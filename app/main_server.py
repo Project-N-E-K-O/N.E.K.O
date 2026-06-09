@@ -1666,7 +1666,7 @@ async def health():
 
 # ── Card-Forge 跨进程当前猫娘同步端点 ────────────────────────────
 # 奇遇铸造机 (card-forge) 前端会轮询本端点，拿到当前猫娘名作为
-# /arena/forge-facts 的 runtime_character_hint；不要求 card-forge 后端
+# /forge/facts 的 runtime_character_hint；不要求 card-forge 后端
 # 知道 NEKO 内部状态，只通过此端点把"当前 NEKO 在前台展示的猫娘"广播给它。
 _card_forge_active_character: dict = {}  # {dataUrl, name}
 

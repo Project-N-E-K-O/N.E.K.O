@@ -469,7 +469,7 @@ def _forge_route_log(request_id: str, event: str, **fields: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
-@app.get("/arena/forge-facts")
+@app.get("/forge/facts")
 async def arena_forge_facts(
     character: Optional[str] = Query(None, description="调试用猫娘名；默认忽略，实际读取 NEKO 当前猫娘"),
     runtime_character_hint: Optional[str] = Query(None, description="NEKO 本体运行态同步的当前猫娘名"),
@@ -613,7 +613,7 @@ async def arena_forge_facts(
     return JSONResponse(payload)
 
 
-@app.post("/arena/forge-card-story")
+@app.post("/forge/card-story")
 async def arena_forge_card_story(body: dict[str, Any]):
     request_id = f"forge-{uuid.uuid4().hex[:10]}"
     safe_body = body if isinstance(body, dict) else {}
@@ -690,11 +690,11 @@ async def arena_forge_card_story(body: dict[str, Any]):
         )
 
 
-@app.get("/arena/active-character")
+@app.get("/forge/active-character")
 async def arena_active_character():
     """返回当前 NEKO 配置/运行态的猫娘名 + 主人名，供社区 Beta 铸造前端跟随（无则空串）。
 
-    社区 SPA 跨源调本端点拿"当前猫娘"，再据此调 /arena/forge-facts 抽本地记忆。
+    社区 SPA 跨源调本端点拿"当前猫娘"，再据此调 /forge/facts 抽本地记忆。
     复用 active_neko_context（与 forge-facts 同一份"当前猫娘"解析），享受同一 CORS 白名单。
     master_name 透传给云端 /api/cards/forge-beta 当故事 prompt 的主人称谓；社区前端只读，
     不写回本地 —— 这里仅暴露 NEKO 既有的主人设定，不引入新的可识别信息。

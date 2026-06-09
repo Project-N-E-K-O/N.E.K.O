@@ -179,7 +179,7 @@ async function requestForgeCardStory(card, event, character) {
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), FORGE_STORY_FETCH_TIMEOUT_MS)
   try {
-    const res = await fetch('/arena/forge-card-story', {
+    const res = await fetch('/forge/card-story', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(buildForgeStoryRequest(card, event, runtimeCharacter)),
@@ -244,7 +244,7 @@ export default function App() {
     saveForgedBrawlCards(forgedInventory)
   }, [forgedInventory])
 
-  // 从 NEKO 主服务同步当前猫娘名，作为 runtime_character_hint 提供给 /arena/forge-facts。
+  // 从 NEKO 主服务同步当前猫娘名，作为 runtime_character_hint 提供给 /forge/facts。
   // 拿到空 name 时也要把本地 state 清掉，否则服务端缓存清空（例如重启）后前端仍会显示旧猫娘名。
   useEffect(() => {
     let timer = null
@@ -287,7 +287,7 @@ export default function App() {
     if (usedFactIds.length > 0) qs.set('exclude_fact_ids', Array.from(new Set(usedFactIds)).join(','))
     if (usedFactHashes.length > 0) qs.set('exclude_hashes', Array.from(new Set(usedFactHashes)).join(','))
     try {
-      const res = await fetch(`/arena/forge-facts?${qs.toString()}`)
+      const res = await fetch(`/forge/facts?${qs.toString()}`)
       if (!res.ok) throw new Error('forge-facts http')
       const data = await res.json()
       const facts = Array.isArray(data.facts) ? data.facts : []

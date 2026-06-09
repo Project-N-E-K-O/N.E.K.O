@@ -9,11 +9,11 @@ export default defineConfig({
         target: 'http://localhost:48911',
         changeOrigin: true,
       },
-      '/arena/forge-facts': {
+      '/forge/facts': {
         target: 'http://localhost:3001',
         changeOrigin: true,
       },
-      '/arena/forge-card-story': {
+      '/forge/card-story': {
         target: 'http://localhost:3001',
         changeOrigin: true,
       },
