@@ -52,8 +52,6 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   onChoiceSelect?: (option: ChoiceOption, source: ChoicePromptSource) => void;
   onCompactChatStateChange?: (state: CompactChatState) => void;
   onCompactMinimizeRequest?: () => void;
-  // 注：compactMinimizeCancelSeq 在 message-schema.ts 的 chatWindowPropsSchema 里声明
-  // （ChatWindowSchemaProps 已含），必须在 schema 里、否则 parse 会 strip 掉（Codex P2）。
 };
 
 type CompactInlineExportBridge = {
@@ -1168,7 +1166,6 @@ function CompactChatApp({
   composerHidden = false,
   composerDisabled = false,
   chatSurfaceMode = 'compact',
-  compactMinimizeCancelSeq = 0,
   compactChatState,
   composerAttachments = [],
   composerAttachmentsAriaLabel = i18n('chat.pendingImagesAriaLabel', 'Pending attachments'),
@@ -1338,18 +1335,6 @@ function CompactChatApp({
   const [compactExportPreviewOpen, setCompactExportPreviewOpen] = useState(false);
   const [compactExportSelectedIds, setCompactExportSelectedIds] = useState<Set<string>>(() => new Set());
   const [compactExportAutoScrollToBottom, setCompactExportAutoScrollToBottom] = useState(true);
-  // 折叠进行中：点最小化时置 true → 蓝条（历史区开关）淡出（#2）+ 胶囊右→左擦除收走。mode 切到
-  // minimized 后由下方 useEffect 复位。展开进行中：minimized→compact 时置 true → 胶囊左→右展开 reveal。
-  // 这两个擦除/reveal 类必须由 React state 写进 className（而非 host/preload 用 classList 加）—— 否则
-  // React 重渲染会用 JSX className 覆盖、把类删掉，导致动画被打断、胶囊瞬跳（偶发"展开销毁闪一下"）。
-  const [compactCollapsing, setCompactCollapsing] = useState(false);
-  const [compactExpanding, setCompactExpanding] = useState(false);
-  const prevChatSurfaceModeRef = useRef(chatSurfaceMode);
-  // 折叠时若历史区是开的，记下「恢复后应重新打开历史区」。配合 closeCompactExportHistory
-  // ({persist:false})：折叠只播收回动画、不写偏好，恢复（minimized→compact）时据此重开。
-  const compactHistoryReopenAfterRestoreRef = useRef(false);
-  // host 折叠取消序号上次值，用于检测「取消」事件（见下方 useLayoutEffect）。
-  const prevCompactMinimizeCancelSeqRef = useRef(compactMinimizeCancelSeq);
   const compactSurfaceResizeStateRef = useRef<CompactSurfaceResizeState | null>(null);
   const compactHistoryResizeStateRef = useRef<CompactHistoryResizeState | null>(null);
   const compactHistoryVisibilitySuppressClickRef = useRef(false);
@@ -1624,15 +1609,11 @@ function CompactChatApp({
     persistCompactExportHistoryOpen(true);
     setCompactExportAutoScrollToBottom(true);
   }, [clearCompactExportHistoryUnmountTimer]);
-  // persist=false：只播收回动画、不把「历史区关闭」写进持久化偏好。折叠（minimize）时用，
-  // 这样 minimize→恢复后历史区按折叠前状态重新打开，而不是把临时折叠误当成偏好变更。
-  // 显式关闭（点蓝条/handle）仍默认 persist=true，正常写偏好。
-  const closeCompactExportHistory = useCallback((opts?: { persist?: boolean }) => {
-    const persist = opts?.persist !== false;
+  const closeCompactExportHistory = useCallback(() => {
     clearCompactExportHistoryUnmountTimer();
     setCompactExportHistoryClosingMessages(messages);
     setCompactExportHistoryOpen(false);
-    if (persist) persistCompactExportHistoryOpen(false);
+    persistCompactExportHistoryOpen(false);
     setCompactExportPreviewOpen(false);
     compactExportHistoryUnmountTimerRef.current = window.setTimeout(() => {
       setCompactExportHistoryMounted(false);
@@ -1643,86 +1624,6 @@ function CompactChatApp({
   useEffect(() => () => {
     clearCompactExportHistoryUnmountTimer();
   }, [clearCompactExportHistoryUnmountTimer]);
-  // 展开 reveal：minimized → compact（恢复）时置 compactExpanding → 胶囊左→右展开（React state 写
-   // className，不被覆盖）。~340ms 后复位。prev ref 仅在此 effect（deps 只 mode）更新，准确跟踪模式变化。
-   // 用 useLayoutEffect 而非 useEffect：passive effect 在首帧绘制后才置 compactExpanding，胶囊会先
-   // 无 mask 全显一帧再重启擦除（Codex P2）。Electron 路径有壳侧 opacity-0 稳定门挡着看不出，但 web
-   // compact 路径没有那道门，layout effect 让首帧绘制前就挂上 mask，消除 web 端首帧闪。仅提前 1 帧，
-   // 340ms 擦除时长不变，prev ref 无其它时序读者 → 无竞态。
-  useLayoutEffect(() => {
-    const prev = prevChatSurfaceModeRef.current;
-    prevChatSurfaceModeRef.current = chatSurfaceMode;
-    // 重新进入 compact（从 minimized 或 full）时消费历史区重开请求（折叠时 persist:false 记下的）。
-    // 不限于 minimized→compact——经公开 setChatSurfaceMode 的 minimized→full→compact 间接恢复也要重开，
-    // 否则历史区该开没开、而偏好其实仍是开（Codex P2）。ref 仅在「带历史区折叠」时置位，无请求不触发。
-    // 注意用 prev!=='compact' 而非裸 mode==='compact'：折叠点击当帧 mode 仍是 compact，裸判会立即把刚
-    // 关掉的历史区又开回来。
-    if (chatSurfaceMode === 'compact' && prev !== 'compact'
-      && compactHistoryReopenAfterRestoreRef.current) {
-      compactHistoryReopenAfterRestoreRef.current = false;
-      openCompactExportHistory();
-    }
-    // 方向性 reveal 擦除只在毛线球 minimized→compact 恢复时播（full→compact 不播）。~340ms 后复位。
-    // useLayoutEffect 让首帧绘制前就挂 mask，消除 web 端首帧闪（壳侧有 opacity-0 门、Electron 看不出）。
-    if (prev === 'minimized' && chatSurfaceMode === 'compact') {
-      setCompactExpanding(true);
-      const t = window.setTimeout(() => setCompactExpanding(false), 340);
-      return () => window.clearTimeout(t);
-    }
-    return undefined;
-  }, [chatSurfaceMode, openCompactExportHistory]);
-  // 折叠完成（mode→minimized）后复位 compactCollapsing：此刻蓝条/胶囊已随 isCompactSurface 卸载，
-  // 复位无视觉副作用，只为下次恢复干净。
-  useEffect(() => {
-    if (chatSurfaceMode === 'minimized' && compactCollapsing) {
-      setCompactCollapsing(false);
-    }
-  }, [chatSurfaceMode, compactCollapsing]);
-  // 展开被打断时复位 compactExpanding：展开 reveal 是「minimized→compact 置 expanding→true，340ms
-  // 后复位」。若这 340ms 内 mode 又被切走（如公开 setChatSurfaceMode('full') / setViewProps），上面
-  // 展开 effect 的 cleanup 取消了那次 setCompactExpanding(false)，而该转换不是从这里发起 → expanding
-  // 残留 true 带进后续 compact 渲染，令 full→compact 重放/保留展开 mask（Codex P2）。离开 compact 即复位。
-  useEffect(() => {
-    if (chatSurfaceMode !== 'compact' && compactExpanding) {
-      setCompactExpanding(false);
-    }
-  }, [chatSurfaceMode, compactExpanding]);
-  // 安全兜底：折叠流程是「compact 态置 collapsing→true，host ~280ms 后把 mode 切 minimized，
-  // 上面的 minimized 复位 effect 清掉 collapsing」。但若这 280ms 内窗口被关闭 / 折叠被取消，
-  // mode 永远到不了 minimized，collapsing 会卡在 true；而 host 的 closeWindow 是隐藏而非卸载
-  // React 树，重开时复用同一组件 → 胶囊带着 neko-compact-collapsing 的 mask 卡在不可见末态
-  // （Codex P2）。这里挂一道超过擦除时长（280ms wipe）的兜底超时确保复位：正常折叠会在
-  // mode→minimized 时先复位、cleanup 清掉本超时（永不触发）；仅在取消场景兜底，此时窗口已隐藏，
-  // 复位无可见副作用。
-  useEffect(() => {
-    if (!compactCollapsing) return undefined;
-    const t = window.setTimeout(() => {
-      setCompactCollapsing(false);
-      // 折叠被取消（mode 没到 minimized，故正常的 minimized→compact 重开路径不会触发）→ 若折叠时
-      // 用 persist:false 关掉了历史区，这里把它恢复回开，否则历史区会被一次未完成的折叠永久收起、
-      // 而持久化偏好其实仍是开的（Codex P2）。openCompactExportHistory 在非 compact 态仅置状态、
-      // 不渲染（受 isCompactSurface 门控），无副作用。正常折叠走 minimized→compact 重开、不到这里。
-      if (compactHistoryReopenAfterRestoreRef.current) {
-        compactHistoryReopenAfterRestoreRef.current = false;
-        openCompactExportHistory();
-      }
-    }, 600);
-    return () => window.clearTimeout(t);
-  }, [compactCollapsing, openCompactExportHistory]);
-  // host 折叠取消序号变化 = 一次进行中的折叠被取消（如 280ms 折叠延时内 closeWindow）。host 关窗
-  // 只隐藏 overlay、React 树与 state 存活；重开时该 prop 携新值到达。用 useLayoutEffect 在重开
-  // 首帧绘制前立即复位 compactCollapsing 并恢复历史区——否则要等上面 600ms 兜底，快速「关→重开」
-  // 会让 compact 表面带着擦除 mask 的不可见 forwards 末态 + 历史区临时关闭重新出现（Codex P2）。
-  // 600ms 兜底保留作为「取消后一直没重开」场景的更晚双保险。
-  useLayoutEffect(() => {
-    if (compactMinimizeCancelSeq === prevCompactMinimizeCancelSeqRef.current) return;
-    prevCompactMinimizeCancelSeqRef.current = compactMinimizeCancelSeq;
-    setCompactCollapsing(false);
-    if (compactHistoryReopenAfterRestoreRef.current) {
-      compactHistoryReopenAfterRestoreRef.current = false;
-      openCompactExportHistory();
-    }
-  }, [compactMinimizeCancelSeq, openCompactExportHistory]);
   const handleCompactHistoryVisibilityToggle = useCallback(() => {
     if (compactExportHistoryOpen) {
       closeCompactExportHistory();
@@ -4965,23 +4866,7 @@ function CompactChatApp({
           return;
         }
         clearActiveCursorToolSelection();
-        // onCompactMinimizeRequest 是可选 prop：真正把 surfaceMode 切到 'minimized'
-        // 的是宿主回调，切回 minimized 后才会复位 compactCollapsing。宿主没传回调时
-        // 若仍 setCompactCollapsing(true)，模式永不变、collapsing 永不复位，蓝条/胶囊
-        // 会一直卡在折叠样式（CodeRabbit Major）。所以缺回调时直接早退、不进折叠态。
-        if (!onCompactMinimizeRequest) {
-          return;
-        }
-        // #3 折叠时若历史区已开，异步触发其收回动画（与折叠并行，不阻塞）。
-        // 用 persist:false：只播收回动画、不把「关闭」写进偏好；并记下恢复后重开，
-        // 这样 minimize→恢复后历史区按折叠前状态重新打开（不把临时折叠误当偏好变更）。
-        if (compactExportHistoryOpen) {
-          compactHistoryReopenAfterRestoreRef.current = true;
-          closeCompactExportHistory({ persist: false });
-        }
-        // #2 折叠时蓝条（历史区开关）淡出。compactCollapsing→true 给蓝条加 is-collapsing。
-        setCompactCollapsing(true);
-        onCompactMinimizeRequest();
+        onCompactMinimizeRequest?.();
       }}
     >
       <img
@@ -5662,7 +5547,7 @@ function CompactChatApp({
   const compactExportHistoryNode = compactExportHistoryElement;
   const compactHistoryVisibilityHandleNode = isCompactSurface ? (
     <button
-      className={`compact-history-visibility-handle${compactExportHistoryOpen ? ' is-open' : ''}${compactCollapsing ? ' is-collapsing' : ''}`}
+      className={`compact-history-visibility-handle${compactExportHistoryOpen ? ' is-open' : ''}`}
       type="button"
       aria-label={compactExportHistoryToggleLabel}
       aria-expanded={compactExportHistoryOpen}
@@ -5811,13 +5696,7 @@ function CompactChatApp({
           }}>
             {isCompactSurface ? (
               <div
-                className={`compact-chat-surface-shell${
-                  compactCollapsing
-                    ? ' neko-compact-collapsing'
-                    : compactExpanding
-                      ? ' neko-compact-expanding'
-                      : ''
-                }`}
+                className="compact-chat-surface-shell"
                 ref={compactInputShellRef}
                 data-compact-chat-state={effectiveCompactChatState}
                 data-compact-tool-layer-open={compactToolToggleVisible && compactInputToolFanOpen ? 'true' : 'false'}

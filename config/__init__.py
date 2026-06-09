@@ -678,8 +678,10 @@ def get_localized_default_characters(language: str | None = None) -> dict:
 
 DEFAULT_CORE_CONFIG = {
     "coreApiKey": "",
-    "coreApi": "qwen",
-    "assistApi": "qwen",
+    # 兜底默认走免费版而非付费的阿里 qwen：配置为空/缺失/损坏时，宁可落到不要 key、
+    # 不花钱的免费版，也绝不能静默切到付费服务商悄悄消耗用户额度。
+    "coreApi": "free",
+    "assistApi": "free",
     "assistApiKeyQwen": "",
     "assistApiKeyOpenai": "",
     "assistApiKeyGlm": "",

@@ -1146,6 +1146,7 @@
         "saveFailed": "保存失敗: {{error}}",
         "apiKeyInvalid": "API Key無效",
         "apiKeyInvalidRetry": "API Key無效，請重新輸入",
+        "configNotReady": "設定尚未載入完成，請稍候重試",
         "saveNetworkError": "保存失敗，請檢查網絡連接",
         "saveError": "保存時出錯: {{error}}",
         "saveSuccess": "API Key保存成功！",

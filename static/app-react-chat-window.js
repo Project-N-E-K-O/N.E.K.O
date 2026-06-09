@@ -2223,7 +2223,6 @@
             _toolCursorResetKey: state._toolCursorResetKey || undefined,
             composerHidden: state.composerHidden,
             chatSurfaceMode: getCurrentChatSurfaceMode(),
-            compactMinimizeCancelSeq: compactMinimizeCancelSeq,
             compactChatState: getCurrentCompactChatState(),
             galgameModeEnabled: !!state.galgameModeEnabled,
             galgameOptions: Array.isArray(state.galgameOptions) ? state.galgameOptions : [],
@@ -3198,69 +3197,8 @@
     // React compact 输入框/胶囊左侧毛绒球点按 → 折叠为 minimized。最小化控制权在宿主，
     // 走 setChatSurfaceMode('minimized')（既有的 setMinimized + 位置持久化 + chat-surface-mode-change
     // 派发都在其中）；不用 toggleMinimized——毛绒球只在非 minimized 态出现，语义恒为「收起」。
-    //
-    // 说明：曾尝试「在 compact 态把 root 原位慢速淡出 + 提前异步显示独立球」做收起 overlap，但
-    // (a) 淡出期间 compact 仍可交互/未冻结，提前显示的球与 relayout/hit-test/moveTop 互相打架 →
-    //     球在光标下抖、cursor 在箭头/手之间闪；
-    // (b) 给 root 设 inline opacity:0 做淡出，频繁点击时 setMinimized 因状态 desync 提前 return、
-    //     跳过 opacity 复位 → root 卡在 0 = 输入框隐身。
-    // 这套机制竞态太重，已回退。现仅保留一个安全增强：给按下的毛绒球补「按下挤压」动画（CSS），
-    // 留一个短延时让挤压动画露出来再瞬时折叠（折叠本体走原有 PRE_COLLAPSE_DIM 瞬时路径，零竞态）。
-    // 独立球出现时的「放大长出」靠球自身入场动画（neko-ball-appear），与此处解耦。
-    var COMPACT_MINIMIZE_PRESS_MS = 280; // = neko-compact-collapse-wipe 擦除时长：擦完再瞬时折叠
-    var compactMinimizePressTimer = 0;
-    var compactMinimizeCancelSeq = 0; // 折叠取消序号（见 clearCompactMinimizePressTimer），传给 React
-    // 清掉挂起的「按下挤压→瞬时折叠」延时。窗口关闭/动画取消时必须调用，否则这个
-    // 跨 280ms 存活的回调会在窗口已关闭/重开后仍 setChatSurfaceMode('minimized')，
-    // 把更新后的状态覆盖成「幽灵最小化」（CodeRabbit Minor / Codex P2）。
-    function clearCompactMinimizePressTimer() {
-        if (!compactMinimizePressTimer) return;
-        window.clearTimeout(compactMinimizePressTimer);
-        compactMinimizePressTimer = 0;
-        // 真清掉一个 pending 折叠延时 = 一次进行中的折叠被取消（如 280ms 内 closeWindow）。
-        // 递增序号；buildRenderProps 把它当 prop 传给 React，让组件在重开时立即复位
-        // compactCollapsing，而不必等 600ms 兜底——否则快速「关→重开」会让 compact 表面带着擦除
-        // mask 的不可见末态 + 历史区临时关闭重新出现（Codex P2）。
-        compactMinimizeCancelSeq += 1;
-    }
     function handleCompactMinimizeRequest() {
-        // reduced-motion：折叠擦除/按压挤压动画已被 CSS（@media prefers-reduced-motion: reduce）
-        // 禁用，此时再延时 COMPACT_MINIMIZE_PRESS_MS(280ms) 才折叠，只会让窗口「点了没反应」一段，
-        // 无任何动画反馈。无障碍模式下直接立即折叠，保持即时响应（Codex P2）。
-        var reduceMotion = false;
-        try {
-            reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
-        } catch (e) {}
-        if (reduceMotion) {
-            setChatSurfaceMode('minimized');
-            return;
-        }
-        // 给按下的毛绒球补「按下挤压」弹性动画（CSS index.css neko-compact-minimize-press）。
-        try {
-            var pressIcons = document.querySelectorAll('.compact-chat-minimize-ball-icon');
-            for (var pi = 0; pi < pressIcons.length; pi++) {
-                var pressIcon = pressIcons[pi];
-                pressIcon.classList.remove('neko-minimize-ball-pressing');
-                void pressIcon.offsetWidth;
-                pressIcon.classList.add('neko-minimize-ball-pressing');
-            }
-        } catch (e) {}
-        // 防重入：擦除途中再次点最小化忽略。
-        if (compactMinimizePressTimer) return;
-        // #1 折叠方向性擦除（右→左收）由 App.tsx 的 compactCollapsing state 驱动 className 实现
-        //    （onClick 里已 setCompactCollapsing(true)）—— 不再在此用 classList 加类（会被 React 重渲染覆盖）。
-        // web 与 Electron 统一走这条 = 擦除时长的延时再瞬时折叠：web 若同步 setChatSurfaceMode
-        // ('minimized') 会在下一帧前就让 isCompactSurface=false、卸载 .compact-chat-surface-shell，
-        // 新加的 neko-compact-collapsing 擦除遮罩与蓝条淡出根本来不及渲染（Codex P2）。
-        compactMinimizePressTimer = window.setTimeout(function () {
-            compactMinimizePressTimer = 0;
-            // 守卫：擦除期间宿主可能把 surface mode 切走（关闭/重开经
-            // closeWindow→cancelActiveAnimation 清掉本 timer；或经公开 API setChatSurfaceMode
-            // ('full') / setViewProps 直写 state 绕过清理）。只有「仍处于 compact」才执行这次
-            // 延迟折叠，否则会用陈旧的 minimized 覆盖更新后的模式（Codex P2）。两端通用。
-            if (getCurrentChatSurfaceMode() !== 'compact') return;
-            setChatSurfaceMode('minimized');
-        }, COMPACT_MINIMIZE_PRESS_MS);
+        setChatSurfaceMode('minimized');
     }
 
     function handleMiniGameInviteChoice(option) {
@@ -3521,9 +3459,6 @@
             }
             state.chatSurfaceMode = normalizedChatSurfaceMode;
             if (surfaceModeChanged) {
-                // 同 setChatSurfaceMode：mode 经此公开入口变更时取消挂起的延时折叠，防 full→compact
-                // hop 内陈旧折叠回调误折叠刚恢复的表面（Codex P2）。timer 已=0 时为 no-op。
-                clearCompactMinimizePressTimer();
                 // setViewProps is a public entry point (exposed + the
                 // `set-view-props` event), so it can land a real surface change —
                 // e.g. an external `{chatSurfaceMode:'full'}`. Mirror
@@ -4560,9 +4495,6 @@
             activeAnimationCleanup = null;
         }
         isMinimizeTransitioning = false;
-        // 取消进行中的折叠/展开时一并清掉挂起的「按下挤压→瞬时折叠」延时（closeWindow
-        // 也走这里），避免该回调在窗口关闭/重开后幽灵触发 setChatSurfaceMode('minimized')。
-        clearCompactMinimizePressTimer();
     }
 
     // The minimized ball belongs to the surface we'll restore to: the revived
@@ -4633,12 +4565,6 @@
             syncChatSurfaceModeUI();
             return normalized;
         }
-
-        // 任何真实的 surface mode 变更都取消挂起的「按下挤压→延时折叠」：否则 full→compact 之类
-        // 快速跳变会让 280ms 内的陈旧折叠回调在 mode 又回到 compact 时误折叠刚恢复的表面（Codex P2，
-        // 仅靠回调里 getCurrentChatSurfaceMode()==='compact' 守卫挡不住这种 hop）。timer 自身的
-        // minimize 调用此时 timer 已=0，clear 为 no-op，不影响正常折叠。
-        clearCompactMinimizePressTimer();
 
         if (!nextMinimized) {
             lastRestorableChatSurfaceMode = normalized;

@@ -1146,6 +1146,7 @@
         "saveFailed": "Error al guardar: {{error}}",
         "apiKeyInvalid": "La clave API no es válida",
         "apiKeyInvalidRetry": "La clave API no es válida; vuelva a ingresarla",
+        "configNotReady": "La configuración aún se está cargando, inténtalo de nuevo en un momento",
         "saveNetworkError": "Error al guardar, verifique la conexión de red",
         "saveError": "Error al guardar: {{error}}",
         "saveSuccess": "¡La clave API se guardó correctamente!",
