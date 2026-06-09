@@ -4892,13 +4892,20 @@ function CompactChatApp({
           return;
         }
         clearActiveCursorToolSelection();
+        // onCompactMinimizeRequest 是可选 prop：真正把 surfaceMode 切到 'minimized'
+        // 的是宿主回调，切回 minimized 后才会复位 compactCollapsing。宿主没传回调时
+        // 若仍 setCompactCollapsing(true)，模式永不变、collapsing 永不复位，蓝条/胶囊
+        // 会一直卡在折叠样式（CodeRabbit Major）。所以缺回调时直接早退、不进折叠态。
+        if (!onCompactMinimizeRequest) {
+          return;
+        }
         // #3 折叠时若历史区已开，异步触发其收回动画（与折叠并行，不阻塞）。
         if (compactExportHistoryOpen) {
           closeCompactExportHistory();
         }
         // #2 折叠时蓝条（历史区开关）淡出。compactCollapsing→true 给蓝条加 is-collapsing。
         setCompactCollapsing(true);
-        onCompactMinimizeRequest?.();
+        onCompactMinimizeRequest();
       }}
     >
       <img

@@ -3208,6 +3208,14 @@
     // 独立球出现时的「放大长出」靠球自身入场动画（neko-ball-appear），与此处解耦。
     var COMPACT_MINIMIZE_PRESS_MS = 280; // = neko-compact-collapse-wipe 擦除时长：擦完再瞬时折叠
     var compactMinimizePressTimer = 0;
+    // 清掉挂起的「按下挤压→瞬时折叠」延时。窗口关闭/动画取消时必须调用，否则这个
+    // 跨 280ms 存活的回调会在窗口已关闭/重开后仍 setChatSurfaceMode('minimized')，
+    // 把更新后的状态覆盖成「幽灵最小化」（CodeRabbit Minor / Codex P2）。
+    function clearCompactMinimizePressTimer() {
+        if (!compactMinimizePressTimer) return;
+        window.clearTimeout(compactMinimizePressTimer);
+        compactMinimizePressTimer = 0;
+    }
     function handleCompactMinimizeRequest() {
         // 给按下的毛绒球补「按下挤压」弹性动画（CSS index.css neko-compact-minimize-press）。
         try {
@@ -3229,6 +3237,10 @@
         //    （onClick 里已 setCompactCollapsing(true)）—— 不再在此用 classList 加类（会被 React 重渲染覆盖）。
         compactMinimizePressTimer = window.setTimeout(function () {
             compactMinimizePressTimer = 0;
+            // 多一道保险：擦除期间窗口若已退出 Electron compact 语境（关闭/重开会经
+            // closeWindow→cancelActiveAnimation 清掉本 timer，但状态可能在其它路径变更），
+            // 不强行折叠，避免覆盖更新后的 surface mode。
+            if (!isElectronChatWindow()) return;
             setChatSurfaceMode('minimized');
         }, COMPACT_MINIMIZE_PRESS_MS);
     }
@@ -4527,6 +4539,9 @@
             activeAnimationCleanup = null;
         }
         isMinimizeTransitioning = false;
+        // 取消进行中的折叠/展开时一并清掉挂起的「按下挤压→瞬时折叠」延时（closeWindow
+        // 也走这里），避免该回调在窗口关闭/重开后幽灵触发 setChatSurfaceMode('minimized')。
+        clearCompactMinimizePressTimer();
     }
 
     // The minimized ball belongs to the surface we'll restore to: the revived
