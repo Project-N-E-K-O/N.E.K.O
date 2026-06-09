@@ -22,6 +22,7 @@
     const S = window.appState;
     const C = window.appConst;
     const NEW_USER_ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1';
+    const NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 1000;
 
     // ======================== proactive leader election ========================
     //
@@ -119,13 +120,25 @@
         }
     }
 
+    function isRecentNewUserIcebreakerEntry(entry) {
+        if (!entry || typeof entry !== 'object') return false;
+        const timestamps = [
+            Number(entry.triggeredAt || 0),
+            Number(entry.updatedAt || 0),
+            Number(entry.completedAt || 0),
+            Number(entry.endedAt || 0)
+        ].filter((value) => Number.isFinite(value) && value > 0);
+        if (!timestamps.length) return false;
+        const latest = Math.max.apply(Math, timestamps);
+        return Date.now() - latest <= NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS;
+    }
+
     /**
-     * Returns whether the seven-day new-user icebreaker is still in progress.
+     * Returns whether a new-user icebreaker is currently owning the greeting slot.
      *
-     * The proactive scheduler uses this to stay quiet while onboarding owns the
-     * user experience. A live icebreaker session wins immediately; otherwise
-     * the persisted day store is scanned for any started/completed/touched day,
-     * and day 7 completion closes the period.
+     * A live icebreaker session wins immediately; persisted day entries only
+     * suppress nearby reconnect/proactive work so older day history does not
+     * mute normal sessions for the rest of the seven-day onboarding.
      *
      * @returns {boolean} True when proactive chat should be suppressed for onboarding.
      */
@@ -143,12 +156,7 @@
         if (finalDay && finalDay.completed === true) return false;
         for (let day = 1; day <= 7; day += 1) {
             const entry = days[String(day)];
-            if (entry && (
-                entry.started === true
-                || entry.completed === true
-                || entry.triggeredAt
-                || entry.updatedAt
-            )) {
+            if (isRecentNewUserIcebreakerEntry(entry)) {
                 return true;
             }
         }

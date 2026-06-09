@@ -20,6 +20,7 @@
     const GREETING_CHECK_RETRY_BASE_MS = 800;
     const GREETING_CHECK_RETRY_MAX_MS = 5000;
     const NEW_USER_ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1';
+    const NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 1000;
     const MUSIC_PLAY_URL_FOLLOWER_GRACE_MS = 500;
     const MUSIC_PLAY_URL_SECONDARY_CONFIRM_MS = 100;
     const MUSIC_PLAY_URL_CLAIM_TTL_MS = 5000;
@@ -593,6 +594,21 @@
         return !!(finalDay && finalDay.completed === true);
     }
 
+    function isRecentNewUserIcebreakerEntry(entry) {
+        if (!entry || typeof entry !== 'object') return false;
+        var timestamps = [
+            Number(entry.triggeredAt || 0),
+            Number(entry.updatedAt || 0),
+            Number(entry.completedAt || 0),
+            Number(entry.endedAt || 0)
+        ].filter(function (value) {
+            return Number.isFinite(value) && value > 0;
+        });
+        if (!timestamps.length) return false;
+        var latest = Math.max.apply(Math, timestamps);
+        return Date.now() - latest <= NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS;
+    }
+
     function isNewUserIcebreakerPeriodActive() {
         try {
             if (window.newUserIcebreaker && typeof window.newUserIcebreaker.getActiveSession === 'function') {
@@ -606,12 +622,7 @@
         if (hasCompletedNewUserIcebreaker()) return false;
         for (var day = 1; day <= 7; day += 1) {
             var entry = days[String(day)];
-            if (entry && (
-                entry.started === true
-                || entry.completed === true
-                || entry.triggeredAt
-                || entry.updatedAt
-            )) {
+            if (isRecentNewUserIcebreakerEntry(entry)) {
                 return true;
             }
         }

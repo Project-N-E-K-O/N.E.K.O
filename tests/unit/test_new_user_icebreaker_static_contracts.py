@@ -578,14 +578,29 @@ def test_icebreaker_bridge_events_use_monotonic_timestamps_for_deduping():
     assert "timestamp: Date.now()" not in runtime
 
 
-def test_icebreaker_period_suppresses_greeting_and_proactive_chat():
+def test_icebreaker_period_suppresses_only_active_or_recent_icebreaker():
     app_websocket = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
     app_proactive = APP_PROACTIVE_PATH.read_text(encoding="utf-8")
 
     for source in (app_websocket, app_proactive):
         assert "NEW_USER_ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1'" in source
+        assert "NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 1000" in source
         assert "function isNewUserIcebreakerPeriodActive()" in source
+        assert "function isRecentNewUserIcebreakerEntry(entry)" in source
+        assert "Date.now() - latest <= NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS" in source
+        assert "isRecentNewUserIcebreakerEntry(entry)" in source
         assert "days['7']" in source
+
+        period_body = re.search(
+            r"function isNewUserIcebreakerPeriodActive\(\) \{(?P<body>.*?)\n    \}",
+            source,
+            flags=re.S,
+        ).group("body")
+        assert "getActiveSession()" in period_body
+        assert "entry.started === true" not in period_body
+        assert "entry.completed === true" not in period_body
+        assert "|| entry.triggeredAt" not in period_body
+        assert "|| entry.updatedAt" not in period_body
 
     assert "isNewUserIcebreakerPeriodActive()" in app_proactive
     assert "[ProactiveChat] 新用户破冰期未结束，跳过主动搭话" in app_proactive
