@@ -2223,6 +2223,7 @@
             _toolCursorResetKey: state._toolCursorResetKey || undefined,
             composerHidden: state.composerHidden,
             chatSurfaceMode: getCurrentChatSurfaceMode(),
+            compactMinimizeCancelSeq: compactMinimizeCancelSeq,
             compactChatState: getCurrentCompactChatState(),
             galgameModeEnabled: !!state.galgameModeEnabled,
             galgameOptions: Array.isArray(state.galgameOptions) ? state.galgameOptions : [],
@@ -3208,6 +3209,7 @@
     // 独立球出现时的「放大长出」靠球自身入场动画（neko-ball-appear），与此处解耦。
     var COMPACT_MINIMIZE_PRESS_MS = 280; // = neko-compact-collapse-wipe 擦除时长：擦完再瞬时折叠
     var compactMinimizePressTimer = 0;
+    var compactMinimizeCancelSeq = 0; // 折叠取消序号（见 clearCompactMinimizePressTimer），传给 React
     // 清掉挂起的「按下挤压→瞬时折叠」延时。窗口关闭/动画取消时必须调用，否则这个
     // 跨 280ms 存活的回调会在窗口已关闭/重开后仍 setChatSurfaceMode('minimized')，
     // 把更新后的状态覆盖成「幽灵最小化」（CodeRabbit Minor / Codex P2）。
@@ -3215,6 +3217,11 @@
         if (!compactMinimizePressTimer) return;
         window.clearTimeout(compactMinimizePressTimer);
         compactMinimizePressTimer = 0;
+        // 真清掉一个 pending 折叠延时 = 一次进行中的折叠被取消（如 280ms 内 closeWindow）。
+        // 递增序号；buildRenderProps 把它当 prop 传给 React，让组件在重开时立即复位
+        // compactCollapsing，而不必等 600ms 兜底——否则快速「关→重开」会让 compact 表面带着擦除
+        // mask 的不可见末态 + 历史区临时关闭重新出现（Codex P2）。
+        compactMinimizeCancelSeq += 1;
     }
     function handleCompactMinimizeRequest() {
         // reduced-motion：折叠擦除/按压挤压动画已被 CSS（@media prefers-reduced-motion: reduce）

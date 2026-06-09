@@ -52,6 +52,9 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   onChoiceSelect?: (option: ChoiceOption, source: ChoicePromptSource) => void;
   onCompactChatStateChange?: (state: CompactChatState) => void;
   onCompactMinimizeRequest?: () => void;
+  // 折叠取消序号：host 在「进行中的折叠被取消」（如 280ms 折叠延时内 closeWindow）时递增。
+  // 组件用它在重开时立即复位 compactCollapsing（避免快速关→重开露出残留擦除态，Codex P2）。
+  compactMinimizeCancelSeq?: number;
 };
 
 type CompactInlineExportBridge = {
@@ -1166,6 +1169,7 @@ function CompactChatApp({
   composerHidden = false,
   composerDisabled = false,
   chatSurfaceMode = 'compact',
+  compactMinimizeCancelSeq = 0,
   compactChatState,
   composerAttachments = [],
   composerAttachmentsAriaLabel = i18n('chat.pendingImagesAriaLabel', 'Pending attachments'),
@@ -1345,6 +1349,8 @@ function CompactChatApp({
   // 折叠时若历史区是开的，记下「恢复后应重新打开历史区」。配合 closeCompactExportHistory
   // ({persist:false})：折叠只播收回动画、不写偏好，恢复（minimized→compact）时据此重开。
   const compactHistoryReopenAfterRestoreRef = useRef(false);
+  // host 折叠取消序号上次值，用于检测「取消」事件（见下方 useLayoutEffect）。
+  const prevCompactMinimizeCancelSeqRef = useRef(compactMinimizeCancelSeq);
   const compactSurfaceResizeStateRef = useRef<CompactSurfaceResizeState | null>(null);
   const compactHistoryResizeStateRef = useRef<CompactHistoryResizeState | null>(null);
   const compactHistoryVisibilitySuppressClickRef = useRef(false);
@@ -1688,6 +1694,20 @@ function CompactChatApp({
     }, 600);
     return () => window.clearTimeout(t);
   }, [compactCollapsing, openCompactExportHistory]);
+  // host 折叠取消序号变化 = 一次进行中的折叠被取消（如 280ms 折叠延时内 closeWindow）。host 关窗
+  // 只隐藏 overlay、React 树与 state 存活；重开时该 prop 携新值到达。用 useLayoutEffect 在重开
+  // 首帧绘制前立即复位 compactCollapsing 并恢复历史区——否则要等上面 600ms 兜底，快速「关→重开」
+  // 会让 compact 表面带着擦除 mask 的不可见 forwards 末态 + 历史区临时关闭重新出现（Codex P2）。
+  // 600ms 兜底保留作为「取消后一直没重开」场景的更晚双保险。
+  useLayoutEffect(() => {
+    if (compactMinimizeCancelSeq === prevCompactMinimizeCancelSeqRef.current) return;
+    prevCompactMinimizeCancelSeqRef.current = compactMinimizeCancelSeq;
+    setCompactCollapsing(false);
+    if (compactHistoryReopenAfterRestoreRef.current) {
+      compactHistoryReopenAfterRestoreRef.current = false;
+      openCompactExportHistory();
+    }
+  }, [compactMinimizeCancelSeq, openCompactExportHistory]);
   const handleCompactHistoryVisibilityToggle = useCallback(() => {
     if (compactExportHistoryOpen) {
       closeCompactExportHistory();
