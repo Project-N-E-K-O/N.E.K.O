@@ -3197,8 +3197,40 @@
     // React compact 输入框/胶囊左侧毛绒球点按 → 折叠为 minimized。最小化控制权在宿主，
     // 走 setChatSurfaceMode('minimized')（既有的 setMinimized + 位置持久化 + chat-surface-mode-change
     // 派发都在其中）；不用 toggleMinimized——毛绒球只在非 minimized 态出现，语义恒为「收起」。
+    //
+    // 说明：曾尝试「在 compact 态把 root 原位慢速淡出 + 提前异步显示独立球」做收起 overlap，但
+    // (a) 淡出期间 compact 仍可交互/未冻结，提前显示的球与 relayout/hit-test/moveTop 互相打架 →
+    //     球在光标下抖、cursor 在箭头/手之间闪；
+    // (b) 给 root 设 inline opacity:0 做淡出，频繁点击时 setMinimized 因状态 desync 提前 return、
+    //     跳过 opacity 复位 → root 卡在 0 = 输入框隐身。
+    // 这套机制竞态太重，已回退。现仅保留一个安全增强：给按下的毛绒球补「按下挤压」动画（CSS），
+    // 留一个短延时让挤压动画露出来再瞬时折叠（折叠本体走原有 PRE_COLLAPSE_DIM 瞬时路径，零竞态）。
+    // 独立球出现时的「放大长出」靠球自身入场动画（neko-ball-appear），与此处解耦。
+    var COMPACT_MINIMIZE_PRESS_MS = 280; // = neko-compact-collapse-wipe 擦除时长：擦完再瞬时折叠
+    var compactMinimizePressTimer = 0;
     function handleCompactMinimizeRequest() {
-        setChatSurfaceMode('minimized');
+        // 给按下的毛绒球补「按下挤压」弹性动画（CSS index.css neko-compact-minimize-press）。
+        try {
+            var pressIcons = document.querySelectorAll('.compact-chat-minimize-ball-icon');
+            for (var pi = 0; pi < pressIcons.length; pi++) {
+                var pressIcon = pressIcons[pi];
+                pressIcon.classList.remove('neko-minimize-ball-pressing');
+                void pressIcon.offsetWidth;
+                pressIcon.classList.add('neko-minimize-ball-pressing');
+            }
+        } catch (e) {}
+        if (!isElectronChatWindow()) {
+            setChatSurfaceMode('minimized');
+            return;
+        }
+        // 防重入：擦除途中再次点最小化忽略。
+        if (compactMinimizePressTimer) return;
+        // #1 折叠方向性擦除（右→左收）由 App.tsx 的 compactCollapsing state 驱动 className 实现
+        //    （onClick 里已 setCompactCollapsing(true)）—— 不再在此用 classList 加类（会被 React 重渲染覆盖）。
+        compactMinimizePressTimer = window.setTimeout(function () {
+            compactMinimizePressTimer = 0;
+            setChatSurfaceMode('minimized');
+        }, COMPACT_MINIMIZE_PRESS_MS);
     }
 
     function handleMiniGameInviteChoice(option) {

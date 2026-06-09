@@ -3038,6 +3038,14 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   width: clamp(124px, calc(var(--compact-history-handle-surface-width) * 0.30), 168px);
 }
 
+/* #2 折叠时蓝条（历史区开关）淡出：App.tsx 点最小化置 compactCollapsing→加 .is-collapsing，
+   ~0.22s 淡掉，与折叠擦除同步消失。 */
+.compact-history-visibility-handle.is-collapsing {
+  opacity: 0;
+  transition: opacity 0.18s ease 0.08s; /* 略延 0.08s 再淡 0.18s，~0.26s 内消失（在 host 折叠 280ms 窗口内） */
+  pointer-events: none;
+}
+
 .compact-history-visibility-handle::before,
 .compact-history-visibility-handle::after {
   content: "";

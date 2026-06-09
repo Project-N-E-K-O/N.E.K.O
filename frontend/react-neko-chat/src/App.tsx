@@ -1335,6 +1335,13 @@ function CompactChatApp({
   const [compactExportPreviewOpen, setCompactExportPreviewOpen] = useState(false);
   const [compactExportSelectedIds, setCompactExportSelectedIds] = useState<Set<string>>(() => new Set());
   const [compactExportAutoScrollToBottom, setCompactExportAutoScrollToBottom] = useState(true);
+  // 折叠进行中：点最小化时置 true → 蓝条（历史区开关）淡出（#2）+ 胶囊右→左擦除收走。mode 切到
+  // minimized 后由下方 useEffect 复位。展开进行中：minimized→compact 时置 true → 胶囊左→右展开 reveal。
+  // 这两个擦除/reveal 类必须由 React state 写进 className（而非 host/preload 用 classList 加）—— 否则
+  // React 重渲染会用 JSX className 覆盖、把类删掉，导致动画被打断、胶囊瞬跳（偶发"展开销毁闪一下"）。
+  const [compactCollapsing, setCompactCollapsing] = useState(false);
+  const [compactExpanding, setCompactExpanding] = useState(false);
+  const prevChatSurfaceModeRef = useRef(chatSurfaceMode);
   const compactSurfaceResizeStateRef = useRef<CompactSurfaceResizeState | null>(null);
   const compactHistoryResizeStateRef = useRef<CompactHistoryResizeState | null>(null);
   const compactHistoryVisibilitySuppressClickRef = useRef(false);
@@ -1624,6 +1631,25 @@ function CompactChatApp({
   useEffect(() => () => {
     clearCompactExportHistoryUnmountTimer();
   }, [clearCompactExportHistoryUnmountTimer]);
+  // 展开 reveal：minimized → compact（恢复）时置 compactExpanding → 胶囊左→右展开（React state 写
+   // className，不被覆盖）。~340ms 后复位。prev ref 仅在此 effect（deps 只 mode）更新，准确跟踪模式变化。
+  useEffect(() => {
+    const prev = prevChatSurfaceModeRef.current;
+    prevChatSurfaceModeRef.current = chatSurfaceMode;
+    if (prev === 'minimized' && chatSurfaceMode === 'compact') {
+      setCompactExpanding(true);
+      const t = window.setTimeout(() => setCompactExpanding(false), 340);
+      return () => window.clearTimeout(t);
+    }
+    return undefined;
+  }, [chatSurfaceMode]);
+  // 折叠完成（mode→minimized）后复位 compactCollapsing：此刻蓝条/胶囊已随 isCompactSurface 卸载，
+  // 复位无视觉副作用，只为下次恢复干净。
+  useEffect(() => {
+    if (chatSurfaceMode === 'minimized' && compactCollapsing) {
+      setCompactCollapsing(false);
+    }
+  }, [chatSurfaceMode, compactCollapsing]);
   const handleCompactHistoryVisibilityToggle = useCallback(() => {
     if (compactExportHistoryOpen) {
       closeCompactExportHistory();
@@ -4866,6 +4892,12 @@ function CompactChatApp({
           return;
         }
         clearActiveCursorToolSelection();
+        // #3 折叠时若历史区已开，异步触发其收回动画（与折叠并行，不阻塞）。
+        if (compactExportHistoryOpen) {
+          closeCompactExportHistory();
+        }
+        // #2 折叠时蓝条（历史区开关）淡出。compactCollapsing→true 给蓝条加 is-collapsing。
+        setCompactCollapsing(true);
         onCompactMinimizeRequest?.();
       }}
     >
@@ -5473,7 +5505,7 @@ function CompactChatApp({
   const compactExportHistoryNode = compactExportHistoryElement;
   const compactHistoryVisibilityHandleNode = isCompactSurface ? (
     <button
-      className={`compact-history-visibility-handle${compactExportHistoryOpen ? ' is-open' : ''}`}
+      className={`compact-history-visibility-handle${compactExportHistoryOpen ? ' is-open' : ''}${compactCollapsing ? ' is-collapsing' : ''}`}
       type="button"
       aria-label={compactExportHistoryToggleLabel}
       aria-expanded={compactExportHistoryOpen}
@@ -5681,7 +5713,7 @@ function CompactChatApp({
           }}>
             {isCompactSurface ? (
               <div
-                className="compact-chat-surface-shell"
+                className={`compact-chat-surface-shell${compactCollapsing ? ' neko-compact-collapsing' : ''}${compactExpanding ? ' neko-compact-expanding' : ''}`}
                 ref={compactInputShellRef}
                 data-compact-chat-state={effectiveCompactChatState}
                 data-compact-tool-layer-open={compactToolToggleVisible && compactInputToolFanOpen ? 'true' : 'false'}
