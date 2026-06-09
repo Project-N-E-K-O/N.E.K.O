@@ -818,7 +818,7 @@ function _isNekoIdleDesktopStateNewerThan(sourceUpdatedAt, state) {
         incomingSourceUpdatedAt > 0 &&
         (!Number.isFinite(currentSourceUpdatedAt) ||
             currentSourceUpdatedAt <= 0 ||
-            incomingSourceUpdatedAt > currentSourceUpdatedAt);
+            incomingSourceUpdatedAt >= currentSourceUpdatedAt);
 }
 
 function _makeNekoIdleDesktopChatMinimizedState(minimized, screenRect, updatedAt, sourceUpdatedAt, expandedRecent) {
@@ -3631,6 +3631,7 @@ function _ensureNekoIdleReturnPresentationBridge() {
         const screenRect = detail && detail.visible
             ? _normalizeNekoIdleScreenRect(detail.screenRect)
             : null;
+        const heartbeat = !!(detail && detail.heartbeat);
         const nextVisible = !!(detail && detail.visible && screenRect);
         if (nextVisible &&
             _nekoIdleDesktopChatMinimizedState &&
@@ -3638,20 +3639,25 @@ function _ensureNekoIdleReturnPresentationBridge() {
             _isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopChatMinimizedState)) {
             return;
         }
-        _nekoIdleDesktopCompactSurfaceState = _makeNekoIdleDesktopCompactSurfaceState(
-            nextVisible,
-            screenRect,
-            receivedAt,
-            sourceUpdatedAt
-        );
-        if (nextVisible) {
-            _nekoIdleDesktopChatMinimizedState = _makeNekoIdleDesktopChatMinimizedState(
-                false,
-                null,
+        // heartbeat 只用于维持 compact-top-edge 贴附位置同步，不得改变可见性状态缓存。
+        // 聊天框最小化后 compact-surface 心跳仍会继续广播 {visible:true,…}，如果让它
+        // 覆写 minimized state，CAT1 会在最小化后 1s 内失去毛线球步行目标。
+        if (!heartbeat) {
+            _nekoIdleDesktopCompactSurfaceState = _makeNekoIdleDesktopCompactSurfaceState(
+                nextVisible,
+                screenRect,
                 receivedAt,
-                sourceUpdatedAt,
-                false
+                sourceUpdatedAt
             );
+            if (nextVisible) {
+                _nekoIdleDesktopChatMinimizedState = _makeNekoIdleDesktopChatMinimizedState(
+                    false,
+                    null,
+                    receivedAt,
+                    sourceUpdatedAt,
+                    false
+                );
+            }
         }
         _handleNekoIdleCompactSurfaceMoveState(detail);
     });

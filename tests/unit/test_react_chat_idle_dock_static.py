@@ -172,8 +172,13 @@ def test_cat1_minimized_ball_target_wins_over_stale_compact_surface():
 def test_desktop_cat1_minimized_and_compact_surface_state_are_timestamp_ordered():
     source = _read(AVATAR_UI_BUTTONS_PATH)
 
-    assert "sourceUpdatedAt: 0" in source
-    assert "expandedRecent: false" in source
+    state_init_block = _between(
+        source,
+        "let _nekoIdleDesktopChatMinimizedState = {",
+        "function _getNekoIdleDesktopStateSourceUpdatedAt(detail, fallbackUpdatedAt) {",
+    )
+    assert "sourceUpdatedAt: 0" in state_init_block
+    assert "expandedRecent: false" in state_init_block
     assert "function _getNekoIdleDesktopStateSourceUpdatedAt(detail, fallbackUpdatedAt)" in source
     assert "function _isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, state)" in source
     assert "function _isNekoIdleDesktopStateNewerThan(sourceUpdatedAt, state)" in source
@@ -228,7 +233,10 @@ def test_desktop_cat1_minimized_and_compact_surface_state_are_timestamp_ordered(
     assert "_nekoIdleDesktopChatMinimizedState.minimized" in compact_listener
     assert "_isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopChatMinimizedState)" in compact_listener
     assert "_nekoIdleDesktopChatMinimizedState = _makeNekoIdleDesktopChatMinimizedState(" in compact_listener
-    assert "false,\n                null,\n                receivedAt,\n                sourceUpdatedAt,\n                false" in compact_listener
+    reassign_line = compact_listener[compact_listener.index("_nekoIdleDesktopChatMinimizedState = _makeNekoIdleDesktopChatMinimizedState("):]
+    assert reassign_line.index("false") < reassign_line.index("null")
+    assert reassign_line.index("null") < reassign_line.index("receivedAt")
+    assert reassign_line.index("receivedAt") < reassign_line.index("sourceUpdatedAt")
 
 
 def test_electron_chat_loads_interpage_before_react_chat_for_desktop_cat1_sync():
