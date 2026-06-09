@@ -279,8 +279,22 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 _handle_ws_telemetry(message, lanlan_name=lanlan_name)
                 continue
 
+            if action == "goodbye_state":
+                active = bool(message.get("active"))
+                reason = str(message.get("reason") or ("goodbye" if active else "return")).strip().lower()[:64]
+                goodbye_mgr = session_manager[lanlan_name]
+                goodbye_mgr.set_goodbye_silent(active, reason)
+                if not active and goodbye_mgr.pending_agent_callbacks:
+                    logger.info(
+                        "[%s] goodbye_state cleared: retrying %d pending callback(s)",
+                        lanlan_name, len(goodbye_mgr.pending_agent_callbacks),
+                    )
+                    _fire_task(goodbye_mgr.trigger_agent_callbacks())
+                continue
+
             if action == "start_session":
                 session_manager[lanlan_name].active_session_is_idle = False
+                session_manager[lanlan_name].set_goodbye_silent(False, "start_session")
                 input_type = message.get("input_type", "audio")
                 if input_type in ['audio', 'screen', 'camera', 'text']:
                     if is_game_route_active(lanlan_name):
@@ -346,6 +360,9 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
 
             elif action == "end_session":
                 session_manager[lanlan_name].active_session_is_idle = False
+                end_reason = str(message.get("reason") or "").strip().lower()[:64]
+                if bool(message.get("goodbye_active")) or end_reason == "goodbye":
+                    session_manager[lanlan_name].set_goodbye_silent(True, end_reason or "goodbye")
                 _fire_task(session_manager[lanlan_name].end_session())
 
             elif action == "pause_session":

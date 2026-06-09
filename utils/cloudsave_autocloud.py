@@ -8,8 +8,10 @@ from typing import Any
 from utils.cloudsave_runtime import (
     CloudsaveDeadlineExceeded,
     bootstrap_local_cloudsave_environment,
+    cloudsave_disabled_reason,
     export_local_cloudsave_snapshot,
     import_local_cloudsave_snapshot,
+    is_cloudsave_disabled,
     load_cloudsave_manifest,
     runtime_root_has_user_content,
 )
@@ -157,6 +159,23 @@ def _is_steam_launch_tracked(app_id: str) -> bool:
     return normalized_app_id in {steam_app_id, steam_game_id}
 
 
+def _build_cloudsave_disabled_action_result(
+    config_manager,
+    *,
+    action: str,
+    reason: str,
+    requested_reason: str,
+    steamworks=None,
+) -> dict[str, Any]:
+    return {
+        "success": True,
+        "action": action,
+        "reason": reason,
+        "requested_reason": str(requested_reason or ""),
+        "status": get_cloudsave_manager(config_manager).build_status(steamworks=steamworks),
+    }
+
+
 class CloudSaveManager:
     def __init__(self, config_manager):
         self.config_manager = config_manager
@@ -196,6 +215,45 @@ class CloudSaveManager:
             }
 
     def build_status(self, *, steamworks=None) -> dict[str, Any]:
+        if is_cloudsave_disabled():
+            steam_status = _build_steam_connectivity_status(steamworks)
+            app_id = _load_steam_app_id()
+            source_launch = bool(is_source_launch())
+            steam_launch_tracked = _is_steam_launch_tracked(app_id)
+            recommended_paths = _build_recommended_root_paths(self.config_manager)
+            current_platform_rule = _build_current_platform_rule_preview(self.config_manager)
+            return {
+                "backend": STEAM_AUTO_CLOUD_SYNC_BACKEND,
+                "app_id": app_id,
+                "has_snapshot": False,
+                "snapshot_sequence_number": 0,
+                "snapshot_exported_at_utc": "",
+                "manifest_fingerprint": "",
+                "last_applied_manifest_fingerprint": "",
+                "startup_import_required": False,
+                "manual_download_required": False,
+                "runtime_has_user_content": runtime_root_has_user_content(
+                    self.config_manager.app_docs_dir,
+                    config_manager=self.config_manager,
+                ),
+                "last_successful_export_at": "",
+                "last_successful_import_at": "",
+                "source_launch": source_launch,
+                "steam_session_ready": False,
+                "steam_launch_tracked": bool(steam_launch_tracked),
+                "steam_available": bool(steam_status["available"]),
+                "steam_running": bool(steam_status["running"]),
+                "steam_logged_on": bool(steam_status["logged_on"]),
+                "runtime_root": str(self.config_manager.app_docs_dir),
+                "cloudsave_root": str(self.config_manager.cloudsave_dir),
+                "manifest_path": str(self.config_manager.cloudsave_manifest_path),
+                "manifest_exists": False,
+                "recommended_paths": recommended_paths,
+                "current_platform_rule": current_platform_rule,
+                "disabled": True,
+                "disabled_reason": cloudsave_disabled_reason(),
+            }
+
         bootstrap_local_cloudsave_environment(self.config_manager)
         cloud_state = self.config_manager.load_cloudsave_local_state()
         manifest = load_cloudsave_manifest(self.config_manager)
@@ -275,6 +333,15 @@ class CloudSaveManager:
         deadline_monotonic: float | None = None,
         fence_already_active: bool = False,
     ) -> dict[str, Any]:
+        if is_cloudsave_disabled():
+            return _build_cloudsave_disabled_action_result(
+                self.config_manager,
+                action="skipped",
+                reason="cloudsave_disabled",
+                requested_reason=reason,
+                steamworks=steamworks,
+            )
+
         remote_bundle_result = self._try_download_remote_bundle(
             steamworks=steamworks,
             deadline_monotonic=deadline_monotonic,
@@ -324,6 +391,15 @@ class CloudSaveManager:
         steamworks=None,
         deadline_monotonic: float | None = None,
     ) -> dict[str, Any]:
+        if is_cloudsave_disabled():
+            return _build_cloudsave_disabled_action_result(
+                self.config_manager,
+                action="skipped",
+                reason="cloudsave_disabled",
+                requested_reason=reason,
+                steamworks=steamworks,
+            )
+
         result = export_local_cloudsave_snapshot(
             self.config_manager,
             deadline_monotonic=deadline_monotonic,
@@ -349,6 +425,15 @@ class CloudSaveManager:
         steamworks=None,
         deadline_monotonic: float | None = None,
     ) -> dict[str, Any]:
+        if is_cloudsave_disabled():
+            return _build_cloudsave_disabled_action_result(
+                self.config_manager,
+                action="skipped",
+                reason="cloudsave_disabled",
+                requested_reason=reason,
+                steamworks=steamworks,
+            )
+
         status = self.build_status(steamworks=steamworks)
         if not status["has_snapshot"]:
             return {

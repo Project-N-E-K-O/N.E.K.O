@@ -1,4 +1,7 @@
 @import url('base.css');
+/* Frozen legacy `full` minimized breathing-light orb — isolated, gated on
+   .is-legacy-full-ball; never affects the compact yarn ball. */
+@import url('full-chat-minimize.css');
 
 :root {
     --neko-model-opacity-transition: opacity 280ms ease-in;
@@ -1315,15 +1318,18 @@ body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {
     overscroll-behavior: contain;
     scrollbar-width: none;
     z-index: 100002;
+    pointer-events: none;
 }
 
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"]::-webkit-scrollbar {
     display: none;
 }
 
-/* The compact choice portal itself is transparent; only its scroll surface and options should receive input. */
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-slot,
-body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-options,
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-options {
+    pointer-events: none;
+}
+
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option {
     pointer-events: auto;
 }

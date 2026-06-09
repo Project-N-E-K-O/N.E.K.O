@@ -449,7 +449,7 @@ def test_home_prompt_queue_serializes_tutorial_and_autostart_prompts(
 
     mock_page.get_by_role("button", name="开始引导").click()
 
-    expect(tutorial_title).to_have_text("要不要让 N.E.K.O 开机自动启动？", timeout=5000)
+    expect(tutorial_title).to_have_text("要不要让 N.E.K.O. 开机自动启动？", timeout=5000)
     expect(mock_page.locator(".modal-overlay")).to_have_count(1)
     expect(mock_page.locator(".modal-dialog-autostart-retention")).to_have_count(1)
     expect(mock_page.locator(".exit-retention-cat-character")).to_have_count(1)
@@ -599,6 +599,8 @@ def test_autostart_prompt_offers_never_after_backend_allows_it(
     expect(mock_page.get_by_role("button", name="不再提示")).to_be_visible()
     expect(mock_page.get_by_role("button", name="以后提醒")).to_be_visible()
     expect(mock_page.get_by_role("button", name="开启自启动")).to_be_visible()
+    button_texts = mock_page.locator(".modal-dialog-autostart-retention .modal-btn").all_text_contents()
+    assert button_texts == ["以后提醒", "开启自启动", "不再提示"]
 
     mock_page.get_by_role("button", name="不再提示").click()
     expect(mock_page.locator(".modal-overlay")).to_have_count(0, timeout=5000)
@@ -746,7 +748,7 @@ def test_home_prompt_later_locally_suppresses_repeat_before_autostart_prompt(
 
     mock_page.get_by_role("button", name="稍后再说").click()
 
-    expect(prompt_title).to_have_text("要不要让 N.E.K.O 开机自动启动？", timeout=5000)
+    expect(prompt_title).to_have_text("要不要让 N.E.K.O. 开机自动启动？", timeout=5000)
     assert mock_page.evaluate("window.appTutorialPrompt.shouldSuppressAutomaticHomeTutorialStart()") is True
 
 
@@ -12143,7 +12145,7 @@ def test_autostart_prompt_display_continues_when_startup_gate_rejects(
 
     mock_page.wait_for_function("() => window.__promptTitles.length === 1")
 
-    assert mock_page.evaluate("() => window.__promptTitles[0]") == "要不要让 N.E.K.O 开机自动启动？"
+    assert mock_page.evaluate("() => window.__promptTitles[0]") == "要不要让 N.E.K.O. 开机自动启动？"
 
 
 @pytest.mark.frontend
@@ -13152,7 +13154,7 @@ def test_autostart_prompt_acceptance_tracks_pending_system_approval_without_fail
     )
 
     expect(mock_page.locator(".modal-title")).to_have_text(
-        "要不要让 N.E.K.O 开机自动启动？",
+        "要不要让 N.E.K.O. 开机自动启动？",
         timeout=5000,
     )
     mock_page.get_by_role("button", name="开启自启动").click()
@@ -13874,7 +13876,7 @@ def test_autostart_decision_failure_retries_without_reopening_prompt(
         """
     )
 
-    assert result["promptTitles"] == ["要不要让 N.E.K.O 开机自动启动？"]
+    assert result["promptTitles"] == ["要不要让 N.E.K.O. 开机自动启动？"]
     assert len(result["decisionBodies"]) == 2
     assert result["decisionBodies"][0]["decision"] == "later"
     assert result["decisionBodies"][1]["decision"] == "later"
@@ -14010,7 +14012,7 @@ def test_autostart_prompt_does_not_retry_later_decision_after_permanent_client_e
         """
     )
 
-    assert result["promptTitles"] == ["要不要让 N.E.K.O 开机自动启动？"]
+    assert result["promptTitles"] == ["要不要让 N.E.K.O. 开机自动启动？"]
     assert len(result["decisionBodies"]) == 1
     assert result["decisionBodies"][0]["decision"] == "later"
     assert len(result["heartbeatBodies"]) == 1

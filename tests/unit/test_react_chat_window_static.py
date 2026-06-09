@@ -8,11 +8,13 @@ MUSIC_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "music_ui.js"
 MUSIC_UI_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "music_ui.css"
 STATIC_INDEX_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "index.css"
 STATIC_DARK_MODE_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "dark-mode.css"
+STATIC_INDEX_JS_PATH = Path(__file__).resolve().parents[2] / "static" / "js" / "index.js"
 REACT_CHAT_STYLES_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "styles.css"
 REACT_CHAT_APP_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "App.tsx"
 REACT_CHAT_IIFE_PATH = Path(__file__).resolve().parents[2] / "static" / "react" / "neko-chat" / "neko-chat-window.iife.js"
 CHAT_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "chat.html"
 SUBTITLE_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "subtitle.html"
+PAGES_ROUTER_PATH = Path(__file__).resolve().parents[2] / "main_routers" / "pages_router.py"
 COMPACT_EXPORT_HISTORY_PANEL_PATH = (
     Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "CompactExportHistoryPanel.tsx"
 )
@@ -97,8 +99,95 @@ def test_chat_surface_mode_preference_is_shared_with_electron():
     assert "electron-chat-window" not in gate_block
     assert "return true;" in gate_block
     assert "localStorage.getItem(CHAT_SURFACE_MODE_STORAGE_KEY)" in read_block
-    assert "if (mode !== 'compact') return;" in persist_block
+    # Restorable surfaces (compact + the revived legacy full) persist; minimized
+    # never does — it restores via lastRestorableChatSurfaceMode.
+    assert "if (mode !== 'compact' && mode !== 'full') return;" in persist_block
     assert "localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, mode)" in persist_block
+
+
+def test_chat_full_endpoint_uses_chat_template_with_initial_full_surface():
+    router_source = PAGES_ROUTER_PATH.read_text(encoding="utf-8")
+    template_source = CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
+
+    assert '@router.get("/chat_full", response_class=HTMLResponse)' in router_source
+    assert '"initial_chat_surface_mode": "full"' in router_source
+    assert '"initial_chat_surface_mode": "compact"' in router_source
+    assert 'data-initial-chat-surface-mode="{{ initial_chat_surface_mode|default(\'compact\', true) }}"' in template_source
+
+    chat_route_block = router_source.split('async def get_chat_page', 1)[1].split(
+        '@router.get("/chat_full"',
+        1,
+    )[0]
+    assert '"initial_chat_surface_mode": "compact"' in chat_route_block
+    assert '"initial_chat_surface_mode": "full"' not in chat_route_block
+
+
+def test_full_inset_layout_gated_by_electron_runtime_marker():
+    """full 30px inset 布局是「仅 Electron 独立窗口」样式。chat.html 同时服务 Electron 独立窗口
+    和 web /chat_full（两者共用本模板，body.electron-chat-window 是静态写入，浏览器访问 web
+    /chat_full 时也会带它），故 inset 门禁必须用 preload 注入的运行时标记 neko-electron-runtime，
+    否则 web /chat_full 会被误改成 30px inset。"""
+    source = CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
+
+    # inset 规则用运行时标记门禁，不再用静态 electron-chat-window（web /chat_full 也会命中它）。
+    assert (
+        'body.neko-electron-runtime #react-chat-window-shell[data-chat-surface-mode="full"]'
+        in source
+    )
+    assert (
+        'body.electron-chat-window #react-chat-window-shell[data-chat-surface-mode="full"]'
+        not in source
+    )
+
+    # 运行时标记由 body 内联脚本基于 preload 信号（window.nekoChatWindow）/ Electron UA 注入；
+    # web 浏览器无这些信号 → 不打标记 → full 退回 base 居中。
+    assert "document.body.classList.add('neko-electron-runtime')" in source
+    assert "w.nekoChatWindow" in source
+
+
+def test_chat_templates_version_react_chat_bundle_from_react_assets():
+    chat_template = CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
+
+    assert 'neko-chat-window.css?v={{ react_chat_asset_version }}' in chat_template
+    assert 'neko-chat-window.iife.js?v={{ react_chat_asset_version }}' in chat_template
+
+
+def test_chat_full_is_reserved_from_character_page_config_routing():
+    source = STATIC_INDEX_JS_PATH.read_text(encoding="utf-8")
+
+    assert "const RESERVED_PAGE_PATHS = new Set([" in source
+    assert "'chat'" in source
+    assert "'chat_full'" in source
+    assert "RESERVED_PAGE_PATHS.has(pathParts[0])" in source
+    assert "isReservedPagePath(window.location.pathname)" in source
+
+
+def test_chat_host_initial_surface_mode_prefers_template_override_before_storage():
+    source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    assert "function readInitialChatSurfaceMode()" in source
+    initial_reader_block = source.split("function readInitialChatSurfaceMode()", 1)[1].split(
+        "function persistChatSurfaceModePreference",
+        1,
+    )[0]
+    assert "var declaredModeAttr = body" in initial_reader_block
+    assert "body.getAttribute('data-initial-chat-surface-mode')" in initial_reader_block
+    assert "declaredModeAttr ? normalizeChatSurfaceMode(declaredModeAttr) : ''" in initial_reader_block
+    assert "normalizeChatSurfaceMode(body.getAttribute('data-initial-chat-surface-mode'))" not in initial_reader_block
+    assert "if (declaredMode === 'compact' || declaredMode === 'full')" in initial_reader_block
+    assert "return declaredMode;" in initial_reader_block
+    assert initial_reader_block.index("return declaredMode;") < initial_reader_block.index("return readChatSurfaceModePreference();")
+
+    init_block = source.split("function init()", 1)[1].split(
+        "function initAfterStorageBarrier()",
+        1,
+    )[0]
+    initial_assignment = "state.chatSurfaceMode = readInitialChatSurfaceMode();"
+    storage_read = "readChatSurfaceModePreference()"
+
+    assert initial_assignment in init_block
+    assert init_block.index(initial_assignment) < init_block.index("lastRestorableChatSurfaceMode = state.chatSurfaceMode;")
+    assert storage_read not in init_block.split(initial_assignment, 1)[0]
 
 
 def test_close_from_minimized_preserves_compact_surface_mode():
@@ -240,6 +329,28 @@ def test_home_tutorial_events_lock_chat_buttons_and_collapse_compact_input():
     assert "setHomeTutorialInteractionLocked(false, 'tutorial-skipped');" in skipped_block
     assert "setHomeTutorialInteractionLocked(false, 'tutorial-ended-without-completion');" in ended_block
     assert "disabled={composerDisabled}" in history_handle_block
+
+
+def test_idle_cat1_compact_mirror_ignores_pet_window_local_events():
+    source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    assert "function shouldIgnoreIdleCat1CompactMirrorState(detail)" in source
+    ignore_block = source.split("function shouldIgnoreIdleCat1CompactMirrorState(detail)", 1)[1].split(
+        "function handleIdleCat1CompactMirrorState(event)",
+        1,
+    )[0]
+    assert "window.__LANLAN_IS_ELECTRON_PET__" in ignore_block
+    assert "detail.via === 'local'" in ignore_block
+    assert "detail.source === 'pet-window'" in ignore_block
+
+    handler_block = source.split("function handleIdleCat1CompactMirrorState(event)", 1)[1].split(
+        "function dispatchCompactSurfaceLayoutChange(rect)",
+        1,
+    )[0]
+    ignore_call = "if (shouldIgnoreIdleCat1CompactMirrorState(detail)) return;"
+    inactive_branch = "if (!detail || !detail.active)"
+    assert ignore_call in handler_block
+    assert handler_block.index(ignore_call) < handler_block.index(inactive_branch)
 
 
 def test_desktop_compact_history_uses_workarea_not_browserwindow_viewport():
@@ -445,6 +556,16 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
 
     fan_block = css_block(styles, ".compact-input-tool-fan {", ".compact-chat-surface-shell *")
+    compact_input_block = css_block(
+        styles,
+        '.compact-chat-surface-frame[data-compact-chat-state="input"] .composer-input {',
+        '.compact-chat-surface-frame[data-compact-chat-state="input"] .composer-input::placeholder',
+    )
+    compact_mobile_block = css_block(
+        styles,
+        "@media (max-width: 820px) {",
+        "/* ===================================================================",
+    )
     wheel_block = styles.split(".compact-input-tool-fan .compact-input-tool-item {", 1)[1].split(
         ".compact-input-tool-fan .composer-tool-btn img",
         1,
@@ -504,7 +625,13 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
         '.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] '
         '.compact-input-tool-toggle:hover'
     ) in styles
-    assert 'padding: 5px 62px 5px 20px;' in styles
+    assert "width: auto;" in compact_input_block
+    assert "min-width: 0;" in compact_input_block
+    assert "padding: 10px 8px 10px 0;" in compact_input_block
+    assert 'padding: 5px 62px 5px 2px;' in styles
+    assert '.compact-chat-surface-frame[data-compact-chat-state="input"]' in compact_mobile_block
+    assert 'padding: 5px 62px 5px 18px;' in compact_mobile_block
+    assert 'padding: 5px 8px 5px 18px;' not in compact_mobile_block
     assert '.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"]:not([data-compact-chat-state="input"])' in styles
     assert 'padding-right: 62px;' in styles
     assert 'right: 9px;' in styles
@@ -569,24 +696,28 @@ def test_compact_choice_hit_contract_uses_real_options_only():
     choice_selector = 'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {'
     slot_selector = (
         'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-slot,\n'
-        'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-options,\n'
+        'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-options {'
+    )
+    option_selector = (
         'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option {'
     )
     choice_block = css_block(styles, choice_selector, 'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"]::-webkit-scrollbar')
     host_choice_block = css_block(host_styles, choice_selector, 'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"]::-webkit-scrollbar')
-    slot_block = css_block(styles, slot_selector, 'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-choice-layer-open="false"]')
-    host_slot_block = css_block(host_styles, slot_selector, 'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-choice-layer-open="false"]')
+    slot_block = css_block(styles, slot_selector, option_selector)
+    host_slot_block = css_block(host_styles, slot_selector, option_selector)
+    option_block = css_block(styles, option_selector, 'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-options')
+    host_option_block = css_block(host_styles, option_selector, 'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-choice-layer-open="false"]')
     geometry_block = script.split("function getCompactGeometryElementRect(element)", 1)[1].split(
         "function getCompactHistoryScrollbarRect(element, parentRect)",
         1,
     )[0]
 
-    assert "pointer-events: none;" not in choice_block
-    assert "pointer-events: none;" not in host_choice_block
-    assert "pointer-events: auto;" in slot_block
-    assert "pointer-events: auto;" in host_slot_block
-    assert "The compact choice portal itself is transparent" in styles
-    assert "The compact choice portal itself is transparent" in host_styles
+    assert "pointer-events: none;" in choice_block
+    assert "pointer-events: none;" in host_choice_block
+    assert "pointer-events: none;" in slot_block
+    assert "pointer-events: none;" in host_slot_block
+    assert "pointer-events: auto;" in option_block
+    assert "pointer-events: auto;" in host_option_block
     assert "if (item === 'choice')" in geometry_block
     assert "querySelectorAll('.composer-galgame-option')" in geometry_block
     assert "var ownRect = normalizeCompactDomRect(element.getBoundingClientRect());" in geometry_block
@@ -717,7 +848,7 @@ def test_compact_tutorial_guide_preview_scrolls_without_ellipsis():
 
     scrollable_block = css_block(
         styles,
-        '.compact-chat-capsule-text[data-compact-preview-scrollable="true"] {',
+        '.compact-chat-capsule-text[data-compact-preview-scrollable="true"],',
         ".compact-chat-capsule-text::-webkit-scrollbar",
     )
 
@@ -837,10 +968,24 @@ def test_electron_compact_chat_retires_full_surface_chrome():
     # frame before React mounted and collapsed it to compact ("先 full 再
     # compact" 的那一帧). chat.html must NOT re-introduce that full surface.
     #
-    # Retired full-surface artifacts that must stay gone:
-    assert "@keyframes liquidFlow" not in template            # 玻璃流光关键帧
-    assert "@keyframes lightSweep" not in template
-    assert "-webkit-mask-image" not in template               # 全窗口 root 四边渐隐 mask
+    # Retired *un-gated* full-surface artifacts that must stay gone — these are the
+    # ones that painted before React mounted on the SHARED /chat route ("先 full 再
+    # compact" 闪帧). 玻璃流光特效后来在独立 Electron full 窗口上带门槛复活（见
+    # test_full_chat_glass_flow_revived_and_gated），但**无门槛**的旧形态必须保持移除，
+    # 共享 /chat 这条路径才永远不会画出它。
+    assert "@keyframes lightSweep" not in template            # 死代码关键帧，未恢复
+    # 四边渐隐 mask 已带 full gate 复活（见 test_full_chat_glass_flow_revived_and_gated）。这里只守
+    # 「无门槛」旧形态：每处 -webkit-mask-image 前必须紧邻 full gate —— 裸 #react-chat-window-root
+    # 直接带 mask 才是 #1594 在共享 /chat 上挂载前先画的闪帧根因，必须保持不存在。
+    _mask_token = "-webkit-mask-image"
+    _gate_token = 'data-chat-surface-mode="full"'
+    _scan = 0
+    while True:
+        _scan = template.find(_mask_token, _scan)
+        if _scan == -1:
+            break
+        assert _gate_token in template[max(0, _scan - 400):_scan], "发现无门槛 mask（共享 /chat 闪帧根因）"
+        _scan += len(_mask_token)
     assert "#react-chat-window-shell:not(.is-minimized)::before" not in template
     assert "#react-chat-window-shell:not(.is-minimized)::after" not in template
     assert "inset: 40px 25px 25px 20px" not in template       # 全窗口 shell 几何
@@ -851,6 +996,104 @@ def test_electron_compact_chat_retires_full_surface_chrome():
     # compact surface — parity with templates/index.html, which is what kills the
     # pre-mount full-form flash.
     assert 'id="react-chat-window-overlay" hidden' in template
+
+
+def test_full_chat_glass_flow_revived_and_gated():
+    """独立 Electron full 窗口（part B）的玻璃流光特效复活，且严格带门槛。
+
+    原 full 玻璃面板在 #1594 退「共享 /chat 的 full 玻璃壳」时随整套 full 形态删除，
+    根因是规则不带门槛、在共享 /chat 上先画空玻璃再塌成 compact（闪帧）。现在 full 是
+    独立窗口（/chat_full + data-chat-surface-mode="full" + 运行时标记 neko-electron-
+    runtime），用与 inset 几何**完全相同的门槛**把玻璃视觉挂回——只命中 Electron full
+    shell，compact 与 web /chat_full 都不命中，故不再有闪帧。
+    """
+    template = CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
+
+    # 三色流光关键帧已复活（被下方 ::after 引用）。
+    assert "@keyframes liquidFlow" in template
+    # liquidFlow 只被那一个带门槛的 ::after 消费，别处不得再引用。
+    assert template.count("animation: liquidFlow") == 1
+
+    # ::before 静态高光 + ::after 三色流光都只挂在 Electron full shell 门槛上。
+    glass_gate = (
+        'body.neko-electron-runtime '
+        '#react-chat-window-shell[data-chat-surface-mode="full"]'
+        ':not(.is-minimized):not(.neko-e-collapsed)'
+    )
+    assert glass_gate + "::before" in template      # 静态边缘/顶部高光
+    assert glass_gate + "::after" in template        # 三色流光层
+
+    # 玻璃边缘渐隐 mask 复活，且必须挂在与 ::before/::after 完全相同的 full gate 下：把不透明聊天
+    # 内容（.chat-body rgba 0.91）四边淡出、露出 ::before 高光层 —— 这才是「玻璃」本体。#1695 只复活
+    # 了浮在最上层的 ::after 流光，高光层被不透明内容盖住，故当时只有流光没有玻璃。裸 mask 会在共享
+    # /chat 挂载前画→闪帧（#1594 删它的根因），所以这里断言 mask 只出现在 gated root 选择器上。
+    assert glass_gate + " #react-chat-window-root {" in template
+    assert "-webkit-mask-image" in template
+
+    # 尊重系统「减少动态」：流光在 prefers-reduced-motion 下停掉。按花括号配平取整段 media
+    # 块（而非定长切片），块体增长也不会让断言失真。
+    reduced_idx = template.find("@media (prefers-reduced-motion: reduce)")
+    assert reduced_idx != -1
+    brace_start = template.index("{", reduced_idx)
+    depth = 0
+    block_end = brace_start
+    for i in range(brace_start, len(template)):
+        if template[i] == "{":
+            depth += 1
+        elif template[i] == "}":
+            depth -= 1
+            if depth == 0:
+                block_end = i
+                break
+    media_block = template[reduced_idx:block_end + 1]
+    assert "animation: none;" in media_block
+
+
+def test_compact_history_resize_bar_is_draggable_and_persisted():
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+    panel_source = COMPACT_EXPORT_HISTORY_PANEL_PATH.read_text(encoding="utf-8")
+    app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
+
+    # 顶部 resize bar 的样式：可纵向拖、可接收 pointer、平时透明、不触发原生窗口拖动。
+    bar_block = css_block(
+        styles,
+        ".compact-export-history-resize-bar {",
+        ".compact-export-history-resize-bar::after",
+    )
+    assert "cursor: ns-resize;" in bar_block
+    assert "pointer-events: auto;" in bar_block
+    assert "-webkit-app-region: no-drag;" in bar_block
+    # bar 本体不能透明：宿主几何收集器按 opacity<=0.01 丢弃 hit-region，透明会让 Electron 下鼠标穿透、点不到。
+    assert "opacity: 0;" not in bar_block
+    # 只让视觉抓手（伪元素）平时透明、hover/拖动显现。
+    after_block = css_block(
+        styles,
+        ".compact-export-history-resize-bar::after {",
+        ".compact-export-history-anchor:hover .compact-export-history-resize-bar::after",
+    )
+    assert "opacity: 0;" in after_block
+    assert ".compact-export-history-resize-bar.is-active::after {" in styles
+    # hover 整个历史区即浮现顶部高度 bar（回滚 fd138cd 的「调尺寸热区联动浮现」收窄，
+    # 让整个历史记录气泡区域都能唤出 resize bar）。
+    assert ".compact-export-history-anchor:hover .compact-export-history-resize-bar::after" in styles
+
+    # bar 的 DOM：带可命中且不穿透的 hit-region，拖拽不触发面板 / 整窗拖动。
+    assert "className={clsx('compact-export-history-resize-bar'" in panel_source
+    # hit-region 受 historyInteractive && !choiceLayerAbove 双重 gate：choice prompt 压在历史上方时，
+    # bar 不再上报命中区（与 scroll/controls 一起惰性，Electron 下不留可拖 / 不穿透的活条）。
+    assert "data-compact-hit-region-id={historyInteractive && !choiceLayerAbove ? 'history:resize' : undefined}" in panel_source
+    assert "data-compact-hit-region-kind={historyInteractive && !choiceLayerAbove ? 'resize' : undefined}" in panel_source
+    resize_bar_jsx = panel_source.split("compact-export-history-resize-bar", 1)[1].split("/>", 1)[0]
+    assert 'data-compact-no-drag="true"' in resize_bar_jsx
+    # under-choice 态把 bar 一并纳入 pointer-events:none / 淡化规则。
+    assert ".compact-export-history-anchor.under-choice-prompt .compact-export-history-resize-bar," in styles
+    # 纯点击不落库：finish 仅在 moved 时 persist。
+    assert "if (resizeState.moved) {" in app_source
+
+    # 高度上限写预留覆盖变量 + 独立 localStorage key；变更后触发宿主几何重算（Electron 窗口联动）。
+    assert "COMPACT_HISTORY_HEIGHT_STORAGE_KEY = 'neko.reactChatWindow.compactHistorySlotHeight'" in app_source
+    assert "'--compact-history-slot-height'" in app_source
+    assert "new CustomEvent('neko:compact-interaction-geometry-refresh')" in app_source
 
 
 def test_compact_history_controls_collapse_gives_height_back_to_history_scroll():
@@ -976,19 +1219,41 @@ def test_compact_history_closing_bubbles_disable_pointer_events():
     assert "pointer-events: none;" in closing_bubble_block
 
 
-def test_compact_history_enter_animation_excludes_drag_sources():
-    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
-    enter_selector = (
-        '.compact-export-history-anchor[data-compact-export-history-visibility="open"] '
-        ".compact-export-history-message:not([data-compact-history-drag-phase]) "
-        ".compact-export-history-bubble"
-    )
+def test_compact_history_bubbles_are_text_selectable_and_drag_free():
+    """拖到 avatar 子系统已删除：气泡不再捕获指针，文本可被鼠标选中复制。
 
-    assert enter_selector in styles
-    assert (
-        '.compact-export-history-anchor[data-compact-export-history-visibility="open"] '
-        ".compact-export-history-bubble {"
-    ) not in styles
+    断言气泡 CSS 显式声明 user-select:text / cursor:text（覆盖 [role=\"button\"]
+    的 user-select:none），且气泡 JSX 不再挂任何指针拖拽 handler（只留 onClick /
+    onKeyDown 驱动导出勾选）。"""
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+    panel_source = COMPACT_EXPORT_HISTORY_PANEL_PATH.read_text(encoding="utf-8")
+
+    bubble_block = css_block(
+        styles,
+        ".compact-export-history-bubble {",
+        ".compact-export-history-anchor[data-compact-export-history-visibility=\"open\"]",
+    )
+    assert "user-select: text;" in bubble_block
+    assert "-webkit-user-select: text;" in bubble_block
+    assert "cursor: text;" in bubble_block
+    assert "cursor: pointer;" not in bubble_block
+
+    # 拖拽 CSS 全部移除。
+    assert "compact-history-drag-layer" not in styles
+    assert "data-compact-history-drag" not in styles
+
+    # 气泡 JSX 只保留 onClick / onKeyDown，不再有拖拽指针 handler。
+    bubble_jsx = panel_source.split('className="compact-export-history-bubble"', 1)[1].split(
+        "compact-export-history-check",
+        1,
+    )[0]
+    assert "onClick={(event) => handleClick(event, message, selectable)}" in bubble_jsx
+    assert "onKeyDown={(event) => handleKeyDown(event, message, selectable)}" in bubble_jsx
+    assert "onPointerDown" not in bubble_jsx
+    assert "onPointerMove" not in bubble_jsx
+    assert "onPointerUp" not in bubble_jsx
+    assert "handlePointerDown" not in panel_source
+    assert "startCompactHistoryDrag" not in panel_source
 
 
 def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regions():
@@ -1220,15 +1485,15 @@ def test_compact_inline_export_uses_windowless_app_chat_export_api():
     assert "function buildCompactInlinePreview(options)" in compact_api_block
     assert "buildExportDocument(entries, state.exportFormat)" in compact_api_block
     assert "URL.createObjectURL(exportData.previewBlob)" in compact_api_block
-    assert "buildMarkdownPreviewDocument(exportData.content)" in compact_api_block
+    assert "buildMarkdownPreviewDocument(exportData.content)" not in compact_api_block
     assert "getOrBuildPreviewPayload" not in compact_api_block
     assert "clearPreviewCache()" not in compact_api_block
     assert "function runCompactInlineExportAction(options, action)" in compact_api_block
     assert "state.exportFormat = previous.exportFormat;" in compact_api_block
     assert "buildExportDocument(entries, 'image')" in compact_api_block
     assert "copyImageToClipboard(imgBlob)" in compact_api_block
-    assert "buildExportDocument(entries, 'markdown')" in compact_api_block
-    assert "copyTextToClipboard(mdData.content)" in compact_api_block
+    assert "buildExportDocument(entries, 'markdown')" not in compact_api_block
+    assert "copyTextToClipboard(mdData.content)" not in compact_api_block
     assert "downloadExportFile(data.fileName, data.content, data.contentType, window)" in compact_api_block
     assert "handleCopyClick" not in compact_api_block
     assert "handleDownloadClick" not in compact_api_block

@@ -42,6 +42,7 @@ const pluginId = 'qq_auto_reply';
                 token: '',
                 path: '',
                 showOnboarding: false,
+                guideStepNapcatDone: false,
                 guideStepConfigDone: false,
                 guideStepRuntimeDone: false,
                 normalRelayProbability: 0.1,
@@ -105,6 +106,25 @@ const pluginId = 'qq_auto_reply';
             document.getElementById('onboarding').classList.remove('hidden');
             document.getElementById('onboarding').style.display = 'flex';
             nextStep(1);
+        }
+
+        function openStep1GuideModal() {
+            document.getElementById('step1-guide-modal-overlay')?.classList.add('show');
+        }
+
+        function closeStep1GuideModal() {
+            document.getElementById('step1-guide-modal-overlay')?.classList.remove('show');
+        }
+
+        async function confirmStep1GuideModal() {
+            try {
+                await callPlugin('save_settings', { guide_step_napcat_done: true });
+                await reloadDashboard();
+                closeStep1GuideModal();
+                showToast(t('ui.toast.saved', '设置已保存'));
+            } catch (error) {
+                showToast(error.message || t('ui.toast.save_failed', '保存失败'));
+            }
         }
 
         function uiT(key, fallback) {
@@ -171,6 +191,7 @@ const pluginId = 'qq_auto_reply';
             state.config.url = String(settings.onebot_url || '');
             state.config.path = String(settings.napcat_directory || '');
             state.config.showOnboarding = Boolean(settings.show_onboarding ?? true);
+            state.config.guideStepNapcatDone = Boolean(settings.guide_step_napcat_done ?? false);
             state.config.guideStepConfigDone = Boolean(settings.guide_step_config_done ?? false);
             state.config.guideStepRuntimeDone = Boolean(settings.guide_step_runtime_done ?? false);
             state.config.normalRelayProbability = Number(settings.normal_relay_probability ?? 0.1);
@@ -1166,7 +1187,7 @@ const pluginId = 'qq_auto_reply';
         window.reopenOnboarding = reopenOnboarding;
 
         document.getElementById('guide-step-napcat').addEventListener('click', () => {
-            showToast(t('ui.toast.start_napcat_manual', '请先手动启动 NapCat，再回到这里继续配置。'));
+            openStep1GuideModal();
         });
         document.getElementById('guide-step-settings').addEventListener('click', () => {
             scrollToConfigSection();
@@ -1194,6 +1215,13 @@ const pluginId = 'qq_auto_reply';
         });
         document.getElementById('backlog-refresh').addEventListener('click', loadBacklogSummary);
         document.getElementById('backlog-review-button').addEventListener('click', () => markBacklogGroupReviewed());
+        document.getElementById('step1-guide-confirm').addEventListener('click', confirmStep1GuideModal);
+        document.getElementById('step1-guide-cancel').addEventListener('click', closeStep1GuideModal);
+        document.getElementById('step1-guide-modal-overlay').addEventListener('click', (event) => {
+            if (event.target === event.currentTarget) {
+                closeStep1GuideModal();
+            }
+        });
         document.getElementById('backlog-label-add').addEventListener('click', addBacklogLabelDraft);
         document.getElementById('backlog-label-modal-save').addEventListener('click', confirmBacklogLabelModal);
         document.getElementById('backlog-label-modal-delete').addEventListener('click', deleteBacklogLabelFromModal);

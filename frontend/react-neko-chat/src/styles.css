@@ -120,7 +120,7 @@ svg {
   --drop-rotation: 0deg;
   --drop-scale: 1;
   --drop-delay: 0ms;
-  position: absolute;
+  position: fixed;
   left: calc(100% - 30px);
   top: 33px;
   z-index: 10000;
@@ -1954,15 +1954,18 @@ body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {
   overscroll-behavior: contain;
   scrollbar-width: none;
   z-index: 100002;
+  pointer-events: none;
 }
 
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"]::-webkit-scrollbar {
   display: none;
 }
 
-/* The compact choice portal itself is transparent; only its scroll surface and options should receive input. */
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-slot,
-body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-options,
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-options {
+  pointer-events: none;
+}
+
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option {
   pointer-events: auto;
 }
@@ -2107,51 +2110,55 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 
 .compact-chat-surface-frame[data-compact-chat-state="input"] {
   gap: 0;
-  padding: 5px 62px 5px 20px;
+  padding: 5px 62px 5px 2px;
 }
 
-/* 输入态左侧拖拽把手：给一处稳定可抓的「移动文本框」区域。
-   textarea / 工具按钮是 no-drag，本握把不加 no-drag，于是属于 surface 本体拖拽区
-   （web/X11 命中判定 + Wayland 原生 -webkit-app-region:drag 都覆盖到）。
-   静息低透明、hover 提亮，沿用与左右 resize 手柄一致的「平时低调、靠近才显形」手感。 */
-.compact-chat-surface-frame[data-compact-chat-state="input"] .compact-chat-input-drag-grip {
-  flex: 0 0 12px;
-  align-self: stretch;
-  margin-right: 4px;
+/* compact 输入框/胶囊左侧毛绒球（minimize 折叠入口）：点按=折叠为 minimized 毛绒球小窗口，
+   按住拖>6px=拖动整个 surface（与右侧工具轮盘原点对偶的 origin-drag 手势）。
+   平时低调、hover/active 提亮微放大，沿用「平时低调、靠近才显形」手感。 */
+.compact-chat-minimize-ball {
+  flex: 0 0 auto;
+  align-self: center;
+  margin-right: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
+  width: 41px;
+  height: 41px;
+  padding: 0;
+  border: 0;
+  background: transparent;
   cursor: grab;
   touch-action: none;
-  color: #2f526b;
 }
 
-.compact-chat-input-drag-grip::before {
-  content: "";
-  width: 4px;
-  height: 18px;
-  background-image: radial-gradient(currentcolor 0.9px, transparent 1.3px);
-  background-size: 4px 6px;
-  background-position: center;
-  opacity: 0.22;
-  transition: opacity 0.15s ease;
-}
-
-.compact-chat-surface-shell:hover .compact-chat-input-drag-grip::before,
-.compact-chat-input-drag-grip:active::before {
-  opacity: 0.5;
-}
-
-.compact-chat-input-drag-grip:active {
+.compact-chat-minimize-ball:active {
   cursor: grabbing;
 }
 
-[data-theme="dark"] .compact-chat-surface-frame[data-compact-chat-state="input"] .compact-chat-input-drag-grip {
-  color: #e9f4ff;
+.compact-chat-minimize-ball:disabled {
+  cursor: default;
+}
+
+.compact-chat-minimize-ball-icon {
+  width: 37px;
+  height: 37px;
+  object-fit: contain;
+  opacity: 0.8;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  pointer-events: none;
+}
+
+.compact-chat-surface-shell:hover .compact-chat-minimize-ball-icon,
+.compact-chat-minimize-ball:hover .compact-chat-minimize-ball-icon,
+.compact-chat-minimize-ball:active .compact-chat-minimize-ball-icon {
+  opacity: 1;
+  transform: scale(1.08);
 }
 
 .compact-chat-surface-frame[data-compact-tool-toggle-visible="true"]:not([data-compact-chat-state="input"]) {
   padding-right: 62px;
+  padding-left: 2px;
 }
 
 .compact-chat-surface-frame::before {
@@ -2186,7 +2193,8 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   display: flex;
   align-items: center;
   justify-content: flex-start;
-  width: 100%;
+  flex: 1 1 auto;
+  width: auto;
   height: 100%;
   min-width: 0;
   padding: 0;
@@ -2304,7 +2312,7 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   position: fixed;
   --compact-export-surface-width: var(--compact-surface-resize-width, var(--desktop-compact-surface-width, var(--compact-surface-width, 430px)));
   left: calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--compact-export-surface-width) / 2));
-  bottom: calc(100vh - var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) + 34px);
+  bottom: calc(100vh - var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) + 2px);
   /* Geometry-critical: derive collapse compensation from control metrics; do not animate layout properties here. */
   --compact-export-controls-padding-y: clamp(4px, calc(var(--compact-export-surface-width) * 0.0116), 6px);
   --compact-export-controls-border-width: 1px;
@@ -2324,7 +2332,7 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
     min(calc(var(--compact-export-surface-width) * 1.18), 63vh)
   );
   --compact-export-history-viewport-gutter: 24px;
-  --compact-export-history-width-ratio: 1.36;
+  --compact-export-history-width-ratio: 1;
   --compact-export-history-max-inline-size: calc(100vw - var(--compact-export-history-viewport-gutter));
   --compact-export-history-inline-size: min(
     calc(var(--compact-export-surface-width) * var(--compact-export-history-width-ratio)),
@@ -2335,7 +2343,9 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   --compact-export-preview-bubble-max-ratio: 90%;
   --compact-export-preview-system-bubble-max-ratio: 95%;
   width: var(--compact-export-history-inline-size);
-  max-height: min(calc(var(--compact-export-surface-width) * 1.46), 78vh);
+  /* 与 JS getCompactHistorySlotMaxHeight 对齐：高度上限只受屏幕(78vh)约束、不再挂对话条宽度，
+     否则窄宽+高屏时 JS 允许的 slot 高 > CSS anchor 高，hit region 会被裁出死区(Codex P2)。 */
+  max-height: 78vh;
   transform: translateX(-50%);
   z-index: 100001;
   pointer-events: none;
@@ -2370,6 +2380,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 .compact-export-history-anchor.under-choice-prompt .compact-export-history-scroll,
 .compact-export-history-anchor.under-choice-prompt .compact-export-history-scrollbar-hit,
+.compact-export-history-anchor.under-choice-prompt .compact-export-history-resize-bar,
 .compact-export-history-anchor.under-choice-prompt .compact-export-history-controls,
 .compact-export-history-anchor.under-choice-prompt .compact-export-preview-region {
   opacity: 0.32;
@@ -2384,8 +2395,12 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 .compact-export-history-scroll {
-  display: flex;
-  flex-direction: column;
+  /* display:block（不是 flex）：scroll 盒的底部 padding 只有在 block 容器里才会被算进可滚区(scrollHeight)，
+     钉底后给最下方气泡的 box-shadow(下沿~25px)留出真实空间、不被 overflow-y:auto 裁。
+     flex/grid column 容器的「末端 padding」会被 Chromium 排除出 scroll overflow（实测 scrollHeight 不含它、
+     钉底后最下气泡贴裁剪边、阴影被切——这是之前 padding 一直没生效的真因，与「落在容器还是子元素」无关）。
+     单个直接子元素 scroll-content 自带 min-height:100% 撑满高度 + 内部 flex 列做底部对齐，无需此处 flex。 */
+  display: block;
   height: calc(var(--compact-export-history-region-height) + var(--compact-export-controls-collapse-delta));
   max-height: calc(var(--compact-export-history-region-height) + var(--compact-export-controls-collapse-delta));
   min-height: 0;
@@ -2394,7 +2409,13 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   overflow-x: visible;
   overscroll-behavior: contain;
   touch-action: pan-y;
-  padding: 4px 6px;
+  /* 底部 padding 给最下方气泡的 box-shadow 留空间，block 容器下它被算进可滚区、钉底后阴影不被 overflow 裁；
+     border-box 下不增 scroll 盒总高(=region)，只让出底部内容区，不额外增整体留白。
+     取 16px：box-shadow(0 7px 18px)数学下沿~25px，但实测(canvas 阴影衰减,白底最大对比)其视觉可见
+     下沿只到气泡实体底以下~16px(此处 alpha≈3/255≈1.2%,再往下不可察)；清晰可见段(alpha≥8)仅~9px、
+     可感知段(alpha≥5)~13px,均落在 16px 内。压到 16 让气泡实体底更贴输入框(实体底到输入框由~28px→~18px)、
+     同时可见阴影完整不裁。再小(如12)会切到可感知段,不取。 */
+  padding: 4px 6px 16px;
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
   pointer-events: none;
@@ -2407,9 +2428,18 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   display: flex;
   flex-direction: column;
   gap: 0;
+  /* 稳态：撑到 scroll 盒高度，配合 first-child margin-top:auto 让内容底部对齐、内容少时不产生可滚空白。 */
   min-height: 100%;
   overflow-anchor: none;
   pointer-events: none;
+}
+
+/* 拖 resize bar 调整高度期间：把内容布局高度锚定在「最大高度」上（而非随 slot 收缩的 100%），
+   于是缩小 scroll 盒高度时内容不再 reflow 重排，只由 scroll 盒裁剪可视窗口（上端被顶部 mask
+   渐隐折起、下端最新消息靠钉底锚定）——卷帘从上往下收。拖动结束回落 100%、内容重新贴合（单次 reflow，
+   不抖动）。仅在拖动中切换，避免稳态下 content>scroll 多出的空白可滚区。 */
+.compact-export-history-anchor[data-compact-export-history-resizing="true"] .compact-export-history-scroll-content {
+  min-height: var(--compact-history-slot-max-height, 100%);
 }
 
 .compact-export-history-scroll-content > .compact-export-history-message:first-child {
@@ -2534,31 +2564,6 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   opacity: 0.85;
 }
 
-.compact-export-history-message[data-compact-history-drag-source][data-compact-history-drag-phase="dragging"] .compact-export-history-bubble,
-.compact-export-history-message[data-compact-history-drag-source][data-compact-history-drag-phase="sending"] .compact-export-history-bubble {
-  border-color: transparent;
-  background: transparent;
-  box-shadow: none;
-}
-
-.compact-export-history-message[data-compact-history-drag-source][data-compact-history-drag-phase="dragging"] .compact-export-history-bubble {
-  opacity: 0;
-}
-
-.compact-export-history-message[data-compact-history-drag-source][data-compact-history-drag-phase="dragging"] .compact-export-history-bubble > *,
-.compact-export-history-message[data-compact-history-drag-source][data-compact-history-drag-phase="sending"] .compact-export-history-bubble > * {
-  opacity: var(--compact-history-drag-source-content-opacity, 0);
-  transition: opacity 0.08s linear;
-}
-
-.compact-export-history-message[data-compact-history-drag-phase="returning"] .compact-export-history-bubble {
-  transition: border-color 0.16s ease, box-shadow 0.22s ease, transform 0.26s cubic-bezier(0.22, 1.22, 0.36, 1);
-}
-
-.compact-export-history-message[data-compact-history-drag-phase="sending"] .compact-export-history-bubble {
-  animation: compact-history-source-send 0.34s ease both;
-}
-
 .compact-export-history-bubble {
   position: relative;
   max-width: var(--compact-history-bubble-max-ratio, var(--compact-export-history-bubble-max-ratio));
@@ -2571,14 +2576,18 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   box-shadow: 0 7px 18px rgba(22, 48, 84, 0.08);
   backdrop-filter: blur(8px) saturate(1.08);
   -webkit-backdrop-filter: blur(8px) saturate(1.08);
-  cursor: pointer;
+  /* 历史气泡文本可被鼠标正常选中复制（拖到 avatar 子系统已移除，不再捕获指针）。
+     选择模式下气泡是 role="button"，styles 里 [role="button"] 有 user-select:none，
+     这里用更高特异度的 class 规则覆盖回 text，确保选择/勾选两态都能选中文本。 */
+  cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
   pointer-events: auto;
-  transform-origin: var(--compact-history-drag-origin-x, 50%) var(--compact-history-drag-origin-y, 50%);
   transform: translateX(var(--compact-history-stagger-x, 0px)) rotate(var(--compact-history-rotate, 0deg));
   transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
 }
 
-.compact-export-history-anchor[data-compact-export-history-visibility="open"] .compact-export-history-message:not([data-compact-history-drag-phase]) .compact-export-history-bubble {
+.compact-export-history-anchor[data-compact-export-history-visibility="open"] .compact-export-history-message .compact-export-history-bubble {
   animation: compact-history-message-enter 0.26s cubic-bezier(0.2, 0.78, 0.34, 1) both;
   animation-delay: var(--compact-history-enter-delay, 0ms);
 }
@@ -2609,8 +2618,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   --compact-history-rotate: 0deg;
 }
 
-.compact-export-history-bubble .message-block-image img,
-.compact-history-drag-bubble .message-block-image img {
+.compact-export-history-bubble .message-block-image img {
   height: auto;
   object-fit: contain;
 }
@@ -2629,230 +2637,38 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
     0 8px 20px rgba(36, 151, 217, 0.12);
 }
 
-.compact-history-drag-layer {
-  position: fixed;
-  left: var(--compact-history-drag-left, 0px);
-  top: var(--compact-history-drag-top, 0px);
-  width: var(--compact-history-drag-width, 1px);
-  min-width: 1px;
-  min-height: 1px;
-  z-index: 100020;
-  pointer-events: none;
+/* 堆砌区顶部的高度 resize bar：视觉抓手平时透明，hover 整个历史区 / 拖动中（is-active）半透明显现。
+   与左右宽度 handle 一致采用「平时低调、靠近才显形」手感（opacity 切换，无过渡）。
+   注意：透明只施加在 ::after 伪元素上，bar 本体保持不透明——宿主几何收集器
+   （app-react-chat-window.js）会按 computed opacity <= 0.01 丢弃 hit-region，
+   若 bar 本体透明则 Electron 下整条会鼠标穿透、永远 hover/点不到、无法发起拖拽。 */
+.compact-export-history-resize-bar {
+  flex: 0 0 auto;
+  height: 12px;
+  margin: 0 8px 2px;
+  cursor: ns-resize;
+  pointer-events: auto;
+  touch-action: none;
   -webkit-app-region: no-drag;
-  overflow: visible;
-  transform: translateZ(0);
-  will-change: left, top, transform;
-  contain: layout style;
 }
 
-.compact-history-drag-layer[data-compact-drag-phase="returning"],
-.compact-history-drag-layer[data-compact-drag-phase="sending"] {
-  transition:
-    left 0.26s cubic-bezier(0.22, 1.22, 0.36, 1),
-    top 0.26s cubic-bezier(0.22, 1.22, 0.36, 1);
-}
-
-.compact-history-drag-filter-defs {
-  position: fixed;
-  width: 0;
-  height: 0;
-  overflow: hidden;
-  pointer-events: none;
-}
-
-.compact-history-drag-elastic {
-  position: fixed;
-  inset: 0;
-  width: 100vw;
-  height: 100vh;
-  z-index: 100019;
-  pointer-events: none;
-  -webkit-app-region: no-drag;
-  overflow: visible;
-  opacity: var(--compact-history-elastic-opacity, 0.86);
-  filter:
-    drop-shadow(0 10px 20px rgb(var(--compact-history-drag-shadow-rgb, 42 93 145) / 0.16))
-    drop-shadow(0 1px 0 rgb(var(--compact-history-drag-edge-rgb, 77 160 220) / 0.04));
-  transform: translateZ(0);
-  will-change: opacity, filter;
-  contain: layout style paint;
-}
-
-.compact-history-drag-goo-group {
-  filter: url("#compact-history-goo-filter");
-}
-
-.compact-history-drag-elastic-fill,
-.compact-history-drag-bubble-shell-fill {
-  fill: rgb(var(--compact-history-drag-surface-rgb, 255 255 255) / 0.9);
-  stroke: transparent;
-  stroke-width: 0;
-}
-
-.compact-history-drag-bubble-shell-fill {
-  fill: rgb(var(--compact-history-drag-surface-rgb, 255 255 255) / 0.92);
-}
-
-.compact-history-drag-elastic[data-compact-drag-over-target="true"] {
-  opacity: 0.94;
-  filter: drop-shadow(0 12px 26px rgba(46, 178, 132, 0.2));
-}
-
-.compact-history-drag-elastic[data-compact-drag-phase="returning"],
-.compact-history-drag-elastic[data-compact-drag-phase="sending"] {
-  opacity: 0;
-  transition: opacity 0.16s ease;
-}
-
-.compact-history-drag-shadow {
-  box-sizing: border-box;
-  width: 100%;
-  min-height: var(--compact-history-drag-height, 1px);
-  border-radius: inherit;
-  overflow: visible;
-  opacity: 0.94;
-  transform:
-    scaleX(var(--compact-history-drag-scale-x, 1.04))
-    scaleY(var(--compact-history-drag-scale-y, 0.98));
-  transform-origin: var(--compact-history-drag-origin-x, 50%) var(--compact-history-drag-origin-y, 50%);
-  filter: drop-shadow(0 12px 24px rgb(var(--compact-history-drag-shadow-rgb, 42 93 145) / 0.2));
-  transition:
-    opacity 0.2s ease,
-    transform 0.24s cubic-bezier(0.2, 1.1, 0.32, 1),
-    filter 0.2s ease;
-}
-
-.compact-history-drag-layer[data-compact-drag-over-target="true"] .compact-history-drag-shadow {
-  filter: drop-shadow(0 14px 28px rgba(46, 178, 132, 0.22));
-  transform:
-    scaleX(calc(var(--compact-history-drag-scale-x, 1.01) + 0.015))
-    scaleY(calc(var(--compact-history-drag-scale-y, 1) + 0.01));
-}
-
-.compact-history-drag-layer[data-compact-drag-phase="returning"] .compact-history-drag-shadow {
-  opacity: 0;
-  transform: scale(0.72);
-  filter: drop-shadow(0 4px 10px rgba(23, 55, 91, 0.08));
-}
-
-.compact-history-drag-layer[data-compact-drag-phase="sending"] .compact-history-drag-shadow {
-  opacity: 0;
-  transform: scale(0.42) translateY(-8px);
-  filter: drop-shadow(0 4px 16px rgba(46, 178, 132, 0.18));
-}
-
-.compact-history-drag-layer[data-compact-drag-type="image"] .compact-history-drag-shadow {
-  min-height: 0;
-}
-
-.compact-history-drag-layer[data-compact-drag-type="bubble"] .compact-history-drag-shadow {
-  filter: none;
-  transform: none;
-}
-
-.compact-history-drag-image {
-  box-sizing: border-box;
+.compact-export-history-resize-bar::after {
+  content: "";
   display: block;
-  width: 100%;
-  height: auto;
-  max-height: 220px;
-  border-radius: 12px;
-  object-fit: contain;
-  background: rgb(var(--compact-history-drag-surface-rgb, 220 228 240) / 0.9);
-  border: 1px solid rgb(var(--compact-history-drag-edge-rgb, 77 160 220) / 0.22);
+  width: 80px;
+  height: 4px;
+  margin: 4px auto 0;
+  border-radius: 999px;
+  background: rgba(120, 142, 170, 0.75);
+  opacity: 0;
 }
 
-.compact-history-drag-bubble {
-  box-sizing: border-box;
-  position: relative;
-  isolation: isolate;
-  width: 100%;
-  max-width: 100%;
-  min-width: 0;
-  padding: 8px 10px;
-  border: 1.5px solid transparent;
-  border-radius:
-    var(--compact-history-bubble-radius-tl, 8px)
-    var(--compact-history-bubble-radius-tr, 16px)
-    var(--compact-history-bubble-radius-br, 16px)
-    var(--compact-history-bubble-radius-bl, 16px);
-  color: var(--compact-history-drag-text, #273042);
-  background: transparent;
-  box-shadow: none;
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-}
-
-.compact-history-drag-layer[data-compact-drag-type="bubble"] .compact-history-drag-bubble {
-  background: transparent;
-  box-shadow: none;
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-}
-
-.compact-history-drag-layer[data-compact-drag-role="user"] .compact-history-drag-bubble {
-  border-radius:
-    var(--compact-history-bubble-radius-tl, 16px)
-    var(--compact-history-bubble-radius-tr, 8px)
-    var(--compact-history-bubble-radius-br, 16px)
-    var(--compact-history-bubble-radius-bl, 16px);
-  color: #142033;
-}
-
-.compact-history-drag-layer[data-compact-drag-role="system"] .compact-history-drag-bubble {
-  color: #607086;
-}
-
-.compact-history-drag-bubble-content {
-  position: relative;
-  z-index: 1;
-  transform:
-    scaleX(var(--compact-history-bubble-content-scale-x, 1))
-    scaleY(var(--compact-history-bubble-content-scale-y, 1));
-  transform-origin: var(--compact-history-bubble-shell-origin-x, 50%) var(--compact-history-bubble-shell-origin-y, 50%);
-}
-
-@keyframes compact-history-source-send {
-  0% {
-    opacity: 1;
-    transform:
-      translateX(calc(var(--compact-history-stagger-x, 0px) + var(--compact-history-drag-pull-x, 0px)))
-      translateY(var(--compact-history-drag-pull-y, 0px))
-      rotate(var(--compact-history-rotate, 0deg))
-      scaleX(var(--compact-history-drag-stretch-x, 1.02))
-      scaleY(var(--compact-history-drag-stretch-y, 0.985));
-  }
-  42% {
-    opacity: 0.28;
-    transform:
-      translateX(var(--compact-history-stagger-x, 0px))
-      translateY(0)
-      rotate(var(--compact-history-rotate, 0deg))
-      scale(0.9);
-  }
-  100% {
-    opacity: 1;
-    transform:
-      translateX(var(--compact-history-stagger-x, 0px))
-      translateY(0)
-      rotate(var(--compact-history-rotate, 0deg))
-      skewX(0deg)
-      scale(1);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .compact-history-drag-layer,
-  .compact-history-drag-shadow,
-  .compact-history-drag-elastic,
-  .compact-export-history-message[data-compact-history-drag-source] .compact-export-history-bubble {
-    transition: none;
-    animation: none;
-  }
-
-  .compact-history-drag-elastic {
-    display: none;
-  }
+/* hover 整个历史区即浮现顶部高度 bar（含直接 hover bar 本体 / 拖动中 is-active），
+   让整个历史记录气泡区域都能唤出 resize bar。 */
+.compact-export-history-anchor:hover .compact-export-history-resize-bar::after,
+.compact-export-history-resize-bar:hover::after,
+.compact-export-history-resize-bar.is-active::after {
+  opacity: 0.55;
 }
 
 .compact-export-history-check {
@@ -3219,6 +3035,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 .compact-history-visibility-handle.is-open {
   --compact-history-handle-line-width: 100%;
+  width: clamp(124px, calc(var(--compact-history-handle-surface-width) * 0.30), 168px);
 }
 
 .compact-history-visibility-handle::before,
@@ -3664,10 +3481,12 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 .compact-chat-surface-frame[data-compact-chat-state="input"] .composer-input {
   flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
   height: 42px;
   min-height: 42px;
   max-height: 42px;
-  padding: 10px 0;
+  padding: 10px 8px 10px 0;
   border: 0;
   background: transparent;
   color: #2f526b;
@@ -4167,7 +3986,52 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   }
 
   .compact-chat-surface-frame[data-compact-chat-state="input"] {
-    padding: 5px 8px 5px 18px;
+    padding: 5px 62px 5px 18px;
+  }
+
+  /* Only use the phone fallback when the original wheel geometry would overflow the viewport. */
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"],
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-1"],
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="0"],
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="1"],
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] {
+    opacity: 1;
+    pointer-events: auto;
+    transition: none;
+  }
+
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] {
+    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(-200deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(200deg) scale(0.86);
+  }
+
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-1"] {
+    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(-170deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(170deg) scale(0.98);
+  }
+
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="0"] {
+    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(-140deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(140deg) scale(1.04);
+  }
+
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="1"] {
+    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(-110deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(110deg) scale(0.98);
+  }
+
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] {
+    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(-80deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(80deg) scale(0.86);
+  }
+
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"]::after,
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > img,
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > svg,
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > .composer-galgame-btn-glyph,
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > .composer-tool-btn,
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"]::after,
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > img,
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > svg,
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > .composer-galgame-btn-glyph,
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > .composer-tool-btn {
+    -webkit-mask-image: none;
+    mask-image: none;
   }
 }
 

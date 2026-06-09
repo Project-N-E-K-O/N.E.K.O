@@ -981,7 +981,7 @@
     async function autoOpenReactChat() {
         await waitForStartupBarrier();
         hideOldChat();
-        if (window.__NEKO_MULTI_WINDOW__ && !/^\/chat(?:\/|$)/.test(window.location.pathname || '')) {
+        if (window.__NEKO_MULTI_WINDOW__ && !/^\/chat(?:_full)?(?:\/|$)/.test(window.location.pathname || '')) {
             return;
         }
         var host = getHost();

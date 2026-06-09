@@ -15,4 +15,8 @@ def raise_http_from_domain(error: ServerDomainError, *, logger: Any) -> NoReturn
         error.status_code,
         error.message,
     )
-    raise HTTPException(status_code=error.status_code, detail=error.message)
+    raise HTTPException(
+        status_code=error.status_code,
+        detail=error.message,
+        headers={"X-Error-Code": error.code},
+    )

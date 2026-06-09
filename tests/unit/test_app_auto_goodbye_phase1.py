@@ -155,7 +155,17 @@ def test_app_auto_goodbye_phase1_harness():
           win.document = doc;
           win.location = {{ pathname }};
           win.appConst = {{}};
-          win.appState = {{ socket: {{ readyState: 0 }} }};
+          const sentMessages = [];
+          win.appState = {{ socket: {{
+            readyState: 0,
+            send(payload) {{
+              try {{
+                sentMessages.push(JSON.parse(payload));
+              }} catch (_) {{
+                sentMessages.push(payload);
+              }}
+            }},
+          }} }};
           win.live2dManager = {{ _goodbyeClicked: false }};
           win.vrmManager = {{ _goodbyeClicked: false }};
           win.mmdManager = {{ _goodbyeClicked: false }};
@@ -227,6 +237,7 @@ def test_app_auto_goodbye_phase1_harness():
             win,
             doc,
             goodbyeEvents,
+            sentMessages,
             advance(ms) {{
               now += ms;
             }},
@@ -583,6 +594,37 @@ def test_app_auto_goodbye_phase1_harness():
           assert(manualState.visualTier === 'cat1', 'manual goodbye should still resolve to cat1');
           assert(manualState.autoGoodbyeTriggered === false, 'manual goodbye should not set auto flag');
           assert(manualState.lastReason === 'manual-goodbye', 'manual goodbye should preserve manual reason');
+
+          // Fresh-page priming reconciles stale backend goodbye_silent: a model/pet window that is
+          // not in goodbye sends goodbye_state:false once on first prime, clearing leftover silence
+          // from a previous "请她离开" so greeting / proactive are not永久 suppressed after a reload.
+          const reconcile = createHarness('/', {{ barrierResolved: true }});
+          await reconcile.flush();
+          assert(reconcile.sentMessages.length === 0, 'reconcile should not fire before websocket open');
+          reconcile.setSocketOpen(true);
+          reconcile.tickAll();
+          const reconcileSends = reconcile.sentMessages.filter((m) => m && m.action === 'goodbye_state');
+          assert(reconcileSends.length === 1, 'fresh prime should send exactly one goodbye_state reconcile');
+          assert(reconcileSends[0].active === false, 'reconcile should clear stale goodbye silence');
+          assert(reconcileSends[0].reason === 'fresh-connect-reconcile', 'reconcile should be tagged');
+          // A subsequent same-session reconnect already has the in-memory state → no duplicate send.
+          reconcile.setSocketOpen(false);
+          reconcile.tickAll();
+          reconcile.setSocketOpen(true);
+          reconcile.tickAll();
+          const reconcileSendsAfter = reconcile.sentMessages.filter((m) => m && m.action === 'goodbye_state');
+          assert(reconcileSendsAfter.length === 1, 'reconnect with cached state should not re-send reconcile');
+
+          // A window already in goodbye must NOT have its silence cleared by the prime reconcile.
+          const stillGoodbye = createHarness('/', {{ barrierResolved: true }});
+          await stillGoodbye.flush();
+          stillGoodbye.win.dispatchEvent(new CustomEventLike('live2d-goodbye-click'));
+          stillGoodbye.setSocketOpen(true);
+          stillGoodbye.tickAll();
+          const clearedWhileGoodbye = stillGoodbye.sentMessages.filter(
+            (m) => m && m.action === 'goodbye_state' && m.active === false
+          );
+          assert(clearedWhileGoodbye.length === 0, 'prime must not clear silence while still in goodbye');
 
           console.log('app-auto-goodbye phase1 harness passed');
         }})().catch((error) => {{
