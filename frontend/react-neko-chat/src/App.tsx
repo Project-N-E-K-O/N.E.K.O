@@ -1342,6 +1342,9 @@ function CompactChatApp({
   const [compactCollapsing, setCompactCollapsing] = useState(false);
   const [compactExpanding, setCompactExpanding] = useState(false);
   const prevChatSurfaceModeRef = useRef(chatSurfaceMode);
+  // 折叠时若历史区是开的，记下「恢复后应重新打开历史区」。配合 closeCompactExportHistory
+  // ({persist:false})：折叠只播收回动画、不写偏好，恢复（minimized→compact）时据此重开。
+  const compactHistoryReopenAfterRestoreRef = useRef(false);
   const compactSurfaceResizeStateRef = useRef<CompactSurfaceResizeState | null>(null);
   const compactHistoryResizeStateRef = useRef<CompactHistoryResizeState | null>(null);
   const compactHistoryVisibilitySuppressClickRef = useRef(false);
@@ -1616,11 +1619,15 @@ function CompactChatApp({
     persistCompactExportHistoryOpen(true);
     setCompactExportAutoScrollToBottom(true);
   }, [clearCompactExportHistoryUnmountTimer]);
-  const closeCompactExportHistory = useCallback(() => {
+  // persist=false：只播收回动画、不把「历史区关闭」写进持久化偏好。折叠（minimize）时用，
+  // 这样 minimize→恢复后历史区按折叠前状态重新打开，而不是把临时折叠误当成偏好变更。
+  // 显式关闭（点蓝条/handle）仍默认 persist=true，正常写偏好。
+  const closeCompactExportHistory = useCallback((opts?: { persist?: boolean }) => {
+    const persist = opts?.persist !== false;
     clearCompactExportHistoryUnmountTimer();
     setCompactExportHistoryClosingMessages(messages);
     setCompactExportHistoryOpen(false);
-    persistCompactExportHistoryOpen(false);
+    if (persist) persistCompactExportHistoryOpen(false);
     setCompactExportPreviewOpen(false);
     compactExportHistoryUnmountTimerRef.current = window.setTimeout(() => {
       setCompactExportHistoryMounted(false);
@@ -1642,11 +1649,16 @@ function CompactChatApp({
     prevChatSurfaceModeRef.current = chatSurfaceMode;
     if (prev === 'minimized' && chatSurfaceMode === 'compact') {
       setCompactExpanding(true);
+      // 折叠前历史区是开的（minimize 用 persist:false 关掉只播了动画、未写偏好）→ 恢复时重开。
+      if (compactHistoryReopenAfterRestoreRef.current) {
+        compactHistoryReopenAfterRestoreRef.current = false;
+        openCompactExportHistory();
+      }
       const t = window.setTimeout(() => setCompactExpanding(false), 340);
       return () => window.clearTimeout(t);
     }
     return undefined;
-  }, [chatSurfaceMode]);
+  }, [chatSurfaceMode, openCompactExportHistory]);
   // 折叠完成（mode→minimized）后复位 compactCollapsing：此刻蓝条/胶囊已随 isCompactSurface 卸载，
   // 复位无视觉副作用，只为下次恢复干净。
   useEffect(() => {
@@ -4916,8 +4928,11 @@ function CompactChatApp({
           return;
         }
         // #3 折叠时若历史区已开，异步触发其收回动画（与折叠并行，不阻塞）。
+        // 用 persist:false：只播收回动画、不把「关闭」写进偏好；并记下恢复后重开，
+        // 这样 minimize→恢复后历史区按折叠前状态重新打开（不把临时折叠误当偏好变更）。
         if (compactExportHistoryOpen) {
-          closeCompactExportHistory();
+          compactHistoryReopenAfterRestoreRef.current = true;
+          closeCompactExportHistory({ persist: false });
         }
         // #2 折叠时蓝条（历史区开关）淡出。compactCollapsing→true 给蓝条加 is-collapsing。
         setCompactCollapsing(true);
