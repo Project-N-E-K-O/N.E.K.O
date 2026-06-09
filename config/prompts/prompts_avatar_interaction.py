@@ -318,23 +318,23 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "lollipop": {
             "offer": {
                 "normal": {
-                    "reaction_focus": "{master_name}刚刚用棒棒糖喂了你第一口。",
+                    "reaction_focus": "{actor}刚刚用棒棒糖喂了你第一口。",
                     "style_hint": "棒棒糖第一口。",
                 },
             },
             "tease": {
                 "normal": {
-                    "reaction_focus": "{master_name}刚刚用同一支棒棒糖又喂了你一口。",
+                    "reaction_focus": "{actor}刚刚用同一支棒棒糖又喂了你一口。",
                     "style_hint": "棒棒糖第二口。",
                 },
             },
             "tap_soft": {
                 "rapid": {
-                    "reaction_focus": "{master_name}刚刚继续用棒棒糖一口接一口地喂你。",
+                    "reaction_focus": "{actor}刚刚继续用棒棒糖一口接一口地喂你。",
                     "style_hint": "棒棒糖连续投喂。",
                 },
                 "burst": {
-                    "reaction_focus": "{master_name}刚刚短时间内用棒棒糖快速喂了你好几口。",
+                    "reaction_focus": "{actor}刚刚短时间内用棒棒糖快速喂了你好几口。",
                     "style_hint": "棒棒糖快速连续投喂。",
                 },
             },
@@ -342,15 +342,15 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "fist": {
             "poke": {
                 "normal": {
-                    "reaction_focus": "{master_name}刚刚用猫爪轻轻碰了你一下。",
+                    "reaction_focus": "{actor}刚刚用猫爪轻轻碰了你一下。",
                     "style_hint": "猫爪轻碰。",
                 },
                 "rapid": {
-                    "reaction_focus": "{master_name}刚刚用猫爪连续轻轻碰了你几下。",
+                    "reaction_focus": "{actor}刚刚用猫爪连续轻轻碰了你几下。",
                     "style_hint": "猫爪连续轻碰。",
                 },
                 "reward_drop": {
-                    "reaction_focus": "{master_name}刚刚用猫爪轻轻碰你时掉出了奖励。",
+                    "reaction_focus": "{actor}刚刚用猫爪轻轻碰你时掉出了奖励。",
                     "style_hint": "猫爪轻碰并掉出奖励。",
                 },
             },
@@ -358,19 +358,19 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "hammer": {
             "bonk": {
                 "normal": {
-                    "reaction_focus": "{master_name}刚刚用锤子敲中了你一次。",
+                    "reaction_focus": "{actor}刚刚用锤子敲中了你一次。",
                     "style_hint": "锤子敲中一次。",
                 },
                 "rapid": {
-                    "reaction_focus": "{master_name}刚刚短时间内又用锤子敲中了你一次。",
+                    "reaction_focus": "{actor}刚刚短时间内又用锤子敲中了你一次。",
                     "style_hint": "锤子再次敲中。",
                 },
                 "burst": {
-                    "reaction_focus": "{master_name}刚刚用锤子连续快速敲中了你好几次。",
+                    "reaction_focus": "{actor}刚刚用锤子连续快速敲中了你好几次。",
                     "style_hint": "锤子连续快速敲中。",
                 },
                 "easter_egg": {
-                    "reaction_focus": "{master_name}刚刚用放大彩蛋锤敲中了你一次。",
+                    "reaction_focus": "{actor}刚刚用放大彩蛋锤敲中了你一次。",
                     "style_hint": "放大彩蛋锤敲中。",
                 },
             },
@@ -380,23 +380,23 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "lollipop": {
             "offer": {
                 "normal": {
-                    "reaction_focus": "{master_name} just fed you the first bite of the lollipop.",
+                    "reaction_focus": "{actor} just fed you the first bite of the lollipop.",
                     "style_hint": "First lollipop bite.",
                 },
             },
             "tease": {
                 "normal": {
-                    "reaction_focus": "{master_name} just fed you another bite from the same lollipop.",
+                    "reaction_focus": "{actor} just fed you another bite from the same lollipop.",
                     "style_hint": "Second lollipop bite.",
                 },
             },
             "tap_soft": {
                 "rapid": {
-                    "reaction_focus": "{master_name} just kept feeding you the lollipop bite after bite.",
+                    "reaction_focus": "{actor} just kept feeding you the lollipop bite after bite.",
                     "style_hint": "Repeated lollipop feeding.",
                 },
                 "burst": {
-                    "reaction_focus": "{master_name} just fed you several quick bites of the lollipop in a short time.",
+                    "reaction_focus": "{actor} just fed you several quick bites of the lollipop in a short time.",
                     "style_hint": "Rapid repeated lollipop feeding.",
                 },
             },
@@ -404,15 +404,15 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "fist": {
             "poke": {
                 "normal": {
-                    "reaction_focus": "{master_name} just lightly touched you once with the cat paw.",
+                    "reaction_focus": "{actor} just lightly touched you once with the cat paw.",
                     "style_hint": "Single cat-paw touch.",
                 },
                 "rapid": {
-                    "reaction_focus": "{master_name} just lightly touched you several times with the cat paw.",
+                    "reaction_focus": "{actor} just lightly touched you several times with the cat paw.",
                     "style_hint": "Repeated cat-paw touches.",
                 },
                 "reward_drop": {
-                    "reaction_focus": "{master_name} just lightly touched you with the cat paw, and a reward dropped.",
+                    "reaction_focus": "{actor} just lightly touched you with the cat paw, and a reward dropped.",
                     "style_hint": "Cat-paw touch with reward drop.",
                 },
             },
@@ -420,19 +420,19 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "hammer": {
             "bonk": {
                 "normal": {
-                    "reaction_focus": "{master_name} just hit you once with the hammer.",
+                    "reaction_focus": "{actor} just hit you once with the hammer.",
                     "style_hint": "Single hammer hit.",
                 },
                 "rapid": {
-                    "reaction_focus": "{master_name} just hit you again with the hammer within a short time.",
+                    "reaction_focus": "{actor} just hit you again with the hammer within a short time.",
                     "style_hint": "Second hammer hit.",
                 },
                 "burst": {
-                    "reaction_focus": "{master_name} just hit you several times quickly with the hammer.",
+                    "reaction_focus": "{actor} just hit you several times quickly with the hammer.",
                     "style_hint": "Rapid repeated hammer hits.",
                 },
                 "easter_egg": {
-                    "reaction_focus": "{master_name} just hit you once with the enlarged easter-egg hammer.",
+                    "reaction_focus": "{actor} just hit you once with the enlarged easter-egg hammer.",
                     "style_hint": "Enlarged easter-egg hammer hit.",
                 },
             },
@@ -442,23 +442,23 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "lollipop": {
             "offer": {
                 "normal": {
-                    "reaction_focus": "{master_name}剛剛用棒棒糖餵了你第一口。",
+                    "reaction_focus": "{actor}剛剛用棒棒糖餵了你第一口。",
                     "style_hint": "棒棒糖第一口。",
                 },
             },
             "tease": {
                 "normal": {
-                    "reaction_focus": "{master_name}剛剛用同一支棒棒糖又餵了你一口。",
+                    "reaction_focus": "{actor}剛剛用同一支棒棒糖又餵了你一口。",
                     "style_hint": "棒棒糖第二口。",
                 },
             },
             "tap_soft": {
                 "rapid": {
-                    "reaction_focus": "{master_name}剛剛繼續用棒棒糖一口接一口地餵你。",
+                    "reaction_focus": "{actor}剛剛繼續用棒棒糖一口接一口地餵你。",
                     "style_hint": "棒棒糖連續投餵。",
                 },
                 "burst": {
-                    "reaction_focus": "{master_name}剛剛短時間內用棒棒糖快速餵了你好幾口。",
+                    "reaction_focus": "{actor}剛剛短時間內用棒棒糖快速餵了你好幾口。",
                     "style_hint": "棒棒糖快速連續投餵。",
                 },
             },
@@ -466,15 +466,15 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "fist": {
             "poke": {
                 "normal": {
-                    "reaction_focus": "{master_name}剛剛用貓爪輕輕碰了你一下。",
+                    "reaction_focus": "{actor}剛剛用貓爪輕輕碰了你一下。",
                     "style_hint": "貓爪輕碰。",
                 },
                 "rapid": {
-                    "reaction_focus": "{master_name}剛剛用貓爪連續輕輕碰了你幾下。",
+                    "reaction_focus": "{actor}剛剛用貓爪連續輕輕碰了你幾下。",
                     "style_hint": "貓爪連續輕碰。",
                 },
                 "reward_drop": {
-                    "reaction_focus": "{master_name}剛剛用貓爪輕輕碰你時掉出了獎勵。",
+                    "reaction_focus": "{actor}剛剛用貓爪輕輕碰你時掉出了獎勵。",
                     "style_hint": "貓爪輕碰並掉出獎勵。",
                 },
             },
@@ -482,19 +482,19 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "hammer": {
             "bonk": {
                 "normal": {
-                    "reaction_focus": "{master_name}剛剛用槌子敲中了你一次。",
+                    "reaction_focus": "{actor}剛剛用槌子敲中了你一次。",
                     "style_hint": "槌子敲中一次。",
                 },
                 "rapid": {
-                    "reaction_focus": "{master_name}剛剛短時間內又用槌子敲中了你一次。",
+                    "reaction_focus": "{actor}剛剛短時間內又用槌子敲中了你一次。",
                     "style_hint": "槌子再次敲中。",
                 },
                 "burst": {
-                    "reaction_focus": "{master_name}剛剛用槌子連續快速敲中了你好幾次。",
+                    "reaction_focus": "{actor}剛剛用槌子連續快速敲中了你好幾次。",
                     "style_hint": "槌子連續快速敲中。",
                 },
                 "easter_egg": {
-                    "reaction_focus": "{master_name}剛剛用放大彩蛋槌敲中了你一次。",
+                    "reaction_focus": "{actor}剛剛用放大彩蛋槌敲中了你一次。",
                     "style_hint": "放大彩蛋槌敲中。",
                 },
             },
@@ -504,23 +504,23 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "lollipop": {
             "offer": {
                 "normal": {
-                    "reaction_focus": "{master_name}が今、ペロペロキャンディを最初の一口だけ食べさせた。",
+                    "reaction_focus": "{actor}が今、ペロペロキャンディを最初の一口だけ食べさせた。",
                     "style_hint": "最初のペロペロキャンディ。",
                 },
             },
             "tease": {
                 "normal": {
-                    "reaction_focus": "{master_name}が今、同じペロペロキャンディをもう一口食べさせた。",
+                    "reaction_focus": "{actor}が今、同じペロペロキャンディをもう一口食べさせた。",
                     "style_hint": "二口目のペロペロキャンディ。",
                 },
             },
             "tap_soft": {
                 "rapid": {
-                    "reaction_focus": "{master_name}が今、ペロペロキャンディを一口ずつ続けて食べさせている。",
+                    "reaction_focus": "{actor}が今、ペロペロキャンディを一口ずつ続けて食べさせている。",
                     "style_hint": "連続ペロペロキャンディ。",
                 },
                 "burst": {
-                    "reaction_focus": "{master_name}が今、短時間でペロペロキャンディを何口も続けて食べさせた。",
+                    "reaction_focus": "{actor}が今、短時間でペロペロキャンディを何口も続けて食べさせた。",
                     "style_hint": "高速連続ペロペロキャンディ。",
                 },
             },
@@ -528,15 +528,15 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "fist": {
             "poke": {
                 "normal": {
-                    "reaction_focus": "{master_name}が今、猫の肉球で一度だけ軽く触れた。",
+                    "reaction_focus": "{actor}が今、猫の肉球で一度だけ軽く触れた。",
                     "style_hint": "猫の肉球の一回接触。",
                 },
                 "rapid": {
-                    "reaction_focus": "{master_name}が今、猫の肉球で何度か続けて軽く触れた。",
+                    "reaction_focus": "{actor}が今、猫の肉球で何度か続けて軽く触れた。",
                     "style_hint": "猫の肉球の連続接触。",
                 },
                 "reward_drop": {
-                    "reaction_focus": "{master_name}が今、猫の肉球で軽く触れた時に報酬が落ちた。",
+                    "reaction_focus": "{actor}が今、猫の肉球で軽く触れた時に報酬が落ちた。",
                     "style_hint": "猫の肉球接触と報酬ドロップ。",
                 },
             },
@@ -544,19 +544,19 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "hammer": {
             "bonk": {
                 "normal": {
-                    "reaction_focus": "{master_name}が今、ハンマーで一度当てた。",
+                    "reaction_focus": "{actor}が今、ハンマーで一度当てた。",
                     "style_hint": "ハンマーの一回命中。",
                 },
                 "rapid": {
-                    "reaction_focus": "{master_name}が今、短時間でもう一度ハンマーを当てた。",
+                    "reaction_focus": "{actor}が今、短時間でもう一度ハンマーを当てた。",
                     "style_hint": "ハンマーの二回目命中。",
                 },
                 "burst": {
-                    "reaction_focus": "{master_name}が今、ハンマーを何度も続けて当てた。",
+                    "reaction_focus": "{actor}が今、ハンマーを何度も続けて当てた。",
                     "style_hint": "ハンマーの高速連続命中。",
                 },
                 "easter_egg": {
-                    "reaction_focus": "{master_name}が今、拡大イースターエッグのハンマーを一度当てた。",
+                    "reaction_focus": "{actor}が今、拡大イースターエッグのハンマーを一度当てた。",
                     "style_hint": "拡大イースターエッグのハンマー命中。",
                 },
             },
@@ -566,23 +566,23 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "lollipop": {
             "offer": {
                 "normal": {
-                    "reaction_focus": "{master_name}이 방금 막대사탕을 첫 한입 먹여 줬다.",
+                    "reaction_focus": "{actor} 방금 막대사탕을 첫 한입 먹여 줬다.",
                     "style_hint": "첫 막대사탕 먹이기.",
                 },
             },
             "tease": {
                 "normal": {
-                    "reaction_focus": "{master_name}이 방금 같은 막대사탕을 한입 더 먹여 줬다.",
+                    "reaction_focus": "{actor} 방금 같은 막대사탕을 한입 더 먹여 줬다.",
                     "style_hint": "두 번째 막대사탕 먹이기.",
                 },
             },
             "tap_soft": {
                 "rapid": {
-                    "reaction_focus": "{master_name}이 방금 막대사탕을 한입씩 계속 먹여 줬다.",
+                    "reaction_focus": "{actor} 방금 막대사탕을 한입씩 계속 먹여 줬다.",
                     "style_hint": "연속 막대사탕 먹이기.",
                 },
                 "burst": {
-                    "reaction_focus": "{master_name}이 방금 짧은 시간 안에 막대사탕을 여러 입 빠르게 먹여 줬다.",
+                    "reaction_focus": "{actor} 방금 짧은 시간 안에 막대사탕을 여러 입 빠르게 먹여 줬다.",
                     "style_hint": "빠른 연속 막대사탕 먹이기.",
                 },
             },
@@ -590,15 +590,15 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "fist": {
             "poke": {
                 "normal": {
-                    "reaction_focus": "{master_name}이 방금 고양이 발로 한 번 가볍게 건드렸다.",
+                    "reaction_focus": "{actor} 방금 고양이 발로 한 번 가볍게 건드렸다.",
                     "style_hint": "고양이 발 한 번 터치.",
                 },
                 "rapid": {
-                    "reaction_focus": "{master_name}이 방금 고양이 발로 여러 번 가볍게 건드렸다.",
+                    "reaction_focus": "{actor} 방금 고양이 발로 여러 번 가볍게 건드렸다.",
                     "style_hint": "고양이 발 연속 터치.",
                 },
                 "reward_drop": {
-                    "reaction_focus": "{master_name}이 방금 고양이 발로 가볍게 건드렸을 때 보상이 떨어졌다.",
+                    "reaction_focus": "{actor} 방금 고양이 발로 가볍게 건드렸을 때 보상이 떨어졌다.",
                     "style_hint": "고양이 발 터치와 보상 드롭.",
                 },
             },
@@ -606,19 +606,19 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "hammer": {
             "bonk": {
                 "normal": {
-                    "reaction_focus": "{master_name}이 방금 망치로 한 번 맞혔다.",
+                    "reaction_focus": "{actor} 방금 망치로 한 번 맞혔다.",
                     "style_hint": "망치 한 번 명중.",
                 },
                 "rapid": {
-                    "reaction_focus": "{master_name}이 방금 짧은 시간 안에 망치로 다시 한 번 맞혔다.",
+                    "reaction_focus": "{actor} 방금 짧은 시간 안에 망치로 다시 한 번 맞혔다.",
                     "style_hint": "망치 두 번째 명중.",
                 },
                 "burst": {
-                    "reaction_focus": "{master_name}이 방금 망치로 여러 번 빠르게 맞혔다.",
+                    "reaction_focus": "{actor} 방금 망치로 여러 번 빠르게 맞혔다.",
                     "style_hint": "망치 빠른 연속 명중.",
                 },
                 "easter_egg": {
-                    "reaction_focus": "{master_name}이 방금 확대 이스터에그 망치로 한 번 맞혔다.",
+                    "reaction_focus": "{actor} 방금 확대 이스터에그 망치로 한 번 맞혔다.",
                     "style_hint": "확대 이스터에그 망치 명중.",
                 },
             },
@@ -628,23 +628,23 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "lollipop": {
             "offer": {
                 "normal": {
-                    "reaction_focus": "{master_name} только что дал тебе первый кусочек леденца.",
+                    "reaction_focus": "{actor} только что дал тебе первый кусочек леденца.",
                     "style_hint": "Первое кормление леденцом.",
                 },
             },
             "tease": {
                 "normal": {
-                    "reaction_focus": "{master_name} только что дал тебе ещё кусочек того же леденца.",
+                    "reaction_focus": "{actor} только что дал тебе ещё кусочек того же леденца.",
                     "style_hint": "Второе кормление леденцом.",
                 },
             },
             "tap_soft": {
                 "rapid": {
-                    "reaction_focus": "{master_name} только что продолжил кормить тебя леденцом кусочек за кусочком.",
+                    "reaction_focus": "{actor} только что продолжил кормить тебя леденцом кусочек за кусочком.",
                     "style_hint": "Повторяющееся кормление леденцом.",
                 },
                 "burst": {
-                    "reaction_focus": "{master_name} только что быстро дал тебе несколько кусочков леденца подряд.",
+                    "reaction_focus": "{actor} только что быстро дал тебе несколько кусочков леденца подряд.",
                     "style_hint": "Быстрое повторяющееся кормление леденцом.",
                 },
             },
@@ -652,15 +652,15 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "fist": {
             "poke": {
                 "normal": {
-                    "reaction_focus": "{master_name} только что один раз легко коснулся тебя кошачьей лапкой.",
+                    "reaction_focus": "{actor} только что один раз легко коснулся тебя кошачьей лапкой.",
                     "style_hint": "Одно касание кошачьей лапкой.",
                 },
                 "rapid": {
-                    "reaction_focus": "{master_name} только что несколько раз легко коснулся тебя кошачьей лапкой.",
+                    "reaction_focus": "{actor} только что несколько раз легко коснулся тебя кошачьей лапкой.",
                     "style_hint": "Повторяющиеся касания кошачьей лапкой.",
                 },
                 "reward_drop": {
-                    "reaction_focus": "{master_name} только что легко коснулся тебя кошачьей лапкой, и выпала награда.",
+                    "reaction_focus": "{actor} только что легко коснулся тебя кошачьей лапкой, и выпала награда.",
                     "style_hint": "Касание кошачьей лапкой и выпадение награды.",
                 },
             },
@@ -668,19 +668,19 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "hammer": {
             "bonk": {
                 "normal": {
-                    "reaction_focus": "{master_name} только что один раз попал по тебе молотком.",
+                    "reaction_focus": "{actor} только что один раз попал по тебе молотком.",
                     "style_hint": "Одно попадание молотком.",
                 },
                 "rapid": {
-                    "reaction_focus": "{master_name} только что снова попал по тебе молотком за короткое время.",
+                    "reaction_focus": "{actor} только что снова попал по тебе молотком за короткое время.",
                     "style_hint": "Второе попадание молотком.",
                 },
                 "burst": {
-                    "reaction_focus": "{master_name} только что быстро попал по тебе молотком несколько раз подряд.",
+                    "reaction_focus": "{actor} только что быстро попал по тебе молотком несколько раз подряд.",
                     "style_hint": "Быстрые повторяющиеся попадания молотком.",
                 },
                 "easter_egg": {
-                    "reaction_focus": "{master_name} только что один раз попал по тебе увеличенным пасхальным молотком.",
+                    "reaction_focus": "{actor} только что один раз попал по тебе увеличенным пасхальным молотком.",
                     "style_hint": "Попадание увеличенным пасхальным молотком.",
                 },
             },
@@ -690,23 +690,23 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "lollipop": {
             "offer": {
                 "normal": {
-                    "reaction_focus": "{master_name} acaba de darte el primer bocado de la piruleta.",
+                    "reaction_focus": "{actor} acaba de darte el primer bocado de la piruleta.",
                     "style_hint": "Primera alimentación con piruleta.",
                 }
             },
             "tease": {
                 "normal": {
-                    "reaction_focus": "{master_name} acaba de darte otro bocado de la misma piruleta.",
+                    "reaction_focus": "{actor} acaba de darte otro bocado de la misma piruleta.",
                     "style_hint": "Segunda alimentación con piruleta.",
                 }
             },
             "tap_soft": {
                 "rapid": {
-                    "reaction_focus": "{master_name} acaba de seguir dándote la piruleta bocado tras bocado.",
+                    "reaction_focus": "{actor} acaba de seguir dándote la piruleta bocado tras bocado.",
                     "style_hint": "Alimentación repetida con piruleta.",
                 },
                 "burst": {
-                    "reaction_focus": "{master_name} acaba de darte varios bocados rápidos de la piruleta en poco tiempo.",
+                    "reaction_focus": "{actor} acaba de darte varios bocados rápidos de la piruleta en poco tiempo.",
                     "style_hint": "Alimentación rápida repetida con piruleta.",
                 },
             },
@@ -714,15 +714,15 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "fist": {
             "poke": {
                 "normal": {
-                    "reaction_focus": "{master_name} acaba de tocarte una vez con la patita de gato.",
+                    "reaction_focus": "{actor} acaba de tocarte una vez con la patita de gato.",
                     "style_hint": "Un toque de patita de gato.",
                 },
                 "rapid": {
-                    "reaction_focus": "{master_name} acaba de tocarte varias veces con la patita de gato.",
+                    "reaction_focus": "{actor} acaba de tocarte varias veces con la patita de gato.",
                     "style_hint": "Toques repetidos de patita de gato.",
                 },
                 "reward_drop": {
-                    "reaction_focus": "{master_name} acaba de tocarte con la patita de gato y cayó una recompensa.",
+                    "reaction_focus": "{actor} acaba de tocarte con la patita de gato y cayó una recompensa.",
                     "style_hint": "Toque de patita de gato con recompensa.",
                 },
             }
@@ -730,19 +730,19 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "hammer": {
             "bonk": {
                 "normal": {
-                    "reaction_focus": "{master_name} acaba de golpearte una vez con el martillo.",
+                    "reaction_focus": "{actor} acaba de golpearte una vez con el martillo.",
                     "style_hint": "Un golpe de martillo.",
                 },
                 "rapid": {
-                    "reaction_focus": "{master_name} acaba de volver a golpearte con el martillo en poco tiempo.",
+                    "reaction_focus": "{actor} acaba de volver a golpearte con el martillo en poco tiempo.",
                     "style_hint": "Segundo golpe de martillo.",
                 },
                 "burst": {
-                    "reaction_focus": "{master_name} acaba de golpearte varias veces rápido con el martillo.",
+                    "reaction_focus": "{actor} acaba de golpearte varias veces rápido con el martillo.",
                     "style_hint": "Golpes rápidos repetidos de martillo.",
                 },
                 "easter_egg": {
-                    "reaction_focus": "{master_name} acaba de golpearte una vez con el martillo easter egg ampliado.",
+                    "reaction_focus": "{actor} acaba de golpearte una vez con el martillo easter egg ampliado.",
                     "style_hint": "Golpe de martillo easter egg ampliado.",
                 },
             }
@@ -752,23 +752,23 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "lollipop": {
             "offer": {
                 "normal": {
-                    "reaction_focus": "{master_name} acabou de te dar a primeira mordida do pirulito.",
+                    "reaction_focus": "{actor} acabou de te dar a primeira mordida do pirulito.",
                     "style_hint": "Primeira alimentação com pirulito.",
                 }
             },
             "tease": {
                 "normal": {
-                    "reaction_focus": "{master_name} acabou de te dar outra mordida do mesmo pirulito.",
+                    "reaction_focus": "{actor} acabou de te dar outra mordida do mesmo pirulito.",
                     "style_hint": "Segunda alimentação com pirulito.",
                 }
             },
             "tap_soft": {
                 "rapid": {
-                    "reaction_focus": "{master_name} acabou de continuar te dando o pirulito mordida após mordida.",
+                    "reaction_focus": "{actor} acabou de continuar te dando o pirulito mordida após mordida.",
                     "style_hint": "Alimentação repetida com pirulito.",
                 },
                 "burst": {
-                    "reaction_focus": "{master_name} acabou de te dar várias mordidas rápidas do pirulito em pouco tempo.",
+                    "reaction_focus": "{actor} acabou de te dar várias mordidas rápidas do pirulito em pouco tempo.",
                     "style_hint": "Alimentação rápida repetida com pirulito.",
                 },
             },
@@ -776,15 +776,15 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "fist": {
             "poke": {
                 "normal": {
-                    "reaction_focus": "{master_name} acabou de tocar em você uma vez com a patinha de gato.",
+                    "reaction_focus": "{actor} acabou de tocar em você uma vez com a patinha de gato.",
                     "style_hint": "Um toque de patinha de gato.",
                 },
                 "rapid": {
-                    "reaction_focus": "{master_name} acabou de tocar em você várias vezes com a patinha de gato.",
+                    "reaction_focus": "{actor} acabou de tocar em você várias vezes com a patinha de gato.",
                     "style_hint": "Toques repetidos de patinha de gato.",
                 },
                 "reward_drop": {
-                    "reaction_focus": "{master_name} acabou de tocar em você com a patinha de gato e caiu uma recompensa.",
+                    "reaction_focus": "{actor} acabou de tocar em você com a patinha de gato e caiu uma recompensa.",
                     "style_hint": "Toque de patinha de gato com recompensa.",
                 },
             }
@@ -792,19 +792,19 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "hammer": {
             "bonk": {
                 "normal": {
-                    "reaction_focus": "{master_name} acabou de bater em você uma vez com o martelo.",
+                    "reaction_focus": "{actor} acabou de bater em você uma vez com o martelo.",
                     "style_hint": "Um golpe de martelo.",
                 },
                 "rapid": {
-                    "reaction_focus": "{master_name} acabou de bater em você de novo com o martelo em pouco tempo.",
+                    "reaction_focus": "{actor} acabou de bater em você de novo com o martelo em pouco tempo.",
                     "style_hint": "Segundo golpe de martelo.",
                 },
                 "burst": {
-                    "reaction_focus": "{master_name} acabou de bater em você várias vezes rapidamente com o martelo.",
+                    "reaction_focus": "{actor} acabou de bater em você várias vezes rapidamente com o martelo.",
                     "style_hint": "Golpes rápidos repetidos de martelo.",
                 },
                 "easter_egg": {
-                    "reaction_focus": "{master_name} acabou de bater em você uma vez com o martelo easter egg ampliado.",
+                    "reaction_focus": "{actor} acabou de bater em você uma vez com o martelo easter egg ampliado.",
                     "style_hint": "Golpe de martelo easter egg ampliado.",
                 },
             }
@@ -962,6 +962,16 @@ _AVATAR_INTERACTION_MEMORY_NOTE_MASTER_FALLBACK: dict[str, str] = {
     "ru": "собеседник",
     "es": "esa persona",
     "pt": "a outra pessoa",
+}
+_AVATAR_INTERACTION_PROMPT_ACTOR_FALLBACK: dict[str, str] = {
+    "zh": "对方",
+    "zh-TW": "對方",
+    "en": "The other person",
+    "ja": "相手",
+    "ko": "상대가",
+    "ru": "Собеседник",
+    "es": "Esa persona",
+    "pt": "A outra pessoa",
 }
 _AVATAR_INTERACTION_DEFAULT_REACTION_PROFILES = {
     "zh": {
@@ -1214,6 +1224,41 @@ def _avatar_interaction_locale(language: str | None) -> str:
     if locale.startswith("pt"):
         return "pt"
     return "en"
+
+
+def _avatar_interaction_korean_subject_actor(name: str) -> str:
+    """Return a Korean subject phrase for an arbitrary actor name.
+
+    Hangul names can choose 이/가 exactly by final consonant. For latin names,
+    use a small readability heuristic; other scripts keep the previous safe
+    default of 이.
+    """
+    stripped = str(name or "").strip()
+    if not stripped:
+        return _AVATAR_INTERACTION_PROMPT_ACTOR_FALLBACK["ko"]
+
+    last_char = stripped[-1]
+    codepoint = ord(last_char)
+    if 0xAC00 <= codepoint <= 0xD7A3:
+        has_final_consonant = (codepoint - 0xAC00) % 28 != 0
+        marker = "이" if has_final_consonant else "가"
+    elif last_char.isascii() and last_char.isalpha():
+        # Latin display names are common in config; this keeps simple names
+        # readable without forcing every non-Hangul script into a Korean marker.
+        marker = "가" if last_char.lower() in {"a", "e", "i", "o", "u", "y"} else "이"
+    else:
+        return stripped
+    return f"{stripped}{marker}"
+
+
+def _avatar_interaction_prompt_actor(locale: str, master_name: str) -> str:
+    stripped = str(master_name or "").strip()
+    if locale == "ko":
+        return _avatar_interaction_korean_subject_actor(stripped)
+    if stripped:
+        return stripped
+    fallback = _AVATAR_INTERACTION_PROMPT_ACTOR_FALLBACK
+    return fallback.get(locale, fallback["en"])
 
 
 def _sanitize_avatar_interaction_text_context(
@@ -1475,11 +1520,12 @@ def _build_avatar_interaction_instruction(
                 locale, _AVATAR_INTERACTION_DEFAULT_REACTION_PROFILES["en"]
             )
         )
+    actor = _avatar_interaction_prompt_actor(locale, master_name)
     reaction_focus = str(reaction_profile["reaction_focus"]).format(
-        lanlan_name=lanlan_name, master_name=master_name
+        lanlan_name=lanlan_name, master_name=actor, actor=actor
     )
     style_hint = str(reaction_profile["style_hint"]).format(
-        lanlan_name=lanlan_name, master_name=master_name
+        lanlan_name=lanlan_name, master_name=actor, actor=actor
     )
 
     interaction_intro = (
@@ -1494,7 +1540,7 @@ def _build_avatar_interaction_instruction(
     lines = [
         wrapper["prefix"],
         prompt_text["actor_line"].format(
-            lanlan_name=lanlan_name, master_name=master_name
+            lanlan_name=lanlan_name, master_name=actor
         ),
     ]
     if interaction_intro:
