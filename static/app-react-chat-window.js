@@ -3217,6 +3217,17 @@
         compactMinimizePressTimer = 0;
     }
     function handleCompactMinimizeRequest() {
+        // reduced-motion：折叠擦除/按压挤压动画已被 CSS（@media prefers-reduced-motion: reduce）
+        // 禁用，此时再延时 COMPACT_MINIMIZE_PRESS_MS(280ms) 才折叠，只会让窗口「点了没反应」一段，
+        // 无任何动画反馈。无障碍模式下直接立即折叠，保持即时响应（Codex P2）。
+        var reduceMotion = false;
+        try {
+            reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+        } catch (e) {}
+        if (reduceMotion) {
+            setChatSurfaceMode('minimized');
+            return;
+        }
         // 给按下的毛绒球补「按下挤压」弹性动画（CSS index.css neko-compact-minimize-press）。
         try {
             var pressIcons = document.querySelectorAll('.compact-chat-minimize-ball-icon');

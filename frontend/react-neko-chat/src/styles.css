@@ -3046,6 +3046,54 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   pointer-events: none;
 }
 
+/* 折叠/展开方向性擦除 + 毛绒球按下挤压动画。这些 class 由 React 组件（App.tsx）发出，
+   但动画规则原本只在 host 的 static/css/index.css。Vite dev / 独立 React bundle 路径下没有
+   index.css，class 会失效、擦除/挤压不跑（Codex P2）。这里在 bundle 自带的 styles.css 里镜像
+   同一套规则，保证组件自带动画 CSS。两份保持一致。 */
+@keyframes neko-compact-minimize-press {
+  0%   { transform: scale(1, 1); }
+  30%  { transform: scale(1.12, 0.74); }
+  58%  { transform: scale(0.94, 1.08); }
+  80%  { transform: scale(1.03, 0.97); }
+  100% { transform: scale(1, 1); }
+}
+.compact-chat-minimize-ball-icon.neko-minimize-ball-pressing {
+  transform-origin: center bottom;
+  animation: neko-compact-minimize-press 420ms cubic-bezier(0.3, 0.8, 0.4, 1) both;
+}
+@keyframes neko-compact-collapse-wipe {
+  from { -webkit-mask-position: 0% 0;   mask-position: 0% 0; }
+  to   { -webkit-mask-position: 100% 0; mask-position: 100% 0; }
+}
+@keyframes neko-compact-expand-wipe {
+  from { -webkit-mask-position: 100% 0; mask-position: 100% 0; }
+  to   { -webkit-mask-position: 0% 0;   mask-position: 0% 0; }
+}
+.compact-chat-surface-shell.neko-compact-collapsing,
+.compact-chat-surface-shell.neko-compact-expanding {
+  -webkit-mask-image: linear-gradient(to right, #000 33%, transparent 50%);
+  mask-image: linear-gradient(to right, #000 33%, transparent 50%);
+  -webkit-mask-size: 300% 100%; mask-size: 300% 100%;
+  -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+}
+.compact-chat-surface-shell.neko-compact-collapsing {
+  animation: neko-compact-collapse-wipe 280ms ease forwards;
+}
+.compact-chat-surface-shell.neko-compact-expanding {
+  animation: neko-compact-expand-wipe 300ms ease forwards;
+}
+/* reduced-motion 禁用上面这些动画。必须放在动画规则之后：同特异性下 CSS 后定义者胜、
+   media query 不加特异性（与 index.css 同样处理，Codex P2）。 */
+@media (prefers-reduced-motion: reduce) {
+  .compact-chat-minimize-ball-icon.neko-minimize-ball-pressing {
+    animation: none;
+  }
+  .compact-chat-surface-shell.neko-compact-collapsing,
+  .compact-chat-surface-shell.neko-compact-expanding {
+    animation: none;
+  }
+}
+
 .compact-history-visibility-handle::before,
 .compact-history-visibility-handle::after {
   content: "";
