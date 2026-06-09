@@ -324,6 +324,24 @@
         return option ? String(option.textContent || '').trim() : (TUTORIAL_CASCADER_PAGE_LABELS[pageKey] || pageKey);
     }
 
+    function getTutorialDayLabel(day) {
+        const fallback = '第 ' + day + ' 天';
+        if (!window.t || typeof window.t !== 'function') {
+            return fallback;
+        }
+        const translated = window.t('memory.tutorialHomeDayLabel', { day: day });
+        return translated && translated !== 'memory.tutorialHomeDayLabel' ? translated : fallback;
+    }
+
+    function refreshTutorialCascaderDayLabels() {
+        document.querySelectorAll('.tutorial-cascader-option[data-tutorial-day]').forEach(function (option) {
+            const day = Number(option.dataset.tutorialDay || 0);
+            if (day > 0) {
+                option.textContent = getTutorialDayLabel(day);
+            }
+        });
+    }
+
     function resolveSelectedTutorialReset() {
         const tutorialSelect = document.getElementById('tutorial-reset-select');
         const pageKey = tutorialSelect ? String(tutorialSelect.value || '') : '';
@@ -373,7 +391,7 @@
             if (!pageKey) {
                 valueEl.textContent = getTutorialPageLabel('');
             } else if (pageKey === 'home' && selectedTutorialDay) {
-                valueEl.textContent = getTutorialPageLabel('home') + ' / 第 ' + selectedTutorialDay + ' 天';
+                valueEl.textContent = getTutorialPageLabel('home') + ' / ' + getTutorialDayLabel(selectedTutorialDay);
             } else {
                 valueEl.textContent = getTutorialPageLabel(pageKey);
             }
@@ -1365,6 +1383,10 @@
                 }
             });
         }
+        window.addEventListener('localechange', function () {
+            refreshTutorialCascaderDayLabels();
+            syncTutorialResetCascader();
+        });
 
         const openStorageBtn = document.getElementById('storage-location-open-btn');
         if (openStorageBtn) {
@@ -1417,6 +1439,7 @@
         const tutorialSelect = document.getElementById('tutorial-reset-select');
         const tutorialResetBtn = document.getElementById('tutorial-reset-btn');
         if (tutorialSelect && tutorialResetBtn) {
+            refreshTutorialCascaderDayLabels();
             syncTutorialResetCascader();
             const trigger = document.querySelector('.tutorial-cascader-trigger');
             const popup = document.querySelector('.tutorial-cascader-popup');

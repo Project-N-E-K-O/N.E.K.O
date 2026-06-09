@@ -1735,6 +1735,8 @@
         "tutorialResetSuccess": "Todos os tutoriais foram redefinidos. Eles serão mostrados novamente quando você visitar cada página.",
         "tutorialPageResetSuccess": "O tutorial desta página foi redefinido. Ele será mostrado novamente quando você visitar.",
         "tutorialPageResetSuccessWithName": "O tutorial para \"{{pageName}}\" foi redefinido. Ele será mostrado novamente quando você visitar essa página.",
+        "tutorialHomeDayLabel": "Dia {{day}}",
+        "tutorialHomeDayColumn": "Tutorial de sete dias da página inicial",
         "refreshed": "Memória atualizada, nova memória será usada na próxima conversa",
         "refreshingContext": "Atualizando contexto...",
         "storageLocation": "Local de armazenamento",

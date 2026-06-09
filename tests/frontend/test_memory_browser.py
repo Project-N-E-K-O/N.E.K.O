@@ -232,6 +232,25 @@ def test_memory_browser_current_personality_reset_requests_home_reselect(
 
 
 @pytest.mark.frontend
+def test_memory_browser_tutorial_cascader_localizes_home_day_labels_for_english(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file,
+):
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    mock_page.add_init_script("window.localStorage.setItem('i18nextLng', 'en')")
+
+    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.wait_for_selector(".tutorial-cascader-trigger", timeout=10000)
+    mock_page.locator(".tutorial-cascader-trigger").click()
+    expect(mock_page.locator(".tutorial-cascader-option[data-tutorial-page='home']")).to_have_text("Home")
+    expect(mock_page.locator(".tutorial-cascader-option[data-tutorial-day='1']")).to_have_text("Day 1")
+    mock_page.locator(".tutorial-cascader-option[data-tutorial-page='home']").click()
+    mock_page.locator(".tutorial-cascader-option[data-tutorial-day='1']").click()
+    expect(mock_page.locator(".tutorial-reset-value")).to_have_text("Home / Day 1")
+
+
+@pytest.mark.frontend
 def test_memory_browser_select_file(mock_page: Page, running_server: str, seed_memory_file):
     """Test that selecting a memory file loads and renders its chat content."""
     mock_page.on("console", lambda msg: print(f"Browser Console: {msg.text}"))
