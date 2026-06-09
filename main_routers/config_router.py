@@ -762,10 +762,20 @@ async def update_core_config(request: Request):
         # coreApi / assistApi 为空串 = 前端在配置尚未加载完成（下拉被清空）时提交。
         # 绝不能用空值覆盖已存的有效 provider——否则重新加载时空值会被兜底成别的服务商，
         # 把免费版用户悄悄切走。仅在非空时写入；空值保留 existing_core_cfg 里的旧值。
-        if data.get('coreApi'):
-            core_cfg['coreApi'] = data['coreApi']
-        if data.get('assistApi'):
-            core_cfg['assistApi'] = data['assistApi']
+        if 'coreApi' in data:
+            core_api = data.get('coreApi')
+            if core_api is not None and not isinstance(core_api, str):
+                return {"success": False, "error": "coreApi must be a string"}
+            core_api = (core_api or "").strip()
+            if core_api:
+                core_cfg['coreApi'] = core_api
+        if 'assistApi' in data:
+            assist_api = data.get('assistApi')
+            if assist_api is not None and not isinstance(assist_api, str):
+                return {"success": False, "error": "assistApi must be a string"}
+            assist_api = (assist_api or "").strip()
+            if assist_api:
+                core_cfg['assistApi'] = assist_api
         if 'resolvedProviderUrls' in data:
             resolved_urls = data.get('resolvedProviderUrls')
             if not isinstance(resolved_urls, dict):

@@ -108,14 +108,18 @@ def test_backend_ignores_empty_core_api_on_save(mock_page: Page, running_server:
     重新读取必须仍是 free（绝不变成 qwen）。"""
     _open_free_settings(mock_page, running_server)
 
-    readback = mock_page.evaluate(
+    result = mock_page.evaluate(
         """async () => {
-            await fetch('/api/config/core_api', {
+            const saveResp = await fetch('/api/config/core_api', {
                 method:'POST', headers:{'Content-Type':'application/json'},
-                body: JSON.stringify({coreApiKey:'', coreApi:'', assistApi:'', enableCustomApi:true})
+                body: JSON.stringify({coreApiKey:'', coreApi:'   ', assistApi:'   ', enableCustomApi:true})
             });
-            return await (await fetch('/api/config/core_api')).json();
+            const saveJson = await saveResp.json();
+            const readback = await (await fetch('/api/config/core_api')).json();
+            return {saveJson, readback};
         }"""
     )
+    assert result["saveJson"].get("success") is True, f"保存请求未成功: {result['saveJson']}"
+    readback = result["readback"]
     assert readback["coreApi"] == "free", f"空 coreApi 覆盖了已存值: {readback['coreApi']!r}"
     assert readback["assistApi"] == "free"

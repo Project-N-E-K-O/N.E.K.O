@@ -590,7 +590,10 @@ def _runtime_config_path_matches_pristine_default(config_manager, runtime_path: 
 
     if source_path is not None and source_path.exists():
         try:
-            return runtime_path.read_bytes() == source_path.read_bytes()
+            if runtime_path.read_bytes() == source_path.read_bytes():
+                return True
+            runtime_payload = json.loads(runtime_path.read_text(encoding="utf-8"))
+            return _config_payload_looks_default(runtime_path.name, runtime_payload)
         except Exception:
             return False
 
@@ -598,7 +601,8 @@ def _runtime_config_path_matches_pristine_default(config_manager, runtime_path: 
     if default_payload is None:
         return False
     try:
-        return json.loads(runtime_path.read_text(encoding="utf-8")) == default_payload
+        runtime_payload = json.loads(runtime_path.read_text(encoding="utf-8"))
+        return _config_payload_looks_default(runtime_path.name, runtime_payload)
     except Exception:
         return False
 
@@ -799,8 +803,19 @@ def _deep_merge_json_dicts(legacy_payload: Any, current_payload: Any) -> dict[st
     return legacy_dict
 
 
+def _core_config_payload_looks_legacy_seeded_default(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    legacy_payload = deepcopy(DEFAULT_CONFIG_DATA.get("core_config.json") or {})
+    legacy_payload["coreApi"] = "qwen"
+    legacy_payload["assistApi"] = "qwen"
+    return deepcopy(payload) == legacy_payload
+
+
 def _config_payload_looks_default(filename: str, payload: Any) -> bool:
     default_payload = DEFAULT_CONFIG_DATA.get(filename)
+    if filename == "core_config.json" and _core_config_payload_looks_legacy_seeded_default(payload):
+        return True
     if filename == "user_preferences.json":
         return _normalize_preferences_payload(payload) == _normalize_preferences_payload(default_payload)
     if isinstance(default_payload, dict):
@@ -813,6 +828,8 @@ def _config_payload_looks_default(filename: str, payload: Any) -> bool:
 def _config_payload_looks_seeded(config_manager, filename: str, payload: Any) -> bool:
     project_payload = _load_json_if_exists(Path(config_manager.project_config_dir) / filename)
     if project_payload is not None:
+        if filename == "core_config.json" and _core_config_payload_looks_legacy_seeded_default(payload):
+            return True
         if filename == "user_preferences.json":
             return _normalize_preferences_payload(payload) == _normalize_preferences_payload(project_payload)
         return deepcopy(payload) == deepcopy(project_payload)

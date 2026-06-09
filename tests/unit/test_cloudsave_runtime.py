@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from config import DEFAULT_CONFIG_DATA
 from utils.file_utils import atomic_write_json
 
 
@@ -216,6 +217,15 @@ def test_bootstrap_imports_legacy_root_after_seed_migration(tmp_path):
     # then bootstrap decides whether to import a historical runtime root.
     cm.migrate_config_files()
     cm.migrate_memory_files()
+    legacy_seeded_core_config = copy.deepcopy(DEFAULT_CONFIG_DATA["core_config.json"])
+    legacy_seeded_core_config["coreApi"] = "qwen"
+    legacy_seeded_core_config["assistApi"] = "qwen"
+    atomic_write_json(
+        cm.config_dir / "core_config.json",
+        legacy_seeded_core_config,
+        ensure_ascii=False,
+        indent=2,
+    )
 
     assert (cm.config_dir / "characters.json").is_file()
     assert not cm.root_state_path.exists()
