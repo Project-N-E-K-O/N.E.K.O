@@ -2,7 +2,7 @@
 
 本文整理 Linux 桌面版 AppImage / Steam 包的排障线索，主要面向维护者和 issue triage。适用场景包括 KDE / Wayland 点击穿透异常、透明窗口拦截输入、Toast 不可点击，以及中文/日文/韩文输入法无法提交文字。
 
-相关 issue：[ #396 ](https://github.com/Project-N-E-K-O/N.E.K.O/issues/396)、[ #1276 ](https://github.com/Project-N-E-K-O/N.E.K.O/issues/1276)、[ #1279 ](https://github.com/Project-N-E-K-O/N.E.K.O/issues/1279)。
+相关 issue：[#396](https://github.com/Project-N-E-K-O/N.E.K.O/issues/396)、[#1276](https://github.com/Project-N-E-K-O/N.E.K.O/issues/1276)、[#1279](https://github.com/Project-N-E-K-O/N.E.K.O/issues/1279)。
 
 ## 运行时分层
 
@@ -31,10 +31,14 @@ echo "XMODIFIERS=$XMODIFIERS"
 echo "SteamAppId=$SteamAppId"
 ```
 
-对正在运行的桌面进程，检查真实环境变量和启动参数：
+对正在运行的桌面壳进程，检查真实环境变量和启动参数。排查 Electron 窗口和输入法问题时，不要采样 `projectneko_server` 或其他后端 helper：
 
 ```bash
-pid="$(pgrep -n -f 'n.e.k.o|projectneko_server')"
+pid="$(pgrep -n -f 'AppRun|AppImage|electron|N[.]E[.]K[.]O|n[.]e[.]k[.]o')"
+if [ -z "$pid" ]; then
+  echo "N.E.K.O desktop shell process was not found" >&2
+  exit 1
+fi
 tr '\0' '\n' < "/proc/$pid/environ" | sort | grep -E 'DISPLAY|WAYLAND|GTK_IM|QT_IM|XMODIFIERS|Steam'
 tr '\0' ' ' < "/proc/$pid/cmdline"; echo
 ```

@@ -31,10 +31,14 @@ echo "XMODIFIERS=$XMODIFIERS"
 echo "SteamAppId=$SteamAppId"
 ```
 
-For a running desktop process, inspect the real environment and arguments:
+For a running desktop shell process, inspect the real environment and arguments. Do not sample `projectneko_server` or other backend helpers for Electron window and input-method bugs:
 
 ```bash
-pid="$(pgrep -n -f 'n.e.k.o|projectneko_server')"
+pid="$(pgrep -n -f 'AppRun|AppImage|electron|N[.]E[.]K[.]O|n[.]e[.]k[.]o')"
+if [ -z "$pid" ]; then
+  echo "N.E.K.O desktop shell process was not found" >&2
+  exit 1
+fi
 tr '\0' '\n' < "/proc/$pid/environ" | sort | grep -E 'DISPLAY|WAYLAND|GTK_IM|QT_IM|XMODIFIERS|Steam'
 tr '\0' ' ' < "/proc/$pid/cmdline"; echo
 ```
