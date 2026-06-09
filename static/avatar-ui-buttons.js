@@ -259,7 +259,7 @@ const _NEKO_IDLE_CAT1_AMBIENT_SOUND_URLS = Object.freeze([
 ]);
 const _NEKO_IDLE_CAT1_DRAG_SOUND_URL = '/static/assets/neko-idle/cat1-voice-click.mp3';
 const _NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS = 5 * 60 * 1000;
-const _NEKO_IDLE_SLEEP_SOUND_VOLUME = 0.12;
+const _NEKO_IDLE_SLEEP_SOUND_VOLUME = 0.09;
 const _NEKO_IDLE_SLEEP_SOUND_BY_TIER = Object.freeze({
     [_NEKO_IDLE_TIER_CAT2]: Object.freeze({
         src: '/static/assets/neko-idle/cat2-sleep.mp3',
@@ -3354,10 +3354,15 @@ function _playNekoIdleHoverArt(art, tier) {
             art.__nekoIdleHoverTimer = 0;
         }
         art.__nekoIdleHoverToken = (art.__nekoIdleHoverToken || 0) + 1;
+        _clearNekoIdleGifPlaybackSource(art);
+        if ((art.getAttribute('src') || '') !== clickSrc) {
+            art.src = clickSrc;
+        }
         return;
     }
 
     _clearNekoIdleHoverPlayback(art);
+    _clearNekoIdleGifPlaybackSource(art);
     art.__nekoIdleHoverToken = (art.__nekoIdleHoverToken || 0) + 1;
     art.__nekoIdleHoverSrc = clickSrc;
     art.__nekoIdleHoverTier = normalizedTier;

@@ -389,11 +389,29 @@ def test_return_button_hover_click_gif_finishes_before_restore():
     assert 'keepHoverPlayback' in source
 
 
+def test_cat1_walk_hover_invalidates_pending_playback_rate_source():
+    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+
+    play_hover_block = source[
+        source.index('function _playNekoIdleHoverArt'):
+        source.index('function _finishNekoIdleHoverArtAfterPlayback')
+    ]
+
+    assert '_clearNekoIdleGifPlaybackSource(art)' in play_hover_block
+    assert play_hover_block.index('_clearNekoIdleGifPlaybackSource(art)') < play_hover_block.index('art.src = clickSrc')
+    repeat_hover_block = play_hover_block[
+        play_hover_block.index('if (art.__nekoIdleHoverSrc === clickSrc)'):
+        play_hover_block.index('_clearNekoIdleHoverPlayback(art)')
+    ]
+    assert '_clearNekoIdleGifPlaybackSource(art)' in repeat_hover_block
+    assert 'art.src = clickSrc' in repeat_hover_block
+
+
 def test_sleeping_cat_tiers_schedule_soft_random_sound_once_per_interval():
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
 
     assert "_NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS = 5 * 60 * 1000" in source
-    assert "_NEKO_IDLE_SLEEP_SOUND_VOLUME = 0.12" in source
+    assert "_NEKO_IDLE_SLEEP_SOUND_VOLUME = 0.09" in source
     assert "function _playNekoIdleSound(state, src, volume)" in source
     assert "[_NEKO_IDLE_TIER_CAT2]" in source
     assert "[_NEKO_IDLE_TIER_CAT3]" in source
