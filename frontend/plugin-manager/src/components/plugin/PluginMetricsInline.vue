@@ -8,32 +8,38 @@
     @leave="onLeave"
     @after-leave="onAfterLeave"
   >
-    <div v-if="shouldShow" class="metrics-bar">
+    <div class="metrics-bar">
       <div class="metrics-bar__cells">
-        <div class="metrics-cell">
+        <template v-if="hasMetrics">
+          <div class="metrics-cell">
+            <el-icon class="metrics-cell__icon" :size="13"><Lightning /></el-icon>
+            <span class="metrics-cell__value">{{ cpuDisplay }}</span>
+            <span class="metrics-cell__label">CPU</span>
+          </div>
+          <div class="metrics-cell">
+            <el-icon class="metrics-cell__icon" :size="13"><Coin /></el-icon>
+            <span class="metrics-cell__value">{{ memDisplay }}</span>
+            <span class="metrics-cell__label">{{ t('metrics.memory') }}</span>
+          </div>
+          <div class="metrics-cell">
+            <el-icon class="metrics-cell__icon" :size="13"><Connection /></el-icon>
+            <span class="metrics-cell__value">{{ metrics!.num_threads }}</span>
+            <span class="metrics-cell__label">{{ t('metrics.threads') }}</span>
+          </div>
+          <div v-if="metrics!.pending_requests != null" class="metrics-cell">
+            <el-icon class="metrics-cell__icon" :size="13"><Message /></el-icon>
+            <span class="metrics-cell__value">{{ metrics!.pending_requests }}</span>
+            <span class="metrics-cell__label">{{ t('metrics.pendingRequests') }}</span>
+          </div>
+          <div v-if="metrics!.total_executions != null" class="metrics-cell">
+            <el-icon class="metrics-cell__icon" :size="13"><DataAnalysis /></el-icon>
+            <span class="metrics-cell__value">{{ metrics!.total_executions }}</span>
+            <span class="metrics-cell__label">{{ t('metrics.totalExecutions') }}</span>
+          </div>
+        </template>
+        <div v-else class="metrics-cell metrics-cell--empty">
           <el-icon class="metrics-cell__icon" :size="13"><Lightning /></el-icon>
-          <span class="metrics-cell__value">{{ cpuDisplay }}</span>
-          <span class="metrics-cell__label">CPU</span>
-        </div>
-        <div class="metrics-cell">
-          <el-icon class="metrics-cell__icon" :size="13"><Coin /></el-icon>
-          <span class="metrics-cell__value">{{ memDisplay }}</span>
-          <span class="metrics-cell__label">{{ t('metrics.memory') }}</span>
-        </div>
-        <div class="metrics-cell">
-          <el-icon class="metrics-cell__icon" :size="13"><Connection /></el-icon>
-          <span class="metrics-cell__value">{{ metrics!.num_threads }}</span>
-          <span class="metrics-cell__label">{{ t('metrics.threads') }}</span>
-        </div>
-        <div v-if="metrics!.pending_requests != null" class="metrics-cell">
-          <el-icon class="metrics-cell__icon" :size="13"><Message /></el-icon>
-          <span class="metrics-cell__value">{{ metrics!.pending_requests }}</span>
-          <span class="metrics-cell__label">{{ t('metrics.pendingRequests') }}</span>
-        </div>
-        <div v-if="metrics!.total_executions != null" class="metrics-cell">
-          <el-icon class="metrics-cell__icon" :size="13"><DataAnalysis /></el-icon>
-          <span class="metrics-cell__value">{{ metrics!.total_executions }}</span>
-          <span class="metrics-cell__label">{{ t('metrics.totalExecutions') }}</span>
+          <span class="metrics-cell__value">{{ emptyDisplay }}</span>
         </div>
       </div>
     </div>
@@ -64,7 +70,10 @@ const metrics = computed<PluginMetrics | null>(() => {
 })
 
 const isRunning = computed(() => props.pluginStatus === 'running')
-const shouldShow = computed(() => isRunning.value && !!metrics.value)
+const hasMetrics = computed(() => isRunning.value && !!metrics.value)
+const emptyDisplay = computed(() => {
+  return isRunning.value ? t('metrics.noMetrics') : t('status.stopped')
+})
 
 const cpuDisplay = computed(() => {
   if (!metrics.value) return '—'
@@ -204,6 +213,11 @@ watch(() => props.pluginId, (newId) => {
   background: color-mix(in srgb, var(--el-color-primary) 6%, var(--el-bg-color));
   border-color: color-mix(in srgb, var(--el-color-primary) 20%, var(--el-border-color));
   transform: translateY(-1px);
+}
+
+.metrics-cell--empty {
+  max-width: 100%;
+  color: var(--el-text-color-secondary);
 }
 
 .metrics-cell__icon {
