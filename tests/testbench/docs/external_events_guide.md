@@ -65,7 +65,7 @@
 ### 1.2 典型测试步骤
 
 1. **触发事件**: 面板填好字段, 点 **触发事件**.
-2. **看 wire**: 右侧 Prompt Preview 区的 **当前 wire** 标签页立刻更新, 末尾一条是 `role=user` 的 compact instruction。它应包含道具事件事实和一句回应要求；`reward_drop` / `easter_egg` 会体现在事件事实里，`text_context` 不直接进入 instruction 正文。如果只看到 `[主人摸了摸你的头]` 这种短 memory note, 是看错标签页了 — memory note 是对话气泡里显示的那条.
+2. **看 wire**: 右侧 Prompt Preview 区的 **当前 wire** 标签页立刻更新, 末尾一条是 `role=user` 的 compact instruction。它应包含道具事件事实；只有 `compact_reply_line` 非空时才会额外带显式回应要求。`reward_drop` / `easter_egg` 等结果会通过对应事件事实体现，`text_context` 不直接进入 instruction 正文。如果只看到 `[主人摸了摸你的头]` 这种短 memory note, 是看错标签页了 — memory note 是对话气泡里显示的那条, 不是 wire instruction.
 3. **看对话**: 左侧聊天区会多出一对 `user` (memory note) + `assistant` (LLM 回复).
 4. **看日志**: 诊断 → 日志, 搜 `avatar_interaction_simulated`. `detail.accepted=true` 是成功, `detail.reason` 是被拒时的原因代码.
 

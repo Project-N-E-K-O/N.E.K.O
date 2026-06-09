@@ -1230,8 +1230,7 @@ def _avatar_interaction_korean_subject_actor(name: str) -> str:
     """Return a Korean subject phrase for an arbitrary actor name.
 
     Hangul names can choose 이/가 exactly by final consonant. For latin names,
-    use a small readability heuristic; other scripts keep the previous safe
-    default of 이.
+    use a small readability heuristic; other scripts stay unchanged.
     """
     stripped = str(name or "").strip()
     if not stripped:

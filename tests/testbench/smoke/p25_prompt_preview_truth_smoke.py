@@ -329,12 +329,11 @@ def check_pp2_avatar_event(client, mock_ext) -> list[str]:
         tail_content = str(tail.get("content") or "")
 
         # The avatar instruction is the rendered prompt cue, not the short
-        # memory_note. In compact prompt mode it is intentionally one concise
-        # event fact plus the one-sentence reply instruction, without draft text
-        # or verbose field-list bullets.
-        # Reward is part of the objective event fact. text_context is not part
-        # of the compact runtime prompt, because leaking composer drafts into
-        # this cue makes avatar reactions templated and off-topic.
+        # memory_note. In compact mode, compact_reply_line may be empty; then
+        # the avatar instruction can be only the event fact, such as the reward
+        # objective, without an extra reply sentence or verbose field-list
+        # bullets. text_context is excluded from the compact runtime prompt so
+        # composer drafts do not leak into this cue.
         _check(
             "奖励" in tail_content,
             "PP2.reward_fact",
