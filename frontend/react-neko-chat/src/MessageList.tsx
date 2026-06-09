@@ -1,4 +1,4 @@
-import { useRef, useEffect, useMemo } from 'react';
+import { useRef, useEffect, useMemo, useState } from 'react';
 import MessageBubble from './MessageBubble';
 import { i18n } from './i18n';
 import { type ChatMessage, type MessageAction } from './message-schema';
@@ -33,6 +33,13 @@ export default function MessageList({
 }: MessageListProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const shouldScrollRef = useRef(true);
+  const scrollbarTimerRef = useRef<number | null>(null);
+  const [scrollbarState, setScrollbarState] = useState({
+    visible: false,
+    top: 0,
+    height: 0,
+    scrollable: false,
+  });
 
   const displayMessages = useMemo(
     () => messages.length > MAX_DISPLAY_MESSAGES
@@ -50,6 +57,49 @@ export default function MessageList({
     container.scrollTop = container.scrollHeight;
   }, [displayMessages]);
 
+  function clearScrollbarTimer() {
+    if (scrollbarTimerRef.current === null) return;
+    window.clearTimeout(scrollbarTimerRef.current);
+    scrollbarTimerRef.current = null;
+  }
+
+  function updateFloatingScrollbar(show: boolean) {
+    const container = containerRef.current;
+    if (!container) return;
+    const scrollableHeight = container.scrollHeight - container.clientHeight;
+    if (scrollableHeight <= 1 || container.clientHeight <= 0 || container.scrollHeight <= 0) {
+      clearScrollbarTimer();
+      setScrollbarState(prev => (
+        prev.scrollable || prev.visible
+          ? { visible: false, top: 0, height: 0, scrollable: false }
+          : prev
+      ));
+      return;
+    }
+    const height = Math.max(28, Math.round((container.clientHeight / container.scrollHeight) * container.clientHeight));
+    const top = Math.round((container.scrollTop / scrollableHeight) * (container.clientHeight - height));
+    setScrollbarState(prev => {
+      if (
+        prev.visible === show
+        && prev.scrollable
+        && prev.top === top
+        && prev.height === height
+      ) {
+        return prev;
+      }
+      return { visible: show, top, height, scrollable: true };
+    });
+  }
+
+  function revealFloatingScrollbar() {
+    updateFloatingScrollbar(true);
+    clearScrollbarTimer();
+    scrollbarTimerRef.current = window.setTimeout(() => {
+      scrollbarTimerRef.current = null;
+      updateFloatingScrollbar(false);
+    }, 760);
+  }
+
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -58,6 +108,7 @@ export default function MessageList({
       if (shouldScrollRef.current) {
         container.scrollTop = container.scrollHeight;
       }
+      updateFloatingScrollbar(false);
     });
 
     // 同时观察容器自身：galgame 模式开关 / 选项面板展开收起时
@@ -71,6 +122,14 @@ export default function MessageList({
     return () => observer.disconnect();
   }, [displayMessages.length]);
 
+  useEffect(() => {
+    updateFloatingScrollbar(false);
+  }, [displayMessages]);
+
+  useEffect(() => () => {
+    clearScrollbarTimer();
+  }, []);
+
   const handleScroll = () => {
     const container = containerRef.current;
     if (!container) return;
@@ -78,26 +137,52 @@ export default function MessageList({
     const isNearBottom =
       container.scrollHeight - container.scrollTop - container.clientHeight < 60;
     shouldScrollRef.current = isNearBottom;
+    revealFloatingScrollbar();
+  };
+
+  const scrollThumbStyle = {
+    height: `${scrollbarState.height}px`,
+    transform: `translateY(${scrollbarState.top}px)`,
   };
 
   if (displayMessages.length === 0) {
     return (
-      <div className="message-list" ref={containerRef} aria-label={ariaLabel}>
+      <div className="message-list-shell">
+        <div className="message-list" ref={containerRef} aria-label={ariaLabel}>
+        </div>
+        {scrollbarState.scrollable ? (
+          <div
+            className="message-list-scroll-thumb"
+            data-message-list-scrollbar-visible={scrollbarState.visible ? 'true' : undefined}
+            style={scrollThumbStyle}
+            aria-hidden="true"
+          />
+        ) : null}
       </div>
     );
   }
 
   return (
-    <div className="message-list" ref={containerRef} aria-label={ariaLabel} onScroll={handleScroll}>
-      {displayMessages.map((message, index) => (
-        <MessageBubble
-          key={message.id}
-          message={message}
-          isGroupedWithPrevious={shouldGroupWithPrevious(message, displayMessages[index - 1])}
-          failedStatusLabel={failedStatusLabel}
-          onAction={onAction}
+    <div className="message-list-shell">
+      <div className="message-list" ref={containerRef} aria-label={ariaLabel} onScroll={handleScroll}>
+        {displayMessages.map((message, index) => (
+          <MessageBubble
+            key={message.id}
+            message={message}
+            isGroupedWithPrevious={shouldGroupWithPrevious(message, displayMessages[index - 1])}
+            failedStatusLabel={failedStatusLabel}
+            onAction={onAction}
+          />
+        ))}
+      </div>
+      {scrollbarState.scrollable ? (
+        <div
+          className="message-list-scroll-thumb"
+          data-message-list-scrollbar-visible={scrollbarState.visible ? 'true' : undefined}
+          style={scrollThumbStyle}
+          aria-hidden="true"
         />
-      ))}
+      ) : null}
     </div>
   );
 }
