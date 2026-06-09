@@ -2115,7 +2115,7 @@ def _mini_game_invite_advance_response(
     )
 
 
-def _mini_game_invite_in_cooldown(lanlan_name: str) -> bool:
+def _mini_game_invite_in_cooldown(lanlan_name: str, game_type: str | None = None) -> bool:
     """是否处于冷却期。True = 本轮不该掷骰。
 
     覆盖：
@@ -2126,10 +2126,19 @@ def _mini_game_invite_in_cooldown(lanlan_name: str) -> bool:
 
     时间阈值按 last_response_choice 分：accept=2h、decline=5h。fallback 取 accept
     阈值（短），避免遗留 state 没该字段时把用户卡到长 cooldown。
+
+    game_type 非空时，已完成回应后的长冷却/短抑制只作用于同一个游戏：
+    拒绝足球邀请不应挡住篮球邀请。pending 仍按角色全局抑制，避免一个
+    ChoicePrompt 还挂着时又投第二个邀请。
     """
     state = _mini_game_invite_state.get(lanlan_name)
     if not state:
         return False
+    if game_type:
+        last_game_type = state.get('last_game_type')
+        pending = state.get('delivered_at') is not None and state.get('responded_at') is None
+        if last_game_type and last_game_type != game_type and not pending:
+            return False
     suppressed_until = state.get('suppressed_until')
     if suppressed_until is not None and time.time() < float(suppressed_until):
         return True
@@ -2177,15 +2186,22 @@ def _mini_game_invite_count_post_response_chat(lanlan_name: str) -> None:
     state['chats_since_response'] += 1
 
 
-def _pick_mini_game_type() -> str | None:
+def _pick_mini_game_type(lanlan_name: str | None = None) -> str | None:
     """从 MINI_GAME_INVITE_AVAILABLE_GAMES 选一个 game_type。
 
     必须是 MINI_GAME_INVITE_LINES_BY_GAME 里有文案的——如果配置错位（available
-    list 里有但 lines 里没），跳过那条。空 → None（caller 短路返回）。"""
+    list 里有但 lines 里没），跳过那条。空 → None（caller 短路返回）。
+    lanlan_name 非空时，跳过该角色当前仍在冷却的游戏；这样拒绝 soccer
+    后仍可继续收到 basketball 邀请。"""
     candidates = [
         g for g in MINI_GAME_INVITE_AVAILABLE_GAMES
         if g in MINI_GAME_INVITE_LINES_BY_GAME
     ]
+    if lanlan_name:
+        candidates = [
+            g for g in candidates
+            if not _mini_game_invite_in_cooldown(lanlan_name, g)
+        ]
     if not candidates:
         return None
     import random as _random
@@ -2311,9 +2327,6 @@ async def _maybe_deliver_mini_game_invite(
         # 优先级，统一不让 mini-game 邀请把 promised follow-up 抢走。
         if getattr(activity_snapshot, 'unfinished_thread', None) is not None:
             return None
-        if _mini_game_invite_in_cooldown(lanlan_name):
-            return None
-
         # Force-first：从未发过邀请 + 累计已成功投递 N-1 条主动搭话 → 本条强制变邀请。
         # proactive_chat_total 在 _record_proactive_chat 之后才 +1，所以"第 N 次"的
         # 当下值是 N-1。计数走持久化文件，跨重启保留——否则用户每次重启都再"第 N 次"
@@ -2331,12 +2344,7 @@ async def _maybe_deliver_mini_game_invite(
             and total_so_far >= max(0, MINI_GAME_INVITE_NEW_USER_FORCE_AT - 1)
         )
 
-        if not force_first:
-            import random as _random
-            if _random.random() >= MINI_GAME_INVITE_TRIGGER_PROBABILITY:
-                return None
-
-        game_type = _pick_mini_game_type()
+        game_type = _pick_mini_game_type(lanlan_name)
         if game_type is None:
             logger.warning(
                 "[%s] mini-game invite skipped: no game_type available "
@@ -2346,6 +2354,11 @@ async def _maybe_deliver_mini_game_invite(
                 list(MINI_GAME_INVITE_LINES_BY_GAME.keys()),
             )
             return None
+
+        if not force_first:
+            import random as _random
+            if _random.random() >= MINI_GAME_INVITE_TRIGGER_PROBABILITY:
+                return None
     template = _loc(MINI_GAME_INVITE_LINES_BY_GAME[game_type], invite_lang)
     safe_master = (master_name or '').strip()
     try:
@@ -7380,23 +7393,82 @@ def _match_mini_game_invite_keyword(text: str) -> str | None:
     return None
 
 
+_MINI_GAME_DIRECT_REQUEST_NEGATIONS = (
+    "不想", "不玩", "不要", "不打", "别开", "算了", "没空", "拒绝",
+    "don't", "do not", "not now", "no thanks", "nope", "pass",
+)
+_MINI_GAME_DIRECT_REQUEST_RULES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
+    (
+        "basketball",
+        ("投篮", "篮球", "shooting challenge", "basketball"),
+        ("玩", "打", "来一局", "来一把", "开一局", "开一把", "开始", "想玩", "要玩", "play", "start", "open"),
+    ),
+    (
+        "soccer",
+        ("足球", "soccer", "football"),
+        ("玩", "踢", "来一局", "来一把", "开一局", "开一把", "开始", "想玩", "要玩", "play", "start", "open"),
+    ),
+)
+
+
+def _build_direct_mini_game_open_result(lanlan_name: str, game_type: str) -> dict[str, Any] | None:
+    url_template = MINI_GAME_LAUNCH_URL_BY_GAME.get(game_type)
+    if not url_template:
+        return None
+    invite_session_id = str(uuid4())
+    from urllib.parse import urlencode as _urlencode
+    query = _urlencode({
+        "lanlan_name": lanlan_name,
+        "session_id": invite_session_id,
+    })
+    return {
+        "action": "open_game",
+        "game_type": game_type,
+        "game_url": f"{url_template}?{query}",
+        "session_id": invite_session_id,
+        "source": "direct_request",
+    }
+
+
+def _match_direct_mini_game_request(text: str) -> str | None:
+    """用户主动说"玩一局投篮/打篮球"时直接启动对应小游戏。
+
+    这条路径不依赖 pending invite；它是用户主动请求，所以不进入 invite cooldown。
+    匹配要求同时出现游戏词和行动词，避免"篮球新闻"这类闲聊误开页面。"""
+    norm = str(text or "").lower().strip()
+    if not norm:
+        return None
+    if any(token in norm for token in _MINI_GAME_DIRECT_REQUEST_NEGATIONS):
+        return None
+    for game_type, game_terms, action_terms in _MINI_GAME_DIRECT_REQUEST_RULES:
+        if any(term in norm for term in game_terms) and any(term in norm for term in action_terms):
+            return game_type
+    return None
+
+
 def _maybe_apply_mini_game_invite_keyword(
     lanlan_name: str, text: str,
 ) -> dict[str, Any] | None:
-    """文本入口（core.py user message handler）调一次。pending invite 时尝试
-    关键词匹配；命中即触发对应 state 转换，返回 dict 给 caller 决定是否要做
-    side effect（如 push WS message 让前端 window.open 游戏）。
+    """文本入口（core.py user message handler）调一次。
+
+    1. pending invite 时尝试 accept/decline/later 关键词，命中即触发 state 转换；
+    2. 没有 pending invite 时，如果用户直接请求"玩一局投篮/打篮球"，返回
+       open_game，让 caller 推 WS 打开对应小游戏。
 
     **不吃掉用户消息**——caller 应继续走普通 chat 流水线，AI 仍然会回应这条
     话。仅做 state side effect。
 
-    - 没 pending invite / 文本空 / 没命中 → None
+    - 文本空 / 没命中 → None
     - 命中 accept → ``{action: 'open_game', game_type, game_url}``
     - 命中 decline / later → ``{action: 'cooldown' | 'suppress'}``
+    - 命中直接请求 → ``{action: 'open_game', game_type, game_url}``
     """
     state = _mini_game_invite_state.get(lanlan_name)
     if not state or state.get('delivered_at') is None or state.get('responded_at') is not None:
-        return None  # 没 pending
+        game_type = _match_direct_mini_game_request(text)
+        if game_type is None:
+            return None
+        return _build_direct_mini_game_open_result(lanlan_name, game_type)
     choice = _match_mini_game_invite_keyword(text)
     if choice is None:
         return None
