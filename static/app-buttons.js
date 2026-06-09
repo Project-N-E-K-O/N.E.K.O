@@ -1980,8 +1980,16 @@
             S.voiceChatActive = false;
             S.isSwitchingMode = true;
 
-            var isGoodbyeMode = window.live2dManager && window.live2dManager._goodbyeClicked;
-            console.log(window.t('console.checkingGoodbyeMode'), isGoodbyeMode, window.t('console.goodbyeClicked'), window.live2dManager ? window.live2dManager._goodbyeClicked : 'undefined');
+            var isGoodbyeMode = (typeof window.isNekoGoodbyeModeActive === 'function')
+                ? window.isNekoGoodbyeModeActive()
+                : !!((window.live2dManager && window.live2dManager._goodbyeClicked)
+                    || (window.vrmManager && window.vrmManager._goodbyeClicked)
+                    || (window.mmdManager && window.mmdManager._goodbyeClicked));
+            console.log(window.t('console.checkingGoodbyeMode'), isGoodbyeMode, window.t('console.goodbyeClicked'), {
+                live2d: window.live2dManager ? window.live2dManager._goodbyeClicked : 'undefined',
+                vrm: window.vrmManager ? window.vrmManager._goodbyeClicked : 'undefined',
+                mmd: window.mmdManager ? window.mmdManager._goodbyeClicked : 'undefined'
+            });
 
             var live2dContainer = document.getElementById('live2d-container');
             console.log(window.t('console.hideLive2dBeforeStatus'), {
@@ -2002,7 +2010,11 @@
 
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
                 S._suppressCharacterLeft = true;
-                S.socket.send(JSON.stringify({ action: 'end_session' }));
+                S.socket.send(JSON.stringify({
+                    action: 'end_session',
+                    goodbye_active: !!isGoodbyeMode,
+                    reason: isGoodbyeMode ? 'goodbye' : 'manual'
+                }));
             }
             window.stopRecording();
             S.voiceStartPending = false;
@@ -2102,6 +2114,14 @@
                 }
                 if (window.mmdManager) {
                     window.mmdManager._goodbyeClicked = false;
+                }
+
+                if (S.socket && S.socket.readyState === WebSocket.OPEN) {
+                    S.socket.send(JSON.stringify({
+                        action: 'goodbye_state',
+                        active: false,
+                        reason: 'return-session'
+                    }));
                 }
 
                 micButton.classList.remove('recording');

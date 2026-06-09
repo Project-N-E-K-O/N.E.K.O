@@ -407,7 +407,11 @@ async def get_conversation_settings():
     控制组/实验组在客户端跟 server 端出现不一致。
     """
     try:
-        settings = await aload_global_conversation_settings()
+        # 先解析 telemetry branch、再 load settings：get_telemetry_branch 可能在 slow
+        # path 触发退役实验（proactive_interval_20s）的一次性偏好回滚（20s→15s）。若按
+        # 旧顺序先 load，会拿到回滚前的 20s 返回前端；而存量用户没有首启 pending marker、
+        # 会直接应用并经 periodic sync 把 20s POST 回来，撤销本次迁移（见 token_tracker
+        # ._rollback_retired_proactive_interval）。
         try:
             from utils.token_tracker import get_telemetry_branch
             telemetry_branch = await asyncio.to_thread(get_telemetry_branch)
@@ -418,6 +422,7 @@ async def get_conversation_settings():
             # 下次 fetch 成功再决议
             logger.exception("解析 telemetry branch 失败，返回 null 让前端保留 pending marker")
             telemetry_branch = None
+        settings = await aload_global_conversation_settings()
         return {"success": True, "settings": settings, "telemetryBranch": telemetry_branch}
     except Exception as e:
         logger.exception(f"获取对话设置失败: {e}")

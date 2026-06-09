@@ -21,6 +21,7 @@ def test_auto_goodbye_reuses_existing_goodbye_base_chain():
     buttons_source = _read(APP_BUTTONS_PATH)
 
     assert "window.dispatchEvent(new CustomEvent('live2d-goodbye-click'" in auto_source
+    assert "window.__nekoGoodbyeSilentState" in auto_source
     assert "action: 'start_session'" not in auto_source
     assert "resetSessionButton.click();" in ui_source
     assert "function playModelGoodbyeExit(container, rect)" in ui_source
@@ -35,7 +36,10 @@ def test_auto_goodbye_reuses_existing_goodbye_base_chain():
         "resetSessionButton.addEventListener('click', function () {",
         "// ----------------------------------------------------------------\n        // Return session button click",
     )
-    assert "S.socket.send(JSON.stringify({ action: 'end_session' }));" in reset_block
+    assert "window.isNekoGoodbyeModeActive()" in reset_block
+    assert "action: 'end_session'" in reset_block
+    assert "goodbye_active: !!isGoodbyeMode" in reset_block
+    assert "reason: isGoodbyeMode ? 'goodbye' : 'manual'" in reset_block
     assert "window.cancelPendingSessionStart('Voice start cancelled by goodbye');" in reset_block
     assert "S.voiceStartPending = false;" in reset_block
     assert "window.isMicStarting = false;" in reset_block
@@ -68,3 +72,5 @@ def test_return_ball_keeps_handle_return_click_semantics():
         "function markFirstUserInputForAchievement() {",
     )
     assert "action: 'start_session'" in return_session_block
+    assert "action: 'goodbye_state'" in return_session_block
+    assert "active: false" in return_session_block

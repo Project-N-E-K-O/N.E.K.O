@@ -98,7 +98,7 @@
     }
 
     function supportsLocalModelRuntime() {
-        return !/^\/chat(?:\/|$)/.test(window.location.pathname || '');
+        return !/^\/chat(?:_full)?(?:\/|$)/.test(window.location.pathname || '');
     }
 
     function emitAssistantSpeechCancel(source) {

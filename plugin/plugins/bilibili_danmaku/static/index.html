@@ -2352,6 +2352,7 @@
     const btn = document.querySelector('[onclick="testBgLLM()"]');
     const dot = document.getElementById('bgLlmDot');
     const statusEl = document.getElementById('bgLlmStatus');
+    const statsEl = document.getElementById('bgLlmStats');
     const originalBtnHTML = btn.innerHTML;
 
     const url = document.getElementById('bgLlmApiUrl').value.trim();
@@ -2369,42 +2370,27 @@
     dot.className = 'status-dot connecting';
     statusEl.textContent = I18n.t('bgllm.testing', '测试中...');
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 15000);
-
     try {
-      const resp = await fetch('/plugin/bilibili_danmaku/ui-api/test-bg-llm', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, api_key: apiKey, model }),
-        signal: controller.signal,
-      });
-
-      const data = await resp.json();
+      const data = await callPlugin("test_bg_llm", { url, api_key: apiKey, model });
 
       if (data.success) {
-        dot.className = 'status-dot connected';
-        statusEl.textContent = '\u2705 ' + I18n.t('bgllm.test_ok', '背景LLM连接正常');
-        toast(I18n.t('bgllm.test_ok', '背景LLM连接正常'), 'success');
+        dot.className = "status-dot connected";
+        statusEl.textContent = "✅ " + I18n.t("bgllm.test_ok", "背景LLM连接正常");
+        statsEl.textContent = "";
+        toast(I18n.t("bgllm.test_ok", "背景LLM连接正常"), "success");
       } else {
-        dot.className = 'status-dot error';
-        statusEl.textContent = data.error || I18n.t('bgllm.test_failed', '测试失败');
-        toast(I18n.t('bgllm.test_failed', '测试失败：') + (data.error || ''), 'error');
+        dot.className = "status-dot error";
+        statusEl.textContent = data.error || I18n.t("bgllm.test_failed", "测试失败");
+        statsEl.textContent = I18n.t("bgllm.test_show_detail", "详情：") + JSON.stringify(data);
+        toast(I18n.t("bgllm.test_failed", "测试失败：") + (data.error || ""), "error");
       }
     } catch (e) {
-      if (e.name === 'AbortError') {
-        dot.className = 'status-dot error';
-        const msg = I18n.t('bgllm.test_failed', '测试失败：') + I18n.t('error.timeout', '调用超时');
-        statusEl.textContent = msg;
-        toast(msg, 'error');
-      } else {
-        dot.className = 'status-dot error';
-        const msg = I18n.t('bgllm.test_failed', '测试失败：') + e.message;
-        statusEl.textContent = msg;
-        toast(msg, 'error');
-      }
+      dot.className = "status-dot error";
+      const msg = I18n.t("bgllm.test_failed", "测试失败：") + (e.message || e);
+      statusEl.textContent = msg;
+      statsEl.textContent = "";
+      toast(msg, "error");
     } finally {
-      clearTimeout(timer);
       btn.disabled = false;
       btn.innerHTML = originalBtnHTML;
     }
