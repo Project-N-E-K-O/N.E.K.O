@@ -37,7 +37,7 @@ export function computeCompactHistoryExitDelay(index: number): string {
   return `${Math.min(index * COMPACT_HISTORY_EXIT_DELAY_STEP_MS, COMPACT_HISTORY_EXIT_DELAY_MAX_MS)}ms`;
 }
 
-export type CompactExportFormat = 'image';
+export type CompactExportFormat = 'image' | 'markdown';
 export type CompactExportImageStyle = 'neko' | 'original' | 'poster' | 'lyrics';
 export type CompactExportImageFormat = 'png' | 'jpeg' | 'webp';
 
@@ -596,6 +596,7 @@ export default function CompactExportHistoryPanel({
 
   const exportFormatOptions: { id: CompactExportFormat; label: string }[] = [
     { id: 'image', label: i18n('chat.exportFormatImage', 'Image') },
+    { id: 'markdown', label: i18n('chat.exportFormatMarkdown', 'Markdown') },
   ];
   const imageStyleOptions: { id: CompactExportImageStyle; label: string }[] = [
     { id: 'neko', label: i18n('chat.exportImageStyleNeko', 'N.E.K.O') },
@@ -700,7 +701,7 @@ export default function CompactExportHistoryPanel({
           className="compact-export-preview-frame"
           title={i18n('chat.exportPreviewTitle', 'Export Preview')}
           srcDoc={previewState.result.previewDocument}
-          sandbox=""
+          sandbox="allow-scripts"
         />
       </div>
     );
