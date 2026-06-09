@@ -1,7 +1,9 @@
 import asyncio
+import sqlite3
 from unittest.mock import AsyncMock
 
 import pytest
+from starlette.responses import JSONResponse
 
 from .game_route_test_helpers import (
     mark_game_started as _mark_game_started,
@@ -42,6 +44,712 @@ def test_parse_control_instructions_extracts_json_line():
         "line": "这球我拿下了喵",
         "control": {"mood": "happy", "difficulty": "lv2"},
     }
+
+
+@pytest.mark.unit
+def test_basketball_prompt_and_control_contract():
+    prompt = game_router._build_game_prompt(
+        "basketball",
+        "Lan",
+        "傲娇但会认真看比赛。",
+        language="zh",
+    )
+
+    assert "投篮挑战小游戏" in prompt
+    assert "玩家在左侧" in prompt
+    assert "swish、bank、rim_in、rim_out、air_ball" in prompt
+    assert "expression" in prompt
+    assert "intensity" in prompt
+    assert "final_streak" in prompt
+    assert ">=15" in prompt
+
+    parsed = game_router._parse_control_instructions(
+        '破纪录了喵！\n{"mood":"surprised","expression":"hype","intensity":"high","difficulty":"max"}',
+        game_type="basketball",
+    )
+    assert parsed == {
+        "line": "破纪录了喵！",
+        "control": {"mood": "surprised", "expression": "hype", "intensity": "high", "difficulty": "max"},
+    }
+
+
+@pytest.mark.unit
+def test_basketball_shooter_prompt_contract():
+    prompt = game_router._build_game_prompt(
+        "basketball",
+        "Lan",
+        "傲娇但会认真看比赛。",
+        language="zh",
+        mode="shooter",
+    )
+
+    assert "被玩家操控投篮" in prompt
+    assert "投篮手是 Yui" in prompt
+    assert "评价的是玩家操控 Yui 的技术" in prompt
+    assert "shooterEvaluation" in prompt
+    assert "shooterRating" in prompt
+
+
+@pytest.mark.unit
+def test_basketball_duel_prompt_contract():
+    prompt = game_router._build_game_prompt(
+        "basketball",
+        "Lan",
+        "傲娇但会认真看比赛。",
+        language="zh",
+        mode="duel",
+    )
+
+    assert "篮球对战回合" in prompt
+    assert "label / duel 字段" in prompt
+    assert "player_duel_shot" in prompt
+    assert "duel.player_score" in prompt
+
+
+@pytest.mark.unit
+def test_basketball_control_drops_invalid_values():
+    parsed = game_router._parse_control_instructions(
+        '嗯？\n{"mood":"evil","expression":"explode","intensity":"extreme"}',
+        game_type="basketball",
+    )
+
+    assert parsed == {"line": "嗯？", "control": {}}
+
+
+@pytest.mark.unit
+def test_basketball_event_sanitizer_keeps_current_state_and_drops_invalid_fields():
+    event, error = game_router._sanitize_basketball_event({
+        "kind": "shot_result",
+        "result": "scored",
+        "shot_type": "swish",
+        "streak": "7",
+        "distance": "380",
+        "currentState": {
+            "game": "basketball",
+            "streak": "7",
+            "distance": "380",
+            "record_distance": "520",
+            "final_streak": "7",
+            "final_distance": "380",
+            "last_shot_type": "swish",
+            "unsafe": "<tag>",
+        },
+        "was_perfect": True,
+    })
+
+    assert error == ""
+    assert event["streak"] == 7
+    assert event["distance"] == 380
+    assert event["was_perfect"] is True
+    assert event["currentState"] == {
+        "game": "basketball",
+        "last_shot_type": "swish",
+        "streak": 7,
+        "distance": 380,
+        "record_distance": 520,
+        "final_streak": 7,
+        "final_distance": 380,
+    }
+
+    invalid, invalid_error = game_router._sanitize_basketball_event({
+        "kind": "bad_kind",
+        "shot_type": "explode",
+    })
+    assert invalid is None
+    assert invalid_error == "invalid kind"
+
+
+@pytest.mark.unit
+def test_basketball_event_sanitizer_keeps_duel_state_and_shot_missed():
+    event, error = game_router._sanitize_basketball_event({
+        "kind": "shot_missed",
+        "mode": "duel",
+        "duel": {
+            "playerScore": "2",
+            "neko_score": "3",
+            "round": "4",
+            "activeShooter": "neko",
+            "maxRounds": "6",
+        },
+        "currentState": {
+            "game": "basketball",
+            "mode": "duel",
+            "duel": {
+                "player_score": "2",
+                "nekoScore": "3",
+                "round": "4",
+                "active_shooter": "neko",
+                "max_rounds": "6",
+            },
+        },
+    })
+
+    assert error == ""
+    assert event["kind"] == "shot_missed"
+    assert event["mode"] == "duel"
+    assert event["duel"] == {
+        "player_score": 2,
+        "neko_score": 3,
+        "round": 4,
+        "max_rounds": 6,
+        "active_shooter": "neko",
+    }
+    assert event["currentState"]["duel"] == {
+        "player_score": 2,
+        "neko_score": 3,
+        "round": 4,
+        "max_rounds": 6,
+        "active_shooter": "neko",
+    }
+
+
+@pytest.mark.unit
+def test_basketball_shooter_helper_boundaries():
+    assert game_router._compute_distance_tier(80) == "close"
+    assert game_router._compute_distance_tier(150) == "mid"
+    assert game_router._compute_distance_tier(300) == "far"
+    assert game_router._compute_distance_tier(451) == "deep"
+
+    assert game_router._compute_streak_tier(0) == "cold"
+    assert game_router._compute_streak_tier(1) == "cold"
+    assert game_router._compute_streak_tier(2) == "neutral"
+    assert game_router._compute_streak_tier(3) == "warming"
+    assert game_router._compute_streak_tier(4) == "warming"
+    assert game_router._compute_streak_tier(5) == "on_fire"
+
+    assert game_router._compute_shooter_rating({"final_streak": 15}) == "S"
+    assert game_router._compute_shooter_rating({"final_streak": 10}) == "A"
+    assert game_router._compute_shooter_rating({"final_streak": 5}) == "B"
+    assert game_router._compute_shooter_rating({"final_streak": 2}) == "C"
+    assert game_router._compute_shooter_rating({"final_streak": 1}) == "D"
+    assert game_router._compute_shooter_rating({"final_streak": 0}) == "D"
+
+
+@pytest.mark.unit
+def test_basketball_shooter_evaluation_and_sanitizer_fields():
+    event, error = game_router._sanitize_basketball_event({
+        "kind": "shot_result",
+        "mode": "shooter",
+        "result": "scored",
+        "shot_type": "swish",
+        "streak": 3,
+        "distance": 180,
+        "shot_angle": 50,
+        "shot_power": 34,
+        "aim_duration_seconds": 61,
+        "currentState": {"mode": "shooter", "streak": 3, "distance": 180},
+    })
+
+    assert error == ""
+    assert event["mode"] == "shooter"
+    assert event["aim_duration_seconds"] == 60.0
+    assert event["currentState"]["mode"] == "shooter"
+
+    evaluation = game_router._compute_shooter_evaluation(event)
+    assert evaluation["best_angle"] == 48.0
+    assert evaluation["angle_deviation"] == 2.0
+    assert evaluation["power_deviation"] == 0.0
+    assert evaluation["aim_duration_seconds"] == 60.0
+    assert evaluation["distance_tier"] == "mid"
+    assert evaluation["streak_tier"] == "warming"
+
+    weak = game_router._compute_shooter_evaluation({
+        "distance": 180,
+        "shot_angle": 40,
+        "shot_power": 25,
+        "aim_duration": -2,
+    })
+    assert weak["angle_deviation"] == 8.0
+    assert weak["power_deviation"] == 6.0
+    assert weak["aim_duration_seconds"] == 0.0
+
+    invalid_mode, invalid_error = game_router._sanitize_basketball_event({
+        "kind": "shot_result",
+        "mode": "invalid",
+    })
+    assert invalid_error == ""
+    assert invalid_mode["mode"] == "spectator"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_basketball_quick_lines_returns_fallback_on_llm_failure(monkeypatch):
+    monkeypatch.setattr(game_router, "_get_current_character_info", lambda: {
+        "lanlan_name": "Lan",
+        "lanlan_prompt": "傲娇。",
+        "user_language": "zh",
+        "model": "fake",
+        "base_url": "http://fake",
+        "api_key": "fake",
+    })
+
+    def fail_llm(*_args, **_kwargs):
+        raise RuntimeError("llm unavailable")
+
+    import utils.llm_client as llm_client
+    monkeypatch.setattr(llm_client, "create_chat_llm", fail_llm)
+
+    result = await game_router.game_quick_lines(
+        "basketball",
+        _FakeRequest({"lanlan_name": "Lan", "session_id": "bb-1"}),
+    )
+
+    assert result["ok"] is True
+    assert result["fallback"] is True
+    assert "swish" in result["lines"]
+    assert "shot_missed" in result["lines"]
+    assert "game_over" in result["lines"]
+    assert "close_to_record" in result["lines"]
+    assert "streak_15" in result["lines"]
+    assert "streak_20" in result["lines"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_basketball_quick_lines_fallback_uses_request_language(monkeypatch):
+    monkeypatch.setattr(game_router, "_get_current_character_info", lambda: {
+        "lanlan_name": "Lan",
+        "lanlan_prompt": "Tsundere but focused.",
+        "user_language": "zh",
+        "model": "fake",
+        "base_url": "http://fake",
+        "api_key": "fake",
+    })
+
+    def fail_llm(*_args, **_kwargs):
+        raise RuntimeError("llm unavailable")
+
+    import utils.llm_client as llm_client
+    monkeypatch.setattr(llm_client, "create_chat_llm", fail_llm)
+
+    result = await game_router.game_quick_lines(
+        "basketball",
+        _FakeRequest({"lanlan_name": "Lan", "session_id": "bb-1", "i18n_language": "en-US"}),
+    )
+
+    assert result["ok"] is True
+    assert result["fallback"] is True
+    assert result["lines"]["swish"][0] == "Clean swish!"
+    assert result["lines"]["shot_missed"][0] == "Still in it"
+
+
+@pytest.mark.unit
+def test_basketball_template_contract():
+    from pathlib import Path
+
+    html = Path(__file__).resolve().parents[2].joinpath("templates/basketball_demo.html").read_text(encoding="utf-8")
+
+    assert "/api/game/basketball/route/start" in html
+    assert "/api/game/basketball/chat" in html
+    assert "/api/game/basketball/quick-lines" in html
+    assert "/api/game/basketball/speak" in html
+    assert "/api/game/basketball/mirror-assistant" in html
+    assert "/api/game/basketball/route/drain" in html
+    assert "/api/game/basketball/route/heartbeat" in html
+    assert "/api/game/basketball/route/end" in html
+    assert "/api/game/basketball/character" in html
+    assert "/api/game/basketball/leaderboard" in html
+    assert "initNekoAvatar" in html
+    assert "activeAvatarType" in html
+    assert "model_type" in html
+    assert "live3d_sub_type" in html
+    assert "initVRMAvatar(charData.vrm_path" in html
+    assert "initMMDAvatar(charData.mmd_path" in html
+    assert "initPIXI('neko-l2d-canvas', 'neko-l2d-container'" in html
+    assert "loadModel(modelPath)" in html
+    assert "var modelPath = live2dPath || '/static/yui-origin/yui-origin.model3.json'" in html
+    assert "当前 Live2D 路径缺失" in html
+    assert "角色接口不可用或未返回 model_type" in html
+    assert "modelType === 'live3d' && subType === 'vrm'" in html
+    assert "modelType === 'live3d' && subType === 'mmd'" in html
+    assert "MMD audience embed is waiting for a safe independent manager API" in html
+    assert "not loading Live2D fallback for MMD" in html
+    assert "var modelPath = '/static/mao_pro/mao_pro.model3.json'" not in html
+    assert "focusController" in html
+    assert "RIM_FRONT_IN_PROB = 0.20" in html
+    assert "RIM_BACK_IN_PROB = 0.08" in html
+    assert "rimHandled" in html
+    assert "banked" in html
+    assert "score-label" in html
+    assert "leaderboard-panel" in html
+    assert "leaderboard-button" in html
+    assert "leaderboard-tabs" in html
+    assert "leaderboard-body" in html
+    assert "pxToMeters" in html
+    assert "calcShotScore" in html
+    assert 'id="aiming-canvas"' in html
+    assert "var aimingCanvas = document.getElementById('aiming-canvas')" in html
+    assert "function drawCourt()" in html
+    assert "function drawHoop()" in html
+    assert "function drawAiming()" in html
+    assert "drawDistanceMarkers" in html
+    assert "drawFreeThrowLine" not in html
+    assert "drawThreePointLine" not in html
+    assert "bb_last_final_streak" in html
+    assert "navigator.sendBeacon" in html
+    assert ".textContent" in html
+    assert ".innerHTML" not in html
+    assert "ctx.lineTo(px + Math.cos(radians) * 54, py - Math.sin(radians) * 54);" not in html
+    assert "key === 'g'" in html
+    assert "key === 's'" in html
+    assert "key === 'd'" in html
+    assert "return hoopCenterX - game.distance" in html
+    assert "vx: v * Math.cos(radians)" in html
+    assert "currentMode" in html
+    assert "function isPracticeMode()" in html
+    assert "currentMode === 'spectator'" in html
+    assert "不限次数" in html
+    assert "自由练习：不限投篮次数，不记录排行榜分数" in html
+    assert "自由练习：不记录排行榜分数" in html
+    assert "if (!isPracticeMode() && !isTimeAttackMode() && !isHorseMode()) game.attemptsRemaining" in html
+    assert "if (!isPracticeMode()) game.totalScore += shotScore" in html
+    assert "var newRecord = !isPracticeMode() && previousDistance > game.recordDistance" in html
+    assert "if (playerSenseiLoading) return" in html
+    assert "playerSenseiLoading = true" in html
+    assert "game.power = 0;" in html
+    assert 'id="mode-switcher"' in html
+    assert 'data-mode="spectator"' in html
+    assert 'data-mode="shooter"' in html
+    assert 'data-mode="duel"' in html
+    assert "自由练习" in html
+    assert "投篮挑战" in html
+    assert "跟Yui对战" in html
+    assert "function updateModeSwitcher()" in html
+    assert "function switchBasketballMode(nextMode)" in html
+    assert "url.searchParams.set('mode', mode)" in html
+    assert "queueNekoDuelTurnVoice" in html
+    assert "voice_deadline_ms" in html
+    assert "--neko-expression-y" in html
+    assert "yui-neko-tease" in html
+    assert "updateYuiPosition" in html
+    assert "shouldCallLLMShooter" in html
+    assert "shouldCallLLMDuel" in html
+    assert "YUI_PASSIVE_LINES_SHOOTER" in html
+    assert "YUI_PASSIVE_LINES_DUEL" in html
+    assert "mode: currentMode" in html
+    assert "currentMode = requestedMode === 'shooter' ? 'shooter' : 'spectator'" in html
+    assert "if (requestedMode === 'duel') currentMode = 'duel'" in html
+    assert "await initLive2DAvatar('/static/yui-origin/yui-origin.model3.json')" in html
+    assert "aim_duration_seconds" in html
+    assert "操控评级" in html
+    assert "function getRequestLanguage()" in html
+    assert "i18n_language: getRequestLanguage()" in html
+    assert "function applyCharacterIdentity(charData)" in html
+    assert "lanlanName = resolvedName" in html
+    assert "initNekoAvatar().finally(function () { startRoute(); })" in html
+    assert "voiceArbiter" in html
+    assert "mirror_text: false" in html
+    assert "post('/mirror-assistant'" in html
+    assert "post('/speak'" in html
+    assert "if (pending && pending.priority <= entry.priority) return" in html
+    assert "if (voiceArbiter.pending.priority <= entry.priority) return" in html
+    assert "label: shooter === 'neko' ? 'neko_duel_shot' : 'player_duel_shot'" in html
+
+
+@pytest.mark.unit
+def test_basketball_leaderboard_query_contract():
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[2].joinpath("main_routers/game_router.py").read_text(encoding="utf-8")
+
+    assert "BEGIN IMMEDIATE" in source
+    assert "LIMIT ? OFFSET ?" in source
+    assert "WHERE lanlan_name = ?" in source
+    assert "WHERE session_id = ?" in source
+    assert "_basketball_score_order_clause" not in source
+
+
+@pytest.mark.unit
+def test_strip_ssml_like_tags_only_removes_known_ssml_tags():
+    line = game_router._strip_ssml_like_tags(
+        'a < b > c &#160; <break time="200ms"/>'
+        ' <prosody rate="slow">慢一点</prosody> <not-ssml>保留</not-ssml>'
+    )
+
+    assert "a < b > c" in line
+    assert "&#160;" in line
+    assert "慢一点" in line
+    assert "<not-ssml>保留</not-ssml>" in line
+    assert "<break" not in line
+    assert "<prosody" not in line
+    assert "</prosody>" not in line
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_basketball_leaderboard_post_and_get_sorting(tmp_path, monkeypatch):
+    monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", tmp_path / "basketball_scores.db")
+
+    first = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+        "session_id": "s1",
+        "lanlan_name": "Lan A",
+        "score": 15,
+        "streak": 4,
+        "max_distance_px": 200,
+        "swish_count": 1,
+        "bank_count": 0,
+        "rim_in_count": 0,
+        "mode": "spectator",
+    }))
+    second = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+        "session_id": "s2",
+        "lanlan_name": "Lan B",
+        "score": 20,
+        "streak": 3,
+        "max_distance_px": 300,
+        "swish_count": 0,
+        "bank_count": 1,
+        "rim_in_count": 0,
+        "mode": "shooter",
+    }))
+    third = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+        "session_id": "s3",
+        "lanlan_name": "Lan A",
+        "score": 20,
+        "streak": 5,
+        "max_distance_px": 250,
+        "swish_count": 2,
+        "bank_count": 0,
+        "rim_in_count": 1,
+        "mode": "spectator",
+    }))
+
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert third["ok"] is True
+    assert third["rank"] == 1
+    assert third["is_personal_best"] is True
+
+    leaderboard = await game_router.game_basketball_leaderboard(
+        "basketball",
+        session_id="s3",
+        lanlan_name="Lan A",
+    )
+
+    assert leaderboard["total_players"] == 2
+    assert leaderboard["your_best"] == {"rank": 1, "score": 20}
+    assert leaderboard["top"][0]["name"] == "Lan A"
+    assert leaderboard["top"][0]["score"] == 20
+    assert leaderboard["top"][0]["streak"] == 5
+    assert leaderboard["top"][0]["max_distance_m"] == "4.2"
+    assert leaderboard["top"][1]["name"] == "Lan B"
+    assert leaderboard["top"][1]["score"] == 20
+    assert leaderboard["top"][1]["streak"] == 3
+    assert leaderboard["top"][1]["max_distance_m"] == "5.0"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_basketball_leaderboard_get_paginates_results(tmp_path, monkeypatch):
+    monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", tmp_path / "basketball_scores.db")
+
+    for index in range(12):
+        await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+            "session_id": f"s{index}",
+            "lanlan_name": f"Lan {index}",
+            "score": 120 - index,
+            "streak": 1,
+            "max_distance_px": 200,
+            "swish_count": 0,
+            "bank_count": 0,
+            "rim_in_count": 0,
+            "mode": "spectator",
+        }))
+
+    page = await game_router.game_basketball_leaderboard(
+        "basketball",
+        limit=5,
+        offset=5,
+    )
+
+    assert page["limit"] == 5
+    assert page["offset"] == 5
+    assert page["total_scores"] == 12
+    assert page["has_more"] is True
+    assert [row["score"] for row in page["top"]] == [115, 114, 113, 112, 111]
+    assert [row["rank"] for row in page["top"]] == [6, 7, 8, 9, 10]
+
+    last_page = await game_router.game_basketball_leaderboard(
+        "basketball",
+        limit=5,
+        offset=10,
+    )
+
+    assert last_page["has_more"] is False
+    assert [row["score"] for row in last_page["top"]] == [110, 109]
+    assert [row["rank"] for row in last_page["top"]] == [11, 12]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_basketball_leaderboard_sanitizes_inputs_and_normalizes_mode(tmp_path, monkeypatch):
+    monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", tmp_path / "basketball_scores.db")
+
+    result = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+        "session_id": "  session-9  ",
+        "lanlan_name": "  Lan C  ",
+        "score": "-7",
+        "streak": "4.9",
+        "max_distance_px": "nan",
+        "swish_count": "-2",
+        "bank_count": "2.8",
+        "rim_in_count": "3.2",
+        "mode": "arcade",
+    }))
+
+    assert result["ok"] is True
+    assert result["rank"] == 1
+    assert result["total_players"] == 1
+    assert result["is_personal_best"] is True
+
+    leaderboard = await game_router.game_basketball_leaderboard(
+        "basketball",
+        session_id="session-9",
+        lanlan_name="Lan C",
+    )
+
+    assert leaderboard["top"][0]["name"] == "Lan C"
+    assert leaderboard["top"][0]["score"] == 0
+    assert leaderboard["top"][0]["streak"] == 4
+    assert leaderboard["top"][0]["mode"] == "spectator"
+    assert leaderboard["your_best"] == {"rank": 1, "score": 0}
+
+
+@pytest.mark.unit
+def test_basketball_scores_default_path_uses_runtime_state_dir(tmp_path, monkeypatch):
+    fake_config = type("FakeConfig", (), {"app_docs_dir": tmp_path / "runtime"})()
+    monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", None)
+    monkeypatch.setattr(game_router, "get_config_manager", lambda: fake_config)
+
+    path = game_router._get_basketball_scores_db_path()
+
+    assert path == tmp_path / "runtime" / "state" / "game_scores" / "basketball_scores.db"
+    assert "main_routers" not in str(path)
+
+
+@pytest.mark.unit
+def test_basketball_scores_legacy_db_migrates_to_runtime_path(tmp_path, monkeypatch):
+    legacy_path = tmp_path / "legacy" / "basketball_scores.db"
+    runtime_path = tmp_path / "runtime" / "state" / "game_scores" / "basketball_scores.db"
+    legacy_path.parent.mkdir(parents=True)
+    with sqlite3.connect(str(legacy_path)) as conn:
+        conn.execute("CREATE TABLE marker (value TEXT)")
+        conn.execute("INSERT INTO marker (value) VALUES ('legacy-score')")
+
+    fake_config = type("FakeConfig", (), {"app_docs_dir": tmp_path / "runtime"})()
+    monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", None)
+    monkeypatch.setattr(game_router, "_BASKETBALL_LEGACY_SCORES_DB_PATH", legacy_path)
+    monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_MIGRATED", False)
+    monkeypatch.setattr(game_router, "get_config_manager", lambda: fake_config)
+
+    prepared = game_router._prepare_basketball_scores_db_path()
+
+    assert prepared == runtime_path
+    assert runtime_path.exists()
+    with sqlite3.connect(str(runtime_path)) as conn:
+        row = conn.execute("SELECT value FROM marker").fetchone()
+    assert row[0] == "legacy-score"
+
+
+class _FakeConfigManager:
+    def __init__(self, characters, *, project_root=None, vrm_dir=None):
+        self._characters = characters
+        self.project_root = project_root
+        self.vrm_dir = vrm_dir
+
+    def load_characters(self):
+        return self._characters
+
+
+def _characters_with_avatar(name, avatar):
+    return {
+        "当前猫娘": name,
+        "猫娘": {
+            name: {
+                "_reserved": {
+                    "avatar": avatar,
+                },
+            },
+        },
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_character_returns_live2d_path(monkeypatch):
+    import main_routers.characters_router as characters_router
+
+    monkeypatch.setattr(game_router, "get_config_manager", lambda: _FakeConfigManager(
+        _characters_with_avatar("Lan", {
+            "model_type": "live2d",
+            "live2d": {"model_path": "/user_live2d/Lan/model.model3.json"},
+        })
+    ))
+
+    async def fake_current_live2d_model(name):
+        assert name == "Lan"
+        return JSONResponse({"model_info": {"path": "/user_live2d/Lan/model.model3.json"}})
+
+    monkeypatch.setattr(characters_router, "get_current_live2d_model", fake_current_live2d_model)
+
+    result = await game_router.game_character("basketball")
+
+    assert result["lanlan_name"] == "Lan"
+    assert result["model_type"] == "live2d"
+    assert result["live2d_path"] == "/user_live2d/Lan/model.model3.json"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_character_returns_vrm_path_for_live3d_vrm(monkeypatch, tmp_path):
+    static_vrm = tmp_path / "static" / "vrm" / "hero.vrm"
+    static_vrm.parent.mkdir(parents=True)
+    static_vrm.write_text("vrm", encoding="utf-8")
+
+    monkeypatch.setattr(game_router, "get_config_manager", lambda: _FakeConfigManager(
+        _characters_with_avatar("VrmLan", {
+            "model_type": "live3d",
+            "live3d_sub_type": "vrm",
+            "vrm": {"model_path": "hero.vrm"},
+        }),
+        project_root=tmp_path,
+        vrm_dir=tmp_path / "user_vrm",
+    ))
+
+    result = await game_router.game_character("basketball")
+
+    assert result["lanlan_name"] == "VrmLan"
+    assert result["model_type"] == "live3d"
+    assert result["live3d_sub_type"] == "vrm"
+    assert result["vrm_path"] == "/static/vrm/hero.vrm"
+    assert result["mmd_path"] == ""
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_character_returns_mmd_path_for_live3d_mmd(monkeypatch, tmp_path):
+    user_vrm = tmp_path / "user_vrm" / "ignored-but-direct.vrm"
+    user_vrm.parent.mkdir(parents=True)
+    user_vrm.write_text("vrm", encoding="utf-8")
+
+    monkeypatch.setattr(game_router, "get_config_manager", lambda: _FakeConfigManager(
+        _characters_with_avatar("MmdLan", {
+            "model_type": "live3d",
+            "live3d_sub_type": "mmd",
+            "mmd": {"model_path": "Miku/Miku.pmx"},
+            "vrm": {"model_path": "/user_vrm/ignored-but-direct.vrm"},
+        }),
+        project_root=tmp_path,
+        vrm_dir=tmp_path / "user_vrm",
+    ))
+
+    result = await game_router.game_character("basketball")
+
+    assert result["lanlan_name"] == "MmdLan"
+    assert result["model_type"] == "live3d"
+    assert result["live3d_sub_type"] == "mmd"
+    assert result["mmd_path"] == "/static/mmd/Miku/Miku.pmx"
+    assert result["vrm_path"] == "/user_vrm/ignored-but-direct.vrm"
 
 
 @pytest.mark.unit
@@ -1869,7 +2577,7 @@ async def test_game_memory_disabled_skips_archive_memory(monkeypatch):
     )
 
     assert result["archive_memory"]["status"] == "skipped"
-    assert result["archive_memory"]["reason"] == "soccer_game_memory_archive_disabled"
+    assert result["archive_memory"]["reason"] == "game_memory_archive_disabled"
     assert result["archive"]["game_memory_enabled"] is False
     assert result["archive"]["memory_skipped"] is True
 

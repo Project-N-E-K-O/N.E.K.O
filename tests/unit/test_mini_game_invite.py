@@ -144,6 +144,18 @@ def test_in_cooldown_true_when_responded_within_24h_and_under_10_chats():
     assert sr._mini_game_invite_in_cooldown(LANLAN) is True
 
 
+def test_game_specific_cooldown_does_not_cross_block_other_game():
+    """拒绝 soccer 后，soccer 在冷却；basketball 不应被这次冷却挡住。"""
+    state = sr._mini_game_invite_get_state(LANLAN)
+    state['delivered_at'] = time.time() - 60
+    state['responded_at'] = time.time() - 60
+    state['chats_since_response'] = 5
+    state['last_game_type'] = 'soccer'
+
+    assert sr._mini_game_invite_in_cooldown(LANLAN, 'soccer') is True
+    assert sr._mini_game_invite_in_cooldown(LANLAN, 'basketball') is False
+
+
 def test_in_cooldown_true_when_only_time_elapsed_chats_short():
     """时间阈值已过但 chats 没到 10 次 → 仍 cooldown（AND 语义）。
 
@@ -644,7 +656,11 @@ async def test_maybe_deliver_uses_localized_template(monkeypatch):
     history = sr._proactive_chat_history[LANLAN]
     _, message, _ = history[0]
     assert 'Alice' in message
-    assert 'soccer' in message.lower()
+    assert (
+        'soccer' in message.lower()
+        or 'basketball' in message.lower()
+        or 'shooting challenge' in message.lower()
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -952,6 +968,27 @@ def test_cooldown_decline_is_5h_by_default():
     assert sr.MINI_GAME_INVITE_COOLDOWN_AFTER_DECLINE_SECONDS == 5 * 3600
 
 
+@pytest.mark.asyncio
+async def test_declined_soccer_invite_still_allows_basketball_invite(monkeypatch):
+    """同角色下 soccer 已回应进入冷却时，邀请选择器应跳过 soccer 并仍可投 basketball。"""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_AVAILABLE_GAMES', ('soccer', 'basketball'))
+    state = sr._mini_game_invite_get_state(LANLAN)
+    state['delivered_at'] = time.time() - 60
+    state['responded_at'] = time.time() - 60
+    state['chats_since_response'] = 0
+    state['last_game_type'] = 'soccer'
+
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN, mgr=_make_mgr(),
+        activity_snapshot=_make_snapshot(),
+        invite_lang='zh', master_name=MASTER,
+    )
+
+    assert out is not None
+    assert out['game_type'] == 'basketball'
+
+
 def test_new_user_force_at_is_4_by_default():
     """spec：「从未玩过的用户固定在开场第 4 次主动搭话邀请」。
     pin 住默认值，未来调整由 follow-up 显式翻。"""
@@ -1227,6 +1264,31 @@ def test_maybe_apply_keyword_noop_when_no_pending():
     assert result is None
 
 
+def test_direct_basketball_request_opens_game_without_pending():
+    result = sr._maybe_apply_mini_game_invite_keyword(LANLAN, '来玩一句投篮')
+
+    assert result is not None
+    assert result['action'] == 'open_game'
+    assert result['game_type'] == 'basketball'
+    assert result['game_url'].startswith('/basketball_demo?')
+    assert f'lanlan_name={LANLAN}' in result['game_url']
+    assert result['session_id']
+
+
+def test_direct_basketball_request_ignores_casual_or_negated_mentions():
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '篮球新闻挺有意思') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '我现在不想玩投篮') is None
+
+
+def test_direct_soccer_request_opens_game_without_pending():
+    result = sr._maybe_apply_mini_game_invite_keyword(LANLAN, '来一局足球')
+
+    assert result is not None
+    assert result['action'] == 'open_game'
+    assert result['game_type'] == 'soccer'
+    assert result['game_url'].startswith('/soccer_demo?')
+
+
 def test_maybe_apply_keyword_accept_returns_open_game():
     """pending invite + accept 关键词 → 触发 state 转换，返回 open_game。"""
     state = sr._mini_game_invite_get_state(LANLAN)
@@ -1330,7 +1392,7 @@ async def test_push_resolved_includes_game_url_for_open_game(monkeypatch):
     payload = mgr.websocket.send_json.await_args.args[0]
     assert payload['action'] == 'open_game'
     assert payload['game_url'].startswith('/soccer_demo?')
-    assert payload['game_type'] == 'soccer'
+    assert payload['game_type'] in ('soccer', 'basketball')
 
 
 @pytest.mark.asyncio
@@ -1385,7 +1447,7 @@ async def test_invite_delivery_pushes_options_via_websocket(monkeypatch):
     payload = mgr.websocket.send_json.await_args.args[0]
     assert payload['type'] == 'mini_game_invite_options'
     assert payload['session_id'] == out['invite_session_id']
-    assert payload['game_type'] == 'soccer'
+    assert payload['game_type'] in ('soccer', 'basketball')
     assert isinstance(payload['options'], list) and len(payload['options']) == 3
     choices = [opt['choice'] for opt in payload['options']]
     assert choices == ['accept', 'decline', 'later']
@@ -1417,6 +1479,31 @@ def test_keywords_cover_all_native_locales():
         kws = MINI_GAME_INVITE_KEYWORDS[lang]
         for choice in ('accept', 'decline', 'later'):
             assert choice in kws, f"{lang} 缺 {choice} 关键词"
-            assert isinstance(kws[choice], list) and kws[choice], (
-                f"{lang}/{choice} 关键词列表空"
-            )
+        assert isinstance(kws[choice], list) and kws[choice], (
+            f"{lang}/{choice} 关键词列表空"
+        )
+
+
+def test_basketball_invite_config_and_i18n_complete():
+    from config import MINI_GAME_INVITE_AVAILABLE_GAMES, MINI_GAME_LAUNCH_URL_BY_GAME
+    from config.prompts.prompts_proactive import MINI_GAME_INVITE_LINES_BY_GAME
+
+    assert 'basketball' in MINI_GAME_INVITE_AVAILABLE_GAMES
+    assert MINI_GAME_LAUNCH_URL_BY_GAME['basketball'] == '/basketball_demo'
+    for lang in ('zh', 'en', 'ja', 'ko', 'ru', 'es', 'pt'):
+        assert MINI_GAME_INVITE_LINES_BY_GAME['basketball'][lang].strip()
+
+
+def test_accept_basketball_invite_returns_basketball_url():
+    state = sr._mini_game_invite_get_state(LANLAN)
+    state['delivered_at'] = time.time() - 3
+    state['responded_at'] = None
+    state['pending_session_id'] = 'bb-sess'
+    state['last_game_type'] = 'basketball'
+
+    result = sr._apply_mini_game_invite_choice(LANLAN, 'accept', source='unit')
+
+    assert result['action'] == 'open_game'
+    assert result['game_type'] == 'basketball'
+    assert result['game_url'].startswith('/basketball_demo?')
+    assert 'session_id=bb-sess' in result['game_url']
