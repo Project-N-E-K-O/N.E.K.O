@@ -3732,10 +3732,12 @@ const AvatarButtonMixin = {
                     // N.E.K.O.Servers 社交平台入口（替代原 screen 槽位）。
                     // 屏幕分享不再暴露独立按钮，改为跟随语音控制按钮启停。
                     id: 'social',
-                    emoji: '👥',
-                    title: window.t ? window.t('buttons.social') : '猫娘网络',
+                    title: window.t ? window.t('buttons.social') : '猫娘社区',
                     titleKey: 'buttons.social',
                     hasPopup: false,
+                    iconOff: `/static/icons/neko_community_off.png${iconVersion}`,
+                    iconOn: `/static/icons/neko_community_on.png${iconVersion}`,
+                    imageRendering: 'auto'
                 },
                 {
                     id: 'settings',
@@ -3815,7 +3817,7 @@ const AvatarButtonMixin = {
                     pointerEvents: 'none',
                     opacity: '0.75',
                     transition: 'opacity 0.3s ease',
-                    imageRendering: 'crisp-edges'
+                    imageRendering: config.imageRendering || 'crisp-edges'
                 });
 
                 imgOn = document.createElement('img');
@@ -3829,7 +3831,7 @@ const AvatarButtonMixin = {
                     pointerEvents: 'none',
                     opacity: '0',
                     transition: 'opacity 0.3s ease',
-                    imageRendering: 'crisp-edges'
+                    imageRendering: config.imageRendering || 'crisp-edges'
                 });
 
                 imgContainer.appendChild(imgOff);

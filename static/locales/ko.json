@@ -2183,6 +2183,7 @@
     "buttons": {
         "voiceControl": "음성 제어",
         "screenShare": "화면 공유",
+        "social": "네코 커뮤니티",
         "agentTools": "네코클로",
         "settings": "설정",
         "leave": "나가기",
