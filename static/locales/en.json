@@ -1146,6 +1146,7 @@
         "saveFailed": "Save failed: {{error}}",
         "apiKeyInvalid": "API Key is invalid",
         "apiKeyInvalidRetry": "API Key is invalid, please re-enter",
+        "configNotReady": "Configuration is still loading, please try again in a moment",
         "saveNetworkError": "Save failed, please check network connection",
         "saveError": "Error while saving: {{error}}",
         "saveSuccess": "API Key saved successfully!",

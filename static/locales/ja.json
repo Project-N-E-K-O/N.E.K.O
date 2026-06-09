@@ -1146,6 +1146,7 @@
         "saveFailed": "保存失敗: {{error}}",
         "apiKeyInvalid": "APIキーが無効です",
         "apiKeyInvalidRetry": "APIキーが無効です。再入力してください",
+        "configNotReady": "設定の読み込みが完了していません。少し待ってから再試行してください",
         "saveNetworkError": "保存失敗。ネットワーク接続を確認してください",
         "saveError": "保存エラー: {{error}}",
         "saveSuccess": "APIキーを保存しました！",

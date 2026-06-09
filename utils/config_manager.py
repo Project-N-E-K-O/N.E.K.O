@@ -3468,7 +3468,8 @@ class ConfigManager:
             'MCP_ROUTER_API_KEY': DEFAULT_MCP_ROUTER_API_KEY,
             'CORE_URL': DEFAULT_CORE_URL,
             'CORE_MODEL': DEFAULT_CORE_MODEL,
-            'CORE_API_TYPE': 'qwen',
+            # coreApi 为空串时的兜底服务商：用免费版而非付费阿里 qwen，避免悄悄消耗额度。
+            'CORE_API_TYPE': 'free',
             'OPENROUTER_URL': DEFAULT_OPENROUTER_URL,
             'CONVERSATION_MODEL': DEFAULT_CONVERSATION_MODEL,
             'SUMMARY_MODEL': DEFAULT_SUMMARY_MODEL,

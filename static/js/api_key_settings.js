@@ -1903,6 +1903,15 @@ async function save_button_down(e) {
         }
     }
 
+    // 防御：coreApi 为空 = 服务商下拉尚未加载完成（loadCurrentApiKey 起手会先把下拉
+    // 清空成 ''，再 await 后端数据异步回填）。在这个窗口内点保存（尤其是开着自定义API
+    // 绕过了下方的空 Key 校验时）会把空 coreApi 写盘，后端解析时会把空值兜底成别的
+    // 服务商，导致免费版被悄悄切走、key 失效。一律中止保存并提示稍候重试，绝不写空 provider。
+    if (!coreApi) {
+        showStatus(window.t ? window.t('api.configNotReady') : '配置尚未加载完成，请稍候重试', 'error');
+        return;
+    }
+
     // 处理API Key（优先读取真实 key）
     let apiKey = getRealKey(apiKeyInput);
     if (isFreeVersionText(apiKey)) {

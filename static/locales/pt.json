@@ -1146,6 +1146,7 @@
         "saveFailed": "Falha ao salvar: {{error}}",
         "apiKeyInvalid": "A chave de API é inválida",
         "apiKeyInvalidRetry": "A chave de API é inválida. Digite novamente",
+        "configNotReady": "A configuração ainda está carregando, tente novamente em instantes",
         "saveNetworkError": "Falha ao salvar, verifique a conexão de rede",
         "saveError": "Erro ao salvar: {{error}}",
         "saveSuccess": "Chave de API salva com sucesso!",

@@ -1146,6 +1146,7 @@
         "saveFailed": "Ошибка сохранения: {{error}}",
         "apiKeyInvalid": "API Key недействителен",
         "apiKeyInvalidRetry": "API Key недействителен, введите заново",
+        "configNotReady": "Конфигурация ещё загружается, повторите попытку через мгновение",
         "saveNetworkError": "Ошибка сохранения, проверьте сеть",
         "saveError": "Ошибка при сохранении: {{error}}",
         "saveSuccess": "API Key сохранён успешно!",

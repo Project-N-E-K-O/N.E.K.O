@@ -619,7 +619,8 @@ async def get_core_config_api():
         # 但只能回退到与 coreApi / assistApi 匹配的服务商，
         # 以免将不兼容的 API Key 填充到其他服务商。
         fallback_key = api_key if api_key != 'free-access' else ''
-        _core_api_provider = core_cfg.get('coreApi') or runtime_core_api_provider or 'qwen'
+        # 兜底服务商用免费版而非付费阿里 qwen：coreApi 为空/缺失时不静默切到付费服务商。
+        _core_api_provider = core_cfg.get('coreApi') or runtime_core_api_provider or 'free'
         _assist_api_provider = core_cfg.get('assistApi') or runtime_assist_api_provider
         if not _assist_api_provider:
             _assist_api_provider = 'free' if _core_api_provider == 'free' else 'qwen'
@@ -758,9 +759,12 @@ async def update_core_config(request: Request):
                 return {"success": False, "error": str(exc)}
             if api_key is not None:
                 core_cfg['coreApiKey'] = api_key
-        if 'coreApi' in data:
+        # coreApi / assistApi 为空串 = 前端在配置尚未加载完成（下拉被清空）时提交。
+        # 绝不能用空值覆盖已存的有效 provider——否则重新加载时空值会被兜底成别的服务商，
+        # 把免费版用户悄悄切走。仅在非空时写入；空值保留 existing_core_cfg 里的旧值。
+        if data.get('coreApi'):
             core_cfg['coreApi'] = data['coreApi']
-        if 'assistApi' in data:
+        if data.get('assistApi'):
             core_cfg['assistApi'] = data['assistApi']
         if 'resolvedProviderUrls' in data:
             resolved_urls = data.get('resolvedProviderUrls')
