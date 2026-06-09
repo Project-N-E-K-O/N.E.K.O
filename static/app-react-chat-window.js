@@ -3227,24 +3227,19 @@
                 pressIcon.classList.add('neko-minimize-ball-pressing');
             }
         } catch (e) {}
-        if (!isElectronChatWindow()) {
-            setChatSurfaceMode('minimized');
-            return;
-        }
         // 防重入：擦除途中再次点最小化忽略。
         if (compactMinimizePressTimer) return;
         // #1 折叠方向性擦除（右→左收）由 App.tsx 的 compactCollapsing state 驱动 className 实现
         //    （onClick 里已 setCompactCollapsing(true)）—— 不再在此用 classList 加类（会被 React 重渲染覆盖）。
+        // web 与 Electron 统一走这条 = 擦除时长的延时再瞬时折叠：web 若同步 setChatSurfaceMode
+        // ('minimized') 会在下一帧前就让 isCompactSurface=false、卸载 .compact-chat-surface-shell，
+        // 新加的 neko-compact-collapsing 擦除遮罩与蓝条淡出根本来不及渲染（Codex P2）。
         compactMinimizePressTimer = window.setTimeout(function () {
             compactMinimizePressTimer = 0;
-            // 守卫：擦除期间窗口若已退出 Electron compact 语境（关闭/重开会经
-            // closeWindow→cancelActiveAnimation 清掉本 timer，但状态可能在其它路径变更），
-            // 不强行折叠，避免覆盖更新后的 surface mode。
-            if (!isElectronChatWindow()) return;
-            // 守卫：宿主可能在这 280ms 内经公开 API 把 surface mode 切走
-            // （setChatSurfaceMode('full') 或 setViewProps({chatSurfaceMode}) 直写 state，
-            // 后者绕过 cancelActiveAnimation 不清本 timer）。只有「仍处于 compact」才执行
-            // 这次延迟折叠，否则会用陈旧的 minimized 覆盖更新后的模式（Codex P2）。
+            // 守卫：擦除期间宿主可能把 surface mode 切走（关闭/重开经
+            // closeWindow→cancelActiveAnimation 清掉本 timer；或经公开 API setChatSurfaceMode
+            // ('full') / setViewProps 直写 state 绕过清理）。只有「仍处于 compact」才执行这次
+            // 延迟折叠，否则会用陈旧的 minimized 覆盖更新后的模式（Codex P2）。两端通用。
             if (getCurrentChatSurfaceMode() !== 'compact') return;
             setChatSurfaceMode('minimized');
         }, COMPACT_MINIMIZE_PRESS_MS);

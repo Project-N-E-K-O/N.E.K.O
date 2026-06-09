@@ -1675,9 +1675,19 @@ function CompactChatApp({
   // 复位无可见副作用。
   useEffect(() => {
     if (!compactCollapsing) return undefined;
-    const t = window.setTimeout(() => setCompactCollapsing(false), 600);
+    const t = window.setTimeout(() => {
+      setCompactCollapsing(false);
+      // 折叠被取消（mode 没到 minimized，故正常的 minimized→compact 重开路径不会触发）→ 若折叠时
+      // 用 persist:false 关掉了历史区，这里把它恢复回开，否则历史区会被一次未完成的折叠永久收起、
+      // 而持久化偏好其实仍是开的（Codex P2）。openCompactExportHistory 在非 compact 态仅置状态、
+      // 不渲染（受 isCompactSurface 门控），无副作用。正常折叠走 minimized→compact 重开、不到这里。
+      if (compactHistoryReopenAfterRestoreRef.current) {
+        compactHistoryReopenAfterRestoreRef.current = false;
+        openCompactExportHistory();
+      }
+    }, 600);
     return () => window.clearTimeout(t);
-  }, [compactCollapsing]);
+  }, [compactCollapsing, openCompactExportHistory]);
   const handleCompactHistoryVisibilityToggle = useCallback(() => {
     if (compactExportHistoryOpen) {
       closeCompactExportHistory();
