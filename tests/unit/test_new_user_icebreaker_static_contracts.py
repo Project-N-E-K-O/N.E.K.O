@@ -266,6 +266,27 @@ def test_icebreaker_context_append_does_not_touch_shared_websocket_router():
     assert 'action == "icebreaker_context_append"' not in websocket_router
 
 
+def test_icebreaker_context_appends_are_serialized_before_chat_progression():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+
+    assert "var contextAppendPromise = Promise.resolve();" in runtime
+    assert "contextAppendPromise = contextAppendPromise.catch(function () {}).then(function () {" in runtime
+    assert "return contextAppendPromise;" in runtime
+
+    append_message_block = runtime.split("function appendChatMessage(role, text, meta)", 1)[1].split(
+        "function speakViaProjectTts",
+        1,
+    )[0]
+    assert "return appendLlmContext(role, messageText, meta || {}).then(function () {" in append_message_block
+    assert "broadcastIcebreakerAppendMessage(message);" in append_message_block
+    assert append_message_block.index("broadcastIcebreakerAppendMessage(message);") < append_message_block.index(
+        "return appendLlmContext(role, messageText, meta || {}).then(function () {"
+    )
+    assert append_message_block.index("return appendLlmContext(role, messageText, meta || {}).then(function () {") < append_message_block.index(
+        "return waitForChatHost(30000).then(function (host) {"
+    )
+
+
 def test_icebreaker_waits_long_enough_for_react_chat_host():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
 
@@ -367,6 +388,42 @@ def test_home_tutorial_release_events_carry_current_avatar_round_end_state():
     )
     assert generic_tutorial_branch is not None
     assert "day = 1" not in generic_tutorial_branch.group(0)
+
+
+def test_avatar_floating_angry_exit_skip_event_preserves_raw_end_state():
+    tutorial_manager = UNIVERSAL_TUTORIAL_MANAGER_PATH.read_text(encoding="utf-8")
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+
+    mark_match = re.search(
+        r"markAvatarFloatingGuideRoundOutcome\(day, outcome, rawReason = outcome\) \{(?P<body>.*?)\n    \}",
+        tutorial_manager,
+        re.DOTALL,
+    )
+    assert mark_match is not None
+    mark_body = mark_match.group("body")
+    assert "const normalizedRawReason = typeof rawReason === 'string' && rawReason.trim()" in mark_body
+    assert "rawReason: normalizedRawReason" in mark_body
+    assert "isAngryExit: normalizedRawReason === 'angry_exit'" in mark_body
+    assert "detail: { day: round, state, endState: state.lastEndState }" in mark_body
+
+    assert re.search(
+        r"markAvatarFloatingGuideRoundOutcome\(\s*avatarFloatingRound,\s*endMeta\.reason,\s*endMeta\.rawReason\s*\)",
+        tutorial_manager,
+    )
+    assert re.search(
+        r"markAvatarFloatingGuideRoundOutcome\(\s*1,\s*endMeta\.reason,\s*endMeta\.rawReason\s*\)",
+        tutorial_manager,
+    )
+
+    synthesize_match = re.search(
+        r"function synthesizeEndStateFromEvent\(eventType, detail\) \{(?P<body>.*?)\n    \}",
+        runtime,
+        re.DOTALL,
+    )
+    assert synthesize_match is not None
+    synthesize_body = synthesize_match.group("body")
+    assert "var rawReason = String(normalizedDetail.rawReason || normalizedDetail.reason || outcome || '')" in synthesize_body
+    assert "isAngryExit: rawReason === 'angry_exit'" in synthesize_body
 
 
 def test_icebreaker_uses_broadcast_channel_for_desktop_chat_window():

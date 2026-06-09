@@ -16,6 +16,7 @@
     var localePromises = Object.create(null);
     var icebreakerSortKeySeq = 0;
     var icebreakerBridgeTimestampSeq = 0;
+    var contextAppendPromise = Promise.resolve();
 
     function safeJsonParse(raw, fallback) {
         if (!raw) return fallback;
@@ -248,7 +249,7 @@
     function appendLlmContext(role, text, meta) {
         var cleanRole = String(role || '').trim();
         var cleanText = String(text || '').trim();
-        if ((cleanRole !== 'assistant' && cleanRole !== 'user') || !cleanText) return;
+        if ((cleanRole !== 'assistant' && cleanRole !== 'user') || !cleanText) return Promise.resolve(false);
         var currentSession = activeSession || {};
         var extra = meta && typeof meta === 'object' ? meta : {};
         var body = {
@@ -269,14 +270,24 @@
                 request_id: String(extra.requestId || '')
             }
         };
-        fetch('/api/game/' + encodeURIComponent(GAME_TYPE) + '/context', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'same-origin',
-            body: JSON.stringify(body)
+        contextAppendPromise = contextAppendPromise.catch(function () {}).then(function () {
+            return fetch('/api/game/' + encodeURIComponent(GAME_TYPE) + '/context', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
+                body: JSON.stringify(body)
+            }).then(function (response) {
+                if (!response.ok) throw new Error('HTTP ' + response.status);
+                return true;
+            }).catch(function (error) {
+                console.warn('[NewUserIcebreaker] append LLM context failed:', error);
+                return false;
+            });
         }).catch(function (error) {
             console.warn('[NewUserIcebreaker] append LLM context failed:', error);
+            return false;
         });
+        return contextAppendPromise;
     }
 
     function appendChatMessage(role, text, meta) {
@@ -297,15 +308,16 @@
             icebreaker: Object.assign({ source: SOURCE }, meta || {})
         };
         broadcastIcebreakerAppendMessage(message);
-        appendLlmContext(role, messageText, meta || {});
-        if (!shouldRenderIcebreakerOnLocalChatHost()) {
-            return Promise.resolve(message);
-        }
-        return waitForChatHost(30000).then(function (host) {
-            if (typeof host.openWindow === 'function') {
-                host.openWindow();
+        return appendLlmContext(role, messageText, meta || {}).then(function () {
+            if (!shouldRenderIcebreakerOnLocalChatHost()) {
+                return message;
             }
-            return host.appendMessage(message);
+            return waitForChatHost(30000).then(function (host) {
+                if (typeof host.openWindow === 'function') {
+                    host.openWindow();
+                }
+                return host.appendMessage(message);
+            });
         }).catch(function (error) {
             console.warn('[NewUserIcebreaker] append message failed:', error);
             return null;
@@ -723,12 +735,14 @@
             outcome = 'complete';
         }
         if (!day || !outcome) return null;
+        var rawReason = String(normalizedDetail.rawReason || normalizedDetail.reason || outcome || '').trim().toLowerCase();
+        if (!rawReason) rawReason = outcome;
         return {
             day: day,
             ended: true,
             outcome: outcome,
-            rawReason: outcome,
-            isAngryExit: false,
+            rawReason: rawReason,
+            isAngryExit: rawReason === 'angry_exit',
             completed: outcome === 'complete',
             skipped: outcome === 'skip',
             source: eventType || 'tutorial_event',

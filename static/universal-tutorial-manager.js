@@ -387,9 +387,12 @@ class UniversalTutorialManager {
         return state;
     }
 
-    markAvatarFloatingGuideRoundOutcome(day, outcome) {
+    markAvatarFloatingGuideRoundOutcome(day, outcome, rawReason = outcome) {
         const round = normalizeAvatarFloatingGuideRound(day);
         const normalizedOutcome = outcome === 'skip' ? 'skip' : (outcome === 'complete' ? 'complete' : 'destroy');
+        const normalizedRawReason = typeof rawReason === 'string' && rawReason.trim()
+            ? rawReason.trim().toLowerCase()
+            : normalizedOutcome;
         const state = loadAvatarFloatingGuideState();
         state.currentRound = null;
         if (state.pendingRound === round) state.pendingRound = null;
@@ -408,8 +411,8 @@ class UniversalTutorialManager {
             day: round,
             ended: true,
             outcome: normalizedOutcome,
-            rawReason: normalizedOutcome,
-            isAngryExit: false,
+            rawReason: normalizedRawReason,
+            isAngryExit: normalizedRawReason === 'angry_exit',
             completed: normalizedOutcome === 'complete',
             skipped: normalizedOutcome === 'skip',
             source: 'avatar_floating_guide_state',
@@ -5268,10 +5271,10 @@ class UniversalTutorialManager {
         this._teardownTutorialUI();
 
         if (avatarFloatingRound) {
-            this.markAvatarFloatingGuideRoundOutcome(avatarFloatingRound, endMeta.reason);
+            this.markAvatarFloatingGuideRoundOutcome(avatarFloatingRound, endMeta.reason, endMeta.rawReason);
             this.activeAvatarFloatingGuideRound = null;
         } else if (this.currentPage === 'home' && (endMeta.reason === 'complete' || endMeta.reason === 'skip')) {
-            this.markAvatarFloatingGuideRoundOutcome(1, endMeta.reason);
+            this.markAvatarFloatingGuideRoundOutcome(1, endMeta.reason, endMeta.rawReason);
         }
         let avatarFloatingEndState = null;
         if (avatarFloatingRound || this.currentPage === 'home') {
