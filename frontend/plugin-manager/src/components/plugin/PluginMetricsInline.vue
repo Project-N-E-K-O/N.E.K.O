@@ -174,8 +174,10 @@ onMounted(() => {
   }
 })
 
-watch(() => props.pluginId, (newId) => {
-  if (isRunning.value) {
+// 当 stopped → running 时 pluginId 不变，仅靠 pluginId watcher 不会触发拉取，
+// 空态要等全局 5s 轮询才补齐。把 isRunning 一并纳入监听走即时拉取的 fast-path。
+watch([() => props.pluginId, isRunning], ([newId, running]) => {
+  if (running) {
     void loadMetrics(newId)
   }
 })
