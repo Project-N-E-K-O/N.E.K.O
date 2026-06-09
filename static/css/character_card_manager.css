@@ -415,6 +415,7 @@ z-index: 5;
     flex: 1 1 auto;
     min-height: 0;
     margin-top: 0;
+    padding-bottom: 28px;
     overflow-y: auto;
     overflow-x: hidden;
     align-content: start;
@@ -2221,13 +2222,13 @@ border-color: rgba(0, 0, 0, 0.12);
 /* 卡片头部样式 - 上半部分（空白封面区） */
 .workshop-card .card-header {
     background-color: #ffffff;
-    height: 180px;
+    height: 145px;
     border-radius: 48px 48px 48px 12px;
     border: 1px solid #9ce4ff;
     position: relative;
     overflow: hidden;
     padding: 0;
-    margin-bottom: 12px;
+    margin-bottom: 10px;
     display: block;
 }
 
@@ -2257,11 +2258,11 @@ line-height: 1.5;
     border-radius: 12px 48px 48px 48px;
     border: 1px solid #9ce4ff;
     overflow: hidden;
-    padding: 16px 16px 25px 16px;
+    padding: 12px 14px 18px;
     flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 6px;
     position: relative;
 }
 
@@ -2441,13 +2442,13 @@ opacity: 1;
         
 /* 卡片标题样式 - workshop-card专用（标题区域） */
 .workshop-card .card-title {
-    margin: 0 0 8px 0;
-    font-size: 24px;
+    margin: 0 0 4px 0;
+    font-size: 20px;
     color: #0ba7ff;
     font-weight: 900;
     letter-spacing: 2px;
     background: linear-gradient(to right, #dff5ff 0%, #ffffff 100%);
-    padding: 4px 76px 4px 16px;
+    padding: 3px 64px 3px 14px;
     border-radius: 12px;
     text-align: center;
     position: relative;
@@ -2457,7 +2458,7 @@ opacity: 1;
 }
 
 .workshop-card .card-title .card-title-paw {
-    width: 60px;
+    width: 50px;
     height: auto;
     opacity: 0.85;
     object-fit: contain;
@@ -2490,10 +2491,10 @@ line-height: 1.5;
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 8px 4px 12px 4px;
+    padding: 6px 4px 8px;
     border-bottom: 1px solid #e1f4ff;
-    margin: 0 4px 10px 4px;
-    gap: 10px;
+    margin: 0 4px 6px;
+    gap: 8px;
 }
 
 .workshop-card .author-info span {
@@ -2682,8 +2683,8 @@ border-radius: 12px;
 .workshop-card .card-info-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 12px;
-    padding: 0 8px 20px 8px;
+    gap: 8px 12px;
+    padding: 0 8px 10px;
 }
 
 .workshop-card .card-info-item {
@@ -2761,7 +2762,7 @@ line-height: 1.4;
     margin: auto 8px 0 8px;
     display: flex;
     flex-direction: column;
-    gap: 18px;
+    gap: 10px;
 }
 
 .workshop-card .card-actions button,
@@ -2771,10 +2772,10 @@ line-height: 1.4;
     border: none;
     border-radius: 50px;
     color: white;
-    font-size: 18px;
+    font-size: 15px;
     font-weight: 900;
     letter-spacing: 2px;
-    padding: 14px 0;
+    padding: 10px 0;
     margin: 0 !important;
     cursor: pointer;
     box-shadow: 0 0 0 6px #bcf1ff;
