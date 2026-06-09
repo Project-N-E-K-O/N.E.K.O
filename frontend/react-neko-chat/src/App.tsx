@@ -5789,7 +5789,13 @@ function CompactChatApp({
           }}>
             {isCompactSurface ? (
               <div
-                className={`compact-chat-surface-shell${compactCollapsing ? ' neko-compact-collapsing' : ''}${compactExpanding ? ' neko-compact-expanding' : ''}`}
+                className={`compact-chat-surface-shell${
+                  compactCollapsing
+                    ? ' neko-compact-collapsing'
+                    : compactExpanding
+                      ? ' neko-compact-expanding'
+                      : ''
+                }`}
                 ref={compactInputShellRef}
                 data-compact-chat-state={effectiveCompactChatState}
                 data-compact-tool-layer-open={compactToolToggleVisible && compactInputToolFanOpen ? 'true' : 'false'}
