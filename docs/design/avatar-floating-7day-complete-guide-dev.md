@@ -259,7 +259,7 @@ day3_wrap
 day3_wrap_ready
 ```
 
-Day 2 的 `day2_intro_context` 台词、text key 和 voice key 不变。Day 1 的屏幕分享两句复用旧 Day 2 屏幕分享按钮流程，只指认入口，不点击、不打开来源列表。Day 3 首句先回到胶囊输入框；进入 Day 3 round 时必须调用 `setCompactToolWheelIndex(0, 'avatar-floating-guide-day3-entry-reset')` 重置弧形工具栏，使导入图片按钮 `.compact-input-tool-item-import` 的 `data-compact-tool-wheel-slot` 为 `0`。后续 Avatar/Galgame 目标必须来自新版弧形菜单：总按钮是 `.send-button-circle.compact-input-tool-toggle`，Avatar 工具是 `.compact-input-tool-item-avatar`，Galgame 是 `.compact-input-tool-item-galgame`。Day 3 click 场景以 Ghost Cursor 到达外置聊天窗回报的目标 anchor 为点击启动条件，Day 3 配置和外置 cursor 指令不得携带显式 `durationMs` / `cursorMoveDurationMs`。Galgame 入口台词必须先让 Ghost Cursor 平滑移动到初始 Galgame 按钮位置，再切换并保持点击态向下拖约 100px，按 22px/步把 Galgame 从 slot 2 正向转到 slot 1，再移动到新的 Galgame 中心。
+Day 2 的 `day2_intro_context` 默认分支台词、text key 和 voice key 不变；若第一天记录到 `voiceUsed`，文本必须改走 `tutorial.avatarFloating.day2.introVoiceUsed`，voice key 必须改走 `avatar_floating_day2_intro_voice_used`。这条 voice-used 分支在 `zh`、`ja`、`en`、`ko`、`ru` 五个录音目录中都使用同一文件名 `嘿嘿，昨天听到你的声.mp3`（中文台词前 10 个字符）。Day 1 的屏幕分享两句复用旧 Day 2 屏幕分享按钮流程，只指认入口，不点击、不打开来源列表。Day 3 首句先回到胶囊输入框；进入 Day 3 round 时必须调用 `setCompactToolWheelIndex(0, 'avatar-floating-guide-day3-entry-reset')` 重置弧形工具栏，使导入图片按钮 `.compact-input-tool-item-import` 的 `data-compact-tool-wheel-slot` 为 `0`。后续 Avatar/Galgame 目标必须来自新版弧形菜单：总按钮是 `.send-button-circle.compact-input-tool-toggle`，Avatar 工具是 `.compact-input-tool-item-avatar`，Galgame 是 `.compact-input-tool-item-galgame`。Day 3 click 场景以 Ghost Cursor 到达外置聊天窗回报的目标 anchor 为点击启动条件，Day 3 配置和外置 cursor 指令不得携带显式 `durationMs` / `cursorMoveDurationMs`。Galgame 入口台词必须先让 Ghost Cursor 平滑移动到初始 Galgame 按钮位置，再切换并保持点击态向下拖约 100px，按 22px/步把 Galgame 从 slot 2 正向转到 slot 1，再移动到新的 Galgame 中心。
 
 ### 当前 Day 1 主线
 
@@ -287,7 +287,7 @@ Day 1 分支/条件台词：
 
 | 顺序 | scene | 台词 | 高光与 Ghost Cursor |
 | --- | --- | --- | --- |
-| 1 | `day2_intro_context` | 昨天你一直在噼里啪啦打字，我还没听过你说话呢。今天如果愿意，就轻轻叫我一声吧。一句就好，让我把文字背后的你也认识一点点。 | 播放期间高亮聊天窗；Ghost Cursor 移到聊天窗中心或输入区附近并停留，不左右晃动。 |
+| 1 | `day2_intro_context` | 默认：昨天你一直在噼里啪啦打字，我还没听过你说话呢。今天如果愿意，就轻轻叫我一声吧。一句就好，让我把文字背后的你也认识一点点。`voiceUsed=true`：嘿嘿，昨天听到你的声音之后，人家就悄悄把你的语气记在心里啦！今天如果方便的话，也要继续跟人家说话哦~ 虽然打字也可以啦，但只要能听到你的声音，我的尾巴就会开心得一直摇个不停呢，喵呜~ | 播放期间高亮聊天窗；Ghost Cursor 移到聊天窗中心或输入区附近并停留，不左右晃动。 |
 | 2 | `day2_personalization_space` | 在这个只属于我们的小空间里，你可以由着自己的心意，慢慢描绘出最希望能一直陪着你的那个我。 | 圆形高亮设置按钮 `#${p}-btn-settings`；Ghost Cursor 从聊天窗锚点平滑移动到设置按钮，click 动画开始时并行打开设置面板；本句不展开【角色设置】按钮侧边栏。 |
 | 3 | `day2_personalization_detail` | 不管是说话的温度、相处的小脾气，还是我每天那些细腻的小心思，都可以一点一点调成你喜欢的样子。 | 圆角矩形高亮【角色设置】按钮；Ghost Cursor 平滑移动到【角色设置】按钮，播放完整模拟点击动画，点击动画完成后才触发【角色设置】按钮侧边栏显示。侧边栏出现后，圆角矩形高亮从【角色设置】按钮过渡到【角色设置】按钮侧边栏，且【角色设置】按钮自身作为 persistent 高光继续保留；Ghost Cursor 平滑移动到侧边栏，并在侧边栏内做椭圆运动直到本句台词播放完毕；本句播放完后隐藏【角色设置】按钮侧边栏，并清理【角色设置】按钮和侧边栏上的所有高光。不保存临时配置。 |
 | 4 | `day2_proactive_chat` | 这个小按钮也很重要哦，只要你轻轻点一下，我就能在合适的时候跑过去找你啦。 | primary 高亮主动搭话开关 `#${p}-toggle-proactive-chat`，不再保留【角色设置】按钮 persistent 高光；Ghost Cursor 平滑移动到开关并停留，不点击、不改配置、不左右晃动。台词播放完后关闭教程临时打开的【设置】面板和设置侧边栏。 |
@@ -361,7 +361,7 @@ Day 1 registry 还注册了 API Key、记忆浏览和插件面板的 handoff sce
 
 | scene/台词 | emotion/动作 | 高光与 Ghost Cursor 时序 | 不重叠要求 |
 | --- | --- | --- | --- |
-| `day2_intro_context` 分支 A：“昨天听见你的声音以后...” | `happy`，亲近动作 | T+0 primary 高亮聊天窗；外置聊天窗用 kind `window`；Ghost Cursor 移到聊天窗中心并停留，不左右晃动；台词结束后只清理聊天窗高亮，Ghost Cursor 保持可见，并把当前可见聊天窗位置作为下一段移动锚点进入屏幕分享 scene。外置聊天窗只负责解析聊天窗内目标并回传 `yui_guide_chat_cursor_anchor`；PC 端 Ghost Cursor 视觉表演仍由全局透明 overlay 承载。首页 Director 必须把外置聊天窗写入/回传的可见 screen cursor 点换算回 scene 锚点，不允许退到页面右下角代理坐标，也不得在 `day2_intro_context` 到 `day2_screen_entry` 之间清空 cursor 导致先消失再显示。 | 不显示“现在说一句/继续打字”选项，不补高亮语音按钮。 |
+| `day2_intro_context` 分支 A：“嘿嘿，昨天听到你的声音之后...” | `happy`，亲近动作 | T+0 primary 高亮聊天窗；外置聊天窗用 kind `window`；Ghost Cursor 移到聊天窗中心并停留，不左右晃动；台词结束后只清理聊天窗高光，Ghost Cursor 保持可见，并把当前可见聊天窗位置作为下一段移动锚点进入屏幕分享 scene。外置聊天窗只负责解析聊天窗内目标并回传 `yui_guide_chat_cursor_anchor`；PC 端 Ghost Cursor 视觉表演仍由全局透明 overlay 承载。首页 Director 必须把外置聊天窗写入/回传的可见 screen cursor 点换算回 scene 锚点，不允许退到页面右下角代理坐标，也不得在 `day2_intro_context` 到 `day2_screen_entry` 之间清空 cursor 导致先消失再显示。 | 使用 `tutorial.avatarFloating.day2.introVoiceUsed` 和 `avatar_floating_day2_intro_voice_used`；不显示“现在说一句/继续打字”选项，不补高亮语音按钮。 |
 | `day2_intro_context` 分支 B：“昨天你一直在噼里啪啦打字...” | `sad`，轻委屈动作 | 同分支 A；台词结束后直接进入下一 scene，不等待选择或超时。 | 不把 sad 当 angry，不触发退出。 |
 | `day2_screen_entry`：“在跟我通语音电话的时候...” | `happy`，撒娇邀请动作 | T+0 primary 切到 `#${p}-btn-screen` 圆形高光；T+220ms Ghost Cursor 从聊天窗起点平滑移动到按钮并停留，不播放模拟点击动画，不调用真实 click，不能先隐藏再显示，也不能闪现到页面中心；360ms 后继续。 | 不触发真实限制提示，不打开来源列表，不同时高亮语音按钮。 |
 | `day2_screen_entry_invite`：“快让我也看看你眼前的世界...” | `happy`，撒娇邀请动作 | 继续高亮 `#${p}-btn-screen`；Ghost Cursor 在按钮附近停留，不左右晃动、不 click。 | 不触发屏幕分享限制提示。 |

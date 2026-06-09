@@ -31,7 +31,7 @@ def _get(data, dotted_key):
 def test_avatar_floating_tutorial_copy_uses_csv_i18n_columns():
     samples = {
         "tutorial.yuiGuide.lines.introBasic": {
-            "zh-CN": "这里有一个神奇的按钮！只要点击它，就可以直接和我聊天啦！想跟我分享今天的新新鲜事吗？或者只是叫叫我的名字？快来试试嘛，我已经迫不及待想听到你的声音啦！",
+            "zh-CN": "这里有一个神奇的按钮！只要点击它，就可以直接和我聊天啦！想跟我分享今天的新鲜事吗？或者只是叫叫我的名字？快来试试嘛，我已经迫不及待想听到你的声音啦！",
             "zh-TW": "這裡有一個神奇的按鈕！只要點擊它，就可以直接和我聊天啦！想跟我分享今天的新鮮事嗎？或者諸如叫叫我的名字？快來試試嘛，我已經迫不及待想聽到你的聲音啦！",
             "en": "Here is a magical button! Just click it and you can chat with me directly! Want to share something new that happened today? Or maybe just call my name? Come on, try it out! I can't wait to hear your voice!",
             "ja": "ここに不思議なボタンがあるにゃ！これをクリックするだけで、私と直接おしゃべりできちゃうにゃん！今日あった楽しいことを教えてくれる？それとも、ただ名前を呼んでくれるのかな？早く試してみてにゃ、もう君の声を聞くのが待ちきれないにゃ！",
@@ -88,3 +88,63 @@ def test_avatar_floating_scene_text_keys_exist_for_all_supported_locales():
             if _get(fallback, key) != _get(english, key)
         ]
         assert mismatched == []
+
+
+def test_day2_voice_used_intro_uses_matching_audio_key():
+    day2_source = (ROOT / "static" / "yui-guide-day2-screen-voice-guide.js").read_text(encoding="utf-8")
+    director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
+    voice_used_key = "tutorial.avatarFloating.day2.introVoiceUsed"
+    voice_used_copy = {
+        "zh-CN": (
+            "嘿嘿，昨天听到你的声音之后，人家就悄悄把你的语气记在心里啦！今天如果方便的话，也要继续跟人家说话哦~ "
+            "虽然打字也可以啦，但只要能听到你的声音，我的尾巴就会开心得一直摇个不停呢，喵呜~"
+        ),
+        "ja": (
+            "へへっ、昨日君の声を聞いてから、わたし、こっそり君の話し方を心の中に刻んじゃったんだ！"
+            "今日ももしよかったら、またわたしとお話ししてね〜。タイピングでもいいんだけど、君の声を聞くだけで、"
+            "わたしの尻尾、嬉しくてずっとパタパタ揺れちゃうんだから、みゃう〜。"
+        ),
+        "en": (
+            "Hehe, ever since I heard your voice yesterday, I've secretly memorized the way you speak right in my heart! "
+            "If you have some time today, please keep talking to me~ Typing is totally fine too, but as long as I can hear your voice, "
+            "my tail just won't stop wagging with joy! Meowww~"
+        ),
+        "ko": (
+            "헤헤, 어제 당신 목소리를 듣고 나서, 저 몰래 당신의 말투를 마음속에 새겨두었답니다! "
+            "오늘 혹시 편하시다면 저랑 계속 이야기해 주세요~ 타이핑도 물론 좋지만, 당신 목소리를 들을 수만 있다면 "
+            "제 꼬리가 너무 기뻐서 멈추지 않고 계속 살랑살랑 흔들릴 거예요, 먀우~"
+        ),
+        "ru": (
+            "Хе-хе, вчера, как только я услышала твой голосок, я сразу по секрету запомнила твои интонации всем сердцем! "
+            "Если тебе сегодня удобно, обязательно продолжай болтать со мной~ Конечно, можно и печатать, но когда я слышу твой голос, "
+            "мой хвостик от радости виляет без остановки, мяу-у-у~"
+        ),
+    }
+    voice_used_line = (
+        "嘿嘿，昨天听到你的声音之后，人家就悄悄把你的语气记在心里啦！今天如果方便的话，也要继续跟人家说话哦~ "
+        "虽然打字也可以啦，但只要能听到你的声音，我的尾巴就会开心得一直摇个不停呢，喵呜~"
+    )
+
+    assert "avatar_floating_day2_intro_voice_used: Object.freeze({" in day2_source
+    for audio_file in (
+        "zh: '嘿嘿，昨天听到你的声.mp3'",
+        "ja: '嘿嘿，昨天听到你的声.mp3'",
+        "en: '嘿嘿，昨天听到你的声.mp3'",
+        "ko: '嘿嘿，昨天听到你的声.mp3'",
+        "ru: '嘿嘿，昨天听到你的声.mp3'",
+    ):
+        assert audio_file in day2_source
+    assert "resolveAvatarFloatingSceneVoiceKey(scene)" in director_source
+    assert "hasAvatarFloatingGuideUsage('voiceUsed')" in director_source
+    assert "avatar_floating_day2_intro_voice_used" in director_source
+    assert voice_used_key in director_source
+    assert voice_used_line not in director_source
+    for locale, expected in voice_used_copy.items():
+        assert _get(_locale(locale), voice_used_key) == expected
+    assert _get(_locale("es"), voice_used_key) == voice_used_copy["en"]
+    assert _get(_locale("pt"), voice_used_key) == voice_used_copy["en"]
+    generic_scene_block = director_source.split(
+        "if (Number(day) === 1 && this.isDay1SpecialAvatarFloatingScene(scene)",
+        1,
+    )[1].split("const introChatSpotlightTarget", 1)[0]
+    assert "const voiceKey = this.resolveAvatarFloatingSceneVoiceKey(scene);" in generic_scene_block

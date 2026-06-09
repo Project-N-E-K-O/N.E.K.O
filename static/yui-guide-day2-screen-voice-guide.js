@@ -36,6 +36,13 @@
         key: 'screen-voice',
         audioFilesByKey: {
             avatar_floating_day2_intro: zhAudio('昨天你一直在噼里啪啦.mp3'),
+            avatar_floating_day2_intro_voice_used: Object.freeze({
+                zh: '嘿嘿，昨天听到你的声.mp3',
+                ja: '嘿嘿，昨天听到你的声.mp3',
+                en: '嘿嘿，昨天听到你的声.mp3',
+                ko: '嘿嘿，昨天听到你的声.mp3',
+                ru: '嘿嘿，昨天听到你的声.mp3'
+            }),
             takeover_settings_peek_intro: zhAudio('在这个只属于我们的小.mp3'),
             takeover_settings_peek_detail: zhAudio('不管是说话的温度、相.mp3'),
             takeover_settings_peek_detail_part_2: zhAudio('这个小按钮也很重要哦.mp3'),

@@ -77,6 +77,22 @@ test('day2 proactive chat uses its own recorded line instead of the detail narra
     assert.equal(proactiveScene.voiceKey, 'takeover_settings_peek_detail_part_2');
 });
 
+test('day2 voice-used intro has recorded audio files for supported locales', () => {
+    const guides = loadGuides();
+    const audioFilesByKey = mergeAudioFilesByKey(guides);
+    const files = audioFilesByKey.avatar_floating_day2_intro_voice_used || {};
+    const missing = [];
+
+    for (const locale of supportedRecordedLocales) {
+        const audioFile = typeof files[locale] === 'string' ? files[locale] : '';
+        if (!audioFile || !fs.existsSync(path.join(guideAudioRoot, locale, audioFile))) {
+            missing.push(`${locale}:${audioFile || '<no file>'}`);
+        }
+    }
+
+    assert.deepEqual(missing, []);
+});
+
 test('director merges audio maps from all registered daily guides', () => {
     const directorSource = fs.readFileSync(path.join(__dirname, 'yui-guide-director.js'), 'utf8');
 

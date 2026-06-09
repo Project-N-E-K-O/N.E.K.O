@@ -14,7 +14,7 @@
 Day 2 的 scene 和台词按本文落地；导演硬约束以 `avatar-floating-7day-complete-guide-dev.md` 为准：
 
 1. Day 2 必须使用统一教程生命周期，不在本日 scene 中重写接管、skip、打断、临时切模或高光清理。
-2. `day2_intro_context` 的文案、text key 和 voice key 保持原样；只播放承接台词，不恢复“现在说一句 / 继续打字”选项，也不补高亮语音按钮。
+2. `day2_intro_context` 默认分支的文案、text key 和 voice key 保持原样；若第一天记录到 `voiceUsed`，台词必须改走 `tutorial.avatarFloating.day2.introVoiceUsed`，voice key 改走 `avatar_floating_day2_intro_voice_used`。本段只播放承接台词，不恢复“现在说一句 / 继续打字”选项，也不补高亮语音按钮。
 3. 设置入口、设置侧边栏和主动搭话入口都必须写清楚真实目标、Ghost Cursor 移动方式、是否点击和是否修改配置；不得只写“沿用某日流程”。
 4. 设置相关 scene 不保存用户设置，不打开深层页面，不触发主动搭话。
 5. 收尾三句期间重新高亮胶囊输入框；最终句约 70% cue 同步隐藏 Ghost Cursor、清理所有高光并写入 Day 2 完成态。
@@ -25,7 +25,7 @@ Day 2 的 scene 和台词按本文落地；导演硬约束以 `avatar-floating-7
 
 | 顺序 | scene | 台词 | 高光与 Ghost Cursor |
 | --- | --- | --- | --- |
-| 1 | `day2_intro_context` | 昨天你一直在噼里啪啦打字，我还没听过你说话呢。今天如果愿意，就轻轻叫我一声吧。一句就好，让我把文字背后的你也认识一点点。 | 播放期间高亮聊天窗；外置聊天窗模式使用 `window` kind。Ghost Cursor 移到聊天窗中心或输入区附近并停留，不左右晃动。台词结束后清理聊天窗高光，保留上一段可见 cursor 锚点，供下一句平滑移动使用。 |
+| 1 | `day2_intro_context` | 默认：昨天你一直在噼里啪啦打字，我还没听过你说话呢。今天如果愿意，就轻轻叫我一声吧。一句就好，让我把文字背后的你也认识一点点。`voiceUsed=true`：嘿嘿，昨天听到你的声音之后，人家就悄悄把你的语气记在心里啦！今天如果方便的话，也要继续跟人家说话哦~ 虽然打字也可以啦，但只要能听到你的声音，我的尾巴就会开心得一直摇个不停呢，喵呜~ | 播放期间高亮聊天窗；外置聊天窗模式使用 `window` kind。Ghost Cursor 移到聊天窗中心或输入区附近并停留，不左右晃动。台词结束后清理聊天窗高光，保留上一段可见 cursor 锚点，供下一句平滑移动使用。 |
 | 2 | `day2_personalization_space` | 在这个只属于我们的小空间里，你可以由着自己的心意，慢慢描绘出最希望能一直陪着你的那个我。 | 收起前一段聊天窗高光后，圆形高亮设置按钮 `#${p}-btn-settings`。Ghost Cursor 从聊天窗锚点平滑移动到设置按钮并停留；到达打开设置的 cue 时播放点击动画，同时调用设置面板打开 API。设置弹窗出现后清理设置按钮主高光，等待面板稳定；本句不展开【角色设置】按钮侧边栏。 |
 | 3 | `day2_personalization_detail` | 不管是说话的温度、相处的小脾气，还是我每天那些细腻的小心思，都可以一点一点调成你喜欢的样子。 | 圆角矩形高亮【角色设置】按钮；Ghost Cursor 平滑移动到【角色设置】按钮，播放完整模拟点击动画，点击动画完成后才触发【角色设置】按钮侧边栏显示。侧边栏出现后，圆角矩形高亮从【角色设置】按钮过渡到【角色设置】按钮侧边栏，且【角色设置】按钮自身作为 persistent 高光继续保留；Ghost Cursor 平滑移动到侧边栏，并在侧边栏内做椭圆运动直到本句台词播放完毕；本句播放完后隐藏【角色设置】按钮侧边栏，并同步清理【角色设置】按钮和侧边栏上的所有高光。不保存临时配置。 |
 | 4 | `day2_proactive_chat` | 这个小按钮也很重要哦，只要你轻轻点一下，我就能在合适的时候跑过去找你啦。 | primary 平滑切到主动搭话开关 `#${p}-toggle-proactive-chat` 本体，不再保留【角色设置】按钮 persistent 高光。Ghost Cursor 平滑移动到该开关并停留指认，不左右晃动；不点击，不打开 `interval-proactive-chat` 侧边栏，不改变用户配置。台词播放完后清理主动搭话开关高光，并关闭教程临时打开的【设置】面板和设置侧边栏。 |
@@ -48,11 +48,15 @@ UniversalTutorialManager.startAvatarFloatingGuideRound(2)
 - `static/yui-guide-director.js`
   - `getYuiGuideDailyGuide(2)`
   - `resolveAvatarFloatingSceneText()`
+  - `resolveAvatarFloatingSceneVoiceKey()`
   - `resolveAvatarFloatingSceneEmotion()`
   - `playAvatarFloatingScene()`
   - `runAvatarFloatingSceneOperation()`
 - `static/yui-guide-day2-screen-voice-guide.js`
   - Day 2 scene 配置、台词、voice key、收尾 `petalTransition`。
+  - `avatar_floating_day2_intro_voice_used` 五语种音频统一使用中文台词前 10 个字符文件名：`嘿嘿，昨天听到你的声.mp3`，分别放在 `zh`、`ja`、`en`、`ko`、`ru` 目录。
+- `static/locales/{zh-CN,zh-TW,en,ja,ko,ru,es,pt}.json`
+  - `tutorial.avatarFloating.day2.introVoiceUsed`，其中 `es` / `pt` 复用英文文案。
 - 设置与主动搭话目标：
   - `#${p}-btn-settings`
   - 设置弹窗侧边栏容器 / `[data-neko-sidepanel-type]`
@@ -85,7 +89,7 @@ UniversalTutorialManager.startAvatarFloatingGuideRound(2)
 ## 验收清单
 
 1. Day 2 scene 顺序与本文一致。
-2. `day2_intro_context` 文案、text key 和 voice key 保持原样。
+2. `day2_intro_context` 默认分支文案、text key 和 voice key 保持原样；`voiceUsed=true` 分支必须使用 `tutorial.avatarFloating.day2.introVoiceUsed` 和 `avatar_floating_day2_intro_voice_used`，且五语种录音文件名统一为 `嘿嘿，昨天听到你的声.mp3`。
 3. 设置按钮、设置侧边栏、主动搭话入口都有明确高光目标、Ghost Cursor 路径和禁止点击/保存约束。
 4. Day 2 主线不触发屏幕分享、主动搭话或用户配置保存。
 5. Day 2 主线普通指认统一使用平滑移动和停留。

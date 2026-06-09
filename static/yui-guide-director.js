@@ -795,6 +795,13 @@
             ko: 11024,
             ru: 7993
         }),
+        avatar_floating_day2_intro_voice_used: Object.freeze({
+            zh: 20208,
+            ja: 21682,
+            en: 19931,
+            ko: 25992,
+            ru: 19566
+        }),
         avatar_floating_day6_wrap: Object.freeze({
             zh: 11340,
             ja: 15438,
@@ -3950,10 +3957,17 @@
         resolveAvatarFloatingSceneText(scene) {
             if (scene && scene.id === 'day2_intro_context') {
                 return hasAvatarFloatingGuideUsage('voiceUsed')
-                    ? '昨天听见你的声音以后，我就偷偷记住了一点点你的语气。今天如果方便，也可以继续叫我。打字当然也可以，只是听见你时，我会更像真的坐在你旁边，尾巴都会轻轻晃起来喵。'
+                    ? this.resolveGuideCopy('tutorial.avatarFloating.day2.introVoiceUsed', scene.text || '')
                     : '昨天你一直在噼里啪啦打字，我还没听过你说话呢。今天如果愿意，就轻轻叫我一声吧。一句就好，让我把文字背后的你也认识一点点。';
             }
             return this.resolveGuideCopy(scene.textKey || '', scene.text || '');
+        }
+
+        resolveAvatarFloatingSceneVoiceKey(scene) {
+            if (scene && scene.id === 'day2_intro_context' && hasAvatarFloatingGuideUsage('voiceUsed')) {
+                return 'avatar_floating_day2_intro_voice_used';
+            }
+            return scene && typeof scene.voiceKey === 'string' ? scene.voiceKey : '';
         }
 
         resolveAvatarFloatingSceneEmotion(scene) {
@@ -9597,7 +9611,7 @@
             }
 
             const text = this.resolveAvatarFloatingSceneText(scene);
-            const voiceKey = scene.voiceKey || '';
+            const voiceKey = this.resolveAvatarFloatingSceneVoiceKey(scene);
             const sceneButtons = this.getAvatarFloatingSceneButtons(scene);
             const canHandleSceneButtons = sceneButtons.length > 0
                 ? this.installGuideMessageActionHandler()
