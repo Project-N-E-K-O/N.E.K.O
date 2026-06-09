@@ -4787,11 +4787,15 @@ async def game_project_context(game_type: str, request: Request):
     if not mgr:
         return {"ok": False, "reason": "no_session_manager", "lanlan_name": lanlan_name}
 
+    append_icebreaker_context_async = getattr(mgr, "append_icebreaker_context_async", None)
     append_icebreaker_context = getattr(mgr, "append_icebreaker_context", None)
-    if not callable(append_icebreaker_context):
+    if callable(append_icebreaker_context_async):
+        ok = await append_icebreaker_context_async(role, text)
+    elif callable(append_icebreaker_context):
+        ok = append_icebreaker_context(role, text)
+    else:
         return {"ok": False, "reason": "context_method_unavailable", "lanlan_name": lanlan_name}
 
-    ok = append_icebreaker_context(role, text)
     return {
         "ok": bool(ok),
         "method": "project_session_history",

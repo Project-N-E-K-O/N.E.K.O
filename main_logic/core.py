@@ -2640,10 +2640,21 @@ class LLMSessionManager:
             return False
         return True
 
-    def _append_icebreaker_context_to_session(self, role: str, text: str) -> bool:
-        history = getattr(getattr(self, "session", None), "_conversation_history", None)
-        if not isinstance(history, list):
-            return False
+    def _queue_pending_icebreaker_context(self, role: str, text: str) -> None:
+        pending = getattr(self, "pending_icebreaker_context", None)
+        if not isinstance(pending, list):
+            pending = []
+            self.pending_icebreaker_context = pending
+        pending.append((role, text))
+        if len(pending) > 80:
+            del pending[:-80]
+
+    @staticmethod
+    def _render_icebreaker_context_for_realtime(role: str, text: str) -> str:
+        return f"{role}: {text}"
+
+    @staticmethod
+    def _append_icebreaker_context_to_history(history: list, role: str, text: str) -> bool:
         if role == "user":
             history.append(HumanMessage(content=text))
             return True
@@ -2651,6 +2662,54 @@ class LLMSessionManager:
             history.append(AIMessage(content=text))
             return True
         return False
+
+    async def _prime_icebreaker_context_to_realtime_session(self, session, role: str, text: str) -> None:
+        try:
+            await session.prime_context(
+                self._render_icebreaker_context_for_realtime(role, text),
+                skipped=True,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[%s] icebreaker realtime context prime failed; re-queueing role=%s: %s",
+                getattr(self, "lanlan_name", "?"),
+                role,
+                exc,
+            )
+            self._queue_pending_icebreaker_context(role, text)
+
+    def _append_icebreaker_context_to_session(self, role: str, text: str) -> bool:
+        session = getattr(self, "session", None)
+        history = getattr(session, "_conversation_history", None)
+        if not isinstance(history, list):
+            prime_context = getattr(session, "prime_context", None)
+            if not callable(prime_context):
+                return False
+            try:
+                self._fire_task(self._prime_icebreaker_context_to_realtime_session(session, role, text))
+            except RuntimeError:
+                return False
+            return True
+        return self._append_icebreaker_context_to_history(history, role, text)
+
+    async def append_icebreaker_context_async(self, role: str, text: str) -> bool:
+        clean_role = str(role or "").strip()
+        clean_text = str(text or "").strip()
+        if clean_role not in {"assistant", "user"} or not clean_text:
+            return False
+
+        session = getattr(self, "session", None)
+        history = getattr(session, "_conversation_history", None)
+        if isinstance(history, list):
+            return self._append_icebreaker_context_to_history(history, clean_role, clean_text)
+
+        prime_context = getattr(session, "prime_context", None)
+        if callable(prime_context):
+            await self._prime_icebreaker_context_to_realtime_session(session, clean_role, clean_text)
+            return True
+
+        self._queue_pending_icebreaker_context(clean_role, clean_text)
+        return True
 
     def append_icebreaker_context(self, role: str, text: str) -> bool:
         clean_role = str(role or "").strip()
@@ -2661,20 +2720,17 @@ class LLMSessionManager:
         if self._append_icebreaker_context_to_session(clean_role, clean_text):
             return True
 
-        pending = getattr(self, "pending_icebreaker_context", None)
-        if not isinstance(pending, list):
-            pending = []
-            self.pending_icebreaker_context = pending
-        pending.append((clean_role, clean_text))
-        if len(pending) > 80:
-            del pending[:-80]
+        self._queue_pending_icebreaker_context(clean_role, clean_text)
         return True
 
     def _flush_pending_icebreaker_context(self) -> None:
         pending = getattr(self, "pending_icebreaker_context", None)
         if not isinstance(pending, list) or not pending:
             return
-        if not isinstance(getattr(getattr(self, "session", None), "_conversation_history", None), list):
+        session = getattr(self, "session", None)
+        has_history = isinstance(getattr(session, "_conversation_history", None), list)
+        has_prime_context = callable(getattr(session, "prime_context", None))
+        if not (has_history or has_prime_context):
             return
 
         remaining: list[tuple[str, str]] = []

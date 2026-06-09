@@ -1,3 +1,5 @@
+import asyncio
+
 from main_logic.core import LLMSessionManager
 from utils.llm_client import AIMessage, HumanMessage
 
@@ -7,10 +9,19 @@ class _FakeSession:
         self._conversation_history = []
 
 
+class _FakeRealtimeSession:
+    def __init__(self):
+        self.prime_context_calls = []
+
+    async def prime_context(self, text, skipped=False):
+        self.prime_context_calls.append((text, skipped))
+
+
 def _make_mgr(session=None):
     mgr = LLMSessionManager.__new__(LLMSessionManager)
     mgr.session = session
     mgr.pending_icebreaker_context = []
+    mgr._bg_tasks = set()
     return mgr
 
 
@@ -42,6 +53,39 @@ def test_icebreaker_context_waits_for_next_session_when_none_active():
     history = mgr.session._conversation_history
     assert [type(message) for message in history] == [AIMessage, HumanMessage]
     assert [message.content for message in history] == ["先认识一下", "看得差不多了"]
+    assert mgr.pending_icebreaker_context == []
+
+
+async def test_icebreaker_context_primes_active_realtime_session_immediately():
+    session = _FakeRealtimeSession()
+    mgr = _make_mgr(session)
+
+    assert LLMSessionManager.append_icebreaker_context(mgr, "assistant", "先认识一下") is True
+    assert LLMSessionManager.append_icebreaker_context(mgr, "user", "我选第一个") is True
+    await asyncio.gather(*mgr._bg_tasks)
+
+    assert session.prime_context_calls == [
+        ("assistant: 先认识一下", True),
+        ("user: 我选第一个", True),
+    ]
+    assert mgr.pending_icebreaker_context == []
+
+
+async def test_pending_icebreaker_context_flushes_to_realtime_session():
+    session = _FakeRealtimeSession()
+    mgr = _make_mgr(None)
+
+    assert LLMSessionManager.append_icebreaker_context(mgr, "assistant", "先认识一下") is True
+    assert LLMSessionManager.append_icebreaker_context(mgr, "user", "我选第一个") is True
+    mgr.session = session
+
+    LLMSessionManager._flush_pending_icebreaker_context(mgr)
+    await asyncio.gather(*mgr._bg_tasks)
+
+    assert session.prime_context_calls == [
+        ("assistant: 先认识一下", True),
+        ("user: 我选第一个", True),
+    ]
     assert mgr.pending_icebreaker_context == []
 
 
