@@ -23,7 +23,11 @@
 
     function zhAudio(fileName) {
         return Object.freeze({
-            zh: fileName
+            zh: fileName,
+            ja: fileName,
+            en: fileName,
+            ko: fileName,
+            ru: fileName
         });
     }
 

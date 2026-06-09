@@ -5,7 +5,8 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 const repoRoot = path.resolve(__dirname, '..');
-const zhAudioDir = path.join(__dirname, 'assets', 'tutorial', 'guide-audio', 'zh');
+const guideAudioRoot = path.join(__dirname, 'assets', 'tutorial', 'guide-audio');
+const supportedRecordedLocales = ['zh', 'ja', 'en', 'ko', 'ru'];
 const guideFiles = [
     'yui-guide-day1-home-guide.js',
     'yui-guide-day2-screen-voice-guide.js',
@@ -49,24 +50,19 @@ function mergeAudioFilesByKey(guides) {
     return result;
 }
 
-test('daily tutorial round scenes have recorded zh audio files', () => {
+test('daily tutorial round scenes have recorded audio files for supported locales', () => {
     const guides = loadGuides();
     const audioFilesByKey = mergeAudioFilesByKey(guides);
-    const allowedMissing = new Set([
-        '5:day5_wrap:avatar_floating_day5_wrap'
-    ]);
     const missing = [];
 
     for (const entry of collectRoundVoiceKeys(guides)) {
         const files = audioFilesByKey[entry.voiceKey];
-        const zhFile = files && typeof files.zh === 'string' ? files.zh : '';
         const missingKey = `${entry.day}:${entry.sceneId}:${entry.voiceKey}`;
-        if (allowedMissing.has(missingKey)) {
-            assert.equal(zhFile, '');
-            continue;
-        }
-        if (!zhFile || !fs.existsSync(path.join(zhAudioDir, zhFile))) {
-            missing.push(`${missingKey}:${zhFile || '<no zh file>'}`);
+        for (const locale of supportedRecordedLocales) {
+            const audioFile = files && typeof files[locale] === 'string' ? files[locale] : '';
+            if (!audioFile || !fs.existsSync(path.join(guideAudioRoot, locale, audioFile))) {
+                missing.push(`${missingKey}:${locale}:${audioFile || '<no file>'}`);
+            }
         }
     }
 

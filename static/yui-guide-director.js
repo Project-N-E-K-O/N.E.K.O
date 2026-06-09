@@ -719,84 +719,88 @@
 
     const GUIDE_AUDIO_DURATIONS_BY_KEY = Object.freeze({
         intro_basic: Object.freeze({
-            zh: 15020,
-            ja: 19418,
-            en: 12957,
-            ko: 20297,
-            ru: 15726
+            zh: 12576,
+            ja: 19984,
+            en: 13166,
+            ko: 17424,
+            ru: 17032
         }),
         intro_greeting_reply: Object.freeze({
-            zh: 15020,
-            ja: 19178,
-            en: 17058,
-            ko: 23066,
-            ru: 19122
+            zh: 15680,
+            ja: 22021,
+            en: 22596,
+            ko: 19957,
+            ru: 18991
         }),
         takeover_capture_cursor: Object.freeze({
-            zh: 21760,
-            ja: 27714,
-            en: 23066,
-            ko: 26671,
-            ru: 24085
+            zh: 22580,
+            ja: 28238,
+            en: 24712,
+            ko: 23040,
+            ru: 25966
         }),
         takeover_plugin_preview_home: Object.freeze({
-            zh: 4937,
-            ja: 7097,
-            en: 5251,
-            ko: 6609,
-            ru: 4885
+            zh: 3780,
+            ja: 6374,
+            en: 6243,
+            ko: 7131,
+            ru: 5721
         }),
         takeover_plugin_preview_dashboard: Object.freeze({
-            zh: 8333,
-            ja: 13097,
-            en: 11024,
-            ko: 12408,
-            ru: 10188
+            zh: 9400,
+            ja: 15334,
+            en: 11807,
+            ko: 12565,
+            ru: 13009
         }),
         takeover_settings_peek_intro: Object.freeze({
-            zh: 9800,
-            ja: 13097,
-            en: 13113,
-            ko: 16535,
-            ru: 13662
+            zh: 7680,
+            ja: 8882,
+            en: 10841,
+            ko: 10240,
+            ru: 11729
         }),
         takeover_settings_peek_detail: Object.freeze({
-            zh: 14263,
-            ja: 19497,
-            en: 16170,
-            ko: 21629,
-            ru: 17711
+            zh: 9540,
+            ja: 11337,
+            en: 12042,
+            ko: 11206,
+            ru: 10240
         }),
         interrupt_resist_light_1: Object.freeze({
-            zh: 3265,
-            ja: 5337,
-            en: 3579,
-            ko: 4180,
-            ru: 3109
+            zh: 3920,
+            ja: 4989,
+            en: 3396,
+            ko: 5460,
+            ru: 4101
         }),
         interrupt_resist_light_3: Object.freeze({
-            zh: 4049,
-            ja: 7257,
-            en: 4232,
+            zh: 3500,
+            ja: 6713,
+            en: 4650,
             ko: 5825,
-            ru: 4702
+            ru: 5590
         }),
         interrupt_angry_exit: Object.freeze({
-            zh: 8124,
-            ja: 13898,
-            en: 8411,
-            ko: 9900,
-            ru: 10841
+            zh: 8660,
+            ja: 11206,
+            en: 11990,
+            ko: 9953,
+            ru: 10736
         }),
         takeover_return_control: Object.freeze({
-            zh: 11938,
-            ja: 14640,
-            en: 11990,
-            ko: 13766,
-            ru: 11964
+            zh: 7500,
+            ja: 9822,
+            en: 9770,
+            ko: 11024,
+            ru: 7993
         }),
         avatar_floating_day6_wrap: Object.freeze({
-            zh: 11340
+            zh: 11340,
+            ja: 15438,
+            en: 13949,
+            ko: 16326,
+            ru: 12330
         })
     });
 

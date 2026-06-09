@@ -36,7 +36,7 @@
         intro_basic: '这里有一个神奇的按钮.mp3',
         intro_greeting_reply: '微风、阳光，还有刚刚.mp3',
         takeover_capture_cursor: '超级魔法开关出现！只.mp3',
-        takeover_plugin_preview_home: '',
+        takeover_plugin_preview_home: '除了之前介绍的功能，.mp3',
         takeover_plugin_preview_dashboard: '有了它们，我不光能看.mp3',
         takeover_settings_peek_intro: '在这个只属于我们的小.mp3',
         takeover_settings_peek_detail: '不管是说话的温度、相.mp3',
