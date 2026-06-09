@@ -73,7 +73,7 @@ svg {
   position: fixed;
   top: 0;
   left: 0;
-  z-index: 9998;
+  z-index: 100006;
   pointer-events: none;
   will-change: transform;
 }
@@ -258,7 +258,7 @@ svg {
   position: fixed;
   top: 0;
   left: 0;
-  z-index: 9999;
+  z-index: 100006;
   pointer-events: none;
   will-change: transform;
 }

@@ -3974,6 +3974,80 @@ export default function FullChatSurface({
   const compactChoiceLayerNode = isCompactSurface
     ? (typeof document !== 'undefined' ? createPortal(choiceLayerNode, document.body) : choiceLayerNode)
     : null;
+  const avatarCursorOverlayNode = activeToolItem && activeCursorToolId !== 'hammer' && avatarCursorOverlayActive ? (
+    <div
+      ref={avatarCursorOverlayRef}
+      className={`avatar-cursor-overlay avatar-cursor-overlay-${activeToolItem.id}${avatarCursorOverlayActive ? ' is-visible' : ''}${avatarCursorOverlayCompact ? ' is-compact' : ''}`}
+      aria-hidden="true"
+    >
+      <div
+        className="avatar-cursor-overlay-stage"
+        style={{
+          transformOrigin: `${activeToolItem.cursorHotspotX ?? 18}px ${activeToolItem.cursorHotspotY ?? 18}px`,
+        }}
+      >
+        <img
+          className={`avatar-cursor-overlay-image avatar-cursor-overlay-image-${activeToolItem.id}`}
+          src={avatarCursorOverlayImagePath}
+          alt=""
+        />
+      </div>
+    </div>
+  ) : null;
+  const hammerCursorOverlayNode = hammerToolItem && hammerCursorOverlayActive ? (
+    <div
+      ref={hammerCursorOverlayRef}
+      className={`hammer-cursor-overlay${hammerCursorOverlayActive ? ' is-visible' : ''}${hammerCursorOverlayCompact ? ' is-compact' : ''}${isInnerHammerEasterEggActive ? ' is-easter-egg' : ''}`}
+      aria-hidden="true"
+    >
+      <div
+        className="hammer-cursor-overlay-stage"
+        style={{
+          transformOrigin: `${hammerToolItem.cursorHotspotX ?? 18}px ${hammerToolItem.cursorHotspotY ?? 18}px`,
+        }}
+      >
+        {hammerCursorOverlayUsesCompactImage ? (
+          <img
+            className="hammer-cursor-overlay-compact-image"
+            src={hammerCursorOverlayCompactImagePath}
+            alt=""
+          />
+        ) : (
+          <div
+            className={`hammer-cursor-overlay-visual${hammerCursorOverlayMotionActive ? ' is-active' : ' is-idle'}${hammerSwingPhase === 'impact' ? ' is-impact' : ''}`}
+            style={{
+              transformOrigin: `${hammerOverlayTransformOrigin.x}px ${hammerOverlayTransformOrigin.y}px`,
+            }}
+          >
+            <img
+              className="hammer-cursor-overlay-image hammer-cursor-overlay-image-primary"
+              src={hammerCursorOverlayPrimaryImagePath}
+              alt=""
+            />
+            <img
+              className="hammer-cursor-overlay-image hammer-cursor-overlay-image-secondary"
+              src={hammerCursorOverlaySecondaryImagePath}
+              alt=""
+            />
+          </div>
+        )}
+      </div>
+    </div>
+  ) : null;
+  const avatarToolCursorOverlayNodes = typeof document !== 'undefined'
+    ? createPortal(
+      <>
+        {avatarCursorOverlayNode}
+        {hammerCursorOverlayNode}
+      </>,
+      document.body,
+    )
+    : (
+      <>
+        {avatarCursorOverlayNode}
+        {hammerCursorOverlayNode}
+      </>
+    );
 
   const messageListNode = (
     <MessageList
@@ -4092,66 +4166,7 @@ export default function FullChatSurface({
           <span className="lollipop-floating-heart-glyph">*</span>
         </span>
       ))}
-      {activeToolItem && activeCursorToolId !== 'hammer' && avatarCursorOverlayActive ? (
-        <div
-          ref={avatarCursorOverlayRef}
-          className={`avatar-cursor-overlay avatar-cursor-overlay-${activeToolItem.id}${avatarCursorOverlayActive ? ' is-visible' : ''}${avatarCursorOverlayCompact ? ' is-compact' : ''}`}
-          aria-hidden="true"
-        >
-          <div
-            className="avatar-cursor-overlay-stage"
-            style={{
-              transformOrigin: `${activeToolItem.cursorHotspotX ?? 18}px ${activeToolItem.cursorHotspotY ?? 18}px`,
-            }}
-          >
-            <img
-              className={`avatar-cursor-overlay-image avatar-cursor-overlay-image-${activeToolItem.id}`}
-              src={avatarCursorOverlayImagePath}
-              alt=""
-            />
-          </div>
-        </div>
-      ) : null}
-      {hammerToolItem && hammerCursorOverlayActive ? (
-        <div
-          ref={hammerCursorOverlayRef}
-          className={`hammer-cursor-overlay${hammerCursorOverlayActive ? ' is-visible' : ''}${hammerCursorOverlayCompact ? ' is-compact' : ''}${isInnerHammerEasterEggActive ? ' is-easter-egg' : ''}`}
-          aria-hidden="true"
-        >
-          <div
-            className="hammer-cursor-overlay-stage"
-            style={{
-              transformOrigin: `${hammerToolItem.cursorHotspotX ?? 18}px ${hammerToolItem.cursorHotspotY ?? 18}px`,
-            }}
-          >
-            {hammerCursorOverlayUsesCompactImage ? (
-              <img
-                className="hammer-cursor-overlay-compact-image"
-                src={hammerCursorOverlayCompactImagePath}
-                alt=""
-              />
-            ) : (
-              <div
-                className={`hammer-cursor-overlay-visual${hammerCursorOverlayMotionActive ? ' is-active' : ' is-idle'}${hammerSwingPhase === 'impact' ? ' is-impact' : ''}`}
-                style={{
-                  transformOrigin: `${hammerOverlayTransformOrigin.x}px ${hammerOverlayTransformOrigin.y}px`,
-                }}
-              >
-                <img
-                  className="hammer-cursor-overlay-image hammer-cursor-overlay-image-primary"
-                  src={hammerCursorOverlayPrimaryImagePath}
-                  alt=""
-                />
-                <img
-                  className="hammer-cursor-overlay-image hammer-cursor-overlay-image-secondary"
-                  src={hammerCursorOverlaySecondaryImagePath}
-                  alt=""
-                />
-              </div>
-	                  )}
-                </div>
-              </div>
-      ) : null}
+      {avatarToolCursorOverlayNodes}
       <section
         className={`chat-window ${surfaceModeClassName}`}
         aria-label={chatWindowAriaLabel}
