@@ -768,7 +768,7 @@
         var detail = event && event.detail ? event.detail : {};
         var eventType = event && event.type ? String(event.type) : '';
         window.setTimeout(function () {
-            startFromEndState(resolveLatestEndState(detail, eventType));
+            startFromEndStateWhenTutorialIdle(resolveLatestEndState(detail, eventType));
         }, 500);
     }
 

@@ -346,8 +346,8 @@ def test_icebreaker_tutorial_end_events_start_from_explicit_event_state():
 
     assert match is not None
     body = match.group("body")
-    assert "startFromEndState(resolveLatestEndState(detail, eventType))" in body
-    assert "startFromEndStateWhenTutorialIdle(resolveLatestEndState(detail, eventType))" not in body
+    assert "startFromEndState(resolveLatestEndState(detail, eventType))" not in body
+    assert "startFromEndStateWhenTutorialIdle(resolveLatestEndState(detail, eventType))" in body
 
 
 def test_icebreaker_does_not_bootstrap_from_persisted_end_state_on_cold_start():
