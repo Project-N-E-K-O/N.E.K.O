@@ -98,7 +98,7 @@
 | `lollipop` | `tap_soft` | `burst` | 短时间内连续递到嘴边，角色吃了好几口 |
 | `fist` | `poke` | `normal` | 猫爪轻轻碰一次 |
 | `fist` | `poke` | `rapid` | 猫爪连续轻轻碰几次 |
-| `fist` | `poke` | `reward_drop=True` | 猫爪轻碰时掉出奖励 |
+| `fist` | `poke` | `reward_drop=True` | 猫爪轻碰或连续轻碰时掉出奖励，不覆盖原 intensity 事实 |
 | `hammer` | `bonk` | `normal` | 锤子敲中一次 |
 | `hammer` | `bonk` | `rapid` | 短时间内又敲中一次 |
 | `hammer` | `bonk` | `burst` | 锤子连续快速敲中好几次 |

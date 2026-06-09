@@ -353,6 +353,10 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
                     "reaction_focus": "{actor}刚刚用猫爪轻轻碰你时掉出了奖励。",
                     "style_hint": "猫爪轻碰并掉出奖励。",
                 },
+                "reward_drop_rapid": {
+                    "reaction_focus": "{actor}刚刚用猫爪连续轻轻碰了你几下时掉出了奖励。",
+                    "style_hint": "猫爪连续轻碰并掉出奖励。",
+                },
             },
         },
         "hammer": {
@@ -414,6 +418,10 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
                 "reward_drop": {
                     "reaction_focus": "{actor} just lightly touched you with the cat paw, and a reward dropped.",
                     "style_hint": "Cat-paw touch with reward drop.",
+                },
+                "reward_drop_rapid": {
+                    "reaction_focus": "{actor} just lightly touched you several times with the cat paw, and a reward dropped.",
+                    "style_hint": "Repeated cat-paw touches with reward drop.",
                 },
             },
         },
@@ -477,6 +485,10 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
                     "reaction_focus": "{actor}剛剛用貓爪輕輕碰你時掉出了獎勵。",
                     "style_hint": "貓爪輕碰並掉出獎勵。",
                 },
+                "reward_drop_rapid": {
+                    "reaction_focus": "{actor}剛剛用貓爪連續輕輕碰了你幾下時掉出了獎勵。",
+                    "style_hint": "貓爪連續輕碰並掉出獎勵。",
+                },
             },
         },
         "hammer": {
@@ -538,6 +550,10 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
                 "reward_drop": {
                     "reaction_focus": "{actor}が今、猫の肉球で軽く触れた時に報酬が落ちた。",
                     "style_hint": "猫の肉球接触と報酬ドロップ。",
+                },
+                "reward_drop_rapid": {
+                    "reaction_focus": "{actor}が今、猫の肉球で何度か続けて軽く触れた時に報酬が落ちた。",
+                    "style_hint": "猫の肉球の連続接触と報酬ドロップ。",
                 },
             },
         },
@@ -601,6 +617,10 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
                     "reaction_focus": "{actor} 방금 고양이 발로 가볍게 건드렸을 때 보상이 떨어졌다.",
                     "style_hint": "고양이 발 터치와 보상 드롭.",
                 },
+                "reward_drop_rapid": {
+                    "reaction_focus": "{actor} 방금 고양이 발로 여러 번 가볍게 건드렸을 때 보상이 떨어졌다.",
+                    "style_hint": "고양이 발 연속 터치와 보상 드롭.",
+                },
             },
         },
         "hammer": {
@@ -662,6 +682,10 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
                 "reward_drop": {
                     "reaction_focus": "{actor} только что легко коснулся тебя кошачьей лапкой, и выпала награда.",
                     "style_hint": "Касание кошачьей лапкой и выпадение награды.",
+                },
+                "reward_drop_rapid": {
+                    "reaction_focus": "{actor} только что несколько раз легко коснулся тебя кошачьей лапкой, и выпала награда.",
+                    "style_hint": "Повторяющиеся касания кошачьей лапкой и выпадение награды.",
                 },
             },
         },
@@ -725,6 +749,10 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
                     "reaction_focus": "{actor} acaba de tocarte con la patita de gato y cayó una recompensa.",
                     "style_hint": "Toque de patita de gato con recompensa.",
                 },
+                "reward_drop_rapid": {
+                    "reaction_focus": "{actor} acaba de tocarte varias veces con la patita de gato y cayó una recompensa.",
+                    "style_hint": "Toques repetidos de patita de gato con recompensa.",
+                },
             }
         },
         "hammer": {
@@ -786,6 +814,10 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
                 "reward_drop": {
                     "reaction_focus": "{actor} acabou de tocar em você com a patinha de gato e caiu uma recompensa.",
                     "style_hint": "Toque de patinha de gato com recompensa.",
+                },
+                "reward_drop_rapid": {
+                    "reaction_focus": "{actor} acabou de tocar em você várias vezes com a patinha de gato e caiu uma recompensa.",
+                    "style_hint": "Toques repetidos de patinha de gato com recompensa.",
                 },
             }
         },
@@ -1510,7 +1542,8 @@ def _build_avatar_interaction_instruction(
         .get(action_id, {})
     )
     if payload.get("reward_drop") and action_profiles.get("reward_drop"):
-        reaction_profile = action_profiles["reward_drop"]
+        reward_key = f"reward_drop_{intensity}"
+        reaction_profile = action_profiles.get(reward_key) or action_profiles["reward_drop"]
     else:
         reaction_profile = (
             action_profiles.get(intensity)

@@ -215,6 +215,24 @@ def test_avatar_instruction_named_master_still_uses_given_actor():
 
 
 @pytest.mark.unit
+def test_avatar_instruction_rapid_fist_reward_keeps_repeated_touch_fact():
+    instruction = _build_avatar_interaction_instruction(
+        "zh",
+        "YUI",
+        "哥哥",
+        {
+            "tool_id": "fist",
+            "action_id": "poke",
+            "intensity": "rapid",
+            "reward_drop": True,
+        },
+    )
+
+    assert "连续轻轻碰" in instruction
+    assert "奖励" in instruction
+
+
+@pytest.mark.unit
 def test_game_route_auto_assistant_lines_are_game_only_for_ordinary_memory():
     assert is_mirror_assistant_message({
         "type": "gemini_response",

@@ -374,6 +374,9 @@ def check_a_happy_paths(client, mock) -> list[str]:
         _check("奖励" in instruction_d, "A1d.reward_drop_line",
                f"instruction missing reward_drop event fact; "
                f"前 400 字符: {instruction_d[:400]!r}")
+        _check("连续" in instruction_d, "A1d.rapid_reward_keeps_intensity",
+               f"rapid+reward instruction lost repeated-touch fact; "
+               f"前 400 字符: {instruction_d[:400]!r}")
         _check("输入框草稿" not in instruction_d, "A1d.no_text_context_label",
                f"compact avatar instruction leaked text_context label: "
                f"{instruction_d[:400]!r}")
