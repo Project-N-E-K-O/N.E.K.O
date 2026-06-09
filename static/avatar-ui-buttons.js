@@ -2344,6 +2344,11 @@ function _getNekoIdleCat1CompactTopEdgeTarget(container, surfaceRect, options = 
 }
 
 function _getNekoIdleCat1Target(container, chatRect, options = {}) {
+    const minimizedSideTarget = _getNekoIdleCat1SideTarget(container, chatRect);
+    if (minimizedSideTarget) {
+        return minimizedSideTarget;
+    }
+
     const compactSurfaceRect = _getNekoIdleChatCompactSurfaceRect();
     const compactTarget = _getNekoIdleCat1CompactTopEdgeTarget(container, compactSurfaceRect, {
         anchorRatio: options.anchorRatio
@@ -2354,7 +2359,7 @@ function _getNekoIdleCat1Target(container, chatRect, options = {}) {
         compactTarget.distance <= _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_FOLLOW_DISTANCE_PX) {
         return compactTarget;
     }
-    return _getNekoIdleCat1SideTarget(container, chatRect);
+    return null;
 }
 
 function _setNekoIdleCat1ContainerPosition(container, left, top) {

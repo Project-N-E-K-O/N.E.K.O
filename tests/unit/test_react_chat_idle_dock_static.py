@@ -154,6 +154,21 @@ def test_react_chat_broadcasts_minimized_screen_rect_for_cat1_follow():
     assert "_NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS = 2500" in avatar_source
 
 
+def test_cat1_minimized_ball_target_wins_over_stale_compact_surface():
+    source = _read(AVATAR_UI_BUTTONS_PATH)
+    target_block = _between(
+        source,
+        "function _getNekoIdleCat1Target(container, chatRect, options = {}) {",
+        "function _setNekoIdleCat1ContainerPosition",
+    )
+
+    side_index = target_block.index("const minimizedSideTarget = _getNekoIdleCat1SideTarget(container, chatRect);")
+    return_side_index = target_block.index("return minimizedSideTarget;")
+    compact_index = target_block.index("const compactSurfaceRect = _getNekoIdleChatCompactSurfaceRect();")
+    assert side_index < return_side_index < compact_index
+    assert "return null;" in target_block
+
+
 def test_electron_chat_loads_interpage_before_react_chat_for_desktop_cat1_sync():
     source = _read(CHAT_TEMPLATE_PATH)
 
