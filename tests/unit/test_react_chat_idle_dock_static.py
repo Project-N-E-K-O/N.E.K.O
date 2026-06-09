@@ -169,6 +169,68 @@ def test_cat1_minimized_ball_target_wins_over_stale_compact_surface():
     assert "return null;" in target_block
 
 
+def test_desktop_cat1_minimized_and_compact_surface_state_are_timestamp_ordered():
+    source = _read(AVATAR_UI_BUTTONS_PATH)
+
+    assert "sourceUpdatedAt: 0" in source
+    assert "expandedRecent: false" in source
+    assert "function _getNekoIdleDesktopStateSourceUpdatedAt(detail, fallbackUpdatedAt)" in source
+    assert "function _isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, state)" in source
+    assert "function _isNekoIdleDesktopStateNewerThan(sourceUpdatedAt, state)" in source
+    assert "function _makeNekoIdleDesktopChatMinimizedState(minimized, screenRect, updatedAt, sourceUpdatedAt, expandedRecent)" in source
+    assert "function _makeNekoIdleDesktopCompactSurfaceState(visible, screenRect, updatedAt, sourceUpdatedAt)" in source
+    assert "if (state.expandedRecent === false) return false;" in source
+
+    pair_move_block = _between(
+        source,
+        "function _rememberNekoIdleDesktopChatPairMoveRect(screenRect) {",
+        "function _dispatchNekoIdleDesktopChatPairMoveBounds(screenRect) {",
+    )
+    assert "_nekoIdleDesktopChatMinimizedState = _makeNekoIdleDesktopChatMinimizedState(" in pair_move_block
+    assert "_nekoIdleDesktopCompactSurfaceState = _makeNekoIdleDesktopCompactSurfaceState(" in pair_move_block
+
+    desktop_compact_rect = _between(
+        source,
+        "function _getNekoIdleDesktopCompactSurfaceRect() {",
+        "function _getNekoIdleChatCompactSurfaceRect() {",
+    )
+    assert "_nekoIdleDesktopChatMinimizedState.minimized" in desktop_compact_rect
+    assert "_isNekoIdleDesktopStateNewerThan(_nekoIdleDesktopChatMinimizedState.sourceUpdatedAt, state)" in desktop_compact_rect
+
+    desktop_minimized_rect = _between(
+        source,
+        "function _getNekoIdleDesktopChatMinimizedRect() {",
+        "function _isNekoIdleDesktopChatExpandedRecent() {",
+    )
+    assert "_nekoIdleDesktopCompactSurfaceState.visible" in desktop_minimized_rect
+    assert "_isNekoIdleDesktopStateNewerThan(_nekoIdleDesktopCompactSurfaceState.sourceUpdatedAt, state)" in desktop_minimized_rect
+
+    minimized_listener = _between(
+        source,
+        "window.addEventListener('neko:idle-chat-minimized-state', (event) => {",
+        "window.addEventListener('neko:idle-chat-compact-surface-state', (event) => {",
+    )
+    assert "const sourceUpdatedAt = _getNekoIdleDesktopStateSourceUpdatedAt(detail, receivedAt);" in minimized_listener
+    assert "if (_isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopChatMinimizedState)) return;" in minimized_listener
+    assert "const compactSurfaceCurrentlyVisible = !!_getNekoIdleDesktopCompactSurfaceRect();" in minimized_listener
+    assert "_nekoIdleDesktopCompactSurfaceState.visible" in minimized_listener
+    assert "_isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopCompactSurfaceState)" in minimized_listener
+    assert "_nekoIdleDesktopCompactSurfaceState = _makeNekoIdleDesktopCompactSurfaceState(" in minimized_listener
+    assert "!!(detail && !detail.minimized && !compactSurfaceCurrentlyVisible)" in minimized_listener
+
+    compact_listener = _between(
+        source,
+        "window.addEventListener('neko:idle-chat-compact-surface-state', (event) => {",
+        "const currentTier = _readNekoAutoGoodbyeVisualTier();",
+    )
+    assert "const sourceUpdatedAt = _getNekoIdleDesktopStateSourceUpdatedAt(detail, receivedAt);" in compact_listener
+    assert "if (_isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopCompactSurfaceState)) return;" in compact_listener
+    assert "_nekoIdleDesktopChatMinimizedState.minimized" in compact_listener
+    assert "_isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopChatMinimizedState)" in compact_listener
+    assert "_nekoIdleDesktopChatMinimizedState = _makeNekoIdleDesktopChatMinimizedState(" in compact_listener
+    assert "false,\n                null,\n                receivedAt,\n                sourceUpdatedAt,\n                false" in compact_listener
+
+
 def test_electron_chat_loads_interpage_before_react_chat_for_desktop_cat1_sync():
     source = _read(CHAT_TEMPLATE_PATH)
 

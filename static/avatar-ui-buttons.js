@@ -780,15 +780,67 @@ const _NEKO_IDLE_RETURN_SUBACTION_PROFILES = Object.freeze({
 let _nekoIdleDesktopChatMinimizedState = {
     minimized: false,
     screenRect: null,
-    updatedAt: 0
+    updatedAt: 0,
+    sourceUpdatedAt: 0,
+    expandedRecent: false
 };
 let _nekoIdleDesktopCompactSurfaceState = {
     visible: false,
     screenRect: null,
-    updatedAt: 0
+    updatedAt: 0,
+    sourceUpdatedAt: 0
 };
 let _nekoIdleCompactSurfaceDragging = false;
 let _nekoIdleCompactSurfaceSettleTimer = 0;
+
+function _getNekoIdleDesktopStateSourceUpdatedAt(detail, fallbackUpdatedAt) {
+    const timestamp = Number(detail && detail.timestamp);
+    if (Number.isFinite(timestamp) && timestamp > 0) return timestamp;
+    const fallback = Number(fallbackUpdatedAt);
+    if (Number.isFinite(fallback) && fallback > 0) return fallback;
+    return Date.now();
+}
+
+function _isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, state) {
+    const incomingSourceUpdatedAt = Number(sourceUpdatedAt);
+    const currentSourceUpdatedAt = Number(state && state.sourceUpdatedAt);
+    return Number.isFinite(incomingSourceUpdatedAt) &&
+        incomingSourceUpdatedAt > 0 &&
+        Number.isFinite(currentSourceUpdatedAt) &&
+        currentSourceUpdatedAt > 0 &&
+        incomingSourceUpdatedAt < currentSourceUpdatedAt;
+}
+
+function _isNekoIdleDesktopStateNewerThan(sourceUpdatedAt, state) {
+    const incomingSourceUpdatedAt = Number(sourceUpdatedAt);
+    const currentSourceUpdatedAt = Number(state && state.sourceUpdatedAt);
+    return Number.isFinite(incomingSourceUpdatedAt) &&
+        incomingSourceUpdatedAt > 0 &&
+        (!Number.isFinite(currentSourceUpdatedAt) ||
+            currentSourceUpdatedAt <= 0 ||
+            incomingSourceUpdatedAt > currentSourceUpdatedAt);
+}
+
+function _makeNekoIdleDesktopChatMinimizedState(minimized, screenRect, updatedAt, sourceUpdatedAt, expandedRecent) {
+    const active = !!(minimized && screenRect);
+    return {
+        minimized: active,
+        screenRect: active ? screenRect : null,
+        updatedAt: updatedAt,
+        sourceUpdatedAt: sourceUpdatedAt,
+        expandedRecent: !active && !!expandedRecent
+    };
+}
+
+function _makeNekoIdleDesktopCompactSurfaceState(visible, screenRect, updatedAt, sourceUpdatedAt) {
+    const active = !!(visible && screenRect);
+    return {
+        visible: active,
+        screenRect: active ? screenRect : null,
+        updatedAt: updatedAt,
+        sourceUpdatedAt: sourceUpdatedAt
+    };
+}
 
 function _shouldReduceNekoIdleMotion() {
     try {
@@ -2174,6 +2226,11 @@ function _getNekoIdleReactChatCompactSurfaceRect() {
 function _getNekoIdleDesktopCompactSurfaceRect() {
     const state = _nekoIdleDesktopCompactSurfaceState;
     if (!state || !state.visible || !state.screenRect) return null;
+    if (_nekoIdleDesktopChatMinimizedState &&
+        _nekoIdleDesktopChatMinimizedState.minimized &&
+        _isNekoIdleDesktopStateNewerThan(_nekoIdleDesktopChatMinimizedState.sourceUpdatedAt, state)) {
+        return null;
+    }
     if (Date.now() - (state.updatedAt || 0) > _NEKO_IDLE_DESKTOP_COMPACT_SURFACE_RECT_STALE_MS) return null;
     const screenRect = _normalizeNekoIdleScreenRect(state.screenRect);
     if (!screenRect) return null;
@@ -2201,6 +2258,11 @@ function _getNekoIdleChatCompactSurfaceRect() {
 function _getNekoIdleDesktopChatMinimizedRect() {
     const state = _nekoIdleDesktopChatMinimizedState;
     if (!state || !state.minimized || !state.screenRect) return null;
+    if (_nekoIdleDesktopCompactSurfaceState &&
+        _nekoIdleDesktopCompactSurfaceState.visible &&
+        _isNekoIdleDesktopStateNewerThan(_nekoIdleDesktopCompactSurfaceState.sourceUpdatedAt, state)) {
+        return null;
+    }
     if (Date.now() - (state.updatedAt || 0) > _NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS) return null;
     const screenRect = _normalizeNekoIdleScreenRect(state.screenRect);
     if (!screenRect) return null;
@@ -2223,6 +2285,7 @@ function _getNekoIdleDesktopChatMinimizedRect() {
 function _isNekoIdleDesktopChatExpandedRecent() {
     const state = _nekoIdleDesktopChatMinimizedState;
     if (!state || state.minimized) return false;
+    if (state.expandedRecent === false) return false;
     return Date.now() - (state.updatedAt || 0) <= _NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS;
 }
 
@@ -2383,11 +2446,20 @@ function _setNekoIdleCat1PairMoveChatPosition(shell, left, top) {
 function _rememberNekoIdleDesktopChatPairMoveRect(screenRect) {
     const normalized = _normalizeNekoIdleScreenRect(screenRect);
     if (!normalized) return null;
-    _nekoIdleDesktopChatMinimizedState = {
-        minimized: true,
-        screenRect: normalized,
-        updatedAt: Date.now()
-    };
+    const updatedAt = Date.now();
+    _nekoIdleDesktopChatMinimizedState = _makeNekoIdleDesktopChatMinimizedState(
+        true,
+        normalized,
+        updatedAt,
+        updatedAt,
+        false
+    );
+    _nekoIdleDesktopCompactSurfaceState = _makeNekoIdleDesktopCompactSurfaceState(
+        false,
+        null,
+        updatedAt,
+        updatedAt
+    );
     return normalized;
 }
 
@@ -3507,9 +3579,20 @@ function _ensureNekoIdleReturnPresentationBridge() {
 
     window.addEventListener('neko:idle-chat-minimized-state', (event) => {
         const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+        const receivedAt = Date.now();
+        const sourceUpdatedAt = _getNekoIdleDesktopStateSourceUpdatedAt(detail, receivedAt);
+        if (_isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopChatMinimizedState)) return;
         const screenRect = detail && detail.minimized
             ? _normalizeNekoIdleScreenRect(detail.screenRect)
             : null;
+        const nextMinimized = !!(detail && detail.minimized && screenRect);
+        const compactSurfaceCurrentlyVisible = !!_getNekoIdleDesktopCompactSurfaceRect();
+        if (nextMinimized &&
+            _nekoIdleDesktopCompactSurfaceState &&
+            _nekoIdleDesktopCompactSurfaceState.visible &&
+            _isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopCompactSurfaceState)) {
+            return;
+        }
         const previousState = _nekoIdleDesktopChatMinimizedState;
         const previousScreenRect = previousState && previousState.minimized
             ? previousState.screenRect
@@ -3517,11 +3600,21 @@ function _ensureNekoIdleReturnPresentationBridge() {
         const desktopChatMoveDistance = _getNekoIdleRectCenterMoveDistance(previousScreenRect, screenRect);
         const isSmallDesktopChatMove = !!(previousScreenRect && screenRect) &&
             desktopChatMoveDistance < _NEKO_IDLE_CAT1_RECHECK_MOVE_DISTANCE_PX;
-        _nekoIdleDesktopChatMinimizedState = {
-            minimized: !!(detail && detail.minimized && screenRect),
-            screenRect: screenRect,
-            updatedAt: Date.now()
-        };
+        _nekoIdleDesktopChatMinimizedState = _makeNekoIdleDesktopChatMinimizedState(
+            nextMinimized,
+            screenRect,
+            receivedAt,
+            sourceUpdatedAt,
+            !!(detail && !detail.minimized && !compactSurfaceCurrentlyVisible)
+        );
+        if (nextMinimized) {
+            _nekoIdleDesktopCompactSurfaceState = _makeNekoIdleDesktopCompactSurfaceState(
+                false,
+                null,
+                receivedAt,
+                sourceUpdatedAt
+            );
+        }
         document.querySelectorAll(_NEKO_IDLE_RETURN_BUTTON_SELECTOR).forEach((button) => {
             const currentState = button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey;
             if (currentState && (currentState.pairMovePlan || currentState.pairMoveFrame)) return;
@@ -3532,14 +3625,34 @@ function _ensureNekoIdleReturnPresentationBridge() {
 
     window.addEventListener('neko:idle-chat-compact-surface-state', (event) => {
         const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+        const receivedAt = Date.now();
+        const sourceUpdatedAt = _getNekoIdleDesktopStateSourceUpdatedAt(detail, receivedAt);
+        if (_isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopCompactSurfaceState)) return;
         const screenRect = detail && detail.visible
             ? _normalizeNekoIdleScreenRect(detail.screenRect)
             : null;
-        _nekoIdleDesktopCompactSurfaceState = {
-            visible: !!(detail && detail.visible && screenRect),
-            screenRect: screenRect,
-            updatedAt: Date.now()
-        };
+        const nextVisible = !!(detail && detail.visible && screenRect);
+        if (nextVisible &&
+            _nekoIdleDesktopChatMinimizedState &&
+            _nekoIdleDesktopChatMinimizedState.minimized &&
+            _isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopChatMinimizedState)) {
+            return;
+        }
+        _nekoIdleDesktopCompactSurfaceState = _makeNekoIdleDesktopCompactSurfaceState(
+            nextVisible,
+            screenRect,
+            receivedAt,
+            sourceUpdatedAt
+        );
+        if (nextVisible) {
+            _nekoIdleDesktopChatMinimizedState = _makeNekoIdleDesktopChatMinimizedState(
+                false,
+                null,
+                receivedAt,
+                sourceUpdatedAt,
+                false
+            );
+        }
         _handleNekoIdleCompactSurfaceMoveState(detail);
     });
 
