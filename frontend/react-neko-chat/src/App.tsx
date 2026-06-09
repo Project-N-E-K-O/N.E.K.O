@@ -52,9 +52,8 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   onChoiceSelect?: (option: ChoiceOption, source: ChoicePromptSource) => void;
   onCompactChatStateChange?: (state: CompactChatState) => void;
   onCompactMinimizeRequest?: () => void;
-  // 折叠取消序号：host 在「进行中的折叠被取消」（如 280ms 折叠延时内 closeWindow）时递增。
-  // 组件用它在重开时立即复位 compactCollapsing（避免快速关→重开露出残留擦除态，Codex P2）。
-  compactMinimizeCancelSeq?: number;
+  // 注：compactMinimizeCancelSeq 在 message-schema.ts 的 chatWindowPropsSchema 里声明
+  // （ChatWindowSchemaProps 已含），必须在 schema 里、否则 parse 会 strip 掉（Codex P2）。
 };
 
 type CompactInlineExportBridge = {
@@ -1672,6 +1671,15 @@ function CompactChatApp({
       setCompactCollapsing(false);
     }
   }, [chatSurfaceMode, compactCollapsing]);
+  // 展开被打断时复位 compactExpanding：展开 reveal 是「minimized→compact 置 expanding→true，340ms
+  // 后复位」。若这 340ms 内 mode 又被切走（如公开 setChatSurfaceMode('full') / setViewProps），上面
+  // 展开 effect 的 cleanup 取消了那次 setCompactExpanding(false)，而该转换不是从这里发起 → expanding
+  // 残留 true 带进后续 compact 渲染，令 full→compact 重放/保留展开 mask（Codex P2）。离开 compact 即复位。
+  useEffect(() => {
+    if (chatSurfaceMode !== 'compact' && compactExpanding) {
+      setCompactExpanding(false);
+    }
+  }, [chatSurfaceMode, compactExpanding]);
   // 安全兜底：折叠流程是「compact 态置 collapsing→true，host ~280ms 后把 mode 切 minimized，
   // 上面的 minimized 复位 effect 清掉 collapsing」。但若这 280ms 内窗口被关闭 / 折叠被取消，
   // mode 永远到不了 minimized，collapsing 会卡在 true；而 host 的 closeWindow 是隐藏而非卸载

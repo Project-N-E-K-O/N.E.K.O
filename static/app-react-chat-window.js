@@ -3521,6 +3521,9 @@
             }
             state.chatSurfaceMode = normalizedChatSurfaceMode;
             if (surfaceModeChanged) {
+                // 同 setChatSurfaceMode：mode 经此公开入口变更时取消挂起的延时折叠，防 full→compact
+                // hop 内陈旧折叠回调误折叠刚恢复的表面（Codex P2）。timer 已=0 时为 no-op。
+                clearCompactMinimizePressTimer();
                 // setViewProps is a public entry point (exposed + the
                 // `set-view-props` event), so it can land a real surface change —
                 // e.g. an external `{chatSurfaceMode:'full'}`. Mirror
@@ -4630,6 +4633,12 @@
             syncChatSurfaceModeUI();
             return normalized;
         }
+
+        // 任何真实的 surface mode 变更都取消挂起的「按下挤压→延时折叠」：否则 full→compact 之类
+        // 快速跳变会让 280ms 内的陈旧折叠回调在 mode 又回到 compact 时误折叠刚恢复的表面（Codex P2，
+        // 仅靠回调里 getCurrentChatSurfaceMode()==='compact' 守卫挡不住这种 hop）。timer 自身的
+        // minimize 调用此时 timer 已=0，clear 为 no-op，不影响正常折叠。
+        clearCompactMinimizePressTimer();
 
         if (!nextMinimized) {
             lastRestorableChatSurfaceMode = normalized;
