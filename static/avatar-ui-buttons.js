@@ -3675,6 +3675,22 @@ function _ensureNekoIdleReturnPresentationBridge() {
                 receivedAt,
                 prevCompactSourceUpdatedAt
             );
+        } else if (nextVisible &&
+            _nekoIdleDesktopChatMinimizedState &&
+            !_nekoIdleDesktopChatMinimizedState.minimized) {
+            // 还原后来的心跳 catch-up：Electron setMinimized(false) 早退不发布
+            // compact-surface-state，compact 缓存仍为 minimize 时写下的
+            // visible:false。心跳说 visible + minimized 已 false → 信任心跳
+            // 恢复 compact 可用性，保留原 sourceUpdatedAt 不乱排序。
+            var prevCompactSourceUpdatedAt = _nekoIdleDesktopCompactSurfaceState
+                ? _nekoIdleDesktopCompactSurfaceState.sourceUpdatedAt
+                : sourceUpdatedAt;
+            _nekoIdleDesktopCompactSurfaceState = _makeNekoIdleDesktopCompactSurfaceState(
+                true,
+                screenRect,
+                receivedAt,
+                prevCompactSourceUpdatedAt
+            );
         }
         _handleNekoIdleCompactSurfaceMoveState(detail);
     });

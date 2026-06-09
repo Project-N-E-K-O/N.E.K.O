@@ -237,6 +237,9 @@ def test_desktop_cat1_minimized_and_compact_surface_state_are_timestamp_ordered(
     assert "_nekoIdleDesktopChatMinimizedState = _makeNekoIdleDesktopChatMinimizedState(" in compact_listener
     # heartbeat 分支必须保留原 sourceUpdatedAt，避免心跳新鲜时间戳扰乱跨状态排序
     assert "prevCompactSourceUpdatedAt" in compact_listener
+    # 还原后来心跳 catch-up：minimized 确认 false 但 compact 缓存尚未恢复时，
+    # heartbeat 应能恢复 compact 可见性（Electron setMinimized 早退不发布 compact 事件）
+    assert "!_nekoIdleDesktopChatMinimizedState.minimized" in compact_listener
     # minimized state 重赋值仅在 !heartbeat 分支内
     minimized_reassign_line = compact_listener[compact_listener.index("_nekoIdleDesktopChatMinimizedState = _makeNekoIdleDesktopChatMinimizedState("):]
     assert minimized_reassign_line.index("false") < minimized_reassign_line.index("null")
