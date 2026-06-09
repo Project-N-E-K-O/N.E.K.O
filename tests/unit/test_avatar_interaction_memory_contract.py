@@ -161,33 +161,36 @@ def test_avatar_memory_meta_master_name_passes_through_unchanged():
 
 @pytest.mark.unit
 def test_avatar_instruction_empty_master_uses_localized_neutral_actor():
-    payload = {
-        "tool_id": "lollipop",
-        "action_id": "offer",
-        "intensity": "normal",
-    }
-    expected_prefix = {
-        "zh": "对方刚刚用棒棒糖",
-        "zh-TW": "對方剛剛用棒棒糖",
-        "en": "The other person just fed you",
-        "ja": "相手が今、",
-        "ko": "상대가 방금",
-        "ru": "Собеседник только что",
-        "es": "Esa persona acaba",
-        "pt": "A outra pessoa acabou",
+    lollipop_payloads = [
+        {"tool_id": "lollipop", "action_id": "offer", "intensity": "normal"},
+        {"tool_id": "lollipop", "action_id": "tease", "intensity": "normal"},
+        {"tool_id": "lollipop", "action_id": "tap_soft", "intensity": "rapid"},
+        {"tool_id": "lollipop", "action_id": "tap_soft", "intensity": "burst"},
+    ]
+    expected_actor = {
+        "zh": "对方",
+        "zh-TW": "對方",
+        "en": "The other person",
+        "ja": "相手",
+        "ko": "상대",
+        "ru": "Собеседник",
+        "es": "Esa persona",
+        "pt": "A outra pessoa",
     }
 
-    for locale, prefix in expected_prefix.items():
-        instruction = _build_avatar_interaction_instruction(locale, "YUI", "", payload)
-        assert instruction.startswith(prefix), (
-            f"locale={locale} instruction={instruction!r} 没用本地化中性 actor"
-        )
-        assert not instruction.startswith((" ", "刚刚", "剛剛", "が", "이 "))
+    for locale, actor in expected_actor.items():
+        for payload in lollipop_payloads:
+            instruction = _build_avatar_interaction_instruction(locale, "YUI", "", payload)
+            assert instruction.startswith(actor), (
+                f"locale={locale} payload={payload} instruction={instruction!r} "
+                "没把本地化中性 actor 放在事件主体位置"
+            )
+            assert not instruction.startswith((" ", "刚刚", "剛剛", "が", "이 "))
 
-        whitespace_instruction = _build_avatar_interaction_instruction(
-            locale, "YUI", "   ", payload
-        )
-        assert whitespace_instruction == instruction
+            whitespace_instruction = _build_avatar_interaction_instruction(
+                locale, "YUI", "   ", payload
+            )
+            assert whitespace_instruction == instruction
 
 
 @pytest.mark.unit

@@ -25,7 +25,7 @@
 当前实际提示词走 `compact_fields=True` 分支，结构是：
 
 ```text
-客观事件事实 + 一句说出口的话
+客观事件事实
 ```
 
 不要只看配置里遗留的非 compact 字段。检查提示词时必须调用 `_build_avatar_interaction_instruction` 看最终字符串。
@@ -92,10 +92,10 @@
 
 | 道具 | action | intensity / flag | 事件语义 |
 |---|---|---|---|
-| `lollipop` | `offer` | `normal` | 棒棒糖第一口 |
-| `lollipop` | `tease` | `normal` | 同一支棒棒糖第二口 |
-| `lollipop` | `tap_soft` | `rapid` | 棒棒糖一口接一口继续投喂 |
-| `lollipop` | `tap_soft` | `burst` | 短时间内快速喂了好几口 |
+| `lollipop` | `offer` | `normal` | 对方把棒棒糖递到嘴边，角色吃了第一口 |
+| `lollipop` | `tease` | `normal` | 同一支棒棒糖再次递到嘴边，角色吃了第二口 |
+| `lollipop` | `tap_soft` | `rapid` | 棒棒糖一口接一口递到嘴边，角色连续吃了几口 |
+| `lollipop` | `tap_soft` | `burst` | 短时间内连续递到嘴边，角色吃了好几口 |
 | `fist` | `poke` | `normal` | 猫爪轻轻碰一次 |
 | `fist` | `poke` | `rapid` | 猫爪连续轻轻碰几次 |
 | `fist` | `poke` | `reward_drop=True` | 猫爪轻碰时掉出奖励 |
@@ -191,10 +191,10 @@ zh / zh-TW / en / ja / ko / ru / es / pt
 除非有明确设计变更，新道具也应沿用：
 
 ```text
-reaction_focus + compact_reply_line
+reaction_focus
 ```
 
-`compact_reply_line` 应引导模型输出角色会直接说出口的话，而不是抽象地“回应”事件。不要为单个道具新增长 wrapper、字段列表、示例台词或专属禁令。
+当前 `compact_reply_line` 默认留空，减少“感叹词 + 事件描述 + 评价”的模板化倾向。只有在实际输出证明模型不知道这是聊天互动时，才考虑加入极短对话指向；不要把坏回复里的具体词写成禁令，也不要规定“一句话”“固定语气”或其它会压出格式感的写法。不要为单个道具新增长 wrapper、字段列表、示例台词或专属禁令。
 
 ## 修改现有道具模板
 

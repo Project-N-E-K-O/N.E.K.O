@@ -318,24 +318,24 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "lollipop": {
             "offer": {
                 "normal": {
-                    "reaction_focus": "{actor}刚刚用棒棒糖喂了你第一口。",
-                    "style_hint": "棒棒糖第一口。",
+                    "reaction_focus": "{actor}刚刚把棒棒糖递到你嘴边，你吃了第一口。",
+                    "style_hint": "第一口棒棒糖。",
                 },
             },
             "tease": {
                 "normal": {
-                    "reaction_focus": "{actor}刚刚用同一支棒棒糖又喂了你一口。",
-                    "style_hint": "棒棒糖第二口。",
+                    "reaction_focus": "{actor}刚刚又把同一支棒棒糖递到你嘴边，你吃了第二口。",
+                    "style_hint": "同一支棒棒糖又一口。",
                 },
             },
             "tap_soft": {
                 "rapid": {
-                    "reaction_focus": "{actor}刚刚继续用棒棒糖一口接一口地喂你。",
-                    "style_hint": "棒棒糖连续投喂。",
+                    "reaction_focus": "{actor}刚刚把棒棒糖一口接一口递到你嘴边，你连续吃了几口。",
+                    "style_hint": "连续几口棒棒糖。",
                 },
                 "burst": {
-                    "reaction_focus": "{actor}刚刚短时间内用棒棒糖快速喂了你好几口。",
-                    "style_hint": "棒棒糖快速连续投喂。",
+                    "reaction_focus": "{actor}刚刚短时间内连续把棒棒糖递到你嘴边，你吃了好几口。",
+                    "style_hint": "短时间连续几口棒棒糖。",
                 },
             },
         },
@@ -380,24 +380,24 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "lollipop": {
             "offer": {
                 "normal": {
-                    "reaction_focus": "{actor} just fed you the first bite of the lollipop.",
+                    "reaction_focus": "{actor} just brought the lollipop to your mouth, and you took the first bite.",
                     "style_hint": "First lollipop bite.",
                 },
             },
             "tease": {
                 "normal": {
-                    "reaction_focus": "{actor} just fed you another bite from the same lollipop.",
-                    "style_hint": "Second lollipop bite.",
+                    "reaction_focus": "{actor} just brought the same lollipop to your mouth again, and you took a second bite.",
+                    "style_hint": "Same lollipop, another bite.",
                 },
             },
             "tap_soft": {
                 "rapid": {
-                    "reaction_focus": "{actor} just kept feeding you the lollipop bite after bite.",
-                    "style_hint": "Repeated lollipop feeding.",
+                    "reaction_focus": "{actor} just kept bringing the lollipop to your mouth, and you took several bites in a row.",
+                    "style_hint": "Several lollipop bites in a row.",
                 },
                 "burst": {
-                    "reaction_focus": "{actor} just fed you several quick bites of the lollipop in a short time.",
-                    "style_hint": "Rapid repeated lollipop feeding.",
+                    "reaction_focus": "{actor} just brought the lollipop to your mouth several times in quick succession, and you took several bites.",
+                    "style_hint": "Several quick lollipop bites.",
                 },
             },
         },
@@ -442,24 +442,24 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "lollipop": {
             "offer": {
                 "normal": {
-                    "reaction_focus": "{actor}剛剛用棒棒糖餵了你第一口。",
-                    "style_hint": "棒棒糖第一口。",
+                    "reaction_focus": "{actor}剛剛把棒棒糖遞到你嘴邊，你吃了第一口。",
+                    "style_hint": "第一口棒棒糖。",
                 },
             },
             "tease": {
                 "normal": {
-                    "reaction_focus": "{actor}剛剛用同一支棒棒糖又餵了你一口。",
-                    "style_hint": "棒棒糖第二口。",
+                    "reaction_focus": "{actor}剛剛又把同一支棒棒糖遞到你嘴邊，你吃了第二口。",
+                    "style_hint": "同一支棒棒糖又一口。",
                 },
             },
             "tap_soft": {
                 "rapid": {
-                    "reaction_focus": "{actor}剛剛繼續用棒棒糖一口接一口地餵你。",
-                    "style_hint": "棒棒糖連續投餵。",
+                    "reaction_focus": "{actor}剛剛把棒棒糖一口接一口遞到你嘴邊，你連續吃了幾口。",
+                    "style_hint": "連續幾口棒棒糖。",
                 },
                 "burst": {
-                    "reaction_focus": "{actor}剛剛短時間內用棒棒糖快速餵了你好幾口。",
-                    "style_hint": "棒棒糖快速連續投餵。",
+                    "reaction_focus": "{actor}剛剛短時間內連續把棒棒糖遞到你嘴邊，你吃了好幾口。",
+                    "style_hint": "短時間連續幾口棒棒糖。",
                 },
             },
         },
@@ -504,24 +504,24 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "lollipop": {
             "offer": {
                 "normal": {
-                    "reaction_focus": "{actor}が今、ペロペロキャンディを最初の一口だけ食べさせた。",
-                    "style_hint": "最初のペロペロキャンディ。",
+                    "reaction_focus": "{actor}が今、ペロペロキャンディをあなたの口元に差し出し、あなたが最初の一口を食べた。",
+                    "style_hint": "ペロペロキャンディの最初の一口。",
                 },
             },
             "tease": {
                 "normal": {
-                    "reaction_focus": "{actor}が今、同じペロペロキャンディをもう一口食べさせた。",
-                    "style_hint": "二口目のペロペロキャンディ。",
+                    "reaction_focus": "{actor}が今、同じペロペロキャンディをもう一度あなたの口元に差し出し、あなたが二口目を食べた。",
+                    "style_hint": "同じペロペロキャンディをもう一口。",
                 },
             },
             "tap_soft": {
                 "rapid": {
-                    "reaction_focus": "{actor}が今、ペロペロキャンディを一口ずつ続けて食べさせている。",
-                    "style_hint": "連続ペロペロキャンディ。",
+                    "reaction_focus": "{actor}が今、ペロペロキャンディを続けてあなたの口元に差し出し、あなたが何口か続けて食べている。",
+                    "style_hint": "ペロペロキャンディを一口ずつ。",
                 },
                 "burst": {
-                    "reaction_focus": "{actor}が今、短時間でペロペロキャンディを何口も続けて食べさせた。",
-                    "style_hint": "高速連続ペロペロキャンディ。",
+                    "reaction_focus": "{actor}が今、短い間にペロペロキャンディを何度もあなたの口元に差し出し、あなたが何口も食べた。",
+                    "style_hint": "ペロペロキャンディを短時間で何口も。",
                 },
             },
         },
@@ -566,24 +566,24 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "lollipop": {
             "offer": {
                 "normal": {
-                    "reaction_focus": "{actor} 방금 막대사탕을 첫 한입 먹여 줬다.",
-                    "style_hint": "첫 막대사탕 먹이기.",
+                    "reaction_focus": "{actor} 방금 막대사탕을 네 입가에 내밀었고, 너는 첫 한입을 먹었다.",
+                    "style_hint": "막대사탕 첫 한입.",
                 },
             },
             "tease": {
                 "normal": {
-                    "reaction_focus": "{actor} 방금 같은 막대사탕을 한입 더 먹여 줬다.",
-                    "style_hint": "두 번째 막대사탕 먹이기.",
+                    "reaction_focus": "{actor} 방금 같은 막대사탕을 다시 네 입가에 내밀었고, 너는 두 번째 한입을 먹었다.",
+                    "style_hint": "같은 막대사탕 한입 더.",
                 },
             },
             "tap_soft": {
                 "rapid": {
-                    "reaction_focus": "{actor} 방금 막대사탕을 한입씩 계속 먹여 줬다.",
-                    "style_hint": "연속 막대사탕 먹이기.",
+                    "reaction_focus": "{actor} 방금 막대사탕을 한입씩 계속 네 입가에 내밀었고, 너는 몇 입 연달아 먹었다.",
+                    "style_hint": "막대사탕 한입씩 계속.",
                 },
                 "burst": {
-                    "reaction_focus": "{actor} 방금 짧은 시간 안에 막대사탕을 여러 입 빠르게 먹여 줬다.",
-                    "style_hint": "빠른 연속 막대사탕 먹이기.",
+                    "reaction_focus": "{actor} 방금 짧은 시간 안에 막대사탕을 여러 번 네 입가에 내밀었고, 너는 여러 입 빠르게 먹었다.",
+                    "style_hint": "막대사탕 짧은 시간 여러 입.",
                 },
             },
         },
@@ -628,24 +628,24 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "lollipop": {
             "offer": {
                 "normal": {
-                    "reaction_focus": "{actor} только что дал тебе первый кусочек леденца.",
-                    "style_hint": "Первое кормление леденцом.",
+                    "reaction_focus": "{actor} подносит леденец к твоему рту, и ты съедаешь первый кусочек.",
+                    "style_hint": "Первый кусочек леденца.",
                 },
             },
             "tease": {
                 "normal": {
-                    "reaction_focus": "{actor} только что дал тебе ещё кусочек того же леденца.",
-                    "style_hint": "Второе кормление леденцом.",
+                    "reaction_focus": "{actor} снова подносит тот же леденец к твоему рту, и ты съедаешь второй кусочек.",
+                    "style_hint": "Ещё кусочек того же леденца.",
                 },
             },
             "tap_soft": {
                 "rapid": {
-                    "reaction_focus": "{actor} только что продолжил кормить тебя леденцом кусочек за кусочком.",
-                    "style_hint": "Повторяющееся кормление леденцом.",
+                    "reaction_focus": "{actor} продолжает подносить леденец к твоему рту, и ты съедаешь несколько кусочков подряд.",
+                    "style_hint": "Леденец кусочек за кусочком.",
                 },
                 "burst": {
-                    "reaction_focus": "{actor} только что быстро дал тебе несколько кусочков леденца подряд.",
-                    "style_hint": "Быстрое повторяющееся кормление леденцом.",
+                    "reaction_focus": "{actor} быстро несколько раз подносит леденец к твоему рту, и ты съедаешь несколько кусочков.",
+                    "style_hint": "Несколько быстрых кусочков леденца.",
                 },
             },
         },
@@ -690,24 +690,24 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "lollipop": {
             "offer": {
                 "normal": {
-                    "reaction_focus": "{actor} acaba de darte el primer bocado de la piruleta.",
-                    "style_hint": "Primera alimentación con piruleta.",
+                    "reaction_focus": "{actor} acaba de acercarte la piruleta a la boca, y diste el primer bocado.",
+                    "style_hint": "Primer bocado de piruleta.",
                 }
             },
             "tease": {
                 "normal": {
-                    "reaction_focus": "{actor} acaba de darte otro bocado de la misma piruleta.",
-                    "style_hint": "Segunda alimentación con piruleta.",
+                    "reaction_focus": "{actor} acaba de acercarte otra vez la misma piruleta a la boca, y diste un segundo bocado.",
+                    "style_hint": "Otro bocado de la misma piruleta.",
                 }
             },
             "tap_soft": {
                 "rapid": {
-                    "reaction_focus": "{actor} acaba de seguir dándote la piruleta bocado tras bocado.",
-                    "style_hint": "Alimentación repetida con piruleta.",
+                    "reaction_focus": "{actor} acaba de acercarte la piruleta a la boca varias veces seguidas, y diste varios bocados.",
+                    "style_hint": "Piruleta bocado tras bocado.",
                 },
                 "burst": {
-                    "reaction_focus": "{actor} acaba de darte varios bocados rápidos de la piruleta en poco tiempo.",
-                    "style_hint": "Alimentación rápida repetida con piruleta.",
+                    "reaction_focus": "{actor} acaba de acercarte la piruleta a la boca varias veces en poco tiempo, y diste varios bocados rápidos.",
+                    "style_hint": "Varios bocados rápidos de piruleta.",
                 },
             },
         },
@@ -752,24 +752,24 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "lollipop": {
             "offer": {
                 "normal": {
-                    "reaction_focus": "{actor} acabou de te dar a primeira mordida do pirulito.",
-                    "style_hint": "Primeira alimentação com pirulito.",
+                    "reaction_focus": "{actor} acabou de aproximar o pirulito da sua boca, e você deu a primeira mordida.",
+                    "style_hint": "Primeira mordida de pirulito.",
                 }
             },
             "tease": {
                 "normal": {
-                    "reaction_focus": "{actor} acabou de te dar outra mordida do mesmo pirulito.",
-                    "style_hint": "Segunda alimentação com pirulito.",
+                    "reaction_focus": "{actor} acabou de aproximar o mesmo pirulito da sua boca outra vez, e você deu uma segunda mordida.",
+                    "style_hint": "Outra mordida do mesmo pirulito.",
                 }
             },
             "tap_soft": {
                 "rapid": {
-                    "reaction_focus": "{actor} acabou de continuar te dando o pirulito mordida após mordida.",
-                    "style_hint": "Alimentação repetida com pirulito.",
+                    "reaction_focus": "{actor} acabou de aproximar o pirulito da sua boca várias vezes seguidas, e você deu várias mordidas.",
+                    "style_hint": "Pirulito mordida após mordida.",
                 },
                 "burst": {
-                    "reaction_focus": "{actor} acabou de te dar várias mordidas rápidas do pirulito em pouco tempo.",
-                    "style_hint": "Alimentação rápida repetida com pirulito.",
+                    "reaction_focus": "{actor} acabou de aproximar o pirulito da sua boca várias vezes em pouco tempo, e você deu várias mordidas rápidas.",
+                    "style_hint": "Várias mordidas rápidas de pirulito.",
                 },
             },
         },
@@ -1027,7 +1027,7 @@ _AVATAR_INTERACTION_PROMPT_TEXT = {
             "1. 只输出猫娘当下会说的一句回复。",
             "2. 回复接住上面的道具事件事实。",
         ],
-        "compact_reply_line": "直接回一句你会说出口的话。",
+        "compact_reply_line": "",
         "lollipop_requirement": "",
     },
     "zh-TW": {
@@ -1049,7 +1049,7 @@ _AVATAR_INTERACTION_PROMPT_TEXT = {
             "1. 只輸出貓娘當下會說的一句回覆。",
             "2. 回覆接住上面的道具事件事實。",
         ],
-        "compact_reply_line": "直接回一句你會說出口的話。",
+        "compact_reply_line": "",
         "lollipop_requirement": "",
     },
     "en": {
@@ -1074,7 +1074,7 @@ _AVATAR_INTERACTION_PROMPT_TEXT = {
             "4. The draft text is not a formal user message; use it only as light context if it fits naturally and never quote it verbatim.",
             "5. Do not mention coordinates, probabilities, payloads, or backend rules.",
         ],
-        "compact_reply_line": "Reply with one spoken line you would say right now.",
+        "compact_reply_line": "",
         "lollipop_requirement": "6. This is lollipop feeding, not petting, soothing, or a generic touch.",
     },
     "ja": {
@@ -1099,7 +1099,7 @@ _AVATAR_INTERACTION_PROMPT_TEXT = {
             "4. text_context は正式なユーザーメッセージではありません。自然な場合だけ軽く参考にし、逐語的に繰り返さないでください。",
             "5. 座標、確率、payload、バックエンドのルールには触れないでください。",
         ],
-        "compact_reply_line": "その場で口にする一言として返答してください。",
+        "compact_reply_line": "",
         "lollipop_requirement": "6. これはペロペロキャンディを食べさせるやり取りであり、頭なで、軽い接触、なだめる行為、一般的なスキンシップとして書かないでください。",
     },
     "ko": {
@@ -1124,7 +1124,7 @@ _AVATAR_INTERACTION_PROMPT_TEXT = {
             "4. text_context 는 정식 사용자 메시지가 아니다. 아주 자연스러울 때만 가볍게 참고하고, 그대로 되풀이하지 않는다.",
             "5. 좌표, 확률, payload, 백엔드 규칙은 언급하지 않는다.",
         ],
-        "compact_reply_line": "지금 바로 말하는 한마디로 답한다.",
+        "compact_reply_line": "",
         "lollipop_requirement": "6. 이것은 막대사탕 먹이기이며, 쓰다듬기, 가벼운 터치, 달래기, 일반적인 스킨십으로 쓰면 안 된다.",
     },
     "ru": {
@@ -1149,7 +1149,7 @@ _AVATAR_INTERACTION_PROMPT_TEXT = {
             "4. Черновик текста не является официальным сообщением пользователя; используй его лишь как лёгкий контекст, если это естественно, и никогда не цитируй дословно.",
             "5. Не упоминай координаты, вероятности, payload или правила бэкенда.",
         ],
-        "compact_reply_line": "Ответь одной короткой репликой от своего лица.",
+        "compact_reply_line": "",
         "lollipop_requirement": "6. Это кормление леденцом, а не поглаживание, успокаивание или просто абстрактное касание.",
     },
     "es": {
@@ -1174,7 +1174,7 @@ _AVATAR_INTERACTION_PROMPT_TEXT = {
             "4. El borrador no es un mensaje formal del usuario; úsalo solo como contexto ligero si encaja y nunca lo cites literalmente.",
             "5. No menciones coordenadas, probabilidades, payloads ni reglas del backend.",
         ],
-        "compact_reply_line": "Responde con una línea de diálogo que dirías ahora.",
+        "compact_reply_line": "",
         "lollipop_requirement": "6. Esto es alimentación con piruleta, no lo conviertas en caricias, toques, consuelo o palmaditas.",
     },
     "pt": {
@@ -1199,7 +1199,7 @@ _AVATAR_INTERACTION_PROMPT_TEXT = {
             "4. O rascunho não é uma mensagem formal do usuário; use apenas como contexto leve se couber e nunca cite literalmente.",
             "5. Não mencione coordenadas, probabilidades, payloads ou regras do backend.",
         ],
-        "compact_reply_line": "Responda com uma fala que você diria agora.",
+        "compact_reply_line": "",
         "lollipop_requirement": "6. Isto é alimentação com pirulito, não transforme em carinho, toque, consolo ou afago.",
     },
 }
@@ -1534,10 +1534,13 @@ def _build_avatar_interaction_instruction(
         else prompt_text["interaction_intro"]
     )
     if prompt_text.get("compact_fields"):
-        compact_separator = "" if locale in {"zh", "zh-TW", "ja"} else " "
         compact_reply_line = prompt_text["compact_reply_line"].format(
             lanlan_name=lanlan_name, master_name=actor, actor=actor
         )
+        # Empty by design: keep the compact prompt as one event fact to avoid reply-shape templates.
+        if not compact_reply_line:
+            return reaction_focus
+        compact_separator = "" if locale in {"zh", "zh-TW", "ja"} else " "
         return f"{reaction_focus}{compact_separator}{compact_reply_line}"
 
     lines = [
