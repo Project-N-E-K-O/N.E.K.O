@@ -1652,13 +1652,20 @@ function CompactChatApp({
   useLayoutEffect(() => {
     const prev = prevChatSurfaceModeRef.current;
     prevChatSurfaceModeRef.current = chatSurfaceMode;
+    // 重新进入 compact（从 minimized 或 full）时消费历史区重开请求（折叠时 persist:false 记下的）。
+    // 不限于 minimized→compact——经公开 setChatSurfaceMode 的 minimized→full→compact 间接恢复也要重开，
+    // 否则历史区该开没开、而偏好其实仍是开（Codex P2）。ref 仅在「带历史区折叠」时置位，无请求不触发。
+    // 注意用 prev!=='compact' 而非裸 mode==='compact'：折叠点击当帧 mode 仍是 compact，裸判会立即把刚
+    // 关掉的历史区又开回来。
+    if (chatSurfaceMode === 'compact' && prev !== 'compact'
+      && compactHistoryReopenAfterRestoreRef.current) {
+      compactHistoryReopenAfterRestoreRef.current = false;
+      openCompactExportHistory();
+    }
+    // 方向性 reveal 擦除只在毛线球 minimized→compact 恢复时播（full→compact 不播）。~340ms 后复位。
+    // useLayoutEffect 让首帧绘制前就挂 mask，消除 web 端首帧闪（壳侧有 opacity-0 门、Electron 看不出）。
     if (prev === 'minimized' && chatSurfaceMode === 'compact') {
       setCompactExpanding(true);
-      // 折叠前历史区是开的（minimize 用 persist:false 关掉只播了动画、未写偏好）→ 恢复时重开。
-      if (compactHistoryReopenAfterRestoreRef.current) {
-        compactHistoryReopenAfterRestoreRef.current = false;
-        openCompactExportHistory();
-      }
       const t = window.setTimeout(() => setCompactExpanding(false), 340);
       return () => window.clearTimeout(t);
     }
