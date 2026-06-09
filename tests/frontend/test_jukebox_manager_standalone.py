@@ -24,6 +24,72 @@ HARNESS_HTML = """
 """
 
 
+def setup_song_manager_page(mock_page: Page, songs: str) -> None:
+    mock_page.set_viewport_size({"width": 900, "height": 700})
+    mock_page.set_content(HARNESS_HTML)
+    mock_page.evaluate(
+        f"""
+        () => {{
+          window.__batchDeleteRequests = [];
+          window.t = (key, fallback) => {{
+            if (typeof fallback === 'string') return fallback;
+            if (fallback && typeof fallback.defaultValue === 'string') return fallback.defaultValue;
+            return key;
+          }};
+          const songs = {songs};
+          window.fetch = async (url, options = {{}}) => {{
+            if (String(url).endsWith('/config')) {{
+              return {{
+                ok: true,
+                json: async () => ({{ songs, actions: {{}}, bindings: {{}} }})
+              }};
+            }}
+            if (String(url).endsWith('/songs/batch-delete')) {{
+              const payload = JSON.parse(options.body);
+              window.__batchDeleteRequests.push(payload);
+              return {{
+                ok: true,
+                json: async () => ({{
+                  success: true,
+                  partial: false,
+                  requestedCount: payload.songIds.length,
+                  deletedCount: payload.songIds.filter(id => !songs[id].isBuiltin).length,
+                  hiddenCount: payload.songIds.filter(id => songs[id].isBuiltin).length,
+                  failedCount: 0,
+                  deleted: payload.songIds
+                    .filter(id => !songs[id].isBuiltin)
+                    .map(id => ({{ songId: id, name: songs[id].name }})),
+                  hidden: payload.songIds
+                    .filter(id => songs[id].isBuiltin)
+                    .map(id => ({{ songId: id, name: songs[id].name }})),
+                  failed: []
+                }})
+              }};
+            }}
+            throw new Error('unexpected fetch: ' + url);
+          }};
+        }}
+        """
+    )
+    mock_page.add_script_tag(content=JUKEBOX_SCRIPT)
+    mock_page.evaluate(
+        """
+        () => {
+          const SAM = window.Jukebox.SongActionManager;
+          SAM.bindDragEvents = function() {};
+          SAM.bindFileDropEvents = function() {};
+          const style = document.createElement('style');
+          style.textContent = SAM.getStyles();
+          document.head.appendChild(style);
+          const panel = SAM.create();
+          document.body.appendChild(panel);
+          panel.style.display = 'flex';
+        }
+        """
+    )
+    mock_page.wait_for_selector(".sam-btn-song-danger", state="visible")
+
+
 @pytest.mark.frontend
 def test_jukebox_manager_standalone_uses_native_drag_regions():
     """
@@ -92,6 +158,90 @@ def test_jukebox_manager_select_all_checkbox_toggles_state(mock_page: Page):
     mock_page.click("#select-all-songs")
     assert not mock_page.locator("#select-all-songs").is_checked()
     assert mock_page.locator(".sam-song-select:checked").count() == 0
+
+
+@pytest.mark.frontend
+def test_jukebox_manager_song_delete_button_switches_between_clear_and_selected(mock_page: Page):
+    setup_song_manager_page(
+        mock_page,
+        """
+        {
+          song1: { name: 'Song 1', artist: 'A', visible: true },
+          song2: { name: 'Builtin Song', artist: 'B', visible: true, isBuiltin: true },
+          hidden: { name: 'Hidden Song', artist: 'C', visible: false }
+        }
+        """,
+    )
+
+    danger_btn = mock_page.locator(".sam-btn-song-danger")
+    assert danger_btn.get_attribute("data-mode") == "clear-visible"
+    assert "3" in danger_btn.inner_text()
+
+    mock_page.evaluate(
+        """
+        () => document.querySelector('.sam-btn-song-danger')
+          .dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }))
+        """
+    )
+    tooltip = mock_page.locator(".sam-danger-tooltip")
+    assert tooltip.is_visible()
+    assert "自定义" in tooltip.inner_text()
+    assert "内置" in tooltip.inner_text()
+
+    mock_page.locator('.sam-song-select[data-id="song1"]').click()
+    assert danger_btn.get_attribute("data-mode") == "selected"
+    assert "1" in danger_btn.inner_text()
+
+
+@pytest.mark.frontend
+def test_jukebox_manager_delete_selected_uses_single_confirm(mock_page: Page):
+    setup_song_manager_page(
+        mock_page,
+        """
+        {
+          song1: { name: 'Song 1', artist: 'A', visible: true },
+          song2: { name: 'Song 2', artist: 'B', visible: true }
+        }
+        """,
+    )
+
+    mock_page.locator('.sam-song-select[data-id="song1"]').click()
+    mock_page.evaluate("() => window.Jukebox.SongActionManager.confirmSongBatchDelete()")
+    expect_title = mock_page.locator(".sam-danger-modal h3")
+    assert "删除选中" in expect_title.inner_text()
+    mock_page.locator(".sam-danger-modal-confirm").click()
+
+    mock_page.wait_for_function("() => window.__batchDeleteRequests.length === 1")
+    assert mock_page.evaluate("window.__batchDeleteRequests[0].songIds") == ["song1"]
+    assert mock_page.locator(".sam-danger-result-modal").is_visible()
+
+
+@pytest.mark.frontend
+def test_jukebox_manager_clear_visible_uses_second_confirm_and_escape_once(mock_page: Page):
+    setup_song_manager_page(
+        mock_page,
+        """
+        {
+          song1: { name: 'Song 1', artist: 'A', visible: true },
+          builtin: { name: 'Builtin Song', artist: 'B', visible: true, isBuiltin: true }
+        }
+        """,
+    )
+
+    mock_page.evaluate("() => window.Jukebox.SongActionManager.confirmSongBatchDelete()")
+    assert "清空当前显示" in mock_page.locator(".sam-danger-modal h3").inner_text()
+    mock_page.locator(".sam-danger-modal-confirm").click()
+    assert "真..真的要全部清理吗.." in mock_page.locator(".sam-danger-modal p").first.inner_text()
+
+    confirm_btn = mock_page.locator(".sam-danger-modal-confirm")
+    mock_page.locator(".sam-danger-confirm-zone-final").hover()
+    assert "sam-danger-confirm-escaped" in (confirm_btn.get_attribute("class") or "")
+    mock_page.locator(".sam-danger-confirm-zone-final").hover()
+    assert "sam-danger-confirm-escaped" in (confirm_btn.get_attribute("class") or "")
+
+    confirm_btn.click()
+    mock_page.wait_for_function("() => window.__batchDeleteRequests.length === 1")
+    assert mock_page.evaluate("window.__batchDeleteRequests[0].songIds") == ["song1", "builtin"]
 
 
 @pytest.mark.frontend

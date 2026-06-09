@@ -28,6 +28,7 @@ from dataclasses import dataclass, asdict
 
 from fastapi import APIRouter, File, Form, UploadFile, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from .shared_state import get_config_manager
@@ -155,6 +156,10 @@ class Action:
     format: str  # 动画格式（vmd, vrma, fbx, bvh）
     uploadDate: str
     missing: bool = False
+
+
+class BatchDeleteSongsRequest(BaseModel):
+    songIds: List[str] = Field(default_factory=list)
 
 
 class JukeboxConfig:
@@ -486,6 +491,74 @@ async def upload_songs(
     if len(files) == 1:
         return results[0] if results else {"success": False, "error": "无文件上传"}
     return {"success": True, "results": results}
+
+
+@router.post("/songs/batch-delete")
+async def batch_delete_songs(request: BatchDeleteSongsRequest):
+    """批量删除歌曲。用户歌曲删除，内置歌曲改为隐藏。"""
+    config_mgr = get_config_manager()
+    jukebox_config = JukeboxConfig(config_mgr)
+
+    song_ids = []
+    seen = set()
+    for song_id in request.songIds:
+        if song_id and song_id not in seen:
+            song_ids.append(song_id)
+            seen.add(song_id)
+
+    if not song_ids:
+        raise HTTPException(400, "未选择歌曲")
+
+    missing_ids = [song_id for song_id in song_ids if song_id not in jukebox_config.data["songs"]]
+    if missing_ids:
+        raise HTTPException(404, {"message": "歌曲不存在", "songIds": missing_ids})
+
+    deleted = []
+    hidden = []
+    failed = []
+
+    for song_id in song_ids:
+        song = jukebox_config.data["songs"][song_id]
+        song_name = song.get("name") or song_id
+
+        try:
+            if song.get("isBuiltin", False):
+                song["visible"] = False
+                hidden.append({"songId": song_id, "name": song_name})
+                continue
+
+            audio_path = jukebox_config.jukebox_dir / song["audio"]
+            if audio_path.exists():
+                audio_path.unlink()
+
+            if song_id in jukebox_config.data["bindings"]:
+                del jukebox_config.data["bindings"][song_id]
+
+            song_md5 = song.get("audioMd5", "")
+            if song_md5 and song_md5 in jukebox_config.data["md5Index"]["songs"]:
+                del jukebox_config.data["md5Index"]["songs"][song_md5]
+
+            del jukebox_config.data["songs"][song_id]
+            deleted.append({"songId": song_id, "name": song_name})
+        except Exception as exc:
+            logger.error(f"批量删除歌曲失败: {song_id}, error={exc}")
+            failed.append({"songId": song_id, "name": song_name, "error": str(exc)})
+
+    if deleted or hidden:
+        await jukebox_config.asave()
+
+    failed_count = len(failed)
+    return {
+        "success": failed_count == 0,
+        "partial": failed_count > 0 and (len(deleted) > 0 or len(hidden) > 0),
+        "requestedCount": len(song_ids),
+        "deletedCount": len(deleted),
+        "hiddenCount": len(hidden),
+        "failedCount": failed_count,
+        "deleted": deleted,
+        "hidden": hidden,
+        "failed": failed,
+    }
 
 
 @router.delete("/songs/{song_id}")
