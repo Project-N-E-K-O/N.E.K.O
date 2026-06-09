@@ -123,3 +123,29 @@ def test_backend_ignores_empty_core_api_on_save(mock_page: Page, running_server:
     readback = result["readback"]
     assert readback["coreApi"] == "free", f"空 coreApi 覆盖了已存值: {readback['coreApi']!r}"
     assert readback["assistApi"] == "free"
+
+
+@pytest.mark.frontend
+def test_backend_preserves_free_provider_before_key_validation(
+    mock_page: Page,
+    running_server: str,
+):
+    """Regression: blank submitted providers should inherit stored free providers
+    before coreApiKey emptiness is validated."""
+    _open_free_settings(mock_page, running_server)
+
+    result = mock_page.evaluate(
+        """async () => {
+            const saveResp = await fetch('/api/config/core_api', {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({coreApiKey:'', coreApi:'   ', assistApi:'   ', enableCustomApi:false})
+            });
+            const saveJson = await saveResp.json();
+            const readback = await (await fetch('/api/config/core_api')).json();
+            return {saveJson, readback};
+        }"""
+    )
+    assert result["saveJson"].get("success") is True, result["saveJson"]
+    readback = result["readback"]
+    assert readback["coreApi"] == "free"
+    assert readback["assistApi"] == "free"
