@@ -557,40 +557,42 @@
 
     function handleFreeText(detail) {
         if (!activeSession || !detail) return;
-        if (detail.sessionId && detail.sessionId !== activeSession.sessionId) return;
+        var session = activeSession;
+        if (detail.sessionId && detail.sessionId !== session.sessionId) return;
         var text = String(detail.text || '').trim();
         if (!text) return;
-        if (activeSession.releasedByFreeText) return;
-        var fallback = (activeSession.dayConfig && activeSession.dayConfig.fallback) || {};
-        var isRelease = Number(activeSession.offTopicCount || 0) >= 1;
-        activeSession.offTopicCount = Number(activeSession.offTopicCount || 0) + 1;
+        if (session.releasedByFreeText) return;
+        var day = session.day;
+        var nodeId = session.nodeId;
+        var sessionId = session.sessionId;
+        var localeData = session.localeData;
+        var fallback = (session.dayConfig && session.dayConfig.fallback) || {};
+        var isRelease = Number(session.offTopicCount || 0) >= 1;
+        session.offTopicCount = Number(session.offTopicCount || 0) + 1;
         if (isRelease) {
-            activeSession.releasedByFreeText = true;
+            session.releasedByFreeText = true;
             clearChoicePrompt();
         }
 
         appendChatMessage('user', text, {
-            day: activeSession.day,
-            nodeId: activeSession.nodeId,
+            day: day,
+            nodeId: nodeId,
             freeText: true,
             requestId: detail.requestId || ''
         }).then(function () {
             var fallbackKey = isRelease ? fallback.releaseKey : fallback.redirectKey;
             var voiceKey = isRelease ? fallback.releaseVoiceKey : fallback.redirectVoiceKey;
-            var fallbackText = getText(activeSession.localeData, fallbackKey);
+            var fallbackText = getText(localeData, fallbackKey);
             if (!fallbackText) return null;
             applyAssistantTextEmotion(fallbackText);
             return appendChatMessage('assistant', fallbackText, {
-                day: activeSession.day,
-                nodeId: activeSession.nodeId,
+                day: day,
+                nodeId: nodeId,
                 voiceKey: voiceKey || '',
                 fallback: isRelease ? 'release' : 'redirect'
             }).then(function () {
                 speakLine(fallbackText, voiceKey || '');
-                if (isRelease && activeSession) {
-                    var day = activeSession.day;
-                    var sessionId = activeSession.sessionId;
-                    var nodeId = activeSession.nodeId;
+                if (isRelease) {
                     markDay(day, {
                         started: true,
                         completed: true,
@@ -599,7 +601,9 @@
                         nodeId: nodeId,
                         releasedByFreeText: true
                     });
-                    activeSession = null;
+                    if (activeSession === session) {
+                        activeSession = null;
+                    }
                 }
                 return null;
             });

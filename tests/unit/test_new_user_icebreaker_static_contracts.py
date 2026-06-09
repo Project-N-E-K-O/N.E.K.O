@@ -521,6 +521,29 @@ def test_icebreaker_free_text_uses_fallback_instead_of_llm():
     assert "neko:icebreaker-free-text-submitted" in runtime
 
 
+def test_icebreaker_free_text_fallback_uses_session_snapshot_after_async_append():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    free_text_block = runtime.split("function handleFreeText(detail)", 1)[1].split(
+        "function canStartFromEndState",
+        1,
+    )[0]
+    continuation_block = free_text_block.split("}).then(function () {", 1)[1]
+
+    assert "var session = activeSession;" in free_text_block
+    assert "var day = session.day;" in free_text_block
+    assert "var nodeId = session.nodeId;" in free_text_block
+    assert "var sessionId = session.sessionId;" in free_text_block
+    assert "var localeData = session.localeData;" in free_text_block
+    assert "getText(localeData, fallbackKey)" in continuation_block
+    assert "day: day" in continuation_block
+    assert "nodeId: nodeId" in continuation_block
+    assert "sessionId: sessionId" in continuation_block
+    assert "activeSession.localeData" not in continuation_block
+    assert "activeSession.day" not in continuation_block
+    assert "activeSession.nodeId" not in continuation_block
+    assert "activeSession.sessionId" not in continuation_block
+
+
 def test_home_tutorial_reset_also_resets_day1_icebreaker_state():
     reset_source = (ROOT / "static" / "avatar-floating-guide-reset.js").read_text(encoding="utf-8")
 
