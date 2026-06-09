@@ -154,65 +154,6 @@ body {
     animation: none;
 }
 
-.home-tutorial-reset-controls {
-    position: fixed;
-    left: max(16px, env(safe-area-inset-left));
-    top: max(16px, env(safe-area-inset-top));
-    bottom: auto;
-    z-index: 100020;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px;
-    border: 1px solid rgba(255, 255, 255, 0.5);
-    border-radius: 8px;
-    background: rgba(23, 28, 38, 0.78);
-    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
-    backdrop-filter: blur(12px);
-    pointer-events: auto;
-}
-
-.home-tutorial-reset-label {
-    padding: 0 4px;
-    color: rgba(255, 255, 255, 0.86);
-    font-size: 12px;
-    font-weight: 600;
-    line-height: 28px;
-    white-space: nowrap;
-}
-
-.home-tutorial-reset-btn {
-    min-width: 58px;
-    height: 28px;
-    padding: 0 9px;
-    border: 1px solid rgba(255, 255, 255, 0.22);
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.12);
-    color: #fff;
-    font-size: 12px;
-    font-weight: 600;
-    line-height: 28px;
-    cursor: pointer;
-    pointer-events: auto;
-    transition: background-color 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
-}
-
-.home-tutorial-reset-btn:hover,
-.home-tutorial-reset-btn:focus-visible {
-    border-color: rgba(255, 255, 255, 0.52);
-    background: rgba(255, 255, 255, 0.22);
-    outline: none;
-}
-
-.home-tutorial-reset-btn:active {
-    transform: translateY(1px);
-}
-
-.home-tutorial-reset-btn:disabled {
-    cursor: wait;
-    opacity: 0.62;
-}
-
 .home-avatar-floating-guide-player {
     position: fixed;
     right: 18px;
@@ -336,24 +277,6 @@ body {
     /* 移动端状态提示气泡框滑动出动画 */
     #status-toast.hide {
         transform: translateY(-20px) scale(0.95);
-    }
-
-    .home-tutorial-reset-controls {
-        top: max(10px, env(safe-area-inset-top));
-        right: 10px;
-        bottom: auto;
-        left: 10px;
-        flex-wrap: wrap;
-    }
-
-    .home-tutorial-reset-label {
-        flex-basis: 100%;
-        line-height: 18px;
-    }
-
-    .home-tutorial-reset-btn {
-        flex: 1 1 calc(50% - 6px);
-        min-width: 0;
     }
 
     .home-avatar-floating-guide-player {
@@ -537,7 +460,6 @@ body.neko-game-active #status-toast,
 body.neko-game-active #subtitle-display,
 body.neko-game-active #react-chat-window-overlay,
 body.neko-game-active #chat-avatar-preview-popup,
-body.neko-game-active .home-tutorial-reset-controls,
 body.neko-game-active .home-avatar-floating-guide-player,
 body.neko-game-active [id$="-floating-buttons"],
 body.neko-game-active [id$="-return-button-container"],

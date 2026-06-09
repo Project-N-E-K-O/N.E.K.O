@@ -472,7 +472,7 @@ def test_tutorial_avatar_override_does_not_capture_avatar_preview():
     )
 
 
-def test_day1_reset_uses_avatar_floating_day_launcher():
+def test_day_reset_waits_for_reload_before_restarting_guide():
     source = RESET_PATH.read_text(encoding="utf-8")
     reset_block = source.split("async function resetHomeTutorialDay(day, options = {})", 1)[1].split(
         "function detectModelPrefix()",
@@ -481,7 +481,9 @@ def test_day1_reset_uses_avatar_floating_day_launcher():
 
     assert "if (round === 1)" not in reset_block
     assert "resetPageTutorial('home')" not in reset_block
-    assert "startAvatarFloatingGuideDay(round" in reset_block
+    assert "startAvatarFloatingGuideDay(round" not in reset_block
+    assert "startAfterReset" not in reset_block
+    assert "刷新页面或下次启动后将重新显示" in source
 
 
 def test_day_reset_fallback_player_keeps_tutorial_model_reload_before_first_step():

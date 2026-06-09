@@ -1319,26 +1319,46 @@ def test_home_tutorial_reset_also_clears_backend_prompt_state():
 
 def test_home_avatar_floating_guide_day_reset_buttons_are_wired():
     template_source = Path("templates/index.html").read_text(encoding="utf-8")
+    memory_template_source = Path("templates/memory_browser.html").read_text(encoding="utf-8")
     reset_source = Path("static/avatar-floating-guide-reset.js").read_text(encoding="utf-8")
-    style_source = Path("static/css/index.css").read_text(encoding="utf-8")
+    style_source = Path("static/css/memory_browser.css").read_text(encoding="utf-8")
+    index_style_source = Path("static/css/index.css").read_text(encoding="utf-8")
     day2_block = reset_source[
         reset_source.index("2: {")
         :reset_source.index("3: {", reset_source.index("2: {"))
     ]
+    reset_day_block = reset_source.split("async function resetHomeTutorialDay(day, options = {})", 1)[1].split(
+        "function detectModelPrefix()",
+        1,
+    )[0]
 
-    assert "/static/avatar-floating-guide-reset.js" in template_source
-    assert "home-tutorial-reset-controls" in template_source
+    assert "/static/avatar-floating-guide-reset.js" not in template_source
+    assert "home-tutorial-reset-controls" not in template_source
+    assert "home-tutorial-reset-btn" not in template_source
+    assert "/static/avatar-floating-guide-reset.js" in memory_template_source
+    assert "tutorial-reset-cascade" in memory_template_source
+    assert "tutorial-cascader-trigger" in memory_template_source
+    assert "tutorial-cascader-popup" in memory_template_source
+    assert "tutorial-cascader-page-column" in memory_template_source
+    assert "tutorial-cascader-day-column" in memory_template_source
+    assert "tutorial-reset-value" in memory_template_source
+    assert 'id="tutorial-day-reset-select"' not in memory_template_source
+    assert "tutorial-day-reset-menu" not in memory_template_source
+    assert "tutorial-day-reset-btn" not in memory_template_source
     for day in range(1, 8):
-        assert f'data-home-tutorial-reset-day="{day}"' in template_source
+        assert f'data-home-tutorial-reset-day="{day}"' not in template_source
+        assert f'data-tutorial-day="{day}"' in memory_template_source
+    assert "data-home-tutorial-reset-start" not in memory_template_source
 
     assert "neko_avatar_floating_guide_v1" in reset_source
     assert "neko:avatar-floating-guide-reset" in reset_source
+    assert "button.dataset.homeTutorialResetStart" not in reset_source
     assert "window.universalTutorialManager.resetPageTutorial('home')" not in reset_source
     assert "completedRounds = omitRound(state.completedRounds, round)" in reset_source
     assert "skippedRounds = omitRound(state.skippedRounds, round)" in reset_source
     assert "pendingRound = round" in reset_source
     assert "manualResetRound = round" in reset_source
-    assert "await startAvatarFloatingGuideDay(round" in reset_source
+    assert "await startAvatarFloatingGuideDay(round" not in reset_day_block
     assert "manager.beginTutorialAvatarOverride()" in reset_source
     assert "manager.restoreTutorialAvatarOverride()" in reset_source
     assert "appendTutorialTextToChat(step, day)" in reset_source
@@ -1346,8 +1366,15 @@ def test_home_avatar_floating_guide_day_reset_buttons_are_wired():
     assert "host.appendMessage(message)" in reset_source
     assert "waitForTutorialAvatarEnvironment()" in reset_source
     assert "forceShowTutorialAvatar(manager)" in reset_source
-    assert "top: max(16px, env(safe-area-inset-top))" in style_source
-    assert "bottom: auto" in style_source
+    assert ".tutorial-reset-cascade" in style_source
+    assert ".tutorial-cascader-trigger" in style_source
+    assert ".tutorial-cascader-popup" in style_source
+    assert ".tutorial-cascader-column" in style_source
+    assert ".tutorial-day-reset-menu" not in style_source
+    assert ".tutorial-day-reset-btn" not in style_source
+    assert "resetSelectedTutorial()" in memory_template_source
+    assert "function resolveSelectedTutorialReset()" in Path("static/js/memory_browser.js").read_text(encoding="utf-8")
+    assert "function syncTutorialResetCascader()" in Path("static/js/memory_browser.js").read_text(encoding="utf-8")
     assert "window.showCurrentModel()" in reset_source
     assert "window.TutorialInteractionTakeover.createController" in reset_source
     assert "interactionTakeover.setActive(true)" in reset_source
@@ -1374,10 +1401,27 @@ def test_home_avatar_floating_guide_day_reset_buttons_are_wired():
     assert "window.startAvatarFloatingGuideDay = startAvatarFloatingGuideDay" in reset_source
     assert "window.resetHomeTutorialDay = resetHomeTutorialDay" in reset_source
     assert "pointer-events: auto" in style_source
-    assert "home-avatar-floating-guide-player" in style_source
-    assert "home-avatar-floating-guide-cursor" not in style_source
-    assert 'data-home-avatar-floating-guide-role="action"' in style_source
-    assert 'data-home-avatar-floating-guide-highlight="true"' in style_source
+    assert "home-avatar-floating-guide-player" in index_style_source
+    assert "home-avatar-floating-guide-cursor" not in index_style_source
+    assert 'data-home-avatar-floating-guide-role="action"' in index_style_source
+    assert 'data-home-avatar-floating-guide-highlight="true"' in index_style_source
+
+
+def test_avatar_floating_manual_reset_round_restarts_on_next_home_load():
+    manager_source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+    next_round_block = manager_source.split("getNextAvatarFloatingGuideAutoRound() {", 1)[1].split(
+        "async maybeStartAvatarFloatingGuideAutoRound",
+        1,
+    )[0]
+
+    assert "const pendingManualRound = state.pendingRound || state.manualResetRound;" in next_round_block
+    assert "return pendingManualRound;" in next_round_block
+    assert next_round_block.index("const pendingManualRound = state.pendingRound || state.manualResetRound;") < next_round_block.index(
+        "if (state.lastAutoShownDate === today)"
+    )
+    assert next_round_block.index("return pendingManualRound;") < next_round_block.index(
+        "if (!completed.has(1))"
+    )
 
 
 def test_avatar_floating_reset_fallback_cursor_routes_to_pc_global_overlay():

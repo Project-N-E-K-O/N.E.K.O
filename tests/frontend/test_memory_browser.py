@@ -159,6 +159,21 @@ def test_memory_browser_page_load(mock_page: Page, running_server: str, seed_mem
     expect(mock_page.locator("#storage-current-root")).not_to_have_text("加载中...", timeout=5000)
     expect(mock_page.locator("#storage-location-overlay")).to_have_count(0)
     expect(mock_page.locator("#tutorial-reset-select option[value='current_personality']")).to_have_count(1)
+    expect(mock_page.locator("#home-tutorial-reset-controls")).to_have_count(0)
+    expect(mock_page.locator(".tutorial-day-reset-menu")).to_have_count(0)
+    expect(mock_page.locator(".tutorial-cascader-day-column [data-tutorial-day]")).to_have_count(7)
+    expect(mock_page.locator(".tutorial-cascader-popup")).to_be_hidden()
+    expect(mock_page.locator("#tutorial-reset-btn")).to_be_disabled()
+    mock_page.locator(".tutorial-cascader-trigger").click()
+    expect(mock_page.locator(".tutorial-cascader-popup")).to_be_visible()
+    mock_page.locator(".tutorial-cascader-option[data-tutorial-page='home']").click()
+    expect(mock_page.locator(".tutorial-cascader-day-column")).to_be_visible()
+    expect(mock_page.locator("#tutorial-reset-btn")).to_be_disabled()
+    mock_page.locator(".tutorial-cascader-option[data-tutorial-day='1']").click()
+    expect(mock_page.locator(".tutorial-reset-value")).to_have_text("主页 / 第 1 天")
+    expect(mock_page.locator(".tutorial-cascader-popup")).to_be_hidden()
+    expect(mock_page.locator("#tutorial-reset-btn")).to_be_enabled()
+    assert mock_page.evaluate("typeof window.AvatarFloatingGuideReset") == "object"
     assert mock_page.evaluate("typeof window.appStorageLocation") == "object"
     assert mock_page.evaluate("typeof window.waitForStorageLocationStartupBarrier") == "undefined"
     assert mock_page.evaluate("typeof window.__nekoStorageLocationStartupBarrier") == "undefined"
@@ -194,8 +209,9 @@ def test_memory_browser_current_personality_reset_requests_home_reselect(
 
     mock_page.route("**/api/characters/persona-reselect-current", handle_reselect)
     mock_page.goto(f"{running_server}/memory_browser")
-    mock_page.wait_for_selector("#tutorial-reset-select", timeout=10000)
-    mock_page.select_option("#tutorial-reset-select", "current_personality")
+    mock_page.wait_for_selector(".tutorial-cascader-trigger", timeout=10000)
+    mock_page.locator(".tutorial-cascader-trigger").click()
+    mock_page.locator(".tutorial-cascader-option[data-tutorial-page='current_personality']").click()
     with mock_page.expect_response(
         lambda r: "/api/characters/persona-reselect-current" in r.url
         and r.request.method == "POST"

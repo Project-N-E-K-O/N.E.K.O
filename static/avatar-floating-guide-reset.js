@@ -661,7 +661,6 @@
         }
 
         await resetHomeTutorialFallback();
-        await startAvatarFloatingGuideDay(round, { source });
 
         showResetToast(round);
         return state;
@@ -1772,9 +1771,13 @@
     }
 
     function showResetToast(day) {
-        const message = `已重置第 ${day} 天新手教程。`;
+        const message = `已重置第 ${day} 天新手教程，刷新页面或下次启动后将重新显示。`;
         if (typeof window.showStatusToast === 'function') {
             window.showStatusToast(message, 2500, { priority: 1 });
+            return;
+        }
+        if (typeof window.alert === 'function') {
+            window.alert(message);
             return;
         }
         console.log('[AvatarFloatingGuideReset]', message);
@@ -1789,7 +1792,9 @@
                 const day = Number(button.dataset.homeTutorialResetDay);
                 button.disabled = true;
                 try {
-                    await resetHomeTutorialDay(day, { source: 'home_reset_button' });
+                    await resetHomeTutorialDay(day, {
+                        source: 'memory_browser_reset_button',
+                    });
                 } catch (error) {
                     console.error('[AvatarFloatingGuideReset] 重置失败:', error);
                     if (typeof window.showStatusToast === 'function') {

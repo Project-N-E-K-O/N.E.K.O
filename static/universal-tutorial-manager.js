@@ -439,6 +439,10 @@ class UniversalTutorialManager {
     getNextAvatarFloatingGuideAutoRound() {
         const state = loadAvatarFloatingGuideState();
         const today = getTodayLocalDateForAvatarFloatingGuide();
+        const pendingManualRound = state.pendingRound || state.manualResetRound;
+        if (pendingManualRound) {
+            return pendingManualRound;
+        }
         if (state.lastAutoShownDate === today) {
             return null;
         }
