@@ -3237,10 +3237,15 @@
         //    （onClick 里已 setCompactCollapsing(true)）—— 不再在此用 classList 加类（会被 React 重渲染覆盖）。
         compactMinimizePressTimer = window.setTimeout(function () {
             compactMinimizePressTimer = 0;
-            // 多一道保险：擦除期间窗口若已退出 Electron compact 语境（关闭/重开会经
+            // 守卫：擦除期间窗口若已退出 Electron compact 语境（关闭/重开会经
             // closeWindow→cancelActiveAnimation 清掉本 timer，但状态可能在其它路径变更），
             // 不强行折叠，避免覆盖更新后的 surface mode。
             if (!isElectronChatWindow()) return;
+            // 守卫：宿主可能在这 280ms 内经公开 API 把 surface mode 切走
+            // （setChatSurfaceMode('full') 或 setViewProps({chatSurfaceMode}) 直写 state，
+            // 后者绕过 cancelActiveAnimation 不清本 timer）。只有「仍处于 compact」才执行
+            // 这次延迟折叠，否则会用陈旧的 minimized 覆盖更新后的模式（Codex P2）。
+            if (getCurrentChatSurfaceMode() !== 'compact') return;
             setChatSurfaceMode('minimized');
         }, COMPACT_MINIMIZE_PRESS_MS);
     }
