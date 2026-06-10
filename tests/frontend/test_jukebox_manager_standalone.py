@@ -113,6 +113,14 @@ def setup_song_manager_page(mock_page: Page, songs: str, actions: str = "{}") ->
                 json: async () => ({{ success: true }})
               }};
             }}
+            if (String(url).includes('/songs/') && String(url).endsWith('/visibility')) {{
+              const songId = String(url).split('/songs/')[1].split('/visibility')[0];
+              songs[songId].visible = options.body.get('visible') === 'true';
+              return {{
+                ok: true,
+                json: async () => ({{ success: true }})
+              }};
+            }}
             throw new Error('unexpected fetch: ' + url);
           }};
         }}
@@ -712,6 +720,45 @@ def test_jukebox_manager_hidden_selection_does_not_drive_delete_selected(mock_pa
     assert not mock_page.evaluate("() => window.Jukebox.SongActionManager.selectedActions.has('hiddenAction')")
     assert danger_btn.get_attribute("data-mode") == "clear-visible"
     assert danger_btn.inner_text() == "删除当前显示(1)"
+
+
+@pytest.mark.frontend
+def test_jukebox_manager_hiding_song_prunes_selection(mock_page: Page):
+    setup_song_manager_page(
+        mock_page,
+        """
+        {
+          song1: { name: 'Song 1', artist: 'A', visible: true },
+          song2: { name: 'Song 2', artist: 'B', visible: true }
+        }
+        """,
+        """
+        {
+          action1: { name: 'Action 1', format: 'vmd', visible: true }
+        }
+        """,
+    )
+
+    mock_page.locator(".songs-panel .sam-checkbox-right input").click()
+    mock_page.locator('.songs-panel .sam-item[data-id="song1"] .sam-song-select').click()
+    mock_page.evaluate(
+        """
+        () => {
+          const SAM = window.Jukebox.SongActionManager;
+          SAM.bindingSourceSongs.add('song1');
+          SAM.bindingSelectedSongs.add('song1');
+        }
+        """
+    )
+    assert mock_page.locator(".sam-btn-song-danger").inner_text() == "删除选中(1)"
+
+    mock_page.locator('.songs-panel .sam-item[data-id="song1"] .sam-visibility-btn').click()
+
+    assert mock_page.locator('.songs-panel .sam-item[data-id="song1"]').count() == 0
+    assert not mock_page.evaluate("() => window.Jukebox.SongActionManager.selectedSongs.has('song1')")
+    assert not mock_page.evaluate("() => window.Jukebox.SongActionManager.bindingSourceSongs.has('song1')")
+    assert not mock_page.evaluate("() => window.Jukebox.SongActionManager.bindingSelectedSongs.has('song1')")
+    assert mock_page.locator(".sam-btn-song-danger").inner_text() == "删除当前显示(1)"
 
 
 @pytest.mark.frontend

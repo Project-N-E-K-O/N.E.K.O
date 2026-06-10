@@ -1039,6 +1039,11 @@ window.Jukebox = {
       try {
         await this.api.updateSongVisibility(songId, newVisible);
         song.visible = newVisible;
+        if (!newVisible) {
+          if (this.selectedSongs) this.selectedSongs.delete(songId);
+          if (this.bindingSourceSongs) this.bindingSourceSongs.delete(songId);
+          if (this.bindingSelectedSongs) this.bindingSelectedSongs.delete(songId);
+        }
         
         const songsPanel = document.querySelector('.songs-panel');
         if (songsPanel) {
