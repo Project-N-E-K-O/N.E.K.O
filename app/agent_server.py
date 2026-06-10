@@ -2832,6 +2832,17 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 bu_info["status"] = "cancelled"
                                 bu_info["end_time"] = _now_iso()
                                 bu_info["error"] = "browser_use disabled before dispatch"
+                                # Close out the record_assigned entry; otherwise
+                                # the tracker keeps showing [ASSIGNED] and later
+                                # analyzer passes treat the same user request as
+                                # still in flight instead of retrying it.
+                                _task_tracker.record_completed(
+                                    lanlan_name, task_id=bu_task_id, method="browser_use",
+                                    desc=result.task_description or "",
+                                    detail="browser_use disabled before dispatch",
+                                    success=False, cancelled=True,
+                                    trigger_user_fingerprint=trigger_user_msg_sig,
+                                )
                                 try:
                                     await _emit_main_event(
                                         "task_update", lanlan_name,
