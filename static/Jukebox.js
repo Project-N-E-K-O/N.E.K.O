@@ -1004,6 +1004,9 @@ window.Jukebox = {
     
     toggleShowHidden(checked) {
       this.showHiddenSongs = checked;
+      if (!checked) {
+        this.pruneHiddenSongSelection();
+      }
       const songsPanel = document.querySelector('.songs-panel');
       if (songsPanel) {
         this.rerenderPanel(songsPanel, () => this.renderSongs(songsPanel));
@@ -1013,6 +1016,9 @@ window.Jukebox = {
 
     toggleShowHiddenActions(checked) {
       this.showHiddenActions = checked;
+      if (!checked) {
+        this.pruneHiddenActionSelection();
+      }
       const actionsPanel = document.querySelector('.actions-panel');
       if (actionsPanel) {
         this.rerenderPanel(actionsPanel, () => this.renderActions(actionsPanel));
@@ -1218,13 +1224,17 @@ window.Jukebox = {
     
     async deleteSong(songId) {
       try {
-        await this.api.deleteSong(songId);
+        const result = await this.api.deleteSong(songId);
         // 从选择集合中移除
         if (this.selectedSongs) this.selectedSongs.delete(songId);
         if (this.bindingSourceSongs) this.bindingSourceSongs.delete(songId);
         if (this.bindingSelectedSongs) this.bindingSelectedSongs.delete(songId);
-        delete this.data.songs[songId];
-        delete this.data.bindings[songId];
+        if (result?.hidden && this.data.songs[songId]) {
+          this.data.songs[songId].visible = false;
+        } else {
+          delete this.data.songs[songId];
+          delete this.data.bindings[songId];
+        }
 
         // 刷新所有面板
         this.refreshAllPanels();
@@ -1867,6 +1877,11 @@ window.Jukebox = {
       return Object.entries(this.data.songs).filter(([id, song]) => showHidden || song.visible !== false);
     },
 
+    shouldShowSong(song) {
+      const showHidden = this.showHiddenSongs !== false;
+      return !!song && (showHidden || song.visible !== false);
+    },
+
     shouldShowAction(action) {
       const showHidden = this.showHiddenActions !== false;
       return !!action && (showHidden || action.visible !== false);
@@ -1874,6 +1889,34 @@ window.Jukebox = {
 
     getVisibleActionEntries() {
       return Object.entries(this.data.actions).filter(([, action]) => this.shouldShowAction(action));
+    },
+
+    pruneHiddenSongSelection() {
+      const visibleSongIds = new Set(this.getVisibleSongEntries().map(([id]) => id));
+      this.selectedSongs?.forEach(id => {
+        if (!visibleSongIds.has(id)) this.selectedSongs.delete(id);
+      });
+      this.bindingSelectedSongs?.forEach(id => {
+        if (!visibleSongIds.has(id)) this.bindingSelectedSongs.delete(id);
+      });
+      this.bindingSourceSongs?.forEach(id => {
+        if (!visibleSongIds.has(id)) this.bindingSourceSongs.delete(id);
+      });
+      this.syncBindingSelection();
+    },
+
+    pruneHiddenActionSelection() {
+      const visibleActionIds = new Set(this.getVisibleActionEntries().map(([id]) => id));
+      this.selectedActions?.forEach(id => {
+        if (!visibleActionIds.has(id)) this.selectedActions.delete(id);
+      });
+      this.bindingSelectedActions?.forEach(id => {
+        if (!visibleActionIds.has(id)) this.bindingSelectedActions.delete(id);
+      });
+      this.bindingSourceActions?.forEach(id => {
+        if (!visibleActionIds.has(id)) this.bindingSourceActions.delete(id);
+      });
+      this.syncBindingSelection();
     },
 
     areAllSongsSelected() {
@@ -1900,13 +1943,13 @@ window.Jukebox = {
 
     areAllBindingSongsSelected() {
       this.initBindingSelection();
-      const songIds = Object.keys(this.data.songs);
+      const songIds = this.getVisibleSongEntries().map(([id]) => id);
       return songIds.length > 0 && songIds.every(songId => this.bindingSelectedSongs.has(songId));
     },
 
     hasAnyBindingSongsSelected() {
       this.initBindingSelection();
-      return Object.keys(this.data.songs).some(songId => this.bindingSelectedSongs.has(songId));
+      return this.getVisibleSongEntries().some(([songId]) => this.bindingSelectedSongs.has(songId));
     },
 
     areAllBindingActionsSelected() {
@@ -1933,20 +1976,20 @@ window.Jukebox = {
       const actionIds = new Set();
 
       this.bindingSourceSongs.forEach(songId => {
-        if (!this.data.songs[songId]) return;
+        if (!this.shouldShowSong(this.data.songs[songId])) return;
         songIds.add(songId);
         this.getSongBindings(songId).forEach(actionId => {
-          if (this.data.actions[actionId]) {
+          if (this.shouldShowAction(this.data.actions[actionId])) {
             actionIds.add(actionId);
           }
         });
       });
 
       this.bindingSourceActions.forEach(actionId => {
-        if (!this.data.actions[actionId]) return;
+        if (!this.shouldShowAction(this.data.actions[actionId])) return;
         actionIds.add(actionId);
         this.getActionBindings(actionId).forEach(songId => {
-          if (this.data.songs[songId]) {
+          if (this.shouldShowSong(this.data.songs[songId])) {
             songIds.add(songId);
           }
         });

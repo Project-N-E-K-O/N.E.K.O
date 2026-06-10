@@ -68,6 +68,21 @@ def setup_song_manager_page(mock_page: Page, songs: str, actions: str = "{}") ->
                 }})
               }};
             }}
+            if (String(url).includes('/songs/') && options.method === 'DELETE') {{
+              const songId = String(url).split('/songs/')[1];
+              if (songs[songId]?.isBuiltin) {{
+                songs[songId].visible = false;
+                return {{
+                  ok: true,
+                  json: async () => ({{ success: true, hidden: true }})
+                }};
+              }}
+              delete songs[songId];
+              return {{
+                ok: true,
+                json: async () => ({{ success: true }})
+              }};
+            }}
             if (String(url).endsWith('/actions/batch-delete')) {{
               const payload = JSON.parse(options.body);
               window.__batchActionDeleteRequests.push(payload);
@@ -125,17 +140,18 @@ def setup_song_manager_page(mock_page: Page, songs: str, actions: str = "{}") ->
 @pytest.mark.frontend
 def test_jukebox_manager_standalone_uses_native_drag_regions():
     """
-    回归保护：管理器的拖动必须走 CSS `-webkit-app-region: drag`（OS 原生 HTCAPTION），
-    而不是 JS mousedown + setBounds。历史 bug：JS 设 setBounds 会和 Windows 边缘
-    WS_THICKFRAME resize 热区并发触发，表现为"拖一下窗口变大一下"。
+    Regression guard: manager dragging must use CSS `-webkit-app-region: drag`
+    (native OS HTCAPTION) instead of JS mousedown plus setBounds. The historical
+    bug was that JS setBounds could race with the Windows WS_THICKFRAME resize
+    hot zone near the window edge, making the window grow when dragged.
 
-    改回 JS 驱动拖动会让这个测试失败。
+    Reintroducing JS-driven dragging should make this test fail.
     """
-    # 面板本体必须保持 no-drag，避免 frameless 原生 resize 边缘和滚动区被 HTCAPTION 抢走。
+    # The panel must stay no-drag so frameless resize edges and scroll areas are not claimed by HTCAPTION.
     assert re.search(r"\.jukebox-sam-panel\s*\{[\s\S]*?-webkit-app-region:\s*no-drag\s*!important", MANAGER_TEMPLATE)
-    # 标题栏必须声明为 drag 区域（放宽空白容忍 CSS 格式化工具）。
+    # The header must remain the drag region; whitespace is relaxed for CSS formatting tools.
     assert re.search(r"\.jukebox-sam-panel\s+\.sam-header\s*\{[\s\S]*?-webkit-app-region:\s*drag\s*!important", MANAGER_TEMPLATE)
-    # 交互元素必须声明为 no-drag，否则点击会被原生拖动吃掉
+    # Interactive elements must be no-drag or native dragging can consume clicks.
     assert re.search(r"\.jukebox-sam-panel\s+button\b[\s\S]*?\{[\s\S]*?-webkit-app-region:\s*no-drag\s*!important", MANAGER_TEMPLATE)
     assert re.search(r"\.jukebox-sam-panel\s+\.sam-close-btn\b[\s\S]*?\{[\s\S]*?-webkit-app-region:\s*no-drag\s*!important", MANAGER_TEMPLATE)
     # 不应再注册 JS mousedown 拖动（旧实现的标志函数）——模板和外部 JS 文件都要拦
@@ -417,6 +433,40 @@ def test_jukebox_manager_delete_selected_uses_single_confirm(mock_page: Page):
 
 
 @pytest.mark.frontend
+def test_jukebox_manager_single_delete_builtin_song_hides_locally(mock_page: Page):
+    setup_song_manager_page(
+        mock_page,
+        """
+        {
+          builtin: { name: 'Builtin Song', artist: 'B', visible: true, isBuiltin: true }
+        }
+        """,
+        """
+        {
+          action1: { name: 'Action 1', format: 'vmd', visible: true }
+        }
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+          const SAM = window.Jukebox.SongActionManager;
+          SAM.data.bindings = { builtin: { action1: { offset: 0 } } };
+        }
+        """
+    )
+
+    mock_page.evaluate("() => window.Jukebox.SongActionManager.deleteSong('builtin')")
+    mock_page.wait_for_function("() => window.Jukebox.SongActionManager.data.songs.builtin.visible === false")
+
+    assert mock_page.evaluate("() => !!window.Jukebox.SongActionManager.data.songs.builtin")
+    assert mock_page.evaluate("() => !!window.Jukebox.SongActionManager.data.bindings.builtin.action1")
+    assert "sam-item-hidden" in (
+        mock_page.locator('.songs-panel .sam-item[data-id="builtin"]').get_attribute("class") or ""
+    )
+
+
+@pytest.mark.frontend
 def test_jukebox_manager_clear_visible_uses_second_confirm_and_escape_once(mock_page: Page):
     setup_song_manager_page(
         mock_page,
@@ -648,6 +698,7 @@ def test_jukebox_manager_hidden_selection_does_not_drive_delete_selected(mock_pa
 
     mock_page.locator(".songs-panel .sam-checkbox-right input").click()
     assert mock_page.locator('.songs-panel .sam-item[data-id="hiddenSong"]').count() == 0
+    assert not mock_page.evaluate("() => window.Jukebox.SongActionManager.selectedSongs.has('hiddenSong')")
     assert danger_btn.get_attribute("data-mode") == "clear-visible"
     assert danger_btn.inner_text() == "删除当前显示(1)"
 
@@ -658,6 +709,7 @@ def test_jukebox_manager_hidden_selection_does_not_drive_delete_selected(mock_pa
 
     mock_page.locator(".actions-panel .sam-checkbox-right input").click()
     assert mock_page.locator('.actions-panel .sam-item[data-id="hiddenAction"]').count() == 0
+    assert not mock_page.evaluate("() => window.Jukebox.SongActionManager.selectedActions.has('hiddenAction')")
     assert danger_btn.get_attribute("data-mode") == "clear-visible"
     assert danger_btn.inner_text() == "删除当前显示(1)"
 
