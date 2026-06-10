@@ -2579,7 +2579,7 @@
         var frame = doc.createElement('iframe');
         frame.className = 'chat-export-preview-frame';
         frame.hidden = true;
-        frame.setAttribute('sandbox', 'allow-same-origin');
+        frame.setAttribute('sandbox', 'allow-scripts');
         frame.setAttribute('title', translateLabel('chat.exportPreviewTitle', 'Export Preview'));
 
         var previewImageWrap = doc.createElement('div');

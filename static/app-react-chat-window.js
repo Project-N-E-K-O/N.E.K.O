@@ -961,6 +961,10 @@
     function seedCompactSurfaceAnchorForRender() {
         var shell = getShell();
         if (!shell || getCurrentChatSurfaceMode() !== 'compact') return;
+        if (compactSurfaceAnchorLocked) return;
+        if (compactSurfaceDesktopResizeActive || compactSurfaceResizeSession) return;
+        if ((dragState && dragState.compactSurface) || compactSurfaceDesktopDragActive) return;
+        if (shell.hasAttribute('data-compact-surface-anchor-ready')) return;
         var layoutOverride = getElectronCompactLayoutOverride();
         var target = getCompactSurfaceTarget(layoutOverride);
         if (!target) {
@@ -2544,7 +2548,7 @@
     function renderWindow() {
         var overlay = getOverlay();
         if (!overlay || overlay.hidden) return;
-        if (getCurrentChatSurfaceMode() === 'compact') {
+        if (!mounted && getCurrentChatSurfaceMode() === 'compact') {
             seedCompactSurfaceAnchorForRender();
         }
         mountWindow();

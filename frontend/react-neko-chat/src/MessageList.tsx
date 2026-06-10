@@ -48,6 +48,11 @@ export default function MessageList({
     [messages],
   );
 
+  const observedMessageKey = useMemo(
+    () => displayMessages.map(message => message.id).join('|'),
+    [displayMessages],
+  );
+
   // Always instant scroll: behavior:'smooth' is silently broken in our Electron
   // host (window.scrollTo / element.scrollTo with behavior:'smooth' is a no-op),
   // which left the chat stuck at scrollTop=0 on mount and after each new message.
@@ -120,7 +125,7 @@ export default function MessageList({
     }
 
     return () => observer.disconnect();
-  }, [displayMessages.length]);
+  }, [observedMessageKey]);
 
   useEffect(() => {
     updateFloatingScrollbar(false);
