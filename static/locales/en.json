@@ -1919,6 +1919,8 @@
         "aiCompanionSeedDescribe": "Generate a catgirl card based on this description: ",
         "aiCompanionSeedGenerated": "Generated and filled into the form: ",
         "aiCompanionSub": "Card-design buddy · YUI standing in for the dev cat",
+        "aiCompanionExpand": "Expand",
+        "aiCompanionDragHint": "Drag to move",
         "aiCompanionClose": "Close",
         "aiCompanionMinimize": "Minimize",
         "aiCompanionPlaceholder": "Say something… (Enter to send, Shift+Enter for newline)",

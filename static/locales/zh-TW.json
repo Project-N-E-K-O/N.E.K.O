@@ -1919,6 +1919,8 @@
         "aiCompanionSub": "設定捏人助手 · YUI 暫代開發貓",
         "aiCompanionClose": "關閉",
         "aiCompanionMinimize": "收起",
+        "aiCompanionExpand": "展開",
+        "aiCompanionDragHint": "拖曳視窗",
         "aiCompanionPlaceholder": "說點什麼…（Enter 發送、Shift+Enter 換行）",
         "aiCompanionSend": "發送",
         "aiCompanionGreeting": "喵～我是設定捏人助手，先告訴我你想要一隻什麼樣的貓娘呀？一句話描述就好，我會再問幾個細節，然後幫你把整張卡寫好喵。",

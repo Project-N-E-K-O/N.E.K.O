@@ -1919,6 +1919,8 @@
         "aiCompanionSub": "設定捏ね助手 · YUI が開発猫の代役",
         "aiCompanionClose": "閉じる",
         "aiCompanionMinimize": "最小化",
+        "aiCompanionExpand": "展開",
+        "aiCompanionDragHint": "ドラッグで移動",
         "aiCompanionPlaceholder": "なにか話してね…（Enter で送信、Shift+Enter で改行）",
         "aiCompanionSend": "送信",
         "aiCompanionGreeting": "にゃ〜 設定捏ね助手だよ。まず、どんな猫娘がいいか一言で教えてくれる？ いくつか追加で質問して、それからカード全体を書いてあげるね。",

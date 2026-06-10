@@ -1919,6 +1919,8 @@
         "aiCompanionSeedDescribe": "基于这段描述生成猫娘卡：",
         "aiCompanionSeedGenerated": "已生成并填入表单：",
         "aiCompanionSub": "设定捏人助手 · 暂代开发猫",
+        "aiCompanionExpand": "展开",
+        "aiCompanionDragHint": "拖动窗口",
         "aiCompanionClose": "关闭",
         "aiCompanionMinimize": "收起",
         "aiCompanionPlaceholder": "说点什么…（Enter 发送、Shift+Enter 换行）",

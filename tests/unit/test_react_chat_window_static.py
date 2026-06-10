@@ -1460,15 +1460,16 @@ def test_compact_inline_export_uses_windowless_app_chat_export_api():
     assert "function buildCompactInlinePreview(options)" in compact_api_block
     assert "buildExportDocument(entries, state.exportFormat)" in compact_api_block
     assert "URL.createObjectURL(exportData.previewBlob)" in compact_api_block
-    assert "buildMarkdownPreviewDocument(exportData.content)" not in compact_api_block
+    assert "previewKind: 'document'," in compact_api_block
+    assert "previewDocument: buildMarkdownPreviewDocument(exportData.content)" in compact_api_block
     assert "getOrBuildPreviewPayload" not in compact_api_block
     assert "clearPreviewCache()" not in compact_api_block
     assert "function runCompactInlineExportAction(options, action)" in compact_api_block
     assert "state.exportFormat = previous.exportFormat;" in compact_api_block
     assert "buildExportDocument(entries, 'image')" in compact_api_block
     assert "copyImageToClipboard(imgBlob)" in compact_api_block
-    assert "buildExportDocument(entries, 'markdown')" not in compact_api_block
-    assert "copyTextToClipboard(mdData.content)" not in compact_api_block
+    assert "buildExportDocument(entries, 'markdown')" in compact_api_block
+    assert "copyTextToClipboard(markdownData.content)" in compact_api_block
     assert "downloadExportFile(data.fileName, data.content, data.contentType, window)" in compact_api_block
     assert "handleCopyClick" not in compact_api_block
     assert "handleDownloadClick" not in compact_api_block
