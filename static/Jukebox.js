@@ -875,7 +875,7 @@ window.Jukebox = {
                     </div>
                   </div>
                   <div class="sam-item-bindings">
-                    ${this.getActionBindings(id).map(songId => {
+                    ${this.getActionBindings(id).filter(songId => this.shouldShowSong(this.data.songs[songId])).map(songId => {
                       const song = this.data.songs[songId];
                       return song ? `<span class="sam-binding-tag" data-neko-marquee title="${Jukebox.escapeHtml(song.name)}">${Jukebox.escapeHtml(song.name)}</span>` : '';
                     }).join('')}
@@ -897,6 +897,7 @@ window.Jukebox = {
       const hasAnyBindingSongsSelected = this.hasAnyBindingSongsSelected();
       const allBindingActionsSelected = this.areAllBindingActionsSelected();
       const hasAnyBindingActionsSelected = this.hasAnyBindingActionsSelected();
+      const visibleSongs = this.getVisibleSongEntries();
       const visibleActions = this.getVisibleActionEntries();
 
       panel.innerHTML = `
@@ -910,8 +911,8 @@ window.Jukebox = {
               </label>
             </div>
             <div class="sam-bindings-list songs-for-drop">
-              ${Object.entries(this.data.songs).length === 0 ? `<div class="sam-empty">${window.t('Jukebox.noSongs', '暂无歌曲')}</div>` :
-                Object.entries(this.data.songs).map(([id, song], index) => {
+              ${visibleSongs.length === 0 ? `<div class="sam-empty">${window.t('Jukebox.noSongs', '暂无歌曲')}</div>` :
+                visibleSongs.map(([id, song], index) => {
                   const boundActions = this.getSongBindings(id).filter(actionId => this.shouldShowAction(this.data.actions[actionId]));
                   const isSelected = this.bindingSelectedSongs.has(id);
                   const songIndex = index + 1;
@@ -977,7 +978,7 @@ window.Jukebox = {
                     <span class="sam-binding-item-name" data-neko-marquee title="${Jukebox.escapeHtml(action.name)}">${Jukebox.escapeHtml(action.name)}</span>
                   </div>
                   <div class="sam-binding-item-tags">
-                    ${boundSongs.map(songId => {
+                    ${boundSongs.filter(songId => this.shouldShowSong(this.data.songs[songId])).map(songId => {
                       const song = this.data.songs[songId];
                       const isSongSelected = this.bindingSelectedSongs.has(songId);
                       const offset = this.data.bindings[songId]?.[id]?.offset || 0;

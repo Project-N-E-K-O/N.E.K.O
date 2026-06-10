@@ -975,6 +975,46 @@ def test_jukebox_manager_add_binding_index_uses_visible_songs(mock_page: Page):
 
 
 @pytest.mark.frontend
+def test_jukebox_manager_bindings_filter_hidden_songs(mock_page: Page):
+    setup_song_manager_page(
+        mock_page,
+        """
+        {
+          visibleSong: { name: 'Visible Song', artist: 'A', visible: true },
+          hiddenSong: { name: 'Hidden Song', artist: 'B', visible: false }
+        }
+        """,
+        """
+        {
+          action1: { name: 'Action 1', format: 'vmd', visible: true }
+        }
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+          const SAM = window.Jukebox.SongActionManager;
+          SAM.data.bindings = {
+            visibleSong: { action1: { offset: 0 } },
+            hiddenSong: { action1: { offset: 0 } }
+          };
+          SAM.toggleShowHidden(false);
+        }
+        """
+    )
+
+    mock_page.locator('.sam-tab[data-tab="actions"]').click()
+    assert mock_page.locator('.actions-panel .sam-binding-tag', has_text="Visible Song").count() == 1
+    assert mock_page.locator('.actions-panel .sam-binding-tag', has_text="Hidden Song").count() == 0
+
+    mock_page.locator('.sam-tab[data-tab="bindings"]').click()
+    assert mock_page.locator('.bindings-panel .songs-for-drop [data-song-id="visibleSong"]').count() == 1
+    assert mock_page.locator('.bindings-panel .songs-for-drop [data-song-id="hiddenSong"]').count() == 0
+    assert mock_page.locator('.bindings-panel .actions-for-drop .sam-binding-tag-small', has_text="Visible Song").count() == 1
+    assert mock_page.locator('.bindings-panel .actions-for-drop .sam-binding-tag-small', has_text="Hidden Song").count() == 0
+
+
+@pytest.mark.frontend
 def test_jukebox_manager_long_song_name_scrolls_without_pushing_actions(mock_page: Page):
     setup_song_manager_page(
         mock_page,
