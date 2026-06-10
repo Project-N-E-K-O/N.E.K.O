@@ -120,7 +120,7 @@
         return !!(
             body
             && isElectronChatWindow()
-            && body.getAttribute('data-initial-chat-surface-mode') === 'compact'
+            && body.getAttribute('data-chat-host-kind') === 'compact'
         );
     }
 

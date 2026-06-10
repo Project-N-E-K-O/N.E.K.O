@@ -112,6 +112,9 @@ def test_chat_full_endpoint_uses_chat_template_with_initial_full_surface():
     assert '@router.get("/chat_full", response_class=HTMLResponse)' in router_source
     assert '"initial_chat_surface_mode": "full"' in router_source
     assert '"initial_chat_surface_mode": "compact"' in router_source
+    assert '"initial_chat_host_kind": "full"' in router_source
+    assert '"initial_chat_host_kind": "compact"' in router_source
+    assert 'data-chat-host-kind="{{ initial_chat_host_kind|default(\'compact\', true) }}"' in template_source
     assert 'data-initial-chat-surface-mode="{{ initial_chat_surface_mode|default(\'compact\', true) }}"' in template_source
 
     chat_route_block = router_source.split('async def get_chat_page', 1)[1].split(
@@ -119,7 +122,9 @@ def test_chat_full_endpoint_uses_chat_template_with_initial_full_surface():
         1,
     )[0]
     assert '"initial_chat_surface_mode": "compact"' in chat_route_block
+    assert '"initial_chat_host_kind": "compact"' in chat_route_block
     assert '"initial_chat_surface_mode": "full"' not in chat_route_block
+    assert '"initial_chat_host_kind": "full"' not in chat_route_block
 
 
 def test_full_inset_layout_gated_by_electron_runtime_marker():
@@ -181,7 +186,8 @@ def test_chat_host_initial_surface_mode_prefers_template_override_before_storage
     assert initial_reader_block.index("return declaredMode;") < initial_reader_block.index("return readChatSurfaceModePreference();")
 
     assert "function isCompactOnlyElectronChatHost()" in source
-    assert "body.getAttribute('data-initial-chat-surface-mode') === 'compact'" in source
+    assert "body.getAttribute('data-chat-host-kind') === 'compact'" in source
+    assert "body.getAttribute('data-initial-chat-surface-mode') === 'compact'" not in source
     assert "function coerceChatSurfaceModeForHost(mode)" in source
     assert "normalized === 'full' && isCompactOnlyElectronChatHost()" in source
 
