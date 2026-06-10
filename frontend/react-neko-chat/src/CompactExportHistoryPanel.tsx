@@ -37,7 +37,7 @@ export function computeCompactHistoryExitDelay(index: number): string {
   return `${Math.min(index * COMPACT_HISTORY_EXIT_DELAY_STEP_MS, COMPACT_HISTORY_EXIT_DELAY_MAX_MS)}ms`;
 }
 
-export type CompactExportFormat = 'image';
+export type CompactExportFormat = 'image' | 'markdown';
 export type CompactExportImageStyle = 'neko' | 'original' | 'poster' | 'lyrics';
 export type CompactExportImageFormat = 'png' | 'jpeg' | 'webp';
 
@@ -94,6 +94,12 @@ type ScrollbarDragState = {
   startScrollTop: number;
   scrollableHeight: number;
   draggableTrackHeight: number;
+};
+
+type CompactHistoryScrollbarThumbState = {
+  top: number;
+  height: number;
+  scrollable: boolean;
 };
 
 type CompactHistoryBubbleTone = {
@@ -249,6 +255,11 @@ export default function CompactExportHistoryPanel({
   const [exportActionError, setExportActionError] = useState<string | null>(null);
   const [previewState, setPreviewState] = useState<CompactExportPreviewState>({ status: 'idle' });
   const [scrollbarVisible, setScrollbarVisible] = useState(false);
+  const [scrollbarThumbState, setScrollbarThumbState] = useState<CompactHistoryScrollbarThumbState>({
+    top: 0,
+    height: 0,
+    scrollable: false,
+  });
   const selectedMessages = messages.filter(message => selectedIds.has(message.id));
   const previewHasSelection = selectedMessages.length > 0;
   const selectedMessageIds = selectedMessages.map(message => message.id);
@@ -298,9 +309,27 @@ export default function CompactExportHistoryPanel({
     scrollbarVisibleTimerRef.current = null;
   }
 
+  function updateScrollbarThumbState() {
+    const scrollNode = scrollRef.current;
+    const metrics = scrollNode ? getCompactHistoryScrollbarMetrics(scrollNode) : null;
+    if (!scrollNode || !metrics) {
+      setScrollbarThumbState(prev => (
+        prev.scrollable ? { top: 0, height: 0, scrollable: false } : prev
+      ));
+      return;
+    }
+    const top = Math.round(metrics.draggableTrackHeight * (scrollNode.scrollTop / metrics.scrollableHeight));
+    const height = Math.round(metrics.thumbHeight);
+    setScrollbarThumbState(prev => {
+      if (prev.scrollable && prev.top === top && prev.height === height) return prev;
+      return { top, height, scrollable: true };
+    });
+  }
+
   function revealScrollbarForWheel() {
     if (!historyInteractive) return;
     clearScrollbarVisibleTimer();
+    updateScrollbarThumbState();
     setScrollbarVisible(true);
     if (desktopHistoryHoverActiveRef.current) return;
     scrollbarVisibleTimerRef.current = window.setTimeout(() => {
@@ -397,6 +426,9 @@ export default function CompactExportHistoryPanel({
     if (historyInteractive) return;
     clearScrollbarVisibleTimer();
     setScrollbarVisible(false);
+    setScrollbarThumbState(prev => (
+      prev.scrollable ? { top: 0, height: 0, scrollable: false } : prev
+    ));
     scrollbarDragRef.current = null;
     desktopHistoryHoverActiveRef.current = false;
   }, [historyInteractive]);
@@ -407,6 +439,9 @@ export default function CompactExportHistoryPanel({
       const detail = (event as CustomEvent<{ active?: boolean }>).detail;
       desktopHistoryHoverActiveRef.current = detail?.active === true;
       clearScrollbarVisibleTimer();
+      if (desktopHistoryHoverActiveRef.current) {
+        updateScrollbarThumbState();
+      }
       setScrollbarVisible(desktopHistoryHoverActiveRef.current);
     }
 
@@ -545,6 +580,7 @@ export default function CompactExportHistoryPanel({
     if (!scrollNode) return;
     const distanceToBottom = scrollNode.scrollHeight - scrollNode.scrollTop - scrollNode.clientHeight;
     onAutoScrollToBottomChange(distanceToBottom <= COMPACT_EXPORT_BOTTOM_THRESHOLD);
+    updateScrollbarThumbState();
   }
 
   function handleClick(event: ReactMouseEvent<HTMLElement>, message: ChatMessage, selectable: boolean) {
@@ -596,6 +632,7 @@ export default function CompactExportHistoryPanel({
 
   const exportFormatOptions: { id: CompactExportFormat; label: string }[] = [
     { id: 'image', label: i18n('chat.exportFormatImage', 'Image') },
+    { id: 'markdown', label: i18n('chat.exportFormatMarkdown', 'Markdown') },
   ];
   const imageStyleOptions: { id: CompactExportImageStyle; label: string }[] = [
     { id: 'neko', label: i18n('chat.exportImageStyleNeko', 'N.E.K.O') },
@@ -700,7 +737,7 @@ export default function CompactExportHistoryPanel({
           className="compact-export-preview-frame"
           title={i18n('chat.exportPreviewTitle', 'Export Preview')}
           srcDoc={previewState.result.previewDocument}
-          sandbox=""
+          sandbox="allow-scripts"
         />
       </div>
     );
@@ -942,6 +979,10 @@ export default function CompactExportHistoryPanel({
             <div
               className="compact-export-history-scrollbar-hit"
               data-compact-scrollbar-hit="true"
+              style={{
+                '--compact-history-scroll-thumb-top': `${scrollbarThumbState.top}px`,
+                '--compact-history-scroll-thumb-height': `${scrollbarThumbState.height}px`,
+              } as CSSProperties}
               aria-hidden="true"
               onWheel={handleScrollbarWheel}
               onPointerDown={handleScrollbarPointerDown}
