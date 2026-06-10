@@ -975,8 +975,12 @@ def test_jukebox_manager_binding_long_text_stays_inside_columns(mock_page: Page)
             actionOneTagsHeight: actionOneTagsRect.height,
             actionOneTagWidth: actionOneTagRect.width,
             actionOneTagHeight: actionOneTagRect.height,
+            actionOneTagTop: actionOneTagRect.top,
+            actionOneTagBottom: actionOneTagRect.bottom,
             actionOneAddWidth: actionOneAddRect.width,
             actionOneAddHeight: actionOneAddRect.height,
+            actionOneAddTop: actionOneAddRect.top,
+            actionOneAddBottom: actionOneAddRect.bottom,
             actionRects
           };
         }
@@ -996,6 +1000,8 @@ def test_jukebox_manager_binding_long_text_stays_inside_columns(mock_page: Page)
     assert metrics["actionOneTagHeight"] > 0
     assert metrics["actionOneAddWidth"] > 0
     assert metrics["actionOneAddHeight"] > 0
+    assert abs(metrics["actionOneAddTop"] - metrics["actionOneTagTop"]) <= 1
+    assert abs(metrics["actionOneAddBottom"] - metrics["actionOneTagBottom"]) <= 1
     for rect in metrics["actionRects"]:
         assert rect["height"] >= 60
         assert rect["tagsTop"] >= rect["top"]

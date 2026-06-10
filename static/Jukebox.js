@@ -3659,7 +3659,7 @@ window.Jukebox = {
 
         .sam-binding-item-tags {
           display: flex;
-          flex-wrap: wrap;
+          flex-wrap: nowrap;
           gap: 4px;
           margin-top: 4px;
           padding-top: 4px;
@@ -3669,6 +3669,7 @@ window.Jukebox = {
           max-width: 100%;
           min-height: 24px;
           align-items: center;
+          overflow: hidden;
           box-sizing: border-box;
           flex: 0 0 auto;
           position: relative;
@@ -3689,7 +3690,7 @@ window.Jukebox = {
           align-items: center;
           justify-content: center;
           transition: all 0.2s;
-          flex-shrink: 0;
+          flex: 0 0 20px;
           box-sizing: border-box;
         }
 
@@ -3819,7 +3820,7 @@ window.Jukebox = {
           position: relative;
           overflow: hidden;
           min-width: 0;
-          flex: 0 1 140px;
+          flex: 1 1 0;
           box-sizing: border-box;
           min-height: 20px;
           max-height: 20px;
