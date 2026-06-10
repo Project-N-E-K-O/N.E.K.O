@@ -465,7 +465,7 @@ def test_mobile_web_compact_surface_respects_width_bounds_and_position_vars():
         1,
     )[0]
 
-    assert "COMPACT_SURFACE_RESIZE_MOBILE_MIN_WIDTH = 280" in app_source
+    assert "COMPACT_SURFACE_RESIZE_MOBILE_MIN_WIDTH = 180" in app_source
     assert "COMPACT_SURFACE_RESIZE_MOBILE_VIEWPORT_GUTTER = 16" in app_source
     assert "getCompactSurfaceResizeMinAvailableWidth" in app_source
     assert "getCompactSurfaceResizeViewportGutter" in app_source
@@ -473,7 +473,7 @@ def test_mobile_web_compact_surface_respects_width_bounds_and_position_vars():
     assert "window.innerWidth <= 768" in app_source
     assert "lanlan-pet-mode" in app_source
     assert "__LANLAN_IS_ELECTRON_PET__" in app_source
-    assert "COMPACT_SURFACE_MOBILE_MIN_WIDTH = 280" in script
+    assert "COMPACT_SURFACE_MOBILE_MIN_WIDTH = 180" in script
     assert "COMPACT_SURFACE_MOBILE_VIEWPORT_GUTTER" in script
     assert "COMPACT_SURFACE_RESIZE_MAX_WIDTH" in mobile_width_bounds_block
     assert "viewportWidth - COMPACT_SURFACE_MOBILE_VIEWPORT_GUTTER" in mobile_width_bounds_block

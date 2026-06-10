@@ -292,10 +292,12 @@
     var COMPACT_MINIMIZE_BALL_AVATAR_VERTICAL_RATIO = 0.58;
     var COMPACT_SURFACE_MAX_WIDTH = 430;
     var COMPACT_SURFACE_RESIZE_MAX_WIDTH = 720;
-    var COMPACT_SURFACE_MOBILE_MIN_WIDTH = 280;
+    var COMPACT_SURFACE_MOBILE_MIN_WIDTH = 180;
     // 桌面端 compact surface 可拖到的最短宽度。默认/初始宽度仍为 COMPACT_SURFACE_MAX_WIDTH=430
     // （见 getCompactSurfaceMetrics），这里只放宽 resize 下限，让用户能把对话条拖得更窄。
-    var COMPACT_SURFACE_DESKTOP_MIN_WIDTH = 280;
+    // 须与 react-neko-chat App.tsx 的 COMPACT_SURFACE_RESIZE_(MOBILE_)MIN_WIDTH 同步，
+    // 否则 React 侧拖到的宽度会在 phase=end 时被 host 这份 clamp 顶回去。
+    var COMPACT_SURFACE_DESKTOP_MIN_WIDTH = 180;
     var COMPACT_SURFACE_MOBILE_VIEWPORT_GUTTER = 16;
     var COMPACT_SURFACE_VIEWPORT_PAD_X = 16;
     var COMPACT_SURFACE_VIEWPORT_PAD_TOP = 12;
