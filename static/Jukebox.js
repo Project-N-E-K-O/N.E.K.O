@@ -642,6 +642,16 @@ window.Jukebox = {
       panel.className = 'jukebox-sam-panel';
       panel.style.display = 'none'; // 默认隐藏
       panel.innerHTML = `
+        ${window.__NEKO_JUKEBOX_MANAGER_STANDALONE__ ? '' : `
+          <div class="sam-resize-handle" data-dir="n"></div>
+          <div class="sam-resize-handle" data-dir="s"></div>
+          <div class="sam-resize-handle" data-dir="w"></div>
+          <div class="sam-resize-handle" data-dir="e"></div>
+          <div class="sam-resize-handle" data-dir="nw"></div>
+          <div class="sam-resize-handle" data-dir="ne"></div>
+          <div class="sam-resize-handle" data-dir="sw"></div>
+          <div class="sam-resize-handle" data-dir="se"></div>
+        `}
         <div class="sam-header">
           <span class="sam-title">${window.t('Jukebox.managerTitle', '管理器')}</span>
           <div class="sam-tabs">
@@ -2658,6 +2668,10 @@ window.Jukebox = {
         this._panelDragCleanup();
         this._panelDragCleanup = null;
       }
+      if (this._panelResizeCleanup) {
+        this._panelResizeCleanup();
+        this._panelResizeCleanup = null;
+      }
       if (this.element) {
         this.element.remove();
         this.element = null;
@@ -2796,7 +2810,11 @@ window.Jukebox = {
           padding: 15px;
           border-radius: 12px;
           width: 450px;
-          max-height: 500px;
+          height: min(500px, calc(100vh - 24px));
+          min-width: 420px;
+          min-height: 360px;
+          max-width: calc(100vw - 24px);
+          max-height: calc(100vh - 24px);
           overflow: hidden;
           display: flex;
           flex-direction: column;
@@ -2808,6 +2826,21 @@ window.Jukebox = {
           user-select: none;
           -webkit-user-select: none;
         }
+
+        .sam-resize-handle {
+          position: absolute;
+          z-index: 130;
+          -webkit-app-region: no-drag;
+        }
+
+        .sam-resize-handle[data-dir="n"]  { top: -3px; left: 12px; right: 12px; height: 6px; cursor: ns-resize; }
+        .sam-resize-handle[data-dir="s"]  { bottom: -3px; left: 12px; right: 12px; height: 6px; cursor: ns-resize; }
+        .sam-resize-handle[data-dir="w"]  { left: -3px; top: 12px; bottom: 12px; width: 6px; cursor: ew-resize; }
+        .sam-resize-handle[data-dir="e"]  { right: -3px; top: 12px; bottom: 12px; width: 6px; cursor: ew-resize; }
+        .sam-resize-handle[data-dir="nw"] { top: -3px; left: -3px; width: 18px; height: 18px; cursor: nwse-resize; }
+        .sam-resize-handle[data-dir="ne"] { top: -3px; right: -3px; width: 18px; height: 18px; cursor: nesw-resize; }
+        .sam-resize-handle[data-dir="sw"] { bottom: -3px; left: -3px; width: 18px; height: 18px; cursor: nesw-resize; }
+        .sam-resize-handle[data-dir="se"] { bottom: -3px; right: -3px; width: 18px; height: 18px; cursor: nwse-resize; }
 
         .jukebox-sam-panel:active {
           cursor: grabbing;
@@ -3838,6 +3871,7 @@ window.Jukebox = {
           flex-direction: column;
           align-items: center;
           gap: 8px;
+          flex: 0 0 auto;
           padding: 12px 16px;
           background: ${C.footer.importBg};
           border-top: ${C.footer.borderTop};
@@ -4458,6 +4492,7 @@ window.Jukebox = {
     if (!window.__NEKO_JUKEBOX_STANDALONE__) {
       Jukebox.bindWindowDrag(wrapper, jukeboxContainer);
       Jukebox.bindPanelDrag(sidePanel);
+      Jukebox.bindPanelResize(sidePanel);
       Jukebox.bindResize(jukeboxContainer);
     }
 
@@ -4653,7 +4688,7 @@ window.Jukebox = {
 
     const onMouseDown = (e) => {
       // 忽略所有交互元素
-      if (e.target.closest('button, input, a, select, textarea, .sam-close-btn, .sam-tab, .sam-content, .sam-checkbox, .sam-click-add')) return;
+      if (e.target.closest('button, input, a, select, textarea, .sam-close-btn, .sam-tab, .sam-content, .sam-checkbox, .sam-click-add, .sam-resize-handle')) return;
 
       e.preventDefault();
       const clientX = e.touches ? e.touches[0].clientX : e.clientX;
@@ -4721,6 +4756,112 @@ window.Jukebox = {
       isDragging = false;
       document.body.classList.remove('sam-panel-dragging');
     };
+  },
+
+  // Web 管理器 resize：模拟桌面窗口边缘 resize，不用于 Electron standalone 管理器。
+  bindPanelResize: function(panel) {
+    if (window.__NEKO_JUKEBOX_MANAGER_STANDALONE__) return;
+    const handles = panel.querySelectorAll('.sam-resize-handle');
+    if (!handles.length) return;
+
+    const MIN_WIDTH = 420;
+    const MIN_HEIGHT = 360;
+    const VIEWPORT_MARGIN = 12;
+
+    const onPointerDown = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const dir = e.currentTarget.dataset.dir;
+      if (!dir) return;
+
+      const startX = e.touches ? e.touches[0].clientX : e.clientX;
+      const startY = e.touches ? e.touches[0].clientY : e.clientY;
+      const rect = panel.getBoundingClientRect();
+      const startLeft = rect.left;
+      const startTop = rect.top;
+      const maxWidth = Math.max(MIN_WIDTH, window.innerWidth - VIEWPORT_MARGIN);
+      const maxHeight = Math.max(MIN_HEIGHT, window.innerHeight - VIEWPORT_MARGIN);
+
+      if (!panel.style.left) panel.style.left = startLeft + 'px';
+      if (!panel.style.top) panel.style.top = startTop + 'px';
+      panel.style.right = 'auto';
+      panel.style.bottom = 'auto';
+      panel.style.maxWidth = `calc(100vw - ${VIEWPORT_MARGIN * 2}px)`;
+      panel.style.maxHeight = `calc(100vh - ${VIEWPORT_MARGIN * 2}px)`;
+
+      document.body.classList.add('sam-panel-resizing');
+
+      const onPointerMove = (ev) => {
+        ev.preventDefault();
+        const clientX = ev.touches ? ev.touches[0].clientX : ev.clientX;
+        const clientY = ev.touches ? ev.touches[0].clientY : ev.clientY;
+        const dx = clientX - startX;
+        const dy = clientY - startY;
+
+        let nextWidth = rect.width;
+        let nextHeight = rect.height;
+        let nextLeft = startLeft;
+        let nextTop = startTop;
+
+        if (dir.includes('e')) {
+          nextWidth = clamp(rect.width + dx, MIN_WIDTH, maxWidth);
+        }
+        if (dir.includes('w')) {
+          nextWidth = clamp(rect.width - dx, MIN_WIDTH, maxWidth);
+          nextLeft = startLeft + (rect.width - nextWidth);
+        }
+        if (dir.includes('s')) {
+          nextHeight = clamp(rect.height + dy, MIN_HEIGHT, maxHeight);
+        }
+        if (dir.includes('n')) {
+          nextHeight = clamp(rect.height - dy, MIN_HEIGHT, maxHeight);
+          nextTop = startTop + (rect.height - nextHeight);
+        }
+
+        nextLeft = clamp(nextLeft, 0, Math.max(0, window.innerWidth - nextWidth));
+        nextTop = clamp(nextTop, 0, Math.max(0, window.innerHeight - nextHeight));
+
+        panel.style.width = nextWidth + 'px';
+        panel.style.height = nextHeight + 'px';
+        panel.style.left = nextLeft + 'px';
+        panel.style.top = nextTop + 'px';
+      };
+
+      const cleanup = () => {
+        document.body.classList.remove('sam-panel-resizing');
+        document.removeEventListener('mousemove', onPointerMove);
+        document.removeEventListener('touchmove', onPointerMove);
+        document.removeEventListener('mouseup', cleanup);
+        document.removeEventListener('touchend', cleanup);
+        document.removeEventListener('touchcancel', cleanup);
+        window.removeEventListener('blur', cleanup);
+      };
+
+      document.addEventListener('mousemove', onPointerMove);
+      document.addEventListener('touchmove', onPointerMove, { passive: false });
+      document.addEventListener('mouseup', cleanup);
+      document.addEventListener('touchend', cleanup);
+      document.addEventListener('touchcancel', cleanup);
+      window.addEventListener('blur', cleanup);
+    };
+
+    handles.forEach((handle) => {
+      handle.addEventListener('mousedown', onPointerDown);
+      handle.addEventListener('touchstart', onPointerDown, { passive: false });
+    });
+
+    Jukebox.SongActionManager._panelResizeCleanup = () => {
+      handles.forEach((handle) => {
+        handle.removeEventListener('mousedown', onPointerDown);
+        handle.removeEventListener('touchstart', onPointerDown);
+      });
+      document.body.classList.remove('sam-panel-resizing');
+    };
+
+    function clamp(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
   },
   
   injectStyles: function() {

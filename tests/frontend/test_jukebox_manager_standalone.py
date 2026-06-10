@@ -128,6 +128,119 @@ def test_jukebox_web_resize_changes_size_without_zoom():
 
 
 @pytest.mark.frontend
+def test_jukebox_web_manager_uses_dom_resize_without_standalone(mock_page: Page):
+    setup_song_manager_page(
+        mock_page,
+        """
+        {
+          song1: { name: 'Song 1', artist: 'A', visible: true },
+          song2: { name: 'Song 2', artist: 'B', visible: true }
+        }
+        """,
+    )
+    metrics = mock_page.evaluate(
+        """
+        () => {
+          const panel = document.querySelector('.jukebox-sam-panel');
+          panel.style.left = '100px';
+          panel.style.top = '80px';
+          panel.style.width = '450px';
+          panel.style.height = '420px';
+          window.Jukebox.bindPanelResize(panel);
+
+          const drag = (selector, moveX, moveY) => {
+            const handle = panel.querySelector(selector);
+            const rect = handle.getBoundingClientRect();
+            const startX = rect.left + rect.width / 2;
+            const startY = rect.top + rect.height / 2;
+            handle.dispatchEvent(new MouseEvent('mousedown', {
+              bubbles: true,
+              cancelable: true,
+              clientX: startX,
+              clientY: startY
+            }));
+            document.dispatchEvent(new MouseEvent('mousemove', {
+              bubbles: true,
+              cancelable: true,
+              clientX: startX + moveX,
+              clientY: startY + moveY
+            }));
+            document.dispatchEvent(new MouseEvent('mouseup', {
+              bubbles: true,
+              cancelable: true
+            }));
+          };
+
+          const before = panel.getBoundingClientRect();
+          drag('.sam-resize-handle[data-dir="se"]', 90, 70);
+          const afterSe = panel.getBoundingClientRect();
+          drag('.sam-resize-handle[data-dir="w"]', -60, 0);
+          const afterW = panel.getBoundingClientRect();
+          const content = panel.querySelector('.sam-content').getBoundingClientRect();
+          const footer = panel.querySelector('.sam-footer').getBoundingClientRect();
+
+          return {
+            handleCount: panel.querySelectorAll('.sam-resize-handle').length,
+            beforeWidth: before.width,
+            beforeHeight: before.height,
+            afterSeWidth: afterSe.width,
+            afterSeHeight: afterSe.height,
+            afterWLeft: afterW.left,
+            afterWWidth: afterW.width,
+            contentBottom: content.bottom,
+            footerTop: footer.top,
+            minWidth: getComputedStyle(panel).minWidth,
+            minHeight: getComputedStyle(panel).minHeight
+          };
+        }
+        """
+    )
+
+    assert metrics["handleCount"] == 8
+    assert metrics["afterSeWidth"] > metrics["beforeWidth"] + 50
+    assert metrics["afterSeHeight"] > metrics["beforeHeight"] + 40
+    assert metrics["afterWLeft"] < 100
+    assert metrics["afterWWidth"] > metrics["afterSeWidth"] + 40
+    assert metrics["contentBottom"] <= metrics["footerTop"] + 1
+    assert metrics["minWidth"] == "420px"
+    assert metrics["minHeight"] == "360px"
+
+
+@pytest.mark.frontend
+def test_jukebox_standalone_manager_does_not_render_web_resize_handles(mock_page: Page):
+    mock_page.set_content(HARNESS_HTML)
+    mock_page.evaluate(
+        """
+        () => {
+          window.__NEKO_JUKEBOX_MANAGER_STANDALONE__ = true;
+          window.t = (key, fallback) => typeof fallback === 'string' ? fallback : key;
+          window.fetch = async () => ({
+            ok: true,
+            json: async () => ({ songs: {}, actions: {}, bindings: {} })
+          });
+        }
+        """
+    )
+    mock_page.add_script_tag(content=JUKEBOX_SCRIPT)
+    handle_count = mock_page.evaluate(
+        """
+        () => {
+          const SAM = window.Jukebox.SongActionManager;
+          const style = document.createElement('style');
+          style.textContent = SAM.getStyles();
+          document.head.appendChild(style);
+          const panel = SAM.create();
+          document.body.appendChild(panel);
+          panel.style.display = 'flex';
+          window.Jukebox.bindPanelResize(panel);
+          return panel.querySelectorAll('.sam-resize-handle').length;
+        }
+        """
+    )
+    assert handle_count == 0
+
+
+@pytest.mark.frontend
 def test_jukebox_manager_select_all_checkbox_toggles_state(mock_page: Page):
     mock_page.set_viewport_size({"width": 900, "height": 700})
     mock_page.set_content(HARNESS_HTML)
