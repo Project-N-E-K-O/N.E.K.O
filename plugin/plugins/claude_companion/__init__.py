@@ -782,6 +782,11 @@ class ClaudeCompanionPlugin(NekoPluginBase):
             assistant_msg=turn_info["assistant_message"],
         )
 
+        # 仅在有重要操作时推送
+        if not turn_info.get("has_significant_action", False):
+            self.logger.debug("Skipping push: no significant action")
+            return
+
         # 推送到 NEKO 伙伴
         self._notify_companion(summary, activity_type, turn_info)
         self._last_push_time = now

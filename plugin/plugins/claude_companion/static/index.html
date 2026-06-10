@@ -723,7 +723,7 @@
 
         <!-- 设置 -->
         <div class="card">
-            <div class="card-title"><span class="icon">⚙️</span> <span data-i18n="ui.settings"></span>设置</span></div>
+            <div class="card-title"><span class="icon">⚙️</span> <span data-i18n="ui.settings">设置</span></div>
             <div class="settings-row">
                 <label data-i18n="ui.username">用户名</label>
                 <input type="text" id="input-name" placeholder="输入你的名字">
@@ -766,11 +766,34 @@
                     if (bundleResp.ok) {
                         translations = await bundleResp.json();
                         localeLoaded = true;
+                        applyTranslations();
                         return;
                     }
                 }
             } catch (e) {
                 console.warn('[i18n] Failed to load locale, using hardcoded strings:', e);
+            }
+        }
+
+        // ── 应用翻译到 data-i18n 元素 ──
+        function applyTranslations() {
+            if (!localeLoaded) return;
+            var elems = document.querySelectorAll('[data-i18n]');
+            for (var i = 0; i < elems.length; i++) {
+                var el = elems[i];
+                var key = el.getAttribute('data-i18n');
+                var translated = t(key);
+                if (translated && translated !== key) {
+                    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+                        if (key.indexOf('.placeholder') >= 0 || el.getAttribute('placeholder')) {
+                            el.placeholder = translated;
+                        } else {
+                            el.value = translated;
+                        }
+                    } else {
+                        el.textContent = translated;
+                    }
+                }
             }
         }
 
@@ -1010,9 +1033,9 @@
             }
         }
 
-        // ── 初始化 ──
-        document.addEventListener('DOMContentLoaded', function() {
-            loadLocale();
+        // ── 初始化 ─
+        document.addEventListener('DOMContentLoaded', async function() {
+            await loadLocale();
             loadStatus();
             loadEvents();
             // 每 15 秒自动刷新
