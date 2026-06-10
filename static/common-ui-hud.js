@@ -552,12 +552,13 @@ window.AgentHUD.createAgentTaskHUD = function () {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: 'end_all' })
             });
-            // 2xx → end_all ran; 500/502 → the proxy timed out but the tool
-            // server keeps executing end_all to completion. Either way the
-            // backend registry ends up cleared, so apply the terminal state
-            // locally in case its task_update events never arrive (stuck
-            // dispatch). 501 (remote backend block) means nothing happened.
-            if (r.ok || r.status === 500 || r.status === 502) {
+            // 2xx → end_all ran; 504 → the proxy timed out AFTER forwarding,
+            // so the tool server keeps executing end_all to completion.
+            // Either way the backend registry ends up cleared — apply the
+            // terminal state locally in case its task_update events never
+            // arrive (stuck dispatch). Other failures (500 connect error,
+            // 501 remote block) mean the request never landed: don't lie.
+            if (r.ok || r.status === 504) {
                 if (window.AgentHUD._markTasksCancelledLocally) {
                     window.AgentHUD._markTasksCancelledLocally();
                 }
@@ -1309,14 +1310,21 @@ window.AgentHUD._createTaskCard = function (task) {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' }
             });
-            // Success → the backend emitted task_update(cancelled); marking
-            // locally is an idempotent fallback for when that event can't
-            // arrive (stuck backend). A 404/"not active"/502 failure means
-            // the backend no longer tracks this task, so the card is an
-            // orphan (e.g. left behind by an earlier end_all) — clear it
-            // locally too. 501 (remote backend block) changes nothing.
-            if (r.status !== 501 && window.AgentHUD._markTasksCancelledLocally) {
-                window.AgentHUD._markTasksCancelledLocally([task.id]);
+            // 2xx → the backend handled the cancel (marking locally is an
+            // idempotent fallback for when its event can't arrive);
+            // 404 → the backend no longer tracks this task, the card is an
+            // orphan (e.g. left behind by an earlier end_all) — clear it;
+            // 504 → proxy timed out AFTER forwarding, the cancel did land.
+            // Anything else (502 connect error, 501 remote block) means the
+            // request never reached the tool server — keep the card and
+            // re-enable the button for retry.
+            if (r.ok || r.status === 404 || r.status === 504) {
+                if (window.AgentHUD._markTasksCancelledLocally) {
+                    window.AgentHUD._markTasksCancelledLocally([task.id]);
+                }
+            } else {
+                taskCancelBtn.style.opacity = '1';
+                taskCancelBtn.style.pointerEvents = 'auto';
             }
         } catch (err) {
             console.error('[AgentHUD] Cancel task failed:', err);

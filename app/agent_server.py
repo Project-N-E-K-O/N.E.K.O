@@ -5484,30 +5484,33 @@ async def admin_control(payload: Dict[str, Any]):
         # registry is cleared. Dispatch coroutines that do wake up emit the
         # same terminal event again; duplicate cancel records are tolerated
         # by design (see get_cancelled_user_sigs).
-        for tid, info in list(Modules.task_registry.items()):
-            if info.get("status") not in ("queued", "running"):
-                continue
-            info["status"] = "cancelled"
-            info["error"] = "Cancelled by user"
-            _task_tracker.record_completed(
-                info.get("lanlan_name"),
-                task_id=tid,
-                method=str(info.get("type") or ""),
-                desc=_tracker_desc_for_task_info(info),
-                detail="Cancelled by user",
-                success=False,
-                cancelled=True,
-                trigger_user_fingerprint=info.get("_trigger_user_fingerprint"),
-            )
-            try:
-                await _emit_main_event(
-                    "task_update", info.get("lanlan_name"),
-                    task={"id": tid, "status": "cancelled", "type": info.get("type"),
-                          "end_time": _now_iso(), "params": info.get("params", {}),
-                          "error": "Cancelled by user"},
+        async def _mark_and_emit_cancelled() -> None:
+            for tid, info in list(Modules.task_registry.items()):
+                if info.get("status") not in ("queued", "running"):
+                    continue
+                info["status"] = "cancelled"
+                info["error"] = "Cancelled by user"
+                _task_tracker.record_completed(
+                    info.get("lanlan_name"),
+                    task_id=tid,
+                    method=str(info.get("type") or ""),
+                    desc=_tracker_desc_for_task_info(info),
+                    detail="Cancelled by user",
+                    success=False,
+                    cancelled=True,
+                    trigger_user_fingerprint=info.get("_trigger_user_fingerprint"),
                 )
-            except Exception as exc:
-                logger.debug("[Agent] end_all: emit task_update(cancelled) failed: task_id=%s error=%s", tid, exc)
+                try:
+                    await _emit_main_event(
+                        "task_update", info.get("lanlan_name"),
+                        task={"id": tid, "status": "cancelled", "type": info.get("type"),
+                              "end_time": _now_iso(), "params": info.get("params", {}),
+                              "error": "Cancelled by user"},
+                    )
+                except Exception as exc:
+                    logger.debug("[Agent] end_all: emit task_update(cancelled) failed: task_id=%s error=%s", tid, exc)
+
+        await _mark_and_emit_cancelled()
 
         # Cancel any in-flight background analyzer/dispatch tasks. Include the
         # per-task dispatch handles explicitly so a handle that fell out of
@@ -5527,6 +5530,15 @@ async def admin_control(payload: Dict[str, Any]):
                     "[Agent] end_all: %d task(s) still not finished 10s after cancel; continuing teardown",
                     len(pending),
                 )
+                # A wedged dispatch coroutine may still hold the browser-use
+                # mutex; future tasks would queue on it forever. Every known
+                # handle was cancelled above (the ghost raises CancelledError
+                # at its next await) and the browser session is torn down
+                # below, so handing fresh tasks a new lock is safe.
+                lock = Modules.browser_use_dispatch_lock
+                if lock is not None and lock.locked():
+                    logger.warning("[Agent] end_all: browser_use dispatch lock still held after timeout; resetting")
+                    Modules.browser_use_dispatch_lock = asyncio.Lock()
             for res in done:
                 try:
                     exc = res.exception()
@@ -5558,6 +5570,12 @@ async def admin_control(payload: Dict[str, Any]):
             finished = await loop.run_in_executor(None, cu.wait_for_completion, 10.0)
             if not finished:
                 logger.warning("[Agent] CUA thread did not stop within 10s during end_all")
+
+        # Rescan right before wiping the registry: an in-flight analyzer may
+        # have registered a new task while any of the awaits above yielded.
+        # Its dispatch handle was cancelled above (or its scheduler guard
+        # skips it), but the frontend still needs the terminal event.
+        await _mark_and_emit_cancelled()
 
         Modules.task_registry.clear()
         Modules.last_user_turn_fingerprint.clear()
