@@ -948,6 +948,7 @@
             document.documentElement.style.setProperty('--desktop-compact-surface-width', rect.width + 'px');
             document.documentElement.style.setProperty('--desktop-compact-surface-height', rect.height + 'px');
         }
+        shell.setAttribute('data-compact-surface-anchor-ready', 'true');
         shell.style.transform = 'none';
         if (options && options.persist && !isElectronChatWindow()) {
             saveCompactSurfacePosition(rect.left, rect.top, rect.width);
@@ -955,6 +956,48 @@
         dispatchCompactSurfaceLayoutChange(rect);
         syncCompactInteractionGeometry();
         return rect;
+    }
+
+    function seedCompactSurfaceAnchorForRender() {
+        var shell = getShell();
+        if (!shell || getCurrentChatSurfaceMode() !== 'compact') return;
+        if (compactSurfaceAnchorLocked) return;
+        if (compactSurfaceDesktopResizeActive || compactSurfaceResizeSession) return;
+        if ((dragState && dragState.compactSurface) || compactSurfaceDesktopDragActive) return;
+        if (shell.hasAttribute('data-compact-surface-anchor-ready')) return;
+        var layoutOverride = getElectronCompactLayoutOverride();
+        var target = getCompactSurfaceTarget(layoutOverride);
+        if (!target) {
+            shell.removeAttribute('data-compact-surface-anchor-ready');
+            return;
+        }
+        var left = Math.round(target.left);
+        var top = Math.round(target.top);
+        var width = Math.round(target.width);
+        var height = Math.round(target.height || COMPACT_SURFACE_DEFAULT_HEIGHT);
+        shell.style.setProperty('--compact-surface-left', left + 'px');
+        shell.style.setProperty('--compact-surface-top', top + 'px');
+        shell.style.setProperty('--compact-surface-width', width + 'px');
+        shell.style.setProperty('--compact-surface-height', height + 'px');
+        document.documentElement.style.setProperty('--compact-surface-left', left + 'px');
+        document.documentElement.style.setProperty('--compact-surface-top', top + 'px');
+        document.documentElement.style.setProperty('--compact-surface-width', width + 'px');
+        document.documentElement.style.setProperty('--compact-surface-height', height + 'px');
+        if (isElectronChatWindow() || (layoutOverride && layoutOverride.surface)) {
+            shell.style.setProperty('--desktop-compact-surface-left', left + 'px');
+            shell.style.setProperty('--desktop-compact-surface-top', top + 'px');
+            shell.style.setProperty('--desktop-compact-surface-width', width + 'px');
+            shell.style.setProperty('--desktop-compact-surface-height', height + 'px');
+            document.documentElement.style.setProperty('--desktop-compact-surface-left', left + 'px');
+            document.documentElement.style.setProperty('--desktop-compact-surface-top', top + 'px');
+            document.documentElement.style.setProperty('--desktop-compact-surface-width', width + 'px');
+            document.documentElement.style.setProperty('--desktop-compact-surface-height', height + 'px');
+        }
+        if (layoutOverride && layoutOverride.workArea) {
+            document.documentElement.style.setProperty('--compact-desktop-workarea-width', Math.round(layoutOverride.workArea.width) + 'px');
+            document.documentElement.style.setProperty('--compact-desktop-workarea-height', Math.round(layoutOverride.workArea.height) + 'px');
+        }
+        shell.setAttribute('data-compact-surface-anchor-ready', 'true');
     }
 
     function getCurrentCompactSurfaceRect() {
@@ -1646,6 +1689,7 @@
         shell.style.removeProperty('--desktop-compact-surface-top');
         shell.style.removeProperty('--desktop-compact-surface-width');
         shell.style.removeProperty('--desktop-compact-surface-height');
+        shell.removeAttribute('data-compact-surface-anchor-ready');
         document.documentElement.style.removeProperty('--compact-surface-left');
         document.documentElement.style.removeProperty('--compact-surface-top');
         document.documentElement.style.removeProperty('--compact-surface-width');
@@ -1722,6 +1766,7 @@
             document.documentElement.style.removeProperty('--compact-desktop-workarea-width');
             document.documentElement.style.removeProperty('--compact-desktop-workarea-height');
         }
+        shell.setAttribute('data-compact-surface-anchor-ready', 'true');
         dispatchCompactSurfaceLayoutChange({
             left: Math.round(target.left),
             top: Math.round(target.top),
@@ -2504,6 +2549,9 @@
     function renderWindow() {
         var overlay = getOverlay();
         if (!overlay || overlay.hidden) return;
+        if (!mounted && getCurrentChatSurfaceMode() === 'compact') {
+            seedCompactSurfaceAnchorForRender();
+        }
         mountWindow();
         scheduleMobileContentLayout();
     }
@@ -4649,6 +4697,9 @@
         resetCompactChatState();
         state.chatSurfaceMode = normalized;
         persistChatSurfaceModePreference(normalized);
+        if (normalized === 'compact') {
+            seedCompactSurfaceAnchorForRender();
+        }
         renderWindow();
 
         if (nextMinimized !== previousMinimized) {
@@ -4796,6 +4847,22 @@
             var ballBottom = curRect.top + (curRect.height || MINIMIZED_SIZE);
 
             // 恢复保存的尺寸
+            var previousSetupVisibility = shell.style.visibility;
+            var setupVisibilityHidden = true;
+            var restoreSetupVisibility = function () {
+                if (!setupVisibilityHidden) return;
+                setupVisibilityHidden = false;
+                if (previousSetupVisibility) {
+                    shell.style.visibility = previousSetupVisibility;
+                } else {
+                    shell.style.removeProperty('visibility');
+                }
+            };
+            // Removing .is-minimized makes the full React surface visible again.
+            // Keep it hidden while we restore/measure geometry so the browser
+            // cannot paint one frame at the measurement position before the
+            // scale-from-ball transform is ready.
+            shell.style.visibility = 'hidden';
             shell.classList.remove('is-minimized');
             shell.style.removeProperty('right');
             shell.style.removeProperty('bottom');
@@ -4820,9 +4887,7 @@
             }
 
             // 以球的位置为展开后对话框的左下角来计算展开位置
-            // 先设临时位置以获取真实尺寸
-            shell.style.left = '0px';
-            shell.style.top = '0px';
+            // 先落到最终目标位置获取真实尺寸，避免 (0,0) 测量态被绘制出来。
             var expandedTarget = getExpandedTargetFromSavedState();
             if (expandedTarget) {
                 shell.style.left = expandedTarget.left + 'px';
@@ -4845,6 +4910,7 @@
                 savedShellSize = null;
                 savedShellPosition = null;
                 isMinimizeTransitioning = false;
+                restoreSetupVisibility();
                 requestAnimationFrame(function () {
                     var r = shell.getBoundingClientRect();
                     var clamped = clampPosition(r.left, r.top);
@@ -4881,6 +4947,7 @@
             shell.style.transform = 'scale(' + sx2 + ', ' + sy2 + ')';
             shell.classList.add('is-expanding');
             void shell.offsetHeight; // 强制 reflow
+            restoreSetupVisibility();
 
             // 动画到 identity（展开到完整尺寸）
             requestAnimationFrame(function () {
@@ -4948,6 +5015,7 @@
                 shell.removeEventListener('transitionend', onExpandEnd);
                 shell.classList.remove('is-expanding');
                 shell.style.transform = 'none';
+                restoreSetupVisibility();
                 expandHandled = true;
             };
 
@@ -5067,6 +5135,9 @@
                     // the minimized shell.
                     state.chatSurfaceMode = normalizeChatSurfaceMode(lastRestorableChatSurfaceMode);
                     resetCompactChatState();
+                }
+                if (getCurrentChatSurfaceMode() === 'compact') {
+                    seedCompactSurfaceAnchorForRender();
                 }
                 if (!mountWindow()) {
                     showToast(getI18nText('chat.reactWindowMountFailed', '聊天框挂载失败'), 3000);

@@ -19,8 +19,10 @@
 html,
 body,
 #root {
-  min-height: 100%;
+  width: 100%;
+  height: 100%;
   margin: 0;
+  overflow: hidden;
 }
 
 body {
@@ -547,20 +549,25 @@ svg {
   pointer-events: none;
 }
 
+.message-list-shell {
+  position: relative;
+  height: 100%;
+  min-height: 0;
+}
+
 .message-list {
   height: 100%;
   overflow: auto;
-  padding: 50px 12px 16px;
+  padding: 50px 24px 16px 12px;
   display: flex;
   flex-direction: column;
   gap: 12px;
-  /* 滚动条：细线 + 半透明，参考 Discord / Slack */
-  scrollbar-width: thin;
-  scrollbar-color: rgba(140, 152, 172, 0.25) transparent;
+  scrollbar-width: none;
 }
 
 .message-list::-webkit-scrollbar {
-  width: 5px;
+  width: 0;
+  height: 0;
 }
 
 .message-list::-webkit-scrollbar-track {
@@ -568,12 +575,25 @@ svg {
 }
 
 .message-list::-webkit-scrollbar-thumb {
-  background: rgba(140, 152, 172, 0.25);
-  border-radius: 3px;
+  background: transparent;
 }
 
-.message-list::-webkit-scrollbar-thumb:hover {
-  background: rgba(140, 152, 172, 0.45);
+.message-list-scroll-thumb {
+  position: absolute;
+  top: 0;
+  right: 7px;
+  width: 4px;
+  min-height: 28px;
+  border-radius: 999px;
+  background: rgba(140, 152, 172, 0.38);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 3;
+  transition: opacity 0.16s ease;
+}
+
+.message-list-scroll-thumb[data-message-list-scrollbar-visible="true"] {
+  opacity: 1;
 }
 
 .message-empty-state {
@@ -2110,7 +2130,7 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 
 .compact-chat-surface-frame[data-compact-chat-state="input"] {
   gap: 0;
-  padding: 5px 62px 5px 2px;
+  padding: 5px 62px 5px 8px;
 }
 
 /* compact 输入框/胶囊左侧毛绒球（minimize 折叠入口）：点按=折叠为 minimized 毛绒球小窗口，
@@ -2158,7 +2178,7 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 
 .compact-chat-surface-frame[data-compact-tool-toggle-visible="true"]:not([data-compact-chat-state="input"]) {
   padding-right: 62px;
-  padding-left: 2px;
+  padding-left: 8px;
 }
 
 .compact-chat-surface-frame::before {
@@ -2415,9 +2435,8 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
      下沿只到气泡实体底以下~16px(此处 alpha≈3/255≈1.2%,再往下不可察)；清晰可见段(alpha≥8)仅~9px、
      可感知段(alpha≥5)~13px,均落在 16px 内。压到 16 让气泡实体底更贴输入框(实体底到输入框由~28px→~18px)、
      同时可见阴影完整不裁。再小(如12)会切到可感知段,不取。 */
-  padding: 4px 6px 16px;
-  scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
+  padding: 4px 24px 16px 6px;
+  scrollbar-width: none;
   pointer-events: none;
   -webkit-app-region: no-drag;
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, rgba(0, 0, 0, 0.78) 12px, #000 28px);
@@ -2446,35 +2465,13 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   margin-top: auto;
 }
 
-.compact-export-history-scroll[data-compact-scrollbar-visible="true"] {
-  scrollbar-color: rgba(70, 160, 255, 0.42) transparent;
-}
-
 .compact-export-history-scroll::-webkit-scrollbar {
-  width: 6px;
+  width: 0;
+  height: 0;
 }
 
 .compact-export-history-scroll::-webkit-scrollbar-track {
   background: transparent;
-}
-
-.compact-export-history-scroll::-webkit-scrollbar-thumb {
-  border: 1.5px solid transparent;
-  border-radius: 999px;
-  background: transparent;
-  background-clip: padding-box;
-}
-
-.compact-export-history-scroll[data-compact-scrollbar-visible="true"]::-webkit-scrollbar-thumb {
-  background:
-    linear-gradient(180deg, rgba(86, 188, 255, 0.64), rgba(42, 140, 214, 0.42))
-    padding-box;
-}
-
-.compact-export-history-scroll[data-compact-scrollbar-visible="true"]::-webkit-scrollbar-thumb:hover {
-  background:
-    linear-gradient(180deg, rgba(103, 202, 255, 0.82), rgba(36, 151, 217, 0.62))
-    padding-box;
 }
 
 .compact-export-history-scrollbar-hit {
@@ -2490,6 +2487,20 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   background: transparent;
   z-index: 2;
   -webkit-app-region: no-drag;
+}
+
+.compact-export-history-scrollbar-hit::before {
+  content: "";
+  position: absolute;
+  top: var(--compact-history-scroll-thumb-top, 0px);
+  right: 7px;
+  width: 4px;
+  height: var(--compact-history-scroll-thumb-height, 24px);
+  min-height: 24px;
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, rgba(86, 188, 255, 0.64), rgba(42, 140, 214, 0.42));
+  pointer-events: none;
 }
 
 .compact-export-history-message {
@@ -4173,15 +4184,11 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 /* --- 消息列表滚动条 --- */
 [data-theme="dark"] .message-list {
-  scrollbar-color: rgba(200, 210, 230, 0.15) transparent;
+  scrollbar-width: none;
 }
 
-[data-theme="dark"] .message-list::-webkit-scrollbar-thumb {
-  background: rgba(200, 210, 230, 0.15);
-}
-
-[data-theme="dark"] .message-list::-webkit-scrollbar-thumb:hover {
-  background: rgba(200, 210, 230, 0.3);
+[data-theme="dark"] .message-list-scroll-thumb {
+  background: rgba(200, 210, 230, 0.32);
 }
 
 /* --- 消息列表 --- */
@@ -4630,23 +4637,12 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 [data-theme="dark"] .compact-export-history-scroll {
-  scrollbar-color: transparent transparent;
+  scrollbar-width: none;
 }
 
-[data-theme="dark"] .compact-export-history-scroll[data-compact-scrollbar-visible="true"] {
-  scrollbar-color: rgba(68, 183, 254, 0.46) transparent;
-}
-
-[data-theme="dark"] .compact-export-history-scroll[data-compact-scrollbar-visible="true"]::-webkit-scrollbar-thumb {
+[data-theme="dark"] .compact-export-history-scrollbar-hit::before {
   background:
-    linear-gradient(180deg, rgba(95, 199, 255, 0.68), rgba(47, 145, 224, 0.48))
-    padding-box;
-}
-
-[data-theme="dark"] .compact-export-history-scroll[data-compact-scrollbar-visible="true"]::-webkit-scrollbar-thumb:hover {
-  background:
-    linear-gradient(180deg, rgba(125, 214, 255, 0.86), rgba(59, 171, 246, 0.68))
-    padding-box;
+    linear-gradient(180deg, rgba(95, 199, 255, 0.68), rgba(47, 145, 224, 0.48));
 }
 
 [data-theme="dark"] .compact-export-history-bubble {
