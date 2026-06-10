@@ -30,18 +30,32 @@ def _install_basketball_test_hooks(page: Page) -> None:
 
 def _goto_basketball(page: Page, running_server: str, mode: str) -> None:
     _install_basketball_test_hooks(page)
-    page.goto(f"{running_server}/basketball_demo?mode={mode}&debug=1&i18n_language=zh")
+    page.goto(f"{running_server}/basketball_demo?mode={mode}&debug=1")
     expect(page.locator("#game")).to_be_attached(timeout=15000)
     page.wait_for_function("window.BasketballDemo && window.BasketballDemo.getState")
 
 
 def _force_shot_result(page: Page, scored: bool = True) -> None:
+    before_results = page.evaluate("window.BasketballDemo.getState().attemptsResults.length")
     page.evaluate(
         """(scored) => {
           const api = window.BasketballDemo;
           api._debugFinishShot(scored, scored ? 'swish' : 'rim_out');
         }""",
         scored,
+    )
+    page.wait_for_function(
+        """(beforeResults) => {
+          const state = window.BasketballDemo && window.BasketballDemo.getState();
+          return state && state.attemptsResults.length > beforeResults;
+        }""",
+        arg=before_results,
+    )
+    page.wait_for_function(
+        """() => {
+          const state = window.BasketballDemo && window.BasketballDemo.getState();
+          return state && (state.state === 'ready' || state.state === 'game_over');
+        }"""
     )
 
 
@@ -73,7 +87,10 @@ def test_basketball_shooter_three_attempts_and_restart(mock_page: Page, running_
         _force_shot_result(page, False)
 
     expect(page.locator("#result-panel")).to_have_class(re.compile(r"\bshow\b"))
-    expect(page.locator("#result-stats")).to_contain_text("总分")
+    state = page.evaluate("window.BasketballDemo.getState()")
+    assert state["state"] == "game_over"
+    assert state["attemptsRemaining"] == 0
+    assert state["score"] == 0
     page.locator("#restart-button").click()
     page.wait_for_function("window.BasketballDemo.getState().score === 0")
 

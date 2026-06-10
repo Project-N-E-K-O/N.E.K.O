@@ -1280,6 +1280,14 @@ def test_direct_basketball_request_ignores_casual_or_negated_mentions():
     assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '我现在不想玩投篮') is None
 
 
+def test_direct_request_negation_is_scoped_to_matched_game():
+    result = sr._maybe_apply_mini_game_invite_keyword(LANLAN, '不想踢足球，想打篮球')
+
+    assert result is not None
+    assert result['action'] == 'open_game'
+    assert result['game_type'] == 'basketball'
+
+
 def test_direct_soccer_request_opens_game_without_pending():
     result = sr._maybe_apply_mini_game_invite_keyword(LANLAN, '来一局足球')
 
@@ -1479,9 +1487,9 @@ def test_keywords_cover_all_native_locales():
         kws = MINI_GAME_INVITE_KEYWORDS[lang]
         for choice in ('accept', 'decline', 'later'):
             assert choice in kws, f"{lang} 缺 {choice} 关键词"
-        assert isinstance(kws[choice], list) and kws[choice], (
-            f"{lang}/{choice} 关键词列表空"
-        )
+            assert isinstance(kws[choice], list) and kws[choice], (
+                f"{lang}/{choice} 关键词列表空"
+            )
 
 
 def test_basketball_invite_config_and_i18n_complete():

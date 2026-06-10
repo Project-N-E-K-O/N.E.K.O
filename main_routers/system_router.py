@@ -5032,12 +5032,11 @@ async def proactive_chat(request: Request):
             if (
                 MINI_GAME_INVITE_ENABLED
                 and _user_invite_toggle
-                and not _mini_game_invite_in_cooldown(lanlan_name)
                 and _gi_prob > 0
             ):
                 import random as _random
                 if _random.random() < _gi_prob:
-                    chosen_game_type = _pick_mini_game_type()
+                    chosen_game_type = _pick_mini_game_type(lanlan_name)
                     if chosen_game_type is not None:
                         gi_prompt = _render_work_break_game_invite_prompt(
                             pending=water_pending,
@@ -7411,6 +7410,35 @@ _MINI_GAME_DIRECT_REQUEST_RULES: tuple[tuple[str, tuple[str, ...], tuple[str, ..
 )
 
 
+def _iter_direct_request_term_hits(norm: str, terms: tuple[str, ...]) -> list[tuple[int, int]]:
+    hits: list[tuple[int, int]] = []
+    for term in terms:
+        start = norm.find(term)
+        while start >= 0:
+            hits.append((start, start + len(term)))
+            start = norm.find(term, start + 1)
+    return hits
+
+
+def _direct_request_pair_has_scoped_negation(
+    norm: str,
+    game_hit: tuple[int, int],
+    action_hit: tuple[int, int],
+) -> bool:
+    first_start = min(game_hit[0], action_hit[0])
+    last_end = max(game_hit[1], action_hit[1])
+    for token in _MINI_GAME_DIRECT_REQUEST_NEGATIONS:
+        start = norm.find(token)
+        while start >= 0:
+            end = start + len(token)
+            if start < last_end and end > first_start:
+                return True
+            if end <= first_start and first_start - end <= 4:
+                return True
+            start = norm.find(token, start + 1)
+    return False
+
+
 def _build_direct_mini_game_open_result(lanlan_name: str, game_type: str) -> dict[str, Any] | None:
     url_template = MINI_GAME_LAUNCH_URL_BY_GAME.get(game_type)
     if not url_template:
@@ -7438,11 +7466,13 @@ def _match_direct_mini_game_request(text: str) -> str | None:
     norm = str(text or "").lower().strip()
     if not norm:
         return None
-    if any(token in norm for token in _MINI_GAME_DIRECT_REQUEST_NEGATIONS):
-        return None
     for game_type, game_terms, action_terms in _MINI_GAME_DIRECT_REQUEST_RULES:
-        if any(term in norm for term in game_terms) and any(term in norm for term in action_terms):
-            return game_type
+        game_hits = _iter_direct_request_term_hits(norm, game_terms)
+        action_hits = _iter_direct_request_term_hits(norm, action_terms)
+        for game_hit in game_hits:
+            for action_hit in action_hits:
+                if not _direct_request_pair_has_scoped_negation(norm, game_hit, action_hit):
+                    return game_type
     return None
 
 

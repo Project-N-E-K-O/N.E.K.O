@@ -997,6 +997,10 @@ BASKETBALL_SHOOTER_SYSTEM_PROMPTS = {
     "pt": _BASKETBALL_SHOOTER_SYSTEM_PROMPT_PT,
 }
 
+# Timed is a solo shooting mode; HORSE is turn-based like duel.
+BASKETBALL_TIMED_SYSTEM_PROMPTS = BASKETBALL_SHOOTER_SYSTEM_PROMPTS
+BASKETBALL_HORSE_SYSTEM_PROMPTS = BASKETBALL_DUEL_SYSTEM_PROMPTS
+
 BASKETBALL_SYSTEM_PROMPT_WATERMARK = "\n======以上为投篮小游戏会话系统提示======\n"
 
 BASKETBALL_QUICK_LINES_PROMPT = """\
@@ -1195,6 +1199,9 @@ _BASKETBALL_QUICK_LINES_PROMPTS_SHOOTER = {
     "es": _BASKETBALL_QUICK_LINES_PROMPT_ES,
     "pt": _BASKETBALL_QUICK_LINES_PROMPT_PT,
 }
+
+_BASKETBALL_QUICK_LINES_PROMPTS_TIMED = _BASKETBALL_QUICK_LINES_PROMPTS_SHOOTER
+_BASKETBALL_QUICK_LINES_PROMPTS_HORSE = _BASKETBALL_QUICK_LINES_PROMPTS_DUEL
 
 BASKETBALL_PREGAME_CONTEXT_PROMPT = """\
 你是投篮小游戏开局上下文分析器。只输出 JSON，不要 Markdown，不要解释。
@@ -1959,23 +1966,44 @@ def get_basketball_pregame_context_formatter_labels(lang: str | None = None) -> 
     return BASKETBALL_PREGAME_CONTEXT_FORMATTER_LABELS.get(prompt_lang) or BASKETBALL_PREGAME_CONTEXT_FORMATTER_LABELS["en"]
 
 
-def get_basketball_system_prompt(lang: str | None = None, mode: str = "spectator") -> str:
+def _normalize_basketball_prompt_mode(mode: str | None) -> str:
     mode_name = str(mode or "").strip().lower()
+    if "horse" in mode_name:
+        return "horse"
+    if mode_name.startswith("timed") or mode_name in {"time_attack", "time-attack", "timeattack"}:
+        return "timed"
+    if mode_name.startswith("shooter"):
+        return "shooter"
+    if mode_name.startswith("duel"):
+        return "duel"
+    return mode_name or "spectator"
+
+
+def get_basketball_system_prompt(lang: str | None = None, mode: str = "spectator") -> str:
+    mode_name = _normalize_basketball_prompt_mode(mode)
     if mode_name == "shooter":
         prompt_set = BASKETBALL_SHOOTER_SYSTEM_PROMPTS
     elif mode_name == "duel":
         prompt_set = BASKETBALL_DUEL_SYSTEM_PROMPTS
+    elif mode_name == "timed":
+        prompt_set = BASKETBALL_TIMED_SYSTEM_PROMPTS
+    elif mode_name == "horse":
+        prompt_set = BASKETBALL_HORSE_SYSTEM_PROMPTS
     else:
         prompt_set = BASKETBALL_SYSTEM_PROMPTS
     return _localized_template(prompt_set, lang) + BASKETBALL_SYSTEM_PROMPT_WATERMARK
 
 
 def get_basketball_quick_lines_prompt(lang: str | None = None, mode: str = "spectator") -> str:
-    mode_name = str(mode or "").strip().lower()
+    mode_name = _normalize_basketball_prompt_mode(mode)
     if mode_name == "shooter":
         prompt_set = _BASKETBALL_QUICK_LINES_PROMPTS_SHOOTER
     elif mode_name == "duel":
         prompt_set = _BASKETBALL_QUICK_LINES_PROMPTS_DUEL
+    elif mode_name == "timed":
+        prompt_set = _BASKETBALL_QUICK_LINES_PROMPTS_TIMED
+    elif mode_name == "horse":
+        prompt_set = _BASKETBALL_QUICK_LINES_PROMPTS_HORSE
     else:
         prompt_set = BASKETBALL_QUICK_LINES_PROMPTS
     return _localized_template(prompt_set, lang)

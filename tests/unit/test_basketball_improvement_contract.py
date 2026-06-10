@@ -417,13 +417,20 @@ def test_basketball_prompt_localizations_do_not_fallback_to_english():
     english_spectator = prompts_game.get_basketball_system_prompt("en", mode="spectator")
     english_duel = prompts_game.get_basketball_system_prompt("en", mode="duel")
     english_shooter = prompts_game.get_basketball_system_prompt("en", mode="shooter")
+    english_timed = prompts_game.get_basketball_system_prompt("en", mode="timed")
+    english_horse = prompts_game.get_basketball_system_prompt("en", mode="horse")
     english_quick = prompts_game.get_basketball_quick_lines_prompt("en", mode="spectator")
     english_pregame = prompts_game.get_basketball_pregame_context_prompt("en")
+
+    assert english_timed != english_spectator
+    assert english_horse != english_spectator
 
     for lang in ("ja", "ko", "ru", "es", "pt"):
         assert prompts_game.get_basketball_system_prompt(lang, mode="spectator") != english_spectator
         assert prompts_game.get_basketball_system_prompt(lang, mode="duel") != english_duel
         assert prompts_game.get_basketball_system_prompt(lang, mode="shooter") != english_shooter
+        assert prompts_game.get_basketball_system_prompt(lang, mode="timed") != english_timed
+        assert prompts_game.get_basketball_system_prompt(lang, mode="horse") != english_horse
         assert prompts_game.get_basketball_quick_lines_prompt(lang, mode="spectator") != english_quick
         assert prompts_game.get_basketball_pregame_context_prompt(lang) != english_pregame
 
