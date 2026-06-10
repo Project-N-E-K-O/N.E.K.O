@@ -4180,7 +4180,19 @@ const AvatarButtonMixin = {
                 dispatchReturnEvent();
             });
 
+            const thoughtBubble = document.createElement('img');
+            thoughtBubble.className = 'neko-idle-thought-bubble';
+            thoughtBubble.src = `/static/assets/neko-idle/cloud-thought-bubble.gif${_getNekoIdleReturnAssetVersionSuffix()}`;
+            thoughtBubble.alt = '';
+            thoughtBubble.draggable = false;
+            Object.assign(thoughtBubble.style, {
+                position: 'absolute',
+                pointerEvents: 'none',
+                userSelect: 'none'
+            });
+
             returnBtn.appendChild(returnArt);
+            returnBtn.appendChild(thoughtBubble);
             returnButtonContainer.appendChild(returnBtn);
             document.body.appendChild(returnButtonContainer);
             this._returnButtonContainer = returnButtonContainer;

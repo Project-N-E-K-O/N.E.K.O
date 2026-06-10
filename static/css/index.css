@@ -447,6 +447,34 @@ body.neko-game-active [id$="-lock-icon"] {
     --neko-idle-return-facing-transform: scaleX(-1);
 }
 
+.neko-idle-thought-bubble {
+    --neko-idle-bubble-size: clamp(52px, 9vw, 78px);
+    position: absolute;
+    z-index: 3;
+    width: var(--neko-idle-bubble-size);
+    height: var(--neko-idle-bubble-size);
+    right: calc(var(--neko-idle-bubble-size) * -0.18);
+    top: calc(var(--neko-idle-bubble-size) * -0.45);
+    object-fit: contain;
+    display: block;
+    transform: translate3d(0, 0, 0);
+    pointer-events: none;
+    user-select: none;
+}
+
+.neko-idle-return-btn[data-neko-idle-tier="cat1"] .neko-idle-thought-bubble {
+    right: calc(var(--neko-idle-bubble-size) * -0.42);
+    top: calc(var(--neko-idle-bubble-size) * -0.72);
+}
+
+.neko-idle-return-btn[data-neko-idle-tier="none"] .neko-idle-thought-bubble,
+.neko-idle-return-btn.is-drag-action .neko-idle-thought-bubble,
+.neko-idle-return-btn.is-cat1-walking .neko-idle-thought-bubble,
+.neko-idle-return-btn.is-cat1-stretching .neko-idle-thought-bubble,
+.neko-idle-return-btn.is-cat1-hover-paused .neko-idle-thought-bubble {
+    display: none;
+}
+
 .neko-idle-return-art-next {
     position: absolute;
     inset: 0;
