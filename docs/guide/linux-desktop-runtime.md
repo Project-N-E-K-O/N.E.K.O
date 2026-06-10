@@ -31,19 +31,23 @@ echo "XMODIFIERS=$XMODIFIERS"
 echo "SteamAppId=$SteamAppId"
 ```
 
-For a running desktop shell process, inspect the real environment and arguments. Target the **main Electron browser process**, not a `projectneko_server` backend helper nor an Electron child process. The transparent window and the GTK input-method modules live in the main browser process, while renderer/GPU/zygote children (`--type=...`) do not own them, so `pgrep -n` (newest PID) would usually land on a child and make the checks below report missing IM/input-shape state by mistake. Select the first matching process whose command line has no `--type=` flag:
+For a running desktop shell process, inspect the real environment and arguments. Target the **main Electron browser process**, not a `projectneko_server` backend helper nor an Electron child process. The transparent window and the GTK input-method modules live in the main browser process, while renderer/GPU/zygote children (`--type=...`) do not own them, so `pgrep -n` (newest PID) would usually land on a child and make the checks below report missing IM/input-shape state by mistake. Match N.E.K.O's AppImage/AppRun specifically (avoid the generic `electron` term so an unrelated Electron app such as VS Code or Discord is not picked up), then keep the matching process(es) without a `--type=` flag:
 
 ```bash
-pid=""
-for p in $(pgrep -f 'AppRun|AppImage|electron|N[.]E[.]K[.]O|n[.]e[.]k[.]o'); do
-  if ! tr '\0' '\n' < "/proc/$p/cmdline" | grep -q -- '--type='; then
-    pid="$p"; break
-  fi
+mains=()
+for p in $(pgrep -f 'AppRun|AppImage|N[.]E[.]K[.]O|n[.]e[.]k[.]o'); do
+  tr '\0' '\n' < "/proc/$p/cmdline" | grep -q -- '--type=' || mains+=("$p")
 done
-if [ -z "$pid" ]; then
+if [ "${#mains[@]}" -eq 0 ]; then
   echo "N.E.K.O desktop shell (main Electron process) was not found" >&2
   exit 1
+elif [ "${#mains[@]}" -gt 1 ]; then
+  echo "Multiple candidates found; confirm the N.E.K.O PID and set it manually:" >&2
+  for p in "${mains[@]}"; do
+    printf '  %s  %s\n' "$p" "$(tr '\0' ' ' < "/proc/$p/cmdline")" >&2
+  done
 fi
+pid="${mains[0]}"
 tr '\0' '\n' < "/proc/$pid/environ" | sort | grep -E 'DISPLAY|WAYLAND|GTK_IM|QT_IM|XMODIFIERS|Steam'
 tr '\0' ' ' < "/proc/$pid/cmdline"; echo
 ```
@@ -85,9 +89,10 @@ export INPUT_METHOD=fcitx
 
 For X11/XWayland desktop builds, prefer native GTK IM modules over XIM when possible. XIM can show a candidate window but still fail to commit text into Electron text fields. A successful native Fcitx5 path normally shows `im-fcitx5.so` and `libFcitx5GClient.so.2` mapped in the Electron process.
 
-If native Fcitx fails only inside Steam, check for GLib version mismatches:
+If native Fcitx fails only inside Steam, check for GLib version mismatches — but run the check with the **Steam runtime's** library resolution, not your plain terminal's. `ldd -r` resolves relocations against the current environment, so a normal-terminal run can report a false clean result and hide exactly the Steam-only mismatch this section is diagnosing. Import `LD_LIBRARY_PATH` from the Steam-launched N.E.K.O process (`$pid` from the snapshot above), or run the check from a shell started by Steam:
 
 ```bash
+export LD_LIBRARY_PATH="$(tr '\0' '\n' < "/proc/$pid/environ" | sed -n 's/^LD_LIBRARY_PATH=//p')"
 ldd -r /path/to/im-fcitx5.so | grep -E 'not found|undefined symbol|glib|gobject'
 ```
 

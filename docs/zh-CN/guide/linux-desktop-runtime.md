@@ -31,19 +31,23 @@ echo "XMODIFIERS=$XMODIFIERS"
 echo "SteamAppId=$SteamAppId"
 ```
 
-对正在运行的桌面壳进程，检查真实环境变量和启动参数。要采样 **Electron 主浏览器进程**，既不要采样 `projectneko_server` 等后端 helper，也不要采样 Electron 子进程。透明窗口和 GTK 输入法模块都驻留在主浏览器进程里，renderer/GPU/zygote 子进程（带 `--type=...`）并不持有它们；而 `pgrep -n`（取最新 PID）通常会命中子进程，导致下面的检查误报「输入法/input-shape 未加载」。应选取第一个命令行不含 `--type=` 的匹配进程：
+对正在运行的桌面壳进程，检查真实环境变量和启动参数。要采样 **Electron 主浏览器进程**，既不要采样 `projectneko_server` 等后端 helper，也不要采样 Electron 子进程。透明窗口和 GTK 输入法模块都驻留在主浏览器进程里，renderer/GPU/zygote 子进程（带 `--type=...`）并不持有它们；而 `pgrep -n`（取最新 PID）通常会命中子进程，导致下面的检查误报「输入法/input-shape 未加载」。匹配时要锁定 N.E.K.O 的 AppImage/AppRun（不要用泛词 `electron`，否则会误命中 VS Code、Discord 等其他 Electron 应用），再保留命令行不含 `--type=` 的进程：
 
 ```bash
-pid=""
-for p in $(pgrep -f 'AppRun|AppImage|electron|N[.]E[.]K[.]O|n[.]e[.]k[.]o'); do
-  if ! tr '\0' '\n' < "/proc/$p/cmdline" | grep -q -- '--type='; then
-    pid="$p"; break
-  fi
+mains=()
+for p in $(pgrep -f 'AppRun|AppImage|N[.]E[.]K[.]O|n[.]e[.]k[.]o'); do
+  tr '\0' '\n' < "/proc/$p/cmdline" | grep -q -- '--type=' || mains+=("$p")
 done
-if [ -z "$pid" ]; then
+if [ "${#mains[@]}" -eq 0 ]; then
   echo "N.E.K.O desktop shell (main Electron process) was not found" >&2
   exit 1
+elif [ "${#mains[@]}" -gt 1 ]; then
+  echo "找到多个候选，请确认 N.E.K.O 的 PID 并手动指定：" >&2
+  for p in "${mains[@]}"; do
+    printf '  %s  %s\n' "$p" "$(tr '\0' ' ' < "/proc/$p/cmdline")" >&2
+  done
 fi
+pid="${mains[0]}"
 tr '\0' '\n' < "/proc/$pid/environ" | sort | grep -E 'DISPLAY|WAYLAND|GTK_IM|QT_IM|XMODIFIERS|Steam'
 tr '\0' ' ' < "/proc/$pid/cmdline"; echo
 ```
@@ -85,9 +89,10 @@ export INPUT_METHOD=fcitx
 
 对 X11 / XWayland 桌面包，优先使用原生 GTK IM module，而不是只依赖 XIM。XIM 可能能调出候选框，但文字 commit 仍然进不了 Electron 文本输入框。Fcitx5 原生路径成功时，Electron 进程中通常能看到 `im-fcitx5.so` 和 `libFcitx5GClient.so.2`。
 
-如果只在 Steam 内原生 Fcitx 加载失败，应检查 GLib 版本不匹配：
+如果只在 Steam 内原生 Fcitx 加载失败，应检查 GLib 版本不匹配——但要在 **Steam runtime 的**库解析环境下跑，而不是普通终端。`ldd -r` 是按当前环境解析 relocation 的，在普通终端跑可能给出假「干净」结果，恰好掩盖本节要诊断的「仅 Steam 下不匹配」。从 Steam 启动的 N.E.K.O 进程（上面快照里的 `$pid`）导入 `LD_LIBRARY_PATH`，或直接从 Steam 启动的 shell 里跑：
 
 ```bash
+export LD_LIBRARY_PATH="$(tr '\0' '\n' < "/proc/$pid/environ" | sed -n 's/^LD_LIBRARY_PATH=//p')"
 ldd -r /path/to/im-fcitx5.so | grep -E 'not found|undefined symbol|glib|gobject'
 ```
 
