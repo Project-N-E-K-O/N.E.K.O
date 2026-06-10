@@ -4142,6 +4142,16 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     except Exception as e:
         logger.warning(f'TTS调度器检查报告:{e}')
 
+    tts_provider = str(core_cfg.get('TTS_PROVIDER') or core_cfg.get('ttsProvider') or '').strip().lower()
+    assist_api_type = str(core_cfg.get('assistApi') or '').strip().lower()
+    if tts_provider == 'mimo' or assist_api_type == 'mimo':
+        mimo_base_url = core_cfg.get('OPENROUTER_URL') if assist_api_type == 'mimo' else None
+        return (
+            partial(mimo_tts_worker, base_url=mimo_base_url),
+            cm.get_tts_api_key('mimo'),
+            'mimo',
+        )
+
     # 如果有自定义克隆音色，使用 CosyVoice（阿里云）
     # 必须同时有有效的 voice_id 且不是免费预设音色，否则 fallthrough 到默认 TTS
     # 注：core.py 的 _has_custom_tts 对 core_api_type=='gemini' + Gemini voice 短路返回 False，
@@ -4168,16 +4178,6 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
             return grok_streaming_tts_worker, grok_api_key, 'grok'
         else:
             return cosyvoice_vc_tts_worker, None, 'cosyvoice'
-
-    tts_provider = str(core_cfg.get('TTS_PROVIDER') or core_cfg.get('ttsProvider') or '').strip().lower()
-    assist_api_type = str(core_cfg.get('assistApi') or '').strip().lower()
-    if tts_provider == 'mimo' or assist_api_type == 'mimo':
-        mimo_base_url = core_cfg.get('OPENROUTER_URL') if assist_api_type == 'mimo' else None
-        return (
-            partial(mimo_tts_worker, base_url=mimo_base_url),
-            cm.get_tts_api_key('mimo'),
-            'mimo',
-        )
 
     # 没有自定义音色时，使用与 core_api 匹配的默认 TTS
     if core_api_type in ('qwen', 'qwen_intl'):

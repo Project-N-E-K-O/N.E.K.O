@@ -222,3 +222,36 @@ def test_get_tts_worker_routes_tts_provider_mimo_to_default_endpoint(monkeypatch
     assert worker.keywords == {"base_url": None}
     assert api_key == "mimo-key-via-provider"
     assert provider_key == "mimo"
+
+
+@pytest.mark.unit
+def test_get_tts_worker_routes_mimo_before_custom_voice_fallback(monkeypatch):
+    class _CM:
+        def get_core_config(self):
+            return {
+                "assistApi": "qwen",
+                "OPENROUTER_URL": "https://api.xiaomimimo.com/v1",
+                "TTS_PROVIDER": "mimo",
+            }
+
+        def get_model_api_config(self, model_type):
+            return {"is_custom": False}
+
+        def get_tts_api_key(self, provider):
+            assert provider == "mimo"
+            return "mimo-key-with-voice"
+
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM())
+    monkeypatch.setattr(tts_client, "_get_voice_meta", lambda voice_id: None)
+
+    worker, api_key, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen",
+        has_custom_voice=True,
+        voice_id="Milo",
+    )
+
+    assert isinstance(worker, partial)
+    assert worker.func is tts_client.mimo_tts_worker
+    assert worker.keywords == {"base_url": None}
+    assert api_key == "mimo-key-with-voice"
+    assert provider_key == "mimo"
