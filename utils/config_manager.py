@@ -624,10 +624,14 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
     model_type = str(
         get_reserved(catgirl_data, "avatar", "model_type", default="", legacy_keys=("model_type",))
     ).strip().lower()
-    if model_type not in {"live2d", "vrm", "live3d"}:
+    if model_type not in {"live2d", "vrm", "live3d", "pngtuber"}:
         has_vrm = catgirl_data.get("vrm") or get_reserved(catgirl_data, "avatar", "vrm", "model_path")
         has_mmd = catgirl_data.get("mmd") or get_reserved(catgirl_data, "avatar", "mmd", "model_path")
-        model_type = "live3d" if (has_vrm or has_mmd) else "live2d"
+        has_pngtuber = catgirl_data.get("pngtuber") or get_reserved(catgirl_data, "avatar", "pngtuber", default={})
+        if has_pngtuber:
+            model_type = "pngtuber"
+        else:
+            model_type = "live3d" if (has_vrm or has_mmd) else "live2d"
     # 归一化：旧配置中的 'vrm' 统一为 'live3d'
     if model_type == "vrm":
         model_type = "live3d"
@@ -750,6 +754,26 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
     if mmd_animation is not None:
         changed |= set_reserved(catgirl_data, "avatar", "mmd", "animation", mmd_animation)
 
+    pngtuber_config = get_reserved(catgirl_data, "avatar", "pngtuber", default=None, legacy_keys=("pngtuber",))
+    if pngtuber_config is None:
+        pngtuber_config = {}
+    if not isinstance(pngtuber_config, dict):
+        pngtuber_config = {"idle_image": str(pngtuber_config)} if str(pngtuber_config or "").strip() else {}
+    pngtuber_config = dict(pngtuber_config)
+    legacy_pngtuber_fields = {
+        "idle_image": "pngtuber_idle_image",
+        "talking_image": "pngtuber_talking_image",
+        "happy_image": "pngtuber_happy_image",
+        "sad_image": "pngtuber_sad_image",
+        "angry_image": "pngtuber_angry_image",
+        "surprised_image": "pngtuber_surprised_image",
+    }
+    for reserved_key, legacy_key in legacy_pngtuber_fields.items():
+        if not pngtuber_config.get(reserved_key) and catgirl_data.get(legacy_key):
+            pngtuber_config[reserved_key] = str(catgirl_data.get(legacy_key) or "")
+    if pngtuber_config:
+        changed |= set_reserved(catgirl_data, "avatar", "pngtuber", pngtuber_config)
+
     mmd_idle_animation = get_reserved(
         catgirl_data,
         "avatar",
@@ -818,6 +842,13 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         "mmd_animation",
         "mmd_idle_animation",
         "mmd_idle_animations",
+        "pngtuber",
+        "pngtuber_idle_image",
+        "pngtuber_talking_image",
+        "pngtuber_happy_image",
+        "pngtuber_sad_image",
+        "pngtuber_angry_image",
+        "pngtuber_surprised_image",
     ):
         if legacy_key in catgirl_data:
             catgirl_data.pop(legacy_key, None)
@@ -906,6 +937,20 @@ def flatten_reserved(catgirl_data: dict) -> dict:
         else:
             result["mmd_idle_animation"] = ""
             result["mmd_idle_animations"] = []
+
+    pngtuber_config = get_reserved(result, "avatar", "pngtuber", default=None)
+    if isinstance(pngtuber_config, dict) and pngtuber_config:
+        result["pngtuber"] = dict(pngtuber_config)
+        for key in (
+            "idle_image",
+            "talking_image",
+            "happy_image",
+            "sad_image",
+            "angry_image",
+            "surprised_image",
+        ):
+            if pngtuber_config.get(key):
+                result[f"pngtuber_{key}"] = pngtuber_config.get(key)
 
     touch_set = get_reserved(result, 'touch_set', default=None)
     if touch_set:
@@ -1059,6 +1104,7 @@ class ConfigManager:
         # MMD模型存储在用户文档目录下
         self.mmd_dir = self.app_docs_dir / "mmd"
         self.mmd_animation_dir = self.mmd_dir / "animation"  # VMD动画文件目录
+        self.pngtuber_dir = self.app_docs_dir / "pngtuber"
         self.workshop_dir = self.app_docs_dir / "workshop"
         self._steam_workshop_path = None
         self._user_workshop_folder_persisted = False
@@ -1632,6 +1678,17 @@ class ConfigManager:
             return True
         except Exception as e:
             print(f"Warning: Failed to create mmd directory: {e}", file=sys.stderr)
+            return False
+
+    def ensure_pngtuber_directory(self):
+        """Ensure the user PNGTuber asset directory exists."""
+        try:
+            if not self._ensure_app_docs_directory():
+                return False
+            self.pngtuber_dir.mkdir(parents=True, exist_ok=True)
+            return True
+        except Exception as e:
+            print(f"Warning: Failed to create pngtuber directory: {e}", file=sys.stderr)
             return False
         
     def ensure_chara_directory(self):

@@ -209,6 +209,40 @@ body {
     pointer-events: auto;
 }
 
+#pngtuber-container {
+    position: fixed;
+    right: 0px;
+    bottom: 0px;
+    width: 100%;
+    height: 100%;
+    z-index: 10;
+    pointer-events: none;
+    overflow: hidden;
+    display: block;
+}
+
+#pngtuber-container.hidden {
+    display: none;
+}
+
+#pngtuber-container .pngtuber-image {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    right: auto;
+    bottom: auto;
+    max-width: 80vw;
+    max-height: 92vh;
+    object-fit: contain;
+    transform-origin: center center;
+    user-select: none;
+    -webkit-user-drag: none;
+}
+
+body.model-manager-page #pngtuber-container .pngtuber-image {
+    transform: translate(-50%, -50%);
+}
+
 #sidebar {
     position: fixed;
     left: 20px;

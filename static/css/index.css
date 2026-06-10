@@ -258,7 +258,8 @@ button * {
 
 /* 看板娘判定框-悬停时半透明 */
 #live2d-container.locked-hover-fade,
-#vrm-container.locked-hover-fade {
+#vrm-container.locked-hover-fade,
+#pngtuber-container.locked-hover-fade {
     opacity: 0.12;
 }
 
@@ -331,6 +332,50 @@ button * {
     transform-origin: var(--neko-model-exit-origin-x, 50%) var(--neko-model-exit-origin-y, 50%);
 }
 
+#pngtuber-container {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 10;
+    pointer-events: none;
+    background: transparent !important;
+    overflow: hidden;
+    visibility: visible;
+    transition: var(--neko-model-opacity-transition), var(--neko-model-transform-transition);
+    will-change: transform;
+    transform: translateZ(0);
+    transform-origin: var(--neko-model-exit-origin-x, 50%) var(--neko-model-exit-origin-y, 50%);
+}
+
+#pngtuber-container.minimized {
+    transform: scale(0.38) translateZ(0);
+    opacity: 0;
+}
+
+#pngtuber-container .pngtuber-image {
+    position: absolute;
+    left: calc(100% - 48px);
+    top: calc(100% - 18px);
+    right: auto;
+    bottom: auto;
+    max-width: min(56vw, 560px);
+    max-height: 82vh;
+    width: auto;
+    height: auto;
+    object-fit: contain;
+    pointer-events: auto;
+    user-select: none;
+    touch-action: none;
+    cursor: grab;
+    transform-origin: right bottom;
+}
+
+#pngtuber-container .pngtuber-image.is-dragging {
+    cursor: grabbing;
+}
+
 /* 看板娘VR/MMD模型判定框-最小化状态 */
 #vrm-container.minimized,
 #mmd-container.minimized {
@@ -356,6 +401,7 @@ button * {
 body.neko-game-active #live2d-container,
 body.neko-game-active #vrm-container,
 body.neko-game-active #mmd-container,
+body.neko-game-active #pngtuber-container,
 body.neko-game-active #chat-container,
 body.neko-game-active #status-toast,
 body.neko-game-active #subtitle-display,

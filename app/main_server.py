@@ -1554,6 +1554,7 @@ if _IS_MAIN_PROCESS:
     _config_manager.ensure_live2d_directory()
     _config_manager.ensure_vrm_directory()
     _config_manager.ensure_mmd_directory()
+    _config_manager.ensure_pngtuber_directory()
     _config_manager.ensure_chara_directory()
 
     # CFA (反勒索防护) 感知挂载：
@@ -1607,7 +1608,12 @@ if _IS_MAIN_PROCESS:
     if os.path.exists(user_mmd_path):
         app.mount("/user_mmd", CustomStaticFiles(directory=user_mmd_path), name="user_mmd")
         logger.info(f"已挂载MMD目录: {user_mmd_path}")
-    
+
+    user_pngtuber_path = str(_config_manager.pngtuber_dir)
+    if os.path.exists(user_pngtuber_path):
+        app.mount("/user_pngtuber", CustomStaticFiles(directory=user_pngtuber_path), name="user_pngtuber")
+        logger.info(f"已挂载PNGTuber目录: {user_pngtuber_path}")
+
     # 挂载项目目录下的static/mmd（作为备用）
     project_mmd_path = os.path.join(static_dir, 'mmd')
     if os.path.exists(project_mmd_path) and os.path.isdir(project_mmd_path):
@@ -1634,6 +1640,7 @@ from main_routers.memory_router import router as memory_router # noqa
 from main_routers.mmd_router import router as mmd_router # noqa
 from main_routers.music_router import router as music_router # noqa
 from main_routers.pages_router import router as pages_router # noqa
+from main_routers.pngtuber_router import router as pngtuber_router # noqa
 from main_routers.storage_location_router import router as storage_location_router # noqa
 from main_routers.system_router import router as system_router # noqa
 from main_routers.tool_router import router as tool_router # noqa
@@ -1761,6 +1768,7 @@ app.include_router(characters_router)
 app.include_router(live2d_router)
 app.include_router(vrm_router)
 app.include_router(mmd_router)
+app.include_router(pngtuber_router)
 app.include_router(jukebox_router)
 app.include_router(workshop_router)
 app.include_router(memory_router)

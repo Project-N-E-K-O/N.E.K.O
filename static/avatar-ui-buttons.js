@@ -189,7 +189,7 @@ const _NEKO_IDLE_TIER_NONE = 'none';
 const _NEKO_IDLE_TIER_CAT1 = 'cat1';
 const _NEKO_IDLE_TIER_CAT2 = 'cat2';
 const _NEKO_IDLE_TIER_CAT3 = 'cat3';
-const _NEKO_IDLE_RETURN_BUTTON_SELECTOR = '#live2d-btn-return, #vrm-btn-return, #mmd-btn-return';
+const _NEKO_IDLE_RETURN_BUTTON_SELECTOR = '#live2d-btn-return, #vrm-btn-return, #mmd-btn-return, #pngtuber-btn-return';
 const _NEKO_IDLE_RETURN_TRANSITION_MS = 820;
 const _NEKO_IDLE_RETURN_GIF_DURATION_FALLBACK_MS = 900;
 const _NEKO_IDLE_RETURN_GIF_DURATION_CACHE = new Map();
@@ -3611,7 +3611,8 @@ const AvatarButtonMixin = {
             const allButtonIds = [
                 'live2d-floating-buttons', 'live2d-lock-icon', 'live2d-return-button-container',
                 'vrm-floating-buttons', 'vrm-lock-icon', 'vrm-return-button-container',
-                'mmd-floating-buttons', 'mmd-lock-icon', 'mmd-return-button-container'
+                'mmd-floating-buttons', 'mmd-lock-icon', 'mmd-return-button-container',
+                'pngtuber-floating-buttons', 'pngtuber-lock-icon', 'pngtuber-return-button-container'
             ];
             const selfIds = [options.containerElementId, options.lockIconId, options.returnContainerId];
             allButtonIds.forEach(id => {
@@ -3624,11 +3625,12 @@ const AvatarButtonMixin = {
             });
 
             // 调用其他管理器的完整清理 API，防止幽灵回调及残留事件监听
-            const otherPrefixes = ['live2d', 'vrm', 'mmd'].filter(p => p !== prefix);
+            const otherPrefixes = ['live2d', 'vrm', 'mmd', 'pngtuber'].filter(p => p !== prefix);
             otherPrefixes.forEach(p => {
                 const mgr = p === 'live2d' ? window.live2dManager
                           : p === 'vrm'    ? window.vrmManager
-                          :                   window.mmdManager;
+                          : p === 'mmd'    ? window.mmdManager
+                          :                   window.pngtuberManager;
                 if (!mgr) return;
                 const manualCleanup = () => {
                     if (mgr._uiUpdateLoopId !== null && mgr._uiUpdateLoopId !== undefined) {
@@ -3656,7 +3658,7 @@ const AvatarButtonMixin = {
             });
 
             // 清理所有模型类型的侧边面板
-            ['live2d', 'vrm', 'mmd'].forEach(p => {
+            ['live2d', 'vrm', 'mmd', 'pngtuber'].forEach(p => {
                 document.querySelectorAll(`[data-neko-sidepanel-owner^="${p}-popup-"]`).forEach(panel => {
                     if (typeof window.clearAvatarSidePanelHoverState === 'function') {
                         window.clearAvatarSidePanelHoverState(panel);

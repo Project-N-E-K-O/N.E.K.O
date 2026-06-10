@@ -73,6 +73,8 @@ VRM_USER_PATH = "/user_vrm"  # 用户文档目录下的 VRM 模型路径
 # MMD 模型路径常量
 MMD_STATIC_PATH = "/static/mmd"  # 项目目录下的 MMD 模型路径
 MMD_USER_PATH = "/user_mmd"  # 用户文档目录下的 MMD 模型路径
+PNGTUBER_USER_PATH = "/user_pngtuber"
+PNGTUBER_EXTENSIONS = {'.png', '.gif', '.jpg', '.jpeg', '.webp'}
 
 
 def _resolve_master_display_name(master_basic_config: dict, fallback_name: str = "") -> str:
@@ -209,6 +211,37 @@ def _resolve_mmd_path(mmd_path: str, _config_manager, target_name: str) -> str:
         return ""
 
 
+def _resolve_pngtuber_image_path(image_path: str, _config_manager, target_name: str) -> str:
+    """Resolve a PNGTuber image reference to a browser-loadable URL."""
+    image_path = str(image_path or '').strip().replace('\\', '/')
+    if not image_path or image_path.lower() in {'undefined', 'null'}:
+        return ""
+    if image_path.startswith('http://') or image_path.startswith('https://'):
+        return image_path
+    if image_path.startswith('/'):
+        if image_path.startswith(PNGTUBER_USER_PATH + '/'):
+            rel = image_path[len(PNGTUBER_USER_PATH) + 1:]
+            if (_config_manager.pngtuber_dir / rel).exists():
+                return image_path
+            logger.warning(f"PNGTuber image not found for {target_name}: {image_path}")
+            return ""
+        return image_path
+
+    from pathlib import PurePosixPath
+    safe_rel = PurePosixPath(image_path)
+    if safe_rel.is_absolute() or '..' in safe_rel.parts:
+        logger.warning(f"Invalid PNGTuber image path for {target_name}: {image_path}")
+        return ""
+    if safe_rel.suffix.lower() not in PNGTUBER_EXTENSIONS:
+        logger.warning(f"Unsupported PNGTuber image extension for {target_name}: {image_path}")
+        return ""
+    user_path = _config_manager.pngtuber_dir / str(safe_rel)
+    if user_path.exists():
+        return f'{PNGTUBER_USER_PATH}/{safe_rel}'
+    logger.warning(f"PNGTuber image not found for {target_name}: {image_path}")
+    return ""
+
+
 @router.get("/page_config")
 async def get_page_config(response: Response, lanlan_name: str = ""):
     """获取页面配置(lanlan_name 和 model_path),支持Live2D、VRM和MMD(Live3D)模型"""
@@ -227,6 +260,7 @@ async def get_page_config(response: Response, lanlan_name: str = ""):
         # 获取角色配置
         catgirl_config = lanlan_basic_config.get(target_name, {})
         model_type = get_reserved(catgirl_config, 'avatar', 'model_type', default='live2d', legacy_keys=('model_type',))
+        model_type = str(model_type or 'live2d').strip().lower()
         # 归一化：旧配置中的 'vrm' 统一为 'live3d'
         if model_type == 'vrm':
             model_type = 'live3d'
@@ -235,9 +269,22 @@ async def get_page_config(response: Response, lanlan_name: str = ""):
         lighting = None
         # live3d_sub_type: 前端用于区分 Live3D 模式下加载 VRM 还是 MMD 渲染器
         live3d_sub_type = ""
+        pngtuber_config = None
         
         # 根据模型类型获取模型路径
-        if model_type == 'live3d' and _get_live3d_sub_type(catgirl_config) == 'vrm':
+        if model_type == 'pngtuber':
+            raw_pngtuber = get_reserved(catgirl_config, 'avatar', 'pngtuber', default={})
+            if not isinstance(raw_pngtuber, dict):
+                raw_pngtuber = {}
+            pngtuber_config = dict(raw_pngtuber)
+            for key in ('idle_image', 'talking_image', 'drag_image', 'click_image', 'happy_image', 'sad_image', 'angry_image', 'surprised_image'):
+                pngtuber_config[key] = _resolve_pngtuber_image_path(
+                    str(raw_pngtuber.get(key) or ''),
+                    _config_manager,
+                    target_name,
+                )
+            model_path = pngtuber_config.get('idle_image', '') or ''
+        elif model_type == 'live3d' and _get_live3d_sub_type(catgirl_config) == 'vrm':
             live3d_sub_type = 'vrm'
             # VRM模型：处理路径转换
             vrm_path = get_reserved(catgirl_config, 'avatar', 'vrm', 'model_path', default='', legacy_keys=('vrm',))
@@ -301,6 +348,8 @@ async def get_page_config(response: Response, lanlan_name: str = ""):
         }
         if model_type == 'live3d':
             result["live3d_sub_type"] = live3d_sub_type
+        if model_type == 'pngtuber':
+            result["pngtuber"] = pngtuber_config or {}
         return result
     except Exception as e:
         logger.error(f"获取页面配置失败: {str(e)}")

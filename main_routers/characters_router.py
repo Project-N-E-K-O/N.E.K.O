@@ -28,6 +28,7 @@ import asyncio
 import copy
 import base64
 import hashlib
+import math
 import struct
 import tempfile
 import wave
@@ -1920,12 +1921,12 @@ async def update_catgirl_l2d(name: str, request: Request):
         # 根据model_type检查相应的模型字段
         model_type_str = str(model_type).lower() if model_type else 'live2d'
 
-        # 【修复】model_type 只允许 {live2d, vrm, live3d}，否则 400
-        if model_type_str not in ['live2d', 'vrm', 'live3d']:
+        # 【修复】model_type 只允许 {live2d, vrm, live3d, pngtuber}，否则 400
+        if model_type_str not in ['live2d', 'vrm', 'live3d', 'pngtuber']:
             return JSONResponse(
                 content={
                     'success': False,
-                    'error': f'无效的模型类型: {model_type}，只允许 live2d、vrm 或 live3d'
+                    'error': f'无效的模型类型: {model_type}，只允许 live2d、vrm、live3d 或 pngtuber'
                 },
                 status_code=400
             )
@@ -1933,6 +1934,48 @@ async def update_catgirl_l2d(name: str, request: Request):
         # 归一化：旧客户端发送的 'vrm' 统一为 'live3d'（走 Live3D VRM 子分支处理）
         if model_type_str == 'vrm':
             model_type_str = 'live3d'
+
+        if model_type_str == 'pngtuber':
+            raw_pngtuber = data.get('pngtuber') if isinstance(data.get('pngtuber'), dict) else {}
+            pngtuber_payload = dict(raw_pngtuber)
+            for key in ('idle_image', 'talking_image', 'drag_image', 'click_image', 'happy_image', 'sad_image', 'angry_image', 'surprised_image'):
+                if key not in pngtuber_payload and key in data:
+                    pngtuber_payload[key] = data.get(key)
+            allowed_prefixes = ('/user_pngtuber/', '/static/', '/workshop/')
+            allowed_exts = ('.png', '.gif', '.jpg', '.jpeg', '.webp')
+            idle_image = str(pngtuber_payload.get('idle_image') or '').strip().replace('\\', '/')
+            if not idle_image:
+                return JSONResponse(content={'success': False, 'error': '未提供PNGTuber idle_image'}, status_code=400)
+            for key in ('idle_image', 'talking_image', 'drag_image', 'click_image', 'happy_image', 'sad_image', 'angry_image', 'surprised_image'):
+                image_path = str(pngtuber_payload.get(key) or '').strip().replace('\\', '/')
+                if not image_path:
+                    pngtuber_payload[key] = ''
+                    continue
+                if image_path.startswith('data:'):
+                    return JSONResponse(content={'success': False, 'error': f'PNGTuber图片路径不能使用data URL: {key}'}, status_code=400)
+                if '..' in image_path:
+                    return JSONResponse(content={'success': False, 'error': f'PNGTuber图片路径不能包含路径遍历（..）: {key}'}, status_code=400)
+                is_remote_image = image_path.startswith('http://') or image_path.startswith('https://')
+                if not is_remote_image and not any(image_path.startswith(prefix) for prefix in allowed_prefixes):
+                    return JSONResponse(content={'success': False, 'error': f'PNGTuber图片路径必须以 /user_pngtuber/、/static/ 或 /workshop/ 开头: {key}'}, status_code=400)
+                extension_path = image_path.lower().split('?', 1)[0].split('#', 1)[0]
+                if not extension_path.endswith(allowed_exts):
+                    return JSONResponse(content={'success': False, 'error': f'PNGTuber图片格式必须是 PNG/GIF/JPG/JPEG/WebP: {key}'}, status_code=400)
+                pngtuber_payload[key] = image_path
+
+            def _bounded_number(value, default, min_value, max_value):
+                try:
+                    parsed = float(value)
+                except (TypeError, ValueError):
+                    return default
+                if not math.isfinite(parsed):
+                    return default
+                return max(min_value, min(max_value, parsed))
+
+            pngtuber_payload['scale'] = _bounded_number(pngtuber_payload.get('scale'), 1, 0.1, 5)
+            pngtuber_payload['offset_x'] = _bounded_number(pngtuber_payload.get('offset_x'), 0, -5000, 5000)
+            pngtuber_payload['offset_y'] = _bounded_number(pngtuber_payload.get('offset_y'), 0, -5000, 5000)
+            pngtuber_payload['mirror'] = bool(pngtuber_payload.get('mirror'))
 
         if model_type_str == 'live3d':
             # Live3D 模式：接受 VRM 或 MMD 模型
@@ -1962,7 +2005,7 @@ async def update_catgirl_l2d(name: str, request: Request):
                 mmd_model = mmd_model_str
             else:
                 return JSONResponse(content={'success': False, 'error': '未提供VRM或MMD模型路径'}, status_code=400)
-        else:
+        elif model_type_str != 'pngtuber':
             if not live2d_model:
                 return JSONResponse(
                     content={
@@ -2090,6 +2133,13 @@ async def update_catgirl_l2d(name: str, request: Request):
                 'asset_source',
                 current_asset_source or 'local_imported',
             )
+        elif model_type_str == 'pngtuber':
+            set_reserved(characters['猫娘'][name], 'avatar', 'model_type', 'pngtuber')
+            set_reserved(characters['猫娘'][name], 'avatar', 'live3d_sub_type', '')
+            set_reserved(characters['猫娘'][name], 'avatar', 'pngtuber', pngtuber_payload)
+            set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', '')
+            set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', 'local_imported')
+            logger.debug(f"已保存角色 {name} 的PNGTuber配置")
         else:
             # 更新Live2D模型设置，同时保存item_id（如果有）
             live2d_model_path, resolved_item_id, resolved_asset_source = _resolve_live2d_model_binding(
@@ -2153,6 +2203,8 @@ async def update_catgirl_l2d(name: str, request: Request):
             active_model = vrm_model or mmd_model
             sub_type = 'VRM' if vrm_model else 'MMD'
             message = f'已更新角色 {name} 的Live3D({sub_type})模型为 {active_model}'
+        elif model_type_str == 'pngtuber':
+            message = f'已更新角色 {name} 的PNGTuber配置'
         else:
             message = f'已更新角色 {name} 的Live2D模型为 {live2d_model}'
 
@@ -3414,9 +3466,9 @@ async def update_catgirl(name: str, request: Request):
         requested_model_type = str(raw_data.get('model_type') or '').strip().lower()
         if requested_model_type == 'vrm':
             requested_model_type = 'live3d'
-        if requested_model_type and requested_model_type not in ('live2d', 'live3d'):
+        if requested_model_type and requested_model_type not in ('live2d', 'live3d', 'pngtuber'):
             return JSONResponse(
-                {'success': False, 'error': f'无效的模型类型: {requested_model_type}，只允许 live2d 或 live3d'},
+                {'success': False, 'error': f'无效的模型类型: {requested_model_type}，只允许 live2d、live3d 或 pngtuber'},
                 status_code=400,
             )
 
