@@ -122,6 +122,40 @@ def test_cancel_active_browser_task_tears_down_browser(srv):
     assert M.active_browser_use_task_id is None
 
 
+def test_end_all_cancels_untracked_direct_browser_run(srv):
+    """A direct /browser_use/run call must be tracked in _background_tasks so
+    end_all can cancel it — otherwise it would survive end_all still holding
+    the dispatch mutex and every later browser task would queue forever."""
+    M = srv.Modules
+    saved_lock = M.browser_use_dispatch_lock
+    M.browser_use_dispatch_lock = None
+    M.browser_use = MagicMock()
+    M.browser_use._browser_session = None
+
+    async def _stall(instruction, **kwargs):
+        await asyncio.sleep(3600)
+
+    M.browser_use.run_instruction = _stall
+
+    async def _scenario():
+        run = asyncio.create_task(srv.browser_use_run({"instruction": "x"}))
+        await asyncio.sleep(0.05)  # let it acquire the lock and stall
+        assert M.browser_use_dispatch_lock is not None
+        assert M.browser_use_dispatch_lock.locked()
+
+        result = await srv.admin_control({"action": "end_all"})
+        assert result["success"] is True
+
+        resp = await run
+        assert resp.status_code == 500
+        assert not M.browser_use_dispatch_lock.locked()
+
+    try:
+        asyncio.run(_scenario())
+    finally:
+        M.browser_use_dispatch_lock = saved_lock
+
+
 def test_end_all_cancels_orphan_dispatch_handles(srv):
     """Handles registered only in task_async_handles (not _background_tasks)
     must still receive the cancel."""

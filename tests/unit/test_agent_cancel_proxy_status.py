@@ -54,6 +54,8 @@ def _client_responding(status_code: int) -> MagicMock:
     [
         (httpx.ConnectError("refused"), 502),
         (httpx.ConnectTimeout("connect timed out"), 502),
+        (httpx.WriteTimeout("write timed out"), 502),
+        (httpx.PoolTimeout("pool timed out"), 502),
         (httpx.ReadTimeout("read timed out"), 504),
     ],
 )
@@ -74,6 +76,8 @@ def test_task_cancel_proxy_passes_through_tool_server_status(router, monkeypatch
     [
         (httpx.ConnectError("refused"), 500),
         (httpx.ConnectTimeout("connect timed out"), 500),
+        (httpx.WriteTimeout("write timed out"), 500),
+        (httpx.PoolTimeout("pool timed out"), 500),
         (httpx.ReadTimeout("read timed out"), 504),
     ],
 )

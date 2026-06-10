@@ -796,17 +796,20 @@ window.AgentHUD.updateAgentTaskHUD = function (tasksData) {
 // click handlers below call this after reaching the server so the UI always
 // converges. Backend events for the same tasks merge idempotently in
 // app-websocket.js.
-window.AgentHUD._markTasksCancelledLocally = function (taskIds) {
+window.AgentHUD._markTasksCancelledLocally = function (taskIds, status) {
     const map = window._agentTaskMap;
     if (!map || typeof map.forEach !== 'function' || map.size === 0) return;
     if (!window._agentTaskRemoveTimers) window._agentTaskRemoveTimers = new Map();
     const ids = Array.isArray(taskIds) ? new Set(taskIds) : null;
+    // Optional status override: when the backend reports the task already
+    // reached a different terminal state, mirror it instead of "cancelled".
+    const terminalStatus = status || 'cancelled';
     const now = Date.now();
     let changed = false;
     map.forEach((t, id) => {
         if (!t || (ids && !ids.has(id))) return;
         if (t.status !== 'running' && t.status !== 'queued') return;
-        map.set(id, Object.assign({}, t, { status: 'cancelled', terminal_at: now }));
+        map.set(id, Object.assign({}, t, { status: terminalStatus, terminal_at: now }));
         changed = true;
         // Schedule the same 10s map removal as the websocket event path —
         // otherwise the entry outlives the HUD's 30s terminal cache and a
@@ -819,7 +822,7 @@ window.AgentHUD._markTasksCancelledLocally = function (taskIds) {
         window._agentTaskRemoveTimers.set(id, setTimeout(() => {
             window._agentTaskRemoveTimers.delete(id);
             const current = window._agentTaskMap && window._agentTaskMap.get(id);
-            if (!current || current.status !== 'cancelled') return;
+            if (!current || current.status !== terminalStatus) return;
             window._agentTaskMap.delete(id);
             const remaining = Array.from(window._agentTaskMap.values());
             window.AgentHUD.updateAgentTaskHUD({
@@ -1319,8 +1322,21 @@ window.AgentHUD._createTaskCard = function (task) {
             // request never reached the tool server — keep the card and
             // re-enable the button for retry.
             if (r.ok || r.status === 404 || r.status === 504) {
+                // "task is not active" (200 + success:false) means the task
+                // hit a different terminal state right before the click —
+                // mirror that status instead of faking "cancelled".
+                let realStatus = null;
+                if (r.ok) {
+                    try {
+                        const body = await r.json();
+                        if (body && body.success === false
+                            && ['completed', 'failed', 'cancelled'].indexOf(body.status) !== -1) {
+                            realStatus = body.status;
+                        }
+                    } catch (_) { /* empty or non-JSON body */ }
+                }
                 if (window.AgentHUD._markTasksCancelledLocally) {
-                    window.AgentHUD._markTasksCancelledLocally([task.id]);
+                    window.AgentHUD._markTasksCancelledLocally([task.id], realStatus || undefined);
                 }
             } else {
                 taskCancelBtn.style.opacity = '1';

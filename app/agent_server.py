@@ -2824,6 +2824,24 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             # scheduler's queued guard).
                             if bu_info.get("status") != "queued":
                                 return
+                            # Recheck the feature flag: the user may have
+                            # disabled browser_use while this task waited for
+                            # the slot (mirrors the computer-use scheduler's
+                            # disabled-drop path).
+                            if not Modules.analyzer_enabled or not Modules.agent_flags.get("browser_use_enabled", False):
+                                bu_info["status"] = "cancelled"
+                                bu_info["end_time"] = _now_iso()
+                                bu_info["error"] = "browser_use disabled before dispatch"
+                                try:
+                                    await _emit_main_event(
+                                        "task_update", lanlan_name,
+                                        task={"id": bu_task_id, "status": "cancelled", "type": "browser_use",
+                                              "end_time": bu_info["end_time"], "error": bu_info["error"],
+                                              "session_id": bu_session.session_id},
+                                    )
+                                except Exception as emit_err:
+                                    logger.debug("[BrowserUse] emit task_update(disabled-drop) failed: task_id=%s error=%s", bu_task_id, emit_err)
+                                return
                             bu_info["status"] = "running"
                             bu_info["start_time"] = _now_iso()
                             Modules.active_browser_use_task_id = bu_task_id
@@ -3982,7 +4000,9 @@ async def cancel_task(task_id: str):
     if not info:
         raise HTTPException(404, "task not found")
     if info.get("status") not in ("queued", "running"):
-        return {"success": False, "error": "task is not active"}
+        # Include the real terminal status so the HUD's local fallback can
+        # mirror it instead of mislabeling the card "cancelled".
+        return {"success": False, "error": "task is not active", "status": info.get("status")}
 
     task_type = info.get("type")
     # Mark cancelled up front so any late terminal writes from the dispatch
@@ -5418,10 +5438,26 @@ async def browser_use_run(payload: Dict[str, Any]):
     # tolerate concurrent run_instruction calls.
     if Modules.browser_use_dispatch_lock is None:
         Modules.browser_use_dispatch_lock = asyncio.Lock()
-    try:
+
+    async def _locked_run():
         async with Modules.browser_use_dispatch_lock:
-            result = await Modules.browser_use.run_instruction(instruction)
+            return await Modules.browser_use.run_instruction(instruction)
+
+    # Run as a tracked background task so end_all can cancel a wedged direct
+    # run (otherwise it would survive end_all still holding the mutex).
+    run_task = asyncio.create_task(_locked_run())
+    Modules._background_tasks.add(run_task)
+    run_task.add_done_callback(Modules._background_tasks.discard)
+    try:
+        result = await run_task
         return {"success": bool(result.get("success", False)), "result": result}
+    except asyncio.CancelledError:
+        if run_task.cancelled():
+            # end_all tore this direct run down.
+            return JSONResponse(content={"success": False, "error": "cancelled by end_all"}, status_code=500)
+        # The HTTP request itself was cancelled — don't leak the inner task.
+        run_task.cancel()
+        raise
     except Exception as e:
         return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
 
