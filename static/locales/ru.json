@@ -752,7 +752,7 @@
         "avatarCropZoomOut": "Уменьшить",
         "avatarCropCancel": "Отмена",
         "avatarCropSave": "Сохранить",
-        "emptyState": "Сообщения появятся здесь после подключения чата.",
+        "emptyState":  "Сообщения появятся здесь после подключения чата.",
         "messageStreaming": "Генерация",
         "messageFailed": "Ошибка отправки",
         "reactWindowOpen": "Открыть окно чата",

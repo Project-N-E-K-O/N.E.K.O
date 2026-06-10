@@ -473,6 +473,12 @@
                 extension: 'png',
                 mimeType: 'image/png',
                 label: translateLabel('chat.exportFormatImage', 'Image')
+            },
+            {
+                id: 'markdown',
+                extension: 'md',
+                mimeType: 'text/markdown;charset=utf-8',
+                label: translateLabel('chat.exportFormatMarkdown', 'Markdown')
             }
         ];
     }
@@ -631,6 +637,11 @@
             'html,body{margin:0;padding:0;background:#fafbfc;color:#1f2933;',
             'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;',
             'font-size:14px;line-height:1.7;}',
+            'html{color-scheme:light;scrollbar-width:none;}',
+            'html::-webkit-scrollbar,body::-webkit-scrollbar{width:0;height:0;background:transparent;}',
+            'html::-webkit-scrollbar-track,body::-webkit-scrollbar-track,html::-webkit-scrollbar-corner,body::-webkit-scrollbar-corner{background:transparent;}',
+            '.neko-md-scrollbar-thumb{position:fixed;right:5px;top:0;width:4px;min-height:24px;border-radius:999px;background:rgba(89,101,120,0.5);opacity:0;pointer-events:none;z-index:10;transition:opacity 0.16s ease;}',
+            'html.neko-md-scrollbar-visible .neko-md-scrollbar-thumb{opacity:1;}',
             '.preview-wrap{max-width:780px;margin:0 auto;padding:28px 32px;}',
             '.preview-wrap h1{font-size:1.72rem;padding-bottom:0.32em;border-bottom:1px solid #e2e8f0;margin-top:0;}',
             '.preview-wrap h2{font-size:1.3rem;margin-top:1.4em;color:#334155;}',
@@ -642,19 +653,56 @@
             '.preview-wrap img{max-width:100%;height:auto;border-radius:6px;margin:0.5em 0;}',
             '.preview-wrap a{color:#2563eb;text-decoration:none;}',
             '.preview-wrap a:hover{text-decoration:underline;}',
-            '[data-theme="dark"],[data-theme="dark"] body{background:#111827;color:#e5e7eb;}',
+            '[data-theme="dark"],[data-theme="dark"] body{color-scheme:dark;background:#111827;color:#e5e7eb;}',
+            '[data-theme="dark"] .neko-md-scrollbar-thumb{background:rgba(210,222,240,0.38);}',
             '[data-theme="dark"] .preview-wrap h1{border-color:#374151;}',
             '[data-theme="dark"] .preview-wrap h2{color:#cbd5e1;}',
             '[data-theme="dark"] .preview-wrap blockquote{background:#1f2937;color:#9ca3af;border-color:#4b5563;}',
             '[data-theme="dark"] .preview-wrap code{background:#1f2937;}',
             '[data-theme="dark"] .preview-wrap a{color:#93c5fd;}',
-            '@media (prefers-color-scheme:dark){html:not([data-theme]),html:not([data-theme]) body{background:#111827;color:#e5e7eb;}html:not([data-theme]) .preview-wrap h1{border-color:#374151;}html:not([data-theme]) .preview-wrap h2{color:#cbd5e1;}html:not([data-theme]) .preview-wrap blockquote{background:#1f2937;color:#9ca3af;border-color:#4b5563;}html:not([data-theme]) .preview-wrap code{background:#1f2937;}}'
+            '@media (prefers-color-scheme:dark){html:not([data-theme]),html:not([data-theme]) body{color-scheme:dark;background:#111827;color:#e5e7eb;}html:not([data-theme]) .neko-md-scrollbar-thumb{background:rgba(210,222,240,0.38);}html:not([data-theme]) .preview-wrap h1{border-color:#374151;}html:not([data-theme]) .preview-wrap h2{color:#cbd5e1;}html:not([data-theme]) .preview-wrap blockquote{background:#1f2937;color:#9ca3af;border-color:#4b5563;}html:not([data-theme]) .preview-wrap code{background:#1f2937;}}'
+        ].join('');
+        var script = [
+            '<script>',
+            '(function(){',
+            'var root=document.documentElement;',
+            'var thumb=document.createElement("div");',
+            'thumb.className="neko-md-scrollbar-thumb";',
+            'document.body.appendChild(thumb);',
+            'var timer=null;',
+            'function update(){',
+            'var scroller=document.scrollingElement||root;',
+            'var scrollable=scroller.scrollHeight-window.innerHeight;',
+            'if(scrollable<=1){thumb.style.display="none";return false;}',
+            'thumb.style.display="block";',
+            'var viewport=window.innerHeight;',
+            'var height=Math.max(24,Math.round((viewport/scroller.scrollHeight)*viewport));',
+            'var top=Math.round((scroller.scrollTop/scrollable)*(viewport-height));',
+            'thumb.style.height=height+"px";',
+            'thumb.style.transform="translateY("+top+"px)";',
+            'return true;',
+            '}',
+            'function show(){',
+            'if(!update())return;',
+            'root.classList.add("neko-md-scrollbar-visible");',
+            'if(timer)window.clearTimeout(timer);',
+            'timer=window.setTimeout(function(){root.classList.remove("neko-md-scrollbar-visible");},760);',
+            '}',
+            'window.addEventListener("resize",update,{passive:true});',
+            'window.addEventListener("scroll",show,{passive:true});',
+            'window.addEventListener("wheel",show,{passive:true});',
+            'window.addEventListener("touchmove",show,{passive:true});',
+            'window.addEventListener("keydown",function(event){',
+            'if(["ArrowDown","ArrowUp","PageDown","PageUp","Home","End"," "].indexOf(event.key)!==-1)show();',
+            '});',
+            '}());',
+            '</script>'
         ].join('');
         return '<!DOCTYPE html><html lang="' + escapeHtml(document.documentElement.lang || 'en')
             + '"' + getPreviewThemeAttributesHtml() + '><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'
             + escapeHtml(translateLabel('chat.exportFileTitle', 'Project N.E.K.O Conversation Export'))
             + '</title><style>' + css + '</style></head><body><div class="preview-wrap">'
-            + bodyHtml + '</div></body></html>';
+            + bodyHtml + '</div>' + script + '</body></html>';
     }
 
     // ======================== Image export — shared utilities ========================
@@ -2223,6 +2271,9 @@
 
     async function buildExportDocument(entries, formatId) {
         var now = new Date();
+        if (formatId === 'markdown') {
+            return buildMarkdownExportDocument(entries, now);
+        }
         return buildImageExportDocument(entries, now);
     }
 
@@ -2528,7 +2579,7 @@
         var frame = doc.createElement('iframe');
         frame.className = 'chat-export-preview-frame';
         frame.hidden = true;
-        frame.setAttribute('sandbox', 'allow-same-origin');
+        frame.setAttribute('sandbox', 'allow-scripts');
         frame.setAttribute('title', translateLabel('chat.exportPreviewTitle', 'Export Preview'));
 
         var previewImageWrap = doc.createElement('div');
@@ -3186,6 +3237,12 @@
                 return { previewKind: 'empty' };
             }
             var exportData = await buildExportDocument(entries, state.exportFormat);
+            if (state.exportFormat === 'markdown') {
+                return {
+                    previewKind: 'document',
+                    previewDocument: buildMarkdownPreviewDocument(exportData.content)
+                };
+            }
             return {
                 previewKind: 'image',
                 previewUrl: URL.createObjectURL(exportData.previewBlob)
@@ -3217,9 +3274,17 @@
 
     async function copyCompactInlineSelection(options) {
         if (state.isCopying) return;
+        var requestedFormat = normalizeExportFormatId(options && options.format);
         state.isCopying = true;
         try {
             await runCompactInlineExportAction(options, async function (entries) {
+                if (state.exportFormat === 'markdown') {
+                    var markdownData = await buildExportDocument(entries, 'markdown');
+                    var markdownOk = await copyTextToClipboard(markdownData.content);
+                    if (markdownOk) showToast('chat.copyMarkdownSuccess', 'Markdown copied to clipboard.');
+                    else showToast('chat.copyMarkdownFailed', 'Failed to copy Markdown.', 4000);
+                    return;
+                }
                 var imgData = await buildExportDocument(entries, 'image');
                 var imgBlob = imgData.previewBlob || imgData.content;
                 var imgOk = await copyImageToClipboard(imgBlob);
@@ -3228,7 +3293,11 @@
             });
         } catch (error) {
             logExportError('copyCompactInlineSelection', error);
-            showToast('chat.copyImageFailed', 'Failed to copy image to clipboard.', 4000);
+            if (requestedFormat === 'markdown') {
+                showToast('chat.copyMarkdownFailed', 'Failed to copy Markdown.', 4000);
+            } else {
+                showToast('chat.copyImageFailed', 'Failed to copy image to clipboard.', 4000);
+            }
         } finally {
             state.isCopying = false;
         }
@@ -3288,6 +3357,13 @@
         var modal = state.previewModal;
         if (modal) modal.copyButton.disabled = true;
         try {
+            if (state.exportFormat === 'markdown') {
+                var markdownPayload = await getOrBuildPreviewPayload(entries, 'markdown');
+                var markdownOk = await copyTextToClipboard(markdownPayload.exportData.content);
+                if (markdownOk) showToast('chat.copyMarkdownSuccess', 'Markdown copied to clipboard.');
+                else showToast('chat.copyMarkdownFailed', 'Failed to copy Markdown.', 4000);
+                return;
+            }
             var imgPayload = await getOrBuildPreviewPayload(entries, 'image');
             var imgBlob = imgPayload.exportData.previewBlob || imgPayload.exportData.content;
             var imgOk = await copyImageToClipboard(imgBlob);
@@ -3295,7 +3371,11 @@
             else showToast('chat.copyImageFailed', 'Failed to copy image to clipboard.', 4000);
         } catch (error) {
             logExportError('handleCopyClick', error);
-            showToast('chat.copyImageFailed', 'Failed to copy image to clipboard.', 4000);
+            if (state.exportFormat === 'markdown') {
+                showToast('chat.copyMarkdownFailed', 'Failed to copy Markdown.', 4000);
+            } else {
+                showToast('chat.copyImageFailed', 'Failed to copy image to clipboard.', 4000);
+            }
         } finally {
             state.isCopying = false;
             if (modal) modal.copyButton.disabled = false;

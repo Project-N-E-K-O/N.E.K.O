@@ -752,7 +752,7 @@
         "avatarCropZoomOut": "Diminuir zoom",
         "avatarCropCancel": "Cancelar",
         "avatarCropSave": "Salvar",
-        "emptyState": "As mensagens aparecerão aqui depois que o feed do bate-papo for conectado.",
+        "emptyState":  "As mensagens aparecerão aqui depois que o feed do bate-papo for conectado.",
         "messageStreaming": "Gerando",
         "messageFailed": "Falha no envio",
         "reactWindowOpen": "Abra a janela de bate-papo",
