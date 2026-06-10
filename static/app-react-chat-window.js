@@ -3222,8 +3222,10 @@
         // compactCollapsing，而不必等 600ms 兜底——否则快速「关→重开」会让 compact 表面带着擦除
         // mask 的不可见末态 + 历史区临时关闭重新出现（Codex P2）。
         compactMinimizeCancelSeq += 1;
+        pendingChatSurfaceMode = null;
     }
     function handleCompactMinimizeRequest() {
+        if (isMinimizeTransitioning) return;
         // reduced-motion：折叠擦除/按压挤压动画已被 CSS（@media prefers-reduced-motion: reduce）
         // 禁用，此时再延时 COMPACT_MINIMIZE_PRESS_MS(280ms) 才折叠，只会让窗口「点了没反应」一段，
         // 无任何动画反馈。无障碍模式下直接立即折叠，保持即时响应（Codex P2）。
@@ -3736,6 +3738,7 @@
     var MINIMIZED_DOWN_OFFSET = 24;     // 放大后整体下移，更贴近猫 GIF
     var isMinimizeTransitioning = false;
     var activeAnimationCleanup = null; // 当前进行中动画的清理函数
+    var pendingChatSurfaceMode = null;
 
     // ── Idle-dock: independent orchestration (Phase 4) ──────────
     // Positions the minimized ball next to CAT2/CAT3 return-ball.
@@ -4563,6 +4566,7 @@
         // 取消进行中的折叠/展开时一并清掉挂起的「按下挤压→瞬时折叠」延时（closeWindow
         // 也走这里），避免该回调在窗口关闭/重开后幽灵触发 setChatSurfaceMode('minimized')。
         clearCompactMinimizePressTimer();
+        pendingChatSurfaceMode = null;
     }
 
     // The minimized ball belongs to the surface we'll restore to: the revived
@@ -4634,6 +4638,12 @@
             return normalized;
         }
 
+        if (isMinimizeTransitioning) {
+            pendingChatSurfaceMode = normalized;
+            return previousMode;
+        }
+        pendingChatSurfaceMode = null;
+
         // 任何真实的 surface mode 变更都取消挂起的「按下挤压→延时折叠」：否则 full→compact 之类
         // 快速跳变会让 280ms 内的陈旧折叠回调在 mode 又回到 compact 时误折叠刚恢复的表面（Codex P2，
         // 仅靠回调里 getCurrentChatSurfaceMode()==='compact' 守卫挡不住这种 hop）。timer 自身的
@@ -4665,7 +4675,21 @@
     }
 
     function cycleChatSurfaceMode() {
+        if (isMinimizeTransitioning) {
+            return getCurrentChatSurfaceMode();
+        }
         return setChatSurfaceMode(getNextChatSurfaceMode(getCurrentChatSurfaceMode()));
+    }
+
+    function flushPendingChatSurfaceModeIfNeeded() {
+        if (isMinimizeTransitioning || !pendingChatSurfaceMode) return;
+
+        var targetMode = pendingChatSurfaceMode;
+        pendingChatSurfaceMode = null;
+        if (targetMode === getCurrentChatSurfaceMode()) {
+            return;
+        }
+        setChatSurfaceMode(targetMode);
     }
 
     function setMinimized(nextMinimized) {
@@ -4770,6 +4794,7 @@
                 // orb instead of the stale compact yarn ball.
                 applyMinimizedBallSkin(ensureMinimizedBallIcon());
                 isMinimizeTransitioning = false;
+                flushPendingChatSurfaceModeIfNeeded();
             };
             var onEnd = function (e) {
                 if (e.target !== shell || e.propertyName !== 'transform') return;
@@ -4845,6 +4870,7 @@
                 savedShellSize = null;
                 savedShellPosition = null;
                 isMinimizeTransitioning = false;
+                flushPendingChatSurfaceModeIfNeeded();
                 requestAnimationFrame(function () {
                     var r = shell.getBoundingClientRect();
                     var clamped = clampPosition(r.left, r.top);
@@ -4906,6 +4932,7 @@
                 savedShellSize = null;
                 savedShellPosition = null;
                 isMinimizeTransitioning = false;
+                flushPendingChatSurfaceModeIfNeeded();
                 scheduleMobileContentLayout();
                 // 确保位置不溢出；全屏模式（/chat）不持久化，
                 // 否则 (0,0) 会覆盖 index.html 中用户保存的窗口位置
@@ -5006,6 +5033,7 @@
     }
 
     function toggleMinimized() {
+        if (isMinimizeTransitioning) return;
         if (minimized && idleDockActive && idleDockSavedPosition) {
             var shell = getShell();
             if (shell) {
@@ -5133,6 +5161,7 @@
         // surfacing stale A/B/C the next time the user opens the window.
         invalidatePendingGalgameRequest();
         cancelActiveAnimation(); // 清理进行中的折叠/展开回调
+        pendingChatSurfaceMode = null;
         clearIdleDockState();
         deactivateToolCursor();
         hideIdleCat1CompactMirror('close-window');
