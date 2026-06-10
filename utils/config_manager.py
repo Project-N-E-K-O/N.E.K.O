@@ -2565,10 +2565,10 @@ class ConfigManager:
         return voice_id
 
     def get_tts_api_key(self, provider: str) -> str | None:
-        """根据 provider 统一获取 TTS API Key，返回 None 表示未配置。
+        """Return the configured TTS API key for a provider, or None.
 
-        - cosyvoice: tts_custom 配置的 api_key
-        - cosyvoice_intl: ASSIST_API_KEY_QWEN_INTL（阿里国际版）
+        - cosyvoice: api_key from the tts_custom model config
+        - cosyvoice_intl: API key resolved by the CosyVoice intl runtime
         - minimax:   ASSIST_API_KEY_MINIMAX → MINIMAX_API_KEY fallback
         - minimax_intl: ASSIST_API_KEY_MINIMAX_INTL → MINIMAX_INTL_API_KEY fallback
         - mimo: ASSIST_API_KEY_MIMO
