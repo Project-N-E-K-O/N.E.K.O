@@ -51,6 +51,13 @@ def test_mimo_tts_route_exposes_native_voice_catalog(core_config):
 
 
 @pytest.mark.unit
+def test_mimo_assist_api_takes_priority_over_tts_provider_for_voice_catalog():
+    cm = _CM({"CORE_API_TYPE": "qwen", "ttsProvider": "step", "assistApi": "mimo"})
+
+    assert get_active_realtime_native_provider_for_ui(cm) == "mimo"
+
+
+@pytest.mark.unit
 def test_mimo_tts_route_makes_builtin_voices_saveable():
     cm = _CM({"CORE_API_TYPE": "qwen", "ttsProvider": "mimo"})
 

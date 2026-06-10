@@ -332,15 +332,15 @@ def _read_tts_native_provider_for_ui(cm: "ConfigManager") -> str | None:
     except Exception:
         core_config = {}
 
+    assist_api = str(core_config.get('assistApi') or '').strip().lower()
+    if assist_api == 'mimo' and assist_api in _PROVIDERS:
+        return assist_api
+
     tts_provider = str(
         core_config.get('TTS_PROVIDER') or core_config.get('ttsProvider') or ''
     ).strip().lower()
     if tts_provider in _PROVIDERS:
         return tts_provider
-
-    assist_api = str(core_config.get('assistApi') or '').strip().lower()
-    if assist_api == 'mimo' and assist_api in _PROVIDERS:
-        return assist_api
 
     return None
 
