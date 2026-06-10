@@ -1334,17 +1334,19 @@ window.Jukebox = {
         return { x: x / length, y: y / length };
       };
 
-      const entry = normalize(mouseX - centerX, mouseY - centerY, 1, 0);
+      const escape = normalize(centerX - mouseX, centerY - mouseY, -1, 0);
       // Bias the curved path toward the early ".." area in the final warning text.
       const promptTargetX = promptRect.left + promptRect.width * 0.28;
       const promptTargetY = promptRect.top + promptRect.height * 0.48;
       const towardPrompt = normalize(promptTargetX - centerX, promptTargetY - centerY, 0, -1);
       const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
-      const controlX = entry.x * 116;
-      const controlY = entry.y * 54;
-      const endX = clamp(entry.x * 96 + towardPrompt.x * 54, -150, 150);
-      const endY = clamp(entry.y * 36 + towardPrompt.y * 70, -92, 42);
+      const controlX = escape.x * 116;
+      const controlY = escape.y * 54;
+      const endX = clamp(escape.x * 96 + towardPrompt.x * 54, -150, 150);
+      const endY = clamp(escape.y * 36 + towardPrompt.y * 70, -92, 42);
+      confirmBtn.dataset.escapeInitialX = String(Math.round(controlX));
+      confirmBtn.dataset.escapeInitialY = String(Math.round(controlY));
       confirmBtn.dataset.escapeX = String(Math.round(endX));
       confirmBtn.dataset.escapeY = String(Math.round(endY));
 

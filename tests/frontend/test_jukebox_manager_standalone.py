@@ -291,8 +291,8 @@ def test_jukebox_manager_clear_visible_uses_second_confirm_and_escape_once(mock_
     mock_page.wait_for_function(
         "() => !document.querySelector('.sam-danger-modal-confirm').classList.contains('sam-danger-confirm-escaping')"
     )
-    right_escape_x = int(confirm_btn.get_attribute("data-escape-x") or "0")
-    assert right_escape_x > 0
+    right_initial_x = int(confirm_btn.get_attribute("data-escape-initial-x") or "0")
+    assert right_initial_x < 0
 
     mock_page.evaluate(
         """
@@ -319,7 +319,7 @@ def test_jukebox_manager_clear_visible_uses_second_confirm_and_escape_once(mock_
     mock_page.wait_for_function(
         "() => !document.querySelector('.sam-danger-modal-confirm').classList.contains('sam-danger-confirm-escaping')"
     )
-    assert int(confirm_btn.get_attribute("data-escape-x") or "0") < 0
+    assert int(confirm_btn.get_attribute("data-escape-initial-x") or "0") > 0
 
     mock_page.evaluate(
         """
@@ -333,7 +333,7 @@ def test_jukebox_manager_clear_visible_uses_second_confirm_and_escape_once(mock_
         }
         """
     )
-    assert int(confirm_btn.get_attribute("data-escape-x") or "0") < 0
+    assert int(confirm_btn.get_attribute("data-escape-initial-x") or "0") > 0
     assert "sam-danger-confirm-escaped" in (confirm_btn.get_attribute("class") or "")
 
     confirm_btn.click()
