@@ -212,11 +212,18 @@ def test_get_tts_worker_routes_mimo_before_core_native_voice(monkeypatch):
             return "mimo-key-over-native"
 
     monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM())
+    monkeypatch.setattr(
+        tts_client,
+        "get_native_tts_worker",
+        lambda *args, **kwargs: pytest.fail(
+            "assistApi=mimo should not enter the core native voice branch"
+        ),
+    )
 
     worker, api_key, provider_key = tts_client.get_tts_worker(
         core_api_type="gemini",
         has_custom_voice=False,
-        voice_id="Puck",
+        voice_id="any-native-voice",
     )
 
     assert isinstance(worker, partial)
