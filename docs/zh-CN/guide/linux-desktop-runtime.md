@@ -42,10 +42,11 @@ if [ "${#mains[@]}" -eq 0 ]; then
   echo "N.E.K.O desktop shell (main Electron process) was not found" >&2
   exit 1
 elif [ "${#mains[@]}" -gt 1 ]; then
-  echo "找到多个候选，请确认 N.E.K.O 的 PID 并手动指定：" >&2
+  echo "找到多个候选，请挑一个、手动设 pid=<PID> 后重跑：" >&2
   for p in "${mains[@]}"; do
     printf '  %s  %s\n' "$p" "$(tr '\0' ' ' < "/proc/$p/cmdline")" >&2
   done
+  exit 1
 fi
 pid="${mains[0]}"
 tr '\0' '\n' < "/proc/$pid/environ" | sort | grep -E 'DISPLAY|WAYLAND|GTK_IM|QT_IM|XMODIFIERS|Steam'
