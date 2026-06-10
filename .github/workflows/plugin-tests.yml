@@ -1,0 +1,72 @@
+name: Plugin Tests
+
+# First pytest gate in CI. Scoped to the plugin subsystem on purpose: plugin
+# PRs historically shipped with no test gate at all, which let silent drift
+# accumulate (e.g. #1464's ocr_reader → ocr_window_scanner extraction broke
+# monkeypatch namespaces in 4 tests, #1480's install_source field broke the
+# query-status expectations — none of it surfaced until a manual full run).
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'plugin/**'
+      - '.github/workflows/plugin-tests.yml'
+      # Dependency changes alter the plugin test/runtime environment (e.g.
+      # removing a dev dep plugin/tests needs) — without these a deps-only
+      # PR skips the gate and the breakage surfaces on the next plugin PR.
+      - 'pyproject.toml'
+      - 'uv.lock'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'plugin/**'
+      - '.github/workflows/plugin-tests.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+  workflow_dispatch:
+
+# The test job only needs to read the checked-out source.
+permissions:
+  contents: read
+
+concurrency:
+  group: plugin-tests-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  plugin-pytest:
+    name: Plugin pytest (Windows)
+    # windows-latest, not ubuntu: galgame_plugin / study_companion tests
+    # exercise win32 code paths (GetForegroundWindow, window inventory, DPI)
+    # that FAIL — not skip — on Linux where ctypes.windll does not exist.
+    # Windows is also the product's primary desktop platform, so this is the
+    # environment the suite was written against. Native-extra cohorts that
+    # are genuinely optional (dxcam etc.) self-skip when not installed.
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        # Plain `uv sync` = main deps + dev group (pytest, pytest-asyncio,
+        # hypothesis). The galgame group (rapidocr + cv2, ~130 MB) is NOT
+        # installed — the plugin degrades its OCR backend gracefully and the
+        # affected tests mock or skip that cohort.
+        run: uv sync
+
+      - name: Run plugin test suite
+        # Explicit path (not bare `pytest` under plugin/tests): passing the
+        # directory overrides the testpaths whitelist in plugin/tests/
+        # pytest.ini, so unit/plugins — where the silent drift lived — is
+        # collected too.
+        run: uv run pytest plugin/tests -q
