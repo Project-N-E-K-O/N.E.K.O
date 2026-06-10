@@ -142,3 +142,96 @@ def test_assist_free_disables_assist_api_key_input(mock_page: Page, running_serv
     assert mock_page.evaluate(
         "isFreeVersionText(getRealKey(document.getElementById('assistApiKeyInput')))"
     ) is False
+
+
+@pytest.mark.frontend
+def test_custom_api_close_does_not_trigger_assist_provider_fallback(mock_page: Page, running_server: str):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    url = f"{running_server}/api_key"
+    mock_page.goto(url)
+
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=10000)
+    mock_page.wait_for_selector("#coreApiSelect option[value='qwen']", state="attached", timeout=10000)
+    mock_page.wait_for_selector("#assistApiSelect option[value='free']", state="attached", timeout=10000)
+    mock_page.wait_for_selector("#assistApiSelect option[value='qwen']", state="attached", timeout=10000)
+
+    alternate_assist = mock_page.evaluate("""
+        () => {
+            const options = Array.from(document.querySelectorAll('#assistApiSelect option'));
+            const option = options.find(opt => opt.value && opt.value !== 'free' && opt.value !== 'qwen' && !opt.disabled);
+            return option ? option.value : '';
+        }
+    """)
+    if not alternate_assist:
+        pytest.skip("No alternate non-free assist provider is available")
+
+    result = mock_page.evaluate("""
+        (alternateAssist) => {
+            const core = document.getElementById('coreApiSelect');
+            const assist = document.getElementById('assistApiSelect');
+            const enableCustomApi = document.getElementById('enableCustomApi');
+
+            core.value = 'qwen';
+            assist.value = alternateAssist;
+            updateAssistApiRecommendation({ preserveAssistProvider: true });
+
+            enableCustomApi.checked = true;
+            toggleCustomApi();
+            const afterOpen = assist.value;
+
+            assist.value = 'free';
+            enableCustomApi.checked = false;
+            toggleCustomApi();
+            const afterClose = assist.value;
+
+            assist.value = 'free';
+            updateAssistApiRecommendation();
+            const intentionalFallback = assist.value;
+
+            return { afterOpen, afterClose, intentionalFallback };
+        }
+    """, alternate_assist)
+
+    assert result["afterOpen"] == alternate_assist
+    assert result["afterClose"] == alternate_assist
+    assert result["intentionalFallback"] == "qwen"
+
+
+@pytest.mark.frontend
+def test_custom_api_close_does_not_preserve_ineligible_free_assist(mock_page: Page, running_server: str):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    url = f"{running_server}/api_key"
+    mock_page.goto(url)
+
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=10000)
+    mock_page.wait_for_selector("#coreApiSelect option[value='qwen']", state="attached", timeout=10000)
+    mock_page.wait_for_selector("#assistApiSelect option[value='free']", state="attached", timeout=10000)
+    mock_page.wait_for_selector("#assistApiSelect option[value='qwen']", state="attached", timeout=10000)
+
+    result = mock_page.evaluate("""
+        () => {
+            const core = document.getElementById('coreApiSelect');
+            const assist = document.getElementById('assistApiSelect');
+            const enableCustomApi = document.getElementById('enableCustomApi');
+
+            core.value = 'qwen';
+            assist.value = 'free';
+            enableCustomApi.checked = true;
+            toggleCustomApi();
+            const afterOpen = assist.value;
+
+            enableCustomApi.checked = false;
+            toggleCustomApi();
+            const afterClose = assist.value;
+
+            assist.value = 'free';
+            updateAssistApiRecommendation();
+            const intentionalFallback = assist.value;
+
+            return { afterOpen, afterClose, intentionalFallback };
+        }
+    """)
+
+    assert result["afterOpen"] == "free"
+    assert result["afterClose"] == "qwen"
+    assert result["intentionalFallback"] == "qwen"

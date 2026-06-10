@@ -19,6 +19,7 @@ import CompactExportHistoryPanel, {
   type CompactExportActionRequest,
   type CompactExportPreviewResult,
 } from './CompactExportHistoryPanel';
+import { getChatEmptyStateFallback } from './chat-copy';
 import { i18n } from './i18n';
 import {
   type ChatMessage,
@@ -1936,7 +1937,7 @@ function CompactChatApp({
           : compactSpeechPreservedText || compactMessagePreview?.fullText || ''
       )
       : compactMessagePreview?.text
-      || i18n('chat.emptyState', 'Chat content will appear here.');
+      || i18n('chat.emptyState', getChatEmptyStateFallback());
   const compactPreviewIsStreaming = compactSpeechModeActive;
   const compactPreviewAllowsScroll = compactPreviewIsStreaming || !!compactMessagePreview?.isGuide;
   const compactPreviewSpeechDuration = useMemo(() => {
@@ -2610,6 +2611,13 @@ function CompactChatApp({
     const gap = 16;
     let frameId: number | null = null;
 
+    const syncChoiceLayerSurfaceVars = (shellRect: DOMRect, layerNode: HTMLElement) => {
+      layerNode.style.setProperty('--compact-choice-surface-left', `${shellRect.left}px`);
+      layerNode.style.setProperty('--compact-choice-surface-top', `${shellRect.top}px`);
+      layerNode.style.setProperty('--compact-choice-surface-width', `${Math.max(1, shellRect.width)}px`);
+      layerNode.style.setProperty('--compact-choice-surface-height', `${Math.max(1, shellRect.height)}px`);
+    };
+
     const getDesktopPlacementSpace = (shellRect: DOMRect) => {
       const layout = (window as typeof window & {
         __nekoDesktopCompactLayout?: DesktopCompactChoicePlacementLayout | null;
@@ -2628,11 +2636,15 @@ function CompactChatApp({
         return null;
       }
 
-      const surfaceTop = Number(layout?.surface?.top);
-      const surfaceHeight = Number(layout?.surface?.height);
-      const surfaceScreenTop = windowY + (Number.isFinite(surfaceTop) ? surfaceTop : shellRect.top);
+      const layoutSurfaceTop = Number(layout?.surface?.top);
+      const layoutSurfaceHeight = Number(layout?.surface?.height);
+      const measuredTop = Number.isFinite(shellRect.top) ? shellRect.top : layoutSurfaceTop;
+      const measuredHeight = Number.isFinite(shellRect.height) && shellRect.height > 0
+        ? shellRect.height
+        : layoutSurfaceHeight;
+      const surfaceScreenTop = windowY + (Number.isFinite(measuredTop) ? measuredTop : 0);
       const surfaceScreenBottom = surfaceScreenTop
-        + (Number.isFinite(surfaceHeight) && surfaceHeight > 0 ? surfaceHeight : shellRect.height);
+        + (Number.isFinite(measuredHeight) && measuredHeight > 0 ? measuredHeight : Math.max(1, shellRect.height));
       const workAreaBottom = workAreaY + workAreaHeight;
       return {
         availableAbove: Math.max(0, surfaceScreenTop - workAreaY),
@@ -2648,11 +2660,12 @@ function CompactChatApp({
       const desktopForcedPlacement = ((window as typeof window & {
         __nekoDesktopCompactLayout?: DesktopCompactChoicePlacementLayout | null;
       }).__nekoDesktopCompactLayout?.compactChoicePlacement);
+      const shellRect = nextShellNode.getBoundingClientRect();
+      syncChoiceLayerSurfaceVars(shellRect, nextLayerNode);
       if (desktopForcedPlacement === 'above' || desktopForcedPlacement === 'below') {
         setCompactChoiceLayerPlacement(current => (current === desktopForcedPlacement ? current : desktopForcedPlacement));
         return;
       }
-      const shellRect = nextShellNode.getBoundingClientRect();
       const layerRect = nextLayerNode.getBoundingClientRect();
       const layerHeight = Math.max(layerRect.height, nextLayerNode.scrollHeight);
       const viewportHeight = window.visualViewport?.height ?? window.innerHeight;

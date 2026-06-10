@@ -687,30 +687,8 @@ async def update_core_config(request: Request):
         if not data:
             return {"success": False, "error": "无效的数据"}
         
-        # 检查是否启用了自定义API
         enable_custom_api = data.get('enableCustomApi', False)
-        
-        # 如果启用了自定义API，不需要强制检查核心API key
-        if not enable_custom_api:
-            # 检查是否为免费版配置
-            is_free_version = data.get('coreApi') == 'free' or data.get('assistApi') == 'free'
-            
-            if 'coreApiKey' not in data:
-                return {"success": False, "error": "缺少coreApiKey字段"}
-            
-            api_key = data['coreApiKey']
-            if api_key is None:
-                return {"success": False, "error": "API Key不能为null"}
-            
-            if not isinstance(api_key, str):
-                return {"success": False, "error": "API Key必须是字符串类型"}
-            
-            api_key = api_key.strip()
-            
-            # 免费版允许使用 'free-access' 作为API key，不进行空值检查
-            if not is_free_version and not api_key:
-                return {"success": False, "error": "API Key不能为空"}
-        
+
         # 保存到core_config.json
         from utils.config_manager import get_config_manager
         config_manager = get_config_manager()
@@ -724,6 +702,31 @@ async def update_core_config(request: Request):
         except Exception:
             existing_core_cfg = {}
         core_cfg = dict(existing_core_cfg) if isinstance(existing_core_cfg, dict) else {}
+
+        def _incoming_provider(field, error_message):
+            if field not in data:
+                return None
+            provider = data.get(field)
+            if provider is not None and not isinstance(provider, str):
+                raise TypeError(error_message)
+            provider = (provider or "").strip()
+            return provider or None
+
+        def _stored_provider(field):
+            provider = core_cfg.get(field)
+            if not isinstance(provider, str):
+                return None
+            provider = provider.strip()
+            return provider or None
+
+        try:
+            incoming_core_api = _incoming_provider('coreApi', 'coreApi must be a string')
+            incoming_assist_api = _incoming_provider('assistApi', 'assistApi must be a string')
+        except TypeError as exc:
+            return {"success": False, "error": str(exc)}
+
+        effective_core_api = incoming_core_api or _stored_provider('coreApi')
+        core_uses_free_provider = effective_core_api == 'free'
         
         def _is_masked_secret(value) -> bool:
             if not isinstance(value, str):
@@ -752,16 +755,27 @@ async def update_core_config(request: Request):
                     core_cfg['coreApiKey'] = api_key
         else:
             # 未启用自定义API时，必须设置coreApiKey
+            if 'coreApiKey' not in data and not core_uses_free_provider:
+                return {"success": False, "error": "缺少coreApiKey字段"}
             try:
-                api_key = _normalize_core_api_key(data.get('coreApiKey', ''))
+                api_key = (
+                    _normalize_core_api_key(data['coreApiKey'])
+                    if 'coreApiKey' in data
+                    else None
+                )
             except (TypeError, ValueError) as exc:
                 return {"success": False, "error": str(exc)}
+            if not core_uses_free_provider and not api_key:
+                return {"success": False, "error": "API Key不能为空"}
             if api_key is not None:
                 core_cfg['coreApiKey'] = api_key
-        if 'coreApi' in data:
-            core_cfg['coreApi'] = data['coreApi']
-        if 'assistApi' in data:
-            core_cfg['assistApi'] = data['assistApi']
+        # coreApi / assistApi 为空串 = 前端在配置尚未加载完成（下拉被清空）时提交。
+        # 绝不能用空值覆盖已存的有效 provider——否则重新加载时空值会被兜底成别的服务商，
+        # 把免费版用户悄悄切走。仅在非空时写入；空值保留 existing_core_cfg 里的旧值。
+        if incoming_core_api:
+            core_cfg['coreApi'] = incoming_core_api
+        if incoming_assist_api:
+            core_cfg['assistApi'] = incoming_assist_api
         if 'resolvedProviderUrls' in data:
             resolved_urls = data.get('resolvedProviderUrls')
             if not isinstance(resolved_urls, dict):

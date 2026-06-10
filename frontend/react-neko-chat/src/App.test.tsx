@@ -7,12 +7,13 @@ import {
   computeCompactHistoryExitDelay,
 } from './CompactExportHistoryPanel';
 import MessageList from './MessageList';
+import { getChatEmptyStateFallback } from './chat-copy';
 import { parseChatMessage, type CompactChatState } from './message-schema';
 
 describe('App', () => {
   const COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY = 'neko.reactChatWindow.compactExportHistoryOpen';
   const COMPACT_INPUT_TOOL_WHEEL_INDEX_STORAGE_KEY = 'neko.reactChatWindow.compactInputToolWheelIndex';
-
+  const DEFAULT_CHAT_EMPTY_STATE_FALLBACK = getChatEmptyStateFallback('en');
   beforeEach(() => {
     window.localStorage.removeItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
     window.localStorage.removeItem(COMPACT_INPUT_TOOL_WHEEL_INDEX_STORAGE_KEY);
@@ -45,6 +46,15 @@ describe('App', () => {
     fireEvent.click(exportButton!);
     return exportButton!;
   };
+
+  it('selects locale-aware chat empty state fallbacks', () => {
+    expect(getChatEmptyStateFallback('zh-CN')).toBe('现在开始跟我聊天吧！');
+    expect(getChatEmptyStateFallback('zh-TW')).toBe('現在開始跟我聊天吧！');
+    expect(getChatEmptyStateFallback('zh-HK')).toBe('現在開始跟我聊天吧！');
+    expect(getChatEmptyStateFallback('zh-MO')).toBe('現在開始跟我聊天吧！');
+    expect(getChatEmptyStateFallback('zh-Hant')).toBe('現在開始跟我聊天吧！');
+    expect(getChatEmptyStateFallback('en-US')).toBe('Start chatting with me now!');
+  });
 
   const mockHoverCapableMatchMedia = (hoverCapable = true) => {
     window.matchMedia = vi.fn().mockImplementation((query: string) => ({
@@ -1339,6 +1349,85 @@ describe('App', () => {
     }
   });
 
+  it('positions compact galgame options after pending screenshot attachments', async () => {
+    const originalInnerHeight = window.innerHeight;
+    Object.defineProperty(window, 'innerHeight', {
+      configurable: true,
+      value: 900,
+    });
+
+    try {
+      const { container } = render(
+        <App
+          chatSurfaceMode="compact"
+          composerAttachments={[
+            { id: 'screenshot-1', url: 'data:image/png;base64,aaa', alt: 'Screenshot 1' },
+          ]}
+          galgameModeEnabled
+          galgameOptions={[
+            { label: 'A', text: 'Option A' },
+            { label: 'B', text: 'Option B' },
+          ]}
+        />,
+      );
+
+      const shell = container.querySelector('.compact-chat-surface-shell');
+      const choiceLayer = document.body.querySelector<HTMLElement>('body > .compact-chat-choice-anchor');
+      expect(shell).not.toBeNull();
+      expect(choiceLayer).not.toBeNull();
+
+      Object.defineProperty(shell!, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({
+          x: 0,
+          y: 100,
+          top: 100,
+          left: 24,
+          right: 454,
+          bottom: 248,
+          width: 430,
+          height: 148,
+          toJSON: () => ({}),
+        }),
+      });
+      Object.defineProperty(choiceLayer!, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({
+          x: 0,
+          y: 0,
+          top: 0,
+          left: 0,
+          right: 420,
+          bottom: 112,
+          width: 420,
+          height: 112,
+          toJSON: () => ({}),
+        }),
+      });
+      Object.defineProperty(choiceLayer!, 'scrollHeight', {
+        configurable: true,
+        value: 112,
+      });
+
+      fireEvent(window, new Event('resize'));
+
+      await waitFor(() => {
+        expect(choiceLayer).toHaveAttribute('data-compact-choice-placement', 'below');
+        expect(choiceLayer).toHaveStyle({
+          '--compact-choice-surface-top': '100px',
+          '--compact-choice-surface-left': '24px',
+          '--compact-choice-surface-width': '430px',
+          '--compact-choice-surface-height': '148px',
+        });
+      });
+    } finally {
+      Object.defineProperty(window, 'innerHeight', {
+        configurable: true,
+        value: originalInnerHeight,
+      });
+    }
+  });
+
   it('places compact galgame options above the surface when the lower viewport space is insufficient', async () => {
     const originalInnerHeight = window.innerHeight;
     Object.defineProperty(window, 'innerHeight', {
@@ -1633,6 +1722,61 @@ describe('App', () => {
     }
   });
 
+  it('updates compact choice surface vars before applying forced desktop placement', async () => {
+    const desktopWindow = window as typeof window & { __nekoDesktopCompactLayout?: unknown };
+    const originalDesktopLayout = desktopWindow.__nekoDesktopCompactLayout;
+    desktopWindow.__nekoDesktopCompactLayout = {
+      compactChoicePlacement: 'above',
+    };
+
+    try {
+      const { container } = render(
+        <App
+          chatSurfaceMode="compact"
+          galgameModeEnabled
+          galgameOptions={[
+            { label: 'A', text: 'Option A' },
+            { label: 'B', text: 'Option B' },
+          ]}
+        />,
+      );
+
+      const shell = container.querySelector('.compact-chat-surface-shell');
+      const choiceLayer = document.body.querySelector<HTMLElement>('body > .compact-chat-choice-anchor');
+      expect(shell).not.toBeNull();
+      expect(choiceLayer).not.toBeNull();
+
+      Object.defineProperty(shell!, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({
+          x: 0,
+          y: 0,
+          top: 72,
+          left: 18,
+          right: 448,
+          bottom: 154,
+          width: 430,
+          height: 82,
+          toJSON: () => ({}),
+        }),
+      });
+
+      fireEvent(window, new Event('resize'));
+
+      await waitFor(() => {
+        expect(choiceLayer).toHaveAttribute('data-compact-choice-placement', 'above');
+        expect(choiceLayer).toHaveStyle({
+          '--compact-choice-surface-top': '72px',
+          '--compact-choice-surface-left': '18px',
+          '--compact-choice-surface-width': '430px',
+          '--compact-choice-surface-height': '82px',
+        });
+      });
+    } finally {
+      desktopWindow.__nekoDesktopCompactLayout = originalDesktopLayout;
+    }
+  });
+
   it('repositions compact galgame options when the compact surface moves after opening', async () => {
     const originalInnerHeight = window.innerHeight;
     Object.defineProperty(window, 'innerHeight', {
@@ -1876,7 +2020,7 @@ describe('App', () => {
       <App chatSurfaceMode="compact" composerHidden messages={[assistantMessage, userMessage]} />,
     );
 
-    expect(container.querySelector('.compact-chat-capsule-button')).toHaveTextContent('Chat content will appear here.');
+    expect(container.querySelector('.compact-chat-capsule-button')).toHaveTextContent(DEFAULT_CHAT_EMPTY_STATE_FALLBACK);
     expect(container.querySelector('.compact-chat-capsule-button')).not.toHaveTextContent('先看我这边的引导内容');
     expect(container.querySelector('.compact-chat-capsule-button')).not.toHaveTextContent('这是我刚刚发出的内容');
   });
@@ -3162,7 +3306,7 @@ describe('App', () => {
 
     const preview = container.querySelector('.compact-chat-capsule-text');
     expect(preview).toHaveAttribute('data-compact-preview-streaming', 'false');
-    expect(preview).toHaveTextContent('Chat content will appear here.');
+    expect(preview).toHaveTextContent(DEFAULT_CHAT_EMPTY_STATE_FALLBACK);
     expect(preview).not.toHaveTextContent(settledText.slice(0, 20));
   });
 
@@ -3387,7 +3531,7 @@ describe('App', () => {
     );
 
     const capsule = container.querySelector('.compact-chat-capsule-button');
-    expect(capsule).toHaveTextContent('Chat content will appear here.');
+    expect(capsule).toHaveTextContent(DEFAULT_CHAT_EMPTY_STATE_FALLBACK);
     fireEvent.click(capsule as Element);
 
     expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'default');

@@ -374,6 +374,49 @@ class TestAssistFollowsCore:
 
 
 # ---------------------------------------------------------------------------
+# 3b. 默认兜底：coreApi 为空/缺失时保持历史默认 qwen
+# ---------------------------------------------------------------------------
+class TestEmptyCoreApiFallsBackToDefaultQwen:
+
+    @pytest.mark.unit
+    def test_empty_core_api_falls_back_to_qwen(self, config_manager):
+        """coreApi/assistApi='' → 兜底到默认 qwen。"""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'free-access',
+            'coreApi': '',
+            'assistApi': '',
+        })
+        cfg = config_manager.get_core_config()
+
+        assert cfg['CORE_API_TYPE'] == 'qwen'
+        assert cfg['assistApi'] == 'qwen'
+        assert 'dashscope.aliyuncs.com' in (cfg.get('CORE_URL') or '')
+
+    @pytest.mark.unit
+    def test_missing_core_api_keys_fall_back_to_qwen(self, config_manager):
+        """core_config.json 缺少 coreApi/assistApi 字段 → 兜底 qwen。"""
+        _write_core_config(config_manager, {'coreApiKey': 'free-access'})
+        cfg = config_manager.get_core_config()
+
+        assert cfg['CORE_API_TYPE'] == 'qwen'
+        assert cfg['assistApi'] == 'qwen'
+        assert 'dashscope.aliyuncs.com' in (cfg.get('CORE_URL') or '')
+
+    @pytest.mark.unit
+    def test_explicit_paid_provider_still_honored(self, config_manager):
+        """用户显式选了 qwen 必须被尊重。"""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-real-qwen',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+        })
+        cfg = config_manager.get_core_config()
+
+        assert cfg['CORE_API_TYPE'] == 'qwen'
+        assert 'dashscope.aliyuncs.com' in (cfg.get('CORE_URL') or '')
+
+
+# ---------------------------------------------------------------------------
 # 4. MiniMax key: no fallback to CORE_API_KEY
 # ---------------------------------------------------------------------------
 class TestMinimaxKeyIsolation:

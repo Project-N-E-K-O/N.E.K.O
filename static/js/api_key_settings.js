@@ -20,6 +20,7 @@ let _resolvedProviderUrls = {};
 let _coreApiKeyInputDirty = false;
 // 保存/检测期间锁住设置页，避免用户中途关闭或重复操作
 let _apiSaveInProgress = false;
+let _lastEligibleAssistProvider = '';
 // 本页已提醒过的阿里美国 API URL，避免同一轮检测重复弹窗。
 const _aliyunUsApiWarningShownKeys = new Set();
 
@@ -1265,6 +1266,7 @@ async function loadCurrentApiKey() {
                     const optionExists = Array.from(assistApiSelect.options).some(opt => opt.value === data.assistApi);
                     if (optionExists) {
                         assistApiSelect.value = data.assistApi;
+                        rememberEligibleAssistProvider(data.assistApi);
                         syncProviderSelectDropdowns(assistApiSelect);
                     }
                 } else {
@@ -1689,6 +1691,12 @@ function updateAssistApiKeyInputAvailability() {
     }
 }
 
+function rememberEligibleAssistProvider(providerKey) {
+    if (providerKey && providerKey !== 'free') {
+        _lastEligibleAssistProvider = providerKey;
+    }
+}
+
 // 切换自定义API启用状态
 function toggleCustomApi(skipAutoFill) {
     const enableCustomApi = document.getElementById('enableCustomApi');
@@ -1748,7 +1756,7 @@ function toggleCustomApi(skipAutoFill) {
     if (!isCustomEnabled && !skipAutoFill) {
         autoFillCoreApiKey(true);
         autoFillAssistApiKey(true);
-        updateAssistApiRecommendation();
+        updateAssistApiRecommendation({ preserveAssistProvider: true });
     }
 
     syncProviderSelectDropdowns();
@@ -1901,6 +1909,15 @@ async function save_button_down(e) {
         if (!enableCustomApi && coreApi === 'free') {
             assistApi = 'free';
         }
+    }
+
+    // 防御：coreApi 为空 = 服务商下拉尚未加载完成（loadCurrentApiKey 起手会先把下拉
+    // 清空成 ''，再 await 后端数据异步回填）。在这个窗口内点保存（尤其是开着自定义API
+    // 绕过了下方的空 Key 校验时）会把空 coreApi 写盘，后端解析时会把空值兜底成别的
+    // 服务商，导致免费版被悄悄切走、key 失效。一律中止保存并提示稍候重试，绝不写空 provider。
+    if (!coreApi) {
+        showStatus(window.t ? window.t('api.configNotReady') : '配置尚未加载完成，请稍候重试', 'error');
+        return;
     }
 
     // 处理API Key（优先读取真实 key）
@@ -2294,12 +2311,13 @@ function isFreeVersionText(value) {
 }
 
 // 根据核心API选择更新辅助API的提示和建议
-function updateAssistApiRecommendation() {
+function updateAssistApiRecommendation(options = {}) {
     const coreApiSelect = document.getElementById('coreApiSelect');
     const assistApiSelect = document.getElementById('assistApiSelect');
 
     if (!coreApiSelect || !assistApiSelect) return;
 
+    const preserveAssistProvider = options && options.preserveAssistProvider === true;
     const selectedCoreApi = coreApiSelect.value;
 
     // 控制API Key输入框和免费版提示
@@ -2361,14 +2379,22 @@ function updateAssistApiRecommendation() {
         }
         // If assist is still stuck on 'free' (now disabled), switch to a valid provider
         if (assistApiSelect.value === 'free') {
-            // Prefer qwen as default, otherwise pick first non-free enabled option
-            const qwenOpt = assistApiSelect.querySelector('option[value="qwen"]');
-            if (qwenOpt && !qwenOpt.disabled) {
-                assistApiSelect.value = 'qwen';
+            const rememberedOpt = preserveAssistProvider && _lastEligibleAssistProvider
+                ? assistApiSelect.querySelector(`option[value="${_lastEligibleAssistProvider}"]`)
+                : null;
+            if (rememberedOpt && !rememberedOpt.disabled) {
+                assistApiSelect.value = _lastEligibleAssistProvider;
             } else {
-                const validOpt = Array.from(assistApiSelect.options).find(o => !o.disabled && o.value !== 'free');
-                if (validOpt) assistApiSelect.value = validOpt.value;
+                // Prefer qwen as default, otherwise pick first non-free enabled option
+                const qwenOpt = assistApiSelect.querySelector('option[value="qwen"]');
+                if (qwenOpt && !qwenOpt.disabled) {
+                    assistApiSelect.value = 'qwen';
+                } else {
+                    const validOpt = Array.from(assistApiSelect.options).find(o => !o.disabled && o.value !== 'free');
+                    if (validOpt) assistApiSelect.value = validOpt.value;
+                }
             }
+            rememberEligibleAssistProvider(assistApiSelect.value);
             autoFillAssistApiKey(true);
             // Directly recompute follow_assist slots (avoid redundant handler call)
             MODEL_TYPES.forEach(mt => {
@@ -2377,6 +2403,8 @@ function updateAssistApiRecommendation() {
                     onCustomModelProviderChange(mt);
                 }
             });
+        } else {
+            rememberEligibleAssistProvider(assistApiSelect.value);
         }
     }
 
@@ -2578,7 +2606,7 @@ document.addEventListener('DOMContentLoaded', function () {
     // 根据自定义API启用状态设置初始折叠状态
     const enableCustomApi = document.getElementById('enableCustomApi');
     if (enableCustomApi) {
-        toggleCustomApi();
+        toggleCustomApi(true);
     }
 });
 
@@ -4010,7 +4038,7 @@ async function initializePage() {
             }
             updateAssistApiKeyInputAvailability();
 
-            updateAssistApiRecommendation();
+            updateAssistApiRecommendation({ preserveAssistProvider: true });
             autoFillCoreApiKey(true);
             // 不再调用 autoFillAssistApiKey(true)，因为 loadCurrentApiKey()
             // 已从后端数据直接设置辅助API Key，此处再次从管理簿读取会覆盖正确值
@@ -4048,7 +4076,7 @@ async function initializePage() {
             });
         }
 
-        updateAssistApiRecommendation();
+        updateAssistApiRecommendation({ preserveAssistProvider: true });
 
         // 监听语言切换事件，更新下拉选项（保留用户未保存的输入）
         window.addEventListener('localechange', async () => {
