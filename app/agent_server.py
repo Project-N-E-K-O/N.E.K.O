@@ -5506,8 +5506,8 @@ async def admin_control(payload: Dict[str, Any]):
                           "end_time": _now_iso(), "params": info.get("params", {}),
                           "error": "Cancelled by user"},
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("[Agent] end_all: emit task_update(cancelled) failed: task_id=%s error=%s", tid, exc)
 
         # Cancel any in-flight background analyzer/dispatch tasks. Include the
         # per-task dispatch handles explicitly so a handle that fell out of
