@@ -326,6 +326,25 @@ def _read_realtime_base_url(cm: "ConfigManager") -> str:
     return base_url
 
 
+def _read_tts_native_provider_for_ui(cm: "ConfigManager") -> str | None:
+    try:
+        core_config = cm.get_core_config() or {}
+    except Exception:
+        core_config = {}
+
+    tts_provider = str(
+        core_config.get('TTS_PROVIDER') or core_config.get('ttsProvider') or ''
+    ).strip().lower()
+    if tts_provider in _PROVIDERS:
+        return tts_provider
+
+    assist_api = str(core_config.get('assistApi') or '').strip().lower()
+    if assist_api == 'mimo' and assist_api in _PROVIDERS:
+        return assist_api
+
+    return None
+
+
 def get_active_realtime_native_provider(cm: "ConfigManager") -> str | None:
     """返回当前 realtime API 注册的 native voice provider key（route-agnostic）。
 
@@ -347,7 +366,11 @@ def is_saveable_native_voice(cm: "ConfigManager", voice_id: str | None) -> bool:
     """
     api_type = _read_realtime_api_type(cm)
     base_url = _read_realtime_base_url(cm)
-    candidates = {api_type, _effective_native_provider_key(api_type, base_url)}
+    candidates = {
+        api_type,
+        _effective_native_provider_key(api_type, base_url),
+        _read_tts_native_provider_for_ui(cm),
+    }
     return any(is_native_voice(voice_id, key) for key in candidates if key)
 
 
@@ -358,6 +381,10 @@ def get_active_realtime_native_provider_for_ui(cm: "ConfigManager") -> str | Non
     *.lanlan.app）展示 'free_intl'（Gemini 全量 + yui），国内免费展示 'free'
     （阶跃原生）。UI 只暴露该线路实际可用的音色目录。
     """
+    tts_provider = _read_tts_native_provider_for_ui(cm)
+    if tts_provider:
+        return tts_provider
+
     api_type = _read_realtime_api_type(cm)
     base_url = _read_realtime_base_url(cm)
     key = _effective_native_provider_key(api_type, base_url)
