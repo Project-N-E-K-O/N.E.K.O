@@ -562,12 +562,25 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
         '.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] '
         '.compact-input-tool-toggle:hover'
     ) in styles
+    assert "--compact-chat-minimize-ball-size: 41px;" in styles
+    assert "--compact-chat-minimize-ball-inset: 2px;" in styles
+    assert "--compact-chat-minimize-ball-gap: 8px;" in styles
+    assert "--compact-chat-minimize-ball-slot: calc(" in styles
+    fixed_ball_block = css_block(
+        styles,
+        ".compact-chat-surface-frame .compact-chat-minimize-ball {",
+        ".compact-chat-capsule-button",
+    )
+    assert "position: absolute;" in fixed_ball_block
+    assert "left: var(--compact-chat-minimize-ball-inset);" in fixed_ball_block
+    assert "top: 50%;" in fixed_ball_block
+    assert "transform: translateY(-50%);" in fixed_ball_block
     assert "width: auto;" in compact_input_block
     assert "min-width: 0;" in compact_input_block
     assert "padding: 10px 8px 10px 0;" in compact_input_block
-    assert 'padding: 5px 62px 5px 2px;' in styles
+    assert 'padding: 5px 62px 5px var(--compact-chat-minimize-ball-slot);' in styles
     assert '.compact-chat-surface-frame[data-compact-chat-state="input"]' in compact_mobile_block
-    assert 'padding: 5px 62px 5px 18px;' in compact_mobile_block
+    assert 'padding: 5px 62px 5px var(--compact-chat-minimize-ball-slot);' in compact_mobile_block
     assert 'padding: 5px 8px 5px 18px;' not in compact_mobile_block
     assert '.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"]:not([data-compact-chat-state="input"])' in styles
     assert 'padding-right: 62px;' in styles
@@ -783,6 +796,72 @@ def test_moved_drag_suppresses_trailing_release_click():
         1,
     )[1]
     assert "document.addEventListener('click', consumeDragReleaseClickGuard, true);" in listeners_block
+
+
+def test_compact_minimize_targets_inline_yarn_ball_button_center():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    assert "var compactMinimizeBallTargetAnchor = null;" in script
+    assert "function getCompactMinimizeBallTargetRect()" in script
+    assert "root.querySelector('.compact-chat-minimize-ball')" in script
+    assert "width: MINIMIZED_SIZE" in script
+    assert "height: MINIMIZED_SIZE" in script
+    assert "left: buttonRect.left + buttonRect.width / 2 - MINIMIZED_SIZE / 2" in script
+    assert "top: buttonRect.top + buttonRect.height / 2 - MINIMIZED_SIZE / 2" in script
+    target_rect_block = script.split("function getCompactMinimizeBallTargetRect()", 1)[1].split(
+        "function rememberCompactMinimizeBallTargetAnchor()",
+        1,
+    )[0]
+    assert "document.querySelector('.compact-chat-minimize-ball')" not in target_rect_block
+    assert "function getMinimizedTargetFromCompactAnchor(anchorRect)" in script
+    assert "Math.round(anchorRect.left)" in script
+    assert "Math.round(anchorRect.top)" in script
+
+    cancel_block = script.split("function clearCompactMinimizePressTimer()", 1)[1].split(
+        "function handleCompactMinimizeRequest()",
+        1,
+    )[0]
+    assert "compactMinimizeBallTargetAnchor = null;" in cancel_block
+
+    minimize_block = script.split("function handleCompactMinimizeRequest()", 1)[1].split(
+        "function handleMiniGameInviteChoice(option)",
+        1,
+    )[0]
+    assert "rememberCompactMinimizeBallTargetAnchor();" in minimize_block
+
+    set_mode_block = script.split("function setChatSurfaceMode(nextMode)", 1)[1].split(
+        "function cycleChatSurfaceMode()",
+        1,
+    )[0]
+    assert "if (!previousMinimized && nextMinimized && previousMode === 'compact')" in set_mode_block
+    assert "rememberCompactMinimizeBallTargetAnchor();" in set_mode_block
+    assert set_mode_block.index("clearCompactMinimizePressTimer();") < set_mode_block.index(
+        "rememberCompactMinimizeBallTargetAnchor();"
+    )
+    assert set_mode_block.index("rememberCompactMinimizeBallTargetAnchor();") < set_mode_block.index(
+        "state.chatSurfaceMode = normalized;"
+    )
+
+    target_block = script.split("function getMinimizedTarget(rect)", 1)[1].split(
+        "function getExpandedTargetFromSavedState()",
+        1,
+    )[0]
+    assert "getMinimizedTargetFromCompactAnchor(consumeCompactMinimizeBallTargetAnchor())" in target_block
+    assert "if (compactTarget) return compactTarget;" in target_block
+
+
+def test_compact_minimize_collapse_origin_matches_target():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    collapse_block = script.split("// ---- 折叠动画", 1)[1].split(
+        "// ---- 展开动画",
+        1,
+    )[0]
+
+    assert "var originDenomX = 1 - sx;" in collapse_block
+    assert "originX = (targetLeft - rect.left) / originDenomX;" in collapse_block
+    assert "originY = (targetTop - rect.top) / originDenomY;" in collapse_block
+    assert "shell.style.transformOrigin = originX + 'px ' + originY + 'px';" in collapse_block
+    assert "shell.style.removeProperty('transform-origin');" in collapse_block
 
 
 def test_desktop_compact_layout_change_resets_anchor_only_when_base_surface_changes():
