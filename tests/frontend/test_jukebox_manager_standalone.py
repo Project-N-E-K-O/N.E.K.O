@@ -250,11 +250,25 @@ def test_jukebox_manager_delete_selected_uses_single_confirm(mock_page: Page):
     mock_page.evaluate("() => window.Jukebox.SongActionManager.confirmSongBatchDelete()")
     expect_title = mock_page.locator(".sam-danger-modal h3")
     assert "删除选中" in expect_title.inner_text()
+    assert mock_page.evaluate(
+        """
+        () => {
+          const backdrop = document.querySelector('.sam-danger-modal-backdrop');
+          const panel = document.querySelector('.jukebox-sam-panel');
+          return backdrop.parentElement === panel
+            && getComputedStyle(backdrop).position === 'absolute'
+            && getComputedStyle(backdrop).pointerEvents === 'auto';
+        }
+        """
+    )
     mock_page.locator(".sam-danger-modal-confirm").click()
 
     mock_page.wait_for_function("() => window.__batchDeleteRequests.length === 1")
     assert mock_page.evaluate("window.__batchDeleteRequests[0].songIds") == ["song1"]
     assert mock_page.locator(".sam-danger-result-modal").is_visible()
+    assert mock_page.evaluate(
+        "() => document.querySelector('.sam-danger-result-backdrop').parentElement === document.querySelector('.jukebox-sam-panel')"
+    )
 
 
 @pytest.mark.frontend
@@ -275,6 +289,9 @@ def test_jukebox_manager_clear_visible_uses_second_confirm_and_escape_once(mock_
     assert "真..真的要全部清理吗.." in mock_page.locator(".sam-danger-modal p").first.inner_text()
 
     confirm_btn = mock_page.locator(".sam-danger-modal-confirm")
+    assert mock_page.evaluate(
+        "() => document.querySelector('.sam-danger-modal-backdrop').parentElement === document.querySelector('.jukebox-sam-panel')"
+    )
     mock_page.evaluate(
         """
         () => {
@@ -288,6 +305,7 @@ def test_jukebox_manager_clear_visible_uses_second_confirm_and_escape_once(mock_
         """
     )
     assert "sam-danger-confirm-escaped" in (confirm_btn.get_attribute("class") or "")
+    assert confirm_btn.evaluate("el => getComputedStyle(el).pointerEvents") == "auto"
     mock_page.wait_for_function(
         "() => !document.querySelector('.sam-danger-modal-confirm').classList.contains('sam-danger-confirm-escaping')"
     )

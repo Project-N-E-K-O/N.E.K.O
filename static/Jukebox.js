@@ -1228,6 +1228,13 @@ window.Jukebox = {
       if (dialog) dialog.remove();
     },
 
+    getDangerDialogHost() {
+      if (this.element && document.body.contains(this.element)) {
+        return this.element;
+      }
+      return document.body;
+    },
+
     showSongDeleteConfirmDialog(mode, songIds, step) {
       this.closeSongDeleteDialog();
       const summary = this.getSongDeleteSummary(songIds);
@@ -1297,7 +1304,12 @@ window.Jukebox = {
         };
       }
 
-      confirmBtn.onclick = () => {
+      confirmBtn.onclick = (event) => {
+        if (confirmBtn.classList.contains('sam-danger-confirm-escaping')) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
         if (isClear && step === 1) {
           this.showSongDeleteConfirmDialog(mode, songIds, 2);
           return;
@@ -1313,7 +1325,7 @@ window.Jukebox = {
       dialog.appendChild(detail);
       dialog.appendChild(actions);
       backdrop.appendChild(dialog);
-      document.body.appendChild(backdrop);
+      this.getDangerDialogHost().appendChild(backdrop);
       confirmBtn.focus();
     },
 
@@ -1451,7 +1463,7 @@ window.Jukebox = {
       dialog.appendChild(body);
       dialog.appendChild(actions);
       backdrop.appendChild(dialog);
-      document.body.appendChild(backdrop);
+      this.getDangerDialogHost().appendChild(backdrop);
       okBtn.focus();
     },
 
@@ -3954,6 +3966,12 @@ window.Jukebox = {
           justify-content: center;
           background: rgba(0,0,0,0.52);
           -webkit-app-region: no-drag;
+          pointer-events: auto;
+        }
+
+        .jukebox-sam-panel > .sam-danger-modal-backdrop {
+          position: absolute;
+          z-index: 120;
         }
 
         .sam-danger-modal {
@@ -3964,6 +3982,7 @@ window.Jukebox = {
           border: 1px solid rgba(255,255,255,0.14);
           box-shadow: 0 18px 54px rgba(0,0,0,0.42);
           color: ${C.text.primary};
+          pointer-events: auto;
         }
 
         .sam-danger-modal h3 {
@@ -4024,7 +4043,7 @@ window.Jukebox = {
         }
 
         .sam-danger-confirm-escaping {
-          pointer-events: none;
+          cursor: default;
         }
 
         .sam-btn-primary {
