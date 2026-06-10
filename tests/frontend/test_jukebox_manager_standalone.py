@@ -611,6 +611,71 @@ def test_jukebox_manager_actions_visibility_filters_current_display(mock_page: P
 
 
 @pytest.mark.frontend
+def test_jukebox_manager_song_tags_filter_hidden_actions(mock_page: Page):
+    mock_page.set_content(HARNESS_HTML)
+    mock_page.evaluate(
+        """
+        () => {
+          window.t = (key, fallback) => typeof fallback === 'string' ? fallback : key;
+          window.fetch = () => Promise.reject(new Error('fetch should not be called in this test'));
+        }
+        """
+    )
+    mock_page.add_script_tag(content=JUKEBOX_SCRIPT)
+    tag_state = mock_page.evaluate(
+        """
+        () => {
+          const SAM = window.Jukebox.SongActionManager;
+          SAM.bindDragEvents = function() {};
+          SAM.bindFileDropEvents = function() {};
+          SAM.data = {
+            songs: {
+              song1: {
+                name: 'Song 1',
+                artist: 'A',
+                visible: true,
+                defaultAction: 'hiddenAction'
+              }
+            },
+            actions: {
+              hiddenAction: { name: 'Hidden Action', format: 'vmd', visible: false },
+              visibleAction: { name: 'Visible Action', format: 'vmd', visible: true }
+            },
+            bindings: {
+              song1: {
+                hiddenAction: { offset: 0 },
+                visibleAction: { offset: 0 }
+              }
+            }
+          };
+
+          const panel = document.createElement('div');
+          panel.className = 'songs-panel';
+          document.body.appendChild(panel);
+
+          SAM.showHiddenActions = false;
+          SAM.showHiddenSongs = true;
+          SAM.renderSongs(panel);
+          const filtered = Array.from(panel.querySelectorAll('.sam-item-bindings .sam-binding-tag'))
+            .map((node) => node.textContent.trim());
+
+          SAM.showHiddenActions = true;
+          SAM.renderSongs(panel);
+          const withHidden = Array.from(panel.querySelectorAll('.sam-item-bindings .sam-binding-tag'))
+            .map((node) => node.textContent.trim());
+
+          return { filtered, withHidden };
+        }
+        """
+    )
+
+    assert tag_state == {
+        "filtered": ["Visible Action"],
+        "withHidden": ["★ Hidden Action", "Visible Action"],
+    }
+
+
+@pytest.mark.frontend
 def test_jukebox_playback_ignores_hidden_bound_actions(mock_page: Page):
     mock_page.set_content(HARNESS_HTML)
     mock_page.evaluate(

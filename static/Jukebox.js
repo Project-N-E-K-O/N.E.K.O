@@ -805,7 +805,7 @@ window.Jukebox = {
                        onkeydown="if(event.key==='Enter'){this.blur();event.preventDefault();}">${Jukebox.escapeHtml(song.artist || window.t('Jukebox.unknown', '未知'))}
                   </div>
                   <div class="sam-item-bindings">
-                    ${this.getSongBindings(id).map(actionId => {
+                    ${this.getSongBindings(id).filter(actionId => this.shouldShowAction(this.data.actions[actionId])).map(actionId => {
                       const action = this.data.actions[actionId];
                       if (!action) return '';
                       const isDefault = song.defaultAction === actionId;
