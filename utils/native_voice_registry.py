@@ -368,6 +368,7 @@ _BUILTIN_PROVIDER_MODULES: tuple[str, ...] = (
     "utils.gemini_tts_voices",
     "utils.stepfun_tts_voices",
     "utils.grok_tts_voices",
+    "utils.mimo_tts_voices",
 )
 
 

@@ -2571,6 +2571,7 @@ class ConfigManager:
         - cosyvoice_intl: ASSIST_API_KEY_QWEN_INTL（阿里国际版）
         - minimax:   ASSIST_API_KEY_MINIMAX → MINIMAX_API_KEY fallback
         - minimax_intl: ASSIST_API_KEY_MINIMAX_INTL → MINIMAX_INTL_API_KEY fallback
+        - mimo: ASSIST_API_KEY_MIMO
         """
         if provider == 'cosyvoice':
             tts_config = self.get_model_api_config('tts_custom')
@@ -2598,6 +2599,12 @@ class ConfigManager:
             key = (core_config.get('ASSIST_API_KEY_ELEVENLABS') or '').strip()
             if not key:
                 key = (core_config.get('ELEVENLABS_API_KEY') or '').strip()
+            if '***' in key:
+                return None
+            return key or None
+        if provider == 'mimo':
+            core_config = self.get_core_config()
+            key = (core_config.get('ASSIST_API_KEY_MIMO') or '').strip()
             if '***' in key:
                 return None
             return key or None
@@ -3486,6 +3493,7 @@ class ConfigManager:
             'ASSIST_API_KEY_QWEN_INTL': '',
             'ASSIST_API_KEY_MINIMAX': '',
             'ASSIST_API_KEY_MINIMAX_INTL': '',
+            'ASSIST_API_KEY_MIMO': '',
             'ASSIST_API_KEY_GROK': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_OPENROUTER': DEFAULT_CORE_API_KEY,
             'VISION_MODEL': DEFAULT_VISION_MODEL,
@@ -3571,6 +3579,7 @@ class ConfigManager:
         # 塞进 TTS 凭证槽位导致 401，掩盖"未配置 minimax key"的真实提示。
         config['ASSIST_API_KEY_MINIMAX'] = core_cfg.get('assistApiKeyMinimax', '')
         config['ASSIST_API_KEY_MINIMAX_INTL'] = core_cfg.get('assistApiKeyMinimaxIntl', '')
+        config['ASSIST_API_KEY_MIMO'] = core_cfg.get('assistApiKeyMimo', '') or _fb('mimo')
         config['ASSIST_API_KEY_ELEVENLABS'] = core_cfg.get('assistApiKeyElevenlabs', '')
         config['ASSIST_API_KEY_GROK'] = core_cfg.get('assistApiKeyGrok', '') or _fb('grok')
         config['ASSIST_API_KEY_CLAUDE'] = core_cfg.get('assistApiKeyClaude', '') or _fb('claude')

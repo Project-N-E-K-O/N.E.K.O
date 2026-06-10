@@ -648,6 +648,7 @@ async def get_core_config_api():
             # 塞进 TTS 凭证槽位导致 401，掩盖"未配置 minimax key"的真实提示。
             "assistApiKeyMinimax": core_cfg.get('assistApiKeyMinimax', ''),
             "assistApiKeyMinimaxIntl": core_cfg.get('assistApiKeyMinimaxIntl', ''),
+            "assistApiKeyMimo": core_cfg.get('assistApiKeyMimo', '') or _fb('mimo'),
             "assistApiKeyElevenlabs": core_cfg.get('assistApiKeyElevenlabs', ''),
             "assistApiKeyGrok": core_cfg.get('assistApiKeyGrok', '') or _fb('grok'),
             "assistApiKeyClaude": core_cfg.get('assistApiKeyClaude', '') or _fb('claude'),
@@ -793,7 +794,7 @@ async def update_core_config(request: Request):
             'assistApiKeyQwen', 'assistApiKeyQwenIntl', 'assistApiKeyOpenai', 'assistApiKeyDeepseek',
             'assistApiKeyGlm', 'assistApiKeyStep', 'assistApiKeySilicon',
             'assistApiKeyGemini', 'assistApiKeyKimi', 'assistApiKeyDoubao',
-            'assistApiKeyMinimax', 'assistApiKeyMinimaxIntl', 'assistApiKeyElevenlabs', 'assistApiKeyGrok',
+            'assistApiKeyMinimax', 'assistApiKeyMinimaxIntl', 'assistApiKeyMimo', 'assistApiKeyElevenlabs', 'assistApiKeyGrok',
             'assistApiKeyClaude', 'assistApiKeyOpenrouter',
         ]
         for field in _api_key_fields:

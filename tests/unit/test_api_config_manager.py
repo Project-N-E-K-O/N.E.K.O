@@ -55,6 +55,7 @@ class TestKeybookSaveLoad:
         'assistApiKeyDoubao': 'ASSIST_API_KEY_DOUBAO',
         'assistApiKeyMinimax': 'ASSIST_API_KEY_MINIMAX',
         'assistApiKeyMinimaxIntl': 'ASSIST_API_KEY_MINIMAX_INTL',
+        'assistApiKeyMimo': 'ASSIST_API_KEY_MIMO',
         'assistApiKeyGrok': 'ASSIST_API_KEY_GROK',
     }
 
@@ -99,7 +100,8 @@ class TestKeybookSaveLoad:
                        'ASSIST_API_KEY_DOUBAO', 'ASSIST_API_KEY_GROK',
                        'ASSIST_API_KEY_CLAUDE', 'ASSIST_API_KEY_OPENROUTER',
                        'ASSIST_API_KEY_QWEN_INTL',
-                       'ASSIST_API_KEY_MINIMAX', 'ASSIST_API_KEY_MINIMAX_INTL']:
+                       'ASSIST_API_KEY_MINIMAX', 'ASSIST_API_KEY_MINIMAX_INTL',
+                       'ASSIST_API_KEY_MIMO']:
             assert cfg[upper] == '', (
                 f'{upper} 未被选中，不应 fallback 到 CORE_API_KEY'
             )
@@ -849,6 +851,29 @@ class TestVoiceCloneKeyResolution:
         # Should be None (not CORE_API_KEY!)
         assert key is None, \
             'MiniMax TTS key should be None when not configured, not fall back to core key'
+
+    @pytest.mark.unit
+    def test_mimo_tts_key_from_keybook(self, config_manager):
+        """get_tts_api_key('mimo') reads from ASSIST_API_KEY_MIMO."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'mimo',
+            'assistApiKeyMimo': 'sk-mimo-tts-key',
+        })
+        key = config_manager.get_tts_api_key('mimo')
+        assert key == 'sk-mimo-tts-key'
+
+    @pytest.mark.unit
+    def test_mimo_tts_key_empty_returns_none(self, config_manager):
+        """No MiMo key configured → get_tts_api_key returns None."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core-should-not-leak',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+        })
+        key = config_manager.get_tts_api_key('mimo')
+        assert key is None
 
     @pytest.mark.unit
     def test_cosyvoice_tts_key_from_custom_config(self, config_manager):
