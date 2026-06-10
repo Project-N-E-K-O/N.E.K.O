@@ -190,3 +190,35 @@ def test_get_tts_worker_routes_assist_mimo_to_mimo_worker(monkeypatch):
     assert worker.keywords == {"base_url": "https://api.xiaomimimo.com/v1"}
     assert api_key == "test-mimo-key"
     assert provider_key == "mimo"
+
+
+@pytest.mark.unit
+def test_get_tts_worker_routes_tts_provider_mimo_to_default_endpoint(monkeypatch):
+    class _CM:
+        def get_core_config(self):
+            return {
+                "assistApi": "qwen",
+                "OPENROUTER_URL": "https://api.xiaomimimo.com/v1",
+                "TTS_PROVIDER": "mimo",
+            }
+
+        def get_model_api_config(self, model_type):
+            return {"is_custom": False}
+
+        def get_tts_api_key(self, provider):
+            assert provider == "mimo"
+            return "mimo-key-via-provider"
+
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM())
+
+    worker, api_key, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen",
+        has_custom_voice=False,
+        voice_id="",
+    )
+
+    assert isinstance(worker, partial)
+    assert worker.func is tts_client.mimo_tts_worker
+    assert worker.keywords == {"base_url": None}
+    assert api_key == "mimo-key-via-provider"
+    assert provider_key == "mimo"
