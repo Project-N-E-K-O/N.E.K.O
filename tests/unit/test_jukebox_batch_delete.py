@@ -437,6 +437,7 @@ async def test_export_ignore_hidden_skips_hidden_actions_and_bindings(monkeypatc
                     "audio": "songs/song.mp3",
                     "audioMd5": "song-md5",
                     "visible": True,
+                    "defaultAction": "hidden-action",
                 }
             },
             "actions": {
@@ -474,6 +475,8 @@ async def test_export_ignore_hidden_skips_hidden_actions_and_bindings(monkeypatc
 
     assert set(exported["actions"]) == {"visible-action"}
     assert "hidden-action" not in exported["actions"]
+    assert exported["songs"]["song-1"]["defaultAction"] == ""
+    assert fake.data["songs"]["song-1"]["defaultAction"] == "hidden-action"
     assert exported["bindings"] == {
         "song-md5": {
             "visible-md5": {"offset": 1},

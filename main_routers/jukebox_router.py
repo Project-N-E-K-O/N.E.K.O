@@ -1134,7 +1134,7 @@ async def export_config(
         # 导出歌曲
         for song_id in song_ids_to_export:
             song = jukebox_config.data["songs"][song_id]
-            export_data["songs"][song_id] = song
+            export_data["songs"][song_id] = song.copy()
 
             # 复制文件
             src_path = jukebox_config.jukebox_dir / song["audio"]
@@ -1172,6 +1172,12 @@ async def export_config(
                 dst_path = export_dir / action["file"]
                 dst_path.parent.mkdir(parents=True, exist_ok=True)
                 await asyncio.to_thread(shutil.copy2, src_path, dst_path)
+
+        if not includeHidden:
+            for song in export_data["songs"].values():
+                default_action = song.get("defaultAction", "")
+                if default_action and default_action not in export_data["actions"]:
+                    song["defaultAction"] = ""
 
         # 导出绑定关系（将ID绑定转换为MD5绑定，便于跨系统导入）
         # 本地存储格式: bindings[songId][actionId] = {"offset": 0}
