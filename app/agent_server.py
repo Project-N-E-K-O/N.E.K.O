@@ -113,6 +113,11 @@ class Modules:
     # Browser-use task tracking
     active_browser_use_task_id: Optional[str] = None
     active_browser_use_bg_task: Optional[asyncio.Task] = None
+    # Browser-use exclusivity: the adapter is a singleton whose cancel flag
+    # and browser session are shared state, so dispatches must not overlap
+    # (mirrors computer-use exclusivity, implemented as a lock instead of a
+    # scheduler loop). Lazily created on the running event loop.
+    browser_use_dispatch_lock: Optional[asyncio.Lock] = None
     # OpenClaw/QwenPaw is an external service. Enabling keeps the user's intent
     # while a bounded background probe waits for the external health endpoint.
     openclaw_enable_task: Optional[asyncio.Task] = None
@@ -2779,7 +2784,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 bu_info = {
                     "id": bu_task_id,
                     "type": "browser_use",
-                    "status": "running",
+                    "status": "queued",
                     "start_time": bu_start,
                     "params": {"instruction": result.task_description},
                     "lanlan_name": lanlan_name,
@@ -2790,7 +2795,6 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 }
                 _set_internal_correction_context(bu_info, result)
                 Modules.task_registry[bu_task_id] = bu_info
-                Modules.active_browser_use_task_id = bu_task_id
                 _task_tracker.record_assigned(
                     lanlan_name, task_id=bu_task_id, method="browser_use",
                     desc=result.task_description or "",
@@ -2798,12 +2802,12 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 try:
                     await _emit_main_event(
                         "task_update", lanlan_name,
-                        task={"id": bu_task_id, "status": "running", "type": "browser_use",
+                        task={"id": bu_task_id, "status": "queued", "type": "browser_use",
                               "start_time": bu_start, "params": {"instruction": result.task_description},
                               "session_id": bu_session.session_id},
                     )
                 except Exception as e:
-                    logger.debug("[BrowserUse] emit task_update(running) failed: task_id=%s error=%s", bu_task_id, e)
+                    logger.debug("[BrowserUse] emit task_update(queued) failed: task_id=%s error=%s", bu_task_id, e)
                 async def _run_browser_use_dispatch():
                     try:
                         from utils.instrument import counter as _ic
@@ -2811,10 +2815,32 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     except Exception:
                         pass  # 埋点 best-effort
                     try:
-                        bres = await Modules.browser_use.run_instruction(
-                            result.task_description,
-                            session_id=bu_session.session_id,
-                        )
+                        if Modules.browser_use_dispatch_lock is None:
+                            Modules.browser_use_dispatch_lock = asyncio.Lock()
+                        async with Modules.browser_use_dispatch_lock:
+                            # cancel_task may have flipped the entry to
+                            # "cancelled" while it sat waiting for the slot —
+                            # don't resurrect it (mirrors the computer-use
+                            # scheduler's queued guard).
+                            if bu_info.get("status") != "queued":
+                                return
+                            bu_info["status"] = "running"
+                            bu_info["start_time"] = _now_iso()
+                            Modules.active_browser_use_task_id = bu_task_id
+                            try:
+                                await _emit_main_event(
+                                    "task_update", lanlan_name,
+                                    task={"id": bu_task_id, "status": "running", "type": "browser_use",
+                                          "start_time": bu_info["start_time"],
+                                          "params": {"instruction": result.task_description},
+                                          "session_id": bu_session.session_id},
+                                )
+                            except Exception as e:
+                                logger.debug("[BrowserUse] emit task_update(running) failed: task_id=%s error=%s", bu_task_id, e)
+                            bres = await Modules.browser_use.run_instruction(
+                                result.task_description,
+                                session_id=bu_session.session_id,
+                            )
                         if bu_info.get("status") == "cancelled":
                             # cancel_task set the terminal state before run_instruction
                             # returned (e.g. via fire-and-forget CDP teardown winning
@@ -2927,7 +2953,11 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         except Exception as emit_err:
                             logger.debug("[BrowserUse] emit task_update(failed) failed: task_id=%s error=%s", bu_task_id, emit_err)
                     finally:
-                        Modules.active_browser_use_task_id = None
+                        # Only the slot owner may clear it: a queued dispatch
+                        # cancelled while waiting for the lock must not wipe
+                        # the running task's id.
+                        if Modules.active_browser_use_task_id == bu_task_id:
+                            Modules.active_browser_use_task_id = None
 
                 bu_task = asyncio.create_task(_run_browser_use_dispatch())
                 Modules.task_async_handles[bu_task_id] = bu_task
@@ -3982,11 +4012,15 @@ async def cancel_task(task_id: str):
         if Modules.active_computer_use_task_id == task_id and Modules.active_computer_use_async_task:
             Modules.active_computer_use_async_task.cancel()
     elif task_type == "browser_use":
-        if Modules.browser_use:
-            _spawn_background_cancel(
-                Modules.browser_use.cancel(), label=f"browser_use:{task_id}"
-            )
+        # Tear down the shared browser only for the task that owns the slot.
+        # A queued task's dispatch coroutine dies at the lock via bg.cancel()
+        # above; ripping the browser for it would kill the unrelated running
+        # task that is actually using it.
         if Modules.active_browser_use_task_id == task_id:
+            if Modules.browser_use:
+                _spawn_background_cancel(
+                    Modules.browser_use.cancel(), label=f"browser_use:{task_id}"
+                )
             Modules.active_browser_use_task_id = None
     elif task_type == "openfang":
         if Modules.openfang:
@@ -5436,17 +5470,64 @@ async def list_tasks():
 async def admin_control(payload: Dict[str, Any]):
     action = (payload or {}).get("action")
     if action == "end_all":
-        # Cancel any in-flight background analyzer tasks
+        # Mark every active registry task cancelled and notify the frontend
+        # BEFORE the potentially-slow teardown below. The task HUD is purely
+        # event-driven (no HTTP polling), so without these emits the cards of
+        # tasks whose dispatch coroutine is stuck (e.g. a browser-use agent
+        # wedged inside an LLM call) would stay "running" forever once the
+        # registry is cleared. Dispatch coroutines that do wake up emit the
+        # same terminal event again; duplicate cancel records are tolerated
+        # by design (see get_cancelled_user_sigs).
+        for tid, info in list(Modules.task_registry.items()):
+            if info.get("status") not in ("queued", "running"):
+                continue
+            info["status"] = "cancelled"
+            info["error"] = "Cancelled by user"
+            _task_tracker.record_completed(
+                info.get("lanlan_name"),
+                task_id=tid,
+                method=str(info.get("type") or ""),
+                desc=_tracker_desc_for_task_info(info),
+                detail="Cancelled by user",
+                success=False,
+                cancelled=True,
+                trigger_user_fingerprint=info.get("_trigger_user_fingerprint"),
+            )
+            try:
+                await _emit_main_event(
+                    "task_update", info.get("lanlan_name"),
+                    task={"id": tid, "status": "cancelled", "type": info.get("type"),
+                          "end_time": _now_iso(), "params": info.get("params", {}),
+                          "error": "Cancelled by user"},
+                )
+            except Exception:
+                pass
+
+        # Cancel any in-flight background analyzer/dispatch tasks. Include the
+        # per-task dispatch handles explicitly so a handle that fell out of
+        # _background_tasks bookkeeping still receives the cancel.
         tasks_to_await = []
-        for t in list(Modules._background_tasks):
+        for t in set(Modules._background_tasks) | set(Modules.task_async_handles.values()):
             if not t.done():
                 t.cancel()
                 tasks_to_await.append(t)
         if tasks_to_await:
-            results = await asyncio.gather(*tasks_to_await, return_exceptions=True)
-            for res in results:
-                if isinstance(res, Exception) and not isinstance(res, asyncio.CancelledError):
-                    logger.warning(f"[Agent] Error awaiting cancelled background task: {res}")
+            # Bounded wait: a dispatch coroutine stuck in an uncancellable
+            # spot must not wedge end_all itself (the frontend proxy gives up
+            # after 5s and the user sees the ✕ do nothing).
+            done, pending = await asyncio.wait(tasks_to_await, timeout=10.0)
+            if pending:
+                logger.warning(
+                    "[Agent] end_all: %d task(s) still not finished 10s after cancel; continuing teardown",
+                    len(pending),
+                )
+            for res in done:
+                try:
+                    exc = res.exception()
+                except asyncio.CancelledError:
+                    continue
+                if exc is not None:
+                    logger.warning(f"[Agent] Error awaiting cancelled background task: {exc}")
         Modules._background_tasks.clear()
 
         # Signal computer-use adapter to cancel at next step boundary

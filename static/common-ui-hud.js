@@ -547,11 +547,21 @@ window.AgentHUD.createAgentTaskHUD = function () {
         try {
             cancelBtn.style.opacity = '0.5';
             cancelBtn.style.pointerEvents = 'none';
-            await fetch('/api/agent/admin/control', {
+            const r = await fetch('/api/agent/admin/control', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: 'end_all' })
             });
+            // 2xx → end_all ran; 500/502 → the proxy timed out but the tool
+            // server keeps executing end_all to completion. Either way the
+            // backend registry ends up cleared, so apply the terminal state
+            // locally in case its task_update events never arrive (stuck
+            // dispatch). 501 (remote backend block) means nothing happened.
+            if (r.ok || r.status === 500 || r.status === 502) {
+                if (window.AgentHUD._markTasksCancelledLocally) {
+                    window.AgentHUD._markTasksCancelledLocally();
+                }
+            }
         } catch (err) {
             console.error('[AgentHUD] Cancel all tasks failed:', err);
         } finally {
@@ -775,6 +785,39 @@ window.AgentHUD.updateAgentTaskHUD = function (tasksData) {
     this._updateRafId = requestAnimationFrame(() => {
         this._updateRafId = null;
         this._doUpdateAgentTaskHUD();
+    });
+};
+
+// Local fallback: mark tasks cancelled in the shared task map and re-render.
+// The HUD is purely event-driven; when the backend is wedged (the very
+// situation the user is cancelling out of) its task_update(cancelled) events
+// may never arrive, leaving cards stuck on "running" forever. The cancel
+// click handlers below call this after reaching the server so the UI always
+// converges. Backend events for the same tasks merge idempotently in
+// app-websocket.js.
+window.AgentHUD._markTasksCancelledLocally = function (taskIds) {
+    const map = window._agentTaskMap;
+    if (!map || typeof map.forEach !== 'function' || map.size === 0) return;
+    const ids = Array.isArray(taskIds) ? new Set(taskIds) : null;
+    const now = Date.now();
+    let changed = false;
+    map.forEach((t, id) => {
+        if (!t || (ids && !ids.has(id))) return;
+        if (t.status !== 'running' && t.status !== 'queued') return;
+        map.set(id, Object.assign({}, t, { status: 'cancelled', terminal_at: now }));
+        changed = true;
+    });
+    if (!changed) return;
+    const tasks = Array.from(map.values());
+    this.updateAgentTaskHUD({
+        success: true,
+        tasks: tasks,
+        total_count: tasks.length,
+        running_count: tasks.filter(t => t.status === 'running').length,
+        queued_count: tasks.filter(t => t.status === 'queued').length,
+        completed_count: tasks.filter(t => t.status === 'completed').length,
+        failed_count: tasks.filter(t => t.status === 'failed').length,
+        timestamp: new Date().toISOString()
     });
 };
 
@@ -1236,12 +1279,25 @@ window.AgentHUD._createTaskCard = function (task) {
         taskCancelBtn.style.opacity = '0.4';
         taskCancelBtn.style.pointerEvents = 'none';
         try {
-            await fetch(`/api/agent/tasks/${encodeURIComponent(task.id)}/cancel`, {
+            const r = await fetch(`/api/agent/tasks/${encodeURIComponent(task.id)}/cancel`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' }
             });
+            // Success → the backend emitted task_update(cancelled); marking
+            // locally is an idempotent fallback for when that event can't
+            // arrive (stuck backend). A 404/"not active"/502 failure means
+            // the backend no longer tracks this task, so the card is an
+            // orphan (e.g. left behind by an earlier end_all) — clear it
+            // locally too. 501 (remote backend block) changes nothing.
+            if (r.status !== 501 && window.AgentHUD._markTasksCancelledLocally) {
+                window.AgentHUD._markTasksCancelledLocally([task.id]);
+            }
         } catch (err) {
             console.error('[AgentHUD] Cancel task failed:', err);
+            // Network-level failure: the request never reached the server.
+            // Re-enable the button so the user can retry.
+            taskCancelBtn.style.opacity = '1';
+            taskCancelBtn.style.pointerEvents = 'auto';
         }
     });
 
