@@ -4634,6 +4634,9 @@
         var nextMinimized = normalized === 'minimized';
         var previousMinimized = previousMode === 'minimized';
         if (previousMode === normalized) {
+            if (isMinimizeTransitioning) {
+                pendingChatSurfaceMode = null;
+            }
             syncChatSurfaceModeUI();
             return normalized;
         }
