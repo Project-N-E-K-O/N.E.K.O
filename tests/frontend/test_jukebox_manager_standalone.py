@@ -78,16 +78,24 @@ def setup_song_manager_page(mock_page: Page, songs: str, actions: str = "{}") ->
                   partial: false,
                   requestedCount: payload.actionIds.length,
                   deletedCount: payload.actionIds.filter(id => !actions[id].isBuiltin).length,
-                  unboundCount: payload.actionIds.filter(id => actions[id].isBuiltin).length,
+                  hiddenCount: payload.actionIds.filter(id => actions[id].isBuiltin).length,
                   failedCount: 0,
                   deleted: payload.actionIds
                     .filter(id => !actions[id].isBuiltin)
                     .map(id => ({{ actionId: id, name: actions[id].name }})),
-                  unbound: payload.actionIds
+                  hidden: payload.actionIds
                     .filter(id => actions[id].isBuiltin)
                     .map(id => ({{ actionId: id, name: actions[id].name }})),
                   failed: []
                 }})
+              }};
+            }}
+            if (String(url).includes('/actions/') && String(url).endsWith('/visibility')) {{
+              const actionId = String(url).split('/actions/')[1].split('/visibility')[0];
+              actions[actionId].visible = options.body.get('visible') === 'true';
+              return {{
+                ok: true,
+                json: async () => ({{ success: true }})
               }};
             }}
             throw new Error('unexpected fetch: ' + url);
@@ -562,6 +570,44 @@ def test_jukebox_manager_actions_delete_current_display_matches_song_flow(mock_p
     confirm_btn.click()
     mock_page.wait_for_function("() => window.__batchActionDeleteRequests.length === 1")
     assert mock_page.evaluate("window.__batchActionDeleteRequests[0].actionIds") == ["action1", "builtinAction"]
+
+
+@pytest.mark.frontend
+def test_jukebox_manager_actions_visibility_filters_current_display(mock_page: Page):
+    setup_song_manager_page(
+        mock_page,
+        """
+        {
+          song1: { name: 'Song 1', artist: 'A', visible: true }
+        }
+        """,
+        """
+        {
+          action1: { name: 'Action 1', format: 'vmd', visible: true },
+          action2: { name: 'Hidden Action', format: 'vrma', visible: false },
+          builtinAction: { name: 'Builtin Action', format: 'vmd', visible: true, isBuiltin: true }
+        }
+        """,
+    )
+
+    mock_page.locator('.sam-tab[data-tab="actions"]').click()
+    danger_btn = mock_page.locator(".sam-btn-song-danger")
+    assert danger_btn.inner_text() == "删除当前显示(3)"
+    assert mock_page.locator('.actions-panel .sam-item[data-id="action2"]').count() == 1
+    assert "sam-item-hidden" in (mock_page.locator('.actions-panel .sam-item[data-id="action2"]').get_attribute("class") or "")
+
+    mock_page.locator(".actions-panel .sam-checkbox-right input").click()
+    assert danger_btn.inner_text() == "删除当前显示(2)"
+    assert mock_page.locator('.actions-panel .sam-item[data-id="action2"]').count() == 0
+
+    mock_page.locator('.actions-panel .sam-item[data-id="action1"] .sam-visibility-btn').click()
+    assert mock_page.evaluate("window.Jukebox.SongActionManager.data.actions.action1.visible") is False
+    assert mock_page.locator('.actions-panel .sam-item[data-id="action1"]').count() == 0
+    assert danger_btn.inner_text() == "删除当前显示(1)"
+
+    mock_page.locator(".actions-panel .sam-checkbox-right input").click()
+    assert danger_btn.inner_text() == "删除当前显示(3)"
+    assert "sam-item-hidden" in (mock_page.locator('.actions-panel .sam-item[data-id="action1"]').get_attribute("class") or "")
 
 
 @pytest.mark.frontend

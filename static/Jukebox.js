@@ -520,6 +520,16 @@ window.Jukebox = {
         return response.json();
       },
 
+      async updateActionVisibility(actionId, visible) {
+        const formData = new FormData();
+        formData.append('visible', visible);
+        const response = await fetch(`${this.baseUrl}/actions/${actionId}/visibility`, {
+          method: 'PUT',
+          body: formData
+        });
+        return response.json();
+      },
+
       async updateSongMetadata(songId, name, artist) {
         const formData = new FormData();
         if (name !== undefined) formData.append('name', name);
@@ -822,7 +832,8 @@ window.Jukebox = {
     },
 
     renderActions(panel) {
-      const actions = Object.entries(this.data.actions);
+      const showHidden = this.showHiddenActions !== false;
+      const actions = this.getVisibleActionEntries();
       const allActionsSelected = this.areAllActionsSelected();
       const hasAnyActionsSelected = this.hasAnyActionsSelected();
       panel.innerHTML = `
@@ -831,7 +842,10 @@ window.Jukebox = {
             <input type="checkbox" id="select-all-actions" ${allActionsSelected ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleSelectAllActions(this.checked)">
             <span>${window.t('Jukebox.selectAll', '全选')}</span>
           </label>
-          <span></span>
+          <label class="sam-checkbox sam-checkbox-right">
+            <input type="checkbox" ${showHidden ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleShowHiddenActions(this.checked)">
+            <span>${window.t('Jukebox.showHiddenActions', '显示隐藏的动画')}</span>
+          </label>
         </div>
         <div class="sam-list">
             ${actions.length === 0 ? `<div class="sam-empty">${window.t('Jukebox.noActions', '暂无动画')}</div>` :
@@ -839,7 +853,7 @@ window.Jukebox = {
                 const format = action.format || 'vmd';
                 const formatColor = this.getFormatColor(format);
                 return `
-                <div class="sam-item ${this.selectedActions?.has(id) ? 'sam-item-selected' : ''}" data-id="${id}" draggable="true">
+                <div class="sam-item ${action.visible === false ? 'sam-item-hidden' : ''} ${this.selectedActions?.has(id) ? 'sam-item-selected' : ''}" data-id="${id}" draggable="true">
                   <div class="sam-item-header">
                     <label class="sam-checkbox sam-item-checkbox">
                       <input type="checkbox" class="sam-action-select" data-id="${id}" ${this.selectedActions?.has(id) ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleActionSelect('${id}', this.checked)">
@@ -850,6 +864,13 @@ window.Jukebox = {
                           onkeydown="if(event.key==='Enter'){this.blur();event.preventDefault();}">${Jukebox.escapeHtml(action.name)}</span>
                     <div class="sam-item-actions">
                       ${action.missing ? `<span class="sam-missing-badge">${window.t('Jukebox.missing', '缺失')}</span>` : ''}
+                      <button class="sam-visibility-btn ${action.visible === false ? 'hidden' : ''}"
+                              onclick="Jukebox.SongActionManager.toggleActionVisibility('${id}')"
+                              title="${action.visible === false ? window.t('Jukebox.show', '显示') : window.t('Jukebox.hide', '隐藏')}">
+                        ${action.visible === false
+                          ? '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/><line x1="3" y1="3" x2="21" y2="21" stroke="currentColor" stroke-width="2"/></svg>'
+                          : '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>'}
+                      </button>
                       <button class="sam-delete-btn" onclick="Jukebox.SongActionManager.confirmDeleteAction('${id}')" title="${window.t('Jukebox.delete', '删除')}">🗑</button>
                     </div>
                   </div>
@@ -876,6 +897,7 @@ window.Jukebox = {
       const hasAnyBindingSongsSelected = this.hasAnyBindingSongsSelected();
       const allBindingActionsSelected = this.areAllBindingActionsSelected();
       const hasAnyBindingActionsSelected = this.hasAnyBindingActionsSelected();
+      const visibleActions = this.getVisibleActionEntries();
 
       panel.innerHTML = `
         <div class="sam-bindings-container">
@@ -890,7 +912,7 @@ window.Jukebox = {
             <div class="sam-bindings-list songs-for-drop">
               ${Object.entries(this.data.songs).length === 0 ? `<div class="sam-empty">${window.t('Jukebox.noSongs', '暂无歌曲')}</div>` :
                 Object.entries(this.data.songs).map(([id, song], index) => {
-                  const boundActions = this.getSongBindings(id);
+                  const boundActions = this.getSongBindings(id).filter(actionId => this.shouldShowAction(this.data.actions[actionId]));
                   const isSelected = this.bindingSelectedSongs.has(id);
                   const songIndex = index + 1;
                   return `
@@ -937,8 +959,8 @@ window.Jukebox = {
               </label>
             </div>
             <div class="sam-bindings-list actions-for-drop">
-              ${Object.entries(this.data.actions).length === 0 ? `<div class="sam-empty">${window.t('Jukebox.noActions', '暂无动画')}</div>` :
-                Object.entries(this.data.actions).map(([id, action], index) => {
+              ${visibleActions.length === 0 ? `<div class="sam-empty">${window.t('Jukebox.noActions', '暂无动画')}</div>` :
+                visibleActions.map(([id, action], index) => {
                   const boundSongs = this.getActionBindings(id);
                   const isSelected = this.bindingSelectedActions.has(id);
                   const format = action.format || 'vmd';
@@ -988,6 +1010,19 @@ window.Jukebox = {
       }
       this.updateSelectionInfo();
     },
+
+    toggleShowHiddenActions(checked) {
+      this.showHiddenActions = checked;
+      const actionsPanel = document.querySelector('.actions-panel');
+      if (actionsPanel) {
+        this.rerenderPanel(actionsPanel, () => this.renderActions(actionsPanel));
+      }
+      const bindingsPanel = document.querySelector('.bindings-panel');
+      if (bindingsPanel && bindingsPanel.innerHTML.trim()) {
+        this.rerenderPanel(bindingsPanel, () => this.renderBindings(bindingsPanel));
+      }
+      this.updateSelectionInfo();
+    },
     
     async toggleSongVisibility(songId) {
       const song = this.data.songs[songId];
@@ -1010,6 +1045,39 @@ window.Jukebox = {
         }
       } catch (err) {
         console.error('切换歌曲可见性失败:', err);
+        alert(window.t('Jukebox.operationFailed', '操作失败'));
+      }
+    },
+
+    async toggleActionVisibility(actionId) {
+      const action = this.data.actions[actionId];
+      if (!action) return;
+
+      const newVisible = action.visible === false ? true : false;
+      try {
+        await this.api.updateActionVisibility(actionId, newVisible);
+        action.visible = newVisible;
+        if (!newVisible) {
+          if (this.selectedActions) this.selectedActions.delete(actionId);
+          if (this.bindingSourceActions) this.bindingSourceActions.delete(actionId);
+          if (this.bindingSelectedActions) this.bindingSelectedActions.delete(actionId);
+        }
+
+        const actionsPanel = document.querySelector('.actions-panel');
+        if (actionsPanel) {
+          this.rerenderPanel(actionsPanel, () => this.renderActions(actionsPanel));
+        }
+        const bindingsPanel = document.querySelector('.bindings-panel');
+        if (bindingsPanel && bindingsPanel.innerHTML.trim()) {
+          this.rerenderPanel(bindingsPanel, () => this.renderBindings(bindingsPanel));
+        }
+        this.updateSelectionInfo();
+
+        if (window.Jukebox && window.Jukebox.loadSongs) {
+          await window.Jukebox.loadSongs();
+        }
+      } catch (err) {
+        console.error('切换动画可见性失败:', err);
         alert(window.t('Jukebox.operationFailed', '操作失败'));
       }
     },
@@ -1262,18 +1330,25 @@ window.Jukebox = {
       const scope = mode === 'selected'
         ? window.t('Jukebox.deleteSelectedActionScope', '选中的动画')
         : window.t('Jukebox.clearVisibleActionScope', '当前显示的动画');
+      const hiddenHint = mode === 'clear-visible'
+        ? (this.showHiddenActions !== false
+          ? window.t('Jukebox.clearVisibleActionsIncludesHidden', '已开启显示隐藏动画，隐藏动画也会被处理。')
+          : window.t('Jukebox.clearVisibleActionsExcludesHidden', '未开启显示隐藏动画，隐藏动画不会被处理。'))
+        : '';
       const template = window.t('Jukebox.actionBatchDeleteTooltip', {
-        defaultValue: '范围：{{scope}}\n共 {{total}} 个；自定义动画会删除，内置动画会解除绑定。\n自定义：{{userCount}}，内置：{{builtinCount}}',
+        defaultValue: '范围：{{scope}}\n共 {{total}} 个；自定义动画会删除，内置动画会隐藏。\n自定义：{{userCount}}，内置：{{builtinCount}}\n{{hiddenHint}}',
         scope,
         total: summary.total,
         userCount: summary.userCount,
-        builtinCount: summary.builtinCount
+        builtinCount: summary.builtinCount,
+        hiddenHint
       });
       return template
         .replace('{{scope}}', scope)
         .replace('{{total}}', summary.total)
         .replace('{{userCount}}', summary.userCount)
         .replace('{{builtinCount}}', summary.builtinCount)
+        .replace('{{hiddenHint}}', hiddenHint)
         .trim();
     },
 
@@ -1368,7 +1443,7 @@ window.Jukebox = {
       } else if (isClear) {
         body.textContent = isActions
           ? window.t('Jukebox.clearVisibleActionsConfirm', {
-            defaultValue: '将处理当前显示的 {{total}} 个动画。自定义动画会被删除，内置动画会解除绑定。此操作不可恢复。',
+            defaultValue: '将处理当前显示的 {{total}} 个动画。自定义动画会被删除，内置动画会被隐藏。此操作不可恢复。',
             total: summary.total
           }).replace('{{total}}', summary.total)
           : window.t('Jukebox.clearVisibleSongsConfirm', {
@@ -1378,7 +1453,7 @@ window.Jukebox = {
       } else {
         body.textContent = isActions
           ? window.t('Jukebox.deleteSelectedActionsConfirm', {
-            defaultValue: '将删除选中的 {{total}} 个动画。自定义动画会被删除，内置动画会解除绑定。此操作不可恢复。',
+            defaultValue: '将删除选中的 {{total}} 个动画。自定义动画会被删除，内置动画会被隐藏。此操作不可恢复。',
             total: summary.total
           }).replace('{{total}}', summary.total)
           : window.t('Jukebox.deleteSelectedSongsConfirm', {
@@ -1618,18 +1693,24 @@ window.Jukebox = {
 
     applyActionBatchDeleteResult(result) {
       const deletedIds = (result.deleted || []).map(item => item.actionId);
-      const unboundIds = (result.unbound || []).map(item => item.actionId);
-      const processedIds = new Set([...deletedIds, ...unboundIds]);
+      const hiddenIds = (result.hidden || []).map(item => item.actionId);
+      const processedIds = new Set([...deletedIds, ...hiddenIds]);
 
       deletedIds.forEach(actionId => {
         delete this.data.actions[actionId];
+      });
+
+      hiddenIds.forEach(actionId => {
+        if (this.data.actions[actionId]) this.data.actions[actionId].visible = false;
       });
 
       processedIds.forEach(actionId => {
         if (this.selectedActions) this.selectedActions.delete(actionId);
         if (this.bindingSourceActions) this.bindingSourceActions.delete(actionId);
         if (this.bindingSelectedActions) this.bindingSelectedActions.delete(actionId);
+      });
 
+      deletedIds.forEach(actionId => {
         for (const songId in this.data.bindings) {
           delete this.data.bindings[songId][actionId];
           if (Object.keys(this.data.bindings[songId]).length === 0) {
@@ -1649,12 +1730,12 @@ window.Jukebox = {
       const failed = result.failed || [];
       const failedNames = failed.slice(0, 5).map(item => item.name || item.actionId).join(', ');
       let message = window.t('Jukebox.actionBatchDeleteResult', {
-        defaultValue: '已删除 {{deletedCount}} 个自定义动画，解除 {{unboundCount}} 个内置动画的绑定。',
+        defaultValue: '已删除 {{deletedCount}} 个自定义动画，隐藏 {{hiddenCount}} 个内置动画。',
         deletedCount: result.deletedCount || 0,
-        unboundCount: result.unboundCount || 0
+        hiddenCount: result.hiddenCount || 0
       })
         .replace('{{deletedCount}}', result.deletedCount || 0)
-        .replace('{{unboundCount}}', result.unboundCount || 0);
+        .replace('{{hiddenCount}}', result.hiddenCount || 0);
 
       if ((result.failedCount || 0) > 0) {
         message += '\n' + window.t('Jukebox.actionBatchDeleteFailedSummary', {
@@ -1693,18 +1774,22 @@ window.Jukebox = {
 
     async deleteAction(actionId) {
       try {
-        await this.api.deleteAction(actionId);
+        const result = await this.api.deleteAction(actionId);
         // 从选择集合中移除
         if (this.selectedActions) this.selectedActions.delete(actionId);
         if (this.bindingSourceActions) this.bindingSourceActions.delete(actionId);
         if (this.bindingSelectedActions) this.bindingSelectedActions.delete(actionId);
-        delete this.data.actions[actionId];
+        if (result?.hidden && this.data.actions[actionId]) {
+          this.data.actions[actionId].visible = false;
+        } else {
+          delete this.data.actions[actionId];
 
-        // 从所有绑定中移除
-        for (const songId in this.data.bindings) {
-          delete this.data.bindings[songId][actionId];
-          if (Object.keys(this.data.bindings[songId]).length === 0) {
-            delete this.data.bindings[songId];
+          // 从所有绑定中移除
+          for (const songId in this.data.bindings) {
+            delete this.data.bindings[songId][actionId];
+            if (Object.keys(this.data.bindings[songId]).length === 0) {
+              delete this.data.bindings[songId];
+            }
           }
         }
 
@@ -1777,8 +1862,13 @@ window.Jukebox = {
       return Object.entries(this.data.songs).filter(([id, song]) => showHidden || song.visible !== false);
     },
 
+    shouldShowAction(action) {
+      const showHidden = this.showHiddenActions !== false;
+      return !!action && (showHidden || action.visible !== false);
+    },
+
     getVisibleActionEntries() {
-      return Object.entries(this.data.actions);
+      return Object.entries(this.data.actions).filter(([, action]) => this.shouldShowAction(action));
     },
 
     areAllSongsSelected() {
@@ -1794,13 +1884,13 @@ window.Jukebox = {
 
     areAllActionsSelected() {
       this.initSelection();
-      const actionIds = Object.keys(this.data.actions);
+      const actionIds = this.getVisibleActionEntries().map(([id]) => id);
       return actionIds.length > 0 && actionIds.every(id => this.selectedActions.has(id));
     },
 
     hasAnyActionsSelected() {
       this.initSelection();
-      return Object.keys(this.data.actions).some(id => this.selectedActions.has(id));
+      return this.getVisibleActionEntries().some(([id]) => this.selectedActions.has(id));
     },
 
     areAllBindingSongsSelected() {
@@ -1816,13 +1906,13 @@ window.Jukebox = {
 
     areAllBindingActionsSelected() {
       this.initBindingSelection();
-      const actionIds = Object.keys(this.data.actions);
+      const actionIds = this.getVisibleActionEntries().map(([id]) => id);
       return actionIds.length > 0 && actionIds.every(actionId => this.bindingSelectedActions.has(actionId));
     },
 
     hasAnyBindingActionsSelected() {
       this.initBindingSelection();
-      return Object.keys(this.data.actions).some(actionId => this.bindingSelectedActions.has(actionId));
+      return this.getVisibleActionEntries().some(([actionId]) => this.bindingSelectedActions.has(actionId));
     },
 
     syncCheckboxState(checkbox, checked, indeterminate) {
@@ -1956,8 +2046,8 @@ window.Jukebox = {
     // 动画Tab全选：只勾选动画本身
     toggleSelectAllActions(checked) {
       this.initSelection();
-      
-      Object.keys(this.data.actions).forEach(id => {
+
+      this.getVisibleActionEntries().forEach(([id]) => {
         if (checked) {
           this.selectedActions.add(id);
         } else {
@@ -1987,8 +2077,8 @@ window.Jukebox = {
     // 绑定Tab全选动画（使用合集逻辑：只勾选满足条件的动画）
     toggleSelectAllBindingActions(checked) {
       this.ensureBindingSelectionState();
-      
-      Object.keys(this.data.actions).forEach(actionId => {
+
+      this.getVisibleActionEntries().forEach(([actionId]) => {
         if (checked) {
           this.bindingSourceActions.add(actionId);
         } else {

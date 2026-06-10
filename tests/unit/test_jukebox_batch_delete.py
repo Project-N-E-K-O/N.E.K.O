@@ -172,7 +172,7 @@ async def test_batch_delete_reports_partial_failures(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_batch_delete_actions_removes_user_action_and_unbinds_builtin(monkeypatch, tmp_path):
+async def test_batch_delete_actions_removes_user_action_and_hides_builtin(monkeypatch, tmp_path):
     jukebox_dir = tmp_path / "jukebox"
     actions_dir = jukebox_dir / "actions"
     actions_dir.mkdir(parents=True)
@@ -196,6 +196,7 @@ async def test_batch_delete_actions_removes_user_action_and_unbinds_builtin(monk
                     "file": "actions/builtin.vmd",
                     "fileMd5": "builtin-action-md5",
                     "isBuiltin": True,
+                    "visible": True,
                 },
             },
             "bindings": {
@@ -221,16 +222,47 @@ async def test_batch_delete_actions_removes_user_action_and_unbinds_builtin(monk
     assert result["success"] is True
     assert result["partial"] is False
     assert result["deletedCount"] == 1
-    assert result["unboundCount"] == 1
+    assert result["hiddenCount"] == 1
     assert result["failedCount"] == 0
     assert not action_file.exists()
     assert "user-action" not in fake.data["actions"]
     assert "builtin-action" in fake.data["actions"]
+    assert fake.data["actions"]["builtin-action"]["visible"] is False
     assert "user-action-md5" not in fake.data["md5Index"]["actions"]
-    assert "song-1" not in fake.data["bindings"]
-    assert "song-2" not in fake.data["bindings"]
+    assert fake.data["bindings"] == {
+        "song-1": {"builtin-action": {"offset": 0}},
+        "song-2": {"builtin-action": {"offset": 0}},
+    }
     assert fake.data["songs"]["song-1"]["defaultAction"] == ""
-    assert fake.data["songs"]["song-2"]["defaultAction"] == ""
+    assert fake.data["songs"]["song-2"]["defaultAction"] == "builtin-action"
+    assert fake.saved is True
+
+
+@pytest.mark.asyncio
+async def test_update_action_visibility_persists_hidden_state(monkeypatch, tmp_path):
+    fake = _FakeJukeboxConfig(
+        {
+            "songs": {},
+            "actions": {
+                "builtin-action": {
+                    "name": "Builtin Action",
+                    "file": "actions/builtin.vmd",
+                    "fileMd5": "builtin-action-md5",
+                    "isBuiltin": True,
+                    "visible": True,
+                }
+            },
+            "bindings": {},
+            "md5Index": {"songs": {}, "actions": {}},
+        },
+        tmp_path / "jukebox",
+    )
+    _install_fake_config(monkeypatch, fake)
+
+    result = await jukebox_router.update_action_visibility("builtin-action", visible=False)
+
+    assert result == {"success": True}
+    assert fake.data["actions"]["builtin-action"]["visible"] is False
     assert fake.saved is True
 
 
