@@ -45,14 +45,9 @@ GROUPS: list[dict[str, object]] = [
     {
         "name": "static/locales",
         "dir": "static/locales",
-        # TEMPORARY (PR #1731): en.json / zh-CN.json excluded for a one-time
-        # realignment of the aiCompanion block (PR #1419 put the two Seed keys
-        # at the top of the block in these two files only; #1731 moves them to
-        # the majority position so all 8 files share one key order again).
-        # Restore both files to the list right after PR #1731 merges.
         "files": [
-            "es.json", "ja.json", "ko.json",
-            "pt.json", "ru.json", "zh-TW.json",
+            "en.json", "es.json", "ja.json", "ko.json",
+            "pt.json", "ru.json", "zh-CN.json", "zh-TW.json",
         ],
     },
     {
