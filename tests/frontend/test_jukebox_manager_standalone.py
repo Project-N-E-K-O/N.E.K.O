@@ -611,6 +611,79 @@ def test_jukebox_manager_actions_visibility_filters_current_display(mock_page: P
 
 
 @pytest.mark.frontend
+def test_jukebox_playback_ignores_hidden_bound_actions(mock_page: Page):
+    mock_page.set_content(HARNESS_HTML)
+    mock_page.evaluate(
+        """
+        () => {
+          window.t = (key, fallback) => typeof fallback === 'string' ? fallback : key;
+          window.lanlan_config = { model_type: 'live3d', live3d_sub_type: 'mmd' };
+          window.fetch = async (url) => {
+            if (!String(url).endsWith('/api/jukebox/config')) {
+              throw new Error('unexpected fetch: ' + url);
+            }
+            return {
+              ok: true,
+              json: async () => ({
+                songs: {
+                  song1: {
+                    name: 'Song 1',
+                    artist: 'A',
+                    visible: true,
+                    defaultAction: 'hiddenAction'
+                  },
+                  song2: {
+                    name: 'Song 2',
+                    artist: 'B',
+                    visible: true,
+                    defaultAction: 'hiddenAction'
+                  }
+                },
+                actions: {
+                  hiddenAction: { name: 'Hidden Action', format: 'vmd', visible: false },
+                  visibleAction: { name: 'Visible Action', format: 'vmd', visible: true }
+                },
+                bindings: {
+                  song1: {
+                    hiddenAction: { offset: 0 },
+                    visibleAction: { offset: 0 }
+                  },
+                  song2: {
+                    hiddenAction: { offset: 0 }
+                  }
+                }
+              })
+            };
+          };
+          document.body.innerHTML = '<table><tbody id="jukebox-song-list"></tbody></table>';
+        }
+        """
+    )
+    mock_page.add_script_tag(content=JUKEBOX_SCRIPT)
+    playback_state = mock_page.evaluate(
+        """
+        async () => {
+          await window.Jukebox.loadSongs();
+          const [song1, song2] = window.Jukebox.State.songs;
+          return {
+            song1BoundActionIds: song1.boundActions.map((action) => action.id),
+            song1SelectedActionId: window.Jukebox.getActionForModel(song1)?.id || null,
+            song2BoundActionIds: song2.boundActions.map((action) => action.id),
+            song2SelectedActionId: window.Jukebox.getActionForModel(song2)?.id || null
+          };
+        }
+        """
+    )
+
+    assert playback_state == {
+        "song1BoundActionIds": ["visibleAction"],
+        "song1SelectedActionId": "visibleAction",
+        "song2BoundActionIds": [],
+        "song2SelectedActionId": None,
+    }
+
+
+@pytest.mark.frontend
 def test_jukebox_manager_long_song_name_scrolls_without_pushing_actions(mock_page: Page):
     setup_song_manager_page(
         mock_page,

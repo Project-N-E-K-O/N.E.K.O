@@ -5968,10 +5968,12 @@ window.Jukebox = {
       Jukebox.State.songs = Object.entries(songs).map(([id, song]) => {
         // 获取该歌曲绑定的动画
         const songBindings = bindings[id] || {};
-        const boundActions = Object.keys(songBindings).map(actionId => ({
-          id: actionId,
-          ...actions[actionId]
-        })).filter(a => a.id); // 过滤掉不存在的动画
+        const boundActions = Object.keys(songBindings)
+          .filter(actionId => actions[actionId] && actions[actionId].visible !== false)
+          .map(actionId => ({
+            id: actionId,
+            ...actions[actionId]
+          })); // 过滤掉不存在或已隐藏的动画
         
         // 处理音频路径：自带资源使用 /static/jukebox/ 前缀
         let audioPath = song.audio || '';
