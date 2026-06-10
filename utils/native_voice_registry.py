@@ -326,11 +326,27 @@ def _read_realtime_base_url(cm: "ConfigManager") -> str:
     return base_url
 
 
+def _gptsovits_tts_overrides_native_tts_for_ui(
+    cm: "ConfigManager",
+    core_config: Mapping[str, Any],
+) -> bool:
+    if not core_config.get('GPTSOVITS_ENABLED', False):
+        return False
+    try:
+        tts_config = cm.get_model_api_config('tts_custom') or {}
+    except Exception:
+        return False
+    return bool(tts_config.get('is_custom'))
+
+
 def _read_tts_native_provider_for_ui(cm: "ConfigManager") -> str | None:
     try:
         core_config = cm.get_core_config() or {}
     except Exception:
         core_config = {}
+
+    if _gptsovits_tts_overrides_native_tts_for_ui(cm, core_config):
+        return None
 
     assist_api = str(core_config.get('assistApi') or '').strip().lower()
     if assist_api == 'mimo' and assist_api in _PROVIDERS:
