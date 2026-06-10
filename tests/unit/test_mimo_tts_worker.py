@@ -193,6 +193,40 @@ def test_get_tts_worker_routes_assist_mimo_to_mimo_worker(monkeypatch):
 
 
 @pytest.mark.unit
+def test_get_tts_worker_routes_mimo_before_core_native_voice(monkeypatch):
+    class _CM:
+        def get_core_config(self):
+            return {
+                "assistApi": "mimo",
+                "OPENROUTER_URL": "https://api.xiaomimimo.com/v1",
+                "TTS_PROVIDER": "",
+                "CORE_API_KEY": "gemini-core-key",
+                "GPTSOVITS_ENABLED": False,
+            }
+
+        def get_model_api_config(self, model_type):
+            return {"is_custom": False, "api_key": "tts-default-key"}
+
+        def get_tts_api_key(self, provider):
+            assert provider == "mimo"
+            return "mimo-key-over-native"
+
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM())
+
+    worker, api_key, provider_key = tts_client.get_tts_worker(
+        core_api_type="gemini",
+        has_custom_voice=False,
+        voice_id="Puck",
+    )
+
+    assert isinstance(worker, partial)
+    assert worker.func is tts_client.mimo_tts_worker
+    assert worker.keywords == {"base_url": "https://api.xiaomimimo.com/v1"}
+    assert api_key == "mimo-key-over-native"
+    assert provider_key == "mimo"
+
+
+@pytest.mark.unit
 def test_get_tts_worker_routes_tts_provider_mimo_to_default_endpoint(monkeypatch):
     class _CM:
         def get_core_config(self):

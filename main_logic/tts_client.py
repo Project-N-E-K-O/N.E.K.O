@@ -4120,13 +4120,36 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
                         voice_id, provider)
             return cosyvoice_vc_tts_worker, (runtime_key or None), 'cosyvoice'
 
+    tts_provider = str(core_cfg.get('TTS_PROVIDER') or core_cfg.get('ttsProvider') or '').strip().lower()
+    assist_api_type = str(core_cfg.get('assistApi') or '').strip().lower()
+    if tts_provider == 'mimo' or assist_api_type == 'mimo':
+        try:
+            tts_config = cm.get_model_api_config('tts_custom')
+            if tts_config.get('is_custom') and core_cfg.get('GPTSOVITS_ENABLED', False):
+                return gptsovits_tts_worker, None, 'gptsovits'
+        except Exception as e:
+            logger.warning(f'TTS调度器检查报告:{e}')
+
+        mimo_base_url = core_cfg.get('OPENROUTER_URL') if assist_api_type == 'mimo' else None
+        mimo_api_key = (cm.get_tts_api_key('mimo') or '').strip()
+        if not mimo_api_key:
+            logger.warning(
+                "MiMo TTS 已选中但 MiMo API Key 缺失，改用 dummy TTS worker 避免复用主 TTS Key")
+            return dummy_tts_worker, None, None
+        return (
+            partial(mimo_tts_worker, base_url=mimo_base_url),
+            mimo_api_key,
+            'mimo',
+        )
+
     # core_api_type 命中 native voice provider + 用户选了该 provider 的原生声线
     # (e.g. Gemini Puck/Leda/中文男) 时优先走原生 worker，不能被 has_custom_voice=False
     # 的 GPT-SoVITS / local CosyVoice fallthrough 拦截 —— _has_custom_tts 已经判断
     # voice_id 不是用户克隆音色，这里 has_custom_voice 必为 False，是用户显式选择的
     # 原生路径，应当尊重该选择喵。api_key 由 provider 注册的 resolver 提供
     # (Gemini 用 CORE_API_KEY；若 fallback 到 get_model_api_config('tts_default')
-    # 会拿到自定义 TTS 的 key，鉴权必失败)。
+    # 会拿到自定义 TTS 的 key，鉴权必失败)。显式选择 MiMo 时已在上方短路，
+    # 避免 Gemini/Grok 等 core-native voice 覆盖 MiMo 的辅助 API TTS 路由。
     if not has_custom_voice:
         native = get_native_tts_worker(core_api_type, cm, voice_id)
         if native is not None:
@@ -4141,21 +4164,6 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
                 return gptsovits_tts_worker, None, 'gptsovits'
     except Exception as e:
         logger.warning(f'TTS调度器检查报告:{e}')
-
-    tts_provider = str(core_cfg.get('TTS_PROVIDER') or core_cfg.get('ttsProvider') or '').strip().lower()
-    assist_api_type = str(core_cfg.get('assistApi') or '').strip().lower()
-    if tts_provider == 'mimo' or assist_api_type == 'mimo':
-        mimo_base_url = core_cfg.get('OPENROUTER_URL') if assist_api_type == 'mimo' else None
-        mimo_api_key = (cm.get_tts_api_key('mimo') or '').strip()
-        if not mimo_api_key:
-            logger.warning(
-                "MiMo TTS 已选中但 MiMo API Key 缺失，改用 dummy TTS worker 避免复用主 TTS Key")
-            return dummy_tts_worker, None, None
-        return (
-            partial(mimo_tts_worker, base_url=mimo_base_url),
-            mimo_api_key,
-            'mimo',
-        )
 
     # 如果有自定义克隆音色，使用 CosyVoice（阿里云）
     # 必须同时有有效的 voice_id 且不是免费预设音色，否则 fallthrough 到默认 TTS
