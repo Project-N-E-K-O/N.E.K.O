@@ -726,8 +726,7 @@ async def update_core_config(request: Request):
             return {"success": False, "error": str(exc)}
 
         effective_core_api = incoming_core_api or _stored_provider('coreApi')
-        effective_assist_api = incoming_assist_api or _stored_provider('assistApi')
-        is_free_version = effective_core_api == 'free' or effective_assist_api == 'free'
+        core_uses_free_provider = effective_core_api == 'free'
         
         def _is_masked_secret(value) -> bool:
             if not isinstance(value, str):
@@ -756,7 +755,7 @@ async def update_core_config(request: Request):
                     core_cfg['coreApiKey'] = api_key
         else:
             # 未启用自定义API时，必须设置coreApiKey
-            if 'coreApiKey' not in data and not is_free_version:
+            if 'coreApiKey' not in data and not core_uses_free_provider:
                 return {"success": False, "error": "缺少coreApiKey字段"}
             try:
                 api_key = (
@@ -766,7 +765,7 @@ async def update_core_config(request: Request):
                 )
             except (TypeError, ValueError) as exc:
                 return {"success": False, "error": str(exc)}
-            if not is_free_version and not api_key:
+            if not core_uses_free_provider and not api_key:
                 return {"success": False, "error": "API Key不能为空"}
             if api_key is not None:
                 core_cfg['coreApiKey'] = api_key

@@ -149,3 +149,29 @@ def test_backend_preserves_free_provider_before_key_validation(
     readback = result["readback"]
     assert readback["coreApi"] == "free"
     assert readback["assistApi"] == "free"
+
+
+@pytest.mark.frontend
+def test_backend_requires_key_when_switching_free_core_to_qwen(
+    mock_page: Page,
+    running_server: str,
+):
+    """Regression: assistApi=free must not waive the key for a paid coreApi."""
+    _open_free_settings(mock_page, running_server)
+
+    result = mock_page.evaluate(
+        """async () => {
+            const saveResp = await fetch('/api/config/core_api', {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({coreApiKey:'', coreApi:'qwen', enableCustomApi:false})
+            });
+            const saveJson = await saveResp.json();
+            const readback = await (await fetch('/api/config/core_api')).json();
+            return {saveJson, readback};
+        }"""
+    )
+    assert result["saveJson"].get("success") is False, result["saveJson"]
+    assert "API Key" in result["saveJson"].get("error", "")
+    readback = result["readback"]
+    assert readback["coreApi"] == "free"
+    assert readback["assistApi"] == "free"
