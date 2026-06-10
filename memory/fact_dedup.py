@@ -33,8 +33,8 @@ threshold:
 
 Why an LLM is in the loop:
 
-  * Cosine alone can't distinguish "主人喜欢猫" (master likes cats) from
-    "主人讨厌猫" (master hates cats).
+  * Cosine alone can't distinguish "主人喜欢猫" (the user likes cats) from
+    "主人讨厌猫" (the user hates cats).
     Both surface forms vary by 1 token but ride opposite poles.
   * Hash-based dedup remains the first line of defence (catches exact
     repeats, no LLM cost) and the FTS5 lightweight near-dup check
@@ -275,7 +275,7 @@ class FactDedupResolver:
         to repeatedly scan the entire history on every sweep, only
         check the new arrivals against existing rows.
 
-        Pairs are entity-scoped: ``主人喜欢猫`` ("master likes cats",
+        Pairs are entity-scoped: ``主人喜欢猫`` ("the user likes cats",
         entity=master) should not collide with ``关系融洽`` ("harmonious
         relationship", entity=relationship) even if the embeddings happen
         to be close. Cross-entity overlap is weird enough that we'd rather

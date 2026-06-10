@@ -49,7 +49,7 @@ whole pipeline degrades to "evidence_score DESC + top ``budget``" —
 exactly the current behaviour, no LLM call cost added.
 
 Why vectors are a *prefilter*, not a replacement: cosine alone can't
-tell ``主人喜欢猫`` ("master likes cats") from ``主人讨厌猫`` ("master
+tell ``主人喜欢猫`` ("the user likes cats") from ``主人讨厌猫`` ("the user
 hates cats") (≈0.78), and "semantically near" entries that the user
 didn't actually mean to bring up trigger false positives in Stage-2
 signal detection (which would either reinforce or negate the wrong
