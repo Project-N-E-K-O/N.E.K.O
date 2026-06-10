@@ -425,8 +425,10 @@ def _check_ui_surface(plugin_dir: Path, value: object, label: str, issues: list[
     if open_in is not None:
         _check_enum(open_in, f"{label}.open_in", {"iframe", "new_tab", "same_tab"}, issues)
     context = value.get("context")
-    if context is not None:
-        _check_enum(context, f"{label}.context", {"dashboard", "chat", "settings", "plugin_detail"}, issues)
+    if context is not None and (not isinstance(context, str) or not context.strip()):
+        # context is the plugin-defined @ui.context provider id resolved via
+        # host.get_ui_context(), not a placement enum
+        issues.append(("error", f"{label}.context must be a non-empty string"))
     permissions = value.get("permissions")
     if permissions is not None:
         _check_string_list(permissions, f"{label}.permissions", issues, required=False)
