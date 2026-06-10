@@ -198,6 +198,7 @@ const _NEKO_IDLE_CAT1_SUBSTATE_IDLE = 'idle';
 const _NEKO_IDLE_CAT1_SUBSTATE_WALKING = 'walking-to-chat';
 const _NEKO_IDLE_CAT1_SUBSTATE_STRETCH = 'stretch-near-chat';
 const _NEKO_IDLE_CAT1_CHAT_GAP_PX = -12;
+const _NEKO_IDLE_CAT1_MINIMIZED_RIGHT_TO_LEFT_APPROACH_PX = 35;
 const _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE = 'compact-top-edge';
 const _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE = 'minimized-side';
 const _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_OVERLAP_PX = 28;
@@ -2305,6 +2306,14 @@ function _clampNekoIdleCat1Position(left, top, width, height) {
     };
 }
 
+function _getNekoIdleCat1MinimizedSideApproachOffsetPx(facingRight, chatRect) {
+    // The yarn ball's right side has trailing string space, so right-to-left approaches need an inward visual anchor.
+    if (facingRight) return 0;
+    const width = Number(chatRect && chatRect.width);
+    if (!Number.isFinite(width) || width <= 0) return 0;
+    return Math.max(0, Math.min(width, _NEKO_IDLE_CAT1_MINIMIZED_RIGHT_TO_LEFT_APPROACH_PX));
+}
+
 function _getNekoIdleCat1SideTarget(container, chatRect) {
     if (!container || !chatRect || typeof container.getBoundingClientRect !== 'function') return null;
     const profile = _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
@@ -2314,9 +2323,10 @@ function _getNekoIdleCat1SideTarget(container, chatRect) {
     const catCenterX = rect.left + rect.width / 2;
     const chatCenterX = chatRect.left + chatRect.width / 2;
     const facingRight = chatCenterX > catCenterX;
+    const approachOffsetPx = _getNekoIdleCat1MinimizedSideApproachOffsetPx(facingRight, chatRect);
     const rawLeft = facingRight
         ? chatRect.left - rect.width - profile.target.gapPx
-        : chatRect.right + profile.target.gapPx;
+        : chatRect.right + profile.target.gapPx - approachOffsetPx;
     const rawTop = chatRect.top + (chatRect.height - rect.height) / 2;
     const clamped = _clampNekoIdleCat1Position(rawLeft, rawTop, rect.width, rect.height);
     const targetCenterX = clamped.left + rect.width / 2;
@@ -2330,6 +2340,7 @@ function _getNekoIdleCat1SideTarget(container, chatRect) {
         top: clamped.top,
         distance: Math.hypot(dx, dy),
         facingRight: facingRight,
+        approachOffsetPx: approachOffsetPx,
         kind: _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE
     };
 }
