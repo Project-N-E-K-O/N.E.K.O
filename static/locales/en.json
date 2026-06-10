@@ -752,7 +752,7 @@
         "avatarCropZoomOut": "Zoom out",
         "avatarCropCancel": "Cancel",
         "avatarCropSave": "Save",
-        "emptyState": "Start chatting with me now!",
+        "emptyState":  "Messages will appear here after the chat feed is connected.",
         "messageStreaming": "Generating",
         "messageFailed": "Send failed",
         "reactWindowOpen": "Open chat window",

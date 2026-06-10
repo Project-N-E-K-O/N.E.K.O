@@ -4739,6 +4739,10 @@
         // minimize 调用此时 timer 已=0，clear 为 no-op，不影响正常折叠。
         clearCompactMinimizePressTimer();
 
+        if (!previousMinimized && nextMinimized && previousMode === 'compact') {
+            rememberCompactMinimizeBallTargetAnchor();
+        }
+
         if (!nextMinimized) {
             lastRestorableChatSurfaceMode = normalized;
         } else if (!previousMinimized) {

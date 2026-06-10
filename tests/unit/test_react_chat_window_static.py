@@ -829,6 +829,19 @@ def test_compact_minimize_targets_inline_yarn_ball_button_center():
     )[0]
     assert "rememberCompactMinimizeBallTargetAnchor();" in minimize_block
 
+    set_mode_block = script.split("function setChatSurfaceMode(nextMode)", 1)[1].split(
+        "function cycleChatSurfaceMode()",
+        1,
+    )[0]
+    assert "if (!previousMinimized && nextMinimized && previousMode === 'compact')" in set_mode_block
+    assert "rememberCompactMinimizeBallTargetAnchor();" in set_mode_block
+    assert set_mode_block.index("clearCompactMinimizePressTimer();") < set_mode_block.index(
+        "rememberCompactMinimizeBallTargetAnchor();"
+    )
+    assert set_mode_block.index("rememberCompactMinimizeBallTargetAnchor();") < set_mode_block.index(
+        "state.chatSurfaceMode = normalized;"
+    )
+
     target_block = script.split("function getMinimizedTarget(rect)", 1)[1].split(
         "function getExpandedTargetFromSavedState()",
         1,
