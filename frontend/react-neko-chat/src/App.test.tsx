@@ -50,6 +50,9 @@ describe('App', () => {
   it('selects locale-aware chat empty state fallbacks', () => {
     expect(getChatEmptyStateFallback('zh-CN')).toBe('现在开始跟我聊天吧！');
     expect(getChatEmptyStateFallback('zh-TW')).toBe('現在開始跟我聊天吧！');
+    expect(getChatEmptyStateFallback('zh-HK')).toBe('現在開始跟我聊天吧！');
+    expect(getChatEmptyStateFallback('zh-MO')).toBe('現在開始跟我聊天吧！');
+    expect(getChatEmptyStateFallback('zh-Hant')).toBe('現在開始跟我聊天吧！');
     expect(getChatEmptyStateFallback('en-US')).toBe('Start chatting with me now!');
   });
 

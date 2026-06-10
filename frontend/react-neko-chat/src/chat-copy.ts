@@ -1,7 +1,15 @@
 function normalizeChatLocale(locale?: string): 'zh-CN' | 'zh-TW' | 'default' {
   const normalized = (locale || '').trim().toLowerCase();
   if (!normalized) return 'default';
-  if (normalized === 'zh-tw' || normalized.startsWith('zh-tw') || normalized.includes('hant')) {
+  if (
+    normalized === 'zh-tw'
+    || normalized.startsWith('zh-tw')
+    || normalized === 'zh-hk'
+    || normalized.startsWith('zh-hk')
+    || normalized === 'zh-mo'
+    || normalized.startsWith('zh-mo')
+    || normalized.includes('hant')
+  ) {
     return 'zh-TW';
   }
   if (
