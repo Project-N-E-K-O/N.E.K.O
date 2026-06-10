@@ -142,11 +142,11 @@ const compactInputToolWheelViewportFitVisibleSlots = [
   { angleDeg: -110, scale: 0.98 },
   { angleDeg: -80, scale: 0.86 },
 ] as const;
-const COMPACT_SURFACE_RESIZE_MIN_WIDTH = 280;
+const COMPACT_SURFACE_RESIZE_MIN_WIDTH = 180;
 // compact 对话条默认/初始宽度（无法从 rect/CSS 量到时的回退值）。与 resize 下限解耦：
 // 减小最短宽度只动 RESIZE_MIN_WIDTH，默认仍是这个值，保证「默认宽度不变」。
 const COMPACT_SURFACE_DEFAULT_WIDTH = 430;
-const COMPACT_SURFACE_RESIZE_MOBILE_MIN_WIDTH = 280;
+const COMPACT_SURFACE_RESIZE_MOBILE_MIN_WIDTH = 180;
 const COMPACT_SURFACE_RESIZE_MAX_WIDTH = 720;
 const COMPACT_SURFACE_RESIZE_VIEWPORT_GUTTER = 32;
 const COMPACT_SURFACE_RESIZE_MOBILE_VIEWPORT_GUTTER = 16;

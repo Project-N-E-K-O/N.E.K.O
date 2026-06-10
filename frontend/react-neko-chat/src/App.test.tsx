@@ -308,7 +308,7 @@ describe('App', () => {
       });
 
       await waitFor(() => {
-        expect(document.documentElement.style.getPropertyValue('--compact-surface-resize-width')).toBe('280px');
+        expect(document.documentElement.style.getPropertyValue('--compact-surface-resize-width')).toBe('180px');
       });
       fireEvent.pointerUp(rightHandle!, {
         pointerId: 22,
