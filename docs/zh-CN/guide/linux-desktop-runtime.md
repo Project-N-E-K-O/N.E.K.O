@@ -31,12 +31,17 @@ echo "XMODIFIERS=$XMODIFIERS"
 echo "SteamAppId=$SteamAppId"
 ```
 
-对正在运行的桌面壳进程，检查真实环境变量和启动参数。排查 Electron 窗口和输入法问题时，不要采样 `projectneko_server` 或其他后端 helper：
+对正在运行的桌面壳进程，检查真实环境变量和启动参数。要采样 **Electron 主浏览器进程**，既不要采样 `projectneko_server` 等后端 helper，也不要采样 Electron 子进程。透明窗口和 GTK 输入法模块都驻留在主浏览器进程里，renderer/GPU/zygote 子进程（带 `--type=...`）并不持有它们；而 `pgrep -n`（取最新 PID）通常会命中子进程，导致下面的检查误报「输入法/input-shape 未加载」。应选取第一个命令行不含 `--type=` 的匹配进程：
 
 ```bash
-pid="$(pgrep -n -f 'AppRun|AppImage|electron|N[.]E[.]K[.]O|n[.]e[.]k[.]o')"
+pid=""
+for p in $(pgrep -f 'AppRun|AppImage|electron|N[.]E[.]K[.]O|n[.]e[.]k[.]o'); do
+  if ! tr '\0' '\n' < "/proc/$p/cmdline" | grep -q -- '--type='; then
+    pid="$p"; break
+  fi
+done
 if [ -z "$pid" ]; then
-  echo "N.E.K.O desktop shell process was not found" >&2
+  echo "N.E.K.O desktop shell (main Electron process) was not found" >&2
   exit 1
 fi
 tr '\0' '\n' < "/proc/$pid/environ" | sort | grep -E 'DISPLAY|WAYLAND|GTK_IM|QT_IM|XMODIFIERS|Steam'

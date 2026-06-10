@@ -31,12 +31,17 @@ echo "XMODIFIERS=$XMODIFIERS"
 echo "SteamAppId=$SteamAppId"
 ```
 
-For a running desktop shell process, inspect the real environment and arguments. Do not sample `projectneko_server` or other backend helpers for Electron window and input-method bugs:
+For a running desktop shell process, inspect the real environment and arguments. Target the **main Electron browser process**, not a `projectneko_server` backend helper nor an Electron child process. The transparent window and the GTK input-method modules live in the main browser process, while renderer/GPU/zygote children (`--type=...`) do not own them, so `pgrep -n` (newest PID) would usually land on a child and make the checks below report missing IM/input-shape state by mistake. Select the first matching process whose command line has no `--type=` flag:
 
 ```bash
-pid="$(pgrep -n -f 'AppRun|AppImage|electron|N[.]E[.]K[.]O|n[.]e[.]k[.]o')"
+pid=""
+for p in $(pgrep -f 'AppRun|AppImage|electron|N[.]E[.]K[.]O|n[.]e[.]k[.]o'); do
+  if ! tr '\0' '\n' < "/proc/$p/cmdline" | grep -q -- '--type='; then
+    pid="$p"; break
+  fi
+done
 if [ -z "$pid" ]; then
-  echo "N.E.K.O desktop shell process was not found" >&2
+  echo "N.E.K.O desktop shell (main Electron process) was not found" >&2
   exit 1
 fi
 tr '\0' '\n' < "/proc/$pid/environ" | sort | grep -E 'DISPLAY|WAYLAND|GTK_IM|QT_IM|XMODIFIERS|Steam'
