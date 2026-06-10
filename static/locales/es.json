@@ -1042,7 +1042,6 @@
         },
         "freeVersionNoApiKey": "La versión gratuita no requiere clave API",
         "pleaseEnterApiKey": "Por favor ingrese su clave API",
-        "freeVersionOnlyWhenCoreFree": "Versión gratuita (solo disponible cuando Core API es la versión gratuita)",
         "freeVersionConfig": "Configuración de la versión gratuita: admite chat de audio/vídeo, chat de texto y gestión de memoria. No se admiten voz personalizada ni modo Agente",
         "qwenRecommendation": "Cuando Alibaba es la API principal, se recomienda seleccionar también Alibaba como API de asistencia para obtener la mejor experiencia de voz personalizada.",
         "glmRecommendation": "Cuando GLM es la API principal, ofrece una cuota gratuita y admite búsquedas web. El audio de voz contiene un pitido de marca de agua de forma predeterminada (se puede desactivar manualmente en la consola Zhipu). Se recomienda seleccionar Alibaba como API de asistencia para soporte de voz personalizado.",

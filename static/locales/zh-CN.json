@@ -1042,7 +1042,6 @@
         },
         "freeVersionNoApiKey": "免费版无需API Key",
         "pleaseEnterApiKey": "请输入您的API Key",
-        "freeVersionOnlyWhenCoreFree": "免费版（仅核心API为免费版时可用）",
         "freeVersionConfig": "免费版配置：支持音视频对话、文本对话和记忆管理，不支持自定义语音、Agent模式",
         "qwenRecommendation": "阿里作为核心API时，建议辅助API也选择阿里以获得最佳的自定义语音体验",
         "glmRecommendation": "智谱作为核心API时，有免费额度，支持联网搜索。语音默认含水印滴滴声（可在智谱控制台手动关闭）。建议辅助API选择阿里以支持自定义语音功能",

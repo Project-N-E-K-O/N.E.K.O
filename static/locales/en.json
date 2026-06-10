@@ -1042,7 +1042,6 @@
         },
         "freeVersionNoApiKey": "Free version does not require API Key",
         "pleaseEnterApiKey": "Please enter your API Key",
-        "freeVersionOnlyWhenCoreFree": "Free Version (Only available when Core API is Free Version)",
         "freeVersionConfig": "Free Version Configuration: Supports audio/video chat, text chat, and memory management. Custom voice and Agent mode not supported",
         "qwenRecommendation": "When Alibaba is the Core API, it's recommended to also select Alibaba as Assist API for the best custom voice experience",
         "glmRecommendation": "When GLM is the Core API, it offers a free quota and supports web search. Voice audio contains a watermark beep by default (can be disabled manually in the Zhipu console). It's recommended to select Alibaba as Assist API for custom voice support",

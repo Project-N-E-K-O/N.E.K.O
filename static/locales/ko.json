@@ -1042,7 +1042,6 @@
         },
         "freeVersionNoApiKey": "무료 버전에는 API 키가 필요하지 않습니다.",
         "pleaseEnterApiKey": "API 키를 입력하세요.",
-        "freeVersionOnlyWhenCoreFree": "무료 버전(Core API가 무료 버전인 경우에만 사용 가능)",
         "freeVersionConfig": "무료 버전 구성: 오디오/비디오 채팅, 텍스트 채팅, 메모리 관리를 지원합니다. 사용자 정의 음성 및 에이전트 모드는 지원되지 않습니다.",
         "qwenRecommendation": "Alibaba가 핵심 API인 경우 최상의 사용자 정의 음성 경험을 위해 Alibaba를 Assist API로 선택하는 것이 좋습니다.",
         "glmRecommendation": "GLM을 Core API로 사용할 때 무료 할당량이 있으며 웹 검색을 지원합니다. 음성에 기본적으로 워터마크 비프음이 포함됩니다(Zhipu 콘솔에서 수동 비활성화 가능). 맞춤형 음성을 위해 Assist API로 Alibaba를 선택하는 것이 좋습니다",

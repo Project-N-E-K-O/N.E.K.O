@@ -20,7 +20,6 @@ let _resolvedProviderUrls = {};
 let _coreApiKeyInputDirty = false;
 // 保存/检测期间锁住设置页，避免用户中途关闭或重复操作
 let _apiSaveInProgress = false;
-let _lastEligibleAssistProvider = '';
 // 本页已提醒过的阿里美国 API URL，避免同一轮检测重复弹窗。
 const _aliyunUsApiWarningShownKeys = new Set();
 
@@ -1201,7 +1200,8 @@ async function loadCurrentApiKey() {
             if (data.enableCustomApi) {
                 showCurrentApiKey(window.t ? window.t('api.currentUsingCustomApi') : '当前使用：自定义API模式', '', true);
             } else if (data.api_key) {
-                if (data.api_key === 'free-access' || data.coreApi === 'free' || data.assistApi === 'free') {
+                // 免费判定只看 core：assist=free 配付费 core 时 coreApiKey 是真实付费 Key。
+                if (data.api_key === 'free-access' || data.coreApi === 'free') {
                     showCurrentApiKey(window.t ? window.t('api.currentUsingFreeVersion') : '当前使用：免费版（无需API Key）', 'free-access', true);
                 } else {
                     showCurrentApiKey(window.t ? window.t('api.currentApiKey', { key: maskApiKey(data.api_key) }) : `当前API Key: ${maskApiKey(data.api_key)}`, data.api_key, true);
@@ -1223,7 +1223,7 @@ async function loadCurrentApiKey() {
 
             // 设置核心API Key输入框的值（重要：必须在显示提示后设置）
             if (apiKeyInput) {
-                if (data.api_key === 'free-access' || data.coreApi === 'free' || data.assistApi === 'free') {
+                if (data.api_key === 'free-access' || data.coreApi === 'free') {
                     // 免费版本：显示用户友好的文本
                     apiKeyInput.value = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
                 } else if (data.api_key) {
@@ -1266,7 +1266,6 @@ async function loadCurrentApiKey() {
                     const optionExists = Array.from(assistApiSelect.options).some(opt => opt.value === data.assistApi);
                     if (optionExists) {
                         assistApiSelect.value = data.assistApi;
-                        rememberEligibleAssistProvider(data.assistApi);
                         syncProviderSelectDropdowns(assistApiSelect);
                     }
                 } else {
@@ -1691,12 +1690,6 @@ function updateAssistApiKeyInputAvailability() {
     }
 }
 
-function rememberEligibleAssistProvider(providerKey) {
-    if (providerKey && providerKey !== 'free') {
-        _lastEligibleAssistProvider = providerKey;
-    }
-}
-
 // 切换自定义API启用状态
 function toggleCustomApi(skipAutoFill) {
     const enableCustomApi = document.getElementById('enableCustomApi');
@@ -1756,7 +1749,7 @@ function toggleCustomApi(skipAutoFill) {
     if (!isCustomEnabled && !skipAutoFill) {
         autoFillCoreApiKey(true);
         autoFillAssistApiKey(true);
-        updateAssistApiRecommendation({ preserveAssistProvider: true });
+        updateAssistApiRecommendation();
     }
 
     syncProviderSelectDropdowns();
@@ -2041,10 +2034,12 @@ async function save_button_down(e) {
     const effectiveCoreApiKeyForSave = (!_coreApiKeyInputDirty && hasCoreBookKeyForSave)
         ? coreBookKeyForSave
         : apiKey;
-    const apiKeyForSave = (coreApi === 'free' || assistApi === 'free') ? 'free-access' : effectiveCoreApiKeyForSave;
+    // coreApiKey 只看 core 自己：assist=free 与付费 core 组合时，付费 core 仍需要真实 Key，
+    // 不能被 free-access 覆盖。
+    const apiKeyForSave = coreApi === 'free' ? 'free-access' : effectiveCoreApiKeyForSave;
 
     // 免费版和启用自定义API时不需要API Key检查
-    if (!enableCustomApi && coreApi !== 'free' && assistApi !== 'free' && !apiKeyForSave) {
+    if (!enableCustomApi && coreApi !== 'free' && !apiKeyForSave) {
         showStatus(window.t ? window.t('api.pleaseEnterApiKeyError') : '请输入API Key', 'error');
         return;
     }
@@ -2186,14 +2181,15 @@ async function saveApiKey(params) {
     if (_apiSaveInProgress) return;
     const { apiKey, coreApi, assistApi, enableCustomApi } = params;
 
-    // 统一处理免费版 API Key 的保存值
+    // 统一处理免费版 API Key 的保存值。只看 core 自己：
+    // assist=free 的 free-access 由后端按辅助服务商 profile 解析，不落在 coreApiKey 上。
     let finalApiKey = apiKey;
-    if (coreApi === 'free' || assistApi === 'free') {
+    if (coreApi === 'free') {
         finalApiKey = 'free-access';
     }
 
     // 确保apiKey是有效的字符串
-    if (!enableCustomApi && coreApi !== 'free' && assistApi !== 'free' && (!finalApiKey || typeof finalApiKey !== 'string')) {
+    if (!enableCustomApi && coreApi !== 'free' && (!finalApiKey || typeof finalApiKey !== 'string')) {
         showStatus(window.t ? window.t('api.apiKeyInvalid') : 'API Key无效', 'error');
         return;
     }
@@ -2311,39 +2307,40 @@ function isFreeVersionText(value) {
 }
 
 // 根据核心API选择更新辅助API的提示和建议
-function updateAssistApiRecommendation(options = {}) {
+function updateAssistApiRecommendation() {
     const coreApiSelect = document.getElementById('coreApiSelect');
     const assistApiSelect = document.getElementById('assistApiSelect');
 
     if (!coreApiSelect || !assistApiSelect) return;
 
-    const preserveAssistProvider = options && options.preserveAssistProvider === true;
     const selectedCoreApi = coreApiSelect.value;
 
     // 控制API Key输入框和免费版提示
     const apiKeyInput = document.getElementById('apiKeyInput');
     const freeVersionHint = document.getElementById('freeVersionHint');
 
+    // 辅助 API 与核心 API 解耦：free 与付费可双向组合，free 选项始终可选。
+    // 选了 free 的辅助 API 不可填 Key，由 updateAssistApiKeyInputAvailability 锁定，
+    // 后端解析时与 core=free 一样使用 free-access。
+    assistApiSelect.disabled = false;
+    const freeOption = assistApiSelect.querySelector('option[value="free"]');
+    if (freeOption) {
+        freeOption.disabled = false;
+        freeOption.textContent = window.t ? window.t('api.freeVersion') : '免费版';
+    }
+
     if (selectedCoreApi === 'free') {
+        // core=free 仅锁核心 API Key，辅助 Key 输入是否可用由辅助服务商自身决定。
         if (apiKeyInput) {
             apiKeyInput.disabled = true;
             apiKeyInput.placeholder = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
             apiKeyInput.required = false;
             apiKeyInput.value = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
         }
-        // 辅助 API 与核心 API 解耦：core=free 仅锁核心 API Key，
-        // 辅助 Key 输入是否可用由辅助服务商自身决定。
         if (freeVersionHint) {
             freeVersionHint.style.display = 'inline';
         }
 
-        assistApiSelect.disabled = false;
-        // free 选项保持可用——core=free 时它是合理默认；用户也能切换到其它 provider。
-        const freeOption = assistApiSelect.querySelector('option[value="free"]');
-        if (freeOption) {
-            freeOption.disabled = false;
-            freeOption.textContent = window.t ? window.t('api.freeVersion') : '免费版';
-        }
         // 用户未显式选择 assist 时默认填 'free'，保持原免费版一键到位体验。
         if (!assistApiSelect.value) {
             assistApiSelect.value = 'free';
@@ -2368,43 +2365,6 @@ function updateAssistApiRecommendation(options = {}) {
         }
         if (freeVersionHint) {
             freeVersionHint.style.display = 'none';
-        }
-
-        // 启用辅助API选择框
-        assistApiSelect.disabled = false;
-        const freeOption = assistApiSelect.querySelector('option[value="free"]');
-        if (freeOption) {
-            freeOption.disabled = true;
-            freeOption.textContent = window.t ? window.t('api.freeVersionOnlyWhenCoreFree') : '免费版（仅核心API为免费版时可用）';
-        }
-        // If assist is still stuck on 'free' (now disabled), switch to a valid provider
-        if (assistApiSelect.value === 'free') {
-            const rememberedOpt = preserveAssistProvider && _lastEligibleAssistProvider
-                ? assistApiSelect.querySelector(`option[value="${_lastEligibleAssistProvider}"]`)
-                : null;
-            if (rememberedOpt && !rememberedOpt.disabled) {
-                assistApiSelect.value = _lastEligibleAssistProvider;
-            } else {
-                // Prefer qwen as default, otherwise pick first non-free enabled option
-                const qwenOpt = assistApiSelect.querySelector('option[value="qwen"]');
-                if (qwenOpt && !qwenOpt.disabled) {
-                    assistApiSelect.value = 'qwen';
-                } else {
-                    const validOpt = Array.from(assistApiSelect.options).find(o => !o.disabled && o.value !== 'free');
-                    if (validOpt) assistApiSelect.value = validOpt.value;
-                }
-            }
-            rememberEligibleAssistProvider(assistApiSelect.value);
-            autoFillAssistApiKey(true);
-            // Directly recompute follow_assist slots (avoid redundant handler call)
-            MODEL_TYPES.forEach(mt => {
-                const sel = document.getElementById(`${mt}ModelProvider`);
-                if (sel && sel.value === 'follow_assist') {
-                    onCustomModelProviderChange(mt);
-                }
-            });
-        } else {
-            rememberEligibleAssistProvider(assistApiSelect.value);
         }
     }
 
@@ -4038,7 +3998,7 @@ async function initializePage() {
             }
             updateAssistApiKeyInputAvailability();
 
-            updateAssistApiRecommendation({ preserveAssistProvider: true });
+            updateAssistApiRecommendation();
             autoFillCoreApiKey(true);
             // 不再调用 autoFillAssistApiKey(true)，因为 loadCurrentApiKey()
             // 已从后端数据直接设置辅助API Key，此处再次从管理簿读取会覆盖正确值
@@ -4076,7 +4036,7 @@ async function initializePage() {
             });
         }
 
-        updateAssistApiRecommendation({ preserveAssistProvider: true });
+        updateAssistApiRecommendation();
 
         // 监听语言切换事件，更新下拉选项（保留用户未保存的输入）
         window.addEventListener('localechange', async () => {

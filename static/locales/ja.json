@@ -1042,7 +1042,6 @@
         },
         "freeVersionNoApiKey": "無料版はAPIキー不要です",
         "pleaseEnterApiKey": "APIキーを入力してください",
-        "freeVersionOnlyWhenCoreFree": "無料版（Core APIが無料版の時のみ選択可）",
         "freeVersionConfig": "無料版構成: 音声通話、テキストチャット、記憶管理に対応。カスタム音声とAgentは非対応",
         "qwenRecommendation": "Core APIがAlibabaの場合、最高の体験（カスタム音声等）のためにAssist APIもAlibaba推奨",
         "glmRecommendation": "GLMをCore APIとして使用する場合、無料枠があり、Web検索に対応。音声にはデフォルトで透かし（ビープ音）が含まれます（智譜コンソールで手動無効化可能）。カスタム音声にはAssist APIにAlibabaを推奨",
