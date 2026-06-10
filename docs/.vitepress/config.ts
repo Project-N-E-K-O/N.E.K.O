@@ -180,19 +180,28 @@ function modulesSidebar(lang: 'en' | 'zh-CN' | 'ja') {
 function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
   const t = {
     en: {
-      group: 'Plugin Development', overview: 'Overview', quick: 'Quick Start',
+      group: 'Plugin Development', overview: 'Overview',
+      journey: 'Getting Started', quick: 'Quick Start', base: 'Plugin Capabilities',
+      toml: 'Plugin Config (plugin.toml)',
+      entries: 'Entries & Parameters', router: 'Router (Code Splitting)', lifecycleCfg: 'Lifecycle',
       sdk: 'SDK Reference', dec: 'Decorators', ex: 'Examples', adv: 'Advanced Topics',
-      hosted: 'Hosted UI', best: 'Best Practices',
+      hosted: 'Hosted UI', tool: 'LLM Tool Calling', best: 'Best Practices',
     },
     'zh-CN': {
-      group: '插件开发', overview: '概览', quick: '快速开始',
+      group: '插件开发', overview: '概览',
+      journey: '旅程的起点', quick: '快速开始', base: '插件能力',
+      toml: '插件配置 (plugin.toml)',
+      entries: '入口与参数', router: 'Router（代码拆分）', lifecycleCfg: '生命周期',
       sdk: 'SDK 参考', dec: '装饰器', ex: '示例', adv: '进阶话题',
-      hosted: 'Hosted UI', best: '最佳实践',
+      hosted: 'Hosted UI', tool: 'LLM Tool Calling', best: '最佳实践',
     },
     ja: {
-      group: 'プラグイン開発', overview: '概要', quick: 'クイックスタート',
+      group: 'プラグイン開発', overview: '概要',
+      journey: 'はじめの一歩', quick: 'クイックスタート', base: 'プラグイン機能',
+      toml: 'プラグイン設定 (plugin.toml)',
+      entries: 'エントリーとパラメータ', router: 'Router（コード分割）', lifecycleCfg: 'ライフサイクル',
       sdk: 'SDK リファレンス', dec: 'デコレーター', ex: 'サンプル', adv: '高度なトピック',
-      hosted: 'Hosted UI', best: 'ベストプラクティス',
+      hosted: 'Hosted UI', tool: 'LLM ツール呼び出し', best: 'ベストプラクティス',
     },
   }[lang]
   const p = lang === 'en' ? '' : `/${lang}`
@@ -201,9 +210,21 @@ function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
       text: t.group,
       items: [
         { text: t.overview, link: `${p}/plugins/` },
-        { text: t.quick, link: `${p}/plugins/quick-start` },
+        {
+          text: t.journey,
+          collapsed: false,
+          items: [
+            { text: t.quick, link: `${p}/plugins/quick-start` },
+            { text: t.toml, link: `${p}/plugins/plugin-toml` },
+            { text: t.entries, link: `${p}/plugins/entries` },
+            { text: t.router, link: `${p}/plugins/router` },
+            { text: t.lifecycleCfg, link: `${p}/plugins/lifecycle-config` },
+            { text: t.base, link: `${p}/plugins/plugin-base` },
+          ],
+        },
         { text: t.sdk, link: `${p}/plugins/sdk-reference` },
         { text: t.dec, link: `${p}/plugins/decorators` },
+        { text: t.tool, link: `${p}/plugins/tool-calling` },
         ...(lang === 'ja' ? [] : [{ text: t.hosted, link: `${p}/plugins/hosted-ui` }]),
         { text: t.ex, link: `${p}/plugins/examples` },
         { text: t.adv, link: `${p}/plugins/advanced` },

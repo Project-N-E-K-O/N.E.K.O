@@ -173,11 +173,11 @@ def bridge_e2e_env(
 ) -> Iterator[dict[str, Any]]:
     """Build an ASGI bridge app + ISM all rooted under ``tmp_path``.
 
-    Redirects ``USER_PLUGIN_CONFIG_ROOT`` / ``USER_PLUGIN_PACKAGES_ROOT``
-    on the loaded :mod:`plugin_cli.service` module so saved packages and
-    unpacked plugins land in ``tmp_path``. Also monkeypatches the bridge's
-    own ``USER_PLUGIN_CONFIG_ROOT`` import so its upgrade path resolves
-    the correct roots.
+    Redirects the plugin root settings on :mod:`plugin.settings` so saved
+    packages and unpacked plugins land in ``tmp_path``. Both the plugin_cli
+    service and the market bridge resolve their roots through
+    ``PluginCliPathPolicy.from_settings()``, so patching the settings module
+    is enough — neither freezes the roots at import time anymore.
 
     Yields a dict with ``client`` (httpx AsyncClient), ``token``,
     ``user_root``, ``builtin_root``, ``packages_root``, ``lock_path``.
@@ -191,17 +191,18 @@ def bridge_e2e_env(
     for d in (builtin_root, user_root, packages_root, profiles_root):
         d.mkdir(parents=True, exist_ok=True)
 
-    # Redirect plugin_cli.service module-level constants. They are
-    # captured at import time from settings, so we patch them on the
-    # already-loaded module.
     from plugin.server.application import plugin_cli as plugin_cli_pkg
-    from plugin.server.application.plugin_cli import service as plugin_cli_service
+    import plugin.settings as plugin_settings
     from plugin.server.routes import market_bridge as market_bridge_module
 
-    monkeypatch.setattr(plugin_cli_service, "_INSTALL_PLUGINS_ROOT", user_root)
-    monkeypatch.setattr(plugin_cli_service, "_INSTALL_PROFILES_ROOT", profiles_root)
-    monkeypatch.setattr(plugin_cli_service, "_TARGET_ROOT", packages_root)
-    monkeypatch.setattr(market_bridge_module, "USER_PLUGIN_CONFIG_ROOT", user_root)
+    monkeypatch.setattr(plugin_settings, "BUILTIN_PLUGIN_CONFIG_ROOT", builtin_root)
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_CONFIG_ROOT", user_root)
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
+    monkeypatch.setattr(plugin_settings, "USER_PACKAGE_PROFILES_ROOT", profiles_root)
+    # market_bridge no longer freezes USER_PLUGIN_CONFIG_ROOT at import time; it
+    # resolves plugin roots through PluginCliPathPolicy.from_settings(), so the
+    # plugin.settings patches above are picked up without patching the module
+    # attribute (which no longer exists).
     monkeypatch.setattr(
         market_bridge_module,
         "_OAUTH_TOKEN_FILE",
@@ -1014,7 +1015,7 @@ async def test_install_identity_check_uses_plugin_toml_id_when_directory_renamed
         item for item in installed_body["installed"]
         if item["plugin_id"] == plugin_id
     ]
-    assert projected["path"].endswith(f"/{plugin_id}_1")
+    assert Path(projected["path"]).name == f"{plugin_id}_1"
     assert projected["latest_install_source"] is not None
     assert projected["latest_install_source"]["version"] == version
 

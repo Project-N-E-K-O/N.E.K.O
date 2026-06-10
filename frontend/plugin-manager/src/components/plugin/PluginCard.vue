@@ -35,17 +35,22 @@
         :latest-version="latestVersion"
       />
 
-      <div class="plugin-meta">
-        <el-tag size="small" type="info">v{{ plugin.version }}</el-tag>
-        <SourceTag
-          :source="plugin.install_source?.source"
-          :has-update="hasUpdate"
-        />
-        <span v-if="plugin.type === 'extension' && plugin.host_plugin_id" class="plugin-host">
-          → {{ plugin.host_plugin_id }}
-        </span>
+      <footer class="plugin-card-footer">
+        <div class="plugin-card-footer__main">
+          <el-tag size="small" type="info" class="plugin-version-tag" :title="`v${plugin.version}`">
+            <span class="plugin-version-tag__label">v{{ plugin.version }}</span>
+          </el-tag>
+          <SourceTag
+            :source="plugin.install_source?.source"
+            :has-update="hasUpdate"
+            compact
+          />
+          <span v-if="plugin.type === 'extension' && plugin.host_plugin_id" class="plugin-host">
+            → {{ plugin.host_plugin_id }}
+          </span>
+        </div>
         <span class="plugin-entries">{{ t('plugins.entryPoint') }}: {{ entryCount }}</span>
-      </div>
+      </footer>
     </div>
   </el-card>
 </template>
@@ -113,6 +118,7 @@ const hasUpdate = computed<boolean>(() => {
 
 <style scoped>
 .plugin-card {
+  container-type: inline-size;
   cursor: pointer;
   border-radius: var(--plugin-entry-radius, 16px);
   transition:
@@ -159,6 +165,8 @@ const hasUpdate = computed<boolean>(() => {
   flex: 1;
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  min-height: 0;
 }
 
 .plugin-description {
@@ -172,8 +180,9 @@ const hasUpdate = computed<boolean>(() => {
   overflow: hidden;
 }
 
-.plugin-meta {
-  display: flex;
+.plugin-card-footer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   font-size: 12px;
@@ -181,17 +190,50 @@ const hasUpdate = computed<boolean>(() => {
   margin-top: auto;
   padding-top: 10px;
   min-width: 0;
+}
+
+.plugin-card-footer__main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   flex-wrap: wrap;
+  min-width: 0;
+}
+
+.plugin-version-tag {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.plugin-version-tag :deep(.el-tag__content) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.plugin-version-tag__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .plugin-entries {
-  margin-left: auto;
+  justify-self: end;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .plugin-host {
   color: var(--el-color-primary);
   font-size: 12px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -202,6 +244,17 @@ const hasUpdate = computed<boolean>(() => {
 @media (max-width: 640px) {
   .plugin-info {
     align-items: flex-start;
+  }
+}
+
+@container (max-width: 220px) {
+  .plugin-card-footer {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .plugin-entries {
+    justify-self: start;
   }
 }
 </style>

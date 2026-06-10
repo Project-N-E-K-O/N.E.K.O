@@ -345,7 +345,9 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                     existingWindow.focus();
                     openedWindow = existingWindow;
                 } else if (typeof window.openOrFocusWindow === 'function') {
-                    openedWindow = window.openOrFocusWindow(targetUrl, actionConfig.windowName, features);
+                    openedWindow = window.openOrFocusWindow(targetUrl, actionConfig.windowName, features, {
+                        navigateOnReuse: !!actionConfig.forceReloadOnReuse
+                    });
                 } else {
                     openedWindow = window.open(targetUrl, actionConfig.windowName, features);
                 }
@@ -1683,25 +1685,6 @@ window.AgentHUD._setupDragging = function (hud) {
             0% { transform: translateX(-100%); }
             50% { transform: translateX(200%); }
             100% { transform: translateX(-100%); }
-        }
-        
-        /* 请她回来按钮呼吸特效 */
-        @keyframes returnButtonBreathing {
-            0%, 100% {
-                box-shadow: 0 0 8px rgba(68, 183, 254, 0.6), 0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08);
-            }
-            50% {
-                box-shadow: 0 0 18px rgba(68, 183, 254, 1), 0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08);
-            }
-        }
-        
-        #live2d-btn-return {
-            animation: returnButtonBreathing 2s ease-in-out infinite;
-            will-change: box-shadow;
-        }
-        
-        #live2d-btn-return:hover {
-            animation: none;
         }
         
         #agent-task-hud::-webkit-scrollbar {

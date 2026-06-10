@@ -199,6 +199,7 @@ def build_plugin_server_app(title: str = "N.E.K.O User Plugin Server") -> FastAP
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["X-Error-Code"],
     )
 
     register_exception_handlers(app)
@@ -241,11 +242,6 @@ def build_plugin_server_app(title: str = "N.E.K.O User Plugin Server") -> FastAP
         app,
         module_name="plugin.server.routes.plugin_install",
         label="plugin install routes",
-    )
-    _include_optional_router(
-        app,
-        module_name="plugin.plugins.bilibili_danmaku.i18n_routes",
-        label="bilibili i18n routes",
     )
     app.include_router(plugin_cli_router)
     app.include_router(llm_tools_router)

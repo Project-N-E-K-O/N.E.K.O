@@ -8,6 +8,7 @@ import base64
 import time
 import wave
 import numpy as np
+import soxr
 from pathlib import Path
 
 from typing import Optional, Callable, Dict, Any, Awaitable, List
@@ -80,6 +81,8 @@ def _ensure_gemini_sdk() -> bool:
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
+
+_IMAGE_ANALYSIS_PENDING_DESCRIPTION = "[实时屏幕截图或相机画面正在分析中。先不要瞎编内容，可以稍等片刻。在此期间不要用搜索功能应付。等收到画面分析结果后再描述画面。]"
 
 
 # ── Proactive audio prompt cache ──────────────────────────────────────
@@ -312,7 +315,7 @@ class OmniRealtimeClient:
         self._image_recognized_this_turn = False
         self._image_sent_this_turn = False
         self._image_being_analyzed = False
-        self._image_description = "[实时屏幕截图或相机画面正在分析中。先不要瞎编内容，可以稍等片刻。在此期间不要用搜索功能应付。等收到画面分析结果后再描述画面。]"
+        self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
         self._latest_image_b64 = None  # Cached latest screenshot for proactive injection
         self._proactive_image_consumed = True  # Whether the cached image has been used by a proactive nudge
         self._proactive_injecting = False  # True while prompt_ephemeral is injecting audio — suppresses mic input
@@ -341,7 +344,27 @@ class OmniRealtimeClient:
             noise_reduce_enabled=True,  # RNNoise noise reduction + VAD
             on_silence_reset=self._on_silence_reset  # 静音重置时发送 input_audio_buffer.clear
         )
-        
+
+        # ── Uplink (client→provider) sample rate ──────────────────────
+        # 内部管线一律 16kHz（RNNoise 降采样到 16k、移动端原生 16k、主动
+        # 注入 WAV 也是 16k）。绝大多数 Realtime API（Gemini/Qwen/GLM/Step/
+        # Grok/free）都吃 16kHz PCM —— 唯独 OpenAI Realtime 的 PCM 输入
+        # *只* 接受 24kHz（GA 文档：audio/pcm 的 rate 固定 24000，不能声明
+        # 16000）。否则服务端会把我们的 16k 字节当 24k 解，等于喂模型 1.5×
+        # 变速变调的音频，拖累 ASR 与 server VAD。
+        # 因此只为 GPT 在「发送前的最后一刻」把 16k 上采到 24k；其余各家
+        # _uplink_sample_rate 保持 16000，_uplink_resampler 为 None → 整条
+        # 重采样彻底短路，行为与改动前完全一致。
+        self._uplink_sample_rate = 24000 if 'gpt' in self._model_lower else 16000
+        # 持续型流式重采样器：连续麦克风流必须维持 FIR 状态，否则每个 chunk
+        # 边界都会引入伪影（与 AudioProcessor 的 downsample stream 同理）。
+        # 一次性的预录 WAV（prompt_ephemeral）走整段无状态重采样，不复用它。
+        self._uplink_resampler = (
+            soxr.ResampleStream(16000, self._uplink_sample_rate, 1, dtype='float32', quality='HQ')
+            if self._uplink_sample_rate != 16000
+            else None
+        )
+
         # 静音重置事件异步队列（RNNoise 4秒静音回调用）
         self._silence_reset_pending = False
         # 按“上次语音时间”做静音清 buffer：无 RNNoise 时也生效，与 RESET_TIMEOUT 一致
@@ -593,6 +616,40 @@ class OmniRealtimeClient:
         else:
             logger.info("apply_tools_to_session: api_type=%s does not support custom tools — ignoring", api)
 
+    def _clear_uplink_resampler(self) -> None:
+        """Drop the uplink resampler's pending FIR tail (soxr holds ~21ms of
+        algorithmic delay at 16k→24k HQ).
+
+        Called at every server-buffer clear/commit boundary so a finished
+        turn's residual samples are not carried into — and prepended to —
+        the next turn. Discard (not flush-and-send) is the right semantics:
+        on ``input_audio_buffer.clear`` the server is throwing that audio
+        away anyway, and on a MANUAL commit the trailing ~21ms is end-of-turn
+        tail. Mirrors AudioProcessor's downsample-resampler ``.clear()`` on
+        reset. No-op for every 16kHz-native provider (resampler is None).
+        """
+        if self._uplink_resampler is not None:
+            self._uplink_resampler.clear()
+
+    def _resample_uplink(self, pcm16_bytes: bytes) -> bytes:
+        """Upsample 16kHz PCM16 mic/cache audio to the provider's uplink rate.
+
+        No-op for every provider that accepts 16kHz (``_uplink_resampler``
+        is None) — returns the bytes unchanged. Only OpenAI Realtime needs
+        24kHz, in which case the persistent stream resampler converts each
+        chunk while carrying FIR state across calls (no boundary clicks).
+
+        Returns ``b''`` if the resampler is still buffering and produced no
+        output for this chunk; callers should skip sending empty frames.
+        """
+        if self._uplink_resampler is None or not pcm16_bytes:
+            return pcm16_bytes
+        samples = np.frombuffer(pcm16_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+        out = self._uplink_resampler.resample_chunk(samples)
+        if len(out) == 0:
+            return b''
+        return (out * 32768.0).clip(-32768, 32767).astype(np.int16).tobytes()
+
     async def process_audio_chunk_async(self, audio_chunk: bytes) -> bytes:
         """
         Asynchronously process audio chunk using RNNoise in a separate thread.
@@ -708,6 +765,9 @@ class OmniRealtimeClient:
             logger.debug("Gemini mode: no WebSocket input_audio_buffer.clear event")
             return
         await self.send_event({"type": "input_audio_buffer.clear"})
+        # The server is discarding this buffer; drop the uplink resampler's
+        # held tail too so it isn't prepended to the next utterance.
+        self._clear_uplink_resampler()
         logger.debug("📤 已发送 input_audio_buffer.clear 事件")
 
     async def connect(self, instructions: str, native_audio=True) -> None:
@@ -741,6 +801,9 @@ class OmniRealtimeClient:
         self._ai_recent_activity_time = 0.0
         if self._audio_processor is not None:
             self._audio_processor.reset()
+        # Flush uplink resampler FIR history so a previous session's tail
+        # samples don't bleed into the new connection's first frames.
+        self._clear_uplink_resampler()
 
         # WebSocket-based APIs (GLM, Qwen, GPT, Step, Free)
         url = f"{self.base_url}?model={self.model}" if self._model_lower != "free-model" else self.base_url
@@ -850,6 +913,11 @@ class OmniRealtimeClient:
                 "output_modalities": ['audio'] if 'audio' in self._modalities else ['text'],
                 "audio": {
                     "input": {
+                        # OpenAI Realtime PCM 输入只支持 24kHz；显式声明以匹配
+                        # 我们 _resample_uplink 上采后的实际采样率。复用
+                        # _uplink_sample_rate（此分支恒为 24000）作单一数据源，
+                        # 避免声明与实际两处来源漂移。
+                        "format": {"type": "audio/pcm", "rate": self._uplink_sample_rate},
                         "transcription": {"model": "gpt-4o-mini-transcribe"},
                         "turn_detection": None if is_manual else {
                             "type": "semantic_vad",
@@ -915,6 +983,12 @@ class OmniRealtimeClient:
                     "type": "server_vad"
                 },
             }
+            # 海外免费（lanlan.app，Gemini 代理）建 session 时一次性指定
+            # language_code，与 TTS server 路对偶；lanlan.tech（StepFun）不发，
+            # 沿用其自动识别 / voice_label 语义。
+            if 'lanlan.app' in (self.base_url or ''):
+                from utils.language_utils import get_tts_language_code
+                free_session["language_code"] = get_tts_language_code()
             free_tools: List[Dict[str, Any]] = []
             if self.has_tools():
                 free_tools.extend(self._tools_for_step())
@@ -1283,11 +1357,18 @@ class OmniRealtimeClient:
             self._silence_reset_pending = False
             await self.clear_audio_buffer()
 
-        # Gemini uses different API
+        # Gemini uses different API (16kHz, no uplink resample needed)
         if self._is_gemini:
             await self._stream_audio_gemini(audio_chunk)
             return
-        
+
+        # By this point audio_chunk is always 16kHz (RNNoise-downsampled,
+        # mobile-native, or hot-swap-cache replay). Upsample to the provider
+        # uplink rate as the very last step (24kHz for OpenAI; no-op others).
+        audio_chunk = self._resample_uplink(audio_chunk)
+        if not audio_chunk:
+            return  # resampler still buffering — nothing to send this frame
+
         audio_b64 = base64.b64encode(audio_chunk).decode()
 
         append_event = {
@@ -1351,6 +1432,9 @@ class OmniRealtimeClient:
                     self._fatal_error_occurred = True
             return
         await self.send_event({"type": "input_audio_buffer.commit"})
+        # The committed buffer excludes the ~21ms tail soxr still holds in the
+        # uplink resampler; drop it so it isn't prepended to the next turn.
+        self._clear_uplink_resampler()
         await self.send_event({"type": "response.create"})
 
     async def _analyze_image_with_vision_model(self, image_b64: str) -> str:
@@ -1371,21 +1455,26 @@ class OmniRealtimeClient:
                 return description
             else:
                 logger.warning("VISION_MODEL not configured or analysis failed")
-                self._image_description = "[实时屏幕截图或相机画面]: 画面分析失败或暂时无法识别。"
-                self._image_recognized_this_turn = True
+                self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
+                self._image_recognized_this_turn = False
+                self._latest_image_b64 = None
+                self._proactive_image_consumed = True
                 return ""
             
         except Exception as e:
             logger.error(f"Error analyzing image with vision model: {e}")
-            self.image_recognized_this_turn = True
-            self._image_being_analyzed = False
-            self._image_description = f"[实时屏幕截图或相机画面]: 分析出错: {str(e)}"
+            self._image_recognized_this_turn = False
+            self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
+            self._latest_image_b64 = None
+            self._proactive_image_consumed = True
             # 检测内容审查错误并发送中文提示到前端（不关闭session）
             error_str = str(e)
             if 'censorship' in error_str:
                 if self.on_status_message:
                     await self.on_status_message(json.dumps({"code": "IMAGE_BLOCKED"}))
-            return "图片识别发生严重错误！"
+            return ""
+        finally:
+            self._image_being_analyzed = False
     
     async def stream_image(self, image_b64: str, *, bypass_rate_limit: bool = False) -> None:
         """Stream raw image data to the API.
@@ -1403,6 +1492,11 @@ class OmniRealtimeClient:
         try:
             # Models without native vision (step, free on lanlan.tech) — first frame triggers VISION_MODEL analysis
             if '实时屏幕截图或相机画面正在分析中' in self._image_description and not self._supports_native_image:
+                # 非原生视觉后端只需要本轮第一帧做分析；后续高频帧直接丢弃，避免并发刷爆 VISION_MODEL。
+                async with self._image_lock:
+                    if self._image_recognized_this_turn or self._image_being_analyzed:
+                        return
+                    self._image_being_analyzed = True
                 await self._analyze_image_with_vision_model(image_b64)
                 return
             
@@ -2076,6 +2170,15 @@ class OmniRealtimeClient:
                 logger.warning("prompt_ephemeral: no audio file found for %s", filename)
                 return False
 
+        # Proactive WAVs are stored at 16kHz; for OpenAI's 24kHz-only uplink,
+        # upsample the whole clip once (stateless — it's a complete signal, so
+        # no chunk-boundary artifacts and no need to touch the mic-stream
+        # resampler). No-op for every 16kHz-native provider.
+        if self._uplink_sample_rate != 16000:
+            _clip = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32) / 32768.0
+            _clip = soxr.resample(_clip, 16000, self._uplink_sample_rate, quality='HQ')
+            pcm_data = (_clip * 32768.0).clip(-32768, 32767).astype(np.int16).tobytes()
+
         # ── Non-native vision: inject text description before audio ───
         # step / lanlan.tech+free can't receive raw images; send the
         # VISION_MODEL text analysis so the model has visual context.
@@ -2094,8 +2197,9 @@ class OmniRealtimeClient:
         self._proactive_injecting = True
 
         # ── Send audio chunks (same pacing as hot-swap flush) ─────────
-        # 320 bytes = 10 ms @16 kHz 16-bit mono, ×5 multiplier → 1600 bytes
-        chunk_size = 320 * 5  # 1600 bytes = 50 ms of audio
+        # 10 ms @16-bit mono = (rate/100)*2 bytes, ×5 multiplier → 50 ms/chunk.
+        # Rate-derived so pacing stays 50 ms/chunk after the 24kHz upsample.
+        chunk_size = (self._uplink_sample_rate // 100) * 2 * 5  # 50 ms of audio
         sleep_interval = 0.025  # 25 ms → 40 chunks/s, 2× real-time
 
         logger.info(
@@ -2535,6 +2639,33 @@ class OmniRealtimeClient:
                     else:
                         self._last_response_transcript = ""
                         print(f"OmniRealtimeClient: response.done - 没有转录文本 | audio_deltas={self._audio_delta_count}")
+                    # [有声无字兜底] 部分 provider（如 lanlan.app Gemini 语音代理）只发
+                    # response.audio_transcript.delta、从不发 response.audio_transcript.done，
+                    # 输出转录全靠下面 streaming 分支（_print_input_transcript=True）实时送出。
+                    # 但带工具调用的一轮里，工具调用那一轮的 response.done 会把
+                    # _print_input_transcript 置 False（见下方），紧随其后的真回复转录便走
+                    # buffer 分支累积进 _output_transcript_buffer，没有 transcript.done 来 flush，
+                    # 就在这里被直接清空 → 前端有声无字。这里在清空前补一次 flush：只要本轮真
+                    # 出过声（audio_delta_count>0）且 buffer 仍有残留就补发。streaming 分支每次都
+                    # 会清空 buffer，故正常轮此处为 no-op，不会重复发送。
+                    if (
+                        self._output_transcript_buffer
+                        and self.on_output_transcript
+                        and self._audio_delta_count > 0
+                    ):
+                        # 「有声无字」是反复出现的问题（见上方 ISSUE4b），留一条 debug
+                        # 日志方便下次诊断时确认是这条兜底生效、还是 streaming/transcript.done
+                        # 路径生效。audio_delta_count 此处尚未清零，记录的是本轮真实值。
+                        logger.debug(
+                            "response.done 兜底 flush 输出转录: buffer_len=%d audio_deltas=%d is_first=%s",
+                            len(self._output_transcript_buffer),
+                            self._audio_delta_count,
+                            self._is_first_transcript_chunk,
+                        )
+                        await self.on_output_transcript(
+                            self._output_transcript_buffer, self._is_first_transcript_chunk
+                        )
+                        self._is_first_transcript_chunk = False
                     self._audio_delta_count = 0
                     # 确保 buffer 被清空
                     self._output_transcript_buffer = ""

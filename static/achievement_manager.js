@@ -137,6 +137,14 @@
             return this.unlockedAchievements.includes(achievementName);
         }
 
+        markUnlockedLocally(achievementName) {
+            if (this.isUnlocked(achievementName)) {
+                return;
+            }
+            this.unlockedAchievements.push(achievementName);
+            this.saveUnlockedAchievements();
+        }
+
         // 解锁成就
         async unlockAchievement(achievementName) {
             // 检查成就是否存在
@@ -175,14 +183,28 @@
                 });
 
                 if (response.ok) {
-                    console.log(`✓ 成就解锁成功: ${achievementName}`);
+                    const payload = await response.json().catch(() => ({}));
+                    const alreadyUnlocked = payload && payload.alreadyUnlocked === true;
+                    const newlyUnlocked = payload && payload.newlyUnlocked === true;
+                    const processed = newlyUnlocked || alreadyUnlocked || (payload && payload.success === true);
 
-                    // 记录到本地
-                    this.unlockedAchievements.push(achievementName);
-                    this.saveUnlockedAchievements();
+                    if (!processed) {
+                        console.error(`✗ 成就解锁响应异常: ${achievementName}`, payload);
+                        return false;
+                    }
 
-                    // 显示通知（如果有通知系统）
-                    this.showAchievementNotification(ACHIEVEMENTS[achievementName]);
+                    // 无论 Steam 返回"刚解锁"还是"早已解锁"，本地都要补齐缓存；
+                    // 但只有刚解锁才弹提示，避免清缓存/跨窗口时重复祝贺。
+                    this.markUnlockedLocally(achievementName);
+
+                    if (newlyUnlocked) {
+                        console.log(`✓ 成就解锁成功: ${achievementName}`);
+                        this.showAchievementNotification(ACHIEVEMENTS[achievementName]);
+                    } else if (alreadyUnlocked) {
+                        console.log(`成就已在 Steam 解锁，已同步本地缓存: ${achievementName}`);
+                    } else {
+                        console.log(`✓ 成就处理完成: ${achievementName}`);
+                    }
 
                     return true;
                 } else {

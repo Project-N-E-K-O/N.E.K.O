@@ -312,7 +312,7 @@ class TestAssistFollowsCore:
         cfg = config_manager.get_core_config()
 
         assert cfg['assistApi'] == 'free'
-        assert cfg.get('IS_FREE_VERSION') is True
+        assert cfg.get('CORE_API_TYPE') == 'free'
 
     @pytest.mark.unit
     @pytest.mark.asyncio
@@ -355,8 +355,8 @@ class TestAssistFollowsCore:
         assert cfg['assistApi'] == 'silicon', \
             'core=free 不应强制覆盖用户显式选择的 assist'
         assert cfg['OPENROUTER_URL'] == 'https://api.siliconflow.cn/v1'
-        # core profile 仍然给到 IS_FREE_VERSION=True（realtime 是免费的）
-        assert cfg.get('IS_FREE_VERSION') is True
+        # core=free 即语音免费（is_free_voice 维度，CORE_API_TYPE=='free'），与 assist 选择无关
+        assert cfg.get('CORE_API_TYPE') == 'free'
 
     @pytest.mark.unit
     def test_non_free_core_allows_independent_assist(self, config_manager):
@@ -654,8 +654,8 @@ class TestGetModelApiConfig:
 
     @pytest.mark.unit
     def test_agent_uses_dedicated_fields_but_not_custom_when_toggle_off(self, config_manager):
-        """Agent always uses AGENT_MODEL_URL (with lanlan.app normalization)
-        even when enableCustomApi=false, but is_custom must be False."""
+        """Agent always uses AGENT_MODEL_URL even when enableCustomApi=false,
+        but is_custom must be False."""
         _write_core_config(config_manager, {
             'coreApiKey': 'sk-core',
             'coreApi': 'qwen',
@@ -670,13 +670,11 @@ class TestGetModelApiConfig:
         # Agent should still use its dedicated fields, not generic OPENROUTER_URL
         assert result['model'] != '', 'Agent model should be populated'
         assert result['base_url'] != '', 'Agent URL should be populated'
-        # AGENT_MODEL_URL is normalized to lanlan.app; OPENROUTER_URL is not
-        assert 'lanlan.tech' not in result['base_url'], \
-            'Agent URL should have lanlan.app normalization applied'
+        assert result['base_url'] == 'https://dashscope.aliyuncs.com/compatible-mode/v1'
 
 
 # ---------------------------------------------------------------------------
-# 7b. Agent URL region routing: 国内 lanlan.app / 国际 www.lanlan.app
+# 7b. Agent URL normalization: temporary no-op
 # ---------------------------------------------------------------------------
 class TestAgentUrlRegionRouting:
 
@@ -684,20 +682,14 @@ class TestAgentUrlRegionRouting:
     @pytest.mark.parametrize(
         ('non_mainland', 'url_in', 'expected'),
         [
-            # 国际：保留 www 前缀
-            (True, 'https://www.lanlan.tech/text/v1', 'https://www.lanlan.app/text/v1'),
-            # 国内：剥掉 www
-            (False, 'https://www.lanlan.tech/text/v1', 'https://lanlan.app/text/v1'),
-            # GeoIP 不确定（按国内处理）：同样剥 www
-            (None, 'https://www.lanlan.tech/text/v1', 'https://lanlan.app/text/v1'),
-            # 已经是 www.lanlan.app 的国内输入：仍剥 www（幂等）
-            (False, 'https://www.lanlan.app/text/v1', 'https://lanlan.app/text/v1'),
-            # 国际下 www.lanlan.app 保持不变
+            # 临时保持原样：free-agent-model 走配置中的国内 lanlan.tech 文本入口。
+            (True, 'https://www.lanlan.tech/text/v1', 'https://www.lanlan.tech/text/v1'),
+            (False, 'https://www.lanlan.tech/text/v1', 'https://www.lanlan.tech/text/v1'),
+            (None, 'https://www.lanlan.tech/text/v1', 'https://www.lanlan.tech/text/v1'),
+            (False, 'https://www.lanlan.app/text/v1', 'https://www.lanlan.app/text/v1'),
             (True, 'https://www.lanlan.app/text/v1', 'https://www.lanlan.app/text/v1'),
-            # bare host 输入（无 www，仅可能来自自定义 URL）：尊重原样，不补 www，
-            # 两区都落到 bare lanlan.app（仅做 tech→app）
-            (True, 'https://lanlan.tech/text/v1', 'https://lanlan.app/text/v1'),
-            (False, 'https://lanlan.tech/text/v1', 'https://lanlan.app/text/v1'),
+            (True, 'https://lanlan.tech/text/v1', 'https://lanlan.tech/text/v1'),
+            (False, 'https://lanlan.tech/text/v1', 'https://lanlan.tech/text/v1'),
         ],
     )
     def test_normalize_agent_url_by_region(self, config_manager, non_mainland, url_in, expected):
@@ -716,6 +708,33 @@ class TestAgentUrlRegionRouting:
     def test_normalize_agent_url_non_string_passthrough(self, config_manager):
         config_manager._check_non_mainland = lambda: True
         assert config_manager._normalize_agent_url(None) is None
+
+
+# ---------------------------------------------------------------------------
+# 7c. Free API URL region routing: 海外统一走 www.lanlan.app（含 /tts）
+# ---------------------------------------------------------------------------
+class TestFreeApiUrlRegionRouting:
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ('non_mainland', 'url_in', 'expected'),
+        [
+            # 海外：lanlan.tech → lanlan.app，/tts 不再降级到裸 lanlan.app，
+            # 统一停在 www.lanlan.app（透传 voice 到 Gemini）。
+            (True, 'wss://www.lanlan.tech/tts', 'wss://www.lanlan.app/tts'),
+            (True, 'wss://www.lanlan.tech/core', 'wss://www.lanlan.app/core'),
+            (True, 'https://www.lanlan.tech/text/v1', 'https://www.lanlan.app/text/v1'),
+            # 国内：原样保留。
+            (False, 'wss://www.lanlan.tech/tts', 'wss://www.lanlan.tech/tts'),
+            # 非 lanlan.tech 自定义 URL 不受影响。
+            (True, 'wss://api.stepfun.com/v1/realtime/audio', 'wss://api.stepfun.com/v1/realtime/audio'),
+        ],
+    )
+    def test_adjust_free_api_url_keeps_tts_on_www_lanlan_app(
+        self, config_manager, non_mainland, url_in, expected,
+    ):
+        config_manager._check_non_mainland = lambda: non_mainland
+        assert config_manager._adjust_free_api_url(url_in, True) == expected
 
 
 # ---------------------------------------------------------------------------

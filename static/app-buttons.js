@@ -209,6 +209,54 @@
         return /\.(avif|bmp|gif|heic|heif|ico|jpe?g|png|tiff?|webp)$/i.test(name);
     }
 
+    function getImageFilesFromFileList(fileList) {
+        return Array.from(fileList || []).filter(function (file) {
+            return file instanceof File && (file.type === '' || isLikelyImageFile(file));
+        });
+    }
+
+    function dataTransferHasFiles(dataTransfer) {
+        if (!dataTransfer) return false;
+        if (dataTransfer.files && dataTransfer.files.length > 0) return true;
+        if (dataTransfer.items && dataTransfer.items.length > 0) {
+            return Array.from(dataTransfer.items).some(function (item) {
+                return item && item.kind === 'file';
+            });
+        }
+        return Array.from(dataTransfer.types || []).some(function (type) {
+            return /^files$/i.test(String(type || ''));
+        });
+    }
+
+    function getFilesFromDataTransfer(dataTransfer) {
+        if (!dataTransfer) return [];
+        var files = Array.from(dataTransfer.files || []);
+        if (files.length > 0) return files;
+        return Array.from(dataTransfer.items || [])
+            .filter(function (item) {
+                return item && item.kind === 'file' && typeof item.getAsFile === 'function';
+            })
+            .map(function (item) {
+                return item.getAsFile();
+            })
+            .filter(function (file) {
+                return file instanceof File;
+            });
+    }
+
+    function isChatImageDropTarget(target) {
+        var targetNode = target instanceof Node ? target : null;
+        var shell = document.getElementById('react-chat-window-shell');
+        if (shell && targetNode && shell.contains(targetNode)) return true;
+        var textInputBox = S && S.dom ? S.dom.textInputBox : null;
+        if (textInputBox && targetNode && textInputBox.contains(targetNode)) return true;
+        return !!(document.body && document.body.classList.contains('electron-chat-window'));
+    }
+
+    function shouldHandleChatFileDrop(event) {
+        return !!(event && isChatImageDropTarget(event.target) && dataTransferHasFiles(event.dataTransfer));
+    }
+
     function isLikelyJpegBlob(blob) {
         if (!blob || typeof blob !== 'object') return false;
         if (/^image\/jpe?g$/i.test(blob.type || '')) return true;
@@ -483,31 +531,7 @@
                 return;
             }
 
-            Promise.allSettled(files.map(mod.importImageFileToPendingList))
-                .then(function (results) {
-                    var succeeded = 0;
-                    var failed = 0;
-                    for (var i = 0; i < results.length; i++) {
-                        if (results[i].status === 'fulfilled') {
-                            succeeded++;
-                        } else {
-                            failed++;
-                            console.error('[导入图片] 单张处理失败:', results[i].reason);
-                        }
-                    }
-                    if (succeeded > 0) {
-                        window.showStatusToast(
-                            window.t ? window.t('app.importImageAdded', { count: succeeded }) : '已添加 ' + succeeded + ' 张图片，发送时会一并带上',
-                            3000
-                        );
-                    }
-                    if (failed > 0) {
-                        window.showStatusToast(
-                            window.t ? window.t('app.importImageFailed') : '导入图片失败',
-                            4000
-                        );
-                    }
-                })
+            mod.importImageFilesToPendingList(files, { logPrefix: '[导入图片]' })
                 .finally(function () {
                     input.value = '';
                 });
@@ -530,6 +554,52 @@
             .then(function (dataUrl) {
                 mod.addScreenshotToList(dataUrl);
                 return dataUrl;
+            });
+    };
+
+    mod.importImageFilesToPendingList = function importImageFilesToPendingList(files, options) {
+        var inputFiles = Array.from(files || []);
+        var imageFiles = getImageFilesFromFileList(inputFiles);
+        if (!imageFiles.length) {
+            window.showStatusToast(
+                window.t ? window.t('app.importImageFailed') : '导入图片失败',
+                4000
+            );
+            return Promise.resolve({ succeeded: 0, failed: inputFiles.length });
+        }
+
+        var logPrefix = options && options.logPrefix ? options.logPrefix : '[导入图片]';
+        return Promise.allSettled(imageFiles.map(mod.importImageFileToPendingList))
+            .then(function (results) {
+                var succeeded = 0;
+                var failed = inputFiles.length - imageFiles.length;
+                for (var i = 0; i < results.length; i++) {
+                    if (results[i].status === 'fulfilled') {
+                        succeeded++;
+                    } else {
+                        failed++;
+                        console.error(logPrefix + ' 单张处理失败:', results[i].reason);
+                    }
+                }
+                if (succeeded > 0 && failed > 0) {
+                    window.showStatusToast(
+                        window.t
+                            ? window.t('app.importImagePartial', { success: succeeded, failed: failed })
+                            : '已添加 ' + succeeded + ' 张图片，' + failed + ' 张导入失败',
+                        4000
+                    );
+                } else if (succeeded > 0) {
+                    window.showStatusToast(
+                        window.t ? window.t('app.importImageAdded', { count: succeeded }) : '已添加 ' + succeeded + ' 张图片，发送时会一并带上',
+                        3000
+                    );
+                } else if (failed > 0) {
+                    window.showStatusToast(
+                        window.t ? window.t('app.importImageFailed') : '导入图片失败',
+                        4000
+                    );
+                }
+                return { succeeded: succeeded, failed: failed };
             });
     };
 
@@ -1623,6 +1693,17 @@
             if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(true);
             window.isMicStarting = true;
             S.voiceStartPending = true;
+            var voiceStartEpoch = (S.voiceSessionStartEpoch || 0) + 1;
+            S.voiceSessionStartEpoch = voiceStartEpoch;
+            function ensureVoiceStartCurrent() {
+                if (S.voiceSessionStartEpoch !== voiceStartEpoch
+                        || window.isMicStarting !== true
+                        || (typeof window.isNekoGoodbyeModeActive === 'function' && window.isNekoGoodbyeModeActive())) {
+                    throw (typeof window.makeNekoSessionAbortError === 'function'
+                        ? window.makeNekoSessionAbortError('Voice start cancelled')
+                        : new Error('Voice start cancelled'));
+                }
+            }
             micButton.disabled = true;
 
             // Show preparing toast
@@ -1636,6 +1717,7 @@
                 if (isAssistantTextResponseInFlight()) {
                     window.showVoicePreparingToast(window.t ? window.t('app.waitForReplyBeforeVoice') : '\u7B49\u56DE\u590D\u7ED3\u675F\u540E\u5207\u6362\u5230\u8BED\u97F3\u2026');
                     await waitForAssistantTurnEnd(15000);
+                    ensureVoiceStartCurrent();
                 }
                 S.isSwitchingMode = true;
                 if (S.socket && S.socket.readyState === WebSocket.OPEN) {
@@ -1645,6 +1727,7 @@
                 window.showStatusToast(window.t ? window.t('app.switchingToVoice') : '\u6B63\u5728\u5207\u6362\u5230\u8BED\u97F3\u6A21\u5F0F...', 3000);
                 window.showVoicePreparingToast(window.t ? window.t('app.switchingToVoice') : '\u6B63\u5728\u5207\u6362\u5230\u8BED\u97F3\u6A21\u5F0F...');
                 await new Promise(function (resolve) { setTimeout(resolve, 1500); });
+                ensureVoiceStartCurrent();
             }
 
             // Deactivate tool cursor mode (lollipop/cat paw/hammer)
@@ -1699,6 +1782,7 @@
                         throw voiceConfigTimeoutError;
                     }
                     window.showVoicePreparingToast(window.t ? window.t('app.connectingToServer') : '\u6B63\u5728\u8FDE\u63A5\u670D\u52A1\u5668...');
+                    ensureVoiceStartCurrent();
                 }
 
                 // Create a promise for session_started
@@ -1714,6 +1798,7 @@
 
                 // Send start session (ensure WS open)
                 await window.ensureWebSocketOpen();
+                ensureVoiceStartCurrent();
                 S.socket.send(JSON.stringify({
                     action: 'start_session',
                     input_type: 'audio'
@@ -1743,6 +1828,7 @@
                 // Init mic only after the session is confirmed started
                 try {
                     await window.showCurrentModel();
+                    ensureVoiceStartCurrent();
                     window.showStatusToast(window.t ? window.t('app.initializingMic') : '\u6B63\u5728\u521D\u59CB\u5316\u9EA6\u514B\u98CE...', 3000);
 
                     // 先确认 session 启动成功，再开麦。与 CHARACTER_DISCONNECTED 自动
@@ -1751,6 +1837,7 @@
                     // 之后才 settle、把 UI 写回录音中"的竞态，也就不需要 token / 补充
                     // teardown 去追平它。
                     await sessionStartPromise;
+                    ensureVoiceStartCurrent();
 
                     if (window.sessionTimeoutId) {
                         clearTimeout(window.sessionTimeoutId);
@@ -1758,6 +1845,7 @@
                     }
 
                     await window.startMicCapture();
+                    ensureVoiceStartCurrent();
                 } catch (error) {
                     if (window.sessionTimeoutId) {
                         clearTimeout(window.sessionTimeoutId);
@@ -1794,7 +1882,13 @@
                 S.isSwitchingMode = false;
 
             } catch (error) {
-                console.error(window.t('console.startVoiceSessionFailed'), error);
+                var isVoiceStartCancelled = !!(error && error.voiceStartCancelled);
+                var preserveGoodbyeUi = isVoiceStartCancelled
+                    && typeof window.isNekoGoodbyeModeActive === 'function'
+                    && window.isNekoGoodbyeModeActive();
+                if (!isVoiceStartCancelled) {
+                    console.error(window.t('console.startVoiceSessionFailed'), error);
+                }
 
                 // Cleanup
                 if (window.sessionTimeoutId) {
@@ -1804,7 +1898,7 @@
                 S.sessionStartedResolver = null;
                 S.sessionStartedRejecter = null;
 
-                if (!(error && error.voiceConfigSwitchTimedOut) && S.socket && S.socket.readyState === WebSocket.OPEN) {
+                if (!isVoiceStartCancelled && !(error && error.voiceConfigSwitchTimedOut) && S.socket && S.socket.readyState === WebSocket.OPEN) {
                     S.socket.send(JSON.stringify({ action: 'end_session' }));
                     console.log(window.t('console.sessionStartFailedEndSession'));
                 }
@@ -1829,16 +1923,23 @@
                 window.syncFloatingMicButtonState(false);
                 window.syncFloatingScreenButtonState(false);
 
-                micButton.disabled = false;
+                micButton.disabled = preserveGoodbyeUi ? true : false;
                 muteButton.disabled = true;
                 screenButton.disabled = true;
                 stopButton.disabled = true;
-                resetSessionButton.disabled = false;
-                textInputArea.classList.remove('hidden');
-                if (typeof window.syncVoiceChatComposerHidden === 'function') {
-                    window.syncVoiceChatComposerHidden(false);
+                resetSessionButton.disabled = preserveGoodbyeUi ? true : false;
+                returnSessionButton.disabled = preserveGoodbyeUi ? false : returnSessionButton.disabled;
+                if (preserveGoodbyeUi) {
+                    textInputArea.classList.add('hidden');
+                } else {
+                    textInputArea.classList.remove('hidden');
                 }
-                if (error && error.voiceConfigSwitchTimedOut) {
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(preserveGoodbyeUi);
+                }
+                if (preserveGoodbyeUi) {
+                    window.showStatusToast('', 0);
+                } else if (error && error.voiceConfigSwitchTimedOut) {
                     window.showStatusToast(error.message, 5000);
                 } else {
                     window.showStatusToast(window.t ? window.t('app.startFailed', { error: error.message }) : '\u542F\u52A8\u5931\u8D25: ' + error.message, 5000);
@@ -1868,10 +1969,27 @@
         // ----------------------------------------------------------------
         resetSessionButton.addEventListener('click', function () {
             console.log(window.t('console.resetButtonClicked'));
+            if (typeof window.cancelPendingSessionStart === 'function') {
+                window.cancelPendingSessionStart('Voice start cancelled by goodbye');
+            } else {
+                S.voiceStartPending = false;
+                window.isMicStarting = false;
+                S.sessionStartedResolver = null;
+                S.sessionStartedRejecter = null;
+            }
+            S.voiceChatActive = false;
             S.isSwitchingMode = true;
 
-            var isGoodbyeMode = window.live2dManager && window.live2dManager._goodbyeClicked;
-            console.log(window.t('console.checkingGoodbyeMode'), isGoodbyeMode, window.t('console.goodbyeClicked'), window.live2dManager ? window.live2dManager._goodbyeClicked : 'undefined');
+            var isGoodbyeMode = (typeof window.isNekoGoodbyeModeActive === 'function')
+                ? window.isNekoGoodbyeModeActive()
+                : !!((window.live2dManager && window.live2dManager._goodbyeClicked)
+                    || (window.vrmManager && window.vrmManager._goodbyeClicked)
+                    || (window.mmdManager && window.mmdManager._goodbyeClicked));
+            console.log(window.t('console.checkingGoodbyeMode'), isGoodbyeMode, window.t('console.goodbyeClicked'), {
+                live2d: window.live2dManager ? window.live2dManager._goodbyeClicked : 'undefined',
+                vrm: window.vrmManager ? window.vrmManager._goodbyeClicked : 'undefined',
+                mmd: window.mmdManager ? window.mmdManager._goodbyeClicked : 'undefined'
+            });
 
             var live2dContainer = document.getElementById('live2d-container');
             console.log(window.t('console.hideLive2dBeforeStatus'), {
@@ -1892,9 +2010,16 @@
 
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
                 S._suppressCharacterLeft = true;
-                S.socket.send(JSON.stringify({ action: 'end_session' }));
+                S.socket.send(JSON.stringify({
+                    action: 'end_session',
+                    goodbye_active: !!isGoodbyeMode,
+                    reason: isGoodbyeMode ? 'goodbye' : 'manual'
+                }));
             }
             window.stopRecording();
+            S.voiceStartPending = false;
+            window.isMicStarting = false;
+            S.voiceChatActive = false;
 
             (async function () {
                 await window.clearAudioQueue();
@@ -1989,6 +2114,14 @@
                 }
                 if (window.mmdManager) {
                     window.mmdManager._goodbyeClicked = false;
+                }
+
+                if (S.socket && S.socket.readyState === WebSocket.OPEN) {
+                    S.socket.send(JSON.stringify({
+                        action: 'goodbye_state',
+                        active: false,
+                        reason: 'return-session'
+                    }));
                 }
 
                 micButton.classList.remove('recording');
@@ -3099,6 +3232,28 @@
                 }
             }
         });
+
+        // 图片文件拖到聊天框时按「导入图片」处理，避免浏览器默认打开本地文件。
+        document.addEventListener('dragover', function (e) {
+            if (!shouldHandleChatFileDrop(e)) return;
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.dataTransfer) {
+                e.dataTransfer.dropEffect = isHomeTutorialInteractionLocked() ? 'none' : 'copy';
+            }
+        }, true);
+
+        document.addEventListener('drop', function (e) {
+            if (!shouldHandleChatFileDrop(e)) return;
+            e.preventDefault();
+            e.stopPropagation();
+            if (isHomeTutorialInteractionLocked()) {
+                showHomeTutorialLockedToast();
+                return;
+            }
+            var files = getFilesFromDataTransfer(e.dataTransfer);
+            mod.importImageFilesToPendingList(files, { logPrefix: '[拖放图片]' });
+        }, true);
 
         mod.ensureImportImageInput();
         mod.syncPendingComposerAttachments();

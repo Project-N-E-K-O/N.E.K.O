@@ -9,10 +9,14 @@ import pytest
 
 from utils.cloudsave_autocloud import CloudSaveManager, STEAM_AUTO_CLOUD_SYNC_BACKEND
 from utils.cloudsave_runtime import (
+    CLOUDSAVE_DISABLED_ENV,
     CloudsaveDeadlineExceeded,
+    CloudsaveOperationError,
     bootstrap_local_cloudsave_environment,
     export_cloudsave_character_unit,
     export_local_cloudsave_snapshot,
+    import_cloudsave_character_unit,
+    import_local_cloudsave_snapshot,
 )
 from utils.config_manager import ConfigManager
 from utils.file_utils import atomic_write_json
@@ -308,6 +312,75 @@ def test_cloudsave_manager_no_snapshot_result_includes_diagnostic_hint():
         assert result["reason"] == "no_snapshot"
         assert str(cm.cloudsave_dir) in result["hint"]
         assert "Steam" in result["hint"]
+
+
+@pytest.mark.unit
+def test_cloudsave_manager_actions_skip_when_cloudsave_is_disabled():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        cm.anchor_root.mkdir(parents=True, exist_ok=True)
+        cm.root_state_path.mkdir(parents=True, exist_ok=True)
+
+        manager = CloudSaveManager(cm)
+        with patch.dict("os.environ", {CLOUDSAVE_DISABLED_ENV: "local_state_unavailable"}, clear=False):
+            import_result = manager.import_if_needed(reason="startup")
+            export_result = manager.export_snapshot(reason="shutdown")
+            upload_result = manager.upload_existing_snapshot(reason="shutdown_upload")
+
+        for result in (import_result, export_result, upload_result):
+            assert result["success"] is True
+            assert result["action"] == "skipped"
+            assert result["reason"] == "cloudsave_disabled"
+            assert result["status"]["disabled"] is True
+            assert result["status"]["disabled_reason"] == "local_state_unavailable"
+
+
+@pytest.mark.unit
+def test_cloudsave_direct_mutations_do_not_touch_state_when_cloudsave_is_disabled():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        cm.anchor_root.mkdir(parents=True, exist_ok=True)
+        cm.root_state_path.mkdir(parents=True, exist_ok=True)
+
+        def _snapshot_cloudsave_state() -> dict[str, bytes | None]:
+            paths = {
+                "anchor_root": cm.anchor_root,
+                "root_state": cm.root_state_path,
+                "cloudsave_local_state": cm.cloudsave_local_state_path,
+                "manifest": cm.cloudsave_manifest_path,
+                "cloudsave_dir": cm.cloudsave_dir,
+                "characters_dir": cm.cloudsave_dir / "characters",
+            }
+            snapshot: dict[str, bytes | None] = {}
+            for label, path in paths.items():
+                if not path.exists():
+                    snapshot[label] = None
+                    continue
+                if path.is_file():
+                    snapshot[label] = path.read_bytes()
+                    continue
+                entries = []
+                for child in sorted(path.rglob("*")):
+                    relative = child.relative_to(path).as_posix()
+                    if child.is_file():
+                        entries.append((relative, child.read_bytes()))
+                    elif child.is_dir():
+                        entries.append((f"{relative}/", b""))
+                snapshot[label] = repr(entries).encode("utf-8")
+            return snapshot
+
+        with patch.dict("os.environ", {CLOUDSAVE_DISABLED_ENV: "local_state_unavailable"}, clear=False):
+            for operation_name, operation in (
+                ("export_local_cloudsave_snapshot", lambda: export_local_cloudsave_snapshot(cm)),
+                ("import_local_cloudsave_snapshot", lambda: import_local_cloudsave_snapshot(cm)),
+                ("export_cloudsave_character_unit", lambda: export_cloudsave_character_unit(cm, "小满")),
+                ("import_cloudsave_character_unit", lambda: import_cloudsave_character_unit(cm, "小满")),
+            ):
+                before = _snapshot_cloudsave_state()
+                with pytest.raises(CloudsaveOperationError) as exc_info:
+                    operation()
+                assert exc_info.value.code == "CLOUDSAVE_PROVIDER_UNAVAILABLE"
+                assert _snapshot_cloudsave_state() == before, f"{operation_name} mutated local cloudsave state"
 
 
 @pytest.mark.unit

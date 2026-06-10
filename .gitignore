@@ -97,6 +97,7 @@ node_modules/
 dist/
 build/
 *.tsbuildinfo
+docs/.vitepress/cache/
 static/react/neko-chat/
 
 # Python venvs and wheels

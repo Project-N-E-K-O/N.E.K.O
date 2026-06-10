@@ -71,6 +71,24 @@
     let _wasLeaderLastTick = null; // 用于 leader 状态切换时主动 reschedule
     let _chatInputSlowdownUntil = 0;
 
+    function isProactiveVisionEnabledNow() {
+        // 跨窗口时 leader 可能还没收到 storage 事件；以 localStorage 的最新保存值兜底。
+        try {
+            const raw = localStorage.getItem('project_neko_settings');
+            if (raw) {
+                const settings = JSON.parse(raw);
+                if (settings && typeof settings.proactiveVisionEnabled === 'boolean') {
+                    return settings.proactiveVisionEnabled;
+                }
+            }
+        } catch (_) { }
+
+        if (typeof window.proactiveVisionEnabled !== 'undefined') {
+            return !!window.proactiveVisionEnabled;
+        }
+        return !!S.proactiveVisionEnabled;
+    }
+
     function isHomeTutorialFeatureSuppressed() {
         try {
             const controller = window.NekoHomeTutorialFeatureController;
@@ -461,7 +479,7 @@
             !S.proactiveVideoChatEnabled && !S.proactivePersonalChatEnabled &&
             !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
             !S.proactiveMiniGameInviteEnabled) {
-            return S.proactiveVisionEnabled;
+            return isProactiveVisionEnabledNow();
         }
 
         // 如果只选择了个人动态搭话，需要同时开启个人动态
@@ -800,7 +818,7 @@
             if (S.isRecording) {
                 var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                 var voiceModes = [];
-                if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && S.proactiveVisionEnabled) {
+                if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && isProactiveVisionEnabledNow()) {
                     voiceModes.push('vision');
                 }
                 console.log('[ProactiveChat] 语音模式快速路径，modes: [' + voiceModes.join(', ') + ']');
@@ -879,7 +897,7 @@
             // 收集所有启用的搭话方式
             // 视觉搭话：需要同时开启主动搭话和自主视觉
             // 同时触发 vision 和 window 模式
-            if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && S.proactiveVisionEnabled) {
+            if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && isProactiveVisionEnabledNow()) {
                 availableModes.push('vision');
                 availableModes.push('window');
             }
@@ -1016,7 +1034,7 @@
 
                 // await 期间用户可能切换模式，重新过滤可用模式
                 var latestModes = [];
-                if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && S.proactiveVisionEnabled) {
+                if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && isProactiveVisionEnabledNow()) {
                     latestModes.push('vision', 'window');
                 }
                 if (S.proactiveNewsChatEnabled && S.proactiveChatEnabled) {
@@ -1617,6 +1635,10 @@
      */
     async function sendOneProactiveVisionFrame() {
         try {
+            if (!isProactiveVisionEnabledNow() || !S.isRecording) {
+                stopProactiveVisionDuringSpeech();
+                return;
+            }
             if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
 
             var dataUrl = null;
@@ -1650,6 +1672,10 @@
                 }
             }
 
+            if (!isProactiveVisionEnabledNow() || !S.isRecording) {
+                stopProactiveVisionDuringSpeech();
+                return;
+            }
             if (dataUrl && S.socket && S.socket.readyState === WebSocket.OPEN) {
                 S.socket.send(JSON.stringify({
                     action: 'stream_data',
@@ -1684,13 +1710,13 @@
         }
 
         // 仅在条件满足时启动：已开启主动视觉 && 正在录音 && 未手动屏幕共享
-        if (!S.proactiveVisionEnabled || !S.isRecording) return;
+        if (!isProactiveVisionEnabledNow() || !S.isRecording) return;
         var screenButton = document.getElementById('screenButton');
         if (screenButton && screenButton.classList.contains('active')) return; // 手动共享时不启动
 
         S.proactiveVisionFrameTimer = setInterval(async function () {
             // 在每次执行前再做一次检查，避免竞态
-            if (!S.proactiveVisionEnabled || !S.isRecording || isGoodbyeActive()) {
+            if (!isProactiveVisionEnabledNow() || !S.isRecording || isGoodbyeActive()) {
                 stopProactiveVisionDuringSpeech();
                 return;
             }
@@ -1894,14 +1920,16 @@
             return;
         }
 
+        var privacyBlocksVision = !isProactiveVisionEnabledNow();
+
         // 如果正在录音（语音模式），流可能正在被使用，不释放
-        if (S.isRecording) {
+        if (S.isRecording && !privacyBlocksVision) {
             console.log('[主动视觉] 语音模式活跃中，不释放流');
             return;
         }
 
         // 如果主动搭话+主动视觉Chat仍活跃，保留流
-        if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled) {
+        if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && !privacyBlocksVision) {
             console.log('[主动视觉] 主动搭话视觉仍活跃，不释放流');
             return;
         }

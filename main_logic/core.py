@@ -32,6 +32,7 @@ from utils.screenshot_utils import process_screen_data, overlay_avatar_annotatio
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.tts_client import get_tts_worker, dummy_tts_worker, TTS_PROVIDER_REGISTRY
+from utils.gptsovits_config import is_gsv_disabled_voice_id
 from main_logic.tool_calling import (
     ToolCall,
     ToolDefinition,
@@ -503,8 +504,6 @@ from utils.logger_config import get_module_logger
 from utils.native_voice_registry import (
     is_free_preset_voice_id,
     resolve_native_voice_for_routing,
-    should_block_free_native_voice,
-    should_block_free_voice_for_route,
 )
 from utils.api_config_loader import (
     get_livestream_config,
@@ -549,7 +548,7 @@ _proactive_expected_sid: contextvars.ContextVar[str | None] = contextvars.Contex
 )
 
 # TTS 错误码：不可恢复，禁止 respawn（欠费 / API Key 无效）
-NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_KEY_REJECTED'}
+NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_KEY_REJECTED', 'TTS_CONFIG_INVALID'}
 # TTS 错误码：立即上报前端，不受"第3次才通知"门槛限制（含配额——仍允许重试）
 IMMEDIATE_REPORT_TTS_CODES = NO_RETRY_TTS_CODES | {'API_QUOTA_TIME'}
 
@@ -760,7 +759,7 @@ class LLMSessionManager:
         self.core_api_type = realtime_config.get('api_type', '') or self._config_manager.get_core_config().get('CORE_API_TYPE', '')
         self.memory_server_port = MEMORY_SERVER_PORT
         self.audio_api_key = self._config_manager.get_core_config()['AUDIO_API_KEY']  # 用于CosyVoice自定义音色
-        self._apply_voice_id_for_route(realtime_config.get('base_url', ''))
+        self._apply_voice_id_for_route()
         # 注意：use_tts 会在 start_session 中根据 input_mode 重新设置
         self.use_tts = False
         self.generation_config = {}  # Qwen暂时不用
@@ -831,6 +830,11 @@ class LLMSessionManager:
         # making check-and-claim atomic. (Text mode uses the SM's
         # try_start_proactive claim instead; voice deliberately bypasses the SM.)
         self._voice_proactive_inject_lock = asyncio.Lock()
+        # 请她离开/变猫期间的后端静默闸门。前端会在进入猫态时置 True，
+        # 回来或显式 start_session 时清掉；所有主动搭话入口统一读取它。
+        self.goodbye_silent: bool = False
+        self.goodbye_silent_reason: str = ""
+        self.goodbye_silent_updated_at: float = 0.0
         # ── Session takeover ──────────────────────────────────────────
         # 当某个外部 controller 接管这个 session 时，本地 chat LLM 的输出
         # （text/audio delta、output transcript、response.complete、
@@ -900,6 +904,14 @@ class LLMSessionManager:
         
         # 用户活动时间戳：用于主动搭话检测最近是否有用户输入
         self.last_user_activity_time = None  # float timestamp or None
+
+        # 用户「真实消息」时间戳：仅在非空、非 AI 回声的真用户输入时刷新（语音
+        # 真转录 / 文本输入），不含 VAD 空噪声、麦克风录回 AI 自己 TTS 的回声。
+        # 区别于 last_user_activity_time（顶部无条件刷新，含回声/空噪声）——后者拿
+        # 来判 mini-game 邀请「用户是否已回应」会被 AI 念邀请台词的回声污染，导致
+        # 隐式 dismiss 在用户还没点按钮前就把 pending 邀请清掉、按钮撤走，用户随后
+        # 点「现在不想玩」落到 expired、真正的 decline 冷却起不来、邀请反复重来。
+        self.last_user_message_time = None  # float timestamp or None
 
         # 用户静默 ≥ IDLE_SESSION_RESET_THRESHOLD_SECONDS 时主动断 session 的
         # 后台 loop。lazily 在首次 start_session 时启动，永久存活（per-manager
@@ -1012,6 +1024,35 @@ class LLMSessionManager:
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
         return task
+
+    def is_goodbye_silent(self) -> bool:
+        """请她离开后的猫态静默是否生效。"""
+        return bool(getattr(self, "goodbye_silent", False))
+
+    def set_goodbye_silent(self, active: bool, reason: str = "") -> None:
+        """同步前端猫态静默状态，并把已排队的主动回调停在持久队列里。"""
+        active = bool(active)
+        reason = str(reason or "")[:64]
+        was_active = self.is_goodbye_silent()
+        self.goodbye_silent = active
+        self.goodbye_silent_reason = reason
+        self.goodbye_silent_updated_at = time.time()
+        if active:
+            self._park_proactive_for_goodbye()
+        if was_active != active:
+            logger.info("[%s] goodbye_silent=%s reason=%s", self.lanlan_name, active, reason or "-")
+
+    def _park_proactive_for_goodbye(self) -> None:
+        """猫态静默时把 manager 内待释放回调转入持久队列，避免静默期间漏发或超时释放。"""
+        try:
+            leftover = self.proactive_manager.drain_pending()
+            for callback in leftover:
+                self.enqueue_agent_callback(callback)
+            self.proactive_manager.reset_gate()
+            if leftover:
+                logger.info("[%s] goodbye_silent parked proactive callbacks n=%d", self.lanlan_name, len(leftover))
+        except Exception:
+            logger.exception("[%s] goodbye_silent proactive park failed", self.lanlan_name)
 
     def _ensure_audio_stream_worker(self):
         if self._audio_stream_worker_task and not self._audio_stream_worker_task.done():
@@ -2097,6 +2138,50 @@ class LLMSessionManager:
         recent_ai_text = getattr(self, "_recent_ai_voice_echo_text", "") or ""
         return _looks_like_recent_ai_echo(transcript_text, recent_ai_text)
 
+    async def _dispatch_mini_game_invite_keyword(self, user_text: str) -> None:
+        """扫一遍用户原话里的 mini-game 邀请 accept/decline/later 关键词，命中即
+        触发对应 state 转换 + 推 ``mini_game_invite_resolved`` 让前端 dismiss
+        ChoicePrompt（accept 时兼当 launch 信号带 game_url）。
+
+        文本输入路径（``_process_stream_data_internal``）与语音转写路径
+        （``handle_input_transcript``）共用——语音用户没法点 ChoicePrompt 三按钮，
+        只能说话；口头"现在不想玩"必须和打字 / 点按钮一样触发真正的 decline 冷却。
+        否则语音口头拒绝既不算 decline，又会被下一个 proactive tick 的
+        ``_mini_game_invite_advance_response`` 当成隐式 dismiss = 'later'（只抑制
+        5min），邀请反复重来。**不吃掉消息**：普通 chat 流水线仍然回应这条话。
+
+        main_routers' keyword matcher is registered as a hook on the bus
+        (see app/runtime_bindings.py). Dispatcher swallows per-hook errors;
+        if no hook is bound (e.g. entrypoint without main_routers), result
+        is None.
+        """
+        outcome = dispatch_text_user_message(self.lanlan_name, user_text or '')
+        # 推一条 mini_game_invite_resolved 给前端：accept 时兼当 launch 信号
+        # （带 game_url），decline/later 时让 ChoicePrompt UI 清掉不让按钮挂着——
+        # codex P2 指出，原版只对 accept 推，decline/later 命中后前端 prompt 不
+        # 消失，用户后续点按钮会被 endpoint 当 expired，state 早变了。
+        if not (outcome and outcome.get('action')):
+            return
+        try:
+            if self.websocket and hasattr(self.websocket, 'send_json'):
+                ws_state = getattr(self.websocket, 'client_state', None)
+                if ws_state is None or ws_state == ws_state.CONNECTED:
+                    payload = {
+                        'type': 'mini_game_invite_resolved',
+                        'session_id': outcome.get('session_id') or '',
+                        'action': outcome['action'],
+                    }
+                    if outcome.get('game_url'):
+                        payload['game_url'] = outcome['game_url']
+                    if outcome.get('game_type'):
+                        payload['game_type'] = outcome['game_type']
+                    await self.websocket.send_json(payload)
+        except Exception as _push_err:
+            logger.warning(
+                f"[{self.lanlan_name}] mini_game_invite_resolved "
+                f"WS push failed: {_push_err}",
+            )
+
     async def handle_input_transcript(self, transcript: str, *, is_voice_source: bool = True):
         """输入转录回调：同步转录文本到消息队列和缓存，并发送到前端显示
 
@@ -2113,8 +2198,13 @@ class LLMSessionManager:
         transcript_text = transcript.strip()
         voice_rms_recorded = False
 
-        # 更新用户活动时间戳（用于主动搭话检测）
-        self.last_user_activity_time = time.time()
+        # 更新用户活动时间戳（用于主动搭话检测）。先捕获「转写到达时刻」局部变量，
+        # 下面 last_user_message_time 复用同一时刻——若 takeover dispatcher 注册，
+        # 这条转写会先 await 它再走到下面的真消息块；用 await 之后的 time.time() 会
+        # 把时间戳推迟，万一 await 期间投递了 invite，invite 之前说的话会被记成 >
+        # delivered_at、被下个 tick 误判成 invite 之后的回应（codex P2）。
+        _transcript_arrival_ts = time.time()
+        self.last_user_activity_time = _transcript_arrival_ts
         if (
             is_voice_source
             and transcript_text
@@ -2168,6 +2258,11 @@ class LLMSessionManager:
             # emotion-tier LLM 用——空 transcript 这些副作用都不该触发。
             if transcript_text:
                 self._activity_tracker.on_user_message(text=transcript)
+                # 真实用户语音消息（已过 echo 抑制 + 非空）才刷「真消息」时间戳，
+                # 给 mini-game 邀请隐式 dismiss 用，避免回声/空噪声误判用户已回应。
+                # 用顶部捕获的到达时刻而非此处 time.time()：takeover dispatcher 的
+                # await 不会把它推迟到 await 之后（codex P2）。
+                self.last_user_message_time = _transcript_arrival_ts
                 self._session_turn_count += 1
                 # Telemetry：D1 漏斗——本进程首条用户消息（语音路径）。
                 try:
@@ -2186,6 +2281,13 @@ class LLMSessionManager:
                 # 这里只覆盖语音路径，避免 openclaw handoff（is_voice_source=False）
                 # 重复发布。
                 self._publish_user_utterance_to_plugin_bus(transcript, is_voice_source=True)
+
+                # Mini-game 邀请关键词兜底：与文本路径
+                # （_process_stream_data_internal）对偶。语音用户没法点
+                # ChoicePrompt 三按钮，只能说话——口头"现在不想玩"必须和打字 /
+                # 点按钮一样触发真正的 decline 冷却，否则邀请会按 5min 隐式
+                # dismiss 反复重来。详见 _dispatch_mini_game_invite_keyword。
+                await self._dispatch_mini_game_invite_keyword(transcript)
         else:
             # Non-voice reuse of this method (e.g. openclaw text handoff).
             # Skip activity-tracker hooks entirely — the text-mode entry
@@ -3307,6 +3409,14 @@ class LLMSessionManager:
         # auto-start 不被误清），但 end_session 语义就是整轮收尾，必须强制清场。
         await self.state.reset(force=True)
 
+    def _realtime_base_url(self) -> str:
+        """读取 realtime 线路 base_url，供 native voice 路由的 host 重映射
+        （海外免费 free→free_intl）使用。读不到时返回空串，按非 lanlan.app 处理。"""
+        try:
+            return str((self._config_manager.get_model_api_config('realtime') or {}).get('base_url') or '')
+        except Exception:
+            return ''
+
     def _has_custom_tts(self) -> bool:
         """判断当前会话是否使用自定义 TTS（克隆音色或自定义 TTS URL）。"""
         core_config = self._config_manager.get_core_config()
@@ -3314,19 +3424,17 @@ class LLMSessionManager:
             self.core_api_type,
             self.voice_id,
             self._config_manager.voice_id_exists_in_any_storage,
+            realtime_base_url=self._realtime_base_url(),
         )
         if uses_provider_native_voice:
             return False
-        # 克隆音色始终走 custom 路径；
-        # ENABLE_CUSTOM_API + TTS_MODEL_URL 仅在 gptsovitsEnabled 开启时才视为 custom，
-        # 否则 caller 会用 tts_custom credentials 启动 default worker，导致鉴权失败。
+        gsv_enabled = bool(core_config.get('GPTSOVITS_ENABLED'))
+        if gsv_enabled:
+            return True
+        # 克隆音色始终走 custom 路径。
         if bool(self.voice_id) and not self._is_free_preset_voice:
             return True
-        return bool(
-            core_config.get('ENABLE_CUSTOM_API')
-            and core_config.get('TTS_MODEL_URL')
-            and core_config.get('GPTSOVITS_ENABLED')
-        )
+        return False
 
     def _start_tts_thread(self):
         """创建并启动 TTS Worker 线程。
@@ -3635,9 +3743,8 @@ class LLMSessionManager:
     ) -> bool:
         """Resolve whether this session should use the external TTS pipeline."""
         has_custom_tts_config = (
-            core_config_snapshot.get('ENABLE_CUSTOM_API')
-            and core_config_snapshot.get('TTS_MODEL_URL')
-            and core_config_snapshot.get('GPTSOVITS_ENABLED')
+            bool(core_config_snapshot.get('GPTSOVITS_ENABLED'))
+            and not is_gsv_disabled_voice_id(core_config_snapshot.get('TTS_VOICE_ID', ''))
         )
 
         if input_mode == 'text':
@@ -3656,17 +3763,12 @@ class LLMSessionManager:
             logger.info(f"{log_prefix}🎙️ livestream 模式：使用服务端原生语音，跳过外部 TTS")
             return False
         base_url = realtime_config.get('base_url', '')
-        if should_block_free_native_voice(
-            self.core_api_type, self.voice_id, base_url,
+        _, uses_provider_native_voice = resolve_native_voice_for_routing(
+            self.core_api_type,
+            self.voice_id,
             self._config_manager.voice_id_exists_in_any_storage,
-        ):
-            uses_provider_native_voice = False
-        else:
-            _, uses_provider_native_voice = resolve_native_voice_for_routing(
-                self.core_api_type,
-                self.voice_id,
-                self._config_manager.voice_id_exists_in_any_storage,
-            )
+            realtime_base_url=base_url,
+        )
         if uses_provider_native_voice:
             logger.info(f"{log_prefix}🔊 {self.core_api_type} 原生音色 '{self.voice_id}' 将直接传入 RealtimeClient")
             return False
@@ -3694,24 +3796,23 @@ class LLMSessionManager:
         # 比较 / route gating / is_free_preset_voice_id 之类的 callee 失配。
         return (raw or '').strip()
 
-    def _apply_voice_id_for_route(self, realtime_base_url: str) -> None:
+    def _apply_voice_id_for_route(self) -> None:
         """按当前 route 把角色卡里的 voice_id 解析进 self.voice_id /
         self._is_free_preset_voice。
 
         __init__ / start_session / _background_prepare_pending_session 三处
-        共用：读取 _get_voice_id() → 海外 free 路由屏蔽 → 校正 free preset
-        与 core_api_type 的匹配关系。集中在这里避免规则漂移。
+        共用：读取 _get_voice_id() → 校正 free preset 与 core_api_type 的匹配
+        关系。集中在这里避免规则漂移。
+
+        历史上这里还按"海外 lanlan.app 会硬覆盖成 Leda"屏蔽 voice 下发；
+        现在海外免费统一走 www.lanlan.app 透传 voice（Gemini 全量 + yui，由
+        free_intl provider 认领），不再屏蔽——stale 的阶跃/free 预设音色在海外
+        路由下不会命中 free_intl catalog，自然 fall through，不需要预清。
+
+        空 voice_id 保持空：海外免费下"空 → 默认音色"的映射交给服务端
+        （www.lanlan.app）处理，客户端不再注入兜底音色。
         """
         raw_voice_id = self._get_voice_id()
-        if should_block_free_voice_for_route(
-            self.core_api_type,
-            raw_voice_id,
-            realtime_base_url,
-            self._config_manager.voice_id_exists_in_any_storage,
-        ):
-            self.voice_id = ''
-            self._is_free_preset_voice = False
-            return
         self.voice_id = raw_voice_id
         self._is_free_preset_voice = is_free_preset_voice_id(raw_voice_id)
         # free preset 选了但当前非 free 模式 → 不下发，避免把 preset id 透给别的 provider。
@@ -3733,20 +3834,16 @@ class LLMSessionManager:
            （绕过 free_voices preset gate，base_url 已被派生不含 lanlan.tech）
         3. 否则保留原逻辑：仅在角色 voice 是 free preset、core_api_type='free'
            且 base_url 仍指向 lanlan.tech 域时下发，避免把 preset id 透给非
-           lanlan 服务（lanlan.app 的屏蔽由 should_block_free_voice_for_route 兜底）
+           lanlan 服务。海外免费（free + *.lanlan.app）的 yui / Gemini 音色由
+           resolve_native_voice_for_routing 经 free_intl 重映射在第 1 步直接命中。
         """
         base_url = realtime_config.get('base_url', '')
-        if should_block_free_native_voice(
-            self.core_api_type, self.voice_id, base_url,
+        voice_name, uses_provider_native_voice = resolve_native_voice_for_routing(
+            self.core_api_type,
+            self.voice_id,
             self._config_manager.voice_id_exists_in_any_storage,
-        ):
-            voice_name, uses_provider_native_voice = self.voice_id, False
-        else:
-            voice_name, uses_provider_native_voice = resolve_native_voice_for_routing(
-                self.core_api_type,
-                self.voice_id,
-                self._config_manager.voice_id_exists_in_any_storage,
-            )
+            realtime_base_url=base_url,
+        )
         if uses_provider_native_voice:
             return voice_name
         if self._is_livestream_active():
@@ -4111,14 +4208,21 @@ class LLMSessionManager:
             # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
             _, _, _, self.lanlan_basic_config, _, _, _, _, _ = await self._config_manager.aget_character_data()
             old_voice_id = self.voice_id
-            self._apply_voice_id_for_route(realtime_config.get('base_url', ''))
+            self._apply_voice_id_for_route()
 
             # 如果角色没有设置 voice_id，尝试使用自定义API配置的 TTS_VOICE_ID 作为回退
             if not self.voice_id:
                 # core_config 在单次 start_session 内不会变（改它走 save_core_api → end_session），复用顶部 snapshot
                 tts_voice_id = core_config_snapshot.get('TTS_VOICE_ID', '')
                 # 过滤掉 GPT-SoVITS 禁用时的占位符（格式: __gptsovits_disabled__|...）
-                if core_config_snapshot.get('ENABLE_CUSTOM_API') and tts_voice_id and not tts_voice_id.startswith('__gptsovits_disabled__'):
+                if (
+                    tts_voice_id
+                    and not is_gsv_disabled_voice_id(tts_voice_id)
+                    and (
+                        core_config_snapshot.get('ENABLE_CUSTOM_API')
+                        or core_config_snapshot.get('GPTSOVITS_ENABLED')
+                    )
+                ):
                     self.voice_id = tts_voice_id
                     logger.info(f"🔄 使用自定义TTS回退音色: '{self.voice_id}'")
                     self._is_free_preset_voice = False
@@ -4793,14 +4897,21 @@ class LLMSessionManager:
             # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
             _, _, _, self.lanlan_basic_config, _, _, _, _, _ = await self._config_manager.aget_character_data()
             old_voice_id = self.voice_id
-            self._apply_voice_id_for_route(realtime_config.get('base_url', ''))
+            self._apply_voice_id_for_route()
 
             # 如果角色没有设置 voice_id，尝试使用自定义API配置的 TTS_VOICE_ID 作为回退
             if not self.voice_id:
                 # 复用本次热切换准备顶部的 snapshot（save_core_api 会 end_session 才能改 core_config）
                 tts_voice_id = core_config_snapshot.get('TTS_VOICE_ID', '')
                 # 过滤掉 GPT-SoVITS 禁用时的占位符（格式: __gptsovits_disabled__|...）
-                if core_config_snapshot.get('ENABLE_CUSTOM_API') and tts_voice_id and not tts_voice_id.startswith('__gptsovits_disabled__'):
+                if (
+                    tts_voice_id
+                    and not is_gsv_disabled_voice_id(tts_voice_id)
+                    and (
+                        core_config_snapshot.get('ENABLE_CUSTOM_API')
+                        or core_config_snapshot.get('GPTSOVITS_ENABLED')
+                    )
+                ):
                     self.voice_id = tts_voice_id
                     logger.info(f"🔄 热切换准备: 使用自定义TTS回退音色: '{self.voice_id}'")
                     self._is_free_preset_voice = False
@@ -5138,6 +5249,9 @@ class LLMSessionManager:
         """
         if not self.is_active or not isinstance(self.session, OmniRealtimeClient):
             return False
+        if self.is_goodbye_silent():
+            logger.info("[%s] voice proactive nudge skipped: goodbye silent", self.lanlan_name)
+            return False
         if self._takeover_active:
             logger.info("[%s] voice proactive nudge skipped: session takeover active", self.lanlan_name)
             return False
@@ -5157,7 +5271,11 @@ class LLMSessionManager:
     # ------------------------------------------------------------------
 
     async def request_fresh_screenshot(self, timeout: float = 3.0) -> str:
-        """通过 WebSocket 向前端请求最新截图，失败时用后端 pyautogui 兜底。返回 base64（不含前缀）。"""
+        """通过 WebSocket 向前端请求最新截图，失败时用后端 pyautogui 兜底。
+
+        两条路径都会把截图统一压到 720p/JPEG-80，返回归一化后的 base64（不含前缀），
+        避免前端原生分辨率大图直发 vision LLM 触发代理 413。
+        """
         # 策略1: 前端 WebSocket 截图
         if self.websocket:
             try:
@@ -5166,6 +5284,25 @@ class LLMSessionManager:
                 await self.websocket.send_json({"type": "request_screenshot"})
                 b64 = await asyncio.wait_for(self._screenshot_future, timeout=timeout)
                 if b64:
+                    # 前端有的截图路径（如 Electron 主进程直捕 captureSourceAsDataUrl）
+                    # 返回原生分辨率，未走 720p 缩放，base64 可达 ~1.4MB，直接发给
+                    # vision LLM 会被代理 nginx 以 413 Request Entity Too Large 拒掉。
+                    # 这里和下方 pyautogui 兜底分支对称，统一压到 720p/JPEG-80 再返回
+                    # （avatar 注解会在其上二次编码，不影响）。压缩失败则退回原图。
+                    try:
+                        from utils.screenshot_utils import (
+                            decode_and_compress_screenshot_b64,
+                            COMPRESS_TARGET_HEIGHT, COMPRESS_JPEG_QUALITY,
+                        )
+                        b64 = await asyncio.to_thread(
+                            decode_and_compress_screenshot_b64,
+                            b64, COMPRESS_TARGET_HEIGHT, COMPRESS_JPEG_QUALITY,
+                        )
+                    except Exception as comp_err:
+                        logger.warning(
+                            "[%s] request_fresh_screenshot WS compress failed, using raw: %s",
+                            self.lanlan_name, comp_err,
+                        )
                     return b64
             except (asyncio.TimeoutError, Exception) as e:
                 logger.warning("[%s] request_fresh_screenshot WS failed: %s", self.lanlan_name, e)
@@ -5211,6 +5348,9 @@ class LLMSessionManager:
 
     async def prepare_proactive_delivery(self, min_idle_secs: float = 10.0) -> bool:
         """Phase 2 流式输出前的前置检查 + speech_id 生成。返回 True 表示可以继续。"""
+        if self.is_goodbye_silent():
+            logger.info("[%s] prepare_proactive_delivery: goodbye silent", self.lanlan_name)
+            return False
         # 早期抢占检查：在任何 await / sid 改写前快速短路，防止用户刚在入口之后
         # 抢占而后续 self.current_speech_id 写入覆盖用户的 user_sid。默认 reset()
         # 对活动 phase no-op（保护 auto-start 期间偶发并发 reset），但 end_session
@@ -5563,6 +5703,12 @@ class LLMSessionManager:
             self.lanlan_name, sess_type, self.state.phase.value, len(self.pending_agent_callbacks),
         )
         if not self.pending_agent_callbacks:
+            return
+        if self.is_goodbye_silent():
+            logger.info(
+                "[%s] trigger_agent_callbacks deferred: goodbye silent, keeping %d callback(s)",
+                self.lanlan_name, len(self.pending_agent_callbacks),
+            )
             return
         # 与 handle_text_data / handle_response_complete 等输出 handler 对偶：
         # takeover 期间普通 chat LLM 输出会被静音，所以现在派发会被吞掉、callback
@@ -6020,6 +6166,9 @@ class LLMSessionManager:
 
         流程：查询 memory_server 获取间隔 → 构建引导词 → 主动拉起 text session → 投递。
         """
+        if self.is_goodbye_silent():
+            logger.info("[%s] trigger_greeting: goodbye silent, skipping", self.lanlan_name)
+            return
         # ── 守卫：语音 session 正在启动 / 已活跃时，跳过 greeting ──
         if self._is_voice_session_active_or_starting():
             logger.info("[%s] trigger_greeting: voice session active/starting, skipping", self.lanlan_name)
@@ -6175,6 +6324,119 @@ class LLMSessionManager:
         finally:
             await self.state.fire(SessionEvent.PROACTIVE_DONE)
 
+    async def trigger_cat_greeting(self, duration_seconds: float, tier: str, was_auto: bool) -> None:
+        """从猫咪形态变回猫娘（请她回来）时，按"行为(tier) × 猫咪停留时长"触发一次专属问候。
+
+        与 trigger_greeting 对偶，但独立计时：不查 last_conversation_gap，直接用前端
+        测量并传入的猫咪停留时长（datetime gap 是"距上次对话"，这里是"作为猫咪待了多久"，
+        两套时钟互不干扰）。流程：选行为/时长档 → 构建引导词 → 主动拉起 text session → 投递。
+        """
+        if self.is_goodbye_silent():
+            logger.info("[%s] trigger_cat_greeting: goodbye silent, skipping", self.lanlan_name)
+            return
+        # ── 守卫：语音 session 正在启动 / 已活跃时，跳过（与 trigger_greeting 对偶）──
+        if self._is_voice_session_active_or_starting():
+            logger.info("[%s] trigger_cat_greeting: voice session active/starting, skipping", self.lanlan_name)
+            return
+        if self._takeover_active:
+            logger.info("[%s] trigger_cat_greeting: session takeover active, skipping", self.lanlan_name)
+            return
+
+        # tier → 行为：cat1=清醒 / cat2=打盹 / cat3=熟睡。
+        behavior = {"cat1": "awake", "cat2": "nap", "cat3": "sleep"}.get(str(tier or "").strip().lower(), "awake")
+
+        _lang = normalize_language_code(self.user_language, format='short')
+        from config.prompts.prompts_proactive import (
+            get_cat_greeting_prompt, get_cat_greeting_reason_hint, get_time_of_day_hint,
+        )
+        from utils.time_format import format_elapsed as _format_elapsed
+        # < 3min 静默由 get_cat_greeting_prompt 内部判定，返回 None 时不触发。
+        template = get_cat_greeting_prompt(behavior, duration_seconds, _lang)
+        if not template:
+            logger.debug("[%s] trigger_cat_greeting: duration %.0fs below threshold, skipping", self.lanlan_name, duration_seconds)
+            return
+
+        # 投递通道：已有空闲 text session 则直接用，否则主动拉起（与 trigger_greeting 对偶）
+        if isinstance(self.session, OmniOfflineClient) and not getattr(self.session, "_is_responding", False):
+            pass
+        else:
+            if self._is_voice_session_active_or_starting():
+                logger.info("[%s] trigger_cat_greeting: voice session appeared before text session auto-start, skipping", self.lanlan_name)
+                return
+            ws = self.websocket
+            if not ws or not hasattr(ws, 'client_state') or ws.client_state != ws.client_state.CONNECTED:
+                logger.warning("[%s] trigger_cat_greeting: no connected websocket, aborting", self.lanlan_name)
+                return
+            try:
+                logger.info("[%s] trigger_cat_greeting: auto-starting text session", self.lanlan_name)
+                await self.start_session(ws, new=False, input_mode='text')
+            except Exception as e:
+                logger.warning("[%s] trigger_cat_greeting: auto start_session failed: %s", self.lanlan_name, e)
+                return
+
+        if not isinstance(self.session, OmniOfflineClient):
+            logger.warning("[%s] trigger_cat_greeting: session is not text mode after start, aborting", self.lanlan_name)
+            return
+
+        # 与 time_hint 一样，reason_hint 先 format 好 {master} 再注入主模板。
+        reason_hint = get_cat_greeting_reason_hint(was_auto, _lang).format(master=self.master_name)
+        elapsed = _format_elapsed(_lang, duration_seconds)
+        time_hint = get_time_of_day_hint(_lang).format(master=self.master_name)
+
+        instruction = template.format(
+            reason_hint=reason_hint, elapsed=elapsed, name=self.lanlan_name,
+            master=self.master_name, time_hint=time_hint,
+        )
+        print(f"[trigger_cat_greeting] instruction:\n{instruction}")
+        logger.info("[%s] trigger_cat_greeting: behavior=%s duration=%.0fs was_auto=%s elapsed=%s, delivering",
+                    self.lanlan_name, behavior, duration_seconds, was_auto, elapsed)
+
+        # ── 投递前最终检查：构建 instruction 期间语音可能已接管 ──
+        if self._is_voice_session_active_or_starting():
+            logger.info("[%s] trigger_cat_greeting: voice session took over before delivery, skipping", self.lanlan_name)
+            return
+
+        # 原子 SM claim：与 trigger_greeting / trigger_agent_callbacks / proactive_chat 互斥
+        if not await self.state.try_start_proactive(session=self.session):
+            logger.info(
+                "[%s] trigger_cat_greeting: SM denied claim (phase=%s), skipping",
+                self.lanlan_name, self.state.phase.value,
+            )
+            return
+
+        try:
+            async with self._proactive_write_lock:
+                if self._is_voice_session_active_or_starting():
+                    logger.info("[%s] trigger_cat_greeting: voice session took over while waiting for write lock, skipping", self.lanlan_name)
+                    return
+                async with self.lock:
+                    if self.state.is_proactive_preempted():
+                        logger.info("[%s] trigger_cat_greeting: preempted before sid claim, skipping", self.lanlan_name)
+                        return
+                    self.current_speech_id = str(uuid4())
+                    self._tts_done_queued_for_turn = False
+                    self._tts_done_pending_until_ready = False
+                    proactive_sid = self.current_speech_id
+                await self.state.fire(SessionEvent.PROACTIVE_CLAIM, sid=proactive_sid)
+                await self.state.fire(SessionEvent.PROACTIVE_PHASE2)
+                _sid_token = _proactive_expected_sid.set(proactive_sid)
+                try:
+                    # stale session 防御：与 trigger_greeting 同款快照 + 类型校验。
+                    session_ref = self.session
+                    if not isinstance(session_ref, OmniOfflineClient):
+                        logger.info(
+                            "[%s] trigger_cat_greeting: session swapped/nullified "
+                            "before prompt_ephemeral (now=%s), skipping",
+                            self.lanlan_name, type(session_ref).__name__,
+                        )
+                        return
+                    delivered = await session_ref.prompt_ephemeral(instruction)
+                finally:
+                    _proactive_expected_sid.reset(_sid_token)
+                logger.info("[%s] trigger_cat_greeting: delivered=%s", self.lanlan_name, delivered)
+        finally:
+            await self.state.fire(SessionEvent.PROACTIVE_DONE)
+
     async def trigger_new_character_greeting(self) -> None:
         from config.prompts.prompts_proactive import get_new_character_greeting_prompt
         from utils.new_character_greeting_state import has_pending, remove_pending
@@ -6182,6 +6444,10 @@ class LLMSessionManager:
         config_manager = get_config_manager()
         if not await has_pending(config_manager, self.lanlan_name):
             logger.debug("[%s] trigger_new_character_greeting: no pending intent", self.lanlan_name)
+            return
+
+        if self.is_goodbye_silent():
+            logger.info("[%s] trigger_new_character_greeting: goodbye silent, skipping", self.lanlan_name)
             return
 
         if self._is_voice_session_active_or_starting():
@@ -6294,6 +6560,10 @@ class LLMSessionManager:
         their existing direct enqueue-only path so ``delivery="passive"``'s
         "don't interrupt" promise is unchanged.
         """
+        if self.is_goodbye_silent():
+            self.enqueue_agent_callback(callback)
+            logger.info("[%s] proactive callback queued: goodbye silent", self.lanlan_name)
+            return
         self.proactive_manager.submit(callback, priority=priority, coalesce_key=coalesce_key)
 
     async def _deliver_proactive_batch(self, callbacks: list) -> None:
@@ -6479,6 +6749,8 @@ class LLMSessionManager:
         response.created→voice_play_start window the playback gate can't see,
         AND an active offline/text user response where try_start_proactive
         would deny the claim)."""
+        if self.is_goodbye_silent():
+            return False
         # Time-bounded read (NOT the raw _voice_playback_active flag): if the
         # frontend dropped voice_play_end, _is_voice_playing() self-heals after
         # the 30s watchdog, so a stuck flag can't make can_release return False
@@ -7002,6 +7274,13 @@ class LLMSessionManager:
                     # 对偶）。idle reset loop 依赖该字段判断静默时长，文本路径不补的话
                     # 纯文本会话永远满足"静默 ≥ 30 min"被误重置。
                     self.last_user_activity_time = time.time()
+                    # 「真消息」时间戳：strip 后非空才刷，与语音路径
+                    # `if transcript_text:` 对偶——空白输入不算真实回应，否则会误
+                    # 推进 mini-game 邀请隐式 dismiss 判定（CodeRabbit）。注意
+                    # last_user_activity_time 仍无条件刷（服务 idle reset，语义是
+                    # 「有没有发请求」，与「是不是真消息」不同）。
+                    if data.strip():
+                        self.last_user_message_time = time.time()
 
                     # 更新字数限制（可能用户在对话期间修改了设置）
                     if hasattr(self.session, 'update_max_response_length'):
@@ -7055,46 +7334,13 @@ class LLMSessionManager:
                     )
 
                     # Mini-game 邀请的关键词文本兜底（PR #1141 follow-up E2）。
-                    # 用户在 pending 邀请期间自己打字（没点 ChoicePrompt 三按
-                    # 钮）→ 扫关键词命中就触发对应 state 转换。**不吃掉消息**：
-                    # 继续走普通 chat 流水线，AI 仍然会回应这条话——AI 收到的
-                    # 上下文里也含这条用户输入，所以模型会自然把"好啊"、"不
-                    # 玩了"之类的回复处理掉。仅做 state side effect + accept 时
-                    # 推一条 mini_game_launch WS 让前端 window.open 游戏。
-                    # main_routers' keyword matcher is registered as a hook
-                    # on the bus (see app/runtime_bindings.py). Dispatcher
-                    # swallows per-hook errors; if no hook is bound (e.g.
-                    # entrypoint without main_routers), result is None.
-                    _kw_outcome = dispatch_text_user_message(
-                        self.lanlan_name,
+                    # 用户在 pending 邀请期间自己打字（没点 ChoicePrompt 三按钮）
+                    # → 扫关键词命中就触发对应 state 转换。与语音转写路径
+                    # （handle_input_transcript）共用同一方法，逻辑见
+                    # _dispatch_mini_game_invite_keyword。
+                    await self._dispatch_mini_game_invite_keyword(
                         data if isinstance(data, str) else '',
                     )
-                    # 推一条 mini_game_invite_resolved 给前端：accept 时兼当 launch
-                    # 信号（带 game_url），decline/later 时让 ChoicePrompt UI 清掉
-                    # 不让按钮挂着——codex P2 指出，原版只对 accept 推，
-                    # decline/later keyword 命中后前端 prompt 不消失，用户后续点
-                    # 按钮会被 endpoint 当 expired，state 早变了。
-                    if _kw_outcome and _kw_outcome.get('action'):
-                        try:
-                            if (self.websocket
-                                    and hasattr(self.websocket, 'send_json')):
-                                ws_state = getattr(self.websocket, 'client_state', None)
-                                if ws_state is None or ws_state == ws_state.CONNECTED:
-                                    payload = {
-                                        'type': 'mini_game_invite_resolved',
-                                        'session_id': _kw_outcome.get('session_id') or '',
-                                        'action': _kw_outcome['action'],
-                                    }
-                                    if _kw_outcome.get('game_url'):
-                                        payload['game_url'] = _kw_outcome['game_url']
-                                    if _kw_outcome.get('game_type'):
-                                        payload['game_type'] = _kw_outcome['game_type']
-                                    await self.websocket.send_json(payload)
-                        except Exception as _push_err:
-                            logger.warning(
-                                f"[{self.lanlan_name}] mini_game_invite_resolved "
-                                f"WS push failed: {_push_err}",
-                            )
 
                     should_handoff, openclaw_messages = await self._should_handoff_text_to_openclaw(data)
                     if should_handoff:
@@ -7747,7 +7993,7 @@ class LLMSessionManager:
                             'API_ARREARS', 'API_QUOTA_TIME', 'API_KEY_REJECTED',
                             'API_RATE_LIMIT', 'API_POLICY_VIOLATION',
                             'API_1008_FALLBACK', 'TTS_CONNECTION_FAILED',
-                            'UPSTREAM_SERVER_BUSY',
+                            'UPSTREAM_SERVER_BUSY', 'TTS_CONFIG_INVALID',
                         }
                         _parsed_code = None
                         _keyword_target = error_msg_text  # 非 JSON 错误时回退使用

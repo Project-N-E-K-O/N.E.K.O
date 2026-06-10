@@ -4,11 +4,12 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Study Companion</title>
+    <link rel="stylesheet" href="./katex.min.css" />
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
     <main class="study-shell">
-      <section class="study-toolbar" aria-label="Study companion controls">
+      <section class="study-toolbar" data-i18n-aria-label="ui.label.study_controls" aria-label="Study companion controls">
         <div>
           <h1 data-i18n="ui.title">Study Companion</h1>
           <p id="statusLine" data-i18n="ui.status.starting">Starting...</p>
@@ -25,7 +26,7 @@
         <button id="modeTeachingBtn" type="button" data-mode="teaching" data-i18n="status.mode.teaching">Teaching</button>
       </section>
 
-      <section class="study-meta" aria-label="Study state">
+      <section class="study-meta" data-i18n-aria-label="ui.label.study_state" aria-label="Study state">
         <div class="meta-item">
           <span data-i18n="ui.label.screen">Screen</span>
           <strong id="screenType">-</strong>
@@ -40,7 +41,7 @@
         </div>
       </section>
 
-      <section class="memory-panel" aria-live="polite">
+      <section class="memory-panel" aria-live="polite" data-i18n-aria-label="ui.memory.title" aria-label="Memory Deck">
         <div class="section-heading">
           <h2 data-i18n="ui.memory.title">Memory Deck</h2>
           <span id="memoryDeckStatus">-</span>
@@ -64,7 +65,7 @@
         </div>
       </section>
 
-      <section class="study-workspace">
+      <section class="study-workspace" data-i18n-aria-label="ui.label.study_workspace" aria-label="Study workspace">
         <label class="input-label" for="studyInput" data-i18n="ui.label.text">Text</label>
         <textarea id="studyInput" spellcheck="true" placeholder="Paste a concept, problem statement, or OCR text here." data-i18n-placeholder="ui.placeholder.input"></textarea>
         <div class="action-row">
@@ -73,7 +74,7 @@
         </div>
       </section>
 
-      <section class="question-panel" aria-live="polite">
+      <section class="question-panel" aria-live="polite" data-i18n-aria-label="ui.label.question_panel" aria-label="Question panel">
         <h2 data-i18n="ui.label.question">Question</h2>
         <pre id="questionText"></pre>
         <label class="input-label" for="answerInput" data-i18n="ui.label.answer">Answer</label>
@@ -84,12 +85,14 @@
         </div>
       </section>
 
-      <section class="reply-panel" aria-live="polite">
+      <section class="reply-panel" aria-live="polite" data-i18n-aria-label="ui.label.reply_panel" aria-label="Reply panel">
         <h2 data-i18n="ui.label.reply">Reply</h2>
         <pre id="replyText"></pre>
       </section>
     </main>
     <script src="./i18n.js"></script>
+    <script src="./katex.min.js"></script>
+    <script src="./katex-render.js"></script>
     <script src="./main.js"></script>
   </body>
 </html>

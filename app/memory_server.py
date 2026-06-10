@@ -80,6 +80,7 @@ from utils.cloudsave_runtime import (
     MaintenanceModeError,
     ROOT_MODE_NORMAL,
     bootstrap_local_cloudsave_environment,
+    is_cloudsave_disabled,
     maintenance_error_payload,
     set_root_mode,
     should_write_root_mode_normal_after_startup,
@@ -2940,11 +2941,14 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             return False
 
         bootstrap_ok = False
-        try:
-            bootstrap_local_cloudsave_environment(_config_manager)
-            bootstrap_ok = True
-        except Exception as e:
-            logger.warning(f"[Memory] cloudsave 环境 bootstrap 失败，后续 cloudsave 相关操作可能降级: {e}")
+        if is_cloudsave_disabled():
+            logger.warning("[Memory] 跳过 cloudsave 环境 bootstrap：cloudsave 已为本次会话禁用")
+        else:
+            try:
+                bootstrap_local_cloudsave_environment(_config_manager)
+                bootstrap_ok = True
+            except Exception as e:
+                logger.warning(f"[Memory] cloudsave 环境 bootstrap 失败，后续 cloudsave 相关操作可能降级: {e}")
 
         try:
             from memory import migrate_to_character_dirs

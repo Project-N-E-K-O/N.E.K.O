@@ -10,6 +10,7 @@ import re
 import shutil
 import threading
 import asyncio
+import time
 import math
 import uuid
 from datetime import date
@@ -34,10 +35,11 @@ from utils.api_config_loader import (
 )
 from utils.custom_tts_adapter import check_custom_tts_voice_allowed
 from utils.file_utils import atomic_write_json
+from utils.gptsovits_config import normalize_gsv_api_url
 from utils.logger_config import get_module_logger
 from utils.native_voice_registry import (
-    get_active_realtime_native_provider,
-    is_native_voice,
+    is_free_lanlan_app_route,
+    is_saveable_native_voice,
 )
 from utils.persona_presets import PERSONA_OVERRIDE_FIELDS
 from utils.steam_state import get_steamworks
@@ -46,6 +48,38 @@ from utils.steam_state import get_steamworks
 
 
 logger = get_module_logger(__name__)
+
+
+class LocalStateDirectoryError(OSError):
+    """Raised when the local non-cloud state directory cannot be prepared."""
+
+    local_state_directory_error = True
+
+    def __init__(
+        self,
+        message,
+        *,
+        anchor_root=None,
+        local_state_dir=None,
+        failed_path=None,
+        reason="",
+    ):
+        self.anchor_root = str(Path(anchor_root).expanduser().resolve(strict=False)) if anchor_root else ""
+        self.local_state_dir = (
+            str(Path(local_state_dir).expanduser().resolve(strict=False)) if local_state_dir else ""
+        )
+        self.failed_path = str(Path(failed_path).expanduser().resolve(strict=False)) if failed_path else ""
+        self.reason = str(reason or "")
+        parts = [str(message or "Local state directory is unavailable")]
+        if self.anchor_root:
+            parts.append(f"anchor_root={self.anchor_root}")
+        if self.local_state_dir:
+            parts.append(f"local_state_dir={self.local_state_dir}")
+        if self.failed_path:
+            parts.append(f"failed_path={self.failed_path}")
+        if self.reason:
+            parts.append(f"reason={self.reason}")
+        super().__init__("\n".join(parts))
 
 
 def _as_bool(value, default=False):
@@ -155,6 +189,16 @@ def _is_default_yui_character(character_name: str, character_data: dict) -> bool
     return _normalize_live2d_model_path(model_path) == DEFAULT_YUI_LIVE2D_MODEL_PATH
 
 
+# 历史上 free_voices["yui_cn"] 用过、现已被替换的免费 YUI 预设音色 ID。
+# 这些值仍残留在存量用户的 characters.json 里，但已不在 free_voices 白名单中，
+# 会被 cleanup_invalid_voice_ids 判为 invalid 清空 → 空 voice 落到 free/step
+# provider 的 default_voice（qingchunshaonv），导致「一直吃默认 YUI、从没手动
+# 选过音色」的免费用户在音色 ID 更替后无声掉档到通用女声。cleanup 在判 invalid
+# 前先把这些值平移到现役 yui_cn 即可兜住。将来再更替 YUI 音色时，把被替换掉的
+# 旧值追加进这个集合。
+_DEPRECATED_FREE_YUI_VOICE_IDS = frozenset({"voice-tone-R6NtLH3Hk0"})
+
+
 def _get_default_yui_free_voice_id() -> str:
     from utils.api_config_loader import get_free_voices
     from utils.language_utils import get_global_language_full
@@ -194,7 +238,8 @@ async def ensure_default_yui_voice_for_free_api(config_manager, core_cfg: dict |
             core_cfg = {}
     if not isinstance(core_cfg, dict):
         return False
-    if core_cfg.get("coreApi") != "free" and core_cfg.get("assistApi") != "free" and not core_cfg.get("IS_FREE_VERSION"):
+    # 免费预设 YUI 音色只在 core=free 运行时可用，与 assist 无关。
+    if (core_cfg.get("coreApi") or core_cfg.get("CORE_API_TYPE")) != "free":
         return False
 
     characters = await config_manager.aload_characters()
@@ -219,7 +264,20 @@ async def ensure_default_yui_voice_for_free_api(config_manager, core_cfg: dict |
     if current_voice_id:
         return False
 
-    yui_voice_id = _get_default_yui_free_voice_id()
+    # 海外免费（free + *.lanlan.app）：默认音色是品牌 yui（free_intl 的 default_voice），
+    # 下发字面量 "yui"。国内免费（lanlan.tech）仍按语言绑定 free_voices 里的 yui 音色。
+    #
+    # 注意：update_core_config 传进来的 raw core_cfg 里 CORE_URL 还是 lanlan.tech，
+    # get_core_config() 才会按非大陆改写成 lanlan.app，直接判 URL 会漏判海外。
+    # 故 URL 命中 lanlan.app 走快路，否则用 _check_non_mainland 兜底判海外。
+    core_url = str((core_cfg or {}).get("CORE_URL") or "")
+    overseas = is_free_lanlan_app_route("free", core_url)
+    if not overseas:
+        try:
+            overseas = bool(config_manager._check_non_mainland())
+        except Exception:
+            overseas = False
+    yui_voice_id = "yui" if overseas else _get_default_yui_free_voice_id()
     if not yui_voice_id:
         return False
 
@@ -859,7 +917,15 @@ class ConfigManager:
     """配置文件管理器"""
     _agent_quota_lock = threading.Lock()
     _selected_root_unavailable_recovery_override_roots: set[str] = set()
-    _free_agent_daily_limit = 300 # 免费配额并非只在本地实施，本地计算是为了减少无效请求、节约网络带宽。
+    _free_agent_daily_limit = 500 # 免费配额并非只在本地实施，本地计算是为了减少无效请求、节约网络带宽。
+    # 本地每日配额只对真正的免费 Agent 模型计数；模型名与 config/api_providers.json 的 assist free profile 保持一致。
+    _free_agent_model_name = "free-agent-model"
+    # 配额耗尽时给前端弹提示的节流：与 _agent_quota_lock 不同的锁，避免在持有配额锁时重入。
+    # notifier 由 agent_server 在启动时注册（进程级），收到耗尽信号最多每 _quota_notify_interval_s 秒触发一次。
+    _quota_notify_lock = threading.Lock()
+    _quota_notify_interval_s = 10.0
+    _quota_notify_last_monotonic = 0.0
+    _quota_exceeded_notifier = None
     ROOT_STATE_VERSION = 1
     CLOUDSAVE_LOCAL_STATE_VERSION = 1
     CHARACTER_TOMBSTONES_STATE_VERSION = 1
@@ -1662,14 +1728,109 @@ class ConfigManager:
 
     def ensure_local_state_directory(self):
         """确保本地状态目录存在。"""
+        self._last_local_state_directory_error = None
         try:
-            if not self._ensure_anchor_root_directory():
-                return False
+            if self.anchor_root.exists() and not self.anchor_root.is_dir():
+                raise LocalStateDirectoryError(
+                    "Local state anchor root is unavailable",
+                    anchor_root=self.anchor_root,
+                    local_state_dir=self.local_state_dir,
+                    failed_path=self.anchor_root,
+                    reason="anchor_root exists but is not a directory",
+                )
+            self.anchor_root.mkdir(parents=True, exist_ok=True)
+            if self.local_state_dir.exists() and not self.local_state_dir.is_dir():
+                raise LocalStateDirectoryError(
+                    "Local state directory is unavailable",
+                    anchor_root=self.anchor_root,
+                    local_state_dir=self.local_state_dir,
+                    failed_path=self.local_state_dir,
+                    reason="local_state_dir exists but is not a directory",
+                )
             self.local_state_dir.mkdir(parents=True, exist_ok=True)
+            probe_path = self.local_state_dir / f".neko_state_write_probe.{uuid.uuid4().hex}.tmp"
+            try:
+                with open(probe_path, "w", encoding="utf-8") as probe_file:
+                    probe_file.write("probe")
+                    probe_file.flush()
+            finally:
+                try:
+                    probe_path.unlink()
+                except FileNotFoundError:
+                    pass
             return True
-        except Exception as e:
+        except LocalStateDirectoryError as e:
+            self._last_local_state_directory_error = e
             print(f"Warning: Failed to create local state directory: {e}", file=sys.stderr)
             return False
+        except Exception as e:
+            diagnostic = LocalStateDirectoryError(
+                "Local state directory is unavailable",
+                anchor_root=self.anchor_root,
+                local_state_dir=self.local_state_dir,
+                failed_path=self.local_state_dir,
+                reason=str(e),
+            )
+            self._last_local_state_directory_error = diagnostic
+            print(f"Warning: Failed to create local state directory: {diagnostic}", file=sys.stderr)
+            return False
+
+    def _raise_local_state_directory_error(self, operation):
+        diagnostic = getattr(self, "_last_local_state_directory_error", None)
+        message = f"Failed to ensure local state directory before {operation}"
+        if isinstance(diagnostic, LocalStateDirectoryError):
+            raise LocalStateDirectoryError(
+                message,
+                anchor_root=diagnostic.anchor_root,
+                local_state_dir=diagnostic.local_state_dir,
+                failed_path=diagnostic.failed_path,
+                reason=diagnostic.reason,
+            ) from diagnostic
+        raise LocalStateDirectoryError(
+            message,
+            anchor_root=self.anchor_root,
+            local_state_dir=self.local_state_dir,
+            failed_path=self.local_state_dir,
+            reason="ensure_local_state_directory returned False",
+        )
+
+    def _raise_local_state_file_error(self, operation, path, reason, cause=None):
+        error = LocalStateDirectoryError(
+            f"Failed to ensure local state file before {operation}",
+            anchor_root=self.anchor_root,
+            local_state_dir=self.local_state_dir,
+            failed_path=path,
+            reason=reason,
+        )
+        if cause is not None:
+            raise error from cause
+        raise error
+
+    def _save_local_state_json_file(self, path, data, operation):
+        path = Path(path)
+        if path.exists() and not path.is_file():
+            self._raise_local_state_file_error(
+                operation,
+                path,
+                "state file target exists but is not a file",
+            )
+        try:
+            self._save_json_file(path, data)
+        except OSError as e:
+            self._raise_local_state_file_error(operation, path, str(e), cause=e)
+
+    def _load_local_state_json_file(self, path, default_value, operation):
+        path = Path(path)
+        if path.exists() and not path.is_file():
+            self._raise_local_state_file_error(
+                operation,
+                path,
+                "state file target exists but is not a file",
+            )
+        try:
+            return self._load_json_file(path, default_value)
+        except OSError as e:
+            self._raise_local_state_file_error(operation, path, str(e), cause=e)
 
     def build_default_root_state(self):
         """构建默认 root_state 内容。"""
@@ -1724,7 +1885,11 @@ class ConfigManager:
         """加载 root_state；缺失时返回默认状态。"""
         if default_value is None:
             default_value = self.build_default_root_state()
-        state = self._load_json_file(self.root_state_path, default_value)
+        state = self._load_local_state_json_file(
+            self.root_state_path,
+            default_value,
+            "loading root_state",
+        )
         if self._has_selected_root_unavailable_recovery_override():
             return self._build_selected_root_unavailable_recovery_state(state)
         return state
@@ -1732,42 +1897,61 @@ class ConfigManager:
     def save_root_state(self, data):
         """保存 root_state。"""
         if not self.ensure_local_state_directory():
-            raise OSError("Failed to ensure local state directory before saving root_state")
-        self._save_json_file(self.root_state_path, data)
+            self._raise_local_state_directory_error("saving root_state")
+        self._save_local_state_json_file(self.root_state_path, data, "saving root_state")
 
     def load_cloudsave_local_state(self, default_value=None):
         """加载 cloudsave_local_state；缺失时返回带稳定字段结构的默认值。"""
         if default_value is None:
             default_value = self.build_default_cloudsave_local_state()
-        return self._load_json_file(self.cloudsave_local_state_path, default_value)
+        return self._load_local_state_json_file(
+            self.cloudsave_local_state_path,
+            default_value,
+            "loading cloudsave_local_state",
+        )
 
     def save_cloudsave_local_state(self, data):
         """保存 cloudsave_local_state。"""
         if not self.ensure_local_state_directory():
-            raise OSError("Failed to ensure local state directory before saving cloudsave_local_state")
-        self._save_json_file(self.cloudsave_local_state_path, data)
+            self._raise_local_state_directory_error("saving cloudsave_local_state")
+        self._save_local_state_json_file(
+            self.cloudsave_local_state_path,
+            data,
+            "saving cloudsave_local_state",
+        )
 
     def load_character_tombstones_state(self, default_value=None):
         """加载角色 tombstone 本地状态。"""
         if default_value is None:
             default_value = self.build_default_character_tombstones_state()
-        return self._load_json_file(self.character_tombstones_state_path, default_value)
+        return self._load_local_state_json_file(
+            self.character_tombstones_state_path,
+            default_value,
+            "loading character_tombstones_state",
+        )
 
     def save_character_tombstones_state(self, data):
         """保存角色 tombstone 本地状态。"""
         if not self.ensure_local_state_directory():
-            raise OSError("Failed to ensure local state directory before saving character_tombstones_state")
-        self._save_json_file(self.character_tombstones_state_path, data)
+            self._raise_local_state_directory_error("saving character_tombstones_state")
+        self._save_local_state_json_file(
+            self.character_tombstones_state_path,
+            data,
+            "saving character_tombstones_state",
+        )
 
     def ensure_cloudsave_state_files(self):
         """确保本地 cloudsave 相关状态文件存在，返回是否发生创建。"""
         created = False
         if not self.ensure_local_state_directory():
+            diagnostic = getattr(self, "_last_local_state_directory_error", None)
+            diagnostic_suffix = f"\n{diagnostic}" if diagnostic is not None else ""
             raise RuntimeError(
                 "Failed to initialize local state directory for "
                 f"{self.root_state_path.name}, "
                 f"{self.cloudsave_local_state_path.name}, and "
                 f"{self.character_tombstones_state_path.name}"
+                f"{diagnostic_suffix}"
             )
 
         if not self.root_state_path.exists():
@@ -2334,6 +2518,52 @@ class ConfigManager:
             voice_id.startswith("cosyvoice-v2") or voice_id.startswith("cosyvoice-v3-")
         )
 
+    @staticmethod
+    def is_deprecated_free_yui_voice_id(voice_id) -> bool:
+        """voice_id 是否是已被替换、仍残留在存量存档里的免费 YUI 预设音色。"""
+        return bool(voice_id) and str(voice_id).strip() in _DEPRECATED_FREE_YUI_VOICE_IDS
+
+    def remap_deprecated_free_yui_voice_id(self, voice_id):
+        """废弃的免费 YUI 预设音色 → 现役国内 yui_cn（仅国内 free 线路迁移）。
+
+        非废弃值原样返回（不做 strip 归一化），避免调用方把单纯的前后空白差异
+        误当成「已迁移」而 continue，漏掉本轮对无效 voice_id 的清理。
+
+        废弃值是国内 StepFun YUI tone，只有国内免费（lanlan.tech）线路会真正下发它，
+        也只有该线路迁移到现役 free_voices["yui_cn"]：
+          - 海外免费（lanlan.app → free_intl）：原样返回，交既有 validate 在海外线路
+            判 invalid 清空 → 落服务端默认音色 fallback。客户端不注入 "yui"/native
+            alias（PR #1643 设计原则：free_intl 继承 Gemini-native provider，不得把
+            StepFun magic id 或其 alias 漏进该 catalog；且无条件换成国内 voice-tone
+            还会让非空 voice_id 在 free_intl 落进 external TTS）。
+          - 非 free 路由：原样返回，废弃 StepFun preset 用不上，交清空兜底。
+        现役 yui_cn 缺失/为空/仍落废弃集合时也原样返回——绝不借 cuteGirl 等其它 preset
+        当替身把 YUI 串成别的音色，也不把废弃换成另一个废弃造成死循环。
+        """
+        if not self.is_deprecated_free_yui_voice_id(voice_id):
+            return voice_id
+        core_cfg = self.get_core_config() or {}
+        if (core_cfg.get("CORE_API_TYPE") or core_cfg.get("coreApi")) != "free":
+            return voice_id
+
+        # get_core_config() 已按非大陆把 CORE_URL 改写成 lanlan.app，URL 即可判海外；
+        # _check_non_mainland 兜底地理判定。与 ensure_default 同源。海外不迁移（见上）。
+        core_url = str(core_cfg.get("CORE_URL") or "")
+        overseas = is_free_lanlan_app_route("free", core_url)
+        if not overseas:
+            try:
+                overseas = bool(self._check_non_mainland())
+            except Exception:
+                overseas = False
+        if overseas:
+            return voice_id
+
+        from utils.api_config_loader import get_free_voices
+        current = str((get_free_voices() or {}).get("yui_cn") or "").strip()
+        if current and current not in _DEPRECATED_FREE_YUI_VOICE_IDS:
+            return current
+        return voice_id
+
     def get_tts_api_key(self, provider: str) -> str | None:
         """根据 provider 统一获取 TTS API Key，返回 None 表示未配置。
 
@@ -2545,7 +2775,7 @@ class ConfigManager:
         tts_config = self.get_model_api_config('tts_custom')
         base_url = tts_config.get('base_url', '')
         is_local_tts = tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://'))
-        hide_cloud_main = for_listing and self.is_free_version()
+        hide_cloud_main = for_listing and self.is_free_voice()
 
         if is_local_tts:
             # 本地 WebSocket TTS：免费版仍可用，列表必须可见
@@ -2789,8 +3019,7 @@ class ConfigManager:
         if voice_id in voices:
             return True
 
-        active_native_provider = get_active_realtime_native_provider(self)
-        if active_native_provider and is_native_voice(voice_id, active_native_provider):
+        if is_saveable_native_voice(self, voice_id):
             return True
 
         # 免费预设音色允许豁免保存校验，运行时再由 core.py 按当前线路动态判断可用性
@@ -2819,8 +3048,7 @@ class ConfigManager:
         if voice_id in voices:
             return True
 
-        active_native_provider = get_active_realtime_native_provider(self)
-        if active_native_provider and is_native_voice(voice_id, active_native_provider):
+        if is_saveable_native_voice(self, voice_id):
             return True
 
         from utils.api_config_loader import get_free_voices
@@ -2837,17 +3065,35 @@ class ConfigManager:
         注意：免费预设音色在此处不会被清理（validate_voice_id 白名单放行），
         实际可用性由 core.py 运行时按 free + lanlan.app/lanlan.tech 线路决定。
 
+        清空前还会先把已废弃的免费 YUI 预设音色平移到现役 yui_cn
+        （remap_deprecated_free_yui_voice_id），避免存量用户因 YUI 音色 ID 更替
+        被判 invalid 清空、无声掉档到通用默认音色。迁移命中同样触发存盘。
+
         Returns:
             (cleaned_count, legacy_cosyvoice_names): 清理总数 及 仍在使用旧版 CosyVoice 音色的角色名列表
         """
         character_data = self.load_characters()
         cleaned_count = 0
+        migrated_count = 0
         legacy_cosyvoice_names: list[str] = []
 
         catgirls = character_data.get('猫娘', {})
         for name, config in catgirls.items():
             voice_id = get_reserved(config, 'voice_id', default='', legacy_keys=('voice_id',))
             if not voice_id:
+                continue
+            # 已废弃的免费 YUI 预设音色：先平移到现役 yui_cn，再 continue 跳过后续
+            # invalid 判定（新值在 free_voices 白名单内本就合法），保住默认 YUI 音色
+            remapped = self.remap_deprecated_free_yui_voice_id(voice_id)
+            if remapped and remapped != voice_id:
+                set_reserved(config, 'voice_id', remapped)
+                migrated_count += 1
+                logger.info(
+                    "猫娘 '%s' 的废弃 YUI 预设音色 '%s' 已平移到 '%s'",
+                    name,
+                    voice_id,
+                    remapped,
+                )
                 continue
             # 旧版 CosyVoice 音色：保留 voice_id 不清空，仅记录供通知
             if self.is_legacy_cosyvoice_id(voice_id):
@@ -2863,9 +3109,12 @@ class ConfigManager:
                 set_reserved(config, 'voice_id', '')
                 cleaned_count += 1
 
-        if cleaned_count > 0:
+        if cleaned_count > 0 or migrated_count > 0:
             self.save_characters(character_data)
-            logger.info("已清理 %d 个无效的 voice_id 引用", cleaned_count)
+            if cleaned_count > 0:
+                logger.info("已清理 %d 个无效的 voice_id 引用", cleaned_count)
+            if migrated_count > 0:
+                logger.info("已平移 %d 个废弃 YUI 预设音色", migrated_count)
 
         return cleaned_count, legacy_cosyvoice_names
 
@@ -3086,30 +3335,21 @@ class ConfigManager:
 
         try:
             if self._check_non_mainland():
-                return url.replace('lanlan.tech', 'lanlan.app').replace("www.lanlan.app/tts", "lanlan.app/tts")
+                # 海外免费统一走 www.lanlan.app（含 /tts）：该节点透传客户端
+                # voice 字段到 Gemini，支持 Gemini 全量 + yui。早期把 /tts 降级到
+                # 裸 lanlan.app（硬覆盖 Leda 的旧端点）的 .replace 已移除。
+                return url.replace('lanlan.tech', 'lanlan.app')
         except Exception:
             pass
 
         return url
 
     def _normalize_agent_url(self, url: str) -> str:
-        """Agent 模型始终走 lanlan.app（国际 API），统一 lanlan.tech → lanlan.app；
-        国际保留 www（www.lanlan.app），国内剥掉 www（lanlan.app）走就近节点。
+        """临时不改写 Agent URL。
 
-        lanlan.tech / lanlan.app 是项目自有域名，AGENT_MODEL_URL 要么是写死的
-        free 默认（https://www.lanlan.tech/text/v1），要么是用户自填的其它服务
-        URL（不含这两个域，replace 自然 no-op），所以直接字符串替换即可。
+        free-agent-model 需要走配置里的国内 ``lanlan.tech`` 文本入口；这里保持
+        AGENT_MODEL_URL 原样，避免把它归一化到 ``lanlan.app``。
         """
-        if not isinstance(url, str):
-            return url
-        url = url.replace('lanlan.tech', 'lanlan.app')
-        try:
-            if not self._check_non_mainland():
-                url = url.replace('www.lanlan.app', 'lanlan.app')
-        except Exception:
-            # 仅 _check_non_mainland 可能抛（GeoIP 探测）。探测失败时不剥 www，
-            # 保留国际形态作安全默认；线路探测不该阻断 URL 推导。
-            pass
         return url
 
     @staticmethod
@@ -3248,7 +3488,6 @@ class ConfigManager:
             'ASSIST_API_KEY_MINIMAX_INTL': '',
             'ASSIST_API_KEY_GROK': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_OPENROUTER': DEFAULT_CORE_API_KEY,
-            'IS_FREE_VERSION': False,
             'VISION_MODEL': DEFAULT_VISION_MODEL,
             'AGENT_MODEL': DEFAULT_AGENT_MODEL,
             'REALTIME_MODEL': DEFAULT_REALTIME_MODEL,
@@ -3448,7 +3687,7 @@ class ConfigManager:
         config['ENABLE_CUSTOM_API'] = enable_custom_api
 
         # GPT-SoVITS 配置映射
-        config['GPTSOVITS_ENABLED'] = core_cfg.get('gptsovitsEnabled', False)
+        config['GPTSOVITS_ENABLED'] = _as_bool(core_cfg.get('gptsovitsEnabled', False))
 
         config['ELEVENLABS_API_KEY'] = core_cfg.get('assistApiKeyElevenlabs', '')
         config['TTS_PROVIDER'] = core_cfg.get('ttsProvider', '')
@@ -3471,6 +3710,12 @@ class ConfigManager:
         except (TypeError, ValueError):
             config['TEXT_GUARD_MAX_LENGTH'] = 300
         
+        # GPT-SoVITS 是本地 TTS 运行时，不依赖 enableCustomApi 总开关。用户
+        # 保存的 ttsModelUrl 是 GSV server URL，不能被 follow_core/follow_assist
+        # 的 LLM URL 覆盖；空值只在运行时默认到 127.0.0.1，不写回配置文件。
+        if config['GPTSOVITS_ENABLED']:
+            config['TTS_MODEL_URL'] = normalize_gsv_api_url(core_cfg.get('ttsModelUrl'))
+
         # 只有在启用自定义API时才允许覆盖各模型相关字段
         if enable_custom_api:
             # URL / Model ID 字段：空值回退到已有配置。
@@ -3538,29 +3783,27 @@ class ConfigManager:
                 # 路径里读不到（fallback 用 CORE_MODEL，不是 REALTIME_MODEL/TTS_MODEL），
                 # 那是另一个层面的问题，下个 PR 跟进。
                 is_follow = provider in ('follow_core', 'follow_assist')
-                # GSV 启用时 ttsModelUrl 是 api_key_settings.js (save_button_down 那段)
-                # 强制覆盖进去的 GPT-SoVITS server URL，不是 follow_* 联动出来的 readonly
-                # 提示值。如果还按 skip_url_for_follow 跳过，TTS_MODEL_URL 永远是空，
-                # tts_custom 走 fallthrough → is_custom=False → 整条 GSV 链路全断
-                # （/custom_tts_voices 报 CUSTOM_API_NOT_ENABLED，TTS dispatcher 落到
-                # cosyvoice_vc_tts_worker 撞 dashscope 鉴权）。默认 ttsModelProvider 是
-                # 'follow_assist'，用户开 GSV 但不会专门去把 provider 改成 'custom'，
-                # 这条豁免必须在后端兜住。
-                gsv_enabled_for_url = bool(core_cfg.get('gptsovitsEnabled', False))
+                # GSV 启用时 ttsModelUrl 是 GPT-SoVITS server URL，不是 follow_*
+                # 联动出来的 LLM URL。即便 ttsModelProvider 仍是默认 follow_assist，
+                # 也必须优先保留 GSV URL，否则对话 TTS 会连到辅助 LLM endpoint。
+                gsv_enabled_for_url = config['GPTSOVITS_ENABLED']
+                gsv_tts_url_override = prefix == 'tts' and gsv_enabled_for_url
                 skip_url_for_follow = (
                     is_follow
                     and prefix in ('omni', 'tts')
-                    and not (prefix == 'tts' and gsv_enabled_for_url)
+                    and not gsv_tts_url_override
                 )
 
                 # URL: 空值回退到已有配置；omni/tts follow_* 时跳过
-                if not skip_url_for_follow:
+                cfg_url = core_cfg.get(f'{prefix}ModelUrl')
+                if gsv_tts_url_override:
+                    config[url_key] = normalize_gsv_api_url(cfg_url or config.get(url_key))
+                elif not skip_url_for_follow:
                     if is_follow:
                         followed_url = _resolve_follow_model_url(prefix, provider)
                         if followed_url:
                             config[url_key] = followed_url
                     else:
-                        cfg_url = core_cfg.get(f'{prefix}ModelUrl')
                         if cfg_url is not None:
                             config[url_key] = cfg_url or config.get(url_key, '')
 
@@ -3600,6 +3843,9 @@ class ConfigManager:
             # TTS Voice ID 作为角色 voice_id 的回退
             if core_cfg.get('ttsVoiceId') is not None:
                 config['TTS_VOICE_ID'] = core_cfg.get('ttsVoiceId', '')
+
+        if config['GPTSOVITS_ENABLED'] and core_cfg.get('ttsVoiceId') is not None:
+            config['TTS_VOICE_ID'] = core_cfg.get('ttsVoiceId', '')
 
         for key, value in config.items():
             if key.endswith('_URL') and isinstance(value, str):
@@ -3822,11 +4068,12 @@ class ConfigManager:
         """
         Agent 模式门槛检查：
         - 必须具备可用的 AGENT_MODEL(model/url/api_key)
-        - free 版本允许使用但由前端提示风险
+        - 是否免费(计配额/前端提示)由 is_agent_free() 单独判定，与本检查无关：
+          readiness 只关心 model/url/key 三件套填没填、能否发起请求。free-access 对
+          真免费 agent 是有效占位 token，应让它过门槛；脏配置(占位 key 打自费端点)由
+          下游 401 兜底，不在这里拦。
         """
         reasons = []
-        core_config = self.get_core_config()
-        is_free = bool(core_config.get('IS_FREE_VERSION'))
         agent_api = self.get_model_api_config('agent')
         if not (agent_api.get('model') or '').strip():
             reasons.append("Agent 模型未配置")
@@ -3835,19 +4082,60 @@ class ConfigManager:
         api_key = (agent_api.get('api_key') or '').strip()
         if not api_key:
             reasons.append("Agent API Key 未配置或不可用")
-        elif api_key == 'free-access' and not is_free:
-            reasons.append("Agent API Key 未配置或不可用")
         return len(reasons) == 0, reasons
 
-    def is_free_version(self) -> bool:
-        return bool(self.get_core_config().get('IS_FREE_VERSION'))
+    def is_agent_free(self) -> bool:
+        """当前 Agent 实际用的是否为内置免费 Agent 模型(free-agent-model)。
+
+        agent 侧"是否免费"的唯一真相源——计配额、前端"免费模型易阻塞"提示都看它。
+        对偶于 is_free_voice()(语音/core 维度)：即便用免费语音(core=free)，只要 agent
+        换成自费/自定义 model，这里就为 False。
+        """
+        agent_model = (self.get_model_api_config('agent').get('model') or '').strip()
+        return agent_model == self._free_agent_model_name
+
+    def is_free_voice(self) -> bool:
+        """当前是否走内置免费语音(core=free)。语音/音色侧"是否免费"的唯一真相源——
+        免费预设音色、隐藏云端克隆音色、默认 YUI 兜底都看它。对偶于 is_agent_free()。
+
+        realtime 与文本 TTS 共用同一音色、统一跟 core 走，与 assist 无关：被
+        hide_cloud_main 隐藏的 CosyVoice/Qwen 克隆音色只是复用了 assist key，免费版
+        (core=free)运行时走 free_mode worker 播不出它们，故隐藏。
+        """
+        return (self.get_core_config().get('CORE_API_TYPE') or '') == 'free'
 
     def _get_agent_quota_path(self) -> Path:
         """本地 Agent 试用配额计数文件路径。"""
         return self.config_dir / "agent_quota.json"
 
+    @classmethod
+    def register_quota_exceeded_notifier(cls, notifier) -> None:
+        """注册"免费版 Agent 配额耗尽"通知回调（进程级，由 agent_server 启动时注册）。
+
+        notifier(used:int, limit:int) 会在配额耗尽时被调用，**最多每 10 秒一次**（见
+        ``_maybe_notify_quota_exceeded`` 的节流）。回调本身必须非阻塞——它在持有
+        ``_agent_quota_lock`` 的临界区里被调用，通常只做一次跨线程 schedule。
+        """
+        cls._quota_exceeded_notifier = notifier
+
+    def _maybe_notify_quota_exceeded(self, used: int, limit: int) -> None:
+        """配额耗尽时节流触发已注册的前端提示回调（最多每 _quota_notify_interval_s 秒一次）。"""
+        notifier = ConfigManager._quota_exceeded_notifier
+        if notifier is None:
+            return
+        now = time.monotonic()
+        with ConfigManager._quota_notify_lock:
+            last = ConfigManager._quota_notify_last_monotonic
+            if last and (now - last) < ConfigManager._quota_notify_interval_s:
+                return
+            ConfigManager._quota_notify_last_monotonic = now
+        try:
+            notifier(used, limit)
+        except Exception as e:
+            logger.debug("配额耗尽通知回调失败: %s", e)
+
     def consume_agent_daily_quota(self, source: str = "", units: int = 1) -> tuple[bool, dict]:
-        """消费 Agent 模型每日配额（仅免费版生效）。配额并非只在本地实施，本地计算是为了减少无效请求、节约网络带宽。
+        """消费 Agent 模型每日配额（仅当实际 Agent 模型为 free-agent-model 时生效）。配额并非只在本地实施，本地计算是为了减少无效请求、节约网络带宽。
 
         Returns:
             (ok, info)
@@ -3862,11 +4150,14 @@ class ConfigManager:
         if units <= 0:
             units = 1
 
-        is_free = self.is_free_version()
+        # 只对真正的免费 Agent 模型(free-agent-model)本地计数：用户换用自费/自定义 agent
+        # model 后不该再被这条免费试用配额挡。判定收口在 is_agent_free()。analyzer/deduper
+        # 这类判定器走的是 summary/emotion 模型而非 agent model，已不再调用本函数。
+        is_metered = self.is_agent_free()
         today = date.today().isoformat()
         limit = int(self._free_agent_daily_limit)
 
-        if not is_free:
+        if not is_metered:
             return True, {
                 "limited": False,
                 "date": today,
@@ -3895,6 +4186,9 @@ class ConfigManager:
 
             used = int(data.get("used", 0))
             if used + units > limit:
+                # 配额耗尽：节流通知前端弹提示（最多每 10 秒一次）。回调非阻塞，
+                # 在临界区里只做一次跨线程 schedule，不展开网络 IO。
+                self._maybe_notify_quota_exceeded(used, limit)
                 return False, {
                     "limited": True,
                     "date": today,

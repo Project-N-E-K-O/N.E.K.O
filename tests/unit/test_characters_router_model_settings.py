@@ -4,6 +4,8 @@ import json
 
 import pytest
 
+from config import CHARACTER_RESERVED_FIELDS
+
 characters_router_module = importlib.import_module('main_routers.characters_router')
 from main_routers.config_router import _get_live3d_sub_type
 from utils.config_manager import delete_reserved, flatten_reserved, get_reserved, migrate_catgirl_reserved, set_reserved
@@ -34,6 +36,24 @@ class DummyConfigManager:
 
     async def asave_characters(self, characters, character_json_path=None):
         self.save_characters(characters, character_json_path)
+
+
+def test_live2d_idle_animation_is_reserved_and_hidden_from_editable_fields():
+    assert 'live2d_idle_animation' in CHARACTER_RESERVED_FIELDS
+
+    catgirl = {
+        '性格': '开朗',
+        'live2d_idle_animation': 'surprised1.motion3.json',
+    }
+
+    assert migrate_catgirl_reserved(catgirl) is True
+    assert 'live2d_idle_animation' not in catgirl
+    assert get_reserved(catgirl, 'avatar', 'live2d', 'idle_animation') == 'surprised1.motion3.json'
+
+    flattened = flatten_reserved(catgirl)
+    assert flattened['live2d_idle_animation'] == 'surprised1.motion3.json'
+    editable_keys = [k for k in flattened if k not in CHARACTER_RESERVED_FIELDS]
+    assert 'live2d_idle_animation' not in editable_keys
 
 
 def _build_characters_fixture():
@@ -290,6 +310,32 @@ def test_flatten_reserved_exposes_live3d_sub_type_for_frontend_consumers():
 
     assert flattened['model_type'] == 'live3d'
     assert flattened['live3d_sub_type'] == 'vrm'
+
+
+def test_flatten_catgirl_for_response_preserves_numeric_field_creation_order():
+    catgirl = {
+        '喵喵喵': '文字字段',
+        '1': '数字字段',
+    }
+
+    flattened = characters_router_module._flatten_catgirl_for_response(catgirl)
+
+    assert get_reserved(flattened, 'field_order') == ['喵喵喵', '1']
+    assert '_reserved' not in catgirl
+
+
+def test_sync_catgirl_field_order_honors_top_level_payload():
+    # 工坊上传卡的顺序存在顶层 _field_order（上传时 _reserved 被剥离）；列表/读取入口调 _sync
+    # 时不传 payload，必须认这个顶层字段，否则退回 JSON key 枚举顺序让数字 key 被提前。
+    catgirl = {
+        '1': '数字字段',
+        '喵喵喵': '文字字段',
+        '_field_order': ['喵喵喵', '1'],
+    }
+
+    characters_router_module._sync_catgirl_field_order(catgirl)
+
+    assert get_reserved(catgirl, 'field_order') == ['喵喵喵', '1']
 
 
 def test_migrate_catgirl_reserved_does_not_persist_empty_live3d_sub_type():

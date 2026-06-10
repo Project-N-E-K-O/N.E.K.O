@@ -1,121 +1,118 @@
 # 插件快速开始
 
-## 第一步：创建插件目录
+本指南手把手带你从零创建第一个插件。不需要任何插件开发经验。
 
-```bash
-mkdir -p plugin/plugins/hello_world
+## 前置条件
+
+- N.E.K.O 已安装并能正常启动
+- 基础 Python 知识（函数、类）
+
+## 你要做什么
+
+一个简单的 "Hello World" 插件，功能：按名字问候别人。
+
+完成后，文件结构长这样：
+
+```
+plugin/
+└── plugins/
+    └── hello_world/          ← 你的新插件
+        ├── plugin.toml       ← 配置文件：告诉 N.E.K.O 这个插件是什么
+        └── __init__.py       ← 代码文件：你的插件逻辑
 ```
 
+## 第一步：创建文件夹
+
+在 N.E.K.O 项目中找到 `plugin/plugins/` 目录，在里面新建一个叫 `hello_world` 的文件夹。
+
 ## 第二步：创建 `plugin.toml`
+
+在 `hello_world/` 里面，创建一个叫 `plugin.toml` 的文件。这是配置文件，告诉 N.E.K.O 你的插件是什么。
+
+粘贴以下内容：
 
 ```toml
 [plugin]
 id = "hello_world"
-name = "Hello World Plugin"
-description = "A simple example plugin"
-version = "1.0.0"
-entry = "plugins.hello_world:HelloWorldPlugin"
+name = "Hello World"
+description = "我的第一个插件 - 按名字问候别人"
+version = "0.1.0"
+entry = "plugin.plugins.hello_world:HelloWorldPlugin"
 
 [plugin.sdk]
 recommended = ">=0.1.0,<0.2.0"
 supported = ">=0.1.0,<0.3.0"
+
+[plugin_runtime]
+enabled = true
+auto_start = true
 ```
 
-### 配置字段
-
-| 字段 | 是否必需 | 说明 |
-|------|----------|------|
-| `id` | 是 | 唯一插件标识符 |
-| `name` | 否 | 显示名称 |
-| `description` | 否 | 插件描述 |
-| `version` | 否 | 插件版本 |
-| `entry` | 是 | 入口点：`module_path:ClassName` |
-
-### SDK 版本字段
-
-| 字段 | 说明 |
-|------|------|
-| `recommended` | 推荐的 SDK 版本范围 |
-| `supported` | 最低支持范围（不满足则拒绝加载） |
-| `untested` | 允许但加载时会发出警告 |
-| `conflicts` | 拒绝的版本范围 |
+关键点：
+- `id` 必须和文件夹名一致（`hello_world`）
+- `entry` 告诉 N.E.K.O 加载哪个类 — 格式是 `模块路径:类名`
+- `auto_start = true` 表示 N.E.K.O 启动时自动运行这个插件
 
 ## 第三步：创建 `__init__.py`
 
+在 `hello_world/` 里面，创建一个叫 `__init__.py` 的文件。这是你的插件代码。
+
+粘贴以下内容：
+
 ```python
-from plugin.sdk.plugin import (
-    NekoPluginBase, neko_plugin, plugin_entry, lifecycle,
-    Ok, Err,
-)
-from typing import Any
+from plugin.sdk.plugin import NekoPluginBase, neko_plugin, plugin_entry, Ok
+from typing import Annotated
+
 
 @neko_plugin
 class HelloWorldPlugin(NekoPluginBase):
-    """Hello World 插件示例。"""
+    """我的第一个插件。"""
 
-    def __init__(self, ctx: Any):
-        super().__init__(ctx)
-        self.logger = ctx.logger
-        self.counter = 0
-
-    @lifecycle(id="startup")
-    def on_startup(self, **_):
-        self.logger.info("HelloWorldPlugin started!")
-        return Ok({"status": "ready"})
-
-    @lifecycle(id="shutdown")
-    def on_shutdown(self, **_):
-        self.logger.info("HelloWorldPlugin stopped!")
-        return Ok({"status": "stopped"})
-
-    @plugin_entry(
-        id="greet",
-        name="Greet",
-        description="Return a greeting message",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "Name to greet",
-                    "default": "World"
-                }
-            }
-        }
-    )
-    def greet(self, name: str = "World", **_):
-        self.counter += 1
-        message = f"Hello, {name}! (call #{self.counter})"
-        self.logger.info(f"Greeting: {message}")
-        return Ok({"message": message, "count": self.counter})
+    @plugin_entry(id="greet", name="问候", description="跟某人打个招呼")
+    async def greet(self, name: Annotated[str, "要问候的名字"] = "World"):
+        return Ok({"message": f"Hello, {name}!"})
 ```
 
-### 关键要点
+每行代码的作用：
 
-- **`@neko_plugin`** — 必需的类装饰器，将类注册为插件
-- **`NekoPluginBase`** — 所有插件必须继承的基类
-- **`@plugin_entry`** — 定义一个可外部调用的入口点
-- **`@lifecycle`** — 处理生命周期事件（`startup`、`shutdown`、`reload`）
-- **`Ok(...)` / `Err(...)`** — 返回 Result 类型，实现类型安全的错误处理
-- **`**_`** — 始终在入口点签名中包含此参数，以捕获额外的参数
+| 代码 | 作用 |
+|------|------|
+| `@neko_plugin` | 把这个类标记为插件 |
+| `NekoPluginBase` | 基类 — 提供日志、配置、存储等能力 |
+| `@plugin_entry(...)` | 让这个函数可以从插件管理面板调用 |
+| `Annotated[str, "要问候的名字"]` | 一个字符串参数，带描述 |
+| `= "World"` | 默认值，不传参数时使用 |
+| `Ok({...})` | 返回成功结果 |
 
-## 第四步：测试
+## 第四步：运行
 
-启动插件服务器后，通过 HTTP 调用你的插件：
+1. 启动（或重启）N.E.K.O
+2. 从主界面打开 **插件管理** 面板
+3. "Hello World" 出现在插件列表中，状态：运行中
+4. 点击它 → 看到 **问候** 入口点
+5. 点击执行，输入一个名字，查看结果
 
-```bash
-curl -X POST http://localhost:48916/plugin/trigger \
-  -H "Content-Type: application/json" \
-  -d '{
-    "plugin_id": "hello_world",
-    "entry_id": "greet",
-    "args": {"name": "N.E.K.O"}
-  }'
+::: tip 已经在运行了？
+不需要重启。打开插件管理面板 → 点击 **刷新** → 找到你的插件 → 点击 **启动**。
+:::
+
+## 第五步：修改并重载
+
+修改 `__init__.py` 中的消息：
+
+```python
+return Ok({"message": f"嘿 {name}，欢迎来到 N.E.K.O！"})
 ```
 
-## 下一步
+保存 → 在插件管理面板中点击 **重载** → 完成。不需要重启。
 
-- [SDK 参考](./sdk-reference) — 了解 `NekoPluginBase`、Result 类型和运行时辅助工具
-- [装饰器](./decorators) — 所有可用的装饰器类型，包括钩子
-- [Hosted UI](./hosted-ui) — 添加交互式 TSX 面板或 Markdown 教程页
-- [示例](./examples) — 完整的可运行插件示例
+## 接下来做什么？
+
+| 我想要... | 看这个 |
+|---|---|
+| 添加更多功能和参数 | [SDK 参考](./sdk-reference) |
+| 在启动/关闭时执行代码 | [装饰器](./decorators) |
+| 让 AI 在聊天中调用我的插件 | [LLM Tool Calling](./tool-calling) |
+| 给插件做一个 UI 面板 | [Hosted UI](./hosted-ui) |
+| 看真实的插件示例 | [示例](./examples) |
+| 正确处理错误 | [最佳实践](./best-practices) |

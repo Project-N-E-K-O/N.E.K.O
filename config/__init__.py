@@ -13,7 +13,7 @@ from config.prompts.prompts_chara import lanlan_prompt, get_lanlan_prompt, is_de
 
 # 应用程序名称与版本配置
 APP_NAME = "N.E.K.O"
-APP_VERSION = "0.8.1"
+APP_VERSION = "0.8.2"
 logger = logging.getLogger(f"{APP_NAME}.{__name__}")
 
 # GPT-SoVITS voice_id 前缀(角色管理中使用 "gsv:<voice_id>" 格式标识 GPT-SoVITS 声音)
@@ -41,6 +41,7 @@ CHARACTER_SYSTEM_RESERVED_FIELDS = (
     "lighting",
     "vrm_rotation",
     "live2d_item_id",
+    "live2d_idle_animation",
     "item_id",
     "idleAnimation",
     "idleAnimations",
@@ -49,6 +50,7 @@ CHARACTER_SYSTEM_RESERVED_FIELDS = (
     "mmd_idle_animation",
     "mmd_idle_animations",
     "touch_set",
+    "_field_order",
 )
 
 CHARACTER_WORKSHOP_RESERVED_FIELDS = (
@@ -78,6 +80,7 @@ def get_character_reserved_fields() -> tuple[str, ...]:
 RESERVED_FIELD_SCHEMA = {
     "voice_id": str,
     "system_prompt": str,
+    "field_order": list,
     "persona_override": {
         "preset_id": str,
         "selected_at": str,
@@ -709,7 +712,6 @@ DEFAULT_CORE_API_PROFILES = {
         'CORE_URL': "wss://www.lanlan.tech/core",
         'CORE_MODEL': "free-model",
         'CORE_API_KEY': "free-access",
-        'IS_FREE_VERSION': True,
     },
     'qwen': {
         'CORE_URL': "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
@@ -749,10 +751,11 @@ DEFAULT_ASSIST_API_PROFILES = {
         'CORRECTION_MODEL': "free-model",
         'EMOTION_MODEL': "free-model",
         'VISION_MODEL': "free-vision-model",
-        'AGENT_MODEL': "free-model",
+        # 必须与 api_providers.json 的 free agent_model 及 _free_agent_model_name 一致，
+        # 否则 json 缺失回退到本 defaults 时免费 agent 不计配额、is_agent_free 误判。
+        'AGENT_MODEL': "free-agent-model",
         'AUDIO_API_KEY': "free-access",
         'OPENROUTER_API_KEY': "free-access",
-        'IS_FREE_VERSION': True,
     },
     'qwen': {
         'OPENROUTER_URL': "https://dashscope.aliyuncs.com/compatible-mode/v1",

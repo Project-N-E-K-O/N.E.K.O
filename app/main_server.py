@@ -75,6 +75,7 @@ from utils.cloudsave_runtime import (
     MaintenanceModeError,
     ROOT_MODE_NORMAL,
     bootstrap_local_cloudsave_environment,
+    is_cloudsave_disabled,
     is_write_fence_active,
     maintenance_error_payload,
     set_root_mode,
@@ -626,6 +627,32 @@ async def _handle_agent_event(event: dict):
                         logger.debug("[EventBus] agent_status_update send failed: %s", e)
             else:
                 await _broadcast_to_all_connected(payload)
+            return
+
+        # 免费版 Agent 每日配额耗尽：全局提示（与角色无关），广播成 status toast
+        # 到所有已连接会话。上游 config_manager 已节流（≤每 10 秒一次），这里不会刷屏。
+        # 前端已就绪：AGENT_QUOTA_EXCEEDED 在 criticalErrorCodes 里，配 i18n 文案
+        # （{{used}}/{{limit}}）走 showStatusToast。
+        if event_type == "agent_quota_exceeded":
+            import json as _json
+            status_message = _json.dumps({
+                "code": "AGENT_QUOTA_EXCEEDED",
+                "details": {
+                    "used": event.get("used", 0),
+                    "limit": event.get("limit", 300),
+                },
+            })
+            quota_payload = {"type": "status", "message": status_message}
+            mgr_for_quota = _get_session_manager(lanlan)
+            if lanlan and mgr_for_quota is not None:
+                ws_for_quota = getattr(mgr_for_quota, "websocket", None)
+                if _is_websocket_connected(ws_for_quota):
+                    try:
+                        await ws_for_quota.send_json(quota_payload)
+                    except Exception as e:
+                        logger.debug("[EventBus] agent_quota_exceeded send failed: %s", e)
+            else:
+                await _broadcast_to_all_connected(quota_payload)
             return
 
         # Resolve target session manager; fallback to broadcast if lanlan is unknown
@@ -1615,6 +1642,7 @@ from main_routers.websocket_router import router as websocket_router # noqa
 from main_routers.workshop_router import router as workshop_router # noqa
 from main_routers.cookies_login_router import router as cookies_login_router # noqa
 from main_routers.game_router import router as game_router # noqa
+from main_routers.card_assist_router import router as card_assist_router # noqa
 from main_routers.debug_router import router as debug_router, start_watchdog as _start_debug_health_watchdog # noqa
 from main_routers.shared_state import init_shared_state, set_steamworks_initializer # noqa
 
@@ -1746,6 +1774,7 @@ app.include_router(tool_router)
 app.include_router(music_router)
 app.include_router(galgame_router)
 app.include_router(game_router)
+app.include_router(card_assist_router)
 app.include_router(capture_router)
 app.include_router(cookies_login_router) # Cookies登录相关路由，放在最后以避免与其他API路由冲突
 app.include_router(debug_router)  # 诊断观测：/api/debug/health（轻量、零侵入，详见 debug_router.py 头注释）
@@ -2003,21 +2032,25 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
             return False
 
         try:
-            bootstrap_local_cloudsave_environment(_config_manager)
-            import_result = None
-            try:
-                import_result = await _run_cloudsave_manager_action(
-                    "import_if_needed",
-                    reason="main_server_startup",
-                    budget_seconds=10.0,
-                )
-                logger.info("Steam Auto-Cloud startup import: %s", import_result)
-            except CloudsaveDeadlineExceeded:
-                logger.warning(
-                    "Steam Auto-Cloud startup import exceeded 10.0s budget before applying runtime changes; continuing with local runtime state"
-                )
-            except Exception as e:
-                logger.warning(f"Steam Auto-Cloud startup import failed: {e}")
+            if is_cloudsave_disabled():
+                logger.warning("Steam Auto-Cloud startup skipped because cloudsave is disabled for this session")
+                import_result = None
+            else:
+                bootstrap_local_cloudsave_environment(_config_manager)
+                import_result = None
+                try:
+                    import_result = await _run_cloudsave_manager_action(
+                        "import_if_needed",
+                        reason="main_server_startup",
+                        budget_seconds=10.0,
+                    )
+                    logger.info("Steam Auto-Cloud startup import: %s", import_result)
+                except CloudsaveDeadlineExceeded:
+                    logger.warning(
+                        "Steam Auto-Cloud startup import exceeded 10.0s budget before applying runtime changes; continuing with local runtime state"
+                    )
+                except Exception as e:
+                    logger.warning(f"Steam Auto-Cloud startup import failed: {e}")
 
             await initialize_character_data()
             await _sync_memory_server_after_startup_import(import_result)
@@ -2069,8 +2102,16 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
             except Exception as e:
                 logger.warning(f"全局语言初始化失败（不影响启动）: {e}")
 
-            current_root_state = _config_manager.load_root_state()
-            if should_write_root_mode_normal_after_startup(current_root_state):
+            if is_cloudsave_disabled():
+                logger.warning("跳过 ROOT_MODE_NORMAL 写入：cloudsave 已为本次会话禁用")
+                current_root_state = None
+            else:
+                current_root_state = _config_manager.load_root_state()
+
+            if current_root_state is None:
+                if not is_cloudsave_disabled():
+                    logger.warning("跳过 ROOT_MODE_NORMAL 写入：root_state 缺失或读取失败")
+            elif should_write_root_mode_normal_after_startup(current_root_state):
                 try:
                     set_root_mode(
                         _config_manager,

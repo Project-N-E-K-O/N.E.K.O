@@ -18,6 +18,12 @@ from urllib.parse import quote, urlparse, urlunparse
 from config import GSV_VOICE_PREFIX
 from utils.aiohttp_proxy_utils import aiohttp_session_kwargs_for_url
 from utils.config_manager import get_config_manager
+from utils.gptsovits_config import (
+    gsv_ws_url_from_http_base,
+    is_local_http_url,
+    normalize_gsv_api_url,
+    redact_url_for_log,
+)
 from utils.dashscope_region import (
     DASHSCOPE_GLOBAL_LOCK,
     configure_dashscope_sdk_urls,
@@ -227,30 +233,14 @@ def _ws_is_open(ws_conn) -> bool:
     return not getattr(ws_conn, "closed", True)
 
 
-_TTS_LANGUAGE_CODE_MAP = {
-    'zh':    'cmn-CN',
-    'zh-CN': 'cmn-CN',
-    'zh-TW': 'cmn-tw',
-    'en':    'en-US',
-    'ja':    'ja-JP',
-    'ko':    'ko-KR',
-    'es':    'es-ES',
-    'fr':    'fr-FR',
-    'de':    'de-DE',
-    'it':    'it-IT',
-    'ru':    'ru-RU',
-    'tr':    'tr-TR'
-}
-
-
 def _get_tts_language_code() -> str:
-    """获取 lanlan.app TTS 服务器所需的 language_code。"""
-    try:
-        from utils.language_utils import get_global_language_full, normalize_language_code
-        lang = normalize_language_code(get_global_language_full(), format='full')
-    except Exception:
-        lang = 'zh-CN'
-    return _TTS_LANGUAGE_CODE_MAP.get(lang, 'cmn-CN')
+    """获取 lanlan.app TTS 服务器所需的 language_code。
+
+    实现收敛到 utils.language_utils.get_tts_language_code —— core/realtime 与
+    TTS server 两条路共用同一张 BCP-47 映射表，避免漂移。
+    """
+    from utils.language_utils import get_tts_language_code
+    return get_tts_language_code()
 
 
 def _build_step_tts_create_data(sid_: str, voice_id: str, lang_hint, is_lanlan_app: bool) -> dict:
@@ -262,7 +252,8 @@ def _build_step_tts_create_data(sid_: str, voice_id: str, lang_hint, is_lanlan_a
         "sample_rate": 24000,
     }
     if is_lanlan_app:
-        data["voice_id"] = "Leda"
+        # 发真实 voice_id（data 里已带传入值），由 www.lanlan.app 服务端透传给
+        # Gemini 并做映射；不再客户端硬覆盖成 Leda。
         data["language_code"] = "ja-JP" if lang_hint == "ja" else _get_tts_language_code()
     else:
         # lanlan.tech (free) 和自建 StepFun 协议对称，都用 voice_label。
@@ -1372,6 +1363,18 @@ register_tts_worker_resolver(
 )
 register_tts_worker_resolver(
     'free',
+    make_native_tts_resolver(
+        step_realtime_tts_worker,
+        'tts_default_api_key',
+        worker_kwargs={'free_mode': True},
+    ),
+)
+# free_intl（海外免费 *.lanlan.app）：上游 Gemini 代理走 www.lanlan.app/tts，
+# 协议同 free（StepFun-shape streaming，proxy 把 voice_id 透传给 Gemini），
+# 因此复用 free 的 worker。与 free 对偶，仅 provider key 不同（registry 按
+# host 把 free→free_intl 重映射，让 yui/Gemini 音色短路到这里而非外部 TTS）。
+register_tts_worker_resolver(
+    'free_intl',
     make_native_tts_resolver(
         step_realtime_tts_worker,
         'tts_default_api_key',
@@ -2837,19 +2840,28 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
     # 获取配置
     cm = get_config_manager()
     tts_config = cm.get_model_api_config('tts_custom')
-    base_url = (tts_config.get('base_url') or 'http://127.0.0.1:9881').rstrip('/')
+    base_url = normalize_gsv_api_url(tts_config.get('base_url'))
 
-    # 转换为 WS URL
-    if base_url.startswith('http://'):
-        ws_base = 'ws://' + base_url[7:]
-    elif base_url.startswith('https://'):
-        ws_base = 'wss://' + base_url[8:]
-    elif base_url.startswith('ws://') or base_url.startswith('wss://'):
-        ws_base = base_url
-    else:
-        ws_base = 'ws://' + base_url
+    if not is_local_http_url(base_url):
+        message = (
+            "GPT-SoVITS URL 配置无效：需要 http(s)://localhost 或 "
+            "http(s)://127.0.0.1 这类本地服务地址"
+        )
+        logger.error("[GPT-SoVITS v3] %s，当前: %s", message, redact_url_for_log(base_url))
+        _enqueue_error(response_queue, {
+            "code": "TTS_CONFIG_INVALID",
+            "provider": "gptsovits",
+            "message": message,
+        })
+        response_queue.put(("__ready__", False))
+        return
 
-    WS_URL = f'{ws_base}/api/v3/tts/stream-input'
+    WS_URL = gsv_ws_url_from_http_base(base_url)
+    logger.info(
+        "[GPT-SoVITS v3] 使用本地服务: base=%s ws=%s",
+        redact_url_for_log(base_url),
+        redact_url_for_log(WS_URL),
+    )
 
     # 剥离 gsv: 前缀（角色系统用于标识 GPT-SoVITS voice_id 的路由前缀）
     # 解析 voice_id：支持 "voice_id" 或 "voice_id|{JSON高级参数}" 格式
@@ -3934,13 +3946,9 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
         tts_config = cm.get_model_api_config('tts_custom')
         base_url = tts_config.get('base_url') or ''
         if tts_config.get('is_custom'):
-            # GPT-SoVITS / local CosyVoice 需要用户显式启用 gptsovitsEnabled 开关，
-            # 仅 enableCustomApi + http URL 不应自动路由到 GPT-SoVITS。
             gsv_enabled = core_cfg.get('GPTSOVITS_ENABLED', False)
-            if gsv_enabled and (base_url.startswith('http://') or base_url.startswith('https://')):
+            if gsv_enabled:
                 return gptsovits_tts_worker, None, 'gptsovits'
-            if gsv_enabled and (base_url.startswith('ws://') or base_url.startswith('wss://')):
-                return local_cosyvoice_worker, None, 'local_cosyvoice'
     except Exception as e:
         logger.warning(f'TTS调度器检查报告:{e}')
 

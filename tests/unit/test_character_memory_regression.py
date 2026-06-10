@@ -37,6 +37,7 @@ def _make_role_state_for_test(session_managers: dict) -> dict:
     }
 from utils.config_manager import ConfigManager
 from utils.cloudsave_runtime import (
+    CLOUDSAVE_DISABLED_ENV,
     MaintenanceModeError,
     ROOT_MODE_BOOTSTRAP_IMPORTING,
     bootstrap_local_cloudsave_environment,
@@ -1048,6 +1049,108 @@ async def test_deleted_workshop_character_is_not_restored_by_startup_sync():
             current_characters = cm.load_characters()
             assert "工坊角色" not in current_characters.get("猫娘", {})
             assert current_characters["当前猫娘"] == initial_name
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_delete_catgirl_skips_tombstone_state_when_cloudsave_local_state_is_unavailable(monkeypatch):
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            characters_router_module = reload_module("main_routers.characters_router")
+            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module._session_deleted_names.clear()
+            characters = cm.load_characters()
+            initial_name = next(iter(characters.get("猫娘", {})))
+            characters["猫娘"]["禁用云存档删除角色"] = {"昵称": "禁用云存档删除角色"}
+            characters["当前猫娘"] = initial_name
+            cm.save_characters(characters, bypass_write_fence=True)
+
+            fake_response = type(
+                "Resp",
+                (),
+                {"status_code": 200, "json": lambda self: {"status": "success"}},
+            )()
+            fake_client = AsyncMock()
+            fake_client.__aenter__.return_value = fake_client
+            fake_client.__aexit__.return_value = False
+            fake_client.post.return_value = fake_response
+
+            monkeypatch.setenv(CLOUDSAVE_DISABLED_ENV, "local_state_unavailable")
+            with (
+                patch("main_routers.characters_router.httpx.AsyncClient", return_value=fake_client),
+                patch.object(
+                    cm,
+                    "load_character_tombstones_state",
+                    side_effect=AssertionError("disabled cloudsave delete path should not load tombstones"),
+                ),
+                patch.object(
+                    cm,
+                    "save_character_tombstones_state",
+                    side_effect=AssertionError("disabled cloudsave delete path should not save tombstones"),
+                ),
+                patch.object(
+                    characters_router_module,
+                    "_build_character_tombstones_state",
+                    side_effect=AssertionError("disabled cloudsave delete path should not build tombstones"),
+                ),
+            ):
+                delete_result = await characters_router_module.delete_catgirl("禁用云存档删除角色")
+
+            assert delete_result["success"] is True
+            current_characters = cm.load_characters()
+            assert "禁用云存档删除角色" not in current_characters.get("猫娘", {})
+            assert current_characters["当前猫娘"] == initial_name
+
+            installed_folder = Path(td) / "disabled_cloudsave_workshop_item"
+            installed_folder.mkdir(parents=True, exist_ok=True)
+            (installed_folder / "角色卡.chara.json").write_text(
+                json.dumps({"档案名": "禁用云存档删除角色", "昵称": "来自工坊"}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            with patch.object(
+                workshop_router_module,
+                "get_subscribed_workshop_items",
+                AsyncMock(
+                    return_value={
+                        "success": True,
+                        "items": [
+                            {
+                                "publishedFileId": "123456",
+                                "installedFolder": str(installed_folder),
+                            }
+                        ],
+                    }
+                ),
+            ):
+                sync_result = await workshop_router_module.sync_workshop_character_cards()
+
+            assert sync_result["added"] == 0
+            assert sync_result["skipped"] >= 1
+            current_characters = cm.load_characters()
+            assert "禁用云存档删除角色" not in current_characters.get("猫娘", {})
+            workshop_router_module._session_deleted_names.clear()
 
 
 @pytest.mark.unit

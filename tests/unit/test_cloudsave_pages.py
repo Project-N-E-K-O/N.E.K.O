@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 
@@ -37,3 +38,20 @@ async def test_cloudsave_manager_page_renders_with_or_without_character_query():
     without_character = await cloudsave_manager_page(request, lanlan_name="")
     assert without_character["template_name"] == "templates/cloudsave_manager.html"
     assert without_character["context"]["lanlan_name"] == ""
+
+
+@pytest.mark.unit
+def test_character_card_manager_disables_cloudsave_entry_when_provider_is_unavailable():
+    source = Path("static/js/character_card_manager.js").read_text(encoding="utf-8")
+    css_source = Path("static/css/character_card_manager.css").read_text(encoding="utf-8")
+
+    assert "refreshCloudsaveManagerEntryAvailability" in source
+    assert "setCloudsaveManagerEntryDisabled" in source
+    assert "setCloudsaveManagerEntryDisabled(openCloudsaveManagerBtn, true);" in source
+    assert "summary.provider_available === false" in source
+    assert "steamAutoCloud.disabled === true" in source
+    assert "setCloudsaveManagerEntryDisabled(openCloudsaveManagerBtn, false);" in source
+    assert "openCloudsaveManagerBtn.disabled" in source
+    assert "if (openCloudsaveManagerBtn.disabled)" in source
+    assert ".sidebar-cloudsave-btn:hover:not(:disabled)" in css_source
+    assert ".sidebar-cloudsave-btn:active:not(:disabled)" in css_source

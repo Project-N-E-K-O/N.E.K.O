@@ -305,12 +305,10 @@ class VRMCore {
     /**
      * 应用性能设置
      */
-    applyPerformanceSettings() {
-        if (!this.manager.renderer) return;
-        
+    _getPerformancePixelRatio() {
         const devicePixelRatio = window.devicePixelRatio || 1;
         let pixelRatio;
-        
+
         if (this.performanceMode === 'low') {
             // 低性能模式：限制最大为 1.0
             pixelRatio = Math.min(1.0, devicePixelRatio);
@@ -323,9 +321,42 @@ class VRMCore {
         }
         
         // 确保 pixelRatio 至少为 1.0（避免模糊）
-        pixelRatio = Math.max(1.0, pixelRatio);
-        
+        return Math.max(1.0, pixelRatio);
+    }
+
+    _getQualityPixelRatio(quality) {
+        if (quality === 'low') return 0.8;
+        if (quality === 'medium') return 1.0;
+        return this._getPerformancePixelRatio();
+    }
+
+    applyPerformanceSettings() {
+        if (!this.manager.renderer) return;
+        const pixelRatio = this._getPerformancePixelRatio();
         this.manager.renderer.setPixelRatio(pixelRatio);
+    }
+
+    syncRendererPixelRatio(reason = 'resize') {
+        if (!this.manager.renderer) return;
+        const renderer = this.manager.renderer;
+        const prevPixelRatio = typeof renderer.getPixelRatio === 'function'
+            ? renderer.getPixelRatio()
+            : null;
+
+        renderer.setPixelRatio(this._getQualityPixelRatio(window.renderQuality || 'medium'));
+
+        const nextPixelRatio = typeof renderer.getPixelRatio === 'function'
+            ? renderer.getPixelRatio()
+            : null;
+        if (Number.isFinite(prevPixelRatio) && Number.isFinite(nextPixelRatio) &&
+            Math.abs(prevPixelRatio - nextPixelRatio) >= 0.001) {
+            console.log('[VRM Core] renderer pixelRatio 已刷新:', {
+                reason,
+                prevPixelRatio,
+                nextPixelRatio,
+                devicePixelRatio: window.devicePixelRatio || 1
+            });
+        }
     }
 
     /**
@@ -626,6 +657,9 @@ class VRMCore {
         // 创建命名函数并存储在 manager 上，以便 dispose() 可以移除它；如果已存在则复用，避免重复注册
         if (!this.manager._resizeHandler) {
             this.manager._resizeHandler = () => {
+                if (this.manager && this.manager.core && typeof this.manager.core.syncRendererPixelRatio === 'function') {
+                    this.manager.core.syncRendererPixelRatio('resize');
+                }
                 if (this.manager && typeof this.manager.onWindowResize === 'function') {
                     this.manager.onWindowResize();
                 }
@@ -640,6 +674,44 @@ class VRMCore {
         if (!alreadyRegistered) {
             this.manager._coreWindowHandlers.push({ event: 'resize', handler: this.manager._resizeHandler });
             window.addEventListener('resize', this.manager._resizeHandler);
+        }
+
+        if (!this.manager._displayChangeHandler) {
+            this.manager._displayChangeHandler = () => {
+                requestAnimationFrame(() => {
+                    if (this.manager && this.manager.core && typeof this.manager.core.syncRendererPixelRatio === 'function') {
+                        this.manager.core.syncRendererPixelRatio('electron-display-changed');
+                    }
+                    if (this.manager && typeof this.manager.onWindowResize === 'function') {
+                        this.manager.onWindowResize();
+                    }
+                    requestAnimationFrame(() => {
+                        if (this.manager && this.manager.core && typeof this.manager.core.syncRendererPixelRatio === 'function') {
+                            this.manager.core.syncRendererPixelRatio('electron-display-changed:settled');
+                        }
+                        if (this.manager && typeof this.manager.onWindowResize === 'function') {
+                            this.manager.onWindowResize();
+                        }
+                    });
+                    setTimeout(() => {
+                        if (this.manager && this.manager.core && typeof this.manager.core.syncRendererPixelRatio === 'function') {
+                            this.manager.core.syncRendererPixelRatio('electron-display-changed:delayed');
+                        }
+                        if (this.manager && typeof this.manager.onWindowResize === 'function') {
+                            this.manager.onWindowResize();
+                        }
+                    }, 120);
+                });
+            };
+        }
+
+        const alreadyDisplayRegistered = this.manager._coreWindowHandlers.some(
+            h => h.event === 'electron-display-changed' && h.handler === this.manager._displayChangeHandler
+        );
+
+        if (!alreadyDisplayRegistered) {
+            this.manager._coreWindowHandlers.push({ event: 'electron-display-changed', handler: this.manager._displayChangeHandler });
+            window.addEventListener('electron-display-changed', this.manager._displayChangeHandler);
         }
     }
 
@@ -1446,5 +1518,8 @@ window.addEventListener('neko-render-quality-changed', (e) => {
     const quality = e.detail?.quality;
     if (quality && window.vrmManager?.core) {
         window.vrmManager.core.applyQualitySettings(quality);
+        if (typeof window.vrmManager.onWindowResize === 'function') {
+            window.vrmManager.onWindowResize();
+        }
     }
 });

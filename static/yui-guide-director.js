@@ -116,6 +116,76 @@
         });
     }
 
+    const GUIDE_SPEECH_PLAYBACK_STATE_KEY = 'neko_speech_playback_state';
+    const GUIDE_SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';
+    let guideSpeechPlaybackChannel = null;
+
+    function getGuideSpeechPlaybackChannel() {
+        if (guideSpeechPlaybackChannel !== null) {
+            return guideSpeechPlaybackChannel;
+        }
+        if (typeof BroadcastChannel === 'undefined') {
+            guideSpeechPlaybackChannel = false;
+            return null;
+        }
+        try {
+            guideSpeechPlaybackChannel = new BroadcastChannel(GUIDE_SPEECH_PLAYBACK_CHANNEL_NAME);
+        } catch (_) {
+            guideSpeechPlaybackChannel = false;
+            return null;
+        }
+        return guideSpeechPlaybackChannel;
+    }
+
+    function normalizeGuidePlaybackIdentifier(value) {
+        if (value === undefined || value === null || value === '') {
+            return null;
+        }
+        return String(value);
+    }
+
+    function publishGuideSpeechPlaybackState(reason, patch) {
+        const state = Object.assign({
+            type: 'speech_playback_state',
+            active: false,
+            speechId: null,
+            turnId: null,
+            playbackTurnId: null,
+            playbackStartAudioTime: 0,
+            playbackEndAudioTime: 0,
+            scheduledEndAudioTime: 0,
+            audioContextTime: 0,
+            remainingSeconds: 0,
+            updatedAt: Date.now(),
+            reason: reason || 'guide_update',
+            source: 'yui_guide_audio'
+        }, patch || {});
+
+        if (!state.active) {
+            state.remainingSeconds = 0;
+        }
+
+        window.NekoSpeechPlaybackState = state;
+        try {
+            localStorage.setItem(GUIDE_SPEECH_PLAYBACK_STATE_KEY, JSON.stringify(state));
+        } catch (_) {}
+
+        const channel = getGuideSpeechPlaybackChannel();
+        if (channel && typeof channel.postMessage === 'function') {
+            try {
+                channel.postMessage(state);
+            } catch (_) {}
+        }
+
+        try {
+            window.dispatchEvent(new CustomEvent('neko-speech-playback-state', {
+                detail: state
+            }));
+        } catch (_) {}
+
+        return state;
+    }
+
     async function syncGuideI18nLanguage(timeoutMs) {
         await waitForGuideI18nReady(timeoutMs);
 
@@ -217,8 +287,8 @@
     const TAKEOVER_PLUGIN_DASHBOARD_TEXT_KEY = 'tutorial.yuiGuide.lines.takeoverPluginPreviewDashboard';
     const PLUGIN_DASHBOARD_POPUP_BLOCKED_TEXT = '浏览器需要你亲自点一下这里打开插件面板。点一下这个“管理面板”，我就继续带你看。';
     const PLUGIN_DASHBOARD_POPUP_BLOCKED_TEXT_KEY = 'tutorial.yuiGuide.lines.pluginDashboardPopupBlocked';
-    const TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1 = '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？';
-    const TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2 = '等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！';
+    const TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1 = '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘，或是修改记忆？';
+    const TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2 = '等一下！你在干嘛？该不会是想把我换掉吧？啊！不行！快关掉，快关掉！';
     const TAKEOVER_SETTINGS_DETAIL_TEXT = TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1 + TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2;
     const TAKEOVER_SETTINGS_DETAIL_TEXT_KEY = 'tutorial.yuiGuide.lines.takeoverSettingsPeekDetail';
     const TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1_KEY = 'tutorial.yuiGuide.lines.takeoverSettingsPeekDetailPart1';
@@ -249,6 +319,19 @@
         takeover_settings_peek_intro: '当然啦，如果你想让本.mp3',
         takeover_settings_peek_detail: '你看，这里可以穿我的.mp3',
         interrupt_resist_light_1: '喂！不要拽我啦，还没.mp3',
+        interrupt_resist_light_3: '等一下啦！还没结束呢.mp3',
+        interrupt_angry_exit: '人类！你真的很没礼貌.mp3',
+        takeover_return_control: '好啦好啦，不霸占你的.mp3'
+    });
+    const GUIDE_AUDIO_FILE_NAMES_ZH = Object.freeze({
+        intro_basic: '这里有一个神奇的小按.mp3',
+        intro_greeting_reply: '微风、阳光，还有刚刚.mp3',
+        takeover_capture_cursor: '超级魔法开关出现！只.mp3',
+        takeover_plugin_preview_home: '还没完呢！你快看快看.mp3',
+        takeover_plugin_preview_dashboard: '有了它们，我不光能看.mp3',
+        takeover_settings_peek_intro: '当然啦，如果你想让本.mp3',
+        takeover_settings_peek_detail: '你看，这里可以穿我的.mp3',
+        interrupt_resist_light_1: '喂！不要拽我啦，现在.mp3',
         interrupt_resist_light_3: '等一下啦！还没结束呢.mp3',
         interrupt_angry_exit: '人类！你真的很没礼貌.mp3',
         takeover_return_control: '好啦好啦，不霸占你的.mp3'
@@ -345,11 +428,25 @@
         });
     }
 
-    const GUIDE_AUDIO_FILE_OVERRIDES_BY_KEY = Object.freeze({});
+    const GUIDE_AUDIO_FILE_OVERRIDES_BY_KEY = Object.freeze({
+        intro_basic: Object.freeze({ zh: GUIDE_AUDIO_FILE_NAMES_ZH.intro_basic }),
+        intro_greeting_reply: Object.freeze({ zh: GUIDE_AUDIO_FILE_NAMES_ZH.intro_greeting_reply }),
+        takeover_capture_cursor: Object.freeze({ zh: GUIDE_AUDIO_FILE_NAMES_ZH.takeover_capture_cursor }),
+        takeover_plugin_preview_home: Object.freeze({ zh: GUIDE_AUDIO_FILE_NAMES_ZH.takeover_plugin_preview_home }),
+        takeover_plugin_preview_dashboard: Object.freeze({ zh: GUIDE_AUDIO_FILE_NAMES_ZH.takeover_plugin_preview_dashboard }),
+        takeover_settings_peek_intro: Object.freeze({ zh: GUIDE_AUDIO_FILE_NAMES_ZH.takeover_settings_peek_intro }),
+        takeover_settings_peek_detail: Object.freeze({ zh: GUIDE_AUDIO_FILE_NAMES_ZH.takeover_settings_peek_detail }),
+        interrupt_resist_light_1: Object.freeze({ zh: GUIDE_AUDIO_FILE_NAMES_ZH.interrupt_resist_light_1 }),
+        interrupt_resist_light_3: Object.freeze({ zh: GUIDE_AUDIO_FILE_NAMES_ZH.interrupt_resist_light_3 }),
+        interrupt_angry_exit: Object.freeze({ zh: GUIDE_AUDIO_FILE_NAMES_ZH.interrupt_angry_exit }),
+        takeover_return_control: Object.freeze({ zh: GUIDE_AUDIO_FILE_NAMES_ZH.takeover_return_control })
+    });
 
     function guideAudioSrc(key) {
-        const files = key
-            ? (GUIDE_AUDIO_FILE_OVERRIDES_BY_KEY[key] || GUIDE_AUDIO_FILES_BY_KEY[key] || null)
+        const baseFiles = key ? (GUIDE_AUDIO_FILES_BY_KEY[key] || null) : null;
+        const overrideFiles = key ? (GUIDE_AUDIO_FILE_OVERRIDES_BY_KEY[key] || null) : null;
+        const files = baseFiles || overrideFiles
+            ? Object.assign({}, baseFiles || {}, overrideFiles || {})
             : null;
         if (!files) {
             return '';
@@ -637,7 +734,7 @@
 
     const GUIDE_NARRATION_TIMELINES_BY_KEY = Object.freeze({
         intro_greeting_reply: Object.freeze({
-            fallbackDurationMs: 15020,
+            fallbackDurationMs: 15600,
             cues: Object.freeze({
                 showIntroGiftHeart: Object.freeze({
                     at: 57 / 78,
@@ -652,19 +749,19 @@
             })
         }),
         takeover_settings_peek_intro: Object.freeze({
-            fallbackDurationMs: 11877,
+            fallbackDurationMs: 12144,
             cues: Object.freeze({
-                openSettingsPanel: Object.freeze({ at: 9000 / 11877 })
+                openSettingsPanel: Object.freeze({ at: 9000 / 12144 })
             })
         }),
         takeover_settings_peek_detail: Object.freeze({
-            fallbackDurationMs: 13923,
+            fallbackDurationMs: 13992,
             cues: Object.freeze({
-                showSecondLine: Object.freeze({ at: 7450 / 13923 })
+                showSecondLine: Object.freeze({ at: 7450 / 13992 })
             })
         }),
         takeover_return_control: Object.freeze({
-            fallbackDurationMs: 11938,
+            fallbackDurationMs: 10992,
             cues: Object.freeze({
                 returnPetalTransition: Object.freeze({ at: 0.7 })
             })
@@ -673,77 +770,77 @@
 
     const GUIDE_AUDIO_DURATIONS_BY_KEY = Object.freeze({
         intro_basic: Object.freeze({
-            zh: 15020,
+            zh: 13296,
             ja: 19418,
             en: 12957,
             ko: 20297,
             ru: 15726
         }),
         intro_greeting_reply: Object.freeze({
-            zh: 15020,
+            zh: 15600,
             ja: 19178,
             en: 17058,
             ko: 23066,
             ru: 19122
         }),
         takeover_capture_cursor: Object.freeze({
-            zh: 21760,
+            zh: 22896,
             ja: 27714,
             en: 23066,
             ko: 26671,
             ru: 24085
         }),
         takeover_plugin_preview_home: Object.freeze({
-            zh: 4937,
+            zh: 4368,
             ja: 7097,
             en: 5251,
             ko: 6609,
             ru: 4885
         }),
         takeover_plugin_preview_dashboard: Object.freeze({
-            zh: 8333,
+            zh: 8592,
             ja: 13097,
             en: 11024,
             ko: 12408,
             ru: 10188
         }),
         takeover_settings_peek_intro: Object.freeze({
-            zh: 9800,
+            zh: 12144,
             ja: 13097,
             en: 13113,
             ko: 16535,
             ru: 13662
         }),
         takeover_settings_peek_detail: Object.freeze({
-            zh: 14263,
+            zh: 13992,
             ja: 19497,
             en: 16170,
             ko: 21629,
             ru: 17711
         }),
         interrupt_resist_light_1: Object.freeze({
-            zh: 3265,
+            zh: 3792,
             ja: 5337,
             en: 3579,
             ko: 4180,
             ru: 3109
         }),
         interrupt_resist_light_3: Object.freeze({
-            zh: 4049,
+            zh: 3960,
             ja: 7257,
             en: 4232,
             ko: 5825,
             ru: 4702
         }),
         interrupt_angry_exit: Object.freeze({
-            zh: 8124,
+            zh: 8016,
             ja: 13898,
             en: 8411,
             ko: 9900,
             ru: 10841
         }),
         takeover_return_control: Object.freeze({
-            zh: 11938,
+            zh: 10992,
             ja: 14640,
             en: 11990,
             ko: 13766,
@@ -1416,6 +1513,23 @@
 
             await resumeKnownAudioContexts();
             const minDurationMs = Number.isFinite(minimumDurationMs) ? minimumDurationMs : 0;
+            const playbackTurnId = normalizeGuidePlaybackIdentifier(meta && meta.playbackTurnId);
+            const speechId = normalizeGuidePlaybackIdentifier(meta && meta.voiceKey);
+            const publishEndState = (reason, audioTime) => {
+                if (!playbackTurnId && !speechId) {
+                    return;
+                }
+                publishGuideSpeechPlaybackState(reason, {
+                    active: false,
+                    speechId: speechId,
+                    turnId: playbackTurnId || speechId,
+                    playbackTurnId: playbackTurnId,
+                    audioContextTime: Number.isFinite(audioTime) ? audioTime : 0,
+                    playbackStartAudioTime: 0,
+                    playbackEndAudioTime: Number.isFinite(audioTime) ? audioTime : 0,
+                    scheduledEndAudioTime: Number.isFinite(audioTime) ? audioTime : 0
+                });
+            };
             const initialTimeSeconds = Math.max(
                 0,
                 (Number.isFinite(startAtMs) ? startAtMs : 0) / 1000
@@ -1461,6 +1575,10 @@
                     if (this.currentFinish === cancelPlayback) {
                         this.currentFinish = null;
                     }
+                    publishEndState(
+                        success ? 'guide_audio_ended' : 'guide_audio_failed',
+                        Number.isFinite(audio.currentTime) ? audio.currentTime : 0
+                    );
                     if (success) {
                         resolve(true);
                         return;
@@ -1482,6 +1600,20 @@
                     text: ''
                 }, meta || {});
                 this.currentFinish = cancelPlayback;
+                if (playbackTurnId || speechId) {
+                    const playbackEndAudioTime = minDurationMs > 0 ? minDurationMs / 1000 : 0;
+                    publishGuideSpeechPlaybackState('guide_audio_started', {
+                        active: true,
+                        speechId: speechId,
+                        turnId: playbackTurnId || speechId,
+                        playbackTurnId: playbackTurnId,
+                        audioContextTime: 0,
+                        playbackStartAudioTime: 0,
+                        playbackEndAudioTime: playbackEndAudioTime,
+                        scheduledEndAudioTime: playbackEndAudioTime,
+                        remainingSeconds: playbackEndAudioTime
+                    });
+                }
 
                 if (initialTimeSeconds > 0) {
                     const applyStartTime = () => {
@@ -1547,6 +1679,8 @@
             const audioBuffer = await this.decodeGuideAudioBuffer(context, arrayBuffer);
             const startOffsetMs = Number.isFinite(startAtMs) ? Math.max(0, startAtMs) : 0;
             const startOffsetSeconds = Math.max(0, startOffsetMs / 1000);
+            const playbackTurnId = normalizeGuidePlaybackIdentifier(meta && meta.playbackTurnId);
+            const speechId = normalizeGuidePlaybackIdentifier(meta && meta.voiceKey);
 
             return new Promise((resolve, reject) => {
                 let settled = false;
@@ -1584,6 +1718,19 @@
                     }
                     if (this.currentFinish === cancelPlayback) {
                         this.currentFinish = null;
+                    }
+                    if (playbackTurnId || speechId) {
+                        const audioTime = Number.isFinite(context.currentTime) ? context.currentTime : 0;
+                        publishGuideSpeechPlaybackState(success ? 'guide_audio_ended' : 'guide_audio_failed', {
+                            active: false,
+                            speechId: speechId,
+                            turnId: playbackTurnId || speechId,
+                            playbackTurnId: playbackTurnId,
+                            audioContextTime: audioTime,
+                            playbackStartAudioTime: audioTime,
+                            playbackEndAudioTime: audioTime,
+                            scheduledEndAudioTime: audioTime
+                        });
                     }
                     if (success) {
                         resolve(true);
@@ -1642,6 +1789,22 @@
                 this.currentFallbackTimer = fallbackTimerId;
 
                 try {
+                    const playbackStartAudioTime = Number.isFinite(context.currentTime) ? context.currentTime : 0;
+                    const playbackDurationSeconds = Math.max(0, audioBuffer.duration - startOffsetSeconds);
+                    const playbackEndAudioTime = playbackStartAudioTime + playbackDurationSeconds;
+                    if (playbackTurnId || speechId) {
+                        publishGuideSpeechPlaybackState('guide_audio_started', {
+                            active: true,
+                            speechId: speechId,
+                            turnId: playbackTurnId || speechId,
+                            playbackTurnId: playbackTurnId,
+                            audioContextTime: playbackStartAudioTime,
+                            playbackStartAudioTime: playbackStartAudioTime,
+                            playbackEndAudioTime: playbackEndAudioTime,
+                            scheduledEndAudioTime: playbackEndAudioTime,
+                            remainingSeconds: playbackDurationSeconds
+                        });
+                    }
                     source.start(0, Math.min(startOffsetSeconds, Math.max(0, audioBuffer.duration - 0.05)));
                 } catch (error) {
                     finish(false, error);
@@ -1684,6 +1847,7 @@
                         startAtMs,
                         {
                             voiceKey: normalizedOptions.voiceKey,
+                            playbackTurnId: normalizedOptions.playbackTurnId,
                             text: message
                         }
                     );
@@ -1697,6 +1861,7 @@
                 try {
                     await this.playPreviewAudio(localAudioSrc, fallbackDurationMs, startAtMs, {
                         voiceKey: normalizedOptions.voiceKey,
+                        playbackTurnId: normalizedOptions.playbackTurnId,
                         text: message
                     });
                     return;
@@ -2413,6 +2578,8 @@
             this.sceneRunId = 0;
             this.sceneTimers = new Set();
             this.guideChatStreamTimers = new Set();
+            this.activeGuideChatMessages = new Map();
+            this.guideChatVoiceMessageIds = new Map();
             this.interruptsEnabled = false;
             this.interruptCount = 0;
             this.interruptAccelerationStreak = 0;
@@ -3292,6 +3459,21 @@
             return true;
         }
 
+        normalizeVoiceQueueSpeakOptions(options) {
+            const normalizedOptions = Object.assign({}, options || {});
+            if (!normalizedOptions.playbackTurnId) {
+                const voiceKey = typeof normalizedOptions.voiceKey === 'string' ? normalizedOptions.voiceKey.trim() : '';
+                const guideMessageId = voiceKey && this.guideChatVoiceMessageIds
+                    ? this.guideChatVoiceMessageIds.get(voiceKey)
+                    : '';
+                if (guideMessageId) {
+                    normalizedOptions.playbackTurnId = guideMessageId;
+                }
+            }
+
+            return normalizedOptions;
+        }
+
         async speakGuideLine(text, options) {
             const content = typeof text === 'string' ? text.trim() : '';
 
@@ -3299,7 +3481,8 @@
                 return;
             }
 
-            await this.speakLineAndWait(content, options || {});
+            const normalizedOptions = this.normalizeVoiceQueueSpeakOptions(options);
+            await this.speakLineAndWait(content, normalizedOptions);
         }
 
         resolvePerformanceBubbleText(performance) {
@@ -4237,6 +4420,11 @@
 
         getChatInputTarget() {
             const preferredSelectors = [
+                '#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="input"]',
+                '#react-chat-window-root .compact-chat-surface-shell[data-compact-chat-state="input"]',
+                '#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="capsule"]',
+                '#react-chat-window-root .compact-chat-surface-frame',
+                '#react-chat-window-root .compact-chat-surface-shell',
                 '#react-chat-window-root .composer-input',
                 '#react-chat-window-root .composer-input-shell',
                 '#react-chat-window-root .composer-panel',
@@ -4264,6 +4452,10 @@
 
         getChatWindowTarget() {
             const preferredSelectors = [
+                '#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="capsule"]',
+                '#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="input"]',
+                '#react-chat-window-root .compact-chat-surface-frame',
+                '#react-chat-window-root .compact-chat-surface-shell',
                 '#react-chat-window-shell',
                 '#react-chat-window-root .chat-window',
                 '#react-chat-window-root',
@@ -4350,6 +4542,10 @@
                     : (this.getChatWindowTarget() || this.getChatInputTarget() || null);
             }
 
+            if (stepId === 'takeover_return_control') {
+                return this.getChatInputTarget() || fallbackTarget;
+            }
+
             if (this.shouldNarrateInChat(stepId)) {
                 return this.introGreetingChatHighlightCleared
                     ? fallbackTarget
@@ -4397,7 +4593,7 @@
 
             if (this.isHomeChatExternalized()) {
                 if (this.interactionTakeover && typeof this.interactionTakeover.setExternalizedChatSpotlight === 'function') {
-                    this.interactionTakeover.setExternalizedChatSpotlight('window');
+                    this.interactionTakeover.setExternalizedChatSpotlight('input');
                 }
                 return;
             }
@@ -4437,6 +4633,11 @@
 
         getChatIntroActivationTarget() {
             const preferredSelectors = [
+                '#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="input"]',
+                '#react-chat-window-root .compact-chat-surface-shell[data-compact-chat-state="input"]',
+                '#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="capsule"]',
+                '#react-chat-window-root .compact-chat-surface-frame',
+                '#react-chat-window-root .compact-chat-surface-shell',
                 '#react-chat-window-root .composer-input-shell',
                 '#react-chat-window-root .composer-panel',
                 '#react-chat-window-root .composer-input',
@@ -4474,6 +4675,24 @@
                 window.clearTimeout(timerId);
             });
             this.guideChatStreamTimers.clear();
+        }
+
+        finalizeActiveGuideChatMessages() {
+            if (!this.activeGuideChatMessages || this.activeGuideChatMessages.size <= 0) {
+                return;
+            }
+
+            this.activeGuideChatMessages.forEach((message) => {
+                if (!message || !message.id) {
+                    return;
+                }
+                this.updateGuideChatMessage(message.id, {
+                    blocks: message.blocks,
+                    actions: message.actions,
+                    status: 'sent'
+                });
+            });
+            this.activeGuideChatMessages.clear();
         }
 
         scheduleGuideChatStream(callback, delayMs) {
@@ -4812,8 +5031,9 @@
             narration.running = true;
             narration.playbackStartIndex = playbackStartIndex;
             narration.playbackStartAt = Date.now();
-            await this.voiceQueue.speak(playbackText, {
+            await this.voiceQueue.speak(playbackText, this.normalizeVoiceQueueSpeakOptions({
                 voiceKey: narration.voiceKey,
+                playbackTurnId: narration.playbackTurnId,
                 startAtMs: Number.isFinite(narration.resumeAudioOffsetMs) ? narration.resumeAudioOffsetMs : 0,
                 minDurationMs: Number.isFinite(narration.minDurationMs)
                     ? narration.minDurationMs
@@ -4837,7 +5057,7 @@
                         }
                     }
                 }
-            });
+            }));
             narration.running = false;
 
             if (this.destroyed || narration.cancelled) {
@@ -4877,6 +5097,7 @@
                 const narration = {
                     text: content,
                     voiceKey: typeof normalizedOptions.voiceKey === 'string' ? normalizedOptions.voiceKey : '',
+                    playbackTurnId: normalizeGuidePlaybackIdentifier(normalizedOptions.playbackTurnId),
                     resumeIndex: 0,
                     resumeAudioOffsetMs: 0,
                     playbackStartIndex: 0,
@@ -7955,6 +8176,7 @@
             this.resumeCurrentSceneAfterResistance();
             this.setCurrentScene(null, null);
             this.clearSceneTimers();
+            this.finalizeActiveGuideChatMessages();
             this.disableInterrupts();
             this.cancelActiveNarration();
             this.clearUserCursorReveal(true);
@@ -8260,6 +8482,7 @@
                 return;
             }
 
+            this.activeGuideChatMessages.set(String(message.id), message);
             let index = 0;
             const durationMs = Math.max(0, Math.round(
                 this.resolveGuideChatStreamDurationMs(fullText, options)
@@ -8270,6 +8493,7 @@
                     actions: message.actions,
                     status: 'sent'
                 });
+                this.activeGuideChatMessages.delete(String(message.id));
                 return;
             }
 
@@ -8319,6 +8543,7 @@
                         actions: message.actions,
                         status: 'sent'
                     });
+                    this.activeGuideChatMessages.delete(String(message.id));
                     return;
                 }
 
@@ -8352,6 +8577,9 @@
                 return null;
             }
 
+            this.clearGuideChatStreamTimers();
+            this.finalizeActiveGuideChatMessages();
+
             const createdAt = Date.now();
             let time = '';
 
@@ -8362,12 +8590,14 @@
                 });
             } catch (_) {}
 
+            const author = this.getGuideAssistantName();
             const message = {
                 id: 'yui-guide-' + createdAt + '-' + Math.random().toString(36).slice(2, 8),
                 role: 'assistant',
-                author: this.getGuideAssistantName(),
+                author: author,
                 time: time,
                 createdAt: createdAt,
+                avatarLabel: String(author || '').trim().slice(0, 1).toUpperCase(),
                 avatarUrl: this.getGuideAssistantAvatarUrl(),
                 blocks: [{
                     type: 'text',
@@ -8375,6 +8605,10 @@
                 }],
                 status: 'sent'
             };
+            const voiceKey = typeof normalizedOptions.voiceKey === 'string' ? normalizedOptions.voiceKey.trim() : '';
+            if (voiceKey) {
+                this.guideChatVoiceMessageIds.set(voiceKey, message.id);
+            }
 
             if (Array.isArray(normalizedOptions.buttons) && normalizedOptions.buttons.length > 0) {
                 message.blocks.push({
@@ -8468,7 +8702,7 @@
 
             if (this.isHomeChatExternalized()) {
                 if (this.interactionTakeover && typeof this.interactionTakeover.setExternalizedChatSpotlight === 'function') {
-                    this.interactionTakeover.setExternalizedChatSpotlight('window');
+                    this.interactionTakeover.setExternalizedChatSpotlight('input');
                 }
                 return;
             }
@@ -9016,7 +9250,7 @@
             this.overlay.hideBubble();
             this.overlay.hidePluginPreview();
             if (this.interactionTakeover && typeof this.interactionTakeover.setExternalizedChatSpotlight === 'function') {
-                this.interactionTakeover.setExternalizedChatSpotlight('window');
+                this.interactionTakeover.setExternalizedChatSpotlight('input');
             }
 
             this.enableInterrupts(introStep);
@@ -9191,8 +9425,8 @@
             }
 
             const persistentSpotlightTarget = this.getSceneSpotlightTarget(stepId, performance);
-            if (stepId === 'takeover_return_control') {
-                this.overlay.clearPersistentSpotlight();
+            if (stepId === 'takeover_return_control' && this.isHomeChatExternalized()) {
+                this.focusAndHighlightChatInput(persistentSpotlightTarget);
             } else if (persistentSpotlightTarget) {
                 this.applyCircularFloatingButtonSpotlightHint(persistentSpotlightTarget);
                 this.overlay.setPersistentSpotlight(persistentSpotlightTarget);
@@ -9819,9 +10053,9 @@
                 voiceKey: resistanceVoiceKey
             }).catch(() => null);
             return Promise.all([
-                this.voiceQueue.speak(message, {
+                this.voiceQueue.speak(message, this.normalizeVoiceQueueSpeakOptions({
                     voiceKey: resistanceVoiceKey
-                }),
+                })),
                 cursorResistancePromise,
                 interruptPerformancePromise
             ]).finally(() => {
@@ -9963,6 +10197,7 @@
             this.cancelActiveNarration();
             this.clearIntroFlow();
             this.clearSceneTimers();
+            this.finalizeActiveGuideChatMessages();
             this.clearGuideChatStreamTimers();
             if (this.wakeup && typeof this.wakeup.destroy === 'function') {
                 this.wakeup.destroy();
@@ -10060,8 +10295,17 @@
             }
 
             if (this.awaitingIntroActivation) {
-                const chatInput = target.closest('#react-chat-window-root .composer-input')
-                    || target.closest('#textInputBox');
+                const chatInput = target.closest([
+                    '#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="capsule"]',
+                    '#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="input"]',
+                    '#react-chat-window-root .compact-chat-surface-frame',
+                    '#react-chat-window-root .compact-chat-surface-shell',
+                    '#react-chat-window-root .composer-input',
+                    '#react-chat-window-root .composer-input-shell',
+                    '#react-chat-window-root .composer-panel',
+                    '#textInputBox',
+                    '#text-input-area'
+                ].join(', '));
                 if (chatInput) {
                     this.awaitingIntroActivation = false;
                     if (typeof this._introActivationResolve === 'function') {

@@ -147,6 +147,14 @@ def _parse_tool_result(res: Any, lang: str) -> tuple[bool, str]:
 
     raw_err = res.get("error")
     err = _format_error(raw_err, lang)
+    if not err:
+        # ComputerUse 的 terminate(status="failure", answer=CODE) 把失败原因放进
+        # res["result"] 而非 res["error"]（见 brain/computer_use.py run_instruction 的
+        # 返回结构）。若 result 恰好是已知错误码（如 AGENT_QUOTA_EXCEEDED），同样翻成
+        # 本地化人话；普通自由文本失败仍走下面的通用 'exec_failed'，不外泄原始文本。
+        result_code = str(res.get("result") or "").strip()
+        if result_code in RESULT_PARSER_ERROR_CODES:
+            err = _loc(RESULT_PARSER_ERROR_CODES[result_code], lang)
     if err:
         return False, _phrase('failed', lang, detail=_truncate(err))
     return False, _phrase('exec_failed', lang)
