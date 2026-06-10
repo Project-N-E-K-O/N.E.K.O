@@ -342,6 +342,32 @@ class TestAssistFollowsCore:
         assert response['assistApiKeyQwen'] == ''
 
     @pytest.mark.unit
+    def test_free_core_defaults_assist_to_free_when_key_missing(self, config_manager):
+        """legacy 文件只有 coreApi=free、从未保存 assistApi → assist 跟随 free。
+
+        模板默认 assistApi='qwen' 在 merge 时会吞掉"缺失"信号，若不特判，
+        assist 会落到无 key 的 qwen（语音正常、文本/记忆等全 401）。
+        """
+        _write_core_config(config_manager, {
+            'coreApi': 'free',
+        })
+        cfg = config_manager.get_core_config()
+
+        assert cfg['assistApi'] == 'free'
+        assert cfg.get('CORE_API_TYPE') == 'free'
+
+    @pytest.mark.unit
+    def test_non_free_core_keeps_template_assist_when_key_missing(self, config_manager):
+        """coreApi=qwen 且文件缺 assistApi → 维持模板默认 qwen，不受特判影响。"""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+        })
+        cfg = config_manager.get_core_config()
+
+        assert cfg['assistApi'] == 'qwen'
+
+    @pytest.mark.unit
     def test_free_core_honors_explicit_assist(self, config_manager):
         """coreApi=free + assistApi=silicon → 显式选择被保留，agent/text 走 silicon。"""
         _write_core_config(config_manager, {
