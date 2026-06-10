@@ -292,10 +292,12 @@
     var COMPACT_MINIMIZE_BALL_AVATAR_VERTICAL_RATIO = 0.58;
     var COMPACT_SURFACE_MAX_WIDTH = 430;
     var COMPACT_SURFACE_RESIZE_MAX_WIDTH = 720;
-    var COMPACT_SURFACE_MOBILE_MIN_WIDTH = 280;
+    var COMPACT_SURFACE_MOBILE_MIN_WIDTH = 180;
     // 桌面端 compact surface 可拖到的最短宽度。默认/初始宽度仍为 COMPACT_SURFACE_MAX_WIDTH=430
     // （见 getCompactSurfaceMetrics），这里只放宽 resize 下限，让用户能把对话条拖得更窄。
-    var COMPACT_SURFACE_DESKTOP_MIN_WIDTH = 280;
+    // 须与 react-neko-chat App.tsx 的 COMPACT_SURFACE_RESIZE_(MOBILE_)MIN_WIDTH 同步，
+    // 否则 React 侧拖到的宽度会在 phase=end 时被 host 这份 clamp 顶回去。
+    var COMPACT_SURFACE_DESKTOP_MIN_WIDTH = 180;
     var COMPACT_SURFACE_MOBILE_VIEWPORT_GUTTER = 16;
     var COMPACT_SURFACE_VIEWPORT_PAD_X = 16;
     var COMPACT_SURFACE_VIEWPORT_PAD_TOP = 12;
@@ -949,6 +951,7 @@
             document.documentElement.style.setProperty('--desktop-compact-surface-width', rect.width + 'px');
             document.documentElement.style.setProperty('--desktop-compact-surface-height', rect.height + 'px');
         }
+        shell.setAttribute('data-compact-surface-anchor-ready', 'true');
         shell.style.transform = 'none';
         if (options && options.persist && !isElectronChatWindow()) {
             saveCompactSurfacePosition(rect.left, rect.top, rect.width);
@@ -956,6 +959,48 @@
         dispatchCompactSurfaceLayoutChange(rect);
         syncCompactInteractionGeometry();
         return rect;
+    }
+
+    function seedCompactSurfaceAnchorForRender() {
+        var shell = getShell();
+        if (!shell || getCurrentChatSurfaceMode() !== 'compact') return;
+        if (compactSurfaceAnchorLocked) return;
+        if (compactSurfaceDesktopResizeActive || compactSurfaceResizeSession) return;
+        if ((dragState && dragState.compactSurface) || compactSurfaceDesktopDragActive) return;
+        if (shell.hasAttribute('data-compact-surface-anchor-ready')) return;
+        var layoutOverride = getElectronCompactLayoutOverride();
+        var target = getCompactSurfaceTarget(layoutOverride);
+        if (!target) {
+            shell.removeAttribute('data-compact-surface-anchor-ready');
+            return;
+        }
+        var left = Math.round(target.left);
+        var top = Math.round(target.top);
+        var width = Math.round(target.width);
+        var height = Math.round(target.height || COMPACT_SURFACE_DEFAULT_HEIGHT);
+        shell.style.setProperty('--compact-surface-left', left + 'px');
+        shell.style.setProperty('--compact-surface-top', top + 'px');
+        shell.style.setProperty('--compact-surface-width', width + 'px');
+        shell.style.setProperty('--compact-surface-height', height + 'px');
+        document.documentElement.style.setProperty('--compact-surface-left', left + 'px');
+        document.documentElement.style.setProperty('--compact-surface-top', top + 'px');
+        document.documentElement.style.setProperty('--compact-surface-width', width + 'px');
+        document.documentElement.style.setProperty('--compact-surface-height', height + 'px');
+        if (isElectronChatWindow() || (layoutOverride && layoutOverride.surface)) {
+            shell.style.setProperty('--desktop-compact-surface-left', left + 'px');
+            shell.style.setProperty('--desktop-compact-surface-top', top + 'px');
+            shell.style.setProperty('--desktop-compact-surface-width', width + 'px');
+            shell.style.setProperty('--desktop-compact-surface-height', height + 'px');
+            document.documentElement.style.setProperty('--desktop-compact-surface-left', left + 'px');
+            document.documentElement.style.setProperty('--desktop-compact-surface-top', top + 'px');
+            document.documentElement.style.setProperty('--desktop-compact-surface-width', width + 'px');
+            document.documentElement.style.setProperty('--desktop-compact-surface-height', height + 'px');
+        }
+        if (layoutOverride && layoutOverride.workArea) {
+            document.documentElement.style.setProperty('--compact-desktop-workarea-width', Math.round(layoutOverride.workArea.width) + 'px');
+            document.documentElement.style.setProperty('--compact-desktop-workarea-height', Math.round(layoutOverride.workArea.height) + 'px');
+        }
+        shell.setAttribute('data-compact-surface-anchor-ready', 'true');
     }
 
     function getCurrentCompactSurfaceRect() {
@@ -1647,6 +1692,7 @@
         shell.style.removeProperty('--desktop-compact-surface-top');
         shell.style.removeProperty('--desktop-compact-surface-width');
         shell.style.removeProperty('--desktop-compact-surface-height');
+        shell.removeAttribute('data-compact-surface-anchor-ready');
         document.documentElement.style.removeProperty('--compact-surface-left');
         document.documentElement.style.removeProperty('--compact-surface-top');
         document.documentElement.style.removeProperty('--compact-surface-width');
@@ -1723,6 +1769,7 @@
             document.documentElement.style.removeProperty('--compact-desktop-workarea-width');
             document.documentElement.style.removeProperty('--compact-desktop-workarea-height');
         }
+        shell.setAttribute('data-compact-surface-anchor-ready', 'true');
         dispatchCompactSurfaceLayoutChange({
             left: Math.round(target.left),
             top: Math.round(target.top),
@@ -2261,6 +2308,7 @@
             _toolCursorResetKey: state._toolCursorResetKey || undefined,
             composerHidden: state.composerHidden,
             chatSurfaceMode: getCurrentChatSurfaceMode(),
+            compactMinimizeCancelSeq: compactMinimizeCancelSeq,
             compactChatState: getCurrentCompactChatState(),
             galgameModeEnabled: !!state.galgameModeEnabled,
             galgameOptions: Array.isArray(state.galgameOptions) ? state.galgameOptions : [],
@@ -2541,6 +2589,9 @@
     function renderWindow() {
         var overlay = getOverlay();
         if (!overlay || overlay.hidden) return;
+        if (!mounted && getCurrentChatSurfaceMode() === 'compact') {
+            seedCompactSurfaceAnchorForRender();
+        }
         mountWindow();
         scheduleMobileContentLayout();
     }
@@ -3235,8 +3286,74 @@
     // React compact 输入框/胶囊左侧毛绒球点按 → 折叠为 minimized。最小化控制权在宿主，
     // 走 setChatSurfaceMode('minimized')（既有的 setMinimized + 位置持久化 + chat-surface-mode-change
     // 派发都在其中）；不用 toggleMinimized——毛绒球只在非 minimized 态出现，语义恒为「收起」。
+    //
+    // 说明：曾尝试「在 compact 态把 root 原位慢速淡出 + 提前异步显示独立球」做收起 overlap，但
+    // (a) 淡出期间 compact 仍可交互/未冻结，提前显示的球与 relayout/hit-test/moveTop 互相打架 →
+    //     球在光标下抖、cursor 在箭头/手之间闪；
+    // (b) 给 root 设 inline opacity:0 做淡出，频繁点击时 setMinimized 因状态 desync 提前 return、
+    //     跳过 opacity 复位 → root 卡在 0 = 输入框隐身。
+    // 这套机制竞态太重，已回退。现仅保留一个安全增强：给按下的毛绒球补「按下挤压」动画（CSS），
+    // 留一个短延时让挤压动画露出来再瞬时折叠（折叠本体走原有 PRE_COLLAPSE_DIM 瞬时路径，零竞态）。
+    // 独立球出现时的「放大长出」靠球自身入场动画（neko-ball-appear），与此处解耦。
+    var COMPACT_MINIMIZE_PRESS_MS = 280; // = neko-compact-collapse-wipe 擦除时长：擦完再瞬时折叠
+    var compactMinimizePressTimer = 0;
+    var compactMinimizeCancelSeq = 0; // 折叠取消序号（见 clearCompactMinimizePressTimer），传给 React
+    var compactMinimizeBallTargetAnchor = null;
+    // 清掉挂起的「按下挤压→瞬时折叠」延时。窗口关闭/动画取消时必须调用，否则这个
+    // 跨 280ms 存活的回调会在窗口已关闭/重开后仍 setChatSurfaceMode('minimized')，
+    // 把更新后的状态覆盖成「幽灵最小化」（CodeRabbit Minor / Codex P2）。
+    function clearCompactMinimizePressTimer() {
+        if (!compactMinimizePressTimer) return;
+        window.clearTimeout(compactMinimizePressTimer);
+        compactMinimizePressTimer = 0;
+        compactMinimizeBallTargetAnchor = null;
+        // 真清掉一个 pending 折叠延时 = 一次进行中的折叠被取消（如 280ms 内 closeWindow）。
+        // 递增序号；buildRenderProps 把它当 prop 传给 React，让组件在重开时立即复位
+        // compactCollapsing，而不必等 600ms 兜底——否则快速「关→重开」会让 compact 表面带着擦除
+        // mask 的不可见末态 + 历史区临时关闭重新出现（Codex P2）。
+        compactMinimizeCancelSeq += 1;
+        pendingChatSurfaceMode = null;
+    }
     function handleCompactMinimizeRequest() {
-        setChatSurfaceMode('minimized');
+        if (isMinimizeTransitioning) return;
+        rememberCompactMinimizeBallTargetAnchor();
+        // reduced-motion：折叠擦除/按压挤压动画已被 CSS（@media prefers-reduced-motion: reduce）
+        // 禁用，此时再延时 COMPACT_MINIMIZE_PRESS_MS(280ms) 才折叠，只会让窗口「点了没反应」一段，
+        // 无任何动画反馈。无障碍模式下直接立即折叠，保持即时响应（Codex P2）。
+        var reduceMotion = false;
+        try {
+            reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+        } catch (e) {}
+        if (reduceMotion) {
+            setChatSurfaceMode('minimized');
+            return;
+        }
+        // 给按下的毛绒球补「按下挤压」弹性动画（CSS index.css neko-compact-minimize-press）。
+        try {
+            var pressIcons = document.querySelectorAll('.compact-chat-minimize-ball-icon');
+            for (var pi = 0; pi < pressIcons.length; pi++) {
+                var pressIcon = pressIcons[pi];
+                pressIcon.classList.remove('neko-minimize-ball-pressing');
+                void pressIcon.offsetWidth;
+                pressIcon.classList.add('neko-minimize-ball-pressing');
+            }
+        } catch (e) {}
+        // 防重入：擦除途中再次点最小化忽略。
+        if (compactMinimizePressTimer) return;
+        // #1 折叠方向性擦除（右→左收）由 App.tsx 的 compactCollapsing state 驱动 className 实现
+        //    （onClick 里已 setCompactCollapsing(true)）—— 不再在此用 classList 加类（会被 React 重渲染覆盖）。
+        // web 与 Electron 统一走这条 = 擦除时长的延时再瞬时折叠：web 若同步 setChatSurfaceMode
+        // ('minimized') 会在下一帧前就让 isCompactSurface=false、卸载 .compact-chat-surface-shell，
+        // 新加的 neko-compact-collapsing 擦除遮罩与蓝条淡出根本来不及渲染（Codex P2）。
+        compactMinimizePressTimer = window.setTimeout(function () {
+            compactMinimizePressTimer = 0;
+            // 守卫：擦除期间宿主可能把 surface mode 切走（关闭/重开经
+            // closeWindow→cancelActiveAnimation 清掉本 timer；或经公开 API setChatSurfaceMode
+            // ('full') / setViewProps 直写 state 绕过清理）。只有「仍处于 compact」才执行这次
+            // 延迟折叠，否则会用陈旧的 minimized 覆盖更新后的模式（Codex P2）。两端通用。
+            if (getCurrentChatSurfaceMode() !== 'compact') return;
+            setChatSurfaceMode('minimized');
+        }, COMPACT_MINIMIZE_PRESS_MS);
     }
 
     function handleMiniGameInviteChoice(option) {
@@ -3497,6 +3614,9 @@
             }
             state.chatSurfaceMode = normalizedChatSurfaceMode;
             if (surfaceModeChanged) {
+                // 同 setChatSurfaceMode：mode 经此公开入口变更时取消挂起的延时折叠，防 full→compact
+                // hop 内陈旧折叠回调误折叠刚恢复的表面（Codex P2）。timer 已=0 时为 no-op。
+                clearCompactMinimizePressTimer();
                 // setViewProps is a public entry point (exposed + the
                 // `set-view-props` event), so it can land a real surface change —
                 // e.g. an external `{chatSurfaceMode:'full'}`. Mirror
@@ -3709,6 +3829,7 @@
     var MINIMIZED_DOWN_OFFSET = 24;     // 放大后整体下移，更贴近猫 GIF
     var isMinimizeTransitioning = false;
     var activeAnimationCleanup = null; // 当前进行中动画的清理函数
+    var pendingChatSurfaceMode = null;
 
     // ── Idle-dock: independent orchestration (Phase 4) ──────────
     // Positions the minimized ball next to CAT2/CAT3 return-ball.
@@ -4451,22 +4572,70 @@
 
     // ── End idle-dock ────────────────────────────────────────────
 
+    function getCompactMinimizeBallTargetRect() {
+        var root = getRoot();
+        if (!root || typeof root.querySelector !== 'function') return null;
+        var button = root.querySelector('.compact-chat-minimize-ball');
+        if (!button || typeof button.getBoundingClientRect !== 'function') return null;
+        var buttonRect = normalizeCompactDomRect(button.getBoundingClientRect());
+        if (!buttonRect) return null;
+        return {
+            width: MINIMIZED_SIZE,
+            height: MINIMIZED_SIZE,
+            left: buttonRect.left + buttonRect.width / 2 - MINIMIZED_SIZE / 2,
+            top: buttonRect.top + buttonRect.height / 2 - MINIMIZED_SIZE / 2
+        };
+    }
+
+    function rememberCompactMinimizeBallTargetAnchor() {
+        compactMinimizeBallTargetAnchor = null;
+        if (getCurrentChatSurfaceMode() !== 'compact') return null;
+        compactMinimizeBallTargetAnchor = getCompactMinimizeBallTargetRect();
+        return compactMinimizeBallTargetAnchor;
+    }
+
+    function consumeCompactMinimizeBallTargetAnchor() {
+        var targetRect = normalizeCompactDomRect(compactMinimizeBallTargetAnchor);
+        compactMinimizeBallTargetAnchor = null;
+        return targetRect;
+    }
+
+    function getMinimizedTargetFromCompactAnchor(anchorRect) {
+        anchorRect = normalizeCompactDomRect(anchorRect);
+        if (!anchorRect) return null;
+        return {
+            width: MINIMIZED_SIZE,
+            height: MINIMIZED_SIZE,
+            left: Math.max(
+                0,
+                Math.min(
+                    Math.round(anchorRect.left),
+                    window.innerWidth - MINIMIZED_SIZE
+                )
+            ),
+            top: Math.max(
+                0,
+                Math.min(
+                    Math.round(anchorRect.top),
+                    window.innerHeight - MINIMIZED_SIZE
+                )
+            )
+        };
+    }
+
     // 返回最小化后 shell 应达到的像素几何。
-    // 桌面：50x50 圆球，锚定在对话框原左下角（clamp 到视口内）。
-    // 手机：全宽底部胶囊，贴屏幕底边（类似移动 App 的底栏收起态）。
-    // 由于 collapse/expand 动画的 transform-origin = 0% 100%（左下角），
-    // target.left 应等于 rect.left 同列，target 底边应与 rect 底边对齐
-    // （即 target.top = rect.bottom - target.height），这样动画过程中底边不漂移。
+    // compact 折叠时，优先锚定到 React frame 内的毛线球按钮中心；React 在切到 minimized
+    // 后会卸载 compact surface，所以点击入口要先记录 target rect。拿不到 target rect 时才退回
+    // shell 左下角 fallback。
     function getMinimizedTarget(rect) {
-        // Both full and compact collapse to the surface's OWN bottom-left corner:
-        // the dialog folds toward its bottom-left pivot (transform-origin 0% 100%)
-        // and the orb appears right there — NOT compact's avatar/cat dock
-        // (getCompactMinimizeBallTarget) and without the cat-leaning
-        // MINIMIZED_DOWN_OFFSET. This is the pre-#1506 in-place behaviour.
-        // Best-effort for compact: the orb stays where the bar was; carrying a
-        // dragged-orb position into the next expand is the deferred follow-up
-        // (needs the compact surface to become a free-positioned window).
-        // Web-only — Electron short-circuits in setMinimized before this runs.
+        var compactTarget = isLegacyFullMinimizedBall()
+            ? null
+            : getMinimizedTargetFromCompactAnchor(consumeCompactMinimizeBallTargetAnchor());
+        if (compactTarget) return compactTarget;
+
+        // Fallback: collapse to the surface's own bottom-left corner. This keeps
+        // legacy full behavior and covers compact cases where the inline yarn
+        // icon was not measurable.
         return {
             width: MINIMIZED_SIZE,
             height: MINIMIZED_SIZE,
@@ -4533,6 +4702,10 @@
             activeAnimationCleanup = null;
         }
         isMinimizeTransitioning = false;
+        // 取消进行中的折叠/展开时一并清掉挂起的「按下挤压→瞬时折叠」延时（closeWindow
+        // 也走这里），避免该回调在窗口关闭/重开后幽灵触发 setChatSurfaceMode('minimized')。
+        clearCompactMinimizePressTimer();
+        pendingChatSurfaceMode = null;
     }
 
     // The minimized ball belongs to the surface we'll restore to: the revived
@@ -4600,8 +4773,27 @@
         var nextMinimized = normalized === 'minimized';
         var previousMinimized = previousMode === 'minimized';
         if (previousMode === normalized) {
+            if (isMinimizeTransitioning) {
+                pendingChatSurfaceMode = null;
+            }
             syncChatSurfaceModeUI();
             return normalized;
+        }
+
+        if (isMinimizeTransitioning) {
+            pendingChatSurfaceMode = normalized;
+            return previousMode;
+        }
+        pendingChatSurfaceMode = null;
+
+        // 任何真实的 surface mode 变更都取消挂起的「按下挤压→延时折叠」：否则 full→compact 之类
+        // 快速跳变会让 280ms 内的陈旧折叠回调在 mode 又回到 compact 时误折叠刚恢复的表面（Codex P2，
+        // 仅靠回调里 getCurrentChatSurfaceMode()==='compact' 守卫挡不住这种 hop）。timer 自身的
+        // minimize 调用此时 timer 已=0，clear 为 no-op，不影响正常折叠。
+        clearCompactMinimizePressTimer();
+
+        if (!previousMinimized && nextMinimized && previousMode === 'compact') {
+            rememberCompactMinimizeBallTargetAnchor();
         }
 
         if (!nextMinimized) {
@@ -4613,6 +4805,9 @@
         resetCompactChatState();
         state.chatSurfaceMode = normalized;
         persistChatSurfaceModePreference(normalized);
+        if (normalized === 'compact') {
+            seedCompactSurfaceAnchorForRender();
+        }
         renderWindow();
 
         if (nextMinimized !== previousMinimized) {
@@ -4630,6 +4825,17 @@
 
     function cycleChatSurfaceMode() {
         return setChatSurfaceMode(getNextChatSurfaceMode(getCurrentChatSurfaceMode()));
+    }
+
+    function flushPendingChatSurfaceModeIfNeeded() {
+        if (isMinimizeTransitioning || !pendingChatSurfaceMode) return;
+
+        var targetMode = pendingChatSurfaceMode;
+        pendingChatSurfaceMode = null;
+        if (targetMode === getCurrentChatSurfaceMode()) {
+            return;
+        }
+        setChatSurfaceMode(targetMode);
     }
 
     function setMinimized(nextMinimized) {
@@ -4682,27 +4888,34 @@
             var targetLeft = target.left;
             var targetTop = target.top;
 
-            // 3. 计算缩放比（transform-origin 为 0% 100% 即左下角，无需 translate）
+            // 3. 计算缩放比，并反推 transform-origin，使缩放后的 shell
+            //    视觉终点落在 target 上。fallback 的 shell 左下角目标会自然得到
+            //    0px 100% 等价原点；compact 的毛线球槽位目标则不会再从左下角跳过去。
             var sx = rect.width > 0 ? target.width / rect.width : 1;
             var sy = rect.height > 0 ? target.height / rect.height : 1;
+            var originX = 0;
+            var originY = rect.height;
+            var originDenomX = 1 - sx;
+            var originDenomY = 1 - sy;
+            if (Math.abs(originDenomX) > 0.0001) {
+                originX = (targetLeft - rect.left) / originDenomX;
+            }
+            if (Math.abs(originDenomY) > 0.0001) {
+                originY = (targetTop - rect.top) / originDenomY;
+            }
+            if (!Number.isFinite(originX)) originX = 0;
+            if (!Number.isFinite(originY)) originY = rect.height;
 
             // 4. 初始 transform = identity，添加过渡类
             shell.style.transform = 'scale(1, 1)';
+            shell.style.transformOrigin = originX + 'px ' + originY + 'px';
             shell.classList.add('is-collapsing');
             void shell.offsetHeight; // 强制 reflow
 
             // 5. 设置目标 transform，触发动画
-            //    full + compact 都：动画期间 left/top **不动**，只缩放（origin 左下角），
-            //    让对话框以自己的左下角为支点原地收缩成球；finishCollapse 再把（已缩成
-            //    球大小的）shell snap 到左下角球位置，视觉无缝。这是 #1506 三态重构前的
-            //    原地折叠行为（best effort：compact 折叠原地、不再滑去贴模型/猫）。
-            var collapseHoldsPosition = true;
+            //    动画期间 left/top 不动，只通过动态 origin 缩放到 target。
             requestAnimationFrame(function () {
                 requestAnimationFrame(function () {
-                    if (!collapseHoldsPosition) {
-                        shell.style.left = targetLeft + 'px';
-                        shell.style.top = targetTop + 'px';
-                    }
                     shell.style.transform = 'scale(' + sx + ', ' + sy + ')';
                 });
             });
@@ -4718,6 +4931,7 @@
                 activeAnimationCleanup = null;
                 shell.classList.remove('is-collapsing');
                 shell.style.transform = 'none';
+                shell.style.removeProperty('transform-origin');
                 // 清除内联尺寸，让 .is-minimized 的 CSS 生效
                 shell.style.removeProperty('width');
                 shell.style.removeProperty('height');
@@ -4734,6 +4948,7 @@
                 // orb instead of the stale compact yarn ball.
                 applyMinimizedBallSkin(ensureMinimizedBallIcon());
                 isMinimizeTransitioning = false;
+                flushPendingChatSurfaceModeIfNeeded();
             };
             var onEnd = function (e) {
                 if (e.target !== shell || e.propertyName !== 'transform') return;
@@ -4748,6 +4963,7 @@
                 shell.removeEventListener('transitionend', onEnd);
                 shell.classList.remove('is-collapsing');
                 shell.style.transform = 'none';
+                shell.style.removeProperty('transform-origin');
                 handled = true;
             };
 
@@ -4760,6 +4976,22 @@
             var ballBottom = curRect.top + (curRect.height || MINIMIZED_SIZE);
 
             // 恢复保存的尺寸
+            var previousSetupVisibility = shell.style.visibility;
+            var setupVisibilityHidden = true;
+            var restoreSetupVisibility = function () {
+                if (!setupVisibilityHidden) return;
+                setupVisibilityHidden = false;
+                if (previousSetupVisibility) {
+                    shell.style.visibility = previousSetupVisibility;
+                } else {
+                    shell.style.removeProperty('visibility');
+                }
+            };
+            // Removing .is-minimized makes the full React surface visible again.
+            // Keep it hidden while we restore/measure geometry so the browser
+            // cannot paint one frame at the measurement position before the
+            // scale-from-ball transform is ready.
+            shell.style.visibility = 'hidden';
             shell.classList.remove('is-minimized');
             shell.style.removeProperty('right');
             shell.style.removeProperty('bottom');
@@ -4784,9 +5016,7 @@
             }
 
             // 以球的位置为展开后对话框的左下角来计算展开位置
-            // 先设临时位置以获取真实尺寸
-            shell.style.left = '0px';
-            shell.style.top = '0px';
+            // 先落到最终目标位置获取真实尺寸，避免 (0,0) 测量态被绘制出来。
             var expandedTarget = getExpandedTargetFromSavedState();
             if (expandedTarget) {
                 shell.style.left = expandedTarget.left + 'px';
@@ -4809,6 +5039,8 @@
                 savedShellSize = null;
                 savedShellPosition = null;
                 isMinimizeTransitioning = false;
+                flushPendingChatSurfaceModeIfNeeded();
+                restoreSetupVisibility();
                 requestAnimationFrame(function () {
                     var r = shell.getBoundingClientRect();
                     var clamped = clampPosition(r.left, r.top);
@@ -4845,6 +5077,7 @@
             shell.style.transform = 'scale(' + sx2 + ', ' + sy2 + ')';
             shell.classList.add('is-expanding');
             void shell.offsetHeight; // 强制 reflow
+            restoreSetupVisibility();
 
             // 动画到 identity（展开到完整尺寸）
             requestAnimationFrame(function () {
@@ -4870,6 +5103,7 @@
                 savedShellSize = null;
                 savedShellPosition = null;
                 isMinimizeTransitioning = false;
+                flushPendingChatSurfaceModeIfNeeded();
                 scheduleMobileContentLayout();
                 // 确保位置不溢出；全屏模式（/chat）不持久化，
                 // 否则 (0,0) 会覆盖 index.html 中用户保存的窗口位置
@@ -4912,6 +5146,7 @@
                 shell.removeEventListener('transitionend', onExpandEnd);
                 shell.classList.remove('is-expanding');
                 shell.style.transform = 'none';
+                restoreSetupVisibility();
                 expandHandled = true;
             };
 
@@ -4970,6 +5205,7 @@
     }
 
     function toggleMinimized() {
+        if (isMinimizeTransitioning) return;
         if (minimized && idleDockActive && idleDockSavedPosition) {
             var shell = getShell();
             if (shell) {
@@ -5031,6 +5267,9 @@
                     // the minimized shell.
                     state.chatSurfaceMode = normalizeChatSurfaceMode(lastRestorableChatSurfaceMode);
                     resetCompactChatState();
+                }
+                if (getCurrentChatSurfaceMode() === 'compact') {
+                    seedCompactSurfaceAnchorForRender();
                 }
                 if (!mountWindow()) {
                     showToast(getI18nText('chat.reactWindowMountFailed', '聊天框挂载失败'), 3000);
@@ -5097,6 +5336,7 @@
         // surfacing stale A/B/C the next time the user opens the window.
         invalidatePendingGalgameRequest();
         cancelActiveAnimation(); // 清理进行中的折叠/展开回调
+        pendingChatSurfaceMode = null;
         clearIdleDockState();
         deactivateToolCursor();
         hideIdleCat1CompactMirror('close-window');

@@ -154,6 +154,99 @@ def test_react_chat_broadcasts_minimized_screen_rect_for_cat1_follow():
     assert "_NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS = 2500" in avatar_source
 
 
+def test_cat1_minimized_ball_target_wins_over_stale_compact_surface():
+    source = _read(AVATAR_UI_BUTTONS_PATH)
+    target_block = _between(
+        source,
+        "function _getNekoIdleCat1Target(container, chatRect, options = {}) {",
+        "function _setNekoIdleCat1ContainerPosition",
+    )
+
+    side_index = target_block.index("const minimizedSideTarget = _getNekoIdleCat1SideTarget(container, chatRect);")
+    return_side_index = target_block.index("return minimizedSideTarget;")
+    compact_index = target_block.index("const compactSurfaceRect = _getNekoIdleChatCompactSurfaceRect();")
+    assert side_index < return_side_index < compact_index
+    assert "return null;" in target_block
+
+
+def test_desktop_cat1_minimized_and_compact_surface_state_are_timestamp_ordered():
+    source = _read(AVATAR_UI_BUTTONS_PATH)
+
+    state_init_block = _between(
+        source,
+        "let _nekoIdleDesktopChatMinimizedState = {",
+        "function _getNekoIdleDesktopStateSourceUpdatedAt(detail, fallbackUpdatedAt) {",
+    )
+    assert "sourceUpdatedAt: 0" in state_init_block
+    assert "expandedRecent: false" in state_init_block
+    assert "function _getNekoIdleDesktopStateSourceUpdatedAt(detail, fallbackUpdatedAt)" in source
+    assert "function _isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, state)" in source
+    assert "function _isNekoIdleDesktopStateNewerThan(sourceUpdatedAt, state)" in source
+    assert "function _makeNekoIdleDesktopChatMinimizedState(minimized, screenRect, updatedAt, sourceUpdatedAt, expandedRecent)" in source
+    assert "function _makeNekoIdleDesktopCompactSurfaceState(visible, screenRect, updatedAt, sourceUpdatedAt)" in source
+    assert "if (state.expandedRecent === false) return false;" in source
+
+    pair_move_block = _between(
+        source,
+        "function _rememberNekoIdleDesktopChatPairMoveRect(screenRect) {",
+        "function _getNekoIdleDesktopChatPairMoveSignature(screenRect) {",
+    )
+    assert "_nekoIdleDesktopChatMinimizedState = _makeNekoIdleDesktopChatMinimizedState(" in pair_move_block
+    assert "_nekoIdleDesktopCompactSurfaceState = _makeNekoIdleDesktopCompactSurfaceState(" in pair_move_block
+
+    desktop_compact_rect = _between(
+        source,
+        "function _getNekoIdleDesktopCompactSurfaceRect() {",
+        "function _getNekoIdleChatCompactSurfaceRect() {",
+    )
+    assert "_nekoIdleDesktopChatMinimizedState.minimized" in desktop_compact_rect
+    assert "_isNekoIdleDesktopStateNewerThan(_nekoIdleDesktopChatMinimizedState.sourceUpdatedAt, state)" in desktop_compact_rect
+
+    desktop_minimized_rect = _between(
+        source,
+        "function _getNekoIdleDesktopChatMinimizedRect() {",
+        "function _isNekoIdleDesktopChatExpandedRecent() {",
+    )
+    assert "_nekoIdleDesktopCompactSurfaceState.visible" in desktop_minimized_rect
+    assert "_isNekoIdleDesktopStateNewerThan(_nekoIdleDesktopCompactSurfaceState.sourceUpdatedAt, state)" in desktop_minimized_rect
+
+    minimized_listener = _between(
+        source,
+        "window.addEventListener('neko:idle-chat-minimized-state', (event) => {",
+        "window.addEventListener('neko:idle-chat-compact-surface-state', (event) => {",
+    )
+    assert "const sourceUpdatedAt = _getNekoIdleDesktopStateSourceUpdatedAt(detail, receivedAt);" in minimized_listener
+    assert "if (_isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopChatMinimizedState)) return;" in minimized_listener
+    assert "const compactSurfaceCurrentlyVisible = !!_getNekoIdleDesktopCompactSurfaceRect();" in minimized_listener
+    assert "_nekoIdleDesktopCompactSurfaceState.visible" in minimized_listener
+    assert "_isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopCompactSurfaceState)" in minimized_listener
+    assert "_nekoIdleDesktopCompactSurfaceState = _makeNekoIdleDesktopCompactSurfaceState(" in minimized_listener
+    assert "!!(detail && !detail.minimized && !compactSurfaceCurrentlyVisible)" in minimized_listener
+
+    compact_listener = _between(
+        source,
+        "window.addEventListener('neko:idle-chat-compact-surface-state', (event) => {",
+        "const currentTier = _readNekoAutoGoodbyeVisualTier();",
+    )
+    assert "const sourceUpdatedAt = _getNekoIdleDesktopStateSourceUpdatedAt(detail, receivedAt);" in compact_listener
+    assert "if (_isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopCompactSurfaceState)) return;" in compact_listener
+    assert "_nekoIdleDesktopChatMinimizedState.minimized" in compact_listener
+    assert "_isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopChatMinimizedState)" in compact_listener
+    assert "const heartbeat = !!(detail && detail.heartbeat);" in compact_listener
+    assert "if (!heartbeat) {" in compact_listener
+    assert "_nekoIdleDesktopChatMinimizedState = _makeNekoIdleDesktopChatMinimizedState(" in compact_listener
+    # heartbeat 分支必须保留原 sourceUpdatedAt，避免心跳新鲜时间戳扰乱跨状态排序
+    assert "prevCompactSourceUpdatedAt" in compact_listener
+    # 还原后来心跳 catch-up：minimized 确认 false 但 compact 缓存尚未恢复时，
+    # heartbeat 应能恢复 compact 可见性（Electron setMinimized 早退不发布 compact 事件）
+    assert "!_nekoIdleDesktopChatMinimizedState.minimized" in compact_listener
+    # minimized state 重赋值仅在 !heartbeat 分支内
+    minimized_reassign_line = compact_listener[compact_listener.index("_nekoIdleDesktopChatMinimizedState = _makeNekoIdleDesktopChatMinimizedState("):]
+    assert minimized_reassign_line.index("false") < minimized_reassign_line.index("null")
+    assert minimized_reassign_line.index("null") < minimized_reassign_line.index("receivedAt")
+    assert minimized_reassign_line.index("receivedAt") < minimized_reassign_line.index("sourceUpdatedAt")
+
+
 def test_electron_chat_loads_interpage_before_react_chat_for_desktop_cat1_sync():
     source = _read(CHAT_TEMPLATE_PATH)
 
@@ -173,6 +266,36 @@ def test_react_chat_applies_desktop_cat1_pair_move_bounds_when_collapsed():
     assert "if (hasElectronIdleDockPendingOrActive()) return;" in source
     assert "bridge.idleDockCommitCollapsedBounds(targetBounds)" in source
     assert "scheduleElectronChatMinimizedState('cat1-pair-move')" in source
+
+
+def test_cat1_desktop_pair_move_throttles_native_bounds_sync_and_forces_final_frame():
+    source = _read(AVATAR_UI_BUTTONS_PATH)
+
+    assert "_NEKO_IDLE_CAT1_DESKTOP_PAIR_MOVE_SYNC_MIN_MS = 50" in source
+    assert "let _nekoIdleDesktopChatPairMoveLastDispatchAt = 0;" in source
+    assert "let _nekoIdleDesktopChatPairMoveLastDispatchSignature = '';" in source
+    assert "function _getNekoIdleDesktopChatPairMoveSignature(screenRect)" in source
+
+    dispatch_block = _between(
+        source,
+        "function _dispatchNekoIdleDesktopChatPairMoveBounds(screenRect, options = {}) {",
+        "function _getNekoIdleCat1PairMoveChatTarget() {",
+    )
+    assert "_rememberNekoIdleDesktopChatPairMoveRect(screenRect)" in dispatch_block
+    assert "const force = !!(options && options.force);" in dispatch_block
+    assert "if (!force) {" in dispatch_block
+    assert "signature === _nekoIdleDesktopChatPairMoveLastDispatchSignature" in dispatch_block
+    assert "now - _nekoIdleDesktopChatPairMoveLastDispatchAt < _NEKO_IDLE_CAT1_DESKTOP_PAIR_MOVE_SYNC_MIN_MS" in dispatch_block
+    assert "_nekoIdleDesktopChatPairMoveLastDispatchAt = now;" in dispatch_block
+    assert "_nekoIdleDesktopChatPairMoveLastDispatchSignature = signature;" in dispatch_block
+    assert "timestamp: now" in dispatch_block
+
+    pair_move_block = _between(
+        source,
+        "function _applyNekoIdleCat1PairMovePlan(plan, progress) {",
+        "function _setNekoIdleCat1Substate(button, substate, options = {}) {",
+    )
+    assert "force: progress >= 1" in pair_move_block
 
 
 def test_idle_dock_uses_mutation_observer_to_detect_minimize_completion():

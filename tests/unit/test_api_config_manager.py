@@ -342,6 +342,33 @@ class TestAssistFollowsCore:
         assert response['assistApiKeyQwen'] == ''
 
     @pytest.mark.unit
+    def test_free_core_defaults_assist_to_free_when_key_missing(self, config_manager):
+        """Legacy file with only coreApi=free and no saved assistApi: assist follows free.
+
+        The template default assistApi='qwen' swallows the "key missing" signal
+        during merge; without the special case, assist lands on qwen with no
+        API key (voice works, but text/memory etc. all fail auth).
+        """
+        _write_core_config(config_manager, {
+            'coreApi': 'free',
+        })
+        cfg = config_manager.get_core_config()
+
+        assert cfg['assistApi'] == 'free'
+        assert cfg.get('CORE_API_TYPE') == 'free'
+
+    @pytest.mark.unit
+    def test_non_free_core_keeps_template_assist_when_key_missing(self, config_manager):
+        """coreApi=qwen with assistApi key missing keeps template default qwen."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+        })
+        cfg = config_manager.get_core_config()
+
+        assert cfg['assistApi'] == 'qwen'
+
+    @pytest.mark.unit
     def test_free_core_honors_explicit_assist(self, config_manager):
         """coreApi=free + assistApi=silicon → 显式选择被保留，agent/text 走 silicon。"""
         _write_core_config(config_manager, {
@@ -371,6 +398,49 @@ class TestAssistFollowsCore:
 
         assert cfg['assistApi'] == 'silicon'
         assert cfg['OPENROUTER_URL'] == 'https://api.siliconflow.cn/v1'
+
+
+# ---------------------------------------------------------------------------
+# 3b. 默认兜底：coreApi 为空/缺失时保持历史默认 qwen
+# ---------------------------------------------------------------------------
+class TestEmptyCoreApiFallsBackToDefaultQwen:
+
+    @pytest.mark.unit
+    def test_empty_core_api_falls_back_to_qwen(self, config_manager):
+        """coreApi/assistApi='' → 兜底到默认 qwen。"""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'free-access',
+            'coreApi': '',
+            'assistApi': '',
+        })
+        cfg = config_manager.get_core_config()
+
+        assert cfg['CORE_API_TYPE'] == 'qwen'
+        assert cfg['assistApi'] == 'qwen'
+        assert 'dashscope.aliyuncs.com' in (cfg.get('CORE_URL') or '')
+
+    @pytest.mark.unit
+    def test_missing_core_api_keys_fall_back_to_qwen(self, config_manager):
+        """core_config.json 缺少 coreApi/assistApi 字段 → 兜底 qwen。"""
+        _write_core_config(config_manager, {'coreApiKey': 'free-access'})
+        cfg = config_manager.get_core_config()
+
+        assert cfg['CORE_API_TYPE'] == 'qwen'
+        assert cfg['assistApi'] == 'qwen'
+        assert 'dashscope.aliyuncs.com' in (cfg.get('CORE_URL') or '')
+
+    @pytest.mark.unit
+    def test_explicit_paid_provider_still_honored(self, config_manager):
+        """用户显式选了 qwen 必须被尊重。"""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-real-qwen',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+        })
+        cfg = config_manager.get_core_config()
+
+        assert cfg['CORE_API_TYPE'] == 'qwen'
+        assert 'dashscope.aliyuncs.com' in (cfg.get('CORE_URL') or '')
 
 
 # ---------------------------------------------------------------------------

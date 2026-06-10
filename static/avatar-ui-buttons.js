@@ -198,6 +198,7 @@ const _NEKO_IDLE_CAT1_SUBSTATE_IDLE = 'idle';
 const _NEKO_IDLE_CAT1_SUBSTATE_WALKING = 'walking-to-chat';
 const _NEKO_IDLE_CAT1_SUBSTATE_STRETCH = 'stretch-near-chat';
 const _NEKO_IDLE_CAT1_CHAT_GAP_PX = -12;
+const _NEKO_IDLE_CAT1_MINIMIZED_RIGHT_TO_LEFT_APPROACH_PX = 35;
 const _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE = 'compact-top-edge';
 const _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE = 'minimized-side';
 const _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_OVERLAP_PX = 28;
@@ -240,6 +241,7 @@ const _NEKO_IDLE_CAT1_PAIR_MOVE_MIN_USABLE_DISTANCE_PX = 36;
 const _NEKO_IDLE_CAT1_PAIR_MOVE_SPEED_PX_PER_SEC = 82;
 const _NEKO_IDLE_CAT1_PAIR_MOVE_MIN_DURATION_MS = 720;
 const _NEKO_IDLE_CAT1_PAIR_MOVE_MAX_DURATION_MS = 2200;
+const _NEKO_IDLE_CAT1_DESKTOP_PAIR_MOVE_SYNC_MIN_MS = 50;
 const _NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS = 2500;
 const _NEKO_IDLE_DESKTOP_COMPACT_SURFACE_RECT_STALE_MS = 10 * 1000;
 const _NEKO_IDLE_RETURN_DRAG_ACTION_CLASS = 'is-drag-action';
@@ -780,15 +782,69 @@ const _NEKO_IDLE_RETURN_SUBACTION_PROFILES = Object.freeze({
 let _nekoIdleDesktopChatMinimizedState = {
     minimized: false,
     screenRect: null,
-    updatedAt: 0
+    updatedAt: 0,
+    sourceUpdatedAt: 0,
+    expandedRecent: false
 };
 let _nekoIdleDesktopCompactSurfaceState = {
     visible: false,
     screenRect: null,
-    updatedAt: 0
+    updatedAt: 0,
+    sourceUpdatedAt: 0
 };
+let _nekoIdleDesktopChatPairMoveLastDispatchAt = 0;
+let _nekoIdleDesktopChatPairMoveLastDispatchSignature = '';
 let _nekoIdleCompactSurfaceDragging = false;
 let _nekoIdleCompactSurfaceSettleTimer = 0;
+
+function _getNekoIdleDesktopStateSourceUpdatedAt(detail, fallbackUpdatedAt) {
+    const timestamp = Number(detail && detail.timestamp);
+    if (Number.isFinite(timestamp) && timestamp > 0) return timestamp;
+    const fallback = Number(fallbackUpdatedAt);
+    if (Number.isFinite(fallback) && fallback > 0) return fallback;
+    return Date.now();
+}
+
+function _isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, state) {
+    const incomingSourceUpdatedAt = Number(sourceUpdatedAt);
+    const currentSourceUpdatedAt = Number(state && state.sourceUpdatedAt);
+    return Number.isFinite(incomingSourceUpdatedAt) &&
+        incomingSourceUpdatedAt > 0 &&
+        Number.isFinite(currentSourceUpdatedAt) &&
+        currentSourceUpdatedAt > 0 &&
+        incomingSourceUpdatedAt < currentSourceUpdatedAt;
+}
+
+function _isNekoIdleDesktopStateNewerThan(sourceUpdatedAt, state) {
+    const incomingSourceUpdatedAt = Number(sourceUpdatedAt);
+    const currentSourceUpdatedAt = Number(state && state.sourceUpdatedAt);
+    return Number.isFinite(incomingSourceUpdatedAt) &&
+        incomingSourceUpdatedAt > 0 &&
+        (!Number.isFinite(currentSourceUpdatedAt) ||
+            currentSourceUpdatedAt <= 0 ||
+            incomingSourceUpdatedAt >= currentSourceUpdatedAt);
+}
+
+function _makeNekoIdleDesktopChatMinimizedState(minimized, screenRect, updatedAt, sourceUpdatedAt, expandedRecent) {
+    const active = !!(minimized && screenRect);
+    return {
+        minimized: active,
+        screenRect: active ? screenRect : null,
+        updatedAt: updatedAt,
+        sourceUpdatedAt: sourceUpdatedAt,
+        expandedRecent: !active && !!expandedRecent
+    };
+}
+
+function _makeNekoIdleDesktopCompactSurfaceState(visible, screenRect, updatedAt, sourceUpdatedAt) {
+    const active = !!(visible && screenRect);
+    return {
+        visible: active,
+        screenRect: active ? screenRect : null,
+        updatedAt: updatedAt,
+        sourceUpdatedAt: sourceUpdatedAt
+    };
+}
 
 function _shouldReduceNekoIdleMotion() {
     try {
@@ -2174,6 +2230,11 @@ function _getNekoIdleReactChatCompactSurfaceRect() {
 function _getNekoIdleDesktopCompactSurfaceRect() {
     const state = _nekoIdleDesktopCompactSurfaceState;
     if (!state || !state.visible || !state.screenRect) return null;
+    if (_nekoIdleDesktopChatMinimizedState &&
+        _nekoIdleDesktopChatMinimizedState.minimized &&
+        _isNekoIdleDesktopStateNewerThan(_nekoIdleDesktopChatMinimizedState.sourceUpdatedAt, state)) {
+        return null;
+    }
     if (Date.now() - (state.updatedAt || 0) > _NEKO_IDLE_DESKTOP_COMPACT_SURFACE_RECT_STALE_MS) return null;
     const screenRect = _normalizeNekoIdleScreenRect(state.screenRect);
     if (!screenRect) return null;
@@ -2201,6 +2262,11 @@ function _getNekoIdleChatCompactSurfaceRect() {
 function _getNekoIdleDesktopChatMinimizedRect() {
     const state = _nekoIdleDesktopChatMinimizedState;
     if (!state || !state.minimized || !state.screenRect) return null;
+    if (_nekoIdleDesktopCompactSurfaceState &&
+        _nekoIdleDesktopCompactSurfaceState.visible &&
+        _isNekoIdleDesktopStateNewerThan(_nekoIdleDesktopCompactSurfaceState.sourceUpdatedAt, state)) {
+        return null;
+    }
     if (Date.now() - (state.updatedAt || 0) > _NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS) return null;
     const screenRect = _normalizeNekoIdleScreenRect(state.screenRect);
     if (!screenRect) return null;
@@ -2223,6 +2289,7 @@ function _getNekoIdleDesktopChatMinimizedRect() {
 function _isNekoIdleDesktopChatExpandedRecent() {
     const state = _nekoIdleDesktopChatMinimizedState;
     if (!state || state.minimized) return false;
+    if (state.expandedRecent === false) return false;
     return Date.now() - (state.updatedAt || 0) <= _NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS;
 }
 
@@ -2242,6 +2309,14 @@ function _clampNekoIdleCat1Position(left, top, width, height) {
     };
 }
 
+function _getNekoIdleCat1MinimizedSideApproachOffsetPx(facingRight, chatRect) {
+    // The yarn ball's right side has trailing string space, so right-to-left approaches need an inward visual anchor.
+    if (facingRight) return 0;
+    const width = Number(chatRect && chatRect.width);
+    if (!Number.isFinite(width) || width <= 0) return 0;
+    return Math.max(0, Math.min(width, _NEKO_IDLE_CAT1_MINIMIZED_RIGHT_TO_LEFT_APPROACH_PX));
+}
+
 function _getNekoIdleCat1SideTarget(container, chatRect) {
     if (!container || !chatRect || typeof container.getBoundingClientRect !== 'function') return null;
     const profile = _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
@@ -2251,9 +2326,10 @@ function _getNekoIdleCat1SideTarget(container, chatRect) {
     const catCenterX = rect.left + rect.width / 2;
     const chatCenterX = chatRect.left + chatRect.width / 2;
     const facingRight = chatCenterX > catCenterX;
+    const approachOffsetPx = _getNekoIdleCat1MinimizedSideApproachOffsetPx(facingRight, chatRect);
     const rawLeft = facingRight
         ? chatRect.left - rect.width - profile.target.gapPx
-        : chatRect.right + profile.target.gapPx;
+        : chatRect.right + profile.target.gapPx - approachOffsetPx;
     const rawTop = chatRect.top + (chatRect.height - rect.height) / 2;
     const clamped = _clampNekoIdleCat1Position(rawLeft, rawTop, rect.width, rect.height);
     const targetCenterX = clamped.left + rect.width / 2;
@@ -2267,6 +2343,7 @@ function _getNekoIdleCat1SideTarget(container, chatRect) {
         top: clamped.top,
         distance: Math.hypot(dx, dy),
         facingRight: facingRight,
+        approachOffsetPx: approachOffsetPx,
         kind: _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE
     };
 }
@@ -2344,6 +2421,11 @@ function _getNekoIdleCat1CompactTopEdgeTarget(container, surfaceRect, options = 
 }
 
 function _getNekoIdleCat1Target(container, chatRect, options = {}) {
+    const minimizedSideTarget = _getNekoIdleCat1SideTarget(container, chatRect);
+    if (minimizedSideTarget) {
+        return minimizedSideTarget;
+    }
+
     const compactSurfaceRect = _getNekoIdleChatCompactSurfaceRect();
     const compactTarget = _getNekoIdleCat1CompactTopEdgeTarget(container, compactSurfaceRect, {
         anchorRatio: options.anchorRatio
@@ -2354,7 +2436,7 @@ function _getNekoIdleCat1Target(container, chatRect, options = {}) {
         compactTarget.distance <= _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_FOLLOW_DISTANCE_PX) {
         return compactTarget;
     }
-    return _getNekoIdleCat1SideTarget(container, chatRect);
+    return null;
 }
 
 function _setNekoIdleCat1ContainerPosition(container, left, top) {
@@ -2378,19 +2460,48 @@ function _setNekoIdleCat1PairMoveChatPosition(shell, left, top) {
 function _rememberNekoIdleDesktopChatPairMoveRect(screenRect) {
     const normalized = _normalizeNekoIdleScreenRect(screenRect);
     if (!normalized) return null;
-    _nekoIdleDesktopChatMinimizedState = {
-        minimized: true,
-        screenRect: normalized,
-        updatedAt: Date.now()
-    };
+    const updatedAt = Date.now();
+    _nekoIdleDesktopChatMinimizedState = _makeNekoIdleDesktopChatMinimizedState(
+        true,
+        normalized,
+        updatedAt,
+        updatedAt,
+        false
+    );
+    _nekoIdleDesktopCompactSurfaceState = _makeNekoIdleDesktopCompactSurfaceState(
+        false,
+        null,
+        updatedAt,
+        updatedAt
+    );
     return normalized;
 }
 
-function _dispatchNekoIdleDesktopChatPairMoveBounds(screenRect) {
+function _getNekoIdleDesktopChatPairMoveSignature(screenRect) {
+    const normalized = _normalizeNekoIdleScreenRect(screenRect);
+    if (!normalized) return '';
+    return [
+        normalized.left,
+        normalized.top,
+        normalized.width,
+        normalized.height
+    ].join(':');
+}
+
+function _dispatchNekoIdleDesktopChatPairMoveBounds(screenRect, options = {}) {
     const normalized = _rememberNekoIdleDesktopChatPairMoveRect(screenRect);
     if (!normalized) return false;
     const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
     if (!channel || typeof channel.postMessage !== 'function') return false;
+    const now = Date.now();
+    const force = !!(options && options.force);
+    const signature = _getNekoIdleDesktopChatPairMoveSignature(normalized);
+    if (!force) {
+        if (signature && signature === _nekoIdleDesktopChatPairMoveLastDispatchSignature) return false;
+        if (now - _nekoIdleDesktopChatPairMoveLastDispatchAt < _NEKO_IDLE_CAT1_DESKTOP_PAIR_MOVE_SYNC_MIN_MS) return false;
+    }
+    _nekoIdleDesktopChatPairMoveLastDispatchAt = now;
+    _nekoIdleDesktopChatPairMoveLastDispatchSignature = signature;
     channel.postMessage({
         action: 'idle_chat_pair_move_bounds',
         source: 'cat1-pair-move',
@@ -2401,7 +2512,7 @@ function _dispatchNekoIdleDesktopChatPairMoveBounds(screenRect) {
             width: normalized.width,
             height: normalized.height
         },
-        timestamp: Date.now()
+        timestamp: now
     });
     return true;
 }
@@ -2554,6 +2665,8 @@ function _applyNekoIdleCat1PairMovePlan(plan, progress) {
             top: plan.chatStartScreenTop + offsetY,
             width: plan.chatWidth,
             height: plan.chatHeight
+        }, {
+            force: progress >= 1
         });
     } else if (plan.chatMode === 'dom') {
         _setNekoIdleCat1PairMoveChatPosition(plan.shell, plan.chatStartLeft + offsetX, plan.chatStartTop + offsetY);
@@ -3001,11 +3114,13 @@ function _stepNekoIdleCat1PairMove(button, startedAt, timestamp) {
     }
     const elapsedMs = Math.max(0, timestamp - startedAt);
     const progress = plan.durationMs > 0 ? Math.min(1, elapsedMs / plan.durationMs) : 1;
-    _applyNekoIdleCat1PairMovePlan(plan, progress);
     if (progress >= 1) {
+        // 末帧只由 _finishNekoIdleCat1PairMove 强制同步一次原生 bounds；
+        // 若先在此处 apply(progress=1) 再 finish，会触发两次 force dispatch（绕过节流/去重）的重复同步。
         _finishNekoIdleCat1PairMove(button);
         return;
     }
+    _applyNekoIdleCat1PairMovePlan(plan, progress);
     state.pairMoveFrame = window.requestAnimationFrame((nextTimestamp) => {
         _stepNekoIdleCat1PairMove(button, startedAt, nextTimestamp);
     });
@@ -3502,9 +3617,20 @@ function _ensureNekoIdleReturnPresentationBridge() {
 
     window.addEventListener('neko:idle-chat-minimized-state', (event) => {
         const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+        const receivedAt = Date.now();
+        const sourceUpdatedAt = _getNekoIdleDesktopStateSourceUpdatedAt(detail, receivedAt);
+        if (_isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopChatMinimizedState)) return;
         const screenRect = detail && detail.minimized
             ? _normalizeNekoIdleScreenRect(detail.screenRect)
             : null;
+        const nextMinimized = !!(detail && detail.minimized && screenRect);
+        const compactSurfaceCurrentlyVisible = !!_getNekoIdleDesktopCompactSurfaceRect();
+        if (nextMinimized &&
+            _nekoIdleDesktopCompactSurfaceState &&
+            _nekoIdleDesktopCompactSurfaceState.visible &&
+            _isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopCompactSurfaceState)) {
+            return;
+        }
         const previousState = _nekoIdleDesktopChatMinimizedState;
         const previousScreenRect = previousState && previousState.minimized
             ? previousState.screenRect
@@ -3512,11 +3638,21 @@ function _ensureNekoIdleReturnPresentationBridge() {
         const desktopChatMoveDistance = _getNekoIdleRectCenterMoveDistance(previousScreenRect, screenRect);
         const isSmallDesktopChatMove = !!(previousScreenRect && screenRect) &&
             desktopChatMoveDistance < _NEKO_IDLE_CAT1_RECHECK_MOVE_DISTANCE_PX;
-        _nekoIdleDesktopChatMinimizedState = {
-            minimized: !!(detail && detail.minimized && screenRect),
-            screenRect: screenRect,
-            updatedAt: Date.now()
-        };
+        _nekoIdleDesktopChatMinimizedState = _makeNekoIdleDesktopChatMinimizedState(
+            nextMinimized,
+            screenRect,
+            receivedAt,
+            sourceUpdatedAt,
+            !!(detail && !detail.minimized && !compactSurfaceCurrentlyVisible)
+        );
+        if (nextMinimized) {
+            _nekoIdleDesktopCompactSurfaceState = _makeNekoIdleDesktopCompactSurfaceState(
+                false,
+                null,
+                receivedAt,
+                sourceUpdatedAt
+            );
+        }
         document.querySelectorAll(_NEKO_IDLE_RETURN_BUTTON_SELECTOR).forEach((button) => {
             const currentState = button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey;
             if (currentState && (currentState.pairMovePlan || currentState.pairMoveFrame)) return;
@@ -3527,14 +3663,73 @@ function _ensureNekoIdleReturnPresentationBridge() {
 
     window.addEventListener('neko:idle-chat-compact-surface-state', (event) => {
         const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+        const receivedAt = Date.now();
+        const sourceUpdatedAt = _getNekoIdleDesktopStateSourceUpdatedAt(detail, receivedAt);
+        if (_isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopCompactSurfaceState)) return;
         const screenRect = detail && detail.visible
             ? _normalizeNekoIdleScreenRect(detail.screenRect)
             : null;
-        _nekoIdleDesktopCompactSurfaceState = {
-            visible: !!(detail && detail.visible && screenRect),
-            screenRect: screenRect,
-            updatedAt: Date.now()
-        };
+        const heartbeat = !!(detail && detail.heartbeat);
+        const nextVisible = !!(detail && detail.visible && screenRect);
+        if (nextVisible &&
+            _nekoIdleDesktopChatMinimizedState &&
+            _nekoIdleDesktopChatMinimizedState.minimized &&
+            _isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopChatMinimizedState)) {
+            return;
+        }
+        // heartbeat 只用于维持 compact-top-edge 贴附位置同步，不得改变可见性状态：
+        // - 禁止通过 heartbeat 覆写 minimized state（聊天框最小化后心跳仍广播可见态，
+        //   清掉 minimized 会导致 CAT1 在最小化后 1s 内失去毛线球步行目标）。
+        // - 但 compact surface 可见时，心跳必须刷新缓存时间戳，防止 _NEKO_IDLE_DESKTOP_
+        //   COMPACT_SURFACE_RECT_STALE_MS (10s) 过期后 _getNekoIdleDesktopCompactSurfaceRect
+        //   返回 null，导致 CAT1 失去 compact-top-edge 目标。
+        // - 心跳用 receivedAt 刷新 updatedAt 防过期，但保留原 sourceUpdatedAt 避免扰乱
+        //   跨状态时间戳排序（心跳自身的新鲜时间戳会让 isStaleAgainst 永远判不出旧）。
+        if (!heartbeat) {
+            _nekoIdleDesktopCompactSurfaceState = _makeNekoIdleDesktopCompactSurfaceState(
+                nextVisible,
+                screenRect,
+                receivedAt,
+                sourceUpdatedAt
+            );
+            if (nextVisible) {
+                _nekoIdleDesktopChatMinimizedState = _makeNekoIdleDesktopChatMinimizedState(
+                    false,
+                    null,
+                    receivedAt,
+                    sourceUpdatedAt,
+                    false
+                );
+            }
+        } else if (nextVisible &&
+            _nekoIdleDesktopCompactSurfaceState &&
+            _nekoIdleDesktopCompactSurfaceState.visible) {
+            // 最小化时 compact state 已被 minimized listener 清为 visible:false，
+            // 此处不会进入——心跳不会把 minimized 态的「不可见 compact」刷回可见。
+            var prevCompactSourceUpdatedAt = _nekoIdleDesktopCompactSurfaceState.sourceUpdatedAt;
+            _nekoIdleDesktopCompactSurfaceState = _makeNekoIdleDesktopCompactSurfaceState(
+                true,
+                screenRect || _nekoIdleDesktopCompactSurfaceState.screenRect,
+                receivedAt,
+                prevCompactSourceUpdatedAt
+            );
+        } else if (nextVisible &&
+            _nekoIdleDesktopChatMinimizedState &&
+            !_nekoIdleDesktopChatMinimizedState.minimized) {
+            // 还原后来的心跳 catch-up：Electron setMinimized(false) 早退不发布
+            // compact-surface-state，compact 缓存仍为 minimize 时写下的
+            // visible:false。心跳说 visible + minimized 已 false → 信任心跳
+            // 恢复 compact 可用性，保留原 sourceUpdatedAt 不乱排序。
+            var prevCompactSourceUpdatedAt = _nekoIdleDesktopCompactSurfaceState
+                ? _nekoIdleDesktopCompactSurfaceState.sourceUpdatedAt
+                : sourceUpdatedAt;
+            _nekoIdleDesktopCompactSurfaceState = _makeNekoIdleDesktopCompactSurfaceState(
+                true,
+                screenRect,
+                receivedAt,
+                prevCompactSourceUpdatedAt
+            );
+        }
         _handleNekoIdleCompactSurfaceMoveState(detail);
     });
 

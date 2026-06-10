@@ -40,6 +40,12 @@ def test_build_plugin_list_reports_source_missing_status(monkeypatch: pytest.Mon
             "i18n": {"messages": {}},
             "entries": [],
             "list_actions": [],
+            "install_source": {
+                "source": "unknown",
+                "reason": None,
+                "installed_at": None,
+                "source_detail": None,
+            },
         }
     ]
 

@@ -101,7 +101,7 @@ jobs:
         run: python scripts/check_prompt_hygiene.py
 
   python-conventions:
-    name: Python conventions (i18n-sync + docs + api-trailing-slash×2 + module-layering)
+    name: Python conventions (i18n-sync + docs + api-trailing-slash×2 + module-layering + docstring-cjk)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -131,7 +131,30 @@ jobs:
         # ranges across all languages. Skipped on direct push to main —
         # there's nothing to diff against.
         if: github.event_name == 'pull_request'
-        run: python scripts/check_i18n_sync.py --base "origin/${{ github.base_ref }}"
+        env:
+          # Indirection instead of inlining ${{ github.base_ref }} into the
+          # shell line: with the `pull_request: branches: [main]` trigger the
+          # ref is always `main`, but zizmor flags the inline form as
+          # template-injection, and env-var expansion is inert either way.
+          BASE_REF: ${{ github.base_ref }}
+        run: python scripts/check_i18n_sync.py --base "origin/${BASE_REF}"
+
+      - name: Forbid CJK in new/modified Python docstrings (PR-only)
+        # Convention: docstrings in the main program are written in English.
+        # The repo carries a large legacy stock of CJK docstrings, so this is
+        # a diff-ratchet: only docstrings whose line span overlaps lines
+        # added/modified in this PR (vs the merge-base) are checked — touch
+        # it, translate it. plugin/ and local_server/ are policy-exempt
+        # (plugin internals follow their own conventions; local_server is a
+        # semi-independent unit). `--full` exists for local migration sweeps.
+        # Suppress a single docstring with `# noqa: DOCSTRING_CJK` (e.g.
+        # fixtures whose CJK content is itself under test). Skipped on direct
+        # push to main — nothing to diff against.
+        if: github.event_name == 'pull_request'
+        env:
+          # Same zizmor template-injection indirection as the i18n-sync step.
+          BASE_REF: ${{ github.base_ref }}
+        run: python scripts/check_docstring_no_cjk.py --base "origin/${BASE_REF}"
 
       - name: Forbid relative-up markdown links inside docs/
         # docs/ ships through VitePress with itself as the deploy root;
