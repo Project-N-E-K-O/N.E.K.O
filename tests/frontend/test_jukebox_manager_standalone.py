@@ -136,9 +136,8 @@ def test_jukebox_manager_standalone_uses_native_drag_regions():
     # 标题栏必须声明为 drag 区域（放宽空白容忍 CSS 格式化工具）。
     assert re.search(r"\.jukebox-sam-panel\s+\.sam-header\s*\{[\s\S]*?-webkit-app-region:\s*drag\s*!important", MANAGER_TEMPLATE)
     # 交互元素必须声明为 no-drag，否则点击会被原生拖动吃掉
-    assert re.search(r"\.jukebox-sam-panel\s+button\b", MANAGER_TEMPLATE)
-    assert re.search(r"\.jukebox-sam-panel\s+\.sam-close-btn\b", MANAGER_TEMPLATE)
-    assert re.search(r"-webkit-app-region:\s*no-drag\s*!important", MANAGER_TEMPLATE)
+    assert re.search(r"\.jukebox-sam-panel\s+button\b[\s\S]*?\{[\s\S]*?-webkit-app-region:\s*no-drag\s*!important", MANAGER_TEMPLATE)
+    assert re.search(r"\.jukebox-sam-panel\s+\.sam-close-btn\b[\s\S]*?\{[\s\S]*?-webkit-app-region:\s*no-drag\s*!important", MANAGER_TEMPLATE)
     # 不应再注册 JS mousedown 拖动（旧实现的标志函数）——模板和外部 JS 文件都要拦
     for source in (MANAGER_TEMPLATE, JUKEBOX_STANDALONE_SCRIPT, JUKEBOX_SCRIPT):
         assert "_bindManagerStandaloneDrag" not in source
@@ -152,11 +151,12 @@ def test_jukebox_manager_popup_requests_browser_resizable():
 
 @pytest.mark.frontend
 def test_jukebox_web_resize_changes_size_without_zoom():
-    resize_body = re.search(r"bindResize:\s*function\(container\)\s*\{([\s\S]*?)\n  \},\n\n  // 管理器面板拖拽功能", JUKEBOX_SCRIPT)
-    assert resize_body
-    assert ".style.zoom" not in resize_body.group(1)
-    assert "container.style.width" in resize_body.group(1)
-    assert "container.style.height" in resize_body.group(1)
+    resize_start = JUKEBOX_SCRIPT.find("bindResize: function(container)")
+    assert resize_start >= 0
+    resize_body = JUKEBOX_SCRIPT[resize_start:resize_start + 4000]
+    assert ".style.zoom" not in resize_body
+    assert "container.style.width" in resize_body
+    assert "container.style.height" in resize_body
 
 
 @pytest.mark.frontend
@@ -439,6 +439,23 @@ def test_jukebox_manager_clear_visible_uses_second_confirm_and_escape_once(mock_
     )
     mock_page.evaluate("() => document.querySelector('.sam-danger-modal-confirm').click()")
     assert mock_page.evaluate("window.__batchDeleteRequests.length") == 0
+    assert "sam-danger-confirm-escaped" in (confirm_btn.get_attribute("class") or "")
+    assert confirm_btn.evaluate("el => getComputedStyle(el).pointerEvents") == "auto"
+    mock_page.wait_for_function(
+        "() => !document.querySelector('.sam-danger-modal-confirm').classList.contains('sam-danger-confirm-escaping')"
+    )
+    assert confirm_btn.get_attribute("data-escape-ready") == "true"
+
+    mock_page.evaluate(
+        """
+        () => window.Jukebox.SongActionManager.showSongDeleteConfirmDialog(
+          'clear-visible',
+          ['song1', 'builtin'],
+          2
+        )
+        """
+    )
+    confirm_btn = mock_page.locator(".sam-danger-modal-confirm")
     mock_page.evaluate(
         """
         () => {
@@ -452,14 +469,9 @@ def test_jukebox_manager_clear_visible_uses_second_confirm_and_escape_once(mock_
         }
         """
     )
-    assert "sam-danger-confirm-escaped" in (confirm_btn.get_attribute("class") or "")
-    assert confirm_btn.evaluate("el => getComputedStyle(el).pointerEvents") == "auto"
-    mock_page.evaluate("() => document.querySelector('.sam-danger-modal-confirm').click()")
-    assert mock_page.evaluate("window.__batchDeleteRequests.length") == 0
     mock_page.wait_for_function(
         "() => !document.querySelector('.sam-danger-modal-confirm').classList.contains('sam-danger-confirm-escaping')"
     )
-    assert confirm_btn.get_attribute("data-escape-ready") == "true"
     right_initial_x = int(confirm_btn.get_attribute("data-escape-initial-x") or "0")
     assert right_initial_x < 0
 
@@ -549,6 +561,7 @@ def test_jukebox_manager_actions_delete_current_display_matches_song_flow(mock_p
     confirm_btn = mock_page.locator(".sam-danger-modal-confirm")
     mock_page.evaluate("() => document.querySelector('.sam-danger-modal-confirm').click()")
     assert mock_page.evaluate("window.__batchActionDeleteRequests.length") == 0
+    assert confirm_btn.get_attribute("data-escaped") == "true"
     mock_page.evaluate(
         """
         () => {
@@ -608,6 +621,45 @@ def test_jukebox_manager_actions_visibility_filters_current_display(mock_page: P
     mock_page.locator(".actions-panel .sam-checkbox-right input").click()
     assert danger_btn.inner_text() == "删除当前显示(3)"
     assert "sam-item-hidden" in (mock_page.locator('.actions-panel .sam-item[data-id="action1"]').get_attribute("class") or "")
+
+
+@pytest.mark.frontend
+def test_jukebox_manager_hidden_selection_does_not_drive_delete_selected(mock_page: Page):
+    setup_song_manager_page(
+        mock_page,
+        """
+        {
+          visibleSong: { name: 'Visible Song', artist: 'A', visible: true },
+          hiddenSong: { name: 'Hidden Song', artist: 'B', visible: false }
+        }
+        """,
+        """
+        {
+          visibleAction: { name: 'Visible Action', format: 'vmd', visible: true },
+          hiddenAction: { name: 'Hidden Action', format: 'vmd', visible: false }
+        }
+        """,
+    )
+
+    danger_btn = mock_page.locator(".sam-btn-song-danger")
+    mock_page.locator('.songs-panel .sam-item[data-id="hiddenSong"] .sam-song-select').click()
+    assert danger_btn.get_attribute("data-mode") == "selected"
+    assert danger_btn.inner_text() == "删除选中(1)"
+
+    mock_page.locator(".songs-panel .sam-checkbox-right input").click()
+    assert mock_page.locator('.songs-panel .sam-item[data-id="hiddenSong"]').count() == 0
+    assert danger_btn.get_attribute("data-mode") == "clear-visible"
+    assert danger_btn.inner_text() == "删除当前显示(1)"
+
+    mock_page.locator('.sam-tab[data-tab="actions"]').click()
+    mock_page.locator('.actions-panel .sam-item[data-id="hiddenAction"] .sam-action-select').click()
+    assert danger_btn.get_attribute("data-mode") == "selected"
+    assert danger_btn.inner_text() == "删除选中(1)"
+
+    mock_page.locator(".actions-panel .sam-checkbox-right input").click()
+    assert mock_page.locator('.actions-panel .sam-item[data-id="hiddenAction"]').count() == 0
+    assert danger_btn.get_attribute("data-mode") == "clear-visible"
+    assert danger_btn.inner_text() == "删除当前显示(1)"
 
 
 @pytest.mark.frontend
@@ -806,6 +858,67 @@ def test_jukebox_manager_add_binding_index_uses_visible_actions(mock_page: Page)
     assert binding_state == {
         "options": [{"id": "visibleAction", "index": "1", "name": "Visible Action"}],
         "captured": {"songId": "song1", "actionId": "visibleAction"},
+    }
+
+
+@pytest.mark.frontend
+def test_jukebox_manager_add_binding_index_uses_visible_songs(mock_page: Page):
+    mock_page.set_content(HARNESS_HTML)
+    mock_page.evaluate(
+        """
+        () => {
+          window.t = (key, fallback) => typeof fallback === 'string' ? fallback : key;
+          window.fetch = () => Promise.reject(new Error('fetch should not be called in this test'));
+        }
+        """
+    )
+    mock_page.add_script_tag(content=JUKEBOX_SCRIPT)
+    binding_state = mock_page.evaluate(
+        """
+        () => {
+          const SAM = window.Jukebox.SongActionManager;
+          SAM.data = {
+            songs: {
+              hiddenSong: { name: 'Hidden Song', artist: 'A', visible: false },
+              visibleSong: { name: 'Visible Song', artist: 'B', visible: true }
+            },
+            actions: {
+              action1: { name: 'Action 1', format: 'vmd', visible: true }
+            },
+            bindings: {}
+          };
+          SAM.showHiddenSongs = false;
+
+          const host = document.createElement('div');
+          host.innerHTML = '<button class="sam-add-binding-btn">+</button>';
+          document.body.appendChild(host);
+          const button = host.querySelector('button');
+
+          let captured = null;
+          SAM.bindSongToAction = (songId, actionId) => {
+            captured = { songId, actionId };
+          };
+
+          SAM.showAddBindingInput(button, 'action1', 'action');
+          const options = Array.from(document.querySelectorAll('.sam-add-binding-option'))
+            .map((node) => ({
+              id: node.dataset.id,
+              index: node.querySelector('.sam-add-binding-option-index').textContent,
+              name: node.querySelector('.sam-add-binding-option-name').textContent
+            }));
+
+          const input = document.querySelector('.sam-add-binding-input');
+          input.value = '1';
+          document.querySelector('.sam-add-binding-confirm').click();
+
+          return { options, captured };
+        }
+        """
+    )
+
+    assert binding_state == {
+        "options": [{"id": "visibleSong", "index": "1", "name": "Visible Song"}],
+        "captured": {"songId": "visibleSong", "actionId": "action1"},
     }
 
 

@@ -1242,12 +1242,13 @@ window.Jukebox = {
       const activeTab = this.element?.querySelector('.sam-tab.active')?.dataset.tab || 'songs';
       if (activeTab !== 'songs') return null;
 
-      const selectedIds = Array.from(this.selectedSongs || []).filter(id => this.data.songs[id]);
+      const visibleSongIds = this.getVisibleSongEntries().map(([id]) => id);
+      const visibleSongIdSet = new Set(visibleSongIds);
+      const selectedIds = Array.from(this.selectedSongs || []).filter(id => visibleSongIdSet.has(id));
       if (selectedIds.length > 0) {
         return { resource: 'songs', mode: 'selected', ids: selectedIds, songIds: selectedIds };
       }
 
-      const visibleSongIds = this.getVisibleSongEntries().map(([id]) => id);
       if (visibleSongIds.length > 0) {
         return { resource: 'songs', mode: 'clear-visible', ids: visibleSongIds, songIds: visibleSongIds };
       }
@@ -1259,12 +1260,13 @@ window.Jukebox = {
       const activeTab = this.element?.querySelector('.sam-tab.active')?.dataset.tab || 'songs';
       if (activeTab !== 'actions') return null;
 
-      const selectedIds = Array.from(this.selectedActions || []).filter(id => this.data.actions[id]);
+      const visibleActionIds = this.getVisibleActionEntries().map(([id]) => id);
+      const visibleActionIdSet = new Set(visibleActionIds);
+      const selectedIds = Array.from(this.selectedActions || []).filter(id => visibleActionIdSet.has(id));
       if (selectedIds.length > 0) {
         return { resource: 'actions', mode: 'selected', ids: selectedIds, actionIds: selectedIds };
       }
 
-      const visibleActionIds = this.getVisibleActionEntries().map(([id]) => id);
       if (visibleActionIds.length > 0) {
         return { resource: 'actions', mode: 'clear-visible', ids: visibleActionIds, actionIds: visibleActionIds };
       }
@@ -1510,6 +1512,9 @@ window.Jukebox = {
         if (isFinalClear && confirmBtn.dataset.escapeReady !== 'true') {
           event.preventDefault();
           event.stopPropagation();
+          if (confirmBtn.dataset.escaped !== 'true') {
+            this.runFinalClearButtonEscape(confirmBtn, event, body);
+          }
           return;
         }
         if (isClear && step === 1) {
@@ -2304,7 +2309,7 @@ window.Jukebox = {
       container.appendChild(inputWrapper);
 
       // 获取可用项目（排除当前视图隐藏和已绑定的）
-      const availableEntries = isSong ? this.getVisibleActionEntries() : Object.entries(this.data.songs);
+      const availableEntries = isSong ? this.getVisibleActionEntries() : this.getVisibleSongEntries();
       const currentBindings = isSong
         ? (this.data.bindings[sourceId] || {})
         : this.getActionBindings(sourceId);

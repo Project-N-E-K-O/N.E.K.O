@@ -83,6 +83,40 @@ async def test_batch_delete_removes_user_song_and_hides_builtin(monkeypatch, tmp
 
 
 @pytest.mark.asyncio
+async def test_delete_builtin_song_hides_and_preserves_bindings(monkeypatch, tmp_path):
+    fake = _FakeJukeboxConfig(
+        {
+            "songs": {
+                "builtin-song": {
+                    "name": "Builtin Song",
+                    "audio": "songs/builtin.mp3",
+                    "audioMd5": "builtin-md5",
+                    "visible": True,
+                    "isBuiltin": True,
+                }
+            },
+            "bindings": {
+                "builtin-song": {"action-1": {"offset": 0}},
+            },
+            "md5Index": {
+                "songs": {"builtin-md5": "builtin-song"},
+                "actions": {},
+            },
+        },
+        tmp_path / "jukebox",
+    )
+    _install_fake_config(monkeypatch, fake)
+
+    result = await jukebox_router.delete_song("builtin-song")
+
+    assert result == {"success": True, "message": "内置歌曲已隐藏", "hidden": True}
+    assert fake.data["songs"]["builtin-song"]["visible"] is False
+    assert fake.data["bindings"] == {"builtin-song": {"action-1": {"offset": 0}}}
+    assert fake.data["md5Index"]["songs"] == {"builtin-md5": "builtin-song"}
+    assert fake.saved is True
+
+
+@pytest.mark.asyncio
 async def test_batch_delete_precheck_rejects_unknown_ids(monkeypatch, tmp_path):
     fake = _FakeJukeboxConfig(
         {
@@ -106,6 +140,7 @@ async def test_batch_delete_precheck_rejects_unknown_ids(monkeypatch, tmp_path):
         )
 
     assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "歌曲不存在: missing-song"
     assert fake.data["songs"]["known-song"]["visible"] is True
     assert fake.saved is False
 
@@ -362,6 +397,7 @@ async def test_batch_delete_actions_precheck_rejects_unknown_ids(monkeypatch, tm
         )
 
     assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "动画不存在: missing-action"
     assert "known-action" in fake.data["actions"]
     assert fake.saved is False
 

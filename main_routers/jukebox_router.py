@@ -516,7 +516,7 @@ async def batch_delete_songs(request: BatchDeleteSongsRequest):
 
     missing_ids = [song_id for song_id in song_ids if song_id not in jukebox_config.data["songs"]]
     if missing_ids:
-        raise HTTPException(404, {"message": "歌曲不存在", "songIds": missing_ids})
+        raise HTTPException(404, f"歌曲不存在: {', '.join(missing_ids)}")
 
     deleted = []
     hidden = []
@@ -568,7 +568,7 @@ async def batch_delete_songs(request: BatchDeleteSongsRequest):
 
 @router.delete("/songs/{song_id}")
 async def delete_song(song_id: str):
-    """删除歌曲"""
+    """Delete an uploaded song or hide a built-in song."""
     config_mgr = get_config_manager()
     jukebox_config = JukeboxConfig(config_mgr)
 
@@ -577,14 +577,12 @@ async def delete_song(song_id: str):
 
     song = jukebox_config.data["songs"][song_id]
 
-    # 内置资源：只删除绑定关系，不删除资源本身
+    # 内置资源：隐藏，不删除资源本身或绑定关系
     if song.get("isBuiltin", False):
-        # 删除相关绑定
-        if song_id in jukebox_config.data["bindings"]:
-            del jukebox_config.data["bindings"][song_id]
-            await jukebox_config.asave()
-            logger.info(f"删除内置歌曲的绑定关系: {song_id}")
-        return {"success": True, "message": "内置歌曲的绑定关系已删除"}
+        song["visible"] = False
+        await jukebox_config.asave()
+        logger.info(f"隐藏内置歌曲: {song_id}")
+        return {"success": True, "message": "内置歌曲已隐藏", "hidden": True}
 
     # 用户资源：完全删除
     # 删除文件
@@ -843,7 +841,7 @@ async def batch_delete_actions(request: BatchDeleteActionsRequest):
 
     missing_ids = [action_id for action_id in action_ids if action_id not in jukebox_config.data["actions"]]
     if missing_ids:
-        raise HTTPException(404, {"message": "动画不存在", "actionIds": missing_ids})
+        raise HTTPException(404, f"动画不存在: {', '.join(missing_ids)}")
 
     deleted = []
     hidden = []
