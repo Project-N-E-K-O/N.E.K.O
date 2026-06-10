@@ -49,6 +49,13 @@ elif [ "${#mains[@]}" -gt 1 ]; then
   exit 1
 fi
 pid="${mains[0]}"
+# AppRun/AppImage are kept so a Steam-launched build whose command line lacks
+# the literal app name is still matched, but they can also hit an unrelated
+# app. If the sole match does not look like N.E.K.O, warn and verify the
+# cmdline printed below before trusting the diagnostics.
+if ! tr '\0' '\n' < "/proc/$pid/cmdline" | grep -qiE 'n[.]?e[.]?k[.]?o'; then
+  echo "Warning: pid $pid matched only a generic AppRun/AppImage rule; confirm the cmdline below is N.E.K.O." >&2
+fi
 tr '\0' '\n' < "/proc/$pid/environ" | sort | grep -E 'DISPLAY|WAYLAND|GTK_IM|QT_IM|XMODIFIERS|Steam'
 tr '\0' ' ' < "/proc/$pid/cmdline"; echo
 ```

@@ -49,6 +49,12 @@ elif [ "${#mains[@]}" -gt 1 ]; then
   exit 1
 fi
 pid="${mains[0]}"
+# 保留 AppRun/AppImage 是为了兜住「Steam 启动、命令行不含字面 app 名」的情况，
+# 但它们也可能命中无关应用。若唯一匹配看起来不像 N.E.K.O，就告警，让人先核对
+# 下面打印的 cmdline 再采信诊断结果。
+if ! tr '\0' '\n' < "/proc/$pid/cmdline" | grep -qiE 'n[.]?e[.]?k[.]?o'; then
+  echo "警告：pid $pid 仅由泛化的 AppRun/AppImage 规则命中，请确认下面的 cmdline 确属 N.E.K.O。" >&2
+fi
 tr '\0' '\n' < "/proc/$pid/environ" | sort | grep -E 'DISPLAY|WAYLAND|GTK_IM|QT_IM|XMODIFIERS|Steam'
 tr '\0' ' ' < "/proc/$pid/cmdline"; echo
 ```
