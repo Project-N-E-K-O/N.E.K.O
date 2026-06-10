@@ -11,11 +11,18 @@ on:
     paths:
       - 'plugin/**'
       - '.github/workflows/plugin-tests.yml'
+      # Dependency changes alter the plugin test/runtime environment (e.g.
+      # removing a dev dep plugin/tests needs) — without these a deps-only
+      # PR skips the gate and the breakage surfaces on the next plugin PR.
+      - 'pyproject.toml'
+      - 'uv.lock'
   pull_request:
     branches: [main]
     paths:
       - 'plugin/**'
       - '.github/workflows/plugin-tests.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
   workflow_dispatch:
 
 # The test job only needs to read the checked-out source.
