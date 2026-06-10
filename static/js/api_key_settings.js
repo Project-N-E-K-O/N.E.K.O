@@ -1748,7 +1748,7 @@ function toggleCustomApi(skipAutoFill) {
     if (!isCustomEnabled && !skipAutoFill) {
         autoFillCoreApiKey(true);
         autoFillAssistApiKey(true);
-        updateAssistApiRecommendation();
+        updateAssistApiRecommendation({ preserveAssistProvider: true });
     }
 
     syncProviderSelectDropdowns();
@@ -2294,12 +2294,13 @@ function isFreeVersionText(value) {
 }
 
 // 根据核心API选择更新辅助API的提示和建议
-function updateAssistApiRecommendation() {
+function updateAssistApiRecommendation(options = {}) {
     const coreApiSelect = document.getElementById('coreApiSelect');
     const assistApiSelect = document.getElementById('assistApiSelect');
 
     if (!coreApiSelect || !assistApiSelect) return;
 
+    const preserveAssistProvider = options && options.preserveAssistProvider === true;
     const selectedCoreApi = coreApiSelect.value;
 
     // 控制API Key输入框和免费版提示
@@ -2360,7 +2361,7 @@ function updateAssistApiRecommendation() {
             freeOption.textContent = window.t ? window.t('api.freeVersionOnlyWhenCoreFree') : '免费版（仅核心API为免费版时可用）';
         }
         // If assist is still stuck on 'free' (now disabled), switch to a valid provider
-        if (assistApiSelect.value === 'free') {
+        if (!preserveAssistProvider && assistApiSelect.value === 'free') {
             // Prefer qwen as default, otherwise pick first non-free enabled option
             const qwenOpt = assistApiSelect.querySelector('option[value="qwen"]');
             if (qwenOpt && !qwenOpt.disabled) {
@@ -2578,7 +2579,7 @@ document.addEventListener('DOMContentLoaded', function () {
     // 根据自定义API启用状态设置初始折叠状态
     const enableCustomApi = document.getElementById('enableCustomApi');
     if (enableCustomApi) {
-        toggleCustomApi();
+        toggleCustomApi(true);
     }
 });
 
@@ -4010,7 +4011,7 @@ async function initializePage() {
             }
             updateAssistApiKeyInputAvailability();
 
-            updateAssistApiRecommendation();
+            updateAssistApiRecommendation({ preserveAssistProvider: true });
             autoFillCoreApiKey(true);
             // 不再调用 autoFillAssistApiKey(true)，因为 loadCurrentApiKey()
             // 已从后端数据直接设置辅助API Key，此处再次从管理簿读取会覆盖正确值
@@ -4048,7 +4049,7 @@ async function initializePage() {
             });
         }
 
-        updateAssistApiRecommendation();
+        updateAssistApiRecommendation({ preserveAssistProvider: true });
 
         // 监听语言切换事件，更新下拉选项（保留用户未保存的输入）
         window.addEventListener('localechange', async () => {
