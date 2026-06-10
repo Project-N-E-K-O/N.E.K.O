@@ -758,8 +758,8 @@ def test_tool_register_request_rejects_non_loopback_callback_url():
         "http://[::1]:9000/cb",
         "http://127.0.0.5/cb",  # 127.0.0.0/8 整段都是 loopback
         "https://localhost/cb",
-        # IPv4-mapped IPv6 loopback：Python < 3.13 的 is_loopback 不穿透
-        # 映射，validator 需手动解包 ipv4_mapped 判断
+        # IPv4-mapped IPv6 loopback：CPython < 3.11.11 的 is_loopback
+        # 不穿透映射，validator 需手动解包 ipv4_mapped 判断
         "http://[::ffff:127.0.0.1]:9000/cb",
     ]:
         ToolRegisterRequest(**{**base, "callback_url": url})
