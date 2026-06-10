@@ -374,14 +374,13 @@ class TestAssistFollowsCore:
 
 
 # ---------------------------------------------------------------------------
-# 3b. 兜底安全：coreApi 为空/缺失/损坏时必须落到免费版，绝不静默切到付费的阿里 qwen
-#     （回归：自定义 API 开关曾把空 coreApi 写盘，旧逻辑会兜底成 qwen 偷偷消耗额度）
+# 3b. 默认兜底：coreApi 为空/缺失时保持历史默认 qwen
 # ---------------------------------------------------------------------------
-class TestEmptyCoreApiFallsBackToFreeNotPaid:
+class TestEmptyCoreApiFallsBackToDefaultQwen:
 
     @pytest.mark.unit
-    def test_empty_core_api_falls_back_to_free_not_qwen(self, config_manager):
-        """coreApi/assistApi='' → 兜底到 free（lanlan），不能解析成付费阿里 dashscope。"""
+    def test_empty_core_api_falls_back_to_qwen(self, config_manager):
+        """coreApi/assistApi='' → 兜底到默认 qwen。"""
         _write_core_config(config_manager, {
             'coreApiKey': 'free-access',
             'coreApi': '',
@@ -389,23 +388,23 @@ class TestEmptyCoreApiFallsBackToFreeNotPaid:
         })
         cfg = config_manager.get_core_config()
 
-        assert cfg['CORE_API_TYPE'] == 'free', '空 coreApi 必须兜底成 free，不能是 qwen'
-        assert cfg['assistApi'] == 'free'
-        assert 'dashscope.aliyuncs.com' not in (cfg.get('CORE_URL') or ''), \
-            '免费版绝不能被静默路由到付费阿里 dashscope'
+        assert cfg['CORE_API_TYPE'] == 'qwen'
+        assert cfg['assistApi'] == 'qwen'
+        assert 'dashscope.aliyuncs.com' in (cfg.get('CORE_URL') or '')
 
     @pytest.mark.unit
-    def test_missing_core_api_keys_fall_back_to_free(self, config_manager):
-        """core_config.json 缺少 coreApi/assistApi 字段 → 兜底 free，不是 qwen。"""
+    def test_missing_core_api_keys_fall_back_to_qwen(self, config_manager):
+        """core_config.json 缺少 coreApi/assistApi 字段 → 兜底 qwen。"""
         _write_core_config(config_manager, {'coreApiKey': 'free-access'})
         cfg = config_manager.get_core_config()
 
-        assert cfg['CORE_API_TYPE'] == 'free'
-        assert 'dashscope.aliyuncs.com' not in (cfg.get('CORE_URL') or '')
+        assert cfg['CORE_API_TYPE'] == 'qwen'
+        assert cfg['assistApi'] == 'qwen'
+        assert 'dashscope.aliyuncs.com' in (cfg.get('CORE_URL') or '')
 
     @pytest.mark.unit
     def test_explicit_paid_provider_still_honored(self, config_manager):
-        """反向保护：用户显式选了付费 qwen 必须被尊重，不能被兜底误改成 free。"""
+        """用户显式选了 qwen 必须被尊重。"""
         _write_core_config(config_manager, {
             'coreApiKey': 'sk-real-qwen',
             'coreApi': 'qwen',

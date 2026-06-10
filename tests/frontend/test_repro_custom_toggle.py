@@ -4,10 +4,10 @@
 开着自定义 API 点保存时，空 coreApi 绕过了空 Key 校验被写盘，后端把空值兜底成
 付费的 qwen(阿里 dashscope)，残留的 free-access 被发给阿里 → 「API key 无效」。
 
-修复三层：
+修复两层：
   A1 前端 save_button_down：coreApi 为空时中止保存（提示稍候重试）。
   A2 后端 update_core_config：空 coreApi/assistApi 不覆盖已存的有效值。
-  B  解析兜底：空/缺失/损坏 → free（不花钱），而非 qwen。
+全局解析兜底仍是默认 qwen；这里保护的是已存 free 配置不能被空提交污染。
 """
 
 import pytest

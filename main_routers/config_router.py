@@ -619,8 +619,7 @@ async def get_core_config_api():
         # 但只能回退到与 coreApi / assistApi 匹配的服务商，
         # 以免将不兼容的 API Key 填充到其他服务商。
         fallback_key = api_key if api_key != 'free-access' else ''
-        # 兜底服务商用免费版而非付费阿里 qwen：coreApi 为空/缺失时不静默切到付费服务商。
-        _core_api_provider = core_cfg.get('coreApi') or runtime_core_api_provider or 'free'
+        _core_api_provider = core_cfg.get('coreApi') or runtime_core_api_provider or 'qwen'
         _assist_api_provider = core_cfg.get('assistApi') or runtime_assist_api_provider
         if not _assist_api_provider:
             _assist_api_provider = 'free' if _core_api_provider == 'free' else 'qwen'
