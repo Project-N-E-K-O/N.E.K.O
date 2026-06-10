@@ -99,7 +99,11 @@ def _validate_local_callback_url(url: str) -> str:
             f"callback_url host 必须是 loopback 地址（127.0.0.0/8、::1、"
             f"localhost），实际是非 IP 域名：{host!r}"
         ) from None
-    if not ip.is_loopback:
+    # Python < 3.13 下 IPv4-mapped IPv6 的 is_loopback 不穿透映射
+    # （ipaddress.ip_address('::ffff:127.0.0.1').is_loopback == False），
+    # 需手动解包 ipv4_mapped 再判一次。
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if not (ip.is_loopback or (mapped is not None and mapped.is_loopback)):
         raise ValueError(
             f"callback_url host 必须是 loopback 地址，实际：{host!r}"
         )
