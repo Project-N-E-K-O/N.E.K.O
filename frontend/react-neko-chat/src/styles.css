@@ -1964,8 +1964,8 @@ svg {
 
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {
   position: fixed;
-  left: calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--desktop-compact-surface-width, var(--compact-surface-width, 430px)) / 2));
-  width: min(var(--desktop-compact-surface-width, var(--compact-surface-width, 430px)), 420px);
+  left: calc(var(--compact-choice-surface-left, var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw))) + (var(--compact-choice-surface-width, var(--desktop-compact-surface-width, var(--compact-surface-width, 430px))) / 2));
+  width: min(var(--compact-choice-surface-width, var(--desktop-compact-surface-width, var(--compact-surface-width, 430px))), 420px);
   max-height: min(240px, calc(100vh - 96px));
   height: max-content;
   transform: translateX(-50%);
@@ -2035,11 +2035,11 @@ body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-choice
 
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-compact-choice-placement="above"] {
   top: auto;
-  bottom: calc(100vh - var(--desktop-compact-surface-top, var(--compact-surface-top, 0px)) + 16px);
+  bottom: calc(100vh - var(--compact-choice-surface-top, var(--desktop-compact-surface-top, var(--compact-surface-top, 0px))) + 16px);
 }
 
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-compact-choice-placement="below"] {
-  top: calc(var(--desktop-compact-surface-top, var(--compact-surface-top, 0px)) + var(--desktop-compact-surface-height, var(--compact-surface-height, 58px)) + 16px);
+  top: calc(var(--compact-choice-surface-top, var(--desktop-compact-surface-top, var(--compact-surface-top, 0px))) + var(--compact-choice-surface-height, var(--desktop-compact-surface-height, var(--compact-surface-height, 58px))) + 16px);
   bottom: auto;
 }
 
