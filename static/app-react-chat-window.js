@@ -4483,9 +4483,8 @@
 
     function getCompactMinimizeBallTargetRect() {
         var root = getRoot();
-        var button = root
-            ? root.querySelector('.compact-chat-minimize-ball')
-            : document.querySelector('.compact-chat-minimize-ball');
+        if (!root || typeof root.querySelector !== 'function') return null;
+        var button = root.querySelector('.compact-chat-minimize-ball');
         if (!button || typeof button.getBoundingClientRect !== 'function') return null;
         var buttonRect = normalizeCompactDomRect(button.getBoundingClientRect());
         if (!buttonRect) return null;

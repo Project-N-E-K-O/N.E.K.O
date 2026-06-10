@@ -562,14 +562,17 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
         '.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] '
         '.compact-input-tool-toggle:hover'
     ) in styles
-    assert "--compact-chat-minimize-ball-slot: 51px;" in styles
+    assert "--compact-chat-minimize-ball-size: 41px;" in styles
+    assert "--compact-chat-minimize-ball-inset: 2px;" in styles
+    assert "--compact-chat-minimize-ball-gap: 8px;" in styles
+    assert "--compact-chat-minimize-ball-slot: calc(" in styles
     fixed_ball_block = css_block(
         styles,
-        ".compact-chat-surface-frame > .compact-chat-minimize-ball {",
+        ".compact-chat-surface-frame .compact-chat-minimize-ball {",
         ".compact-chat-capsule-button",
     )
     assert "position: absolute;" in fixed_ball_block
-    assert "left: 2px;" in fixed_ball_block
+    assert "left: var(--compact-chat-minimize-ball-inset);" in fixed_ball_block
     assert "top: 50%;" in fixed_ball_block
     assert "transform: translateY(-50%);" in fixed_ball_block
     assert "width: auto;" in compact_input_block
@@ -805,6 +808,11 @@ def test_compact_minimize_targets_inline_yarn_ball_button_center():
     assert "height: MINIMIZED_SIZE" in script
     assert "left: buttonRect.left + buttonRect.width / 2 - MINIMIZED_SIZE / 2" in script
     assert "top: buttonRect.top + buttonRect.height / 2 - MINIMIZED_SIZE / 2" in script
+    target_rect_block = script.split("function getCompactMinimizeBallTargetRect()", 1)[1].split(
+        "function rememberCompactMinimizeBallTargetAnchor()",
+        1,
+    )[0]
+    assert "document.querySelector('.compact-chat-minimize-ball')" not in target_rect_block
     assert "function getMinimizedTargetFromCompactAnchor(anchorRect)" in script
     assert "Math.round(anchorRect.left)" in script
     assert "Math.round(anchorRect.top)" in script

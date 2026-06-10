@@ -19,6 +19,7 @@ import CompactExportHistoryPanel, {
   type CompactExportActionRequest,
   type CompactExportPreviewResult,
 } from './CompactExportHistoryPanel';
+import { CHAT_EMPTY_STATE_FALLBACK } from './chat-copy';
 import { i18n } from './i18n';
 import {
   type ChatMessage,
@@ -1936,7 +1937,7 @@ function CompactChatApp({
           : compactSpeechPreservedText || compactMessagePreview?.fullText || ''
       )
       : compactMessagePreview?.text
-      || i18n('chat.emptyState', '现在开始跟我聊天吧！');
+      || i18n('chat.emptyState', CHAT_EMPTY_STATE_FALLBACK);
   const compactPreviewIsStreaming = compactSpeechModeActive;
   const compactPreviewAllowsScroll = compactPreviewIsStreaming || !!compactMessagePreview?.isGuide;
   const compactPreviewSpeechDuration = useMemo(() => {

@@ -2082,7 +2082,14 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 }
 
 .compact-chat-surface-frame {
-  --compact-chat-minimize-ball-slot: 51px;
+  --compact-chat-minimize-ball-size: 41px;
+  --compact-chat-minimize-ball-inset: 2px;
+  --compact-chat-minimize-ball-gap: 8px;
+  --compact-chat-minimize-ball-slot: calc(
+    var(--compact-chat-minimize-ball-size)
+    + var(--compact-chat-minimize-ball-inset)
+    + var(--compact-chat-minimize-ball-gap)
+  );
   --compact-chat-surface-bg:
     linear-gradient(180deg, rgba(255, 255, 255, 0.7), rgba(247, 251, 255, 0.6) 58%, rgba(232, 243, 255, 0.54));
   --compact-chat-surface-edge: rgba(255, 255, 255, 0.5);
@@ -2124,8 +2131,8 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 41px;
-  height: 41px;
+  width: var(--compact-chat-minimize-ball-size);
+  height: var(--compact-chat-minimize-ball-size);
   padding: 0;
   border: 0;
   background: transparent;
@@ -2190,9 +2197,9 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   z-index: 2;
 }
 
-.compact-chat-surface-frame > .compact-chat-minimize-ball {
+.compact-chat-surface-frame .compact-chat-minimize-ball {
   position: absolute;
-  left: 2px;
+  left: var(--compact-chat-minimize-ball-inset);
   top: 50%;
   z-index: 5;
   transform: translateY(-50%);
