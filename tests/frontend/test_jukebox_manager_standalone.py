@@ -24,24 +24,26 @@ HARNESS_HTML = """
 """
 
 
-def setup_song_manager_page(mock_page: Page, songs: str) -> None:
+def setup_song_manager_page(mock_page: Page, songs: str, actions: str = "{}") -> None:
     mock_page.set_viewport_size({"width": 900, "height": 700})
     mock_page.set_content(HARNESS_HTML)
     mock_page.evaluate(
         f"""
         () => {{
           window.__batchDeleteRequests = [];
+          window.__batchActionDeleteRequests = [];
           window.t = (key, fallback) => {{
             if (typeof fallback === 'string') return fallback;
             if (fallback && typeof fallback.defaultValue === 'string') return fallback.defaultValue;
             return key;
           }};
           const songs = {songs};
+          const actions = {actions};
           window.fetch = async (url, options = {{}}) => {{
             if (String(url).endsWith('/config')) {{
               return {{
                 ok: true,
-                json: async () => ({{ songs, actions: {{}}, bindings: {{}} }})
+                json: async () => ({{ songs, actions, bindings: {{}} }})
               }};
             }}
             if (String(url).endsWith('/songs/batch-delete')) {{
@@ -62,6 +64,28 @@ def setup_song_manager_page(mock_page: Page, songs: str) -> None:
                   hidden: payload.songIds
                     .filter(id => songs[id].isBuiltin)
                     .map(id => ({{ songId: id, name: songs[id].name }})),
+                  failed: []
+                }})
+              }};
+            }}
+            if (String(url).endsWith('/actions/batch-delete')) {{
+              const payload = JSON.parse(options.body);
+              window.__batchActionDeleteRequests.push(payload);
+              return {{
+                ok: true,
+                json: async () => ({{
+                  success: true,
+                  partial: false,
+                  requestedCount: payload.actionIds.length,
+                  deletedCount: payload.actionIds.filter(id => !actions[id].isBuiltin).length,
+                  unboundCount: payload.actionIds.filter(id => actions[id].isBuiltin).length,
+                  failedCount: 0,
+                  deleted: payload.actionIds
+                    .filter(id => !actions[id].isBuiltin)
+                    .map(id => ({{ actionId: id, name: actions[id].name }})),
+                  unbound: payload.actionIds
+                    .filter(id => actions[id].isBuiltin)
+                    .map(id => ({{ actionId: id, name: actions[id].name }})),
                   failed: []
                 }})
               }};
@@ -397,19 +421,22 @@ def test_jukebox_manager_clear_visible_uses_second_confirm_and_escape_once(mock_
     )
 
     mock_page.evaluate("() => window.Jukebox.SongActionManager.confirmSongBatchDelete()")
-    assert "清空当前显示" in mock_page.locator(".sam-danger-modal h3").inner_text()
+    assert "删除当前显示" in mock_page.locator(".sam-danger-modal h3").inner_text()
     mock_page.locator(".sam-danger-modal-confirm").click()
-    assert "真..真的要全部清理吗.." in mock_page.locator(".sam-danger-modal p").first.inner_text()
+    assert "真..真的要删除当前显示吗.." in mock_page.locator(".sam-danger-modal p").first.inner_text()
 
     confirm_btn = mock_page.locator(".sam-danger-modal-confirm")
     assert mock_page.evaluate(
         "() => document.querySelector('.sam-danger-modal-backdrop').parentElement === document.querySelector('.jukebox-sam-panel')"
     )
+    mock_page.evaluate("() => document.querySelector('.sam-danger-modal-confirm').click()")
+    assert mock_page.evaluate("window.__batchDeleteRequests.length") == 0
     mock_page.evaluate(
         """
         () => {
           const zone = document.querySelector('.sam-danger-confirm-zone-final');
-          const rect = zone.getBoundingClientRect();
+          const button = document.querySelector('.sam-danger-modal-confirm');
+          const rect = button.getBoundingClientRect();
           zone.dispatchEvent(new MouseEvent('mouseenter', {
             clientX: rect.right + 2,
             clientY: rect.top + rect.height / 2
@@ -419,9 +446,12 @@ def test_jukebox_manager_clear_visible_uses_second_confirm_and_escape_once(mock_
     )
     assert "sam-danger-confirm-escaped" in (confirm_btn.get_attribute("class") or "")
     assert confirm_btn.evaluate("el => getComputedStyle(el).pointerEvents") == "auto"
+    mock_page.evaluate("() => document.querySelector('.sam-danger-modal-confirm').click()")
+    assert mock_page.evaluate("window.__batchDeleteRequests.length") == 0
     mock_page.wait_for_function(
         "() => !document.querySelector('.sam-danger-modal-confirm').classList.contains('sam-danger-confirm-escaping')"
     )
+    assert confirm_btn.get_attribute("data-escape-ready") == "true"
     right_initial_x = int(confirm_btn.get_attribute("data-escape-initial-x") or "0")
     assert right_initial_x < 0
 
@@ -439,7 +469,8 @@ def test_jukebox_manager_clear_visible_uses_second_confirm_and_escape_once(mock_
         """
         () => {
           const zone = document.querySelector('.sam-danger-confirm-zone-final');
-          const rect = zone.getBoundingClientRect();
+          const button = document.querySelector('.sam-danger-modal-confirm');
+          const rect = button.getBoundingClientRect();
           zone.dispatchEvent(new MouseEvent('mouseenter', {
             clientX: rect.left - 2,
             clientY: rect.top + rect.height / 2
@@ -456,7 +487,8 @@ def test_jukebox_manager_clear_visible_uses_second_confirm_and_escape_once(mock_
         """
         () => {
           const zone = document.querySelector('.sam-danger-confirm-zone-final');
-          const rect = zone.getBoundingClientRect();
+          const button = document.querySelector('.sam-danger-modal-confirm');
+          const rect = button.getBoundingClientRect();
           zone.dispatchEvent(new MouseEvent('mouseenter', {
             clientX: rect.right + 2,
             clientY: rect.top + rect.height / 2
@@ -470,6 +502,66 @@ def test_jukebox_manager_clear_visible_uses_second_confirm_and_escape_once(mock_
     confirm_btn.click()
     mock_page.wait_for_function("() => window.__batchDeleteRequests.length === 1")
     assert mock_page.evaluate("window.__batchDeleteRequests[0].songIds") == ["song1", "builtin"]
+
+
+@pytest.mark.frontend
+def test_jukebox_manager_actions_delete_current_display_matches_song_flow(mock_page: Page):
+    setup_song_manager_page(
+        mock_page,
+        """
+        {
+          song1: { name: 'Song 1', artist: 'A', visible: true }
+        }
+        """,
+        """
+        {
+          action1: { name: 'Action 1', format: 'vmd' },
+          builtinAction: { name: 'Builtin Action', format: 'vrma', isBuiltin: true }
+        }
+        """,
+    )
+
+    mock_page.locator('.sam-tab[data-tab="actions"]').click()
+    danger_btn = mock_page.locator(".sam-btn-song-danger")
+    assert danger_btn.get_attribute("data-resource") == "actions"
+    assert danger_btn.get_attribute("data-mode") == "clear-visible"
+    assert danger_btn.inner_text() == "删除当前显示(2)"
+
+    mock_page.locator('.sam-action-select[data-id="action1"]').click()
+    assert danger_btn.get_attribute("data-mode") == "selected"
+    assert danger_btn.inner_text() == "删除选中(1)"
+
+    mock_page.locator('.sam-action-select[data-id="action1"]').click()
+    assert danger_btn.get_attribute("data-mode") == "clear-visible"
+    mock_page.evaluate("() => window.Jukebox.SongActionManager.confirmManagerBatchDelete()")
+    assert "删除当前显示" in mock_page.locator(".sam-danger-modal h3").inner_text()
+    mock_page.locator(".sam-danger-modal-confirm").click()
+    assert "真..真的要删除当前显示吗.." in mock_page.locator(".sam-danger-modal p").first.inner_text()
+
+    confirm_btn = mock_page.locator(".sam-danger-modal-confirm")
+    mock_page.evaluate("() => document.querySelector('.sam-danger-modal-confirm').click()")
+    assert mock_page.evaluate("window.__batchActionDeleteRequests.length") == 0
+    mock_page.evaluate(
+        """
+        () => {
+          const zone = document.querySelector('.sam-danger-confirm-zone-final');
+          const button = document.querySelector('.sam-danger-modal-confirm');
+          const rect = button.getBoundingClientRect();
+          zone.dispatchEvent(new MouseEvent('mouseenter', {
+            clientX: rect.right + 2,
+            clientY: rect.top + rect.height / 2
+          }));
+        }
+        """
+    )
+    mock_page.evaluate("() => document.querySelector('.sam-danger-modal-confirm').click()")
+    assert mock_page.evaluate("window.__batchActionDeleteRequests.length") == 0
+    mock_page.wait_for_function(
+        "() => document.querySelector('.sam-danger-modal-confirm').dataset.escapeReady === 'true'"
+    )
+    confirm_btn.click()
+    mock_page.wait_for_function("() => window.__batchActionDeleteRequests.length === 1")
+    assert mock_page.evaluate("window.__batchActionDeleteRequests[0].actionIds") == ["action1", "builtinAction"]
 
 
 @pytest.mark.frontend

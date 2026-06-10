@@ -487,6 +487,21 @@ window.Jukebox = {
         }
         return response.json();
       },
+
+      async batchDeleteActions(actionIds) {
+        const response = await fetch(`${this.baseUrl}/actions/batch-delete`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ actionIds })
+        });
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.detail?.message || errorData.detail || errorData.error || `HTTP ${response.status}`);
+        }
+        return response.json();
+      },
       
       async deleteAction(actionId) {
         const response = await fetch(`${this.baseUrl}/actions/${actionId}`, {
@@ -673,9 +688,9 @@ window.Jukebox = {
             <button class="sam-btn sam-btn-export-selected" onclick="Jukebox.SongActionManager.exportSelected()" style="display:none">${window.t('Jukebox.exportSelected', '导出选中')}</button>
             <span class="sam-danger-action-wrap" style="display:none">
               <button class="sam-btn sam-btn-danger sam-btn-song-danger"
-                      onclick="Jukebox.SongActionManager.confirmSongBatchDelete()"
-                      onmouseenter="Jukebox.SongActionManager.showSongDeleteTooltip(this)"
-                      onmouseleave="Jukebox.SongActionManager.hideSongDeleteTooltip()"></button>
+                      onclick="Jukebox.SongActionManager.confirmManagerBatchDelete()"
+                      onmouseenter="Jukebox.SongActionManager.showManagerDeleteTooltip(this)"
+                      onmouseleave="Jukebox.SongActionManager.hideManagerDeleteTooltip()"></button>
               <span class="sam-danger-tooltip" role="tooltip"></span>
             </span>
           </div>
@@ -1161,14 +1176,38 @@ window.Jukebox = {
 
       const selectedIds = Array.from(this.selectedSongs || []).filter(id => this.data.songs[id]);
       if (selectedIds.length > 0) {
-        return { mode: 'selected', songIds: selectedIds };
+        return { resource: 'songs', mode: 'selected', ids: selectedIds, songIds: selectedIds };
       }
 
       const visibleSongIds = this.getVisibleSongEntries().map(([id]) => id);
       if (visibleSongIds.length > 0) {
-        return { mode: 'clear-visible', songIds: visibleSongIds };
+        return { resource: 'songs', mode: 'clear-visible', ids: visibleSongIds, songIds: visibleSongIds };
       }
 
+      return null;
+    },
+
+    getActionDeleteMode() {
+      const activeTab = this.element?.querySelector('.sam-tab.active')?.dataset.tab || 'songs';
+      if (activeTab !== 'actions') return null;
+
+      const selectedIds = Array.from(this.selectedActions || []).filter(id => this.data.actions[id]);
+      if (selectedIds.length > 0) {
+        return { resource: 'actions', mode: 'selected', ids: selectedIds, actionIds: selectedIds };
+      }
+
+      const visibleActionIds = this.getVisibleActionEntries().map(([id]) => id);
+      if (visibleActionIds.length > 0) {
+        return { resource: 'actions', mode: 'clear-visible', ids: visibleActionIds, actionIds: visibleActionIds };
+      }
+
+      return null;
+    },
+
+    getManagerDeleteMode() {
+      const activeTab = this.element?.querySelector('.sam-tab.active')?.dataset.tab || 'songs';
+      if (activeTab === 'songs') return this.getSongDeleteMode();
+      if (activeTab === 'actions') return this.getActionDeleteMode();
       return null;
     },
 
@@ -1179,6 +1218,15 @@ window.Jukebox = {
         userCount: songs.filter(([, song]) => !song.isBuiltin).length,
         builtinCount: songs.filter(([, song]) => !!song.isBuiltin).length,
         hiddenCount: songs.filter(([, song]) => song.visible === false).length
+      };
+    },
+
+    getActionDeleteSummary(actionIds) {
+      const actions = actionIds.map(id => [id, this.data.actions[id]]).filter(([, action]) => !!action);
+      return {
+        total: actions.length,
+        userCount: actions.filter(([, action]) => !action.isBuiltin).length,
+        builtinCount: actions.filter(([, action]) => !!action.isBuiltin).length
       };
     },
 
@@ -1209,28 +1257,66 @@ window.Jukebox = {
         .trim();
     },
 
-    showSongDeleteTooltip(button) {
-      const state = this.getSongDeleteMode();
+    formatActionDeleteTooltip(mode, actionIds) {
+      const summary = this.getActionDeleteSummary(actionIds);
+      const scope = mode === 'selected'
+        ? window.t('Jukebox.deleteSelectedActionScope', '选中的动画')
+        : window.t('Jukebox.clearVisibleActionScope', '当前显示的动画');
+      const template = window.t('Jukebox.actionBatchDeleteTooltip', {
+        defaultValue: '范围：{{scope}}\n共 {{total}} 个；自定义动画会删除，内置动画会解除绑定。\n自定义：{{userCount}}，内置：{{builtinCount}}',
+        scope,
+        total: summary.total,
+        userCount: summary.userCount,
+        builtinCount: summary.builtinCount
+      });
+      return template
+        .replace('{{scope}}', scope)
+        .replace('{{total}}', summary.total)
+        .replace('{{userCount}}', summary.userCount)
+        .replace('{{builtinCount}}', summary.builtinCount)
+        .trim();
+    },
+
+    showManagerDeleteTooltip(button) {
+      const state = this.getManagerDeleteMode();
       const wrapper = button?.closest('.sam-danger-action-wrap');
       const tooltip = wrapper?.querySelector('.sam-danger-tooltip');
       if (!state || !tooltip) return;
-      tooltip.textContent = this.formatSongDeleteTooltip(state.mode, state.songIds);
+      tooltip.textContent = state.resource === 'actions'
+        ? this.formatActionDeleteTooltip(state.mode, state.ids)
+        : this.formatSongDeleteTooltip(state.mode, state.ids);
       tooltip.style.display = 'block';
     },
 
-    hideSongDeleteTooltip() {
+    hideManagerDeleteTooltip() {
       const tooltip = this.element?.querySelector('.sam-danger-tooltip');
       if (tooltip) tooltip.style.display = 'none';
     },
 
+    showSongDeleteTooltip(button) {
+      this.showManagerDeleteTooltip(button);
+    },
+
+    hideSongDeleteTooltip() {
+      this.hideManagerDeleteTooltip();
+    },
+
+    confirmManagerBatchDelete() {
+      const state = this.getManagerDeleteMode();
+      if (!state || state.ids.length === 0) return;
+      this.showResourceDeleteConfirmDialog(state.resource, state.mode, state.ids, 1);
+    },
+
     confirmSongBatchDelete() {
       const state = this.getSongDeleteMode();
-      if (!state || state.songIds.length === 0) return;
-      if (state.mode === 'selected') {
-        this.showSongDeleteConfirmDialog(state.mode, state.songIds, 1);
-      } else {
-        this.showSongDeleteConfirmDialog(state.mode, state.songIds, 1);
-      }
+      if (!state || state.ids.length === 0) return;
+      this.showResourceDeleteConfirmDialog('songs', state.mode, state.ids, 1);
+    },
+
+    confirmActionBatchDelete() {
+      const state = this.getActionDeleteMode();
+      if (!state || state.ids.length === 0) return;
+      this.showResourceDeleteConfirmDialog('actions', state.mode, state.ids, 1);
     },
 
     closeSongDeleteDialog() {
@@ -1246,8 +1332,13 @@ window.Jukebox = {
     },
 
     showSongDeleteConfirmDialog(mode, songIds, step) {
+      this.showResourceDeleteConfirmDialog('songs', mode, songIds, step);
+    },
+
+    showResourceDeleteConfirmDialog(resource, mode, ids, step) {
       this.closeSongDeleteDialog();
-      const summary = this.getSongDeleteSummary(songIds);
+      const isActions = resource === 'actions';
+      const summary = isActions ? this.getActionDeleteSummary(ids) : this.getSongDeleteSummary(ids);
       const isClear = mode === 'clear-visible';
       const isFinalClear = isClear && step === 2;
       const backdrop = document.createElement('div');
@@ -1259,29 +1350,49 @@ window.Jukebox = {
       dialog.setAttribute('aria-modal', 'true');
 
       const title = document.createElement('h3');
-      title.textContent = isClear
-        ? window.t('Jukebox.clearVisibleSongsTitle', '清空当前显示')
-        : window.t('Jukebox.deleteSelectedSongsTitle', '删除选中歌曲');
+      if (isActions) {
+        title.textContent = isClear
+          ? window.t('Jukebox.clearVisibleActionsTitle', '删除当前显示')
+          : window.t('Jukebox.deleteSelectedActionsTitle', '删除选中动画');
+      } else {
+        title.textContent = isClear
+          ? window.t('Jukebox.clearVisibleSongsTitle', '删除当前显示')
+          : window.t('Jukebox.deleteSelectedSongsTitle', '删除选中歌曲');
+      }
 
       const body = document.createElement('p');
       if (isFinalClear) {
-        body.textContent = window.t('Jukebox.clearVisibleSongsSecondConfirm', '真..真的要全部清理吗..');
+        body.textContent = isActions
+          ? window.t('Jukebox.clearVisibleActionsSecondConfirm', '真..真的要删除当前显示吗..')
+          : window.t('Jukebox.clearVisibleSongsSecondConfirm', '真..真的要删除当前显示吗..');
       } else if (isClear) {
-        body.textContent = window.t('Jukebox.clearVisibleSongsConfirm', {
-          defaultValue: '将处理当前显示的 {{total}} 首歌曲。自定义歌曲会被删除，内置歌曲会被隐藏。此操作不可恢复。',
-          total: summary.total
-        }).replace('{{total}}', summary.total);
+        body.textContent = isActions
+          ? window.t('Jukebox.clearVisibleActionsConfirm', {
+            defaultValue: '将处理当前显示的 {{total}} 个动画。自定义动画会被删除，内置动画会解除绑定。此操作不可恢复。',
+            total: summary.total
+          }).replace('{{total}}', summary.total)
+          : window.t('Jukebox.clearVisibleSongsConfirm', {
+            defaultValue: '将处理当前显示的 {{total}} 首歌曲。自定义歌曲会被删除，内置歌曲会被隐藏。此操作不可恢复。',
+            total: summary.total
+          }).replace('{{total}}', summary.total);
       } else {
-        body.textContent = window.t('Jukebox.deleteSelectedSongsConfirm', {
-          defaultValue: '将删除选中的 {{total}} 首歌曲。自定义歌曲会被删除，内置歌曲会被隐藏。此操作不可恢复。',
-          total: summary.total
-        }).replace('{{total}}', summary.total);
+        body.textContent = isActions
+          ? window.t('Jukebox.deleteSelectedActionsConfirm', {
+            defaultValue: '将删除选中的 {{total}} 个动画。自定义动画会被删除，内置动画会解除绑定。此操作不可恢复。',
+            total: summary.total
+          }).replace('{{total}}', summary.total)
+          : window.t('Jukebox.deleteSelectedSongsConfirm', {
+            defaultValue: '将删除选中的 {{total}} 首歌曲。自定义歌曲会被删除，内置歌曲会被隐藏。此操作不可恢复。',
+            total: summary.total
+          }).replace('{{total}}', summary.total);
       }
 
       const detail = document.createElement('p');
       detail.className = 'sam-danger-modal-detail';
-      detail.textContent = window.t('Jukebox.songBatchDeleteSummary', {
-        defaultValue: '共 {{total}} 首；自定义 {{userCount}} 首，内置 {{builtinCount}} 首。',
+      detail.textContent = window.t(isActions ? 'Jukebox.actionBatchDeleteSummary' : 'Jukebox.songBatchDeleteSummary', {
+        defaultValue: isActions
+          ? '共 {{total}} 个；自定义 {{userCount}} 个，内置 {{builtinCount}} 个。'
+          : '共 {{total}} 首；自定义 {{userCount}} 首，内置 {{builtinCount}} 首。',
         total: summary.total,
         userCount: summary.userCount,
         builtinCount: summary.builtinCount
@@ -1304,8 +1415,14 @@ window.Jukebox = {
       const confirmBtn = document.createElement('button');
       confirmBtn.className = 'sam-danger-modal-confirm';
       confirmBtn.textContent = isClear
-        ? (isFinalClear ? window.t('Jukebox.clearVisibleSongsNow', '全部清理') : window.t('Jukebox.continue', '继续'))
-        : window.t('Jukebox.deleteSelectedSongsNow', '删除选中');
+        ? (isFinalClear
+          ? window.t(isActions ? 'Jukebox.clearVisibleActionsNow' : 'Jukebox.clearVisibleSongsNow', '删除当前显示')
+          : window.t('Jukebox.continue', '继续'))
+        : window.t(isActions ? 'Jukebox.deleteSelectedActionsNow' : 'Jukebox.deleteSelectedSongsNow', '删除选中');
+
+      if (isFinalClear) {
+        confirmBtn.dataset.escapeReady = 'false';
+      }
 
       if (isFinalClear) {
         confirmZone.onmouseenter = (event) => {
@@ -1315,16 +1432,20 @@ window.Jukebox = {
       }
 
       confirmBtn.onclick = (event) => {
-        if (confirmBtn.classList.contains('sam-danger-confirm-escaping')) {
+        if (isFinalClear && confirmBtn.dataset.escapeReady !== 'true') {
           event.preventDefault();
           event.stopPropagation();
           return;
         }
         if (isClear && step === 1) {
-          this.showSongDeleteConfirmDialog(mode, songIds, 2);
+          this.showResourceDeleteConfirmDialog(resource, mode, ids, 2);
           return;
         }
-        this.executeSongBatchDelete(mode, songIds);
+        if (isActions) {
+          this.executeActionBatchDelete(mode, ids);
+        } else {
+          this.executeSongBatchDelete(mode, ids);
+        }
       };
 
       confirmZone.appendChild(confirmBtn);
@@ -1388,6 +1509,7 @@ window.Jukebox = {
         } else {
           confirmBtn.style.transform = `translate(${endX.toFixed(1)}px, ${endY.toFixed(1)}px)`;
           confirmBtn.classList.remove('sam-danger-confirm-escaping');
+          confirmBtn.dataset.escapeReady = 'true';
         }
       };
 
@@ -1460,6 +1582,98 @@ window.Jukebox = {
       title.textContent = (result.failedCount || 0) > 0
         ? window.t('Jukebox.songBatchDeletePartialTitle', '处理完成，部分失败')
         : window.t('Jukebox.songBatchDeleteSuccessTitle', '处理完成');
+      const body = document.createElement('p');
+      body.textContent = message;
+      const actions = document.createElement('div');
+      actions.className = 'sam-danger-modal-actions';
+      const okBtn = document.createElement('button');
+      okBtn.className = 'sam-danger-modal-confirm';
+      okBtn.textContent = window.t('Jukebox.confirm', '确认');
+      okBtn.onclick = () => backdrop.remove();
+      actions.appendChild(okBtn);
+      dialog.appendChild(title);
+      dialog.appendChild(body);
+      dialog.appendChild(actions);
+      backdrop.appendChild(dialog);
+      this.getDangerDialogHost().appendChild(backdrop);
+      okBtn.focus();
+    },
+
+    async executeActionBatchDelete(mode, actionIds) {
+      try {
+        const result = await this.api.batchDeleteActions(actionIds);
+        this.applyActionBatchDeleteResult(result);
+        this.closeSongDeleteDialog();
+        this.showActionBatchDeleteResult(result);
+        this.refreshAllPanels();
+        if (window.Jukebox && window.Jukebox.loadSongs) {
+          await window.Jukebox.loadSongs();
+        }
+      } catch (err) {
+        console.error('批量删除动画失败:', err);
+        this.closeSongDeleteDialog();
+        alert(window.t('Jukebox.deleteFailed', '删除失败') + ': ' + (err.message || window.t('Jukebox.unknownError', '未知错误')));
+      }
+    },
+
+    applyActionBatchDeleteResult(result) {
+      const deletedIds = (result.deleted || []).map(item => item.actionId);
+      const unboundIds = (result.unbound || []).map(item => item.actionId);
+      const processedIds = new Set([...deletedIds, ...unboundIds]);
+
+      deletedIds.forEach(actionId => {
+        delete this.data.actions[actionId];
+      });
+
+      processedIds.forEach(actionId => {
+        if (this.selectedActions) this.selectedActions.delete(actionId);
+        if (this.bindingSourceActions) this.bindingSourceActions.delete(actionId);
+        if (this.bindingSelectedActions) this.bindingSelectedActions.delete(actionId);
+
+        for (const songId in this.data.bindings) {
+          delete this.data.bindings[songId][actionId];
+          if (Object.keys(this.data.bindings[songId]).length === 0) {
+            delete this.data.bindings[songId];
+          }
+        }
+
+        for (const songId in this.data.songs) {
+          if (this.data.songs[songId]?.defaultAction === actionId) {
+            this.data.songs[songId].defaultAction = '';
+          }
+        }
+      });
+    },
+
+    showActionBatchDeleteResult(result) {
+      const failed = result.failed || [];
+      const failedNames = failed.slice(0, 5).map(item => item.name || item.actionId).join(', ');
+      let message = window.t('Jukebox.actionBatchDeleteResult', {
+        defaultValue: '已删除 {{deletedCount}} 个自定义动画，解除 {{unboundCount}} 个内置动画的绑定。',
+        deletedCount: result.deletedCount || 0,
+        unboundCount: result.unboundCount || 0
+      })
+        .replace('{{deletedCount}}', result.deletedCount || 0)
+        .replace('{{unboundCount}}', result.unboundCount || 0);
+
+      if ((result.failedCount || 0) > 0) {
+        message += '\n' + window.t('Jukebox.actionBatchDeleteFailedSummary', {
+          defaultValue: '{{failedCount}} 个处理失败：{{names}}',
+          failedCount: result.failedCount,
+          names: failedNames
+        })
+          .replace('{{failedCount}}', result.failedCount)
+          .replace('{{names}}', failedNames);
+      }
+
+      const backdrop = document.createElement('div');
+      backdrop.className = 'sam-danger-modal-backdrop sam-danger-result-backdrop';
+      const dialog = document.createElement('div');
+      dialog.className = 'sam-danger-modal sam-danger-result-modal';
+      const title = document.createElement('h3');
+      title.textContent = (result.failedCount || 0) > 0
+        ? window.t('Jukebox.actionBatchDeletePartialTitle', '处理完成，部分失败')
+        : window.t('Jukebox.actionBatchDeleteSuccessTitle', '处理完成');
       const body = document.createElement('p');
       body.textContent = message;
       const actions = document.createElement('div');
@@ -1561,6 +1775,10 @@ window.Jukebox = {
     getVisibleSongEntries() {
       const showHidden = this.showHiddenSongs !== false;
       return Object.entries(this.data.songs).filter(([id, song]) => showHidden || song.visible !== false);
+    },
+
+    getVisibleActionEntries() {
+      return Object.entries(this.data.actions);
     },
 
     areAllSongsSelected() {
@@ -1845,25 +2063,27 @@ window.Jukebox = {
       }
 
       if (dangerWrap && dangerBtn) {
-        const deleteState = this.getSongDeleteMode();
-        if (activeTab === 'songs' && deleteState) {
+        const deleteState = this.getManagerDeleteMode();
+        if ((activeTab === 'songs' || activeTab === 'actions') && deleteState) {
+          const isActions = deleteState.resource === 'actions';
           dangerWrap.style.display = '';
           dangerBtn.dataset.mode = deleteState.mode;
+          dangerBtn.dataset.resource = deleteState.resource;
           dangerBtn.textContent = deleteState.mode === 'selected'
-            ? window.t('Jukebox.deleteSelectedSongs', {
+            ? window.t(isActions ? 'Jukebox.deleteSelectedActions' : 'Jukebox.deleteSelectedSongs', {
               defaultValue: '删除选中({{count}})',
-              count: deleteState.songIds.length,
-            }).replace('{{count}}', deleteState.songIds.length)
-            : window.t('Jukebox.clearVisibleSongs', {
-              defaultValue: '清空当前显示({{count}})',
-              count: deleteState.songIds.length,
-            }).replace('{{count}}', deleteState.songIds.length);
+              count: deleteState.ids.length,
+            }).replace('{{count}}', deleteState.ids.length)
+            : window.t(isActions ? 'Jukebox.clearVisibleActions' : 'Jukebox.clearVisibleSongs', {
+              defaultValue: '删除当前显示({{count}})',
+              count: deleteState.ids.length,
+            }).replace('{{count}}', deleteState.ids.length);
           dangerBtn.title = deleteState.mode === 'selected'
-            ? window.t('Jukebox.deleteSelectedSongsTitle', '删除选中歌曲')
-            : window.t('Jukebox.clearVisibleSongsTitle', '清空当前显示');
+            ? window.t(isActions ? 'Jukebox.deleteSelectedActionsTitle' : 'Jukebox.deleteSelectedSongsTitle', isActions ? '删除选中动画' : '删除选中歌曲')
+            : window.t(isActions ? 'Jukebox.clearVisibleActionsTitle' : 'Jukebox.clearVisibleSongsTitle', '删除当前显示');
         } else {
           dangerWrap.style.display = 'none';
-          this.hideSongDeleteTooltip();
+          this.hideManagerDeleteTooltip();
         }
       }
     },

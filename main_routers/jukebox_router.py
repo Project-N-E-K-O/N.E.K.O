@@ -162,6 +162,10 @@ class BatchDeleteSongsRequest(BaseModel):
     songIds: List[str] = Field(default_factory=list)
 
 
+class BatchDeleteActionsRequest(BaseModel):
+    actionIds: List[str] = Field(default_factory=list)
+
+
 class JukeboxConfig:
     """点歌台配置管理器"""
     
@@ -792,6 +796,86 @@ async def upload_actions(
     return {"success": True, "results": results}
 
 
+def _remove_action_bindings(jukebox_config: JukeboxConfig, action_id: str) -> None:
+    """Remove action references from bindings and defaultAction fields."""
+    for song_id, bindings in list(jukebox_config.data["bindings"].items()):
+        if action_id in bindings:
+            del bindings[action_id]
+            song = jukebox_config.data["songs"].get(song_id)
+            if song and song.get("defaultAction") == action_id:
+                song["defaultAction"] = ""
+                logger.info(f"清除默认动画: {song_id} (删除了动画 {action_id})")
+        if not bindings:
+            del jukebox_config.data["bindings"][song_id]
+
+
+@router.post("/actions/batch-delete")
+async def batch_delete_actions(request: BatchDeleteActionsRequest):
+    """批量删除动画。用户动画删除，内置动画解除绑定。"""
+    config_mgr = get_config_manager()
+    jukebox_config = JukeboxConfig(config_mgr)
+
+    action_ids = []
+    seen = set()
+    for action_id in request.actionIds:
+        if action_id and action_id not in seen:
+            action_ids.append(action_id)
+            seen.add(action_id)
+
+    if not action_ids:
+        raise HTTPException(400, "未选择动画")
+
+    missing_ids = [action_id for action_id in action_ids if action_id not in jukebox_config.data["actions"]]
+    if missing_ids:
+        raise HTTPException(404, {"message": "动画不存在", "actionIds": missing_ids})
+
+    deleted = []
+    unbound = []
+    failed = []
+
+    for action_id in action_ids:
+        action = jukebox_config.data["actions"][action_id]
+        action_name = action.get("name") or action_id
+
+        try:
+            if action.get("isBuiltin", False):
+                _remove_action_bindings(jukebox_config, action_id)
+                unbound.append({"actionId": action_id, "name": action_name})
+                continue
+
+            file_path = jukebox_config.jukebox_dir / action["file"]
+            if file_path.exists():
+                file_path.unlink()
+
+            _remove_action_bindings(jukebox_config, action_id)
+
+            action_md5 = action.get("fileMd5", "")
+            if action_md5 and action_md5 in jukebox_config.data["md5Index"]["actions"]:
+                del jukebox_config.data["md5Index"]["actions"][action_md5]
+
+            del jukebox_config.data["actions"][action_id]
+            deleted.append({"actionId": action_id, "name": action_name})
+        except Exception as exc:
+            logger.error(f"批量删除动画失败: {action_id}, error={exc}")
+            failed.append({"actionId": action_id, "name": action_name, "error": str(exc)})
+
+    if deleted or unbound:
+        await jukebox_config.asave()
+
+    failed_count = len(failed)
+    return {
+        "success": failed_count == 0,
+        "partial": failed_count > 0 and (len(deleted) > 0 or len(unbound) > 0),
+        "requestedCount": len(action_ids),
+        "deletedCount": len(deleted),
+        "unboundCount": len(unbound),
+        "failedCount": failed_count,
+        "deleted": deleted,
+        "unbound": unbound,
+        "failed": failed,
+    }
+
+
 @router.delete("/actions/{action_id}")
 async def delete_action(action_id: str):
     """删除动画"""
@@ -805,18 +889,7 @@ async def delete_action(action_id: str):
 
     # 内置资源：只删除绑定关系，不删除资源本身
     if action.get("isBuiltin", False):
-        # 从所有绑定中移除，并清理默认动画
-        for song_id, bindings in list(jukebox_config.data["bindings"].items()):
-            if action_id in bindings:
-                del bindings[action_id]
-                # 如果删除的是默认动画，清除默认动画设置
-                song = jukebox_config.data["songs"].get(song_id)
-                if song and song.get("defaultAction") == action_id:
-                    song["defaultAction"] = ""
-                    logger.info(f"清除默认动画: {song_id} (删除了内置动画 {action_id} 的绑定)")
-            # 如果没有绑定了，删除空字典
-            if not bindings:
-                del jukebox_config.data["bindings"][song_id]
+        _remove_action_bindings(jukebox_config, action_id)
         await jukebox_config.asave()
         logger.info(f"删除内置动画的绑定关系: {action_id}")
         return {"success": True, "message": "内置动画的绑定关系已删除"}
@@ -827,18 +900,7 @@ async def delete_action(action_id: str):
     if file_path.exists():
         file_path.unlink()
 
-    # 从所有绑定中移除（使用ID），并清理默认动画
-    for song_id, bindings in list(jukebox_config.data["bindings"].items()):
-        if action_id in bindings:
-            del bindings[action_id]
-            # 如果删除的是默认动画，清除默认动画设置
-            song = jukebox_config.data["songs"].get(song_id)
-            if song and song.get("defaultAction") == action_id:
-                song["defaultAction"] = ""
-                logger.info(f"清除默认动画: {song_id} (删除了动画 {action_id})")
-        # 如果没有绑定了，删除空字典
-        if not bindings:
-            del jukebox_config.data["bindings"][song_id]
+    _remove_action_bindings(jukebox_config, action_id)
 
     # 从 MD5 索引中移除
     action_md5 = action.get("fileMd5", "")
