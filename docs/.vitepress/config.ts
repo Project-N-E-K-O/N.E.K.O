@@ -19,13 +19,11 @@ function guideSidebar(lang: 'en' | 'zh-CN' | 'ja') {
     ja: {
       group: 'はじめに',
       intro: 'はじめに', prereq: '前提条件', dev: '開発環境の構築',
-      quick: 'クイックスタート', struct: 'プロジェクト構造', linux: 'Linux Desktop Runtime',
+      quick: 'クイックスタート', struct: 'プロジェクト構造', linux: 'Linux デスクトップランタイム',
     },
   }[lang]
   const p = lang === 'en' ? '' : `/${lang}`
-  const linuxDesktopItems = lang === 'ja'
-    ? []
-    : [{ text: t.linux, link: `${p}/guide/linux-desktop-runtime` }]
+  const linuxDesktopItems = [{ text: t.linux, link: `${p}/guide/linux-desktop-runtime` }]
   return [
     {
       text: t.group,
