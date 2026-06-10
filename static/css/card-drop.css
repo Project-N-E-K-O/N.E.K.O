@@ -94,6 +94,11 @@
   padding: 3px 10px; border-radius: 8px; background: rgba(0,0,0,.5); color: var(--cd-accent,#fff);
   border: 1px solid var(--cd-c,#9aa6bd);
 }
+.cd-level {
+  position: absolute; top: 10px; right: 10px; font-weight: 900; font-size: 12px;
+  padding: 3px 9px; border-radius: 8px; background: rgba(0,0,0,.5); color: #fff;
+  border: 1px solid rgba(255,255,255,.35);
+}
 .cd-serial {
   position: absolute; bottom: 8px; right: 10px; font-size: 11px; font-weight: 700;
   letter-spacing: .06em; color: #fff; text-shadow: 0 1px 4px #000; opacity: .92;

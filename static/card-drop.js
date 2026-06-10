@@ -178,6 +178,7 @@
     var img = el('img'); img.src = card.cover_url || PLACEHOLDER_ART; img.alt = 'card';
     inner.appendChild(img);
     inner.appendChild(el('div', 'cd-rank', rk));
+    inner.appendChild(el('div', 'cd-level', 'Lv' + Number(card.level || 1)));
     if (card.serial) inner.appendChild(el('div', 'cd-serial', escapeHtml(card.serial)));
     cardEl.appendChild(inner);
     wrap.appendChild(cardEl);
