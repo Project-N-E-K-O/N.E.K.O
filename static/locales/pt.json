@@ -1918,6 +1918,8 @@
         "aiCompanionSub": "Assistente de design de carta · YUI substituindo o gatinho desenvolvedor",
         "aiCompanionClose": "Fechar",
         "aiCompanionMinimize": "Minimizar",
+        "aiCompanionExpand": "Expandir",
+        "aiCompanionDragHint": "Arraste para mover",
         "aiCompanionPlaceholder": "Diga algo… (Enter para enviar, Shift+Enter para nova linha)",
         "aiCompanionSend": "Enviar",
         "aiCompanionGreeting": "Miau~ Eu sou seu assistente de design de carta. Primeiro me diga que tipo de NEKO você quer — uma linha basta! Vou fazer algumas perguntas de acompanhamento e depois escrever a carta inteira pra você.",

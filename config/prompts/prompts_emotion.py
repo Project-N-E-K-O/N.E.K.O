@@ -382,11 +382,14 @@ def get_emotion_keywords_flat() -> dict:
     for lang_map in EMOTION_KEYWORDS_BY_LANG.values():
         for emotion, words in lang_map.items():
             merged[emotion] = merged.get(emotion, ()) + tuple(words)
-    return merged
+    # 跨语种去重：同一词条出现在多个语种块（如 en/pt 都收了 `haha`）时只保留一份，
+    # 否则启发式按词条逐一累加命中数会对同一段文本重复计分。
+    return {emotion: tuple(dict.fromkeys(words)) for emotion, words in merged.items()}
 
 
 def _flatten_lang_tuples(by_lang: dict) -> tuple:
-    return tuple(item for words in by_lang.values() for item in words)
+    # dict.fromkeys 保序去重，理由同上：跨语种重复词条不能导致重复计分。
+    return tuple(dict.fromkeys(item for words in by_lang.values() for item in words))
 
 
 def get_angry_attack_patterns_flat() -> tuple:

@@ -1918,6 +1918,8 @@
         "aiCompanionSub": "설정 보조 · YUI 가 개발 고양이 대행",
         "aiCompanionClose": "닫기",
         "aiCompanionMinimize": "최소화",
+        "aiCompanionExpand": "펼치기",
+        "aiCompanionDragHint": "드래그로 이동",
         "aiCompanionPlaceholder": "뭐든 말해줘… (Enter 로 보내기, Shift+Enter 로 줄바꿈)",
         "aiCompanionSend": "보내기",
         "aiCompanionGreeting": "냐~ 설정 보조야. 먼저 어떤 캐릭터를 원하는지 한 줄로 알려줘! 몇 가지 후속 질문하고 카드 전체를 적어줄게.",

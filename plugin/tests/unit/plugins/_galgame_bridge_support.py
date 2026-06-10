@@ -20,6 +20,7 @@ import plugin.plugins.galgame_plugin as galgame_plugin_module
 import plugin.plugins.galgame_plugin.game_llm_agent as game_llm_agent_module
 from plugin.plugins.galgame_plugin import local_input_actuator as local_input
 from plugin.plugins.galgame_plugin import ocr_reader as galgame_ocr_reader
+from plugin.plugins.galgame_plugin import ocr_window_scanner as galgame_ocr_window_scanner
 from plugin.plugins.galgame_plugin import service as galgame_service
 from plugin.plugins.galgame_plugin.host_agent_adapter import (
     HostAgentAdapter,

@@ -565,7 +565,7 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     assert "width: auto;" in compact_input_block
     assert "min-width: 0;" in compact_input_block
     assert "padding: 10px 8px 10px 0;" in compact_input_block
-    assert 'padding: 5px 62px 5px 2px;' in styles
+    assert 'padding: 5px 62px 5px 8px;' in styles
     assert '.compact-chat-surface-frame[data-compact-chat-state="input"]' in compact_mobile_block
     assert 'padding: 5px 62px 5px 18px;' in compact_mobile_block
     assert 'padding: 5px 8px 5px 18px;' not in compact_mobile_block
@@ -1381,15 +1381,16 @@ def test_compact_inline_export_uses_windowless_app_chat_export_api():
     assert "function buildCompactInlinePreview(options)" in compact_api_block
     assert "buildExportDocument(entries, state.exportFormat)" in compact_api_block
     assert "URL.createObjectURL(exportData.previewBlob)" in compact_api_block
-    assert "buildMarkdownPreviewDocument(exportData.content)" not in compact_api_block
+    assert "previewKind: 'document'," in compact_api_block
+    assert "previewDocument: buildMarkdownPreviewDocument(exportData.content)" in compact_api_block
     assert "getOrBuildPreviewPayload" not in compact_api_block
     assert "clearPreviewCache()" not in compact_api_block
     assert "function runCompactInlineExportAction(options, action)" in compact_api_block
     assert "state.exportFormat = previous.exportFormat;" in compact_api_block
     assert "buildExportDocument(entries, 'image')" in compact_api_block
     assert "copyImageToClipboard(imgBlob)" in compact_api_block
-    assert "buildExportDocument(entries, 'markdown')" not in compact_api_block
-    assert "copyTextToClipboard(mdData.content)" not in compact_api_block
+    assert "buildExportDocument(entries, 'markdown')" in compact_api_block
+    assert "copyTextToClipboard(markdownData.content)" in compact_api_block
     assert "downloadExportFile(data.fileName, data.content, data.contentType, window)" in compact_api_block
     assert "handleCopyClick" not in compact_api_block
     assert "handleDownloadClick" not in compact_api_block
