@@ -91,8 +91,11 @@ def _first_cjk(s: str) -> str | None:
 def _has_noqa(line: str, code: str) -> bool:
     """True if `line` contains `# noqa` (bare) or `# noqa: ...,CODE,...`.
 
-    Tolerates a trailing explanatory comment after the noqa. Matches the
-    behaviour of scripts/check_prompt_hygiene.py."""
+    Tolerates a trailing explanatory comment after the noqa, but it must
+    start with ``#`` (``# noqa: CODE  # rationale``) — the codes block
+    stops only at the next ``#`` or end-of-line, so other separators like
+    ``— rationale`` break the match. Same behaviour as
+    scripts/check_prompt_hygiene.py (and ruff/flake8)."""
     m = re.search(r"#\s*noqa\b(?:\s*:\s*([A-Za-z0-9_,\s]+?))?(?=#|$)", line)
     if not m:
         return False

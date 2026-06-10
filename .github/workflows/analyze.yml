@@ -131,7 +131,13 @@ jobs:
         # ranges across all languages. Skipped on direct push to main —
         # there's nothing to diff against.
         if: github.event_name == 'pull_request'
-        run: python scripts/check_i18n_sync.py --base "origin/${{ github.base_ref }}"
+        env:
+          # Indirection instead of inlining ${{ github.base_ref }} into the
+          # shell line: with the `pull_request: branches: [main]` trigger the
+          # ref is always `main`, but zizmor flags the inline form as
+          # template-injection, and env-var expansion is inert either way.
+          BASE_REF: ${{ github.base_ref }}
+        run: python scripts/check_i18n_sync.py --base "origin/${BASE_REF}"
 
       - name: Forbid CJK in new/modified Python docstrings (PR-only)
         # Convention: docstrings in the main program are written in English.
@@ -145,7 +151,10 @@ jobs:
         # fixtures whose CJK content is itself under test). Skipped on direct
         # push to main — nothing to diff against.
         if: github.event_name == 'pull_request'
-        run: python scripts/check_docstring_no_cjk.py --base "origin/${{ github.base_ref }}"
+        env:
+          # Same zizmor template-injection indirection as the i18n-sync step.
+          BASE_REF: ${{ github.base_ref }}
+        run: python scripts/check_docstring_no_cjk.py --base "origin/${BASE_REF}"
 
       - name: Forbid relative-up markdown links inside docs/
         # docs/ ships through VitePress with itself as the deploy root;
