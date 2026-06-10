@@ -5413,8 +5413,14 @@ async def browser_use_run(payload: Dict[str, Any]):
     instruction = (payload or {}).get("instruction", "").strip()
     if not instruction:
         raise HTTPException(400, "instruction required")
+    # Debug/API entry: must share the dispatch mutex with the analyzer path —
+    # the adapter is a singleton whose cancel flag and browser session cannot
+    # tolerate concurrent run_instruction calls.
+    if Modules.browser_use_dispatch_lock is None:
+        Modules.browser_use_dispatch_lock = asyncio.Lock()
     try:
-        result = await Modules.browser_use.run_instruction(instruction)
+        async with Modules.browser_use_dispatch_lock:
+            result = await Modules.browser_use.run_instruction(instruction)
         return {"success": bool(result.get("success", False)), "result": result}
     except Exception as e:
         return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)

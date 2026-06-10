@@ -798,6 +798,7 @@ window.AgentHUD.updateAgentTaskHUD = function (tasksData) {
 window.AgentHUD._markTasksCancelledLocally = function (taskIds) {
     const map = window._agentTaskMap;
     if (!map || typeof map.forEach !== 'function' || map.size === 0) return;
+    if (!window._agentTaskRemoveTimers) window._agentTaskRemoveTimers = new Map();
     const ids = Array.isArray(taskIds) ? new Set(taskIds) : null;
     const now = Date.now();
     let changed = false;
@@ -806,6 +807,31 @@ window.AgentHUD._markTasksCancelledLocally = function (taskIds) {
         if (t.status !== 'running' && t.status !== 'queued') return;
         map.set(id, Object.assign({}, t, { status: 'cancelled', terminal_at: now }));
         changed = true;
+        // Schedule the same 10s map removal as the websocket event path —
+        // otherwise the entry outlives the HUD's 30s terminal cache and a
+        // later full-map refresh would re-show it as a "new" terminal task.
+        // If the backend's own cancelled event arrives later, app-websocket
+        // clears this timer and installs its own (idempotent handoff).
+        if (window._agentTaskRemoveTimers.has(id)) {
+            clearTimeout(window._agentTaskRemoveTimers.get(id));
+        }
+        window._agentTaskRemoveTimers.set(id, setTimeout(() => {
+            window._agentTaskRemoveTimers.delete(id);
+            const current = window._agentTaskMap && window._agentTaskMap.get(id);
+            if (!current || current.status !== 'cancelled') return;
+            window._agentTaskMap.delete(id);
+            const remaining = Array.from(window._agentTaskMap.values());
+            window.AgentHUD.updateAgentTaskHUD({
+                success: true,
+                tasks: remaining,
+                total_count: remaining.length,
+                running_count: remaining.filter(t2 => t2.status === 'running').length,
+                queued_count: remaining.filter(t2 => t2.status === 'queued').length,
+                completed_count: remaining.filter(t2 => t2.status === 'completed').length,
+                failed_count: remaining.filter(t2 => t2.status === 'failed').length,
+                timestamp: new Date().toISOString()
+            });
+        }, 10000));
     });
     if (!changed) return;
     const tasks = Array.from(map.values());
