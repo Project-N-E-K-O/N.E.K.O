@@ -575,11 +575,11 @@
         </div>
 
         <!-- 教程切换按钮 -->
-        <div class="tutorial-toggle" onclick="toggleTutorial()">
+        <button type="button" class="tutorial-toggle" onclick="toggleTutorial(this)" aria-expanded="false">
             <span class="icon">📖</span>
             <span>使用教程（新手必看）</span>
             <span class="arrow" id="tutorial-arrow">▼</span>
-        </div>
+        </button>
 
         <!-- 教程面板 -->
         <div class="tutorial-panel" id="tutorial-panel">
@@ -696,47 +696,47 @@
             <div class="stats-grid">
                 <div class="stat-item">
                     <div class="stat-value" id="event-count">0</div>
-                    <div class="stat-label">活动事件</div>
+                    <div class="stat-label" data-i18n="ui.event_count">活动事件</div>
                 </div>
                 <div class="stat-item">
                     <div class="stat-value" id="user-name">-</div>
-                    <div class="stat-label">用户名</div>
+                    <div class="stat-label" data-i18n="ui.username">用户名</div>
                 </div>
                 <div class="stat-item">
                     <div class="stat-value" id="port-num">-</div>
-                    <div class="stat-label">监听端口</div>
+                    <div class="stat-label" data-i18n="ui.port">监听端口</div>
                 </div>
                 <div class="stat-item">
                     <div class="stat-value" id="cooldown-val">-</div>
-                    <div class="stat-label">冷却(秒)</div>
+                    <div class="stat-label" data-i18n="ui.cooldown_label">冷却(秒)</div>
                 </div>
             </div>
         </div>
 
         <!-- 活动时间线 -->
         <div class="card">
-            <div class="card-title"><span class="icon">📜</span> 活动时间线</div>
+            <div class="card-title"><span class="icon">📜</span> <span data-i18n="ui.timeline">活动时间线</span></div>
             <div id="timeline-container">
-                <div class="loading"><div class="spinner"></div><div style="margin-top:10px;">加载中...</div></div>
+                <div class="loading"><div class="spinner"></div><div style="margin-top:10px;" data-i18n="ui.loading">加载中...</div></div>
             </div>
         </div>
 
         <!-- 设置 -->
         <div class="card">
-            <div class="card-title"><span class="icon">⚙️</span> 设置</div>
+            <div class="card-title"><span class="icon">⚙️</span> <span data-i18n="ui.settings"></span>设置</span></div>
             <div class="settings-row">
-                <label>用户名</label>
+                <label data-i18n="ui.username">用户名</label>
                 <input type="text" id="input-name" placeholder="输入你的名字">
-                <button class="btn btn-primary" onclick="saveUserName()">保存</button>
+                <button class="btn btn-primary" onclick="saveUserName()" data-i18n="ui.save">保存</button>
             </div>
             <div class="settings-row">
-                <label>冷却时间</label>
+                <label data-i18n="ui.cooldown">冷却时间</label>
                 <input type="number" id="input-cooldown" placeholder="秒" min="10" max="3600">
-                <button class="btn btn-secondary" onclick="saveCooldown()">保存</button>
+                <button class="btn btn-secondary" onclick="saveCooldown()" data-i18n="ui.save">保存</button>
             </div>
             <div class="btn-group">
-                <button class="btn btn-primary" onclick="testPush()">💌 发送测试消息</button>
-                <button class="btn btn-danger" onclick="clearEvents()">🧹 清空事件日志</button>
+                <button class="btn btn-primary" onclick="testPush()" data-i18n="ui.test_push">💌 发送测试消息</button>
+                <button class="btn btn-danger" onclick="clearEvents()" data-i18n="ui.clear_events">🧹 清空事件日志</button>
             </div>
         </div>
     </div>
@@ -746,25 +746,54 @@
     <script>
         const pluginId = 'claude_companion';
         let refreshTimer = null;
+        let translations = {};
+        let localeLoaded = false;
+
+        // ── 简易翻译函数 ──
+        function t(key, fallback) {
+            return translations[key] || fallback;
+        }
+
+        // ── 加载 i18n ──
+        async function loadLocale() {
+            try {
+                var baseUrl = getBaseUrl();
+                var locResp = await fetch(baseUrl + '/plugin/' + pluginId + '/ui-api/locale');
+                if (locResp.ok) {
+                    var locData = await locResp.json();
+                    var lang = locData.locale || locData.language || 'zh-CN';
+                    var bundleResp = await fetch(baseUrl + '/plugin/' + pluginId + '/i18n/' + lang + '.json');
+                    if (bundleResp.ok) {
+                        translations = await bundleResp.json();
+                        localeLoaded = true;
+                        return;
+                    }
+                }
+            } catch (e) {
+                console.warn('[i18n] Failed to load locale, using hardcoded strings:', e);
+            }
+        }
 
         // ── Toast 提示 ──
         function showToast(msg) {
-            var t = document.getElementById('toast');
-            t.textContent = msg;
-            t.classList.add('show');
-            setTimeout(function() { t.classList.remove('show'); }, 3000);
+            var el = document.getElementById('toast');
+            el.textContent = msg;
+            el.classList.add('show');
+            setTimeout(function() { el.classList.remove('show'); }, 3000);
         }
 
         // ── 教程面板切换 ──
-        function toggleTutorial() {
+        function toggleTutorial(btn) {
             var panel = document.getElementById('tutorial-panel');
             var arrow = document.getElementById('tutorial-arrow');
             if (panel.classList.contains('show')) {
                 panel.classList.remove('show');
                 arrow.classList.remove('open');
+                if (btn) btn.setAttribute('aria-expanded', 'false');
             } else {
                 panel.classList.add('show');
                 arrow.classList.add('open');
+                if (btn) btn.setAttribute('aria-expanded', 'true');
                 // 滚动到教程位置
                 panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
             }
@@ -858,11 +887,13 @@
             console.log('[ClaudeCompanion] Status result:', result);
             if (!result) {
                 document.getElementById('status-dot').classList.add('offline');
-                document.getElementById('status-text').innerHTML = '未连接 - 请确认 NEKO 服务已启动';
+                document.getElementById('status-text').innerHTML = t('ui.disconnected', '未连接 - 请确认 NEKO 服务已启动');
                 return;
             }
             document.getElementById('status-dot').classList.remove('offline');
-            document.getElementById('status-text').innerHTML = '已连接 — <strong>' + escapeHtml(result.user_name || '你') + '</strong>，你的伙伴正在关注你～';
+            var connectedFmt = t('ui.connected', '已连接 — <strong>{user}</strong>，你的伙伴正在关注你～');
+            var userDisplay = escapeHtml(result.user_name || '你');
+            document.getElementById('status-text').innerHTML = connectedFmt.replace('{user}', userDisplay);
             document.getElementById('event-count').textContent = result.event_count || 0;
             document.getElementById('user-name').textContent = result.user_name || '-';
             document.getElementById('port-num').textContent = result.port || '-';
@@ -892,11 +923,14 @@
                 html += '<div class="timeline-item" data-type="' + escapeHtml(type) + '">';
                 html += '<div class="timeline-time">' + escapeHtml(ev.time_str || '') + '</div>';
                 html += '<div class="timeline-summary">' + icon + ' ' + escapeHtml(ev.summary || '') + '</div>';
-                if (ev.tools && ev.tools.length) {
+                var hasMeta = (ev.tools && ev.tools.length) || (ev.files && ev.files.length);
+                if (hasMeta) {
                     html += '<div class="timeline-meta">';
-                    ev.tools.forEach(function(t) {
-                        html += '<span class="timeline-tag">🔧 ' + escapeHtml(t) + '</span>';
-                    });
+                    if (ev.tools && ev.tools.length) {
+                        ev.tools.forEach(function(t) {
+                            html += '<span class="timeline-tag">🔧 ' + escapeHtml(t) + '</span>';
+                        });
+                    }
                     if (ev.files && ev.files.length) {
                         ev.files.slice(0, 3).forEach(function(f) {
                             var name = f.split(/[\\/]/).pop();
@@ -932,51 +966,53 @@
         // ── 设置操作 ──
         async function saveUserName() {
             var name = document.getElementById('input-name').value.trim();
-            if (!name) { showToast('请输入用户名'); return; }
+            if (!name) { showToast(t('ui.toast_username_empty', '请输入用户名')); return; }
             var r = await callPlugin('set_user_name', { name: name });
             if (r && r.user_name) {
-                showToast('用户名已更新为: ' + r.user_name);
+                showToast(t('ui.toast_username_updated', '用户名已更新为: ').replace('{name}', r.user_name) + r.user_name);
                 loadStatus();
             } else {
-                showToast('更新失败');
+                showToast(t('ui.toast_fail', '更新失败'));
             }
         }
 
         async function saveCooldown() {
             var sec = parseInt(document.getElementById('input-cooldown').value);
-            if (isNaN(sec) || sec < 10) { showToast('冷却时间至少 10 秒'); return; }
+            if (isNaN(sec) || sec < 10) { showToast(t('ui.toast_cooldown_invalid', '冷却时间至少 10 秒')); return; }
             var r = await callPlugin('set_cooldown', { seconds: sec });
             if (r && r.cooldown_seconds) {
-                showToast('冷却时间已设为 ' + r.cooldown_seconds + ' 秒');
+                showToast(t('ui.toast_cooldown_updated', '冷却时间已设为 ').replace('{sec}', r.cooldown_seconds) + r.cooldown_seconds + ' 秒');
                 loadStatus();
             } else {
-                showToast('更新失败');
+                showToast(t('ui.toast_fail', '更新失败'));
             }
         }
 
         async function testPush() {
             var r = await callPlugin('test_push');
             if (r && r.sent) {
-                showToast('测试消息已发送！检查 NEKO 对话框～');
+                showToast(t('ui.toast_test_sent', '测试消息已发送！检查 NEKO 对话框～'));
             } else {
-                showToast('发送失败');
+                showToast(t('ui.toast_fail', '更新失败'));
             }
         }
 
         async function clearEvents() {
-            if (!confirm('确定要清空所有事件日志吗？')) return;
+            if (!confirm(t('ui.confirm_clear', '确定要清空所有事件日志吗？'))) return;
             var r = await callPlugin('clear_events');
             if (r && r.cleared !== undefined) {
-                showToast('已清空 ' + r.cleared + ' 条事件');
+                var fmt = t('ui.toast_events_cleared', '已清空 ').replace('{count}', r.cleared);
+                showToast(fmt + r.cleared + ' 条事件');
                 loadEvents();
                 loadStatus();
             } else {
-                showToast('清空失败');
+                showToast(t('ui.toast_fail', '更新失败'));
             }
         }
 
         // ── 初始化 ──
         document.addEventListener('DOMContentLoaded', function() {
+            loadLocale();
             loadStatus();
             loadEvents();
             // 每 15 秒自动刷新

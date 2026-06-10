@@ -19,6 +19,7 @@ import threading
 import time
 import re
 import uuid
+import os
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -300,10 +301,15 @@ class _HookHTTPHandler(BaseHTTPRequestHandler):
     # 类变量，由插件实例设置
     plugin_instance: Optional["ClaudeCompanionPlugin"] = None
 
+    # 需要鉴权的路径（NEKO 调用的接口）
+    _AUTH_PATHS = {"/push-summary", "/inbox/send", "/inbox/ack", "/inbox/pending"}
+
     def do_GET(self):
         if self.path == "/health":
             self._respond(200, {"status": "ok"})
         elif self.path == "/inbox/pending":
+            if not self._authorize():
+                return
             self._handle_inbox_pending()
         else:
             self._respond(404, {"error": "Not found"})
@@ -322,6 +328,11 @@ class _HookHTTPHandler(BaseHTTPRequestHandler):
                 self._respond(400, {"error": "Invalid JSON"})
                 return
 
+        # hook 路径无需鉴权（Claude Code 无法携带 token）
+        if self.path in self._AUTH_PATHS:
+            if not self._authorize():
+                return
+
         if self.path == "/hook/turn-end":
             self._handle_turn_end(data)
         elif self.path == "/hook/turn-start":
@@ -336,6 +347,17 @@ class _HookHTTPHandler(BaseHTTPRequestHandler):
             self._respond(200, {"status": "ok"})
         else:
             self._respond(404, {"error": "Not found"})
+
+    def _authorize(self) -> bool:
+        """验证 Bearer token。未配置 token 时跳过鉴权。"""
+        token = self.plugin_instance._api_token if self.plugin_instance else ""
+        if not token:
+            return True
+        auth = self.headers.get("Authorization", "")
+        if auth == f"Bearer {token}":
+            return True
+        self._respond(401, {"error": "unauthorized"})
+        return False
 
     def _handle_turn_start(self, data: dict):
         """处理 UserPromptSubmit hook - 记录用户消息。"""
@@ -605,6 +627,9 @@ class ClaudeCompanionPlugin(NekoPluginBase):
         except (TypeError, ValueError):
             self._cooldown = _DEFAULT_COOLDOWN
 
+        # API 鉴权 token（用于 NEKO → Claude 方向的接口）
+        self._api_token = cc_cfg.get("api_token") or os.environ.get("NEKO_CLAUDE_COMPANION_TOKEN") or ""
+
         # 获取用户名
         try:
             self._user_name = await self._load_user_name()
@@ -622,6 +647,7 @@ class ClaudeCompanionPlugin(NekoPluginBase):
                 self.logger.info("Inbox initialized with {} pending messages", pending_count)
         except Exception as e:
             self.logger.warning("Failed to initialize inbox: {}", e)
+            self._inbox = None
 
         # 启动 HTTP 服务器
         try:
@@ -701,8 +727,18 @@ class ClaudeCompanionPlugin(NekoPluginBase):
     def _stop_http_server(self):
         """停止 HTTP 服务器。"""
         if self._http_server:
-            self._http_server.shutdown()
+            try:
+                self._http_server.shutdown()
+            except Exception:
+                pass
+            try:
+                self._http_server.server_close()
+            except Exception:
+                pass
             self._http_server = None
+        if self._http_thread and self._http_thread.is_alive():
+            self._http_thread.join(timeout=3)
+            self._http_thread = None
 
     # ── Hook 事件处理 ──
 
@@ -715,20 +751,19 @@ class ClaudeCompanionPlugin(NekoPluginBase):
     def _on_turn_end(self, data: dict):
         """处理 Stop 事件 - 解析对话、生成摘要、推送。"""
         transcript_path = data.get("transcript_path", "")
-        print(f"[ClaudeCompanion] Turn end hook received, transcript_path={transcript_path}")
         if not transcript_path:
-            print("[ClaudeCompanion] No transcript_path in hook data")
+            self.logger.debug("No transcript_path in hook data")
             return
 
-        # 去重：5秒内不重复推送
+        # 去重：冷却时间内不重复推送
         now = time.time()
-        if now - self._last_push_time < 5:
-            print("[ClaudeCompanion] Duplicate push blocked (within 5s)")
+        if now - self._last_push_time < self._cooldown:
+            self.logger.debug("Duplicate push blocked (within cooldown)")
             return
 
         # 解析转录
         turn_info = TranscriptParser.parse_latest_turn(transcript_path)
-        print(f"[ClaudeCompanion] Parsed turn: tools={turn_info['tools_used']}, has_significant={turn_info['has_significant_action']}")
+        self.logger.debug("Parsed turn: tools={}, has_significant={}", turn_info["tools_used"], turn_info["has_significant_action"])
 
         # 检测活动类型
         activity_type = _detect_activity_type(
@@ -763,17 +798,16 @@ class ClaudeCompanionPlugin(NekoPluginBase):
 
     def _on_push_summary(self, data: dict):
         """处理 Claude 主动推送的摘要 - 直接接收总结内容。"""
-        # 去重：Stop hook 刚推送过则跳过
         now = time.time()
-        if now - self._last_push_time < 5:
-            print("[ClaudeCompanion] push-summary blocked: already pushed within 5s")
+        if now - self._last_push_time < self._cooldown:
+            self.logger.debug("push-summary blocked: already pushed within cooldown")
             return
 
         user_msg = data.get("user_message", "")
         assistant_msg = data.get("assistant_message", "")
         activity_type = data.get("activity_type", "general")
 
-        print(f"[ClaudeCompanion] Received push-summary: user={user_msg[:50]}, assistant={assistant_msg[:50]}")
+        self.logger.debug("Received push-summary: activity_type={}", activity_type)
 
         # 生成摘要
         summary = ActivitySummarizer.summarize(
@@ -799,6 +833,8 @@ class ClaudeCompanionPlugin(NekoPluginBase):
 
     def _on_inbox_send(self, data: dict) -> dict:
         """NEKO 向 Claude 发送消息。"""
+        if self._inbox is None:
+            return {"error": "inbox not initialized"}
         content = data.get("content", "")
         if not content:
             return {"error": "content is required"}
@@ -810,11 +846,15 @@ class ClaudeCompanionPlugin(NekoPluginBase):
 
     def _on_inbox_pending(self) -> dict:
         """查询待处理消息。"""
+        if self._inbox is None:
+            return {"error": "inbox not initialized", "count": 0, "messages": []}
         messages = self._inbox.pending()
         return {"status": "ok", "count": len(messages), "messages": messages}
 
     def _on_inbox_ack(self, data: dict) -> dict:
         """确认消息已读。"""
+        if self._inbox is None:
+            return {"error": "inbox not initialized", "acknowledged": 0}
         msg_ids = data.get("message_ids", [])
         if msg_ids:
             count = self._inbox.ack(msg_ids)
@@ -824,15 +864,12 @@ class ClaudeCompanionPlugin(NekoPluginBase):
 
     def _notify_companion(self, summary: str, activity_type: str, turn_info: dict):
         """通过 push_message 将摘要发送给 NEKO 伙伴。"""
-        print(f"[ClaudeCompanion] Pushing companion message: type={activity_type}, summary={summary[:100]}")
+        self.logger.info("Pushing companion message: type={}", activity_type)
         try:
-            # 检查 ctx 是否有 push_message 方法
             if not hasattr(self.ctx, 'push_message'):
-                print("[ClaudeCompanion] ERROR: ctx has no push_message method")
+                self.logger.error("ctx has no push_message method")
                 return
 
-            # 调用 push_message
-            print(f"[ClaudeCompanion] Calling push_message with source=claude_companion, visibility=['chat']")
             self.ctx.push_message(
                 source="claude_companion",
                 visibility=["chat"],
@@ -845,11 +882,9 @@ class ClaudeCompanionPlugin(NekoPluginBase):
                     "files_touched": turn_info.get("files_touched", []),
                 },
             )
-            print("[ClaudeCompanion] Push message sent successfully")
+            self.logger.debug("Push message sent successfully")
         except Exception as e:
-            print(f"[ClaudeCompanion] Failed to push companion message: {type(e).__name__}: {e}")
-            import traceback
-            traceback.print_exc()
+            self.logger.error("Failed to push companion message: {}", e)
 
     # ── 事件日志（供 UI 展示）──
 
