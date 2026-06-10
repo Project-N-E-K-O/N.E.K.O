@@ -3210,7 +3210,7 @@
     var COMPACT_MINIMIZE_PRESS_MS = 280; // = neko-compact-collapse-wipe 擦除时长：擦完再瞬时折叠
     var compactMinimizePressTimer = 0;
     var compactMinimizeCancelSeq = 0; // 折叠取消序号（见 clearCompactMinimizePressTimer），传给 React
-    var compactMinimizeBallIconAnchor = null;
+    var compactMinimizeBallTargetAnchor = null;
     // 清掉挂起的「按下挤压→瞬时折叠」延时。窗口关闭/动画取消时必须调用，否则这个
     // 跨 280ms 存活的回调会在窗口已关闭/重开后仍 setChatSurfaceMode('minimized')，
     // 把更新后的状态覆盖成「幽灵最小化」（CodeRabbit Minor / Codex P2）。
@@ -3218,7 +3218,7 @@
         if (!compactMinimizePressTimer) return;
         window.clearTimeout(compactMinimizePressTimer);
         compactMinimizePressTimer = 0;
-        compactMinimizeBallIconAnchor = null;
+        compactMinimizeBallTargetAnchor = null;
         // 真清掉一个 pending 折叠延时 = 一次进行中的折叠被取消（如 280ms 内 closeWindow）。
         // 递增序号；buildRenderProps 把它当 prop 传给 React，让组件在重开时立即复位
         // compactCollapsing，而不必等 600ms 兜底——否则快速「关→重开」会让 compact 表面带着擦除
@@ -3226,7 +3226,7 @@
         compactMinimizeCancelSeq += 1;
     }
     function handleCompactMinimizeRequest() {
-        rememberCompactMinimizeBallIconAnchor();
+        rememberCompactMinimizeBallTargetAnchor();
         // reduced-motion：折叠擦除/按压挤压动画已被 CSS（@media prefers-reduced-motion: reduce）
         // 禁用，此时再延时 COMPACT_MINIMIZE_PRESS_MS(280ms) 才折叠，只会让窗口「点了没反应」一段，
         // 无任何动画反馈。无障碍模式下直接立即折叠，保持即时响应（Codex P2）。
@@ -4481,45 +4481,52 @@
 
     // ── End idle-dock ────────────────────────────────────────────
 
-    function getCompactMinimizeBallIconRect() {
+    function getCompactMinimizeBallTargetRect() {
         var root = getRoot();
-        var icon = root
-            ? root.querySelector('.compact-chat-minimize-ball-icon')
-            : document.querySelector('.compact-chat-minimize-ball-icon');
-        if (!icon || typeof icon.getBoundingClientRect !== 'function') return null;
-        return normalizeCompactDomRect(icon.getBoundingClientRect());
+        var button = root
+            ? root.querySelector('.compact-chat-minimize-ball')
+            : document.querySelector('.compact-chat-minimize-ball');
+        if (!button || typeof button.getBoundingClientRect !== 'function') return null;
+        var buttonRect = normalizeCompactDomRect(button.getBoundingClientRect());
+        if (!buttonRect) return null;
+        return {
+            width: MINIMIZED_SIZE,
+            height: MINIMIZED_SIZE,
+            left: buttonRect.left + buttonRect.width / 2 - MINIMIZED_SIZE / 2,
+            top: buttonRect.top + buttonRect.height / 2 - MINIMIZED_SIZE / 2
+        };
     }
 
-    function rememberCompactMinimizeBallIconAnchor() {
-        compactMinimizeBallIconAnchor = null;
+    function rememberCompactMinimizeBallTargetAnchor() {
+        compactMinimizeBallTargetAnchor = null;
         if (getCurrentChatSurfaceMode() !== 'compact') return null;
-        compactMinimizeBallIconAnchor = getCompactMinimizeBallIconRect();
-        return compactMinimizeBallIconAnchor;
+        compactMinimizeBallTargetAnchor = getCompactMinimizeBallTargetRect();
+        return compactMinimizeBallTargetAnchor;
     }
 
-    function consumeCompactMinimizeBallIconAnchor() {
-        var iconRect = normalizeCompactDomRect(compactMinimizeBallIconAnchor);
-        compactMinimizeBallIconAnchor = null;
-        return iconRect;
+    function consumeCompactMinimizeBallTargetAnchor() {
+        var targetRect = normalizeCompactDomRect(compactMinimizeBallTargetAnchor);
+        compactMinimizeBallTargetAnchor = null;
+        return targetRect;
     }
 
-    function getMinimizedTargetFromCompactIcon(iconRect) {
-        iconRect = normalizeCompactDomRect(iconRect);
-        if (!iconRect) return null;
+    function getMinimizedTargetFromCompactAnchor(anchorRect) {
+        anchorRect = normalizeCompactDomRect(anchorRect);
+        if (!anchorRect) return null;
         return {
             width: MINIMIZED_SIZE,
             height: MINIMIZED_SIZE,
             left: Math.max(
                 0,
                 Math.min(
-                    Math.round(iconRect.left + iconRect.width / 2 - MINIMIZED_SIZE / 2),
+                    Math.round(anchorRect.left),
                     window.innerWidth - MINIMIZED_SIZE
                 )
             ),
             top: Math.max(
                 0,
                 Math.min(
-                    Math.round(iconRect.top + iconRect.height / 2 - MINIMIZED_SIZE / 2),
+                    Math.round(anchorRect.top),
                     window.innerHeight - MINIMIZED_SIZE
                 )
             )
@@ -4527,14 +4534,14 @@
     }
 
     // 返回最小化后 shell 应达到的像素几何。
-    // compact 折叠时，优先锚定到 React frame 内的毛线球图标本身；React 在切到 minimized
-    // 后会卸载 compact surface，所以点击入口要先记录 icon rect。拿不到 icon rect 时才退回
+    // compact 折叠时，优先锚定到 React frame 内的毛线球按钮中心；React 在切到 minimized
+    // 后会卸载 compact surface，所以点击入口要先记录 target rect。拿不到 target rect 时才退回
     // shell 左下角 fallback。
     function getMinimizedTarget(rect) {
-        var iconTarget = isLegacyFullMinimizedBall()
+        var compactTarget = isLegacyFullMinimizedBall()
             ? null
-            : getMinimizedTargetFromCompactIcon(consumeCompactMinimizeBallIconAnchor());
-        if (iconTarget) return iconTarget;
+            : getMinimizedTargetFromCompactAnchor(consumeCompactMinimizeBallTargetAnchor());
+        if (compactTarget) return compactTarget;
 
         // Fallback: collapse to the surface's own bottom-left corner. This keeps
         // legacy full behavior and covers compact cases where the inline yarn
@@ -4763,27 +4770,34 @@
             var targetLeft = target.left;
             var targetTop = target.top;
 
-            // 3. 计算缩放比（transform-origin 为 0% 100% 即左下角，无需 translate）
+            // 3. 计算缩放比，并反推 transform-origin，使缩放后的 shell
+            //    视觉终点落在 target 上。fallback 的 shell 左下角目标会自然得到
+            //    0px 100% 等价原点；compact 的毛线球槽位目标则不会再从左下角跳过去。
             var sx = rect.width > 0 ? target.width / rect.width : 1;
             var sy = rect.height > 0 ? target.height / rect.height : 1;
+            var originX = 0;
+            var originY = rect.height;
+            var originDenomX = 1 - sx;
+            var originDenomY = 1 - sy;
+            if (Math.abs(originDenomX) > 0.0001) {
+                originX = (targetLeft - rect.left) / originDenomX;
+            }
+            if (Math.abs(originDenomY) > 0.0001) {
+                originY = (targetTop - rect.top) / originDenomY;
+            }
+            if (!Number.isFinite(originX)) originX = 0;
+            if (!Number.isFinite(originY)) originY = rect.height;
 
             // 4. 初始 transform = identity，添加过渡类
             shell.style.transform = 'scale(1, 1)';
+            shell.style.transformOrigin = originX + 'px ' + originY + 'px';
             shell.classList.add('is-collapsing');
             void shell.offsetHeight; // 强制 reflow
 
             // 5. 设置目标 transform，触发动画
-            //    full + compact 都：动画期间 left/top **不动**，只缩放（origin 左下角），
-            //    让对话框以自己的左下角为支点原地收缩成球；finishCollapse 再把（已缩成
-            //    球大小的）shell snap 到左下角球位置，视觉无缝。这是 #1506 三态重构前的
-            //    原地折叠行为（best effort：compact 折叠原地、不再滑去贴模型/猫）。
-            var collapseHoldsPosition = true;
+            //    动画期间 left/top 不动，只通过动态 origin 缩放到 target。
             requestAnimationFrame(function () {
                 requestAnimationFrame(function () {
-                    if (!collapseHoldsPosition) {
-                        shell.style.left = targetLeft + 'px';
-                        shell.style.top = targetTop + 'px';
-                    }
                     shell.style.transform = 'scale(' + sx + ', ' + sy + ')';
                 });
             });
@@ -4799,6 +4813,7 @@
                 activeAnimationCleanup = null;
                 shell.classList.remove('is-collapsing');
                 shell.style.transform = 'none';
+                shell.style.removeProperty('transform-origin');
                 // 清除内联尺寸，让 .is-minimized 的 CSS 生效
                 shell.style.removeProperty('width');
                 shell.style.removeProperty('height');
@@ -4829,6 +4844,7 @@
                 shell.removeEventListener('transitionend', onEnd);
                 shell.classList.remove('is-collapsing');
                 shell.style.transform = 'none';
+                shell.style.removeProperty('transform-origin');
                 handled = true;
             };
 

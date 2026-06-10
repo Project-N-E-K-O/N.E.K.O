@@ -795,34 +795,52 @@ def test_moved_drag_suppresses_trailing_release_click():
     assert "document.addEventListener('click', consumeDragReleaseClickGuard, true);" in listeners_block
 
 
-def test_compact_minimize_targets_inline_yarn_ball_icon():
+def test_compact_minimize_targets_inline_yarn_ball_button_center():
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
-    assert "var compactMinimizeBallIconAnchor = null;" in script
-    assert "function getCompactMinimizeBallIconRect()" in script
-    assert "root.querySelector('.compact-chat-minimize-ball-icon')" in script
-    assert "function getMinimizedTargetFromCompactIcon(iconRect)" in script
-    assert "Math.round(iconRect.left + iconRect.width / 2 - MINIMIZED_SIZE / 2)" in script
-    assert "Math.round(iconRect.top + iconRect.height / 2 - MINIMIZED_SIZE / 2)" in script
+    assert "var compactMinimizeBallTargetAnchor = null;" in script
+    assert "function getCompactMinimizeBallTargetRect()" in script
+    assert "root.querySelector('.compact-chat-minimize-ball')" in script
+    assert "width: MINIMIZED_SIZE" in script
+    assert "height: MINIMIZED_SIZE" in script
+    assert "left: buttonRect.left + buttonRect.width / 2 - MINIMIZED_SIZE / 2" in script
+    assert "top: buttonRect.top + buttonRect.height / 2 - MINIMIZED_SIZE / 2" in script
+    assert "function getMinimizedTargetFromCompactAnchor(anchorRect)" in script
+    assert "Math.round(anchorRect.left)" in script
+    assert "Math.round(anchorRect.top)" in script
 
     cancel_block = script.split("function clearCompactMinimizePressTimer()", 1)[1].split(
         "function handleCompactMinimizeRequest()",
         1,
     )[0]
-    assert "compactMinimizeBallIconAnchor = null;" in cancel_block
+    assert "compactMinimizeBallTargetAnchor = null;" in cancel_block
 
     minimize_block = script.split("function handleCompactMinimizeRequest()", 1)[1].split(
         "function handleMiniGameInviteChoice(option)",
         1,
     )[0]
-    assert "rememberCompactMinimizeBallIconAnchor();" in minimize_block
+    assert "rememberCompactMinimizeBallTargetAnchor();" in minimize_block
 
     target_block = script.split("function getMinimizedTarget(rect)", 1)[1].split(
         "function getExpandedTargetFromSavedState()",
         1,
     )[0]
-    assert "getMinimizedTargetFromCompactIcon(consumeCompactMinimizeBallIconAnchor())" in target_block
-    assert "if (iconTarget) return iconTarget;" in target_block
+    assert "getMinimizedTargetFromCompactAnchor(consumeCompactMinimizeBallTargetAnchor())" in target_block
+    assert "if (compactTarget) return compactTarget;" in target_block
+
+
+def test_compact_minimize_collapse_origin_matches_target():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    collapse_block = script.split("// ---- 折叠动画", 1)[1].split(
+        "// ---- 展开动画",
+        1,
+    )[0]
+
+    assert "var originDenomX = 1 - sx;" in collapse_block
+    assert "originX = (targetLeft - rect.left) / originDenomX;" in collapse_block
+    assert "originY = (targetTop - rect.top) / originDenomY;" in collapse_block
+    assert "shell.style.transformOrigin = originX + 'px ' + originY + 'px';" in collapse_block
+    assert "shell.style.removeProperty('transform-origin');" in collapse_block
 
 
 def test_desktop_compact_layout_change_resets_anchor_only_when_base_surface_changes():
