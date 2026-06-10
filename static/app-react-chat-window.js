@@ -3210,6 +3210,7 @@
     var COMPACT_MINIMIZE_PRESS_MS = 280; // = neko-compact-collapse-wipe 擦除时长：擦完再瞬时折叠
     var compactMinimizePressTimer = 0;
     var compactMinimizeCancelSeq = 0; // 折叠取消序号（见 clearCompactMinimizePressTimer），传给 React
+    var compactMinimizeBallIconAnchor = null;
     // 清掉挂起的「按下挤压→瞬时折叠」延时。窗口关闭/动画取消时必须调用，否则这个
     // 跨 280ms 存活的回调会在窗口已关闭/重开后仍 setChatSurfaceMode('minimized')，
     // 把更新后的状态覆盖成「幽灵最小化」（CodeRabbit Minor / Codex P2）。
@@ -3217,6 +3218,7 @@
         if (!compactMinimizePressTimer) return;
         window.clearTimeout(compactMinimizePressTimer);
         compactMinimizePressTimer = 0;
+        compactMinimizeBallIconAnchor = null;
         // 真清掉一个 pending 折叠延时 = 一次进行中的折叠被取消（如 280ms 内 closeWindow）。
         // 递增序号；buildRenderProps 把它当 prop 传给 React，让组件在重开时立即复位
         // compactCollapsing，而不必等 600ms 兜底——否则快速「关→重开」会让 compact 表面带着擦除
@@ -3224,6 +3226,7 @@
         compactMinimizeCancelSeq += 1;
     }
     function handleCompactMinimizeRequest() {
+        rememberCompactMinimizeBallIconAnchor();
         // reduced-motion：折叠擦除/按压挤压动画已被 CSS（@media prefers-reduced-motion: reduce）
         // 禁用，此时再延时 COMPACT_MINIMIZE_PRESS_MS(280ms) 才折叠，只会让窗口「点了没反应」一段，
         // 无任何动画反馈。无障碍模式下直接立即折叠，保持即时响应（Codex P2）。
@@ -4478,22 +4481,64 @@
 
     // ── End idle-dock ────────────────────────────────────────────
 
+    function getCompactMinimizeBallIconRect() {
+        var root = getRoot();
+        var icon = root
+            ? root.querySelector('.compact-chat-minimize-ball-icon')
+            : document.querySelector('.compact-chat-minimize-ball-icon');
+        if (!icon || typeof icon.getBoundingClientRect !== 'function') return null;
+        return normalizeCompactDomRect(icon.getBoundingClientRect());
+    }
+
+    function rememberCompactMinimizeBallIconAnchor() {
+        compactMinimizeBallIconAnchor = null;
+        if (getCurrentChatSurfaceMode() !== 'compact') return null;
+        compactMinimizeBallIconAnchor = getCompactMinimizeBallIconRect();
+        return compactMinimizeBallIconAnchor;
+    }
+
+    function consumeCompactMinimizeBallIconAnchor() {
+        var iconRect = normalizeCompactDomRect(compactMinimizeBallIconAnchor);
+        compactMinimizeBallIconAnchor = null;
+        return iconRect;
+    }
+
+    function getMinimizedTargetFromCompactIcon(iconRect) {
+        iconRect = normalizeCompactDomRect(iconRect);
+        if (!iconRect) return null;
+        return {
+            width: MINIMIZED_SIZE,
+            height: MINIMIZED_SIZE,
+            left: Math.max(
+                0,
+                Math.min(
+                    Math.round(iconRect.left + iconRect.width / 2 - MINIMIZED_SIZE / 2),
+                    window.innerWidth - MINIMIZED_SIZE
+                )
+            ),
+            top: Math.max(
+                0,
+                Math.min(
+                    Math.round(iconRect.top + iconRect.height / 2 - MINIMIZED_SIZE / 2),
+                    window.innerHeight - MINIMIZED_SIZE
+                )
+            )
+        };
+    }
+
     // 返回最小化后 shell 应达到的像素几何。
-    // 桌面：50x50 圆球，锚定在对话框原左下角（clamp 到视口内）。
-    // 手机：全宽底部胶囊，贴屏幕底边（类似移动 App 的底栏收起态）。
-    // 由于 collapse/expand 动画的 transform-origin = 0% 100%（左下角），
-    // target.left 应等于 rect.left 同列，target 底边应与 rect 底边对齐
-    // （即 target.top = rect.bottom - target.height），这样动画过程中底边不漂移。
+    // compact 折叠时，优先锚定到 React frame 内的毛线球图标本身；React 在切到 minimized
+    // 后会卸载 compact surface，所以点击入口要先记录 icon rect。拿不到 icon rect 时才退回
+    // shell 左下角 fallback。
     function getMinimizedTarget(rect) {
-        // Both full and compact collapse to the surface's OWN bottom-left corner:
-        // the dialog folds toward its bottom-left pivot (transform-origin 0% 100%)
-        // and the orb appears right there — NOT compact's avatar/cat dock
-        // (getCompactMinimizeBallTarget) and without the cat-leaning
-        // MINIMIZED_DOWN_OFFSET. This is the pre-#1506 in-place behaviour.
-        // Best-effort for compact: the orb stays where the bar was; carrying a
-        // dragged-orb position into the next expand is the deferred follow-up
-        // (needs the compact surface to become a free-positioned window).
-        // Web-only — Electron short-circuits in setMinimized before this runs.
+        var iconTarget = isLegacyFullMinimizedBall()
+            ? null
+            : getMinimizedTargetFromCompactIcon(consumeCompactMinimizeBallIconAnchor());
+        if (iconTarget) return iconTarget;
+
+        // Fallback: collapse to the surface's own bottom-left corner. This keeps
+        // legacy full behavior and covers compact cases where the inline yarn
+        // icon was not measurable.
         return {
             width: MINIMIZED_SIZE,
             height: MINIMIZED_SIZE,

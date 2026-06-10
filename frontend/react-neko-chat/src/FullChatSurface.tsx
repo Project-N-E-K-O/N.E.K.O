@@ -1411,7 +1411,7 @@ export default function FullChatSurface({
         : compactSpeechPreservedText || compactMessagePreview?.fullText || ''
     )
     : compactMessagePreview?.text
-    || i18n('chat.emptyState', 'Chat content will appear here.');
+    || i18n('chat.emptyState', '现在开始跟我聊天吧！');
   const compactPreviewIsStreaming = compactSpeechModeActive;
   const compactPreviewSpeechDuration = useMemo(() => {
     if (!compactPreviewIsStreaming || !speechPlaybackState) {

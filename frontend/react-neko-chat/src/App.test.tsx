@@ -1876,7 +1876,7 @@ describe('App', () => {
       <App chatSurfaceMode="compact" composerHidden messages={[assistantMessage, userMessage]} />,
     );
 
-    expect(container.querySelector('.compact-chat-capsule-button')).toHaveTextContent('Chat content will appear here.');
+    expect(container.querySelector('.compact-chat-capsule-button')).toHaveTextContent('现在开始跟我聊天吧！');
     expect(container.querySelector('.compact-chat-capsule-button')).not.toHaveTextContent('先看我这边的引导内容');
     expect(container.querySelector('.compact-chat-capsule-button')).not.toHaveTextContent('这是我刚刚发出的内容');
   });
@@ -3162,7 +3162,7 @@ describe('App', () => {
 
     const preview = container.querySelector('.compact-chat-capsule-text');
     expect(preview).toHaveAttribute('data-compact-preview-streaming', 'false');
-    expect(preview).toHaveTextContent('Chat content will appear here.');
+    expect(preview).toHaveTextContent('现在开始跟我聊天吧！');
     expect(preview).not.toHaveTextContent(settledText.slice(0, 20));
   });
 
@@ -3387,7 +3387,7 @@ describe('App', () => {
     );
 
     const capsule = container.querySelector('.compact-chat-capsule-button');
-    expect(capsule).toHaveTextContent('Chat content will appear here.');
+    expect(capsule).toHaveTextContent('现在开始跟我聊天吧！');
     fireEvent.click(capsule as Element);
 
     expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'default');

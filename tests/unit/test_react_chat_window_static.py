@@ -562,12 +562,22 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
         '.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] '
         '.compact-input-tool-toggle:hover'
     ) in styles
+    assert "--compact-chat-minimize-ball-slot: 51px;" in styles
+    fixed_ball_block = css_block(
+        styles,
+        ".compact-chat-surface-frame > .compact-chat-minimize-ball {",
+        ".compact-chat-capsule-button",
+    )
+    assert "position: absolute;" in fixed_ball_block
+    assert "left: 2px;" in fixed_ball_block
+    assert "top: 50%;" in fixed_ball_block
+    assert "transform: translateY(-50%);" in fixed_ball_block
     assert "width: auto;" in compact_input_block
     assert "min-width: 0;" in compact_input_block
     assert "padding: 10px 8px 10px 0;" in compact_input_block
-    assert 'padding: 5px 62px 5px 2px;' in styles
+    assert 'padding: 5px 62px 5px var(--compact-chat-minimize-ball-slot);' in styles
     assert '.compact-chat-surface-frame[data-compact-chat-state="input"]' in compact_mobile_block
-    assert 'padding: 5px 62px 5px 18px;' in compact_mobile_block
+    assert 'padding: 5px 62px 5px var(--compact-chat-minimize-ball-slot);' in compact_mobile_block
     assert 'padding: 5px 8px 5px 18px;' not in compact_mobile_block
     assert '.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"]:not([data-compact-chat-state="input"])' in styles
     assert 'padding-right: 62px;' in styles
@@ -783,6 +793,36 @@ def test_moved_drag_suppresses_trailing_release_click():
         1,
     )[1]
     assert "document.addEventListener('click', consumeDragReleaseClickGuard, true);" in listeners_block
+
+
+def test_compact_minimize_targets_inline_yarn_ball_icon():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    assert "var compactMinimizeBallIconAnchor = null;" in script
+    assert "function getCompactMinimizeBallIconRect()" in script
+    assert "root.querySelector('.compact-chat-minimize-ball-icon')" in script
+    assert "function getMinimizedTargetFromCompactIcon(iconRect)" in script
+    assert "Math.round(iconRect.left + iconRect.width / 2 - MINIMIZED_SIZE / 2)" in script
+    assert "Math.round(iconRect.top + iconRect.height / 2 - MINIMIZED_SIZE / 2)" in script
+
+    cancel_block = script.split("function clearCompactMinimizePressTimer()", 1)[1].split(
+        "function handleCompactMinimizeRequest()",
+        1,
+    )[0]
+    assert "compactMinimizeBallIconAnchor = null;" in cancel_block
+
+    minimize_block = script.split("function handleCompactMinimizeRequest()", 1)[1].split(
+        "function handleMiniGameInviteChoice(option)",
+        1,
+    )[0]
+    assert "rememberCompactMinimizeBallIconAnchor();" in minimize_block
+
+    target_block = script.split("function getMinimizedTarget(rect)", 1)[1].split(
+        "function getExpandedTargetFromSavedState()",
+        1,
+    )[0]
+    assert "getMinimizedTargetFromCompactIcon(consumeCompactMinimizeBallIconAnchor())" in target_block
+    assert "if (iconTarget) return iconTarget;" in target_block
 
 
 def test_desktop_compact_layout_change_resets_anchor_only_when_base_surface_changes():
