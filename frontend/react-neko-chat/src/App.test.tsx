@@ -1712,6 +1712,61 @@ describe('App', () => {
     }
   });
 
+  it('updates compact choice surface vars before applying forced desktop placement', async () => {
+    const desktopWindow = window as typeof window & { __nekoDesktopCompactLayout?: unknown };
+    const originalDesktopLayout = desktopWindow.__nekoDesktopCompactLayout;
+    desktopWindow.__nekoDesktopCompactLayout = {
+      compactChoicePlacement: 'above',
+    };
+
+    try {
+      const { container } = render(
+        <App
+          chatSurfaceMode="compact"
+          galgameModeEnabled
+          galgameOptions={[
+            { label: 'A', text: 'Option A' },
+            { label: 'B', text: 'Option B' },
+          ]}
+        />,
+      );
+
+      const shell = container.querySelector('.compact-chat-surface-shell');
+      const choiceLayer = document.body.querySelector<HTMLElement>('body > .compact-chat-choice-anchor');
+      expect(shell).not.toBeNull();
+      expect(choiceLayer).not.toBeNull();
+
+      Object.defineProperty(shell!, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({
+          x: 0,
+          y: 0,
+          top: 72,
+          left: 18,
+          right: 448,
+          bottom: 154,
+          width: 430,
+          height: 82,
+          toJSON: () => ({}),
+        }),
+      });
+
+      fireEvent(window, new Event('resize'));
+
+      await waitFor(() => {
+        expect(choiceLayer).toHaveAttribute('data-compact-choice-placement', 'above');
+        expect(choiceLayer).toHaveStyle({
+          '--compact-choice-surface-top': '72px',
+          '--compact-choice-surface-left': '18px',
+          '--compact-choice-surface-width': '430px',
+          '--compact-choice-surface-height': '82px',
+        });
+      });
+    } finally {
+      desktopWindow.__nekoDesktopCompactLayout = originalDesktopLayout;
+    }
+  });
+
   it('repositions compact galgame options when the compact surface moves after opening', async () => {
     const originalInnerHeight = window.innerHeight;
     Object.defineProperty(window, 'innerHeight', {

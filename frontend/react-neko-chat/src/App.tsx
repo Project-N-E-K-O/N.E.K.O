@@ -2659,12 +2659,12 @@ function CompactChatApp({
       const desktopForcedPlacement = ((window as typeof window & {
         __nekoDesktopCompactLayout?: DesktopCompactChoicePlacementLayout | null;
       }).__nekoDesktopCompactLayout?.compactChoicePlacement);
+      const shellRect = nextShellNode.getBoundingClientRect();
+      syncChoiceLayerSurfaceVars(shellRect, nextLayerNode);
       if (desktopForcedPlacement === 'above' || desktopForcedPlacement === 'below') {
         setCompactChoiceLayerPlacement(current => (current === desktopForcedPlacement ? current : desktopForcedPlacement));
         return;
       }
-      const shellRect = nextShellNode.getBoundingClientRect();
-      syncChoiceLayerSurfaceVars(shellRect, nextLayerNode);
       const layerRect = nextLayerNode.getBoundingClientRect();
       const layerHeight = Math.max(layerRect.height, nextLayerNode.scrollHeight);
       const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
