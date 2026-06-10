@@ -1013,6 +1013,23 @@ def test_jukebox_manager_bindings_filter_hidden_songs(mock_page: Page):
     assert mock_page.locator('.bindings-panel .actions-for-drop .sam-binding-tag-small', has_text="Visible Song").count() == 1
     assert mock_page.locator('.bindings-panel .actions-for-drop .sam-binding-tag-small', has_text="Hidden Song").count() == 0
 
+    mock_page.locator("#select-all-binding-songs").click()
+    selected_state = mock_page.evaluate(
+        """
+        () => {
+          const SAM = window.Jukebox.SongActionManager;
+          return {
+            source: Array.from(SAM.bindingSourceSongs).sort(),
+            selected: Array.from(SAM.bindingSelectedSongs).sort()
+          };
+        }
+        """
+    )
+    assert selected_state == {
+        "source": ["visibleSong"],
+        "selected": ["visibleSong"],
+    }
+
 
 @pytest.mark.frontend
 def test_jukebox_manager_long_song_name_scrolls_without_pushing_actions(mock_page: Page):

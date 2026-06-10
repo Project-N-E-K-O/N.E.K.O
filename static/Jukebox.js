@@ -2111,7 +2111,7 @@ window.Jukebox = {
     toggleSelectAllBindingSongs(checked) {
       this.ensureBindingSelectionState();
       
-      Object.keys(this.data.songs).forEach(songId => {
+      this.getVisibleSongEntries().forEach(([songId]) => {
         if (checked) {
           this.bindingSourceSongs.add(songId);
         } else {
