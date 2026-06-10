@@ -20,6 +20,7 @@ let _resolvedProviderUrls = {};
 let _coreApiKeyInputDirty = false;
 // 保存/检测期间锁住设置页，避免用户中途关闭或重复操作
 let _apiSaveInProgress = false;
+let _lastEligibleAssistProvider = '';
 // 本页已提醒过的阿里美国 API URL，避免同一轮检测重复弹窗。
 const _aliyunUsApiWarningShownKeys = new Set();
 
@@ -1265,6 +1266,7 @@ async function loadCurrentApiKey() {
                     const optionExists = Array.from(assistApiSelect.options).some(opt => opt.value === data.assistApi);
                     if (optionExists) {
                         assistApiSelect.value = data.assistApi;
+                        rememberEligibleAssistProvider(data.assistApi);
                         syncProviderSelectDropdowns(assistApiSelect);
                     }
                 } else {
@@ -1686,6 +1688,12 @@ function updateAssistApiKeyInputAvailability() {
     assistApiKeyInput.placeholder = window.t ? window.t('api.assistApiKeyPlaceholder') : '留空使用管理簿对应 Key';
     if (isFreeVersionText(getRealKey(assistApiKeyInput))) {
         setMaskedInput(assistApiKeyInput, '');
+    }
+}
+
+function rememberEligibleAssistProvider(providerKey) {
+    if (providerKey && providerKey !== 'free') {
+        _lastEligibleAssistProvider = providerKey;
     }
 }
 
@@ -2361,15 +2369,23 @@ function updateAssistApiRecommendation(options = {}) {
             freeOption.textContent = window.t ? window.t('api.freeVersionOnlyWhenCoreFree') : '免费版（仅核心API为免费版时可用）';
         }
         // If assist is still stuck on 'free' (now disabled), switch to a valid provider
-        if (!preserveAssistProvider && assistApiSelect.value === 'free') {
-            // Prefer qwen as default, otherwise pick first non-free enabled option
-            const qwenOpt = assistApiSelect.querySelector('option[value="qwen"]');
-            if (qwenOpt && !qwenOpt.disabled) {
-                assistApiSelect.value = 'qwen';
+        if (assistApiSelect.value === 'free') {
+            const rememberedOpt = preserveAssistProvider && _lastEligibleAssistProvider
+                ? assistApiSelect.querySelector(`option[value="${_lastEligibleAssistProvider}"]`)
+                : null;
+            if (rememberedOpt && !rememberedOpt.disabled) {
+                assistApiSelect.value = _lastEligibleAssistProvider;
             } else {
-                const validOpt = Array.from(assistApiSelect.options).find(o => !o.disabled && o.value !== 'free');
-                if (validOpt) assistApiSelect.value = validOpt.value;
+                // Prefer qwen as default, otherwise pick first non-free enabled option
+                const qwenOpt = assistApiSelect.querySelector('option[value="qwen"]');
+                if (qwenOpt && !qwenOpt.disabled) {
+                    assistApiSelect.value = 'qwen';
+                } else {
+                    const validOpt = Array.from(assistApiSelect.options).find(o => !o.disabled && o.value !== 'free');
+                    if (validOpt) assistApiSelect.value = validOpt.value;
+                }
             }
+            rememberEligibleAssistProvider(assistApiSelect.value);
             autoFillAssistApiKey(true);
             // Directly recompute follow_assist slots (avoid redundant handler call)
             MODEL_TYPES.forEach(mt => {
@@ -2378,6 +2394,8 @@ function updateAssistApiRecommendation(options = {}) {
                     onCustomModelProviderChange(mt);
                 }
             });
+        } else {
+            rememberEligibleAssistProvider(assistApiSelect.value);
         }
     }
 
