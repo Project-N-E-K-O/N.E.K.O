@@ -500,7 +500,7 @@ async def upload_songs(
 
 @router.post("/songs/batch-delete")
 async def batch_delete_songs(request: BatchDeleteSongsRequest):
-    """批量删除歌曲。用户歌曲删除，内置歌曲改为隐藏。"""
+    """Delete uploaded songs and hide built-in songs in one validated batch."""
     config_mgr = get_config_manager()
     jukebox_config = JukeboxConfig(config_mgr)
 
@@ -626,7 +626,7 @@ async def update_song_visibility(song_id: str, visible: bool = Form(...)):
 
 @router.put("/actions/{action_id}/visibility")
 async def update_action_visibility(action_id: str, visible: bool = Form(...)):
-    """更新动画可见性"""
+    """Update an action visibility flag."""
     config_mgr = get_config_manager()
     jukebox_config = JukeboxConfig(config_mgr)
 
@@ -827,7 +827,7 @@ def _remove_action_bindings(jukebox_config: JukeboxConfig, action_id: str) -> No
 
 @router.post("/actions/batch-delete")
 async def batch_delete_actions(request: BatchDeleteActionsRequest):
-    """批量删除动画。用户动画删除，内置动画改为隐藏。"""
+    """Delete uploaded actions and hide built-in actions in one validated batch."""
     config_mgr = get_config_manager()
     jukebox_config = JukeboxConfig(config_mgr)
 
