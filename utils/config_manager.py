@@ -3574,12 +3574,12 @@ class ConfigManager:
         config['ASSIST_API_KEY_KIMI'] = core_cfg.get('assistApiKeyKimi', '') or _fb('kimi')
         config['ASSIST_API_KEY_DEEPSEEK'] = core_cfg.get('assistApiKeyDeepseek', '') or _fb('deepseek')
         config['ASSIST_API_KEY_DOUBAO'] = core_cfg.get('assistApiKeyDoubao', '') or _fb('doubao')
-        # MiniMax 是 assist-only（TTS 专用），不在 coreApi 候选集里，
-        # coreApiKey 永远不是 minimax 兼容的；不 fallback，以免把无效 key
-        # 塞进 TTS 凭证槽位导致 401，掩盖"未配置 minimax key"的真实提示。
+        # MiniMax / MiMo 是 assist-only TTS provider，coreApiKey 不保证兼容；
+        # 不 fallback，以免把无效 key 塞进 TTS 凭证槽位导致 401，
+        # 掩盖"未配置 TTS provider key"的真实提示。
         config['ASSIST_API_KEY_MINIMAX'] = core_cfg.get('assistApiKeyMinimax', '')
         config['ASSIST_API_KEY_MINIMAX_INTL'] = core_cfg.get('assistApiKeyMinimaxIntl', '')
-        config['ASSIST_API_KEY_MIMO'] = core_cfg.get('assistApiKeyMimo', '') or _fb('mimo')
+        config['ASSIST_API_KEY_MIMO'] = core_cfg.get('assistApiKeyMimo', '')
         config['ASSIST_API_KEY_ELEVENLABS'] = core_cfg.get('assistApiKeyElevenlabs', '')
         config['ASSIST_API_KEY_GROK'] = core_cfg.get('assistApiKeyGrok', '') or _fb('grok')
         config['ASSIST_API_KEY_CLAUDE'] = core_cfg.get('assistApiKeyClaude', '') or _fb('claude')

@@ -876,15 +876,15 @@ class TestVoiceCloneKeyResolution:
         assert key is None
 
     @pytest.mark.unit
-    def test_mimo_tts_key_falls_back_when_selected(self, config_manager):
-        """Selected MiMo assist API falls back to the core API key."""
+    def test_mimo_tts_key_does_not_fallback_when_selected(self, config_manager):
+        """Selected MiMo assist API still requires an explicit MiMo key."""
         _write_core_config(config_manager, {
             'coreApiKey': 'sk-core-master',
             'coreApi': 'qwen',
             'assistApi': 'mimo',
         })
         key = config_manager.get_tts_api_key('mimo')
-        assert key == 'sk-core-master'
+        assert key is None
 
     @pytest.mark.unit
     def test_cosyvoice_tts_key_from_custom_config(self, config_manager):
