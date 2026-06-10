@@ -13,6 +13,9 @@ supported = ">=0.1.0,<0.3.0"
 default_locale = "en"
 locales_dir = "i18n"
 
+[plugin.store]
+enabled = true
+
 [plugin.ui]
 enabled = true
 

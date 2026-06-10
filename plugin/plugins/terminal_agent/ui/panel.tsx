@@ -3,7 +3,6 @@ import {
   Card,
   Stack,
   Text,
-  Input,
   Button,
   StatusBadge,
   useRef,
@@ -63,6 +62,7 @@ export default function TerminalPanel(props: PluginSurfaceProps<TerminalState>) 
     try {
       setCommandHistory((prev) => [...prev, command])
       await props.api.call("execute_command", { command: command.trim() })
+      await props.api.refresh()
       setCommand("")
       setHistoryIndex(-1)
     } catch (err) {
@@ -70,7 +70,7 @@ export default function TerminalPanel(props: PluginSurfaceProps<TerminalState>) 
     }
   }
 
-  function handleKeyDown(e: React.KeyboardEvent) {
+  function handleKeyDown(e: KeyboardEvent) {
     if (e.key === "Enter") {
       handleExecute()
     } else if (e.key === "ArrowUp") {
@@ -97,6 +97,7 @@ export default function TerminalPanel(props: PluginSurfaceProps<TerminalState>) 
     if (!clearAction) return
     try {
       await props.api.call("clear_terminal")
+      await props.api.refresh()
       setCommandHistory([])
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
@@ -163,10 +164,13 @@ export default function TerminalPanel(props: PluginSurfaceProps<TerminalState>) 
             fontFamily: '"JetBrains Mono", monospace',
             padding: "8px 0",
           }}>$</span>
-          <Input
+          {/* hosted ui-kit 的 Input 不透传 onKeyDown/ref，回车执行与历史翻页必须用原生 input */}
+          <input
             ref={inputRef}
+            className="neko-input"
             value={command}
-            onChange={(value) => setCommand(value)}
+            onInput={(e: Event) => setCommand((e.target as HTMLInputElement).value)}
+            onCompositionEnd={(e: Event) => setCommand((e.target as HTMLInputElement).value)}
             onKeyDown={handleKeyDown}
             placeholder={t("panel.placeholder")}
             style={{ flex: 1 }}

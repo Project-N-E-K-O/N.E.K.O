@@ -21,7 +21,6 @@ from plugin.sdk.plugin import (
     Ok,
     Err,
     SdkError,
-    PluginStore,
 )
 
 
@@ -36,33 +35,34 @@ class TerminalState:
 class TerminalAgentPlugin(NekoPluginBase):
     """终端 Agent 插件"""
 
+    MAX_HISTORY = 50
+
     def __init__(self, ctx):
         super().__init__(ctx)
         self._state = TerminalState()
-        self._store = PluginStore(ctx)
         self._history_lock = asyncio.Lock()
-        self._load_history()
 
     async def _load_history(self):
         try:
-            result = await self._store.get("terminal_history", [])
+            result = await self.store.get("terminal_history", [])
             if hasattr(result, "value"):
                 history = result.value
             else:
                 history = result
             if isinstance(history, list):
-                self._state.history = history[:50]
+                self._state.history = history[-self.MAX_HISTORY:]
         except Exception as e:
             self.ctx.logger.debug(f"Failed to load history: {e}")
 
     async def _save_history(self):
         try:
-            await self._store.set("terminal_history", self._state.history[-50:])
+            await self.store.set("terminal_history", self._state.history[-self.MAX_HISTORY:])
         except Exception as e:
             self.ctx.logger.debug(f"Failed to save history: {e}")
 
     @lifecycle(id="startup")
     async def on_startup(self, **_):
+        await self._load_history()
         self.ctx.logger.info("TerminalAgentPlugin started")
         return Ok({"status": "ready"})
 
@@ -105,13 +105,21 @@ class TerminalAgentPlugin(NekoPluginBase):
             return Err(SdkError("Command cannot be empty"))
 
         command = command.strip()
-        
+
+        # clear 在 append 之前短路，否则清空后又会落一条输出，终端永远清不空
+        if command.lower() == "clear":
+            async with self._history_lock:
+                self._state.history = []
+                await self._save_history()
+            return Ok({"command": command, "response": "Terminal cleared"})
+
         async with self._history_lock:
             self._state.history.append({
                 "type": "input",
                 "content": command,
                 "timestamp": asyncio.get_event_loop().time(),
             })
+            self._state.history = self._state.history[-self.MAX_HISTORY:]
 
         response = await self._process_command(command)
 
@@ -121,6 +129,7 @@ class TerminalAgentPlugin(NekoPluginBase):
                 "content": response,
                 "timestamp": asyncio.get_event_loop().time(),
             })
+            self._state.history = self._state.history[-self.MAX_HISTORY:]
             await self._save_history()
 
         self._send_to_catgirl(command, response)
@@ -161,11 +170,6 @@ Available commands:
   help        - Show this help message
   clear       - Clear terminal history
             """.strip()
-        
-        elif command_lower == "clear":
-            self._state.history = []
-            await self._save_history()
-            return "Terminal cleared"
         
         else:
             return f"Unknown command: {command}\nType 'help' for available commands"
