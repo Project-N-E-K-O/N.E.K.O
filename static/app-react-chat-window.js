@@ -4675,9 +4675,6 @@
     }
 
     function cycleChatSurfaceMode() {
-        if (isMinimizeTransitioning) {
-            return getCurrentChatSurfaceMode();
-        }
         return setChatSurfaceMode(getNextChatSurfaceMode(getCurrentChatSurfaceMode()));
     }
 
