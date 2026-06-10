@@ -684,6 +684,67 @@ def test_jukebox_playback_ignores_hidden_bound_actions(mock_page: Page):
 
 
 @pytest.mark.frontend
+def test_jukebox_manager_add_binding_index_uses_visible_actions(mock_page: Page):
+    mock_page.set_content(HARNESS_HTML)
+    mock_page.evaluate(
+        """
+        () => {
+          window.t = (key, fallback) => typeof fallback === 'string' ? fallback : key;
+          window.fetch = () => Promise.reject(new Error('fetch should not be called in this test'));
+        }
+        """
+    )
+    mock_page.add_script_tag(content=JUKEBOX_SCRIPT)
+    binding_state = mock_page.evaluate(
+        """
+        () => {
+          const SAM = window.Jukebox.SongActionManager;
+          SAM.data = {
+            songs: {
+              song1: { name: 'Song 1', artist: 'A', visible: true }
+            },
+            actions: {
+              hiddenAction: { name: 'Hidden Action', format: 'vmd', visible: false },
+              visibleAction: { name: 'Visible Action', format: 'vmd', visible: true }
+            },
+            bindings: {}
+          };
+          SAM.showHiddenActions = false;
+
+          const host = document.createElement('div');
+          host.innerHTML = '<button class="sam-add-binding-btn">+</button>';
+          document.body.appendChild(host);
+          const button = host.querySelector('button');
+
+          let captured = null;
+          SAM.bindSongToAction = (songId, actionId) => {
+            captured = { songId, actionId };
+          };
+
+          SAM.showAddBindingInput(button, 'song1', 'song');
+          const options = Array.from(document.querySelectorAll('.sam-add-binding-option'))
+            .map((node) => ({
+              id: node.dataset.id,
+              index: node.querySelector('.sam-add-binding-option-index').textContent,
+              name: node.querySelector('.sam-add-binding-option-name').textContent
+            }));
+
+          const input = document.querySelector('.sam-add-binding-input');
+          input.value = '1';
+          document.querySelector('.sam-add-binding-confirm').click();
+
+          return { options, captured };
+        }
+        """
+    )
+
+    assert binding_state == {
+        "options": [{"id": "visibleAction", "index": "1", "name": "Visible Action"}],
+        "captured": {"songId": "song1", "actionId": "visibleAction"},
+    }
+
+
+@pytest.mark.frontend
 def test_jukebox_manager_long_song_name_scrolls_without_pushing_actions(mock_page: Page):
     setup_song_manager_page(
         mock_page,

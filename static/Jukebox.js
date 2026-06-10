@@ -2303,15 +2303,15 @@ window.Jukebox = {
       btn.style.display = 'none';
       container.appendChild(inputWrapper);
 
-      // 获取可用项目（排除已绑定的）
-      const availableItems = isSong ? this.data.actions : this.data.songs;
+      // 获取可用项目（排除当前视图隐藏和已绑定的）
+      const availableEntries = isSong ? this.getVisibleActionEntries() : Object.entries(this.data.songs);
       const currentBindings = isSong
         ? (this.data.bindings[sourceId] || {})
         : this.getActionBindings(sourceId);
       const boundIds = new Set(isSong ? Object.keys(currentBindings) : currentBindings);
 
-      // 获取所有项目的原始序号映射
-      const allItemsWithIndex = Object.entries(availableItems)
+      // 获取当前视图项目的序号映射
+      const allItemsWithIndex = availableEntries
         .map(([id, item], index) => ({ id, item, originalIndex: index + 1 }));
 
       // 过滤：只排除已绑定的项目（被隐藏的歌曲也可以绑定）

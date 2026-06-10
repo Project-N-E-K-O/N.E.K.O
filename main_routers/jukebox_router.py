@@ -1120,6 +1120,9 @@ async def export_config(
 
             action = jukebox_config.data["actions"][action_id]
 
+            if not includeHidden and not action.get("visible", True):
+                continue
+
             # 处理自带资源：导出ID和MD5，但不打包文件
             if action.get("isBuiltin", False):
                 # 只导出必要信息（ID、MD5、名称等），不包含文件路径
@@ -1178,6 +1181,8 @@ async def export_config(
             for action_id, binding_data in jukebox_config.data["bindings"][song_id].items():
                 action = jukebox_config.data["actions"].get(action_id)
                 if not action:
+                    continue
+                if not includeHidden and not action.get("visible", True):
                     continue
 
                 action_md5 = action_id_to_md5.get(action_id, "")

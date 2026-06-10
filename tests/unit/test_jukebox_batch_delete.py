@@ -1,3 +1,6 @@
+import io
+import json
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -264,6 +267,75 @@ async def test_update_action_visibility_persists_hidden_state(monkeypatch, tmp_p
     assert result == {"success": True}
     assert fake.data["actions"]["builtin-action"]["visible"] is False
     assert fake.saved is True
+
+
+@pytest.mark.asyncio
+async def test_export_ignore_hidden_skips_hidden_actions_and_bindings(monkeypatch, tmp_path):
+    jukebox_dir = tmp_path / "jukebox"
+    songs_dir = jukebox_dir / "songs"
+    actions_dir = jukebox_dir / "actions"
+    songs_dir.mkdir(parents=True)
+    actions_dir.mkdir(parents=True)
+    (songs_dir / "song.mp3").write_bytes(b"audio")
+    (actions_dir / "visible.vmd").write_bytes(b"visible")
+    (actions_dir / "hidden.vmd").write_bytes(b"hidden")
+
+    fake = _FakeJukeboxConfig(
+        {
+            "version": "1.0",
+            "songs": {
+                "song-1": {
+                    "name": "Song 1",
+                    "audio": "songs/song.mp3",
+                    "audioMd5": "song-md5",
+                    "visible": True,
+                }
+            },
+            "actions": {
+                "visible-action": {
+                    "name": "Visible Action",
+                    "file": "actions/visible.vmd",
+                    "fileMd5": "visible-md5",
+                    "visible": True,
+                },
+                "hidden-action": {
+                    "name": "Hidden Action",
+                    "file": "actions/hidden.vmd",
+                    "fileMd5": "hidden-md5",
+                    "visible": False,
+                },
+            },
+            "bindings": {
+                "song-1": {
+                    "visible-action": {"offset": 1},
+                    "hidden-action": {"offset": 2},
+                }
+            },
+            "md5Index": {"songs": {}, "actions": {}},
+        },
+        jukebox_dir,
+    )
+    _install_fake_config(monkeypatch, fake)
+
+    response = await jukebox_router.export_config(songIds=None, actionIds=None, includeHidden=False)
+    archive_bytes = b"".join([chunk async for chunk in response.body_iterator])
+
+    with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
+        exported = json.loads(archive.read("config.json").decode("utf-8"))
+        archive_names = archive.namelist()
+
+    assert set(exported["actions"]) == {"visible-action"}
+    assert "hidden-action" not in exported["actions"]
+    assert exported["bindings"] == {
+        "song-md5": {
+            "visible-md5": {"offset": 1},
+        }
+    }
+    assert "actions/visible.vmd" in archive_names
+    assert "actions/hidden.vmd" not in archive_names
+
+    if response.background:
+        await response.background()
 
 
 @pytest.mark.asyncio
