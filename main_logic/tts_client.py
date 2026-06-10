@@ -4146,9 +4146,14 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     assist_api_type = str(core_cfg.get('assistApi') or '').strip().lower()
     if tts_provider == 'mimo' or assist_api_type == 'mimo':
         mimo_base_url = core_cfg.get('OPENROUTER_URL') if assist_api_type == 'mimo' else None
+        mimo_api_key = (cm.get_tts_api_key('mimo') or '').strip()
+        if not mimo_api_key:
+            logger.warning(
+                "MiMo TTS 已选中但 MiMo API Key 缺失，改用 dummy TTS worker 避免复用主 TTS Key")
+            return dummy_tts_worker, None, None
         return (
             partial(mimo_tts_worker, base_url=mimo_base_url),
-            cm.get_tts_api_key('mimo'),
+            mimo_api_key,
             'mimo',
         )
 

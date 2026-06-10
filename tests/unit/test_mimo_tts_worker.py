@@ -225,6 +225,36 @@ def test_get_tts_worker_routes_tts_provider_mimo_to_default_endpoint(monkeypatch
 
 
 @pytest.mark.unit
+def test_get_tts_worker_does_not_fallback_to_core_key_when_mimo_key_missing(monkeypatch):
+    class _CM:
+        def get_core_config(self):
+            return {
+                "assistApi": "qwen",
+                "OPENROUTER_URL": "https://api.xiaomimimo.com/v1",
+                "TTS_PROVIDER": "mimo",
+            }
+
+        def get_model_api_config(self, model_type):
+            return {"is_custom": False}
+
+        def get_tts_api_key(self, provider):
+            assert provider == "mimo"
+            return None
+
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM())
+
+    worker, api_key, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen",
+        has_custom_voice=False,
+        voice_id="",
+    )
+
+    assert worker is tts_client.dummy_tts_worker
+    assert api_key is None
+    assert provider_key is None
+
+
+@pytest.mark.unit
 def test_get_tts_worker_routes_mimo_before_custom_voice_fallback(monkeypatch):
     class _CM:
         def get_core_config(self):
