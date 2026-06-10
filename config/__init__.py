@@ -13,7 +13,7 @@ from config.prompts.prompts_chara import lanlan_prompt, get_lanlan_prompt, is_de
 
 # 应用程序名称与版本配置
 APP_NAME = "N.E.K.O"
-APP_VERSION = "0.8.1"
+APP_VERSION = "0.8.2"
 logger = logging.getLogger(f"{APP_NAME}.{__name__}")
 
 # GPT-SoVITS voice_id 前缀(角色管理中使用 "gsv:<voice_id>" 格式标识 GPT-SoVITS 声音)
@@ -50,6 +50,7 @@ CHARACTER_SYSTEM_RESERVED_FIELDS = (
     "mmd_idle_animation",
     "mmd_idle_animations",
     "touch_set",
+    "_field_order",
 )
 
 CHARACTER_WORKSHOP_RESERVED_FIELDS = (
@@ -79,6 +80,7 @@ def get_character_reserved_fields() -> tuple[str, ...]:
 RESERVED_FIELD_SCHEMA = {
     "voice_id": str,
     "system_prompt": str,
+    "field_order": list,
     "persona_override": {
         "preset_id": str,
         "selected_at": str,

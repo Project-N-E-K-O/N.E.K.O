@@ -7,11 +7,16 @@
 html,
 body {
     height: 100%;
+    min-height: 100vh;
+    width: 100%;
     margin: 0;
     padding: 0;
-    background: transparent;
+    background: #e1f4ff;
     color: #222;
     font-family: 'Segoe UI', Arial, sans-serif;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
 }
 
 .container {
@@ -22,7 +27,12 @@ body {
     box-shadow: none;
     padding: 0;
     position: relative;
-    min-height: 100vh;
+    height: 100%;
+    min-height: 0;
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    overflow: hidden;
 }
 
 body .container-header {
@@ -32,9 +42,10 @@ body .container-header {
     justify-content: space-between;
     align-items: center;
     border-radius: 0;
-    position: sticky;
+    position: relative;
     top: 0;
     z-index: 100;
+    flex: 0 0 auto;
     -webkit-app-region: drag;
 }
 
@@ -76,12 +87,13 @@ body .container-header {
 
 .container-header h2 {
     margin: 0;
-    font-size: 1.5rem;
+    font-size: clamp(0.9rem, 2.5vw, 1.5rem);
     font-weight: 600;
     position: relative;
     font-family: 'Comic Neue', 'Source Han Sans CN', 'Noto Sans SC', sans-serif;
     letter-spacing: 1px;
     color: transparent;
+    white-space: nowrap;
     --button-text-stroke-color: #22b3ff;
 }
 
@@ -138,7 +150,35 @@ body .container-header {
 .container-content {
     padding: 24px 32px;
     background: #e3f4ff;
-    border-radius: 0 0 20px 20px;
+    border-radius: 0;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(64, 197, 241, 0.65) rgba(179, 229, 252, 0.28);
+}
+
+.container-content::-webkit-scrollbar {
+    width: 10px;
+}
+
+.container-content::-webkit-scrollbar-track {
+    background: rgba(179, 229, 252, 0.28);
+    border-radius: 999px;
+}
+
+.container-content::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, #96e8ff 0%, #40C5F1 52%, #17A7FF 100%);
+    border: 2px solid rgba(255, 255, 255, 0.82);
+    border-radius: 999px;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65), 0 2px 6px rgba(64, 197, 241, 0.28);
+}
+
+.container-content::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, #baf2ff 0%, #4BD4FD 45%, #17A7FF 100%);
 }
 
 /* 顶部提示栏 */

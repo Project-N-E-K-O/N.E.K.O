@@ -236,31 +236,16 @@ def get_native_voice_catalog_for_ui(
     return provider.voice_catalog_for_ui()
 
 
-def resolve_native_voice_for_routing(
-    core_api_type: str | None,
-    voice_id: str | None,
-    voice_id_exists: VoiceIdExists | None = None,
-) -> tuple[str, bool]:
-    """Look up provider by core_api_type, then delegate to its resolver.
-
-    Returns (voice_or_input, use_native). When core_api_type isn't a
-    registered native-voice provider, returns the stripped input verbatim
-    with use_native=False so callers fall through to custom TTS routing.
-    """
-    provider = get_provider(core_api_type)
-    if provider is None:
-        return (voice_id or "").strip(), False
-    return provider.resolve_for_routing(voice_id, voice_id_exists)
-
-
 def is_free_lanlan_app_route(
     core_api_type: str | None,
     realtime_base_url: str | None,
 ) -> bool:
-    """是否为会被 lanlan.app 边缘强制映射为 Leda 的海外免费路由。
+    """是否为海外免费路由（core_api_type='free' 且 host 落在 lanlan.app 域）。
 
-    服务端忽略客户端传的 voice_id，硬覆盖成 Leda；这里集中识别"该路由下
-    voice 字段不应下发 / native catalog 不应暴露"的条件。
+    海外免费上游是 lanlan.app 的 Gemini 代理，可选音色是 Gemini 全量 + 品牌
+    yui，因此这条路由的"有效 native voice provider"不是阶跃系的 'free'，而是
+    'free_intl'（见 _effective_native_provider_key）。host 判定集中在这里，
+    避免散落到 cross-cutting 文件。
     """
     raw_url = str(realtime_base_url or "").strip()
     parsed = urlparse(raw_url if "://" in raw_url else f"//{raw_url}")
@@ -269,6 +254,45 @@ def is_free_lanlan_app_route(
         str(core_api_type or "").lower() == "free"
         and (hostname == "lanlan.app" or hostname.endswith(".lanlan.app"))
     )
+
+
+def _effective_native_provider_key(
+    core_api_type: str | None,
+    realtime_base_url: str | None,
+) -> str | None:
+    """把 (core_api_type, host) 归一化成实际查表用的 native voice provider key。
+
+    唯一的 host 依赖分歧：海外免费（free + *.lanlan.app）→ 'free_intl'
+    （Gemini 全量 + yui）。其余情况 provider key == core_api_type。集中在
+    registry 内做重映射，cross-cutting 调用方只需把 base_url 透传进来，不必
+    自己 if host == ...。
+    """
+    if is_free_lanlan_app_route(core_api_type, realtime_base_url):
+        return "free_intl"
+    return core_api_type
+
+
+def resolve_native_voice_for_routing(
+    core_api_type: str | None,
+    voice_id: str | None,
+    voice_id_exists: VoiceIdExists | None = None,
+    realtime_base_url: str | None = None,
+) -> tuple[str, bool]:
+    """Look up provider by core_api_type, then delegate to its resolver.
+
+    Returns (voice_or_input, use_native). When core_api_type isn't a
+    registered native-voice provider, returns the stripped input verbatim
+    with use_native=False so callers fall through to custom TTS routing.
+
+    传入 realtime_base_url 时，海外免费路由（free + *.lanlan.app）会被重映射
+    到 'free_intl'（Gemini 全量 + yui），让 yui / Gemini 音色在该路由下被认成
+    native；不传则按 core_api_type 原样查表（向后兼容旧调用与非 free 路由）。
+    """
+    provider_key = _effective_native_provider_key(core_api_type, realtime_base_url)
+    provider = get_provider(provider_key)
+    if provider is None:
+        return (voice_id or "").strip(), False
+    return provider.resolve_for_routing(voice_id, voice_id_exists)
 
 
 def is_free_preset_voice_id(voice_id: str | None) -> bool:
@@ -281,83 +305,17 @@ def is_free_preset_voice_id(voice_id: str | None) -> bool:
     return voice in set(get_free_voices().values())
 
 
-def should_block_free_preset_voice(
-    core_api_type: str | None,
-    voice_id: str | None,
-    realtime_base_url: str | None,
-) -> bool:
-    """lanlan.app/free 下屏蔽 free preset 音色（custom 音色不受影响）。"""
-    return bool(
-        is_free_lanlan_app_route(core_api_type, realtime_base_url)
-        and is_free_preset_voice_id(voice_id)
-    )
-
-
-def should_block_free_native_voice(
-    core_api_type: str | None,
-    voice_id: str | None,
-    realtime_base_url: str | None,
-    voice_id_exists: VoiceIdExists | None = None,
-) -> bool:
-    """lanlan.app/free 下屏蔽 Step/free 原生音色（避免被静默覆盖为 Leda）。"""
-    normalized = (voice_id or "").strip()
-    if not (normalized and is_free_lanlan_app_route(core_api_type, realtime_base_url)):
-        return False
-    _, uses_native = resolve_native_voice_for_routing("free", normalized, voice_id_exists)
-    return uses_native
-
-
-def should_block_free_voice_for_route(
-    core_api_type: str | None,
-    voice_id: str | None,
-    realtime_base_url: str | None,
-    voice_id_exists: VoiceIdExists | None = None,
-) -> bool:
-    """lanlan.app/free 下不下发 free preset 或 Step/free 原生音色。"""
-    normalized = (voice_id or "").strip()
-    return (
-        should_block_free_preset_voice(core_api_type, normalized, realtime_base_url)
-        or should_block_free_native_voice(
-            core_api_type, normalized, realtime_base_url, voice_id_exists
-        )
-    )
-
-
-def get_active_realtime_native_provider(cm: "ConfigManager") -> str | None:
-    """返回当前 realtime API 注册的 native voice provider key（route-agnostic）。
-
-    没有路由屏蔽 —— 仅看 api_type 是否对应已注册 provider。validate_voice_id
-    / cleanup_invalid_voice_ids 等校验链路用这一版：哪怕当前在 lanlan.app
-    海外免费路由（runtime 会被服务端覆盖成 Leda），也认 Step/free 原生音色
-    为合法保存值，避免用户切线路时 characters.json 里保存的 voice_id 被
-    silently 清空。
-
-    UI / preview 路径要"该路由下不展示不可用音色"语义的，用
-    `get_active_realtime_native_provider_for_ui`。
-    """
+def _read_realtime_api_type(cm: "ConfigManager") -> str | None:
     try:
-        realtime_config = cm.get_model_api_config('realtime')
-        api_type = realtime_config.get('api_type')
+        return cm.get_model_api_config('realtime').get('api_type')
     except Exception:
-        api_type = (cm.get_core_config() or {}).get('CORE_API_TYPE')
-    return api_type if api_type in _PROVIDERS else None
+        return (cm.get_core_config() or {}).get('CORE_API_TYPE')
 
 
-def get_active_realtime_native_provider_for_ui(cm: "ConfigManager") -> str | None:
-    """同 get_active_realtime_native_provider，但屏蔽 lanlan.app 海外免费路由。
-
-    /voices 端点和原生音色 preview 路径用这一版：lanlan.app 边缘会把
-    Step/free voice_id 映射为固定 Leda，UI 不应让用户选这些音色，preview
-    也不该走原生合成。
-    """
-    provider = get_active_realtime_native_provider(cm)
-    if provider is None:
-        return None
-
+def _read_realtime_base_url(cm: "ConfigManager") -> str:
     base_url = ""
     try:
-        realtime_config = cm.get_model_api_config('realtime')
-        base_url = str(realtime_config.get('base_url') or '')
+        base_url = str(cm.get_model_api_config('realtime').get('base_url') or '')
     except Exception:
         base_url = ""
     if not base_url:
@@ -365,10 +323,45 @@ def get_active_realtime_native_provider_for_ui(cm: "ConfigManager") -> str | Non
             base_url = str((cm.get_core_config() or {}).get('CORE_URL') or '')
         except Exception:
             base_url = ""
+    return base_url
 
-    if is_free_lanlan_app_route(provider, base_url):
-        return None
-    return provider
+
+def get_active_realtime_native_provider(cm: "ConfigManager") -> str | None:
+    """返回当前 realtime API 注册的 native voice provider key（route-agnostic）。
+
+    仅看 api_type 是否对应已注册 provider，不做 host 重映射 —— 海外免费下
+    api_type 仍是 'free'。validate / cleanup 这条链路用 route-agnostic 版叠加
+    `is_saveable_native_voice` 的 free_intl 候选，既认海外 Gemini/yui 音色，
+    又保留切线路时 Step 原生音色不被误清的宽容度。
+    """
+    api_type = _read_realtime_api_type(cm)
+    return api_type if api_type in _PROVIDERS else None
+
+
+def is_saveable_native_voice(cm: "ConfigManager", voice_id: str | None) -> bool:
+    """voice_id 是否是当前线路下可保存的 native 音色。
+
+    候选 provider = registered api_type（route-agnostic，避免用户切线路时把
+    characters.json 里存的 Step 原生音色误清）∪ host 重映射后的有效 provider
+    （海外免费叠加 free_intl 的 Gemini 全量 + yui）。命中任一即合法。
+    """
+    api_type = _read_realtime_api_type(cm)
+    base_url = _read_realtime_base_url(cm)
+    candidates = {api_type, _effective_native_provider_key(api_type, base_url)}
+    return any(is_native_voice(voice_id, key) for key in candidates if key)
+
+
+def get_active_realtime_native_provider_for_ui(cm: "ConfigManager") -> str | None:
+    """返回 /voices 端点和原生音色 preview 应展示的有效 provider key。
+
+    与 route-agnostic 版的差别：这里做 host 重映射 —— 海外免费（free +
+    *.lanlan.app）展示 'free_intl'（Gemini 全量 + yui），国内免费展示 'free'
+    （阶跃原生）。UI 只暴露该线路实际可用的音色目录。
+    """
+    api_type = _read_realtime_api_type(cm)
+    base_url = _read_realtime_base_url(cm)
+    key = _effective_native_provider_key(api_type, base_url)
+    return key if key in _PROVIDERS else None
 
 
 _BUILTIN_PROVIDER_MODULES: tuple[str, ...] = (
@@ -415,14 +408,17 @@ def get_native_tts_worker(
     """
     if not core_api_type:
         return None
-    provider = _PROVIDERS.get(core_api_type)
+    # host 重映射：海外免费（free + *.lanlan.app）的 yui/Gemini 音色走 free_intl
+    # worker（Gemini 代理），否则 provider key == core_api_type。
+    provider_key = _effective_native_provider_key(core_api_type, _read_realtime_base_url(cm))
+    provider = _PROVIDERS.get(provider_key)
     if provider is None or not provider.is_voice(voice_id):
         return None
-    resolver = _TTS_WORKER_RESOLVERS.get(core_api_type)
+    resolver = _TTS_WORKER_RESOLVERS.get(provider_key)
     if resolver is None:
         return None
     worker, api_key = resolver(cm)
-    return worker, api_key, core_api_type
+    return worker, api_key, provider_key
 
 
 # Auto-bootstrap on module import: any consumer of this registry gets a

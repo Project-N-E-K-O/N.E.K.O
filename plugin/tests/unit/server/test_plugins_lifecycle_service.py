@@ -268,7 +268,7 @@ async def test_start_plugin_refreshes_registry_before_loading(
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
         monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
-        monkeypatch.setattr(module.importlib, "import_module", lambda _: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin))
+        monkeypatch.setattr(module, "_import_plugin_module", lambda *args, **kwargs: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin))
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
         service = module.PluginLifecycleService()
@@ -340,7 +340,7 @@ async def test_start_plugin_checks_python_requirements_against_vendor_paths(
     monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
     monkeypatch.setattr(module, "_find_missing_python_requirements", _fake_find_missing)
     monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
-    monkeypatch.setattr(module.importlib, "import_module", lambda _: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin))
+    monkeypatch.setattr(module, "_import_plugin_module", lambda *args, **kwargs: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin))
     monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
     plugins_backup = copy.deepcopy(module.state.plugins)
@@ -437,7 +437,7 @@ async def test_start_plugin_persists_entries_preview_and_invalidates_stale_cache
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
         monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
-        monkeypatch.setattr(module.importlib, "import_module", lambda _: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin))
+        monkeypatch.setattr(module, "_import_plugin_module", lambda *args, **kwargs: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin))
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
         service = module.PluginLifecycleService()
@@ -527,7 +527,7 @@ async def test_start_plugin_logs_structured_config_warnings_from_resolver(
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
         monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
-        monkeypatch.setattr(module.importlib, "import_module", lambda _: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin))
+        monkeypatch.setattr(module, "_import_plugin_module", lambda *args, **kwargs: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin))
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
         monkeypatch.setattr(module, "logger", capture_logger)
 
@@ -639,7 +639,7 @@ async def test_start_plugin_allows_retry_for_load_failed_plugin(
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
         monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
-        monkeypatch.setattr(module.importlib, "import_module", lambda _: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin))
+        monkeypatch.setattr(module, "_import_plugin_module", lambda *args, **kwargs: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin))
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
         service = module.PluginLifecycleService()
@@ -749,7 +749,7 @@ async def test_start_plugin_passes_prebuilt_extension_configs_to_host(
             module.state.event_handlers.clear()
 
         monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
-        monkeypatch.setattr(module.importlib, "import_module", lambda _: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin))
+        monkeypatch.setattr(module, "_import_plugin_module", lambda *args, **kwargs: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin))
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
         service = module.PluginLifecycleService()
@@ -764,6 +764,7 @@ async def test_start_plugin_passes_prebuilt_extension_configs_to_host(
                 "ext_id": "demo_ext",
                 "ext_entry": "tests.fake_ext:DemoExtRouter",
                 "prefix": "/demo",
+                "config_path": str(ext_config_path.resolve()),
             }
         ]
 

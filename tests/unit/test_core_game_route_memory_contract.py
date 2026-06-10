@@ -1,7 +1,7 @@
 import asyncio
 from collections import deque
 import queue
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 
@@ -112,6 +112,8 @@ def _make_manager():
     mgr._takeover_input_dispatcher = None
     mgr.sent_responses = []
     mgr.user_activity = []
+    mgr.last_user_activity_time = None
+    mgr.last_user_message_time = None
 
     async def send_user_activity(interrupted_speech_id):
         mgr.user_activity.append(interrupted_speech_id)
@@ -336,6 +338,169 @@ async def test_no_takeover_voice_transcript_uses_ordinary_flow():
         "type": "user",
         "data": {"input_type": "transcript", "data": "普通语音"},
     }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_voice_transcript_runs_mini_game_invite_keyword(monkeypatch):
+    """语音口头回应 mini-game 邀请必须和打字 / 点按钮一样过关键词匹配器——否则
+    语音用户说"现在不想玩"永远触发不了 decline 冷却，会被下一个 proactive tick
+    当成隐式 dismiss（只抑制 5min），邀请反复重来。回归：handle_input_transcript
+    必须把原话喂给 dispatch_text_user_message（与文本路径对偶）。"""
+    mgr = _make_transcript_manager()
+    seen = []
+    monkeypatch.setattr(
+        core_module, "dispatch_text_user_message",
+        lambda name, text: seen.append((name, text)),
+    )
+
+    await core_module.LLMSessionManager.handle_input_transcript(
+        mgr, "  现在不想玩  ", is_voice_source=True,
+    )
+
+    # 传原话（未 strip），matcher 内部自己 lower+strip；与文本路径一致
+    assert seen == [("Lan", "  现在不想玩  ")]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_voice_transcript_keyword_outcome_pushes_invite_resolved(monkeypatch):
+    """关键词命中时，语音路径推 mini_game_invite_resolved 让前端 dismiss
+    ChoicePrompt（accept 兼带 game_url 当 launch 信号）。"""
+    mgr = _make_transcript_manager()
+    mgr.websocket = MagicMock()
+    mgr.websocket.send_json = AsyncMock()
+    fake_state = MagicMock()
+    fake_state.CONNECTED = fake_state
+    mgr.websocket.client_state = fake_state
+    monkeypatch.setattr(
+        core_module, "dispatch_text_user_message",
+        lambda name, text: {
+            "action": "open_game",
+            "session_id": "sid-1",
+            "game_url": "/soccer_demo?x=1",
+            "game_type": "soccer",
+        },
+    )
+
+    await core_module.LLMSessionManager.handle_input_transcript(
+        mgr, "好啊一起玩", is_voice_source=True,
+    )
+
+    mgr.websocket.send_json.assert_awaited_once()
+    payload = mgr.websocket.send_json.await_args.args[0]
+    assert payload == {
+        "type": "mini_game_invite_resolved",
+        "session_id": "sid-1",
+        "action": "open_game",
+        "game_url": "/soccer_demo?x=1",
+        "game_type": "soccer",
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_non_voice_transcript_skips_mini_game_invite_keyword(monkeypatch):
+    """非语音复用（openclaw 文本 handoff，is_voice_source=False）不重复跑关键词——
+    文本入口 _process_stream_data_internal 已经跑过一次，避免双触发。"""
+    mgr = _make_transcript_manager()
+    seen = []
+    monkeypatch.setattr(
+        core_module, "dispatch_text_user_message",
+        lambda name, text: seen.append((name, text)),
+    )
+
+    await core_module.LLMSessionManager.handle_input_transcript(
+        mgr, "现在不想玩", is_voice_source=False,
+    )
+
+    assert seen == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_genuine_voice_transcript_stamps_last_user_message_time(monkeypatch):
+    """真实非空语音消息既刷 last_user_activity_time 也刷 last_user_message_time。
+    后者喂给 mini-game 邀请隐式 dismiss，必须只反映真用户输入。"""
+    mgr = _make_transcript_manager()
+    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+
+    await core_module.LLMSessionManager.handle_input_transcript(
+        mgr, "今天天气不错", is_voice_source=True,
+    )
+
+    assert mgr.last_user_activity_time == FIXED_TS
+    assert mgr.last_user_message_time == FIXED_TS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ai_echo_transcript_does_not_stamp_last_user_message_time(monkeypatch):
+    """关键回归：AI 念邀请台词被麦克风录回的回声会刷 last_user_activity_time
+    （顶部无条件），但**不能**刷 last_user_message_time——否则语音模式下用户还
+    没点「现在不想玩」按钮，隐式 dismiss 就因回声误判用户已回应、把 pending 邀请
+    清掉撤按钮，用户随后点击落到 expired、邀请 5min 后反复重来。"""
+    mgr = _make_transcript_manager()
+    monkeypatch.setattr(core_module, "HIDE_DIRTY_VOICE_TRANSCRIPTS", True)
+    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    mgr._recent_ai_voice_echo_text = "要不要现在跟我一起踢一会儿足球小游戏？"
+    mgr._recent_ai_voice_echo_at = FIXED_TS
+
+    await core_module.LLMSessionManager.handle_input_transcript(
+        mgr, "要不要现在跟我一起踢一会儿足球小游戏", is_voice_source=True,
+    )
+
+    # 回声照样污染 last_user_activity_time（说明旧字段为何不能用于邀请判定）
+    assert mgr.last_user_activity_time == FIXED_TS
+    # 但真消息时间戳保持干净
+    assert mgr.last_user_message_time is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_empty_voice_transcript_does_not_stamp_last_user_message_time(monkeypatch):
+    """空转录（VAD 误触发 / 转录失败）刷 activity 但不刷真消息时间戳。"""
+    mgr = _make_transcript_manager()
+    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+
+    await core_module.LLMSessionManager.handle_input_transcript(
+        mgr, "   ", is_voice_source=True,
+    )
+
+    assert mgr.last_user_activity_time == FIXED_TS
+    assert mgr.last_user_message_time is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_last_user_message_time_uses_transcript_arrival_not_post_await(monkeypatch):
+    """takeover dispatcher 注册但未消费该转写时，last_user_message_time 必须用转写
+    到达时刻（await 之前），不能用 await 之后的 time.time()——否则 await 期间投递的
+    invite 会把 invite 之前的发言误记成之后的回应、提前清掉 pending invite（codex
+    P2）。time.time() 每次递增，断言两个时间戳都锁在首次（到达）取值 101。"""
+    mgr = _make_transcript_manager()
+    calls = {"n": 0}
+
+    def _ticking_time():
+        calls["n"] += 1
+        return 100.0 + calls["n"]
+
+    monkeypatch.setattr(core_module.time, "time", _ticking_time)
+    monkeypatch.setattr(core_module, "dispatch_text_user_message", lambda name, text: None)
+
+    async def _dispatcher(name, text, request_id=None):
+        core_module.time.time()  # 模拟 await 期间时钟流逝
+        return False             # 未处理 → 继续普通流程走到真消息块
+
+    mgr._takeover_input_dispatcher = _dispatcher
+    mgr.session = object()
+
+    await core_module.LLMSessionManager.handle_input_transcript(
+        mgr, "你好呀", is_voice_source=True,
+    )
+
+    assert mgr.last_user_activity_time == 101.0
+    assert mgr.last_user_message_time == 101.0
 
 
 @pytest.mark.unit

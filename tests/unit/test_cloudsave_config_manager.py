@@ -128,6 +128,98 @@ def test_ensure_cloudsave_state_files_raises_when_local_state_directory_init_fai
 
 
 @pytest.mark.unit
+def test_ensure_cloudsave_state_files_reports_local_state_directory_diagnostic(tmp_path):
+    cm = _make_config_manager(tmp_path)
+    cm.anchor_root.mkdir(parents=True, exist_ok=True)
+    cm.local_state_dir.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(RuntimeError) as exc_info:
+        cm.ensure_cloudsave_state_files()
+
+    message = str(exc_info.value)
+    assert "root_state.json" in message
+    assert f"anchor_root={cm.anchor_root.resolve()}" in message
+    assert f"local_state_dir={cm.local_state_dir.resolve()}" in message
+    assert "not a directory" in message
+
+
+@pytest.mark.unit
+def test_save_root_state_reports_anchor_file_blocker(tmp_path):
+    standard_parent = tmp_path / "standard_data"
+    standard_parent.mkdir(parents=True, exist_ok=True)
+    blocked_anchor = standard_parent / "N.E.K.O"
+    blocked_anchor.write_text("not a directory", encoding="utf-8")
+    cm = _make_config_manager(tmp_path)
+
+    with pytest.raises(OSError) as exc_info:
+        cm.save_root_state(cm.build_default_root_state())
+
+    message = str(exc_info.value)
+    assert "Failed to ensure local state directory before saving root_state" in message
+    assert f"anchor_root={blocked_anchor.resolve()}" in message
+    assert f"local_state_dir={(blocked_anchor / 'state').resolve()}" in message
+    assert "not a directory" in message
+
+
+@pytest.mark.unit
+def test_save_root_state_reports_state_file_blocker(tmp_path):
+    cm = _make_config_manager(tmp_path)
+    cm.anchor_root.mkdir(parents=True, exist_ok=True)
+    cm.local_state_dir.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(OSError) as exc_info:
+        cm.save_root_state(cm.build_default_root_state())
+
+    message = str(exc_info.value)
+    assert "Failed to ensure local state directory before saving root_state" in message
+    assert f"anchor_root={cm.anchor_root.resolve()}" in message
+    assert f"local_state_dir={cm.local_state_dir.resolve()}" in message
+    assert "not a directory" in message
+
+
+@pytest.mark.unit
+def test_state_save_entrypoints_report_target_directory_blockers(tmp_path):
+    cm = _make_config_manager(tmp_path)
+    cm.ensure_cloudsave_state_files()
+
+    targets = (
+        (
+            cm.root_state_path,
+            lambda: cm.save_root_state(cm.build_default_root_state()),
+            "saving root_state",
+        ),
+        (
+            cm.cloudsave_local_state_path,
+            lambda: cm.save_cloudsave_local_state(cm.build_default_cloudsave_local_state()),
+            "saving cloudsave_local_state",
+        ),
+        (
+            cm.character_tombstones_state_path,
+            lambda: cm.save_character_tombstones_state(cm.build_default_character_tombstones_state()),
+            "saving character_tombstones_state",
+        ),
+    )
+
+    for target_path, save_call, operation in targets:
+        target_path.unlink()
+        target_path.mkdir()
+
+        with pytest.raises(OSError) as exc_info:
+            save_call()
+
+        message = str(exc_info.value)
+        assert getattr(exc_info.value, "local_state_directory_error", False)
+        assert f"Failed to ensure local state file before {operation}" in message
+        assert f"anchor_root={cm.anchor_root.resolve()}" in message
+        assert f"local_state_dir={cm.local_state_dir.resolve()}" in message
+        assert f"failed_path={target_path.resolve()}" in message
+        assert "state file target exists but is not a file" in message
+
+        target_path.rmdir()
+        target_path.write_text("{}", encoding="utf-8")
+
+
+@pytest.mark.unit
 def test_get_documents_directory_preserves_first_readable_legacy_candidate(tmp_path):
     import utils.config_manager as config_manager_module
     from utils.config_manager import ConfigManager

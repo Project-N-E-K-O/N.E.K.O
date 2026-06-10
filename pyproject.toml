@@ -66,8 +66,8 @@ dependencies = [
   "cachetools>=5.3",
   # Local memory embeddings (memory/embeddings.py): ONNX + tokenizer. CPU
   # SIMD detection reads numpy's __cpu_features__ (compiled-C probe) — we do
-  # NOT use py-cpuinfo, whose CPUID probe runs VirtualAlloc+shellcode in a
-  # multiprocessing child that Huorong quarantines as Trojan.ShellLoader.
+  # NOT use py-cpuinfo, whose low-level CPU probe runs a generated native
+  # routine in a child process that Huorong's heuristic flags as a trojan.
   "onnxruntime",
   "tokenizers",
   # Cross-platform screen capture used by galgame_plugin and potentially other

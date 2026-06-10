@@ -192,4 +192,8 @@ async def hot_update_plugin_config(
             timeout=timeout,
         )
     except ServerDomainError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=exc.message,
+            headers={"X-Error-Code": exc.code},
+        ) from exc

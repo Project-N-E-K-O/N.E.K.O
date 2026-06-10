@@ -132,6 +132,47 @@ GEMINI_PROVIDER = _create_provider()
 register_provider(GEMINI_PROVIDER)
 
 
+# ---- free_intl：海外免费（free + *.lanlan.app）的有效音色目录 ----
+# 海外免费路由 core_api_type 仍是 'free'（走 lanlan.app 的 Gemini 代理），
+# 但其可选音色是 Gemini 全量 + 一个品牌 yui 音色（服务端识别字面量 "yui"，
+# 映射到 yui 角色专属声音）。这里复用 Gemini 目录，叠加 yui，并把 "default"
+# 别名指到 Leda。registry 由 native_voice_registry 按 host 把 free→free_intl
+# 重映射，cross-cutting 文件无需感知。
+_FALLBACK_FREE_INTL_VOICE_GENDERS: dict[str, str] = {
+    "yui": "Female",
+    **_FALLBACK_GEMINI_TTS_VOICE_GENDERS,
+}
+_FALLBACK_FREE_INTL_VOICE_ALIASES: dict[str, str] = {
+    **_FALLBACK_GEMINI_TTS_VOICE_ALIASES,
+    "default": FALLBACK_GEMINI_TTS_DEFAULT_VOICE,
+    "默认": FALLBACK_GEMINI_TTS_DEFAULT_VOICE,
+}
+
+
+def _create_free_intl_provider() -> NativeVoiceProvider:
+    """与 _create_provider 同样保证非空注册：缺失 config 时回退到 Gemini 目录
+    叠加 yui，避免 free_intl 缺席导致 yui/Gemini 音色在海外免费路由被当 custom
+    误路由到外部 TTS。"""
+    cfg = get_native_tts_voice_provider_config("free_intl")
+    return NativeVoiceProvider(
+        key="free_intl",
+        catalog=cfg.get("voices") or _FALLBACK_FREE_INTL_VOICE_GENDERS,
+        aliases=_build_aliases(cfg.get("aliases") or _FALLBACK_FREE_INTL_VOICE_ALIASES),
+        default_voice=cfg.get("default_voice") or "yui",
+        default_male_voice=(
+            cfg.get("default_male_voice") or FALLBACK_GEMINI_TTS_DEFAULT_MALE_VOICE
+        ),
+        catalog_prefix=cfg.get("catalog_prefix") or "Gemini",
+        catalog_value_is_display_name=bool(
+            cfg.get("catalog_value_is_display_name", False)
+        ),
+    )
+
+
+FREE_INTL_PROVIDER = _create_free_intl_provider()
+register_provider(FREE_INTL_PROVIDER)
+
+
 def normalize_gemini_tts_voice(voice_id: str | None) -> tuple[str, bool]:
     """Wire-format helper for Gemini-bound code paths (gemini_tts_worker,
     omni_realtime_client). Cross-cutting code should go through the registry."""

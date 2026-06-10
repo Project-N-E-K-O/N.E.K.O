@@ -3,8 +3,8 @@
  *
  * Reads chat messages from window.reactChatWindowHost.getState() (the typed
  * React state managed by app-react-chat-window.js), renders a preview modal
- * with per-message checkbox selection, and produces Markdown or Canvas-based
- * image downloads. Pure client-side — no backend endpoints are required.
+ * with per-message checkbox selection, and produces Canvas-based image
+ * downloads. Pure client-side — no backend endpoints are required.
  *
  * Triggered by the #exportConversationButton element in templates/index.html.
  *
@@ -469,12 +469,6 @@
     function getExportFormats() {
         return [
             {
-                id: 'markdown',
-                extension: 'md',
-                mimeType: 'text/markdown;charset=utf-8',
-                label: translateLabel('chat.exportFormatMarkdown', 'Markdown')
-            },
-            {
                 id: 'image',
                 extension: 'png',
                 mimeType: 'image/png',
@@ -938,14 +932,29 @@
     function getNekoTheme() {
         var dark = isDarkTheme();
         return {
-            background: dark ? '#0f1317' : '#f5f7fa',
-            card:       dark ? '#1a2029' : '#ffffff',
-            cardBorder: dark ? '#2b3340' : '#e2e8f0',
-            accentUser: dark ? '#60a5fa' : '#2563eb',
-            accentBot:  dark ? '#a78bfa' : '#7c3aed',
-            textPrimary: dark ? '#e8eaed' : '#1f2937',
-            textSecondary: dark ? '#9ca3af' : '#6b7280',
-            shadow: dark ? 'rgba(0,0,0,0.5)' : 'rgba(15,23,42,0.08)'
+            pageTop: dark ? '#111c27' : '#e9f8ff',
+            pageMid: dark ? '#14283a' : '#f7fcff',
+            pageBot: dark ? '#0d1722' : '#d9f0ff',
+            panel: dark ? 'rgba(19,31,44,0.94)' : 'rgba(255,255,255,0.94)',
+            panelBorder: dark ? 'rgba(119,197,255,0.20)' : 'rgba(92,184,242,0.24)',
+            panelShadow: dark ? 'rgba(0,0,0,0.45)' : 'rgba(35,122,177,0.16)',
+            headerBandTop: dark ? 'rgba(51,132,191,0.22)' : 'rgba(213,244,255,0.96)',
+            headerBandBot: dark ? 'rgba(41,103,154,0.06)' : 'rgba(255,255,255,0.82)',
+            title: dark ? '#f3fbff' : '#0f3d57',
+            textPrimary: dark ? '#eaf7ff' : '#153243',
+            textSecondary: dark ? '#a9c6d8' : '#5f7f91',
+            accentStrong: dark ? '#9ee5ff' : '#1586c8',
+            accentSoft: dark ? 'rgba(83,183,238,0.18)' : 'rgba(87,190,243,0.15)',
+            assistantCard: dark ? 'rgba(25,45,62,0.94)' : '#f8fdff',
+            userCard: dark ? 'rgba(28,52,70,0.94)' : '#ffffff',
+            cardBorder: dark ? 'rgba(121,200,255,0.16)' : 'rgba(66,159,214,0.16)',
+            innerBubble: dark ? 'rgba(10,22,32,0.30)' : 'rgba(239,249,255,0.88)',
+            assistantAccent: dark ? '#76d4ff' : '#2498d5',
+            userAccent: dark ? '#a5d8ff' : '#4f8fd8',
+            assistantAvatar: dark ? '#193f5b' : '#dff5ff',
+            userAvatar: dark ? '#1e365a' : '#e7f1ff',
+            assistantAvatarText: dark ? '#dff7ff' : '#0f6388',
+            userAvatarText: dark ? '#eaf4ff' : '#295f9b'
         };
     }
 
@@ -1073,40 +1082,402 @@
         return y;
     }
 
-    // ----- Style: neko (default card layout) -----
+    // ----- Style: neko (mobile chat share card) -----
 
     async function renderNekoStyleCanvas(resolvedEntries, now) {
         var theme = getNekoTheme();
+        var dark = isDarkTheme();
         var scale = 2;
-        var width = 800;
-        var padding = 36;
-        var cardPadding = 22;
-        var cardGap = 18;
-        var headerFont = '700 26px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
-        var subtitleFont = '400 13px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
-        var authorFont = '600 15px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
+        var width = 430;
+        var panelRadius = 24;
+        var headerHeight = 82;
+        var footerHeight = 46;
+        var contentPaddingX = 22;
+        var contentTopGap = 18;
+        var contentBottomGap = 16;
+        var groupGap = 18;
+        var avatarSize = 36;
+        var avatarGap = 9;
+        var bubblePaddingX = 15;
+        var bubblePaddingY = 12;
+        var bubbleRadius = 18;
+        var entryGap = 10;
+        var metaHeight = 18;
+        var maxBubbleWidth = width - contentPaddingX * 2 - avatarSize - avatarGap - 30;
+        var maxBodyWidth = maxBubbleWidth - bubblePaddingX * 2;
+        var minBubbleWidth = 76;
+        var maxImageHeight = 190;
+        var brandFont = '800 22px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
+        var metaFont = '700 11px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
         var bodyFont = '400 15px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
-        var metaFont = '400 12px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
-        var bodyLineHeight = 24;
-        var maxBodyWidth = width - padding * 2 - cardPadding * 2;
+        var footerFont = '600 11px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
+        var emptyFont = '600 14px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
+        var bodyLineHeight = 23;
+        var appIcon = await loadImageElement('/static/neko_192.png', 2500).catch(function () { return null; });
+        var yuiAvatar = await loadImageElement('/static/default/card_faces/YUI.png', 2500).catch(function () { return null; });
+
+        function getSide(entry) {
+            return entry && entry.rawRole === 'user' ? 'user' : 'assistant';
+        }
+
+        function getSpeakerName(group) {
+            var first = group.entries[0] || {};
+            if (group.side === 'assistant') {
+                return first.author || 'YUI';
+            }
+            return first.author || first.role || 'Human';
+        }
+
+        function getGroupTime(group) {
+            var times = group.entries.map(function (entry) {
+                return entry && entry.time ? entry.time : '';
+            }).filter(Boolean);
+            if (times.length === 0) return '';
+            return times[0];
+        }
+
+        function fitMetaText(ctx, text, maxWidth) {
+            text = String(text || '');
+            if (!text || ctx.measureText(text).width <= maxWidth) return text;
+            var suffix = '...';
+            var limit = Math.max(0, maxWidth - ctx.measureText(suffix).width);
+            var value = text;
+            while (value.length > 0 && ctx.measureText(value).width > limit) {
+                value = value.slice(0, -1);
+            }
+            return value ? value + suffix : suffix;
+        }
+
+        function drawCoverImage(ctx, image, x, y, width, height) {
+            var imageWidth = image.naturalWidth || image.width || 0;
+            var imageHeight = image.naturalHeight || image.height || 0;
+            if (!imageWidth || !imageHeight) return false;
+            var ratio = Math.max(width / imageWidth, height / imageHeight);
+            var sourceWidth = width / ratio;
+            var sourceHeight = height / ratio;
+            var sourceX = Math.max(0, (imageWidth - sourceWidth) / 2);
+            var sourceY = Math.max(0, (imageHeight - sourceHeight) / 2);
+            ctx.drawImage(image, sourceX, sourceY, sourceWidth, sourceHeight, x, y, width, height);
+            return true;
+        }
+
+        function drawFitImage(ctx, image, x, y, width, height) {
+            var imageWidth = image.naturalWidth || image.width || 0;
+            var imageHeight = image.naturalHeight || image.height || 0;
+            if (!imageWidth || !imageHeight) return false;
+            var ratio = Math.min(width / imageWidth, height / imageHeight);
+            var drawWidth = imageWidth * ratio;
+            var drawHeight = imageHeight * ratio;
+            ctx.drawImage(image, x + (width - drawWidth) / 2, y + (height - drawHeight) / 2, drawWidth, drawHeight);
+            return true;
+        }
+
+        function drawAvatarTile(ctx, x, y, size, options) {
+            options = options || {};
+            var image = options.image || null;
+            var label = String(options.label || '?').trim().slice(0, 2) || '?';
+            var background = options.background || '#e5f4ff';
+            var textColor = options.textColor || '#1f5f86';
+            var radius = 11;
+
+            ctx.save();
+            drawRoundedRect(ctx, x, y, size, size, radius);
+            ctx.clip();
+            ctx.fillStyle = background;
+            ctx.fillRect(x, y, size, size);
+            if (image) {
+                try { drawCoverImage(ctx, image, x, y, size, size); }
+                catch (_) {}
+            }
+            ctx.restore();
+
+            if (!image) {
+                ctx.save();
+                ctx.font = '800 ' + Math.max(12, Math.floor(size * 0.34)) + 'px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
+                ctx.fillStyle = textColor;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(label, x + size / 2, y + size / 2 + 0.5);
+                ctx.restore();
+            }
+
+            ctx.strokeStyle = options.borderColor || 'rgba(255,255,255,0.92)';
+            ctx.lineWidth = 1;
+            drawRoundedRect(ctx, x + 0.5, y + 0.5, size - 1, size - 1, radius);
+            ctx.stroke();
+        }
+
+        function buildGroups(entries) {
+            var groups = [];
+            entries.forEach(function (entry) {
+                var side = getSide(entry);
+                var current = groups.length > 0 ? groups[groups.length - 1] : null;
+                if (current && current.side === side) {
+                    current.entries.push(entry);
+                } else {
+                    groups.push({ side: side, entries: [entry] });
+                }
+            });
+            return groups;
+        }
+
+        var groups = buildGroups(resolvedEntries);
+
+        // Measurement pass
+        var measureCanvas = document.createElement('canvas');
+        var measureCtx = measureCanvas.getContext('2d');
+        measureCtx.font = bodyFont;
+        var measuredGroups = groups.map(function (group) {
+            var contentWidth = 0;
+            var contentHeight = 0;
+            var items = group.entries.map(function (entry, index) {
+                var body = measureEntryBody(
+                    measureCtx,
+                    entry,
+                    bodyFont,
+                    bodyLineHeight,
+                    maxBodyWidth,
+                    true,
+                    maxImageHeight
+                );
+                var itemHeight = Math.max(body.height, bodyLineHeight);
+                contentWidth = Math.max(contentWidth, body.width);
+                contentHeight += itemHeight;
+                if (index > 0) contentHeight += entryGap;
+                return { entry: entry, body: body, itemHeight: itemHeight };
+            });
+            var bubbleWidth = Math.max(
+                minBubbleWidth,
+                Math.min(maxBubbleWidth, Math.ceil(contentWidth + bubblePaddingX * 2))
+            );
+            var bubbleHeight = bubblePaddingY * 2 + contentHeight;
+            var height = metaHeight + 8 + Math.max(avatarSize, bubbleHeight);
+            return {
+                group: group,
+                items: items,
+                bubbleWidth: bubbleWidth,
+                bubbleHeight: bubbleHeight,
+                height: height
+            };
+        });
+
+        var timelineHeight = measuredGroups.reduce(function (sum, group, index) {
+            return sum + group.height + (index > 0 ? groupGap : 0);
+        }, 0);
+        if (timelineHeight === 0) timelineHeight = 86;
+        var totalHeight = Math.max(
+            620,
+            headerHeight + contentTopGap + timelineHeight + contentBottomGap + footerHeight
+        );
+        var footerTop = totalHeight - footerHeight;
+
+        var canvas = document.createElement('canvas');
+        canvas.width = width * scale;
+        canvas.height = totalHeight * scale;
+        var ctx = canvas.getContext('2d');
+        ctx.scale(scale, scale);
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.textBaseline = 'top';
+
+        ctx.save();
+        drawRoundedRect(ctx, 0, 0, width, totalHeight, panelRadius);
+        ctx.clip();
+        var background = ctx.createLinearGradient(0, 0, 0, totalHeight);
+        background.addColorStop(0, dark ? '#112233' : '#fbfdff');
+        background.addColorStop(0.55, dark ? '#142a3d' : '#f4fbff');
+        background.addColorStop(1, dark ? '#102031' : '#f8fdff');
+        ctx.fillStyle = background;
+        ctx.fillRect(0, 0, width, totalHeight);
+
+        var headerBand = ctx.createLinearGradient(0, 0, 0, headerHeight);
+        headerBand.addColorStop(0, theme.headerBandTop);
+        headerBand.addColorStop(1, theme.headerBandBot);
+        ctx.fillStyle = headerBand;
+        ctx.fillRect(0, 0, width, headerHeight);
+        ctx.strokeStyle = dark ? 'rgba(126,204,255,0.12)' : 'rgba(48,151,210,0.12)';
+        ctx.beginPath();
+        ctx.moveTo(contentPaddingX, headerHeight - 0.5);
+        ctx.lineTo(width - contentPaddingX, headerHeight - 0.5);
+        ctx.stroke();
+        ctx.restore();
+
+        ctx.strokeStyle = theme.panelBorder;
+        ctx.lineWidth = 1;
+        drawRoundedRect(ctx, 0.5, 0.5, width - 1, totalHeight - 1, panelRadius);
+        ctx.stroke();
+
+        var headerX = contentPaddingX;
+        var iconSize = 38;
+        var headerY = 22;
+        if (appIcon) {
+            try { drawFitImage(ctx, appIcon, headerX, headerY - 1, iconSize, iconSize); }
+            catch (_) {}
+        } else {
+            ctx.fillStyle = theme.accentSoft;
+            drawRoundedRect(ctx, headerX, headerY - 1, iconSize, iconSize, 11);
+            ctx.fill();
+            ctx.font = '800 18px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif';
+            ctx.fillStyle = theme.accentStrong;
+            ctx.textAlign = 'center';
+            ctx.fillText('N', headerX + iconSize / 2, headerY + 8);
+            ctx.textAlign = 'left';
+        }
+
+        ctx.font = brandFont;
+        ctx.fillStyle = theme.title;
+        ctx.fillText('NEKO', headerX + iconSize + 11, headerY + 6);
+
+        var messageY = headerHeight + contentTopGap;
+        if (measuredGroups.length === 0) {
+            ctx.font = emptyFont;
+            ctx.fillStyle = theme.textSecondary;
+            ctx.textAlign = 'center';
+            ctx.fillText(translateLabel('chat.exportNoMessages', 'No messages selected'), width / 2, messageY + 28);
+            ctx.textAlign = 'left';
+        }
+
+        measuredGroups.forEach(function (measuredGroup, index) {
+            if (index > 0) messageY += groupGap;
+            var group = measuredGroup.group;
+            var isUser = group.side === 'user';
+            var firstEntry = group.entries[0] || {};
+            var avatarImage = firstEntry.avatarImage || (!isUser ? yuiAvatar : null);
+            var avatarX = isUser
+                ? width - contentPaddingX - avatarSize
+                : contentPaddingX;
+            var bubbleX = isUser
+                ? avatarX - avatarGap - measuredGroup.bubbleWidth
+                : avatarX + avatarSize + avatarGap;
+            var bubbleY = messageY + metaHeight + 8;
+            var bubbleTextX = bubbleX + bubblePaddingX;
+            var bubbleInnerWidth = measuredGroup.bubbleWidth - bubblePaddingX * 2;
+            var speaker = getSpeakerName(group);
+            var timeText = getGroupTime(group);
+            var metaText = [speaker, timeText].filter(Boolean).join(' ');
+
+            ctx.font = metaFont;
+            ctx.fillStyle = theme.textSecondary;
+            ctx.textAlign = isUser ? 'right' : 'left';
+            ctx.fillText(
+                fitMetaText(ctx, metaText, measuredGroup.bubbleWidth),
+                isUser ? bubbleX + measuredGroup.bubbleWidth : bubbleX,
+                messageY
+            );
+            ctx.textAlign = 'left';
+
+            drawAvatarTile(ctx, avatarX, bubbleY, avatarSize, {
+                image: avatarImage,
+                label: firstEntry.avatarLabel || speaker,
+                background: isUser ? theme.userAvatar : theme.assistantAvatar,
+                textColor: isUser ? theme.userAvatarText : theme.assistantAvatarText,
+                borderColor: isUser ? 'rgba(101,155,210,0.20)' : 'rgba(67,166,218,0.22)'
+            });
+
+            ctx.save();
+            ctx.shadowColor = dark ? 'rgba(0,0,0,0.20)' : 'rgba(42,128,181,0.08)';
+            ctx.shadowBlur = 10;
+            ctx.shadowOffsetY = 3;
+            ctx.fillStyle = isUser
+                ? (dark ? 'rgba(64,126,185,0.92)' : '#dff1ff')
+                : (dark ? 'rgba(26,48,66,0.96)' : '#ffffff');
+            drawRoundedRect(ctx, bubbleX, bubbleY, measuredGroup.bubbleWidth, measuredGroup.bubbleHeight, bubbleRadius);
+            ctx.fill();
+            ctx.restore();
+
+            ctx.strokeStyle = isUser
+                ? (dark ? 'rgba(166,215,255,0.18)' : 'rgba(64,150,214,0.18)')
+                : (dark ? 'rgba(125,203,255,0.14)' : 'rgba(55,154,210,0.14)');
+            ctx.lineWidth = 1;
+            drawRoundedRect(ctx, bubbleX + 0.5, bubbleY + 0.5, measuredGroup.bubbleWidth - 1, measuredGroup.bubbleHeight - 1, bubbleRadius);
+            ctx.stroke();
+
+            var bodyY = bubbleY + bubblePaddingY;
+            measuredGroup.items.forEach(function (item, itemIndex) {
+                if (itemIndex > 0) bodyY += entryGap;
+                ctx.font = bodyFont;
+                ctx.fillStyle = isUser
+                    ? (dark ? '#f5fbff' : '#153243')
+                    : theme.textPrimary;
+                drawSegments(
+                    ctx,
+                    item.body.segments,
+                    bubbleTextX,
+                    bodyY,
+                    {
+                        noteColor: isUser
+                            ? (dark ? 'rgba(230,245,255,0.78)' : '#557a92')
+                            : theme.textSecondary,
+                        align: isUser ? 'right' : 'left',
+                        maxWidth: bubbleInnerWidth
+                    }
+                );
+                bodyY += item.itemHeight;
+            });
+
+            messageY += measuredGroup.height;
+        });
+
+        ctx.strokeStyle = dark ? 'rgba(126,204,255,0.10)' : 'rgba(48,151,210,0.10)';
+        ctx.beginPath();
+        ctx.moveTo(contentPaddingX, footerTop + 0.5);
+        ctx.lineTo(width - contentPaddingX, footerTop + 0.5);
+        ctx.stroke();
+
+        ctx.font = footerFont;
+        ctx.fillStyle = theme.textSecondary;
+        ctx.textAlign = 'center';
+        ctx.fillText('N.E.K.O / ' + buildDisplayTimestamp(now), width / 2, footerTop + 16);
+        ctx.textAlign = 'left';
+
+        return canvas;
+    }
+
+    // ----- Legacy neko card layout (kept for reference) -----
+
+    async function renderNekoStyleCanvasLegacy(resolvedEntries, now) {
+        var theme = getNekoTheme();
+        var scale = 2;
+        var width = 900;
+        var outerPadding = 0;
+        var panelPadding = 30;
+        var panelRadius = 26;
+        var headerHeight = 156;
+        var cardPadding = 20;
+        var cardGap = 16;
+        var avatarSize = 46;
+        var avatarGap = 14;
+        var brandFont = '800 34px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
+        var titleFont = '700 18px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
+        var subtitleFont = '500 13px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
+        var authorFont = '700 16px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
+        var bodyFont = '400 16px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
+        var metaFont = '500 12px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
+        var pillFont = '700 11px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
+        var footerFont = '700 12px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
+        var bodyLineHeight = 25;
+        var panelX = outerPadding;
+        var panelW = width - outerPadding * 2;
+        var contentW = panelW - panelPadding * 2;
+        var maxBodyWidth = contentW - cardPadding * 2 - avatarSize - avatarGap;
 
         // Measurement pass
         var measureCanvas = document.createElement('canvas');
         var measureCtx = measureCanvas.getContext('2d');
         var measuredEntries = resolvedEntries.map(function (entry) {
             measureCtx.font = bodyFont;
-            var body = measureEntryBody(measureCtx, entry, bodyFont, bodyLineHeight, maxBodyWidth, true, 240);
-            var headerHeight = 24;  // author + time row
-            var cardHeight = cardPadding * 2 + headerHeight + 8 + body.height;
+            var body = measureEntryBody(measureCtx, entry, bodyFont, bodyLineHeight, maxBodyWidth, true, 220);
+            var cardHeight = cardPadding * 2 + 52 + Math.max(body.height, 25) + 18;
             return { entry: entry, body: body, cardHeight: cardHeight };
         });
 
         var totalCardsHeight = measuredEntries.reduce(function (sum, m) {
             return sum + m.cardHeight + cardGap;
         }, 0);
-        var headerBlock = 70;
-        var footerBlock = 40;
-        var totalHeight = padding + headerBlock + totalCardsHeight + footerBlock;
+        if (measuredEntries.length > 0) totalCardsHeight -= cardGap;
+        var footerBlock = 58;
+        var panelHeight = headerHeight + panelPadding + totalCardsHeight + footerBlock;
+        var totalHeight = panelHeight;
 
         var canvas = document.createElement('canvas');
         canvas.width = width * scale;
@@ -1116,74 +1487,150 @@
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = 'high';
 
-        // background
-        ctx.fillStyle = theme.background;
-        ctx.fillRect(0, 0, width, totalHeight);
+        ctx.save();
+        ctx.shadowColor = theme.panelShadow;
+        ctx.shadowBlur = 26;
+        ctx.shadowOffsetY = 12;
+        ctx.fillStyle = theme.panel;
+        drawRoundedRect(ctx, panelX, outerPadding, panelW, panelHeight, panelRadius);
+        ctx.fill();
+        ctx.restore();
+        ctx.strokeStyle = theme.panelBorder;
+        ctx.lineWidth = 1;
+        drawRoundedRect(ctx, panelX + 0.5, outerPadding + 0.5, panelW - 1, panelHeight - 1, panelRadius);
+        ctx.stroke();
 
-        // title
-        ctx.fillStyle = theme.textPrimary;
-        ctx.font = headerFont;
+        ctx.save();
+        drawRoundedRect(ctx, panelX, outerPadding, panelW, headerHeight, panelRadius);
+        ctx.clip();
+        var headerBand = ctx.createLinearGradient(0, outerPadding, 0, outerPadding + headerHeight);
+        headerBand.addColorStop(0, theme.headerBandTop);
+        headerBand.addColorStop(1, theme.headerBandBot);
+        ctx.fillStyle = headerBand;
+        ctx.fillRect(panelX, outerPadding, panelW, headerHeight);
+        ctx.strokeStyle = 'rgba(45,156,219,0.10)';
+        ctx.lineWidth = 1;
+        for (var hx = panelX - 60; hx < panelX + panelW + 60; hx += 34) {
+            ctx.beginPath();
+            ctx.moveTo(hx, outerPadding + headerHeight);
+            ctx.lineTo(hx + 84, outerPadding);
+            ctx.stroke();
+        }
+        ctx.restore();
+
+        var headerX = panelX + panelPadding;
+        var headerY = outerPadding + 26;
+        ctx.font = pillFont;
         ctx.textBaseline = 'top';
-        ctx.fillText(
-            translateLabel('chat.exportFileTitle', 'Project N.E.K.O Conversation Export'),
-            padding, padding
-        );
+        var badgeText = translateLabel('chat.exportPosterSubtitle', 'Shared from N.E.K.O').toUpperCase();
+        var badgeW = Math.ceil(ctx.measureText(badgeText).width + 24);
+        ctx.fillStyle = theme.accentSoft;
+        drawRoundedRect(ctx, headerX, headerY - 3, badgeW, 24, 12);
+        ctx.fill();
+        ctx.fillStyle = theme.accentStrong;
+        ctx.fillText(badgeText, headerX + 12, headerY + 3);
+
+        ctx.font = brandFont;
+        ctx.fillStyle = theme.title;
+        ctx.fillText('N.E.K.O', headerX, headerY + 34);
+        ctx.font = titleFont;
+        ctx.fillStyle = theme.textPrimary;
+        ctx.fillText(translateLabel('chat.exportFileTitle', 'Project N.E.K.O Conversation Export'), headerX, headerY + 78);
         ctx.font = subtitleFont;
         ctx.fillStyle = theme.textSecondary;
-        ctx.fillText(
-            translateLabel('chat.exportGeneratedAt', 'Exported At') + ': ' + buildDisplayTimestamp(now),
-            padding, padding + 34
-        );
+        ctx.fillText(translateLabel('chat.exportGeneratedAt', 'Exported At') + ': ' + buildDisplayTimestamp(now), headerX, headerY + 104);
+
+        var statX = panelX + panelW - panelPadding - 126;
+        var statY = outerPadding + 34;
+        ctx.fillStyle = 'rgba(255,255,255,0.72)';
+        drawRoundedRect(ctx, statX, statY, 126, 84, 18);
+        ctx.fill();
+        ctx.strokeStyle = theme.panelBorder;
+        drawRoundedRect(ctx, statX + 0.5, statY + 0.5, 125, 83, 18);
+        ctx.stroke();
+        ctx.font = '800 28px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif';
+        ctx.fillStyle = theme.accentStrong;
+        ctx.textAlign = 'center';
+        ctx.fillText(String(resolvedEntries.length), statX + 63, statY + 16);
+        ctx.font = footerFont;
+        ctx.fillStyle = theme.accentStrong;
+        ctx.fillText('messages', statX + 63, statY + 50);
+        ctx.textAlign = 'start';
 
         // cards
-        var y = padding + headerBlock;
+        var y = outerPadding + headerHeight + panelPadding;
         measuredEntries.forEach(function (m) {
             var entry = m.entry;
+            var isUser = entry.rawRole === 'user';
+            var accent = isUser ? theme.userAccent : theme.assistantAccent;
             var cardHeight = m.cardHeight;
-            var cardX = padding;
+            var cardX = panelX + panelPadding;
             var cardY = y;
-            var cardW = width - padding * 2;
+            var cardW = contentW;
 
             // card background + border
             ctx.save();
-            ctx.shadowColor = theme.shadow;
-            ctx.shadowBlur = 8;
-            ctx.shadowOffsetY = 2;
-            ctx.fillStyle = theme.card;
-            drawRoundedRect(ctx, cardX, cardY, cardW, cardHeight, 12);
+            ctx.shadowColor = 'rgba(42,128,181,0.10)';
+            ctx.shadowBlur = 16;
+            ctx.shadowOffsetY = 6;
+            ctx.fillStyle = isUser ? theme.userCard : theme.assistantCard;
+            drawRoundedRect(ctx, cardX, cardY, cardW, cardHeight, 18);
             ctx.fill();
             ctx.restore();
             ctx.strokeStyle = theme.cardBorder;
             ctx.lineWidth = 1;
-            drawRoundedRect(ctx, cardX + 0.5, cardY + 0.5, cardW - 1, cardHeight - 1, 12);
+            drawRoundedRect(ctx, cardX + 0.5, cardY + 0.5, cardW - 1, cardHeight - 1, 18);
             ctx.stroke();
 
-            // accent bar
-            var accent = entry.rawRole === 'user' ? theme.accentUser : theme.accentBot;
-            ctx.fillStyle = accent;
-            drawRoundedRect(ctx, cardX, cardY + 14, 4, cardHeight - 28, 2);
-            ctx.fill();
+            var avatarX = cardX + cardPadding;
+            var avatarY = cardY + cardPadding;
+            drawAvatarCircle(ctx, avatarX, avatarY, avatarSize, {
+                image: entry.avatarImage,
+                label: entry.avatarLabel || entry.author || entry.role,
+                background: isUser ? theme.userAvatar : theme.assistantAvatar,
+                textColor: isUser ? theme.userAvatarText : theme.assistantAvatarText,
+                borderColor: 'rgba(255,255,255,0.72)'
+            });
 
-            // author + time row
+            // author row
+            var textX = avatarX + avatarSize + avatarGap;
+            var textY = cardY + cardPadding + 1;
             ctx.font = authorFont;
+            ctx.fillStyle = theme.textPrimary;
+            ctx.fillText(entry.author || entry.role || '', textX, textY);
+
+            ctx.font = pillFont;
+            var roleText = String(entry.role || '').toUpperCase();
+            var roleW = Math.ceil(ctx.measureText(roleText).width + 18);
+            var roleX = cardX + cardW - cardPadding - roleW;
+            ctx.fillStyle = theme.accentSoft;
+            drawRoundedRect(ctx, roleX, textY - 2, roleW, 22, 11);
+            ctx.fill();
             ctx.fillStyle = accent;
-            ctx.fillText(entry.author || entry.role || '', cardX + cardPadding, cardY + cardPadding);
+            ctx.fillText(roleText, roleX + 9, textY + 4);
 
             ctx.font = metaFont;
             ctx.fillStyle = theme.textSecondary;
             var metaText = [entry.role, entry.time].filter(Boolean).join(' · ');
             var metaWidth = ctx.measureText(metaText).width;
-            ctx.fillText(metaText, cardX + cardW - cardPadding - metaWidth, cardY + cardPadding + 2);
+            ctx.fillText(metaText, textX, textY + 24);
 
             // body
+            var bubbleX = textX;
+            var bubbleY = cardY + cardPadding + 52;
+            var bubbleW = cardW - cardPadding * 2 - avatarSize - avatarGap;
+            var bubbleH = Math.max(30, m.body.height + 18);
+            ctx.fillStyle = theme.innerBubble;
+            drawRoundedRect(ctx, bubbleX - 12, bubbleY - 10, bubbleW + 24, bubbleH, 14);
+            ctx.fill();
             ctx.font = bodyFont;
             ctx.fillStyle = theme.textPrimary;
             drawSegments(
                 ctx,
                 m.body.segments,
-                cardX + cardPadding,
-                cardY + cardPadding + 24 + 6,
-                { noteColor: theme.textSecondary }
+                bubbleX,
+                bubbleY,
+                { noteColor: theme.textSecondary, maxWidth: bubbleW }
             );
 
             y += cardHeight + cardGap;
@@ -1776,10 +2223,7 @@
 
     async function buildExportDocument(entries, formatId) {
         var now = new Date();
-        if (formatId === 'image') {
-            return buildImageExportDocument(entries, now);
-        }
-        return buildMarkdownExportDocument(entries, now);
+        return buildImageExportDocument(entries, now);
     }
 
     // ======================== Download + copy ========================
@@ -2120,7 +2564,7 @@
         downloadButton.type = 'button';
         downloadButton.className = 'chat-export-preview-action chat-export-preview-action-download chat-export-preview-action-primary';
         downloadButton.textContent = translateLabel('chat.confirmExportAs', 'Export {{format}}', {
-            format: translateLabel('chat.exportFormatMarkdown', 'Markdown')
+            format: translateLabel('chat.exportFormatImage', 'Image')
         });
 
         footer.appendChild(copyButton);
@@ -2416,10 +2860,13 @@
         var modal = state.previewModal;
         if (!modal) return;
         var doc = modal.formatGroup.ownerDocument || document;
+        state.exportFormat = normalizeExportFormatId(state.exportFormat);
 
         // format chips
+        var exportFormats = getExportFormats();
         modal.formatGroup.innerHTML = '';
-        getExportFormats().forEach(function (format) {
+        modal.formatGroup.hidden = exportFormats.length <= 1;
+        exportFormats.forEach(function (format) {
             var chip = doc.createElement('button');
             chip.type = 'button';
             chip.className = 'chat-export-format-chip';
@@ -2739,15 +3186,9 @@
                 return { previewKind: 'empty' };
             }
             var exportData = await buildExportDocument(entries, state.exportFormat);
-            if (state.exportFormat === 'image') {
-                return {
-                    previewKind: 'image',
-                    previewUrl: URL.createObjectURL(exportData.previewBlob)
-                };
-            }
             return {
-                previewKind: 'document',
-                previewDocument: buildMarkdownPreviewDocument(exportData.content)
+                previewKind: 'image',
+                previewUrl: URL.createObjectURL(exportData.previewBlob)
             };
         } finally {
             restoreCompactInlineExportState(previous);
@@ -2776,30 +3217,18 @@
 
     async function copyCompactInlineSelection(options) {
         if (state.isCopying) return;
-        var compactFormat = normalizeExportFormatId(options && options.format);
         state.isCopying = true;
         try {
             await runCompactInlineExportAction(options, async function (entries) {
-                if (state.exportFormat === 'image') {
-                    var imgData = await buildExportDocument(entries, 'image');
-                    var imgBlob = imgData.previewBlob || imgData.content;
-                    var imgOk = await copyImageToClipboard(imgBlob);
-                    if (imgOk) showToast('chat.copyImageSuccess', 'Image copied to clipboard.');
-                    else showToast('chat.copyImageFailed', 'Failed to copy image to clipboard.', 4000);
-                } else {
-                    var mdData = await buildExportDocument(entries, 'markdown');
-                    var mdOk = await copyTextToClipboard(mdData.content);
-                    if (mdOk) showToast('chat.copyMarkdownSuccess', 'Markdown copied to clipboard.');
-                    else showToast('chat.copyMarkdownFailed', 'Failed to copy Markdown.', 4000);
-                }
+                var imgData = await buildExportDocument(entries, 'image');
+                var imgBlob = imgData.previewBlob || imgData.content;
+                var imgOk = await copyImageToClipboard(imgBlob);
+                if (imgOk) showToast('chat.copyImageSuccess', 'Image copied to clipboard.');
+                else showToast('chat.copyImageFailed', 'Failed to copy image to clipboard.', 4000);
             });
         } catch (error) {
             logExportError('copyCompactInlineSelection', error);
-            if (compactFormat === 'image') {
-                showToast('chat.copyImageFailed', 'Failed to copy image to clipboard.', 4000);
-            } else {
-                showToast('chat.copyMarkdownFailed', 'Failed to copy Markdown.', 4000);
-            }
+            showToast('chat.copyImageFailed', 'Failed to copy image to clipboard.', 4000);
         } finally {
             state.isCopying = false;
         }
@@ -2859,25 +3288,14 @@
         var modal = state.previewModal;
         if (modal) modal.copyButton.disabled = true;
         try {
-            if (state.exportFormat === 'image') {
-                var imgPayload = await getOrBuildPreviewPayload(entries, 'image');
-                var imgBlob = imgPayload.exportData.previewBlob || imgPayload.exportData.content;
-                var imgOk = await copyImageToClipboard(imgBlob);
-                if (imgOk) showToast('chat.copyImageSuccess', 'Image copied to clipboard.');
-                else showToast('chat.copyImageFailed', 'Failed to copy image to clipboard.', 4000);
-            } else {
-                var mdPayload = await getOrBuildPreviewPayload(entries, 'markdown');
-                var mdOk = await copyTextToClipboard(mdPayload.exportData.content);
-                if (mdOk) showToast('chat.copyMarkdownSuccess', 'Markdown copied to clipboard.');
-                else showToast('chat.copyMarkdownFailed', 'Failed to copy Markdown.', 4000);
-            }
+            var imgPayload = await getOrBuildPreviewPayload(entries, 'image');
+            var imgBlob = imgPayload.exportData.previewBlob || imgPayload.exportData.content;
+            var imgOk = await copyImageToClipboard(imgBlob);
+            if (imgOk) showToast('chat.copyImageSuccess', 'Image copied to clipboard.');
+            else showToast('chat.copyImageFailed', 'Failed to copy image to clipboard.', 4000);
         } catch (error) {
             logExportError('handleCopyClick', error);
-            if (state.exportFormat === 'image') {
-                showToast('chat.copyImageFailed', 'Failed to copy image to clipboard.', 4000);
-            } else {
-                showToast('chat.copyMarkdownFailed', 'Failed to copy Markdown.', 4000);
-            }
+            showToast('chat.copyImageFailed', 'Failed to copy image to clipboard.', 4000);
         } finally {
             state.isCopying = false;
             if (modal) modal.copyButton.disabled = false;

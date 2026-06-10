@@ -31,10 +31,34 @@ CAT1_INTERACTIVE_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" /
 CAT1_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-move-1.gif"
 CAT2_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-move-2.gif"
 CAT3_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-move-3.gif"
+CAT_MODEL_CHANGE_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat_model_change.gif"
+
+
+def _source_slice_between(source, start_marker, end_marker, block_name):
+    start = source.find(start_marker)
+    assert start != -1, f"{block_name} start marker not found: {start_marker}"
+    end = source.find(end_marker, start + len(start_marker))
+    assert end != -1, f"{block_name} end marker not found after start: {end_marker}"
+    assert start < end, f"{block_name} start marker must precede end marker"
+    return source[start:end]
+
+
+def _assert_source_contains(block, expected, block_name):
+    assert expected in block, f"{block_name} missing expected source: {expected}"
+
+
+def _assert_source_order(block, block_name, *expected_markers):
+    positions = []
+    for marker in expected_markers:
+        position = block.find(marker)
+        assert position != -1, f"{block_name} missing expected source: {marker}"
+        positions.append(position)
+    assert positions == sorted(positions), f"{block_name} expected order: {' -> '.join(expected_markers)}"
 
 
 def test_return_button_idle_tier_assets_are_mapped_in_source():
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    app_ui_source = APP_UI_PATH.read_text(encoding="utf-8")
 
     # Non-click states
     assert "/static/assets/neko-idle/cat-idle-cat1.gif" in source
@@ -60,8 +84,100 @@ def test_return_button_idle_tier_assets_are_mapped_in_source():
     assert "/static/assets/neko-idle/cat-idle-cat-move-1.gif" in source
     assert "/static/assets/neko-idle/cat-idle-cat-move-2.gif" in source
     assert "/static/assets/neko-idle/cat-idle-cat-move-3.gif" in source
+    assert "/static/assets/neko-idle/cat_model_change.gif" in app_ui_source
     assert '_getNekoIdleReturnClickAssetUrl' in source
     assert '_getNekoIdleReturnDragAssetUrl' in source
+
+
+def test_model_cat_transition_contract_is_present():
+    source = APP_UI_PATH.read_text(encoding="utf-8")
+    avatar_source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+
+    assert "function playNekoModelCatTransition" in source
+    assert "window.playNekoModelCatTransition = playNekoModelCatTransition" in source
+    assert "let nekoModelCatTransitionActive = null" in source
+    assert "function isNekoModelCatTransitionActive(direction = '')" in source
+    assert "function reserveNekoModelCatTransition(direction)" in source
+    assert "function releaseNekoModelCatTransition(token)" in source
+    assert "const goodbyeTransitionToken = reserveNekoModelCatTransition('model-to-cat')" in source
+    assert "transitionToken: goodbyeTransitionToken" in source
+    assert "releaseNekoModelCatTransition(goodbyeTransitionToken)" in source
+    assert "window.isNekoModelCatTransitionActive = isNekoModelCatTransitionActive" in source
+    assert "blocked: true" in source
+    assert "isNekoModelCatTransitionActive()" in source
+    assert "isNekoModelCatTransitionActive('model-to-cat')" in source
+    assert "window.isNekoModelCatTransitionActive()" in avatar_source
+    assert "data-neko-model-cat-transitioning" in source
+    assert "function playModelReturnEnter(container, rect)" in source
+    assert "window._nekoModelReturnEnterRect = returnRect || savedRect || null" in source
+    assert "consumeModelReturnEnterRect()" in source
+    assert "NEKO_MODEL_CAT_TRANSITION_MODEL_SCALE = 0.38" in source
+    assert "function getModelCatTransitionScaleTransform()" in source
+    assert "getModelCatTransitionScaleTransform()" in source
+    assert "function prepareModelReturnContainer(container, rect, options = {})" in source
+    assert "container.style.transform = 'scale(1) translateZ(0)'" in source
+    assert "NEKO_MODEL_RETURN_ENTER_TRANSITION = 'opacity 1120ms ease-out, transform 1080ms cubic-bezier(0.22, 1, 0.36, 1)'" in source
+    assert "NEKO_MODEL_RETURN_ENTER_CLEANUP_MS = 1160" in source
+    assert "NEKO_MODEL_RETURN_CANVAS_FADE_TRANSITION = 'opacity 1.12s ease-out'" in source
+    assert "NEKO_MODEL_RETURN_CANVAS_FADE_CLEANUP_MS = 1160" in source
+    assert "1450" not in source
+    return_enter_block = source[
+        source.index("function playModelReturnEnter(container, rect)"):
+        source.index("function mergeNekoTransitionAnchorRect(anchorRect, coverRect)")
+    ]
+    assert "}, NEKO_MODEL_RETURN_ENTER_CLEANUP_MS)" in return_enter_block
+    assert "NEKO_MODEL_RETURN_CANVAS_FADE_CLEANUP_MS" not in return_enter_block
+    assert "NEKO_MODEL_GOODBYE_VISUAL_FADE_TRANSITION = 'opacity 240ms ease-in'" in source
+    assert "function getActiveModelTransitionRect()" in source
+    assert "getModelScreenBounds" in source
+    assert "savedGoodbyeRect = savedModelRect || savedGoodbyeRect" in source
+    assert "NEKO_MODEL_CAT_TRANSITION_DURATION_MS = 850" in source
+    assert "NEKO_MODEL_CAT_TRANSITION_LOOP_GUARD_MS = 70" in source
+    assert "NEKO_MODEL_CAT_TO_MODEL_LOCK_MS = 1120" in source
+    assert "function getNekoModelCatOverlayVisibleMs()" in source
+    assert "function getNekoModelCatSettleMs(direction)" in source
+    assert "NEKO_MODEL_CAT_TRANSITION_DURATION_MS - NEKO_MODEL_CAT_TRANSITION_LOOP_GUARD_MS" in source
+    assert "overflow: 'hidden'" in source
+    assert "borderRadius: '50%'" in source
+    assert "NEKO_MODEL_CAT_TRANSITION_EDGE_MASK = 'radial-gradient(circle at center" in source
+    assert "rgba(0,0,0,0.18) 72%" in source
+    assert "rgba(0,0,0,0) 88%" in source
+    assert "function applyNekoTransitionMask(element)" in source
+    assert "maskImage: NEKO_MODEL_CAT_TRANSITION_EDGE_MASK" in source
+    assert "element.style.webkitMaskImage = NEKO_MODEL_CAT_TRANSITION_EDGE_MASK" in source
+    assert "element.style.setProperty('-webkit-mask-image', NEKO_MODEL_CAT_TRANSITION_EDGE_MASK)" in source
+    assert "function createNekoModelCatTransitionOverlay(rect, direction)" in source
+    assert "applyNekoTransitionMask(overlay)" in source
+    assert "applyNekoTransitionMask(image)" in source
+    assert "parseGifDurationMs" not in source
+    assert "getNekoModelCatTransitionDurationMs" not in source
+    assert "NEKO_MODEL_CAT_TRANSITION_MIN_SIZE = 260" in source
+    assert "NEKO_MODEL_CAT_TRANSITION_MAX_SIZE = 680" in source
+    assert "NEKO_MODEL_CAT_TRANSITION_SIZE_FACTOR = 0.86" in source
+    assert "Math.round(basis * NEKO_MODEL_CAT_TRANSITION_SIZE_FACTOR)" in source
+    transition_rect_block = source[
+        source.index("function normalizeNekoTransitionRect(anchorRect, container, coverRect)"):
+        source.index("function clearNekoModelCatTransitionOverlay()")
+    ]
+    assert "left: Math.round(centerX - size / 2)" in transition_rect_block
+    assert "top: Math.round(centerY - size / 2)" in transition_rect_block
+    assert "maxLeft" not in transition_rect_block
+    assert "maxTop" not in transition_rect_block
+    assert "const transitionAnchorRect = savedGoodbyeRect || activeReturnButtonContainer.getBoundingClientRect()" in source
+    assert "function mergeNekoTransitionAnchorRect(anchorRect, coverRect)" in source
+    assert "const coverRect = options.coverRect || null" in source
+    assert "coverRect: window._savedGoodbyeRect || getActiveModelTransitionRect()" in source
+    assert "coverRect: window._savedGoodbyeRect || null" in avatar_source
+    assert "direction: 'model-to-cat'" in source
+    assert "direction: 'cat-to-model'" in source
+    assert "return-ball-model-cat-transition-done" in source
+    assert "return-ball-model-cat-transition-fallback" in source
+    assert "NEKO_MODEL_CAT_TRANSITION_MODEL_EXIT_WAIT_MS" not in source
+    assert "deferReveal" not in source
+    assert "dispatchClickEvent();" in source
+    assert "window.playNekoModelCatTransition" in avatar_source
+    assert "window.dispatchEvent(event);" in avatar_source
+    assert "dispatchReturnEvent();" in avatar_source
 
 
 def test_return_button_idle_tier_styles_are_present():
@@ -70,6 +186,47 @@ def test_return_button_idle_tier_styles_are_present():
     assert '.neko-idle-return-btn[data-neko-idle-tier="cat2"]' in source
     assert '.neko-idle-return-btn[data-neko-idle-tier="cat3"]' in source
     assert '.neko-idle-return-btn.is-cat1-facing-right' in source
+
+
+def test_model_goodbye_exit_shrinks_in_place_instead_of_sliding_right():
+    source = INDEX_CSS_PATH.read_text(encoding="utf-8")
+    app_ui_source = APP_UI_PATH.read_text(encoding="utf-8")
+
+    assert "translateX(300px)" not in source
+    assert "#live2d-container.minimized" in source
+    assert "#vrm-container.minimized" in source
+    assert "#mmd-container.minimized" in source
+    assert "transform: scale(0.38) translateZ(0);" in source
+    assert "--neko-model-opacity-transition: opacity 280ms ease-in;" in source
+    assert "--neko-model-transform-transition: transform 400ms cubic-bezier(0.22, 1, 0.36, 1);" in source
+    assert "--neko-model-visibility-delay: 400ms;" in source
+    assert "transition: var(--neko-model-opacity-transition), var(--neko-model-transform-transition)" in source
+    assert "height 0ms var(--neko-model-visibility-delay)" in source
+    assert "transform-origin: var(--neko-model-exit-origin-x, 50%) var(--neko-model-exit-origin-y, 50%);" in source
+    assert source.count("transform-origin: var(--neko-model-exit-origin-x, 50%) var(--neko-model-exit-origin-y, 50%);") >= 3
+    assert "function setModelExitTransformOrigin(container, rect)" in app_ui_source
+    assert "function playModelGoodbyeExit(container, rect)" in app_ui_source
+    assert "function applyModelGoodbyeVisualFade(container, options = {})" in app_ui_source
+    assert "visualLayer.style.transition = NEKO_MODEL_GOODBYE_VISUAL_FADE_TRANSITION" in app_ui_source
+    assert "if (options.restart !== false)" in app_ui_source
+    assert "visualLayer.style.opacity = '0'" in app_ui_source
+    assert "applyModelGoodbyeVisualFade(container, { restart: false })" in app_ui_source
+    assert "applyModelGoodbyeVisualFade(container, { restart: true })" in app_ui_source
+    assert "const isGoodbyeExiting = container.getAttribute('data-neko-model-goodbye-exiting') === 'true';" in app_ui_source
+    assert "if (live2dCanvasForHide && !isGoodbyeExiting)" in app_ui_source
+    assert "container.style.transition = NEKO_MODEL_GOODBYE_EXIT_TRANSITION" not in app_ui_source
+    assert "container.classList.add('minimized')" in app_ui_source
+    assert "playModelGoodbyeExit(live2dContainerForGoodbye, savedGoodbyeRect)" in app_ui_source
+    assert "playModelGoodbyeExit(vrmContainer, savedGoodbyeRect)" in app_ui_source
+    assert "playModelGoodbyeExit(mmdContainer, savedGoodbyeRect)" in app_ui_source
+    assert "mmdCanvas.style.transition = 'opacity 0.62s ease-out'" not in app_ui_source
+
+    live2d_minimized_block = _extract_css_block(source, "#live2d-container.minimized")
+    vrm_minimized_block = _extract_css_block(source, "#vrm-container.minimized")
+    mmd_minimized_block = _extract_css_block(source, "#mmd-container.minimized")
+    assert "visibility: hidden" not in live2d_minimized_block
+    assert "visibility: hidden" not in vrm_minimized_block
+    assert "visibility: hidden" not in mmd_minimized_block
 
 
 def test_desktop_return_ball_drag_viewport_preserves_measured_cat_size():
@@ -103,14 +260,26 @@ def test_desktop_return_ball_drag_stops_native_drag_without_waiting_for_frame():
 def test_desktop_return_ball_drag_lifecycle_waits_for_restored_viewport_before_reveal():
     source = APP_UI_PATH.read_text(encoding="utf-8")
 
-    assert ": 600" in source
+    assert "MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_FALLBACK_MS = 220" in source
+    assert "MULTI_WINDOW_RETURN_BALL_DRAG_RESTORE_FALLBACK_MS = 600" in source
+    assert "MULTI_WINDOW_RETURN_BALL_REVEAL_FALLBACK_MS = 600" in source
+    assert "continueOnFallback" in source
+    assert "waitForViewportSize timed out; continuing best-effort cleanup" in source
     assert "keeping return-ball hidden until viewport is restored" in source
     assert "waitForViewportSize hard timeout; continuing best-effort cleanup" in source
     assert "clearMultiWindowReturnBallDeferredWork(state)" in source
     assert "state.viewportWaitFallbackTimer = setTimeout(pollViewportRestore, 50)" in source
-    assert "runWhenStable({ timedOut: true })" not in source
+    assert "runWhenStable({ timedOut: true })" in source
     assert "function revealReturnBallDragWindow()" in source
     assert "window.nekoPetDrag.reveal" in source
+    assert "function dispatchReturnBallRevealFailed(reason, error)" in source
+    assert "'return-ball-reveal-failed'" in source
+    assert "'neko:return-ball-reveal-failed'" in source
+    assert "Promise.resolve(revealResult)" in source
+    assert "dispatchReturnBallRevealFailed('reveal-timeout')" in source
+    assert "await revealReturnBallDragWindow()" not in source
+    assert "function isNativeReturnBallDragDisabled()" in source
+    assert "isNativeReturnBallDragDisabled() || !window.nekoPetDrag" in source
     assert "const dragStarted = window.nekoPetDrag.start(screenX, screenY)" in source
     assert "if (dragStarted === false)" in source
 
@@ -121,6 +290,46 @@ def test_desktop_return_ball_drag_lifecycle_waits_for_restored_viewport_before_r
 
     assert begin_index < native_start_index < dispatch_start_index < drag_style_index
 
+    finish_index = source.index("async function finishDrag(screenX, screenY)")
+    no_move_start = source.index("if (!state.hasMoved) {", finish_index)
+    no_move_end = source.index("const finalBounds = await resolveFinalWindowBounds", no_move_start)
+    no_move_block = source[no_move_start:no_move_end]
+
+    assert no_move_block.index("revealReturnBallDragWindow();") < no_move_block.index("dispatchReturnBallClick();")
+
+
+def test_desktop_return_ball_drag_recovers_when_mouse_release_is_lost():
+    source = APP_UI_PATH.read_text(encoding="utf-8")
+
+    assert "RETURN_BALL_DRAG_RECOVERY_POLL_MS = 250" in source
+    assert "RETURN_BALL_DRAG_STALE_RECOVERY_MS = 12000" in source
+    assert "function getReturnBallDragScreenCoordinate(value, fallback)" in source
+    assert "Number.isFinite(value) ? value : fallback" in source
+    assert "state.releaseScreenX || state.startScreenX" not in source
+    assert "state.releaseScreenY || state.startScreenY" not in source
+    assert "function finishDragIfMouseButtonReleased(event, reason)" in source
+    assert "event.pointerType && event.pointerType !== 'mouse'" in source
+    assert "event.buttons !== 0" in source
+    assert "cancelActiveDrag('window-blur')" in source
+    assert "cancelActiveDrag('visibility-hidden')" in source
+    assert "cancelActiveDrag('pagehide')" in source
+    assert "cancelActiveDrag('pointercancel')" in source
+    assert "cancelActiveDrag('stale-pointer-timeout')" in source
+    assert "document.addEventListener('pointermove', state.handlePointerMove, true)" in source
+    assert "document.addEventListener('pointerup', state.handlePointerUp, true)" in source
+    assert "document.addEventListener('pointercancel', state.handlePointerCancel, true)" in source
+    assert "window.addEventListener('blur', state.handleWindowBlur)" in source
+    assert "document.addEventListener('visibilitychange', state.handleVisibilityChange)" in source
+    assert "suppressClick ? 'return-ball-drag-cancel' : 'return-ball-drag-click'" in source
+    assert "if (suppressClick)" in source
+    assert "dragCancelled: true" in source
+    assert "movedDistancePx: 0" in source
+    assert "dispatchReturnBallClick();" in source
+    assert "window.nekoPetDrag.stop(stopScreenX, stopScreenY)" in source
+    # 已经移动过的拖拽被中断（截图/blur/超时）时也要传播取消标记，
+    # 否则 moved 分支照常派发 drag-end，app-auto-goodbye 会当成真实释放降级猫档
+    assert "dragCancelled: suppressClick" in source
+
 
 def test_return_button_drag_has_single_owner_per_runtime_path():
     avatar_source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
@@ -128,7 +337,8 @@ def test_return_button_drag_has_single_owner_per_runtime_path():
     vrm_source = VRM_UI_BUTTONS_PATH.read_text(encoding="utf-8")
     mmd_source = MMD_UI_BUTTONS_PATH.read_text(encoding="utf-8")
 
-    assert "if (!window.__NEKO_MULTI_WINDOW__)" in avatar_source
+    assert "function _isNekoNativeReturnBallDragDisabled()" in avatar_source
+    assert "if (!window.__NEKO_MULTI_WINDOW__ || _isNekoNativeReturnBallDragDisabled())" in avatar_source
     assert "this._setupReturnButtonDrag(returnButtonContainer)" in avatar_source
     assert "Live2DManager.prototype.setupReturnButtonContainerDrag = function(container)" in live2d_source
     assert "this.setupReturnButtonContainerDrag(returnButtonContainer)" not in live2d_source
@@ -212,6 +422,12 @@ def test_cat1_voice_sounds_are_limited_to_non_drag_and_drag_states():
     assert "urls[Math.floor(Math.random() * urls.length)]" in source
     assert "_scheduleNekoIdleCat1AmbientSoundInterval(startedAt + _NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS)" in source
     assert "normalizedTier !== _NEKO_IDLE_TIER_CAT1 || _isAnyNekoIdleReturnDragActionActive()" in source
+    assert "_playNekoIdleCat1SoundReaction()" in source
+    assert "state.targetKind !== _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE" in source
+    assert "_playNekoIdleHoverArt(art, _NEKO_IDLE_TIER_CAT1);" in source
+    assert "const reactionSrc = art.__nekoIdleHoverSrc;" in source
+    assert "const reactionStartedAt = Math.max(0, Number(art.__nekoIdleHoverStartedAt) || Date.now());" in source
+    assert "_finishNekoIdleHoverArtAfterPlayback(art, _NEKO_IDLE_TIER_CAT1);" in source
     assert "_playNekoIdleCat1DragSound(tier)" in source
     assert "_fadeOutNekoIdleCat1DragSound()" in source
     assert "_fadeOutNekoIdleSoundAudio(_nekoIdleCat1DragSoundState, _NEKO_IDLE_CAT1_DRAG_SOUND_FADE_OUT_MS)" in source
@@ -227,7 +443,9 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
 
     assert "_NEKO_IDLE_CAT1_SUBSTATE_WALKING = 'walking-to-chat'" in source
     assert "_NEKO_IDLE_CAT1_SUBSTATE_STRETCH = 'stretch-near-chat'" in source
-    assert '_NEKO_IDLE_CAT1_WALK_SPEED_PX_PER_SEC = 101' in source
+    assert '_NEKO_IDLE_CAT1_CHAT_GAP_PX = -12' in source
+    assert '_NEKO_IDLE_CAT1_WALK_SPEED_PX_PER_SEC = 82' in source
+    assert '_NEKO_IDLE_CAT1_WALK_EXIT_DISTANCE_PX = 14' in source
     assert '_NEKO_IDLE_CAT1_WALK_MAX_SPEED_RATE = 1.5' in source
     assert '_NEKO_IDLE_CAT1_WALK_DISTANCE_INCREASE_THRESHOLD_PX' in source
     assert '_NEKO_IDLE_CAT1_WALK_DISTANCE_GROWTH_FOR_MAX_RATE_PX' in source
@@ -235,6 +453,31 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert '_NEKO_IDLE_CAT1_WALK_ENTER_DISTANCE_PX' in source
     assert '_NEKO_IDLE_CAT1_WALK_EXIT_DISTANCE_PX' in source
     assert '_NEKO_IDLE_CAT1_RECHECK_MOVE_DISTANCE_PX' in source
+    assert '_NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_STICK_MAX_SPEED_PX_PER_SEC = 1100' in source
+    assert '_NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_STICK_MAX_STEP_PX = 210' in source
+    assert '_NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_DROP_FAST_MOVE_COUNT = 3' in source
+    assert 'compactTopEdgeFastMoveCount: 0' in source
+    assert 'state.compactTopEdgeFastMoveCount = 0' in source
+    assert 'state.compactTopEdgeFastMoveCount >= _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_DROP_FAST_MOVE_COUNT' in source
+    assert "function _postNekoIdleCat1CompactMirrorState(payload)" in source
+    assert "new CustomEvent('neko:idle-cat1-compact-mirror-state'" in source
+    assert "via: 'local'" in source
+    assert "return dispatchedLocal;" in source
+    assert "assetUrl: options.assetUrl || _getNekoIdleReturnAssetUrl(_NEKO_IDLE_TIER_CAT1)" in source
+    mirror_state_block = source.split("function _setNekoIdleCat1CompactMirrorActive", 1)[1].split(
+        "const surfaceScreenRect = _getNekoIdleScreenRectFromCompactSurfaceRect(options.surfaceRect)",
+        1,
+    )[0]
+    assert "inactiveReason === 'compact-surface-settled'" in mirror_state_block
+    assert "clearTimeout(container.__nekoIdleCat1CompactMirrorSettleTimer);" in mirror_state_block
+    immediate_clear_index = mirror_state_block.rindex("clearTimeout(container.__nekoIdleCat1CompactMirrorSettleTimer);")
+    assert mirror_state_block.index("inactiveReason === 'compact-surface-settled'") < immediate_clear_index
+    assert immediate_clear_index < mirror_state_block.index(
+        "if (!container.__nekoIdleCat1CompactMirrorActive) return true;"
+    )
+    assert "_syncNekoIdleCat1CompactMirrorReaction(button, container, reactionSrc, 'cat1-sound-reaction')" in source
+    assert "_getNekoIdleGifDurationMs(reactionSrc)" in source
+    assert "const remainingMs = Math.max(0, (Number(durationMs) || 0) - elapsedMs);" in source
     assert '_NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW' in source
     assert '_NEKO_IDLE_RETURN_SUBACTION_PROFILES' in source
     assert '_getNekoIdleReturnSubactionProfile' in source
@@ -259,10 +502,18 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert 'pendingWalkTimer' in source
     assert 'pendingWalkReady' in source
     assert '_cancelNekoIdleReturnPendingWalk' in source
+    walk_start_block = source[
+        source.index('function _scheduleNekoIdleCat1WalkStart'):
+        source.index('function _canScheduleNekoIdleCat1PairMove')
+    ]
+    assert "if (art && art.__nekoIdleHoverSrc)" in walk_start_block
+    assert "_finishNekoIdleHoverArtAfterPlayback(art, profile.tier)" in walk_start_block
+    assert walk_start_block.index("if (art && art.__nekoIdleHoverSrc)") < walk_start_block.index("if (state.pendingWalkReady)")
     assert '_NEKO_IDLE_CAT1_WALK_LONG_DELAY_MAX_MS = 5 * 60 * 1000' in source
     assert '_NEKO_IDLE_CAT1_PAIR_MOVE_SHORT_DELAY_MIN_MS = 5 * 1000' in source
     assert '_NEKO_IDLE_CAT1_PAIR_MOVE_SHORT_DELAY_MAX_MS = 90 * 1000' in source
     assert '_NEKO_IDLE_CAT1_PAIR_MOVE_LONG_DELAY_MAX_MS = 5 * 60 * 1000' in source
+    assert '_NEKO_IDLE_CAT1_PAIR_MOVE_SPEED_PX_PER_SEC = 82' in source
     assert 'pairMove: Object.freeze' in source
     assert 'intervalChoices' in source
     assert 'pairMoveTimer' in source
@@ -351,7 +602,143 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert "'return-ball-drag-end'" in app_ui_source
     assert "movedDistancePx: movedDistancePx" in app_ui_source
     assert "this._setupReturnButtonDrag(returnButtonContainer)" in source
-    assert "if (!window.__NEKO_MULTI_WINDOW__)" in source
+    assert "if (!window.__NEKO_MULTI_WINDOW__ || _isNekoNativeReturnBallDragDisabled())" in source
+
+
+def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
+    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+
+    drag_setup = _source_slice_between(
+        source,
+        "ManagerPrototype._setupReturnButtonDrag = function(container) {",
+        "container.addEventListener('mousedown'",
+        "return button drag setup",
+    )
+    handle_start = _source_slice_between(
+        source,
+        "const handleStart = (clientX, clientY) => {",
+        "const handleMove = (clientX, clientY) => {",
+        "return button drag start handler",
+    )
+    handle_end = _source_slice_between(
+        source,
+        "const handleEnd = () => {",
+        "container.addEventListener('mousedown'",
+        "return button drag end handler",
+    )
+
+    for expected in (
+        "let dragSafetyTimer = 0;",
+        "let dragSafetyToken = 0;",
+        "const clearDragSafetyTimer = () => {",
+        "const resetDragStateAfterMissingEnd = (safetyToken) => {",
+        "if (dragSafetyToken !== safetyToken || !isDragging) return;",
+        "const finishDragState = (moved, safetyToken) => {",
+        "if (safetyToken !== dragSafetyToken) return;",
+        "container.setAttribute('data-dragging', 'false');",
+        "_dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-end'",
+    ):
+        _assert_source_contains(drag_setup, expected, "return button drag setup")
+    _assert_source_order(
+        drag_setup,
+        "return button drag setup helpers",
+        "const finishDragState = (moved, safetyToken) => {",
+        "const resetDragStateAfterMissingEnd = (safetyToken) => {",
+        "finishDragState(moved, safetyToken);",
+    )
+    _assert_source_contains(
+        handle_start,
+        "container.setAttribute('data-dragging', 'pending')",
+        "return button drag start handler",
+    )
+    _assert_source_contains(handle_start, "const safetyToken = dragSafetyToken + 1", "return button drag start handler")
+    _assert_source_contains(handle_start, "dragSafetyTimer = setTimeout(() => {", "return button drag start handler")
+    _assert_source_contains(
+        handle_start,
+        "resetDragStateAfterMissingEnd(safetyToken);",
+        "return button drag start handler",
+    )
+    _assert_source_contains(handle_start, "}, 5000);", "return button drag start handler")
+    _assert_source_order(
+        handle_start,
+        "return button drag start handler",
+        "clearDragSafetyTimer();",
+        "container.setAttribute('data-dragging', 'pending')",
+        "dragSafetyTimer = setTimeout(() => {",
+    )
+    _assert_source_contains(handle_end, "clearDragSafetyTimer();", "return button drag end handler")
+    _assert_source_contains(handle_end, "const safetyToken = dragSafetyToken;", "return button drag end handler")
+    _assert_source_contains(
+        handle_end,
+        "finishDragState(moved, safetyToken);",
+        "return button drag end handler",
+    )
+    _assert_source_order(
+        handle_end,
+        "return button drag end handler",
+        "clearDragSafetyTimer();",
+        "if (isDragging) {",
+        "const safetyToken = dragSafetyToken;",
+        "finishDragState(moved, safetyToken);",
+    )
+
+    sync_block = _source_slice_between(
+        source,
+        "function _syncNekoIdleCat1Journey",
+        "function _scheduleNekoIdleCat1JourneySync(button)",
+        "cat1 journey sync",
+    )
+    for expected in (
+        "const initialContainer = _getNekoIdleReturnContainerFromButton(button)",
+        "const initialDragging = initialContainer && initialContainer.getAttribute('data-dragging')",
+        "if (initialDragging && initialDragging !== 'false') return",
+    ):
+        _assert_source_contains(sync_block, expected, "cat1 journey sync")
+    _assert_source_order(
+        sync_block,
+        "cat1 journey sync drag guard",
+        "if (_isNekoIdleCompactSurfaceDragging()) return",
+        "if (initialDragging && initialDragging !== 'false') return",
+        "const normalizedTier",
+    )
+
+    container_observer = _source_slice_between(
+        source,
+        "state.containerObserver = new MutationObserver(() => {",
+        "state.containerObserver.observe(container",
+        "cat1 container observer",
+    )
+    _assert_source_contains(
+        container_observer,
+        "const observerDragging = container.getAttribute('data-dragging');",
+        "cat1 container observer",
+    )
+    _assert_source_contains(
+        container_observer,
+        "if (observerDragging && observerDragging !== 'false') return;",
+        "cat1 container observer",
+    )
+
+    walk_start = _source_slice_between(
+        source,
+        "function _startNekoIdleCat1Walk",
+        "function _scheduleNekoIdleCat1WalkStart",
+        "cat1 walk start",
+    )
+    for expected in (
+        "if (_isNekoIdleReturnDragActionActive(button)) return",
+        "const walkContainer = _getNekoIdleReturnContainerFromButton(button)",
+        "const walkDragging = walkContainer && walkContainer.getAttribute('data-dragging')",
+        "if (walkDragging && walkDragging !== 'false') return",
+    ):
+        _assert_source_contains(walk_start, expected, "cat1 walk start")
+    _assert_source_order(
+        walk_start,
+        "cat1 walk start drag guard",
+        "if (!state) return",
+        "if (_isNekoIdleReturnDragActionActive(button)) return",
+        "const profile = state.profile",
+    )
 
 
 def test_return_button_idle_tier_assets_are_version_tracked():
@@ -365,7 +752,8 @@ def test_return_button_idle_tier_assets_are_version_tracked():
                  CAT2_SLEEP_SOUND_PATH, CAT3_SLEEP_SOUND_PATH,
                  CAT1_WALK_ASSET_PATH, CAT1_STRETCH_ASSET_PATH,
                  CAT1_INTERACTIVE_ASSET_PATH,
-                 CAT1_DRAG_ASSET_PATH, CAT2_DRAG_ASSET_PATH, CAT3_DRAG_ASSET_PATH):
+                 CAT1_DRAG_ASSET_PATH, CAT2_DRAG_ASSET_PATH, CAT3_DRAG_ASSET_PATH,
+                 CAT_MODEL_CHANGE_ASSET_PATH):
         assert path in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
         assert path.is_file()
 
@@ -378,6 +766,36 @@ def test_no_box_shadow_or_border_in_base_return_btn_css():
     assert 'box-shadow' not in base_block
     assert 'border' not in base_block
     assert 'backdrop-filter' not in base_block
+
+
+def _extract_css_block(source, selector):
+    """Extract a selector's CSS block body from source.
+
+    Args:
+        source: CSS source string to search.
+        selector: Selector text whose following brace-delimited block is read.
+
+    Returns:
+        The string inside the matched braces, or '' when the selector/opening
+        brace/closing brace is not found. Nested braces are handled with
+        brace-depth tracking.
+    """
+    start = source.find(selector)
+    if start == -1:
+        return ''
+    open_brace = source.find('{', start + len(selector))
+    if open_brace == -1:
+        return ''
+    depth = 0
+    for index in range(open_brace, len(source)):
+        char = source[index]
+        if char == '{':
+            depth += 1
+        elif char == '}':
+            depth -= 1
+            if depth == 0:
+                return source[open_brace + 1:index]
+    return ''
 
 
 def _extract_neko_return_btn_block(source):

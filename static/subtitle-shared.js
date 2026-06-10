@@ -431,9 +431,20 @@
         };
     }
 
+    function isDarkThemeActive() {
+        return !!(
+            document.documentElement &&
+            document.documentElement.getAttribute('data-theme') === 'dark'
+        );
+    }
+
     function applyBackgroundOpacity(display, opacity) {
         if (!display) return;
         var alpha = clampOpacity(opacity) / 100;
+        if (isDarkThemeActive()) {
+            display.style.background = 'linear-gradient(135deg, rgba(18,29,45,' + alpha + ') 0%, rgba(22,45,68,' + Math.max(0, alpha - 0.04) + ') 52%, rgba(30,74,108,' + alpha + ') 100%)';
+            return;
+        }
         display.style.background = 'linear-gradient(135deg, rgba(68,183,254,' + alpha + ') 0%, rgba(68,183,254,' + Math.max(0, alpha - 0.05) + ') 50%, rgba(100,200,255,' + alpha + ') 100%)';
     }
 
@@ -868,6 +879,38 @@
 
         applyState(state, { changedKeys: [], source: 'init' });
         cleanupFns.push(subscribeSettings(applyState, { immediate: false }));
+
+        var observedThemeDark = isDarkThemeActive();
+        var applyThemeStateIfChanged = function(source) {
+            var nextThemeDark = isDarkThemeActive();
+            if (nextThemeDark === observedThemeDark) return;
+            observedThemeDark = nextThemeDark;
+            applyState(getSettings(), { changedKeys: ['theme'], source: source });
+        };
+        var onThemeChanged = function() {
+            applyThemeStateIfChanged('subtitle-ui-theme-event');
+        };
+        window.addEventListener('neko-theme-changed', onThemeChanged);
+        cleanupFns.push(function() {
+            window.removeEventListener('neko-theme-changed', onThemeChanged);
+        });
+        if (window.MutationObserver && document.documentElement) {
+            var themeObserver = new MutationObserver(function(mutations) {
+                for (var i = 0; i < mutations.length; i += 1) {
+                    if (mutations[i].attributeName === 'data-theme') {
+                        applyThemeStateIfChanged('subtitle-ui-theme-attribute');
+                        break;
+                    }
+                }
+            });
+            themeObserver.observe(document.documentElement, {
+                attributes: true,
+                attributeFilter: ['data-theme']
+            });
+            cleanupFns.push(function() {
+                themeObserver.disconnect();
+            });
+        }
 
         if (window.i18next && typeof window.i18next.on === 'function') {
             var onLanguageChanged = function(nextLocale) {

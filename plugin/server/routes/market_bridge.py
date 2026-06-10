@@ -39,13 +39,11 @@ from plugin.server.application.install_source import (
     classify_plugin_path,
     get_install_source_manager,
 )
-from plugin.server.application.plugin_cli import service as plugin_cli_service_module
 from plugin.server.application.plugin_cli import PluginCliService
+from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
 from plugin.settings import (
     MARKET_URL,
     MARKET_WEB_URL,
-    PLUGIN_CONFIG_ROOTS,
-    USER_PLUGIN_CONFIG_ROOT,
 )
 
 router = APIRouter(prefix="/market", tags=["market-bridge"])
@@ -231,8 +229,9 @@ def _cleanup_tasks() -> None:
 
 
 def _plugin_config_roots() -> tuple[Path, ...]:
+    policy = PluginCliPathPolicy.from_settings()
     roots: list[Path] = []
-    for root in (*PLUGIN_CONFIG_ROOTS, USER_PLUGIN_CONFIG_ROOT):
+    for root in (policy.builtin_plugins_root, policy.user_plugins_root):
         if root not in roots:
             roots.append(root)
     return tuple(roots)
@@ -1456,7 +1455,7 @@ async def _do_upgrade(
                 ),
             )
 
-    plugin_dir = (USER_PLUGIN_CONFIG_ROOT / entry.directory_name).resolve()
+    plugin_dir = (PluginCliPathPolicy.from_settings().user_plugins_root / entry.directory_name).resolve()
     backup_dir = plugin_dir.with_name(
         f"{entry.directory_name}.bak.{_utc_micro_ts()}"
     )
@@ -1930,7 +1929,7 @@ def _utc_iso_now() -> str:
 async def _download_package(url: str, task: dict[str, Any]) -> Path:
     """Download a plugin package to a temp file with progress updates."""
 
-    download_dir = plugin_cli_service_module._TARGET_ROOT / ".downloads"
+    download_dir = PluginCliPathPolicy.from_settings().package_artifacts_root / ".downloads"
     download_dir.mkdir(parents=True, exist_ok=True)
     fd, raw_path = tempfile.mkstemp(
         prefix="neko-market-",

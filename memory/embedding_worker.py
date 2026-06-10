@@ -47,7 +47,7 @@ try:
     )
 except ImportError:
     # ``memory/embeddings.py`` is missing (typically because an antivirus
-    # quarantined it — historically as ``Trojan/Python.ShellLoader.i``).
+    # quarantined it — see memory.embeddings for the false-positive history).
     # Fall back to disabled stubs so the warmup/backfill loop still
     # imports; the loop's own ``is_available()`` short-circuit then
     # turns the whole worker into a one-shot no-op.

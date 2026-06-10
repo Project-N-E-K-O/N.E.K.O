@@ -104,3 +104,4 @@ async def test_hot_update_plugin_config_maps_domain_error_to_http(monkeypatch: p
 
     assert exc_info.value.status_code == 409
     assert exc_info.value.detail == "plugin is offline"
+    assert exc_info.value.headers == {"X-Error-Code": "PLUGIN_NOT_RUNNING"}

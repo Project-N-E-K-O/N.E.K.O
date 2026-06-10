@@ -2,6 +2,7 @@ import pytest
 
 from config.prompts.prompts_avatar_interaction import (
     _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES,
+    _build_avatar_interaction_instruction,
     _build_avatar_interaction_memory_meta,
 )
 from main_logic.cross_server import _should_persist_avatar_interaction_memory
@@ -156,6 +157,79 @@ def test_avatar_memory_meta_master_name_passes_through_unchanged():
     for name in ("小明", "Alice", "mochi", "猫猫", "Mei Wang"):
         meta = _build_avatar_interaction_memory_meta("zh", payload, name)
         assert name in meta["memory_note"]
+
+
+@pytest.mark.unit
+def test_avatar_instruction_empty_master_uses_localized_neutral_actor():
+    lollipop_payloads = [
+        {"tool_id": "lollipop", "action_id": "offer", "intensity": "normal"},
+        {"tool_id": "lollipop", "action_id": "tease", "intensity": "normal"},
+        {"tool_id": "lollipop", "action_id": "tap_soft", "intensity": "rapid"},
+        {"tool_id": "lollipop", "action_id": "tap_soft", "intensity": "burst"},
+    ]
+    expected_actor = {
+        "zh": "对方",
+        "zh-TW": "對方",
+        "en": "The other person",
+        "ja": "相手",
+        "ko": "상대",
+        "ru": "Собеседник",
+        "es": "Esa persona",
+        "pt": "A outra pessoa",
+    }
+
+    for locale, actor in expected_actor.items():
+        for payload in lollipop_payloads:
+            instruction = _build_avatar_interaction_instruction(locale, "YUI", "", payload)
+            assert instruction.startswith(actor), (
+                f"locale={locale} payload={payload} instruction={instruction!r} "
+                "没把本地化中性 actor 放在事件主体位置"
+            )
+            assert not instruction.startswith((" ", "刚刚", "剛剛", "が", "이 "))
+
+            whitespace_instruction = _build_avatar_interaction_instruction(
+                locale, "YUI", "   ", payload
+            )
+            assert whitespace_instruction == instruction
+
+
+@pytest.mark.unit
+def test_avatar_instruction_named_master_still_uses_given_actor():
+    payload = {
+        "tool_id": "fist",
+        "action_id": "poke",
+        "intensity": "normal",
+    }
+
+    zh = _build_avatar_interaction_instruction("zh", "YUI", "哥哥", payload)
+    en = _build_avatar_interaction_instruction("en", "YUI", "Alice", payload)
+    ko_vowel = _build_avatar_interaction_instruction("ko", "YUI", "유이", payload)
+    ko_final = _build_avatar_interaction_instruction("ko", "YUI", "민준", payload)
+    ko_cjk = _build_avatar_interaction_instruction("ko", "YUI", "哥哥", payload)
+
+    assert zh.startswith("哥哥刚刚用猫爪")
+    assert en.startswith("Alice just lightly touched")
+    assert ko_vowel.startswith("유이가 방금")
+    assert ko_final.startswith("민준이 방금")
+    assert ko_cjk.startswith("哥哥 방금")
+
+
+@pytest.mark.unit
+def test_avatar_instruction_rapid_fist_reward_keeps_repeated_touch_fact():
+    instruction = _build_avatar_interaction_instruction(
+        "zh",
+        "YUI",
+        "哥哥",
+        {
+            "tool_id": "fist",
+            "action_id": "poke",
+            "intensity": "rapid",
+            "reward_drop": True,
+        },
+    )
+
+    assert "连续轻轻碰" in instruction
+    assert "奖励" in instruction
 
 
 @pytest.mark.unit

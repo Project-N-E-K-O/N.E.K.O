@@ -40,8 +40,10 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/app-auto-goodbye.js",
     _PROJECT_ROOT / "static/app-ui.js",
     _PROJECT_ROOT / "static/app-interpage.js",
+    _PROJECT_ROOT / "static/common_ui.js",
     _PROJECT_ROOT / "static/common-ui-hud.js",
     _PROJECT_ROOT / "static/app-react-chat-window.js",
+    _PROJECT_ROOT / "static/app-chat-export.js",
     _PROJECT_ROOT / "static/avatar-ui-buttons.js",
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat1.gif",
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat1-click.gif",
@@ -55,6 +57,8 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat-move-1.gif",
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat-move-2.gif",
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat-move-3.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat_model_change.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/chat-minimized-yarn-ball.png",
     _PROJECT_ROOT / "static/assets/neko-idle/cat1-voice-click.mp3",
     _PROJECT_ROOT / "static/assets/neko-idle/cat1-voice1.mp3",
     _PROJECT_ROOT / "static/assets/neko-idle/cat1-voice2.mp3",
@@ -278,6 +282,20 @@ async def get_chat_page(request: Request):
     templates = get_templates()
     return templates.TemplateResponse("templates/chat.html", {
         "request": request,
+        "initial_chat_surface_mode": "compact",
+        **_vrm_defaults_ctx(),
+        **_static_assets_ctx(),
+        **_react_chat_assets_ctx(),
+    })
+
+
+@router.get("/chat_full", response_class=HTMLResponse)
+async def get_chat_full_page(request: Request):
+    """Web 专用完整聊天窗口页面"""
+    templates = get_templates()
+    return templates.TemplateResponse("templates/chat.html", {
+        "request": request,
+        "initial_chat_surface_mode": "full",
         **_vrm_defaults_ctx(),
         **_static_assets_ctx(),
         **_react_chat_assets_ctx(),

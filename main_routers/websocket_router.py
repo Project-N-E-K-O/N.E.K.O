@@ -274,8 +274,22 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 _handle_ws_telemetry(message, lanlan_name=lanlan_name)
                 continue
 
+            if action == "goodbye_state":
+                active = bool(message.get("active"))
+                reason = str(message.get("reason") or ("goodbye" if active else "return")).strip().lower()[:64]
+                goodbye_mgr = session_manager[lanlan_name]
+                goodbye_mgr.set_goodbye_silent(active, reason)
+                if not active and goodbye_mgr.pending_agent_callbacks:
+                    logger.info(
+                        "[%s] goodbye_state cleared: retrying %d pending callback(s)",
+                        lanlan_name, len(goodbye_mgr.pending_agent_callbacks),
+                    )
+                    _fire_task(goodbye_mgr.trigger_agent_callbacks())
+                continue
+
             if action == "start_session":
                 session_manager[lanlan_name].active_session_is_idle = False
+                session_manager[lanlan_name].set_goodbye_silent(False, "start_session")
                 input_type = message.get("input_type", "audio")
                 if input_type in ['audio', 'screen', 'camera', 'text']:
                     if is_game_route_active(lanlan_name):
@@ -341,6 +355,9 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
 
             elif action == "end_session":
                 session_manager[lanlan_name].active_session_is_idle = False
+                end_reason = str(message.get("reason") or "").strip().lower()[:64]
+                if bool(message.get("goodbye_active")) or end_reason == "goodbye":
+                    session_manager[lanlan_name].set_goodbye_silent(True, end_reason or "goodbye")
                 _fire_task(session_manager[lanlan_name].end_session())
 
             elif action == "pause_session":
@@ -403,6 +420,24 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                         _fire_task(session_manager[lanlan_name].trigger_greeting())
                 else:
                     logger.info(f"[{lanlan_name}] greeting_check: since_disconnect={since_disconnect:.1f}s ≤15s reason={greeting_reason or '-'} → skip (refresh/reconnect)")
+
+            elif action == "cat_greeting_check":
+                # 从猫咪形态变回猫娘（请她回来）时，前端按猫咪停留时长请求一次专属问候。
+                # 与 greeting_check 对偶，但独立计时：时长由前端测量传入，不查对话 gap；
+                # 不发 agent intent restore（那是"首次进入会话"信号，变回不是）。
+                if _is_home_tutorial_blocking_greeting(lanlan_name):
+                    logger.info(f"[{lanlan_name}] cat_greeting_check: skipped by home tutorial guard")
+                    continue
+                try:
+                    cat_duration = float(message.get("cat_duration_seconds", 0) or 0)
+                except (TypeError, ValueError):
+                    cat_duration = 0.0
+                # sanitize：非负、封顶 7 天，防前端异常值（如丢失 goodbyeEnteredAt → now-0）
+                cat_duration = max(0.0, min(cat_duration, 7 * 24 * 3600))
+                cat_tier = str(message.get("tier") or "").strip().lower()[:16]
+                cat_was_auto = bool(message.get("was_auto"))
+                logger.info(f"[{lanlan_name}] cat_greeting_check: duration={cat_duration:.0f}s tier={cat_tier or '-'} was_auto={cat_was_auto}")
+                _fire_task(session_manager[lanlan_name].trigger_cat_greeting(cat_duration, cat_tier, cat_was_auto))
 
             elif action == "ping":
                 # 心跳保活消息，回复pong
