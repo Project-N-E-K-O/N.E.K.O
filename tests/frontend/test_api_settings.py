@@ -146,7 +146,7 @@ def test_assist_free_disables_assist_api_key_input(mock_page: Page, running_serv
 
 @pytest.mark.frontend
 def test_custom_api_close_preserves_assist_provider(mock_page: Page, running_server: str):
-    """开关自定义 API 不得改写用户已选的辅助服务商（非 free 服务商）。"""
+    """Toggling custom API on/off must not rewrite the user's chosen (non-free) assist provider."""
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
     url = f"{running_server}/api_key"
     mock_page.goto(url)
@@ -194,8 +194,9 @@ def test_custom_api_close_preserves_assist_provider(mock_page: Page, running_ser
 
 @pytest.mark.frontend
 def test_free_assist_with_paid_core_is_preserved(mock_page: Page, running_server: str):
-    """assist=free 配付费 core 是合法组合：推荐逻辑与自定义 API 开关都不得把它改走，
-    且 free 选项不再被禁用、辅助 Key 输入框锁定为免费版文案。"""
+    """assist=free with a paid core is a valid combination: neither the recommendation
+    logic nor the custom API toggle may move it away; the free option must stay enabled
+    and the assist key input must be locked with the free-version text."""
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
     url = f"{running_server}/api_key"
     mock_page.goto(url)
@@ -246,8 +247,8 @@ def test_free_assist_with_paid_core_is_preserved(mock_page: Page, running_server
 
 @pytest.mark.frontend
 def test_paid_core_key_not_overwritten_by_free_assist_on_save(mock_page: Page, running_server: str):
-    """core=qwen + assist=free 保存时：付费 core 仍必须有 Key（不得被 assist=free 豁免），
-    且 coreApiKey 保存真实 Key 而不是 free-access。"""
+    """Saving core=qwen + assist=free: the paid core still requires a key (assist=free
+    must not waive the check), and coreApiKey persists the real key, not free-access."""
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
     url = f"{running_server}/api_key"
     mock_page.goto(url)
