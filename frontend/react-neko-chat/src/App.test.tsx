@@ -7,12 +7,13 @@ import {
   computeCompactHistoryExitDelay,
 } from './CompactExportHistoryPanel';
 import MessageList from './MessageList';
+import { getChatEmptyStateFallback } from './chat-copy';
 import { parseChatMessage, type CompactChatState } from './message-schema';
 
 describe('App', () => {
   const COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY = 'neko.reactChatWindow.compactExportHistoryOpen';
   const COMPACT_INPUT_TOOL_WHEEL_INDEX_STORAGE_KEY = 'neko.reactChatWindow.compactInputToolWheelIndex';
-
+  const DEFAULT_CHAT_EMPTY_STATE_FALLBACK = getChatEmptyStateFallback('en');
   beforeEach(() => {
     window.localStorage.removeItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
     window.localStorage.removeItem(COMPACT_INPUT_TOOL_WHEEL_INDEX_STORAGE_KEY);
@@ -45,6 +46,15 @@ describe('App', () => {
     fireEvent.click(exportButton!);
     return exportButton!;
   };
+
+  it('selects locale-aware chat empty state fallbacks', () => {
+    expect(getChatEmptyStateFallback('zh-CN')).toBe('现在开始跟我聊天吧！');
+    expect(getChatEmptyStateFallback('zh-TW')).toBe('現在開始跟我聊天吧！');
+    expect(getChatEmptyStateFallback('zh-HK')).toBe('現在開始跟我聊天吧！');
+    expect(getChatEmptyStateFallback('zh-MO')).toBe('現在開始跟我聊天吧！');
+    expect(getChatEmptyStateFallback('zh-Hant')).toBe('現在開始跟我聊天吧！');
+    expect(getChatEmptyStateFallback('en-US')).toBe('Start chatting with me now!');
+  });
 
   const mockHoverCapableMatchMedia = (hoverCapable = true) => {
     window.matchMedia = vi.fn().mockImplementation((query: string) => ({
@@ -1876,7 +1886,7 @@ describe('App', () => {
       <App chatSurfaceMode="compact" composerHidden messages={[assistantMessage, userMessage]} />,
     );
 
-    expect(container.querySelector('.compact-chat-capsule-button')).toHaveTextContent('Chat content will appear here.');
+    expect(container.querySelector('.compact-chat-capsule-button')).toHaveTextContent(DEFAULT_CHAT_EMPTY_STATE_FALLBACK);
     expect(container.querySelector('.compact-chat-capsule-button')).not.toHaveTextContent('先看我这边的引导内容');
     expect(container.querySelector('.compact-chat-capsule-button')).not.toHaveTextContent('这是我刚刚发出的内容');
   });
@@ -3162,7 +3172,7 @@ describe('App', () => {
 
     const preview = container.querySelector('.compact-chat-capsule-text');
     expect(preview).toHaveAttribute('data-compact-preview-streaming', 'false');
-    expect(preview).toHaveTextContent('Chat content will appear here.');
+    expect(preview).toHaveTextContent(DEFAULT_CHAT_EMPTY_STATE_FALLBACK);
     expect(preview).not.toHaveTextContent(settledText.slice(0, 20));
   });
 
@@ -3387,7 +3397,7 @@ describe('App', () => {
     );
 
     const capsule = container.querySelector('.compact-chat-capsule-button');
-    expect(capsule).toHaveTextContent('Chat content will appear here.');
+    expect(capsule).toHaveTextContent(DEFAULT_CHAT_EMPTY_STATE_FALLBACK);
     fireEvent.click(capsule as Element);
 
     expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'default');

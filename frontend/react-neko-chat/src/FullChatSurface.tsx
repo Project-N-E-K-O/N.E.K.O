@@ -26,6 +26,7 @@ import CompactExportHistoryPanel, {
   type CompactExportActionRequest,
   type CompactExportPreviewResult,
 } from './CompactExportHistoryPanel';
+import { getChatEmptyStateFallback } from './chat-copy';
 import { i18n } from './i18n';
 import {
   type ChatMessage,
@@ -1411,7 +1412,7 @@ export default function FullChatSurface({
         : compactSpeechPreservedText || compactMessagePreview?.fullText || ''
     )
     : compactMessagePreview?.text
-    || i18n('chat.emptyState', 'Chat content will appear here.');
+    || i18n('chat.emptyState', getChatEmptyStateFallback());
   const compactPreviewIsStreaming = compactSpeechModeActive;
   const compactPreviewSpeechDuration = useMemo(() => {
     if (!compactPreviewIsStreaming || !speechPlaybackState) {

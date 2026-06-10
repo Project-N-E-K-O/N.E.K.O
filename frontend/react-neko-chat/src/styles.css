@@ -2102,6 +2102,14 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 }
 
 .compact-chat-surface-frame {
+  --compact-chat-minimize-ball-size: 41px;
+  --compact-chat-minimize-ball-inset: 2px;
+  --compact-chat-minimize-ball-gap: 8px;
+  --compact-chat-minimize-ball-slot: calc(
+    var(--compact-chat-minimize-ball-size)
+    + var(--compact-chat-minimize-ball-inset)
+    + var(--compact-chat-minimize-ball-gap)
+  );
   --compact-chat-surface-bg:
     linear-gradient(180deg, rgba(255, 255, 255, 0.7), rgba(247, 251, 255, 0.6) 58%, rgba(232, 243, 255, 0.54));
   --compact-chat-surface-edge: rgba(255, 255, 255, 0.5);
@@ -2117,7 +2125,7 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   min-height: 54px;
   max-height: 54px;
   box-sizing: border-box;
-  padding: 0 20px;
+  padding: 0 20px 0 var(--compact-chat-minimize-ball-slot);
   border: 1px solid var(--compact-chat-surface-edge);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.08);
@@ -2130,7 +2138,7 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 
 .compact-chat-surface-frame[data-compact-chat-state="input"] {
   gap: 0;
-  padding: 5px 62px 5px 8px;
+  padding: 5px 62px 5px var(--compact-chat-minimize-ball-slot);
 }
 
 /* compact 输入框/胶囊左侧毛绒球（minimize 折叠入口）：点按=折叠为 minimized 毛绒球小窗口，
@@ -2139,12 +2147,12 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 .compact-chat-minimize-ball {
   flex: 0 0 auto;
   align-self: center;
-  margin-right: 8px;
+  margin-right: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 41px;
-  height: 41px;
+  width: var(--compact-chat-minimize-ball-size);
+  height: var(--compact-chat-minimize-ball-size);
   padding: 0;
   border: 0;
   background: transparent;
@@ -2178,7 +2186,7 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 
 .compact-chat-surface-frame[data-compact-tool-toggle-visible="true"]:not([data-compact-chat-state="input"]) {
   padding-right: 62px;
-  padding-left: 8px;
+  padding-left: var(--compact-chat-minimize-ball-slot);
 }
 
 .compact-chat-surface-frame::before {
@@ -2207,6 +2215,14 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 .compact-chat-surface-frame > * {
   position: relative;
   z-index: 2;
+}
+
+.compact-chat-surface-frame .compact-chat-minimize-ball {
+  position: absolute;
+  left: var(--compact-chat-minimize-ball-inset);
+  top: 50%;
+  z-index: 5;
+  transform: translateY(-50%);
 }
 
 .compact-chat-capsule-button {
@@ -4042,7 +4058,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   .compact-chat-surface-frame[data-compact-chat-state="default"],
   .compact-chat-surface-frame[data-compact-chat-state="options"] {
     min-height: 54px;
-    padding: 0 18px;
+    padding: 0 18px 0 var(--compact-chat-minimize-ball-slot);
   }
 
   /* 工具轮盘按钮在字幕/选项态依旧绝对定位在右侧，需保留右侧内边距，
@@ -4053,7 +4069,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   }
 
   .compact-chat-surface-frame[data-compact-chat-state="input"] {
-    padding: 5px 62px 5px 18px;
+    padding: 5px 62px 5px var(--compact-chat-minimize-ball-slot);
   }
 
   /* Only use the phone fallback when the original wheel geometry would overflow the viewport. */

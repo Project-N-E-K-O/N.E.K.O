@@ -752,7 +752,7 @@
         "avatarCropZoomOut": "縮小",
         "avatarCropCancel": "取消",
         "avatarCropSave": "儲存",
-        "emptyState": "聊天內容接入後會顯示在這裡。",
+        "emptyState": "現在開始跟我聊天吧！",
         "messageStreaming": "生成中",
         "messageFailed": "發送失敗",
         "reactWindowOpen": "打開聊天框",
