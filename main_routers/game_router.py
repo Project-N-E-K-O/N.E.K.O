@@ -1,12 +1,26 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Game Router
 
-通用游戏 LLM 交互端点。采用 A+B "双簧"模式：
-  A（幕后决策）：OmniOfflineClient 纯文本 LLM，接收游戏事件，生成台词 + 结构化控制指令
-  B（台前输出）：将 A 的结果送到当前会话模式的输出通道（语音/TTS/文字气泡）
+Generic game LLM interaction endpoints. Uses an A+B "double act" pattern:
+  A (behind-the-scenes decision): OmniOfflineClient text-only LLM that receives game events and generates lines + structured control instructions
+  B (front-of-stage output): sends A's result to the current session mode's output channel (voice/TTS/text bubble)
 
-当前实现：足球（soccer）。通用路由 /{game_type}/chat 支持未来扩展其他游戏。
+Currently implemented: soccer. The generic route /{game_type}/chat supports extending to other games later.
 """
 
 import asyncio
@@ -101,19 +115,20 @@ async def _push_game_window_state_change(
     game_type: str,
     session_id: str = "",
 ) -> None:
-    """Broadcast 'game window opened/closed' WS event so chat.html / pet 多窗口
-    能联动收缩 / 还原（用户级 UX 联动，不参与任何 game-route 状态判定，单纯
-    驱动前端布局）。
+    """Broadcast the 'game window opened/closed' WS event so the chat.html / pet
+    multi-windows can collapse / restore in sync (user-level UX linkage; not
+    involved in any game-route state decisions, purely drives frontend layout).
 
-    单一事实源：``game_route_start`` 激活后推 ``opened``，
-    ``_finalize_game_route_state_inner`` 把 state 翻 inactive 之后推 ``closed``。
-    所有 finalize 路径（/route/end / heartbeat sweep / supersede）都走 inner，
-    覆盖率与 ``is_game_route_active`` 同步——前端不会出现"游戏已结束但 UI 仍
-    锁着收缩态"的孤岛。
+    Single source of truth: ``game_route_start`` pushes ``opened`` after
+    activation, and ``_finalize_game_route_state_inner`` pushes ``closed`` after
+    flipping the state to inactive. All finalize paths (/route/end / heartbeat
+    sweep / supersede) go through the inner helper, keeping coverage in sync
+    with ``is_game_route_active`` — the frontend never ends up in an orphaned
+    "game already over but the UI is still locked collapsed" state.
 
-    多窗口转发依赖现有 ``WS_PROXY_CHANNELS.RAW_MESSAGE`` IPC（pet 主窗收 WS →
-    forwarder 转给 chat.html），与 mini_game_invite_resolved 走同一条总线，
-    无需新 IPC channel。
+    Multi-window forwarding relies on the existing ``WS_PROXY_CHANNELS.RAW_MESSAGE``
+    IPC (the pet main window receives WS → the forwarder relays it to chat.html),
+    the same bus as mini_game_invite_resolved; no new IPC channel needed.
     """
     if not mgr or not lanlan_name:
         return
@@ -314,7 +329,7 @@ def _build_game_prompt(
     game_context: dict | None = None,
     language: str | None = None,
 ) -> str:
-    """构建游戏 system prompt。"""
+    """Build the game system prompt."""
     if game_type == "soccer":
         prompt = get_soccer_system_prompt(language).format(name=lanlan_name, personality=lanlan_prompt)
         context_prompt = _format_soccer_pregame_context_for_prompt(pre_game_context, language)
@@ -329,7 +344,7 @@ def _build_game_prompt(
 
 
 def _strip_json_fence(text: str) -> str:
-    """提取 LLM 返回中的 JSON 正文，兼容 ```json 代码块。"""
+    """Extract the JSON body from an LLM reply, tolerating ```json code fences."""
     raw = text.strip()
     code_block = re.search(r"```(?:json)?\s*(.+?)\s*```", raw, flags=re.S)
     if code_block:
@@ -967,7 +982,7 @@ def _build_game_context_prompt_payload(state: dict | None) -> dict | None:
 
 
 def _normalize_quick_lines(value: Any) -> Dict[str, list[str]]:
-    """校验并裁剪快路径台词，失败 key 会回退到前端内建文案。"""
+    """Validate and trim quick-path lines; failed keys fall back to the frontend's built-in lines."""
     if not isinstance(value, dict):
         return {}
 
@@ -992,13 +1007,15 @@ def _normalize_quick_lines(value: Any) -> Dict[str, list[str]]:
 
 
 def _absorb_request_language(data: Any, lanlan_name: str | None) -> str | None:
-    """从 request body 抽出前端 i18n 真值，并顺手回写到 ``mgr.user_language``。
+    """Extract the frontend i18n ground truth from the request body, writing it back to ``mgr.user_language`` along the way.
 
-    动机：``mgr.user_language`` 在 ``start_session`` 路径会被全局缓存覆盖（见
-    ``main_logic/core.py``），全局缓存又是 Steam SDK 启动期 race 失败的产物。前端
-    i18n 已经异步从 ``/api/config/steam_language`` 拿到对的值，只要把它在请求体
-    里捎带过来，就能即时纠正 session 状态。返回归一化后的短码（``zh`` / ``en`` ...）；
-    取不到时返回 ``None``，让上层走旧的兜底链。
+    Motivation: ``mgr.user_language`` gets overwritten by the global cache on the
+    ``start_session`` path (see ``main_logic/core.py``), and the global cache is the
+    product of a Steam SDK startup race failure. The frontend i18n has already
+    fetched the correct value asynchronously from ``/api/config/steam_language``;
+    piggybacking it on the request body lets us correct the session state
+    immediately. Returns the normalized short code (``zh`` / ``en`` ...); returns
+    ``None`` when unavailable, letting the caller follow the old fallback chain.
     """
     if not isinstance(data, dict):
         return None
@@ -1039,17 +1056,22 @@ def _resolve_game_prompt_language(
 ) -> str:
     """Resolve the user's current language for game-route LLM prompts.
 
-    优先级（与 ``main_routers/system_router._resolve_proactive_locale`` 同形）：
-      1. ``data`` (request body) 里的 ``i18n_language`` / ``language`` / ``lang``
-         —— 前端显式传，最高优先；同时把值回写到 ``mgr.user_language``，让本次
-         请求里所有不接 data 的下游 ``_resolve_game_prompt_language`` 也命中。
-      2. ``mgr.user_language`` —— websocket greeting_check 同步的 session 真值。
-      3. ``get_global_language()`` —— 进程级缓存，最后兜底。
+    Priority (same shape as ``main_routers/system_router._resolve_proactive_locale``):
+      1. ``i18n_language`` / ``language`` / ``lang`` in ``data`` (request body)
+         — explicitly sent by the frontend, highest priority; the value is also
+         written back to ``mgr.user_language`` so every downstream
+         ``_resolve_game_prompt_language`` in this request without access to
+         ``data`` hits it too.
+      2. ``mgr.user_language`` — the session ground truth synced by the websocket
+         greeting_check.
+      3. ``get_global_language()`` — process-level cache, final fallback.
 
-    第 1 层是 PR #1150 之外的洞：Steam=zh / 系统=en 的环境下，``mgr.user_language``
-    在 ``start_session`` 时会被全局缓存（错的 'en'）覆盖，soccer 短路在前端 ws
-    greeting_check 还没把对的值推上来之前发起，就只能拿到错的 'en'。把请求体里
-    携带的 i18n 真值作为最优先来源，配合自愈写回，把这条 race 关掉。
+    Layer 1 covers a hole beyond PR #1150: in a Steam=zh / system=en environment,
+    ``mgr.user_language`` gets overwritten by the (wrong, 'en') global cache at
+    ``start_session``, and the soccer short-circuit fires before the frontend ws
+    greeting_check pushes the right value up, so it could only see the wrong 'en'.
+    Making the request body's i18n truth the top-priority source, combined with
+    the self-healing write-back, closes this race.
     """
     request_lang = _absorb_request_language(data, lanlan_name)
     if request_lang:
@@ -1075,7 +1097,7 @@ def _resolve_game_prompt_language(
 
 
 def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
-    """从 shared_state 获取指定角色信息；未指定时使用当前角色。"""
+    """Get the specified character's info from shared_state; uses the current character when unspecified."""
     try:
         config_manager = get_config_manager()
     except RuntimeError:
@@ -1127,7 +1149,7 @@ def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
 
 
 def _get_current_character_info() -> Dict[str, Any]:
-    """从 shared_state 获取当前角色信息。"""
+    """Get the current character's info from shared_state."""
     return _get_character_info()
 
 
@@ -3429,7 +3451,7 @@ async def _get_or_create_session(
     *,
     postgame_snapshot: Optional[dict] = None,
 ) -> dict:
-    """获取或创建游戏 session.
+    """Get or create a game session.
 
     B6: serialize the cache-miss → ctor → connect → cache-insert sequence
     under a per-key ``asyncio.Lock`` so two concurrent ``_run_game_chat``
@@ -3656,7 +3678,7 @@ async def _refresh_game_session_instructions(
 
 
 def _parse_control_instructions(reply: str) -> Dict[str, Any]:
-    """从回复中解析结构化控制指令（心情/难度 JSON 行）。"""
+    """Parse structured control instructions (the mood/difficulty JSON line) from the reply."""
     import json as _json
 
     text = reply.strip()
@@ -3704,7 +3726,7 @@ def _parse_control_instructions(reply: str) -> Dict[str, Any]:
 
 
 def _build_soccer_balance_hint(event: Any) -> Dict[str, Any]:
-    """基于比分生成软提示：提醒 LLM 注意局势，但不直接替它做控制决定。"""
+    """Generate a soft hint from the score: reminds the LLM of the game state without making the control decision for it."""
     if not isinstance(event, dict):
         return {}
 
@@ -3961,7 +3983,7 @@ async def _close_and_remove_session(
     session_id: str,
     lanlan_name: str = "",
 ) -> bool:
-    """关闭并移除指定游戏 session.
+    """Close and remove the specified game session.
 
     B1: serialize against in-flight ``_run_game_chat`` work for the same
     entry by acquiring ``entry['lock']`` before popping + closing. Without
@@ -4287,15 +4309,15 @@ async def _run_game_chat(
 
 @router.post("/{game_type}/chat")
 async def game_chat(game_type: str, request: Request):
-    """通用游戏 LLM 对话端点。
+    """Generic game LLM chat endpoint.
 
-    请求体：
-        session_id: str  — 比赛/游戏局 ID
-        event: dict      — 游戏事件（格式由前端定义，后端透传给 LLM）
+    Request body:
+        session_id: str  — match/round ID
+        event: dict      — game event (format defined by the frontend, passed through to the LLM)
 
-    响应：
-        line: str        — 猫娘台词
-        control: dict    — 可选的游戏控制指令（mood, difficulty）
+    Response:
+        line: str        — catgirl line
+        control: dict    — optional game control instructions (mood, difficulty)
     """
     try:
         data = await request.json()
@@ -4497,16 +4519,20 @@ async def game_route_state(game_type: str, lanlan_name: str = ""):
 
 @router.get("/route/active")
 async def game_route_any_active(lanlan_name: str = ""):
-    """Bootstrap reconciliation endpoint：返回当前 lanlan_name 是否有任意活跃
-    game_route，给 chat.html / pet 等 game_window_state_change 事件订阅者用。
+    """Bootstrap reconciliation endpoint: returns whether the given lanlan_name has
+    any active game_route, for game_window_state_change event subscribers such as
+    chat.html / pet.
 
-    场景：edge-triggered 的 game_window_state_change WS 事件只在 activate /
-    finalize 那一瞬间推；订阅者初次加载（或 WS reconnect）时若 route 已经在
-    active，听不到历史 opened，UI 永远停在普通态。订阅者在 init 路径调本
-    endpoint，发现 active 就自己 dispatch 一次 opened DOM 事件，UI 与后端
-    state 对齐。codex P1。
+    Scenario: the edge-triggered game_window_state_change WS event is only pushed
+    at the activate / finalize instant; if a subscriber loads for the first time
+    (or the WS reconnects) while a route is already active, it never hears the
+    historical opened event and the UI stays in the normal state forever.
+    Subscribers call this endpoint on their init path and, on seeing active,
+    dispatch an opened DOM event themselves to realign the UI with the backend
+    state. codex P1.
 
-    单 GET、参数仅 lanlan_name、无副作用——不需要 CSRF 防护。"""
+    Single GET, lanlan_name as the only parameter, no side effects — no CSRF
+    protection needed."""
     resolved = _resolve_lanlan_name(lanlan_name)
     state = _get_active_game_route_state(resolved) if resolved else None
     if state is None:
@@ -5437,7 +5463,7 @@ async def _complete_game_end_from_payload(
 
 @router.post("/{game_type}/end")
 async def game_end(game_type: str, request: Request):
-    """结束一局游戏并清理对应的 LLM session。"""
+    """End a game round and clean up its LLM session."""
     try:
         data = await request.json()
     except Exception:
@@ -5447,15 +5473,18 @@ async def game_end(game_type: str, request: Request):
 
 @router.post("/{game_type}/quick-lines")
 async def game_quick_lines(game_type: str, request: Request):
-    """进入游戏时生成一组当前猫娘专属快路径台词。
+    """Generate a set of quick-path lines specific to the current catgirl when entering a game.
 
-    产品语义：这是“游戏内上下文初始化”的一部分。代码告诉 LLM：
-    接下来当前猫娘要和玩家踢足球，请按当前人设生成备用短句。
-    成功时前端用这些短句替换内建快路径；失败时仍使用前端内建文案。
+    Product semantics: this is part of "in-game context initialization". The code
+    tells the LLM: the current catgirl is about to play soccer with the player;
+    generate backup short lines matching the current persona. On success the
+    frontend replaces its built-in quick-path lines with these; on failure the
+    frontend's built-in lines are still used.
 
-    quick-lines 是 soccer 流程里第一个命中 LLM 的端点（在 /route/start 之前），
-    所以这里要从请求体吸收 ``i18n_language`` 主动 heal mgr.user_language——
-    否则首批 quick lines 会用 ``start_session`` 时全局缓存覆盖出来的英文。
+    quick-lines is the first endpoint in the soccer flow to hit the LLM (before
+    /route/start), so it must absorb ``i18n_language`` from the request body to
+    proactively heal mgr.user_language — otherwise the first batch of quick lines
+    would come out in the English imposed by the global cache at ``start_session``.
     """
     if game_type != "soccer":
         return {"ok": False, "error": f"暂不支持 {game_type} 的快路径文案生成", "lines": {}}
@@ -5522,10 +5551,10 @@ async def game_quick_lines(game_type: str, request: Request):
 
 @router.get("/{game_type}/character")
 async def game_character(game_type: str, request: Request):
-    """获取当前角色信息（需求 2：角色替换用）。
+    """Get current character info (requirement 2: for character replacement).
 
-    返回角色的模型类型和路径。足球游戏 AI 侧支持 Live2D / VRM；
-    MMD 仍由前端回退到 Live2D 默认模型。
+    Returns the character's model type and path. The soccer game AI side supports
+    Live2D / VRM; for MMD the frontend still falls back to the default Live2D model.
     """
     try:
         config_manager = get_config_manager()
@@ -5595,7 +5624,7 @@ async def game_character(game_type: str, request: Request):
 # ── 后台清理 ───────────────────────────────────────────────────────
 
 async def cleanup_expired_sessions():
-    """清理超时的游戏 session。可由 startup 事件注册为后台任务。"""
+    """Clean up expired game sessions. Can be registered as a background task by the startup event."""
     next_session_cleanup_at = 0.0
     while True:
         await asyncio.sleep(_GAME_ROUTE_HEARTBEAT_SWEEP_SECONDS)

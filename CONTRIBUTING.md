@@ -61,7 +61,7 @@ We also welcome non-code contributions:
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the [MIT License](LICENSE).
+By contributing, you agree that your contributions will be licensed under the [Apache License 2.0](LICENSE).
 
 ---
 
@@ -124,4 +124,4 @@ uv run python app/main_server.py
 
 ## 许可证
 
-参与贡献即表示你同意你的贡献将在 [MIT 许可证](LICENSE) 下发布。
+参与贡献即表示你同意你的贡献将在 [Apache 2.0 许可证](LICENSE) 下发布。

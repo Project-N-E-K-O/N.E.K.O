@@ -1,10 +1,24 @@
 # -*- coding: utf-8 -*-
-"""
-SSL 环境预检与诊断文件输出工具。
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-目标：
-1) 启动阶段快速识别 Windows 证书库异常（如 ASN1 nested asn1 error）
-2) 生成结构化证据文件，便于用户上报与问题归因
+"""
+SSL environment preflight and diagnostics file output utility.
+
+Goals:
+1) quickly identify Windows certificate store anomalies at startup (e.g. ASN1 nested asn1 error)
+2) produce a structured evidence file for user reports and root-cause analysis
 """
 
 from __future__ import annotations
@@ -19,7 +33,7 @@ from utils.file_utils import atomic_write_json
 
 
 def probe_ssl_environment() -> dict:
-    """执行 SSL 预检，返回结构化结果。"""
+    """Run the SSL preflight; returns a structured result."""
     result = {
         "ok": True,
         "error_type": None,
@@ -49,7 +63,7 @@ def write_ssl_diagnostic(
     error: Exception | None = None,
     extra: dict | None = None,
 ) -> str | None:
-    """将 SSL 相关诊断写入 JSON 文件，返回文件路径。"""
+    """Write SSL-related diagnostics to a JSON file; returns the file path."""
     try:
         os.makedirs(output_dir, exist_ok=True)
         payload = {

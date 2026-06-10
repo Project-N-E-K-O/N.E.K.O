@@ -1,15 +1,29 @@
-"""
-音乐爬虫模块，用于从不同平台搜索和抓取音乐。
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
--   **功能**: 
-    -   根据用户所在区域（中国/非中国）选择合适的音乐源。
-    -   支持从网易云音乐、Musopen（古典乐）、FMA（免版权音乐）等平台抓取。
-    -   所有爬虫都返回 APlayer 兼容的音频格式。
--   **设计**: 
-    -   采用统一的 `BaseMusicCrawler` 基类，封装了通用的 `httpx` 请求逻辑、日志记录和 User-Agent 管理。
-    -   每个平台实现为 `BaseMusicCrawler` 的子类，只需重写 `search` 方法即可。
-    -   主函数 `fetch_music_content` 通过 `asyncio.gather` 并发执行多个爬虫，并根据区域、关键词和多样性策略进行智能调度。
-    -   实现了短期去重机制，避免同一首歌曲在短时间内被重复爬取。
+"""
+Music crawler module, for searching and fetching music from different platforms.
+
+-   **Features**: 
+    -   Picks suitable music sources based on the user's region (China/non-China).
+    -   Supports fetching from NetEase Cloud Music, Musopen (classical), FMA (royalty-free), etc.
+    -   All crawlers return APlayer-compatible audio formats.
+-   **Design**: 
+    -   A unified `BaseMusicCrawler` base class encapsulates common `httpx` request logic, logging and User-Agent management.
+    -   Each platform is implemented as a `BaseMusicCrawler` subclass that only overrides the `search` method.
+    -   The main function `fetch_music_content` runs multiple crawlers concurrently via `asyncio.gather`, scheduling intelligently by region, keyword and diversity strategy.
+    -   Short-term dedupe prevents the same song from being re-fetched within a short window.
 """
 
 import asyncio
@@ -135,7 +149,7 @@ MUSIC_SOURCE_DOMAINS = {
 
 class MusicCache:
     """
-    歌曲缓存管理器，实现短期去重和多样性评估
+    Song cache manager, implementing short-term dedupe and diversity evaluation
     """
     
     def __init__(self, expire_seconds: int = 300):
@@ -145,7 +159,7 @@ class MusicCache:
     
     def _cleanup(self):
         """
-        清理过期缓存（按歌曲 TTL 删除过期项）
+        Clean expired cache entries (deleting by per-song TTL)
         """
         current_time = time.time()
         # 移除已过期的项
@@ -157,7 +171,7 @@ class MusicCache:
     
     def is_duplicate(self, url: str, name: str, artist: str) -> bool:
         """
-        检查是否重复
+        Check for duplicates
         """
         self._cleanup()
         for item in self.cache:
@@ -170,7 +184,7 @@ class MusicCache:
     
     def add(self, track: Dict[str, Any]):
         """
-        添加歌曲到缓存
+        Add a song to the cache
         """
         self._cleanup()
         self.cache.append({
@@ -182,7 +196,7 @@ class MusicCache:
     
     def filter_duplicates(self, tracks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        过滤重复歌曲（只过滤，不写入缓存）
+        Filter duplicate songs (filter only; no cache writes)
         """
         self._cleanup()
         filtered = []
@@ -193,14 +207,14 @@ class MusicCache:
     
     def mark_as_played(self, tracks: List[Dict[str, Any]]):
         """
-        将实际返回的歌曲标记为已播放（写入缓存）
+        Mark actually returned songs as played (write into the cache)
         """
         for track in tracks:
             self.add(track)
     
     def get_diversity_score(self, tracks: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        评估歌曲多样性
+        Evaluate song diversity
         """
         if not tracks:
             return {'score': 0, 'artist_diversity': 0, 'style_notes': []}
@@ -240,7 +254,7 @@ class MusicCache:
 
 def anykw(tracks: List[Dict[str, Any]], keywords: List[str]) -> bool:
     """
-    检查 tracks 中是否包含任意关键词
+    Check whether tracks contain any of the keywords
     """
     for track in tracks:
         text = f"{track.get('name', '')} {track.get('artist', '')}".lower()
@@ -253,7 +267,7 @@ music_cache = MusicCache(expire_seconds=300)
 
 def get_random_user_agent() -> str:
     """
-    随机获取一个User-Agent
+    Get a random User-Agent
     """
     return random.choice(USER_AGENTS)
 
@@ -275,7 +289,7 @@ except ImportError:
 
 class BaseMusicCrawler:
     """
-    音乐爬虫的基类，封装了通用的请求逻辑和格式化方法。
+    Base class for music crawlers, encapsulating common request logic and formatting.
     """
     def __init__(self, platform_name: str):
         self.platform_name = platform_name
@@ -287,24 +301,24 @@ class BaseMusicCrawler:
 
     async def search(self, keyword: str = "", limit: int = 1) -> List[Dict[str, Any]]:
         """
-        每个子类必须实现的核心搜索方法。
+        Core search method each subclass must implement.
         
         Args:
-            keyword: 搜索关键词。
-            limit: 希望返回的结果数量。
+            keyword: search keyword.
+            limit: desired number of results.
 
         Returns:
-            一个包含 APlayer 格式字典的列表。
+            A list of APlayer-format dicts.
         """
         raise NotImplementedError
 
     def _refresh_user_agent(self):
-        """动态刷新 User-Agent 防止被封"""
+        """Refresh the User-Agent dynamically to avoid bans"""
         self.client.headers.update({'User-Agent': get_random_user_agent()})
 
     def _format_item(self, name: str, url: str, artist: str = "未知艺术家", cover: str = "") -> Dict[str, Any]:
         """
-        将抓取到的数据统一为 APlayer 兼容的格式。
+        Normalize fetched data into the APlayer-compatible format.
         """
         return {
             'name': name,
@@ -316,7 +330,7 @@ class BaseMusicCrawler:
 
     async def close(self):
         """
-        关闭 httpx 客户端
+        Close the httpx client
         """
         await self.client.aclose()
 
@@ -326,8 +340,8 @@ class BaseMusicCrawler:
 
 class NeteaseCrawler(BaseMusicCrawler):
     """
-    网易云音乐爬虫，支持搜索并过滤 VIP/付费歌曲。
-    Cookie 支持热重载：每次搜索前检测凭证文件变动，自动同步最新登录态。
+    NetEase Cloud Music crawler; supports search with VIP/paid song filtering.
+    Cookie hot-reload: before each search, detects credential file changes and syncs the latest login state.
     """
     def __init__(self):
         super().__init__("网易云音乐")
@@ -343,7 +357,7 @@ class NeteaseCrawler(BaseMusicCrawler):
         self._load_cookies()
 
     def _get_cookie_file_mtime(self) -> float:
-        """获取网易云 Cookie 文件的最后修改时间，不存在则返回 0"""
+        """Get the last-modified time of the NetEase cookie file; returns 0 when absent"""
         try:
             from utils.cookies_login import COOKIE_FILES
             cookie_path = COOKIE_FILES.get('netease')
@@ -354,7 +368,7 @@ class NeteaseCrawler(BaseMusicCrawler):
         return 0.0
 
     def _load_cookies(self):
-        """动态加载本地配置的 Netease Cookie"""
+        """Dynamically load the locally configured NetEase cookies"""
         try:
             from utils.cookies_login import load_cookies_from_file
             cookies = load_cookies_from_file('netease')
@@ -375,7 +389,7 @@ class NeteaseCrawler(BaseMusicCrawler):
             logger.warning(f"[{self.platform_name}] 加载 Cookie 失败 (此异常不影响服务启动): {e}")
 
     def _check_cookie_freshness(self):
-        """检测 Cookie 文件是否有变动，有则热重载并重置 VIP 缓存"""
+        """Detect cookie file changes; hot-reload and reset the VIP cache when changed"""
         current_mtime = self._get_cookie_file_mtime()
         if current_mtime != self._cookie_file_mtime:
             logger.info(f"[{self.platform_name}] 检测到凭证文件变动 (mtime: {self._cookie_file_mtime} → {current_mtime})，执行热重载")
@@ -385,7 +399,7 @@ class NeteaseCrawler(BaseMusicCrawler):
             self._vip_checked = False
 
     async def _check_vip_status(self):
-        """异步检查用户 VIP 状态（首次 search() 时懒触发）"""
+        """Asynchronously check the user's VIP status (lazily triggered on first search())"""
         if self._vip_checked:
             return
         try:
@@ -491,7 +505,7 @@ class NeteaseCrawler(BaseMusicCrawler):
 
 class SoundCloudCrawler(BaseMusicCrawler):
     """
-    SoundCloud 爬虫，自动动态获取鉴权 Token
+    SoundCloud crawler, dynamically fetching the auth token automatically
     """
     def __init__(self):
         super().__init__("SoundCloud")
@@ -499,7 +513,7 @@ class SoundCloudCrawler(BaseMusicCrawler):
 
     async def _get_dynamic_client_id(self):
         """
-        动态去 SoundCloud 的 JS 脚本里提取最新的 client_id
+        Dynamically extract the latest client_id from SoundCloud's JS scripts
         """
         if self.client_id:
             return self.client_id
@@ -613,7 +627,7 @@ class SoundCloudCrawler(BaseMusicCrawler):
 
 class iTunesCrawler(BaseMusicCrawler):
     """
-    iTunes/Apple Music 爬虫，用于搜索热门音乐。
+    iTunes/Apple Music crawler, for searching popular music.
     """
     def __init__(self):
         super().__init__("iTunes")
@@ -670,7 +684,7 @@ class iTunesCrawler(BaseMusicCrawler):
 
 class MusopenCrawler(BaseMusicCrawler):
     """
-    Musopen 古典音乐爬虫，用于在无明确关键词时提供背景音乐。
+    Musopen classical-music crawler, providing background music when no clear keyword exists.
     """
     def __init__(self):
         # 针对 Musopen 的特殊反爬，需要 HTTP/2 + 特殊 Headers
@@ -811,7 +825,7 @@ class MusopenCrawler(BaseMusicCrawler):
 
 class FMACrawler(BaseMusicCrawler):
     """
-    FMA (Free Music Archive) 爬虫，用于搜索免版权音乐。
+    FMA (Free Music Archive) crawler, for searching royalty-free music.
     """
     def __init__(self):
         super().__init__("FMA")
@@ -892,7 +906,7 @@ class FMACrawler(BaseMusicCrawler):
 
 class BandcampCrawler(BaseMusicCrawler):
     """
-    Bandcamp 独立音乐爬虫，极度适合抓取 lofi、环境音和游戏同人OST。
+    Bandcamp indie-music crawler, extremely well suited for lofi, ambient and game fan OSTs.
     """
     def __init__(self):
         super().__init__("Bandcamp")
@@ -997,13 +1011,13 @@ def get_crawlers() -> Dict[str, BaseMusicCrawler]:
     return _crawlers_cache
 
 def get_music_crawlers() -> Dict[str, BaseMusicCrawler]:
-    """获取音乐爬虫实例的懒加载访问器"""
+    """Lazy-loading accessor for music crawler instances"""
     return get_crawlers()
 
 async def close_all_crawlers():
     """
-    统一关闭所有全局爬虫实例，释放连接池资源。
-    建议在服务关闭时调用（如 main_server.py 的 on_shutdown）。
+    Close all global crawler instances together, releasing connection-pool resources.
+    Recommended at service shutdown (e.g. main_server.py on_shutdown).
     """
     global _crawlers_cache
     if _crawlers_cache is None:
@@ -1032,7 +1046,7 @@ async def close_all_crawlers():
 
 async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
     """
-    主音乐获取函数，带有“分段截断”的智能并发调度。
+    Main music-fetching function, with "segmented cutoff" smart concurrent scheduling.
     """
     china = is_china_region()
     logger.info(f"音乐搜索请求: keyword='{keyword}', limit={limit}, is_china_region={china}")
@@ -1285,10 +1299,10 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
 
 def expand_style_keyword(keyword: str) -> List[str]:
     """
-    将风格关键词扩展为多样化的搜索词列表，避免搜索结果过于单一。
+    Expand a style keyword into a diversified list of search terms, avoiding overly uniform results.
     
-    例如: "lofi" -> ["lofi hip hop", "chill beats", "study music", "lofi"]
-    包含跨语言映射：输入中文风格词时自动补充对应英文词，反之亦然。
+    e.g.: "lofi" -> ["lofi hip hop", "chill beats", "study music", "lofi"]
+    Includes cross-language mapping: Chinese style words automatically gain their English counterparts, and vice versa.
     """
     kw_lower = keyword.lower().strip()
     
@@ -1384,11 +1398,11 @@ def expand_style_keyword(keyword: str) -> List[str]:
 
 def identify_best_music_resource(target_song: str, search_results: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    鉴别音乐资源提取逻辑（重构后的核心提取逻辑）。
+    Music resource identification/extraction logic (refactored core extraction logic).
     
     Args:
-        target_song: AI 识别的目标歌曲名/关键词
-        search_results: 搜索结果列表（非空，由上层保证）
+        target_song: target song name/keyword recognized by the AI
+        search_results: search result list (non-empty, guaranteed by the caller)
         
     Returns:
         Dict: {"status": "exact" | "fuzzy" | "random", "resource": item, "real_name": name}
@@ -1441,7 +1455,7 @@ def identify_best_music_resource(target_song: str, search_results: List[Dict[str
 
 async def main():
     """
-    全方位测试函数：测试独立爬虫及智能调度器
+    Full-coverage test function: tests standalone crawlers and the smart scheduler
     """
     print("==================================================")
     print(" 🚀 阶段一：测试独立爬虫模块")

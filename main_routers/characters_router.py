@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Characters Router
 
@@ -388,7 +402,7 @@ def _is_current_catgirl_voice_session_starting(name: str, characters, session_ma
 
 
 def _get_new_catgirl_default_voice_id() -> str:
-    """获取新建角色的默认音色，兼容旧版/自定义 free_voices 缺失的配置。"""
+    """Get the default voice for a newly created character, tolerating legacy/custom configs missing free_voices."""
     from utils.api_config_loader import get_free_voices
 
     free_voices = get_free_voices() or {}
@@ -420,7 +434,7 @@ def _build_profile_rename_event(old_name: str, new_name: str) -> dict:
 
 
 def _append_profile_rename_event(character_payload: dict, old_name: str, new_name: str) -> None:
-    """把改名事件写入隐藏 AI 上下文；角色管理页不会把 `_reserved` 渲染成普通字段。"""
+    """Write the rename event into the hidden AI context; the character manager page does not render `_reserved` as a regular field."""
     if not isinstance(character_payload, dict):
         return
 
@@ -485,7 +499,7 @@ def _build_persona_selection_payload(character_payload: dict) -> dict:
 
 
 def _normalize_persona_request_language(raw_language: object) -> str | None:
-    """归一化人格选择请求携带的界面语言，无效值保持 None 让下游使用现有兜底。"""
+    """Normalize the UI language carried by a persona selection request; invalid values stay None so downstream keeps its existing fallback."""
     raw = str(raw_language or "").strip()
     if not raw or not is_supported_language_code(raw):
         return None
@@ -493,7 +507,7 @@ def _normalize_persona_request_language(raw_language: object) -> str | None:
 
 
 def _get_persona_request_language(request: Request) -> str | None:
-    """从查询参数或 Accept-Language 里提取人格预设语言。"""
+    """Extract the persona preset language from query params or Accept-Language."""
     language = request.query_params.get("language") or request.query_params.get("i18n_language")
     if language:
         normalized = _normalize_persona_request_language(language)
@@ -509,7 +523,7 @@ def _get_persona_request_language(request: Request) -> str | None:
 
 
 def _get_persona_payload_request_language(payload: object, request: Request) -> str | None:
-    """优先使用请求体语言；无效或缺失时回退到查询参数和请求头。"""
+    """Prefer the request-body language; fall back to query params and headers when invalid or missing."""
     body_language = None
     if isinstance(payload, dict):
         body_language = payload.get("i18n_language") or payload.get("language")
@@ -521,7 +535,7 @@ def _get_persona_payload_request_language(payload: object, request: Request) -> 
 
 
 def _normalize_voice_preview_language(raw_language: object) -> str | None:
-    """归一化语音试听语言，无效值返回 None 以便继续尝试其他来源。"""
+    """Normalize the voice preview language; returns None for invalid values so other sources can be tried."""
     raw = str(raw_language or "").strip()
     if not raw or not is_supported_language_code(raw):
         return None
@@ -532,7 +546,7 @@ def _normalize_voice_preview_language(raw_language: object) -> str | None:
 
 
 def _get_voice_preview_language(request: Request, language: object = None, i18n_language: object = None) -> str:
-    """按前端 i18n 语言选择试听文本，缺省保持旧版中文试听。"""
+    """Pick the preview text by the frontend i18n language; defaults to the legacy Chinese preview."""
     for candidate in (language, i18n_language):
         normalized = _normalize_voice_preview_language(candidate)
         if normalized:
@@ -549,7 +563,7 @@ def _get_voice_preview_language(request: Request, language: object = None, i18n_
 
 
 def _is_free_preset_voice_id(voice_id: object) -> bool:
-    """判断是否为运行时免费预设音色。"""
+    """Check whether this is a runtime free preset voice."""
     normalized = str(voice_id or "").strip()
     if not normalized:
         return False
@@ -562,7 +576,7 @@ def _is_free_preset_voice_id(voice_id: object) -> bool:
 
 
 def _get_active_native_preview_provider(config_manager, voice_id: object) -> str | None:
-    """判断 voice_id 是否应走当前实时 Provider 的原生预览路径。"""
+    """Decide whether the voice_id should take the current realtime provider's native preview path."""
     normalized = str(voice_id or "").strip()
     if not normalized:
         return None
@@ -580,7 +594,7 @@ def _get_active_native_preview_provider(config_manager, voice_id: object) -> str
 
 
 def _read_wav_payload(audio_bytes: bytes) -> tuple[bytes, int, int, int]:
-    """读取上游返回的 WAV，返回 PCM 与声道、采样宽度、采样率。"""
+    """Read the WAV returned by upstream; returns PCM plus channel count, sample width and sample rate."""
     with io.BytesIO(audio_bytes) as wav_io:
         with wave.open(wav_io, "rb") as wav_file:
             pcm_data = wav_file.readframes(wav_file.getnframes())
@@ -593,7 +607,7 @@ def _read_wav_payload(audio_bytes: bytes) -> tuple[bytes, int, int, int]:
 
 
 def _build_wav_payload(pcm_chunks: list[bytes], channels: int, sample_width: int, sample_rate: int) -> bytes:
-    """把多个 PCM 片段封装为单个 WAV，供前端 Audio 直接播放。"""
+    """Wrap multiple PCM chunks into a single WAV playable directly by the frontend Audio element."""
     out = io.BytesIO()
     with wave.open(out, "wb") as wav_file:
         wav_file.setnchannels(channels)
@@ -611,7 +625,7 @@ async def _synthesize_step_voice_preview(
     *,
     free_mode: bool = False,
 ) -> bytes:
-    """使用 StepFun/free TTS WebSocket 生成试听 WAV。"""
+    """Generate a preview WAV using the StepFun/free TTS WebSocket."""
     import websockets
 
     from main_logic.tts_client import _adjust_free_tts_url, _build_step_tts_create_data
@@ -682,7 +696,7 @@ async def _synthesize_step_voice_preview(
 
 
 async def _synthesize_free_voice_preview(voice_id: str, preview_line: str, preview_language: str, audio_api_key: str = "") -> bytes:
-    """使用 free TTS WebSocket 为免费预设音色生成试听 WAV。"""
+    """Generate a preview WAV for a free preset voice using the free TTS WebSocket."""
     return await _synthesize_step_voice_preview(
         voice_id=voice_id,
         preview_line=preview_line,
@@ -693,7 +707,7 @@ async def _synthesize_free_voice_preview(voice_id: str, preview_line: str, previ
 
 
 async def _synthesize_gemini_native_voice_preview(voice_id: str, preview_line: str, audio_api_key: str) -> bytes:
-    """使用 Gemini 原生 TTS 生成试听 WAV。"""
+    """Generate a preview WAV using Gemini native TTS."""
     from utils.gemini_tts_voices import GEMINI_TTS_MODEL, normalize_gemini_tts_voice
 
     normalized_voice_id, recognized = normalize_gemini_tts_voice(voice_id)
@@ -1052,9 +1066,9 @@ def _resolve_live2d_model_binding(model_identifier: str, *, item_id: str = "") -
 
 
 def _embed_zip_in_png_chunk(png_data: bytes, zip_data: bytes) -> bytes:
-    """将 ZIP 数据嵌入 PNG 的 ancillary private chunk（neKo 块），插在 IEND 之前。
+    """Embed ZIP data into a PNG ancillary private chunk (the neKo chunk), inserted before IEND.
 
-    生成的文件仍是合法 PNG，任何图片查看器 / Electron 都可以正常预览。
+    The resulting file is still a valid PNG; any image viewer / Electron can preview it normally.
     """
     # PNG IEND 块固定 12 字节: 00 00 00 00  49 45 4E 44  AE 42 60 82
     if len(png_data) < 12 or png_data[-12:-4] != b'\x00\x00\x00\x00IEND':
@@ -1104,7 +1118,7 @@ def _profile_name_contains_path_separator(name: str) -> bool:
 
 
 def _filter_mutable_catgirl_fields(data: dict) -> dict:
-    """过滤掉角色通用编辑接口不允许写入的保留字段。"""
+    """Filter out reserved fields that the generic character edit API must not write."""
     if not isinstance(data, dict):
         logger.warning(
             "_filter_mutable_catgirl_fields expected dict, got %s: %r",
@@ -1120,7 +1134,7 @@ def _filter_mutable_catgirl_fields(data: dict) -> dict:
 
 
 def _normalize_catgirl_field_order(order, available_fields: list[str]) -> list[str]:
-    """按显式顺序排列普通设定字段，并把遗漏字段按当前存储顺序补在末尾。"""
+    """Order regular profile fields by the explicit order, appending omitted fields in their current stored order."""
     available = {str(key) for key in available_fields}
     result: list[str] = []
     seen: set[str] = set()
@@ -1142,7 +1156,7 @@ def _normalize_catgirl_field_order(order, available_fields: list[str]) -> list[s
 
 
 def _extract_catgirl_field_order_payload(raw_data: dict) -> list[str] | None:
-    """读取前端提交的字段顺序；没有显式顺序时返回 None。"""
+    """Read the field order submitted by the frontend; returns None when no explicit order is given."""
     if not isinstance(raw_data, dict):
         return None
     raw_order = raw_data.get("_field_order")
@@ -1155,7 +1169,7 @@ def _extract_catgirl_field_order_payload(raw_data: dict) -> list[str] | None:
 
 
 def _sync_catgirl_field_order(catgirl_data: dict, requested_order: list[str] | None = None) -> None:
-    """维护普通设定字段的创建顺序，避免数字 key 被 JS 枚举规则提前。"""
+    """Maintain the creation order of regular profile fields, preventing numeric keys from being reordered first by JS enumeration rules."""
     if not isinstance(catgirl_data, dict):
         return
     available_fields = [
@@ -1172,7 +1186,7 @@ def _sync_catgirl_field_order(catgirl_data: dict, requested_order: list[str] | N
 
 
 def _flatten_catgirl_for_response(catgirl_data: dict) -> dict:
-    """展开保留字段前补上字段顺序，供前端按创建顺序渲染。"""
+    """Prepend the field order before flattening reserved fields, so the frontend renders in creation order."""
     if not isinstance(catgirl_data, dict):
         return catgirl_data
     data = copy.deepcopy(catgirl_data)
@@ -1181,7 +1195,7 @@ def _flatten_catgirl_for_response(catgirl_data: dict) -> dict:
 
 
 def _build_minimax_request_prefix(prefix: str, provider_label: str) -> tuple[str, str]:
-    """将用户输入的前缀规范化为 MiniMax 可接受的安全前缀。"""
+    """Normalize the user-entered prefix into a safe prefix that MiniMax accepts."""
     import uuid
 
     original_prefix = str(prefix or '').strip()
@@ -1335,15 +1349,15 @@ async def send_reload_page_notice(
     message_code: str | None = None,
 ):
     """
-    发送页面刷新通知给前端（通过 WebSocket）
+    Send a page-reload notice to the frontend (via WebSocket).
 
     Args:
-        session: LLMSessionManager 实例
-        message_text: 要发送的消息文本（会被自动翻译）
-        message_code: 指定本地化消息码；为空时根据消息文本推断
+        session: LLMSessionManager instance
+        message_text: message text to send (auto-translated)
+        message_code: explicit localized message code; inferred from the message text when empty
 
     Returns:
-        bool: 是否成功发送
+        bool: whether the notice was sent successfully
     """
     if not session or not session.websocket:
         return False
@@ -1573,7 +1587,7 @@ async def _rollback_character_operation(
 
 @router.get('')
 async def get_characters(request: Request):
-    """获取角色数据，支持根据用户语言自动翻译人设"""
+    """Get character data, with persona auto-translation based on the user language."""
     _config_manager = get_config_manager()
     # 创建深拷贝，避免修改原始配置数据
     characters_data = copy.deepcopy(await _config_manager.aload_characters())
@@ -1633,11 +1647,11 @@ async def get_characters(request: Request):
 
 @router.get('/current_live2d_model')
 async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
-    """获取指定角色或当前角色的Live2D模型信息
+    """Get Live2D model info for the specified or current character.
 
     Args:
-        catgirl_name: 角色名称
-        item_id: 可选的物品ID，用于直接指定模型
+        catgirl_name: character name
+        item_id: optional item ID to directly specify the model
     """
     try:
         _config_manager = get_config_manager()
@@ -1904,7 +1918,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
 
 @router.put('/catgirl/l2d/{name}')
 async def update_catgirl_l2d(name: str, request: Request):
-    """更新指定猫娘的模型设置（支持Live2D和VRM）"""
+    """Update the specified catgirl's model settings (supports Live2D and VRM)."""
     try:
         data = await request.json()
         live2d_model = data.get('live2d')
@@ -2173,11 +2187,11 @@ async def update_catgirl_l2d(name: str, request: Request):
 
 @router.patch('/catgirl/{name}/touch_set')
 async def update_catgirl_touch_set(name: str, request: Request):
-    """全量更新指定猫娘当前模型的触摸动画配置
+    """Fully replace the touch animation config of the specified catgirl's current model.
 
-    请求体格式:
+    Request body format:
     {
-        "model_name": "模型名称",
+        "model_name": "model name",
         "touch_set": {
             "default": {"motions": [], "expressions": []},
             "HitArea1": {"motions": ["motion1"], "expressions": ["exp1"]}
@@ -2251,12 +2265,12 @@ async def update_catgirl_touch_set(name: str, request: Request):
 
 @router.put('/catgirl/{name}/lighting')
 async def update_catgirl_lighting(name: str, request: Request):
-    """更新指定猫娘的VRM打光配置
+    """Update the specified catgirl's VRM lighting config.
 
     Args:
-        name: 角色名称
-        request: 请求体包含 lighting (dict) 和可选的 apply_runtime (bool)
-                 apply_runtime 也可通过 query param 传递,query param 优先级更高
+        name: character name
+        request: body containing lighting (dict) and an optional apply_runtime (bool);
+                 apply_runtime can also be passed as a query param, which takes precedence
     """
     try:
         data = await request.json()
@@ -2377,7 +2391,7 @@ async def update_catgirl_lighting(name: str, request: Request):
 
 @router.put('/catgirl/{name}/mmd_settings')
 async def update_catgirl_mmd_settings(name: str, request: Request):
-    """更新指定角色的MMD模型设置（光照、渲染、物理、鼠标跟踪）"""
+    """Update the specified character's MMD model settings (lighting, rendering, physics, mouse tracking)."""
     def _to_bool(val):
         if isinstance(val, bool):
             return val
@@ -2473,7 +2487,7 @@ async def update_catgirl_mmd_settings(name: str, request: Request):
 
 @router.get('/catgirl/{name}/mmd_settings')
 async def get_catgirl_mmd_settings(name: str):
-    """获取指定角色的MMD模型设置"""
+    """Get the specified character's MMD model settings."""
     try:
         _config_manager = get_config_manager()
         characters = await _config_manager.aload_characters()
@@ -2593,7 +2607,7 @@ async def update_catgirl_voice_id(name: str, request: Request):
 
 @router.get('/catgirl/{name}/voice_mode_status')
 async def get_catgirl_voice_mode_status(name: str):
-    """检查指定角色是否在语音模式下"""
+    """Check whether the specified character is in voice mode."""
     _config_manager = get_config_manager()
     session_manager = get_session_manager()
     characters = await _config_manager.aload_characters()
@@ -2840,7 +2854,7 @@ async def rename_catgirl(old_name: str, request: Request):
 
 @router.post('/catgirl/{name}/unregister_voice')
 async def unregister_voice(name: str):
-    """解除猫娘的声音注册"""
+    """Unregister the catgirl's voice."""
     try:
         _config_manager = get_config_manager()
         session_manager = get_session_manager()
@@ -2893,7 +2907,7 @@ async def unregister_voice(name: str):
 
 @router.get('/current_catgirl')
 async def get_current_catgirl():
-    """获取当前使用的猫娘名称"""
+    """Get the name of the currently active catgirl."""
     _config_manager = get_config_manager()
     characters = await _config_manager.aload_characters()
     current_catgirl = characters.get('当前猫娘', '')
@@ -3104,7 +3118,7 @@ async def clear_character_persona_selection(name: str):
 
 @router.post('/current_catgirl')
 async def set_current_catgirl(request: Request):
-    """设置当前使用的猫娘"""
+    """Set the currently active catgirl."""
     data = await request.json()
     catgirl_name = data.get('catgirl_name', '') if data else ''
 
@@ -3214,7 +3228,7 @@ async def set_current_catgirl(request: Request):
 
 @router.post('/reload')
 async def reload_character_config():
-    """重新加载角色配置（热重载）"""
+    """Reload the character config (hot reload)."""
     try:
         initialize_character_data = get_initialize_character_data()
         await initialize_character_data()
@@ -3276,7 +3290,7 @@ async def update_master(request: Request):
 
 @router.post('/master/{old_name}/rename')
 async def rename_master(old_name: str, request: Request):
-    """重命名主人档案"""
+    """Rename the master profile."""
     _config_manager = get_config_manager()
     try:
         data = await request.json()
@@ -3682,7 +3696,7 @@ async def delete_catgirl(name: str):
 
 @router.post('/clear_voice_ids')
 async def clear_voice_ids():
-    """清除所有角色的本地Voice ID记录"""
+    """Clear all characters' local voice ID records."""
     try:
         _config_manager = get_config_manager()
         characters = await _config_manager.aload_characters()
@@ -3822,18 +3836,23 @@ async def get_microphone():
 
 
 def _build_free_intl_voice_pins(native_catalog: dict, voice_id_exists=None) -> list[dict]:
-    """海外免费（free_intl）列表顶部的两个置顶音色。
+    """The two pinned voices at the top of the overseas free (free_intl) list.
 
-    - yui：初始/默认角色音色，下发字面量 "yui"（服务端映射到 yui 专属声音）。
-    - default：与 Leda 同义，下发 "Leda"。仍以普通条目保留在 Gemini 长列表里
-      （不去重），这里只是把它再置顶一份并换成 "默认" 文案。
+    - yui: the initial/default character voice; sends the literal "yui" (the
+      server maps it to yui's dedicated voice).
+    - default: synonymous with Leda, sends "Leda". It still remains a normal
+      entry in the long Gemini list (no dedup); this merely pins an extra copy
+      on top relabeled as "default".
 
-    展示名交给前端按 i18n_key 本地化；这里只给 voice_id / i18n_key / 兜底 prefix。
+    Display names are localized by the frontend via i18n_key; this only provides
+    voice_id / i18n_key / fallback prefix.
 
-    voice_id_exists：若某 pin 的 voice_id 与用户已注册/克隆音色撞名（如本地 TTS
-    用户自建了一个 ID 叫 "yui"/"Leda" 的音色），runtime 路由会按撞名优先走克隆
-    路径、不再当 native（见 NativeVoiceProvider.resolve_for_routing 的 collision
-    分支），此时置顶 pin 点了也到不了 Gemini，故直接隐藏，避免误导。
+    voice_id_exists: if a pin's voice_id collides with a user-registered/cloned
+    voice (e.g. a local-TTS user created a voice whose ID is "yui"/"Leda"), the
+    runtime routing prefers the cloned path on collision and no longer treats it
+    as native (see the collision branch of NativeVoiceProvider.resolve_for_routing),
+    so clicking the pinned entry would never reach Gemini — hide it outright to
+    avoid misleading the user.
     """
     def _pin(voice_id: str, i18n_key: str, fallback: str) -> dict | None:
         if callable(voice_id_exists) and voice_id_exists(voice_id):
@@ -3856,7 +3875,7 @@ def _build_free_intl_voice_pins(native_catalog: dict, voice_id_exists=None) -> l
 
 @router.get('/voices')
 async def get_voices():
-    """获取当前API key对应的所有已注册音色"""
+    """Get all registered voices for the current API key."""
     _config_manager = get_config_manager()
     result = {"voices": _config_manager.get_voices_for_current_api(for_listing=True)}
 
@@ -3924,7 +3943,7 @@ async def get_voice_preview(
     language: str | None = None,
     i18n_language: str | None = None,
 ):
-    """获取音色预览音频"""
+    """Get the voice preview audio."""
     try:
         _config_manager = get_config_manager()
         voices = _config_manager.get_voices_for_current_api()
@@ -4199,7 +4218,7 @@ async def get_voice_preview(
 
 @router.post('/voices')
 async def register_voice(request: Request):
-    """注册新音色"""
+    """Register a new voice."""
     try:
         data = await request.json()
         voice_id = data.get('voice_id')
@@ -4239,7 +4258,7 @@ async def register_voice(request: Request):
 
 @router.delete('/voices/{voice_id}')
 async def delete_voice(voice_id: str):
-    """删除指定音色"""
+    """Delete the specified voice."""
     try:
         _config_manager = get_config_manager()
         deleted = _config_manager.delete_voice_for_current_api(voice_id)
@@ -4317,14 +4336,14 @@ MAX_CARD_FACE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
 class _UploadTooLargeError(Exception):
-    """上传文件大小超过限制"""
+    """Uploaded file size exceeds the limit."""
 
 
 async def _read_limited_stream(stream: UploadFile, max_size: int) -> io.BytesIO:
-    """读取上传文件并检查大小限制，返回 BytesIO (positioned at 0)。
+    """Read an uploaded file with a size-limit check, returning BytesIO (positioned at 0).
 
     Raises:
-        _UploadTooLargeError: 文件大小超过 max_size。
+        _UploadTooLargeError: file size exceeds max_size.
     """
     buf = io.BytesIO()
     total = 0
@@ -4345,16 +4364,16 @@ async def _read_limited_stream(stream: UploadFile, max_size: int) -> io.BytesIO:
 @router.post('/audio/analyze_silence')
 async def analyze_silence(file: UploadFile = File(...)):
     """
-    分析上传音频中的静音段落。
+    Analyze silence segments in the uploaded audio.
 
-    返回:
-        - original_duration / original_duration_ms: 原始音频总时长
-        - silence_duration / silence_duration_ms: 检测到的静音总时长 (total_silence_ms)
-        - removable_silence / removable_silence_ms: 实际可移除的静音时长
-        - estimated_duration / estimated_duration_ms: 处理后预计剩余时长
-        - saving_percentage: 节省百分比 (基于实际可移除量)
-        - silence_segments: 静音段列表 [{start_ms, end_ms, duration_ms}]
-        - has_silence: 是否检测到可移除静音
+    Returns:
+        - original_duration / original_duration_ms: total duration of the original audio
+        - silence_duration / silence_duration_ms: total detected silence (total_silence_ms)
+        - removable_silence / removable_silence_ms: silence that can actually be removed
+        - estimated_duration / estimated_duration_ms: estimated remaining duration after processing
+        - saving_percentage: savings percentage (based on the actually removable amount)
+        - silence_segments: list of silence segments [{start_ms, end_ms, duration_ms}]
+        - has_silence: whether removable silence was detected
     """
     from utils.audio_silence_remover import (
         detect_silence, convert_to_wav_if_needed, format_duration_mmss
@@ -4409,10 +4428,10 @@ async def analyze_silence(file: UploadFile = File(...)):
 @router.post('/audio/trim_silence')
 async def trim_silence_endpoint(file: UploadFile = File(...), task_id: str | None = Form(default=None)):
     """
-    执行静音裁剪并返回处理后的音频。
+    Perform silence trimming and return the processed audio.
 
-    先分析静音段，然后将超长静音缩减至 200ms（从正中间裁剪）。
-    返回处理后的 WAV 文件 (base64 编码) 以及 MD5 校验值。
+    Analyzes silence segments first, then shrinks over-long silences down to 200ms (cut from the middle).
+    Returns the processed WAV file (base64-encoded) plus an MD5 checksum.
     """
     import uuid
     import base64 as b64
@@ -4533,7 +4552,7 @@ async def trim_silence_endpoint(file: UploadFile = File(...), task_id: str | Non
 
 @router.get('/audio/trim_progress/{task_id}')
 async def get_trim_progress(task_id: str):
-    """获取裁剪任务进度"""
+    """Get trim task progress."""
     task = _trim_tasks.get(task_id)
     if not task:
         return JSONResponse({'exists': False, 'progress': 100, 'phase': 'done'})
@@ -4547,7 +4566,7 @@ async def get_trim_progress(task_id: str):
 
 @router.post('/audio/trim_cancel/{task_id}')
 async def cancel_trim_task(task_id: str):
-    """取消裁剪任务"""
+    """Cancel a trim task."""
     task = _trim_tasks.get(task_id)
     if task:
         task['cancelled'] = True
@@ -4563,14 +4582,14 @@ async def voice_clone(
     provider: str = Form(default="cosyvoice"),
 ):
     """
-    语音克隆接口
+    Voice cloning endpoint.
 
-    参数:
-        file: 音频文件
-        prefix: 音色前缀名
-        ref_language: 参考音频的语言，可选值：ch, en, fr, de, ja, ko, ru
-                      注意：这是参考音频的语言，不是目标语音的语言
-        provider: 服务商，可选值：cosyvoice (阿里百炼), cosyvoice_intl (阿里国际版), minimax (国服), minimax_intl (国际服), elevenlabs
+    Parameters:
+        file: audio file
+        prefix: voice prefix name
+        ref_language: language of the reference audio; one of: ch, en, fr, de, ja, ko, ru
+                      Note: this is the language of the reference audio, not the target voice
+        provider: service provider; one of: cosyvoice (Alibaba Bailian), cosyvoice_intl (Alibaba international), minimax (China), minimax_intl (international), elevenlabs
     """
     # 流式读取上传文件（带大小限制）并增量计算 MD5
     try:
@@ -4887,18 +4906,18 @@ async def voice_clone(
 @router.post('/voice_clone_direct')
 async def voice_clone_direct(request: Request):
     """
-    直链语音克隆接口 - 跳过音频上传步骤，直接使用提供的直链URL注册音色
+    Direct-link voice cloning endpoint — skips the audio upload step and registers the voice directly from the provided direct URL.
 
-    支持 CosyVoice、MiniMax 和 ElevenLabs 服务商：
-    - CosyVoice: 直接使用直链URL注册音色
-    - MiniMax: 先下载音频文件，再上传到MiniMax服务器注册音色
+    Supports the CosyVoice, MiniMax and ElevenLabs providers:
+    - CosyVoice: registers the voice directly with the direct-link URL
+    - MiniMax: downloads the audio file first, then uploads it to the MiniMax server to register the voice
 
-    请求体:
+    Request body:
         {
-            "direct_link": "https://example.com/audio.wav",  // 音频直链URL
-            "prefix": "custom_prefix",                        // 音色前缀名
-            "ref_language": "ch",                             // 参考音频语言
-            "provider": "cosyvoice"                           // 服务商：cosyvoice / cosyvoice_intl / minimax / minimax_intl / elevenlabs
+            "direct_link": "https://example.com/audio.wav",  // direct audio URL
+            "prefix": "custom_prefix",                        // voice prefix name
+            "ref_language": "ch",                             // reference audio language
+            "provider": "cosyvoice"                           // provider: cosyvoice / cosyvoice_intl / minimax / minimax_intl / elevenlabs
         }
     """
     try:
@@ -5261,7 +5280,7 @@ async def voice_clone_direct(request: Request):
 
 @router.get('/character-card/list')
 async def get_character_cards():
-    """获取character_cards文件夹中的所有角色卡"""
+    """Get all character cards in the character_cards folder."""
     try:
         # 获取config_manager实例
         config_mgr = get_config_manager()
@@ -5306,7 +5325,7 @@ async def get_character_cards():
 
 @router.post('/catgirl/save-to-model-folder')
 async def save_catgirl_to_model_folder(request: Request):
-    """将角色卡保存到模型所在文件夹"""
+    """Save the character card into the model's folder."""
     try:
         data = await request.json()
         chara_data = data.get('charaData')
@@ -5359,7 +5378,7 @@ async def save_catgirl_to_model_folder(request: Request):
 
 @router.post('/character-card/save')
 async def save_character_card(request: Request):
-    """保存角色卡到characters.json文件"""
+    """Save the character card to characters.json."""
     try:
         data = await request.json()
         chara_data = data.get('charaData')
@@ -5450,15 +5469,15 @@ async def save_character_card(request: Request):
 
 @router.get('/catgirl/{name}/export')
 async def export_catgirl_card(name: str):
-    """导出猫娘角色卡为PNG图片（包含模型和设定的压缩包数据）
+    """Export a catgirl character card as a PNG image (with embedded archive data of the model and profile).
 
-    导出流程：
-    1. 获取猫娘的设定数据
-    2. 如果使用了非默认模型，将模型文件打包到压缩包
-    3. 将压缩包数据拼接到PNG图片中
-    4. 返回PNG图片供下载
+    Export flow:
+    1. Fetch the catgirl's profile data
+    2. If a non-default model is in use, pack the model files into the archive
+    3. Append the archive data to the PNG image
+    4. Return the PNG image for download
 
-    注意：默认模型(DEFAULT_LIVE2D_MODEL_NAME)不会被包含在导出中
+    Note: the default model (DEFAULT_LIVE2D_MODEL_NAME) is never included in the export.
     """
     import zipfile
     import tempfile
@@ -5487,7 +5506,7 @@ async def export_catgirl_card(name: str):
                 FIELDS_TO_EXCLUDE = {'cursor_follow', 'physics', 'voice_id'}
 
                 def filter_excluded_fields(data):
-                    """递归过滤掉指定字段"""
+                    """Recursively filter out the specified fields."""
                     if isinstance(data, dict):
                         return {
                             k: filter_excluded_fields(v)
@@ -5716,13 +5735,13 @@ async def export_catgirl_card(name: str):
 
 @router.get('/catgirl/{name}/export-settings')
 async def export_catgirl_settings_only(name: str):
-    """仅导出猫娘设定（加密，不包含模型文件）
+    """Export only the catgirl profile (obfuscated, without model files).
 
-    导出流程：
-    1. 获取猫娘的设定数据
-    2. 过滤掉指定字段
-    3. 使用简单的异或加密
-    4. 直接返回加密后的JSON文件
+    Export flow:
+    1. Fetch the catgirl's profile data
+    2. Filter out the specified fields
+    3. Apply simple XOR obfuscation
+    4. Return the obfuscated JSON file directly
     """
     from urllib.parse import quote
 
@@ -5730,10 +5749,11 @@ async def export_catgirl_settings_only(name: str):
     XOR_KEY = b'NEKOCHARA2024'
 
     def xor_obfuscate(data: bytes, key: bytes) -> bytes:
-        """使用XOR进行简单的数据混淆/还原（仅用于防止意外编辑，非安全加密）
+        """Simple XOR data obfuscation/restoration (only to prevent accidental edits; not secure encryption).
 
-        注意：这不是真正的加密，只是简单的可逆混淆，用于防止用户意外编辑。
-        如果需要真正的安全保护，应使用其他加密方案。
+        Note: this is not real encryption, just simple reversible obfuscation to
+        keep users from accidentally editing the data. Use a proper encryption
+        scheme if real security protection is needed.
         """
         return bytes(data[i] ^ key[i % len(key)] for i in range(len(data)))
 
@@ -5750,7 +5770,7 @@ async def export_catgirl_settings_only(name: str):
         FIELDS_TO_EXCLUDE = {'cursor_follow', 'physics', 'voice_id', '_reserved'}
 
         def filter_excluded_fields(data):
-            """递归过滤掉指定字段"""
+            """Recursively filter out the specified fields."""
             if isinstance(data, dict):
                 return {
                     k: filter_excluded_fields(v)
@@ -5804,11 +5824,12 @@ async def import_character_card(
     zip_file: UploadFile = File(...),
     card_image: UploadFile = File(None),
 ):
-    """导入角色卡（从PNG图片中提取的ZIP文件）
+    """Import a character card (a ZIP extracted from a PNG image).
 
-    可选参数：
-      - card_image: 原始载体 PNG。若提供且本地尚未存在同名卡面，则直接存为
-        该角色的 card-face，以谙则老角色卡「封面图即卡面」的习惯。
+    Optional parameters:
+      - card_image: the original carrier PNG. If provided and no card face of the
+        same name exists locally yet, it is stored directly as the character's
+        card-face, following the legacy convention that the cover image is the card face.
     """
     import zipfile
     import tempfile
@@ -5819,9 +5840,9 @@ async def import_character_card(
     XOR_KEY = b'NEKOCHARA2024'
 
     def xor_deobfuscate(data: bytes, key: bytes) -> bytes:
-        """使用XOR进行数据还原（与xor_obfuscate相同的操作，用于命名一致性）
+        """XOR data restoration (the same operation as xor_obfuscate; named for consistency).
 
-        注意：这不是真正的解密，只是简单的可逆混淆还原。
+        Note: this is not real decryption, just reversal of the simple reversible obfuscation.
         """
         return bytes(data[i] ^ key[i % len(key)] for i in range(len(data)))
 
@@ -5968,7 +5989,7 @@ async def import_character_card(
             imported_model_info = None  # 记录导入的模型信息，用于自动使用
 
             def _find_model3_json(directory):
-                """递归查找 .model3.json 文件"""
+                """Recursively find the .model3.json file."""
                 for item in directory.iterdir():
                     if item.is_file() and item.name.lower().endswith('.model3.json'):
                         return item
@@ -6240,7 +6261,7 @@ async def import_character_card(
 
 # 卡面元数据 sidecar 默认结构
 def _default_card_meta(origin: str = 'self') -> dict:
-    """返回默认卡面元数据。"""
+    """Return the default card-face metadata."""
     return {
         'author': '',
         'origin': origin,  # self / imported / steam
@@ -6250,7 +6271,7 @@ def _default_card_meta(origin: str = 'self') -> dict:
 
 
 def _read_card_meta(meta_path) -> dict:
-    """读取 sidecar JSON，文件不存在或损坏时返回默认值。"""
+    """Read the sidecar JSON; returns defaults when the file is missing or corrupted."""
     try:
         if meta_path.exists():
             with open(meta_path, 'r', encoding='utf-8') as f:
@@ -6269,15 +6290,15 @@ def _read_card_meta(meta_path) -> dict:
 
 
 def _write_card_meta(meta_path, meta: dict) -> None:
-    """写入 sidecar JSON（原子写入）。调用方需先 ensure_card_faces_directory()。"""
+    """Write the sidecar JSON (atomic write). The caller must run ensure_card_faces_directory() first."""
     from utils.file_utils import atomic_write_json
     atomic_write_json(meta_path, meta, ensure_ascii=False, indent=2)
 
 
 def _detect_card_origin_from_character(catgirl_data: dict) -> str:
-    """从猫娘配置推断 origin（用于无 sidecar 时的回退）。
-    依据角色卡本身的来源（character_origin.source），而非模型来源（avatar.asset_source），
-    确保更换模型不会改变角色卡来源标注。"""
+    """Infer origin from the catgirl config (fallback when no sidecar exists).
+    Based on the card's own source (character_origin.source), not the model source (avatar.asset_source),
+    so swapping models never changes the card's origin label."""
     try:
         char_source = get_reserved(catgirl_data, 'character_origin', 'source', default='')
         if char_source == 'steam_workshop':
@@ -6289,7 +6310,7 @@ def _detect_card_origin_from_character(catgirl_data: dict) -> str:
 
 @router.get('/card-faces')
 async def list_card_faces():
-    """返回所有已设置自定义卡面的猫娘名列表（用于前端避免无意义的 404 请求）"""
+    """Return the names of all catgirls with a custom card face set (lets the frontend avoid pointless 404 requests)."""
     _config_manager = get_config_manager()
     faces_dir = _config_manager.card_faces_dir
     names: list[str] = []
@@ -6315,10 +6336,11 @@ async def list_card_faces():
 
 @router.get('/card-metas')
 async def list_card_metas():
-    """批量返回所有猫娘的卡面元数据。
+    """Return card-face metadata for all catgirls in bulk.
 
-    对于没有 sidecar JSON 的历史角色卡，会根据猫娘配置推断 origin 后
-    返回默认值，保证旧版本升级后前端仍能显示卡面信息。
+    For legacy character cards without a sidecar JSON, the origin is inferred
+    from the catgirl config and defaults are returned, so the frontend still
+    shows card-face info after upgrading from older versions.
     """
     _config_manager = get_config_manager()
     faces_dir = _config_manager.card_faces_dir
@@ -6352,7 +6374,7 @@ async def list_card_metas():
 
 @router.get('/catgirl/{name}/card-meta')
 async def get_card_meta(name: str):
-    """获取单个猫娘的卡面元数据。无 sidecar 时根据猫娘配置推断 origin 后返回默认。"""
+    """Get a single catgirl's card-face metadata. Without a sidecar, infers origin from the catgirl config and returns defaults."""
     _config_manager = get_config_manager()
     safe_name = os.path.basename(name)
     if safe_name != name or not name:
@@ -6372,7 +6394,7 @@ async def get_card_meta(name: str):
 
 @router.put('/catgirl/{name}/card-meta')
 async def put_card_meta(name: str, request: Request):
-    """更新卡面元数据（当前仅支持 author 字段，且仅 origin=self 时允许）。"""
+    """Update card-face metadata (currently only the author field, and only when origin=self)."""
     _config_manager = get_config_manager()
     safe_name = os.path.basename(name)
     if safe_name != name or not name:
@@ -6463,7 +6485,7 @@ def _strip_legacy_card_face_header(image_data: bytes) -> bytes:
 
 @router.get('/catgirl/{name}/card-face')
 async def get_card_face(name: str):
-    """获取角色的自定义卡面图片"""
+    """Get the character's custom card-face image."""
     _config_manager = get_config_manager()
     # 安全检查：防止路径遍历
     safe_name = os.path.basename(name)
@@ -6481,7 +6503,7 @@ async def get_card_face(name: str):
 
 @router.put('/catgirl/{name}/card-face')
 async def put_card_face(name: str, image: UploadFile = File(...)):
-    """保存角色的自定义卡面图片"""
+    """Save the character's custom card-face image."""
     _config_manager = get_config_manager()
     # 安全检查：防止路径遍历
     safe_name = os.path.basename(name)
@@ -6569,13 +6591,13 @@ async def export_catgirl_with_portrait(
     portrait: UploadFile = File(...),
     include_model: bool = Form(True)
 ):
-    """导出角色卡（包含立绘图片）
+    """Export a character card (including the portrait image).
 
-    导出流程：
-    1. 接收前端传来的立绘图片
-    2. 将立绘合成到角色卡模板上
-    3. 打包角色设定和模型文件（可选）
-    4. 返回合成的PNG角色卡
+    Export flow:
+    1. Receive the portrait image from the frontend
+    2. Composite the portrait onto the character card template
+    3. Pack the character profile and model files (optional)
+    4. Return the composited PNG character card
     """
     import zipfile
     import tempfile
@@ -6605,7 +6627,7 @@ async def export_catgirl_with_portrait(
 
             # 过滤掉运行时字段
             def _filter_export_fields(data, keep_model_paths=False):
-                """导出时过滤字段"""
+                """Filter fields on export."""
                 result = {}
                 for key, value in data.items():
                     if key in ('cursor_follow', 'physics', 'voice_id'):

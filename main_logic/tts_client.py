@@ -1,6 +1,20 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
-TTS Helper模块
-负责处理TTS语音合成，支持自定义音色（阿里云CosyVoice）和默认音色（各core_api的原生TTS）
+TTS helper module
+Handles TTS speech synthesis, supporting custom voices (Aliyun CosyVoice) and default voices (each core_api's native TTS)
 """
 import numpy as np
 import soxr
@@ -63,7 +77,7 @@ _DASHSCOPE_DEFAULT_REALTIME_WS_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/rea
 
 
 def _resolve_qwen_realtime_tts_url() -> str:
-    """根据当前 Qwen/Qwen Intl 核心配置选择实时 TTS WebSocket 地址。"""
+    """Pick the realtime TTS WebSocket URL based on the current Qwen/Qwen Intl core config."""
     try:
         core_config = get_config_manager().get_core_config() or {}
     except Exception:
@@ -168,16 +182,16 @@ def _resolve_elevenlabs_api_key(cm) -> str:
 
 def _resample_audio(audio_int16: np.ndarray, src_rate: int, dst_rate: int, 
                     resampler: 'soxr.ResampleStream | None' = None) -> bytes:
-    """使用 soxr 进行高质量音频重采样
+    """High-quality audio resampling using soxr
     
     Args:
-        audio_int16: int16 格式的音频 numpy 数组
-        src_rate: 源采样率
-        dst_rate: 目标采样率
-        resampler: 可选的流式重采样器，用于维护 chunk 间状态
+        audio_int16: audio numpy array in int16 format
+        src_rate: source sample rate
+        dst_rate: target sample rate
+        resampler: optional streaming resampler, maintains state across chunks
         
     Returns:
-        重采样后的 bytes
+        resampled bytes
     """
     if src_rate == dst_rate:
         return audio_int16.tobytes()
@@ -198,7 +212,7 @@ def _resample_audio(audio_int16: np.ndarray, src_rate: int, dst_rate: int,
 
 
 def _enqueue_error(response_queue, error_value):
-    """统一错误日志与错误消息入队。"""
+    """Unified error logging and error-message enqueueing."""
     if isinstance(error_value, str):
         formatted_msg = error_value
     else:
@@ -211,7 +225,7 @@ def _enqueue_error(response_queue, error_value):
 
 
 def _adjust_free_tts_url(url: str) -> str:
-    """Free TTS URL 的地区替换：委托给 ConfigManager._adjust_free_api_url。"""
+    """Region substitution for the free TTS URL: delegates to ConfigManager._adjust_free_api_url."""
     try:
         return get_config_manager()._adjust_free_api_url(url, True)
     except Exception:
@@ -225,7 +239,7 @@ except (ImportError, AttributeError):
 
 
 def _ws_is_open(ws_conn) -> bool:
-    """兼容不同 websockets 版本的连接状态检查。"""
+    """Connection-state check compatible with different websockets versions."""
     if ws_conn is None:
         return False
     if _WsState is not None:
@@ -234,17 +248,18 @@ def _ws_is_open(ws_conn) -> bool:
 
 
 def _get_tts_language_code() -> str:
-    """获取 lanlan.app TTS 服务器所需的 language_code。
+    """Get the language_code required by the lanlan.app TTS server.
 
-    实现收敛到 utils.language_utils.get_tts_language_code —— core/realtime 与
-    TTS server 两条路共用同一张 BCP-47 映射表，避免漂移。
+    Implementation converges on utils.language_utils.get_tts_language_code — the
+    core/realtime path and the TTS server path share the same BCP-47 mapping table
+    to avoid drift.
     """
     from utils.language_utils import get_tts_language_code
     return get_tts_language_code()
 
 
 def _build_step_tts_create_data(sid_: str, voice_id: str, lang_hint, is_lanlan_app: bool) -> dict:
-    """根据 URL 和语言提示组装 Step/free TTS 的 tts.create data 字段。"""
+    """Assemble the tts.create data field for Step/free TTS from the URL and language hint."""
     data = {
         "session_id": sid_,
         "voice_id": voice_id,
@@ -294,7 +309,7 @@ from typing import Literal
 
 @dataclass(frozen=True, slots=True)
 class TTSProviderMeta:
-    """TTS provider 的架构元数据，用于文档化和统一查询。"""
+    """Architectural metadata of a TTS provider, for documentation and unified lookups."""
     name: str
     category: Literal["ws_bistream", "http_sentence", "local"]
     protocol: str                   # 如 "WebSocket", "HTTP POST + SSE", "HTTP POST + JSON"
@@ -433,11 +448,12 @@ _GSV_ALLOWED_PUNCT = frozenset('。！？；：，、…—．.!?;:,¿¡،؟؛')
 
 
 def _gsv_should_drop_chunk(text: str) -> bool:
-    """True = chunk 是 kaomoji / 怪符号堆，丢；False = 放行。
+    """True = the chunk is a pile of kaomoji / odd symbols, drop it; False = let it through.
 
-    扫完所有字符再判：任何 alnum 都让 chunk 立刻放行（含 letter 的 kaomoji
-    如 `T_T` / `\\(^o^)/` 走这条路过——server clean 完还有字母，不会触发
-    empty error）；无 alnum 时只看有没有非白名单符号。
+    Judge only after scanning all characters: any alnum lets the chunk through
+    immediately (kaomoji containing letters such as `T_T` / `\\(^o^)/` pass via this
+    route — after the server cleans them letters remain, so no empty error is
+    triggered); with no alnum, only check for non-whitelisted symbols.
     """
     has_unsanctioned = False
     for c in text:
@@ -454,10 +470,11 @@ def _gsv_should_drop_chunk(text: str) -> bool:
 
 
 class SentenceBuffer:
-    """文本句子缓冲区 — 模拟 GPT-SoVITS v3 TextBuffer 的按标点切句逻辑。
+    """Text sentence buffer — mimics GPT-SoVITS v3 TextBuffer's punctuation-based sentence splitting.
 
-    累积文本碎片，遇到句末标点时自动切分出完整句子，使 TTS 可以
-    "边收文本边合成"，而不必等待 LLM 全部回复完毕。
+    Accumulates text fragments and automatically splits out complete sentences at
+    end-of-sentence punctuation, so TTS can "synthesize while receiving text"
+    instead of waiting for the LLM's full reply.
     """
 
     _SENTENCE_END_RE = re.compile(r'[。！？；…\.\!\?\;]+')
@@ -467,7 +484,7 @@ class SentenceBuffer:
         self._buf = ""
 
     def append(self, text: str) -> list[str]:
-        """追加文本，返回已完成的句子列表（可能为空）。"""
+        """Append text; returns the list of completed sentences (possibly empty)."""
         self._buf += text
         sentences: list[str] = []
         last = 0
@@ -481,26 +498,26 @@ class SentenceBuffer:
         return sentences
 
     def flush(self) -> str | None:
-        """返回剩余文本并清空缓冲区。无有效文本时返回 None。"""
+        """Return the remaining text and clear the buffer. Returns None when there is no valid text."""
         text = self._buf
         self._buf = ""
         return text if text.strip() else None
 
     def clear(self):
-        """丢弃所有缓冲文本。"""
+        """Discard all buffered text."""
         self._buf = ""
 
 
 class _AudioQueueProxy:
-    """response_queue 的代理，将 synthesize_fn 的 put 调用路由到正确的 slot buffer。
+    """Proxy for response_queue, routing synthesize_fn's put calls to the correct slot buffer.
 
-    synthesize_fn 的闭包在 setup() 时捕获了 response_queue 引用。
-    通过让 setup() 捕获的是这个 proxy 而非真实队列，我们可以在不修改
-    synthesize_fn 签名的前提下，根据当前 asyncio Task 将音频 chunk
-    路由到对应句子的 buffer。
+    synthesize_fn's closure captured the response_queue reference at setup().
+    By having setup() capture this proxy instead of the real queue, we can route
+    audio chunks to the buffer of the corresponding sentence based on the current
+    asyncio Task, without changing synthesize_fn's signature.
 
-    当没有活跃的 task 映射时（如 setup 阶段发送 __ready__ 信号），
-    put 调用直接转发到真实队列。
+    When there is no active task mapping (e.g. sending the __ready__ signal during
+    setup), put calls are forwarded directly to the real queue.
     """
 
     __slots__ = ('_real_queue', '_task_map')
@@ -542,38 +559,43 @@ async def _non_bistream_tts_main_loop(
     max_concurrent: int = 3,
     sentence_trace_fn=None,
 ):
-    """非流式输入 TTS 的通用主循环（按句切分 + 并行合成 + 顺序投递）。
+    """Generic main loop for non-bistream-input TTS (sentence splitting + parallel synthesis + in-order delivery).
 
-    文本到达后立即按句切分，多个句子的 TTS 请求并行发起（受
-    ``max_concurrent`` 限制），但音频严格按句子顺序投递到
-    ``response_queue``，保证前端播放时序正确。
+    Text is split into sentences as soon as it arrives; TTS requests for multiple
+    sentences are issued in parallel (bounded by ``max_concurrent``), but audio is
+    delivered to ``response_queue`` strictly in sentence order, keeping frontend
+    playback order correct.
 
-    设计要点
+    Design points
     --------
-    - **并行请求**：句子 N 的合成不必等句子 N-1 完成即可开始。
-    - **顺序投递**：drain 协程按 seq_id 递增顺序转发音频 chunk。
-    - **打断安全**：``__interrupt__`` / speech_id 切换时立即递增
-      ``_generation_id``，所有 in-flight task 检测到 generation 过期
-      后自动丢弃数据并退出，不会有残留音频泄漏到 response_queue。
-    - **无 GIL 阻塞**：request_queue.get 通过 ``run_in_executor``
-      执行；内部同步全部使用 asyncio 原语（Event / Semaphore），
-      不使用 threading.Lock 或 time.sleep。
+    - **Parallel requests**: synthesis of sentence N can start without waiting for
+      sentence N-1 to finish.
+    - **In-order delivery**: the drain coroutine forwards audio chunks in
+      increasing seq_id order.
+    - **Interrupt safety**: on ``__interrupt__`` / speech_id switch,
+      ``_generation_id`` is incremented immediately; every in-flight task detects
+      the stale generation, drops its data and exits, so no leftover audio leaks
+      into response_queue.
+    - **No GIL blocking**: request_queue.get runs via ``run_in_executor``;
+      internal synchronization uses asyncio primitives only (Event / Semaphore),
+      never threading.Lock or time.sleep.
 
-    response_queue 代理机制
+    response_queue proxy mechanism
     -----------------------
-    ``synthesize_fn`` 的闭包已经捕获了 ``response_queue`` 引用。
-    为了在不修改 synthesize_fn 签名的前提下将音频重定向到 per-sentence
-    buffer，调用方（``_run_sentence_tts_worker``）应传入一个
-    ``_AudioQueueProxy`` 实例作为 ``response_queue``。该代理的 ``put``
-    方法根据当前 asyncio Task 查找对应的 slot buffer 并写入。
-    若调用方传入的是真实队列（向后兼容），则退化为串行模式（max_concurrent=1）。
+    ``synthesize_fn``'s closure has already captured the ``response_queue``
+    reference. To redirect audio into per-sentence buffers without changing
+    synthesize_fn's signature, the caller (``_run_sentence_tts_worker``) should
+    pass an ``_AudioQueueProxy`` instance as ``response_queue``. The proxy's
+    ``put`` looks up the slot buffer for the current asyncio Task and writes
+    there. If the caller passes the real queue (backward compatibility), it
+    degrades to serial mode (max_concurrent=1).
 
     Args:
-        request_queue: 多进程请求队列，接收 (speech_id, text) 元组
-        response_queue: 响应队列或 ``_AudioQueueProxy`` 实例
+        request_queue: multiprocess request queue receiving (speech_id, text) tuples
+        response_queue: response queue or an ``_AudioQueueProxy`` instance
         synthesize_fn: async def(text: str, speech_id: str) -> None
-        label: 日志前缀
-        max_concurrent: 最大并行合成数
+        label: log prefix
+        max_concurrent: maximum parallel syntheses
     """
     sentence_buf = SentenceBuffer()
     current_speech_id = None
@@ -625,7 +647,7 @@ async def _non_bistream_tts_main_loop(
         _sentence_enqueued_at.pop(seq, None)
 
     def _slot_put(seq: int, gen_id: int, item) -> None:
-        """将一个 chunk 写入指定 slot 的 buffer（供 proxy 回调）。"""
+        """Write one chunk into the given slot's buffer (called back by the proxy)."""
         if gen_id != _generation_id:
             return
         buf = _slot_buffers.get(seq)
@@ -636,7 +658,7 @@ async def _non_bistream_tts_main_loop(
         evt.set()
 
     async def _synth_one(seq: int, text: str, sid: str, gen_id: int) -> None:
-        """在信号量保护下运行 synthesize_fn。"""
+        """Run synthesize_fn under semaphore protection."""
         done_evt = _slot_done.get(seq)
         if done_evt is None:
             return
@@ -672,7 +694,7 @@ async def _non_bistream_tts_main_loop(
                         nd.set()
 
     async def _drain_loop(gen_id: int) -> None:
-        """按 seq_id 顺序将 slot buffer 中的音频转发到真实 response_queue。"""
+        """Forward audio from slot buffers to the real response_queue in seq_id order."""
         nonlocal _drain_seq
         while gen_id == _generation_id:
             seq = _drain_seq
@@ -734,7 +756,7 @@ async def _non_bistream_tts_main_loop(
         _ensure_drain()
 
     async def _drain_remaining() -> None:
-        """等待所有已提交的句子合成并投递完毕。"""
+        """Wait until all submitted sentences are synthesized and delivered."""
         tasks = list(_tasks.values())
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -820,29 +842,32 @@ def _run_sentence_tts_worker(
     label: str,
     sentence_trace_fn=None,
 ):
-    """HTTP 按句合成类 TTS worker 的通用骨架。
+    """Generic skeleton for HTTP per-sentence synthesis TTS workers.
 
-    封装了所有 ``_non_bistream_tts_main_loop`` 系 worker 共有的样板代码：
-    asyncio 事件循环启动、就绪信号发送、主循环异常处理、资源清理。
+    Wraps the boilerplate shared by all ``_non_bistream_tts_main_loop``-family
+    workers: asyncio event loop startup, ready-signal sending, main-loop exception
+    handling, resource cleanup.
 
-    内部会创建 ``_AudioQueueProxy`` 代理并传给 ``async_setup_fn``，
-    使 ``synthesize_fn`` 闭包捕获的是代理而非真实队列，从而支持
-    并行合成时按 task 路由音频到正确的 slot buffer。
+    Internally creates an ``_AudioQueueProxy`` and passes it to
+    ``async_setup_fn``, so the ``synthesize_fn`` closure captures the proxy
+    instead of the real queue, enabling per-task routing of audio to the correct
+    slot buffer during parallel synthesis.
 
     Args:
-        request_queue / response_queue: 多进程队列。
-        async_setup_fn: 一个 **async** 工厂函数，签名为::
+        request_queue / response_queue: multiprocess queues.
+        async_setup_fn: an **async** factory function with the signature::
 
             async def setup(queue_proxy) -> tuple[synthesize_fn, cleanup_fn | None]
 
-            - queue_proxy: ``_AudioQueueProxy`` 实例，synthesize_fn 应通过
-              它（而非直接引用 response_queue）来 put 音频数据。
+            - queue_proxy: an ``_AudioQueueProxy`` instance; synthesize_fn should
+              put audio data through it (rather than referencing response_queue
+              directly).
             - synthesize_fn: ``async def(text: str, speech_id: str) -> None``
-            - cleanup_fn: 可选的 ``async def() -> None``
+            - cleanup_fn: optional ``async def() -> None``
 
-            如果 setup 过程中发现不可恢复的错误，应自行
-            ``queue_proxy.put(("__ready__", False))`` 并 raise。
-        label: 日志 / 错误消息前缀。
+            If setup hits an unrecoverable error, it should itself
+            ``queue_proxy.put(("__ready__", False))`` and raise.
+        label: log / error message prefix.
     """
     proxy = _AudioQueueProxy(response_queue)
 
@@ -889,14 +914,14 @@ def _run_sentence_tts_worker(
 
 def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice_id, free_mode=False):
     """
-    StepFun实时TTS worker（用于默认音色）
-    使用阶跃星辰的实时TTS API（step-tts-mini）
+    StepFun realtime TTS worker (for default voices)
+    Uses StepFun's realtime TTS API (step-tts-mini)
 
     Args:
-        request_queue: 多进程请求队列，接收(speech_id, text)元组
-        response_queue: 多进程响应队列，发送音频数据（也用于发送就绪信号）
-        audio_api_key: API密钥
-        voice_id: 音色ID，默认读取 api_providers.json 的 StepFun 配置
+        request_queue: multiprocess request queue receiving (speech_id, text) tuples
+        response_queue: multiprocess response queue sending audio data (also used for the ready signal)
+        audio_api_key: API key
+        voice_id: voice ID; defaults to the StepFun config in api_providers.json
     """
     # free + livestream 子模式：voice_id 优先取 api_providers.json 的
     # livestream_config.voice_id（绕过 caller 的 free_voices preset 路径）。
@@ -935,7 +960,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             voice_id = normalized_voice_id
     
     async def async_worker():
-        """异步TTS worker主循环"""
+        """Async TTS worker main loop"""
         from utils.language_utils import detect_tts_language_hint, TTS_LANG_DETECT_MIN_CHARS
 
         if free_mode:
@@ -960,17 +985,17 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
 
         def _build_tts_create_data(sid_: str, lang_hint):
-            """根据 URL 和语言提示组装 tts.create 的 data 字段。
-            - lanlan.app: language_code（Gemini streaming-TTS 风格；命中 ja 时覆盖全局语言）
-            - lanlan.tech / 自建 StepFun: 协议对称，voice_label.language="日语"（命中 ja 时）
+            """Assemble the tts.create data field from the URL and language hint.
+            - lanlan.app: language_code (Gemini streaming-TTS style; overrides the global language on a ja hit)
+            - lanlan.tech / self-hosted StepFun: protocol-symmetric, voice_label.language="Japanese" (on a ja hit)
             """
             return _build_step_tts_create_data(sid_, voice_id, lang_hint, is_lanlan_app)
 
         async def _flush_deferred_create(force: bool = False) -> bool:
-            """尚未发 tts.create 时，检测语言并发送，然后把 pending 文本刷出去。
+            """When tts.create hasn't been sent yet, detect the language and send it, then flush the pending text.
 
-            force=True 用于 sid=None 提前收尾的场景：不够 MIN_CHARS 也强制发。
-            返回 True 表示 session 已就绪（本次新建或此前已建）。
+            force=True is for the sid=None early-wrap-up case: send even below MIN_CHARS.
+            Returns True if the session is ready (created just now or previously).
             """
             nonlocal session_created, pending_text_buffer
             if session_created:
@@ -1012,7 +1037,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             
             # 等待连接成功事件
             async def wait_for_connection():
-                """等待连接成功"""
+                """Wait for the connection to succeed"""
                 nonlocal session_id
                 try:
                     async for message in ws:
@@ -1080,7 +1105,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             _text_done_error_suppressed = False  # 抑制 "tts.text.done already sent" 错误洪泛
 
             async def receive_messages_initial():
-                """初始接收任务"""
+                """Initial receive task"""
                 nonlocal _text_done_error_suppressed
                 try:
                     async for message in ws:
@@ -1389,8 +1414,8 @@ _XAI_TTS_DELTA_CAP = 15000
 
 
 def _grok_chunk_text_delta(text: str, cap: int = _XAI_TTS_DELTA_CAP) -> list[str]:
-    """把可能超过 xAI text.delta 上限的文本切成顺序发送的多段。
-    返回的每段长度 ≤ cap；空输入返回空列表。"""
+    """Split text that may exceed the xAI text.delta cap into multiple sequentially sent segments.
+    Each returned segment has length <= cap; empty input returns an empty list."""
     if not text:
         return []
     if len(text) <= cap:
@@ -1400,23 +1425,24 @@ def _grok_chunk_text_delta(text: str, cap: int = _XAI_TTS_DELTA_CAP) -> list[str
 
 def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     """
-    xAI Grok 流式 TTS worker（wss://api.x.ai/v1/tts）
+    xAI Grok streaming TTS worker (wss://api.x.ai/v1/tts)
 
-    协议特点（对比 step）:
-      - 无 session 握手 / 无 tts.create，连上即可推 text.delta
-      - 配置全部走 query params（voice/language/codec/sample_rate）
-      - codec=pcm 时音频是 raw 16-bit little-endian，无 WAV header
-      - language 必传；用 auto 让服务端自动检测，省掉客户端语言检测
+    Protocol traits (vs. step):
+      - no session handshake / no tts.create; push text.delta right after connecting
+      - all configuration goes through query params (voice/language/codec/sample_rate)
+      - with codec=pcm the audio is raw 16-bit little-endian, no WAV header
+      - language is required; use auto for server-side detection, skipping client-side language detection
 
     Args:
-        request_queue: 多进程请求队列，接收 (speech_id, text) 元组
-        response_queue: 多进程响应队列，发送音频数据和就绪信号
+        request_queue: multiprocess request queue receiving (speech_id, text) tuples
+        response_queue: multiprocess response queue sending audio data and the ready signal
         audio_api_key: xAI API key
-        voice_id: 内置音色（eve/ara/leo/rex/sal）/ alias（male / 女声 等）/ 自定义
-            8 位音色 id / 空。routing 层（native_voice_registry）会把 alias
-            识别为 native；worker 这里再归一化成 xAI canonical id，
-            因为 xAI 端点的 voice query param 只接受 canonical id 或
-            自定义 8 位 id，不认 alias。
+        voice_id: built-in voice (eve/ara/leo/rex/sal) / alias (male, female-voice
+            labels, etc.) / custom 8-char voice id / empty. The routing layer
+            (native_voice_registry) recognizes aliases as native; the worker then
+            normalizes to the xAI canonical id here, because the xAI endpoint's
+            voice query param only accepts canonical ids or custom 8-char ids,
+            not aliases.
     """
     from utils.grok_tts_voices import normalize_grok_tts_voice
     # 先 strip：whitespace-only 输入（如 '   '）等价于空，否则 'not voice_id'
@@ -1721,14 +1747,14 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
 
 def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     """
-    Qwen实时TTS worker（用于默认音色）
-    使用阿里云的实时TTS API（qwen3-tts-flash-2025-09-18）
+    Qwen realtime TTS worker (for default voices)
+    Uses Aliyun's realtime TTS API (qwen3-tts-flash-2025-09-18)
     
     Args:
-        request_queue: 多进程请求队列，接收(speech_id, text)元组
-        response_queue: 多进程响应队列，发送音频数据（也用于发送就绪信号）
-        audio_api_key: API密钥
-        voice_id: 音色ID, 默认使用"Momo"
+        request_queue: multiprocess request queue receiving (speech_id, text) tuples
+        response_queue: multiprocess response queue sending audio data (also used for the ready signal)
+        audio_api_key: API key
+        voice_id: voice ID, defaults to "Momo"
     """
     if not voice_id:
         voice_id = "Momo"
@@ -1736,7 +1762,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
     from utils.language_utils import detect_tts_language_hint, TTS_LANG_DETECT_MIN_CHARS
 
     async def async_worker():
-        """异步TTS worker主循环"""
+        """Async TTS worker main loop"""
         tts_url = _resolve_qwen_realtime_tts_url()
         ws = None
         current_speech_id = None
@@ -1750,7 +1776,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
 
         def build_config_message(lang_hint=None):
-            """构造 session.update 消息；lang_hint='ja' 时指定 Japanese，其他走服务端 Auto。"""
+            """Build the session.update message; lang_hint='ja' specifies Japanese, anything else uses server-side Auto."""
             session = {
                 "mode": "server_commit",
                 "voice": voice_id,
@@ -1768,10 +1794,10 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             }
 
         async def _flush_deferred_config(force: bool = False) -> bool:
-            """按需发送延迟的 session.update，并把缓冲文本 append 出去。
+            """Send the deferred session.update on demand and append the buffered text out.
 
-            - 未达到阈值且非 force：返回 False。
-            - 已发送或执行后：返回 True。
+            - Below threshold and not force: returns False.
+            - Already sent or after executing: returns True.
             """
             nonlocal session_configured, pending_text_buffer
             if session_configured:
@@ -1815,7 +1841,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             
             # 等待并处理初始消息
             async def wait_for_session_ready():
-                """等待会话创建确认"""
+                """Wait for session-creation confirmation"""
                 try:
                     async for message in ws:
                         event = json.loads(message)
@@ -1855,7 +1881,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
 
             # 初始接收任务（会在每次新 speech_id 时重新创建）
             async def receive_messages_initial():
-                """初始接收任务"""
+                """Initial receive task"""
                 nonlocal ws
                 try:
                     async for message in ws:
@@ -2112,13 +2138,13 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
 
 def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     """
-    TTS多进程worker函数，用于阿里云CosyVoice TTS
+    TTS multiprocess worker function for Aliyun CosyVoice TTS
     
     Args:
-        request_queue: 多进程请求队列，接收(speech_id, text)元组
-        response_queue: 多进程响应队列，发送音频数据（也用于发送就绪信号）
-        audio_api_key: API密钥
-        voice_id: 音色ID
+        request_queue: multiprocess request queue receiving (speech_id, text) tuples
+        response_queue: multiprocess response queue sending audio data (also used for the ready signal)
+        audio_api_key: API key
+        voice_id: voice ID
     """
     import dashscope
     from dashscope.audio.tts_v2 import ResultCallback, SpeechSynthesizer, AudioFormat
@@ -2143,8 +2169,8 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         _dashscope_base_url = ""
 
     def _apply_dashscope_region():
-        """每次重建 SpeechSynthesizer 前调用（必须在 DASHSCOPE_GLOBAL_LOCK 内），
-        保证 module-global 是 worker 自己的地域/key。
+        """Called before every SpeechSynthesizer rebuild (must be inside DASHSCOPE_GLOBAL_LOCK),
+        ensuring the module-global is the worker's own region/key.
         """
         dashscope.api_key = audio_api_key
         try:
@@ -2268,8 +2294,8 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
     IDLE_AUTO_COMPLETE_SECONDS = 15  # 空闲超过此秒数则主动 complete（须 < 服务端 23s 超时）
 
     def _create_synthesizer(lang_hint=None):
-        """创建新的 SpeechSynthesizer，可选语言提示。
-        仅建立 WebSocket 连接，不发送预热文本——调用方会紧接着发送真实文本。
+        """Create a new SpeechSynthesizer, with an optional language hint.
+        Only establishes the WebSocket connection without sending warmup text — the caller sends real text right after.
         """
         from utils.api_config_loader import (
             cosyvoice_model_supports_language_hints,
@@ -2298,7 +2324,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         return syn
 
     def _flush_buffer():
-        """检测语言、创建 synthesizer（如果需要）并刷出缓冲区"""
+        """Detect the language, create the synthesizer (if needed) and flush the buffer"""
         nonlocal synthesizer, char_buffer, detected_lang, last_streaming_call_time
         if not char_buffer.strip():
             char_buffer = ""
@@ -2316,9 +2342,9 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         char_buffer = ""
 
     def _do_streaming_complete():
-        """非阻塞地通知服务器文本已全部发送。
-        只发 FINISHED 信号，不等服务器确认。音频继续通过 on_data 回调流向前端。
-        synthesizer 保持开放，由下一次 speech_id 切换时关闭。
+        """Non-blockingly notify the server that all text has been sent.
+        Only sends the FINISHED signal without waiting for server confirmation. Audio keeps streaming to the frontend via the on_data callback.
+        The synthesizer stays open and is closed at the next speech_id switch.
         """
         nonlocal synthesizer, last_streaming_call_time
         if synthesizer is None:
@@ -2491,7 +2517,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
 
 
 def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
-    """智谱AI CogTTS worker — 按句切分合成，SSE 流式输出音频。"""
+    """Zhipu AI CogTTS worker — per-sentence synthesis, SSE streaming audio output."""
     import httpx
 
     if not voice_id:
@@ -2543,10 +2569,10 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                 first_audio_received = False
 
                 def _detect_beep_watermark(audio: np.ndarray, sr: int) -> int:
-                    """检测开头的滴滴声水印，返回应裁剪的采样数（0 = 未检测到）。
+                    """Detect the leading beep watermark; returns the number of samples to trim (0 = not detected).
 
-                    检测策略：在前 1.5s 内寻找短促高频脉冲（beep）。
-                    beep 特征：短时能量突增 + 高频占比显著高于语音。
+                    Detection strategy: look for a short high-frequency pulse (beep) within the first 1.5s.
+                    Beep signature: a short-time energy spike + a high-frequency ratio significantly above speech.
                     """
                     scan_len = min(int(sr * 1.5), len(audio))
                     if scan_len < int(sr * 0.05):
@@ -2581,7 +2607,7 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                     return min(trim_end, scan_len)
 
                 def _handle_sse_line(line: str) -> None:
-                    """解析单条 SSE data 行并将音频入队。"""
+                    """Parse one SSE data line and enqueue the audio."""
                     nonlocal first_audio_received
                     line = line.strip()
                     if not line or not line.startswith('data: '):
@@ -2669,7 +2695,7 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
 
 
 def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
-    """Gemini TTS worker — 按句切分合成，httpx 异步直连。"""
+    """Gemini TTS worker — per-sentence synthesis, direct async httpx connection."""
     import httpx
 
     requested_voice_id = (voice_id or "").strip()
@@ -2782,7 +2808,7 @@ register_tts_worker_resolver(
 
 
 def openai_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
-    """OpenAI TTS worker — 按句切分合成，流式接收音频。"""
+    """OpenAI TTS worker — per-sentence synthesis, streaming audio reception."""
     try:
         from openai import AsyncOpenAI
     except ImportError:
@@ -2822,18 +2848,18 @@ def openai_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
 
 
 def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
-    """GPT-SoVITS TTS Worker - 使用 v3 WebSocket stream-input 双工模式
+    """GPT-SoVITS TTS worker - uses the v3 WebSocket stream-input duplex mode
     
     Args:
-        request_queue: 多进程请求队列，接收 (speech_id, text) 元组
-        response_queue: 多进程响应队列，发送音频数据（也用于发送就绪信号）
-        audio_api_key: API密钥（未使用，保持接口一致）
-        voice_id: v3 声音配置ID，格式为 "voice_id" 或 "voice_id|高级参数JSON"
-                  例如: "my_voice" 或 "my_voice|{\"speed\":1.2,\"text_lang\":\"all_zh\"}"
+        request_queue: multiprocess request queue receiving (speech_id, text) tuples
+        response_queue: multiprocess response queue sending audio data (also used for the ready signal)
+        audio_api_key: API key (unused, kept for interface consistency)
+        voice_id: v3 voice config ID, formatted as "voice_id" or "voice_id|advanced-params JSON"
+                  e.g.: "my_voice" or "my_voice|{\"speed\":1.2,\"text_lang\":\"all_zh\"}"
     
-    配置项（通过 TTS_MODEL_URL 设置）:
-        base_url: GPT-SoVITS API 地址，如 "http://127.0.0.1:9881"
-                  会自动转换为 ws:// 协议用于 WebSocket 连接
+    Config (set via TTS_MODEL_URL):
+        base_url: GPT-SoVITS API address, e.g. "http://127.0.0.1:9881"
+                  automatically converted to the ws:// protocol for the WebSocket connection
     """
     _ = audio_api_key  # 未使用，但保持接口一致
 
@@ -2890,7 +2916,7 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
         _WsState = None
 
     def _ws_is_open(ws_conn):
-        """检查 WS 连接是否仍然打开（兼容 websockets v14+/v16）"""
+        """Check whether the WS connection is still open (compatible with websockets v14+/v16)"""
         if ws_conn is None:
             return False
         if _WsState is not None:
@@ -2899,7 +2925,7 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
         return not getattr(ws_conn, 'closed', True)
 
     def _extract_pcm_from_wav(wav_bytes: bytes) -> tuple:
-        """从 WAV chunk 中提取 PCM 数据和采样率"""
+        """Extract PCM data and the sample rate from a WAV chunk"""
         if len(wav_bytes) < 44:
             return None, 0
         src_rate = int.from_bytes(wav_bytes[24:28], 'little')
@@ -2912,14 +2938,14 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
         return pcm_data, src_rate
 
     async def async_worker():
-        """异步 TTS worker 主循环 - WebSocket 双工模式"""
+        """Async TTS worker main loop - WebSocket duplex mode"""
         ws = None
         receive_task = None
         current_speech_id = None
         resampler = None
 
         async def receive_loop(ws_conn):
-            """独立接收协程：处理 WS 返回的音频 chunk 和 JSON 消息"""
+            """Independent receive coroutine: handles audio chunks and JSON messages returned by the WS"""
             nonlocal resampler
             try:
                 async for message in ws_conn:
@@ -2964,7 +2990,7 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                 _enqueue_error(response_queue, f"[GPT-SoVITS v3] 接收循环异常: {e}")
 
         async def close_session(ws_conn, recv_task, send_end=True):
-            """关闭当前 WS 会话"""
+            """Close the current WS session"""
             nonlocal resampler
             if send_end and _ws_is_open(ws_conn):
                 try:
@@ -2987,7 +3013,7 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
             resampler = None
 
         async def create_connection():
-            """创建新的 WS 连接并发送 init"""
+            """Create a new WS connection and send init"""
             nonlocal ws, receive_task, resampler
             resampler = None
 
@@ -3115,7 +3141,7 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
 
 
 def _get_minimax_tts_http_url(base_url: str | None = None) -> str:
-    """将 MiniMax API base URL 规范化为 TTS HTTP SSE 地址。"""
+    """Normalize the MiniMax API base URL into the TTS HTTP SSE address."""
     raw_url = (base_url or "https://api.minimaxi.com").strip().rstrip("/")
     # 将 ws/wss 协议转为 http/https
     if raw_url.startswith("ws://"):
@@ -3136,7 +3162,7 @@ async def _minimax_sse_synthesize(
     text: str, voice_id: str, speech_id: str,
     response_queue, agg_flush_bytes: int,
 ):
-    """对 MiniMax T2A v2 HTTP SSE 接口发起一次合成请求并流式接收音频。"""
+    """Issue one synthesis request to the MiniMax T2A v2 HTTP SSE endpoint and stream the audio."""
     import binascii
 
     payload = {
@@ -3175,7 +3201,7 @@ async def _minimax_sse_synthesize(
             audio_chunk_buffer.clear()
 
     def process_audio_chunk(audio_hex: str) -> None:
-        """处理单个音频块（hex 编码）"""
+        """Process a single audio chunk (hex encoded)"""
         nonlocal resampler
         if not audio_hex:
             return
@@ -3194,7 +3220,7 @@ async def _minimax_sse_synthesize(
             flush_audio(force=False)
 
     def process_event(event: dict) -> bool:
-        """处理单个事件，返回 False 表示遇到错误需要停止"""
+        """Process a single event; returning False means an error occurred and we must stop"""
         base_resp = event.get("base_resp") or {}
         if base_resp.get("status_code", 0) != 0:
             _enqueue_error(
@@ -3316,7 +3342,7 @@ async def _minimax_sse_synthesize(
 
 
 def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, base_url=None):
-    """MiniMax TTS worker — 按句切分合成，HTTP SSE 流式输出音频。"""
+    """MiniMax TTS worker — per-sentence synthesis, HTTP SSE streaming audio output."""
     import httpx
 
     async def setup(response_queue):
@@ -3754,14 +3780,14 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
 
 def dummy_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     """
-    空的TTS worker（用于不支持TTS的core_api）
-    持续清空请求队列但不生成任何音频，使程序正常运行但无语音输出
+    Empty TTS worker (for core_apis without TTS support)
+    Keeps draining the request queue without producing any audio, so the program runs normally but with no speech output
     
     Args:
-        request_queue: 多进程请求队列，接收(speech_id, text)元组
-        response_queue: 多进程响应队列（也用于发送就绪信号）
-        audio_api_key: API密钥（不使用）
-        voice_id: 音色ID（不使用）
+        request_queue: multiprocess request queue receiving (speech_id, text) tuples
+        response_queue: multiprocess response queue (also used for the ready signal)
+        audio_api_key: API key (unused)
+        voice_id: voice ID (unused)
     """
     logger.warning("TTS Worker 未启用，不会生成语音")
     
@@ -3787,9 +3813,9 @@ def dummy_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
 
 
 def _get_voice_meta(voice_id: str) -> dict | None:
-    """获取 voice_id 对应的 voice_data 元信息（含 provider 字段）。
+    """Get the voice_data metadata for a voice_id (including the provider field).
 
-    返回 voice_data dict（至少含 ``provider``），找不到时返回 None。
+    Returns the voice_data dict (containing at least ``provider``), or None if not found.
     """
     if not voice_id:
         return None
@@ -3808,30 +3834,36 @@ _XAI_CUSTOM_VOICE_PATTERN = re.compile(r'^[a-z0-9]{8}$')
 
 
 def _grok_voice_id_is_xai_custom(voice_id: str) -> bool:
-    """判断 voice_id 是否真的是 xAI 自定义 voice 而非 alias-clone collision /
-    残留的非-xAI id。
+    """Decide whether voice_id is genuinely an xAI custom voice rather than an
+    alias-clone collision / a leftover non-xAI id.
 
-    要 short-circuit 到 grok worker，voice_id 必须满足下列其一：
-      (a) 是 grok 词表（canonical id 或 alias）且 canonical 没被任何 voice
-          storage 槽克隆 —— 走 grok 内置音色路径；
-      (b) 不是词表内容，但形如 xAI 自定义 voice 的 8-char lowercase
-          alphanumeric id（POST /v1/custom-voices 返回的格式）。
+    To short-circuit to the grok worker, voice_id must satisfy one of:
+      (a) it is in the grok vocabulary (canonical id or alias) and the canonical
+          hasn't been cloned in any voice storage slot — take the grok built-in
+          voice path;
+      (b) it is not in the vocabulary but looks like an xAI custom voice's 8-char
+          lowercase alphanumeric id (the format returned by
+          POST /v1/custom-voices).
 
-    场景 (a) 防 alias collision：用户把克隆音色命名为 grok canonical id（例如
-    'leo'）后在 UI 上选 alias（例如 'male'，会 normalize 到 'leo'）。
-    ``core._has_custom_tts()`` 走 ``resolve_native_voice_for_routing`` 用
-    canonical name 当 voice_id_exists 探针，命中 collision 后会让
-    has_custom_voice=True 进入这里，但 ``_get_voice_meta(raw_voice_id)`` 是
-    None（用户存的是 canonical 'leo'，不是 alias 'male'）。直接路由到 grok
-    worker 的话 worker 会 normalize 回 'leo' 内置音色，悄悄绕过用户克隆。
-    跨槽检查与 ``core._has_custom_tts()`` 对齐：那边用
-    ``voice_id_exists_in_any_storage`` 跨所有 API-key 槽位查找（用户可能在
-    qwen 槽克隆了 'leo' 而当前 session 是 grok）。
+    Case (a) guards against alias collisions: the user names a cloned voice after
+    a grok canonical id (e.g. 'leo') and then picks an alias in the UI (e.g.
+    'male', which normalizes to 'leo'). ``core._has_custom_tts()`` goes through
+    ``resolve_native_voice_for_routing`` using the canonical name as the
+    voice_id_exists probe; on hitting the collision it sets has_custom_voice=True
+    and lands here, but ``_get_voice_meta(raw_voice_id)`` is None (the user stored
+    the canonical 'leo', not the alias 'male'). Routing straight to the grok
+    worker would have the worker normalize back to the 'leo' built-in voice,
+    silently bypassing the user's clone. The cross-slot check is aligned with
+    ``core._has_custom_tts()``: that side uses
+    ``voice_id_exists_in_any_storage`` to search all API-key slots (the user may
+    have cloned 'leo' in the qwen slot while the current session is grok).
 
-    场景 (b) 防"无 meta 但不是 xAI"误路由：``voice_meta is None`` 也可能是
-    远端 cosyvoice clone 成功但本地 meta 丢失，或历史遗留的非-xAI voice id。
-    旧设计无脑短路到 grok worker，xAI 会拒绝这些非 8-char id。改为只匹配
-    xAI custom 实际格式，让其他 unknown id 回 cosyvoice fallback。
+    Case (b) guards against misrouting "no meta but not xAI": ``voice_meta is
+    None`` can also mean a remote cosyvoice clone succeeded but the local meta
+    was lost, or a historical non-xAI voice id. The old design blindly
+    short-circuited to the grok worker, and xAI would reject those non-8-char
+    ids. Now only the actual xAI custom format matches, and other unknown ids
+    fall back to cosyvoice.
     """
     if not voice_id:
         return False
@@ -3857,21 +3889,23 @@ def _grok_voice_id_is_xai_custom(voice_id: str) -> bool:
 
 def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     """
-    根据 core_api 类型和是否有自定义音色，返回一个 callable。
+    Return a callable based on the core_api type and whether a custom voice exists.
 
-    该 callable 的签名为 (request_queue, response_queue, api_key, voice_id)，
-    所有 provider 特有的参数（如 base_url）已通过 partial 绑定。
-    若某个 provider 需要替换 api_key，返回的第二个值非 None。
+    The callable's signature is (request_queue, response_queue, api_key, voice_id);
+    all provider-specific parameters (e.g. base_url) are already bound via partial.
+    If a provider needs an api_key replacement, the second return value is non-None.
 
     Returns:
         (worker_fn, api_key_override, provider_key)
-        - worker_fn: 签名统一的 TTS worker callable
-        - api_key_override: 若非 None，替换 tts_config['api_key']
-        - provider_key: 实际选中的 provider 名称（对应 TTS_PROVIDER_REGISTRY 的 key），
-          用于调用方查询 provider 元数据（如 category）。
-          特殊值：'free' 故意不在 registry 中（国外走 Gemini 后端需要 normalizer，
-          meta=None → 调用方 fallthrough 启用 normalizer）；
-          不支持原生 TTS 时为 None
+        - worker_fn: TTS worker callable with the unified signature
+        - api_key_override: if non-None, replaces tts_config['api_key']
+        - provider_key: name of the provider actually selected (a key of
+          TTS_PROVIDER_REGISTRY), for the caller to query provider metadata
+          (e.g. category).
+          Special values: 'free' is deliberately absent from the registry
+          (overseas routes to the Gemini backend and needs the normalizer;
+          meta=None → the caller falls through and enables the normalizer);
+          None when native TTS is unsupported
     """
     cm = get_config_manager()
     try:
@@ -4010,21 +4044,21 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
 
 def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_id):
     """
-    本地 CosyVoice WebSocket Worker（OpenAI 兼容 bistream 版本）
-    适配 openai_server.py 定义的 /v1/audio/speech/stream 接口
+    Local CosyVoice WebSocket worker (OpenAI-compatible bistream version)
+    Adapted to the /v1/audio/speech/stream endpoint defined by openai_server.py
     
-    协议流程：
-    1. 连接后发送 config: {"voice": ..., "speed": ...}
-    2. 发送文本: {"text": ...}
-    3. 发送结束信号: {"event": "end"}
-    4. 接收 bytes 音频数据（16-bit PCM, 22050Hz）
+    Protocol flow:
+    1. After connecting, send config: {"voice": ..., "speed": ...}
+    2. Send text: {"text": ...}
+    3. Send the end signal: {"event": "end"}
+    4. Receive bytes audio data (16-bit PCM, 22050Hz)
     
-    特性：
-    - 双工流：发送和接收独立运行，互不阻塞
-    - 打断支持：speech_id 变化时关闭旧连接，打断旧语音
-    - 非阻塞：异步架构，不会卡住主循环
+    Features:
+    - Duplex streaming: sending and receiving run independently without blocking each other
+    - Interrupt support: when speech_id changes, the old connection is closed, interrupting the old speech
+    - Non-blocking: async architecture, never stalls the main loop
     
-    注意：audio_api_key 参数未使用（本地模式不需要 API Key），保留是为了与其他 worker 保持统一签名
+    Note: the audio_api_key parameter is unused (local mode needs no API key); it is kept to match the unified worker signature
     """
     _ = audio_api_key  # 本地模式不需要 API Key
 
@@ -4073,7 +4107,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
         resampler = soxr.ResampleStream(SRC_RATE, 48000, 1, dtype='float32')
 
         async def receive_loop(ws_conn):
-            """独立接收任务，处理音频流"""
+            """Independent receive task, handles the audio stream"""
             try:
                 async for message in ws_conn:
                     if isinstance(message, bytes):
@@ -4089,7 +4123,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                 _enqueue_error(response_queue, f"接收循环异常: {e}")
 
         async def send_end_signal(ws_conn):
-            """发送结束信号（文本已在主循环中实时发送，此处只需发送 end）"""
+            """Send the end signal (text was already sent in real time in the main loop; only end needs sending here)"""
             try:
                 await ws_conn.send(json.dumps({"event": "end"}))
                 logger.debug("发送结束信号")
@@ -4097,7 +4131,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                 _enqueue_error(response_queue, f"发送结束信号失败: {e}")
 
         async def create_connection():
-            """创建新连接并发送配置"""
+            """Create a new connection and send the config"""
             nonlocal ws, receive_task, resampler
             
             # 清理旧连接

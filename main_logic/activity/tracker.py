@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Per-character user-activity tracker.
 
 Combines the process-wide ``SystemSignalCollector`` with session-scoped
@@ -151,13 +165,13 @@ _ANTI_SLACK_LEISURE_STATES: frozenset[str] = frozenset({
 
 
 def _privacy_mode_active() -> bool:
-    """用户是否开启了隐私模式。开启时整个 tracker 应当短路。
+    """Whether the user has enabled privacy mode. The whole tracker should short-circuit when on.
 
-    存储在前端 ``proactiveVisionEnabled`` 的反面（详见 utils.preferences）。
-    异常路径 fail-closed：任何读取异常一律按"隐私模式开启"处理，宁可
-    短期内 tracker 不可用，也不能让"读不出来"等价于"用户没开隐私"。
-    正常的"用户没开隐私"路径走 ``is_privacy_mode_enabled`` 返回 False，
-    不进 except 分支。
+    Stored as the inverse of the frontend ``proactiveVisionEnabled`` (see utils.preferences).
+    The exception path is fail-closed: any read error is treated as "privacy mode on" —
+    better to lose the tracker briefly than to let "can't read the setting" be equivalent
+    to "user didn't enable privacy". The normal "user didn't enable privacy" path goes
+    through ``is_privacy_mode_enabled`` returning False and never enters the except branch.
     """
     try:
         from utils.preferences import is_privacy_mode_enabled
@@ -170,18 +184,21 @@ def _privacy_mode_active() -> bool:
 
 
 def _proactive_chat_enabled() -> bool:
-    """主动搭话总开关是否打开。
+    """Whether the proactive-chat master switch is on.
 
-    ``activity_guess`` 的 emotion-tier LLM 叙述只喂 proactive Phase 2 的
-    state_section，没有别的消费方；主动搭话关时算它纯属浪费。loop 用它跳过
-    LLM 部分——这样「实验组为弹窗 kick 起 loop、但用户没开主动搭话」时只剩廉价
-    规则轮询 + 情境弹窗检测，零 LLM 开销。
+    The emotion-tier LLM narration from ``activity_guess`` only feeds the state_section of
+    proactive Phase 2 — there is no other consumer, so computing it while proactive chat is
+    off is pure waste. The loop uses this to skip the LLM part, so when "the experiment
+    group kicks the loop for context prompts but the user hasn't enabled proactive chat",
+    only the cheap rule polling + context prompt detection remain, with zero LLM cost.
 
-    fail-open：key 缺失 *或* 读取异常都返回 True。误判「关」会把 proactive-on 用户该有
-    的活动叙述吞掉（伤用户可见功能），误判「开」只是多算一次叙述（小成本），两害相权
-    取「宁可多算」。真正明确关掉主动搭话的用户 key=false（前端总会同步这个键），照样
-    走 skip 分支，成本修复对主流场景依旧生效；只有从没同步过设置的全新会话才落到缺失→
-    True 这条窄路径，可忽略。
+    Fail-open: a missing key *or* a read error both return True. Misjudging "off" would
+    swallow the activity narration a proactive-on user should get (hurts a user-visible
+    feature), while misjudging "on" merely computes one extra narration (small cost), so
+    we prefer "compute too much". Users who explicitly turned proactive chat off have
+    key=false (the frontend always syncs this key) and still take the skip branch, so the
+    cost fix keeps working for the mainstream case; only brand-new sessions that never
+    synced settings fall into the narrow missing→True path, which is negligible.
     """
     try:
         from utils.preferences import load_global_conversation_settings
@@ -858,15 +875,18 @@ class UserActivityTracker:
     # ── 情境弹窗（A/B 实验组前端用）──────────────────────────────
 
     def reset_context_prompt_baseline(self) -> None:
-        """清掉情境弹窗的「上一状态」基线，让下一 tick 把当前状态重新算作一次「进入」。
+        """Clear the context prompt's "previous state" baseline so the next tick counts the current state as a fresh "entry".
 
-        在每个 session 开始时调用（core.py 的实验组 kick 里）。tracker 跨 session 长存，
-        若不清，「上个 session 结束时在游戏、新 session 仍在游戏」就检测不到进入、漏弹。
-        只动情境弹窗专属基线，不碰 break/anti-slack 的 _last_known_state。
+        Called at the start of every session (in core.py's experiment-group kick). The
+        tracker outlives sessions; without clearing, "gaming when the last session ended,
+        still gaming in the new session" would never be detected as an entry and the
+        prompt would be missed. Only touches the context-prompt baseline, not the
+        break/anti-slack ``_last_known_state``.
 
-        同时清掉可能遗留的 pending：上个 session 置了 pending 但没来得及 drain（loop 没
-        tick 到就 end_session）时，残留会被新 session 的首个 tick 推成过期弹窗。清掉后
-        紧跟的 kick get_snapshot 会按新 session 的当前状态重新置 pending。
+        Also clears any leftover pending: if the previous session set a pending but never
+        drained it (session ended before the loop ticked), the leftover would be pushed
+        as a stale prompt by the new session's first tick. After clearing, the kick's
+        following get_snapshot re-sets pending based on the new session's current state.
         """
         self._context_prompt_last_state = None
         self._context_prompt_pending = None
@@ -874,19 +894,21 @@ class UserActivityTracker:
     def set_context_prompt_callback(
         self, callback: Callable[[str], Awaitable[None]] | None
     ) -> None:
-        """注入「进入游戏/娱乐 或 进入专注工作」时往前端推送的 async 回调。
+        """Inject the async callback that pushes "entered gaming/entertainment or focused work" signals to the frontend.
 
-        由 core.py 在建好 tracker 后调用，回调内部把信号经 WebSocket 发给前端。
-        ``callback(context)`` 的 context 取 'play'（游戏/娱乐）或 'work'（专注工作）。
-        传 None 解除注入（如会话结束）。
+        Called by core.py after the tracker is built; the callback forwards the signal to
+        the frontend over WebSocket. ``callback(context)`` receives 'play'
+        (gaming/entertainment) or 'work' (focused work). Pass None to remove the
+        callback (e.g. when the session ends).
         """
         self._on_context_prompt = callback
 
     async def _drain_context_prompt(self) -> None:
-        """把 ``_tick_break_reminders`` 攒下的一次性情境信号推给前端。
+        """Push the one-shot context signals accumulated by ``_tick_break_reminders`` to the frontend.
 
-        只在异步心跳里调用（async 上下文才能 await 回调）。一次消费一个槽位，
-        推送失败静默吞掉——埋点性质的提示，丢一次也不该把心跳搞崩。
+        Only called from the async heartbeat (awaiting the callback requires an async
+        context). Consumes one slot per call; push failures are swallowed silently —
+        these are telemetry-style prompts, and losing one must not crash the heartbeat.
         """
         pending = self._context_prompt_pending
         if pending is None:

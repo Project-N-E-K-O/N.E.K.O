@@ -1,35 +1,50 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
-外部 HTTPS 专用的共享 httpx.AsyncClient 单例。
+Shared httpx.AsyncClient singleton dedicated to external HTTPS.
 
-为什么需要：
-  每次 `async with httpx.AsyncClient(...)` 构造 SSLContext 初始化开销
-  很高（Windows 冷态 ~150ms，事件循环压力下可达 1.1s）。对 web_scraper /
-  meme_fetcher / holiday_cache 等跑着跑着就高频访问外网的模块，每次请求
-  都重新开 client 既拖慢又把连接池复用的好处全扔了。
+Why it is needed:
+  Every `async with httpx.AsyncClient(...)` pays a very high SSLContext
+  initialization cost (~150ms cold on Windows, up to 1.1s under event-loop
+  pressure). For modules like web_scraper / meme_fetcher / holiday_cache that
+  end up hitting the external network frequently, re-creating the client per
+  request is both slow and throws away all connection-pool reuse.
 
-覆盖范围：
-  **外部安全 HTTPS**（verify=True），允许读 HTTP_PROXY / HTTPS_PROXY 环境
-  变量（trust_env=True），默认跟随 30x 跳转（follow_redirects=True）。
-  `httpx.AsyncClient` 跨 host 复用安全，连接池按 (scheme, host, port)
-  分桶各自 keep-alive。
+Coverage:
+  **External secure HTTPS** (verify=True), allowed to read the HTTP_PROXY /
+  HTTPS_PROXY environment variables (trust_env=True), follows 30x redirects by
+  default (follow_redirects=True). `httpx.AsyncClient` is safe to reuse across
+  hosts; the pool buckets keep-alive connections by (scheme, host, port).
 
-不适用：
-  - 内部 127.0.0.1 服务：用 `utils/internal_http_client.py`
-  - 用户一次性大下载（>30MB 或 >30s）：per-call 更直观，避免占用池
-  - 需要特殊 SSL 配置 / 自定义 verify 的场景：per-call
-  - TTS 长连流式：已有 per-worker 专属 client
+Not applicable for:
+  - internal 127.0.0.1 services: use `utils/internal_http_client.py`
+  - one-off large user downloads (>30MB or >30s): per-call is clearer and avoids hogging the pool
+  - scenarios needing special SSL config / custom verify: per-call
+  - long-lived TTS streaming: already has a dedicated per-worker client
 
-并发：
-  共享 client **不阻塞并发**。`asyncio.gather(client.get(a), client.get(b))`
-  正常，池内自动开多条 TCP（默认 max_connections=100）。
+Concurrency:
+  The shared client **does not block concurrency**. `asyncio.gather(client.get(a), client.get(b))`
+  works normally; the pool opens multiple TCP connections automatically (default max_connections=100).
 
-用法：
+Usage:
     from utils.external_http_client import get_external_http_client
     client = get_external_http_client()
     resp = await client.get("https://example.com/api", timeout=10.0)
 
-进程关闭时需调用 `aclose_external_http_client()`。
+Call `aclose_external_http_client()` at process shutdown.
 """
 from __future__ import annotations
 
@@ -48,13 +63,13 @@ _DEFAULT_TIMEOUT = 10.0
 
 
 def get_external_http_client() -> httpx.AsyncClient:
-    """返回进程级共享的外部 HTTPS AsyncClient。首次调用时懒初始化。
+    """Return the process-wide shared external HTTPS AsyncClient. Lazily initialized on first call.
 
-    配置：
-      - verify=True（默认）：正常校验 TLS 证书
-      - trust_env=True：读 HTTP(S)_PROXY / NO_PROXY 环境变量
-      - follow_redirects=True：默认跟随 30x 跳转
-      - timeout=10.0：请求超时默认值
+    Configuration:
+      - verify=True (default): normal TLS certificate validation
+      - trust_env=True: reads the HTTP(S)_PROXY / NO_PROXY environment variables
+      - follow_redirects=True: follows 30x redirects by default
+      - timeout=10.0: default request timeout
     """
     global _client
     if _client is None or _client.is_closed:
@@ -68,7 +83,7 @@ def get_external_http_client() -> httpx.AsyncClient:
 
 
 async def aclose_external_http_client() -> None:
-    """在 FastAPI shutdown 钩子中调用，释放连接池。"""
+    """Call from the FastAPI shutdown hook to release the connection pool."""
     global _client
     if _client is None:
         return

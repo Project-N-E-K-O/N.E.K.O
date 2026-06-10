@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Public holiday cache & greeting consumption tracker.
 
 Fetches yearly holiday data from https://date.nager.at/api/v3 at startup,
@@ -7,17 +21,17 @@ with a per-period consumption budget.  Consumption state is persisted to disk.
 Key concepts
 ------------
 - **HolidayPeriod**: consecutive rest days grouped into one period, containing
-  both 法定假日 (statutory holidays) and 调休 (adjusted rest days).
+  both statutory holidays and adjusted rest days (tiaoxiu).
 - **CN supplement**: patches the Nager API with correct statutory day counts
-  and approximate 调休 extensions.
+  and approximate adjusted-rest-day extensions.
 
 Consumption rules (per character, per period)
 ---------------------------------------------
-- 假日当天 (any statutory holiday day within the period) : budget 3 (shared)
-- 假期非假日 (调休 rest days within the period)           : budget 3 (shared)
-- Single-day holiday (no 调休)                           : total 3
-- Multi-day holiday (with 调休)                          : total 6  (3+3)
-- Weekend (no holiday)                                   : budget 2 per day
+- Holiday day proper (any statutory holiday day within the period) : budget 3 (shared)
+- Non-holiday rest day (adjusted rest days within the period)      : budget 3 (shared)
+- Single-day holiday (no adjusted rest days)                       : total 3
+- Multi-day holiday (with adjusted rest days)                      : total 6  (3+3)
+- Weekend (no holiday)                                             : budget 2 per day
 - When budget is exhausted, the hint is omitted entirely.
 """
 
@@ -64,9 +78,10 @@ class HolidayPeriod:
 
     Attributes:
         start / end      — inclusive boundaries of the full rest period
-        nominal_date     — the single "名义日期" of the holiday (e.g. 10/1 for
-                           国庆节, 初一 for 春节).  Only THIS day qualifies as
-                           "假日当天" with an independent 3-use budget.
+        nominal_date     — the single "nominal date" of the holiday (e.g. 10/1 for
+                           National Day, Lunar New Year's Day for Spring Festival).
+                           Only THIS day qualifies as the "holiday day proper" with
+                           an independent 3-use budget.
         name / local_name — display names
     """
     __slots__ = ("name", "local_name", "start", "end", "nominal_date")
@@ -92,7 +107,7 @@ class HolidayPeriod:
         return self.start <= d <= self.end
 
     def is_nominal_day(self, d: date) -> bool:
-        """Is *d* the holiday's nominal date (假日当天)?"""
+        """Is *d* the holiday's nominal date (the holiday day proper)?"""
         return d == (self.nominal_date or self.start)
 
     def __repr__(self) -> str:
@@ -225,7 +240,7 @@ async def _fetch_nager(country: str, year: int) -> list[HolidayEntry]:
 
 
 async def _fetch_cn(year: int) -> list[HolidayEntry]:
-    """Fetch from timor.tech API for China — complete with 调休."""
+    """Fetch from timor.tech API for China — complete with adjusted rest days."""
     url = f"{_TIMOR_API}/{year}"
     # per-call AsyncClient: 同上，每年一次，trust_env=False 绕开代理
     async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT, proxy=None, trust_env=False) as client:
@@ -353,7 +368,7 @@ async def get_nearest_holiday(lang: str) -> HolidayProximity | None:
     - "Today" matches if today falls *anywhere* inside a period.
     - Advance reminders (≤3 / 7 days) are based on the period's *start*.
     - In late December, also checks next year's periods so that early-
-      January holidays (e.g. 元旦) are not missed near year boundaries.
+      January holidays (e.g. New Year's Day) are not missed near year boundaries.
     """
     country = _LANG_TO_COUNTRY.get(lang)
     if not country:
@@ -502,8 +517,8 @@ def try_consume_holiday(character: str, proximity: HolidayProximity) -> bool:
     """Try to consume 1 hint use for a holiday.
 
     Budget logic:
-    - 假日当天 (nominal date, e.g. 10/1) → "holiday" bucket (3, independent)
-    - 假期中非假日当天 (all other days in period) → "period" bucket (3, shared)
+    - Holiday day proper (nominal date, e.g. 10/1) → "holiday" bucket (3, independent)
+    - Non-holiday days within the period (all other days) → "period" bucket (3, shared)
     - Advance reminder (≤3 / 7 days) → "period" bucket (3)
     """
     period = proximity.period

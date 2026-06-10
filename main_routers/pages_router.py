@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Pages Router
 
@@ -86,13 +100,13 @@ _react_chat_asset_version_cache: tuple[float, str] = (0.0, "0")
 
 
 def _vrm_defaults_ctx() -> dict:
-    """返回 VRM 光照默认值，供 Jinja2 模板注入到 <script> 中。"""
+    """Return VRM lighting defaults for Jinja2 templates to inject into <script>."""
     from config import DEFAULT_VRM_LIGHTING
     return {"vrm_defaults": dict(DEFAULT_VRM_LIGHTING)}
 
 
 def _static_assets_ctx() -> dict:
-    """返回模板静态资源统一缓存版本号。"""
+    """Return the unified cache version for template static assets."""
     from config import APP_VERSION
 
     global _static_asset_version_cache
@@ -114,7 +128,7 @@ def _static_assets_ctx() -> dict:
 
 
 def _react_chat_assets_ctx() -> dict:
-    """返回 React Chat 相关静态资源的统一缓存版本号。"""
+    """Return the unified cache version for React Chat static assets."""
     global _react_chat_asset_version_cache
     now = time.monotonic()
     cached_at, cached_version = _react_chat_asset_version_cache
@@ -145,7 +159,7 @@ async def get_default_index(request: Request):
 
 
 def _render_model_manager(request: Request):
-    """渲染模型管理器页面的内部实现"""
+    """Internal implementation for rendering the model manager page."""
     templates = get_templates()
     return templates.TemplateResponse("templates/model_manager.html", {
         "request": request,
@@ -156,19 +170,19 @@ def _render_model_manager(request: Request):
 
 @router.get("/l2d", response_class=HTMLResponse)
 async def get_l2d_manager(request: Request):
-    """渲染模型管理器页面(兼容旧路由)"""
+    """Render the model manager page (legacy route compatibility)."""
     return _render_model_manager(request)
 
 
 @router.get("/model_manager", response_class=HTMLResponse)
 async def get_model_manager(request: Request):
-    """渲染模型管理器页面"""
+    """Render the model manager page."""
     return _render_model_manager(request)
 
 
 @router.get("/live2d_parameter_editor", response_class=HTMLResponse)
 async def live2d_parameter_editor(request: Request):
-    """Live2D参数编辑器页面"""
+    """Live2D parameter editor page."""
     templates = get_templates()
     return templates.TemplateResponse("templates/live2d_parameter_editor.html", {
         "request": request
@@ -187,7 +201,7 @@ async def soccer_demo(request: Request):
 
 @router.get("/live2d_emotion_manager", response_class=HTMLResponse)
 async def live2d_emotion_manager(request: Request):
-    """Live2D情感映射管理器页面"""
+    """Live2D emotion mapping manager page."""
     templates = get_templates()
     return templates.TemplateResponse("templates/live2d_emotion_manager.html", {
         "request": request,
@@ -197,7 +211,7 @@ async def live2d_emotion_manager(request: Request):
 
 @router.get("/vrm_emotion_manager", response_class=HTMLResponse)
 async def vrm_emotion_manager(request: Request):
-    """VRM情感映射管理器页面"""
+    """VRM emotion mapping manager page."""
     templates = get_templates()
     return templates.TemplateResponse("templates/vrm_emotion_manager.html", {
         "request": request,
@@ -207,7 +221,7 @@ async def vrm_emotion_manager(request: Request):
 
 @router.get("/mmd_emotion_manager", response_class=HTMLResponse)
 async def mmd_emotion_manager(request: Request):
-    """MMD情感映射管理器页面"""
+    """MMD emotion mapping manager page."""
     templates = get_templates()
     return templates.TemplateResponse("templates/mmd_emotion_manager.html", {
         "request": request,
@@ -223,7 +237,7 @@ async def voice_clone_page(request: Request):
 
 @router.get("/api_key", response_class=HTMLResponse)
 async def api_key_settings(request: Request):
-    """API Key 设置页面"""
+    """API key settings page."""
     templates = get_templates()
     return templates.TemplateResponse("templates/api_key_settings.html", {
         "request": request,
@@ -270,7 +284,7 @@ async def memory_browser(request: Request):
 
 @router.get('/cookies_login', response_class=HTMLResponse)
 async def cookies_login_page(request: Request):
-    """媒体凭证获取页面"""
+    """Media credential acquisition page."""
     templates = get_templates()
     return templates.TemplateResponse('templates/cookies_login.html', {"request": request})
 
@@ -278,7 +292,7 @@ async def cookies_login_page(request: Request):
 
 @router.get("/chat", response_class=HTMLResponse)
 async def get_chat_page(request: Request):
-    """Chat 独立窗口页面"""
+    """Standalone chat window page."""
     templates = get_templates()
     return templates.TemplateResponse("templates/chat.html", {
         "request": request,
@@ -292,7 +306,7 @@ async def get_chat_page(request: Request):
 
 @router.get("/chat_full", response_class=HTMLResponse)
 async def get_chat_full_page(request: Request):
-    """Web 专用完整聊天窗口页面"""
+    """Web-only full chat window page."""
     templates = get_templates()
     return templates.TemplateResponse("templates/chat.html", {
         "request": request,
@@ -306,21 +320,21 @@ async def get_chat_full_page(request: Request):
 
 @router.get("/subtitle", response_class=HTMLResponse)
 async def get_subtitle_page(request: Request):
-    """Subtitle 独立窗口页面"""
+    """Standalone subtitle window page."""
     templates = get_templates()
     return templates.TemplateResponse("templates/subtitle.html", {"request": request})
 
 
 @router.get("/agenthud", response_class=HTMLResponse)
 async def get_agenthud_page(request: Request):
-    """AgentHUD 独立窗口页面"""
+    """Standalone AgentHUD window page."""
     templates = get_templates()
     return templates.TemplateResponse("templates/agenthud.html", {"request": request})
 
 
 @router.get("/card_maker", response_class=HTMLResponse)
 async def get_card_maker_page(request: Request):
-    """卡面制作页面（独立加载模型并可调整构图）"""
+    """Card-face maker page (loads the model standalone with adjustable composition)."""
     templates = get_templates()
     return templates.TemplateResponse("templates/card_maker.html", {
         "request": request,
@@ -331,21 +345,21 @@ async def get_card_maker_page(request: Request):
 
 @router.get("/jukebox", response_class=HTMLResponse)
 async def get_jukebox_page(request: Request):
-    """Jukebox 点歌台独立窗口页面（Electron 加载）"""
+    """Standalone jukebox window page (loaded by Electron)."""
     templates = get_templates()
     return templates.TemplateResponse("templates/jukebox.html", {"request": request})
 
 
 @router.get("/jukebox/manager", response_class=HTMLResponse)
 async def get_jukebox_manager_page(request: Request):
-    """Jukebox 管理器独立窗口页面 (从点歌台打开)"""
+    """Standalone jukebox manager window page (opened from the jukebox)."""
     templates = get_templates()
     return templates.TemplateResponse("templates/jukebox_manager.html", {"request": request})
 
 
 @router.get("/toast", response_class=HTMLResponse)
 async def get_toast_page(request: Request):
-    """Toast 通知独立窗口页面（Electron 加载）"""
+    """Standalone toast notification window page (loaded by Electron)."""
     templates = get_templates()
     return templates.TemplateResponse("templates/toast.html", {"request": request})
 

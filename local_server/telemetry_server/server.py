@@ -1,19 +1,34 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 N.E.K.O Telemetry Collection Server
 
-匿名 LLM token 用量收集。安全机制：HMAC 签名 + 时间戳防重放 + 速率限制。
+Anonymous LLM token usage collection. Security: HMAC signature + timestamp
+anti-replay + rate limiting.
 
-部署：
+Deployment:
     pip install -r requirements.txt
     python server.py --port 8099 --admin-token YOUR_TOKEN
 
-    # 或 Docker
+    # or Docker
     docker-compose up -d
 
-容量：20k DAU × 3 进程 × 6 req/h × 8h ≈ 2.88M req/day ≈ 33 req/s peak
-      SQLite WAL 可承载 ~500 write/s，单实例足够。
+Capacity: 20k DAU × 3 processes × 6 req/h × 8h ≈ 2.88M req/day ≈ 33 req/s peak
+      SQLite WAL sustains ~500 write/s; a single instance is enough.
 """
 from __future__ import annotations
 
@@ -74,13 +89,14 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["POST", "
 
 
 def _decompress_if_gzip(body_bytes: bytes, content_encoding: str) -> bytes:
-    """按 ``Content-Encoding`` header 解压请求体。
+    """Decompress the request body according to the ``Content-Encoding`` header.
 
-    向下兼容：header 缺失或为 'identity' 时透传原始 bytes，让老客户端
-    （v1 一直发的是裸 JSON）继续工作。
+    Backward compat: when the header is missing or 'identity', pass the raw bytes
+    through so old clients (v1 always sent bare JSON) keep working.
 
-    防 zip bomb：流式 read，看到超过 MAX_DECOMPRESSED_SIZE 立刻拒绝，
-    不让 gzip.decompress 在内存里展开任意大小的数据。
+    Zip-bomb defense: streamed read; reject immediately once the output exceeds
+    MAX_DECOMPRESSED_SIZE, never letting gzip.decompress expand arbitrarily large
+    data in memory.
     """
     enc = (content_encoding or "").strip().lower()
     if enc in ("", "identity"):
@@ -102,7 +118,7 @@ def _decompress_if_gzip(body_bytes: bytes, content_encoding: str) -> bytes:
 
 
 def _extract_token(request: Request) -> str:
-    """从 Header 或 URL ?token= 中提取 admin token。"""
+    """Extract the admin token from the header or the URL ?token= param."""
     # 优先 URL 参数（方便浏览器直接访问仪表盘）
     url_token = request.query_params.get("token", "").strip()
     if url_token:
@@ -126,7 +142,7 @@ def require_admin(request: Request):
 
 @app.post("/api/v1/telemetry", response_model=SubmitResponse)
 async def submit_telemetry(request: Request):
-    """接收遥测数据。验证流程：body 大小 → 解压 → 时间戳 → HMAC 签名 → 速率限制 → 存储。"""
+    """Receive telemetry. Validation flow: body size → decompress → timestamp → HMAC signature → rate limit → store."""
     # Body 大小（wire size，gzip 后通常 ≤50KB，给 512KB 余量）
     body_bytes = await request.body()
     if len(body_bytes) > MAX_BODY_SIZE:
@@ -221,19 +237,19 @@ async def health():
 
 @app.get("/api/v1/admin/stats", dependencies=[Depends(require_admin)])
 async def admin_global_stats(days: int = 30):
-    """全局统计 JSON。"""
+    """Global stats JSON."""
     return storage.get_global_stats(days=min(days, 365))
 
 
 @app.get("/api/v1/admin/devices", dependencies=[Depends(require_admin)])
 async def admin_devices(days: int = 7):
-    """活跃设备列表。"""
+    """Active device list."""
     return storage.get_active_devices(days=min(days, 90))
 
 
 @app.post("/api/v1/admin/prune", dependencies=[Depends(require_admin)])
 async def admin_prune(max_days: int = 180):
-    """清理旧事件日志 + instrument 聚合（daily_aggregates 永久保留）。"""
+    """Prune old event logs + instrument aggregates (daily_aggregates are kept forever)."""
     days = max(max_days, 30)
     deleted_events = storage.prune_old_events(max_days=days)
     deleted_instruments = storage.prune_old_instruments(max_days=days)
@@ -246,7 +262,7 @@ async def admin_prune(max_days: int = 180):
 
 @app.get("/api/v1/admin/export/daily.csv", dependencies=[Depends(require_admin)])
 async def export_daily_csv(days: int = 90):
-    """按日汇总导出 CSV。"""
+    """Export per-day aggregated CSV."""
     csv_text = storage.export_daily_csv(days=min(days, 365))
     return PlainTextResponse(csv_text, media_type="text/csv",
                              headers={"Content-Disposition": "attachment; filename=daily_stats.csv"})
@@ -254,7 +270,7 @@ async def export_daily_csv(days: int = 90):
 
 @app.get("/api/v1/admin/export/model.csv", dependencies=[Depends(require_admin)])
 async def export_model_csv(days: int = 90):
-    """按模型汇总导出 CSV。"""
+    """Export per-model aggregated CSV."""
     csv_text = storage.export_model_csv(days=min(days, 365))
     return PlainTextResponse(csv_text, media_type="text/csv",
                              headers={"Content-Disposition": "attachment; filename=model_stats.csv"})
@@ -262,11 +278,12 @@ async def export_model_csv(days: int = 90):
 
 @app.get("/api/v1/admin/instruments", dependencies=[Depends(require_admin)])
 async def admin_instruments(days: int = 7):
-    """instrument 埋点数据 JSON：top counters + histogram p50/p95 摘要。
+    """Instrument metrics JSON: top counters + histogram p50/p95 summaries.
 
-    公开 repo 不再内置 HTML 看板（见 README）；这是给内部看板的数据接口，
-    运维据此自建可视化。counter/histogram 的口径见 storage.get_top_counters /
-    get_histogram_summary。
+    The public repo no longer ships an HTML dashboard (see README); this is the data
+    endpoint for internal dashboards, on which operators build their own
+    visualization. Counter/histogram semantics: see storage.get_top_counters /
+    get_histogram_summary.
     """
     days = min(days, 365)
     return {
@@ -281,7 +298,7 @@ async def admin_instruments(days: int = 7):
 
 @app.get("/api/v1/admin/canonical/metrics", dependencies=[Depends(require_admin)])
 async def admin_canonical_metrics(days: int = 30):
-    """用户指标 JSON：device 口径（装机量）与 canonical 口径（按真人去重）并列。"""
+    """User metrics JSON: device-based (install count) and canonical (deduped per real person) side by side."""
     days = min(days, 365)
     return {
         "device": storage.get_user_metrics(days=days),
@@ -291,7 +308,7 @@ async def admin_canonical_metrics(days: int = 30):
 
 @app.post("/api/v1/admin/canonical/rebuild", dependencies=[Depends(require_admin)])
 async def admin_canonical_rebuild():
-    """手动触发：扫 events 产边（drain 到追平）+ 重算 canonical 连通分量。"""
+    """Manual trigger: scan events to build edges (drain until caught up) + recompute canonical connected components."""
     # 同步 SQLite/union-find 丢线程池，别卡住事件循环（拖慢公开上报接口）。
     # _canonical_lock 串行化，避免与后台周期任务并发抢游标重复处理。
     async with _canonical_lock:
@@ -302,7 +319,7 @@ async def admin_canonical_rebuild():
 
 @app.post("/api/v1/admin/canonical/denylist", dependencies=[Depends(require_admin)])
 async def admin_canonical_denylist(steam_user_id: str):
-    """删号：Steam64 入 denylist（防复活）+ 脱敏源数据 + 删边 + 重算。"""
+    """Account deletion: Steam64 into denylist (prevents resurrection) + redact source data + delete edges + recompute."""
     async with _canonical_lock:
         sid = await asyncio.to_thread(storage.add_steam_id_to_denylist, steam_user_id)
         if not sid:
@@ -316,7 +333,7 @@ async def admin_canonical_denylist(steam_user_id: str):
 # ---------------------------------------------------------------------------
 
 async def _periodic_rate_limiter_cleanup():
-    """每小时清理不活跃设备的速率限制记录，防止内存缓慢膨胀。"""
+    """Hourly cleanup of rate-limit records for inactive devices, preventing slow memory bloat."""
     while True:
         await asyncio.sleep(3600)
         try:
@@ -326,13 +343,15 @@ async def _periodic_rate_limiter_cleanup():
 
 
 async def _periodic_canonical_rebuild():
-    """每 5 分钟增量扫 events 产边 + 重算 canonical 落表。
+    """Every 5 minutes, incrementally scan events to build edges + recompute canonical and persist.
 
-    阻塞 SQLite 调用丢线程池跑，避免占着事件循环。用 need_recompute 脏标记保证
-    "边产出后必须落到一次成功的 recompute"：build_all_pending_edges 已推进游标，
-    若紧接着 recompute 抛异常（如瞬时 SQLite 锁），脏标记保持 True，下个 tick
-    即便没有新事件也会重试——不会让 canonical_map 永久停在 build 已推进、recompute
-    没跟上的不一致态。
+    Blocking SQLite calls run in the thread pool to keep off the event loop. The
+    need_recompute dirty flag guarantees "edge production must be followed by one
+    successful recompute": build_all_pending_edges has already advanced the cursor,
+    so if the recompute right after it throws (e.g. a transient SQLite lock), the
+    dirty flag stays True and the next tick retries even without new events — the
+    canonical_map never gets stuck permanently in the inconsistent state where build
+    advanced but recompute didn't follow.
     """
     # 不用内存脏标记：recompute 在本量级（几千边、全量 union-find）是毫秒级，每 tick
     # 无条件重算最简单也最稳，一次性覆盖所有"标记没设/丢失"的坑——

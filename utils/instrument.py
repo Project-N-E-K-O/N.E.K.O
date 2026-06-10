@@ -1,32 +1,49 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
-通用埋点 SDK（counter / histogram / event）
+General-purpose instrumentation SDK (counter / histogram / event)
 
-业务侧只需 import 三个函数 —— ``counter`` / ``histogram`` / ``event`` —— 不
-关心 buffering / snapshot / 上报通道。所有数据由 TokenTracker 的 60s
-periodic save 顺手收走，跟 daily_stats 同一条 HTTP 通道、同一个 device_id、
-同一份 HMAC 签名走出去。
+Business code only imports three functions — ``counter`` / ``histogram`` / ``event`` —
+and never cares about buffering / snapshots / reporting channels. All data is picked up
+by TokenTracker's 60s periodic save and leaves through the same HTTP channel, the same
+device_id and the same HMAC signature as daily_stats.
 
-数据通道选择（什么用什么）：
+Channel selection (what to use when):
 
 ================= ================================ ============================
-通道              何时用                            后端展现
+Channel           When to use                      Backend presentation
 ================= ================================ ============================
-counter           累加型计数：消息条数 / 点击次数  汇总成"周期内总数 + 维度切片"
-histogram         分布型测量：延迟 / FPS / size    桶分布 + count + sum
-event             稀疏带 context：crash / step     原样存事件流（events.jsonl）
+counter           additive counts: messages sent / rolled up as "period total +
+                  clicks                           dimension slices"
+histogram         distribution measurements:       bucket distribution + count + sum
+                  latency / FPS / size
+event             sparse with context: crash /     stored verbatim as an event
+                  step                             stream (events.jsonl)
 ================= ================================ ============================
 
-何时**不要**用：
-- 不要每次 mouse move / scroll 都 counter()。挑有意义的事件（消息发出、按
-  钮按下、功能首次使用），不然就是 noise。
-- 不要把消息内容 / persona text / master_name 放进 fields。维度只能是 enum
-  类标签（surface、feature_name、error_class 等）。
+When **not** to use:
+- Don't counter() every mouse move / scroll. Pick meaningful events (message sent,
+  button pressed, first feature use), otherwise it's just noise.
+- Don't put message content / persona text / master_name into fields. Dimensions may
+  only be enum-like tags (surface, feature_name, error_class, etc.).
 
-开销：
-- counter / histogram：进程内 lock + dict op，~300ns / 次
-- event：转交 event_logger，纳秒级 deque.append
-- snapshot：每 60s 一次，clear-on-read，无累积
+Overhead:
+- counter / histogram: in-process lock + dict op, ~300ns per call
+- event: handed to event_logger, nanosecond-scale deque.append
+- snapshot: once per 60s, clear-on-read, no accumulation
 """
 from __future__ import annotations
 
@@ -68,10 +85,11 @@ _MAX_HISTOGRAM_KEYS = 1000
 
 
 class Instrument:
-    """进程内单例的 counter + histogram 累积器。
+    """Process-wide singleton counter + histogram accumulator.
 
-    snapshot() 由 TokenTracker.save 顺手在 60s 周期里调用。业务代码用模块
-    级 ``counter`` / ``histogram`` / ``event`` 即可，不直接动这个类。
+    snapshot() is called by TokenTracker.save during its 60s cycle. Business code uses
+    the module-level ``counter`` / ``histogram`` / ``event``; never touch this class
+    directly.
     """
 
     _instance: Optional["Instrument"] = None
@@ -102,13 +120,13 @@ class Instrument:
     # ---- 公开 API ----
 
     def counter(self, name: str, value: int = 1, **dims) -> None:
-        """累加一个计数器。
+        """Increment a counter.
 
         Args:
-            name: 指标名（snake_case，e.g. "user_message_sent"）
-            value: 增量，默认 1。允许负数（减），但通常用不上。
-            **dims: 维度标签。值必须是 string / int / bool 等可哈希简单类型。
-                不要传消息内容、user_id 之类的高基数值。
+            name: metric name (snake_case, e.g. "user_message_sent")
+            value: increment, default 1. Negative (decrement) is allowed but rarely useful.
+            **dims: dimension tags. Values must be hashable simple types like string / int / bool.
+                Never pass high-cardinality values like message content or user_id.
 
         Example:
             counter("user_message_sent", 1, surface="pet_widget")
@@ -132,12 +150,12 @@ class Instrument:
                     self._cap_warned_counter = True
 
     def histogram(self, name: str, value: float, **dims) -> None:
-        """记录一个分布型测量。
+        """Record a distribution measurement.
 
         Args:
-            name: 指标名（snake_case，e.g. "ttft_ms"、"live2d_fps"）
-            value: 测量值（数字）。会被分桶到 _HIST_BOUNDS 对应的 bucket。
-            **dims: 同 counter，维度标签必须是低基数。
+            name: metric name (snake_case, e.g. "ttft_ms", "live2d_fps")
+            value: measured value (number). Bucketed into the corresponding _HIST_BOUNDS bucket.
+            **dims: same as counter; dimension tags must be low-cardinality.
 
         Example:
             histogram("ttft_ms", 234)
@@ -166,10 +184,11 @@ class Instrument:
             entry[2][bucket_idx] += 1
 
     def event(self, name: str, **fields) -> None:
-        """记录一个稀疏带 context 事件（直接转 event_logger）。
+        """Record a sparse event with context (forwarded straight to event_logger).
 
-        与 counter 的区别：event 是离散事件流（"在 ts=X 发生了 name"），
-        会被一条条原样保留；counter 是聚合数字（"窗口内 name 发生了 N 次"）。
+        Difference from counter: an event is a discrete event stream ("name happened at
+        ts=X"), preserved record by record; a counter is an aggregate number ("name
+        happened N times within the window").
 
         Example:
             event("crash", traceback_hash="a3f8", module="agent_router")
@@ -180,31 +199,34 @@ class Instrument:
     # ---- snapshot ----
 
     def has_data(self) -> bool:
-        """是否有累积数据等着 snapshot。给上报通道在决定是否发请求时 peek 用。
+        """Whether accumulated data is waiting for a snapshot. For the reporting channel to peek at when deciding whether to send a request.
 
-        TokenTracker 在 daily_stats 为空时本来会跳过上报，但 instrument 自己
-        可能有 counter/histogram 等着发；这个方法让上报通道在不消费数据的
-        前提下判断"是否值得发一次请求"。
+        TokenTracker would normally skip reporting when daily_stats is empty, but
+        instrument itself may have counters/histograms waiting; this method lets the
+        reporting channel judge "is a request worth sending" without consuming data.
         """
         with self._lock:
             return bool(self._counters or self._histograms)
 
     def snapshot(self) -> dict:
-        """取出当前累积值 + 清零 + 返回。由 TokenTracker 上报通道调用。
+        """Take the current accumulated values + reset + return. Called by the TokenTracker reporting channel.
 
         Returns:
             dict with keys "window_start", "window_end", "stat_date",
-            "bounds", "counters", "histograms"，或者空 dict（无任何累积）。
+            "bounds", "counters", "histograms", or an empty dict (nothing accumulated).
 
-            ``stat_date`` 是**客户端本地**日历日（``YYYY-MM-DD``），跟
-            ``daily_stats`` 用同一口径。服务端按它落 SQL 行，避免因为服务端
-            时区不同把跨时区客户端的同一天 usage / instrument 拆到两天。
+            ``stat_date`` is the **client-local** calendar day (``YYYY-MM-DD``), the
+            same convention as ``daily_stats``. The server lands SQL rows by it, so
+            same-day usage / instrument data from cross-timezone clients isn't split
+            into two days by server timezone differences.
 
-        失败处理：返回的 snapshot 一旦丢给 token_tracker，instrument 内部
-        立刻清零。如果上报失败，60s 窗口的 counter / histogram 数据丢失 —
-        这是设计取舍：sparse_event 走 event_logger 有本地 jsonl 兜底，
-        counter / histogram 是聚合数据，丢一个窗口对趋势分析影响小，不值得
-        为它再维护一份 unsent 队列。daily_stats（LLM tokens）才需要不丢。
+        Failure handling: once the returned snapshot is handed to token_tracker,
+        instrument's internals are immediately reset. If reporting fails, the 60s
+        window's counter / histogram data is lost — a deliberate trade-off:
+        sparse_event has a local jsonl fallback via event_logger, while counter /
+        histogram are aggregates and losing one window barely affects trend analysis —
+        not worth maintaining another unsent queue. Only daily_stats (LLM tokens) must
+        not be lost.
         """
         from datetime import date as _date  # 局部 import 防进程启动时早调用环
         with self._lock:
@@ -243,13 +265,14 @@ class Instrument:
 
 
 def _esc_dim(s) -> str:
-    r"""转义 metric_key 分隔符（``\`` ``|`` ``,`` ``=``）。
+    r"""Escape metric_key separators (``\`` ``|`` ``,`` ``=``).
 
-    前端 WS telemetry 接受任意字符串 dim 值，若值里含 ``,`` 或 ``=``，未转义
-    拼接会让不同 dim 组合塌缩成同一 metric_key（如 ``{a:"x,b=y"}`` 与
-    ``{a:"x", b:"y"}`` 都拼成 ``a=x,b=y``），静默混淆 dashboard 切片。反斜杠
-    转义保证单射：不同 (k,v) 集合永远产出不同 key（Codex）。``\`` 先转，
-    避免二次转义把别的转义序列再escape。
+    Frontend WS telemetry accepts arbitrary string dim values; if a value contains ``,``
+    or ``=``, unescaped concatenation collapses distinct dim combos into the same
+    metric_key (e.g. ``{a:"x,b=y"}`` and ``{a:"x", b:"y"}`` both become ``a=x,b=y``),
+    silently confusing dashboard slices. Backslash escaping guarantees injectivity:
+    distinct (k,v) sets always produce distinct keys (Codex). ``\`` is escaped first,
+    so other escape sequences never get escaped twice.
     """
     return (
         str(s)
@@ -261,16 +284,19 @@ def _esc_dim(s) -> str:
 
 
 def _make_key(name: str, dims: dict) -> str:
-    """把 (name, dims) 拼成一个稳定的 flat key。
+    """Build a stable flat key from (name, dims).
 
-    格式：``name`` 或 ``name|k1=v1,k2=v2``（dims 按 key 字典序拼，k/v 都过
-    _esc_dim 转义分隔符）。没有 dims 时省略 ``|``，保持简单 case 的 key 短。
+    Format: ``name`` or ``name|k1=v1,k2=v2`` (dims joined in key lexicographic order;
+    both k/v go through _esc_dim separator escaping). Without dims the ``|`` is
+    omitted, keeping simple-case keys short.
 
-    值会用 ``str()`` 转换 —— 调用方有义务只传可序列化的低基数维度。
+    Values are converted with ``str()`` — callers are obligated to pass only
+    serializable, low-cardinality dimensions.
 
-    name 也要 _esc_dim 转义：untrusted WS 客户端能发含 ``|`` ``,`` ``=`` 的
-    name（如 ``foo|a=1``）跟合法的 ``name=foo,dims={a:1}`` 碰撞，静默混淆
-    counter/histogram（Codex）。合法 name（snake_case）无分隔符，转义是 no-op。
+    name is _esc_dim-escaped too: an untrusted WS client could send a name containing
+    ``|`` ``,`` ``=`` (like ``foo|a=1``) that collides with a legitimate
+    ``name=foo,dims={a:1}``, silently confusing counters/histograms (Codex). Legal
+    names (snake_case) carry no separators, so escaping is a no-op.
     """
     if not dims:
         return _esc_dim(name)
@@ -296,10 +322,10 @@ def event(name: str, **fields) -> None:
 
 
 def snapshot() -> dict:
-    """供 TokenTracker 调用，业务代码一般不用。"""
+    """Called by TokenTracker; business code usually doesn't need it."""
     return Instrument.get_instance().snapshot()
 
 
 def has_data() -> bool:
-    """供 TokenTracker peek 用，业务代码一般不用。"""
+    """For TokenTracker to peek; business code usually doesn't need it."""
     return Instrument.get_instance().has_data()

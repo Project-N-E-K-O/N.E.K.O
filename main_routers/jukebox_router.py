@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Jukebox Router
 
@@ -51,7 +65,7 @@ import re
 import io
 
 def check_file_size(file: UploadFile, max_size: int) -> int:
-    """检查文件大小，返回文件大小（字节），超过限制则抛出异常"""
+    """Check file size; returns the size in bytes, raising an exception if the limit is exceeded."""
     file.file.seek(0, 2)
     file_size = file.file.tell()
     file.file.seek(0)
@@ -61,14 +75,14 @@ def check_file_size(file: UploadFile, max_size: int) -> int:
 
 
 def file_iterator(file_path: Path, chunk_size: int = CHUNK_SIZE):
-    """文件流式迭代器，用于大文件传输"""
+    """File streaming iterator for large file transfers."""
     with open(file_path, "rb") as f:
         while chunk := f.read(chunk_size):
             yield chunk
 
 
 def cleanup_temp_path(path: str):
-    """清理临时文件或目录"""
+    """Clean up a temporary file or directory."""
     try:
         p = Path(path)
         if p.is_file():
@@ -80,7 +94,7 @@ def cleanup_temp_path(path: str):
 
 
 def validate_extract_path(file_path: str, extract_dir: Path) -> Path:
-    """验证解压路径安全，防止路径遍历攻击"""
+    """Validate the extraction path for safety, preventing path traversal attacks."""
     # 规范化路径（移除 ../ 等）
     target_path = (extract_dir / file_path).resolve()
     extract_dir_resolved = extract_dir.resolve()
@@ -100,7 +114,7 @@ def validate_extract_path(file_path: str, extract_dir: Path) -> Path:
     return target_path
 
 def sanitize_filename(name: str) -> str:
-    """清理文件名，移除非法字符，用于生成ID"""
+    """Sanitize a filename by removing illegal characters, used for generating IDs."""
     # 移除扩展名
     name = Path(name).stem
     # 替换非法字符为下划线
@@ -115,7 +129,7 @@ def sanitize_filename(name: str) -> str:
     return name or 'unnamed'
 
 def get_unique_filename(directory: Path, filename: str) -> str:
-    """获取唯一的文件名，如果冲突则添加数字后缀（使用下划线格式）"""
+    """Get a unique filename, appending a numeric suffix (underscore format) on conflict."""
     target_path = directory / filename
     if not target_path.exists():
         return filename
@@ -168,7 +182,7 @@ class BatchDeleteActionsRequest(BaseModel):
 
 
 class JukeboxConfig:
-    """点歌台配置管理器"""
+    """Jukebox configuration manager."""
     
     def __init__(self, config_mgr):
         self.config_mgr = config_mgr
@@ -184,13 +198,13 @@ class JukeboxConfig:
         self.data = self._load_config()
     
     def _ensure_directories(self):
-        """确保目录存在"""
+        """Ensure the directories exist."""
         self.jukebox_dir.mkdir(parents=True, exist_ok=True)
         self.songs_dir.mkdir(parents=True, exist_ok=True)
         self.actions_dir.mkdir(parents=True, exist_ok=True)
     
     def _load_config(self) -> dict:
-        """加载配置文件，融合用户配置和软件自带配置"""
+        """Load the config file, merging user config with the bundled config."""
         # 默认配置
         default_config = {
             "version": "1.0",
@@ -315,7 +329,7 @@ class JukeboxConfig:
         return overrides_by_id
 
     def save(self):
-        """保存配置（排除自带资源，但保留跨类型绑定和内置资源覆盖设置）"""
+        """Save the config (excluding bundled resources, but keeping cross-type bindings and built-in resource override settings)."""
         # 获取所有资源ID及其类型
         all_songs = self.data.get("songs", {})
         all_actions = self.data.get("actions", {})
@@ -388,11 +402,11 @@ class JukeboxConfig:
         atomic_write_json(self.config_file, user_data)
 
     async def asave(self):
-        """异步 save 包装：事件循环上不能直接调用 save()（会阻塞）。"""
+        """Async wrapper for save: save() must not be called directly on the event loop (it blocks)."""
         await asyncio.to_thread(self.save)
 
     def get_next_id(self, prefix: str) -> str:
-        """获取下一个 ID"""
+        """Get the next ID."""
         existing = self.data.get(f"{prefix}s", {})
         max_num = 0
         for key in existing.keys():
@@ -406,7 +420,7 @@ class JukeboxConfig:
 
 
 def calculate_md5(file_path: Path) -> str:
-    """计算文件 MD5"""
+    """Compute the MD5 of a file."""
     md5_hash = hashlib.md5()
     with open(file_path, "rb") as f:
         for chunk in iter(lambda: f.read(CHUNK_SIZE), b""):
@@ -421,7 +435,7 @@ def calculate_md5(file_path: Path) -> str:
 
 @router.get("/config")
 async def get_config():
-    """获取完整配置（本地绑定已经是ID级别，直接返回）"""
+    """Get the full config (local bindings are already ID-level; returned as-is)."""
     config_mgr = get_config_manager()
     jukebox_config = JukeboxConfig(config_mgr)
     return jukebox_config.data
@@ -433,9 +447,9 @@ async def upload_songs(
     metadata: str = Form("[]")
 ):
     """
-    上传歌曲
-    files: 单个文件或文件列表
-    metadata: JSON 字符串，包含每首歌的元数据 [{name, artist}, ...]
+    Upload songs.
+    files: a single file or a list of files
+    metadata: JSON string with per-song metadata [{name, artist}, ...]
     """
     config_mgr = get_config_manager()
     jukebox_config = JukeboxConfig(config_mgr)
@@ -641,7 +655,7 @@ async def delete_song(song_id: str):
 
 @router.put("/songs/{song_id}/visibility")
 async def update_song_visibility(song_id: str, visible: bool = Form(...)):
-    """更新歌曲可见性"""
+    """Update song visibility."""
     config_mgr = get_config_manager()
     jukebox_config = JukeboxConfig(config_mgr)
     
@@ -675,7 +689,7 @@ async def update_song_metadata(
     name: str = Form(None),
     artist: str = Form(None)
 ):
-    """更新歌曲元数据（名称、歌手）"""
+    """Update song metadata (name, artist)."""
     config_mgr = get_config_manager()
     jukebox_config = JukeboxConfig(config_mgr)
     
@@ -698,7 +712,7 @@ async def update_action_metadata(
     action_id: str,
     name: str = Form(...)
 ):
-    """更新动画元数据（名称）"""
+    """Update action metadata (name)."""
     config_mgr = get_config_manager()
     jukebox_config = JukeboxConfig(config_mgr)
     
@@ -717,7 +731,7 @@ async def set_song_default_action(
     song_id: str,
     action_id: str = Form(...)  # 空字符串表示取消默认动画
 ):
-    """设置歌曲的默认动画"""
+    """Set a song's default action."""
     config_mgr = get_config_manager()
     jukebox_config = JukeboxConfig(config_mgr)
     
@@ -748,9 +762,9 @@ async def upload_actions(
     metadata: str = Form("[]")
 ):
     """
-    上传动画
-    files: 单个文件或文件列表
-    metadata: JSON 字符串，包含每个动画的元数据 [{name}, ...]
+    Upload actions.
+    files: a single file or a list of files
+    metadata: JSON string with per-action metadata [{name}, ...]
     """
     config_mgr = get_config_manager()
     jukebox_config = JukeboxConfig(config_mgr)
@@ -924,7 +938,7 @@ async def batch_delete_actions(request: BatchDeleteActionsRequest):
 
 @router.delete("/actions/{action_id}")
 async def delete_action(action_id: str):
-    """删除动画"""
+    """Delete an action."""
     config_mgr = get_config_manager()
     jukebox_config = JukeboxConfig(config_mgr)
 
@@ -967,7 +981,7 @@ async def bind_song_action(
     actionId: str = Form(...),
     offset: int = Form(0)
 ):
-    """建立歌曲与动画的绑定（基于ID）"""
+    """Create a binding between a song and an action (ID-based)."""
     config_mgr = get_config_manager()
     jukebox_config = JukeboxConfig(config_mgr)
 
@@ -1022,7 +1036,7 @@ async def unbind_song_action(
     songId: str = Form(...),
     actionId: str = Form(...)
 ):
-    """解除歌曲与动画的绑定（基于ID）"""
+    """Remove a binding between a song and an action (ID-based)."""
     config_mgr = get_config_manager()
     jukebox_config = JukeboxConfig(config_mgr)
     
@@ -1061,10 +1075,10 @@ async def export_config(
     includeHidden: bool = Form(True)
 ):
     """
-    导出配置
-    songIds: JSON 字符串数组，指定要导出的歌曲ID。为None时根据includeHidden导出所有/非隐藏歌曲
-    actionIds: JSON 字符串数组，指定要导出的动画ID（仅用于选中导出）。为None时导出所有动画
-    includeHidden: 是否包含隐藏歌曲。为False时只导出非隐藏歌曲的绑定关系
+    Export the config.
+    songIds: JSON string array of song IDs to export. If None, exports all / non-hidden songs depending on includeHidden
+    actionIds: JSON string array of action IDs to export (only for selective export). If None, exports all actions
+    includeHidden: whether to include hidden songs. If False, only bindings of non-hidden songs are exported
     """
     config_mgr = get_config_manager()
     jukebox_config = JukeboxConfig(config_mgr)
@@ -1258,9 +1272,9 @@ async def export_config(
 
 @router.get("/file/{file_path:path}")
 async def get_file(file_path: str):
-    """获取歌曲或动画文件
-    file_path: 相对路径，如 songs/song_001.mp3 或 actions/action_001.vmd
-    优先从用户文档目录获取，如果不存在则从软件自带目录获取
+    """Get a song or action file.
+    file_path: relative path, e.g. songs/song_001.mp3 or actions/action_001.vmd
+    Prefers the user documents directory; falls back to the bundled directory if absent.
     """
     config_mgr = get_config_manager()
     jukebox_config = JukeboxConfig(config_mgr)
@@ -1321,7 +1335,7 @@ async def get_file(file_path: str):
 
 @router.post("/import")
 async def import_config(file: UploadFile = File(...)):
-    """导入配置（MD5级别绑定）"""
+    """Import a config (MD5-level bindings)."""
     config_mgr = get_config_manager()
     jukebox_config = JukeboxConfig(config_mgr)
 
@@ -1582,7 +1596,7 @@ async def import_config(file: UploadFile = File(...)):
 
 @router.post("/pack-folder")
 async def pack_folder(files: List[UploadFile] = File(...)):
-    """将文件夹中的文件打包成 ZIP"""
+    """Pack the files in a folder into a ZIP."""
     # 创建临时目录（使用手动管理，避免 TemporaryDirectory 在函数返回时清理）
     temp_dir = tempfile.mkdtemp()
     temp_path = Path(temp_dir)

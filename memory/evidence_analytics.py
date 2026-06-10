@@ -1,26 +1,43 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Funnel analytics over the per-character `events.ndjson` log
 (memory-evidence-rfc §3.10).
 
-为什么单独成模块（不放进 `evidence.py`）：
-- `evidence.py` 是纯函数 + 数学，按 RFC §3.8.2 / §7 不能 import 任何
-  stateful 类（FastAPI, EventLog, ConfigManager），更不能做 IO。
-- 本模块要扫盘 → 必须依赖 `ensure_character_dir` + `ConfigManager`，
-  所以放在 sibling 模块里隔离 IO 与纯数学。
+Why a separate module (instead of inside `evidence.py`):
+- `evidence.py` is pure functions + math; per RFC §3.8.2 / §7 it must not
+  import any stateful class (FastAPI, EventLog, ConfigManager), let alone
+  do IO.
+- This module scans the disk → it must depend on `ensure_character_dir` +
+  `ConfigManager`, hence a sibling module isolating IO from pure math.
 
-V1 范围（RFC §3.10.4）：
-- 只暴露 `funnel_counts` 一个聚合函数；UI / CLI / 跨角色聚合都不做
-- 读时线性扫，O(N)；events.ndjson compaction 阈值 10k 行，全扫 <200ms
-  (RFC §3.10.3)，不需要专用索引
+V1 scope (RFC §3.10.4):
+- Exposes only the single aggregation function `funnel_counts`; no UI / CLI /
+  cross-character aggregation
+- Linear scan at read time, O(N); the events.ndjson compaction threshold is
+  10k lines, a full scan takes <200ms (RFC §3.10.3), no dedicated index needed
 
-Forward compatibility 注意（PR-2 / PR-3 协调）：
-- `persona_entries_archived` 依赖 PR-2 在 `persona.fact_added` payload
-  里写 `archive_shard_path` 字段；PR-2 落地前永远是 0
-- `reflections_merged` / `persona_entries_rewritten` 依赖 PR-3 的
-  merge-on-promote 路径；PR-3 落地前永远是 0
-- 未知事件类型与未识别的 `state_changed.to` 值 silently 跳过
-  （forward-compat：旧版本读新事件流不要 crash）
+Forward compatibility notes (PR-2 / PR-3 coordination):
+- `persona_entries_archived` depends on PR-2 writing the `archive_shard_path`
+  field into the `persona.fact_added` payload; always 0 until PR-2 lands
+- `reflections_merged` / `persona_entries_rewritten` depend on PR-3's
+  merge-on-promote path; always 0 until PR-3 lands
+- Unknown event types and unrecognized `state_changed.to` values are silently
+  skipped (forward-compat: old versions reading a new event stream must not
+  crash)
 """
 from __future__ import annotations
 
@@ -68,11 +85,12 @@ _STATE_TO_BUCKET: dict[str, str] = {
 def _events_path(lanlan_name: str) -> str:
     """Return the absolute path of `events.ndjson` for a character.
 
-    重复 `EventLog._events_path` 的路径计算逻辑，但**不** import
-    `EventLog`——本模块只是只读 scanner，不持锁、不 mutate；引入
-    EventLog 会把 stateful 类捎进 evidence.py 邻居，违反 §3.8.2 隔离
-    （即便本文件是独立 sibling，pure-function evidence.py 也会因二阶
-    re-export 间接依赖）。
+    Duplicates the path computation of `EventLog._events_path` but does **not**
+    import `EventLog` — this module is a read-only scanner: it takes no locks
+    and mutates nothing; importing EventLog would drag a stateful class in
+    next to evidence.py, violating the §3.8.2 isolation (even though this file
+    is an independent sibling, the pure-function evidence.py would still pick
+    up an indirect dependency through second-order re-exports).
     """
     # 局部 import 避开 memory/__init__.py ↔ memory/* 的循环依赖
     from memory import ensure_character_dir

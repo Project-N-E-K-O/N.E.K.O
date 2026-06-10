@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """xAI Grok TTS adapter: catalog metadata for grok streaming TTS voices.
 
 Mirrors `utils.gemini_tts_voices` — cross-cutting decision logic lives in
@@ -6,13 +20,14 @@ into the registry so `core._has_custom_tts()` correctly classifies them as
 native (not custom), and `get_tts_worker` dispatches to
 `grok_streaming_tts_worker` instead of falling through to `cosyvoice_vc_tts_worker`.
 
-音色 ID、性别标签和默认值优先读取自 config/api_providers.json 的
-native_tts_voice_providers.grok。fallback 常量是 PR #1336 之前的硬编码目录的
-副本，仅在 JSON 加载失败时兜底——此时 provider 仍必须留在 registry 里，
-否则 `is_native_voice("leo", "grok")` 返 False，`core._has_custom_tts()` 把
-eve/leo 之类内置音色当 custom，最终 `get_tts_worker` 路由到
-`cosyvoice_vc_tts_worker` 而非 `grok_streaming_tts_worker`，比"丢失目录"
-更隐蔽的 routing 回归。
+Voice IDs, gender labels and defaults are read preferentially from
+native_tts_voice_providers.grok in config/api_providers.json. The fallback
+constants are a copy of the pre-PR #1336 hardcoded catalog, used only when JSON
+loading fails — even then the provider must stay in the registry, otherwise
+`is_native_voice("leo", "grok")` returns False, `core._has_custom_tts()` treats
+built-in voices like eve/leo as custom, and `get_tts_worker` ends up routing to
+`cosyvoice_vc_tts_worker` instead of `grok_streaming_tts_worker` — a routing
+regression sneakier than a "lost catalog".
 
 Voice list reference: xAI `GET /v1/tts/voices` (eve / ara / leo / rex / sal).
 The upstream API expects lowercase voice ids; we mirror that in the catalog.
@@ -69,8 +84,8 @@ GROK_TTS_DEFAULT_MALE_VOICE = (
 
 
 def _build_aliases(configured: dict[str, str]) -> dict[str, str]:
-    """同 gemini_tts_voices：只 casefold configured aliases，不把 catalog 的
-    Female/Male 标签当 alias 注入。"""
+    """Same as gemini_tts_voices: only casefold configured aliases; never inject the
+    catalog's Female/Male labels as aliases."""
     return {
         alias.casefold(): voice_id
         for alias, voice_id in configured.items()
@@ -79,8 +94,8 @@ def _build_aliases(configured: dict[str, str]) -> dict[str, str]:
 
 
 def _create_provider() -> NativeVoiceProvider:
-    """Always succeed — provider 必须留在 registry，否则下游 routing 会
-    把 eve/leo 这种内置 voice 当 custom 走 cosyvoice。"""
+    """Always succeed — the provider must stay in the registry, otherwise downstream
+    routing treats built-in voices like eve/leo as custom and routes them to cosyvoice."""
     aliases_source = _CFG.get("aliases") or _FALLBACK_GROK_TTS_VOICE_ALIASES
     return NativeVoiceProvider(
         key="grok",

@@ -1,9 +1,23 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
-本模块用于将lanlan的消息转发至所有相关服务器，包括：
-1. Bullet Server。对实时内容进行监听并与直播间弹幕进行交互。
-2. Monitor Server。将实时内容转发至所有副终端。副终端会同步播放与主终端完全相同的内容，但不具备交互性。同一时间只有一个主终端可以交互。
-3. Memory Server。对对话历史进行总结、分析，并转为持久化记忆。
-注意，cross server是一个单向的转发器，不会将任何内容回传给主进程。如需回传，目前仍需要建立专门的双向连接。
+This module forwards lanlan's messages to all related servers, including:
+1. Bullet Server: listens to real-time content and interacts with live-stream chat (danmaku).
+2. Monitor Server: forwards real-time content to all secondary terminals. Secondary terminals play exactly the same content as the primary terminal but are non-interactive. Only one primary terminal can interact at a time.
+3. Memory Server: summarizes and analyzes conversation history and converts it into persistent memory.
+Note that the cross server is a one-way forwarder and never sends anything back to the main process. If a backchannel is needed, a dedicated bidirectional connection still has to be established.
 """
 
 import ssl
@@ -97,10 +111,10 @@ from main_logic.mirror_meta import (
 
 
 def merge_unsynced_tail_assistants(chat_history, last_synced_index):
-    """合并 last_synced_index 之后末尾连续的 assistant 消息为一条。
+    """Merge the trailing run of consecutive assistant messages after last_synced_index into one.
 
-    只触碰未同步到 memory 的主动搭话消息，不影响已同步的正常回复。
-    返回被消除的消息数（0 表示无需合并）。
+    Only touches proactive-chat messages not yet synced to memory; synced normal replies
+    are unaffected. Returns the number of messages eliminated (0 means nothing to merge).
     """
     tail = chat_history[last_synced_index:]
     if len(tail) < 2:
@@ -250,7 +264,7 @@ def _build_recent_analyze_messages(
 
 
 async def _safe_close(target) -> None:
-    """关 ws / session 的统一兜底。已进入清理阶段，close 失败不影响后续流程。"""
+    """Unified fallback for closing ws / session. We are already in the cleanup phase, so a failed close must not affect the rest of the flow."""
     if target is None:
         return
     try:
@@ -260,10 +274,11 @@ async def _safe_close(target) -> None:
 
 
 class _WSSlot:
-    """单 ws 端点的共享状态。主 loop / reader / maintainer 三方读写。
+    """Shared state for a single ws endpoint. Read/written by the main loop, reader, and maintainer.
 
-    主 loop 只对 ``ws`` / ``dead_event`` 做读 + 标死，从不调 ws_connect / close；
-    全部生命周期由 :func:`_slot_maintainer` 在独立 task 里管理。
+    The main loop only reads ``ws`` / ``dead_event`` and marks them dead; it never calls
+    ws_connect / close. The entire lifecycle is managed by :func:`_slot_maintainer` in a
+    separate task.
     """
     __slots__ = ("name", "url", "lanlan_name", "ws_kwargs",
                  "ws", "session", "reader", "maintainer", "dead_event")
@@ -282,16 +297,17 @@ class _WSSlot:
 
 
 def _mark_dead(slot: _WSSlot) -> None:
-    """标记 slot 为断开。幂等。主 loop send 失败 / reader 检测 close 都调这个。"""
+    """Mark the slot as disconnected. Idempotent. Called both when the main loop's send fails and when the reader detects a close."""
     slot.ws = None
     slot.dead_event.set()
 
 
 async def _slot_reader(slot: _WSSlot, ws: aiohttp.ClientWebSocketResponse) -> None:
-    """绑定到具体 ws 实例的读循环。检测 close → mark_dead 唤醒 maintainer。
+    """Read loop bound to a specific ws instance. Detects close → mark_dead wakes the maintainer.
 
-    ws 通过参数传入而不是从 slot 读，避免 maintainer 已经替换 slot.ws 后老 reader
-    误标新 ws 为死。被 maintainer 主动 cancel 时不调 mark_dead。
+    The ws is passed as a parameter instead of read from the slot, so that an old reader
+    cannot mistakenly mark a new ws dead after the maintainer has already replaced
+    slot.ws. Does not call mark_dead when actively cancelled by the maintainer.
     """
     try:
         while True:
@@ -316,18 +332,18 @@ async def _slot_maintainer(
     backoff_min: float = 0.25,
     backoff_max: float = 1.5,
 ) -> None:
-    """单 slot 的 reconnect 循环，事件驱动 + 指数退避。
+    """Per-slot reconnect loop, event-driven + exponential backoff.
 
-    monitor 是外挂；不在的时候这条 task 会以 backoff_max 节奏静默重试，主 sync loop
-    完全不感知。
+    The monitor is an optional add-on; when absent, this task silently retries at the
+    backoff_max cadence and the main sync loop is completely unaware.
 
-    周期保证：每次尝试 = ``wait_for(ws_connect, timeout=backoff)``，所以 cycle 时长
-    被 backoff 双向夹住——
-    - 上限：connect 挂到 timeout 才失败，cycle ≈ backoff
-    - 下限：connect 极速 fail（refused），sleep 补足到 backoff，cycle = backoff
+    Cycle guarantee: each attempt = ``wait_for(ws_connect, timeout=backoff)``, so the
+    cycle duration is clamped by backoff on both sides —
+    - upper bound: connect hangs until timeout before failing, cycle ≈ backoff
+    - lower bound: connect fails instantly (refused), sleep pads up to backoff, cycle = backoff
 
-    backoff_max=1.5s 即"最差 1.5s 轮询"。Windows 上裸 ws_connect 失败有时要 ~4s
-    （TCP SYN timeout），不加 wait_for 这条保证就破了。
+    backoff_max=1.5s means "worst case 1.5s polling". On Windows a bare ws_connect
+    failure can take ~4s (TCP SYN timeout); without wait_for this guarantee would break.
     """
     backoff = backoff_min
     while True:
@@ -381,7 +397,7 @@ async def _slot_maintainer(
 
 
 async def _try_send_json(slot: _WSSlot | None, payload: dict) -> bool:
-    """fail-soft 发送。slot 不存在 / ws 死 / send 抛异常都返回 False，不向上传播。"""
+    """Fail-soft send. Returns False when the slot is missing / ws is dead / send raises; never propagates upward."""
     if slot is None:
         return False
     ws = slot.ws
@@ -495,23 +511,26 @@ async def run_sync_connector(
     config=None,
     status_callback=None,
 ):
-    """Async-native 同步连接器，跑在调用方主 event loop 上。
+    """Async-native sync connector, running on the caller's main event loop.
 
-    架构：
-    - 主 loop：``await message_queue.get()`` 阻塞等消息，处理后用 ``_try_send_*``
-      把数据塞进 ws；ws 死/不存在时 fail-soft 跳过。**主 loop 永远不调
-      ws_connect / session.close / ws.close**，所以 monitor 没启动或断线
-      不会阻塞 memory 等其它 await 路径。
-    - 每个 ws 一个 :func:`_slot_maintainer` 后台 task：``dead_event`` 唤醒 +
-      指数退避重连（0.25s → 2s 封顶）。失败时静默重试，不打扰主 loop。
-    - 每条活 ws 一个 :func:`_slot_reader` 后台 task：检测服务端 close →
-      ``_mark_dead`` → 唤醒 maintainer。
-    - 应用层 heartbeat 已删除：aiohttp 底层 ``heartbeat=10`` 的 ping/pong
-      会在 ~10s 内把死连接变成 reader 看得见的 ``CLOSED``。
+    Architecture:
+    - Main loop: blocks on ``await message_queue.get()`` for messages, then pushes data
+      into the ws via ``_try_send_*``; fail-soft skips when the ws is dead/missing.
+      **The main loop never calls ws_connect / session.close / ws.close**, so a monitor
+      that hasn't started or is disconnected never blocks other await paths like memory.
+    - One :func:`_slot_maintainer` background task per ws: woken by ``dead_event`` +
+      exponential-backoff reconnect (0.25s → capped at 2s). Retries silently on failure
+      without disturbing the main loop.
+    - One :func:`_slot_reader` background task per live ws: detects server close →
+      ``_mark_dead`` → wakes the maintainer.
+    - The application-level heartbeat has been removed: aiohttp's underlying
+      ``heartbeat=10`` ping/pong turns a dead connection into a ``CLOSED`` the reader
+      can see within ~10s.
 
     Args:
-        status_callback: 可选 ``Callable[[str], None]``。运行在主 loop 上，
-            可直接 ``asyncio.create_task(...)``，无需 ``run_coroutine_threadsafe``。
+        status_callback: optional ``Callable[[str], None]``. Runs on the main loop, so it
+            may call ``asyncio.create_task(...)`` directly without
+            ``run_coroutine_threadsafe``.
     """
     chat_history: list = []
     default_config = {'bullet': True, 'monitor': True}

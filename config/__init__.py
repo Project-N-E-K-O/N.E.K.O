@@ -1,5 +1,19 @@
 # -*- coding: utf-8 -*-
-"""config 包对外暴露的配置常量。"""
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Configuration constants exposed by the config package."""
 
 from copy import deepcopy
 import json
@@ -71,7 +85,7 @@ CHARACTER_RESERVED_FIELDS = tuple(
 
 
 def get_character_reserved_fields() -> tuple[str, ...]:
-    """返回角色档案保留字段（去重后、有序）。"""
+    """Return the reserved character-profile fields (deduplicated, ordered)."""
     return CHARACTER_RESERVED_FIELDS
 
 
@@ -223,9 +237,11 @@ def _read_list_env(var_name: str) -> tuple[str, ...]:
 def _read_str_env(
     var_name: str, default: str, *, allowed: tuple[str, ...] | None = None,
 ) -> str:
-    """字符串型配置的 env 覆盖。键序同端口：``NEKO_<NAME>`` 优先，裸 ``<NAME>``
-    兼容。``allowed`` 非空时，越界值被忽略并 warning（回退 default），避免一个
-    typo 把功能整块带挂。空串视为未设置。"""
+    """Env override for string-typed config values. Key precedence matches the port
+    settings: ``NEKO_<NAME>`` wins, bare ``<NAME>`` is kept for compatibility.
+    When ``allowed`` is non-empty, out-of-range values are ignored with a warning
+    (falling back to default) so a single typo cannot take the whole feature down.
+    An empty string counts as unset."""
     for key in (f"NEKO_{var_name}", var_name):
         raw = os.getenv(key)
         if raw is None:
@@ -244,8 +260,8 @@ def _read_str_env(
 
 
 def _read_bool_env(var_name: str, default: bool) -> bool:
-    """布尔型配置的 env 覆盖。1/true/yes/on → True；0/false/no/off → False；
-    其余/未设置 → default。键序同上。"""
+    """Env override for boolean config values. 1/true/yes/on → True; 0/false/no/off → False;
+    anything else / unset → default. Key precedence as above."""
     for key in (f"NEKO_{var_name}", var_name):
         raw = os.getenv(key)
         if raw is None:
@@ -464,7 +480,7 @@ VRM_LIGHTING_RANGES = {
 
 
 def get_default_vrm_lighting() -> dict[str, float]:
-    """获取默认VRM打光配置的副本"""
+    """Get a copy of the default VRM lighting config"""
     return dict(DEFAULT_VRM_LIGHTING)
 
 
@@ -526,7 +542,7 @@ MMD_CURSOR_FOLLOW_RANGES = {
 
 
 def get_default_mmd_settings() -> dict:
-    """获取默认MMD设置的副本"""
+    """Get a copy of the default MMD settings"""
     return {
         "lighting": dict(DEFAULT_MMD_LIGHTING),
         "rendering": dict(DEFAULT_MMD_RENDERING),
@@ -585,18 +601,18 @@ _VALUE_TRANSLATIONS = {
 
 def get_localized_default_characters(language: str | None = None) -> dict:
     """
-    获取本地化的默认角色配置。
-    
-    根据 Steam 语言设置翻译内容值（如"哥哥"→"Brother"）。
-    注意：键名保持中文不变，因为系统内部依赖这些键名。
-    仅在首次创建 characters.json 时使用。
-    
+    Get the localized default character configuration.
+
+    Translates content values based on the Steam language setting (e.g. "哥哥"→"Brother").
+    Note: key names stay in Chinese because internal code depends on them.
+    Only used when characters.json is created for the first time.
+
     Args:
-        language: 语言代码 ('en', 'ja', 'zh', 'zh-CN', 'zh-TW')。
-                  如果为 None，则从 Steam 获取或默认为 'zh-CN'。
-    
+        language: Language code ('en', 'ja', 'zh', 'zh-CN', 'zh-TW').
+                  If None, fetched from Steam or defaults to 'zh-CN'.
+
     Returns:
-        本地化后的 DEFAULT_CHARACTERS_CONFIG 副本
+        Localized copy of DEFAULT_CHARACTERS_CONFIG
     """
     # 获取语言代码
     if language is None:
@@ -643,7 +659,7 @@ def get_localized_default_characters(language: str | None = None) -> dict:
         return result
     
     def translate_value(val):
-        """翻译值（仅翻译字符串类型）"""
+        """Translate a value (only string types are translated)"""
         if isinstance(val, str):
             return value_trans.get(val, val)
         return val

@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 gpt4_1_system = """## PERSISTENCE
 You are an agent - please keep going until the user's query is completely 
 resolved, before ending your turn and yielding back to the user. Only 
@@ -20,9 +34,9 @@ ability to solve the problem and think insightfully"""
 # =====================================================================
 
 def _loc(d: dict, lang: str) -> str:
-    """从多语言 dict 按 lang 取值，缺失则回退 'en'。
-
-    prompt 模块应显式提供当前支持语种；回退只作为异常兜底。
+    """Resolve a value from a multi-language dict by lang, falling back to 'en' when missing.
+    Prompt modules should explicitly provide every currently supported language;
+    the fallback is only an exceptional safety net.
     """
     if lang not in d:
         print(f"WARNING: Unexpected lang code {lang}")
