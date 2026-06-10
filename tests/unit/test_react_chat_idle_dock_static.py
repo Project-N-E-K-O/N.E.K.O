@@ -189,7 +189,7 @@ def test_desktop_cat1_minimized_and_compact_surface_state_are_timestamp_ordered(
     pair_move_block = _between(
         source,
         "function _rememberNekoIdleDesktopChatPairMoveRect(screenRect) {",
-        "function _dispatchNekoIdleDesktopChatPairMoveBounds(screenRect) {",
+        "function _getNekoIdleDesktopChatPairMoveSignature(screenRect) {",
     )
     assert "_nekoIdleDesktopChatMinimizedState = _makeNekoIdleDesktopChatMinimizedState(" in pair_move_block
     assert "_nekoIdleDesktopCompactSurfaceState = _makeNekoIdleDesktopCompactSurfaceState(" in pair_move_block
@@ -266,6 +266,36 @@ def test_react_chat_applies_desktop_cat1_pair_move_bounds_when_collapsed():
     assert "if (hasElectronIdleDockPendingOrActive()) return;" in source
     assert "bridge.idleDockCommitCollapsedBounds(targetBounds)" in source
     assert "scheduleElectronChatMinimizedState('cat1-pair-move')" in source
+
+
+def test_cat1_desktop_pair_move_throttles_native_bounds_sync_and_forces_final_frame():
+    source = _read(AVATAR_UI_BUTTONS_PATH)
+
+    assert "_NEKO_IDLE_CAT1_DESKTOP_PAIR_MOVE_SYNC_MIN_MS = 50" in source
+    assert "let _nekoIdleDesktopChatPairMoveLastDispatchAt = 0;" in source
+    assert "let _nekoIdleDesktopChatPairMoveLastDispatchSignature = '';" in source
+    assert "function _getNekoIdleDesktopChatPairMoveSignature(screenRect)" in source
+
+    dispatch_block = _between(
+        source,
+        "function _dispatchNekoIdleDesktopChatPairMoveBounds(screenRect, options = {}) {",
+        "function _getNekoIdleCat1PairMoveChatTarget() {",
+    )
+    assert "_rememberNekoIdleDesktopChatPairMoveRect(screenRect)" in dispatch_block
+    assert "const force = !!(options && options.force);" in dispatch_block
+    assert "if (!force) {" in dispatch_block
+    assert "signature === _nekoIdleDesktopChatPairMoveLastDispatchSignature" in dispatch_block
+    assert "now - _nekoIdleDesktopChatPairMoveLastDispatchAt < _NEKO_IDLE_CAT1_DESKTOP_PAIR_MOVE_SYNC_MIN_MS" in dispatch_block
+    assert "_nekoIdleDesktopChatPairMoveLastDispatchAt = now;" in dispatch_block
+    assert "_nekoIdleDesktopChatPairMoveLastDispatchSignature = signature;" in dispatch_block
+    assert "timestamp: now" in dispatch_block
+
+    pair_move_block = _between(
+        source,
+        "function _applyNekoIdleCat1PairMovePlan(plan, progress) {",
+        "function _setNekoIdleCat1Substate(button, substate, options = {}) {",
+    )
+    assert "force: progress >= 1" in pair_move_block
 
 
 def test_idle_dock_uses_mutation_observer_to_detect_minimize_completion():

@@ -240,6 +240,7 @@ const _NEKO_IDLE_CAT1_PAIR_MOVE_MIN_USABLE_DISTANCE_PX = 36;
 const _NEKO_IDLE_CAT1_PAIR_MOVE_SPEED_PX_PER_SEC = 82;
 const _NEKO_IDLE_CAT1_PAIR_MOVE_MIN_DURATION_MS = 720;
 const _NEKO_IDLE_CAT1_PAIR_MOVE_MAX_DURATION_MS = 2200;
+const _NEKO_IDLE_CAT1_DESKTOP_PAIR_MOVE_SYNC_MIN_MS = 50;
 const _NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS = 2500;
 const _NEKO_IDLE_DESKTOP_COMPACT_SURFACE_RECT_STALE_MS = 10 * 1000;
 const _NEKO_IDLE_RETURN_DRAG_ACTION_CLASS = 'is-drag-action';
@@ -790,6 +791,8 @@ let _nekoIdleDesktopCompactSurfaceState = {
     updatedAt: 0,
     sourceUpdatedAt: 0
 };
+let _nekoIdleDesktopChatPairMoveLastDispatchAt = 0;
+let _nekoIdleDesktopChatPairMoveLastDispatchSignature = '';
 let _nekoIdleCompactSurfaceDragging = false;
 let _nekoIdleCompactSurfaceSettleTimer = 0;
 
@@ -2463,11 +2466,31 @@ function _rememberNekoIdleDesktopChatPairMoveRect(screenRect) {
     return normalized;
 }
 
-function _dispatchNekoIdleDesktopChatPairMoveBounds(screenRect) {
+function _getNekoIdleDesktopChatPairMoveSignature(screenRect) {
+    const normalized = _normalizeNekoIdleScreenRect(screenRect);
+    if (!normalized) return '';
+    return [
+        normalized.left,
+        normalized.top,
+        normalized.width,
+        normalized.height
+    ].join(':');
+}
+
+function _dispatchNekoIdleDesktopChatPairMoveBounds(screenRect, options = {}) {
     const normalized = _rememberNekoIdleDesktopChatPairMoveRect(screenRect);
     if (!normalized) return false;
     const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
     if (!channel || typeof channel.postMessage !== 'function') return false;
+    const now = Date.now();
+    const force = !!(options && options.force);
+    const signature = _getNekoIdleDesktopChatPairMoveSignature(normalized);
+    if (!force) {
+        if (signature && signature === _nekoIdleDesktopChatPairMoveLastDispatchSignature) return false;
+        if (now - _nekoIdleDesktopChatPairMoveLastDispatchAt < _NEKO_IDLE_CAT1_DESKTOP_PAIR_MOVE_SYNC_MIN_MS) return false;
+    }
+    _nekoIdleDesktopChatPairMoveLastDispatchAt = now;
+    _nekoIdleDesktopChatPairMoveLastDispatchSignature = signature;
     channel.postMessage({
         action: 'idle_chat_pair_move_bounds',
         source: 'cat1-pair-move',
@@ -2478,7 +2501,7 @@ function _dispatchNekoIdleDesktopChatPairMoveBounds(screenRect) {
             width: normalized.width,
             height: normalized.height
         },
-        timestamp: Date.now()
+        timestamp: now
     });
     return true;
 }
@@ -2631,6 +2654,8 @@ function _applyNekoIdleCat1PairMovePlan(plan, progress) {
             top: plan.chatStartScreenTop + offsetY,
             width: plan.chatWidth,
             height: plan.chatHeight
+        }, {
+            force: progress >= 1
         });
     } else if (plan.chatMode === 'dom') {
         _setNekoIdleCat1PairMoveChatPosition(plan.shell, plan.chatStartLeft + offsetX, plan.chatStartTop + offsetY);
