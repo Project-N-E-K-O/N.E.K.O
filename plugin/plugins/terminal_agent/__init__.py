@@ -9,6 +9,7 @@ Terminal Agent Plugin - 终端风格的 Agent 启动器
 """
 
 import asyncio
+import time
 from typing import Any, Dict, List
 
 from plugin.sdk.plugin import (
@@ -117,7 +118,7 @@ class TerminalAgentPlugin(NekoPluginBase):
             self._state.history.append({
                 "type": "input",
                 "content": command,
-                "timestamp": asyncio.get_event_loop().time(),
+                "timestamp": time.time(),
             })
             self._state.history = self._state.history[-self.MAX_HISTORY:]
 
@@ -127,7 +128,7 @@ class TerminalAgentPlugin(NekoPluginBase):
             self._state.history.append({
                 "type": "output",
                 "content": response,
-                "timestamp": asyncio.get_event_loop().time(),
+                "timestamp": time.time(),
             })
             self._state.history = self._state.history[-self.MAX_HISTORY:]
             await self._save_history()
@@ -201,6 +202,7 @@ Available commands:
         description=tr("entries.clear.description", default="Clear terminal history"),
     )
     async def clear_terminal(self, **_):
-        self._state.history = []
-        await self._save_history()
+        async with self._history_lock:
+            self._state.history = []
+            await self._save_history()
         return Ok({"status": "cleared"})
