@@ -24,6 +24,119 @@ def _install_fake_config(monkeypatch, fake):
     monkeypatch.setattr(jukebox_router, "JukeboxConfig", lambda _config_mgr: fake)
 
 
+def _make_save_config(tmp_path, data, builtin_songs, builtin_actions):
+    config = object.__new__(jukebox_router.JukeboxConfig)
+    config.config_file = tmp_path / "config.json"
+    config.data = data
+    config._load_builtin_resource_defaults = lambda: (builtin_songs, builtin_actions)
+    return config
+
+
+def test_save_builtin_overrides_omits_unchanged_defaults(tmp_path):
+    config = _make_save_config(
+        tmp_path,
+        {
+            "version": "1.0",
+            "songs": {
+                "builtin-song": {
+                    "name": "Builtin Song",
+                    "artist": "Builtin Artist",
+                    "defaultAction": "builtin-action",
+                    "visible": True,
+                    "isBuiltin": True,
+                }
+            },
+            "actions": {
+                "builtin-action": {
+                    "name": "Builtin Action",
+                    "visible": True,
+                    "isBuiltin": True,
+                }
+            },
+            "bindings": {},
+            "md5Index": {"songs": {}, "actions": {}},
+        },
+        {
+            "builtin-song": {
+                "name": "Builtin Song",
+                "artist": "Builtin Artist",
+                "defaultAction": "builtin-action",
+                "visible": True,
+            }
+        },
+        {
+            "builtin-action": {
+                "name": "Builtin Action",
+                "visible": True,
+            }
+        },
+    )
+
+    config.save()
+
+    saved = json.loads(config.config_file.read_text(encoding="utf-8"))
+    assert saved["builtinOverrides"] == {"songs": {}, "actions": {}}
+
+
+def test_save_builtin_overrides_persists_changed_fields(tmp_path):
+    config = _make_save_config(
+        tmp_path,
+        {
+            "version": "1.0",
+            "songs": {
+                "builtin-song": {
+                    "name": "Builtin Song",
+                    "artist": "Builtin Artist",
+                    "defaultAction": "",
+                    "visible": False,
+                    "isBuiltin": True,
+                }
+            },
+            "actions": {
+                "builtin-action": {
+                    "name": "Renamed Action",
+                    "visible": False,
+                    "isBuiltin": True,
+                }
+            },
+            "bindings": {},
+            "md5Index": {"songs": {}, "actions": {}},
+        },
+        {
+            "builtin-song": {
+                "name": "Builtin Song",
+                "artist": "Builtin Artist",
+                "defaultAction": "builtin-action",
+                "visible": True,
+            }
+        },
+        {
+            "builtin-action": {
+                "name": "Builtin Action",
+                "visible": True,
+            }
+        },
+    )
+
+    config.save()
+
+    saved = json.loads(config.config_file.read_text(encoding="utf-8"))
+    assert saved["builtinOverrides"] == {
+        "songs": {
+            "builtin-song": {
+                "visible": False,
+                "defaultAction": "",
+            }
+        },
+        "actions": {
+            "builtin-action": {
+                "visible": False,
+                "name": "Renamed Action",
+            }
+        },
+    }
+
+
 @pytest.mark.asyncio
 async def test_batch_delete_removes_user_song_and_hides_builtin(monkeypatch, tmp_path):
     jukebox_dir = tmp_path / "jukebox"

@@ -274,6 +274,46 @@ class JukeboxConfig:
             "md5Index": merged_md5_index
         }
 
+    def _load_builtin_resource_defaults(self) -> tuple[dict, dict]:
+        """Load bundled song/action defaults used to detect real user overrides."""
+        builtin_songs_path = Path(__file__).parent.parent / "static" / "jukebox" / "songs.json"
+        if not builtin_songs_path.exists():
+            return {}, {}
+
+        try:
+            with open(builtin_songs_path, 'r', encoding='utf-8') as f:
+                builtin_data = json.load(f)
+        except Exception as e:
+            logger.error(f"加载软件自带配置失败: {e}")
+            return {}, {}
+
+        return builtin_data.get("songs", {}), builtin_data.get("actions", {})
+
+    @staticmethod
+    def _collect_builtin_overrides(resources: dict, resource_ids: set, defaults: dict, fields: list[str]) -> dict:
+        fallback_values = {
+            "visible": True,
+            "defaultAction": "",
+            "name": "",
+            "artist": "",
+        }
+        overrides_by_id = {}
+
+        for resource_id in resource_ids:
+            resource = resources[resource_id]
+            default_resource = defaults.get(resource_id, {})
+            overrides = {}
+            for field in fields:
+                if field not in resource:
+                    continue
+                default_value = default_resource.get(field, fallback_values.get(field))
+                if resource[field] != default_value:
+                    overrides[field] = resource[field]
+            if overrides:
+                overrides_by_id[resource_id] = overrides
+
+        return overrides_by_id
+
     def save(self):
         """保存配置（排除自带资源，但保留跨类型绑定和内置资源覆盖设置）"""
         # 获取所有资源ID及其类型
@@ -287,29 +327,21 @@ class JukeboxConfig:
         builtin_action_ids = {k for k, v in all_actions.items() if v.get("isBuiltin", False)}
 
         # 收集内置资源的覆盖设置（可见性、默认动画、名称、歌手等）
+        builtin_song_defaults, builtin_action_defaults = self._load_builtin_resource_defaults()
         builtin_overrides = {
-            "songs": {},
-            "actions": {}
+            "songs": self._collect_builtin_overrides(
+                all_songs,
+                builtin_song_ids,
+                builtin_song_defaults,
+                ["visible", "defaultAction", "name", "artist"],
+            ),
+            "actions": self._collect_builtin_overrides(
+                all_actions,
+                builtin_action_ids,
+                builtin_action_defaults,
+                ["visible", "name"],
+            ),
         }
-        for song_id in builtin_song_ids:
-            song = all_songs[song_id]
-            # 保存用户可能修改的字段
-            overrides = {}
-            for field in ["visible", "defaultAction", "name", "artist"]:
-                if field in song:
-                    overrides[field] = song[field]
-            if overrides:
-                builtin_overrides["songs"][song_id] = overrides
-
-        for action_id in builtin_action_ids:
-            action = all_actions[action_id]
-            # 保存用户可能修改的字段
-            overrides = {}
-            for field in ["visible", "name"]:
-                if field in action:
-                    overrides[field] = action[field]
-            if overrides:
-                builtin_overrides["actions"][action_id] = overrides
 
         user_data = {
             "version": self.data.get("version", "1.0"),
