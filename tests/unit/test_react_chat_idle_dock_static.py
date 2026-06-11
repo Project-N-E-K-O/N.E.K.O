@@ -28,7 +28,14 @@ def test_idle_dock_is_limited_to_cat2_and_cat3_tiers():
     assert "var IDLE_DOCK_TIER_CAT3 = 'cat3';" in source
     assert "function isIdleDockTierActive()" in source
     assert "detail.tier === IDLE_DOCK_TIER_CAT2 || detail.tier === IDLE_DOCK_TIER_CAT3" in source
-    assert "window.addEventListener('live2d-goodbye-click'" not in source
+    goodbye_click_block = _between(
+        source,
+        "window.addEventListener('live2d-goodbye-click'",
+        "window.addEventListener('live2d-return-click'",
+    )
+    assert "setGoodbyeComposerHidden(true, 'live2d-goodbye-click')" in goodbye_click_block
+    assert "enterIdleDock" not in goodbye_click_block
+    assert "setChatSurfaceMode('minimized')" not in goodbye_click_block
 
 
 def test_idle_dock_does_not_pollute_normal_minimize_export_or_app_ui():
@@ -87,7 +94,7 @@ def test_idle_dock_enters_minimized_surface_mode_without_setminimized_options():
 
     # exitIdleDock restores the previous real surface mode without adding
     # idle-dock options or branches to setMinimized itself.
-    assert "setChatSurfaceMode(normalizeChatSurfaceMode(lastRestorableChatSurfaceMode));" in source
+    assert "setChatSurfaceMode(coerceChatSurfaceModeForHost(lastRestorableChatSurfaceMode));" in source
     assert "setMinimized(false, {" not in source
 
 
@@ -257,6 +264,10 @@ def test_electron_chat_loads_interpage_before_react_chat_for_desktop_cat1_sync()
 def test_react_chat_applies_desktop_cat1_pair_move_bounds_when_collapsed():
     source = _read(APP_REACT_CHAT_WINDOW_PATH)
 
+    assert "function isElectronLinuxRuntime()" in source
+    assert "runtime.isLinux" in source
+    assert "runtime.isLinuxX11" in source
+    assert "runtime.platform === 'linux'" in source
     assert "electronCat1PairMoveBoundsFrame" in source
     assert "function scheduleElectronCat1PairMoveBounds(bounds)" in source
     assert "async function applyElectronCat1PairMoveBounds(bounds)" in source
@@ -267,10 +278,28 @@ def test_react_chat_applies_desktop_cat1_pair_move_bounds_when_collapsed():
     assert "bridge.idleDockCommitCollapsedBounds(targetBounds)" in source
     assert "scheduleElectronChatMinimizedState('cat1-pair-move')" in source
 
+    apply_block = _between(
+        source,
+        "async function applyElectronCat1PairMoveBounds(bounds) {",
+        "function scheduleElectronCat1PairMoveBounds(bounds) {",
+    )
+    assert "if (isElectronLinuxRuntime()) return;" in apply_block
 
-def test_cat1_desktop_pair_move_throttles_native_bounds_sync_and_forces_final_frame():
+    schedule_block = _between(
+        source,
+        "function scheduleElectronCat1PairMoveBounds(bounds) {",
+        "function isElectronIdleDockCurrent(generation) {",
+    )
+    assert "if (isElectronLinuxRuntime()) return;" in schedule_block
+
+
+def test_cat1_desktop_pair_move_skips_linux_runtime_native_bounds_sync():
     source = _read(AVATAR_UI_BUTTONS_PATH)
 
+    assert "function _isNekoDesktopLinuxRuntime()" in source
+    assert "runtime.isLinux" in source
+    assert "runtime.isLinuxX11" in source
+    assert "runtime.platform === 'linux'" in source
     assert "_NEKO_IDLE_CAT1_DESKTOP_PAIR_MOVE_SYNC_MIN_MS = 50" in source
     assert "let _nekoIdleDesktopChatPairMoveLastDispatchAt = 0;" in source
     assert "let _nekoIdleDesktopChatPairMoveLastDispatchSignature = '';" in source
@@ -281,6 +310,7 @@ def test_cat1_desktop_pair_move_throttles_native_bounds_sync_and_forces_final_fr
         "function _dispatchNekoIdleDesktopChatPairMoveBounds(screenRect, options = {}) {",
         "function _getNekoIdleCat1PairMoveChatTarget() {",
     )
+    assert "if (_isNekoDesktopLinuxRuntime()) return false;" in dispatch_block
     assert "_rememberNekoIdleDesktopChatPairMoveRect(screenRect)" in dispatch_block
     assert "const force = !!(options && options.force);" in dispatch_block
     assert "if (!force) {" in dispatch_block
@@ -290,12 +320,88 @@ def test_cat1_desktop_pair_move_throttles_native_bounds_sync_and_forces_final_fr
     assert "_nekoIdleDesktopChatPairMoveLastDispatchSignature = signature;" in dispatch_block
     assert "timestamp: now" in dispatch_block
 
+    plan_block = _between(
+        source,
+        "function _getNekoIdleCat1PairMovePlan(button) {",
+        "function _easeNekoIdleCat1PairMove(progress) {",
+    )
+    assert "chatTarget && chatTarget.mode === 'desktop' && _isNekoDesktopLinuxRuntime()" in plan_block
+
+    schedule_guard_block = _between(
+        source,
+        "function _canScheduleNekoIdleCat1PairMove(button, state) {",
+        "function _finishNekoIdleCat1PairMove(button) {",
+    )
+    assert "chatTarget && chatTarget.mode === 'desktop' && _isNekoDesktopLinuxRuntime()" in schedule_guard_block
+
     pair_move_block = _between(
         source,
         "function _applyNekoIdleCat1PairMovePlan(plan, progress) {",
         "function _setNekoIdleCat1Substate(button, substate, options = {}) {",
     )
     assert "force: progress >= 1" in pair_move_block
+
+
+def test_cat1_compact_mirror_uses_stable_native_reserve_rect():
+    source = _read(APP_REACT_CHAT_WINDOW_PATH)
+
+    assert "function getIdleCat1CompactMirrorNativeReserveRect(mirrorRect, surfaceRect)" in source
+    reserve_block = _between(
+        source,
+        "function getIdleCat1CompactMirrorNativeReserveRect(mirrorRect, surfaceRect) {",
+        "function intersectCompactRects(a, b) {",
+    )
+    assert "var horizontalPad = Math.ceil(mirror.width / 2);" in reserve_block
+    assert "surface.left - horizontalPad" in reserve_block
+    assert "surface.right + horizontalPad" in reserve_block
+    assert "Math.min(mirror.top, surface.top)" in reserve_block
+
+    collect_block = _between(
+        source,
+        "function collectCompactSurfaceGeometryItems() {",
+        "function getCompactInteractionGeometrySnapshot() {",
+    )
+    assert "var mirrorNativeRect = getIdleCat1CompactMirrorNativeReserveRect(mirrorRect, shellRect);" in collect_block
+    assert "visualRect: mirrorRect" in collect_block
+    assert "nativeRect: mirrorNativeRect || mirrorRect" in collect_block
+
+
+def test_desktop_compact_resize_broadcasts_surface_state_for_cat1_follow():
+    source = _read(APP_REACT_CHAT_WINDOW_PATH)
+
+    resize_block = _between(
+        source,
+        "function applyCompactSurfaceResizeRequest(detail) {",
+        "function getCompactSurfaceTarget(layoutOverride) {",
+    )
+    assert "isElectronChatWindow() && detail && detail.screenRect" in resize_block
+    assert "new CustomEvent('neko:compact-surface-layout-change'" in resize_block
+    assert "screenRect: detail.screenRect" in resize_block
+    assert "resizeActive: phase !== 'end'" in resize_block
+    assert "reason: phase === 'end' ? 'resize-end' : 'resize'" in resize_block
+
+
+def test_cat1_compact_follow_treats_resize_as_active_surface_adjustment():
+    source = _read(AVATAR_UI_BUTTONS_PATH)
+
+    move_state_block = _between(
+        source,
+        "function _handleNekoIdleCompactSurfaceMoveState(detail) {",
+        "function _shouldRecheckNekoIdleCat1AfterManualMove(detail) {",
+    )
+    assert "const resizeActive = !!(detail && detail.resizeActive);" in move_state_block
+    assert "const activeSurfaceAdjustment = dragging || resizeActive;" in move_state_block
+    assert "_nekoIdleCompactSurfaceDragging = activeSurfaceAdjustment;" in move_state_block
+    assert "_interruptNekoIdleCat1PairMovesForRetarget({ scheduleSync: !activeSurfaceAdjustment });" in move_state_block
+
+    follow_block = _between(
+        source,
+        "function _syncNekoIdleCat1CompactTopEdgeSurfaceFollow(detail) {",
+        "function _isNekoIdleCat1Walking(button) {",
+    )
+    assert "const resizeActive = !!(detail && detail.resizeActive);" in follow_block
+    assert "const fastMove = !resizeActive && motion.hasPrevious" in follow_block
+    assert "reason: resizeActive ? 'compact-surface-resize' : 'compact-surface-drag'" in follow_block
 
 
 def test_idle_dock_uses_mutation_observer_to_detect_minimize_completion():
@@ -367,4 +473,4 @@ def test_idle_dock_exit_clears_cat2_to_cat1_drag_binding():
     assert "await commitElectronIdleDockCollapsedBounds(bridge, preserveBounds, exitGeneration)" in source
     assert "wasActive && saved && !preserveCurrentPosition" in source
     assert "wasActive && triggered && minimized && preserveCurrentPosition" in source
-    assert "setChatSurfaceMode(normalizeChatSurfaceMode(lastRestorableChatSurfaceMode));" in source
+    assert "setChatSurfaceMode(coerceChatSurfaceModeForHost(lastRestorableChatSurfaceMode));" in source

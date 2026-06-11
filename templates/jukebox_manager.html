@@ -34,10 +34,16 @@
             box-sizing: border-box !important;
         }
 
-        /* 整个面板走 OS 原生拖动（Chromium `-webkit-app-region: drag` → Windows HTCAPTION）。
+        /* 标题栏走 OS 原生拖动（Chromium `-webkit-app-region: drag` → Windows HTCAPTION）。
            不再用 JS mousedown + setBounds 模拟，避免和 Windows 边缘 WS_THICKFRAME resize
-           热区并发触发导致"拖一下窗口变大一下"。 */
+           热区并发触发导致"拖一下窗口变大一下"。整块面板不能都设为 drag，
+           否则 frameless 原生 resize 边缘和内容滚动区会被 HTCAPTION 抢走。 */
         .jukebox-sam-panel {
+            -webkit-app-region: no-drag !important;
+            cursor: default;
+        }
+
+        .jukebox-sam-panel .sam-header {
             -webkit-app-region: drag !important;
             cursor: grab;
         }

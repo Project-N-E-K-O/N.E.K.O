@@ -105,6 +105,59 @@ def test_chat_surface_mode_preference_is_shared_with_electron():
     assert "localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, mode)" in persist_block
 
 
+def test_goodbye_composer_hidden_survives_surface_mode_switches():
+    source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    build_render_block = source.split("function buildRenderProps()", 1)[1].split(
+        "function showToast",
+        1,
+    )[0]
+    submit_block = source.split("function handleComposerSubmit(payload)", 1)[1].split(
+        "function prepareCompactHistoryDropSubmit",
+        1,
+    )[0]
+    set_mode_block = source.split("function setChatSurfaceMode(nextMode)", 1)[1].split(
+        "function cycleChatSurfaceMode()",
+        1,
+    )[0]
+    goodbye_set_block = source.split("function setGoodbyeComposerHidden(hidden, reason)", 1)[1].split(
+        "function syncGoodbyeComposerHidden",
+        1,
+    )[0]
+    attachments_set_block = source.split("function setComposerAttachments(attachments)", 1)[1].split(
+        "var MAX_MESSAGES",
+        1,
+    )[0]
+    desktop_min_height_block = source.split("function getDesktopMinHeight()", 1)[1].split(
+        "function createResizeEdges",
+        1,
+    )[0]
+
+    assert "goodbyeComposerHidden: false" in source
+    assert "function getEffectiveComposerHidden()" in source
+    assert "function hasLocalGoodbyeModeSource()" in source
+    assert "Standalone chat pages inherit window.isNekoGoodbyeModeActive" in source
+    assert "typeof window.isNekoGoodbyeModeActive === 'function'" in source
+    assert "&& window.isNekoGoodbyeModeActive()" in source
+    assert "function getEffectiveComposerAttachmentsVisible()" in source
+    assert "function syncComposerAttachmentsVisibility(previousVisible)" in source
+    assert "return !!(state.composerHidden || state.goodbyeComposerHidden);" in source
+    assert "composerHidden: getEffectiveComposerHidden()" in build_render_block
+    assert "state.homeTutorialInteractionLocked || getEffectiveComposerHidden()" in submit_block
+    assert "syncGoodbyeComposerHidden('chat-surface-mode-change', { localOnly: true });" in set_mode_block
+    assert "options && options.localOnly && !hasLocalGoodbyeModeSource()" in source
+    assert "syncComposerAttachmentsVisibility(previousAttachmentsVisible);" in goodbye_set_block
+    assert "restoredEffectiveComposer && getEffectiveGalgameEnabled()" in goodbye_set_block
+    assert "fetchGalgameOptionsForLatestTurn();" in goodbye_set_block
+    assert "var previousVisible = getEffectiveComposerAttachmentsVisible();" in attachments_set_block
+    assert "syncComposerAttachmentsVisibility(previousVisible);" in attachments_set_block
+    assert "if (!getEffectiveGalgameEnabled()) return MIN_HEIGHT;" in desktop_min_height_block
+    assert "EVENT_PREFIX + 'set-goodbye-composer-hidden'" in source
+    assert "window.addEventListener('live2d-goodbye-click'" in source
+    assert "setGoodbyeComposerHidden(true, 'live2d-goodbye-click')" in source
+    assert "setGoodbyeComposerHidden(false, 'live2d-return-click')" in source
+
+
 def test_chat_full_endpoint_uses_chat_template_with_initial_full_surface():
     router_source = PAGES_ROUTER_PATH.read_text(encoding="utf-8")
     template_source = CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
@@ -112,6 +165,9 @@ def test_chat_full_endpoint_uses_chat_template_with_initial_full_surface():
     assert '@router.get("/chat_full", response_class=HTMLResponse)' in router_source
     assert '"initial_chat_surface_mode": "full"' in router_source
     assert '"initial_chat_surface_mode": "compact"' in router_source
+    assert '"initial_chat_host_kind": "full"' in router_source
+    assert '"initial_chat_host_kind": "compact"' in router_source
+    assert 'data-chat-host-kind="{{ initial_chat_host_kind|default(\'compact\', true) }}"' in template_source
     assert 'data-initial-chat-surface-mode="{{ initial_chat_surface_mode|default(\'compact\', true) }}"' in template_source
 
     chat_route_block = router_source.split('async def get_chat_page', 1)[1].split(
@@ -119,7 +175,9 @@ def test_chat_full_endpoint_uses_chat_template_with_initial_full_surface():
         1,
     )[0]
     assert '"initial_chat_surface_mode": "compact"' in chat_route_block
+    assert '"initial_chat_host_kind": "compact"' in chat_route_block
     assert '"initial_chat_surface_mode": "full"' not in chat_route_block
+    assert '"initial_chat_host_kind": "full"' not in chat_route_block
 
 
 def test_full_inset_layout_gated_by_electron_runtime_marker():
@@ -175,8 +233,16 @@ def test_chat_host_initial_surface_mode_prefers_template_override_before_storage
     assert "declaredModeAttr ? normalizeChatSurfaceMode(declaredModeAttr) : ''" in initial_reader_block
     assert "normalizeChatSurfaceMode(body.getAttribute('data-initial-chat-surface-mode'))" not in initial_reader_block
     assert "if (declaredMode === 'compact' || declaredMode === 'full')" in initial_reader_block
+    assert "if (declaredMode === 'full' && isCompactOnlyElectronChatHost())" in initial_reader_block
+    assert "return 'compact';" in initial_reader_block
     assert "return declaredMode;" in initial_reader_block
     assert initial_reader_block.index("return declaredMode;") < initial_reader_block.index("return readChatSurfaceModePreference();")
+
+    assert "function isCompactOnlyElectronChatHost()" in source
+    assert "body.getAttribute('data-chat-host-kind') === 'compact'" in source
+    assert "body.getAttribute('data-initial-chat-surface-mode') === 'compact'" not in source
+    assert "function coerceChatSurfaceModeForHost(mode)" in source
+    assert "normalized === 'full' && isCompactOnlyElectronChatHost()" in source
 
     init_block = source.split("function init()", 1)[1].split(
         "function initAfterStorageBarrier()",
@@ -206,7 +272,7 @@ def test_close_from_minimized_preserves_compact_surface_mode():
     # restorable mode. Otherwise the next openWindow() rebuilds the React props
     # with chatSurfaceMode:'minimized' and renders a blank body.
     assert (
-        "state.chatSurfaceMode = normalizeChatSurfaceMode(lastRestorableChatSurfaceMode);"
+        "state.chatSurfaceMode = coerceChatSurfaceModeForHost(lastRestorableChatSurfaceMode);"
         in minimized_block
     )
     assert "syncChatSurfaceModeUI();" in minimized_block
@@ -225,7 +291,7 @@ def test_open_from_minimized_restores_surface_mode_before_mounting():
     # mountWindow() so React rebuilds the compact body instead of the blank
     # minimized surface — symmetric with closeWindow's reset.
     restore_assignment = (
-        "state.chatSurfaceMode = normalizeChatSurfaceMode(lastRestorableChatSurfaceMode);"
+        "state.chatSurfaceMode = coerceChatSurfaceModeForHost(lastRestorableChatSurfaceMode);"
     )
     assert restore_assignment in open_block
     assert open_block.index(restore_assignment) < open_block.index("if (!mountWindow())")
@@ -260,7 +326,7 @@ def test_minimized_restore_uses_previous_real_surface_mode():
 
     assert "if (normalized === 'minimized')" in next_mode_block
     assert "lastRestorableChatSurfaceMode" in next_mode_block
-    assert "return normalizeChatSurfaceMode(lastRestorableChatSurfaceMode);" in next_mode_block
+    assert "return coerceChatSurfaceModeForHost(lastRestorableChatSurfaceMode);" in next_mode_block
     assert "lastRestorableChatSurfaceMode = normalized;" in set_mode_block
     assert "lastRestorableChatSurfaceMode = previousMode;" in set_mode_block
     assert "lastRestorableChatSurfaceMode = normalizedChatSurfaceMode;" in set_view_props_block

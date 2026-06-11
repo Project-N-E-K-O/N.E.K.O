@@ -447,6 +447,97 @@ body.neko-game-active [id$="-lock-icon"] {
     --neko-idle-return-facing-transform: scaleX(-1);
 }
 
+.neko-idle-thought-bubble {
+    --neko-idle-bubble-size: clamp(52px, 9vw, 78px);
+    position: absolute;
+    z-index: 3;
+    width: var(--neko-idle-bubble-size);
+    height: var(--neko-idle-bubble-size);
+    right: calc(var(--neko-idle-bubble-size) * -0.18);
+    top: calc(var(--neko-idle-bubble-size) * -0.45);
+    display: block;
+    transform: translate3d(0, 0, 0);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 360ms ease, visibility 0s linear 360ms;
+    pointer-events: none;
+    user-select: none;
+}
+
+.neko-idle-thought-bubble-bg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+    pointer-events: none;
+    user-select: none;
+}
+
+.neko-idle-thought-bubble-item {
+    position: absolute;
+    left: 50%;
+    top: 36%;
+    width: 47%;
+    max-height: 38%;
+    object-fit: contain;
+    display: block;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    user-select: none;
+}
+
+@keyframes neko-idle-thought-bubble-item-float {
+    0% { transform: translate(-50%, -50%); }
+    8.333% { transform: translate(-50%, calc(-50% - 0.5px)); }
+    16.667% { transform: translate(-50%, calc(-50% - 0.75px)); }
+    25% { transform: translate(-50%, calc(-50% - 1px)); }
+    33.333% { transform: translate(-50%, calc(-50% - 0.75px)); }
+    41.667% { transform: translate(-50%, calc(-50% - 0.5px)); }
+    50% { transform: translate(-50%, -50%); }
+    58.333% { transform: translate(-50%, calc(-50% + 0.5px)); }
+    66.667% { transform: translate(-50%, calc(-50% + 0.75px)); }
+    75% { transform: translate(-50%, calc(-50% + 1px)); }
+    83.333% { transform: translate(-50%, calc(-50% + 0.75px)); }
+    91.667% { transform: translate(-50%, calc(-50% + 0.5px)); }
+    100% { transform: translate(-50%, -50%); }
+}
+
+.neko-idle-return-btn.is-thought-bubble-active .neko-idle-thought-bubble {
+    opacity: 1;
+    visibility: visible;
+    transition-delay: 0s;
+}
+
+.neko-idle-return-btn.is-thought-bubble-active .neko-idle-thought-bubble-item {
+    animation: neko-idle-thought-bubble-item-float 3600ms steps(24, end) infinite;
+}
+
+.neko-idle-return-btn.is-thought-bubble-sleeping .neko-idle-thought-bubble-item {
+    display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .neko-idle-return-btn.is-thought-bubble-active .neko-idle-thought-bubble-item {
+        animation: none;
+    }
+}
+
+.neko-idle-return-btn[data-neko-idle-tier="cat1"] .neko-idle-thought-bubble {
+    right: calc(var(--neko-idle-bubble-size) * -0.42);
+    top: calc(var(--neko-idle-bubble-size) * -0.72);
+}
+
+.neko-idle-return-btn[data-neko-idle-tier="none"] .neko-idle-thought-bubble,
+.neko-idle-return-btn.is-drag-action-pending .neko-idle-thought-bubble,
+.neko-idle-return-btn.is-drag-action .neko-idle-thought-bubble,
+.neko-idle-return-btn.is-cat1-walking .neko-idle-thought-bubble,
+.neko-idle-return-btn.is-cat1-stretching .neko-idle-thought-bubble,
+.neko-idle-return-btn.is-cat1-hover-paused .neko-idle-thought-bubble {
+    display: none;
+}
+
 .neko-idle-return-art-next {
     position: absolute;
     inset: 0;

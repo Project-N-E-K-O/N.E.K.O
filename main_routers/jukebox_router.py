@@ -28,6 +28,7 @@ from dataclasses import dataclass, asdict
 
 from fastapi import APIRouter, File, Form, UploadFile, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from .shared_state import get_config_manager
@@ -154,7 +155,16 @@ class Action:
     fileMd5: str  # 文件MD5
     format: str  # 动画格式（vmd, vrma, fbx, bvh）
     uploadDate: str
+    visible: bool = True
     missing: bool = False
+
+
+class BatchDeleteSongsRequest(BaseModel):
+    songIds: List[str] = Field(default_factory=list)
+
+
+class BatchDeleteActionsRequest(BaseModel):
+    actionIds: List[str] = Field(default_factory=list)
 
 
 class JukeboxConfig:
@@ -264,6 +274,46 @@ class JukeboxConfig:
             "md5Index": merged_md5_index
         }
 
+    def _load_builtin_resource_defaults(self) -> tuple[dict, dict]:
+        """Load bundled song/action defaults used to detect real user overrides."""
+        builtin_songs_path = Path(__file__).parent.parent / "static" / "jukebox" / "songs.json"
+        if not builtin_songs_path.exists():
+            return {}, {}
+
+        try:
+            with open(builtin_songs_path, 'r', encoding='utf-8') as f:
+                builtin_data = json.load(f)
+        except Exception as e:
+            logger.error(f"加载软件自带配置失败: {e}")
+            return {}, {}
+
+        return builtin_data.get("songs", {}), builtin_data.get("actions", {})
+
+    @staticmethod
+    def _collect_builtin_overrides(resources: dict, resource_ids: set, defaults: dict, fields: list[str]) -> dict:
+        fallback_values = {
+            "visible": True,
+            "defaultAction": "",
+            "name": "",
+            "artist": "",
+        }
+        overrides_by_id = {}
+
+        for resource_id in resource_ids:
+            resource = resources[resource_id]
+            default_resource = defaults.get(resource_id, {})
+            overrides = {}
+            for field in fields:
+                if field not in resource:
+                    continue
+                default_value = default_resource.get(field, fallback_values.get(field))
+                if resource[field] != default_value:
+                    overrides[field] = resource[field]
+            if overrides:
+                overrides_by_id[resource_id] = overrides
+
+        return overrides_by_id
+
     def save(self):
         """保存配置（排除自带资源，但保留跨类型绑定和内置资源覆盖设置）"""
         # 获取所有资源ID及其类型
@@ -277,29 +327,21 @@ class JukeboxConfig:
         builtin_action_ids = {k for k, v in all_actions.items() if v.get("isBuiltin", False)}
 
         # 收集内置资源的覆盖设置（可见性、默认动画、名称、歌手等）
+        builtin_song_defaults, builtin_action_defaults = self._load_builtin_resource_defaults()
         builtin_overrides = {
-            "songs": {},
-            "actions": {}
+            "songs": self._collect_builtin_overrides(
+                all_songs,
+                builtin_song_ids,
+                builtin_song_defaults,
+                ["visible", "defaultAction", "name", "artist"],
+            ),
+            "actions": self._collect_builtin_overrides(
+                all_actions,
+                builtin_action_ids,
+                builtin_action_defaults,
+                ["visible", "name"],
+            ),
         }
-        for song_id in builtin_song_ids:
-            song = all_songs[song_id]
-            # 保存用户可能修改的字段
-            overrides = {}
-            for field in ["visible", "defaultAction", "name", "artist"]:
-                if field in song:
-                    overrides[field] = song[field]
-            if overrides:
-                builtin_overrides["songs"][song_id] = overrides
-
-        for action_id in builtin_action_ids:
-            action = all_actions[action_id]
-            # 保存用户可能修改的字段
-            overrides = {}
-            for field in ["visible", "name"]:
-                if field in action:
-                    overrides[field] = action[field]
-            if overrides:
-                builtin_overrides["actions"][action_id] = overrides
 
         user_data = {
             "version": self.data.get("version", "1.0"),
@@ -488,9 +530,77 @@ async def upload_songs(
     return {"success": True, "results": results}
 
 
+@router.post("/songs/batch-delete")
+async def batch_delete_songs(request: BatchDeleteSongsRequest):
+    """Delete uploaded songs and hide built-in songs in one validated batch."""
+    config_mgr = get_config_manager()
+    jukebox_config = JukeboxConfig(config_mgr)
+
+    song_ids = []
+    seen = set()
+    for song_id in request.songIds:
+        if song_id and song_id not in seen:
+            song_ids.append(song_id)
+            seen.add(song_id)
+
+    if not song_ids:
+        raise HTTPException(400, "未选择歌曲")
+
+    missing_ids = [song_id for song_id in song_ids if song_id not in jukebox_config.data["songs"]]
+    if missing_ids:
+        raise HTTPException(404, f"歌曲不存在: {', '.join(missing_ids)}")
+
+    deleted = []
+    hidden = []
+    failed = []
+
+    for song_id in song_ids:
+        song = jukebox_config.data["songs"][song_id]
+        song_name = song.get("name") or song_id
+
+        try:
+            if song.get("isBuiltin", False):
+                song["visible"] = False
+                hidden.append({"songId": song_id, "name": song_name})
+                continue
+
+            audio_path = jukebox_config.jukebox_dir / song["audio"]
+            if audio_path.exists():
+                audio_path.unlink()
+
+            if song_id in jukebox_config.data["bindings"]:
+                del jukebox_config.data["bindings"][song_id]
+
+            song_md5 = song.get("audioMd5", "")
+            if song_md5 and song_md5 in jukebox_config.data["md5Index"]["songs"]:
+                del jukebox_config.data["md5Index"]["songs"][song_md5]
+
+            del jukebox_config.data["songs"][song_id]
+            deleted.append({"songId": song_id, "name": song_name})
+        except Exception as exc:
+            logger.error(f"批量删除歌曲失败: {song_id}, error={exc}")
+            failed.append({"songId": song_id, "name": song_name, "error": str(exc)})
+
+    if deleted or hidden:
+        await jukebox_config.asave()
+
+    failed_count = len(failed)
+    return {
+        "success": failed_count == 0,
+        "partial": failed_count > 0 and (len(deleted) > 0 or len(hidden) > 0),
+        "requestedCount": len(song_ids),
+        "deletedCount": len(deleted),
+        "hiddenCount": len(hidden),
+        "failedCount": failed_count,
+        "deleted": deleted,
+        "hidden": hidden,
+        "failed": failed,
+    }
+
+
 @router.delete("/songs/{song_id}")
 async def delete_song(song_id: str):
-    """删除歌曲"""
+    """Delete an uploaded song or hide a built-in song."""
     config_mgr = get_config_manager()
     jukebox_config = JukeboxConfig(config_mgr)
 
@@ -499,14 +609,12 @@ async def delete_song(song_id: str):
 
     song = jukebox_config.data["songs"][song_id]
 
-    # 内置资源：只删除绑定关系，不删除资源本身
+    # 内置资源：隐藏，不删除资源本身或绑定关系
     if song.get("isBuiltin", False):
-        # 删除相关绑定
-        if song_id in jukebox_config.data["bindings"]:
-            del jukebox_config.data["bindings"][song_id]
-            await jukebox_config.asave()
-            logger.info(f"删除内置歌曲的绑定关系: {song_id}")
-        return {"success": True, "message": "内置歌曲的绑定关系已删除"}
+        song["visible"] = False
+        await jukebox_config.asave()
+        logger.info(f"隐藏内置歌曲: {song_id}")
+        return {"success": True, "message": "内置歌曲已隐藏", "hidden": True}
 
     # 用户资源：完全删除
     # 删除文件
@@ -543,6 +651,21 @@ async def update_song_visibility(song_id: str, visible: bool = Form(...)):
     jukebox_config.data["songs"][song_id]["visible"] = visible
     await jukebox_config.asave()
     
+    return {"success": True}
+
+
+@router.put("/actions/{action_id}/visibility")
+async def update_action_visibility(action_id: str, visible: bool = Form(...)):
+    """Update an action visibility flag."""
+    config_mgr = get_config_manager()
+    jukebox_config = JukeboxConfig(config_mgr)
+
+    if action_id not in jukebox_config.data["actions"]:
+        raise HTTPException(404, "动画不存在")
+
+    jukebox_config.data["actions"][action_id]["visible"] = visible
+    await jukebox_config.asave()
+
     return {"success": True}
 
 
@@ -719,6 +842,86 @@ async def upload_actions(
     return {"success": True, "results": results}
 
 
+def _remove_action_bindings(jukebox_config: JukeboxConfig, action_id: str) -> None:
+    """Remove action references from bindings and defaultAction fields."""
+    for song_id, bindings in list(jukebox_config.data["bindings"].items()):
+        if action_id in bindings:
+            del bindings[action_id]
+            song = jukebox_config.data["songs"].get(song_id)
+            if song and song.get("defaultAction") == action_id:
+                song["defaultAction"] = ""
+                logger.info(f"清除默认动画: {song_id} (删除了动画 {action_id})")
+        if not bindings:
+            del jukebox_config.data["bindings"][song_id]
+
+
+@router.post("/actions/batch-delete")
+async def batch_delete_actions(request: BatchDeleteActionsRequest):
+    """Delete uploaded actions and hide built-in actions in one validated batch."""
+    config_mgr = get_config_manager()
+    jukebox_config = JukeboxConfig(config_mgr)
+
+    action_ids = []
+    seen = set()
+    for action_id in request.actionIds:
+        if action_id and action_id not in seen:
+            action_ids.append(action_id)
+            seen.add(action_id)
+
+    if not action_ids:
+        raise HTTPException(400, "未选择动画")
+
+    missing_ids = [action_id for action_id in action_ids if action_id not in jukebox_config.data["actions"]]
+    if missing_ids:
+        raise HTTPException(404, f"动画不存在: {', '.join(missing_ids)}")
+
+    deleted = []
+    hidden = []
+    failed = []
+
+    for action_id in action_ids:
+        action = jukebox_config.data["actions"][action_id]
+        action_name = action.get("name") or action_id
+
+        try:
+            if action.get("isBuiltin", False):
+                action["visible"] = False
+                hidden.append({"actionId": action_id, "name": action_name})
+                continue
+
+            file_path = jukebox_config.jukebox_dir / action["file"]
+            if file_path.exists():
+                file_path.unlink()
+
+            _remove_action_bindings(jukebox_config, action_id)
+
+            action_md5 = action.get("fileMd5", "")
+            if action_md5 and action_md5 in jukebox_config.data["md5Index"]["actions"]:
+                del jukebox_config.data["md5Index"]["actions"][action_md5]
+
+            del jukebox_config.data["actions"][action_id]
+            deleted.append({"actionId": action_id, "name": action_name})
+        except Exception as exc:
+            logger.error(f"批量删除动画失败: {action_id}, error={exc}")
+            failed.append({"actionId": action_id, "name": action_name, "error": str(exc)})
+
+    if deleted or hidden:
+        await jukebox_config.asave()
+
+    failed_count = len(failed)
+    return {
+        "success": failed_count == 0,
+        "partial": failed_count > 0 and (len(deleted) > 0 or len(hidden) > 0),
+        "requestedCount": len(action_ids),
+        "deletedCount": len(deleted),
+        "hiddenCount": len(hidden),
+        "failedCount": failed_count,
+        "deleted": deleted,
+        "hidden": hidden,
+        "failed": failed,
+    }
+
+
 @router.delete("/actions/{action_id}")
 async def delete_action(action_id: str):
     """删除动画"""
@@ -730,23 +933,12 @@ async def delete_action(action_id: str):
 
     action = jukebox_config.data["actions"][action_id]
 
-    # 内置资源：只删除绑定关系，不删除资源本身
+    # 内置资源：隐藏，不删除资源本身
     if action.get("isBuiltin", False):
-        # 从所有绑定中移除，并清理默认动画
-        for song_id, bindings in list(jukebox_config.data["bindings"].items()):
-            if action_id in bindings:
-                del bindings[action_id]
-                # 如果删除的是默认动画，清除默认动画设置
-                song = jukebox_config.data["songs"].get(song_id)
-                if song and song.get("defaultAction") == action_id:
-                    song["defaultAction"] = ""
-                    logger.info(f"清除默认动画: {song_id} (删除了内置动画 {action_id} 的绑定)")
-            # 如果没有绑定了，删除空字典
-            if not bindings:
-                del jukebox_config.data["bindings"][song_id]
+        action["visible"] = False
         await jukebox_config.asave()
-        logger.info(f"删除内置动画的绑定关系: {action_id}")
-        return {"success": True, "message": "内置动画的绑定关系已删除"}
+        logger.info(f"隐藏内置动画: {action_id}")
+        return {"success": True, "message": "内置动画已隐藏", "hidden": True}
 
     # 用户资源：完全删除
     # 删除文件
@@ -754,18 +946,7 @@ async def delete_action(action_id: str):
     if file_path.exists():
         file_path.unlink()
 
-    # 从所有绑定中移除（使用ID），并清理默认动画
-    for song_id, bindings in list(jukebox_config.data["bindings"].items()):
-        if action_id in bindings:
-            del bindings[action_id]
-            # 如果删除的是默认动画，清除默认动画设置
-            song = jukebox_config.data["songs"].get(song_id)
-            if song and song.get("defaultAction") == action_id:
-                song["defaultAction"] = ""
-                logger.info(f"清除默认动画: {song_id} (删除了动画 {action_id})")
-        # 如果没有绑定了，删除空字典
-        if not bindings:
-            del jukebox_config.data["bindings"][song_id]
+    _remove_action_bindings(jukebox_config, action_id)
 
     # 从 MD5 索引中移除
     action_md5 = action.get("fileMd5", "")
@@ -953,7 +1134,7 @@ async def export_config(
         # 导出歌曲
         for song_id in song_ids_to_export:
             song = jukebox_config.data["songs"][song_id]
-            export_data["songs"][song_id] = song
+            export_data["songs"][song_id] = song.copy()
 
             # 复制文件
             src_path = jukebox_config.jukebox_dir / song["audio"]
@@ -968,6 +1149,9 @@ async def export_config(
                 continue
 
             action = jukebox_config.data["actions"][action_id]
+
+            if not includeHidden and not action.get("visible", True):
+                continue
 
             # 处理自带资源：导出ID和MD5，但不打包文件
             if action.get("isBuiltin", False):
@@ -988,6 +1172,12 @@ async def export_config(
                 dst_path = export_dir / action["file"]
                 dst_path.parent.mkdir(parents=True, exist_ok=True)
                 await asyncio.to_thread(shutil.copy2, src_path, dst_path)
+
+        if not includeHidden:
+            for song in export_data["songs"].values():
+                default_action = song.get("defaultAction", "")
+                if default_action and default_action not in export_data["actions"]:
+                    song["defaultAction"] = ""
 
         # 导出绑定关系（将ID绑定转换为MD5绑定，便于跨系统导入）
         # 本地存储格式: bindings[songId][actionId] = {"offset": 0}
@@ -1027,6 +1217,8 @@ async def export_config(
             for action_id, binding_data in jukebox_config.data["bindings"][song_id].items():
                 action = jukebox_config.data["actions"].get(action_id)
                 if not action:
+                    continue
+                if not includeHidden and not action.get("visible", True):
                     continue
 
                 action_md5 = action_id_to_md5.get(action_id, "")
