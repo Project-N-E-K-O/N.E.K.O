@@ -443,7 +443,7 @@ class StudyStore:
             "notebooks": [
                 asdict(item) for item in notebooks.list_notebooks(limit=5000)
             ],
-            "notes": [asdict(item) for item in notebooks.list_notes(limit=5000)],
+            "notes": [asdict(item) for item in notebooks.export_notes(limit=5000)],
             "memory_decks": memory_decks.list_decks(limit=5000),
             "memory_items": memory_decks.list_items(limit=5000, include_archived=True),
             "memory_due_reviews": memory_decks.due_reviews(limit=5000),

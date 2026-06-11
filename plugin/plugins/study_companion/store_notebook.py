@@ -653,6 +653,24 @@ class NotebookStore:
     def get_recent_notes(self, *, limit: int = 10) -> list[NoteItem]:
         return self.list_notes(limit=limit)
 
+    def export_notes(self, *, limit: int = 5000) -> list[NoteItem]:
+        safe_limit = max(1, int(limit or 5000))
+        with self.store._lock:
+            rows = (
+                self.store._require_conn()
+                .execute(
+                    """
+                    SELECT *
+                    FROM notes
+                    ORDER BY updated_at DESC, rowid DESC
+                    LIMIT ?
+                    """,
+                    (safe_limit,),
+                )
+                .fetchall()
+            )
+        return [item for item in (self._note_from_row(row) for row in rows) if item]
+
     def count_notes_by_topic(self) -> dict[str, int]:
         with self.store._lock:
             rows = (

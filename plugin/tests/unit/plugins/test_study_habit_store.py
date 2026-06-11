@@ -241,21 +241,23 @@ def test_export_json_includes_notebook_backup_rows(tmp_path: Path) -> None:
     try:
         notebooks = NotebookStore(store)
         notebook = notebooks.create_notebook(name="Private Notes")
-        note = notebooks.create_note(
-            notebook_id=notebook.id,
-            title="Secret note",
-            content="private study note",
-            tags=["backup"],
-        )
+        for index in range(505):
+            notebooks.create_note(
+                notebook_id=notebook.id,
+                title=f"Secret note {index}",
+                content=f"private study note {index}",
+                tags=["backup"],
+            )
 
         exported = store.export_json()
+        notes_by_title = {item["title"]: item for item in exported["notes"]}
 
         assert exported["notebooks"][0]["id"] == notebook.id
         assert exported["notebooks"][0]["name"] == "Private Notes"
-        assert exported["notes"][0]["id"] == note.id
-        assert exported["notes"][0]["notebook_id"] == notebook.id
-        assert exported["notes"][0]["content"] == "private study note"
-        assert exported["notes"][0]["tags"] == ["backup"]
+        assert len(exported["notes"]) == 505
+        assert notes_by_title["Secret note 0"]["notebook_id"] == notebook.id
+        assert notes_by_title["Secret note 0"]["content"] == "private study note 0"
+        assert notes_by_title["Secret note 0"]["tags"] == ["backup"]
     finally:
         store.close()
 
