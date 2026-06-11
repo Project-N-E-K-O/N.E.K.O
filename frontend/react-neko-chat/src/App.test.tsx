@@ -359,6 +359,85 @@ describe('App', () => {
     }
   });
 
+  it('keeps local compact resize width during desktop compact surface resize', async () => {
+    (window as typeof window & {
+      __nekoDesktopCompactLayout?: unknown;
+    }).__nekoDesktopCompactLayout = {
+      windowBounds: { x: 100, y: 200, width: 460, height: 90 },
+      surfaceScreenRect: { left: 108, top: 208, width: 430, height: 58, right: 538, bottom: 266 },
+      workArea: { x: 0, y: 0, width: 1440, height: 900 },
+    };
+
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" />,
+    );
+
+    try {
+      const rightHandle = container.querySelector<HTMLDivElement>('[data-compact-resize-side="right"]');
+      expect(rightHandle).not.toBeNull();
+
+      fireEvent.pointerDown(rightHandle!, {
+        pointerId: 24,
+        clientX: 430,
+        screenX: 538,
+        button: 0,
+        buttons: 1,
+        pointerType: 'mouse',
+      });
+      fireEvent.pointerMove(rightHandle!, {
+        pointerId: 24,
+        clientX: 550,
+        screenX: 658,
+        buttons: 1,
+        pointerType: 'mouse',
+      });
+
+      await waitFor(() => {
+        expect(document.documentElement.style.getPropertyValue('--compact-surface-resize-width')).toBe('550px');
+      });
+      expect((container.querySelector('.compact-chat-surface-shell') as HTMLElement).style
+        .getPropertyValue('--compact-surface-resize-width')).toBe('550px');
+
+      fireEvent.pointerUp(rightHandle!, {
+        pointerId: 24,
+        clientX: 550,
+        screenX: 658,
+        buttons: 0,
+        pointerType: 'mouse',
+      });
+
+      expect(document.documentElement.style.getPropertyValue('--compact-surface-resize-width')).toBe('550px');
+      expect((container.querySelector('.compact-chat-surface-shell') as HTMLElement).style
+        .getPropertyValue('--compact-surface-resize-width')).toBe('550px');
+
+      (window as typeof window & {
+        __nekoDesktopCompactLayout?: unknown;
+      }).__nekoDesktopCompactLayout = {
+        windowBounds: { x: 100, y: 200, width: 580, height: 90 },
+        surfaceScreenRect: { left: 108, top: 208, width: 550, height: 58, right: 658, bottom: 266 },
+        workArea: { x: 0, y: 0, width: 1440, height: 900 },
+        resizeActive: false,
+      };
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko:desktop-compact-layout-change', {
+          detail: (window as typeof window & {
+            __nekoDesktopCompactLayout?: unknown;
+          }).__nekoDesktopCompactLayout,
+        }));
+      });
+
+      await waitFor(() => {
+        expect(document.documentElement.style.getPropertyValue('--compact-surface-resize-width')).toBe('');
+      });
+      expect((container.querySelector('.compact-chat-surface-shell') as HTMLElement).style
+        .getPropertyValue('--compact-surface-resize-width')).toBe('');
+    } finally {
+      delete (window as typeof window & {
+        __nekoDesktopCompactLayout?: unknown;
+      }).__nekoDesktopCompactLayout;
+    }
+  });
+
   it('defaults compact history open and preserves history controls through visibility toggles', async () => {
     const onExportConversationClick = vi.fn();
     const message = parseChatMessage({
@@ -628,6 +707,29 @@ describe('App', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('keeps compact history open when the first press causes the handle to leave before click', () => {
+    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
+
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" />,
+    );
+
+    const handle = container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle');
+    expect(handle).not.toBeNull();
+    expect(handle).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.pointerDown(handle!, { pointerType: 'mouse', button: 0, buttons: 1 });
+    expect(handle).toHaveAttribute('aria-expanded', 'true');
+    expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+
+    fireEvent.pointerLeave(handle!, { pointerType: 'mouse', buttons: 1 });
+    fireEvent.click(handle!);
+
+    expect(handle).toHaveAttribute('aria-expanded', 'true');
+    expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'open');
+    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
   });
 
   it('keeps compact export history message actions read-only', async () => {

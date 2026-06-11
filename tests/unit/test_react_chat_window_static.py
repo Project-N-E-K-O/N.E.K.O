@@ -12,6 +12,7 @@ STATIC_INDEX_JS_PATH = Path(__file__).resolve().parents[2] / "static" / "js" / "
 REACT_CHAT_STYLES_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "styles.css"
 REACT_CHAT_APP_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "App.tsx"
 CHAT_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "chat.html"
+INDEX_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "index.html"
 SUBTITLE_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "subtitle.html"
 PAGES_ROUTER_PATH = Path(__file__).resolve().parents[2] / "main_routers" / "pages_router.py"
 COMPACT_EXPORT_HISTORY_PANEL_PATH = (
@@ -89,28 +90,46 @@ def test_chat_surface_mode_preference_is_shared_with_electron():
     assert "localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, mode)" in persist_block
 
 
-def test_chat_full_endpoint_uses_chat_template_with_initial_full_surface():
+def test_chat_full_endpoint_uses_index_template_with_initial_full_surface():
     router_source = PAGES_ROUTER_PATH.read_text(encoding="utf-8")
-    template_source = CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
+    index_template = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
 
     assert '@router.get("/chat_full", response_class=HTMLResponse)' in router_source
-    assert '"initial_chat_surface_mode": "full"' in router_source
-    assert '"initial_chat_surface_mode": "compact"' in router_source
-    assert 'data-initial-chat-surface-mode="{{ initial_chat_surface_mode|default(\'compact\', true) }}"' in template_source
+    assert 'data-initial-chat-surface-mode="{{ initial_chat_surface_mode|default(\'compact\', true) }}"' in index_template
+
+    root_route_block = router_source.split('async def get_default_index', 1)[1].split(
+        'def _render_model_manager',
+        1,
+    )[0]
+    assert 'TemplateResponse("templates/index.html"' in root_route_block
+    assert '"initial_chat_surface_mode": "compact"' in root_route_block
 
     chat_route_block = router_source.split('async def get_chat_page', 1)[1].split(
         '@router.get("/chat_full"',
         1,
     )[0]
+    assert 'TemplateResponse("templates/chat.html"' in chat_route_block
     assert '"initial_chat_surface_mode": "compact"' in chat_route_block
     assert '"initial_chat_surface_mode": "full"' not in chat_route_block
+
+    chat_full_route_block = router_source.split('async def get_chat_full_page', 1)[1].split(
+        '@router.get("/subtitle"',
+        1,
+    )[0]
+    assert 'TemplateResponse("templates/index.html"' in chat_full_route_block
+    assert 'TemplateResponse("templates/chat.html"' not in chat_full_route_block
+    assert '"initial_chat_surface_mode": "full"' in chat_full_route_block
+    assert '"initial_chat_surface_mode": "compact"' not in chat_full_route_block
 
 
 def test_chat_templates_version_react_chat_bundle_from_react_assets():
     chat_template = CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
+    index_template = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
 
     assert 'neko-chat-window.css?v={{ react_chat_asset_version }}' in chat_template
     assert 'neko-chat-window.iife.js?v={{ react_chat_asset_version }}' in chat_template
+    assert 'neko-chat-window.css?v={{ react_chat_asset_version }}' in index_template
+    assert 'neko-chat-window.iife.js?v={{ react_chat_asset_version }}' in index_template
 
 
 def test_chat_full_is_reserved_from_character_page_config_routing():
@@ -344,6 +363,12 @@ def test_compact_surface_resize_handles_keep_width_in_dom_geometry_contract():
     assert "var compactSurfaceDesktopResizeActive = false;" in script
     assert "if (isElectronChatWindow() && detail && detail.screenRect)" in script
     assert "compactSurfaceDesktopResizeActive = phase !== 'end';" in script
+    desktop_layout_change_block = script.split("function handleDesktopCompactLayoutChange(layout)", 1)[1].split(
+        "function normalizeCompactDesktopWorkArea",
+        1,
+    )[0]
+    assert "compactSurfaceDesktopResizeActive = !!(layout && layout.resizeActive);" in desktop_layout_change_block
+    assert "compactSurfaceDesktopResizeActive = !!(layout && layout.dragging);" not in desktop_layout_change_block
     assert "if (compactSurfaceDesktopResizeActive && isElectronChatWindow())" in script
     assert "function handleDesktopCompactLayoutChange(layout)" in script
     assert "if (baseAnchorChanged && !compactSurfaceDesktopResizeActive)" in script
@@ -372,14 +397,39 @@ def test_compact_surface_resize_handles_keep_width_in_dom_geometry_contract():
     assert "neko:compact-surface-resize-width-change" in script
     assert "function isDesktopCompactSurfaceLayoutActive()" in app_source
     assert "document.documentElement.style.removeProperty('--compact-surface-resize-width');" in app_source
+    apply_resize_width_block = app_source.split(
+        "const applyCompactSurfaceResizeWidthVar = useCallback((width: number | null) => {",
+        1,
+    )[1].split(
+        "const dispatchCompactSurfaceResizeRequest = useCallback(",
+        1,
+    )[0]
+    assert "isDesktopCompactSurfaceLayoutActive()" not in apply_resize_width_block
     assert "&& !isDesktopCompactSurfaceLayoutActive()" in app_source
     assert "const getClampedCompactSurfaceResizeWidthForSide = useCallback" in app_source
     assert "resizeState.anchorRightScreen - areaLeft" in app_source
     assert "areaRight - resizeState.anchorLeftScreen" in app_source
     assert "if (!isDesktopCompactSurfaceLayoutActive()) {\n      setCompactSurfaceResizeWidth(startWidth);" in app_source
     assert "if (!isDesktopCompactSurfaceLayoutActive()) {\n      setCompactSurfaceResizeWidth(nextWidth);" in app_source
-    assert "if (isDesktopCompactSurfaceLayoutActive()) {\n        setCompactSurfaceResizeWidth(null);" in app_source
-    assert "applyCompactSurfaceResizeWidthVar(null);\n        return;\n      }\n      const resizeState = compactSurfaceResizeStateRef.current;" in app_source
+    assert "if (compactSurfaceResizeStateRef.current) return;" in app_source
+    finish_resize_block = app_source.split(
+        "const finishCompactSurfaceResize = useCallback((event?: ReactPointerEvent<HTMLDivElement>) => {",
+        1,
+    )[1].split(
+        "const handleCompactSurfaceResizePointerDown = useCallback(",
+        1,
+    )[0]
+    assert "if (!isDesktopCompactSurfaceLayoutActive()) {\n      applyCompactSurfaceResizeWidthVar(null);" in finish_resize_block
+    clamp_width_block = app_source.split(
+        "const clampExistingWidth = () => {",
+        1,
+    )[1].split(
+        "window.addEventListener('resize', clampExistingWidth);",
+        1,
+    )[0]
+    assert "if (compactSurfaceResizeStateRef.current) return;" in clamp_width_block
+    assert "setCompactSurfaceResizeWidth(null);" in clamp_width_block
+    assert "if (resizeState) return;\n        setCompactSurfaceResizeWidth(null);" in app_source
 
     assert "--compact-surface-active-width: var(--compact-surface-resize-width, var(--compact-surface-width, 430px));" in resize_shell_block
     assert "width: var(--compact-surface-active-width);" in resize_shell_block

@@ -334,6 +334,7 @@
 
     function handleDesktopCompactLayoutChange(layout) {
         compactSurfaceDesktopDragActive = !!(layout && layout.dragging);
+        compactSurfaceDesktopResizeActive = !!(layout && layout.resizeActive);
         var nextAnchorSnapshot = getCompactDesktopLayoutAnchorSnapshot(layout);
         var baseAnchorChanged = false;
         if (!nextAnchorSnapshot) {

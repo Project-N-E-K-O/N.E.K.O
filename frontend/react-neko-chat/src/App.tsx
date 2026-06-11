@@ -2612,11 +2612,6 @@ function CompactChatApp({
 
   const applyCompactSurfaceResizeWidthVar = useCallback((width: number | null) => {
     const shell = compactInputShellRef.current;
-    if (isDesktopCompactSurfaceLayoutActive()) {
-      document.documentElement.style.removeProperty('--compact-surface-resize-width');
-      shell?.style.removeProperty('--compact-surface-resize-width');
-      return;
-    }
     if (width === null) {
       document.documentElement.style.removeProperty('--compact-surface-resize-width');
       shell?.style.removeProperty('--compact-surface-resize-width');
@@ -2651,8 +2646,10 @@ function CompactChatApp({
     if (!resizeState) return;
     if (event && resizeState.pointerId !== event.pointerId) return;
     dispatchCompactSurfaceResizeRequest(resizeState.side, resizeState.lastWidth, 'end');
-    applyCompactSurfaceResizeWidthVar(null);
-    setCompactSurfaceResizeWidth(null);
+    if (!isDesktopCompactSurfaceLayoutActive()) {
+      applyCompactSurfaceResizeWidthVar(null);
+      setCompactSurfaceResizeWidth(null);
+    }
     const captureTarget = resizeState.captureTarget;
     if (captureTarget && typeof captureTarget.releasePointerCapture === 'function') {
       try {
@@ -2919,6 +2916,7 @@ function CompactChatApp({
     if (!isCompactSurface) return undefined;
     const clampExistingWidth = () => {
       if (isDesktopCompactSurfaceLayoutActive()) {
+        if (compactSurfaceResizeStateRef.current) return;
         setCompactSurfaceResizeWidth(null);
         applyCompactSurfaceResizeWidthVar(null);
         return;
@@ -2938,12 +2936,13 @@ function CompactChatApp({
   useEffect(() => {
     if (!isCompactSurface) return undefined;
     const syncAppliedResizeWidth = (event: Event) => {
+      const resizeState = compactSurfaceResizeStateRef.current;
       if (isDesktopCompactSurfaceLayoutActive()) {
+        if (resizeState) return;
         setCompactSurfaceResizeWidth(null);
         applyCompactSurfaceResizeWidthVar(null);
         return;
       }
-      const resizeState = compactSurfaceResizeStateRef.current;
       if (!resizeState) return;
       const width = Number((event as CustomEvent).detail?.width);
       if (!Number.isFinite(width) || width <= 0) return;
@@ -5451,7 +5450,6 @@ function CompactChatApp({
       data-compact-history-open={compactExportHistoryOpen ? 'true' : 'false'}
       onPointerDown={handleCompactHistoryVisibilityPress}
       onPointerCancel={handleCompactHistoryVisibilityPointerCancel}
-      onPointerLeave={handleCompactHistoryVisibilityPointerCancel}
       onClick={handleCompactHistoryVisibilityClick}
     >
       <span className="compact-history-visibility-handle-triangle" aria-hidden="true" />
