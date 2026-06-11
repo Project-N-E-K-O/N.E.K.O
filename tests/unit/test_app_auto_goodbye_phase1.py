@@ -682,6 +682,18 @@ def test_goodbye_composer_hidden_syncs_to_chat_window():
         "function handleGoodbyeChatComposerHiddenMessage(data, via)",
         1,
     )[1].split("function postGoodbyeChatComposerHiddenState", 1)[0]
+    goodbye_filter_block = interpage_source.split(
+        "function isGoodbyeChatComposerHiddenMessageForCurrentLanlan(data)",
+        1,
+    )[1].split("function handleGoodbyeChatComposerHiddenMessage", 1)[0]
+    goodbye_post_block = interpage_source.split(
+        "function postGoodbyeChatComposerHiddenState(hidden, reason)",
+        1,
+    )[1].split("function pruneVoiceConfigSwitchOps", 1)[0]
+    goodbye_initial_request_block = interpage_source.split(
+        "var postGoodbyeComposerRequest = function ()",
+        1,
+    )[1].split("postAvatarRequest();", 1)[0]
 
     assert "function applyGoodbyeChatComposerHidden(hidden, reason)" in interpage_source
     assert "function getGoodbyeChatComposerHiddenElectronBridge()" in interpage_source
@@ -695,6 +707,14 @@ def test_goodbye_composer_hidden_syncs_to_chat_window():
     assert "case 'request_goodbye_chat_composer_hidden':" in interpage_source
     assert "pathname === '/chat_full'" in standalone_block
     assert "pathname === '/chat_full/'" in standalone_block
+    assert "if (!data || !data.lanlan_name) return false;" in goodbye_filter_block
+    assert "return !!currentName && data.lanlan_name === currentName;" in goodbye_filter_block
+    assert "var lanlanName = getCurrentLanlanName();" in goodbye_post_block
+    assert "if (!lanlanName) return;" in goodbye_post_block
+    assert "lanlan_name: lanlanName" in goodbye_post_block
+    assert "var lanlanName = getCurrentLanlanName();" in goodbye_initial_request_block
+    assert "if (!lanlanName) return;" in goodbye_initial_request_block
+    assert "lanlan_name: lanlanName" in goodbye_initial_request_block
     assert "if (isStandaloneChatPage()) return true;" in goodbye_handler_block
     assert (
         "postGoodbyeChatComposerHiddenState(undefined, 'request-goodbye-chat-composer-hidden');"

@@ -120,15 +120,35 @@ def test_goodbye_composer_hidden_survives_surface_mode_switches():
         "function cycleChatSurfaceMode()",
         1,
     )[0]
+    goodbye_set_block = source.split("function setGoodbyeComposerHidden(hidden, reason)", 1)[1].split(
+        "function syncGoodbyeComposerHidden",
+        1,
+    )[0]
+    attachments_set_block = source.split("function setComposerAttachments(attachments)", 1)[1].split(
+        "var MAX_MESSAGES",
+        1,
+    )[0]
+    desktop_min_height_block = source.split("function getDesktopMinHeight()", 1)[1].split(
+        "function createResizeEdges",
+        1,
+    )[0]
 
     assert "goodbyeComposerHidden: false" in source
     assert "function getEffectiveComposerHidden()" in source
     assert "function hasLocalGoodbyeModeSource()" in source
+    assert "function getEffectiveComposerAttachmentsVisible()" in source
+    assert "function syncComposerAttachmentsVisibility(previousVisible)" in source
     assert "return !!(state.composerHidden || state.goodbyeComposerHidden);" in source
     assert "composerHidden: getEffectiveComposerHidden()" in build_render_block
     assert "state.homeTutorialInteractionLocked || getEffectiveComposerHidden()" in submit_block
     assert "syncGoodbyeComposerHidden('chat-surface-mode-change', { localOnly: true });" in set_mode_block
     assert "options && options.localOnly && !hasLocalGoodbyeModeSource()" in source
+    assert "syncComposerAttachmentsVisibility(previousAttachmentsVisible);" in goodbye_set_block
+    assert "restoredEffectiveComposer && getEffectiveGalgameEnabled()" in goodbye_set_block
+    assert "fetchGalgameOptionsForLatestTurn();" in goodbye_set_block
+    assert "var previousVisible = getEffectiveComposerAttachmentsVisible();" in attachments_set_block
+    assert "syncComposerAttachmentsVisibility(previousVisible);" in attachments_set_block
+    assert "if (!getEffectiveGalgameEnabled()) return MIN_HEIGHT;" in desktop_min_height_block
     assert "EVENT_PREFIX + 'set-goodbye-composer-hidden'" in source
     assert "window.addEventListener('live2d-goodbye-click'" in source
     assert "setGoodbyeComposerHidden(true, 'live2d-goodbye-click')" in source

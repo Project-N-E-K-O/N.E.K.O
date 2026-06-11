@@ -324,6 +324,23 @@
         if (typeof document === 'undefined' || !document.body) return;
         document.body.classList.toggle('composer-has-attachments', !!hasAttachments);
     }
+
+    function getEffectiveComposerAttachmentsVisible() {
+        return !!(
+            state.composerAttachments
+            && state.composerAttachments.length > 0
+            && !getEffectiveComposerHidden()
+        );
+    }
+
+    function syncComposerAttachmentsVisibility(previousVisible) {
+        var nextVisible = getEffectiveComposerAttachmentsVisible();
+        applyAttachmentsBodyClass(nextVisible);
+        if (previousVisible !== undefined && previousVisible !== nextVisible) {
+            dispatchHostEvent('composer-attachments-change', { hasAttachments: nextVisible });
+        }
+        return nextVisible;
+    }
     // No module-eval apply: state defaults to off here; init() resolves the
     // persisted preference and calls setGalgameModeEnabled(...) which flips
     // the class and fires the change event chat.html listens to.
@@ -3746,9 +3763,11 @@
     function setComposerHidden(hidden) {
         var next = !!hidden;
         var wasEffectiveHidden = getEffectiveComposerHidden();
+        var previousAttachmentsVisible = getEffectiveComposerAttachmentsVisible();
         state.composerHidden = next;
         var effectiveChanged = wasEffectiveHidden !== getEffectiveComposerHidden();
         if (effectiveChanged) {
+            syncComposerAttachmentsVisibility(previousAttachmentsVisible);
             // composer 隐藏/显示切换会改变 effective galgame body class（参见
             // applyGalgameBodyClass），同步刷新一次；否则在 galgame ON 期间
             // 触发请她离开，body 仍带 galgame-mode-enabled，min-height:385px 撑住
@@ -3764,6 +3783,7 @@
     function setGoodbyeComposerHidden(hidden, reason) {
         var next = !!hidden;
         var wasEffectiveHidden = getEffectiveComposerHidden();
+        var previousAttachmentsVisible = getEffectiveComposerAttachmentsVisible();
         try {
             window.__nekoGoodbyeChatComposerHidden = {
                 hidden: next,
@@ -3773,18 +3793,28 @@
         } catch (_) {}
         if (state.goodbyeComposerHidden === next) {
             if (wasEffectiveHidden !== getEffectiveComposerHidden()) {
+                syncComposerAttachmentsVisibility(previousAttachmentsVisible);
                 renderWindow();
             }
             return;
         }
         state.goodbyeComposerHidden = next;
+        var isEffectiveHidden = getEffectiveComposerHidden();
+        var restoredEffectiveComposer = wasEffectiveHidden && !isEffectiveHidden;
+        syncComposerAttachmentsVisibility(previousAttachmentsVisible);
         if (next) {
             resetCompactChatState();
             invalidatePendingGalgameRequest();
         }
-        if (wasEffectiveHidden !== getEffectiveComposerHidden()) {
+        if (wasEffectiveHidden !== isEffectiveHidden) {
             applyGalgameBodyClass();
             dispatchHostEvent('galgame-mode-change', { enabled: getEffectiveGalgameEnabled() });
+            if (restoredEffectiveComposer && getEffectiveGalgameEnabled()) {
+                var overlay = getOverlay();
+                if (overlay && !overlay.hidden) {
+                    fetchGalgameOptionsForLatestTurn();
+                }
+            }
         }
         renderWindow();
     }
@@ -3814,7 +3844,7 @@
     }
 
     function setComposerAttachments(attachments) {
-        var prevHas = state.composerAttachments && state.composerAttachments.length > 0;
+        var previousVisible = getEffectiveComposerAttachmentsVisible();
         state.composerAttachments = Array.isArray(attachments)
             ? attachments.map(function (attachment, index) {
                 if (!attachment || typeof attachment !== 'object' || !attachment.url) return null;
@@ -3825,15 +3855,8 @@
                 };
             }).filter(Boolean)
             : [];
-        var nextHas = state.composerAttachments.length > 0;
-        applyAttachmentsBodyClass(nextHas);
+        syncComposerAttachmentsVisibility(previousVisible);
         renderWindow();
-        if (prevHas !== nextHas) {
-            // chat.html 的 syncWindowToAttachmentsMin 监听这条事件，0→N 时
-            // 主动 setBounds 把 Electron 窗口撑高到能容纳附件 + 输入框，避免
-            // 附件刚贴上来就把输入区顶出可视区。和 galgame-mode-change 对称。
-            dispatchHostEvent('composer-attachments-change', { hasAttachments: nextHas });
-        }
         return state.composerAttachments;
     }
 
@@ -5704,7 +5727,7 @@
     var RESIZE_DIRECTIONS = ['n', 's', 'w', 'e', 'nw', 'ne', 'sw', 'se'];
 
     function getDesktopMinHeight() {
-        if (!state.galgameModeEnabled) return MIN_HEIGHT;
+        if (!getEffectiveGalgameEnabled()) return MIN_HEIGHT;
         // 与 CSS 的 galgame min-height 对齐，避免拖拽时 JS 先把高度压到 280px。
         return Math.min(GALGAME_MIN_HEIGHT, Math.max(MIN_HEIGHT, window.innerHeight - 22));
     }

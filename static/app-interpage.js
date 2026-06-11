@@ -1540,8 +1540,9 @@
     }
 
     function isGoodbyeChatComposerHiddenMessageForCurrentLanlan(data) {
+        if (!data || !data.lanlan_name) return false;
         var currentName = getCurrentLanlanName();
-        return !(data && data.lanlan_name && currentName && data.lanlan_name !== currentName);
+        return !!currentName && data.lanlan_name === currentName;
     }
 
     function handleGoodbyeChatComposerHiddenMessage(data, via) {
@@ -1561,14 +1562,16 @@
     }
 
     function postGoodbyeChatComposerHiddenState(hidden, reason) {
+        var lanlanName = getCurrentLanlanName();
         var nextHidden = hidden === undefined ? readGoodbyeChatComposerHidden() : !!hidden;
         var nextReason = reason || (nextHidden ? 'goodbye' : 'return');
         applyGoodbyeChatComposerHidden(nextHidden, nextReason);
+        if (!lanlanName) return;
         postGoodbyeChatComposerHiddenPayload({
             action: 'goodbye_chat_composer_hidden',
             hidden: nextHidden,
             reason: nextReason,
-            lanlan_name: getCurrentLanlanName(),
+            lanlan_name: lanlanName,
             timestamp: Date.now()
         });
     }
@@ -2530,9 +2533,11 @@
             });
         };
         var postGoodbyeComposerRequest = function () {
+            var lanlanName = getCurrentLanlanName();
+            if (!lanlanName) return;
             var payload = {
                 action: 'request_goodbye_chat_composer_hidden',
-                lanlan_name: (window.lanlan_config && window.lanlan_config.lanlan_name) || '',
+                lanlan_name: lanlanName,
                 timestamp: Date.now()
             };
             postGoodbyeChatComposerHiddenPayload(payload);
