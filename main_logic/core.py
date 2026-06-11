@@ -6657,6 +6657,13 @@ class LLMSessionManager:
         their existing direct enqueue-only path so ``delivery="passive"``'s
         "don't interrupt" promise is unchanged.
         """
+        if self.is_goodbye_silent():
+            self.enqueue_agent_callback(callback)
+            logger.debug(
+                "[%s] goodbye_silent queued proactive callback for later delivery",
+                self.lanlan_name,
+            )
+            return
         self.proactive_manager.submit(callback, priority=priority, coalesce_key=coalesce_key)
 
     async def _deliver_proactive_batch(self, callbacks: list) -> None:

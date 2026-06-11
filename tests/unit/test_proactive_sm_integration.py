@@ -682,8 +682,8 @@ def test_goodbye_silent_blocks_manager_release():
     assert LLMSessionManager._can_release_proactive(mgr) is False
 
 
-def test_submit_proactive_callback_keeps_manager_semantics_when_goodbye_silent():
-    """goodbye_silent keeps release gated without bypassing manager ordering."""
+def test_submit_proactive_callback_persists_when_goodbye_silent():
+    """goodbye_silent persists new callbacks outside the manager TTL queue."""
     mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
     mgr.goodbye_silent = True
     cb = {"status": "completed", "summary": "queued"}
@@ -695,13 +695,21 @@ def test_submit_proactive_callback_keeps_manager_semantics_when_goodbye_silent()
         coalesce_key="same-source",
     )
 
-    mgr.proactive_manager.submit.assert_called_once_with(
-        cb,
-        priority=7,
-        coalesce_key="same-source",
-    )
-    assert mgr.pending_agent_callbacks == []
-    assert mgr.pending_extra_replies == []
+    mgr.proactive_manager.submit.assert_not_called()
+    assert mgr.pending_agent_callbacks == [cb]
+    assert cb["_callback_delivery_id"]
+    assert mgr.pending_extra_replies == [
+        {
+            "_callback_delivery_id": cb["_callback_delivery_id"],
+            "origin": "event",
+            "summary": "queued",
+            "detail": "",
+            "status": "completed",
+            "source_kind": "unknown",
+            "source_name": "",
+            "error_message": "",
+        }
+    ]
 
 
 def test_start_session_success_path_clears_goodbye_silent_gate():
