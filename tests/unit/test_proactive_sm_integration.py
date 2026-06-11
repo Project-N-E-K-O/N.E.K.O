@@ -99,6 +99,8 @@ def _make_mgr(session=None) -> LLMSessionManager:
     mgr.goodbye_silent = False
     mgr.goodbye_silent_reason = ""
     mgr.goodbye_silent_updated_at = 0.0
+    mgr.proactive_manager = MagicMock()
+    mgr.proactive_manager.min_gap_s = 0.0
     mgr._get_text_guard_max_length = MagicMock(return_value=200)
     # Patch OmniRealtimeClient / OmniOfflineClient isinstance 判定：
     # 在测试里我们只关心 OmniOfflineClient 分支，其他分支显式构造。
@@ -679,16 +681,44 @@ def test_goodbye_silent_blocks_manager_release():
     assert LLMSessionManager._can_release_proactive(mgr) is False
 
 
-def test_submit_proactive_callback_parks_when_goodbye_silent():
-    """猫态静默期间新来的 proactive callback 进入持久队列，不触发释放泵。"""
+def test_submit_proactive_callback_keeps_manager_semantics_when_goodbye_silent():
+    """goodbye_silent keeps release gated without bypassing manager ordering."""
     mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
     mgr.goodbye_silent = True
     cb = {"status": "completed", "summary": "queued"}
 
-    LLMSessionManager.submit_proactive_callback(mgr, cb)
+    LLMSessionManager.submit_proactive_callback(
+        mgr,
+        cb,
+        priority=7,
+        coalesce_key="same-source",
+    )
 
-    assert mgr.pending_agent_callbacks == [cb]
-    assert mgr.pending_extra_replies
+    mgr.proactive_manager.submit.assert_called_once_with(
+        cb,
+        priority=7,
+        coalesce_key="same-source",
+    )
+    assert mgr.pending_agent_callbacks == []
+    assert mgr.pending_extra_replies == []
+
+
+def test_start_session_success_path_clears_goodbye_silent_gate():
+    """Static guard for the successful start_session branch unblocking proactive."""
+    with open(
+        os.path.join(os.path.dirname(__file__), "../../main_logic/core.py"),
+        encoding="utf-8",
+    ) as fh:
+        source = fh.read()
+    success_marker = "self._session_start_circuit_open = False"
+    clear_marker = "if self.is_goodbye_silent():\n                    self.set_goodbye_silent(False)"
+    notify_marker = "await self.send_session_started(input_mode)"
+
+    clear_pos = source.index(clear_marker)
+    success_pos = source.rindex(success_marker, 0, clear_pos)
+    notify_pos = source.index(notify_marker, clear_pos)
+
+    assert success_pos < clear_pos < notify_pos
 
 
 async def test_text_mode_successful_delivery_fires_full_event_sequence():

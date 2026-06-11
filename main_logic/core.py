@@ -3510,7 +3510,11 @@ class LLMSessionManager:
         )
         if uses_provider_native_voice:
             return False
-        gsv_enabled = bool(core_config.get('GPTSOVITS_ENABLED'))
+        gsv_voice_id = str(core_config.get('TTS_VOICE_ID') or '')
+        gsv_enabled = (
+            bool(core_config.get('GPTSOVITS_ENABLED'))
+            and not is_gsv_disabled_voice_id(gsv_voice_id)
+        )
         if gsv_enabled:
             return True
         # 克隆音色始终走 custom 路径。
@@ -4721,6 +4725,8 @@ class LLMSessionManager:
                 self.session_start_last_failure_time = None
                 self._memory_error_retry_after = 0
                 self._session_start_circuit_open = False
+                if self.is_goodbye_silent():
+                    self.set_goodbye_silent(False)
 
                 logger.info(f"[语音会话诊断] 即将通知前端 session_started (start_session 总耗时: {time.time() - _diag_start:.2f}秒)")
                 # 通知前端 session 已成功启动
@@ -6642,10 +6648,6 @@ class LLMSessionManager:
         their existing direct enqueue-only path so ``delivery="passive"``'s
         "don't interrupt" promise is unchanged.
         """
-        if self.is_goodbye_silent():
-            self.enqueue_agent_callback(callback)
-            logger.info("[%s] proactive callback queued: goodbye silent", self.lanlan_name)
-            return
         self.proactive_manager.submit(callback, priority=priority, coalesce_key=coalesce_key)
 
     async def _deliver_proactive_batch(self, callbacks: list) -> None:
