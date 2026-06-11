@@ -2183,6 +2183,8 @@ async function save_button_down(e) {
     };
     if (gptsovitsEnabled) {
         payload.ttsProvider = 'gptsovits';
+    } else if (selectedTtsProvider === 'mimo') {
+        payload.ttsProvider = 'mimo';
     } else if (_loadedGptSovitsState !== 'none') {
         payload.ttsProvider = '';
     } else if (selectedTtsProvider) {

@@ -452,3 +452,45 @@ def test_explicit_mimo_provider_ignores_assist_token_plan(mock_page: Page, runni
     assert result["followAssist"]["providerKey"] == "mimo"
     assert result["followAssist"]["key"] == "tp-token-plan-key"
     assert "token-plan-cn.xiaomimimo.com" in result["followAssist"]["url"]
+
+
+@pytest.mark.frontend
+def test_explicit_mimo_tts_provider_is_saved_for_runtime_routing(mock_page: Page, running_server: str):
+    """Saving explicit MiMo TTS must preserve ttsProvider so runtime dispatch selects MiMo."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#assistApiSelect option[value='qwen']", state="attached", timeout=10000)
+    mock_page.wait_for_selector("#ttsModelProvider option[value='mimo']", state="attached", timeout=10000)
+
+    payload = mock_page.evaluate("""
+        async () => {
+            document.getElementById('enableCustomApi').checked = true;
+            toggleCustomApi();
+
+            const assist = document.getElementById('assistApiSelect');
+            assist.value = 'qwen';
+            assist.dispatchEvent(new Event('change', { bubbles: true }));
+
+            const provider = document.getElementById('ttsModelProvider');
+            provider.value = 'mimo';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+
+            window.__capturedSavePayload = null;
+            window.saveApiKey = async (params) => {
+                window.__capturedSavePayload = JSON.parse(JSON.stringify(params));
+            };
+
+            const currentApiKeyDiv = document.getElementById('current-api-key');
+            if (currentApiKeyDiv) {
+                currentApiKeyDiv.dataset.hasKey = 'false';
+            }
+
+            await save_button_down({ preventDefault() {} });
+            return window.__capturedSavePayload;
+        }
+    """)
+
+    assert payload["assistApi"] == "qwen"
+    assert payload["ttsModelProvider"] == "mimo"
+    assert payload["ttsProvider"] == "mimo"
