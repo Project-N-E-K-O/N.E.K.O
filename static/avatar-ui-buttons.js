@@ -4389,6 +4389,7 @@ const AvatarButtonMixin = {
                     position: 'relative',
                     width: '48px',
                     height: '48px',
+                    boxSizing: 'border-box',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center'
@@ -4399,12 +4400,17 @@ const AvatarButtonMixin = {
                 imgOff.alt = config.title;
                 Object.assign(imgOff.style, {
                     position: 'absolute',
+                    left: '50%',
+                    top: '50%',
                     width: '48px',
                     height: '48px',
                     objectFit: 'contain',
+                    display: 'block',
                     pointerEvents: 'none',
                     opacity: '0.75',
                     transition: 'opacity 0.3s ease',
+                    transform: 'translate(-50%, -50%)',
+                    transformOrigin: 'center center',
                     imageRendering: 'crisp-edges'
                 });
 
@@ -4413,12 +4419,17 @@ const AvatarButtonMixin = {
                 imgOn.alt = config.title;
                 Object.assign(imgOn.style, {
                     position: 'absolute',
+                    left: '50%',
+                    top: '50%',
                     width: '48px',
                     height: '48px',
                     objectFit: 'contain',
+                    display: 'block',
                     pointerEvents: 'none',
                     opacity: '0',
                     transition: 'opacity 0.3s ease',
+                    transform: 'translate(-50%, -50%)',
+                    transformOrigin: 'center center',
                     imageRendering: 'crisp-edges'
                 });
 
@@ -4433,6 +4444,7 @@ const AvatarButtonMixin = {
             Object.assign(btn.style, {
                 width: '48px',
                 height: '48px',
+                boxSizing: 'border-box',
                 borderRadius: '50%',
                 background: 'var(--neko-btn-bg, rgba(255, 255, 255, 0.65))',
                 backdropFilter: 'saturate(180%) blur(20px)',
