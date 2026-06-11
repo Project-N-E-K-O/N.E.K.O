@@ -204,8 +204,8 @@ function getEffectiveAssistProviderKey(providerKey) {
         : providerKey;
 }
 
-function getEffectiveAssistKey(providerKey, fallbackInput = null) {
-    if (providerKey === 'mimo' && isMimoTokenPlanActive()) {
+function getEffectiveAssistKey(providerKey, fallbackInput = null, { useTokenPlan = true } = {}) {
+    if (useTokenPlan && providerKey === 'mimo' && isMimoTokenPlanActive()) {
         const tokenPlanInput = document.getElementById('mimoTokenPlanKeyInput');
         return tokenPlanInput ? getRealKey(tokenPlanInput) : '';
     }
@@ -216,8 +216,8 @@ function getEffectiveAssistKey(providerKey, fallbackInput = null) {
     return (bookKey !== null) ? bookKey : '';
 }
 
-function getEffectiveAssistUrl(providerKey, profile) {
-    if (providerKey === 'mimo' && isMimoTokenPlanActive()) {
+function getEffectiveAssistUrl(providerKey, profile, { useTokenPlan = true } = {}) {
+    if (useTokenPlan && providerKey === 'mimo' && isMimoTokenPlanActive()) {
         return getMimoTokenPlanUrl();
     }
     return getProviderOpenrouterUrl(providerKey, profile);
@@ -1078,11 +1078,11 @@ function onCustomModelProviderChange(modelType) {
             }
         } else {
             if (urlInput) {
-                urlInput.value = getEffectiveAssistUrl(provider, pInfo) || getProviderCoreUrl(provider, pInfo);
+                urlInput.value = getEffectiveAssistUrl(provider, pInfo, { useTokenPlan: false }) || getProviderCoreUrl(provider, pInfo);
                 urlInput.setAttribute('readonly', 'readonly');
             }
         }
-        const bookKey = getEffectiveAssistKey(provider);
+        const bookKey = getEffectiveAssistKey(provider, null, { useTokenPlan: false });
         setKeyReadonly(keyInput, bookKey);
     }
 }
@@ -2259,7 +2259,8 @@ function refreshAutoResolvedModelUrlsForSave(params) {
         }
 
         const assistProfile = _assistApiProviders[providerKey] || _coreApiProviders[providerKey] || {};
-        return getEffectiveAssistUrl(providerKey, assistProfile) || getProviderCoreUrl(providerKey, assistProfile);
+        const useTokenPlan = providerMode === 'follow_assist';
+        return getEffectiveAssistUrl(providerKey, assistProfile, { useTokenPlan }) || getProviderCoreUrl(providerKey, assistProfile);
     };
 
     MODEL_TYPES.forEach(modelType => {
@@ -2997,7 +2998,7 @@ const ConnectivityManager = {
                 result.providerType = (mt === 'omni') ? 'websocket' : 'openai_compatible';
             } else {
                 // 指定服务商：从 Key Book 读取
-                result.key = getEffectiveAssistKey(provider);
+                result.key = getEffectiveAssistKey(provider, null, { useTokenPlan: false });
                 if (mt === 'omni') {
                     const coreProfile = _coreApiProviders[provider] || {};
                     result.url = getProviderCoreUrl(provider, coreProfile);
@@ -3006,7 +3007,7 @@ const ConnectivityManager = {
                     result.providerScope = 'core';
                 } else {
                     const pInfo = _assistApiProviders[provider] || _coreApiProviders[provider] || {};
-                    result.url = getEffectiveAssistUrl(provider, pInfo) || getProviderCoreUrl(provider, pInfo);
+                    result.url = getEffectiveAssistUrl(provider, pInfo, { useTokenPlan: false }) || getProviderCoreUrl(provider, pInfo);
                     result.providerType = 'openai_compatible';
                     result.providerKey = provider;
                     result.providerScope = 'assist';
@@ -3116,7 +3117,7 @@ const ConnectivityManager = {
                 // Built-in provider mode
                 body.provider_key = provider_key;
                 body.provider_scope = provider_scope;
-                if (url) {
+                if (provider_scope === 'assist' && provider_key === 'mimo' && isMimoTokenPlanUrl(url)) {
                     body.url = url;
                 }
             } else {

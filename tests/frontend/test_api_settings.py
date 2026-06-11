@@ -403,3 +403,52 @@ def test_mimo_token_plan_hidden_when_assist_api_is_not_mimo(mock_page: Page, run
     assert result["resolved"]["providerKey"] == "qwen"
     assert result["resolved"]["key"] == "sk-qwen-assist"
     assert "dashscope.aliyuncs.com" in result["resolved"]["url"]
+
+
+@pytest.mark.frontend
+def test_explicit_mimo_provider_ignores_assist_token_plan(mock_page: Page, running_server: str):
+    """Explicit MiMo model providers should keep normal MiMo even when assist follows Token Plan."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#assistApiSelect option[value='mimo']", state="attached", timeout=10000)
+
+    result = mock_page.evaluate("""
+        () => {
+            syncKeyToBook('mimo', 'sk-regular-mimo');
+            const assist = document.getElementById('assistApiSelect');
+            assist.value = 'mimo';
+            assist.dispatchEvent(new Event('change', { bubbles: true }));
+
+            const tokenToggle = document.getElementById('useMimoTokenPlan');
+            tokenToggle.checked = true;
+            tokenToggle.dispatchEvent(new Event('change', { bubbles: true }));
+            setMaskedInput(document.getElementById('mimoTokenPlanKeyInput'), 'tp-token-plan-key');
+
+            const provider = document.getElementById('conversationModelProvider');
+            provider.value = 'mimo';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+
+            const explicit = ConnectivityManager.resolveEffectiveKey({
+                type: 'custom',
+                modelType: 'conversation'
+            });
+            const followAssist = (() => {
+                provider.value = 'follow_assist';
+                provider.dispatchEvent(new Event('change', { bubbles: true }));
+                return ConnectivityManager.resolveEffectiveKey({
+                    type: 'custom',
+                    modelType: 'conversation'
+                });
+            })();
+            return { explicit, followAssist };
+        }
+    """)
+
+    assert result["explicit"]["providerKey"] == "mimo"
+    assert result["explicit"]["key"] == "sk-regular-mimo"
+    assert "api.xiaomimimo.com" in result["explicit"]["url"]
+    assert "token-plan" not in result["explicit"]["url"]
+    assert result["followAssist"]["providerKey"] == "mimo"
+    assert result["followAssist"]["key"] == "tp-token-plan-key"
+    assert "token-plan-cn.xiaomimimo.com" in result["followAssist"]["url"]
