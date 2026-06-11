@@ -93,6 +93,22 @@ class _FailingNotebookAgent(_FakeNotebookAgent):
         raise RuntimeError("model unavailable")
 
 
+class _PartialOriginalNotebookAgent(_FakeNotebookAgent):
+    def __init__(self, raw: str) -> None:
+        super().__init__()
+        self.raw = raw
+
+    async def _call_model(self, *args, **kwargs):
+        self.calls.append(
+            {
+                "operation": kwargs.get("operation", ""),
+                "model_group": str(kwargs.get("model_group_override") or ""),
+                "timeout": kwargs.get("timeout"),
+            }
+        )
+        return self.raw
+
+
 def _make_store(tmp_path) -> tuple[StudyStore, NotebookStore, _Logger]:
     logger = _Logger()
     store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", logger)
@@ -482,6 +498,24 @@ async def test_notebook_expand_fallback_follows_language() -> None:
 
     assert expanded.degraded is True
     assert "Unable to connect to the model" in expanded.reply
+
+
+@pytest.mark.asyncio
+async def test_notebook_expand_preserves_full_original_when_model_returns_prefix() -> None:
+    original = (
+        "".join(f"section-{index:02d};" for index in range(24))
+        + "\n\nThis tail was not visible in the model response."
+    )
+    prefix = original[:120]
+    agent = _PartialOriginalNotebookAgent(f"{prefix}\n\n> [!ai]\n> Added detail.")
+
+    expanded = await expand_note(agent, original)
+
+    assert expanded.reply.startswith(original)
+    assert "This tail was not visible in the model response." in expanded.reply
+    assert "> [!ai]" in expanded.reply
+    assert "> Added detail." in expanded.reply
+    assert expanded.reply.count(prefix) == 1
 
 
 @pytest.mark.asyncio

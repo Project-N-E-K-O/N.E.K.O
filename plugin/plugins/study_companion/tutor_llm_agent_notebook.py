@@ -189,17 +189,26 @@ def _ensure_expanded_note_preserves_original(
     generated = str(raw or "").strip()
     if not generated:
         return _fallback_expand_note(original, language=language)
-    original_probe = original[:120].strip()
-    has_original = bool(original_probe and original_probe in generated)
+    has_original = bool(original and original in generated)
     has_ai_callout = "> [!ai]" in generated
     if has_original and has_ai_callout:
         return generated
-    addition = generated
-    if has_original:
-        addition = generated.replace(original, "", 1).strip() or generated
+    addition = _remove_preserved_original_fragment(original, generated)
     if not addition.startswith("> [!ai]"):
         addition = "> [!ai]\n> " + addition.replace("\n", "\n> ")
     return f"{original}\n\n{addition}".strip()
+
+
+def _remove_preserved_original_fragment(original: str, generated: str) -> str:
+    if original and original in generated:
+        return generated.replace(original, "", 1).strip() or generated
+    common = 0
+    limit = min(len(original), len(generated))
+    while common < limit and original[common] == generated[common]:
+        common += 1
+    if common >= min(120, len(original)):
+        return generated[common:].strip() or generated
+    return generated
 
 
 def _ensure_note_summary_structure(
