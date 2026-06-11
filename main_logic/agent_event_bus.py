@@ -8,6 +8,7 @@ fd 轮询（add_reader），而该机制在 Windows ProactorEventLoop 上不可�
 """
 
 import asyncio
+import contextlib
 import os
 import threading
 import time
@@ -278,6 +279,54 @@ class AgentServerEventBridge:
                 "pid": os.getpid(),
             })
             await asyncio.sleep(AGENT_BRIDGE_HEARTBEAT_INTERVAL_S)
+
+    async def stop(self) -> None:
+        """Shut down ZMQ resources, receiver threads, and heartbeat task."""
+        self._stop.set()
+        self.ready = False
+
+        heartbeat_task = self._heartbeat_task
+        self._heartbeat_task = None
+        if heartbeat_task is not None:
+            heartbeat_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await heartbeat_task
+
+        recv_threads = [
+            thread
+            for thread in (self._recv_thread, self._analyze_recv_thread)
+            if thread is not None
+        ]
+        if recv_threads:
+            await asyncio.gather(
+                *(asyncio.to_thread(thread.join, 2.0) for thread in recv_threads),
+                return_exceptions=True,
+            )
+        self._recv_thread = None
+        self._analyze_recv_thread = None
+
+        for sock_name in ("sub", "analyze_pull", "push"):
+            sock = getattr(self, sock_name, None)
+            if sock is None:
+                continue
+            try:
+                sock.close(linger=0)
+            except Exception as exc:
+                logger.debug("[EventBus] Agent bridge socket %s close error: %s", sock_name, exc)
+            setattr(self, sock_name, None)
+
+        if self.ctx is not None:
+            ctx = self.ctx
+            self.ctx = None
+            try:
+                await asyncio.wait_for(asyncio.to_thread(ctx.term), timeout=3.0)
+            except asyncio.TimeoutError:
+                logger.warning("[EventBus] Agent bridge ctx.term timed out, skipping")
+            except Exception as exc:
+                logger.debug("[EventBus] Agent bridge ctx.term error: %s", exc)
+
+        self._owner_loop = None
+        logger.debug("[EventBus] Agent bridge stopped")
 
     # -- 后台接收线程 -------------------------------------------------------
 

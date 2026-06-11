@@ -79,6 +79,15 @@ class _FakeVoiceBridgeSession:
         self.primed.append((context, skipped))
 
 
+class _FakeGeminiVoiceBridgeSession(core_module.OmniRealtimeClient):
+    def __init__(self):
+        self._is_gemini = True
+        self.primed = []
+
+    async def prime_context(self, context, *, skipped=False):
+        self.primed.append((context, skipped))
+
+
 class _FakeAliveThread:
     def is_alive(self):
         return True
@@ -451,6 +460,35 @@ async def test_voice_bridge_cancel_failure_continues_ordinary_transcript_flow(mo
         "type": "user",
         "data": {"input_type": "transcript", "data": "continue this transcript"},
     }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_voice_bridge_gemini_prime_context_does_not_skip_current_response(monkeypatch):
+    mgr = _make_transcript_manager()
+    session = _FakeGeminiVoiceBridgeSession()
+    mgr.session = session
+
+    async def fake_publish(*_args, **_kwargs):
+        return {
+            "action": "prime_context",
+            "context": "screen context",
+            "skipped": True,
+        }
+
+    monkeypatch.setattr(
+        core_module,
+        "publish_voice_transcript_request_reliably",
+        fake_publish,
+    )
+
+    action = await core_module.LLMSessionManager._dispatch_voice_transcript_bridge(
+        mgr,
+        "explain this screen",
+    )
+
+    assert action == "prime_context"
+    assert session.primed == [("screen context", False)]
 
 
 @pytest.mark.unit

@@ -3615,38 +3615,7 @@ async def shutdown():
     bridge = Modules.agent_bridge
     if bridge is not None:
         try:
-            bridge._stop.set()
-            # 等 recv 线程退出（RCVTIMEO=1s，最多等 2s）—— 两个线程并行 join，避免串行 4s
-            _recv_threads = [t for t in (getattr(bridge, '_recv_thread', None), getattr(bridge, '_analyze_recv_thread', None)) if t is not None]
-            if _recv_threads:
-                await asyncio.gather(
-                    *(asyncio.to_thread(_t.join, 2.0) for _t in _recv_threads),
-                    return_exceptions=True,
-                )
-            try:
-                import zmq as _zmq
-
-                _LINGER = _zmq.LINGER
-            except Exception:
-                _LINGER = 17
-            for sock_name in ("sub", "analyze_pull", "push"):
-                sock = getattr(bridge, sock_name, None)
-                if sock is not None:
-                    try:
-                        sock.setsockopt(_LINGER, 0)
-                        sock.close()
-                    except Exception as e:
-                        logger.debug("[Agent] ZMQ socket %s close error: %s", sock_name, e)
-            if bridge.ctx is not None:
-                _ctx = bridge.ctx
-                bridge.ctx = None
-                try:
-                    await asyncio.wait_for(asyncio.to_thread(_ctx.term), timeout=3.0)
-                except asyncio.TimeoutError:
-                    logger.warning("[Agent] ZMQ context term timed out, skipping")
-                except Exception as e:
-                    logger.debug("[Agent] ZMQ context term error: %s", e)
-            bridge.ready = False
+            await bridge.stop()
             Modules.agent_bridge = None
             logger.debug("[Agent] ✅ ZMQ event bridge cleaned up")
         except Exception as e:

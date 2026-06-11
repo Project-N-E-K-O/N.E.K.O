@@ -2061,7 +2061,16 @@ class LLMSessionManager:
             prime_context = getattr(session_snapshot, "prime_context", None)
             if not callable(prime_context):
                 return action
-            skipped = bool(result.get("skipped", False))
+            requested_skipped = bool(result.get("skipped", False))
+            skipped = requested_skipped
+            if (
+                requested_skipped
+                and isinstance(session_snapshot, OmniRealtimeClient)
+                and getattr(session_snapshot, "_is_gemini", False)
+            ):
+                # This callback runs during the user's realtime turn; Gemini
+                # would otherwise suppress that same response via skipped=True.
+                skipped = False
             try:
                 if _session_changed():
                     return ""

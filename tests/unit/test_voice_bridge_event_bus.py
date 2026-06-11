@@ -171,3 +171,32 @@ async def test_voice_transcript_request_retries_after_send_failure(
     assert attempts == [0, 1]
     assert result == {"action": "prime_context", "context": "screen context"}
     assert agent_event_bus._voice_bridge_waiters == {}
+
+
+@pytest.mark.asyncio
+async def test_agent_bridge_stop_cancels_heartbeat_task() -> None:
+    async def _noop(_event: dict) -> None:
+        return None
+
+    bridge = agent_event_bus.AgentServerEventBridge(on_session_event=_noop)
+    heartbeat_finally_ran = False
+
+    async def _heartbeat() -> None:
+        nonlocal heartbeat_finally_ran
+        try:
+            await asyncio.sleep(30)
+        finally:
+            heartbeat_finally_ran = True
+
+    heartbeat_task = asyncio.create_task(_heartbeat())
+    bridge.ready = True
+    bridge._heartbeat_task = heartbeat_task
+    await asyncio.sleep(0)
+
+    await bridge.stop()
+
+    assert bridge._stop.is_set()
+    assert bridge.ready is False
+    assert bridge._heartbeat_task is None
+    assert heartbeat_task.cancelled()
+    assert heartbeat_finally_ran is True
