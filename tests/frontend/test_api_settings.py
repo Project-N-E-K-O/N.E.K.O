@@ -145,7 +145,8 @@ def test_assist_free_disables_assist_api_key_input(mock_page: Page, running_serv
 
 
 @pytest.mark.frontend
-def test_custom_api_close_does_not_trigger_assist_provider_fallback(mock_page: Page, running_server: str):
+def test_custom_api_close_preserves_assist_provider(mock_page: Page, running_server: str):
+    """Toggling custom API on/off must not rewrite the user's chosen (non-free) assist provider."""
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
     url = f"{running_server}/api_key"
     mock_page.goto(url)
@@ -173,32 +174,29 @@ def test_custom_api_close_does_not_trigger_assist_provider_fallback(mock_page: P
 
             core.value = 'qwen';
             assist.value = alternateAssist;
-            updateAssistApiRecommendation({ preserveAssistProvider: true });
+            updateAssistApiRecommendation();
 
             enableCustomApi.checked = true;
             toggleCustomApi();
             const afterOpen = assist.value;
 
-            assist.value = 'free';
             enableCustomApi.checked = false;
             toggleCustomApi();
             const afterClose = assist.value;
 
-            assist.value = 'free';
-            updateAssistApiRecommendation();
-            const intentionalFallback = assist.value;
-
-            return { afterOpen, afterClose, intentionalFallback };
+            return { afterOpen, afterClose };
         }
     """, alternate_assist)
 
     assert result["afterOpen"] == alternate_assist
     assert result["afterClose"] == alternate_assist
-    assert result["intentionalFallback"] == "qwen"
 
 
 @pytest.mark.frontend
-def test_custom_api_close_does_not_preserve_ineligible_free_assist(mock_page: Page, running_server: str):
+def test_free_assist_with_paid_core_is_preserved(mock_page: Page, running_server: str):
+    """assist=free with a paid core is a valid combination: neither the recommendation
+    logic nor the custom API toggle may move it away; the free option must stay enabled
+    and the assist key input must be locked with the free-version text."""
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
     url = f"{running_server}/api_key"
     mock_page.goto(url)
@@ -215,7 +213,13 @@ def test_custom_api_close_does_not_preserve_ineligible_free_assist(mock_page: Pa
             const enableCustomApi = document.getElementById('enableCustomApi');
 
             core.value = 'qwen';
+            core.dispatchEvent(new Event('change', { bubbles: true }));
             assist.value = 'free';
+            assist.dispatchEvent(new Event('change', { bubbles: true }));
+            const afterExplicitSelect = assist.value;
+            const freeOption = assist.querySelector('option[value="free"]');
+            const freeOptionDisabled = freeOption ? freeOption.disabled : null;
+
             enableCustomApi.checked = true;
             toggleCustomApi();
             const afterOpen = assist.value;
@@ -224,14 +228,90 @@ def test_custom_api_close_does_not_preserve_ineligible_free_assist(mock_page: Pa
             toggleCustomApi();
             const afterClose = assist.value;
 
-            assist.value = 'free';
-            updateAssistApiRecommendation();
-            const intentionalFallback = assist.value;
-
-            return { afterOpen, afterClose, intentionalFallback };
+            const assistKeyInput = document.getElementById('assistApiKeyInput');
+            return {
+                afterExplicitSelect, afterOpen, afterClose, freeOptionDisabled,
+                assistKeyDisabled: assistKeyInput.disabled,
+                assistKeyIsFreeText: isFreeVersionText(getRealKey(assistKeyInput)),
+            };
         }
     """)
 
+    assert result["afterExplicitSelect"] == "free"
     assert result["afterOpen"] == "free"
-    assert result["afterClose"] == "qwen"
-    assert result["intentionalFallback"] == "qwen"
+    assert result["afterClose"] == "free"
+    assert result["freeOptionDisabled"] is False
+    assert result["assistKeyDisabled"] is True
+    assert result["assistKeyIsFreeText"] is True
+
+
+@pytest.mark.frontend
+def test_paid_core_key_not_overwritten_by_free_assist_on_save(mock_page: Page, running_server: str):
+    """Saving core=qwen + assist=free: the paid core still requires a key (assist=free
+    must not waive the check), and coreApiKey persists the real key, not free-access."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    url = f"{running_server}/api_key"
+    mock_page.goto(url)
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+
+    # 建立干净基线：免费版配置 + 清空 qwen 辅助 Key，隔离 session 级 server 的残留状态。
+    baseline = mock_page.evaluate("""
+        async () => {
+            const r = await fetch('/api/config/core_api', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    coreApiKey: 'free-access', coreApi: 'free',
+                    assistApi: 'free', assistApiKeyQwen: '', enableCustomApi: false,
+                }),
+            });
+            return await r.json();
+        }
+    """)
+    assert baseline.get("success"), f"建立免费版基线失败: {baseline}"
+
+    mock_page.reload()
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#coreApiSelect option[value='qwen']", state="attached", timeout=10000)
+    expect(mock_page.locator("#coreApiSelect")).to_have_value("free", timeout=5000)
+
+    # 切到付费 core，assist 保持 free
+    mock_page.evaluate("""
+        () => {
+            const core = document.getElementById('coreApiSelect');
+            core.value = 'qwen';
+            core.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+    """)
+    expect(mock_page.locator("#assistApiSelect")).to_have_value("free", timeout=5000)
+
+    # 空 Key 保存必须被拦截：assist=free 不豁免付费 core 的 Key 要求
+    blocked = mock_page.evaluate("""
+        async () => {
+            window.__captured = null;
+            window.saveApiKey = async (p) => { window.__captured = JSON.parse(JSON.stringify(p)); };
+            const div = document.getElementById('current-api-key');
+            if (div) div.dataset.hasKey = 'false';
+            await save_button_down({ preventDefault() {} });
+            return window.__captured === null;
+        }
+    """)
+    assert blocked, "付费 core 空 Key 被 assist=free 放行保存了"
+
+    # 填入真实 Key 后保存：coreApiKey 必须是真实 Key，不得被 free-access 覆盖
+    test_key = "sk-test-paid-core-with-free-assist"
+    mock_page.fill("#apiKeyInput", test_key)
+    payload = mock_page.evaluate("""
+        async () => {
+            window.__captured = null;
+            window.saveApiKey = async (p) => { window.__captured = JSON.parse(JSON.stringify(p)); };
+            const div = document.getElementById('current-api-key');
+            if (div) div.dataset.hasKey = 'false';
+            await save_button_down({ preventDefault() {} });
+            return window.__captured;
+        }
+    """)
+    assert payload is not None, "填好 Key 的正常保存不应被拦截"
+    assert payload["coreApi"] == "qwen"
+    assert payload["assistApi"] == "free"
+    assert payload["apiKey"] == test_key, f"付费 core Key 被改写: {payload['apiKey']!r}"

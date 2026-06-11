@@ -112,6 +112,9 @@ def test_chat_full_endpoint_uses_chat_template_with_initial_full_surface():
     assert '@router.get("/chat_full", response_class=HTMLResponse)' in router_source
     assert '"initial_chat_surface_mode": "full"' in router_source
     assert '"initial_chat_surface_mode": "compact"' in router_source
+    assert '"initial_chat_host_kind": "full"' in router_source
+    assert '"initial_chat_host_kind": "compact"' in router_source
+    assert 'data-chat-host-kind="{{ initial_chat_host_kind|default(\'compact\', true) }}"' in template_source
     assert 'data-initial-chat-surface-mode="{{ initial_chat_surface_mode|default(\'compact\', true) }}"' in template_source
 
     chat_route_block = router_source.split('async def get_chat_page', 1)[1].split(
@@ -119,7 +122,9 @@ def test_chat_full_endpoint_uses_chat_template_with_initial_full_surface():
         1,
     )[0]
     assert '"initial_chat_surface_mode": "compact"' in chat_route_block
+    assert '"initial_chat_host_kind": "compact"' in chat_route_block
     assert '"initial_chat_surface_mode": "full"' not in chat_route_block
+    assert '"initial_chat_host_kind": "full"' not in chat_route_block
 
 
 def test_full_inset_layout_gated_by_electron_runtime_marker():
@@ -175,8 +180,16 @@ def test_chat_host_initial_surface_mode_prefers_template_override_before_storage
     assert "declaredModeAttr ? normalizeChatSurfaceMode(declaredModeAttr) : ''" in initial_reader_block
     assert "normalizeChatSurfaceMode(body.getAttribute('data-initial-chat-surface-mode'))" not in initial_reader_block
     assert "if (declaredMode === 'compact' || declaredMode === 'full')" in initial_reader_block
+    assert "if (declaredMode === 'full' && isCompactOnlyElectronChatHost())" in initial_reader_block
+    assert "return 'compact';" in initial_reader_block
     assert "return declaredMode;" in initial_reader_block
     assert initial_reader_block.index("return declaredMode;") < initial_reader_block.index("return readChatSurfaceModePreference();")
+
+    assert "function isCompactOnlyElectronChatHost()" in source
+    assert "body.getAttribute('data-chat-host-kind') === 'compact'" in source
+    assert "body.getAttribute('data-initial-chat-surface-mode') === 'compact'" not in source
+    assert "function coerceChatSurfaceModeForHost(mode)" in source
+    assert "normalized === 'full' && isCompactOnlyElectronChatHost()" in source
 
     init_block = source.split("function init()", 1)[1].split(
         "function initAfterStorageBarrier()",
@@ -206,7 +219,7 @@ def test_close_from_minimized_preserves_compact_surface_mode():
     # restorable mode. Otherwise the next openWindow() rebuilds the React props
     # with chatSurfaceMode:'minimized' and renders a blank body.
     assert (
-        "state.chatSurfaceMode = normalizeChatSurfaceMode(lastRestorableChatSurfaceMode);"
+        "state.chatSurfaceMode = coerceChatSurfaceModeForHost(lastRestorableChatSurfaceMode);"
         in minimized_block
     )
     assert "syncChatSurfaceModeUI();" in minimized_block
@@ -225,7 +238,7 @@ def test_open_from_minimized_restores_surface_mode_before_mounting():
     # mountWindow() so React rebuilds the compact body instead of the blank
     # minimized surface — symmetric with closeWindow's reset.
     restore_assignment = (
-        "state.chatSurfaceMode = normalizeChatSurfaceMode(lastRestorableChatSurfaceMode);"
+        "state.chatSurfaceMode = coerceChatSurfaceModeForHost(lastRestorableChatSurfaceMode);"
     )
     assert restore_assignment in open_block
     assert open_block.index(restore_assignment) < open_block.index("if (!mountWindow())")
@@ -260,7 +273,7 @@ def test_minimized_restore_uses_previous_real_surface_mode():
 
     assert "if (normalized === 'minimized')" in next_mode_block
     assert "lastRestorableChatSurfaceMode" in next_mode_block
-    assert "return normalizeChatSurfaceMode(lastRestorableChatSurfaceMode);" in next_mode_block
+    assert "return coerceChatSurfaceModeForHost(lastRestorableChatSurfaceMode);" in next_mode_block
     assert "lastRestorableChatSurfaceMode = normalized;" in set_mode_block
     assert "lastRestorableChatSurfaceMode = previousMode;" in set_mode_block
     assert "lastRestorableChatSurfaceMode = normalizedChatSurfaceMode;" in set_view_props_block
@@ -465,7 +478,7 @@ def test_mobile_web_compact_surface_respects_width_bounds_and_position_vars():
         1,
     )[0]
 
-    assert "COMPACT_SURFACE_RESIZE_MOBILE_MIN_WIDTH = 280" in app_source
+    assert "COMPACT_SURFACE_RESIZE_MOBILE_MIN_WIDTH = 180" in app_source
     assert "COMPACT_SURFACE_RESIZE_MOBILE_VIEWPORT_GUTTER = 16" in app_source
     assert "getCompactSurfaceResizeMinAvailableWidth" in app_source
     assert "getCompactSurfaceResizeViewportGutter" in app_source
@@ -473,7 +486,7 @@ def test_mobile_web_compact_surface_respects_width_bounds_and_position_vars():
     assert "window.innerWidth <= 768" in app_source
     assert "lanlan-pet-mode" in app_source
     assert "__LANLAN_IS_ELECTRON_PET__" in app_source
-    assert "COMPACT_SURFACE_MOBILE_MIN_WIDTH = 280" in script
+    assert "COMPACT_SURFACE_MOBILE_MIN_WIDTH = 180" in script
     assert "COMPACT_SURFACE_MOBILE_VIEWPORT_GUTTER" in script
     assert "COMPACT_SURFACE_RESIZE_MAX_WIDTH" in mobile_width_bounds_block
     assert "viewportWidth - COMPACT_SURFACE_MOBILE_VIEWPORT_GUTTER" in mobile_width_bounds_block

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -1779,11 +1780,33 @@ def test_onboarding_uses_dynamic_character_name_and_split_detail_pills(mock_page
     )
 
     expect(mock_page.locator(".cph-badge")).to_have_text("小天")
+    mock_page.evaluate(
+        """
+        () => {
+            const card = document.createElement('div');
+            card.className = 'chara-card-item active';
+            const avatar = document.createElement('div');
+            avatar.className = 'card-avatar';
+            const img = document.createElement('img');
+            img.className = 'card-face-img';
+            img.src = '/mock-current-avatar.png';
+            avatar.appendChild(img);
+            const name = document.createElement('div');
+            name.className = 'card-name';
+            name.textContent = '小天';
+            card.appendChild(avatar);
+            card.appendChild(name);
+            document.body.appendChild(card);
+        }
+        """
+    )
 
     mock_page.locator("[data-testid='character-personality-preset-classic_genki']").click()
 
     expect(mock_page.locator("#previewTitleBadge")).to_have_text("经典元气猫娘")
-    expect(mock_page.locator(".preview-avatar")).to_have_text("小天")
+    expect(mock_page.locator(".preview-avatar")).to_have_text("")
+    avatar_img = mock_page.locator(".preview-avatar-img")
+    expect(avatar_img).to_have_attribute("src", re.compile(r"/mock-current-avatar\.png$"))
 
     speech_pills = mock_page.locator("#detailCatchphrases .detail-pill")
     expect(speech_pills).to_have_count(2)
@@ -1794,6 +1817,56 @@ def test_onboarding_uses_dynamic_character_name_and_split_detail_pills(mock_page
     expect(hobby_pills).to_have_count(2)
     expect(hobby_pills.nth(0)).to_have_text("陪伴")
     expect(hobby_pills.nth(1)).to_have_text("温暖")
+
+
+@pytest.mark.frontend
+def test_onboarding_avatar_ignores_other_character_images_when_card_face_img_is_missing(mock_page: Page):
+    _bootstrap_page(mock_page)
+    mock_page.evaluate("() => { window.universalTutorialManager.isTutorialRunning = false; }")
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / "js" / "character_personality_onboarding.js"))
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.CharacterPersonalityOnboarding.bootstrap();
+        }
+        """
+    )
+
+    expect(mock_page.locator(".cph-badge")).to_have_text("小天")
+    mock_page.evaluate(
+        """
+        () => {
+            const otherCard = document.createElement('div');
+            otherCard.className = 'chara-card-item active';
+            const otherAvatar = document.createElement('div');
+            otherAvatar.className = 'card-avatar';
+            const otherImg = document.createElement('img');
+            otherImg.className = 'card-face-img';
+            otherImg.src = '/other-character-avatar.png';
+            otherAvatar.appendChild(otherImg);
+            const otherName = document.createElement('div');
+            otherName.className = 'card-name';
+            otherName.textContent = '其他角色';
+            otherCard.appendChild(otherAvatar);
+            otherCard.appendChild(otherName);
+            document.body.appendChild(otherCard);
+
+            const cover = document.createElement('img');
+            cover.id = 'character-card-cover-img';
+            cover.src = '/visible-cover-avatar.png';
+            document.body.appendChild(cover);
+        }
+        """
+    )
+
+    mock_page.locator("[data-testid='character-personality-preset-classic_genki']").click()
+
+    expect(mock_page.locator(".preview-avatar")).to_have_text("")
+    expect(mock_page.locator(".preview-avatar-img")).to_have_attribute(
+        "src",
+        re.compile(r"/api/characters/catgirl/%E5%B0%8F%E5%A4%A9/card-face$"),
+    )
 
 
 @pytest.mark.frontend

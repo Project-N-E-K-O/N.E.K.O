@@ -342,6 +342,33 @@ class TestAssistFollowsCore:
         assert response['assistApiKeyQwen'] == ''
 
     @pytest.mark.unit
+    def test_free_core_defaults_assist_to_free_when_key_missing(self, config_manager):
+        """Legacy file with only coreApi=free and no saved assistApi: assist follows free.
+
+        The template default assistApi='qwen' swallows the "key missing" signal
+        during merge; without the special case, assist lands on qwen with no
+        API key (voice works, but text/memory etc. all fail auth).
+        """
+        _write_core_config(config_manager, {
+            'coreApi': 'free',
+        })
+        cfg = config_manager.get_core_config()
+
+        assert cfg['assistApi'] == 'free'
+        assert cfg.get('CORE_API_TYPE') == 'free'
+
+    @pytest.mark.unit
+    def test_non_free_core_keeps_template_assist_when_key_missing(self, config_manager):
+        """coreApi=qwen with assistApi key missing keeps template default qwen."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+        })
+        cfg = config_manager.get_core_config()
+
+        assert cfg['assistApi'] == 'qwen'
+
+    @pytest.mark.unit
     def test_free_core_honors_explicit_assist(self, config_manager):
         """coreApi=free + assistApi=silicon → 显式选择被保留，agent/text 走 silicon。"""
         _write_core_config(config_manager, {

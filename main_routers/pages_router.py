@@ -283,6 +283,7 @@ async def get_chat_page(request: Request):
     return templates.TemplateResponse("templates/chat.html", {
         "request": request,
         "initial_chat_surface_mode": "compact",
+        "initial_chat_host_kind": "compact",
         **_vrm_defaults_ctx(),
         **_static_assets_ctx(),
         **_react_chat_assets_ctx(),
@@ -296,6 +297,7 @@ async def get_chat_full_page(request: Request):
     return templates.TemplateResponse("templates/chat.html", {
         "request": request,
         "initial_chat_surface_mode": "full",
+        "initial_chat_host_kind": "full",
         **_vrm_defaults_ctx(),
         **_static_assets_ctx(),
         **_react_chat_assets_ctx(),

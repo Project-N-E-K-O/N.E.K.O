@@ -7741,13 +7741,13 @@ margin-top: 10px;
 }
 
 .card-companion-avatar img {
-    width: 130%;
-    height: 130%;
+    width: 148%;
+    height: 148%;
     max-width: none;
     flex-shrink: 0;
     object-fit: cover;
-    object-position: 50% 8%;
-    transform: translateY(3px) scale(1.02);
+    object-position: 50% 46%;
+    transform: translateY(5px);
     transform-origin: center center;
 }
 

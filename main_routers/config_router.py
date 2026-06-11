@@ -1637,9 +1637,12 @@ def _build_save_connectivity_targets(core_cfg: dict, api_config: dict) -> dict[s
         }
 
     core_provider = str(core_cfg.get("coreApi") or "qwen").strip()
-    assist_provider = str(core_cfg.get("assistApi") or "qwen").strip()
-    if core_provider == "free":
-        assist_provider = "free"
+    # 显式选择的 assistApi 一律被尊重（free 与付费可双向组合）；
+    # 仅在缺失时沿用 coreApi 偏好做默认：core=free 默认 free，其他默认 qwen。
+    # 与 ConfigManager.get_core_config() 的解析规则保持一致。
+    assist_provider = str(core_cfg.get("assistApi") or "").strip()
+    if not assist_provider:
+        assist_provider = "free" if core_provider == "free" else "qwen"
 
     _add("core", core_provider)
     _add("assist", assist_provider)
