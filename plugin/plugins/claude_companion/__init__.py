@@ -629,6 +629,9 @@ class ClaudeCompanionPlugin(NekoPluginBase):
 
         # API 鉴权 token（用于 NEKO → Claude 方向的接口）
         self._api_token = cc_cfg.get("api_token") or os.environ.get("NEKO_CLAUDE_COMPANION_TOKEN") or ""
+        if not self._api_token:
+            self._api_token = uuid.uuid4().hex[:16]
+            self.logger.info("No api_token configured, generated random token: {}", self._api_token)
 
         # 获取用户名
         try:
