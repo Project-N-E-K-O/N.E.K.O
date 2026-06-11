@@ -49,7 +49,7 @@ def test_cat1_minimized_side_target_separates_look_and_move_direction():
 
 
 def test_cat1_minimized_side_target_commits_approach_side_to_prevent_center_straddle():
-    """接近侧必须提交并带滞回，禁止每帧用 catCenter vs chatCenter 重判导致跨球心横跳（贴着毛球抽搐）。"""
+    """Approach side must be committed with hysteresis, never re-judged each frame via catCenter vs chatCenter (which makes the cat straddle the ball center and jitter against it)."""
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
 
     side_target_block = source.split("function _getNekoIdleCat1SideTarget", 1)[1].split(
@@ -75,7 +75,7 @@ def test_cat1_minimized_side_target_commits_approach_side_to_prevent_center_stra
 
 
 def test_cat1_walk_speed_rate_relaxes_when_converging():
-    """追赶倍率必须在收敛时回落，避免一次瞬时变远把速度永久钉死在 maxRate。"""
+    """Catch-up speed rate must relax while converging, so one momentary distance spike does not pin the speed at maxRate forever."""
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
 
     speed_block = source.split("function _updateNekoIdleCat1WalkSpeedRate", 1)[1].split(
