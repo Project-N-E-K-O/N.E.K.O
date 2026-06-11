@@ -68,11 +68,15 @@ jobs:
         # affected tests mock or skip that cohort.
         run: uv sync
 
-      - name: Run plugin and static contract tests
+      - name: Run plugin test suite
         # Explicit path (not bare `pytest` under plugin/tests): passing the
         # directory overrides the testpaths whitelist in plugin/tests/
         # pytest.ini, so unit/plugins — where the silent drift lived — is
         # collected too.
-        # The avatar static contract lives under repo-root tests/, so list it
-        # explicitly instead of relying on plugin/tests discovery.
-        run: uv run pytest plugin/tests tests/unit/test_avatar_return_button_idle_tiers_static.py -q
+        run: uv run pytest plugin/tests -q
+
+      - name: Run avatar static contract tests
+        # Keep this in a separate pytest process so plugin/tests continues to
+        # use its own pytest.ini while repo-root static contracts are still
+        # covered by CI.
+        run: uv run pytest tests/unit/test_avatar_return_button_idle_tiers_static.py -q
