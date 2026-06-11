@@ -2542,7 +2542,6 @@
 
     // Chat 窗口初始化时，向 Pet 窗口请求当前已缓存的头像
     if (isStandaloneChatPage() && (nekoBroadcastChannel || getGoodbyeChatComposerHiddenElectronBridge())) {
-        var initialLanlanName = getCurrentLanlanName();
         var GOODBYE_COMPOSER_REQUEST_RETRY_DELAYS_MS = [100, 300, 700, 1500, 3000, 5000];
         var goodbyeComposerRequestRetryIndex = 0;
         var goodbyeComposerRequestTimer = 0;
@@ -2588,11 +2587,7 @@
                 timestamp: Date.now()
             });
         }
-        // 配置可能尚未注入（lanlan_name 为空），等 IPC 注入后补发一次
-        if (!initialLanlanName) {
-            window.addEventListener('neko:config-injected', postAvatarRequest, { once: true });
-            window.addEventListener('neko:config-injected', postGoodbyeComposerRequest, { once: true });
-        }
+        // 配置注入后统一重新请求状态（postStandaloneChatStateRequests 内部已含头像与 goodbye composer 隐藏状态请求，避免重复补发）
         window.addEventListener('neko:config-injected', postStandaloneChatStateRequests);
         window.addEventListener('neko:request-goodbye-chat-composer-hidden-state', function () {
             scheduleGoodbyeComposerRequest(0);

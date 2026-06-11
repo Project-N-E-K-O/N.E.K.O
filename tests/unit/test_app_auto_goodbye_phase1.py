@@ -743,7 +743,15 @@ def test_goodbye_composer_hidden_syncs_to_chat_window():
     assert "nekoBroadcastChannel || getGoodbyeChatComposerHiddenElectronBridge()" in interpage_source
     assert "postGoodbyeChatComposerHiddenPayload({" in interpage_source
     assert "postGoodbyeComposerRequest();" in interpage_source
-    assert "window.addEventListener('neko:config-injected', postGoodbyeComposerRequest" in interpage_source
+    # config 注入后只通过 postStandaloneChatStateRequests 统一补发，不再单独注册 once 监听，避免重复请求
+    assert (
+        "window.addEventListener('neko:config-injected', postGoodbyeComposerRequest"
+        not in interpage_source
+    )
+    assert (
+        "window.addEventListener('neko:config-injected', postAvatarRequest"
+        not in interpage_source
+    )
     assert "window.addEventListener('neko:config-injected', postStandaloneChatStateRequests);" in interpage_source
     assert "window.addEventListener('neko:request-goodbye-chat-composer-hidden-state'" in interpage_source
     assert "window.addEventListener('focus', function ()" in interpage_source
