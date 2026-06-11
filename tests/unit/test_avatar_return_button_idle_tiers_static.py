@@ -31,7 +31,15 @@ CAT1_INTERACTIVE_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" /
 CAT1_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-move-1.gif"
 CAT2_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-move-2.gif"
 CAT3_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-move-3.gif"
+CAT4_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-move-4.gif"
 CAT_MODEL_CHANGE_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat_model_change.gif"
+THOUGHT_BUBBLE_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "thought-items" / "cloud-thought-bubble.gif"
+SLEEPING_THOUGHT_BUBBLE_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "thought-items" / "sleeping-zzz.gif"
+THOUGHT_BUBBLE_ITEM_ASSET_PATHS = (
+    PROJECT_ROOT / "static" / "assets" / "neko-idle" / "thought-items" / "catnip-pouch.png",
+    PROJECT_ROOT / "static" / "assets" / "neko-idle" / "thought-items" / "fish-cookie.png",
+    PROJECT_ROOT / "static" / "assets" / "neko-idle" / "thought-items" / "toy-mouse.png",
+)
 
 
 def _source_slice_between(source, start_marker, end_marker, block_name):
@@ -84,9 +92,42 @@ def test_return_button_idle_tier_assets_are_mapped_in_source():
     assert "/static/assets/neko-idle/cat-idle-cat-move-1.gif" in source
     assert "/static/assets/neko-idle/cat-idle-cat-move-2.gif" in source
     assert "/static/assets/neko-idle/cat-idle-cat-move-3.gif" in source
+    assert "/static/assets/neko-idle/cat-idle-cat-move-4.gif" in source
     assert "/static/assets/neko-idle/cat_model_change.gif" in app_ui_source
     assert '_getNekoIdleReturnClickAssetUrl' in source
     assert '_getNekoIdleReturnDragAssetUrl' in source
+    assert "const _NEKO_IDLE_RETURN_DRAG_ASSET_URLS_BY_TIER = Object.freeze({" in source
+    assert "[_NEKO_IDLE_TIER_CAT1]: Object.freeze([" in source
+    assert "[_NEKO_IDLE_TIER_CAT2]: Object.freeze([" in source
+    assert "[_NEKO_IDLE_TIER_CAT3]: Object.freeze([" in source
+    assert "function _pickNekoIdleReturnDragAssetUrl(tier)" in source
+
+    cat1_drag_pool = _source_slice_between(
+        source,
+        "[_NEKO_IDLE_TIER_CAT1]: Object.freeze([",
+        "]),\n    [_NEKO_IDLE_TIER_CAT2]",
+        "cat1 drag asset pool",
+    )
+    assert "cat-idle-cat-move-1.gif" in cat1_drag_pool
+    assert "cat-idle-cat-move-2.gif" in cat1_drag_pool
+
+    cat2_drag_pool = _source_slice_between(
+        source,
+        "[_NEKO_IDLE_TIER_CAT2]: Object.freeze([",
+        "]),\n    [_NEKO_IDLE_TIER_CAT3]",
+        "cat2 drag asset pool",
+    )
+    assert "cat-idle-cat-move-2.gif" in cat2_drag_pool
+    assert "cat-idle-cat-move-3.gif" in cat2_drag_pool
+
+    cat3_drag_pool = _source_slice_between(
+        source,
+        "[_NEKO_IDLE_TIER_CAT3]: Object.freeze([",
+        "])\n});",
+        "cat3 drag asset pool",
+    )
+    assert "cat-idle-cat-move-3.gif" in cat3_drag_pool
+    assert "cat-idle-cat-move-4.gif" in cat3_drag_pool
 
 
 def test_model_cat_transition_contract_is_present():
@@ -469,6 +510,239 @@ def test_idle_thought_bubble_hides_during_pending_long_press():
     assert ".neko-idle-return-btn.is-drag-action-pending .neko-idle-thought-bubble" in css_source
 
 
+def test_return_button_drag_randomizes_asset_once_per_drag_action():
+    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+
+    set_drag_art_block = _source_slice_between(
+        source,
+        "function _setNekoIdleReturnDragActionArt(button, tier)",
+        "function _prepareNekoIdleReturnDragActionForContainer(container)",
+        "return drag action art",
+    )
+    _assert_source_contains(
+        set_drag_art_block,
+        "const dragSrc = button.__nekoIdleReturnDragAssetUrl || _pickNekoIdleReturnDragAssetUrl(tier);",
+        "return drag action art",
+    )
+    _assert_source_contains(
+        set_drag_art_block,
+        "button.__nekoIdleReturnDragAssetUrl = dragSrc;",
+        "return drag action art",
+    )
+
+    start_drag_block = _source_slice_between(
+        source,
+        "function _startNekoIdleReturnDragActionForContainer(container)",
+        "function _finishNekoIdleReturnDragAction(button, options = {})",
+        "return drag action start",
+    )
+    _assert_source_order(
+        start_drag_block,
+        "return drag action start",
+        "state.tier = tier;",
+        "button.__nekoIdleReturnDragAssetUrl = _pickNekoIdleReturnDragAssetUrl(tier);",
+        "_setNekoIdleReturnDragActionArt(button, tier);",
+    )
+    assert "src: button.__nekoIdleReturnDragAssetUrl" in start_drag_block
+
+    finish_drag_block = _source_slice_between(
+        source,
+        "function _finishNekoIdleReturnDragAction(button, options = {})",
+        "function _finishNekoIdleReturnDragActionForContainer(container, options = {})",
+        "return drag action finish",
+    )
+    _assert_source_contains(
+        finish_drag_block,
+        "button.__nekoIdleReturnDragAssetUrl = '';",
+        "return drag action finish",
+    )
+
+
+def test_idle_thought_bubble_is_sound_triggered_with_fade():
+    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    css_source = INDEX_CSS_PATH.read_text(encoding="utf-8")
+
+    assert "_NEKO_IDLE_THOUGHT_BUBBLE_ACTIVE_CLASS = 'is-thought-bubble-active'" in source
+    assert "_NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_CLASS = 'is-thought-bubble-sleeping'" in source
+    assert "_NEKO_IDLE_THOUGHT_BUBBLE_ASSET_URL = '/static/assets/neko-idle/thought-items/cloud-thought-bubble.gif'" in source
+    assert "_NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_ASSET_URL = '/static/assets/neko-idle/thought-items/sleeping-zzz.gif'" in source
+    assert "const _NEKO_IDLE_THOUGHT_BUBBLE_ITEM_ASSET_URLS = Object.freeze([" in source
+    assert "'/static/assets/neko-idle/thought-items/catnip-pouch.png'" in source
+    assert "'/static/assets/neko-idle/thought-items/fish-cookie.png'" in source
+    assert "'/static/assets/neko-idle/thought-items/toy-mouse.png'" in source
+    assert "fish-cookie-transparent.png" not in source
+    assert "_NEKO_IDLE_THOUGHT_BUBBLE_VISIBLE_MS = 5000" in source
+    assert "_NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_VISIBLE_MS = 8000" in source
+    assert "function _pickNekoIdleThoughtBubbleBgAsset(tier)" in source
+    assert "normalizedTier === _NEKO_IDLE_TIER_CAT2 && roll < 1 / 3" in source
+    assert "normalizedTier === _NEKO_IDLE_TIER_CAT3 && roll < 2 / 3" in source
+    assert "function _getNekoIdleThoughtBubbleBgAssetUrl(assetUrl, restartToken = 0)" in source
+    assert "function _getNekoIdleThoughtBubbleItemAssetUrl(assetUrl)" in source
+    assert "function _pickNekoIdleThoughtBubbleItemAssetUrl(previousAssetUrl = '')" in source
+    assert "const availableUrls = urls.length > 1 && previousAssetUrl" in source
+    assert "urls.filter((url) => url !== previousAssetUrl)" in source
+    assert "function _restartNekoIdleThoughtBubbleArt(button, tier)" in source
+    assert "function _clearNekoIdleThoughtBubble(button)" in source
+    assert "function _showNekoIdleThoughtBubbleForSound(tier)" in source
+    assert "button.__nekoIdleThoughtBubbleTier = normalizedTier;" in source
+    assert "if (button.__nekoIdleThoughtBubbleTier && button.__nekoIdleThoughtBubbleTier !== normalizedTier)" in source
+    assert "_NEKO_IDLE_THOUGHT_BUBBLE_VISIBLE_MS" in source
+
+    bubble_helper_block = _source_slice_between(
+        source,
+        "function _showNekoIdleThoughtBubbleForSound(tier)",
+        "function _clearNekoIdleSleepSoundTimer()",
+        "thought bubble helper",
+    )
+    _assert_source_order(
+        bubble_helper_block,
+        "thought bubble helper",
+        "const bubbleConfig = _restartNekoIdleThoughtBubbleArt(button, normalizedTier);",
+        "button.classList.add(_NEKO_IDLE_THOUGHT_BUBBLE_ACTIVE_CLASS);",
+        "button.__nekoIdleThoughtBubbleTimer = window.setTimeout(() => {",
+    )
+    _assert_source_contains(
+        bubble_helper_block,
+        "}, bubbleConfig.visibleMs);",
+        "thought bubble helper",
+    )
+    bubble_restart_block = _source_slice_between(
+        source,
+        "function _restartNekoIdleThoughtBubbleArt(button, tier)",
+        "function _showNekoIdleThoughtBubbleForSound(tier)",
+        "thought bubble restart helper",
+    )
+    _assert_source_contains(
+        bubble_restart_block,
+        "button.classList.remove(_NEKO_IDLE_THOUGHT_BUBBLE_ACTIVE_CLASS);",
+        "thought bubble restart helper",
+    )
+    _assert_source_contains(
+        bubble_restart_block,
+        "const bubbleConfig = _pickNekoIdleThoughtBubbleBgAsset(tier);",
+        "thought bubble restart helper",
+    )
+    _assert_source_contains(
+        bubble_restart_block,
+        "button.classList.toggle(_NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_CLASS, !!bubbleConfig.sleeping);",
+        "thought bubble restart helper",
+    )
+    _assert_source_contains(
+        bubble_restart_block,
+        "bg.src = _getNekoIdleThoughtBubbleBgAssetUrl(bubbleConfig.assetUrl, button.__nekoIdleThoughtBubbleRestartToken);",
+        "thought bubble restart helper",
+    )
+    _assert_source_contains(
+        bubble_restart_block,
+        "const item = button.querySelector('.neko-idle-thought-bubble-item');",
+        "thought bubble restart helper",
+    )
+    _assert_source_contains(
+        bubble_restart_block,
+        "const itemAssetUrl = _pickNekoIdleThoughtBubbleItemAssetUrl(button.__nekoIdleThoughtBubbleItemAssetUrl);",
+        "thought bubble restart helper",
+    )
+    _assert_source_contains(
+        bubble_restart_block,
+        "button.__nekoIdleThoughtBubbleItemAssetUrl = itemAssetUrl;",
+        "thought bubble restart helper",
+    )
+    _assert_source_contains(
+        bubble_restart_block,
+        "item.src = _getNekoIdleThoughtBubbleItemAssetUrl(itemAssetUrl);",
+        "thought bubble restart helper",
+    )
+    _assert_source_contains(
+        bubble_restart_block,
+        "return bubbleConfig;",
+        "thought bubble restart helper",
+    )
+    _assert_source_contains(
+        bubble_restart_block,
+        "void button.offsetWidth;",
+        "thought bubble restart helper",
+    )
+
+    sleep_play_block = _source_slice_between(
+        source,
+        "function _playNekoIdleSleepSound(tier, token)",
+        "function _scheduleNekoIdleSleepSoundInterval(tier, intervalStartedAt)",
+        "sleep sound playback",
+    )
+    _assert_source_order(
+        sleep_play_block,
+        "sleep sound playback",
+        "const audio = _playNekoIdleSound(_nekoIdleSleepSoundState, config.src, config.volume);",
+        "if (audio) _showNekoIdleThoughtBubbleForSound(tier);",
+    )
+
+    ambient_play_block = _source_slice_between(
+        source,
+        "function _playNekoIdleCat1AmbientSound(token)",
+        "function _scheduleNekoIdleCat1AmbientSoundInterval(intervalStartedAt)",
+        "cat1 ambient sound playback",
+    )
+    _assert_source_order(
+        ambient_play_block,
+        "cat1 ambient sound playback",
+        "const audio = _playNekoIdleSound(",
+        "if (audio) _showNekoIdleThoughtBubbleForSound(_NEKO_IDLE_TIER_CAT1);",
+        "_playNekoIdleCat1SoundReaction();",
+    )
+
+    bubble_block = _extract_css_block(css_source, ".neko-idle-thought-bubble")
+    assert "opacity: 0;" in bubble_block
+    assert "visibility: hidden;" in bubble_block
+    assert "transition: opacity 360ms ease, visibility 0s linear 360ms;" in bubble_block
+
+    active_block = _extract_css_block(
+        css_source,
+        ".neko-idle-return-btn.is-thought-bubble-active .neko-idle-thought-bubble",
+    )
+    assert "opacity: 1;" in active_block
+    assert "visibility: visible;" in active_block
+    assert "transition-delay: 0s;" in active_block
+
+    assert "const thoughtBubble = document.createElement('span');" in source
+    assert "const thoughtBubbleBg = document.createElement('img');" in source
+    assert "thoughtBubbleBg.className = 'neko-idle-thought-bubble-bg';" in source
+    assert "thoughtBubbleBg.src = _getNekoIdleThoughtBubbleBgAssetUrl(_NEKO_IDLE_THOUGHT_BUBBLE_ASSET_URL);" in source
+    assert "const thoughtBubbleItem = document.createElement('img');" in source
+    assert "thoughtBubbleItem.className = 'neko-idle-thought-bubble-item';" in source
+    assert "thoughtBubbleItem.src = _getNekoIdleThoughtBubbleItemAssetUrl(_NEKO_IDLE_THOUGHT_BUBBLE_ITEM_ASSET_URLS[0]);" in source
+    assert "thoughtBubble.appendChild(thoughtBubbleBg);" in source
+    assert "thoughtBubble.appendChild(thoughtBubbleItem);" in source
+
+    bubble_bg_block = _extract_css_block(css_source, ".neko-idle-thought-bubble-bg")
+    assert "position: absolute;" in bubble_bg_block
+    assert "inset: 0;" in bubble_bg_block
+    assert "width: 100%;" in bubble_bg_block
+    assert "height: 100%;" in bubble_bg_block
+    assert "object-fit: contain;" in bubble_bg_block
+
+    bubble_item_block = _extract_css_block(css_source, ".neko-idle-thought-bubble-item")
+    assert "position: absolute;" in bubble_item_block
+    assert "left: 50%;" in bubble_item_block
+    assert "top: 36%;" in bubble_item_block
+    assert "width: 47%;" in bubble_item_block
+    assert "max-height: 38%;" in bubble_item_block
+    assert "transform: translate(-50%, -50%);" in bubble_item_block
+    assert "animation:" not in bubble_item_block
+    active_item_block = _extract_css_block(
+        css_source,
+        ".neko-idle-return-btn.is-thought-bubble-active .neko-idle-thought-bubble-item",
+    )
+    assert "animation: neko-idle-thought-bubble-item-float 3600ms steps(24, end) infinite;" in active_item_block
+    assert "@keyframes neko-idle-thought-bubble-item-float" in css_source
+    assert "25% { transform: translate(-50%, calc(-50% - 1px)); }" in css_source
+    assert "75% { transform: translate(-50%, calc(-50% + 1px)); }" in css_source
+    sleeping_item_block = _extract_css_block(
+        css_source,
+        ".neko-idle-return-btn.is-thought-bubble-sleeping .neko-idle-thought-bubble-item",
+    )
+    assert "display: none;" in sleeping_item_block
+
+
 def test_sleeping_cat_tiers_schedule_soft_random_sound_once_per_interval():
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
 
@@ -832,8 +1106,11 @@ def test_return_button_idle_tier_assets_are_version_tracked():
                  CAT2_SLEEP_SOUND_PATH, CAT3_SLEEP_SOUND_PATH,
                  CAT1_WALK_ASSET_PATH, CAT1_STRETCH_ASSET_PATH,
                  CAT1_INTERACTIVE_ASSET_PATH,
-                 CAT1_DRAG_ASSET_PATH, CAT2_DRAG_ASSET_PATH, CAT3_DRAG_ASSET_PATH,
-                 CAT_MODEL_CHANGE_ASSET_PATH):
+                 CAT1_DRAG_ASSET_PATH, CAT2_DRAG_ASSET_PATH,
+                 CAT3_DRAG_ASSET_PATH, CAT4_DRAG_ASSET_PATH,
+                 CAT_MODEL_CHANGE_ASSET_PATH,
+                 THOUGHT_BUBBLE_ASSET_PATH, SLEEPING_THOUGHT_BUBBLE_ASSET_PATH,
+                 *THOUGHT_BUBBLE_ITEM_ASSET_PATHS):
         assert path in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
         assert path.is_file()
 
