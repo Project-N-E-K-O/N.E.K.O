@@ -340,6 +340,14 @@ function _isNekoNativeReturnBallDragDisabled() {
     );
 }
 
+function _isNekoDesktopLinuxRuntime() {
+    const runtime = window.__NEKO_DESKTOP_RUNTIME__ || {};
+    return !!(
+        runtime.isLinux ||
+        runtime.platform === 'linux'
+    );
+}
+
 function _getNekoIdleReturnAssetUrl(tier) {
     const normalizedTier = _normalizeNekoIdleReturnTier(tier);
     const versionSuffix = _getNekoIdleReturnAssetVersionSuffix();
@@ -2478,6 +2486,7 @@ function _getNekoIdleDesktopChatPairMoveSignature(screenRect) {
 }
 
 function _dispatchNekoIdleDesktopChatPairMoveBounds(screenRect, options = {}) {
+    if (_isNekoDesktopLinuxRuntime()) return false;
     const normalized = _rememberNekoIdleDesktopChatPairMoveRect(screenRect);
     if (!normalized) return false;
     const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
@@ -2590,6 +2599,7 @@ function _getNekoIdleCat1PairMovePlan(button) {
     const config = profile.pairMove || {};
     const container = _getNekoIdleReturnContainerFromButton(button);
     const chatTarget = _getNekoIdleCat1PairMoveChatTarget();
+    if (chatTarget && chatTarget.mode === 'desktop' && _isNekoDesktopLinuxRuntime()) return null;
     const canMoveSolo = chatTarget ? false : _canNekoIdleCat1MoveSoloWithExpandedChat();
     if (!container || (!chatTarget && !canMoveSolo)) return null;
     if (container.getAttribute('data-dragging') === 'true') return null;
