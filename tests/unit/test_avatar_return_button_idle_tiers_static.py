@@ -337,6 +337,29 @@ def test_desktop_return_ball_drag_lifecycle_waits_for_restored_viewport_before_r
     no_move_block = source[no_move_start:no_move_end]
 
     assert no_move_block.index("revealReturnBallDragWindow();") < no_move_block.index("dispatchReturnBallClick();")
+    suppress_click_block = _source_slice_between(
+        no_move_block,
+        "if (suppressClick) {",
+        "} else {",
+        "no-move suppressed return-ball drag branch",
+    )
+    _assert_source_contains(
+        suppress_click_block,
+        "reason: 'return-ball-drag-cancel'",
+        "no-move suppressed return-ball drag branch",
+    )
+    _assert_source_contains(
+        suppress_click_block,
+        "dragCancelled: true",
+        "no-move suppressed return-ball drag branch",
+    )
+    normal_click_block = no_move_block.split("} else {", 1)[1]
+    _assert_source_order(
+        normal_click_block,
+        "no-move normal return-ball click branch",
+        "reason: 'return-ball-drag-end'",
+        "dispatchReturnBallClick();",
+    )
 
 
 def test_desktop_return_ball_drag_recovers_when_mouse_release_is_lost():
@@ -572,10 +595,13 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
     assert "'/static/assets/neko-idle/thought-items/toy-mouse.png'" in source
     assert "fish-cookie-transparent.png" not in source
     assert "_NEKO_IDLE_THOUGHT_BUBBLE_VISIBLE_MS = 5000" in source
-    assert "_NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_VISIBLE_MS = 8000" in source
+    assert "_NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_VISIBLE_MS" not in source
     assert "function _pickNekoIdleThoughtBubbleBgAsset(tier)" in source
     assert "normalizedTier === _NEKO_IDLE_TIER_CAT2 && roll < 1 / 3" in source
     assert "normalizedTier === _NEKO_IDLE_TIER_CAT3 && roll < 2 / 3" in source
+    assert "function _getNekoIdleAudioRemainingMs(audio)" in source
+    assert "function _getNekoIdleThoughtBubbleVisibleMs(bubbleConfig, audio)" in source
+    assert "function _scheduleNekoIdleThoughtBubbleHide(button, token, visibleMs)" in source
     assert "function _getNekoIdleThoughtBubbleBgAssetUrl(assetUrl, restartToken = 0)" in source
     assert "function _getNekoIdleThoughtBubbleItemAssetUrl(assetUrl)" in source
     assert "function _pickNekoIdleThoughtBubbleItemAssetUrl(previousAssetUrl = '')" in source
@@ -583,14 +609,14 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
     assert "urls.filter((url) => url !== previousAssetUrl)" in source
     assert "function _restartNekoIdleThoughtBubbleArt(button, tier)" in source
     assert "function _clearNekoIdleThoughtBubble(button)" in source
-    assert "function _showNekoIdleThoughtBubbleForSound(tier)" in source
+    assert "function _showNekoIdleThoughtBubbleForSound(tier, audio = null)" in source
     assert "button.__nekoIdleThoughtBubbleTier = normalizedTier;" in source
     assert "if (button.__nekoIdleThoughtBubbleTier && button.__nekoIdleThoughtBubbleTier !== normalizedTier)" in source
     assert "_NEKO_IDLE_THOUGHT_BUBBLE_VISIBLE_MS" in source
 
     bubble_helper_block = _source_slice_between(
         source,
-        "function _showNekoIdleThoughtBubbleForSound(tier)",
+        "function _showNekoIdleThoughtBubbleForSound(tier, audio = null)",
         "function _clearNekoIdleSleepSoundTimer()",
         "thought bubble helper",
     )
@@ -599,17 +625,28 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
         "thought bubble helper",
         "const bubbleConfig = _restartNekoIdleThoughtBubbleArt(button, normalizedTier);",
         "button.classList.add(_NEKO_IDLE_THOUGHT_BUBBLE_ACTIVE_CLASS);",
-        "button.__nekoIdleThoughtBubbleTimer = window.setTimeout(() => {",
+        "const visibleMs = _getNekoIdleThoughtBubbleVisibleMs(bubbleConfig, audio);",
+        "_scheduleNekoIdleThoughtBubbleHide(button, timerToken, visibleMs);",
     )
     _assert_source_contains(
         bubble_helper_block,
-        "}, bubbleConfig.visibleMs);",
+        "audio.addEventListener('loadedmetadata'",
+        "thought bubble helper",
+    )
+    _assert_source_contains(
+        bubble_helper_block,
+        "audio.addEventListener('ended'",
+        "thought bubble helper",
+    )
+    _assert_source_contains(
+        bubble_helper_block,
+        "audio.addEventListener('error'",
         "thought bubble helper",
     )
     bubble_restart_block = _source_slice_between(
         source,
         "function _restartNekoIdleThoughtBubbleArt(button, tier)",
-        "function _showNekoIdleThoughtBubbleForSound(tier)",
+        "function _showNekoIdleThoughtBubbleForSound(tier, audio = null)",
         "thought bubble restart helper",
     )
     _assert_source_contains(
@@ -673,7 +710,7 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
         sleep_play_block,
         "sleep sound playback",
         "const audio = _playNekoIdleSound(_nekoIdleSleepSoundState, config.src, config.volume);",
-        "if (audio) _showNekoIdleThoughtBubbleForSound(tier);",
+        "if (audio) _showNekoIdleThoughtBubbleForSound(tier, audio);",
     )
 
     ambient_play_block = _source_slice_between(
@@ -736,6 +773,13 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
     assert "@keyframes neko-idle-thought-bubble-item-float" in css_source
     assert "25% { transform: translate(-50%, calc(-50% - 1px)); }" in css_source
     assert "75% { transform: translate(-50%, calc(-50% + 1px)); }" in css_source
+    thought_bubble_reduced_motion_block = _source_slice_between(
+        css_source,
+        "@media (prefers-reduced-motion: reduce) {\n    .neko-idle-return-btn.is-thought-bubble-active .neko-idle-thought-bubble-item",
+        ".neko-idle-return-btn[data-neko-idle-tier=\"cat1\"] .neko-idle-thought-bubble",
+        "thought bubble reduced motion block",
+    )
+    assert "animation: none;" in thought_bubble_reduced_motion_block
     sleeping_item_block = _extract_css_block(
         css_source,
         ".neko-idle-return-btn.is-thought-bubble-sleeping .neko-idle-thought-bubble-item",

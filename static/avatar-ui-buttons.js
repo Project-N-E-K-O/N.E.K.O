@@ -268,7 +268,6 @@ const _NEKO_IDLE_THOUGHT_BUBBLE_ITEM_ASSET_URLS = Object.freeze([
     '/static/assets/neko-idle/thought-items/toy-mouse.png'
 ]);
 const _NEKO_IDLE_THOUGHT_BUBBLE_VISIBLE_MS = 5000;
-const _NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_VISIBLE_MS = 8000;
 const _NEKO_IDLE_CAT1_LAYER_REQUEST_HEARTBEAT_MS = 250;
 const _NEKO_IDLE_CAT1_LAYER_FOLLOW_REASSERT_MS = 80;
 const _NEKO_IDLE_CAT1_LAYER_RELEASE_DELAY_MS = 2600;
@@ -431,7 +430,7 @@ function _pickNekoIdleThoughtBubbleBgAsset(tier) {
         (normalizedTier === _NEKO_IDLE_TIER_CAT3 && roll < 2 / 3);
     return {
         assetUrl: useSleeping ? _NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_ASSET_URL : _NEKO_IDLE_THOUGHT_BUBBLE_ASSET_URL,
-        visibleMs: useSleeping ? _NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_VISIBLE_MS : _NEKO_IDLE_THOUGHT_BUBBLE_VISIBLE_MS,
+        visibleMs: _NEKO_IDLE_THOUGHT_BUBBLE_VISIBLE_MS,
         sleeping: useSleeping
     };
 }
@@ -549,8 +548,51 @@ function _clearNekoIdleThoughtBubble(button) {
         clearTimeout(button.__nekoIdleThoughtBubbleTimer);
         button.__nekoIdleThoughtBubbleTimer = 0;
     }
+    button.__nekoIdleThoughtBubbleTimerToken = (button.__nekoIdleThoughtBubbleTimerToken || 0) + 1;
     button.__nekoIdleThoughtBubbleTier = '';
     button.__nekoIdleThoughtBubbleDebugKey = '';
+    button.__nekoIdleThoughtBubbleAudio = null;
+    button.classList.remove(_NEKO_IDLE_THOUGHT_BUBBLE_ACTIVE_CLASS);
+    button.classList.remove(_NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_CLASS);
+}
+
+function _getNekoIdleAudioRemainingMs(audio) {
+    if (!audio) return 0;
+    const durationMs = Number(audio.duration) * 1000;
+    if (!Number.isFinite(durationMs) || durationMs <= 0) return 0;
+    const currentMs = Math.max(0, Number(audio.currentTime) * 1000 || 0);
+    return Math.max(0, Math.round(durationMs - currentMs));
+}
+
+function _getNekoIdleThoughtBubbleVisibleMs(bubbleConfig, audio) {
+    if (!bubbleConfig || !bubbleConfig.sleeping) {
+        return Math.max(0, Number(bubbleConfig && bubbleConfig.visibleMs) || _NEKO_IDLE_THOUGHT_BUBBLE_VISIBLE_MS);
+    }
+    if (audio) return _getNekoIdleAudioRemainingMs(audio);
+    return _NEKO_IDLE_THOUGHT_BUBBLE_VISIBLE_MS;
+}
+
+function _scheduleNekoIdleThoughtBubbleHide(button, token, visibleMs) {
+    if (!button || button.__nekoIdleThoughtBubbleTimerToken !== token) return;
+    const normalizedVisibleMs = Number(visibleMs);
+    if (!Number.isFinite(normalizedVisibleMs) || normalizedVisibleMs <= 0) return;
+    if (button.__nekoIdleThoughtBubbleTimer) {
+        clearTimeout(button.__nekoIdleThoughtBubbleTimer);
+    }
+    button.__nekoIdleThoughtBubbleTimer = window.setTimeout(() => {
+        _hideNekoIdleThoughtBubble(button, token);
+    }, normalizedVisibleMs);
+}
+
+function _hideNekoIdleThoughtBubble(button, token) {
+    if (!button) return;
+    if (token != null && button.__nekoIdleThoughtBubbleTimerToken !== token) return;
+    if (button.__nekoIdleThoughtBubbleTimer) {
+        clearTimeout(button.__nekoIdleThoughtBubbleTimer);
+        button.__nekoIdleThoughtBubbleTimer = 0;
+    }
+    button.__nekoIdleThoughtBubbleTier = '';
+    button.__nekoIdleThoughtBubbleAudio = null;
     button.classList.remove(_NEKO_IDLE_THOUGHT_BUBBLE_ACTIVE_CLASS);
     button.classList.remove(_NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_CLASS);
 }
@@ -583,7 +625,7 @@ function _restartNekoIdleThoughtBubbleArt(button, tier) {
     return bubbleConfig;
 }
 
-function _showNekoIdleThoughtBubbleForSound(tier) {
+function _showNekoIdleThoughtBubbleForSound(tier, audio = null) {
     const normalizedTier = _normalizeNekoIdleReturnTier(tier);
     if (normalizedTier === _NEKO_IDLE_TIER_NONE) return;
     _forEachNekoIdleReturnButton((button) => {
@@ -596,12 +638,32 @@ function _showNekoIdleThoughtBubbleForSound(tier) {
         if (button.__nekoIdleThoughtBubbleTimer) {
             clearTimeout(button.__nekoIdleThoughtBubbleTimer);
         }
-        button.__nekoIdleThoughtBubbleTimer = window.setTimeout(() => {
-            button.__nekoIdleThoughtBubbleTimer = 0;
-            button.__nekoIdleThoughtBubbleTier = '';
-            button.classList.remove(_NEKO_IDLE_THOUGHT_BUBBLE_ACTIVE_CLASS);
-            button.classList.remove(_NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_CLASS);
-        }, bubbleConfig.visibleMs);
+        button.__nekoIdleThoughtBubbleTimerToken = (button.__nekoIdleThoughtBubbleTimerToken || 0) + 1;
+        const timerToken = button.__nekoIdleThoughtBubbleTimerToken;
+        const visibleMs = _getNekoIdleThoughtBubbleVisibleMs(bubbleConfig, audio);
+        button.__nekoIdleThoughtBubbleAudio = bubbleConfig.sleeping ? audio : null;
+        _scheduleNekoIdleThoughtBubbleHide(button, timerToken, visibleMs);
+        if (bubbleConfig.sleeping && audio && typeof audio.addEventListener === 'function') {
+            audio.addEventListener('loadedmetadata', () => {
+                if (button.__nekoIdleThoughtBubbleAudio === audio) {
+                    _scheduleNekoIdleThoughtBubbleHide(
+                        button,
+                        timerToken,
+                        _getNekoIdleThoughtBubbleVisibleMs(bubbleConfig, audio)
+                    );
+                }
+            }, { once: true });
+            audio.addEventListener('ended', () => {
+                if (button.__nekoIdleThoughtBubbleAudio === audio) {
+                    _hideNekoIdleThoughtBubble(button, timerToken);
+                }
+            }, { once: true });
+            audio.addEventListener('error', () => {
+                if (button.__nekoIdleThoughtBubbleAudio === audio) {
+                    _hideNekoIdleThoughtBubble(button, timerToken);
+                }
+            }, { once: true });
+        }
     });
 }
 
@@ -623,7 +685,7 @@ function _playNekoIdleSleepSound(tier, token) {
     }
 
     const audio = _playNekoIdleSound(_nekoIdleSleepSoundState, config.src, config.volume);
-    if (audio) _showNekoIdleThoughtBubbleForSound(tier);
+    if (audio) _showNekoIdleThoughtBubbleForSound(tier, audio);
 }
 
 function _scheduleNekoIdleSleepSoundInterval(tier, intervalStartedAt) {

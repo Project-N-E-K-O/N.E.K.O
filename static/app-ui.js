@@ -2833,7 +2833,7 @@
                     if (suppressClick) {
                         window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
                             detail: {
-                                reason: 'return-ball-drag-end',
+                                reason: 'return-ball-drag-cancel',
                                 container: container,
                                 movedDistancePx: 0,
                                 dragCancelled: true
@@ -2842,7 +2842,7 @@
                     } else {
                         window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
                             detail: {
-                                reason: 'return-ball-drag-cancel',
+                                reason: 'return-ball-drag-end',
                                 container: container
                             }
                         }));

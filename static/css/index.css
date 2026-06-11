@@ -518,6 +518,12 @@ body.neko-game-active [id$="-lock-icon"] {
     display: none;
 }
 
+@media (prefers-reduced-motion: reduce) {
+    .neko-idle-return-btn.is-thought-bubble-active .neko-idle-thought-bubble-item {
+        animation: none;
+    }
+}
+
 .neko-idle-return-btn[data-neko-idle-tier="cat1"] .neko-idle-thought-bubble {
     right: calc(var(--neko-idle-bubble-size) * -0.42);
     top: calc(var(--neko-idle-bubble-size) * -0.72);
