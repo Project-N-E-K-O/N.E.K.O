@@ -435,105 +435,108 @@ class _FakeTutorAgent:
 def test_study_store_round_trip_and_export(tmp_path: Path) -> None:
     store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
     store.open()
-    config = StudyConfig(language="en", history_limit=2)
-    state = build_initial_state(mode=config.mode)
-    state.last_ocr_text = "photosynthesis"
+    try:
+        config = StudyConfig(language="en", history_limit=2)
+        state = build_initial_state(mode=config.mode)
+        state.last_ocr_text = "photosynthesis"
 
-    store.save_config(config)
-    store.save_state(state)
-    store.append_interaction(
-        kind="concept_explain", input_text="a", output_text="b", history_limit=2
-    )
-    store.append_interaction(
-        kind="concept_explain", input_text="c", output_text="d", history_limit=2
-    )
-    store.append_interaction(
-        kind="concept_explain", input_text="e", output_text="f", history_limit=2
-    )
-    store.ensure_topic(topic_id="photosynthesis_topic", name="Photosynthesis")
-    notebooks = NotebookStore(store)
-    notebook = notebooks.create_notebook(name="Biology")
-    note = notebooks.create_note(
-        notebook_id=notebook.id,
-        title="Photosynthesis note",
-        content="Plants convert light into sugar.",
-        topic_ids=["photosynthesis_topic"],
-        tags=["biology"],
-    )
-    store.ensure_session(session_id="session-1", mode="interactive")
-    store.add_qa_record(
-        session_id="session-1",
-        topic_id="photosynthesis_topic",
-        question={"question": "What is photosynthesis?"},
-        user_answer="Plants make sugar.",
-        eval_result={"verdict": "correct"},
-        mode="interactive",
-    )
-    store.append_review_log(
-        topic_id="photosynthesis_topic",
-        card_id=None,
-        rating=3,
-        scheduled_days=1,
-        actual_days=0,
-    )
-    candidate = store.upsert_candidate_item(
-        item_type="topic",
-        payload={"topic_id": "photosynthesis_topic", "name": "Photosynthesis"},
-        source="test",
-        dedupe_key="topic:photosynthesis",
-    )
-    store.add_knowledge_evidence(
-        item_id=candidate["id"],
-        event_type="mentioned",
-        weight=0.2,
-        context={"source": "unit"},
-    )
-    for index in range(2):
+        store.save_config(config)
+        store.save_state(state)
+        store.append_interaction(
+            kind="concept_explain", input_text="a", output_text="b", history_limit=2
+        )
+        store.append_interaction(
+            kind="concept_explain", input_text="c", output_text="d", history_limit=2
+        )
+        store.append_interaction(
+            kind="concept_explain", input_text="e", output_text="f", history_limit=2
+        )
+        store.ensure_topic(topic_id="photosynthesis_topic", name="Photosynthesis")
+        notebooks = NotebookStore(store)
+        notebook = notebooks.create_notebook(name="Biology")
+        note = notebooks.create_note(
+            notebook_id=notebook.id,
+            title="Photosynthesis note",
+            content="Plants convert light into sugar.",
+            topic_ids=["photosynthesis_topic"],
+            tags=["biology"],
+        )
+        store.ensure_session(session_id="session-1", mode="interactive")
         store.add_qa_record(
             session_id="session-1",
             topic_id="photosynthesis_topic",
-            question={"question": f"Recent QA {index}"},
-            user_answer="answer",
+            question={"question": "What is photosynthesis?"},
+            user_answer="Plants make sugar.",
             eval_result={"verdict": "correct"},
             mode="interactive",
         )
         store.append_review_log(
             topic_id="photosynthesis_topic",
             card_id=None,
-            rating=index + 1,
-            scheduled_days=index + 1,
+            rating=3,
+            scheduled_days=1,
             actual_days=0,
+        )
+        candidate = store.upsert_candidate_item(
+            item_type="topic",
+            payload={"topic_id": "photosynthesis_topic", "name": "Photosynthesis"},
+            source="test",
+            dedupe_key="topic:photosynthesis",
         )
         store.add_knowledge_evidence(
             item_id=candidate["id"],
             event_type="mentioned",
-            weight=0.3 + index,
-            context={"index": index},
+            weight=0.2,
+            context={"source": "unit"},
         )
+        for index in range(2):
+            store.add_qa_record(
+                session_id="session-1",
+                topic_id="photosynthesis_topic",
+                question={"question": f"Recent QA {index}"},
+                user_answer="answer",
+                eval_result={"verdict": "correct"},
+                mode="interactive",
+            )
+            store.append_review_log(
+                topic_id="photosynthesis_topic",
+                card_id=None,
+                rating=index + 1,
+                scheduled_days=index + 1,
+                actual_days=0,
+            )
+            store.add_knowledge_evidence(
+                item_id=candidate["id"],
+                event_type="mentioned",
+                weight=0.3 + index,
+                context={"index": index},
+            )
 
-    assert store.load_config(StudyConfig()).language == "en"
-    assert store.load_state(build_initial_state()).last_ocr_text == "photosynthesis"
-    assert [item["input_text"] for item in store.list_interactions(limit=10)] == [
-        "e",
-        "c",
-    ]
-    exported = store.export_json()
-    assert exported["config"]["language"] == "en"
-    assert exported["sessions"][0]["id"] == "session-1"
-    assert [
-        item["question"]["question"] for item in store.list_qa_records(limit=2)
-    ] == ["Recent QA 0", "Recent QA 1"]
-    assert [item["rating"] for item in store.list_review_log(limit=2)] == [1, 2]
-    assert [
-        item["context"].get("index") for item in store.list_knowledge_evidence(limit=2)
-    ] == [0, 1]
-    assert exported["qa_records"][-1]["question"]["question"] == "Recent QA 1"
-    assert exported["review_log"][0]["topic_id"] == "photosynthesis_topic"
-    assert exported["knowledge_evidence"][0]["item_id"] == candidate["id"]
-    assert exported["notebooks"][0]["id"] == notebook.id
-    assert exported["notes"][0]["id"] == note.id
-    assert exported["notes"][0]["content"] == "Plants convert light into sugar."
-    store.close()
+        assert store.load_config(StudyConfig()).language == "en"
+        assert store.load_state(build_initial_state()).last_ocr_text == "photosynthesis"
+        assert [item["input_text"] for item in store.list_interactions(limit=10)] == [
+            "e",
+            "c",
+        ]
+        exported = store.export_json()
+        assert exported["config"]["language"] == "en"
+        assert exported["sessions"][0]["id"] == "session-1"
+        assert [
+            item["question"]["question"] for item in store.list_qa_records(limit=2)
+        ] == ["Recent QA 0", "Recent QA 1"]
+        assert [item["rating"] for item in store.list_review_log(limit=2)] == [1, 2]
+        assert [
+            item["context"].get("index")
+            for item in store.list_knowledge_evidence(limit=2)
+        ] == [0, 1]
+        assert exported["qa_records"][-1]["question"]["question"] == "Recent QA 1"
+        assert exported["review_log"][0]["topic_id"] == "photosynthesis_topic"
+        assert exported["knowledge_evidence"][0]["item_id"] == candidate["id"]
+        assert exported["notebooks"][0]["id"] == notebook.id
+        assert exported["notes"][0]["id"] == note.id
+        assert exported["notes"][0]["content"] == "Plants convert light into sugar."
+    finally:
+        store.close()
 
 
 def test_study_store_seed_topic_upsert_preserves_seed_metadata(tmp_path: Path) -> None:
