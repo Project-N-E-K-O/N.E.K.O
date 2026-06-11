@@ -54,6 +54,86 @@ class VRMCore {
         }
     }
 
+    static _getSceneRotation(vrm) {
+        if (!vrm || !vrm.scene || !vrm.scene.rotation) {
+            return null;
+        }
+
+        const { x, y, z } = vrm.scene.rotation;
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+            return null;
+        }
+
+        return { x, y, z };
+    }
+
+    static _isFiniteRotation(rotation) {
+        return !!rotation &&
+            Number.isFinite(rotation.x) &&
+            Number.isFinite(rotation.y) &&
+            Number.isFinite(rotation.z);
+    }
+
+    static _isIdentityRotation(rotation) {
+        return VRMCore._isFiniteRotation(rotation) &&
+            Math.abs(rotation.x) < 0.000001 &&
+            Math.abs(rotation.y) < 0.000001 &&
+            Math.abs(rotation.z) < 0.000001;
+    }
+
+    getEffectiveSavedRotation(savedRotation, versionDefaultRotation) {
+        if (!VRMCore._isFiniteRotation(savedRotation)) {
+            return null;
+        }
+
+        // 旧逻辑可能把漏判的 VRM0.x 朝向自动保存为 identity。
+        // 对有明确 VRM0.x 版本默认旋转的模型，将该缓存视为可迁移旧值。
+        // 这也会迁移用户有意保存的 VRM0 identity；特殊背对模型需保存非 identity 旋转或按个案处理。
+        if (this.vrmVersion === '0.0' &&
+            VRMCore._isIdentityRotation(savedRotation) &&
+            VRMCore._isFiniteRotation(versionDefaultRotation) &&
+            !VRMCore._isIdentityRotation(versionDefaultRotation)) {
+            console.log('[VRM Core] 忽略旧版 VRM0.x identity rotation 缓存，改用版本默认旋转');
+            return null;
+        }
+
+        return savedRotation;
+    }
+
+    /**
+     * 对 VRM0.x 应用 three-vrm 官方朝向兼容，并返回统一旋转管线应使用的默认旋转。
+     * VRM1.0 不需要该兼容处理；已有用户保存 rotation 时，后续统一旋转管线仍会优先使用用户值。
+     */
+    async applyVRM0CompatibilityRotation(vrm) {
+        if (this.vrmVersion !== '0.0' || !vrm || !vrm.scene) {
+            return null;
+        }
+
+        try {
+            const VRMUtils = await VRMCore._getVRMUtils();
+            if (VRMUtils && typeof VRMUtils.rotateVRM0 === 'function') {
+                VRMUtils.rotateVRM0(vrm);
+                if (VRMCore._isIdentityRotation(VRMCore._getSceneRotation(vrm))) {
+                    console.warn('[VRM Core] VRMUtils.rotateVRM0 未产生旋转，回退到 Y 轴 180 度旋转');
+                    vrm.scene.rotation.y = Math.PI;
+                }
+            } else {
+                vrm.scene.rotation.y = Math.PI;
+            }
+        } catch (error) {
+            console.warn('[VRM Core] VRM0.x 官方朝向兼容失败，回退到 Y 轴 180 度旋转:', error);
+            vrm.scene.rotation.y = Math.PI;
+        }
+
+        vrm.scene.updateMatrixWorld(true);
+
+        const rotation = VRMCore._getSceneRotation(vrm);
+        if (rotation) {
+            console.log('[VRM Core] 已应用 VRM0.x 朝向兼容:', rotation);
+        }
+        return rotation;
+    }
+
     /**
      * 检测设备性能模式
      */
@@ -225,12 +305,10 @@ class VRMCore {
     /**
      * 应用性能设置
      */
-    applyPerformanceSettings() {
-        if (!this.manager.renderer) return;
-        
+    _getPerformancePixelRatio() {
         const devicePixelRatio = window.devicePixelRatio || 1;
         let pixelRatio;
-        
+
         if (this.performanceMode === 'low') {
             // 低性能模式：限制最大为 1.0
             pixelRatio = Math.min(1.0, devicePixelRatio);
@@ -243,9 +321,42 @@ class VRMCore {
         }
         
         // 确保 pixelRatio 至少为 1.0（避免模糊）
-        pixelRatio = Math.max(1.0, pixelRatio);
-        
+        return Math.max(1.0, pixelRatio);
+    }
+
+    _getQualityPixelRatio(quality) {
+        if (quality === 'low') return 0.8;
+        if (quality === 'medium') return 1.0;
+        return this._getPerformancePixelRatio();
+    }
+
+    applyPerformanceSettings() {
+        if (!this.manager.renderer) return;
+        const pixelRatio = this._getPerformancePixelRatio();
         this.manager.renderer.setPixelRatio(pixelRatio);
+    }
+
+    syncRendererPixelRatio(reason = 'resize') {
+        if (!this.manager.renderer) return;
+        const renderer = this.manager.renderer;
+        const prevPixelRatio = typeof renderer.getPixelRatio === 'function'
+            ? renderer.getPixelRatio()
+            : null;
+
+        renderer.setPixelRatio(this._getQualityPixelRatio(window.renderQuality || 'medium'));
+
+        const nextPixelRatio = typeof renderer.getPixelRatio === 'function'
+            ? renderer.getPixelRatio()
+            : null;
+        if (Number.isFinite(prevPixelRatio) && Number.isFinite(nextPixelRatio) &&
+            Math.abs(prevPixelRatio - nextPixelRatio) >= 0.001) {
+            console.log('[VRM Core] renderer pixelRatio 已刷新:', {
+                reason,
+                prevPixelRatio,
+                nextPixelRatio,
+                devicePixelRatio: window.devicePixelRatio || 1
+            });
+        }
     }
 
     /**
@@ -546,6 +657,9 @@ class VRMCore {
         // 创建命名函数并存储在 manager 上，以便 dispose() 可以移除它；如果已存在则复用，避免重复注册
         if (!this.manager._resizeHandler) {
             this.manager._resizeHandler = () => {
+                if (this.manager && this.manager.core && typeof this.manager.core.syncRendererPixelRatio === 'function') {
+                    this.manager.core.syncRendererPixelRatio('resize');
+                }
                 if (this.manager && typeof this.manager.onWindowResize === 'function') {
                     this.manager.onWindowResize();
                 }
@@ -560,6 +674,44 @@ class VRMCore {
         if (!alreadyRegistered) {
             this.manager._coreWindowHandlers.push({ event: 'resize', handler: this.manager._resizeHandler });
             window.addEventListener('resize', this.manager._resizeHandler);
+        }
+
+        if (!this.manager._displayChangeHandler) {
+            this.manager._displayChangeHandler = () => {
+                requestAnimationFrame(() => {
+                    if (this.manager && this.manager.core && typeof this.manager.core.syncRendererPixelRatio === 'function') {
+                        this.manager.core.syncRendererPixelRatio('electron-display-changed');
+                    }
+                    if (this.manager && typeof this.manager.onWindowResize === 'function') {
+                        this.manager.onWindowResize();
+                    }
+                    requestAnimationFrame(() => {
+                        if (this.manager && this.manager.core && typeof this.manager.core.syncRendererPixelRatio === 'function') {
+                            this.manager.core.syncRendererPixelRatio('electron-display-changed:settled');
+                        }
+                        if (this.manager && typeof this.manager.onWindowResize === 'function') {
+                            this.manager.onWindowResize();
+                        }
+                    });
+                    setTimeout(() => {
+                        if (this.manager && this.manager.core && typeof this.manager.core.syncRendererPixelRatio === 'function') {
+                            this.manager.core.syncRendererPixelRatio('electron-display-changed:delayed');
+                        }
+                        if (this.manager && typeof this.manager.onWindowResize === 'function') {
+                            this.manager.onWindowResize();
+                        }
+                    }, 120);
+                });
+            };
+        }
+
+        const alreadyDisplayRegistered = this.manager._coreWindowHandlers.some(
+            h => h.event === 'electron-display-changed' && h.handler === this.manager._displayChangeHandler
+        );
+
+        if (!alreadyDisplayRegistered) {
+            this.manager._coreWindowHandlers.push({ event: 'electron-display-changed', handler: this.manager._displayChangeHandler });
+            window.addEventListener('electron-display-changed', this.manager._displayChangeHandler);
         }
     }
 
@@ -682,6 +834,7 @@ class VRMCore {
 
             // 检测 VRM 模型版本（0.0 或 1.0）
             this.vrmVersion = this.detectVRMVersion(vrm, gltf);
+            const versionDefaultRotation = await this.applyVRM0CompatibilityRotation(vrm);
 
             // 计算模型的边界框，用于确定合适的初始大小
             const box = new THREE.Box3().setFromObject(vrm.scene);
@@ -834,29 +987,36 @@ class VRMCore {
             
             // 旋转设置统一在这里处理，确保只应用一次
             // 先通过检测器检测并修复方向，然后应用最终的旋转值
-            const savedRotation = preferences?.rotation;
+            const savedRotation = this.getEffectiveSavedRotation(preferences?.rotation, versionDefaultRotation);
             
-            const detectedRotation = window.VRMOrientationDetector 
-                ? window.VRMOrientationDetector.detectAndFixOrientation(vrm, savedRotation)
-                : { x: 0, y: 0, z: 0 };
+            let detectedRotation = window.VRMOrientationDetector
+                ? window.VRMOrientationDetector.detectAndFixOrientation(vrm, savedRotation, {
+                    defaultRotation: versionDefaultRotation
+                })
+                : (versionDefaultRotation || { x: 0, y: 0, z: 0 });
             
             if (window.VRMOrientationDetector) {
                 window.VRMOrientationDetector.applyRotation(vrm, detectedRotation);
             } else {
-                // 如果没有检测器，回退到直接使用保存的旋转值
+                // 如果没有检测器，回退到直接使用保存的旋转值或版本默认旋转
                 if (savedRotation && 
                     Number.isFinite(savedRotation.x) && 
                     Number.isFinite(savedRotation.y) && 
                     Number.isFinite(savedRotation.z)) {
                     vrm.scene.rotation.set(savedRotation.x, savedRotation.y, savedRotation.z);
                     vrm.scene.updateMatrixWorld(true);
+                    detectedRotation = VRMCore._getSceneRotation(vrm) || detectedRotation;
+                } else if (versionDefaultRotation &&
+                    Number.isFinite(versionDefaultRotation.x) &&
+                    Number.isFinite(versionDefaultRotation.y) &&
+                    Number.isFinite(versionDefaultRotation.z)) {
+                    vrm.scene.rotation.set(versionDefaultRotation.x, versionDefaultRotation.y, versionDefaultRotation.z);
+                    vrm.scene.updateMatrixWorld(true);
+                    detectedRotation = VRMCore._getSceneRotation(vrm) || detectedRotation;
                 }
             }
             
-            const hasSavedRotation = savedRotation && 
-                Number.isFinite(savedRotation.x) && 
-                Number.isFinite(savedRotation.y) && 
-                Number.isFinite(savedRotation.z);
+            const hasSavedRotation = VRMCore._isFiniteRotation(savedRotation);
             
             if (!hasSavedRotation && typeof this.saveUserPreferences === 'function') {
                 // 标准化位置为普通对象 {x, y, z}
@@ -900,7 +1060,8 @@ class VRMCore {
                     const screenWidth = window.innerWidth;
 
                     // 计算合适的初始缩放（参考Live2D的默认大小计算，参考 vrm.js）
-                    const isMobile = window.innerWidth <= 768;
+                    // Electron Pet 窗口永不进入手机模式，统一走 canonical 谓词。
+                    const isMobile = typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (window.innerWidth <= 768);
                     let targetScale;
 
                     if (isMobile) {
@@ -990,7 +1151,7 @@ class VRMCore {
                     const fov = this.manager.camera.fov * (Math.PI / 180);
                     const distance = (scaledModelHeight / 2) / Math.tan(fov / 2) / targetScreenHeight * screenHeight;
 
-                    const isMobileDevice = screenWidth <= 768;
+                    const isMobileDevice = typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (screenWidth <= 768);
                     const cameraY = center.y + (isMobileDevice ? scaledModelHeight * 0.2 : scaledModelHeight * 0.1);
                     const cameraZ = Math.abs(distance);
                     this.manager.camera.position.set(0, cameraY, cameraZ);
@@ -1185,6 +1346,10 @@ class VRMCore {
      */
     async saveUserPreferences(modelPath, position, scale, rotation, display, viewport, cameraPosition) {
         try {
+            // 观看模式只读：viewer 不应把本地拖动覆盖到全局模型布局（也避免向 monitor 的只读端点 POST 触发 405）
+            if (window.isViewerMode) {
+                return false;
+            }
             // 验证位置值
             if (!position || typeof position !== 'object' ||
                 !Number.isFinite(position.x) || !Number.isFinite(position.y) || !Number.isFinite(position.z)) {
@@ -1353,6 +1518,8 @@ window.addEventListener('neko-render-quality-changed', (e) => {
     const quality = e.detail?.quality;
     if (quality && window.vrmManager?.core) {
         window.vrmManager.core.applyQualitySettings(quality);
+        if (typeof window.vrmManager.onWindowResize === 'function') {
+            window.vrmManager.onWindowResize();
+        }
     }
 });
-

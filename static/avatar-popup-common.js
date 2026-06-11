@@ -41,6 +41,25 @@
         return hasVisiblePopup(ownerPrefix) || hasVisibleSidePanel(ownerPrefix);
     }
 
+    function clearSidePanelTimers(panel) {
+        if (!panel) return;
+        if (typeof window.clearAvatarSidePanelHoverState === 'function') {
+            window.clearAvatarSidePanelHoverState(panel);
+            return;
+        }
+        if (panel._collapseTimeout) {
+            clearTimeout(panel._collapseTimeout);
+            panel._collapseTimeout = null;
+        }
+        if (panel._hoverCollapseTimer) {
+            clearTimeout(panel._hoverCollapseTimer);
+            panel._hoverCollapseTimer = null;
+        }
+        if (typeof panel._stopHoverPointerTracking === 'function') {
+            panel._stopHoverPointerTracking();
+        }
+    }
+
     /**
      * 立即隐藏除 current 以外的所有侧面板（跳过动画）。
      * 必须在计算新面板位置之前调用，确保旧面板不影响空间判断。
@@ -58,17 +77,15 @@
         });
 
         for (const panel of toHide) {
-            if (panel.style.display === 'none') continue;
             // 清除所有定时器
-            if (panel._collapseTimeout) {
-                clearTimeout(panel._collapseTimeout);
-                panel._collapseTimeout = null;
-            }
-            if (panel._hoverCollapseTimer) {
-                clearTimeout(panel._hoverCollapseTimer);
-                panel._hoverCollapseTimer = null;
-            }
+            clearSidePanelTimers(panel);
             // 立即隐藏 + 彻底清除位置状态，不留任何残影
+            if (panel._expandFrameId) {
+                cancelAnimationFrame(panel._expandFrameId);
+                panel._expandFrameId = null;
+            }
+            panel._visibilityRevision = (panel._visibilityRevision || 0) + 1;
+            if (panel.style.display === 'none') continue;
             panel.style.transition = 'none';
             panel.style.opacity = '0';
             panel.style.display = 'none';
@@ -262,8 +279,9 @@
         }
 
         // ── Step 0.5：手机端特殊处理：向下展开而非向左/向右 ──
+        // Electron Pet 窗口永不进入手机模式，统一走 canonical 谓词。
         const screenWidth = window.innerWidth;
-        const isMobile = screenWidth <= 768;
+        const isMobile = typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (screenWidth <= 768);
         const goDown = isMobile;
 
         // ── Step 1：从 popup 获取方向（取代 getButtonZone 启发式） ──

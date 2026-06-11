@@ -17,6 +17,11 @@ cd N.E.K.O
 uv sync
 ```
 
+## 可选：本地嵌入模型
+
+向量记忆使用可选的本地 ONNX 模型资源。下载命令、目录布局以及 PyInstaller / Nuitka 打包说明见
+[`embedding-models.md`](embedding-models.md)。
+
 ## 构建前端
 
 项目在 `frontend/` 下有两个前端项目，运行前需要先构建。
@@ -69,9 +74,9 @@ uv run python agent_server.py
 - macOS 源码模式如果提示“Apple 无法验证 `SteamworksPy.dylib`”，通常是 Gatekeeper 在拦截未公证的本地动态库。先确认从项目根目录启动；如果仍被拦截，可在项目根目录执行：
 
 ```bash
-xattr -dr com.apple.quarantine SteamworksPy.dylib libsteam_api.dylib
-codesign --force --sign - libsteam_api.dylib
-codesign --force --sign - SteamworksPy.dylib
+xattr -dr com.apple.quarantine steamworks/SteamworksPy.dylib steamworks/libsteam_api.dylib
+codesign --force --sign - steamworks/libsteam_api.dylib
+codesign --force --sign - steamworks/SteamworksPy.dylib
 ```
 
 - 重新签名后再执行 `uv run python launcher.py` 或 `uv run python main_server.py`。

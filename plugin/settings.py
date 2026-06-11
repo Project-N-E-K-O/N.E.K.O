@@ -2,6 +2,7 @@
 import os
 import warnings
 from pathlib import Path
+from urllib.parse import urlparse
 
 from utils.config_manager import get_plugins_directory
 
@@ -31,6 +32,36 @@ def _get_float_env(name: str, default: float) -> float:
         return float(value)
     except Exception:
         return default
+
+
+def _validate_http_url(value: str, *, name: str, allow_empty: bool = False) -> str:
+    value = value.strip()
+    if allow_empty and not value:
+        return value
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"{name} must be a valid http(s) URL")
+    if parsed.username or parsed.password:
+        raise ValueError(f"{name} must not include credentials")
+    return value
+
+
+def _validate_market_origin(origin: str) -> str:
+    origin = origin.strip()
+    parsed = urlparse(origin)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"Invalid NEKO_MARKET_ORIGINS entry: {origin!r}")
+    if parsed.username or parsed.password:
+        raise ValueError(f"NEKO_MARKET_ORIGINS entry must not include credentials: {origin!r}")
+    if parsed.path not in ("", "/") or parsed.params or parsed.query or parsed.fragment:
+        raise ValueError(f"NEKO_MARKET_ORIGINS entries must be origins only: {origin!r}")
+    hostname = (parsed.hostname or "").lower()
+    if parsed.scheme == "http" and hostname not in {"localhost", "127.0.0.1", "::1"}:
+        raise ValueError(
+            "NEKO_MARKET_ORIGINS only allows http for localhost; "
+            f"use https for trusted remote origins: {origin!r}"
+        )
+    return f"{parsed.scheme}://{parsed.netloc}"
 
 
 # ========== 路径配置 ==========
@@ -92,9 +123,24 @@ def get_user_package_profiles_root() -> Path:
     return (get_user_plugin_config_root().parent / ".neko-package-profiles").resolve()
 
 
+def get_user_plugin_packages_root() -> Path:
+    """获取用户插件包（``.neko-plugin`` / ``.neko-bundle``）落地目录。
+
+    - Env: ``PLUGIN_PACKAGES_ROOT``
+    - 默认：``<user plugins root>/../.neko-plugin-packages``，与
+      ``USER_PLUGIN_CONFIG_ROOT`` / ``USER_PACKAGE_PROFILES_ROOT`` 同级，
+      避免落到 Nuitka 打包后的只读 dist 目录中。
+    """
+    custom_path = os.getenv("PLUGIN_PACKAGES_ROOT")
+    if custom_path:
+        return Path(custom_path).expanduser().resolve()
+    return (get_user_plugin_config_root().parent / ".neko-plugin-packages").resolve()
+
+
 BUILTIN_PLUGIN_CONFIG_ROOT = get_builtin_plugin_config_root()
 USER_PLUGIN_CONFIG_ROOT = get_user_plugin_config_root()
 USER_PACKAGE_PROFILES_ROOT = get_user_package_profiles_root()
+USER_PLUGIN_PACKAGES_ROOT = get_user_plugin_packages_root()
 # Deprecated compatibility alias for older single-root callers.
 PLUGIN_CONFIG_ROOT = BUILTIN_PLUGIN_CONFIG_ROOT
 PLUGIN_CONFIG_ROOTS = get_plugin_config_roots()
@@ -186,6 +232,44 @@ PROCESS_SHUTDOWN_TIMEOUT = _get_float_env("NEKO_PROCESS_SHUTDOWN_TIMEOUT", 1.0)
 # 插件进程在被强制终止（terminate）后的 join 超时时间
 # Env: NEKO_PROCESS_TERMINATE_TIMEOUT, default=0.5
 PROCESS_TERMINATE_TIMEOUT = _get_float_env("NEKO_PROCESS_TERMINATE_TIMEOUT", 0.5)
+
+
+# ========== 插件市场配置 ==========
+
+# 插件市场 API URL。配置后插件管理面板会显示"插件市场"入口。
+# Env: NEKO_MARKET_URL, default="http://localhost:8000"（本地开发默认值）
+# 生产部署时通过环境变量覆盖为线上 Market 地址；设为空字符串则隐藏市场入口。
+MARKET_URL = _validate_http_url(
+    os.getenv("NEKO_MARKET_URL", "http://localhost:8000"),
+    name="NEKO_MARKET_URL",
+    allow_empty=True,
+)
+
+# 插件市场 Web URL。插件管理器打开详情页时使用这个地址，而 API 请求仍走
+# MARKET_URL + /api/v1。本地开发默认前端 Vite 端口 5173；生产未显式配置时
+# 默认与 MARKET_URL 同源。
+# Env: NEKO_MARKET_WEB_URL
+_market_web_url_env = os.getenv("NEKO_MARKET_WEB_URL")
+if _market_web_url_env is not None:
+    MARKET_WEB_URL = _validate_http_url(
+        _market_web_url_env,
+        name="NEKO_MARKET_WEB_URL",
+        allow_empty=True,
+    )
+elif MARKET_URL.rstrip("/") in {"http://localhost:8000", "http://127.0.0.1:8000"}:
+    MARKET_WEB_URL = "http://localhost:5173"
+else:
+    MARKET_WEB_URL = MARKET_URL
+
+# 允许的 Market CORS 来源（逗号分隔）。
+# 用于允许 Market 前端跨域调用本地 /market/* 端点。
+# Env: NEKO_MARKET_ORIGINS, default="" (空则仅允许 localhost)
+# 此配置会影响 CORS 安全策略，仅应配置受信任的 Market 前端域名。
+MARKET_ORIGINS = [
+    _validate_market_origin(o)
+    for o in os.getenv("NEKO_MARKET_ORIGINS", "").split(",")
+    if o.strip()
+]
 
 
 # ========== 线程池配置 ==========
@@ -508,6 +592,11 @@ def validate_config() -> None:
         raise ValueError("PROCESS_TERMINATE_TIMEOUT must be positive")
     if PROCESS_TERMINATE_TIMEOUT > 60:
         raise ValueError("PROCESS_TERMINATE_TIMEOUT is unreasonably large (max: 60s)")
+
+    _validate_http_url(MARKET_URL, name="MARKET_URL", allow_empty=True)
+    _validate_http_url(MARKET_WEB_URL, name="MARKET_WEB_URL", allow_empty=True)
+    for origin in MARKET_ORIGINS:
+        _validate_market_origin(origin)
     
     if COMMUNICATION_THREAD_POOL_MAX_WORKERS <= 0:
         raise ValueError("COMMUNICATION_THREAD_POOL_MAX_WORKERS must be positive")
@@ -536,13 +625,18 @@ __all__ = [
     "BUILTIN_PLUGIN_CONFIG_ROOT",
     "USER_PLUGIN_CONFIG_ROOT",
     "USER_PACKAGE_PROFILES_ROOT",
+    "USER_PLUGIN_PACKAGES_ROOT",
     "PLUGIN_CONFIG_ROOT",
     "PLUGIN_CONFIG_ROOTS",
+    "MARKET_URL",
+    "MARKET_WEB_URL",
+    "MARKET_ORIGINS",
     "get_builtin_plugin_config_root",
     "get_plugin_config_root",
     "get_plugin_config_roots",
     "get_user_plugin_config_root",
     "get_user_package_profiles_root",
+    "get_user_plugin_packages_root",
     
     # 队列配置
     "EVENT_QUEUE_MAX",
@@ -621,8 +715,11 @@ PUBLIC_SYSTEM_CONFIG_KEYS = (
     "BUILTIN_PLUGIN_CONFIG_ROOT",
     "USER_PLUGIN_CONFIG_ROOT",
     "USER_PACKAGE_PROFILES_ROOT",
+    "USER_PLUGIN_PACKAGES_ROOT",
     "PLUGIN_CONFIG_ROOT",
     "PLUGIN_CONFIG_ROOTS",
+    "MARKET_URL",
+    "MARKET_WEB_URL",
     "EVENT_QUEUE_MAX",
     "LIFECYCLE_QUEUE_MAX",
     "MESSAGE_QUEUE_MAX",

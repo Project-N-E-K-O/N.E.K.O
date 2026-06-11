@@ -17,6 +17,12 @@ cd N.E.K.O
 uv sync
 ```
 
+## Optional Local Embeddings
+
+Vector memory uses optional local ONNX assets. See
+[`embedding-models.md`](embedding-models.md) for the download command, expected
+directory layout, and packaging notes for PyInstaller/Nuitka builds.
+
 ## Build Frontend
 
 The project has two frontend projects under `frontend/` that must be built before running.
@@ -71,9 +77,9 @@ Notes:
 - On macOS source runs, if Apple reports that `SteamworksPy.dylib` cannot be verified, Gatekeeper is usually blocking the local unnotarized Steamworks libraries. First make sure you are launching from the project root. If it is still blocked, run the following from the repo root:
 
 ```bash
-xattr -dr com.apple.quarantine SteamworksPy.dylib libsteam_api.dylib
-codesign --force --sign - libsteam_api.dylib
-codesign --force --sign - SteamworksPy.dylib
+xattr -dr com.apple.quarantine steamworks/SteamworksPy.dylib steamworks/libsteam_api.dylib
+codesign --force --sign - steamworks/libsteam_api.dylib
+codesign --force --sign - steamworks/SteamworksPy.dylib
 ```
 
 - After that, retry `uv run python launcher.py` or `uv run python main_server.py`.

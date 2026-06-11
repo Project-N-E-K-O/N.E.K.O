@@ -1,19 +1,24 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 import re
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
+    import tomli as tomllib  # type: ignore[no-redef]
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from plugin.core.dependency import _topological_sort_plugins
+from plugin.core.host import _import_plugin_module
 from plugin.core.registry import (
     PluginContext,
     _build_plugin_meta,
     _check_plugin_dependency,
+    _ensure_python_requirement_paths,
     _extract_entries_preview,
+    _extract_plugin_ui_config,
     _find_missing_python_requirements,
     _parse_single_plugin_config,
     _prepare_plugin_import_roots,
@@ -47,6 +52,8 @@ _MANAGED_META_KEYS = {
     "author",
     "dependencies",
     "host_plugin_id",
+    "i18n",
+    "plugin_ui",
     "config_path",
     "entry_point",
     "runtime_enabled",
@@ -397,7 +404,10 @@ def _build_discovery_payload(
                 pdata=ctx.pdata,
             )
         else:
-            missing_requirements = _find_missing_python_requirements(ctx.python_requirements)
+            missing_requirements = _find_missing_python_requirements(
+                ctx.python_requirements,
+                search_paths=ctx.python_requirement_paths,
+            )
             if missing_requirements:
                 error_type = "MissingPythonDependencies"
                 error_message = f"Unsatisfied Python dependencies: {missing_requirements}"
@@ -409,9 +419,19 @@ def _build_discovery_payload(
                     pdata=ctx.pdata,
                 )
             else:
+                # The startup loader installs vendor paths on sys.path before
+                # importing each plugin's entry module; do the same here so a
+                # plugin whose [project].dependencies live only under its own
+                # vendor/ directory does not get falsely recorded as
+                # ImportError/ModuleNotFoundError during a registry refresh.
+                _ensure_python_requirement_paths(
+                    ctx.python_requirement_paths,
+                    logger,
+                    plugin_id,
+                )
                 try:
                     module_path, class_name = ctx.entry.split(":", 1)
-                    module_obj = importlib.import_module(module_path)
+                    module_obj = _import_plugin_module(module_path, ctx.toml_path, logger)
                     cls_obj = getattr(module_obj, class_name)
                     entries_preview = _extract_entries_preview(plugin_id, cls_obj, ctx.conf, ctx.pdata)
                 except (ImportError, ModuleNotFoundError) as exc:
@@ -444,6 +464,7 @@ def _build_discovery_payload(
         sdk_conflicts_list=ctx.sdk_conflicts_list,
         dependencies=ctx.dependencies,
         host_plugin_id=host_plugin_id,
+        plugin_ui=_extract_plugin_ui_config(ctx.conf, plugin_id=plugin_id, logger=logger),
     )
     payload = plugin_meta.model_dump(mode="python")
     payload["config_path"] = str(ctx.toml_path)
@@ -536,6 +557,7 @@ def _apply_discovery_record_sync(
         sdk_conflicts_list=record.meta_payload.get("sdk_conflicts") if isinstance(record.meta_payload.get("sdk_conflicts"), list) else None,
         dependencies=record.meta_payload.get("dependencies") if isinstance(record.meta_payload.get("dependencies"), list) else None,
         host_plugin_id=record.meta_payload.get("host_plugin_id") if isinstance(record.meta_payload.get("host_plugin_id"), str) else None,
+        plugin_ui=record.meta_payload.get("plugin_ui") if isinstance(record.meta_payload.get("plugin_ui"), dict) else None,
     )
     resolved_id = register_plugin(
         plugin_meta,
@@ -818,6 +840,7 @@ class PluginRegistryService:
                     "ext_id": plugin_id,
                     "ext_entry": entry_point_obj,
                     "prefix": prefix,
+                    "config_path": str(config_path) if config_path is not None else "",
                 }
             )
 

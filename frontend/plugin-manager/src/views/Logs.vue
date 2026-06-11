@@ -1,16 +1,18 @@
 <template>
-  <div class="logs-page">
-    <el-card>
+  <div class="logs-page" data-yui-guide-id="logs-page">
+    <el-card data-yui-guide-id="logs-card">
       <template #header>
-        <div class="card-header">
-          <span>{{ isServerLog ? $t('logs.serverLogs') : $t('logs.pluginLogs') + ': ' + pluginId }}</span>
-          <el-button :icon="Refresh" @click="handleRefresh" :loading="loading">
+        <div class="card-header" data-yui-guide-id="logs-card-header">
+          <span data-yui-guide-id="logs-title">{{ isServerLog ? $t('logs.serverLogs') : $t('logs.pluginLogs') + ': ' + pluginId }}</span>
+          <el-button :icon="Refresh" data-yui-guide-id="logs-refresh" @click="handleRefresh" :loading="loading">
             {{ $t('common.refresh') }}
           </el-button>
         </div>
       </template>
 
-      <LogViewer :plugin-id="pluginId" />
+      <div data-yui-guide-id="logs-viewer-wrap">
+        <LogViewer :plugin-id="pluginId" />
+      </div>
     </el-card>
   </div>
 </template>

@@ -7,6 +7,7 @@ keeps returning the real module instead of the APIRouter object.
 """
 
 from . import agent_router
+from . import capture_router
 from . import characters_router
 from . import cloudsave_router
 from . import config_router
@@ -16,6 +17,7 @@ from . import memory_router
 from . import mmd_router
 from . import music_router
 from . import pages_router
+from . import storage_location_router
 from . import system_router
 from . import vrm_router
 from . import websocket_router
@@ -23,6 +25,7 @@ from . import workshop_router
 
 __all__ = [
     'agent_router',
+    'capture_router',
     'characters_router',
     'cloudsave_router',
     'config_router',
@@ -32,6 +35,7 @@ __all__ = [
     'mmd_router',
     'music_router',
     'pages_router',
+    'storage_location_router',
     'system_router',
     'vrm_router',
     'websocket_router',

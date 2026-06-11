@@ -99,7 +99,7 @@ window.VRM_PATHS = {
 };
 
 // 全局：判断是否为移动端宽度（如果不存在则定义，避免重复定义）
-window.isMobileWidth = window.isMobileWidth || (() => window.innerWidth <= 768);
+window.isMobileWidth = window.isMobileWidth || (() => !window.__LANLAN_IS_ELECTRON_PET__ && window.innerWidth <= 768);
 
 const isModelManagerPage = () => window.location.pathname.includes('model_manager') || document.querySelector('#vrm-model-select') !== null;
 window.vrmManager = null;
@@ -411,6 +411,9 @@ async function initVRMModel() {
     try {
         // 标记开始（共享锁）- 放在 try 块内确保 finally 能正确释放
         window._isVRMLoading = true;
+        if (window.__nekoStorageLocationStartupBarrier && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
+            await window.__nekoStorageLocationStartupBarrier;
+        }
         // 1. 等待配置加载完成
         if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
             await window.pageConfigReady;

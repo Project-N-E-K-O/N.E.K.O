@@ -61,6 +61,139 @@ else:
     bundle_dir = os.path.dirname(os.path.abspath(__file__))
 
 
+def _configure_ssl_cert_bundle() -> None:
+    """仅在冻结发行版里把 certifi 的 CA bundle 显式喂给 OpenSSL。
+
+    Nuitka / PyInstaller 会复制 `libssl`，但其编译期硬编码的 OPENSSLDIR 指向
+    构建机路径，用户机上不存在；如果同时没设 SSL_CERT_FILE 环境变量，
+    `ssl.create_default_context()` 拿不到任何根证书，所有外部 TLS 一律失败。
+    build-desktop.yml 已经把 `certifi/cacert.pem` 当 package data 打进去，
+    这里只是把它显式指给 OpenSSL。
+
+    源码模式下**不动** SSL_CERT_FILE：系统 Python 的 OpenSSL 默认信任链是
+    OS / venv 在用的那一份，可能挂着企业私有 CA（公司 TLS 中间人代理、
+    内部 PKI 等），certifi 静态 bundle 里没有这些根，硬覆盖会让原本能通
+    的内网 HTTPS 突然报 `certificate verify failed`。打包发行版没这层风险
+    （libssl 的 OPENSSLDIR 本身就指不到任何东西），所以只在 IS_FROZEN
+    分支里兜底。
+
+    用户已显式设过任一变量且文件存在时，无论是否冻结都尊重原值；只覆盖
+    那些缺失或指向已不存在路径的变量（比如打包构建机继承下来的失效路径）。
+    """
+    var_names = ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE")
+
+    def _existing_is_valid(name: str) -> bool:
+        value = os.environ.get(name)
+        if not value:
+            return False
+        # 各变量对"有效"的定义不同：
+        # - REQUESTS_CA_BUNDLE: requests 文档明确允许 PEM 文件 *或* c_rehash
+        #   过的 CA 目录（capath 模式），把目录当失效值覆盖会破坏企业 PKI 的
+        #   capath 配置。
+        # - SSL_CERT_FILE / CURL_CA_BUNDLE: OpenSSL / curl 都只接受 PEM 文件，
+        #   目录由各自的 SSL_CERT_DIR / CURL_CA_PATH 单独表达。
+        if name == "REQUESTS_CA_BUNDLE":
+            return os.path.isfile(value) or os.path.isdir(value)
+        return os.path.isfile(value)
+
+    # 三个变量都已经指向有效文件 → 完全不动。
+    if all(_existing_is_valid(name) for name in var_names):
+        return
+
+    # 源码模式：保持系统默认信任链，不强行换 certifi（避免破坏企业 CA 场景）。
+    # 即便某个变量目前指向失效路径，源码模式也由用户/上游脚本负责修——我们
+    # 没法区分"用户故意指向坏路径调试"和"误继承坏路径"。
+    if not IS_FROZEN:
+        return
+
+    ca_path: str | None = None
+    try:
+        import certifi  # noqa: WPS433 — 故意放在函数内，保持模块导入开销可控
+        candidate = certifi.where()
+        if candidate and os.path.isfile(candidate):
+            ca_path = candidate
+    except Exception:
+        ca_path = None
+
+    if ca_path is None:
+        # 冻结环境兜底：build-desktop.yml 把 certifi/cacert.pem 落到 bundle_dir 下；
+        # PyInstaller onefile 模式下 bundle_dir == sys._MEIPASS（见文件顶部
+        # IS_FROZEN 分支），所以这一份候选覆盖了主流冻结布局。
+        candidate = os.path.join(bundle_dir, "certifi", "cacert.pem")
+        if os.path.isfile(candidate):
+            ca_path = candidate
+
+    if ca_path is None:
+        # 冻结环境下找不到任何 CA bundle —— 外网 TLS 注定挂，给运维一个明确的
+        # 根因提示，避免下游只看到二手的 "certificate verify failed"。
+        print(
+            "[Launcher] Warning: failed to locate CA bundle in frozen build "
+            f"(certifi.where() unavailable, no certifi/cacert.pem under {bundle_dir}); "
+            "external HTTPS / WSS will fail with certificate verify failed.",
+            flush=True,
+        )
+        return
+
+    # 每个失效变量按"自身语义最贴近的 fallback 顺序"挑来源，保持各库自己
+    # 的查找语义不变；都没拿到再用 certifi 兜底。
+    #
+    # 关键场景：用户故意分流 SSL_CERT_FILE=/etc/openssl.pem 给 OpenSSL、
+    # CURL_CA_BUNDLE=/etc/curl.pem 给 curl/requests，没设 REQUESTS_CA_BUNDLE
+    # 想让 requests 走文档里的 fallback (REQUESTS → CURL → default)。如果
+    # 我们对所有失效变量都 break 在第一个找到的有效文件（顺序为 SSL → REQUESTS
+    # → CURL），REQUESTS_CA_BUNDLE 会被错填成 SSL 的 PEM，requests 看不到
+    # 用户预期的 CURL_CA_BUNDLE，HTTPS 行为偏离文档。
+    #
+    # 偏好顺序设计依据：
+    # - SSL_CERT_FILE: OpenSSL 没 documented fallback，但 REQUESTS / CURL 的
+    #   PEM 都是 OpenSSL 兼容文件，任选其一无大差异；REQUESTS 排前因为更可能
+    #   是用户业务侧的 trust bundle，CURL 排后留给系统级 curl 配置。
+    # - REQUESTS_CA_BUNDLE: requests 文档明确 fallback 到 CURL_CA_BUNDLE，
+    #   所以 CURL 必须排第一；SSL 作为最后兜底（仍是有效 PEM）。
+    # - CURL_CA_BUNDLE: curl 没 documented fallback，按"系统全局信任 → 业务
+    #   信任"的直觉：SSL 排前，REQUESTS 兜底。
+    #
+    # 只看 file：REQUESTS_CA_BUNDLE 允许的目录（capath）不能喂给 OpenSSL /
+    # curl，跨变量传播一律走文件。
+    propagation_sources = {
+        "SSL_CERT_FILE": ("REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"),
+        "REQUESTS_CA_BUNDLE": ("CURL_CA_BUNDLE", "SSL_CERT_FILE"),
+        "CURL_CA_BUNDLE": ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"),
+    }
+
+    def _pick_fallback(target: str) -> str:
+        for src in propagation_sources[target]:
+            value = os.environ.get(src)
+            if value and os.path.isfile(value):
+                return value
+        return ca_path
+
+    # 三个变量统一处理：已存在且有效 → 保留；否则 → 按 propagation_sources
+    # 顺序找一个有效 PEM 文件填，找不到才用 certifi。`setdefault` 不够：
+    # 继承自打包构建机 / 旧路径的失效值会让 requests / curl 仍然报 verify
+    # failed，本函数要避免的恰恰就是这个症状。
+    for name in var_names:
+        if not _existing_is_valid(name):
+            os.environ[name] = _pick_fallback(name)
+
+
+# 必须在任何会触发 `import ssl` 的模块之前执行；Python 的 ssl 模块在第一次
+# import 时就会通过 OpenSSL 把默认 verify paths 锁住，之后再设环境变量
+# 对已有 SSLContext 不生效。下面 from utils.* import ... 已经会拉起 httpx /
+# openai SDK 链路，所以这里抢在前面跑。
+#
+# 用显式判断而非 `assert`：`python -O` 会剥离 assert，把检查变成静默通过。
+# 这里希望任何在本函数之前 import ssl 的回归都能被运维直接看到。
+if "ssl" in sys.modules:
+    print(
+        "[Launcher] Warning: `ssl` was imported before _configure_ssl_cert_bundle() ran; "
+        "SSL_CERT_FILE override won't affect the already-initialized default SSLContext. "
+        "Move SSL bootstrap higher in launcher.py.",
+        flush=True,
+    )
+_configure_ssl_cert_bundle()
+
+
 def _get_project_venv_python(project_dir: str) -> str | None:
     if sys.platform == 'win32':
         candidate = os.path.join(project_dir, '.venv', 'Scripts', 'python.exe')
@@ -133,15 +266,21 @@ from utils.port_utils import (
     set_port_probe_reuse,
 )
 from utils.cloudsave_runtime import (
+    CLOUDSAVE_DISABLED_ENV,
+    CLOUDSAVE_DISABLED_LOCAL_STATE_UNAVAILABLE,
     ROOT_MODE_BOOTSTRAP_IMPORTING,
     ROOT_MODE_MAINTENANCE_READONLY,
     ROOT_MODE_NORMAL,
     bootstrap_local_cloudsave_environment,
     cloud_apply_fence,
     set_root_mode,
+    should_write_root_mode_normal_after_startup,
 )
 from utils.cloudsave_autocloud import get_cloudsave_manager
 from utils.config_manager import get_config_manager, reset_config_manager_cache
+from utils.storage_layout import clear_storage_layout_env, export_storage_layout_to_env, resolve_storage_layout
+from utils.storage_migration import run_pending_storage_migration
+from utils.storage_policy import paths_equal
 
 
 def _configure_multiprocessing_executable(project_dir: str) -> None:
@@ -167,6 +306,7 @@ INSTANCE_ID = ""
 JOB_HANDLE = None
 _cleanup_lock = threading.Lock()
 _cleanup_done = False
+_expected_launcher_shutdown = False
 _existing_neko_services: set[str] = set()  # 已有 N.E.K.O 实例占用的端口键
 DEFAULT_PORTS = {
     "MAIN_SERVER_PORT": MAIN_SERVER_PORT,
@@ -338,8 +478,195 @@ def emit_frontend_event(event_type: str, payload: dict | None = None):
     print(f"NEKO_EVENT {json.dumps(envelope, ensure_ascii=True, separators=(',', ':'))}", flush=True)
 
 
+def _resolve_storage_layout_for_launch() -> dict:
+    clear_storage_layout_env()
+    reset_config_manager_cache()
+    config_manager = get_config_manager(APP_NAME, migrate=False)
+
+    try:
+        migration_result = run_pending_storage_migration(config_manager)
+    except Exception as exc:
+        print(f"[Launcher] Warning: pending storage migration processing failed: {exc}", flush=True)
+        migration_result = {
+            "attempted": False,
+            "completed": False,
+            "error_message": str(exc),
+        }
+
+    reset_config_manager_cache()
+    resolved_config_manager = get_config_manager(APP_NAME, migrate=False)
+    layout = resolve_storage_layout(resolved_config_manager)
+    export_storage_layout_to_env(layout)
+    reset_config_manager_cache()
+    return {
+        "layout": layout,
+        "migration_result": migration_result,
+    }
+
+
+def _build_launcher_relaunch_command() -> list[str]:
+    if IS_FROZEN:
+        return [sys.executable, *sys.argv[1:]]
+    return [sys.executable, os.path.abspath(__file__), *sys.argv[1:]]
+
+
+def _should_detach_stdio_for_relaunch() -> bool:
+    for stream_name in ("stdin", "stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        isatty = getattr(stream, "isatty", None)
+        if callable(isatty):
+            try:
+                if isatty():
+                    return True
+            except Exception:
+                continue
+    return False
+
+
+def _spawn_restarted_launcher() -> None:
+    command = _build_launcher_relaunch_command()
+    relaunch_env = os.environ.copy()
+    # ``main_server`` uses this marker only to suppress duplicate module-level
+    # init within the *current* Python process tree (mainly Windows spawn).
+    # A storage-location relaunch is a brand-new launcher instance and must
+    # re-run full startup initialization, so we must not inherit the marker.
+    relaunch_env.pop("_NEKO_MAIN_SERVER_INITIALIZED", None)
+    kwargs: dict[str, object] = {
+        "cwd": os.getcwd(),
+        "env": relaunch_env,
+        "close_fds": True,
+    }
+    if _should_detach_stdio_for_relaunch():
+        kwargs["stdin"] = subprocess.DEVNULL
+        kwargs["stdout"] = subprocess.DEVNULL
+        kwargs["stderr"] = subprocess.DEVNULL
+    if sys.platform == "win32":
+        creationflags = 0
+        creationflags |= int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+        creationflags |= int(getattr(subprocess, "DETACHED_PROCESS", 0))
+        if creationflags:
+            kwargs["creationflags"] = creationflags
+    else:
+        kwargs["start_new_session"] = True
+    subprocess.Popen(command, **kwargs)
+
+
+def _mark_expected_launcher_shutdown() -> None:
+    global _expected_launcher_shutdown
+    _expected_launcher_shutdown = True
+
+
+def _is_expected_launcher_shutdown() -> bool:
+    return bool(_expected_launcher_shutdown)
+
+
+STARTUP_WAIT_RESULT_STORAGE_RESTART = "storage_restart_requested"
+
+
+def _is_pending_storage_restart_request() -> bool:
+    try:
+        config_manager = get_config_manager(APP_NAME, migrate=False)
+        load_root_state = getattr(config_manager, "load_root_state", None)
+        if not callable(load_root_state):
+            return False
+
+        root_state = load_root_state()
+        if not isinstance(root_state, dict):
+            return False
+
+        root_mode = str(root_state.get("mode") or "").strip()
+        last_migration_result = str(root_state.get("last_migration_result") or "").strip()
+        if root_mode != ROOT_MODE_MAINTENANCE_READONLY:
+            return False
+
+        return last_migration_result.startswith(("restart_pending:", "restart_rebind:"))
+    except Exception as exc:
+        print(f"[Launcher] Warning: failed to inspect storage restart intent: {exc}", flush=True)
+        return False
+
+
+def _maybe_schedule_storage_restart() -> bool:
+    pre_restart_root_state: dict[str, object] = {}
+    try:
+        config_manager = get_config_manager(APP_NAME, migrate=False)
+        load_root_state = getattr(config_manager, "load_root_state", None)
+        if callable(load_root_state):
+            loaded_root_state = load_root_state()
+            if isinstance(loaded_root_state, dict):
+                pre_restart_root_state = loaded_root_state
+    except Exception as exc:
+        print(f"[Launcher] Warning: failed to inspect root_state before restart scheduling: {exc}", flush=True)
+
+    storage_bootstrap = _resolve_storage_layout_for_launch()
+    migration_result = storage_bootstrap.get("migration_result") or {}
+    restart_reason = ""
+
+    if bool(migration_result.get("attempted")):
+        restart_reason = "migration"
+    else:
+        root_mode = str(pre_restart_root_state.get("mode") or "").strip()
+        last_migration_result = str(pre_restart_root_state.get("last_migration_result") or "").strip()
+        last_migration_source = str(pre_restart_root_state.get("last_migration_source") or "").strip()
+        previous_current_root = str(pre_restart_root_state.get("current_root") or "").strip()
+        layout = storage_bootstrap.get("layout") if isinstance(storage_bootstrap.get("layout"), dict) else {}
+        resolved_selected_root = str(layout.get("selected_root") or "").strip()
+        if (
+            root_mode == ROOT_MODE_MAINTENANCE_READONLY
+            and last_migration_result.startswith("restart_rebind:")
+        ):
+            restart_reason = "rebind_only"
+        elif (
+            resolved_selected_root
+            and previous_current_root
+            and last_migration_source
+            and paths_equal(last_migration_source, resolved_selected_root)
+            and not paths_equal(previous_current_root, resolved_selected_root)
+        ):
+            restart_reason = "rebind_only"
+
+    if not restart_reason:
+        return False
+
+    emit_frontend_event(
+        "storage_migration_restart",
+        {
+            "completed": bool(migration_result.get("completed")) or restart_reason == "rebind_only",
+            "error_code": str(migration_result.get("error_code") or ""),
+            "error_message": str(migration_result.get("error_message") or ""),
+            "layout": storage_bootstrap.get("layout") or {},
+            "restart_reason": restart_reason,
+        },
+    )
+    release_startup_lock()
+    _spawn_restarted_launcher()
+    return True
+
+
+def _persist_post_startup_root_state(config_manager) -> None:
+    current_root_state = config_manager.load_root_state()
+    if should_write_root_mode_normal_after_startup(current_root_state):
+        set_root_mode(
+            config_manager,
+            ROOT_MODE_NORMAL,
+            current_root=str(config_manager.app_docs_dir),
+            last_known_good_root=str(config_manager.app_docs_dir),
+            last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        )
+        return
+
+    print(
+        "[Launcher] Preserving non-normal root_state after startup: "
+        f"{current_root_state.get('mode') or ROOT_MODE_NORMAL}",
+        flush=True,
+    )
+
+
 def report_startup_failure(message: str, show_dialog: bool = True):
     """统一报告启动失败信息：终端 + （可选）弹窗。"""
+    normalized_message = str(message or "").strip().lower()
+    if _is_expected_launcher_shutdown() and normalized_message.startswith(("start failed", "startup failed", "startup timeout", "startup aborted")):
+        print(f"[Launcher] Suppressed startup failure during expected shutdown: {message}", flush=True)
+        return
     print(message, flush=True)
     emit_frontend_event("startup_failure", {"message": message})
     if show_dialog and IS_FROZEN:
@@ -551,11 +878,11 @@ def run_merged_servers() -> int:
 
     # 分步 import（控制峰值内存 & 提供进度反馈）
     print("[Merged] Importing memory_server...", flush=True)
-    import memory_server
+    from app import memory_server
     print("[Merged] Importing agent_server...", flush=True)
-    import agent_server
+    from app import agent_server
     print("[Merged] Importing main_server...", flush=True)
-    import main_server
+    from app import main_server
 
     _apps = [
         (memory_server.app, MEMORY_SERVER_PORT, "Memory"),
@@ -579,6 +906,29 @@ def run_merged_servers() -> int:
         s.install_signal_handlers = lambda: None
 
     _exiting = False
+    _shutdown_watchdog_started = False
+
+    def _begin_merged_shutdown(*, reason: str = "signal") -> bool:
+        nonlocal _exiting, _shutdown_watchdog_started
+        if _exiting:
+            return False
+        _exiting = True
+        _mark_expected_launcher_shutdown()
+        watchdog_timeout = 30 if reason == "storage_location_restart" else 10
+        print(
+            f"\n[Merged] Shutting down... (reason={reason}, watchdog={watchdog_timeout}s)",
+            flush=True,
+        )
+        for s in servers:
+            s.should_exit = True
+        if not _shutdown_watchdog_started:
+            threading.Thread(
+                target=lambda timeout=watchdog_timeout: (time.sleep(timeout), os._exit(1)),
+                daemon=True,
+                name="merged-shutdown-watchdog",
+            ).start()
+            _shutdown_watchdog_started = True
+        return True
 
     def _on_exit_signal(_sig, _frame):
         nonlocal _exiting
@@ -586,15 +936,22 @@ def run_merged_servers() -> int:
             # 第二次 Ctrl+C → 强制退出（与多进程模式行为一致）
             print("\n[Merged] Force exit!", flush=True)
             os._exit(1)
-        _exiting = True
-        print("\n[Merged] Shutting down...", flush=True)
-        for s in servers:
-            s.should_exit = True
-        # 看门狗：10s 后强制退出（防止 shutdown handler 卡死残留进程）
-        threading.Thread(
-            target=lambda: (time.sleep(10), os._exit(1)),
-            daemon=True, name="merged-shutdown-watchdog",
-        ).start()
+        _begin_merged_shutdown(reason=f"signal:{_sig}")
+
+    try:
+        main_server.set_start_config(
+            {
+                "browser_mode_enabled": False,
+                "browser_page": "",
+                "shutdown_memory_server_on_exit": False,
+                "request_runtime_shutdown": lambda: _begin_merged_shutdown(
+                    reason="storage_location_restart"
+                ),
+                "server": None,
+            }
+        )
+    except Exception as exc:
+        print(f"[Merged] Warning: failed to install merged shutdown bridge: {exc}", flush=True)
 
     _prev_sigint = signal.getsignal(signal.SIGINT)
     _prev_sigterm = signal.getsignal(signal.SIGTERM)
@@ -616,13 +973,7 @@ def run_merged_servers() -> int:
               flush=True)
         try:
             _config_manager = get_config_manager(APP_NAME)
-            set_root_mode(
-                _config_manager,
-                ROOT_MODE_NORMAL,
-                current_root=str(_config_manager.app_docs_dir),
-                last_known_good_root=str(_config_manager.app_docs_dir),
-                last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            )
+            _persist_post_startup_root_state(_config_manager)
         except Exception as e:
             print(f"[Merged] Warning: failed to persist root_state boot success: {e}", flush=True)
         emit_frontend_event("startup_ready", {
@@ -648,11 +999,7 @@ def run_merged_servers() -> int:
         signal.signal(signal.SIGINT, _prev_sigint)
         signal.signal(signal.SIGTERM, _prev_sigterm)
 
-    # 合并模式下第三方库（ZMQ、httpx 连接池等）可能残留非 daemon 线程，
-    # 导致 Python 解释器在 threading._shutdown() 永远等待。
-    # 所有清理已在 FastAPI shutdown handler 里完成，直接强制退出。
-    release_startup_lock()
-    os._exit(0)
+    return 0
 
 
 def run_memory_server(
@@ -684,11 +1031,11 @@ def run_memory_server(
             except: # noqa
                 pass
         
-        import memory_server
+        from app import memory_server
         import uvicorn
         if import_event:
             import_event.set()
-        
+
         print(f"[Memory Server] Starting on port {MEMORY_SERVER_PORT}")
         
         _behind_proxy = os.environ.get("NEKO_BEHIND_PROXY", "").strip().lower() in ("1", "true", "yes")
@@ -781,11 +1128,11 @@ def run_agent_server(
             except: # noqa
                 pass
         
-        import agent_server
+        from app import agent_server
         import uvicorn
         if import_event:
             import_event.set()
-        
+
         print(f"[Agent Server] Starting on port {TOOL_SERVER_PORT}")
         
         # Agent Server 不需要等待，立即通知就绪
@@ -846,7 +1193,7 @@ def run_main_server(
                 os.chdir(os.path.dirname(os.path.abspath(__file__)))
         
         print("[Main Server] Importing main_server module...")
-        import main_server
+        from app import main_server
         import uvicorn
         if import_event:
             import_event.set()
@@ -866,6 +1213,18 @@ def run_main_server(
             forwarded_allow_ips="*" if _behind_proxy else None,
         )
         server = uvicorn.Server(config)
+        try:
+            main_server.set_start_config(
+                {
+                    "browser_mode_enabled": False,
+                    "browser_page": "",
+                    "shutdown_memory_server_on_exit": False,
+                    "request_runtime_shutdown": None,
+                    "server": server,
+                }
+            )
+        except Exception as exc:
+            print(f"[Main Server] Warning: failed to install launcher shutdown bridge: {exc}", flush=True)
 
         if shutdown_complete_event is not None:
             async def _notify_shutdown_complete() -> None:
@@ -1264,7 +1623,7 @@ def start_server(server: Dict) -> bool:
         report_startup_failure(f"Start failed: {server['name']} exception: {e}")
         return False
 
-def wait_for_servers(timeout: int = 60) -> bool:
+def wait_for_servers(timeout: int = 60) -> bool | str:
     """等待所有服务器启动完成"""
     print("\n等待服务器准备就绪...", flush=True)
     
@@ -1283,6 +1642,18 @@ def wait_for_servers(timeout: int = 60) -> bool:
         for server in SERVERS:
             proc = server.get('process')
             if proc is not None and not proc.is_alive() and not check_port(server['port']):
+                if (
+                    server.get("module") == "main_server"
+                    and _is_pending_storage_restart_request()
+                ):
+                    _mark_expected_launcher_shutdown()
+                    print(
+                        "\n[Launcher] Detected intentional main_server shutdown during startup for storage restart",
+                        flush=True,
+                    )
+                    stop_spinner.set()
+                    spinner_thread.join()
+                    return STARTUP_WAIT_RESULT_STORAGE_RESTART
                 report_startup_failure(
                     f"Startup failed: {server['name']} exited early (exitcode={proc.exitcode})"
                 )
@@ -1443,6 +1814,7 @@ def cleanup_servers():
 
 def _handle_termination_signal(signum, _frame):
     """处理终止信号，尽量保证清理逻辑被触发。"""
+    _mark_expected_launcher_shutdown()
     print(f"\n收到终止信号 ({signum})，正在关闭...", flush=True)
     cleanup_servers()
     raise SystemExit(0)
@@ -1533,6 +1905,12 @@ def _prepare_cloudsave_runtime_for_launch() -> dict:
     reset_config_manager_cache()
     config_manager = get_config_manager(APP_NAME, migrate=False)
 
+    if not config_manager.ensure_local_state_directory():
+        diagnostic = getattr(config_manager, "_last_local_state_directory_error", None)
+        if diagnostic is not None:
+            raise diagnostic
+        raise OSError("failed to ensure local state directory")
+
     with cloud_apply_fence(
         config_manager,
         mode=ROOT_MODE_BOOTSTRAP_IMPORTING,
@@ -1544,12 +1922,17 @@ def _prepare_cloudsave_runtime_for_launch() -> dict:
             fence_already_active=True,
         )
 
-    root_state = set_root_mode(
-        config_manager,
-        ROOT_MODE_NORMAL,
-        current_root=str(config_manager.app_docs_dir),
-        last_known_good_root=str(config_manager.app_docs_dir),
-    )
+    load_root_state = getattr(config_manager, "load_root_state", None)
+    current_root_state = load_root_state() if callable(load_root_state) else {"mode": ROOT_MODE_NORMAL}
+    if should_write_root_mode_normal_after_startup(current_root_state):
+        root_state = set_root_mode(
+            config_manager,
+            ROOT_MODE_NORMAL,
+            current_root=str(config_manager.app_docs_dir),
+            last_known_good_root=str(config_manager.app_docs_dir),
+        )
+    else:
+        root_state = current_root_state
     root_mode = str(root_state.get("mode") or "")
     root_state_event_payload = {
         "mode": root_mode,
@@ -1577,6 +1960,18 @@ def _prepare_cloudsave_runtime_for_launch() -> dict:
     }
 
 
+def _is_local_state_directory_error(exc) -> bool:
+    if bool(getattr(exc, "local_state_directory_error", False)):
+        return True
+    cause = getattr(exc, "__cause__", None)
+    if cause is not None and cause is not exc:
+        return _is_local_state_directory_error(cause)
+    context = getattr(exc, "__context__", None)
+    if context is not None and context is not exc:
+        return _is_local_state_directory_error(context)
+    return False
+
+
 def main():
     """主函数"""
     # 支持 multiprocessing 在 Windows 上的打包
@@ -1584,6 +1979,7 @@ def main():
 
     # ── 发送 startup_begin，便于前端绑定本次启动会话 ──
     emit_frontend_event("startup_begin", {"instance_id": INSTANCE_ID})
+    os.environ["NEKO_LAUNCHER_PID"] = str(os.getpid())
 
     # ── 单实例启动锁 ──────────────────────────────────
     if not acquire_startup_lock():
@@ -1594,6 +1990,8 @@ def main():
         })
         return 0  # 非错误场景：前端应附加到已有进程
 
+    restart_scheduled = False
+    allow_storage_restart = False
     try:
         port_result = apply_port_strategy()
         if port_result == "attach":
@@ -1607,20 +2005,29 @@ def main():
         # 创建 Job Object，确保主进程被 kill 时子进程也会被终止
         setup_job_object()
 
+        _resolve_storage_layout_for_launch()
+
         try:
             _prepare_cloudsave_runtime_for_launch()
         except Exception as e:
-            try:
-                _config_manager = get_config_manager(APP_NAME)
-                set_root_mode(
-                    _config_manager,
-                    ROOT_MODE_MAINTENANCE_READONLY,
-                    last_migration_result=f"launcher_phase0_bootstrap_failed:{e}",
-                )
-            except Exception:
-                pass
-            report_startup_failure(f"Startup failed: cloudsave bootstrap error: {e}")
-            return 1
+            if not _is_local_state_directory_error(e):
+                try:
+                    _config_manager = get_config_manager(APP_NAME)
+                    set_root_mode(
+                        _config_manager,
+                        ROOT_MODE_MAINTENANCE_READONLY,
+                        last_migration_result=f"launcher_phase0_bootstrap_failed:{e}",
+                    )
+                except Exception:
+                    pass
+                report_startup_failure(f"Startup failed: cloudsave bootstrap error: {e}")
+                return 1
+            os.environ[CLOUDSAVE_DISABLED_ENV] = CLOUDSAVE_DISABLED_LOCAL_STATE_UNAVAILABLE
+            print(
+                "[Launcher] Cloudsave disabled for this session because local state is unavailable: "
+                f"{e}",
+                flush=True,
+            )
 
         # 自动安装 Playwright Chromium（browser-use 依赖）
         _ensure_playwright_browsers()
@@ -1633,8 +2040,13 @@ def main():
         # 打包环境默认合并（省内存），开发环境默认分离（方便调试）。
         # 可通过环境变量 NEKO_MERGED=1/0 强制覆盖。
         if _should_use_merged_mode():
+            os.environ["NEKO_LAUNCH_MODE"] = "merged"
+            allow_storage_restart = True
             print("\n[Launcher] 合并进程模式\n", flush=True)
-            return run_merged_servers()
+            run_merged_servers()
+            return 0
+
+        os.environ["NEKO_LAUNCH_MODE"] = "multi"
 
         # 1. 分步启动服务器（错开 import 阶段以降低内存峰值）
         #    Windows spawn 模式下每个子进程独立加载所有依赖，
@@ -1649,6 +2061,8 @@ def main():
             if not start_server(server):
                 all_started = False
                 break
+            if server.get("module") == "main_server":
+                allow_storage_restart = True
 
             evt = server.get('import_event')
             is_last = (i == len(SERVERS) - 1)
@@ -1686,7 +2100,12 @@ def main():
             return 1
 
         # 2. 等待最后一个服务器也准备就绪
-        if not wait_for_servers():
+        wait_result = wait_for_servers()
+        if wait_result is not True:
+            if wait_result == STARTUP_WAIT_RESULT_STORAGE_RESTART:
+                print("\n检测到启动期间触发的存储重启，正在清理当前实例...", flush=True)
+                cleanup_servers()
+                return 0
             print("\n启动失败，正在清理...", flush=True)
             report_startup_failure("Startup aborted: services did not become ready before timeout", show_dialog=False)
             cleanup_servers()
@@ -1695,13 +2114,7 @@ def main():
         # 3. 服务器已启动，通知前端
         try:
             _config_manager = get_config_manager(APP_NAME)
-            set_root_mode(
-                _config_manager,
-                ROOT_MODE_NORMAL,
-                current_root=str(_config_manager.app_docs_dir),
-                last_known_good_root=str(_config_manager.app_docs_dir),
-                last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            )
+            _persist_post_startup_root_state(_config_manager)
         except Exception as e:
             print(f"[Launcher] Warning: failed to persist root_state boot success: {e}", flush=True)
 
@@ -1713,6 +2126,7 @@ def main():
                 "TOOL_SERVER_PORT": TOOL_SERVER_PORT,
             },
         })
+        allow_storage_restart = True
 
         print("", flush=True)
         print("=" * 60, flush=True)
@@ -1755,6 +2169,7 @@ def main():
             break
 
     except KeyboardInterrupt:
+        _mark_expected_launcher_shutdown()
         try:
             signal.signal(signal.SIGINT, signal.SIG_IGN)
         except Exception:
@@ -1832,15 +2247,25 @@ def main():
                 server.get('process') and server['process'].is_alive()
                 for server in SERVERS
             )
-        
+
         print("\n清理完成", flush=True)
-        release_startup_lock()
+        if allow_storage_restart:
+            try:
+                restart_scheduled = _maybe_schedule_storage_restart()
+            except Exception as e:
+                print(f"[Launcher] Warning: failed to schedule storage migration restart: {e}", flush=True)
+                restart_scheduled = False
+
+        if not restart_scheduled:
+            release_startup_lock()
         # 如果还有残留进程，使用非零退出码
         if has_alive:
             sys.exit(1)
     
         print("\n所有服务器已关闭", flush=True)
         print("再见！\n", flush=True)
+        if os.environ.get("NEKO_LAUNCH_MODE", "").strip().lower() == "merged":
+            os._exit(0)
     return 0
 
 

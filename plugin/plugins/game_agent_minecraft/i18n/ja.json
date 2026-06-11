@@ -1,0 +1,4 @@
+{
+  "plugin.name": "Minecraft ゲームプラグイン",
+  "plugin.description": "ローカルの mc-agent（WebSocket）と接続し、猫娘ちゃんが会話しながら Minecraft で一緒に遊び、リアルタイムで実況できるようにします"
+}

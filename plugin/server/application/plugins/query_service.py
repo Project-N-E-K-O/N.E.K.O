@@ -1,17 +1,28 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from collections.abc import Mapping
 
 from plugin.core.state import state
 from plugin.core.status import status_manager
 from plugin.logging_config import get_logger
+from plugin.sdk.shared.i18n import load_plugin_i18n_from_meta, resolve_i18n_refs
+from plugin.server.application.install_source import (
+    LockEntry,
+    SourceDetailImported,
+    SourceDetailMarket,
+    _DEFAULT_INSTALL_SOURCE,
+    get_install_source_manager,
+)
 from plugin.server.application.plugins.ui_query_service import _build_plugin_list_actions_from_meta
 from plugin.server.domain import IO_RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.utils.time_utils import now_iso
 
 logger = get_logger("server.application.plugins.query")
+
+_PLUGIN_CARD_I18N_KEYS = {"plugin.name", "plugin.description", "plugin.short_description"}
 
 
 def _normalize_mapping(
@@ -44,6 +55,54 @@ def _normalize_plugin_entries(raw_items: list[object]) -> list[dict[str, object]
             )
         normalized_items.append(_normalize_mapping(item, context=f"plugin_list[{index}]"))
     return normalized_items
+
+
+def _serialize_install_source_detail(entry: LockEntry) -> dict[str, object] | None:
+    detail = entry.source_detail
+    if isinstance(detail, (SourceDetailImported, SourceDetailMarket)):
+        return dataclasses.asdict(detail)
+    return None
+
+
+def _install_source_api_view(entry: LockEntry | None) -> dict[str, object | None]:
+    if entry is None or entry.removed:
+        return dict(_DEFAULT_INSTALL_SOURCE)
+    return {
+        "source": entry.channel,
+        "reason": entry.reason,
+        "installed_at": entry.installed_at,
+        "source_detail": _serialize_install_source_detail(entry),
+    }
+
+
+def _install_source_index() -> tuple[
+    dict[str, LockEntry],
+    dict[str, LockEntry],
+]:
+    mgr = get_install_source_manager()
+    if mgr is None:
+        return {}, {}
+    snapshot = mgr.snapshot()
+    by_plugin_id: dict[str, LockEntry] = {}
+    by_directory_name: dict[str, LockEntry] = {}
+    for entry in snapshot.entries:
+        if entry.removed:
+            continue
+        by_directory_name[entry.directory_name] = entry
+        if entry.plugin_id:
+            by_plugin_id[entry.plugin_id] = entry
+    return by_plugin_id, by_directory_name
+
+
+def _attach_install_source(
+    plugin_info: dict[str, object],
+    *,
+    plugin_id: str,
+    by_plugin_id: Mapping[str, LockEntry],
+    by_directory_name: Mapping[str, LockEntry],
+) -> None:
+    entry = by_plugin_id.get(plugin_id) or by_directory_name.get(plugin_id)
+    plugin_info["install_source"] = _install_source_api_view(entry)
 
 
 def _normalize_string_list(raw_value: object) -> list[str]:
@@ -117,10 +176,82 @@ def _resolve_plugin_status(
     return "running" if plugin_id in running_plugin_ids else "stopped"
 
 
+def _resolve_default_locale() -> str:
+    try:
+        from utils.language_utils import get_global_language_full
+        return str(get_global_language_full() or "en")
+    except Exception:
+        return "en"
+
+
+def _plugin_card_i18n_payload(
+    plugin_meta: Mapping[str, object],
+    plugin_i18n: object,
+) -> dict[str, object]:
+    raw_config = plugin_meta.get("i18n")
+    config = dict(raw_config) if isinstance(raw_config, Mapping) else {}
+    messages = getattr(plugin_i18n, "messages", {})
+    card_messages: dict[str, dict[str, str]] = {}
+    if isinstance(messages, Mapping):
+        for locale, bundle in messages.items():
+            if not isinstance(locale, str) or not isinstance(bundle, Mapping):
+                continue
+            selected = {
+                key: value
+                for key, value in bundle.items()
+                if isinstance(key, str)
+                and key in _PLUGIN_CARD_I18N_KEYS
+                and isinstance(value, str)
+            }
+            if selected:
+                card_messages[locale] = selected
+
+    config["messages"] = card_messages
+    return config
+
+
+def _resolve_plugin_display_fields(
+    plugin_info: dict[str, object],
+    plugin_i18n: object,
+    *,
+    locale: str,
+) -> None:
+    missing = "\0__missing_plugin_display_i18n__"
+    name_fallback = plugin_info.get("name")
+    description_fallback = plugin_info.get("description")
+    short_description_fallback = plugin_info.get("short_description")
+    name_default = name_fallback if isinstance(name_fallback, str) and name_fallback else str(plugin_info.get("id") or "")
+    plugin_info["name"] = plugin_i18n.t(
+        "plugin.name",
+        locale=locale,
+        default=name_default,
+    )
+    description = plugin_i18n.t(
+        "plugin.description",
+        locale=locale,
+        default=description_fallback if isinstance(description_fallback, str) and description_fallback else missing,
+    )
+    if description != missing:
+        plugin_info["description"] = description
+    elif isinstance(description_fallback, str):
+        plugin_info["description"] = description_fallback
+    short_description = plugin_i18n.t(
+        "plugin.short_description",
+        locale=locale,
+        default=short_description_fallback if isinstance(short_description_fallback, str) and short_description_fallback else missing,
+    )
+    if short_description != missing:
+        plugin_info["short_description"] = short_description
+    elif isinstance(short_description_fallback, str):
+        plugin_info["short_description"] = short_description_fallback
+
+
 def _build_entries_from_handlers(
     *,
     plugin_id: str,
     handlers_snapshot: Mapping[object, object],
+    plugin_meta: Mapping[str, object] | None = None,
+    locale: str | None = None,
 ) -> tuple[list[dict[str, object]], set[tuple[str, str]]]:
     entries: list[dict[str, object]] = []
     seen: set[tuple[str, str]] = set()
@@ -177,12 +308,12 @@ def _build_entries_from_handlers(
 
         entry_dict: dict[str, object] = {
             "id": entry_id,
-            "name": name_obj if isinstance(name_obj, str) else "",
-            "description": description_obj if isinstance(description_obj, str) else "",
+            "name": name_obj if isinstance(name_obj, (str, Mapping)) else "",
+            "description": description_obj if isinstance(description_obj, (str, Mapping)) else "",
             "event_key": event_key_obj,
             "timeout": getattr(meta, "timeout", None),
             "input_schema": input_schema,
-            "return_message": return_message_obj if isinstance(return_message_obj, str) else "",
+            "return_message": return_message_obj if isinstance(return_message_obj, (str, Mapping)) else "",
             "llm_result_fields": llm_result_fields,
             "llm_result_schema": llm_result_schema,
             "metadata": metadata,
@@ -193,6 +324,12 @@ def _build_entries_from_handlers(
         if isinstance(meta_dict, dict) and "llm_result_fields" in meta_dict:
             entry_dict["llm_result_fields"] = meta_dict["llm_result_fields"]
 
+        if plugin_meta is not None:
+            entry_dict = resolve_i18n_refs(
+                entry_dict,
+                load_plugin_i18n_from_meta(plugin_meta),
+                locale=locale or _resolve_default_locale(),
+            )  # type: ignore[assignment]
         entries.append(entry_dict)
 
     return entries, seen
@@ -265,12 +402,12 @@ def _append_entries_from_preview(
 
         entry_dict: dict[str, object] = {
             "id": entry_id_obj,
-            "name": name_obj if isinstance(name_obj, str) else "",
-            "description": description_obj if isinstance(description_obj, str) else "",
+            "name": name_obj if isinstance(name_obj, (str, Mapping)) else "",
+            "description": description_obj if isinstance(description_obj, (str, Mapping)) else "",
             "event_key": event_key_obj if isinstance(event_key_obj, str) and event_key_obj else f"{plugin_id}.{entry_id_obj}",
             "timeout": normalized_preview.get("timeout"),
             "input_schema": input_schema,
-            "return_message": return_message_obj if isinstance(return_message_obj, str) else "",
+            "return_message": return_message_obj if isinstance(return_message_obj, (str, Mapping)) else "",
             "llm_result_fields": llm_result_fields,
             "llm_result_schema": llm_result_schema,
             "metadata": metadata,
@@ -317,8 +454,9 @@ def _append_plugin_fallback(
     )
 
 
-def _build_plugin_list_sync() -> list[dict[str, object]]:
+def _build_plugin_list_sync(locale: str | None = None) -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
+    effective_locale = locale or _resolve_default_locale()
     try:
         plugins_snapshot = state.get_plugins_snapshot_cached(timeout=2.0)
         if not plugins_snapshot:
@@ -343,6 +481,8 @@ def _build_plugin_list_sync() -> list[dict[str, object]]:
         except Exception:
             pass
 
+    install_source_by_plugin_id, install_source_by_directory_name = _install_source_index()
+
     for plugin_id_obj, plugin_meta_obj in plugins_snapshot.items():
         if not isinstance(plugin_id_obj, str):
             continue
@@ -362,6 +502,8 @@ def _build_plugin_list_sync() -> list[dict[str, object]]:
             entries, seen = _build_entries_from_handlers(
                 plugin_id=plugin_id,
                 handlers_snapshot=handlers_snapshot,
+                plugin_meta=plugin_meta,
+                locale=effective_locale,
             )
             _append_entries_from_preview(
                 plugin_id=plugin_id,
@@ -369,9 +511,29 @@ def _build_plugin_list_sync() -> list[dict[str, object]]:
                 entries=entries,
                 seen=seen,
             )
+            plugin_i18n = load_plugin_i18n_from_meta(plugin_meta)
+            _resolve_plugin_display_fields(plugin_info, plugin_i18n, locale=effective_locale)
+            plugin_i18n_payload = _plugin_card_i18n_payload(plugin_meta, plugin_i18n)
+            if plugin_i18n_payload:
+                plugin_info["i18n"] = plugin_i18n_payload
+            entries = [
+                resolve_i18n_refs(entry, plugin_i18n, locale=effective_locale)  # type: ignore[misc]
+                for entry in entries
+                if isinstance(entry, dict)
+            ]
 
             plugin_info["entries"] = entries
-            plugin_info["list_actions"] = _build_plugin_list_actions_from_meta(plugin_id, plugin_meta)
+            plugin_info["list_actions"] = resolve_i18n_refs(
+                _build_plugin_list_actions_from_meta(plugin_id, plugin_meta),
+                plugin_i18n,
+                locale=effective_locale,
+            )
+            _attach_install_source(
+                plugin_info,
+                plugin_id=plugin_id,
+                by_plugin_id=install_source_by_plugin_id,
+                by_directory_name=install_source_by_directory_name,
+            )
             result.append(plugin_info)
         except ServerDomainError as exc:
             _append_plugin_fallback(
@@ -439,9 +601,9 @@ class PluginQueryService:
                 },
             ) from exc
 
-    async def list_plugins(self) -> dict[str, object]:
+    async def list_plugins(self, locale: str | None = None) -> dict[str, object]:
         try:
-            raw_plugins = await asyncio.to_thread(_build_plugin_list_sync)
+            raw_plugins = await asyncio.to_thread(_build_plugin_list_sync, locale)
             if not isinstance(raw_plugins, list):
                 raise ServerDomainError(
                     code="INVALID_DATA_SHAPE",

@@ -7,6 +7,14 @@ description: "Gemini 模型通过 OpenAI 兼容 API 接入指南。包含：(1) 
 
 Gemini 提供 OpenAI 兼容端点，可作为辅助 API 使用。
 
+> [!IMPORTANT]
+> **memory/ + utils/ 下不要传 `temperature`**。项目级约定：所有走
+> `utils.llm_client.create_chat_llm` / `ChatOpenAI` 的调用一律不下发
+> `temperature` 字段（默认 `None` = 不写进请求体）。守门见
+> `scripts/check_no_temperature.py`。`extra_body`（控制 thinking）/
+> `max_completion_tokens` / `timeout` / `max_retries` 这类参数继续按需配置，但
+> 不要为了"调风格"再加 `temperature=...`。
+
 ## Base URL
 
 ```

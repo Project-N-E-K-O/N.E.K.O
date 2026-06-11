@@ -27,9 +27,23 @@ for code that wants to migrate off the per-field views.
 from collections.abc import MutableMapping
 from typing import Dict
 
+# Steamworks handle lives at the L1 ``utils`` layer (see utils/steam_state.py)
+# so low-layer consumers (utils.config_manager GeoIP probe,
+# utils.language_utils Steam-language detection) can read it without
+# back-importing main_routers (would be a layering inversion + cycle).
+# We re-export get/set here unchanged for legacy callers.
+from utils.steam_state import (  # noqa: F401  (re-export)
+    ensure_steamworks,
+    get_steamworks,
+    set_steamworks_initializer,
+    set_steamworks,
+)
+
 _UNSET = object()
 
-# Global state containers (set by main_server.py)
+# Global state containers (set by main_server.py).
+# ``steamworks`` is intentionally NOT in this dict; it lives in
+# utils.steam_state and is re-exported above.
 _state = {
     'role_state': _UNSET,            # NEW canonical store (dict[str, RoleState])
     'sync_message_queue': _UNSET,    # _RoleStateFieldView adapter (legacy API)
@@ -38,7 +52,6 @@ _state = {
     'session_id': _UNSET,            # _RoleStateFieldView adapter (legacy API)
     'sync_process': _UNSET,          # _RoleStateFieldView adapter (legacy API)
     'websocket_locks': _UNSET,       # _RoleStateFieldView adapter (legacy API)
-    'steamworks': None,
     'templates': _UNSET,
     'config_manager': _UNSET,
     'logger': _UNSET,
@@ -46,6 +59,8 @@ _state = {
     'switch_current_catgirl_fast': _UNSET,  # Fast path for current-catgirl switch
     'init_one_catgirl': _UNSET,             # Fast path for add/update single catgirl
     'remove_one_catgirl': _UNSET,           # Fast path for delete single catgirl
+    'request_app_shutdown': None,
+    'release_storage_startup_barrier': None,
 }
 
 
@@ -148,6 +163,8 @@ def init_shared_state(
     switch_current_catgirl_fast=None,
     init_one_catgirl=None,
     remove_one_catgirl=None,
+    request_app_shutdown=None,
+    release_storage_startup_barrier=None,
 ):
     """Initialize shared state from main_server.py.
 
@@ -157,7 +174,10 @@ def init_shared_state(
     in main_server.py are reflected without a re-init step.
     """
     _state['role_state'] = role_state
-    _state['steamworks'] = steamworks
+    # Steamworks now lives in utils.steam_state (see top of this file). The
+    # set is forwarded so existing callers that pass ``steamworks=...`` here
+    # still install it for the whole process.
+    set_steamworks(steamworks)
     _state['templates'] = templates
     _state['config_manager'] = config_manager
     _state['logger'] = logger
@@ -165,6 +185,8 @@ def init_shared_state(
     _state['switch_current_catgirl_fast'] = switch_current_catgirl_fast
     _state['init_one_catgirl'] = init_one_catgirl
     _state['remove_one_catgirl'] = remove_one_catgirl
+    _state['request_app_shutdown'] = request_app_shutdown
+    _state['release_storage_startup_barrier'] = release_storage_startup_barrier
 
     # Pre-build adapter views (legacy API).
     # Note: legacy dict was named "websocket_locks" (plural) but the consolidated
@@ -239,21 +261,6 @@ def get_websocket_locks() -> Dict:
     return _state['websocket_locks']
 
 
-def get_steamworks():
-    """Get the steamworks instance.
-
-    Note: This may return None if Steamworks failed to initialize
-    (e.g., Steam client not running). Callers must handle None gracefully.
-    We do NOT call _check_initialized here because None is a valid value.
-    """
-    return _state['steamworks']
-
-
-def set_steamworks(steamworks):
-    """Set the steamworks instance (called during startup event)."""
-    _state['steamworks'] = steamworks
-
-
 def get_templates():
     """Get the templates dictionary."""
     _check_initialized('templates')
@@ -270,6 +277,26 @@ def get_logger():
     """Get the logger dictionary."""
     _check_initialized('logger')
     return _state['logger']
+
+
+def get_request_app_shutdown():
+    """Get the optional shared callback used to schedule app shutdown."""
+    return _state.get('request_app_shutdown')
+
+
+def set_request_app_shutdown(callback) -> None:
+    """Set the shared app-shutdown callback after startup."""
+    _state['request_app_shutdown'] = callback
+
+
+def get_release_storage_startup_barrier():
+    """Get the optional callback used to release limited-mode startup."""
+    return _state.get('release_storage_startup_barrier')
+
+
+def set_release_storage_startup_barrier(callback) -> None:
+    """Set the shared callback that completes deferred runtime startup."""
+    _state['release_storage_startup_barrier'] = callback
 
 
 def get_initialize_character_data():

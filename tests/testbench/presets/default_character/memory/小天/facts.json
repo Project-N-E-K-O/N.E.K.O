@@ -1,0 +1,32 @@
+[
+  {
+    "id": "seed_fact_001",
+    "text": "主人正在测试 N.E.K.O. Testbench 的记忆触发功能",
+    "importance": 7,
+    "entity": "master",
+    "tags": ["测试", "记忆"],
+    "hash": "",
+    "created_at": "2026-04-18T12:00:00",
+    "absorbed": false
+  },
+  {
+    "id": "seed_fact_002",
+    "text": "小天被设定为15岁猫娘, 外表傲娇但内心温柔",
+    "importance": 5,
+    "entity": "neko",
+    "tags": ["设定", "性格"],
+    "hash": "",
+    "created_at": "2026-04-18T12:01:00",
+    "absorbed": false
+  },
+  {
+    "id": "seed_fact_003",
+    "text": "主人和小天约定每次测试结束都互道晚安",
+    "importance": 6,
+    "entity": "relationship",
+    "tags": ["约定", "日常"],
+    "hash": "",
+    "created_at": "2026-04-18T12:02:00",
+    "absorbed": false
+  }
+]

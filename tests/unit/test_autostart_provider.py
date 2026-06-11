@@ -25,6 +25,26 @@ const fs = require('fs');
 const vm = require('vm');
 
 global.window = global;
+global.CustomEvent = class CustomEvent {{
+  constructor(type, init) {{
+    this.type = type;
+    this.detail = init && init.detail;
+  }}
+}};
+const __eventListeners = new Map();
+global.addEventListener = function (type, listener) {{
+  if (!__eventListeners.has(type)) {{
+    __eventListeners.set(type, []);
+  }}
+  __eventListeners.get(type).push(listener);
+}};
+global.dispatchEvent = function (event) {{
+  const listeners = __eventListeners.get(event && event.type) || [];
+  for (const listener of listeners) {{
+    listener(event);
+  }}
+  return true;
+}};
 // Node 21+ ships a built-in `navigator` that refuses plain assignment; override
 // the two properties our provider inspects so the harness works on Windows too.
 if (typeof navigator === 'undefined') {{
@@ -88,7 +108,7 @@ runScenario()
 
 
 @pytest.mark.unit
-def test_provider_reports_unsupported_without_desktop_bridge():
+def test_provider_reports_backend_removed_without_desktop_bridge():
     result = _run_autostart_provider_scenario(
         """
     return window.nekoAutostartProvider.getStatus();
@@ -100,14 +120,15 @@ def test_provider_reports_unsupported_without_desktop_bridge():
         "supported": False,
         "enabled": False,
         "authoritative": True,
-        "provider": "neko-pc",
-        "mechanism": "desktop-bridge-unavailable",
+        "provider": "backend",
+        "mechanism": "",
         "platform": "MacIntel",
+        "reason": "backend_autostart_removed",
     }
 
 
 @pytest.mark.unit
-def test_provider_enable_returns_explicit_unsupported_error_without_desktop_bridge():
+def test_provider_enable_returns_explicit_launch_command_error_without_desktop_bridge():
     result = _run_autostart_provider_scenario(
         """
     return window.nekoAutostartProvider.enable();
@@ -119,9 +140,10 @@ def test_provider_enable_returns_explicit_unsupported_error_without_desktop_brid
         "supported": False,
         "enabled": False,
         "authoritative": True,
-        "provider": "neko-pc",
-        "mechanism": "desktop-bridge-unavailable",
+        "provider": "backend",
+        "mechanism": "",
         "platform": "MacIntel",
-        "error": "autostart_not_supported",
-        "error_code": "autostart_not_supported",
+        "reason": "backend_autostart_removed",
+        "error": "launch_command_unavailable",
+        "error_code": "launch_command_unavailable",
     }

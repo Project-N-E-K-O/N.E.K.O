@@ -1,0 +1,110 @@
+"""neko-plugin CLI entry point.
+
+Can be invoked as:
+  - ``python -m plugin.neko_plugin_cli`` from the N.E.K.O repository root
+  - ``python plugin/neko_plugin_cli/cli.py`` from the N.E.K.O repository root
+  - ``python neko_plugin_cli/cli.py`` from the N.E.K.O ``plugin/`` directory
+  - ``neko-plugin <command>`` (when installed via pip/uv with entry_points)
+
+Shell completion (requires ``shtab``)::
+
+    # zsh
+    neko-plugin --print-completion zsh > ~/.zsh/completions/_neko-plugin
+    # bash
+    neko-plugin --print-completion bash > ~/.bash_completion.d/neko-plugin
+    # fish (not yet supported by shtab)
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+import textwrap
+from pathlib import Path
+
+if __package__ in {None, ""}:  # pragma: no cover - exercised by script invocation.
+    repo_root = Path(__file__).resolve().parents[2]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    from plugin.neko_plugin_cli.commands import (  # noqa: E402
+        analyze_cmd,
+        check_cmd,
+        deps_cmd,
+        init_cmd,
+        inspect_cmd,
+        build_cmd,
+        install_cmd,
+        verify_cmd,
+    )
+    from plugin.neko_plugin_cli.paths import resolve_default_paths  # noqa: E402
+else:
+    from .commands import (
+        analyze_cmd,
+        check_cmd,
+        deps_cmd,
+        init_cmd,
+        inspect_cmd,
+        build_cmd,
+        install_cmd,
+        verify_cmd,
+    )
+    from .paths import resolve_default_paths
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if not hasattr(args, "handler"):
+        parser.print_help()
+        return 1
+    return args.handler(args)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    defaults = resolve_default_paths()
+
+    parser = argparse.ArgumentParser(
+        prog="neko-plugin",
+        description="N.E.K.O plugin development, packaging, and release CLI",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent(
+            """\
+            Recommended workflow:
+              neko-plugin init-repo <plugin>       Create a standalone plugin repo
+              neko-plugin setup-repo <plugin>      Adopt an existing plugin directory
+              neko-plugin add <plugin> <pkg>...    Add Python dependencies to vendor/
+              neko-plugin sync <plugin>            Sync vendor/ from pyproject.toml
+              neko-plugin check <plugin>           Diagnose local repo readiness
+              neko-plugin build <plugin>           Build a plugin package artifact
+              neko-plugin check -r <plugin>        Run the pre-release check used by CI
+
+            Package/debug commands:
+              build, inspect, verify, install, analyze
+            """
+        ),
+    )
+
+    # Shell completion support (optional dependency).
+    try:
+        import shtab
+        shtab.add_argument_to(parser)
+    except ImportError:
+        pass  # shtab is optional; shell completion simply won't be available
+
+    subparsers = parser.add_subparsers(dest="command", metavar="<command>")
+
+    init_cmd.register(subparsers, defaults=defaults)
+    check_cmd.register(subparsers, defaults=defaults)
+    deps_cmd.register(subparsers, defaults=defaults)
+    build_cmd.register(subparsers, defaults=defaults)
+    inspect_cmd.register(subparsers, defaults=defaults)
+    verify_cmd.register(subparsers, defaults=defaults)
+    install_cmd.register(subparsers, defaults=defaults)
+    analyze_cmd.register(subparsers, defaults=defaults)
+
+    return parser
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

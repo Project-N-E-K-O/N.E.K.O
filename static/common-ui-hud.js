@@ -5,6 +5,50 @@
 
 window.AgentHUD = window.AgentHUD || {};
 
+var PLUGIN_DASHBOARD_REDIRECT_URL = '/api/agent/user_plugin/dashboard';
+const STANDALONE_HUD_POSITION = Object.freeze({
+    top: '0',
+    left: '0',
+    right: 'auto',
+    transform: 'none'
+});
+
+function appendPluginDashboardOpenerOrigin(url) {
+    const target = new URL(url, document.baseURI || window.location.href);
+    if (window.location && window.location.origin) {
+        target.searchParams.set('yui_opener_origin', window.location.origin);
+    }
+    return target.toString();
+}
+
+function getPluginDashboardRedirectUrl() {
+    return appendPluginDashboardOpenerOrigin(PLUGIN_DASHBOARD_REDIRECT_URL);
+}
+
+function appendCacheBuster(url) {
+    var separator = typeof url === 'string' && url.indexOf('?') >= 0 ? '&' : '?';
+    return `${url}${separator}v=${Date.now()}`;
+}
+
+function isStandaloneAgentHudPage() {
+    try {
+        return !!(document.body && document.body.classList.contains('agent-hud-standalone-page'));
+    } catch (_) {
+        return false;
+    }
+}
+
+function setAgentHudDraggingState(active) {
+    try {
+        if (document.body) {
+            document.body.classList.toggle('neko-agent-hud-dragging', !!active);
+        }
+        window.dispatchEvent(new CustomEvent('neko-agent-hud-drag-state', {
+            detail: { dragging: !!active }
+        }));
+    } catch (_) {}
+}
+
 /**
  * 精简 AI 生成的冗长任务描述为用户友好的短文本
  * 例: "设置一个15分钟后的一次性提醒，内容为'起来活动'" → "15分钟后 起来活动"
@@ -181,7 +225,18 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
 
         // 侧边快捷入口（用户插件管理面板 / OpenClaw 接入教程）
         if ((toggle.id === 'agent-user-plugin' || toggle.id === 'agent-openclaw') && typeof this._createSidePanelContainer === 'function') {
+            document.querySelectorAll(`[data-neko-sidepanel-type="${toggle.id}-actions"]`).forEach((element) => {
+                if (element && typeof element.remove === 'function') {
+                    element.remove();
+                }
+            });
+            const existingSidePanelById = document.getElementById(`${toggle.id}-actions`);
+            if (existingSidePanelById && typeof existingSidePanelById.remove === 'function') {
+                existingSidePanelById.remove();
+            }
             const sidePanel = this._createSidePanelContainer();
+            sidePanel.id = `${toggle.id}-actions`;
+            sidePanel.setAttribute('data-neko-sidepanel-type', `${toggle.id}-actions`);
             sidePanel.style.flexDirection = 'column';
             sidePanel.style.alignItems = 'stretch';
             sidePanel.style.gap = '4px';
@@ -192,13 +247,16 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
             const configBtn = document.createElement('div');
             const actionConfig = toggle.id === 'agent-user-plugin'
                 ? {
+                    actionId: 'management-panel',
                     labelKey: 'settings.toggles.pluginManagementPanel',
                     labelFallback: '管理面板',
                     icon: '⚙',
-                    url: '/api/agent/user_plugin/dashboard',
-                    windowName: 'neko_plugin_dashboard'
+                    url: getPluginDashboardRedirectUrl,
+                    windowName: 'neko_plugin_dashboard',
+                    forceReloadOnReuse: true
                 }
                 : {
+                    actionId: 'openclaw-guide',
                     labelKey: 'settings.toggles.openclawGuide',
                     labelFallback: 'OpenClaw 接入教程',
                     icon: '📘',
@@ -206,6 +264,13 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                     windowName: 'neko_openclaw_guide',
                     forceReloadOnReuse: true
                 };
+            const existingActionButton = document.getElementById(`neko-sidepanel-action-${toggle.id}-${actionConfig.actionId}`);
+            if (existingActionButton && typeof existingActionButton.remove === 'function') {
+                existingActionButton.remove();
+            }
+            configBtn.id = `neko-sidepanel-action-${toggle.id}-${actionConfig.actionId}`;
+            configBtn.setAttribute('data-neko-sidepanel-action', actionConfig.actionId);
+            configBtn.setAttribute('data-neko-sidepanel-toggle', toggle.id);
             Object.assign(configBtn.style, {
                 display: 'flex',
                 alignItems: 'center',
@@ -259,21 +324,41 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                 const left = Math.max(0, Math.floor((screen.width - width) / 2));
                 const top = Math.max(0, Math.floor((screen.height - height) / 2));
                 const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
-                const targetUrl = actionConfig.forceReloadOnReuse
-                    ? `${actionConfig.url}?v=${Date.now()}`
+                const rawUrl = typeof actionConfig.url === 'function'
+                    ? actionConfig.url()
                     : actionConfig.url;
+                const absoluteUrl = new URL(rawUrl, document.baseURI || window.location.href).toString();
+                const targetUrl = actionConfig.forceReloadOnReuse
+                    ? appendCacheBuster(absoluteUrl)
+                    : absoluteUrl;
                 const existingWindow = window._openedWindows && window._openedWindows[actionConfig.windowName];
+                let openedWindow = null;
                 if (actionConfig.forceReloadOnReuse && existingWindow && !existingWindow.closed) {
                     try {
                         existingWindow.location.replace(targetUrl);
                     } catch (_) {
                         existingWindow.location.href = targetUrl;
                     }
+                    if (typeof window.requestOpenedWindowRestore === 'function') {
+                        window.requestOpenedWindowRestore(existingWindow);
+                    }
                     existingWindow.focus();
+                    openedWindow = existingWindow;
                 } else if (typeof window.openOrFocusWindow === 'function') {
-                    window.openOrFocusWindow(targetUrl, actionConfig.windowName, features);
+                    openedWindow = window.openOrFocusWindow(targetUrl, actionConfig.windowName, features, {
+                        navigateOnReuse: !!actionConfig.forceReloadOnReuse
+                    });
                 } else {
-                    window.open(targetUrl, actionConfig.windowName, features);
+                    openedWindow = window.open(targetUrl, actionConfig.windowName, features);
+                }
+                if (openedWindow) {
+                    if (!window._openedWindows) {
+                        window._openedWindows = {};
+                    }
+                    window._openedWindows[actionConfig.windowName] = openedWindow;
+                    try {
+                        openedWindow.focus();
+                    } catch (_) {}
                 }
                 setTimeout(() => { isOpening = false; }, 500);
             });
@@ -305,10 +390,15 @@ window.AgentHUD.createAgentTaskHUD = function () {
     hud.id = 'agent-task-hud';
 
     // 获取保存的位置或使用默认位置
-    const savedPos = localStorage.getItem('agent-task-hud-position');
+    const standaloneAgentHud = isStandaloneAgentHudPage();
+    const savedPos = standaloneAgentHud ? null : localStorage.getItem('agent-task-hud-position');
     let position = { top: '50%', right: '20px', transform: 'translateY(-50%)' };
 
-    if (savedPos) {
+    if (standaloneAgentHud) {
+        position = STANDALONE_HUD_POSITION;
+    }
+
+    if (!standaloneAgentHud && savedPos) {
         try {
             const parsed = JSON.parse(savedPos);
             position = {
@@ -324,8 +414,9 @@ window.AgentHUD.createAgentTaskHUD = function () {
 
     Object.assign(hud.style, {
         position: 'fixed',
-        width: '320px',
-        maxHeight: '60vh',
+        width: standaloneAgentHud ? '100%' : '320px',
+        maxHeight: standaloneAgentHud ? '100vh' : '60vh',
+        height: standaloneAgentHud ? '100%' : '',
         background: 'var(--neko-popup-bg, rgba(255, 255, 255, 0.65))',
         backdropFilter: 'saturate(180%) blur(20px)',
         WebkitBackdropFilter: 'saturate(180%) blur(20px)',
@@ -343,7 +434,7 @@ window.AgentHUD.createAgentTaskHUD = function () {
         pointerEvents: 'auto',
         overflowY: 'auto',
         transition: 'opacity 0.4s cubic-bezier(0.16, 1, 0.3, 1), transform 0.4s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.3s ease, width 0.4s cubic-bezier(0.16, 1, 0.3, 1), padding 0.4s ease, max-height 0.4s ease',
-        cursor: 'move',
+        cursor: standaloneAgentHud ? 'default' : 'move',
         userSelect: 'none',
         willChange: 'transform, width',
         contain: 'layout style paint'
@@ -357,6 +448,7 @@ window.AgentHUD.createAgentTaskHUD = function () {
 
     // HUD 标题栏
     const header = document.createElement('div');
+    header.id = 'agent-task-hud-header';
     Object.assign(header.style, {
         display: 'flex',
         alignItems: 'center',
@@ -455,11 +547,22 @@ window.AgentHUD.createAgentTaskHUD = function () {
         try {
             cancelBtn.style.opacity = '0.5';
             cancelBtn.style.pointerEvents = 'none';
-            await fetch('/api/agent/admin/control', {
+            const r = await fetch('/api/agent/admin/control', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: 'end_all' })
             });
+            // 2xx → end_all ran; 504 → the proxy timed out AFTER forwarding,
+            // so the tool server keeps executing end_all to completion.
+            // Either way the backend registry ends up cleared — apply the
+            // terminal state locally in case its task_update events never
+            // arrive (stuck dispatch). Other failures (500 connect error,
+            // 501 remote block) mean the request never landed: don't lie.
+            if (r.ok || r.status === 504) {
+                if (window.AgentHUD._markTasksCancelledLocally) {
+                    window.AgentHUD._markTasksCancelledLocally();
+                }
+            }
         } catch (err) {
             console.error('[AgentHUD] Cancel all tasks failed:', err);
         } finally {
@@ -527,7 +630,7 @@ window.AgentHUD.createAgentTaskHUD = function () {
             taskList.style.opacity = '0';
             minimizeBtn.style.transform = 'rotate(-90deg)';
         } else {
-            hud.style.width = '320px';
+            hud.style.width = standaloneAgentHud ? '100%' : '320px';
             hud.style.gap = '12px'; 
             
             header.style.padding = '12px 16px';
@@ -614,8 +717,14 @@ window.AgentHUD.showAgentTaskHUD = function () {
     }
     hud.style.display = 'flex';
     hud.style.opacity = '1';
-    const savedPos = localStorage.getItem('agent-task-hud-position');
-    if (savedPos) {
+    const standaloneAgentHud = isStandaloneAgentHudPage();
+    const savedPos = standaloneAgentHud ? null : localStorage.getItem('agent-task-hud-position');
+    if (standaloneAgentHud) {
+        hud.style.left = STANDALONE_HUD_POSITION.left;
+        hud.style.top = STANDALONE_HUD_POSITION.top;
+        hud.style.right = STANDALONE_HUD_POSITION.right;
+        hud.style.transform = STANDALONE_HUD_POSITION.transform;
+    } else if (savedPos) {
         try {
             const parsed = JSON.parse(savedPos);
             if (parsed.top) hud.style.top = parsed.top;
@@ -645,8 +754,14 @@ window.AgentHUD.hideAgentTaskHUD = function () {
 
     console.log('[AgentHUD] hideAgentTaskHUD: starting fade out');
     hud.style.opacity = '0';
-    const savedPos = localStorage.getItem('agent-task-hud-position');
-    if (!savedPos) {
+    const standaloneAgentHud = isStandaloneAgentHudPage();
+    const savedPos = standaloneAgentHud ? null : localStorage.getItem('agent-task-hud-position');
+    if (standaloneAgentHud) {
+        hud.style.left = STANDALONE_HUD_POSITION.left;
+        hud.style.top = STANDALONE_HUD_POSITION.top;
+        hud.style.right = STANDALONE_HUD_POSITION.right;
+        hud.style.transform = STANDALONE_HUD_POSITION.transform;
+    } else if (!savedPos) {
         hud.style.transform = 'translateY(-50%) translateX(20px)';
     }
 
@@ -671,6 +786,68 @@ window.AgentHUD.updateAgentTaskHUD = function (tasksData) {
     this._updateRafId = requestAnimationFrame(() => {
         this._updateRafId = null;
         this._doUpdateAgentTaskHUD();
+    });
+};
+
+// Local fallback: mark tasks cancelled in the shared task map and re-render.
+// The HUD is purely event-driven; when the backend is wedged (the very
+// situation the user is cancelling out of) its task_update(cancelled) events
+// may never arrive, leaving cards stuck on "running" forever. The cancel
+// click handlers below call this after reaching the server so the UI always
+// converges. Backend events for the same tasks merge idempotently in
+// app-websocket.js.
+window.AgentHUD._markTasksCancelledLocally = function (taskIds, status) {
+    const map = window._agentTaskMap;
+    if (!map || typeof map.forEach !== 'function' || map.size === 0) return;
+    if (!window._agentTaskRemoveTimers) window._agentTaskRemoveTimers = new Map();
+    const ids = Array.isArray(taskIds) ? new Set(taskIds) : null;
+    // Optional status override: when the backend reports the task already
+    // reached a different terminal state, mirror it instead of "cancelled".
+    const terminalStatus = status || 'cancelled';
+    const now = Date.now();
+    let changed = false;
+    map.forEach((t, id) => {
+        if (!t || (ids && !ids.has(id))) return;
+        if (t.status !== 'running' && t.status !== 'queued') return;
+        map.set(id, Object.assign({}, t, { status: terminalStatus, terminal_at: now }));
+        changed = true;
+        // Schedule the same 10s map removal as the websocket event path —
+        // otherwise the entry outlives the HUD's 30s terminal cache and a
+        // later full-map refresh would re-show it as a "new" terminal task.
+        // If the backend's own cancelled event arrives later, app-websocket
+        // clears this timer and installs its own (idempotent handoff).
+        if (window._agentTaskRemoveTimers.has(id)) {
+            clearTimeout(window._agentTaskRemoveTimers.get(id));
+        }
+        window._agentTaskRemoveTimers.set(id, setTimeout(() => {
+            window._agentTaskRemoveTimers.delete(id);
+            const current = window._agentTaskMap && window._agentTaskMap.get(id);
+            if (!current || current.status !== terminalStatus) return;
+            window._agentTaskMap.delete(id);
+            const remaining = Array.from(window._agentTaskMap.values());
+            window.AgentHUD.updateAgentTaskHUD({
+                success: true,
+                tasks: remaining,
+                total_count: remaining.length,
+                running_count: remaining.filter(t2 => t2.status === 'running').length,
+                queued_count: remaining.filter(t2 => t2.status === 'queued').length,
+                completed_count: remaining.filter(t2 => t2.status === 'completed').length,
+                failed_count: remaining.filter(t2 => t2.status === 'failed').length,
+                timestamp: new Date().toISOString()
+            });
+        }, 10000));
+    });
+    if (!changed) return;
+    const tasks = Array.from(map.values());
+    this.updateAgentTaskHUD({
+        success: true,
+        tasks: tasks,
+        total_count: tasks.length,
+        running_count: tasks.filter(t => t.status === 'running').length,
+        queued_count: tasks.filter(t => t.status === 'queued').length,
+        completed_count: tasks.filter(t => t.status === 'completed').length,
+        failed_count: tasks.filter(t => t.status === 'failed').length,
+        timestamp: new Date().toISOString()
     });
 };
 
@@ -1132,12 +1309,45 @@ window.AgentHUD._createTaskCard = function (task) {
         taskCancelBtn.style.opacity = '0.4';
         taskCancelBtn.style.pointerEvents = 'none';
         try {
-            await fetch(`/api/agent/tasks/${encodeURIComponent(task.id)}/cancel`, {
+            const r = await fetch(`/api/agent/tasks/${encodeURIComponent(task.id)}/cancel`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' }
             });
+            // 2xx → the backend handled the cancel (marking locally is an
+            // idempotent fallback for when its event can't arrive);
+            // 404 → the backend no longer tracks this task, the card is an
+            // orphan (e.g. left behind by an earlier end_all) — clear it;
+            // 504 → proxy timed out AFTER forwarding, the cancel did land.
+            // Anything else (502 connect error, 501 remote block) means the
+            // request never reached the tool server — keep the card and
+            // re-enable the button for retry.
+            if (r.ok || r.status === 404 || r.status === 504) {
+                // "task is not active" (200 + success:false) means the task
+                // hit a different terminal state right before the click —
+                // mirror that status instead of faking "cancelled".
+                let realStatus = null;
+                if (r.ok) {
+                    try {
+                        const body = await r.json();
+                        if (body && body.success === false
+                            && ['completed', 'failed', 'cancelled'].indexOf(body.status) !== -1) {
+                            realStatus = body.status;
+                        }
+                    } catch (_) { /* empty or non-JSON body */ }
+                }
+                if (window.AgentHUD._markTasksCancelledLocally) {
+                    window.AgentHUD._markTasksCancelledLocally([task.id], realStatus || undefined);
+                }
+            } else {
+                taskCancelBtn.style.opacity = '1';
+                taskCancelBtn.style.pointerEvents = 'auto';
+            }
         } catch (err) {
             console.error('[AgentHUD] Cancel task failed:', err);
+            // Network-level failure: the request never reached the server.
+            // Re-enable the button so the user can retry.
+            taskCancelBtn.style.opacity = '1';
+            taskCancelBtn.style.pointerEvents = 'auto';
         }
     });
 
@@ -1249,9 +1459,30 @@ window.AgentHUD._createTaskCard = function (task) {
 
 // 设置HUD全局拖拽功能
 window.AgentHUD._setupDragging = function (hud) {
+    if (isStandaloneAgentHudPage()) {
+        hud.addEventListener('dragstart', (e) => e.preventDefault());
+        this._cleanupDragging = () => {};
+        return;
+    }
+
     let isDragging = false;
     let dragOffsetX = 0;
     let dragOffsetY = 0;
+
+    const resetDragVisualState = () => {
+        hud.style.cursor = 'move';
+        hud.style.boxShadow = 'var(--neko-popup-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04))';
+        hud.style.opacity = '1';
+        hud.style.transition = 'opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease, width 0.3s ease, padding 0.3s ease, max-height 0.3s ease';
+    };
+
+    const cancelDragState = () => {
+        if (!isDragging && !touchDragging) return;
+        isDragging = false;
+        touchDragging = false;
+        setAgentHudDraggingState(false);
+        resetDragVisualState();
+    };
 
     // 高性能拖拽函数
     const performDrag = (clientX, clientY) => {
@@ -1289,6 +1520,7 @@ window.AgentHUD._setupDragging = function (hud) {
         if (isInteractive) return;
 
         isDragging = true;
+        setAgentHudDraggingState(true);
 
         // 视觉反馈
         hud.style.cursor = 'grabbing';
@@ -1321,12 +1553,10 @@ window.AgentHUD._setupDragging = function (hud) {
         if (!isDragging) return;
 
         isDragging = false;
+        setAgentHudDraggingState(false);
 
         // 恢复视觉状态
-        hud.style.cursor = 'move';
-        hud.style.boxShadow = 'var(--neko-popup-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04))';
-        hud.style.opacity = '1';
-        hud.style.transition = 'opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease, width 0.3s ease, padding 0.3s ease, max-height 0.3s ease';
+        resetDragVisualState();
 
         // 最终位置校准（多屏幕支持）
         requestAnimationFrame(() => {
@@ -1392,6 +1622,7 @@ window.AgentHUD._setupDragging = function (hud) {
 
         touchDragging = true;
         isDragging = true;  // 让performDrag函数能正常工作
+        setAgentHudDraggingState(true);
 
         // 视觉反馈
         hud.style.boxShadow = '0 12px 48px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.2)';
@@ -1423,11 +1654,10 @@ window.AgentHUD._setupDragging = function (hud) {
 
         touchDragging = false;
         isDragging = false;  // 确保performDrag函数停止工作
+        setAgentHudDraggingState(false);
 
         // 恢复视觉状态
-        hud.style.boxShadow = 'var(--neko-popup-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04))';
-        hud.style.opacity = '1';
-        hud.style.transition = 'opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease, width 0.3s ease, padding 0.3s ease, max-height 0.3s ease';
+        resetDragVisualState();
 
         // 最终位置校准（多屏幕支持）
         requestAnimationFrame(() => {
@@ -1475,6 +1705,9 @@ window.AgentHUD._setupDragging = function (hud) {
     hud.addEventListener('touchstart', handleTouchStart, { passive: false });
     document.addEventListener('touchmove', handleTouchMove, { passive: false });
     document.addEventListener('touchend', handleTouchEnd, { passive: false });
+    document.addEventListener('touchcancel', cancelDragState, { passive: true });
+    window.addEventListener('blur', cancelDragState);
+    window.addEventListener('pointercancel', cancelDragState, true);
 
     // 窗口大小变化时重新校准位置（多屏幕支持）
     const handleResize = async () => {
@@ -1533,12 +1766,16 @@ window.AgentHUD._setupDragging = function (hud) {
 
     // 清理函数
     this._cleanupDragging = () => {
+        setAgentHudDraggingState(false);
         hud.removeEventListener('mousedown', handleMouseDown);
         document.removeEventListener('mousemove', handleMouseMove);
         document.removeEventListener('mouseup', handleMouseUp);
         hud.removeEventListener('touchstart', handleTouchStart);
         document.removeEventListener('touchmove', handleTouchMove);
         document.removeEventListener('touchend', handleTouchEnd);
+        document.removeEventListener('touchcancel', cancelDragState);
+        window.removeEventListener('blur', cancelDragState);
+        window.removeEventListener('pointercancel', cancelDragState, true);
         window.removeEventListener('resize', handleResize);
     };
 };
@@ -1554,25 +1791,6 @@ window.AgentHUD._setupDragging = function (hud) {
             0% { transform: translateX(-100%); }
             50% { transform: translateX(200%); }
             100% { transform: translateX(-100%); }
-        }
-        
-        /* 请她回来按钮呼吸特效 */
-        @keyframes returnButtonBreathing {
-            0%, 100% {
-                box-shadow: 0 0 8px rgba(68, 183, 254, 0.6), 0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08);
-            }
-            50% {
-                box-shadow: 0 0 18px rgba(68, 183, 254, 1), 0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08);
-            }
-        }
-        
-        #live2d-btn-return {
-            animation: returnButtonBreathing 2s ease-in-out infinite;
-            will-change: box-shadow;
-        }
-        
-        #live2d-btn-return:hover {
-            animation: none;
         }
         
         #agent-task-hud::-webkit-scrollbar {

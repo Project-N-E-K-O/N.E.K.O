@@ -9,11 +9,18 @@ from .types import InputSchema, JsonValue
 
 
 @dataclass(slots=True)
+class QuickActionConfig:
+    """快捷操作配置（typed，不用松散 dict）。"""
+    icon: str | None = None
+    priority: int = 0
+
+
+@dataclass(slots=True)
 class EventMeta:
     event_type: str
     id: str
-    name: str = ""
-    description: str = ""
+    name: object = ""
+    description: object = ""
     input_schema: InputSchema | None = None
     kind: str = "action"
     auto_start: bool = False
@@ -24,6 +31,8 @@ class EventMeta:
     llm_result_fields: list[str] | None = None
     llm_result_schema: InputSchema | None = None
     llm_result_model: type | None = None
+    quick_action: bool = False
+    quick_action_config: QuickActionConfig = field(default_factory=QuickActionConfig)
     extra: dict[str, JsonValue] = field(default_factory=dict)
     metadata: dict[str, JsonValue] = field(default_factory=dict)
 
@@ -34,4 +43,4 @@ class EventHandler:
     handler: object
 
 
-__all__ = ["EVENT_META_ATTR", "EventMeta", "EventHandler"]
+__all__ = ["EVENT_META_ATTR", "EventMeta", "EventHandler", "QuickActionConfig"]

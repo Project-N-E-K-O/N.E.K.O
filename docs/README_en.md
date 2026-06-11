@@ -4,7 +4,7 @@
 
 [中文](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/README.MD) | [日本語](README_ja.md) | [Русский](README_ru.md)
 
-# Project N.E.K.O. :kissing_cat: <br>**A proactive, native omni-modal AI companion featuring 24/7 ambient awareness, agent capability and an embodied emotional engine.**
+# Project N.E.K.O. :kissing_cat: <br>**Listens to your voice. Sees your world.<br>Discovers more to love, with you.**
 
 > **N.E.K.O.** = **N**etworked **E**motional **K**nowledging **O**rganism
 >
@@ -14,24 +14,16 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/LICENSE)
 [![Commit](https://img.shields.io/github/last-commit/wehos/N.E.K.O?color=green)](https://github.com/Project-N-E-K-O/N.E.K.O/commits)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/5kgHfepNJr)
-[![QQ Group](https://custom-icon-badges.demolab.com/badge/QQ群-1022939659-00BFFF?style=flat&logo=tencent-qq)](https://qm.qq.com/q/hN82yFONJQ)
+![QQ Group](https://custom-icon-badges.demolab.com/badge/QQ群-995414391-00BFFF?style=flat&logo=tencent-qq)
 [![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)
 
 [![Docs](https://img.shields.io/badge/📖_Developer_Docs-project--neko.online-40C5F1?style=for-the-badge)](https://project-neko.online)
 
-**:older_woman: Zero-configuration, ready-to-use cyber catgirl that even my grandma can master!**
+**:older_woman: Zero-configuration and ready to use — a cyber catgirl even my grandma can wake up with ease!**
 
-:newspaper: **[![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/) version has been released! Complete UI overhaul and added out-of-the-box exclusive free model (thanks to StepFun for sponsoring this project). Add it to your wishlist now~**
+:newspaper: **The [Steam version](https://store.steampowered.com/app/4099310/__NEKO/) is available for free! If you like her, add her to your library and leave a kind review~**
 
 *Project N.E.K.O., NekoVerse!*
-
-</div>
-
-<div align="center">
-
-#### Feature Demo (Full version on Bilibili) [![Bilibili](https://img.shields.io/badge/Bilibili-Tutorial-blue)](https://www.bilibili.com/video/BV1mM32zXE46/)
-
-https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 
 </div>
 
@@ -41,15 +33,15 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 
 <table>
 <tr>
-<td align="center" width="25%">🎙️<br><b>Omni-Modal Dialogue</b><br>Real-time voice (Realtime API) + text chat (ChatCompletion) with visual understanding</td>
-<td align="center" width="25%">🧠<br><b>Three-Tier Memory</b><br>Facts / Reflection / Persona — she truly "remembers" you</td>
-<td align="center" width="25%">🤖<br><b>Agent Capabilities</b><br>Browser control (CUA), computer use, OpenClaw A2A calling — she can get work done for you</td>
+<td align="center" width="25%">💬<br><b>Proactive Companion</b><br>Screen understanding, social trends, personal updates, music and memes — she starts conversations and shares fresh things you love</td>
+<td align="center" width="25%">🎙️<br><b>Real-Time Voice, Text & Vision</b><br>Real-time voice (Realtime API) + text chat (ChatCompletion) with live visual understanding</td>
+<td align="center" width="25%">🧠<br><b>Five-Dimensional Memory</b><br>Working / Recent / Facts / Reflection / Persona memory, so she understands you better over time</td>
 <td align="center" width="25%">🎭<br><b>Multi-Form Avatar</b><br>Live2D / VRM / MMD with motion capture and full-screen tracking support</td>
 </tr>
 <tr>
-<td align="center">🔌<br><b>Plugin Ecosystem</b><br>Full plugin SDK & marketplace for custom extensions</td>
+<td align="center">🤖<br><b>Agent Tool Execution</b><br>Controls browsers and computers, calling CUA / OpenClaw A2A / plugins to complete tasks</td>
+<td align="center">🔌<br><b>Plugin Ecosystem</b><br>SDK + plugin marketplace for online game companionship, social media interaction, livestream interaction, and smart home integrations</td>
 <td align="center">🌐<br><b>14+ AI Providers</b><br>OpenAI / Gemini / Qwen / DeepSeek and more, with free models out of the box</td>
-<td align="center">💬<br><b>Proactive Chat</b><br>24/7 ambient awareness: screen understanding, social media trends, personal feeds, music & memes — she initiates conversations with you</td>
 <td align="center">🏪<br><b>UGC Workshop</b><br>Upload and share custom characters, models, and voice packs via Steam Workshop</td>
 </tr>
 </table>
@@ -77,7 +69,7 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 * **Creators:** Artists, Live2D/3D modelers, voice actors, writers — you give "her" a soul.
 * **Dreamers:** Your feedback and advocacy are invaluable contributions.
 
-**Discord**: [Join Us](https://discord.gg/5kgHfepNJr) | **QQ Group**: [1022939659](https://qm.qq.com/q/HxeaMdSkQW)
+**Discord**: [Join Us](https://discord.gg/5kgHfepNJr) | **QQ Group**: 995414391
 
 ## Quick Start
 
@@ -417,7 +409,7 @@ uv run python agent_server.py
 # 5. Visit http://localhost:48911 to configure API Key and start using
 ```
 
-Developers are encouraged to join QQ group 1022939659.
+Developers are encouraged to join QQ group 995414391.
 
 </details>
 
@@ -429,7 +421,7 @@ Developers are encouraged to join QQ group 1022939659.
 
 Configure third-party AI services for additional features:
 
-- **Core API** (real-time voice conversation): Must support Realtime API. Recommended: *Gemini*, *OpenAI*, *StepFun* or *Alibaba Cloud*.
+- **Core API** (real-time voice conversation): Must support Realtime API. Recommended: *Alibaba Cloud*.
 - **Assist API** (memory/emotion/vision): Supports standard ChatCompletion interface. 14+ providers available.
 
 Visit `http://localhost:48911/api_key` to configure directly through the Web interface.
@@ -438,7 +430,7 @@ Visit `http://localhost:48911/api_key` to configure directly through the Web int
 
 #### Modifying Character Persona
 
-- Access `http://localhost:48911/chara_manager` to enter the character editing page. The default companion preset name is `XiaoTian`; it's recommended to directly modify the name and add or change basic persona items one by one.
+- Access `http://localhost:48911/character_card_manager` to enter the character editing page. The default companion preset name is `XiaoTian`; it's recommended to directly modify the name and add or change basic persona items one by one.
 
 - Advanced persona settings include **Live2D/VRM/MMD model settings** and **voice settings**. To change the **Avatar model**, first copy the model directory to the `static` folder. From advanced settings, enter the model management interface to switch models and adjust position/size by dragging and scrolling. To change the **character voice**, prepare a continuous, clean voice recording of about 5 seconds. Enter the voice clone page through advanced settings and upload the recording.
 
@@ -474,8 +466,9 @@ N.E.K.O/
 │   └── 📁 cua/                  # Computer Use Agent subsystem
 ├── 📁 config/                   # ⚙️ Configuration management
 │   ├── api_providers.json       # API provider configuration
-│   ├── prompts_chara.py         # Character prompts
-│   └── prompts_sys.py           # System prompts
+│   └── 📁 prompts/              # Character, system, and feature prompts
+│       ├── prompts_chara.py     # Character prompts
+│       └── prompts_sys.py       # System prompts
 ├── 📁 main_logic/               # 🔧 Core modules
 │   ├── core.py                  # Core dialogue module
 │   ├── cross_server.py          # Cross-server communication
@@ -483,7 +476,7 @@ N.E.K.O/
 │   ├── omni_offline_client.py   # Text API client (ChatCompletion)
 │   └── tts_client.py            # 🔊 TTS engine adapter
 ├── 📁 main_routers/             # 🌐 API routers (14 routes)
-├── 📁 memory/                   # 🧠 Three-tier memory system
+├── 📁 memory/                   # 🧠 Five-dimensional memory system (partial examples)
 │   ├── facts/                   # Fact memory
 │   ├── reflection/              # Reflection memory
 │   └── persona/                 # Persona memory
@@ -518,6 +511,29 @@ v0.8: Memory-related features, OpenClaw-like functionality. Expected: March 2026
 v0.9: Multi-system support (Linux, mobile). N.E.K.O. Network launch. Expected: April 2026.
 
 v1.0: Focus on in-house large models and agent systems. Expected: June 2026.
+
+### Telemetry
+
+N.E.K.O. ships with **anonymous LLM-token usage telemetry enabled by default** so we can track version compatibility, model-usage distribution, and error rates. We believe shipping a product needs data — but we believe even more strongly that nothing should be collected behind your back.
+
+**One-line opt-out**: set the environment variable `DO_NOT_TRACK=1` (or `NEKO_DO_NOT_TRACK=1`). Telemetry is disabled immediately, no rebuild needed. We follow the [Console Do Not Track](https://consoledonottrack.com/) open convention.
+
+**What we do / do not collect**:
+
+| ✅ Collected | ❌ Never collected |
+| --- | --- |
+| LLM token usage (prompt / cached / completion) | Conversation content, text, voice, images |
+| Model name, call type (`conversation` / `memory` / …) | Username, API key, GitHub ID |
+| Call counts, error counts | IP address, geolocation, MAC, hardware serial |
+| App version, A/B branch, locale, timezone, distribution channel (`source` / `release` / `steam`) | File paths, cookies, browser fingerprints |
+| Pseudonymous device identifier — primary: `SHA256(OS_machine_id ‖ namespace)`; fallback: `SHA256(uuid.getnode() ‖ install_path ‖ namespace)`. During the migration window, both new and legacy IDs are sent so the server can fold cohorts | Any PII that could be traced back to a person |
+| **Whenever the Steamworks SDK can initialize at runtime AND you are signed into the Steam client**: Steam64 user ID (the public numeric ID visible in your Steam profile URL) | Any other account-system IDs (GitHub / Google / OpenAI / …) |
+
+> **About the pseudonymous device identifier**: one-way SHA-256, irreversible, contains no user data. The same machine (same OS install) reproduces the same identifier, so under GDPR / PIPL it counts as a *pseudonymous identifier*, not fully anonymous data. Used only for deduplicated DAU counting and version-compatibility attribution.
+>
+> **About Steam64**: this is the public numeric ID the Steam client exposes to any third-party SDK once you are signed in (the trailing number in your Steam profile URL is exactly it). It contains no email, phone number, or real name, but it is stable across sessions. **The actual trigger condition follows the code, not the distribution label**: [`app/main_server.py`](app/main_server.py) unconditionally calls `initialize_steamworks()` at startup, and `_get_telemetry_steam_user_id()` in [`utils/token_tracker.py`](utils/token_tracker.py) reports any non-zero Steam ID regardless of whether the distribution channel is `source`, `release`, or `steam`. The typical case is a Steam release build, but a source checkout that has the `steamworks` Python package installed, keeps `steam_appid.txt` in place, and runs while signed into Steam will also send Steam64. **If you do not want it sent: (1) the safest path is `DO_NOT_TRACK=1` to disable everything; (2) sign out of Steam; (3) source users can uninstall the `steamworks` package or remove `steam_appid.txt` from the working directory.**
+
+Full implementation and wire protocol live in [`utils/token_tracker.py`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/utils/token_tracker.py) and [`local_server/telemetry_server/README.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/local_server/telemetry_server/README.md): HMAC-SHA256 signing, ±5 min replay-protection window, sliding-window rate limit (120 req/h/device), append-only storage. Each server process reports at most ~once per 60 seconds (shares the same throttling timer as local disk-flush) — no impact on the hot path.
 
 </details>
 

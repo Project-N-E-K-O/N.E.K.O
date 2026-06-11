@@ -1,5 +1,5 @@
 /**
- * 角色保留字段加载工具（供 chara_manager.js / steam_workshop_manager.js 共用）。
+ * 角色保留字段加载工具（供 chara_manager.js / character_card_manager.js 共用）。
  *
  * 依赖：无外部依赖。需在使用方之前通过 <script> 引入。
  *
@@ -19,7 +19,7 @@ const ReservedFieldsUtils = (() => {
 
     const SYSTEM_RESERVED_FIELDS_FALLBACK = Object.freeze([
         'live2d', 'voice_id', 'system_prompt', 'model_type', 'live3d_sub_type', 'vrm', 'vrm_animation',
-        'lighting', 'vrm_rotation', 'live2d_item_id', '_reserved', 'item_id', 'idleAnimation', 'idleAnimations',
+        'lighting', 'vrm_rotation', 'live2d_item_id', 'live2d_idle_animation', '_reserved', '_field_order', 'item_id', 'idleAnimation', 'idleAnimations',
         'mmd', 'mmd_animation', 'mmd_idle_animation', 'mmd_idle_animations'
     ]);
 
@@ -27,7 +27,7 @@ const ReservedFieldsUtils = (() => {
         '原始数据', '文件路径', '创意工坊物品ID',
         'description', 'tags', 'name',
         '描述', '标签', '关键词',
-        '_reserved', 'item_id', 'idleAnimation', 'idleAnimations'
+        '_reserved', '_field_order', 'item_id', 'idleAnimation', 'idleAnimations'
     ]);
 
     const ALL_RESERVED_FIELDS_FALLBACK = Object.freeze(

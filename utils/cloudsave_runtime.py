@@ -20,6 +20,7 @@ from typing import Any
 from config import CHARACTER_RESERVED_FIELDS, DEFAULT_CONFIG_DATA
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from utils.file_utils import atomic_write_json
+from utils.storage_path_rewrite import rebase_runtime_bound_workshop_config_paths
 
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,8 @@ ROOT_MODE_BOOTSTRAP_IMPORTING = "bootstrap_importing"
 ROOT_MODE_BOOTSTRAP_READONLY = "bootstrap_readonly"
 ROOT_MODE_DEFERRED_INIT = "deferred_init"
 ROOT_MODE_MAINTENANCE_READONLY = "maintenance_readonly"
+CLOUDSAVE_DISABLED_ENV = "NEKO_CLOUDSAVE_DISABLED"
+CLOUDSAVE_DISABLED_LOCAL_STATE_UNAVAILABLE = "local_state_unavailable"
 
 WRITE_BLOCKING_MODES = frozenset(
     {
@@ -102,6 +105,7 @@ LEGACY_RUNTIME_DIR_NAMES = (
     "mmd",
     "workshop",
     "character_cards",
+    "card_faces",
     "cloudsave",
     "cloudsave_backups",
     ".cloudsave_staging",
@@ -131,6 +135,7 @@ RUNTIME_ASSET_DIR_NAMES = (
     "mmd",
     "workshop",
     "character_cards",
+    "card_faces",
 )
 
 _cloud_apply_lock_handle = None
@@ -190,10 +195,33 @@ def _assert_deadline_not_exceeded(
 
 def is_cloudsave_provider_available(config_manager) -> bool:
     """Centralize provider availability so future remote probes only need one hook."""
+    if is_cloudsave_disabled():
+        return False
     override = getattr(config_manager, "cloudsave_provider_available", None)
     if override is None:
         return True
     return bool(override)
+
+
+def cloudsave_disabled_reason() -> str:
+    return str(os.environ.get(CLOUDSAVE_DISABLED_ENV) or "").strip()
+
+
+def is_cloudsave_disabled() -> bool:
+    return bool(cloudsave_disabled_reason())
+
+
+def is_cloudsave_disabled_due_to_local_state_unavailable() -> bool:
+    return cloudsave_disabled_reason() == CLOUDSAVE_DISABLED_LOCAL_STATE_UNAVAILABLE
+
+
+def _raise_cloudsave_disabled(operation: str, *, character_name: str = "") -> None:
+    reason = cloudsave_disabled_reason() or "unknown"
+    raise CloudsaveOperationError(
+        "CLOUDSAVE_PROVIDER_UNAVAILABLE",
+        f"Cloudsave is disabled for this session ({reason}); skipped {operation}.",
+        character_name=character_name,
+    )
 
 
 def build_default_cloudsave_manifest(*, client_id: str = "") -> dict[str, Any]:
@@ -619,6 +647,11 @@ def _runtime_root_has_user_content(root: Path, *, config_manager=None) -> bool:
     return False
 
 
+def runtime_root_has_user_content(root: Path, *, config_manager=None) -> bool:
+    """Public wrapper for detecting user-owned runtime data in a storage root."""
+    return _runtime_root_has_user_content(root, config_manager=config_manager)
+
+
 def _is_ignorable_runtime_entry(path: Path) -> bool:
     name = path.name
     if name == ".gitkeep":
@@ -1015,6 +1048,12 @@ def _stage_merged_runtime_configs(config_manager, *, source_root: Path, target_r
         if source_payload is None and target_payload is None:
             continue
         merged_payload = _deep_merge_json_dicts(source_payload, target_payload)
+        if filename == "workshop_config.json":
+            merged_payload = rebase_runtime_bound_workshop_config_paths(
+                merged_payload,
+                source_root=source_root,
+                target_root=target_root,
+            )
         atomic_write_json(config_dir / filename, merged_payload, ensure_ascii=False, indent=2)
 
 
@@ -1339,11 +1378,18 @@ def _derive_binding_asset_display_name(model_ref: str) -> str:
 
 
 def _collect_binding_live2d_roots(config_manager) -> list[Path]:
+    get_live2d_lookup_roots = getattr(config_manager, "get_live2d_lookup_roots", None)
+    if callable(get_live2d_lookup_roots):
+        try:
+            return [Path(candidate) for candidate in get_live2d_lookup_roots(prefer_writable=True)]
+        except Exception:
+            pass
+
     roots: list[Path] = []
     seen_roots: set[str] = set()
     for candidate in (
-        getattr(config_manager, "readable_live2d_dir", None),
         getattr(config_manager, "live2d_dir", None),
+        getattr(config_manager, "readable_live2d_dir", None),
     ):
         if not candidate:
             continue
@@ -1941,7 +1987,7 @@ def _derive_character_binding_summary(
 
     fallback_model_ref = ""
     if asset_state != "ready" and binding_model_type != "live2d":
-        fallback_model_ref = "mao_pro/mao_pro.model3.json"
+        fallback_model_ref = "yui-origin/yui-origin.model3.json"
 
     return {
         "character_name": character_name,
@@ -2635,7 +2681,8 @@ def _merge_character_summary_item(
 def _build_cloudsave_summary_state(
     config_manager,
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
-    bootstrap_local_cloudsave_environment(config_manager)
+    if not is_cloudsave_disabled():
+        bootstrap_local_cloudsave_environment(config_manager)
 
     characters_payload = config_manager.load_characters()
     local_character_map = characters_payload.get("猫娘") or {}
@@ -2727,6 +2774,8 @@ def _assert_single_character_name_safe(character_name: str, *, context: str) -> 
 
 
 def export_cloudsave_character_unit(config_manager, character_name: str, *, overwrite: bool = False) -> dict[str, Any]:
+    if is_cloudsave_disabled():
+        _raise_cloudsave_disabled("single_character_upload", character_name=character_name)
     bootstrap_local_cloudsave_environment(config_manager)
     _assert_single_character_name_safe(character_name, context="single_character_upload")
 
@@ -2922,6 +2971,8 @@ def import_cloudsave_character_unit(
     overwrite: bool = False,
     backup_before_overwrite: bool = True,
 ) -> dict[str, Any]:
+    if is_cloudsave_disabled():
+        _raise_cloudsave_disabled("single_character_download", character_name=character_name)
     bootstrap_local_cloudsave_environment(config_manager)
     _assert_single_character_name_safe(character_name, context="single_character_download")
 
@@ -3062,17 +3113,68 @@ def _collect_memory_stage_entries(
     return staged_entries
 
 
+def _managed_target_relative_path(config_manager, target_path: Path) -> Path:
+    normalized_target = Path(target_path).expanduser().resolve(strict=False)
+    runtime_root = Path(config_manager.app_docs_dir).expanduser().resolve(strict=False)
+    anchor_root = Path(getattr(config_manager, "anchor_root", config_manager.app_docs_dir)).expanduser().resolve(strict=False)
+
+    candidate_roots = [("runtime", runtime_root)]
+    if anchor_root != runtime_root:
+        candidate_roots.append(("anchor", anchor_root))
+    candidate_roots.sort(key=lambda item: len(item[1].parts), reverse=True)
+
+    for scope, root in candidate_roots:
+        try:
+            relative_path = normalized_target.relative_to(root)
+        except ValueError:
+            continue
+        return Path(scope) / relative_path
+
+    raise ValueError(f"unmanaged cloudsave backup target: {target_path}")
+
+
+def _resolve_managed_target_path(config_manager, relative_path: str) -> Path:
+    normalized_relative_path = str(relative_path or "").strip().replace("\\", "/")
+    if not normalized_relative_path:
+        raise ValueError("managed backup relative path is empty")
+
+    parts = Path(normalized_relative_path)
+    if not parts.parts or parts.is_absolute() or ".." in parts.parts:
+        raise ValueError("managed backup relative path is invalid")
+
+    scope = parts.parts[0]
+    suffix = Path(*parts.parts[1:]) if len(parts.parts) > 1 else Path()
+    if scope == "anchor":
+        root = Path(getattr(config_manager, "anchor_root", config_manager.app_docs_dir))
+    elif scope == "runtime":
+        root = Path(config_manager.app_docs_dir)
+    else:
+        # Backward compatibility for backups created before dual-root metadata was introduced.
+        root = Path(config_manager.app_docs_dir)
+        suffix = Path(normalized_relative_path)
+
+    resolved_root = root.expanduser().resolve(strict=False)
+    candidate = (root / suffix).expanduser().resolve(strict=False)
+    try:
+        candidate.relative_to(resolved_root)
+    except ValueError as exc:
+        raise ValueError("managed backup relative path escapes storage root") from exc
+    return candidate
+
+
 def _build_backup_path(config_manager, backup_root: Path, target_path: Path) -> Path:
-    return backup_root / target_path.relative_to(config_manager.app_docs_dir)
+    return backup_root / _managed_target_relative_path(config_manager, target_path)
 
 
 def _snapshot_existing_targets(config_manager, backup_root: Path, targets: set[Path]) -> list[dict[str, Any]]:
     backup_records: list[dict[str, Any]] = []
     for target_path in sorted(targets, key=lambda path: (len(path.parts), str(path))):
+        relative_path = _managed_target_relative_path(config_manager, target_path)
         record = {
             "target": target_path,
             "backup": None,
             "is_dir": target_path.is_dir(),
+            "relative_path": str(relative_path).replace("\\", "/"),
         }
         if target_path.exists():
             backup_path = _build_backup_path(config_manager, backup_root, target_path)
@@ -3117,7 +3219,7 @@ def _write_operation_backup_metadata(
         "character_name": character_name,
         "targets": [
             {
-                "relative_path": str(record["target"].relative_to(config_manager.app_docs_dir)).replace("\\", "/"),
+                "relative_path": str(record.get("relative_path") or ""),
                 "had_backup": record.get("backup") is not None,
                 "is_dir": bool(record.get("is_dir", False)),
             }
@@ -3142,7 +3244,7 @@ def restore_cloudsave_operation_backup(config_manager, backup_root: str | Path) 
         relative_path = str(target.get("relative_path") or "").strip().replace("\\", "/")
         if not relative_path:
             continue
-        runtime_target = Path(config_manager.app_docs_dir) / relative_path
+        runtime_target = _resolve_managed_target_path(config_manager, relative_path)
         backup_path = backup_root_path / relative_path
         backup_records.append(
             {
@@ -3277,6 +3379,8 @@ def export_local_cloudsave_snapshot(
     deadline_monotonic: float | None = None,
 ) -> dict[str, Any]:
     """Export the current local runtime truth into cloudsave/ with manifest-last semantics."""
+    if is_cloudsave_disabled():
+        _raise_cloudsave_disabled("local_cloudsave_export")
     bootstrap_local_cloudsave_environment(config_manager)
 
     with cloud_apply_fence(
@@ -3468,6 +3572,8 @@ def import_local_cloudsave_snapshot(
     use_cloud_apply_fence: bool = True,
 ) -> dict[str, Any]:
     """Import the current local cloudsave snapshot back into runtime truth with rollback."""
+    if is_cloudsave_disabled():
+        _raise_cloudsave_disabled("local_cloudsave_import")
     bootstrap_local_cloudsave_environment(config_manager)
     fence_scope = (
         cloud_apply_fence(
@@ -3700,6 +3806,17 @@ def save_cloudsave_manifest(config_manager, data: dict[str, Any]) -> None:
     atomic_write_json(config_manager.cloudsave_manifest_path, data, ensure_ascii=False, indent=2)
 
 
+def _ensure_local_state_directory_or_raise(config_manager, context: str) -> None:
+    if config_manager.ensure_local_state_directory():
+        return
+    if hasattr(config_manager, "_raise_local_state_directory_error"):
+        config_manager._raise_local_state_directory_error(context)
+    diagnostic = getattr(config_manager, "_last_local_state_directory_error", None)
+    if diagnostic is not None:
+        raise diagnostic
+    raise OSError("failed to ensure local state directory")
+
+
 def ensure_cloudsave_manifest(config_manager, *, preserve_existing_client_id: bool = False) -> dict[str, Any]:
     config_manager.ensure_cloudsave_structure()
     cloud_state = config_manager.load_cloudsave_local_state()
@@ -3747,13 +3864,60 @@ def ensure_cloudsave_manifest(config_manager, *, preserve_existing_client_id: bo
 
 def bootstrap_local_cloudsave_environment(config_manager) -> dict[str, Any]:
     """Initialize phase-0 local cloudsave skeleton and state files."""
-    legacy_import = import_legacy_runtime_root_if_needed(config_manager)
+    if is_cloudsave_disabled():
+        return {
+            "disabled": True,
+            "disabled_reason": cloudsave_disabled_reason(),
+            "root_state": config_manager.build_default_root_state(),
+            "cloudsave_local_state": config_manager.build_default_cloudsave_local_state(client_id=""),
+            "manifest": build_default_cloudsave_manifest(client_id=""),
+            "legacy_import": {
+                "migrated": False,
+                "source": "",
+                "copied_paths": [],
+                "backup_path": "",
+                "repair_reason": "",
+                "result": "cloudsave_disabled",
+            },
+        }
+
+    _ensure_local_state_directory_or_raise(config_manager, "preparing local cloudsave state")
+
     if not config_manager.ensure_cloudsave_structure():
         raise OSError("failed to ensure cloudsave directory structure")
 
     config_manager.ensure_cloudsave_state_files()
 
     root_state = config_manager.load_root_state()
+    if str(root_state.get("mode") or ROOT_MODE_NORMAL) == ROOT_MODE_DEFERRED_INIT:
+        cloud_state = config_manager.load_cloudsave_local_state()
+        cloud_changed = False
+        if not cloud_state.get("client_id"):
+            cloud_state["client_id"] = config_manager.build_default_cloudsave_local_state()["client_id"]
+            cloud_changed = True
+        next_seq = int(cloud_state.get("next_sequence_number") or 0)
+        if next_seq < 1:
+            cloud_state["next_sequence_number"] = 1
+            cloud_changed = True
+        if cloud_changed:
+            config_manager.save_cloudsave_local_state(cloud_state)
+
+        manifest = ensure_cloudsave_manifest(config_manager, preserve_existing_client_id=True)
+        return {
+            "root_state": root_state,
+            "cloudsave_local_state": config_manager.load_cloudsave_local_state(),
+            "manifest": manifest,
+            "legacy_import": {
+                "migrated": False,
+                "source": "",
+                "copied_paths": [],
+                "backup_path": "",
+                "repair_reason": "",
+                "result": "recovery_required",
+            },
+        }
+
+    legacy_import = import_legacy_runtime_root_if_needed(config_manager)
     root_state, recovered_stale_mode = _recover_stale_write_blocking_mode(config_manager, root_state)
     root_changed = False
     app_root = str(config_manager.app_docs_dir)
@@ -3811,6 +3975,12 @@ def get_root_mode(config_manager) -> str:
     return str(state.get("mode") or ROOT_MODE_NORMAL)
 
 
+def should_write_root_mode_normal_after_startup(root_state: dict[str, Any] | None) -> bool:
+    """Return True only when startup bootstrap has already settled back to normal mode."""
+    state = root_state if isinstance(root_state, dict) else {}
+    return str(state.get("mode") or ROOT_MODE_NORMAL) == ROOT_MODE_NORMAL
+
+
 def set_root_mode(config_manager, mode: str, **updates: Any) -> dict[str, Any]:
     state = get_root_state(config_manager)
     state["mode"] = str(mode or ROOT_MODE_NORMAL)
@@ -3826,6 +3996,8 @@ def is_write_fence_active(config_manager) -> bool:
 
 
 def assert_cloudsave_writable(config_manager, *, operation: str = "write", target: str = "") -> None:
+    if is_cloudsave_disabled_due_to_local_state_unavailable():
+        return
     mode = get_root_mode(config_manager)
     if mode in WRITE_BLOCKING_MODES:
         raise MaintenanceModeError(mode, operation=operation, target=target)
@@ -3952,9 +4124,39 @@ def _process_holds_cloud_apply_lock() -> bool:
     return _cloud_apply_lock_handle is not None or _cloud_apply_lock_file is not None
 
 
+def _should_preserve_write_blocking_mode(config_manager, root_state: dict[str, Any]) -> bool:
+    current_mode = str(root_state.get("mode") or ROOT_MODE_NORMAL)
+    if current_mode == ROOT_MODE_DEFERRED_INIT:
+        # 恢复态必须显式交给存储引导流程处理，不能在启动 bootstrap 里静默放行为 normal。
+        return True
+
+    if current_mode != ROOT_MODE_MAINTENANCE_READONLY:
+        return False
+
+    # 真相源是 storage_migration.json 的 pending 状态：迁移真在跑就保留 readonly，
+    # 否则视为孤儿态自愈。``last_migration_result`` 字段（含 ``restart_pending:``
+    # 前缀）只是描述上一次操作意图，不该被当作"还在进行中"的硬证据——marker
+    # 在 launcher 接力跑完迁移时才会被覆盖，任何让 launcher 跑不到那一步的事件
+    # （shutdown fire-and-forget 后 launcher 被绕过 / 半途强杀 / 迁移文件已被
+    # 善后删除）都会让 marker 残留，配合旧逻辑就把进程永久钉在 readonly 上、
+    # memory server 所有写盘静默失败。
+    try:
+        from utils.storage_migration import is_storage_migration_pending, load_storage_migration
+
+        migration_payload = load_storage_migration(config_manager)
+    except Exception as exc:
+        logger.warning("failed to load storage migration while preserving write-blocking mode: %s", exc)
+        return True
+
+    return bool(migration_payload) and is_storage_migration_pending(migration_payload)
+
+
 def _recover_stale_write_blocking_mode(config_manager, root_state: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     current_mode = str(root_state.get("mode") or ROOT_MODE_NORMAL)
     if current_mode not in WRITE_BLOCKING_MODES:
+        return root_state, False
+
+    if _should_preserve_write_blocking_mode(config_manager, root_state):
         return root_state, False
 
     if _process_holds_cloud_apply_lock():
@@ -3976,6 +4178,8 @@ def _recover_stale_write_blocking_mode(config_manager, root_state: dict[str, Any
 @contextmanager
 def cloud_apply_fence(config_manager, *, mode: str = ROOT_MODE_MAINTENANCE_READONLY, reason: str = ""):
     """Acquire the global cloud apply lock and switch root_state into maintenance."""
+    _ensure_local_state_directory_or_raise(config_manager, "entering cloud_apply_fence")
+
     previous_state = get_root_state(config_manager)
     previous_mode = str(previous_state.get("mode") or ROOT_MODE_NORMAL)
     if not acquire_cloud_apply_lock(config_manager):

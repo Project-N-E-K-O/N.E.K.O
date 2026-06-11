@@ -2,9 +2,11 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { deletePlugin } from '@/api/plugins'
-import { packPluginCli } from '@/api/pluginCli'
+import { buildPluginCli } from '@/api/pluginCli'
 import { usePluginStore } from '@/stores/plugin'
 import type { PluginListAction, PluginMeta } from '@/types/api'
+import { resolveLocalizedText } from '@/utils/i18nLabel'
+import { openExternalUrl } from '@/utils/openExternal'
 
 type PluginListContextPlugin = PluginMeta & {
   status?: string
@@ -27,21 +29,17 @@ const BUILTIN_ACTION_IDS = [
   'open_logs',
 ] as const
 
-function replacePluginTokens(value: string, pluginId: string): string {
-  return value.split('{plugin_id}').join(pluginId)
-}
-
 export function usePluginListContextActions() {
   const router = useRouter()
   const pluginStore = usePluginStore()
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
 
+  // status === 'disabled' 现在只出现在 extension 上（extension 仍由
+  // enable_extension / disable_extension 两个按钮显式切换）。非 extension
+  // 的 runtime_enabled=false 已不再被前端提升成 disabled 状态，统一显示成
+  // stopped —— 详见 stores/plugin.ts pluginsWithStatus。
   function isRunning(plugin: PluginListContextPlugin): boolean {
     return plugin.status === 'running'
-  }
-
-  function isDisabled(plugin: PluginListContextPlugin): boolean {
-    return plugin.status === 'disabled'
   }
 
   function resolveBuiltinActions(plugin: PluginListContextPlugin): PluginListAction[] {
@@ -58,7 +56,7 @@ export function usePluginListContextActions() {
       })
       actions.push(
         {
-          id: 'pack',
+          id: 'build',
           kind: 'builtin',
         },
         {
@@ -71,7 +69,7 @@ export function usePluginListContextActions() {
       return actions
     }
 
-    if (!isRunning(plugin) && !isDisabled(plugin)) {
+    if (!isRunning(plugin)) {
       actions.push({
         id: 'start',
         kind: 'builtin',
@@ -87,11 +85,10 @@ export function usePluginListContextActions() {
     actions.push({
       id: 'reload',
       kind: 'builtin',
-      disabled: isDisabled(plugin),
     })
     actions.push(
       {
-        id: 'pack',
+        id: 'build',
         kind: 'builtin',
       },
       {
@@ -105,8 +102,11 @@ export function usePluginListContextActions() {
   }
 
   function resolveActionLabel(action: PluginListAction): string {
-    if (action.label) {
-      return action.label
+    // 后端 label 可能是 string 或 locale-keyed dict，统一走 resolveLocalizedText
+    // 解析；解析后为空再回退到内置 action id 对应的 i18n key。
+    const localized = resolveLocalizedText(action.label, locale.value, '')
+    if (localized) {
+      return localized
     }
     switch (action.id) {
       case 'open_detail':
@@ -115,14 +115,18 @@ export function usePluginListContextActions() {
         return t('plugins.config')
       case 'open_logs':
         return t('plugins.logs')
+      case 'open_panel':
+        return t('plugins.ui.panel')
+      case 'open_guide':
+        return t('plugins.ui.guide')
       case 'start':
         return t('plugins.start')
       case 'stop':
         return t('plugins.stop')
       case 'reload':
         return t('plugins.reload')
-      case 'pack':
-        return t('plugins.pack')
+      case 'build':
+        return t('plugins.build')
       case 'delete':
         return t('plugins.delete')
       case 'enable_extension':
@@ -143,9 +147,6 @@ export function usePluginListContextActions() {
     if (action.requires_running && !isRunning(plugin)) {
       return true
     }
-    if (action.id === 'reload' && isDisabled(plugin)) {
-      return true
-    }
     return false
   }
 
@@ -158,6 +159,8 @@ export function usePluginListContextActions() {
       case 'open_detail':
       case 'open_config':
       case 'open_logs':
+      case 'open_panel':
+      case 'open_guide':
         return {
           key: 'navigation',
           label: t('plugins.contextSections.navigation'),
@@ -217,11 +220,15 @@ export function usePluginListContextActions() {
     if (action.confirm_mode === 'hold') {
       return true
     }
-    if (!action.confirm_message) {
+    // confirm_message 与 label 同样是 LocalizedText（string 或 locale-keyed
+    // dict），不能直接传给 ElMessageBox.confirm（它会把 dict 渲染成
+    // "[object Object]"）。解析为空时跳过确认。
+    const message = resolveLocalizedText(action.confirm_message, locale.value, '')
+    if (!message) {
       return true
     }
     try {
-      await ElMessageBox.confirm(action.confirm_message, t('common.confirm'), {
+      await ElMessageBox.confirm(message, t('common.confirm'), {
         type: action.danger ? 'warning' : 'info',
       })
       return true
@@ -252,6 +259,12 @@ export function usePluginListContextActions() {
       case 'open_logs':
         await router.push({ path: `/plugins/${safeId}`, query: { tab: 'logs' } })
         return
+      case 'open_panel':
+        await router.push({ path: `/plugins/${safeId}`, query: { tab: 'panel' } })
+        return
+      case 'open_guide':
+        await router.push({ path: `/plugins/${safeId}`, query: { tab: 'guide' } })
+        return
       case 'start':
         await pluginStore.start(plugin.id)
         ElMessage.success(t('messages.pluginStarted'))
@@ -276,18 +289,18 @@ export function usePluginListContextActions() {
         await pluginStore.reload(plugin.id)
         ElMessage.success(t('messages.pluginReloaded'))
         return
-      case 'pack': {
-        const result = await packPluginCli({
+      case 'build': {
+        const result = await buildPluginCli({
           mode: 'single',
           plugin: plugin.id,
         })
-        const packedItem = result.packed.find(item => item.plugin_id === plugin.id) || result.packed[0]
-        if (!packedItem) {
-          throw new Error(result.failed[0]?.error || t('messages.packFailed'))
+        const builtItem = result.built.find(item => item.plugin_id === plugin.id) || result.built[0]
+        if (!builtItem) {
+          throw new Error(result.failed[0]?.error || t('messages.buildFailed'))
         }
         ElMessage.success(
-          t('messages.pluginPacked', {
-            packageName: resolvePackageDisplayName(packedItem.package_path),
+          t('messages.pluginBuilt', {
+            packageName: resolvePackageDisplayName(builtItem.package_path),
           }),
         )
         return
@@ -331,7 +344,10 @@ export function usePluginListContextActions() {
       return
     }
 
-    const target = typeof action.target === 'string' ? replacePluginTokens(action.target, plugin.id) : ''
+    // 后端 _normalize_plugin_list_action 在 plugin/server/application/plugins/
+    // ui_query_service.py:481 已经把 `{plugin_id}` 占位符替换并 strip 过；
+    // 前端直接消费就行，不再二次替换。
+    const target = typeof action.target === 'string' ? action.target : ''
     if (!target) {
       ElMessage.warning(action.label)
       return
@@ -343,8 +359,14 @@ export function usePluginListContextActions() {
     }
 
     if (action.kind === 'ui' || action.kind === 'url') {
-      const nextTarget = action.open_in === 'same_tab' ? '_self' : '_blank'
-      window.open(target, nextTarget, nextTarget === '_blank' ? 'noopener' : undefined)
+      // _blank 走 openExternalUrl，让 Electron host 把它转发到系统浏览器，
+      // 避免嵌入 webview 没有关闭按钮把用户困住；same_tab 仍是当前窗口
+      // navigation。
+      if (action.open_in === 'same_tab') {
+        window.open(target, '_self')
+      } else {
+        openExternalUrl(target)
+      }
     }
   }
 

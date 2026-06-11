@@ -258,13 +258,16 @@ class VRMManager {
                 this._cursorFollow.init(this);
             }
             // 同步鼠标跟踪启用状态
-            const isEnabled = window.mouseTrackingEnabled !== false;
+            const storedMouseTrackingEnabled = window.mouseTrackingEnabled !== false;
+            const isEnabled = window.nekoYuiGuideFaceForwardLock === true
+                ? false
+                : storedMouseTrackingEnabled;
             console.log(`[VRM] 鼠标跟踪检查: window.mouseTrackingEnabled=${window.mouseTrackingEnabled}, isEnabled=${isEnabled}`);
             if (this._cursorFollow.isEnabled() !== isEnabled) {
                 this._cursorFollow.setEnabled(isEnabled);
             }
             // 同步内部状态
-            this._mouseTrackingEnabled = isEnabled;
+            this._mouseTrackingEnabled = storedMouseTrackingEnabled;
             // CursorFollow 拥有自己的 eyesTarget，旧 _lookAtTarget 不再需要
             return;
         }
@@ -852,7 +855,14 @@ class VRMManager {
 
         // 2) 应用朝向检测（保持和初次加载一致）
         if (window.VRMOrientationDetector && vrm) {
-            const detectedRotation = window.VRMOrientationDetector.detectAndFixOrientation(vrm, null);
+            const versionDefaultRotation = this.core?.vrmVersion === '0.0'
+                ? { x: 0, y: Math.PI, z: 0 }
+                : null;
+            const detectedRotation = window.VRMOrientationDetector.detectAndFixOrientation(
+                vrm,
+                null,
+                { defaultRotation: versionDefaultRotation }
+            );
             window.VRMOrientationDetector.applyRotation(vrm, detectedRotation);
         }
 
@@ -867,7 +877,7 @@ class VRMManager {
 
                 const screenHeight = window.innerHeight;
                 const screenWidth = window.innerWidth;
-                const isMobile = screenWidth <= 768;
+                const isMobile = typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (screenWidth <= 768);
 
                 if (isMobile) {
                     targetScale = Math.max(0.4, Math.min(0.8, screenHeight / 1800));
@@ -902,7 +912,7 @@ class VRMManager {
 
                 const screenHeight = window.innerHeight;
                 const screenWidth = window.innerWidth;
-                const isMobileDevice = screenWidth <= 768;
+                const isMobileDevice = typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (screenWidth <= 768);
 
                 const scaledModelHeight = size.y > 0 ? size.y : 1.5;
                 const targetScreenHeight = screenHeight * 0.45;
@@ -1199,11 +1209,11 @@ class VRMManager {
             this._loadState = 'ready';
             this._isModelReadyForInteraction = true;
 
-            // 首次加载围栏：检查模型是否在屏幕外，如果是则立即校正（不动画）
+            // 首次加载围栏：与拖拽结束共用默认可见像素阈值，避免重启时把允许的半出屏位置拉回屏内。
             if (this.interaction && this.currentModel?.vrm?.scene) {
                 try {
                     const currentPos = this.currentModel.vrm.scene.position.clone();
-                    const correctedPos = this.interaction.clampModelPosition(currentPos, { minVisiblePixels: 300 });
+                    const correctedPos = this.interaction.clampModelPosition(currentPos);
                     if (!currentPos.equals(correctedPos)) {
                         this.currentModel.vrm.scene.position.copy(correctedPos);
                         console.log('[VRM Manager] 首次加载围栏已校正模型位置');
@@ -1620,9 +1630,10 @@ class VRMManager {
     setMouseTrackingEnabled(enabled) {
         this._mouseTrackingEnabled = enabled;
         window.mouseTrackingEnabled = enabled;
+        const effectiveEnabled = enabled && window.nekoYuiGuideFaceForwardLock !== true;
 
         if (this._cursorFollow) {
-            this._cursorFollow.setEnabled(enabled);
+            this._cursorFollow.setEnabled(effectiveEnabled);
         }
     }
 
@@ -1631,6 +1642,9 @@ class VRMManager {
      * @returns {boolean}
      */
     isMouseTrackingEnabled() {
+        if (window.nekoYuiGuideFaceForwardLock === true) {
+            return false;
+        }
         return this._mouseTrackingEnabled !== false;
     }
 

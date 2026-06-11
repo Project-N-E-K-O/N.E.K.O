@@ -146,6 +146,14 @@ class VRMInteraction {
             return;
         }
 
+        const isYuiGuideDragLocked = () => {
+            const body = document.body;
+            return !!(body && (
+                body.classList.contains('yui-guide-home-driver-hidden')
+                || body.classList.contains('yui-taking-over')
+            ));
+        };
+
         // 先清理旧的事件监听器
         this.cleanupDragAndZoom();
 
@@ -153,6 +161,7 @@ class VRMInteraction {
         this.mouseDownHandler = (e) => {
             if (!this.manager._isModelReadyForInteraction) return;
             if (this.checkLocked()) return;
+            if (isYuiGuideDragLocked()) return;
 
             // 如果正在回弹动画，优先取消，避免拖拽冲突
             if (this._snapAnimationFrameId) {
@@ -211,6 +220,17 @@ class VRMInteraction {
         // 2. 鼠标移动 (核心拖拽逻辑)
         this.dragHandler = (e) => {
             if (!this.manager._isModelReadyForInteraction) return;
+            if (isYuiGuideDragLocked()) {
+                if (this.isDragging) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    this.isDragging = false;
+                    this.dragMode = null;
+                    canvas.style.cursor = 'default';
+                    this._restoreButtonPointerEvents();
+                }
+                return;
+            }
             if (this.checkLocked()) {
                 if (this.isDragging) {
                     e.preventDefault();
@@ -320,7 +340,11 @@ class VRMInteraction {
 
                 if (!displaySwitched) {
                     // 拖拽结束后：若超出屏幕范围，执行回弹
-                    await this._snapModelIntoScreen({ animate: true });
+                    const snapped = await this._snapModelIntoScreen({ animate: true });
+                    if (snapped && window.NekoAvatarMultiScreenDragHint &&
+                        typeof window.NekoAvatarMultiScreenDragHint.recordEdgeBounce === 'function') {
+                        window.NekoAvatarMultiScreenDragHint.recordEdgeBounce('vrm');
+                    }
 
                     // 拖动结束后保存位置（包含回弹后的位置）
                     await this._savePositionAfterInteraction();
@@ -992,6 +1016,10 @@ class VRMInteraction {
 
             await this._snapModelIntoScreen({ animate: true });
             await this._savePositionAfterInteraction();
+            if (window.NekoAvatarMultiScreenDragHint &&
+                typeof window.NekoAvatarMultiScreenDragHint.markDisplaySwitchSuccess === 'function') {
+                window.NekoAvatarMultiScreenDragHint.markDisplaySwitchSuccess('vrm');
+            }
 
             return true;
         } catch (error) {

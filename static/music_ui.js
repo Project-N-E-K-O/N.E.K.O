@@ -351,6 +351,157 @@
         });
     };
 
+    let musicMountObserver = null;
+    let musicMountRelocationFrame = 0;
+    let musicMountGeometryFrame = 0;
+    let pendingDetachedMusicBar = null;
+
+    function getCompactMusicMountTarget() {
+        const compactMount = document.querySelector('[data-music-player-mount="compact-surface"]');
+        return compactMount instanceof Element ? compactMount : null;
+    }
+
+    function getPreferredMusicMountTarget() {
+        const compactMount = getCompactMusicMountTarget();
+        if (compactMount) return { mountTarget: compactMount, insertBeforeEl: null };
+
+        const reactMount = document.getElementById('music-player-mount');
+        if (reactMount) return { mountTarget: reactMount, insertBeforeEl: null };
+
+        const legacyMount = document.getElementById(MUSIC_CONFIG.dom.containerId);
+        return {
+            mountTarget: legacyMount,
+            insertBeforeEl: legacyMount ? document.getElementById(MUSIC_CONFIG.dom.insertBeforeId) : null
+        };
+    }
+
+    function requestCompactMusicGeometrySync() {
+        if (musicMountGeometryFrame) return;
+        const raf = window.requestAnimationFrame || ((callback) => window.setTimeout(callback, 16));
+        musicMountGeometryFrame = raf(() => {
+            musicMountGeometryFrame = 0;
+            window.dispatchEvent(new CustomEvent('neko:compact-interaction-geometry-refresh'));
+        });
+    }
+
+    function prepareMusicBarHitRegion(musicBar) {
+        if (!musicBar) return;
+        musicBar.setAttribute('data-compact-hit-region', 'true');
+        musicBar.setAttribute('data-compact-hit-region-id', 'music-player');
+        musicBar.setAttribute('data-compact-hit-region-kind', 'music');
+    }
+
+    function mountMusicBar(musicBar) {
+        if (!musicBar) return false;
+        ensureMusicMountObserver();
+        if (musicBar.dataset) delete musicBar.dataset.skipMountRelocation;
+        prepareMusicBarHitRegion(musicBar);
+        const target = getPreferredMusicMountTarget();
+        if (!target || !target.mountTarget) return false;
+        if (musicBar.parentNode === target.mountTarget) {
+            requestCompactMusicGeometrySync();
+            return true;
+        }
+        if (target.insertBeforeEl && target.insertBeforeEl.parentNode === target.mountTarget) {
+            target.mountTarget.insertBefore(musicBar, target.insertBeforeEl);
+        } else {
+            target.mountTarget.appendChild(musicBar);
+        }
+        requestCompactMusicGeometrySync();
+        return true;
+    }
+
+    function removeMusicBarWithoutRelocation(musicBar) {
+        if (!musicBar) return;
+        if (musicBar.dataset) musicBar.dataset.skipMountRelocation = 'true';
+        musicBar.remove();
+        requestCompactMusicGeometrySync();
+    }
+
+    function findMusicBarInNode(node) {
+        if (!(node instanceof Element)) return null;
+        const musicBar = node.id === MUSIC_CONFIG.dom.barId
+            ? node
+            : (node.querySelector ? node.querySelector('#' + MUSIC_CONFIG.dom.barId) : null);
+        if (musicBar && musicBar.dataset && musicBar.dataset.skipMountRelocation === 'true') return null;
+        return musicBar;
+    }
+
+    function isMusicMountMutationNode(node) {
+        if (!(node instanceof Element)) return false;
+        if (node.id === 'music-player-mount' || node.getAttribute('data-music-player-mount') === 'compact-surface') return true;
+        return !!(node.querySelector && node.querySelector('#music-player-mount, [data-music-player-mount="compact-surface"]'));
+    }
+
+    function isMusicMountMutationTarget(node) {
+        if (!(node instanceof Element)) return false;
+        return node.id === 'music-player-mount'
+            || node.getAttribute('data-music-player-mount') === 'compact-surface';
+    }
+
+    function isCompactMusicGeometryMutationTarget(node) {
+        if (!(node instanceof Element)) return false;
+        const compactMusicMount = node.closest && node.closest('[data-music-player-mount="compact-surface"]');
+        if (!compactMusicMount) return false;
+        return node.classList.contains('music-bar-volume-container')
+            || node.classList.contains('music-bar-volume-slider-wrapper');
+    }
+
+    function scheduleMusicBarRelocation(detachedMusicBar) {
+        if (detachedMusicBar) pendingDetachedMusicBar = detachedMusicBar;
+        if (musicMountRelocationFrame) return;
+        const raf = window.requestAnimationFrame || ((callback) => window.setTimeout(callback, 16));
+        musicMountRelocationFrame = raf(() => {
+            musicMountRelocationFrame = 0;
+            const musicBar = pendingDetachedMusicBar || document.getElementById(MUSIC_CONFIG.dom.barId);
+            pendingDetachedMusicBar = null;
+            mountMusicBar(musicBar);
+        });
+    }
+
+    function ensureMusicMountObserver() {
+        if (musicMountObserver || typeof MutationObserver === 'undefined' || !document.body) return;
+        musicMountObserver = new MutationObserver((mutations) => {
+            for (const mutation of mutations) {
+                if (mutation.type === 'attributes' && isMusicMountMutationTarget(mutation.target)) {
+                    scheduleMusicBarRelocation();
+                    return;
+                }
+                if (mutation.type === 'attributes' && isCompactMusicGeometryMutationTarget(mutation.target)) {
+                    requestCompactMusicGeometrySync();
+                    return;
+                }
+                for (const node of mutation.removedNodes) {
+                    const removedBar = findMusicBarInNode(node);
+                    if (removedBar) {
+                        scheduleMusicBarRelocation(removedBar);
+                        return;
+                    }
+                    if (isMusicMountMutationNode(node)) {
+                        scheduleMusicBarRelocation();
+                        return;
+                    }
+                }
+                for (const node of mutation.addedNodes) {
+                    if (isMusicMountMutationNode(node)) {
+                        scheduleMusicBarRelocation();
+                        return;
+                    }
+                }
+            }
+        });
+        musicMountObserver.observe(document.body, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: [
+                'class',
+                'data-music-player-mount',
+                'style'
+            ]
+        });
+    }
+
     const bindMirrorBarControls = (musicBar) => {
         const apBtn = musicBar.querySelector('.music-bar-play');
         const closeBtn = musicBar.querySelector('.music-bar-close');
@@ -375,7 +526,10 @@
 
         if (volumeBtn) volumeBtn.onclick = (e) => {
             e.preventDefault(); e.stopPropagation();
-            if (volumeContainer) volumeContainer.classList.toggle('expanded');
+            if (volumeContainer) {
+                volumeContainer.classList.toggle('expanded');
+                requestCompactMusicGeometrySync();
+            }
         };
 
         if (volumeSliderWrapper && volumeSlider) {
@@ -495,6 +649,7 @@
             const closeOnOutside = (e) => {
                 if (volumeContainer.classList.contains('expanded') && !volumeContainer.contains(e.target)) {
                     volumeContainer.classList.remove('expanded');
+                    requestCompactMusicGeometrySync();
                 }
             };
             document.addEventListener('mousedown', closeOnOutside);
@@ -521,20 +676,14 @@
 
         if (firstRender) {
             ensureMusicUiCSS();
-            let mountTarget = document.getElementById('music-player-mount');
-            let insertBeforeEl = null;
-            if (!mountTarget) {
-                mountTarget = document.getElementById(MUSIC_CONFIG.dom.containerId);
-                insertBeforeEl = document.getElementById(MUSIC_CONFIG.dom.insertBeforeId);
-            }
+            const mountTarget = getPreferredMusicMountTarget().mountTarget;
             if (!mountTarget) return;
 
             musicBar = document.createElement('div');
             musicBar.id = MUSIC_CONFIG.dom.barId;
             musicBar.className = 'music-player-bar';
             musicBar.dataset.mirror = 'true';
-            if (insertBeforeEl) mountTarget.insertBefore(musicBar, insertBeforeEl);
-            else mountTarget.appendChild(musicBar);
+            mountMusicBar(musicBar);
 
             const randomColor = MUSIC_CONFIG.themeColors[Math.floor(Math.random() * MUSIC_CONFIG.themeColors.length)];
             musicBar.style.setProperty('--dynamic-random-color', randomColor);
@@ -564,7 +713,7 @@
                 <button type="button" class="music-bar-play" aria-label="Play/Pause" title="Play/Pause">▶</button>
                 <div class="music-bar-volume-container">
                     <button type="button" class="music-bar-volume-btn" aria-label="Volume" title="Volume">🔊</button>
-                    <div class="music-bar-volume-slider-wrapper">
+                    <div class="music-bar-volume-slider-wrapper" data-compact-hit-region="true" data-compact-hit-region-id="music-player:volume" data-compact-hit-region-kind="music-volume">
                         <div class="music-bar-volume-slider">
                             <div class="music-bar-volume-slider-fill"></div>
                             <div class="music-bar-volume-slider-handle"></div>
@@ -577,6 +726,7 @@
             bindMirrorBarControls(musicBar);
         } else {
             musicBar.classList.remove('fading-out');
+            mountMusicBar(musicBar);
         }
 
         // 切歌 / 首次：刷新标题 + 歌手 + 封面
@@ -668,7 +818,7 @@
         }
 
         const removeNow = () => {
-            if (musicBar.parentNode) musicBar.remove();
+            if (musicBar.parentNode) removeMusicBarWithoutRelocation(musicBar);
             mirrorBarTrackSig = null;
             mirrorBarLastState = null;
             mirrorBarDestroyTimer = null;
@@ -893,6 +1043,47 @@
             console.log('[Music UI] 用户正常收听，重置秒关计数');
         }
         consecutiveSkipCount = 0;
+    }
+
+    // 完整播放是用户对"音乐分享"通道最强的正向反馈：让后端把
+    // _proactive_chat_history 里 channel=='music' 的最近条目通道清空，从而停止
+    // 因为"刚刚分享过音乐"而对 music 通道继续做权重衰减惩罚。fire-and-forget。
+    // 去抖按曲目维度：APlayer 同一首 audio 偶尔会重复 fire ended（音源/seek 抖动），
+    // 但两首不同歌秒级连续 ended 是合法事件，不能被全局 timestamp 吞掉。
+    let lastMusicPlayedThroughKey = '';
+    let lastMusicPlayedThroughAt = 0;
+    function notifyMusicPlayedThrough(track) {
+        // 用 filter(Boolean) 把缺失字段挤掉再 join，避免 {url:'',name:'',artist:''}
+        // 拼出"||"这种伪 key 让多首无元数据曲共享去抖钥匙
+        const parts = track ? [track.url, track.name, track.artist].filter(Boolean) : [];
+        const trackKey = parts.join('|');
+        const now = Date.now();
+        if (now - lastMusicPlayedThroughAt < 2000) {
+            // 空 key 时退化到全局 2s 兜底；非空 key 仅在和上次相同时才吞
+            if (!trackKey || trackKey === lastMusicPlayedThroughKey) return;
+        }
+        lastMusicPlayedThroughKey = trackKey;
+        lastMusicPlayedThroughAt = now;
+        const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+        // fire-and-forget：用 async IIFE 包一层，让 getMutationHeaders 能 await
+        // 但不阻塞外层调用方（aplayer 'ended' 回调本身不关心后端是否成功）。
+        (async () => {
+            const playedHeaders = { 'Content-Type': 'application/json' };
+            const sec = window.nekoLocalMutationSecurity;
+            if (sec && typeof sec.getMutationHeaders === 'function') {
+                try { Object.assign(playedHeaders, await sec.getMutationHeaders()); } catch (_) { }
+            }
+            try {
+                await fetch('/api/proactive/music_played_through', {
+                    method: 'POST',
+                    headers: playedHeaders,
+                    body: JSON.stringify({
+                        lanlan_name: lanlanName,
+                        track: track ? { name: track.name, artist: track.artist, url: track.url } : null
+                    })
+                });
+            } catch (_) { /* 后端不可达不影响播放体验 */ }
+        })();
     }
 
     // 全局监听管理
@@ -1126,11 +1317,11 @@
                 if (fullTeardown) {
                     bar.classList.add('fading-out');
                     domRemovalTimer = setTimeout(() => {
-                        bar.remove();
+                        removeMusicBarWithoutRelocation(bar);
                         domRemovalTimer = null;
                     }, 300);
                 } else {
-                    bar.remove();
+                    removeMusicBarWithoutRelocation(bar);
                 }
             }
             clearManagedListeners();
@@ -1230,7 +1421,7 @@
                 }
                 existingBar.__mirrorTeardownCleanups = null;
             }
-            existingBar.remove();
+            removeMusicBarWithoutRelocation(existingBar);
             mirrorBarTrackSig = null;
             mirrorBarLastState = null;
             // 自己升成 owner 后就不再持有"绑定到某个 leader"的状态
@@ -1243,20 +1434,14 @@
 
         // --- 1. DOM 基础架构 ---
         if (isFirstRender) {
-            // 优先挂载到 React 聊天窗口 composer-panel 内的专用挂载点，回退到旧 chat-container
-            let mountTarget = document.getElementById('music-player-mount');
-            let insertBeforeEl = null;
-            if (!mountTarget) {
-                mountTarget = document.getElementById(MUSIC_CONFIG.dom.containerId);
-                insertBeforeEl = document.getElementById(MUSIC_CONFIG.dom.insertBeforeId);
-            }
+            // 优先使用紧凑历史目标，其次 React composer 挂载点，最后回退旧 chat-container。
+            const mountTarget = getPreferredMusicMountTarget().mountTarget;
             if (!mountTarget) return;
 
             musicBar = document.createElement('div');
             musicBar.id = MUSIC_CONFIG.dom.barId;
             musicBar.className = 'music-player-bar';
-            if (insertBeforeEl) mountTarget.insertBefore(musicBar, insertBeforeEl);
-            else mountTarget.appendChild(musicBar);
+            mountMusicBar(musicBar);
 
             const randomColor = MUSIC_CONFIG.themeColors[Math.floor(Math.random() * MUSIC_CONFIG.themeColors.length)];
             musicBar.style.setProperty('--dynamic-random-color', randomColor);
@@ -1286,7 +1471,7 @@
                 <button type="button" class="music-bar-play" aria-label="Play/Pause" title="Play/Pause">▶</button>
                 <div class="music-bar-volume-container">
                     <button type="button" class="music-bar-volume-btn" aria-label="Volume" title="Volume">🔊</button>
-                    <div class="music-bar-volume-slider-wrapper">
+                    <div class="music-bar-volume-slider-wrapper" data-compact-hit-region="true" data-compact-hit-region-id="music-player:volume" data-compact-hit-region-kind="music-volume">
                         <div class="music-bar-volume-slider">
                             <div class="music-bar-volume-slider-fill"></div>
                             <div class="music-bar-volume-slider-handle"></div>
@@ -1299,18 +1484,7 @@
             ensureTitleMarqueeObserver(musicBar);
         } else {
             musicBar.classList.remove('fading-out');
-
-            // Relocate musicBar if a new mount target has appeared
-            let newMountTarget = document.getElementById('music-player-mount');
-            let newInsertBeforeEl = null;
-            if (!newMountTarget) {
-                newMountTarget = document.getElementById(MUSIC_CONFIG.dom.containerId);
-                newInsertBeforeEl = document.getElementById(MUSIC_CONFIG.dom.insertBeforeId);
-            }
-            if (newMountTarget && musicBar.parentNode !== newMountTarget) {
-                if (newInsertBeforeEl) newMountTarget.insertBefore(musicBar, newInsertBeforeEl);
-                else newMountTarget.appendChild(musicBar);
-            }
+            mountMusicBar(musicBar);
         }
 
         // 切歌前，先把上一首卡片标记为"已结束"。必须在 currentPlayingTrack
@@ -1486,6 +1660,7 @@
                 boundPlayer.on('ended', () => {
                     updatePlayBtnState(false);
                     resetSkipCounter();
+                    notifyMusicPlayedThrough(currentPlayingTrack);
                     accumulatedPlaySeconds = 0;
                     lastPlayPosition = 0;
                     const tokenAtEvent = boundPlayer._latestToken;
@@ -1588,6 +1763,7 @@
                     e.preventDefault();
                     e.stopPropagation();
                     volumeContainer.classList.toggle('expanded');
+                    requestCompactMusicGeometrySync();
                 };
 
                 let isDraggingVolume = false;
@@ -1652,6 +1828,7 @@
                 const closeVolumeOnOutsideClick = (e) => {
                     if (volumeContainer.classList.contains('expanded') && !volumeContainer.contains(e.target)) {
                         volumeContainer.classList.remove('expanded');
+                        requestCompactMusicGeometrySync();
                     }
                 };
                 addManagedListener('mousedown', closeVolumeOnOutsideClick);
@@ -1824,7 +2001,7 @@
         } catch (err) {
             if (currentToken !== latestMusicRequestToken) return;
             console.error('[Music UI] 播放器处理异常:', err);
-            if (isFirstRender && musicBar) musicBar.remove();
+            if (isFirstRender && musicBar) removeMusicBarWithoutRelocation(musicBar);
             // 回滚：前面已经发过 emitBarInitialState，但 APlayer 没建起来，
             // 后续事件不会广播，follower 会卡着占位 bar，这里补一条 destroyed
             broadcastBarDestroyed(false);
@@ -2062,7 +2239,22 @@
     window.dispatchEvent(new CustomEvent('music-ui-ready'));
     console.log('[Music UI] 接口已暴露，就绪信号已发送');
 
+    async function syncDomainsAfterStorageBarrier() {
+        if (typeof window.waitForStorageLocationStartupBarrier === 'function') {
+            try {
+                await window.waitForStorageLocationStartupBarrier();
+            } catch (_) {}
+        } else if (window.__nekoStorageLocationStartupBarrier
+            && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
+            try {
+                await window.__nekoStorageLocationStartupBarrier;
+            } catch (_) {}
+        }
+
+        syncDomainsFromBackend();
+    }
+
     // 自动从后端同步音乐源域名到白名单
-    syncDomainsFromBackend();
+    syncDomainsAfterStorageBarrier();
 
 })();

@@ -1,0 +1,65 @@
+from pathlib import Path
+
+
+APP_WEBSOCKET_PATH = Path(__file__).resolve().parents[2] / "static" / "app-websocket.js"
+
+
+def test_response_discarded_visible_in_react_chat():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    assert "function appendAssistantStatusMessage(text)" in source
+    assert "window.reactChatWindowHost.appendMessage({" in source
+    assert "appendAssistantStatusMessage(translatedDiscardMsg);" in source
+
+    helper_block = source.split("function appendAssistantStatusMessage(text)", 1)[1].split(
+        "function websocketTraceEnabled()",
+        1,
+    )[0]
+    assert helper_block.index("window.reactChatWindowHost.appendMessage({") < helper_block.index(
+        "document.createElement('div')"
+    )
+    assert "status: 'failed'" in helper_block
+    assert "window.currentGeminiMessage" not in helper_block
+
+    response_discarded_block = source.split("// -------- response_discarded --------", 1)[1].split(
+        "// -------- user_transcript --------",
+        1,
+    )[0]
+    assert "document.createElement('div')" not in response_discarded_block
+    assert "appendChild(messageDiv)" not in response_discarded_block
+
+
+def test_goodbye_blocks_stale_audio_session_started():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    stale_audio_guard = source.split("// -------- session_started --------", 1)[1].split(
+        "console.log(window.t('console.sessionStartedReceived')",
+        1,
+    )[0]
+
+    assert "response.input_mode !== 'text'" in stale_audio_guard
+    assert "window.isNekoGoodbyeModeActive()" in stale_audio_guard
+    assert "window.cancelPendingSessionStart('Voice start cancelled by goodbye');" in stale_audio_guard
+    assert "S.socket.send(JSON.stringify({ action: 'end_session' }));" in stale_audio_guard
+    assert "return;" in stale_audio_guard
+
+
+def test_ws_open_resyncs_goodbye_state_and_skips_regular_greeting():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    onopen_greeting_block = source.split("// ── 首次连接 / 切换角色：标记 greeting 意图", 1)[1].split(
+        "// ── game-window-state 重连兜底",
+        1,
+    )[0]
+
+    assert "window.isNekoGoodbyeModeActive()" in onopen_greeting_block
+    assert "window.__nekoGoodbyeSilentState" in onopen_greeting_block
+    assert "pendingGoodbyeState.pending === true" in onopen_greeting_block
+    assert "action: 'goodbye_state'" in onopen_greeting_block
+    assert "active: !!goodbyeSyncOnOpen.active" in onopen_greeting_block
+    assert "reason: 'ws-open-goodbye'" in onopen_greeting_block
+    assert "pendingGoodbyeState.active === true" in onopen_greeting_block
+    assert "reason: 'ws-open-goodbye-from-sync'" in onopen_greeting_block
+    assert "pending: false" in onopen_greeting_block
+    assert "if (goodbyeActiveOnOpen || (goodbyeSyncOnOpen && goodbyeSyncOnOpen.active))" in onopen_greeting_block
+    assert "_sendGreetingCheckIfReady();" in onopen_greeting_block

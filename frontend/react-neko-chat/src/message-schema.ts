@@ -48,6 +48,44 @@ const composerAttachmentSchema = z.object({
   alt: z.string().optional(),
 });
 
+// `full` is the frozen legacy surface (full chat window) revived alongside the
+// active `compact` floating bar and `minimized` ball. The host dispatcher routes
+// `full` to the isolated FullChatSurface; `compact`/`minimized` stay on the
+// active App. Keep all three valid at the parse boundary.
+const chatSurfaceModeSchema = z.enum(['full', 'compact', 'minimized']);
+const compactChatStateSchema = z.enum(['default', 'options', 'input']);
+
+const galgameOptionSchema = z.object({
+  label: z.string().min(1),
+  text: z.string().min(1),
+});
+
+// Generic ChoicePrompt — composer-anchored "AI 给你出几个选项" UI 组件抽象。
+//
+// 当前 source：
+//   - 'galgame'           ：旧路径（galgameOptions / onGalgameOptionSelect 依然
+//                           保留 BC，本框架不替换它，作为渐进迁移目标）
+//   - 'mini_game_invite'  ：mini-game 邀请三选项（accept / decline / later）
+//
+// 未来扩展：
+//   - 'tutorial_step' / 'plugin_action' / ...
+//   - 当需要"对话框 + avatar 旁边同步显示"时，加 placement: 'composer' | 'avatar'
+//     | 'both'，不破坏 wire-format。
+//
+// option.choice 是后端 wire-format 标识符（accept/decline/later 之类），点击
+// 时回传给 onChoiceSelect；UI 显示用 option.label。
+const choiceOptionSchema = z.object({
+  choice: z.string().min(1),  // wire id (accept/decline/later/...)
+  label: z.string().min(1),   // 显示文本
+});
+
+const choicePromptSchema = z.object({
+  source: z.enum(['galgame', 'mini_game_invite']),
+  options: z.array(choiceOptionSchema).min(1),
+  sessionId: z.string().optional(),
+  gameType: z.string().optional(),
+}).nullable();
+
 const avatarInteractionPayloadBaseSchema = z.object({
   interactionId: z.string().min(1),
   target: z.literal('avatar'),
@@ -79,6 +117,39 @@ export const avatarInteractionPayloadSchema = z.discriminatedUnion('toolId', [
   }).strict(),
 ]);
 
+const avatarToolIdSchema = z.enum(['lollipop', 'fist', 'hammer']);
+const avatarToolCursorVariantSchema = z.enum(['primary', 'secondary', 'tertiary']);
+const avatarToolImageKindSchema = z.enum(['cursor', 'icon']);
+
+const avatarToolDescriptorSchema = z.object({
+  id: avatarToolIdSchema,
+  label: z.string().optional(),
+  iconImagePath: z.string().min(1),
+  iconImagePathAlt: z.string().optional(),
+  iconImagePathAlt2: z.string().optional(),
+  cursorImagePath: z.string().min(1),
+  cursorImagePathAlt: z.string().optional(),
+  cursorImagePathAlt2: z.string().optional(),
+  cursorHotspotX: z.number().finite().optional(),
+  cursorHotspotY: z.number().finite().optional(),
+  menuIconScale: z.number().finite().positive().optional(),
+}).strict();
+
+export const avatarToolStatePayloadSchema = z.object({
+  active: z.boolean(),
+  toolId: avatarToolIdSchema.nullable().optional(),
+  variant: avatarToolCursorVariantSchema.optional(),
+  avatarRangeVariant: avatarToolCursorVariantSchema.optional(),
+  outsideRangeVariant: avatarToolCursorVariantSchema.optional(),
+  imageKind: avatarToolImageKindSchema.optional(),
+  withinAvatarRange: z.boolean().optional(),
+  overCompactZone: z.boolean().optional(),
+  insideHostWindow: z.boolean().optional(),
+  tool: avatarToolDescriptorSchema.nullable().optional(),
+  textContext: z.string().optional(),
+  timestamp: z.number().finite(),
+}).strict();
+
 export const messageBlockSchema = z.discriminatedUnion('type', [
   textBlockSchema,
   imageBlockSchema,
@@ -87,12 +158,20 @@ export const messageBlockSchema = z.discriminatedUnion('type', [
   buttonGroupBlockSchema,
 ]);
 
+const turnIdSchema = z.preprocess((value) => {
+  if (value === null || value === undefined || value === '') {
+    return undefined;
+  }
+  return value;
+}, z.string().min(1).optional());
+
 export const chatMessageSchema = z.object({
   id: z.string().min(1),
   role: z.enum(['user', 'assistant', 'system', 'tool']),
   author: z.string().min(1),
   time: z.string(),
   createdAt: z.number().finite().optional(),
+  turnId: turnIdSchema,
   avatarLabel: z.string().optional(),
   avatarUrl: z.string().optional(),
   blocks: z.array(messageBlockSchema),
@@ -127,14 +206,39 @@ export const chatWindowPropsSchema = z.object({
   inputHint: z.string().optional(),
   rollbackDraft: z.string().optional(),
   _rollbackKey: z.string().optional(),
+  _toolCursorResetKey: z.string().optional(),
   jukeboxButtonLabel: z.string().optional(),
   jukeboxButtonAriaLabel: z.string().optional(),
   avatarGeneratorButtonLabel: z.string().optional(),
   avatarGeneratorButtonAriaLabel: z.string().optional(),
+  exportConversationButtonLabel: z.string().optional(),
+  exportConversationButtonAriaLabel: z.string().optional(),
   composerHidden: z.boolean().optional(),
+  composerDisabled: z.boolean().optional(),
+  chatSurfaceMode: chatSurfaceModeSchema.optional(),
+  // host 折叠取消序号：必须在 schema 里声明，否则 z.object().parse() 默认 strip 未知键、
+  // App 永远只看到默认 0，重开立即复位的 useLayoutEffect 不会触发（Codex P2）。
+  // 逻辑上是单调递增的非负整数计数（host 从 0 起 += 1），加 int/nonnegative 作边界防御
+  // （CodeRabbit）；host 恒传合法值，约束不会触发拒绝。
+  compactMinimizeCancelSeq: z.number().int().nonnegative().optional(),
+  compactChatState: compactChatStateSchema.optional(),
+  onCompactChatStateChange: z.function()
+    .args(compactChatStateSchema)
+    .returns(z.void())
+    .optional(),
+  onCompactMinimizeRequest: z.function()
+    .args()
+    .returns(z.void())
+    .optional(),
   translateEnabled: z.boolean().optional(),
   translateButtonLabel: z.string().optional(),
   translateButtonAriaLabel: z.string().optional(),
+  galgameModeEnabled: z.boolean().optional(),
+  galgameOptions: z.array(galgameOptionSchema).optional(),
+  galgameOptionsLoading: z.boolean().optional(),
+  galgameToggleButtonLabel: z.string().optional(),
+  galgameToggleButtonAriaLabel: z.string().optional(),
+  galgameLoadingLabel: z.string().optional(),
   onMessageAction: z.function()
     .args(chatMessageSchema, messageActionSchema)
     .returns(z.void())
@@ -159,6 +263,10 @@ export const chatWindowPropsSchema = z.object({
     .args(avatarInteractionPayloadSchema)
     .returns(z.void())
     .optional(),
+  onAvatarToolStateChange: z.function()
+    .args(avatarToolStatePayloadSchema)
+    .returns(z.void())
+    .optional(),
   onJukeboxClick: z.function()
     .args()
     .returns(z.void())
@@ -167,8 +275,28 @@ export const chatWindowPropsSchema = z.object({
     .args()
     .returns(z.void())
     .optional(),
+  onExportConversationClick: z.function()
+    .args()
+    .returns(z.void())
+    .optional(),
   onTranslateToggle: z.function()
     .args()
+    .returns(z.void())
+    .optional(),
+  onGalgameModeToggle: z.function()
+    .args()
+    .returns(z.void())
+    .optional(),
+  onGalgameOptionSelect: z.function()
+    .args(galgameOptionSchema)
+    .returns(z.void())
+    .optional(),
+  // Generic ChoicePrompt（mini-game invite 等通用三选项框架）
+  choicePrompt: choicePromptSchema.optional(),
+  onChoiceSelect: z.function()
+    // source 必须是固定枚举，与 ChoicePrompt['source'] 对齐——CodeRabbit 指出
+    // 任意 z.string() 会让 zod 验证变松。
+    .args(choiceOptionSchema, z.enum(['galgame', 'mini_game_invite']))
     .returns(z.void())
     .optional(),
 });
@@ -181,7 +309,14 @@ export type LinkBlock = z.infer<typeof linkBlockSchema>;
 export type StatusBlock = z.infer<typeof statusBlockSchema>;
 export type ButtonGroupBlock = z.infer<typeof buttonGroupBlockSchema>;
 export type ComposerAttachment = z.infer<typeof composerAttachmentSchema>;
+export type ChatSurfaceMode = z.infer<typeof chatSurfaceModeSchema>;
+export type CompactChatState = z.infer<typeof compactChatStateSchema>;
+export type GalgameOption = z.infer<typeof galgameOptionSchema>;
+export type ChoiceOption = z.infer<typeof choiceOptionSchema>;
+export type ChoicePrompt = NonNullable<z.infer<typeof choicePromptSchema>>;
+export type ChoicePromptSource = ChoicePrompt['source'];
 export type AvatarInteractionPayload = z.infer<typeof avatarInteractionPayloadSchema>;
+export type AvatarToolStatePayload = z.infer<typeof avatarToolStatePayloadSchema>;
 export type MessageBlock = z.infer<typeof messageBlockSchema>;
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
 export type ComposerSubmitPayload = z.infer<typeof composerSubmitSchema>;

@@ -366,83 +366,98 @@
 }
 
 /* ── 暗色模式 ── */
-.dark-mode .profiler-panel {
+[data-theme="dark"] .profiler-panel {
     background: #1e2a35;
     border-color: #2a4055;
     color: #ddd;
 }
 
-.dark-mode .profiler-panel:hover {
+[data-theme="dark"] .profiler-panel:hover {
     border-color: #40C5F1;
 }
 
-.dark-mode .profiler-stat {
+[data-theme="dark"] .profiler-stat {
     background: #253545;
     border-color: #2a4055;
 }
 
-.dark-mode .profiler-stat-value {
+[data-theme="dark"] .profiler-stat-value {
     color: #eee;
 }
 
-.dark-mode .profiler-info-grid {
+[data-theme="dark"] .profiler-info-grid {
     background: #253545;
     border-color: #2a4055;
 }
 
-.dark-mode .profiler-info-row {
+[data-theme="dark"] .profiler-info-row {
     border-bottom-color: #2a4055;
 }
 
-.dark-mode .profiler-info-val {
+[data-theme="dark"] .profiler-info-val {
     color: #ddd;
 }
 
-.dark-mode .profiler-chart-container {
+[data-theme="dark"] .profiler-chart-container {
     background: #253545;
     border-color: #2a4055;
 }
 
-.dark-mode .profiler-btn {
+[data-theme="dark"] .profiler-btn {
     background: #253545;
     border-color: #2a4055;
     color: #40C5F1;
 }
 
-.dark-mode .profiler-placeholder {
+[data-theme="dark"] .profiler-placeholder {
     background: #253545;
     border-color: #2a4055;
     color: #666;
 }
 
-.dark-mode .profiler-section-title {
+[data-theme="dark"] .profiler-section-title {
     border-bottom-color: #2a4055;
 }
 
-.dark-mode .profiler-overall-rating.profiler-rating-low {
+[data-theme="dark"] .profiler-overall-rating.profiler-rating-low {
     background: #1b3a1b;
     color: #81c784;
 }
 
-.dark-mode .profiler-overall-rating.profiler-rating-medium {
+[data-theme="dark"] .profiler-overall-rating.profiler-rating-medium {
     background: #3e2723;
     color: #ffb74d;
 }
 
-.dark-mode .profiler-overall-rating.profiler-rating-high {
+[data-theme="dark"] .profiler-overall-rating.profiler-rating-high {
     background: #3e1a1a;
     color: #ef9a9a;
 }
 
-.dark-mode .profiler-overall-rating.profiler-rating-extreme {
+[data-theme="dark"] .profiler-overall-rating.profiler-rating-extreme {
     background: #4a0e0e;
     color: #ef5350;
 }
 
-.dark-mode .profiler-rating-item.profiler-rating-low { background: #1b3a1b; }
-.dark-mode .profiler-rating-item.profiler-rating-medium { background: #3e2723; }
-.dark-mode .profiler-rating-item.profiler-rating-high { background: #3e1a1a; }
-.dark-mode .profiler-rating-item.profiler-rating-extreme { background: #4a0e0e; }
+[data-theme="dark"] .profiler-rating-item.profiler-rating-low { background: #1b3a1b; color: #81c784; }
+[data-theme="dark"] .profiler-rating-item.profiler-rating-medium { background: #3e2723; color: #ffb74d; }
+[data-theme="dark"] .profiler-rating-item.profiler-rating-high { background: #3e1a1a; color: #ef9a9a; }
+[data-theme="dark"] .profiler-rating-item.profiler-rating-extreme { background: #4a0e0e; color: #ef5350; }
+
+[data-theme="dark"] .profiler-rating-label,
+[data-theme="dark"] .profiler-rating-note,
+[data-theme="dark"] .profiler-stat-label {
+    color: #b0b0b0;
+}
+
+[data-theme="dark"] .profiler-info-key {
+    color: #999;
+}
+
+[data-theme="dark"] .profiler-rating-tag {
+    background: rgba(255, 255, 255, 0.1);
+    color: #cfcfcf;
+}
 
 /* ── 调试可视化按钮激活态 ── */
 .profiler-debug-active {
@@ -451,7 +466,7 @@
     border-color: #40C5F1 !important;
 }
 
-.dark-mode .profiler-debug-active {
+[data-theme="dark"] .profiler-debug-active {
     background: #2196f3 !important;
     color: #fff !important;
     border-color: #2196f3 !important;

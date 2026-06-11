@@ -11,6 +11,8 @@
 const chatContainer = document.getElementById('chat-container');
 const chatContentWrapper = document.getElementById('chat-content-wrapper');
 const toggleBtn = document.getElementById('toggle-chat-btn');
+const CHAT_MINIMIZED_YARN_BALL_ICON_SRC = '/static/assets/neko-idle/chat-minimized-yarn-ball.png';
+const CHAT_MINIMIZED_SIZE_PX = 51;
 
 let isTransitioning = false;
 let applyChatContainerSize = null;
@@ -18,8 +20,11 @@ let restoreChatContainerSize = null;
 let getStoredChatContainerSize = null;
 
 // 移动端检测（与 live2d.js 的 isMobileWidth 一致：基于窗口宽度）
+// Electron Pet 窗口（index.html）永不进入手机模式：优先走 canonical 谓词
+//（live2d-core.js 定义的 window.isMobileWidth 已感知 __LANLAN_IS_ELECTRON_PET__）。
 function uiIsMobileWidth() {
-    return window.innerWidth <= 768;
+    if (typeof window.isMobileWidth === 'function') return window.isMobileWidth();
+    return !window.__LANLAN_IS_ELECTRON_PET__ && window.innerWidth <= 768;
 }
 
 function isCollapsed() {
@@ -307,7 +312,10 @@ function setupResizableChatContainer() {
         e.preventDefault();
     };
     // 绑定调整大小启动事件（仅 handle 上绑定 mousedown/touchstart）
-    resizeHandle.addEventListener('mousedown', startResize);
+    resizeHandle.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        startResize(e);
+    });
     resizeHandle.addEventListener('touchstart', startResize, { passive: false });
 
     window.addEventListener('resize', () => {
@@ -419,7 +427,7 @@ if (toggleBtn) {
                 }
 
                 if (becomingCollapsed) {
-                    iconImg.src = '/static/icons/expand_icon_off.png';
+                    iconImg.src = CHAT_MINIMIZED_YARN_BALL_ICON_SRC;
                     iconImg.alt = window.t ? window.t('common.expand') : '展开';
                     toggleBtn.title = window.t ? window.t('common.expand') : '展开';
                     // 折叠后执行回弹，避免位置越界
@@ -447,7 +455,7 @@ if (toggleBtn) {
             }
             if (willMinimize) {
                 const rect = chatContainer.getBoundingClientRect();
-                const targetSize = 50;
+                const targetSize = CHAT_MINIMIZED_SIZE_PX;
                 const scaleX = rect.width > 0 ? Math.min(1, targetSize / rect.width) : 1;
                 const scaleY = rect.height > 0 ? Math.min(1, targetSize / rect.height) : 1;
 
@@ -487,7 +495,7 @@ if (toggleBtn) {
                 }, transitionDuration);
             } else {
                 // 展开动画：从最小化尺寸过渡到完整尺寸
-                const targetSize = 50;
+                const targetSize = CHAT_MINIMIZED_SIZE_PX;
                 // 计算初始 scale（从最小尺寸到完整尺寸的逆向）
                 const storedSize = getStoredChatContainerSize ? getStoredChatContainerSize() : null;
                 const targetW = storedSize ? storedSize.width : 400;
@@ -554,7 +562,7 @@ if (toggleBtn) {
 
             if (isMinimized) {
                 // 刚刚最小化，显示展开图标（加号）
-                iconImg.src = '/static/icons/expand_icon_off.png';
+                iconImg.src = CHAT_MINIMIZED_YARN_BALL_ICON_SRC;
                 iconImg.alt = window.t ? window.t('common.expand') : '展开';
                 toggleBtn.title = window.t ? window.t('common.expand') : '展开';
                 iconImg.style.width = '100%';
@@ -592,7 +600,7 @@ if (toggleBtn) {
         if (chatContainer.classList.contains('minimized')) {
             let iconImg = toggleBtn.querySelector('img');
             if (iconImg) {
-                iconImg.src = '/static/icons/expand_icon_on.png';
+                iconImg.src = CHAT_MINIMIZED_YARN_BALL_ICON_SRC;
             }
         }
     });
@@ -601,7 +609,7 @@ if (toggleBtn) {
         if (chatContainer.classList.contains('minimized')) {
             let iconImg = toggleBtn.querySelector('img');
             if (iconImg) {
-                iconImg.src = '/static/icons/expand_icon_off.png';
+                iconImg.src = CHAT_MINIMIZED_YARN_BALL_ICON_SRC;
             }
         }
     });
@@ -621,6 +629,10 @@ if (toggleBtn) {
     let dragRAFId = null; // 拖动时的 requestAnimationFrame ID
     let pendingDragClientX = 0; // 待处理的鼠标位置
     let pendingDragClientY = 0;
+
+    function isPrimaryMouseDrag(e) {
+        return !e || e.type.includes('touch') || e.button === 0;
+    }
 
     // 拖动回弹配置（多屏幕切换时使用）
     const CHAT_SNAP_CONFIG = {
@@ -784,6 +796,8 @@ if (toggleBtn) {
 
     // 开始拖动的函数
     function startDrag(e, skipPreventDefault = false) {
+        if (!isPrimaryMouseDrag(e)) return false;
+
         isDragging = true;
         hasMoved = false;
         dragStartedFromToggleBtn = (e.target === toggleBtn || toggleBtn.contains(e.target));
@@ -830,6 +844,8 @@ if (toggleBtn) {
         if (!skipPreventDefault) {
             e.preventDefault();
         }
+
+        return true;
     }
 
     // 计算边界限制后的位移量
@@ -947,6 +963,7 @@ if (toggleBtn) {
     if (chatHeader) {
         // 鼠标事件
         chatHeader.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return;
             if (!isCollapsed()) {
                 startDrag(e);
             }
@@ -964,6 +981,7 @@ if (toggleBtn) {
     if (toggleBtn) {
         // 鼠标事件
         toggleBtn.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return;
             // 使用 skipPreventDefault=true 来保留 click 事件
             startDrag(e, true);
             e.stopPropagation(); // 阻止事件冒泡到 chatContainer
@@ -982,6 +1000,7 @@ if (toggleBtn) {
             !!el.closest('textarea, input, button, select, a, [contenteditable]');
 
         textInputArea.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return;
             if (!isCollapsed() && !isInteractiveTarget(e.target)) {
                 startDrag(e);
             }
@@ -996,6 +1015,7 @@ if (toggleBtn) {
 
     // 折叠状态：点击容器（除了按钮）可以拖动或展开
     chatContainer.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
         if (isCollapsed()) {
             // 如果点击的是切换按钮，不启动拖动
             if (e.target === toggleBtn || toggleBtn.contains(e.target)) {
@@ -1051,8 +1071,17 @@ if (toggleBtn) {
 const sidebar = document.getElementById('sidebar');
 
 
-// --- 初始化 ---
-document.addEventListener('DOMContentLoaded', () => {
+async function initCommonUiAfterStorageBarrier() {
+    if (typeof window.waitForStorageLocationStartupBarrier === 'function') {
+        try {
+            await window.waitForStorageLocationStartupBarrier();
+        } catch (_) {}
+    } else if (window.__nekoStorageLocationStartupBarrier
+        && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
+        try {
+            await window.__nekoStorageLocationStartupBarrier;
+        } catch (_) {}
+    }
 
     setupResizableChatContainer();
 
@@ -1073,7 +1102,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (isCollapsed()) {
             // 最小化状态，显示展开图标（加号）
-            iconImg.src = '/static/icons/expand_icon_off.png';
+            iconImg.src = CHAT_MINIMIZED_YARN_BALL_ICON_SRC;
             iconImg.alt = window.t ? window.t('common.expand') : '展开';
             toggleBtn.title = window.t ? window.t('common.expand') : '展开';
         } else {
@@ -1087,6 +1116,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // 确保自动滚动在页面加载后生效
     scrollToBottom();
+}
+
+// --- 初始化 ---
+document.addEventListener('DOMContentLoaded', () => {
+    initCommonUiAfterStorageBarrier();
 });
 
 // 监听 DOM 变化，确保新内容添加后自动滚动

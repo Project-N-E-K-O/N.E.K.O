@@ -29,6 +29,12 @@ on:
 env:
   PYTHON_VERSION: '3.11'
   NODE_VERSION: '20'
+  # Anonymous embedding profile id (compatibility contract — bumped only when
+  # the upstream weights/tokenizer become incompatible with previously-cached
+  # vectors). The repo + revision together pin the actual artifacts.
+  EMBEDDING_MODEL_REPO: jinaai/jina-embeddings-v5-text-nano-retrieval
+  EMBEDDING_MODEL_PROFILE_ID: local-text-retrieval-v1
+  EMBEDDING_MODEL_REVISION: ac5d898c8d382b17167c33e5c8af644a3519b47d
 
 jobs:
   # ──────────────────────────────────────────────
@@ -106,7 +112,14 @@ jobs:
         shell: bash
         run: |
           uv venv .venv
-          uv sync
+          # Embedding runtime deps (onnxruntime, tokenizers; CPU SIMD detect
+          # reads numpy's __cpu_features__, no py-cpuinfo) are in
+          # [project.dependencies] now — plain `uv sync` covers both the
+          # build-time prepare step and the bundled runtime.
+          # `--group galgame` adds rapidocr-onnxruntime + opencv-python-headless
+          # for the bundled OCR backend; pyproject's [tool.uv].override-dependencies
+          # blocks opencv-python (full) so only the headless cv2 ships.
+          uv sync --group galgame
           uv pip install --python .venv nuitka ordered-set zstandard
 
       # --- Generate runtime config files (not tracked in git) ---
@@ -120,6 +133,7 @@ jobs:
             'config/characters.en.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
             'config/characters.ja.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
             'config/characters.ko.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
+            'config/characters.ru.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
             'config/characters.zh-CN.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
             'config/characters.zh-TW.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
             'config/core_config.json': {},
@@ -190,6 +204,54 @@ jobs:
             Write-Warning "Playwright Chromium install failed; will download on first run."
           }
 
+      # --- Prepare local embedding model assets (cross-platform) ---
+      # Mirrors the upstream Hugging Face repo at a pinned revision into the
+      # anonymous profile folder so the bundled app can run vector memory
+      # offline. The runtime (memory/embeddings.py) auto-falls back to bundled
+      # assets when the user's app-data profile is incomplete.
+      # Cache the weights by revision so huggingface.co is hit at most once per
+      # pin (per OS) instead of every build — the same per-IP HTTP 429 throttle
+      # that broke the Docker build can bite here too. Cache hit -> the next step
+      # is a no-op ("keep existing"); only a cold cache actually downloads.
+      - name: Cache embedding model weights
+        uses: actions/cache@v4
+        with:
+          path: data/embedding_models
+          key: embedding-model-${{ runner.os }}-${{ env.EMBEDDING_MODEL_REVISION }}-both
+
+      - name: Prepare embedding model assets
+        shell: bash
+        run: |
+          VENV_PYTHON=".venv/bin/python"
+          if [ -f ".venv/Scripts/python.exe" ]; then
+            VENV_PYTHON=".venv/Scripts/python.exe"
+          fi
+          $VENV_PYTHON scripts/prepare_embedding_model.py \
+            --repo "$EMBEDDING_MODEL_REPO" \
+            --revision "$EMBEDDING_MODEL_REVISION" \
+            --profile-id "$EMBEDDING_MODEL_PROFILE_ID" \
+            --output-root data/embedding_models \
+            --variant both
+
+      # --- Warm tiktoken o200k_base cache for offline use (PR #929) ---
+      # tiktoken downloads encoding blobs (~1.5 MB each) on first use into
+      # TIKTOKEN_CACHE_DIR; without warming, the bundled app would either
+      # need network at startup or fall back to the heuristic counter.
+      # launcher.py points TIKTOKEN_CACHE_DIR at data/tiktoken_cache when it
+      # exists in the bundle.
+      - name: Warm tiktoken cache (o200k_base)
+        shell: bash
+        run: |
+          mkdir -p data/tiktoken_cache
+          VENV_PYTHON=".venv/bin/python"
+          if [ -f ".venv/Scripts/python.exe" ]; then
+            VENV_PYTHON=".venv/Scripts/python.exe"
+          fi
+          TIKTOKEN_CACHE_DIR="$(pwd)/data/tiktoken_cache" \
+            $VENV_PYTHON -c "import tiktoken; tiktoken.get_encoding('o200k_base')"
+          echo "=== tiktoken_cache ==="
+          ls -la data/tiktoken_cache/
+
       - name: Set up Node.js for frontend builds
         uses: actions/setup-node@v4
         with:
@@ -198,6 +260,11 @@ jobs:
       - name: Build all frontend projects
         shell: bash
         run: |
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            ./build_frontend.sh
+            bash scripts/verify_frontend_build.sh
+            exit 0
+          fi
           cd frontend/plugin-manager
           npm ci
           npm run build-only
@@ -221,11 +288,10 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.en.json=config/characters.en.json"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.ja.json=config/characters.ja.json"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.ko.json=config/characters.ko.json"
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.ru.json=config/characters.ru.json"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.zh-CN.json=config/characters.zh-CN.json"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.zh-TW.json=config/characters.zh-TW.json"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/core_config.json=config/core_config.json"
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/prompts_chara.py=config/prompts_chara.py"
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/prompts_sys.py=config/prompts_sys.py"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/user_preferences.json=config/user_preferences.json"
 
           # Data directories
@@ -246,6 +312,12 @@ jobs:
           if [[ "$RUNNER_OS" != "macOS" ]]; then
             NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=playwright_browsers=playwright_browsers"
           fi
+          if [ -d "data/tiktoken_cache" ]; then
+            NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/tiktoken_cache=data/tiktoken_cache"
+          fi
+          if [ -d "data/embedding_models" ]; then
+            NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/embedding_models=data/embedding_models"
+          fi
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=static=static"
 
           # Packages
@@ -254,11 +326,15 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package=starlette"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=jinja2"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=websockets"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=main_server"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=memory_server"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=agent_server"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=app"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=config"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=plugin"
+          # Built-in plugins are imported at runtime via their dotted entry path
+          # (plugin.plugins.<name>:Class in each plugin.toml), so they must be
+          # compiled into the binary. Shipping them only via --include-data-dir
+          # drops the .py (Nuitka treats it as code) and every built-in plugin
+          # fails to import. Kept in sync with build_nuitka.bat.
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=plugin.plugins"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=brain"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=main_logic"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=main_routers"
@@ -268,6 +344,33 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package=browser_use"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=browser_use_sdk"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=playwright"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=tiktoken"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=tiktoken_ext"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=onnxruntime"
+          # onnxruntime.transformers/ is a benchmark + model-conversion toolbox
+          # nothing at runtime imports (rapidocr uses only the core InferenceSession).
+          # --include-package=onnxruntime would recurse and compile the whole subtree,
+          # including a 130k+ line gpt2 benchmark C unit that crashes the C backend.
+          # Synced with build_nuitka.bat.
+          NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=onnxruntime.transformers"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=tokenizers"
+          # bilibili_dm/bilibili_danmaku plugins import bilibili_api; compile the
+          # package itself (CI previously only carried its package-data).
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=bilibili_api"
+          # galgame_plugin native OCR/vision cohort. Installed on every platform by
+          # `uv sync --group galgame` (rapidocr-onnxruntime + opencv-python-headless,
+          # which pulls shapely/pyclipper). Nuitka's auto-follow misses their data
+          # files, so include package + data explicitly. Synced with build_nuitka.bat.
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=cv2"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package-data=cv2"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=rapidocr_onnxruntime"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package-data=rapidocr_onnxruntime"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=shapely"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package-data=shapely"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=pyclipper"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=mss"
+          # dxcam is Windows-only (win32 marker); it's handled in the Windows cmd
+          # build step and is never installed here, so it's intentionally omitted.
 
           # Package data
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=audiolab"
@@ -281,7 +384,11 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=bilibili_api"
 
           # Exclusions
-          NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=plugin.plugins"
+          # galgame_plugin/training/ is offline model-training code (torch /
+          # torchvision / albumentations) — not declared deps, not installed, and
+          # runtime inference uses the exported .onnx via onnxruntime instead.
+          # Carve it out so --include-package=plugin.plugins doesn't recurse into it.
+          NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=plugin.plugins.galgame_plugin.training"
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=audiolab"
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=pyrnnoise"
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=matplotlib"
@@ -301,19 +408,33 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --enable-plugin=dill-compat"
           NUITKA_OPTS="$NUITKA_OPTS --assume-yes-for-downloads"
 
-          # Steam files (include if present in repo)
+          # Steam files (include if present in repo).
+          # PR #1264 moved native libs into steamworks/; runtime still loads them
+          # from the exe sibling dir (see steamworks/__init__.py), so dest stays at root.
+          # Gate by RUNNER_OS: all platforms' libs are checked into the repo, but
+          # feeding a Linux ELF .so to a macOS Nuitka build trips an arch-mismatch FATAL.
+          # The --include-package=steamworks above also makes Nuitka pick up every
+          # native lib in steamworks/ as package data, so strip the wrong-platform
+          # copies from the source tree before invoking nuitka.
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=steam_appid.txt=steam_appid.txt"
-          if [ -f "libsteam_api.dylib" ]; then
-            NUITKA_OPTS="$NUITKA_OPTS --include-data-files=libsteam_api.dylib=libsteam_api.dylib"
-          fi
-          if [ -f "SteamworksPy.dylib" ]; then
-            NUITKA_OPTS="$NUITKA_OPTS --include-data-files=SteamworksPy.dylib=SteamworksPy.dylib"
-          fi
-          if [ -f "libsteam_api.so" ]; then
-            NUITKA_OPTS="$NUITKA_OPTS --include-data-files=libsteam_api.so=libsteam_api.so"
-          fi
-          if [ -f "SteamworksPy.so" ]; then
-            NUITKA_OPTS="$NUITKA_OPTS --include-data-files=SteamworksPy.so=SteamworksPy.so"
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            rm -f steamworks/SteamworksPy.so steamworks/libsteam_api.so \
+                  steamworks/SteamworksPy64.dll steamworks/steam_api64.dll steamworks/steam_api64.lib
+            if [ -f "steamworks/libsteam_api.dylib" ]; then
+              NUITKA_OPTS="$NUITKA_OPTS --include-data-files=steamworks/libsteam_api.dylib=libsteam_api.dylib"
+            fi
+            if [ -f "steamworks/SteamworksPy.dylib" ]; then
+              NUITKA_OPTS="$NUITKA_OPTS --include-data-files=steamworks/SteamworksPy.dylib=SteamworksPy.dylib"
+            fi
+          elif [[ "$RUNNER_OS" == "Linux" ]]; then
+            rm -f steamworks/SteamworksPy.dylib steamworks/libsteam_api.dylib \
+                  steamworks/SteamworksPy64.dll steamworks/steam_api64.dll steamworks/steam_api64.lib
+            if [ -f "steamworks/libsteam_api.so" ]; then
+              NUITKA_OPTS="$NUITKA_OPTS --include-data-files=steamworks/libsteam_api.so=libsteam_api.so"
+            fi
+            if [ -f "steamworks/SteamworksPy.so" ]; then
+              NUITKA_OPTS="$NUITKA_OPTS --include-data-files=steamworks/SteamworksPy.so=SteamworksPy.so"
+            fi
           fi
 
           echo "=== Nuitka options ==="
@@ -338,11 +459,10 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/characters.en.json=config/characters.en.json
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/characters.ja.json=config/characters.ja.json
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/characters.ko.json=config/characters.ko.json
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/characters.ru.json=config/characters.ru.json
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/characters.zh-CN.json=config/characters.zh-CN.json
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/characters.zh-TW.json=config/characters.zh-TW.json
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/core_config.json=config/core_config.json
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/prompts_chara.py=config/prompts_chara.py
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/prompts_sys.py=config/prompts_sys.py
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/user_preferences.json=config/user_preferences.json
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=assets=assets
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=templates=templates
@@ -351,27 +471,40 @@ jobs:
           if exist "frontend\plugin-manager\dist" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=frontend/plugin-manager/dist=frontend/plugin-manager/dist
           if exist "plugin\plugins" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=plugin/plugins=plugin/plugins
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=playwright_browsers=playwright_browsers
+          if exist "data\tiktoken_cache" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=data/tiktoken_cache=data/tiktoken_cache
+          if exist "data\embedding_models" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=data/embedding_models=data/embedding_models
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=static=static
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=uvicorn
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=fastapi
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=starlette
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=jinja2
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=websockets
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=main_server
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=memory_server
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=agent_server
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=app
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=config
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=plugin
+          rem Built-in plugins are imported at runtime via their dotted entry path
+          rem (plugin.plugins.<name>:Class in plugin.toml), so they must be compiled
+          rem into the binary; --include-data-dir alone drops the .py. Synced with
+          rem build_nuitka.bat. training/ is offline-only (torch) so carve it out.
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=plugin.plugins
+          set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=plugin.plugins.galgame_plugin.training
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=brain
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=main_logic
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=main_routers
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=memory
-          set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=plugin.plugins
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=utils
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=steamworks
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=steam_api64.dll=steam_api64.dll
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=steam_api64.lib=steam_api64.lib
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=SteamworksPy64.dll=SteamworksPy64.dll
+          rem PR #1264 moved native libs into steamworks/; runtime still loads them
+          rem from the exe sibling dir (see steamworks/__init__.py), so dest stays at root.
+          rem Guard with `if exist` to mirror the Unix branch — keeps the build
+          rem soft on incidental missing libs instead of fataling in Nuitka.
+          rem --include-package=steamworks pulls in every native lib in steamworks/
+          rem as package data; strip the non-Windows copies so Nuitka can't trip
+          rem an arch check on them (mirrors the Unix branch's rm step).
+          del /q steamworks\SteamworksPy.so steamworks\libsteam_api.so steamworks\SteamworksPy.dylib steamworks\libsteam_api.dylib 2>nul
+          if exist "steamworks\steam_api64.dll" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=steamworks/steam_api64.dll=steam_api64.dll
+          if exist "steamworks\steam_api64.lib" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=steamworks/steam_api64.lib=steam_api64.lib
+          if exist "steamworks\SteamworksPy64.dll" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=steamworks/SteamworksPy64.dll=SteamworksPy64.dll
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=steam_appid.txt=steam_appid.txt
           set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=audiolab
           set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=pyrnnoise
@@ -382,9 +515,33 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=browser_use_sdk
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=playwright
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=playwright
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=tiktoken
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=tiktoken_ext
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=onnxruntime
+          rem onnxruntime.transformers/ is a benchmark + model-conversion toolbox
+          rem nothing at runtime imports (rapidocr uses only the core InferenceSession).
+          rem --include-package=onnxruntime would recurse and compile the whole subtree,
+          rem including a 130k+ line gpt2 benchmark C unit that crashes the C backend.
+          rem Synced with build_nuitka.bat.
+          set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=onnxruntime.transformers
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=tokenizers
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=jinja2
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=certifi
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=bilibili_api
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=bilibili_api
+          rem galgame_plugin native OCR/vision cohort (uv sync --group galgame:
+          rem rapidocr-onnxruntime + opencv-python-headless, pulling shapely/pyclipper;
+          rem mss/dxcam from main deps). Nuitka auto-follow misses their data files,
+          rem so include package + data explicitly. Synced with build_nuitka.bat.
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=rapidocr_onnxruntime
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=rapidocr_onnxruntime
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=cv2
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=cv2
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=pyclipper
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=shapely
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=shapely
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=mss
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=dxcam
           set NUITKA_OPTS=%NUITKA_OPTS% --enable-plugin=dill-compat
           set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=matplotlib
           set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=pytest
@@ -408,6 +565,56 @@ jobs:
           fi
           echo "=== Build output ==="
           ls -la dist/Xiao8/ || echo "dist/Xiao8 not found!"
+
+      # --- Verify bundled embedding + tiktoken assets ---
+      # memory/embeddings.py treats every onnx_data sidecar plus both fp32
+      # and int8 variants as required at session-load time; tiktoken
+      # o200k_base must also be present so utils.tokenize doesn't fall
+      # back to the heuristic counter. Use -s (non-empty) so a zero-byte
+      # file from an interrupted download fails the build, matching
+      # prepare_embedding_model.py's own non-empty contract.
+      - name: Verify bundled offline assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -d "dist/Xiao8" ]; then
+            echo "::error::dist/Xiao8 not found, cannot verify"
+            exit 1
+          fi
+          embedding_required=(
+            "tokenizer.json"
+            "onnx/model.onnx"
+            "onnx/model.onnx_data"
+            "onnx/model_quantized.onnx"
+            "onnx/model_quantized.onnx_data"
+          )
+          missing=0
+          for rel in "${embedding_required[@]}"; do
+            if [ ! -s "dist/Xiao8/data/embedding_models/$EMBEDDING_MODEL_PROFILE_ID/$rel" ]; then
+              echo "::error::missing or empty bundled embedding asset: $rel"
+              missing=1
+            fi
+          done
+          if ! ls dist/Xiao8/data/tiktoken_cache/ 2>/dev/null | grep -q .; then
+            echo "::error::data/tiktoken_cache empty in bundle (o200k_base would re-download at runtime)"
+            missing=1
+          fi
+          [ "$missing" -eq 0 ]
+
+      # --- Generic dist invariant check ---
+      # Catches the broader class of "Nuitka silently dropped a required
+      # asset" bugs: missing config/, static/, plugin/plugins, frontend
+      # build output, or built-in plugin.toml files. See
+      # scripts/check_nuitka_dist.py for the full asset list and rationale.
+      - name: Verify Nuitka dist invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            .venv/Scripts/python.exe scripts/check_nuitka_dist.py dist/Xiao8
+          else
+            .venv/bin/python scripts/check_nuitka_dist.py dist/Xiao8
+          fi
 
       - name: Upload Python backend artifact
         uses: actions/upload-artifact@v4

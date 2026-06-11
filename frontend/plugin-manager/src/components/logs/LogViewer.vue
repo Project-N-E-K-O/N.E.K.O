@@ -1,7 +1,7 @@
 <template>
-  <div class="log-viewer">
-    <div class="toolbar">
-      <el-select v-model="levelFilter" class="toolbar-item level-select" :placeholder="$t('logs.allLevels')" clearable>
+  <div class="log-viewer" data-yui-guide-id="log-viewer">
+    <div class="toolbar" data-yui-guide-id="log-viewer-toolbar">
+      <el-select v-model="levelFilter" class="toolbar-item level-select" data-yui-guide-id="log-filter-level" :placeholder="$t('logs.allLevels')" clearable>
         <el-option :label="$t('logs.allLevels')" value="" />
         <el-option v-for="level in levels" :key="level" :label="$t(`logLevel.${level}`)" :value="level" />
       </el-select>
@@ -9,21 +9,22 @@
       <el-input
         v-model="search"
         class="toolbar-item search-input"
+        data-yui-guide-id="log-search"
         clearable
         :placeholder="$t('logs.search')"
         @keyup.enter="refreshLogs"
       />
 
-      <el-input-number v-model="lines" class="toolbar-item lines-input" :min="50" :max="5000" :step="50" />
+      <el-input-number v-model="lines" class="toolbar-item lines-input" data-yui-guide-id="log-lines" :min="50" :max="5000" :step="50" />
 
-      <el-button :loading="loading" @click="refreshLogs">{{ $t('common.refresh') }}</el-button>
+      <el-button :loading="loading" data-yui-guide-id="log-refresh" @click="refreshLogs">{{ $t('common.refresh') }}</el-button>
 
-      <el-switch v-model="autoScroll" :active-text="$t('logs.autoScroll')" />
+      <el-switch v-model="autoScroll" data-yui-guide-id="log-auto-scroll" :active-text="$t('logs.autoScroll')" />
     </div>
 
-    <div class="meta-row">
+    <div class="meta-row" data-yui-guide-id="log-meta">
       <el-space wrap>
-        <el-tag size="small" :type="isConnected ? 'success' : 'warning'">
+        <el-tag size="small" data-yui-guide-id="log-connection-status" :type="isConnected ? 'success' : 'warning'">
           {{ isConnected ? $t('logs.connected') : $t('logs.disconnected') }}
         </el-tag>
         <span class="meta-text">{{ $t('logs.totalLogs', { count: filteredLogs.length }) }}</span>
@@ -36,13 +37,14 @@
     <el-alert
       v-if="effectiveError"
       class="error-alert"
+      data-yui-guide-id="log-load-error"
       type="warning"
       show-icon
       :closable="false"
       :title="$t('logs.loadError', { error: effectiveError })"
     />
 
-    <div ref="logContainerRef" class="log-list">
+    <div ref="logContainerRef" class="log-list" data-yui-guide-id="log-list">
       <template v-if="filteredLogs.length > 0">
         <div v-for="(log, index) in filteredLogs" :key="`${log.timestamp}-${index}`" class="log-item">
           <span class="log-time">{{ formatTimestamp(log.timestamp) }}</span>

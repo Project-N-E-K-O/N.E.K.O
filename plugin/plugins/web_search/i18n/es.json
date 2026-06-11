@@ -1,0 +1,4 @@
+{
+  "plugin.name": "Búsqueda web",
+  "plugin.description": "Búsqueda en línea que elige el motor según la IP del usuario (Baidu en China continental, DuckDuckGo en el resto). No requiere clave de API"
+}

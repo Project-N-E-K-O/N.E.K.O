@@ -1,0 +1,62 @@
+"""Stable public package data model exports."""
+
+from __future__ import annotations
+
+from ..core.models import (
+    BundleAnalysisResult,
+    BundleSdkAnalysis,
+    ConflictStrategyValue,
+    InspectedPackagePlugin,
+    NonEmptyText,
+    OptionalPayloadHashValue,
+    OptionalResolvedPath,
+    OptionalText,
+    PackageInspectResult,
+    PackageTypeValue,
+    BuildResult,
+    PayloadBuildResult,
+    PayloadHashValue,
+    PluginIdList,
+    PluginIdValue,
+    PluginSource,
+    ResolvedPath,
+    ResolvedPathList,
+    SharedDependency,
+    StringList,
+    InstalledPlugin,
+    InstallResult,
+)
+
+__all__ = [
+    "BundleAnalysisResult",
+    "BundleSdkAnalysis",
+    "ConflictStrategyValue",
+    "InspectedPackagePlugin",
+    "NonEmptyText",
+    "OptionalPayloadHashValue",
+    "OptionalResolvedPath",
+    "OptionalText",
+    "PackageInspectResult",
+    "PackageTypeValue",
+    "BuildResult",
+    "PayloadBuildResult",
+    "PayloadHashValue",
+    "PluginIdList",
+    "PluginIdValue",
+    "PluginSource",
+    "ResolvedPath",
+    "ResolvedPathList",
+    "SharedDependency",
+    "StringList",
+    "InstalledPlugin",
+    "InstallResult",
+    # Legacy aliases (backward compatibility)
+    "PackResult",
+    "UnpackResult",
+    "UnpackedPlugin",
+]
+
+# Legacy aliases
+PackResult = BuildResult
+UnpackResult = InstallResult
+UnpackedPlugin = InstalledPlugin

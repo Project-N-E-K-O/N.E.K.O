@@ -140,7 +140,24 @@ async def test_persona_locks_prevent_corruption_proof(tmp_path):
         await pm.arecord_mentions("小天", text)
 
     with patch.object(pm, "asave_persona", side_effect=slow_save):
-        await asyncio.gather(*(racy_record("主人喜欢喝咖啡") for _ in range(10)))
+        # `return_exceptions=True` keeps the race playing out when a coroutine
+        # raises (Windows surfaces concurrent atomic-replace contention as
+        # PermissionError; on POSIX the same race usually manifests as silent
+        # lost updates). Either failure mode satisfies the oracle, but only
+        # those two — any other exception type would mask an unrelated
+        # regression in the unlocked path, so we require it explicitly below.
+        results = await asyncio.gather(
+            *(racy_record("主人喜欢喝咖啡") for _ in range(10)),
+            return_exceptions=True,
+        )
+
+    unexpected = [
+        r for r in results
+        if isinstance(r, BaseException) and not isinstance(r, PermissionError)
+    ]
+    assert not unexpected, (
+        f"racy_record raised non-contention exceptions: {unexpected!r}"
+    )
 
     # Without the lock at least one update is lost
     fresh, _ = _install_persona(str(tmp_path))
@@ -351,7 +368,7 @@ async def test_high_contention_mixed_mutations_stay_consistent(tmp_path):
 
     async def timed_run():
         with patch("utils.llm_client.create_chat_llm", _FakeLLM), \
-             patch("config.prompts_memory.get_reflection_prompt",
+             patch("config.prompts.prompts_memory.get_reflection_prompt",
                    lambda lang: "{FACTS}|{LANLAN_NAME}|{MASTER_NAME}"), \
              patch("utils.language_utils.get_global_language", return_value="zh"):
             return await asyncio.wait_for(

@@ -17,7 +17,8 @@ export function useLogStream(pluginIdInput: MaybeRef<string>) {
   const reconnectTimer = ref<number | null>(null)
   const reconnectAttempts = ref(0)
   const maxReconnectAttempts = 5
-  const reconnectDelay = 3000 // 3秒
+  const reconnectDelay = 1200
+  const manuallyClosed = ref(false)
 
   // 获取 WebSocket URL
   function getWebSocketUrl(): string {
@@ -55,19 +56,29 @@ export function useLogStream(pluginIdInput: MaybeRef<string>) {
     if (ws.value?.readyState === WebSocket.OPEN || ws.value?.readyState === WebSocket.CONNECTING) {
       return
     }
+    if (!pluginId.value) {
+      return
+    }
 
     try {
+      manuallyClosed.value = false
       const connectionPluginId = pluginId.value
       const url = getWebSocketUrl()
-      ws.value = new WebSocket(url)
+      const socket = new WebSocket(url)
+      ws.value = socket
 
-      ws.value.onopen = () => {
+      socket.onopen = () => {
+        if (ws.value !== socket) {
+          socket.close(1000, 'stale socket')
+          return
+        }
         isConnected.value = true
         reconnectAttempts.value = 0
         console.log(`[LogStream] Connected to ${connectionPluginId}`)
       }
 
-      ws.value.onmessage = (event) => {
+      socket.onmessage = (event) => {
+        if (ws.value !== socket) return
         try {
           const data = JSON.parse(event.data)
 
@@ -111,22 +122,31 @@ export function useLogStream(pluginIdInput: MaybeRef<string>) {
         }
       }
 
-      ws.value.onerror = (error) => {
-        console.error(`[LogStream] WebSocket error for ${pluginId.value}:`, error)
+      socket.onerror = (error) => {
+        if (ws.value !== socket || manuallyClosed.value) return
+        const log = reconnectAttempts.value === 0 ? console.debug : console.warn
+        log(`[LogStream] WebSocket error for ${connectionPluginId}:`, error)
         isConnected.value = false
       }
 
-      ws.value.onclose = (event) => {
+      socket.onclose = (event) => {
+        if (ws.value !== socket) return
         isConnected.value = false
-        console.log(`[LogStream] Disconnected from ${pluginId.value}`, event.code, event.reason)
+        const expectedClose = manuallyClosed.value || event.code === 1000
+        if (expectedClose) {
+          console.debug(`[LogStream] Disconnected from ${connectionPluginId}`, event.code, event.reason)
+          return
+        }
+        console.warn(`[LogStream] Disconnected from ${connectionPluginId}`, event.code, event.reason)
         
         // 如果不是正常关闭，尝试重连
         if (event.code !== 1000 && reconnectAttempts.value < maxReconnectAttempts) {
           reconnectAttempts.value++
-          console.log(`[LogStream] Attempting to reconnect (${reconnectAttempts.value}/${maxReconnectAttempts})...`)
+          const delay = Math.min(reconnectDelay * (2 ** (reconnectAttempts.value - 1)), 8000)
+          console.log(`[LogStream] Attempting to reconnect (${reconnectAttempts.value}/${maxReconnectAttempts}) in ${delay}ms...`)
           reconnectTimer.value = window.setTimeout(() => {
             connect()
-          }, reconnectDelay)
+          }, delay)
         } else if (reconnectAttempts.value >= maxReconnectAttempts) {
           console.error(`[LogStream] Max reconnection attempts reached for ${pluginId.value}`)
           ElMessage.error(t('logs.connectionFailed'))
@@ -140,22 +160,25 @@ export function useLogStream(pluginIdInput: MaybeRef<string>) {
 
   // 断开连接
   function disconnect() {
+    manuallyClosed.value = true
     if (reconnectTimer.value) {
       clearTimeout(reconnectTimer.value)
       reconnectTimer.value = null
     }
     
     if (ws.value) {
+      const socket = ws.value
+      ws.value = null
       try {
         // 正常关闭连接（code 1000 表示正常关闭）
-        if (ws.value.readyState === WebSocket.OPEN || ws.value.readyState === WebSocket.CONNECTING) {
-          ws.value.close(1000, 'Client disconnect')
+        if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+          socket.close(1000, 'Client disconnect')
         }
       } catch (error) {
         // 忽略关闭时的错误
         console.debug('[LogStream] Error closing WebSocket:', error)
       } finally {
-        ws.value = null
+        // stale socket is detached above
       }
     }
     

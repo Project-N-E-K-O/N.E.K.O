@@ -1,5 +1,29 @@
-import conftest as project_conftest
+import importlib.util
+import sys
+from pathlib import Path
+
 import pytest
+
+
+def _load_root_conftest():
+    """Resolve `tests/conftest.py` (the bare name `conftest` would shadow this
+    file with `tests/unit/conftest.py`). Reuse the module pytest already loaded
+    when possible to avoid re-running its module-level side effects."""
+    root_conftest_path = Path(__file__).resolve().parents[1] / "conftest.py"
+    target = root_conftest_path.resolve()
+    for module in sys.modules.values():
+        module_file = getattr(module, "__file__", None)
+        if module_file and Path(module_file).resolve() == target:
+            return module
+    spec = importlib.util.spec_from_file_location(
+        "_tests_root_conftest", root_conftest_path
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+project_conftest = _load_root_conftest()
 
 
 @pytest.fixture(scope="session", autouse=True)

@@ -23,6 +23,7 @@ EXTRA_BODY_CLAUDE = {"thinking": {"type": "disabled"}}
 EXTRA_BODY_GEMINI = {"extra_body": {"google": {"thinking_config": {"thinking_budget": 0}}}}
 EXTRA_BODY_GEMINI_3 = {"extra_body": {"google": {"thinking_config": {"thinking_level": "low", "include_thoughts": False}}}}
 EXTRA_BODY_OPENROUTER = {"reasoning": {"effort": "none"}}
+EXTRA_BODY_MINIMAX = {"reasoning_split": True}
 
 # Agent 调用统一开关：是否加载 extra_body。
 # 默认开启，配合 MODELS_EXTRA_BODY_MAP 实现默认关闭 thinking。
@@ -32,34 +33,49 @@ AGENT_USE_EXTRA_BODY = True
 MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     # Qwen 系列
     "qwen-flash": EXTRA_BODY_OPENAI,
+    "qwen3.6-flash": EXTRA_BODY_OPENAI,
+    "qwen3.6-flash-2026-04-16": EXTRA_BODY_OPENAI,
     "qwen3-vl-plus-2025-09-23": EXTRA_BODY_OPENAI,
     "qwen3-vl-plus": EXTRA_BODY_OPENAI,
     "qwen3-vl-flash": EXTRA_BODY_OPENAI,
     "qwen3.5-plus": EXTRA_BODY_OPENAI,
     "qwen3.6-plus": EXTRA_BODY_OPENAI,
+    "qwen3.6-plus-2026-04-02": EXTRA_BODY_OPENAI,
     "qwen-plus": EXTRA_BODY_OPENAI,
-    "deepseek-ai/DeepSeek-V3.2": EXTRA_BODY_OPENAI,
+    "qwen3.7-plus-2026-05-26": EXTRA_BODY_OPENAI,
+    "qwen3.7-plus": EXTRA_BODY_OPENAI,
     # GLM 系列
     "glm-4.5-air": EXTRA_BODY_CLAUDE,
     "glm-4.6v-flash": EXTRA_BODY_CLAUDE,
     "glm-4.7-flash": EXTRA_BODY_CLAUDE,
     "glm-4.6v": EXTRA_BODY_CLAUDE,
+    "glm-5v-turbo": EXTRA_BODY_CLAUDE,
     "glm-5.1": EXTRA_BODY_CLAUDE,
     # Kimi系列
     "kimi-k2-0905-preview": EXTRA_BODY_CLAUDE,
     "kimi-k2.5": EXTRA_BODY_CLAUDE,
-    # Silicon (zai-org) - 使用 Qwen 格式
+    # MiniMax系列
+    "MiniMax-M2.5": EXTRA_BODY_MINIMAX,
+    "MiniMax-M2.7": EXTRA_BODY_MINIMAX,
+    "MiniMax-Text-01": EXTRA_BODY_MINIMAX,
+    # Silicon
     "zai-org/GLM-4.6V": EXTRA_BODY_OPENAI,
+    "deepseek-ai/DeepSeek-V3.2": EXTRA_BODY_OPENAI,
+    "deepseek-ai/DeepSeek-V4-Flash": EXTRA_BODY_OPENAI,
+    "Qwen/Qwen3.5-397B-A17B": EXTRA_BODY_OPENAI,
     # Step
     "step-2-mini": {"tools": [{"type": "web_search", "function": {"description": "这个web_search用来搜索互联网的信息"}}]},
     # Claude 系列
     "claude-sonnet-4-6": EXTRA_BODY_CLAUDE,
     "claude-haiku-4-5-20251001": EXTRA_BODY_CLAUDE,
     "claude-opus-4-7": EXTRA_BODY_CLAUDE,
+    "claude-opus-4-6": EXTRA_BODY_CLAUDE,
     # Doubao Seed 2.0 系列
     "doubao-seed-2-0-lite-260215": EXTRA_BODY_CLAUDE,
     "doubao-seed-2-0-mini-260215": EXTRA_BODY_CLAUDE,
     "doubao-seed-2-0-pro-260215": EXTRA_BODY_CLAUDE,
+    "doubao-seed-2-0-lite-260428": EXTRA_BODY_CLAUDE,
+    "doubao-seed-2-0-mini-260428": EXTRA_BODY_CLAUDE,
     # Gemini 系列
     "gemini-2.5-flash": EXTRA_BODY_GEMINI,
     "gemini-2.5-flash-lite": EXTRA_BODY_GEMINI,
@@ -122,15 +138,28 @@ class CacheProviderConfig:
 
 
 CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
-    # qwen_intl before qwen: resolve_cache_provider iterates in dict order
-    # and matches on base_url_pattern substring. The qwen pattern
-    # "dashscope.aliyuncs.com" also matches "dashscope-intl.aliyuncs.com",
-    # so qwen_intl must come first to win the match.
+    # qwen_intl / qwen_us 必须排在 qwen 前面：resolve_cache_provider 按
+    # dict 顺序做 substring 匹配，区域域名需要先命中自己的配置。
     "qwen_intl": CacheProviderConfig(
         provider_id="qwen_intl",
         name="阿里云 DashScope (Intl)",
         base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
         base_url_pattern="dashscope-intl.aliyuncs.com",
+        cache_mode="session",
+        requires_header=True,
+        header_name="x-dashscope-session-cache",
+        header_value="enable",
+        min_cache_tokens=1024,
+        auto_cache=True,
+        cache_price=0.10,
+        creation_price=0.125,
+        cached_token_field="prompt_tokens_details.cached_tokens",
+    ),
+    "qwen_us": CacheProviderConfig(
+        provider_id="qwen_us",
+        name="阿里云 DashScope (US)",
+        base_url="https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+        base_url_pattern="dashscope-us.aliyuncs.com",
         cache_mode="session",
         requires_header=True,
         header_name="x-dashscope-session-cache",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio.events as _events
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -34,6 +35,55 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 
 @pytest.fixture(autouse=True)
+def _disable_galgame_rapidocr_warmup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No-op RapidOcrBackend.warmup_async so tests don't oversubscribe cores via daemon ONNX threads."""
+    try:
+        from plugin.plugins.galgame_plugin.ocr_reader import RapidOcrBackend
+    except Exception:
+        return
+    monkeypatch.setattr(RapidOcrBackend, "warmup_async", lambda self, logger=None: None)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_galgame_runtime_root(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    path = Path(str(request.node.fspath))
+    if "galgame" not in str(path):
+        return
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime_data"))
+    monkeypatch.delenv("NEKO_STORAGE_ANCHOR_ROOT", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_runtime_overrides(monkeypatch: pytest.MonkeyPatch):
+    """Redirect plugin runtime override persistence to an in-memory dict for tests.
+
+    Without this, tests that exercise `disable_extension` / `enable_extension`
+    (directly or via `delete_plugin`) would write to the real user's
+    ``plugin_runtime_overrides.json``, persistently disabling extensions on the
+    developer's machine.
+    """
+    from plugin.server.infrastructure import runtime_overrides as _ro
+
+    fake_store: dict[str, bool] = {}
+
+    monkeypatch.setattr(_ro, "_load_from_disk", lambda: dict(fake_store))
+    monkeypatch.setattr(
+        _ro,
+        "_save_to_disk",
+        lambda overrides: fake_store.clear() or fake_store.update(overrides),
+    )
+    _ro.reset_cache_for_testing()
+    try:
+        yield fake_store
+    finally:
+        _ro.reset_cache_for_testing()
+
+
+@pytest.fixture(autouse=True)
 def _clear_leaked_running_loop(request: pytest.FixtureRequest):
     """Temporarily clear any running event loop leaked by Playwright's greenlet
     so that sync tests see a clean ``asyncio.get_running_loop() → RuntimeError``
@@ -60,6 +110,11 @@ def plugin_test_app() -> FastAPI:
     app.include_router(metrics_router)
     app.include_router(runs_router)
     return app
+
+
+@pytest.fixture(scope="session")
+def galgame_i18n_dir() -> Path:
+    return Path(__file__).resolve().parents[1] / "plugins/galgame_plugin/i18n"
 
 
 @pytest.fixture

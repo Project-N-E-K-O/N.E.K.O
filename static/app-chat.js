@@ -25,6 +25,9 @@
     // 首次交互跟踪
     let isFirstUserInput = true;   // 跟踪是否为用户第一次输入
     let isFirstAIResponse = true;  // 跟踪是否为AI第一次回复
+    let firstDialogueUnlockPending = false; // unlockAchievement 尚未就绪时的补偿标记
+    let firstDialogueUnlockInFlight = false;
+    let firstDialogueUnlocked = false;
 
     // ======================== 工具函数 ========================
 
@@ -49,7 +52,8 @@
 
     function getCurrentAssistantName() {
         return sanitizeDisplayName(
-            (window.lanlan_config && window.lanlan_config.lanlan_name)
+            window.__NEKO_TUTORIAL_ASSISTANT_NAME_OVERRIDE__
+            || (window.lanlan_config && window.lanlan_config.lanlan_name)
             || window._currentCatgirl
             || window.currentCatgirl
         ) || 'Neko';
@@ -157,6 +161,12 @@
         return window.appChatAvatar.getCurrentAvatarDataUrl() || '';
     }
 
+    function getAssistantAvatarLabel() {
+        var name = getCurrentAssistantName();
+        var first = Array.from(name || '')[0] || '';
+        return first ? first.toUpperCase() : undefined;
+    }
+
     function nextReactMessageId(prefix) {
         _reactMessageSeq += 1;
         return (prefix || 'msg') + '-' + Date.now() + '-' + _reactMessageSeq;
@@ -212,7 +222,11 @@
         }
         var message = buildReactTextMessage(messageId, role, author, timeStr, text, status);
         if (!message) return;
-        host.appendMessage(message);
+        try {
+            host.appendMessage(message);
+        } catch (error) {
+            console.warn('[Chat] React message mirror append failed', error);
+        }
     }
 
     function appendReactUserMessage(payload) {
@@ -295,6 +309,8 @@
         snapshot.messages.forEach(function (message) {
             if (!message || message.role !== 'assistant') return;
             host.updateMessage(message.id, {
+                author: getCurrentAssistantName(),
+                avatarLabel: getAssistantAvatarLabel(),
                 avatarUrl: avatarUrl || undefined
             });
         });
@@ -303,19 +319,64 @@
     // ======================== 成就 ========================
 
     /**
-     * 检查并解锁首次对话成就
-     * 当用户和AI都完成首次交互后调用API
+     * 检查并解锁首次对话成就。
+     * 只由 AI 可见回复路径触发；用户输入路径只负责标记 isFirstUserInput。
      */
     async function checkAndUnlockFirstDialogueAchievement() {
-        if (!isFirstUserInput && !isFirstAIResponse) {
-            if (!window.unlockAchievement) return;
-            console.log(window.t('console.firstConversationUnlockAchievement'));
-            try {
-                await window.unlockAchievement('ACH_FIRST_DIALOGUE');
-            } catch (error) {
-                console.error(window.t('console.achievementUnlockError'), error);
+        if (isFirstUserInput || firstDialogueUnlockInFlight || firstDialogueUnlocked) return;
+
+        if (!window.unlockAchievement) {
+            if (!firstDialogueUnlockPending) {
+                firstDialogueUnlockPending = true;
+                var retryAttempts = 0;
+                var maxRetryAttempts = 10;
+                var retryDelayMs = 500;
+                var slowRetryDelayMs = 5000;
+                setTimeout(function retryFirstDialogueUnlock() {
+                    if (!firstDialogueUnlockPending || firstDialogueUnlocked) {
+                        firstDialogueUnlockPending = false;
+                        return;
+                    }
+                    retryAttempts += 1;
+                    if (!window.unlockAchievement) {
+                        if (retryAttempts >= maxRetryAttempts) {
+                            retryAttempts = 0;
+                            console.warn('[Achievement] unlockAchievement not ready; continuing first dialogue retry at a slower interval');
+                            setTimeout(retryFirstDialogueUnlock, slowRetryDelayMs);
+                            return;
+                        }
+                        setTimeout(retryFirstDialogueUnlock, retryDelayMs);
+                        return;
+                    }
+                    checkAndUnlockFirstDialogueAchievement();
+                }, retryDelayMs);
             }
+            return;
         }
+
+        firstDialogueUnlockPending = false;
+        firstDialogueUnlockInFlight = true;
+        var firstDialogueUnlockMessage = (window.t && window.t('console.firstConversationUnlockAchievement')) || 'First conversation detected, unlocking achievement';
+        console.log(firstDialogueUnlockMessage);
+        try {
+            await window.unlockAchievement('ACH_FIRST_DIALOGUE');
+            firstDialogueUnlocked = true;
+        } catch (error) {
+            var achievementUnlockErrorMessage = (window.t && window.t('console.achievementUnlockError')) || 'Achievement unlock error';
+            console.error(achievementUnlockErrorMessage, error);
+        } finally {
+            firstDialogueUnlockInFlight = false;
+        }
+    }
+
+    function markAssistantVisibleResponse() {
+        if (firstDialogueUnlocked) return;
+        if (isFirstAIResponse) {
+            isFirstAIResponse = false;
+            var aiFirstReplyDetectedMessage = (window.t && window.t('console.aiFirstReplyDetected')) || 'AI first reply detected';
+            console.log(aiFirstReplyDetectedMessage);
+        }
+        checkAndUnlockFirstDialogueAchievement();
     }
 
     // ======================== 气泡创建 ========================
@@ -337,12 +398,8 @@
             window.ensureAssistantTurnStarted('create_gemini_bubble');
         }
 
-        // 如果是AI第一次回复，更新状态并检查成就
-        if (isFirstAIResponse) {
-            isFirstAIResponse = false;
-            console.log(window.t('console.aiFirstReplyDetected'));
-            checkAndUnlockFirstDialogueAchievement();
-        }
+        // AI 可见回复出现时才尝试解锁首次对话成就
+        markAssistantVisibleResponse();
     }
 
     function normalizeGeminiText(s) {
@@ -379,15 +436,25 @@
 
     // ======================== 拟真输出队列 ========================
 
+    function createRealisticQueueOwnerToken() {
+        return 'realistic-queue-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+    }
+
     async function processRealisticQueue(queueVersion) {
         queueVersion = queueVersion || (window._realisticGeminiVersion || 0);
-        if (window._isProcessingRealisticQueue) return;
+        if (window._realisticProcessingOwner) return;
+
+        const processingOwner = createRealisticQueueOwnerToken();
+        window._realisticProcessingOwner = processingOwner;
         window._isProcessingRealisticQueue = true;
 
         const chatContainer = S.dom.chatContainer;
 
         try {
             while (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
+                if (window._realisticProcessingOwner !== processingOwner) {
+                    break;
+                }
                 if ((window._realisticGeminiVersion || 0) !== queueVersion) {
                     break;
                 }
@@ -399,6 +466,9 @@
                 }
 
                 if ((window._realisticGeminiVersion || 0) !== queueVersion) {
+                    break;
+                }
+                if (window._realisticProcessingOwner !== processingOwner) {
                     break;
                 }
 
@@ -416,15 +486,15 @@
                 }
             }
         } finally {
-            // 如果 lock 还是 true，说明没有任何外部路径（discard / audio-capture）
-            // 接管过 —— 无论 version 是否变化，我们都是当前唯一持有者，必须释放锁，
-            // 否则队列会卡死。
-            // 如果 lock 已经是 false，说明外部路径已经重置锁并可能启动了新 processor，
-            // 我们不能再递归也不能再动锁。
-            if (window._isProcessingRealisticQueue) {
-                window._isProcessingRealisticQueue = false;
-                if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
-                    processRealisticQueue(window._realisticGeminiVersion || 0);
+            // 只有当前 owner 仍然匹配时，才说明处理中没有被外部路径接管。
+            // 这时才允许当前实例释放 owner/lock 并决定是否继续拉起下一轮处理。
+            if (window._realisticProcessingOwner === processingOwner) {
+                window._realisticProcessingOwner = null;
+                if (window._isProcessingRealisticQueue) {
+                    window._isProcessingRealisticQueue = false;
+                    if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
+                        processRealisticQueue(window._realisticGeminiVersion || 0);
+                    }
                 }
             }
         }
@@ -788,11 +858,7 @@
                 window.currentTurnGeminiBubbles = window.currentTurnGeminiBubbles || [];
                 window.currentTurnGeminiBubbles.push(msgDiv);
 
-                if (isFirstAIResponse) {
-                    isFirstAIResponse = false;
-                    console.log(window.t('console.aiFirstReplyDetected'));
-                    checkAndUnlockFirstDialogueAchievement();
-                }
+                markAssistantVisibleResponse();
                 return;
             }
 
@@ -935,14 +1001,9 @@
                 // ========== 追踪本轮气泡 ==========
                 window.currentTurnGeminiBubbles.push(messageDiv);
                 createdVisibleBubble = true;
+                markAssistantVisibleResponse();
             } else {
                 window.currentGeminiMessage = null;
-            }
-
-            if (isFirstAIResponse) {
-                isFirstAIResponse = false;
-                console.log(window.t('console.aiFirstReplyDetected'));
-                checkAndUnlockFirstDialogueAchievement();
             }
         } else if (sender === 'gemini' && isMergeMessagesEnabled()) {
             // 【核心重构】不再依赖 isNewMessage 标志，而是根据"本轮是否已有气泡"来决策。
@@ -962,6 +1023,7 @@
                     window.currentTurnGeminiBubbles = window.currentTurnGeminiBubbles || [];
                     window.currentTurnGeminiBubbles.push(msgDiv);
                     createdVisibleBubble = true;
+                    markAssistantVisibleResponse();
                 } else {
                     // 仅有指令无文本，继续保持指针为空，直到出现有意义的文本块
                     window.currentGeminiMessage = null;
@@ -1006,12 +1068,8 @@
                 window.currentTurnGeminiBubbles.push(newDiv);
                 createdVisibleBubble = true;
 
-                // 如果是AI第一次回复，更新状态并检查成就
-                if (isFirstAIResponse) {
-                    isFirstAIResponse = false;
-                    console.log('\u68C0\u6D4B\u5230AI\u7B2C\u4E00\u6B21\u56DE\u590D');
-                    checkAndUnlockFirstDialogueAchievement();
-                }
+                // AI 可见回复出现时才尝试解锁首次对话成就
+                markAssistantVisibleResponse();
             }
         }
         // 仅在用户已处于底部附近时自动滚动（使用函数开头缓存的快照）
@@ -1029,6 +1087,7 @@
     mod.appendMessage = appendMessage;
     mod.appendReactUserMessage = appendReactUserMessage;
     mod.checkAndUnlockFirstDialogueAchievement = checkAndUnlockFirstDialogueAchievement;
+    mod.markAssistantVisibleResponse = markAssistantVisibleResponse;
     mod.setReactMessageStatus = setReactMessageStatus;
     mod.ensureUserDisplayName = ensureUserDisplayName;
 
@@ -1057,6 +1116,7 @@
 
     window.addEventListener('chat-avatar-preview-updated', refreshReactAssistantAvatars);
     window.addEventListener('chat-avatar-preview-cleared', refreshReactAssistantAvatars);
+    window.addEventListener('neko:tutorial-chat-identity-changed', refreshReactAssistantAvatars);
 
     // 音乐搜索纪元：向后兼容全局变量（原来定义在 app.js IIFE 外部的 currentMusicSearchEpoch）
     if (typeof window._musicSearchEpoch === 'undefined') {

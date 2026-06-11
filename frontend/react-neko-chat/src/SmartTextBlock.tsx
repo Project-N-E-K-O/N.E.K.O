@@ -4,6 +4,29 @@ import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 
+import { openExternalUrl } from './openExternal';
+
+function ExternalAnchor(props: React.ComponentPropsWithoutRef<'a'>) {
+  const { href, onClick, children, ...rest } = props;
+  return (
+    <a
+      {...rest}
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      onClick={(event) => {
+        if (onClick) onClick(event);
+        if (event.defaultPrevented) return;
+        if (!href) return;
+        event.preventDefault();
+        openExternalUrl(href);
+      }}
+    >
+      {children}
+    </a>
+  );
+}
+
 function looksLikeRichText(text: string) {
   return (
     /```[\s\S]*```/.test(text)
@@ -93,7 +116,19 @@ function StreamingText({ text }: { text: string }) {
   );
 }
 
-export default function SmartTextBlock({ text, isStreaming }: { text: string; isStreaming?: boolean }) {
+export default function SmartTextBlock({
+  text,
+  isStreaming,
+  disableStreamingReveal,
+}: {
+  text: string;
+  isStreaming?: boolean;
+  disableStreamingReveal?: boolean;
+}) {
+  if (isStreaming && disableStreamingReveal) {
+    return <div className="message-block message-block-text">{text}</div>;
+  }
+
   // Streaming: always use StreamingText for per-batch fade-in, regardless of
   // markdown content.  Once streaming ends, fall through to markdown rendering.
   if (isStreaming) {
@@ -111,7 +146,7 @@ export default function SmartTextBlock({ text, isStreaming }: { text: string; is
         rehypePlugins={[rehypeKatex]}
         components={{
           code: CodeBlock,
-          a: (props: React.ComponentPropsWithoutRef<'a'>) => <a {...props} target="_blank" rel="noreferrer" />,
+          a: ExternalAnchor,
         }}
       >
         {text}

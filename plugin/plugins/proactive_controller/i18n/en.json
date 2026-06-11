@@ -1,0 +1,4 @@
+{
+  "plugin.name": "Proactive Chat Controller",
+  "plugin.description": "System-level control plane for proactive-chat mode and frequency. Other plugins can call its entries (set_mode, set_settings, get_state, command) to centrally drive how/when the AI initiates conversation."
+}

@@ -1,4 +1,5 @@
 import copy
+import contextlib
 import json
 import shutil
 import sqlite3
@@ -24,6 +25,11 @@ def _make_config_manager(
         patch.object(ConfigManager, "_get_documents_directory", return_value=tmp_path),
         patch.object(
             ConfigManager,
+            "_get_standard_data_directory_candidates",
+            return_value=[tmp_path],
+        ),
+        patch.object(
+            ConfigManager,
             "get_legacy_app_root_candidates",
             return_value=list(legacy_candidates),
         ),
@@ -31,15 +37,14 @@ def _make_config_manager(
     if platform is not None:
         patchers.append(patch("utils.config_manager.sys.platform", platform))
 
-    with patchers[0], patchers[1]:
-        if len(patchers) == 2:
-            config_manager = ConfigManager("N.E.K.O")
-            config_manager.get_legacy_app_root_candidates = lambda: list(legacy_candidates)
-            return config_manager
-        with patchers[2]:
-            config_manager = ConfigManager("N.E.K.O")
-            config_manager.get_legacy_app_root_candidates = lambda: list(legacy_candidates)
-            return config_manager
+    with contextlib.ExitStack() as stack:
+        for patcher in patchers:
+            stack.enter_context(patcher)
+        config_manager = ConfigManager("N.E.K.O")
+
+    config_manager.get_legacy_app_root_candidates = lambda: list(legacy_candidates)
+    config_manager._get_standard_data_directory_candidates = lambda: [tmp_path]
+    return config_manager
 
 
 def _write_runtime_state(cm, *, character_name="小满"):
@@ -90,6 +95,32 @@ def _write_runtime_state(cm, *, character_name="小满"):
     return characters
 
 
+@pytest.mark.unit
+def test_resolve_managed_target_path_rejects_traversal(tmp_path):
+    from utils.cloudsave_runtime import _resolve_managed_target_path
+
+    cm = _make_config_manager(tmp_path)
+
+    with pytest.raises(ValueError):
+        _resolve_managed_target_path(cm, "anchor/../../outside.txt")
+    with pytest.raises(ValueError):
+        _resolve_managed_target_path(cm, "/absolute/outside.txt")
+
+    resolved = _resolve_managed_target_path(cm, "runtime/config/characters.json")
+    assert resolved == (cm.app_docs_dir / "config" / "characters.json").resolve(strict=False)
+
+
+@pytest.mark.unit
+def test_managed_target_relative_path_prefers_nested_anchor_root(tmp_path):
+    from utils.cloudsave_runtime import _managed_target_relative_path
+
+    cm = _make_config_manager(tmp_path)
+    cm.anchor_root = cm.app_docs_dir / "anchor" / "N.E.K.O"
+    target_path = cm.anchor_root / "state" / "storage_policy.json"
+
+    assert _managed_target_relative_path(cm, target_path) == Path("anchor/state/storage_policy.json")
+
+
 def _add_runtime_character(cm, character_name: str, *, recent_text: str) -> None:
     from utils.config_manager import set_reserved
 
@@ -133,6 +164,23 @@ def test_bootstrap_creates_manifest_and_legacy_state(tmp_path):
 
 
 @pytest.mark.unit
+def test_bootstrap_reports_local_state_directory_diagnostic(tmp_path):
+    cm = _make_config_manager(tmp_path)
+    cm.anchor_root.write_text("not a directory", encoding="utf-8")
+
+    from utils.cloudsave_runtime import bootstrap_local_cloudsave_environment
+    from utils.config_manager import LocalStateDirectoryError
+
+    with pytest.raises(LocalStateDirectoryError) as exc_info:
+        bootstrap_local_cloudsave_environment(cm)
+
+    message = str(exc_info.value)
+    assert "Failed to ensure local state directory before preparing local cloudsave state" in message
+    assert f"anchor_root={cm.anchor_root.resolve()}" in message
+    assert "not a directory" in message
+
+
+@pytest.mark.unit
 def test_bootstrap_imports_legacy_root_after_seed_migration(tmp_path):
     new_root_base = tmp_path / "new_root_base"
     legacy_root = tmp_path / "legacy_docs" / "N.E.K.O"
@@ -151,7 +199,12 @@ def test_bootstrap_imports_legacy_root_after_seed_migration(tmp_path):
     atomic_write_json(legacy_config_dir / "characters.json", legacy_characters, ensure_ascii=False, indent=2)
     atomic_write_json(legacy_config_dir / "user_preferences.json", [{"model_path": "/legacy.model3.json", "scale": {"x": 2, "y": 2}}], ensure_ascii=False, indent=2)
     atomic_write_json(legacy_config_dir / "voice_storage.json", {"legacy_bucket": {"voice_a": {"name": "旧音色"}}}, ensure_ascii=False, indent=2)
-    atomic_write_json(legacy_config_dir / "workshop_config.json", {"default_workshop_folder": "/legacy/workshop"}, ensure_ascii=False, indent=2)
+    atomic_write_json(
+        legacy_config_dir / "workshop_config.json",
+        {"default_workshop_folder": str(legacy_root / "workshop")},
+        ensure_ascii=False,
+        indent=2,
+    )
     atomic_write_json(legacy_config_dir / "core_config.json", {"recent_memory_auto_review": False}, ensure_ascii=False, indent=2)
     atomic_write_json(legacy_memory_dir / "recent.json", [{"role": "user", "content": "旧记忆"}], ensure_ascii=False, indent=2)
     (legacy_root / "live2d" / "legacy_model").mkdir(parents=True, exist_ok=True)
@@ -178,6 +231,8 @@ def test_bootstrap_imports_legacy_root_after_seed_migration(tmp_path):
     assert Path(cm.get_config_path("user_preferences.json")).is_file()
     assert Path(cm.get_config_path("voice_storage.json")).is_file()
     assert Path(cm.get_config_path("workshop_config.json")).is_file()
+    migrated_workshop_config = json.loads(Path(cm.get_config_path("workshop_config.json")).read_text(encoding="utf-8"))
+    assert migrated_workshop_config["default_workshop_folder"] == str(cm.workshop_dir)
     assert Path(cm.get_config_path("core_config.json")).is_file()
     assert (cm.live2d_dir / "legacy_model" / "legacy_model.model3.json").is_file()
     assert cm.root_state_path.is_file()
@@ -537,6 +592,128 @@ def test_bootstrap_recovers_stale_blocking_mode(tmp_path):
 
 
 @pytest.mark.unit
+def test_bootstrap_preserves_deferred_init_mode(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import ROOT_MODE_DEFERRED_INIT, bootstrap_local_cloudsave_environment
+
+    cm.ensure_cloudsave_state_files()
+    root_state = cm.load_root_state()
+    unavailable_root = tmp_path / "offline-selected" / "N.E.K.O"
+    root_state["mode"] = ROOT_MODE_DEFERRED_INIT
+    root_state["current_root"] = str(unavailable_root)
+    root_state["last_known_good_root"] = str(unavailable_root)
+    root_state["last_migration_result"] = f"selected_root_unavailable:{unavailable_root}"
+    cm.save_root_state(root_state)
+
+    result = bootstrap_local_cloudsave_environment(cm)
+
+    assert result["root_state"]["mode"] == ROOT_MODE_DEFERRED_INIT
+    assert result["root_state"]["current_root"] == str(unavailable_root)
+    assert result["root_state"]["last_known_good_root"] == str(unavailable_root)
+    assert result["root_state"]["last_migration_result"] == f"selected_root_unavailable:{unavailable_root}"
+
+
+@pytest.mark.unit
+def test_bootstrap_preserves_restart_pending_maintenance_mode(tmp_path):
+    cm = _make_config_manager(tmp_path)
+    anchor_base = tmp_path / "anchor-base"
+    anchor_base.mkdir(parents=True, exist_ok=True)
+    cm._get_standard_data_directory_candidates = lambda: [anchor_base]
+
+    from utils.cloudsave_runtime import (
+        ROOT_MODE_MAINTENANCE_READONLY,
+        bootstrap_local_cloudsave_environment,
+        set_root_mode,
+    )
+    from utils.storage_migration import create_pending_storage_migration
+
+    create_pending_storage_migration(
+        cm,
+        source_root=cm.app_docs_dir,
+        target_root=tmp_path / "target-root" / "N.E.K.O",
+        selection_source="custom",
+    )
+    set_root_mode(
+        cm,
+        ROOT_MODE_MAINTENANCE_READONLY,
+        last_migration_source=str(cm.app_docs_dir),
+        last_migration_result=f"restart_pending:{tmp_path / 'target-root' / 'N.E.K.O'}",
+    )
+
+    result = bootstrap_local_cloudsave_environment(cm)
+
+    assert result["root_state"]["mode"] == ROOT_MODE_MAINTENANCE_READONLY
+    assert result["root_state"]["last_migration_result"].startswith("restart_pending:")
+
+
+@pytest.mark.unit
+def test_write_blocking_recovery_fails_closed_when_migration_checkpoint_cannot_load(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils import cloudsave_runtime as cloudsave_runtime_module
+    from utils.cloudsave_runtime import ROOT_MODE_MAINTENANCE_READONLY
+
+    root_state = {
+        "mode": ROOT_MODE_MAINTENANCE_READONLY,
+        "last_migration_result": "restart_pending_missing_marker",
+    }
+
+    with patch("utils.storage_migration.load_storage_migration", side_effect=OSError("unreadable")):
+        assert cloudsave_runtime_module._should_preserve_write_blocking_mode(cm, root_state) is True
+
+
+@pytest.mark.unit
+def test_bootstrap_heals_orphan_restart_pending_marker(tmp_path):
+    """``restart_pending:`` marker 残留 + 没有真 pending 的 storage_migration.json
+    时，bootstrap 必须把 mode 自愈回 normal——否则用户撞到 fire-and-forget
+    shutdown / launcher 接力失败 / 强杀 等任一场景就会被永久钉在 readonly，
+    memory server 所有写盘静默失败（见 time_indexed.db 不更新导致 gap 永远算成
+    3 天以上的 bug 报告）。
+
+    与 ``test_bootstrap_preserves_restart_pending_maintenance_mode`` 对偶：那个
+    用例创建了真 pending 的 migration checkpoint，本用例只留 marker。
+    """
+    cm = _make_config_manager(tmp_path)
+    anchor_base = tmp_path / "anchor-base"
+    anchor_base.mkdir(parents=True, exist_ok=True)
+    cm._get_standard_data_directory_candidates = lambda: [anchor_base]
+
+    from utils.cloudsave_runtime import (
+        ROOT_MODE_MAINTENANCE_READONLY,
+        ROOT_MODE_NORMAL,
+        bootstrap_local_cloudsave_environment,
+        set_root_mode,
+    )
+
+    set_root_mode(
+        cm,
+        ROOT_MODE_MAINTENANCE_READONLY,
+        last_migration_source=str(cm.app_docs_dir),
+        last_migration_result=f"restart_pending:{tmp_path / 'orphan-target'}",
+    )
+
+    result = bootstrap_local_cloudsave_environment(cm)
+
+    assert result["root_state"]["mode"] == ROOT_MODE_NORMAL
+    # _recover_stale_write_blocking_mode 写入的标记，方便运维从日志/state 追溯
+    assert result["root_state"]["last_migration_result"].startswith("recovered_stale_mode:")
+
+
+@pytest.mark.unit
+def test_should_write_root_mode_normal_after_startup_only_when_mode_is_normal():
+    from utils.cloudsave_runtime import (
+        ROOT_MODE_DEFERRED_INIT,
+        ROOT_MODE_MAINTENANCE_READONLY,
+        should_write_root_mode_normal_after_startup,
+    )
+
+    assert should_write_root_mode_normal_after_startup({"mode": "normal"}) is True
+    assert should_write_root_mode_normal_after_startup({"mode": ROOT_MODE_DEFERRED_INIT}) is False
+    assert should_write_root_mode_normal_after_startup({"mode": ROOT_MODE_MAINTENANCE_READONLY}) is False
+
+
+@pytest.mark.unit
 def test_bootstrap_does_not_clear_active_fence_in_same_process(tmp_path):
     cm = _make_config_manager(tmp_path)
 
@@ -574,6 +751,87 @@ def test_cloud_apply_fence_blocks_core_writes(tmp_path):
                 cm.save_workshop_config({"default_workshop_folder": "/tmp/workshop", "auto_create_folder": True})
             with pytest.raises(MaintenanceModeError):
                 preferences.save_global_conversation_settings({"userLanguage": "en-US"})
+
+
+@pytest.mark.unit
+def test_cloud_apply_fence_reports_local_state_directory_diagnostic(tmp_path):
+    cm = _make_config_manager(tmp_path)
+    cm.anchor_root.mkdir(parents=True, exist_ok=True)
+    cm.local_state_dir.write_text("not a directory", encoding="utf-8")
+
+    from utils.cloudsave_runtime import cloud_apply_fence
+    from utils.config_manager import LocalStateDirectoryError
+
+    with pytest.raises(LocalStateDirectoryError) as exc_info:
+        with cloud_apply_fence(cm):
+            pass
+
+    message = str(exc_info.value)
+    assert "Failed to ensure local state directory before entering cloud_apply_fence" in message
+    assert f"local_state_dir={cm.local_state_dir.resolve()}" in message
+    assert "not a directory" in message
+
+
+@pytest.mark.unit
+def test_cloud_apply_fence_reports_root_state_file_blocker(tmp_path):
+    cm = _make_config_manager(tmp_path)
+    cm.local_state_dir.mkdir(parents=True, exist_ok=True)
+    cm.root_state_path.mkdir()
+
+    from utils.cloudsave_runtime import cloud_apply_fence
+    from utils.config_manager import LocalStateDirectoryError
+
+    with pytest.raises(LocalStateDirectoryError) as exc_info:
+        with cloud_apply_fence(cm):
+            pass
+
+    message = str(exc_info.value)
+    assert "Failed to ensure local state file before loading root_state" in message
+    assert f"failed_path={cm.root_state_path.resolve()}" in message
+    assert "state file target exists but is not a file" in message
+
+
+@pytest.mark.unit
+def test_cloudsave_disabled_mode_disables_provider_and_write_fence(monkeypatch, tmp_path):
+    cm = _make_config_manager(tmp_path)
+    cm.local_state_dir.mkdir(parents=True, exist_ok=True)
+    cm.root_state_path.mkdir()
+
+    from utils.cloudsave_runtime import (
+        CLOUDSAVE_DISABLED_ENV,
+        assert_cloudsave_writable,
+        is_cloudsave_provider_available,
+    )
+
+    monkeypatch.setenv(CLOUDSAVE_DISABLED_ENV, "local_state_unavailable")
+
+    assert is_cloudsave_provider_available(cm) is False
+    assert_cloudsave_writable(cm, operation="save", target="characters.json")
+
+    from utils.cloudsave_runtime import build_cloudsave_summary
+
+    summary = build_cloudsave_summary(cm)
+    assert summary["success"] is True
+    assert summary["provider_available"] is False
+
+
+@pytest.mark.unit
+def test_non_local_state_cloudsave_disabled_reason_does_not_bypass_write_fence(monkeypatch, tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import (
+        CLOUDSAVE_DISABLED_ENV,
+        MaintenanceModeError,
+        ROOT_MODE_MAINTENANCE_READONLY,
+        assert_cloudsave_writable,
+        set_root_mode,
+    )
+
+    set_root_mode(cm, ROOT_MODE_MAINTENANCE_READONLY)
+    monkeypatch.setenv(CLOUDSAVE_DISABLED_ENV, "manual_disabled")
+
+    with pytest.raises(MaintenanceModeError):
+        assert_cloudsave_writable(cm, operation="save", target="characters.json")
 
 
 @pytest.mark.unit

@@ -30,7 +30,54 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // 更新语言包内容时可以递增此值
-    const LOCALE_VERSION = '2026-04-22-1';
+    const LOCALE_VERSION = '2026-05-03-1';
+
+    function initDecorativeImageDragGuard() {
+        const markImage = (img) => {
+            if (!(img instanceof HTMLImageElement)) return;
+            img.draggable = false;
+            img.setAttribute('draggable', 'false');
+        };
+
+        const markImages = (root = document) => {
+            if (root instanceof HTMLImageElement) {
+                markImage(root);
+                return;
+            }
+            if (!root.querySelectorAll) return;
+            root.querySelectorAll('img').forEach(markImage);
+        };
+
+        const start = () => {
+            markImages(document);
+
+            document.addEventListener('dragstart', (event) => {
+                const target = event.target;
+                if (target instanceof HTMLImageElement) {
+                    event.preventDefault();
+                }
+            }, true);
+
+            const observer = new MutationObserver((mutations) => {
+                mutations.forEach((mutation) => {
+                    mutation.addedNodes.forEach((node) => {
+                        if (node instanceof Element) {
+                            markImages(node);
+                        }
+                    });
+                });
+            });
+            observer.observe(document.documentElement, { childList: true, subtree: true });
+        };
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', start, { once: true });
+        } else {
+            start();
+        }
+    }
+
+    initDecorativeImageDragGuard();
 
     function getLanguageFromQuery() {
         try {
@@ -892,6 +939,37 @@
      * @param {string|object} message - Error message string or structured error object
      * @returns {string} Translated message
      */
+    function looksLikeApiKeyRejected(message) {
+        var parts = [];
+        if (typeof message === 'string') {
+            parts.push(message);
+        } else if (message && typeof message === 'object') {
+            parts.push(message.code || '', message.message || '');
+            if (message.details && typeof message.details === 'object') {
+                parts.push(
+                    message.details.error || '',
+                    message.details.msg || '',
+                    message.details.error_type || ''
+                );
+            }
+        }
+        var text = parts.join(' ').toLowerCase();
+        return text.indexOf('incorrect api key') !== -1 ||
+            text.indexOf('incorect api key') !== -1 ||
+            text.indexOf('invalid_api_key') !== -1 ||
+            text.indexOf('invalid api key') !== -1 ||
+            (
+                text.indexOf('authenticationerror') !== -1 &&
+                (
+                    text.indexOf('api key') !== -1 ||
+                    text.indexOf('invalid_api_key') !== -1 ||
+                    text.indexOf('invalid api key') !== -1 ||
+                    text.indexOf('incorrect api key') !== -1 ||
+                    text.indexOf('incorect api key') !== -1
+                )
+            );
+    }
+
     function translateStatusMessage(message) {
         // Attempt to parse JSON strings into objects
         if (typeof message === 'string') {
@@ -903,6 +981,10 @@
             } catch (e) {
                 // Not valid JSON, keep as string
             }
+        }
+
+        if (looksLikeApiKeyRejected(message)) {
+            return i18next.t('errors.API_KEY_REJECTED');
         }
 
         // Support structured error objects: {"code": "XXX", "details": {...}}

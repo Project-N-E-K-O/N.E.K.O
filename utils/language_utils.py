@@ -20,6 +20,7 @@ from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
+from utils.steam_state import get_steamworks
 
 logger = get_module_logger(__name__)
 
@@ -50,6 +51,40 @@ def _matches_lang_code(lang_lower: str, code: str, aliases: Optional[set] = None
         or lang_lower.startswith(f'{code}_')
         or lang_lower in aliases
     )
+
+
+_SUPPORTED_LANGUAGE_CODES: tuple = ('zh', 'en', 'ja', 'ko', 'ru', 'es', 'pt')
+_SUPPORTED_STEAM_LITERALS: frozenset = frozenset({
+    'schinese', 'tchinese', 'english', 'japanese',
+    'koreana', 'korean', 'russian', 'spanish', 'latam',
+    'portuguese', 'brazilian',
+})
+
+
+def is_supported_language_code(raw: Any) -> bool:
+    """判断原始输入是否落在 ``normalize_language_code`` 真正能识别的支持集合内。
+
+    背景：``normalize_language_code`` 对未识别的输入会默认回退到 ``'en'``，让 garbage
+    （``'undefined'`` / ``'estonian'`` / 空白）被静默当作英文写入下游状态（全局缓存
+    或 ``mgr.user_language``）。所有"接受请求体语言再回写状态"的入口（例如
+    ``refresh_global_language`` / ``_absorb_request_language``）必须先用此 helper
+    把输入挡在外面，再调归一化。
+
+    支持集合 = 与 ``normalize_language_code`` 实际真识别的码 / Steam literal 一致；
+    用 ``_matches_lang_code`` 而不是 ``startswith`` 避免 ``estonian`` / ``ptsd`` /
+    ``essential`` 这种无意义前缀通过校验。
+    """
+    if not raw:
+        return False
+    try:
+        s = str(raw).strip().lower()
+    except Exception:
+        return False
+    if not s:
+        return False
+    if s in _SUPPORTED_STEAM_LITERALS:
+        return True
+    return any(_matches_lang_code(s, code) for code in _SUPPORTED_LANGUAGE_CODES)
 
 
 def _is_china_region() -> bool:
@@ -159,8 +194,6 @@ def _get_steam_language() -> Optional[str]:
         语言代码 ('zh', 'en', 'ja', 'ko', 'ru')，如果无法获取则返回 None
     """
     try:
-        from main_routers.shared_state import get_steamworks
-
         steamworks = get_steamworks()
         if steamworks is None:
             return None
@@ -311,6 +344,75 @@ def set_global_language(language: str) -> None:
         logger.info(f"全局语言已手动设置为: {_global_language} (full: {_global_language_full})")
 
 
+def refresh_global_language(language: str) -> bool:
+    """重新校准全局语言缓存（用于晚到的真值，例如 Steam SDK 启动期 race 失败后才拿到）。
+
+    与 ``set_global_language`` 的区别：
+    - 静默 no-op：若归一化后值与当前缓存相同，直接返回 ``False``，不打 INFO 日志
+      （前端 i18n bootstrap 会调 ``/api/config/steam_language``，每次冷启都触发刷新，
+      不应每次都刷屏）。
+    - 仅当值不同 / 缓存未初始化时才覆盖并 log。
+
+    设计动机：``initialize_global_language`` 在进程启动时只跑一次，Steam SDK 没就绪
+    就退化到系统 locale 然后**终生缓存**；前端的 ``/api/config/steam_language`` 端点
+    每次重读 Steam 拿得到对的值，但没有路径回写到全局缓存——所有依赖
+    ``get_global_language()`` 的下游（memory / reflection / tts / soccer 兜底等）就
+    一直用错的英文。该函数就是这条回写路径。
+
+    Returns:
+        ``True`` 表示发生了真实变更；``False`` 表示已是最新或参数无效。
+    """
+    global _global_language, _global_language_full, _global_region, _global_language_initialized
+
+    if not language:
+        return False
+
+    # 用 ``is_supported_language_code`` 把 garbage / ``'undefined'`` / ``'estonian'``
+    # 等未识别值挡在外面：normalize 对未识别输入会默认回退到 ``'en'``，会静默把缓存
+    # 误覆盖，违背"无效就 no-op"的契约。
+    if not is_supported_language_code(language):
+        return False
+    raw = language.strip().lower()
+
+    short = normalize_language_code(raw, format='short')
+    full = normalize_language_code(raw, format='full')
+    if not short:
+        return False
+
+    with _global_language_lock:
+        # ``_global_region is not None`` 也要 hold，否则 ``set_global_language`` 这条
+        # pre-existing 路径（只置 ``_global_language_initialized=True``、不碰 region）
+        # 留下的 ``language=short, region=None`` 状态会让本次 refresh 走早 return，
+        # 漏掉 region 自愈，``get_global_region`` 永久卡 ``'non-china'`` fallback。
+        if (_global_language_initialized
+                and _global_language == short
+                and _global_language_full == full
+                and _global_region is not None):
+            return False
+        prev_short = _global_language
+        prev_full = _global_language_full
+        _global_language = short
+        _global_language_full = full
+        # _global_region 必须和 _global_language_initialized 同时建立：``get_global_region``
+        # 看到 region 为 None 才会再调 ``initialize_global_language``，但后者一旦看到
+        # initialized=True 就 early-return，会把 region 永久卡在 None → 'non-china'
+        # fallback。startup 路径正常会先初始化 region；但 startup 异常 / 测试 / 子进程
+        # 等场景下若 refresh 先于 init 跑到这里，必须自补 region 来维持不变量。
+        if _global_region is None:
+            try:
+                _global_region = 'china' if _is_china_region() else 'non-china'
+                logger.info(f"系统区域判断（refresh 路径补齐）: {_global_region}")
+            except Exception:
+                _global_region = 'non-china'
+                logger.debug("refresh_global_language 补齐 region 失败，回落 non-china", exc_info=True)
+        _global_language_initialized = True
+        logger.info(
+            f"全局语言已刷新（晚到真值覆盖）: {prev_short} -> {short} "
+            f"(full: {prev_full} -> {full})"
+        )
+    return True
+
+
 def get_global_region() -> str:
     """
     获取全局区域标识
@@ -450,45 +552,83 @@ def normalize_language_code(lang: str, format: str = 'short') -> str:
 # 语言检测和翻译部分（原 language_utils.py）
 # ============================================================================
 
-# 尝试导入 googletrans
-try:
-    from googletrans import Translator
-    GOOGLETRANS_AVAILABLE = True
-    logger.debug("googletrans 导入成功")
-except ImportError as e:
-    GOOGLETRANS_AVAILABLE = False
-    logger.warning(f"googletrans 导入失败（未安装）: {e}，将跳过 Google 翻译")
-except Exception as e:
-    GOOGLETRANS_AVAILABLE = False
-    logger.warning(f"googletrans 导入失败（其他错误）: {e}，将跳过 Google 翻译")
+# 翻译后端懒加载：translatepy（~0.2s，含各翻译器的语言数据表）和 googletrans
+# 都只在真正翻译时才需要，不在 greeting 链上。改成首次使用时再 import，并由
+# utils.module_warmup 在 ready 后预热，使启动链不付这笔钱。
+Translator = None  # googletrans.Translator
+TranslatepyTranslator = None
+CHINA_ACCESSIBLE_SERVICES = None
+GOOGLETRANS_AVAILABLE: bool | None = None  # None = 尚未尝试导入
+TRANSLATEPY_AVAILABLE: bool | None = None
 
-# 尝试导入 translatepy
-try:
-    from translatepy import Translator as TranslatepyTranslator
-    # 导入在中国大陆可直接访问的翻译服务
-    from translatepy.translators.microsoft import MicrosoftTranslate
-    from translatepy.translators.bing import BingTranslate
-    from translatepy.translators.reverso import ReversoTranslate
-    from translatepy.translators.libre import LibreTranslate
-    from translatepy.translators.mymemory import MyMemoryTranslate
-    from translatepy.translators.translatecom import TranslateComTranslate
-    # 定义在中国大陆可直接访问的翻译服务列表（排除需要代理的 Google、Yandex、DeepL）
-    CHINA_ACCESSIBLE_SERVICES = [
-        MicrosoftTranslate,
-        BingTranslate,
-        ReversoTranslate,
-        LibreTranslate,
-        MyMemoryTranslate,
-        TranslateComTranslate,
-    ]
-    TRANSLATEPY_AVAILABLE = True
-    logger.debug("translatepy 导入成功，已配置中国大陆可访问的翻译服务")
-except ImportError as e:
-    TRANSLATEPY_AVAILABLE = False
-    logger.warning(f"translatepy 导入失败（未安装）: {e}，将跳过 translatepy 翻译")
-except Exception as e:
-    TRANSLATEPY_AVAILABLE = False
-    logger.warning(f"translatepy 导入失败（其他错误）: {e}，将跳过 translatepy 翻译")
+
+def _ensure_googletrans() -> bool:
+    """首次调用时 import googletrans，缓存结果。返回是否可用。"""
+    global Translator, GOOGLETRANS_AVAILABLE
+    # 显式强制不可用优先 → 降级。
+    if GOOGLETRANS_AVAILABLE is False:
+        return False
+    # 已注入/导入过 Translator → 信任，不重导入。
+    if Translator is not None:
+        GOOGLETRANS_AVAILABLE = True
+        return True
+    try:
+        from googletrans import Translator as _GTrans
+        # 只补缺失，保住测试可能注入的 Translator mock。
+        if Translator is None:
+            Translator = _GTrans
+        GOOGLETRANS_AVAILABLE = True
+        logger.debug("googletrans 导入成功")
+    except ImportError as e:
+        GOOGLETRANS_AVAILABLE = False
+        logger.warning(f"googletrans 导入失败（未安装）: {e}，将跳过 Google 翻译")
+    except Exception as e:
+        GOOGLETRANS_AVAILABLE = False
+        logger.warning(f"googletrans 导入失败（其他错误）: {e}，将跳过 Google 翻译")
+    return GOOGLETRANS_AVAILABLE
+
+
+def _ensure_translatepy() -> bool:
+    """首次调用时 import translatepy 及中国大陆可访问的翻译器，缓存结果。"""
+    global TranslatepyTranslator, CHINA_ACCESSIBLE_SERVICES, TRANSLATEPY_AVAILABLE
+    # 显式强制不可用优先 → 降级。
+    if TRANSLATEPY_AVAILABLE is False:
+        return False
+    # 已注入/导入过（翻译器 + 服务列表都就位）→ 信任，不重导入。
+    if TranslatepyTranslator is not None and CHINA_ACCESSIBLE_SERVICES is not None:
+        TRANSLATEPY_AVAILABLE = True
+        return True
+    try:
+        from translatepy import Translator as _TPyTrans
+        # 导入在中国大陆可直接访问的翻译服务
+        from translatepy.translators.microsoft import MicrosoftTranslate
+        from translatepy.translators.bing import BingTranslate
+        from translatepy.translators.reverso import ReversoTranslate
+        from translatepy.translators.libre import LibreTranslate
+        from translatepy.translators.mymemory import MyMemoryTranslate
+        from translatepy.translators.translatecom import TranslateComTranslate
+        # 只补缺失，保住测试可能注入的 TranslatepyTranslator / 服务列表 mock。
+        if TranslatepyTranslator is None:
+            TranslatepyTranslator = _TPyTrans
+        if CHINA_ACCESSIBLE_SERVICES is None:
+            # 中国大陆可直接访问的翻译服务（排除需要代理的 Google、Yandex、DeepL）
+            CHINA_ACCESSIBLE_SERVICES = [
+                MicrosoftTranslate,
+                BingTranslate,
+                ReversoTranslate,
+                LibreTranslate,
+                MyMemoryTranslate,
+                TranslateComTranslate,
+            ]
+        TRANSLATEPY_AVAILABLE = True
+        logger.debug("translatepy 导入成功，已配置中国大陆可访问的翻译服务")
+    except ImportError as e:
+        TRANSLATEPY_AVAILABLE = False
+        logger.warning(f"translatepy 导入失败（未安装）: {e}，将跳过 translatepy 翻译")
+    except Exception as e:
+        TRANSLATEPY_AVAILABLE = False
+        logger.warning(f"translatepy 导入失败（其他错误）: {e}，将跳过 translatepy 翻译")
+    return TRANSLATEPY_AVAILABLE
 
 # 进程级 Google 翻译失败标记：一旦 Google 在本进程内失败过一次，
 # 后续直接跳过 Google，避免每个请求都等满超时。前端的 skip_google
@@ -555,6 +695,35 @@ def detect_tts_language_hint(text: str) -> Optional[str]:
     return None
 
 
+# lanlan.app（海外免费 Gemini 代理）streaming-TTS / realtime 用的 language_code。
+# BCP-47 风格（cmn=普通话）。TTS server 与 core/realtime 两条路共用，建 session
+# 时一次性指定。日语另由 lang_hint 覆盖成 'ja-JP'。
+TTS_LANGUAGE_CODE_MAP = {
+    'zh':    'cmn-CN',
+    'zh-CN': 'cmn-CN',
+    'zh-TW': 'cmn-tw',
+    'en':    'en-US',
+    'ja':    'ja-JP',
+    'ko':    'ko-KR',
+    'pt':    'pt-BR',
+    'es':    'es-ES',
+    'fr':    'fr-FR',
+    'de':    'de-DE',
+    'it':    'it-IT',
+    'ru':    'ru-RU',
+    'tr':    'tr-TR',
+}
+
+
+def get_tts_language_code() -> str:
+    """按当前全局语言返回 lanlan.app 所需的 language_code，兜底 'cmn-CN'。"""
+    try:
+        lang = normalize_language_code(get_global_language_full(), format='full')
+    except Exception:
+        lang = 'zh-CN'
+    return TTS_LANGUAGE_CODE_MAP.get(lang, 'cmn-CN')
+
+
 def _split_text_into_chunks(text: str, max_chunk_size: int) -> List[str]:
     """
     将文本分段，尝试在句号、换行符等位置分割
@@ -618,9 +787,9 @@ async def translate_with_translatepy(text: str, source_lang: str, target_lang: s
     Returns:
         翻译后的文本，失败时返回 None
     """
-    if not text or not text.strip() or not TRANSLATEPY_AVAILABLE:
+    if not text or not text.strip() or not _ensure_translatepy():
         return None
-    
+
     try:
         # translatepy 的语言代码映射（translatepy 支持多种语言名称和代码）
         TRANSLATEPY_LANG_MAP = {
@@ -682,8 +851,9 @@ async def translate_with_translatepy(text: str, source_lang: str, target_lang: s
             except Exception:
                 return None
         
-        # 如果文本太长（超过5000字符），分段翻译
-        max_chunk_size = 5000
+        # 如果文本太长，分段翻译
+        from config import TRANSLATION_CHUNK_MAX_CHARS_SHORT
+        max_chunk_size = TRANSLATION_CHUNK_MAX_CHARS_SHORT
         chunks = _split_text_into_chunks(text, max_chunk_size)
         
         if len(chunks) > 1:
@@ -869,16 +1039,17 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
         Returns:
             翻译结果或 None（超时或失败时返回 None）
         """
-        if not GOOGLETRANS_AVAILABLE:
+        if not _ensure_googletrans():
             return None
-        
+
         try:
             translator = Translator()
             
             # 使用 asyncio.wait_for 实现超时机制
             async def _translate_internal():
-                # 如果文本太长（超过15k字符），分段翻译
-                max_chunk_size = 15000
+                # 如果文本太长，分段翻译
+                from config import TRANSLATION_CHUNK_MAX_CHARS_LONG
+                max_chunk_size = TRANSLATION_CHUNK_MAX_CHARS_LONG
                 chunks = _split_text_into_chunks(text, max_chunk_size)
                 
                 if len(chunks) > 1:
@@ -916,7 +1087,7 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
     if is_china:
         # 中文区：直接走 translatepy（不再尝试 Google，避免每次都等满超时）
         logger.debug("⏭️ [翻译服务] 中文区，直接使用 translatepy")
-        if TRANSLATEPY_AVAILABLE:
+        if _ensure_translatepy():
             # 拉丁脚本歧义文本：传 'unknown' 让 translatepy 走 auto-detect
             translatepy_source = 'unknown' if ambiguous_latin_source else source_lang
             logger.debug(f"🌐 [翻译服务] 尝试 translatepy (中文区): {translatepy_source} -> {target_lang}")
@@ -936,7 +1107,7 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
         # skip_google_effective 综合了调用方意愿与本进程的失败标记
         if skip_google_effective:
             logger.debug("⏭️ [翻译服务] 跳过 Google 翻译（已被标记不可用 / 调用方要求），直接使用 LLM 翻译")
-        elif GOOGLETRANS_AVAILABLE:
+        elif _ensure_googletrans():
             logger.debug(f"🌐 [翻译服务] 尝试 Google 翻译 (非中文区): {source_lang} -> {target_lang}")
             translated_text = await _try_google_translate()
             if translated_text:
@@ -956,7 +1127,7 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
         # 复用emotion模型配置
         emotion_config = config_manager.get_model_api_config('emotion')
         
-        from config.prompts_sys import (
+        from config.prompts.prompts_sys import (
             _loc, TRANSLATION_WATERMARK_START, TRANSLATION_WATERMARK_END,
             TRANSLATION_INSTRUCTION, TRANSLATION_REQUIREMENTS, TRANSLATION_LANG_NAMES,
         )
@@ -968,22 +1139,28 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
         llm = create_chat_llm(
             emotion_config['model'], emotion_config['base_url'],
             emotion_config['api_key'],
-            temperature=0.3, timeout=10.0,
+            timeout=10.0,
         )
 
         instruction = _loc(TRANSLATION_INSTRUCTION, lang).format(
             source_name=source_name, target_name=target_name)
         requirements = _loc(TRANSLATION_REQUIREMENTS, lang)
         system_prompt = f"{instruction}\n{TRANSLATION_WATERMARK_START}\n{requirements}\n{TRANSLATION_WATERMARK_END}"
-        
+
         messages = [
             SystemMessage(content=system_prompt),
             HumanMessage(content=text)
         ]
-        
+
         set_call_type("translation")
-        response = await llm.ainvoke(messages)
-        translated_text = response.content.strip()
+        # ad-hoc 客户端，每次请求新建 → 必须 aclose 释放底层 httpx 连接池，
+        # 与 memory/ 其它调用点的 try/finally 收尾对偶（缓存版客户端在
+        # TranslationService._llm_client 里复用，不走这条路径）。
+        try:
+            response = await llm.ainvoke(messages)
+            translated_text = response.content.strip()
+        finally:
+            await llm.aclose()
 
         logger.info(f"✅ [翻译服务] LLM翻译成功: {source_lang} -> {target_lang}")
         return translated_text, google_failed
@@ -1030,7 +1207,7 @@ async def get_user_language_async() -> str:
 # 缓存配置
 CACHE_MAX_SIZE = 1000
 SUPPORTED_LANGUAGES = ['zh', 'zh-CN', 'en', 'ja', 'ko', 'ru', 'es', 'pt']
-DEFAULT_LANGUAGE = 'zh-CN'
+DEFAULT_LANGUAGE = 'en'
 
 class TranslationService:
     """翻译服务类"""
@@ -1059,10 +1236,12 @@ class TranslationService:
             
             if self._llm_client is not None:
                 return self._llm_client
-            
+
+            from config import TRANSLATION_OUTPUT_MAX_TOKENS
             self._llm_client = create_chat_llm(
                 config['model'], config['base_url'], config['api_key'],
-                temperature=0.3, max_completion_tokens=2000, timeout=30.0,
+                max_completion_tokens=TRANSLATION_OUTPUT_MAX_TOKENS,
+                timeout=30.0,
             )
             
             return self._llm_client
@@ -1196,11 +1375,14 @@ class TranslationService:
 
             translated = response.content.strip()
             if not translated:
-                logger.warning(f"翻译服务：LLM返回空结果，使用原文: '{text[:50]}...'")
-                return text            
+                # 原文/译文都不写 logger
+                logger.warning(f"翻译服务：LLM返回空结果，使用原文 (text_len={len(text)})")
+                print(f"[翻译] LLM 空结果，原文: '{text[:50]}...'")
+                return text
             await self._save_to_cache(text, target_lang_normalized, translated)
-            
-            logger.debug(f"翻译服务：'{text[:50]}...' -> '{translated[:50]}...' ({target_lang})")
+
+            logger.debug(f"翻译服务：text_len={len(text)} -> translated_len={len(translated)} ({target_lang})")
+            print(f"[翻译] '{text[:50]}...' -> '{translated[:50]}...' ({target_lang})")
             return translated
             
         except Exception as e:

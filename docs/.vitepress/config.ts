@@ -9,20 +9,21 @@ function guideSidebar(lang: 'en' | 'zh-CN' | 'ja') {
     en: {
       group: 'Getting Started',
       intro: 'Introduction', prereq: 'Prerequisites', dev: 'Development Setup',
-      quick: 'Quick Start', struct: 'Project Structure',
+      quick: 'Quick Start', struct: 'Project Structure', linux: 'Linux Desktop Runtime',
     },
     'zh-CN': {
       group: '快速上手',
       intro: '简介', prereq: '前置条件', dev: '开发环境搭建',
-      quick: '快速开始', struct: '项目结构',
+      quick: '快速开始', struct: '项目结构', linux: 'Linux 桌面运行时',
     },
     ja: {
       group: 'はじめに',
       intro: 'はじめに', prereq: '前提条件', dev: '開発環境の構築',
-      quick: 'クイックスタート', struct: 'プロジェクト構造',
+      quick: 'クイックスタート', struct: 'プロジェクト構造', linux: 'Linux デスクトップランタイム',
     },
   }[lang]
   const p = lang === 'en' ? '' : `/${lang}`
+  const linuxDesktopItems = [{ text: t.linux, link: `${p}/guide/linux-desktop-runtime` }]
   return [
     {
       text: t.group,
@@ -31,6 +32,7 @@ function guideSidebar(lang: 'en' | 'zh-CN' | 'ja') {
         { text: t.prereq, link: `${p}/guide/prerequisites` },
         { text: t.dev, link: `${p}/guide/dev-setup` },
         { text: t.quick, link: `${p}/guide/quick-start` },
+        ...linuxDesktopItems,
         { text: t.struct, link: `${p}/guide/project-structure` },
       ],
     },
@@ -180,19 +182,28 @@ function modulesSidebar(lang: 'en' | 'zh-CN' | 'ja') {
 function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
   const t = {
     en: {
-      group: 'Plugin Development', overview: 'Overview', quick: 'Quick Start',
+      group: 'Plugin Development', overview: 'Overview',
+      journey: 'Getting Started', quick: 'Quick Start', base: 'Plugin Capabilities',
+      toml: 'Plugin Config (plugin.toml)',
+      entries: 'Entries & Parameters', router: 'Router (Code Splitting)', lifecycleCfg: 'Lifecycle',
       sdk: 'SDK Reference', dec: 'Decorators', ex: 'Examples', adv: 'Advanced Topics',
-      best: 'Best Practices',
+      hosted: 'Hosted UI', tool: 'LLM Tool Calling', best: 'Best Practices',
     },
     'zh-CN': {
-      group: '插件开发', overview: '概览', quick: '快速开始',
+      group: '插件开发', overview: '概览',
+      journey: '旅程的起点', quick: '快速开始', base: '插件能力',
+      toml: '插件配置 (plugin.toml)',
+      entries: '入口与参数', router: 'Router（代码拆分）', lifecycleCfg: '生命周期',
       sdk: 'SDK 参考', dec: '装饰器', ex: '示例', adv: '进阶话题',
-      best: '最佳实践',
+      hosted: 'Hosted UI', tool: 'LLM Tool Calling', best: '最佳实践',
     },
     ja: {
-      group: 'プラグイン開発', overview: '概要', quick: 'クイックスタート',
+      group: 'プラグイン開発', overview: '概要',
+      journey: 'はじめの一歩', quick: 'クイックスタート', base: 'プラグイン機能',
+      toml: 'プラグイン設定 (plugin.toml)',
+      entries: 'エントリーとパラメータ', router: 'Router（コード分割）', lifecycleCfg: 'ライフサイクル',
       sdk: 'SDK リファレンス', dec: 'デコレーター', ex: 'サンプル', adv: '高度なトピック',
-      best: 'ベストプラクティス',
+      hosted: 'Hosted UI', tool: 'LLM ツール呼び出し', best: 'ベストプラクティス',
     },
   }[lang]
   const p = lang === 'en' ? '' : `/${lang}`
@@ -201,9 +212,22 @@ function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
       text: t.group,
       items: [
         { text: t.overview, link: `${p}/plugins/` },
-        { text: t.quick, link: `${p}/plugins/quick-start` },
+        {
+          text: t.journey,
+          collapsed: false,
+          items: [
+            { text: t.quick, link: `${p}/plugins/quick-start` },
+            { text: t.toml, link: `${p}/plugins/plugin-toml` },
+            { text: t.entries, link: `${p}/plugins/entries` },
+            { text: t.router, link: `${p}/plugins/router` },
+            { text: t.lifecycleCfg, link: `${p}/plugins/lifecycle-config` },
+            { text: t.base, link: `${p}/plugins/plugin-base` },
+          ],
+        },
         { text: t.sdk, link: `${p}/plugins/sdk-reference` },
         { text: t.dec, link: `${p}/plugins/decorators` },
+        { text: t.tool, link: `${p}/plugins/tool-calling` },
+        ...(lang === 'ja' ? [] : [{ text: t.hosted, link: `${p}/plugins/hosted-ui` }]),
         { text: t.ex, link: `${p}/plugins/examples` },
         { text: t.adv, link: `${p}/plugins/advanced` },
         { text: t.best, link: `${p}/plugins/best-practices` },
@@ -310,14 +334,17 @@ function contributingSidebar(lang: 'en' | 'zh-CN' | 'ja') {
     en: {
       group: 'Contributing', overview: 'Overview', dev: 'Developer Notes',
       test: 'Testing', code: 'Code Style', road: 'Roadmap', ai: 'AI-Assisted Dev',
+      nuitka: 'Nuitka Packaging',
     },
     'zh-CN': {
       group: '贡献指南', overview: '概览', dev: '开发者须知',
       test: '测试', code: '代码风格', road: '路线图', ai: 'AI 辅助开发',
+      nuitka: 'Nuitka 打包注意事项',
     },
     ja: {
       group: 'コントリビュート', overview: '概要', dev: '開発者ノート',
       test: 'テスト', code: 'コードスタイル', road: 'ロードマップ', ai: 'AI支援開発',
+      nuitka: 'Nuitka パッケージング',
     },
   }[lang]
   const p = lang === 'en' ? '' : `/${lang}`
@@ -330,6 +357,7 @@ function contributingSidebar(lang: 'en' | 'zh-CN' | 'ja') {
         { text: t.ai, link: `${p}/contributing/ai-assisted-dev` },
         { text: t.test, link: `${p}/contributing/testing` },
         { text: t.code, link: `${p}/contributing/code-style` },
+        { text: t.nuitka, link: `${p}/contributing/nuitka-packaging` },
         { text: t.road, link: `${p}/contributing/roadmap` },
       ],
     },

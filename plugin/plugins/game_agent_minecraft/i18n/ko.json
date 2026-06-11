@@ -1,0 +1,4 @@
+{
+  "plugin.name": "Minecraft 게임 플러그인",
+  "plugin.description": "로컬 mc-agent(WebSocket)와 연결해 고양이가 대화하면서 Minecraft에서 함께 놀고 실시간으로 게임 화면을 해설할 수 있도록 합니다"
+}

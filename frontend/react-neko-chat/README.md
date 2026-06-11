@@ -18,6 +18,32 @@ The following rules are part of this refactor and should be treated as project c
 4. The new UI is not a visual copy of the current floating chat box.
 5. The new layout should move toward a QQ-like chat window experience.
 
+## Three host contexts (any change must be verified in all three)
+
+The same React bundle is mounted into three host contexts, and they behave
+differently. Any change here must be checked in **all three** before shipping —
+"works in the browser dev server" is **not** sufficient.
+
+1. **`index.html` — desktop browser (wide viewport)**
+   - Chat is a collapsible floating panel on top of the main page.
+   - Vite dev server (`npm run dev`) approximates this path.
+2. **`index.html` — mobile (narrow viewport)**
+   - Same route, but the mobile-detection branch kicks in: collapsed bubble,
+     drag handle, keyboard-aware scroll, touch-only behaviors.
+   - Reproduce by resizing the browser window or via mobile emulation.
+3. **`chat.html` — Electron standalone window**
+   - The desktop distribution opens chat in its own BrowserWindow. Full-screen
+     layout, **no Live2D / side panels**, and **mobile detection is bypassed**
+     even if the window is dragged narrow.
+   - Electron's Chromium fork is **not** equivalent to a regular browser.
+     Known divergence: `scrollTo({ behavior: 'smooth' })` is a silent no-op in
+     Electron 41 — so anything depending on smooth scroll must fall back to
+     instant assignment (`scrollTop = scrollHeight`).
+
+When editing scroll, sizing, animation, ResizeObserver, keyboard, or touch
+logic, mentally walk all three paths first, then smoke-test all three before
+declaring the change done.
+
 ## UI direction
 
 The target interaction model is a QQ-style chat window, not a full QQ-like application system.

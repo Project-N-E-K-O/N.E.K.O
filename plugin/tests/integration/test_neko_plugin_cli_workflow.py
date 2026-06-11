@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 import shutil
-import sys
 import zipfile
 
 import pytest
@@ -12,21 +11,40 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     import tomli as tomllib  # type: ignore[no-redef]
 
-CLI_ROOT = Path(__file__).resolve().parents[2] / "neko-plugin-cli"
-if str(CLI_ROOT) not in sys.path:
-    sys.path.insert(0, str(CLI_ROOT))
-
-import cli as neko_plugin_cli
-from public import analyze_bundle_plugins, inspect_package, pack_bundle, pack_plugin, unpack_package
+from plugin.neko_plugin_cli import cli as neko_plugin_cli
+from plugin.neko_plugin_cli.public import (
+    analyze_bundle_plugins,
+    inspect_package,
+    build_bundle,
+    build_plugin,
+    install_package,
+)
 
 FIXTURE_PLUGINS_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "neko_plugin_cli" / "plugins"
+
+_FIXTURE_VENDOR_DISTS = {
+    "plugin_with_rules": [("httpx", "0.27.0"), ("shared-lib", "1.0.0")],
+    "bundle_alpha": [("shared-lib", "2.0.0"), ("alpha-only", "0.1.0")],
+    "bundle_beta": [("shared-lib", "2.0.0"), ("beta-only", "0.5.0")],
+}
 
 
 def _copy_fixture_plugin(tmp_path: Path, fixture_name: str) -> Path:
     source = FIXTURE_PLUGINS_ROOT / fixture_name
     target = tmp_path / fixture_name
     shutil.copytree(source, target)
+    for name, version in _FIXTURE_VENDOR_DISTS.get(fixture_name, []):
+        _write_vendor_dist(target, name, version)
     return target
+
+
+def _write_vendor_dist(plugin_dir: Path, name: str, version: str) -> None:
+    dist_dir = plugin_dir / "vendor" / f"{name.replace('-', '_')}-{version}.dist-info"
+    dist_dir.mkdir(parents=True, exist_ok=True)
+    (dist_dir / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n",
+        encoding="utf-8",
+    )
 
 
 def _read_archive_toml(package_path: Path, member_name: str) -> dict[str, object]:
@@ -73,10 +91,10 @@ def test_public_single_plugin_workflow_matches_real_package_layout(tmp_path: Pat
     plugin_dir = _copy_fixture_plugin(tmp_path, "plugin_with_rules")
     package_path = tmp_path / "plugin_with_rules.neko-plugin"
 
-    pack_result = pack_plugin(plugin_dir, package_path)
+    build_result = build_plugin(plugin_dir, package_path)
     inspect_result = inspect_package(package_path)
 
-    assert pack_result.plugin_id == "plugin_with_rules"
+    assert build_result.plugin_id == "plugin_with_rules"
     assert inspect_result.package_type == "plugin"
     assert inspect_result.package_name == "Plugin With Rules"
     assert inspect_result.payload_hash_verified is True
@@ -92,7 +110,7 @@ def test_public_single_plugin_workflow_matches_real_package_layout(tmp_path: Pat
         "id": "plugin_with_rules",
         "package_name": "Plugin With Rules",
         "version": "1.4.2",
-        "package_description": "Fixture plugin with realistic pack rules and runtime config.",
+        "package_description": "Fixture plugin with realistic build rules and runtime config.",
     }
     assert _metadata_snapshot(metadata) == {
         "payload": {
@@ -102,7 +120,7 @@ def test_public_single_plugin_workflow_matches_real_package_layout(tmp_path: Pat
         "source": {
             "kind": "local",
             "path_count": 1,
-            "paths": [str(plugin_dir.resolve())],
+            "paths": ["plugin_with_rules"],
         },
     }
 
@@ -115,23 +133,23 @@ def test_public_single_plugin_workflow_matches_real_package_layout(tmp_path: Pat
     assert "payload/plugins/plugin_with_rules/secret.txt" not in names
     assert "payload/plugins/plugin_with_rules/cache_dir/cache.txt" not in names
 
-    unpack_result = unpack_package(
+    install_result = install_package(
         package_path,
         plugins_root=tmp_path / "runtime_plugins",
         profiles_root=tmp_path / "runtime_profiles",
         on_conflict="rename",
     )
 
-    unpacked_dir = unpack_result.unpacked_plugins[0].target_dir
-    assert (unpacked_dir / "plugin.toml").is_file()
-    assert (unpacked_dir / "main.py").is_file()
-    assert not (unpacked_dir / "debug.tmp").exists()
-    assert not (unpacked_dir / "secret.txt").exists()
-    assert (unpack_result.profile_dir / "default.toml").is_file()
+    installed_dir = install_result.installed_plugins[0].target_dir
+    assert (installed_dir / "plugin.toml").is_file()
+    assert (installed_dir / "main.py").is_file()
+    assert not (installed_dir / "debug.tmp").exists()
+    assert not (installed_dir / "secret.txt").exists()
+    assert (install_result.profile_dir / "default.toml").is_file()
 
 
 @pytest.mark.plugin_integration
-def test_public_bundle_workflow_covers_analysis_pack_and_unpack(tmp_path: Path) -> None:
+def test_public_bundle_workflow_covers_analysis_build_and_install(tmp_path: Path) -> None:
     alpha_dir = _copy_fixture_plugin(tmp_path, "bundle_alpha")
     beta_dir = _copy_fixture_plugin(tmp_path, "bundle_beta")
     package_path = tmp_path / "fixture_bundle.neko-bundle"
@@ -148,7 +166,7 @@ def test_public_bundle_workflow_covers_analysis_pack_and_unpack(tmp_path: Path) 
     assert "2.3.0" in analysis.sdk_supported_analysis.matching_versions
     assert analysis.sdk_supported_analysis.current_sdk_supported_by_all is True
 
-    pack_result = pack_bundle(
+    build_result = build_bundle(
         [alpha_dir, beta_dir],
         package_path,
         bundle_id="fixture_bundle",
@@ -160,8 +178,8 @@ def test_public_bundle_workflow_covers_analysis_pack_and_unpack(tmp_path: Path) 
     manifest = _read_archive_toml(package_path, "manifest.toml")
     metadata = _read_archive_toml(package_path, "metadata.toml")
 
-    assert pack_result.package_type == "bundle"
-    assert pack_result.plugin_ids == ["bundle_alpha", "bundle_beta"]
+    assert build_result.package_type == "bundle"
+    assert build_result.plugin_ids == ["bundle_alpha", "bundle_beta"]
     assert inspect_result.package_type == "bundle"
     assert inspect_result.package_name == "Fixture Bundle"
     assert inspect_result.plugin_count == 2
@@ -182,32 +200,32 @@ def test_public_bundle_workflow_covers_analysis_pack_and_unpack(tmp_path: Path) 
         "source": {
             "kind": "local_bundle",
             "path_count": 2,
-            "paths": [str(alpha_dir.resolve()), str(beta_dir.resolve())],
+            "paths": ["bundle_alpha", "bundle_beta"],
         },
     }
 
-    unpack_result = unpack_package(
+    install_result = install_package(
         package_path,
         plugins_root=tmp_path / "runtime_plugins",
         profiles_root=tmp_path / "runtime_profiles",
         on_conflict="rename",
     )
 
-    unpacked_ids = [item.target_plugin_id for item in unpack_result.unpacked_plugins]
-    assert unpacked_ids == ["bundle_alpha", "bundle_beta"]
+    installed_ids = [item.target_plugin_id for item in install_result.installed_plugins]
+    assert installed_ids == ["bundle_alpha", "bundle_beta"]
     assert (tmp_path / "runtime_plugins" / "bundle_alpha" / "plugin.toml").is_file()
     assert (tmp_path / "runtime_plugins" / "bundle_beta" / "plugin.toml").is_file()
-    assert (unpack_result.profile_dir / "default.toml").is_file()
+    assert (install_result.profile_dir / "default.toml").is_file()
 
 
 @pytest.mark.plugin_integration
-def test_cli_workflow_can_pack_verify_and_repeatedly_unpack_without_manual_steps(tmp_path: Path) -> None:
+def test_cli_workflow_can_build_verify_and_repeatedly_install_without_manual_steps(tmp_path: Path) -> None:
     plugin_dir = _copy_fixture_plugin(tmp_path, "simple_plugin")
     target_dir = tmp_path / "target"
     plugins_root = tmp_path / "plugins"
     profiles_root = tmp_path / "profiles"
 
-    assert neko_plugin_cli.main(["pack", str(plugin_dir), "--target-dir", str(target_dir)]) == 0
+    assert neko_plugin_cli.main(["build", str(plugin_dir), "--target-dir", str(target_dir)]) == 0
 
     package_path = target_dir / "simple_plugin.neko-plugin"
     assert package_path.is_file()
@@ -216,7 +234,7 @@ def test_cli_workflow_can_pack_verify_and_repeatedly_unpack_without_manual_steps
     assert (
         neko_plugin_cli.main(
             [
-                "unpack",
+                "install",
                 str(package_path),
                 "--plugins-root",
                 str(plugins_root),
@@ -231,7 +249,7 @@ def test_cli_workflow_can_pack_verify_and_repeatedly_unpack_without_manual_steps
     assert (
         neko_plugin_cli.main(
             [
-                "unpack",
+                "install",
                 str(package_path),
                 "--plugins-root",
                 str(plugins_root),

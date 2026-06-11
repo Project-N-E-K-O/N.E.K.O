@@ -1,0 +1,4 @@
+{
+  "plugin.name": "능동 대화 컨트롤러",
+  "plugin.description": "능동 대화 모드와 빈도를 시스템 수준에서 관리. 다른 플러그인은 set_mode / set_settings / get_state 호출로 제어 가능"
+}
