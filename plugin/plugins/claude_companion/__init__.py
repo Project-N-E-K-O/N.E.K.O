@@ -64,7 +64,7 @@ def _now_str() -> str:
     return datetime.now(_TZ_SHANGHAI).strftime("%H:%M")
 
 
-def _detect_activity_type(user_msg: str, tools_used: List[str], files_touched: List[str]) -> str:
+def _detect_activity_type(user_msg: str, tools_used: List[str]) -> str:
     """根据用户消息和工具使用情况检测活动类型。"""
     msg_lower = user_msg.lower()
     tools_str = " ".join(tools_used).lower()
@@ -79,20 +79,12 @@ def _detect_activity_type(user_msg: str, tools_used: List[str], files_touched: L
             return activity
 
     # 根据工具推断
-    if any(t in tools_used for t in ("Edit", "Write", "NotebookEdit")):
+    if any(t in tools_used for t in ("Edit", "Write", "MultiEdit", "NotebookEdit")):
         return "edit"
     if any(t in tools_used for t in ("Bash", "PowerShell")):
         return "command"
 
     return "general"
-
-
-def _get_file_short_name(filepath: str) -> str:
-    """从完整路径提取简短文件名。"""
-    if not filepath:
-        return ""
-    parts = filepath.replace("\\", "/").split("/")
-    return parts[-1] if parts else filepath
 
 
 # ── 收件箱队列 ──────────────────────────────────────────────────────────
@@ -263,6 +255,7 @@ class ActivitySummarizer:
         assistant_msg: str = "",
     ) -> str:
         """生成活动摘要：用户做了什么 + Claude 回复了什么。"""
+        import random
         name = user_name or "你"
 
         # 提取用户意图（去掉系统提示等无关内容）
@@ -280,17 +273,23 @@ class ActivitySummarizer:
             if len(assistant_msg) > 80:
                 claude_reply += "..."
 
-        # 生成摘要
-        if user_intent and claude_reply:
-            summary = f"{name}说：「{user_intent}」，Claude 回复：「{claude_reply}」"
-        elif user_intent:
-            summary = f"{name}说：「{user_intent}」"
-        elif claude_reply:
-            summary = f"Claude 回复了 {name}：「{claude_reply}」"
-        else:
-            summary = f"{name}和 Claude 在交流"
+        # 从模板中随机选取一条温暖的陪伴消息
+        templates = cls.TEMPLATES.get(activity_type, cls.TEMPLATES.get("general", []))
+        template_msg = ""
+        if templates:
+            files_str = ", ".join(files_touched[:2]) if files_touched else "代码"
+            template_msg = random.choice(templates).format(name=name, files=files_str)
 
-        return summary
+        # 生成摘要：模板消息 + 用户意图 + Claude回复
+        parts = []
+        if template_msg:
+            parts.append(template_msg)
+        if user_intent:
+            parts.append(f"用户说：「{user_intent}」")
+        if claude_reply:
+            parts.append(f"Claude 回复：「{claude_reply}」")
+
+        return " | ".join(parts) if parts else f"{name}和 Claude 在交流"
 
 
 # ── HTTP 服务器 ───────────────────────────────────────────────────────────
@@ -772,7 +771,6 @@ class ClaudeCompanionPlugin(NekoPluginBase):
         activity_type = _detect_activity_type(
             turn_info["user_message"],
             turn_info["tools_used"],
-            turn_info["files_touched"],
         )
 
         # 生成摘要
