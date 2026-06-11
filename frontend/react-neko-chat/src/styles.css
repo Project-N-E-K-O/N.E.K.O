@@ -1342,6 +1342,7 @@ svg {
   justify-content: center;
   width: 32px;
   height: 32px;
+  box-sizing: border-box;
   padding: 0;
   margin: 0;
   border: 0;
@@ -1414,6 +1415,7 @@ svg {
 .composer-tool-btn img {
   width: 24px;
   height: 24px;
+  display: block;
   object-fit: contain;
   pointer-events: none;
 }
@@ -1697,11 +1699,13 @@ svg {
 .composer-icon-button.is-active {
   --composer-icon-bubble-scale: 1.12;
   background:
-    radial-gradient(circle at 30% 28%, rgba(255, 255, 255, 0.84) 0%, rgba(255, 255, 255, 0.7) 22%, rgba(223, 241, 255, 0.66) 70%, rgba(200, 232, 255, 0.56) 100%);
+    radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.98) 0%, rgba(255, 255, 255, 0.86) 34%, rgba(238, 248, 255, 0.76) 72%, rgba(218, 239, 255, 0.64) 100%);
   box-shadow:
-    0 12px 24px rgba(63, 168, 235, 0.22),
-    0 3px 8px rgba(96, 177, 230, 0.2),
-    inset 0 1px 0 rgba(255, 255, 255, 0.98);
+    0 0 0 2px rgba(126, 204, 245, 0.54),
+    0 12px 24px rgba(63, 168, 235, 0.18),
+    0 4px 12px rgba(107, 164, 215, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.98),
+    inset 0 -10px 18px rgba(177, 220, 247, 0.18);
 }
 
 .composer-icon-button.is-active:hover {
@@ -1726,7 +1730,7 @@ svg {
   opacity: 1;
 }
 
-.composer-translate-btn.is-active::after {
+.composer-translate-btn.is-active:not(.compact-input-tool-item)::after {
   content: '';
   position: absolute;
   bottom: 2px;
@@ -1770,7 +1774,7 @@ svg {
   color: #2497d9;
 }
 
-.composer-galgame-btn.is-active::after {
+.composer-galgame-btn.is-active:not(.compact-input-tool-item)::after {
   content: '';
   position: absolute;
   bottom: 2px;
@@ -3684,7 +3688,17 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   --compact-tool-toggle-center-y: 31px;
   --compact-tool-button-fill: rgba(255, 255, 255, 0.9);
   --compact-tool-button-hover-fill: rgba(232, 246, 255, 0.96);
-  --compact-tool-button-shadow: 0 8px 18px rgba(20, 36, 64, 0.13);
+  --compact-tool-button-shadow:
+    0 8px 18px rgba(20, 36, 64, 0.13),
+    inset 0 1px 0 rgba(255, 255, 255, 0.88);
+  --compact-tool-button-active-fill:
+    radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.98) 0%, rgba(255, 255, 255, 0.88) 34%, rgba(238, 248, 255, 0.78) 72%, rgba(218, 239, 255, 0.66) 100%);
+  --compact-tool-button-active-shadow:
+    0 0 0 2px rgba(126, 204, 245, 0.54),
+    0 10px 22px rgba(63, 168, 235, 0.18),
+    0 4px 12px rgba(107, 164, 215, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.98),
+    inset 0 -10px 18px rgba(177, 220, 247, 0.18);
   --compact-tool-wheel-transform-duration: 0.22s;
   --compact-tool-wheel-transform-easing: cubic-bezier(0.2, 0.9, 0.22, 1.12);
   --compact-tool-wheel-charge-first-angle: 0deg;
@@ -3837,13 +3851,18 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 .compact-input-tool-fan .compact-input-tool-item > svg,
 .compact-input-tool-fan .compact-input-tool-item > .composer-galgame-btn-glyph,
 .compact-input-tool-fan .compact-input-tool-item > .composer-tool-btn {
-  position: relative;
+  position: absolute;
+  left: 50%;
+  top: 50%;
   z-index: 2;
+  transform: translate(-50%, -50%);
 }
 
 .compact-input-tool-fan .compact-input-tool-item-avatar > .composer-emoji-btn,
 .compact-input-tool-fan .compact-input-tool-item-avatar > .composer-emoji-btn:hover,
 .compact-input-tool-fan .compact-input-tool-item-avatar > .composer-emoji-btn.is-active {
+  width: var(--compact-tool-button-size);
+  height: var(--compact-tool-button-size);
   background: transparent;
   border-radius: 999px;
 }
@@ -3877,25 +3896,23 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 .compact-input-tool-fan .compact-input-tool-item[data-compact-tool-active="true"]::after {
-  background:
-    radial-gradient(circle at 30% 24%, rgba(255, 255, 255, 0.96) 0%, rgba(255, 255, 255, 0.76) 32%, rgba(205, 239, 255, 0.78) 100%),
-    var(--compact-tool-button-fill);
-  box-shadow:
-    0 0 0 2px rgba(36, 151, 217, 0.34),
-    0 8px 18px rgba(36, 151, 217, 0.2);
+  background: var(--compact-tool-button-active-fill);
+  box-shadow: var(--compact-tool-button-active-shadow);
 }
 
 .compact-input-tool-fan .compact-input-tool-item[data-compact-tool-active="true"]::before {
   content: "";
   position: absolute;
-  right: 2px;
-  bottom: 2px;
-  width: 9px;
-  height: 9px;
-  border: 2px solid rgba(255, 255, 255, 0.96);
+  right: -1px;
+  bottom: -1px;
+  width: 11px;
+  height: 11px;
+  border: 3px solid rgba(255, 255, 255, 0.98);
   border-radius: 999px;
   background: #2497d9;
-  box-shadow: 0 2px 6px rgba(36, 151, 217, 0.32);
+  box-shadow:
+    0 0 0 1px rgba(126, 204, 245, 0.34),
+    0 2px 7px rgba(36, 151, 217, 0.28);
   z-index: 3;
 }
 
@@ -3983,6 +4000,18 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 .compact-input-tool-fan .composer-tool-btn img {
   width: 26px;
   height: 26px;
+}
+
+.compact-input-tool-fan .composer-translate-btn img,
+.compact-input-tool-fan .composer-translate-btn:hover img,
+.compact-input-tool-fan .composer-translate-btn.is-active img {
+  opacity: 1;
+}
+
+.compact-input-tool-fan .composer-galgame-btn,
+.compact-input-tool-fan .composer-galgame-btn:hover,
+.compact-input-tool-fan .composer-galgame-btn.is-active {
+  color: #2497d9;
 }
 
 .compact-input-tool-fan .composer-galgame-btn-glyph {
@@ -4502,11 +4531,14 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 [data-theme="dark"] .composer-icon-button.is-active {
   background:
-    radial-gradient(circle at 30% 28%, rgba(130, 166, 232, 0.72) 0%, rgba(101, 132, 191, 0.62) 22%, rgba(73, 98, 150, 0.68) 72%, rgba(62, 83, 130, 0.62) 100%);
+    radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.96) 0%, rgba(235, 248, 255, 0.86) 34%, rgba(198, 226, 246, 0.76) 72%, rgba(156, 201, 232, 0.66) 100%);
+  color: #1b4f73;
   box-shadow:
-    0 12px 26px rgba(11, 24, 47, 0.42),
-    0 2px 8px rgba(37, 86, 160, 0.28),
-    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+    0 0 0 2px rgba(126, 204, 245, 0.48),
+    0 12px 26px rgba(11, 24, 47, 0.34),
+    0 4px 12px rgba(107, 164, 215, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.88),
+    inset 0 -10px 18px rgba(86, 151, 198, 0.18);
 }
 
 [data-theme="dark"] .composer-icon-button-image {
@@ -4516,7 +4548,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   filter: none !important;
 }
 
-[data-theme="dark"] .composer-translate-btn.is-active::after {
+[data-theme="dark"] .composer-translate-btn.is-active:not(.compact-input-tool-item)::after {
   background: #44b7fe;
 }
 
@@ -4532,7 +4564,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   color: #44b7fe;
 }
 
-[data-theme="dark"] .composer-galgame-btn.is-active::after {
+[data-theme="dark"] .composer-galgame-btn.is-active:not(.compact-input-tool-item)::after {
   background: #44b7fe;
 }
 
@@ -4645,7 +4677,9 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 [data-theme="dark"] .compact-input-tool-fan .compact-input-tool-item {
   --compact-tool-button-fill: rgba(20, 31, 46, 0.94);
   --compact-tool-button-hover-fill: rgba(30, 47, 68, 0.98);
-  --compact-tool-button-shadow: 0 8px 18px rgba(5, 12, 24, 0.36);
+  --compact-tool-button-shadow:
+    0 8px 18px rgba(5, 12, 24, 0.36),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
 }
 
 [data-theme="dark"] .compact-input-tool-fan .compact-input-tool-item:hover {
