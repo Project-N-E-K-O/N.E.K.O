@@ -1611,8 +1611,8 @@ def test_character_card_manager_card_assist_avatar_toggles_companion(
     assert state["titleDisplayWhenMinimized"] == "none"
     assert state["closeDisplayWhenMinimized"] == "none"
     assert state["avatarSrc"].endswith("/api/characters/catgirl/YUI/card-face")
-    assert state["avatarImgObjectPosition"] == "50% 8%"
-    assert state["avatarImgTransform"] == "matrix(1.02, 0, 0, 1.02, 0, 3)"
+    assert state["avatarImgObjectPosition"] == "50% 46%"
+    assert state["avatarImgTransform"] == "matrix(1, 0, 0, 1, 0, 5)"
     assert state["avatarRole"] == "button"
     assert state["avatarTabIndex"] == "0"
     assert state["ariaAfterFirstClick"] == "false"
