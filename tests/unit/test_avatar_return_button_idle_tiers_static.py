@@ -1197,13 +1197,18 @@ def test_cat1_minimized_ball_contact_finishes_without_side_retarget_jitter():
     assert "const approachOffsetPx = _getNekoIdleCat1MinimizedSideApproachOffsetPx(lookFacingRight, chatRect);" in side_target_block
     assert "const contactOverlapPx = _getNekoIdleRectDirectionalOverlapPx(rect, chatRect, lookFacingRight);" in side_target_block
     assert "const requiredContactOverlapPx = _getNekoIdleCat1MinimizedContactOverlapPx(" in side_target_block
+    assert "const verticalTargetDistancePx = sideTarget" in side_target_block
+    assert "Math.abs(Number(sideTarget.top) - Number(rect.top))" in side_target_block
+    assert "verticalTargetDistancePx <= exitDistancePx" in side_target_block
     assert "contactOverlapPx >= requiredContactOverlapPx" in side_target_block
     assert "contactDistance <= profile.target.exitDistancePx" not in side_target_block
     assert "_makeNekoIdleCat1MinimizedContactTarget(rect, chatRect" in side_target_block
     assert side_target_block.index("const approachOffsetPx = _getNekoIdleCat1MinimizedSideApproachOffsetPx(lookFacingRight, chatRect);") < side_target_block.index(
         "const contactOverlapPx = _getNekoIdleRectDirectionalOverlapPx(rect, chatRect, lookFacingRight);"
     )
-    assert side_target_block.index("contactOverlapPx >= requiredContactOverlapPx") < side_target_block.index("const rawLeft = lookFacingRight")
+    assert side_target_block.index("const rawLeft = lookFacingRight") < side_target_block.index("const sideTarget = _makeNekoIdleCat1SideTarget")
+    assert side_target_block.index("const sideTarget = _makeNekoIdleCat1SideTarget") < side_target_block.index("verticalTargetDistancePx <= exitDistancePx")
+    assert side_target_block.index("verticalTargetDistancePx <= exitDistancePx") < side_target_block.index("_makeNekoIdleCat1MinimizedContactTarget(rect, chatRect")
 
     contact_overlap_block = source.split("function _getNekoIdleCat1MinimizedContactOverlapPx(facingRight, approachOffsetPx, profile)", 1)[1].split(
         "function _resolveNekoIdleCat1TargetFacing",

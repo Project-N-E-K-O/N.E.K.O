@@ -2713,12 +2713,6 @@ function _getNekoIdleCat1SideTarget(container, chatRect) {
         approachOffsetPx,
         profile
     );
-    if (contactOverlapPx >= requiredContactOverlapPx) {
-        return _makeNekoIdleCat1MinimizedContactTarget(rect, chatRect, {
-            facingRight: lookFacingRight
-        });
-    }
-
     const rawLeft = lookFacingRight
         ? chatRect.left - rect.width - profile.target.gapPx
         : chatRect.right + profile.target.gapPx - approachOffsetPx;
@@ -2727,6 +2721,16 @@ function _getNekoIdleCat1SideTarget(container, chatRect) {
         rawLeft: rawLeft,
         approachOffsetPx: approachOffsetPx
     });
+    const exitDistancePx = Math.max(0, Number(profile.target && profile.target.exitDistancePx) || 0);
+    const verticalTargetDistancePx = sideTarget
+        ? Math.abs(Number(sideTarget.top) - Number(rect.top))
+        : Infinity;
+    if (verticalTargetDistancePx <= exitDistancePx &&
+        contactOverlapPx >= requiredContactOverlapPx) {
+        return _makeNekoIdleCat1MinimizedContactTarget(rect, chatRect, {
+            facingRight: lookFacingRight
+        });
+    }
     if (!sideTarget || sideTarget.moveFacingRight === null || sideTarget.moveFacingRight === lookFacingRight) {
         return sideTarget;
     }
