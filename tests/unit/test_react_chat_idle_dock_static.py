@@ -28,7 +28,14 @@ def test_idle_dock_is_limited_to_cat2_and_cat3_tiers():
     assert "var IDLE_DOCK_TIER_CAT3 = 'cat3';" in source
     assert "function isIdleDockTierActive()" in source
     assert "detail.tier === IDLE_DOCK_TIER_CAT2 || detail.tier === IDLE_DOCK_TIER_CAT3" in source
-    assert "window.addEventListener('live2d-goodbye-click'" not in source
+    goodbye_click_block = _between(
+        source,
+        "window.addEventListener('live2d-goodbye-click'",
+        "window.addEventListener('live2d-return-click'",
+    )
+    assert "setGoodbyeComposerHidden(true, 'live2d-goodbye-click')" in goodbye_click_block
+    assert "enterIdleDock" not in goodbye_click_block
+    assert "setChatSurfaceMode('minimized')" not in goodbye_click_block
 
 
 def test_idle_dock_does_not_pollute_normal_minimize_export_or_app_ui():

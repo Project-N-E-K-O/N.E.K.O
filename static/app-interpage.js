@@ -1478,6 +1478,106 @@
         }
     }
 
+    function readGoodbyeChatComposerHidden() {
+        try {
+            if (typeof window.isNekoGoodbyeModeActive === 'function'
+                && window.isNekoGoodbyeModeActive()) {
+                return true;
+            }
+        } catch (_) {}
+        if (window.__nekoGoodbyeChatComposerHidden
+            && typeof window.__nekoGoodbyeChatComposerHidden === 'object'
+            && window.__nekoGoodbyeChatComposerHidden.hidden === true) {
+            return true;
+        }
+        return !!(
+            (window.live2dManager && window.live2dManager._goodbyeClicked)
+            || (window.vrmManager && window.vrmManager._goodbyeClicked)
+            || (window.mmdManager && window.mmdManager._goodbyeClicked)
+            || (window.__nekoGoodbyeSilentState && window.__nekoGoodbyeSilentState.active === true)
+        );
+    }
+
+    function applyGoodbyeChatComposerHidden(hidden, reason) {
+        hidden = !!hidden;
+        var detail = {
+            hidden: hidden,
+            reason: reason || (hidden ? 'goodbye' : 'return'),
+            timestamp: Date.now()
+        };
+        window.__nekoGoodbyeChatComposerHidden = detail;
+        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setGoodbyeComposerHidden === 'function') {
+            window.reactChatWindowHost.setGoodbyeComposerHidden(hidden, detail.reason);
+        } else {
+            try {
+                window.dispatchEvent(new CustomEvent('react-chat-window:set-goodbye-composer-hidden', {
+                    detail: detail
+                }));
+            } catch (_) {}
+        }
+    }
+
+    function getGoodbyeChatComposerHiddenElectronBridge() {
+        var bridge = window.nekoElectronGoodbyeChatComposerHidden;
+        return bridge && typeof bridge.send === 'function' ? bridge : null;
+    }
+
+    function postGoodbyeChatComposerHiddenElectron(payload) {
+        var bridge = getGoodbyeChatComposerHiddenElectronBridge();
+        if (!bridge) return false;
+        try {
+            bridge.send(payload || {});
+            return true;
+        } catch (err) {
+            console.warn('[Goodbye] Electron composer hidden bridge failed:', err);
+            return false;
+        }
+    }
+
+    function postGoodbyeChatComposerHiddenPayload(payload) {
+        if (nekoBroadcastChannel) {
+            nekoBroadcastChannel.postMessage(payload);
+        }
+        postGoodbyeChatComposerHiddenElectron(payload);
+    }
+
+    function isGoodbyeChatComposerHiddenMessageForCurrentLanlan(data) {
+        if (!data || !data.lanlan_name) return false;
+        var currentName = getCurrentLanlanName();
+        return !!currentName && data.lanlan_name === currentName;
+    }
+
+    function handleGoodbyeChatComposerHiddenMessage(data, via) {
+        if (!data || !data.action) return false;
+        if (data.action === 'goodbye_chat_composer_hidden') {
+            if (!isGoodbyeChatComposerHiddenMessageForCurrentLanlan(data)) return true;
+            applyGoodbyeChatComposerHidden(!!data.hidden, data.reason || via || 'broadcast');
+            return true;
+        }
+        if (data.action === 'request_goodbye_chat_composer_hidden') {
+            if (isStandaloneChatPage()) return true;
+            if (!isGoodbyeChatComposerHiddenMessageForCurrentLanlan(data)) return true;
+            postGoodbyeChatComposerHiddenState(undefined, 'request-goodbye-chat-composer-hidden');
+            return true;
+        }
+        return false;
+    }
+
+    function postGoodbyeChatComposerHiddenState(hidden, reason) {
+        var lanlanName = getCurrentLanlanName();
+        var nextHidden = hidden === undefined ? readGoodbyeChatComposerHidden() : !!hidden;
+        var nextReason = reason || (nextHidden ? 'goodbye' : 'return');
+        applyGoodbyeChatComposerHidden(nextHidden, nextReason);
+        if (!lanlanName) return;
+        postGoodbyeChatComposerHiddenPayload({
+            action: 'goodbye_chat_composer_hidden',
+            hidden: nextHidden,
+            reason: nextReason,
+            lanlan_name: lanlanName,
+            timestamp: Date.now()
+        });
+    }
+
     function pruneVoiceConfigSwitchOps(now) {
         now = now || Date.now();
         Object.keys(_voiceConfigSwitchOps).forEach(function (opId) {
@@ -1849,6 +1949,14 @@
                         applyVoiceChatComposerHidden(vcEffectiveHidden);
                         break;
                     }
+                    case 'goodbye_chat_composer_hidden': {
+                        handleGoodbyeChatComposerHiddenMessage(event.data, 'broadcast');
+                        break;
+                    }
+                    case 'request_goodbye_chat_composer_hidden': {
+                        handleGoodbyeChatComposerHiddenMessage(event.data, 'broadcast-request');
+                        break;
+                    }
                     case 'idle_activity': {
                         var idleCurrentName = getCurrentLanlanName();
                         if (event.data.lanlan_name && (!idleCurrentName || event.data.lanlan_name !== idleCurrentName)) break;
@@ -2133,7 +2241,7 @@
 
     function isStandaloneChatPage() {
         var pathname = (window.location && window.location.pathname) || '';
-        return pathname === '/chat' || pathname === '/chat/';
+        return pathname === '/chat' || pathname === '/chat/' || pathname === '/chat_full' || pathname === '/chat_full/';
     }
 
     function dispatchCrossWindowIdleActivity(detail) {
@@ -2416,27 +2524,42 @@
     });
 
     // Chat 窗口初始化时，向 Pet 窗口请求当前已缓存的头像
-    if (isStandaloneChatPage() && nekoBroadcastChannel) {
+    if (isStandaloneChatPage() && (nekoBroadcastChannel || getGoodbyeChatComposerHiddenElectronBridge())) {
         var initialLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
         var postAvatarRequest = function () {
+            if (!nekoBroadcastChannel) return;
             nekoBroadcastChannel.postMessage({
                 action: 'request_avatar',
                 lanlan_name: (window.lanlan_config && window.lanlan_config.lanlan_name) || '',
                 timestamp: Date.now()
             });
         };
+        var postGoodbyeComposerRequest = function () {
+            var lanlanName = getCurrentLanlanName();
+            if (!lanlanName) return;
+            var payload = {
+                action: 'request_goodbye_chat_composer_hidden',
+                lanlan_name: lanlanName,
+                timestamp: Date.now()
+            };
+            postGoodbyeChatComposerHiddenPayload(payload);
+        };
         postAvatarRequest();
-        nekoBroadcastChannel.postMessage({
-            action: 'request_tutorial_chat_identity',
-            timestamp: Date.now()
-        });
-        nekoBroadcastChannel.postMessage({
-            action: 'yui_guide_chat_ready',
-            timestamp: Date.now()
-        });
+        postGoodbyeComposerRequest();
+        if (nekoBroadcastChannel) {
+            nekoBroadcastChannel.postMessage({
+                action: 'request_tutorial_chat_identity',
+                timestamp: Date.now()
+            });
+            nekoBroadcastChannel.postMessage({
+                action: 'yui_guide_chat_ready',
+                timestamp: Date.now()
+            });
+        }
         // 配置可能尚未注入（lanlan_name 为空），等 IPC 注入后补发一次
         if (!initialLanlanName) {
             window.addEventListener('neko:config-injected', postAvatarRequest, { once: true });
+            window.addEventListener('neko:config-injected', postGoodbyeComposerRequest, { once: true });
         }
     }
 
@@ -2493,6 +2616,10 @@
             return;
         }
         handleVoiceConfigSwitchingMessage(data);
+    });
+
+    window.addEventListener('neko:electron-goodbye-chat-composer-hidden', function (event) {
+        handleGoodbyeChatComposerHiddenMessage((event && event.detail) || {}, 'electron-ipc');
     });
 
     window.addEventListener('message', function (event) {
@@ -2630,6 +2757,10 @@
     mod.cleanupMMDOverlayUI = cleanupMMDOverlayUI;
     mod.syncVoiceChatComposerHidden = syncVoiceChatComposerHidden;
     mod.shouldKeepVoiceComposerHidden = shouldKeepVoiceComposerHidden;
+    mod.applyGoodbyeChatComposerHidden = applyGoodbyeChatComposerHidden;
+    mod.postGoodbyeChatComposerHiddenElectron = postGoodbyeChatComposerHiddenElectron;
+    mod.handleGoodbyeChatComposerHiddenMessage = handleGoodbyeChatComposerHiddenMessage;
+    mod.postGoodbyeChatComposerHiddenState = postGoodbyeChatComposerHiddenState;
     mod.isVoiceConfigSwitching = isVoiceConfigSwitching;
     mod.waitForVoiceConfigSwitchReady = waitForVoiceConfigSwitchReady;
     mod.applyTutorialChatIdentityOverride = applyTutorialChatIdentityOverride;
@@ -2645,6 +2776,8 @@
     window.cleanupMMDOverlayUI = cleanupMMDOverlayUI;
     window.syncVoiceChatComposerHidden = syncVoiceChatComposerHidden;
     window.shouldKeepVoiceComposerHidden = shouldKeepVoiceComposerHidden;
+    window.applyGoodbyeChatComposerHidden = applyGoodbyeChatComposerHidden;
+    window.postGoodbyeChatComposerHiddenState = postGoodbyeChatComposerHiddenState;
     window.isVoiceConfigSwitching = isVoiceConfigSwitching;
     window.waitForVoiceConfigSwitchReady = waitForVoiceConfigSwitchReady;
 

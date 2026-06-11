@@ -671,6 +671,84 @@ def test_app_interpage_relays_idle_return_ball_state_to_chat_window():
     assert "new CustomEvent('neko:idle-return-ball-state'" in source
 
 
+def test_goodbye_composer_hidden_syncs_to_chat_window():
+    interpage_source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+    app_ui_source = (PROJECT_ROOT / "static" / "app-ui.js").read_text(encoding="utf-8")
+    standalone_block = interpage_source.split("function isStandaloneChatPage()", 1)[1].split(
+        "function dispatchCrossWindowIdleActivity",
+        1,
+    )[0]
+    goodbye_handler_block = interpage_source.split(
+        "function handleGoodbyeChatComposerHiddenMessage(data, via)",
+        1,
+    )[1].split("function postGoodbyeChatComposerHiddenState", 1)[0]
+    goodbye_read_block = interpage_source.split(
+        "function readGoodbyeChatComposerHidden()",
+        1,
+    )[1].split("function applyGoodbyeChatComposerHidden", 1)[0]
+    goodbye_filter_block = interpage_source.split(
+        "function isGoodbyeChatComposerHiddenMessageForCurrentLanlan(data)",
+        1,
+    )[1].split("function handleGoodbyeChatComposerHiddenMessage", 1)[0]
+    goodbye_post_block = interpage_source.split(
+        "function postGoodbyeChatComposerHiddenState(hidden, reason)",
+        1,
+    )[1].split("function pruneVoiceConfigSwitchOps", 1)[0]
+    goodbye_initial_request_block = interpage_source.split(
+        "var postGoodbyeComposerRequest = function ()",
+        1,
+    )[1].split("postAvatarRequest();", 1)[0]
+
+    assert "function applyGoodbyeChatComposerHidden(hidden, reason)" in interpage_source
+    assert "function getGoodbyeChatComposerHiddenElectronBridge()" in interpage_source
+    assert "function postGoodbyeChatComposerHiddenElectron(payload)" in interpage_source
+    assert "function handleGoodbyeChatComposerHiddenMessage(data, via)" in interpage_source
+    assert "function postGoodbyeChatComposerHiddenState(hidden, reason)" in interpage_source
+    assert "window.nekoElectronGoodbyeChatComposerHidden" in interpage_source
+    assert "neko:electron-goodbye-chat-composer-hidden" in interpage_source
+    assert "action: 'goodbye_chat_composer_hidden'" in interpage_source
+    assert "case 'goodbye_chat_composer_hidden':" in interpage_source
+    assert "case 'request_goodbye_chat_composer_hidden':" in interpage_source
+    assert "pathname === '/chat_full'" in standalone_block
+    assert "pathname === '/chat_full/'" in standalone_block
+    assert (
+        "typeof window.isNekoGoodbyeModeActive === 'function'\n"
+        "                && window.isNekoGoodbyeModeActive()"
+        in goodbye_read_block
+    )
+    assert "window.__nekoGoodbyeChatComposerHidden.hidden === true" in goodbye_read_block
+    assert "window.__nekoGoodbyeSilentState && window.__nekoGoodbyeSilentState.active === true" in goodbye_read_block
+    assert "if (!data || !data.lanlan_name) return false;" in goodbye_filter_block
+    assert "return !!currentName && data.lanlan_name === currentName;" in goodbye_filter_block
+    assert "var lanlanName = getCurrentLanlanName();" in goodbye_post_block
+    assert "if (!lanlanName) return;" in goodbye_post_block
+    assert "lanlan_name: lanlanName" in goodbye_post_block
+    assert "var lanlanName = getCurrentLanlanName();" in goodbye_initial_request_block
+    assert "if (!lanlanName) return;" in goodbye_initial_request_block
+    assert "lanlan_name: lanlanName" in goodbye_initial_request_block
+    assert "if (isStandaloneChatPage()) return true;" in goodbye_handler_block
+    assert (
+        "postGoodbyeChatComposerHiddenState(undefined, 'request-goodbye-chat-composer-hidden');"
+        in goodbye_handler_block
+    )
+    assert "nekoBroadcastChannel || getGoodbyeChatComposerHiddenElectronBridge()" in interpage_source
+    assert "postGoodbyeChatComposerHiddenPayload(payload);" in interpage_source
+    assert "postGoodbyeComposerRequest();" in interpage_source
+    assert "window.addEventListener('neko:config-injected', postGoodbyeComposerRequest" in interpage_source
+    assert (
+        "mod.postGoodbyeChatComposerHiddenElectron = postGoodbyeChatComposerHiddenElectron;"
+        in interpage_source
+    )
+    assert (
+        "mod.handleGoodbyeChatComposerHiddenMessage = handleGoodbyeChatComposerHiddenMessage;"
+        in interpage_source
+    )
+    assert "mod.postGoodbyeChatComposerHiddenState = postGoodbyeChatComposerHiddenState;" in interpage_source
+    assert "window.postGoodbyeChatComposerHiddenState = postGoodbyeChatComposerHiddenState;" in interpage_source
+    assert "postGoodbyeChatComposerHiddenState(true, 'live2d-goodbye-click')" in app_ui_source
+    assert "postGoodbyeChatComposerHiddenState(false, 'return-click')" in app_ui_source
+
+
 def test_app_interpage_relays_idle_chat_minimized_state_to_pet_window():
     source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
 
