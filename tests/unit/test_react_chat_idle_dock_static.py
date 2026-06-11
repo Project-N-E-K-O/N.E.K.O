@@ -286,7 +286,7 @@ def test_react_chat_applies_desktop_cat1_pair_move_bounds_when_collapsed():
     assert "if (isElectronLinuxRuntime()) return;" in schedule_block
 
 
-def test_cat1_desktop_pair_move_throttles_native_bounds_sync_and_forces_final_frame():
+def test_cat1_desktop_pair_move_skips_linux_runtime_native_bounds_sync():
     source = _read(AVATAR_UI_BUTTONS_PATH)
 
     assert "function _isNekoDesktopLinuxRuntime()" in source
