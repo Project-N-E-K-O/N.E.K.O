@@ -298,6 +298,15 @@
         );
     }
 
+    function hasLocalGoodbyeModeSource() {
+        return !!(
+            window.live2dManager
+            || window.vrmManager
+            || window.mmdManager
+            || (window.__nekoGoodbyeSilentState && typeof window.__nekoGoodbyeSilentState === 'object')
+        );
+    }
+
     function getEffectiveGalgameEnabled() {
         return !!state.galgameModeEnabled && !getEffectiveComposerHidden();
     }
@@ -3780,7 +3789,10 @@
         renderWindow();
     }
 
-    function syncGoodbyeComposerHidden(reason) {
+    function syncGoodbyeComposerHidden(reason, options) {
+        if (options && options.localOnly && !hasLocalGoodbyeModeSource()) {
+            return;
+        }
         setGoodbyeComposerHidden(getNekoGoodbyeModeActive(), reason || 'sync');
     }
 
@@ -4896,7 +4908,7 @@
         }
 
         resetCompactChatState();
-        syncGoodbyeComposerHidden('chat-surface-mode-change');
+        syncGoodbyeComposerHidden('chat-surface-mode-change', { localOnly: true });
 
         if (!previousMinimized && nextMinimized && previousMode === 'full' && !isElectronChatWindow() && getShell()) {
             pendingMinimizedSurfaceCommit = {
