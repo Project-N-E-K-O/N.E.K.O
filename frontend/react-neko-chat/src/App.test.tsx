@@ -120,6 +120,23 @@ describe('App', () => {
     expect(container.querySelector('.compact-chat-stage')).toBeNull();
   });
 
+  it('hides the full composer and tools when composerHidden is true', () => {
+    const message = parseChatMessage({
+      id: 'm-full-hidden',
+      role: 'assistant',
+      author: 'Neko',
+      time: '12:01',
+      blocks: [{ type: 'text', text: 'goodbye state' }],
+    });
+    const { container } = render(<App chatSurfaceMode="full" composerHidden messages={[message]} />);
+
+    expect(container.querySelector('.message-list')).not.toBeNull();
+    expect(screen.queryByPlaceholderText('Type a message...')).toBeNull();
+    expect(container.querySelector('.composer-panel')).toBeNull();
+    expect(container.querySelector('.composer-bottom-tools')).toBeNull();
+    expect(container.querySelector('.send-button-circle')).toBeNull();
+  });
+
   it('enters compact input from the subtitle capsule when used uncontrolled', () => {
     const { container } = render(<App chatSurfaceMode="compact" />);
 
