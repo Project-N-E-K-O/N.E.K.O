@@ -45,7 +45,7 @@
         #react-chat-window-backdrop { display: none !important; }
         /* Electron 缩/展窗期间主进程会先 setBounds，再由 renderer 收到 resize 后更新
            React compact 几何。隐藏这段中间态，避免透明窗口左上角画出一帧旧布局。 */
-        body.neko-electron-runtime #react-chat-window-shell.neko-e-animating {
+        body.neko-electron-runtime #react-chat-window-shell[data-chat-surface-mode="compact"].neko-e-animating {
             visibility: hidden !important;
         }
         /* Electron 独立 full 窗口（part B）：full shell 改用「固定 30px inset 充满窗口」定位 +

@@ -477,6 +477,18 @@
         return !!(document.body && document.body.classList.contains('electron-chat-window'));
     }
 
+    function isElectronLinuxRuntime() {
+        var runtime = window.__NEKO_DESKTOP_RUNTIME__ || {};
+        return !!(
+            isElectronChatWindow()
+            && (
+                runtime.isLinux ||
+                runtime.isLinuxX11 ||
+                runtime.platform === 'linux'
+            )
+        );
+    }
+
     function isMobileWidth() {
         // chat.html 是 Electron 独立窗口，始终按 PC 行为处理（即使用户把窗口拖窄到 <768px），
         // 通过 <body class="electron-chat-window"> 从"手机端布局"中排除。
@@ -1308,6 +1320,24 @@
         };
     }
 
+    function getIdleCat1CompactMirrorNativeReserveRect(mirrorRect, surfaceRect) {
+        var mirror = normalizeCompactDomRect(mirrorRect);
+        var surface = normalizeCompactDomRect(surfaceRect);
+        if (!mirror) return null;
+        if (!surface) return mirror;
+        var horizontalPad = Math.ceil(mirror.width / 2);
+        var left = Math.round(surface.left - horizontalPad);
+        var right = Math.round(surface.right + horizontalPad);
+        var top = Math.round(Math.min(mirror.top, surface.top));
+        var bottom = Math.round(Math.max(mirror.bottom, surface.top));
+        return normalizeCompactDomRect({
+            left: left,
+            top: top,
+            width: Math.max(1, right - left),
+            height: Math.max(1, bottom - top)
+        });
+    }
+
     function intersectCompactRects(a, b) {
         var leftRect = normalizeCompactDomRect(a);
         var rightRect = normalizeCompactDomRect(b);
@@ -1614,6 +1644,7 @@
             }
             if (compactGeometryItem === 'cat1Mirror') {
                 var mirrorRect = getCompactGeometryElementRect(element);
+                var mirrorNativeRect = getIdleCat1CompactMirrorNativeReserveRect(mirrorRect, shellRect);
                 if (mirrorRect) {
                     items.push({
                         id: 'cat1Mirror:native',
@@ -1621,7 +1652,7 @@
                         kind: 'cat1Mirror',
                         visualRect: mirrorRect,
                         hitRect: null,
-                        nativeRect: mirrorRect,
+                        nativeRect: mirrorNativeRect || mirrorRect,
                         interactive: false
                     });
                 }
@@ -3813,6 +3844,7 @@
     var isMinimizeTransitioning = false;
     var activeAnimationCleanup = null; // 当前进行中动画的清理函数
     var pendingChatSurfaceMode = null;
+    var pendingMinimizedSurfaceCommit = null;
 
     // ── Idle-dock: independent orchestration (Phase 4) ──────────
     // Positions the minimized ball next to CAT2/CAT3 return-ball.
@@ -4093,6 +4125,7 @@
     }
 
     async function applyElectronCat1PairMoveBounds(bounds) {
+        if (isElectronLinuxRuntime()) return;
         var targetBounds = electronRectToBounds(bounds);
         if (!targetBounds) return;
         var bridge = getElectronIdleDockBridge();
@@ -4112,6 +4145,7 @@
 
     function scheduleElectronCat1PairMoveBounds(bounds) {
         if (!isElectronChatWindow()) return;
+        if (isElectronLinuxRuntime()) return;
         electronCat1PairMovePendingBounds = electronRectToBounds(bounds);
         if (!electronCat1PairMovePendingBounds || electronCat1PairMoveBoundsFrame) return;
         electronCat1PairMoveBoundsFrame = window.requestAnimationFrame(function () {
@@ -4689,6 +4723,7 @@
         // 也走这里），避免该回调在窗口关闭/重开后幽灵触发 setChatSurfaceMode('minimized')。
         clearCompactMinimizePressTimer();
         pendingChatSurfaceMode = null;
+        pendingMinimizedSurfaceCommit = null;
     }
 
     // 最小化球皮肤跟随可恢复形态；紧凑 Electron 宿主会把历史 full 规整回 compact。
@@ -4747,6 +4782,22 @@
         return normalized;
     }
 
+    function commitPendingMinimizedSurfaceMode() {
+        if (!pendingMinimizedSurfaceCommit) return false;
+
+        var commit = pendingMinimizedSurfaceCommit;
+        pendingMinimizedSurfaceCommit = null;
+        state.chatSurfaceMode = commit.mode;
+        resetCompactChatState();
+        renderWindow();
+        syncChatSurfaceModeUI();
+        dispatchHostEvent('chat-surface-mode-change', {
+            mode: commit.mode,
+            previousMode: commit.previousMode
+        });
+        return true;
+    }
+
     function setChatSurfaceMode(nextMode) {
         var normalized = coerceChatSurfaceModeForHost(nextMode);
         var previousMode = getCurrentChatSurfaceMode();
@@ -4783,6 +4834,17 @@
         }
 
         resetCompactChatState();
+
+        if (!previousMinimized && nextMinimized && previousMode === 'full' && !isElectronChatWindow() && getShell()) {
+            pendingMinimizedSurfaceCommit = {
+                mode: normalized,
+                previousMode: previousMode
+            };
+            setMinimized(true);
+            return normalized;
+        }
+
+        pendingMinimizedSurfaceCommit = null;
         state.chatSurfaceMode = normalized;
         persistChatSurfaceModePreference(normalized);
         if (normalized === 'compact') {
@@ -4927,6 +4989,7 @@
                 // minimize from the revived legacy full shows its breathing-light
                 // orb instead of the stale compact yarn ball.
                 applyMinimizedBallSkin(ensureMinimizedBallIcon());
+                commitPendingMinimizedSurfaceMode();
                 isMinimizeTransitioning = false;
                 flushPendingChatSurfaceModeIfNeeded();
             };
@@ -4944,6 +5007,7 @@
                 shell.classList.remove('is-collapsing');
                 shell.style.transform = 'none';
                 shell.style.removeProperty('transform-origin');
+                pendingMinimizedSurfaceCommit = null;
                 handled = true;
             };
 
