@@ -2840,14 +2840,6 @@
                             }
                         }));
                     } else {
-                        window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
-                            detail: {
-                                reason: 'return-ball-drag-end',
-                                container: container,
-                                movedDistancePx: 0,
-                                dragCancelled: false
-                            }
-                        }));
                         dispatchReturnBallClick();
                     }
                 }, {

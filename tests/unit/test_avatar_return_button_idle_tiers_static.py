@@ -360,14 +360,9 @@ def test_desktop_return_ball_drag_lifecycle_waits_for_restored_viewport_before_r
         "no-move suppressed return-ball drag branch",
     )
     normal_click_block = no_move_block.split("} else {", 1)[1]
-    _assert_source_order(
-        normal_click_block,
-        "no-move normal return-ball click branch",
-        "reason: 'return-ball-drag-end'",
-        "movedDistancePx: 0",
-        "dragCancelled: false",
-        "dispatchReturnBallClick();",
-    )
+    assert "reason: 'return-ball-drag-end'" not in normal_click_block
+    assert "dragCancelled: false" not in normal_click_block
+    assert "dispatchReturnBallClick();" in normal_click_block
 
 
 def test_desktop_return_ball_drag_recovers_when_mouse_release_is_lost():
