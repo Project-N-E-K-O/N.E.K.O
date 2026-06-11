@@ -39,7 +39,7 @@ from plugin.sdk.plugin import (
 
 _DEFAULT_PORT = 48920
 _DEFAULT_COOLDOWN = 60
-_SIGNIFICANT_TOOLS = {"Edit", "Write", "Bash", "NotebookEdit"}
+_SIGNIFICANT_TOOLS = {"Edit", "Write", "Bash", "PowerShell", "NotebookEdit"}
 _TASK_COMPLETE_TOOLS = {"TaskUpdate"}
 
 # 活动类型关键词映射
@@ -81,7 +81,7 @@ def _detect_activity_type(user_msg: str, tools_used: List[str], files_touched: L
     # 根据工具推断
     if any(t in tools_used for t in ("Edit", "Write", "NotebookEdit")):
         return "edit"
-    if "Bash" in tools_used:
+    if any(t in tools_used for t in ("Bash", "PowerShell")):
         return "command"
 
     return "general"
@@ -550,8 +550,8 @@ class TranscriptParser:
         significant_tools = _SIGNIFICANT_TOOLS | _TASK_COMPLETE_TOOLS
         has_significant = bool(set(tools_used) & significant_tools)
 
-        # 如果有 Bash 命令，解析命令内容看是否有文件操作
-        if "Bash" in tools_used:
+        # 如果有 Bash 或 PowerShell 命令，解析命令内容看是否有文件操作
+        if any(t in tools_used for t in ("Bash", "PowerShell")):
             for line in reversed(lines):
                 try:
                     entry = json.loads(line.strip())
@@ -564,7 +564,7 @@ class TranscriptParser:
                     content = msg.get("content", []) or entry.get("content", [])
                     if isinstance(content, list):
                         for block in content:
-                            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "Bash":
+                            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") in ("Bash", "PowerShell"):
                                 cmd = block.get("input", {}).get("command", "")
                                 # 检测文件操作命令
                                 if any(kw in cmd.lower() for kw in ("rm ", "mv ", "cp ", "mkdir", "touch", "echo ", "cat ", "sed ", "pip ", "npm ", "cargo ")):
