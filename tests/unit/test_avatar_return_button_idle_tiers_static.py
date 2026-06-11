@@ -1183,6 +1183,48 @@ def test_return_button_local_no_move_release_clears_pending_drag_state():
     )
 
 
+def test_cat1_minimized_ball_contact_finishes_without_side_retarget_jitter():
+    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+
+    assert "function _getNekoIdleRectDirectionalOverlapPx(rect, targetRect, facingRight)" in source
+    assert "function _getNekoIdleCat1MinimizedContactOverlapPx(facingRight, approachOffsetPx, profile)" in source
+    assert "function _makeNekoIdleCat1MinimizedContactTarget(rect, chatRect, options)" in source
+
+    side_target_block = source.split("function _getNekoIdleCat1SideTarget(container, chatRect)", 1)[1].split(
+        "function _getNekoIdleCat1CompactTopEdgeBounds",
+        1,
+    )[0]
+    assert "const approachOffsetPx = _getNekoIdleCat1MinimizedSideApproachOffsetPx(lookFacingRight, chatRect);" in side_target_block
+    assert "const contactOverlapPx = _getNekoIdleRectDirectionalOverlapPx(rect, chatRect, lookFacingRight);" in side_target_block
+    assert "const requiredContactOverlapPx = _getNekoIdleCat1MinimizedContactOverlapPx(" in side_target_block
+    assert "contactOverlapPx >= requiredContactOverlapPx" in side_target_block
+    assert "contactDistance <= profile.target.exitDistancePx" not in side_target_block
+    assert "_makeNekoIdleCat1MinimizedContactTarget(rect, chatRect" in side_target_block
+    assert side_target_block.index("const approachOffsetPx = _getNekoIdleCat1MinimizedSideApproachOffsetPx(lookFacingRight, chatRect);") < side_target_block.index(
+        "const contactOverlapPx = _getNekoIdleRectDirectionalOverlapPx(rect, chatRect, lookFacingRight);"
+    )
+    assert side_target_block.index("contactOverlapPx >= requiredContactOverlapPx") < side_target_block.index("const rawLeft = lookFacingRight")
+
+    contact_overlap_block = source.split("function _getNekoIdleCat1MinimizedContactOverlapPx(facingRight, approachOffsetPx, profile)", 1)[1].split(
+        "function _resolveNekoIdleCat1TargetFacing",
+        1,
+    )[0]
+    assert "const targetOverlapPx = facingRight" in contact_overlap_block
+    assert "? -gapPx" in contact_overlap_block
+    assert ": Math.max(0, Number(approachOffsetPx) || 0) - gapPx" in contact_overlap_block
+    assert "return Math.max(0, targetOverlapPx - exitDistancePx);" in contact_overlap_block
+
+    contact_target_block = source.split("function _makeNekoIdleCat1MinimizedContactTarget(rect, chatRect, options)", 1)[1].split(
+        "function _getNekoIdleCat1SideTarget",
+        1,
+    )[0]
+    assert "left: rect.left" in contact_target_block
+    assert "top: rect.top" in contact_target_block
+    assert "distance: 0" in contact_target_block
+    assert "moveFacingRight: null" in contact_target_block
+    assert "kind: _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE" in contact_target_block
+
+
 def test_return_button_idle_tier_assets_are_version_tracked():
     for path in (APP_UI_PATH, APP_INTERPAGE_PATH, COMMON_UI_HUD_PATH,
                  APP_REACT_CHAT_WINDOW_PATH,
