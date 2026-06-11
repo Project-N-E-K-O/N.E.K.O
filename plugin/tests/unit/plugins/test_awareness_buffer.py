@@ -211,6 +211,8 @@ async def test_activity_buffer_concurrent_add_and_summarize_is_safe() -> None:
         ("Arc Browser", "web_page"),
         ("Stack Overflow - Mozilla Firefox", "web_page"),
         ("Knowledge Base", "other"),
+        ("Vimeo tutorial", "other"),
+        ("Atomic habits outline", "other"),
         ("Knowledge Base - Chrome", "web_page"),
         ("Google Docs - Google Chrome", "text_editor"),
         ("Paper - Adobe Acrobat", "pdf_reader"),

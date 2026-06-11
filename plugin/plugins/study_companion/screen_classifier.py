@@ -192,23 +192,37 @@ def normalize_screen_type(screen_type: str | None) -> str:
     return _SCREEN_TYPE_ALIASES.get(candidate, "idle")
 
 
+def _title_keyword_matches(title: str, keyword: str) -> bool:
+    candidate = str(keyword or "").strip().lower()
+    if not candidate:
+        return False
+    if candidate.isalnum():
+        pattern = rf"(?<![a-z0-9]){re.escape(candidate)}(?![a-z0-9])"
+        return re.search(pattern, title) is not None
+    return candidate in title
+
+
+def _any_title_keyword_matches(title: str, keywords: Iterable[str]) -> bool:
+    return any(_title_keyword_matches(title, keyword) for keyword in keywords)
+
+
 def classify_app_from_title(window_title: str | None) -> str:
     title = _clean_line(str(window_title or "")).lower()
     if not title:
         return "other"
     if title in _BROWSER_APP_NAME_KEYWORDS:
         return "web_page"
-    if any(keyword in title for keyword in _CODE_EDITOR_TITLE_KEYWORDS):
+    if _any_title_keyword_matches(title, _CODE_EDITOR_TITLE_KEYWORDS):
         return "code_editor"
-    if any(keyword in title for keyword in _TEXT_EDITOR_TITLE_KEYWORDS):
+    if _any_title_keyword_matches(title, _TEXT_EDITOR_TITLE_KEYWORDS):
         return "text_editor"
-    if any(keyword in title for keyword in _PDF_READER_TITLE_KEYWORDS):
+    if _any_title_keyword_matches(title, _PDF_READER_TITLE_KEYWORDS):
         return "pdf_reader"
-    if any(keyword in title for keyword in _NOTE_APP_TITLE_KEYWORDS):
+    if _any_title_keyword_matches(title, _NOTE_APP_TITLE_KEYWORDS):
         return "note_app"
-    if any(keyword in title for keyword in _BROWSER_PAGE_TITLE_KEYWORDS):
+    if _any_title_keyword_matches(title, _BROWSER_PAGE_TITLE_KEYWORDS):
         return "web_page"
-    if any(keyword in title for keyword in _BROWSER_TITLE_KEYWORDS):
+    if _any_title_keyword_matches(title, _BROWSER_TITLE_KEYWORDS):
         return "web_page"
     return "other"
 

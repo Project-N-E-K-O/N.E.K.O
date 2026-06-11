@@ -16,6 +16,7 @@
 """
 import asyncio
 import os
+import re
 import sys
 from unittest.mock import AsyncMock, MagicMock
 
@@ -689,6 +690,25 @@ def test_submit_proactive_callback_parks_when_goodbye_silent():
 
     assert mgr.pending_agent_callbacks == [cb]
     assert mgr.pending_extra_replies
+
+
+def test_start_session_success_path_clears_goodbye_silent_gate():
+    """Static guard for the successful start_session branch unblocking proactive."""
+    with open(
+        os.path.join(os.path.dirname(__file__), "../../main_logic/core.py"),
+        encoding="utf-8",
+    ) as fh:
+        source = fh.read()
+    normalized_source = re.sub(r"\s+", " ", source)
+    success_marker = "self._session_start_circuit_open = False"
+    clear_marker = "if self.is_goodbye_silent(): self.set_goodbye_silent(False)"
+    notify_marker = "await self.send_session_started(input_mode)"
+
+    clear_pos = normalized_source.index(clear_marker)
+    success_pos = normalized_source.rindex(success_marker, 0, clear_pos)
+    notify_pos = normalized_source.index(notify_marker, clear_pos)
+
+    assert success_pos < clear_pos < notify_pos
 
 
 async def test_text_mode_successful_delivery_fires_full_event_sequence():

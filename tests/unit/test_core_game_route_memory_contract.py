@@ -384,6 +384,7 @@ async def test_voice_transcript_runs_mini_game_invite_keyword(monkeypatch):
 @pytest.mark.asyncio
 async def test_voice_transcript_bridge_cancel_consumes_ordinary_flow(monkeypatch):
     calls = []
+    mini_game_calls = []
 
     async def fake_publish(lanlan_name, transcript, *, metadata):
         calls.append((lanlan_name, transcript, metadata))
@@ -393,6 +394,11 @@ async def test_voice_transcript_bridge_cancel_consumes_ordinary_flow(monkeypatch
     mgr = _make_transcript_manager()
     mgr.session = session
     monkeypatch.setattr(core_module, "publish_voice_transcript_request_reliably", fake_publish)
+    monkeypatch.setattr(
+        core_module,
+        "dispatch_text_user_message",
+        lambda name, text: mini_game_calls.append((name, text)),
+    )
 
     await core_module.LLMSessionManager.handle_input_transcript(
         mgr,
@@ -408,6 +414,7 @@ async def test_voice_transcript_bridge_cancel_consumes_ordinary_flow(monkeypatch
     assert "voice_session_id" not in calls[0][2]
     assert mgr._latest_voice_transcript_request_id == calls[0][2]["request_id"]
     assert session.cancelled == 1
+    assert mini_game_calls == [("Lan", "screen echo")]
     assert mgr._activity_tracker.voice_rms_count == 1
     assert mgr._activity_tracker.user_messages == []
     assert mgr._session_turn_count == 0

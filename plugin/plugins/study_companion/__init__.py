@@ -447,7 +447,6 @@ class StudyCompanionPlugin(
     def stop_awareness_loop(self) -> None:
         task = self._awareness_task
         self._buffer = None
-        self._collector = None
         self._last_awareness_push_at = 0.0
         self._awareness_idle_ticks = 0
         if task is not None and not task.done():
@@ -658,23 +657,38 @@ class StudyCompanionPlugin(
             await asyncio.sleep(max(0.0, _REVIEW_DUE_INTERVAL_SECONDS))
 
     async def _run_awareness_loop(self) -> None:
+        collector = None
         if self._cfg.awareness.os_signals_enabled:
             try:
                 from main_logic.activity.system_signals import (
                     get_system_signal_collector,
                 )
 
-                self._collector = get_system_signal_collector()
-                await self._collector.start()
+                collector = get_system_signal_collector()
+                self._collector = collector
+                await collector.start()
             except Exception:
+                collector = None
                 self._collector = None
                 self.logger.warning(
                     "study awareness collector startup failed; continuing without os signals",
                     exc_info=True,
                 )
-        while self._buffer is not None:
-            await self.awareness_tick()
-            await asyncio.sleep(self._awareness_sleep_seconds())
+        try:
+            while self._buffer is not None:
+                await self.awareness_tick()
+                await asyncio.sleep(self._awareness_sleep_seconds())
+        finally:
+            if collector is not None:
+                try:
+                    await collector.stop()
+                except Exception:
+                    self.logger.warning(
+                        "study awareness collector shutdown failed",
+                        exc_info=True,
+                    )
+            if self._collector is collector:
+                self._collector = None
 
     def _awareness_sleep_seconds(self) -> float:
         base = max(1.0, float(self._cfg.awareness.snapshot_interval_seconds))

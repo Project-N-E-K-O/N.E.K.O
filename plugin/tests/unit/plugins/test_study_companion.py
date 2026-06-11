@@ -306,6 +306,66 @@ async def test_start_awareness_loop_runs_async_tick_and_pushes_context(
 
 
 @pytest.mark.asyncio
+async def test_stop_awareness_loop_stops_os_signal_collector(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeCollector:
+        def __init__(self) -> None:
+            self.started = False
+            self.stopped = False
+
+        async def start(self) -> None:
+            self.started = True
+
+        async def stop(self) -> None:
+            self.stopped = True
+
+        def snapshot(self):
+            return SimpleNamespace(os_signals_available=False)
+
+    class _CaptureFailedPipeline:
+        def capture_lightweight(self):
+            return SimpleNamespace(status="capture_failed")
+
+    from main_logic.activity import system_signals as system_signals_module
+
+    collector = _FakeCollector()
+    monkeypatch.setattr(
+        system_signals_module,
+        "get_system_signal_collector",
+        lambda: collector,
+    )
+
+    plugin = StudyCompanionPlugin(_Ctx(tmp_path, {"study": {"language": "en"}}))
+    plugin._cfg = StudyConfig(
+        awareness=AwarenessConfig(
+            enabled=True,
+            os_signals_enabled=True,
+            snapshot_interval_seconds=60,
+            push_to_llm_mode="blind",
+        )
+    )
+    plugin._ocr_pipeline = _CaptureFailedPipeline()
+
+    plugin.start_awareness_loop()
+    try:
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and not collector.started:
+            await asyncio.sleep(0.01)
+        assert collector.started is True
+
+        plugin.stop_awareness_loop()
+        await plugin._await_awareness_stop()
+
+        assert collector.stopped is True
+        assert plugin._collector is None
+    finally:
+        plugin.stop_awareness_loop()
+        await plugin._await_awareness_stop()
+
+
+@pytest.mark.asyncio
 async def test_awareness_tick_counts_unusable_snapshot_as_idle(tmp_path: Path) -> None:
     class _NoActivitySnapshot:
         status = "ok"
