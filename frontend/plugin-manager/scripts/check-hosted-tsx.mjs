@@ -1,6 +1,6 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import process from 'node:process'
 import ts from 'typescript'
@@ -184,13 +184,65 @@ function hasDefaultExport(source) {
   return /\bexport\s+default\b/.test(source)
 }
 
-function createCheckFile(entryPath, tempDir, index, surface, tomlPath) {
-  const source = readFileSync(entryPath, 'utf8')
-  const stripped = source
+function stripHostedUiImports(source) {
+  return source
     .replace(/^\s*import[\s\S]*?from\s+['"](?:@neko\/plugin-ui|neko:ui)['"]\s*;?\s*/gm, '')
     .replace(/^\s*import\s+['"](?:@neko\/plugin-ui|neko:ui)['"]\s*;?\s*/gm, '')
-  const checkPath = join(tempDir, `surface-${index}.tsx`)
+}
+
+function tempPathForSource(sourcePath, tempDir) {
+  return join(tempDir, relative(repoRoot, sourcePath))
+}
+
+function resolveRelativeImport(fromPath, specifier) {
+  const basePath = resolve(dirname(fromPath), specifier)
+  const candidates = [
+    basePath,
+    `${basePath}.ts`,
+    `${basePath}.tsx`,
+    `${basePath}.js`,
+    `${basePath}.jsx`,
+    join(basePath, 'index.ts'),
+    join(basePath, 'index.tsx'),
+    join(basePath, 'index.js'),
+    join(basePath, 'index.jsx'),
+  ]
+  return candidates.find((candidate) => existsSync(candidate) && statSync(candidate).isFile()) || null
+}
+
+function copyRelativeDependencies(sourcePath, tempDir, copied = new Set()) {
+  if (copied.has(sourcePath)) return
+  copied.add(sourcePath)
+  const source = readFileSync(sourcePath, 'utf8')
+  const targetPath = tempPathForSource(sourcePath, tempDir)
+  mkdirSync(dirname(targetPath), { recursive: true })
+  writeFileSync(targetPath, source, 'utf8')
+
+  const importPattern = /^\s*import(?:[\s\S]*?\sfrom\s+|\s+)['"](\.{1,2}\/[^'"]+)['"]\s*;?/gm
+  let match
+  while ((match = importPattern.exec(source)) !== null) {
+    const dependencyPath = resolveRelativeImport(sourcePath, match[1])
+    if (dependencyPath) {
+      copyRelativeDependencies(dependencyPath, tempDir, copied)
+    }
+  }
+}
+
+function createCheckFile(entryPath, tempDir, index, surface, tomlPath) {
+  const source = readFileSync(entryPath, 'utf8')
+  const stripped = stripHostedUiImports(source)
+  const checkPath = tempPathForSource(entryPath, tempDir)
   const prefixLines = 6
+  mkdirSync(dirname(checkPath), { recursive: true })
+  const copied = new Set([entryPath])
+  const importPattern = /^\s*import(?:[\s\S]*?\sfrom\s+|\s+)['"](\.{1,2}\/[^'"]+)['"]\s*;?/gm
+  let match
+  while ((match = importPattern.exec(source)) !== null) {
+    const dependencyPath = resolveRelativeImport(entryPath, match[1])
+    if (dependencyPath) {
+      copyRelativeDependencies(dependencyPath, tempDir, copied)
+    }
+  }
   writeFileSync(
     checkPath,
     `/// <reference path="${hostedUiGlobalsPath}" />\nimport * as NekoUi from "@neko/plugin-ui";\nimport type { PluginSurfaceProps, HostedAction, JsonSchema, HostedApi } from "@neko/plugin-ui";\nconst { ${[
