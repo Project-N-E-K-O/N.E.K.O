@@ -3813,6 +3813,7 @@
     var isMinimizeTransitioning = false;
     var activeAnimationCleanup = null; // 当前进行中动画的清理函数
     var pendingChatSurfaceMode = null;
+    var pendingMinimizedSurfaceCommit = null;
 
     // ── Idle-dock: independent orchestration (Phase 4) ──────────
     // Positions the minimized ball next to CAT2/CAT3 return-ball.
@@ -4689,6 +4690,7 @@
         // 也走这里），避免该回调在窗口关闭/重开后幽灵触发 setChatSurfaceMode('minimized')。
         clearCompactMinimizePressTimer();
         pendingChatSurfaceMode = null;
+        pendingMinimizedSurfaceCommit = null;
     }
 
     // 最小化球皮肤跟随可恢复形态；紧凑 Electron 宿主会把历史 full 规整回 compact。
@@ -4747,6 +4749,22 @@
         return normalized;
     }
 
+    function commitPendingMinimizedSurfaceMode() {
+        if (!pendingMinimizedSurfaceCommit) return false;
+
+        var commit = pendingMinimizedSurfaceCommit;
+        pendingMinimizedSurfaceCommit = null;
+        state.chatSurfaceMode = commit.mode;
+        resetCompactChatState();
+        renderWindow();
+        syncChatSurfaceModeUI();
+        dispatchHostEvent('chat-surface-mode-change', {
+            mode: commit.mode,
+            previousMode: commit.previousMode
+        });
+        return true;
+    }
+
     function setChatSurfaceMode(nextMode) {
         var normalized = coerceChatSurfaceModeForHost(nextMode);
         var previousMode = getCurrentChatSurfaceMode();
@@ -4783,6 +4801,17 @@
         }
 
         resetCompactChatState();
+
+        if (!previousMinimized && nextMinimized && previousMode === 'full' && !isElectronChatWindow() && getShell()) {
+            pendingMinimizedSurfaceCommit = {
+                mode: normalized,
+                previousMode: previousMode
+            };
+            setMinimized(true);
+            return normalized;
+        }
+
+        pendingMinimizedSurfaceCommit = null;
         state.chatSurfaceMode = normalized;
         persistChatSurfaceModePreference(normalized);
         if (normalized === 'compact') {
@@ -4927,6 +4956,7 @@
                 // minimize from the revived legacy full shows its breathing-light
                 // orb instead of the stale compact yarn ball.
                 applyMinimizedBallSkin(ensureMinimizedBallIcon());
+                commitPendingMinimizedSurfaceMode();
                 isMinimizeTransitioning = false;
                 flushPendingChatSurfaceModeIfNeeded();
             };
@@ -4944,6 +4974,7 @@
                 shell.classList.remove('is-collapsing');
                 shell.style.transform = 'none';
                 shell.style.removeProperty('transform-origin');
+                pendingMinimizedSurfaceCommit = null;
                 handled = true;
             };
 
