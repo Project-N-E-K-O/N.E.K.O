@@ -5733,6 +5733,7 @@ function CompactChatApp({
       </div>
     </section>
   ) : null;
+  const shouldRenderComposerPanel = isCompactSurface || !composerHidden;
 
   return (
     <main
@@ -5811,132 +5812,133 @@ function CompactChatApp({
 
         {chatBodyNode}
 
-        <footer
-          className={`composer-panel ${surfaceModeClassName}${galgameModeEnabled ? ' is-galgame-mode' : ''}`}
-          style={composerHidden && !isCompactSurface ? { display: 'none' } : undefined}
-          data-chat-surface-mode={chatSurfaceMode}
-          data-compact-chat-state={effectiveCompactChatState}
-        >
-          {!isCompactSurface ? <div id="music-player-mount" className="composer-music-player-mount" /> : null}
-          <form className="composer" onSubmit={(event) => {
-            event.preventDefault();
-            submitDraft();
-          }}>
-            {isCompactSurface ? (
-              <div
-                className={`compact-chat-surface-shell${
-                  compactCollapsing
-                    ? ' neko-compact-collapsing'
-                    : compactExpanding
-                      ? ' neko-compact-expanding'
-                      : ''
-                }`}
-                ref={compactInputShellRef}
-                data-compact-chat-state={effectiveCompactChatState}
-                data-compact-tool-layer-open={compactToolToggleVisible && compactInputToolFanOpen ? 'true' : 'false'}
-                style={compactSurfaceShellStyle}
-                onBlurCapture={effectiveCompactChatState === 'input' ? scheduleCompactInputCollapse : undefined}
-              >
+        {shouldRenderComposerPanel ? (
+          <footer
+            className={`composer-panel ${surfaceModeClassName}${galgameModeEnabled ? ' is-galgame-mode' : ''}`}
+            data-chat-surface-mode={chatSurfaceMode}
+            data-compact-chat-state={effectiveCompactChatState}
+          >
+            {!isCompactSurface ? <div id="music-player-mount" className="composer-music-player-mount" /> : null}
+            <form className="composer" onSubmit={(event) => {
+              event.preventDefault();
+              submitDraft();
+            }}>
+              {isCompactSurface ? (
                 <div
-                  className="compact-chat-resize-handle compact-chat-resize-handle-left"
-                  data-compact-resize-side="left"
-                  data-compact-geometry-item="resizeHandle"
-                  data-compact-geometry-owner="surface"
-                  data-compact-no-drag="true"
-                  aria-hidden="true"
-                  onPointerDown={(event) => handleCompactSurfaceResizePointerDown('left', event)}
-                  onPointerMove={handleCompactSurfaceResizePointerMove}
-                  onPointerUp={handleCompactSurfaceResizePointerUp}
-                  onPointerCancel={handleCompactSurfaceResizePointerCancel}
-                  onLostPointerCapture={handleCompactSurfaceResizePointerCancel}
-                />
-                <div
-                  className="compact-chat-resize-handle compact-chat-resize-handle-right"
-                  data-compact-resize-side="right"
-                  data-compact-geometry-item="resizeHandle"
-                  data-compact-geometry-owner="surface"
-                  data-compact-no-drag="true"
-                  aria-hidden="true"
-                  onPointerDown={(event) => handleCompactSurfaceResizePointerDown('right', event)}
-                  onPointerMove={handleCompactSurfaceResizePointerMove}
-                  onPointerUp={handleCompactSurfaceResizePointerUp}
-                  onPointerCancel={handleCompactSurfaceResizePointerCancel}
-                  onLostPointerCapture={handleCompactSurfaceResizePointerCancel}
-                />
-                <div
-                  className="compact-chat-surface-frame"
-                  data-compact-geometry-item={effectiveCompactChatState === 'input' ? 'input' : 'capsule'}
-                  data-compact-geometry-owner="surface"
-                  data-compact-drag-surface="true"
+                  className={`compact-chat-surface-shell${
+                    compactCollapsing
+                      ? ' neko-compact-collapsing'
+                      : compactExpanding
+                        ? ' neko-compact-expanding'
+                        : ''
+                  }`}
+                  ref={compactInputShellRef}
                   data-compact-chat-state={effectiveCompactChatState}
-                  data-compact-geometry-part={effectiveCompactChatState === 'input' ? 'inputBody' : 'capsuleBody'}
-                  data-compact-tool-toggle-visible={compactToolToggleVisible ? 'true' : 'false'}
+                  data-compact-tool-layer-open={compactToolToggleVisible && compactInputToolFanOpen ? 'true' : 'false'}
+                  style={compactSurfaceShellStyle}
+                  onBlurCapture={effectiveCompactChatState === 'input' ? scheduleCompactInputCollapse : undefined}
                 >
-                  {effectiveCompactChatState === 'input' ? (
-                    <>
-                      {/* 输入态左侧毛绒球：点按折叠为 minimized，按住拖动整个输入框（见 compactMinimizeButton 定义）。
-                          按住把手不会让 textarea 失焦收起输入态——宿主 mousedown 会 preventDefault。 */}
-                      {compactMinimizeButton}
-                      <textarea
-                        className="composer-input"
-                        ref={compactInputRef}
-                        data-compact-no-drag="true"
-                        placeholder={inputPlaceholder}
-                        aria-label={inputPlaceholder}
-                        rows={1}
-                        value={draft}
-                        readOnly={composerDisabled}
-                        disabled={composerDisabled}
-                        onChange={(event) => {
-                          setDraft(event.target.value);
-                          if (event.target.value.trim().length > 0) {
-                            closeCompactInputToolFan();
-                          }
-                        }}
-                        onBlur={scheduleCompactInputCollapse}
-                        onKeyDown={(event) => {
-                          if (event.nativeEvent.isComposing) return;
-                          if (event.key === 'Enter' && !event.shiftKey) {
-                            event.preventDefault();
-                            submitDraft();
-                          }
-                        }}
-                      />
-                      {compactInputToolToggleButton}
-                    </>
-                  ) : (
-                    <>
-                      {compactMinimizeButton}
-                      <button
-                        className="compact-chat-capsule-button"
-                        type="button"
-                        disabled={composerDisabled}
-                        onClick={() => {
-                          if (composerHidden) return;
-                          if (isGuideChatButtonLockActive()) return;
-                          requestCompactChatState('input');
-                        }}
-                      >
-                        <span
-                          ref={compactPreviewTextRef}
-                          className="compact-chat-capsule-text"
-                          data-compact-preview-streaming={compactPreviewIsStreaming ? 'true' : 'false'}
-                          data-compact-preview-scrollable={compactPreviewAllowsScroll ? 'true' : 'false'}
-                          onWheel={handleCompactPreviewWheel}
+                  <div
+                    className="compact-chat-resize-handle compact-chat-resize-handle-left"
+                    data-compact-resize-side="left"
+                    data-compact-geometry-item="resizeHandle"
+                    data-compact-geometry-owner="surface"
+                    data-compact-no-drag="true"
+                    aria-hidden="true"
+                    onPointerDown={(event) => handleCompactSurfaceResizePointerDown('left', event)}
+                    onPointerMove={handleCompactSurfaceResizePointerMove}
+                    onPointerUp={handleCompactSurfaceResizePointerUp}
+                    onPointerCancel={handleCompactSurfaceResizePointerCancel}
+                    onLostPointerCapture={handleCompactSurfaceResizePointerCancel}
+                  />
+                  <div
+                    className="compact-chat-resize-handle compact-chat-resize-handle-right"
+                    data-compact-resize-side="right"
+                    data-compact-geometry-item="resizeHandle"
+                    data-compact-geometry-owner="surface"
+                    data-compact-no-drag="true"
+                    aria-hidden="true"
+                    onPointerDown={(event) => handleCompactSurfaceResizePointerDown('right', event)}
+                    onPointerMove={handleCompactSurfaceResizePointerMove}
+                    onPointerUp={handleCompactSurfaceResizePointerUp}
+                    onPointerCancel={handleCompactSurfaceResizePointerCancel}
+                    onLostPointerCapture={handleCompactSurfaceResizePointerCancel}
+                  />
+                  <div
+                    className="compact-chat-surface-frame"
+                    data-compact-geometry-item={effectiveCompactChatState === 'input' ? 'input' : 'capsule'}
+                    data-compact-geometry-owner="surface"
+                    data-compact-drag-surface="true"
+                    data-compact-chat-state={effectiveCompactChatState}
+                    data-compact-geometry-part={effectiveCompactChatState === 'input' ? 'inputBody' : 'capsuleBody'}
+                    data-compact-tool-toggle-visible={compactToolToggleVisible ? 'true' : 'false'}
+                  >
+                    {effectiveCompactChatState === 'input' ? (
+                      <>
+                        {/* 输入态左侧毛绒球：点按折叠为 minimized，按住拖动整个输入框（见 compactMinimizeButton 定义）。
+                            按住把手不会让 textarea 失焦收起输入态——宿主 mousedown 会 preventDefault。 */}
+                        {compactMinimizeButton}
+                        <textarea
+                          className="composer-input"
+                          ref={compactInputRef}
+                          data-compact-no-drag="true"
+                          placeholder={inputPlaceholder}
+                          aria-label={inputPlaceholder}
+                          rows={1}
+                          value={draft}
+                          readOnly={composerDisabled}
+                          disabled={composerDisabled}
+                          onChange={(event) => {
+                            setDraft(event.target.value);
+                            if (event.target.value.trim().length > 0) {
+                              closeCompactInputToolFan();
+                            }
+                          }}
+                          onBlur={scheduleCompactInputCollapse}
+                          onKeyDown={(event) => {
+                            if (event.nativeEvent.isComposing) return;
+                            if (event.key === 'Enter' && !event.shiftKey) {
+                              event.preventDefault();
+                              submitDraft();
+                            }
+                          }}
+                        />
+                        {compactInputToolToggleButton}
+                      </>
+                    ) : (
+                      <>
+                        {compactMinimizeButton}
+                        <button
+                          className="compact-chat-capsule-button"
+                          type="button"
+                          disabled={composerDisabled}
+                          onClick={() => {
+                            if (composerHidden) return;
+                            if (isGuideChatButtonLockActive()) return;
+                            requestCompactChatState('input');
+                          }}
                         >
-                          {compactPreviewDisplayContent}
-                        </span>
-                      </button>
-                      {compactInputToolToggleButton}
-                    </>
-                  )}
+                          <span
+                            ref={compactPreviewTextRef}
+                            className="compact-chat-capsule-text"
+                            data-compact-preview-streaming={compactPreviewIsStreaming ? 'true' : 'false'}
+                            data-compact-preview-scrollable={compactPreviewAllowsScroll ? 'true' : 'false'}
+                            onWheel={handleCompactPreviewWheel}
+                          >
+                            {compactPreviewDisplayContent}
+                          </span>
+                        </button>
+                        {compactInputToolToggleButton}
+                      </>
+                    )}
+                  </div>
+                  {composerAttachmentPreviewNode}
+                  {compactInputToolFanNode}
                 </div>
-                {composerAttachmentPreviewNode}
-                {compactInputToolFanNode}
-              </div>
-            ) : null}
-          </form>
-        </footer>
+              ) : null}
+            </form>
+          </footer>
+        ) : null}
       </section>
     </main>
   );

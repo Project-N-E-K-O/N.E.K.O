@@ -1183,6 +1183,54 @@ def test_return_button_local_no_move_release_clears_pending_drag_state():
     )
 
 
+def test_cat1_minimized_ball_inside_cat_finishes_without_side_retarget_jitter():
+    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+
+    assert "function _isNekoIdleRectCenterInsideRect(innerRect, outerRect)" in source
+    assert "function _makeNekoIdleCat1CurrentSideTarget(rect, chatRect, options)" in source
+    assert "function _getNekoIdleRectDirectionalOverlapPx" not in source
+    assert "function _getNekoIdleCat1MinimizedContactTargetOverlapPx" not in source
+
+    side_target_block = source.split("function _getNekoIdleCat1SideTarget(container, chatRect)", 1)[1].split(
+        "function _getNekoIdleCat1CompactTopEdgeBounds",
+        1,
+    )[0]
+    assert "const approachOffsetPx = _getNekoIdleCat1MinimizedSideApproachOffsetPx(lookFacingRight, chatRect);" in side_target_block
+    assert "const sideTarget = _makeNekoIdleCat1SideTarget(rect, chatRect" in side_target_block
+    assert "_isNekoIdleRectCenterInsideRect(chatRect, rect)" in side_target_block
+    assert "sideTarget.moveFacingRight !== lookFacingRight" in side_target_block
+    assert "_makeNekoIdleCat1CurrentSideTarget(rect, chatRect" in side_target_block
+    assert "contactDistance <= profile.target.exitDistancePx" not in side_target_block
+    assert side_target_block.index("const approachOffsetPx = _getNekoIdleCat1MinimizedSideApproachOffsetPx(lookFacingRight, chatRect);") < side_target_block.index(
+        "const rawLeft = lookFacingRight"
+    )
+    assert side_target_block.index("const rawLeft = lookFacingRight") < side_target_block.index("const sideTarget = _makeNekoIdleCat1SideTarget")
+    assert side_target_block.index("const sideTarget = _makeNekoIdleCat1SideTarget") < side_target_block.index("_isNekoIdleRectCenterInsideRect(chatRect, rect)")
+    assert side_target_block.index("sideTarget.moveFacingRight !== lookFacingRight") < side_target_block.index("_makeNekoIdleCat1CurrentSideTarget(rect, chatRect")
+    assert side_target_block.index("_isNekoIdleRectCenterInsideRect(chatRect, rect)") < side_target_block.index("if (!sideTarget || sideTarget.moveFacingRight === null || sideTarget.moveFacingRight === lookFacingRight)")
+
+    center_inside_block = source.split("function _isNekoIdleRectCenterInsideRect(innerRect, outerRect)", 1)[1].split(
+        "function _makeNekoIdleCat1CurrentSideTarget",
+        1,
+    )[0]
+    assert "const innerCenterX = innerLeft + innerWidth / 2;" in center_inside_block
+    assert "const innerCenterY = innerTop + innerHeight / 2;" in center_inside_block
+    assert "return innerCenterX >= outerLeft && innerCenterX <= outerRight &&" in center_inside_block
+    assert "innerCenterY >= outerTop && innerCenterY <= outerBottom;" in center_inside_block
+
+    current_target_block = source.split("function _makeNekoIdleCat1CurrentSideTarget(rect, chatRect, options)", 1)[1].split(
+        "function _getNekoIdleCat1SideTarget",
+        1,
+    )[0]
+    assert "left: rect.left" in current_target_block
+    assert "top: rect.top" in current_target_block
+    assert "distance: 0" in current_target_block
+    assert "moveFacingRight: null" in current_target_block
+    assert "approachOffsetPx" in current_target_block
+    assert "approachOffsetPx: _getNekoIdleCat1MinimizedSideApproachOffsetPx(facingRight, chatRect)" in current_target_block
+    assert "kind: _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE" in current_target_block
+
+
 def test_return_button_idle_tier_assets_are_version_tracked():
     for path in (APP_UI_PATH, APP_INTERPAGE_PATH, COMMON_UI_HUD_PATH,
                  APP_REACT_CHAT_WINDOW_PATH,

@@ -2643,6 +2643,45 @@ function _makeNekoIdleCat1SideTarget(rect, chatRect, options) {
     };
 }
 
+function _isNekoIdleRectCenterInsideRect(innerRect, outerRect) {
+    if (!innerRect || !outerRect) return false;
+    const innerLeft = Number(innerRect.left);
+    const innerTop = Number(innerRect.top);
+    const innerWidth = Number(innerRect.width);
+    const innerHeight = Number(innerRect.height);
+    const outerLeft = Number(outerRect.left);
+    const outerTop = Number(outerRect.top);
+    const outerWidth = Number(outerRect.width);
+    const outerHeight = Number(outerRect.height);
+    if (!Number.isFinite(innerLeft) || !Number.isFinite(innerTop) ||
+        !Number.isFinite(innerWidth) || !Number.isFinite(innerHeight) ||
+        !Number.isFinite(outerLeft) || !Number.isFinite(outerTop) ||
+        !Number.isFinite(outerWidth) || !Number.isFinite(outerHeight) ||
+        innerWidth <= 0 || innerHeight <= 0 || outerWidth <= 0 || outerHeight <= 0) {
+        return false;
+    }
+    const outerRight = Number.isFinite(Number(outerRect.right)) ? Number(outerRect.right) : outerLeft + outerWidth;
+    const outerBottom = Number.isFinite(Number(outerRect.bottom)) ? Number(outerRect.bottom) : outerTop + outerHeight;
+    const innerCenterX = innerLeft + innerWidth / 2;
+    const innerCenterY = innerTop + innerHeight / 2;
+    return innerCenterX >= outerLeft && innerCenterX <= outerRight &&
+        innerCenterY >= outerTop && innerCenterY <= outerBottom;
+}
+
+function _makeNekoIdleCat1CurrentSideTarget(rect, chatRect, options) {
+    const facingRight = !!(options && options.facingRight);
+    return {
+        left: rect.left,
+        top: rect.top,
+        distance: 0,
+        facingRight: facingRight,
+        lookFacingRight: facingRight,
+        moveFacingRight: null,
+        approachOffsetPx: _getNekoIdleCat1MinimizedSideApproachOffsetPx(facingRight, chatRect),
+        kind: _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE
+    };
+}
+
 function _getNekoIdleCat1SideTarget(container, chatRect) {
     if (!container || !chatRect || typeof container.getBoundingClientRect !== 'function') return null;
     const profile = _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
@@ -2661,6 +2700,14 @@ function _getNekoIdleCat1SideTarget(container, chatRect) {
         rawLeft: rawLeft,
         approachOffsetPx: approachOffsetPx
     });
+    if (_isNekoIdleRectCenterInsideRect(chatRect, rect) &&
+        sideTarget &&
+        sideTarget.moveFacingRight !== null &&
+        sideTarget.moveFacingRight !== lookFacingRight) {
+        return _makeNekoIdleCat1CurrentSideTarget(rect, chatRect, {
+            facingRight: lookFacingRight
+        });
+    }
     if (!sideTarget || sideTarget.moveFacingRight === null || sideTarget.moveFacingRight === lookFacingRight) {
         return sideTarget;
     }
@@ -4389,6 +4436,7 @@ const AvatarButtonMixin = {
                     position: 'relative',
                     width: '48px',
                     height: '48px',
+                    boxSizing: 'border-box',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center'
@@ -4399,12 +4447,17 @@ const AvatarButtonMixin = {
                 imgOff.alt = config.title;
                 Object.assign(imgOff.style, {
                     position: 'absolute',
+                    left: '50%',
+                    top: '50%',
                     width: '48px',
                     height: '48px',
                     objectFit: 'contain',
+                    display: 'block',
                     pointerEvents: 'none',
                     opacity: '0.75',
                     transition: 'opacity 0.3s ease',
+                    transform: 'translate(-50%, -50%)',
+                    transformOrigin: 'center center',
                     imageRendering: 'crisp-edges'
                 });
 
@@ -4413,12 +4466,17 @@ const AvatarButtonMixin = {
                 imgOn.alt = config.title;
                 Object.assign(imgOn.style, {
                     position: 'absolute',
+                    left: '50%',
+                    top: '50%',
                     width: '48px',
                     height: '48px',
                     objectFit: 'contain',
+                    display: 'block',
                     pointerEvents: 'none',
                     opacity: '0',
                     transition: 'opacity 0.3s ease',
+                    transform: 'translate(-50%, -50%)',
+                    transformOrigin: 'center center',
                     imageRendering: 'crisp-edges'
                 });
 
@@ -4433,6 +4491,7 @@ const AvatarButtonMixin = {
             Object.assign(btn.style, {
                 width: '48px',
                 height: '48px',
+                boxSizing: 'border-box',
                 borderRadius: '50%',
                 background: 'var(--neko-btn-bg, rgba(255, 255, 255, 0.65))',
                 backdropFilter: 'saturate(180%) blur(20px)',
