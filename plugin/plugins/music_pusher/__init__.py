@@ -44,8 +44,8 @@ _ALLOWED_AUDIO_EXTENSIONS = frozenset({
     ".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac",
 })
 _ALLOWED_LYRIC_EXTENSIONS = frozenset({".irc", ".lrc", ".txt"})
-_DEFAULT_MAX_UPLOAD_TB = 3
-_DEFAULT_MAX_AUDIO_SIZE_BYTES = _DEFAULT_MAX_UPLOAD_TB * 1024 * 1024 * 1024 * 1024
+_DEFAULT_MAX_UPLOAD_MB = 500
+_DEFAULT_MAX_AUDIO_SIZE_BYTES = _DEFAULT_MAX_UPLOAD_MB * 1024 * 1024
 _UPLOAD_SUBDIR = "uploads"
 _DEFAULT_PLUGIN_SERVER_PORT = 48916
 _STATE_FILE_NAME = "scheduler_state.json"
@@ -735,6 +735,13 @@ class MusicPusherPlugin(NekoPluginBase):
             for name, meta in self._upload_name_map.items()
             if name in upload_files
         }
+
+        # 清理已删除文件对应的 music_items，避免脏数据残留。
+        self._music_items = [
+            item for item in self._music_items
+            if not str(item.get("stored_filename") or "").strip()
+            or str(item.get("stored_filename") or "").strip() in upload_files
+        ]
 
         by_stored: dict[str, dict[str, Any]] = {}
         for item in self._music_items:
@@ -1719,7 +1726,7 @@ class MusicPusherPlugin(NekoPluginBase):
         async with self._state_lock:
             self._attach_prompt_on_push = bool(attach_prompt_on_push)
             self._save_state_locked()
-        return Ok({"attach_prompt_on_push": bool(self._attach_prompt_on_push), "message": "获取成功"})
+        return Ok({"attach_prompt_on_push": bool(self._attach_prompt_on_push), "message": "设置成功"})
 
     @plugin_entry(
         id="list_music_items",

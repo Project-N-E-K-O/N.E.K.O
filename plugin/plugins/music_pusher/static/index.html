@@ -139,6 +139,7 @@
     .planner-pane,
     .library-pane,
     .task-list-pane {
+      grid-area: tasks;
       display: flex;
       flex-direction: column;
       min-height: 0;
@@ -1195,17 +1196,20 @@
     }
 
     function toPlayableUrl(rawUrl) {
+      // 后端已通过 _to_absolute_ui_url 返回正确的绝对 URL（包含正确的 origin/端口）。
+      // 前端不应再硬编码端口，直接信任后端返回的 URL 即可。
       const text = String(rawUrl || "").trim();
       if (!text) return "";
       try {
-        const parsed = new URL(text, window.location.href);
-        const isPluginUpload = parsed.pathname.includes(`/plugin/${PLUGIN_ID}/ui/uploads/`);
-        if (isPluginUpload) {
-          return `http://127.0.0.1:48916${parsed.pathname}${parsed.search}${parsed.hash}`;
+        new URL(text);
+        return text; // 已经是完整的绝对 URL
+      } catch {
+        // 兼容旧数据：相对路径用当前页面 origin 补齐
+        try {
+          return new URL(text, window.location.href).href;
+        } catch {
+          return text;
         }
-        return parsed.href;
-      } catch (_err) {
-        return text;
       }
     }
 
