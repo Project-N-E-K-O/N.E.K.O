@@ -105,6 +105,34 @@ def test_chat_surface_mode_preference_is_shared_with_electron():
     assert "localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, mode)" in persist_block
 
 
+def test_goodbye_composer_hidden_survives_surface_mode_switches():
+    source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    build_render_block = source.split("function buildRenderProps()", 1)[1].split(
+        "function showToast",
+        1,
+    )[0]
+    submit_block = source.split("function handleComposerSubmit(payload)", 1)[1].split(
+        "function prepareCompactHistoryDropSubmit",
+        1,
+    )[0]
+    set_mode_block = source.split("function setChatSurfaceMode(nextMode)", 1)[1].split(
+        "function cycleChatSurfaceMode()",
+        1,
+    )[0]
+
+    assert "goodbyeComposerHidden: false" in source
+    assert "function getEffectiveComposerHidden()" in source
+    assert "return !!(state.composerHidden || state.goodbyeComposerHidden);" in source
+    assert "composerHidden: getEffectiveComposerHidden()" in build_render_block
+    assert "state.homeTutorialInteractionLocked || getEffectiveComposerHidden()" in submit_block
+    assert "syncGoodbyeComposerHidden('chat-surface-mode-change');" in set_mode_block
+    assert "EVENT_PREFIX + 'set-goodbye-composer-hidden'" in source
+    assert "window.addEventListener('live2d-goodbye-click'" in source
+    assert "setGoodbyeComposerHidden(true, 'live2d-goodbye-click')" in source
+    assert "setGoodbyeComposerHidden(false, 'live2d-return-click')" in source
+
+
 def test_chat_full_endpoint_uses_chat_template_with_initial_full_surface():
     router_source = PAGES_ROUTER_PATH.read_text(encoding="utf-8")
     template_source = CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")

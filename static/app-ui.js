@@ -3150,6 +3150,11 @@
             if (window.mmdManager) {
                 window.mmdManager._goodbyeClicked = true;
             }
+            if (window.appInterpage && typeof window.appInterpage.postGoodbyeChatComposerHiddenState === 'function') {
+                window.appInterpage.postGoodbyeChatComposerHiddenState(true, 'live2d-goodbye-click');
+            } else if (typeof window.postGoodbyeChatComposerHiddenState === 'function') {
+                window.postGoodbyeChatComposerHiddenState(true, 'live2d-goodbye-click');
+            }
             console.log('[App] 设置 goodbyeClicked 为 true，当前状态:', window.live2dManager ? window.live2dManager._goodbyeClicked : 'undefined', 'VRM:', window.vrmManager ? window.vrmManager._goodbyeClicked : 'undefined');
 
             // 立即关闭所有弹窗
@@ -3554,6 +3559,11 @@
             }
             if (window.mmdManager) {
                 window.mmdManager._goodbyeClicked = false;
+            }
+            if (window.appInterpage && typeof window.appInterpage.postGoodbyeChatComposerHiddenState === 'function') {
+                window.appInterpage.postGoodbyeChatComposerHiddenState(false, 'return-click');
+            } else if (typeof window.postGoodbyeChatComposerHiddenState === 'function') {
+                window.postGoodbyeChatComposerHiddenState(false, 'return-click');
             }
 
             console.log('[App] 标志清除后 - live2dManager._goodbyeClicked:', window.live2dManager?._goodbyeClicked);
