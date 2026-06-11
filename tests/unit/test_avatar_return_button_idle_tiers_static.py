@@ -1222,6 +1222,8 @@ def test_cat1_minimized_ball_contact_finishes_without_side_retarget_jitter():
     assert "top: rect.top" in contact_target_block
     assert "distance: 0" in contact_target_block
     assert "moveFacingRight: null" in contact_target_block
+    assert "approachOffsetPx" in contact_target_block
+    assert "approachOffsetPx: _getNekoIdleCat1MinimizedSideApproachOffsetPx(facingRight, chatRect)" in contact_target_block
     assert "kind: _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE" in contact_target_block
 
 
