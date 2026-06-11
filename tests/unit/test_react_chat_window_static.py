@@ -145,7 +145,12 @@ def test_goodbye_composer_hidden_survives_surface_mode_switches():
     assert "composerHidden: getEffectiveComposerHidden()" in build_render_block
     assert "state.homeTutorialInteractionLocked || getEffectiveComposerHidden()" in submit_block
     assert "syncGoodbyeComposerHidden('chat-surface-mode-change', { localOnly: true });" in set_mode_block
+    assert "requestGoodbyeComposerHiddenState('chat-surface-mode-change');" in set_mode_block
     assert "options && options.localOnly && !hasLocalGoodbyeModeSource()" in source
+    assert "function requestGoodbyeComposerHiddenState(reason)" in source
+    assert "window.requestGoodbyeChatComposerHiddenState(resolvedReason)" in source
+    assert "neko:request-goodbye-chat-composer-hidden-state" in source
+    assert "requestGoodbyeComposerHiddenState('initial-goodbye-state');" in source
     assert "syncComposerAttachmentsVisibility(previousAttachmentsVisible);" in goodbye_set_block
     assert "restoredEffectiveComposer && getEffectiveGalgameEnabled()" in goodbye_set_block
     assert "fetchGalgameOptionsForLatestTurn();" in goodbye_set_block

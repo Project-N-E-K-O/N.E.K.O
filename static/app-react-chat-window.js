@@ -3837,6 +3837,28 @@
         setGoodbyeComposerHidden(getNekoGoodbyeModeActive(), reason || 'sync');
     }
 
+    function requestGoodbyeComposerHiddenState(reason) {
+        var resolvedReason = reason || 'react-chat-window';
+        try {
+            if (typeof window.requestGoodbyeChatComposerHiddenState === 'function') {
+                if (window.requestGoodbyeChatComposerHiddenState(resolvedReason)) {
+                    return true;
+                }
+            }
+        } catch (_) {}
+        try {
+            window.dispatchEvent(new CustomEvent('neko:request-goodbye-chat-composer-hidden-state', {
+                detail: {
+                    reason: resolvedReason,
+                    timestamp: Date.now()
+                }
+            }));
+            return true;
+        } catch (_) {
+            return false;
+        }
+    }
+
     function setHomeTutorialInteractionLocked(locked, reason) {
         var next = !!locked;
         if (state.homeTutorialInteractionLocked === next) {
@@ -4943,6 +4965,7 @@
 
         resetCompactChatState();
         syncGoodbyeComposerHidden('chat-surface-mode-change', { localOnly: true });
+        requestGoodbyeComposerHiddenState('chat-surface-mode-change');
 
         if (!previousMinimized && nextMinimized && previousMode === 'full' && !isElectronChatWindow() && getShell()) {
             pendingMinimizedSurfaceCommit = {
@@ -6290,6 +6313,7 @@
             } else {
                 syncGoodbyeComposerHidden('initial-goodbye-state');
             }
+            requestGoodbyeComposerHiddenState('initial-goodbye-state');
         } catch (_) {
             // 首绘兜底失败不影响后续 session_started 同步
         }
