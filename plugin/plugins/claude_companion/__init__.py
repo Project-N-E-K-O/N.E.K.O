@@ -39,7 +39,7 @@ from plugin.sdk.plugin import (
 
 _DEFAULT_PORT = 48920
 _DEFAULT_COOLDOWN = 60
-_SIGNIFICANT_TOOLS = {"Edit", "Write", "Bash", "PowerShell", "NotebookEdit"}
+_SIGNIFICANT_TOOLS = {"Edit", "Write", "MultiEdit", "Bash", "PowerShell", "NotebookEdit"}
 _TASK_COMPLETE_TOOLS = {"TaskUpdate"}
 
 # 活动类型关键词映射
