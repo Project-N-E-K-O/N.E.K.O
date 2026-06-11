@@ -23,8 +23,10 @@ CAT1_VOICE_CLICK_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat1
 CAT1_VOICE1_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat1-voice1.mp3"
 CAT1_VOICE2_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat1-voice2.mp3"
 CAT1_VOICE3_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat1-voice3.mp3"
-CAT2_SLEEP_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat2-sleep.mp3"
-CAT3_SLEEP_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat3-sleep.mp3"
+CAT2_SLEEP_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat2-sleep1.mp3"
+CAT2_SLEEP_SOUND2_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat2-sleep2.mp3"
+CAT3_SLEEP_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat3-sleep1.mp3"
+CAT3_SLEEP_SOUND2_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat3-sleep2.mp3"
 CAT1_WALK_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat4-1.gif"
 CAT1_STRETCH_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat4-2.gif"
 CAT1_INTERACTIVE_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat4-3.gif"
@@ -86,8 +88,8 @@ def test_return_button_idle_tier_assets_are_mapped_in_source():
     assert "/static/assets/neko-idle/cat1-voice1.mp3" in source
     assert "/static/assets/neko-idle/cat1-voice2.mp3" in source
     assert "/static/assets/neko-idle/cat1-voice3.mp3" in source
-    assert "/static/assets/neko-idle/cat2-sleep.mp3" in source
-    assert "/static/assets/neko-idle/cat3-sleep.mp3" in source
+    assert "/static/assets/neko-idle/cat2-sleep1.mp3" in source
+    assert "/static/assets/neko-idle/cat3-sleep1.mp3" in source
     assert "/static/assets/neko-idle/cat-idle-cat4-3.gif" in source
     assert "/static/assets/neko-idle/cat-idle-cat-move-1.gif" in source
     assert "/static/assets/neko-idle/cat-idle-cat-move-2.gif" in source
@@ -714,7 +716,7 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
     _assert_source_order(
         sleep_play_block,
         "sleep sound playback",
-        "const audio = _playNekoIdleSound(_nekoIdleSleepSoundState, config.src, config.volume);",
+        "const audio = _playNekoIdleSound(_nekoIdleSleepSoundState, _pickNekoIdleSleepSoundSrc(config), config.volume);",
         "if (audio) _showNekoIdleThoughtBubbleForSound(tier, audio);",
     )
 
@@ -800,8 +802,14 @@ def test_sleeping_cat_tiers_schedule_soft_random_sound_once_per_interval():
     assert "function _playNekoIdleSound(state, src, volume)" in source
     assert "[_NEKO_IDLE_TIER_CAT2]" in source
     assert "[_NEKO_IDLE_TIER_CAT3]" in source
-    assert "src: '/static/assets/neko-idle/cat2-sleep.mp3'" in source
-    assert "src: '/static/assets/neko-idle/cat3-sleep.mp3'" in source
+    assert "srcs: Object.freeze([" in source
+    assert "'/static/assets/neko-idle/cat2-sleep1.mp3'" in source
+    assert "'/static/assets/neko-idle/cat2-sleep2.mp3'" in source
+    assert "'/static/assets/neko-idle/cat3-sleep1.mp3'" in source
+    assert "'/static/assets/neko-idle/cat3-sleep2.mp3'" in source
+    assert "function _pickNekoIdleSleepSoundSrc(config)" in source
+    assert "Math.floor(Math.random() * srcs.length)" in source
+    assert "_playNekoIdleSound(_nekoIdleSleepSoundState, _pickNekoIdleSleepSoundSrc(config), config.volume)" in source
     assert "audio.volume = Math.max(0, Math.min(1, Number(volume) || 0.2))" in source
     assert "audio.dispatchEvent(new Event('error'));" in source
     assert "Math.random() * _NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS" in source
@@ -1145,6 +1153,32 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
     )
 
 
+def test_return_button_local_no_move_release_clears_pending_drag_state():
+    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+
+    drag_setup = _source_slice_between(
+        source,
+        "ManagerPrototype._setupReturnButtonDrag = function(container) {",
+        "ManagerPrototype._addReturnButtonBreathingAnimation = function()",
+        "return button drag setup",
+    )
+    finish_drag_state = _source_slice_between(
+        drag_setup,
+        "const finishDragState = (moved, safetyToken) => {",
+        "const resetDragStateAfterMissingEnd = (safetyToken) => {",
+        "return button drag finish helper",
+    )
+
+    _assert_source_order(
+        finish_drag_state,
+        "return button no-move release cleanup branch",
+        "if (moved) {",
+        "_dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-end'",
+        "} else {",
+        "_dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-cancel'",
+    )
+
+
 def test_return_button_idle_tier_assets_are_version_tracked():
     for path in (APP_UI_PATH, APP_INTERPAGE_PATH, COMMON_UI_HUD_PATH,
                  APP_REACT_CHAT_WINDOW_PATH,
@@ -1153,7 +1187,8 @@ def test_return_button_idle_tier_assets_are_version_tracked():
                  CAT3_ASSET_PATH, CAT3_CLICK_ASSET_PATH,
                  CAT1_VOICE_CLICK_PATH, CAT1_VOICE1_PATH,
                  CAT1_VOICE2_PATH, CAT1_VOICE3_PATH,
-                 CAT2_SLEEP_SOUND_PATH, CAT3_SLEEP_SOUND_PATH,
+                 CAT2_SLEEP_SOUND_PATH, CAT2_SLEEP_SOUND2_PATH,
+                 CAT3_SLEEP_SOUND_PATH, CAT3_SLEEP_SOUND2_PATH,
                  CAT1_WALK_ASSET_PATH, CAT1_STRETCH_ASSET_PATH,
                  CAT1_INTERACTIVE_ASSET_PATH,
                  CAT1_DRAG_ASSET_PATH, CAT2_DRAG_ASSET_PATH,
@@ -1163,6 +1198,17 @@ def test_return_button_idle_tier_assets_are_version_tracked():
                  *THOUGHT_BUBBLE_ITEM_ASSET_PATHS):
         assert path in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
         assert path.is_file()
+
+
+def test_sleep_sound_assets_match_current_tier_assignment():
+    assert CAT2_SLEEP_SOUND_PATH.is_file()
+    assert CAT2_SLEEP_SOUND2_PATH.is_file()
+    assert CAT3_SLEEP_SOUND_PATH.is_file()
+    assert CAT3_SLEEP_SOUND2_PATH.is_file()
+    assert CAT2_SLEEP_SOUND_PATH.stat().st_size > 0
+    assert CAT2_SLEEP_SOUND2_PATH.stat().st_size > 0
+    assert CAT3_SLEEP_SOUND_PATH.stat().st_size > 0
+    assert CAT3_SLEEP_SOUND2_PATH.stat().st_size > 0
 
 
 def test_no_box_shadow_or_border_in_base_return_btn_css():

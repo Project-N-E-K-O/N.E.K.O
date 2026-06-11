@@ -363,8 +363,8 @@ CAT1 子动作资源：
 |------|------|
 | CAT1 拖拽/点击反馈 | `cat1-voice-click.mp3` |
 | CAT1 环境声 | `cat1-voice1.mp3` / `cat1-voice2.mp3` / `cat1-voice3.mp3` |
-| CAT2 睡眠声 | `cat2-sleep.mp3` |
-| CAT3 睡眠声 | `cat3-sleep.mp3` |
+| CAT2 睡眠声 | `cat2-sleep1.mp3` / `cat2-sleep2.mp3` 随机 |
+| CAT3 睡眠声 | `cat3-sleep1.mp3` / `cat3-sleep2.mp3` 随机 |
 
 美术交付要求：
 

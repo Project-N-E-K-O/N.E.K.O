@@ -288,11 +288,17 @@ const _NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS = 5 * 60 * 1000;
 const _NEKO_IDLE_SLEEP_SOUND_VOLUME = 0.09;
 const _NEKO_IDLE_SLEEP_SOUND_BY_TIER = Object.freeze({
     [_NEKO_IDLE_TIER_CAT2]: Object.freeze({
-        src: '/static/assets/neko-idle/cat2-sleep.mp3',
+        srcs: Object.freeze([
+            '/static/assets/neko-idle/cat2-sleep1.mp3',
+            '/static/assets/neko-idle/cat2-sleep2.mp3'
+        ]),
         volume: _NEKO_IDLE_SLEEP_SOUND_VOLUME
     }),
     [_NEKO_IDLE_TIER_CAT3]: Object.freeze({
-        src: '/static/assets/neko-idle/cat3-sleep.mp3',
+        srcs: Object.freeze([
+            '/static/assets/neko-idle/cat3-sleep1.mp3',
+            '/static/assets/neko-idle/cat3-sleep2.mp3'
+        ]),
         volume: _NEKO_IDLE_SLEEP_SOUND_VOLUME
     })
 });
@@ -418,6 +424,12 @@ function _pickNekoIdleReturnDragAssetUrl(tier) {
 
 function _getNekoIdleSleepSoundConfig(tier) {
     return _NEKO_IDLE_SLEEP_SOUND_BY_TIER[_normalizeNekoIdleReturnTier(tier)] || null;
+}
+
+function _pickNekoIdleSleepSoundSrc(config) {
+    const srcs = config && config.srcs;
+    if (!srcs || !srcs.length) return '';
+    return srcs[Math.floor(Math.random() * srcs.length)] || srcs[0] || '';
 }
 
 function _buildNekoIdleSoundUrl(src) {
@@ -688,7 +700,7 @@ function _playNekoIdleSleepSound(tier, token) {
         return;
     }
 
-    const audio = _playNekoIdleSound(_nekoIdleSleepSoundState, config.src, config.volume);
+    const audio = _playNekoIdleSound(_nekoIdleSleepSoundState, _pickNekoIdleSleepSoundSrc(config), config.volume);
     if (audio) _showNekoIdleThoughtBubbleForSound(tier, audio);
 }
 
@@ -4453,6 +4465,11 @@ const AvatarButtonMixin = {
                             (parseFloat(container.style.left) || containerStartX) - containerStartX,
                             (parseFloat(container.style.top) || containerStartY) - containerStartY
                         )
+                    });
+                } else {
+                    _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-cancel', {
+                        movedDistancePx: 0,
+                        dragCancelled: true
                     });
                 }
             };
