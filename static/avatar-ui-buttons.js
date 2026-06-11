@@ -268,6 +268,7 @@ const _NEKO_IDLE_THOUGHT_BUBBLE_ITEM_ASSET_URLS = Object.freeze([
     '/static/assets/neko-idle/thought-items/toy-mouse.png'
 ]);
 const _NEKO_IDLE_THOUGHT_BUBBLE_VISIBLE_MS = 5000;
+const _NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_FALLBACK_VISIBLE_MS = 8000;
 const _NEKO_IDLE_CAT1_LAYER_REQUEST_HEARTBEAT_MS = 250;
 const _NEKO_IDLE_CAT1_LAYER_FOLLOW_REASSERT_MS = 80;
 const _NEKO_IDLE_CAT1_LAYER_RELEASE_DELAY_MS = 2600;
@@ -533,6 +534,9 @@ function _playNekoIdleSound(state, src, volume) {
                 if (state.audio === audio) {
                     state.audio = null;
                 }
+                try {
+                    audio.dispatchEvent(new Event('error'));
+                } catch (_) {}
             });
         }
         return audio;
@@ -568,8 +572,8 @@ function _getNekoIdleThoughtBubbleVisibleMs(bubbleConfig, audio) {
     if (!bubbleConfig || !bubbleConfig.sleeping) {
         return Math.max(0, Number(bubbleConfig && bubbleConfig.visibleMs) || _NEKO_IDLE_THOUGHT_BUBBLE_VISIBLE_MS);
     }
-    if (audio) return _getNekoIdleAudioRemainingMs(audio);
-    return _NEKO_IDLE_THOUGHT_BUBBLE_VISIBLE_MS;
+    if (audio) return _getNekoIdleAudioRemainingMs(audio) || _NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_FALLBACK_VISIBLE_MS;
+    return _NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_FALLBACK_VISIBLE_MS;
 }
 
 function _scheduleNekoIdleThoughtBubbleHide(button, token, visibleMs) {

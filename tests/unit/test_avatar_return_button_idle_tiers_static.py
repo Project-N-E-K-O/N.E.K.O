@@ -603,6 +603,7 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
     assert "'/static/assets/neko-idle/thought-items/toy-mouse.png'" in source
     assert "fish-cookie-transparent.png" not in source
     assert "_NEKO_IDLE_THOUGHT_BUBBLE_VISIBLE_MS = 5000" in source
+    assert "_NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_FALLBACK_VISIBLE_MS = 8000" in source
     assert "_NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_VISIBLE_MS" not in source
     assert "function _pickNekoIdleThoughtBubbleBgAsset(tier)" in source
     assert "normalizedTier === _NEKO_IDLE_TIER_CAT2 && roll < 1 / 3" in source
@@ -610,6 +611,7 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
     assert "function _getNekoIdleAudioRemainingMs(audio)" in source
     assert "function _getNekoIdleThoughtBubbleVisibleMs(bubbleConfig, audio)" in source
     assert "function _scheduleNekoIdleThoughtBubbleHide(button, token, visibleMs)" in source
+    assert "if (audio) return _getNekoIdleAudioRemainingMs(audio) || _NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_FALLBACK_VISIBLE_MS;" in source
     assert "function _getNekoIdleThoughtBubbleBgAssetUrl(assetUrl, restartToken = 0)" in source
     assert "function _getNekoIdleThoughtBubbleItemAssetUrl(assetUrl)" in source
     assert "function _pickNekoIdleThoughtBubbleItemAssetUrl(previousAssetUrl = '')" in source
@@ -806,6 +808,7 @@ def test_sleeping_cat_tiers_schedule_soft_random_sound_once_per_interval():
     assert "src: '/static/assets/neko-idle/cat2-sleep.mp3'" in source
     assert "src: '/static/assets/neko-idle/cat3-sleep.mp3'" in source
     assert "audio.volume = Math.max(0, Math.min(1, Number(volume) || 0.2))" in source
+    assert "audio.dispatchEvent(new Event('error'));" in source
     assert "Math.random() * _NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS" in source
     assert "_scheduleNekoIdleSleepSoundInterval(tier, startedAt + _NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS)" in source
     assert "_syncNekoIdleSleepSoundForTier(detail.tier)" in source
