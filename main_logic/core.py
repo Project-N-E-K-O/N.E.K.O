@@ -4097,6 +4097,8 @@ class LLMSessionManager:
         # 路径独立处理（见 main_routers/config_router.py:steam_language 端点）。
         if not getattr(self, 'user_language', None):
             self.user_language = normalize_language_code(get_global_language(), format='short')
+        if hasattr(self._activity_tracker, 'set_topic_language'):
+            self._activity_tracker.set_topic_language(self.user_language)
         # 重置防刷屏标志
         self.session_closed_by_server = False
         self.last_audio_send_error_time = 0.0
@@ -7813,6 +7815,8 @@ class LLMSessionManager:
         normalized_lang = normalize_language_code(language, format='full')
 
         self.user_language = normalized_lang
+        if hasattr(self._activity_tracker, 'set_topic_language'):
+            self._activity_tracker.set_topic_language(normalized_lang)
         if normalized_lang != language:
             logger.info(f"用户语言已归一化: {language} → {normalized_lang}")
         else:

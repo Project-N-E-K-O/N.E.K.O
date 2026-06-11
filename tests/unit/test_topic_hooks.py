@@ -98,3 +98,25 @@ def test_build_topic_hook_prompt_localizes_topic_material_fields_for_english():
     assert "Source titles=news:Career change guide" in prompt
     assert "关系点=" not in prompt
     assert "联网素材=" not in prompt
+
+
+def test_build_topic_hook_prompt_preserves_supported_non_english_locale():
+    prompt = build_topic_hook_prompt(
+        lang="ja",
+        topic_materials=[
+            {
+                "interest": "転職の迷い",
+                "hook": "次の働き方の不安から入る",
+                "opening_intent": "短く自然に触れる",
+                "deepening_hint": "相手の反応に合わせて広げる",
+            }
+        ],
+        open_threads=["さっきの転職の話が少し残っている"],
+    )
+
+    assert "低頻度の深め話題候補" in prompt
+    assert "深め話題 hook" in prompt
+    assert "関係点=転職の迷い" in prompt
+    assert "未完了の話題" in prompt
+    assert "Low-frequency deeper topic candidates" not in prompt
+    assert "Deep topic hook" not in prompt
