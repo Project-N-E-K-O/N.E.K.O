@@ -1137,6 +1137,14 @@
             if (phase === 'end') {
                 compactSurfaceResizeSession = null;
             }
+            window.dispatchEvent(new CustomEvent('neko:compact-surface-layout-change', {
+                detail: {
+                    screenRect: detail.screenRect,
+                    resizeActive: phase !== 'end',
+                    dragging: false,
+                    reason: phase === 'end' ? 'resize-end' : 'resize'
+                }
+            }));
             return;
         }
         var currentRect = getCurrentCompactSurfaceRect();
