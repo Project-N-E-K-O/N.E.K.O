@@ -10,6 +10,8 @@ on:
     branches: [main]
     paths:
       - 'plugin/**'
+      - 'static/avatar-ui-buttons.js'
+      - 'tests/unit/test_avatar_return_button_idle_tiers_static.py'
       - '.github/workflows/plugin-tests.yml'
       # Dependency changes alter the plugin test/runtime environment (e.g.
       # removing a dev dep plugin/tests needs) — without these a deps-only
@@ -20,6 +22,8 @@ on:
     branches: [main]
     paths:
       - 'plugin/**'
+      - 'static/avatar-ui-buttons.js'
+      - 'tests/unit/test_avatar_return_button_idle_tiers_static.py'
       - '.github/workflows/plugin-tests.yml'
       - 'pyproject.toml'
       - 'uv.lock'
@@ -64,9 +68,11 @@ jobs:
         # affected tests mock or skip that cohort.
         run: uv sync
 
-      - name: Run plugin test suite
+      - name: Run plugin and static contract tests
         # Explicit path (not bare `pytest` under plugin/tests): passing the
         # directory overrides the testpaths whitelist in plugin/tests/
         # pytest.ini, so unit/plugins — where the silent drift lived — is
         # collected too.
-        run: uv run pytest plugin/tests -q
+        # The avatar static contract lives under repo-root tests/, so list it
+        # explicitly instead of relying on plugin/tests discovery.
+        run: uv run pytest plugin/tests tests/unit/test_avatar_return_button_idle_tiers_static.py -q
