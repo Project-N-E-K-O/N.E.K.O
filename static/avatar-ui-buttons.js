@@ -2134,14 +2134,16 @@ function _scheduleNekoIdleCompactSurfaceSettledSync(delayMs) {
 
 function _handleNekoIdleCompactSurfaceMoveState(detail) {
     const dragging = !!(detail && detail.dragging);
+    const resizeActive = !!(detail && detail.resizeActive);
+    const activeSurfaceAdjustment = dragging || resizeActive;
     const heartbeat = !!(detail && detail.heartbeat);
-    _nekoIdleCompactSurfaceDragging = dragging;
+    _nekoIdleCompactSurfaceDragging = activeSurfaceAdjustment;
     const followedCompactSurface = _syncNekoIdleCat1CompactTopEdgeSurfaceFollow(detail);
     if (!heartbeat) {
-        _interruptNekoIdleCat1PairMovesForRetarget({ scheduleSync: !dragging });
+        _interruptNekoIdleCat1PairMovesForRetarget({ scheduleSync: !activeSurfaceAdjustment });
     }
     if (heartbeat) return;
-    if (dragging) {
+    if (activeSurfaceAdjustment) {
         if (_nekoIdleCompactSurfaceSettleTimer) {
             clearTimeout(_nekoIdleCompactSurfaceSettleTimer);
             _nekoIdleCompactSurfaceSettleTimer = 0;
@@ -2290,6 +2292,9 @@ function _syncNekoIdleCat1CompactTopEdgeSurfaceFollow(detail) {
     const surfaceRect = _getNekoIdleCompactSurfaceFollowRect(detail);
     if (!surfaceRect) return false;
     const nowMs = _getNekoIdleNowMs();
+    const dragging = !!(detail && detail.dragging);
+    const resizeActive = !!(detail && detail.resizeActive);
+    const activeSurfaceAdjustment = dragging || resizeActive;
     let handled = false;
 
     _forEachNekoIdleReturnButton((button) => {
@@ -2313,7 +2318,7 @@ function _syncNekoIdleCat1CompactTopEdgeSurfaceFollow(detail) {
         }
 
         const motion = _getNekoIdleCat1CompactFollowSpeed(state, surfaceRect, nowMs);
-        const fastMove = motion.hasPrevious && (
+        const fastMove = !resizeActive && motion.hasPrevious && (
             motion.speedPxPerSec > _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_STICK_MAX_SPEED_PX_PER_SEC ||
             (motion.elapsedMs <= 240 && motion.distancePx > _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_STICK_MAX_STEP_PX)
         );
@@ -2341,9 +2346,9 @@ function _syncNekoIdleCat1CompactTopEdgeSurfaceFollow(detail) {
         _setNekoIdleCat1ContainerPosition(container, target.left, target.top);
         _setNekoIdleCat1Classes(button, state);
         _reassertNekoIdleCat1LayerForFollow(container);
-        if (detail && detail.dragging) {
+        if (activeSurfaceAdjustment) {
             _setNekoIdleCat1CompactMirrorActive(button, container, true, {
-                reason: 'compact-surface-drag',
+                reason: resizeActive ? 'compact-surface-resize' : 'compact-surface-drag',
                 surfaceRect: surfaceRect,
                 target: target
             });
