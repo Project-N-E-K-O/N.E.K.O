@@ -1480,13 +1480,15 @@
 
     function readGoodbyeChatComposerHidden() {
         try {
-            if (typeof window.isNekoGoodbyeModeActive === 'function') {
-                return !!window.isNekoGoodbyeModeActive();
+            if (typeof window.isNekoGoodbyeModeActive === 'function'
+                && window.isNekoGoodbyeModeActive()) {
+                return true;
             }
         } catch (_) {}
         if (window.__nekoGoodbyeChatComposerHidden
-            && typeof window.__nekoGoodbyeChatComposerHidden === 'object') {
-            return !!window.__nekoGoodbyeChatComposerHidden.hidden;
+            && typeof window.__nekoGoodbyeChatComposerHidden === 'object'
+            && window.__nekoGoodbyeChatComposerHidden.hidden === true) {
+            return true;
         }
         return !!(
             (window.live2dManager && window.live2dManager._goodbyeClicked)

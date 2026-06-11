@@ -682,6 +682,10 @@ def test_goodbye_composer_hidden_syncs_to_chat_window():
         "function handleGoodbyeChatComposerHiddenMessage(data, via)",
         1,
     )[1].split("function postGoodbyeChatComposerHiddenState", 1)[0]
+    goodbye_read_block = interpage_source.split(
+        "function readGoodbyeChatComposerHidden()",
+        1,
+    )[1].split("function applyGoodbyeChatComposerHidden", 1)[0]
     goodbye_filter_block = interpage_source.split(
         "function isGoodbyeChatComposerHiddenMessageForCurrentLanlan(data)",
         1,
@@ -707,6 +711,13 @@ def test_goodbye_composer_hidden_syncs_to_chat_window():
     assert "case 'request_goodbye_chat_composer_hidden':" in interpage_source
     assert "pathname === '/chat_full'" in standalone_block
     assert "pathname === '/chat_full/'" in standalone_block
+    assert (
+        "typeof window.isNekoGoodbyeModeActive === 'function'\n"
+        "                && window.isNekoGoodbyeModeActive()"
+        in goodbye_read_block
+    )
+    assert "window.__nekoGoodbyeChatComposerHidden.hidden === true" in goodbye_read_block
+    assert "window.__nekoGoodbyeSilentState && window.__nekoGoodbyeSilentState.active === true" in goodbye_read_block
     assert "if (!data || !data.lanlan_name) return false;" in goodbye_filter_block
     assert "return !!currentName && data.lanlan_name === currentName;" in goodbye_filter_block
     assert "var lanlanName = getCurrentLanlanName();" in goodbye_post_block
