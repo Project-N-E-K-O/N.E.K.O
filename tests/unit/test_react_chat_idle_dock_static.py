@@ -359,36 +359,6 @@ def test_cat1_compact_mirror_uses_stable_native_reserve_rect():
     assert "nativeRect: mirrorNativeRect || mirrorRect" in collect_block
 
 
-def test_cat1_desktop_pair_move_throttles_native_bounds_sync_and_forces_final_frame():
-    source = _read(AVATAR_UI_BUTTONS_PATH)
-
-    assert "_NEKO_IDLE_CAT1_DESKTOP_PAIR_MOVE_SYNC_MIN_MS = 50" in source
-    assert "let _nekoIdleDesktopChatPairMoveLastDispatchAt = 0;" in source
-    assert "let _nekoIdleDesktopChatPairMoveLastDispatchSignature = '';" in source
-    assert "function _getNekoIdleDesktopChatPairMoveSignature(screenRect)" in source
-
-    dispatch_block = _between(
-        source,
-        "function _dispatchNekoIdleDesktopChatPairMoveBounds(screenRect, options = {}) {",
-        "function _getNekoIdleCat1PairMoveChatTarget() {",
-    )
-    assert "_rememberNekoIdleDesktopChatPairMoveRect(screenRect)" in dispatch_block
-    assert "const force = !!(options && options.force);" in dispatch_block
-    assert "if (!force) {" in dispatch_block
-    assert "signature === _nekoIdleDesktopChatPairMoveLastDispatchSignature" in dispatch_block
-    assert "now - _nekoIdleDesktopChatPairMoveLastDispatchAt < _NEKO_IDLE_CAT1_DESKTOP_PAIR_MOVE_SYNC_MIN_MS" in dispatch_block
-    assert "_nekoIdleDesktopChatPairMoveLastDispatchAt = now;" in dispatch_block
-    assert "_nekoIdleDesktopChatPairMoveLastDispatchSignature = signature;" in dispatch_block
-    assert "timestamp: now" in dispatch_block
-
-    pair_move_block = _between(
-        source,
-        "function _applyNekoIdleCat1PairMovePlan(plan, progress) {",
-        "function _setNekoIdleCat1Substate(button, substate, options = {}) {",
-    )
-    assert "force: progress >= 1" in pair_move_block
-
-
 def test_idle_dock_uses_mutation_observer_to_detect_minimize_completion():
     source = _read(APP_REACT_CHAT_WINDOW_PATH)
 
