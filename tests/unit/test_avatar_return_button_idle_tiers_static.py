@@ -1187,7 +1187,7 @@ def test_cat1_minimized_ball_contact_finishes_without_side_retarget_jitter():
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
 
     assert "function _getNekoIdleRectDirectionalOverlapPx(rect, targetRect, facingRight)" in source
-    assert "function _getNekoIdleCat1MinimizedContactOverlapPx(facingRight, approachOffsetPx, profile)" in source
+    assert "function _getNekoIdleCat1MinimizedContactTargetOverlapPx(facingRight, approachOffsetPx, profile)" in source
     assert "function _makeNekoIdleCat1MinimizedContactTarget(rect, chatRect, options)" in source
 
     side_target_block = source.split("function _getNekoIdleCat1SideTarget(container, chatRect)", 1)[1].split(
@@ -1196,28 +1196,29 @@ def test_cat1_minimized_ball_contact_finishes_without_side_retarget_jitter():
     )[0]
     assert "const approachOffsetPx = _getNekoIdleCat1MinimizedSideApproachOffsetPx(lookFacingRight, chatRect);" in side_target_block
     assert "const contactOverlapPx = _getNekoIdleRectDirectionalOverlapPx(rect, chatRect, lookFacingRight);" in side_target_block
-    assert "const requiredContactOverlapPx = _getNekoIdleCat1MinimizedContactOverlapPx(" in side_target_block
+    assert "const targetContactOverlapPx = _getNekoIdleCat1MinimizedContactTargetOverlapPx(" in side_target_block
     assert "const verticalTargetDistancePx = sideTarget" in side_target_block
     assert "Math.abs(Number(sideTarget.top) - Number(rect.top))" in side_target_block
-    assert "verticalTargetDistancePx <= exitDistancePx" in side_target_block
-    assert "contactOverlapPx >= requiredContactOverlapPx" in side_target_block
+    assert "const horizontalTargetDistancePx = Math.max(0, targetContactOverlapPx - contactOverlapPx);" in side_target_block
+    assert "const contactTargetDistancePx = Math.hypot(horizontalTargetDistancePx, verticalTargetDistancePx);" in side_target_block
+    assert "contactTargetDistancePx <= exitDistancePx" in side_target_block
     assert "contactDistance <= profile.target.exitDistancePx" not in side_target_block
     assert "_makeNekoIdleCat1MinimizedContactTarget(rect, chatRect" in side_target_block
     assert side_target_block.index("const approachOffsetPx = _getNekoIdleCat1MinimizedSideApproachOffsetPx(lookFacingRight, chatRect);") < side_target_block.index(
         "const contactOverlapPx = _getNekoIdleRectDirectionalOverlapPx(rect, chatRect, lookFacingRight);"
     )
     assert side_target_block.index("const rawLeft = lookFacingRight") < side_target_block.index("const sideTarget = _makeNekoIdleCat1SideTarget")
-    assert side_target_block.index("const sideTarget = _makeNekoIdleCat1SideTarget") < side_target_block.index("verticalTargetDistancePx <= exitDistancePx")
-    assert side_target_block.index("verticalTargetDistancePx <= exitDistancePx") < side_target_block.index("_makeNekoIdleCat1MinimizedContactTarget(rect, chatRect")
+    assert side_target_block.index("const sideTarget = _makeNekoIdleCat1SideTarget") < side_target_block.index("const contactTargetDistancePx = Math.hypot")
+    assert side_target_block.index("contactTargetDistancePx <= exitDistancePx") < side_target_block.index("_makeNekoIdleCat1MinimizedContactTarget(rect, chatRect")
 
-    contact_overlap_block = source.split("function _getNekoIdleCat1MinimizedContactOverlapPx(facingRight, approachOffsetPx, profile)", 1)[1].split(
+    contact_overlap_block = source.split("function _getNekoIdleCat1MinimizedContactTargetOverlapPx(facingRight, approachOffsetPx, profile)", 1)[1].split(
         "function _resolveNekoIdleCat1TargetFacing",
         1,
     )[0]
     assert "const targetOverlapPx = facingRight" in contact_overlap_block
     assert "? -gapPx" in contact_overlap_block
     assert ": Math.max(0, Number(approachOffsetPx) || 0) - gapPx" in contact_overlap_block
-    assert "return Math.max(0, targetOverlapPx - exitDistancePx);" in contact_overlap_block
+    assert "return Math.max(0, targetOverlapPx);" in contact_overlap_block
 
     contact_target_block = source.split("function _makeNekoIdleCat1MinimizedContactTarget(rect, chatRect, options)", 1)[1].split(
         "function _getNekoIdleCat1SideTarget",

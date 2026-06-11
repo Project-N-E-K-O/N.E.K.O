@@ -2630,13 +2630,12 @@ function _getNekoIdleRectDirectionalOverlapPx(rect, targetRect, facingRight) {
         : targetRight - left;
 }
 
-function _getNekoIdleCat1MinimizedContactOverlapPx(facingRight, approachOffsetPx, profile) {
+function _getNekoIdleCat1MinimizedContactTargetOverlapPx(facingRight, approachOffsetPx, profile) {
     const gapPx = Number(profile && profile.target && profile.target.gapPx) || 0;
-    const exitDistancePx = Math.max(0, Number(profile && profile.target && profile.target.exitDistancePx) || 0);
     const targetOverlapPx = facingRight
         ? -gapPx
         : Math.max(0, Number(approachOffsetPx) || 0) - gapPx;
-    return Math.max(0, targetOverlapPx - exitDistancePx);
+    return Math.max(0, targetOverlapPx);
 }
 
 function _resolveNekoIdleCat1TargetFacing(rect, target) {
@@ -2708,7 +2707,7 @@ function _getNekoIdleCat1SideTarget(container, chatRect) {
     const lookFacingRight = chatCenterX > catCenterX;
     const approachOffsetPx = _getNekoIdleCat1MinimizedSideApproachOffsetPx(lookFacingRight, chatRect);
     const contactOverlapPx = _getNekoIdleRectDirectionalOverlapPx(rect, chatRect, lookFacingRight);
-    const requiredContactOverlapPx = _getNekoIdleCat1MinimizedContactOverlapPx(
+    const targetContactOverlapPx = _getNekoIdleCat1MinimizedContactTargetOverlapPx(
         lookFacingRight,
         approachOffsetPx,
         profile
@@ -2725,8 +2724,9 @@ function _getNekoIdleCat1SideTarget(container, chatRect) {
     const verticalTargetDistancePx = sideTarget
         ? Math.abs(Number(sideTarget.top) - Number(rect.top))
         : Infinity;
-    if (verticalTargetDistancePx <= exitDistancePx &&
-        contactOverlapPx >= requiredContactOverlapPx) {
+    const horizontalTargetDistancePx = Math.max(0, targetContactOverlapPx - contactOverlapPx);
+    const contactTargetDistancePx = Math.hypot(horizontalTargetDistancePx, verticalTargetDistancePx);
+    if (contactTargetDistancePx <= exitDistancePx) {
         return _makeNekoIdleCat1MinimizedContactTarget(rect, chatRect, {
             facingRight: lookFacingRight
         });
