@@ -66,14 +66,15 @@ embedding_assets_present = os.path.isdir(
 #   - galgame_group_packages: live in [dependency-groups] galgame in
 #     pyproject.toml. Failure means maintainer ran plain `uv sync` instead
 #     of `uv sync --group galgame` — the actionable fix is the group sync.
-#     `cv2` is provided by opencv-python-headless via [tool.uv].override-dependencies.
+#     rapidocr_onnxruntime is provided by the local rapidocr-pillow fork, which
+#     removes the old opencv/shapely dependency chain.
 #
 #   - galgame_main_packages: live in [project.dependencies]. They're always
 #     installed by default `uv sync`; failure here means the main venv state
 #     is broken (interrupted install, manual deletion, etc) — actionable
 #     fix is recreating the venv. `dxcam` is in this set only on Windows
 #     (PEP 508 sys_platform marker keeps it out of macOS/Linux installs).
-galgame_group_packages = {'rapidocr_onnxruntime', 'cv2', 'shapely', 'pyclipper'}
+galgame_group_packages = {'rapidocr_onnxruntime', 'pyclipper'}
 galgame_main_packages = {'mss'}
 if sys.platform == 'win32':
     galgame_main_packages = galgame_main_packages | {'dxcam'}
