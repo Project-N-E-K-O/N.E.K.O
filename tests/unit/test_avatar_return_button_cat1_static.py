@@ -42,6 +42,7 @@ def test_cat1_minimized_side_target_separates_look_and_move_direction():
     assert "const lookFacingRight = chatCenterX > catCenterX;" in side_target_block
     assert "sideTarget.moveFacingRight === lookFacingRight" in side_target_block
     assert "alternateTarget.moveFacingRight === null || alternateTarget.moveFacingRight === lookFacingRight" in side_target_block
+    assert "facingRight: facingRight," in source
     assert "lookFacingRight: facingRight" in source
     assert "moveFacingRight: moveFacingRight" in source
 
@@ -50,11 +51,13 @@ def test_cat1_walk_uses_resolved_target_facing_instead_of_raw_chat_side():
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
 
     assert "function _resolveNekoIdleCat1TargetFacing" in source
+    assert "function _resolveNekoIdleCat1FinalTargetFacing" in source
     walk_step_block = source.split("function _stepNekoIdleCat1Walk", 1)[1].split(
         "function _startNekoIdleCat1Walk",
         1,
     )[0]
     assert "state.facingRight = _resolveNekoIdleCat1TargetFacing(rect, target);" in walk_step_block
+    assert "state.facingRight = _resolveNekoIdleCat1FinalTargetFacing(target);" in walk_step_block
     assert "state.facingRight = target.facingRight;" not in walk_step_block
 
     walk_start_block = source.split("function _startNekoIdleCat1Walk", 1)[1].split(
@@ -63,6 +66,13 @@ def test_cat1_walk_uses_resolved_target_facing_instead_of_raw_chat_side():
     )[0]
     assert "state.facingRight = _resolveNekoIdleCat1TargetFacing(currentRect, target);" in walk_start_block
     assert "state.facingRight = !!(target && target.facingRight);" not in walk_start_block
+
+    journey_sync_block = source.split("function _syncNekoIdleCat1Journey", 1)[1].split(
+        "function _scheduleNekoIdleCat1JourneySync",
+        1,
+    )[0]
+    assert "_resolveNekoIdleCat1FinalTargetFacing(target)" in journey_sync_block
+    assert "state.facingRight = target.facingRight;" not in journey_sync_block
 
 
 def test_cat1_external_chat_position_updates_interrupt_pair_move_for_retarget():

@@ -2387,6 +2387,14 @@ function _resolveNekoIdleCat1TargetFacing(rect, target) {
     return !!target.facingRight;
 }
 
+function _resolveNekoIdleCat1FinalTargetFacing(target) {
+    if (!target) return false;
+    if (Object.prototype.hasOwnProperty.call(target, 'lookFacingRight')) {
+        return !!target.lookFacingRight;
+    }
+    return !!target.facingRight;
+}
+
 function _makeNekoIdleCat1SideTarget(rect, chatRect, options) {
     const facingRight = !!(options && options.facingRight);
     const rawLeft = Number(options && options.rawLeft);
@@ -2405,7 +2413,7 @@ function _makeNekoIdleCat1SideTarget(rect, chatRect, options) {
         left: clamped.left,
         top: clamped.top,
         distance: Math.hypot(dx, dy),
-        facingRight: moveFacingRight !== null ? moveFacingRight : facingRight,
+        facingRight: facingRight,
         lookFacingRight: facingRight,
         moveFacingRight: moveFacingRight,
         approachOffsetPx: approachOffsetPx,
@@ -3062,6 +3070,7 @@ function _stepNekoIdleCat1Walk(button, timestamp) {
         if (target.kind === _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE) {
             _finishNekoIdleCat1CompactTopEdgeWalk(button);
         } else {
+            state.facingRight = _resolveNekoIdleCat1FinalTargetFacing(target);
             _finishNekoIdleCat1Walk(button);
         }
         return;
@@ -3448,17 +3457,18 @@ function _syncNekoIdleCat1Journey(button, tier) {
     if (state.substate === profile.walkingSubstate) {
         _cancelNekoIdleReturnPendingWalk(state);
         if (compactTopEdgeTarget) {
-            state.facingRight = target.facingRight;
+            state.facingRight = _resolveNekoIdleCat1FinalTargetFacing(target);
             _setNekoIdleCat1ContainerPosition(container, target.left, target.top);
             _finishNekoIdleCat1CompactTopEdgeWalk(button);
         } else {
+            state.facingRight = _resolveNekoIdleCat1FinalTargetFacing(target);
             _finishNekoIdleCat1Walk(button);
         }
         return;
     }
 
     if (state.substate === profile.finishingSubstate) {
-        state.facingRight = target.facingRight;
+        state.facingRight = _resolveNekoIdleCat1FinalTargetFacing(target);
         _setNekoIdleCat1Classes(button, state);
         _scheduleNekoIdleReturnSubactionSettle(button);
         return;
@@ -3469,7 +3479,7 @@ function _syncNekoIdleCat1Journey(button, tier) {
             _setNekoIdleCat1ContainerPosition(container, target.left, target.top);
         }
         state.target = null;
-        state.facingRight = target.facingRight;
+        state.facingRight = _resolveNekoIdleCat1FinalTargetFacing(target);
         state.actionSettled = true;
         _resetNekoIdleCat1WalkSpeed(state);
         _setNekoIdleCat1Classes(button, state);
