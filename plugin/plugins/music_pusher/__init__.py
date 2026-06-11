@@ -12,10 +12,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import ipaddress
 import json
 import os
 import random
 import re
+import socket
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -303,6 +305,31 @@ def _calc_total_duration(queue: list[dict[str, Any]]) -> int:
     return sum(_normalize_duration(it.get("duration_sec"), 0) for it in queue)
 
 
+def _validate_url_for_av_open(url: str) -> bool:
+    """拒绝私有/回环/链路本地/IPv6 ULA 地址，防止 SSRF。"""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return False
+    hostname = str(parsed.hostname or "").strip().lower()
+    if not hostname:
+        return False
+
+    try:
+        addrs = socket.getaddrinfo(hostname, None)
+    except Exception:
+        return False
+
+    for family, _, _, _, sockaddr in addrs:
+        try:
+            ip = ipaddress.ip_address(sockaddr[0])
+        except Exception:
+            continue
+        if ip.is_loopback or ip.is_private or ip.is_link_local:
+            return False
+
+    return True
+
+
 def _extract_duration_from_av_container(container: Any) -> int | None:
     container_duration = getattr(container, "duration", None)
     if container_duration:
@@ -329,7 +356,6 @@ class MusicPusherPlugin(NekoPluginBase):
         self._run_lock = asyncio.Lock()
         self._scheduler_stop = asyncio.Event()
         self._scheduler_task: asyncio.Task | None = None
-        self._task_timers: dict[str, asyncio.Task] = {}
 
         self._music_items: list[dict[str, Any]] = []
         self._tasks: dict[str, dict[str, Any]] = {}
@@ -440,8 +466,18 @@ class MusicPusherPlugin(NekoPluginBase):
     def _detect_audio_duration_from_url(self, url: str) -> int | None:
         if av is None:
             return None
+        if not _validate_url_for_av_open(url):
+            self.logger.warning(f"拒绝不安全的音频 URL（可能为私有地址）: {url}")
+            return None
         try:
-            with av.open(url, mode="r", options={"rw_timeout": "5000000"}) as container:
+            with av.open(
+                url,
+                mode="r",
+                options={
+                    "rw_timeout": "5000000",
+                    "protocol_whitelist": "http,https,tcp,tls",
+                },
+            ) as container:
                 return _extract_duration_from_av_container(container)
         except Exception:
             return None
@@ -1117,7 +1153,7 @@ class MusicPusherPlugin(NekoPluginBase):
         expire_at = int(time.time()) + int(_PROACTIVE_PROMPT_EXPIRE_SECONDS)
         parsed = urlparse(url)
         host = str(parsed.hostname or "").strip().lower()
-        if host:
+        if host and _validate_url_for_av_open(url):
             domains = [host]
             if host in {"127.0.0.1", "localhost"}:
                 domains = ["127.0.0.1", "localhost"]
@@ -1227,9 +1263,6 @@ class MusicPusherPlugin(NekoPluginBase):
             priority=8,
         )
 
-    def _wake_scheduler(self) -> None:
-        return
-
     def _resolve_attach_prompt_on_push(self, kwargs: dict[str, Any], explicit: object = None) -> bool:
         if explicit is not None:
             return _coerce_bool(explicit, self._attach_prompt_on_push)
@@ -1241,43 +1274,6 @@ class MusicPusherPlugin(NekoPluginBase):
         task = self._scheduler_task
         if task is None or task.done():
             self._scheduler_task = asyncio.create_task(self._scheduler_loop())
-
-    def _cancel_task_timer(self, task_id: str) -> None:
-        timer = self._task_timers.pop(task_id, None)
-        current = asyncio.current_task()
-        if timer is current:
-            return
-        if timer is not None and not timer.done():
-            timer.cancel()
-
-    def _schedule_task_timer(self, task_id: str) -> None:
-        self._cancel_task_timer(task_id)
-
-        async def _runner() -> None:
-            try:
-                while not self._scheduler_stop.is_set():
-                    async with self._state_lock:
-                        task = self._tasks.get(task_id)
-                        if task is None:
-                            return
-                        if str(task.get("status") or "") != "pending":
-                            return
-                        try:
-                            trigger_dt = _parse_datetime_to_utc(str(task.get("trigger_at") or ""))
-                        except Exception:
-                            trigger_dt = _utc_now()
-
-                    delay = (trigger_dt - _utc_now()).total_seconds()
-                    if delay > 0:
-                        await asyncio.sleep(min(delay, 1.0))
-                        continue
-
-                    self._spawn_execute_task(task_id)
-                    return
-            except asyncio.CancelledError:
-                return
-
-        self._task_timers[task_id] = asyncio.create_task(_runner())
 
     def _spawn_execute_task(self, task_id: str) -> None:
         live = self._active_execution_task
@@ -1313,7 +1309,6 @@ class MusicPusherPlugin(NekoPluginBase):
         self._state_lock = asyncio.Lock()
         self._run_lock = asyncio.Lock()
         self._scheduler_stop = asyncio.Event()
-        self._task_timers = {}
         self._active_control = None
         self._active_execution_task = None
         self._active_task_id = None
@@ -1343,22 +1338,11 @@ class MusicPusherPlugin(NekoPluginBase):
         self.register_static_ui("static")
         self._scheduler_stop.clear()
         self._ensure_scheduler_task()
-        async with self._state_lock:
-            pending_ids = [
-                str(t.get("task_id") or "")
-                for t in self._tasks.values()
-                if str(t.get("status") or "") == "pending"
-            ]
-        for task_id in pending_ids:
-            if task_id:
-                self._schedule_task_timer(task_id)
         return Ok("音乐推送插件已启动（含定时队列）")
 
     @lifecycle(id="shutdown")
     async def on_shutdown(self, **_):
         self._scheduler_stop.set()
-        for task_id in list(self._task_timers.keys()):
-            self._cancel_task_timer(task_id)
 
         running_task = self._active_execution_task
         self._active_execution_task = None
@@ -1435,10 +1419,10 @@ class MusicPusherPlugin(NekoPluginBase):
         if lyric_err:
             return Err(SdkError(lyric_err))
 
-        stored_filename, music_url = self._save_upload_file(binary, ext)
+        stored_filename, music_url = await asyncio.to_thread(self._save_upload_file, binary, ext)
         absolute_url = self._to_absolute_ui_url(music_url)
 
-        detected_duration = self._detect_audio_duration_seconds(binary)
+        detected_duration = await asyncio.to_thread(self._detect_audio_duration_seconds, binary)
         final_duration = _normalize_duration(duration_sec) if duration_sec is not None else (
             detected_duration if detected_duration is not None else _DEFAULT_TRACK_DURATION_SECONDS
         )
@@ -1857,9 +1841,7 @@ class MusicPusherPlugin(NekoPluginBase):
             self._tasks[task_id] = task
             self._save_state_locked()
 
-        self._wake_scheduler()
         self._ensure_scheduler_task()
-        self._schedule_task_timer(task_id)
         return Ok({"task_id": task_id, "status": "pending", "message": "获取成功"})
 
     @plugin_entry(
@@ -1947,9 +1929,7 @@ class MusicPusherPlugin(NekoPluginBase):
             task["current_index"] = 0
             self._save_state_locked()
 
-        self._wake_scheduler()
         self._ensure_scheduler_task()
-        self._schedule_task_timer(target_id)
         return Ok({"updated": True, "task_id": target_id, "message": "获取成功"})
 
     @plugin_entry(
@@ -1976,8 +1956,6 @@ class MusicPusherPlugin(NekoPluginBase):
             deleted = self._tasks.pop(target_id, None) is not None
             if deleted:
                 self._save_state_locked()
-        if deleted:
-            self._cancel_task_timer(target_id)
         return Ok({"deleted": deleted, "task_id": target_id})
 
     @plugin_entry(
@@ -2020,9 +1998,7 @@ class MusicPusherPlugin(NekoPluginBase):
             should_start_now = self._active_task_id is None
             self._save_state_locked()
 
-        self._wake_scheduler()
         self._ensure_scheduler_task()
-        self._schedule_task_timer(target_id)
         if should_start_now:
             self._spawn_execute_task(target_id)
 
@@ -2203,7 +2179,6 @@ class MusicPusherPlugin(NekoPluginBase):
 
     async def _execute_task(self, task_id: str) -> None:
         async with self._run_lock:
-            self._cancel_task_timer(task_id)
             current_execution_task = asyncio.current_task()
             if current_execution_task is not None:
                 self._active_execution_task = current_execution_task
@@ -2407,4 +2382,3 @@ class MusicPusherPlugin(NekoPluginBase):
                         "track_title": "",
                     }
                     self._save_state_locked()
-                self._wake_scheduler()
