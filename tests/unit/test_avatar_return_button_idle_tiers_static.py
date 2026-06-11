@@ -337,6 +337,7 @@ def test_desktop_return_ball_drag_lifecycle_waits_for_restored_viewport_before_r
     no_move_block = source[no_move_start:no_move_end]
 
     assert no_move_block.index("revealReturnBallDragWindow();") < no_move_block.index("dispatchReturnBallClick();")
+    assert "reason: 'return-ball-drag-cancel'" not in no_move_block
     suppress_click_block = _source_slice_between(
         no_move_block,
         "if (suppressClick) {",
@@ -345,7 +346,12 @@ def test_desktop_return_ball_drag_lifecycle_waits_for_restored_viewport_before_r
     )
     _assert_source_contains(
         suppress_click_block,
-        "reason: 'return-ball-drag-cancel'",
+        "reason: 'return-ball-drag-end'",
+        "no-move suppressed return-ball drag branch",
+    )
+    _assert_source_contains(
+        suppress_click_block,
+        "movedDistancePx: 0",
         "no-move suppressed return-ball drag branch",
     )
     _assert_source_contains(
@@ -358,6 +364,8 @@ def test_desktop_return_ball_drag_lifecycle_waits_for_restored_viewport_before_r
         normal_click_block,
         "no-move normal return-ball click branch",
         "reason: 'return-ball-drag-end'",
+        "movedDistancePx: 0",
+        "dragCancelled: false",
         "dispatchReturnBallClick();",
     )
 
