@@ -105,6 +105,59 @@ def test_chat_surface_mode_preference_is_shared_with_electron():
     assert "localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, mode)" in persist_block
 
 
+def test_goodbye_composer_hidden_survives_surface_mode_switches():
+    source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    build_render_block = source.split("function buildRenderProps()", 1)[1].split(
+        "function showToast",
+        1,
+    )[0]
+    submit_block = source.split("function handleComposerSubmit(payload)", 1)[1].split(
+        "function prepareCompactHistoryDropSubmit",
+        1,
+    )[0]
+    set_mode_block = source.split("function setChatSurfaceMode(nextMode)", 1)[1].split(
+        "function cycleChatSurfaceMode()",
+        1,
+    )[0]
+    goodbye_set_block = source.split("function setGoodbyeComposerHidden(hidden, reason)", 1)[1].split(
+        "function syncGoodbyeComposerHidden",
+        1,
+    )[0]
+    attachments_set_block = source.split("function setComposerAttachments(attachments)", 1)[1].split(
+        "var MAX_MESSAGES",
+        1,
+    )[0]
+    desktop_min_height_block = source.split("function getDesktopMinHeight()", 1)[1].split(
+        "function createResizeEdges",
+        1,
+    )[0]
+
+    assert "goodbyeComposerHidden: false" in source
+    assert "function getEffectiveComposerHidden()" in source
+    assert "function hasLocalGoodbyeModeSource()" in source
+    assert "Standalone chat pages inherit window.isNekoGoodbyeModeActive" in source
+    assert "typeof window.isNekoGoodbyeModeActive === 'function'" in source
+    assert "&& window.isNekoGoodbyeModeActive()" in source
+    assert "function getEffectiveComposerAttachmentsVisible()" in source
+    assert "function syncComposerAttachmentsVisibility(previousVisible)" in source
+    assert "return !!(state.composerHidden || state.goodbyeComposerHidden);" in source
+    assert "composerHidden: getEffectiveComposerHidden()" in build_render_block
+    assert "state.homeTutorialInteractionLocked || getEffectiveComposerHidden()" in submit_block
+    assert "syncGoodbyeComposerHidden('chat-surface-mode-change', { localOnly: true });" in set_mode_block
+    assert "options && options.localOnly && !hasLocalGoodbyeModeSource()" in source
+    assert "syncComposerAttachmentsVisibility(previousAttachmentsVisible);" in goodbye_set_block
+    assert "restoredEffectiveComposer && getEffectiveGalgameEnabled()" in goodbye_set_block
+    assert "fetchGalgameOptionsForLatestTurn();" in goodbye_set_block
+    assert "var previousVisible = getEffectiveComposerAttachmentsVisible();" in attachments_set_block
+    assert "syncComposerAttachmentsVisibility(previousVisible);" in attachments_set_block
+    assert "if (!getEffectiveGalgameEnabled()) return MIN_HEIGHT;" in desktop_min_height_block
+    assert "EVENT_PREFIX + 'set-goodbye-composer-hidden'" in source
+    assert "window.addEventListener('live2d-goodbye-click'" in source
+    assert "setGoodbyeComposerHidden(true, 'live2d-goodbye-click')" in source
+    assert "setGoodbyeComposerHidden(false, 'live2d-return-click')" in source
+
+
 def test_chat_full_endpoint_uses_chat_template_with_initial_full_surface():
     router_source = PAGES_ROUTER_PATH.read_text(encoding="utf-8")
     template_source = CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
