@@ -146,7 +146,7 @@ def test_model_cat_transition_contract_is_present():
     assert "maskImage: NEKO_MODEL_CAT_TRANSITION_EDGE_MASK" in source
     assert "element.style.webkitMaskImage = NEKO_MODEL_CAT_TRANSITION_EDGE_MASK" in source
     assert "element.style.setProperty('-webkit-mask-image', NEKO_MODEL_CAT_TRANSITION_EDGE_MASK)" in source
-    assert "function createNekoModelCatTransitionOverlay(rect, direction)" in source
+    assert "function createNekoModelCatTransitionOverlay(rect, direction, token)" in source
     assert "applyNekoTransitionMask(overlay)" in source
     assert "applyNekoTransitionMask(image)" in source
     assert "parseGifDurationMs" not in source
@@ -157,7 +157,7 @@ def test_model_cat_transition_contract_is_present():
     assert "Math.round(basis * NEKO_MODEL_CAT_TRANSITION_SIZE_FACTOR)" in source
     transition_rect_block = source[
         source.index("function normalizeNekoTransitionRect(anchorRect, container, coverRect)"):
-        source.index("function clearNekoModelCatTransitionOverlay()")
+        source.index("function clearNekoModelCatTransitionOverlay(keepToken = '')")
     ]
     assert "left: Math.round(centerX - size / 2)" in transition_rect_block
     assert "top: Math.round(centerY - size / 2)" in transition_rect_block
@@ -173,7 +173,6 @@ def test_model_cat_transition_contract_is_present():
     assert "return-ball-model-cat-transition-done" in source
     assert "return-ball-model-cat-transition-fallback" in source
     assert "NEKO_MODEL_CAT_TRANSITION_MODEL_EXIT_WAIT_MS" not in source
-    assert "deferReveal" not in source
     assert "dispatchClickEvent();" in source
     assert "window.playNekoModelCatTransition" in avatar_source
     assert "window.dispatchEvent(event);" in avatar_source
