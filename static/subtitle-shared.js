@@ -470,7 +470,9 @@
         applySubtitlePreset(refs.display, state.subtitleSize, { host: host });
         refs.display.classList.toggle('drag-anywhere', !!state.subtitleDragAnywhere);
         if (refs.dragHandle) {
-            refs.dragHandle.style.display = state.subtitleDragAnywhere ? '' : 'none';
+            refs.dragHandle.style.display = 'none';
+            refs.dragHandle.setAttribute('aria-hidden', 'true');
+            refs.dragHandle.tabIndex = -1;
         }
         if (refs.langSelect) {
             refs.langSelect.value = state.userLanguage;
@@ -599,7 +601,7 @@
     }
 
     function attachWebDrag(refs) {
-        if (!refs.display || !refs.dragHandle) return function() {};
+        if (!refs.display) return function() {};
 
         var isDragging = false;
         var pendingDrag = false;
@@ -726,8 +728,10 @@
             beginTouchDrag(e);
         }
 
-        refs.dragHandle.addEventListener('mousedown', onHandleMouseDown);
-        refs.dragHandle.addEventListener('touchstart', onHandleTouchStart, { passive: false });
+        if (refs.dragHandle) {
+            refs.dragHandle.addEventListener('mousedown', onHandleMouseDown);
+            refs.dragHandle.addEventListener('touchstart', onHandleTouchStart, { passive: false });
+        }
         refs.display.addEventListener('mousedown', onDisplayMouseDown);
         refs.display.addEventListener('touchstart', onDisplayTouchStart, { passive: false });
         document.addEventListener('touchmove', handleTouchMove, { passive: false });
@@ -736,8 +740,10 @@
         window.addEventListener('resize', clampManualPosition);
 
         return function detachWebDrag() {
-            refs.dragHandle.removeEventListener('mousedown', onHandleMouseDown);
-            refs.dragHandle.removeEventListener('touchstart', onHandleTouchStart, { passive: false });
+            if (refs.dragHandle) {
+                refs.dragHandle.removeEventListener('mousedown', onHandleMouseDown);
+                refs.dragHandle.removeEventListener('touchstart', onHandleTouchStart, { passive: false });
+            }
             refs.display.removeEventListener('mousedown', onDisplayMouseDown);
             refs.display.removeEventListener('touchstart', onDisplayTouchStart, { passive: false });
             document.removeEventListener('touchmove', handleTouchMove, { passive: false });
@@ -751,7 +757,7 @@
 
     function attachWindowDrag(refs, options) {
         var api = options && options.api;
-        if (!refs.display || !refs.dragHandle || !api) return function() {};
+        if (!refs.display || !api) return function() {};
 
         var isDragging = false;
 
@@ -807,7 +813,7 @@
         function stopDrag() {
             if (!isDragging) return;
             isDragging = false;
-            refs.dragHandle.style.cursor = '';
+            if (refs.dragHandle) refs.dragHandle.style.cursor = '';
             if (typeof api.dragStop === 'function') {
                 api.dragStop();
             }
@@ -817,13 +823,13 @@
         function onHandleMouseDown(e) {
             if (!isDragAnywhereMode()) return;
             startDrag(e);
-            refs.dragHandle.style.cursor = 'grabbing';
+            if (refs.dragHandle) refs.dragHandle.style.cursor = 'grabbing';
         }
 
         function onHandleTouchStart(e) {
             if (!isDragAnywhereMode()) return;
             startDrag(e);
-            refs.dragHandle.style.cursor = 'grabbing';
+            if (refs.dragHandle) refs.dragHandle.style.cursor = 'grabbing';
         }
 
         function onDisplayMouseDown(e) {
@@ -836,8 +842,10 @@
             startDrag(e);
         }
 
-        refs.dragHandle.addEventListener('mousedown', onHandleMouseDown);
-        refs.dragHandle.addEventListener('touchstart', onHandleTouchStart, { passive: false });
+        if (refs.dragHandle) {
+            refs.dragHandle.addEventListener('mousedown', onHandleMouseDown);
+            refs.dragHandle.addEventListener('touchstart', onHandleTouchStart, { passive: false });
+        }
         refs.display.addEventListener('mousedown', onDisplayMouseDown);
         refs.display.addEventListener('touchstart', onDisplayTouchStart, { passive: false });
         document.addEventListener('mouseup', stopDrag);
@@ -847,8 +855,10 @@
         window.addEventListener('resize', bounceBackIfNeeded);
 
         return function detachWindowDrag() {
-            refs.dragHandle.removeEventListener('mousedown', onHandleMouseDown);
-            refs.dragHandle.removeEventListener('touchstart', onHandleTouchStart, { passive: false });
+            if (refs.dragHandle) {
+                refs.dragHandle.removeEventListener('mousedown', onHandleMouseDown);
+                refs.dragHandle.removeEventListener('touchstart', onHandleTouchStart, { passive: false });
+            }
             refs.display.removeEventListener('mousedown', onDisplayMouseDown);
             refs.display.removeEventListener('touchstart', onDisplayTouchStart, { passive: false });
             document.removeEventListener('mouseup', stopDrag);

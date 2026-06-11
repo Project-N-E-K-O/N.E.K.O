@@ -1261,8 +1261,6 @@ def test_subtitle_window_height_uses_content_bounds_not_dropdown_height(
             document.dispatchEvent(new Event('DOMContentLoaded'));
             await new Promise((resolve) => setTimeout(resolve, 0));
             const emptySize = window.__subtitleSizes[window.__subtitleSizes.length - 1];
-            const emptySettingsBtnRect = document.getElementById('subtitle-settings-btn').getBoundingClientRect();
-            const emptyDragHandleRect = document.getElementById('subtitle-drag-handle').getBoundingClientRect();
             window.dispatchEvent(new CustomEvent('neko-ws-transcript', {
                 detail: {
                     transcript: '这是一段很长很长的翻译字幕，用来测试窗口高度会按内容增长，但是不会超过中号字幕的最大高度。'.repeat(8),
@@ -1270,13 +1268,14 @@ def test_subtitle_window_height_uses_content_bounds_not_dropdown_height(
             }));
             await new Promise((resolve) => setTimeout(resolve, 0));
             const longSize = window.__subtitleSizes[window.__subtitleSizes.length - 1];
+            const displayRectBeforePanel = document.getElementById('subtitle-display').getBoundingClientRect();
             document.getElementById('subtitle-settings-btn').click();
             await new Promise((resolve) => setTimeout(resolve, 0));
             const panelOpenSize = window.__subtitleSizes[window.__subtitleSizes.length - 1];
             const displayRect = document.getElementById('subtitle-display').getBoundingClientRect();
             const scrollRect = document.getElementById('subtitle-scroll').getBoundingClientRect();
             const settingsBtnRect = document.getElementById('subtitle-settings-btn').getBoundingClientRect();
-            const dragHandleRect = document.getElementById('subtitle-drag-handle').getBoundingClientRect();
+            const dragHandle = document.getElementById('subtitle-drag-handle');
             const panelRect = document.getElementById('subtitle-settings-panel').getBoundingClientRect();
             const displayStyle = getComputedStyle(document.getElementById('subtitle-display'));
             const scrollStyle = getComputedStyle(document.getElementById('subtitle-scroll'));
@@ -1286,15 +1285,17 @@ def test_subtitle_window_height_uses_content_bounds_not_dropdown_height(
             const textStyle = getComputedStyle(document.getElementById('subtitle-text'));
             return {
                 emptySize,
-                emptyControlsOverlap: emptySettingsBtnRect.bottom > emptyDragHandleRect.top,
-                emptyControlsGap: emptyDragHandleRect.top - emptySettingsBtnRect.bottom,
                 longSize,
                 panelOpenSize,
+                settingsPanelParentId: document.getElementById('subtitle-settings-panel').parentElement.id,
+                displayHeightBeforePanel: displayRectBeforePanel.height,
+                displayWidthBeforePanel: displayRectBeforePanel.width,
                 displayHeight: displayRect.height,
+                displayWidth: displayRect.width,
                 scrollHeight: scrollRect.height,
                 scrollRight: scrollRect.right,
                 settingsBtnLeft: settingsBtnRect.left,
-                dragHandleLeft: dragHandleRect.left,
+                dragHandleDisplay: dragHandle ? getComputedStyle(dragHandle).display : 'missing',
                 panelBottom: panelRect.bottom,
                 overlapsVertically: panelRect.bottom > scrollRect.top && panelRect.top < scrollRect.bottom,
                 displayOverflow: displayStyle.overflowY,
@@ -1313,17 +1314,18 @@ def test_subtitle_window_height_uses_content_bounds_not_dropdown_height(
     )
 
     assert result["emptySize"]["height"] == 68
-    assert result["emptyControlsOverlap"] is False
-    assert result["emptyControlsGap"] >= 8
     assert result["longSize"]["height"] <= 160
     assert result["longSize"]["height"] >= 40
+    assert result["settingsPanelParentId"] == "subtitle-settings-layer"
+    assert abs(result["displayHeight"] - result["displayHeightBeforePanel"]) < 0.5
+    assert abs(result["displayWidth"] - result["displayWidthBeforePanel"]) < 0.5
     assert result["panelOpenSize"]["height"] >= result["panelBottom"]
     assert result["overlapsVertically"] is False
     assert result["displayOverflow"] == "visible"
     assert result["scrollOverflow"] == "auto"
     assert result["scrollPointerEvents"] == "auto"
     assert result["scrollRight"] <= result["settingsBtnLeft"] - 6
-    assert result["scrollRight"] <= result["dragHandleLeft"] - 6
+    assert result["dragHandleDisplay"] == "none"
     assert result["scrollBarWidth"] == "thin"
     assert "rgba" in result["scrollBarColor"]
     assert result["scrollBarGutter"] == "stable"
@@ -1331,6 +1333,359 @@ def test_subtitle_window_height_uses_content_bounds_not_dropdown_height(
     assert result["scrollTrackBackground"] == "rgba(0, 0, 0, 0)"
     assert result["scrollThumbBackground"] == "rgba(255, 255, 255, 0.42)"
     assert result["textMarginRight"] == "8px"
+
+
+@pytest.mark.frontend
+def test_subtitle_window_settings_panel_width_is_independent_from_short_subtitle(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display">
+            <div id="subtitle-scroll"><span id="subtitle-text"></span></div>
+            <button type="button" id="subtitle-settings-btn"></button>
+            <div id="subtitle-settings-panel" class="hidden">
+                <div class="subtitle-settings-row">
+                    <span class="subtitle-settings-label" data-subtitle-label="targetLang">目标语言</span>
+                    <select id="subtitle-lang-select"><option value="zh">中文</option><option value="en">English</option></select>
+                </div>
+                <div class="subtitle-settings-row">
+                    <span class="subtitle-settings-label" data-subtitle-label="opacity">不透明度</span>
+                    <input type="range" id="subtitle-opacity-slider" min="20" max="100" value="95">
+                    <span id="subtitle-opacity-value">95%</span>
+                </div>
+                <div class="subtitle-settings-row">
+                    <span class="subtitle-settings-label" data-subtitle-label="dragAnywhere">整体拖动</span>
+                    <label class="subtitle-settings-switch"><input type="checkbox" id="subtitle-drag-mode-toggle"><span class="subtitle-settings-track"></span></label>
+                </div>
+                <div class="subtitle-settings-row">
+                    <span class="subtitle-settings-label" data-subtitle-label="size">大小</span>
+                    <div class="subtitle-size-group">
+                        <button type="button" class="subtitle-size-btn" data-size="small">小</button>
+                        <button type="button" class="subtitle-size-btn active" data-size="medium">中</button>
+                        <button type="button" class="subtitle-size-btn" data-size="large">大</button>
+                    </div>
+                </div>
+            </div>
+            <div id="subtitle-drag-handle"></div>
+        </div>
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.__subtitleSizes = [];
+            window.localStorage.setItem('subtitleSize', 'small');
+            window.nekoSubtitle = {
+                setSize: (width, height) => window.__subtitleSizes.push({ width, height }),
+                changeSettings: () => {},
+                dragStart: () => {},
+                dragStop: () => {},
+            };
+        }
+        """
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            document.dispatchEvent(new Event('DOMContentLoaded'));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            window.dispatchEvent(new CustomEvent('neko-ws-transcript', {
+                detail: { transcript: '嗷' },
+            }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            document.getElementById('subtitle-settings-btn').click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const finalSize = window.__subtitleSizes[window.__subtitleSizes.length - 1];
+            const displayRect = document.getElementById('subtitle-display').getBoundingClientRect();
+            const panelRect = document.getElementById('subtitle-settings-panel').getBoundingClientRect();
+            const displayStyle = getComputedStyle(document.getElementById('subtitle-display'));
+            const panelStyle = getComputedStyle(document.getElementById('subtitle-settings-panel'));
+            return {
+                finalSize,
+                displayWidth: displayRect.width,
+                panelWidth: panelRect.width,
+                panelHidden: document.getElementById('subtitle-settings-panel').classList.contains('hidden'),
+                panelParentId: document.getElementById('subtitle-settings-panel').parentElement.id,
+                displayContainsPanel: document.getElementById('subtitle-display').contains(document.getElementById('subtitle-settings-panel')),
+                displayCssWidth: parseFloat(displayStyle.width),
+                panelPosition: panelStyle.position,
+                displayTransform: displayStyle.transform,
+                panelTransform: panelStyle.transform,
+            };
+        }
+        """
+    )
+
+    assert result["panelHidden"] is False
+    assert result["panelParentId"] == "subtitle-settings-layer"
+    assert result["displayContainsPanel"] is False
+    assert result["panelPosition"] == "fixed"
+    assert result["displayWidth"] <= 220
+    assert result["panelWidth"] > result["displayWidth"]
+    assert result["finalSize"]["width"] >= result["panelWidth"]
+    assert abs(result["displayCssWidth"] - result["displayWidth"]) < 0.5
+    assert result["displayTransform"] == "none"
+    assert result["panelTransform"] == "none"
+
+
+@pytest.mark.frontend
+def test_subtitle_window_drag_still_uses_native_bridge_after_panel_layout(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display">
+            <div id="subtitle-scroll"><span id="subtitle-text">可拖动字幕</span></div>
+            <button type="button" id="subtitle-settings-btn"></button>
+            <div id="subtitle-settings-panel" class="hidden"></div>
+            <label class="subtitle-settings-switch">
+                <input type="checkbox" id="subtitle-drag-mode-toggle">
+                <span class="subtitle-settings-track"></span>
+            </label>
+            <div id="subtitle-drag-handle"></div>
+        </div>
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.__subtitleDragLog = [];
+            window.localStorage.setItem('subtitleDragAnywhere', 'true');
+            window.nekoSubtitle = {
+                setSize: () => {},
+                changeSettings: () => {},
+                dragStart: () => window.__subtitleDragLog.push('dragStart'),
+                dragStop: () => window.__subtitleDragLog.push('dragStop'),
+            };
+        }
+        """
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            document.dispatchEvent(new Event('DOMContentLoaded'));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const display = document.getElementById('subtitle-display');
+            const rect = display.getBoundingClientRect();
+            display.dispatchEvent(new MouseEvent('mousedown', {
+                bubbles: true,
+                button: 0,
+                clientX: rect.left + 12,
+                clientY: rect.top + 12,
+            }));
+            document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+            return {
+                dragAnywhere: display.classList.contains('drag-anywhere'),
+                log: window.__subtitleDragLog.slice(),
+                transform: getComputedStyle(display).transform,
+            };
+        }
+        """
+    )
+
+    assert result["dragAnywhere"] is True
+    assert result["log"] == ["dragStart", "dragStop"]
+    assert result["transform"] == "none"
+
+
+@pytest.mark.frontend
+def test_subtitle_window_drag_closes_settings_before_native_drag(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display">
+            <div id="subtitle-scroll"><span id="subtitle-text">可拖动字幕</span></div>
+            <button type="button" id="subtitle-settings-btn"></button>
+            <div id="subtitle-settings-panel" class="hidden">
+                <div class="subtitle-settings-row">
+                    <span class="subtitle-settings-label" data-subtitle-label="targetLang">目标语言</span>
+                    <select id="subtitle-lang-select"><option value="zh">中文</option><option value="en">English</option></select>
+                </div>
+                <div class="subtitle-settings-row">
+                    <span class="subtitle-settings-label" data-subtitle-label="opacity">不透明度</span>
+                    <input type="range" id="subtitle-opacity-slider" min="20" max="100" value="95">
+                    <span id="subtitle-opacity-value">95%</span>
+                </div>
+                <div class="subtitle-settings-row">
+                    <span class="subtitle-settings-label" data-subtitle-label="dragAnywhere">整体拖动</span>
+                    <label class="subtitle-settings-switch"><input type="checkbox" id="subtitle-drag-mode-toggle"><span class="subtitle-settings-track"></span></label>
+                </div>
+            </div>
+            <div id="subtitle-drag-handle"></div>
+        </div>
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.__subtitleSizes = [];
+            window.__subtitleDragLog = [];
+            window.localStorage.setItem('subtitleSize', 'small');
+            window.localStorage.setItem('subtitleDragAnywhere', 'true');
+            window.nekoSubtitle = {
+                setSize: (width, height) => window.__subtitleSizes.push({ width, height }),
+                changeSettings: () => {},
+                dragStart: () => window.__subtitleDragLog.push('dragStart'),
+                dragStop: () => window.__subtitleDragLog.push('dragStop'),
+            };
+        }
+        """
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            document.dispatchEvent(new Event('DOMContentLoaded'));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            document.getElementById('subtitle-settings-btn').click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const sizeWithPanel = window.__subtitleSizes[window.__subtitleSizes.length - 1];
+            const display = document.getElementById('subtitle-display');
+            const rect = display.getBoundingClientRect();
+            display.dispatchEvent(new MouseEvent('mousedown', {
+                bubbles: true,
+                button: 0,
+                clientX: rect.left + 12,
+                clientY: rect.top + 12,
+            }));
+            document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+            const sizeAfterDragStart = window.__subtitleSizes[window.__subtitleSizes.length - 1];
+            return {
+                sizeWithPanel,
+                sizeAfterDragStart,
+                panelHidden: document.getElementById('subtitle-settings-panel').classList.contains('hidden'),
+                dragLog: window.__subtitleDragLog.slice(),
+            };
+        }
+        """
+    )
+
+    assert result["panelHidden"] is True
+    assert result["dragLog"] == ["dragStart", "dragStop"]
+    assert result["sizeWithPanel"]["height"] > result["sizeAfterDragStart"]["height"]
+
+
+@pytest.mark.frontend
+def test_subtitle_window_manual_resize_expands_subtitle_display_not_backing_layer(
+    mock_page: Page,
+):
+    mock_page.set_viewport_size({"width": 240, "height": 90})
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display">
+            <div id="subtitle-scroll"><span id="subtitle-text"></span></div>
+            <button type="button" id="subtitle-settings-btn"></button>
+            <div id="subtitle-settings-panel" class="hidden"></div>
+            <div id="subtitle-drag-handle"></div>
+        </div>
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.__subtitleSizes = [];
+            window.localStorage.setItem('subtitleSize', 'small');
+            window.nekoSubtitle = {
+                setSize: (width, height) => window.__subtitleSizes.push({ width, height }),
+                changeSettings: () => {},
+                dragStart: () => {},
+                dragStop: () => {},
+            };
+        }
+        """
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+    mock_page.evaluate(
+        """
+        async () => {
+            document.dispatchEvent(new Event('DOMContentLoaded'));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            window.dispatchEvent(new CustomEvent('neko-ws-transcript', {
+                detail: { transcript: '嗷' },
+            }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+        """
+    )
+
+    mock_page.set_viewport_size({"width": 420, "height": 160})
+    mock_page.wait_for_timeout(50)
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const display = document.getElementById('subtitle-display');
+            const scroll = document.getElementById('subtitle-scroll');
+            const settingsBtn = document.getElementById('subtitle-settings-btn');
+            const displayRect = display.getBoundingClientRect();
+            const scrollRect = scroll.getBoundingClientRect();
+            const displayStyle = getComputedStyle(display);
+            const scrollStyle = getComputedStyle(scroll);
+            const finalSizeBeforePanel = window.__subtitleSizes[window.__subtitleSizes.length - 1];
+            const sizeCallsBeforePanel = window.__subtitleSizes.slice();
+            settingsBtn.click();
+            const displayRectAfterPanel = display.getBoundingClientRect();
+            const panel = document.getElementById('subtitle-settings-panel');
+            return {
+                finalSizeBeforePanel,
+                finalSizeAfterPanel: window.__subtitleSizes[window.__subtitleSizes.length - 1],
+                sizeCallsBeforePanel,
+                viewportWidth: window.innerWidth,
+                viewportHeight: window.innerHeight,
+                displayWidth: displayRect.width,
+                displayHeight: displayRect.height,
+                displayWidthAfterPanel: displayRectAfterPanel.width,
+                displayHeightAfterPanel: displayRectAfterPanel.height,
+                panelParentId: panel.parentElement.id,
+                displayContainsPanel: display.contains(panel),
+                scrollHeight: scrollRect.height,
+                displayCssWidth: parseFloat(displayStyle.width),
+                displayCssHeight: parseFloat(displayStyle.height),
+                scrollMaxHeight: scrollStyle.maxHeight,
+            };
+        }
+        """
+    )
+
+    assert result["viewportWidth"] == 420
+    assert result["viewportHeight"] == 160
+    assert result["finalSizeBeforePanel"] != {"width": 420, "height": 160}
+    assert {"width": 420, "height": 160} not in result["sizeCallsBeforePanel"]
+    assert result["finalSizeAfterPanel"]["width"] == 420
+    assert result["finalSizeAfterPanel"]["height"] >= 160
+    assert abs(result["displayWidth"] - 420) < 0.5
+    assert abs(result["displayHeight"] - 160) < 0.5
+    assert abs(result["displayWidthAfterPanel"] - 420) < 0.5
+    assert abs(result["displayHeightAfterPanel"] - 160) < 0.5
+    assert result["panelParentId"] == "subtitle-settings-layer"
+    assert result["displayContainsPanel"] is False
+    assert abs(result["displayCssWidth"] - 420) < 0.5
+    assert abs(result["displayCssHeight"] - 160) < 0.5
+    assert result["scrollHeight"] > 80
+    assert result["scrollMaxHeight"] == "120px"
 
 
 @pytest.mark.frontend
@@ -1381,7 +1736,7 @@ def test_web_subtitle_settings_panel_does_not_overlap_subtitle_text(
             await new Promise((resolve) => setTimeout(resolve, 0));
             const scrollRect = document.getElementById('subtitle-scroll').getBoundingClientRect();
             const settingsBtnRect = document.getElementById('subtitle-settings-btn').getBoundingClientRect();
-            const dragHandleRect = document.getElementById('subtitle-drag-handle').getBoundingClientRect();
+            const dragHandle = document.getElementById('subtitle-drag-handle');
             const panelRect = document.getElementById('subtitle-settings-panel').getBoundingClientRect();
             const displayStyle = getComputedStyle(document.getElementById('subtitle-display'));
             const scrollStyle = getComputedStyle(document.getElementById('subtitle-scroll'));
@@ -1394,7 +1749,7 @@ def test_web_subtitle_settings_panel_does_not_overlap_subtitle_text(
                 scrollBottom: scrollRect.bottom,
                 scrollRight: scrollRect.right,
                 settingsBtnLeft: settingsBtnRect.left,
-                dragHandleLeft: dragHandleRect.left,
+                dragHandleDisplay: dragHandle ? getComputedStyle(dragHandle).display : 'missing',
                 panelTop: panelRect.top,
                 panelBottom: panelRect.bottom,
                 overlapsVertically: panelRect.bottom > scrollRect.top && panelRect.top < scrollRect.bottom,
@@ -1420,7 +1775,7 @@ def test_web_subtitle_settings_panel_does_not_overlap_subtitle_text(
     assert result["scrollOverflow"] == "auto"
     assert result["scrollPointerEvents"] == "auto"
     assert result["scrollRight"] <= result["settingsBtnLeft"] - 6
-    assert result["scrollRight"] <= result["dragHandleLeft"] - 6
+    assert result["dragHandleDisplay"] == "none"
     assert result["scrollBarWidth"] == "thin"
     assert "rgba" in result["scrollBarColor"]
     assert result["scrollBarGutter"] == "stable"
@@ -1431,7 +1786,7 @@ def test_web_subtitle_settings_panel_does_not_overlap_subtitle_text(
 
 
 @pytest.mark.frontend
-def test_web_subtitle_drag_mode_shows_handle_and_accepts_pointer_events_when_enabled(
+def test_web_subtitle_drag_mode_hides_handle_and_drags_from_display_when_enabled(
     mock_page: Page,
 ):
     _open_subtitle_harness(
@@ -1469,17 +1824,17 @@ def test_web_subtitle_drag_mode_shows_handle_and_accepts_pointer_events_when_ena
             const dragHandle = document.getElementById('subtitle-drag-handle');
             const displayPointerEventsWhenEnabled = getComputedStyle(display).pointerEvents;
             const dragHandleDisplayWhenEnabled = getComputedStyle(dragHandle).display;
-            const handleRect = dragHandle.getBoundingClientRect();
-            dragHandle.dispatchEvent(new MouseEvent('mousedown', {
+            const displayRect = display.getBoundingClientRect();
+            display.dispatchEvent(new MouseEvent('mousedown', {
                 bubbles: true,
                 button: 0,
-                clientX: handleRect.left + 4,
-                clientY: handleRect.top + 4,
+                clientX: displayRect.left + 20,
+                clientY: displayRect.top + 20,
             }));
             document.dispatchEvent(new MouseEvent('mousemove', {
                 bubbles: true,
-                clientX: handleRect.left + 20,
-                clientY: handleRect.top + 20,
+                clientX: displayRect.left + 40,
+                clientY: displayRect.top + 40,
             }));
             const draggingAfterMove = display.classList.contains('dragging');
             document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
@@ -1498,7 +1853,7 @@ def test_web_subtitle_drag_mode_shows_handle_and_accepts_pointer_events_when_ena
         """
     )
 
-    assert result["dragHandleDisplayWhenEnabled"] != "none"
+    assert result["dragHandleDisplayWhenEnabled"] == "none"
     assert result["displayPointerEventsWhenEnabled"] == "auto"
     assert result["draggingAfterMove"] is True
     assert result["dragAnywhere"] is False
