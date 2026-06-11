@@ -16,6 +16,7 @@
 """
 import asyncio
 import os
+import re
 import sys
 from unittest.mock import AsyncMock, MagicMock
 
@@ -710,13 +711,14 @@ def test_start_session_success_path_clears_goodbye_silent_gate():
         encoding="utf-8",
     ) as fh:
         source = fh.read()
+    normalized_source = re.sub(r"\s+", " ", source)
     success_marker = "self._session_start_circuit_open = False"
-    clear_marker = "if self.is_goodbye_silent():\n                    self.set_goodbye_silent(False)"
+    clear_marker = "if self.is_goodbye_silent(): self.set_goodbye_silent(False)"
     notify_marker = "await self.send_session_started(input_mode)"
 
-    clear_pos = source.index(clear_marker)
-    success_pos = source.rindex(success_marker, 0, clear_pos)
-    notify_pos = source.index(notify_marker, clear_pos)
+    clear_pos = normalized_source.index(clear_marker)
+    success_pos = normalized_source.rindex(success_marker, 0, clear_pos)
+    notify_pos = normalized_source.index(notify_marker, clear_pos)
 
     assert success_pos < clear_pos < notify_pos
 

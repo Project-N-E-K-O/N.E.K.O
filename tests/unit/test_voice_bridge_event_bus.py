@@ -9,6 +9,13 @@ from main_logic import agent_event_bus
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _reset_agent_bridge_liveness() -> None:
+    agent_event_bus._clear_agent_bridge_seen()
+    yield
+    agent_event_bus._clear_agent_bridge_seen()
+
+
 @pytest.mark.asyncio
 async def test_voice_bridge_notify_keeps_waiter_until_loop_resolves() -> None:
     event_id = "voice-race-regression"
@@ -94,6 +101,7 @@ async def test_voice_transcript_request_returns_agent_result(monkeypatch: pytest
             return True
 
     monkeypatch.setattr(agent_event_bus, "_main_bridge_ref", _Bridge())
+    agent_event_bus._mark_agent_bridge_seen()
 
     result = await agent_event_bus.publish_voice_transcript_request_reliably(
         "Yui",
@@ -105,6 +113,30 @@ async def test_voice_transcript_request_returns_agent_result(monkeypatch: pytest
     assert captured["event_type"] == "voice_transcript_request"
     assert captured["lanlan_name"] == "Yui"
     assert captured["transcript"] == "hm this is 3x^2"
+    assert agent_event_bus._voice_bridge_waiters == {}
+
+
+@pytest.mark.asyncio
+async def test_voice_transcript_request_skips_publish_without_agent_liveness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    published: list[dict] = []
+
+    class _Bridge:
+        async def publish_session_event(self, event: dict) -> bool:
+            published.append(event)
+            return True
+
+    monkeypatch.setattr(agent_event_bus, "_main_bridge_ref", _Bridge())
+
+    result = await agent_event_bus.publish_voice_transcript_request_reliably(
+        "Yui",
+        "agent server is gone",
+        timeout_s=0.2,
+    )
+
+    assert result is None
+    assert published == []
     assert agent_event_bus._voice_bridge_waiters == {}
 
 
@@ -127,6 +159,7 @@ async def test_voice_transcript_request_retries_after_send_failure(
             return True
 
     monkeypatch.setattr(agent_event_bus, "_main_bridge_ref", _Bridge())
+    agent_event_bus._mark_agent_bridge_seen()
 
     result = await agent_event_bus.publish_voice_transcript_request_reliably(
         "Yui",
