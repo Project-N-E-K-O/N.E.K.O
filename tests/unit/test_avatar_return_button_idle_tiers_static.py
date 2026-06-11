@@ -407,6 +407,68 @@ def test_cat1_walk_hover_invalidates_pending_playback_rate_source():
     assert 'art.src = clickSrc' in repeat_hover_block
 
 
+def test_idle_thought_bubble_hides_during_pending_long_press():
+    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    app_ui_source = APP_UI_PATH.read_text(encoding="utf-8")
+    css_source = INDEX_CSS_PATH.read_text(encoding="utf-8")
+
+    assert "_NEKO_IDLE_RETURN_DRAG_PENDING_CLASS = 'is-drag-action-pending'" in source
+    assert "function _setNekoIdleReturnDragPendingClasses(button, active)" in source
+    assert "_setNekoIdleReturnDragPendingClasses(button, true);" in source
+    assert "_setNekoIdleReturnDragPendingClasses(button, false);" in source
+
+    prepare_block = _source_slice_between(
+        source,
+        "function _prepareNekoIdleReturnDragActionForContainer(container)",
+        "function _startNekoIdleReturnDragActionForContainer(container)",
+        "return button drag pending preparation",
+    )
+    _assert_source_contains(
+        prepare_block,
+        "_setNekoIdleReturnDragPendingClasses(button, true);",
+        "return button drag pending preparation",
+    )
+
+    start_block = _source_slice_between(
+        source,
+        "function _startNekoIdleReturnDragActionForContainer(container)",
+        "function _finishNekoIdleReturnDragAction(button, options = {})",
+        "return button drag active start",
+    )
+    _assert_source_order(
+        start_block,
+        "return button drag active start",
+        "_setNekoIdleReturnDragPendingClasses(button, false);",
+        "_setNekoIdleReturnDragActionClasses(button, true);",
+    )
+
+    finish_block = _source_slice_between(
+        source,
+        "function _finishNekoIdleReturnDragAction(button, options = {})",
+        "function _finishNekoIdleReturnDragActionForContainer(container, options = {})",
+        "return button drag finish",
+    )
+    _assert_source_contains(
+        finish_block,
+        "_setNekoIdleReturnDragPendingClasses(button, false);",
+        "return button drag finish",
+    )
+
+    assert "'return-ball-drag-cancel'" in app_ui_source
+    cancel_handler = _source_slice_between(
+        source,
+        "if (detail.reason === 'return-ball-drag-cancel')",
+        "if (detail.reason === 'return-ball-drag-start')",
+        "return button drag cancel handler",
+    )
+    _assert_source_contains(
+        cancel_handler,
+        "_finishNekoIdleReturnDragActionForContainer(detail.container, { restoreArt: false });",
+        "return button drag cancel handler",
+    )
+    assert ".neko-idle-return-btn.is-drag-action-pending .neko-idle-thought-bubble" in css_source
+
+
 def test_sleeping_cat_tiers_schedule_soft_random_sound_once_per_interval():
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
 

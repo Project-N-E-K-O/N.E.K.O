@@ -242,6 +242,7 @@ const _NEKO_IDLE_CAT1_PAIR_MOVE_MIN_DURATION_MS = 720;
 const _NEKO_IDLE_CAT1_PAIR_MOVE_MAX_DURATION_MS = 2200;
 const _NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS = 2500;
 const _NEKO_IDLE_DESKTOP_COMPACT_SURFACE_RECT_STALE_MS = 10 * 1000;
+const _NEKO_IDLE_RETURN_DRAG_PENDING_CLASS = 'is-drag-action-pending';
 const _NEKO_IDLE_RETURN_DRAG_ACTION_CLASS = 'is-drag-action';
 const _NEKO_IDLE_CAT1_LAYER_REQUEST_HEARTBEAT_MS = 250;
 const _NEKO_IDLE_CAT1_LAYER_FOLLOW_REASSERT_MS = 80;
@@ -1167,6 +1168,15 @@ function _setNekoIdleReturnDragActionClasses(button, active) {
     }
 }
 
+function _setNekoIdleReturnDragPendingClasses(button, active) {
+    if (!button) return;
+    const container = _getNekoIdleReturnContainerFromButton(button);
+    button.classList.toggle(_NEKO_IDLE_RETURN_DRAG_PENDING_CLASS, !!active);
+    if (container) {
+        container.classList.toggle(_NEKO_IDLE_RETURN_DRAG_PENDING_CLASS, !!active);
+    }
+}
+
 function _setNekoIdleReturnDragActionArt(button, tier) {
     const art = button && button.querySelector('.neko-idle-return-art');
     const dragSrc = _getNekoIdleReturnDragAssetUrl(tier);
@@ -1191,6 +1201,7 @@ function _prepareNekoIdleReturnDragActionForContainer(container) {
         containerId: container && container.id,
         tier: button.getAttribute('data-neko-idle-tier')
     });
+    _setNekoIdleReturnDragPendingClasses(button, true);
     _cancelNekoIdleCat1Journey(button, {
         resetArt: false,
         preserveObservers: true
@@ -1210,6 +1221,7 @@ function _startNekoIdleReturnDragActionForContainer(container) {
         resetArt: false,
         preserveObservers: true
     });
+    _setNekoIdleReturnDragPendingClasses(button, false);
     _setNekoIdleReturnDragActionClasses(button, true);
     _setNekoIdleReturnDragActionArt(button, tier);
     _playNekoIdleCat1DragSound(tier);
@@ -1221,8 +1233,10 @@ function _startNekoIdleReturnDragActionForContainer(container) {
 }
 
 function _finishNekoIdleReturnDragAction(button, options = {}) {
-    const state = button && button.__nekoIdleReturnDragActionState;
-    if (!button || !state) return;
+    if (!button) return;
+    _setNekoIdleReturnDragPendingClasses(button, false);
+    const state = button.__nekoIdleReturnDragActionState;
+    if (!state) return;
     _logNekoIdleReturnDragDebug('finish', {
         buttonId: button.id,
         restoreArt: options.restoreArt !== false,
@@ -3569,6 +3583,10 @@ function _ensureNekoIdleReturnPresentationBridge() {
             if (compactTopEdgeRearmState.shouldSync || _shouldRecheckNekoIdleCat1AfterManualMove(detail)) {
                 _scheduleNekoIdleCat1JourneySyncForContainer(detail.container);
             }
+            return;
+        }
+        if (detail.reason === 'return-ball-drag-cancel') {
+            _finishNekoIdleReturnDragActionForContainer(detail.container, { restoreArt: false });
             return;
         }
         if (detail.reason === 'return-ball-drag-start') {
