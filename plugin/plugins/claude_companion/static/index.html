@@ -762,12 +762,20 @@
                 if (locResp.ok) {
                     var locData = await locResp.json();
                     var lang = locData.locale || locData.language || 'zh-CN';
-                    var bundleResp = await fetch(baseUrl + '/plugin/' + pluginId + '/i18n/' + lang + '.json');
-                    if (bundleResp.ok) {
-                        translations = await bundleResp.json();
-                        localeLoaded = true;
-                        applyTranslations();
-                        return;
+                    // Fallback chain: e.g. en-US -> en -> zh-CN
+                    var candidates = [lang];
+                    var baseLang = lang.split('-')[0];
+                    if (baseLang !== lang) candidates.push(baseLang);
+                    if (candidates.indexOf('zh-CN') === -1) candidates.push('zh-CN');
+
+                    for (var i = 0; i < candidates.length; i++) {
+                        var bundleResp = await fetch(baseUrl + '/plugin/' + pluginId + '/i18n/' + candidates[i] + '.json');
+                        if (bundleResp.ok) {
+                            translations = await bundleResp.json();
+                            localeLoaded = true;
+                            applyTranslations();
+                            return;
+                        }
                     }
                 }
             } catch (e) {
