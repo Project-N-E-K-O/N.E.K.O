@@ -14,6 +14,67 @@
     var el = document.getElementById(BACKDROP_ID);
     if (el && el.parentNode) el.parentNode.removeChild(el);
     document.removeEventListener('keydown', onKey, true);
+    document.removeEventListener('pointermove', onDragMove, true);
+    document.removeEventListener('pointerup', onDragEnd, true);
+    window.removeEventListener('resize', onResize, true);
+    dragState = null;
+  }
+
+  var dragState = null;
+
+  function clamp(value, min, max) {
+    return Math.min(Math.max(value, min), max);
+  }
+
+  function keepWindowInViewport(win) {
+    var margin = 12;
+    var rect = win.getBoundingClientRect();
+    win.style.left = clamp(rect.left, margin, Math.max(margin, window.innerWidth - rect.width - margin)) + 'px';
+    win.style.top = clamp(rect.top, margin, Math.max(margin, window.innerHeight - rect.height - margin)) + 'px';
+  }
+
+  function onDragMove(e) {
+    if (!dragState) return;
+    e.preventDefault();
+    var maxLeft = Math.max(dragState.margin, window.innerWidth - dragState.width - dragState.margin);
+    var maxTop = Math.max(dragState.margin, window.innerHeight - dragState.height - dragState.margin);
+    dragState.win.style.left = clamp(dragState.startLeft + e.clientX - dragState.startX, dragState.margin, maxLeft) + 'px';
+    dragState.win.style.top = clamp(dragState.startTop + e.clientY - dragState.startY, dragState.margin, maxTop) + 'px';
+  }
+
+  function onDragEnd() {
+    if (dragState && dragState.bar) dragState.bar.classList.remove('is-dragging');
+    document.removeEventListener('pointermove', onDragMove, true);
+    document.removeEventListener('pointerup', onDragEnd, true);
+    dragState = null;
+  }
+
+  function startDrag(e, win, bar) {
+    if (e.button !== 0 || e.target.closest('.neko-social-embed-close')) return;
+    var rect = win.getBoundingClientRect();
+    dragState = {
+      win: win,
+      bar: bar,
+      startX: e.clientX,
+      startY: e.clientY,
+      startLeft: rect.left,
+      startTop: rect.top,
+      width: rect.width,
+      height: rect.height,
+      margin: 12
+    };
+    win.style.left = rect.left + 'px';
+    win.style.top = rect.top + 'px';
+    bar.classList.add('is-dragging');
+    document.addEventListener('pointermove', onDragMove, true);
+    document.addEventListener('pointerup', onDragEnd, true);
+    e.preventDefault();
+  }
+
+  function onResize() {
+    var el = document.getElementById(BACKDROP_ID);
+    var win = el && el.querySelector('.neko-social-embed-window');
+    if (win) keepWindowInViewport(win);
   }
 
   function onKey(e) {
@@ -41,16 +102,13 @@
     var backdrop = document.createElement('div');
     backdrop.id = BACKDROP_ID;
     backdrop.className = 'neko-social-embed-backdrop';
-    // 点遮罩空白处（不是窗本身）关闭
-    backdrop.addEventListener('mousedown', function (e) {
-      if (e.target === backdrop) close();
-    });
 
     var win = document.createElement('div');
     win.className = 'neko-social-embed-window';
 
     var bar = document.createElement('div');
     bar.className = 'neko-social-embed-titlebar';
+    bar.addEventListener('pointerdown', function (e) { startDrag(e, win, bar); });
 
     var title = document.createElement('div');
     title.className = 'neko-social-embed-title';
@@ -82,6 +140,8 @@
     win.appendChild(frame);
     backdrop.appendChild(win);
     document.body.appendChild(backdrop);
+    keepWindowInViewport(win);
+    window.addEventListener('resize', onResize, true);
     document.addEventListener('keydown', onKey, true);
     return true;
   }

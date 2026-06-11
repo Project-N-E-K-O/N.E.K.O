@@ -1,18 +1,13 @@
 /* ===== 猫娘社区「页内嵌入拟态窗」样式 =====
-   桌宠 pointer-events:none 穿透坑：backdrop / 窗 / iframe / 关闭按钮全部显式 pointer-events:auto
-   + 高 z-index（2000000），否则模态点不动（见 static/social-embed.js）。 */
+   宿主桌面保持可交互：backdrop 只承载窗口、不拦截整屏点击；
+   窗口 / iframe / 关闭按钮显式 pointer-events:auto（见 static/social-embed.js）。 */
 
 .neko-social-embed-backdrop {
   position: fixed;
   inset: 0;
   z-index: 2000000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(8, 10, 20, 0.55);
-  -webkit-backdrop-filter: blur(4px);
-  backdrop-filter: blur(4px);
-  pointer-events: auto;
+  background: transparent;
+  pointer-events: none;
   animation: neko-social-embed-fade 0.18s ease;
 }
 
@@ -22,6 +17,9 @@
 }
 
 .neko-social-embed-window {
+  position: absolute;
+  top: max(28px, calc((100vh - min(800px, 88vh)) / 2));
+  left: max(28px, calc((100vw - min(1100px, 92vw)) / 2));
   width: min(1100px, 92vw);
   height: min(800px, 88vh);
   display: flex;
@@ -32,6 +30,7 @@
   box-shadow: 0 24px 70px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.08);
   pointer-events: auto;
   animation: neko-social-embed-pop 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+  will-change: left, top;
 }
 
 @keyframes neko-social-embed-pop {
@@ -50,6 +49,12 @@
   border-bottom: 1px solid rgba(255, 255, 255, 0.07);
   -webkit-user-select: none;
   user-select: none;
+  cursor: grab;
+  touch-action: none;
+}
+
+.neko-social-embed-titlebar.is-dragging {
+  cursor: grabbing;
 }
 
 .neko-social-embed-title {
@@ -84,6 +89,7 @@
   place-items: center;
   transition: background 0.15s, color 0.15s;
   pointer-events: auto;
+  cursor: pointer;
 }
 
 .neko-social-embed-close:hover {
