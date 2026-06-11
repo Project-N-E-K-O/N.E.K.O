@@ -259,6 +259,7 @@ def test_react_chat_applies_desktop_cat1_pair_move_bounds_when_collapsed():
 
     assert "function isElectronLinuxRuntime()" in source
     assert "runtime.isLinux" in source
+    assert "runtime.isLinuxX11" in source
     assert "runtime.platform === 'linux'" in source
     assert "electronCat1PairMoveBoundsFrame" in source
     assert "function scheduleElectronCat1PairMoveBounds(bounds)" in source
@@ -290,6 +291,7 @@ def test_cat1_desktop_pair_move_throttles_native_bounds_sync_and_forces_final_fr
 
     assert "function _isNekoDesktopLinuxRuntime()" in source
     assert "runtime.isLinux" in source
+    assert "runtime.isLinuxX11" in source
     assert "runtime.platform === 'linux'" in source
     assert "_NEKO_IDLE_CAT1_DESKTOP_PAIR_MOVE_SYNC_MIN_MS = 50" in source
     assert "let _nekoIdleDesktopChatPairMoveLastDispatchAt = 0;" in source
@@ -317,6 +319,13 @@ def test_cat1_desktop_pair_move_throttles_native_bounds_sync_and_forces_final_fr
         "function _easeNekoIdleCat1PairMove(progress) {",
     )
     assert "chatTarget && chatTarget.mode === 'desktop' && _isNekoDesktopLinuxRuntime()" in plan_block
+
+    schedule_guard_block = _between(
+        source,
+        "function _canScheduleNekoIdleCat1PairMove(button, state) {",
+        "function _finishNekoIdleCat1PairMove(button) {",
+    )
+    assert "chatTarget && chatTarget.mode === 'desktop' && _isNekoDesktopLinuxRuntime()" in schedule_guard_block
 
     pair_move_block = _between(
         source,

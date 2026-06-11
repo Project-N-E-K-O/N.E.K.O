@@ -483,6 +483,7 @@
             isElectronChatWindow()
             && (
                 runtime.isLinux ||
+                runtime.isLinuxX11 ||
                 runtime.platform === 'linux'
             )
         );

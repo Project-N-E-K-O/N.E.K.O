@@ -345,6 +345,7 @@ function _isNekoDesktopLinuxRuntime() {
     const runtime = window.__NEKO_DESKTOP_RUNTIME__ || {};
     return !!(
         runtime.isLinux ||
+        runtime.isLinuxX11 ||
         runtime.platform === 'linux'
     );
 }
@@ -3090,6 +3091,7 @@ function _canScheduleNekoIdleCat1PairMove(button, state) {
 
     const container = _getNekoIdleReturnContainerFromButton(button);
     const chatTarget = _getNekoIdleCat1PairMoveChatTarget();
+    if (chatTarget && chatTarget.mode === 'desktop' && _isNekoDesktopLinuxRuntime()) return false;
     const canMoveSolo = chatTarget ? false : _canNekoIdleCat1MoveSoloWithExpandedChat();
     if (!container || (!chatTarget && !canMoveSolo)) return false;
     if (container.style.display === 'none' || container.getAttribute('data-dragging') === 'true') return false;
