@@ -274,7 +274,7 @@
 
         attachCloseSettingsBeforeContentDrag(subtitleWindowController.refs);
 
-        // 窗口自身按内容自适应大小，不再记录手动拖拽尺寸
+        window.addEventListener('resize', rememberUserViewportSizeFromResize);
 
         window.addEventListener('neko-subtitle-state-sync', function(e) {
             applyStateSync(e.detail || {});
