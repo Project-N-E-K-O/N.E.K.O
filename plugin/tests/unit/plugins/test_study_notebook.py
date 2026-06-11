@@ -234,6 +234,26 @@ def test_notebook_like_search_escapes_wildcards(tmp_path) -> None:
         store.close()
 
 
+def test_notebook_search_merges_fts_and_like_substring_matches(tmp_path) -> None:
+    store, notebooks, _logger = _make_store(tmp_path)
+    try:
+        title_match = notebooks.create_note(
+            title="变化",
+            content="函数变化。",
+        )
+        substring_match = notebooks.create_note(
+            title="Derivative",
+            content="导数描述瞬时变化率。",
+        )
+
+        results = notebooks.list_notes(search_query="变化", limit=10)
+
+        assert {item.id for item in results} == {title_match.id, substring_match.id}
+        assert results[0].id == title_match.id
+    finally:
+        store.close()
+
+
 @pytest.mark.asyncio
 async def test_notebook_entries_serialize_dataclasses(tmp_path) -> None:
     store, notebooks, _logger = _make_store(tmp_path)

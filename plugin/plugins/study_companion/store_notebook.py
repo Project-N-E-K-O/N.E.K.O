@@ -526,8 +526,9 @@ class NotebookStore:
         )
         if query:
             fts_failed = False
+            fts_notes: list[NoteItem] = []
             try:
-                notes = self._list_notes_fts(
+                fts_notes = self._list_notes_fts(
                     notebook_filter=normalized_filter,
                     notebook_id=notebook_id,
                     topic_id=topic_id,
@@ -535,12 +536,10 @@ class NotebookStore:
                     search_query=query,
                     limit=safe_limit,
                 )
-                if notes:
-                    return notes
             except NotebookFtsSearchError:
                 fts_failed = True
             try:
-                return self._list_notes_like(
+                like_notes = self._list_notes_like(
                     notebook_filter=normalized_filter,
                     notebook_id=notebook_id,
                     topic_id=topic_id,
@@ -551,7 +550,19 @@ class NotebookStore:
             except Exception as exc:
                 if fts_failed:
                     raise NotebookSearchError("notebook search failed") from exc
+                if fts_notes:
+                    return fts_notes
                 raise
+            merged: list[NoteItem] = []
+            seen: set[str] = set()
+            for note in [*fts_notes, *like_notes]:
+                if note.id in seen:
+                    continue
+                merged.append(note)
+                seen.add(note.id)
+                if len(merged) >= safe_limit:
+                    break
+            return merged
         where, params = self._filter_clauses(
             notebook_filter=normalized_filter,
             notebook_id=notebook_id,
