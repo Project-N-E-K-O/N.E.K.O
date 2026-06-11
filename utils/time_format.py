@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """轻量级时间格式化工具，供 memory_server / main_logic 等模块共用。"""
 
-from config.prompts_sys import _loc
-from config.prompts_memory import (
+from config.prompts.prompts_sys import _loc
+from config.prompts.prompts_memory import (
     ELAPSED_TIME_DH, ELAPSED_TIME_D,
     ELAPSED_TIME_HM, ELAPSED_TIME_H, ELAPSED_TIME_M,
 )

@@ -61,7 +61,7 @@ def test_load_plugins_from_roots_rolls_back_scanned_metadata_when_register_plugi
             auto_start=True,
         )
 
-        original_import_module = module.importlib.import_module
+        original_import_module = module._import_plugin_entry_module
         original_collect = module._collect_plugin_contexts_from_roots
         original_sort = module._topological_sort_plugins
         original_prepare = module._prepare_plugin_import_roots
@@ -73,7 +73,7 @@ def test_load_plugins_from_roots_rolls_back_scanned_metadata_when_register_plugi
         shutdown_calls: list[str] = []
 
         try:
-            module.importlib.import_module = lambda _: SimpleNamespace(DuplicateCleanupPlugin=_DuplicateCleanupPlugin)
+            module._import_plugin_entry_module = lambda *args, **kwargs: SimpleNamespace(DuplicateCleanupPlugin=_DuplicateCleanupPlugin)
             module._collect_plugin_contexts_from_roots = lambda roots, logger: ([ctx], {ctx.pid: ctx})
             module._topological_sort_plugins = lambda contexts, pid_to_context, logger: [ctx.pid]
             module._prepare_plugin_import_roots = lambda roots, logger: None
@@ -95,7 +95,7 @@ def test_load_plugins_from_roots_rolls_back_scanned_metadata_when_register_plugi
                 process_host_factory=lambda *args, **kwargs: _DuplicateCleanupHost(),
             )
         finally:
-            module.importlib.import_module = original_import_module
+            module._import_plugin_entry_module = original_import_module
             module._collect_plugin_contexts_from_roots = original_collect
             module._topological_sort_plugins = original_sort
             module._prepare_plugin_import_roots = original_prepare

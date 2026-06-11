@@ -1,7 +1,22 @@
 <template>
   <div class="dashboard">
+    <div class="dashboard-hero" data-yui-guide-id="plugin-dashboard-hero">
+      <div>
+        <h1 class="dashboard-hero__title">{{ $t('dashboard.title') }}</h1>
+        <p class="dashboard-hero__subtitle">{{ $t('dashboard.tutorialHint') }}</p>
+      </div>
+      <el-button
+        type="primary"
+        class="dashboard-hero__guide"
+        data-yui-guide-id="plugin-dashboard-guide-button"
+        @click="handleStartTutorial"
+      >
+        {{ $t('dashboard.startTutorial') }}
+      </el-button>
+    </div>
+
     <!-- ── Stats row ── -->
-    <div class="stats-row">
+    <div class="stats-row" data-yui-guide-id="plugin-dashboard-stats">
       <div
         v-for="(stat, i) in statCards"
         :key="stat.key"
@@ -29,6 +44,7 @@
         :initial="{ opacity: 0, y: 24, filter: 'blur(6px)' }"
         :enter="{ opacity: 1, y: 0, filter: 'blur(0px)', transition: { delay: 280, duration: 460, type: 'spring', stiffness: 220, damping: 22 } }"
         class="panel panel--metrics"
+        data-yui-guide-id="plugin-dashboard-metrics"
       >
         <div class="panel__header">
           <span class="panel__title">{{ $t('dashboard.globalMetrics') }}</span>
@@ -92,6 +108,7 @@
         :initial="{ opacity: 0, y: 24, filter: 'blur(6px)' }"
         :enter="{ opacity: 1, y: 0, filter: 'blur(0px)', transition: { delay: 380, duration: 460, type: 'spring', stiffness: 220, damping: 22 } }"
         class="panel panel--server"
+        data-yui-guide-id="plugin-dashboard-server"
       >
         <div class="panel__header">
           <span class="panel__title">{{ $t('dashboard.serverInfo') }}</span>
@@ -131,6 +148,7 @@ import { useI18n } from 'vue-i18n'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
 import { getServerInfo } from '@/api/plugins'
+import { startPluginDashboardTutorial, type PluginDashboardLocalTutorialStep } from '@/yui-guide-runtime'
 import { PluginStatus, METRICS_REFRESH_INTERVAL } from '@/utils/constants'
 import type { ServerInfo, GlobalMetrics } from '@/types/api'
 import { Box, VideoPlay, CloseBold, WarningFilled, Connection, Lightning, Refresh } from '@element-plus/icons-vue'
@@ -225,6 +243,164 @@ async function handleRefreshMetrics() {
   await fetchGlobalMetrics()
 }
 
+function handleStartTutorial() {
+  const steps: PluginDashboardLocalTutorialStep[] = [
+    {
+      targetId: 'plugin-dashboard-guide-button',
+      title: t('yuiTutorial.steps.start.title'),
+      body: t('yuiTutorial.steps.start.body'),
+      motion: 'click',
+      durationMs: 1800,
+    },
+    {
+      targetId: 'plugin-dashboard-stats',
+      title: t('yuiTutorial.steps.stats.title'),
+      body: t('yuiTutorial.steps.stats.body'),
+      motion: 'ellipse',
+      durationMs: 2400,
+    },
+    {
+      targetId: 'plugin-dashboard-metrics',
+      title: t('yuiTutorial.steps.metrics.title'),
+      body: t('yuiTutorial.steps.metrics.body'),
+      motion: 'ellipse',
+      durationMs: 2400,
+    },
+    {
+      targetId: 'plugin-dashboard-server',
+      title: t('yuiTutorial.steps.server.title'),
+      body: t('yuiTutorial.steps.server.body'),
+      motion: 'point',
+      durationMs: 2200,
+    },
+    {
+      targetId: 'sidebar-plugins',
+      title: t('yuiTutorial.steps.plugins.title'),
+      body: t('yuiTutorial.steps.plugins.body'),
+      route: '/plugins',
+      motion: 'click',
+      durationMs: 2200,
+    },
+    {
+      targetId: 'plugin-list-workbench',
+      title: t('yuiTutorial.steps.pluginWorkbench.title'),
+      body: t('yuiTutorial.steps.pluginWorkbench.body'),
+      route: '/plugins',
+      motion: 'ellipse',
+      durationMs: 2400,
+    },
+    {
+      targetId: 'plugin-list-filter-input',
+      title: t('yuiTutorial.steps.pluginFilters.title'),
+      body: t('yuiTutorial.steps.pluginFilters.body'),
+      route: '/plugins',
+      durationMs: 2200,
+    },
+    {
+      targetId: 'plugin-list-layout-mode',
+      title: t('yuiTutorial.steps.pluginLayout.title'),
+      body: t('yuiTutorial.steps.pluginLayout.body'),
+      route: '/plugins',
+      durationMs: 2200,
+    },
+    {
+      targetId: 'plugin-list-context-menu',
+      title: t('yuiTutorial.steps.pluginContextMenu.title'),
+      body: t('yuiTutorial.steps.pluginContextMenu.body'),
+      route: '/plugins',
+      action: 'show-plugin-context-menu',
+      waitMs: 360,
+      allowMissing: true,
+      durationMs: 2600,
+    },
+    {
+      targetId: 'package-manager-root',
+      title: t('yuiTutorial.steps.packageManager.title'),
+      body: t('yuiTutorial.steps.packageManager.body'),
+      route: '/plugins',
+      action: 'open-package-panel',
+      waitMs: 420,
+      durationMs: 2600,
+    },
+    {
+      targetId: 'package-manager-operations',
+      title: t('yuiTutorial.steps.packageOperations.title'),
+      body: t('yuiTutorial.steps.packageOperations.body'),
+      route: '/plugins?tab=packages',
+      durationMs: 2400,
+    },
+    {
+      targetId: 'plugin-detail-header',
+      title: t('yuiTutorial.steps.pluginDetail.title'),
+      body: t('yuiTutorial.steps.pluginDetail.body'),
+      route: '/plugins',
+      action: 'open-first-plugin-detail',
+      waitMs: 700,
+      allowMissing: true,
+      durationMs: 2400,
+    },
+    {
+      targetId: 'plugin-detail-actions',
+      title: t('yuiTutorial.steps.pluginDetailActions.title'),
+      body: t('yuiTutorial.steps.pluginDetailActions.body'),
+      allowMissing: true,
+      durationMs: 2200,
+    },
+    {
+      targetId: 'sidebar-runs',
+      title: t('yuiTutorial.steps.runs.title'),
+      body: t('yuiTutorial.steps.runs.body'),
+      route: '/runs',
+      motion: 'click',
+      durationMs: 2200,
+    },
+    {
+      targetId: 'runs-list-panel',
+      title: t('yuiTutorial.steps.runsList.title'),
+      body: t('yuiTutorial.steps.runsList.body'),
+      route: '/runs',
+      durationMs: 2400,
+    },
+    {
+      targetId: 'runs-detail-panel',
+      title: t('yuiTutorial.steps.runsDetail.title'),
+      body: t('yuiTutorial.steps.runsDetail.body'),
+      route: '/runs',
+      durationMs: 2400,
+    },
+    {
+      targetId: 'sidebar-server-logs',
+      title: t('yuiTutorial.steps.logs.title'),
+      body: t('yuiTutorial.steps.logs.body'),
+      route: '/logs/_server',
+      motion: 'click',
+      durationMs: 2200,
+    },
+    {
+      targetId: 'log-viewer-toolbar',
+      title: t('yuiTutorial.steps.logToolbar.title'),
+      body: t('yuiTutorial.steps.logToolbar.body'),
+      route: '/logs/_server',
+      durationMs: 2400,
+    },
+    {
+      targetId: 'log-list',
+      title: t('yuiTutorial.steps.logList.title'),
+      body: t('yuiTutorial.steps.logList.body'),
+      route: '/logs/_server',
+      durationMs: 2400,
+    },
+  ]
+
+  startPluginDashboardTutorial({
+    steps,
+    labels: {
+      skip: t('yuiTutorial.dismiss'),
+      keyboardHint: t('yuiTutorial.keyboardSkipHint'),
+    },
+  })
+}
+
 function startAutoRefresh() {
   stopAutoRefresh()
   metricsTimer = window.setInterval(() => {
@@ -259,6 +435,40 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 20px;
+}
+
+.dashboard-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px;
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at top left, color-mix(in srgb, var(--el-color-primary) 16%, transparent), transparent 36%),
+    color-mix(in srgb, var(--el-bg-color) 84%, transparent);
+  border: 1px solid color-mix(in srgb, var(--el-border-color) 40%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 24%, transparent),
+    0 4px 16px color-mix(in srgb, var(--el-text-color-primary) 4%, transparent);
+}
+
+.dashboard-hero__title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 760;
+  color: var(--el-text-color-primary);
+}
+
+.dashboard-hero__subtitle {
+  margin: 6px 0 0;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.dashboard-hero__guide {
+  flex-shrink: 0;
 }
 
 /* ── Stat cards row ── */
@@ -606,6 +816,11 @@ onUnmounted(() => {
 }
 
 @media (max-width: 768px) {
+  .dashboard-hero {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
   .stats-row {
     grid-template-columns: repeat(2, 1fr);
   }

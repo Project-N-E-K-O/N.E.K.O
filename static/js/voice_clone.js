@@ -5,16 +5,128 @@ let workshopReferenceFile = null;
 let workshopReferenceAudioUrl = '';
 let providerTouchedByUser = false;
 let suppressProviderTouchedTracking = false;
+// 防止并发应用音色的可重入守卫
+let isApplyingVoice = false;
+const VOICE_CLONE_PROVIDER_REGISTRY_KEYS = Object.freeze({
+    cosyvoice: 'qwen',
+    cosyvoice_intl: 'qwen_intl',
+    minimax: 'minimax',
+    minimax_intl: 'minimax_intl',
+    elevenlabs: 'elevenlabs',
+});
+const VOICE_CLONE_RESTRICTED_REGISTRY_KEYS = new Set([
+    'qwen_intl',
+    'minimax_intl',
+    'elevenlabs',
+]);
+const VOICE_CLONE_PROVIDER_KEY_FIELDS = Object.freeze([
+    ['cosyvoice', 'assistApiKeyQwen'],
+    ['cosyvoice_intl', 'assistApiKeyQwenIntl'],
+    ['minimax', 'assistApiKeyMinimax'],
+    ['minimax_intl', 'assistApiKeyMinimaxIntl'],
+    ['elevenlabs', 'assistApiKeyElevenlabs'],
+]);
+const voiceCloneProviderRestrictionState = {
+    loaded: false,
+    loadingPromise: null,
+    isMainlandChinaUser: false,
+    apiKeyRegistry: {},
+};
+const voiceCloneApiConfigState = {
+    loaded: false,
+    loadingPromise: null,
+    cfg: null,
+    isLocalTts: false,
+};
+const VOICE_CLONE_LOADER_FETCH_TIMEOUT_MS = 5000;
+const VOICE_CLONE_LOADER_FETCH_ATTEMPTS = 3;
+const VOICE_CLONE_LOADER_FETCH_BACKOFF_MS = 250;
+
+function sleepVoiceCloneLoaderRetry(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function fetchVoiceCloneLoaderResponse(url, options = {}) {
+    let lastError = null;
+    for (let attempt = 1; attempt <= VOICE_CLONE_LOADER_FETCH_ATTEMPTS; attempt += 1) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), VOICE_CLONE_LOADER_FETCH_TIMEOUT_MS);
+        try {
+            const response = await fetch(url, {
+                ...options,
+                signal: controller.signal,
+            });
+            if (response.ok || response.status < 500 || attempt >= VOICE_CLONE_LOADER_FETCH_ATTEMPTS) {
+                return response;
+            }
+            lastError = new Error(`API returned ${response.status}`);
+        } catch (error) {
+            lastError = error;
+            if (attempt >= VOICE_CLONE_LOADER_FETCH_ATTEMPTS) break;
+        } finally {
+            clearTimeout(timeoutId);
+        }
+        await sleepVoiceCloneLoaderRetry(VOICE_CLONE_LOADER_FETCH_BACKOFF_MS * attempt);
+    }
+    throw lastError || new Error('请求失败');
+}
+
+async function fetchVoiceCloneLoaderJson(url, options = {}) {
+    const response = await fetchVoiceCloneLoaderResponse(url, options);
+    let data = null;
+    try {
+        data = await response.json();
+    } catch (error) {
+        if (response.ok) {
+            throw error;
+        }
+    }
+    if (!response.ok) {
+        throw new Error(`API returned ${response.status}`);
+    }
+    return data;
+}
+
+function notifyApiSettingsKeyBookFocus(win) {
+    if (!win) return;
+    [250, 800, 1500].forEach(delay => {
+        setTimeout(() => {
+            try {
+                win.postMessage({ type: 'focus_api_key_book' }, window.location.origin);
+            } catch (_) { }
+        }, delay);
+    });
+}
 
 // 打开API设置页（带弹窗拦截回退）
-function openApiSettings() {
-    const win = window.open('/api_key', 'apiSettings', 'width=820,height=700,scrollbars=yes,resizable=yes');
+function openApiSettings(options = {}) {
+    const focusKeyBook = !!(options && options.focusKeyBook);
+    const url = focusKeyBook ? '/api_key?focus=key_book' : '/api_key';
+    const windowName = 'neko_api_key';
+    const features = typeof window.buildApiKeySettingsWindowFeatures === 'function'
+        ? window.buildApiKeySettingsWindowFeatures()
+        : undefined;
+    const win = typeof window.openOrFocusWindow === 'function'
+        ? window.openOrFocusWindow(url, windowName, features)
+        : window.open(url, windowName, features);
     if (win) {
         const modal = document.getElementById('noApiModal');
         if (modal) modal.style.display = 'none';
+        if (typeof win.focus === 'function') {
+            try {
+                win.focus();
+            } catch (_) {}
+        }
+        if (focusKeyBook) {
+            notifyApiSettingsKeyBookFocus(win);
+        }
     } else {
-        location.href = '/api_key';
+        location.href = url;
     }
+}
+
+function openApiSettingsKeyBook() {
+    openApiSettings({ focusKeyBook: true });
 }
 
 // 安全地解析 fetch 响应：当后端/反向代理返回 HTML（404/502/504/网关错误等）时
@@ -70,6 +182,232 @@ function resolveBackendErrorMsg(data, status) {
     return (data && (data.detail || data.message || data.error)) || `API returned ${status}`;
 }
 
+function normalizeVoicePreviewLanguage(rawLanguage) {
+    const current = String(rawLanguage || '').trim().toLowerCase();
+    if (!current || current === 'auto') return 'zh-CN';
+    if (current === 'tchinese' || current.startsWith('zh-tw') || current.startsWith('zh-hk') || current.includes('hant')) return 'zh-TW';
+    if (current === 'schinese' || current.startsWith('zh')) return 'zh-CN';
+    if (current === 'english' || current.startsWith('en')) return 'en';
+    if (current === 'japanese' || current.startsWith('ja')) return 'ja';
+    if (current === 'koreana' || current === 'korean' || current.startsWith('ko')) return 'ko';
+    if (current === 'russian' || current.startsWith('ru')) return 'ru';
+    if (current === 'spanish' || current === 'latam' || current.startsWith('es')) return 'es';
+    if (current === 'portuguese' || current === 'brazilian' || current.startsWith('pt')) return 'pt';
+    return 'en';
+}
+
+function getNativeVoiceProviderLabel(nativeEntries) {
+    if (!Array.isArray(nativeEntries)) return '';
+    for (const [, voiceData] of nativeEntries) {
+        const label = voiceData && (voiceData.provider_label || voiceData.provider);
+        if (label) return String(label);
+    }
+    return '';
+}
+
+function formatNativeVoiceLabel(nativeEntries) {
+    const providerLabel = getNativeVoiceProviderLabel(nativeEntries);
+    if (providerLabel) {
+        return window.t
+            ? window.t('voice.nativePresetLabel', { provider: providerLabel })
+            : providerLabel + ' 原生音色';
+    }
+    return window.t ? window.t('voice.nativePresetLabelGeneric') : '原生预设音色';
+}
+
+function getVoicePreviewLanguage() {
+    const candidates = [
+        window.i18n && window.i18n.language,
+        window.localStorage && window.localStorage.getItem('i18nextLng'),
+        document.documentElement && document.documentElement.lang,
+        navigator.language,
+        window.localStorage && window.localStorage.getItem('locale')
+    ];
+
+    for (let index = 0; index < candidates.length; index += 1) {
+        const candidate = String(candidates[index] || '').trim();
+        if (candidate && candidate.toLowerCase() !== 'auto') {
+            return normalizeVoicePreviewLanguage(candidate);
+        }
+    }
+    return 'zh-CN';
+}
+
+function appendVoiceApplyStatus(resultDiv, message, className = '') {
+    if (!resultDiv) return;
+    if (resultDiv.textContent || resultDiv.childNodes.length) {
+        resultDiv.appendChild(document.createElement('br'));
+    }
+    const statusSpan = document.createElement('span');
+    if (className) statusSpan.className = className;
+    statusSpan.textContent = message;
+    resultDiv.appendChild(statusSpan);
+}
+
+function notifyVoiceIdUpdated(voiceId, lanlanName, sessionRestarted) {
+    const payload = { type: 'voice_id_updated', voice_id: voiceId, lanlan_name: lanlanName, session_restarted: sessionRestarted };
+    if (window.parent !== window) {
+        try { window.parent.postMessage(payload, window.location.origin); } catch (e) { }
+    }
+    if (window.opener && !window.opener.closed) {
+        try { window.opener.postMessage(payload, window.location.origin); } catch (e) { }
+    }
+}
+
+function createVoiceConfigSwitchOpId(lanlanName) {
+    return 'voice-config-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8) + '-' + (lanlanName || 'current');
+}
+
+function notifyVoiceConfigSwitching(lanlanName, active, opId) {
+    const payload = {
+        action: 'voice_config_switching',
+        type: 'voice_config_switching',
+        active: !!active,
+        op_id: opId || '',
+        lanlan_name: lanlanName || '',
+        timestamp: Date.now()
+    };
+
+    if (typeof BroadcastChannel !== 'undefined') {
+        try {
+            const channel = new BroadcastChannel('neko_page_channel');
+            channel.postMessage(payload);
+            setTimeout(() => channel.close(), 1000);
+        } catch (_) { /* 跨窗口同步失败时继续走 postMessage 兜底 */ }
+    }
+
+    if (window.nekoElectronVoiceConfigSwitching && typeof window.nekoElectronVoiceConfigSwitching.send === 'function') {
+        try { window.nekoElectronVoiceConfigSwitching.send(payload); } catch (_) { }
+    }
+
+    if (window.parent !== window) {
+        try { window.parent.postMessage(payload, window.location.origin); } catch (_) { }
+    }
+    if (window.opener && !window.opener.closed) {
+        try { window.opener.postMessage(payload, window.location.origin); } catch (_) { }
+    }
+}
+
+async function saveVoiceIdToCurrentCharacter(voiceId) {
+    const lanlanInput = document.getElementById('lanlan_name');
+    const lanlanName = (lanlanInput && lanlanInput.value ? lanlanInput.value : '').trim();
+    if (!lanlanName) {
+        throw new Error(window.t ? window.t('voice.noCurrentCharacterForApply') : '未找到当前角色，无法应用音色');
+    }
+
+    const switchOpId = createVoiceConfigSwitchOpId(lanlanName);
+    notifyVoiceConfigSwitching(lanlanName, true, switchOpId);
+    let resp;
+    try {
+        resp = await fetch(`/api/characters/catgirl/voice_id/${encodeURIComponent(lanlanName)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ voice_id: voiceId })
+        });
+    } finally {
+        notifyVoiceConfigSwitching(lanlanName, false, switchOpId);
+    }
+    const { data, nonJson, text } = await safeReadResponse(resp);
+    if (!resp.ok) {
+        if (data && (data.error || data.detail)) {
+            throw new Error(data.error || data.detail);
+        }
+        throw new Error(buildNonJsonError(resp, text));
+    }
+    if (nonJson) {
+        throw new Error(buildNonJsonError(resp, text));
+    }
+    if (!data || data.success === false) {
+        throw new Error((data && data.error) || (window.t ? window.t('common.unknownError') : '未知错误'));
+    }
+    notifyVoiceIdUpdated(voiceId, lanlanName, data.session_restarted);
+    return { lanlanName, result: data };
+}
+
+async function getCurrentCharacterVoiceId() {
+    const lanlanInput = document.getElementById('lanlan_name');
+    const lanlanName = (lanlanInput && lanlanInput.value ? lanlanInput.value : '').trim();
+    if (!lanlanName) return '';
+
+    const resp = await fetchVoiceCloneLoaderResponse('/api/characters?language=zh-CN', { cache: 'no-store' });
+    const { data, nonJson, text } = await safeReadResponse(resp);
+    if (!resp.ok) {
+        if (data && (data.error || data.detail)) {
+            throw new Error(data.error || data.detail);
+        }
+        throw new Error(buildNonJsonError(resp, text));
+    }
+    if (nonJson) {
+        throw new Error(buildNonJsonError(resp, text));
+    }
+
+    const catgirls = data && data['猫娘'];
+    const currentCatgirl = catgirls && catgirls[lanlanName];
+    if (!currentCatgirl || typeof currentCatgirl !== 'object') return '';
+    return String(currentCatgirl.voice_id || '').trim();
+}
+
+function markSelectedVoiceItem(item, selected) {
+    if (!item) return;
+    item.classList.toggle('selected', !!selected);
+    item.setAttribute('aria-pressed', selected ? 'true' : 'false');
+}
+
+async function applyVoiceToCurrentCharacter(voiceId, displayName, item) {
+    if (!voiceId) return;
+    if (isApplyingVoice) return;
+    isApplyingVoice = true;
+
+    const resultDiv = document.getElementById('result');
+    const refreshBtn = document.getElementById('refresh-voices-btn');
+    const voiceItems = document.querySelectorAll('.voice-list-item');
+    const previousSelectedVoiceIds = new Set(
+        Array.from(voiceItems)
+            .filter(node => node.classList.contains('selected'))
+            .map(node => node.dataset.voiceId || '')
+            .filter(Boolean)
+    );
+
+    voiceItems.forEach(node => {
+        node.classList.remove('applying', 'selected');
+        node.setAttribute('aria-pressed', 'false');
+    });
+    if (item) item.classList.add('applying');
+    if (refreshBtn) refreshBtn.disabled = true;
+
+    if (resultDiv) {
+        resultDiv.className = 'result';
+        resultDiv.textContent = window.t ? window.t('voice.applyingVoice', { name: displayName || voiceId }) : `正在应用音色「${displayName || voiceId}」...`;
+    }
+
+    try {
+        const { result } = await saveVoiceIdToCurrentCharacter(voiceId);
+        if (item) {
+            item.classList.remove('applying');
+            markSelectedVoiceItem(item, true);
+        }
+        if (resultDiv) {
+            resultDiv.className = 'result';
+            resultDiv.textContent = window.t ? window.t('voice.applyVoiceSuccess', { name: displayName || voiceId }) : `已将音色「${displayName || voiceId}」应用到当前角色`;
+            const statusText = result.session_restarted
+                ? (window.t ? window.t('voice.pageWillRefresh') : '当前页面即将自动刷新以应用新语音')
+                : (window.t ? window.t('voice.voiceWillTakeEffect') : '新语音将在下次对话时生效');
+            appendVoiceApplyStatus(resultDiv, statusText);
+        }
+    } catch (e) {
+        if (item) item.classList.remove('applying');
+        voiceItems.forEach(node => markSelectedVoiceItem(node, previousSelectedVoiceIds.has(node.dataset.voiceId || '')));
+        const errorMsg = e?.message || e?.toString() || (window.t ? window.t('common.unknownError') : '未知错误');
+        if (resultDiv) {
+            resultDiv.className = 'result error';
+            resultDiv.textContent = window.t ? window.t('voice.applyVoiceFailed', { error: errorMsg }) : `应用音色失败：${errorMsg}`;
+        }
+    } finally {
+        isApplyingVoice = false;
+        if (refreshBtn) refreshBtn.disabled = false;
+    }
+}
+
 function parseVoiceRegisterError(errorObj) {
     const errorCode = errorObj?.code;
     const errorMsg = errorObj?.message || errorObj?.error || errorObj || '';
@@ -98,6 +436,460 @@ function parseVoiceRegisterError(errorObj) {
 
 function isMiniMaxProvider(provider) {
     return provider === 'minimax' || provider === 'minimax_intl';
+}
+
+function getVoiceCloneProviderKeyField(provider) {
+    const entry = VOICE_CLONE_PROVIDER_KEY_FIELDS.find(([providerKey]) => providerKey === provider);
+    return entry ? entry[1] : '';
+}
+
+function getVoiceCloneProviderRegistryKey(provider) {
+    return VOICE_CLONE_PROVIDER_REGISTRY_KEYS[provider] || provider;
+}
+
+function isLocalVoiceCloneServerConfigured(cfg) {
+    if (!cfg || typeof cfg !== 'object') return false;
+    const ttsUrl = String(cfg.ttsModelUrl || '');
+    return !!(cfg.enableCustomApi && (ttsUrl.startsWith('ws://') || ttsUrl.startsWith('wss://')));
+}
+
+async function loadVoiceCloneApiConfigState(options = {}) {
+    const force = !!(options && options.force);
+    if (voiceCloneApiConfigState.loaded && !force) {
+        return voiceCloneApiConfigState;
+    }
+    if (voiceCloneApiConfigState.loadingPromise && !force) {
+        return voiceCloneApiConfigState.loadingPromise;
+    }
+
+    voiceCloneApiConfigState.loadingPromise = (async () => {
+        const cfg = await fetchVoiceCloneLoaderJson('/api/config/core_api');
+        if (!cfg || cfg.success === false) {
+            throw new Error((cfg && cfg.error) || 'core_api config unavailable');
+        }
+        voiceCloneApiConfigState.cfg = cfg;
+        voiceCloneApiConfigState.isLocalTts = isLocalVoiceCloneServerConfigured(cfg);
+        voiceCloneApiConfigState.loaded = true;
+        return voiceCloneApiConfigState;
+    })().finally(() => {
+        voiceCloneApiConfigState.loadingPromise = null;
+    });
+
+    return voiceCloneApiConfigState.loadingPromise;
+}
+
+async function ensureVoiceCloneApiConfigState(options = {}) {
+    try {
+        await loadVoiceCloneApiConfigState(options);
+    } catch (error) {
+        console.warn('检查克隆API Key失败:', error);
+        voiceCloneApiConfigState.cfg = null;
+        voiceCloneApiConfigState.isLocalTts = false;
+        voiceCloneApiConfigState.loaded = false;
+    }
+    return voiceCloneApiConfigState;
+}
+
+function hasVoiceCloneProviderApi(provider) {
+    if (voiceCloneApiConfigState.isLocalTts) return true;
+    const cfg = voiceCloneApiConfigState.cfg;
+    const fieldName = getVoiceCloneProviderKeyField(provider);
+    return !!(cfg && fieldName && cfg[fieldName]);
+}
+
+async function checkVoiceCloneMainlandChinaUser() {
+    let data = null;
+    try {
+        data = await fetchVoiceCloneLoaderJson('/api/config/steam_language', {
+            method: 'GET',
+            headers: { 'Content-Type': 'application/json' }
+        });
+    } catch (error) {
+        console.warn('声音克隆地区检测失败，使用受限服务商策略:', error);
+        return true;
+    }
+
+    if (data && data.is_mainland_china === true) {
+        return true;
+    }
+
+    const ipCountry = String((data && data.ip_country) || '').trim().toUpperCase();
+    if (data && data.success === true && ipCountry && ipCountry !== 'CN') {
+        return false;
+    }
+
+    return true;
+}
+
+async function loadVoiceCloneProviderRestrictionState() {
+    if (voiceCloneProviderRestrictionState.loaded) {
+        return voiceCloneProviderRestrictionState;
+    }
+    if (voiceCloneProviderRestrictionState.loadingPromise) {
+        return voiceCloneProviderRestrictionState.loadingPromise;
+    }
+
+    voiceCloneProviderRestrictionState.loadingPromise = (async () => {
+        const [isMainlandChinaUser, providersData] = await Promise.all([
+            checkVoiceCloneMainlandChinaUser(),
+            fetchVoiceCloneLoaderJson('/api/config/api_providers').catch(() => null)
+        ]);
+        let apiKeyRegistry = {};
+        if (providersData && providersData.success) {
+            apiKeyRegistry = providersData.api_key_registry || {};
+        }
+        voiceCloneProviderRestrictionState.isMainlandChinaUser = !!isMainlandChinaUser;
+        voiceCloneProviderRestrictionState.apiKeyRegistry = apiKeyRegistry;
+        voiceCloneProviderRestrictionState.loaded = true;
+        return voiceCloneProviderRestrictionState;
+    })().finally(() => {
+        voiceCloneProviderRestrictionState.loadingPromise = null;
+    });
+
+    return voiceCloneProviderRestrictionState.loadingPromise;
+}
+
+async function ensureVoiceCloneProviderRestrictionsLoaded() {
+    try {
+        await loadVoiceCloneProviderRestrictionState();
+    } catch (error) {
+        console.warn('声音克隆服务商地区配置加载失败，使用默认显示策略:', error);
+    }
+    return voiceCloneProviderRestrictionState;
+}
+
+function isVoiceCloneProviderRestricted(provider) {
+    if (!voiceCloneProviderRestrictionState.isMainlandChinaUser) return false;
+    const registryKey = getVoiceCloneProviderRegistryKey(provider);
+    const entry = voiceCloneProviderRestrictionState.apiKeyRegistry[registryKey];
+    if (entry && Object.prototype.hasOwnProperty.call(entry, 'restricted')) {
+        return entry.restricted === true;
+    }
+    return VOICE_CLONE_RESTRICTED_REGISTRY_KEYS.has(registryKey);
+}
+
+function getFirstAvailableVoiceCloneProviderValue(providerSelect) {
+    if (!providerSelect) return '';
+    const options = Array.from(providerSelect.options || []);
+    const availableOption = options.find(option => !option.disabled && !option.hidden && option.style.display !== 'none');
+    return availableOption ? availableOption.value : '';
+}
+
+function applyVoiceCloneProviderRestrictions(providerSelect) {
+    if (!providerSelect) return false;
+    const previousValue = providerSelect.value;
+    Array.from(providerSelect.options || []).forEach(option => {
+        const restricted = isVoiceCloneProviderRestricted(option.value);
+        option.disabled = restricted;
+        option.hidden = restricted;
+        option.style.display = restricted ? 'none' : '';
+    });
+
+    const selectedOption = providerSelect.options[providerSelect.selectedIndex];
+    if (selectedOption && !selectedOption.disabled && !selectedOption.hidden && selectedOption.style.display !== 'none') {
+        syncVoiceCloneSelectDropdowns(providerSelect, { rebuild: true });
+        return false;
+    }
+
+    const fallbackValue = getFirstAvailableVoiceCloneProviderValue(providerSelect);
+    if (fallbackValue) {
+        providerSelect.value = fallbackValue;
+    }
+    syncVoiceCloneSelectDropdowns(providerSelect, { rebuild: true });
+    return providerSelect.value !== previousValue;
+}
+
+let voiceCloneDropdownHandlersBound = false;
+
+function getVoiceCloneDropdownPlaceholder(select) {
+    const fallbackText = window.t ? window.t('api.providerSelectPlaceholder') : '请选择服务商';
+    if (!select) return fallbackText;
+
+    const label = select.id ? document.querySelector(`label[for="${select.id}"]`) : null;
+    const labelText = label ? label.textContent?.trim() : '';
+    return labelText || fallbackText;
+}
+
+function closeVoiceCloneSelectDropdown(wrapper) {
+    if (!wrapper) return;
+
+    wrapper.classList.remove('open');
+
+    const trigger = wrapper.querySelector('.api-provider-dropdown-trigger');
+    if (trigger) {
+        trigger.setAttribute('aria-expanded', 'false');
+    }
+}
+
+function closeAllVoiceCloneSelectDropdowns(exceptWrapper = null) {
+    document.querySelectorAll('.api-provider-dropdown.open').forEach(wrapper => {
+        if (wrapper !== exceptWrapper) {
+            closeVoiceCloneSelectDropdown(wrapper);
+        }
+    });
+}
+
+function openVoiceCloneSelectDropdown(wrapper) {
+    if (!wrapper || wrapper.classList.contains('disabled')) return;
+
+    closeAllVoiceCloneSelectDropdowns(wrapper);
+    wrapper.classList.add('open');
+
+    const trigger = wrapper.querySelector('.api-provider-dropdown-trigger');
+    if (trigger) {
+        trigger.setAttribute('aria-expanded', 'true');
+    }
+}
+
+function isVoiceCloneDropdownOptionVisible(option) {
+    return !!option && !option.hidden && option.style.display !== 'none';
+}
+
+function buildVoiceCloneSelectDropdownMenu(select) {
+    if (!select) return;
+
+    const wrapper = select.closest('.api-provider-dropdown');
+    const menu = wrapper ? wrapper.querySelector('.api-provider-dropdown-menu') : null;
+    const menuScroll = menu ? menu.querySelector('.api-provider-dropdown-menu-scroll') : null;
+    if (!wrapper || !menu || !menuScroll) return;
+
+    menuScroll.innerHTML = '';
+
+    const options = Array.from(select.options).filter(isVoiceCloneDropdownOptionVisible);
+    if (options.length === 0) {
+        const emptyState = document.createElement('div');
+        emptyState.className = 'api-provider-dropdown-empty';
+        emptyState.textContent = window.t ? window.t('api.noOptionsAvailable') : '暂无可选项';
+        menuScroll.appendChild(emptyState);
+        return;
+    }
+
+    options.forEach(option => {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'api-provider-dropdown-option';
+        item.setAttribute('role', 'option');
+        item.dataset.value = option.value;
+        item.textContent = option.textContent;
+
+        if (option.disabled) {
+            item.disabled = true;
+            item.setAttribute('aria-disabled', 'true');
+        }
+
+        item.addEventListener('click', event => {
+            event.preventDefault();
+
+            if (option.disabled || select.disabled || !isVoiceCloneDropdownOptionVisible(option)) {
+                return;
+            }
+
+            select.value = option.value;
+            syncVoiceCloneSelectDropdowns(select);
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+            closeVoiceCloneSelectDropdown(wrapper);
+        });
+
+        menuScroll.appendChild(item);
+    });
+}
+
+function syncVoiceCloneSelectDropdowns(targetSelect = null, { rebuild = false } = {}) {
+    const selects = targetSelect
+        ? [targetSelect]
+        : Array.from(document.querySelectorAll('.api-provider-select[data-dropdown-enhanced="true"]'));
+
+    selects.forEach(select => {
+        if (!select) return;
+
+        const wrapper = select.closest('.api-provider-dropdown');
+        const trigger = wrapper ? wrapper.querySelector('.api-provider-dropdown-trigger') : null;
+        const current = wrapper ? wrapper.querySelector('.api-provider-dropdown-current') : null;
+        const menu = wrapper ? wrapper.querySelector('.api-provider-dropdown-menu') : null;
+
+        if (!wrapper || !trigger || !current || !menu) return;
+
+        if (rebuild) {
+            buildVoiceCloneSelectDropdownMenu(select);
+        }
+
+        const selectedOption = select.options[select.selectedIndex] || null;
+        const placeholder = getVoiceCloneDropdownPlaceholder(select);
+
+        current.textContent = selectedOption && isVoiceCloneDropdownOptionVisible(selectedOption)
+            ? selectedOption.textContent
+            : placeholder;
+        current.classList.toggle('placeholder', !selectedOption || !isVoiceCloneDropdownOptionVisible(selectedOption));
+
+        trigger.disabled = !!select.disabled;
+        wrapper.classList.toggle('disabled', !!select.disabled);
+
+        menu.querySelectorAll('.api-provider-dropdown-option').forEach(item => {
+            const isSelected = item.dataset.value === select.value;
+            item.classList.toggle('selected', isSelected);
+            item.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+        });
+
+        if (select.disabled) {
+            closeVoiceCloneSelectDropdown(wrapper);
+        }
+    });
+}
+
+function bindVoiceCloneDropdownGlobalHandlers() {
+    if (voiceCloneDropdownHandlersBound) return;
+
+    document.addEventListener('click', event => {
+        if (!event.target.closest('.api-provider-dropdown')) {
+            closeAllVoiceCloneSelectDropdowns();
+        }
+    });
+
+    document.addEventListener('keydown', event => {
+        if (event.key === 'Escape') {
+            closeAllVoiceCloneSelectDropdowns();
+        }
+    });
+
+    window.addEventListener('resize', () => closeAllVoiceCloneSelectDropdowns());
+
+    voiceCloneDropdownHandlersBound = true;
+}
+
+function initVoiceCloneSelectDropdown(select) {
+    if (!select || select.dataset.dropdownEnhanced === 'true' || !select.parentNode) return;
+
+    bindVoiceCloneDropdownGlobalHandlers();
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'api-provider-dropdown';
+
+    select.parentNode.insertBefore(wrapper, select);
+    wrapper.appendChild(select);
+
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'api-provider-dropdown-trigger';
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-expanded', 'false');
+    trigger.setAttribute('aria-label', getVoiceCloneDropdownPlaceholder(select));
+    trigger.innerHTML = '<span class="api-provider-dropdown-current"></span><span class="api-provider-dropdown-arrow" aria-hidden="true"></span>';
+
+    const menu = document.createElement('div');
+    menu.className = 'api-provider-dropdown-menu';
+    menu.setAttribute('role', 'listbox');
+
+    const menuScroll = document.createElement('div');
+    menuScroll.className = 'api-provider-dropdown-menu-scroll';
+
+    if (select.id) {
+        menu.id = `${select.id}-menu`;
+        trigger.id = `${select.id}-dropdown-trigger`;
+        trigger.setAttribute('aria-controls', menu.id);
+    }
+
+    menu.appendChild(menuScroll);
+    wrapper.appendChild(trigger);
+    wrapper.appendChild(menu);
+
+    select.classList.add('is-enhanced');
+    select.dataset.dropdownEnhanced = 'true';
+
+    trigger.addEventListener('click', event => {
+        event.preventDefault();
+
+        if (wrapper.classList.contains('open')) {
+            closeVoiceCloneSelectDropdown(wrapper);
+        } else {
+            openVoiceCloneSelectDropdown(wrapper);
+        }
+    });
+
+    select.addEventListener('change', () => syncVoiceCloneSelectDropdowns(select));
+
+    const observer = new MutationObserver(() => {
+        syncVoiceCloneSelectDropdowns(select, { rebuild: true });
+    });
+
+    observer.observe(select, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+        attributes: true,
+        attributeFilter: ['disabled', 'hidden', 'style', 'label', 'value', 'selected']
+    });
+
+    syncVoiceCloneSelectDropdowns(select, { rebuild: true });
+}
+
+function initVoiceCloneSelectDropdowns() {
+    document.querySelectorAll('.api-provider-select').forEach(initVoiceCloneSelectDropdown);
+    syncVoiceCloneSelectDropdowns(null, { rebuild: true });
+}
+
+async function initVoiceCloneProviderRestrictions() {
+    await ensureVoiceCloneProviderRestrictionsLoaded();
+    const providerSelect = document.getElementById('voiceProvider');
+    const changed = applyVoiceCloneProviderRestrictions(providerSelect);
+    if (changed && providerSelect) {
+        suppressProviderTouchedTracking = true;
+        providerSelect.dispatchEvent(new Event('change'));
+        suppressProviderTouchedTracking = false;
+    }
+    return voiceCloneProviderRestrictionState;
+}
+
+function getPreferredCloneProviderFromConfig(cfg) {
+    if (!cfg || typeof cfg !== 'object') return '';
+    for (const [provider, fieldName] of VOICE_CLONE_PROVIDER_KEY_FIELDS) {
+        if (cfg[fieldName] && !isVoiceCloneProviderRestricted(provider)) {
+            return provider;
+        }
+    }
+    return '';
+}
+
+function hasUsableCloneApiFromConfig(cfg, isLocalTts) {
+    if (isLocalTts) return true;
+    if (!cfg || typeof cfg !== 'object') return false;
+    return VOICE_CLONE_PROVIDER_KEY_FIELDS.some(([provider, fieldName]) => (
+        !!cfg[fieldName] && !isVoiceCloneProviderRestricted(provider)
+    ));
+}
+
+function updateVoiceCloneProviderNoticeText(noticeDiv, provider) {
+    const span = noticeDiv ? noticeDiv.querySelector('span') : null;
+    if (!span) return;
+
+    const keyMap = {
+        'cosyvoice_intl': 'voice.alibabaIntlApiRequired',
+        'minimax': 'voice.minimaxApiRequired',
+        'minimax_intl': 'voice.minimaxIntlApiRequired',
+        'elevenlabs': 'voice.elevenlabsApiRequired',
+    };
+    const fallbackMap = {
+        'cosyvoice_intl': '请先在 API 设置中填写阿里国际版 API Key',
+        'elevenlabs': '请先在 API 设置中填写 ElevenLabs API Key',
+    };
+    const i18nKey = keyMap[provider] || 'voice.alibabaApiRequired';
+    span.setAttribute('data-i18n', i18nKey);
+    if (window.t) {
+        const translated = window.t(i18nKey);
+        span.textContent = (translated && translated !== i18nKey) ? translated : (fallbackMap[provider] || translated);
+    } else if (fallbackMap[provider]) {
+        span.textContent = fallbackMap[provider];
+    }
+    // 若 window.t 不可用，保留 HTML 中的原始文本，不覆盖
+}
+
+async function refreshVoiceCloneProviderNotice(providerSelect, noticeDiv) {
+    if (!providerSelect || !noticeDiv) return;
+    updateVoiceCloneProviderNoticeText(noticeDiv, providerSelect.value);
+    noticeDiv.style.display = 'none';
+    await ensureVoiceCloneApiConfigState();
+    const provider = providerSelect.value || 'cosyvoice';
+    updateVoiceCloneProviderNoticeText(noticeDiv, provider);
+    noticeDiv.style.display = hasVoiceCloneProviderApi(provider) ? 'none' : '';
 }
 
 function sanitizeMiniMaxPrefix(prefix) {
@@ -158,6 +950,7 @@ function applyWorkshopProviderHint(providerHint) {
     const providerSelect = document.getElementById('voiceProvider');
     if (!providerSelect || !providerHint) return;
     if (providerTouchedByUser) return;
+    if (isVoiceCloneProviderRestricted(providerHint)) return;
     if (providerSelect.value !== 'cosyvoice') return;
 
     suppressProviderTouchedTracking = true;
@@ -216,6 +1009,10 @@ function updateFileDisplay() {
 
 // 监听文件选择变化
 document.addEventListener('DOMContentLoaded', () => {
+    initVoiceCloneSelectDropdowns();
+    initVoiceCloneProviderRestrictions().catch(error => {
+        console.warn('初始化声音克隆服务商地区过滤失败:', error);
+    });
     const audioFile = document.getElementById('audioFile');
     if (audioFile) {
         audioFile.addEventListener('change', updateFileDisplay);
@@ -356,11 +1153,7 @@ if (window.i18n && window.i18n.isInitialized) {
 
         // 如果 URL 中没有，从 API 获取
         if (!lanlanName) {
-            const response = await fetch('/api/config/page_config');
-            if (!response.ok) {
-                throw new Error(`API returned ${response.status}`);
-            }
-            const data = await response.json();
+            const data = await fetchVoiceCloneLoaderJson('/api/config/page_config');
             if (data.success) {
                 lanlanName = data.lanlan_name || "";
             }
@@ -370,6 +1163,10 @@ if (window.i18n && window.i18n.isInitialized) {
         if (lanlanInput) {
             lanlanInput.value = lanlanName;
         }
+        // lanlan_name 就绪后再刷新音色列表，确保当前音色选中态正确
+        if (typeof loadVoices === 'function') {
+            try { await loadVoices(); } catch (_) { /* 静默忽略二次加载错误 */ }
+        }
     } catch (error) {
         console.error('获取 lanlan_name 失败:', error);
         if (lanlanInput) {
@@ -377,26 +1174,28 @@ if (window.i18n && window.i18n.isInitialized) {
         }
     }
 
-    // 检查是否已设置可用于克隆的API Key
-    try {
-        const resp = await fetch('/api/config/core_api');
-        if (resp.ok) {
-            const cfg = await resp.json();
-            if (!cfg || cfg.success === false) {
-                console.warn('获取核心配置失败:', cfg?.error);
-            } else {
-                // 本地TTS服务器(ws/wss协议)不需要云端API Key
-                const ttsUrl = cfg.ttsModelUrl || '';
-                const isLocalTts = cfg.enableCustomApi && (ttsUrl.startsWith('ws://') || ttsUrl.startsWith('wss://'));
-                const hasCloneApi = isLocalTts || !!(cfg.assistApiKeyQwen || cfg.assistApiKeyMinimax || cfg.assistApiKeyMinimaxIntl);
-                if (!hasCloneApi) {
-                    const modal = document.getElementById('noApiModal');
-                    if (modal) modal.style.display = 'flex';
-                }
-            }
+    await initVoiceCloneProviderRestrictions();
+
+    const apiConfigState = await ensureVoiceCloneApiConfigState({ force: true });
+    const cfg = apiConfigState.cfg;
+    if (cfg) {
+        const hasCloneApi = hasUsableCloneApiFromConfig(cfg, apiConfigState.isLocalTts);
+        const preferredProvider = getPreferredCloneProviderFromConfig(cfg);
+        const providerSelect = document.getElementById('voiceProvider');
+        if (!providerTouchedByUser && preferredProvider && providerSelect && providerSelect.value === 'cosyvoice') {
+            suppressProviderTouchedTracking = true;
+            providerSelect.value = preferredProvider;
+            providerSelect.dispatchEvent(new Event('change'));
+            suppressProviderTouchedTracking = false;
         }
-    } catch (e) {
-        console.warn('检查克隆API Key失败:', e);
+        if (!hasCloneApi) {
+            const modal = document.getElementById('noApiModal');
+            if (modal) modal.style.display = 'flex';
+        }
+        await refreshVoiceCloneProviderNotice(
+            document.getElementById('voiceProvider'),
+            document.getElementById('provider-notice')
+        );
     }
 
     await initWorkshopVoiceReference();
@@ -409,28 +1208,22 @@ document.addEventListener('DOMContentLoaded', function initProviderSwitch() {
     const prefixInput = document.getElementById('prefix');
     if (!providerSelect || !noticeDiv) return;
 
-    function updateNotice() {
-        const provider = providerSelect.value;
-        const span = noticeDiv.querySelector('span');
-        if (!span) return;
-
-        const keyMap = {
-            'minimax': 'voice.minimaxApiRequired',
-            'minimax_intl': 'voice.minimaxIntlApiRequired',
-        };
-        const i18nKey = keyMap[provider] || 'voice.alibabaApiRequired';
-        span.setAttribute('data-i18n', i18nKey);
-        if (window.t) {
-            span.textContent = window.t(i18nKey);
+    noticeDiv.setAttribute('role', 'button');
+    noticeDiv.setAttribute('tabindex', '0');
+    noticeDiv.style.cursor = 'pointer';
+    noticeDiv.addEventListener('click', openApiSettingsKeyBook);
+    noticeDiv.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            openApiSettingsKeyBook();
         }
-        // 若 window.t 不可用，保留 HTML 中的原始文本，不覆盖
-    }
+    });
 
     providerSelect.addEventListener('change', () => {
         if (!suppressProviderTouchedTracking) {
             providerTouchedByUser = true;
         }
-        updateNotice();
+        refreshVoiceCloneProviderNotice(providerSelect, noticeDiv);
         normalizePrefixInputForProvider();
     });
     if (prefixInput) {
@@ -438,7 +1231,7 @@ document.addEventListener('DOMContentLoaded', function initProviderSwitch() {
             normalizePrefixInputForProvider();
         });
     }
-    updateNotice();
+    refreshVoiceCloneProviderNotice(providerSelect, noticeDiv);
     normalizePrefixInputForProvider();
 });
 
@@ -503,7 +1296,7 @@ async function initWorkshopVoiceReference() {
     setWorkshopVoiceSourceStatus(t('voice.workshopSourceLoading', 'Loading workshop reference voice...'));
 
     try {
-        const manifestResponse = await fetch(`/api/steam/workshop/voice-reference/${encodeURIComponent(workshopItemId)}`);
+        const manifestResponse = await fetchVoiceCloneLoaderResponse(`/api/steam/workshop/voice-reference/${encodeURIComponent(workshopItemId)}`);
         const manifestData = await manifestResponse.json();
         if (!manifestResponse.ok) {
             throw new Error(manifestData.error || `HTTP ${manifestResponse.status}`);
@@ -512,7 +1305,7 @@ async function initWorkshopVoiceReference() {
             throw new Error(t('voice.workshopSourceUnavailable', 'This workshop item has no available reference voice.'));
         }
 
-        const audioResponse = await fetch(`/api/steam/workshop/voice-reference/${encodeURIComponent(workshopItemId)}/audio`);
+        const audioResponse = await fetchVoiceCloneLoaderResponse(`/api/steam/workshop/voice-reference/${encodeURIComponent(workshopItemId)}/audio`);
         if (!audioResponse.ok) {
             const errorData = await audioResponse.json().catch(() => ({}));
             throw new Error(errorData.error || `HTTP ${audioResponse.status}`);
@@ -542,7 +1335,10 @@ async function initWorkshopVoiceReference() {
         const prefixInput = document.getElementById('prefix');
         const refLanguageSelect = document.getElementById('refLanguage');
         if (prefixInput) prefixInput.value = manifest.prefix || '';
-        if (refLanguageSelect) refLanguageSelect.value = manifest.ref_language || 'ch';
+        if (refLanguageSelect) {
+            refLanguageSelect.value = manifest.ref_language || 'ch';
+            refLanguageSelect.dispatchEvent(new Event('change'));
+        }
         applyWorkshopProviderHint(manifest.provider_hint);
         updateFileDisplay();
     } catch (error) {
@@ -577,18 +1373,22 @@ function setFormDisabled(disabled) {
     }
 }
 
-function registerVoice() {
+async function registerVoice() {
     const fileInput = document.getElementById('audioFile');
     const directLinkUrl = document.getElementById('directLinkUrl');
     const refLanguage = document.getElementById('refLanguage').value;
     const resultDiv = document.getElementById('result');
-    const effectiveAudioFile = getEffectiveAudioFile();
-    const provider = (document.getElementById('voiceProvider') || {}).value || 'cosyvoice';
-    const prefix = normalizePrefixInputForProvider();
 
     // 清空现有内容并重置类名
     resultDiv.textContent = '';
     resultDiv.className = 'result';
+
+    const effectiveAudioFile = getEffectiveAudioFile();
+    const providerSelect = document.getElementById('voiceProvider');
+    await ensureVoiceCloneProviderRestrictionsLoaded();
+    applyVoiceCloneProviderRestrictions(providerSelect);
+    const provider = (providerSelect || {}).value || 'cosyvoice';
+    const prefix = normalizePrefixInputForProvider();
 
     // 根据克隆方式验证输入
     if (currentCloneMethod === 'file') {
@@ -725,56 +1525,22 @@ function registerVoice() {
                 // 自动更新voice_id到后端
                 const lanlanName = document.getElementById('lanlan_name').value;
                 if (lanlanName) {
-                    fetch(`/api/characters/catgirl/voice_id/${encodeURIComponent(lanlanName)}`, {
-                        method: 'PUT',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ voice_id: data.voice_id })
-                    }).then(async resp => {
-                        const { data: respData, nonJson, text } = await safeReadResponse(resp);
-                        if (!resp.ok) {
-                            if (respData && (respData.error || respData.detail)) {
-                                throw new Error(respData.error || respData.detail);
-                            }
-                            throw new Error(buildNonJsonError(resp, text));
-                        }
-                        if (nonJson) {
-                            throw new Error(buildNonJsonError(resp, text));
-                        }
-                        return respData;
-                    }).then(res => {
-                        if (!res.success) {
-                            const errorMsg = res.error || (window.t ? window.t('common.unknownError') : '未知错误');
-                            const errorSpan = document.createElement('span');
-                            errorSpan.className = 'error';
-                            errorSpan.textContent = (window.t ? window.t('voice.voiceIdSaveFailed', { error: errorMsg }) : 'voice_id自动保存失败: ' + errorMsg);
-                            resultDiv.appendChild(document.createElement('br'));
-                            resultDiv.appendChild(errorSpan);
+                    saveVoiceIdToCurrentCharacter(data.voice_id).then(({ result: res }) => {
+                        const successMsg = document.createElement('span');
+                        successMsg.textContent = (window.t ? window.t('voice.voiceIdSaved') : 'voice_id已自动保存到角色');
+                        resultDiv.appendChild(document.createElement('br'));
+                        resultDiv.appendChild(successMsg);
+
+                        // 如果session被结束，页面会自动刷新
+                        const statusSpan = document.createElement('span');
+                        statusSpan.style.color = 'blue';
+                        if (res.session_restarted) {
+                            statusSpan.textContent = (window.t ? window.t('voice.pageWillRefresh') : '当前页面即将自动刷新以应用新语音');
                         } else {
-                            const successMsg = document.createElement('span');
-                            successMsg.textContent = (window.t ? window.t('voice.voiceIdSaved') : 'voice_id已自动保存到角色');
-                            resultDiv.appendChild(document.createElement('br'));
-                            resultDiv.appendChild(successMsg);
-
-                            // 如果session被结束，页面会自动刷新
-                            const statusSpan = document.createElement('span');
-                            statusSpan.style.color = 'blue';
-                            if (res.session_restarted) {
-                                statusSpan.textContent = (window.t ? window.t('voice.pageWillRefresh') : '当前页面即将自动刷新以应用新语音');
-                            } else {
-                                statusSpan.textContent = (window.t ? window.t('voice.voiceWillTakeEffect') : '新语音将在下次对话时生效');
-                            }
-                            resultDiv.appendChild(document.createElement('br'));
-                            resultDiv.appendChild(statusSpan);
-
-                            // 通知父页面voice_id已更新
-                            const payload = { type: 'voice_id_updated', voice_id: data.voice_id, lanlan_name: lanlanName, session_restarted: res.session_restarted };
-                            if (window.parent !== window) {
-                                try { window.parent.postMessage(payload, window.location.origin); } catch (e) { }
-                            }
-                            if (window.opener && !window.opener.closed) {
-                                try { window.opener.postMessage(payload, window.location.origin); } catch (e) { }
-                            }
+                            statusSpan.textContent = (window.t ? window.t('voice.voiceWillTakeEffect') : '新语音将在下次对话时生效');
                         }
+                        resultDiv.appendChild(document.createElement('br'));
+                        resultDiv.appendChild(statusSpan);
                     }).catch(e => {
                         // e 可能携带 safeReadResponse/buildNonJsonError 构造的可读错误
                         // （含 HTTP 状态和正文摘要），必须拼进最终提示，否则诊断信息被吞。
@@ -816,6 +1582,12 @@ window.addEventListener('message', function (event) {
     if (event.data.type === 'api_key_changed') {
         // API Key已更改，可以在这里添加其他需要的处理逻辑
         console.log('API Key已更改，音色注册页面已收到通知');
+        ensureVoiceCloneApiConfigState({ force: true }).then(() => {
+            refreshVoiceCloneProviderNotice(
+                document.getElementById('voiceProvider'),
+                document.getElementById('provider-notice')
+            );
+        });
         // 刷新音色列表
         loadVoices();
     }
@@ -831,11 +1603,31 @@ async function playPreview(voiceId, btn) {
 
     try {
         const storageKey = `voice_preview_${voiceId}`;
-        let audioSrc = localStorage.getItem(storageKey);
+        const previewLanguage = getVoicePreviewLanguage();
+        const cachedPreview = localStorage.getItem(storageKey);
+        let audioSrc = '';
+        if (cachedPreview) {
+            try {
+                const cachedData = JSON.parse(cachedPreview);
+                if (
+                    cachedData
+                    && cachedData.version === 2
+                    && cachedData.language === previewLanguage
+                    && typeof cachedData.audioSrc === 'string'
+                    && cachedData.audioSrc
+                ) {
+                    audioSrc = cachedData.audioSrc;
+                }
+            } catch (_) {
+                // 旧版缓存没有语言信息，忽略并重新生成，避免切换语言后继续播放旧试听。
+            }
+        }
 
         if (!audioSrc) {
             // 如果本地没有缓存，则从服务器获取
-            const response = await fetch(`/api/characters/voice_preview?voice_id=${encodeURIComponent(voiceId)}`);
+            const response = await fetchVoiceCloneLoaderResponse(
+                `/api/characters/voice_preview?voice_id=${encodeURIComponent(voiceId)}&language=${encodeURIComponent(previewLanguage)}`
+            );
             const { data, nonJson, text } = await safeReadResponse(response);
             if (!response.ok) {
                 if (data && (data.error || data.detail)) {
@@ -851,7 +1643,11 @@ async function playPreview(voiceId, btn) {
                 audioSrc = `data:${data.mime_type || 'audio/mpeg'};base64,${data.audio}`;
                 // 保存到 localStorage
                 try {
-                    localStorage.setItem(storageKey, audioSrc);
+                    localStorage.setItem(storageKey, JSON.stringify({
+                        version: 2,
+                        language: previewLanguage,
+                        audioSrc
+                    }));
                 } catch (e) {
                     console.warn('Failed to save preview to localStorage:', e);
                     // localStorage 可能满了，但我们仍然可以播放这一次生成的音频
@@ -903,7 +1699,11 @@ async function loadVoices() {
     if (refreshBtn) refreshBtn.disabled = true;
 
     try {
-        const response = await fetch('/api/characters/voices');
+        const currentVoiceId = await getCurrentCharacterVoiceId().catch(error => {
+            console.warn('获取当前角色音色失败:', error);
+            return '';
+        });
+        const response = await fetchVoiceCloneLoaderResponse('/api/characters/voices');
         const { data, nonJson, text } = await safeReadResponse(response);
         if (!response.ok) {
             if (data && (data.error || data.detail)) {
@@ -916,7 +1716,9 @@ async function loadVoices() {
         }
 
         if ((!data.voices || Object.keys(data.voices).length === 0) &&
-            (!data.free_voices || Object.keys(data.free_voices).length === 0)) {
+            (!data.free_voices || Object.keys(data.free_voices).length === 0) &&
+            (!data.pinned_voices || data.pinned_voices.length === 0) &&
+            (!data.native_voices || Object.keys(data.native_voices).length === 0)) {
             const noVoicesText = window.t ? window.t('voice.noVoices') : '暂无已注册音色';
             container.textContent = '';
             const emptyDiv = document.createElement('div');
@@ -930,6 +1732,66 @@ async function loadVoices() {
 
         // 清空容器
         container.textContent = '';
+
+        // 置顶音色（海外免费 free_intl：yui + default）。永远排在列表最上面，
+        // 展示名按 i18n_key 本地化；支持预览与点击应用，不可删除。
+        if (Array.isArray(data.pinned_voices) && data.pinned_voices.length > 0) {
+            data.pinned_voices.forEach((pin) => {
+                const voiceId = pin && pin.voice_id;
+                if (!voiceId) return;
+                const item = document.createElement('div');
+                item.className = 'voice-list-item';
+                item.dataset.voiceId = voiceId;
+                item.style.opacity = '0.85';
+                item.tabIndex = 0;
+                item.setAttribute('role', 'button');
+                markSelectedVoiceItem(item, voiceId === currentVoiceId);
+
+                const displayName = (window.t && pin.i18n_key)
+                    ? window.t(pin.i18n_key)
+                    : (pin.prefix || voiceId);
+
+                const infoDiv = document.createElement('div');
+                infoDiv.className = 'voice-info';
+                const nameDiv = document.createElement('div');
+                nameDiv.className = 'voice-name';
+                nameDiv.textContent = displayName;
+                infoDiv.appendChild(nameDiv);
+                const idDiv = document.createElement('div');
+                idDiv.className = 'voice-id';
+                idDiv.textContent = `ID: ${voiceId}`;
+                infoDiv.appendChild(idDiv);
+
+                const voiceActions = document.createElement('div');
+                voiceActions.className = 'voice-actions';
+                const previewBtn = document.createElement('button');
+                previewBtn.className = 'voice-preview-btn';
+                const previewText = window.t ? window.t('voice.preview') : '预览';
+                const previewImg = document.createElement('img');
+                previewImg.src = '/static/icons/sound.png';
+                previewImg.alt = '';
+                previewBtn.appendChild(previewImg);
+                previewBtn.appendChild(document.createTextNode(previewText));
+                previewBtn.onclick = (event) => {
+                    event.stopPropagation();
+                    playPreview(voiceId, previewBtn);
+                };
+                voiceActions.appendChild(previewBtn);
+
+                item.appendChild(infoDiv);
+                item.appendChild(voiceActions);
+                item.setAttribute('aria-label', window.t ? window.t('voice.applyVoiceAria', { name: displayName }) : `应用音色 ${displayName}`);
+                item.addEventListener('click', () => applyVoiceToCurrentCharacter(voiceId, displayName, item));
+                item.addEventListener('keydown', (event) => {
+                    if (event.target !== item) return;
+                    if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        applyVoiceToCurrentCharacter(voiceId, displayName, item);
+                    }
+                });
+                container.appendChild(item);
+            });
+        }
 
         // 按创建时间排序（如果有）
         const voicesArray = Object.entries(data.voices).map(([voiceId, voiceData]) => ({
@@ -949,6 +1811,11 @@ async function loadVoices() {
         voicesArray.forEach(({ voiceId, prefix, created_at }) => {
             const item = document.createElement('div');
             item.className = 'voice-list-item';
+            item.dataset.voiceId = voiceId;
+            item.tabIndex = 0;
+            item.setAttribute('role', 'button');
+            item.setAttribute('aria-label', window.t ? window.t('voice.applyVoiceAria', { name: prefix || voiceId }) : `应用音色 ${prefix || voiceId}`);
+            markSelectedVoiceItem(item, voiceId === currentVoiceId);
 
             const voiceName = prefix || voiceId;
             const displayName = voiceName.length > 30 ? voiceName.substring(0, 30) + '...' : voiceName;
@@ -982,7 +1849,10 @@ async function loadVoices() {
             previewImg.alt = '';
             previewBtn.appendChild(previewImg);
             previewBtn.appendChild(document.createTextNode(previewText));
-            previewBtn.onclick = () => playPreview(voiceId, previewBtn);
+            previewBtn.onclick = (event) => {
+                event.stopPropagation();
+                playPreview(voiceId, previewBtn);
+            };
 
             const deleteBtn = document.createElement('button');
             deleteBtn.className = 'voice-delete-btn';
@@ -992,7 +1862,10 @@ async function loadVoices() {
             deleteImg.alt = '';
             deleteBtn.appendChild(deleteImg);
             deleteBtn.appendChild(document.createTextNode(deleteText));
-            deleteBtn.onclick = () => deleteVoice(voiceId, displayName);
+            deleteBtn.onclick = (event) => {
+                event.stopPropagation();
+                deleteVoice(voiceId, displayName);
+            };
 
             voiceActions.appendChild(previewBtn);
             voiceActions.appendChild(deleteBtn);
@@ -1019,6 +1892,14 @@ async function loadVoices() {
 
             item.appendChild(infoDiv);
             item.appendChild(voiceActions);
+            item.addEventListener('click', () => applyVoiceToCurrentCharacter(voiceId, displayName, item));
+            item.addEventListener('keydown', (event) => {
+                if (event.target !== item) return;
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    applyVoiceToCurrentCharacter(voiceId, displayName, item);
+                }
+            });
 
             container.appendChild(item);
         });
@@ -1030,14 +1911,18 @@ async function loadVoices() {
                 const divider = document.createElement('div');
                 divider.style.cssText = 'border-top: 1px dashed #b0d4f1; margin: 12px 0; padding-top: 8px; color: #90b8d8; font-size: 12px; text-align: center;';
                 const freeLabel = window.t ? window.t('voice.freePresetLabel') : '免费预设音色';
-                divider.textContent = '── ' + freeLabel + ' ──';
+                divider.textContent = freeLabel;
                 container.appendChild(divider);
             }
 
             Object.entries(data.free_voices).forEach(([voiceKey, voiceId]) => {
                 const item = document.createElement('div');
                 item.className = 'voice-list-item';
+                item.dataset.voiceId = voiceId;
                 item.style.opacity = '0.85';
+                item.tabIndex = 0;
+                item.setAttribute('role', 'button');
+                markSelectedVoiceItem(item, voiceId === currentVoiceId);
 
                 const infoDiv = document.createElement('div');
                 infoDiv.className = 'voice-info';
@@ -1059,12 +1944,122 @@ async function loadVoices() {
                 idDiv.textContent = `ID: ${voiceId}`;
                 infoDiv.appendChild(idDiv);
 
-                item.appendChild(infoDiv);
+                const voiceActions = document.createElement('div');
+                voiceActions.className = 'voice-actions';
 
-                // 免费预设音色：不支持预览和删除
+                const previewBtn = document.createElement('button');
+                previewBtn.className = 'voice-preview-btn';
+                const previewText = window.t ? window.t('voice.preview') : '预览';
+                const previewImg = document.createElement('img');
+                previewImg.src = '/static/icons/sound.png';
+                previewImg.alt = '';
+                previewBtn.appendChild(previewImg);
+                previewBtn.appendChild(document.createTextNode(previewText));
+                previewBtn.onclick = (event) => {
+                    event.stopPropagation();
+                    playPreview(voiceId, previewBtn);
+                };
+                voiceActions.appendChild(previewBtn);
+
+                item.appendChild(infoDiv);
+                item.appendChild(voiceActions);
+                item.setAttribute('aria-label', window.t ? window.t('voice.applyVoiceAria', { name: displayName }) : `应用音色 ${displayName}`);
+                item.addEventListener('click', () => applyVoiceToCurrentCharacter(voiceId, displayName, item));
+                item.addEventListener('keydown', (event) => {
+                    if (event.target !== item) return;
+                    if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        applyVoiceToCurrentCharacter(voiceId, displayName, item);
+                    }
+                });
 
                 container.appendChild(item);
             });
+        }
+
+        // 渲染当前 Realtime Provider 的原生音色（由后端按 core_api_type 注入）
+        // 去重范围：自定义注册音色 + 免费预设音色 ID，避免冲突时列表里重复条目和多重选中态。
+        // 自定义/免费音色优先保留，与 _has_custom_tts 的路由优先级一致。
+        if (data.native_voices && Object.keys(data.native_voices).length > 0) {
+            const renderedVoiceIds = new Set(voicesArray.map((v) => String(v.voiceId).toLowerCase()));
+            if (data.free_voices) {
+                Object.values(data.free_voices).forEach((id) => {
+                    if (id) renderedVoiceIds.add(String(id).toLowerCase());
+                });
+            }
+            const nativeEntries = Object.entries(data.native_voices)
+                .filter(([voiceId]) => !renderedVoiceIds.has(String(voiceId).toLowerCase()));
+            if (nativeEntries.length > 0) {
+                const hasPriorContent = voicesArray.length > 0
+                    || (data.free_voices && Object.keys(data.free_voices).length > 0);
+                if (hasPriorContent) {
+                    const divider = document.createElement('div');
+                    divider.style.cssText = 'border-top: 1px dashed #b0d4f1; margin: 12px 0; padding-top: 8px; color: #90b8d8; font-size: 12px; text-align: center;';
+                    divider.textContent = formatNativeVoiceLabel(nativeEntries);
+                    container.appendChild(divider);
+                }
+
+                nativeEntries.forEach(([voiceId, voiceData]) => {
+                    const item = document.createElement('div');
+                    item.className = 'voice-list-item';
+                    item.dataset.voiceId = voiceId;
+                    item.style.opacity = '0.85';
+                    item.tabIndex = 0;
+                    item.setAttribute('role', 'button');
+                    markSelectedVoiceItem(item, voiceId === currentVoiceId);
+
+                    const infoDiv = document.createElement('div');
+                    infoDiv.className = 'voice-info';
+
+                    const nameDiv = document.createElement('div');
+                    nameDiv.className = 'voice-name';
+                    const displayName = (voiceData && voiceData.prefix) || voiceId;
+                    nameDiv.textContent = displayName;
+                    const badge = document.createElement('span');
+                    badge.style.cssText = 'margin-left: 8px; font-size: 10px; padding: 1px 6px; border-radius: 8px; background: rgba(140,120,220,0.25); color: #b8a4ff;';
+                    badge.textContent = window.t ? window.t('voice.nativePresetBadge') : '原生';
+                    nameDiv.appendChild(badge);
+                    infoDiv.appendChild(nameDiv);
+
+                    const idDiv = document.createElement('div');
+                    idDiv.className = 'voice-id';
+                    idDiv.textContent = `ID: ${voiceId}`;
+                    infoDiv.appendChild(idDiv);
+
+                    const voiceActions = document.createElement('div');
+                    voiceActions.className = 'voice-actions';
+
+                    const previewBtn = document.createElement('button');
+                    previewBtn.className = 'voice-preview-btn';
+                    const previewText = window.t ? window.t('voice.preview') : '预览';
+                    const previewImg = document.createElement('img');
+                    previewImg.src = '/static/icons/sound.png';
+                    previewImg.alt = '';
+                    previewBtn.appendChild(previewImg);
+                    previewBtn.appendChild(document.createTextNode(previewText));
+                    previewBtn.onclick = (event) => {
+                        event.stopPropagation();
+                        playPreview(voiceId, previewBtn);
+                    };
+                    voiceActions.appendChild(previewBtn);
+
+                    item.appendChild(infoDiv);
+                    item.appendChild(voiceActions);
+                    item.setAttribute('aria-label', window.t ? window.t('voice.applyVoiceAria', { name: displayName }) : `应用音色 ${displayName}`);
+                    item.addEventListener('click', () => applyVoiceToCurrentCharacter(voiceId, displayName, item));
+                    item.addEventListener('keydown', (event) => {
+                        if (event.target !== item) return;
+                        if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            applyVoiceToCurrentCharacter(voiceId, displayName, item);
+                        }
+                    });
+
+                    // Provider 原生音色：支持预览和点击应用，不支持删除
+
+                    container.appendChild(item);
+                });
+            }
         }
 
     } catch (error) {

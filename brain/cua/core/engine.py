@@ -196,7 +196,7 @@ class LMMEngineGemini(LMMEngine):
             self.llm_client._client.chat.completions.create(
                 model=self.model,
                 messages=messages,
-                max_tokens=max_new_tokens if max_new_tokens else 4096,
+                max_completion_tokens=max_new_tokens if max_new_tokens else 4096,
                 temperature=temp,
                 extra_body=self.llm_client.extra_body or None,
                 **kwargs,
@@ -252,7 +252,7 @@ class LMMEngineOpenRouter(LMMEngine):
             self.llm_client._client.chat.completions.create(
                 model=self.model,
                 messages=messages,
-                max_tokens=max_new_tokens if max_new_tokens else 4096,
+                max_completion_tokens=max_new_tokens if max_new_tokens else 4096,
                 temperature=temp,
                 extra_body=self.llm_client.extra_body or None,
                 **kwargs,
@@ -315,7 +315,7 @@ class LMMEngineAzureOpenAI(LMMEngine):
         completion = self.llm_client.chat.completions.create(
             model=self.model,
             messages=messages,
-            max_tokens=max_new_tokens if max_new_tokens else 4096,
+            max_completion_tokens=max_new_tokens if max_new_tokens else 4096,
             temperature=temp,
             **kwargs,
         )
@@ -379,7 +379,7 @@ class LMMEnginevLLM(LMMEngine):
         completion = self.llm_client._client.chat.completions.create(
             model=self.model,
             messages=messages,
-            max_tokens=max_new_tokens if max_new_tokens else 4096,
+            max_completion_tokens=max_new_tokens if max_new_tokens else 4096,
             temperature=temp,
             top_p=top_p,
             extra_body=merged_extra or None,
@@ -420,7 +420,7 @@ class LMMEngineHuggingFace(LMMEngine):
             self.llm_client._client.chat.completions.create(
                 model="tgi",
                 messages=messages,
-                max_tokens=max_new_tokens if max_new_tokens else 4096,
+                max_completion_tokens=max_new_tokens if max_new_tokens else 4096,
                 temperature=temperature,
                 extra_body=self.llm_client.extra_body or None,
                 **kwargs,
@@ -467,7 +467,7 @@ class LMMEngineParasail(LMMEngine):
             self.llm_client._client.chat.completions.create(
                 model=self.model,
                 messages=messages,
-                max_tokens=max_new_tokens if max_new_tokens else 4096,
+                max_completion_tokens=max_new_tokens if max_new_tokens else 4096,
                 temperature=temperature,
                 extra_body=self.llm_client.extra_body or None,
                 **kwargs,

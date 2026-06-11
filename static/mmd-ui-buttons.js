@@ -24,9 +24,12 @@ MMDManager.prototype.setupFloatingButtons = function() {
     if (window.location.pathname.includes('model_manager')) return;
 
     // 防御性检查：当前模型类型不是 MMD 时不创建按钮（防止过时的异步回调）
+    // 守卫形式与 vrm-ui-buttons.js 对齐：cfgType 为空时放行（启动早期 lanlan_config
+    // 尚未注入的窗口期），仅当明确切到非 MMD 类型才退出。
     var cfgType = (window.lanlan_config && window.lanlan_config.model_type || '').toLowerCase();
     var cfgSub = (window.lanlan_config && window.lanlan_config.live3d_sub_type || '').toLowerCase();
-    if (!(cfgType === 'live3d' && cfgSub === 'mmd')) return;  // 仅 live3d + mmd 子类型时才创建 MMD 按钮
+    var isMmd = cfgType === 'mmd' || (cfgType === 'live3d' && cfgSub === 'mmd');
+    if (cfgType && !isMmd) return;
 
     // 基础框架初始化
     const buttonsContainer = this.setupFloatingButtonsBase();
@@ -371,7 +374,6 @@ MMDManager.prototype.setupFloatingButtons = function() {
 
     // 创建"请她回来"按钮
     const returnButtonContainer = this.createReturnButton();
-    this._setupReturnButtonDrag(returnButtonContainer);
     this._addReturnButtonBreathingAnimation();
 
     // 创建锁图标
@@ -812,7 +814,12 @@ MMDManager.prototype._startUIUpdateLoop = function() {
                                 }
                             }
                         });
-                        lockIcon.style.opacity = isLockOverlapped ? '0.3' : '';
+                        // 与角色形象半透明状态完全同步：容器淡化(opacity<1)时锁图标镜像同一透明度
+                        const mmdFadeContainer = document.getElementById('mmd-container');
+                        const mmdFadeOpacity = mmdFadeContainer ? parseFloat(mmdFadeContainer.style.opacity) : NaN;
+                        lockIcon.style.opacity = (Number.isFinite(mmdFadeOpacity) && mmdFadeOpacity < 1)
+                            ? String(mmdFadeOpacity)
+                            : (isLockOverlapped ? '0.3' : '');
                     }
                 }
                 buttonsContainer.style.transform = `scale(${scale})`;
@@ -833,7 +840,7 @@ MMDManager.prototype._startUIUpdateLoop = function() {
  * 将屏幕像素偏移量应用到 MMD 模型的世界坐标
  * 用于"请她回来"按钮被拖拽后，模型跟随出现在新位置
  */
-MMDManager.prototype.applyScreenDelta = function(screenDx, screenDy) {
+MMDManager.prototype.applyScreenDelta = function(screenDx, screenDy, options = {}) {
     const mesh = this.currentModel && this.currentModel.mesh;
     if (!mesh || !this.camera || !this.renderer) return;
 
@@ -860,4 +867,9 @@ MMDManager.prototype.applyScreenDelta = function(screenDx, screenDy) {
 
     mesh.position.add(right.clone().multiplyScalar(screenDx * pixelToWorldX));
     mesh.position.add(up.clone().multiplyScalar(-screenDy * pixelToWorldY));
+
+    if (options.clamp !== false && this.interaction && typeof this.interaction.clampModelPosition === 'function') {
+        const clamped = this.interaction.clampModelPosition(mesh.position.clone());
+        if (clamped && clamped.isVector3) mesh.position.copy(clamped);
+    }
 };

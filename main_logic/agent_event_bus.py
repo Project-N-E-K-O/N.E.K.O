@@ -316,6 +316,96 @@ def notify_analyze_ack(event_id: str) -> None:
     loop.call_soon_threadsafe(_resolve)
 
 
+# ---------------------------------------------------------------------------
+#  Layering-inversion sinks: lower layers (main_logic) emit, higher layers
+#  (plugin / main_routers) register.
+#
+#  Why this exists
+#  ---------------
+#  ``main_logic.core`` used to ``import`` from ``plugin.core.state`` and
+#  ``main_routers.system_router`` to publish user utterances and to consult
+#  the mini-game-invite keyword matcher. Both are layering inversions
+#  (main_logic L2 → plugin L4 / main_routers L3) — banned by
+#  ``scripts/check_module_layering.py``.
+#
+#  Now main_logic emits via ``dispatch_*`` and the higher layers attach via
+#  ``register_*``. The CONSUMERS self-register at module-import time
+#  (plugin/core/state.py and main_routers/system_router.py), so any context
+#  that loads those modules — even directly, without going through the
+#  ``app`` entrypoint — gets its sink wired automatically. This preserves
+#  the side-effect that direct ``main_logic.core`` consumers (testbench /
+#  ad-hoc scripts) used to enjoy via the previous chained import. The
+#  registries dedupe on identity, so ``app/runtime_bindings.py`` calling
+#  ``register_*`` again after the consumer module is loaded is a no-op.
+#
+#  If nothing is registered (e.g. memory_server entrypoint doesn't ship
+#  plugin runtime), the dispatchers silently no-op.
+# ---------------------------------------------------------------------------
+
+# Fire-and-forget user-utterance sink. Plugin's user-context bus subscribes
+# here. Multiple subscribers are allowed; per-sink errors are swallowed so
+# one misbehaving consumer cannot break the chat pipeline.
+_user_utterance_sinks: list[Callable[[str, Dict[str, Any]], None]] = []
+
+
+def register_user_utterance_sink(
+    fn: Callable[[str, Dict[str, Any]], None],
+) -> None:
+    """Subscribe to user-utterance events: ``fn(bucket: str, event: dict)``.
+
+    Dedupes on identity — re-registering the same callable is a no-op.
+    Important because both ``plugin.core.state`` (self-register on import)
+    and ``app.runtime_bindings`` (explicit wiring) call this for the same
+    function; without dedup, every utterance would fire twice.
+    """
+    if fn in _user_utterance_sinks:
+        return
+    _user_utterance_sinks.append(fn)
+
+
+def dispatch_user_utterance(bucket: str, event: Dict[str, Any]) -> None:
+    """Fan a user utterance out to every registered sink."""
+    for fn in _user_utterance_sinks:
+        try:
+            fn(bucket, event)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("[EventBus] user_utterance sink raised: %s", exc)
+
+
+# First-hit-wins text-message hook with optional return value.
+# main_routers' mini-game-invite keyword matcher is the canonical consumer.
+_text_user_message_hooks: list[
+    Callable[[str, str], Optional[Dict[str, Any]]]
+] = []
+
+
+def register_text_user_message_hook(
+    fn: Callable[[str, str], Optional[Dict[str, Any]]],
+) -> None:
+    """Subscribe to text user-message events: ``fn(lanlan_name, text) -> dict?``.
+
+    First hook returning a truthy value wins; later hooks are skipped.
+    Dedupes on identity (see ``register_user_utterance_sink`` rationale).
+    """
+    if fn in _text_user_message_hooks:
+        return
+    _text_user_message_hooks.append(fn)
+
+
+def dispatch_text_user_message(
+    lanlan_name: str, text: str,
+) -> Optional[Dict[str, Any]]:
+    """Run hooks in registration order; return the first truthy result."""
+    for fn in _text_user_message_hooks:
+        try:
+            result = fn(lanlan_name, text)
+            if result:
+                return result
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("[EventBus] text_user_message hook raised: %s", exc)
+    return None
+
+
 async def publish_analyze_request_reliably(
     lanlan_name: str,
     trigger: str,

@@ -5,6 +5,12 @@
 (function () {
     'use strict';
 
+    function isDesktopLinuxX11Runtime() {
+        return !!(window.__NEKO_DESKTOP_RUNTIME__ && window.__NEKO_DESKTOP_RUNTIME__.isLinuxX11);
+    }
+
+    const DEFAULT_RENDER_QUALITY = isDesktopLinuxX11Runtime() ? 'low' : 'medium';
+
     // ======================== 常量 ========================
     window.appConst = Object.freeze({
         HEARTBEAT_INTERVAL: 30000,           // WebSocket 心跳间隔 (ms)
@@ -12,6 +18,12 @@
         MAX_MIC_GAIN_DB: 25,                 // 麦克风增益上限 (dB ≈ 18x)
         MIN_MIC_GAIN_DB: -5,                 // 麦克风增益下限 (dB ≈ 0.56x)
         DEFAULT_SPEAKER_VOLUME: 100,         // 扬声器默认音量
+        DEFAULT_SPATIAL_AUDIO_ENABLED: true, // 空间音频默认开启
+        SPATIAL_AUDIO_MIN_GAIN: 0.4,         // 副屏远端最低音量保底（防止猫娘飞远后听不见）
+        SPATIAL_AUDIO_MAX_PAN: 0.6,          // pan 绝对值上限（防止完全单声道，另一边留 ~31% 信号）
+        SPATIAL_AUDIO_FALLOFF_RATE: 0.35,    // 超出主屏后每个 refDist 衰减比例
+        SPATIAL_AUDIO_RAMP_SECONDS: 0.12,    // pan/gain 平滑过渡时长，避免突变 click
+        SPATIAL_AUDIO_POLL_MS: 500,          // 位置轮询周期（兜底，事件驱动为主）
         DEFAULT_PROACTIVE_CHAT_INTERVAL: 15, // 默认搭话间隔 (秒)
         DEFAULT_PROACTIVE_VISION_INTERVAL: 10, // 默认视觉间隔 (秒)
         MAX_SCREENSHOT_WIDTH: 1280,
@@ -41,6 +53,13 @@
         seqCounter: 0,
         speakerVolume: 100,
 
+        // --- Audio (空间音频，多屏立体声 + 距离衰减) ---
+        spatialAudioEnabled: true,
+        spatialPannerNode: null,         // StereoPannerNode：水平 L/R 定位
+        spatialDistanceGainNode: null,   // GainNode：距离衰减
+        spatialPollTimer: null,          // 位置轮询 timer 句柄
+        spatialPrimaryDisplay: null,     // 缓存的主屏信息 { bounds, workArea }
+
         // --- Audio (打断/解码) ---
         interruptedSpeechId: null,
         currentPlayingSpeechId: null,
@@ -65,25 +84,55 @@
         silenceDetectionTimer: null,
         hasSoundDetected: false,
         isMicMuted: false,
+        gameRouteActive: false,
+        gameRouteGameType: '',
+        gameRouteLanlanName: '',
+        gameRouteSessionId: '',
+        gameVoiceSttGateActive: false,
+        gameVoiceSttGameType: '',
+        gameVoiceSttSessionId: '',
+        gameVoiceSttRecognition: null,
+        gameVoiceSttListening: false,
+        gameVoiceSttStopping: false,
+        gameVoiceSttRestartTimer: null,
+        gameVoiceSttUnsupportedNotified: false,
+        proactiveChatWasStoppedByGameRoute: false,
 
         // --- 会话 / WebSocket ---
         socket: null,
         heartbeatInterval: null,
         autoReconnectTimeoutId: null,
         isRecording: false,
+        voiceChatActive: false,
+        voiceStartPending: false,
         isTextSessionActive: false,
         isSwitchingMode: false,
         sessionStartedResolver: null,
         sessionStartedRejecter: null,
+        voiceSessionStartEpoch: 0,
         assistantTurnId: null,
         assistantTurnStartedAt: 0,
         assistantPendingTurnServerId: null,
         assistantTurnAwaitingBubble: false,
+        // 文本会话刚把 WS payload 发出去（text 和/或 screenshot），但 gemini_response
+        // 还没回第一个 chunk 的那段空窗。用 ms 时间戳 + 15s 上限自我兜底，避免
+        // 错过 clear 时永远卡 true。专门给 isAssistantTextResponseInFlight()
+        // 用（_lastSubmittedRequestId 对纯截图请求会被故意清空，挡不住这段空窗）。
+        pendingTextTurnSubmitAt: 0,
         assistantTurnSeq: 0,
         assistantTurnCompletedId: null,
+        // 一轮干净收尾后（maybeFinalizeAssistantSpeech 成功），completedId 会被
+        // clearAssistantTurnCompletion 清成 null，但 assistantTurnId 要等下条用户
+        // 消息才清。没有这个 settled 标记的话，isAssistantTextResponseInFlight 的
+        // turnMismatch（turnId !== completedId）在每条语音回复收尾后都恒为 true，
+        // 切语音会干等满 15s。settledId 记下"这轮已收尾"，turn-start/cancel 时清。
+        assistantTurnSettledId: null,
         assistantTurnCompletionSource: null,
         assistantSpeechActiveTurnId: null,
         assistantSpeechStartedTurnId: null,
+        assistantSpeechPlaybackTurnId: null,
+        assistantSpeechPlaybackStartAudioTime: 0,
+        assistantSpeechPlaybackEndAudioTime: 0,
         // 最近一次本地麦克风 RMS 超过语音阈值的时间戳（ms epoch）。
         // 由 app-audio-capture.js 里的 monitorInputVolume 持续写入；
         // app-proactive.js 在 voice 模式 tick 时用它判断"用户最近是否在发声"，
@@ -109,9 +158,16 @@
         proactivePersonalChatEnabled: false,
         proactiveMusicEnabled: true,
         proactiveMemeEnabled: true,
+        proactiveMiniGameInviteEnabled: true,
         mergeMessagesEnabled: false,
         proactiveChatTimer: null,
         proactiveChatBackoffLevel: 0,
+        // 屏幕专注态（gaming / focused_work，后端 propensity=restricted_screen_only）
+        // 切到「固定间隔 + 后端抖动」调度：跳过 3-tier 退避，按 baseInterval
+        // 等间隔触发，后端 /proactive_chat 入口注入 [0, 0.5×base] 的 sleep
+        // 把实际间隔抹成 [base, 1.5×base] 均匀分布。由 /proactive_chat 响应里的
+        // next_schedule_fixed_mode 字段控制开关；默认 false（即走常规退避）。
+        proactiveFixedScheduleMode: false,
         _voiceProactiveNoResponseCount: 0,
         _voiceSessionInitialTimer: null,
         isProactiveChatRunning: false,
@@ -128,7 +184,7 @@
         // --- UI / 杂项 ---
         focusModeEnabled: false,
         avatarReactionBubbleEnabled: true,
-        renderQuality: 'medium',
+        renderQuality: DEFAULT_RENDER_QUALITY,
         targetFrameRate: 60,
         screenshotCounter: 0,
         statusToastTimeout: null,
@@ -142,6 +198,39 @@
     };
 
     window.appState = S;
+
+    window.isNekoGoodbyeModeActive = function () {
+        return !!(
+            (window.live2dManager && window.live2dManager._goodbyeClicked)
+            || (window.vrmManager && window.vrmManager._goodbyeClicked)
+            || (window.mmdManager && window.mmdManager._goodbyeClicked)
+        );
+    };
+
+    window.makeNekoSessionAbortError = function (reason) {
+        var error = new Error(reason || 'Session aborted');
+        error.sessionStartCancelled = true;
+        error.voiceStartCancelled = true;
+        return error;
+    };
+
+    window.cancelPendingSessionStart = function (reason) {
+        if (window.sessionTimeoutId) {
+            clearTimeout(window.sessionTimeoutId);
+            window.sessionTimeoutId = null;
+        }
+        S.voiceSessionStartEpoch += 1;
+        S.voiceStartPending = false;
+        window.isMicStarting = false;
+
+        if (S.sessionStartedRejecter) {
+            try {
+                S.sessionStartedRejecter(window.makeNekoSessionAbortError(reason));
+            } catch (_) { }
+        }
+        S.sessionStartedResolver = null;
+        S.sessionStartedRejecter = null;
+    };
 
     // ======================== 工具函数 ========================
     /** 分贝转线性增益 */
@@ -168,7 +257,8 @@
     const proactiveKeys = [
         'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
         'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
-        'proactiveMusicEnabled', 'proactiveMemeEnabled', 'mergeMessagesEnabled', 'focusModeEnabled',
+        'proactiveMusicEnabled', 'proactiveMemeEnabled', 'proactiveMiniGameInviteEnabled',
+        'mergeMessagesEnabled', 'focusModeEnabled',
         'proactiveChatInterval', 'proactiveVisionInterval', 'avatarReactionBubbleEnabled',
         'renderQuality', 'targetFrameRate', 'isRecording',
     ];

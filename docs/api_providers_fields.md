@@ -16,6 +16,50 @@
 
 ---
 
+## 原生 TTS 音色配置
+
+原生 TTS 音色目录集中放在 `config/api_providers.json` 的
+`native_tts_voice_providers` 字段中，避免在业务代码里硬编码上游
+`voice_id`。
+
+字段约定：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `catalog_prefix` | string | 前端分组/来源展示名 |
+| `default_voice` | string | 默认女声音色 ID |
+| `default_male_voice` | string | 默认男声音色 ID |
+| `catalog_value_is_display_name` | boolean | `voices` 的值是否直接作为前端展示名 |
+| `voices` | object | `{voice_id: 展示名}` 映射 |
+| `aliases` | object | `{别名: voice_id}` 映射 |
+| `inherits` | string | 复用另一个 Provider 的音色目录并覆盖元数据 |
+
+例如 `free` 可继承 `step` 的阶跃音色目录，只覆盖
+`catalog_prefix` 为“免费 API”。
+
+注意：这里的 `voices` 应只放当前 realtime/free TTS 线路实际可用的音色。
+部分官方 HTTP TTS 音色可能需要额外权限或不支持免费线路，不应直接暴露到
+角色卡和克隆页，否则预览/应用会返回 voice not found。
+
+### Provider 适配说明
+
+- **`step` / `free`**：`catalog_value_is_display_name=true`，`voices` 的值就是
+  前端展示名（中文音色标签）。`free` 通过 `inherits: "step"` 复用同一份目录，
+  只覆盖 `catalog_prefix`。详见 `utils/stepfun_tts_voices.py`。
+- **`gemini`**：`catalog_value_is_display_name=false`（默认），`voices` 的值
+  是性别标签 `Female`/`Male`，前端展示用 voice_id（Leda/Puck/…）。`aliases`
+  把 `male`/`woman`/`中文女` 之类用户输入映射回 Puck/Leda 等规范 ID。详见
+  `utils/gemini_tts_voices.py`。
+- **`grok`**：与 Gemini 同形，5 个 xAI 内置音色（eve/ara/leo/rex/sal），
+  上游接收小写 voice_id。详见 `utils/grok_tts_voices.py`。
+
+新增 Provider 时只需在 `native_tts_voice_providers` 里加配置，再写一个
+~50 行的适配模块（参照三者之一）调用 `register_provider`，把模块名追加到
+`utils/native_voice_registry.py::_BUILTIN_PROVIDER_MODULES` 即可——`config_manager`
+/`characters_router`/`tts_client` 都不需要改。
+
+---
+
 ## 1. 阿里云 (DashScope / Qwen)
 
 ### 基础配置

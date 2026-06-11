@@ -524,14 +524,16 @@ class ModelProfiler {
         details.vertices = {
             value: verts,
             rating: verts <= 50000 ? 'low' : verts <= 100000 ? 'medium' : verts <= 200000 ? 'high' : 'extreme',
-            label: '顶点数'
+            label: '顶点数',
+            labelKey: 'profiler.ratingDetail.vertices'
         };
 
         const faces = snapshot.geometry?.faces || 0;
         details.faces = {
             value: faces,
             rating: faces <= 32000 ? 'low' : faces <= 70000 ? 'medium' : faces <= 140000 ? 'high' : 'extreme',
-            label: '面数(三角形)'
+            label: '面数(三角形)',
+            labelKey: 'profiler.ratingDetail.faces'
         };
 
         // 材质数评级
@@ -541,7 +543,8 @@ class ModelProfiler {
         details.materials = {
             value: matCount,
             rating: matCount <= 8 ? 'low' : matCount <= 16 ? 'medium' : matCount <= 32 ? 'high' : 'extreme',
-            label: '材质数'
+            label: '材质数',
+            labelKey: 'profiler.ratingDetail.materials'
         };
 
         // 纹理数评级（VRChat 用纹理内存衡量，这里用数量近似）
@@ -549,7 +552,8 @@ class ModelProfiler {
         details.textures = {
             value: texCount,
             rating: texCount <= 10 ? 'low' : texCount <= 25 ? 'medium' : texCount <= 50 ? 'high' : 'extreme',
-            label: '纹理数'
+            label: '纹理数',
+            labelKey: 'profiler.ratingDetail.textures'
         };
 
         // 骨骼数评级
@@ -560,7 +564,8 @@ class ModelProfiler {
         details.bones = {
             value: boneCount,
             rating: boneCount <= 200 ? 'low' : boneCount <= 350 ? 'medium' : boneCount <= 500 ? 'high' : 'extreme',
-            label: '骨骼数'
+            label: '骨骼数',
+            labelKey: 'profiler.ratingDetail.bones'
         };
 
         // 物理刚体评级（MMD）
@@ -572,14 +577,16 @@ class ModelProfiler {
             details.physicsBodies = {
                 value: bodyCount,
                 rating: bodyCount <= 64 ? 'low' : bodyCount <= 128 ? 'medium' : bodyCount <= 256 ? 'high' : 'extreme',
-                label: '物理刚体'
+                label: '物理刚体',
+                labelKey: 'profiler.ratingDetail.physicsBodies'
             };
             details.physicsConstraints = {
                 value: snapshot.physics.constraintCount || 0,
                 rating: (snapshot.physics.constraintCount || 0) <= 64 ? 'low' :
                         (snapshot.physics.constraintCount || 0) <= 128 ? 'medium' :
                         (snapshot.physics.constraintCount || 0) <= 256 ? 'high' : 'extreme',
-                label: '物理约束'
+                label: '物理约束',
+                labelKey: 'profiler.ratingDetail.physicsConstraints'
             };
         }
 
@@ -590,7 +597,8 @@ class ModelProfiler {
                 rating: (snapshot.springBones.jointCount || 0) <= 64 ? 'low' :
                         (snapshot.springBones.jointCount || 0) <= 128 ? 'medium' :
                         (snapshot.springBones.jointCount || 0) <= 256 ? 'high' : 'extreme',
-                label: 'Spring Bone 关节'
+                label: 'Spring Bone 关节',
+                labelKey: 'profiler.ratingDetail.springJoints'
             };
         }
 
@@ -600,7 +608,8 @@ class ModelProfiler {
                 value: snapshot.geometry.morphTargetCount,
                 rating: snapshot.geometry.morphTargetCount <= 20 ? 'low' :
                         snapshot.geometry.morphTargetCount <= 50 ? 'medium' : 'high',
-                label: 'Morph Targets'
+                label: 'Morph Targets',
+                labelKey: 'profiler.ratingDetail.morphTargets'
             };
         }
 
@@ -612,7 +621,8 @@ class ModelProfiler {
                 rating: snapshot.renderer.drawCalls <= 8 ? 'low' :
                         snapshot.renderer.drawCalls <= 16 ? 'medium' :
                         snapshot.renderer.drawCalls <= 32 ? 'high' : 'extreme',
-                label: 'Draw Calls'
+                label: 'Draw Calls',
+                labelKey: 'profiler.ratingDetail.drawCalls'
             };
         }
 

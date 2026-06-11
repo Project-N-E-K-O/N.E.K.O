@@ -6,6 +6,21 @@
     const AUTOSTART_STATUS_MAX_AGE_MS = HEARTBEAT_INTERVAL_MS;
     const AUTOSTART_PROMPT_COORDINATION_KEY = 'home-autostart-prompt';
     const AUTOSTART_PROMPT_PRIORITY = 100;
+    const AUTOSTART_PROMPT_VOICE_BASE_URL = '/static/autostart_prompt_voices/';
+    const AUTOSTART_PROMPT_VOICE_LANGUAGES = {
+        'zh': 'zh-CN',
+        'zh-cn': 'zh-CN',
+        'zh-hans': 'zh-CN',
+        'cn': 'zh-CN',
+        'zh-tw': 'zh-TW',
+        'zh-hant': 'zh-TW',
+        'tw': 'zh-TW',
+        'en': 'en',
+        'ko': 'ko',
+        'ko-kr': 'ko',
+        'ru': 'ru',
+        'ru-ru': 'ru',
+    };
 
     const promptShared = window.nekoPromptShared;
     if (!promptShared || typeof promptShared.createPromptTools !== 'function') {
@@ -35,8 +50,8 @@
         pendingWeakHomeInteractions: 0,
         pendingChatTurns: 0,
         pendingVoiceSessions: 0,
-        neverRemind: false,
         deferredUntil: 0,
+        canNeverRemind: false,
         autostartEnabled: false,
         autostartSupported: true,
         autostartStatusLoaded: false,
@@ -44,6 +59,10 @@
         autostartStatusAuthoritative: false,
         autostartProvider: '',
         autostartStatusUpdatedAt: 0,
+        pendingDecisionPayload: null,
+        foregroundTrackingReady: false,
+        foregroundGateStarted: false,
+        foregroundTrackingBlockedHeartbeat: false,
     };
 
     const shortPromptToken = promptTools.shortToken;
@@ -57,8 +76,25 @@
     const isWeakHomeFocusTarget = promptTools.isWeakHomeFocusTarget;
     const isWeakHomeChangeTarget = promptTools.isWeakHomeChangeTarget;
     const foregroundTracker = promptTools.attachForegroundTracker(state);
-    const syncForegroundWindow = foregroundTracker.syncForegroundWindow;
-    const consumeForegroundDelta = foregroundTracker.consumeForegroundDelta;
+    const syncForegroundWindowNow = foregroundTracker.syncForegroundWindow;
+    const consumeForegroundDeltaNow = foregroundTracker.consumeForegroundDelta;
+
+    function syncForegroundWindow() {
+        if (!state.foregroundTrackingReady) {
+            return;
+        }
+        syncForegroundWindowNow();
+    }
+
+    function consumeForegroundDelta() {
+        if (!state.foregroundTrackingReady) {
+            state.pendingForegroundMs = 0;
+            state.foregroundStartedAt = null;
+            state.foregroundTrackingBlockedHeartbeat = true;
+            return 0;
+        }
+        return consumeForegroundDeltaNow();
+    }
 
     function createHeartbeatToken() {
         if (window.crypto && typeof window.crypto.randomUUID === 'function') {
@@ -102,30 +138,30 @@
 
         const previous = {
             autostartEnabled: state.autostartEnabled,
-            neverRemind: state.neverRemind,
             deferredUntil: state.deferredUntil,
+            canNeverRemind: state.canNeverRemind,
         };
         const status = serverState.status ? String(serverState.status).toLowerCase() : '';
         const serverAutostartEnabled = serverState.autostart_enabled === true;
         const completedAt = normalizeMs(serverState.completed_at);
 
-        state.neverRemind = serverState.never_remind === true;
         state.deferredUntil = normalizeMs(serverState.deferred_until);
+        state.canNeverRemind = serverState.can_never_remind === true;
         if (!state.autostartStatusAuthoritative) {
             state.autostartEnabled = serverAutostartEnabled || status === 'completed' || completedAt > 0;
         }
 
         const changed = previous.autostartEnabled !== state.autostartEnabled
-            || previous.neverRemind !== state.neverRemind
-            || previous.deferredUntil !== state.deferredUntil;
+            || previous.deferredUntil !== state.deferredUntil
+            || previous.canNeverRemind !== state.canNeverRemind;
 
         if (changed || source === 'initial-state') {
             logFlow('state-sync', {
                 source: source || 'unknown',
                 status: status || null,
                 autostartEnabled: state.autostartEnabled,
-                neverRemind: state.neverRemind,
                 deferredUntil: state.deferredUntil || 0,
+                canNeverRemind: state.canNeverRemind,
             });
         }
     }
@@ -137,6 +173,65 @@
         state.autostartStatusAuthoritative = !!(response && response.authoritative);
         state.autostartProvider = response && response.provider ? String(response.provider) : '';
         state.autostartStatusUpdatedAt = Date.now();
+    }
+
+    function isTransientError(error) {
+        const status = Number(error && error.status);
+        if (Number.isFinite(status)) {
+            if (status >= 500) {
+                return true;
+            }
+            if (status >= 400 && status <= 499) {
+                return false;
+            }
+        }
+
+        const code = String((error && error.code) || '').toLowerCase();
+        if (
+            code === 'timeout'
+            || code === 'network_error'
+            || code === 'networkerror'
+            || code === 'failed_to_fetch'
+            || code === 'aborterror'
+        ) {
+            return true;
+        }
+        if (/^http_4\d\d$/.test(code)) {
+            return false;
+        }
+        if (/^http_5\d\d$/.test(code)) {
+            return true;
+        }
+
+        const message = String((error && error.message) || error || '').toLowerCase();
+        if (!message) {
+            return false;
+        }
+        if (
+            message.includes('failed to fetch')
+            || message.includes('networkerror')
+            || message.includes('network request failed')
+            || message.includes('load failed')
+            || message.includes('timeout')
+            || message.includes('timed out')
+            || message.includes('econnreset')
+            || message.includes('econnrefused')
+            || message.includes('eai_again')
+            || message.includes('offline')
+        ) {
+            return true;
+        }
+        const httpStatusMatch = message.match(/\bhttp\s+(\d{3})\b/i);
+        if (httpStatusMatch) {
+            const httpStatus = Number(httpStatusMatch[1]);
+            if (httpStatus >= 500) {
+                return true;
+            }
+            if (httpStatus >= 400 && httpStatus <= 499) {
+                return false;
+            }
+        }
+        return false;
     }
 
     let autostartChangedListenerInstalled = false;
@@ -160,10 +255,12 @@
                 platform: detail.platform,
                 mechanism: detail.mechanism,
             });
+            scheduleFastHeartbeat();
             return;
         }
         // detail 不完整：仅清零时间戳，下一次 ensureAutostartStatusFresh 会重新 poll。
         state.autostartStatusUpdatedAt = 0;
+        scheduleFastHeartbeat();
     }
 
     async function postDecision(payload) {
@@ -172,6 +269,7 @@
                 method: 'POST',
                 json: payload,
             });
+            state.pendingDecisionPayload = null;
             if (response && response.state) {
                 applyServerState(response.state, 'decision');
             }
@@ -182,7 +280,13 @@
                 status: response && response.state ? response.state.status : null,
             });
         } catch (error) {
-            console.warn('[AutostartPrompt] failed to persist decision:', error);
+            if (isTransientError(error)) {
+                state.pendingDecisionPayload = payload || null;
+                scheduleFastHeartbeat();
+                console.warn('[AutostartPrompt] failed to persist decision, will retry:', error);
+                return;
+            }
+            console.warn('[AutostartPrompt] failed to persist decision permanently; not retrying:', error);
         }
     }
 
@@ -311,7 +415,7 @@
         } catch (_) {
             return {
                 supported: state.autostartSupported,
-                enabled: false,
+                enabled: state.autostartEnabled,
                 authoritative: false,
                 provider: state.autostartProvider,
             };
@@ -377,7 +481,7 @@
 
             // 只在真有 replay-sensitive delta 时带 heartbeat_token：
             // 断线/超时/响应解析失败时前端会把 delta 加回 pending（Lines 364-367），
-            // 后端按 token 幂等 dedupe，避免同一批 foreground_ms 被 15 分钟阈值重复计入
+            // 后端按 token 幂等 dedupe，避免同一批 foreground_ms 被阈值重复计入
             // 而误弹自启动提示。和 tutorial heartbeat (app-tutorial-prompt.js) 同构。
             const hasReplaySensitiveDelta = (
                 foregroundDelta > 0
@@ -392,6 +496,11 @@
             state.pendingWeakHomeInteractions = 0;
             state.pendingChatTurns = 0;
             state.pendingVoiceSessions = 0;
+
+            if (state.pendingDecisionPayload) {
+                const pendingPayload = state.pendingDecisionPayload;
+                await postDecision(pendingPayload);
+            }
 
             const data = await requestJson('/api/autostart-prompt/heartbeat', {
                 method: 'POST',
@@ -414,6 +523,9 @@
             });
             if (data && data.should_prompt) {
                 try {
+                    await waitForAutostartPromptGate().catch(function (error) {
+                        console.warn('[AutostartPrompt] prompt gate failed, showing prompt anyway:', error);
+                    });
                     await maybeShowPrompt(data.prompt_token);
                 } catch (error) {
                     console.warn('[AutostartPrompt] prompt display failed:', error);
@@ -440,9 +552,61 @@
         FAST_HEARTBEAT_DELAY_MS
     );
 
+    function beginForegroundTrackingAfterGate() {
+        if (state.foregroundTrackingReady) {
+            return;
+        }
+        state.pendingForegroundMs = 0;
+        state.foregroundStartedAt = null;
+        state.foregroundTrackingReady = true;
+        syncForegroundWindowNow();
+        logFlow('foreground-gate-settled', {});
+        if (state.foregroundTrackingBlockedHeartbeat) {
+            state.foregroundTrackingBlockedHeartbeat = false;
+            scheduleFastHeartbeat();
+        }
+    }
+
+    async function waitForAutostartPromptGate() {
+        const AUTOSTART_GATE_FALLBACK_MS = 15000;
+        if (typeof window.waitForStorageLocationStartupBarrier === 'function') {
+            await window.waitForStorageLocationStartupBarrier();
+        }
+
+        const onboarding = window.CharacterPersonalityOnboarding;
+        if (!onboarding || typeof onboarding.whenSettled !== 'function') {
+            return;
+        }
+
+        const settled = await Promise.race([
+            onboarding.whenSettled().then(() => true),
+            new Promise((resolve) => setTimeout(() => resolve(false), AUTOSTART_GATE_FALLBACK_MS)),
+        ]);
+        if (settled) {
+            return;
+        }
+
+        const overlayActive = (onboarding.overlay && !onboarding.overlay.hidden)
+            || onboarding.pendingResumeAfterTutorial;
+        if (overlayActive) {
+            await onboarding.whenSettled();
+        }
+    }
+
+    function startForegroundTrackingGate() {
+        if (state.foregroundGateStarted) {
+            return;
+        }
+        state.foregroundGateStarted = true;
+        void waitForAutostartPromptGate()
+            .catch(function (error) {
+                console.warn('[AutostartPrompt] foreground gate failed, starting timer anyway:', error);
+            })
+            .finally(beginForegroundTrackingAfterGate);
+    }
+
     function isPromptSuppressedLocally() {
         return state.autostartEnabled
-            || state.neverRemind
             || state.deferredUntil > Date.now();
     }
 
@@ -459,6 +623,25 @@
     async function handlePromptAcceptance(promptToken) {
         try {
             const response = await enableAutostart();
+            if (response && response.requires_approval) {
+                await postDecision({
+                    decision: 'accept',
+                    result: 'approval_pending',
+                    autostart_provider: response && response.provider,
+                    prompt_token: promptToken,
+                });
+                if (typeof window.showStatusToast === 'function') {
+                    window.showStatusToast(
+                        translate(
+                            'autostartPrompt.requiresApproval',
+                            '需要先在系统设置里批准开机自启动，批准后会自动生效'
+                        ),
+                        3500
+                    );
+                }
+                scheduleFastHeartbeat();
+                return;
+            }
             if (!response || response.enabled !== true) {
                 throw new Error(
                     response && response.error
@@ -519,44 +702,134 @@
         return typeof window.showDecisionPrompt === 'function';
     }
 
+    function normalizeAutostartPromptVoiceLanguage(rawLanguage) {
+        const normalized = String(rawLanguage || '').trim().toLowerCase().replace(/_/g, '-');
+        if (!normalized) {
+            return '';
+        }
+        if (AUTOSTART_PROMPT_VOICE_LANGUAGES[normalized]) {
+            return AUTOSTART_PROMPT_VOICE_LANGUAGES[normalized];
+        }
+        const primary = normalized.split('-')[0];
+        return AUTOSTART_PROMPT_VOICE_LANGUAGES[primary] || '';
+    }
+
+    function getAutostartPromptLanguage() {
+        if (window.i18next && typeof window.i18next.language === 'string') {
+            return normalizeAutostartPromptVoiceLanguage(window.i18next.language);
+        }
+        try {
+            const storedLanguage = window.localStorage.getItem('i18nextLng');
+            if (storedLanguage) {
+                return normalizeAutostartPromptVoiceLanguage(storedLanguage);
+            }
+        } catch (_) {
+            // ignore
+        }
+        if (window.navigator && typeof window.navigator.language === 'string') {
+            return normalizeAutostartPromptVoiceLanguage(window.navigator.language);
+        }
+        return '';
+    }
+
+    function getAutostartPromptVoiceUrl() {
+        const language = getAutostartPromptLanguage();
+        if (!language) {
+            return '';
+        }
+        return new URL(
+            AUTOSTART_PROMPT_VOICE_BASE_URL + encodeURIComponent(language) + '.mp3',
+            window.location.origin
+        ).href;
+    }
+
+    function startAutostartPromptVoice() {
+        const voiceUrl = getAutostartPromptVoiceUrl();
+        if (!voiceUrl || typeof window.Audio !== 'function') {
+            return null;
+        }
+
+        let audio = null;
+        let stopped = false;
+        try {
+            audio = new window.Audio(voiceUrl);
+            audio.preload = 'auto';
+            const playResult = audio.play();
+            if (playResult && typeof playResult.catch === 'function') {
+                playResult.catch(() => { });
+            }
+        } catch (_) {
+            return null;
+        }
+
+        return {
+            stop: function () {
+                if (stopped || !audio) {
+                    return;
+                }
+                stopped = true;
+                try {
+                    audio.pause();
+                } catch (_) {
+                    // ignore
+                }
+                try {
+                    audio.currentTime = 0;
+                } catch (_) {
+                    // ignore
+                }
+            }
+        };
+    }
+
     async function showPrompt(promptToken) {
         state.promptOpen = true;
         state.lastPromptTokenSeen = promptToken;
+        let promptVoice = null;
+        const buttons = [
+            {
+                value: 'later',
+                text: translate('autostartPrompt.later', '以后提醒'),
+                variant: 'secondary'
+            },
+            {
+                value: 'accept',
+                text: translate('autostartPrompt.startNow', '开启自启动'),
+                variant: 'primary'
+            }
+        ];
+        if (state.canNeverRemind) {
+            buttons.push({
+                value: 'never',
+                text: translate('autostartPrompt.never', '不再提示'),
+                variant: 'link'
+            });
+        }
+        const stopPromptVoice = function () {
+            if (promptVoice && typeof promptVoice.stop === 'function') {
+                promptVoice.stop();
+            }
+            promptVoice = null;
+        };
         logFlow('prompt-open', { token: shortPromptToken(promptToken) });
         try {
             const decision = await window.showDecisionPrompt({
-                title: translate('autostartPrompt.title', '要不要让 N.E.K.O 开机自动启动？'),
+                skin: 'autostart-retention',
+                title: translate('autostartPrompt.title', '要不要让 N.E.K.O. 开机自动启动？'),
                 message: translate(
                     'autostartPrompt.message',
-                    '这样下次打开电脑后，N.E.K.O 会自动准备好，不用你再手动启动。'
-                ),
-                note: translate(
-                    'autostartPrompt.note',
-                    '只会为当前用户开启，之后也可以随时关闭。'
+                    '下次开机，N.E.K.O. 会自动准备好。'
                 ),
                 dismissValue: null,
                 closeOnClickOutside: false,
                 closeOnEscape: false,
                 onShown: function () {
+                    stopPromptVoice();
+                    promptVoice = startAutostartPromptVoice();
                     return postShownAck(promptToken);
                 },
-                buttons: [
-                    {
-                        value: 'never',
-                        text: translate('autostartPrompt.never', '不再提示'),
-                        variant: 'secondary'
-                    },
-                    {
-                        value: 'later',
-                        text: translate('autostartPrompt.later', '稍后再说'),
-                        variant: 'secondary'
-                    },
-                    {
-                        value: 'accept',
-                        text: translate('autostartPrompt.startNow', '开启自启动'),
-                        variant: 'primary'
-                    }
-                ]
+                onResolve: stopPromptVoice,
+                buttons: buttons
             });
 
             if (decision === 'never') {
@@ -571,6 +844,7 @@
                 await handlePromptAcceptance(promptToken);
             }
         } finally {
+            stopPromptVoice();
             state.promptOpen = false;
         }
     }
@@ -652,6 +926,7 @@
 
         state.initialized = true;
         syncForegroundWindow();
+        startForegroundTrackingGate();
         bindEvents();
 
         state.heartbeatTimer = setInterval(function () {

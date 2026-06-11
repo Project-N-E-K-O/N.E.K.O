@@ -1,10 +1,9 @@
 import clsx from 'clsx';
-import SmartTextBlock from './SmartTextBlock';
 import { i18n } from './i18n';
+import MessageBlockView, { isGuideMessage } from './MessageBlockView';
 import {
   type ChatMessage,
   type MessageAction,
-  type MessageBlock,
 } from './message-schema';
 
 type MessageBubbleProps = {
@@ -44,83 +43,6 @@ function getAvatarClassName(message: ChatMessage) {
   });
 }
 
-function MessageBlockView({
-  block,
-  message,
-  isStreaming,
-  onAction,
-}: {
-  block: MessageBlock;
-  message: ChatMessage;
-  isStreaming?: boolean;
-  onAction?: (message: ChatMessage, action: MessageAction) => void;
-}) {
-  if (block.type === 'text') {
-    return <SmartTextBlock text={block.text} isStreaming={isStreaming} />;
-  }
-
-  if (block.type === 'image') {
-    return (
-      <figure
-        className="message-block message-block-image"
-        style={block.width && block.height ? { aspectRatio: `${block.width} / ${block.height}` } : undefined}
-      >
-        <img src={block.url} alt={block.alt || ''} loading="lazy" />
-      </figure>
-    );
-  }
-
-  if (block.type === 'link') {
-    return (
-      <a
-        className="message-block message-block-link"
-        href={block.url}
-        target="_blank"
-        rel="noreferrer"
-      >
-        {block.thumbnailUrl ? (
-          <div className="message-link-thumb">
-            <img src={block.thumbnailUrl} alt="" loading="lazy" />
-          </div>
-        ) : null}
-        <div className="message-link-copy">
-          <div className="message-link-title">{block.title || block.url}</div>
-          {block.description ? <div className="message-link-description">{block.description}</div> : null}
-          <div className="message-link-url">{block.siteName || block.url}</div>
-        </div>
-      </a>
-    );
-  }
-
-  if (block.type === 'status') {
-    return (
-      <div className={`message-block message-block-status tone-${block.tone || 'info'}`}>
-        {block.text}
-      </div>
-    );
-  }
-
-  if (block.type === 'buttons') {
-    return (
-      <div className="message-block message-block-buttons">
-        {block.buttons.map((action) => (
-          <button
-            key={action.id}
-            className={`message-action-button variant-${action.variant || 'secondary'}`}
-            type="button"
-            disabled={action.disabled}
-            onClick={() => onAction?.(message, action)}
-          >
-            {action.label}
-          </button>
-        ))}
-      </div>
-    );
-  }
-
-  return null;
-}
-
 export default function MessageBubble({
   message,
   isGroupedWithPrevious = false,
@@ -130,7 +52,8 @@ export default function MessageBubble({
   const bubbleClassName = getBubbleClassName(message);
   const rowClassName = getRowClassName(message);
   const showAvatar = message.role !== 'system' && !isGroupedWithPrevious;
-  const showMeta = message.role !== 'system';
+  const showMeta = message.role !== 'system' && !isGroupedWithPrevious;
+  const showFailed = message.role !== 'system' && message.status === 'failed';
 
   if (message.role === 'system') {
     return (
@@ -138,6 +61,7 @@ export default function MessageBubble({
         className={rowClassName}
         data-message-id={message.id}
         data-message-role={message.role}
+        data-guide-message={isGuideMessage(message) ? 'true' : undefined}
         data-message-sort-key={message.sortKey ?? ''}
       >
         <div className="system-chip">
@@ -165,6 +89,7 @@ export default function MessageBubble({
       data-message-id={message.id}
       data-message-role={message.role}
       data-message-status={message.status || ''}
+      data-guide-message={isGuideMessage(message) ? 'true' : undefined}
       data-message-sort-key={message.sortKey ?? ''}
     >
       {showAvatar ? (
@@ -178,11 +103,11 @@ export default function MessageBubble({
       )}
 
       <div className="message-stack">
-        {showMeta ? (
+        {(showMeta || showFailed) ? (
           <div className="message-meta">
-            <span className="message-author">{message.author}</span>
-            <span className="message-time">{message.time}</span>
-            {message.status === 'failed' ? <span className="message-delivery message-delivery-failed">{failedStatusLabel}</span> : null}
+            {showMeta ? <span className="message-author">{message.author}</span> : null}
+            {showMeta ? <span className="message-time">{message.time}</span> : null}
+            {showFailed ? <span className="message-delivery message-delivery-failed">{failedStatusLabel}</span> : null}
           </div>
         ) : null}
         <div className={bubbleClassName}>

@@ -8,6 +8,65 @@
 
 // 常量
 const AVATAR_POPUP_ANIMATION_DURATION_MS = 200;
+const AVATAR_POPUP_HOVER_COLLAPSE_DELAY_MS = 260;
+const AVATAR_POPUP_HOVER_BRIDGE_GRACE_MS = 900;
+const AVATAR_POPUP_HOVER_BRIDGE_PADDING_PX = 18;
+const AVATAR_CHARACTER_MANAGER_WINDOW_WIDTH = 1240;
+const AVATAR_CHARACTER_MANAGER_WINDOW_HEIGHT = 940;
+
+function isAvatarFramedSettingsWindowUrl(finalUrl) {
+    return typeof finalUrl === 'string'
+        && (
+            finalUrl.startsWith('/character_card_manager')
+            || finalUrl.startsWith('/chara_manager')
+            || finalUrl.startsWith('/api_key')
+            || finalUrl.startsWith('/memory_browser')
+        );
+}
+
+function buildAvatarCenteredWindowFeatures(width, height) {
+    const availableWidth = Math.max(1, Number(window.screen && (window.screen.availWidth || window.screen.width)) || width);
+    const availableHeight = Math.max(1, Number(window.screen && (window.screen.availHeight || window.screen.height)) || height);
+    const windowWidth = Math.min(width, Math.max(720, availableWidth - 80));
+    const windowHeight = Math.min(height, Math.max(560, availableHeight - 80));
+    // 居中走 core 公共 helper：多显示器下叠加当前屏幕偏移，避免副屏弹窗跳回主屏。
+    if (typeof window.buildCenteredPopupFeatures === 'function') {
+        return window.buildCenteredPopupFeatures(windowWidth, windowHeight);
+    }
+    const left = Math.max(0, Math.floor((availableWidth - windowWidth) / 2));
+    const top = Math.max(0, Math.floor((availableHeight - windowHeight) / 2));
+    return `width=${windowWidth},height=${windowHeight},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+}
+
+function buildAvatarFullscreenWindowFeatures() {
+    const screenRef = window.screen || {};
+    const width = Math.max(720, Math.floor(Number(screenRef.availWidth || screenRef.width) || 1280));
+    const height = Math.max(560, Math.floor(Number(screenRef.availHeight || screenRef.height) || 900));
+    const left = Number.isFinite(screenRef.availLeft) ? screenRef.availLeft : 0;
+    const top = Number.isFinite(screenRef.availTop) ? screenRef.availTop : 0;
+    return `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+}
+
+function getAvatarNavigationWindowFeatures(finalUrl) {
+    if (isAvatarFramedSettingsWindowUrl(finalUrl)) {
+        return buildAvatarCenteredWindowFeatures(
+            AVATAR_CHARACTER_MANAGER_WINDOW_WIDTH,
+            AVATAR_CHARACTER_MANAGER_WINDOW_HEIGHT
+        );
+    }
+    return undefined;
+}
+
+function clearAvatarSidePanelHoverState(panel) {
+    if (!panel) return;
+    if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
+    if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
+    if (typeof panel._stopHoverPointerTracking === 'function') panel._stopHoverPointerTracking();
+}
+
+if (typeof window !== 'undefined') {
+    window.clearAvatarSidePanelHoverState = clearAvatarSidePanelHoverState;
+}
 
 /**
  * 注入指定前缀的 CSS 样式
@@ -160,13 +219,12 @@ function injectPopupStyles(prefix) {
         .${prefix}-toggle-item:hover:not([aria-disabled="true"]) {
             background: var(--neko-popup-hover, rgba(68, 183, 254, 0.1));
         }
-        .${prefix}-toggle-item.${prefix}-toggle-item-static,
         .${prefix}-toggle-item.${prefix}-toggle-item-static:hover:not([aria-disabled="true"]) {
-            background: var(--neko-popup-selected-bg, rgba(68, 183, 254, 0.1)) !important;
+            background: var(--neko-popup-hover, rgba(68, 183, 254, 0.1)) !important;
         }
         .${prefix}-toggle-item.${prefix}-toggle-item-static .${prefix}-toggle-indicator[aria-checked="true"] {
-            background-color: #69c5ff;
-            border-color: #69c5ff;
+            background-color: var(--neko-popup-accent, #44b7fe);
+            border-color: var(--neko-popup-accent, #44b7fe);
         }
         .${prefix}-settings-menu-item {
             display: flex;
@@ -236,8 +294,7 @@ function createPopup(manager, prefix, buttonId) {
     if (existingPopup) {
         const existingId = existingPopup.id;
         document.querySelectorAll(`[data-neko-sidepanel-owner="${existingId}"]`).forEach(panel => {
-            if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
-            if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
+            clearAvatarSidePanelHoverState(panel);
             panel.remove();
         });
         if (existingPopup._hideTimeoutId) { clearTimeout(existingPopup._hideTimeoutId); }
@@ -337,7 +394,7 @@ function createSettingsPopupContent(manager, prefix, popup) {
     // 4. 主动搭话和自主视觉（角色设置已移至分隔线下方的导航菜单区域）
     const settingsToggles = [
         { id: 'proactive-chat', label: window.t ? window.t('settings.toggles.proactiveChat') : '主动搭话', labelKey: 'settings.toggles.proactiveChat', storageKey: 'proactiveChatEnabled', hasInterval: true, intervalKey: 'proactiveChatInterval', defaultInterval: 15 },
-        { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '自主视觉', labelKey: 'settings.toggles.proactiveVision', storageKey: 'proactiveVisionEnabled', hasInterval: true, intervalKey: 'proactiveVisionInterval', defaultInterval: 15 }
+        { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '隐私模式', labelKey: 'settings.toggles.proactiveVision', tooltipKey: 'settings.toggles.proactiveVisionTooltip', storageKey: 'proactiveVisionEnabled', hasInterval: true, intervalKey: 'proactiveVisionInterval', defaultInterval: 15, inverted: true }
     ];
 
     settingsToggles.forEach(toggle => {
@@ -404,11 +461,27 @@ function createSettingsPopupContent(manager, prefix, popup) {
 }
 
 /**
+ * 将菜单锚点 ID 标准化：trim、小写、去非法字符，再拼 ${prefix}-menu-${id}。
+ */
+function createMenuAnchorId(prefix, rawId) {
+    if (!rawId) return '';
+    var sanitized = String(rawId)
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^[-]+|[-]+$/g, '');
+    return sanitized ? `${prefix}-menu-${sanitized}` : '';
+}
+
+/**
  * 创建设置菜单按钮
  */
 function createSettingsMenuButton(manager, prefix, config) {
     const btn = document.createElement('div');
     btn.className = `${prefix}-settings-menu-item`;
+    var btnAnchorId = createMenuAnchorId(prefix, config && config.id);
+    if (btnAnchorId) btn.id = btnAnchorId;
     Object.assign(btn.style, {
         justifyContent: 'space-between'
     });
@@ -493,6 +566,7 @@ function createChatSettingsSidePanel(manager, prefix, popup) {
         { id: 'merge-messages', label: window.t ? window.t('settings.toggles.mergeMessages') : '合并消息', labelKey: 'settings.toggles.mergeMessages', alwaysTinted: true },
         { id: 'focus-mode', label: window.t ? window.t('settings.toggles.allowInterrupt') : '允许打断', labelKey: 'settings.toggles.allowInterrupt', storageKey: 'focusModeEnabled', inverted: true, alwaysTinted: true },
         { id: 'avatar-reaction-bubble', label: window.t ? window.t('settings.toggles.avatarReactionBubble') : '表情气泡', labelKey: 'settings.toggles.avatarReactionBubble', storageKey: 'avatarReactionBubbleEnabled', alwaysTinted: true },
+        { id: 'auto-cat', label: window.t ? window.t('settings.toggles.autoCat') : '自动变猫', labelKey: 'settings.toggles.autoCat', tooltipKey: 'settings.toggles.autoCatTooltip', alwaysTinted: true },
     ];
 
     chatToggles.forEach(toggle => {
@@ -568,20 +642,20 @@ function createTextGuardSlider(manager, prefix) {
 
     const slider = document.createElement('input');
     slider.type = 'range';
-    // 滑动条位置：0-10 对应 50-1500（每档150字），11 对应无限制
-    // 默认值 350字 = (350-50)/150 = 2
+    // 滑动条位置：0-10 对应 100-1100（每档 100 tokens），11 对应无限制
+    // 默认值 300 tokens = (300-100)/100 = 2
     slider.min = '0';
     slider.max = '11';
     slider.step = '1';
 
     // 当前值转换：数值 -> 滑动条位置
-    const currentValue = typeof window.textGuardMaxLength !== 'undefined' ? window.textGuardMaxLength : 350;
+    const currentValue = typeof window.textGuardMaxLength !== 'undefined' ? window.textGuardMaxLength : 300;
     let currentPosition;
     if (currentValue === 0 || currentValue === null || currentValue === undefined) {
         currentPosition = 11; // 无限制
     } else {
-        // 找到最接近的档位：50 + position * 150
-        currentPosition = Math.min(10, Math.max(0, Math.round((currentValue - 50) / 150)));
+        // 找到最接近的档位：100 + position * 100
+        currentPosition = Math.min(10, Math.max(0, Math.round((currentValue - 100) / 100)));
     }
     slider.value = currentPosition;
 
@@ -599,9 +673,10 @@ function createTextGuardSlider(manager, prefix) {
             valueDisplay.textContent = unlimitedText;
             valueDisplay.setAttribute('data-i18n', 'settings.toggles.unlimited');
         } else {
-            const value = 50 + parseInt(position) * 150;
-            const unit = (typeof window.t === 'function') ? window.t('settings.toggles.characters') : '字';
-            valueDisplay.textContent = `${value}${unit}`;
+            const value = 100 + parseInt(position) * 100;
+            // 单位从"字"切到 token：UI label 用独立的 i18n key（locale 文件已同步）。
+            const unit = (typeof window.t === 'function') ? window.t('settings.toggles.tokens') : 'tokens';
+            valueDisplay.textContent = `${value} ${unit}`;
             valueDisplay.removeAttribute('data-i18n');
         }
     };
@@ -619,11 +694,11 @@ function createTextGuardSlider(manager, prefix) {
         if (position === 11) {
             value = 0; // 0 表示无限制
         } else {
-            value = 50 + position * 150;
+            value = 100 + position * 100;
         }
         window.textGuardMaxLength = value;
         if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
-        console.log(`[TextGuard] 回复字数限制已设置为 ${value === 0 ? '无限制' : value + '字'}`);
+        console.log(`[TextGuard] 回复 token 上限已设置为 ${value === 0 ? '无限制' : value + ' tokens'}`);
     });
 
     slider.addEventListener('click', (e) => e.stopPropagation());
@@ -790,7 +865,8 @@ function createSidePanelMenuItem(manager, prefix, item) {
                 finalUrl = `${item.urlBase}?lanlan_name=${encodeURIComponent(lanlanName)}`;
                 isOpening = true;
                 windowName = `neko_${item.id}_${encodeURIComponent(lanlanName || 'default')}`;
-                openAndPauseMainUI(finalUrl, windowName);
+                features = buildAvatarFullscreenWindowFeatures();
+                openAndPauseMainUI(finalUrl, windowName, features);
                 setTimeout(() => { isOpening = false; }, 500);
             } else if (item.id === 'voice-clone' && item.url) {
                 const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
@@ -812,11 +888,21 @@ function createSidePanelMenuItem(manager, prefix, item) {
                 }
                 setTimeout(() => { isOpening = false; }, 500);
             } else if (item.url) {
+                if (isAvatarFramedSettingsWindowUrl(finalUrl)) {
+                    if (typeof finalUrl === 'string' && (finalUrl.startsWith('/character_card_manager') || finalUrl.startsWith('/chara_manager'))) {
+                        windowName = 'neko_chara_manager';
+                    } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/api_key')) {
+                        windowName = 'neko_api_key';
+                    } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/memory_browser')) {
+                        windowName = 'neko_memory_browser';
+                    }
+                    features = getAvatarNavigationWindowFeatures(finalUrl);
+                }
                 isOpening = true;
                 if (typeof window.openOrFocusWindow === 'function') {
-                    window.openOrFocusWindow(finalUrl, windowName);
+                    window.openOrFocusWindow(finalUrl, windowName, features);
                 } else {
-                    window.open(finalUrl, windowName);
+                    window.open(finalUrl, windowName, features);
                 }
                 setTimeout(() => { isOpening = false; }, 500);
             }
@@ -1090,6 +1176,20 @@ function createAnimationSettingsSidePanel(manager, prefix) {
         boxSizing: 'border-box',
         transition: 'background 0.2s ease'
     };
+    const updateTrackingToggleRowBackground = (row, checked) => {
+        if (!row) return;
+        const hovered = row.matches(':hover');
+        row.style.background = hovered
+            ? (checked
+                ? 'var(--neko-popup-selected-hover, rgba(68,183,254,0.15))'
+                : 'var(--neko-popup-hover-subtle, rgba(68,183,254,0.08))')
+            : 'transparent';
+    };
+    const bindTrackingToggleRowHover = (row, getChecked) => {
+        if (!row || typeof getChecked !== 'function') return;
+        row.addEventListener('mouseenter', () => updateTrackingToggleRowBackground(row, getChecked()));
+        row.addEventListener('mouseleave', () => updateTrackingToggleRowBackground(row, getChecked()));
+    };
 
     // 鼠标跟踪复选框
     const checkbox = document.createElement('input');
@@ -1101,9 +1201,11 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     const { indicator, updateStyle: updateIndicatorStyle } = manager._createCheckIndicator();
     Object.assign(indicator.style, { width: '20px', height: '20px', flexShrink: '0' });
 
+    let trackingClickArea = null;
     const updateRowStyle = () => {
         const isChecked = checkbox.checked;
         updateIndicatorStyle(isChecked);
+        updateTrackingToggleRowBackground(trackingClickArea, isChecked);
     };
     checkbox.updateStyle = updateRowStyle;
     updateRowStyle();
@@ -1115,11 +1217,13 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     Object.assign(label.style, { userSelect: 'none', fontSize: '12px', whiteSpace: 'nowrap' });
 
     // 鼠标跟踪点击区域（左半部分）
-    const trackingClickArea = document.createElement('div');
+    trackingClickArea = document.createElement('div');
     Object.assign(trackingClickArea.style, trackingToggleRowStyle);
     trackingClickArea.appendChild(checkbox);
     trackingClickArea.appendChild(indicator);
     trackingClickArea.appendChild(label);
+    bindTrackingToggleRowHover(trackingClickArea, () => checkbox.checked);
+    updateRowStyle();
 
     const handleTrackingChange = () => {
         const enabled = !checkbox.checked;
@@ -1127,10 +1231,12 @@ function createAnimationSettingsSidePanel(manager, prefix) {
         updateRowStyle();
         updateTrackingModeToggleState();
         trackingClickArea.setAttribute('aria-checked', String(enabled));
-        if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
+        // 必须先跑回调写 window.mouseTrackingEnabled，再 save——saveSettings 是从该
+        // 全局变量读值落盘的，顺序反了会把切换前的旧值持久化（刷新后看着像被重置）
         if (typeof manager._onMouseTrackingToggle === 'function') {
             manager._onMouseTrackingToggle(enabled);
         }
+        if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
     };
 
     trackingClickArea.addEventListener('click', (e) => {
@@ -1163,8 +1269,10 @@ function createAnimationSettingsSidePanel(manager, prefix) {
         modeClickArea.tabIndex = isEnabled ? 0 : -1;
     };
 
+    let modeClickArea = null;
     const updateModeRowStyle = () => {
         updateModeIndicatorStyle(modeCheckbox.checked);
+        updateTrackingToggleRowBackground(modeClickArea, modeCheckbox.checked);
     };
 
     const getTrackingModeState = () => {
@@ -1189,11 +1297,13 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     }
     Object.assign(modeLabel.style, { userSelect: 'none', fontSize: '12px', whiteSpace: 'nowrap' });
 
-    const modeClickArea = document.createElement('div');
+    modeClickArea = document.createElement('div');
     Object.assign(modeClickArea.style, trackingToggleRowStyle);
     modeClickArea.appendChild(modeCheckbox);
     modeClickArea.appendChild(modeIndicator);
     modeClickArea.appendChild(modeLabel);
+    bindTrackingToggleRowHover(modeClickArea, () => modeCheckbox.checked);
+    updateModeRowStyle();
 
     // 初始化跟踪模式按钮状态
     updateTrackingModeToggleState();
@@ -1254,6 +1364,7 @@ function createAnimationSettingsSidePanel(manager, prefix) {
 
     const updateHoverFadeRowStyle = () => {
         updateHoverFadeIndicatorStyle(hoverFadeCheckbox.checked);
+        updateTrackingToggleRowBackground(hoverFadeRow, hoverFadeCheckbox.checked);
         hoverFadeRow.setAttribute('aria-checked', String(hoverFadeCheckbox.checked));
     };
     hoverFadeCheckbox.updateStyle = updateHoverFadeRowStyle;
@@ -1268,6 +1379,8 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     hoverFadeRow.appendChild(hoverFadeIndicator);
     hoverFadeRow.appendChild(hoverFadeLabel);
     Object.assign(hoverFadeRow.style, { cursor: 'pointer' });
+    bindTrackingToggleRowHover(hoverFadeRow, () => hoverFadeCheckbox.checked);
+    updateHoverFadeRowStyle();
 
     const handleHoverFadeChange = () => {
         const enabled = !hoverFadeCheckbox.checked;
@@ -1308,6 +1421,14 @@ function createAnimationSettingsSidePanel(manager, prefix) {
 function createSidePanelContainer(manager, prefix, options = {}) {
     const container = document.createElement('div');
     container.setAttribute('data-neko-sidepanel', '');
+    const getInteractionGuardDelay = () => {
+        const sidePanelType = container.getAttribute('data-neko-sidepanel-type') || '';
+        if (sidePanelType === 'agent-user-plugin-actions' || sidePanelType === 'agent-openclaw-actions') {
+            return 220;
+        }
+        return 0;
+    };
+    container._getInteractionGuardDelay = getInteractionGuardDelay;
     Object.assign(container.style, {
         position: 'fixed',
         display: 'none',
@@ -1342,41 +1463,138 @@ function createSidePanelContainer(manager, prefix, options = {}) {
     });
     container.addEventListener('click', stopEventPropagation);
 
-    container._expand = () => {
-        if (container.style.display === 'flex' && container.style.opacity !== '0') return;
-        if (container._collapseTimeout) { clearTimeout(container._collapseTimeout); container._collapseTimeout = null; }
-
-        container.style.display = 'flex';
-        container.style.pointerEvents = 'none';
-        const savedTransition = container.style.transition;
-        container.style.transition = 'none';
-        container.style.opacity = '0';
-        container.style.left = '';
-        container.style.right = '';
-        container.style.top = '';
-        container.style.transform = '';
-        void container.offsetHeight;
-        container.style.transition = savedTransition;
-
+    const positionContainerFromAnchor = () => {
         const anchor = container._anchorElement;
-        if (anchor && window.AvatarPopupUI && window.AvatarPopupUI.positionSidePanel) {
+        if (!anchor) {
+            return false;
+        }
+        const anchorRect = anchor.getBoundingClientRect();
+        if (!anchorRect || anchorRect.width <= 0 || anchorRect.height <= 0) {
+            return false;
+        }
+
+        if (window.AvatarPopupUI && typeof window.AvatarPopupUI.positionSidePanel === 'function') {
             window.AvatarPopupUI.positionSidePanel(container, anchor);
         }
 
-        requestAnimationFrame(() => {
-            container.style.pointerEvents = 'auto';
+        const rect = container.getBoundingClientRect();
+        const horizontalGap = rect
+            ? Math.max(0, anchorRect.left - rect.right, rect.left - anchorRect.right)
+            : Infinity;
+        const verticalGap = rect
+            ? Math.max(0, anchorRect.top - rect.bottom, rect.top - anchorRect.bottom)
+            : Infinity;
+        const nearAnchor = (
+            horizontalGap <= Math.max(420, rect.width + anchorRect.width + 80)
+            && verticalGap <= Math.max(220, rect.height + anchorRect.height + 80)
+        );
+        if (
+            rect
+            && rect.width > 0
+            && rect.height > 0
+            && rect.right > 0
+            && rect.bottom > 0
+            && rect.left < window.innerWidth
+            && rect.top < window.innerHeight
+            && nearAnchor
+            && (container.style.left || container.style.right || container.style.top)
+        ) {
+            return true;
+        }
+
+        const edgeMargin = 8;
+        const gap = 12;
+        const panelW = container.offsetWidth || rect.width || 180;
+        const panelH = container.offsetHeight || rect.height || 40;
+        const placeLeft = anchorRect.left >= (window.innerWidth / 2);
+        let left = placeLeft
+            ? anchorRect.left - gap - panelW
+            : anchorRect.right + gap;
+        let top = anchorRect.top;
+
+        left = Math.max(edgeMargin, Math.min(left, window.innerWidth - edgeMargin - panelW));
+        top = Math.max(edgeMargin, Math.min(top, window.innerHeight - 60 - panelH));
+        container.style.left = `${left}px`;
+        container.style.right = 'auto';
+        container.style.top = `${top}px`;
+        container.style.transform = placeLeft ? 'translateX(6px)' : 'translateX(-6px)';
+        return true;
+    };
+
+    container._expand = () => {
+        const alreadyVisible = container.style.display === 'flex' && container.style.opacity !== '0';
+        const visibilityRevision = (container._visibilityRevision || 0) + 1;
+        container._visibilityRevision = visibilityRevision;
+        if (container._expandFrameId) {
+            cancelAnimationFrame(container._expandFrameId);
+            container._expandFrameId = null;
+        }
+        if (container._collapseTimeout) { clearTimeout(container._collapseTimeout); container._collapseTimeout = null; }
+        if (container._interactionGuardTimer) { clearTimeout(container._interactionGuardTimer); container._interactionGuardTimer = null; }
+
+        container.style.display = 'flex';
+        container.style.pointerEvents = alreadyVisible ? 'auto' : 'none';
+        if (!alreadyVisible) {
+            const savedTransition = container.style.transition;
+            container.style.transition = 'none';
+            container.style.opacity = '0';
+            container.style.left = '';
+            container.style.right = '';
+            container.style.top = '';
+            container.style.transform = '';
+            void container.offsetHeight;
+            container.style.transition = savedTransition;
+        }
+        const positioned = positionContainerFromAnchor();
+        if (!positioned) {
+            container.style.opacity = '0';
+            container.style.display = 'none';
+            container.style.pointerEvents = 'none';
+            container._visibilityRevision = visibilityRevision + 1;
+            return false;
+        }
+
+        container._expandFrameId = requestAnimationFrame(() => {
+            container._expandFrameId = null;
+            if (container._visibilityRevision !== visibilityRevision || container.style.display === 'none') {
+                return;
+            }
             container.style.opacity = '1';
             container.style.transform = 'translateX(0)';
+            if (alreadyVisible) {
+                container.style.pointerEvents = 'auto';
+                return;
+            }
+            const interactionGuardDelay = getInteractionGuardDelay();
+            if (interactionGuardDelay > 0) {
+                container._interactionGuardTimer = setTimeout(() => {
+                    container.style.pointerEvents = 'auto';
+                    container._interactionGuardTimer = null;
+                }, interactionGuardDelay);
+            } else {
+                container.style.pointerEvents = 'auto';
+            }
         });
+        return true;
     };
 
     container._collapse = () => {
         if (container.style.display === 'none') return;
+        container._visibilityRevision = (container._visibilityRevision || 0) + 1;
+        const visibilityRevision = container._visibilityRevision;
+        if (container._expandFrameId) {
+            cancelAnimationFrame(container._expandFrameId);
+            container._expandFrameId = null;
+        }
         if (container._collapseTimeout) { clearTimeout(container._collapseTimeout); container._collapseTimeout = null; }
+        if (container._interactionGuardTimer) { clearTimeout(container._interactionGuardTimer); container._interactionGuardTimer = null; }
+        container.style.pointerEvents = 'none';
         container.style.opacity = '0';
         container.style.transform = container.dataset.goLeft === 'true' ? 'translateX(6px)' : 'translateX(-6px)';
         container._collapseTimeout = setTimeout(() => {
-            if (container.style.opacity === '0') container.style.display = 'none';
+            if (container._visibilityRevision === visibilityRevision && container.style.opacity === '0') {
+                container.style.display = 'none';
+            }
             container._collapseTimeout = null;
         }, AVATAR_POPUP_ANIMATION_DURATION_MS);
     };
@@ -1394,31 +1612,131 @@ function createSidePanelContainer(manager, prefix, options = {}) {
 function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
     const popupEl = sidePanel._popupElement || null;
     const ownerId = popupEl && popupEl.id ? popupEl.id : '';
+    let lastPointerPosition = null;
+    let isPointerTracking = false;
+    const isTutorialHoverDisabled = () => {
+        if (window.isInTutorial !== true) {
+            return false;
+        }
+
+        const sidePanelType = sidePanel && typeof sidePanel.getAttribute === 'function'
+            ? (sidePanel.getAttribute('data-neko-sidepanel-type') || '')
+            : '';
+
+        return [
+            'agent-user-plugin-actions',
+            'agent-openclaw-actions',
+            'chat-settings',
+            'animation-settings',
+            'interval-proactive-chat',
+            'interval-proactive-vision',
+            'character-settings'
+        ].includes(sidePanelType);
+    };
 
     if (ownerId) sidePanel.setAttribute('data-neko-sidepanel-owner', ownerId);
 
-    const collapseWithDelay = (delay = 80) => {
+    const rememberPointerPosition = (event) => {
+        if (!event || typeof event.clientX !== 'number' || typeof event.clientY !== 'number') return;
+        lastPointerPosition = { x: event.clientX, y: event.clientY };
+    };
+
+    const startPointerTracking = () => {
+        if (isPointerTracking) return;
+        document.addEventListener('mousemove', rememberPointerPosition, true);
+        document.addEventListener('pointermove', rememberPointerPosition, true);
+        isPointerTracking = true;
+    };
+
+    const stopPointerTracking = () => {
+        if (!isPointerTracking) return;
+        document.removeEventListener('mousemove', rememberPointerPosition, true);
+        document.removeEventListener('pointermove', rememberPointerPosition, true);
+        isPointerTracking = false;
+    };
+    sidePanel._stopHoverPointerTracking = stopPointerTracking;
+
+    const isHoveringAnchorOrPanel = () => {
+        return anchorEl.matches(':hover') || sidePanel.matches(':hover');
+    };
+
+    const isPointerInTransferBridge = () => {
+        if (!lastPointerPosition || sidePanel.style.display === 'none') return false;
+        const anchorRect = anchorEl.getBoundingClientRect();
+        const panelRect = sidePanel.getBoundingClientRect();
+        if (!anchorRect || !panelRect || panelRect.width <= 0 || panelRect.height <= 0) return false;
+
+        const padding = AVATAR_POPUP_HOVER_BRIDGE_PADDING_PX;
+        const left = Math.min(anchorRect.left, panelRect.left) - padding;
+        const right = Math.max(anchorRect.right, panelRect.right) + padding;
+        const top = Math.min(anchorRect.top, panelRect.top) - padding;
+        const bottom = Math.max(anchorRect.bottom, panelRect.bottom) + padding;
+        return lastPointerPosition.x >= left
+            && lastPointerPosition.x <= right
+            && lastPointerPosition.y >= top
+            && lastPointerPosition.y <= bottom;
+    };
+
+    const collapseWithDelay = (delay = AVATAR_POPUP_HOVER_COLLAPSE_DELAY_MS) => {
+        if (isTutorialHoverDisabled()) {
+            if (sidePanel._hoverCollapseTimer) {
+                clearTimeout(sidePanel._hoverCollapseTimer);
+                sidePanel._hoverCollapseTimer = null;
+            }
+            stopPointerTracking();
+            return;
+        }
+        const interactionGuardDelay = typeof sidePanel._getInteractionGuardDelay === 'function'
+            ? sidePanel._getInteractionGuardDelay()
+            : 0;
+        const normalizedDelay = interactionGuardDelay > 0
+            ? Math.max(delay, interactionGuardDelay) + 80
+            : delay;
         if (sidePanel._hoverCollapseTimer) { clearTimeout(sidePanel._hoverCollapseTimer); sidePanel._hoverCollapseTimer = null; }
-        sidePanel._hoverCollapseTimer = setTimeout(() => {
-            if (!anchorEl.matches(':hover') && !sidePanel.matches(':hover')) sidePanel._collapse();
+        startPointerTracking();
+        const bridgeGraceStartedAt = Date.now();
+        const attemptCollapse = () => {
             sidePanel._hoverCollapseTimer = null;
-        }, delay);
+            if (!sidePanel.isConnected || isTutorialHoverDisabled()) {
+                stopPointerTracking();
+                return;
+            }
+            if (isHoveringAnchorOrPanel()) {
+                stopPointerTracking();
+                return;
+            }
+            if (
+                isPointerInTransferBridge()
+                && Date.now() - bridgeGraceStartedAt < AVATAR_POPUP_HOVER_BRIDGE_GRACE_MS
+            ) {
+                sidePanel._hoverCollapseTimer = setTimeout(attemptCollapse, 90);
+                return;
+            }
+            sidePanel._collapse();
+            stopPointerTracking();
+        };
+        sidePanel._hoverCollapseTimer = setTimeout(attemptCollapse, normalizedDelay);
     };
 
     const expandPanel = () => {
+        if (isTutorialHoverDisabled()) return;
         if (window.AvatarPopupUI && window.AvatarPopupUI.collapseOtherSidePanels) {
             window.AvatarPopupUI.collapseOtherSidePanels(sidePanel);
         }
         void document.body.offsetHeight;
         if (sidePanel._hoverCollapseTimer) { clearTimeout(sidePanel._hoverCollapseTimer); sidePanel._hoverCollapseTimer = null; }
+        stopPointerTracking();
         sidePanel._expand();
     };
     const collapsePanel = (e) => {
+        if (isTutorialHoverDisabled()) return;
+        rememberPointerPosition(e);
         const target = e.relatedTarget;
         if (!target || (!anchorEl.contains(target) && !sidePanel.contains(target))) collapseWithDelay();
     };
 
     anchorEl.addEventListener('mouseenter', expandPanel);
+    anchorEl.addEventListener('mousemove', rememberPointerPosition);
     anchorEl.addEventListener('mouseleave', collapsePanel);
     sidePanel.addEventListener('mouseenter', () => {
         expandPanel();
@@ -1431,12 +1749,15 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
         collapsePanel(e);
         if (manager.interaction) manager.interaction._isMouseOverButtons = false;
     });
+    sidePanel.addEventListener('mousemove', rememberPointerPosition);
 
     if (popupEl) {
         popupEl.addEventListener('mouseleave', (e) => {
+            rememberPointerPosition(e);
             const target = e.relatedTarget;
-            if (!target || (!anchorEl.contains(target) && !sidePanel.contains(target))) collapseWithDelay(60);
+            if (!target || (!anchorEl.contains(target) && !sidePanel.contains(target))) collapseWithDelay();
         });
+        popupEl.addEventListener('mousemove', rememberPointerPosition);
     }
 }
 
@@ -1492,7 +1813,7 @@ function createIntervalControl(manager, prefix, toggle) {
     });
 
     const labelKey = toggle.id === 'proactive-chat' ? 'settings.interval.chatIntervalBase' : 'settings.interval.visionInterval';
-    const defaultLabel = toggle.id === 'proactive-chat' ? '基础间隔' : '读取间隔';
+    const defaultLabel = toggle.id === 'proactive-chat' ? '最低间隔' : '感知间隔';
     const labelText = document.createElement('span');
     labelText.textContent = window.t ? window.t(labelKey) : defaultLabel;
     labelText.setAttribute('data-i18n', labelKey);
@@ -1542,6 +1863,12 @@ function createIntervalControl(manager, prefix, toggle) {
 
     container._expand = () => {
         if (container.style.display === 'flex' && container.style.opacity !== '0') return;
+        const visibilityRevision = (container._visibilityRevision || 0) + 1;
+        container._visibilityRevision = visibilityRevision;
+        if (container._expandFrameId) {
+            cancelAnimationFrame(container._expandFrameId);
+            container._expandFrameId = null;
+        }
         if (container._collapseTimeout) { clearTimeout(container._collapseTimeout); container._collapseTimeout = null; }
 
         container.style.display = 'flex';
@@ -1561,7 +1888,11 @@ function createIntervalControl(manager, prefix, toggle) {
             window.AvatarPopupUI.positionSidePanel(container, anchor);
         }
 
-        requestAnimationFrame(() => {
+        container._expandFrameId = requestAnimationFrame(() => {
+            container._expandFrameId = null;
+            if (container._visibilityRevision !== visibilityRevision || container.style.display === 'none') {
+                return;
+            }
             container.style.pointerEvents = 'auto';
             container.style.opacity = '1';
             container.style.transform = 'translateX(0)';
@@ -1570,11 +1901,17 @@ function createIntervalControl(manager, prefix, toggle) {
 
     container._collapse = () => {
         if (container.style.display === 'none') return;
+        container._visibilityRevision = (container._visibilityRevision || 0) + 1;
+        const visibilityRevision = container._visibilityRevision;
+        if (container._expandFrameId) {
+            cancelAnimationFrame(container._expandFrameId);
+            container._expandFrameId = null;
+        }
         if (container._collapseTimeout) { clearTimeout(container._collapseTimeout); container._collapseTimeout = null; }
         container.style.opacity = '0';
         container.style.transform = container.dataset.goLeft === 'true' ? 'translateX(6px)' : 'translateX(-6px)';
         container._collapseTimeout = setTimeout(() => {
-            if (container.style.opacity === '0') container.style.display = 'none';
+            if (container._visibilityRevision === visibilityRevision && container.style.opacity === '0') container.style.display = 'none';
             container._collapseTimeout = null;
         }, AVATAR_POPUP_ANIMATION_DURATION_MS);
     };
@@ -1642,6 +1979,7 @@ function createCheckIndicator(manager, prefix) {
 function createToggleItem(manager, prefix, toggle, popup) {
     const toggleItem = document.createElement('div');
     toggleItem.className = `${prefix}-toggle-item`;
+    toggleItem.id = `${prefix}-toggle-${toggle.id}`;
     toggleItem.setAttribute('role', 'switch');
     toggleItem.setAttribute('tabIndex', toggle.initialDisabled ? '-1' : '0');
     toggleItem.setAttribute('aria-checked', 'false');
@@ -1777,6 +2115,11 @@ function createSettingsToggleItem(manager, prefix, toggle) {
     toggleItem.setAttribute('tabIndex', '0');
     toggleItem.setAttribute('aria-checked', 'false');
     toggleItem.setAttribute('aria-label', toggle.label);
+    if (toggle.tooltipKey) {
+        const tooltipText = window.t ? window.t(toggle.tooltipKey) : '';
+        if (tooltipText) toggleItem.title = tooltipText;
+        toggleItem.setAttribute('data-i18n-title', toggle.tooltipKey);
+    }
     Object.assign(toggleItem.style, {
         padding: '8px 12px'
     });
@@ -1809,9 +2152,11 @@ function createSettingsToggleItem(manager, prefix, toggle) {
     } else if (toggle.id === 'proactive-chat' && typeof window.proactiveChatEnabled !== 'undefined') {
         checkbox.checked = window.proactiveChatEnabled;
     } else if (toggle.id === 'proactive-vision' && typeof window.proactiveVisionEnabled !== 'undefined') {
-        checkbox.checked = window.proactiveVisionEnabled;
+        checkbox.checked = toggle.inverted ? !window.proactiveVisionEnabled : window.proactiveVisionEnabled;
     } else if (toggle.id === 'fullscreen-tracking' && typeof window.live2dFullscreenTrackingEnabled !== 'undefined') {
         checkbox.checked = window.live2dFullscreenTrackingEnabled;
+    } else if (toggle.id === 'auto-cat' && window.nekoAutoGoodbye && typeof window.nekoAutoGoodbye.isAutoCatEnabled === 'function') {
+        checkbox.checked = window.nekoAutoGoodbye.isAutoCatEnabled();
     }
 
     const indicator = document.createElement('div');
@@ -1827,7 +2172,7 @@ function createSettingsToggleItem(manager, prefix, toggle) {
 
     const updateIndicatorStyle = (checked) => {
         if (checked) {
-            const activeColor = toggle.alwaysTinted ? '#69c5ff' : 'var(--neko-popup-accent, #44b7fe)';
+            const activeColor = 'var(--neko-popup-accent, #44b7fe)';
             indicator.style.backgroundColor = activeColor;
             indicator.style.borderColor = activeColor;
             checkmark.style.opacity = '1';
@@ -1854,13 +2199,14 @@ function createSettingsToggleItem(manager, prefix, toggle) {
 
     const updateStyle = () => {
         const isChecked = checkbox.checked;
+        const hovered = toggleItem.matches(':hover');
         toggleItem.setAttribute('aria-checked', isChecked ? 'true' : 'false');
         indicator.setAttribute('aria-checked', isChecked ? 'true' : 'false');
         updateIndicatorStyle(isChecked);
-        toggleItem.style.background = toggle.alwaysTinted
-            ? 'var(--neko-popup-selected-bg, rgba(68,183,254,0.1))'
-            : isChecked
-            ? 'var(--neko-popup-selected-bg, rgba(68,183,254,0.1))'
+        toggleItem.style.background = hovered
+            ? (isChecked
+                ? 'var(--neko-popup-selected-hover, rgba(68,183,254,0.15))'
+                : 'var(--neko-popup-hover-subtle, rgba(68,183,254,0.08))')
             : 'transparent';
     };
 
@@ -1870,18 +2216,12 @@ function createSettingsToggleItem(manager, prefix, toggle) {
     toggleItem.appendChild(indicator);
     toggleItem.appendChild(label);
 
-    if (!toggle.alwaysTinted) {
-        toggleItem.addEventListener('mouseenter', () => {
-            if (checkbox.checked) {
-                toggleItem.style.background = 'var(--neko-popup-selected-hover, rgba(68,183,254,0.15))';
-            } else {
-                toggleItem.style.background = 'var(--neko-popup-hover-subtle, rgba(68,183,254,0.08))';
-            }
-        });
-        toggleItem.addEventListener('mouseleave', () => {
-            updateStyle();
-        });
-    }
+    toggleItem.addEventListener('mouseenter', () => {
+        updateStyle();
+    });
+    toggleItem.addEventListener('mouseleave', () => {
+        updateStyle();
+    });
 
     const handleToggleChange = (isChecked) => {
         updateStyle();
@@ -1919,11 +2259,12 @@ function createSettingsToggleItem(manager, prefix, toggle) {
                 window.stopProactiveChatSchedule();
             }
         } else if (toggle.id === 'proactive-vision') {
-            window.proactiveVisionEnabled = isChecked;
+            const visionEnabled = toggle.inverted ? !isChecked : isChecked;
+            window.proactiveVisionEnabled = visionEnabled;
             if (typeof window.saveNEKOSettings === 'function') {
                 window.saveNEKOSettings();
             }
-            if (isChecked) {
+            if (visionEnabled) {
                 if (typeof window.acquireProactiveVisionStream === 'function') {
                     window.acquireProactiveVisionStream();
                 }
@@ -1955,6 +2296,12 @@ function createSettingsToggleItem(manager, prefix, toggle) {
             }
             if (typeof window.saveNEKOSettings === 'function') {
                 window.saveNEKOSettings();
+            }
+        } else if (toggle.id === 'auto-cat') {
+            // 「自动变猫」开关：开=启用自动 idle 变猫（默认）。状态由 app-auto-goodbye 自管（独立 localStorage），
+            // 不走 saveNEKOSettings 的 server-sync 对话设置管线。
+            if (window.nekoAutoGoodbye && typeof window.nekoAutoGoodbye.setAutoCatEnabled === 'function') {
+                window.nekoAutoGoodbye.setAutoCatEnabled(isChecked);
             }
         }
     };
@@ -2097,6 +2444,8 @@ const AvatarPopupMixin = {
         ManagerProto._createMenuItem = function (item, isSubmenuItem = false) {
             const menuItem = document.createElement('div');
             menuItem.className = `${prefix}-settings-menu-item`;
+            var itemAnchorId = createMenuAnchorId(prefix, item && item.id);
+            if (itemAnchorId) menuItem.id = itemAnchorId;
             Object.assign(menuItem.style, {
                 display: 'flex',
                 alignItems: 'center',
@@ -2185,7 +2534,16 @@ const AvatarPopupMixin = {
                         }
                         setTimeout(() => { isOpening = false; }, 500);
                     } else {
-                        if (typeof finalUrl === 'string' && finalUrl.startsWith('/chara_manager')) windowName = 'neko_chara_manager';
+                        if (isAvatarFramedSettingsWindowUrl(finalUrl)) {
+                            if (typeof finalUrl === 'string' && (finalUrl.startsWith('/character_card_manager') || finalUrl.startsWith('/chara_manager'))) {
+                                windowName = 'neko_chara_manager';
+                            } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/api_key')) {
+                                windowName = 'neko_api_key';
+                            } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/memory_browser')) {
+                                windowName = 'neko_memory_browser';
+                            }
+                            features = getAvatarNavigationWindowFeatures(finalUrl);
+                        }
 
                         isOpening = true;
                         if (typeof window.openOrFocusWindow === 'function') {
@@ -2226,8 +2584,7 @@ const AvatarPopupMixin = {
                 const closingPopupId = popup.id;
                 if (closingPopupId) {
                     document.querySelectorAll(`[data-neko-sidepanel-owner="${closingPopupId}"]`).forEach(panel => {
-                        if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
-                        if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
+                        clearAvatarSidePanelHoverState(panel);
                         panel.style.transition = 'none';
                         panel.style.opacity = '0';
                         panel.style.display = 'none';
@@ -2326,8 +2683,7 @@ const AvatarPopupMixin = {
             const popupId = popup.id;
             if (popupId) {
                 document.querySelectorAll(`[data-neko-sidepanel-owner="${popupId}"]`).forEach(panel => {
-                    if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
-                    if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
+                    clearAvatarSidePanelHoverState(panel);
                     panel.style.transition = 'none';
                     panel.style.opacity = '0';
                     panel.style.display = 'none';
@@ -2379,6 +2735,7 @@ const AvatarPopupMixin = {
             // 角色设置按钮（带侧边面板）
             if (this._characterMenuItems && this._characterMenuItems.length > 0) {
                 const charSettingsBtn = this._createSettingsMenuButton({
+                    id: 'character',
                     label: window.t ? window.t('settings.menu.characterSettings') : '角色设置',
                     labelKey: 'settings.menu.characterSettings',
                     icon: '/static/icons/character_icon.png'
@@ -2393,7 +2750,6 @@ const AvatarPopupMixin = {
             const settingsItems = [
                 { id: 'api-keys', label: window.t ? window.t('settings.menu.apiKeys') : 'API密钥', labelKey: 'settings.menu.apiKeys', icon: '/static/icons/api_key_icon.png', action: 'navigate', url: '/api_key' },
                 { id: 'memory', label: window.t ? window.t('settings.menu.memoryBrowser') : '记忆浏览', labelKey: 'settings.menu.memoryBrowser', icon: '/static/icons/memory_icon.png', action: 'navigate', url: '/memory_browser' },
-                { id: 'steam-workshop', label: window.t ? window.t('settings.menu.steamWorkshop') : '创意工坊', labelKey: 'settings.menu.steamWorkshop', icon: '/static/icons/Steam_icon_logo.png', action: 'navigate', url: '/steam_workshop_manager' },
             ];
 
             settingsItems.forEach(item => {

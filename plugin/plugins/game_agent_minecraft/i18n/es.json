@@ -1,0 +1,4 @@
+{
+  "plugin.name": "Complemento de Minecraft",
+  "plugin.description": "Se conecta a un mc-agent local (WebSocket) para que neko-chan charle contigo mientras juega a tu lado en Minecraft y narra la partida en tiempo real"
+}

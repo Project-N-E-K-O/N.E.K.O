@@ -15,11 +15,18 @@ from .infrastructure.cache_manager import CacheManager
 from .infrastructure.credential_provider import CredentialProvider, _mask_user_id
 from .infrastructure.credential_store import FileCredentialStore, ICredentialStore
 from .infrastructure.crypto_service import CryptoService
-from .infrastructure.http_client import HttpClient
+from .infrastructure.http_client import AsyncHttpClient, HttpClient
+from .repositories.async_device_repository import AsyncDeviceRepositoryImpl
+from .repositories.async_device_spec_repository import AsyncDeviceSpecRepositoryImpl
+from .repositories.async_home_repository import AsyncHomeRepositoryImpl
+from .repositories.async_scene_repository import AsyncSceneRepositoryImpl
 from .repositories.device_repository import DeviceRepositoryImpl
 from .repositories.device_spec_repository import DeviceSpecRepositoryImpl
 from .repositories.home_repository import HomeRepositoryImpl
 from .repositories.scene_repository import SceneRepositoryImpl
+from .services.async_device_service import AsyncDeviceService
+from .services.async_scene_service import AsyncSceneService
+from .services.async_statistics_service import AsyncStatisticsService
 from .services.auth_service import AuthService
 from .services.device_service import DeviceService
 from .services.scene_service import SceneService
@@ -167,7 +174,8 @@ def create_async_api_client(
 ) -> AsyncMijiaAPI:
     """创建米家API客户端（异步版本）
 
-    自动创建和组装所有依赖组件，提供异步API接口。
+    自动创建和组装所有异步依赖组件，提供全链路异步API接口。
+    全链路异步：AsyncHttpClient -> 异步仓储层 -> 异步服务层 -> AsyncMijiaAPI。
 
     Args:
         credential: 用户凭据对象
@@ -192,31 +200,29 @@ def create_async_api_client(
     # 1. 创建配置管理器
     config = create_config_manager(config_path)
 
-    # 2. 创建基础设施组件
-    # 注意：异步API客户端当前使用同步服务层 + asyncio.to_thread
-    # AsyncHttpClient 已实现，可用于未来的完全异步架构扩展
+    # 2. 创建异步基础设施组件
     crypto_service = CryptoService()
-    http_client = HttpClient(config, crypto_service)
+    async_http_client = AsyncHttpClient(config, crypto_service)
     cache_manager = CacheManager(cache_dir=cache_dir, redis_client=redis_client)
 
-    # 3. 创建仓储层
-    home_repo = HomeRepositoryImpl(http_client, cache_manager)
-    device_repo = DeviceRepositoryImpl(http_client, cache_manager)
-    scene_repo = SceneRepositoryImpl(http_client)
-    spec_repo = DeviceSpecRepositoryImpl(http_client, cache_manager)
+    # 3. 创建异步仓储层
+    async_home_repo = AsyncHomeRepositoryImpl(async_http_client, cache_manager)
+    async_device_repo = AsyncDeviceRepositoryImpl(async_http_client, cache_manager)
+    async_scene_repo = AsyncSceneRepositoryImpl(async_http_client)
+    async_spec_repo = AsyncDeviceSpecRepositoryImpl(async_http_client, cache_manager)
 
-    # 4. 创建服务层
-    device_service = DeviceService(device_repo, spec_repo, cache_manager)
-    scene_service = SceneService(scene_repo)
-    statistics_service = StatisticsService(device_repo)
+    # 4. 创建异步服务层
+    async_device_service = AsyncDeviceService(async_device_repo, async_spec_repo, cache_manager)
+    async_scene_service = AsyncSceneService(async_scene_repo)
+    async_statistics_service = AsyncStatisticsService(async_device_repo)
 
     # 5. 创建异步API客户端
     api = AsyncMijiaAPI(
         credential=credential,
-        device_service=device_service,
-        scene_service=scene_service,
-        statistics_service=statistics_service,
-        home_repository=home_repo,
+        device_service=async_device_service,
+        scene_service=async_scene_service,
+        statistics_service=async_statistics_service,
+        home_repository=async_home_repo,
         cache_manager=cache_manager,
     )
 

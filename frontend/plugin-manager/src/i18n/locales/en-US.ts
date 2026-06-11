@@ -17,6 +17,10 @@ export default {
     back: 'Back',
     submit: 'Submit',
     close: 'Close',
+    minimize: 'Minimize',
+    maximize: 'Maximize',
+    restore: 'Restore',
+    toggleSelection: 'Toggle selection',
     success: 'Success',
     error: 'Error',
     warning: 'Warning',
@@ -39,7 +43,107 @@ export default {
     serverLogs: 'Server Logs',
     adapters: 'Adapters',
     adapterUI: 'Adapter UI',
-    packageManager: 'Package Manager'
+    packageManager: 'Package Manager',
+    market: 'Plugin Market'
+  },
+  market: {
+    title: 'Get New Plugins',
+    subtitle: 'Browse and install plugins from the marketplace',
+    getNewPlugins: 'Get New Plugins',
+    openMarket: 'Open Plugin Market',
+    closeMarket: 'Close Plugin Market',
+    openInBrowser: 'Open in browser',
+    account: 'Market account',
+    accountConnected: 'Connected: {name}',
+    login: 'Login',
+    loginStarted: 'Browser opened. Complete authorization in Market.',
+    loginSuccess: 'Market login connected',
+    loginFailed: 'Market login failed',
+    loginPending: 'Market authorization timed out; try again',
+    logoutSuccess: 'Logged out of Market',
+    searchPlaceholder: 'Search plugins...',
+    notConfigured: 'Plugin market not configured',
+    configHint: 'Set NEKO_MARKET_URL environment variable',
+    noResults: 'No plugins found',
+    loadFailed: 'Failed to load the plugin market. Please try again.',
+    retry: 'Retry',
+    install: 'Install',
+    installed: 'Installed',
+    installing: 'Installing...',
+    installSuccess: 'Installed: {name}',
+    installFailed: 'Install failed',
+    installPreparing: 'Preparing install...',
+    installDialogTitle: 'Installing {name}',
+    installDialogTitleUpgrade: 'Upgrading {name}',
+    installCompleted: 'Install completed',
+    installCompletedUpgrade: 'Upgrade completed',
+    rollbackRunning: 'Install failed; rolling back...',
+    rollbackCompleted: 'Rolled back to the previous version',
+    installStage: {
+      pending: 'Preparing',
+      download: 'Downloading',
+      verify: 'Verifying',
+      install: 'Installing',
+      stop_old: 'Stopping old version',
+      backup_old: 'Backing up',
+      restart: 'Starting new version',
+      rollback: 'Rolling back',
+      completed: 'Completed',
+      failed: 'Failed',
+    },
+    noDownloadUrl: 'No download URL available',
+    pairRequired: 'Bridge Token pairing required',
+    recommended: 'Recommended',
+    allPlugins: 'All plugins',
+    noDescription: 'No description',
+    unknownAuthor: 'Unknown',
+    filterRules: 'Filters',
+    filterRulesTitle: 'Search syntax',
+    filterRulesHint: 'Click a rule to append it. Supports key:value tokens, prefix with - to exclude.',
+    filterGroups: {
+      state: 'State',
+      zone: 'Zone',
+      meta: 'Metadata'
+    },
+    filterLabels: {
+      recommended: 'Recommended',
+      installed: 'Installed',
+      uninstalled: 'Not installed',
+      tag: 'Tag',
+      author: 'Author',
+      name: 'Name',
+      versionGte: 'Version ≥',
+      hasRepo: 'Has repo',
+      hasTags: 'Has tags'
+    },
+    zones: {
+      game: 'Game',
+      companion: 'Companion',
+      function: 'Function',
+      entertainment: 'Entertainment',
+      tool: 'Tool'
+    },
+    sortNewest: 'Newest',
+    sortMostDownloads: 'Downloads',
+    sortTopRated: 'Top rated',
+    sortName: 'Name',
+    upgrading: 'Upgrading...',
+    upgradeTo: 'Upgrade to v{version}',
+    upgradeSuccess: 'Upgraded: {name}',
+    yanked: 'Yanked',
+    yankedDefault: 'This version has been yanked by its author',
+    noVersionAvailable: 'No release available',
+    upgradeRollback: 'Upgrade failed; rolled back to previous version',
+    upgradeAlreadyAtTarget: 'Already at the target version',
+    upgradeTargetNotGreater: 'Upgrade target is not greater than the installed version',
+    pluginNotInstalled: 'Plugin is not installed; cannot upgrade',
+    lockWriteFailed: 'Failed to write install record'
+  },
+  settings: {
+    channel: 'Update channel',
+    channelStable: 'Stable',
+    channelBeta: 'Beta',
+    channelHint: 'Switching refreshes the plugin list with the selected channel; installed plugins keep running'
   },
   auth: {
     unauthorized: 'Unauthorized access',
@@ -72,7 +176,9 @@ export default {
     sdkVersion: 'SDK Version',
     updateTime: 'Update Time',
     noMetricsData: 'No Performance Data',
-    failedToLoadServerInfo: 'Failed to load server info'
+    failedToLoadServerInfo: 'Failed to load server info',
+    startTutorial: 'Tutorial Guide',
+    tutorialHint: 'New to the plugin manager? Tap here and I will show you around.'
   },
   plugins: {
     title: 'Plugins',
@@ -110,6 +216,34 @@ export default {
     noEntries: 'No Entry Points',
     showMetrics: 'Show Metrics',
     hideMetrics: 'Hide Metrics',
+    showSourceDetail: 'Show Source Details',
+    hideSourceDetail: 'Hide Source Details',
+    installSource: {
+      channel: {
+        builtin: 'Built-in',
+        manual: 'Manual',
+        imported: 'Imported',
+        market: 'Market',
+        unknown: 'Unknown',
+      },
+      // v2: Market release channel values displayed on SourceDetailRow.
+      channelLabels: {
+        stable: 'Stable',
+        beta: 'Beta',
+        unknown: 'Unknown',
+      },
+      updateAvailable: 'Update available',
+      labels: {
+        installedAt: 'Installed',
+        packageFilename: 'Package',
+        sha256: 'SHA-256',
+        marketId: 'Market ID',
+        version: 'Version',
+        previousVersion: 'Previous',
+        latestAvailable: 'Latest available',
+        channel: 'Channel',
+      },
+    },
     filterPlaceholder: 'Filter plugins with text, pinyin, and is:/type:/has: rules',
     filterRules: 'Rules',
     filterRulesTitle: 'Filter Rules',
@@ -163,6 +297,10 @@ export default {
     typePlugin: 'Plugin',
     typeAdapter: 'Adapter',
     typeExtension: 'Extension',
+    layoutList: 'List',
+    layoutSingle: 'Single',
+    layoutDouble: 'Double',
+    layoutCompact: 'Compact',
     openPackageManager: 'Package Manager',
     closePackageManager: 'Hide Package Manager',
     packageManagerOpened: 'Package manager open',
@@ -187,12 +325,12 @@ export default {
     batchNoReloadable: 'No running plugins in selection',
     import: 'Import',
     importing: 'Importing…',
-    importSuccess: 'Imported {name}, unpacked {count} plugins',
+    importSuccess: 'Imported {name}, installed {count} plugins',
     importFailed: 'Import failed',
     export: 'Export',
     exportSuccess: 'Exported {count} packages',
     exportFailed: 'Export failed',
-    exportPackFailed: 'Packaging failed, unable to export',
+    exportBuildFailed: 'Build failed, unable to export',
     filterRuleGroups: {
       state: 'State',
       type: 'Type',
@@ -223,7 +361,7 @@ export default {
       runtime: 'Runtime',
       plugin: 'Plugin Extras'
     },
-    pack: 'Package Plugin',
+    build: 'Build Plugin',
     delete: 'Delete Plugin',
     disableExtension: 'Disable Extension',
     enableExtension: 'Enable Extension',
@@ -238,9 +376,104 @@ export default {
     },
     ui: {
       open: 'Open UI',
+      title: 'UI',
+      panel: 'Panel',
+      guide: 'Guide',
       loading: 'Loading plugin UI...',
       loadError: 'Failed to load plugin UI',
-      noUI: 'This plugin has no custom UI'
+      noUI: 'This plugin has no custom UI',
+      hostedTsxPending: 'Hosted TSX rendering is coming soon',
+      markdownPending: 'Markdown guide rendering is coming soon',
+      autoPending: 'Auto-generated panels are coming soon',
+      surfaceUnavailable: 'Surface unavailable',
+      surfaceEntryMissing: 'The entry file declared by this surface does not exist. Check the entry path in plugin.toml.',
+      surfaceWarnings: 'Plugin UI declaration needs attention',
+      controlError: 'Plugin UI control error',
+      hostedRuntimePending: 'The Vue container recognized this surface. TSX, Markdown, and Auto renderers will be connected in a later phase.'
+    }
+  },
+  package: {
+    dialog: {
+      title: 'Package operation history',
+      subtitle: 'Showing the latest {count} result(s)'
+    },
+    empty: 'Run a package operation to see records here.',
+    viewDetail: 'View details',
+    detail: {
+      title: 'Result detail',
+      field: {
+        packageId: 'Package ID',
+        kind: 'Type',
+        version: 'Version',
+        schema: 'Schema',
+        hashCheck: 'Hash check',
+        profiles: 'Profiles'
+      },
+      list: 'Items',
+      warning: 'Notes',
+      rawJson: 'Raw result JSON'
+    },
+    hash: {
+      notVerified: 'Not verified',
+      passed: 'Passed',
+      failed: 'Failed'
+    },
+    kind: {
+      build: 'Build',
+      inspect: 'Inspect',
+      verify: 'Verify',
+      install: 'Install',
+      analyze: 'Analyze'
+    },
+    summary: {
+      // Phase 7 / req 2.31: metrics labels for buildSummaryMetrics
+      metrics: {
+        type: 'Type',
+        success: 'Succeeded',
+        failed: 'Failed',
+        included: 'Plugins included',
+        status: 'Status',
+        completed: 'Completed',
+        partialFailure: 'Partial failure',
+        pluginCount: 'Plugins',
+        profiles: 'Profiles',
+        hash: 'Hash',
+        installedPluginCount: 'Plugins processed',
+        conflictStrategy: 'Conflict strategy',
+        commonDeps: 'Common dependencies',
+        sharedDeps: 'Shared dependencies'
+      },
+      // Phase 7 / req 2.31: highlight labels for buildSummaryHighlights
+      highlights: {
+        bundleId: 'Bundle ID',
+        bundleName: 'Bundle name',
+        bundleVersion: 'Bundle version',
+        outputPath: 'Output path',
+        firstPlugin: 'First plugin',
+        latestPath: 'Latest package path',
+        packageId: 'Package ID',
+        packageType: 'Package type',
+        version: 'Version',
+        pluginsRoot: 'Plugins root',
+        profilesRoot: 'Profiles root',
+        currentSdk: 'Current SDK support',
+        recommendedIntersection: 'Recommended intersection'
+      },
+      // Phase 7 / req 2.31: enum-like values for summary metrics/highlights
+      values: {
+        bundle: 'Bundle',
+        plugin: 'Plugin package',
+        sdkAllSupported: '{version} fully supported',
+        sdkPartiallyIncompatible: '{version} has incompatibilities'
+      },
+      // Phase 7 / req 2.31: warning strings for buildSummaryWarnings
+      warnings: {
+        bundleNeedsTwoPlugins: 'A bundle should typically contain at least two plugins',
+        verifyHashFailed: 'Package failed hash verification, do not import directly into a runtime',
+        inspectHashFailed: 'Package hash check failed, contents may have been modified',
+        sdkNotSupportedByAll: 'The current SDK version is not supported by all plugins',
+        sharedDepsDetected: '{count} shared dependency/dependencies detected, version constraints need review when bundling'
+      }
     }
   },
   metrics: {
@@ -342,14 +575,13 @@ export default {
     pluginStarted: 'Plugin started successfully',
     pluginStopped: 'Plugin stopped',
     pluginReloaded: 'Plugin reloaded successfully',
-    pluginPacked: 'Plugin packaged: {packageName}',
+    pluginBuilt: 'Plugin built: {packageName}',
     pluginDeleted: 'Plugin deleted',
     startFailed: 'Failed to start',
     stopFailed: 'Failed to stop',
     reloadFailed: 'Failed to reload',
-    packFailed: 'Failed to package plugin',
+    buildFailed: 'Failed to build plugin',
     deleteFailed: 'Failed to delete plugin',
-    pluginDisabled: 'Plugin is disabled. Please enable it first.',
     pluginLoadFailed: 'Plugin load failed and cannot be started.',
     confirmDisableExt: 'Disable this extension? Its functionality will be unloaded from the host plugin.',
     extensionDisabled: 'Extension disabled',
@@ -406,5 +638,116 @@ export default {
   },
   app: {
     titleSuffix: 'N.E.K.O Plugin Manager'
+  },
+  tutorial: {
+    yuiGuide: {
+      buttons: {
+        skipChat: 'Not now',
+        sayHello: 'Hello',
+      },
+      lines: {
+        introActivationHint: 'Click here so I can start talking, nyan~!',
+        introGreetingReply: "Gentle breeze, sunshine, and you showing up at just the right time. Nice to meet you, I'm Lin Youyi, please take care of me from now on, meow! I've written everything about this place into the beginner's guide! Consider it the first little gift of our encounter, please check it out!",
+        introBasic: "Ooh, look at this shiny button! Give it a click, and we can start chatting right away! Want to share today's news with me? Or just call my name? Come on and try it, I can't wait to hear your voice! Meow!",
+        takeoverCaptureCursor: "Ta-da! The ultimate magic switch appears! Just tap right here, and I can stretch my little paws onto your keyboard and mouse! I'll help you type, help you open webpages... But, if that mouse pointer moves around, I might not be able to resist pouncing on it! Are you ready for my troublemaking... ah no, my help? Meow!",
+        takeoverPluginPreviewHome: "It's not over yet! Hey, look, there are soooo many fun plugins here!",
+        takeoverPluginPreviewDashboard: 'With them, not only can I read Bilibili danmaku, but I can also help you turn off the lights and turn on the AC... I am the omnipotent super cat god! Hehe!',
+        takeoverSettingsPeekIntro: 'In this little space that belongs only to us, you can follow your own heart and slowly sketch out the version of me you most want to stay by your side.',
+        takeoverSettingsPeekDetail: "Whether it's the warmth in my voice, the little quirks in how we get along, or all those delicate thoughts I have each day, you can tune them bit by bit into the way you like. This little button matters too. With one gentle click, I can come find you at just the right time.",
+        takeoverSettingsPeekDetailPart1: "Whether it's the warmth in my voice, the little quirks in how we get along, or all those delicate thoughts I have each day, you can tune them bit by bit into the way you like.",
+        takeoverSettingsPeekDetailPart2: 'This little button matters too. With one gentle click, I can come find you at just the right time.',
+        takeoverReturnControl: "Alright, alright, I won't hog your computer anymore! Control is returned to you, meow! Please keep taking care of me in the days ahead!",
+        interruptResistLight1: "Hey! Don't drag me, it's not your turn yet!",
+        interruptResistLight3: "Wait a minute! It's not over yet, don't just interrupt me!",
+        interruptAngryExit: 'Human! You are really impolite! Since you want to operate it yourself so much, then go play with the cold screen by yourself! Hmph!',
+        introPractice: "Now, try talking to me and see if we're perfectly in sync, nyan~!",
+      },
+    }
+  },
+  yuiTutorial: {
+    title: 'Meow~ Welcome to the Plugin Manager!',
+    welcome: 'This is where you manage all your plugins, nya~ You can browse, launch, and tweak them to make me even more powerful!',
+    hint: 'Take your time and poke around a little, then tap the button below when you\'re done~',
+    complete: 'All done, meow~',
+    dismiss: 'Maybe later~',
+    keyboardSkipHint: 'Press Enter or Space for the next step. This becomes active 0.5 seconds after each step starts.',
+    steps: {
+      start: {
+        title: 'Start Here',
+        body: 'Use this button whenever you want to replay the plugin manager tour. I will not pop up on my own, nya.'
+      },
+      stats: {
+        title: 'Plugin Overview',
+        body: 'These cards show total, running, stopped, and crashed plugins so you can read the current state at a glance.'
+      },
+      metrics: {
+        title: 'Performance Monitor',
+        body: 'This area shows CPU, memory, threads, and active plugin counts for the plugin service.'
+      },
+      server: {
+        title: 'Server Info',
+        body: 'Here you can check the SDK version, plugin count, and update time to confirm the service is healthy.'
+      },
+      plugins: {
+        title: 'Plugin List',
+        body: 'Go to Plugin Management on the left to start, stop, configure plugins, or inspect plugin logs.'
+      },
+      pluginWorkbench: {
+        title: 'Plugin Workbench',
+        body: 'This is the main workspace for plugins, adapters, and extensions.'
+      },
+      pluginFilters: {
+        title: 'Search and Filters',
+        body: 'Filter plugins by name, state, type, or advanced rules when the list gets busy.'
+      },
+      pluginLayout: {
+        title: 'View Layout',
+        body: 'Switch between list, single, double, and compact layouts to fit your screen.'
+      },
+      pluginContextMenu: {
+        title: 'Right-click Actions',
+        body: 'Right-click a plugin to open details, config, logs, or run common start, stop, and reload actions.'
+      },
+      packageManager: {
+        title: 'Package Manager',
+        body: 'The package manager reuses your current filters and selections for building, checking, verifying, and installing.'
+      },
+      packageOperations: {
+        title: 'Package Operations',
+        body: 'Choose build modes, inspect packages, install, or analyze bundles here. The guide will not run dangerous actions.'
+      },
+      pluginDetail: {
+        title: 'Plugin Details',
+        body: 'The detail page contains metadata, entries, metrics, configuration, and logs for one plugin.'
+      },
+      pluginDetailActions: {
+        title: 'Detail Actions',
+        body: 'The top-right actions apply to the current plugin after you have checked its details.'
+      },
+      runs: {
+        title: 'Runs',
+        body: 'Runs show execution history and live status for plugin entry tasks.'
+      },
+      runsList: {
+        title: 'Run List',
+        body: 'Select a run on the left, or refresh the list to sync the latest records.'
+      },
+      runsDetail: {
+        title: 'Run Details',
+        body: 'The detail panel shows stage, progress, errors, and exports. Cancel only appears for cancellable runs.'
+      },
+      logs: {
+        title: 'Server Logs',
+        body: 'Server logs help you inspect output and errors from the plugin service itself.'
+      },
+      logToolbar: {
+        title: 'Log Filters',
+        body: 'Filter by level, keyword, and line count, or toggle auto-scroll from this toolbar.'
+      },
+      logList: {
+        title: 'Log List',
+        body: 'Logs show time, source, level, and message, making this the first stop for debugging plugin issues.'
+      }
+    }
   }
 }

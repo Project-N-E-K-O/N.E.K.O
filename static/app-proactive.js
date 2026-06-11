@@ -38,6 +38,8 @@
     const PROACTIVE_LEADER_HEARTBEAT_MS = 5000;
     const PROACTIVE_LEADER_TTL_MS = 15000;
     const PROACTIVE_LEADER_RECHECK_MS = 8000; // 非 leader 的自检周期
+    const PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS = 30;
+    const PROACTIVE_CHAT_INPUT_MIN_DELAY_MS = 30000;
 
     const PROACTIVE_SELF_ID = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
 
@@ -67,6 +69,38 @@
     let _proactiveLeaderChannel = null;
     let _proactiveLeaderHeartbeatTimer = null;
     let _wasLeaderLastTick = null; // 用于 leader 状态切换时主动 reschedule
+    let _chatInputSlowdownUntil = 0;
+
+    function isProactiveVisionEnabledNow() {
+        // 跨窗口时 leader 可能还没收到 storage 事件；以 localStorage 的最新保存值兜底。
+        try {
+            const raw = localStorage.getItem('project_neko_settings');
+            if (raw) {
+                const settings = JSON.parse(raw);
+                if (settings && typeof settings.proactiveVisionEnabled === 'boolean') {
+                    return settings.proactiveVisionEnabled;
+                }
+            }
+        } catch (_) { }
+
+        if (typeof window.proactiveVisionEnabled !== 'undefined') {
+            return !!window.proactiveVisionEnabled;
+        }
+        return !!S.proactiveVisionEnabled;
+    }
+
+    function isHomeTutorialFeatureSuppressed() {
+        try {
+            const controller = window.NekoHomeTutorialFeatureController;
+            if (controller && typeof controller.isActive === 'function' && controller.isActive()) {
+                return true;
+            }
+            return typeof window.isNekoHomeTutorialInteractionLocked === 'function'
+                && window.isNekoHomeTutorialInteractionLocked() === true;
+        } catch (_) {
+            return false;
+        }
+    }
 
     try {
         if (typeof BroadcastChannel !== 'undefined' && PROACTIVE_SELF_RANK !== 99) {
@@ -104,6 +138,12 @@
                     } catch (e) {
                         console.warn('[Proactive] 处理 user_input_reset IPC 失败:', e);
                     }
+                } else if (data.type === 'chat_input_focus_slowdown'
+                        && S.proactiveChatEnabled
+                        && hasAnyChatModeEnabled()
+                        && Number(S.proactiveChatInterval) <= PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS) {
+                    _markChatInputSlowdownWindow(S.proactiveChatInterval);
+                    scheduleProactiveChat();
                 }
             };
         }
@@ -122,6 +162,84 @@
             });
         } catch (_) { /* ignore */ }
     }
+
+    /**
+     * Was this 403 produced by ``_validate_local_mutation_request``
+     * (i.e. CSRF/Origin guard), or by something else (future business
+     * rule, reverse proxy, WAF, …)? The unified-guard contract is
+     * ``error_code === "csrf_validation_failed"`` (see
+     * ``static/app-prompt-shared.js`` 520-541 and
+     * ``static/universal-tutorial-manager.js`` 120-134).
+     *
+     * Only the CSRF case warrants the ``refreshToken()`` + retry-once
+     * recovery path; treating *every* 403 as benign-and-skip means a
+     * token-expired heartbeat looks identical to a "real" 403 and the
+     * caller never recovers — proactive chat would silently stall until
+     * a full page reload (CodeRabbit Major on PR #1530).
+     */
+    async function _proactiveIsCsrfValidationFailure(resp) {
+        if (!resp || resp.status !== 403) return false;
+        try {
+            var cloned = typeof resp.clone === 'function' ? resp.clone() : resp;
+            var body = await cloned.json();
+            return Boolean(body && body.error_code === 'csrf_validation_failed');
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function _isChatInputElement(element) {
+        if (!element || element.nodeType !== 1 || typeof element.matches !== 'function') {
+            return false;
+        }
+        if (!element.matches(
+            '#textInputBox, ' +
+            '#react-chat-window-shell textarea.composer-input, ' +
+            '#react-chat-window-root textarea.composer-input'
+        )) {
+            return false;
+        }
+        return element.disabled !== true && element.readOnly !== true;
+    }
+
+    function _getFocusedChatInputElement() {
+        try {
+            const active = document.activeElement;
+            if (!active || !_isChatInputElement(active)) return null;
+            if (document.hasFocus && !document.hasFocus()) return null;
+            return active;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function _getChatInputSlowdownDelay(baseIntervalSeconds) {
+        const interval = Number(baseIntervalSeconds);
+        if (!isFinite(interval) || interval > PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS) {
+            return 0;
+        }
+        const minDelay = Math.max(PROACTIVE_CHAT_INPUT_MIN_DELAY_MS, interval * 1000);
+        return _getFocusedChatInputElement()
+            ? minDelay
+            : Math.max(0, _chatInputSlowdownUntil - Date.now());
+    }
+
+    function _markChatInputSlowdownWindow(baseIntervalSeconds) {
+        const interval = Number(baseIntervalSeconds);
+        if (!isFinite(interval) || interval > PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS) {
+            return;
+        }
+        _chatInputSlowdownUntil = Date.now() + Math.max(PROACTIVE_CHAT_INPUT_MIN_DELAY_MS, interval * 1000);
+    }
+
+    document.addEventListener('focusin', function (event) {
+        if (!_isChatInputElement(event.target)) return;
+        if (!S.proactiveChatEnabled || !hasAnyChatModeEnabled()) return;
+        if (Number(S.proactiveChatInterval) > PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS) return;
+        _markChatInputSlowdownWindow(S.proactiveChatInterval);
+        scheduleProactiveChat();
+        _proactiveBroadcast('chat_input_focus_slowdown');
+    }, true);
 
     function _purgeStaleProactivePeers() {
         const now = Date.now();
@@ -245,7 +363,8 @@
     function hasAnyChatModeEnabled() {
         return S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled ||
             S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled ||
-            S.proactiveMusicEnabled || S.proactiveMemeEnabled;
+            S.proactiveMusicEnabled || S.proactiveMemeEnabled ||
+            S.proactiveMiniGameInviteEnabled;
     }
     mod.hasAnyChatModeEnabled = hasAnyChatModeEnabled;
 
@@ -288,6 +407,29 @@
     }
     mod._isAssistantSpeaking = _isAssistantSpeaking;
 
+    // 给 proactive skip 日志带上 _isAssistantSpeaking 用到的全部输入 + 音频队列长度。
+    // gate 卡死时直接看 log 就能判断哪个 flag 粘住、队列是不是真的空，
+    // 不用让用户手动到 DevTools 抓快照（手动解锁前一刷新就把证据擦了）。
+    function _dumpSpeakingGateState() {
+        try {
+            if (!S) return { snapshot: 'no_state' };
+            return {
+                isPlaying: S.isPlaying,
+                assistantSpeechActiveTurnId: S.assistantSpeechActiveTurnId,
+                assistantTurnId: S.assistantTurnId,
+                assistantTurnCompletedId: S.assistantTurnCompletedId,
+                assistantTurnStartedAt: S.assistantTurnStartedAt || null,
+                elapsedSinceStartMs: S.assistantTurnStartedAt ? Date.now() - S.assistantTurnStartedAt : null,
+                scheduledSources: (S.scheduledSources && S.scheduledSources.length) || 0,
+                audioBufferQueue: (S.audioBufferQueue && S.audioBufferQueue.length) || 0,
+                incomingAudioBlobQueue: (S.incomingAudioBlobQueue && S.incomingAudioBlobQueue.length) || 0
+            };
+        } catch (e) {
+            return { snapshot: 'error', error: String(e) };
+        }
+    }
+    mod._dumpSpeakingGateState = _dumpSpeakingGateState;
+
     // C: 判断用户是否最近在发声。仅在 voice 模式下使用（文本模式没有麦克风打点），
     // 用来在前端层面拦住 proactive tick，与后端 prompt_ephemeral 的
     // _user_recent_activity_time 防线形成对称冗余。
@@ -304,8 +446,18 @@
     mod._isUserRecentlySpeaking = _isUserRecentlySpeaking;
 
     function canTriggerProactively() {
+        if (isHomeTutorialFeatureSuppressed()) {
+            return false;
+        }
+
         // 「请她离开」状态下禁止一切主动搭话
         if (isGoodbyeActive()) {
+            return false;
+        }
+
+        // 游戏路由 active 期间，普通 proactive 会干扰游戏语音/文本接管。
+        // 赛后 game_postgame 不走 /api/proactive_chat，不受这里影响。
+        if (S.gameRouteActive) {
             return false;
         }
 
@@ -317,21 +469,24 @@
         // 必须选择至少一种搭话方式
         if (!S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled &&
             !S.proactiveVideoChatEnabled && !S.proactivePersonalChatEnabled &&
-            !S.proactiveMusicEnabled && !S.proactiveMemeEnabled) {
+            !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
+            !S.proactiveMiniGameInviteEnabled) {
             return false;
         }
 
         // 如果只选择了视觉搭话，需要同时开启自主视觉
         if (S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled &&
             !S.proactiveVideoChatEnabled && !S.proactivePersonalChatEnabled &&
-            !S.proactiveMusicEnabled && !S.proactiveMemeEnabled) {
-            return S.proactiveVisionEnabled;
+            !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
+            !S.proactiveMiniGameInviteEnabled) {
+            return isProactiveVisionEnabledNow();
         }
 
         // 如果只选择了个人动态搭话，需要同时开启个人动态
         if (!S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled &&
             !S.proactiveVideoChatEnabled && S.proactivePersonalChatEnabled &&
-            !S.proactiveMusicEnabled && !S.proactiveMemeEnabled) {
+            !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
+            !S.proactiveMiniGameInviteEnabled) {
             return S.proactivePersonalChatEnabled;
         }
 
@@ -396,7 +551,7 @@
                 // （没真发请求就不算无回复），但仍然 scheduleProactiveChat() 推进下一 tick。
                 // 结果：播放完成到下一次 nudge 的等待 ∈ [0, interval)，带随机感，更自然。
                 if (_isAssistantSpeaking()) {
-                    console.log('[ProactiveChat] 语音模式：AI 正在播放语音，本次 nudge 跳过（不计数），继续下一 tick');
+                    console.log('[ProactiveChat] 语音模式：AI 正在播放语音，本次 nudge 跳过（不计数），继续下一 tick', _dumpSpeakingGateState());
                     scheduleProactiveChat();
                     return;
                 }
@@ -410,17 +565,25 @@
                     return;
                 }
                 S.isProactiveChatRunning = true;
+                var voiceTriggered = false;
                 try {
-                    await triggerProactiveChat();
+                    voiceTriggered = await triggerProactiveChat();
                 } finally {
                     S.isProactiveChatRunning = false;
                 }
-                S._voiceProactiveNoResponseCount = (S._voiceProactiveNoResponseCount || 0) + 1;
+                // server 并发拒绝（HTTP 409）时 triggerProactiveChat 返回 false 表示
+                // "根本没真正发起一次 proactive"——不消耗 no-response quota，否则连续
+                // 409 会按 >=10 阈值熔断语音 nudge 直到下次 user 触发 reset。等同
+                // _isAssistantSpeaking / _isUserRecentlySpeaking 这两个 frontend
+                // guard 走的"跳过不计数"分支。Codex review on PR #1401。
+                if (voiceTriggered) {
+                    S._voiceProactiveNoResponseCount = (S._voiceProactiveNoResponseCount || 0) + 1;
+                }
                 // 不在这里 scheduleProactiveChat()——等 AI turn end 后再调度下一次，
                 // 避免 AI 还在说话就被下一次 nudge 打断。
                 // turn end handler 中会对语音模式调用 scheduleProactiveChat()。
-                // 如果本次 nudge 被 guard 跳过（pass），AI 不会响应也不会有 turn end，
-                // 所以 pass 时仍需自行调度。
+                // 如果本次 nudge 被 guard 跳过（pass）/ 被 server 409 拒绝，
+                // AI 不会响应也不会有 turn end，所以这两种情况仍需自行调度。
                 if (S._voiceProactiveLastResult === 'pass') {
                     scheduleProactiveChat();
                 }
@@ -454,6 +617,14 @@
         //
         // 单调性: 固定 M1 使 delay(T) ≈ base + T×(M1-1)，
         //         ∂delay/∂base = 1 > 0，base 越高期望 delay 越高。
+        //
+        // ── 固定间隔分支 (proactiveFixedScheduleMode) ──
+        // 当后端 propensity=restricted_screen_only（屏幕专注态：gaming /
+        // focused_work）时，常规退避会让搭话间隔指数级增长，跟陪伴产品
+        // 命题冲突。前端跳过 tier backoff，按 baseInterval 等间隔触发，
+        // 后端在 /proactive_chat 入口注入 [0, 0.5×base] sleep 把实际间隔
+        // 抹成 [base, 1.5×base] 均匀分布。详见 main_routers/system_router.py
+        // 的 restricted_screen_only 处理段。
 
         var baseInterval = S.proactiveChatInterval;
         var BACKOFF_TARGET = 120;
@@ -473,10 +644,18 @@
         var cap1 = caps.cap1;
         var cap2 = caps.cap2;
 
+        var fixedMode = !!S.proactiveFixedScheduleMode;
         var level = S.proactiveChatBackoffLevel;
         var delay;
 
-        if (level < cap1) {
+        if (fixedMode) {
+            // 屏幕专注态：跳过 tier backoff，重置 level，按 baseInterval 等间隔
+            // 触发。抖动完全交给后端（[0, 0.5×base] sleep），前端不做乘性抖动，
+            // 否则两层叠加会让方差大于设计目标。
+            S.proactiveChatBackoffLevel = 0;
+            level = 0;
+            delay = baseInterval * 1000;
+        } else if (level < cap1) {
             // Tier 1: base × M1^level，确定性爬升
             delay = (baseInterval * 1000) * Math.pow(BACKOFF_M1, level);
         } else {
@@ -487,7 +666,10 @@
         }
 
         // 对 delay 做 ±12% 乘性随机抖动，避免节奏过于机械
-        delay *= 1 + (Math.random() - 0.5) * 0.24;
+        // 固定模式下抖动由后端注入，前端不再叠加
+        if (!fixedMode) {
+            delay *= 1 + (Math.random() - 0.5) * 0.24;
+        }
 
         // 首次启动时额外等待 6 秒，避免程序刚启动就触发音乐推荐。
         // 用一次性 flag 而非 backoffLevel === 0 —— 后者在 user_input reset 或
@@ -500,7 +682,18 @@
         }
         delay += startupDelay;
 
-        console.log('主动搭话：' + (delay / 1000).toFixed(1) + '秒后触发（基础间隔：' + baseInterval + '秒，退避级别：' + level + '，cap1：' + cap1 + '，cap2：' + cap2 + '，启动延迟：' + (startupDelay / 1000) + '秒）');
+        // 输入放缓 floor 跟 fixed/tier 模式正交：用户在打字时不该被主动搭话打断，
+        // 不管处于屏幕专注态还是常规态。两边都套这个下限。
+        var inputSlowdownDelay = _getChatInputSlowdownDelay(baseInterval);
+        if (inputSlowdownDelay > 0) {
+            delay = Math.max(delay, inputSlowdownDelay);
+        }
+
+        if (fixedMode) {
+            console.log('主动搭话：' + (delay / 1000).toFixed(1) + '秒后触发（屏幕专注态固定间隔，base=' + baseInterval + 's，level 已重置，后端注入抖动，启动延迟：' + (startupDelay / 1000) + '秒，输入放缓：' + (inputSlowdownDelay ? ((inputSlowdownDelay / 1000) + '秒') : '无') + '）');
+        } else {
+            console.log('主动搭话：' + (delay / 1000).toFixed(1) + '秒后触发（基础间隔：' + baseInterval + '秒，退避级别：' + level + '，cap1：' + cap1 + '，cap2：' + cap2 + '，启动延迟：' + (startupDelay / 1000) + '秒，输入放缓：' + (inputSlowdownDelay ? ((inputSlowdownDelay / 1000) + '秒') : '无') + '）');
+        }
 
         S.proactiveChatTimer = setTimeout(async function () {
             // 双重检查锁：定时器触发时再次检查是否正在执行
@@ -515,7 +708,7 @@
             // （没真发请求就不算一次尝试），但仍然 scheduleProactiveChat() 推进下一 tick。
             // 结果：播放完成到下一次 nudge 的等待 ∈ [0, interval)，带随机感，更自然。
             if (_isAssistantSpeaking()) {
-                console.log('[ProactiveChat] 文本模式：AI 正在播放语音，本次跳过（不累加退避），继续下一 tick');
+                console.log('[ProactiveChat] 文本模式：AI 正在播放语音，本次跳过（不累加退避），继续下一 tick', _dumpSpeakingGateState());
                 scheduleProactiveChat();
                 return;
             }
@@ -534,7 +727,16 @@
             //   tier 1 (level < cap1): 每次必升 — 确定性爬升阶段
             //   tier 2 (cap1 ≤ level < cap2): 9% 概率升级 — 慢区，长时间停留
             //   tier 3 (level ≥ cap2): 每次必升 — 快区，快速逼近 60min 硬顶
-            if (triggered) {
+            // 屏幕专注态固定模式下不动 level（由 next_schedule_fixed_mode
+            // 反向通知后续 reset），让用户离开屏幕态回到常规态时 backoff
+            // 不会带着旧值。
+            //
+            // ⚠️ 用本轮调度时捕获的 ``fixedMode`` 而非已被响应同步过的
+            // ``S.proactiveFixedScheduleMode``：本轮的 level 推进决策应该基于
+            // 「这一 round 是按哪种模式调度的」而不是「返回后的最新模式」。
+            // 否则 fixed → tier 切换的那一跳会误升一级，下一轮 tier 不能从
+            // 干净的 base 起步。CodeRabbit Minor review: PR #1327。
+            if (triggered && !fixedMode) {
                 var currentCaps = computeBackoffCaps(S.proactiveChatInterval);
                 var currentCap1 = currentCaps.cap1;
                 var currentCap2 = currentCaps.cap2;
@@ -592,6 +794,11 @@
     async function triggerProactiveChat() {
         var requestSent = false;
         try {
+            if (isHomeTutorialFeatureSuppressed()) {
+                console.log('[ProactiveChat] 首页新手教程接管中，跳过主动搭话');
+                return false;
+            }
+
             // 主备协调：本窗口非 leader 时不触发，避免和 Pet 主窗口重复发请求。
             // 这里再 guard 一次是为了防止 leader 切换后旧定时器仍然触发。
             if (!isProactiveLeader()) {
@@ -603,23 +810,82 @@
                 console.log('[ProactiveChat] goodbye 状态，跳过本次触发');
                 return;
             }
+            if (S.gameRouteActive) {
+                console.log('[ProactiveChat] 游戏路由 active，跳过普通主动搭话');
+                return;
+            }
             // ── 语音模式快速路径：直接发 voice_mode 请求，后端注入预录音频 ──
             if (S.isRecording) {
                 var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                 var voiceModes = [];
-                if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && S.proactiveVisionEnabled) {
+                if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && isProactiveVisionEnabledNow()) {
                     voiceModes.push('vision');
                 }
                 console.log('[ProactiveChat] 语音模式快速路径，modes: [' + voiceModes.join(', ') + ']');
-                var resp = await fetch('/api/proactive_chat', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        lanlan_name: lanlanName,
-                        enabled_modes: voiceModes,
-                        voice_mode: true
-                    })
+                // 故意不带 base_interval_seconds / 不读 next_schedule_fixed_mode：
+                // 语音模式在后端走 voice fast path（system_router.py 4222 行附近），
+                // 在 propensity / restricted_screen_only / 抖动 sleep 这一整套门
+                // 之前就早退；语音 scheduler 自己也是固定 baseInterval 不带 backoff。
+                // 既然两边都不读，发了也是冗余字段。
+                var voiceProactiveSec = window.nekoLocalMutationSecurity;
+                var voiceProactiveBody = JSON.stringify({
+                    lanlan_name: lanlanName,
+                    enabled_modes: voiceModes,
+                    voice_mode: true,
+                    // mini-game 邀请的用户级 toggle；后端 _maybe_deliver_mini_game_invite
+                    // 与 source-driven sources 解耦，不进 enabled_modes 数组。
+                    mini_game_invite_enabled: !!S.proactiveMiniGameInviteEnabled
                 });
+
+                async function _sendVoiceProactive() {
+                    var hdrs = { 'Content-Type': 'application/json' };
+                    if (voiceProactiveSec && typeof voiceProactiveSec.getMutationHeaders === 'function') {
+                        try { Object.assign(hdrs, await voiceProactiveSec.getMutationHeaders()); } catch (_) { }
+                    }
+                    return fetch('/api/proactive_chat', {
+                        method: 'POST',
+                        headers: hdrs,
+                        body: voiceProactiveBody,
+                    });
+                }
+
+                var resp = await _sendVoiceProactive();
+
+                // CSRF-403 retry-once: 只在 error_code === 'csrf_validation_failed'
+                // 时调 refreshToken() + 重试一次。其它 403（业务规则、反代、WAF）走
+                // 真实失败分支，避免把所有 403 当 benign pass，让 token 过期后
+                // proactive 静默停摆到整页刷新为止（CodeRabbit Major on PR #1530）。
+                if (resp.status === 403
+                    && voiceProactiveSec
+                    && typeof voiceProactiveSec.refreshToken === 'function'
+                    && await _proactiveIsCsrfValidationFailure(resp)) {
+                    try {
+                        await voiceProactiveSec.refreshToken();
+                        resp = await _sendVoiceProactive();
+                    } catch (_) { /* fall through to 403 handling below */ }
+                }
+
+                // HTTP 409 = server try_start_proactive 因并发拒绝（AI 还在响应上一轮 /
+                // 另一路 proactive 已占坑，见 main_routers/system_router.py:4241-4247）。
+                // 本次请求**根本没真正发起**一次 proactive，标 'pass' 走上游"不计数"
+                // 分支自行 schedule，否则 _voiceProactiveNoResponseCount 会被白白消耗
+                // 一格、最坏 5 次 server 忙就触发"连续 5 轮无回复，停止主动搭话"。
+                //
+                // HTTP 403 csrf_validation_failed = 统一守卫拒绝。refresh+retry 仍失败
+                // 时归入"server 拒绝"分支：token bootstrap 真没完成 / 配置错位的
+                // 启动竞速窗口跟 409 同语义（server 早退、没跑业务）。当 attempt 算
+                // 会让 _voiceProactiveNoResponseCount 在 token bootstrap 完成前就
+                // 消耗光，触发"5 轮无回复，停止主动搭话"。
+                //
+                // 非 csrf 的 403（业务规则 / 反代 / WAF）会跳过上面的 retry，落到这里
+                // ——也按"不消耗 attempt"处理：这些路径在 proactive 语义里同样表示
+                // "server 没真正跑业务"，把它们计入 attempt 既无重试帮助又会污染调度。
+                if (resp.status === 409 || resp.status === 403) {
+                    console.log('[ProactiveChat] 语音模式 server 拒绝 ('
+                        + resp.status + ')，不消耗 attempt');
+                    S._voiceProactiveLastResult = 'pass';
+                    return false;
+                }
                 requestSent = true;
                 var result = await resp.json();
                 S._voiceProactiveLastResult = result.action || 'unknown';
@@ -631,7 +897,7 @@
             // 收集所有启用的搭话方式
             // 视觉搭话：需要同时开启主动搭话和自主视觉
             // 同时触发 vision 和 window 模式
-            if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && S.proactiveVisionEnabled) {
+            if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && isProactiveVisionEnabledNow()) {
                 availableModes.push('vision');
                 availableModes.push('window');
             }
@@ -678,21 +944,50 @@
                 availableModes.push('meme');
             }
 
-            // 如果没有选择任何搭话方式，跳过本次搭话
+            // 如果没有选择任何搭话方式，跳过本次搭话——除非 mini-game 邀请独立开着
+            // （那条路径与 enabled_modes 解耦，后端短路通道仍可能掷骰投递邀请）。
             if (availableModes.length === 0) {
-                console.log('未选择任何搭话方式，跳过本次搭话');
-                return;
+                if (!S.proactiveMiniGameInviteEnabled) {
+                    console.log('未选择任何搭话方式，跳过本次搭话');
+                    return;
+                }
+                console.log('availableModes 为空但 mini-game 邀请开着，让请求过去走短路通道');
             }
 
             console.log('主动搭话：启用模式 [' + availableModes.join(', ') + ']，将并行获取所有信息源');
 
             var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+            // 当前 UI locale —— 让后端 mini-game 邀请短路 + Phase 1/2 LLM 与
+            // 前端 i18n 显示完全对齐，不再依赖后端 ``get_global_language()``
+            // 的进程级缓存（Steam SDK 启动期 race 失败时会退化到系统 locale，
+            // Steam=中文 / 系统=英文 的用户会看到邀请文案是英文）。后端
+            // ``_resolve_proactive_locale`` 优先读这个字段，缺时再回落到
+            // ``mgr.user_language`` / 全局缓存。
+            var i18nLanguage = '';
+            try {
+                if (window.i18next && typeof window.i18next.language === 'string') {
+                    i18nLanguage = window.i18next.language;
+                } else if (typeof localStorage !== 'undefined') {
+                    i18nLanguage = localStorage.getItem('i18nextLng') || '';
+                }
+                if (!i18nLanguage && typeof navigator !== 'undefined' && typeof navigator.language === 'string') {
+                    i18nLanguage = navigator.language;
+                }
+            } catch (_) { i18nLanguage = ''; }
             var requestBody = {
                 lanlan_name: lanlanName,
                 enabled_modes: availableModes,
                 is_playing_music: (typeof window.isMusicPlaying === 'function') ? window.isMusicPlaying() : false,
                 current_track: (typeof window.getMusicCurrentTrack === 'function') ? window.getMusicCurrentTrack() : null,
-                music_cooldown: (typeof window.isMusicCooldown === 'function') ? window.isMusicCooldown() : false
+                music_cooldown: (typeof window.isMusicCooldown === 'function') ? window.isMusicCooldown() : false,
+                // mini-game 邀请的用户级 toggle；后端 _maybe_deliver_mini_game_invite
+                // 与 source-driven sources 解耦，不进 enabled_modes 数组。
+                mini_game_invite_enabled: !!S.proactiveMiniGameInviteEnabled,
+                i18n_language: i18nLanguage,
+                // 屏幕专注态后端会按 [0, 0.5×base] 注入间隔抖动，需要知道
+                // 当前用户配置的 baseInterval。后端 propensity 非屏幕专注态
+                // 时忽略此字段。
+                base_interval_seconds: S.proactiveChatInterval
             };
 
             // 独立计时器：确保 vision/window 模式的屏幕感知间隔不低于 proactiveVisionInterval
@@ -739,7 +1034,7 @@
 
                 // await 期间用户可能切换模式，重新过滤可用模式
                 var latestModes = [];
-                if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && S.proactiveVisionEnabled) {
+                if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && isProactiveVisionEnabledNow()) {
                     latestModes.push('vision', 'window');
                 }
                 if (S.proactiveNewsChatEnabled && S.proactiveChatEnabled) {
@@ -842,16 +1137,74 @@
                 return;
             }
 
-            var response = await fetch('/api/proactive_chat', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(requestBody)
-            });
+            var proactiveSec = window.nekoLocalMutationSecurity;
+            var proactiveBody = JSON.stringify(requestBody);
+
+            async function _sendProactive() {
+                var hdrs = { 'Content-Type': 'application/json' };
+                if (proactiveSec && typeof proactiveSec.getMutationHeaders === 'function') {
+                    try { Object.assign(hdrs, await proactiveSec.getMutationHeaders()); } catch (_) { }
+                }
+                return fetch('/api/proactive_chat', {
+                    method: 'POST',
+                    headers: hdrs,
+                    body: proactiveBody,
+                });
+            }
+
+            var response = await _sendProactive();
+
+            // CSRF-403 retry-once: 只在 error_code === 'csrf_validation_failed'
+            // 时调 refreshToken() + 重试一次。其它 403 走真实失败分支，避免把所有
+            // 403 当 benign pass，让 token 过期后 proactive 静默停摆（CodeRabbit
+            // Major on PR #1530）。
+            if (response.status === 403
+                && proactiveSec
+                && typeof proactiveSec.refreshToken === 'function'
+                && await _proactiveIsCsrfValidationFailure(response)) {
+                try {
+                    await proactiveSec.refreshToken();
+                    response = await _sendProactive();
+                } catch (_) { /* fall through to 403 handling below */ }
+            }
+
+            // HTTP 409 = server try_start_proactive 因并发拒绝（AI 还在响应上一轮 /
+            // 另一路 proactive 已占坑，见 main_routers/system_router.py:4241-4247）。
+            // 本次请求**根本没真正发起**一次 proactive——server 在 claim 那一步就早退
+            // 了，没跑过 phase 1/2 LLM、没消耗任何上下文资源。若返 true 让上游
+            // scheduleProactiveChat 的 `if (triggered)` 判定通过、把 backoffLevel++，
+            // 等于"server 一忙就被前端误判成 attempt 用掉一格"，惩罚性升级 backoff 把
+            // 节奏整体往后拉，跟 server 实际状态正交、用户体验上变成"server 越忙、AI
+            // 越沉默"。这里 requestSent 故意不翻 true、return false 让上游识别为"没
+            // 真发"、下一轮按 base interval 重排，不动 level。
+            //
+            // HTTP 403 csrf_validation_failed = 统一守卫拒绝（refresh+retry 后仍失败）。
+            // 跟 409 同语义——server 没跑业务逻辑、没消耗资源；非 csrf 的 403（业务
+            // 规则 / 反代 / WAF）会跳过上面的 retry 落到这里，同样按"不消耗 attempt"
+            // 处理，避免把"刚开机几秒里 token 没就位 / 部署中间态"惩罚性升级
+            // backoff。下一轮 token 通常已到位，按 base interval 重排即可。
+            if (response.status === 409 || response.status === 403) {
+                console.log('[ProactiveChat] server 拒绝 ('
+                    + response.status + ')，不消耗 backoff attempt');
+                return false;
+            }
             requestSent = true;
 
             var result = await response.json();
+
+            // 同步下一轮调度模式：后端在 propensity=restricted_screen_only
+            // 时会把这个字段置 true，前端 scheduleProactiveChat 据此跳过
+            // tier backoff、按 baseInterval 等间隔触发。
+            //
+            // 字段缺席 ≠ 模式应该回退。短路响应路径（409 try_start_proactive
+            // 冲突、voice fast path、game-route active 早退）都不走 _end_proactive，
+            // 也就拿不到这个字段——但用户的活动状态没变，把模式硬重置成 false
+            // 会让一次并发冲突就把客户端踢出 fixed 模式、被 tier backoff 吞几轮。
+            // 改为：只有显式收到 boolean 才同步，缺席时保留旧状态。
+            // Codex P2 review: PR #1327。
+            if (typeof result.next_schedule_fixed_mode === 'boolean') {
+                S.proactiveFixedScheduleMode = result.next_schedule_fixed_mode;
+            }
 
             if (result.success) {
                 if (result.action === 'chat') {
@@ -1282,6 +1635,10 @@
      */
     async function sendOneProactiveVisionFrame() {
         try {
+            if (!isProactiveVisionEnabledNow() || !S.isRecording) {
+                stopProactiveVisionDuringSpeech();
+                return;
+            }
             if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
 
             var dataUrl = null;
@@ -1315,6 +1672,10 @@
                 }
             }
 
+            if (!isProactiveVisionEnabledNow() || !S.isRecording) {
+                stopProactiveVisionDuringSpeech();
+                return;
+            }
             if (dataUrl && S.socket && S.socket.readyState === WebSocket.OPEN) {
                 S.socket.send(JSON.stringify({
                     action: 'stream_data',
@@ -1349,13 +1710,13 @@
         }
 
         // 仅在条件满足时启动：已开启主动视觉 && 正在录音 && 未手动屏幕共享
-        if (!S.proactiveVisionEnabled || !S.isRecording) return;
+        if (!isProactiveVisionEnabledNow() || !S.isRecording) return;
         var screenButton = document.getElementById('screenButton');
         if (screenButton && screenButton.classList.contains('active')) return; // 手动共享时不启动
 
         S.proactiveVisionFrameTimer = setInterval(async function () {
             // 在每次执行前再做一次检查，避免竞态
-            if (!S.proactiveVisionEnabled || !S.isRecording || isGoodbyeActive()) {
+            if (!isProactiveVisionEnabledNow() || !S.isRecording || isGoodbyeActive()) {
                 stopProactiveVisionDuringSpeech();
                 return;
             }
@@ -1559,14 +1920,16 @@
             return;
         }
 
+        var privacyBlocksVision = !isProactiveVisionEnabledNow();
+
         // 如果正在录音（语音模式），流可能正在被使用，不释放
-        if (S.isRecording) {
+        if (S.isRecording && !privacyBlocksVision) {
             console.log('[主动视觉] 语音模式活跃中，不释放流');
             return;
         }
 
         // 如果主动搭话+主动视觉Chat仍活跃，保留流
-        if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled) {
+        if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && !privacyBlocksVision) {
             console.log('[主动视觉] 主动搭话视觉仍活跃，不释放流');
             return;
         }
@@ -1591,6 +1954,16 @@
         }
     }
     mod.releaseProactiveVisionStream = releaseProactiveVisionStream;
+
+    window.addEventListener('neko:home-tutorial-features-suppressed', function (event) {
+        var detail = event && event.detail ? event.detail : {};
+        if (detail.active === true) {
+            stopProactiveChatSchedule();
+            stopProactiveVisionDuringSpeech();
+        } else if (detail.active === false && S.proactiveChatEnabled && hasAnyChatModeEnabled()) {
+            scheduleProactiveChat();
+        }
+    });
 
     // ======================== backward-compat window exports ========================
 

@@ -138,7 +138,12 @@ def _fix_bilibili_api_env():
         # 最后的兜底，确保此函数无论如何不会导致主程序崩溃
         logger.warning(f"⚠️ 尝试自修复 B站 API 环境时发生非预期异常: {e}")
 
-# 在模块加载时立即执行
+# 在模块加载时立即执行：该修复会在 bilibili_api 安装目录里创建缺失的 data 文件
+# （磁盘级、进程无关、一次性）。除了 web_scraper 自身，plugin/plugins/bilibili_*
+# 也会直接 import bilibili_api 并依赖这些文件已就位——所以这一步必须在 import
+# 期跑（而非 lazy 到 web_scraper 的 B 站函数被调时），否则那些插件在全新环境下
+# 会踩到缺文件错误（见 PR #1496 codex review）。开销主要是首次 import bilibili_api，
+# 相对整体启动优化可忽略。
 _fix_bilibili_api_env()
 
 # ==================================================
@@ -251,7 +256,7 @@ async def fetch_bilibili_trending(limit: int = 30) -> Dict[str, Any]:
     """
     try:
         from bilibili_api import homepage
-        
+
         # 获取认证信息（如果有）
         credential = _get_bilibili_credential()
         
@@ -463,7 +468,8 @@ async def fetch_weibo_trending(limit: int = 10) -> Dict[str, Any]:
             return await _fetch_weibo_trending_fallback(limit)
 
         html = response.text
-        soup = BeautifulSoup(html, 'html.parser')
+        # BS4 解析放线程池（与 Google/Baidu/Twitter 链路一致）
+        soup = await asyncio.to_thread(BeautifulSoup, html, 'lxml')
 
         # 解析热搜列表 (td-02 class)
         td_items = soup.find_all('td', class_='td-02')
@@ -757,8 +763,12 @@ async def _fetch_twitter_trending_fallback(limit: int = 10) -> Dict[str, Any]:
             response = await client.get(source['url'], headers=headers, timeout=5.0)
 
             if response.status_code == 200:
-                soup = BeautifulSoup(response.text, 'html.parser')
-                trending_list = source['parser'](soup, limit)
+                # BS4 解析 + 解析器迭代统一放线程池，避免阻塞 event loop
+                def _parse_in_thread(html: str, parser, _limit: int) -> List[Dict[str, Any]]:
+                    return parser(BeautifulSoup(html, 'lxml'), _limit)
+                trending_list = await asyncio.to_thread(
+                    _parse_in_thread, response.text, source['parser'], limit
+                )
 
                 if trending_list:
                     logger.info(f"从{source['name']}获取到{len(trending_list)}条Twitter热门")
@@ -1196,7 +1206,9 @@ def get_active_window_title(include_raw: bool = False) -> Optional[Union[str, Di
                 sanitized_title = raw_title[:30] + '...'
             else:
                 sanitized_title = raw_title
-            logger.info(f"获取到活跃窗口标题: {sanitized_title}")
+            # 窗口标题是用户面对的内容，不写 logger
+            logger.info(f"获取到活跃窗口标题 (len={len(raw_title)})")
+            print(f"获取到活跃窗口标题: {sanitized_title}")
             
             if include_raw:
                 return {
@@ -1242,7 +1254,7 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
         llm = create_chat_llm(
             summary_config['model'], summary_config['base_url'],
             summary_config['api_key'],
-            temperature=1.0, timeout=10.0, max_retries=0,
+            timeout=10.0, max_retries=0,
         )
         
         # 清理/脱敏窗口标题用于日志显示
@@ -1253,7 +1265,7 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
         
         # 检测区域并使用适当的提示词
         # china_region → 'zh'（百度），否则按用户语言选择（Google）
-        from config.prompts_sys import _loc, SEARCH_KEYWORD_SYSTEM, SEARCH_KEYWORD_USER
+        from config.prompts.prompts_sys import _loc, SEARCH_KEYWORD_SYSTEM, SEARCH_KEYWORD_USER
         from utils.language_utils import get_global_language
         china_region = is_china_region()
         keyword_lang = 'zh' if china_region else get_global_language()
@@ -1269,7 +1281,9 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
         ])
         response_text = _extract_llm_text_content(getattr(response, 'content', None))
         if not response_text:
-            logger.warning(f"为窗口标题「{sanitized_title}」生成搜索关键词时收到空包，使用默认清理方法回退")
+            # 窗口标题不写 logger，但记下长度元数据便于调试
+            logger.warning(f"为窗口标题生成搜索关键词时收到空包 (title_len={len(window_title)})")
+            print(f"为窗口标题「{sanitized_title}」生成搜索关键词时收到空包")
             clean_title = clean_window_title(window_title)
             return [clean_title, clean_title, clean_title] if clean_title else []
 
@@ -1292,11 +1306,9 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
             while len(queries) < 3 and clean_title:
                 queries.append(clean_title)
         
-        # 使用脱敏后的标题记录日志
-        if china_region:
-            logger.info(f"为窗口标题「{sanitized_title}」生成的查询关键词: {queries}")
-        else:
-            logger.info(f"为窗口标题「{sanitized_title}」生成的查询关键词: {queries}")
+        # 窗口标题 + AI 生成的查询关键词都不写 logger
+        logger.info(f"窗口标题→查询关键词生成完成 (queries_count={len(queries[:3])})")
+        print(f"为窗口标题「{sanitized_title}」生成的查询关键词: {queries}")
         return queries[:3]
         
     except Exception as e:
@@ -1305,10 +1317,8 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
             sanitized_title = window_title[:30] + '...'
         else:
             sanitized_title = window_title
-        if is_china_region():
-            logger.warning(f"为窗口标题「{sanitized_title}」生成多样化查询失败，使用默认清理方法: {e}")
-        else:
-            logger.warning(f"为窗口标题「{sanitized_title}」生成多样化查询失败，使用默认清理方法: {e}")
+        logger.warning(f"窗口标题→多样化查询生成失败，回退默认清理方法: {e}")
+        print(f"为窗口标题「{sanitized_title}」生成多样化查询失败: {e}")
         # 回退到原始清理方法
         clean_title = clean_window_title(window_title)
         return [clean_title, clean_title, clean_title]
@@ -1412,8 +1422,8 @@ async def search_google(query: str, limit: int = 10) -> Dict[str, Any]:
         response.raise_for_status()
         html_content = response.text
 
-        # 解析搜索结果
-        results = parse_google_results(html_content, limit)
+        # 解析搜索结果（BS4 大 HTML 同步解析放线程池，避免阻塞 event loop）
+        results = await asyncio.to_thread(parse_google_results, html_content, limit)
 
         if results:
             return {
@@ -1457,7 +1467,7 @@ def parse_google_results(html_content: str, limit: int = 5) -> List[Dict[str, st
     
     try:
         from urllib.parse import urljoin, urlparse, parse_qs
-        soup = BeautifulSoup(html_content, 'html.parser')
+        soup = BeautifulSoup(html_content, 'lxml')
         
         # 查找搜索结果容器
         # Google使用各种类名，尝试多个选择器
@@ -1523,6 +1533,153 @@ def parse_google_results(html_content: str, limit: int = 5) -> List[Dict[str, st
         return []
 
 
+async def search_duckduckgo(query: str, limit: int = 10) -> Dict[str, Any]:
+    """
+    使用 DuckDuckGo 搜索关键词并获取搜索结果（用于非中文区域）。
+
+    取代 Google：Google 对无头/脚本请求的反爬几乎必现（302 → /sorry/index → 429），
+    主动搭话的窗口上下文搜索基本拿不到结果。DuckDuckGo 的 HTML 端点
+    （html.duckduckgo.com）对脚本访问宽容得多，结果直接内嵌在 HTML 里便于解析。
+
+    Args:
+        query: 搜索关键词
+        limit: 返回结果数量限制
+
+    Returns:
+        包含搜索结果的字典
+    """
+    try:
+        if not query or len(query.strip()) < 2:
+            return {
+                'success': False,
+                'error': '搜索关键词太短'
+            }
+
+        # 清理查询词
+        query = query.strip()
+        encoded_query = quote(query)
+
+        # DuckDuckGo 无 JS 的 HTML 端点（kl=us-en 对齐非中文区域口径）
+        url = f"https://html.duckduckgo.com/html/?q={encoded_query}&kl=us-en"
+
+        headers = {
+            'User-Agent': get_random_user_agent(),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://duckduckgo.com/',
+            'Connection': 'keep-alive',
+            'DNT': '1',
+            'Cache-Control': 'no-cache',
+        }
+
+        # 添加随机延迟
+        await asyncio.sleep(random.uniform(0.2, 0.5))
+
+        client = get_external_http_client()
+        response = await client.get(url, headers=headers, timeout=5.0)
+        response.raise_for_status()
+        html_content = response.text
+
+        # 解析搜索结果（BS4 大 HTML 同步解析放线程池，避免阻塞 event loop）
+        results = await asyncio.to_thread(parse_duckduckgo_results, html_content, limit)
+
+        if results:
+            return {
+                'success': True,
+                'query': query,
+                'results': results
+            }
+        else:
+            return {
+                'success': False,
+                'error': '未能解析到搜索结果',
+                'query': query
+            }
+
+    except httpx.TimeoutException:
+        logger.exception("DuckDuckGo搜索超时")
+        return {
+            'success': False,
+            'error': '搜索超时'
+        }
+    except Exception as e:
+        logger.exception(f"DuckDuckGo搜索失败: {e}")
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
+
+def parse_duckduckgo_results(html_content: str, limit: int = 5) -> List[Dict[str, str]]:
+    """
+    解析 DuckDuckGo HTML 端点的搜索结果页面
+
+    Args:
+        html_content: HTML页面内容
+        limit: 结果数量限制
+
+    Returns:
+        搜索结果列表，每个结果包含 title, abstract, url
+    """
+    results = []
+
+    try:
+        from urllib.parse import urlparse, parse_qs
+        soup = BeautifulSoup(html_content, 'lxml')
+
+        # html.duckduckgo.com 每条结果是 div.result（正常结果还带 web-result）
+        result_divs = soup.find_all('div', class_='result')
+
+        for div in result_divs[:limit * 2]:
+            # 跳过广告（class 含 result--ad / results_links_deep 之外的 ad 变体）
+            cls = div.get('class') or []
+            if any('ad' in c for c in cls):
+                continue
+
+            link = div.find('a', class_='result__a')
+            if not link:
+                continue
+
+            title = link.get_text(strip=True)
+            if not title or not (3 < len(title) < 200):
+                continue
+
+            # DDG 用跳转链接包裹真实地址：//duckduckgo.com/l/?uddg=<urlencoded>&rut=...
+            href = link.get('href', '')
+            url = ''
+            if href:
+                if 'uddg=' in href:
+                    # //duckduckgo.com/l/?uddg=<urlencoded>&rut=... ——
+                    # parse_qs 已对 uddg 值做一次百分号解码，得到的就是真实地址，
+                    # 不要再 unquote（否则真实 URL 里的字面 % 会被二次解码损坏）。
+                    parsed = urlparse(href if href.startswith('http') else 'https:' + href)
+                    qs = parse_qs(parsed.query)
+                    url = qs.get('uddg', [''])[0]
+                elif href.startswith('http'):
+                    url = href
+
+            # 摘要片段
+            abstract = ''
+            snippet = div.find(class_='result__snippet')
+            if snippet:
+                abstract = snippet.get_text(strip=True)[:200]
+
+            results.append({
+                'title': title,
+                'abstract': abstract,
+                'url': url
+            })
+            if len(results) >= limit:
+                break
+
+        logger.info(f"解析到 {len(results)} 条DuckDuckGo搜索结果")
+        return results[:limit]
+
+    except Exception as e:
+        logger.exception(f"解析DuckDuckGo搜索结果失败: {e}")
+        return []
+
+
 async def search_baidu(query: str, limit: int = 5) -> Dict[str, Any]:
     """
     使用百度搜索关键词并获取搜索结果
@@ -1567,7 +1724,7 @@ async def search_baidu(query: str, limit: int = 5) -> Dict[str, Any]:
         html_content = response.text
 
         # 解析搜索结果
-        results = parse_baidu_results(html_content, limit)
+        results = await asyncio.to_thread(parse_baidu_results, html_content, limit)
 
         if results:
             return {
@@ -1611,7 +1768,7 @@ def parse_baidu_results(html_content: str, limit: int = 5) -> List[Dict[str, str
     
     try:
         from urllib.parse import urljoin
-        soup = BeautifulSoup(html_content, 'html.parser')
+        soup = BeautifulSoup(html_content, 'lxml')
         
         # 提取搜索结果容器
         containers = soup.find_all('div', class_=lambda x: x and 'c-container' in x, limit=limit * 2)
@@ -1772,7 +1929,7 @@ async def fetch_window_context_content(limit: int = 5) -> Dict[str, Any]:
     
     使用区域检测来决定搜索引擎：
     - 中文区域：百度搜索
-    - 非中文区域：Google搜索
+    - 非中文区域：DuckDuckGo搜索（取代 Google，规避其反爬 429）
     
     Args:
         limit: 搜索结果数量限制
@@ -1823,11 +1980,9 @@ async def fetch_window_context_content(limit: int = 5) -> Dict[str, Any]:
                     'window_title': sanitized_title
                 }
         
-        # 日志中使用脱敏后的标题
-        if china_region:
-            logger.info(f"从窗口标题「{sanitized_title}」生成多样化查询: {search_queries}")
-        else:
-            logger.info(f"从窗口标题「{sanitized_title}」生成多样化查询: {search_queries}")
+        # 窗口标题 + 查询都不写 logger
+        logger.info(f"从窗口标题生成多样化查询完成 (queries_count={len(search_queries or [])})")
+        print(f"从窗口标题「{sanitized_title}」生成多样化查询: {search_queries}")
         
         # 执行搜索并合并结果
         all_results = []
@@ -1837,16 +1992,16 @@ async def fetch_window_context_content(limit: int = 5) -> Dict[str, Any]:
         if china_region:
             search_func = search_baidu
         else:
-            search_func = search_google
+            # 非中文区域改用 DuckDuckGo：Google 对脚本请求几乎必触发 429/sorry 反爬
+            search_func = search_duckduckgo
         
         for query in search_queries:
             if not query or len(query) < 2:
                 continue
             
-            if china_region:
-                logger.info(f"使用查询关键词: {query}")
-            else:
-                logger.info(f"使用查询关键词: {query}")
+            # query 是从用户窗口标题派生的搜索词，不写 logger
+            logger.info(f"使用查询关键词 (len={len(query)})")
+            print(f"使用查询关键词: {query}")
             
             search_result = await search_func(query, limit)
             
@@ -2476,11 +2631,10 @@ async def fetch_weibo_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
             logger.info("微博动态:")  # 统一对齐 B站 的提示词
             for i, weibo in enumerate(weibo_list, 1):
                 content = weibo.get('content', '')
-                # 稍微放宽一点截断长度，保证显示效果更好
                 if len(content) > 50:
                     content = content[:50] + "..."
-                # 去掉冗余的时间和作者，直接干干净净地打印 content
-                logger.info(f"  - {content}")
+                # 微博正文是用户面对的内容，不写 logger
+                print(f"  - {content}")
 
             return {'success': True, 'statuses': weibo_list}
         else:

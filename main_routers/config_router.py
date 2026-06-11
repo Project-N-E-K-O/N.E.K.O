@@ -7,6 +7,11 @@ Handles configuration-related API endpoints including:
 - API configuration (core and custom APIs)
 - Steam language settings
 - API providers
+
+URL convention: routes declared WITHOUT trailing slash (no ``@router.get('/')``).
+See ``main_routers/characters_router.py`` docstring or
+``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
+enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
 import asyncio
@@ -15,19 +20,19 @@ import os
 import ssl
 import threading
 import urllib.parse
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from .shared_state import get_config_manager, get_steamworks, get_session_manager, get_initialize_character_data
+from .shared_state import ensure_steamworks, get_config_manager, get_session_manager, get_initialize_character_data
 from .characters_router import get_current_live2d_model
 from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.preferences import aload_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top, aload_global_conversation_settings, save_global_conversation_settings, GLOBAL_CONVERSATION_KEY
 from utils.cloudsave_runtime import MaintenanceModeError
 from utils.logger_config import get_module_logger
-from utils.config_manager import get_reserved
+from utils.config_manager import ensure_default_yui_voice_for_free_api, get_reserved
 from config import (
     AUTOSTART_CSRF_TOKEN,
     CHARACTER_SYSTEM_RESERVED_FIELDS,
@@ -264,7 +269,7 @@ async def get_page_config(response: Response, lanlan_name: str = ""):
             logger.warning(f"角色 {target_name} 的Live3D模型路径均为空")
         else:
             # Live2D模型：使用原有逻辑
-            live2d = get_reserved(catgirl_config, 'avatar', 'live2d', 'model_path', default='mao_pro', legacy_keys=('live2d',))
+            live2d = get_reserved(catgirl_config, 'avatar', 'live2d', 'model_path', default='yui-origin/yui-origin.model3.json', legacy_keys=('live2d',))
             live2d_item_id = get_reserved(
                 catgirl_config,
                 'avatar',
@@ -279,7 +284,7 @@ async def get_page_config(response: Response, lanlan_name: str = ""):
             # 提取JSONResponse中的内容
             model_data = model_response.body.decode('utf-8')
             model_json = json.loads(model_data)
-            model_info = model_json.get('model_info', {})
+            model_info = model_json.get('model_info') or {}
             model_path = model_info.get('path', '')
         
         result = {
@@ -395,10 +400,30 @@ async def set_preferred_model(request: Request):
 
 @router.get("/conversation-settings")
 async def get_conversation_settings():
-    """获取全局对话设置（从 user_preferences.json 同步备份中读取）"""
+    """获取全局对话设置（从 user_preferences.json 同步备份中读取）
+
+    顺手回带遥测 A/B test 分支，让前端在 first-launch 时按分支选择默认行为，
+    与 token tracker 上报的 branch 一致——同一台设备永远落到同一组，避免
+    控制组/实验组在客户端跟 server 端出现不一致。
+    """
     try:
+        # 先解析 telemetry branch、再 load settings：get_telemetry_branch 可能在 slow
+        # path 触发退役实验（proactive_interval_20s）的一次性偏好回滚（20s→15s）。若按
+        # 旧顺序先 load，会拿到回滚前的 20s 返回前端；而存量用户没有首启 pending marker、
+        # 会直接应用并经 periodic sync 把 20s POST 回来，撤销本次迁移（见 token_tracker
+        # ._rollback_retired_proactive_interval）。
+        try:
+            from utils.token_tracker import get_telemetry_branch
+            telemetry_branch = await asyncio.to_thread(get_telemetry_branch)
+        except Exception:
+            # 故意返回 None：前端只在 telemetryBranch 是字符串时清掉首启 pending
+            # marker；如果这里 fallback 到 "main"，瞬时报错会被当成「控制组分流
+            # 已决议」永久锁住，下次也不会重试。返 None 让前端保留 pending、
+            # 下次 fetch 成功再决议
+            logger.exception("解析 telemetry branch 失败，返回 null 让前端保留 pending marker")
+            telemetry_branch = None
         settings = await aload_global_conversation_settings()
-        return {"success": True, "settings": settings}
+        return {"success": True, "settings": settings, "telemetryBranch": telemetry_branch}
     except Exception as e:
         logger.exception(f"获取对话设置失败: {e}")
         return {"success": False, "error": "Internal server error", "settings": {}}
@@ -442,10 +467,10 @@ async def get_steam_language():
     - 如果 IP 国家代码为 "CN"，则标记为中国大陆用户
     - 如果不存在 Steam 语言设置（无 Steam 环境），默认为非大陆用户
     """
-    from utils.language_utils import normalize_language_code
-    
+    from utils.language_utils import normalize_language_code, refresh_global_language, is_supported_language_code
+
     try:
-        steamworks = get_steamworks()
+        steamworks = ensure_steamworks()
         
         if steamworks is None:
             # 没有 Steam 环境，默认为非大陆用户
@@ -467,7 +492,22 @@ async def get_steam_language():
         # 使用 language_utils 的归一化函数，统一映射逻辑
         # format='full' 返回 'zh-CN', 'zh-TW', 'en', 'ja', 'ko' 格式（用于前端 i18n）
         i18n_language = normalize_language_code(steam_language, format='full')
-        
+
+        # 把这一次 Steam 真值回写到进程全局缓存：``initialize_global_language`` 在启动
+        # 时只读一次 Steam SDK，race 失败就锁死系统 locale；前端 bootstrap 这次能拿到
+        # 对的 schinese → zh-CN，把它顺手塞回缓存，下游 ``get_global_language()``
+        # 全部受益（mini-game prompt / memory / reflection / tts ...）。函数自己有
+        # "无变化即 no-op" 的守卫，前端反复刷新也不会刷屏。
+        # 注意校验**原始 steam_language**而非 normalize 后的 i18n_language——后者对空 /
+        # 未知输入会默认回退 'en'，那是一个合法值能通过 refresh 内部白名单，会把已经
+        # 正确的全局缓存（来自 startup init / 上一次有效刷新）误覆盖成 en；前端 i18n
+        # 兜底用 'en' 不受影响（i18n_language 仍正常返回）。
+        if is_supported_language_code(steam_language):
+            try:
+                refresh_global_language(steam_language)
+            except Exception:
+                logger.debug("refresh_global_language 失败", exc_info=True)
+
         # 获取用户 IP 所在国家（用于判断是否为中国大陆用户）
         ip_country = None
         is_mainland_china = False
@@ -558,7 +598,7 @@ async def get_core_config_api():
         try:
             from utils.config_manager import get_config_manager
             config_manager = get_config_manager()
-            core_config_path = str(config_manager.get_config_path('core_config.json'))
+            core_config_path = str(config_manager.get_runtime_config_path('core_config.json'))
             core_cfg = await read_json_async(core_config_path)
             api_key = core_cfg.get('coreApiKey', '')
         except FileNotFoundError:
@@ -568,14 +608,21 @@ async def get_core_config_api():
             api_key = core_config.get('CORE_API_KEY','')
             # 创建空的配置对象用于返回默认值
             core_cfg = {}
+            runtime_core_api_provider = core_config.get('CORE_API_TYPE') or ''
+            runtime_assist_api_provider = core_config.get('assistApi') or ''
+        else:
+            runtime_core_api_provider = ''
+            runtime_assist_api_provider = ''
         
         # 旧版本 core_config.json 可能只有 coreApiKey 而没有各 assistApiKey* 字段，
         # 需要与 ConfigManager.get_core_config() 保持一致的回退逻辑，
         # 但只能回退到与 coreApi / assistApi 匹配的服务商，
         # 以免将不兼容的 API Key 填充到其他服务商。
-        fallback_key = api_key or ''
-        _core_api_provider = core_cfg.get('coreApi') or 'qwen'
-        _assist_api_provider = core_cfg.get('assistApi') or 'qwen'
+        fallback_key = api_key if api_key != 'free-access' else ''
+        _core_api_provider = core_cfg.get('coreApi') or runtime_core_api_provider or 'qwen'
+        _assist_api_provider = core_cfg.get('assistApi') or runtime_assist_api_provider
+        if not _assist_api_provider:
+            _assist_api_provider = 'free' if _core_api_provider == 'free' else 'qwen'
         _fallback_providers = {_core_api_provider, _assist_api_provider}
 
         def _fb(provider: str) -> str:
@@ -601,6 +648,7 @@ async def get_core_config_api():
             # 塞进 TTS 凭证槽位导致 401，掩盖"未配置 minimax key"的真实提示。
             "assistApiKeyMinimax": core_cfg.get('assistApiKeyMinimax', ''),
             "assistApiKeyMinimaxIntl": core_cfg.get('assistApiKeyMinimaxIntl', ''),
+            "assistApiKeyElevenlabs": core_cfg.get('assistApiKeyElevenlabs', ''),
             "assistApiKeyGrok": core_cfg.get('assistApiKeyGrok', '') or _fb('grok'),
             "assistApiKeyClaude": core_cfg.get('assistApiKeyClaude', '') or _fb('claude'),
             "assistApiKeyOpenrouter": core_cfg.get('assistApiKeyOpenrouter', '') or _fb('openrouter'),
@@ -609,6 +657,7 @@ async def get_core_config_api():
             "openclawTimeout": core_cfg.get('openclawTimeout'),
             "openclawDefaultSenderId": core_cfg.get('openclawDefaultSenderId'),
             "enableCustomApi": core_cfg.get('enableCustomApi', False),
+            "resolvedProviderUrls": core_cfg.get('resolvedProviderUrls', {}) if isinstance(core_cfg.get('resolvedProviderUrls'), dict) else {},
             # 自定义API相关字段（Provider / Url / Id / ApiKey per model type）
             **{
                 f'{mt}Model{suffix}': core_cfg.get(f'{mt}Model{suffix}', '')
@@ -617,6 +666,7 @@ async def get_core_config_api():
                 for suffix in ('Provider', 'Url', 'Id', 'ApiKey')
             },
             "gptsovitsEnabled": core_cfg.get('gptsovitsEnabled'),
+            "ttsProvider": core_cfg.get('ttsProvider', ''),
             "ttsVoiceId": core_cfg.get('ttsVoiceId', ''),
             "disableTts": core_cfg.get('disableTts', False) is True or str(core_cfg.get('disableTts', False)).lower() in ('true', '1', 'yes', 'on'),
             "success": True
@@ -637,63 +687,121 @@ async def update_core_config(request: Request):
         if not data:
             return {"success": False, "error": "无效的数据"}
         
-        # 检查是否启用了自定义API
         enable_custom_api = data.get('enableCustomApi', False)
-        
-        # 如果启用了自定义API，不需要强制检查核心API key
-        if not enable_custom_api:
-            # 检查是否为免费版配置
-            is_free_version = data.get('coreApi') == 'free' or data.get('assistApi') == 'free'
-            
-            if 'coreApiKey' not in data:
-                return {"success": False, "error": "缺少coreApiKey字段"}
-            
-            api_key = data['coreApiKey']
-            if api_key is None:
-                return {"success": False, "error": "API Key不能为null"}
-            
-            if not isinstance(api_key, str):
-                return {"success": False, "error": "API Key必须是字符串类型"}
-            
-            api_key = api_key.strip()
-            
-            # 免费版允许使用 'free-access' 作为API key，不进行空值检查
-            if not is_free_version and not api_key:
-                return {"success": False, "error": "API Key不能为空"}
-        
+
         # 保存到core_config.json
         from utils.config_manager import get_config_manager
         config_manager = get_config_manager()
         
-        # 构建配置对象
-        core_cfg = {}
+        # 构建配置对象：先加载旧配置，再按本次提交覆盖。
+        # 这与前端 API 管理簿的行为保持一致，避免某个字段本次未提交时被意外清空。
+        try:
+            existing_core_cfg = await asyncio.to_thread(
+                config_manager.load_json_config, 'core_config.json', {}
+            )
+        except Exception:
+            existing_core_cfg = {}
+        core_cfg = dict(existing_core_cfg) if isinstance(existing_core_cfg, dict) else {}
+
+        def _incoming_provider(field, error_message):
+            if field not in data:
+                return None
+            provider = data.get(field)
+            if provider is not None and not isinstance(provider, str):
+                raise TypeError(error_message)
+            provider = (provider or "").strip()
+            return provider or None
+
+        def _stored_provider(field):
+            provider = core_cfg.get(field)
+            if not isinstance(provider, str):
+                return None
+            provider = provider.strip()
+            return provider or None
+
+        try:
+            incoming_core_api = _incoming_provider('coreApi', 'coreApi must be a string')
+            incoming_assist_api = _incoming_provider('assistApi', 'assistApi must be a string')
+        except TypeError as exc:
+            return {"success": False, "error": str(exc)}
+
+        effective_core_api = incoming_core_api or _stored_provider('coreApi')
+        core_uses_free_provider = effective_core_api == 'free'
         
+        def _is_masked_secret(value) -> bool:
+            if not isinstance(value, str):
+                return False
+            stripped = value.strip()
+            return bool(stripped) and ('***' in stripped or set(stripped) == {'*'})
+
+        def _normalize_core_api_key(value):
+            if _is_masked_secret(value):
+                return None
+            if value is None:
+                raise ValueError("API Key不能为null")
+            if not isinstance(value, str):
+                raise TypeError("API Key必须是字符串类型")
+            return value.strip()
+
         # 只有在启用自定义API时，才允许不设置coreApiKey
         if enable_custom_api:
             # 启用自定义API时，coreApiKey是可选的
             if 'coreApiKey' in data:
-                api_key = data['coreApiKey']
-                if api_key is not None and isinstance(api_key, str):
-                    core_cfg['coreApiKey'] = api_key.strip()
+                try:
+                    api_key = _normalize_core_api_key(data['coreApiKey'])
+                except (TypeError, ValueError) as exc:
+                    return {"success": False, "error": str(exc)}
+                if api_key is not None:
+                    core_cfg['coreApiKey'] = api_key
         else:
             # 未启用自定义API时，必须设置coreApiKey
-            api_key = data.get('coreApiKey', '')
-            if api_key is not None and isinstance(api_key, str):
-                core_cfg['coreApiKey'] = api_key.strip()
-        if 'coreApi' in data:
-            core_cfg['coreApi'] = data['coreApi']
-        if 'assistApi' in data:
-            core_cfg['assistApi'] = data['assistApi']
+            if 'coreApiKey' not in data and not core_uses_free_provider:
+                return {"success": False, "error": "缺少coreApiKey字段"}
+            try:
+                api_key = (
+                    _normalize_core_api_key(data['coreApiKey'])
+                    if 'coreApiKey' in data
+                    else None
+                )
+            except (TypeError, ValueError) as exc:
+                return {"success": False, "error": str(exc)}
+            if not core_uses_free_provider and not api_key:
+                return {"success": False, "error": "API Key不能为空"}
+            if api_key is not None:
+                core_cfg['coreApiKey'] = api_key
+        # coreApi / assistApi 为空串 = 前端在配置尚未加载完成（下拉被清空）时提交。
+        # 绝不能用空值覆盖已存的有效 provider——否则重新加载时空值会被兜底成别的服务商，
+        # 把免费版用户悄悄切走。仅在非空时写入；空值保留 existing_core_cfg 里的旧值。
+        if incoming_core_api:
+            core_cfg['coreApi'] = incoming_core_api
+        if incoming_assist_api:
+            core_cfg['assistApi'] = incoming_assist_api
+        if 'resolvedProviderUrls' in data:
+            resolved_urls = data.get('resolvedProviderUrls')
+            if not isinstance(resolved_urls, dict):
+                return {"success": False, "error": "resolvedProviderUrls must be an object"}
+            sanitized_resolved_urls = {}
+            for key, value in resolved_urls.items():
+                if not isinstance(key, str) or not isinstance(value, str):
+                    continue
+                normalized_key = key.strip()
+                normalized_value = value.strip()
+                if normalized_key and normalized_value:
+                    sanitized_resolved_urls[normalized_key] = normalized_value
+            core_cfg['resolvedProviderUrls'] = sanitized_resolved_urls
         _api_key_fields = [
             'assistApiKeyQwen', 'assistApiKeyQwenIntl', 'assistApiKeyOpenai', 'assistApiKeyDeepseek',
             'assistApiKeyGlm', 'assistApiKeyStep', 'assistApiKeySilicon',
             'assistApiKeyGemini', 'assistApiKeyKimi', 'assistApiKeyDoubao',
-            'assistApiKeyMinimax', 'assistApiKeyMinimaxIntl', 'assistApiKeyGrok',
+            'assistApiKeyMinimax', 'assistApiKeyMinimaxIntl', 'assistApiKeyElevenlabs', 'assistApiKeyGrok',
             'assistApiKeyClaude', 'assistApiKeyOpenrouter',
         ]
         for field in _api_key_fields:
             if field in data:
-                core_cfg[field] = data[field]
+                value = data[field]
+                if isinstance(value, str) and '***' in value:
+                    continue
+                core_cfg[field] = value
         if 'mcpToken' in data:
             core_cfg['mcpToken'] = data['mcpToken']
         if 'openclawUrl' in data:
@@ -706,6 +814,11 @@ async def update_core_config(request: Request):
             core_cfg['enableCustomApi'] = data['enableCustomApi']
         if 'gptsovitsEnabled' in data:
             core_cfg['gptsovitsEnabled'] = data['gptsovitsEnabled']
+        for field in (
+            'ttsProvider',
+        ):
+            if field in data:
+                core_cfg[field] = data[field]
         if 'disableTts' in data:
             if not isinstance(data['disableTts'], bool):
                 return {"success": False, "error": "disableTts must be a boolean"}
@@ -723,6 +836,11 @@ async def update_core_config(request: Request):
                     core_cfg[field] = data[field]
         if 'ttsVoiceId' in data:
             core_cfg['ttsVoiceId'] = data['ttsVoiceId']
+
+        checked_resolved_urls = data.get('connectivityCheckedProviderUrls')
+        if not isinstance(checked_resolved_urls, dict):
+            checked_resolved_urls = {}
+        save_connectivity = await _auto_resolve_provider_urls_for_save(core_cfg, checked_resolved_urls)
         
         # save_json_config 内部已调用 assert_cloudsave_writable + ensure_config_directory
         # + atomic_write_json，不需要再显式栅栏 / 手工拼 core_config_path
@@ -730,6 +848,7 @@ async def update_core_config(request: Request):
             config_manager.save_json_config, 'core_config.json', core_cfg
         )
 
+        await ensure_default_yui_voice_for_free_api(config_manager, core_cfg)
 
         # API配置更新后，需要先通知所有客户端，再关闭session，最后重新加载配置
         logger.info("API配置已更新，准备通知客户端并重置所有session...")
@@ -812,7 +931,13 @@ async def update_core_config(request: Request):
             logger.warning(f"通知 agent_server 刷新 CUA 失败 (非致命): {notify_err}")
 
         logger.info(f"已通知 {notification_count} 个连接的客户端API配置已更新")
-        return {"success": True, "message": "API Key已保存并重新加载配置", "sessions_ended": len(sessions_ended)}
+        return {
+            "success": True,
+            "message": "API Key已保存并重新加载配置",
+            "sessions_ended": len(sessions_ended),
+            "connectivity": save_connectivity,
+            "resolvedProviderUrls": core_cfg.get('resolvedProviderUrls', {}),
+        }
     except MaintenanceModeError:
         raise
     except Exception as e:
@@ -885,11 +1010,14 @@ async def list_gptsovits_voices(request: Request):
                     result = await resp.json(content_type=None)
                 except Exception:
                     text = await resp.text()
-                    logger.error(f"GPT-SoVITS v3 API 返回非 JSON 响应 (HTTP {resp.status}): {text[:200]}")
+                    # 上游响应可能含 TTS 原文 echo，不写 logger
+                    logger.error(f"GPT-SoVITS v3 API 返回非 JSON 响应 (HTTP {resp.status}, body_len={len(text)})")
+                    print(f"[GSV] API 非 JSON 响应 raw: {text[:200]}")
                     return {"success": False, "error": "Upstream TTS service error", "code": "TTS_CONNECTION_FAILED"}
                 if resp.status == 200:
                     return {"success": True, "voices": result}
-                logger.error(f"GPT-SoVITS v3 API 返回错误状态 HTTP {resp.status}: {str(result)[:200]}")
+                logger.error(f"GPT-SoVITS v3 API 返回错误状态 HTTP {resp.status}")
+                print(f"[GSV] API 错误状态 raw: {str(result)[:200]}")
                 return {"success": False, "error": "Upstream TTS service error", "code": "TTS_CONNECTION_FAILED"}
     except aiohttp.ClientError as e:
         logger.error(f"GPT-SoVITS v3 API 请求失败: {e}")
@@ -984,7 +1112,8 @@ async def test_gptsovits_connectivity(request: Request):
                     audio_chunks.append(first_response)
                     logger.info(f"[GSV Test] First response: binary {len(first_response)} bytes")
                 else:
-                    logger.info(f"[GSV Test] First response: {first_response[:200]}")
+                    logger.info(f"[GSV Test] First response (text, len={len(first_response)})")
+                    print(f"[GSV Test] First response: {first_response[:200]}")
                     try:
                         first_data = _json.loads(first_response)
                         if first_data.get("type") == "sentence":
@@ -1000,7 +1129,8 @@ async def test_gptsovits_connectivity(request: Request):
                             audio_chunks.append(msg)
                             logger.debug(f"[GSV Test] Audio chunk: {len(msg)} bytes")
                         else:
-                            logger.info(f"[GSV Test] JSON msg: {msg[:200]}")
+                            logger.info(f"[GSV Test] JSON msg (len={len(msg)})")
+                            print(f"[GSV Test] JSON msg: {msg[:200]}")
                             msg_data = _json.loads(msg)
                             if msg_data.get("type") == "sentence":
                                 got_sentence = True
@@ -1166,14 +1296,16 @@ class ConnectivityTestResponse(BaseModel):
     success: bool
     error: Optional[str] = None
     error_code: Optional[str] = None
+    resolved_url: Optional[str] = None
 
 
 async def _test_openai_compatible(url: str, api_key: str, model: str = "gpt-3.5-turbo", is_free: bool = False) -> dict:
     """Test an OpenAI-compatible REST API endpoint.
 
     Uses the project's ChatOpenAI client (same as actual conversations) to send
-    a minimal chat completion request (max_tokens=1). This ensures the test
-    exercises the exact same auth and request path as real usage.
+    a minimal chat completion request (bounded by CONNECTIVITY_TEST_MAX_TOKENS).
+    This ensures the test exercises the exact same auth and request path as
+    real usage.
 
     Args:
         url: Base URL for the API endpoint.
@@ -1187,13 +1319,14 @@ async def _test_openai_compatible(url: str, api_key: str, model: str = "gpt-3.5-
     those use different protocols and will need dedicated test paths.
     """
     from utils.llm_client import ChatOpenAI as _ChatOpenAI
+    from config import CONNECTIVITY_TEST_MAX_TOKENS
 
     try:
         client = _ChatOpenAI(
             model=model,
             base_url=url,
             api_key=api_key or "sk-placeholder",
-            max_tokens=1,
+            max_completion_tokens=CONNECTIVITY_TEST_MAX_TOKENS,
             timeout=10.0,
             max_retries=0,
         )
@@ -1357,6 +1490,283 @@ async def _test_websocket(url: str, api_key: str, model: str = "") -> dict:
         return {"success": False, "error": f"WebSocket连接失败: {e}", "error_code": "ws_error"}
 
 
+def _normalize_provider_url_candidates(profile: dict[str, Any], primary_field: str) -> list[str]:
+    """读取 provider 的主 URL 和候选 URL，去空去重后保持顺序。"""
+    raw_candidates: list[Any] = [profile.get(primary_field)]
+    list_field = f"{primary_field}s"
+    configured_candidates = profile.get(list_field)
+    if isinstance(configured_candidates, list):
+        raw_candidates.extend(configured_candidates)
+    elif isinstance(configured_candidates, str):
+        raw_candidates.append(configured_candidates)
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw_url in raw_candidates:
+        url = str(raw_url or "").strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        result.append(url)
+    return result
+
+
+async def _test_connectivity_candidates(
+    urls: list[str],
+    api_key: str,
+    model: str,
+    provider_type: str,
+    is_free: bool,
+) -> dict:
+    """并发测试候选 URL；任一通过即返回该 URL。"""
+    if not urls:
+        return {"success": False, "error": "缺少必要参数", "error_code": "missing_params"}
+
+    async def _run_one(candidate_url: str) -> tuple[str, dict]:
+        if provider_type == "websocket":
+            result = await _test_websocket(candidate_url, api_key, model=model)
+        else:
+            result = await _test_openai_compatible(candidate_url, api_key, model=model, is_free=is_free)
+        return candidate_url, result
+
+    tasks = [asyncio.create_task(_run_one(url)) for url in urls]
+    results: list[tuple[str, dict]] = []
+    try:
+        for task in asyncio.as_completed(tasks):
+            try:
+                candidate_url, result = await task
+            except Exception as exc:
+                candidate_url = ""
+                result = {"success": False, "error": str(exc), "error_code": "unknown"}
+            results.append((candidate_url, result))
+            if result.get("success"):
+                for pending in tasks:
+                    if not pending.done():
+                        pending.cancel()
+                resolved = dict(result)
+                resolved["resolved_url"] = candidate_url
+                return resolved
+    finally:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    first_url, first_result = results[0] if results else (urls[0], {"success": False, "error_code": "unknown"})
+    failed_urls = [url for url, _ in results if url]
+    result = dict(first_result)
+    result.setdefault("success", False)
+    result["resolved_url"] = None
+    if len(urls) > 1:
+        result["error"] = result.get("error") or "所有候选 URL 均不可用"
+        logger.info(
+            "[ConnectivityTest] 候选 URL 均未通过: %s",
+            ", ".join(_redact_url_for_log(url) for url in failed_urls or [first_url]),
+        )
+    return result
+
+
+def _get_save_provider_api_key(core_cfg: dict, api_config: dict, provider_key: str) -> str:
+    """从保存配置中取出 provider 对应的 API Key。"""
+    provider_key = str(provider_key or "").strip()
+    if provider_key == "free":
+        return "free-access"
+
+    core_provider = str(core_cfg.get("coreApi") or "").strip()
+    core_key = str(core_cfg.get("coreApiKey") or "").strip()
+
+    registry_entry = (api_config.get("api_key_registry") or {}).get(provider_key, {})
+    field_name = registry_entry.get("config_field") if isinstance(registry_entry, dict) else ""
+    provider_key_value = str(core_cfg.get(field_name) or "").strip() if field_name else ""
+
+    if provider_key_value:
+        return provider_key_value
+    if provider_key == core_provider and core_key:
+        return core_key
+    # 不能把 coreApiKey 当成 assist provider 的 fallback：core/assist 是不同
+    # provider 时（比如 coreApi=openai + assistApi=qwen_intl），coreApiKey 是
+    # OpenAI 的 key，拿去打 qwen_intl 的 candidate URL 必然 401 →
+    # _auto_resolve_provider_urls_for_save 误判连通性失败 → 把之前测通的
+    # qwen_intl 区域 pin 顺手 pop 掉 (Codex P2 #3258802582)。
+    # 唯一应该回退 coreApiKey 的 case 是 provider_key == core_provider，
+    # 上面那条已经处理；这里返回空字符串让 _build_save_connectivity_targets
+    # 把这个 target 过滤掉，跳过本次 probe，保留 resolvedProviderUrls 旧值。
+    return ""
+
+
+def _build_save_connectivity_targets(core_cfg: dict, api_config: dict) -> dict[str, dict[str, Any]]:
+    """收集保存时需要自动检测的内置 provider。"""
+    targets: dict[str, dict[str, Any]] = {}
+    core_providers = api_config.get("core_api_providers", {}) or {}
+    assist_providers = api_config.get("assist_api_providers", {}) or {}
+
+    def _add(scope: str, provider_key: str) -> None:
+        provider_key = str(provider_key or "").strip()
+        if not provider_key:
+            return
+
+        if scope == "core":
+            profile = core_providers.get(provider_key)
+            if not isinstance(profile, dict):
+                return
+            urls = _normalize_provider_url_candidates(profile, "core_url")
+            model = profile.get("core_model", "")
+            provider_type = "websocket"
+        else:
+            profile = assist_providers.get(provider_key)
+            if not isinstance(profile, dict):
+                return
+            urls = _normalize_provider_url_candidates(profile, "openrouter_url")
+            model = profile.get("conversation_model", "")
+            provider_type = "openai_compatible"
+
+        # 单 URL 不需要解析候选地域；页面全量检测会负责常规连通性状态。
+        if len(urls) < 2:
+            return
+
+        api_key = _get_save_provider_api_key(core_cfg, api_config, provider_key)
+        if not api_key and not profile.get("is_free_version", False):
+            return
+
+        targets[f"{scope}:{provider_key}"] = {
+            "scope": scope,
+            "provider_key": provider_key,
+            "urls": urls,
+            "api_key": api_key,
+            "model": model,
+            "provider_type": provider_type,
+            "is_free": profile.get("is_free_version", False),
+            "label": profile.get("name", provider_key),
+        }
+
+    core_provider = str(core_cfg.get("coreApi") or "qwen").strip()
+    # 显式选择的 assistApi 一律被尊重（free 与付费可双向组合）；
+    # 仅在缺失时沿用 coreApi 偏好做默认：core=free 默认 free，其他默认 qwen。
+    # 与 ConfigManager.get_core_config() 的解析规则保持一致。
+    assist_provider = str(core_cfg.get("assistApi") or "").strip()
+    if not assist_provider:
+        assist_provider = "free" if core_provider == "free" else "qwen"
+
+    _add("core", core_provider)
+    _add("assist", assist_provider)
+
+    if core_cfg.get("enableCustomApi", False):
+        model_types = [
+            "conversation", "summary", "correction", "emotion",
+            "vision", "agent", "omni", "tts",
+        ]
+        for model_type in model_types:
+            provider = str(core_cfg.get(f"{model_type}ModelProvider") or "").strip()
+            if not provider or provider == "custom":
+                continue
+            if provider == "follow_core":
+                _add("core" if model_type == "omni" else "assist", core_provider)
+            elif provider == "follow_assist":
+                _add("assist", assist_provider)
+            else:
+                _add("core" if model_type == "omni" else "assist", provider)
+
+    return targets
+
+
+async def _auto_resolve_provider_urls_for_save(
+    core_cfg: dict,
+    checked_resolved_urls: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """保存 API 配置时自动检测候选 URL，并写入通过检测的地域 URL。"""
+    from utils.api_config_loader import get_config as _get_api_config
+
+    api_config = _get_api_config()
+    targets = _build_save_connectivity_targets(core_cfg, api_config)
+    summary: dict[str, Any] = {
+        "total": len(targets),
+        "success": 0,
+        "failed": 0,
+        "resolved_urls": {},
+        "results": {},
+    }
+    # 起点用 core_cfg 里已经存的 resolved 快照（前端这一次保存连带传上来的
+    # _resolvedProviderUrls + 上一次落盘的值），auto-resolve 只动本次 targets
+    # 里的 provider。其它 provider 之前测通的 URL 留着别扔——比如核心用 GPT
+    # 但 CosyVoice intl 还在用 assist:qwen_intl 的 US 端点，保存非 Qwen 设置
+    # 不该顺手清掉 intl 的地域记忆。
+    existing_resolved: dict[str, str] = {
+        str(k): str(v)
+        for k, v in (core_cfg.get("resolvedProviderUrls") or {}).items()
+        if isinstance(k, str) and isinstance(v, str)
+    }
+    if not targets:
+        core_cfg["resolvedProviderUrls"] = existing_resolved
+        return summary
+
+    resolved_urls: dict[str, str] = dict(existing_resolved)
+
+    pending_targets: dict[str, dict[str, Any]] = {}
+    checked_resolved_urls = checked_resolved_urls if isinstance(checked_resolved_urls, dict) else {}
+    for target_key, target in targets.items():
+        checked_url = str(checked_resolved_urls.get(target_key) or "").strip()
+        if checked_url and checked_url in target["urls"]:
+            resolved_urls[target_key] = checked_url
+            summary["success"] += 1
+            summary["resolved_urls"][target_key] = checked_url
+            summary["results"][target_key] = {
+                "success": True,
+                "error": None,
+                "error_code": None,
+                "resolved_url": checked_url,
+            }
+        else:
+            pending_targets[target_key] = target
+
+    if not pending_targets:
+        core_cfg["resolvedProviderUrls"] = resolved_urls
+        return summary
+
+    async def _run_target(target_key: str, target: dict[str, Any]) -> tuple[str, dict]:
+        result = await _test_connectivity_candidates(
+            target["urls"],
+            target["api_key"],
+            target["model"],
+            target["provider_type"],
+            target["is_free"],
+        )
+        return target_key, result
+
+    task_results = await asyncio.gather(
+        *(_run_target(key, target) for key, target in pending_targets.items()),
+        return_exceptions=True,
+    )
+
+    for item in task_results:
+        if isinstance(item, Exception):
+            summary["failed"] += 1
+            continue
+        target_key, result = item
+        clean_result = {
+            "success": bool(result.get("success")),
+            "error": result.get("error"),
+            "error_code": result.get("error_code"),
+            "resolved_url": result.get("resolved_url"),
+        }
+        summary["results"][target_key] = clean_result
+        if result.get("success") and result.get("resolved_url"):
+            summary["success"] += 1
+            resolved_urls[target_key] = result["resolved_url"]
+            summary["resolved_urls"][target_key] = result["resolved_url"]
+        else:
+            summary["failed"] += 1
+            # 本次测失败的 target 必须把旧 resolved 也丢掉，避免下次继续打不通的旧 URL
+            # (CodeRabbit #3258131687 已要求过的语义)。其它没被 test 到的 provider
+            # 由 existing_resolved 保留，互不影响。
+            resolved_urls.pop(target_key, None)
+            summary["resolved_urls"].pop(target_key, None)
+
+    core_cfg["resolvedProviderUrls"] = resolved_urls
+    logger.info(
+        "[ConnectivityTest] 保存前候选 URL 自动检测完成: success=%s failed=%s",
+        summary["success"],
+        summary["failed"],
+    )
+    return summary
+
+
 @router.post("/test_connectivity")
 async def test_connectivity(req: ConnectivityTestRequest) -> dict:
     """测试 API 连通性。
@@ -1368,7 +1778,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
        前端传完整参数，后端直接使用。
 
     根据 provider_type 选择测试策略：
-    - openai_compatible（默认）：通过 ChatOpenAI 发送最小 chat completion 请求（max_tokens=1）
+    - openai_compatible（默认）：通过 ChatOpenAI 发送最小 chat completion 请求（max_completion_tokens 由 CONNECTIVITY_TEST_MAX_TOKENS 控制）
     - websocket：WebSocket 握手，成功后立即关闭
 
     所有请求 10 秒超时。端点为 async，天然支持并发请求不阻塞。
@@ -1382,11 +1792,13 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
         api_config = _get_api_config()
         provider_key = req.provider_key.strip()
         scope = req.provider_scope.strip().lower()
+        url_candidates: list[str] = []
 
         if scope == "core":
             providers = api_config.get("core_api_providers", {})
             profile = providers.get(provider_key, {})
             url_stripped = profile.get("core_url", "")
+            url_candidates = _normalize_provider_url_candidates(profile, "core_url")
             model = profile.get("core_model", "")
             provider_type = "websocket"
             is_free = profile.get("is_free_version", False)
@@ -1395,6 +1807,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
             providers = api_config.get("assist_api_providers", {})
             profile = providers.get(provider_key, {})
             url_stripped = profile.get("openrouter_url", "")
+            url_candidates = _normalize_provider_url_candidates(profile, "openrouter_url")
             # Use conversation_model as the test model (most representative)
             model = profile.get("conversation_model", "")
             provider_type = "openai_compatible"
@@ -1412,6 +1825,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
             fallback_model = assist_profile.get("conversation_model", "")
             if fallback_url and fallback_model:
                 url_stripped = fallback_url
+                url_candidates = _normalize_provider_url_candidates(assist_profile, "openrouter_url")
                 model = fallback_model
                 provider_type = "openai_compatible"
                 _source_label = assist_profile.get("name", profile.get("name", provider_key)) + "（通过辅助端点验证）"
@@ -1424,25 +1838,29 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
             return {"success": False, "error": "缺少必要参数", "error_code": "missing_params"}
 
         url_stripped = req.url.strip()
+        url_candidates = [url_stripped]
         model = (req.model or "gpt-3.5-turbo").strip()
         provider_type = (req.provider_type or "openai_compatible").strip().lower()
         is_free = bool(req.is_free)
         _source_label = _identify_provider_label(url_stripped, is_free)
 
     try:
-        if provider_type == "websocket":
-            result = await _test_websocket(url_stripped, api_key_stripped, model=model)
-        else:
-            result = await _test_openai_compatible(url_stripped, api_key_stripped, model=model, is_free=is_free)
+        result = await _test_connectivity_candidates(
+            url_candidates or [url_stripped],
+            api_key_stripped,
+            model,
+            provider_type,
+            is_free,
+        )
     except Exception as e:
         logger.exception("[ConnectivityTest] 未预期的异常")
         result = {"success": False, "error": str(e), "error_code": "unknown"}
 
     # 单条结果日志：供应商/自定义 + 成功/失败
     if result.get("success"):
-        logger.info("[ConnectivityTest] %s → ✅ 连通", _source_label)
+        logger.info("[ConnectivityTest] %s 连通", _source_label)
     else:
-        logger.info("[ConnectivityTest] %s → ❌ %s", _source_label, result.get("error_code", "unknown"))
+        logger.info("[ConnectivityTest] %s 失败: %s", _source_label, result.get("error_code", "unknown"))
 
     return result
 
@@ -1455,6 +1873,7 @@ def _identify_provider_label(url: str, is_free: bool) -> str:
         "lanlan.tech": "免费版",
         "dashscope.aliyuncs.com": "阿里百炼",
         "dashscope-intl.aliyuncs.com": "阿里国际版",
+        "dashscope-us.aliyuncs.com": "阿里国际版（美国）",
         "api.openai.com": "OpenAI",
         "open.bigmodel.cn": "智谱",
         "api.stepfun.com": "阶跃星辰",

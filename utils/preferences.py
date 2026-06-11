@@ -310,7 +310,8 @@ GLOBAL_CONVERSATION_KEY = "__global_conversation__"
 _ALLOWED_CONVERSATION_SETTINGS = {
     'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
     'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
-    'proactiveMusicEnabled', 'proactiveMemeEnabled', 'mergeMessagesEnabled', 'focusModeEnabled',
+    'proactiveMusicEnabled', 'proactiveMemeEnabled', 'proactiveMiniGameInviteEnabled',
+    'mergeMessagesEnabled', 'focusModeEnabled',
     'avatarReactionBubbleEnabled',
     'proactiveChatInterval', 'proactiveVisionInterval', 'subtitleEnabled', 'userLanguage',
     'textGuardMaxLength', 'noiseReductionEnabled'
@@ -344,6 +345,23 @@ def load_global_conversation_settings() -> Dict[str, Any]:
 async def aload_global_conversation_settings() -> Dict[str, Any]:
     """异步版 load_global_conversation_settings：供 async 路径调用，offload sync IO。"""
     return await asyncio.to_thread(load_global_conversation_settings)
+
+
+def is_privacy_mode_enabled() -> bool:
+    """前端"隐私模式"开关是否开启。
+
+    内部存储字段为 ``proactiveVisionEnabled``（True=允许自主视觉），
+    隐私模式是它的反面。未同步时默认 False（与前端首次启动行为一致：
+    隐私模式默认关，自主视觉默认开）。
+    """
+    settings = load_global_conversation_settings()
+    return not settings.get('proactiveVisionEnabled', True)
+
+
+async def ais_privacy_mode_enabled() -> bool:
+    """异步版 ``is_privacy_mode_enabled``。"""
+    settings = await aload_global_conversation_settings()
+    return not settings.get('proactiveVisionEnabled', True)
 
 
 def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
@@ -399,7 +417,8 @@ def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
         _BOOL_FIELDS = {
             'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
             'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
-            'proactiveMusicEnabled', 'proactiveMemeEnabled', 'mergeMessagesEnabled', 'focusModeEnabled',
+            'proactiveMusicEnabled', 'proactiveMemeEnabled', 'proactiveMiniGameInviteEnabled',
+            'mergeMessagesEnabled', 'focusModeEnabled',
             'avatarReactionBubbleEnabled', 'subtitleEnabled', 'noiseReductionEnabled'
         }
         _INT_INTERVAL_FIELDS = {'proactiveChatInterval', 'proactiveVisionInterval'}
@@ -412,7 +431,9 @@ def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
                 if isinstance(v, bool):
                     validated[k] = v
             elif k in _INT_INTERVAL_FIELDS:
-                if isinstance(v, int) and 1000 <= v <= 3600000:
+                # 单位：秒，与前端 ``app-state.js`` 的 S.proactive*Interval 一致；
+                # 前端使用时再 ×1000 转毫秒喂给 setTimeout。
+                if isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= 3600:
                     validated[k] = v
             elif k in _STRING_FIELDS:
                 if isinstance(v, str) and v:
@@ -438,9 +459,15 @@ def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
             data.append(global_pref)
 
         atomic_write_json(PREFERENCES_FILE, data, ensure_ascii=False, indent=2)
+        # 注意：settings_state telemetry **不**在这里打。instrument_counters 按
+        # (stat_date, device_id, metric_key) 累加 UPSERT，若每次 save 都打点，
+        # 同一设备一天内切几次设置就会给多个 settings_state|... key 各 +1，
+        # dashboard 看到的是"观测次数"而非"用户当前/惯用设置"（CodeRabbit 指出）。
+        # 改为只在 record_app_start 打一次启动快照——"用户本次启动时的设置"，
+        # 跨多次启动按 device 看 mode 即可反推惯用档，语义干净得多。
         return True
     except MaintenanceModeError:
         raise
     except Exception as e:
         print(f"保存全局对话设置失败: {e}")
-        return False 
+        return False

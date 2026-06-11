@@ -18,6 +18,21 @@ AvatarButtonMixin.apply(Live2DManager.prototype, 'live2d', {
     returnBreathingStyleId: 'live2d-return-button-breathing-styles'
 });
 
+const LIVE2D_X11_UI_TICK_MS = 80;
+
+function shouldThrottleLive2DUiTicker(manager) {
+    return !!(window.__NEKO_DESKTOP_RUNTIME__ && window.__NEKO_DESKTOP_RUNTIME__.isLinuxX11) &&
+        !(manager && manager._isDraggingModel);
+}
+
+function shouldSkipLive2DUiTick(manager, propName, intervalMs) {
+    if (!shouldThrottleLive2DUiTicker(manager)) return false;
+    const now = performance.now();
+    if (now - (manager[propName] || 0) < intervalMs) return true;
+    manager[propName] = now;
+    return false;
+}
+
 /**
  * 设置 HTML 锁形图标（Live2D 特定）
  */
@@ -132,6 +147,9 @@ Live2DManager.prototype.setupHTMLLockIcon = function(model) {
 
     const tick = () => {
         try {
+            if (shouldSkipLive2DUiTick(this, '_x11LockIconLastTickAt', LIVE2D_X11_UI_TICK_MS)) {
+                return;
+            }
             if (!model || !model.parent) {
                 // 教程期间不隐藏锁图标，防止高亮框位置被刷到 (0,0)
                 if (lockIcon && !window.isInTutorial) lockIcon.style.display = 'none';
@@ -169,7 +187,10 @@ Live2DManager.prototype.setupHTMLLockIcon = function(model) {
                     }
                 });
             }
-            lockIcon.style.opacity = isOverlapped ? '0.3' : '';
+            // 与角色形象半透明状态完全同步：容器加了 locked-hover-fade 类(opacity 0.12)时，锁图标也淡到同一透明度
+            const live2dFadeContainer = document.getElementById('live2d-container');
+            const lockShouldFade = live2dFadeContainer && live2dFadeContainer.classList.contains('locked-hover-fade');
+            lockIcon.style.opacity = lockShouldFade ? '0.12' : (isOverlapped ? '0.3' : '');
         } catch (_) {}
     };
     this._lockIconTicker = tick;
@@ -532,7 +553,6 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
 
     // 创建"请她回来"按钮
     const returnButtonContainer = this.createReturnButton();
-    this.setupReturnButtonContainerDrag(returnButtonContainer);
 
     container.style.pointerEvents = this.isLocked ? 'none' : 'auto';
 
@@ -543,10 +563,16 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
 
     const tick = () => {
         try {
+            if (shouldSkipLive2DUiTick(this, '_x11FloatingButtonsLastTickAt', LIVE2D_X11_UI_TICK_MS)) {
+                return;
+            }
             if (!model || !model.parent) {
                 return;
             }
             if (isMobileWidth()) {
+                return;
+            }
+            if (this._freezeFloatingButtonsPosition === true) {
                 return;
             }
             const bounds = model.getBounds();
@@ -651,6 +677,5 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
  * 设置返回按钮拖拽（Live2D 特定）
  */
 Live2DManager.prototype.setupReturnButtonContainerDrag = function(container) {
-    this._setupReturnButtonDrag(container);
     this._addReturnButtonBreathingAnimation();
 };

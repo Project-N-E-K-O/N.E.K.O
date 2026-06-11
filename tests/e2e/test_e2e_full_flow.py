@@ -9,7 +9,7 @@ This test simulates a complete user flow:
 5. Switch to VRM model via /model_manager popup
 6. Text chat and LLM evaluation
 7. Fake screenshot insertion and visual chat
-8. Switch character via /chara_manager popup
+8. Switch character via /character_card_manager popup
 9. Voice <-> Text mode switching stress test
 10. Memory browser verification
 """
@@ -191,7 +191,7 @@ def test_full_e2e_flow(mock_page: Page, running_server: str, llm_judger, clean_u
     # ---------------------------------------------------------
     print("[E2E] Step 8: Character switching in popup...")
     with page.expect_popup() as chara_popup_info:
-        page.evaluate(f"window.open('{running_server}/chara_manager', '_blank')")
+        page.evaluate(f"window.open('{running_server}/character_card_manager', '_blank')")
     
     c_popup = chara_popup_info.value
     c_popup.wait_for_load_state("networkidle")

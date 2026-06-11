@@ -19,9 +19,9 @@
         subtitleSize: 'subtitleSize'
     };
     var SIZE_PRESETS = {
-        small: { width: 400, minHeight: 60 },
-        medium: { width: 600, minHeight: 80 },
-        large: { width: 800, minHeight: 100 }
+        small:  { width: 400, minHeight: 64, maxHeight: 120, fontSize: 14 },
+        medium: { width: 600, minHeight: 68, maxHeight: 160, fontSize: 17 },
+        large:  { width: 800, minHeight: 76, maxHeight: 200, fontSize: 21 }
     };
     var UI_KEY_MAP = {
         settingsBtn: 'subtitle.settings.settingsBtn',
@@ -431,9 +431,20 @@
         };
     }
 
+    function isDarkThemeActive() {
+        return !!(
+            document.documentElement &&
+            document.documentElement.getAttribute('data-theme') === 'dark'
+        );
+    }
+
     function applyBackgroundOpacity(display, opacity) {
         if (!display) return;
         var alpha = clampOpacity(opacity) / 100;
+        if (isDarkThemeActive()) {
+            display.style.background = 'linear-gradient(135deg, rgba(18,29,45,' + alpha + ') 0%, rgba(22,45,68,' + Math.max(0, alpha - 0.04) + ') 52%, rgba(30,74,108,' + alpha + ') 100%)';
+            return;
+        }
         display.style.background = 'linear-gradient(135deg, rgba(68,183,254,' + alpha + ') 0%, rgba(68,183,254,' + Math.max(0, alpha - 0.05) + ') 50%, rgba(100,200,255,' + alpha + ') 100%)';
     }
 
@@ -442,6 +453,10 @@
         var preset = getSizePreset(size);
         display.dataset.subtitleSize = normalizeSizePreset(size);
         display.style.minHeight = preset.minHeight + 'px';
+        display.style.maxHeight = preset.maxHeight + 'px';
+        display.style.fontSize = preset.fontSize + 'px';
+        display.style.setProperty('--subtitle-max-height', preset.maxHeight + 'px');
+        display.style.setProperty('--subtitle-content-max-height', Math.max(24, preset.maxHeight - 40) + 'px');
         if (!options || options.host !== 'window') {
             display.style.setProperty('--subtitle-max-width', preset.width + 'px');
         }
@@ -455,7 +470,7 @@
         applySubtitlePreset(refs.display, state.subtitleSize, { host: host });
         refs.display.classList.toggle('drag-anywhere', !!state.subtitleDragAnywhere);
         if (refs.dragHandle) {
-            refs.dragHandle.style.display = state.subtitleDragAnywhere ? 'none' : '';
+            refs.dragHandle.style.display = state.subtitleDragAnywhere ? '' : 'none';
         }
         if (refs.langSelect) {
             refs.langSelect.value = state.userLanguage;
@@ -691,12 +706,12 @@
         }
 
         function onHandleMouseDown(e) {
-            if (isDragAnywhereMode()) return;
+            if (!isDragAnywhereMode()) return;
             beginDrag(e);
         }
 
         function onHandleTouchStart(e) {
-            if (isDragAnywhereMode()) return;
+            if (!isDragAnywhereMode()) return;
             beginTouchDrag(e);
         }
 
@@ -744,8 +759,13 @@
             return refs.display.classList.contains('drag-anywhere');
         }
 
+        function isLinuxSubtitleHost() {
+            return document.body && document.body.classList.contains('subtitle-linux-host');
+        }
+
         function bounceBackIfNeeded() {
             try {
+                if (isLinuxSubtitleHost()) return;
                 if (typeof window.screenX !== 'number') return;
                 var margin = 30;
                 var x = window.screenX;
@@ -795,13 +815,13 @@
         }
 
         function onHandleMouseDown(e) {
-            if (isDragAnywhereMode()) return;
+            if (!isDragAnywhereMode()) return;
             startDrag(e);
             refs.dragHandle.style.cursor = 'grabbing';
         }
 
         function onHandleTouchStart(e) {
-            if (isDragAnywhereMode()) return;
+            if (!isDragAnywhereMode()) return;
             startDrag(e);
             refs.dragHandle.style.cursor = 'grabbing';
         }
@@ -860,6 +880,38 @@
         applyState(state, { changedKeys: [], source: 'init' });
         cleanupFns.push(subscribeSettings(applyState, { immediate: false }));
 
+        var observedThemeDark = isDarkThemeActive();
+        var applyThemeStateIfChanged = function(source) {
+            var nextThemeDark = isDarkThemeActive();
+            if (nextThemeDark === observedThemeDark) return;
+            observedThemeDark = nextThemeDark;
+            applyState(getSettings(), { changedKeys: ['theme'], source: source });
+        };
+        var onThemeChanged = function() {
+            applyThemeStateIfChanged('subtitle-ui-theme-event');
+        };
+        window.addEventListener('neko-theme-changed', onThemeChanged);
+        cleanupFns.push(function() {
+            window.removeEventListener('neko-theme-changed', onThemeChanged);
+        });
+        if (window.MutationObserver && document.documentElement) {
+            var themeObserver = new MutationObserver(function(mutations) {
+                for (var i = 0; i < mutations.length; i += 1) {
+                    if (mutations[i].attributeName === 'data-theme') {
+                        applyThemeStateIfChanged('subtitle-ui-theme-attribute');
+                        break;
+                    }
+                }
+            });
+            themeObserver.observe(document.documentElement, {
+                attributes: true,
+                attributeFilter: ['data-theme']
+            });
+            cleanupFns.push(function() {
+                themeObserver.disconnect();
+            });
+        }
+
         if (window.i18next && typeof window.i18next.on === 'function') {
             var onLanguageChanged = function(nextLocale) {
                 updateSettings({ uiLocale: nextLocale }, {
@@ -876,15 +928,25 @@
         }
 
         if (refs.settingsBtn && refs.settingsPanel) {
+            var notifySettingsPanelChanged = function(source) {
+                if (typeof options.onSettingsApplied === 'function') {
+                    options.onSettingsApplied(getSettings(), refs, {
+                        changedKeys: [],
+                        source: source
+                    });
+                }
+            };
             var onSettingsClick = function(e) {
                 e.stopPropagation();
                 refs.settingsPanel.classList.toggle('hidden');
+                notifySettingsPanelChanged('subtitle-ui-panel');
             };
             var onDocumentDown = function(e) {
                 if (refs.settingsPanel.classList.contains('hidden')) return;
                 if (refs.settingsPanel.contains(e.target)) return;
                 if (refs.settingsBtn.contains(e.target)) return;
                 refs.settingsPanel.classList.add('hidden');
+                notifySettingsPanelChanged('subtitle-ui-panel');
             };
             refs.settingsBtn.addEventListener('click', onSettingsClick);
             document.addEventListener('mousedown', onDocumentDown);

@@ -18,9 +18,11 @@ logger = get_module_logger(__name__)
 MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024
 MAX_BASE64_SIZE = MAX_IMAGE_SIZE_BYTES * 4 // 3 + 100
 
-# 截图压缩默认参数（供 computer_use 等模块复用）
-COMPRESS_TARGET_HEIGHT = 1080
-COMPRESS_JPEG_QUALITY = 75
+# 截图压缩默认参数：与前端手动截图 / 屏幕分享口径对齐（720p, JPEG quality 80）。
+# 前端已统一把发给后端的画面压到 720p，这里的 vision 分析、后端 pyautogui 兜底
+# 等再压也保持同一档位，避免一边 720 一边 1080 的不一致。
+COMPRESS_TARGET_HEIGHT = 720
+COMPRESS_JPEG_QUALITY = 80
 _LANCZOS = getattr(Image, 'LANCZOS', getattr(Image, 'ANTIALIAS', 1))
 
 LOCAL_MAX_PIXELS = 100_000_000
@@ -134,19 +136,23 @@ async def process_screen_data(data: str) -> Optional[str]:
 
 async def analyze_image_with_vision_model(
     image_b64: str,
-    max_tokens: int = 500,
+    max_completion_tokens: int | None = None,
     window_title: str = '',
 ) -> Optional[str]:
     """
     使用视觉模型分析图片
-    
+
     参数:
         image_b64: 图片的base64编码（不含data:前缀）
-        max_tokens: 最大输出token数，默认 500
+        max_completion_tokens: 最大输出 token 数；None 时取
+            config.VISION_ANALYSIS_MAX_TOKENS 默认值
         window_title: 可选的窗口标题，提供时会加入提示词以丰富上下文
-        
+
     返回: 图片描述文本，失败则返回 None
     """
+    if max_completion_tokens is None:
+        from config import VISION_ANALYSIS_MAX_TOKENS
+        max_completion_tokens = VISION_ANALYSIS_MAX_TOKENS
     try:
         from utils.config_manager import get_config_manager
         
@@ -170,19 +176,21 @@ async def analyze_image_with_vision_model(
         else:
             logger.info(f"🖼️ Using VISION_MODEL ({vision_model}) to analyze image")
 
-        from config.prompts_sys import (
+        from config.prompts.prompts_sys import (
             _loc, VISION_WATERMARK,
             VISION_SYSTEM_WITH_TITLE, VISION_SYSTEM_NO_TITLE,
             VISION_USER_WITH_TITLE, VISION_USER_NO_TITLE,
+            get_avatar_annotation_ignore_hint,
         )
         from utils.language_utils import get_global_language
         lang = get_global_language()
 
+        ignore_hint = get_avatar_annotation_ignore_hint(lang)
         if window_title:
-            system_content = VISION_WATERMARK + _loc(VISION_SYSTEM_WITH_TITLE, lang)
+            system_content = VISION_WATERMARK + _loc(VISION_SYSTEM_WITH_TITLE, lang) + ' ' + ignore_hint
             user_text = _loc(VISION_USER_WITH_TITLE, lang).format(window_title=window_title)
         else:
-            system_content = VISION_WATERMARK + _loc(VISION_SYSTEM_NO_TITLE, lang)
+            system_content = VISION_WATERMARK + _loc(VISION_SYSTEM_NO_TITLE, lang) + ' ' + ignore_hint
             user_text = _loc(VISION_USER_NO_TITLE, lang)
 
         set_call_type("vision")
@@ -191,8 +199,7 @@ async def analyze_image_with_vision_model(
             base_url=vision_base_url or None,
             api_key=vision_api_key,
             max_retries=0,
-            max_completion_tokens=max_tokens,
-            temperature=0,
+            max_completion_tokens=max_completion_tokens,
         )
         messages = [
             {
@@ -285,7 +292,9 @@ async def analyze_screenshot_from_data_url(data_url: str, window_title: str = ''
         description = await analyze_image_with_vision_model(base64_data, window_title=window_title)
         
         if description:
-            logger.info(f"AI截图分析成功: {description[:100]}...")
+            # AI 截图分析结果（描述用户屏幕内容）不写 logger
+            logger.info(f"AI截图分析成功 (description_len={len(description)})")
+            print(f"AI截图分析: {description[:100]}...")
         else:
             logger.info("AI截图分析失败")
         
@@ -302,7 +311,7 @@ async def analyze_screenshot_from_data_url(data_url: str, window_title: str = ''
 # Avatar annotation overlay — 在截图上叠加 Avatar 文字注解
 # ============================================================================
 
-from config.prompts_sys import AVATAR_ANNOTATION_TEXT as _AVATAR_ANNOTATION_I18N
+from config.prompts.prompts_sys import AVATAR_ANNOTATION_TEXT as _AVATAR_ANNOTATION_I18N
 
 # Lazy-loaded CJK font cache
 _avatar_font_cache: Dict[int, ImageFont.FreeTypeFont] = {}

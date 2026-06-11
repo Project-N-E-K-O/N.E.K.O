@@ -13,6 +13,10 @@ _ORIGINAL_GET_DOCUMENTS_DIRECTORY = ConfigManager._get_documents_directory
 def _make_config_manager(tmp_path):
     with patch.object(ConfigManager, "_get_documents_directory", return_value=tmp_path), patch.object(
         ConfigManager,
+        "_get_standard_data_directory_candidates",
+        return_value=[tmp_path / "standard_data"],
+    ), patch.object(
+        ConfigManager,
         "get_legacy_app_root_candidates",
         return_value=[],
     ), patch.object(
@@ -24,16 +28,20 @@ def _make_config_manager(tmp_path):
 
 
 @pytest.mark.unit
-def test_cloudsave_paths_follow_app_dir(tmp_path):
+def test_cloudsave_paths_follow_anchor_root_instead_of_runtime_root(tmp_path):
     cm = _make_config_manager(tmp_path)
+    expected_runtime_root = tmp_path / "N.E.K.O"
+    expected_anchor_root = tmp_path / "standard_data" / "N.E.K.O"
 
-    assert cm.cloudsave_dir == tmp_path / "N.E.K.O" / "cloudsave"
+    assert cm.app_docs_dir == expected_runtime_root
+    assert cm.anchor_root == expected_anchor_root
+    assert cm.cloudsave_dir == expected_anchor_root / "cloudsave"
     assert cm.cloudsave_manifest_path == cm.cloudsave_dir / "manifest.json"
-    assert cm.cloudsave_staging_dir == tmp_path / "N.E.K.O" / ".cloudsave_staging"
-    assert cm.cloudsave_backups_dir == tmp_path / "N.E.K.O" / "cloudsave_backups"
-    assert cm.root_state_path == tmp_path / "N.E.K.O" / "state" / "root_state.json"
-    assert cm.cloudsave_local_state_path == tmp_path / "N.E.K.O" / "state" / "cloudsave_local_state.json"
-    assert cm.character_tombstones_state_path == tmp_path / "N.E.K.O" / "state" / "character_tombstones.json"
+    assert cm.cloudsave_staging_dir == expected_anchor_root / ".cloudsave_staging"
+    assert cm.cloudsave_backups_dir == expected_anchor_root / "cloudsave_backups"
+    assert cm.root_state_path == expected_anchor_root / "state" / "root_state.json"
+    assert cm.cloudsave_local_state_path == expected_anchor_root / "state" / "cloudsave_local_state.json"
+    assert cm.character_tombstones_state_path == expected_anchor_root / "state" / "character_tombstones.json"
 
 
 @pytest.mark.unit
@@ -117,6 +125,98 @@ def test_ensure_cloudsave_state_files_raises_when_local_state_directory_init_fai
     with patch.object(cm, "ensure_local_state_directory", return_value=False):
         with pytest.raises(RuntimeError, match="root_state.json"):
             cm.ensure_cloudsave_state_files()
+
+
+@pytest.mark.unit
+def test_ensure_cloudsave_state_files_reports_local_state_directory_diagnostic(tmp_path):
+    cm = _make_config_manager(tmp_path)
+    cm.anchor_root.mkdir(parents=True, exist_ok=True)
+    cm.local_state_dir.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(RuntimeError) as exc_info:
+        cm.ensure_cloudsave_state_files()
+
+    message = str(exc_info.value)
+    assert "root_state.json" in message
+    assert f"anchor_root={cm.anchor_root.resolve()}" in message
+    assert f"local_state_dir={cm.local_state_dir.resolve()}" in message
+    assert "not a directory" in message
+
+
+@pytest.mark.unit
+def test_save_root_state_reports_anchor_file_blocker(tmp_path):
+    standard_parent = tmp_path / "standard_data"
+    standard_parent.mkdir(parents=True, exist_ok=True)
+    blocked_anchor = standard_parent / "N.E.K.O"
+    blocked_anchor.write_text("not a directory", encoding="utf-8")
+    cm = _make_config_manager(tmp_path)
+
+    with pytest.raises(OSError) as exc_info:
+        cm.save_root_state(cm.build_default_root_state())
+
+    message = str(exc_info.value)
+    assert "Failed to ensure local state directory before saving root_state" in message
+    assert f"anchor_root={blocked_anchor.resolve()}" in message
+    assert f"local_state_dir={(blocked_anchor / 'state').resolve()}" in message
+    assert "not a directory" in message
+
+
+@pytest.mark.unit
+def test_save_root_state_reports_state_file_blocker(tmp_path):
+    cm = _make_config_manager(tmp_path)
+    cm.anchor_root.mkdir(parents=True, exist_ok=True)
+    cm.local_state_dir.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(OSError) as exc_info:
+        cm.save_root_state(cm.build_default_root_state())
+
+    message = str(exc_info.value)
+    assert "Failed to ensure local state directory before saving root_state" in message
+    assert f"anchor_root={cm.anchor_root.resolve()}" in message
+    assert f"local_state_dir={cm.local_state_dir.resolve()}" in message
+    assert "not a directory" in message
+
+
+@pytest.mark.unit
+def test_state_save_entrypoints_report_target_directory_blockers(tmp_path):
+    cm = _make_config_manager(tmp_path)
+    cm.ensure_cloudsave_state_files()
+
+    targets = (
+        (
+            cm.root_state_path,
+            lambda: cm.save_root_state(cm.build_default_root_state()),
+            "saving root_state",
+        ),
+        (
+            cm.cloudsave_local_state_path,
+            lambda: cm.save_cloudsave_local_state(cm.build_default_cloudsave_local_state()),
+            "saving cloudsave_local_state",
+        ),
+        (
+            cm.character_tombstones_state_path,
+            lambda: cm.save_character_tombstones_state(cm.build_default_character_tombstones_state()),
+            "saving character_tombstones_state",
+        ),
+    )
+
+    for target_path, save_call, operation in targets:
+        target_path.unlink()
+        target_path.mkdir()
+
+        with pytest.raises(OSError) as exc_info:
+            save_call()
+
+        message = str(exc_info.value)
+        assert getattr(exc_info.value, "local_state_directory_error", False)
+        assert f"Failed to ensure local state file before {operation}" in message
+        assert f"anchor_root={cm.anchor_root.resolve()}" in message
+        assert f"local_state_dir={cm.local_state_dir.resolve()}" in message
+        assert f"failed_path={target_path.resolve()}" in message
+        assert "state file target exists but is not a file" in message
+
+        target_path.rmdir()
+        target_path.write_text("{}", encoding="utf-8")
 
 
 @pytest.mark.unit
@@ -290,6 +390,46 @@ def test_load_workshop_config_does_not_delete_invalid_file_on_read(tmp_path):
     assert isinstance(loaded, dict)
     assert config_path.is_file()
     assert config_path.read_text(encoding="utf-8") == "{not-valid-json"
+
+
+@pytest.mark.unit
+def test_load_workshop_config_rebases_paths_from_retained_migration_source(tmp_path):
+    cm = _make_config_manager(tmp_path)
+    source_root = tmp_path / "old-root" / "N.E.K.O"
+    source_workshop = source_root / "workshop"
+    external_mods = tmp_path / "external-mods"
+    cm.config_dir.mkdir(parents=True, exist_ok=True)
+    source_workshop.mkdir(parents=True, exist_ok=True)
+    external_mods.mkdir(parents=True, exist_ok=True)
+
+    atomic_write_json(
+        cm.config_dir / "workshop_config.json",
+        {
+            "default_workshop_folder": str(source_workshop),
+            "user_workshop_folder": str(source_workshop / "cached"),
+            "user_mod_folder": str(external_mods),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    cm.save_root_state(
+        {
+            **cm.build_default_root_state(),
+            "current_root": str(cm.app_docs_dir),
+            "last_known_good_root": str(cm.app_docs_dir),
+            "last_migration_source": str(source_root),
+            "last_migration_backup": str(source_root),
+            "last_migration_result": f"completed:{cm.app_docs_dir}",
+        }
+    )
+
+    loaded = cm.load_workshop_config()
+    persisted = json.loads((cm.config_dir / "workshop_config.json").read_text(encoding="utf-8"))
+
+    assert loaded["default_workshop_folder"] == str(cm.workshop_dir)
+    assert loaded["user_workshop_folder"] == str(cm.workshop_dir / "cached")
+    assert loaded["user_mod_folder"] == str(external_mods)
+    assert persisted == loaded
 
 
 @pytest.mark.unit

@@ -75,11 +75,15 @@ class ConnectionState:
 
 
 # ── WebSocket 弹幕服务器 ──────────────────────────────────────────
-WS_URL = "wss://broadcastlv.chat.bilibili.com/sub"
-# 备用地址
+# 最可靠的服务器（始终作为最终保底）
+WS_MAIN_URL = "wss://broadcastlv.chat.bilibili.com/sub"
+# 备用地址（按可靠性排序）
 WS_FALLBACK_URLS = [
-    "wss://tx-gz-live-comet-01.chat.bilibili.com/sub",
     "wss://broadcastlv.chat.bilibili.com/sub",
+    "wss://tx-gz-live-comet-01.chat.bilibili.com/sub",
+    "wss://live-comet-01.chat.bilibili.com/sub",
+    "wss://live-comet-02.chat.bilibili.com/sub",
+    "wss://broadcastlv.chat.bilibili.com/sub",  # 最终保底
 ]
 
 # ── 数据包协议常量 ────────────────────────────────────────────────
@@ -177,6 +181,9 @@ class DanmakuListener:
 
         # 连接状态
         self._connection_state = ConnectionState.DISCONNECTED
+
+        # 直播结束标记：收到 PREPARING 后置位，阻止重连循环
+        self._live_ended: bool = False
         self._current_server: str = ""  # 当前连接的服务器地址
         self._viewer_count: int = 0  # 当前观看人数（人气值）
 
@@ -189,16 +196,23 @@ class DanmakuListener:
         self._wbi_mixin_key: str = ""
         self._wbi_key_ts: float = 0.0   # 上次获取时间（unix 秒）
         self._wbi_key_ttl: float = 43200  # 12小时
+        self._real_room_id_cache: dict[int, tuple[int, float]] = {}
+        self._real_room_id_ttl: float = 300
+        self._http_timeout = 8
 
     def _log(self, msg: str, level: str = "info"):
         if self.logger:
             getattr(self.logger, level, self.logger.info)(msg)
 
-    def _emit(self, event: str, *args, **kwargs):
+    async def _emit(self, event: str, *args, **kwargs):
         cb = self.callbacks.get(event)
+        self._log(f"_emit: event={event}, cb={'有' if cb else '无'}, callbacks_keys={list(self.callbacks.keys())}", "info")
         if cb:
             try:
-                cb(*args, **kwargs)
+                if asyncio.iscoroutinefunction(cb):
+                    await cb(*args, **kwargs)
+                else:
+                    cb(*args, **kwargs)
             except Exception as e:
                 self._log(f"回调 {event} 异常: {e}", "warning")
 
@@ -220,6 +234,27 @@ class DanmakuListener:
             "room_id": self.real_room_id if self._connection_state != ConnectionState.DISCONNECTED else self.room_id,
         }
 
+    async def _request_json(
+        self,
+        url: str,
+        *,
+        headers: Optional[dict] = None,
+        cookies: Optional[dict] = None,
+        params: Optional[dict] = None,
+        allow_redirects: bool = True,
+    ) -> dict:
+        import aiohttp
+
+        timeout = aiohttp.ClientTimeout(total=self._http_timeout)
+        async with aiohttp.ClientSession(cookies=cookies, timeout=timeout) as session:
+            async with session.get(
+                url,
+                headers=headers,
+                params=params,
+                allow_redirects=allow_redirects,
+            ) as resp:
+                return await resp.json()
+
     async def _get_wbi_mixin_key(self, cookies: dict) -> str:
         """
         获取 WBI mixin_key（带12小时缓存）。
@@ -231,52 +266,51 @@ class DanmakuListener:
             return self._wbi_mixin_key
 
         try:
-            import aiohttp
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 "Referer": "https://www.bilibili.com/",
             }
-            async with aiohttp.ClientSession(cookies=cookies) as session:
-                async with session.get(
-                    "https://api.bilibili.com/x/web-interface/nav",
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=8),
-                ) as resp:
-                    data = await resp.json()
-                    wbi_img = data.get("data", {}).get("wbi_img", {})
-                    img_url = wbi_img.get("img_url", "")
-                    sub_url = wbi_img.get("sub_url", "")
-                    # 从 URL 中取文件名（去掉扩展名）
-                    img_key = img_url.rsplit("/", 1)[-1].split(".")[0] if img_url else ""
-                    sub_key = sub_url.rsplit("/", 1)[-1].split(".")[0] if sub_url else ""
-                    if img_key and sub_key:
-                        mixin_key = _get_mixin_key(img_key, sub_key)
-                        if mixin_key:
-                            self._wbi_mixin_key = mixin_key
-                            self._wbi_key_ts = now
-                            self._log(f"WBI key 已更新 (img={img_key[:8]}...)")
-                            return mixin_key
-                        else:
-                            self._log(f"WBI key 重排失败: img_key 长度={len(img_key)}, sub_key 长度={len(sub_key)}", "warning")
-                    else:
-                        self._log(f"WBI key 缺失: img_key={'有' if img_key else '无'}, sub_key={'有' if sub_key else '无'}", "warning")
+            data = await self._request_json(
+                "https://api.bilibili.com/x/web-interface/nav",
+                headers=headers,
+                cookies=cookies,
+            )
+            wbi_img = data.get("data", {}).get("wbi_img", {})
+            img_url = wbi_img.get("img_url", "")
+            sub_url = wbi_img.get("sub_url", "")
+            # 从 URL 中取文件名（去掉扩展名）
+            img_key = img_url.rsplit("/", 1)[-1].split(".")[0] if img_url else ""
+            sub_key = sub_url.rsplit("/", 1)[-1].split(".")[0] if sub_url else ""
+            if img_key and sub_key:
+                mixin_key = _get_mixin_key(img_key, sub_key)
+                if mixin_key:
+                    self._wbi_mixin_key = mixin_key
+                    self._wbi_key_ts = now
+                    self._log(f"WBI key 已更新 (img={img_key[:8]}...)")
+                    return mixin_key
+                else:
+                    self._log(f"WBI key 重排失败: img_key 长度={len(img_key)}, sub_key 长度={len(sub_key)}", "warning")
+            else:
+                self._log(f"WBI key 缺失: img_key={'有' if img_key else '无'}, sub_key={'有' if sub_key else '无'}", "warning")
         except Exception as e:
             self._log(f"获取 WBI key 失败: {e}", "warning")
         return ""
 
     async def _get_real_room_id(self, room_id: int) -> int:
         """获取真实房间号（处理短号）"""
+        now = time.time()
+        cached = self._real_room_id_cache.get(room_id)
+        if cached and now - cached[1] < self._real_room_id_ttl:
+            return cached[0]
         try:
-            import aiohttp
             url = f"https://api.live.bilibili.com/xlive/web-room/v1/index/getInfoByRoom?room_id={room_id}"
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=8)) as resp:
-                    data = await resp.json()
-                    if data.get("code") == 0:
-                        real_id = data["data"]["room_info"]["room_id"]
-                        self._log(f"房间号解析: {room_id} -> {real_id}")
-                        return real_id
+            data = await self._request_json(url, headers=headers)
+            if data.get("code") == 0:
+                real_id = data["data"]["room_info"]["room_id"]
+                self._real_room_id_cache[room_id] = (real_id, now)
+                self._log(f"房间号解析: {room_id} -> {real_id}")
+                return real_id
         except Exception as e:
             self._log(f"获取真实房间号失败: {e}，使用原始号", "warning")
         return room_id
@@ -288,11 +322,11 @@ class DanmakuListener:
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             }
-            async with aiohttp.ClientSession() as session:
+            timeout = aiohttp.ClientTimeout(total=self._http_timeout)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(
                     "https://www.bilibili.com/",
                     headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=8),
                     allow_redirects=True,
                 ) as resp:
                     # 从 Set-Cookie 中提取 buvid3
@@ -329,8 +363,6 @@ class DanmakuListener:
         token = ""
 
         try:
-            import aiohttp
-
             # 从凭据中取 buvid3
             buvid3 = ""
             if self.credential:
@@ -381,32 +413,32 @@ class DanmakuListener:
                 self._log("WBI key 获取失败，尝试不带签名请求", "warning")
 
             url = "https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo"
-
-            async with aiohttp.ClientSession(cookies=cookies) as session:
-                async with session.get(
-                    url,
-                    params=params,
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=8),
-                ) as resp:
-                    data = await resp.json()
-                    api_code = data.get("code", -1)
-                    self._log(f"getDanmuInfo API: code={api_code}, msg={data.get('message', '')}")
-                    if api_code == 0:
-                        token = data["data"].get("token", "")
-                        hosts = data["data"].get("host_list", [])
-                        self._log(f"token长度={len(token)}, 可用服务器数={len(hosts)}")
-                        if hosts:
-                            # 构建所有服务器的 URL 列表
-                            for host in hosts:
-                                wss_port = host.get("wss_port", 0)
-                                if wss_port:
-                                    ws_url = f"wss://{host['host']}:{wss_port}/sub"
-                                    servers.append((ws_url, host['host'], wss_port))
-                            self._log(f"弹幕服务器列表: {[s[1] + ':' + str(s[2]) for s in servers]}")
-                            return servers, token
-                    else:
-                        self._log(f"getDanmuInfo 返回错误: {data}", "warning")
+            data = await self._request_json(url, params=params, headers=headers, cookies=cookies)
+            api_code = data.get("code", -1)
+            self._log(f"getDanmuInfo API: code={api_code}, msg={data.get('message', '')}")
+            if api_code == 0:
+                token = data["data"].get("token", "")
+                hosts = data["data"].get("host_list", [])
+                self._log(f"token长度={len(token)}, 可用服务器数={len(hosts)}")
+                if hosts:
+                    # 构建所有服务器的 URL 列表
+                    for host in hosts:
+                        # B站 API 可能返回 wss_port=0, 此时降级尝试 port 字段或默认 443
+                        wss_port = host.get("wss_port", 0)
+                        if not wss_port:
+                            wss_port = host.get("port", 443)
+                        if not wss_port:
+                            wss_port = 443
+                        ws_url = f"wss://{host['host']}:{wss_port}/sub"
+                        servers.append((ws_url, host['host'], wss_port))
+                    # 始终加入最可靠的 broadcastlv 作为保底（去重）
+                    main_host = "broadcastlv.chat.bilibili.com"
+                    if not any(s[1] == main_host for s in servers):
+                        servers.append((f"wss://{main_host}/sub", main_host, 443))
+                    self._log(f"弹幕服务器列表: {[s[1] + ':' + str(s[2]) for s in servers]}")
+                    return servers, token
+            else:
+                self._log(f"getDanmuInfo 返回错误: {data}", "warning")
         except Exception as e:
             self._log(f"获取弹幕服务器信息失败: {e}，使用默认地址", "warning")
 
@@ -450,13 +482,14 @@ class DanmakuListener:
             "type": 2,
             "key": token,
         }
-        # buvid3 有值时加入认证包（B站新版要求）
+        # buvid3 有值时加入认证包（同时兼容新旧字段名）
         if buvid3:
             body["buvid"] = buvid3
+            body["buvid3"] = buvid3  # 新版 B站 协议需要
 
         self._log(
             f"认证包信息: uid={uid}, room={real_room_id}, "
-            f"buvid={'有' if buvid3 else '⚠️无'}, "
+            f"buvid3={'有' if buvid3 else '⚠️无'}, "
             f"token={'有(' + str(len(token)) + '字节)' if token else '⚠️无(空token)'}"
         )
         return json.dumps(body, separators=(",", ":")).encode("utf-8")
@@ -480,8 +513,9 @@ class DanmakuListener:
         except asyncio.CancelledError:
             pass
 
-    def _dispatch_message(self, cmd: str, data: dict):
+    async def _dispatch_message(self, cmd: str, data: dict):
         """根据 cmd 分发事件"""
+        self._log(f"_dispatch_message: cmd={cmd}", "debug")
         try:
             if cmd == "DANMU_MSG":
                 info = data.get("info", [])
@@ -510,6 +544,8 @@ class DanmakuListener:
                     time_str = datetime.now().strftime("%H:%M:%S")
 
                 medal_text = ""
+                medal_level = 0
+                medal_name = ""
                 if len(info) > 3 and isinstance(info[3], list) and len(info[3]) >= 2:
                     try:
                         medal_level = int(info[3][0])
@@ -518,33 +554,49 @@ class DanmakuListener:
                     except Exception:
                         pass
 
-                self._emit("on_danmaku", {
+                await self._emit("on_danmaku", {
                     "time": time_str,
                     "content": content,
                     "user_id": user_id,
                     "user_name": user_name,
                     "user_level": user_level,
                     "medal_text": medal_text,
-                    "medal_level": 0,
-                    "medal_name": "",
+                    "medal_level": medal_level,
+                    "medal_name": medal_name,
                 })
+
+                # LiveDanmaku 事件（增强协议）
+                try:
+                    from .livedanmaku import LiveDanmaku as _LD
+                    ld = _LD.from_danmaku(data)
+                    if ld.text:
+                        await self._emit("on_event", "DANMU_MSG", ld)
+                except Exception:
+                    pass
 
             elif cmd == "SEND_GIFT":
                 inner = data.get("data", {})
-                self._emit("on_gift", {
+                await self._emit("on_gift", {
                     "user_name": inner.get("uname", "未知"),
                     "user_id": inner.get("uid", 0),
                     "gift_name": inner.get("giftName", "未知礼物"),
                     "num": inner.get("num", 1),
                     "coin_type": inner.get("coin_type", "silver"),
-                    "total_coin": inner.get("total_coin", 0),  # 总金瓜子数（所有礼物的价值总和）
-                    "price": inner.get("price", 0),            # 单价（金瓜子）
+                    "total_coin": inner.get("total_coin", 0),
+                    "price": inner.get("price", 0),
                 })
+
+                try:
+                    from .livedanmaku import LiveDanmaku as _LD
+                    ld = _LD.from_gift(data)
+                    await self._emit("on_event", "SEND_GIFT", ld)
+                except Exception:
+                    pass
 
             elif cmd == "SUPER_CHAT_MESSAGE":
                 inner = data.get("data", {})
                 user_info = inner.get("user_info", {})
-                self._emit("on_sc", {
+                await self._emit("on_sc", {
                     "user_name": user_info.get("uname", "未知"),
                     "user_id": inner.get("uid", 0),
                     "message": inner.get("message", ""),
@@ -552,25 +604,171 @@ class DanmakuListener:
                     "start_time": inner.get("start_time", 0),
                 })
 
+                try:
+                    from .livedanmaku import LiveDanmaku as _LD
+                    ld = _LD.from_sc(data)
+                    await self._emit("on_event", "SUPER_CHAT_MESSAGE", ld)
+                except Exception:
+                    pass
+
             elif cmd == "INTERACT_WORD":
                 inner = data.get("data", {})
                 user_name = inner.get("uname", "未知")
                 msg_type = inner.get("msg_type", 0)
                 if msg_type == 1:
-                    self._emit("on_entry", user_name)
+                    await self._emit("on_entry", user_name)
                 elif msg_type == 2:
-                    self._emit("on_follow", user_name)
+                    await self._emit("on_follow", user_name)
+
+                try:
+                    from .livedanmaku import LiveDanmaku as _LD
+                    ld = _LD.from_interact(data)
+                    await self._emit("on_event", "INTERACT_WORD", ld)
+                except Exception:
+                    pass
 
             elif cmd == "LIVE":
-                self._emit("on_live")
+                await self._emit("on_live")
 
             elif cmd == "PREPARING":
-                self._emit("on_preparing")
+                self._live_ended = True
+                await self._emit("on_preparing")
+
+            # ── 新增协议指令（MagicalDanmaku 增强） ────────────────────────
+            elif cmd in self._CMD_HANDLERS:
+                handler = self._CMD_HANDLERS[cmd]
+                try:
+                    ld = handler(data)
+                    if ld:
+                        await self._emit("on_event", cmd, ld)
+                except Exception as e:
+                    self._log(f"增强协议处理 {cmd} 异常: {e}", "debug")
 
         except Exception as e:
             self._log(f"分发消息 {cmd} 异常: {e}", "debug")
 
-    def _process_packet(self, raw: bytes):
+    # ── 增强协议指令处理器 ─────────────────────────────────────
+
+    def _handle_guard_buy(data: dict):
+        """GUARD_BUY — 上舰（大航海）"""
+        from .livedanmaku import LiveDanmaku as _LD
+        return _LD.from_guard_buy(data)
+
+    def _handle_entry_effect(data: dict):
+        """ENTRY_EFFECT — 高能用户进场特效"""
+        from .livedanmaku import LiveDanmaku as _LD
+        return _LD.from_entry_effect(data)
+
+    def _handle_combo_send(data: dict):
+        """COMBO_SEND — 礼物连击"""
+        from .livedanmaku import LiveDanmaku as _LD, GiftInfo, MessageType, MedalInfo
+        d = data.get("data", {})
+        return _LD(
+            msg_type=MessageType.MSG_GIFT,
+            uid=int(d.get("uid", 0)),
+            nickname=str(d.get("uname", "")),
+            text=f"连击 {d.get('combo_num', 1)} 个 {d.get('gift_name', '礼物')}",
+            room_id=int(data.get("room_id", 0)),
+            guard_level=int(d.get("guard_level", 0)),
+            user_level=int(d.get("level", 0)),
+            gift=GiftInfo(
+                gift_id=int(d.get("gift_id", 0)),
+                gift_name=str(d.get("gift_name", "礼物")),
+                num=int(d.get("combo_num", 1)),
+                total_coin=int(d.get("total_coin", 0)),
+            ),
+            medal=MedalInfo(
+                name=str(d.get("medal_info", {}).get("medal_name", "")),
+                level=int(d.get("medal_info", {}).get("medal_level", 0)),
+            ) if d.get("medal_info") else None,
+        )
+
+    def _handle_like(data: dict):
+        """LIKE_INFO_V3_CLICK — 点赞"""
+        from .livedanmaku import LiveDanmaku as _LD
+        return _LD.from_like(data)
+
+    def _handle_online_rank(data: dict):
+        """ONLINE_RANK_V2 / ONLINE_RANK_TOP3 — 高能榜"""
+        from .livedanmaku import LiveDanmaku as _LD
+        return _LD.from_online_rank(data)
+
+    def _handle_notice(data: dict):
+        """NOTICE_MSG — 公告"""
+        from .livedanmaku import LiveDanmaku as _LD
+        return _LD.from_notice(data)
+
+    def _handle_anchor_lot(data: dict):
+        """ANCHOR_LOT_START / ANCHOR_LOT_END — 天选抽奖"""
+        from .livedanmaku import LiveDanmaku as _LD
+        return _LD.from_anchor_lot(data)
+
+    def _handle_block(data: dict):
+        """ROOM_BLOCK_MSG — 禁言"""
+        from .livedanmaku import LiveDanmaku as _LD
+        return _LD.from_block(data)
+
+    def _handle_watched_change(data: dict):
+        """WATCHED_CHANGE — 看过人数变化"""
+        from .livedanmaku import LiveDanmaku as _LD
+        return _LD.from_watched_change(data)
+
+    def _handle_room_update(data: dict):
+        """ROOM_REAL_TIME_MESSAGE_UPDATE — 直播间实时数据更新"""
+        from .livedanmaku import LiveDanmaku as _LD, MessageType
+        d = data.get("data", {})
+        return _LD(
+            msg_type=MessageType.MSG_EXTRA,
+            uid=0,
+            nickname="",
+            text=f"直播间实时更新: {d.get('fans', 0)}粉丝, {d.get('room_id', '?')}",
+            room_id=int(data.get("room_id", 0)),
+            extra_json=__import__('json').dumps(data, ensure_ascii=False),
+        )
+
+    def _handle_room_change(data: dict):
+        """ROOM_CHANGE — 直播间信息变更"""
+        from .livedanmaku import LiveDanmaku as _LD, MessageType
+        d = data.get("data", {})
+        changes = []
+        if "title" in d:
+            changes.append(f"标题: {d['title']}")
+        if "area_name" in d:
+            changes.append(f"分区: {d['area_name']}")
+        text = "直播间变更: " + "; ".join(changes) if changes else "直播间信息更新"
+        return _LD(
+            msg_type=MessageType.MSG_EXTRA,
+            uid=0,
+            nickname="",
+            text=text,
+            room_id=int(data.get("room_id", 0)),
+            extra_json=__import__('json').dumps(data, ensure_ascii=False),
+        )
+
+    def _handle_sc_jpn(data: dict):
+        """SUPER_CHAT_MESSAGE_JPN — 日文 SC（复用 SC handler）"""
+        from .livedanmaku import LiveDanmaku as _LD
+        return _LD.from_sc(data)
+
+    # ── CMD 分发字典 ──────────────────────────────────────────
+    _CMD_HANDLERS = {
+        "GUARD_BUY": _handle_guard_buy,
+        "ENTRY_EFFECT": _handle_entry_effect,
+        "COMBO_SEND": _handle_combo_send,
+        "LIKE_INFO_V3_CLICK": _handle_like,
+        "ONLINE_RANK_V2": _handle_online_rank,
+        "ONLINE_RANK_TOP3": _handle_online_rank,
+        "NOTICE_MSG": _handle_notice,
+        "ANCHOR_LOT_START": _handle_anchor_lot,
+        "ANCHOR_LOT_END": _handle_anchor_lot,
+        "ROOM_BLOCK_MSG": _handle_block,
+        "WATCHED_CHANGE": _handle_watched_change,
+        "ROOM_REAL_TIME_MESSAGE_UPDATE": _handle_room_update,
+        "ROOM_CHANGE": _handle_room_change,
+        "SUPER_CHAT_MESSAGE_JPN": _handle_sc_jpn,
+    }
+
+    async def _process_packet(self, raw: bytes):
         """处理单个数据包"""
         if len(raw) < HEADER_LEN:
             return
@@ -586,7 +784,7 @@ class DanmakuListener:
                         self._viewer_count = viewer_count
                         self._log(f"📊 人气值: {viewer_count:,}")
                     # 可选：触发人气值变化回调
-                    self._emit("on_viewer_count", viewer_count)
+                    await self._emit("on_viewer_count", viewer_count)
             except Exception:
                 pass
 
@@ -612,7 +810,7 @@ class DanmakuListener:
                 try:
                     decompressed = _decompress(body, proto_ver)
                     for pkt in _split_packets(decompressed):
-                        self._process_packet(pkt)
+                        await self._process_packet(pkt)
                 except Exception as e:
                     self._log(f"解压失败: {e}", "warning")
             else:
@@ -624,7 +822,7 @@ class DanmakuListener:
                     cmd = cmd.split(":")[0]
                     if cmd == "DANMU_MSG":
                         self._log(f"📨 收到弹幕包 cmd=DANMU_MSG")
-                    self._dispatch_message(cmd, msg)
+                    await self._dispatch_message(cmd, msg)
                 except Exception as e:
                     self._log(f"解析消息失败: {e}", "warning")
 
@@ -632,8 +830,9 @@ class DanmakuListener:
         """启动监听（带自动重连，直到 stop() 被调用）"""
         import websockets
 
-        # 重置停止事件
+        # 重置停止事件和直播结束标记
         self._stop_event.clear()
+        self._live_ended = False
         self.running = True
         self._connection_state = ConnectionState.CONNECTING
 
@@ -648,7 +847,7 @@ class DanmakuListener:
                 await self._connect_once()
             except Exception as e:
                 self._log(f"连接过程异常: {e}", "error")
-                self._emit("on_error", e)
+                await self._emit("on_error", e)
 
             if self._stop_event.is_set():
                 break
@@ -755,7 +954,7 @@ class DanmakuListener:
                         try:
                             if isinstance(message, bytes):
                                 # 认证成功会在这里设置 RECEIVING 状态
-                                self._process_packet(message)
+                                await self._process_packet(message)
                             # str 消息忽略
                         except Exception as e:
                             self._log(f"处理消息异常: {e}", "debug")
@@ -767,7 +966,12 @@ class DanmakuListener:
                     if self._stop_event.is_set():
                         break
 
-                    # 否则是服务器正常断开（直播结束等），继续尝试下一个服务器
+                    # 直播结束：收到 PREPARING 后不再重连
+                    if self._live_ended:
+                        self._log(f"直播已结束，停止重连", "info")
+                        break
+
+                    # 否则是服务器正常断开，继续尝试下一个服务器
                     if had_authenticated:
                         self._log(f"服务器 [{host}:{port}] 连接已正常关闭，尝试下一个...", "info")
                     continue
@@ -862,12 +1066,12 @@ class DanmakuListener:
                 "csrf_token": bili_jct,
             }
 
-            async with aiohttp.ClientSession(cookies=cookies) as session:
+            async with aiohttp.ClientSession(cookies=cookies, timeout=aiohttp.ClientTimeout(total=self._http_timeout)) as session:
                 async with session.post(
                     url,
                     data=payload,
                     headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=8),
+                    timeout=aiohttp.ClientTimeout(total=self._http_timeout),
                 ) as resp:
                     data = await resp.json()
                     code = data.get("code", -1)

@@ -14,9 +14,13 @@ name = "N.E.K.O Team"
 recommended = ">=0.1.0,<0.2.0"
 supported = ">=0.1.0,<0.3.0"
 
+[plugin.i18n]
+default_locale = "zh-CN"
+locales_dir = "i18n"
+
 [plugin_runtime]
 enabled = true
-auto_start = true
+auto_start = false
 
 [plugin.store]
 enabled = true

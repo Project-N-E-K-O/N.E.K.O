@@ -8,8 +8,10 @@
     <script src="/static/i18n-i18next.js"></script>
     <script src="/static/common_dialogs.js"></script>
     <link rel="stylesheet" href="/static/css/cloudsave_manager.css">
+    <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <script src="/static/theme-manager.js"></script>
+    <script src="/static/js/window_controls.js?v={{ static_asset_version }}" defer></script>
 </head>
 <body>
     <div class="container">
@@ -18,6 +20,14 @@
             <div class="header-actions">
                 <button type="button" class="btn sm secondary" id="refresh-cloudsave-btn" data-i18n="cloudsave.refresh">刷新</button>
                 <button type="button" class="btn sm" id="back-to-chara-manager-btn" data-i18n="cloudsave.backToCharacterManager">返回</button>
+                <div class="neko-window-controls">
+                    <button type="button" class="neko-window-control-btn" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
+                        <span class="neko-window-minimize-icon"></span>
+                    </button>
+                    <button type="button" class="neko-window-control-btn" data-neko-window-control="maximize" data-i18n-title="common.maximize" data-i18n-aria="common.maximize" title="最大化" aria-label="最大化">
+                        <span class="neko-window-maximize-icon"></span>
+                    </button>
+                </div>
             </div>
         </div>
 

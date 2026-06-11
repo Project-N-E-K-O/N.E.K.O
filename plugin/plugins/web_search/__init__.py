@@ -359,13 +359,15 @@ class WebSearchPlugin(NekoPluginBase):
             return Err(SdkError(f"搜索失败: {e}"))
 
         summary = self._build_summary(query, results)
-        self.logger.info("Search returned {} results for {!r}", len(results), query)
+        # query / titles / snippets / summary 含外部网页内容 + 用户搜索词，不写 logger
+        self.logger.info("Search returned {} results (query_len={})", len(results), len(query or ""))
+        print(f"[WebSearch] query: {query!r}")
         for i, r in enumerate(results, 1):
-            self.logger.info(
-                "  [{}] title={!r}  snippet={!r}  url={!r}",
-                i, r.get("title", ""), r.get("snippet", ""), r.get("url", ""),
+            print(
+                f"  [{i}] title={r.get('title', '')!r}  snippet={r.get('snippet', '')!r}  url={r.get('url', '')!r}"
             )
-        self.logger.info("Summary sent to LLM:\n{}", summary)
+        self.logger.info("Summary sent to LLM (summary_len={})", len(summary or ""))
+        print(f"[WebSearch] Summary sent to LLM:\n{summary}")
         return Ok({
             "query": query,
             "count": len(results),

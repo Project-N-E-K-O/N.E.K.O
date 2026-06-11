@@ -28,12 +28,12 @@
       "name": "GPT-Realtime（OpenAI）",
       "description": "智能水平最高，但国内无法使用且价格昂贵",
       "core_url": "wss://api.openai.com/v1/realtime",
-      "core_model": "gpt-realtime-1.5"
+      "core_model": "gpt-realtime-2"
     },
     "step": {
       "key": "step",
       "name": "Step-2（阶跃星辰）",
-      "description": "目前完全免费，内置联网搜索功能",
+      "description": "目前完全免费",
       "core_url": "wss://api.stepfun.com/v1/realtime",
       "core_model": "step-audio-2"
     },
@@ -49,6 +49,13 @@
       "description": "有免费额度，支持联网搜索，语音默认含水印滴滴声（可在智谱控制台手动关闭）",
       "core_url": "wss://open.bigmodel.cn/api/paas/v4/realtime",
       "core_model": "glm-realtime-air"
+    },
+    "grok": {
+      "key": "grok",
+      "name": "Grok Voice（xAI）",
+      "description": "xAI 实时语音，国内无法直连，价格较高",
+      "core_url": "wss://api.x.ai/v1/realtime",
+      "core_model": "grok-voice-fast-1.0"
     }
   },
   "assist_api_providers": {
@@ -72,22 +79,26 @@
       "name": "阿里百炼（推荐）",
       "description": "推荐选择，支持自定义语音和Agent模式，价格适中，国内版",
       "openrouter_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      "conversation_model": "qwen3.6-plus",
-      "summary_model": "qwen3.6-plus",
-      "correction_model": "qwen3.6-plus",
-      "emotion_model": "qwen-flash",
-      "vision_model": "qwen3.6-plus",
-      "agent_model": "qwen3.6-plus"
+      "conversation_model": "qwen3.7-plus-2026-05-26",
+      "summary_model": "qwen3.7-plus-2026-05-26",
+      "correction_model": "qwen3.7-plus",
+      "emotion_model": "qwen3.6-flash",
+      "vision_model": "qwen3.7-plus-2026-05-26",
+      "agent_model": "qwen3.7-plus"
     },
     "qwen_intl": {
       "key": "qwen_intl",
       "name": "阿里国际版",
       "description": "阿里云国际版，适合海外用户，支持自定义语音和Agent模式",
       "openrouter_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+      "openrouter_urls": [
+        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
+      ],
       "conversation_model": "qwen3.6-plus",
       "summary_model": "qwen3.6-plus",
       "correction_model": "qwen3.6-plus",
-      "emotion_model": "qwen-flash",
+      "emotion_model": "qwen3.6-flash-2026-04-16",
       "vision_model": "qwen3.6-plus",
       "agent_model": "qwen3.6-plus"
     },
@@ -101,7 +112,7 @@
       "correction_model": "gpt-5-chat-latest",
       "emotion_model": "gpt-4.1-nano",
       "vision_model": "gpt-5-chat-latest",
-      "agent_model": "gpt-5.2"
+      "agent_model": "glm-5v-turbo"
     },
     "glm": {
       "key": "glm",
@@ -132,12 +143,12 @@
       "name": "硅基流动",
       "description": "性价比高，支持Agent模式，不支持自定义语音",
       "openrouter_url": "https://api.siliconflow.cn/v1",
-      "conversation_model": "deepseek-ai/DeepSeek-V3.2",
-      "summary_model": "inclusionAI/Ling-flash-2.0",
-      "correction_model": "deepseek-ai/DeepSeek-V3.2",
+      "conversation_model": "deepseek-ai/DeepSeek-V4-Flash",
+      "summary_model": "deepseek-ai/DeepSeek-V4-Flash",
+      "correction_model": "deepseek-ai/DeepSeek-V4-Flash",
       "emotion_model": "inclusionAI/Ling-mini-2.0",
-      "vision_model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "agent_model": "zai-org/GLM-4.6V"
+      "vision_model": "Qwen/Qwen3.5-397B-A17B",
+      "agent_model": "Qwen/Qwen3.5-397B-A17B"
     },
     "gemini": {
       "key": "gemini",
@@ -168,23 +179,23 @@
       "name": "DeepSeek",
       "description": "性价比极高，推理能力强，不支持自定义语音",
       "openrouter_url": "https://api.deepseek.com/v1",
-      "conversation_model": "deepseek-chat",
-      "summary_model": "deepseek-chat",
-      "correction_model": "deepseek-chat",
-      "emotion_model": "deepseek-chat",
-      "vision_model": "deepseek-chat",
-      "agent_model": "deepseek-reasoner"
+      "conversation_model": "deepseek-v4-pro",
+      "summary_model": "deepseek-v4-flash",
+      "correction_model": "deepseek-v4-pro",
+      "emotion_model": "deepseek-v4-flash",
+      "vision_model": "",
+      "agent_model": "deepseek-v4-pro"
     },
     "doubao": {
       "key": "doubao",
       "name": "豆包（字节跳动）",
       "description": "国内可用，价格适中，不支持自定义语音",
       "openrouter_url": "https://ark.cn-beijing.volces.com/api/v3",
-      "conversation_model": "doubao-seed-2-0-lite-260215",
-      "summary_model": "doubao-seed-2-0-lite-260215",
-      "correction_model": "doubao-seed-2-0-lite-260215",
-      "emotion_model": "doubao-seed-2-0-mini-260215",
-      "vision_model": "doubao-seed-2-0-lite-260215",
+      "conversation_model": "doubao-seed-2-0-lite-260428",
+      "summary_model": "doubao-seed-2-0-lite-260428",
+      "correction_model": "doubao-seed-2-0-lite-260428",
+      "emotion_model": "doubao-seed-2-0-mini-260428",
+      "vision_model": "doubao-seed-2-0-lite-260428",
       "agent_model": "doubao-seed-2-0-pro-260215"
     },
     "minimax": {
@@ -192,11 +203,11 @@
       "name": "MiniMax（国服）",
       "description": "支持语音克隆（TTS），国服版本",
       "openrouter_url": "https://api.minimaxi.com/v1",
-      "conversation_model": "MiniMax-Text-01",
-      "summary_model": "MiniMax-Text-01",
-      "correction_model": "MiniMax-Text-01",
-      "emotion_model": "MiniMax-Text-01",
-      "vision_model": "MiniMax-Text-01",
+      "conversation_model": "MiniMax-M2.5",
+      "summary_model": "MiniMax-M2.5",
+      "correction_model": "MiniMax-M2.5",
+      "emotion_model": "MiniMax-M2.5",
+      "vision_model": "",
       "agent_model": "MiniMax-M2.7"
     },
     "minimax_intl": {
@@ -204,11 +215,11 @@
       "name": "MiniMax（国际服）",
       "description": "支持语音克隆（TTS），国际服版本",
       "openrouter_url": "https://api.minimax.io/v1",
-      "conversation_model": "MiniMax-Text-01",
-      "summary_model": "MiniMax-Text-01",
-      "correction_model": "MiniMax-Text-01",
-      "emotion_model": "MiniMax-Text-01",
-      "vision_model": "MiniMax-Text-01",
+      "conversation_model": "MiniMax-M2.5",
+      "summary_model": "MiniMax-M2.5",
+      "correction_model": "MiniMax-M2.5",
+      "emotion_model": "MiniMax-M2.5",
+      "vision_model": "",
       "agent_model": "MiniMax-M2.7"
     },
     "claude": {
@@ -241,8 +252,8 @@
       "description": "模型聚合平台，支持数百种模型，国内版不支持",
       "openrouter_url": "https://openrouter.ai/api/v1",
       "conversation_model": "google/gemini-2.5-flash",
-      "summary_model": "deepseek/deepseek-v3.2",
-      "correction_model": "deepseek/deepseek-v3.2",
+      "summary_model": "deepseek/deepseek-v4-flash",
+      "correction_model": "deepseek/deepseek-v4-flash",
       "emotion_model": "qwen/qwen3.5-9b",
       "vision_model": "google/gemini-2.5-flash",
       "agent_model": "google/gemini-3-flash-preview"
@@ -261,7 +272,8 @@
     "core_model": "qwen3-omni-flash-realtime",
     "core_url": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
     "openrouter_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    "cosyvoice_clone_model": "cosyvoice-v3.5-plus"
+    "cosyvoice_clone_model": "cosyvoice-v3.5-plus",
+    "cosyvoice_intl_clone_model": "cosyvoice-v3-plus"
   },
   "assist_api_key_fields": {
     "qwen": "ASSIST_API_KEY_QWEN",
@@ -276,6 +288,7 @@
     "doubao": "ASSIST_API_KEY_DOUBAO",
     "minimax": "ASSIST_API_KEY_MINIMAX",
     "minimax_intl": "ASSIST_API_KEY_MINIMAX_INTL",
+    "elevenlabs": "ASSIST_API_KEY_ELEVENLABS",
     "claude": "ASSIST_API_KEY_CLAUDE",
     "grok": "ASSIST_API_KEY_GROK",
     "openrouter": "ASSIST_API_KEY_OPENROUTER"
@@ -327,7 +340,11 @@
     },
     "minimax_intl": {
       "config_field": "assistApiKeyMinimaxIntl",
-      "restricted": false
+      "restricted": true
+    },
+    "elevenlabs": {
+      "config_field": "assistApiKeyElevenlabs",
+      "restricted": true
     },
     "claude": {
       "config_field": "assistApiKeyClaude",
@@ -342,8 +359,15 @@
       "restricted": true
     }
   },
+  "_comment_livestream_config": "Livestream (主播) overlay on top of core_api_type='free': when enabled with non-empty server_prefix, free路 URLs (/core /text/v1 /tts) auto-derive from server_prefix, voice falls back to voice_id (bypasses free_voices preset gate), and OmniRealtimeClient skips 90s silence-timeout. Preferred path: drop a standalone config/livestream_config.json (untracked via .gitignore) for single-file distribution. The field below is a fallback only; keep server_prefix/voice_id empty in committed configs.",
+  "livestream_config": {
+    "enabled": false,
+    "server_prefix": "",
+    "voice_id": ""
+  },
   "_comment_free_voices": "Shape: {voiceKey: voice_id}. Keys are i18n identifiers (e.g., playfulGirl, cuteGirl) that the frontend must localize for display. Do not treat keys as display names.",
   "free_voices": {
+    "yui_cn": "voice-tone-RcH2svtsrw",
     "playfulGirl": "voice-tone-PGLiTXeJCS",
     "cuteGirl": "voice-tone-PGLiyZt65w",
     "cuteMaiden": "voice-tone-PGLjbHIMbI",
@@ -354,5 +378,124 @@
     "sweetLady": "voice-tone-PGLmTEeUOu",
     "frailMaiden": "voice-tone-PGLmzXEX44",
     "childishMaiden": "voice-tone-PGLnVNQn7A"
+  },
+  "_comment_native_tts_voice_providers": "Shape: {providerKey: {catalog_prefix, default_voice, default_male_voice, catalog_value_is_display_name, voices, aliases, inherits}}. voices maps upstream voice_id to display label. Keep this list to voices available on realtime/free TTS paths; some HTTP-only or permission-gated official voices are intentionally omitted.",
+  "native_tts_voice_providers": {
+    "step": {
+      "catalog_prefix": "StepFun",
+      "default_voice": "qingchunshaonv",
+      "default_male_voice": "wenrounansheng",
+      "catalog_value_is_display_name": true,
+      "voices": {
+        "elegantgentle-female": "高雅女声",
+        "livelybreezy-female": "活力女声",
+        "qingchunshaonv": "青春少女",
+        "wenrounansheng": "温柔男声"
+      },
+      "aliases": {
+        "default": "qingchunshaonv",
+        "默认": "qingchunshaonv",
+        "female": "qingchunshaonv",
+        "woman": "qingchunshaonv",
+        "女": "qingchunshaonv",
+        "女声": "qingchunshaonv",
+        "中文女": "qingchunshaonv",
+        "male": "wenrounansheng",
+        "man": "wenrounansheng",
+        "男": "wenrounansheng",
+        "男声": "wenrounansheng",
+        "中文男": "wenrounansheng"
+      }
+    },
+    "free": {
+      "inherits": "step",
+      "catalog_prefix": "免费 API"
+    },
+    "gemini": {
+      "catalog_prefix": "Gemini",
+      "default_voice": "Leda",
+      "default_male_voice": "Puck",
+      "voices": {
+        "Achernar": "Female",
+        "Achird": "Male",
+        "Algenib": "Male",
+        "Algieba": "Male",
+        "Alnilam": "Male",
+        "Aoede": "Female",
+        "Autonoe": "Female",
+        "Callirrhoe": "Female",
+        "Charon": "Male",
+        "Despina": "Female",
+        "Enceladus": "Male",
+        "Erinome": "Female",
+        "Fenrir": "Male",
+        "Gacrux": "Female",
+        "Iapetus": "Male",
+        "Kore": "Female",
+        "Laomedeia": "Female",
+        "Leda": "Female",
+        "Orus": "Male",
+        "Pulcherrima": "Female",
+        "Puck": "Male",
+        "Rasalgethi": "Male",
+        "Sadachbia": "Male",
+        "Sadaltager": "Male",
+        "Schedar": "Male",
+        "Sulafat": "Female",
+        "Umbriel": "Male",
+        "Vindemiatrix": "Female",
+        "Zephyr": "Female",
+        "Zubenelgenubi": "Male"
+      },
+      "aliases": {
+        "male": "Puck",
+        "man": "Puck",
+        "masculine": "Puck",
+        "男": "Puck",
+        "男声": "Puck",
+        "中文男": "Puck",
+        "female": "Leda",
+        "woman": "Leda",
+        "feminine": "Leda",
+        "女": "Leda",
+        "女声": "Leda",
+        "中文女": "Leda"
+      }
+    },
+    "free_intl": {
+      "inherits": "gemini",
+      "catalog_prefix": "Gemini",
+      "default_voice": "yui",
+      "default_male_voice": "Puck",
+      "voices": {
+        "yui": "Female"
+      },
+      "aliases": {
+        "default": "Leda",
+        "默认": "Leda"
+      }
+    },
+    "grok": {
+      "catalog_prefix": "Grok",
+      "default_voice": "eve",
+      "default_male_voice": "leo",
+      "voices": {
+        "eve": "Female",
+        "ara": "Female",
+        "leo": "Male",
+        "rex": "Male",
+        "sal": "Male"
+      },
+      "aliases": {
+        "male": "leo",
+        "man": "leo",
+        "男": "leo",
+        "男声": "leo",
+        "female": "eve",
+        "woman": "eve",
+        "女": "eve",
+        "女声": "eve"
+      }
+    }
   }
 }
