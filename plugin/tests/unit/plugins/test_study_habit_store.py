@@ -236,6 +236,30 @@ def test_habit_data_stays_out_of_public_knowledge_export(tmp_path: Path) -> None
         store.close()
 
 
+def test_export_json_includes_notebook_backup_rows(tmp_path: Path) -> None:
+    store = _study_store(tmp_path)
+    try:
+        notebooks = NotebookStore(store)
+        notebook = notebooks.create_notebook(name="Private Notes")
+        note = notebooks.create_note(
+            notebook_id=notebook.id,
+            title="Secret note",
+            content="private study note",
+            tags=["backup"],
+        )
+
+        exported = store.export_json()
+
+        assert exported["notebooks"][0]["id"] == notebook.id
+        assert exported["notebooks"][0]["name"] == "Private Notes"
+        assert exported["notes"][0]["id"] == note.id
+        assert exported["notes"][0]["notebook_id"] == notebook.id
+        assert exported["notes"][0]["content"] == "private study note"
+        assert exported["notes"][0]["tags"] == ["backup"]
+    finally:
+        store.close()
+
+
 def test_checkin_streak_is_not_truncated_at_default_checked_dates_limit(
     tmp_path: Path,
 ) -> None:

@@ -5,6 +5,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -417,6 +418,9 @@ class StudyStore:
 
     def export_json(self) -> dict[str, Any]:
         memory_decks = MemoryDeckStore(self)
+        from .store_notebook import NotebookStore
+
+        notebooks = NotebookStore(self)
         return {
             STORE_CONFIG: self.get_raw(STORE_CONFIG) or {},
             STORE_STATE: self.get_raw(STORE_STATE) or {},
@@ -436,6 +440,10 @@ class StudyStore:
             "knowledge_contribution_queue": self.list_knowledge_contribution_queue(
                 limit=5000
             ),
+            "notebooks": [
+                asdict(item) for item in notebooks.list_notebooks(limit=5000)
+            ],
+            "notes": [asdict(item) for item in notebooks.list_notes(limit=5000)],
             "memory_decks": memory_decks.list_decks(limit=5000),
             "memory_items": memory_decks.list_items(limit=5000, include_archived=True),
             "memory_due_reviews": memory_decks.due_reviews(limit=5000),
