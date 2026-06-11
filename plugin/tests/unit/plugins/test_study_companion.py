@@ -534,6 +534,40 @@ async def test_awareness_tick_warns_when_os_activity_snapshot_fails(
     )
 
 
+@pytest.mark.asyncio
+async def test_awareness_context_push_failure_keeps_task_alive(
+    tmp_path: Path,
+) -> None:
+    class _FailingPushCtx(_Ctx):
+        def push_message(self, **kwargs):
+            raise RuntimeError("push failed")
+
+    plugin = StudyCompanionPlugin(_FailingPushCtx(tmp_path, {"study": {"language": "en"}}))
+    plugin._cfg = StudyConfig(
+        awareness=AwarenessConfig(push_to_llm_mode="respond")
+    )
+    plugin.logger = _Logger()
+    plugin._last_awareness_push_at = 123.0
+
+    await plugin._push_awareness_context(
+        {
+            "current_app": "web_page",
+            "current_activity": "question",
+            "app_duration_seconds": 5.0,
+            "recent_apps": ["web_page"],
+            "total_focus_minutes": 0.0,
+            "ocr_text_snippet": "Question: Why?",
+            "app_distribution": {"web_page": 5.0},
+        }
+    )
+
+    assert plugin._last_awareness_push_at == 123.0
+    assert any(
+        "study awareness context push failed" in str(args[0])
+        for args, _kwargs in plugin.logger.warnings
+    )
+
+
 class _FakeOcrBackend:
     def __init__(self, result):
         self.result = result

@@ -267,6 +267,7 @@ textarea {
 }
 
 .study-notebook-sidebar,
+.study-notebook-list,
 .study-note-list,
 .study-search-results {
   overflow: auto;
@@ -302,6 +303,7 @@ textarea {
   background: #eef6ff;
 }
 
+.study-notebook-list,
 .study-note-list {
   display: grid;
   gap: 8px;

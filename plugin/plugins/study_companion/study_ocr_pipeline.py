@@ -215,9 +215,11 @@ class StudyOcrPipeline:
         captured_at: str,
     ) -> tuple[str, str, str, str] | LightweightSnapshot:
         if self._config.awareness.classify_mode not in {"ocr_text", "both"}:
-            return "", "", "title", ""
+            classification = classify_screen_from_ocr("", window_title=title)
+            return classification.screen_type, "", "title", ""
         if not self._config.ocr_enabled:
-            return "", "", "title", "OCR is disabled"
+            classification = classify_screen_from_ocr("", window_title=title)
+            return classification.screen_type, "", "title", "OCR is disabled"
 
         started = time.monotonic()
         try:

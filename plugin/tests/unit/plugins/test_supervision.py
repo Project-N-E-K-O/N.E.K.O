@@ -113,6 +113,50 @@ def test_supervision_idle_away_detected() -> None:
     assert away["idle_seconds"] == 121.0
 
 
+def test_supervision_activity_resets_away_and_distraction_levels() -> None:
+    controller = SupervisionController(
+        SupervisionConfig(
+            enabled=True,
+            remind_interval_minutes=10,
+            inactivity_timeout_minutes=5,
+            idle_away_seconds=120,
+        ),
+        clock=lambda: 0.0,
+    )
+    controller.on_focus_start(goal={}, planned_minutes=25, now=0.0)
+
+    away = controller.observe_activity(
+        ocr_text="same text",
+        sensor_available=True,
+        idle_seconds=121.0,
+        now=121.0,
+    )
+    active = controller.observe_activity(
+        ocr_text="same text",
+        sensor_available=True,
+        idle_seconds=1.0,
+        now=130.0,
+    )
+    distraction = controller.observe_activity(
+        ocr_text="same text",
+        sensor_available=True,
+        idle_seconds=1.0,
+        foreground_category="gaming",
+        now=140.0,
+    )
+    returned = controller.observe_activity(
+        ocr_text="same text",
+        sensor_available=True,
+        idle_seconds=1.0,
+        now=150.0,
+    )
+
+    assert away["reminder_level"] == "away"
+    assert active["reminder_level"] == "active"
+    assert distraction["reminder_level"] == "distraction"
+    assert returned["reminder_level"] == "active"
+
+
 def test_supervision_flags_foreground_distraction_during_focus() -> None:
     controller = SupervisionController(
         SupervisionConfig(

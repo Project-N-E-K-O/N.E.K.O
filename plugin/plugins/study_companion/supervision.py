@@ -123,7 +123,7 @@ class SupervisionController:
         if text != self._last_ocr_text or active_from_idle:
             self._last_ocr_text = text
             self._last_activity_at = current
-            if self._reminder_level == "inactivity":
+            if self._reminder_level != "active":
                 self._reminder_level = "active"
         if distraction_detected:
             self._reminder_level = "distraction"

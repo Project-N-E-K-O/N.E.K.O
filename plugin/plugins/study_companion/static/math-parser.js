@@ -1,5 +1,5 @@
 (function () {
-  const CURRENCY_START_PATTERN = /^\$(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?(?:[A-Z]{2,4}|%)?(?=$|[\s)\],.;!?-])/;
+  const CURRENCY_START_PATTERN = /^\$(?:\d+(?:[\.,]\d+)*|\d{1,3}(?:,\d{3})+)(?:[A-Z]{2,4}|%|元|円|圓|원|¥|￥)?(?=$|[\s)\],.;!?，。；）、\]-])/;
 
   function hasEscapedDelimiter(source, index) {
     let slashes = 0;

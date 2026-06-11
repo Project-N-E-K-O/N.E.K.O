@@ -141,6 +141,7 @@ def _fts_query(query: str) -> str:
 
 def _like_pattern(query: str) -> str:
     text = str(query or "").strip()
+    text = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return f"%{text}%"
 
 
@@ -812,7 +813,11 @@ class NotebookStore:
             tag=tag,
         )
         pattern = _like_pattern(search_query)
-        text_clause = "(title LIKE ? OR content_plain LIKE ? OR tags LIKE ?)"
+        text_clause = (
+            "(title LIKE ? ESCAPE '\\' "
+            "OR content_plain LIKE ? ESCAPE '\\' "
+            "OR tags LIKE ? ESCAPE '\\')"
+        )
         if where:
             where = f"{where} AND {text_clause}"
         else:
@@ -890,7 +895,9 @@ class NotebookStore:
                     """
                     SELECT *
                     FROM sessions
-                    WHERE id LIKE ? OR mode LIKE ? OR summary_markdown LIKE ?
+                    WHERE id LIKE ? ESCAPE '\\'
+                       OR mode LIKE ? ESCAPE '\\'
+                       OR summary_markdown LIKE ? ESCAPE '\\'
                     ORDER BY started_at DESC, id DESC
                     LIMIT ?
                     """,

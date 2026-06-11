@@ -266,22 +266,29 @@ class _AwarenessRunnerMixin:
 
     async def _push_awareness_context(self, summary: ActivitySummary) -> None:
         mode = self._cfg.awareness.push_to_llm_mode
+        try:
+            self.push_message(
+                visibility=[],
+                ai_behavior="read" if mode == "read" else "respond",
+                parts=[
+                    {
+                        "type": "text",
+                        "text": (
+                            "[环境感知] "
+                            + json.dumps(
+                                self._summary_for_llm(summary),
+                                ensure_ascii=False,
+                            )
+                        ),
+                    }
+                ],
+                source="awareness",
+                priority=0,
+            )
+        except Exception:
+            self.logger.warning("study awareness context push failed", exc_info=True)
+            return
         self._last_awareness_push_at = time.monotonic()
-        self.push_message(
-            visibility=[],
-            ai_behavior="read" if mode == "read" else "respond",
-            parts=[
-                {
-                    "type": "text",
-                    "text": (
-                        "[环境感知] "
-                        + json.dumps(self._summary_for_llm(summary), ensure_ascii=False)
-                    ),
-                }
-            ],
-            source="awareness",
-            priority=0,
-        )
 
     @staticmethod
     def _summary_for_llm(

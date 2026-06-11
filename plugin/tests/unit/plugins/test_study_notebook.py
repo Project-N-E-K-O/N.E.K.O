@@ -202,6 +202,38 @@ def test_notebook_search_all_and_note_id_export(tmp_path) -> None:
         store.close()
 
 
+def test_notebook_like_search_escapes_wildcards(tmp_path) -> None:
+    store, notebooks, _logger = _make_store(tmp_path)
+    try:
+        percent_note = notebooks.create_note(
+            title="Literal percent",
+            content="Progress is 100% complete.",
+            tags=["ratio"],
+        )
+        underscore_note = notebooks.create_note(
+            title="snake_case",
+            content="Use snake_case names.",
+            tags=["style"],
+        )
+        notebooks.create_note(
+            title="Plain note",
+            content="No wildcard tokens here.",
+            tags=["plain"],
+        )
+        store.ensure_session(session_id="session_1", mode="companion")
+        store.ensure_session(session_id="session-2", mode="companion")
+
+        percent_results = notebooks.list_notes(search_query="%", limit=10)
+        underscore_results = notebooks.list_notes(search_query="_", limit=10)
+        session_results = notebooks.search_all("_", limit=10)["sessions"]
+
+        assert [item.id for item in percent_results] == [percent_note.id]
+        assert [item.id for item in underscore_results] == [underscore_note.id]
+        assert [item["id"] for item in session_results] == ["session_1"]
+    finally:
+        store.close()
+
+
 @pytest.mark.asyncio
 async def test_notebook_entries_serialize_dataclasses(tmp_path) -> None:
     store, notebooks, _logger = _make_store(tmp_path)

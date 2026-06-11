@@ -149,10 +149,31 @@ def test_ocr_pipeline_capture_lightweight_title_first_skips_ocr_and_limits_jpeg(
     assert snapshot.jpeg_metadata["encoded_bytes"] == len(snapshot.jpeg_bytes)
     assert snapshot.jpeg_metadata["attempts"] >= 1
     assert snapshot.app_type == "unknown"
-    assert snapshot.activity_type == ""
+    assert snapshot.activity_type == "idle"
     assert activity is not None
     assert activity.classify_method == "title"
     assert capture.calls
+
+
+def test_ocr_pipeline_title_only_classification_preserves_activity_type() -> None:
+    image = Image.new("RGB", (800, 600), "white")
+    pipeline = StudyOcrPipeline(
+        logger=_Logger(),
+        config=StudyConfig(
+            awareness=AwarenessConfig(classify_mode="title_first", image_max_bytes=80_000)
+        ),
+        ocr_backend=_Backend(RuntimeError("ocr should not run")),
+        capture_backend=_Capture(image),
+    )
+
+    snapshot = pipeline.capture_lightweight(
+        target={"hwnd": 1, "title": "Quiz - Google Chrome"}
+    )
+
+    assert snapshot.status == "ok"
+    assert snapshot.classify_method == "title"
+    assert snapshot.activity_type == "question"
+    assert snapshot.ocr_text_snippet == ""
 
 
 def test_ocr_pipeline_lightweight_jpeg_keeps_shrinking_until_limit() -> None:

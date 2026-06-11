@@ -365,7 +365,20 @@ def classify_screen_from_ocr(
     }
     screen_type = max(scores, key=scores.get)
     score = float(scores[screen_type])
-    if not lines and screen_type == "reading":
+    has_category_hits = any(
+        (
+            question_hits,
+            answer_hits,
+            review_hits,
+            summary_hits,
+            notes_hits,
+            reading_hits,
+        )
+    )
+    if not lines and not has_category_hits:
+        screen_type = "idle"
+        score = 0.2
+    elif not lines and screen_type == "reading":
         screen_type = "idle"
         score = 0.2
     if score < 0.35 and len(text) < 16:

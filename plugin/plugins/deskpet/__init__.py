@@ -85,6 +85,8 @@ class DeskPetPlugin(NekoPluginBase):
         # CPU 状态
         self._smooth_cpu: float = 0.0
         self._smooth_mem: float = 0.0
+        self._last_raw_cpu: float | None = None
+        self._last_raw_mem: float | None = None
         self._initialized: bool = False
 
         # 吐槽控制
@@ -129,12 +131,23 @@ class DeskPetPlugin(NekoPluginBase):
     )
     async def on_cpu_tick(self, **_):
         # 1. 采样 — 阻塞调用扔进线程池，避免卡住事件循环
-        raw_cpu, raw_mem = await asyncio.to_thread(
-            lambda: (
-                psutil.cpu_percent(interval=_PSUTIL_BLOCK_S),
-                psutil.virtual_memory().percent,
+        def _sample_metrics() -> tuple[float, float]:
+            return (
+                float(psutil.cpu_percent(interval=_PSUTIL_BLOCK_S)),
+                float(psutil.virtual_memory().percent),
             )
-        )
+
+        try:
+            raw_cpu, raw_mem = await asyncio.to_thread(_sample_metrics)
+        except Exception as exc:
+            self.logger.warning("DeskPet psutil sampling failed: %s", exc)
+            if self._last_raw_cpu is None or self._last_raw_mem is None:
+                return
+            raw_cpu = self._last_raw_cpu
+            raw_mem = self._last_raw_mem
+        else:
+            self._last_raw_cpu = raw_cpu
+            self._last_raw_mem = raw_mem
 
         # 2. EMA 平滑
         if not self._initialized:

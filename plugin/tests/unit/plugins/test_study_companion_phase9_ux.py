@@ -43,6 +43,32 @@ def test_phase9_static_math_assets_are_local_and_registered() -> None:
     assert "replyText.innerHTML = window.renderMathInText(value)" in main_js
 
 
+def test_phase9_math_parser_treats_cjk_currency_as_text() -> None:
+    parser = (PLUGIN_DIR / "static" / "math-parser.js").read_text(encoding="utf-8")
+
+    for token in ("元", "円", "圓", "원", "¥", "￥"):
+        assert token in parser
+    for token in ("，", "。", "；", "）"):
+        assert token in parser
+
+
+def test_phase9_notebook_list_styles_target_rendered_class() -> None:
+    style = (PLUGIN_DIR / "static" / "style.css").read_text(encoding="utf-8")
+
+    assert re.search(
+        r"\.study-notebook-sidebar,\s*"
+        r"\.study-notebook-list,\s*"
+        r"\.study-note-list,\s*"
+        r"\.study-search-results\s*\{\s*overflow:\s*auto;",
+        style,
+    )
+    assert re.search(
+        r"\.study-notebook-list,\s*"
+        r"\.study-note-list\s*\{\s*display:\s*grid;\s*gap:\s*8px;\s*max-height:\s*460px;",
+        style,
+    )
+
+
 def test_phase9_hosted_study_panel_uses_span_based_katex_rendering() -> None:
     source = (PLUGIN_DIR / "surfaces" / "study_panel.tsx").read_text(encoding="utf-8")
 
