@@ -244,6 +244,17 @@
             subtitleWindowController.refs.display &&
             Object.prototype.hasOwnProperty.call(data, 'visible')) {
             subtitleWindowController.refs.display.classList.toggle('hidden', !data.visible);
+            // settings panel 已移到 body 级 settings-layer，不再是 display 的子元素，
+            // 需要同步隐藏/显示，否则字幕隐藏时 settings panel 仍可见。
+            if (!data.visible && subtitleWindowController.refs.settingsPanel) {
+                subtitleWindowController.refs.settingsPanel.classList.add('hidden');
+            } else if (data.visible && subtitleWindowController.refs.settingsPanel) {
+                // 不主动移除 hidden —— 面板的显示状态应由用户操作控制，
+                // 只在字幕恢复时确保 settings-layer 容器本身可见
+                if (windowSettingsLayer) {
+                    windowSettingsLayer.classList.remove('hidden');
+                }
+            }
         }
     }
 
