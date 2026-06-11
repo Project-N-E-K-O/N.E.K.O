@@ -131,9 +131,21 @@ class InboxQueue:
         }
         with self._lock:
             self._messages.append(msg)
-            # 超出上限时淘汰最旧的已读消息
+            # 超出上限时只淘汰已读消息，保留未读消息
             if len(self._messages) > self._max_size:
-                self._messages = [m for m in self._messages if m["status"] == "pending"][-self._max_size:]
+                overflow = len(self._messages) - self._max_size
+                kept: List[Dict[str, Any]] = []
+                for item in self._messages:
+                    if overflow > 0 and item["status"] == "read":
+                        overflow -= 1
+                        continue
+                    kept.append(item)
+                if len(kept) > self._max_size:
+                    # 收件箱已满（全是未读消息），拒绝入队
+                    self._messages.pop()  # 移除刚添加的消息
+                    self._save()
+                    return {"error": "inbox is full of pending messages"}
+                self._messages = kept
             self._save()
         return msg
 
@@ -630,7 +642,7 @@ class ClaudeCompanionPlugin(NekoPluginBase):
         self._api_token = cc_cfg.get("api_token") or os.environ.get("NEKO_CLAUDE_COMPANION_TOKEN") or ""
         if not self._api_token:
             self._api_token = uuid.uuid4().hex[:16]
-            self.logger.info("No api_token configured, generated random token: {}", self._api_token)
+            self.logger.warning("No api_token configured; generated a temporary token. Please persist it via config before using protected endpoints.")
 
         # 获取用户名
         try:
@@ -710,10 +722,16 @@ class ClaudeCompanionPlugin(NekoPluginBase):
         """在后台线程启动 HTTP 服务器。"""
         _HookHTTPHandler.plugin_instance = self
 
+        # 同步绑定端口，确保启动成功
+        try:
+            server = HTTPServer(("127.0.0.1", self._port), _HookHTTPHandler)
+            self._http_server = server
+        except Exception as e:
+            self.logger.error("Failed to bind HTTP server on port {}: {}", self._port, e)
+            raise
+
         def run_server():
             try:
-                server = HTTPServer(("127.0.0.1", self._port), _HookHTTPHandler)
-                self._http_server = server
                 self.logger.info("HTTP hook server listening on port {}", self._port)
                 server.serve_forever()
             except Exception as e:
@@ -789,7 +807,8 @@ class ClaudeCompanionPlugin(NekoPluginBase):
             return
 
         # 推送到 NEKO 伙伴
-        self._notify_companion(summary, activity_type, turn_info)
+        if not self._notify_companion(summary, activity_type, turn_info):
+            return
         self._last_push_time = now
 
         # 记录事件日志
@@ -827,7 +846,8 @@ class ClaudeCompanionPlugin(NekoPluginBase):
 
         # 推送到 NEKO 伙伴
         turn_info = {"tools_used": [], "files_touched": [], "user_message": user_msg, "assistant_message": assistant_msg}
-        self._notify_companion(summary, activity_type, turn_info)
+        if not self._notify_companion(summary, activity_type, turn_info):
+            return
         self._last_push_time = time.time()
 
         # 记录事件日志
@@ -868,13 +888,13 @@ class ClaudeCompanionPlugin(NekoPluginBase):
             count = self._inbox.ack_all()
         return {"status": "ok", "acknowledged": count}
 
-    def _notify_companion(self, summary: str, activity_type: str, turn_info: dict):
-        """通过 push_message 将摘要发送给 NEKO 伙伴。"""
+    def _notify_companion(self, summary: str, activity_type: str, turn_info: dict) -> bool:
+        """通过 push_message 将摘要发送给 NEKO 伙伴。返回是否成功。"""
         self.logger.info("Pushing companion message: type={}", activity_type)
         try:
             if not hasattr(self.ctx, 'push_message'):
                 self.logger.error("ctx has no push_message method")
-                return
+                return False
 
             self.ctx.push_message(
                 source="claude_companion",
@@ -889,8 +909,10 @@ class ClaudeCompanionPlugin(NekoPluginBase):
                 },
             )
             self.logger.debug("Push message sent successfully")
+            return True
         except Exception as e:
             self.logger.error("Failed to push companion message: {}", e)
+            return False
 
     # ── 事件日志（供 UI 展示）──
 
@@ -1000,9 +1022,9 @@ class ClaudeCompanionPlugin(NekoPluginBase):
     )
     async def test_push(self, **_):
         summary = f"{self._user_name}，这是一条来自 Claude Companion 的测试消息～连接正常！"
-        self._notify_companion(summary, "test", {"tools_used": [], "files_touched": []})
-        self.logger.info("Test push sent")
-        return Ok({"sent": True, "message": summary})
+        sent = self._notify_companion(summary, "test", {"tools_used": [], "files_touched": []})
+        self.logger.info("Test push sent: {}", sent)
+        return Ok({"sent": sent, "message": summary})
 
     @plugin_entry(
         id="clear_events",
