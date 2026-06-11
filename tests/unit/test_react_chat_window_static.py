@@ -136,6 +136,9 @@ def test_goodbye_composer_hidden_survives_surface_mode_switches():
     assert "goodbyeComposerHidden: false" in source
     assert "function getEffectiveComposerHidden()" in source
     assert "function hasLocalGoodbyeModeSource()" in source
+    assert "Standalone chat pages inherit window.isNekoGoodbyeModeActive" in source
+    assert "typeof window.isNekoGoodbyeModeActive === 'function'" in source
+    assert "&& window.isNekoGoodbyeModeActive()" in source
     assert "function getEffectiveComposerAttachmentsVisible()" in source
     assert "function syncComposerAttachmentsVisibility(previousVisible)" in source
     assert "return !!(state.composerHidden || state.goodbyeComposerHidden);" in source

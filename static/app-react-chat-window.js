@@ -299,6 +299,17 @@
     }
 
     function hasLocalGoodbyeModeSource() {
+        // Standalone chat pages inherit window.isNekoGoodbyeModeActive from
+        // app-state.js even though they do not own model managers. A false
+        // hook result is therefore not authoritative here; only a true hook
+        // result or an actual local manager/silent-state object can safely
+        // drive localOnly goodbye recomputation.
+        try {
+            if (typeof window.isNekoGoodbyeModeActive === 'function'
+                && window.isNekoGoodbyeModeActive()) {
+                return true;
+            }
+        } catch (_) {}
         return !!(
             window.live2dManager
             || window.vrmManager
