@@ -624,7 +624,7 @@
           {
             "type": "http",
             "url": "http://localhost:48920/hook/turn-end",
-            "timeout": 3000
+            "timeout": 10
           }
         ]
       }
@@ -769,7 +769,7 @@
                     if (candidates.indexOf('zh-CN') === -1) candidates.push('zh-CN');
 
                     for (var i = 0; i < candidates.length; i++) {
-                        var bundleResp = await fetch(baseUrl + '/plugin/' + pluginId + '/i18n/' + candidates[i] + '.json');
+                        var bundleResp = await fetch(baseUrl + '/plugin/' + pluginId + '/ui-api/i18n/' + candidates[i] + '.json');
                         if (bundleResp.ok) {
                             translations = await bundleResp.json();
                             localeLoaded = true;
