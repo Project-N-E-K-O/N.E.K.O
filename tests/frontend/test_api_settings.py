@@ -373,6 +373,100 @@ def test_mimo_token_plan_locks_regular_mimo_key(mock_page: Page, running_server:
 
 
 @pytest.mark.frontend
+def test_mimo_token_plan_connectivity_tries_endpoint_candidates(mock_page: Page, running_server: str):
+    """Token Plan connectivity should try regional MiMo endpoints until one succeeds."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#assistApiSelect option[value='mimo']", state="attached", timeout=10000)
+
+    result = mock_page.evaluate("""
+        async () => {
+            const cnUrl = 'https://token-plan-cn.xiaomimimo.com/v1';
+            const sgpUrl = 'https://token-plan-sgp.xiaomimimo.com/v1';
+            const originalFetch = window.fetch.bind(window);
+            const calls = [];
+
+            _resolvedProviderUrls = {};
+            _assistApiProviders.mimo.token_plan_openrouter_url = '';
+            _assistApiProviders.mimo.token_plan_openrouter_urls = [cnUrl, sgpUrl];
+
+            const assist = document.getElementById('assistApiSelect');
+            assist.value = 'mimo';
+            assist.dispatchEvent(new Event('change', { bubbles: true }));
+
+            const tokenToggle = document.getElementById('useMimoTokenPlan');
+            tokenToggle.checked = true;
+            tokenToggle.dispatchEvent(new Event('change', { bubbles: true }));
+            setMaskedInput(document.getElementById('mimoTokenPlanKeyInput'), 'tp-token-plan-key');
+
+            window.fetch = async (input, init = {}) => {
+                const requestUrl = typeof input === 'string' ? input : input.url;
+                if (requestUrl.endsWith('/api/config/test_connectivity')) {
+                    const body = JSON.parse(init.body || '{}');
+                    calls.push(body.url || '');
+                    if (body.url === cnUrl) {
+                        return new Response(JSON.stringify({
+                            success: false,
+                            error: 'cn failed',
+                            error_code: 'upstream_error'
+                        }), {
+                            status: 200,
+                            headers: { 'Content-Type': 'application/json' }
+                        });
+                    }
+                    if (body.url === sgpUrl) {
+                        return new Response(JSON.stringify({
+                            success: true,
+                            resolved_url: sgpUrl
+                        }), {
+                            status: 200,
+                            headers: { 'Content-Type': 'application/json' }
+                        });
+                    }
+                    return new Response(JSON.stringify({
+                        success: false,
+                        error: 'unexpected endpoint',
+                        error_code: 'unexpected_endpoint'
+                    }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                return originalFetch(input, init);
+            };
+
+            try {
+                const resolved = ConnectivityManager.resolveEffectiveKey({ type: 'assist' });
+                const connectivity = await ConnectivityManager.testKey({
+                    provider_key: resolved.providerKey,
+                    provider_scope: resolved.providerScope,
+                    url: resolved.url,
+                    api_key: resolved.key || '',
+                    provider_type: resolved.providerType,
+                    cache_id: resolved.cacheId
+                });
+                return {
+                    calls,
+                    connectivity,
+                    remembered: _resolvedProviderUrls['assist:mimo_token_plan'] || ''
+                };
+            } finally {
+                window.fetch = originalFetch;
+            }
+        }
+    """)
+
+    assert result["calls"] == [
+        "https://token-plan-cn.xiaomimimo.com/v1",
+        "https://token-plan-sgp.xiaomimimo.com/v1",
+    ]
+    assert result["connectivity"]["success"] is True
+    assert result["connectivity"]["resolved_url"] == "https://token-plan-sgp.xiaomimimo.com/v1"
+    assert result["remembered"] == "https://token-plan-sgp.xiaomimimo.com/v1"
+
+
+@pytest.mark.frontend
 def test_mimo_token_plan_hidden_when_assist_api_is_not_mimo(mock_page: Page, running_server: str):
     """Leaving MiMo must hide Token Plan controls and use the selected assist provider normally."""
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")

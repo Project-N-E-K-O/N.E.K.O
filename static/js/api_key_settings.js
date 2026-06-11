@@ -184,11 +184,25 @@ function isMimoTokenPlanActive() {
 }
 
 function getMimoTokenPlanUrl() {
+    return getMimoTokenPlanUrlCandidates()[0] || MIMO_TOKEN_PLAN_OPENROUTER_URLS[0];
+}
+
+function getMimoTokenPlanUrlCandidates() {
     const mimoProfile = _assistApiProviders.mimo || {};
-    return getProviderResolvedUrl('assist', MIMO_TOKEN_PLAN_PROVIDER_KEY)
-        || mimoProfile.token_plan_openrouter_url
-        || (Array.isArray(mimoProfile.token_plan_openrouter_urls) ? mimoProfile.token_plan_openrouter_urls[0] : '')
-        || MIMO_TOKEN_PLAN_OPENROUTER_URLS[0];
+    const candidates = [
+        getProviderResolvedUrl('assist', MIMO_TOKEN_PLAN_PROVIDER_KEY),
+        mimoProfile.token_plan_openrouter_url,
+        ...(Array.isArray(mimoProfile.token_plan_openrouter_urls) ? mimoProfile.token_plan_openrouter_urls : []),
+        ...MIMO_TOKEN_PLAN_OPENROUTER_URLS
+    ];
+    const seen = new Set();
+    return candidates
+        .map(item => String(item || '').trim())
+        .filter(item => {
+            if (!item || seen.has(item)) return false;
+            seen.add(item);
+            return true;
+        });
 }
 
 function isMimoTokenPlanUrl(url) {
@@ -3113,57 +3127,91 @@ const ConnectivityManager = {
         }, 15000);
 
         try {
-            // Build request body based on mode
-            const body = { api_key: apiKey || '' };
-            if (provider_key && provider_scope) {
-                // Built-in provider mode
-                body.provider_key = provider_key;
-                body.provider_scope = provider_scope;
-                if (provider_scope === 'assist' && provider_key === 'mimo' && isMimoTokenPlanUrl(url)) {
-                    body.url = url;
+            const cleanupRequest = () => {
+                clearTimeout(timeoutId);
+                // Only delete if map still points to this controller (avoid race with newer request)
+                if (cacheId && this._abortControllers[cacheId] === controllerState) {
+                    delete this._abortControllers[cacheId];
                 }
-            } else {
-                // Custom API mode
-                body.url = url || '';
-                body.model = model || '';
-                body.provider_type = providerType || 'openai_compatible';
-                body.is_free = !!isFree;
-            }
+            };
+            const buildBody = (overrideUrl = '') => {
+                const body = { api_key: apiKey || '' };
+                if (provider_key && provider_scope) {
+                    // Built-in provider mode
+                    body.provider_key = provider_key;
+                    body.provider_scope = provider_scope;
+                    if (provider_scope === 'assist' && provider_key === 'mimo' && isMimoTokenPlanUrl(overrideUrl)) {
+                        body.url = overrideUrl;
+                    }
+                } else {
+                    // Custom API mode
+                    body.url = url || '';
+                    body.model = model || '';
+                    body.provider_type = providerType || 'openai_compatible';
+                    body.is_free = !!isFree;
+                }
+                return body;
+            };
+            const sendRequest = async (overrideUrl = '') => {
+                const response = await fetch('/api/config/test_connectivity', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(buildBody(overrideUrl)),
+                    signal: controller.signal
+                });
 
-            const response = await fetch('/api/config/test_connectivity', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body),
-                signal: controller.signal
-            });
+                if (!response.ok) {
+                    return {
+                        success: false,
+                        error: `HTTP ${response.status}`,
+                        error_code: 'backend_unavailable',
+                        resolved_url: overrideUrl || null
+                    };
+                }
 
-            clearTimeout(timeoutId);
-            // Only delete if map still points to this controller (avoid race with newer request)
-            if (cacheId && this._abortControllers[cacheId] === controllerState) {
-                delete this._abortControllers[cacheId];
-            }
-
-            if (!response.ok) {
+                const data = await response.json();
                 return {
+                    success: !!data.success,
+                    error: data.error || null,
+                    error_code: data.error_code || null,
+                    resolved_url: data.resolved_url || (data.success ? overrideUrl : null) || null
+                };
+            };
+            const shouldProbeMimoTokenPlan = provider_scope === 'assist' && provider_key === 'mimo' && isMimoTokenPlanUrl(url);
+            if (shouldProbeMimoTokenPlan) {
+                const seenUrls = new Set();
+                const candidates = [url, ...getMimoTokenPlanUrlCandidates()]
+                    .map(item => String(item || '').trim())
+                    .filter(item => {
+                        if (!item || seenUrls.has(item)) return false;
+                        seenUrls.add(item);
+                        return true;
+                    });
+                let lastResult = null;
+                for (const candidateUrl of candidates) {
+                    const result = await sendRequest(candidateUrl);
+                    lastResult = result;
+                    if (result.success) {
+                        rememberResolvedProviderUrl(provider_scope, MIMO_TOKEN_PLAN_PROVIDER_KEY, result.resolved_url || candidateUrl);
+                        cleanupRequest();
+                        return result;
+                    }
+                }
+                cleanupRequest();
+                return lastResult || {
                     success: false,
-                    error: `HTTP ${response.status}`,
-                    error_code: 'backend_unavailable'
+                    error: 'No MiMo Token Plan endpoint configured',
+                    error_code: 'provider_url_missing',
+                    resolved_url: null
                 };
             }
 
-            const data = await response.json();
-            if (data.success && data.resolved_url && provider_key && provider_scope) {
-                const resolvedProviderKey = provider_key === 'mimo' && isMimoTokenPlanUrl(data.resolved_url)
-                    ? MIMO_TOKEN_PLAN_PROVIDER_KEY
-                    : provider_key;
-                rememberResolvedProviderUrl(provider_scope, resolvedProviderKey, data.resolved_url);
+            const result = await sendRequest(url);
+            cleanupRequest();
+            if (result.success && result.resolved_url && provider_key && provider_scope) {
+                rememberResolvedProviderUrl(provider_scope, provider_key, result.resolved_url);
             }
-            return {
-                success: !!data.success,
-                error: data.error || null,
-                error_code: data.error_code || null,
-                resolved_url: data.resolved_url || null
-            };
+            return result;
         } catch (err) {
             clearTimeout(timeoutId);
             if (cacheId && this._abortControllers[cacheId] === controllerState) {
