@@ -1190,7 +1190,12 @@
         },
         "loadConfigFailed": "Falha ao carregar a configuração. Atualize a página e tente novamente",
         "errorGettingCurrentApiKey": "Erro ao obter a chave de API atual",
-        "getCurrentApiKeyFailed": "Falha ao obter a chave de API atual"
+        "getCurrentApiKeyFailed": "Falha ao obter a chave de API atual",
+        "useMimoTokenPlan": "Usar MiMo Token Plan",
+        "mimoTokenPlanKeyLabel": "Chave do MiMo Token Plan",
+        "mimoTokenPlanKeyPlaceholder": "Insira a chave do Token Plan (tp-xxxxx)",
+        "mimoTokenPlanKeyHint": "Quando ativado, o MiMo usa apenas esta chave e o endpoint do Token Plan; a chave normal da API MiMo fica bloqueada.",
+        "mimoApiKeyLockedByTokenPlan": "MiMo Token Plan está ativado; esta chave não é usada"
     },
     "live2d": {
         "manager": "Gerenciador de modelos Live2D",

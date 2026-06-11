@@ -1190,7 +1190,12 @@
         },
         "loadConfigFailed": "설정을 불러오는 데 실패했습니다. 페이지를 새로고침하여 다시 시도하십시오",
         "errorGettingCurrentApiKey": "현재 API 키를 가져오는 중 오류가 발생했습니다",
-        "getCurrentApiKeyFailed": "현재 API 키를 가져오는 데 실패했습니다"
+        "getCurrentApiKeyFailed": "현재 API 키를 가져오는 데 실패했습니다",
+        "useMimoTokenPlan": "MiMo Token Plan 사용",
+        "mimoTokenPlanKeyLabel": "MiMo Token Plan 키",
+        "mimoTokenPlanKeyPlaceholder": "Token Plan 키 입력 (tp-xxxxx)",
+        "mimoTokenPlanKeyHint": "활성화하면 MiMo는 이 Token Plan 키와 엔드포인트만 사용하며 일반 MiMo API 키는 잠깁니다.",
+        "mimoApiKeyLockedByTokenPlan": "MiMo Token Plan이 활성화되어 이 키는 사용되지 않습니다"
     },
     "live2d": {
         "manager": "Live2D 모델 관리자",

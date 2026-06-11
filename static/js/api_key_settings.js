@@ -30,6 +30,12 @@ const MODEL_TYPES = ['conversation', 'summary', 'correction', 'emotion', 'vision
 // provider resolution logic (follow_core/follow_assist/custom).
 // Future: GPT-SoVITS custom TTS may need dedicated WebSocket test path.
 const CONNECTIVITY_TESTABLE_TYPES = MODEL_TYPES;
+const MIMO_TOKEN_PLAN_PROVIDER_KEY = 'mimo_token_plan';
+const MIMO_TOKEN_PLAN_OPENROUTER_URLS = [
+    'https://token-plan-cn.xiaomimimo.com/v1',
+    'https://token-plan-sgp.xiaomimimo.com/v1',
+    'https://token-plan-ams.xiaomimimo.com/v1',
+];
 // 当前加载到页面中的 GPT-SoVITS 状态：none | enabled | disabled
 let _loadedGptSovitsState = 'none';
 // 上方普通 TTS 配置是否被用户在本页改动过
@@ -165,6 +171,83 @@ function getProviderCoreUrl(providerKey, profile) {
         || profile.core_url
         || (Array.isArray(profile.core_urls) ? profile.core_urls[0] : '')
         || '';
+}
+
+function isMimoAssistSelected() {
+    const assistSelect = document.getElementById('assistApiSelect');
+    return !!assistSelect && assistSelect.value === 'mimo';
+}
+
+function isMimoTokenPlanActive() {
+    const toggle = document.getElementById('useMimoTokenPlan');
+    return isMimoAssistSelected() && !!toggle && toggle.checked;
+}
+
+function getMimoTokenPlanUrl() {
+    const mimoProfile = _assistApiProviders.mimo || {};
+    return getProviderResolvedUrl('assist', MIMO_TOKEN_PLAN_PROVIDER_KEY)
+        || mimoProfile.token_plan_openrouter_url
+        || (Array.isArray(mimoProfile.token_plan_openrouter_urls) ? mimoProfile.token_plan_openrouter_urls[0] : '')
+        || MIMO_TOKEN_PLAN_OPENROUTER_URLS[0];
+}
+
+function isMimoTokenPlanUrl(url) {
+    const rawUrl = String(url || '').toLowerCase();
+    return rawUrl.includes('token-plan-cn.xiaomimimo.com')
+        || rawUrl.includes('token-plan-sgp.xiaomimimo.com')
+        || rawUrl.includes('token-plan-ams.xiaomimimo.com');
+}
+
+function getEffectiveAssistProviderKey(providerKey) {
+    return providerKey === 'mimo' && isMimoTokenPlanActive()
+        ? MIMO_TOKEN_PLAN_PROVIDER_KEY
+        : providerKey;
+}
+
+function getEffectiveAssistKey(providerKey, fallbackInput = null) {
+    if (providerKey === 'mimo' && isMimoTokenPlanActive()) {
+        const tokenPlanInput = document.getElementById('mimoTokenPlanKeyInput');
+        return tokenPlanInput ? getRealKey(tokenPlanInput) : '';
+    }
+    if (fallbackInput) {
+        return getRealKey(fallbackInput);
+    }
+    const bookKey = syncKeyFromBook(providerKey);
+    return (bookKey !== null) ? bookKey : '';
+}
+
+function getEffectiveAssistUrl(providerKey, profile) {
+    if (providerKey === 'mimo' && isMimoTokenPlanActive()) {
+        return getMimoTokenPlanUrl();
+    }
+    return getProviderOpenrouterUrl(providerKey, profile);
+}
+
+function updateMimoTokenPlanControls() {
+    const showMimoControls = isMimoAssistSelected();
+    const active = isMimoTokenPlanActive();
+    const toggleRow = document.getElementById('mimoTokenPlanToggleRow');
+    const toggle = document.getElementById('useMimoTokenPlan');
+    const keyRow = document.getElementById('mimoTokenPlanKeyRow');
+    const tokenPlanInput = document.getElementById('mimoTokenPlanKeyInput');
+    const assistInput = document.getElementById('assistApiKeyInput');
+
+    if (toggleRow) toggleRow.style.display = showMimoControls ? 'inline-flex' : 'none';
+    if (toggle) toggle.disabled = !showMimoControls;
+    if (keyRow) keyRow.style.display = active ? 'flex' : 'none';
+    if (tokenPlanInput) tokenPlanInput.disabled = !active;
+
+    if (assistInput) {
+        assistInput.disabled = active || (assistInput.dataset.disabledByFreeAssist === 'true');
+        assistInput.readOnly = active;
+        if (active) {
+            assistInput.placeholder = window.t
+                ? window.t('api.mimoApiKeyLockedByTokenPlan')
+                : 'MiMo Token Plan is enabled; this key is not used';
+        } else if (assistInput.dataset.disabledByFreeAssist !== 'true') {
+            assistInput.placeholder = window.t ? window.t('api.assistApiKeyPlaceholder') : '留空使用管理簿对应 Key';
+        }
+    }
 }
 
 function isAliyunUsApiUrl(url) {
@@ -969,10 +1052,10 @@ function onCustomModelProviderChange(modelType) {
             } else {
                 const pInfo = _assistApiProviders[sourceProviderKey] || _coreApiProviders[sourceProviderKey] || {};
                 if (urlInput) {
-                    urlInput.value = getProviderOpenrouterUrl(sourceProviderKey, pInfo) || getProviderCoreUrl(sourceProviderKey, pInfo);
+                    urlInput.value = getEffectiveAssistUrl(sourceProviderKey, pInfo) || getProviderCoreUrl(sourceProviderKey, pInfo);
                     urlInput.setAttribute('readonly', 'readonly');
                 }
-                const bookKey = syncKeyFromBook(sourceProviderKey);
+                const bookKey = getEffectiveAssistKey(sourceProviderKey);
                 setKeyReadonly(keyInput, bookKey);
             }
         } else {
@@ -995,11 +1078,11 @@ function onCustomModelProviderChange(modelType) {
             }
         } else {
             if (urlInput) {
-                urlInput.value = getProviderOpenrouterUrl(provider, pInfo) || getProviderCoreUrl(provider, pInfo);
+                urlInput.value = getEffectiveAssistUrl(provider, pInfo) || getProviderCoreUrl(provider, pInfo);
                 urlInput.setAttribute('readonly', 'readonly');
             }
         }
-        const bookKey = syncKeyFromBook(provider);
+        const bookKey = getEffectiveAssistKey(provider);
         setKeyReadonly(keyInput, bookKey);
     }
 }
@@ -1272,6 +1355,16 @@ async function loadCurrentApiKey() {
                     waitForOptions(assistApiSelect, data.assistApi);
                 }
             }
+            const useMimoTokenPlanToggle = document.getElementById('useMimoTokenPlan');
+            if (useMimoTokenPlanToggle) {
+                useMimoTokenPlanToggle.checked = data.useMimoTokenPlan === true;
+            }
+            const mimoTokenPlanKeyInput = document.getElementById('mimoTokenPlanKeyInput');
+            if (mimoTokenPlanKeyInput && data.assistApiKeyMimoTokenPlan) {
+                setMaskedInput(mimoTokenPlanKeyInput, data.assistApiKeyMimoTokenPlan);
+                attachMaskBehavior(mimoTokenPlanKeyInput);
+            }
+            updateMimoTokenPlanControls();
 
             // Sync the core API key into the Key Book for the selected core provider
             // so autoFillCoreApiKey() can find it later
@@ -1672,7 +1765,9 @@ function updateAssistApiKeyInputAvailability() {
     if (!assistApiSelect || !assistApiKeyInput) return;
 
     const isFreeAssistApi = assistApiSelect.value === 'free';
+    assistApiKeyInput.dataset.disabledByFreeAssist = isFreeAssistApi ? 'true' : 'false';
     assistApiKeyInput.disabled = isFreeAssistApi;
+    assistApiKeyInput.readOnly = false;
     assistApiKeyInput.required = false;
 
     if (isFreeAssistApi) {
@@ -1681,6 +1776,7 @@ function updateAssistApiKeyInputAvailability() {
         assistApiKeyInput.dataset.realKey = '';
         assistApiKeyInput.value = freeText;
         attachMaskBehavior(assistApiKeyInput);
+        updateMimoTokenPlanControls();
         return;
     }
 
@@ -1688,6 +1784,7 @@ function updateAssistApiKeyInputAvailability() {
     if (isFreeVersionText(getRealKey(assistApiKeyInput))) {
         setMaskedInput(assistApiKeyInput, '');
     }
+    updateMimoTokenPlanControls();
 }
 
 // 切换自定义API启用状态
@@ -1931,7 +2028,10 @@ async function save_button_down(e) {
 
     // 读取辅助API Key
     const assistKeyInput = document.getElementById('assistApiKeyInput');
-    const assistKeyVal = getRealKey(assistKeyInput);
+    const assistKeyVal = getEffectiveAssistKey(assistApi, assistKeyInput);
+    const useMimoTokenPlan = isMimoTokenPlanActive();
+    const mimoTokenPlanKeyInput = document.getElementById('mimoTokenPlanKeyInput');
+    const mimoTokenPlanKey = mimoTokenPlanKeyInput ? getRealKey(mimoTokenPlanKeyInput) : '';
 
     // Collect keys from keyBookInput_* via _apiKeyRegistry.
     // syncKeyFromBook returns null when DOM is absent (restricted/hidden provider)
@@ -1954,7 +2054,7 @@ async function save_button_down(e) {
             allBookKeys[coreApi] = apiKey;
         }
     }
-    if (assistApi && assistApi !== 'free' && _apiKeyRegistry[assistApi]) {
+    if (assistApi && assistApi !== 'free' && _apiKeyRegistry[assistApi] && !useMimoTokenPlan) {
         allBookKeys[assistApi] = assistKeyVal;
     }
 
@@ -2076,6 +2176,8 @@ async function save_button_down(e) {
         omniModelUrl, omniModelId, omniModelApiKey,
         ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId,
         mcpToken, enableCustomApi, gptsovitsEnabled,
+        useMimoTokenPlan,
+        assistApiKeyMimoTokenPlan: mimoTokenPlanKey,
         resolvedProviderUrls: _resolvedProviderUrls,
         ...modelProviders
     };
@@ -2157,7 +2259,7 @@ function refreshAutoResolvedModelUrlsForSave(params) {
         }
 
         const assistProfile = _assistApiProviders[providerKey] || _coreApiProviders[providerKey] || {};
-        return getProviderOpenrouterUrl(providerKey, assistProfile) || getProviderCoreUrl(providerKey, assistProfile);
+        return getEffectiveAssistUrl(providerKey, assistProfile) || getProviderCoreUrl(providerKey, assistProfile);
     };
 
     MODEL_TYPES.forEach(modelType => {
@@ -2432,6 +2534,10 @@ function autoFillAssistApiKey(force) {
         return;
     }
     updateAssistApiKeyInputAvailability();
+
+    if (isMimoTokenPlanActive()) {
+        return;
+    }
 
     const bookKey = syncKeyFromBook(selectedAssistApi);
     // When forced (provider switch, disabling custom API, or init), clear input if no book key
@@ -2828,10 +2934,12 @@ const ConnectivityManager = {
                 result.providerType = 'openai_compatible';
             } else {
                 const assistProfile = _assistApiProviders[assistProvider] || {};
-                result.url = getProviderOpenrouterUrl(assistProvider, assistProfile);
+                result.url = getEffectiveAssistUrl(assistProvider, assistProfile);
                 // 优先从输入框读取，其次从 Key Book
                 const inputKey = getRealKey(assistApiKeyInput);
-                if (inputKey && !isFreeVersionText(inputKey)) {
+                if (assistProvider === 'mimo' && isMimoTokenPlanActive()) {
+                    result.key = getEffectiveAssistKey(assistProvider);
+                } else if (inputKey && !isFreeVersionText(inputKey)) {
                     result.key = inputKey;
                 } else {
                     const bookKey = syncKeyFromBook(assistProvider);
@@ -2839,7 +2947,8 @@ const ConnectivityManager = {
                 }
                 result.providerType = 'openai_compatible';
             }
-            result.cacheId = buildConnectivityCacheId(result.providerScope, result.providerKey, result.key, result.url);
+            const cacheProviderKey = getEffectiveAssistProviderKey(result.providerKey);
+            result.cacheId = buildConnectivityCacheId(result.providerScope, cacheProviderKey, result.key, result.url);
             return result;
         }
 
@@ -2888,8 +2997,7 @@ const ConnectivityManager = {
                 result.providerType = (mt === 'omni') ? 'websocket' : 'openai_compatible';
             } else {
                 // 指定服务商：从 Key Book 读取
-                const bookKey = syncKeyFromBook(provider);
-                result.key = (bookKey !== null) ? bookKey : '';
+                result.key = getEffectiveAssistKey(provider);
                 if (mt === 'omni') {
                     const coreProfile = _coreApiProviders[provider] || {};
                     result.url = getProviderCoreUrl(provider, coreProfile);
@@ -2898,7 +3006,7 @@ const ConnectivityManager = {
                     result.providerScope = 'core';
                 } else {
                     const pInfo = _assistApiProviders[provider] || _coreApiProviders[provider] || {};
-                    result.url = getProviderOpenrouterUrl(provider, pInfo) || getProviderCoreUrl(provider, pInfo);
+                    result.url = getEffectiveAssistUrl(provider, pInfo) || getProviderCoreUrl(provider, pInfo);
                     result.providerType = 'openai_compatible';
                     result.providerKey = provider;
                     result.providerScope = 'assist';
@@ -3008,6 +3116,9 @@ const ConnectivityManager = {
                 // Built-in provider mode
                 body.provider_key = provider_key;
                 body.provider_scope = provider_scope;
+                if (url) {
+                    body.url = url;
+                }
             } else {
                 // Custom API mode
                 body.url = url || '';
@@ -3039,7 +3150,10 @@ const ConnectivityManager = {
 
             const data = await response.json();
             if (data.success && data.resolved_url && provider_key && provider_scope) {
-                rememberResolvedProviderUrl(provider_scope, provider_key, data.resolved_url);
+                const resolvedProviderKey = provider_key === 'mimo' && isMimoTokenPlanUrl(data.resolved_url)
+                    ? MIMO_TOKEN_PLAN_PROVIDER_KEY
+                    : provider_key;
+                rememberResolvedProviderUrl(provider_scope, resolvedProviderKey, data.resolved_url);
             }
             return {
                 success: !!data.success,
@@ -3718,6 +3832,12 @@ function initConnectivityLights() {
 
         assistApiKeyInput.addEventListener('input', handleAssistKeyChange);
         assistApiKeyInput.addEventListener('change', handleAssistKeyChange);
+        const mimoTokenPlanKeyInput = document.getElementById('mimoTokenPlanKeyInput');
+        if (mimoTokenPlanKeyInput) {
+            mimoTokenPlanKeyInput.addEventListener('input', handleAssistKeyChange);
+            mimoTokenPlanKeyInput.addEventListener('change', handleAssistKeyChange);
+            attachMaskBehavior(mimoTokenPlanKeyInput);
+        }
     }
 
     // Custom model key input changes
@@ -3779,12 +3899,39 @@ function initConnectivityLights() {
     // Assist API provider change
     if (assistApiSelect) {
         assistApiSelect.addEventListener('change', () => {
+            updateMimoTokenPlanControls();
             const oldKey = assistCurrentKey;
             assistCurrentKey = reRegister(
                 lightRefs.assist.light, lightRefs.assist.errorDisplay,
                 { type: 'assist' }, oldKey
             );
             // Also re-register custom models that follow_assist
+            CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
+                const providerSel = document.getElementById(`${mt}ModelProvider`);
+                if (providerSel && providerSel.value === 'follow_assist' && lightRefs.custom[mt]) {
+                    const oldCustomKey = customCurrentKeys[mt];
+                    customCurrentKeys[mt] = reRegister(
+                        lightRefs.custom[mt].light, lightRefs.custom[mt].errorDisplay,
+                        { type: 'custom', modelType: mt }, oldCustomKey,
+                        lightRefs.custom[mt].summaryLight
+                    );
+                }
+            });
+        });
+    }
+
+    const useMimoTokenPlanToggle = document.getElementById('useMimoTokenPlan');
+    if (useMimoTokenPlanToggle) {
+        useMimoTokenPlanToggle.addEventListener('change', () => {
+            updateMimoTokenPlanControls();
+            const oldKey = assistCurrentKey;
+            assistCurrentKey = reRegister(
+                lightRefs.assist.light, lightRefs.assist.errorDisplay,
+                { type: 'assist' }, oldKey
+            );
+            if (oldKey && oldKey !== assistCurrentKey) {
+                cascadeResetForKey(oldKey);
+            }
             CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
                 const providerSel = document.getElementById(`${mt}ModelProvider`);
                 if (providerSel && providerSel.value === 'follow_assist' && lightRefs.custom[mt]) {
@@ -4024,6 +4171,7 @@ async function initializePage() {
         const assistApiSelect = document.getElementById('assistApiSelect');
         if (assistApiSelect) {
             assistApiSelect.addEventListener('change', function () {
+                updateMimoTokenPlanControls();
                 updateAssistApiRecommendation();
                 autoFillAssistApiKey(true);
                 // Recompute all follow_assist model slots

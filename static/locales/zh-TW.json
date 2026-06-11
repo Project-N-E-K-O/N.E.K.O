@@ -1190,7 +1190,12 @@
         },
         "loadConfigFailed": "載入配置失敗，請重新整理頁面重試",
         "errorGettingCurrentApiKey": "獲取目前 API Key 時出錯",
-        "getCurrentApiKeyFailed": "獲取目前 API Key 失敗"
+        "getCurrentApiKeyFailed": "獲取目前 API Key 失敗",
+        "useMimoTokenPlan": "使用 MiMo Token Plan",
+        "mimoTokenPlanKeyLabel": "MiMo Token Plan Key",
+        "mimoTokenPlanKeyPlaceholder": "輸入 Token Plan Key（tp-xxxxx）",
+        "mimoTokenPlanKeyHint": "啟用後，MiMo 只使用此 Token Plan Key 和端點；普通 MiMo API Key 會被鎖定。",
+        "mimoApiKeyLockedByTokenPlan": "已啟用 MiMo Token Plan；此 Key 不會被使用"
     },
     "live2d": {
         "manager": "Live2D 模型管理",

@@ -227,6 +227,12 @@
       "name": "MiMo（小米）",
       "description": "小米 MiMo 辅助 API，支持 V2.5 文本/多模态与 MiMo-V2.5-TTS",
       "openrouter_url": "https://api.xiaomimimo.com/v1",
+      "token_plan_openrouter_url": "https://token-plan-cn.xiaomimimo.com/v1",
+      "token_plan_openrouter_urls": [
+        "https://token-plan-cn.xiaomimimo.com/v1",
+        "https://token-plan-sgp.xiaomimimo.com/v1",
+        "https://token-plan-ams.xiaomimimo.com/v1"
+      ],
       "conversation_model": "mimo-v2.5",
       "summary_model": "mimo-v2.5",
       "correction_model": "mimo-v2.5",

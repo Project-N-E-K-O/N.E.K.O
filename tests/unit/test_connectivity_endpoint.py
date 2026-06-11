@@ -197,6 +197,68 @@ class TestSchemaValidation:
         assert result["resolved_url"] == "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
         assert "https://dashscope-us.aliyuncs.com/compatible-mode/v1" in calls
 
+    async def test_builtin_mimo_assist_accepts_token_plan_url_override(self):
+        """MiMo Token Plan may override the built-in MiMo assist endpoint."""
+        calls = []
+
+        async def fake_test(url, api_key, model="gpt-3.5-turbo", is_free=False):
+            calls.append((url, api_key, model))
+            return {"success": True}
+
+        fake_config = {
+            "assist_api_providers": {
+                "mimo": {
+                    "name": "MiMo",
+                    "openrouter_url": "https://api.xiaomimimo.com/v1",
+                    "conversation_model": "mimo-v2.5",
+                }
+            }
+        }
+
+        with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
+            "main_routers.config_router._test_openai_compatible",
+            side_effect=fake_test,
+        ):
+            req = ConnectivityTestRequest(
+                provider_key="mimo",
+                provider_scope="assist",
+                url="https://token-plan-sgp.xiaomimimo.com/v1",
+                api_key="tp-token-plan",
+            )
+            result = await _endpoint_test_connectivity(req)
+
+        assert result["success"] is True
+        assert result["resolved_url"] == "https://token-plan-sgp.xiaomimimo.com/v1"
+        assert calls == [("https://token-plan-sgp.xiaomimimo.com/v1", "tp-token-plan", "mimo-v2.5")]
+
+    async def test_builtin_non_mimo_assist_rejects_token_plan_url_override(self):
+        """MiMo Token Plan override must not affect other built-in assist APIs."""
+        fake_config = {
+            "assist_api_providers": {
+                "qwen": {
+                    "name": "Qwen",
+                    "openrouter_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                    "conversation_model": "qwen-plus",
+                }
+            }
+        }
+
+        with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
+            "main_routers.config_router._test_openai_compatible",
+            new_callable=AsyncMock,
+        ) as mock_http:
+            req = ConnectivityTestRequest(
+                provider_key="qwen",
+                provider_scope="assist",
+                url="https://token-plan-sgp.xiaomimimo.com/v1",
+                api_key="sk-qwen",
+            )
+            result = await _endpoint_test_connectivity(req)
+
+        mock_http.assert_not_awaited()
+        assert result["success"] is False
+        assert result["error_code"] == "missing_params"
+
     async def test_builtin_core_accepts_any_successful_candidate_url(self):
         """内置核心 provider 若配置多个候选 URL，任一通过即返回可用 URL。"""
         calls = []

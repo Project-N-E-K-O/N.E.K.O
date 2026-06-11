@@ -689,6 +689,8 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeyQwenIntl": "",
     "assistApiKeyMinimax": "",
     "assistApiKeyMimo": "",
+    "useMimoTokenPlan": False,
+    "assistApiKeyMimoTokenPlan": "",
     "assistApiKeyElevenlabs": "",
     "assistApiKeyClaude": "",
     "assistApiKeyGrok": "",
@@ -872,6 +874,12 @@ DEFAULT_ASSIST_API_PROFILES = {
     },
     'mimo': {
         'OPENROUTER_URL': "https://api.xiaomimimo.com/v1",
+        'MIMO_TOKEN_PLAN_OPENROUTER_URL': "https://token-plan-cn.xiaomimimo.com/v1",
+        'MIMO_TOKEN_PLAN_OPENROUTER_URLS': [
+            "https://token-plan-cn.xiaomimimo.com/v1",
+            "https://token-plan-sgp.xiaomimimo.com/v1",
+            "https://token-plan-ams.xiaomimimo.com/v1",
+        ],
         'CONVERSATION_MODEL': "mimo-v2.5",
         'SUMMARY_MODEL': "mimo-v2.5",
         'CORRECTION_MODEL': "mimo-v2.5",

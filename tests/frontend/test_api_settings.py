@@ -315,3 +315,91 @@ def test_paid_core_key_not_overwritten_by_free_assist_on_save(mock_page: Page, r
     assert payload["coreApi"] == "qwen"
     assert payload["assistApi"] == "free"
     assert payload["apiKey"] == test_key, f"付费 core Key 被改写: {payload['apiKey']!r}"
+
+
+@pytest.mark.frontend
+def test_mimo_token_plan_locks_regular_mimo_key(mock_page: Page, running_server: str):
+    """MiMo Token Plan is a MiMo-only mode and must not overwrite the normal MiMo key."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#assistApiSelect option[value='mimo']", state="attached", timeout=10000)
+
+    result = mock_page.evaluate("""
+        async () => {
+            const core = document.getElementById('coreApiSelect');
+            core.value = 'qwen';
+            core.dispatchEvent(new Event('change', { bubbles: true }));
+            setMaskedInput(document.getElementById('apiKeyInput'), 'sk-core-test');
+
+            syncKeyToBook('mimo', 'sk-regular-mimo');
+            const assist = document.getElementById('assistApiSelect');
+            assist.value = 'mimo';
+            assist.dispatchEvent(new Event('change', { bubbles: true }));
+
+            const tokenToggle = document.getElementById('useMimoTokenPlan');
+            tokenToggle.checked = true;
+            tokenToggle.dispatchEvent(new Event('change', { bubbles: true }));
+            const tokenInput = document.getElementById('mimoTokenPlanKeyInput');
+            setMaskedInput(tokenInput, 'tp-token-plan-key');
+
+            window.__captured = null;
+            window.saveApiKey = async (p) => { window.__captured = JSON.parse(JSON.stringify(p)); };
+            const div = document.getElementById('current-api-key');
+            if (div) div.dataset.hasKey = 'false';
+            await save_button_down({ preventDefault() {} });
+            const payload = window.__captured;
+
+            const resolved = ConnectivityManager.resolveEffectiveKey({ type: 'assist' });
+            return {
+                payload,
+                assistDisabled: document.getElementById('assistApiKeyInput').disabled,
+                tokenRowVisible: document.getElementById('mimoTokenPlanKeyRow').style.display !== 'none',
+                resolved,
+            };
+        }
+    """)
+
+    payload = result["payload"]
+    assert payload["assistApi"] == "mimo"
+    assert payload["useMimoTokenPlan"] is True
+    assert payload["assistApiKeyMimo"] == "sk-regular-mimo"
+    assert payload["assistApiKeyMimoTokenPlan"] == "tp-token-plan-key"
+    assert result["assistDisabled"] is True
+    assert result["tokenRowVisible"] is True
+    assert result["resolved"]["providerKey"] == "mimo"
+    assert result["resolved"]["key"] == "tp-token-plan-key"
+    assert "token-plan-cn.xiaomimimo.com" in result["resolved"]["url"]
+
+
+@pytest.mark.frontend
+def test_mimo_token_plan_hidden_when_assist_api_is_not_mimo(mock_page: Page, running_server: str):
+    """Leaving MiMo must hide Token Plan controls and use the selected assist provider normally."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#assistApiSelect option[value='qwen']", state="attached", timeout=10000)
+
+    result = mock_page.evaluate("""
+        () => {
+            syncKeyToBook('qwen', 'sk-qwen-assist');
+            const assist = document.getElementById('assistApiSelect');
+            assist.value = 'qwen';
+            assist.dispatchEvent(new Event('change', { bubbles: true }));
+            const toggle = document.getElementById('useMimoTokenPlan');
+            toggle.checked = true;
+            toggle.dispatchEvent(new Event('change', { bubbles: true }));
+            const resolved = ConnectivityManager.resolveEffectiveKey({ type: 'assist' });
+            return {
+                toggleVisible: document.getElementById('mimoTokenPlanToggleRow').style.display !== 'none',
+                tokenRowVisible: document.getElementById('mimoTokenPlanKeyRow').style.display !== 'none',
+                resolved,
+            };
+        }
+    """)
+
+    assert result["toggleVisible"] is False
+    assert result["tokenRowVisible"] is False
+    assert result["resolved"]["providerKey"] == "qwen"
+    assert result["resolved"]["key"] == "sk-qwen-assist"
+    assert "dashscope.aliyuncs.com" in result["resolved"]["url"]

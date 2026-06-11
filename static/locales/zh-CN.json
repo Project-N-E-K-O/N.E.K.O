@@ -1190,7 +1190,12 @@
         },
         "loadConfigFailed": "加载配置失败，请刷新页面后重试",
         "errorGettingCurrentApiKey": "获取当前API Key失败",
-        "getCurrentApiKeyFailed": "获取当前API Key失败"
+        "getCurrentApiKeyFailed": "获取当前API Key失败",
+        "useMimoTokenPlan": "使用 MiMo Token Plan",
+        "mimoTokenPlanKeyLabel": "MiMo Token Plan Key",
+        "mimoTokenPlanKeyPlaceholder": "输入 Token Plan Key（tp-xxxxx）",
+        "mimoTokenPlanKeyHint": "启用后，MiMo 只使用此 Token Plan Key 和端点；普通 MiMo API Key 会被锁定。",
+        "mimoApiKeyLockedByTokenPlan": "已启用 MiMo Token Plan；此 Key 不会被使用"
     },
     "live2d": {
         "manager": "Live2D 模型管理",
@@ -1915,6 +1920,8 @@
         "systemPromptWarning": "系统指令 - 修改可能导致角色行为异常，后果自负",
         "addField": "新增设定",
         "aiAssist": "猫猫辅助生成",
+        "aiCompanionSeedDescribe": "基于这段描述生成猫娘卡：",
+        "aiCompanionSeedGenerated": "已生成并填入表单：",
         "aiCompanionSub": "设定捏人助手 · 暂代开发猫",
         "aiCompanionExpand": "展开",
         "aiCompanionDragHint": "拖动窗口",
@@ -1946,8 +1953,6 @@
         "aiCompanionQuickCheckMsg": "审一下角色设定有没有矛盾、空泛或者重复的地方，并提出修改方案。",
         "aiCompanionQuickRegen": "🎲 重写整张卡",
         "aiCompanionQuickRegenMsg": "把所有可见字段都按原本的角色定位重新写一遍。",
-        "aiCompanionSeedDescribe": "基于这段描述生成猫娘卡：",
-        "aiCompanionSeedGenerated": "已生成并填入表单：",
         "aiAssistApiMissing": "辅助 API 尚未配置。请在「API Key 设置」里完成配置后再试。",
         "confirmNewCatgirl": "确认新猫娘",
         "saveChanges": "保存修改",
