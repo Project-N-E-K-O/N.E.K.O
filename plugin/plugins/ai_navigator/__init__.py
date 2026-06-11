@@ -16,8 +16,7 @@ AI 网站导航插件 (AI-Navigator)
 from __future__ import annotations
 
 import asyncio
-import sys
-import subprocess
+import webbrowser
 from typing import Any, Optional
 
 from plugin.sdk.plugin import (
@@ -62,10 +61,8 @@ def _match_platform(query: str):
             alias_clean = alias.replace("-", "").replace("_", "").replace(" ", "").replace(".", "")
             if q == alias or q in alias:
                 score += 60
-            if alias_clean and q_clean in alias_clean:
+            if alias_clean and q_clean and len(q_clean) >= 2 and q_clean in alias_clean:
                 score += 50
-            if q_clean and alias_clean and len(q_clean) >= 2 and q_clean in alias_clean:
-                score += 45
 
         if q_clean in pname_clean and len(q_clean) >= 2:
             score += 30
@@ -83,12 +80,8 @@ def _match_platform(query: str):
 def _open_url_in_browser(url: str) -> None:
     """在默认浏览器打开 URL（同步调用，仅供 asyncio.to_thread 使用）"""
     try:
-        if sys.platform == "win32":
-            subprocess.Popen(["cmd", "/c", "start", "", url], shell=False)
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", url])
-        else:
-            subprocess.Popen(["xdg-open", url])
+        if not webbrowser.open(url, new=2):
+            raise RuntimeError(f"webbrowser.open returned False for {url}")
     except Exception as e:
         raise RuntimeError(f"无法在浏览器中打开 {url}: {e}")
 
