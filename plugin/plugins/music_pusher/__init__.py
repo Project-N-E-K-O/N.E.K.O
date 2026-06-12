@@ -1,5 +1,5 @@
 """
-Music Pusher
+汐音阁 · XiYin Pavilion
 
 能力概览：
 1) 本地上传音频并可选自动推送。
@@ -406,7 +406,7 @@ def _extract_duration_from_av_container(container: Any) -> int | None:
 
 @neko_plugin
 class MusicPusherPlugin(NekoPluginBase):
-    """音乐推送 + 定时队列插件。"""
+    """汐音阁 · XiYin Pavilion —— 音乐推送 + 定时队列插件。"""
 
     def __init__(self, ctx: Any):
         super().__init__(ctx)
@@ -1716,7 +1716,7 @@ class MusicPusherPlugin(NekoPluginBase):
         self._register_writable_static_ui()
         self._scheduler_stop.clear()
         self._ensure_scheduler_task()
-        return Ok("音乐推送插件已启动（含定时队列）")
+        return Ok("汐音阁已启动（含定时队列）")
 
     @lifecycle(id="shutdown")
     async def on_shutdown(self, **_):
