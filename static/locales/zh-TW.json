@@ -975,7 +975,8 @@
             "glm": "智譜",
             "step": "階躍星辰",
             "silicon": "矽基流動",
-            "gemini": "Gemini"
+            "gemini": "Gemini",
+            "vllm_omni": "vLLM-Omni（TTS）"
         },
         "coreProviderNames": {
             "free": "免費版（貓娘專屬福利，支持聯網搜索）",

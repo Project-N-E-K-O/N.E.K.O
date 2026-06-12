@@ -752,7 +752,7 @@
         "avatarCropZoomOut": "Уменьшить",
         "avatarCropCancel": "Отмена",
         "avatarCropSave": "Сохранить",
-        "emptyState":  "Сообщения появятся здесь после подключения чата.",
+        "emptyState": "Сообщения появятся здесь после подключения чата.",
         "companionEmptyState": "(Я рядом с тобой.)",
         "messageStreaming": "Генерация",
         "messageFailed": "Ошибка отправки",
@@ -975,7 +975,8 @@
             "glm": "GLM",
             "step": "StepFun",
             "silicon": "SiliconFlow",
-            "gemini": "Gemini"
+            "gemini": "Gemini",
+            "vllm_omni": "vLLM-Omni (TTS)"
         },
         "coreProviderNames": {
             "free": "Бесплатная версия (Эксклюзив N.E.K.O., веб-поиск)",

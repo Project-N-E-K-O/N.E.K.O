@@ -752,7 +752,7 @@
         "avatarCropZoomOut": "alejar",
         "avatarCropCancel": "Cancelar",
         "avatarCropSave": "Guardar",
-        "emptyState":  "Los mensajes aparecerán aquí después de que se conecte la transmisión del chat.",
+        "emptyState": "Los mensajes aparecerán aquí después de que se conecte la transmisión del chat.",
         "companionEmptyState": "(Estoy aquí contigo.)",
         "messageStreaming": "generando",
         "messageFailed": "Envío fallido",
@@ -975,7 +975,8 @@
             "glm": "GLM",
             "step": "paso divertido",
             "silicon": "flujo de silicio",
-            "gemini": "Géminis"
+            "gemini": "Géminis",
+            "vllm_omni": "vLLM-Omni (TTS)"
         },
         "coreProviderNames": {
             "free": "Versión gratuita (beneficio exclusivo de N.E.K.O., admite búsqueda web)",
