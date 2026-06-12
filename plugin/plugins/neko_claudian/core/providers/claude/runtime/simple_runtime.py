@@ -84,7 +84,13 @@ class SimpleClaudeRuntime:
             return
 
         # Build command
-        cmd = [self.cli_path, "-p", prompt, "--output-format", "stream-json"]
+        # 注意：--output-format stream-json 需要 --verbose 选项
+        cmd = [
+            self.cli_path,
+            "-p", prompt,
+            "--output-format", "stream-json",
+            "--verbose",
+        ]
 
         if self.model:
             cmd.extend(["--model", self.model])
@@ -147,56 +153,77 @@ class SimpleClaudeRuntime:
             self._process = None
 
     def _transform_chunk(self, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Transform Claude CLI output to StreamChunk format."""
+        """Transform Claude CLI output to StreamChunk format.
+
+        Claude CLI 输出格式（--output-format stream-json --verbose）：
+        - {"type": "system", "subtype": "init", ...} — 初始化
+        - {"type": "system", "subtype": "thinking_tokens", ...} — thinking token 统计
+        - {"type": "assistant", "message": {...}} — 助手消息
+        - {"type": "result", "subtype": "success", "result": "..."} — 最终结果
+        """
         msg_type = data.get("type")
 
-        if msg_type == "assistant":
-            # Extract content from assistant message
+        if msg_type == "system":
+            subtype = data.get("subtype", "")
+            if subtype == "init":
+                # 会话初始化
+                return {
+                    "type": "session_info",
+                    "session_id": data.get("session_id"),
+                    "model": data.get("model"),
+                }
+            elif subtype == "thinking_tokens":
+                # thinking token 统计，跳过
+                return None
+            elif subtype in ("hook_started", "hook_response"):
+                # Hook 事件，跳过
+                return None
+            return None
+
+        elif msg_type == "assistant":
+            # 助手消息
             message = data.get("message", {})
             content = message.get("content", [])
 
+            chunks = []
             for block in content:
                 block_type = block.get("type")
                 if block_type == "text":
-                    return {"type": "text", "content": block.get("text", "")}
+                    text = block.get("text", "")
+                    if text:
+                        chunks.append({"type": "text", "content": text})
                 elif block_type == "tool_use":
-                    return {
+                    chunks.append({
                         "type": "tool_use",
                         "id": block.get("id", ""),
                         "name": block.get("name", ""),
                         "input": block.get("input", {}),
-                    }
+                    })
                 elif block_type == "thinking":
-                    return {"type": "thinking", "content": block.get("thinking", "")}
+                    thinking = block.get("thinking", "")
+                    if thinking:
+                        chunks.append({"type": "thinking", "content": thinking})
 
-        elif msg_type == "user":
-            # Tool result
-            message = data.get("message", {})
-            content = message.get("content", [])
-            for block in content:
-                if block.get("type") == "tool_result":
-                    return {
-                        "type": "tool_result",
-                        "id": block.get("tool_use_id", ""),
-                        "content": block.get("content", ""),
-                        "isError": block.get("is_error", False),
-                    }
+            # 返回第一个 chunk（如果有多个，后续的会被忽略）
+            return chunks[0] if chunks else None
 
         elif msg_type == "result":
-            # Final result
-            return {
-                "type": "text",
-                "content": data.get("result", ""),
-            }
+            # 最终结果
+            subtype = data.get("subtype", "")
+            if subtype == "success":
+                result_text = data.get("result", "")
+                if result_text:
+                    return {"type": "text", "content": result_text}
+            return {"type": "done"}
 
         elif msg_type == "error":
             return {
                 "type": "error",
-                "content": data.get("error", "Unknown error"),
+                "content": data.get("error", data.get("message", "Unknown error")),
             }
 
-        # Return raw data for debugging
-        return {"type": "stream_event", "data": data}
+        # 忽略其他类型
+        return None
 
     def cancel(self) -> None:
         """Cancel current operation."""
