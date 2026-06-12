@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+from urllib.parse import ParseResult
 from uuid import uuid4
 
 try:
@@ -328,10 +329,23 @@ def _default_port_for_scheme(scheme: str) -> int | None:
     return None
 
 
+def _parse_http_url(url: str) -> ParseResult | None:
+    parsed = urlparse(str(url or "").strip())
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    if not str(parsed.hostname or "").strip():
+        return None
+    try:
+        parsed.port
+    except ValueError:
+        return None
+    return parsed
+
+
 def _validate_url_for_av_open(url: str) -> bool:
     """仅允许公网可路由地址给 PyAV 打开，防止 SSRF。"""
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
+    parsed = _parse_http_url(url)
+    if parsed is None:
         return False
     hostname = str(parsed.hostname or "").strip().lower()
     if not hostname:
@@ -470,19 +484,20 @@ class MusicPusherPlugin(NekoPluginBase):
         return self._to_absolute_ui_url(text) if text.startswith("/") else text
 
     def _is_http_music_url(self, url: str) -> bool:
-        parsed = urlparse(str(url or "").strip())
-        return parsed.scheme in {"http", "https"} and bool(str(parsed.hostname or "").strip())
+        return _parse_http_url(url) is not None
 
     def _is_plugin_upload_url(self, url: str) -> bool:
-        parsed = urlparse(str(url or "").strip())
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        parsed = _parse_http_url(url)
+        if parsed is None:
             return False
 
         upload_prefix = f"/plugin/{self.plugin_id}/ui/{_UPLOAD_SUBDIR}/"
         if not str(parsed.path or "").startswith(upload_prefix):
             return False
 
-        public_origin = urlparse(self._resolve_public_origin())
+        public_origin = _parse_http_url(self._resolve_public_origin())
+        if public_origin is None:
+            return False
         return (
             parsed.scheme == public_origin.scheme
             and parsed.hostname == public_origin.hostname
@@ -490,8 +505,52 @@ class MusicPusherPlugin(NekoPluginBase):
             == (public_origin.port or _default_port_for_scheme(public_origin.scheme))
         )
 
+    def _rebase_known_upload_url_locked(self, url: str) -> str:
+        normalized = self._normalize_legacy_url(url)
+        parsed = _parse_http_url(normalized)
+        if parsed is None:
+            return normalized
+
+        upload_prefix = f"/plugin/{self.plugin_id}/ui/{_UPLOAD_SUBDIR}/"
+        path = str(parsed.path or "")
+        if not path.startswith(upload_prefix):
+            return normalized
+
+        stored_filename = Path(path).name
+        if not stored_filename or stored_filename != Path(stored_filename).name:
+            return normalized
+        if (
+            stored_filename not in self._upload_name_map
+            and not (self._upload_dir / stored_filename).is_file()
+        ):
+            return normalized
+
+        return self._to_absolute_ui_url(self._build_ui_file_url(stored_filename))
+
+    def _refresh_upload_urls_in_tasks_locked(self) -> bool:
+        changed = False
+        for task in self._tasks.values():
+            queue = task.get("queue") if isinstance(task, dict) else None
+            if not isinstance(queue, list):
+                continue
+            task_changed = False
+            for track in queue:
+                if not isinstance(track, dict):
+                    continue
+                old_url = str(track.get("url") or "").strip()
+                new_url = self._rebase_known_upload_url_locked(old_url)
+                if new_url and new_url != old_url:
+                    track["url"] = new_url
+                    task_changed = True
+            if task_changed:
+                task["updated_at"] = _iso()
+                changed = True
+        return changed
+
     def _music_allowlist_domains_for_url(self, url: str) -> list[str]:
-        parsed = urlparse(url)
+        parsed = _parse_http_url(url)
+        if parsed is None:
+            return []
         host = str(parsed.hostname or "").strip().lower()
         if not host:
             return []
@@ -1268,10 +1327,19 @@ class MusicPusherPlugin(NekoPluginBase):
         target_lanlan: str | None,
         lyric_text: str = "",
         attach_prompt_on_push: bool = True,
+        deadline_monotonic: float | None = None,
     ) -> None:
+        def _expired() -> bool:
+            return deadline_monotonic is not None and time.monotonic() >= deadline_monotonic
+
+        if _expired():
+            return
+
         event_id = f"music_push_{uuid4().hex[:12]}"
         expire_at = int(time.time()) + int(_PROACTIVE_PROMPT_EXPIRE_SECONDS)
         domains = self._music_allowlist_domains_for_url(url)
+        if _expired():
+            return
         if domains:
             self.ctx.push_message(
                 source="music_pusher",
@@ -1282,6 +1350,8 @@ class MusicPusherPlugin(NekoPluginBase):
                 target_lanlan=target_lanlan,
             )
 
+        if _expired():
+            return
         self.ctx.push_message(
             source="music_pusher",
             message_type="music_play_url",
@@ -1299,6 +1369,8 @@ class MusicPusherPlugin(NekoPluginBase):
         if not bool(attach_prompt_on_push):
             return
 
+        if _expired():
+            return
         lyric_clean = str(lyric_text or "").replace("\r\n", "\n").strip()[:_LYRIC_PUSH_MAX_CHARS]
         proactive_meta: dict[str, Any] = {
             "content_type": "music_url",
@@ -1363,6 +1435,8 @@ class MusicPusherPlugin(NekoPluginBase):
                 "要求根据歌名或歌手联网搜索相关资料，然后据此给与用户回应和情绪价值并且绝对不能超过50字。"
             )
 
+        if _expired():
+            return
         self._push_proactive_text(
             content=(
                 "【用户身份消息】\n"
@@ -1447,6 +1521,7 @@ class MusicPusherPlugin(NekoPluginBase):
             self._load_upload_name_map_locked()
             self._load_lyrics_map_locked()
             self._rebuild_music_items_from_uploads_locked()
+            self._refresh_upload_urls_in_tasks_locked()
             self._save_upload_name_map_locked()
             self._save_lyrics_map_locked()
             self._save_state_locked()
@@ -1579,6 +1654,7 @@ class MusicPusherPlugin(NekoPluginBase):
         attach_prompt = self._resolve_attach_prompt_on_push(kwargs, attach_prompt_on_push)
         pushed = False
         if auto_push:
+            push_deadline = time.monotonic() + _PUSH_TIMEOUT_SECONDS
             await asyncio.wait_for(
                 asyncio.to_thread(
                     self._push_music_link,
@@ -1588,6 +1664,7 @@ class MusicPusherPlugin(NekoPluginBase):
                     target_lanlan=target_lanlan,
                     lyric_text=lyric_text,
                     attach_prompt_on_push=attach_prompt,
+                    deadline_monotonic=push_deadline,
                 ),
                 timeout=_PUSH_TIMEOUT_SECONDS,
             )
@@ -1711,6 +1788,7 @@ class MusicPusherPlugin(NekoPluginBase):
             item_id = str(item.get("item_id") or "")
 
         if auto_push:
+            push_deadline = time.monotonic() + _PUSH_TIMEOUT_SECONDS
             await asyncio.wait_for(
                 asyncio.to_thread(
                     self._push_music_link,
@@ -1720,6 +1798,7 @@ class MusicPusherPlugin(NekoPluginBase):
                     target_lanlan=target_lanlan,
                     lyric_text=lyric_clean,
                     attach_prompt_on_push=attach_prompt,
+                    deadline_monotonic=push_deadline,
                 ),
                 timeout=_PUSH_TIMEOUT_SECONDS,
             )
@@ -2473,6 +2552,7 @@ class MusicPusherPlugin(NekoPluginBase):
                         self._save_state_locked()
 
                     try:
+                        push_deadline = time.monotonic() + _PUSH_TIMEOUT_SECONDS
                         await asyncio.wait_for(
                             asyncio.to_thread(
                                 self._push_music_link,
@@ -2482,6 +2562,7 @@ class MusicPusherPlugin(NekoPluginBase):
                                 target_lanlan=target_lanlan,
                                 lyric_text=lyric_text,
                                 attach_prompt_on_push=attach_prompt_on_push,
+                                deadline_monotonic=push_deadline,
                             ),
                             timeout=_PUSH_TIMEOUT_SECONDS,
                         )
