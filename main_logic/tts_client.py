@@ -2882,9 +2882,15 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
     base_path = (parsed.path or "").rstrip("/")
     if base_path in ("", "/"):
         base_path = "/v1"
-    ws_endpoint = urlunparse(
-        (parsed.scheme, parsed.netloc, f"{base_path}/audio/speech/stream", "", "", "")
-    )
+    # 修复 PR #1764 review 第二轮 #2：URL 规整幂等——若 path 已是完整 endpoint 则不重复拼接
+    if base_path.endswith("/audio/speech/stream"):
+        ws_endpoint = urlunparse(
+            (parsed.scheme, parsed.netloc, base_path, "", "", "")
+        )
+    else:
+        ws_endpoint = urlunparse(
+            (parsed.scheme, parsed.netloc, f"{base_path}/audio/speech/stream", "", "", "")
+        )
 
     effective_model = (model or '').strip() or 'Qwen3-TTS'
     effective_voice = (voice or '').strip() or (voice_id or '').strip() or 'default'
@@ -3057,9 +3063,29 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                 break
 
             if sid == "__interrupt__":
-                # 打断：销毁当前 session 并重建（复用 _rebuild_session 统一逻辑）
-                if not await _rebuild_session():
-                    break
+                # 修复 PR #1764 review 第二轮 #3：打断时只销毁当前连接、把 session 标记失效，
+                # 不立刻重连——避免上游短暂不可用时一次失败就把整个 worker 退出。
+                # 实际重连延迟到下一条输入到来时由活跃性检查（while 循环下方）处理。
+                if receive_task is not None and not receive_task.done():
+                    receive_task.cancel()
+                    try:
+                        await receive_task
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        pass
+                receive_task = None
+                if ws is not None:
+                    try:
+                        await ws.close()
+                    except Exception:
+                        pass
+                    ws = None
+                try:
+                    resampler.clear()
+                except Exception:
+                    pass
+                session_state["active"] = False
                 continue
 
             # 修复 PR #1764 review #3：发送前检查会话是否仍然活跃
