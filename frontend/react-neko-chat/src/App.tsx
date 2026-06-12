@@ -5283,7 +5283,7 @@ function CompactChatApp({
             aria-hidden="true"
           />
         </button>
-        {renderCompactInputToolTooltip(emojiButtonAriaLabel)}
+        {renderCompactInputToolTooltip(selectedEmojiButtonAriaLabel)}
         {activeToolItem ? (
           <button
             className="composer-tool-clear-btn"

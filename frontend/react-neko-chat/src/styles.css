@@ -4888,6 +4888,15 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 
 @media (prefers-reduced-motion: reduce) {
+  .compact-input-tool-fan .compact-input-tool-tooltip {
+    transition: none !important;
+  }
+
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:hover > .compact-input-tool-tooltip,
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:focus-within > .compact-input-tool-tooltip {
+    transform: translate(-50%, 0) scale(1);
+  }
+
   .compact-export-history-anchor[data-compact-export-history-visibility="closing"] {
     opacity: 0 !important;
     visibility: hidden !important;

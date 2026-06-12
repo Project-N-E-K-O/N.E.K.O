@@ -6022,6 +6022,7 @@ describe('App', () => {
 
     const activeBadgeButton = screen.getByRole('button', { name: 'Emoji: 棒棒糖' });
     expect(activeBadgeButton).toHaveClass('is-active');
+    expect(document.body.querySelector('.compact-input-tool-item-avatar .compact-input-tool-tooltip')).toHaveTextContent('Emoji: 棒棒糖');
     expect(screen.queryByRole('group', { name: 'Tool icons' })).not.toBeInTheDocument();
 
     fireEvent.click(activeBadgeButton);
