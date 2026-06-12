@@ -1034,7 +1034,6 @@ class MusicPusherPlugin(NekoPluginBase):
         if not name or name != Path(name).name:
             return False
 
-        upload_path = self._build_ui_file_url(name)
         for task in self._tasks.values():
             queue = task.get("queue") if isinstance(task, dict) else None
             if not isinstance(queue, list):
@@ -1042,8 +1041,7 @@ class MusicPusherPlugin(NekoPluginBase):
             for track in queue:
                 if not isinstance(track, dict):
                     continue
-                parsed = urlparse(self._normalize_legacy_url(str(track.get("url") or "").strip()))
-                if parsed.path == upload_path:
+                if self._upload_filename_from_url(str(track.get("url") or "")) == name:
                     return True
 
         return False
@@ -1060,7 +1058,10 @@ class MusicPusherPlugin(NekoPluginBase):
             self.logger.warning(f"删除上传音乐文件失败[{name}]: {exc}")
 
     def _upload_filename_from_url(self, url: str) -> str:
-        parsed = _parse_http_url(self._normalize_legacy_url(str(url or "").strip()))
+        normalized_url = self._normalize_legacy_url(str(url or "").strip())
+        if not self._is_plugin_upload_url(normalized_url):
+            return ""
+        parsed = _parse_http_url(normalized_url)
         if parsed is None:
             return ""
 
@@ -2332,6 +2333,7 @@ class MusicPusherPlugin(NekoPluginBase):
                 return Err(SdkError("任务执行中，暂不允许编辑"))
 
             trigger_changed = False
+            trigger_updated = False
             if parsed_trigger is not None:
                 old_trigger: datetime | None = None
                 try:
@@ -2365,9 +2367,11 @@ class MusicPusherPlugin(NekoPluginBase):
                 if self._gc_tombstoned_uploads_locked():
                     self._save_upload_name_map_locked()
 
-            should_reset_execution = trigger_changed or str(task.get("status") or "") == "pending"
+            task_status = str(task.get("status") or "")
+            should_reset_execution = trigger_changed or trigger_updated or task_status == "pending"
             if should_reset_execution:
                 task["status"] = "pending"
+                task["started_at"] = None
                 task["finished_at"] = None
                 task["last_error"] = ""
                 task["current_index"] = 0
