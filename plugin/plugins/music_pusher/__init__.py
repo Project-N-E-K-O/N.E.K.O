@@ -1511,7 +1511,7 @@ class MusicPusherPlugin(NekoPluginBase):
             )
 
         if _expired():
-            return False
+            return True
         self._push_proactive_text(
             content=(
                 "【用户身份消息】\n"
@@ -1851,6 +1851,7 @@ class MusicPusherPlugin(NekoPluginBase):
                     lyric_clean = self._extract_lyric_for_item_locked(str(source_item.get("item_id") or ""))
 
         item_id = ""
+        item: dict[str, Any] | None = None
         pushed = False
         if add_to_library:
             item = self._build_music_item(
@@ -1862,17 +1863,6 @@ class MusicPusherPlugin(NekoPluginBase):
             )
             if lyric_clean:
                 item["lyric_text"] = lyric_clean
-            async with self._state_lock:
-                self._music_items.append(item)
-                if lyric_clean:
-                    self._bind_lyrics_to_item_locked(
-                        item_id=str(item.get("item_id") or ""),
-                        lyric_text=lyric_clean,
-                        lyric_filename="manual_lyric.txt",
-                    )
-                    self._save_lyrics_map_locked()
-                self._save_state_locked()
-            item_id = str(item.get("item_id") or "")
 
         if auto_push:
             push_deadline = time.monotonic() + _PUSH_TIMEOUT_SECONDS
@@ -1898,6 +1888,19 @@ class MusicPusherPlugin(NekoPluginBase):
                 return Err(SdkError(f"推送失败: {exc}"))
             if not pushed:
                 return Err(SdkError("推送超时"))
+
+        if item is not None:
+            async with self._state_lock:
+                self._music_items.append(item)
+                if lyric_clean:
+                    self._bind_lyrics_to_item_locked(
+                        item_id=str(item.get("item_id") or ""),
+                        lyric_text=lyric_clean,
+                        lyric_filename="manual_lyric.txt",
+                    )
+                    self._save_lyrics_map_locked()
+                self._save_state_locked()
+            item_id = str(item.get("item_id") or "")
 
         return Ok(
             {
@@ -2267,11 +2270,12 @@ class MusicPusherPlugin(NekoPluginBase):
                     old_trigger = _parse_datetime_to_utc(str(task.get("trigger_at") or ""))
                 except Exception:
                     old_trigger = None
+                trigger_updated = old_trigger is None or parsed_trigger != old_trigger
                 trigger_changed = (
                     old_trigger is None
                     or abs((parsed_trigger - old_trigger).total_seconds()) >= 60
                 )
-                if trigger_changed and parsed_trigger <= _utc_now():
+                if trigger_updated and parsed_trigger <= _utc_now():
                     return Err(SdkError("新的触发时间必须晚于当前时间"))
                 task["trigger_at"] = _iso(parsed_trigger)
 
