@@ -1352,6 +1352,12 @@ class LLMSessionManager:
             and current_key == worker_key
         )
 
+    @staticmethod
+    def resolve_tts_api_key(provider_key: str | None, api_key_override: str | None, tts_config: dict) -> str:
+        if provider_key == 'vllm_omni':
+            return api_key_override or ''
+        return api_key_override or tts_config.get('api_key', '')
+
     def _build_tts_runtime_key(self) -> tuple:
         """Return the effective TTS worker identity for ready-state reuse."""
         try:
@@ -1367,13 +1373,7 @@ class LLMSessionManager:
             tts_config = self._config_manager.get_model_api_config(
                 'tts_custom' if has_custom else 'tts_default'
             )
-            # 修复 PR #1764 review 第三轮 #3：vllm_omni runtime identity 不允许 key fallback
-            # 与 _start_tts_thread 中的 fallback 策略保持一致，避免 runtime_key
-            # 哈希进不该共享的 key，导致 ready-state reuse 跨 provider 错配
-            if provider_key == 'vllm_omni':
-                api_key = api_key_override or ''
-            else:
-                api_key = api_key_override or tts_config.get('api_key', '')
+            api_key = self.resolve_tts_api_key(provider_key, api_key_override, tts_config)
             return (
                 provider_key,
                 self.core_api_type,
@@ -3471,14 +3471,7 @@ class LLMSessionManager:
             tts_config = self._config_manager.get_model_api_config(
                 'tts_custom' if has_custom else 'tts_default'
             )
-            # 修复 PR #1764 review 第三轮 #3（CodeRabbit Major）：vllm_omni 不允许 key fallback
-            # 通用 fallback `api_key_override or tts_config['api_key']` 会把
-            # 默认 TTS provider 的 key 发送给 vLLM-Omni endpoint，造成跨 provider 凭证泄漏。
-            # vllm_omni 显式返回空字符串作为 sentinel，表示"不允许通用 fallback"。
-            if provider_key == 'vllm_omni':
-                api_key = api_key_override or ''
-            else:
-                api_key = api_key_override or tts_config['api_key']
+            api_key = self.resolve_tts_api_key(provider_key, api_key_override, tts_config)
 
         # 根据实际选中的 TTS provider 类别决定是否启用流式文本规范化。
         # ws_bistream 类（qwen / step / cosyvoice）直接把文本碎片发给服务端处理，

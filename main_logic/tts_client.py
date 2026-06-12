@@ -2885,11 +2885,25 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
     # 修复 PR #1764 review 第二轮 #2：URL 规整幂等——若 path 已是完整 endpoint 则不重复拼接
     if base_path.endswith("/audio/speech/stream"):
         ws_endpoint = urlunparse(
-            (parsed.scheme, parsed.netloc, base_path, "", "", "")
+            (
+                parsed.scheme,
+                parsed.netloc,
+                base_path,
+                parsed.params,
+                parsed.query,
+                parsed.fragment,
+            )
         )
     else:
         ws_endpoint = urlunparse(
-            (parsed.scheme, parsed.netloc, f"{base_path}/audio/speech/stream", "", "", "")
+            (
+                parsed.scheme,
+                parsed.netloc,
+                f"{base_path}/audio/speech/stream",
+                parsed.params,
+                parsed.query,
+                parsed.fragment,
+            )
         )
 
     effective_model = (model or '').strip() or 'Qwen3-TTS'
@@ -2908,6 +2922,8 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
         # 修复 PR #1764 review #3（CodeRabbit）：会话生命周期状态
         # session.done 后置为 False，下次 input 前重建连接 + 重发 session.config
         session_state = {"active": False}
+        pending_text: list[str] = []
+        pending_text_sid: str | None = None
 
         async def _connect_and_config() -> bool:
             """建立 WS 连接并发送 session.config，返回是否成功。
@@ -3051,6 +3067,22 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
             receive_task = asyncio.create_task(_receive_loop())
             return True
 
+        async def _replay_pending_text() -> bool:
+            if not pending_text:
+                return True
+            try:
+                replay_text = "".join(pending_text)
+                await ws.send(json.dumps({
+                    "type": "input.text",
+                    "text": replay_text,
+                }))
+                _record_tts_telemetry(effective_model, len(replay_text))
+                return True
+            except Exception as e:
+                logger.error(f"[vLLM-Omni TTS] 重放 pending_text 失败: {e}")
+                session_state["active"] = False
+                return False
+
         loop = asyncio.get_running_loop()
 
         while True:
@@ -3086,6 +3118,8 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                 except Exception:
                     pass
                 session_state["active"] = False
+                pending_text.clear()
+                pending_text_sid = None
                 continue
 
             # 修复 PR #1764 review #3：发送前检查会话是否仍然活跃
@@ -3100,13 +3134,33 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                 if ws is not None:
                     try:
                         await ws.send(json.dumps({"type": "input.done"}))
+                        pending_text.clear()
+                        pending_text_sid = None
                     except Exception as e:
                         logger.warning(f"[vLLM-Omni TTS] 发送 input.done 失败: {e}")
-                        # input.done 语义是"我说完了"，失败不重试，仅标记失效
                         session_state["active"] = False
+                        if await _rebuild_session():
+                            try:
+                                if await _replay_pending_text():
+                                    await ws.send(json.dumps({"type": "input.done"}))
+                                    pending_text.clear()
+                                    pending_text_sid = None
+                                    logger.info("[vLLM-Omni TTS] 重放 pending_text 并重发 input.done 成功")
+                            except Exception as e2:
+                                logger.warning(f"[vLLM-Omni TTS] 重发 input.done 仍失败: {e2}")
+                                session_state["active"] = False
                 continue
 
             if tts_text and tts_text.strip() and ws is not None:
+                if pending_text and pending_text_sid not in (None, sid):
+                    logger.debug(
+                        "[vLLM-Omni TTS] 丢弃跨 utterance 的 pending_text (sid=%s, current=%s, len=%d)",
+                        pending_text_sid,
+                        sid,
+                        sum(len(part) for part in pending_text),
+                    )
+                    pending_text.clear()
+                    pending_text_sid = None
                 payload = json.dumps({
                     "type": "input.text",
                     "text": tts_text,
@@ -3114,14 +3168,19 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                 try:
                     await ws.send(payload)
                     _record_tts_telemetry(effective_model, len(tts_text))
+                    pending_text.append(tts_text)
+                    pending_text_sid = sid
                 except Exception as e:
                     logger.error(f"[vLLM-Omni TTS] 发送 input.text 失败: {e}，尝试重建并重发")
                     session_state["active"] = False
-                    # 单次重试：重建会话后重发当前 chunk，避免 speech_id 丢到半死会话
                     if await _rebuild_session():
                         try:
+                            if not await _replay_pending_text():
+                                continue
                             await ws.send(payload)
                             _record_tts_telemetry(effective_model, len(tts_text))
+                            pending_text.append(tts_text)
+                            pending_text_sid = sid
                             logger.info("[vLLM-Omni TTS] 重发 input.text 成功")
                         except Exception as e2:
                             logger.error(f"[vLLM-Omni TTS] 重发 input.text 仍失败: {e2}，丢弃该 chunk")
