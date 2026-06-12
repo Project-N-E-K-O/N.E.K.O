@@ -2824,6 +2824,17 @@
                 }));
             }
             if (state.hasMoved) {
+                window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
+                    detail: {
+                        reason: 'return-ball-drag-motion',
+                        container: container,
+                        screenX: screenX,
+                        screenY: screenY,
+                        deltaX: dx,
+                        deltaY: dy,
+                        timestamp: Date.now()
+                    }
+                }));
                 scheduleIdleReturnBallDesktopDragState(
                     container,
                     getReturnBallDragScreenRect(

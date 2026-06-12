@@ -34,6 +34,8 @@ CAT1_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-i
 CAT2_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-move-2.gif"
 CAT3_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-move-3.gif"
 CAT4_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-move-4.gif"
+CAT1_RAPID_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-move-5.gif"
+CAT1_RAPID_DRAG_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat1-voice-funny.mp3"
 CAT_MODEL_CHANGE_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat_model_change.gif"
 THOUGHT_BUBBLE_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "thought-items" / "cloud-thought-bubble.gif"
 SLEEPING_THOUGHT_BUBBLE_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "thought-items" / "sleeping-zzz.gif"
@@ -95,6 +97,8 @@ def test_return_button_idle_tier_assets_are_mapped_in_source():
     assert "/static/assets/neko-idle/cat-idle-cat-move-2.gif" in source
     assert "/static/assets/neko-idle/cat-idle-cat-move-3.gif" in source
     assert "/static/assets/neko-idle/cat-idle-cat-move-4.gif" in source
+    assert "/static/assets/neko-idle/cat-idle-cat-move-5.gif" in source
+    assert "/static/assets/neko-idle/cat1-voice-funny.mp3" in source
     assert "/static/assets/neko-idle/cat_model_change.gif" in app_ui_source
     assert '_getNekoIdleReturnClickAssetUrl' in source
     assert '_getNekoIdleReturnDragAssetUrl' in source
@@ -548,7 +552,7 @@ def test_return_button_drag_randomizes_asset_once_per_drag_action():
     )
     _assert_source_contains(
         set_drag_art_block,
-        "const dragSrc = button.__nekoIdleReturnDragAssetUrl || _pickNekoIdleReturnDragAssetUrl(tier);",
+        "const dragSrc = rapidSrc || button.__nekoIdleReturnDragAssetUrl || _pickNekoIdleReturnDragAssetUrl(tier);",
         "return drag action art",
     )
     _assert_source_contains(
@@ -583,6 +587,111 @@ def test_return_button_drag_randomizes_asset_once_per_drag_action():
         "button.__nekoIdleReturnDragAssetUrl = '';",
         "return drag action finish",
     )
+
+
+def test_cat1_rapid_drag_reaction_is_same_drag_motion_only():
+    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    app_ui_source = APP_UI_PATH.read_text(encoding="utf-8")
+
+    assert "_NEKO_IDLE_CAT1_RAPID_DRAG_ASSET_URL = '/static/assets/neko-idle/cat-idle-cat-move-5.gif'" in source
+    assert "_NEKO_IDLE_CAT1_RAPID_DRAG_SOUND_URL = '/static/assets/neko-idle/cat1-voice-funny.mp3'" in source
+    assert "_NEKO_IDLE_CAT1_RAPID_DRAG_REACTION_MS = 5000" in source
+    assert "_NEKO_IDLE_CAT1_RAPID_DRAG_WINDOW_MS = 1100" in source
+    assert "_NEKO_IDLE_CAT1_RAPID_DRAG_MIN_DISTANCE_PX = 28" in source
+    assert "_NEKO_IDLE_CAT1_RAPID_DRAG_MIN_SPAN_MS = 420" in source
+    assert "_NEKO_IDLE_CAT1_RAPID_DRAG_MIN_SUSTAINED_SPEED_PX_PER_SEC = 800" in source
+    assert "_NEKO_IDLE_CAT1_RAPID_DRAG_REQUIRED_REVERSALS = 6" in source
+    assert "_NEKO_IDLE_CAT1_RAPID_DRAG_REVERSE_DOT_THRESHOLD = 0" in source
+    assert "function _handleNekoIdleCat1RapidDragMotionForContainer(container, detail)" in source
+    assert "function _activateNekoIdleCat1RapidDragReaction(button, tier)" in source
+    assert "function _clearNekoIdleCat1RapidDragReaction(button)" in source
+    assert "function _restoreNekoIdleCat1NormalDragArt(button)" in source
+    assert "function _isNekoIdleCat1RapidDragWindowReady(reversals)" in source
+    assert "function _getNekoIdleCat1RapidDragVector(point, motion)" in source
+    assert "function _isNekoIdleCat1RapidDragReversal(previousVector, currentVector)" in source
+    assert "const speed = distance / (elapsedMs / 1000);" not in source
+    assert "lastAxis" not in source
+    assert "lastDirection" not in source
+    assert "axis === motion.lastAxis" not in source
+    assert "direction !== motion.lastDirection" not in source
+    assert "totalDistance / (spanMs / 1000)" in source
+    assert "if (spanMs < _NEKO_IDLE_CAT1_RAPID_DRAG_MIN_SPAN_MS) return false;" in source
+    assert "sustainedSpeed >= _NEKO_IDLE_CAT1_RAPID_DRAG_MIN_SUSTAINED_SPEED_PX_PER_SEC" in source
+    assert "dot / (previousLength * currentLength)" in source
+    assert "cosine <= _NEKO_IDLE_CAT1_RAPID_DRAG_REVERSE_DOT_THRESHOLD" in source
+
+    set_drag_art_block = _source_slice_between(
+        source,
+        "function _setNekoIdleReturnDragActionArt(button, tier)",
+        "function _prepareNekoIdleReturnDragActionForContainer(container)",
+        "return drag action art",
+    )
+    _assert_source_order(
+        set_drag_art_block,
+        "return drag action art",
+        "const rapidSrc = _getNekoIdleCat1RapidDragAssetUrl(button, tier);",
+        "const dragSrc = rapidSrc || button.__nekoIdleReturnDragAssetUrl || _pickNekoIdleReturnDragAssetUrl(tier);",
+    )
+
+    start_drag_block = _source_slice_between(
+        source,
+        "function _startNekoIdleReturnDragActionForContainer(container)",
+        "function _finishNekoIdleReturnDragAction(button, options = {})",
+        "return drag action start",
+    )
+    _assert_source_order(
+        start_drag_block,
+        "return drag action start",
+        "_resetNekoIdleCat1RapidDragMotion(button);",
+        "button.__nekoIdleReturnDragAssetUrl = _pickNekoIdleReturnDragAssetUrl(tier);",
+    )
+
+    finish_drag_block = _source_slice_between(
+        source,
+        "function _finishNekoIdleReturnDragAction(button, options = {})",
+        "function _finishNekoIdleReturnDragActionForContainer(container, options = {})",
+        "return drag action finish",
+    )
+    _assert_source_order(
+        finish_drag_block,
+        "return drag action finish",
+        "_clearNekoIdleCat1RapidDragReaction(button);",
+        "button.__nekoIdleReturnDragAssetUrl = '';",
+    )
+
+    manual_move_handler = _source_slice_between(
+        source,
+        "window.addEventListener('neko:return-ball-manual-move', (event) => {",
+        "window.addEventListener('neko:idle-chat-minimized-state'",
+        "return-ball manual move handler",
+    )
+    _assert_source_contains(
+        manual_move_handler,
+        "if (detail.reason === 'return-ball-drag-motion')",
+        "return-ball manual move handler",
+    )
+    _assert_source_contains(
+        manual_move_handler,
+        "_handleNekoIdleCat1RapidDragMotionForContainer(detail.container, detail);",
+        "return-ball manual move handler",
+    )
+
+    local_drag_setup = _source_slice_between(
+        source,
+        "ManagerPrototype._setupReturnButtonDrag = function(container) {",
+        "ManagerPrototype._addReturnButtonBreathingAnimation = function()",
+        "return button drag setup",
+    )
+    _assert_source_order(
+        local_drag_setup,
+        "return button drag setup",
+        "_dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-active');",
+        "_dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-motion'",
+    )
+
+    assert "reason: 'return-ball-drag-motion'" in app_ui_source
+    assert "screenX: screenX" in app_ui_source
+    assert "screenY: screenY" in app_ui_source
 
 
 def test_idle_thought_bubble_is_sound_triggered_with_fade():
@@ -829,6 +938,8 @@ def test_cat1_voice_sounds_are_limited_to_non_drag_and_drag_states():
     assert "'/static/assets/neko-idle/cat1-voice2.mp3'" in source
     assert "'/static/assets/neko-idle/cat1-voice3.mp3'" in source
     assert "_NEKO_IDLE_CAT1_DRAG_SOUND_URL = '/static/assets/neko-idle/cat1-voice-click.mp3'" in source
+    assert "_NEKO_IDLE_CAT1_RAPID_DRAG_SOUND_URL = '/static/assets/neko-idle/cat1-voice-funny.mp3'" in source
+    assert "const _nekoIdleCat1RapidDragSoundState = {" in source
     assert "Math.random() * _NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS" in source
     assert "urls[Math.floor(Math.random() * urls.length)]" in source
     assert "_scheduleNekoIdleCat1AmbientSoundInterval(startedAt + _NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS)" in source
@@ -842,10 +953,41 @@ def test_cat1_voice_sounds_are_limited_to_non_drag_and_drag_states():
     assert "_playNekoIdleCat1DragSound(tier)" in source
     assert "_fadeOutNekoIdleCat1DragSound()" in source
     assert "_fadeOutNekoIdleSoundAudio(_nekoIdleCat1DragSoundState, _NEKO_IDLE_CAT1_DRAG_SOUND_FADE_OUT_MS)" in source
+    assert "_fadeOutNekoIdleSoundAudio(_nekoIdleCat1RapidDragSoundState, _NEKO_IDLE_CAT1_DRAG_SOUND_FADE_OUT_MS)" in source
     assert "audio.volume = Math.max(0, startVolume * (1 - progress))" in source
     assert "_normalizeNekoIdleReturnTier(tier) !== _NEKO_IDLE_TIER_CAT1" in source
     assert "_syncNekoIdleCat1AmbientSoundForTier(detail.tier)" in source
     assert "_stopNekoIdleCat1AmbientSound()" in source
+
+    rapid_drag_sound_block = _source_slice_between(
+        source,
+        "function _playNekoIdleCat1RapidDragSound(tier)",
+        "function _fadeOutNekoIdleCat1DragSound()",
+        "cat1 rapid drag sound",
+    )
+    _assert_source_order(
+        rapid_drag_sound_block,
+        "cat1 rapid drag sound",
+        "_stopNekoIdleSoundAudio(_nekoIdleCat1DragSoundState);",
+        "_playNekoIdleSound(",
+        "_nekoIdleCat1RapidDragSoundState,",
+        "_NEKO_IDLE_CAT1_RAPID_DRAG_SOUND_URL,",
+    )
+
+    normal_drag_sound_block = _source_slice_between(
+        source,
+        "function _playNekoIdleCat1DragSound(tier)",
+        "function _playNekoIdleCat1RapidDragSound(tier)",
+        "cat1 normal drag sound",
+    )
+    _assert_source_order(
+        normal_drag_sound_block,
+        "cat1 normal drag sound",
+        "_stopNekoIdleSoundAudio(_nekoIdleCat1RapidDragSoundState);",
+        "_playNekoIdleSound(",
+        "_nekoIdleCat1DragSoundState,",
+        "_NEKO_IDLE_CAT1_DRAG_SOUND_URL,",
+    )
 
 
 def test_cat1_walk_to_minimized_chat_contract_is_present():
@@ -1244,6 +1386,7 @@ def test_return_button_idle_tier_assets_are_version_tracked():
                  CAT1_INTERACTIVE_ASSET_PATH,
                  CAT1_DRAG_ASSET_PATH, CAT2_DRAG_ASSET_PATH,
                  CAT3_DRAG_ASSET_PATH, CAT4_DRAG_ASSET_PATH,
+                 CAT1_RAPID_DRAG_ASSET_PATH, CAT1_RAPID_DRAG_SOUND_PATH,
                  CAT_MODEL_CHANGE_ASSET_PATH,
                  THOUGHT_BUBBLE_ASSET_PATH, SLEEPING_THOUGHT_BUBBLE_ASSET_PATH,
                  *THOUGHT_BUBBLE_ITEM_ASSET_PATHS):
