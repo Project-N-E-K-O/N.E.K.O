@@ -30,7 +30,7 @@ class DummyRequest:
 
 
 class DummyConfigManager:
-    def __init__(self):
+    def __init__(self, pngtuber_dir=None):
         self.characters = {
             CATGIRL_BUCKET: {
                 TEST_CATGIRL_NAME: {
@@ -44,6 +44,7 @@ class DummyConfigManager:
             }
         }
         self.saved_characters = None
+        self.pngtuber_dir = pngtuber_dir
 
     async def aload_characters(self, character_json_path=None):
         return copy.deepcopy(self.characters)
@@ -157,6 +158,50 @@ async def test_uploaded_pngtuber_config_can_be_saved_to_character(pngtuber_clien
     assert pngtuber["drag_image"] == "/static/assets/neko-idle/cat-idle-cat-move-1.gif"
 
 
+@pytest.mark.asyncio
+async def test_pngtuber_save_preserves_layered_adapter_metadata(clean_user_data_dir, monkeypatch):
+    real_config_manager = get_config_manager()
+    model_dir = real_config_manager.pngtuber_dir / "Layered_Test_Model"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    (model_dir / "metadata.pngtube-remix.json").write_text(
+        json.dumps({"runtime": "layered_canvas", "layers": []}),
+        encoding="utf-8",
+    )
+
+    config_manager = DummyConfigManager(real_config_manager.pngtuber_dir)
+
+    async def _noop_initialize():
+        return None
+
+    async def _noop_init_one(name, *, is_new=False):
+        return None
+
+    monkeypatch.setattr(characters_router_module, "get_config_manager", lambda: config_manager)
+    monkeypatch.setattr(characters_router_module, "get_initialize_character_data", lambda: _noop_initialize)
+    monkeypatch.setattr(characters_router_module, "get_init_one_catgirl", lambda: _noop_init_one)
+
+    save_response = await characters_router_module.update_catgirl_l2d(
+        TEST_CATGIRL_NAME,
+        DummyRequest({
+            "model_type": "pngtuber",
+            "pngtuber": {
+                "idle_image": "/user_pngtuber/Layered_Test_Model/idle.png",
+                "talking_image": "/user_pngtuber/Layered_Test_Model/talking.png",
+                "source_format": "pngtube_remix_pngremix",
+            },
+        }),
+    )
+    body = json.loads(save_response.body)
+
+    assert save_response.status_code == 200
+    assert body["success"] is True
+    catgirl = config_manager.saved_characters[CATGIRL_BUCKET][TEST_CATGIRL_NAME]
+    pngtuber = get_reserved(catgirl, "avatar", "pngtuber")
+    assert pngtuber["layered_metadata"] == "/user_pngtuber/Layered_Test_Model/metadata.pngtube-remix.json"
+    assert pngtuber["adapter"] == "layered_canvas_v1"
+    assert pngtuber["source_format"] == "pngtube_remix_pngremix"
+
+
 def test_upload_pngtuber_folder_requires_model_json(pngtuber_client, tmp_path):
     bad_dir = tmp_path / "bad-pngtuber"
     bad_dir.mkdir()
@@ -172,7 +217,9 @@ def test_upload_pngtuber_folder_requires_model_json(pngtuber_client, tmp_path):
         handle.close()
 
     assert response.status_code == 400
-    assert "model.json" in response.json()["error"]
+    data = response.json()
+    assert data["source_format"] == "image_pair_candidate"
+    assert "两图导入" in data["error"]
 
 
 def test_sample_pngtuber_model_documents_gif_presets():

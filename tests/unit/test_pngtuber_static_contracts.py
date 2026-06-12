@@ -53,7 +53,6 @@ def test_pngtuber_frontend_runtime_is_wired_to_main_page():
     assert "window.loadPNGTuberAvatar = loadPNGTuberAvatar" in runtime
     assert "drag_image" in runtime
     assert "click_image" in runtime
-    assert "DEFAULT_DRAG_IMAGE" in runtime
     assert "showDragImage()" in runtime
     assert "showClickImage()" in runtime
     assert "restoreStateImage()" in runtime
@@ -84,11 +83,78 @@ def test_pngtuber_frontend_runtime_is_wired_to_main_page():
     assert "#pngtuber-container" in css
 
 
+def test_pngtuber_speech_uses_mouth_flap_animation():
+    runtime = _read("static/pngtuber-core.js")
+
+    assert "this.isSpeaking = false;" in runtime
+    assert "this.speakingMouthTimer = null;" in runtime
+    assert "scheduleSpeakingMouthFrame()" in runtime
+    assert "startSpeakingMouthAnimation()" in runtime
+    assert "stopSpeakingMouthAnimation()" in runtime
+    assert "this.speakingMouthOpen = !this.speakingMouthOpen;" in runtime
+    assert "this.setState(this.speakingMouthOpen ? 'talking' : 'idle');" in runtime
+    assert "this.scheduleSpeakingMouthFrame();" in runtime
+
+    set_speaking_start = runtime.index("setSpeaking(isSpeaking)")
+    set_speaking_body = runtime[set_speaking_start:runtime.index("show()", set_speaking_start)]
+    assert "this.startSpeakingMouthAnimation();" in set_speaking_body
+    assert "this.stopSpeakingMouthAnimation();" in set_speaking_body
+
+    hide_start = runtime.index("hide()")
+    hide_body = runtime[hide_start:runtime.index("dispose()", hide_start)]
+    assert "this.stopSpeakingMouthAnimation();" in hide_body
+
+
+def test_pngtuber_remix_one_bounce_animation_is_wired():
+    runtime = _read("static/pngtuber-core.js")
+
+    assert "speakingBounceConfig()" in runtime
+    assert "current_mo_anim" in runtime
+    assert "mouthAnimation.includes('bounce')" in runtime
+    assert "settings?.bounceGravity" in runtime
+    assert "settings?.bounceSlider" in runtime
+    assert "currentSpeakingBounceTransform(" in runtime
+    assert "startSpeakingBounceAnimation()" in runtime
+    assert "stopSpeakingBounceAnimation()" in runtime
+    assert "this.startSpeakingBounceAnimation();" in runtime
+    assert "this.config.offset_y + bounce.y" in runtime
+    assert "scale(${finalScaleX}, ${finalScaleY})" in runtime
+
+
+def test_pngtuber_debug_state_api_is_wired():
+    runtime = _read("static/pngtuber-core.js")
+
+    assert "getDebugState()" in runtime
+    assert "renderedLayerCountForState(stateName)" in runtime
+    assert "renderedIdleLayerCount" in runtime
+    assert "renderedTalkingLayerCount" in runtime
+    assert "currentMoAnim" in runtime
+    assert "currentMcAnim" in runtime
+    assert "bounceActive" in runtime
+    assert "bounceProgress" in runtime
+    assert "mouthTimer" in runtime
+    assert "bounceFrame" in runtime
+    assert "layeredAnimationFrame" in runtime
+    assert "container: {" in runtime
+    assert "image: {" in runtime
+
+    debug_start = runtime.index("getDebugState()")
+    debug_end = runtime.index("setSpeaking(isSpeaking)", debug_start)
+    debug_body = runtime[debug_start:debug_end]
+    assert "this.setState(" not in debug_body
+    assert "this.setSpeaking(" not in debug_body
+    assert "this.startSpeaking" not in debug_body
+    assert "requestAnimationFrame" not in debug_body
+    assert "setTimeout" not in debug_body
+
+
 def test_pngtuber_main_page_paths_do_not_fall_back_to_live2d():
     index_js = _read("static/js/index.js")
     app_interpage = _read("static/app-interpage.js")
     app_character = _read("static/app-character.js")
     live2d_init = _read("static/live2d-init.js")
+    live2d_model = _read("static/live2d-model.js")
+    pngtuber_runtime = _read("static/pngtuber-core.js")
 
     assert "const modelType = (data.model_type || 'live2d').toLowerCase()" in index_js
     assert "if (modelType === 'pngtuber')" in index_js
@@ -107,6 +173,13 @@ def test_pngtuber_main_page_paths_do_not_fall_back_to_live2d():
 
     assert "(window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber'" in live2d_init
     assert "return;" in live2d_init
+
+    assert "await window.live2dManager.removeModel({ skipCloseWindows: true });" in pngtuber_runtime
+    assert "window.live2dManager._activeLoadToken = (window.live2dManager._activeLoadToken || 0) + 1;" in pngtuber_runtime
+    assert "const isPNGTuberPageMode = (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber';" in live2d_model
+    assert "skipError.name = 'PNGTuberActiveLive2DSkip';" in live2d_model
+    assert "cancelError.name = 'PNGTuberActiveLive2DSkip';" in live2d_model
+    assert "不回退默认模型" in live2d_model
 
 
 def test_pngtuber_backend_response_paths_preserve_model_type():
@@ -144,7 +217,7 @@ def test_pngtuber_model_manager_import_is_wired():
     assert "/api/model/pngtuber/model" in model_manager
     assert "option.setAttribute('data-model-type', 'pngtuber')" in model_manager
     assert "modelSelect.appendChild(option)" in model_manager
-    assert "JSON.parse(selectedOption?.getAttribute('data-pngtuber')" in model_manager
+    assert "JSON.parse(selectedOption.getAttribute('data-pngtuber')" in model_manager
     assert "modelData.pngtuber" in model_manager
     assert "currentModelType === 'pngtuber'" in model_manager
     assert "window.loadPNGTuberAvatar" in model_manager
@@ -154,6 +227,75 @@ def test_pngtuber_model_manager_import_is_wired():
     assert "#pngtuber-container" in css
     assert "body.model-manager-page #pngtuber-container .pngtuber-image" in css
     assert "transform: translate(-50%, -50%)" in css
+
+
+def test_pngtuber_runtime_crops_sprite_sheets_without_implicit_animation():
+    pngtuber_core = _read("static/pngtuber-core.js")
+
+    assert "stateFrameInfo(layer, layerState, img" in pngtuber_core
+    assert "const hasSheet = hframes > 1 || rows > 1;" in pngtuber_core
+    assert "(hasSheet ? computedFrameWidth : layerWidth)" in pngtuber_core
+    assert "(hasSheet ? computedFrameHeight : layerHeight)" in pngtuber_core
+    assert "legacyOffsetX: legacyFullSheetX ? (imageWidth - frameWidth) / 2 : 0" in pngtuber_core
+    assert "legacyOffsetY: legacyFullSheetY ? (imageHeight - frameHeight) / 2 : 0" in pngtuber_core
+    assert "+ frame.legacyOffsetX" in pngtuber_core
+    assert "+ frame.legacyOffsetY" in pngtuber_core
+    assert "REMIX_FRAME_SPEED_MULTIPLIER" in pngtuber_core
+    assert "speed * REMIX_FRAME_SPEED_MULTIPLIER" in pngtuber_core
+    assert "layerState.non_animated_sheet !== true" in pngtuber_core
+    assert "ctx.drawImage(\n                        img,\n                        frame.sx,\n                        frame.sy,\n                        frame.sw,\n                        frame.sh," in pngtuber_core
+
+
+def test_pngtuber_model_manager_grouped_preview_controls_are_wired():
+    template = _read("templates/model_manager.html")
+    model_manager = _read("static/js/model_manager.js")
+    css = _read("static/css/model_manager.css")
+
+    assert 'id="pngtuber-preview-group"' in template
+    assert 'id="pngtuber-basic-preview-section"' in template
+    assert 'id="pngtuber-talk-preview-btn"' in template
+    assert 'id="pngtuber-state-preview-section"' in template
+    assert 'id="pngtuber-state-preview-list"' in template
+    assert 'id="pngtuber-state-preview-select-btn"' in template
+    assert 'id="pngtuber-state-preview-select"' in template
+    assert 'id="pngtuber-state-preview-dropdown"' in template
+    assert "测试说话" in template
+
+    assert "function clearPNGTuberPreviewControls()" in model_manager
+    assert "async function loadPNGTuberPreviewControls(pngtuberConfig)" in model_manager
+    assert "async function fetchPNGTuberLayeredMetadata(pngtuberConfig)" in model_manager
+    assert "function renderPNGTuberStatePreviewDropdown(metadata)" in model_manager
+    assert "window.pngtuberManager.setSpeaking(true);" in model_manager
+    assert "window.pngtuberManager.setSpeaking(false);" in model_manager
+    assert "}, 1800);" in model_manager
+    assert "pngtuberStatePreviewSelect.addEventListener('change'" in model_manager
+    assert "window.playPNGTuberAnimation(stateNumber);" in model_manager
+    assert "pngtuberStatePreviewManager = new DropdownManager" in model_manager
+    assert "defaultText: '状态预览'" in model_manager
+    assert "alwaysShowDefault: true" in model_manager
+    assert "updatePNGTuberStatePreviewButtonText();" in model_manager
+    assert "pngtuber-layered-state-changed" in model_manager
+    assert "await loadPNGTuberPreviewControls(pngtuberConfig);" in model_manager
+    assert "#pngtuber-talk-preview-btn," in css
+    assert "#pngtuber-state-preview-select-btn" in css
+    assert ".pngtuber-state-preview-dropdown" in css
+    assert ".pngtuber-state-preview-dropdown .dropdown-item" in css
+    assert "background: url('/static/icons/bar_bg_2.png')" in css
+    assert "width: var(--model-manager-control-width) !important;" in css
+
+    switch_start = model_manager.index("async function switchModelDisplay(type, subType)")
+    pngtuber_branch = model_manager.index("if (type === 'pngtuber')", switch_start)
+    live2d_branch = model_manager.index("} else if (type === 'live2d')", pngtuber_branch)
+    vrm_branch = model_manager.index("} else { // VRM", live2d_branch)
+    pngtuber_body = model_manager[pngtuber_branch:live2d_branch]
+    live2d_body = model_manager[live2d_branch:vrm_branch]
+    vrm_body = model_manager[vrm_branch:model_manager.index("// =====================================================================", vrm_branch)]
+
+    assert "if (pngtuberPreviewGroup) pngtuberPreviewGroup.style.display = 'flex';" in pngtuber_body
+    assert "clearPNGTuberPreviewControls();" in live2d_body
+    assert "group.id !== 'pngtuber-preview-group'" in live2d_body
+    assert "if (pngtuberPreviewGroup) pngtuberPreviewGroup.style.display = 'none';" in live2d_body
+    assert "clearPNGTuberPreviewControls();" in vrm_body
 
 
 def test_pngtuber_model_selection_enables_save_button():
@@ -171,9 +313,16 @@ def test_pngtuber_model_selection_enables_save_button():
     assert match, "Missing PNGTuber model-select branch"
     branch = match.group("body")
 
-    assert "window.hasUnsavedChanges = true;" in branch
-    assert "savePositionBtn.disabled = false;" in branch
-    assert "markModelChangedForCardFacePrompt();" in branch
+    assert "await loadSelectedPNGTuberOption(selectedOption" in branch
+    assert "markDirty: !isSuppressedModelManagerChangeEvent(e)" in branch
+
+    loader_start = model_manager.index("async function loadSelectedPNGTuberOption(selectedOption, options = {})")
+    helper_start = model_manager.index("async function selectAndPreviewFirstPNGTuberModelAfterModeSwitch()")
+    loader_body = model_manager[loader_start:helper_start]
+    assert "if (options.markDirty)" in loader_body
+    assert "window.hasUnsavedChanges = true;" in loader_body
+    assert "savePositionBtn.disabled = false;" in loader_body
+    assert "markModelChangedForCardFacePrompt();" in loader_body
 
 
 def test_pngtuber_save_uses_live2d_save_success_prompt():
@@ -192,6 +341,25 @@ def test_pngtuber_save_uses_live2d_save_success_prompt():
     assert "模型设置保存成功!" in live3d_body
 
 
+def test_pngtuber_save_merges_runtime_config_last():
+    model_manager = _read("static/js/model_manager.js")
+
+    save_start = model_manager.index("async function saveModelToCharacter")
+    pngtuber_branch = model_manager.index("if (currentModelType === 'pngtuber')", save_start)
+    live3d_branch = model_manager.index("} else if (currentModelType === 'live3d')", pngtuber_branch)
+    pngtuber_body = model_manager[pngtuber_branch:live3d_branch]
+
+    selected_idx = pngtuber_body.index("selectedPNGTuberConfig || {}")
+    current_idx = pngtuber_body.index("currentPNGTuberConfig || {}")
+    runtime_idx = pngtuber_body.index("runtimePNGTuberConfig || {}")
+
+    assert "window.pngtuberManager.config" in pngtuber_body
+    assert selected_idx < current_idx < runtime_idx
+    assert "modelData.pngtuber = pngtuberConfig;" in pngtuber_body
+    assert "'adapter', 'layered_metadata', 'source_format', 'source_type'" in pngtuber_body
+    assert "currentPNGTuberConfig && currentPNGTuberConfig[key]" in pngtuber_body
+
+
 def test_live2d_mode_switch_reloads_selected_live2d_model():
     model_manager = _read("static/js/model_manager.js")
 
@@ -205,7 +373,7 @@ def test_live2d_mode_switch_reloads_selected_live2d_model():
     assert "modelSelect.value = selectedOption.value;" in helper_body
     assert "updateLive2DModelDropdown();" in helper_body
     assert "updateLive2DModelSelectButtonText();" in helper_body
-    assert "dispatchModelManagerChange(modelSelect, { suppress: true });" in helper_body
+    assert "await loadSelectedPNGTuberOption(selectedOption, { markDirty: false });" in helper_body
 
     switch_start = model_manager.index("async function switchModelDisplay(type, subType)")
     pngtuber_branch = model_manager.index("if (type === 'pngtuber')", switch_start)
@@ -230,7 +398,9 @@ def test_live2d_mode_switch_reloads_selected_live2d_model():
 def test_pngtuber_mode_switch_auto_previews_selected_model():
     model_manager = _read("static/js/model_manager.js")
 
+    loader_start = model_manager.index("async function loadSelectedPNGTuberOption(selectedOption, options = {})")
     helper_start = model_manager.index("async function selectAndPreviewFirstPNGTuberModelAfterModeSwitch()")
+    loader_body = model_manager[loader_start:helper_start]
     helper_end = model_manager.index("function rememberSelectedPNGTuberModel", helper_start)
     helper_body = model_manager[helper_start:helper_end]
     remember_start = helper_end
@@ -244,7 +414,11 @@ def test_pngtuber_mode_switch_auto_previews_selected_model():
     assert "selectedOption.dataset.modelType !== 'pngtuber'" in helper_body
     assert "option.dataset.modelType === 'pngtuber'" in helper_body
     assert "modelSelect.value = selectedOption.value;" in helper_body
-    assert "dispatchModelManagerChange(modelSelect, { suppress: true });" in helper_body
+    assert "await loadSelectedPNGTuberOption(selectedOption, { markDirty: false });" in helper_body
+    assert "dispatchModelManagerChange(modelSelect, { suppress: true });" not in helper_body
+    assert "await window.loadPNGTuberAvatar(pngtuberConfig);" in loader_body
+    assert "await loadPNGTuberPreviewControls(pngtuberConfig);" in loader_body
+    assert "if (options.markDirty)" in loader_body
     assert "localStorage.setItem('lastPNGTuberModelSelection'" in remember_body
     assert "idle_image" in remember_body
 
@@ -260,7 +434,8 @@ def test_pngtuber_mode_switch_auto_previews_selected_model():
     model_select_start = model_manager.index("modelSelect.addEventListener('change'")
     model_select_end = model_manager.index("// 检查语音模式状态", model_select_start)
     model_select_pngtuber_body = model_manager[model_select_start:model_select_end]
-    assert "rememberSelectedPNGTuberModel(selectedOption, pngtuberConfig);" in model_select_pngtuber_body
+    assert "await loadSelectedPNGTuberOption(selectedOption" in model_select_pngtuber_body
+    assert "markDirty: !isSuppressedModelManagerChangeEvent(e)" in model_select_pngtuber_body
 
 
 def test_pngtuber_async_load_cannot_hide_live2d_after_mode_switch():
@@ -431,6 +606,63 @@ def test_pngtuber_homepage_position_and_hide_contracts():
     assert "#pngtuber-container.locked-hover-fade" in css
     assert "body.neko-main-ui-hidden-by-model-manager #pngtuber-container," in app_interpage
     assert "body.neko-main-ui-hidden-by-model-manager #pngtuber-container .pngtuber-image," in app_interpage
+
+
+def test_pngtuber_drag_without_custom_image_uses_current_avatar():
+    runtime = _read("static/pngtuber-core.js")
+
+    assert "DEFAULT_DRAG_IMAGE" not in runtime
+    assert "cat-idle-cat-move-1.gif" not in runtime
+    assert "normalized.drag_image = normalized.drag_image || normalized.idle_image;" in runtime
+
+
+def test_pngtuber_layered_adapter_runtime_contract():
+    runtime = _read("static/pngtuber-core.js")
+
+    assert "layered_canvas_v1" in runtime
+    assert "canvas.pngtuber-layered-canvas" in runtime
+    assert "async setupLayeredAdapter()" in runtime
+    assert "fetch(this.config.layered_metadata" in runtime
+    assert "drawLayeredState" in runtime
+    assert "startLayeredBlinkLoop" in runtime
+    assert "shouldRenderLayer" in runtime
+    assert "this.config.adapter === 'layered_canvas_v1'" in runtime
+    assert "this.showTransientImage(this.config.drag_image || this.config.idle_image);" in runtime
+    assert "handleLayeredHotkey" in runtime
+    assert "window.addEventListener('keydown', this._boundLayeredHotkey, true)" in runtime
+    assert "this.layeredStateIndex" in runtime
+    assert "layerStateForCurrentIndex" in runtime
+    assert "window.removeEventListener('keydown', this._boundLayeredHotkey, true)" in runtime
+    assert "pngtuber-play-animation" in runtime
+    assert "playLayeredAnimation(target" in runtime
+    assert "setLayeredStateIndex(index" in runtime
+    assert "returnToDefaultAfterMs" in runtime
+    assert "window.playPNGTuberAnimation = playPNGTuberAnimation" in runtime
+    assert "pngtuber-layered-state-changed" in runtime
+    assert "restartLayeredAnimationLoop" in runtime
+    assert "requestAnimationFrame(tick)" in runtime
+    assert "cancelAnimationFrame(this.layeredAnimationFrame)" in runtime
+    assert "motionValue(layerState.xAmp, layerState.xFrq" in runtime
+    assert "motionValue(layerState.yAmp, layerState.yFrq" in runtime
+    assert "hasWiggleMotion" in runtime
+    assert "if (layerState.folder) return false;" in runtime
+    assert "if (layerState.visible === false) return false;" in runtime
+    assert "layerState.ancestor_visible === false" in runtime
+    assert "layerState.effective_should_talk" in runtime
+    assert "layerState.effective_open_mouth" in runtime
+    assert "layerState.effective_should_blink" in runtime
+    assert "layerState.effective_open_eyes" in runtime
+    assert "base_scale" in runtime
+    assert "relativeFlipX" in runtime
+
+
+def test_pngtuber_save_merges_selected_layered_metadata():
+    manager = _read("static/js/model_manager.js")
+
+    assert "selectedPNGTuberConfig" in manager
+    assert "currentPNGTuberConfig" in manager
+    assert "'adapter', 'layered_metadata', 'source_format', 'source_type'" in manager
+    assert "pngtuberConfig[key] = selectedPNGTuberConfig[key];" in manager
 
 
 def test_pngtuber_main_page_chat_interaction_is_not_blocked():

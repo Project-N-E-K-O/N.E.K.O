@@ -1923,6 +1923,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     const uploadBtn = document.getElementById('upload-btn');
     const modelUpload = document.getElementById('model-upload');
     const pngtuberModelUpload = document.getElementById('pngtuber-model-upload');
+    const pngtuberPreviewGroup = document.getElementById('pngtuber-preview-group');
+    const pngtuberBasicPreviewSection = document.getElementById('pngtuber-basic-preview-section');
+    const pngtuberTalkPreviewBtn = document.getElementById('pngtuber-talk-preview-btn');
+    const pngtuberStatePreviewSection = document.getElementById('pngtuber-state-preview-section');
+    const pngtuberStatePreviewList = document.getElementById('pngtuber-state-preview-list');
+    const pngtuberStatePreviewSelect = document.getElementById('pngtuber-state-preview-select');
+    const pngtuberStatePreviewSelectBtn = document.getElementById('pngtuber-state-preview-select-btn');
+    const pngtuberStatePreviewDropdown = document.getElementById('pngtuber-state-preview-dropdown');
     const vrmFileUpload = document.getElementById('vrm-file-upload');
     const motionFileUpload = document.getElementById('motion-file-upload');
     const expressionFileUpload = document.getElementById('expression-file-upload');
@@ -2226,6 +2234,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     let vrmAnimationManager = null;
     let vrmExpressionManager = null;
     let mmdAnimationManager = null;
+    let pngtuberStatePreviewManager = null;
 
     // 防抖/合并刷新标志
     let isRefreshScheduled = false;
@@ -2458,6 +2467,22 @@ document.addEventListener('DOMContentLoaded', async () => {
                         updateMMDAnimationSelectButtonText();
                     }
                 }
+            });
+        }
+
+        if (!pngtuberStatePreviewManager) {
+            pngtuberStatePreviewManager = new DropdownManager({
+                buttonId: 'pngtuber-state-preview-select-btn',
+                selectId: 'pngtuber-state-preview-select',
+                dropdownId: 'pngtuber-state-preview-dropdown',
+                textSpanId: 'pngtuber-state-preview-select-text',
+                iconClass: 'pngtuber-state-preview-icon',
+                iconSrc: '/static/icons/motion_select_icon.png?v=1',
+                defaultText: '状态预览',
+                iconAlt: '状态预览',
+                maxVisualWidth: 12,
+                alwaysShowDefault: true,
+                shouldSkipOption: (option) => !option.value,
             });
         }
     }
@@ -2898,6 +2923,57 @@ document.addEventListener('DOMContentLoaded', async () => {
         dispatchModelManagerChange(modelSelect, { suppress: true });
     }
 
+    async function loadSelectedPNGTuberOption(selectedOption, options = {}) {
+        if (!selectedOption || selectedOption.dataset.modelType !== 'pngtuber') return false;
+        let pngtuberConfig = {};
+        try {
+            pngtuberConfig = JSON.parse(selectedOption.getAttribute('data-pngtuber') || '{}');
+        } catch (error) {
+            console.warn('[PNGTuber] 解析模型配置失败:', error);
+        }
+
+        const modelName = selectedOption.value || selectedOption.textContent || '';
+        currentLive3dSubType = '';
+        currentModelInfo = {
+            name: selectedOption.textContent || modelName,
+            folder: selectedOption.getAttribute('data-folder') || modelName,
+            path: selectedOption.getAttribute('data-url') || '',
+            url: selectedOption.getAttribute('data-url') || '',
+            type: 'pngtuber',
+            pngtuber: pngtuberConfig,
+        };
+        rememberSelectedPNGTuberModel(selectedOption, pngtuberConfig);
+
+        if (window.loadPNGTuberAvatar) {
+            await window.loadPNGTuberAvatar(pngtuberConfig);
+        }
+        await loadPNGTuberPreviewControls(pngtuberConfig);
+        if (live2dContainer) live2dContainer.style.display = 'none';
+        if (vrmContainer) {
+            vrmContainer.classList.add('hidden');
+            vrmContainer.style.display = 'none';
+        }
+        if (mmdContainer) {
+            mmdContainer.classList.add('hidden');
+            mmdContainer.style.display = 'none';
+        }
+        if (pngtuberContainer) {
+            pngtuberContainer.classList.remove('hidden');
+            pngtuberContainer.style.display = 'block';
+        }
+        showStatus(`已加载PNGTuber模型: ${currentModelInfo.name}`, 2000);
+
+        if (options.markDirty) {
+            window.hasUnsavedChanges = true;
+            if (savePositionBtn) {
+                savePositionBtn.disabled = false;
+            }
+            markModelChangedForCardFacePrompt();
+            console.log('已标记为未保存更改（PNGTuber模型切换），请点击 保存设置 持久化到角色配置。');
+        }
+        return true;
+    }
+
     async function selectAndPreviewFirstPNGTuberModelAfterModeSwitch() {
         if (currentModelType !== 'pngtuber' || !modelSelect) return;
 
@@ -2947,7 +3023,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             updateLive2DModelSelectButtonText();
         }
 
-        dispatchModelManagerChange(modelSelect, { suppress: true });
+        await loadSelectedPNGTuberOption(selectedOption, { markDirty: false });
     }
 
     function rememberSelectedPNGTuberModel(option, pngtuberConfig = null) {
@@ -3127,14 +3203,32 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             if (currentModelType === 'pngtuber') {
                 const selectedOpt = modelSelect && modelSelect.options[modelSelect.selectedIndex];
-                let pngtuberConfig = currentModelInfo && currentModelInfo.pngtuber ? currentModelInfo.pngtuber : null;
-                if (!pngtuberConfig && selectedOpt) {
+                let selectedPNGTuberConfig = null;
+                if (selectedOpt) {
                     try {
-                        pngtuberConfig = JSON.parse(selectedOpt.getAttribute('data-pngtuber') || '{}');
+                        selectedPNGTuberConfig = JSON.parse(selectedOpt.getAttribute('data-pngtuber') || '{}');
                     } catch (_) {
-                        pngtuberConfig = null;
+                        selectedPNGTuberConfig = null;
                     }
                 }
+                const currentPNGTuberConfig = currentModelInfo && currentModelInfo.pngtuber ? currentModelInfo.pngtuber : null;
+                const runtimePNGTuberConfig = window.pngtuberManager && window.pngtuberManager.config
+                    ? window.pngtuberManager.config
+                    : null;
+                const pngtuberConfig = Object.assign(
+                    {},
+                    selectedPNGTuberConfig || {},
+                    currentPNGTuberConfig || {},
+                    runtimePNGTuberConfig || {}
+                );
+                ['adapter', 'layered_metadata', 'source_format', 'source_type'].forEach((key) => {
+                    if (!pngtuberConfig[key] && selectedPNGTuberConfig && selectedPNGTuberConfig[key]) {
+                        pngtuberConfig[key] = selectedPNGTuberConfig[key];
+                    }
+                    if (!pngtuberConfig[key] && currentPNGTuberConfig && currentPNGTuberConfig[key]) {
+                        pngtuberConfig[key] = currentPNGTuberConfig[key];
+                    }
+                });
                 if (!pngtuberConfig || !pngtuberConfig.idle_image) {
                     const errorMsg = 'PNGTuber模型配置无效，无法保存。请重新导入或选择模型。';
                     showStatus(errorMsg, 5000);
@@ -3407,6 +3501,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         if (type === 'pngtuber') {
+            if (pngtuberPreviewGroup) pngtuberPreviewGroup.style.display = 'flex';
             if (window.live2dManager) {
                 try {
                     if (window.live2dManager.currentModel && window.live2dManager.pixi_app?.stage) {
@@ -3477,6 +3572,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 console.error('加载PNGTuber模型列表失败:', error);
             }
         } else if (type === 'live2d') {
+            clearPNGTuberPreviewControls();
             if (pngtuberContainer) {
                 pngtuberContainer.classList.add('hidden');
                 pngtuberContainer.style.display = 'none';
@@ -3567,6 +3663,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // 显示 Live2D 特有的控件
             document.querySelectorAll('.control-group').forEach(group => {
                 if (group.id !== 'live2d-model-group' &&
+                    group.id !== 'pngtuber-preview-group' &&
                     group.id !== 'vrm-model-group' &&
                     group.id !== 'vrm-expression-group' &&
                     group.id !== 'vrm-animation-group' &&
@@ -3576,6 +3673,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     group.style.display = 'flex';
                 }
             });
+            if (pngtuberPreviewGroup) pngtuberPreviewGroup.style.display = 'none';
             // 显示常驻表情组（Live2D特有）
             const persistentExpressionGroup = document.getElementById('persistent-expression-group');
             if (persistentExpressionGroup) persistentExpressionGroup.style.display = 'flex';
@@ -3670,6 +3768,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 await reloadSelectedLive2DModelAfterModeSwitch();
             }
         } else { // VRM
+            clearPNGTuberPreviewControls();
             if (pngtuberContainer) {
                 pngtuberContainer.classList.add('hidden');
                 pngtuberContainer.style.display = 'none';
@@ -4388,6 +4487,165 @@ document.addEventListener('DOMContentLoaded', async () => {
             showStatus(t('live2d.loadError', `错误: ${error.message}`, { error: error.message }), 5000);
         }
     }
+
+    let pngtuberTalkPreviewTimer = null;
+
+    function clearPNGTuberPreviewControls() {
+        if (pngtuberTalkPreviewTimer) {
+            clearTimeout(pngtuberTalkPreviewTimer);
+            pngtuberTalkPreviewTimer = null;
+        }
+        if (window.pngtuberManager && typeof window.pngtuberManager.setSpeaking === 'function') {
+            try { window.pngtuberManager.setSpeaking(false); } catch (_) { /* ignore */ }
+        }
+        if (pngtuberTalkPreviewBtn) {
+            pngtuberTalkPreviewBtn.disabled = false;
+            pngtuberTalkPreviewBtn.classList.remove('active');
+        }
+        if (pngtuberStatePreviewSelect) {
+            pngtuberStatePreviewSelect.innerHTML = '<option value="">状态预览</option>';
+            pngtuberStatePreviewSelect.value = '';
+        }
+        if (pngtuberStatePreviewManager) {
+            pngtuberStatePreviewManager.updateDropdown();
+            updatePNGTuberStatePreviewButtonText();
+        }
+        if (pngtuberStatePreviewSection) {
+            pngtuberStatePreviewSection.style.display = 'none';
+        }
+        if (pngtuberPreviewGroup) {
+            pngtuberPreviewGroup.style.display = 'none';
+        }
+    }
+
+    function updatePNGTuberStatePreviewButtonText() {
+        if (!pngtuberStatePreviewSelectBtn) return;
+        let textSpan = document.getElementById('pngtuber-state-preview-select-text');
+        if (!textSpan) {
+            textSpan = pngtuberStatePreviewSelectBtn.querySelector('span');
+        }
+        if (!textSpan) return;
+        textSpan.textContent = '状态预览';
+        textSpan.setAttribute('data-text', '状态预览');
+    }
+
+    async function fetchPNGTuberLayeredMetadata(pngtuberConfig) {
+        const metadataUrl = pngtuberConfig && typeof pngtuberConfig.layered_metadata === 'string'
+            ? pngtuberConfig.layered_metadata.trim()
+            : '';
+        if (!metadataUrl) return null;
+        try {
+            const response = await fetch(metadataUrl, { cache: 'no-store' });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            return await response.json();
+        } catch (error) {
+            console.warn('[PNGTuber] 读取分层 metadata 失败:', error);
+            return null;
+        }
+    }
+
+    function getPNGTuberStateLabels(metadata) {
+        if (!metadata || typeof metadata !== 'object') return [];
+        const settingsStates = metadata.settings && Array.isArray(metadata.settings.states)
+            ? metadata.settings.states
+            : [];
+        const directStates = Array.isArray(metadata.states) ? metadata.states : [];
+        const sourceStates = settingsStates.length > 0 ? settingsStates : directStates;
+        const stateCount = Number(metadata.state_count || metadata.stateCount || sourceStates.length || 0);
+        const count = Number.isFinite(stateCount) ? Math.max(0, Math.floor(stateCount)) : 0;
+        if (count <= 1) return [];
+
+        return Array.from({ length: count }, (_, index) => {
+            const state = sourceStates[index] || {};
+            const name = state.name || state.label || state.display_name || state.displayName;
+            return name ? String(name) : `状态 ${index + 1}`;
+        });
+    }
+
+    function renderPNGTuberStatePreviewDropdown(metadata) {
+        if (!pngtuberStatePreviewSelect || !pngtuberStatePreviewSection) return;
+        pngtuberStatePreviewSelect.innerHTML = '<option value="">状态预览</option>';
+        pngtuberStatePreviewSelect.value = '';
+        const labels = getPNGTuberStateLabels(metadata);
+        if (labels.length === 0) {
+            pngtuberStatePreviewSection.style.display = 'none';
+            if (pngtuberStatePreviewManager) {
+                pngtuberStatePreviewManager.updateDropdown();
+                updatePNGTuberStatePreviewButtonText();
+            }
+            return;
+        }
+
+        labels.forEach((label, index) => {
+            const option = document.createElement('option');
+            option.value = String(index + 1);
+            option.textContent = label;
+            option.dataset.stateNumber = String(index + 1);
+            pngtuberStatePreviewSelect.appendChild(option);
+        });
+        pngtuberStatePreviewSection.style.display = 'flex';
+        if (pngtuberStatePreviewSelectBtn) pngtuberStatePreviewSelectBtn.disabled = false;
+        if (pngtuberStatePreviewManager) {
+            pngtuberStatePreviewManager.updateDropdown();
+            updatePNGTuberStatePreviewButtonText();
+        }
+    }
+
+    async function loadPNGTuberPreviewControls(pngtuberConfig) {
+        clearPNGTuberPreviewControls();
+        if (currentModelType !== 'pngtuber' || !pngtuberPreviewGroup) return;
+        pngtuberPreviewGroup.style.display = 'flex';
+        if (pngtuberBasicPreviewSection) pngtuberBasicPreviewSection.style.display = 'flex';
+        if (pngtuberTalkPreviewBtn) pngtuberTalkPreviewBtn.disabled = false;
+
+        const metadata = await fetchPNGTuberLayeredMetadata(pngtuberConfig || {});
+        if (currentModelType !== 'pngtuber') return;
+        renderPNGTuberStatePreviewDropdown(metadata);
+    }
+
+    if (pngtuberTalkPreviewBtn) {
+        pngtuberTalkPreviewBtn.addEventListener('click', () => {
+            if (!window.pngtuberManager || typeof window.pngtuberManager.setSpeaking !== 'function') {
+                showStatus('PNGTuber 模型尚未加载', 2000);
+                return;
+            }
+            if (pngtuberTalkPreviewTimer) clearTimeout(pngtuberTalkPreviewTimer);
+            pngtuberTalkPreviewBtn.disabled = true;
+            pngtuberTalkPreviewBtn.classList.add('active');
+            window.pngtuberManager.setSpeaking(true);
+            pngtuberTalkPreviewTimer = setTimeout(() => {
+                pngtuberTalkPreviewTimer = null;
+                if (window.pngtuberManager && typeof window.pngtuberManager.setSpeaking === 'function') {
+                    window.pngtuberManager.setSpeaking(false);
+                }
+                pngtuberTalkPreviewBtn.disabled = false;
+                pngtuberTalkPreviewBtn.classList.remove('active');
+            }, 1800);
+        });
+    }
+
+    if (pngtuberStatePreviewSelect) {
+        pngtuberStatePreviewSelect.addEventListener('change', () => {
+            const stateNumber = Number(pngtuberStatePreviewSelect.value || 0);
+            if (!stateNumber) return;
+            if (typeof window.playPNGTuberAnimation === 'function') {
+                window.playPNGTuberAnimation(stateNumber);
+            }
+            updatePNGTuberStatePreviewButtonText();
+        });
+    }
+
+    window.addEventListener('pngtuber-layered-state-changed', (event) => {
+        if (!pngtuberStatePreviewSelect) return;
+        const detail = event.detail || {};
+        const stateNumber = Number(detail.stateNumber || detail.state_number || (Number.isFinite(detail.index) ? detail.index + 1 : 0));
+        if (!stateNumber) return;
+        const nextValue = String(stateNumber);
+        if (pngtuberStatePreviewSelect.value !== nextValue) {
+            pngtuberStatePreviewSelect.value = nextValue;
+        }
+        updatePNGTuberStatePreviewButtonText();
+    });
 
     // VRM模型选择按钮点击事件已由 DropdownManager 处理
 
@@ -7466,50 +7724,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         const selectedOption = e.target[e.target.selectedIndex];
 
         if (currentModelType === 'pngtuber') {
-            let pngtuberConfig = {};
-            try {
-                pngtuberConfig = JSON.parse(selectedOption?.getAttribute('data-pngtuber') || '{}');
-            } catch (error) {
-                console.warn('[PNGTuber] 解析模型配置失败:', error);
-            }
-
-            currentLive3dSubType = '';
-            currentModelInfo = {
-                name: selectedOption?.textContent || modelName,
-                folder: selectedOption?.getAttribute('data-folder') || modelName,
-                path: selectedOption?.getAttribute('data-url') || '',
-                url: selectedOption?.getAttribute('data-url') || '',
-                type: 'pngtuber',
-                pngtuber: pngtuberConfig,
-            };
-            rememberSelectedPNGTuberModel(selectedOption, pngtuberConfig);
-
-            if (window.loadPNGTuberAvatar) {
-                await window.loadPNGTuberAvatar(pngtuberConfig);
-            }
-            if (live2dContainer) live2dContainer.style.display = 'none';
-            if (vrmContainer) {
-                vrmContainer.classList.add('hidden');
-                vrmContainer.style.display = 'none';
-            }
-            if (mmdContainer) {
-                mmdContainer.classList.add('hidden');
-                mmdContainer.style.display = 'none';
-            }
-            if (pngtuberContainer) {
-                pngtuberContainer.classList.remove('hidden');
-                pngtuberContainer.style.display = 'block';
-            }
-            showStatus(`已加载PNGTuber模型: ${currentModelInfo.name}`, 2000);
-
-            if (!isSuppressedModelManagerChangeEvent(e)) {
-                window.hasUnsavedChanges = true;
-                if (savePositionBtn) {
-                    savePositionBtn.disabled = false;
-                }
-                markModelChangedForCardFacePrompt();
-                console.log('已标记为未保存更改（PNGTuber模型切换），请点击 保存设置 持久化到角色配置。');
-            }
+            await loadSelectedPNGTuberOption(selectedOption, {
+                markDirty: !isSuppressedModelManagerChangeEvent(e)
+            });
             return;
         }
 

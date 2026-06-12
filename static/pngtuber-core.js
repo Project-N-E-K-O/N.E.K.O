@@ -3,9 +3,9 @@
 
     const DEFAULT_PLACEHOLDER = '/static/icons/default_character_card.png';
     const IMAGE_KEYS = ['idle_image', 'talking_image', 'drag_image', 'click_image', 'happy_image', 'sad_image', 'angry_image', 'surprised_image'];
-    const DEFAULT_DRAG_IMAGE = '/static/assets/neko-idle/cat-idle-cat-move-1.gif';
     const SCALE_MIN = 0.1;
     const SCALE_MAX = 5;
+    const REMIX_FRAME_SPEED_MULTIPLIER = 4;
 
     function clampNumber(value, min, max, fallback) {
         const parsed = Number(value);
@@ -27,6 +27,31 @@
         return filename ? `/user_pngtuber/${filename}` : '';
     }
 
+    function normalizeAssetPath(value) {
+        const path = sanitizePath(value);
+        if (!path) return '';
+        if (/^https?:\/\//i.test(path) || path.startsWith('/')) return path;
+        const filename = path.split('/').filter(Boolean).pop();
+        return filename ? `/user_pngtuber/${filename}` : '';
+    }
+
+    function resolveSiblingAsset(baseUrl, value) {
+        const path = sanitizePath(value);
+        if (!path) return '';
+        if (/^https?:\/\//i.test(path) || path.startsWith('/')) return path;
+        const base = sanitizePath(baseUrl).split('/').slice(0, -1).join('/');
+        return base ? `${base}/${path}` : path;
+    }
+
+    function loadImageElement(src) {
+        return new Promise((resolve, reject) => {
+            const img = new Image();
+            img.onload = () => resolve(img);
+            img.onerror = reject;
+            img.src = src;
+        });
+    }
+
     function isModelManagerPage() {
         return window.location.pathname.includes('model_manager')
             || document.body?.classList.contains('model-manager-page')
@@ -46,13 +71,16 @@
         });
         normalized.idle_image = normalized.idle_image || DEFAULT_PLACEHOLDER;
         normalized.talking_image = normalized.talking_image || normalized.idle_image;
-        normalized.drag_image = normalized.drag_image || DEFAULT_DRAG_IMAGE;
+        normalized.drag_image = normalized.drag_image || normalized.idle_image;
         normalized.click_image = normalized.click_image || normalized.talking_image;
         normalized.scale = clampNumber(source.scale, SCALE_MIN, SCALE_MAX, 1);
         const centerPreview = isModelManagerPage() && !source.preserve_model_manager_position;
         normalized.offset_x = centerPreview ? 0 : (Number.isFinite(Number(source.offset_x)) ? Number(source.offset_x) : 0);
         normalized.offset_y = centerPreview ? 0 : (Number.isFinite(Number(source.offset_y)) ? Number(source.offset_y) : 0);
         normalized.mirror = !!source.mirror;
+        normalized.adapter = sanitizePath(source.adapter);
+        normalized.layered_metadata = normalizeAssetPath(source.layered_metadata || source.metadata);
+        normalized.source_format = sanitizePath(source.source_format || source.source_type);
         return normalized;
     }
 
@@ -61,9 +89,33 @@
             this.containerId = containerId;
             this.container = null;
             this.image = null;
+            this.imageElement = null;
+            this.canvasElement = null;
             this.config = normalizeConfig({});
+            this.layeredMetadata = null;
+            this.layeredImages = new Map();
+            this.layeredBlinking = false;
+            this.layeredBlinkTimer = null;
+            this.layeredBlinkEndTimer = null;
+            this.layeredStateIndex = 0;
+            this.layeredStateReturnTimer = null;
+            this.layeredAnimationFrame = null;
+            this.layeredAnimationStart = 0;
+            this._boundLayeredHotkey = (event) => this.handleLayeredHotkey(event);
+            this._boundLayeredPlayEvent = (event) => this.handleLayeredPlayEvent(event);
+            this._layeredHotkeysAttached = false;
+            this._layeredPlayEventAttached = false;
             this.state = 'idle';
             this.returnIdleTimer = null;
+            this.isSpeaking = false;
+            this.speakingMouthTimer = null;
+            this.speakingMouthOpen = false;
+            this.speakingBounceFrame = null;
+            this.speakingBounceStart = 0;
+            this.speakingBounceDuration = 0;
+            this.speakingBounceAmplitude = 0;
+            this.speakingBounceSquish = 0;
+            this.lastSpeakingBounceAt = 0;
             this.clickTimer = null;
             this._suppressNextClick = false;
             this._boundSpeechStart = () => this.setSpeaking(true);
@@ -95,9 +147,28 @@
                 image.draggable = false;
                 container.appendChild(image);
             }
+            let canvas = container.querySelector('canvas.pngtuber-layered-canvas');
+            if (!canvas) {
+                canvas = document.createElement('canvas');
+                canvas.className = 'pngtuber-image pngtuber-layered-canvas';
+                canvas.setAttribute('aria-label', 'PNGTuber layered avatar');
+                container.appendChild(canvas);
+            }
             this.container = container;
-            this.image = image;
+            this.imageElement = image;
+            this.canvasElement = canvas;
+            this.image = this.isLayeredActive() ? canvas : image;
+            image.style.display = this.isLayeredActive() ? 'none' : '';
+            canvas.style.display = this.isLayeredActive() ? '' : 'none';
             return container;
+        }
+
+        isLayeredConfigured() {
+            return this.config.adapter === 'layered_canvas_v1' && !!this.config.layered_metadata;
+        }
+
+        isLayeredActive() {
+            return this.isLayeredConfigured() && !!this.layeredMetadata && this.layeredImages.size > 0;
         }
 
         attachDragListeners() {
@@ -192,9 +263,444 @@
             });
         }
 
+        clearLayeredTimers() {
+            this.stopLayeredAnimationLoop();
+            if (this.layeredBlinkTimer) {
+                clearTimeout(this.layeredBlinkTimer);
+                this.layeredBlinkTimer = null;
+            }
+            if (this.layeredBlinkEndTimer) {
+                clearTimeout(this.layeredBlinkEndTimer);
+                this.layeredBlinkEndTimer = null;
+            }
+            if (this.layeredStateReturnTimer) {
+                clearTimeout(this.layeredStateReturnTimer);
+                this.layeredStateReturnTimer = null;
+            }
+            this.layeredBlinking = false;
+        }
+
+        stopLayeredAnimationLoop() {
+            if (this.layeredAnimationFrame) {
+                cancelAnimationFrame(this.layeredAnimationFrame);
+                this.layeredAnimationFrame = null;
+            }
+        }
+
+        attachLayeredHotkeys() {
+            if (this._layeredHotkeysAttached || !this.isLayeredActive()) return;
+            const hotkeys = Array.isArray(this.layeredMetadata.hotkeys) ? this.layeredMetadata.hotkeys : [];
+            if (hotkeys.length === 0) return;
+            window.addEventListener('keydown', this._boundLayeredHotkey, true);
+            this._layeredHotkeysAttached = true;
+        }
+
+        detachLayeredHotkeys() {
+            if (!this._layeredHotkeysAttached) return;
+            window.removeEventListener('keydown', this._boundLayeredHotkey, true);
+            this._layeredHotkeysAttached = false;
+        }
+
+        attachLayeredPlayEvent() {
+            if (this._layeredPlayEventAttached || !this.isLayeredActive()) return;
+            window.addEventListener('pngtuber-play-animation', this._boundLayeredPlayEvent);
+            this._layeredPlayEventAttached = true;
+        }
+
+        detachLayeredPlayEvent() {
+            if (!this._layeredPlayEventAttached) return;
+            window.removeEventListener('pngtuber-play-animation', this._boundLayeredPlayEvent);
+            this._layeredPlayEventAttached = false;
+        }
+
+        handleLayeredPlayEvent(event) {
+            const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+            const target = detail.animation ?? detail.state ?? detail.index ?? detail.key;
+            this.playLayeredAnimation(target, {
+                returnToDefaultAfterMs: detail.returnToDefaultAfterMs,
+                source: 'event'
+            });
+        }
+
+        getLayeredStateCount() {
+            if (!this.layeredMetadata) return 1;
+            return Math.max(1, Number(this.layeredMetadata.state_count) || 1);
+        }
+
+        resolveLayeredAnimationTarget(target) {
+            const stateCount = this.getLayeredStateCount();
+            if (typeof target === 'number' && Number.isFinite(target)) {
+                const numeric = Math.trunc(target);
+                return numeric >= 1 ? Math.min(stateCount - 1, numeric - 1) : 0;
+            }
+            const text = String(target ?? '').trim();
+            if (!text) return 0;
+            if (/^\d+$/.test(text)) {
+                const numeric = Number(text);
+                return numeric >= 1 ? Math.min(stateCount - 1, numeric - 1) : 0;
+            }
+            const normalized = text.toLowerCase();
+            const hotkeys = Array.isArray(this.layeredMetadata?.hotkeys) ? this.layeredMetadata.hotkeys : [];
+            const matched = hotkeys.find((hotkey) => {
+                return String(hotkey.key || '').toLowerCase() === normalized
+                    || String(hotkey.label || '').toLowerCase() === normalized
+                    || String(hotkey.name || '').toLowerCase() === normalized;
+            });
+            if (matched) {
+                return Math.max(0, Math.min(stateCount - 1, Number(matched.state_index) || 0));
+            }
+            return 0;
+        }
+
+        setLayeredStateIndex(index, options = {}) {
+            if (!this.isLayeredActive()) return false;
+            const stateCount = this.getLayeredStateCount();
+            const nextIndex = Math.max(0, Math.min(stateCount - 1, Number(index) || 0));
+            if (this.layeredStateReturnTimer) {
+                clearTimeout(this.layeredStateReturnTimer);
+                this.layeredStateReturnTimer = null;
+            }
+            this.layeredStateIndex = nextIndex;
+            this.drawLayeredState();
+            this.restartLayeredAnimationLoop();
+            window.dispatchEvent(new CustomEvent('pngtuber-layered-state-changed', {
+                detail: {
+                    stateIndex: this.layeredStateIndex,
+                    stateNumber: this.layeredStateIndex + 1,
+                    source: options.source || 'api'
+                }
+            }));
+            const returnDelay = Number(options.returnToDefaultAfterMs) || 0;
+            if (returnDelay > 0 && this.layeredStateIndex !== 0) {
+                this.layeredStateReturnTimer = setTimeout(() => {
+                    this.layeredStateReturnTimer = null;
+                    this.setLayeredStateIndex(0, { source: 'return' });
+                }, Math.max(80, returnDelay));
+            }
+            return true;
+        }
+
+        playLayeredAnimation(target, options = {}) {
+            if (!this.isLayeredActive()) return false;
+            return this.setLayeredStateIndex(this.resolveLayeredAnimationTarget(target), {
+                returnToDefaultAfterMs: options.returnToDefaultAfterMs,
+                source: options.source || 'api'
+            });
+        }
+
+        hotkeyMatchesEvent(hotkey, event) {
+            const keycode = Number(hotkey.keycode || 0);
+            if (keycode && event.keyCode !== keycode && event.which !== keycode) return false;
+            if (!!hotkey.ctrl !== !!event.ctrlKey) return false;
+            if (!!hotkey.shift !== !!event.shiftKey) return false;
+            if (!!hotkey.alt !== !!event.altKey) return false;
+            if (!!hotkey.meta !== !!event.metaKey) return false;
+            return true;
+        }
+
+        handleLayeredHotkey(event) {
+            if (!this.isLayeredActive()) return;
+            const target = event.target;
+            if (target && (
+                target.tagName === 'INPUT'
+                || target.tagName === 'TEXTAREA'
+                || target.tagName === 'SELECT'
+                || target.isContentEditable
+            )) {
+                return;
+            }
+            const hotkeys = Array.isArray(this.layeredMetadata.hotkeys) ? this.layeredMetadata.hotkeys : [];
+            const matched = hotkeys.find((hotkey) => this.hotkeyMatchesEvent(hotkey, event));
+            if (!matched) return;
+            event.preventDefault();
+            event.stopPropagation();
+            this.setLayeredStateIndex(Number(matched.state_index) || 0, { source: 'hotkey' });
+        }
+
+        async setupLayeredAdapter() {
+            this.clearLayeredTimers();
+            this.detachLayeredHotkeys();
+            this.detachLayeredPlayEvent();
+            this.layeredMetadata = null;
+            this.layeredImages = new Map();
+            this.layeredStateIndex = 0;
+            if (!this.isLayeredConfigured()) return false;
+            try {
+                const response = await fetch(this.config.layered_metadata, { cache: 'no-cache' });
+                if (!response.ok) throw new Error(`metadata ${response.status}`);
+                const metadata = await response.json();
+                const layers = Array.isArray(metadata.layers) ? metadata.layers : [];
+                if (metadata.runtime !== 'layered_canvas' || layers.length === 0) {
+                    throw new Error('metadata is not layered_canvas');
+                }
+                await Promise.all(layers.map(async (layer, index) => {
+                    const src = resolveSiblingAsset(this.config.layered_metadata, layer.image);
+                    if (!src) return;
+                    const img = await loadImageElement(src);
+                    this.layeredImages.set(index, img);
+                    layer._imageIndex = index;
+                }));
+                if (this.layeredImages.size === 0) throw new Error('no layer images loaded');
+                this.layeredMetadata = metadata;
+                this.layeredStateIndex = 0;
+                this.ensureContainer();
+                const canvas = this.canvasElement;
+                const canvasInfo = metadata.canvas || {};
+                canvas.width = Math.max(1, Number(canvasInfo.width) || 1);
+                canvas.height = Math.max(1, Number(canvasInfo.height) || 1);
+                canvas.style.aspectRatio = `${canvas.width} / ${canvas.height}`;
+                this.startLayeredBlinkLoop();
+                this.restartLayeredAnimationLoop();
+                this.attachLayeredHotkeys();
+                this.attachLayeredPlayEvent();
+                return true;
+            } catch (error) {
+                console.warn('[PNGTuber] layered adapter disabled, falling back to image mode:', error);
+                this.layeredMetadata = null;
+                this.layeredImages = new Map();
+                return false;
+            }
+        }
+
+        hasBlinkLayers() {
+            const layers = this.layeredMetadata && Array.isArray(this.layeredMetadata.layers)
+                ? this.layeredMetadata.layers
+                : [];
+            return layers.some((layer) => {
+                const state = layer.state || {};
+                return Number(layer.showBlink || 0) !== 0 || !!state.should_blink;
+            });
+        }
+
+        startLayeredBlinkLoop() {
+            this.clearLayeredTimers();
+            if (!this.isLayeredActive() || !this.hasBlinkLayers()) return;
+            const blinkConfig = this.layeredMetadata.blink || {};
+            if (blinkConfig.enabled === false) return;
+            const minMs = Math.max(500, Number(blinkConfig.interval_min_ms) || 2800);
+            const maxMs = Math.max(minMs, Number(blinkConfig.interval_max_ms) || 5200);
+            const durationMs = Math.max(60, Number(blinkConfig.duration_ms) || 140);
+            const schedule = () => {
+                const delay = minMs + Math.random() * (maxMs - minMs);
+                this.layeredBlinkTimer = setTimeout(() => {
+                    this.layeredBlinking = true;
+                    this.drawLayeredState();
+                    this.layeredBlinkEndTimer = setTimeout(() => {
+                        this.layeredBlinking = false;
+                        this.drawLayeredState();
+                        schedule();
+                    }, durationMs);
+                }, delay);
+            };
+            schedule();
+        }
+
+        shouldRenderLayer(layer, stateName) {
+            if (layer.inactive_asset_ancestor) return false;
+            const mode = stateName === 'talking' ? 'talking' : 'idle';
+            const layerState = this.layerStateForCurrentIndex(layer);
+            if (layerState.folder) return false;
+            if (layerState.visible === false) return false;
+            if (layerState.ancestor_visible === false) return false;
+            if (layerState.ancestor_visible === undefined && layer.ancestor_visible === false) return false;
+            const showTalk = Number(layer.showTalk || 0);
+            if (showTalk !== 0) {
+                if (mode === 'idle' && showTalk !== 1) return false;
+                if (mode === 'talking' && showTalk !== 2) return false;
+            }
+            const showBlink = Number(layer.showBlink || 0);
+            if (showBlink !== 0) {
+                if (!this.layeredBlinking && showBlink === 2) return false;
+                if (this.layeredBlinking && showBlink === 1) return false;
+            }
+
+            const shouldTalk = !!(layerState.effective_should_talk ?? layerState.should_talk);
+            if (shouldTalk) {
+                const openMouth = !!(layerState.effective_open_mouth ?? layerState.open_mouth);
+                if (mode === 'idle' && openMouth) return false;
+                if (mode === 'talking' && !openMouth) return false;
+            }
+            const shouldBlink = !!(layerState.effective_should_blink ?? layerState.should_blink);
+            if (shouldBlink) {
+                const openEyes = (layerState.effective_open_eyes ?? layerState.open_eyes) !== false;
+                if (!this.layeredBlinking && !openEyes) return false;
+                if (this.layeredBlinking && openEyes) return false;
+            }
+            return true;
+        }
+
+        layerStateForCurrentIndex(layer) {
+            const states = Array.isArray(layer.states) ? layer.states : [];
+            return states[this.layeredStateIndex] || layer.state || {};
+        }
+
+        stateHasMotion(layerState) {
+            const hasXMotion = Math.abs(Number(layerState.xAmp) || 0) > 0.0001 && Math.abs(Number(layerState.xFrq) || 0) > 0.0001;
+            const hasYMotion = Math.abs(Number(layerState.yAmp) || 0) > 0.0001 && Math.abs(Number(layerState.yFrq) || 0) > 0.0001;
+            const hasWiggleMotion = Math.abs(Number(layerState.wiggle_amp) || 0) > 0.0001
+                && Math.abs(Number(layerState.wiggle_freq || layerState.rot_frq) || 0) > 0.0001;
+            return hasXMotion || hasYMotion || hasWiggleMotion || this.stateHasFrameAnimation(layerState);
+        }
+
+        stateFrameInfo(layer, layerState, img, timestamp = performance.now()) {
+            const imageWidth = Number(layer.image_width || img.width) || img.width;
+            const imageHeight = Number(layer.image_height || img.height) || img.height;
+            const hframes = Math.max(1, Math.floor(Number(layerState.hframes) || Number(layer.hframes) || 1));
+            const declaredFrames = Math.floor(Number(layerState.frames) || Number(layer.frames) || hframes);
+            const frames = Math.max(1, declaredFrames);
+            const rows = Math.max(1, Math.ceil(frames / hframes));
+            const hasSheet = hframes > 1 || rows > 1;
+            const computedFrameWidth = imageWidth / hframes;
+            const computedFrameHeight = imageHeight / rows;
+            const explicitFrameWidth = Number(layerState.frame_width) || Number(layer.frame_width);
+            const explicitFrameHeight = Number(layerState.frame_height) || Number(layer.frame_height);
+            const layerWidth = Number(layer.width) || 0;
+            const layerHeight = Number(layer.height) || 0;
+            const frameWidth = Math.max(1, Math.floor(
+                explicitFrameWidth
+                || (hasSheet ? computedFrameWidth : layerWidth)
+                || computedFrameWidth
+            ));
+            const frameHeight = Math.max(1, Math.floor(
+                explicitFrameHeight
+                || (hasSheet ? computedFrameHeight : layerHeight)
+                || computedFrameHeight
+            ));
+            const legacyFullSheetX = hasSheet && !explicitFrameWidth && layerWidth >= imageWidth;
+            const legacyFullSheetY = hasSheet && !explicitFrameHeight && layerHeight >= imageHeight;
+            let frame = Math.max(0, Math.floor(Number(layerState.frame) || 0));
+            const speed = Math.max(0, Number(layerState.animation_speed) || Number(layer.animation_speed) || 0);
+            const canAnimate = frames > 1
+                && speed > 0
+                && hasSheet
+                && layerState.non_animated_sheet !== true;
+            if (canAnimate) {
+                const elapsedSeconds = Math.max(0, (timestamp - (this.layeredAnimationStart || timestamp)) / 1000);
+                frame = Math.floor(elapsedSeconds * speed * REMIX_FRAME_SPEED_MULTIPLIER) % frames;
+            }
+            frame = Math.min(frames - 1, frame);
+            return {
+                sx: (frame % hframes) * frameWidth,
+                sy: Math.floor(frame / hframes) * frameHeight,
+                sw: frameWidth,
+                sh: frameHeight,
+                dw: frameWidth,
+                dh: frameHeight,
+                frame,
+                frames,
+                hframes,
+                animated: canAnimate,
+                legacyOffsetX: legacyFullSheetX ? (imageWidth - frameWidth) / 2 : 0,
+                legacyOffsetY: legacyFullSheetY ? (imageHeight - frameHeight) / 2 : 0
+            };
+        }
+
+        stateHasFrameAnimation(layerState) {
+            const hframes = Math.max(1, Math.floor(Number(layerState.hframes) || 1));
+            const frames = Math.max(1, Math.floor(Number(layerState.frames) || hframes));
+            const speed = Math.max(0, Number(layerState.animation_speed) || 0);
+            return frames > 1
+                && speed > 0
+                && (hframes > 1 || Math.ceil(frames / hframes) > 1)
+                && layerState.non_animated_sheet !== true;
+        }
+
+        hasMotionLayersForCurrentState() {
+            if (!this.isLayeredActive()) return false;
+            const layers = Array.isArray(this.layeredMetadata.layers) ? this.layeredMetadata.layers : [];
+            return layers.some((layer) => this.stateHasMotion(this.layerStateForCurrentIndex(layer)));
+        }
+
+        restartLayeredAnimationLoop() {
+            this.stopLayeredAnimationLoop();
+            if (!this.isLayeredActive() || !this.hasMotionLayersForCurrentState()) return;
+            this.layeredAnimationStart = performance.now();
+            const tick = (timestamp) => {
+                if (!this.isLayeredActive()) {
+                    this.stopLayeredAnimationLoop();
+                    return;
+                }
+                this.drawLayeredState(this.state || 'idle', timestamp);
+                this.layeredAnimationFrame = requestAnimationFrame(tick);
+            };
+            this.layeredAnimationFrame = requestAnimationFrame(tick);
+        }
+
+        motionValue(amplitude, frequency, timestamp, phase = 0) {
+            const amp = Number(amplitude) || 0;
+            const freq = Math.abs(Number(frequency) || 0);
+            if (!amp || !freq) return 0;
+            const elapsedSeconds = Math.max(0, (timestamp - (this.layeredAnimationStart || timestamp)) / 1000);
+            const hz = Math.max(0.05, freq * 10);
+            return Math.sin(elapsedSeconds * Math.PI * 2 * hz + phase) * amp;
+        }
+
+        drawLayeredState(stateName = this.state || 'idle', timestamp = performance.now()) {
+            if (!this.isLayeredActive() || !this.canvasElement) return false;
+            const canvas = this.canvasElement;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) return false;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            const layers = Array.isArray(this.layeredMetadata.layers) ? this.layeredMetadata.layers : [];
+            layers
+                .filter((layer) => this.shouldRenderLayer(layer, stateName))
+                .sort((a, b) => {
+                    const aState = this.layerStateForCurrentIndex(a);
+                    const bState = this.layerStateForCurrentIndex(b);
+                    return (Number(aState.z_index ?? a.zindex ?? 0) - Number(bState.z_index ?? b.zindex ?? 0))
+                        || (Number(a.order || 0) - Number(b.order || 0));
+                })
+                .forEach((layer) => {
+                    const img = this.layeredImages.get(layer._imageIndex);
+                    if (!img) return;
+                    const layerState = this.layerStateForCurrentIndex(layer);
+                    const frame = this.stateFrameInfo(layer, layerState, img, timestamp);
+                    const baseX = (Number(layerState.x ?? layer.x) || 0) + frame.legacyOffsetX;
+                    const baseY = (Number(layerState.y ?? layer.y) || 0) + frame.legacyOffsetY;
+                    const x = baseX + this.motionValue(layerState.xAmp, layerState.xFrq, timestamp, Number(layer.order || 0) * 0.17);
+                    const y = baseY + this.motionValue(layerState.yAmp, layerState.yFrq, timestamp, Number(layer.order || 0) * 0.23);
+                    const wiggleDegrees = this.motionValue(layerState.wiggle_amp, layerState.wiggle_freq || layerState.rot_frq, timestamp, Number(layer.order || 0) * 0.11);
+                    const rotation = (Number(layerState.rotation) || 0) + wiggleDegrees * Math.PI / 180;
+                    const rawScale = Array.isArray(layerState.scale) ? layerState.scale : [1, 1];
+                    const baseScale = Array.isArray(layer.base_scale) ? layer.base_scale : [1, 1];
+                    const baseScaleX = Number(baseScale[0]) || 1;
+                    const baseScaleY = Number(baseScale[1]) || 1;
+                    const relativeFlipX = !!layerState.flip_sprite_h !== !!layer.base_flip_h;
+                    const relativeFlipY = !!layerState.flip_sprite_v !== !!layer.base_flip_v;
+                    const scaleX = ((Number(rawScale[0]) || 1) / baseScaleX) * (relativeFlipX ? -1 : 1);
+                    const scaleY = ((Number(rawScale[1]) || 1) / baseScaleY) * (relativeFlipY ? -1 : 1);
+                    ctx.save();
+                    ctx.translate(x + frame.dw / 2, y + frame.dh / 2);
+                    if (rotation) ctx.rotate(rotation);
+                    ctx.scale(scaleX, scaleY);
+                    ctx.drawImage(
+                        img,
+                        frame.sx,
+                        frame.sy,
+                        frame.sw,
+                        frame.sh,
+                        -frame.dw / 2,
+                        -frame.dh / 2,
+                        frame.dw,
+                        frame.dh
+                    );
+                    ctx.restore();
+                });
+            return true;
+        }
+
         showTransientImage(src) {
             this.ensureContainer();
-            const nextSrc = src || this.config.drag_image || DEFAULT_DRAG_IMAGE;
+            if (this.isLayeredActive()) {
+                const transientState = (src && (src === this.config.talking_image || src === this.config.click_image))
+                    ? 'talking'
+                    : (this.state || 'idle');
+                this.drawLayeredState(transientState);
+                this.applyTransform();
+                this.updateLockIconPosition();
+                return;
+            }
+            const nextSrc = src || this.config.drag_image || this.config.idle_image || DEFAULT_PLACEHOLDER;
             if (this.image && nextSrc && this.image.getAttribute('src') !== nextSrc) {
                 this.image.src = nextSrc;
             }
@@ -203,7 +709,7 @@
         }
 
         showDragImage() {
-            this.showTransientImage(this.config.drag_image || DEFAULT_DRAG_IMAGE);
+            this.showTransientImage(this.config.drag_image || this.config.idle_image);
         }
 
         showClickImage() {
@@ -216,7 +722,10 @@
 
         applyTransform() {
             if (!this.image) return;
+            const bounce = this.currentSpeakingBounceTransform();
             const scaleX = this.config.mirror ? -this.config.scale : this.config.scale;
+            const finalScaleX = scaleX * bounce.scaleX;
+            const finalScaleY = this.config.scale * bounce.scaleY;
             const modelManagerPage = isModelManagerPage();
             const pointerEvents = this.isLocked ? 'none' : 'auto';
             if (modelManagerPage) {
@@ -236,7 +745,7 @@
             const anchorTranslate = modelManagerPage
                 ? 'translate(-50%, -50%)'
                 : 'translate(-100%, -100%)';
-            this.image.style.transform = `${anchorTranslate} translate(${this.config.offset_x}px, ${this.config.offset_y}px) scale(${scaleX}, ${this.config.scale})`;
+            this.image.style.transform = `${anchorTranslate} translate(${this.config.offset_x}px, ${this.config.offset_y + bounce.y}px) scale(${finalScaleX}, ${finalScaleY})`;
         }
 
         applyScale(nextScale) {
@@ -629,7 +1138,9 @@
         }
 
         async load(config) {
+            this.detachDragListeners();
             this.config = normalizeConfig(config || {});
+            await this.setupLayeredAdapter();
             this.ensureContainer();
             this.preloadImages();
             this.attachSpeechListeners();
@@ -653,12 +1164,243 @@
         setState(state) {
             this.state = state || 'idle';
             this.ensureContainer();
+            if (this.isLayeredActive()) {
+                this.drawLayeredState(this.state);
+                this.restartLayeredAnimationLoop();
+                this.applyTransform();
+                this.updateLockIconPosition();
+                return;
+            }
             const nextSrc = this.stateToSrc(this.state);
             if (this.image && this.image.getAttribute('src') !== nextSrc) {
                 this.image.src = nextSrc;
             }
             this.applyTransform();
             this.updateLockIconPosition();
+        }
+
+        currentRemixStateSettings() {
+            const settings = this.layeredMetadata && this.layeredMetadata.settings;
+            const states = settings && Array.isArray(settings.states) ? settings.states : [];
+            return states[this.layeredStateIndex] || states[0] || {};
+        }
+
+        speakingBounceConfig() {
+            const settings = this.layeredMetadata && this.layeredMetadata.settings;
+            const stateSettings = this.currentRemixStateSettings();
+            const mouthAnimation = String(stateSettings.current_mo_anim || '').toLowerCase();
+            if (!mouthAnimation.includes('bounce')) return null;
+            const gravity = Math.max(100, Number(settings?.bounceGravity) || 575);
+            const slider = Math.max(0, Number(settings?.bounceSlider) || 250);
+            const squishAmount = Number(stateSettings.squish_amount) || 1;
+            return {
+                amplitude: Math.max(4, Math.min(22, slider / 18)),
+                duration: Math.max(180, Math.min(520, 90000 / gravity + 170)),
+                squish: Math.max(0, Math.min(0.08, Math.abs(squishAmount - 1) * 1.8 || 0.025))
+            };
+        }
+
+        currentSpeakingBounceTransform(now = performance.now()) {
+            if (!this.speakingBounceStart || !this.speakingBounceDuration) {
+                return { y: 0, scaleX: 1, scaleY: 1 };
+            }
+            const progress = (now - this.speakingBounceStart) / this.speakingBounceDuration;
+            if (progress >= 1) {
+                return { y: 0, scaleX: 1, scaleY: 1 };
+            }
+            const clamped = Math.max(0, progress);
+            const peakAt = 0.28;
+            const lift = clamped < peakAt
+                ? Math.sin((clamped / peakAt) * Math.PI / 2)
+                : (1 + Math.cos(((clamped - peakAt) / (1 - peakAt)) * Math.PI)) / 2;
+            const landing = clamped > 0.68 ? Math.sin(Math.PI * Math.min(1, (clamped - 0.68) / 0.32)) : 0;
+            return {
+                y: -this.speakingBounceAmplitude * lift,
+                scaleX: 1 + this.speakingBounceSquish * landing,
+                scaleY: 1 - this.speakingBounceSquish * landing
+            };
+        }
+
+        stopSpeakingBounceAnimation() {
+            if (this.speakingBounceFrame) {
+                cancelAnimationFrame(this.speakingBounceFrame);
+                this.speakingBounceFrame = null;
+            }
+            this.speakingBounceStart = 0;
+            this.speakingBounceDuration = 0;
+            this.speakingBounceAmplitude = 0;
+            this.speakingBounceSquish = 0;
+            this.applyTransform();
+        }
+
+        startSpeakingBounceAnimation() {
+            const config = this.speakingBounceConfig();
+            if (!config) return;
+            const now = performance.now();
+            if (now - this.lastSpeakingBounceAt < 220) return;
+            this.lastSpeakingBounceAt = now;
+            this.speakingBounceStart = now;
+            this.speakingBounceDuration = config.duration;
+            this.speakingBounceAmplitude = config.amplitude;
+            this.speakingBounceSquish = config.squish;
+            if (this.speakingBounceFrame) {
+                cancelAnimationFrame(this.speakingBounceFrame);
+                this.speakingBounceFrame = null;
+            }
+            const tick = () => {
+                const progress = (performance.now() - this.speakingBounceStart) / this.speakingBounceDuration;
+                if (progress >= 1 || !this.container || this.container.style.display === 'none') {
+                    this.speakingBounceFrame = null;
+                    this.speakingBounceStart = 0;
+                    this.applyTransform();
+                    return;
+                }
+                this.applyTransform();
+                this.updateLockIconPosition();
+                if (typeof this.updateFloatingButtonsPosition === 'function') {
+                    this.updateFloatingButtonsPosition();
+                }
+                this.speakingBounceFrame = requestAnimationFrame(tick);
+            };
+            this.speakingBounceFrame = requestAnimationFrame(tick);
+        }
+
+        scheduleSpeakingMouthFrame() {
+            if (!this.isSpeaking) return;
+            const nextDelay = this.speakingMouthOpen
+                ? 80 + Math.random() * 90
+                : 55 + Math.random() * 95;
+            this.speakingMouthTimer = setTimeout(() => {
+                this.speakingMouthTimer = null;
+                if (!this.isSpeaking) return;
+                this.speakingMouthOpen = !this.speakingMouthOpen;
+                if (this.speakingMouthOpen) {
+                    this.startSpeakingBounceAnimation();
+                }
+                this.setState(this.speakingMouthOpen ? 'talking' : 'idle');
+                this.scheduleSpeakingMouthFrame();
+            }, nextDelay);
+        }
+
+        startSpeakingMouthAnimation() {
+            this.isSpeaking = true;
+            if (this.speakingMouthTimer) return;
+            this.speakingMouthOpen = true;
+            this.startSpeakingBounceAnimation();
+            this.setState('talking');
+            this.scheduleSpeakingMouthFrame();
+        }
+
+        stopSpeakingMouthAnimation() {
+            this.isSpeaking = false;
+            this.speakingMouthOpen = false;
+            if (this.speakingMouthTimer) {
+                clearTimeout(this.speakingMouthTimer);
+                this.speakingMouthTimer = null;
+            }
+            this.stopSpeakingBounceAnimation();
+        }
+
+        renderedLayerCountForState(stateName) {
+            if (!this.isLayeredActive()) return 0;
+            const layers = Array.isArray(this.layeredMetadata.layers) ? this.layeredMetadata.layers : [];
+            return layers.filter((layer) => this.shouldRenderLayer(layer, stateName)).length;
+        }
+
+        renderedLayerDebugInfo(stateName) {
+            if (!this.isLayeredActive()) return [];
+            const layers = Array.isArray(this.layeredMetadata.layers) ? this.layeredMetadata.layers : [];
+            return layers
+                .filter((layer) => this.shouldRenderLayer(layer, stateName))
+                .sort((a, b) => {
+                    const aState = this.layerStateForCurrentIndex(a);
+                    const bState = this.layerStateForCurrentIndex(b);
+                    return (Number(aState.z_index ?? a.zindex ?? 0) - Number(bState.z_index ?? b.zindex ?? 0))
+                        || (Number(a.order || 0) - Number(b.order || 0));
+                })
+                .map((layer) => {
+                    const layerState = this.layerStateForCurrentIndex(layer);
+                    const img = this.layeredImages.get(layer._imageIndex);
+                    const frame = img ? this.stateFrameInfo(layer, layerState, img) : null;
+                    return {
+                        name: layer.name || '',
+                        order: Number(layer.order || 0),
+                        sprite_id: layer.sprite_id ?? null,
+                        parent_id: layer.parent_id ?? null,
+                        x: Number(layerState.x ?? layer.x ?? 0),
+                        y: Number(layerState.y ?? layer.y ?? 0),
+                        width: Number(layerState.frame_width ?? layer.width ?? 0),
+                        height: Number(layerState.frame_height ?? layer.height ?? 0),
+                        image_width: Number(layer.image_width ?? 0),
+                        image_height: Number(layer.image_height ?? 0),
+                        frame: frame ? frame.frame : Number(layerState.frame || 0),
+                        frames: frame ? frame.frames : Number(layerState.frames || layerState.hframes || 1),
+                        hframes: frame ? frame.hframes : Number(layerState.hframes || 1),
+                        frame_animated: !!(frame && frame.animated),
+                        visible: layerState.visible !== false,
+                        ancestor_visible: layerState.ancestor_visible ?? layer.ancestor_visible ?? true,
+                        should_talk: !!(layerState.effective_should_talk ?? layerState.should_talk),
+                        open_mouth: !!(layerState.effective_open_mouth ?? layerState.open_mouth),
+                        should_blink: !!(layerState.effective_should_blink ?? layerState.should_blink),
+                        open_eyes: (layerState.effective_open_eyes ?? layerState.open_eyes) !== false
+                    };
+                });
+        }
+
+        getDebugState() {
+            const container = this.container || document.getElementById(this.containerId);
+            const image = this.image || this.imageElement || this.canvasElement;
+            const stateSettings = this.currentRemixStateSettings();
+            const now = performance.now();
+            const bounceProgress = this.speakingBounceStart && this.speakingBounceDuration
+                ? Math.max(0, Math.min(1, (now - this.speakingBounceStart) / this.speakingBounceDuration))
+                : 0;
+            const layers = this.layeredMetadata && Array.isArray(this.layeredMetadata.layers)
+                ? this.layeredMetadata.layers
+                : [];
+            const imageRect = image && typeof image.getBoundingClientRect === 'function'
+                ? image.getBoundingClientRect()
+                : null;
+            return {
+                active: !!(container && container.style.display !== 'none' && !container.classList.contains('hidden')),
+                modelType: (window.lanlan_config?.model_type || '').toLowerCase() || null,
+                state: this.state,
+                isSpeaking: !!this.isSpeaking,
+                speakingMouthOpen: !!this.speakingMouthOpen,
+                layered: this.isLayeredActive(),
+                layeredConfigured: this.isLayeredConfigured(),
+                layeredStateIndex: this.layeredStateIndex,
+                layerCount: layers.length,
+                renderedIdleLayerCount: this.renderedLayerCountForState('idle'),
+                renderedTalkingLayerCount: this.renderedLayerCountForState('talking'),
+                renderedLayers: this.renderedLayerDebugInfo(this.state || 'idle'),
+                currentMoAnim: stateSettings.current_mo_anim || null,
+                currentMcAnim: stateSettings.current_mc_anim || null,
+                bounceActive: !!(this.speakingBounceFrame || (bounceProgress > 0 && bounceProgress < 1)),
+                bounceProgress,
+                timers: {
+                    mouthTimer: !!this.speakingMouthTimer,
+                    bounceFrame: !!this.speakingBounceFrame,
+                    blinkTimer: !!this.layeredBlinkTimer,
+                    blinkEndTimer: !!this.layeredBlinkEndTimer,
+                    returnIdleTimer: !!this.returnIdleTimer,
+                    layeredAnimationFrame: !!this.layeredAnimationFrame
+                },
+                container: {
+                    id: this.containerId,
+                    exists: !!container,
+                    display: container ? container.style.display || '' : '',
+                    visibility: container ? container.style.visibility || '' : '',
+                    hiddenClass: !!(container && container.classList.contains('hidden'))
+                },
+                image: {
+                    tag: image ? image.tagName : null,
+                    src: image && image.getAttribute ? image.getAttribute('src') : null,
+                    width: imageRect ? Math.round(imageRect.width) : 0,
+                    height: imageRect ? Math.round(imageRect.height) : 0,
+                    transform: image && image.style ? image.style.transform || '' : ''
+                }
+            };
         }
 
         setSpeaking(isSpeaking) {
@@ -671,9 +1413,10 @@
                 this.clickTimer = null;
             }
             if (isSpeaking) {
-                this.setState('talking');
+                this.startSpeakingMouthAnimation();
                 return;
             }
+            this.stopSpeakingMouthAnimation();
             this.returnIdleTimer = setTimeout(() => {
                 this.returnIdleTimer = null;
                 this.setState('idle');
@@ -685,9 +1428,19 @@
             this.container.classList.remove('hidden');
             this.container.style.display = 'block';
             this.container.style.visibility = 'visible';
+            if (this.isLayeredActive()) {
+                this.drawLayeredState();
+                if (!this.layeredBlinkTimer && !this.layeredBlinkEndTimer) {
+                    this.startLayeredBlinkLoop();
+                }
+                this.restartLayeredAnimationLoop();
+                this.attachLayeredHotkeys();
+            }
         }
 
         hide() {
+            this.clearLayeredTimers();
+            this.detachLayeredHotkeys();
             if (this.returnIdleTimer) {
                 clearTimeout(this.returnIdleTimer);
                 this.returnIdleTimer = null;
@@ -696,6 +1449,7 @@
                 clearTimeout(this.clickTimer);
                 this.clickTimer = null;
             }
+            this.stopSpeakingMouthAnimation();
             const container = this.container || document.getElementById(this.containerId);
             if (container) {
                 container.style.display = 'none';
@@ -723,8 +1477,12 @@
             }
             this._lockIconElement = null;
             this._lockIconImages = null;
+            this.clearLayeredTimers();
+            this.detachLayeredHotkeys();
+            this.layeredMetadata = null;
+            this.layeredImages = new Map();
             if (this.image) {
-                this.image.removeAttribute('src');
+                if (this.image.removeAttribute) this.image.removeAttribute('src');
             }
             this.hide();
         }
@@ -975,11 +1733,25 @@
 
     installPNGTuberFloatingButtons();
 
-    function hideOtherAvatarRuntimesForPNGTuber() {
+    async function hideOtherAvatarRuntimesForPNGTuber() {
         if (document.body?.classList.contains('model-manager-page')
             && window._modelManagerCurrentAvatarType
             && window._modelManagerCurrentAvatarType !== 'pngtuber') {
             return;
+        }
+
+        if (window.live2dManager) {
+            try {
+                window.live2dManager._activeLoadToken = (window.live2dManager._activeLoadToken || 0) + 1;
+                window.live2dManager._isLoadingModel = false;
+                if (typeof window.live2dManager.removeModel === 'function') {
+                    await window.live2dManager.removeModel({ skipCloseWindows: true });
+                } else {
+                    window.live2dManager.currentModel = null;
+                }
+            } catch (error) {
+                console.warn('[PNGTuber] 清理 Live2D runtime 失败:', error);
+            }
         }
 
         const live2dContainer = document.getElementById('live2d-container');
@@ -1013,7 +1785,7 @@
     }
 
     async function loadPNGTuberAvatar(config) {
-        hideOtherAvatarRuntimesForPNGTuber();
+        await hideOtherAvatarRuntimesForPNGTuber();
         if (!window.pngtuberManager) {
             window.pngtuberManager = new PNGTuberManager();
         }
@@ -1024,14 +1796,22 @@
             window.pngtuberManager.hide();
             return window.pngtuberManager;
         }
-        hideOtherAvatarRuntimesForPNGTuber();
+        await hideOtherAvatarRuntimesForPNGTuber();
         window.pngtuberManager.show();
-        hideOtherAvatarRuntimesForPNGTuber();
+        await hideOtherAvatarRuntimesForPNGTuber();
         window.dispatchEvent(new CustomEvent('pngtuber-model-loaded'));
         return window.pngtuberManager;
+    }
+
+    function playPNGTuberAnimation(target, options = {}) {
+        if (!window.pngtuberManager || typeof window.pngtuberManager.playLayeredAnimation !== 'function') {
+            return false;
+        }
+        return window.pngtuberManager.playLayeredAnimation(target, options);
     }
 
     window.PNGTuberManager = PNGTuberManager;
     window.hideOtherAvatarRuntimesForPNGTuber = hideOtherAvatarRuntimesForPNGTuber;
     window.loadPNGTuberAvatar = loadPNGTuberAvatar;
+    window.playPNGTuberAnimation = playPNGTuberAnimation;
 })();

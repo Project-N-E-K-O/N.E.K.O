@@ -383,7 +383,9 @@ def _validate_local_mutation_request(
 
     logger.warning(
         "Rejected local mutation request due to failed CSRF/origin validation: "
-        "origin=%r allowed_origins=%r has_csrf=%s referer=%r",
+        "method=%r path=%r origin=%r allowed_origins=%r has_csrf=%s referer=%r",
+        request.method,
+        request.url.path,
         request_origin,
         sorted(allowed_origins),
         has_valid_csrf,

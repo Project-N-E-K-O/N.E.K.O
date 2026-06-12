@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 from fastapi import APIRouter, Body, File, UploadFile
 from fastapi.responses import JSONResponse
 
+from .pngtuber_importers import PNGTuberImportError, import_pngtuber_package
 from .shared_state import get_config_manager
 from utils.logger_config import get_module_logger
 
@@ -23,7 +24,7 @@ CHUNK_SIZE = 1024 * 1024
 
 
 def _slugify_name(name: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", (name or "").strip())
+    cleaned = re.sub(r"[^\w.-]+", "_", (name or "").strip(), flags=re.UNICODE)
     cleaned = cleaned.strip("._-")
     return cleaned or "pngtuber_model"
 
@@ -77,11 +78,31 @@ def _normalize_pngtuber_config(model_dir_name: str, model_json: dict) -> dict:
             rel = _safe_relative_path(stripped)
             result[field] = f"{PNGTUBER_USER_PATH}/{model_dir_name}/{rel.as_posix()}" if rel else ""
 
+    metadata_path = raw.get("layered_metadata") or raw.get("metadata")
+    if isinstance(metadata_path, str) and metadata_path.strip():
+        stripped = metadata_path.strip().replace("\\", "/")
+        if stripped.startswith(("/", "http://", "https://")):
+            result["layered_metadata"] = stripped
+        else:
+            rel = _safe_relative_path(stripped)
+            result["layered_metadata"] = f"{PNGTUBER_USER_PATH}/{model_dir_name}/{rel.as_posix()}" if rel else ""
+    else:
+        result["layered_metadata"] = ""
+
+    adapter = raw.get("adapter")
+    if isinstance(adapter, str):
+        result["adapter"] = adapter
+    elif result["layered_metadata"]:
+        result["adapter"] = "layered_canvas_v1"
+    else:
+        result["adapter"] = ""
+
     result["scale"] = raw.get("scale", 1)
     result["offset_x"] = raw.get("offset_x", 0)
     result["offset_y"] = raw.get("offset_y", 0)
     result["mirror"] = bool(raw.get("mirror", False))
     result["source_type"] = raw.get("source_type") or "transparent_asset"
+    result["source_format"] = model_json.get("source_format") or raw.get("source_format") or result["source_type"]
     return result
 
 
@@ -128,14 +149,12 @@ async def upload_pngtuber_model(files: list[UploadFile] = File(...)):
         by_path[rel] = file
 
     upload_root, stripped_paths = _split_upload_root(upload_paths)
-    if PurePosixPath("model.json") not in stripped_paths.values():
-        return JSONResponse(status_code=400, content={"success": False, "error": "PNGTuber 文件夹根目录必须包含 model.json"})
-
     model_name_seed = upload_root or ""
     if not model_name_seed:
         model_file = next((f for p, f in by_path.items() if stripped_paths[p] == PurePosixPath("model.json")), None)
         model_name_seed = Path(model_file.filename or "pngtuber_model").stem if model_file else "pngtuber_model"
     model_dir_name = _slugify_name(model_name_seed)
+
     target_dir = config_mgr.pngtuber_dir / model_dir_name
     if target_dir.exists():
         return JSONResponse(status_code=400, content={"success": False, "error": f"PNGTuber模型 {model_dir_name} 已存在，请先删除或重命名"})
@@ -168,12 +187,13 @@ async def upload_pngtuber_model(files: list[UploadFile] = File(...)):
                         raise ValueError(f"单个文件过大，最大允许 {MAX_FILE_SIZE // (1024 * 1024)}MB")
                     out.write(chunk)
 
-        model_json = _read_model_json(temp_dir)
+        import_result = import_pngtuber_package(temp_dir, model_dir_name)
+        model_json = import_result.model_json
         ok, error = _validate_model_package(temp_dir, model_json)
         if not ok:
             return JSONResponse(status_code=400, content={"success": False, "error": error})
 
-        model_dir_name = _slugify_name(model_json.get("name") or model_dir_name)
+        model_dir_name = _slugify_name(import_result.model_name or model_json.get("name") or model_dir_name)
         target_dir = config_mgr.pngtuber_dir / model_dir_name
         if target_dir.exists():
             return JSONResponse(status_code=400, content={"success": False, "error": f"PNGTuber模型 {model_dir_name} 已存在，请先删除或重命名"})
@@ -181,6 +201,7 @@ async def upload_pngtuber_model(files: list[UploadFile] = File(...)):
         normalized_config = _normalize_pngtuber_config(model_dir_name, model_json)
         model_json["model_type"] = "pngtuber"
         model_json["pngtuber"] = normalized_config
+        model_json["source_format"] = import_result.source_format
         with open(temp_dir / "model.json", "w", encoding="utf-8") as f:
             json.dump(model_json, f, ensure_ascii=False, indent=2)
 
@@ -188,15 +209,27 @@ async def upload_pngtuber_model(files: list[UploadFile] = File(...)):
         logger.info("PNGTuber模型上传成功: %s", target_dir)
         return JSONResponse(content={
             "success": True,
-            "message": f"PNGTuber模型 {model_json.get('name') or model_dir_name} 上传成功",
+            "message": import_result.message or f"PNGTuber模型 {model_json.get('name') or model_dir_name} 上传成功",
             "model_type": "pngtuber",
             "model_name": model_json.get("name") or model_dir_name,
             "name": model_json.get("name") or model_dir_name,
             "folder": model_dir_name,
             "url": f"{PNGTUBER_USER_PATH}/{model_dir_name}/model.json",
             "pngtuber": normalized_config,
+            "source_format": import_result.source_format,
+            "warnings": import_result.warnings,
             "file_size": total_size,
         })
+    except PNGTuberImportError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "success": False,
+                "error": str(exc),
+                "source_format": exc.source_format,
+                "warnings": exc.warnings,
+            },
+        )
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"success": False, "error": str(exc)})
     except Exception as exc:
@@ -236,6 +269,7 @@ async def get_pngtuber_models():
                     "model_type": "pngtuber",
                     "url": f"{PNGTUBER_USER_PATH}/{package_dir.name}/model.json",
                     "pngtuber": pngtuber,
+                    "source_format": model_json.get("source_format", "simple_package"),
                 })
             except Exception as exc:
                 logger.warning("跳过无效PNGTuber模型 %s: %s", package_dir, exc)

@@ -1963,6 +1963,56 @@ async def update_catgirl_l2d(name: str, request: Request):
                     return JSONResponse(content={'success': False, 'error': f'PNGTuber图片格式必须是 PNG/GIF/JPG/JPEG/WebP: {key}'}, status_code=400)
                 pngtuber_payload[key] = image_path
 
+            metadata_path = str(
+                pngtuber_payload.get('layered_metadata')
+                or pngtuber_payload.get('metadata')
+                or ''
+            ).strip().replace('\\', '/')
+
+            def _infer_pngtuber_metadata_from_idle(idle_path: str) -> str:
+                if not idle_path.startswith('/user_pngtuber/'):
+                    return ''
+                parts = [part for part in idle_path.split('/') if part]
+                if len(parts) < 3 or parts[0] != 'user_pngtuber':
+                    return ''
+                model_folder = parts[1]
+                try:
+                    root = get_config_manager().pngtuber_dir / model_folder
+                except Exception:
+                    return ''
+                for filename in (
+                    'metadata.pngtube-remix.json',
+                    'metadata.pngtuber-plus.json',
+                    'metadata.json',
+                ):
+                    if (root / filename).is_file():
+                        return f'/user_pngtuber/{model_folder}/{filename}'
+                return ''
+
+            if not metadata_path:
+                metadata_path = _infer_pngtuber_metadata_from_idle(idle_image)
+
+            if metadata_path:
+                if metadata_path.startswith('data:'):
+                    return JSONResponse(content={'success': False, 'error': 'PNGTuber分层metadata路径不能使用data URL'}, status_code=400)
+                if '..' in metadata_path:
+                    return JSONResponse(content={'success': False, 'error': 'PNGTuber分层metadata路径不能包含路径遍历（..）'}, status_code=400)
+                is_remote_metadata = metadata_path.startswith('http://') or metadata_path.startswith('https://')
+                if not is_remote_metadata and not any(metadata_path.startswith(prefix) for prefix in allowed_prefixes):
+                    return JSONResponse(content={'success': False, 'error': 'PNGTuber分层metadata路径必须以 /user_pngtuber/、/static/ 或 /workshop/ 开头'}, status_code=400)
+                metadata_ext_path = metadata_path.lower().split('?', 1)[0].split('#', 1)[0]
+                if not metadata_ext_path.endswith('.json'):
+                    return JSONResponse(content={'success': False, 'error': 'PNGTuber分层metadata必须是 JSON 文件'}, status_code=400)
+                pngtuber_payload['layered_metadata'] = metadata_path
+                pngtuber_payload['adapter'] = 'layered_canvas_v1'
+            else:
+                pngtuber_payload['layered_metadata'] = ''
+                pngtuber_payload['adapter'] = ''
+
+            for key in ('source_type', 'source_format'):
+                value = str(pngtuber_payload.get(key) or '').strip()
+                pngtuber_payload[key] = value
+
             def _bounded_number(value, default, min_value, max_value):
                 try:
                     parsed = float(value)

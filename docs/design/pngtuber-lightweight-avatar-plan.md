@@ -1,5 +1,112 @@
 # PNGTuber 轻量角色载体接入计划
 
+## PNGTubeRemix runtime 阶段经验补充
+
+### 当前验收基线
+
+当前稳定基线先以“能说话、能弹跳、不破坏 Live2D/VRM/MMD”为准。
+
+已经验证的能力：
+
+- PNGTuber 普通两图模型可以随语音在 `idle` / `talking` 之间切换。
+- layered canvas PNGTuber 可以随语音切换闭嘴层和张嘴层。
+- 长语音不应一直停在张嘴状态，而应通过轻量 mouth flap 在 `idle` / `talking` 之间循环。
+- PNGTubeRemix metadata 中 `current_mo_anim: "One Bounce"` 可以作为说话开口时触发整体弹跳的依据。
+- One Bounce 只在 metadata 明确包含 bounce 语义时启用，不应强制应用到所有 PNGTuber 模型。
+- Live2D、VRM、MMD 与 PNGTuber 的显示互斥仍是最高优先级，任何 runtime 动画都不能破坏模型切换和主页返回逻辑。
+
+本轮自动验证结果：
+
+```powershell
+node --check static\pngtuber-core.js
+uv run pytest tests\unit\test_pngtuber_static_contracts.py tests\unit\test_pngtuber_importers.py tests\unit\test_pngtuber_router.py
+```
+
+结果：`34 passed`，仅有外部依赖 deprecation warning。
+
+### PNGTubeRemix 动画来源判断
+
+对真实橘雪梨 `.pngRemix` 样本和导入后的 metadata 观察后，结论是：PNGTubeRemix 模型并不是简单自带一段完整跳跃 GIF 或逐帧跳跃动画。模型文件主要保存三类信息：
+
+- 图层素材：身体、头发、眼睛、嘴巴、手、道具等 PNG 图层。
+- 状态配置：不同表情状态下的图层可见性、位置、缩放、旋转、父子关系、嘴巴开闭、眨眼等。
+- runtime 参数：例如 `current_mo_anim`、`current_mc_anim`、`bounceGravity`、`bounceSlider`、`xAmp`、`xFrq`、`yAmp`、`yFrq`、`physics`、`stretchAmount`、`rdragStr` 等。
+
+因此，演示中的 `duang~duang~` 更接近“软件 runtime 根据配置实时计算出的效果”，而不是模型包里存在一个可直接播放的完整跳跃动画文件。
+
+已观察到的关键字段：
+
+```json
+{
+  "current_mo_anim": "One Bounce",
+  "current_mc_anim": "Idle",
+  "bounceGravity": 575,
+  "bounceSlider": 250,
+  "xAmp": 5,
+  "xFrq": 0.3,
+  "yAmp": 5,
+  "yFrq": 0.4
+}
+```
+
+语义判断：
+
+- `current_mo_anim` 可理解为 mouth open animation。`One Bounce` 表示嘴巴打开时触发一次整体弹跳。
+- `current_mc_anim` 可理解为 mouth closed 或 character idle animation。`Idle` 表示非说话或常态下的角色动画模式。
+- `bounceGravity` 和 `bounceSlider` 更像软件 runtime 的弹跳物理参数，不是图层自身的坐标。
+- `xAmp/xFrq/yAmp/yFrq` 可能表示全局或局部待机运动参数，但直接加入全局 transform 曾干扰说话和弹跳主链路，暂不纳入稳定基线。
+
+### 当前 runtime 子集
+
+当前项目只把 PNGTubeRemix runtime 落地为一个保守子集：
+
+- 图层渲染：Canvas layered runtime 根据 metadata 中的 layer、state、zindex、position、scale、rotation 绘制。
+- 图层互斥：支持父级可见性继承、说话层继承、眨眼层继承，避免多个动作/表情图层重叠。
+- 口型：语音开始后启动 mouth flap 定时器，在 `idle` / `talking` 间轻量切换。
+- One Bounce：当当前状态的 `current_mo_anim` 包含 `Bounce` 时，在张嘴瞬间触发一次整体 `translateY + scaleX/scaleY` 回弹。
+- 清理：语音结束、隐藏 PNGTuber、dispose 时必须清理 mouth timer 和 bounce animation frame。
+
+当前暂缓的能力：
+
+- 全局 Idle motion：读取 `settings.xAmp/xFrq/yAmp/yFrq` 让整个角色持续漂动。曾导致说话和弹跳失效，需在有浏览器运行态调试面板后再恢复。
+- 完整物理：`rdragStr`、`dragSpeed`、`stretchAmount`、`bounceGravity` 的完整 Godot/Remix 物理还原。
+- mesh：当前不支持 mesh 变形。
+- sprite sheet 多帧：当前以静态层为主，后续再支持 `frames/hframes/img_animated/animation_speed`。
+- 热键 UI：已能保留 hotkey metadata，但还需要用户可见的状态按钮或调试面板。
+
+### 重要回归教训
+
+不要一次性把所有 Remix runtime 参数都接进主渲染链路。
+
+实际发生过一次回归：在已经可用的 mouth flap + One Bounce 基础上，直接加入全局 Idle motion 后，用户观察到“不会开口说话，跳一跳也没了”。随后撤回全局 Idle motion，保留 mouth flap 和 One Bounce，主链路恢复。
+
+因此后续策略必须是：
+
+- 先固化“说话 + One Bounce + 互斥显示”作为稳定基线。
+- 新增 runtime 能力必须有开关，默认不影响已稳定能力。
+- 每新增一个 runtime 参数，只做一个最小可验证行为。
+- 每次新增后都要验证 `setSpeaking(true)`、mouth flap、One Bounce、hide/dispose 清理。
+- 不要让全局 transform、RAF 循环或状态重绘影响 `setState('talking')` 的图层筛选。
+
+### 后续 runtime v2 建议
+
+下一阶段不要直接继续叠动画，而是先做可观测性：
+
+- 在开发模式下暴露 `window.pngtuberManager.getDebugState()`。
+- 返回当前 `state`、`layeredStateIndex`、`isSpeaking`、`speakingMouthOpen`、`speakingBounceStart`、当前 `current_mo_anim`、当前 `current_mc_anim`。
+- 增加只读调试日志或页面调试面板，显示当前渲染层数量、被 ancestor hidden 的层数量、当前 talking/idle 可见层差异。
+- 用 Playwright 实际触发 `window.pngtuberManager.setSpeaking(true)`，观察 1-2 秒内 `state` 是否在 `idle/talking` 间变化。
+- 再逐步恢复全局 Idle motion，并且必须提供开关，例如 `runtime_features.global_idle_motion`。
+
+建议 runtime v2 的实现顺序：
+
+1. Debug state API。
+2. Playwright 运行态验收脚本。
+3. 全局 Idle motion behind flag。
+4. sprite sheet frame animation。
+5. 热键/状态按钮 UI。
+6. 更完整的 Remix physics。
+
 ## 实施经验与问题复盘摘要
 
 本节汇总 PNGTuber 接入过程中的实际经验。PNGTuber 看起来只是图片/GIF 播放，但它进入的是一个已经存在 Live2D、VRM、MMD、模型管理器、多窗口通信、主页返回动画、悬浮按钮和角色配置接口的系统。因此稳定性关键不在单个 `<img>` 能否显示，而在前后端配置一致、运行时互斥、跨页面状态同步和重复 reload 防护。
@@ -847,6 +954,169 @@ uv run pytest tests\unit\test_pngtuber_router.py tests\unit\test_pngtuber_static
 前端 JS 或模板改动后运行：
 
 ```powershell
+.\build_frontend.bat
+```
+
+## 当前已完成能力与稳定基线
+
+本节记录 PNGTuber 接入到当前阶段已经实际完成、验证过或需要长期保留的实现经验。文档前半部分仍可作为原始设计计划参考，本节作为后续维护时的当前事实基线。
+
+### 已完成能力
+
+- `model_type: "pngtuber"` 已作为独立头像类型接入，不能作为 Live2D 子格式处理。
+- PNGTuber 已复用现有 `#model-select / live2dModelManager` 模型选择入口，不再保留独立的 `pngtuber-model-select`、`pngtuberModelManager`、`pngtuberModelDropdown`。
+- PNGTuber 模型列表由 `/api/model/pngtuber/models` 填充到现有 `modelSelect`，option 必须包含 `data-model-type="pngtuber"`、`data-folder`、`data-url`、`data-pngtuber`。
+- Simple Package、PNGTuber Plus `.save`、PNGTubeRemix `.pngRemix` 已进入导入/转换体系。Simple Package 仍是项目内部统一落地格式。
+- 模型管理页已有轻量 PNGTuber 预览控件：`测试说话` 按钮和 `状态预览` 下拉。该面板是导入验收工具，不是完整编辑器，也不接入 Live2D motion/expression 系统。
+- PNGTuber runtime 已支持 idle/talking、mouth flap、One Bounce、layered canvas、拖拽/缩放、浮动按钮、锁定/返回按钮和 debug state。
+- `window.pngtuberManager.getDebugState()` 已存在，不要重复设计第二套 debug API。
+
+### 当前稳定验收基线
+
+最近一次相关自动验证基线包括：
+
+```powershell
+node --check static\js\model_manager.js
+node --check static\pngtuber-core.js
+uv run pytest tests\unit\test_pngtuber_static_contracts.py
+```
+
+前端 JS 或模板改动后必须运行：
+
+```powershell
+.\build_frontend.bat
+```
+
+注意：普通权限构建可能因 `static/yui-origin` 权限失败，需要提升权限重跑。构建输出中的 npm audit 和 chunk size warning 是既有警告，不代表 PNGTuber 修复失败。
+
+## 最新实施经验补充
+
+### 模型管理页自动加载经验
+
+PNGTuber 自动切换到上次选择的模型时，不能只设置下拉值，也不能只依赖 synthetic `change` 事件。实际发生过的问题是：下拉已经显示橘雪莉，但 runtime 没有真正加载，用户必须手动重新选择一次模型才会显示正确状态。
+
+最终约束：
+
+- 自动切到 PNGTuber 时，优先选择用户上次记住的 PNGTuber 模型；没有历史选择时选择第一个可用 PNGTuber option。
+- 自动选择后必须直接 `await loadSelectedPNGTuberOption(selectedOption, { markDirty: false })`。
+- 手动选择 PNGTuber 时也复用 `loadSelectedPNGTuberOption(...)`，但传入 `markDirty: true` 或等价逻辑。
+- `loadSelectedPNGTuberOption(...)` 必须直接 `await window.loadPNGTuberAvatar(pngtuberConfig)`，并 `await loadPNGTuberPreviewControls(pngtuberConfig)`。
+- 自动恢复上次选择不标记未保存；用户手动选择模型才标记未保存并启用保存按钮。
+
+该经验的核心是：下拉选中状态和 runtime 加载状态必须由同一条可等待的函数链路维护，不能分散在多个事件副作用里。
+
+### 保存链路经验
+
+PNGTuber 显示偏好保存在角色配置 `_reserved.avatar.pngtuber` 中，不进入 Live2D preferences。后端会整体写回 PNGTuber 配置，因此前端保存请求必须携带完整 PNGTuber config。
+
+模型管理页保存 PNGTuber 时，配置合并顺序必须固定为：
+
+1. 当前 option 的 `data-pngtuber`
+2. `currentModelInfo.pngtuber`
+3. `window.pngtuberManager.config`
+
+`window.pngtuberManager.config` 必须最后覆盖，保证用户在模型管理页拖拽、缩放、镜像后的 `offset_x / offset_y / scale / mirror` 能保存为最新值。
+
+同时必须保留以下字段，避免 `.save/.pngRemix` 分层模型保存后丢失来源和 metadata：
+
+- `adapter`
+- `layered_metadata`
+- `source_format`
+- `source_type`
+- `idle_image`
+- `talking_image`
+- `drag_image`
+- `click_image`
+
+模型管理页不能依赖 `static/pngtuber-core.js::saveCurrentConfig()` 完成偏好保存。runtime 自动保存主要服务主页/运行态交互；模型管理页的“保存设置”按钮必须主动读取 runtime 当前 config。
+
+### 运行态互斥经验
+
+PNGTuber 与 Live2D/VRM/MMD 的互斥是最高优先级。实际排查中出现过后端配置已经是 Live2D，但主页仍残留 PNGTuber 的情况，根因在前端运行态和 DOM 残留，而不是后端保存失败。
+
+约束：
+
+- `loadPNGTuberAvatar()` 应在加载前、加载后、显示后多次隐藏 Live2D/VRM/MMD，防止异步初始化或 UI 恢复插队。
+- Live2D 在 PNGTuber 模式下必须跳过默认 fallback 加载，避免 PNGTuber 模式又把 Live2D 重新拉起。
+- 从 PNGTuber 切回 Live2D 时，不能只恢复 UI 和 PIXI canvas，必须重新触发 Live2D 模型加载链路。
+- `handleShowMainUI()` 必须只恢复当前模型类型的容器和 floating buttons，不能遍历恢复所有类型按钮。
+- BroadcastChannel 与 postMessage 可能重复触发 `reload_model`，必须做 in-flight reload 去重，避免 Live2D 重复加载和闪烁。
+- PNGTuber runtime 不应在普通同步函数中写 `window.lanlan_config.model_type = 'pngtuber'`，否则切回 Live2D 后可能再次污染全局模型类型。
+
+### 主页面交互经验
+
+PNGTuber 容器是全局 fixed 容器，必须避免挡住主页聊天框和其他按钮。
+
+约束：
+
+- `#pngtuber-container` 应使用 `pointer-events: none`。
+- 只有 `.pngtuber-image` 在可交互状态下使用 `pointer-events: auto`。
+- 锁定状态下图片也应禁用交互。
+- 不要使用全局点击拦截或 MutationObserver 去抢主页 UI 事件。
+
+### 调试经验
+
+`window.pngtuberManager.getDebugState()` 是当前统一运行态观察入口。排查时优先查看：
+
+- `modelType`
+- `state`
+- `isSpeaking`
+- `speakingMouthOpen`
+- `layeredStateIndex`
+- `layerCount`
+- `renderedIdleLayerCount`
+- `renderedTalkingLayerCount`
+- `currentMoAnim`
+- `currentMcAnim`
+- `bounceActive`
+- `timers`
+
+不要在没有运行态证据时继续猜测模型是否加载、是否说话、是否有图层在线。优先用 debug state、DOM computed style 和实际浏览器截图验证。
+
+## 已修复问题与防回归要求
+
+### 已修复问题
+
+- PNGTuber 和 Live2D 同框显示：通过加强运行态互斥、主页恢复逻辑和 Live2D PNGTuber 模式跳过加载修复。
+- 从 PNGTuber 切回 Live2D 后模型不显示：通过 Live2D 回切后重新触发 Live2D 模型加载链路修复。
+- 选择 PNGTuber 后保存提示不一致：保存成功提示已对齐 Live2D 的“位置和模型设置保存成功”。
+- PNGTuber 模型管理页预览位置不对：模型管理页预览和主页展示语义分离，预览页应居中，主页按用户偏好显示。
+- PNGTuber 模式主页聊天框不可用：通过容器 pointer events 约束避免 PNGTuber 容器挡住聊天框。
+- PNGTuber 导入第三方格式后图层/动作重叠：通过 layered canvas runtime 的可见性、状态和继承规则约束减少多状态叠加。
+- 长语音导致一直张嘴：通过 mouth flap 在 `idle/talking` 之间轻量切换，避免长语音一直停留在 talking 图。
+- One Bounce 失效或误用：仅在 metadata 明确包含 bounce 语义时启用，不强制应用到所有 PNGTuber 模型。
+- PNGTuber 偏好保存丢失：模型管理页保存时使用 runtime config 最后覆盖，确保拖拽/缩放/镜像偏好写入 `_reserved.avatar.pngtuber`。
+- 切换到 PNGTuber 后下拉显示上次模型但没有自动加载：通过 `loadSelectedPNGTuberOption(...)` 直接 await runtime 加载修复，不再只依赖 suppressed `change` 事件。
+
+### 防回归要求
+
+静态契约测试至少覆盖：
+
+- PNGTuber 不再引用废弃的 `pngtuberModelSelect`、`pngtuberModelManager`、`pngtuberModelDropdown`。
+- PNGTuber option 写入 `data-model-type="pngtuber"` 和 `data-pngtuber`。
+- `modelSelect` 的 PNGTuber change 分支调用 `loadSelectedPNGTuberOption(...)`。
+- 自动回切 PNGTuber 时直接 `await loadSelectedPNGTuberOption(...)`，不要只 dispatch suppressed change。
+- PNGTuber 保存分支读取 `window.pngtuberManager.config`，且 runtime config 合并顺序在最后。
+- `loadPNGTuberAvatar()` 包含运行态互斥隐藏逻辑。
+- Live2D 在 PNGTuber 模式下不会 fallback 加载默认模型。
+- `getDebugState()` 保持可用。
+
+手动验收至少覆盖：
+
+1. 切到 PNGTuber 后自动加载上次选中的橘雪莉，不需要手动重选。
+2. 手动选择另一个 PNGTuber 后，切走再切回会自动加载新选择的模型。
+3. 拖拽/缩放 PNGTuber 后点击保存，刷新后仍保持位置和大小。
+4. `.save/.pngRemix` 分层模型保存后状态预览仍可用，metadata 不丢。
+5. Live2D -> PNGTuber -> Live2D 不同框、不残留、不异常闪烁。
+6. PNGTuber -> Live2D -> PNGTuber 不出现旧 PNGTuber 或旧 Live2D 残留。
+
+推荐验证命令：
+
+```powershell
+node --check static\js\model_manager.js
+node --check static\pngtuber-core.js
+uv run pytest tests\unit\test_pngtuber_static_contracts.py
+uv run pytest tests\unit\test_pngtuber_router.py tests\unit\test_pngtuber_importers.py
 .\build_frontend.bat
 ```
 

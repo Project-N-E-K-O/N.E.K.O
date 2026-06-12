@@ -12,6 +12,7 @@ STATIC_INDEX_JS_PATH = Path(__file__).resolve().parents[2] / "static" / "js" / "
 REACT_CHAT_STYLES_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "styles.css"
 REACT_CHAT_APP_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "App.tsx"
 CHAT_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "chat.html"
+INDEX_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "index.html"
 SUBTITLE_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "subtitle.html"
 PAGES_ROUTER_PATH = Path(__file__).resolve().parents[2] / "main_routers" / "pages_router.py"
 COMPACT_EXPORT_HISTORY_PANEL_PATH = (
@@ -104,6 +105,12 @@ def test_chat_full_endpoint_uses_chat_template_with_initial_full_surface():
     )[0]
     assert '"initial_chat_surface_mode": "compact"' in chat_route_block
     assert '"initial_chat_surface_mode": "full"' not in chat_route_block
+
+
+def test_home_page_declares_compact_chat_surface_mode():
+    template_source = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
+
+    assert '<body class="subtitle-web-host" data-initial-chat-surface-mode="compact">' in template_source
 
 
 def test_full_inset_layout_gated_by_electron_runtime_marker():
