@@ -187,8 +187,15 @@ def _decode_audio(audio_base64: str, filename: str) -> tuple[bytes | None, str, 
             f"支持的格式: {', '.join(sorted(_ALLOWED_AUDIO_EXTENSIONS))}"
         )
 
+    encoded_audio = _strip_data_uri(audio_base64)
+    max_encoded_chars = ((_MAX_AUDIO_SIZE_BYTES + 2) // 3) * 4
+    if len(encoded_audio) > max_encoded_chars:
+        return None, "", (
+            f"音频 Base64 数据超过限制 {_format_bytes(_MAX_AUDIO_SIZE_BYTES)}"
+        )
+
     try:
-        binary = base64.b64decode(_strip_data_uri(audio_base64), validate=True)
+        binary = base64.b64decode(encoded_audio, validate=True)
     except Exception as exc:
         return None, "", f"Base64 解码失败: {exc}"
 

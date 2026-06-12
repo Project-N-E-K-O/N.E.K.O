@@ -137,9 +137,7 @@
 
     .upload-pane,
     .planner-pane,
-    .library-pane,
-    .task-list-pane {
-      grid-area: tasks;
+    .library-pane {
       display: flex;
       flex-direction: column;
       min-height: 0;
@@ -164,7 +162,10 @@
     }
 
     .task-list-pane {
+      display: flex;
+      flex-direction: column;
       min-height: 0;
+      gap: 10px;
       overflow: visible;
       height: auto;
       margin-top: 12px;
@@ -799,8 +800,7 @@
         grid-template-areas:
           "upload"
           "planner"
-          "library"
-          "tasks";
+          "library";
       }
       .library-pane,
       .task-list-pane { min-height: 560px; }
@@ -1016,6 +1016,7 @@
     // 500MB 是浏览器安全的上限（readAsDataURL 会把文件整体加载到内存 + 约 33% base64 膨胀）
     // 大文件路径应未来迁移到 multipart/form-data 或分片上传
     const MAX_AUDIO_SIZE = 500 * 1024 * 1024;
+    const BACKGROUND_REFRESH_INTERVAL_MS = 5000;
     const MAX_DURATION_SECONDS = 20000 * 3600;
     const AUDIO_EXT = [".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac"];
 
@@ -2709,7 +2710,7 @@
       startStage();
       startVisualizer();
       await refreshAll();
-      setInterval(refreshAll, 2000);
+      setInterval(refreshAll, BACKGROUND_REFRESH_INTERVAL_MS);
     }
 
     init();
