@@ -1422,6 +1422,12 @@ body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"
     pointer-events: auto !important;
 }
 
+/* Keep choice prompts above dimmed history hit regions. */
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"] .compact-export-history-anchor.under-choice-prompt,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"] .compact-export-history-anchor.under-choice-prompt * {
+    pointer-events: none !important;
+}
+
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"] .compact-chat-surface-shell {
     z-index: 100004 !important;
 }
