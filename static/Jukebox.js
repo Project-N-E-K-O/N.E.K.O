@@ -3008,10 +3008,7 @@ window.Jukebox = {
 
     async uploadSongs(files) {
       try {
-        const metadata = files.map(f => ({
-          name: f.name.replace(/\.[^/.]+$/, ''),
-          artist: '未知'
-        }));
+        const metadata = files.map(() => ({}));
         const result = await this.api.uploadSongs(files, metadata);
         console.log('[SongActionManager] 上传歌曲成功:', result);
         await this.load();

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
+from starlette.datastructures import UploadFile
 
 from main_routers import jukebox_router
 
@@ -170,6 +171,168 @@ def test_save_builtin_overrides_persists_changed_fields(tmp_path):
                 "name": "Renamed Action",
             }
         },
+    }
+
+
+@pytest.mark.asyncio
+async def test_upload_song_uses_audio_metadata_title_and_artist_when_form_metadata_empty(
+    monkeypatch, tmp_path
+):
+    jukebox_dir = tmp_path / "jukebox"
+    fake = _FakeJukeboxConfig(
+        {
+            "songs": {},
+            "actions": {},
+            "bindings": {},
+            "md5Index": {"songs": {}, "actions": {}},
+        },
+        jukebox_dir,
+    )
+    fake.songs_dir.mkdir(parents=True)
+    _install_fake_config(monkeypatch, fake)
+    monkeypatch.setattr(
+        jukebox_router,
+        "extract_audio_metadata",
+        lambda _path: {"name": "Metadata Title", "artist": "Metadata Artist"},
+    )
+
+    result = await jukebox_router.upload_songs(
+        [UploadFile(filename="uploaded.mp3", file=io.BytesIO(b"audio-bytes"))],
+        metadata=json.dumps([{}], ensure_ascii=False),
+    )
+
+    assert result["success"] is True
+    assert result["song"]["name"] == "Metadata Title"
+    assert result["song"]["artist"] == "Metadata Artist"
+    assert fake.data["songs"][result["song"]["id"]]["name"] == "Metadata Title"
+    assert fake.data["songs"][result["song"]["id"]]["artist"] == "Metadata Artist"
+    assert (fake.songs_dir / "uploaded.mp3").exists()
+    assert fake.saved is True
+
+
+@pytest.mark.asyncio
+async def test_upload_song_uses_audio_metadata_artist_when_form_artist_missing(monkeypatch, tmp_path):
+    jukebox_dir = tmp_path / "jukebox"
+    fake = _FakeJukeboxConfig(
+        {
+            "songs": {},
+            "actions": {},
+            "bindings": {},
+            "md5Index": {"songs": {}, "actions": {}},
+        },
+        jukebox_dir,
+    )
+    fake.songs_dir.mkdir(parents=True)
+    _install_fake_config(monkeypatch, fake)
+    monkeypatch.setattr(
+        jukebox_router,
+        "extract_audio_metadata",
+        lambda _path: {"name": "Metadata Title", "artist": "Metadata Artist"},
+    )
+
+    result = await jukebox_router.upload_songs(
+        [UploadFile(filename="uploaded.mp3", file=io.BytesIO(b"audio-bytes"))],
+        metadata=json.dumps([{"name": "Manual Title"}], ensure_ascii=False),
+    )
+
+    assert result["success"] is True
+    assert result["song"]["name"] == "Manual Title"
+    assert result["song"]["artist"] == "Metadata Artist"
+    assert fake.data["songs"][result["song"]["id"]]["artist"] == "Metadata Artist"
+    assert (fake.songs_dir / "uploaded.mp3").exists()
+    assert fake.saved is True
+
+
+@pytest.mark.asyncio
+async def test_upload_song_treats_unknown_form_artist_as_missing(monkeypatch, tmp_path):
+    jukebox_dir = tmp_path / "jukebox"
+    fake = _FakeJukeboxConfig(
+        {
+            "songs": {},
+            "actions": {},
+            "bindings": {},
+            "md5Index": {"songs": {}, "actions": {}},
+        },
+        jukebox_dir,
+    )
+    fake.songs_dir.mkdir(parents=True)
+    _install_fake_config(monkeypatch, fake)
+    monkeypatch.setattr(
+        jukebox_router,
+        "extract_audio_metadata",
+        lambda _path: {"name": "Metadata Title", "artist": "Metadata Artist"},
+    )
+
+    result = await jukebox_router.upload_songs(
+        [UploadFile(filename="uploaded.mp3", file=io.BytesIO(b"audio-bytes"))],
+        metadata=json.dumps([{"name": "Manual Title", "artist": "未知"}], ensure_ascii=False),
+    )
+
+    assert result["success"] is True
+    assert result["song"]["artist"] == "Metadata Artist"
+
+
+@pytest.mark.asyncio
+async def test_upload_song_falls_back_when_audio_metadata_extraction_fails(
+    monkeypatch, tmp_path
+):
+    jukebox_dir = tmp_path / "jukebox"
+    fake = _FakeJukeboxConfig(
+        {
+            "songs": {},
+            "actions": {},
+            "bindings": {},
+            "md5Index": {"songs": {}, "actions": {}},
+        },
+        jukebox_dir,
+    )
+    fake.songs_dir.mkdir(parents=True)
+    _install_fake_config(monkeypatch, fake)
+
+    def _raise_metadata_error(_path):
+        raise RuntimeError("tag read failed")
+
+    monkeypatch.setattr(jukebox_router, "extract_audio_metadata", _raise_metadata_error)
+
+    result = await jukebox_router.upload_songs(
+        [UploadFile(filename="fallback-title.mp3", file=io.BytesIO(b"audio-bytes"))],
+        metadata=json.dumps([{}], ensure_ascii=False),
+    )
+
+    assert result["success"] is True
+    assert result["song"]["name"] == "fallback-title"
+    assert result["song"]["artist"] == "未知"
+    assert fake.saved is True
+
+
+def test_extract_audio_metadata_picks_common_artist_tags(monkeypatch, tmp_path):
+    audio_path = tmp_path / "tagged.mp3"
+    audio_path.write_bytes(b"not-real-audio")
+
+    class _FakeStream:
+        type = "audio"
+        metadata = {"PERFORMER": " Stream Artist "}
+
+    class _FakeContainer:
+        metadata = {"title": " Meta Title "}
+        streams = [_FakeStream()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    class _FakeAv:
+        @staticmethod
+        def open(_path):
+            return _FakeContainer()
+
+    monkeypatch.setitem(__import__("sys").modules, "av", _FakeAv)
+
+    assert jukebox_router.extract_audio_metadata(audio_path) == {
+        "name": "Meta Title",
+        "artist": "Stream Artist",
     }
 
 
