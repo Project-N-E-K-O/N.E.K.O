@@ -125,7 +125,12 @@ class _Ctx:
         self.config_path.write_text(
             "[plugin]\nid='study_companion'\n", encoding="utf-8"
         )
-        self._config = config
+        self._config = dict(config)
+        study_config = self._config.get("study")
+        if isinstance(study_config, dict):
+            self._config["study"] = {"auto_open_ui": False, **study_config}
+        else:
+            self._config["study"] = {"auto_open_ui": False}
         self._effective_config = {
             "plugin": {"store": {"enabled": True}, "database": {"enabled": False}},
             "plugin_state": {"backend": "memory"},
@@ -250,6 +255,63 @@ async def test_awareness_disabled_does_not_start_loop_on_startup(
     assert plugin.is_awareness_active() is False
     assert plugin._awareness_task is None
     await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_plugin_startup_auto_opens_static_ui(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened: list[str] = []
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setenv("NEKO_USER_PLUGIN_SERVER_PORT", "49888")
+    monkeypatch.setattr(study_companion_module, "_open_url_in_browser", opened.append)
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "auto_open_ui": True},
+            "study_companion": {"communication": {"enabled": False}},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+
+    result = await plugin.startup()
+
+    try:
+        assert isinstance(result, Ok)
+        assert opened == ["http://127.0.0.1:49888/plugin/study_companion/ui/"]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_plugin_auto_open_failure_does_not_block_startup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _fail_open(_url: str) -> None:
+        raise RuntimeError("browser unavailable")
+
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setattr(study_companion_module, "_open_url_in_browser", _fail_open)
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "auto_open_ui": True},
+            "study_companion": {"communication": {"enabled": False}},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    plugin.logger = ctx.logger
+
+    result = await plugin.startup()
+
+    try:
+        assert isinstance(result, Ok)
+        assert any(
+            warning[0][0] == "study auto-open UI failed: {}"
+            for warning in ctx.logger.warnings
+        )
+    finally:
+        await plugin.shutdown()
 
 
 @pytest.mark.asyncio
@@ -1079,6 +1141,11 @@ def test_study_config_and_state_legacy_mode_migration(tmp_path: Path) -> None:
     legacy = build_config({"study": {"default_mode": "concept_explain"}})
     assert legacy.mode == MODE_COMPANION
     assert legacy.default_mode == MODE_COMPANION
+
+    auto_open = build_config({"study": {"auto_open_ui": True}})
+    assert auto_open.auto_open_ui is True
+    assert build_config({"auto_open_ui": True}).auto_open_ui is True
+    assert StudyConfig(auto_open_ui="yes").auto_open_ui is True
 
     llm_timeout = build_config({"llm": {"call_timeout_seconds": 42}})
     assert llm_timeout.llm_call_timeout_seconds == 42

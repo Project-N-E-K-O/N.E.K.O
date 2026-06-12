@@ -6,7 +6,10 @@ from collections.abc import Mapping
 from datetime import datetime
 import json
 import math
+import os
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 import time
 from typing import Any
@@ -129,6 +132,15 @@ except Exception:  # noqa: BLE001 - route registration should not block package 
 
 
 _REVIEW_DUE_INTERVAL_SECONDS = 1800.0
+
+
+def _open_url_in_browser(url: str) -> None:
+    if sys.platform == "win32":
+        os.startfile(url)
+    elif sys.platform == "darwin":
+        subprocess.run(["open", url], check=True)
+    else:
+        subprocess.run(["xdg-open", url], check=True)
 
 
 from .entry_tutor_context_support import _TutorContextSupportMixin
@@ -323,6 +335,7 @@ class StudyCompanionPlugin(
                     }
                 ]
             )
+            await self._auto_open_ui_if_enabled()
             self._sync_doc_export_entry()
             await self._persist_state()
             self._start_review_due_task()
@@ -342,6 +355,16 @@ class StudyCompanionPlugin(
                 self._state.status = STATUS_ERROR
                 self._state.last_error = "startup_failed"
             return Err(SdkError("failed to start study_companion"))
+
+    async def _auto_open_ui_if_enabled(self) -> None:
+        if not self._cfg.auto_open_ui:
+            return
+        port = os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", "48916")
+        url = f"http://127.0.0.1:{port}/plugin/{self.plugin_id}/ui/"
+        try:
+            await asyncio.to_thread(_open_url_in_browser, url)
+        except Exception as exc:
+            self.logger.warning("study auto-open UI failed: {}", exc)
 
     async def _cleanup_after_failed_startup(self) -> None:
         self.stop_awareness_loop()

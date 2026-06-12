@@ -32,6 +32,7 @@ auto_start = false
 default_mode = "companion"
 language = "zh-CN"
 history_limit = 50
+auto_open_ui = true
 
 [study.pomodoro]
 focus_minutes = 25
