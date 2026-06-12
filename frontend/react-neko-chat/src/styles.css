@@ -2397,6 +2397,11 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   --compact-export-controls-collapse-delta: var(--compact-export-controls-expanded-block-size);
 }
 
+.app-shell[data-compact-tool-layer-open="true"][data-compact-export-controls-open="true"] .compact-export-history-anchor:not(.under-choice-prompt),
+.app-shell[data-compact-tool-layer-open="true"][data-compact-export-preview-open="true"] .compact-export-history-anchor:not(.under-choice-prompt) {
+  z-index: 100006;
+}
+
 body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   --compact-export-history-region-height: var(
     --compact-history-slot-height,
