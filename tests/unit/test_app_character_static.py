@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-APP_CHARACTER_PATH = Path("static/app-character.js")
+APP_CHARACTER_PATH = Path(__file__).resolve().parents[2] / "static" / "app-character.js"
 
 
 def test_character_switch_resets_avatar_lock_after_successful_model_load():
@@ -34,6 +34,9 @@ def test_character_switch_clears_goodbye_state_only_after_commit():
     source = APP_CHARACTER_PATH.read_text(encoding="utf-8")
 
     assert "function clearGoodbyeStateForCharacterSwitch()" in source
+    assert "manager._goodbyeClicked = false" in source
+    assert "manager._isInReturnState = false" in source
+    assert "manager._returnButtonContainer.style.display = 'none'" in source
     assert "window.__nekoGoodbyeSilentState = {" in source
     assert "action: 'goodbye_state'" in source
     assert "active: false" in source

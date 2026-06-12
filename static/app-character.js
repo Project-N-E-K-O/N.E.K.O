@@ -141,10 +141,21 @@
     function clearGoodbyeStateForCharacterSwitch() {
         const reason = 'character-switch';
 
+        const clearManagerReturnState = (manager) => {
+            if (!manager) return;
+            manager._goodbyeClicked = false;
+            if (Object.prototype.hasOwnProperty.call(manager, '_isInReturnState')) {
+                manager._isInReturnState = false;
+            }
+            if (manager._returnButtonContainer && manager._returnButtonContainer.style) {
+                manager._returnButtonContainer.style.display = 'none';
+            }
+        };
+
         try {
-            if (window.live2dManager) window.live2dManager._goodbyeClicked = false;
-            if (window.vrmManager) window.vrmManager._goodbyeClicked = false;
-            if (window.mmdManager) window.mmdManager._goodbyeClicked = false;
+            clearManagerReturnState(window.live2dManager);
+            clearManagerReturnState(window.vrmManager);
+            clearManagerReturnState(window.mmdManager);
 
             window.__nekoGoodbyeSilentState = {
                 active: false,
