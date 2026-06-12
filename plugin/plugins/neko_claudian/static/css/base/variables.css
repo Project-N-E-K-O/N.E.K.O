@@ -1,0 +1,122 @@
+/* Neko Claudian — CSS Variables (Catgirl Theme) */
+/* Ported from claudian/src/style/base/variables.css */
+
+:root {
+    /* === Neko Pink Palette === */
+    --neko-pink-50: #fff0f6;
+    --neko-pink-100: #ffd6e7;
+    --neko-pink-200: #ffadd2;
+    --neko-pink-300: #ff85b6;
+    --neko-pink-400: #ff5c9a;
+    --neko-pink-500: #ff337e;
+    --neko-pink-600: #db256a;
+    --neko-pink-700: #b71c57;
+    --neko-pink-800: #931344;
+    --neko-pink-900: #700a31;
+
+    /* === Neko Blue Palette === */
+    --neko-blue-50: #f0f7ff;
+    --neko-blue-100: #d6e8ff;
+    --neko-blue-200: #a8c8ff;
+    --neko-blue-300: #7eb6ff;
+    --neko-blue-400: #549eff;
+    --neko-blue-500: #2a86ff;
+    --neko-blue-600: #1a6fdb;
+    --neko-blue-700: #1358b7;
+    --neko-blue-800: #0d4193;
+    --neko-blue-900: #072a70;
+
+    /* === Neko Lavender Palette === */
+    --neko-lavender-50: #f5f0ff;
+    --neko-lavender-100: #e8d6ff;
+    --neko-lavender-200: #d1adff;
+    --neko-lavender-300: #ba85ff;
+    --neko-lavender-400: #a35cff;
+    --neko-lavender-500: #8c33ff;
+
+    /* === Neutral Palette === */
+    --neko-white: #ffffff;
+    --neko-gray-50: #fafafa;
+    --neko-gray-100: #f5f5f5;
+    --neko-gray-200: #eeeeee;
+    --neko-gray-300: #e0e0e0;
+    --neko-gray-400: #bdbdbd;
+    --neko-gray-500: #9e9e9e;
+    --neko-gray-600: #757575;
+    --neko-gray-700: #616161;
+    --neko-gray-800: #424242;
+    --neko-gray-900: #212121;
+    --neko-black: #000000;
+
+    /* === Semantic Colors === */
+    --neko-text-primary: #4a3a4f;
+    --neko-text-secondary: #8a7a8f;
+    --neko-text-tertiary: #b0a0b5;
+    --neko-text-inverse: #ffffff;
+
+    --neko-bg-primary: #ffffff;
+    --neko-bg-secondary: #f8f5fa;
+    --neko-bg-tertiary: #f0ecf2;
+    --neko-bg-overlay: rgba(0, 0, 0, 0.5);
+
+    --neko-border-primary: #e8d6f0;
+    --neko-border-secondary: #f0e8f5;
+
+    /* === Gradients === */
+    --neko-gradient-1: linear-gradient(135deg, #ffd6e7 0%, #d6e8ff 100%);
+    --neko-gradient-2: linear-gradient(135deg, #fff0f6 0%, #f0f7ff 50%, #ffd6e7 100%);
+    --neko-gradient-3: linear-gradient(135deg, #f5f0ff 0%, #fff0f6 100%);
+    --neko-gradient-header: linear-gradient(135deg, #ffadd2 0%, #a8c8ff 100%);
+
+    /* === Glass Effect === */
+    --neko-glass-bg: rgba(255, 255, 255, 0.55);
+    --neko-glass-border: rgba(255, 255, 255, 0.35);
+    --neko-glass-shadow: 0 8px 32px rgba(255, 158, 199, 0.18);
+    --neko-glass-blur: blur(20px);
+
+    /* === Shadows === */
+    --neko-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+    --neko-shadow-md: 0 4px 6px rgba(0, 0, 0, 0.07);
+    --neko-shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.1);
+    --neko-shadow-xl: 0 20px 25px rgba(0, 0, 0, 0.15);
+
+    /* === Typography === */
+    --neko-font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans SC', sans-serif;
+    --neko-font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+
+    --neko-font-size-xs: 0.75rem;
+    --neko-font-size-sm: 0.875rem;
+    --neko-font-size-base: 1rem;
+    --neko-font-size-lg: 1.125rem;
+    --neko-font-size-xl: 1.25rem;
+    --neko-font-size-2xl: 1.5rem;
+
+    /* === Spacing === */
+    --neko-space-1: 0.25rem;
+    --neko-space-2: 0.5rem;
+    --neko-space-3: 0.75rem;
+    --neko-space-4: 1rem;
+    --neko-space-5: 1.25rem;
+    --neko-space-6: 1.5rem;
+    --neko-space-8: 2rem;
+    --neko-space-10: 2.5rem;
+    --neko-space-12: 3rem;
+
+    /* === Border Radius === */
+    --neko-radius-sm: 0.375rem;
+    --neko-radius-md: 0.5rem;
+    --neko-radius-lg: 0.75rem;
+    --neko-radius-xl: 1rem;
+    --neko-radius-2xl: 1.5rem;
+    --neko-radius-full: 9999px;
+
+    /* === Transitions === */
+    --neko-transition-fast: 150ms ease;
+    --neko-transition-normal: 250ms ease;
+    --neko-transition-slow: 350ms ease;
+
+    /* === Z-Index === */
+    --neko-z-dropdown: 100;
+    --neko-z-modal: 200;
+    --neko-z-toast: 300;
+}

@@ -1,0 +1,40 @@
+/* Ask User Question Feature */
+
+.neko-ask-question {
+    margin: var(--neko-space-3) 0;
+    padding: var(--neko-space-4);
+    background: var(--neko-bg-primary);
+    border: 2px solid var(--neko-pink-300);
+    border-radius: var(--neko-radius-lg);
+    animation: neko-scale-in var(--neko-transition-normal);
+}
+
+.neko-ask-question-header {
+    font-weight: 600;
+    margin-bottom: var(--neko-space-3);
+    color: var(--neko-pink-700);
+}
+
+.neko-ask-question-options {
+    display: flex;
+    flex-direction: column;
+    gap: var(--neko-space-2);
+}
+
+.neko-ask-option {
+    padding: var(--neko-space-2) var(--neko-space-3);
+    border: 1px solid var(--neko-border-primary);
+    border-radius: var(--neko-radius-md);
+    cursor: pointer;
+    transition: all var(--neko-transition-fast);
+}
+
+.neko-ask-option:hover {
+    background: var(--neko-pink-50);
+    border-color: var(--neko-pink-300);
+}
+
+.neko-ask-option.selected {
+    background: var(--neko-pink-100);
+    border-color: var(--neko-pink-400);
+}

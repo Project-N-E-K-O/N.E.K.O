@@ -1,0 +1,53 @@
+{
+    "_meta": {
+        "name": "Neko Claudian",
+        "version": "1.0.0",
+        "language": "en"
+    },
+    "app.title": "Neko Claudian",
+    "app.tagline": "Run Claude Code inside your catgirl plugin",
+    "app.welcome": "Welcome to Neko Claudian",
+    "app.welcomeHint": "Type a message or use /help for commands",
+
+    "input.placeholder": "Say something to Claude~ (Shift+Enter for newline)",
+    "input.send": "Send",
+
+    "tab.new": "New Chat",
+    "tab.close": "Close",
+
+    "message.user": "You",
+    "message.assistant": "Claude",
+
+    "tool.running": "Running...",
+    "tool.completed": "Completed",
+    "tool.error": "Error",
+
+    "thinking.label": "Thinking...",
+    "thinking.duration": "Thought for {duration}",
+
+    "error.sendFailed": "Failed to send message",
+    "error.network": "Network error",
+
+    "settings.title": "Settings",
+    "settings.model": "Model",
+    "settings.language": "Language",
+    "settings.permission": "Permission Mode",
+
+    "permission.default": "Default",
+    "permission.acceptEdits": "Accept Edits",
+    "permission.bypass": "Bypass Permissions",
+
+    "plan.mode": "Plan Mode",
+    "plan.implement": "Implement",
+    "plan.revise": "Revise",
+    "plan.cancel": "Cancel",
+
+    "fork.newTab": "Open in New Tab",
+    "fork.currentTab": "Open in Current Tab",
+
+    "common.confirm": "Confirm",
+    "common.cancel": "Cancel",
+    "common.save": "Save",
+    "common.delete": "Delete",
+    "common.close": "Close"
+}

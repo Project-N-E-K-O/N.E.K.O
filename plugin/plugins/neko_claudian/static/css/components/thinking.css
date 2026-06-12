@@ -1,0 +1,32 @@
+/* Thinking Component */
+
+.neko-thinking {
+    margin: var(--neko-space-2) 0;
+    padding: var(--neko-space-3);
+    background: var(--neko-lavender-50);
+    border: 1px solid var(--neko-lavender-200);
+    border-radius: var(--neko-radius-md);
+    animation: neko-fade-in var(--neko-transition-normal);
+}
+
+.neko-thinking-header {
+    display: flex;
+    align-items: center;
+    gap: var(--neko-space-2);
+    font-size: var(--neko-font-size-sm);
+    color: var(--neko-lavender-500);
+    cursor: pointer;
+}
+
+.neko-thinking-content {
+    margin-top: var(--neko-space-2);
+    font-size: var(--neko-font-size-sm);
+    color: var(--neko-text-secondary);
+    white-space: pre-wrap;
+}
+
+.neko-thinking-duration {
+    font-size: var(--neko-font-size-xs);
+    color: var(--neko-text-tertiary);
+    margin-top: var(--neko-space-1);
+}

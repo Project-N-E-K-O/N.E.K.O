@@ -1,0 +1,46 @@
+/* Tool Calls Component */
+
+.neko-tool-call {
+    margin: var(--neko-space-2) 0;
+    border: 1px solid var(--neko-border-primary);
+    border-radius: var(--neko-radius-md);
+    overflow: hidden;
+    animation: neko-fade-in-up var(--neko-transition-normal);
+}
+
+.neko-tool-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--neko-space-2) var(--neko-space-3);
+    background: var(--neko-bg-tertiary);
+    cursor: pointer;
+}
+
+.neko-tool-name {
+    font-weight: 500;
+    color: var(--neko-text-primary);
+    font-size: var(--neko-font-size-sm);
+}
+
+.neko-tool-status {
+    font-size: var(--neko-font-size-xs);
+    color: var(--neko-text-secondary);
+}
+
+.neko-tool-body {
+    padding: var(--neko-space-3);
+    background: var(--neko-bg-primary);
+    font-size: var(--neko-font-size-sm);
+}
+
+.neko-tool-result {
+    padding: var(--neko-space-2) var(--neko-space-3);
+    background: var(--neko-bg-secondary);
+    border-top: 1px solid var(--neko-border-secondary);
+    font-size: var(--neko-font-size-sm);
+}
+
+.neko-tool-error {
+    color: #c62828;
+}

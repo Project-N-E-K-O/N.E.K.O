@@ -1,0 +1,53 @@
+{
+    "_meta": {
+        "name": "猫娘 Claudian",
+        "version": "1.0.0",
+        "language": "zh-CN"
+    },
+    "app.title": "猫娘 Claudian",
+    "app.tagline": "在猫娘插件里调用 Claude Code 干活",
+    "app.welcome": "欢迎使用猫娘 Claudian",
+    "app.welcomeHint": "输入消息或使用 /help 查看命令",
+
+    "input.placeholder": "想跟 Claude 说点什么喵~ (Shift+Enter 换行)",
+    "input.send": "发送",
+
+    "tab.new": "新对话",
+    "tab.close": "关闭",
+
+    "message.user": "你",
+    "message.assistant": "Claude",
+
+    "tool.running": "运行中...",
+    "tool.completed": "完成",
+    "tool.error": "错误",
+
+    "thinking.label": "思考中...",
+    "thinking.duration": "思考了 {duration}",
+
+    "error.sendFailed": "发送消息失败",
+    "error.network": "网络错误",
+
+    "settings.title": "设置",
+    "settings.model": "模型",
+    "settings.language": "语言",
+    "settings.permission": "权限模式",
+
+    "permission.default": "默认",
+    "permission.acceptEdits": "接受编辑",
+    "permission.bypass": "绕过权限",
+
+    "plan.mode": "计划模式",
+    "plan.implement": "实施",
+    "plan.revise": "修订",
+    "plan.cancel": "取消",
+
+    "fork.newTab": "在新标签页打开",
+    "fork.currentTab": "在当前标签页打开",
+
+    "common.confirm": "确认",
+    "common.cancel": "取消",
+    "common.save": "保存",
+    "common.delete": "删除",
+    "common.close": "关闭"
+}

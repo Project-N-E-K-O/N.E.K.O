@@ -1,0 +1,74 @@
+/* Input Component */
+
+.neko-input-container {
+    padding: var(--neko-space-3) var(--neko-space-4);
+    background: var(--neko-glass-bg);
+    backdrop-filter: var(--neko-glass-blur);
+    border-top: 1px solid var(--neko-glass-border);
+}
+
+.neko-input-wrapper {
+    display: flex;
+    align-items: flex-end;
+    gap: var(--neko-space-2);
+    background: var(--neko-bg-primary);
+    border: 2px solid var(--neko-border-primary);
+    border-radius: var(--neko-radius-xl);
+    padding: var(--neko-space-2);
+    transition: all var(--neko-transition-fast);
+}
+
+.neko-input-wrapper:focus-within {
+    border-color: var(--neko-pink-400);
+    box-shadow: 0 0 0 3px var(--neko-pink-100);
+}
+
+.neko-input {
+    flex: 1;
+    border: none;
+    outline: none;
+    resize: none;
+    font-family: var(--neko-font-family);
+    font-size: var(--neko-font-size-base);
+    line-height: 1.5;
+    padding: var(--neko-space-1) var(--neko-space-2);
+    background: transparent;
+    color: var(--neko-text-primary);
+    max-height: 200px;
+    min-height: 24px;
+}
+
+.neko-input::placeholder {
+    color: var(--neko-text-tertiary);
+}
+
+.neko-send-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border: none;
+    border-radius: var(--neko-radius-full);
+    background: var(--neko-gradient-1);
+    color: var(--neko-white);
+    cursor: pointer;
+    font-size: 18px;
+    transition: all var(--neko-transition-fast);
+    flex-shrink: 0;
+}
+
+.neko-send-btn:hover {
+    transform: scale(1.05);
+    box-shadow: var(--neko-shadow-md);
+}
+
+.neko-send-btn:active {
+    transform: scale(0.95);
+}
+
+.neko-send-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+}

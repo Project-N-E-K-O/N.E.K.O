@@ -1,0 +1,52 @@
+/* Model Selector Toolbar */
+
+.neko-model-selector {
+    position: relative;
+    display: inline-block;
+}
+
+.neko-model-selector-btn {
+    display: flex;
+    align-items: center;
+    gap: var(--neko-space-1);
+    padding: var(--neko-space-1) var(--neko-space-2);
+    border: 1px solid var(--neko-border-primary);
+    border-radius: var(--neko-radius-md);
+    background: var(--neko-bg-primary);
+    font-size: var(--neko-font-size-sm);
+    cursor: pointer;
+    transition: all var(--neko-transition-fast);
+}
+
+.neko-model-selector-btn:hover {
+    border-color: var(--neko-pink-300);
+}
+
+.neko-model-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: var(--neko-space-1);
+    background: var(--neko-bg-primary);
+    border: 1px solid var(--neko-border-primary);
+    border-radius: var(--neko-radius-md);
+    box-shadow: var(--neko-shadow-lg);
+    z-index: var(--neko-z-dropdown);
+    min-width: 200px;
+    animation: neko-fade-in-down var(--neko-transition-fast);
+}
+
+.neko-model-option {
+    padding: var(--neko-space-2) var(--neko-space-3);
+    cursor: pointer;
+    transition: background var(--neko-transition-fast);
+}
+
+.neko-model-option:hover {
+    background: var(--neko-bg-tertiary);
+}
+
+.neko-model-option.selected {
+    background: var(--neko-pink-50);
+    color: var(--neko-pink-700);
+}

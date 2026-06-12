@@ -1,0 +1,25 @@
+[plugin]
+name = "猫娘 Claudian (Neko Claudian)"
+description = "在猫娘插件前端 UI 中调用 Claude Code 干活。完整移植 Obsidian Claudian 插件的所有 Claude Code 相关功能：持久查询/冷启动/多 Tab/MCP/工具渲染/子代理/Skills/权限/计划模式/Rewind/i18n/猫娘LLM注入。Web UI: http://127.0.0.1:48916/plugin/neko_claudian/ui/"
+short_description = "Run Claude Code inside N.E.K.O catgirl plugin. Full port of Obsidian Claudian's Claude Code features."
+keywords = ["claude", "claudian", "claude-code", "agent", "猫娘", "ai", "mcp", "tools", "subagent", "skills", "i18n", "tab", "rewind", "plan-mode", "permission", "port", "obsidian"]
+version = "1.0.0"
+id = "neko_claudian"
+entry = "plugin.plugins.neko_claudian:NekoClaudianPlugin"
+
+[plugin.author]
+name = "N.E.K.O Community"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin_runtime]
+enabled = true
+auto_start = true
+
+[plugin.http]
+# 独立 HTTP server 端口（前端访问用）
+port = 48930
+# UI 路径前缀
+ui_path = "/neko_claudian/ui"

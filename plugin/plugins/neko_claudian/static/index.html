@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>猫娘 Claudian ✿ Neko Claudian</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="stylesheet" href="css/base/variables.css">
+    <link rel="stylesheet" href="css/base/animations.css">
+    <link rel="stylesheet" href="css/base/container.css">
+    <link rel="stylesheet" href="css/accessibility.css">
+    <link rel="stylesheet" href="css/index.css">
+    <style>
+        /* Inline critical styles for immediate rendering */
+        body {
+            font-family: 'Microsoft YaHei', -apple-system, BlinkMacSystemFont, sans-serif;
+            margin: 0;
+            padding: 0;
+            background: linear-gradient(135deg, #fff0f6, #f0f7ff);
+        }
+    </style>
+</head>
+<body>
+    <div id="neko-claudian-app" class="neko-app">
+        <!-- Header -->
+        <header class="neko-header">
+            <div class="neko-header-left">
+                <span class="neko-logo">🐱</span>
+                <h1 class="neko-title">猫娘 Claudian</h1>
+            </div>
+            <div class="neko-header-right">
+                <button id="neko-settings-btn" class="neko-icon-btn" aria-label="设置" title="设置">
+                    ⚙️
+                </button>
+            </div>
+        </header>
+
+        <!-- Tab Bar -->
+        <div id="neko-tab-bar" class="neko-tab-bar">
+            <!-- Tabs will be rendered here by JS -->
+        </div>
+
+        <!-- Main Chat Area -->
+        <main class="neko-main">
+            <!-- Messages Container -->
+            <div id="neko-messages" class="neko-messages">
+                <!-- Welcome message -->
+                <div id="neko-welcome" class="neko-welcome">
+                    <div class="neko-welcome-icon">🐱</div>
+                    <h2>欢迎使用猫娘 Claudian</h2>
+                    <p>与 Claude 开始对话吧～</p>
+                    <p class="neko-welcome-hint">输入消息或使用 <code>/help</code> 查看命令</p>
+                </div>
+                <!-- Messages will be rendered here by JS -->
+            </div>
+
+            <!-- Status Panel -->
+            <div id="neko-status-panel" class="neko-status-panel hidden">
+                <!-- Status content will be rendered here -->
+            </div>
+
+            <!-- Input Area -->
+            <div id="neko-input-container" class="neko-input-container">
+                <div id="neko-queue-indicator" class="neko-queue-indicator hidden">
+                    <!-- Queue indicator will be rendered here -->
+                </div>
+                <div class="neko-input-wrapper">
+                    <textarea
+                        id="neko-input"
+                        class="neko-input"
+                        placeholder="输入消息... (Shift+Enter 换行)"
+                        rows="1"
+                        aria-label="消息输入"
+                    ></textarea>
+                    <button id="neko-send-btn" class="neko-send-btn" aria-label="发送" title="发送">
+                        ➤
+                    </button>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Icons SVG Sprite -->
+    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+        <symbol id="icon-send" viewBox="0 0 24 24">
+            <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+        </symbol>
+        <symbol id="icon-settings" viewBox="0 0 24 24">
+            <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 00-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1112 8.4a3.6 3.6 0 010 7.2z"/>
+        </symbol>
+        <symbol id="icon-close" viewBox="0 0 24 24">
+            <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+        </symbol>
+        <symbol id="icon-plus" viewBox="0 0 24 24">
+            <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
+        </symbol>
+        <symbol id="icon-copy" viewBox="0 0 24 24">
+            <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+        </symbol>
+        <symbol id="icon-check" viewBox="0 0 24 24">
+            <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+        </symbol>
+    </svg>
+
+    <!-- Scripts -->
+    <script src="js/api.js"></script>
+    <script src="js/sse.js"></script>
+    <script src="js/state.js"></script>
+    <script src="js/i18n.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>

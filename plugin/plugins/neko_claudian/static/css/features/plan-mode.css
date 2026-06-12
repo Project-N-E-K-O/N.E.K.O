@@ -1,0 +1,50 @@
+/* Plan Mode Feature */
+
+.neko-plan-mode {
+    margin: var(--neko-space-3) 0;
+    padding: var(--neko-space-4);
+    background: var(--neko-lavender-50);
+    border: 2px solid var(--neko-lavender-300);
+    border-radius: var(--neko-radius-lg);
+}
+
+.neko-plan-mode-header {
+    display: flex;
+    align-items: center;
+    gap: var(--neko-space-2);
+    font-weight: 600;
+    margin-bottom: var(--neko-space-3);
+    color: var(--neko-lavender-500);
+}
+
+.neko-plan-mode-content {
+    padding: var(--neko-space-3);
+    background: var(--neko-bg-primary);
+    border-radius: var(--neko-radius-md);
+    white-space: pre-wrap;
+}
+
+.neko-plan-mode-actions {
+    display: flex;
+    gap: var(--neko-space-2);
+    margin-top: var(--neko-space-3);
+}
+
+.neko-plan-btn {
+    padding: var(--neko-space-2) var(--neko-space-4);
+    border: none;
+    border-radius: var(--neko-radius-md);
+    font-size: var(--neko-font-size-sm);
+    cursor: pointer;
+    transition: all var(--neko-transition-fast);
+}
+
+.neko-plan-btn-implement {
+    background: var(--neko-gradient-1);
+    color: var(--neko-text-primary);
+}
+
+.neko-plan-btn-revise {
+    background: var(--neko-bg-tertiary);
+    color: var(--neko-text-secondary);
+}

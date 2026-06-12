@@ -1,0 +1,52 @@
+/* Diff Feature */
+
+.neko-diff {
+    margin: var(--neko-space-2) 0;
+    border: 1px solid var(--neko-border-primary);
+    border-radius: var(--neko-radius-md);
+    overflow: hidden;
+}
+
+.neko-diff-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--neko-space-2) var(--neko-space-3);
+    background: var(--neko-bg-tertiary);
+    font-size: var(--neko-font-size-sm);
+}
+
+.neko-diff-stats {
+    display: flex;
+    gap: var(--neko-space-2);
+}
+
+.neko-diff-added {
+    color: #2e7d32;
+}
+
+.neko-diff-removed {
+    color: #c62828;
+}
+
+.neko-diff-content {
+    font-family: var(--neko-font-mono);
+    font-size: var(--neko-font-size-sm);
+    line-height: 1.5;
+}
+
+.neko-diff-line {
+    padding: 0 var(--neko-space-3);
+}
+
+.neko-diff-line-equal {
+    background: var(--neko-bg-primary);
+}
+
+.neko-diff-line-insert {
+    background: #e8f5e9;
+}
+
+.neko-diff-line-delete {
+    background: #ffebee;
+}

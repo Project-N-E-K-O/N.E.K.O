@@ -1,0 +1,222 @@
+/* Neko Claudian — Container Layout */
+
+.neko-app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    width: 100%;
+    background: var(--neko-bg-secondary);
+    font-family: var(--neko-font-family);
+    color: var(--neko-text-primary);
+    overflow: hidden;
+}
+
+/* === Header === */
+.neko-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--neko-space-3) var(--neko-space-4);
+    background: var(--neko-glass-bg);
+    backdrop-filter: var(--neko-glass-blur);
+    border-bottom: 1px solid var(--neko-glass-border);
+    box-shadow: var(--neko-shadow-sm);
+    z-index: 10;
+}
+
+.neko-header-left {
+    display: flex;
+    align-items: center;
+    gap: var(--neko-space-2);
+}
+
+.neko-logo {
+    width: 24px;
+    height: 24px;
+}
+
+.neko-title {
+    font-size: var(--neko-font-size-lg);
+    font-weight: 600;
+    background: var(--neko-gradient-header);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+.neko-header-right {
+    display: flex;
+    align-items: center;
+    gap: var(--neko-space-2);
+}
+
+/* === Tab Bar === */
+.neko-tab-bar {
+    display: flex;
+    align-items: center;
+    padding: var(--neko-space-1) var(--neko-space-4);
+    background: var(--neko-bg-primary);
+    border-bottom: 1px solid var(--neko-border-secondary);
+    overflow-x: auto;
+    gap: var(--neko-space-1);
+}
+
+/* === Main Area === */
+.neko-main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    position: relative;
+}
+
+/* === Messages Container === */
+.neko-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: var(--neko-space-4);
+    scroll-behavior: smooth;
+}
+
+/* === Welcome Message === */
+.neko-welcome {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    text-align: center;
+    color: var(--neko-text-secondary);
+}
+
+.neko-welcome-icon {
+    font-size: 4rem;
+    margin-bottom: var(--neko-space-4);
+    animation: neko-bounce 2s infinite;
+}
+
+.neko-welcome h2 {
+    font-size: var(--neko-font-size-xl);
+    margin-bottom: var(--neko-space-2);
+}
+
+.neko-welcome p {
+    font-size: var(--neko-font-size-base);
+}
+
+/* === Input Container === */
+.neko-input-container {
+    padding: var(--neko-space-3) var(--neko-space-4);
+    background: var(--neko-glass-bg);
+    backdrop-filter: var(--neko-glass-blur);
+    border-top: 1px solid var(--neko-glass-border);
+}
+
+.neko-input-wrapper {
+    display: flex;
+    align-items: flex-end;
+    gap: var(--neko-space-2);
+    background: var(--neko-bg-primary);
+    border: 2px solid var(--neko-border-primary);
+    border-radius: var(--neko-radius-xl);
+    padding: var(--neko-space-2);
+    transition: border-color var(--neko-transition-fast);
+}
+
+.neko-input-wrapper:focus-within {
+    border-color: var(--neko-pink-400);
+    box-shadow: 0 0 0 3px var(--neko-pink-100);
+}
+
+.neko-input {
+    flex: 1;
+    border: none;
+    outline: none;
+    resize: none;
+    font-family: var(--neko-font-family);
+    font-size: var(--neko-font-size-base);
+    line-height: 1.5;
+    padding: var(--neko-space-1) var(--neko-space-2);
+    background: transparent;
+    color: var(--neko-text-primary);
+    max-height: 200px;
+}
+
+.neko-input::placeholder {
+    color: var(--neko-text-tertiary);
+}
+
+/* === Send Button === */
+.neko-send-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border: none;
+    border-radius: var(--neko-radius-full);
+    background: var(--neko-gradient-1);
+    color: var(--neko-white);
+    cursor: pointer;
+    transition: transform var(--neko-transition-fast), box-shadow var(--neko-transition-fast);
+}
+
+.neko-send-btn:hover {
+    transform: scale(1.05);
+    box-shadow: var(--neko-shadow-md);
+}
+
+.neko-send-btn:active {
+    transform: scale(0.95);
+}
+
+.neko-send-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* === Icon Button === */
+.neko-icon-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border: none;
+    border-radius: var(--neko-radius-md);
+    background: transparent;
+    color: var(--neko-text-secondary);
+    cursor: pointer;
+    transition: background var(--neko-transition-fast), color var(--neko-transition-fast);
+}
+
+.neko-icon-btn:hover {
+    background: var(--neko-bg-tertiary);
+    color: var(--neko-text-primary);
+}
+
+/* === Queue Indicator === */
+.neko-queue-indicator {
+    display: flex;
+    align-items: center;
+    padding: var(--neko-space-2) var(--neko-space-3);
+    margin-bottom: var(--neko-space-2);
+    background: var(--neko-pink-50);
+    border-radius: var(--neko-radius-md);
+    font-size: var(--neko-font-size-sm);
+    color: var(--neko-pink-700);
+}
+
+/* === Status Panel === */
+.neko-status-panel {
+    padding: var(--neko-space-2) var(--neko-space-4);
+    background: var(--neko-bg-tertiary);
+    border-top: 1px solid var(--neko-border-secondary);
+    font-size: var(--neko-font-size-sm);
+    color: var(--neko-text-secondary);
+}
+
+/* === Hidden === */
+.hidden {
+    display: none !important;
+}

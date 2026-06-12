@@ -1,0 +1,63 @@
+/* Settings Base */
+
+.neko-settings {
+    padding: var(--neko-space-6);
+    max-width: 600px;
+    margin: 0 auto;
+}
+
+.neko-settings-title {
+    font-size: var(--neko-font-size-2xl);
+    font-weight: 600;
+    margin-bottom: var(--neko-space-6);
+    background: var(--neko-gradient-header);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.neko-settings-section {
+    margin-bottom: var(--neko-space-8);
+}
+
+.neko-settings-section-title {
+    font-size: var(--neko-font-size-lg);
+    font-weight: 600;
+    margin-bottom: var(--neko-space-4);
+    color: var(--neko-text-primary);
+}
+
+.neko-settings-field {
+    margin-bottom: var(--neko-space-4);
+}
+
+.neko-settings-label {
+    display: block;
+    font-size: var(--neko-font-size-sm);
+    font-weight: 500;
+    margin-bottom: var(--neko-space-1);
+    color: var(--neko-text-secondary);
+}
+
+.neko-settings-input {
+    width: 100%;
+    padding: var(--neko-space-2) var(--neko-space-3);
+    border: 1px solid var(--neko-border-primary);
+    border-radius: var(--neko-radius-md);
+    font-size: var(--neko-font-size-base);
+    transition: border-color var(--neko-transition-fast);
+}
+
+.neko-settings-input:focus {
+    outline: none;
+    border-color: var(--neko-pink-400);
+    box-shadow: 0 0 0 3px var(--neko-pink-100);
+}
+
+.neko-settings-select {
+    appearance: none;
+    background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23616161'%3e%3cpath d='M7 10l5 5 5-5z'/%3e%3c/svg%3e");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    background-size: 20px;
+    padding-right: 32px;
+}

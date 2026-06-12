@@ -1,0 +1,68 @@
+/* Tabs Component */
+
+.neko-tab-bar {
+    display: flex;
+    align-items: center;
+    padding: var(--neko-space-1) var(--neko-space-4);
+    background: var(--neko-bg-primary);
+    border-bottom: 1px solid var(--neko-border-secondary);
+    overflow-x: auto;
+    gap: var(--neko-space-1);
+    scrollbar-width: thin;
+}
+
+.neko-tab {
+    display: flex;
+    align-items: center;
+    gap: var(--neko-space-1);
+    padding: var(--neko-space-2) var(--neko-space-3);
+    border: none;
+    border-radius: var(--neko-radius-md);
+    background: transparent;
+    color: var(--neko-text-secondary);
+    font-size: var(--neko-font-size-sm);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all var(--neko-transition-fast);
+}
+
+.neko-tab:hover {
+    background: var(--neko-bg-tertiary);
+    color: var(--neko-text-primary);
+}
+
+.neko-tab.active {
+    background: var(--neko-gradient-1);
+    color: var(--neko-text-primary);
+    font-weight: 500;
+}
+
+.neko-tab-new {
+    font-size: var(--neko-font-size-lg);
+    padding: var(--neko-space-1) var(--neko-space-2);
+}
+
+.neko-tab-close {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border: none;
+    border-radius: var(--neko-radius-sm);
+    background: transparent;
+    color: var(--neko-text-tertiary);
+    cursor: pointer;
+    font-size: 12px;
+    opacity: 0;
+    transition: opacity var(--neko-transition-fast);
+}
+
+.neko-tab:hover .neko-tab-close {
+    opacity: 1;
+}
+
+.neko-tab-close:hover {
+    background: var(--neko-pink-100);
+    color: var(--neko-pink-600);
+}

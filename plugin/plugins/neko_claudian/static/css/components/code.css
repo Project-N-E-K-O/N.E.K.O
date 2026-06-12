@@ -1,0 +1,57 @@
+/* Code Component */
+
+.neko-code-block {
+    margin: var(--neko-space-2) 0;
+    border-radius: var(--neko-radius-md);
+    overflow: hidden;
+    background: #1e1e1e;
+}
+
+.neko-code-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--neko-space-1) var(--neko-space-3);
+    background: #2d2d2d;
+    font-size: var(--neko-font-size-xs);
+    color: #ccc;
+}
+
+.neko-code-lang {
+    text-transform: uppercase;
+}
+
+.neko-code-copy {
+    border: none;
+    background: transparent;
+    color: #ccc;
+    cursor: pointer;
+    font-size: var(--neko-font-size-xs);
+    padding: var(--neko-space-1);
+}
+
+.neko-code-copy:hover {
+    color: #fff;
+}
+
+.neko-code-content {
+    padding: var(--neko-space-3);
+    overflow-x: auto;
+    font-family: var(--neko-font-mono);
+    font-size: var(--neko-font-size-sm);
+    line-height: 1.5;
+    color: #d4d4d4;
+}
+
+.neko-code-content code {
+    font-family: inherit;
+}
+
+/* Inline code */
+.neko-inline-code {
+    background: var(--neko-bg-tertiary);
+    padding: 0.125em 0.375em;
+    border-radius: var(--neko-radius-sm);
+    font-family: var(--neko-font-mono);
+    font-size: 0.9em;
+}

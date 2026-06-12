@@ -1,0 +1,27 @@
+/* Neko Claudian — Main Styles */
+/* Ported from claudian/src/style/index.css */
+
+/* Import component styles */
+@import url('components/messages.css');
+@import url('components/input.css');
+@import url('components/tabs.css');
+@import url('components/thinking.css');
+@import url('components/toolcalls.css');
+@import url('components/code.css');
+@import url('components/status-panel.css');
+
+/* Import feature styles */
+@import url('features/ask-user-question.css');
+@import url('features/diff.css');
+@import url('features/file-context.css');
+@import url('features/inline-edit.css');
+@import url('features/plan-mode.css');
+
+/* Import modal styles */
+@import url('modals/confirm.css');
+
+/* Import settings styles */
+@import url('settings/base.css');
+
+/* Import toolbar styles */
+@import url('toolbar/model-selector.css');

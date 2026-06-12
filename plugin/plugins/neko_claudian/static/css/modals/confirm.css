@@ -1,0 +1,58 @@
+/* Confirm Modal */
+
+.neko-modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: var(--neko-bg-overlay);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: var(--neko-z-modal);
+    animation: neko-fade-in var(--neko-transition-fast);
+}
+
+.neko-modal {
+    background: var(--neko-bg-primary);
+    border-radius: var(--neko-radius-xl);
+    padding: var(--neko-space-6);
+    max-width: 400px;
+    width: 90%;
+    box-shadow: var(--neko-shadow-xl);
+    animation: neko-scale-in var(--neko-transition-normal);
+}
+
+.neko-modal-title {
+    font-size: var(--neko-font-size-lg);
+    font-weight: 600;
+    margin-bottom: var(--neko-space-3);
+}
+
+.neko-modal-content {
+    color: var(--neko-text-secondary);
+    margin-bottom: var(--neko-space-6);
+}
+
+.neko-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--neko-space-2);
+}
+
+.neko-modal-btn {
+    padding: var(--neko-space-2) var(--neko-space-4);
+    border: none;
+    border-radius: var(--neko-radius-md);
+    font-size: var(--neko-font-size-sm);
+    cursor: pointer;
+    transition: all var(--neko-transition-fast);
+}
+
+.neko-modal-btn-primary {
+    background: var(--neko-gradient-1);
+    color: var(--neko-text-primary);
+}
+
+.neko-modal-btn-secondary {
+    background: var(--neko-bg-tertiary);
+    color: var(--neko-text-secondary);
+}

@@ -1,0 +1,51 @@
+/* Inline Edit Feature */
+
+.neko-inline-edit {
+    margin: var(--neko-space-3) 0;
+    padding: var(--neko-space-4);
+    background: var(--neko-bg-primary);
+    border: 2px solid var(--neko-blue-300);
+    border-radius: var(--neko-radius-lg);
+}
+
+.neko-inline-edit-header {
+    font-weight: 600;
+    margin-bottom: var(--neko-space-3);
+    color: var(--neko-blue-700);
+}
+
+.neko-inline-edit-preview {
+    padding: var(--neko-space-3);
+    background: var(--neko-bg-tertiary);
+    border-radius: var(--neko-radius-md);
+    font-family: var(--neko-font-mono);
+    font-size: var(--neko-font-size-sm);
+    white-space: pre-wrap;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.neko-inline-edit-actions {
+    display: flex;
+    gap: var(--neko-space-2);
+    margin-top: var(--neko-space-3);
+}
+
+.neko-inline-edit-btn {
+    padding: var(--neko-space-2) var(--neko-space-4);
+    border: none;
+    border-radius: var(--neko-radius-md);
+    font-size: var(--neko-font-size-sm);
+    cursor: pointer;
+    transition: all var(--neko-transition-fast);
+}
+
+.neko-inline-edit-btn-accept {
+    background: var(--neko-gradient-1);
+    color: var(--neko-text-primary);
+}
+
+.neko-inline-edit-btn-reject {
+    background: var(--neko-bg-tertiary);
+    color: var(--neko-text-secondary);
+}

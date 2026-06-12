@@ -1,0 +1,119 @@
+/* Neko Claudian — Animations */
+/* Ported from claudian/src/style/base/animations.css */
+
+/* === Fade In === */
+@keyframes neko-fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes neko-fade-in-up {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes neko-fade-in-down {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* === Scale === */
+@keyframes neko-scale-in {
+    from {
+        opacity: 0;
+        transform: scale(0.95);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+/* === Slide === */
+@keyframes neko-slide-in-right {
+    from {
+        opacity: 0;
+        transform: translateX(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+@keyframes neko-slide-in-left {
+    from {
+        opacity: 0;
+        transform: translateX(-20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+/* === Pulse === */
+@keyframes neko-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+@keyframes neko-pulse-dot {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.2); }
+}
+
+/* === Spin === */
+@keyframes neko-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+/* === Bounce === */
+@keyframes neko-bounce {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-5px); }
+}
+
+/* === Shimmer === */
+@keyframes neko-shimmer {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+}
+
+/* === Utility Classes === */
+.neko-animate-fade-in {
+    animation: neko-fade-in var(--neko-transition-normal);
+}
+
+.neko-animate-fade-in-up {
+    animation: neko-fade-in-up var(--neko-transition-normal);
+}
+
+.neko-animate-scale-in {
+    animation: neko-scale-in var(--neko-transition-normal);
+}
+
+.neko-animate-pulse {
+    animation: neko-pulse 2s infinite;
+}
+
+.neko-animate-spin {
+    animation: neko-spin 1s linear infinite;
+}
+
+.neko-animate-bounce {
+    animation: neko-bounce 1s infinite;
+}

@@ -1,0 +1,52 @@
+/* Messages Component */
+
+.neko-message {
+    padding: var(--neko-space-3) var(--neko-space-4);
+    margin-bottom: var(--neko-space-2);
+    border-radius: var(--neko-radius-lg);
+    animation: neko-fade-in-up var(--neko-transition-normal);
+}
+
+.neko-message-user {
+    background: var(--neko-gradient-1);
+    margin-left: var(--neko-space-8);
+    border-radius: var(--neko-radius-lg) var(--neko-radius-lg) var(--neko-radius-sm) var(--neko-radius-lg);
+}
+
+.neko-message-assistant {
+    background: var(--neko-bg-primary);
+    margin-right: var(--neko-space-8);
+    border: 1px solid var(--neko-border-secondary);
+    border-radius: var(--neko-radius-lg) var(--neko-radius-lg) var(--neko-radius-lg) var(--neko-radius-sm);
+}
+
+.neko-message-content {
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.neko-message-user .neko-message-content {
+    color: var(--neko-text-primary);
+}
+
+.neko-message-assistant .neko-message-content {
+    color: var(--neko-text-primary);
+}
+
+/* Timestamp */
+.neko-message-time {
+    font-size: var(--neko-font-size-xs);
+    color: var(--neko-text-tertiary);
+    margin-top: var(--neko-space-1);
+}
+
+/* Error message */
+.neko-error {
+    padding: var(--neko-space-3);
+    background: #fff0f0;
+    border: 1px solid #ffcdd2;
+    border-radius: var(--neko-radius-md);
+    color: #c62828;
+    margin: var(--neko-space-2) 0;
+}
