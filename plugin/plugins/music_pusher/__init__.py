@@ -323,6 +323,14 @@ def _calc_total_duration(queue: list[dict[str, Any]]) -> int:
     return sum(_normalize_duration(it.get("duration_sec"), 0) for it in queue)
 
 
+class _CombinedCancelEvent:
+    def __init__(self, *events: threading.Event | None):
+        self._events = tuple(event for event in events if event is not None)
+
+    def is_set(self) -> bool:
+        return any(event.is_set() for event in self._events)
+
+
 def _default_port_for_scheme(scheme: str) -> int | None:
     if scheme == "http":
         return 80
@@ -419,6 +427,7 @@ class MusicPusherPlugin(NekoPluginBase):
         self._active_track_started_at: float | None = None
         self._active_track_duration: int = 0
         self._active_control: str | None = None
+        self._active_cancel_event: threading.Event | None = None
         self._active_execution_task: asyncio.Task | None = None
         self._original_push_message = None
         self._push_mapper_installed = False
@@ -642,7 +651,6 @@ class MusicPusherPlugin(NekoPluginBase):
         attach_prompt_on_push: bool = True,
         deadline_monotonic: float | None = None,
         cancel_event: threading.Event | None = None,
-        play_push_started: threading.Event | None = None,
     ) -> bool:
         play_push_started = threading.Event()
         try:
@@ -1171,6 +1179,10 @@ class MusicPusherPlugin(NekoPluginBase):
         }
 
     async def _load_state(self) -> None:
+        self._music_items = []
+        self._tasks = {}
+        self._attach_prompt_on_push = _DEFAULT_ATTACH_PROMPT_ON_PUSH
+
         path = self._state_file
         if not path.exists():
             return
@@ -1353,8 +1365,9 @@ class MusicPusherPlugin(NekoPluginBase):
                 if not item_id:
                     continue
                 src = music_index.get(item_id)
-                if src:
-                    final_queue.append(self._make_queue_item_from_music_item(src))
+                if src is None:
+                    raise ValueError(f"队列音乐不存在或已删除: {item_id}")
+                final_queue.append(self._make_queue_item_from_music_item(src))
 
         if isinstance(queue_items, list):
             for raw in queue_items:
@@ -1478,6 +1491,7 @@ class MusicPusherPlugin(NekoPluginBase):
         attach_prompt_on_push: bool = True,
         deadline_monotonic: float | None = None,
         cancel_event: threading.Event | None = None,
+        play_push_started: threading.Event | None = None,
     ) -> bool:
         def _expired() -> bool:
             return deadline_monotonic is not None and time.monotonic() >= deadline_monotonic
@@ -1655,6 +1669,8 @@ class MusicPusherPlugin(NekoPluginBase):
             if task_id and task_id != self._active_task_id:
                 return False
             self._active_control = cmd
+            if cmd == _CTRL_STOP and self._active_cancel_event is not None:
+                self._active_cancel_event.set()
             return True
 
     @lifecycle(id="startup")
@@ -1665,6 +1681,7 @@ class MusicPusherPlugin(NekoPluginBase):
         self._scheduler_stop = asyncio.Event()
         self._push_cancel_event = threading.Event()
         self._active_control = None
+        self._active_cancel_event = None
         self._active_execution_task = None
         self._active_task_id = None
         self._active_track = None
@@ -2659,6 +2676,7 @@ class MusicPusherPlugin(NekoPluginBase):
 
     async def _execute_task(self, task_id: str) -> None:
         async with self._run_lock:
+            run_cancel_event = threading.Event()
             current_execution_task = asyncio.current_task()
             if current_execution_task is not None:
                 self._active_execution_task = current_execution_task
@@ -2687,6 +2705,7 @@ class MusicPusherPlugin(NekoPluginBase):
                 task["updated_at"] = _iso()
                 self._active_task_id = task_id
                 self._active_control = None
+                self._active_cancel_event = run_cancel_event
                 self._active_track = None
                 self._active_track_started_at = None
                 self._active_track_duration = 0
@@ -2780,7 +2799,7 @@ class MusicPusherPlugin(NekoPluginBase):
                             lyric_text=lyric_text,
                             attach_prompt_on_push=attach_prompt_on_push,
                             deadline_monotonic=push_deadline,
-                            cancel_event=self._push_cancel_event,
+                            cancel_event=_CombinedCancelEvent(self._push_cancel_event, run_cancel_event),
                         )
                         if not pushed_track:
                             raise asyncio.TimeoutError
@@ -2871,6 +2890,7 @@ class MusicPusherPlugin(NekoPluginBase):
                 async with self._state_lock:
                     self._active_task_id = None
                     self._active_control = None
+                    self._active_cancel_event = None
                     self._active_track = None
                     self._active_track_started_at = None
                     self._active_track_duration = 0
