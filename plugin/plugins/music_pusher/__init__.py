@@ -631,6 +631,44 @@ class MusicPusherPlugin(NekoPluginBase):
                 changed = True
         return changed
 
+    async def _push_music_link_with_timeout(
+        self,
+        *,
+        url: str,
+        title: str,
+        artist: str,
+        target_lanlan: str,
+        lyric_text: str = "",
+        attach_prompt_on_push: bool = True,
+        deadline_monotonic: float | None = None,
+        cancel_event: threading.Event | None = None,
+        play_push_started: threading.Event | None = None,
+    ) -> bool:
+        play_push_started = threading.Event()
+        try:
+            return bool(
+                await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self._push_music_link,
+                        url=url,
+                        title=title,
+                        artist=artist,
+                        target_lanlan=target_lanlan,
+                        lyric_text=lyric_text,
+                        attach_prompt_on_push=attach_prompt_on_push,
+                        deadline_monotonic=deadline_monotonic,
+                        cancel_event=cancel_event,
+                        play_push_started=play_push_started,
+                    ),
+                    timeout=_PUSH_TIMEOUT_SECONDS,
+                )
+            )
+        except asyncio.TimeoutError:
+            if play_push_started.is_set():
+                self.logger.warning("音乐播放推送仍在进行，已按播放请求提交处理")
+                return True
+            raise
+
     def _music_allowlist_domains_for_url(self, url: str) -> list[str]:
         parsed = _parse_http_url(url)
         if parsed is None:
@@ -1472,6 +1510,8 @@ class MusicPusherPlugin(NekoPluginBase):
 
         if _stopped():
             return False
+        if play_push_started is not None:
+            play_push_started.set()
         self.ctx.push_message(
             source="music_pusher",
             message_type="music_play_url",
@@ -1647,6 +1687,7 @@ class MusicPusherPlugin(NekoPluginBase):
             await self._load_state()
             self._load_upload_name_map_locked()
             self._load_lyrics_map_locked()
+            self._refresh_upload_urls_in_tasks_locked()
             self._rebuild_music_items_from_uploads_locked()
             self._refresh_upload_urls_in_tasks_locked()
             self._save_upload_name_map_locked()
@@ -1773,21 +1814,15 @@ class MusicPusherPlugin(NekoPluginBase):
         if auto_push:
             push_deadline = time.monotonic() + _PUSH_TIMEOUT_SECONDS
             try:
-                pushed = bool(
-                    await asyncio.wait_for(
-                        asyncio.to_thread(
-                            self._push_music_link,
-                            url=absolute_url,
-                            title=final_title,
-                            artist=final_artist,
-                            target_lanlan=target_lanlan,
-                            lyric_text=lyric_text,
-                            attach_prompt_on_push=attach_prompt,
-                            deadline_monotonic=push_deadline,
-                            cancel_event=self._push_cancel_event,
-                        ),
-                        timeout=_PUSH_TIMEOUT_SECONDS,
-                    )
+                pushed = await self._push_music_link_with_timeout(
+                    url=absolute_url,
+                    title=final_title,
+                    artist=final_artist,
+                    target_lanlan=target_lanlan,
+                    lyric_text=lyric_text,
+                    attach_prompt_on_push=attach_prompt,
+                    deadline_monotonic=push_deadline,
+                    cancel_event=self._push_cancel_event,
                 )
             except asyncio.TimeoutError:
                 self._delete_upload_file_locked(stored_filename)
@@ -1929,21 +1964,15 @@ class MusicPusherPlugin(NekoPluginBase):
         if auto_push:
             push_deadline = time.monotonic() + _PUSH_TIMEOUT_SECONDS
             try:
-                pushed = bool(
-                    await asyncio.wait_for(
-                        asyncio.to_thread(
-                            self._push_music_link,
-                            url=link,
-                            title=final_title,
-                            artist=final_artist,
-                            target_lanlan=target_lanlan,
-                            lyric_text=lyric_clean,
-                            attach_prompt_on_push=attach_prompt,
-                            deadline_monotonic=push_deadline,
-                            cancel_event=self._push_cancel_event,
-                        ),
-                        timeout=_PUSH_TIMEOUT_SECONDS,
-                    )
+                pushed = await self._push_music_link_with_timeout(
+                    url=link,
+                    title=final_title,
+                    artist=final_artist,
+                    target_lanlan=target_lanlan,
+                    lyric_text=lyric_clean,
+                    attach_prompt_on_push=attach_prompt,
+                    deadline_monotonic=push_deadline,
+                    cancel_event=self._push_cancel_event,
                 )
             except asyncio.TimeoutError:
                 return Err(SdkError("推送超时"))
@@ -2743,21 +2772,15 @@ class MusicPusherPlugin(NekoPluginBase):
                     pushed_track = False
                     try:
                         push_deadline = time.monotonic() + _PUSH_TIMEOUT_SECONDS
-                        pushed_track = bool(
-                            await asyncio.wait_for(
-                                asyncio.to_thread(
-                                    self._push_music_link,
-                                    url=url,
-                                    title=title,
-                                    artist=artist,
-                                    target_lanlan=target_lanlan,
-                                    lyric_text=lyric_text,
-                                    attach_prompt_on_push=attach_prompt_on_push,
-                                    deadline_monotonic=push_deadline,
-                                    cancel_event=self._push_cancel_event,
-                                ),
-                                timeout=_PUSH_TIMEOUT_SECONDS,
-                            )
+                        pushed_track = await self._push_music_link_with_timeout(
+                            url=url,
+                            title=title,
+                            artist=artist,
+                            target_lanlan=target_lanlan,
+                            lyric_text=lyric_text,
+                            attach_prompt_on_push=attach_prompt_on_push,
+                            deadline_monotonic=push_deadline,
+                            cancel_event=self._push_cancel_event,
                         )
                         if not pushed_track:
                             raise asyncio.TimeoutError
