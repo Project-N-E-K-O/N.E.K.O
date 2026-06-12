@@ -537,3 +537,75 @@ async def test_hot_swap_to_external_tts_starts_pipeline(monkeypatch):
 
     assert mgr.use_tts is True
     assert called is True
+
+
+# ---------------------------------------------------------------------------
+# PR #1764 review #3403710558 边界场景：_is_vllm_omni_tts_enabled 对 snapshot
+# 中 ttsModelProvider 字段缺失/空串/大小写/livestream 优先级的容错性
+# ---------------------------------------------------------------------------
+
+
+def test_is_vllm_omni_tts_enabled_returns_false_when_ttsModelProvider_missing():
+    """向后兼容：老用户的 core_config.json 不含 ttsModelProvider key。"""
+    snapshot = {
+        "ENABLE_CUSTOM_API": True,
+        "GPTSOVITS_ENABLED": False,
+        # 故意不写 ttsModelProvider
+    }
+    assert LLMSessionManager._is_vllm_omni_tts_enabled(snapshot) is False
+
+
+def test_is_vllm_omni_tts_enabled_returns_false_for_empty_string():
+    """前端清空 select 后写入空字符串，不应触发 vllm_omni 路由。"""
+    snapshot = {
+        "ENABLE_CUSTOM_API": True,
+        "ttsModelProvider": "",
+        "GPTSOVITS_ENABLED": False,
+    }
+    assert LLMSessionManager._is_vllm_omni_tts_enabled(snapshot) is False
+
+
+def test_is_vllm_omni_tts_enabled_is_case_sensitive():
+    """provider key 比较区分大小写：VLLM_OMNI / Vllm_Omni 不应被识别为 vllm_omni。"""
+    for variant in ("VLLM_OMNI", "Vllm_Omni", "vLLM_omni"):
+        snapshot = {
+            "ENABLE_CUSTOM_API": True,
+            "ttsModelProvider": variant,
+            "GPTSOVITS_ENABLED": False,
+        }
+        assert LLMSessionManager._is_vllm_omni_tts_enabled(snapshot) is False, \
+            f"variant={variant!r} 应返回 False（区分大小写）"
+
+
+def test_is_vllm_omni_tts_enabled_strips_whitespace():
+    """前端可能在保存时附带前后空白，应能正确识别。"""
+    snapshot = {
+        "ENABLE_CUSTOM_API": True,
+        "ttsModelProvider": "  vllm_omni  ",
+        "GPTSOVITS_ENABLED": False,
+    }
+    assert LLMSessionManager._is_vllm_omni_tts_enabled(snapshot) is True
+
+
+def test_livestream_overrides_vllm_omni_tts_routing(monkeypatch):
+    """livestream 模式应早退优先于 vllm_omni 外部 TTS 选择。"""
+    mgr = _make_mgr("Puck")
+    monkeypatch.setattr(
+        LLMSessionManager,
+        "_is_livestream_active",
+        lambda self: True,
+    )
+    realtime_config = {"base_url": "https://generativelanguage.googleapis.com"}
+    snapshot = {
+        "ENABLE_CUSTOM_API": True,
+        "ttsModelProvider": "vllm_omni",
+        "ttsVoiceId": "Puck",
+        "GPTSOVITS_ENABLED": False,
+    }
+    # livestream 早退分支优先（core.py:3786 先于 vllm_omni 检测）
+    assert (
+        LLMSessionManager._resolve_session_use_tts(
+            mgr, "audio", realtime_config, snapshot,
+        )
+        is False
+    )

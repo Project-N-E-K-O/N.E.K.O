@@ -1124,5 +1124,99 @@ class TestFollowProviderNotLocal:
         assert rt['is_custom'] is True
 
 
+# ---------------------------------------------------------------------------
+# PR #1764 review #3403710558: get_core_config() 必须把 ttsModelProvider /
+# ttsVoiceId raw camelCase key 透传到 normalized snapshot，否则
+# main_logic/core.py 的 _is_vllm_omni_tts_enabled / _resolve_vllm_omni_runtime_voice
+# 拿不到字段，vLLM-Omni TTS 在原生 voice（如 Gemini Puck）场景被静默跳过。
+# ---------------------------------------------------------------------------
+class TestVllmOmniRawKeyPassthrough:
+
+    @pytest.mark.unit
+    def test_ttsModelProvider_passes_through_to_snapshot(self, config_manager):
+        """用户在 core_config.json 里写 ttsModelProvider=vllm_omni，
+        snapshot 必须包含同名 raw key。"""
+        _write_core_config(config_manager, {
+            'coreApi': 'gemini',
+            'assistApi': 'gemini',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'vllm_omni',
+            'ttsVoiceId': 'Puck',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg.get('ttsModelProvider') == 'vllm_omni', \
+            f"snapshot 应透传 ttsModelProvider=vllm_omni，实际={cfg.get('ttsModelProvider')!r}"
+        assert cfg.get('ttsVoiceId') == 'Puck', \
+            f"snapshot 应透传 ttsVoiceId=Puck，实际={cfg.get('ttsVoiceId')!r}"
+
+    @pytest.mark.unit
+    def test_missing_raw_keys_default_to_empty_string(self, config_manager):
+        """老用户 core_config.json 不含 ttsModelProvider/ttsVoiceId，
+        snapshot 必须有这两个 key 且值为空串（向后兼容）。"""
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg.get('ttsModelProvider') == '', \
+            f"缺失时应兜底为空串，实际={cfg.get('ttsModelProvider')!r}"
+        assert cfg.get('ttsVoiceId') == '', \
+            f"缺失时应兜底为空串，实际={cfg.get('ttsVoiceId')!r}"
+        # 关键：两个 key 必须存在于 dict 中（即使值为空串），
+        # 否则 _is_vllm_omni_tts_enabled 的 .get() 会返回 None 触发 .strip() 链路异常
+        assert 'ttsModelProvider' in cfg
+        assert 'ttsVoiceId' in cfg
+
+    @pytest.mark.unit
+    def test_none_value_in_raw_config_normalized_to_empty_string(self, config_manager):
+        """core_config.json 被手动编辑后字段为 null，
+        snapshot 必须把 None 兜底成空串，避免下游 .strip() AttributeError。"""
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'ttsModelProvider': None,
+            'ttsVoiceId': None,
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg.get('ttsModelProvider') == '', \
+            f"None 应兜底为空串，实际={cfg.get('ttsModelProvider')!r}"
+        assert cfg.get('ttsVoiceId') == '', \
+            f"None 应兜底为空串，实际={cfg.get('ttsVoiceId')!r}"
+        # 验证下游真实消费方不会抛 AttributeError
+        from main_logic.core import LLMSessionManager
+        assert LLMSessionManager._is_vllm_omni_tts_enabled(cfg) is False
+
+    @pytest.mark.unit
+    def test_snapshot_drives_is_vllm_omni_tts_enabled(self, config_manager):
+        """端到端：core_config.json 含 ttsModelProvider=vllm_omni + enableCustomApi=True，
+        经过 get_core_config() 出来的 snapshot 应让 _is_vllm_omni_tts_enabled 返回 True。
+        这是 codex review #3403710558 的核心契约。"""
+        from main_logic.core import LLMSessionManager
+        _write_core_config(config_manager, {
+            'coreApi': 'gemini',
+            'assistApi': 'gemini',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'vllm_omni',
+            'ttsVoiceId': 'Puck',
+        })
+        cfg = config_manager.get_core_config()
+        assert LLMSessionManager._is_vllm_omni_tts_enabled(cfg) is True, \
+            "snapshot 透传 ttsModelProvider 后，_is_vllm_omni_tts_enabled 应返回 True"
+
+    @pytest.mark.unit
+    def test_snapshot_disabled_when_custom_api_off(self, config_manager):
+        """关掉 enableCustomApi 后即使 ttsModelProvider=vllm_omni 仍然停用。"""
+        from main_logic.core import LLMSessionManager
+        _write_core_config(config_manager, {
+            'coreApi': 'gemini',
+            'assistApi': 'gemini',
+            'enableCustomApi': False,
+            'ttsModelProvider': 'vllm_omni',
+            'ttsVoiceId': 'Puck',
+        })
+        cfg = config_manager.get_core_config()
+        assert LLMSessionManager._is_vllm_omni_tts_enabled(cfg) is False
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

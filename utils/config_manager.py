@@ -3747,6 +3747,14 @@ class ConfigManager:
         config['ELEVENLABS_API_KEY'] = core_cfg.get('assistApiKeyElevenlabs', '')
         config['TTS_PROVIDER'] = core_cfg.get('ttsProvider', '')
 
+        # vllm_omni 路由检测（main_logic/core.py: _is_vllm_omni_tts_enabled /
+        # _resolve_vllm_omni_runtime_voice）读 raw camelCase key，不读映射后的
+        # UPPER_SNAKE。透传 raw key 以保证检测逻辑生效。其余 ttsModelUrl / ttsModelId /
+        # ttsModelApiKey 仍由 main_logic/tts_client.py 通过 load_json_config 绕过
+        # snapshot 读取，待后续统一。（PR #1764 review #3403710558）
+        config['ttsModelProvider'] = str(core_cfg.get('ttsModelProvider', '') or '')
+        config['ttsVoiceId'] = str(core_cfg.get('ttsVoiceId', '') or '')
+
         # 禁用TTS
         _raw_disable_tts = core_cfg.get('disableTts', False)
         if isinstance(_raw_disable_tts, bool):
