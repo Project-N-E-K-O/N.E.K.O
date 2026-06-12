@@ -560,6 +560,9 @@ class MusicPusherPlugin(NekoPluginBase):
         if self._is_plugin_upload_url(url):
             return [host]
 
+        if ":" in host:
+            return []
+
         if _validate_url_for_av_open(url):
             return [host]
 
@@ -1328,30 +1331,32 @@ class MusicPusherPlugin(NekoPluginBase):
         lyric_text: str = "",
         attach_prompt_on_push: bool = True,
         deadline_monotonic: float | None = None,
-    ) -> None:
+    ) -> bool:
         def _expired() -> bool:
             return deadline_monotonic is not None and time.monotonic() >= deadline_monotonic
 
         if _expired():
-            return
+            return False
 
         event_id = f"music_push_{uuid4().hex[:12]}"
         expire_at = int(time.time()) + int(_PROACTIVE_PROMPT_EXPIRE_SECONDS)
         domains = self._music_allowlist_domains_for_url(url)
         if _expired():
-            return
-        if domains:
-            self.ctx.push_message(
-                source="music_pusher",
-                message_type="music_allowlist_add",
-                description=f"Allow music host: {domains[0]}",
-                priority=7,
-                metadata={"domains": domains, "event_id": event_id},
-                target_lanlan=target_lanlan,
-            )
+            return False
+        if not domains:
+            raise ValueError("url 无法安全加入播放白名单")
+
+        self.ctx.push_message(
+            source="music_pusher",
+            message_type="music_allowlist_add",
+            description=f"Allow music host: {domains[0]}",
+            priority=7,
+            metadata={"domains": domains, "event_id": event_id},
+            target_lanlan=target_lanlan,
+        )
 
         if _expired():
-            return
+            return False
         self.ctx.push_message(
             source="music_pusher",
             message_type="music_play_url",
@@ -1367,10 +1372,10 @@ class MusicPusherPlugin(NekoPluginBase):
         )
 
         if not bool(attach_prompt_on_push):
-            return
+            return True
 
         if _expired():
-            return
+            return False
         lyric_clean = str(lyric_text or "").replace("\r\n", "\n").strip()[:_LYRIC_PUSH_MAX_CHARS]
         proactive_meta: dict[str, Any] = {
             "content_type": "music_url",
@@ -1436,7 +1441,7 @@ class MusicPusherPlugin(NekoPluginBase):
             )
 
         if _expired():
-            return
+            return False
         self._push_proactive_text(
             content=(
                 "【用户身份消息】\n"
@@ -1452,6 +1457,7 @@ class MusicPusherPlugin(NekoPluginBase):
             metadata=proactive_meta,
             priority=8,
         )
+        return True
 
     def _resolve_attach_prompt_on_push(self, kwargs: dict[str, Any], explicit: object = None) -> bool:
         if explicit is not None:
@@ -1655,20 +1661,28 @@ class MusicPusherPlugin(NekoPluginBase):
         pushed = False
         if auto_push:
             push_deadline = time.monotonic() + _PUSH_TIMEOUT_SECONDS
-            await asyncio.wait_for(
-                asyncio.to_thread(
-                    self._push_music_link,
-                    url=absolute_url,
-                    title=final_title,
-                    artist=final_artist,
-                    target_lanlan=target_lanlan,
-                    lyric_text=lyric_text,
-                    attach_prompt_on_push=attach_prompt,
-                    deadline_monotonic=push_deadline,
-                ),
-                timeout=_PUSH_TIMEOUT_SECONDS,
-            )
-            pushed = True
+            try:
+                pushed = bool(
+                    await asyncio.wait_for(
+                        asyncio.to_thread(
+                            self._push_music_link,
+                            url=absolute_url,
+                            title=final_title,
+                            artist=final_artist,
+                            target_lanlan=target_lanlan,
+                            lyric_text=lyric_text,
+                            attach_prompt_on_push=attach_prompt,
+                            deadline_monotonic=push_deadline,
+                        ),
+                        timeout=_PUSH_TIMEOUT_SECONDS,
+                    )
+                )
+            except asyncio.TimeoutError:
+                return Err(SdkError("推送超时"))
+            except Exception as exc:
+                return Err(SdkError(f"推送失败: {exc}"))
+            if not pushed:
+                return Err(SdkError("推送超时"))
 
         return Ok(
             {
@@ -1765,6 +1779,7 @@ class MusicPusherPlugin(NekoPluginBase):
                     lyric_clean = self._extract_lyric_for_item_locked(str(source_item.get("item_id") or ""))
 
         item_id = ""
+        pushed = False
         if add_to_library:
             item = self._build_music_item(
                 url=link,
@@ -1789,23 +1804,32 @@ class MusicPusherPlugin(NekoPluginBase):
 
         if auto_push:
             push_deadline = time.monotonic() + _PUSH_TIMEOUT_SECONDS
-            await asyncio.wait_for(
-                asyncio.to_thread(
-                    self._push_music_link,
-                    url=link,
-                    title=final_title,
-                    artist=final_artist,
-                    target_lanlan=target_lanlan,
-                    lyric_text=lyric_clean,
-                    attach_prompt_on_push=attach_prompt,
-                    deadline_monotonic=push_deadline,
-                ),
-                timeout=_PUSH_TIMEOUT_SECONDS,
-            )
+            try:
+                pushed = bool(
+                    await asyncio.wait_for(
+                        asyncio.to_thread(
+                            self._push_music_link,
+                            url=link,
+                            title=final_title,
+                            artist=final_artist,
+                            target_lanlan=target_lanlan,
+                            lyric_text=lyric_clean,
+                            attach_prompt_on_push=attach_prompt,
+                            deadline_monotonic=push_deadline,
+                        ),
+                        timeout=_PUSH_TIMEOUT_SECONDS,
+                    )
+                )
+            except asyncio.TimeoutError:
+                return Err(SdkError("推送超时"))
+            except Exception as exc:
+                return Err(SdkError(f"推送失败: {exc}"))
+            if not pushed:
+                return Err(SdkError("推送超时"))
 
         return Ok(
             {
-                "pushed": bool(auto_push),
+                "pushed": bool(auto_push and pushed),
                 "saved": bool(add_to_library),
                 "chain": "music_play_url + proactive_notification",
                 "url": link,
@@ -2551,21 +2575,26 @@ class MusicPusherPlugin(NekoPluginBase):
                         }
                         self._save_state_locked()
 
+                    pushed_track = False
                     try:
                         push_deadline = time.monotonic() + _PUSH_TIMEOUT_SECONDS
-                        await asyncio.wait_for(
-                            asyncio.to_thread(
-                                self._push_music_link,
-                                url=url,
-                                title=title,
-                                artist=artist,
-                                target_lanlan=target_lanlan,
-                                lyric_text=lyric_text,
-                                attach_prompt_on_push=attach_prompt_on_push,
-                                deadline_monotonic=push_deadline,
-                            ),
-                            timeout=_PUSH_TIMEOUT_SECONDS,
+                        pushed_track = bool(
+                            await asyncio.wait_for(
+                                asyncio.to_thread(
+                                    self._push_music_link,
+                                    url=url,
+                                    title=title,
+                                    artist=artist,
+                                    target_lanlan=target_lanlan,
+                                    lyric_text=lyric_text,
+                                    attach_prompt_on_push=attach_prompt_on_push,
+                                    deadline_monotonic=push_deadline,
+                                ),
+                                timeout=_PUSH_TIMEOUT_SECONDS,
+                            )
                         )
+                        if not pushed_track:
+                            raise asyncio.TimeoutError
                         success_count += 1
                     except asyncio.TimeoutError:
                         last_error = f"推送超时[{title}]"
@@ -2573,6 +2602,23 @@ class MusicPusherPlugin(NekoPluginBase):
                     except Exception as exc:
                         last_error = f"推送失败[{title}]: {exc}"
                         self.logger.warning(last_error)
+
+                    if not pushed_track:
+                        async with self._state_lock:
+                            task_live = self._tasks.get(task_id)
+                            if task_live is not None:
+                                task_live["updated_at"] = _iso()
+                                self._playback_state = {
+                                    "status": "idle",
+                                    "position_sec": 0.0,
+                                    "duration_sec": 0.0,
+                                    "updated_at": _iso(),
+                                    "track_url": "",
+                                    "track_title": "",
+                                }
+                                self._save_state_locked()
+                        index += 1
+                        continue
 
                     switch_to_prev = False
                     switch_to_next = False
