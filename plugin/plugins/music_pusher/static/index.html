@@ -1006,10 +1006,24 @@
   <audio id="sync-player" preload="metadata" crossorigin="anonymous" style="display:none"></audio>
   <div class="toast-box" id="toast-box"></div>
 
-  <script src="https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/postprocessing@6.35.6/build/postprocessing.min.js"></script>
-  <script>
-    "use strict";
+  <script type="module">
+    import * as THREE from "/plugin/music_pusher/ui/vendor/three-0.161.0.module.min.js";
+
+    window.THREE = THREE;
+    const previousWindowRequire = window.require;
+    window.require = () => window.THREE;
+    await new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = "/plugin/music_pusher/ui/vendor/postprocessing-6.35.6.min.js";
+      script.onload = resolve;
+      script.onerror = () => reject(new Error("postprocessing 本地依赖加载失败"));
+      document.head.appendChild(script);
+    });
+    if (previousWindowRequire === undefined) {
+      delete window.require;
+    } else {
+      window.require = previousWindowRequire;
+    }
 
     const PLUGIN_ID = "music_pusher";
     const RUNS_URL = "/runs";
