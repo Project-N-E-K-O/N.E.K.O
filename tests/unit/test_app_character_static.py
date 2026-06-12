@@ -2,6 +2,7 @@ from pathlib import Path
 
 
 APP_CHARACTER_PATH = Path(__file__).resolve().parents[2] / "static" / "app-character.js"
+APP_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "app-ui.js"
 
 
 def test_character_switch_resets_avatar_lock_after_successful_model_load():
@@ -34,9 +35,13 @@ def test_character_switch_clears_goodbye_state_only_after_commit():
     source = APP_CHARACTER_PATH.read_text(encoding="utf-8")
 
     assert "function clearGoodbyeStateForCharacterSwitch()" in source
+    assert "window.hideAllNekoReturnBallContainers(reason)" in source
+    assert "window.hideNekoReturnBallContainer(container, reason)" in source
+    assert "container.removeAttribute('data-neko-return-visible')" in source
+    assert "action: 'idle_return_ball_state'" in source
+    assert "channel.postMessage(payload)" in source
     assert "manager._goodbyeClicked = false" in source
     assert "manager._isInReturnState = false" in source
-    assert "manager._returnButtonContainer.style.display = 'none'" in source
     assert "window.__nekoGoodbyeSilentState = {" in source
     assert "action: 'goodbye_state'" in source
     assert "active: false" in source
@@ -48,3 +53,13 @@ def test_character_switch_clears_goodbye_state_only_after_commit():
     clear = source.index("clearGoodbyeStateForCharacterSwitch();")
     toast = source.index("showStatusToast(window.t ? window.t('app.switchedCatgirl'")
     assert commit < clear < toast
+
+
+def test_app_ui_exposes_shared_return_ball_hide_helper():
+    source = APP_UI_PATH.read_text(encoding="utf-8")
+
+    assert "function hideReturnBallContainer(container, reason = 'return-ball-hide')" in source
+    assert "scheduleIdleReturnBallDesktopBridge(reason || 'return-ball-hide', container)" in source
+    assert "window.hideNekoReturnBallContainer = hideReturnBallContainer" in source
+    assert "window.hideAllNekoReturnBallContainers = function(reason = 'return-ball-hide')" in source
+    assert "ensureMultiWindowReturnBallDrag(null)" in source

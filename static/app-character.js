@@ -141,14 +141,60 @@
     function clearGoodbyeStateForCharacterSwitch() {
         const reason = 'character-switch';
 
+        const postFallbackReturnBallHiddenState = () => {
+            const payload = {
+                action: 'idle_return_ball_state',
+                source: 'pet-window',
+                reason: reason,
+                visible: false,
+                tier: 'none',
+                screenRect: null,
+                lanlan_name: (window.lanlan_config && window.lanlan_config.lanlan_name) || '',
+                timestamp: Date.now()
+            };
+            window.dispatchEvent(new CustomEvent('neko:idle-return-ball-state', { detail: payload }));
+            const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
+            if (channel && typeof channel.postMessage === 'function') {
+                try {
+                    channel.postMessage(payload);
+                } catch (_) {}
+            }
+        };
+
+        const hideReturnButtonContainer = (container) => {
+            if (!container) return;
+            if (typeof window.hideNekoReturnBallContainer === 'function') {
+                window.hideNekoReturnBallContainer(container, reason);
+                return;
+            }
+
+            container.removeAttribute('data-neko-return-visible');
+            container.style.display = 'none';
+            container.style.pointerEvents = 'none';
+            container.style.removeProperty('visibility');
+            postFallbackReturnBallHiddenState();
+        };
+
+        const hideAllReturnButtonContainers = () => {
+            if (typeof window.hideAllNekoReturnBallContainers === 'function') {
+                window.hideAllNekoReturnBallContainers(reason);
+                return;
+            }
+            [
+                window.live2dManager && window.live2dManager._returnButtonContainer,
+                window.vrmManager && window.vrmManager._returnButtonContainer,
+                window.mmdManager && window.mmdManager._returnButtonContainer,
+                document.getElementById('live2d-return-button-container'),
+                document.getElementById('vrm-return-button-container'),
+                document.getElementById('mmd-return-button-container')
+            ].forEach(hideReturnButtonContainer);
+        };
+
         const clearManagerReturnState = (manager) => {
             if (!manager) return;
             manager._goodbyeClicked = false;
             if (Object.prototype.hasOwnProperty.call(manager, '_isInReturnState')) {
                 manager._isInReturnState = false;
-            }
-            if (manager._returnButtonContainer && manager._returnButtonContainer.style) {
-                manager._returnButtonContainer.style.display = 'none';
             }
         };
 
@@ -156,6 +202,7 @@
             clearManagerReturnState(window.live2dManager);
             clearManagerReturnState(window.vrmManager);
             clearManagerReturnState(window.mmdManager);
+            hideAllReturnButtonContainers();
 
             window.__nekoGoodbyeSilentState = {
                 active: false,
