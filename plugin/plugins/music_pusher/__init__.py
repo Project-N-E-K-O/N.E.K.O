@@ -506,6 +506,25 @@ class MusicPusherPlugin(NekoPluginBase):
 
         return []
 
+    async def _allowlist_domains_for_url_async(self, url: str) -> list[str]:
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(self._music_allowlist_domains_for_url, url),
+                timeout=_PUSH_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            return []
+
+    async def _validate_queue_urls_allowlistable(self, queue: list[dict[str, Any]]) -> str:
+        for idx, track in enumerate(queue):
+            url = self._normalize_legacy_url(str((track or {}).get("url") or "").strip())
+            if not url:
+                return f"第 {idx + 1} 首缺少 URL"
+            domains = await self._allowlist_domains_for_url_async(url)
+            if not domains:
+                return f"第 {idx + 1} 首 URL 无法安全加入播放白名单"
+        return ""
+
     def _save_upload_file(self, binary: bytes, ext: str) -> tuple[str, str]:
         self._upload_dir.mkdir(parents=True, exist_ok=True)
         stored_filename = f"{uuid4().hex[:16]}{ext}"
@@ -1560,13 +1579,17 @@ class MusicPusherPlugin(NekoPluginBase):
         attach_prompt = self._resolve_attach_prompt_on_push(kwargs, attach_prompt_on_push)
         pushed = False
         if auto_push:
-            self._push_music_link(
-                url=absolute_url,
-                title=final_title,
-                artist=final_artist,
-                target_lanlan=target_lanlan,
-                lyric_text=lyric_text,
-                attach_prompt_on_push=attach_prompt,
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    self._push_music_link,
+                    url=absolute_url,
+                    title=final_title,
+                    artist=final_artist,
+                    target_lanlan=target_lanlan,
+                    lyric_text=lyric_text,
+                    attach_prompt_on_push=attach_prompt,
+                ),
+                timeout=_PUSH_TIMEOUT_SECONDS,
             )
             pushed = True
 
@@ -1630,6 +1653,8 @@ class MusicPusherPlugin(NekoPluginBase):
             return Err(SdkError("url 不能为空"))
         if not self._is_http_music_url(link):
             return Err(SdkError("url 必须是 http/https 绝对链接"))
+        if not await self._allowlist_domains_for_url_async(link):
+            return Err(SdkError("url 无法安全加入播放白名单"))
 
         target_lanlan = self._resolve_target_lanlan(kwargs)
         attach_prompt = self._resolve_attach_prompt_on_push(kwargs, attach_prompt_on_push)
@@ -1686,13 +1711,17 @@ class MusicPusherPlugin(NekoPluginBase):
             item_id = str(item.get("item_id") or "")
 
         if auto_push:
-            self._push_music_link(
-                url=link,
-                title=final_title,
-                artist=final_artist,
-                target_lanlan=target_lanlan,
-                lyric_text=lyric_clean,
-                attach_prompt_on_push=attach_prompt,
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    self._push_music_link,
+                    url=link,
+                    title=final_title,
+                    artist=final_artist,
+                    target_lanlan=target_lanlan,
+                    lyric_text=lyric_clean,
+                    attach_prompt_on_push=attach_prompt,
+                ),
+                timeout=_PUSH_TIMEOUT_SECONDS,
             )
 
         return Ok(
@@ -1950,6 +1979,11 @@ class MusicPusherPlugin(NekoPluginBase):
             if not queue:
                 return Err(SdkError("队列不能为空，请先添加音频"))
 
+        queue_err = await self._validate_queue_urls_allowlistable(queue)
+        if queue_err:
+            return Err(SdkError(queue_err))
+
+        async with self._state_lock:
             task_id = f"tsk_{uuid4().hex[:10]}"
             task = {
                 "task_id": task_id,
@@ -2022,6 +2056,28 @@ class MusicPusherPlugin(NekoPluginBase):
             except Exception as exc:
                 return Err(SdkError(f"时间格式无效: {exc}"))
 
+        next_queue: list[dict[str, Any]] | None = None
+        if queue_item_ids is not None or queue_items is not None:
+            async with self._state_lock:
+                task = self._tasks.get(target_id)
+                if task is None:
+                    return Err(SdkError("任务不存在"))
+                if str(task.get("status") or "") == "running":
+                    return Err(SdkError("任务执行中，暂不允许编辑"))
+                try:
+                    next_queue = self._build_queue_for_task(
+                        queue_item_ids=queue_item_ids,
+                        queue_items=queue_items,
+                    )
+                except ValueError as exc:
+                    return Err(SdkError(str(exc)))
+                if not next_queue:
+                    return Err(SdkError("队列不能为空"))
+
+            queue_err = await self._validate_queue_urls_allowlistable(next_queue)
+            if queue_err:
+                return Err(SdkError(queue_err))
+
         async with self._state_lock:
             task = self._tasks.get(target_id)
             if task is None:
@@ -2041,18 +2097,9 @@ class MusicPusherPlugin(NekoPluginBase):
             if target_lanlan is not None:
                 task["target_lanlan"] = target_lanlan.strip() or self._resolve_target_lanlan(kwargs)
 
-            if queue_item_ids is not None or queue_items is not None:
-                try:
-                    queue = self._build_queue_for_task(
-                        queue_item_ids=queue_item_ids,
-                        queue_items=queue_items,
-                    )
-                except ValueError as exc:
-                    return Err(SdkError(str(exc)))
-                if not queue:
-                    return Err(SdkError("队列不能为空"))
-                task["queue"] = queue
-                task["total_duration_sec"] = _calc_total_duration(queue)
+            if next_queue is not None:
+                task["queue"] = next_queue
+                task["total_duration_sec"] = _calc_total_duration(next_queue)
                 if self._gc_tombstoned_uploads_locked():
                     self._save_upload_name_map_locked()
 
