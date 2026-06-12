@@ -862,6 +862,9 @@ function populateModelProviderDropdowns() {
         Object.keys(_assistApiProviders).forEach(pk => {
             if (pk === 'free') return;
             if (isProviderRestricted(pk)) return;
+            // vllm_omni 是 TTS 专用 provider，仅在 TTS 下拉里出现，
+            // 不污染 conversation/summary/correction/emotion/vision/agent/omni 的下拉
+            if (pk === 'vllm_omni' && mt !== 'tts') return;
             const pInfo = _assistApiProviders[pk];
             const opt = document.createElement('option');
             opt.value = pk;
@@ -980,6 +983,26 @@ function onCustomModelProviderChange(modelType) {
             if (urlInput) { urlInput.value = ''; urlInput.setAttribute('readonly', 'readonly'); }
             setKeyReadonly(keyInput, '');
         }
+    } else if (provider === 'vllm_omni' && modelType === 'tts') {
+        // vllm-omni: TTS 标准 provider，但 URL/Key/ModelId/Voice 全部可编辑可保存
+        // （类似 custom，但 dropdown 里有自己的名字与默认 URL）
+        const pInfo = _assistApiProviders[provider] || {};
+        if (urlInput) {
+            // 首次切换时若 URL 为空，预填默认值；用户已填的不覆盖
+            if (!urlInput.value || !urlInput.value.trim()) {
+                urlInput.value = getProviderOpenrouterUrl(provider, pInfo) || '';
+            }
+            urlInput.removeAttribute('readonly');
+        }
+        const modelIdInput2 = document.getElementById(`${modelType}ModelId`);
+        if (modelIdInput2 && (!modelIdInput2.value || !modelIdInput2.value.trim())) {
+            modelIdInput2.value = pInfo.tts_default_model || '';
+        }
+        const voiceInput = document.getElementById(`${modelType}VoiceId`);
+        if (voiceInput && (!voiceInput.value || !voiceInput.value.trim())) {
+            voiceInput.value = pInfo.tts_default_voice || '';
+        }
+        setKeyEditable(keyInput);
     } else if (provider === 'custom') {
         // custom: remove readonly
         if (urlInput) urlInput.removeAttribute('readonly');
@@ -2137,7 +2160,7 @@ function refreshAutoResolvedModelUrlsForSave(params) {
     if (!params || typeof params !== 'object') return;
 
     const resolveUrl = (modelType, providerMode) => {
-        if (!providerMode || providerMode === 'custom') return '';
+        if (!providerMode || providerMode === 'custom' || (providerMode === 'vllm_omni' && modelType === 'tts')) return '';
 
         let providerKey = providerMode;
         let scope = 'assist';
@@ -2848,6 +2871,7 @@ const ConnectivityManager = {
             const providerSel = document.getElementById(`${mt}ModelProvider`);
             const urlInput = document.getElementById(`${mt}ModelUrl`);
             const keyInput = document.getElementById(`${mt}ModelApiKey`);
+            const modelIdInput = document.getElementById(`${mt}ModelId`);
 
             if (!providerSel) return result;
 
@@ -2886,6 +2910,13 @@ const ConnectivityManager = {
                 // 自定义：直接从输入框读取，不设 providerKey（走自定义模式）
                 result.key = keyInput ? getRealKey(keyInput) : '';
                 result.providerType = (mt === 'omni') ? 'websocket' : 'openai_compatible';
+            } else if (provider === 'vllm_omni' && mt === 'tts') {
+                // vllm_omni + tts: 走 Mode 2（custom 路径），复用后端 _test_websocket
+                // 不设 providerKey / providerScope → 后端进入 Mode 2，用用户输入的 URL
+                result.url = urlInput ? urlInput.value.trim() : '';
+                result.providerType = 'websocket';
+                result.key = keyInput ? getRealKey(keyInput) : '';
+                result.model = modelIdInput ? modelIdInput.value.trim() : '';
             } else {
                 // 指定服务商：从 Key Book 读取
                 const bookKey = syncKeyFromBook(provider);

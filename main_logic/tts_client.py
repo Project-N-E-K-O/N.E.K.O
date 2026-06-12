@@ -417,6 +417,16 @@ TTS_PROVIDER_REGISTRY: dict[str, TTSProviderMeta] = {
         audio_format="PCM → resample 48kHz",
         notes="连接本地 CosyVoice 服务",
     ),
+    "vllm_omni": TTSProviderMeta(
+        name="vllm_omni",
+        category="ws_bistream",
+        protocol="WebSocket (ws://host:8091/v1/audio/speech/stream)",
+        input_streaming=True,
+        output_streaming=True,
+        client_sentence_split=False,
+        audio_format="PCM 24kHz → resample 48kHz",
+        notes="连接vLLM-Omni部署的TTS服务",
+    ),
 }
 
 
@@ -2821,6 +2831,206 @@ def openai_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     _run_sentence_tts_worker(request_queue, response_queue, setup, label="OpenAI TTS")
 
 
+def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
+                          base_url='', model='', voice=''):
+    """vLLM-Omni TTS Worker —  WebSocket 双工流式合成。
+
+    协议：``ws://{base_url}/v1/audio/speech/stream``
+
+    Client → Server:
+      1. ``{"type": "session.config", "model": "...", "voice": "...", ...}``
+      2. ``{"type": "input.text", "text": "..."}``  （可多次发送）
+      3. ``{"type": "input.done"}``
+
+    Server → Client:
+      1. ``{"type": "audio.start", "sentence_index": N, ...}``
+      2. <binary frame: PCM 24kHz/16bit/mono>
+      3. ``{"type": "audio.done", "sentence_index": N}``
+      4. ``{"type": "session.done", "total_sentences": N}``
+
+    参数：
+        base_url:  vLLM-Omni 服务根地址（如 ``http://localhost:8091``），
+                   自动转为 ws:// 协议。
+        model:     模型名（默认 ``Qwen3-TTS``）。
+        voice:     vllm-omni 提供的 voice 名。
+    """
+    base_url = (base_url or '').strip().rstrip('/')
+    if not base_url:
+        logger.error("[vLLM-Omni TTS] 未配置 base_url（TTS_MODEL_URL 为空）")
+        _enqueue_error(response_queue, {
+            "code": "TTS_CONFIG_INVALID",
+            "provider": "vllm_omni",
+            "message": "vLLM-Omni TTS 未配置 URL",
+        })
+        response_queue.put(("__ready__", False))
+        return
+
+    # WebSocket URL 拼接 
+    ws_url = base_url
+    ws_endpoint = ws_url.rstrip('/') + '/audio/speech/stream'
+
+    effective_model = (model or '').strip() or 'Qwen3-TTS'
+    effective_voice = (voice or '').strip() or (voice_id or '').strip() or 'default'
+
+    logger.info(
+        "[vLLM-Omni TTS] ws=%s model=%s voice=%s",
+        redact_url_for_log(ws_endpoint), effective_model, effective_voice,
+    )
+
+    async def async_worker():
+        ws = None
+        receive_task = None
+        # 流式重采样器（24kHz→48kHz）
+        resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
+
+        async def _connect_and_config() -> bool:
+            """建立 WS 连接并发送 session.config，返回是否成功。"""
+            nonlocal ws
+            try:
+                ws = await websockets.connect(ws_endpoint, max_size=None)
+            except Exception as e:
+                logger.error(f"[vLLM-Omni TTS] WS 连接失败: {e}")
+                return False
+
+            try:
+                config = {
+                    "type": "session.config",
+                    "model": effective_model,
+                    "voice": effective_voice,
+                    "response_format": "pcm",
+                    "speed": 1.0,
+                    "stream_audio": True,
+                    "split_granularity": "sentence",
+                }
+                await ws.send(json.dumps(config))
+                return True
+            except Exception as e:
+                logger.error(f"[vLLM-Omni TTS] 发送 session.config 失败: {e}")
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
+                ws = None
+                return False
+
+        async def _receive_loop():
+            """接收 WS 消息：JSON 事件 + binary PCM 帧。"""
+            try:
+                async for message in ws:
+                    if isinstance(message, bytes):
+                        # 二进制 PCM 帧：24kHz/16bit/mono → 重采样 48kHz
+                        if len(message) < 2:
+                            continue
+                        audio_array = np.frombuffer(message, dtype=np.int16)
+                        response_queue.put(
+                            _resample_audio(audio_array, 24000, 48000, resampler)
+                        )
+                    else:
+                        try:
+                            event = json.loads(message)
+                        except json.JSONDecodeError:
+                            continue
+                        event_type = event.get("type", "")
+                        if event_type == "session.done":
+                            logger.debug(
+                                "[vLLM-Omni TTS] session.done: total_sentences=%s",
+                                event.get("total_sentences", "?"),
+                            )
+                        elif event_type == "audio.start":
+                            logger.debug(
+                                "[vLLM-Omni TTS] audio.start: idx=%s text=%s",
+                                event.get("sentence_index"),
+                                event.get("sentence_text", "")[:40],
+                            )
+                        elif event_type == "audio.done":
+                            pass  # 静默
+                        elif event_type == "error":
+                            _enqueue_error(response_queue, event)
+            except websockets.exceptions.ConnectionClosed:
+                pass
+            except Exception as e:
+                logger.error(f"[vLLM-Omni TTS] 接收异常: {e}")
+
+        # 首次连接 + 就绪信号
+        if not await _connect_and_config():
+            response_queue.put(("__ready__", False))
+            return
+
+        receive_task = asyncio.create_task(_receive_loop())
+        response_queue.put(("__ready__", True))
+        logger.info("[vLLM-Omni TTS] 已就绪")
+
+        loop = asyncio.get_running_loop()
+
+        while True:
+            try:
+                sid, tts_text = await loop.run_in_executor(None, request_queue.get)
+            except Exception:
+                break
+
+            if sid == TTS_SHUTDOWN_SENTINEL:
+                break
+
+            if sid == "__interrupt__":
+                # 打断：关闭连接，丢弃当前 session
+                if receive_task and not receive_task.done():
+                    receive_task.cancel()
+                    try:
+                        await receive_task
+                    except asyncio.CancelledError:
+                        pass
+                    receive_task = None
+                if ws:
+                    try:
+                        await ws.close()
+                    except Exception:
+                        pass
+                    ws = None
+                resampler.clear()
+                # 重连
+                if not await _connect_and_config():
+                    break
+                receive_task = asyncio.create_task(_receive_loop())
+                continue
+
+            if sid is None:
+                if ws:
+                    try:
+                        await ws.send(json.dumps({"type": "input.done"}))
+                    except Exception as e:
+                        logger.warning(f"[vLLM-Omni TTS] 发送 input.done 失败: {e}")
+                continue
+
+            if tts_text and tts_text.strip() and ws:
+                try:
+                    await ws.send(json.dumps({
+                        "type": "input.text",
+                        "text": tts_text,
+                    }))
+                    _record_tts_telemetry(effective_model, len(tts_text))
+                except Exception as e:
+                    logger.error(f"[vLLM-Omni TTS] 发送 input.text 失败: {e}")
+
+        # 清理
+        if receive_task and not receive_task.done():
+            receive_task.cancel()
+            try:
+                await receive_task
+            except asyncio.CancelledError:
+                pass
+        if ws:
+            try:
+                await ws.close()
+            except Exception:
+                pass
+
+    try:
+        asyncio.run(async_worker())
+    except Exception as e:
+        logger.error(f"[vLLM-Omni TTS] Worker 启动失败: {e}")
+        response_queue.put(("__ready__", False))
+
+
 def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     """GPT-SoVITS TTS Worker - 使用 v3 WebSocket stream-input 双工模式
     
@@ -3945,6 +4155,30 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     try:
         tts_config = cm.get_model_api_config('tts_custom')
         base_url = tts_config.get('base_url') or ''
+
+        # vllm-omni: 用户显式从下拉里选了 vllm_omni（标准 provider），
+        # URL/Key/ModelId/Voice 由用户在前端填写并保存到 core_cfg。
+        # 选 vllm_omni 时无视 ENABLE_CUSTOM_API / GPTSOVITS_ENABLED。
+        # 原始字段，所以这里从原始 core_config.json 读取 ttsModelProvider 等。
+        raw_cfg = cm.load_json_config('core_config.json', {})
+        tts_provider_sel = (raw_cfg.get('ttsModelProvider') or '').strip()
+        if tts_provider_sel == 'vllm_omni':
+            vllm_url = (raw_cfg.get('ttsModelUrl') or '').strip() or base_url
+            vllm_model = (raw_cfg.get('ttsModelId') or '').strip() \
+                or (core_cfg.get('TTS_MODEL') or '').strip() \
+                or 'Qwen3-TTS'
+            vllm_voice = (raw_cfg.get('ttsVoiceId') or '').strip() \
+                or (core_cfg.get('TTS_VOICE_ID') or '').strip() \
+                or 'default'
+            vllm_key = (raw_cfg.get('ttsModelApiKey') or '') \
+                or (core_cfg.get('TTS_MODEL_API_KEY') or '') \
+                or None
+            worker = partial(
+                vllm_omni_tts_worker,
+                base_url=vllm_url, model=vllm_model, voice=vllm_voice,
+            )
+            return worker, vllm_key, 'vllm_omni'
+
         if tts_config.get('is_custom'):
             gsv_enabled = core_cfg.get('GPTSOVITS_ENABLED', False)
             if gsv_enabled:

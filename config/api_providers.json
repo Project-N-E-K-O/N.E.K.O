@@ -257,6 +257,20 @@
       "emotion_model": "qwen/qwen3.5-9b",
       "vision_model": "google/gemini-2.5-flash",
       "agent_model": "google/gemini-3-flash-preview"
+    },
+    "vllm_omni": {
+      "key": "vllm_omni",
+      "name": "vLLM-Omni (TTS)",
+      "description": "本地 / 远程 vLLM 部署的 TTS 服务，推荐Qwen3-TTS",
+      "openrouter_url": "ws://localhost:8091/v1",
+      "conversation_model": "",
+      "summary_model": "",
+      "correction_model": "",
+      "emotion_model": "",
+      "vision_model": "",
+      "agent_model": "",
+      "tts_default_model": "Qwen3-TTS",
+      "tts_default_voice": "default"
     }
   },
   "default_models": {
