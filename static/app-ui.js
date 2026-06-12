@@ -3013,7 +3013,10 @@
             );
         };
         state.handleWindowBlur = () => {
-            cancelActiveDrag('window-blur');
+            if (!state.isDragging) return;
+            // Native return-ball dragging may legitimately blur the Pet window when
+            // the companion chat layer has focus; stale recovery handles lost release.
+            scheduleReturnBallDragRecoveryCheck();
         };
         state.handlePageHide = () => {
             cancelActiveDrag('pagehide');
