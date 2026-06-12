@@ -336,25 +336,18 @@ def check_a_happy_paths(client, mock) -> list[str]:
                    "A1c.wire_tail_is_instruction",
                    f"wire tail content != SimulationResult.instruction")
 
-        # A1d — "UI 扩展字段真进了 wire instruction 正文" 防回归
-        # (2026-04-23 r3 polish).
+        # A1d — compact avatar instruction contract.
         #
-        # LESSONS_LEARNED §1.6 (语义契约 vs 运行时机制): 主程序
-        # ``config.prompts.prompts_avatar_interaction._build_avatar_interaction_
-        # instruction`` 把 ``text_context`` / ``reward_drop`` / ``easter_egg``
-        # 这类"上下文可选字段"拼进 instruction body 的指定 bullet 行
-        # (见 `_AVATAR_INTERACTION_PROMPT_TEXT` 里的 ``reward_drop_line`` /
-        # ``easter_egg_line`` / ``text_context_line``). tester 反馈"这些
-        # 字段在发送给 AI 的消息里完全不会有体现" — 实际是 UI 折叠 +
-        # tester 未展开 Instruction preview 看. 加这条断言守住契约, 若
-        # 未来主程序签名漂移 / testbench pipeline 错过 normalizer 字段,
-        # smoke 立刻红.
+        # 2026-06 avatar prompt 收口后，运行时 prompt 不再拼入
+        # text_context / field-list / verbose requirements；这些实现细节会
+        # 带来模板化和跑题。reward_drop / easter_egg 仍应通过客观事件事实
+        # 体现，所以这里守住"奖励进入事件事实，草稿不泄露"。
         #
         # Matrix:
-        #   - fist + reward_drop + text_context → "附加结果 ... 奖励" +
-        #     "输入框草稿"
+        #   - fist + reward_drop + text_context → 事件事实包含"奖励"，
+        #     不包含 text_context 原文或"输入框草稿"字段。
         #   - hammer + easter_egg (+ intensity 自动归一成 easter_egg) →
-        #     "附加结果 ... 彩蛋"
+        #     事件事实包含"彩蛋"。
         # (persona.language 默认 zh-CN, 检 zh 文案 key.)
         #
         # 用 intensity=rapid 升 rank 越过 A1 留下的 fist_touch rank=1 条目
@@ -378,19 +371,19 @@ def check_a_happy_paths(client, mock) -> list[str]:
         _check(rd.get("accepted") is True, "A1d.accepted",
                f"reason={rd.get('reason')}")
         instruction_d = rd.get("instruction") or ""
-        _check("输入框草稿" in instruction_d, "A1d.text_context_line",
-               f"instruction missing '输入框草稿' bullet for text_context; "
-               f"main-program prompts_avatar_interaction 里 "
-               f"_AVATAR_INTERACTION_PROMPT_TEXT['zh']['text_context_line'] "
-               f"应该拼进来. 前 400 字符: {instruction_d[:400]!r}")
-        _check("主人今天看起来心情不太好" in instruction_d,
-               "A1d.text_context_body",
-               f"text_context body not interpolated into instruction; "
-               f"前 400 字符: {instruction_d[:400]!r}")
         _check("奖励" in instruction_d, "A1d.reward_drop_line",
-               f"instruction missing reward_drop bullet (zh '附加结果 ... "
-               f"掉落奖励'); 主程序 reward_drop_line 应在 fist + reward_drop=True "
-               f"时拼入. 前 400 字符: {instruction_d[:400]!r}")
+               f"instruction missing reward_drop event fact; "
+               f"前 400 字符: {instruction_d[:400]!r}")
+        _check("连续" in instruction_d, "A1d.rapid_reward_keeps_intensity",
+               f"rapid+reward instruction lost repeated-touch fact; "
+               f"前 400 字符: {instruction_d[:400]!r}")
+        _check("输入框草稿" not in instruction_d, "A1d.no_text_context_label",
+               f"compact avatar instruction leaked text_context label: "
+               f"{instruction_d[:400]!r}")
+        _check("主人今天看起来心情不太好" not in instruction_d,
+               "A1d.no_text_context_body",
+               f"compact avatar instruction leaked text_context body: "
+               f"{instruction_d[:400]!r}")
         # 并且 wire 最后一条 instruction 必须等于 SimulationResult.instruction
         # (已由 A1c 守住 happy path, 这里对 context/reward 路径再守一次).
         wired = (mock.last_wire or [])[-1:] or [{}]
@@ -415,8 +408,7 @@ def check_a_happy_paths(client, mock) -> list[str]:
                f"reason={re_.get('reason')}")
         instruction_e = re_.get("instruction") or ""
         _check("彩蛋" in instruction_e, "A1e.easter_egg_line",
-               f"instruction missing '彩蛋' bullet for hammer+easter_egg; "
-               f"主程序 easter_egg_line 应在 hammer + easter_egg=True 时拼入. "
+               f"instruction missing '彩蛋' event fact for hammer+easter_egg; "
                f"前 400 字符: {instruction_e[:400]!r}")
 
         # A2 — agent_callback.
@@ -438,9 +430,9 @@ def check_a_happy_paths(client, mock) -> list[str]:
         instr2 = r2.get("instruction") or ""
         _check("\n" in instr2, "A2.instruction_newline",
                "instruction missing newline (expected multi-line bullet list)")
-        _check("- 任务已完成" in instr2 and "- 2 条邮件" in instr2,
+        _check("任务已完成" in instr2 and "2 条邮件" in instr2,
                "A2.instruction_bullets",
-               f"instruction lacks '- <item>' bullets: {instr2[:200]!r}")
+               f"instruction lacks callback item text: {instr2[:200]!r}")
         # A2c — wire instruction role (see A1c for rationale).
         wire2 = mock.last_wire or []
         if wire2:

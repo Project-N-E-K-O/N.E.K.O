@@ -158,6 +158,7 @@ override-dependencies = [
 
 [dependency-groups]
 dev = [
+    "hypothesis>=6.100",
     "nest-asyncio>=1.6.0",
     "playwright>=1.58.0",
     "pytest>=9.0.2",

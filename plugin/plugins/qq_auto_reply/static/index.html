@@ -264,6 +264,28 @@
         </section>
     </div>
 
+    <div class="modal-overlay" id="step1-guide-modal-overlay">
+        <section class="entity-form-card" id="step1-guide-modal">
+            <div class="entity-form-head">
+                <span class="entity-form-title" data-i18n="ui.guide.step1.modal.title">NapCat 启动说明</span>
+            </div>
+            <p class="inline-note" data-i18n="ui.guide.step1.modal.summary">如果你不是通过插件直接启动 NapCat，请先按下面 4 步手动完成配置，再点击确认。</p>
+            <ol class="step1-guide-list">
+                <li>
+                    <span data-i18n="ui.guide.step1.modal.item1">下载 OneBot（推荐 NapCat），打开发布页：</span>
+                    <a class="step1-guide-link" href="https://github.com/NapNeko/NapCatQQ/releases" target="_blank" rel="noopener noreferrer">https://github.com/NapNeko/NapCatQQ/releases</a>
+                </li>
+                <li data-i18n="ui.guide.step1.modal.item2">启动 NapCat，并打开 NapCat 配置页。</li>
+                <li data-i18n="ui.guide.step1.modal.item3">在左侧工具栏进入“网络配置”。</li>
+                <li data-i18n="ui.guide.step1.modal.item4">添加一个 WS 服务器，点击启用，然后保存。</li>
+            </ol>
+            <div class="save-row">
+                <button class="ghost-action" type="button" id="step1-guide-cancel" data-i18n="ui.actions.cancel">取消</button>
+                <button class="primary-action" type="button" id="step1-guide-confirm" data-i18n="ui.guide.step1.modal.confirm">确认</button>
+            </div>
+        </section>
+    </div>
+
     <div class="modal-overlay" id="backlog-label-modal-overlay">
         <section class="entity-form-card" id="backlog-label-modal">
             <div class="entity-form-head">

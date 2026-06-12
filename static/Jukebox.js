@@ -114,6 +114,8 @@ window.Jukebox = {
     songElements: {},
     tooltipElement: null,
     tooltipTimeout: null,
+    marqueeItems: new Map(),
+    marqueeRaf: null,
     // 窗口拖拽状态
     isDragging: false,
     dragOffset: { x: 0, y: 0 }
@@ -159,6 +161,110 @@ window.Jukebox = {
   setupTooltip: function(element, text) {
     element.addEventListener('mouseenter', () => Jukebox.showTooltip(element, text));
     element.addEventListener('mouseleave', () => Jukebox.hideTooltip());
+  },
+
+  easeInOutMarquee: function(t) {
+    return 0.5 - Math.cos(Math.PI * t) / 2;
+  },
+
+  getMarqueeDuration: function(maxScroll) {
+    return Math.max(3000, Math.min(60000, maxScroll * 100));
+  },
+
+  updateMarqueeText: function(root) {
+    const scope = root || document;
+    const nodes = Array.from(scope.querySelectorAll('[data-neko-marquee]'));
+
+    nodes.forEach((el) => {
+      const maxScroll = Math.max(0, el.scrollWidth - el.clientWidth);
+      if (maxScroll <= 1) {
+        el.classList.remove('neko-marquee-active');
+        el.scrollLeft = 0;
+        Jukebox.State.marqueeItems.delete(el);
+        return;
+      }
+
+      el.classList.add('neko-marquee-active');
+      const existing = Jukebox.State.marqueeItems.get(el);
+      const duration = Jukebox.getMarqueeDuration(maxScroll);
+      if (!existing || Math.abs((existing.maxScroll || 0) - maxScroll) > 1) {
+        Jukebox.State.marqueeItems.set(el, {
+          phase: 'pauseStart',
+          phaseStart: performance.now(),
+          duration,
+          maxScroll
+        });
+        el.scrollLeft = 0;
+      } else {
+        existing.duration = duration;
+        existing.maxScroll = maxScroll;
+      }
+    });
+
+    for (const el of Array.from(Jukebox.State.marqueeItems.keys())) {
+      if (!document.contains(el)) {
+        Jukebox.State.marqueeItems.delete(el);
+      }
+    }
+
+    if (Jukebox.State.marqueeItems.size > 0 && !Jukebox.State.marqueeRaf) {
+      Jukebox.State.marqueeRaf = requestAnimationFrame(Jukebox.tickMarqueeText);
+    }
+  },
+
+  tickMarqueeText: function(now) {
+    Jukebox.State.marqueeRaf = null;
+
+    for (const [el, item] of Array.from(Jukebox.State.marqueeItems.entries())) {
+      if (!document.contains(el)) {
+        Jukebox.State.marqueeItems.delete(el);
+        continue;
+      }
+
+      const maxScroll = Math.max(0, el.scrollWidth - el.clientWidth);
+      if (maxScroll <= 1) {
+        el.classList.remove('neko-marquee-active');
+        el.scrollLeft = 0;
+        Jukebox.State.marqueeItems.delete(el);
+        continue;
+      }
+
+      if (document.activeElement === el || el.contains(document.activeElement)) {
+        el.classList.add('neko-marquee-editing');
+        item.phase = 'pauseStart';
+        item.phaseStart = now;
+        continue;
+      }
+      el.classList.remove('neko-marquee-editing');
+
+      item.maxScroll = maxScroll;
+      item.duration = Jukebox.getMarqueeDuration(maxScroll);
+      const elapsed = now - item.phaseStart;
+
+      if (item.phase === 'pauseStart') {
+        el.scrollLeft = 0;
+        if (elapsed >= 1000) {
+          item.phase = 'forward';
+          item.phaseStart = now;
+        }
+      } else if (item.phase === 'forward') {
+        const t = Math.min(1, elapsed / item.duration);
+        el.scrollLeft = Math.round(maxScroll * Jukebox.easeInOutMarquee(t));
+        if (t >= 1) {
+          el.scrollLeft = 0;
+          item.phase = 'pauseStart';
+          item.phaseStart = now;
+        }
+      }
+    }
+
+    if (Jukebox.State.marqueeItems.size > 0) {
+      Jukebox.State.marqueeRaf = requestAnimationFrame(Jukebox.tickMarqueeText);
+    }
+  },
+
+  scheduleMarqueeTextUpdate: function(root) {
+    requestAnimationFrame(() => Jukebox.updateMarqueeText(root || document));
   },
 
   SongActionManager: {
@@ -366,6 +472,36 @@ window.Jukebox = {
         });
         return response.json();
       },
+
+      async batchDeleteSongs(songIds) {
+        const response = await fetch(`${this.baseUrl}/songs/batch-delete`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ songIds })
+        });
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.detail?.message || errorData.detail || errorData.error || `HTTP ${response.status}`);
+        }
+        return response.json();
+      },
+
+      async batchDeleteActions(actionIds) {
+        const response = await fetch(`${this.baseUrl}/actions/batch-delete`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ actionIds })
+        });
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.detail?.message || errorData.detail || errorData.error || `HTTP ${response.status}`);
+        }
+        return response.json();
+      },
       
       async deleteAction(actionId) {
         const response = await fetch(`${this.baseUrl}/actions/${actionId}`, {
@@ -378,6 +514,16 @@ window.Jukebox = {
         const formData = new FormData();
         formData.append('visible', visible);
         const response = await fetch(`${this.baseUrl}/songs/${songId}/visibility`, {
+          method: 'PUT',
+          body: formData
+        });
+        return response.json();
+      },
+
+      async updateActionVisibility(actionId, visible) {
+        const formData = new FormData();
+        formData.append('visible', visible);
+        const response = await fetch(`${this.baseUrl}/actions/${actionId}/visibility`, {
           method: 'PUT',
           body: formData
         });
@@ -464,7 +610,7 @@ window.Jukebox = {
         } else {
           this._managerWindow = window.open(
             '/jukebox/manager', 'neko-jukebox-manager',
-            'width=480,height=600'
+            'width=480,height=600,resizable=yes'
           );
         }
         return;
@@ -521,6 +667,16 @@ window.Jukebox = {
       panel.className = 'jukebox-sam-panel';
       panel.style.display = 'none'; // 默认隐藏
       panel.innerHTML = `
+        ${window.__NEKO_JUKEBOX_MANAGER_STANDALONE__ ? '' : `
+          <div class="sam-resize-handle" data-dir="n"></div>
+          <div class="sam-resize-handle" data-dir="s"></div>
+          <div class="sam-resize-handle" data-dir="w"></div>
+          <div class="sam-resize-handle" data-dir="e"></div>
+          <div class="sam-resize-handle" data-dir="nw"></div>
+          <div class="sam-resize-handle" data-dir="ne"></div>
+          <div class="sam-resize-handle" data-dir="sw"></div>
+          <div class="sam-resize-handle" data-dir="se"></div>
+        `}
         <div class="sam-header">
           <span class="sam-title">${window.t('Jukebox.managerTitle', '管理器')}</span>
           <div class="sam-tabs">
@@ -540,6 +696,13 @@ window.Jukebox = {
             <button class="sam-btn sam-btn-export-all" onclick="Jukebox.SongActionManager.exportAll(false)">${window.t('Jukebox.exportAllIgnoreHidden', '全部导出(忽略隐藏)')}</button>
             <button class="sam-btn sam-btn-export-all" onclick="Jukebox.SongActionManager.exportAll(true)">${window.t('Jukebox.exportAllIncludeHidden', '全部导出(含隐藏)')}</button>
             <button class="sam-btn sam-btn-export-selected" onclick="Jukebox.SongActionManager.exportSelected()" style="display:none">${window.t('Jukebox.exportSelected', '导出选中')}</button>
+            <span class="sam-danger-action-wrap" style="display:none">
+              <button class="sam-btn sam-btn-danger sam-btn-song-danger"
+                      onclick="Jukebox.SongActionManager.confirmManagerBatchDelete()"
+                      onmouseenter="Jukebox.SongActionManager.showManagerDeleteTooltip(this)"
+                      onmouseleave="Jukebox.SongActionManager.hideManagerDeleteTooltip()"></button>
+              <span class="sam-danger-tooltip" role="tooltip"></span>
+            </span>
           </div>
           <span class="sam-selection-info" id="sam-selection-info"></span>
           <div class="sam-unified-hint" id="sam-unified-hint">
@@ -623,9 +786,9 @@ window.Jukebox = {
                     <label class="sam-checkbox sam-item-checkbox">
                       <input type="checkbox" class="sam-song-select" data-id="${id}" ${this.selectedSongs?.has(id) ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleSongSelect('${id}', this.checked)">
                     </label>
-                    <span class="sam-item-name" contenteditable="true"
+                    <span class="sam-item-name" contenteditable="true" data-neko-marquee title="${Jukebox.escapeHtml(song.name)}"
                           onblur="Jukebox.SongActionManager.updateSongName('${id}', this.innerText)"
-                          onkeydown="if(event.key==='Enter'){this.blur();event.preventDefault();}">${song.name}</span>
+                          onkeydown="if(event.key==='Enter'){this.blur();event.preventDefault();}">${Jukebox.escapeHtml(song.name)}</span>
                     <div class="sam-item-actions">
                       <button class="sam-visibility-btn ${song.visible === false ? 'hidden' : ''}"
                               onclick="Jukebox.SongActionManager.toggleSongVisibility('${id}')"
@@ -637,12 +800,12 @@ window.Jukebox = {
                       <button class="sam-delete-btn" onclick="Jukebox.SongActionManager.confirmDeleteSong('${id}')" title="${window.t('Jukebox.delete', '删除')}">🗑</button>
                     </div>
                   </div>
-                  <div class="sam-item-artist" contenteditable="true"
+                  <div class="sam-item-artist" contenteditable="true" data-neko-marquee title="${Jukebox.escapeHtml(song.artist || window.t('Jukebox.unknown', '未知'))}"
                        onblur="Jukebox.SongActionManager.updateSongArtist('${id}', this.innerText)"
-                       onkeydown="if(event.key==='Enter'){this.blur();event.preventDefault();}">${song.artist || window.t('Jukebox.unknown', '未知')}</span>
+                       onkeydown="if(event.key==='Enter'){this.blur();event.preventDefault();}">${Jukebox.escapeHtml(song.artist || window.t('Jukebox.unknown', '未知'))}
                   </div>
                   <div class="sam-item-bindings">
-                    ${this.getSongBindings(id).map(actionId => {
+                    ${this.getSongBindings(id).filter(actionId => this.shouldShowAction(this.data.actions[actionId])).map(actionId => {
                       const action = this.data.actions[actionId];
                       if (!action) return '';
                       const isDefault = song.defaultAction === actionId;
@@ -651,9 +814,10 @@ window.Jukebox = {
                         ? `${window.t('Jukebox.defaultAction', '默认动画')} - ${window.t('Jukebox.clickSetDefault', '点击设为默认')}\n${window.t('Jukebox.format', '格式')}: ${format.toUpperCase()}`
                         : `${window.t('Jukebox.clickSetDefault', '点击设为默认')}\n${window.t('Jukebox.format', '格式')}: ${format.toUpperCase()}`;
                       return `<span class="sam-binding-tag sam-action-tag sam-action-tag-${format.toLowerCase()} ${isDefault ? 'sam-action-tag-default' : ''}"
+                                   data-neko-marquee
                                    onclick="Jukebox.SongActionManager.setDefaultAction('${id}', '${actionId}')"
                                    title="${titleText}">
-                        ${isDefault ? '★ ' : ''}${action.name}
+                        ${isDefault ? '★ ' : ''}${Jukebox.escapeHtml(action.name)}
                       </span>`;
                     }).join('')}
                   </div>
@@ -664,10 +828,12 @@ window.Jukebox = {
       this.syncCheckboxState(panel.querySelector('#select-all-songs'), allSongsSelected, hasAnySongsSelected && !allSongsSelected);
       this.bindDragEvents(panel);
       this.bindFileDropEvents(panel, 'audio');
+      Jukebox.scheduleMarqueeTextUpdate(panel);
     },
 
     renderActions(panel) {
-      const actions = Object.entries(this.data.actions);
+      const showHidden = this.showHiddenActions !== false;
+      const actions = this.getVisibleActionEntries();
       const allActionsSelected = this.areAllActionsSelected();
       const hasAnyActionsSelected = this.hasAnyActionsSelected();
       panel.innerHTML = `
@@ -676,7 +842,10 @@ window.Jukebox = {
             <input type="checkbox" id="select-all-actions" ${allActionsSelected ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleSelectAllActions(this.checked)">
             <span>${window.t('Jukebox.selectAll', '全选')}</span>
           </label>
-          <span></span>
+          <label class="sam-checkbox sam-checkbox-right">
+            <input type="checkbox" ${showHidden ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleShowHiddenActions(this.checked)">
+            <span>${window.t('Jukebox.showHiddenActions', '显示隐藏的动画')}</span>
+          </label>
         </div>
         <div class="sam-list">
             ${actions.length === 0 ? `<div class="sam-empty">${window.t('Jukebox.noActions', '暂无动画')}</div>` :
@@ -684,24 +853,31 @@ window.Jukebox = {
                 const format = action.format || 'vmd';
                 const formatColor = this.getFormatColor(format);
                 return `
-                <div class="sam-item ${this.selectedActions?.has(id) ? 'sam-item-selected' : ''}" data-id="${id}" draggable="true">
+                <div class="sam-item ${action.visible === false ? 'sam-item-hidden' : ''} ${this.selectedActions?.has(id) ? 'sam-item-selected' : ''}" data-id="${id}" draggable="true">
                   <div class="sam-item-header">
                     <label class="sam-checkbox sam-item-checkbox">
                       <input type="checkbox" class="sam-action-select" data-id="${id}" ${this.selectedActions?.has(id) ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleActionSelect('${id}', this.checked)">
                     </label>
                     <span class="sam-format-dot" style="background-color: ${formatColor};"></span>
-                    <span class="sam-item-name" contenteditable="true"
+                    <span class="sam-item-name" contenteditable="true" data-neko-marquee title="${Jukebox.escapeHtml(action.name)}"
                           onblur="Jukebox.SongActionManager.updateActionName('${id}', this.innerText)"
-                          onkeydown="if(event.key==='Enter'){this.blur();event.preventDefault();}">${action.name}</span>
+                          onkeydown="if(event.key==='Enter'){this.blur();event.preventDefault();}">${Jukebox.escapeHtml(action.name)}</span>
                     <div class="sam-item-actions">
                       ${action.missing ? `<span class="sam-missing-badge">${window.t('Jukebox.missing', '缺失')}</span>` : ''}
+                      <button class="sam-visibility-btn ${action.visible === false ? 'hidden' : ''}"
+                              onclick="Jukebox.SongActionManager.toggleActionVisibility('${id}')"
+                              title="${action.visible === false ? window.t('Jukebox.show', '显示') : window.t('Jukebox.hide', '隐藏')}">
+                        ${action.visible === false
+                          ? '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/><line x1="3" y1="3" x2="21" y2="21" stroke="currentColor" stroke-width="2"/></svg>'
+                          : '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>'}
+                      </button>
                       <button class="sam-delete-btn" onclick="Jukebox.SongActionManager.confirmDeleteAction('${id}')" title="${window.t('Jukebox.delete', '删除')}">🗑</button>
                     </div>
                   </div>
                   <div class="sam-item-bindings">
-                    ${this.getActionBindings(id).map(songId => {
+                    ${this.getActionBindings(id).filter(songId => this.shouldShowSong(this.data.songs[songId])).map(songId => {
                       const song = this.data.songs[songId];
-                      return song ? `<span class="sam-binding-tag">${song.name}</span>` : '';
+                      return song ? `<span class="sam-binding-tag" data-neko-marquee title="${Jukebox.escapeHtml(song.name)}">${Jukebox.escapeHtml(song.name)}</span>` : '';
                     }).join('')}
                   </div>
                 </div>
@@ -711,6 +887,7 @@ window.Jukebox = {
       this.syncCheckboxState(panel.querySelector('#select-all-actions'), allActionsSelected, hasAnyActionsSelected && !allActionsSelected);
       this.bindDragEvents(panel);
       this.bindFileDropEvents(panel, 'action');
+      Jukebox.scheduleMarqueeTextUpdate(panel);
     },
 
     renderBindings(panel) {
@@ -720,6 +897,8 @@ window.Jukebox = {
       const hasAnyBindingSongsSelected = this.hasAnyBindingSongsSelected();
       const allBindingActionsSelected = this.areAllBindingActionsSelected();
       const hasAnyBindingActionsSelected = this.hasAnyBindingActionsSelected();
+      const visibleSongs = this.getVisibleSongEntries();
+      const visibleActions = this.getVisibleActionEntries();
 
       panel.innerHTML = `
         <div class="sam-bindings-container">
@@ -732,9 +911,9 @@ window.Jukebox = {
               </label>
             </div>
             <div class="sam-bindings-list songs-for-drop">
-              ${Object.entries(this.data.songs).length === 0 ? `<div class="sam-empty">${window.t('Jukebox.noSongs', '暂无歌曲')}</div>` :
-                Object.entries(this.data.songs).map(([id, song], index) => {
-                  const boundActions = this.getSongBindings(id);
+              ${visibleSongs.length === 0 ? `<div class="sam-empty">${window.t('Jukebox.noSongs', '暂无歌曲')}</div>` :
+                visibleSongs.map(([id, song], index) => {
+                  const boundActions = this.getSongBindings(id).filter(actionId => this.shouldShowAction(this.data.actions[actionId]));
                   const isSelected = this.bindingSelectedSongs.has(id);
                   const songIndex = index + 1;
                   return `
@@ -744,7 +923,7 @@ window.Jukebox = {
                       <input type="checkbox" ${isSelected ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleBindingSongSelect('${id}', this.checked)">
                     </label>
                     <span class="sam-binding-item-index">${songIndex}</span>
-                    <span class="sam-binding-item-name">${song.name}</span>
+                    <span class="sam-binding-item-name" data-neko-marquee title="${Jukebox.escapeHtml(song.name)}">${Jukebox.escapeHtml(song.name)}</span>
                   </div>
                   <div class="sam-binding-item-tags">
                     ${boundActions.map(actionId => {
@@ -762,7 +941,7 @@ window.Jukebox = {
                               onclick="Jukebox.SongActionManager.setDefaultAction('${id}', '${actionId}')"
                               title="${titleText}">
                           <span class="sam-format-dot" style="background-color: ${formatColor};"></span>
-                          ${isDefault ? '★ ' : ''}${action.name}
+                          <span class="sam-binding-tag-label" data-neko-marquee>${isDefault ? '★ ' : ''}${Jukebox.escapeHtml(action.name)}</span>
                           <button class="sam-unbind-btn" onclick="event.stopPropagation(); Jukebox.SongActionManager.unbindSongFromAction('${id}', '${actionId}');" title="${window.t('Jukebox.unbind', '解除绑定')}">×</button>
                         </span>` : '';
                     }).join('')}
@@ -781,8 +960,8 @@ window.Jukebox = {
               </label>
             </div>
             <div class="sam-bindings-list actions-for-drop">
-              ${Object.entries(this.data.actions).length === 0 ? `<div class="sam-empty">${window.t('Jukebox.noActions', '暂无动画')}</div>` :
-                Object.entries(this.data.actions).map(([id, action], index) => {
+              ${visibleActions.length === 0 ? `<div class="sam-empty">${window.t('Jukebox.noActions', '暂无动画')}</div>` :
+                visibleActions.map(([id, action], index) => {
                   const boundSongs = this.getActionBindings(id);
                   const isSelected = this.bindingSelectedActions.has(id);
                   const format = action.format || 'vmd';
@@ -796,17 +975,17 @@ window.Jukebox = {
                     </label>
                     <span class="sam-binding-item-index">${actionIndex}</span>
                     <span class="sam-format-dot" style="background-color: ${formatColor};"></span>
-                    <span class="sam-binding-item-name">${action.name}</span>
+                    <span class="sam-binding-item-name" data-neko-marquee title="${Jukebox.escapeHtml(action.name)}">${Jukebox.escapeHtml(action.name)}</span>
                   </div>
                   <div class="sam-binding-item-tags">
-                    ${boundSongs.map(songId => {
+                    ${boundSongs.filter(songId => this.shouldShowSong(this.data.songs[songId])).map(songId => {
                       const song = this.data.songs[songId];
                       const isSongSelected = this.bindingSelectedSongs.has(songId);
                       const offset = this.data.bindings[songId]?.[id]?.offset || 0;
                       const titleText = `${window.t('Jukebox.offset', '偏移')}: ${offset}${window.t('Jukebox.frame', '帧')}`;
                       return song ? `
                         <span class="sam-binding-tag-small ${isSongSelected ? 'sam-tag-selected' : ''}" title="${titleText}">
-                          ${song.name}
+                          <span class="sam-binding-tag-label" data-neko-marquee>${Jukebox.escapeHtml(song.name)}</span>
                           <button class="sam-unbind-btn" onclick="Jukebox.SongActionManager.unbindSongFromAction('${songId}', '${id}'); event.stopPropagation();" title="${window.t('Jukebox.unbind', '解除绑定')}">×</button>
                         </span>` : '';
                     }).join('')}
@@ -821,14 +1000,35 @@ window.Jukebox = {
       this.syncCheckboxState(panel.querySelector('#select-all-binding-songs'), allBindingSongsSelected, hasAnyBindingSongsSelected && !allBindingSongsSelected);
       this.syncCheckboxState(panel.querySelector('#select-all-binding-actions'), allBindingActionsSelected, hasAnyBindingActionsSelected && !allBindingActionsSelected);
       this.bindBindingDragEvents(panel);
+      Jukebox.scheduleMarqueeTextUpdate(panel);
     },
     
     toggleShowHidden(checked) {
       this.showHiddenSongs = checked;
+      if (!checked) {
+        this.pruneHiddenSongSelection();
+      }
       const songsPanel = document.querySelector('.songs-panel');
       if (songsPanel) {
         this.rerenderPanel(songsPanel, () => this.renderSongs(songsPanel));
       }
+      this.updateSelectionInfo();
+    },
+
+    toggleShowHiddenActions(checked) {
+      this.showHiddenActions = checked;
+      if (!checked) {
+        this.pruneHiddenActionSelection();
+      }
+      const actionsPanel = document.querySelector('.actions-panel');
+      if (actionsPanel) {
+        this.rerenderPanel(actionsPanel, () => this.renderActions(actionsPanel));
+      }
+      const bindingsPanel = document.querySelector('.bindings-panel');
+      if (bindingsPanel && bindingsPanel.innerHTML.trim()) {
+        this.rerenderPanel(bindingsPanel, () => this.renderBindings(bindingsPanel));
+      }
+      this.updateSelectionInfo();
     },
     
     async toggleSongVisibility(songId) {
@@ -839,11 +1039,17 @@ window.Jukebox = {
       try {
         await this.api.updateSongVisibility(songId, newVisible);
         song.visible = newVisible;
+        if (!newVisible) {
+          if (this.selectedSongs) this.selectedSongs.delete(songId);
+          if (this.bindingSourceSongs) this.bindingSourceSongs.delete(songId);
+          if (this.bindingSelectedSongs) this.bindingSelectedSongs.delete(songId);
+        }
         
         const songsPanel = document.querySelector('.songs-panel');
         if (songsPanel) {
           this.rerenderPanel(songsPanel, () => this.renderSongs(songsPanel));
         }
+        this.updateSelectionInfo();
         
         // 通知主UI刷新歌曲列表
         if (window.Jukebox && window.Jukebox.loadSongs) {
@@ -851,6 +1057,39 @@ window.Jukebox = {
         }
       } catch (err) {
         console.error('切换歌曲可见性失败:', err);
+        alert(window.t('Jukebox.operationFailed', '操作失败'));
+      }
+    },
+
+    async toggleActionVisibility(actionId) {
+      const action = this.data.actions[actionId];
+      if (!action) return;
+
+      const newVisible = action.visible === false ? true : false;
+      try {
+        await this.api.updateActionVisibility(actionId, newVisible);
+        action.visible = newVisible;
+        if (!newVisible) {
+          if (this.selectedActions) this.selectedActions.delete(actionId);
+          if (this.bindingSourceActions) this.bindingSourceActions.delete(actionId);
+          if (this.bindingSelectedActions) this.bindingSelectedActions.delete(actionId);
+        }
+
+        const actionsPanel = document.querySelector('.actions-panel');
+        if (actionsPanel) {
+          this.rerenderPanel(actionsPanel, () => this.renderActions(actionsPanel));
+        }
+        const bindingsPanel = document.querySelector('.bindings-panel');
+        if (bindingsPanel && bindingsPanel.innerHTML.trim()) {
+          this.rerenderPanel(bindingsPanel, () => this.renderBindings(bindingsPanel));
+        }
+        this.updateSelectionInfo();
+
+        if (window.Jukebox && window.Jukebox.loadSongs) {
+          await window.Jukebox.loadSongs();
+        }
+      } catch (err) {
+        console.error('切换动画可见性失败:', err);
         alert(window.t('Jukebox.operationFailed', '操作失败'));
       }
     },
@@ -991,13 +1230,17 @@ window.Jukebox = {
     
     async deleteSong(songId) {
       try {
-        await this.api.deleteSong(songId);
+        const result = await this.api.deleteSong(songId);
         // 从选择集合中移除
         if (this.selectedSongs) this.selectedSongs.delete(songId);
         if (this.bindingSourceSongs) this.bindingSourceSongs.delete(songId);
         if (this.bindingSelectedSongs) this.bindingSelectedSongs.delete(songId);
-        delete this.data.songs[songId];
-        delete this.data.bindings[songId];
+        if (result?.hidden && this.data.songs[songId]) {
+          this.data.songs[songId].visible = false;
+        } else {
+          delete this.data.songs[songId];
+          delete this.data.bindings[songId];
+        }
 
         // 刷新所有面板
         this.refreshAllPanels();
@@ -1011,20 +1254,563 @@ window.Jukebox = {
       }
     },
 
-    async deleteAction(actionId) {
+    getSongDeleteMode() {
+      const activeTab = this.element?.querySelector('.sam-tab.active')?.dataset.tab || 'songs';
+      if (activeTab !== 'songs') return null;
+
+      const visibleSongIds = this.getVisibleSongEntries().map(([id]) => id);
+      const visibleSongIdSet = new Set(visibleSongIds);
+      const selectedIds = Array.from(this.selectedSongs || []).filter(id => visibleSongIdSet.has(id));
+      if (selectedIds.length > 0) {
+        return { resource: 'songs', mode: 'selected', ids: selectedIds, songIds: selectedIds };
+      }
+
+      if (visibleSongIds.length > 0) {
+        return { resource: 'songs', mode: 'clear-visible', ids: visibleSongIds, songIds: visibleSongIds };
+      }
+
+      return null;
+    },
+
+    getActionDeleteMode() {
+      const activeTab = this.element?.querySelector('.sam-tab.active')?.dataset.tab || 'songs';
+      if (activeTab !== 'actions') return null;
+
+      const visibleActionIds = this.getVisibleActionEntries().map(([id]) => id);
+      const visibleActionIdSet = new Set(visibleActionIds);
+      const selectedIds = Array.from(this.selectedActions || []).filter(id => visibleActionIdSet.has(id));
+      if (selectedIds.length > 0) {
+        return { resource: 'actions', mode: 'selected', ids: selectedIds, actionIds: selectedIds };
+      }
+
+      if (visibleActionIds.length > 0) {
+        return { resource: 'actions', mode: 'clear-visible', ids: visibleActionIds, actionIds: visibleActionIds };
+      }
+
+      return null;
+    },
+
+    getManagerDeleteMode() {
+      const activeTab = this.element?.querySelector('.sam-tab.active')?.dataset.tab || 'songs';
+      if (activeTab === 'songs') return this.getSongDeleteMode();
+      if (activeTab === 'actions') return this.getActionDeleteMode();
+      return null;
+    },
+
+    getSongDeleteSummary(songIds) {
+      const songs = songIds.map(id => [id, this.data.songs[id]]).filter(([, song]) => !!song);
+      return {
+        total: songs.length,
+        userCount: songs.filter(([, song]) => !song.isBuiltin).length,
+        builtinCount: songs.filter(([, song]) => !!song.isBuiltin).length,
+        hiddenCount: songs.filter(([, song]) => song.visible === false).length
+      };
+    },
+
+    getActionDeleteSummary(actionIds) {
+      const actions = actionIds.map(id => [id, this.data.actions[id]]).filter(([, action]) => !!action);
+      return {
+        total: actions.length,
+        userCount: actions.filter(([, action]) => !action.isBuiltin).length,
+        builtinCount: actions.filter(([, action]) => !!action.isBuiltin).length
+      };
+    },
+
+    formatSongDeleteTooltip(mode, songIds) {
+      const summary = this.getSongDeleteSummary(songIds);
+      const scope = mode === 'selected'
+        ? window.t('Jukebox.deleteSelectedScope', '选中的歌曲')
+        : window.t('Jukebox.clearVisibleScope', '当前显示的歌曲');
+      const hiddenHint = mode === 'clear-visible'
+        ? (this.showHiddenSongs !== false
+          ? window.t('Jukebox.clearVisibleIncludesHidden', '已开启显示隐藏歌曲，隐藏歌曲也会被处理。')
+          : window.t('Jukebox.clearVisibleExcludesHidden', '未开启显示隐藏歌曲，隐藏歌曲不会被处理。'))
+        : '';
+      const template = window.t('Jukebox.songBatchDeleteTooltip', {
+        defaultValue: '范围：{{scope}}\n共 {{total}} 首；自定义歌曲会删除，内置歌曲会隐藏。\n自定义：{{userCount}}，内置：{{builtinCount}}\n{{hiddenHint}}',
+        scope,
+        total: summary.total,
+        userCount: summary.userCount,
+        builtinCount: summary.builtinCount,
+        hiddenHint
+      });
+      return template
+        .replace('{{scope}}', scope)
+        .replace('{{total}}', summary.total)
+        .replace('{{userCount}}', summary.userCount)
+        .replace('{{builtinCount}}', summary.builtinCount)
+        .replace('{{hiddenHint}}', hiddenHint)
+        .trim();
+    },
+
+    formatActionDeleteTooltip(mode, actionIds) {
+      const summary = this.getActionDeleteSummary(actionIds);
+      const scope = mode === 'selected'
+        ? window.t('Jukebox.deleteSelectedActionScope', '选中的动画')
+        : window.t('Jukebox.clearVisibleActionScope', '当前显示的动画');
+      const hiddenHint = mode === 'clear-visible'
+        ? (this.showHiddenActions !== false
+          ? window.t('Jukebox.clearVisibleActionsIncludesHidden', '已开启显示隐藏动画，隐藏动画也会被处理。')
+          : window.t('Jukebox.clearVisibleActionsExcludesHidden', '未开启显示隐藏动画，隐藏动画不会被处理。'))
+        : '';
+      const template = window.t('Jukebox.actionBatchDeleteTooltip', {
+        defaultValue: '范围：{{scope}}\n共 {{total}} 个；自定义动画会删除，内置动画会隐藏。\n自定义：{{userCount}}，内置：{{builtinCount}}\n{{hiddenHint}}',
+        scope,
+        total: summary.total,
+        userCount: summary.userCount,
+        builtinCount: summary.builtinCount,
+        hiddenHint
+      });
+      return template
+        .replace('{{scope}}', scope)
+        .replace('{{total}}', summary.total)
+        .replace('{{userCount}}', summary.userCount)
+        .replace('{{builtinCount}}', summary.builtinCount)
+        .replace('{{hiddenHint}}', hiddenHint)
+        .trim();
+    },
+
+    showManagerDeleteTooltip(button) {
+      const state = this.getManagerDeleteMode();
+      const wrapper = button?.closest('.sam-danger-action-wrap');
+      const tooltip = wrapper?.querySelector('.sam-danger-tooltip');
+      if (!state || !tooltip) return;
+      tooltip.textContent = state.resource === 'actions'
+        ? this.formatActionDeleteTooltip(state.mode, state.ids)
+        : this.formatSongDeleteTooltip(state.mode, state.ids);
+      tooltip.style.display = 'block';
+    },
+
+    hideManagerDeleteTooltip() {
+      const tooltip = this.element?.querySelector('.sam-danger-tooltip');
+      if (tooltip) tooltip.style.display = 'none';
+    },
+
+    showSongDeleteTooltip(button) {
+      this.showManagerDeleteTooltip(button);
+    },
+
+    hideSongDeleteTooltip() {
+      this.hideManagerDeleteTooltip();
+    },
+
+    confirmManagerBatchDelete() {
+      const state = this.getManagerDeleteMode();
+      if (!state || state.ids.length === 0) return;
+      this.showResourceDeleteConfirmDialog(state.resource, state.mode, state.ids, 1);
+    },
+
+    confirmSongBatchDelete() {
+      const state = this.getSongDeleteMode();
+      if (!state || state.ids.length === 0) return;
+      this.showResourceDeleteConfirmDialog('songs', state.mode, state.ids, 1);
+    },
+
+    confirmActionBatchDelete() {
+      const state = this.getActionDeleteMode();
+      if (!state || state.ids.length === 0) return;
+      this.showResourceDeleteConfirmDialog('actions', state.mode, state.ids, 1);
+    },
+
+    closeSongDeleteDialog() {
+      const dialog = document.querySelector('.sam-danger-modal-backdrop');
+      if (dialog) dialog.remove();
+    },
+
+    getDangerDialogHost() {
+      if (this.element && document.body.contains(this.element)) {
+        return this.element;
+      }
+      return document.body;
+    },
+
+    showSongDeleteConfirmDialog(mode, songIds, step) {
+      this.showResourceDeleteConfirmDialog('songs', mode, songIds, step);
+    },
+
+    showResourceDeleteConfirmDialog(resource, mode, ids, step) {
+      this.closeSongDeleteDialog();
+      const isActions = resource === 'actions';
+      const summary = isActions ? this.getActionDeleteSummary(ids) : this.getSongDeleteSummary(ids);
+      const isClear = mode === 'clear-visible';
+      const isFinalClear = isClear && step === 2;
+      const backdrop = document.createElement('div');
+      backdrop.className = 'sam-danger-modal-backdrop';
+
+      const dialog = document.createElement('div');
+      dialog.className = `sam-danger-modal ${isFinalClear ? 'sam-danger-modal-final' : ''}`;
+      dialog.setAttribute('role', 'dialog');
+      dialog.setAttribute('aria-modal', 'true');
+
+      const title = document.createElement('h3');
+      if (isActions) {
+        title.textContent = isClear
+          ? window.t('Jukebox.clearVisibleActionsTitle', '删除当前显示')
+          : window.t('Jukebox.deleteSelectedActionsTitle', '删除选中动画');
+      } else {
+        title.textContent = isClear
+          ? window.t('Jukebox.clearVisibleSongsTitle', '删除当前显示')
+          : window.t('Jukebox.deleteSelectedSongsTitle', '删除选中歌曲');
+      }
+
+      const body = document.createElement('p');
+      if (isFinalClear) {
+        body.textContent = isActions
+          ? window.t('Jukebox.clearVisibleActionsSecondConfirm', '真..真的要删除当前显示吗..')
+          : window.t('Jukebox.clearVisibleSongsSecondConfirm', '真..真的要删除当前显示吗..');
+      } else if (isClear) {
+        body.textContent = isActions
+          ? window.t('Jukebox.clearVisibleActionsConfirm', {
+            defaultValue: '将处理当前显示的 {{total}} 个动画。自定义动画会被删除，内置动画会被隐藏。此操作不可恢复。',
+            total: summary.total
+          }).replace('{{total}}', summary.total)
+          : window.t('Jukebox.clearVisibleSongsConfirm', {
+            defaultValue: '将处理当前显示的 {{total}} 首歌曲。自定义歌曲会被删除，内置歌曲会被隐藏。此操作不可恢复。',
+            total: summary.total
+          }).replace('{{total}}', summary.total);
+      } else {
+        body.textContent = isActions
+          ? window.t('Jukebox.deleteSelectedActionsConfirm', {
+            defaultValue: '将删除选中的 {{total}} 个动画。自定义动画会被删除，内置动画会被隐藏。此操作不可恢复。',
+            total: summary.total
+          }).replace('{{total}}', summary.total)
+          : window.t('Jukebox.deleteSelectedSongsConfirm', {
+            defaultValue: '将删除选中的 {{total}} 首歌曲。自定义歌曲会被删除，内置歌曲会被隐藏。此操作不可恢复。',
+            total: summary.total
+          }).replace('{{total}}', summary.total);
+      }
+
+      const detail = document.createElement('p');
+      detail.className = 'sam-danger-modal-detail';
+      detail.textContent = window.t(isActions ? 'Jukebox.actionBatchDeleteSummary' : 'Jukebox.songBatchDeleteSummary', {
+        defaultValue: isActions
+          ? '共 {{total}} 个；自定义 {{userCount}} 个，内置 {{builtinCount}} 个。'
+          : '共 {{total}} 首；自定义 {{userCount}} 首，内置 {{builtinCount}} 首。',
+        total: summary.total,
+        userCount: summary.userCount,
+        builtinCount: summary.builtinCount
+      })
+        .replace('{{total}}', summary.total)
+        .replace('{{userCount}}', summary.userCount)
+        .replace('{{builtinCount}}', summary.builtinCount);
+
+      const actions = document.createElement('div');
+      actions.className = `sam-danger-modal-actions ${isFinalClear ? 'sam-danger-modal-actions-reversed' : ''}`;
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.className = 'sam-danger-modal-cancel';
+      cancelBtn.textContent = window.t('Jukebox.cancel', '取消');
+      cancelBtn.onclick = () => this.closeSongDeleteDialog();
+
+      const confirmZone = document.createElement('span');
+      confirmZone.className = `sam-danger-confirm-zone ${isFinalClear ? 'sam-danger-confirm-zone-final' : ''}`;
+
+      const confirmBtn = document.createElement('button');
+      confirmBtn.className = 'sam-danger-modal-confirm';
+      confirmBtn.textContent = isClear
+        ? (isFinalClear
+          ? window.t(isActions ? 'Jukebox.clearVisibleActionsNow' : 'Jukebox.clearVisibleSongsNow', '删除当前显示')
+          : window.t('Jukebox.continue', '继续'))
+        : window.t(isActions ? 'Jukebox.deleteSelectedActionsNow' : 'Jukebox.deleteSelectedSongsNow', '删除选中');
+
+      if (isFinalClear) {
+        confirmBtn.dataset.escapeReady = 'false';
+      }
+
+      if (isFinalClear) {
+        confirmZone.onmouseenter = (event) => {
+          if (confirmBtn.dataset.escaped === 'true') return;
+          this.runFinalClearButtonEscape(confirmBtn, event, body);
+        };
+      }
+
+      confirmBtn.onclick = (event) => {
+        if (isFinalClear && confirmBtn.dataset.escapeReady !== 'true') {
+          event.preventDefault();
+          event.stopPropagation();
+          if (confirmBtn.dataset.escaped !== 'true') {
+            this.runFinalClearButtonEscape(confirmBtn, event, body);
+          }
+          return;
+        }
+        if (isClear && step === 1) {
+          this.showResourceDeleteConfirmDialog(resource, mode, ids, 2);
+          return;
+        }
+        if (isActions) {
+          this.executeActionBatchDelete(mode, ids);
+        } else {
+          this.executeSongBatchDelete(mode, ids);
+        }
+      };
+
+      confirmZone.appendChild(confirmBtn);
+      actions.appendChild(cancelBtn);
+      actions.appendChild(confirmZone);
+      dialog.appendChild(title);
+      dialog.appendChild(body);
+      dialog.appendChild(detail);
+      dialog.appendChild(actions);
+      backdrop.appendChild(dialog);
+      this.getDangerDialogHost().appendChild(backdrop);
+      confirmBtn.focus();
+    },
+
+    runFinalClearButtonEscape(confirmBtn, event, promptEl) {
+      confirmBtn.dataset.escaped = 'true';
+      confirmBtn.classList.add('sam-danger-confirm-escaped', 'sam-danger-confirm-escaping');
+
+      const buttonRect = confirmBtn.getBoundingClientRect();
+      const promptRect = promptEl.getBoundingClientRect();
+      const centerX = buttonRect.left + buttonRect.width / 2;
+      const centerY = buttonRect.top + buttonRect.height / 2;
+      const mouseX = Number.isFinite(event?.clientX) ? event.clientX : centerX + 1;
+      const mouseY = Number.isFinite(event?.clientY) ? event.clientY : centerY;
+
+      const normalize = (x, y, fallbackX, fallbackY) => {
+        const length = Math.hypot(x, y);
+        if (length < 0.001) return { x: fallbackX, y: fallbackY };
+        return { x: x / length, y: y / length };
+      };
+
+      const escape = normalize(centerX - mouseX, centerY - mouseY, -1, 0);
+      // Bias the curved path toward the early ".." area in the final warning text.
+      const promptTargetX = promptRect.left + promptRect.width * 0.28;
+      const promptTargetY = promptRect.top + promptRect.height * 0.48;
+      const towardPrompt = normalize(promptTargetX - centerX, promptTargetY - centerY, 0, -1);
+      const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+
+      const controlX = escape.x * 116;
+      const controlY = escape.y * 54;
+      const endX = clamp(escape.x * 96 + towardPrompt.x * 54, -150, 150);
+      const endY = clamp(escape.y * 36 + towardPrompt.y * 70, -92, 42);
+      confirmBtn.dataset.escapeInitialX = String(Math.round(controlX));
+      confirmBtn.dataset.escapeInitialY = String(Math.round(controlY));
+      confirmBtn.dataset.escapeX = String(Math.round(endX));
+      confirmBtn.dataset.escapeY = String(Math.round(endY));
+
+      const durationMs = 620;
+      const startedAt = performance.now();
+      const easeInOutSine = (t) => 0.5 - Math.cos(Math.PI * t) / 2;
+
+      const tick = (now) => {
+        const progress = Math.min(1, (now - startedAt) / durationMs);
+        const eased = easeInOutSine(progress);
+        const inv = 1 - eased;
+        const x = inv * inv * 0 + 2 * inv * eased * controlX + eased * eased * endX;
+        const y = inv * inv * 0 + 2 * inv * eased * controlY + eased * eased * endY;
+        confirmBtn.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`;
+        if (progress < 1) {
+          requestAnimationFrame(tick);
+        } else {
+          confirmBtn.style.transform = `translate(${endX.toFixed(1)}px, ${endY.toFixed(1)}px)`;
+          confirmBtn.classList.remove('sam-danger-confirm-escaping');
+          confirmBtn.dataset.escapeReady = 'true';
+        }
+      };
+
+      requestAnimationFrame(tick);
+    },
+
+    async executeSongBatchDelete(mode, songIds) {
       try {
-        await this.api.deleteAction(actionId);
-        // 从选择集合中移除
+        const result = await this.api.batchDeleteSongs(songIds);
+        this.applySongBatchDeleteResult(result);
+        this.closeSongDeleteDialog();
+        this.showSongBatchDeleteResult(result);
+        this.refreshAllPanels();
+        if (window.Jukebox && window.Jukebox.loadSongs) {
+          await window.Jukebox.loadSongs();
+        }
+      } catch (err) {
+        console.error('批量删除歌曲失败:', err);
+        this.closeSongDeleteDialog();
+        alert(window.t('Jukebox.deleteFailed', '删除失败') + ': ' + (err.message || window.t('Jukebox.unknownError', '未知错误')));
+      }
+    },
+
+    applySongBatchDeleteResult(result) {
+      const deletedIds = (result.deleted || []).map(item => item.songId);
+      const hiddenIds = (result.hidden || []).map(item => item.songId);
+      const processedIds = new Set([...deletedIds, ...hiddenIds]);
+
+      deletedIds.forEach(songId => {
+        delete this.data.songs[songId];
+        delete this.data.bindings[songId];
+      });
+      hiddenIds.forEach(songId => {
+        if (this.data.songs[songId]) this.data.songs[songId].visible = false;
+      });
+
+      processedIds.forEach(songId => {
+        if (this.selectedSongs) this.selectedSongs.delete(songId);
+        if (this.bindingSourceSongs) this.bindingSourceSongs.delete(songId);
+        if (this.bindingSelectedSongs) this.bindingSelectedSongs.delete(songId);
+      });
+    },
+
+    showSongBatchDeleteResult(result) {
+      const failed = result.failed || [];
+      const failedNames = failed.slice(0, 5).map(item => item.name || item.songId).join(', ');
+      let message = window.t('Jukebox.songBatchDeleteResult', {
+        defaultValue: '已删除 {{deletedCount}} 首自定义歌曲，隐藏 {{hiddenCount}} 首内置歌曲。',
+        deletedCount: result.deletedCount || 0,
+        hiddenCount: result.hiddenCount || 0
+      })
+        .replace('{{deletedCount}}', result.deletedCount || 0)
+        .replace('{{hiddenCount}}', result.hiddenCount || 0);
+
+      if ((result.failedCount || 0) > 0) {
+        message += '\n' + window.t('Jukebox.songBatchDeleteFailedSummary', {
+          defaultValue: '{{failedCount}} 首处理失败：{{names}}',
+          failedCount: result.failedCount,
+          names: failedNames
+        })
+          .replace('{{failedCount}}', result.failedCount)
+          .replace('{{names}}', failedNames);
+      }
+
+      const backdrop = document.createElement('div');
+      backdrop.className = 'sam-danger-modal-backdrop sam-danger-result-backdrop';
+      const dialog = document.createElement('div');
+      dialog.className = 'sam-danger-modal sam-danger-result-modal';
+      const title = document.createElement('h3');
+      title.textContent = (result.failedCount || 0) > 0
+        ? window.t('Jukebox.songBatchDeletePartialTitle', '处理完成，部分失败')
+        : window.t('Jukebox.songBatchDeleteSuccessTitle', '处理完成');
+      const body = document.createElement('p');
+      body.textContent = message;
+      const actions = document.createElement('div');
+      actions.className = 'sam-danger-modal-actions';
+      const okBtn = document.createElement('button');
+      okBtn.className = 'sam-danger-modal-confirm';
+      okBtn.textContent = window.t('Jukebox.confirm', '确认');
+      okBtn.onclick = () => backdrop.remove();
+      actions.appendChild(okBtn);
+      dialog.appendChild(title);
+      dialog.appendChild(body);
+      dialog.appendChild(actions);
+      backdrop.appendChild(dialog);
+      this.getDangerDialogHost().appendChild(backdrop);
+      okBtn.focus();
+    },
+
+    async executeActionBatchDelete(mode, actionIds) {
+      try {
+        const result = await this.api.batchDeleteActions(actionIds);
+        this.applyActionBatchDeleteResult(result);
+        this.closeSongDeleteDialog();
+        this.showActionBatchDeleteResult(result);
+        this.refreshAllPanels();
+        if (window.Jukebox && window.Jukebox.loadSongs) {
+          await window.Jukebox.loadSongs();
+        }
+      } catch (err) {
+        console.error('批量删除动画失败:', err);
+        this.closeSongDeleteDialog();
+        alert(window.t('Jukebox.deleteFailed', '删除失败') + ': ' + (err.message || window.t('Jukebox.unknownError', '未知错误')));
+      }
+    },
+
+    applyActionBatchDeleteResult(result) {
+      const deletedIds = (result.deleted || []).map(item => item.actionId);
+      const hiddenIds = (result.hidden || []).map(item => item.actionId);
+      const processedIds = new Set([...deletedIds, ...hiddenIds]);
+
+      deletedIds.forEach(actionId => {
+        delete this.data.actions[actionId];
+      });
+
+      hiddenIds.forEach(actionId => {
+        if (this.data.actions[actionId]) this.data.actions[actionId].visible = false;
+      });
+
+      processedIds.forEach(actionId => {
         if (this.selectedActions) this.selectedActions.delete(actionId);
         if (this.bindingSourceActions) this.bindingSourceActions.delete(actionId);
         if (this.bindingSelectedActions) this.bindingSelectedActions.delete(actionId);
-        delete this.data.actions[actionId];
+      });
 
-        // 从所有绑定中移除
+      deletedIds.forEach(actionId => {
         for (const songId in this.data.bindings) {
           delete this.data.bindings[songId][actionId];
           if (Object.keys(this.data.bindings[songId]).length === 0) {
             delete this.data.bindings[songId];
+          }
+        }
+
+        for (const songId in this.data.songs) {
+          if (this.data.songs[songId]?.defaultAction === actionId) {
+            this.data.songs[songId].defaultAction = '';
+          }
+        }
+      });
+    },
+
+    showActionBatchDeleteResult(result) {
+      const failed = result.failed || [];
+      const failedNames = failed.slice(0, 5).map(item => item.name || item.actionId).join(', ');
+      let message = window.t('Jukebox.actionBatchDeleteResult', {
+        defaultValue: '已删除 {{deletedCount}} 个自定义动画，隐藏 {{hiddenCount}} 个内置动画。',
+        deletedCount: result.deletedCount || 0,
+        hiddenCount: result.hiddenCount || 0
+      })
+        .replace('{{deletedCount}}', result.deletedCount || 0)
+        .replace('{{hiddenCount}}', result.hiddenCount || 0);
+
+      if ((result.failedCount || 0) > 0) {
+        message += '\n' + window.t('Jukebox.actionBatchDeleteFailedSummary', {
+          defaultValue: '{{failedCount}} 个处理失败：{{names}}',
+          failedCount: result.failedCount,
+          names: failedNames
+        })
+          .replace('{{failedCount}}', result.failedCount)
+          .replace('{{names}}', failedNames);
+      }
+
+      const backdrop = document.createElement('div');
+      backdrop.className = 'sam-danger-modal-backdrop sam-danger-result-backdrop';
+      const dialog = document.createElement('div');
+      dialog.className = 'sam-danger-modal sam-danger-result-modal';
+      const title = document.createElement('h3');
+      title.textContent = (result.failedCount || 0) > 0
+        ? window.t('Jukebox.actionBatchDeletePartialTitle', '处理完成，部分失败')
+        : window.t('Jukebox.actionBatchDeleteSuccessTitle', '处理完成');
+      const body = document.createElement('p');
+      body.textContent = message;
+      const actions = document.createElement('div');
+      actions.className = 'sam-danger-modal-actions';
+      const okBtn = document.createElement('button');
+      okBtn.className = 'sam-danger-modal-confirm';
+      okBtn.textContent = window.t('Jukebox.confirm', '确认');
+      okBtn.onclick = () => backdrop.remove();
+      actions.appendChild(okBtn);
+      dialog.appendChild(title);
+      dialog.appendChild(body);
+      dialog.appendChild(actions);
+      backdrop.appendChild(dialog);
+      this.getDangerDialogHost().appendChild(backdrop);
+      okBtn.focus();
+    },
+
+    async deleteAction(actionId) {
+      try {
+        const result = await this.api.deleteAction(actionId);
+        // 从选择集合中移除
+        if (this.selectedActions) this.selectedActions.delete(actionId);
+        if (this.bindingSourceActions) this.bindingSourceActions.delete(actionId);
+        if (this.bindingSelectedActions) this.bindingSelectedActions.delete(actionId);
+        if (result?.hidden && this.data.actions[actionId]) {
+          this.data.actions[actionId].visible = false;
+        } else {
+          delete this.data.actions[actionId];
+
+          // 从所有绑定中移除
+          for (const songId in this.data.bindings) {
+            delete this.data.bindings[songId][actionId];
+            if (Object.keys(this.data.bindings[songId]).length === 0) {
+              delete this.data.bindings[songId];
+            }
           }
         }
 
@@ -1097,6 +1883,48 @@ window.Jukebox = {
       return Object.entries(this.data.songs).filter(([id, song]) => showHidden || song.visible !== false);
     },
 
+    shouldShowSong(song) {
+      const showHidden = this.showHiddenSongs !== false;
+      return !!song && (showHidden || song.visible !== false);
+    },
+
+    shouldShowAction(action) {
+      const showHidden = this.showHiddenActions !== false;
+      return !!action && (showHidden || action.visible !== false);
+    },
+
+    getVisibleActionEntries() {
+      return Object.entries(this.data.actions).filter(([, action]) => this.shouldShowAction(action));
+    },
+
+    pruneHiddenSongSelection() {
+      const visibleSongIds = new Set(this.getVisibleSongEntries().map(([id]) => id));
+      this.selectedSongs?.forEach(id => {
+        if (!visibleSongIds.has(id)) this.selectedSongs.delete(id);
+      });
+      this.bindingSelectedSongs?.forEach(id => {
+        if (!visibleSongIds.has(id)) this.bindingSelectedSongs.delete(id);
+      });
+      this.bindingSourceSongs?.forEach(id => {
+        if (!visibleSongIds.has(id)) this.bindingSourceSongs.delete(id);
+      });
+      this.syncBindingSelection();
+    },
+
+    pruneHiddenActionSelection() {
+      const visibleActionIds = new Set(this.getVisibleActionEntries().map(([id]) => id));
+      this.selectedActions?.forEach(id => {
+        if (!visibleActionIds.has(id)) this.selectedActions.delete(id);
+      });
+      this.bindingSelectedActions?.forEach(id => {
+        if (!visibleActionIds.has(id)) this.bindingSelectedActions.delete(id);
+      });
+      this.bindingSourceActions?.forEach(id => {
+        if (!visibleActionIds.has(id)) this.bindingSourceActions.delete(id);
+      });
+      this.syncBindingSelection();
+    },
+
     areAllSongsSelected() {
       this.initSelection();
       const songs = this.getVisibleSongEntries();
@@ -1110,35 +1938,35 @@ window.Jukebox = {
 
     areAllActionsSelected() {
       this.initSelection();
-      const actionIds = Object.keys(this.data.actions);
+      const actionIds = this.getVisibleActionEntries().map(([id]) => id);
       return actionIds.length > 0 && actionIds.every(id => this.selectedActions.has(id));
     },
 
     hasAnyActionsSelected() {
       this.initSelection();
-      return Object.keys(this.data.actions).some(id => this.selectedActions.has(id));
+      return this.getVisibleActionEntries().some(([id]) => this.selectedActions.has(id));
     },
 
     areAllBindingSongsSelected() {
       this.initBindingSelection();
-      const songIds = Object.keys(this.data.songs);
+      const songIds = this.getVisibleSongEntries().map(([id]) => id);
       return songIds.length > 0 && songIds.every(songId => this.bindingSelectedSongs.has(songId));
     },
 
     hasAnyBindingSongsSelected() {
       this.initBindingSelection();
-      return Object.keys(this.data.songs).some(songId => this.bindingSelectedSongs.has(songId));
+      return this.getVisibleSongEntries().some(([songId]) => this.bindingSelectedSongs.has(songId));
     },
 
     areAllBindingActionsSelected() {
       this.initBindingSelection();
-      const actionIds = Object.keys(this.data.actions);
+      const actionIds = this.getVisibleActionEntries().map(([id]) => id);
       return actionIds.length > 0 && actionIds.every(actionId => this.bindingSelectedActions.has(actionId));
     },
 
     hasAnyBindingActionsSelected() {
       this.initBindingSelection();
-      return Object.keys(this.data.actions).some(actionId => this.bindingSelectedActions.has(actionId));
+      return this.getVisibleActionEntries().some(([actionId]) => this.bindingSelectedActions.has(actionId));
     },
 
     syncCheckboxState(checkbox, checked, indeterminate) {
@@ -1154,20 +1982,20 @@ window.Jukebox = {
       const actionIds = new Set();
 
       this.bindingSourceSongs.forEach(songId => {
-        if (!this.data.songs[songId]) return;
+        if (!this.shouldShowSong(this.data.songs[songId])) return;
         songIds.add(songId);
         this.getSongBindings(songId).forEach(actionId => {
-          if (this.data.actions[actionId]) {
+          if (this.shouldShowAction(this.data.actions[actionId])) {
             actionIds.add(actionId);
           }
         });
       });
 
       this.bindingSourceActions.forEach(actionId => {
-        if (!this.data.actions[actionId]) return;
+        if (!this.shouldShowAction(this.data.actions[actionId])) return;
         actionIds.add(actionId);
         this.getActionBindings(actionId).forEach(songId => {
-          if (this.data.songs[songId]) {
+          if (this.shouldShowSong(this.data.songs[songId])) {
             songIds.add(songId);
           }
         });
@@ -1272,8 +2100,8 @@ window.Jukebox = {
     // 动画Tab全选：只勾选动画本身
     toggleSelectAllActions(checked) {
       this.initSelection();
-      
-      Object.keys(this.data.actions).forEach(id => {
+
+      this.getVisibleActionEntries().forEach(([id]) => {
         if (checked) {
           this.selectedActions.add(id);
         } else {
@@ -1288,7 +2116,7 @@ window.Jukebox = {
     toggleSelectAllBindingSongs(checked) {
       this.ensureBindingSelectionState();
       
-      Object.keys(this.data.songs).forEach(songId => {
+      this.getVisibleSongEntries().forEach(([songId]) => {
         if (checked) {
           this.bindingSourceSongs.add(songId);
         } else {
@@ -1303,8 +2131,8 @@ window.Jukebox = {
     // 绑定Tab全选动画（使用合集逻辑：只勾选满足条件的动画）
     toggleSelectAllBindingActions(checked) {
       this.ensureBindingSelectionState();
-      
-      Object.keys(this.data.actions).forEach(actionId => {
+
+      this.getVisibleActionEntries().forEach(([actionId]) => {
         if (checked) {
           this.bindingSourceActions.add(actionId);
         } else {
@@ -1366,6 +2194,8 @@ window.Jukebox = {
       const hasSelection = songCount > 0 || actionCount > 0;
       const exportAllBtns = document.querySelectorAll('.sam-btn-export-all');
       const exportSelectedBtn = document.querySelector('.sam-btn-export-selected');
+      const dangerWrap = document.querySelector('.sam-danger-action-wrap');
+      const dangerBtn = document.querySelector('.sam-btn-song-danger');
       const hasBindingSelection = bindingSongCount > 0 || bindingActionCount > 0;
       const hasActiveSelection = activeTab === 'bindings' ? hasBindingSelection : hasSelection;
       
@@ -1374,6 +2204,31 @@ window.Jukebox = {
       });
       if (exportSelectedBtn) {
         exportSelectedBtn.style.display = hasActiveSelection ? '' : 'none';
+      }
+
+      if (dangerWrap && dangerBtn) {
+        const deleteState = this.getManagerDeleteMode();
+        if ((activeTab === 'songs' || activeTab === 'actions') && deleteState) {
+          const isActions = deleteState.resource === 'actions';
+          dangerWrap.style.display = '';
+          dangerBtn.dataset.mode = deleteState.mode;
+          dangerBtn.dataset.resource = deleteState.resource;
+          dangerBtn.textContent = deleteState.mode === 'selected'
+            ? window.t(isActions ? 'Jukebox.deleteSelectedActions' : 'Jukebox.deleteSelectedSongs', {
+              defaultValue: '删除选中({{count}})',
+              count: deleteState.ids.length,
+            }).replace('{{count}}', deleteState.ids.length)
+            : window.t(isActions ? 'Jukebox.clearVisibleActions' : 'Jukebox.clearVisibleSongs', {
+              defaultValue: '删除当前显示({{count}})',
+              count: deleteState.ids.length,
+            }).replace('{{count}}', deleteState.ids.length);
+          dangerBtn.title = deleteState.mode === 'selected'
+            ? window.t(isActions ? 'Jukebox.deleteSelectedActionsTitle' : 'Jukebox.deleteSelectedSongsTitle', isActions ? '删除选中动画' : '删除选中歌曲')
+            : window.t(isActions ? 'Jukebox.clearVisibleActionsTitle' : 'Jukebox.clearVisibleSongsTitle', '删除当前显示');
+        } else {
+          dangerWrap.style.display = 'none';
+          this.hideManagerDeleteTooltip();
+        }
       }
     },
     
@@ -1477,7 +2332,7 @@ window.Jukebox = {
     getActionBindings(actionId) {
       const songs = [];
       for (const [songId, actions] of Object.entries(this.data.bindings)) {
-        if (actions[actionId]) {
+        if (actions && Object.prototype.hasOwnProperty.call(actions, actionId)) {
           songs.push(songId);
         }
       }
@@ -1502,15 +2357,15 @@ window.Jukebox = {
       btn.style.display = 'none';
       container.appendChild(inputWrapper);
 
-      // 获取可用项目（排除已绑定的）
-      const availableItems = isSong ? this.data.actions : this.data.songs;
+      // 获取可用项目（排除当前视图隐藏和已绑定的）
+      const availableEntries = isSong ? this.getVisibleActionEntries() : this.getVisibleSongEntries();
       const currentBindings = isSong
         ? (this.data.bindings[sourceId] || {})
         : this.getActionBindings(sourceId);
       const boundIds = new Set(isSong ? Object.keys(currentBindings) : currentBindings);
 
-      // 获取所有项目的原始序号映射
-      const allItemsWithIndex = Object.entries(availableItems)
+      // 获取当前视图项目的序号映射
+      const allItemsWithIndex = availableEntries
         .map(([id, item], index) => ({ id, item, originalIndex: index + 1 }));
 
       // 过滤：只排除已绑定的项目（被隐藏的歌曲也可以绑定）
@@ -2177,6 +3032,10 @@ window.Jukebox = {
         this._panelDragCleanup();
         this._panelDragCleanup = null;
       }
+      if (this._panelResizeCleanup) {
+        this._panelResizeCleanup();
+        this._panelResizeCleanup = null;
+      }
       if (this.element) {
         this.element.remove();
         this.element = null;
@@ -2315,7 +3174,11 @@ window.Jukebox = {
           padding: 15px;
           border-radius: 12px;
           width: 450px;
-          max-height: 500px;
+          height: min(500px, calc(100vh - 24px));
+          min-width: 420px;
+          min-height: 360px;
+          max-width: calc(100vw - 24px);
+          max-height: calc(100vh - 24px);
           overflow: hidden;
           display: flex;
           flex-direction: column;
@@ -2327,6 +3190,21 @@ window.Jukebox = {
           user-select: none;
           -webkit-user-select: none;
         }
+
+        .sam-resize-handle {
+          position: absolute;
+          z-index: 130;
+          -webkit-app-region: no-drag;
+        }
+
+        .sam-resize-handle[data-dir="n"]  { top: -3px; left: 12px; right: 12px; height: 6px; cursor: ns-resize; }
+        .sam-resize-handle[data-dir="s"]  { bottom: -3px; left: 12px; right: 12px; height: 6px; cursor: ns-resize; }
+        .sam-resize-handle[data-dir="w"]  { left: -3px; top: 12px; bottom: 12px; width: 6px; cursor: ew-resize; }
+        .sam-resize-handle[data-dir="e"]  { right: -3px; top: 12px; bottom: 12px; width: 6px; cursor: ew-resize; }
+        .sam-resize-handle[data-dir="nw"] { top: -3px; left: -3px; width: 18px; height: 18px; cursor: nwse-resize; }
+        .sam-resize-handle[data-dir="ne"] { top: -3px; right: -3px; width: 18px; height: 18px; cursor: nesw-resize; }
+        .sam-resize-handle[data-dir="sw"] { bottom: -3px; left: -3px; width: 18px; height: 18px; cursor: nesw-resize; }
+        .sam-resize-handle[data-dir="se"] { bottom: -3px; right: -3px; width: 18px; height: 18px; cursor: nwse-resize; }
 
         .jukebox-sam-panel:active {
           cursor: grabbing;
@@ -2428,18 +3306,20 @@ window.Jukebox = {
         
         .sam-content {
           flex: 1;
-          overflow-y: auto;
+          overflow: hidden;
           min-height: 0;
         }
 
         .sam-panel {
           display: none;
           height: 100%;
-          overflow-y: auto;
+          min-height: 0;
+          overflow: hidden;
         }
 
         .sam-panel.active {
-          display: block;
+          display: flex;
+          flex-direction: column;
         }
         
         .sam-list {
@@ -2552,6 +3432,7 @@ window.Jukebox = {
           display: flex;
           flex-wrap: wrap;
           gap: 4px;
+          min-width: 0;
         }
 
         .sam-binding-tag {
@@ -2560,6 +3441,37 @@ window.Jukebox = {
           background: ${C.functional.tagBg};
           padding: 2px 6px;
           border-radius: 10px;
+          display: inline-block;
+          max-width: 180px;
+          white-space: nowrap;
+          overflow: hidden;
+        }
+
+        .jukebox-sam-panel [data-neko-marquee] {
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: clip;
+          scrollbar-width: none;
+          -ms-overflow-style: none;
+        }
+
+        .jukebox-sam-panel [data-neko-marquee]::-webkit-scrollbar {
+          display: none;
+        }
+
+        .jukebox-sam-panel [data-neko-marquee].neko-marquee-active {
+          cursor: default;
+        }
+
+        .jukebox-sam-panel [contenteditable][data-neko-marquee]:focus {
+          overflow-x: auto;
+          scrollbar-width: thin;
+          -ms-overflow-style: auto;
+        }
+
+        .jukebox-sam-panel [contenteditable][data-neko-marquee]:focus::-webkit-scrollbar {
+          display: block;
+          height: 6px;
         }
         
         /* 动画标签样式 - 不同格式不同颜色 */
@@ -2673,10 +3585,24 @@ window.Jukebox = {
         .sam-bindings-container {
           display: flex;
           gap: 15px;
+          width: 100%;
+          flex: 1;
+          min-width: 0;
+          min-height: 0;
+          overflow: hidden;
         }
 
         .sam-bindings-section {
-          flex: 1;
+          display: flex;
+          flex-direction: column;
+          flex: 1 1 0;
+          min-width: 0;
+          min-height: 0;
+          overflow: hidden;
+        }
+
+        .sam-bindings-header {
+          flex: 0 0 auto;
         }
 
         .sam-bindings-section h4 {
@@ -2689,12 +3615,15 @@ window.Jukebox = {
           display: flex;
           flex-direction: column;
           gap: 8px;
-          max-height: 200px;
+          flex: 1;
+          min-height: 0;
           overflow-y: auto;
+          overflow-x: hidden;
           padding: 10px;
           border: 2px dashed transparent;
           border-radius: 8px;
           transition: all 0.3s;
+          min-width: 0;
         }
 
         .sam-bindings-list.drag-over {
@@ -2709,10 +3638,13 @@ window.Jukebox = {
           position: relative;
           cursor: grab;
           transition: all 0.3s;
-          min-height: 40px;
+          min-height: 66px;
           display: flex;
           flex-direction: column;
-          gap: 4px;
+          gap: 6px;
+          width: 100%;
+          min-width: 0;
+          box-sizing: border-box;
         }
 
         .sam-binding-item:hover {
@@ -2741,6 +3673,9 @@ window.Jukebox = {
           align-items: center;
           gap: 8px;
           width: 100%;
+          min-width: 0;
+          flex: 0 0 auto;
+          min-height: 22px;
         }
 
         .sam-binding-item-index {
@@ -2754,9 +3689,15 @@ window.Jukebox = {
           flex-shrink: 0;
         }
 
+        .sam-binding-item-main input[type="checkbox"] {
+          flex-shrink: 0;
+        }
+
         .sam-binding-item-name {
           font-weight: 500;
           flex: 1;
+          min-width: 0;
+          max-width: 100%;
         }
 
         .sam-binding-count {
@@ -2767,15 +3708,26 @@ window.Jukebox = {
           border-radius: 10px;
           min-width: 18px;
           text-align: center;
+          flex-shrink: 0;
         }
 
         .sam-binding-item-tags {
           display: flex;
-          flex-wrap: wrap;
+          flex-wrap: nowrap;
           gap: 4px;
           margin-top: 4px;
           padding-top: 4px;
           border-top: 1px solid ${C.borders.divider};
+          min-width: 0;
+          width: 100%;
+          max-width: 100%;
+          min-height: 24px;
+          align-items: center;
+          overflow: hidden;
+          box-sizing: border-box;
+          flex: 0 0 auto;
+          position: relative;
+          z-index: 1;
         }
 
         .sam-add-binding-btn {
@@ -2792,6 +3744,8 @@ window.Jukebox = {
           align-items: center;
           justify-content: center;
           transition: all 0.2s;
+          flex: 0 0 20px;
+          box-sizing: border-box;
         }
 
         .sam-add-binding-btn:hover {
@@ -2913,13 +3867,25 @@ window.Jukebox = {
           padding: 2px 6px;
           border-radius: 10px;
           white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
           max-width: 140px;
           display: inline-flex;
           align-items: center;
           gap: 4px;
           position: relative;
+          overflow: hidden;
+          min-width: 0;
+          flex: 1 1 0;
+          box-sizing: border-box;
+          min-height: 20px;
+          max-height: 20px;
+        }
+
+        .sam-binding-tag-label {
+          display: inline-block;
+          min-width: 0;
+          overflow: hidden;
+          white-space: nowrap;
+          flex: 1 1 auto;
         }
 
         .sam-unbind-btn {
@@ -3143,10 +4109,16 @@ window.Jukebox = {
           align-items: center;
           justify-content: space-between;
           gap: 8px;
+          min-width: 0;
         }
         
         .sam-item-name {
+          display: block;
           flex: 1;
+          min-width: 0;
+          max-width: 100%;
+          overflow: hidden;
+          white-space: nowrap;
           font-weight: 500;
           cursor: text;
           padding: 2px 4px;
@@ -3171,6 +4143,8 @@ window.Jukebox = {
           border-radius: 3px;
           transition: all 0.2s;
           margin-top: 4px;
+          overflow: hidden;
+          white-space: nowrap;
         }
 
         .sam-item-artist:hover {
@@ -3186,6 +4160,7 @@ window.Jukebox = {
           display: flex;
           align-items: center;
           gap: 4px;
+          flex-shrink: 0;
         }
         
         .sam-visibility-btn {
@@ -3261,6 +4236,7 @@ window.Jukebox = {
           flex-direction: column;
           align-items: center;
           gap: 8px;
+          flex: 0 0 auto;
           padding: 12px 16px;
           background: ${C.footer.importBg};
           border-top: ${C.footer.borderTop};
@@ -3271,6 +4247,7 @@ window.Jukebox = {
           align-items: center;
           justify-content: center;
           gap: 12px;
+          flex-wrap: wrap;
         }
 
         .sam-selection-info {
@@ -3340,6 +4317,132 @@ window.Jukebox = {
 
         .sam-btn:hover {
           background: ${C.footer.buttonHoverBg};
+        }
+
+        .sam-danger-action-wrap {
+          position: relative;
+          display: inline-flex;
+        }
+
+        .sam-btn-danger {
+          background: rgba(190, 45, 45, 0.32);
+          color: #ffd7d7;
+          border: 1px solid rgba(255, 110, 110, 0.42);
+        }
+
+        .sam-btn-danger:hover {
+          background: rgba(220, 60, 60, 0.46);
+        }
+
+        .sam-danger-tooltip {
+          position: absolute;
+          left: 50%;
+          bottom: calc(100% + 8px);
+          transform: translateX(-50%);
+          z-index: 30;
+          display: none;
+          width: max-content;
+          max-width: 320px;
+          padding: 8px 10px;
+          border-radius: 6px;
+          background: rgba(20, 20, 24, 0.96);
+          border: 1px solid rgba(255,255,255,0.14);
+          box-shadow: 0 8px 24px rgba(0,0,0,0.32);
+          color: ${C.text.primary};
+          font-size: 12px;
+          line-height: 1.45;
+          text-align: left;
+          white-space: pre-line;
+          pointer-events: none;
+        }
+
+        .sam-danger-modal-backdrop {
+          position: fixed;
+          inset: 0;
+          z-index: 100040;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: rgba(0,0,0,0.52);
+          -webkit-app-region: no-drag;
+          pointer-events: auto;
+        }
+
+        .jukebox-sam-panel > .sam-danger-modal-backdrop {
+          position: absolute;
+          z-index: 120;
+        }
+
+        .sam-danger-modal {
+          width: min(420px, calc(100vw - 32px));
+          padding: 18px;
+          border-radius: 8px;
+          background: rgba(31, 34, 42, 0.98);
+          border: 1px solid rgba(255,255,255,0.14);
+          box-shadow: 0 18px 54px rgba(0,0,0,0.42);
+          color: ${C.text.primary};
+          pointer-events: auto;
+        }
+
+        .sam-danger-modal h3 {
+          margin: 0 0 10px;
+          font-size: 16px;
+          font-weight: 600;
+        }
+
+        .sam-danger-modal p {
+          margin: 0 0 10px;
+          font-size: 13px;
+          line-height: 1.55;
+          white-space: pre-line;
+        }
+
+        .sam-danger-modal-detail {
+          color: ${C.text.muted};
+        }
+
+        .sam-danger-modal-actions {
+          display: flex;
+          justify-content: flex-end;
+          align-items: center;
+          gap: 12px;
+          margin-top: 16px;
+        }
+
+        .sam-danger-modal-actions-reversed {
+          flex-direction: row-reverse;
+          justify-content: flex-start;
+        }
+
+        .sam-danger-modal-actions button {
+          min-width: 88px;
+          padding: 8px 14px;
+          border-radius: 4px;
+          border: 1px solid rgba(255,255,255,0.16);
+          color: ${C.text.primary};
+          cursor: pointer;
+        }
+
+        .sam-danger-modal-cancel {
+          background: rgba(255,255,255,0.12);
+        }
+
+        .sam-danger-modal-confirm {
+          background: rgba(190, 45, 45, 0.78);
+        }
+
+        .sam-danger-confirm-zone-final {
+          display: inline-flex;
+          padding: 12px;
+          margin: -12px;
+        }
+
+        .sam-danger-confirm-escaped {
+          will-change: transform;
+        }
+
+        .sam-danger-confirm-escaping {
+          cursor: default;
         }
 
         .sam-btn-primary {
@@ -3754,6 +4857,7 @@ window.Jukebox = {
     if (!window.__NEKO_JUKEBOX_STANDALONE__) {
       Jukebox.bindWindowDrag(wrapper, jukeboxContainer);
       Jukebox.bindPanelDrag(sidePanel);
+      Jukebox.bindPanelResize(sidePanel);
       Jukebox.bindResize(jukeboxContainer);
     }
 
@@ -3843,17 +4947,13 @@ window.Jukebox = {
     };
   },
 
-  // 缩放功能（八方向：四条边 + 四个角，内容等比缩放）
+  // 网页浮层 resize：只改变容器宽高，不缩放内部文字和控件。
   bindResize: function(container) {
     const handles = container.querySelectorAll('.jukebox-resize-handle');
     if (!handles.length) return;
 
-    const BASE_WIDTH = parseInt(Jukebox.Config.width) || 500;
-    const MIN_SCALE = 0.5;
-    const MAX_SCALE = 3;
-
-    // 记录初始 zoom
-    const getZoom = () => parseFloat(container.style.zoom) || 1;
+    const MIN_WIDTH = 360;
+    const MIN_HEIGHT = 300;
 
     const onPointerDown = (e) => {
       e.preventDefault();
@@ -3864,13 +4964,14 @@ window.Jukebox = {
 
       const startX = e.touches ? e.touches[0].clientX : e.clientX;
       const startY = e.touches ? e.touches[0].clientY : e.clientY;
-      const startZoom = getZoom();
       const startRect = container.getBoundingClientRect();
       const startLeft = startRect.left;
       const startTop = startRect.top;
-      // 实际视觉宽高（包含 zoom 效果）
-      const startVisualW = startRect.width;
-      const startVisualH = startRect.height;
+      const computed = window.getComputedStyle(container);
+      const widthExtras = startRect.width - parseFloat(computed.width);
+      const heightExtras = startRect.height - parseFloat(computed.height);
+      const maxWidth = Math.max(MIN_WIDTH, window.innerWidth - 16);
+      const maxHeight = Math.max(MIN_HEIGHT, window.innerHeight - 16);
 
       document.body.classList.add('jukebox-resizing');
 
@@ -3880,49 +4981,31 @@ window.Jukebox = {
         const dx = clientX - startX;
         const dy = clientY - startY;
 
-        let newZoom = startZoom;
         let newLeft = startLeft;
         let newTop = startTop;
-
-        // 计算新的视觉宽度/高度
-        let newVisualW = startVisualW;
-        let newVisualH = startVisualH;
+        let newOuterW = startRect.width;
+        let newOuterH = startRect.height;
 
         if (dir.includes('e')) {
-          newVisualW = Math.max(BASE_WIDTH * MIN_SCALE, startVisualW + dx);
+          newOuterW = clamp(startRect.width + dx, MIN_WIDTH, maxWidth);
         }
         if (dir.includes('w')) {
-          newVisualW = Math.max(BASE_WIDTH * MIN_SCALE, startVisualW - dx);
-          newLeft = startLeft + (startVisualW - newVisualW);
+          newOuterW = clamp(startRect.width - dx, MIN_WIDTH, maxWidth);
+          newLeft = startLeft + (startRect.width - newOuterW);
         }
         if (dir.includes('s')) {
-          newVisualH = Math.max(BASE_WIDTH * MIN_SCALE, startVisualH + dy);
+          newOuterH = clamp(startRect.height + dy, MIN_HEIGHT, maxHeight);
         }
         if (dir.includes('n')) {
-          newVisualH = Math.max(BASE_WIDTH * MIN_SCALE, startVisualH - dy);
-          newTop = startTop + (startVisualH - newVisualH);
+          newOuterH = clamp(startRect.height - dy, MIN_HEIGHT, maxHeight);
+          newTop = startTop + (startRect.height - newOuterH);
         }
 
-        // 根据拖拽方向选择缩放基准
-        if (dir === 'n' || dir === 's') {
-          newZoom = Math.max(MIN_SCALE, Math.min(MAX_SCALE, startZoom * (newVisualH / startVisualH)));
-        } else {
-          newZoom = Math.max(MIN_SCALE, Math.min(MAX_SCALE, startZoom * (newVisualW / startVisualW)));
-        }
+        container.style.width = Math.max(0, newOuterW - widthExtras) + 'px';
+        container.style.height = Math.max(0, newOuterH - heightExtras) + 'px';
 
-        container.style.zoom = newZoom;
-
-        // 左/上方向缩放时同步移动 wrapper 位置
         const wrapper = container.parentElement;
         if (wrapper && (dir.includes('w') || dir.includes('n'))) {
-          // 使用 getBoundingClientRect 获取实际视觉尺寸
-          const zoomedRect = container.getBoundingClientRect();
-          if (dir.includes('w')) {
-            newLeft = startLeft + startVisualW - zoomedRect.width;
-          }
-          if (dir.includes('n')) {
-            newTop = startTop + startVisualH - zoomedRect.height;
-          }
           wrapper.style.left = newLeft + 'px';
           wrapper.style.top = newTop + 'px';
           wrapper.style.bottom = 'auto';
@@ -3957,6 +5040,10 @@ window.Jukebox = {
       handle.addEventListener('mousedown', onPointerDown);
       handle.addEventListener('touchstart', onPointerDown, { passive: false });
     });
+
+    function clamp(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
   },
 
   // 管理器面板拖拽功能
@@ -3966,7 +5053,7 @@ window.Jukebox = {
 
     const onMouseDown = (e) => {
       // 忽略所有交互元素
-      if (e.target.closest('button, input, a, select, textarea, .sam-close-btn, .sam-tab, .sam-content, .sam-checkbox, .sam-click-add')) return;
+      if (e.target.closest('button, input, a, select, textarea, .sam-close-btn, .sam-tab, .sam-content, .sam-checkbox, .sam-click-add, .sam-resize-handle')) return;
 
       e.preventDefault();
       const clientX = e.touches ? e.touches[0].clientX : e.clientX;
@@ -4034,6 +5121,112 @@ window.Jukebox = {
       isDragging = false;
       document.body.classList.remove('sam-panel-dragging');
     };
+  },
+
+  // Web 管理器 resize：模拟桌面窗口边缘 resize，不用于 Electron standalone 管理器。
+  bindPanelResize: function(panel) {
+    if (window.__NEKO_JUKEBOX_MANAGER_STANDALONE__) return;
+    const handles = panel.querySelectorAll('.sam-resize-handle');
+    if (!handles.length) return;
+
+    const MIN_WIDTH = 420;
+    const MIN_HEIGHT = 360;
+    const VIEWPORT_MARGIN = 12;
+
+    const onPointerDown = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const dir = e.currentTarget.dataset.dir;
+      if (!dir) return;
+
+      const startX = e.touches ? e.touches[0].clientX : e.clientX;
+      const startY = e.touches ? e.touches[0].clientY : e.clientY;
+      const rect = panel.getBoundingClientRect();
+      const startLeft = rect.left;
+      const startTop = rect.top;
+      const maxWidth = Math.max(MIN_WIDTH, window.innerWidth - VIEWPORT_MARGIN);
+      const maxHeight = Math.max(MIN_HEIGHT, window.innerHeight - VIEWPORT_MARGIN);
+
+      if (!panel.style.left) panel.style.left = startLeft + 'px';
+      if (!panel.style.top) panel.style.top = startTop + 'px';
+      panel.style.right = 'auto';
+      panel.style.bottom = 'auto';
+      panel.style.maxWidth = `calc(100vw - ${VIEWPORT_MARGIN * 2}px)`;
+      panel.style.maxHeight = `calc(100vh - ${VIEWPORT_MARGIN * 2}px)`;
+
+      document.body.classList.add('sam-panel-resizing');
+
+      const onPointerMove = (ev) => {
+        ev.preventDefault();
+        const clientX = ev.touches ? ev.touches[0].clientX : ev.clientX;
+        const clientY = ev.touches ? ev.touches[0].clientY : ev.clientY;
+        const dx = clientX - startX;
+        const dy = clientY - startY;
+
+        let nextWidth = rect.width;
+        let nextHeight = rect.height;
+        let nextLeft = startLeft;
+        let nextTop = startTop;
+
+        if (dir.includes('e')) {
+          nextWidth = clamp(rect.width + dx, MIN_WIDTH, maxWidth);
+        }
+        if (dir.includes('w')) {
+          nextWidth = clamp(rect.width - dx, MIN_WIDTH, maxWidth);
+          nextLeft = startLeft + (rect.width - nextWidth);
+        }
+        if (dir.includes('s')) {
+          nextHeight = clamp(rect.height + dy, MIN_HEIGHT, maxHeight);
+        }
+        if (dir.includes('n')) {
+          nextHeight = clamp(rect.height - dy, MIN_HEIGHT, maxHeight);
+          nextTop = startTop + (rect.height - nextHeight);
+        }
+
+        nextLeft = clamp(nextLeft, 0, Math.max(0, window.innerWidth - nextWidth));
+        nextTop = clamp(nextTop, 0, Math.max(0, window.innerHeight - nextHeight));
+
+        panel.style.width = nextWidth + 'px';
+        panel.style.height = nextHeight + 'px';
+        panel.style.left = nextLeft + 'px';
+        panel.style.top = nextTop + 'px';
+      };
+
+      const cleanup = () => {
+        document.body.classList.remove('sam-panel-resizing');
+        document.removeEventListener('mousemove', onPointerMove);
+        document.removeEventListener('touchmove', onPointerMove);
+        document.removeEventListener('mouseup', cleanup);
+        document.removeEventListener('touchend', cleanup);
+        document.removeEventListener('touchcancel', cleanup);
+        window.removeEventListener('blur', cleanup);
+      };
+
+      document.addEventListener('mousemove', onPointerMove);
+      document.addEventListener('touchmove', onPointerMove, { passive: false });
+      document.addEventListener('mouseup', cleanup);
+      document.addEventListener('touchend', cleanup);
+      document.addEventListener('touchcancel', cleanup);
+      window.addEventListener('blur', cleanup);
+    };
+
+    handles.forEach((handle) => {
+      handle.addEventListener('mousedown', onPointerDown);
+      handle.addEventListener('touchstart', onPointerDown, { passive: false });
+    });
+
+    Jukebox.SongActionManager._panelResizeCleanup = () => {
+      handles.forEach((handle) => {
+        handle.removeEventListener('mousedown', onPointerDown);
+        handle.removeEventListener('touchstart', onPointerDown);
+      });
+      document.body.classList.remove('sam-panel-resizing');
+    };
+
+    function clamp(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
   },
   
   injectStyles: function() {
@@ -4417,6 +5610,7 @@ window.Jukebox = {
         background: ${Jukebox.Config.table.bodyBg};
         border-radius: 8px;
         overflow: hidden;
+        table-layout: fixed;
       }
       
       .jukebox-table thead {
@@ -4435,6 +5629,36 @@ window.Jukebox = {
         padding: 12px;
         border-bottom: ${Jukebox.Config.table.rowBorder};
         font-size: 14px;
+        vertical-align: middle;
+      }
+
+      .jukebox-table th:nth-child(1),
+      .jukebox-table td.song-index {
+        width: 42px;
+      }
+
+      .jukebox-table th:nth-child(3),
+      .jukebox-table td.song-artist {
+        width: 118px;
+      }
+
+      .jukebox-table th:nth-child(4),
+      .jukebox-table td.song-action {
+        width: 48px;
+      }
+
+      .jukebox-table td.song-name,
+      .jukebox-table td.song-artist {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: clip;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+
+      .jukebox-table td.song-name::-webkit-scrollbar,
+      .jukebox-table td.song-artist::-webkit-scrollbar {
+        display: none;
       }
       
       .jukebox-table tbody tr:hover {
@@ -4798,10 +6022,12 @@ window.Jukebox = {
       Jukebox.State.songs = Object.entries(songs).map(([id, song]) => {
         // 获取该歌曲绑定的动画
         const songBindings = bindings[id] || {};
-        const boundActions = Object.keys(songBindings).map(actionId => ({
-          id: actionId,
-          ...actions[actionId]
-        })).filter(a => a.id); // 过滤掉不存在的动画
+        const boundActions = Object.keys(songBindings)
+          .filter(actionId => actions[actionId] && actions[actionId].visible !== false)
+          .map(actionId => ({
+            id: actionId,
+            ...actions[actionId]
+          })); // 过滤掉不存在或已隐藏的动画
         
         // 处理音频路径：自带资源使用 /static/jukebox/ 前缀
         let audioPath = song.audio || '';
@@ -4887,6 +6113,7 @@ window.Jukebox = {
     });
 
     console.log('[Jukebox]', window.t('Jukebox.songsRendered', '歌曲列表已渲染'));
+    Jukebox.scheduleMarqueeTextUpdate(tbody);
   },
 
   // 创建歌曲行
@@ -4895,8 +6122,8 @@ window.Jukebox = {
     tr.dataset.songId = song.id;
     tr.innerHTML = `
       <td class="song-index">${index + 1}</td>
-      <td class="song-name">${Jukebox.escapeHtml(song.name)}</td>
-      <td class="song-artist">${Jukebox.escapeHtml(song.artist)}</td>
+      <td class="song-name" data-neko-marquee title="${Jukebox.escapeHtml(song.name)}">${Jukebox.escapeHtml(song.name)}</td>
+      <td class="song-artist" data-neko-marquee title="${Jukebox.escapeHtml(song.artist)}">${Jukebox.escapeHtml(song.artist)}</td>
       <td class="song-action">
         <button class="play-btn" data-song-id="${Jukebox.escapeHtml(song.id)}" data-tooltip="${window.t('Jukebox.play', '播放')}">
           <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
@@ -4921,11 +6148,19 @@ window.Jukebox = {
 
     // 更新歌名
     const nameCell = row.querySelector('.song-name');
-    if (nameCell) nameCell.textContent = Jukebox.escapeHtml(song.name);
+    if (nameCell) {
+      nameCell.textContent = song.name;
+      nameCell.title = song.name;
+    }
 
     // 更新歌手
     const artistCell = row.querySelector('.song-artist');
-    if (artistCell) artistCell.textContent = Jukebox.escapeHtml(song.artist);
+    if (artistCell) {
+      artistCell.textContent = song.artist;
+      artistCell.title = song.artist;
+    }
+
+    Jukebox.scheduleMarqueeTextUpdate(row);
 
     // 注意：不更新播放按钮，以保持播放状态
   },

@@ -378,6 +378,20 @@
         // 移除 1 的上限，让低分辨率截图在高分屏上也能放大填满容器，
         // 避免周围出现大面积黑边导致用户误以为边缘内容"选不到"。
         var scale = Math.min(overlayW / natW, overlayH / natH);
+
+        // 【清晰度关键】当截图尺寸 ≈ 裁剪层尺寸（全屏截图铺在同尺寸屏上，最常见）时，
+        // overlay 常因 1px 边框/取整比图小一两像素，scale 会是 0.999 这种接近 1 的【分数】，
+        // 使整张图被按非整数倍做一次双线性重采样 —— 每条文字/UI 边缘都被糊上 1px 混合，
+        // 全图肉眼明显发虚（与浏览器非整数缩放发糊同源）。这里把"图≈层"（两个维度都只差
+        // 几像素）的情形【吸附成精确 1:1】，让全屏截图像素级清晰；多出的 1~2px 由
+        // .crop-workspace 的 overflow:hidden 裁掉，不可见。
+        // 只吸附近似 1:1：明显更大的图（如 4K 截到 1080p 层）仍按 scale<1 真实降采样；
+        // 明显更小的图仍按 scale>1 放大铺满 —— 既有行为不变。
+        var SNAP_PX = 4;
+        if (Math.abs(natW - overlayW) <= SNAP_PX && Math.abs(natH - overlayH) <= SNAP_PX) {
+            scale = 1;
+        }
+
         imgDisplayWidth = Math.round(natW * scale);
         imgDisplayHeight = Math.round(natH * scale);
         imgDisplayLeft = Math.round((overlayW - imgDisplayWidth) / 2);

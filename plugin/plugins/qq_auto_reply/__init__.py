@@ -325,8 +325,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         settings = dict(self._qq_settings or {})
         self.logger.info(f"[qq_auto_reply debug] build_dashboard_state source settings: {settings}")
         napcat_dir = self._get_napcat_directory()
+        runtime = self._build_runtime_status()
         return {
-            "runtime": self._build_runtime_status(),
+            "runtime": runtime,
             "settings": {
                 "onebot_url": settings.get("onebot_url", ""),
                 "token": str(settings.get("token") or ""),
@@ -336,6 +337,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 "napcat_directory_exists": napcat_dir.exists(),
                 "show_napcat_window": bool(settings.get("show_napcat_window", True)),
                 "show_onboarding": bool(settings.get("show_onboarding", True)),
+                "guide_step_napcat_done": bool(settings.get("guide_step_napcat_done", False)),
                 "guide_step_config_done": bool(settings.get("guide_step_config_done", False)),
                 "guide_step_runtime_done": bool(settings.get("guide_step_runtime_done", False)),
                 "normal_relay_probability": float(self._normal_relay_probability),
@@ -343,7 +345,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 "backlog_labels": list(settings.get("backlog_labels") or []),
             },
             "guide": {
-                "step_napcat_done": bool(settings.get("napcat_directory")) and bool(self._napcat_process and self._napcat_process.returncode is None),
+                "step_napcat_done": bool(settings.get("guide_step_napcat_done", False)) or bool(runtime["napcat_managed"] and runtime["napcat_running"]),
                 "step_service_done": bool(settings.get("onebot_url")) and bool(settings.get("token")),
                 "step_contacts_done": bool(self.permission_mgr and self.permission_mgr.list_users()),
                 "step_auto_reply_done": bool(settings.get("guide_step_runtime_done", False)) and self._running,
@@ -433,8 +435,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return Err(SdkError(f"REFRESH_FAILED: {self.i18n.t('errors.refresh_failed', default='{error}', error=str(e))}"))
 
     @ui.action(id="save_settings", label=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), refresh_context=True)
-    @plugin_entry(id="save_settings", name=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), description=tr("entries.save_settings.description", default="保存 QQ 插件当前的 OneBot 地址、Token、NapCat 路径、回复概率和 backlog 标签等设置。"), input_schema={"type": "object", "properties": {"onebot_url": {"type": "string"}, "token": {"type": "string"}, "napcat_directory": {"type": "string"}, "show_napcat_window": {"type": "boolean"}, "show_onboarding": {"type": "boolean"}, "guide_step_config_done": {"type": "boolean"}, "guide_step_runtime_done": {"type": "boolean"}, "normal_relay_probability": {"type": "number"}, "truth_reply_probability": {"type": "number"}, "backlog_labels": {"type": "array", "items": {"type": "object"}}}, "additionalProperties": False})
-    async def save_settings(self, onebot_url: Optional[str] = None, token: Optional[str] = None, napcat_directory: Optional[str] = None, show_napcat_window: Optional[bool] = None, show_onboarding: Optional[bool] = None, guide_step_config_done: Optional[bool] = None, guide_step_runtime_done: Optional[bool] = None, normal_relay_probability: Optional[float] = None, truth_reply_probability: Optional[float] = None, backlog_labels: Optional[list[dict[str, Any]]] = None, **_):
+    @plugin_entry(id="save_settings", name=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), description=tr("entries.save_settings.description", default="保存 QQ 插件当前的 OneBot 地址、Token、NapCat 路径、回复概率和 backlog 标签等设置。"), input_schema={"type": "object", "properties": {"onebot_url": {"type": "string"}, "token": {"type": "string"}, "napcat_directory": {"type": "string"}, "show_napcat_window": {"type": "boolean"}, "show_onboarding": {"type": "boolean"}, "guide_step_napcat_done": {"type": "boolean"}, "guide_step_config_done": {"type": "boolean"}, "guide_step_runtime_done": {"type": "boolean"}, "normal_relay_probability": {"type": "number"}, "truth_reply_probability": {"type": "number"}, "backlog_labels": {"type": "array", "items": {"type": "object"}}}, "additionalProperties": False})
+    async def save_settings(self, onebot_url: Optional[str] = None, token: Optional[str] = None, napcat_directory: Optional[str] = None, show_napcat_window: Optional[bool] = None, show_onboarding: Optional[bool] = None, guide_step_napcat_done: Optional[bool] = None, guide_step_config_done: Optional[bool] = None, guide_step_runtime_done: Optional[bool] = None, normal_relay_probability: Optional[float] = None, truth_reply_probability: Optional[float] = None, backlog_labels: Optional[list[dict[str, Any]]] = None, **_):
         if onebot_url is not None:
             self._qq_settings["onebot_url"] = str(onebot_url or "").strip()
         if token is not None:
@@ -445,6 +447,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             self._qq_settings["show_napcat_window"] = bool(show_napcat_window)
         if show_onboarding is not None:
             self._qq_settings["show_onboarding"] = bool(show_onboarding)
+        if guide_step_napcat_done is not None:
+            self._qq_settings["guide_step_napcat_done"] = bool(guide_step_napcat_done)
         if guide_step_config_done is not None:
             self._qq_settings["guide_step_config_done"] = bool(guide_step_config_done)
         if guide_step_runtime_done is not None:

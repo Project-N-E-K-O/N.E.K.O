@@ -4615,6 +4615,14 @@ async def proactive_chat(request: Request):
         if not mgr:
             return JSONResponse({"success": False, "error": f"角色 {lanlan_name} 不存在"}, status_code=404)
 
+        if getattr(mgr, "is_goodbye_silent", lambda: False)():
+            logger.info("[%s] 主动搭话本轮未发起：goodbye silent", lanlan_name)
+            return JSONResponse({
+                "success": True,
+                "action": "pass",
+                "message": "goodbye silent; proactive skipped",
+            })
+
         try:
             from main_routers.game_router import is_game_route_active
             if is_game_route_active(lanlan_name):
