@@ -159,13 +159,14 @@ def _simulate_protanopia(rgb: tuple[float, float, float]) -> tuple[float, float,
 def _has_playwright_chromium() -> bool:
     try:
         from playwright.sync_api import sync_playwright
-    except Exception:
+    except ImportError:
         return False
 
     try:
         with sync_playwright() as playwright:
             return Path(playwright.chromium.executable_path).exists()
     except Exception:
+        # Playwright exposes install/runtime failures through provider-specific exceptions.
         return False
 
 
@@ -182,10 +183,10 @@ def test_study_companion_static_ui8_visual_accessibility_and_csp_contract() -> N
     csp = csp_match.group(1)
     assert "style-src 'self'" in csp
     assert "'unsafe-inline'" not in csp
-    assert (
-        "connect-src 'self' http://127.0.0.1:* http://localhost:*"
-        in csp
-    )
+    assert "connect-src 'self'" in csp
+    assert ":*" not in csp
+    assert "frame-ancestors" not in csp
+    assert "meta CSP cannot express dynamic localhost ports" in index_html
     assert 'style="' not in index_html
     assert "<style" not in index_html
 
@@ -209,6 +210,10 @@ def test_study_companion_static_ui8_visual_accessibility_and_csp_contract() -> N
     assert "reviewCompleted: 'neko-study-review-completed'" in main_js
     assert "refreshSummary: 'neko-study-refresh-summary'" in main_js
     assert "requestStudyStatusRefresh()" in main_js
+    assert "let refreshPending = false;" in main_js
+    assert ".finally(() => {" in main_js
+    assert "SECURITY: renderMathInText MUST HTML-escape all non-math text." in main_js
+    assert "window.location.origin" in main_js
     assert "const modeSelect = document.getElementById('modeSelect');" in main_js
     assert "function handleModeShortcut(event)" in main_js
     assert "modeSelect.addEventListener('change'" in main_js

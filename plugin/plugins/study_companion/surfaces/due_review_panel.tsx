@@ -1,7 +1,7 @@
 import { useEffect, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 import { callPlugin, errorMessage, text } from './memory_shared';
-import { ensureBrandCSS, STUDY_SURFACE_MESSAGE_TYPES } from './study_surface_utils';
+import { ensureBrandCSS, postStudySurfaceMessage, STUDY_SURFACE_MESSAGE_TYPES } from './study_surface_utils';
 import {
   getMemoryHabitStatus,
   getPomodoroStatus,
@@ -49,15 +49,15 @@ export default function DueReviewPanel(props: PluginSurfaceProps) {
     const nextReviews = Array.isArray(payload.due_reviews) ? payload.due_reviews : [];
     setReviews(nextReviews);
     setShowAnswer(false);
-    window.parent?.postMessage?.({
+    postStudySurfaceMessage({
       type: STUDY_SURFACE_MESSAGE_TYPES.memoryDeckUpdated,
       payload: { due_count: nextReviews.length, due_cards: nextReviews },
-    }, '*');
+    });
     return nextReviews;
   }
 
   function notifyReviewCompleted(review: DueReview, remaining: number) {
-    window.parent?.postMessage?.({
+    postStudySurfaceMessage({
       type: STUDY_SURFACE_MESSAGE_TYPES.reviewCompleted,
       payload: {
         deck_id: review.deck?.id || '',
@@ -65,7 +65,7 @@ export default function DueReviewPanel(props: PluginSurfaceProps) {
         reviewed_count: 1,
         timestamp: Date.now(),
       },
-    }, '*');
+    });
   }
 
   async function handleRefresh() {

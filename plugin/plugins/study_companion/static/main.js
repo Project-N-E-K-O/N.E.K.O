@@ -84,6 +84,7 @@ let settingsConfigLoading = false;
 let firstRunDismissed = false;
 let advancedSettingsOpen = false;
 let modeChangeInFlight = false;
+let refreshPending = false;
 
 function t(key, fallback) {
   return window.I18n && typeof window.I18n.t === 'function'
@@ -103,6 +104,9 @@ function setStatus(text) {
   statusLine.textContent = text;
 }
 
+// SECURITY: renderMathInText MUST HTML-escape all non-math text.
+// LLM replies echo untrusted user input. Never replace innerHTML with
+// a code path that skips escapeHTML().
 function setReply(text) {
   const value = text || '';
   if (window.renderMathInText && typeof window.renderMathInText === 'function') {
@@ -537,7 +541,7 @@ function openHostedSurface(surfaceId) {
       surfaceId,
       kind: 'panel',
     },
-  }, '*');
+  }, window.location.origin);
 }
 
 function trustedStudySurfaceOrigin(origin) {
@@ -545,10 +549,18 @@ function trustedStudySurfaceOrigin(origin) {
 }
 
 function requestStudyStatusRefresh() {
-  refreshStatus({ updateReply: false }).catch((error) => {
-    setStatus(t('ui.status.error', 'Error'));
-    setReply(formatPluginError(error));
-  });
+  if (refreshPending) {
+    return;
+  }
+  refreshPending = true;
+  refreshStatus({ updateReply: false })
+    .catch((error) => {
+      setStatus(t('ui.status.error', 'Error'));
+      setReply(formatPluginError(error));
+    })
+    .finally(() => {
+      refreshPending = false;
+    });
 }
 
 function handleStudySurfaceMessage(event) {
@@ -563,6 +575,7 @@ function handleStudySurfaceMessage(event) {
     requestStudyStatusRefresh();
     return;
   }
+  // Ignore unrelated parent/child messages; this surface only owns the study message namespace above.
   if (message.type !== STUDY_SURFACE_MESSAGE_TYPES.memoryDeckUpdated) {
     return;
   }
@@ -620,6 +633,7 @@ function setSettingsConfigStatus(key, fallback) {
 }
 
 function cloneConfig(value) {
+  // Config is JSON-compatible primitive data; this intentionally drops Date/undefined values.
   return JSON.parse(JSON.stringify(value || {}));
 }
 

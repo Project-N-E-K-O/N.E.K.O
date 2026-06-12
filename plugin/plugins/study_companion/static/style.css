@@ -26,10 +26,10 @@
   --pomodoro-focus: #ef4444;
   --pomodoro-break-short: #22c55e;
   --pomodoro-break-long: #3b82f6;
-  --fsrs-again: #ef4444;
-  --fsrs-hard: #f59e0b;
-  --fsrs-good: #22c55e;
-  --fsrs-easy: #3b82f6;
+  --fsrs-again: #dc2626;
+  --fsrs-hard: #b45309;
+  --fsrs-good: #15803d;
+  --fsrs-easy: #2563eb;
   --shadow: 0 8px 24px rgba(23, 37, 43, 0.08);
   --shadow-strong: 0 18px 42px rgba(23, 37, 43, 0.12);
   --radius: 16px;

@@ -1,5 +1,30 @@
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 
+type RunExportItem = {
+  type?: string;
+  json?: {
+    success?: boolean;
+    error?: unknown;
+    data?: unknown;
+  };
+};
+
+type JsonRunExportItem = RunExportItem & {
+  json: NonNullable<RunExportItem['json']>;
+};
+
+type CallPluginOptions = {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+};
+
+const DEFAULT_PLUGIN_CALL_TIMEOUT_MS = 90000;
+const PLUGIN_CALL_POLL_INTERVAL_MS = 250;
+
+function isJsonRunExportItem(candidate: RunExportItem): candidate is JsonRunExportItem {
+  return candidate.type === 'json' && !!candidate.json;
+}
+
 export const BRAND_CSS = `
   :host, :root {
     color-scheme: light;
@@ -27,10 +52,10 @@ export const BRAND_CSS = `
     --pomodoro-focus: #ef4444;
     --pomodoro-break-short: #22c55e;
     --pomodoro-break-long: #3b82f6;
-    --fsrs-again: #ef4444;
-    --fsrs-hard: #f59e0b;
-    --fsrs-good: #22c55e;
-    --fsrs-easy: #3b82f6;
+    --fsrs-again: #dc2626;
+    --fsrs-hard: #b45309;
+    --fsrs-good: #15803d;
+    --fsrs-easy: #2563eb;
     --shadow: 0 8px 24px rgba(23, 37, 43, 0.08);
     --shadow-strong: 0 18px 42px rgba(23, 37, 43, 0.12);
     --radius: 16px;
@@ -416,6 +441,26 @@ export const STUDY_SURFACE_MESSAGE_TYPES = {
   memoryDeckUpdated: 'neko-study-memory-deck-updated',
 } as const;
 
+type HostedRuntimeWindow = Window & {
+  __NEKO_PAYLOAD?: {
+    hostOrigin?: unknown;
+  };
+};
+
+function studySurfaceTargetOrigin() {
+  const payload = (window as HostedRuntimeWindow).__NEKO_PAYLOAD;
+  const hostOrigin = payload && typeof payload.hostOrigin === 'string' ? payload.hostOrigin : '';
+  if (hostOrigin) {
+    return hostOrigin;
+  }
+  const origin = window.location.origin;
+  return origin && origin !== 'null' ? origin : '*';
+}
+
+export function postStudySurfaceMessage(message: { type: string; payload?: unknown }) {
+  window.parent?.postMessage?.(message, studySurfaceTargetOrigin());
+}
+
 let brandCSSInjected = false;
 
 export function ensureBrandCSS() {
@@ -464,22 +509,43 @@ function pluginErrorMessage(error: unknown) {
   return 'Plugin call failed';
 }
 
-export async function callPlugin(entryId: string, args: Record<string, unknown> = {}) {
+function waitForPluginPoll(signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    return Promise.reject(new DOMException('Aborted', 'AbortError'));
+  }
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(resolve, PLUGIN_CALL_POLL_INTERVAL_MS);
+    signal?.addEventListener('abort', () => {
+      window.clearTimeout(timeout);
+      reject(new DOMException('Aborted', 'AbortError'));
+    }, { once: true });
+  });
+}
+
+export async function callPlugin(
+  entryId: string,
+  args: Record<string, unknown> = {},
+  options: CallPluginOptions = {},
+) {
+  const { signal, timeoutMs = DEFAULT_PLUGIN_CALL_TIMEOUT_MS } = options;
   const created = await readJsonResponse(await fetch('/runs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ plugin_id: 'study_companion', entry_id: entryId, args }),
+    signal,
   }), 'Run create');
   const runId = created.run_id || created.id;
   if (!runId) {
     throw new Error('Run id missing');
   }
-  for (let attempt = 0; attempt < 30; attempt += 1) {
-    await new Promise((resolve) => window.setTimeout(resolve, 250));
-    const run = await readJsonResponse(await fetch(`/runs/${runId}`), 'Run poll');
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await waitForPluginPoll(signal);
+    const run = await readJsonResponse(await fetch(`/runs/${runId}`, { signal }), 'Run poll');
     if (run.status === 'succeeded') {
-      const exported = await readJsonResponse(await fetch(`/runs/${runId}/export`), 'Run export');
-      const item = (exported.items || []).find((candidate: any) => candidate.type === 'json' && candidate.json);
+      const exported = await readJsonResponse(await fetch(`/runs/${runId}/export`, { signal }), 'Run export');
+      const items = Array.isArray(exported.items) ? exported.items as RunExportItem[] : [];
+      const item = items.find(isJsonRunExportItem);
       if (!item) {
         throw new Error('Run export missing JSON result');
       }
@@ -501,5 +567,5 @@ export function text(props: PluginSurfaceProps, key: string, fallback: string) {
 }
 
 export function formatError(error: unknown) {
-  return error instanceof Error ? error.message : String(error);
+  return error instanceof Error ? error.message : pluginErrorMessage(error);
 }

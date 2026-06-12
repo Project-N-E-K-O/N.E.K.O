@@ -189,7 +189,7 @@ function MathReply({ text, label }: { text: string; label: string }) {
     }
   }, [mathReady, text]);
   const mathTools = mathReady ? getStudyMathTools() : null;
-  const parts = mathTools ? mathTools.splitByMath(text) : [{ type: 'text', value: text }];
+  const parts: MathTextPart[] = mathTools ? mathTools.splitByMath(text) : [{ type: 'text', value: text }];
   return (
     <div
       ref={containerRef}

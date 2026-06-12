@@ -1,7 +1,7 @@
 import { useEffect, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 import { callPlugin, errorMessage, text } from './memory_shared';
-import { ensureBrandCSS, STUDY_SURFACE_MESSAGE_TYPES } from './study_surface_utils';
+import { ensureBrandCSS, postStudySurfaceMessage, STUDY_SURFACE_MESSAGE_TYPES } from './study_surface_utils';
 import {
   deckGoalSavedMessage,
   getMemoryHabitStatus,
@@ -32,12 +32,12 @@ export default function MemoryDeckList(props: PluginSurfaceProps) {
     const payload = await callPlugin<{ decks?: MemoryDeck[] }>('study_memory_list_decks', { limit: 100 }, signal);
     const nextDecks = Array.isArray(payload.decks) ? payload.decks : [];
     setDecks(nextDecks);
-    window.parent?.postMessage?.({
+    postStudySurfaceMessage({
       type: STUDY_SURFACE_MESSAGE_TYPES.memoryDeckUpdated,
       payload: {
         card_count: nextDecks.reduce((total, deck) => total + (Number(deck.item_count) || 0), 0),
       },
-    }, '*');
+    });
   }
 
   async function createDeck() {

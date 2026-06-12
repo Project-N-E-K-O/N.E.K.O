@@ -104,8 +104,6 @@
     "ui.surface.knowledge_map":  "Mapa de conocimiento",
     "ui.surface.knowledge_contribution_settings":  "Configuración de contribución",
     "ui.surface.note_exporter":  "Exportador de notas",
-    "ui.surface.quickstart":  "Inicio rápido",
-    "ui.quickstart.subtitle":  "Capturar, preguntar, repasar, exportar",
     "ui.label.topics":  "Temas",
     "ui.label.edges":  "Aristas",
     "ui.label.weak_topics":  "Temas débiles",

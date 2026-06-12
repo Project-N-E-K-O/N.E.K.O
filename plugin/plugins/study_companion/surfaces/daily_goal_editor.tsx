@@ -11,7 +11,8 @@ export default function DailyGoalEditor(props: PluginSurfaceProps) {
 
   async function refresh() {
     const payload = await callPlugin('study_goals');
-    setGoals(Array.isArray(payload.goals) ? payload.goals : []);
+    const goalPayload = payload as { goals?: unknown };
+    setGoals(Array.isArray(goalPayload.goals) ? goalPayload.goals : []);
   }
 
   async function createGoal() {

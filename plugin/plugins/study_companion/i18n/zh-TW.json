@@ -104,8 +104,6 @@
     "ui.surface.knowledge_map":  "知識圖譜",
     "ui.surface.knowledge_contribution_settings":  "知識貢獻設定",
     "ui.surface.note_exporter":  "筆記匯出器",
-    "ui.surface.quickstart":  "快速開始",
-    "ui.quickstart.subtitle":  "擷取、提問、複習、匯出",
     "ui.label.topics":  "主題",
     "ui.label.edges":  "邊",
     "ui.label.weak_topics":  "薄弱主題",

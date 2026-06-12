@@ -2,9 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <!-- Fallback only for local/Electron loads; meta CSP cannot express dynamic localhost ports or frame-ancestors. -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*; base-uri 'self'; object-src 'none'"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; object-src 'none'"
     />
     <title>Study Companion</title>
     <link rel="stylesheet" href="./katex.min.css" />

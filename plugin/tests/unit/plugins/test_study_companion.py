@@ -1416,7 +1416,7 @@ def test_study_companion_i18n_bundles_are_present() -> None:
     assert "I18n.init" in main_js
 
 
-def test_study_companion_ui7_surfaces_use_brand_css_and_quickstart_is_soft_deprecated() -> (
+def test_study_companion_ui7_surfaces_use_brand_css_and_quickstart_is_removed() -> (
     None
 ):
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
@@ -1427,16 +1427,15 @@ def test_study_companion_ui7_surfaces_use_brand_css_and_quickstart_is_soft_depre
     assert "quickstart" not in guide_ids
 
     quickstart_path = plugin_dir / "surfaces" / "quickstart.tsx"
-    assert quickstart_path.is_file()
-    assert "export default function Quickstart" in quickstart_path.read_text(
-        encoding="utf-8"
-    )
+    assert not quickstart_path.exists()
 
     index_html = (plugin_dir / "static" / "index.html").read_text(encoding="utf-8")
     assert 'http-equiv="Content-Security-Policy"' in index_html
     assert "style-src 'self'" in index_html
     assert "'unsafe-inline'" not in index_html
-    assert "connect-src 'self' http://127.0.0.1:* http://localhost:*" in index_html
+    assert "connect-src 'self'" in index_html
+    assert ":*" not in index_html
+    assert "meta CSP cannot express dynamic localhost ports" in index_html
 
     surface_files = [
         "daily_goal_editor.tsx",
@@ -1449,7 +1448,6 @@ def test_study_companion_ui7_surfaces_use_brand_css_and_quickstart_is_soft_depre
         "note_exporter.tsx",
         "passage_recitation.tsx",
         "pomodoro_panel.tsx",
-        "quickstart.tsx",
         "session_summary.tsx",
         "study_panel.tsx",
         "word_review.tsx",

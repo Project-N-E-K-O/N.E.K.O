@@ -15,7 +15,8 @@ export default function HabitDashboard(props: PluginSurfaceProps) {
       callPlugin('study_session_summary'),
       callPlugin('study_supervision_status'),
     ]);
-    setPayload({ status, goals: goals.goals || [], checkin, summary, supervision });
+    const goalPayload = goals as { goals?: unknown };
+    setPayload({ status, goals: Array.isArray(goalPayload.goals) ? goalPayload.goals : [], checkin, summary, supervision });
   }
 
   async function act(entryId: string, args: Record<string, unknown> = {}) {
