@@ -54,11 +54,17 @@
         return Number(state.snoozeUntil) > now();
     }
 
+    function hasDisplaySwitchBridge() {
+        return Boolean(
+            window.electronScreen &&
+            typeof window.electronScreen.getAllDisplays === 'function' &&
+            typeof window.electronScreen.moveWindowToDisplay === 'function'
+        );
+    }
+
     async function hasMultipleDisplays() {
         try {
-            if (!window.electronScreen || typeof window.electronScreen.getAllDisplays !== 'function') {
-                return false;
-            }
+            if (!hasDisplaySwitchBridge()) return false;
             const displays = await window.electronScreen.getAllDisplays();
             return Array.isArray(displays) && displays.length > 1;
         } catch (_) {
@@ -322,7 +328,7 @@
         const originalCheckAndSwitchDisplay = proto._checkAndSwitchDisplay;
         const wrappedCheckAndSwitchDisplay = async function (model) {
             const displaySwitched = await originalCheckAndSwitchDisplay.apply(this, arguments);
-            if (!displaySwitched && isModelCenterOutsideCurrentWindow(model)) {
+            if (hasDisplaySwitchBridge() && !displaySwitched && isModelCenterOutsideCurrentWindow(model)) {
                 recordDisplaySwitchMiss('live2d');
             }
             return displaySwitched;

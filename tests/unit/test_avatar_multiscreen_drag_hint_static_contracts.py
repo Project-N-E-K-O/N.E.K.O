@@ -21,13 +21,16 @@ def test_multiscreen_drag_hint_counts_display_switch_misses_only_on_multiple_dis
 
     assert "const REQUIRED_MISSES = 2;" in source
     assert "const MISS_WINDOW_MS = 30 * 1000;" in source
+    assert "function hasDisplaySwitchBridge()" in source
+    assert "typeof window.electronScreen.moveWindowToDisplay === 'function'" in source
     assert "async function hasMultipleDisplays()" in source
     assert "window.electronScreen.getAllDisplays" in source
+    assert "if (!hasDisplaySwitchBridge()) return false;" in source
     assert "return Array.isArray(displays) && displays.length > 1;" in source
     assert "function recordDisplaySwitchMiss(source)" in source
     assert "if (!(await hasMultipleDisplays())) return false;" in source
     assert "state.recentMissCount >= REQUIRED_MISSES" in source
-    assert "moveWindowToDisplay" not in source
+    assert "hasDisplaySwitchBridge() && !displaySwitched && isModelCenterOutsideCurrentWindow(model)" in source
 
 
 def test_multiscreen_drag_hint_serializes_display_switch_miss_updates():

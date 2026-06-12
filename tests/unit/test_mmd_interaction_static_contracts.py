@@ -17,7 +17,8 @@ def test_mmd_pan_drag_snaps_on_all_platforms_before_saving_position():
     assert "const snapped = await this._snapModelIntoScreen({ animate: true });" in pan_drag_section
     assert "if (!snapped) {" in pan_drag_section
     assert "this._savePositionAfterInteraction();" in pan_drag_section
-    assert "recordEdgeBounce('mmd')" in pan_drag_section
+    assert "recordEdgeBounce('mmd')" not in pan_drag_section
+    assert "recordDisplaySwitchMiss('mmd')" in source
 
 
 def test_mmd_display_switch_snaps_to_target_screen_before_saving_position():
