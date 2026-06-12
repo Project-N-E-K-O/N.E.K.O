@@ -901,6 +901,14 @@ class MusicPusherPlugin(NekoPluginBase):
         meta = self._lyrics_map.get(key) or {}
         return str(meta.get("lyric_text") or "")
 
+    def _lyric_text_for_item_locked(self, item: dict[str, Any] | None) -> str:
+        if not isinstance(item, dict):
+            return ""
+        lyric_text = str(item.get("lyric_text") or "").replace("\r\n", "\n").strip()
+        if lyric_text:
+            return lyric_text[:_LYRIC_PUSH_MAX_CHARS]
+        return self._extract_lyric_for_item_locked(str(item.get("item_id") or ""))
+
     def _find_music_item_locked(
         self,
         *,
@@ -1143,9 +1151,7 @@ class MusicPusherPlugin(NekoPluginBase):
         *,
         duration_sec: object | None = None,
     ) -> dict[str, Any]:
-        lyric_text = str(music_item.get("lyric_text") or "").strip()
-        if not lyric_text:
-            lyric_text = self._extract_lyric_for_item_locked(str(music_item.get("item_id") or ""))
+        lyric_text = self._lyric_text_for_item_locked(music_item)
         return {
             "queue_id": f"q_{uuid4().hex[:10]}",
             "item_id": music_item.get("item_id"),
@@ -1958,7 +1964,7 @@ class MusicPusherPlugin(NekoPluginBase):
                     artist=final_artist,
                 )
                 if source_item:
-                    lyric_clean = self._extract_lyric_for_item_locked(str(source_item.get("item_id") or ""))
+                    lyric_clean = self._lyric_text_for_item_locked(source_item)
 
         item_id = ""
         item: dict[str, Any] | None = None
@@ -2071,6 +2077,7 @@ class MusicPusherPlugin(NekoPluginBase):
             )
 
         chosen: dict[str, Any] | None = None
+        chosen_lyric = ""
         async with self._state_lock:
             if str(item_id or "").strip():
                 chosen = self._find_music_item_locked(item_id=item_id)
@@ -2084,11 +2091,13 @@ class MusicPusherPlugin(NekoPluginBase):
                     return Err(SdkError("未找到与给定歌曲名一致的素材，请先上传或校正歌名"))
             else:
                 chosen = random.choice(self._music_items) if self._music_items else None
+            if chosen:
+                chosen_lyric = self._lyric_text_for_item_locked(chosen)
+                chosen = dict(chosen)
 
         if not chosen:
             return Err(SdkError("未提供可推送 url，且素材池为空"))
 
-        chosen_lyric = self._extract_lyric_for_item_locked(str(chosen.get("item_id") or ""))
         return await self.push_music_url(
             url=str(chosen.get("url") or ""),
             item_id=str(chosen.get("item_id") or ""),
@@ -2144,7 +2153,7 @@ class MusicPusherPlugin(NekoPluginBase):
             for it in self._music_items:
                 item = dict(it)
                 lyric_meta = self._lyrics_map.get(str(item.get("item_id") or "").strip()) or {}
-                item["lyric_bound"] = bool(lyric_meta)
+                item["lyric_bound"] = bool(self._lyric_text_for_item_locked(item))
                 item["lyric_filename"] = str(lyric_meta.get("lyric_filename") or "")
                 item.pop("lyric_text", None)
                 items.append(item)
@@ -2751,7 +2760,13 @@ class MusicPusherPlugin(NekoPluginBase):
                     lyric_text = str(track.get("lyric_text") or "").replace("\r\n", "\n").strip()
                     if not lyric_text:
                         async with self._state_lock:
-                            lyric_text = self._extract_lyric_for_item_locked(str(track.get("item_id") or ""))
+                            source_item = self._find_music_item_locked(
+                                item_id=str(track.get("item_id") or ""),
+                                url=url,
+                                title=title,
+                                artist=artist,
+                            )
+                            lyric_text = self._lyric_text_for_item_locked(source_item)
 
                     if not url:
                         last_error = f"第 {index + 1} 首缺少 URL"
