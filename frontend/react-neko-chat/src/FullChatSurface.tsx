@@ -2337,6 +2337,9 @@ export default function FullChatSurface({
   const closeCompactInputToolFanFromUserClick = useCallback(() => {
     compactInputToolFanSuppressHoverUntilLeaveRef.current = true;
     closeCompactInputToolFan();
+    window.requestAnimationFrame(() => {
+      compactInputToolToggleRef.current?.focus({ preventScroll: true });
+    });
   }, [closeCompactInputToolFan]);
 
   const toggleCompactInputToolFanByClick = useCallback(() => {

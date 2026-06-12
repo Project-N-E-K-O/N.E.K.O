@@ -3493,6 +3493,9 @@ function CompactChatApp({
   const closeCompactInputToolFanFromUserClick = useCallback(() => {
     compactInputToolFanSuppressHoverUntilLeaveRef.current = true;
     closeCompactInputToolFan();
+    window.requestAnimationFrame(() => {
+      compactInputToolToggleRef.current?.focus({ preventScroll: true });
+    });
   }, [closeCompactInputToolFan]);
 
   const closeCompactInputToolFanFromDesktopOutside = useCallback(() => {
