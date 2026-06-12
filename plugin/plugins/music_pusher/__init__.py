@@ -1709,24 +1709,6 @@ class MusicPusherPlugin(NekoPluginBase):
             original_filename=str(Path(filename).name),
         )
         created_item["lyric_text"] = lyric_text
-        async with self._state_lock:
-            self._music_items.append(created_item)
-            self._upsert_upload_name_map_locked(
-                stored_filename=stored_filename,
-                original_filename=str(Path(filename).name),
-                title=final_title,
-                artist=final_artist,
-                duration_sec=final_duration,
-            )
-            if lyric_text:
-                self._bind_lyrics_to_item_locked(
-                    item_id=str(created_item.get("item_id") or ""),
-                    lyric_text=lyric_text,
-                    lyric_filename=lyric_name,
-                )
-            self._save_upload_name_map_locked()
-            self._save_lyrics_map_locked()
-            self._save_state_locked()
 
         target_lanlan = self._resolve_target_lanlan(kwargs)
         attach_prompt = self._resolve_attach_prompt_on_push(kwargs, attach_prompt_on_push)
@@ -1750,11 +1732,33 @@ class MusicPusherPlugin(NekoPluginBase):
                     )
                 )
             except asyncio.TimeoutError:
+                self._delete_upload_file_locked(stored_filename)
                 return Err(SdkError("推送超时"))
             except Exception as exc:
+                self._delete_upload_file_locked(stored_filename)
                 return Err(SdkError(f"推送失败: {exc}"))
             if not pushed:
+                self._delete_upload_file_locked(stored_filename)
                 return Err(SdkError("推送超时"))
+
+        async with self._state_lock:
+            self._music_items.append(created_item)
+            self._upsert_upload_name_map_locked(
+                stored_filename=stored_filename,
+                original_filename=str(Path(filename).name),
+                title=final_title,
+                artist=final_artist,
+                duration_sec=final_duration,
+            )
+            if lyric_text:
+                self._bind_lyrics_to_item_locked(
+                    item_id=str(created_item.get("item_id") or ""),
+                    lyric_text=lyric_text,
+                    lyric_filename=lyric_name,
+                )
+            self._save_upload_name_map_locked()
+            self._save_lyrics_map_locked()
+            self._save_state_locked()
 
         return Ok(
             {
@@ -2142,6 +2146,8 @@ class MusicPusherPlugin(NekoPluginBase):
             trigger_dt = _parse_datetime_to_utc(trigger_at)
         except Exception as exc:
             return Err(SdkError(f"时间格式无效: {exc}"))
+        if trigger_dt <= _utc_now():
+            return Err(SdkError("触发时间必须晚于当前时间"))
 
         mode = _normalize_duration_mode(duration_mode)
         final_target = target_lanlan.strip() or self._resolve_target_lanlan(kwargs)
@@ -2761,7 +2767,7 @@ class MusicPusherPlugin(NekoPluginBase):
                         elif self._scheduler_stop.is_set():
                             final_status = "stopped"
                         else:
-                            final_status = "completed" if success_count > 0 else "failed"
+                            final_status = "completed" if success_count > 0 and not last_error else "failed"
                         task_done["status"] = final_status
                         task_done["finished_at"] = _iso()
                         task_done["updated_at"] = _iso()
