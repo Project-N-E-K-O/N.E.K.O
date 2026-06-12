@@ -19,7 +19,7 @@ import CompactExportHistoryPanel, {
   type CompactExportActionRequest,
   type CompactExportPreviewResult,
 } from './CompactExportHistoryPanel';
-import { getChatEmptyStateFallback } from './chat-copy';
+import { getChatCompanionEmptyStateFallback, getChatEmptyStateFallback } from './chat-copy';
 import { i18n } from './i18n';
 import {
   type ChatMessage,
@@ -1928,6 +1928,9 @@ function CompactChatApp({
   const compactSpeechPreservedText = (compactSpeechModeActive && !compactMessagePreview?.isStreaming)
     ? compactSpeechPreviewTextRef.current
     : '';
+  const compactEmptyStateText = composerHidden
+    ? i18n('chat.companionEmptyState', getChatCompanionEmptyStateFallback())
+    : i18n('chat.emptyState', getChatEmptyStateFallback());
   const compactPreviewText = compactSuppressAssistantFallback
     ? ''
     : compactSpeechModeActive
@@ -1937,7 +1940,7 @@ function CompactChatApp({
           : compactSpeechPreservedText || compactMessagePreview?.fullText || ''
       )
       : compactMessagePreview?.text
-      || i18n('chat.emptyState', getChatEmptyStateFallback());
+      || compactEmptyStateText;
   const compactPreviewIsStreaming = compactSpeechModeActive;
   const compactPreviewAllowsScroll = compactPreviewIsStreaming || !!compactMessagePreview?.isGuide;
   const compactPreviewSpeechDuration = useMemo(() => {

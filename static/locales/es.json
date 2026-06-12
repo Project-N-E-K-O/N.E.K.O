@@ -753,6 +753,7 @@
         "avatarCropCancel": "Cancelar",
         "avatarCropSave": "Guardar",
         "emptyState":  "Los mensajes aparecerán aquí después de que se conecte la transmisión del chat.",
+        "companionEmptyState": "Estoy aquí contigo.",
         "messageStreaming": "generando",
         "messageFailed": "Envío fallido",
         "reactWindowOpen": "Abrir ventana de chat",

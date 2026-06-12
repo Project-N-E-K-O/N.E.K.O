@@ -7,13 +7,14 @@ import {
   computeCompactHistoryExitDelay,
 } from './CompactExportHistoryPanel';
 import MessageList from './MessageList';
-import { getChatEmptyStateFallback } from './chat-copy';
+import { getChatCompanionEmptyStateFallback, getChatEmptyStateFallback } from './chat-copy';
 import { parseChatMessage, type CompactChatState } from './message-schema';
 
 describe('App', () => {
   const COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY = 'neko.reactChatWindow.compactExportHistoryOpen';
   const COMPACT_INPUT_TOOL_WHEEL_INDEX_STORAGE_KEY = 'neko.reactChatWindow.compactInputToolWheelIndex';
   const DEFAULT_CHAT_EMPTY_STATE_FALLBACK = getChatEmptyStateFallback('en');
+  const DEFAULT_CHAT_COMPANION_EMPTY_STATE_FALLBACK = getChatCompanionEmptyStateFallback('en');
   beforeEach(() => {
     window.localStorage.removeItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
     window.localStorage.removeItem(COMPACT_INPUT_TOOL_WHEEL_INDEX_STORAGE_KEY);
@@ -54,6 +55,10 @@ describe('App', () => {
     expect(getChatEmptyStateFallback('zh-MO')).toBe('現在開始跟我聊天吧！');
     expect(getChatEmptyStateFallback('zh-Hant')).toBe('現在開始跟我聊天吧！');
     expect(getChatEmptyStateFallback('en-US')).toBe('Start chatting with me now!');
+    expect(getChatCompanionEmptyStateFallback('zh-CN')).toBe('我就在这陪着你哦');
+    expect(getChatCompanionEmptyStateFallback('zh-TW')).toBe('我就在這陪著你喔');
+    expect(getChatCompanionEmptyStateFallback('zh-HK')).toBe('我就在這陪著你喔');
+    expect(getChatCompanionEmptyStateFallback('en-US')).toBe("I'm right here with you.");
   });
 
   const mockHoverCapableMatchMedia = (hoverCapable = true) => {
@@ -94,6 +99,7 @@ describe('App', () => {
     expect(screen.queryByPlaceholderText('Type a message...')).toBeNull();
     expect(document.body.querySelector('.compact-chat-stage-default')).not.toBeNull();
     expect(document.body.querySelector('.compact-chat-capsule-button')).not.toBeNull();
+    expect(document.body.querySelector('.compact-chat-capsule-button')).toHaveTextContent(DEFAULT_CHAT_EMPTY_STATE_FALLBACK);
     expect(screen.getByRole('button', { name: '更多工具' })).toBeInTheDocument();
     expect(document.body.querySelector('.compact-input-tool-fan')).not.toBeNull();
   });
@@ -2037,7 +2043,7 @@ describe('App', () => {
       <App chatSurfaceMode="compact" composerHidden messages={[assistantMessage, userMessage]} />,
     );
 
-    expect(container.querySelector('.compact-chat-capsule-button')).toHaveTextContent(DEFAULT_CHAT_EMPTY_STATE_FALLBACK);
+    expect(container.querySelector('.compact-chat-capsule-button')).toHaveTextContent(DEFAULT_CHAT_COMPANION_EMPTY_STATE_FALLBACK);
     expect(container.querySelector('.compact-chat-capsule-button')).not.toHaveTextContent('先看我这边的引导内容');
     expect(container.querySelector('.compact-chat-capsule-button')).not.toHaveTextContent('这是我刚刚发出的内容');
   });
@@ -3502,6 +3508,7 @@ describe('App', () => {
     expect(container.querySelector('.compact-chat-surface-shell')).not.toBeNull();
     expect(container.querySelector('.compact-chat-surface-frame')).toHaveAttribute('data-compact-geometry-item', 'capsule');
     expect(container.querySelector('.composer-input')).toBeNull();
+    expect(container.querySelector('.compact-chat-capsule-button')).toHaveTextContent(DEFAULT_CHAT_COMPANION_EMPTY_STATE_FALLBACK);
   });
 
   it('does not expose compact galgame choices while voice mode hides the composer', () => {
@@ -3548,7 +3555,7 @@ describe('App', () => {
     );
 
     const capsule = container.querySelector('.compact-chat-capsule-button');
-    expect(capsule).toHaveTextContent(DEFAULT_CHAT_EMPTY_STATE_FALLBACK);
+    expect(capsule).toHaveTextContent(DEFAULT_CHAT_COMPANION_EMPTY_STATE_FALLBACK);
     fireEvent.click(capsule as Element);
 
     expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'default');
