@@ -237,6 +237,66 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.study-panel__image-preview {
+  position: relative;
+  display: inline-flex;
+  max-width: 220px;
+  margin: 8px 0 0;
+  overflow: hidden;
+  border: 1px solid #c8d0dc;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.study-panel__image-preview img {
+  display: block;
+  max-width: 100%;
+  max-height: 160px;
+  object-fit: contain;
+}
+
+.study-panel__image-remove {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 24px;
+  min-height: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.65);
+  color: #ffffff;
+  font-size: 15px;
+  line-height: 22px;
+  text-align: center;
+}
+
+.study-panel__image-remove:hover {
+  background: rgba(190, 42, 42, 0.86);
+}
+
+.study-panel__image-remove:focus-visible {
+  outline: 2px solid #2e5bff;
+  outline-offset: 2px;
+}
+
+.study-panel__paste-error {
+  margin: 8px 0 0;
+  color: #b42318;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.study-panel[data-busy="true"] .study-panel__image-preview {
+  opacity: 0.55;
+}
+
+.study-panel[data-busy="true"] .study-panel__image-remove {
+  pointer-events: none;
+  opacity: 0.4;
+}
+
 .reply-panel {
   border-top: 1px solid #d8dde6;
   padding-top: 18px;

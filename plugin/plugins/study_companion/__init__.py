@@ -230,6 +230,7 @@ class StudyCompanionPlugin(
         self._awareness_idle_ticks = 0
         self._voice_filter = VoiceFilter()
         self._review_due_task: asyncio.Task[None] | None = None
+        self._review_due_payload_future: asyncio.Future[dict[str, Any]] | None = None
         self._command_queue: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue()
         self._command_worker_task: asyncio.Task[None] | None = None
         self._interruptible_task: asyncio.Task[None] | None = None
@@ -348,7 +349,9 @@ class StudyCompanionPlugin(
         await self._unsubscribe_neko_commands()
         await self._cancel_command_worker()
         await self._cancel_review_due_task()
+        event_bus = self._event_bus
         agent = self._agent
+        ocr_pipeline = self._ocr_pipeline
         self._agent = None
         self._ocr_pipeline = None
         self._knowledge_tracker = None
@@ -359,6 +362,11 @@ class StudyCompanionPlugin(
         self._supervision = None
         self._memory_habit_bridge = None
         self._event_bus = None
+        if event_bus is not None:
+            try:
+                await event_bus.stop_worker()
+            except Exception as exc:
+                self.logger.warning("study startup cleanup event bus failed: {}", exc)
         try:
             self.clear_list_actions()
         except Exception as exc:
@@ -378,6 +386,13 @@ class StudyCompanionPlugin(
                 self.logger.warning(
                     "study startup cleanup agent shutdown failed: {}", exc
                 )
+        if ocr_pipeline is not None:
+            try:
+                close_ocr = getattr(ocr_pipeline, "close", None)
+                if callable(close_ocr):
+                    close_ocr()
+            except Exception as exc:
+                self.logger.warning("study startup cleanup OCR pipeline failed: {}", exc)
         try:
             await asyncio.to_thread(self._store.close)
         except Exception as exc:
@@ -390,12 +405,30 @@ class StudyCompanionPlugin(
         await self._unsubscribe_neko_commands()
         await self._cancel_command_worker()
         await self._cancel_review_due_task()
+        event_bus = self._event_bus
+        self._event_bus = None
+        if event_bus is not None:
+            try:
+                await event_bus.stop_worker()
+            except Exception as exc:
+                self.logger.warning("study shutdown event bus cleanup failed: {}", exc)
         try:
             self.unregister_dynamic_entry("study_export_notes")
         except Exception as exc:
             self.logger.warning("study shutdown dynamic entry cleanup failed: {}", exc)
         if self._agent is not None:
             await self._agent.shutdown()
+        ocr_pipeline = self._ocr_pipeline
+        self._ocr_pipeline = None
+        if ocr_pipeline is not None:
+            try:
+                close_ocr = getattr(ocr_pipeline, "close", None)
+                if callable(close_ocr):
+                    close_ocr()
+            except Exception as exc:
+                self.logger.warning(
+                    "study shutdown OCR pipeline cleanup failed: {}", exc
+                )
         async with self._lock:
             self._state.status = STATUS_STOPPED
         await asyncio.to_thread(self._store.save_state, self._state)
@@ -607,9 +640,24 @@ class StudyCompanionPlugin(
         try:
             await task
         except asyncio.CancelledError:
-            return
+            pass
         except Exception as exc:
             self.logger.warning("study review due task cleanup failed: {}", exc)
+        await self._await_review_due_payload_future()
+
+    async def _await_review_due_payload_future(self) -> None:
+        future = self._review_due_payload_future
+        if future is None:
+            return
+        try:
+            await asyncio.shield(future)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.logger.warning("study review due payload cleanup failed: {}", exc)
+        finally:
+            if self._review_due_payload_future is future:
+                self._review_due_payload_future = None
 
     def _on_review_due_task_done(self, task: asyncio.Task[None]) -> None:
         if self._review_due_task is task:
