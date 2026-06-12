@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -100,45 +101,112 @@ def character_memory_exists(config_manager, character_name: str) -> bool:
     return bool(list_character_memory_paths(config_manager, character_name))
 
 
-def _move_path(source_path: Path, target_path: Path) -> bool:
+def _conflict_backup_root(target_dir: Path) -> Path:
+    return target_dir.parent / f".{target_dir.name}.rename_conflicts" / uuid.uuid4().hex
+
+
+def _move_conflicting_target(target_path: Path, backup_root: Path) -> None:
+    backup_path = backup_root / target_path.name
+    counter = 1
+    while backup_path.exists():
+        backup_path = backup_root / f"{target_path.name}.{counter}"
+        counter += 1
+
+    backup_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(target_path), str(backup_path))
+
+
+def _move_path(
+    source_path: Path,
+    target_path: Path,
+    *,
+    replace_existing: bool = False,
+    conflict_backup_root: Path | None = None,
+) -> bool:
     if not source_path.exists():
         return False
+    try:
+        if source_path.resolve() == target_path.resolve():
+            return False
+    except OSError:
+        pass
 
     if source_path.is_dir():
-        return _merge_directories(source_path, target_path)
+        return _merge_directories(
+            source_path,
+            target_path,
+            replace_existing=replace_existing,
+            conflict_backup_root=conflict_backup_root,
+        )
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
     if target_path.exists():
-        raise FileExistsError(
-            f"Refusing to overwrite existing memory file while moving "
-            f"{source_path} -> {target_path}"
-        )
+        if not replace_existing:
+            raise FileExistsError(
+                f"Refusing to overwrite existing memory file while moving "
+                f"{source_path} -> {target_path}"
+            )
+        if conflict_backup_root is None:
+            conflict_backup_root = _conflict_backup_root(target_path.parent)
+        _move_conflicting_target(target_path, conflict_backup_root)
 
     shutil.move(str(source_path), str(target_path))
     return True
 
 
-def _merge_directories(source_dir: Path, target_dir: Path) -> bool:
+def _merge_directories(
+    source_dir: Path,
+    target_dir: Path,
+    *,
+    replace_existing: bool = False,
+    conflict_backup_root: Path | None = None,
+) -> bool:
     if not source_dir.exists():
         return False
+    try:
+        if source_dir.resolve() == target_dir.resolve():
+            return False
+    except OSError:
+        pass
 
     if not target_dir.exists():
         target_dir.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(source_dir), str(target_dir))
         return True
 
-    # Pre-flight: check for conflicts before moving anything
-    for child in source_dir.iterdir():
-        candidate = target_dir / child.name
-        if candidate.exists():
+    if not target_dir.is_dir():
+        if not replace_existing:
             raise FileExistsError(
                 f"Refusing to overwrite existing path while merging directories "
-                f"{source_dir} -> {target_dir}: conflict at {child.name}"
+                f"{source_dir} -> {target_dir}: target is not a directory"
             )
+        if conflict_backup_root is None:
+            conflict_backup_root = _conflict_backup_root(target_dir.parent)
+        _move_conflicting_target(target_dir, conflict_backup_root)
+        shutil.move(str(source_dir), str(target_dir))
+        return True
+
+    if not replace_existing:
+        # Pre-flight: check for conflicts before moving anything.
+        for child in source_dir.iterdir():
+            candidate = target_dir / child.name
+            if candidate.exists():
+                raise FileExistsError(
+                    f"Refusing to overwrite existing path while merging directories "
+                    f"{source_dir} -> {target_dir}: conflict at {child.name}"
+                )
+
+    if conflict_backup_root is None:
+        conflict_backup_root = _conflict_backup_root(target_dir)
 
     changed = False
     for child in sorted(source_dir.iterdir(), key=lambda item: item.name):
-        changed = _move_path(child, target_dir / child.name) or changed
+        changed = _move_path(
+            child,
+            target_dir / child.name,
+            replace_existing=replace_existing,
+            conflict_backup_root=conflict_backup_root,
+        ) or changed
 
     try:
         source_dir.rmdir()
@@ -213,18 +281,34 @@ def rename_character_memory_storage(config_manager, old_name: str, new_name: str
     changed = False
 
     for base_dir in iter_character_memory_roots(config_manager):
-        changed = _merge_directories(base_dir / old_name, runtime_target_dir) or changed
+        conflict_backup_root = _conflict_backup_root(runtime_target_dir)
+        changed = _merge_directories(
+            base_dir / old_name,
+            runtime_target_dir,
+            replace_existing=True,
+            conflict_backup_root=conflict_backup_root,
+        ) or changed
 
         for legacy_name, target_name in LEGACY_CHARACTER_MEMORY_FILE_MAP.items():
             source_path = base_dir / legacy_name.format(name=old_name)
             target_path = runtime_target_dir / target_name
-            changed = _move_path(source_path, target_path) or changed
+            changed = _move_path(
+                source_path,
+                target_path,
+                replace_existing=True,
+                conflict_backup_root=conflict_backup_root,
+            ) or changed
 
         for legacy_name in LEGACY_CHARACTER_MEMORY_EXTRA_ENTRIES:
             source_path = base_dir / legacy_name.format(name=old_name)
             if source_path.exists():
                 target_path = runtime_target_dir / "semantic_memory_legacy"
-                changed = _move_path(source_path, target_path) or changed
+                changed = _move_path(
+                    source_path,
+                    target_path,
+                    replace_existing=True,
+                    conflict_backup_root=conflict_backup_root,
+                ) or changed
 
     changed = rewrite_recent_file_character_name(
         runtime_target_dir / "recent.json",

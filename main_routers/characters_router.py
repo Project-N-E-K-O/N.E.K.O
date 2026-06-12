@@ -65,6 +65,7 @@ from utils.elevenlabs_tts_voices import (
 )
 from .agent_router import force_disable_agent_for_character_switch
 from utils.character_memory import (
+    character_memory_exists,
     delete_character_memory_storage,
     list_character_memory_paths,
     rename_character_memory_storage,
@@ -1529,9 +1530,21 @@ async def _rollback_character_operation(
     characters_snapshot: dict,
     memory_snapshot_records,
     tombstone_snapshot: dict | None = None,
+    release_character_names: list[str] | None = None,
     reason: str,
 ) -> str:
     rollback_errors: list[str] = []
+
+    for character_name in dict.fromkeys(release_character_names or []):
+        try:
+            released = await release_memory_server_character(
+                character_name,
+                reason=f"{reason} rollback restore",
+            )
+            if not released:
+                rollback_errors.append(f"release memory handle failed: {character_name}")
+        except Exception as exc:
+            rollback_errors.append(f"release memory handle failed: {character_name}: {exc}")
 
     try:
         await asyncio.to_thread(_restore_snapshot_paths, memory_snapshot_records)
@@ -2704,6 +2717,30 @@ async def rename_catgirl(old_name: str, request: Request):
             status_code=503,
         )
 
+    target_memory_exists = character_memory_exists(_config_manager, new_name)
+    target_memory_server_released = True
+    if target_memory_exists:
+        target_memory_server_released = await release_memory_server_character(
+            new_name,
+            reason=f"release target memory handles before character rename: {old_name} -> {new_name}",
+        )
+        if not target_memory_server_released:
+            logger.warning(
+                "Failed to release target memory handle before rename, blocked rename: %s -> %s",
+                old_name,
+                new_name,
+            )
+            return JSONResponse(
+                {
+                    "success": False,
+                    "code": "MEMORY_SERVER_RELEASE_FAILED",
+                    "error": "release target character memory handle failed; rename was blocked, please retry later",
+                    "memory_server_released": released_memory_handle,
+                    "target_memory_server_released": False,
+                },
+                status_code=503,
+            )
+
     characters_snapshot = copy.deepcopy(characters)
     memory_targets = list_character_memory_paths(_config_manager, old_name)
     memory_targets.extend(list_character_memory_paths(_config_manager, new_name))
@@ -2767,6 +2804,7 @@ async def rename_catgirl(old_name: str, request: Request):
                     _config_manager,
                     characters_snapshot=characters_snapshot,
                     memory_snapshot_records=memory_snapshot_records,
+                    release_character_names=[old_name, new_name],
                     reason=f"角色重命名回滚（memory_server 重载失败）: {old_name} -> {new_name}",
                 )
                 logger.error(
@@ -2790,6 +2828,7 @@ async def rename_catgirl(old_name: str, request: Request):
                 _config_manager,
                 characters_snapshot=characters_snapshot,
                 memory_snapshot_records=memory_snapshot_records,
+                release_character_names=[old_name, new_name],
                 reason=f"维护模式：角色重命名回滚 {old_name} -> {new_name}",
             )
             if rollback_error:
@@ -2800,6 +2839,7 @@ async def rename_catgirl(old_name: str, request: Request):
                 _config_manager,
                 characters_snapshot=characters_snapshot,
                 memory_snapshot_records=memory_snapshot_records,
+                release_character_names=[old_name, new_name],
                 reason=f"角色重命名回滚: {old_name} -> {new_name}",
             )
             logger.exception("重命名角色失败，已尝试回滚: %s -> %s", old_name, new_name)
@@ -3637,6 +3677,7 @@ async def delete_catgirl(name: str):
                 characters_snapshot=characters_snapshot,
                 memory_snapshot_records=memory_snapshot_records,
                 tombstone_snapshot=tombstone_snapshot,
+                release_character_names=[name],
                 reason=f"维护模式：删除角色回滚 {name}",
             )
             if rollback_error:
@@ -3648,6 +3689,7 @@ async def delete_catgirl(name: str):
                 characters_snapshot=characters_snapshot,
                 memory_snapshot_records=memory_snapshot_records,
                 tombstone_snapshot=tombstone_snapshot,
+                release_character_names=[name],
                 reason=f"删除角色回滚: {name}",
             )
             logger.exception("删除角色失败，已尝试回滚: %s", name)

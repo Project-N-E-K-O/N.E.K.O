@@ -2991,6 +2991,163 @@ async def test_character_rollback_reports_notify_reload_false_as_failure():
 
 
 @pytest.mark.unit
+def test_rename_character_memory_storage_source_wins_over_precreated_target_dir(tmp_path):
+    from utils.character_memory import rename_character_memory_storage
+
+    memory_dir = tmp_path / "memory"
+    project_memory_dir = tmp_path / "project_memory"
+    old_dir = memory_dir / "YUI"
+    target_dir = memory_dir / "YUI1"
+    old_dir.mkdir(parents=True)
+    target_dir.mkdir(parents=True)
+    project_memory_dir.mkdir(parents=True)
+
+    (old_dir / "persona.json").write_text('{"source":"old"}', encoding="utf-8")
+    (old_dir / "recent.json").write_text(
+        json.dumps([{"speaker": "YUI", "data": {"content": "YUI: hi"}}]),
+        encoding="utf-8",
+    )
+    (target_dir / "persona.json").write_text('{"source":"precreated"}', encoding="utf-8")
+    (target_dir / "target_only.json").write_text('{"kept":true}', encoding="utf-8")
+
+    cm = SimpleNamespace(memory_dir=memory_dir, project_memory_dir=project_memory_dir)
+
+    result = rename_character_memory_storage(cm, "YUI", "YUI1")
+
+    assert result["changed"] is True
+    assert not old_dir.exists()
+    assert (target_dir / "persona.json").read_text(encoding="utf-8") == '{"source":"old"}'
+    assert (target_dir / "target_only.json").is_file()
+
+    recent_payload = json.loads((target_dir / "recent.json").read_text(encoding="utf-8"))
+    assert recent_payload[0]["speaker"] == "YUI1"
+    assert recent_payload[0]["data"]["content"].startswith("YUI1:")
+
+    conflict_files = list((memory_dir / ".YUI1.rename_conflicts").glob("*/persona.json"))
+    assert len(conflict_files) == 1
+    assert conflict_files[0].read_text(encoding="utf-8") == '{"source":"precreated"}'
+
+
+@pytest.mark.unit
+def test_renamed_time_indexed_db_reopens_under_new_character(tmp_path, monkeypatch):
+    from datetime import datetime
+
+    from memory.timeindex import TimeIndexedMemory
+    from utils.character_memory import rename_character_memory_storage
+    from utils.llm_client import SystemMessage
+
+    memory_dir = tmp_path / "memory"
+    project_memory_dir = tmp_path / "project_memory"
+    memory_dir.mkdir(parents=True)
+    project_memory_dir.mkdir(parents=True)
+
+    fake_config_manager = SimpleNamespace(
+        memory_dir=memory_dir,
+        project_memory_dir=project_memory_dir,
+        get_character_data=lambda: ({}, {}, {}, {}, {}, {}, {}, {}, {}),
+    )
+    monkeypatch.setattr("memory.timeindex.get_config_manager", lambda: fake_config_manager)
+    monkeypatch.setattr("memory.timeindex.assert_cloudsave_writable", lambda *args, **kwargs: None)
+
+    original_manager = TimeIndexedMemory(recent_history_manager=None)
+    timestamp = datetime(2026, 1, 2, 3, 4, 5)
+    original_manager.store_conversation(
+        "session-1",
+        [SystemMessage(content="hello from old role")],
+        "YUI",
+        timestamp=timestamp,
+    )
+    original_manager.dispose_engine("YUI")
+
+    old_db_path = memory_dir / "YUI" / "time_indexed.db"
+    new_db_path = memory_dir / "YUI1" / "time_indexed.db"
+    assert old_db_path.is_file()
+
+    rename_character_memory_storage(fake_config_manager, "YUI", "YUI1")
+
+    assert not old_db_path.exists()
+    assert new_db_path.is_file()
+
+    renamed_manager = TimeIndexedMemory(recent_history_manager=None)
+    rows = renamed_manager.retrieve_original_by_timeframe(
+        "YUI1",
+        datetime(2026, 1, 1),
+        datetime(2026, 1, 3),
+    )
+    assert len(rows) == 1
+    assert rows[0][1] == "session-1"
+    assert "hello from old role" in rows[0][2]
+    assert renamed_manager.get_last_conversation_time("YUI1") == timestamp
+
+    assert renamed_manager.retrieve_original_by_timeframe(
+        "YUI",
+        datetime(2026, 1, 1),
+        datetime(2026, 1, 3),
+    ) == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_character_rollback_releases_memory_handles_before_restore():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            characters_router_module = reload_module("main_routers.characters_router")
+            calls = []
+
+            async def _fake_release(character_name, *, reason=""):
+                calls.append(("release", character_name))
+                return True
+
+            def _fake_restore(records):
+                calls.append(("restore", len(records)))
+
+            with (
+                patch.object(characters_router_module, "release_memory_server_character", _fake_release),
+                patch.object(characters_router_module, "_restore_snapshot_paths", side_effect=_fake_restore),
+                patch.object(
+                    characters_router_module,
+                    "notify_memory_server_reload",
+                    AsyncMock(return_value=True),
+                ),
+            ):
+                rollback_error = await characters_router_module._rollback_character_operation(
+                    cm,
+                    characters_snapshot=cm.load_characters(),
+                    memory_snapshot_records=[],
+                    release_character_names=["YUI", "YUI1"],
+                    reason="unit-test rollback",
+                )
+
+    assert rollback_error == ""
+    assert calls[:3] == [
+        ("release", "YUI"),
+        ("release", "YUI1"),
+        ("restore", 0),
+    ]
+
+
+@pytest.mark.unit
 def test_rewrite_recent_file_character_name_does_not_rewrite_role_fields(tmp_path):
     from utils.character_memory import rewrite_recent_file_character_name
 
