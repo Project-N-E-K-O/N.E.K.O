@@ -18,7 +18,6 @@ def test_mmd_pan_drag_snaps_on_all_platforms_before_saving_position():
     assert "if (!snapped) {" in pan_drag_section
     assert "this._savePositionAfterInteraction();" in pan_drag_section
     assert "recordEdgeBounce('mmd')" not in pan_drag_section
-    assert "recordDisplaySwitchMiss('mmd')" in source
 
 
 def test_mmd_display_switch_snaps_to_target_screen_before_saving_position():
@@ -34,6 +33,7 @@ def test_mmd_display_switch_miss_records_bridge_errors_after_model_leaves_window
     method_section = source.split("async _checkAndSwitchDisplay() {", 1)[1].split("\n    /**\n     * 基于可见像素限制", 1)[0]
 
     assert method_section.index("const recordDisplaySwitchMiss = () => {") < method_section.index("try {")
+    assert "recordDisplaySwitchMiss('mmd')" in method_section
     assert "let displaySwitchAttempted = false;" in method_section
     assert method_section.index("displaySwitchAttempted = true;") < method_section.index("window.electronScreen.getAllDisplays()")
     assert "if (displaySwitchAttempted) recordDisplaySwitchMiss();" in method_section
