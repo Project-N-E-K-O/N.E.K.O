@@ -195,6 +195,8 @@ def test_model_cat_transition_contract_is_present():
     assert "function createNekoModelCatTransitionOverlay(rect, direction, token)" in source
     assert "applyNekoTransitionMask(overlay)" in source
     assert "applyNekoTransitionMask(image)" in source
+    assert "const ensureOverlayVisible = () => {" in source
+    assert "ensureOverlayVisible();\n            preloadImage.src = src" in source
     assert "parseGifDurationMs" not in source
     assert "getNekoModelCatTransitionDurationMs" not in source
     assert "NEKO_MODEL_CAT_TRANSITION_MIN_SIZE = 260" in source

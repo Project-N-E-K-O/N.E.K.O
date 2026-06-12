@@ -2117,6 +2117,11 @@
             }, finishRemainingMs);
         };
         const transitionPromise = new Promise((resolve) => {
+            const ensureOverlayVisible = () => {
+                if (!overlay.parentNode) {
+                    document.body.appendChild(overlay);
+                }
+            };
             const startTransitionPlayback = () => {
                 if (didFinish || didStartPlayback) return;
                 didStartPlayback = true;
@@ -2128,7 +2133,7 @@
                     finishTransition(resolve);
                     return;
                 }
-                document.body.appendChild(overlay);
+                ensureOverlayVisible();
                 image.removeAttribute('src');
                 void image.offsetWidth;
                 image.src = src;
@@ -2144,6 +2149,7 @@
                 didImageLoad = true;
                 startTransitionPlayback();
             }, { once: true });
+            ensureOverlayVisible();
             preloadImage.src = src;
             imageLoadFallbackTimer = setTimeout(() => {
                 didImageLoad = true;
