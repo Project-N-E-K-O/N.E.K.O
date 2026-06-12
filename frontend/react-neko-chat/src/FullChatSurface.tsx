@@ -1552,9 +1552,6 @@ export default function FullChatSurface({
   const isCursorWithinAvatarToolRange = isCursorInsideHostWindow
     && isCursorOverAvatarRange
     && !isCursorOverCompactCursorZone;
-  const avatarToolImageKind = activeToolItem
-    ? (isCursorWithinAvatarToolRange ? 'icon' : 'cursor')
-    : 'cursor';
 
   useEffect(() => {
     draftRef.current = draft;
@@ -2694,7 +2691,7 @@ export default function FullChatSurface({
       variant: effectiveCursorVariant,
       avatarRangeVariant: avatarRangeCursorVariant,
       outsideRangeVariant,
-      imageKind: avatarToolImageKind,
+      imageKind: 'cursor',
       withinAvatarRange: isCursorWithinAvatarToolRange,
       overCompactZone: isCursorOverCompactCursorZone,
       insideHostWindow: isCursorInsideHostWindow,
@@ -2726,7 +2723,6 @@ export default function FullChatSurface({
     avatarRangeCursorVariant,
     draft,
     effectiveCursorVariant,
-    avatarToolImageKind,
     isCursorInsideHostWindow,
     isCursorOverCompactCursorZone,
     isCursorWithinAvatarToolRange,

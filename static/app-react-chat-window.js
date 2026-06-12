@@ -1632,6 +1632,7 @@
 
     function collectCompactInputSurfaceGeometryItems(element) {
         var parentRect = getCompactGeometryElementRect(element);
+        var inputSurfaceIsDragSurface = element.getAttribute('data-compact-drag-surface') === 'true';
         var items = [];
         if (parentRect) {
             items.push({
@@ -1639,9 +1640,9 @@
                 owner: 'surface',
                 kind: 'input',
                 visualRect: parentRect,
-                hitRect: null,
-                nativeRect: null,
-                interactive: false
+                hitRect: inputSurfaceIsDragSurface ? parentRect : null,
+                nativeRect: inputSurfaceIsDragSurface ? parentRect : null,
+                interactive: inputSurfaceIsDragSurface
             });
         }
         var hitRegionElements = [];

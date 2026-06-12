@@ -814,7 +814,7 @@ def test_compact_geometry_snapshot_separates_base_surface_from_extra_islands():
     assert "extraIslandHitRects:" in snapshot_block
 
 
-def test_compact_input_geometry_keeps_transparent_surface_out_of_native_regions():
+def test_compact_input_geometry_preserves_drag_surface_native_region():
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
     app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
 
@@ -829,8 +829,10 @@ def test_compact_input_geometry_keeps_transparent_surface_out_of_native_regions(
 
     assert "id: element.id || 'input:surface'" in input_collector
     assert "kind: 'input'" in input_collector
-    assert "hitRect: null" in input_collector
-    assert "nativeRect: null" in input_collector
+    assert "var inputSurfaceIsDragSurface = element.getAttribute('data-compact-drag-surface') === 'true';" in input_collector
+    assert "hitRect: inputSurfaceIsDragSurface ? parentRect : null" in input_collector
+    assert "nativeRect: inputSurfaceIsDragSurface ? parentRect : null" in input_collector
+    assert "interactive: inputSurfaceIsDragSurface" in input_collector
     assert "var hitRegionElements = [];" in input_collector
     assert 'element.getAttribute(\'data-compact-hit-region\') === \'true\'' in input_collector
     assert "hitRegionElements.push(element);" in input_collector

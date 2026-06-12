@@ -6112,6 +6112,7 @@ describe('App', () => {
       active: true,
       toolId: 'hammer',
       variant: 'primary',
+      imageKind: 'cursor',
       tool: expect.objectContaining({
         id: 'hammer',
         cursorImagePath: '/static/icons/chat_hammer1_cursor.png',

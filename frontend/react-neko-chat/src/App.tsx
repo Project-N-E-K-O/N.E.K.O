@@ -2110,9 +2110,6 @@ function CompactChatApp({
   const isCursorWithinAvatarToolRange = isCursorInsideHostWindow
     && isCursorOverAvatarRange
     && !isCursorOverCompactCursorZone;
-  const avatarToolImageKind = activeToolItem
-    ? (isCursorWithinAvatarToolRange ? 'icon' : 'cursor')
-    : 'cursor';
 
   useEffect(() => {
     draftRef.current = draft;
@@ -4308,7 +4305,7 @@ function CompactChatApp({
       variant: effectiveCursorVariant,
       avatarRangeVariant: avatarRangeCursorVariant,
       outsideRangeVariant,
-      imageKind: avatarToolImageKind,
+      imageKind: 'cursor',
       withinAvatarRange: isCursorWithinAvatarToolRange,
       overCompactZone: isCursorOverCompactCursorZone,
       insideHostWindow: isCursorInsideHostWindow,
@@ -4340,7 +4337,6 @@ function CompactChatApp({
     avatarRangeCursorVariant,
     draft,
     effectiveCursorVariant,
-    avatarToolImageKind,
     isCursorInsideHostWindow,
     isCursorOverCompactCursorZone,
     isCursorWithinAvatarToolRange,
