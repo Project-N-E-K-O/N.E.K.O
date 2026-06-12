@@ -13,6 +13,8 @@ class _FakeJukeboxConfig:
     def __init__(self, data, jukebox_dir):
         self.data = data
         self.jukebox_dir = jukebox_dir
+        self.songs_dir = jukebox_dir / "songs"
+        self.actions_dir = jukebox_dir / "actions"
         self.saved = False
 
     async def asave(self):
@@ -30,6 +32,40 @@ def _make_save_config(tmp_path, data, builtin_songs, builtin_actions):
     config.data = data
     config._load_builtin_resource_defaults = lambda: (builtin_songs, builtin_actions)
     return config
+
+
+def test_config_summary_revision_is_stable_and_changes_with_songs():
+    data = {
+        "version": "1.0",
+        "songs": {
+            "song-1": {"name": "Song 1", "artist": "Artist", "visible": True},
+            "song-2": {"name": "Song 2", "artist": "Artist", "visible": False},
+        },
+        "actions": {},
+        "bindings": {},
+    }
+
+    first = jukebox_router.build_config_summary(data)
+    reordered = jukebox_router.build_config_summary(
+        {
+            "bindings": {},
+            "actions": {},
+            "songs": {
+                "song-2": {"visible": False, "artist": "Artist", "name": "Song 2"},
+                "song-1": {"artist": "Artist", "name": "Song 1", "visible": True},
+            },
+            "version": "1.0",
+        }
+    )
+    data["songs"]["song-3"] = {"name": "Song 3", "artist": "Artist", "visible": True}
+    changed = jukebox_router.build_config_summary(data)
+
+    assert first["configRevision"] == reordered["configRevision"]
+    assert first["songCount"] == 2
+    assert first["visibleSongCount"] == 1
+    assert changed["configRevision"] != first["configRevision"]
+    assert changed["songCount"] == 3
+    assert changed["visibleSongCount"] == 2
 
 
 def test_save_builtin_overrides_omits_unchanged_defaults(tmp_path):

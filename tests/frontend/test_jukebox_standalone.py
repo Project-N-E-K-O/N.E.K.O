@@ -70,14 +70,18 @@ def test_jukebox_close_hides_window_without_destroying_dom():
 def test_jukebox_header_buttons_are_outside_native_drag_region():
     assert ".jukebox-container" in JUKEBOX_TEMPLATE
     assert "-webkit-app-region: no-drag !important;" in JUKEBOX_TEMPLATE
-    assert ".jukebox-header-left" in JUKEBOX_TEMPLATE
-    assert ".jukebox-header-left *" in JUKEBOX_TEMPLATE
+    assert ".jukebox-header" in JUKEBOX_TEMPLATE
+    assert re.search(r"\.jukebox-header\s*\{[\s\S]*?-webkit-app-region:\s*drag\s*!important", JUKEBOX_TEMPLATE)
+    assert ".jukebox-header-drag-fill" in JUKEBOX_TEMPLATE
+    assert re.search(r"\.jukebox-header-left,\s*\n\s*\.jukebox-header-drag-fill\s*\{[\s\S]*?-webkit-app-region:\s*drag\s*!important", JUKEBOX_TEMPLATE)
     assert ".jukebox-header-buttons *" in JUKEBOX_TEMPLATE
 
-    assert "['.jukebox-header-left, .jukebox-header-left *']" in PRELOAD_JUKEBOX
     assert "['.jukebox-container']" not in PRELOAD_JUKEBOX
-    assert "container.style.webkitAppRegion = 'no-drag'" in STANDALONE_SCRIPT
-    assert "el.style.webkitAppRegion = 'no-drag'" in STANDALONE_SCRIPT
+    assert "setAppRegion(container, 'no-drag')" in STANDALONE_SCRIPT
+    assert "useRendererNativeDrag ? 'no-drag' : 'drag'" in STANDALONE_SCRIPT
+    assert ".neko-jukebox-bridge-drag .jukebox-header" in JUKEBOX_TEMPLATE
+    assert ".jukebox-header-left, .jukebox-header-drag-fill" in STANDALONE_SCRIPT
+    assert "setAppRegion(el, 'no-drag')" in STANDALONE_SCRIPT
 
 
 def _bootstrap_page(page: Page, stub_script: str) -> None:
@@ -139,6 +143,9 @@ def test_jukebox_standalone_bridge_fast_interactions(mock_page: Page):
     )
 
     expect(mock_page.locator(".jukebox-drag-overlay")).to_be_hidden()
+    assert "neko-jukebox-bridge-drag" in (mock_page.locator("body").get_attribute("class") or "")
+    assert mock_page.evaluate("getComputedStyle(document.querySelector('.jukebox-header')).cursor") == "grab"
+    assert mock_page.evaluate("getComputedStyle(document.querySelector('.jukebox-header')).webkitAppRegion") == "no-drag"
     mock_page.click("#speakerBtn")
     assert mock_page.evaluate("window.__speakerClicks") == 1
     assert mock_page.evaluate("window.__dragGuardCleared") is True
@@ -189,7 +196,7 @@ def test_jukebox_standalone_bridge_fast_interactions(mock_page: Page):
     mock_page.wait_for_timeout(50)
 
     content_log = mock_page.evaluate("window.__bridgeLog")
-    assert any(entry[0] == "dragStart" for entry in content_log)
+    assert not any(entry[0] == "dragStart" for entry in content_log)
 
     mock_page.evaluate("window.__bridgeLog = []")
     nw_handle = mock_page.locator('.jukebox-resize-handle[data-dir="nw"]').bounding_box()
@@ -301,6 +308,9 @@ def test_jukebox_standalone_fallback_fast_interactions(mock_page: Page):
         """,
     )
 
+    assert "neko-jukebox-bridge-drag" not in (mock_page.locator("body").get_attribute("class") or "")
+    assert mock_page.evaluate("getComputedStyle(document.querySelector('.jukebox-header')).webkitAppRegion") == "drag"
+
     mock_page.evaluate("window.__fallbackLog = []")
     header = mock_page.locator(".jukebox-header").bounding_box()
     assert header is not None
@@ -346,7 +356,7 @@ def test_jukebox_standalone_fallback_fast_interactions(mock_page: Page):
     mock_page.wait_for_timeout(50)
 
     content_log = mock_page.evaluate("window.__fallbackLog")
-    assert any(entry[0] == "moveTo" and entry[1] != 100 for entry in content_log)
+    assert not any(entry[0] == "moveTo" and entry[1] != 100 for entry in content_log)
 
     mock_page.evaluate(
         """

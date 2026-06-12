@@ -33,8 +33,7 @@
             z-index: 1 !important;
         }
 
-        /* 容器保持 no-drag，避免父级 drag + 子按钮 no-drag 触发 Chromium 命中测试不稳定。
-           标题左侧区域单独交给 OS 原生拖动，其他空白拖动由 jukebox-standalone.js 兜底。 */
+        /* 容器保持 no-drag；窗口拖动只交给标题栏，按钮和内容区单独排除。 */
         .jukebox-container {
             width: 100% !important;
             max-height: 100% !important;
@@ -44,8 +43,12 @@
             -webkit-app-region: no-drag !important;
         }
 
+        .jukebox-header {
+            -webkit-app-region: drag !important;
+        }
+
         .jukebox-header-left,
-        .jukebox-header-left * {
+        .jukebox-header-drag-fill {
             -webkit-app-region: drag !important;
         }
 
@@ -77,7 +80,21 @@
             touch-action: none;
         }
 
-        body.neko-jukebox-standalone-page.jukebox-dragging .jukebox-header {
+        body.neko-jukebox-standalone-page.neko-jukebox-bridge-drag .jukebox-header,
+        body.neko-jukebox-standalone-page.neko-jukebox-bridge-drag .jukebox-header-left,
+        body.neko-jukebox-standalone-page.neko-jukebox-bridge-drag .jukebox-header-drag-fill {
+            -webkit-app-region: no-drag !important;
+            cursor: grab !important;
+        }
+
+        body.neko-jukebox-standalone-page .jukebox-header-left,
+        body.neko-jukebox-standalone-page .jukebox-header-drag-fill {
+            cursor: grab;
+        }
+
+        body.neko-jukebox-standalone-page.jukebox-dragging .jukebox-header,
+        body.neko-jukebox-standalone-page.jukebox-dragging .jukebox-header-left,
+        body.neko-jukebox-standalone-page.jukebox-dragging .jukebox-header-drag-fill {
             cursor: grabbing;
         }
 

@@ -47,7 +47,6 @@ CHUNK_SIZE = 1024 * 1024  # 1MB chunks
 ALLOWED_AUDIO_EXTENSIONS = {'.mp3', '.wav', '.ogg', '.flac'}
 ALLOWED_ACTION_EXTENSIONS = {'.vmd', '.bvh', '.fbx', '.vrma'}
 
-import re
 import io
 
 def check_file_size(file: UploadFile, max_size: int) -> int:
@@ -405,6 +404,29 @@ class JukeboxConfig:
         return f"{prefix}_{max_num + 1:03d}"
 
 
+def build_config_revision(data: dict) -> str:
+    """Build a small stable token for polling whether jukebox data changed."""
+    payload = {
+        "version": data.get("version", "1.0"),
+        "songs": data.get("songs", {}),
+        "actions": data.get("actions", {}),
+        "bindings": data.get("bindings", {}),
+    }
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.blake2s(serialized.encode("utf-8"), digest_size=12).hexdigest()
+
+
+def build_config_summary(data: dict) -> dict:
+    songs = data.get("songs", {})
+    actions = data.get("actions", {})
+    return {
+        "configRevision": build_config_revision(data),
+        "songCount": len(songs),
+        "visibleSongCount": sum(1 for song in songs.values() if song.get("visible") is not False),
+        "actionCount": len(actions),
+    }
+
+
 def calculate_md5(file_path: Path) -> str:
     """计算文件 MD5"""
     md5_hash = hashlib.md5()
@@ -414,9 +436,6 @@ def calculate_md5(file_path: Path) -> str:
     return md5_hash.hexdigest()
 
 
-
-
-
 # ═══════════════════ API 路由 ═══════════════════
 
 @router.get("/config")
@@ -424,7 +443,15 @@ async def get_config():
     """获取完整配置（本地绑定已经是ID级别，直接返回）"""
     config_mgr = get_config_manager()
     jukebox_config = JukeboxConfig(config_mgr)
-    return jukebox_config.data
+    return {**jukebox_config.data, **build_config_summary(jukebox_config.data)}
+
+
+@router.get("/config/summary")
+async def get_config_summary():
+    """获取轻量配置摘要，用于前端轮询判断是否需要重新拉取完整歌单。"""
+    config_mgr = get_config_manager()
+    jukebox_config = JukeboxConfig(config_mgr)
+    return build_config_summary(jukebox_config.data)
 
 
 @router.post("/songs")
