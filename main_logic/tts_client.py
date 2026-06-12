@@ -3034,10 +3034,16 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                             pass  # 静默
                         elif event_type == "error":
                             _enqueue_error(response_queue, event)
+                            # 修复 PR #1764 review 第六轮：服务端 error 事件后会话已不可用，
+                            # 标记 session 失效，主循环下次 input 前会主动重建（与 session.done 处理对齐）
+                            session_state["active"] = False
             except websockets.exceptions.ConnectionClosed:
-                pass
+                # 修复 PR #1764 review 第六轮：WS 关闭后必须同步本地状态，
+                # 否则主循环会试图往已死连接发送，依赖 send 异常才触发重建（噪声+延迟）
+                session_state["active"] = False
             except Exception as e:
                 logger.error(f"[vLLM-Omni TTS] 接收异常: {e}")
+                session_state["active"] = False
 
         # 首次连接 + 就绪信号
         if not await _connect_and_config():

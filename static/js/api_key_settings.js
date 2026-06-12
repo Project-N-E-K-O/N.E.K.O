@@ -2936,7 +2936,7 @@ const ConnectivityManager = {
      * @returns {{ key: string, url: string, providerType: string }} 解析结果
      */
     resolveEffectiveKey(context) {
-        const result = { key: '', url: '', providerType: 'openai_compatible', providerKey: '', providerScope: '', cacheId: '' };
+        const result = { key: '', url: '', providerType: 'openai_compatible', subType: '', providerKey: '', providerScope: '', cacheId: '' };
 
         if (!context || !context.type) return result;
 
@@ -3093,6 +3093,11 @@ const ConnectivityManager = {
                 }
                 result.url = wsEndpoint;
                 result.providerType = 'websocket';
+                // 修复 PR #1764 review 第六轮：vLLM-Omni 的 /v1/audio/speech/stream 走
+                // Qwen 自定义协议，不识别 OpenAI Realtime 的 session.update。后端会
+                // 按 sub_type 分流到 _test_vllm_omni_ws_handshake 仅做握手探测，
+                // 避免发 session.update 触发 vLLM 主动断连导致连通性误判。
+                result.subType = 'vllm_omni_tts';
                 result.key = keyInput ? getRealKey(keyInput) : '';
                 result.model = modelIdInput ? modelIdInput.value.trim() : '';
             } else {
@@ -3185,7 +3190,7 @@ const ConnectivityManager = {
      * @returns {Promise<{success: boolean, error?: string, error_code?: string}>}
      */
     async testKey(params) {
-        const { provider_key, provider_scope, url, api_key: apiKey, model, provider_type: providerType, is_free: isFree, cache_id: cacheId } = params;
+        const { provider_key, provider_scope, url, api_key: apiKey, model, provider_type: providerType, sub_type: subType, is_free: isFree, cache_id: cacheId } = params;
         console.log('[ConnectivityManager] testKey called:', {
             provider_key: provider_key || '(custom)',
             provider_scope: provider_scope || '(none)',
@@ -3234,6 +3239,11 @@ const ConnectivityManager = {
                     body.url = url || '';
                     body.model = model || '';
                     body.provider_type = providerType || 'openai_compatible';
+                    // 修复 PR #1764 review 第六轮：vllm_omni TTS 透传 sub_type，
+                    // 让后端走 _test_vllm_omni_ws_handshake 而非 _test_websocket。
+                    if (subType) {
+                        body.sub_type = subType;
+                    }
                     body.is_free = !!isFree;
                 }
                 return body;
@@ -3379,7 +3389,7 @@ const ConnectivityManager = {
                     keyConfigs[customCacheId] = {
                         provider_key: customResult.providerKey, provider_scope: customResult.providerScope,
                         url: customResult.url, api_key: customResult.key || '', model: model,
-                        provider_type: customResult.providerType, is_free: isFree
+                        provider_type: customResult.providerType, sub_type: customResult.subType || '', is_free: isFree
                     };
                 }
             });
@@ -3531,7 +3541,7 @@ const ConnectivityManager = {
                     keyConfigs[cacheId] = {
                         provider_key: customResult.providerKey, provider_scope: customResult.providerScope,
                         url: customResult.url, api_key: customResult.key || '', model: model,
-                        provider_type: customResult.providerType, is_free: isFree
+                        provider_type: customResult.providerType, sub_type: customResult.subType || '', is_free: isFree
                     };
                 }
             });

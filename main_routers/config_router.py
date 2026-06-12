@@ -1302,6 +1302,11 @@ class ConnectivityTestRequest(BaseModel):
     api_key: Optional[str] = ""
     model: Optional[str] = ""
     provider_type: Optional[str] = "openai_compatible"
+    # Sub-type used to dispatch to a non-Realtime probe when provider_type=='websocket'.
+    # Currently the only recognized value is 'vllm_omni_tts'; vLLM-Omni's WebSocket
+    # speech endpoint does NOT speak the OpenAI Realtime protocol (no session.update),
+    # so it requires a handshake-only probe instead of _test_websocket. (#1764 review 第六轮)
+    sub_type: Optional[str] = ""
     is_free: Optional[bool] = False
 
 
@@ -1503,6 +1508,62 @@ async def _test_websocket(url: str, api_key: str, model: str = "") -> dict:
         return {"success": False, "error": f"WebSocket连接失败: {e}", "error_code": "ws_error"}
 
 
+async def _test_vllm_omni_ws_handshake(url: str, api_key: str) -> dict:
+    """vLLM-Omni TTS 专用 WebSocket 握手探测（不发任何应用层帧）。
+
+    背景：vLLM-Omni 的 /v1/audio/speech/stream 走 Qwen 自定义协议
+    (session.config / input.text / input.done)，不识别 OpenAI Realtime 的
+    session.update。直接用 _test_websocket 会让 vLLM 主动断连导致连通性
+    误判。本函数仅做 WebSocket 握手 + 立即关闭——握手能完成即说明端点
+    可达且 (空) 鉴权通过；HTTP 401/403 与 _test_websocket 同步识别为
+    auth_failed。错误码与 _test_websocket 保持完全一致以便前端统一处理
+    (#1764 review 第六轮)。
+
+    api_key 为空时不发送 Authorization header（vLLM 自部署常见无鉴权）。
+    """
+    import websockets
+
+    # 兼容旧版 websockets：<12 用 extra_headers，>=12 用 additional_headers
+    # 与 vllm_omni_tts_worker._connect_and_config 保持一致 (#1764 review 第六轮+)
+    ws_kwargs = {"open_timeout": 10, "close_timeout": 5}
+    if api_key:
+        ws_kwargs["additional_headers"] = {"Authorization": f"Bearer {api_key}"}
+
+    try:
+        async with asyncio.timeout(10):
+            try:
+                async with websockets.connect(url, **ws_kwargs) as ws:
+                    _ = ws  # 防止未使用告警
+                    return {"success": True}
+            except TypeError:
+                if "additional_headers" in ws_kwargs:
+                    ws_kwargs["extra_headers"] = ws_kwargs.pop("additional_headers")
+                async with websockets.connect(url, **ws_kwargs) as ws:
+                    _ = ws
+                    return {"success": True}
+
+    except (TimeoutError, asyncio.TimeoutError):
+        return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
+    except ssl.SSLError:
+        return {"success": False, "error": "SSL证书验证失败", "error_code": "ssl_error"}
+    except OSError as e:
+        err_str = str(e).lower()
+        if "getaddrinfo" in err_str or "name or service not known" in err_str or "nodename nor servname" in err_str:
+            return {"success": False, "error": "域名解析失败", "error_code": "dns_error"}
+        if "connection refused" in err_str or "connect call failed" in err_str:
+            return {"success": False, "error": "无法连接到目标服务器", "error_code": "connection_refused"}
+        return {"success": False, "error": f"WebSocket连接失败: {e}", "error_code": "ws_error"}
+    except Exception as e:
+        # websockets 15.0.1: 401/403 走 e.response.status_code；与 _test_websocket 对齐。
+        status_code = getattr(e, "status_code", None)
+        if status_code is None:
+            _resp = getattr(e, "response", None)
+            status_code = getattr(_resp, "status_code", None)
+        if status_code in (401, 403):
+            return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
+        return {"success": False, "error": f"WebSocket连接失败: {e}", "error_code": "ws_error"}
+
+
 def _normalize_provider_url_candidates(profile: dict[str, Any], primary_field: str) -> list[str]:
     """读取 provider 的主 URL 和候选 URL，去空去重后保持顺序。"""
     raw_candidates: list[Any] = [profile.get(primary_field)]
@@ -1530,14 +1591,24 @@ async def _test_connectivity_candidates(
     model: str,
     provider_type: str,
     is_free: bool,
+    sub_type: str = "",
 ) -> dict:
-    """并发测试候选 URL；任一通过即返回该 URL。"""
+    """并发测试候选 URL；任一通过即返回该 URL。
+
+    sub_type='vllm_omni_tts' 时绕开 _test_websocket 的 OpenAI Realtime
+    session.update 探测，改用握手 + 立即关闭的轻量探测，因为 vLLM-Omni 的
+    /v1/audio/speech/stream 不识别 Realtime 协议帧，发 session.update 会被
+    主动断连进而误判 (#1764 review 第六轮)。
+    """
     if not urls:
         return {"success": False, "error": "缺少必要参数", "error_code": "missing_params"}
 
     async def _run_one(candidate_url: str) -> tuple[str, dict]:
         if provider_type == "websocket":
-            result = await _test_websocket(candidate_url, api_key, model=model)
+            if sub_type == "vllm_omni_tts":
+                result = await _test_vllm_omni_ws_handshake(candidate_url, api_key)
+            else:
+                result = await _test_websocket(candidate_url, api_key, model=model)
         else:
             result = await _test_openai_compatible(candidate_url, api_key, model=model, is_free=is_free)
         return candidate_url, result
@@ -1864,6 +1935,13 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
         is_free = bool(req.is_free)
         _source_label = _identify_provider_label(url_stripped, is_free)
 
+    # sub_type 仅 Mode 2 (custom URL) 允许使用；Mode 1 built-in provider 由
+    # api_providers.json 决定 provider_type，不应被前端 sub_type 覆盖
+    # (#1764 review 第六轮)。
+    sub_type = ""
+    if not (req.provider_key and req.provider_scope):
+        sub_type = (req.sub_type or "").strip().lower()
+
     try:
         result = await _test_connectivity_candidates(
             url_candidates or [url_stripped],
@@ -1871,6 +1949,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
             model,
             provider_type,
             is_free,
+            sub_type=sub_type,
         )
     except Exception as e:
         logger.exception("[ConnectivityTest] 未预期的异常")
