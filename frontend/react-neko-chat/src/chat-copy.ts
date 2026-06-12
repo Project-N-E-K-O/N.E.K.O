@@ -55,10 +55,10 @@ export function getChatEmptyStateFallback(locale = getRuntimeLocale()): string {
 export function getChatCompanionEmptyStateFallback(locale = getRuntimeLocale()): string {
   switch (normalizeChatLocale(locale)) {
     case 'zh-CN':
-      return '我就在这陪着你哦';
+      return '（我就在这陪着你哦）';
     case 'zh-TW':
-      return '我就在這陪著你喔';
+      return '（我就在這陪著你喔）';
     default:
-      return "I'm right here with you.";
+      return "(I'm right here with you.)";
   }
 }

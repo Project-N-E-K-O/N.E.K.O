@@ -753,7 +753,7 @@
         "avatarCropCancel": "Отмена",
         "avatarCropSave": "Сохранить",
         "emptyState":  "Сообщения появятся здесь после подключения чата.",
-        "companionEmptyState": "Я рядом с тобой.",
+        "companionEmptyState": "(Я рядом с тобой.)",
         "messageStreaming": "Генерация",
         "messageFailed": "Ошибка отправки",
         "reactWindowOpen": "Открыть окно чата",

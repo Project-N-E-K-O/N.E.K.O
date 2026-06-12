@@ -55,10 +55,12 @@ describe('App', () => {
     expect(getChatEmptyStateFallback('zh-MO')).toBe('現在開始跟我聊天吧！');
     expect(getChatEmptyStateFallback('zh-Hant')).toBe('現在開始跟我聊天吧！');
     expect(getChatEmptyStateFallback('en-US')).toBe('Start chatting with me now!');
-    expect(getChatCompanionEmptyStateFallback('zh-CN')).toBe('我就在这陪着你哦');
-    expect(getChatCompanionEmptyStateFallback('zh-TW')).toBe('我就在這陪著你喔');
-    expect(getChatCompanionEmptyStateFallback('zh-HK')).toBe('我就在這陪著你喔');
-    expect(getChatCompanionEmptyStateFallback('en-US')).toBe("I'm right here with you.");
+    expect(getChatCompanionEmptyStateFallback('zh-CN')).toBe('（我就在这陪着你哦）');
+    expect(getChatCompanionEmptyStateFallback('zh-TW')).toBe('（我就在這陪著你喔）');
+    expect(getChatCompanionEmptyStateFallback('zh-HK')).toBe('（我就在這陪著你喔）');
+    expect(getChatCompanionEmptyStateFallback('zh-MO')).toBe('（我就在這陪著你喔）');
+    expect(getChatCompanionEmptyStateFallback('zh-Hant')).toBe('（我就在這陪著你喔）');
+    expect(getChatCompanionEmptyStateFallback('en-US')).toBe("(I'm right here with you.)");
   });
 
   const mockHoverCapableMatchMedia = (hoverCapable = true) => {

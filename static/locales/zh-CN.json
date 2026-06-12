@@ -753,7 +753,7 @@
         "avatarCropCancel": "取消",
         "avatarCropSave": "保存",
         "emptyState": "现在开始跟我聊天吧！",
-        "companionEmptyState": "我就在这陪着你哦",
+        "companionEmptyState": "（我就在这陪着你哦）",
         "messageStreaming": "生成中",
         "messageFailed": "发送失败",
         "reactWindowOpen": "打开聊天框",
