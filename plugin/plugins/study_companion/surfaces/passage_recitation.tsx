@@ -1,6 +1,7 @@
-import { useState } from '@neko/plugin-ui';
+import { useEffect, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 import { callPlugin, errorMessage, text } from './memory_shared';
+import { ensureBrandCSS } from './study_surface_utils';
 
 type RecitationPayload = {
   diff?: unknown;
@@ -19,6 +20,10 @@ export default function PassageRecitation(props: PluginSurfaceProps) {
   const [hintCount, setHintCount] = useState(0);
   const [result, setResult] = useState('');
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    ensureBrandCSS();
+  }, []);
 
   async function submit() {
     if (!itemId.trim() || !userInput.trim()) {
@@ -43,7 +48,7 @@ export default function PassageRecitation(props: PluginSurfaceProps) {
   }
 
   return (
-    <div className="study-panel">
+    <div className="study-panel surface-shell">
       <header className="study-panel__header">
         <div>
           <h1>{text(props, 'ui.surface.passage_recitation', 'Passage Recitation')}</h1>

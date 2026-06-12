@@ -1,6 +1,7 @@
 import { useEffect, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 import { callPlugin, errorMessage, text } from './memory_shared';
+import { ensureBrandCSS } from './study_surface_utils';
 
 type MemoryDeck = {
   id: string;
@@ -17,6 +18,7 @@ export default function MemoryImporter(props: PluginSurfaceProps) {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
+    ensureBrandCSS();
     const controller = new AbortController();
     callPlugin<{ decks?: MemoryDeck[] }>('study_memory_list_decks', { limit: 100 }, controller.signal)
       .then((payload) => {
@@ -49,7 +51,7 @@ export default function MemoryImporter(props: PluginSurfaceProps) {
   }
 
   return (
-    <div className="study-panel">
+    <div className="study-panel surface-shell">
       <header className="study-panel__header">
         <div>
           <h1>{text(props, 'ui.surface.memory_importer', 'Memory Importer')}</h1>

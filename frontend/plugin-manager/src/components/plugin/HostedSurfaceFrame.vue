@@ -406,6 +406,7 @@ async function loadHostedTsx() {
       if (loadId !== currentLoadId) return
       hostedDocument.value = buildHostedTsxDocument({
         source: response.source,
+        dependencies: response.dependencies,
         pluginId: props.pluginId,
         surface: props.surface,
         context,

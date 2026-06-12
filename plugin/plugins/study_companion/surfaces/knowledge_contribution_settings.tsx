@@ -1,6 +1,8 @@
 import { useEffect, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 
+import { ensureBrandCSS } from './study_surface_utils';
+
 async function readJsonResponse(response: Response, label: string) {
   if (!response.ok) {
     throw new Error(`${label} failed: HTTP ${response.status}`);
@@ -73,11 +75,12 @@ export default function KnowledgeContributionSettings(props: PluginSurfaceProps)
   }
 
   useEffect(() => {
+    ensureBrandCSS();
     refresh().catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }, []);
 
   return (
-    <div className="study-panel">
+    <div className="study-panel surface-shell">
       <header className="study-panel__header">
         <div>
           <h1>{text(props, 'ui.surface.knowledge_contribution_settings', 'Knowledge Contribution Settings')}</h1>

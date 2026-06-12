@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -40,6 +41,13 @@ _ALLOWED_PLUGIN_LIST_ACTION_BUILTINS = {
 }
 _HOSTED_TRANSLATIONS_MAX_BYTES = 128 * 1024
 _HOSTED_TRANSLATIONS_DEFAULT_SOURCE_LOCALE = "en-US"
+_HOSTED_TSX_DEPENDENCIES_MAX_FILES = 32
+_HOSTED_TSX_DEPENDENCIES_MAX_BYTES = 512 * 1024
+_HOSTED_TSX_CODE_EXTENSIONS = {".js", ".jsx", ".ts", ".tsx"}
+_HOSTED_TSX_RELATIVE_IMPORT_RE = re.compile(
+    r"^[^\S\r\n]*import(?:[\s\S]*?\sfrom\s+|[^\S\r\n]+)['\"](\.{1,2}/[^'\"]+)['\"][^\S\r\n]*;?[^\S\r\n]*(?:\r?\n|$)",
+    re.MULTILINE,
+)
 _PLUGIN_NOT_RUNNING_MESSAGES = {
     "en": "The plugin is not running. Start the plugin before using this action.",
     "zh-CN": "插件未运行。请先启动该插件，再执行这个操作。",
@@ -415,6 +423,112 @@ def _load_surface_translations_sync(entry_path: Path) -> dict[str, object]:
     return _normalize_translations(raw, path=translations_path)
 
 
+def _plugin_root_from_meta(plugin_meta: Mapping[str, object]) -> Path | None:
+    config_path_obj = plugin_meta.get("config_path")
+    if not isinstance(config_path_obj, str) or not config_path_obj:
+        return None
+    try:
+        return Path(config_path_obj).parent.resolve()
+    except Exception:
+        return None
+
+
+def _resolve_hosted_tsx_relative_dependency(root: Path, from_path: Path, specifier: str) -> Path | None:
+    clean_specifier = specifier.split("?", 1)[0].split("#", 1)[0]
+    try:
+        base_path = (from_path.parent / clean_specifier).resolve()
+        candidates = [
+            base_path,
+            *(base_path.with_suffix(ext) for ext in _HOSTED_TSX_CODE_EXTENSIONS if not base_path.suffix),
+            *(base_path / f"index{ext}" for ext in _HOSTED_TSX_CODE_EXTENSIONS),
+        ]
+    except (OSError, ValueError):
+        return None
+
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(root)
+        except (OSError, ValueError):
+            continue
+        if resolved.suffix.lower() in _HOSTED_TSX_CODE_EXTENSIONS and resolved.is_file():
+            return resolved
+    return None
+
+
+def _load_hosted_tsx_dependencies_sync(
+    plugin_meta: Mapping[str, object],
+    entry_path: Path,
+) -> list[dict[str, str]]:
+    root = _plugin_root_from_meta(plugin_meta)
+    if root is None:
+        return []
+    try:
+        entry_path = entry_path.resolve()
+        entry_path.relative_to(root)
+    except (OSError, ValueError):
+        return []
+
+    dependencies: list[dict[str, str]] = []
+    seen: set[Path] = set()
+    total_bytes = 0
+
+    def read_source(path: Path) -> str:
+        nonlocal total_bytes
+        try:
+            size = path.stat().st_size
+        except OSError as exc:
+            raise ServerDomainError(
+                code="PLUGIN_UI_DEPENDENCY_READ_FAILED",
+                message=f"Failed to read hosted UI dependency '{path.name}'",
+                status_code=500,
+                details={"path": str(path), "error_type": type(exc).__name__},
+            ) from exc
+        total_bytes += size
+        if total_bytes > _HOSTED_TSX_DEPENDENCIES_MAX_BYTES:
+            raise ServerDomainError(
+                code="PLUGIN_UI_DEPENDENCIES_TOO_LARGE",
+                message="Hosted UI dependencies are too large",
+                status_code=500,
+                details={"max_bytes": _HOSTED_TSX_DEPENDENCIES_MAX_BYTES},
+            )
+        try:
+            return path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise ServerDomainError(
+                code="PLUGIN_UI_DEPENDENCY_READ_FAILED",
+                message=f"Failed to read hosted UI dependency '{path.name}'",
+                status_code=500,
+                details={"path": str(path), "error_type": type(exc).__name__},
+            ) from exc
+
+    def visit(path: Path) -> str:
+        source = read_source(path)
+        for specifier in _HOSTED_TSX_RELATIVE_IMPORT_RE.findall(source):
+            dependency_path = _resolve_hosted_tsx_relative_dependency(root, path, specifier)
+            if dependency_path is None or dependency_path == entry_path:
+                continue
+            if dependency_path in seen:
+                continue
+            if len(seen) >= _HOSTED_TSX_DEPENDENCIES_MAX_FILES:
+                raise ServerDomainError(
+                    code="PLUGIN_UI_DEPENDENCIES_TOO_MANY",
+                    message="Hosted UI declares too many dependencies",
+                    status_code=500,
+                    details={"max_files": _HOSTED_TSX_DEPENDENCIES_MAX_FILES},
+                )
+            seen.add(dependency_path)
+            dependency_source = visit(dependency_path)
+            dependencies.append({
+                "path": dependency_path.relative_to(root).as_posix(),
+                "source": dependency_source,
+            })
+        return source
+
+    visit(entry_path)
+    return dependencies
+
+
 def _entry_ids_from_meta(plugin_meta: Mapping[str, object]) -> set[str]:
     entries_obj = plugin_meta.get("entries")
     if not isinstance(entries_obj, list):
@@ -674,6 +788,11 @@ class PluginUiQueryService:
 
             source = await asyncio.to_thread(entry_path.read_text, encoding="utf-8")
             translations_payload = await asyncio.to_thread(_load_surface_translations_sync, entry_path)
+            dependencies = (
+                await asyncio.to_thread(_load_hosted_tsx_dependencies_sync, plugin_meta, entry_path)
+                if mode == "hosted-tsx"
+                else []
+            )
             return {
                 "plugin_id": plugin_id,
                 "kind": kind,
@@ -683,6 +802,7 @@ class PluginUiQueryService:
                 "source": source,
                 "source_locale": hit_locale or translations_payload["source_locale"],
                 "translations": translations_payload["translations"],
+                "dependencies": dependencies,
                 "warnings": warnings,
             }
         except ServerDomainError:

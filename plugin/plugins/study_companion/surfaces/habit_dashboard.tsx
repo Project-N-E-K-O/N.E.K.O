@@ -1,7 +1,7 @@
 import { useEffect, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 
-import { callPlugin, formatError, text } from './study_surface_utils';
+import { callPlugin, ensureBrandCSS, formatError, text } from './study_surface_utils';
 
 export default function HabitDashboard(props: PluginSurfaceProps) {
   const [payload, setPayload] = useState<any>({});
@@ -29,6 +29,7 @@ export default function HabitDashboard(props: PluginSurfaceProps) {
   }
 
   useEffect(() => {
+    ensureBrandCSS();
     let disposed = false;
     let inFlight = false;
     const tick = async () => {
@@ -53,7 +54,7 @@ export default function HabitDashboard(props: PluginSurfaceProps) {
 
   const goals = Array.isArray(payload.goals) ? payload.goals : [];
   return (
-    <div className="study-panel">
+    <div className="study-panel surface-shell">
       <header className="study-panel__header">
         <div>
           <h1>{text(props, 'ui.surface.habit_dashboard', 'Habit Dashboard')}</h1>

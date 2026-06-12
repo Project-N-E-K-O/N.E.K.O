@@ -1,5 +1,6 @@
-import { useState } from '@neko/plugin-ui';
+import { useEffect, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
+import { ensureBrandCSS } from './study_surface_utils';
 
 type ExportFormat = 'markdown' | 'pdf' | 'docx' | 'xmind';
 
@@ -117,6 +118,10 @@ export default function NoteExporter(props: PluginSurfaceProps) {
   const xmindUnavailable = !exportUnavailable && !allowedFormats.includes('xmind');
   const statusText = status || (exportUnavailable ? text(props, 'ui.status.export_unavailable', 'Export is disabled by doc_export.enabled') : '');
 
+  useEffect(() => {
+    ensureBrandCSS();
+  }, []);
+
   async function exportNotes(previewOnly: boolean) {
     if (exportUnavailable) {
       setStatus(text(props, 'ui.status.export_unavailable', 'Export is disabled by doc_export.enabled'));
@@ -139,7 +144,7 @@ export default function NoteExporter(props: PluginSurfaceProps) {
   }
 
   return (
-    <div className="study-panel">
+    <div className="study-panel surface-shell">
       <header className="study-panel__header">
         <div>
           <h1>{text(props, 'ui.surface.note_exporter', 'Note Exporter')}</h1>

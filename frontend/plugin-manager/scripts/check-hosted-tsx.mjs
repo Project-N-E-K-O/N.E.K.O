@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -6,8 +6,182 @@ import process from 'node:process'
 import ts from 'typescript'
 
 const repoRoot = resolve(fileURLToPath(new URL('../../../', import.meta.url)))
+const repoRealRoot = realpathSync(repoRoot)
 const hostedUiGlobalsPath = join(repoRoot, 'plugin/sdk/hosted-ui/globals.d.ts')
-const surfaceKinds = ['panel', 'guide', 'docs']
+const maxPluginTomlBytes = 1024 * 1024
+const maxRelativeImportDepth = 64
+const importResolutionCache = new Map()
+const fileExistsCache = new Map()
+const sourceTextCache = new Map()
+
+function formatError(error) {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function isPathInside(parentPath, childPath) {
+  const rel = relative(parentPath, childPath)
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+}
+
+function assertPathInsideRepo(sourcePath, label) {
+  const resolvedPath = resolve(sourcePath)
+  if (!isPathInside(repoRoot, resolvedPath)) {
+    throw new Error(`${label} outside repo root: ${sourcePath}`)
+  }
+  let realPath
+  try {
+    realPath = realpathSync(resolvedPath)
+  } catch (error) {
+    throw new Error(`Unable to resolve ${label} real path: ${resolvedPath}: ${formatError(error)}`, { cause: error })
+  }
+  if (!isPathInside(repoRealRoot, realPath)) {
+    throw new Error(`${label} outside repo root: ${sourcePath}`)
+  }
+  return resolvedPath
+}
+
+function statPath(targetPath, label) {
+  try {
+    return statSync(targetPath)
+  } catch (error) {
+    throw new Error(`Unable to inspect ${label}: ${targetPath}: ${formatError(error)}`, { cause: error })
+  }
+}
+
+function lstatPath(targetPath, label) {
+  try {
+    return lstatSync(targetPath)
+  } catch (error) {
+    throw new Error(`Unable to inspect ${label}: ${targetPath}: ${formatError(error)}`, { cause: error })
+  }
+}
+
+function readTextFile(targetPath, label, maxBytes = null) {
+  const stat = statPath(targetPath, label)
+  if (maxBytes !== null && stat.size > maxBytes) {
+    throw new Error(`${label} is too large: ${targetPath} (${stat.size} bytes, limit ${maxBytes} bytes)`)
+  }
+  try {
+    return readFileSync(targetPath, 'utf8')
+  } catch (error) {
+    throw new Error(`Unable to read ${label}: ${targetPath}: ${formatError(error)}`, { cause: error })
+  }
+}
+
+function readSourceFile(sourcePath) {
+  const resolvedPath = assertPathInsideRepo(sourcePath, 'Source path')
+  if (!sourceTextCache.has(resolvedPath)) {
+    sourceTextCache.set(resolvedPath, readTextFile(resolvedPath, 'source file'))
+  }
+  return sourceTextCache.get(resolvedPath)
+}
+
+function mkdirForFile(targetPath, label) {
+  try {
+    mkdirSync(dirname(targetPath), { recursive: true })
+  } catch (error) {
+    throw new Error(`Unable to create ${label} directory: ${dirname(targetPath)}: ${formatError(error)}`, { cause: error })
+  }
+}
+
+function writeTextFile(targetPath, source, label) {
+  try {
+    writeFileSync(targetPath, source, 'utf8')
+  } catch (error) {
+    throw new Error(`Unable to write ${label}: ${targetPath}: ${formatError(error)}`, { cause: error })
+  }
+}
+
+function createTempDir() {
+  try {
+    return mkdtempSync(join(tmpdir(), 'neko-hosted-tsx-'))
+  } catch (error) {
+    throw new Error(`Unable to create hosted TSX temp directory: ${formatError(error)}`, { cause: error })
+  }
+}
+
+function cleanupTempDir(tempDir) {
+  if (!tempDir) return
+  try {
+    rmSync(tempDir, { recursive: true, force: true })
+  } catch (error) {
+    console.warn(`Hosted TSX temp cleanup failed: ${tempDir}: ${formatError(error)}`)
+  }
+}
+
+function isMissingPathError(error) {
+  return error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')
+}
+
+function isFilePath(candidate, label) {
+  const resolvedPath = resolve(candidate)
+  if (fileExistsCache.has(resolvedPath)) {
+    return fileExistsCache.get(resolvedPath)
+  }
+  let isFile = false
+  try {
+    isFile = statSync(resolvedPath).isFile()
+  } catch (error) {
+    if (!isMissingPathError(error)) {
+      throw new Error(`Unable to inspect ${label}: ${resolvedPath}: ${formatError(error)}`, { cause: error })
+    }
+  }
+  fileExistsCache.set(resolvedPath, isFile)
+  return isFile
+}
+
+function sourceFileFor(sourcePath, source) {
+  const scriptKind = sourcePath.endsWith('.tsx') || sourcePath.endsWith('.jsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS
+  return ts.createSourceFile(sourcePath, source, ts.ScriptTarget.Latest, true, scriptKind)
+}
+
+function moduleSpecifierText(node) {
+  return node && typeof node.text === 'string' ? node.text : null
+}
+
+function isRelativeSpecifier(specifier) {
+  return specifier.startsWith('./') || specifier.startsWith('../')
+}
+
+function extractRelativeImportSpecifiers(sourcePath, source) {
+  const sourceFile = sourceFileFor(sourcePath, source)
+  const specifiers = []
+
+  const addSpecifier = (specifier) => {
+    if (specifier && isRelativeSpecifier(specifier)) {
+      specifiers.push(specifier)
+    }
+  }
+
+  const visit = (node) => {
+    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
+      addSpecifier(moduleSpecifierText(node.moduleSpecifier))
+    } else if (
+      ts.isCallExpression(node) &&
+      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+      node.arguments.length === 1
+    ) {
+      addSpecifier(moduleSpecifierText(node.arguments[0]))
+    }
+    ts.forEachChild(node, visit)
+  }
+
+  visit(sourceFile)
+  return specifiers
+}
+
+function replaceRangesWithWhitespace(source, ranges) {
+  if (ranges.length === 0) return source
+  const chars = source.split('')
+  for (const [start, end] of ranges) {
+    for (let index = start; index < end; index += 1) {
+      if (chars[index] !== '\n' && chars[index] !== '\r') {
+        chars[index] = ' '
+      }
+    }
+  }
+  return chars.join('')
+}
 
 function parseTomlSurfaces(text) {
   const surfaces = []
@@ -153,49 +327,100 @@ function inferMode(entry) {
 
 function findPluginTomls(targets) {
   const result = []
+  const visited = new Set()
   const visit = (abs) => {
-    if (!existsSync(abs)) return
-    const stat = statSync(abs)
-    if (stat.isFile() && abs.endsWith('plugin.toml')) {
-      result.push(abs)
+    const resolvedPath = resolve(abs)
+    if (!isPathInside(repoRoot, resolvedPath)) {
+      throw new Error(`Plugin search target outside repo root: ${abs}`)
+    }
+    if (!existsSync(resolvedPath)) return
+    const lstat = lstatPath(resolvedPath, 'plugin search target')
+    if (lstat.isSymbolicLink()) return
+    const realPath = realpathSync(resolvedPath)
+    if (visited.has(realPath)) return
+    visited.add(realPath)
+    if (!isPathInside(repoRealRoot, realPath)) {
+      throw new Error(`Plugin search target outside repo root: ${abs}`)
+    }
+    const stat = statPath(resolvedPath, 'plugin search target')
+    if (stat.isFile() && resolvedPath.endsWith('plugin.toml')) {
+      result.push(resolvedPath)
       return
     }
     if (!stat.isDirectory()) return
-    const direct = join(abs, 'plugin.toml')
-    if (existsSync(direct)) {
+    const direct = join(resolvedPath, 'plugin.toml')
+    if (existsSync(direct) && !lstatPath(direct, 'plugin.toml').isSymbolicLink()) {
       result.push(direct)
     }
-    for (const entry of readdirSync(abs, { withFileTypes: true })) {
-      if (entry.isDirectory()) visit(join(abs, entry.name))
+    let entries
+    try {
+      entries = readdirSync(resolvedPath, { withFileTypes: true })
+    } catch (error) {
+      throw new Error(`Unable to scan plugin directory: ${resolvedPath}: ${formatError(error)}`, { cause: error })
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) visit(join(resolvedPath, entry.name))
     }
   }
   for (const target of targets.length > 0 ? targets : ['plugin/plugins']) {
-    const abs = isAbsolute(target) ? target : join(repoRoot, target)
+    const abs = isAbsolute(target) ? target : resolve(repoRoot, target)
     visit(abs)
   }
   return Array.from(new Set(result))
 }
 
 function surfaceLabel(surface) {
-  return `${surface.kind}:${surface.id || surface.entry || 'main'}`
+  return `${surface.kind || 'unknown'}:${surface.id || surface.entry || 'main'}`
 }
 
-function hasDefaultExport(source) {
-  return /\bexport\s+default\b/.test(source)
+function hasDefaultExport(sourcePath, source) {
+  const sourceFile = sourceFileFor(sourcePath, source)
+  return sourceFile.statements.some((statement) => {
+    if (ts.isExportAssignment(statement) && !statement.isExportEquals) {
+      return true
+    }
+    const modifierKinds = new Set((statement.modifiers || []).map((modifier) => modifier.kind))
+    return modifierKinds.has(ts.SyntaxKind.ExportKeyword) && modifierKinds.has(ts.SyntaxKind.DefaultKeyword)
+  })
 }
 
-function stripHostedUiImports(source) {
-  return source
-    .replace(/^\s*import[\s\S]*?from\s+['"](?:@neko\/plugin-ui|neko:ui)['"]\s*;?\s*/gm, '')
-    .replace(/^\s*import\s+['"](?:@neko\/plugin-ui|neko:ui)['"]\s*;?\s*/gm, '')
+function stripHostedUiImports(sourcePath, source) {
+  const sourceFile = sourceFileFor(sourcePath, source)
+  const ranges = sourceFile.statements
+    .filter((statement) => {
+      if (!ts.isImportDeclaration(statement)) return false
+      const specifier = moduleSpecifierText(statement.moduleSpecifier)
+      return specifier === '@neko/plugin-ui' || specifier === 'neko:ui'
+    })
+    .map((statement) => [statement.getStart(sourceFile), statement.end])
+  return replaceRangesWithWhitespace(source, ranges)
 }
 
 function tempPathForSource(sourcePath, tempDir) {
-  return join(tempDir, relative(repoRoot, sourcePath))
+  const resolvedPath = assertPathInsideRepo(sourcePath, 'Source path')
+  const rel = relative(repoRoot, resolvedPath)
+  if (rel.startsWith('..') || isAbsolute(rel)) {
+    throw new Error(`Source path outside repo root: ${sourcePath}`)
+  }
+  const tempRoot = resolve(tempDir)
+  const targetPath = resolve(tempRoot, rel)
+  if (!isPathInside(tempRoot, targetPath)) {
+    throw new Error(`Temp output path outside temp directory: ${sourcePath}`)
+  }
+  return targetPath
 }
 
 function resolveRelativeImport(fromPath, specifier) {
-  const basePath = resolve(dirname(fromPath), specifier)
+  if (!isRelativeSpecifier(specifier)) return null
+  const fromResolved = assertPathInsideRepo(fromPath, 'Import source path')
+  const cacheKey = `${fromResolved}\0${specifier}`
+  if (importResolutionCache.has(cacheKey)) {
+    return importResolutionCache.get(cacheKey)
+  }
+  const basePath = resolve(dirname(fromResolved), specifier)
+  if (!isPathInside(repoRoot, basePath)) {
+    throw new Error(`Relative import outside repo root: ${fromPath} imports ${specifier}`)
+  }
   const candidates = [
     basePath,
     `${basePath}.ts`,
@@ -207,43 +432,50 @@ function resolveRelativeImport(fromPath, specifier) {
     join(basePath, 'index.js'),
     join(basePath, 'index.jsx'),
   ]
-  return candidates.find((candidate) => existsSync(candidate) && statSync(candidate).isFile()) || null
+  for (const candidate of candidates) {
+    const resolvedCandidate = resolve(candidate)
+    if (!isPathInside(repoRoot, resolvedCandidate)) {
+      throw new Error(`Relative import candidate outside repo root: ${fromPath} imports ${specifier}`)
+    }
+    if (isFilePath(resolvedCandidate, 'relative import candidate')) {
+      const dependencyPath = assertPathInsideRepo(resolvedCandidate, 'Relative import dependency')
+      importResolutionCache.set(cacheKey, dependencyPath)
+      return dependencyPath
+    }
+  }
+  importResolutionCache.set(cacheKey, null)
+  return null
 }
 
-function copyRelativeDependencies(sourcePath, tempDir, copied = new Set()) {
-  if (copied.has(sourcePath)) return
-  copied.add(sourcePath)
-  const source = readFileSync(sourcePath, 'utf8')
-  const targetPath = tempPathForSource(sourcePath, tempDir)
-  mkdirSync(dirname(targetPath), { recursive: true })
-  writeFileSync(targetPath, source, 'utf8')
+function copyRelativeDependencies(sourcePath, tempDir, copied = new Set(), depth = 0) {
+  const resolvedPath = assertPathInsideRepo(sourcePath, 'Source path')
+  if (copied.has(resolvedPath)) return
+  if (depth > maxRelativeImportDepth) {
+    throw new Error(`Relative import depth exceeded ${maxRelativeImportDepth}: ${resolvedPath}`)
+  }
+  copied.add(resolvedPath)
+  const source = readSourceFile(resolvedPath)
+  const targetPath = tempPathForSource(resolvedPath, tempDir)
+  mkdirForFile(targetPath, 'hosted TSX copy')
+  writeTextFile(targetPath, source, 'hosted TSX dependency copy')
 
-  const importPattern = /^\s*import(?:[\s\S]*?\sfrom\s+|\s+)['"](\.{1,2}\/[^'"]+)['"]\s*;?/gm
-  let match
-  while ((match = importPattern.exec(source)) !== null) {
-    const dependencyPath = resolveRelativeImport(sourcePath, match[1])
+  for (const specifier of extractRelativeImportSpecifiers(resolvedPath, source)) {
+    const dependencyPath = resolveRelativeImport(resolvedPath, specifier)
     if (dependencyPath) {
-      copyRelativeDependencies(dependencyPath, tempDir, copied)
+      copyRelativeDependencies(dependencyPath, tempDir, copied, depth + 1)
     }
   }
 }
 
-function createCheckFile(entryPath, tempDir, index, surface, tomlPath) {
-  const source = readFileSync(entryPath, 'utf8')
-  const stripped = stripHostedUiImports(source)
-  const checkPath = tempPathForSource(entryPath, tempDir)
+function createCheckFile(entryPath, tempDir, surface, tomlPath) {
+  const resolvedEntryPath = assertPathInsideRepo(entryPath, 'Hosted TSX entry')
+  const source = readSourceFile(resolvedEntryPath)
+  const stripped = stripHostedUiImports(resolvedEntryPath, source)
+  const checkPath = tempPathForSource(resolvedEntryPath, tempDir)
   const prefixLines = 6
-  mkdirSync(dirname(checkPath), { recursive: true })
-  const copied = new Set([entryPath])
-  const importPattern = /^\s*import(?:[\s\S]*?\sfrom\s+|\s+)['"](\.{1,2}\/[^'"]+)['"]\s*;?/gm
-  let match
-  while ((match = importPattern.exec(source)) !== null) {
-    const dependencyPath = resolveRelativeImport(entryPath, match[1])
-    if (dependencyPath) {
-      copyRelativeDependencies(dependencyPath, tempDir, copied)
-    }
-  }
-  writeFileSync(
+  copyRelativeDependencies(resolvedEntryPath, tempDir)
+  mkdirForFile(checkPath, 'hosted TSX check')
+  writeTextFile(
     checkPath,
     `/// <reference path="${hostedUiGlobalsPath}" />\nimport * as NekoUi from "@neko/plugin-ui";\nimport type { PluginSurfaceProps, HostedAction, JsonSchema, HostedApi } from "@neko/plugin-ui";\nconst { ${[
       'Page', 'Card', 'Section', 'Heading', 'Stack', 'Grid', 'Text', 'Button', 'ButtonGroup',
@@ -254,15 +486,16 @@ function createCheckFile(entryPath, tempDir, index, surface, tomlPath) {
       'useState', 'useReducer', 'useEffect', 'useLayoutEffect', 'useMemo', 'useCallback', 'useRef', 'useLocalState',
       'useDebounce', 'useDebouncedState', 'useForm', 'useAsync', 'useToast', 'useConfirm',
     ].join(', ')} } = NekoUi;\ndeclare const h: any;\ndeclare const Fragment: any;\n${stripped}\n`,
-    'utf8',
+    'hosted TSX check file',
   )
   return {
     checkPath,
-    entryPath,
+    entryPath: resolvedEntryPath,
+    source,
     surface,
     tomlPath,
     prefixLines,
-    hasDefaultExport: hasDefaultExport(stripped),
+    hasDefaultExport: hasDefaultExport(resolvedEntryPath, source),
   }
 }
 
@@ -281,63 +514,85 @@ function formatDiagnostic(diagnostic, metaByCheckPath) {
 }
 
 function main() {
-  const pluginTomls = findPluginTomls(process.argv.slice(2))
-  const tempDir = mkdtempSync(join(tmpdir(), 'neko-hosted-tsx-'))
+  let tempDir = null
   const checkFiles = []
   const errors = []
   const warnings = []
 
   try {
+    const pluginTomls = findPluginTomls(process.argv.slice(2))
+    tempDir = createTempDir()
+
     for (const tomlPath of pluginTomls) {
       const pluginDir = dirname(tomlPath)
-      const surfaces = parseTomlSurfaces(readFileSync(tomlPath, 'utf8'))
+      let surfaces
+      try {
+        surfaces = parseTomlSurfaces(readTextFile(tomlPath, 'plugin.toml', maxPluginTomlBytes))
+      } catch (error) {
+        errors.push(`${tomlPath}:1:1 - ${formatError(error)}`)
+        continue
+      }
       for (const surface of surfaces) {
         const entry = surface.entry
         if (!entry || inferMode(entry) !== 'hosted-tsx') continue
-        const entryPath = join(pluginDir, entry)
-        if (!existsSync(entryPath)) {
-          console.error(`${tomlPath}: hosted-tsx entry not found: ${entry}`)
-          process.exitCode = 1
+        const label = surfaceLabel(surface)
+        const entryPath = resolve(pluginDir, entry)
+        if (!isPathInside(repoRoot, entryPath)) {
+          errors.push(`${tomlPath}:1:1 [${label}] - Hosted TSX entry outside repo root: ${entry}`)
           continue
         }
-        const checkFile = createCheckFile(entryPath, tempDir, checkFiles.length, surface, tomlPath)
+        if (!existsSync(entryPath)) {
+          errors.push(`${tomlPath}:1:1 [${label}] - hosted-tsx entry not found: ${entry}`)
+          continue
+        }
+        let checkFile
+        try {
+          checkFile = createCheckFile(entryPath, tempDir, surface, tomlPath)
+        } catch (error) {
+          errors.push(`${entryPath}:1:1 [${label}] - ${formatError(error)}`)
+          continue
+        }
         checkFiles.push(checkFile)
         if (!checkFile.hasDefaultExport) {
-          errors.push(`${entryPath}:1:1 [${surfaceLabel(surface)}] - Hosted TSX must export a default function component.`)
+          errors.push(`${entryPath}:1:1 [${label}] - Hosted TSX must export a default function component.`)
         }
-        if (/\balert\s*\(/.test(readFileSync(entryPath, 'utf8'))) {
-          warnings.push(`${entryPath} [${surfaceLabel(surface)}] - Prefer inline UI errors over alert(); use ActionForm/ActionButton onError or InlineError.`)
+        if (/\balert\s*\(/.test(checkFile.source)) {
+          warnings.push(`${entryPath} [${label}] - Prefer inline UI errors over alert(); use ActionForm/ActionButton onError or InlineError.`)
         }
-        if (/(^|[^\w.])api\./m.test(readFileSync(entryPath, 'utf8'))) {
-          errors.push(`${entryPath}:1:1 [${surfaceLabel(surface)}] - Use props.api from PluginSurfaceProps instead of the global api object.`)
+        if (/(^|[^\w.])api\./m.test(checkFile.source)) {
+          errors.push(`${entryPath}:1:1 [${label}] - Use props.api from PluginSurfaceProps instead of the global api object.`)
         }
       }
     }
 
-    if (checkFiles.length === 0) {
+    if (checkFiles.length === 0 && errors.length === 0) {
       console.log('No hosted-tsx surfaces found.')
       return
     }
 
-    const metaByCheckPath = new Map(checkFiles.map((item) => [item.checkPath, item]))
-    const program = ts.createProgram(checkFiles.map((item) => item.checkPath), {
-      jsx: ts.JsxEmit.React,
-      jsxFactory: 'h',
-      jsxFragmentFactory: 'Fragment',
-      module: ts.ModuleKind.ESNext,
-      target: ts.ScriptTarget.ES2020,
-      moduleResolution: ts.ModuleResolutionKind.Bundler,
-      baseUrl: repoRoot,
-      paths: {
-        '@neko/plugin-ui': ['plugin/sdk/hosted-ui'],
-      },
-      noEmit: true,
-      strict: false,
-      skipLibCheck: true,
-      esModuleInterop: true,
-      allowSyntheticDefaultImports: true,
-    })
-    const diagnostics = ts.getPreEmitDiagnostics(program)
+    let diagnostics = []
+    let metaByCheckPath = new Map()
+    if (checkFiles.length > 0) {
+      metaByCheckPath = new Map(checkFiles.map((item) => [item.checkPath, item]))
+      const program = ts.createProgram(checkFiles.map((item) => item.checkPath), {
+        jsx: ts.JsxEmit.React,
+        jsxFactory: 'h',
+        jsxFragmentFactory: 'Fragment',
+        module: ts.ModuleKind.ESNext,
+        target: ts.ScriptTarget.ES2020,
+        moduleResolution: ts.ModuleResolutionKind.Bundler,
+        baseUrl: repoRoot,
+        paths: {
+          '@neko/plugin-ui': ['plugin/sdk/hosted-ui'],
+        },
+        noEmit: true,
+        strict: false,
+        skipLibCheck: true,
+        esModuleInterop: true,
+        allowSyntheticDefaultImports: true,
+      })
+      diagnostics = ts.getPreEmitDiagnostics(program)
+    }
     if (warnings.length > 0) {
       console.warn('Hosted TSX warnings:')
       for (const warning of warnings) {
@@ -356,8 +611,12 @@ function main() {
       return
     }
     console.log(`Hosted TSX check passed (${checkFiles.length} file${checkFiles.length === 1 ? '' : 's'}).`)
+  } catch (error) {
+    console.error('Hosted TSX check failed:')
+    console.error(`  ${formatError(error)}`)
+    process.exitCode = 1
   } finally {
-    rmSync(tempDir, { recursive: true, force: true })
+    cleanupTempDir(tempDir)
   }
 }
 

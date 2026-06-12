@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
+import { ensureBrandCSS } from './study_surface_utils';
 
 type StudyStatus = {
   status?: string;
@@ -196,16 +197,6 @@ function MathReply({ text, label }: { text: string; label: string }) {
       role="status"
       aria-live="polite"
       aria-label={label}
-      style={{
-        minHeight: '180px',
-        whiteSpace: 'pre-wrap',
-        overflowWrap: 'break-word',
-        border: '1px solid rgba(148, 163, 184, 0.36)',
-        borderRadius: '8px',
-        background: 'rgba(255, 255, 255, 0.84)',
-        padding: '12px',
-        lineHeight: '1.5',
-      }}
     >
       {parts.map((part, index) => {
         if (part.type === 'math') {
@@ -574,6 +565,10 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const currentMode = String(status.active_mode || status.mode || 'companion');
   const interactionBusy = busy || pastePending;
+
+  useEffect(() => {
+    ensureBrandCSS();
+  }, []);
 
   function beginStudyRequest() {
     explainControllerRef.current?.abort();
@@ -997,7 +992,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   return (
     <div
       ref={panelRef}
-      className="study-panel"
+      className="study-panel surface-shell"
       role="region"
       aria-label={t('ui.surface.study_panel', 'Study Panel')}
       data-busy={interactionBusy ? "true" : "false"}
@@ -1007,15 +1002,21 @@ export default function StudyPanel(props: PluginSurfaceProps) {
           <h1>{t('ui.title', 'Study Companion')}</h1>
           <span>{stateLabel} / {modeLabel(currentMode)}</span>
         </div>
-        <div className="study-panel__modes" role="group" aria-label={t('ui.label.mode', 'Mode')}>
+        <div
+          className="mode-switch study-panel__modes"
+          role="group"
+          aria-label={t('ui.label.mode', 'Mode')}
+          data-active={currentMode}
+        >
           {MODE_ORDER.map((item) => {
             const pressed = currentMode === item.id;
             return (
               <button
                 key={item.id}
                 type="button"
-                className={pressed ? 'is-active' : ''}
+                className={pressed ? 'mode-btn active is-active' : 'mode-btn'}
                 aria-pressed={pressed}
+                data-mode={item.id}
                 disabled={interactionBusy}
                 onClick={() => setMode(item.id)}
               >

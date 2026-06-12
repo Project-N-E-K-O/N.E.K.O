@@ -1,7 +1,7 @@
 import { useEffect, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 
-import { callPlugin, formatError, text } from './study_surface_utils';
+import { callPlugin, ensureBrandCSS, formatError, text } from './study_surface_utils';
 
 export default function DailyGoalEditor(props: PluginSurfaceProps) {
   const [goals, setGoals] = useState<any[]>([]);
@@ -35,11 +35,12 @@ export default function DailyGoalEditor(props: PluginSurfaceProps) {
   }
 
   useEffect(() => {
+    ensureBrandCSS();
     refresh().catch((err) => setError(formatError(err)));
   }, []);
 
   return (
-    <div className="study-panel">
+    <div className="study-panel surface-shell">
       <header className="study-panel__header">
         <div>
           <h1>{text(props, 'ui.surface.daily_goal_editor', 'Daily Goals')}</h1>

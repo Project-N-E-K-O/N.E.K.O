@@ -130,7 +130,12 @@ function mcpContext(): PluginUiContext {
   }
 }
 
-function executeHostedDocument(source: string, context: PluginUiContext = baseContext(), refreshContext: PluginUiContext = context) {
+function executeHostedDocument(
+  source: string,
+  context: PluginUiContext = baseContext(),
+  refreshContext: PluginUiContext = context,
+  dependencies: Array<{ path: string; source: string }> = [],
+) {
   const messages: any[] = []
   document.documentElement.innerHTML = '<head></head><body><main id="root"></main></body>'
   window.confirm = vi.fn(() => true)
@@ -155,6 +160,7 @@ function executeHostedDocument(source: string, context: PluginUiContext = baseCo
 
   const html = buildHostedTsxDocument({
     source,
+    dependencies,
     pluginId: 'demo',
     surface: baseSurface(),
     context,
@@ -213,6 +219,28 @@ describe('hosted TSX document runtime', () => {
 
     expect(root.textContent).toContain('Imported')
     expect(root.textContent).toContain('ok')
+  })
+
+  it('inlines same-plugin relative TSX dependencies before executing', () => {
+    const { root } = executeHostedDocument(`
+      import { decorate, label } from "./shared"
+
+      export default function Panel() {
+        return <strong>{decorate(label)}</strong>
+      }
+    `, baseContext(), baseContext(), [{
+      path: 'ui/shared.ts',
+      source: `
+        import type { PluginSurfaceProps } from "@neko/plugin-ui"
+
+        export const label = "shared"
+        export function decorate(value: string) {
+          return value + " helper"
+        }
+      `,
+    }])
+
+    expect(root.querySelector('strong')?.textContent).toBe('shared helper')
   })
 
   it('bridges api.call and api.refresh through parent postMessage', async () => {

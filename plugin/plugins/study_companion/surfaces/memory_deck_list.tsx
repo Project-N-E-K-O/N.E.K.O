@@ -1,6 +1,7 @@
 import { useEffect, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 import { callPlugin, errorMessage, text } from './memory_shared';
+import { ensureBrandCSS, STUDY_SURFACE_MESSAGE_TYPES } from './study_surface_utils';
 import {
   deckGoalSavedMessage,
   getMemoryHabitStatus,
@@ -29,7 +30,14 @@ export default function MemoryDeckList(props: PluginSurfaceProps) {
 
   async function refresh(signal?: AbortSignal) {
     const payload = await callPlugin<{ decks?: MemoryDeck[] }>('study_memory_list_decks', { limit: 100 }, signal);
-    setDecks(Array.isArray(payload.decks) ? payload.decks : []);
+    const nextDecks = Array.isArray(payload.decks) ? payload.decks : [];
+    setDecks(nextDecks);
+    window.parent?.postMessage?.({
+      type: STUDY_SURFACE_MESSAGE_TYPES.memoryDeckUpdated,
+      payload: {
+        card_count: nextDecks.reduce((total, deck) => total + (Number(deck.item_count) || 0), 0),
+      },
+    }, '*');
   }
 
   async function createDeck() {
@@ -79,6 +87,7 @@ export default function MemoryDeckList(props: PluginSurfaceProps) {
   }
 
   useEffect(() => {
+    ensureBrandCSS();
     const controller = new AbortController();
     getMemoryHabitStatus(controller.signal)
       .then(setHabitStatus)
@@ -92,7 +101,7 @@ export default function MemoryDeckList(props: PluginSurfaceProps) {
   }, []);
 
   return (
-    <div className="study-panel">
+    <div className="study-panel surface-shell">
       <header className="study-panel__header">
         <div>
           <h1>{text(props, 'ui.surface.memory_deck_list', 'Memory Decks')}</h1>

@@ -132,6 +132,66 @@ def test_surface_context_includes_config_snapshot_only_with_permission(monkeypat
     assert context["actions"] == []
 
 
+def test_surface_source_includes_same_plugin_relative_dependencies(tmp_path) -> None:
+    plugin_dir = tmp_path / "demo_plugin"
+    ui_dir = plugin_dir / "ui"
+    nested_dir = ui_dir / "nested"
+    nested_dir.mkdir(parents=True)
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
+    (ui_dir / "panel.tsx").write_text(
+        "import { label } from './shared'\n"
+        "export default function Panel() { return <strong>{label}</strong> }\n",
+        encoding="utf-8",
+    )
+    (ui_dir / "shared.ts").write_text(
+        "import { suffix } from './nested/suffix'\n"
+        "export const label = `shared ${suffix}`\n",
+        encoding="utf-8",
+    )
+    (nested_dir / "suffix.ts").write_text("export const suffix = 'ok'\n", encoding="utf-8")
+    plugin_ui = normalize_plugin_ui_manifest(
+        {
+            "plugin": {
+                "ui": {
+                    "panel": [{
+                        "id": "main",
+                        "entry": "ui/panel.tsx",
+                        "permissions": ["state:read"],
+                    }],
+                },
+            },
+        },
+        plugin_id="demo",
+    )
+
+    plugins_backup = dict(state.plugins)
+    try:
+        with state.acquire_plugins_write_lock():
+            state.plugins.clear()
+            state.plugins["demo"] = {
+                "id": "demo",
+                "config_path": str(config_path),
+                "plugin_ui": plugin_ui,
+                "entries": [],
+            }
+
+        payload = asyncio.run(PluginUiQueryService().get_surface_source("demo", kind="panel", surface_id="main"))
+    finally:
+        with state.acquire_plugins_write_lock():
+            state.plugins.clear()
+            state.plugins.update(plugins_backup)
+
+    assert payload["source"].startswith("import { label }")
+    assert payload["dependencies"] == [
+        {"path": "ui/nested/suffix.ts", "source": "export const suffix = 'ok'\n"},
+        {
+            "path": "ui/shared.ts",
+            "source": "import { suffix } from './nested/suffix'\nexport const label = `shared ${suffix}`\n",
+        },
+    ]
+
+
 def test_call_surface_action_preserves_plugin_entry_error(monkeypatch, tmp_path) -> None:
     plugin_dir = tmp_path / "demo_plugin"
     plugin_dir.mkdir()

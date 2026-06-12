@@ -186,12 +186,6 @@ title = "Session Summary"
 entry = "surfaces/session_summary.tsx"
 permissions = ["state:read", "action:call"]
 
-[[plugin.ui.guide]]
-id = "quickstart"
-title = "Study Companion Quickstart"
-entry = "surfaces/quickstart.tsx"
-permissions = ["state:read"]
-
 [[plugin.ui.docs]]
 id = "onboarding"
 title = "Study Companion Onboarding"

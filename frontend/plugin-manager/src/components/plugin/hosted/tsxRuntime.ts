@@ -4,10 +4,16 @@ import { buildUiKitBundle } from './uiKitBundle'
 
 type BuildHostedTsxDocumentOptions = {
   source: string
+  dependencies?: HostedTsxDependency[]
   pluginId: string
   surface: PluginUiSurface
   context?: PluginUiContext | null
   locale: string
+}
+
+type HostedTsxDependency = {
+  path: string
+  source: string
 }
 
 function escapeScriptContent(value: string) {
@@ -24,14 +30,181 @@ function escapeHtmlAttribute(value: string) {
     .replace(/>/g, '&gt;')
 }
 
-function normalizeSource(source: string) {
-  return source
-    .replace(/^\s*import\s+[^;]+from\s+['"](?:@neko\/plugin-ui|neko:ui)['"];?\s*$/gm, '')
-    .replace(/^\s*import\s+['"](?:@neko\/plugin-ui|neko:ui)['"];?\s*$/gm, '')
+const IMPORT_SOURCE_PATTERN = /^[^\S\r\n]*import(?:([\s\S]*?)\sfrom\s+|[^\S\r\n]+)['"]([^'"]+)['"][^\S\r\n]*;?[^\S\r\n]*(?:\r?\n|$)/gm
+const HOSTED_CODE_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx']
+
+function normalizeHostedPath(path: string) {
+  const parts: string[] = []
+  for (const segment of path.replace(/\\/g, '/').split('/')) {
+    if (!segment || segment === '.') continue
+    if (segment === '..') {
+      parts.pop()
+      continue
+    }
+    parts.push(segment)
+  }
+  return parts.join('/')
 }
 
-function compileHostedTsx(source: string) {
-  const compiled = transform(normalizeSource(source), {
+function dirnameHostedPath(path: string) {
+  const normalized = normalizeHostedPath(path)
+  const index = normalized.lastIndexOf('/')
+  return index >= 0 ? normalized.slice(0, index) : ''
+}
+
+function resolveHostedImport(
+  fromPath: string,
+  specifier: string,
+  dependenciesByPath: Map<string, HostedTsxDependency>,
+) {
+  const cleanSpecifier = specifier.split('?', 1)[0]?.split('#', 1)[0] || ''
+  const base = normalizeHostedPath(`${dirnameHostedPath(fromPath)}/${cleanSpecifier}`)
+  const candidates = [base]
+  if (!/\.[A-Za-z0-9]+$/.test(base)) {
+    candidates.push(...HOSTED_CODE_EXTENSIONS.map((extension) => `${base}${extension}`))
+  }
+  candidates.push(...HOSTED_CODE_EXTENSIONS.map((extension) => `${base}/index${extension}`))
+  return candidates.find((candidate) => dependenciesByPath.has(candidate)) || ''
+}
+
+function parseNamedBindings(bindings: string) {
+  const trimmed = bindings.trim()
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+    return []
+  }
+  return trimmed
+    .slice(1, -1)
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .filter((item) => !item.startsWith('type '))
+    .map((item) => {
+      const aliasMatch = item.match(/^([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)$/)
+      if (aliasMatch) return `${aliasMatch[1]}: ${aliasMatch[2]}`
+      return item
+    })
+}
+
+function moduleImportStatement(rawBindings: string | undefined, modulePath: string) {
+  const bindings = String(rawBindings || '').trim()
+  const moduleRef = `__modules[${JSON.stringify(modulePath)}]`
+  if (!bindings || bindings === 'type' || bindings.startsWith('type ')) {
+    return bindings.startsWith('type ') ? '' : `${moduleRef};\n`
+  }
+  if (bindings.startsWith('* as ')) {
+    return `const ${bindings.slice(5).trim()} = ${moduleRef};\n`
+  }
+  const namedStart = bindings.indexOf('{')
+  const statements: string[] = []
+  if (namedStart > 0) {
+    const defaultName = bindings.slice(0, namedStart).replace(/,$/, '').trim()
+    if (defaultName) statements.push(`const ${defaultName} = ${moduleRef}.default;`)
+  } else if (namedStart < 0) {
+    statements.push(`const ${bindings.replace(/,$/, '').trim()} = ${moduleRef}.default;`)
+  }
+  const namedBindings = namedStart >= 0 ? parseNamedBindings(bindings.slice(namedStart)) : []
+  if (namedBindings.length > 0) {
+    statements.push(`const { ${namedBindings.join(', ')} } = ${moduleRef};`)
+  }
+  return statements.length > 0 ? `${statements.join('\n')}\n` : ''
+}
+
+function transformHostedImports(
+  source: string,
+  fromPath: string,
+  dependenciesByPath: Map<string, HostedTsxDependency>,
+) {
+  return source.replace(IMPORT_SOURCE_PATTERN, (match, rawBindings: string | undefined, specifier: string) => {
+    if (specifier === '@neko/plugin-ui' || specifier === 'neko:ui') {
+      return ''
+    }
+    if (!specifier.startsWith('./') && !specifier.startsWith('../')) {
+      return match
+    }
+    const modulePath = resolveHostedImport(fromPath, specifier, dependenciesByPath)
+    return modulePath ? moduleImportStatement(rawBindings, modulePath) : ''
+  })
+}
+
+function exportAssignment(name: string, localName = name) {
+  return `__exports[${JSON.stringify(name)}] = ${localName};`
+}
+
+function transformModuleExports(source: string) {
+  const exports: string[] = []
+  let next = source
+    .replace(/^\s*export\s+type\s+\{[^}]*\}\s*;?\s*$/gm, '')
+    .replace(/^\s*export\s+(?=(interface|type)\b)/gm, '')
+    .replace(
+      /^\s*export\s+(const|let|var)\s+([A-Za-z_$][\w$]*)/gm,
+      (_match, declaration, name) => {
+        exports.push(exportAssignment(name))
+        return `${declaration} ${name}`
+      },
+    )
+    .replace(
+      /^\s*export\s+(async\s+function|function|class)\s+([A-Za-z_$][\w$]*)/gm,
+      (_match, declaration, name) => {
+        exports.push(exportAssignment(name))
+        return `${declaration} ${name}`
+      },
+    )
+    .replace(/^\s*export\s+\{([^}]+)\}\s*;?\s*$/gm, (_match, names) => {
+      for (const item of String(names).split(',')) {
+        const trimmed = item.trim()
+        if (!trimmed || trimmed.startsWith('type ')) continue
+        const aliasMatch = trimmed.match(/^([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)$/)
+        if (aliasMatch?.[1] && aliasMatch[2]) {
+          exports.push(exportAssignment(aliasMatch[2], aliasMatch[1]))
+        } else {
+          exports.push(exportAssignment(trimmed))
+        }
+      }
+      return ''
+    })
+  next = next.replace(/^\s*export\s+default\s+function\s+([A-Za-z_$][\w$]*)?\s*\(/m, (_match, name) => {
+    const localName = name || '__default'
+    exports.push(exportAssignment('default', localName))
+    return `function ${localName}(`
+  })
+  next = next.replace(/^\s*export\s+default\s+/m, () => {
+    exports.push(exportAssignment('default', '__default'))
+    return 'const __default = '
+  })
+  return `${next}\n${exports.join('\n')}`
+}
+
+function sourceCommentPath(path: string) {
+  return path.replace(/\*\//g, '* /')
+}
+
+function bundleHostedTsxSource(
+  source: string,
+  dependencies: HostedTsxDependency[] = [],
+  entryPath = 'entry.tsx',
+) {
+  const dependenciesByPath = new Map(
+    dependencies
+      .filter((dependency) => dependency && typeof dependency.source === 'string')
+      .map((dependency) => [normalizeHostedPath(String(dependency.path || 'inline')), dependency] as const),
+  )
+  const chunks = Array.from(dependenciesByPath.entries())
+    .map(([path, dependency]) => {
+      const moduleSource = transformModuleExports(transformHostedImports(dependency.source, path, dependenciesByPath))
+      return `
+/* hosted dependency: ${sourceCommentPath(path)} */
+__modules[${JSON.stringify(path)}] = (() => {
+  const __exports = {};
+${moduleSource}
+  return __exports;
+})();`
+    })
+  const entrySource = transformHostedImports(source, normalizeHostedPath(entryPath), dependenciesByPath)
+  return `const __modules = Object.create(null);\n${chunks.join('\n')}\n${entrySource}`
+}
+
+function compileHostedTsx(source: string, dependencies: HostedTsxDependency[] = [], entryPath = 'entry.tsx') {
+  const compiled = transform(bundleHostedTsxSource(source, dependencies, entryPath), {
     transforms: ['typescript', 'jsx'],
     jsxPragma: 'h',
     jsxFragmentPragma: 'Fragment',
@@ -77,7 +250,7 @@ function buildPayload(options: BuildHostedTsxDocumentOptions) {
 }
 
 export function buildHostedTsxDocument(options: BuildHostedTsxDocumentOptions) {
-  const compiled = compileHostedTsx(options.source)
+  const compiled = compileHostedTsx(options.source, options.dependencies, options.surface.entry || 'entry.tsx')
   const payload = escapeScriptContent(JSON.stringify(buildPayload(options)))
   const locale = escapeHtmlAttribute(options.locale)
   const uiKit = buildUiKitBundle()
