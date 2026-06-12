@@ -573,21 +573,19 @@ class MusicPusherPlugin(NekoPluginBase):
         text = str(url or "").strip()
         if not text:
             return ""
-        text = text.replace("/plugin/emoji_pusher/ui/", "/plugin/music_pusher/ui/")
+        if "/plugin/emoji_pusher/ui/" in text:
+            if text.startswith("/"):
+                text = text.replace("/plugin/emoji_pusher/ui/", f"/plugin/{self.plugin_id}/ui/")
+            else:
+                parsed = _parse_http_url(text)
+                if parsed is not None and self._matches_public_origin(parsed):
+                    text = text.replace("/plugin/emoji_pusher/ui/", f"/plugin/{self.plugin_id}/ui/")
         return self._to_absolute_ui_url(text) if text.startswith("/") else text
 
     def _is_http_music_url(self, url: str) -> bool:
         return _parse_http_url(url) is not None
 
-    def _is_plugin_upload_url(self, url: str) -> bool:
-        parsed = _parse_http_url(url)
-        if parsed is None:
-            return False
-
-        upload_prefix = f"/plugin/{self.plugin_id}/ui/{_UPLOAD_SUBDIR}/"
-        if not str(parsed.path or "").startswith(upload_prefix):
-            return False
-
+    def _matches_public_origin(self, parsed: ParseResult) -> bool:
         public_origin = _parse_http_url(self._resolve_public_origin())
         if public_origin is None:
             return False
@@ -598,19 +596,36 @@ class MusicPusherPlugin(NekoPluginBase):
             == (public_origin.port or _default_port_for_scheme(public_origin.scheme))
         )
 
+    def _upload_filename_from_path(self, path: str) -> str:
+        upload_prefix = f"/plugin/{self.plugin_id}/ui/{_UPLOAD_SUBDIR}/"
+        raw_path = str(path or "")
+        if not raw_path.startswith(upload_prefix):
+            return ""
+        filename = raw_path.removeprefix(upload_prefix).strip()
+        if not filename or "/" in filename:
+            return ""
+        return filename if filename == Path(filename).name else ""
+
+    def _is_plugin_upload_url(self, url: str) -> bool:
+        parsed = _parse_http_url(url)
+        if parsed is None:
+            return False
+
+        if not self._upload_filename_from_path(str(parsed.path or "")):
+            return False
+
+        return self._matches_public_origin(parsed)
+
     def _rebase_known_upload_url_locked(self, url: str) -> str:
         normalized = self._normalize_legacy_url(url)
         parsed = _parse_http_url(normalized)
         if parsed is None:
             return normalized
-
-        upload_prefix = f"/plugin/{self.plugin_id}/ui/{_UPLOAD_SUBDIR}/"
-        path = str(parsed.path or "")
-        if not path.startswith(upload_prefix):
+        if not self._is_plugin_upload_url(normalized):
             return normalized
 
-        stored_filename = Path(path).name
-        if not stored_filename or stored_filename != Path(stored_filename).name:
+        stored_filename = self._upload_filename_from_path(str(parsed.path or ""))
+        if not stored_filename:
             return normalized
         if (
             stored_filename not in self._upload_name_map
@@ -669,6 +684,9 @@ class MusicPusherPlugin(NekoPluginBase):
             )
         except asyncio.TimeoutError:
             if play_push_started.is_set():
+                if cancel_event is not None and cancel_event.is_set():
+                    self.logger.warning("音乐播放推送已被取消，不按成功提交处理")
+                    return False
                 self.logger.warning("音乐播放推送仍在进行，已按播放请求提交处理")
                 return True
             raise
@@ -682,7 +700,7 @@ class MusicPusherPlugin(NekoPluginBase):
             return []
 
         if self._is_plugin_upload_url(url) and host in {"127.0.0.1", "localhost", "::1"}:
-            return ["127.0.0.1", "localhost"]
+            return ["127.0.0.1", "localhost", "::1"]
         if self._is_plugin_upload_url(url):
             return [host]
 
@@ -1194,6 +1212,9 @@ class MusicPusherPlugin(NekoPluginBase):
         except Exception as exc:
             self.logger.warning(f"读取调度状态失败，将重置为空状态: {exc}")
             return
+        if not isinstance(data, dict):
+            self.logger.warning("读取调度状态失败，将重置为空状态: 状态文件根节点不是对象")
+            return
 
         raw_items = data.get("music_items")
         if isinstance(raw_items, list):
@@ -1671,7 +1692,7 @@ class MusicPusherPlugin(NekoPluginBase):
             if task_id and task_id != self._active_task_id:
                 return False
             self._active_control = cmd
-            if cmd == _CTRL_STOP and self._active_cancel_event is not None:
+            if self._active_cancel_event is not None:
                 self._active_cancel_event.set()
             return True
 
@@ -2278,6 +2299,8 @@ class MusicPusherPlugin(NekoPluginBase):
             return Err(SdkError(queue_err))
 
         async with self._state_lock:
+            if trigger_dt <= _utc_now():
+                return Err(SdkError("触发时间必须晚于当前时间"))
             missing_upload = self._missing_upload_reference_in_queue_locked(queue)
             if missing_upload:
                 return Err(SdkError(f"上传音频已不存在，请重新选择: {missing_upload}"))
@@ -2710,7 +2733,7 @@ class MusicPusherPlugin(NekoPluginBase):
                 task["updated_at"] = _iso()
                 self._active_task_id = task_id
                 self._active_control = None
-                self._active_cancel_event = run_cancel_event
+                self._active_cancel_event = None
                 self._active_track = None
                 self._active_track_started_at = None
                 self._active_track_duration = 0
@@ -2800,6 +2823,10 @@ class MusicPusherPlugin(NekoPluginBase):
                         self._save_state_locked()
 
                     pushed_track = False
+                    track_cancel_event = threading.Event()
+                    async with self._state_lock:
+                        if self._active_task_id == task_id:
+                            self._active_cancel_event = track_cancel_event
                     try:
                         push_deadline = time.monotonic() + _PUSH_TIMEOUT_SECONDS
                         pushed_track = await self._push_music_link_with_timeout(
@@ -2810,7 +2837,7 @@ class MusicPusherPlugin(NekoPluginBase):
                             lyric_text=lyric_text,
                             attach_prompt_on_push=attach_prompt_on_push,
                             deadline_monotonic=push_deadline,
-                            cancel_event=_CombinedCancelEvent(self._push_cancel_event, run_cancel_event),
+                            cancel_event=_CombinedCancelEvent(self._push_cancel_event, run_cancel_event, track_cancel_event),
                         )
                         if not pushed_track:
                             raise asyncio.TimeoutError
@@ -2821,6 +2848,10 @@ class MusicPusherPlugin(NekoPluginBase):
                     except Exception as exc:
                         last_error = f"推送失败[{title}]: {exc}"
                         self.logger.warning(last_error)
+                    finally:
+                        async with self._state_lock:
+                            if self._active_cancel_event is track_cancel_event:
+                                self._active_cancel_event = None
 
                     if not pushed_track:
                         async with self._state_lock:
