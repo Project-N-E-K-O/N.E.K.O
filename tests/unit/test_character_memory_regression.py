@@ -3029,6 +3029,44 @@ def test_rename_character_memory_storage_source_wins_over_precreated_target_dir(
 
 
 @pytest.mark.unit
+def test_rename_character_memory_storage_runtime_wins_over_project_fallback(tmp_path):
+    from utils.character_memory import rename_character_memory_storage
+
+    memory_dir = tmp_path / "memory"
+    project_memory_dir = tmp_path / "project_memory"
+    runtime_old_dir = memory_dir / "YUI"
+    project_old_dir = project_memory_dir / "YUI"
+    target_dir = memory_dir / "YUI1"
+    runtime_old_dir.mkdir(parents=True)
+    project_old_dir.mkdir(parents=True)
+
+    (runtime_old_dir / "persona.json").write_text('{"source":"runtime"}', encoding="utf-8")
+    (project_old_dir / "persona.json").write_text('{"source":"project-fallback"}', encoding="utf-8")
+    (project_memory_dir / "facts_YUI.json").write_text(
+        '[{"id":"fallback-fact"}]',
+        encoding="utf-8",
+    )
+
+    cm = SimpleNamespace(memory_dir=memory_dir, project_memory_dir=project_memory_dir)
+
+    result = rename_character_memory_storage(cm, "YUI", "YUI1")
+
+    assert result["changed"] is True
+    assert (target_dir / "persona.json").read_text(encoding="utf-8") == '{"source":"runtime"}'
+    assert (target_dir / "facts.json").read_text(encoding="utf-8") == '[{"id":"fallback-fact"}]'
+    assert not runtime_old_dir.exists()
+    assert not project_old_dir.exists()
+    assert not (project_memory_dir / "facts_YUI.json").exists()
+
+    conflict_files = [
+        path
+        for path in (memory_dir / ".YUI1.rename_conflicts").rglob("persona.json")
+        if path.read_text(encoding="utf-8") == '{"source":"project-fallback"}'
+    ]
+    assert len(conflict_files) == 1
+
+
+@pytest.mark.unit
 def test_renamed_time_indexed_db_reopens_under_new_character(tmp_path, monkeypatch):
     from datetime import datetime
 

@@ -105,6 +105,22 @@ def _conflict_backup_root(target_dir: Path) -> Path:
     return target_dir.parent / f".{target_dir.name}.rename_conflicts" / uuid.uuid4().hex
 
 
+def _path_key(path: Path) -> str:
+    try:
+        return str(path.resolve())
+    except OSError:
+        return str(path)
+
+
+def _mark_protected_target(path: Path, protected_targets: set[str] | None) -> None:
+    if protected_targets is None:
+        return
+    protected_targets.add(_path_key(path))
+    if path.is_dir():
+        for descendant in path.rglob("*"):
+            protected_targets.add(_path_key(descendant))
+
+
 def _move_conflicting_target(target_path: Path, backup_root: Path) -> None:
     backup_path = backup_root / target_path.name
     counter = 1
@@ -122,6 +138,7 @@ def _move_path(
     *,
     replace_existing: bool = False,
     conflict_backup_root: Path | None = None,
+    protected_targets: set[str] | None = None,
 ) -> bool:
     if not source_path.exists():
         return False
@@ -137,10 +154,16 @@ def _move_path(
             target_path,
             replace_existing=replace_existing,
             conflict_backup_root=conflict_backup_root,
+            protected_targets=protected_targets,
         )
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
     if target_path.exists():
+        if protected_targets is not None and _path_key(target_path) in protected_targets:
+            if conflict_backup_root is None:
+                conflict_backup_root = _conflict_backup_root(target_path.parent)
+            _move_conflicting_target(source_path, conflict_backup_root)
+            return True
         if not replace_existing:
             raise FileExistsError(
                 f"Refusing to overwrite existing memory file while moving "
@@ -151,6 +174,7 @@ def _move_path(
         _move_conflicting_target(target_path, conflict_backup_root)
 
     shutil.move(str(source_path), str(target_path))
+    _mark_protected_target(target_path, protected_targets)
     return True
 
 
@@ -160,6 +184,7 @@ def _merge_directories(
     *,
     replace_existing: bool = False,
     conflict_backup_root: Path | None = None,
+    protected_targets: set[str] | None = None,
 ) -> bool:
     if not source_dir.exists():
         return False
@@ -172,9 +197,15 @@ def _merge_directories(
     if not target_dir.exists():
         target_dir.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(source_dir), str(target_dir))
+        _mark_protected_target(target_dir, protected_targets)
         return True
 
     if not target_dir.is_dir():
+        if protected_targets is not None and _path_key(target_dir) in protected_targets:
+            if conflict_backup_root is None:
+                conflict_backup_root = _conflict_backup_root(target_dir.parent)
+            _move_conflicting_target(source_dir, conflict_backup_root)
+            return True
         if not replace_existing:
             raise FileExistsError(
                 f"Refusing to overwrite existing path while merging directories "
@@ -184,6 +215,7 @@ def _merge_directories(
             conflict_backup_root = _conflict_backup_root(target_dir.parent)
         _move_conflicting_target(target_dir, conflict_backup_root)
         shutil.move(str(source_dir), str(target_dir))
+        _mark_protected_target(target_dir, protected_targets)
         return True
 
     if not replace_existing:
@@ -206,6 +238,7 @@ def _merge_directories(
             target_dir / child.name,
             replace_existing=replace_existing,
             conflict_backup_root=conflict_backup_root,
+            protected_targets=protected_targets,
         ) or changed
 
     try:
@@ -279,6 +312,7 @@ def rewrite_recent_file_character_name(recent_path: Path, old_name: str, new_nam
 def rename_character_memory_storage(config_manager, old_name: str, new_name: str) -> dict[str, Any]:
     runtime_target_dir = get_runtime_character_memory_dir(config_manager, new_name)
     changed = False
+    protected_targets: set[str] = set()
 
     for base_dir in iter_character_memory_roots(config_manager):
         conflict_backup_root = _conflict_backup_root(runtime_target_dir)
@@ -287,6 +321,7 @@ def rename_character_memory_storage(config_manager, old_name: str, new_name: str
             runtime_target_dir,
             replace_existing=True,
             conflict_backup_root=conflict_backup_root,
+            protected_targets=protected_targets,
         ) or changed
 
         for legacy_name, target_name in LEGACY_CHARACTER_MEMORY_FILE_MAP.items():
@@ -297,6 +332,7 @@ def rename_character_memory_storage(config_manager, old_name: str, new_name: str
                 target_path,
                 replace_existing=True,
                 conflict_backup_root=conflict_backup_root,
+                protected_targets=protected_targets,
             ) or changed
 
         for legacy_name in LEGACY_CHARACTER_MEMORY_EXTRA_ENTRIES:
@@ -308,6 +344,7 @@ def rename_character_memory_storage(config_manager, old_name: str, new_name: str
                     target_path,
                     replace_existing=True,
                     conflict_backup_root=conflict_backup_root,
+                    protected_targets=protected_targets,
                 ) or changed
 
     changed = rewrite_recent_file_character_name(
