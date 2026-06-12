@@ -196,7 +196,12 @@ def test_model_cat_transition_contract_is_present():
     assert "applyNekoTransitionMask(overlay)" in source
     assert "applyNekoTransitionMask(image)" in source
     assert "const ensureOverlayVisible = () => {" in source
-    assert "ensureOverlayVisible();\n            preloadImage.src = src" in source
+    _assert_source_order(
+        source,
+        "transition preload ordering",
+        "ensureOverlayVisible();",
+        "preloadImage.src = src",
+    )
     assert "parseGifDurationMs" not in source
     assert "getNekoModelCatTransitionDurationMs" not in source
     assert "NEKO_MODEL_CAT_TRANSITION_MIN_SIZE = 260" in source
@@ -244,7 +249,13 @@ def test_model_cat_transition_contract_is_present():
     assert "document.body.appendChild(overlay);" in transition_promise_block
     assert "imageLoadFallbackTimer = setTimeout" in transition_promise_block
     assert "image.src = src;" in transition_promise_block
-    assert "image.src = src;\n            scheduleTransitionTimers(resolve);" not in transition_promise_block
+    _assert_source_order(
+        transition_promise_block,
+        "transition playback scheduling",
+        "image.src = src;",
+        "playbackStartedAt = getNekoTransitionNowMs();",
+        "scheduleTransitionTimers(resolve);",
+    )
 
     reveal_active_block = source[
         source.index("const revealActiveReturnBall = (reason) => {"):
