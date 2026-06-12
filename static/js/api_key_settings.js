@@ -1088,10 +1088,9 @@ function onCustomModelProviderChange(modelType) {
             // 切换到 vllm_omni 时：
             // - 若 URL 为空，或当前 URL 是从其他 provider 自动填充的 readonly 值（用户没主动编辑过），
             //   覆盖为 vllm_omni 默认 URL；
-            // - 若 URL 是用户主动编辑过的 ws(s):// 地址（非 readonly），保留。
+            // - 若 URL 是用户主动编辑过的地址（非 readonly），保留。
             const wasReadonly = urlInput.hasAttribute('readonly');
-            const isWsUrl = /^wss?:\/\//i.test((urlInput.value || '').trim());
-            if (!urlInput.value || !urlInput.value.trim() || (wasReadonly && !isWsUrl)) {
+            if (!urlInput.value || !urlInput.value.trim() || wasReadonly) {
                 urlInput.value = getProviderOpenrouterUrl(provider, pInfo) || '';
             }
             urlInput.removeAttribute('readonly');

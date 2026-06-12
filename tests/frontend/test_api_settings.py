@@ -617,3 +617,31 @@ def test_switching_tts_provider_to_vllm_resets_stale_model(mock_page: Page, runn
     """)
 
     assert values == {"model": "Qwen3-TTS", "voice": "default"}
+
+
+@pytest.mark.frontend
+def test_switching_tts_provider_to_vllm_replaces_readonly_url(mock_page: Page, running_server: str):
+    """Provider-derived readonly URLs must not be carried into vLLM TTS."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#ttsModelProvider option[value='vllm_omni']", state="attached", timeout=10000)
+
+    value = mock_page.evaluate("""
+        () => {
+            const provider = document.getElementById('ttsModelProvider');
+            const url = document.getElementById('ttsModelUrl');
+
+            url.value = 'wss://old-provider.example.com/v1';
+            url.setAttribute('readonly', 'readonly');
+            provider.value = 'vllm_omni';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+
+            return {
+                url: url.value,
+                readonly: url.hasAttribute('readonly'),
+            };
+        }
+    """)
+
+    assert value == {"url": "ws://localhost:8091/v1", "readonly": False}
