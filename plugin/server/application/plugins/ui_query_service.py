@@ -40,6 +40,16 @@ _ALLOWED_PLUGIN_LIST_ACTION_BUILTINS = {
 }
 _HOSTED_TRANSLATIONS_MAX_BYTES = 128 * 1024
 _HOSTED_TRANSLATIONS_DEFAULT_SOURCE_LOCALE = "en-US"
+_PLUGIN_NOT_RUNNING_MESSAGES = {
+    "en": "The plugin is not running. Start the plugin before using this action.",
+    "zh-CN": "插件未运行。请先启动该插件，再执行这个操作。",
+    "zh-TW": "外掛未執行。請先啟動該外掛，再執行這個操作。",
+    "ja": "プラグインが実行されていません。先にプラグインを起動してから、この操作を実行してください。",
+    "ko": "플러그인이 실행 중이 아닙니다. 먼저 플러그인을 시작한 뒤 이 작업을 실행하세요.",
+    "es": "El plugin no está en ejecución. Inicia el plugin antes de usar esta acción.",
+    "pt": "O plugin não está em execução. Inicie o plugin antes de usar esta ação.",
+    "ru": "Плагин не запущен. Сначала запустите плагин, затем повторите действие.",
+}
 
 
 def _normalize_mapping(raw: Mapping[object, object], *, context: str) -> dict[str, object]:
@@ -66,6 +76,28 @@ def _to_bool(value: object, *, default: bool) -> bool:
         if lowered in {"0", "false", "no", "off"}:
             return False
     return default
+
+
+def _hosted_plugin_not_running_message(locale: str | None) -> str:
+    normalized = str(locale or "").strip().replace("_", "-")
+    lowered = normalized.lower()
+    if lowered in {"zh-tw", "zh-hk", "zh-mo"} or (lowered.startswith("zh") and "hant" in lowered):
+        key = "zh-TW"
+    elif lowered.startswith("zh"):
+        key = "zh-CN"
+    elif lowered.startswith("ja"):
+        key = "ja"
+    elif lowered.startswith("ko"):
+        key = "ko"
+    elif lowered.startswith("es"):
+        key = "es"
+    elif lowered.startswith("pt"):
+        key = "pt"
+    elif lowered.startswith("ru"):
+        key = "ru"
+    else:
+        key = "en"
+    return _PLUGIN_NOT_RUNNING_MESSAGES[key]
 
 
 def _get_plugin_meta_sync(plugin_id: str) -> dict[str, object] | None:
@@ -807,6 +839,7 @@ class PluginUiQueryService:
         args: Mapping[str, object] | None,
         kind: str = "panel",
         surface_id: str = "main",
+        locale: str | None = None,
     ) -> dict[str, object]:
         try:
             plugin_meta = await asyncio.to_thread(_get_plugin_meta_sync, plugin_id)
@@ -864,9 +897,9 @@ class PluginUiQueryService:
                 )
                 raise ServerDomainError(
                     code="PLUGIN_NOT_RUNNING",
-                    message=f"Plugin '{plugin_id}' is not running",
+                    message=_hosted_plugin_not_running_message(locale),
                     status_code=409,
-                    details={"plugin_id": plugin_id},
+                    details={"plugin_id": plugin_id, "message_key": "plugins.hostedUi.pluginNotRunning"},
                     log_level="debug",
                 )
 

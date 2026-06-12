@@ -124,6 +124,10 @@
         .modal-overlay.show { display: flex; }
         .modal-overlay .entity-form-card { display: block; width: min(100%, 560px); max-height: calc(100vh - 40px); overflow: auto; box-shadow: 0 18px 48px rgba(17, 24, 39, 0.18); }
         .modal-overlay .entity-form-head { position: sticky; top: 0; background: var(--card-bg); padding-bottom: 12px; z-index: 1; }
+        .step1-guide-list { margin: 0 0 20px; padding-left: 22px; display: flex; flex-direction: column; gap: 12px; color: var(--text-main); line-height: 1.6; }
+        .step1-guide-list li { padding-left: 2px; }
+        .step1-guide-link { display: inline-block; margin-top: 6px; color: var(--secondary); font-weight: 700; word-break: break-all; }
+        .step1-guide-link:hover { color: var(--primary); }
         .toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 16px; border-radius: 18px; background: var(--primary-light); margin-bottom: 18px; }
         .toggle-copy { display: flex; flex-direction: column; gap: 4px; }
         .toggle-label { font-size: 13px; font-weight: 800; }

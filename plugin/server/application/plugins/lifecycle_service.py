@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 import re
 import shutil
 import time as time_module
@@ -17,7 +16,7 @@ from typing import Protocol, runtime_checkable
 from fastapi import HTTPException
 
 from plugin._types.exceptions import PluginError
-from plugin.core.host import PluginProcessHost
+from plugin.core.host import PluginProcessHost, _import_plugin_module
 from plugin.core.registry import (
     _collect_plugin_python_requirements,
     _collect_plugin_python_requirement_paths,
@@ -670,7 +669,7 @@ class PluginLifecycleService:
                 current_plugin_id,
             )
             module_path, class_name = entry.split(":", 1)
-            module_obj = await asyncio.to_thread(importlib.import_module, module_path)
+            module_obj = await asyncio.to_thread(_import_plugin_module, module_path, config_path, logger)
             cls_obj = getattr(module_obj, class_name)
             if not isinstance(cls_obj, type):
                 raise _to_domain_error(
@@ -1109,16 +1108,15 @@ class PluginLifecycleService:
             )
 
         prefix = ""
-        config_path_obj = ext_meta.get("config_path")
-        if isinstance(config_path_obj, str) and config_path_obj:
-            config_path = Path(config_path_obj)
+        resolved_config_path = await asyncio.to_thread(_resolve_registered_config_path_sync, ext_meta)
+        if resolved_config_path is not None:
             try:
-                prefix = await asyncio.to_thread(_read_extension_prefix_sync, config_path)
+                prefix = await asyncio.to_thread(_read_extension_prefix_sync, resolved_config_path)
             except (FileNotFoundError, PermissionError, OSError, ValueError) as exc:
                 logger.warning(
                     "failed to read extension prefix: ext_id={}, config_path={}, err_type={}, err={}",
                     ext_id,
-                    str(config_path),
+                    str(resolved_config_path),
                     type(exc).__name__,
                     str(exc),
                 )
@@ -1137,6 +1135,7 @@ class PluginLifecycleService:
                         "ext_id": ext_id,
                         "ext_entry": ext_entry_obj,
                         "prefix": prefix,
+                        "config_path": str(resolved_config_path) if resolved_config_path is not None else "",
                     },
                     timeout=10.0,
                 )

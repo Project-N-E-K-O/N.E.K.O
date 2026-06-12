@@ -961,6 +961,13 @@ async def test_mcp_remove_servers_cancels_pending_reconnect_task() -> None:
 async def test_mcp_connect_server_coerces_string_flags_and_rolls_back_on_tool_register_failure() -> None:
     plugin = MCPAdapterPlugin(_Ctx())
     plugin._route_engine = object()
+    plugin._servers_config = {
+        "fetch": {
+            "transport": "streamable-http",
+            "url": "https://example.com/mcp",
+            "enabled": "false",
+        }
+    }
 
     observed: dict[str, object] = {}
 

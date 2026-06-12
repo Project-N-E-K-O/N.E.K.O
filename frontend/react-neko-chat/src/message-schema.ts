@@ -48,16 +48,11 @@ const composerAttachmentSchema = z.object({
   alt: z.string().optional(),
 });
 
-const chatSurfaceModeSchema = z.enum(['compact', 'minimized']);
-// Mixed-version hosts (or any direct NekoChatWindow.mount consumer) may still
-// pass the legacy three-state value 'full' from before the home chat collapsed
-// to compact/minimized. Accept it at the parse boundary and migrate to
-// 'compact' — mirroring the localStorage migration — so the chat window keeps
-// mounting instead of throwing a ZodError. The public output stays two-state.
-const chatSurfaceModeInputSchema = z.preprocess(
-  (value) => (value === 'full' ? 'compact' : value),
-  chatSurfaceModeSchema,
-);
+// `full` is the frozen legacy surface (full chat window) revived alongside the
+// active `compact` floating bar and `minimized` ball. The host dispatcher routes
+// `full` to the isolated FullChatSurface; `compact`/`minimized` stay on the
+// active App. Keep all three valid at the parse boundary.
+const chatSurfaceModeSchema = z.enum(['full', 'compact', 'minimized']);
 const compactChatStateSchema = z.enum(['default', 'options', 'input']);
 
 const galgameOptionSchema = z.object({
@@ -220,7 +215,12 @@ export const chatWindowPropsSchema = z.object({
   exportConversationButtonAriaLabel: z.string().optional(),
   composerHidden: z.boolean().optional(),
   composerDisabled: z.boolean().optional(),
-  chatSurfaceMode: chatSurfaceModeInputSchema.optional(),
+  chatSurfaceMode: chatSurfaceModeSchema.optional(),
+  // host 折叠取消序号：必须在 schema 里声明，否则 z.object().parse() 默认 strip 未知键、
+  // App 永远只看到默认 0，重开立即复位的 useLayoutEffect 不会触发（Codex P2）。
+  // 逻辑上是单调递增的非负整数计数（host 从 0 起 += 1），加 int/nonnegative 作边界防御
+  // （CodeRabbit）；host 恒传合法值，约束不会触发拒绝。
+  compactMinimizeCancelSeq: z.number().int().nonnegative().optional(),
   compactChatState: compactChatStateSchema.optional(),
   onCompactChatStateChange: z.function()
     .args(compactChatStateSchema)

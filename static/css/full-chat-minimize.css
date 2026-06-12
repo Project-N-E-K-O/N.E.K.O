@@ -1,0 +1,36 @@
+/*
+ * Frozen legacy `full` surface — minimized "breathing light" orb.
+ *
+ * The active compact surface minimizes to the yarn ball (#1625). The revived
+ * legacy `full` surface keeps its own era's minimized ball: the glowing blue
+ * "breathing light" orb that #1625 removed (old icon expand_icon_off_ball.png +
+ * pulsing box-shadow). This file revives ONLY that glow, strictly scoped to the
+ * `is-legacy-full-ball` marker the host shim sets when the restorable surface is
+ * `full`, so the compact minimize path (yarn ball, no glow) is never touched.
+ *
+ * Pure additive layer over the base `.is-minimized` ball geometry in index.css —
+ * loaded via index.css @import. Do not generalize; full is frozen.
+ */
+
+body.subtitle-web-host #react-chat-window-shell.is-minimized.is-legacy-full-ball {
+  box-shadow: 0 0 8px rgba(68, 183, 254, 0.6);
+  animation: neko-full-legacy-ball-breathing 2s ease-in-out infinite;
+  will-change: box-shadow;
+}
+
+@keyframes neko-full-legacy-ball-breathing {
+  0%,
+  100% {
+    box-shadow: 0 0 8px rgba(68, 183, 254, 0.6);
+  }
+  50% {
+    box-shadow: 0 0 16px rgba(68, 183, 254, 1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.subtitle-web-host #react-chat-window-shell.is-minimized.is-legacy-full-ball {
+    animation: none;
+    box-shadow: 0 0 10px rgba(68, 183, 254, 0.8);
+  }
+}

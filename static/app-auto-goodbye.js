@@ -187,6 +187,53 @@
         return !!(socket && socket.readyState === WebSocket.OPEN);
     }
 
+    function rememberGoodbyeSilentState(active, reason, pending) {
+        window.__nekoGoodbyeSilentState = {
+            active: !!active,
+            reason: reason || (active ? 'goodbye' : 'return'),
+            pending: !!pending,
+            updatedAt: nowMs(),
+        };
+    }
+
+    function syncGoodbyeSilentState(active, reason) {
+        const resolvedReason = reason || (active ? 'goodbye' : 'return');
+        rememberGoodbyeSilentState(active, resolvedReason, true);
+        const socket = window.appState && window.appState.socket;
+        if (!socket || typeof socket.send !== 'function') {
+            return;
+        }
+        if (typeof WebSocket === 'undefined' || socket.readyState !== WebSocket.OPEN) {
+            return;
+        }
+        try {
+            socket.send(JSON.stringify({
+                action: 'goodbye_state',
+                active: !!active,
+                reason: resolvedReason,
+            }));
+            rememberGoodbyeSilentState(active, resolvedReason, false);
+        } catch (_) {}
+    }
+
+    // 刷新 / 重启 renderer 后，前端 goodbye 视觉态（_goodbyeClicked）随页面重置为「她已回来」，
+    // 但后端 LLMSessionManager.goodbye_silent 跨 WS 重连存活，可能仍残留上一会话「请她离开」的
+    // 静默——使 greeting / proactive 被压住，角色看着在场却不主动搭话，直到用户显式开会话才解除。
+    // 本控制器只在 pet / 具名角色页（isEligiblePage）启动，是唯一对 goodbye 状态有权威判断的窗口；
+    // chat 等不挂 model manager 的窗口不跑本控制器，天然不会误清别的窗口里真实的 goodbye。
+    // 仅在「全新页面（无 __nekoGoodbyeSilentState 记忆）且当前不在 goodbye」时对账一次，发
+    // goodbye_state:false 清掉后端陈旧静默。同会话内的 WS 重连已有记忆 → 跳过不重复发；真处于
+    // goodbye → isGoodbyeActive 拦住，仍由现有 onopen / goodbye-click 链路重新断言 active=true。
+    function reconcileStaleGoodbyeSilentOnPrime() {
+        if (isGoodbyeActive()) {
+            return;
+        }
+        if (window.__nekoGoodbyeSilentState) {
+            return;
+        }
+        syncGoodbyeSilentState(false, 'fresh-connect-reconcile');
+    }
+
     function markIdleBaseline(source) {
         state.lastInteractionAt = nowMs();
         state.lastInteractionSource = typeof source === 'string' ? source : 'baseline-reset';
@@ -457,6 +504,7 @@
         emitStateChange('infrastructure-primed', {
             reason: 'websocket-open',
         });
+        reconcileStaleGoodbyeSilentOnPrime();
         return true;
     }
 
@@ -752,11 +800,13 @@
                     reason: state.lastReason,
                 });
             }
+            syncGoodbyeSilentState(true, state.lastReason);
         });
 
         const handleReturn = () => {
             // 变回猫娘前，按"作为猫咪待了多久 + 此刻所处 tier（清醒/打盹/熟睡）"
             // 请求一次专属问候。tier 必须在 setVisualTier(NONE) 清空之前读取。
+            syncGoodbyeSilentState(false, 'return-click');
             if (state.goodbyeEnteredAt > 0) {
                 const durationSeconds = Math.max(0, Math.floor((nowMs() - state.goodbyeEnteredAt) / 1000));
                 try {
