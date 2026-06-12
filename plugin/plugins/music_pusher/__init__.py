@@ -320,6 +320,14 @@ def _calc_total_duration(queue: list[dict[str, Any]]) -> int:
     return sum(_normalize_duration(it.get("duration_sec"), 0) for it in queue)
 
 
+def _default_port_for_scheme(scheme: str) -> int | None:
+    if scheme == "http":
+        return 80
+    if scheme == "https":
+        return 443
+    return None
+
+
 def _validate_url_for_av_open(url: str) -> bool:
     """仅允许公网可路由地址给 PyAV 打开，防止 SSRF。"""
     parsed = urlparse(url)
@@ -465,15 +473,33 @@ class MusicPusherPlugin(NekoPluginBase):
         parsed = urlparse(str(url or "").strip())
         return parsed.scheme in {"http", "https"} and bool(str(parsed.hostname or "").strip())
 
+    def _is_plugin_upload_url(self, url: str) -> bool:
+        parsed = urlparse(str(url or "").strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return False
+
+        upload_prefix = f"/plugin/{self.plugin_id}/ui/{_UPLOAD_SUBDIR}/"
+        if not str(parsed.path or "").startswith(upload_prefix):
+            return False
+
+        public_origin = urlparse(self._resolve_public_origin())
+        return (
+            parsed.scheme == public_origin.scheme
+            and parsed.hostname == public_origin.hostname
+            and (parsed.port or _default_port_for_scheme(parsed.scheme))
+            == (public_origin.port or _default_port_for_scheme(public_origin.scheme))
+        )
+
     def _music_allowlist_domains_for_url(self, url: str) -> list[str]:
         parsed = urlparse(url)
         host = str(parsed.hostname or "").strip().lower()
         if not host:
             return []
 
-        upload_prefix = f"/plugin/{self.plugin_id}/ui/{_UPLOAD_SUBDIR}/"
-        if host in {"127.0.0.1", "localhost", "::1"} and str(parsed.path or "").startswith(upload_prefix):
+        if self._is_plugin_upload_url(url) and host in {"127.0.0.1", "localhost", "::1"}:
             return ["127.0.0.1", "localhost"]
+        if self._is_plugin_upload_url(url):
+            return [host]
 
         if _validate_url_for_av_open(url):
             return [host]
@@ -498,23 +524,8 @@ class MusicPusherPlugin(NekoPluginBase):
         return None
 
     def _detect_audio_duration_from_url(self, url: str) -> int | None:
-        if av is None:
-            return None
-        if not _validate_url_for_av_open(url):
-            self.logger.warning(f"拒绝不安全的音频 URL（可能为私有地址）: {url}")
-            return None
-        try:
-            with av.open(
-                url,
-                mode="r",
-                options={
-                    "rw_timeout": "5000000",
-                    "protocol_whitelist": "http,https,tcp,tls",
-                },
-            ) as container:
-                return _extract_duration_from_av_container(container)
-        except Exception:
-            return None
+        # 不对用户提供的远程 URL 调用 FFmpeg/PyAV，避免 DNS rebinding 绕过 SSRF 校验。
+        return None
 
     def _build_music_item(
         self,
@@ -850,6 +861,7 @@ class MusicPusherPlugin(NekoPluginBase):
             for item_id, meta in self._lyrics_map.items()
             if item_id in valid_item_ids
         }
+        self._gc_tombstoned_uploads_locked()
 
     def _upload_file_referenced_by_tasks_locked(self, stored_filename: str) -> bool:
         name = str(stored_filename or "").strip()
@@ -869,6 +881,29 @@ class MusicPusherPlugin(NekoPluginBase):
                     return True
 
         return False
+
+    def _delete_upload_file_locked(self, stored_filename: str) -> None:
+        name = str(stored_filename or "").strip()
+        if not name or name != Path(name).name:
+            return
+        upload_path = self._upload_dir / name
+        try:
+            if upload_path.exists() and upload_path.is_file():
+                upload_path.unlink()
+        except Exception as exc:
+            self.logger.warning(f"删除上传音乐文件失败[{name}]: {exc}")
+
+    def _gc_tombstoned_uploads_locked(self) -> bool:
+        removed = False
+        for stored_filename, meta in list(self._upload_name_map.items()):
+            if not _coerce_bool((meta or {}).get("deleted"), False):
+                continue
+            if self._upload_file_referenced_by_tasks_locked(stored_filename):
+                continue
+            self._delete_upload_file_locked(stored_filename)
+            self._upload_name_map.pop(stored_filename, None)
+            removed = True
+        return removed
 
     def _make_queue_item_from_music_item(
         self,
@@ -1852,12 +1887,7 @@ class MusicPusherPlugin(NekoPluginBase):
                         }
                     else:
                         self._upload_name_map.pop(stored_filename, None)
-                        upload_path = self._upload_dir / stored_filename
-                        try:
-                            if upload_path.exists() and upload_path.is_file():
-                                upload_path.unlink()
-                        except Exception as exc:
-                            self.logger.warning(f"删除上传音乐文件失败[{stored_filename}]: {exc}")
+                        self._delete_upload_file_locked(stored_filename)
                     self._save_upload_name_map_locked()
                 self._save_lyrics_map_locked()
                 self._save_state_locked()
@@ -2022,6 +2052,8 @@ class MusicPusherPlugin(NekoPluginBase):
                     return Err(SdkError("队列不能为空"))
                 task["queue"] = queue
                 task["total_duration_sec"] = _calc_total_duration(queue)
+                if self._gc_tombstoned_uploads_locked():
+                    self._save_upload_name_map_locked()
 
             task["status"] = "pending"
             task["finished_at"] = None
@@ -2056,6 +2088,8 @@ class MusicPusherPlugin(NekoPluginBase):
                 return Err(SdkError("任务执行中，暂不允许删除"))
             deleted = self._tasks.pop(target_id, None) is not None
             if deleted:
+                if self._gc_tombstoned_uploads_locked():
+                    self._save_upload_name_map_locked()
                 self._save_state_locked()
         return Ok({"deleted": deleted, "task_id": target_id})
 
