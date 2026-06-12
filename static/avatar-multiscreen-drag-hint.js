@@ -54,6 +54,18 @@
         return Number(state.snoozeUntil) > now();
     }
 
+    async function hasMultipleDisplays() {
+        try {
+            if (!window.electronScreen || typeof window.electronScreen.getAllDisplays !== 'function') {
+                return false;
+            }
+            const displays = await window.electronScreen.getAllDisplays();
+            return Array.isArray(displays) && displays.length > 1;
+        } catch (_) {
+            return false;
+        }
+    }
+
     function ensureStyles() {
         if (document.getElementById('avatar-multiscreen-drag-hint-style')) return;
 
@@ -264,9 +276,10 @@
         return nextRecord;
     }
 
-    function recordDisplaySwitchMissNow(source) {
+    async function recordDisplaySwitchMissNow(source) {
         const state = readState();
         if (isSuppressed(state) || isPromptVisible) return false;
+        if (!(await hasMultipleDisplays())) return false;
 
         const currentTime = now();
         const lastMissAt = Number(state.lastMissAt) || 0;

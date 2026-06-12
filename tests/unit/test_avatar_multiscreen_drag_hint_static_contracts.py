@@ -16,15 +16,17 @@ def test_multiscreen_drag_hint_ack_snoozes_for_three_days():
     assert "neko:avatar-multiscreen-drag-hint:v1" in source
 
 
-def test_multiscreen_drag_hint_counts_display_switch_misses_without_multi_display_gate():
+def test_multiscreen_drag_hint_counts_display_switch_misses_only_on_multiple_displays():
     source = _source("static/avatar-multiscreen-drag-hint.js")
 
     assert "const REQUIRED_MISSES = 2;" in source
     assert "const MISS_WINDOW_MS = 30 * 1000;" in source
+    assert "async function hasMultipleDisplays()" in source
+    assert "window.electronScreen.getAllDisplays" in source
+    assert "return Array.isArray(displays) && displays.length > 1;" in source
     assert "function recordDisplaySwitchMiss(source)" in source
+    assert "if (!(await hasMultipleDisplays())) return false;" in source
     assert "state.recentMissCount >= REQUIRED_MISSES" in source
-    assert "window.electronScreen.getAllDisplays" not in source
-    assert "displays.length <= 1" not in source
     assert "moveWindowToDisplay" not in source
 
 
