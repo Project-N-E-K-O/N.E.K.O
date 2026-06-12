@@ -378,7 +378,11 @@ def test_desktop_return_ball_drag_recovers_when_mouse_release_is_lost():
     assert "function finishDragIfMouseButtonReleased(event, reason)" in source
     assert "event.pointerType && event.pointerType !== 'mouse'" in source
     assert "event.buttons !== 0" in source
-    assert "cancelActiveDrag('window-blur')" in source
+    window_blur_start = source.index("state.handleWindowBlur = () => {")
+    window_blur_end = source.index("};", window_blur_start)
+    window_blur_block = source[window_blur_start:window_blur_end]
+    assert "cancelActiveDrag(" not in window_blur_block
+    assert "scheduleReturnBallDragRecoveryCheck();" in window_blur_block
     assert "cancelActiveDrag('visibility-hidden')" in source
     assert "cancelActiveDrag('pagehide')" in source
     assert "cancelActiveDrag('pointercancel')" in source
