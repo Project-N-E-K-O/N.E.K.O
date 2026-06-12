@@ -180,6 +180,9 @@ except ImportError as e:
 from .bili_auth_service import BiliAuthService
 from .bili_content_service import BiliContentService
 
+# ── 历史弹幕存储 ──────────────────────────────────────────────────────
+from .danmaku_storage import DanmakuStorage
+
 # ── 同步 helper（避免 async def 内直接调 subprocess 阻塞事件循环）────────────
 def _open_url_in_browser(url: str) -> None:
     """在默认浏览器打开 URL（同步调用，仅供 asyncio.to_thread 使用）"""
@@ -315,6 +318,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
         self._bg_memory: Optional[DanmakuMemory] = None
         self._bg_analyzer: Optional[DanmakuAnalyzer] = None
 
+        # 历史弹幕存储（SQLite 对标 MagicalDanmaku）
+        self._storage: Optional[DanmakuStorage] = None
         
         # UI展示队列
         self._ui_danmaku_queue: deque = deque(maxlen=500)
@@ -871,6 +876,16 @@ class BiliDanmakuPlugin(NekoPluginBase):
         )
         self.logger.info("B站认证/内容服务已初始化")
         
+        # 初始化历史弹幕存储（SQLite）
+        try:
+            db_path = self.data_path("danmaku.db")
+            self._storage = DanmakuStorage(db_path, logger=self.logger)
+            self._storage.open()
+            self.logger.info(f"弹幕历史存储已初始化: {db_path}")
+        except Exception as e:
+            self.logger.warning(f"弹幕历史存储初始化失败: {e}")
+            self._storage = None
+        
         # 初始化背景LLM系统
         if BACKGROUND_LLM_AVAILABLE:
             self.logger.info(f"BACKGROUND_LLM_AVAILABLE=True, 即将调用 _init_background_llm")
@@ -928,6 +943,11 @@ class BiliDanmakuPlugin(NekoPluginBase):
             await self._tracker.save()
         if self._bg_memory:
             await self._bg_memory.save()
+
+        # 6. 关闭历史弹幕存储
+        if self._storage:
+            self._storage.close()
+            self._storage = None
 
         self.logger.info("Bilibili弹幕插件已完全关闭")
         return Ok({"status": "shutdown"})
@@ -1237,6 +1257,15 @@ class BiliDanmakuPlugin(NekoPluginBase):
         content = self._render_template("welcome", user_name=user_name)
         self._push_to_ai(content, f"观众 {user_name} 进入直播间", priority=priority)
 
+        # 持久化到 SQLite
+        if self._storage:
+            asyncio.create_task(self._storage.insert_interact(
+                room_id=str(self._room_id),
+                uid=str(uid or 0),
+                uname=str(user_name),
+                msg_type=1,
+            ))
+
     async def _process_follow_event(self, user_name: str):
         """用户关注主播事件"""
         if not self._get_event_notify_cfg("enabled", True):
@@ -1249,6 +1278,15 @@ class BiliDanmakuPlugin(NekoPluginBase):
         priority = int(self._get_event_notify_cfg("priority.follow", 3))
         content = self._render_template("follow", user_name=user_name)
         self._push_to_ai(content, f"观众 {user_name} 关注主播", priority=priority)
+
+        # 持久化到 SQLite
+        if self._storage:
+            asyncio.create_task(self._storage.insert_interact(
+                room_id=str(self._room_id),
+                uid="0",
+                uname=str(user_name),
+                msg_type=2,
+            ))
 
     async def _process_live_event(self):
         """主播开播事件"""
@@ -1328,6 +1366,20 @@ class BiliDanmakuPlugin(NekoPluginBase):
         )
         if result is not None and asyncio.iscoroutine(result):
             asyncio.create_task(result)
+
+        # 持久化到 SQLite
+        if self._storage:
+            gift = ld.gift
+            asyncio.create_task(self._storage.insert_guard(
+                room_id=str(self._room_id),
+                uid=str(ld.uid),
+                uname=str(ld.nickname),
+                gift_name=str(gift.gift_name) if gift else guard_name,
+                gift_id=gift.gift_id if gift else 0,
+                guard_level=ld.guard_level or 1,
+                price=gift.price if gift else 0,
+                number=gift.num if gift else 1,
+            ))
 
     async def _process_entry_effect_event(self, ld):
         """高能用户进场"""
@@ -1462,6 +1514,21 @@ class BiliDanmakuPlugin(NekoPluginBase):
             except Exception as e:
                 self.logger.error(f"聚合器添加弹幕失败: {e}")
 
+        # 持久化到 SQLite
+        if self._storage:
+            asyncio.create_task(self._storage.insert_danmaku(
+                room_id=str(self._room_id),
+                uid=str(event.get("user_id", 0)),
+                uname=str(event.get("user_name", "未知用户")),
+                msg=str(content),
+                ulevel=event.get("user_level", 0) or 0,
+                admin=event.get("admin", False),
+                guard=event.get("guard_level", 0) or 0,
+                medal_name=str(event.get("medal_text", "")),
+                medal_level=event.get("medal_level", 0) or 0,
+                medal_up=str(event.get("medal_up", "")),
+            ))
+
     async def _process_danmaku_legacy(self, event: Dict[str, Any]):
         """原始弹幕处理（降级模式）"""
         content = event.get("content", "").strip()
@@ -1515,6 +1582,25 @@ class BiliDanmakuPlugin(NekoPluginBase):
         else:
             self._gift_queue.append(gift_info)
 
+        # 持久化到 SQLite
+        if self._storage:
+            asyncio.create_task(self._storage.insert_gift(
+                room_id=str(self._room_id),
+                uid=str(event.get("user_id", 0)),
+                uname=str(event.get("user_name", "未知用户")),
+                gift_name=str(event.get("gift_name", "未知礼物")),
+                gift_id=event.get("gift_id", 0) or 0,
+                coin_type=str(coin_type),
+                total_coin=total_coin,
+                number=event.get("num", 1),
+                ulevel=event.get("user_level", 0) or 0,
+                admin=event.get("admin", False),
+                guard=event.get("guard_level", 0) or 0,
+                medal_name=str(event.get("medal_text", "")),
+                medal_level=event.get("medal_level", 0) or 0,
+                medal_up=str(event.get("medal_up", "")),
+            ))
+
     async def _process_sc_event(self, event: Dict[str, Any]):
         """处理SC事件"""
         sc_info = {
@@ -1550,6 +1636,22 @@ class BiliDanmakuPlugin(NekoPluginBase):
         else:
             self._sc_queue.append(sc_info)
             await self._push_immediate_event(sc_info, "Super Chat")
+
+        # 持久化到 SQLite（SC 存入 danmu 表，price>0 区分）
+        if self._storage:
+            asyncio.create_task(self._storage.insert_danmaku(
+                room_id=str(self._room_id),
+                uid=str(event.get("user_id", 0)),
+                uname=str(event.get("user_name", "未知用户")),
+                msg=str(event.get("message", "")),
+                ulevel=event.get("user_level", 0) or 0,
+                admin=event.get("admin", False),
+                guard=event.get("guard_level", 0) or 0,
+                medal_name=str(event.get("medal_text", "")),
+                medal_level=event.get("medal_level", 0) or 0,
+                medal_up=str(event.get("medal_up", "")),
+                price=event.get("price", 0),
+            ))
 
     async def _push_immediate_event(self, event: Dict[str, Any], event_type: str):
         """立即推送事件给AI（直推 HUD + AI 回复）"""
@@ -3417,6 +3519,153 @@ class BiliDanmakuPlugin(NekoPluginBase):
         if not generated_message:
             return Err(SdkError("AI_EMPTY: NEKO 未生成可发送的弹幕内容。"))
         return await self.send_danmaku(message=generated_message)
+
+    # ==========================================
+    # 历史弹幕查询入口（SQLite）
+    # ==========================================
+
+    async def _ensure_storage(self):
+        """确保存储已就绪，未就绪时返回 Err"""
+        if not self._storage:
+            return None, Err(SdkError("历史弹幕存储未就绪，请先启动插件"))
+        return self._storage, None
+
+    @plugin_entry(
+        id="query_danmaku",
+        name=tr("entries.query_danmaku.name", default="查询弹幕历史"),
+        description=tr("entries.query_danmaku.description", default="查询历史弹幕，支持按关键词/用户/时间范围"),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "keyword": {"type": "string", "description": "关键词搜索（可选）"},
+                "uid": {"type": "string", "description": "用户UID（可选）"},
+                "limit": {"type": "integer", "description": "返回条数上限", "default": 100},
+            },
+            "required": []
+        },
+        llm_result_fields=["message"]
+    )
+    async def query_danmaku(self, keyword: str = "", uid: str = "", limit: int = 100, **_):
+        storage, err = await self._ensure_storage()
+        if err:
+            return err
+        limit = max(1, min(500, limit or 100))
+        room_id = str(self._room_id)
+        if uid:
+            rows = await storage.query_danmaku_by_user(room_id, uid, limit)
+        elif keyword:
+            rows = await storage.query_danmaku_by_keyword(room_id, keyword, limit)
+        else:
+            rows = await storage.query_danmaku_recent(room_id, limit)
+        lines = [f"📺 直播间 {room_id} 弹幕查询 ({len(rows)} 条):"]
+        for r in rows[:20]:
+            lines.append(f"  [{r.get('create_time', '')}] {r.get('uname', '')}: {r.get('msg', '')}")
+        if len(rows) > 20:
+            lines.append(f"  ... 还有 {len(rows) - 20} 条")
+        return Ok({"success": True, "count": len(rows), "rows": rows, "message": "\n".join(lines)})
+
+    @plugin_entry(
+        id="query_gifts",
+        name=tr("entries.query_gifts.name", default="查询礼物历史"),
+        description=tr("entries.query_gifts.description", default="查询礼物记录与流水统计"),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "summary": {"type": "boolean", "description": "是否返回统计摘要（用户送礼排行）", "default": False},
+                "limit": {"type": "integer", "description": "返回条数上限", "default": 100},
+            },
+            "required": []
+        },
+        llm_result_fields=["message"]
+    )
+    async def query_gifts(self, summary: bool = False, limit: int = 100, **_):
+        storage, err = await self._ensure_storage()
+        if err:
+            return err
+        limit = max(1, min(200, limit or 100))
+        room_id = str(self._room_id)
+        if summary:
+            rows = await storage.query_gift_revenue_summary(room_id)
+            lines = [f"🎁 直播间 {room_id} 送礼排行 (金瓜子):"]
+            for r in rows[:15]:
+                lines.append(f"  • {r.get('uname', '')}: ¥{r.get('rmb', 0):.1f} ({r.get('gift_count', 0)}次)")
+        else:
+            rows = await storage.query_gift_history(room_id, limit)
+            lines = [f"🎁 直播间 {room_id} 礼物记录 ({len(rows)} 条):"]
+            for r in rows[:20]:
+                lines.append(
+                    f"  [{r.get('create_time', '')}] {r.get('uname', '')}: "
+                    f"{r.get('gift_name', '')} x{r.get('number', 1)} "
+                    f"({r.get('total_coin', 0)}{r.get('coin_type', '')})"
+                )
+        return Ok({"success": True, "count": len(rows), "rows": rows, "message": "\n".join(lines)})
+
+    @plugin_entry(
+        id="query_interact",
+        name=tr("entries.query_interact.name", default="查询互动记录"),
+        description=tr("entries.query_interact.description", default="查询进场/关注等互动记录"),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "interact_type": {"type": "string", "description": "互动类型: entry(进场) / follow(关注)", "enum": ["entry", "follow"], "default": "entry"},
+                "limit": {"type": "integer", "description": "返回条数上限", "default": 100},
+            },
+            "required": []
+        },
+        llm_result_fields=["message"]
+    )
+    async def query_interact(self, interact_type: str = "entry", limit: int = 100, **_):
+        storage, err = await self._ensure_storage()
+        if err:
+            return err
+        limit = max(1, min(200, limit or 100))
+        room_id = str(self._room_id)
+        if interact_type == "follow":
+            rows = await storage.query_follow_history(room_id, limit)
+            label = "关注"
+        else:
+            rows = await storage.query_entry_history(room_id, limit)
+            label = "进场"
+        lines = [f"👤 直播间 {room_id} {label}记录 ({len(rows)} 条):"]
+        for r in rows[:20]:
+            guard_icon = {1: "👑", 2: "🔱", 3: "⚓"}.get(r.get("guard", 0), "")
+            lines.append(
+                f"  [{r.get('create_time', '')}] {guard_icon} {r.get('uname', '')}"
+                f"{' [' + str(r.get('medal_name', '')) + str(r.get('medal_level', '')) + ']' if r.get('medal_name') else ''}"
+            )
+        return Ok({"success": True, "count": len(rows), "rows": rows, "message": "\n".join(lines)})
+
+    @plugin_entry(
+        id="query_stats",
+        name=tr("entries.query_stats.name", default="数据统计"),
+        description=tr("entries.query_stats.description", default="获取弹幕/礼物数据库统计信息"),
+        input_schema={"type": "object", "properties": {}, "required": []},
+        llm_result_fields=["message"]
+    )
+    async def query_stats(self, **_):
+        storage, err = await self._ensure_storage()
+        if err:
+            return err
+        room_id = str(self._room_id)
+        counts = await storage.get_total_counts(room_id)
+        rank = await storage.query_user_danmaku_ranking(room_id, limit=10)
+        repeat = await storage.query_repeat_danmaku(room_id, min_count=3, limit=10)
+        lines = [
+            f"📊 直播间 {room_id} 数据统计:",
+            f"  弹幕: {counts.get('danmu', 0)} 条",
+            f"  礼物: {counts.get('gift', 0)} 条",
+            f"  互动: {counts.get('interact', 0)} 条",
+            f"  舰长: {counts.get('guard', 0)} 条",
+        ]
+        if rank:
+            lines.append(f"\n🏆 弹幕活跃 TOP10:")
+            for i, r in enumerate(rank, 1):
+                lines.append(f"  {i}. {r.get('uname', '')}: {r.get('count', 0)} 条")
+        if repeat:
+            lines.append(f"\n🔄 高频重复弹幕 TOP10:")
+            for r in repeat:
+                lines.append(f"  • \"{r.get('msg', '')}\" x{r.get('count', 0)}")
+        return Ok({"success": True, "counts": counts, "ranking": rank, "message": "\n".join(lines)})
 
     # ==========================================
     # 配置管理
