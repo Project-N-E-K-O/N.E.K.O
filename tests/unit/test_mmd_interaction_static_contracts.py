@@ -27,3 +27,13 @@ def test_mmd_display_switch_snaps_to_target_screen_before_saving_position():
     display_switch_section = source.split("console.log('[MMD] 屏幕切换成功:', result);", 1)[1]
     assert "const snapped = await this._snapModelIntoScreen({ animate: true });" in display_switch_section
     assert "if (!snapped) {\n                await this._savePositionAfterInteraction();" in display_switch_section
+
+
+def test_mmd_display_switch_miss_records_bridge_errors_after_model_leaves_window():
+    source = _mmd_source()
+    method_section = source.split("async _checkAndSwitchDisplay() {", 1)[1].split("\n    /**\n     * 基于可见像素限制", 1)[0]
+
+    assert method_section.index("const recordDisplaySwitchMiss = () => {") < method_section.index("try {")
+    assert "let displaySwitchAttempted = false;" in method_section
+    assert method_section.index("displaySwitchAttempted = true;") < method_section.index("window.electronScreen.getAllDisplays()")
+    assert "if (displaySwitchAttempted) recordDisplaySwitchMiss();" in method_section

@@ -878,14 +878,15 @@ class VRMInteraction {
         const renderer = this.manager.renderer;
         if (!scene || !vrm || !camera || !renderer) return false;
 
-        try {
-            const recordDisplaySwitchMiss = () => {
-                if (window.NekoAvatarMultiScreenDragHint &&
-                    typeof window.NekoAvatarMultiScreenDragHint.recordDisplaySwitchMiss === 'function') {
-                    window.NekoAvatarMultiScreenDragHint.recordDisplaySwitchMiss('vrm');
-                }
-            };
+        const recordDisplaySwitchMiss = () => {
+            if (window.NekoAvatarMultiScreenDragHint &&
+                typeof window.NekoAvatarMultiScreenDragHint.recordDisplaySwitchMiss === 'function') {
+                window.NekoAvatarMultiScreenDragHint.recordDisplaySwitchMiss('vrm');
+            }
+        };
+        let displaySwitchAttempted = false;
 
+        try {
             // 1. 计算模型在当前窗口中的屏幕空间中心点（像素）
             vrm.scene.updateMatrixWorld(true);
             const box = new THREE.Box3().setFromObject(vrm.scene);
@@ -935,6 +936,7 @@ class VRMInteraction {
 
             // 2. 多屏幕检查。第一版提示机制不以多屏数量为前置条件：
             // 只要用户把模型中心拖出当前窗口但未完成切屏，就记一次 miss。
+            displaySwitchAttempted = true;
             const displays = await window.electronScreen.getAllDisplays();
             if (!displays || displays.length <= 1) {
                 recordDisplaySwitchMiss();
@@ -1037,6 +1039,7 @@ class VRMInteraction {
             return true;
         } catch (error) {
             console.error('[VRM] 检测/切换屏幕时出错:', error);
+            if (displaySwitchAttempted) recordDisplaySwitchMiss();
             return false;
         }
     }
