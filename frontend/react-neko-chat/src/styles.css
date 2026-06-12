@@ -3817,6 +3817,40 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   background: var(--compact-tool-button-hover-fill);
 }
 
+.compact-input-tool-fan .compact-input-tool-tooltip {
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 7px);
+  z-index: 4;
+  max-width: 96px;
+  padding: 3px 8px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.96);
+  color: #243244;
+  font-size: 11px;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -2px) scale(0.96);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  box-shadow: 0 5px 14px rgba(20, 36, 64, 0.14);
+}
+
+.compact-input-tool-fan .compact-input-tool-item:hover,
+.compact-input-tool-fan .compact-input-tool-item:focus-within {
+  z-index: 12;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:hover > .compact-input-tool-tooltip,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:focus-within > .compact-input-tool-tooltip {
+  opacity: 1;
+  transform: translate(-50%, 0) scale(1);
+}
+
 .compact-input-tool-fan .compact-input-tool-item > img,
 .compact-input-tool-fan .compact-input-tool-item > svg,
 .compact-input-tool-fan .compact-input-tool-item > .composer-galgame-btn-glyph,

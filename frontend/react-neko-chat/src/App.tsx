@@ -4892,6 +4892,9 @@ function CompactChatApp({
   const compactInputToolFanActionsDisabled = composerDisabled
     || !compactInputToolFanOpen
     || !compactInputToolFanInteractive;
+  const renderCompactInputToolTooltip = (label: string) => (
+    <span className="compact-input-tool-tooltip" aria-hidden="true">{label}</span>
+  );
   const compactInputToolWheelChargeLapRatio = compactInputToolWheelChargeRatio * 2;
   const compactInputToolWheelChargeFirstLapAngle = Math.round(
     Math.min(1, compactInputToolWheelChargeLapRatio) * 360,
@@ -5146,7 +5149,6 @@ function CompactChatApp({
         className="composer-tool-btn compact-input-tool-item compact-input-tool-item-import"
         type="button"
         aria-label={resolvedImportImageAriaLabel}
-        title={importImageButtonLabel}
         disabled={compactInputToolFanActionsDisabled}
         tabIndex={getCompactToolWheelTabIndex(4)}
         aria-hidden={getCompactToolWheelAriaHidden(4)}
@@ -5154,12 +5156,12 @@ function CompactChatApp({
         onClick={compactFanRunAction(onComposerImportImage)}
       >
         <img src="/static/icons/import_image_icon.png" alt="" aria-hidden="true" />
+        {renderCompactInputToolTooltip(importImageButtonLabel)}
       </button>
       <button
         className="composer-tool-btn compact-input-tool-item compact-input-tool-item-screenshot"
         type="button"
         aria-label={resolvedScreenshotAriaLabel}
-        title={screenshotButtonLabel}
         disabled={compactInputToolFanActionsDisabled}
         tabIndex={getCompactToolWheelTabIndex(0)}
         aria-hidden={getCompactToolWheelAriaHidden(0)}
@@ -5167,13 +5169,13 @@ function CompactChatApp({
         onClick={compactFanRunAction(onComposerScreenshot)}
       >
         <img src="/static/icons/screenshot_new_icon.png" alt="" aria-hidden="true" />
+        {renderCompactInputToolTooltip(screenshotButtonLabel)}
       </button>
       <button
         className={`composer-tool-btn composer-galgame-btn compact-input-tool-item compact-input-tool-item-galgame${galgameModeEnabled ? ' is-active' : ''}`}
         type="button"
         aria-label={resolvedGalgameAriaLabel}
         aria-pressed={galgameModeEnabled}
-        title={galgameToggleButtonLabel}
         disabled={compactInputToolFanActionsDisabled}
         tabIndex={getCompactToolWheelTabIndex(6)}
         aria-hidden={getCompactToolWheelAriaHidden(6)}
@@ -5182,13 +5184,13 @@ function CompactChatApp({
         onClick={compactFanToggleOnAction(onGalgameModeToggle)}
       >
         <span className="composer-galgame-btn-glyph" aria-hidden="true">G</span>
+        {renderCompactInputToolTooltip(galgameToggleButtonLabel)}
       </button>
       <button
         className={`composer-tool-btn composer-translate-btn compact-input-tool-item compact-input-tool-item-translate${translateEnabled ? ' is-active' : ''}`}
         type="button"
         aria-label={resolvedTranslateAriaLabel}
         aria-pressed={translateEnabled}
-        title={translateButtonLabel}
         disabled={compactInputToolFanActionsDisabled}
         tabIndex={getCompactToolWheelTabIndex(2)}
         aria-hidden={getCompactToolWheelAriaHidden(2)}
@@ -5197,12 +5199,12 @@ function CompactChatApp({
         onClick={compactFanToggleOnAction(onTranslateToggle)}
       >
         <img src="/static/icons/translate_icon.png" alt="" aria-hidden="true" />
+        {renderCompactInputToolTooltip(translateButtonLabel)}
       </button>
       <button
         className="composer-tool-btn compact-input-tool-item compact-input-tool-item-jukebox"
         type="button"
         aria-label={jukeboxButtonAriaLabel}
-        title={jukeboxButtonLabel}
         disabled={compactInputToolFanActionsDisabled}
         tabIndex={getCompactToolWheelTabIndex(3)}
         aria-hidden={getCompactToolWheelAriaHidden(3)}
@@ -5210,13 +5212,13 @@ function CompactChatApp({
         onClick={compactFanRunAction(onJukeboxClick)}
       >
         <img src="/static/icons/jukebox_icon.png" alt="" aria-hidden="true" />
+        {renderCompactInputToolTooltip(jukeboxButtonLabel)}
       </button>
       <button
         className={`composer-tool-btn compact-input-tool-item compact-input-tool-item-export${compactExportControlsVisible ? ' is-active' : ''}`}
         type="button"
         aria-label={compactExportControlsButtonLabel}
         aria-pressed={compactExportControlsVisible}
-        title={compactExportControlsButtonLabel}
         disabled={compactInputToolFanActionsDisabled}
         tabIndex={getCompactToolWheelTabIndex(5)}
         aria-hidden={getCompactToolWheelAriaHidden(5)}
@@ -5227,6 +5229,7 @@ function CompactChatApp({
         <svg viewBox="0 0 1024 1024" width="24" height="24" fill="currentColor" aria-hidden="true">
           <path d="M855.467 501.333c-17.067 0-32 14.934-32 32v198.4c0 70.4-59.734 130.134-130.134 130.134H356.267c-83.2 0-151.467-66.134-151.467-149.334V358.4c0-64 53.333-117.333 117.333-117.333h168.534c17.066 0 32-14.934 32-32s-14.934-32-32-32H322.133c-100.266 0-181.333 81.066-181.333 181.333v352c0 117.333 96 213.333 215.467 213.333h337.066c106.667 0 194.134-87.466 194.134-194.133V533.333c0-17.066-14.934-32-32-32zM680.533 256H761.6L458.667 569.6A30.933 30.933 0 0 0 480 622.933c8.533 0 17.067-4.266 23.467-10.666l305.066-313.6v89.6c0 17.066 14.934 32 32 32s32-14.934 32-32v-147.2c0-27.734-23.466-51.2-51.2-51.2h-140.8c-17.066 0-32 14.933-32 32s14.934 34.133 32 34.133z" />
         </svg>
+        {renderCompactInputToolTooltip(compactExportControlsButtonLabel)}
       </button>
       <div
         className="composer-tool-menu compact-input-tool-item compact-input-tool-item-avatar"
@@ -5239,7 +5242,6 @@ function CompactChatApp({
           className={`composer-tool-btn composer-emoji-btn${toolMenuOpen || activeToolItem ? ' is-active' : ''}`}
           type="button"
           aria-label={selectedEmojiButtonAriaLabel}
-          title={selectedEmojiButtonAriaLabel}
           aria-controls={toolMenuOpen ? 'composer-tool-popover-compact' : undefined}
           aria-expanded={toolMenuOpen}
           disabled={compactInputToolFanActionsDisabled}
@@ -5268,6 +5270,7 @@ function CompactChatApp({
             aria-hidden="true"
           />
         </button>
+        {renderCompactInputToolTooltip(emojiButtonAriaLabel)}
         {activeToolItem ? (
           <button
             className="composer-tool-clear-btn"

@@ -3452,6 +3452,41 @@ describe('App', () => {
     expect(container.querySelectorAll('.send-button-circle')).toHaveLength(1);
   });
 
+  it('renders stable compact input tool labels instead of native browser titles', () => {
+    const { container } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        importImageButtonLabel="Import test label"
+        screenshotButtonLabel="Screenshot test label"
+        jukeboxButtonLabel="Jukebox test label"
+        translateButtonLabel="Translate test label"
+        galgameToggleButtonLabel="Galgame test label"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+
+    const fan = container.querySelector('.compact-input-tool-fan');
+    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+    const expectedLabels = [
+      ['.compact-input-tool-item-import', 'Import test label'],
+      ['.compact-input-tool-item-screenshot', 'Screenshot test label'],
+      ['.compact-input-tool-item-jukebox', 'Jukebox test label'],
+      ['.compact-input-tool-item-translate', 'Translate test label'],
+      ['.compact-input-tool-item-galgame', 'Galgame test label'],
+      ['.compact-input-tool-item-export', 'Show history actions'],
+      ['.compact-input-tool-item-avatar', 'Emoji'],
+    ];
+
+    expectedLabels.forEach(([selector, label]) => {
+      const item = fan?.querySelector(selector);
+      expect(item).not.toBeNull();
+      expect(item).not.toHaveAttribute('title');
+      expect(item?.querySelector('.compact-input-tool-tooltip')).toHaveTextContent(label);
+    });
+  });
+
   it('keeps the default compact tool wheel layout on mobile when the original arc fits', () => {
     const originalMatchMedia = window.matchMedia;
     const originalInnerWidth = window.innerWidth;
