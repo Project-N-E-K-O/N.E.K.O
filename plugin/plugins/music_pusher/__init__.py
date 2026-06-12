@@ -655,20 +655,16 @@ class MusicPusherPlugin(NekoPluginBase):
         play_push_started = threading.Event()
         try:
             return bool(
-                await asyncio.wait_for(
-                    asyncio.to_thread(
-                        self._push_music_link,
-                        url=url,
-                        title=title,
-                        artist=artist,
-                        target_lanlan=target_lanlan,
-                        lyric_text=lyric_text,
-                        attach_prompt_on_push=attach_prompt_on_push,
-                        deadline_monotonic=deadline_monotonic,
-                        cancel_event=cancel_event,
-                        play_push_started=play_push_started,
-                    ),
-                    timeout=_PUSH_TIMEOUT_SECONDS,
+                self._push_music_link(
+                    url=url,
+                    title=title,
+                    artist=artist,
+                    target_lanlan=target_lanlan,
+                    lyric_text=lyric_text,
+                    attach_prompt_on_push=attach_prompt_on_push,
+                    deadline_monotonic=deadline_monotonic,
+                    cancel_event=cancel_event,
+                    play_push_started=play_push_started,
                 )
             )
         except asyncio.TimeoutError:
