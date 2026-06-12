@@ -1,0 +1,702 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>猫娘小老师 | Neko Teacher</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app">
+    <div class="lang-switch">
+      <select id="langSelect">
+        <option value="zh-CN">中文</option>
+        <option value="en">English</option>
+        <option value="ja">日本語</option>
+      </select>
+    </div>
+
+    <header class="header">
+      <h1 data-i18n="title">猫娘小老师</h1>
+      <p data-i18n="subtitle">让猫娘为你温柔讲解 Obsidian 知识库</p>
+    </header>
+
+    <nav class="nav">
+      <button class="nav-btn active" data-page="library" data-i18n="nav.library">知识库</button>
+      <button class="nav-btn" data-page="tasks" data-i18n="nav.tasks">学习计划</button>
+      <button class="nav-btn" data-page="history" data-i18n="nav.history">推送历史</button>
+      <button class="nav-btn" data-page="settings" data-i18n="nav.settings">设置</button>
+    </nav>
+
+    <main id="main"></main>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script id="i18n-inline" type="application/json">
+__I18N_JSON__
+</script>
+<script>
+const PLUGIN_ID = 'neko_teacher';
+const POLL_INTERVAL = 300;
+const POLL_MAX_RETRIES = 300;
+
+let i18nData = {};
+let currentLang = 'zh-CN';
+let currentPage = 'library';
+let currentSettings = {};
+let folderTree = null;
+let tasksCache = [];
+let historyCache = [];
+let selectedItem = null;
+
+const $ = (s, el = document) => el ? el.querySelector(s) : document.querySelector(s);
+const $$ = (s, el = document) => Array.from((el || document).querySelectorAll(s));
+
+function formatBytes(b) {
+  if (!b) return '0 B';
+  const u = ['B','KB','MB','GB'];
+  let i = 0;
+  while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+  return b.toFixed(1) + ' ' + u[i];
+}
+function formatTime(iso) {
+  if (!iso) return '-';
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleString();
+}
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function t(key) {
+  var keys = key.split('.');
+  var obj = i18nData[currentLang] || i18nData['zh-CN'] || {};
+  for (var k = 0; k < keys.length; k++) { obj = obj[keys[k]]; if (obj === undefined) break; }
+  if (obj !== undefined) return obj;
+  obj = i18nData['zh-CN'] || {};
+  for (var k2 = 0; k2 < keys.length; k2++) { obj = obj[keys[k2]]; if (obj === undefined) break; }
+  return obj !== undefined ? obj : key;
+}
+
+function showToast(message, type) {
+  type = type || 'success';
+  var el = $('#toast');
+  el.textContent = message;
+  el.className = 'toast ' + type + ' show';
+  setTimeout(function() { el.classList.remove('show'); }, 3000);
+}
+
+async function callPlugin(entryId, args) {
+  args = args || {};
+  try {
+    var createResp = await fetch('/runs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plugin_id: PLUGIN_ID, entry_id: entryId, args: args })
+    });
+    if (!createResp.ok) {
+      var errText = await createResp.text().catch(function() { return ''; });
+      console.error('[neko_teacher] POST /runs failed:', createResp.status, errText);
+      return { success: false, error: 'HTTP ' + createResp.status + ': ' + errText.substring(0, 200) };
+    }
+    var createData = await createResp.json();
+    var runId = createData.run_id;
+    if (!runId) {
+      console.error('[neko_teacher] No run_id in response:', createData);
+      return { success: false, error: '服务端未返回 run_id' };
+    }
+    for (var i = 0; i < POLL_MAX_RETRIES; i++) {
+      await sleep(POLL_INTERVAL);
+      var statusResp = await fetch('/runs/' + runId);
+      if (!statusResp.ok) continue;
+      var statusData = await statusResp.json();
+      if (statusData.status === 'failed') {
+        // 任务失败时直接返回错误，不必再 export
+        var failErr = statusData.error || statusData.last_error || '任务执行失败';
+        console.error('[neko_teacher] run failed:', failErr);
+        return { success: false, error: failErr };
+      }
+      if (statusData.status === 'succeeded') {
+        var exportResp = await fetch('/runs/' + runId + '/export');
+        if (!exportResp.ok) return { success: false, error: 'Export failed (HTTP ' + exportResp.status + ')' };
+        var exportData = await exportResp.json();
+        if (exportData && exportData.error) return { success: false, error: exportData.error };
+        return { success: true, data: exportData };
+      }
+    }
+    return { success: false, error: '轮询超时（90秒），请检查插件服务是否正常运行' };
+  } catch (e) {
+    console.error('[neko_teacher] callPlugin exception:', e);
+    return { success: false, error: e.message || '网络请求异常' };
+  }
+}
+
+async function loadI18n() {
+  // 1. 尝试内联 JSON（模板渲染时注入）
+  var inline = document.getElementById('i18n-inline');
+  if (inline) {
+    try {
+      var parsed = JSON.parse(inline.textContent);
+      if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
+        i18nData = parsed;
+        console.log('[neko_teacher] i18n loaded from inline');
+        return;
+      }
+    } catch (_) {}
+  }
+  // 2. 依次尝试多个相对路径（兼容不同的静态文件服务方式）
+  var paths = ['i18n.json', './i18n.json', '../i18n.json', '/plugin/neko_teacher/ui/i18n.json', '/plugin/neko_teacher/static/i18n.json'];
+  for (var i = 0; i < paths.length; i++) {
+    try {
+      var resp = await fetch(paths[i]);
+      if (resp.ok) {
+        i18nData = await resp.json();
+        if (i18nData && typeof i18nData === 'object' && Object.keys(i18nData).length > 0) {
+          console.log('[neko_teacher] i18n loaded from', paths[i]);
+          return;
+        }
+      }
+    } catch (_) {}
+  }
+  console.error('[neko_teacher] i18n load failed from all paths');
+}
+
+function applyI18n() {
+  document.querySelectorAll('[data-i18n]').forEach(function(el) {
+    el.textContent = t(el.getAttribute('data-i18n'));
+  });
+}
+
+function renderPage() {
+  var main = $('#main');
+  main.innerHTML = '';
+  if (currentPage === 'library') renderLibrary(main);
+  else if (currentPage === 'tasks') renderTasks(main);
+  else if (currentPage === 'history') renderHistory(main);
+  else if (currentPage === 'settings') renderSettings(main);
+  applyI18n();
+}
+
+function renderLibrary(container) {
+  var pathVal = currentSettings.library_path || '';
+  container.innerHTML =
+    '<div class="card">' +
+      '<div class="card-title"><span class="icon">📂</span> <span data-i18n="library.path_label">知识库路径</span></div>' +
+      '<div class="form-row">' +
+        '<input type="text" id="libPath" placeholder="' + t('library.path_placeholder') + '" value="' + escapeHtml(pathVal) + '" />' +
+        // ⭐ 关键：webkitdirectory 隐藏的 input —— 点击"导入文件夹"会触发它，弹出系统原生文件夹选择对话框
+        '<input type="file" id="folderPicker" webkitdirectory directory multiple style="display:none;" />' +
+      '</div>' +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;">' +
+        '<button class="btn btn-primary" id="importBtn">' + (t('library.import_btn') || '导入文件夹') + '</button>' +
+        '<button class="btn btn-secondary" id="scanPathBtn">' + (t('library.scan_path_btn') || '从路径扫描') + '</button>' +
+        '<button class="btn btn-secondary" id="createTaskBtn">' + (t('library.create_task') || '创建学习计划') + '</button>' +
+      '</div>' +
+      '<div class="form-hint" style="margin-top:8px;font-size:12px;color:var(--text-light);">' +
+        '💡 ' + (t('library.tip') || '点击「导入文件夹」会弹出系统文件资源管理器选择窗口') +
+      '</div>' +
+      (selectedItem
+        ? '<div class="selected-badge" style="margin-top:12px;">' +
+            (selectedItem.type === 'file' ? '📄' : '📁') + ' <strong>' + escapeHtml(selectedItem.name) + '</strong>' +
+            ' <span class="selected-path">' + escapeHtml(selectedItem.path) + '</span>' +
+          '</div>'
+        : '') +
+    '</div>' +
+    '<div class="card" id="fileTreeCard" style="display:' + (folderTree ? 'block' : 'none') + ';">' +
+      '<div class="card-title"><span class="icon">📚</span> <span data-i18n="library.file_name">知识库内容</span></div>' +
+      '<div class="file-tree" id="fileTree"></div>' +
+    '</div>' +
+    '<div id="createTaskModal" class="card" style="display:none;"></div>';
+
+  // ⭐ 把"导入文件夹"按钮真正接到隐藏的 webkitdirectory input 上 —— 这是 Electron Webview 唯一可用的方案
+  var importBtn = $('#importBtn');
+  var folderPicker = $('#folderPicker');
+  if (importBtn && folderPicker) {
+    importBtn.onclick = function() { folderPicker.click(); };
+    folderPicker.onchange = onFolderPicked;
+  }
+  var scanPathBtn = $('#scanPathBtn');
+  if (scanPathBtn) scanPathBtn.onclick = scanPathInput;
+  var createTaskBtn = $('#createTaskBtn');
+  if (createTaskBtn) createTaskBtn.onclick = createTaskFromSelected;
+
+  if (folderTree) renderFileTree();
+}
+
+async function onFolderPicked(event) {
+  var files = event.target.files;
+  if (!files || files.length === 0) {
+    showToast(t('library.cancel_pick') || '已取消选择', 'error');
+    return;
+  }
+  showToast('正在读取文件夹内容（' + files.length + ' 个文件）...', 'success');
+
+  var mdFiles = [];
+  for (var i = 0; i < files.length; i++) {
+    var f = files[i];
+    var rel = f.webkitRelativePath || f.name;
+    if (f.name.toLowerCase().endsWith('.md') && !f.name.startsWith('.')) {
+      mdFiles.push({ path: rel, file: f, size: f.size });
+    }
+  }
+  if (mdFiles.length === 0) {
+    showToast('所选文件夹中没有 .md 文档', 'error');
+    event.target.value = '';
+    return;
+  }
+
+  // 推断 vault 根名
+  var firstRel = mdFiles[0].path;
+  var vaultName = firstRel.split('/')[0] || firstRel.split('\\')[0] || 'vault';
+
+  // 读取所有 .md 内容
+  var payload = { vault_name: vaultName, files: [] };
+  for (var j = 0; j < mdFiles.length; j++) {
+    var mf = mdFiles[j];
+    try {
+      var content = await readFileAsText(mf.file);
+      payload.files.push({
+        relpath: mf.path,
+        size: mf.size,
+        content: content
+      });
+    } catch (e) {
+      console.error('[neko_teacher] read failed:', mf.path, e);
+    }
+  }
+
+  if (payload.files.length === 0) {
+    showToast('无法读取任何 .md 文件内容', 'error');
+    event.target.value = '';
+    return;
+  }
+
+  showToast('正在导入 ' + payload.files.length + ' 篇文档...', 'success');
+  var result = await callPlugin('import_vault_files', payload);
+  if (result.success && result.data && result.data.tree) {
+    folderTree = result.data.tree;
+    currentSettings.library_path = result.data.path || '';
+    selectedItem = null;
+    // 更新输入框显示后端实际路径
+    var input = $('#libPath');
+    if (input) input.value = result.data.path || vaultName;
+    renderPage();
+    showToast('导入成功！共 ' + (folderTree.file_count || 0) + ' 篇文档', 'success');
+  } else {
+    var err = result.error || (result.data && result.data.error) || '未知错误';
+    console.error('[neko_teacher] import_vault_files failed:', err);
+    showToast('导入失败: ' + err, 'error');
+  }
+  event.target.value = '';
+}
+
+function readFileAsText(file) {
+  return new Promise(function(resolve, reject) {
+    var r = new FileReader();
+    r.onload = function() { resolve(r.result); };
+    r.onerror = function() { reject(r.error); };
+    r.readAsText(file, 'utf-8');
+  });
+}
+
+function commonPathPrefix(paths) {
+  if (!paths.length) return '';
+  // 按目录分隔符分段
+  var sep = paths[0].indexOf('\\') >= 0 ? '\\' : '/';
+  var first = paths[0].split(sep);
+  var prefix = [];
+  for (var i = 0; i < first.length; i++) {
+    var seg = first[i];
+    var allMatch = true;
+    for (var j = 1; j < paths.length; j++) {
+      var parts = paths[j].split(sep);
+      if (parts[i] !== seg) { allMatch = false; break; }
+    }
+    if (allMatch) prefix.push(seg); else break;
+  }
+  return prefix.join(sep);
+}
+
+async function pickFolder() {
+  // 兼容层：直接转调 webkitdirectory picker
+  var picker = $('#folderPicker');
+  if (picker) {
+    picker.click();
+  } else {
+    showToast('当前页面不支持文件夹选择', 'error');
+  }
+}
+
+async function scanPathInput() {
+  var input = $('#libPath');
+  var path = input ? input.value.trim() : '';
+  if (!path) return showToast(t('library.no_path_error') || '请先输入知识库路径', 'error');
+  showToast('正在扫描: ' + path, 'success');
+  var result = await callPlugin('scan_library_tree', { path: path });
+  if (result.success && result.data && result.data.tree) {
+    folderTree = result.data.tree;
+    currentSettings.library_path = path;
+    selectedItem = null;
+    renderPage();
+    showToast('扫描成功！共 ' + (folderTree.file_count || 0) + ' 篇文档', 'success');
+  } else {
+    var errMsg = result.error || '扫描失败';
+    console.error('[neko_teacher] scan failed:', errMsg);
+    showToast('扫描失败: ' + errMsg, 'error');
+  }
+}
+
+function renderFileTree(node, depth) {
+  depth = depth || 0;
+  var tree = $('#fileTree');
+  if (!tree) return;
+  var root = node || folderTree;
+  if (!root || !root.children || !root.children.length) {
+    tree.innerHTML = '<div class="empty"><span class="emoji">📭</span><p>' + t('library.no_files') + '</p></div>';
+    return;
+  }
+  var html = '';
+  for (var i = 0; i < root.children.length; i++) {
+    var child = root.children[i];
+    var indent = depth * 20;
+    if (child.type === 'folder') {
+      var isSel = selectedItem && selectedItem.type === 'folder' && selectedItem.path === child.path;
+      html += '<div class="folder-item" style="padding-left:' + indent + 'px;">' +
+        '<div class="folder-name ' + (isSel ? 'selected' : '') + '" onclick="selectFolderItem(\'' + escapeAttr(child.path) + '\',\'' + escapeAttr(child.name) + '\')">' +
+        '📁 ' + escapeHtml(child.name) + ' <span class="meta">(' + (child.file_count || 0) + ' 篇)</span></div>' +
+        (child.children && child.children.length ? renderFileTree(child, depth + 1) : '') +
+        '</div>';
+    } else {
+      var isSel2 = selectedItem && selectedItem.type === 'file' && selectedItem.path === child.path;
+      html += '<div class="file-item ' + (isSel2 ? 'selected' : '') + '" style="padding-left:' + (indent + 20) + 'px;" onclick="selectFileItem(\'' + escapeAttr(child.path) + '\',\'' + escapeAttr(child.name) + '\')">' +
+        '📄 ' + escapeHtml(child.name) + ' <span class="meta">' + formatBytes(child.size) + '</span></div>';
+    }
+  }
+  tree.innerHTML = html;
+}
+
+function escapeAttr(s) {
+  return (s || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"');
+}
+
+function selectFolderItem(path, name) {
+  selectedItem = { type: 'folder', path: path, name: name };
+  renderFileTree();
+  showToast(' 已选择: ' + name, 'success');
+}
+
+function selectFileItem(path, name) {
+  selectedItem = { type: 'file', path: path, name: name };
+  renderFileTree();
+  showToast('📄 已选择: ' + name, 'success');
+}
+
+function createTaskFromSelected() {
+  if (!selectedItem) {
+    var path = folderTree ? folderTree.path : (currentSettings.library_path || '');
+    if (path) {
+      var name = folderTree ? folderTree.name : path.split(/[\\\/]/).pop();
+      selectedItem = { type: 'folder', path: path, name: name };
+    } else {
+      return showToast(t('library.no_path_error'), 'error');
+    }
+  }
+  openCreateModal(selectedItem.type);
+}
+
+function openCreateModal(targetType) {
+  var modal = $('#createTaskModal');
+  if (!modal) return;
+  modal.style.display = 'block';
+  var tp = selectedItem ? selectedItem.path : '';
+  var tn = selectedItem ? selectedItem.name : '';
+  var mode = currentSettings.default_chunk_mode || 'by_heading';
+  var size = currentSettings.default_chunk_size || 500;
+
+  modal.innerHTML =
+    '<div class="card-title"><span class="icon"></span> <span data-i18n="task.create_title">创建学习计划</span></div>' +
+    '<div class="form-row"><label>' + t('task.name_label') + '</label>' +
+    '<input type="text" id="taskName" value="学习：' + escapeHtml(tn) + '" /></div>' +
+    '<div class="form-row"><label>' + t('task.target_label') + '</label>' +
+    '<input type="text" readonly value="' + escapeHtml(tp) + '" style="font-size:12px;opacity:0.8;" /></div>' +
+    '<div class="form-row"><label>' + t('task.chunk_mode_label') + '</label>' +
+    '<select id="taskChunkMode" onchange="onChunkModeChange()">' +
+    '<option value="by_heading"' + (mode === 'by_heading' ? ' selected' : '') + '>' + t('modes.by_heading') + '</option>' +
+    '<option value="fixed_length"' + (mode === 'fixed_length' ? ' selected' : '') + '>' + t('modes.fixed_length') + '</option>' +
+    '</select></div>' +
+    '<div class="form-row" id="taskChunkSizeRow" style="display:' + (mode === 'fixed_length' ? 'block' : 'none') + ';">' +
+    '<label>' + t('task.chunk_size_label') + '</label>' +
+    '<input type="number" id="taskChunkSize" value="' + size + '" min="50" /></div>' +
+    '<div class="form-row"><label>' + t('task.schedule_type_label') + '</label>' +
+    '<select id="taskScheduleType" onchange="onScheduleTypeChange()">' +
+    '<option value="interval">' + t('schedule_types.interval') + '</option>' +
+    '<option value="daily">' + t('schedule_types.daily') + '</option>' +
+    '<option value="once">' + t('schedule_types.once') + '</option>' +
+    '</select></div>' +
+    '<div id="scheduleInterval">' +
+    '<div class="form-row"><label>' + t('task.interval_label') + '</label>' +
+    '<input type="number" id="taskInterval" value="300" min="10" /></div>' +
+    '<div class="form-row inline"><input type="checkbox" id="taskRandom" onchange="onRandomToggle()" />' +
+    '<label for="taskRandom">' + t('task.random_label') + '</label></div>' +
+    '<div class="form-row" id="randomRange" style="display:none;">' +
+    '<div style="display:flex;gap:10px;">' +
+    '<div style="flex:1;"><label>' + t('task.random_min_label') + '</label>' +
+    '<input type="number" id="taskRandomMin" value="60" min="10" /></div>' +
+    '<div style="flex:1;"><label>' + t('task.random_max_label') + '</label>' +
+    '<input type="number" id="taskRandomMax" value="600" min="10" /></div></div></div></div>' +
+    '<div id="scheduleDaily" style="display:none;">' +
+    '<div class="form-row"><label>' + t('task.daily_time_label') + '</label>' +
+    '<input type="time" id="taskDailyTime" value="09:00" /></div></div>' +
+    '<div id="scheduleOnce" style="display:none;">' +
+    '<div class="form-row"><label>' + t('task.once_datetime_label') + '</label>' +
+    '<input type="datetime-local" id="taskOnceDatetime" /></div></div>' +
+    '<div class="form-row"><label>' + t('task.target_lanlan_label') + '</label>' +
+    '<input type="text" id="taskLanlan" value="' + escapeHtml(currentSettings.target_lanlan || '') + '" /></div>' +
+    '<div style="display:flex;gap:10px;justify-content:flex-end;">' +
+    '<button class="btn btn-ghost" onclick="closeCreateModal()">' + t('task.cancel_btn') + '</button>' +
+    '<button class="btn btn-primary" onclick="submitCreateTask()">' + t('task.create_btn') + '</button>' +
+    '</div>';
+  applyI18n();
+}
+
+function closeCreateModal() {
+  var modal = $('#createTaskModal');
+  if (modal) modal.style.display = 'none';
+}
+
+function onScheduleTypeChange() {
+  var type = $('#taskScheduleType').value;
+  $('#scheduleInterval').style.display = type === 'interval' ? 'block' : 'none';
+  $('#scheduleDaily').style.display = type === 'daily' ? 'block' : 'none';
+  $('#scheduleOnce').style.display = type === 'once' ? 'block' : 'none';
+}
+
+function onRandomToggle() {
+  $('#randomRange').style.display = $('#taskRandom').checked ? 'block' : 'none';
+}
+
+function onChunkModeChange() {
+  var mode = $('#taskChunkMode').value;
+  var row = $('#taskChunkSizeRow');
+  if (row) row.style.display = mode === 'fixed_length' ? 'block' : 'none';
+}
+
+async function submitCreateTask() {
+  var name = $('#taskName').value.trim();
+  var path = selectedItem ? selectedItem.path : null;
+  if (!name || !path) return showToast(t('toast.error'), 'error');
+
+  var stype = $('#taskScheduleType').value;
+  var schedule = { type: stype };
+  if (stype === 'interval') {
+    schedule.interval_seconds = parseInt($('#taskInterval').value) || 300;
+    schedule.random_interval = $('#taskRandom').checked;
+    schedule.random_min = parseInt($('#taskRandomMin').value) || 60;
+    schedule.random_max = parseInt($('#taskRandomMax').value) || 600;
+  } else if (stype === 'daily') {
+    schedule.daily_time = $('#taskDailyTime').value || '09:00';
+    schedule.interval_seconds = parseInt($('#taskInterval').value) || 300;
+    schedule.random_interval = $('#taskRandom').checked;
+    schedule.random_min = parseInt($('#taskRandomMin').value) || 60;
+    schedule.random_max = parseInt($('#taskRandomMax').value) || 600;
+  } else if (stype === 'once') {
+    schedule.once_datetime = $('#taskOnceDatetime').value || '';
+    schedule.interval_seconds = parseInt($('#taskInterval').value) || 300;
+    schedule.random_interval = $('#taskRandom').checked;
+    schedule.random_min = parseInt($('#taskRandomMin').value) || 60;
+    schedule.random_max = parseInt($('#taskRandomMax').value) || 600;
+  }
+
+  showToast(t('toast.loading'), 'success');
+  var result = await callPlugin('create_task', {
+    name: name,
+    target_path: path,
+    target_type: selectedItem.type,
+    chunk_mode: $('#taskChunkMode').value,
+    chunk_size: parseInt($('#taskChunkSize').value) || 500,
+    schedule: schedule,
+    target_lanlan: $('#taskLanlan').value.trim()
+  });
+  if (result.success) {
+    showToast(t('toast.success'), 'success');
+    closeCreateModal();
+    currentPage = 'tasks';
+    updateNav();
+    await loadTasks();
+    renderPage();
+  } else {
+    showToast(result.error || t('toast.error'), 'error');
+  }
+}
+
+async function loadTasks() {
+  var result = await callPlugin('list_tasks');
+  if (result.success && result.data) tasksCache = result.data.tasks || [];
+}
+
+function renderTasks(container) {
+  if (!tasksCache.length) {
+    container.innerHTML = '<div class="empty"><span class="emoji">🐾</span><p>' + t('task.no_tasks') + '</p></div>';
+    return;
+  }
+  var html = '';
+  for (var i = 0; i < tasksCache.length; i++) {
+    var task = tasksCache[i];
+    var sc = 'status-' + (task.status || 'pending');
+    var st = t('task.status_' + (task.status || 'pending'));
+    var docTitle = task.current_doc_title || (task.target_path || '').split(/[\\\/]/).pop() || '';
+    html += '<div class="card task-card">' +
+      '<div class="status-badge ' + sc + '">' + st + '</div>' +
+      '<div style="font-weight:700;font-size:15px;margin-bottom:4px;">' + escapeHtml(task.name) + '</div>' +
+      '<div style="font-size:12px;color:var(--text-light);margin-bottom:8px;">' +
+      '📖 ' + escapeHtml(docTitle) + ' · ' + t('task.progress_label') + ' ' + (task.progress_percent || 0) + '%</div>' +
+      '<div class="progress-bar"><div class="fill" style="width:' + (task.progress_percent || 0) + '%"></div></div>' +
+      '<div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;">' +
+      (task.status === 'running'
+        ? '<button class="btn btn-sm btn-ghost" onclick="controlTask(\'' + task.task_id + '\',\'pause\')">' + t('task.pause_btn') + '</button>'
+        : '<button class="btn btn-sm btn-primary" onclick="controlTask(\'' + task.task_id + '\',\'start\')">' + t('task.start_btn') + '</button>') +
+      '<button class="btn btn-sm btn-ghost" onclick="controlTask(\'' + task.task_id + '\',\'trigger_now\')">' + t('task.trigger_btn') + '</button>' +
+      '<button class="btn btn-sm btn-ghost" onclick="controlTask(\'' + task.task_id + '\',\'stop\')">' + t('task.stop_btn') + '</button>' +
+      '<button class="btn btn-sm btn-ghost" onclick="controlTask(\'' + task.task_id + '\',\'delete\')">' + t('task.delete_btn') + '</button>' +
+      '</div>' +
+      (task.last_error ? '<div style="margin-top:8px;font-size:12px;color:#ef4444;">⚠ ' + escapeHtml(task.last_error) + '</div>' : '') +
+      '</div>';
+  }
+  container.innerHTML = html;
+  applyI18n();
+}
+
+async function controlTask(taskId, action) {
+  if (action === 'delete') {
+    if (!confirm(t('task.delete_btn') + '?')) return;
+  }
+  showToast(t('toast.loading'), 'success');
+  var entryId = action === 'trigger_now' ? 'trigger_now' : action + '_task';
+  var result = await callPlugin(entryId, { task_id: taskId });
+  if (result.success) {
+    showToast(t('toast.success'), 'success');
+    await loadTasks();
+    renderPage();
+  } else {
+    showToast(result.error || t('toast.error'), 'error');
+  }
+}
+
+async function loadHistory() {
+  var result = await callPlugin('get_history', { limit: 50 });
+  if (result.success && result.data) historyCache = result.data.history || [];
+}
+
+function renderHistory(container) {
+  if (!historyCache.length) {
+    container.innerHTML = '<div class="empty"><span class="emoji"></span><p>' + t('history.no_history') + '</p></div>';
+    return;
+  }
+  var html = '<div class="card"><div class="card-title"><span class="icon">📜</span> <span data-i18n="history.title">推送历史</span></div>';
+  var rev = historyCache.slice().reverse();
+  for (var i = 0; i < rev.length; i++) {
+    var h = rev[i];
+    html += '<div class="history-item"><div><div class="doc">' + escapeHtml(h.doc_title || '') + '</div>' +
+      '<div class="chunk">' + t('history.chunk_index') + ' ' + ((h.chunk_index || 0) + 1) + '/' + (h.total_chunks || 1) + '</div></div>' +
+      '<div class="time">' + formatTime(h.timestamp) + '</div></div>';
+  }
+  html += '</div>';
+  container.innerHTML = html;
+  applyI18n();
+}
+
+async function loadSettings() {
+  var result = await callPlugin('get_settings');
+  if (result.success && result.data && result.data.settings) currentSettings = result.data.settings;
+}
+
+function renderSettings(container) {
+  var s = currentSettings || {};
+  container.innerHTML =
+    '<div class="card"><div class="card-title"><span class="icon">⚙️</span> <span data-i18n="nav.settings">设置</span></div>' +
+    '<div class="form-row"><label>' + t('settings.library_path') + '</label>' +
+    '<input type="text" id="setPath" value="' + escapeHtml(s.library_path || '') + '" /></div>' +
+    '<div class="form-row inline"><input type="checkbox" id="setEnabled"' + (s.enabled !== false ? ' checked' : '') + ' />' +
+    '<label for="setEnabled">' + t('settings.enabled') + '</label></div>' +
+    '<div class="form-row"><label>' + t('settings.chunk_mode') + '</label>' +
+    '<select id="setChunkMode">' +
+    '<option value="by_heading"' + (s.default_chunk_mode === 'by_heading' ? ' selected' : '') + '>' + t('modes.by_heading') + '</option>' +
+    '<option value="fixed_length"' + (s.default_chunk_mode === 'fixed_length' ? ' selected' : '') + '>' + t('modes.fixed_length') + '</option>' +
+    '</select></div>' +
+    '<div class="form-row"><label>' + t('settings.chunk_size') + '</label>' +
+    '<input type="number" id="setChunkSize" value="' + (s.default_chunk_size || 500) + '" min="50" /></div>' +
+    '<div class="form-row"><label>' + t('settings.target_lanlan') + '</label>' +
+    '<input type="text" id="setLanlan" value="' + escapeHtml(s.target_lanlan || '') + '" /></div>' +
+    '<div class="form-row"><label>' + t('settings.push_prompt') + '</label>' +
+    '<textarea id="setPrompt" rows="3">' + escapeHtml(s.push_prompt || '这是主人今天要学习的知识片段哦~请用温柔可爱的语气为主人朗读或讲解这部分内容。') + '</textarea></div>' +
+    '<button class="btn btn-primary" onclick="saveSettings()">' + t('settings.save_btn') + '</button></div>';
+}
+
+async function saveSettings() {
+  var payload = {
+    library_path: $('#setPath').value.trim(),
+    enabled: $('#setEnabled').checked,
+    default_chunk_mode: $('#setChunkMode').value,
+    default_chunk_size: parseInt($('#setChunkSize').value) || 500,
+    target_lanlan: $('#setLanlan').value.trim(),
+    push_prompt: $('#setPrompt').value.trim()
+  };
+  showToast(t('toast.loading'), 'success');
+  var result = await callPlugin('update_settings', payload);
+  if (result.success) {
+    currentSettings = Object.assign({}, currentSettings, payload);
+    showToast(t('settings.saved'), 'success');
+  } else {
+    showToast(result.error || t('toast.error'), 'error');
+  }
+}
+
+function updateNav() {
+  $$('.nav-btn').forEach(function(btn) {
+    btn.classList.toggle('active', btn.getAttribute('data-page') === currentPage);
+  });
+}
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return str.replace(/[&<>"']/g, function(m) {
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m];
+  });
+}
+
+async function init() {
+  await loadI18n();
+  applyI18n();
+
+  $('#langSelect').value = currentLang;
+  $('#langSelect').addEventListener('change', function(e) {
+    currentLang = e.target.value;
+    applyI18n();
+    renderPage();
+  });
+
+  $$('.nav-btn').forEach(function(btn) {
+    btn.addEventListener('click', async function() {
+      currentPage = btn.getAttribute('data-page');
+      updateNav();
+      if (currentPage === 'tasks') await loadTasks();
+      if (currentPage === 'history') await loadHistory();
+      if (currentPage === 'settings') await loadSettings();
+      renderPage();
+    });
+  });
+
+  // 回车键触发扫描
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && document.activeElement && document.activeElement.id === 'libPath') {
+      scanPathInput();
+    }
+  });
+
+  await loadSettings();
+  renderPage();
+}
+
+init();
+</script>
+</body>
+</html>

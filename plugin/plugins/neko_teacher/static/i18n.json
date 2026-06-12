@@ -1,0 +1,248 @@
+{
+  "zh-CN": {
+    "title": "猫娘小老师",
+    "subtitle": "让猫娘为你温柔讲解 Obsidian 知识库",
+    "nav": { "library": "知识库", "tasks": "学习计划", "history": "推送历史", "settings": "设置" },
+    "library": {
+      "path_label": "知识库路径",
+      "path_placeholder": "输入或粘贴 Obsidian 知识库文件夹路径",
+      "import_btn": "导入文件夹",
+      "scan_path_btn": "从路径扫描",
+      "scan_btn": "扫描文件",
+      "select_file": "选择文档",
+      "select_folder": "选择文件夹",
+      "file_name": "知识库内容",
+      "file_size": "大小",
+      "file_modified": "修改时间",
+      "create_task": "创建学习计划",
+      "no_files": "暂无文件，请先导入文件夹",
+      "no_path_error": "请先输入或选择知识库路径",
+      "cancel_pick": "已取消选择",
+      "tip": "点击「导入文件夹」会弹出系统文件资源管理器选择窗口"
+    },
+    "task": {
+      "create_title": "创建学习计划",
+      "name_label": "计划名称",
+      "target_label": "学习内容",
+      "chunk_mode_label": "分片方式",
+      "chunk_size_label": "每片字数",
+      "schedule_type_label": "定时类型",
+      "interval_label": "间隔秒数",
+      "random_label": "随机间隔",
+      "random_min_label": "最小秒数",
+      "random_max_label": "最大秒数",
+      "daily_time_label": "每天时间",
+      "once_datetime_label": "指定时间",
+      "target_lanlan_label": "目标猫娘",
+      "create_btn": "创建计划",
+      "cancel_btn": "取消",
+      "status_pending": "待开始",
+      "status_running": "进行中",
+      "status_paused": "已暂停",
+      "status_completed": "已完成",
+      "status_stopped": "已停止",
+      "start_btn": "开始",
+      "pause_btn": "暂停",
+      "stop_btn": "停止",
+      "delete_btn": "删除",
+      "trigger_btn": "立即推送",
+      "progress_label": "进度",
+      "no_tasks": "暂无学习计划，去知识库创建一个吧~"
+    },
+    "history": {
+      "title": "推送历史",
+      "doc_title": "文档",
+      "chunk_index": "片段",
+      "time": "时间",
+      "no_history": "还没有推送记录哦~"
+    },
+    "settings": {
+      "library_path": "默认知识库路径",
+      "enabled": "启用插件",
+      "chunk_mode": "默认分片方式",
+      "chunk_size": "默认每片字数",
+      "target_lanlan": "默认目标猫娘",
+      "push_prompt": "推送提示词",
+      "save_btn": "保存设置",
+      "saved": "设置已保存"
+    },
+    "modes": {
+      "fixed_length": "固定字数",
+      "by_heading": "按标题"
+    },
+    "schedule_types": {
+      "interval": "固定间隔",
+      "daily": "每日定时",
+      "once": "一次性"
+    },
+    "toast": {
+      "success": "操作成功",
+      "error": "操作失败",
+      "loading": "加载中..."
+    }
+  },
+  "en": {
+    "title": "Neko Teacher",
+    "subtitle": "Let your catgirl gently teach you from Obsidian vaults",
+    "nav": { "library": "Library", "tasks": "Study Plans", "history": "History", "settings": "Settings" },
+    "library": {
+      "path_label": "Vault Path",
+      "path_placeholder": "Enter or select your Obsidian vault folder",
+      "import_btn": "Import Folder",
+      "scan_path_btn": "Scan from Path",
+      "scan_btn": "Scan Files",
+      "select_file": "Select Document",
+      "select_folder": "Select Folder",
+      "file_name": "Vault Contents",
+      "file_size": "Size",
+      "file_modified": "Modified",
+      "create_task": "Create Study Plan",
+      "no_files": "No files yet. Please import a folder first.",
+      "no_path_error": "Please enter the vault path first",
+      "cancel_pick": "Selection cancelled",
+      "tip": "Click 'Import Folder' to open the system file explorer"
+    },
+    "task": {
+      "create_title": "Create Study Plan",
+      "name_label": "Plan Name",
+      "target_label": "Content",
+      "chunk_mode_label": "Chunk Mode",
+      "chunk_size_label": "Chunk Size",
+      "schedule_type_label": "Schedule Type",
+      "interval_label": "Interval (sec)",
+      "random_label": "Random Interval",
+      "random_min_label": "Min (sec)",
+      "random_max_label": "Max (sec)",
+      "daily_time_label": "Daily At",
+      "once_datetime_label": "Once At",
+      "target_lanlan_label": "Target Catgirl",
+      "create_btn": "Create Plan",
+      "cancel_btn": "Cancel",
+      "status_pending": "Pending",
+      "status_running": "Running",
+      "status_paused": "Paused",
+      "status_completed": "Completed",
+      "status_stopped": "Stopped",
+      "start_btn": "Start",
+      "pause_btn": "Pause",
+      "stop_btn": "Stop",
+      "delete_btn": "Delete",
+      "trigger_btn": "Push Now",
+      "progress_label": "Progress",
+      "no_tasks": "No study plans yet. Go to the Library to create one~"
+    },
+    "history": {
+      "title": "Push History",
+      "doc_title": "Document",
+      "chunk_index": "Chunk",
+      "time": "Time",
+      "no_history": "No push history yet~"
+    },
+    "settings": {
+      "library_path": "Default Vault Path",
+      "enabled": "Enable Plugin",
+      "chunk_mode": "Default Chunk Mode",
+      "chunk_size": "Default Chunk Size",
+      "target_lanlan": "Default Target Catgirl",
+      "push_prompt": "Push Prompt",
+      "save_btn": "Save Settings",
+      "saved": "Settings saved"
+    },
+    "modes": {
+      "fixed_length": "Fixed Length",
+      "by_heading": "By Heading"
+    },
+    "schedule_types": {
+      "interval": "Interval",
+      "daily": "Daily",
+      "once": "Once"
+    },
+    "toast": {
+      "success": "Success",
+      "error": "Error",
+      "loading": "Loading..."
+    }
+  },
+  "ja": {
+    "title": "猫娘小先生",
+    "subtitle": "Obsidian の知識庫から、猫娘が優しく教えてくれる",
+    "nav": { "library": "知識庫", "tasks": "学習計画", "history": "履歴", "settings": "設定" },
+    "library": {
+      "path_label": "知識庫パス",
+      "path_placeholder": "Obsidian フォルダを選択",
+      "import_btn": "フォルダをインポート",
+      "scan_btn": "スキャン",
+      "select_file": "文書を選択",
+      "select_folder": "フォルダを選択",
+      "file_name": "知識庫の内容",
+      "file_size": "サイズ",
+      "file_modified": "更新日",
+      "create_task": "学習計画を作成",
+      "no_files": "ファイルがありません。先にフォルダをインポートしてください。",
+      "no_path_error": "先にパスを入力してください",
+      "scan_path_btn": "パスからスキャン",
+      "cancel_pick": "選択がキャンセルされました",
+      "tip": "「フォルダをインポート」をクリックすると、システムのファイル選択ダイアログが開きます"
+    },
+    "task": {
+      "create_title": "学習計画を作成",
+      "name_label": "計画名",
+      "target_label": "学習内容",
+      "chunk_mode_label": "分割方式",
+      "chunk_size_label": "文字数",
+      "schedule_type_label": "スケジュール",
+      "interval_label": "間隔（秒）",
+      "random_label": "ランダム間隔",
+      "random_min_label": "最小（秒）",
+      "random_max_label": "最大（秒）",
+      "daily_time_label": "毎日の時間",
+      "once_datetime_label": "指定日時",
+      "target_lanlan_label": "対象猫娘",
+      "create_btn": "作成",
+      "cancel_btn": "キャンセル",
+      "status_pending": "待機中",
+      "status_running": "進行中",
+      "status_paused": "一時停止",
+      "status_completed": "完了",
+      "status_stopped": "停止",
+      "start_btn": "開始",
+      "pause_btn": "一時停止",
+      "stop_btn": "停止",
+      "delete_btn": "削除",
+      "trigger_btn": "今すぐ配信",
+      "progress_label": "進捗",
+      "no_tasks": "学習計画がありません。知識庫から作成してください~"
+    },
+    "history": {
+      "title": "配信履歴",
+      "doc_title": "文書",
+      "chunk_index": "片段",
+      "time": "時間",
+      "no_history": "まだ履歴がありません~"
+    },
+    "settings": {
+      "library_path": "既定の知識庫パス",
+      "enabled": "有効化",
+      "chunk_mode": "既定の分割方式",
+      "chunk_size": "既定の文字数",
+      "target_lanlan": "既定の猫娘",
+      "push_prompt": "配信プロンプト",
+      "save_btn": "保存",
+      "saved": "保存しました"
+    },
+    "modes": {
+      "fixed_length": "固定文字数",
+      "by_heading": "見出しごと"
+    },
+    "schedule_types": {
+      "interval": "間隔",
+      "daily": "毎日",
+      "once": "一度だけ"
+    },
+    "toast": {
+      "success": "成功",
+      "error": "エラー",
+      "loading": "読み込み中..."
+    }
+  }
+}

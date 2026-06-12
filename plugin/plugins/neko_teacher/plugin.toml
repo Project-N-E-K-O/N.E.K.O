@@ -1,0 +1,22 @@
+[plugin]
+id = "neko_teacher"
+name = "猫娘小老师"
+description = "从 Obsidian 知识库导入 Markdown 文档，让猫娘定时为你讲解知识。支持分片连续推送、随机间隔、每日定时与一次性计划。Web UI: http://127.0.0.1:48916/plugin/neko_teacher/ui/"
+short_description = "Obsidian knowledge pusher: let your catgirl teach you markdown notes piece by piece."
+keywords = ["知识", "学习", "obsidian", "markdown", "定时推送", "猫娘老师", "teaching", "study", "ノート", "학습"]
+version = "1.0.0"
+entry = "plugins.neko_teacher:NekoTeacherPlugin"
+
+[plugin.author]
+name = "N.E.K.O Team"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin_runtime]
+enabled = true
+auto_start = true
+
+[plugin.store]
+enabled = true
