@@ -19,6 +19,7 @@ import random
 import re
 import shutil
 import socket
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -393,6 +394,7 @@ class MusicPusherPlugin(NekoPluginBase):
         self._state_lock = asyncio.Lock()
         self._run_lock = asyncio.Lock()
         self._scheduler_stop = asyncio.Event()
+        self._push_cancel_event = threading.Event()
         self._scheduler_task: asyncio.Task | None = None
 
         self._music_items: list[dict[str, Any]] = []
@@ -1045,6 +1047,29 @@ class MusicPusherPlugin(NekoPluginBase):
         except Exception as exc:
             self.logger.warning(f"删除上传音乐文件失败[{name}]: {exc}")
 
+    def _upload_filename_from_url(self, url: str) -> str:
+        parsed = _parse_http_url(self._normalize_legacy_url(str(url or "").strip()))
+        if parsed is None:
+            return ""
+
+        upload_prefix = f"/plugin/{self.plugin_id}/ui/{_UPLOAD_SUBDIR}/"
+        path = str(parsed.path or "")
+        if not path.startswith(upload_prefix):
+            return ""
+        filename = path.removeprefix(upload_prefix).split("/", 1)[0].strip()
+        return filename if filename and filename == Path(filename).name else ""
+
+    def _missing_upload_reference_in_queue_locked(self, queue: list[dict[str, Any]]) -> str:
+        for track in queue:
+            if not isinstance(track, dict):
+                continue
+            stored_filename = self._upload_filename_from_url(str(track.get("url") or ""))
+            if not stored_filename:
+                continue
+            if not (self._upload_dir / stored_filename).is_file():
+                return _safe_text(track.get("title"), stored_filename)
+        return ""
+
     def _gc_tombstoned_uploads_locked(self) -> bool:
         removed = False
         for stored_filename, meta in list(self._upload_name_map.items()):
@@ -1401,17 +1426,24 @@ class MusicPusherPlugin(NekoPluginBase):
         lyric_text: str = "",
         attach_prompt_on_push: bool = True,
         deadline_monotonic: float | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> bool:
         def _expired() -> bool:
             return deadline_monotonic is not None and time.monotonic() >= deadline_monotonic
 
-        if _expired():
+        def _cancelled() -> bool:
+            return cancel_event is not None and cancel_event.is_set()
+
+        def _stopped() -> bool:
+            return _expired() or _cancelled()
+
+        if _stopped():
             return False
 
         event_id = f"music_push_{uuid4().hex[:12]}"
         expire_at = int(time.time()) + int(_PROACTIVE_PROMPT_EXPIRE_SECONDS)
         domains = self._music_allowlist_domains_for_url(url)
-        if _expired():
+        if _stopped():
             return False
         if not domains:
             raise ValueError("url 无法安全加入播放白名单")
@@ -1425,7 +1457,7 @@ class MusicPusherPlugin(NekoPluginBase):
             target_lanlan=target_lanlan,
         )
 
-        if _expired():
+        if _stopped():
             return False
         self.ctx.push_message(
             source="music_pusher",
@@ -1444,8 +1476,8 @@ class MusicPusherPlugin(NekoPluginBase):
         if not bool(attach_prompt_on_push):
             return True
 
-        if _expired():
-            return False
+        if _stopped():
+            return True
         lyric_clean = str(lyric_text or "").replace("\r\n", "\n").strip()[:_LYRIC_PUSH_MAX_CHARS]
         proactive_meta: dict[str, Any] = {
             "content_type": "music_url",
@@ -1510,7 +1542,7 @@ class MusicPusherPlugin(NekoPluginBase):
                 "要求根据歌名或歌手联网搜索相关资料，然后据此给与用户回应和情绪价值并且绝对不能超过50字。"
             )
 
-        if _expired():
+        if _stopped():
             return True
         self._push_proactive_text(
             content=(
@@ -1575,6 +1607,7 @@ class MusicPusherPlugin(NekoPluginBase):
         self._state_lock = asyncio.Lock()
         self._run_lock = asyncio.Lock()
         self._scheduler_stop = asyncio.Event()
+        self._push_cancel_event = threading.Event()
         self._active_control = None
         self._active_execution_task = None
         self._active_task_id = None
@@ -1612,13 +1645,21 @@ class MusicPusherPlugin(NekoPluginBase):
     @lifecycle(id="shutdown")
     async def on_shutdown(self, **_):
         self._scheduler_stop.set()
+        self._push_cancel_event.set()
 
         running_task = self._active_execution_task
         self._active_execution_task = None
         if running_task is not None and not running_task.done():
-            running_task.cancel()
             try:
-                await running_task
+                await asyncio.wait_for(asyncio.shield(running_task), timeout=_PUSH_TIMEOUT_SECONDS + 1)
+            except asyncio.TimeoutError:
+                running_task.cancel()
+                try:
+                    await running_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
             except asyncio.CancelledError:
                 pass
             except Exception:
@@ -1727,6 +1768,7 @@ class MusicPusherPlugin(NekoPluginBase):
                             lyric_text=lyric_text,
                             attach_prompt_on_push=attach_prompt,
                             deadline_monotonic=push_deadline,
+                            cancel_event=self._push_cancel_event,
                         ),
                         timeout=_PUSH_TIMEOUT_SECONDS,
                     )
@@ -1882,6 +1924,7 @@ class MusicPusherPlugin(NekoPluginBase):
                             lyric_text=lyric_clean,
                             attach_prompt_on_push=attach_prompt,
                             deadline_monotonic=push_deadline,
+                            cancel_event=self._push_cancel_event,
                         ),
                         timeout=_PUSH_TIMEOUT_SECONDS,
                     )
@@ -2168,6 +2211,10 @@ class MusicPusherPlugin(NekoPluginBase):
             return Err(SdkError(queue_err))
 
         async with self._state_lock:
+            missing_upload = self._missing_upload_reference_in_queue_locked(queue)
+            if missing_upload:
+                return Err(SdkError(f"上传音频已不存在，请重新选择: {missing_upload}"))
+
             task_id = f"tsk_{uuid4().hex[:10]}"
             task = {
                 "task_id": task_id,
@@ -2295,6 +2342,9 @@ class MusicPusherPlugin(NekoPluginBase):
                 task["target_lanlan"] = target_lanlan.strip() or self._resolve_target_lanlan(kwargs)
 
             if next_queue is not None:
+                missing_upload = self._missing_upload_reference_in_queue_locked(next_queue)
+                if missing_upload:
+                    return Err(SdkError(f"上传音频已不存在，请重新选择: {missing_upload}"))
                 task["queue"] = next_queue
                 task["total_duration_sec"] = _calc_total_duration(next_queue)
                 if self._gc_tombstoned_uploads_locked():
@@ -2685,6 +2735,7 @@ class MusicPusherPlugin(NekoPluginBase):
                                     lyric_text=lyric_text,
                                     attach_prompt_on_push=attach_prompt_on_push,
                                     deadline_monotonic=push_deadline,
+                                    cancel_event=self._push_cancel_event,
                                 ),
                                 timeout=_PUSH_TIMEOUT_SECONDS,
                             )
