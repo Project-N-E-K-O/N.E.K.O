@@ -1543,6 +1543,17 @@
           try {
             delBtn.disabled = true;
             await callEntry("delete_music_item", { item_id: item.item_id });
+            const deletedId = String(item.item_id || "");
+            const deletedUrl = toPlayableUrl(item.url || "");
+            state.draftQueue = state.draftQueue.filter((queued) => {
+              const queuedId = String(queued.item_id || "");
+              const queuedUrl = toPlayableUrl(queued.url || "");
+              return !(
+                (deletedId && queuedId === deletedId) ||
+                (deletedUrl && queuedUrl === deletedUrl)
+              );
+            });
+            renderDraftQueue();
             toast("素材已删除", "info");
             await refreshAll();
           } catch (err) {

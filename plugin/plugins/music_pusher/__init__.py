@@ -810,6 +810,7 @@ class MusicPusherPlugin(NekoPluginBase):
                 mapped = self._upload_name_map.get(stored_name)
 
             if mapped:
+                item["url"] = self._to_absolute_ui_url(self._build_ui_file_url(stored_name))
                 item["title"] = _safe_text(mapped.get("title"), _safe_text(item.get("title"), Path(stored_name).stem))
                 item["artist"] = _safe_text(mapped.get("artist"), _safe_text(item.get("artist"), "未知"))
                 item["original_filename"] = _safe_text(mapped.get("original_filename"), stored_name)
