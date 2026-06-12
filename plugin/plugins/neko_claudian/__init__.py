@@ -184,12 +184,23 @@ class NekoClaudianPlugin(NekoPluginBase):
             # 3) Storage
             self._storage = _JsonStorage(self._data_dir() / "storage")
 
-            # 4-5) 后续里程碑逐步接入；V2 先用占位
+            # 4) 初始化 Claude Runtime
+            try:
+                from .core.providers.claude.runtime.simple_runtime import create_simple_runtime
+                self._claude_runtime = await create_simple_runtime(
+                    workspace_path=str(self._workspace_path),
+                    model=self._settings.get("model", "claude-sonnet-4-20250514"),
+                )
+                self.logger.info("[neko_claudian] Claude runtime initialized")
+            except Exception as e:
+                self.logger.warning(f"[neko_claudian] Claude runtime init failed: {e}")
+                self._claude_runtime = None
+
+            # 5) 其他组件（后续阶段）
             self._tab_manager = None
             self._chat_state = None
             self._input_controller = None
             self._stream_controller = None
-            self._claude_runtime = None
             self._claude_channel = None
             self._session_manager = None
             self._mcp_manager = None
@@ -197,6 +208,11 @@ class NekoClaudianPlugin(NekoPluginBase):
             self._skill_manager = None
             self._slash_command_manager = None
             self._approval_manager = None
+
+            # 会话存储
+            self._conversations: Dict[str, Dict[str, Any]] = {}
+            self._current_conversation_id: Optional[str] = None
+            self._messages: List[Dict[str, Any]] = []
 
             # 6) 启动 HTTP server
             self._http_server = _HttpServer(self)
@@ -634,6 +650,7 @@ class _HttpServer:
         app.router.add_post(_API_PREFIX + "/permission", self._handle_permission)
         app.router.add_post(_API_PREFIX + "/rewind", self._handle_rewind)
         app.router.add_post(_API_PREFIX + "/stop", self._handle_stop)
+        app.router.add_post(_API_PREFIX + "/cancel", self._handle_cancel)
 
         # 会话 / 历史
         app.router.add_get(_API_PREFIX + "/sessions", self._handle_sessions)
@@ -651,6 +668,10 @@ class _HttpServer:
         app.router.add_get(_API_PREFIX + "/agents", self._handle_agents)
         app.router.add_get(_API_PREFIX + "/skills", self._handle_skills)
         app.router.add_get(_API_PREFIX + "/commands", self._handle_commands)
+
+        # Conversations
+        app.router.add_get(_API_PREFIX + "/conversations", self._handle_conversations)
+        app.router.add_post(_API_PREFIX + "/conversation/new", self._handle_conversation_new)
 
         # i18n
         app.router.add_get(_API_PREFIX + "/i18n", self._handle_i18n_list)
@@ -725,9 +746,14 @@ class _HttpServer:
 
     async def _handle_tabs(self, request):
         from aiohttp import web
+        # 返回简单的单 tab 结构
         return web.json_response({
-            "tabs": [],
-            "current_tab_id": None,
+            "tabs": [{
+                "id": "default",
+                "title": "新对话",
+                "isActive": True,
+            }],
+            "current_tab_id": "default",
         })
 
     async def _handle_tab_new(self, request):
@@ -753,34 +779,77 @@ class _HttpServer:
 
     async def _handle_tab_messages(self, request):
         from aiohttp import web
+        tab_id = request.match_info.get("tab_id", "default")
         return web.json_response({
-            "messages": [],
-            "tab_id": request.match_info.get("tab_id"),
+            "messages": self.plugin._messages,
+            "tab_id": tab_id,
         })
 
     async def _handle_send(self, request):
+        """处理消息发送请求 — 调用 Claude CLI 并通过 SSE 流式返回结果。"""
         from aiohttp import web
         try:
             data = await request.json()
         except Exception:
             return web.json_response({"error": "invalid json"}, status=400)
+
         text = (data.get("text") or "").strip()
         tab_id = data.get("tab_id")
+
         if not text:
             return web.json_response({"error": "text empty"}, status=400)
-        if self.plugin._input_controller is None:
+
+        # 检查 runtime
+        if self.plugin._claude_runtime is None:
             return web.json_response({
                 "ok": False,
-                "error": "InputController 尚未初始化（V4 阶段后可用）",
-            }, status=501)
-        res = await self.plugin._input_controller.send_message(
-            text=text, tab_id=tab_id
-        )
-        if isinstance(res, Ok):
-            return web.json_response({"ok": True, **res.value})
-        return web.json_response(
-            {"ok": False, "error": str(res.error)}, status=500
-        )
+                "error": "Claude runtime 未初始化，请检查 Claude CLI 是否安装",
+            }, status=500)
+
+        # 添加用户消息到历史
+        user_msg = {
+            "id": f"msg-{len(self.plugin._messages)}",
+            "role": "user",
+            "content": text,
+            "timestamp": asyncio.get_event_loop().time(),
+        }
+        self.plugin._messages.append(user_msg)
+
+        # 广播用户消息
+        await self.broadcast(tab_id, {
+            "type": "user_message",
+            "message": user_msg,
+        })
+
+        # 异步执行 Claude 查询
+        asyncio.create_task(self._execute_claude_query(text, tab_id))
+
+        return web.json_response({"ok": True, "message": user_msg})
+
+    async def _execute_claude_query(self, text: str, tab_id: Optional[str] = None):
+        """执行 Claude 查询并通过 SSE 广播结果。"""
+        try:
+            # 广播开始
+            await self.broadcast(tab_id, {"type": "stream_start"})
+
+            # 调用 Claude
+            async for chunk in self.plugin._claude_runtime.query(text):
+                # 广播每个 chunk
+                await self.broadcast(tab_id, chunk)
+
+                # 如果是完成或错误，停止
+                if chunk.get("type") in ("done", "error"):
+                    break
+
+            # 广播结束
+            await self.broadcast(tab_id, {"type": "stream_end"})
+
+        except Exception as e:
+            self.plugin.logger.error(f"[neko_claudian] query error: {e}")
+            await self.broadcast(tab_id, {
+                "type": "error",
+                "content": str(e),
+            })
 
     async def _handle_stream(self, request):
         """SSE 流：订阅 tab_id 的所有事件，转发给浏览器。"""
@@ -841,11 +910,41 @@ class _HttpServer:
 
     async def _handle_stop(self, request):
         from aiohttp import web
+        # 取消当前 Claude 查询
+        if self.plugin._claude_runtime:
+            self.plugin._claude_runtime.cancel()
         return web.json_response({"ok": True, "stopped": True})
+
+    async def _handle_cancel(self, request):
+        from aiohttp import web
+        # 取消当前 Claude 查询
+        if self.plugin._claude_runtime:
+            self.plugin._claude_runtime.cancel()
+        return web.json_response({"ok": True, "cancelled": True})
 
     async def _handle_sessions(self, request):
         from aiohttp import web
-        return web.json_response({"sessions": []})
+        sessions = list(self.plugin._conversations.values())
+        return web.json_response({"sessions": sessions})
+
+    async def _handle_conversations(self, request):
+        from aiohttp import web
+        conversations = list(self.plugin._conversations.values())
+        return web.json_response({"conversations": conversations})
+
+    async def _handle_conversation_new(self, request):
+        from aiohttp import web
+        conv_id = f"conv-{len(self.plugin._conversations)}"
+        conversation = {
+            "id": conv_id,
+            "title": "新对话",
+            "createdAt": asyncio.get_event_loop().time(),
+            "messages": [],
+        }
+        self.plugin._conversations[conv_id] = conversation
+        self.plugin._current_conversation_id = conv_id
+        self.plugin._messages = []
+        return web.json_response({"ok": True, "conversation": conversation})
 
     async def _handle_history(self, request):
         from aiohttp import web

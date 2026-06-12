@@ -36,18 +36,27 @@
 
     // Setup SSE listeners
     function setupSSEListeners() {
-        // Stream events
-        NekoSSE.on('stream_event', (data) => {
-            handleStreamEvent(data);
+        // Stream start
+        NekoSSE.on('stream_start', () => {
+            NekoState.setStreaming(true);
+            showThinkingIndicator();
+        });
+
+        // Stream end
+        NekoSSE.on('stream_end', () => {
+            NekoState.setStreaming(false);
+            hideThinkingIndicator();
         });
 
         // Text events
         NekoSSE.on('text', (data) => {
+            hideThinkingIndicator();
             appendAssistantText(data.content);
         });
 
         // Thinking events
         NekoSSE.on('thinking', (data) => {
+            hideThinkingIndicator();
             appendThinking(data.content);
         });
 
@@ -68,12 +77,19 @@
 
         // Error event
         NekoSSE.on('error', (data) => {
+            hideThinkingIndicator();
             appendError(data.content);
         });
 
-        // Usage event
-        NekoSSE.on('usage', (data) => {
-            NekoState.setUsage(data.usage);
+        // Stream event (raw data)
+        NekoSSE.on('stream_event', (data) => {
+            // Handle raw stream events
+            console.log('Stream event:', data);
+        });
+
+        // User message (echo)
+        NekoSSE.on('user_message', (data) => {
+            // User message already added locally
         });
 
         // Neko-specific events
@@ -150,10 +166,16 @@
         NekoState.setStreaming(true);
 
         try {
-            await NekoAPI.sendMessage(text);
+            const result = await NekoAPI.sendMessage(text);
+            if (!result.ok) {
+                appendError(result.error || '发送失败');
+                NekoState.setStreaming(false);
+            }
+            // Success - streaming will come via SSE
         } catch (e) {
             console.error('Failed to send message:', e);
-            appendError('Failed to send message');
+            appendError('发送失败: ' + e.message);
+            NekoState.setStreaming(false);
         }
     }
 
@@ -237,6 +259,34 @@
     // Finish streaming
     function finishStreaming() {
         NekoState.setStreaming(false);
+        hideThinkingIndicator();
+    }
+
+    // Show thinking indicator
+    function showThinkingIndicator() {
+        let indicator = document.getElementById('neko-thinking-indicator');
+        if (!indicator) {
+            indicator = document.createElement('div');
+            indicator.id = 'neko-thinking-indicator';
+            indicator.className = 'neko-thinking';
+            indicator.innerHTML = '<div class="neko-thinking-header">💭 思考中...</div>';
+            messagesEl.appendChild(indicator);
+        }
+        indicator.style.display = 'block';
+        scrollToBottom();
+    }
+
+    // Hide thinking indicator
+    function hideThinkingIndicator() {
+        const indicator = document.getElementById('neko-thinking-indicator');
+        if (indicator) {
+            indicator.style.display = 'none';
+        }
+    }
+
+    // Scroll to bottom
+    function scrollToBottom() {
+        messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
     // Handle stream event
