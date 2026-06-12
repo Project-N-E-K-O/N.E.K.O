@@ -329,7 +329,7 @@ async def get_chat_full_page(request: Request):
 
 @router.get("/web_chat_compact", response_class=HTMLResponse)
 async def get_web_chat_compact_page(request: Request):
-    """Web 首页入口：打开主页并让 React Chat 以 compact 模式启动。"""
+    """Open the home page with React Chat initialized in compact mode."""
     templates = get_templates()
     return templates.TemplateResponse("templates/index.html", {
         "request": request,
