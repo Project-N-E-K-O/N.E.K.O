@@ -19,6 +19,7 @@ import CompactExportHistoryPanel, {
   type CompactExportActionRequest,
   type CompactExportPreviewResult,
 } from './CompactExportHistoryPanel';
+import { getChatEmptyStateFallback } from './chat-copy';
 import { i18n } from './i18n';
 import {
   type ChatMessage,
@@ -141,11 +142,11 @@ const compactInputToolWheelViewportFitVisibleSlots = [
   { angleDeg: -110, scale: 0.98 },
   { angleDeg: -80, scale: 0.86 },
 ] as const;
-const COMPACT_SURFACE_RESIZE_MIN_WIDTH = 280;
+const COMPACT_SURFACE_RESIZE_MIN_WIDTH = 180;
 // compact 对话条默认/初始宽度（无法从 rect/CSS 量到时的回退值）。与 resize 下限解耦：
 // 减小最短宽度只动 RESIZE_MIN_WIDTH，默认仍是这个值，保证「默认宽度不变」。
 const COMPACT_SURFACE_DEFAULT_WIDTH = 430;
-const COMPACT_SURFACE_RESIZE_MOBILE_MIN_WIDTH = 280;
+const COMPACT_SURFACE_RESIZE_MOBILE_MIN_WIDTH = 180;
 const COMPACT_SURFACE_RESIZE_MAX_WIDTH = 720;
 const COMPACT_SURFACE_RESIZE_VIEWPORT_GUTTER = 32;
 const COMPACT_SURFACE_RESIZE_MOBILE_VIEWPORT_GUTTER = 16;
@@ -1936,7 +1937,7 @@ function CompactChatApp({
           : compactSpeechPreservedText || compactMessagePreview?.fullText || ''
       )
       : compactMessagePreview?.text
-      || i18n('chat.emptyState', 'Chat content will appear here.');
+      || i18n('chat.emptyState', getChatEmptyStateFallback());
   const compactPreviewIsStreaming = compactSpeechModeActive;
   const compactPreviewAllowsScroll = compactPreviewIsStreaming || !!compactMessagePreview?.isGuide;
   const compactPreviewSpeechDuration = useMemo(() => {
@@ -2610,6 +2611,13 @@ function CompactChatApp({
     const gap = 16;
     let frameId: number | null = null;
 
+    const syncChoiceLayerSurfaceVars = (shellRect: DOMRect, layerNode: HTMLElement) => {
+      layerNode.style.setProperty('--compact-choice-surface-left', `${shellRect.left}px`);
+      layerNode.style.setProperty('--compact-choice-surface-top', `${shellRect.top}px`);
+      layerNode.style.setProperty('--compact-choice-surface-width', `${Math.max(1, shellRect.width)}px`);
+      layerNode.style.setProperty('--compact-choice-surface-height', `${Math.max(1, shellRect.height)}px`);
+    };
+
     const getDesktopPlacementSpace = (shellRect: DOMRect) => {
       const layout = (window as typeof window & {
         __nekoDesktopCompactLayout?: DesktopCompactChoicePlacementLayout | null;
@@ -2628,11 +2636,15 @@ function CompactChatApp({
         return null;
       }
 
-      const surfaceTop = Number(layout?.surface?.top);
-      const surfaceHeight = Number(layout?.surface?.height);
-      const surfaceScreenTop = windowY + (Number.isFinite(surfaceTop) ? surfaceTop : shellRect.top);
+      const layoutSurfaceTop = Number(layout?.surface?.top);
+      const layoutSurfaceHeight = Number(layout?.surface?.height);
+      const measuredTop = Number.isFinite(shellRect.top) ? shellRect.top : layoutSurfaceTop;
+      const measuredHeight = Number.isFinite(shellRect.height) && shellRect.height > 0
+        ? shellRect.height
+        : layoutSurfaceHeight;
+      const surfaceScreenTop = windowY + (Number.isFinite(measuredTop) ? measuredTop : 0);
       const surfaceScreenBottom = surfaceScreenTop
-        + (Number.isFinite(surfaceHeight) && surfaceHeight > 0 ? surfaceHeight : shellRect.height);
+        + (Number.isFinite(measuredHeight) && measuredHeight > 0 ? measuredHeight : Math.max(1, shellRect.height));
       const workAreaBottom = workAreaY + workAreaHeight;
       return {
         availableAbove: Math.max(0, surfaceScreenTop - workAreaY),
@@ -2648,11 +2660,12 @@ function CompactChatApp({
       const desktopForcedPlacement = ((window as typeof window & {
         __nekoDesktopCompactLayout?: DesktopCompactChoicePlacementLayout | null;
       }).__nekoDesktopCompactLayout?.compactChoicePlacement);
+      const shellRect = nextShellNode.getBoundingClientRect();
+      syncChoiceLayerSurfaceVars(shellRect, nextLayerNode);
       if (desktopForcedPlacement === 'above' || desktopForcedPlacement === 'below') {
         setCompactChoiceLayerPlacement(current => (current === desktopForcedPlacement ? current : desktopForcedPlacement));
         return;
       }
-      const shellRect = nextShellNode.getBoundingClientRect();
       const layerRect = nextLayerNode.getBoundingClientRect();
       const layerHeight = Math.max(layerRect.height, nextLayerNode.scrollHeight);
       const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
@@ -5723,6 +5736,7 @@ function CompactChatApp({
       </div>
     </section>
   ) : null;
+  const shouldRenderComposerPanel = isCompactSurface || !composerHidden;
 
   return (
     <main
@@ -5801,132 +5815,133 @@ function CompactChatApp({
 
         {chatBodyNode}
 
-        <footer
-          className={`composer-panel ${surfaceModeClassName}${galgameModeEnabled ? ' is-galgame-mode' : ''}`}
-          style={composerHidden && !isCompactSurface ? { display: 'none' } : undefined}
-          data-chat-surface-mode={chatSurfaceMode}
-          data-compact-chat-state={effectiveCompactChatState}
-        >
-          {!isCompactSurface ? <div id="music-player-mount" className="composer-music-player-mount" /> : null}
-          <form className="composer" onSubmit={(event) => {
-            event.preventDefault();
-            submitDraft();
-          }}>
-            {isCompactSurface ? (
-              <div
-                className={`compact-chat-surface-shell${
-                  compactCollapsing
-                    ? ' neko-compact-collapsing'
-                    : compactExpanding
-                      ? ' neko-compact-expanding'
-                      : ''
-                }`}
-                ref={compactInputShellRef}
-                data-compact-chat-state={effectiveCompactChatState}
-                data-compact-tool-layer-open={compactToolToggleVisible && compactInputToolFanOpen ? 'true' : 'false'}
-                style={compactSurfaceShellStyle}
-                onBlurCapture={effectiveCompactChatState === 'input' ? scheduleCompactInputCollapse : undefined}
-              >
+        {shouldRenderComposerPanel ? (
+          <footer
+            className={`composer-panel ${surfaceModeClassName}${galgameModeEnabled ? ' is-galgame-mode' : ''}`}
+            data-chat-surface-mode={chatSurfaceMode}
+            data-compact-chat-state={effectiveCompactChatState}
+          >
+            {!isCompactSurface ? <div id="music-player-mount" className="composer-music-player-mount" /> : null}
+            <form className="composer" onSubmit={(event) => {
+              event.preventDefault();
+              submitDraft();
+            }}>
+              {isCompactSurface ? (
                 <div
-                  className="compact-chat-resize-handle compact-chat-resize-handle-left"
-                  data-compact-resize-side="left"
-                  data-compact-geometry-item="resizeHandle"
-                  data-compact-geometry-owner="surface"
-                  data-compact-no-drag="true"
-                  aria-hidden="true"
-                  onPointerDown={(event) => handleCompactSurfaceResizePointerDown('left', event)}
-                  onPointerMove={handleCompactSurfaceResizePointerMove}
-                  onPointerUp={handleCompactSurfaceResizePointerUp}
-                  onPointerCancel={handleCompactSurfaceResizePointerCancel}
-                  onLostPointerCapture={handleCompactSurfaceResizePointerCancel}
-                />
-                <div
-                  className="compact-chat-resize-handle compact-chat-resize-handle-right"
-                  data-compact-resize-side="right"
-                  data-compact-geometry-item="resizeHandle"
-                  data-compact-geometry-owner="surface"
-                  data-compact-no-drag="true"
-                  aria-hidden="true"
-                  onPointerDown={(event) => handleCompactSurfaceResizePointerDown('right', event)}
-                  onPointerMove={handleCompactSurfaceResizePointerMove}
-                  onPointerUp={handleCompactSurfaceResizePointerUp}
-                  onPointerCancel={handleCompactSurfaceResizePointerCancel}
-                  onLostPointerCapture={handleCompactSurfaceResizePointerCancel}
-                />
-                <div
-                  className="compact-chat-surface-frame"
-                  data-compact-geometry-item={effectiveCompactChatState === 'input' ? 'input' : 'capsule'}
-                  data-compact-geometry-owner="surface"
-                  data-compact-drag-surface="true"
+                  className={`compact-chat-surface-shell${
+                    compactCollapsing
+                      ? ' neko-compact-collapsing'
+                      : compactExpanding
+                        ? ' neko-compact-expanding'
+                        : ''
+                  }`}
+                  ref={compactInputShellRef}
                   data-compact-chat-state={effectiveCompactChatState}
-                  data-compact-geometry-part={effectiveCompactChatState === 'input' ? 'inputBody' : 'capsuleBody'}
-                  data-compact-tool-toggle-visible={compactToolToggleVisible ? 'true' : 'false'}
+                  data-compact-tool-layer-open={compactToolToggleVisible && compactInputToolFanOpen ? 'true' : 'false'}
+                  style={compactSurfaceShellStyle}
+                  onBlurCapture={effectiveCompactChatState === 'input' ? scheduleCompactInputCollapse : undefined}
                 >
-                  {effectiveCompactChatState === 'input' ? (
-                    <>
-                      {/* 输入态左侧毛绒球：点按折叠为 minimized，按住拖动整个输入框（见 compactMinimizeButton 定义）。
-                          按住把手不会让 textarea 失焦收起输入态——宿主 mousedown 会 preventDefault。 */}
-                      {compactMinimizeButton}
-                      <textarea
-                        className="composer-input"
-                        ref={compactInputRef}
-                        data-compact-no-drag="true"
-                        placeholder={inputPlaceholder}
-                        aria-label={inputPlaceholder}
-                        rows={1}
-                        value={draft}
-                        readOnly={composerDisabled}
-                        disabled={composerDisabled}
-                        onChange={(event) => {
-                          setDraft(event.target.value);
-                          if (event.target.value.trim().length > 0) {
-                            closeCompactInputToolFan();
-                          }
-                        }}
-                        onBlur={scheduleCompactInputCollapse}
-                        onKeyDown={(event) => {
-                          if (event.nativeEvent.isComposing) return;
-                          if (event.key === 'Enter' && !event.shiftKey) {
-                            event.preventDefault();
-                            submitDraft();
-                          }
-                        }}
-                      />
-                      {compactInputToolToggleButton}
-                    </>
-                  ) : (
-                    <>
-                      {compactMinimizeButton}
-                      <button
-                        className="compact-chat-capsule-button"
-                        type="button"
-                        disabled={composerDisabled}
-                        onClick={() => {
-                          if (composerHidden) return;
-                          if (isGuideChatButtonLockActive()) return;
-                          requestCompactChatState('input');
-                        }}
-                      >
-                        <span
-                          ref={compactPreviewTextRef}
-                          className="compact-chat-capsule-text"
-                          data-compact-preview-streaming={compactPreviewIsStreaming ? 'true' : 'false'}
-                          data-compact-preview-scrollable={compactPreviewAllowsScroll ? 'true' : 'false'}
-                          onWheel={handleCompactPreviewWheel}
+                  <div
+                    className="compact-chat-resize-handle compact-chat-resize-handle-left"
+                    data-compact-resize-side="left"
+                    data-compact-geometry-item="resizeHandle"
+                    data-compact-geometry-owner="surface"
+                    data-compact-no-drag="true"
+                    aria-hidden="true"
+                    onPointerDown={(event) => handleCompactSurfaceResizePointerDown('left', event)}
+                    onPointerMove={handleCompactSurfaceResizePointerMove}
+                    onPointerUp={handleCompactSurfaceResizePointerUp}
+                    onPointerCancel={handleCompactSurfaceResizePointerCancel}
+                    onLostPointerCapture={handleCompactSurfaceResizePointerCancel}
+                  />
+                  <div
+                    className="compact-chat-resize-handle compact-chat-resize-handle-right"
+                    data-compact-resize-side="right"
+                    data-compact-geometry-item="resizeHandle"
+                    data-compact-geometry-owner="surface"
+                    data-compact-no-drag="true"
+                    aria-hidden="true"
+                    onPointerDown={(event) => handleCompactSurfaceResizePointerDown('right', event)}
+                    onPointerMove={handleCompactSurfaceResizePointerMove}
+                    onPointerUp={handleCompactSurfaceResizePointerUp}
+                    onPointerCancel={handleCompactSurfaceResizePointerCancel}
+                    onLostPointerCapture={handleCompactSurfaceResizePointerCancel}
+                  />
+                  <div
+                    className="compact-chat-surface-frame"
+                    data-compact-geometry-item={effectiveCompactChatState === 'input' ? 'input' : 'capsule'}
+                    data-compact-geometry-owner="surface"
+                    data-compact-drag-surface="true"
+                    data-compact-chat-state={effectiveCompactChatState}
+                    data-compact-geometry-part={effectiveCompactChatState === 'input' ? 'inputBody' : 'capsuleBody'}
+                    data-compact-tool-toggle-visible={compactToolToggleVisible ? 'true' : 'false'}
+                  >
+                    {effectiveCompactChatState === 'input' ? (
+                      <>
+                        {/* 输入态左侧毛绒球：点按折叠为 minimized，按住拖动整个输入框（见 compactMinimizeButton 定义）。
+                            按住把手不会让 textarea 失焦收起输入态——宿主 mousedown 会 preventDefault。 */}
+                        {compactMinimizeButton}
+                        <textarea
+                          className="composer-input"
+                          ref={compactInputRef}
+                          data-compact-no-drag="true"
+                          placeholder={inputPlaceholder}
+                          aria-label={inputPlaceholder}
+                          rows={1}
+                          value={draft}
+                          readOnly={composerDisabled}
+                          disabled={composerDisabled}
+                          onChange={(event) => {
+                            setDraft(event.target.value);
+                            if (event.target.value.trim().length > 0) {
+                              closeCompactInputToolFan();
+                            }
+                          }}
+                          onBlur={scheduleCompactInputCollapse}
+                          onKeyDown={(event) => {
+                            if (event.nativeEvent.isComposing) return;
+                            if (event.key === 'Enter' && !event.shiftKey) {
+                              event.preventDefault();
+                              submitDraft();
+                            }
+                          }}
+                        />
+                        {compactInputToolToggleButton}
+                      </>
+                    ) : (
+                      <>
+                        {compactMinimizeButton}
+                        <button
+                          className="compact-chat-capsule-button"
+                          type="button"
+                          disabled={composerDisabled}
+                          onClick={() => {
+                            if (composerHidden) return;
+                            if (isGuideChatButtonLockActive()) return;
+                            requestCompactChatState('input');
+                          }}
                         >
-                          {compactPreviewDisplayContent}
-                        </span>
-                      </button>
-                      {compactInputToolToggleButton}
-                    </>
-                  )}
+                          <span
+                            ref={compactPreviewTextRef}
+                            className="compact-chat-capsule-text"
+                            data-compact-preview-streaming={compactPreviewIsStreaming ? 'true' : 'false'}
+                            data-compact-preview-scrollable={compactPreviewAllowsScroll ? 'true' : 'false'}
+                            onWheel={handleCompactPreviewWheel}
+                          >
+                            {compactPreviewDisplayContent}
+                          </span>
+                        </button>
+                        {compactInputToolToggleButton}
+                      </>
+                    )}
+                  </div>
+                  {composerAttachmentPreviewNode}
+                  {compactInputToolFanNode}
                 </div>
-                {composerAttachmentPreviewNode}
-                {compactInputToolFanNode}
-              </div>
-            ) : null}
-          </form>
-        </footer>
+              ) : null}
+            </form>
+          </footer>
+        ) : null}
       </section>
     </main>
   );

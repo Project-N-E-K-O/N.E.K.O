@@ -5693,13 +5693,15 @@ def test_rapidocr_resolve_uses_legacy_install_when_new_target_missing(
     )
 
 
-def test_rapidocr_resolve_prefers_existing_new_target_over_legacy_install(
+def test_rapidocr_resolve_prefers_populated_new_target_over_legacy_install(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app_docs_dir = tmp_path / "AppDocs"
     new_target = app_docs_dir / "runtimes" / "galgame_plugin" / "RapidOCR"
-    new_target.mkdir(parents=True)
+    # Since #1517 the new target wins only when it actually has assets
+    # (runtime package or models), not on bare directory existence.
+    (new_target / "runtime" / "site-packages" / "rapidocr_onnxruntime").mkdir(parents=True)
     local_appdata = tmp_path / "LocalAppData"
     legacy_target = local_appdata / "Programs" / "N.E.K.O" / "RapidOCR"
     (legacy_target / "runtime" / "site-packages" / "rapidocr_onnxruntime").mkdir(parents=True)
@@ -5713,6 +5715,31 @@ def test_rapidocr_resolve_prefers_existing_new_target_over_legacy_install(
     assert (
         galgame_rapidocr_support.resolve_rapidocr_install_target("", plugin_id="galgame_plugin")
         == new_target
+    )
+
+
+def test_rapidocr_resolve_empty_new_target_falls_back_to_populated_legacy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app_docs_dir = tmp_path / "AppDocs"
+    new_target = app_docs_dir / "runtimes" / "galgame_plugin" / "RapidOCR"
+    # An empty directory (e.g. left behind by an aborted install) must not
+    # shadow a legacy install that still has working assets — #1517 semantics.
+    new_target.mkdir(parents=True)
+    local_appdata = tmp_path / "LocalAppData"
+    legacy_target = local_appdata / "Programs" / "N.E.K.O" / "RapidOCR"
+    (legacy_target / "runtime" / "site-packages" / "rapidocr_onnxruntime").mkdir(parents=True)
+    monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
+    monkeypatch.setattr(
+        galgame_rapidocr_support,
+        "get_config_manager",
+        lambda: SimpleNamespace(app_docs_dir=app_docs_dir),
+    )
+
+    assert (
+        galgame_rapidocr_support.resolve_rapidocr_install_target("", plugin_id="galgame_plugin")
+        == legacy_target
     )
 
 

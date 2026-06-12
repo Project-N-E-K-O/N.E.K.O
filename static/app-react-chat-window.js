@@ -78,6 +78,7 @@
         messages: [],
         composerAttachments: [],
         composerHidden: false,
+        goodbyeComposerHidden: false,
         onMessageAction: null,
         onComposerImportImage: null,
         onComposerScreenshot: null,
@@ -115,12 +116,30 @@
         return CHAT_SURFACE_MODES.indexOf(mode) >= 0 ? mode : 'compact';
     }
 
+    function isCompactOnlyElectronChatHost() {
+        var body = document.body;
+        return !!(
+            body
+            && isElectronChatWindow()
+            && body.getAttribute('data-chat-host-kind') === 'compact'
+        );
+    }
+
+    function coerceChatSurfaceModeForHost(mode) {
+        var normalized = normalizeChatSurfaceMode(mode);
+        // /chat 是 Electron 紧凑宿主；full 由 /chat_full 独立窗口承载，避免历史 full 状态污染透明承载窗。
+        if (normalized === 'full' && isCompactOnlyElectronChatHost()) {
+            return 'compact';
+        }
+        return normalized;
+    }
+
     function normalizeCompactChatState(mode) {
         return COMPACT_CHAT_STATES.indexOf(mode) >= 0 ? mode : 'default';
     }
 
     function getCurrentChatSurfaceMode() {
-        return normalizeChatSurfaceMode(state.chatSurfaceMode);
+        return coerceChatSurfaceModeForHost(state.chatSurfaceMode);
     }
 
     function getCurrentCompactChatState() {
@@ -147,9 +166,9 @@
     }
 
     function getNextChatSurfaceMode(mode) {
-        var normalized = normalizeChatSurfaceMode(mode);
+        var normalized = coerceChatSurfaceModeForHost(mode);
         if (normalized === 'minimized') {
-            return normalizeChatSurfaceMode(lastRestorableChatSurfaceMode);
+            return coerceChatSurfaceModeForHost(lastRestorableChatSurfaceMode);
         }
         // Any real surface — compact or the revived legacy full — minimizes to the
         // ball; restoring returns to the last real surface via the branch above.
@@ -195,7 +214,7 @@
     }
 
     function readChatSurfaceModePreference() {
-        var fallback = getDefaultChatSurfaceMode();
+        var fallback = coerceChatSurfaceModeForHost(getDefaultChatSurfaceMode());
         if (!shouldPersistChatSurfaceModePreference()) {
             return fallback;
         }
@@ -205,8 +224,8 @@
             // revived legacy 'full'. An explicit stored choice wins; otherwise we
             // fall back to the per-runtime default (web=full / Electron=compact).
             // A stray 'minimized' never lingers — rewrite it to the fallback.
-            if (raw === 'full') return 'full';
-            if (raw === 'compact') return 'compact';
+            if (raw === 'full') return coerceChatSurfaceModeForHost('full');
+            if (raw === 'compact') return coerceChatSurfaceModeForHost('compact');
             if (raw === 'minimized') {
                 localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, fallback);
             }
@@ -223,6 +242,9 @@
             : '';
         var declaredMode = declaredModeAttr ? normalizeChatSurfaceMode(declaredModeAttr) : '';
         if (declaredMode === 'compact' || declaredMode === 'full') {
+            if (declaredMode === 'full' && isCompactOnlyElectronChatHost()) {
+                return 'compact';
+            }
             return declaredMode;
         }
         return readChatSurfaceModePreference();
@@ -258,8 +280,46 @@
     // 但摘掉 body class，让 chat.html / preload-chat-react 里依赖该 class 的
     // 高最小高度 / 窗口最小高度 CSS 不再撑住空白输入区。
     // body class 切换、change 事件 payload 都走这个 helper，避免逻辑分叉。
+    function getEffectiveComposerHidden() {
+        return !!(state.composerHidden || state.goodbyeComposerHidden);
+    }
+
+    function getNekoGoodbyeModeActive() {
+        try {
+            if (typeof window.isNekoGoodbyeModeActive === 'function') {
+                return !!window.isNekoGoodbyeModeActive();
+            }
+        } catch (_) {}
+        return !!(
+            (window.live2dManager && window.live2dManager._goodbyeClicked)
+            || (window.vrmManager && window.vrmManager._goodbyeClicked)
+            || (window.mmdManager && window.mmdManager._goodbyeClicked)
+            || (window.__nekoGoodbyeSilentState && window.__nekoGoodbyeSilentState.active === true)
+        );
+    }
+
+    function hasLocalGoodbyeModeSource() {
+        // Standalone chat pages inherit window.isNekoGoodbyeModeActive from
+        // app-state.js even though they do not own model managers. A false
+        // hook result is therefore not authoritative here; only a true hook
+        // result or an actual local manager/silent-state object can safely
+        // drive localOnly goodbye recomputation.
+        try {
+            if (typeof window.isNekoGoodbyeModeActive === 'function'
+                && window.isNekoGoodbyeModeActive()) {
+                return true;
+            }
+        } catch (_) {}
+        return !!(
+            window.live2dManager
+            || window.vrmManager
+            || window.mmdManager
+            || (window.__nekoGoodbyeSilentState && typeof window.__nekoGoodbyeSilentState === 'object')
+        );
+    }
+
     function getEffectiveGalgameEnabled() {
-        return !!state.galgameModeEnabled && !state.composerHidden;
+        return !!state.galgameModeEnabled && !getEffectiveComposerHidden();
     }
 
     function applyGalgameBodyClass() {
@@ -274,6 +334,23 @@
     function applyAttachmentsBodyClass(hasAttachments) {
         if (typeof document === 'undefined' || !document.body) return;
         document.body.classList.toggle('composer-has-attachments', !!hasAttachments);
+    }
+
+    function getEffectiveComposerAttachmentsVisible() {
+        return !!(
+            state.composerAttachments
+            && state.composerAttachments.length > 0
+            && !getEffectiveComposerHidden()
+        );
+    }
+
+    function syncComposerAttachmentsVisibility(previousVisible) {
+        var nextVisible = getEffectiveComposerAttachmentsVisible();
+        applyAttachmentsBodyClass(nextVisible);
+        if (previousVisible !== undefined && previousVisible !== nextVisible) {
+            dispatchHostEvent('composer-attachments-change', { hasAttachments: nextVisible });
+        }
+        return nextVisible;
     }
     // No module-eval apply: state defaults to off here; init() resolves the
     // persisted preference and calls setGalgameModeEnabled(...) which flips
@@ -292,10 +369,12 @@
     var COMPACT_MINIMIZE_BALL_AVATAR_VERTICAL_RATIO = 0.58;
     var COMPACT_SURFACE_MAX_WIDTH = 430;
     var COMPACT_SURFACE_RESIZE_MAX_WIDTH = 720;
-    var COMPACT_SURFACE_MOBILE_MIN_WIDTH = 280;
+    var COMPACT_SURFACE_MOBILE_MIN_WIDTH = 180;
     // 桌面端 compact surface 可拖到的最短宽度。默认/初始宽度仍为 COMPACT_SURFACE_MAX_WIDTH=430
     // （见 getCompactSurfaceMetrics），这里只放宽 resize 下限，让用户能把对话条拖得更窄。
-    var COMPACT_SURFACE_DESKTOP_MIN_WIDTH = 280;
+    // 须与 react-neko-chat App.tsx 的 COMPACT_SURFACE_RESIZE_(MOBILE_)MIN_WIDTH 同步，
+    // 否则 React 侧拖到的宽度会在 phase=end 时被 host 这份 clamp 顶回去。
+    var COMPACT_SURFACE_DESKTOP_MIN_WIDTH = 180;
     var COMPACT_SURFACE_MOBILE_VIEWPORT_GUTTER = 16;
     var COMPACT_SURFACE_VIEWPORT_PAD_X = 16;
     var COMPACT_SURFACE_VIEWPORT_PAD_TOP = 12;
@@ -452,6 +531,18 @@
         // chat.html 用 <body class="electron-chat-window">；Electron 独立聊天窗口。
         // 本 PR 的所有移动端改动都必须对它无感，作为显式隔离在全局 touch 处理里用来短路。
         return !!(document.body && document.body.classList.contains('electron-chat-window'));
+    }
+
+    function isElectronLinuxRuntime() {
+        var runtime = window.__NEKO_DESKTOP_RUNTIME__ || {};
+        return !!(
+            isElectronChatWindow()
+            && (
+                runtime.isLinux ||
+                runtime.isLinuxX11 ||
+                runtime.platform === 'linux'
+            )
+        );
     }
 
     function isMobileWidth() {
@@ -1102,6 +1193,14 @@
             if (phase === 'end') {
                 compactSurfaceResizeSession = null;
             }
+            window.dispatchEvent(new CustomEvent('neko:compact-surface-layout-change', {
+                detail: {
+                    screenRect: detail.screenRect,
+                    resizeActive: phase !== 'end',
+                    dragging: false,
+                    reason: phase === 'end' ? 'resize-end' : 'resize'
+                }
+            }));
             return;
         }
         var currentRect = getCurrentCompactSurfaceRect();
@@ -1283,6 +1382,24 @@
             right: right,
             bottom: bottom
         };
+    }
+
+    function getIdleCat1CompactMirrorNativeReserveRect(mirrorRect, surfaceRect) {
+        var mirror = normalizeCompactDomRect(mirrorRect);
+        var surface = normalizeCompactDomRect(surfaceRect);
+        if (!mirror) return null;
+        if (!surface) return mirror;
+        var horizontalPad = Math.ceil(mirror.width / 2);
+        var left = Math.round(surface.left - horizontalPad);
+        var right = Math.round(surface.right + horizontalPad);
+        var top = Math.round(Math.min(mirror.top, surface.top));
+        var bottom = Math.round(Math.max(mirror.bottom, surface.top));
+        return normalizeCompactDomRect({
+            left: left,
+            top: top,
+            width: Math.max(1, right - left),
+            height: Math.max(1, bottom - top)
+        });
     }
 
     function intersectCompactRects(a, b) {
@@ -1591,6 +1708,7 @@
             }
             if (compactGeometryItem === 'cat1Mirror') {
                 var mirrorRect = getCompactGeometryElementRect(element);
+                var mirrorNativeRect = getIdleCat1CompactMirrorNativeReserveRect(mirrorRect, shellRect);
                 if (mirrorRect) {
                     items.push({
                         id: 'cat1Mirror:native',
@@ -1598,7 +1716,7 @@
                         kind: 'cat1Mirror',
                         visualRect: mirrorRect,
                         hitRect: null,
-                        nativeRect: mirrorRect,
+                        nativeRect: mirrorNativeRect || mirrorRect,
                         interactive: false
                     });
                 }
@@ -2266,7 +2384,7 @@
             rollbackDraft: state.rollbackDraft || undefined,
             _rollbackKey: state._rollbackKey || undefined,
             _toolCursorResetKey: state._toolCursorResetKey || undefined,
-            composerHidden: state.composerHidden,
+            composerHidden: getEffectiveComposerHidden(),
             chatSurfaceMode: getCurrentChatSurfaceMode(),
             compactMinimizeCancelSeq: compactMinimizeCancelSeq,
             compactChatState: getCurrentCompactChatState(),
@@ -2578,7 +2696,7 @@
     }
 
     function handleComposerSubmit(payload) {
-        if (state.homeTutorialInteractionLocked) {
+        if (state.homeTutorialInteractionLocked || getEffectiveComposerHidden()) {
             return;
         }
         var requestId = payload && typeof payload.requestId === 'string' && payload.requestId
@@ -3197,7 +3315,7 @@
     }
 
     function handleGalgameOptionSelect(option) {
-        if (isHomeTutorialInteractionLocked()) return;
+        if (isHomeTutorialInteractionLocked() || getEffectiveComposerHidden()) return;
         if (!option || typeof option.text !== 'string') return;
         var text = option.text.trim();
         if (!text) return;
@@ -3224,7 +3342,7 @@
     // 直接 callback；这里只是 BC 兜底）；source==='mini_game_invite' 走新逻辑。
 
     function handleChoiceSelect(option, source) {
-        if (isHomeTutorialInteractionLocked()) return;
+        if (isHomeTutorialInteractionLocked() || getEffectiveComposerHidden()) return;
         if (!option || typeof option.choice !== 'string') return;
         if (source === 'galgame') {
             // Forward to legacy galgame handler if it shows up here
@@ -3258,6 +3376,7 @@
     var COMPACT_MINIMIZE_PRESS_MS = 280; // = neko-compact-collapse-wipe 擦除时长：擦完再瞬时折叠
     var compactMinimizePressTimer = 0;
     var compactMinimizeCancelSeq = 0; // 折叠取消序号（见 clearCompactMinimizePressTimer），传给 React
+    var compactMinimizeBallTargetAnchor = null;
     // 清掉挂起的「按下挤压→瞬时折叠」延时。窗口关闭/动画取消时必须调用，否则这个
     // 跨 280ms 存活的回调会在窗口已关闭/重开后仍 setChatSurfaceMode('minimized')，
     // 把更新后的状态覆盖成「幽灵最小化」（CodeRabbit Minor / Codex P2）。
@@ -3265,13 +3384,17 @@
         if (!compactMinimizePressTimer) return;
         window.clearTimeout(compactMinimizePressTimer);
         compactMinimizePressTimer = 0;
+        compactMinimizeBallTargetAnchor = null;
         // 真清掉一个 pending 折叠延时 = 一次进行中的折叠被取消（如 280ms 内 closeWindow）。
         // 递增序号；buildRenderProps 把它当 prop 传给 React，让组件在重开时立即复位
         // compactCollapsing，而不必等 600ms 兜底——否则快速「关→重开」会让 compact 表面带着擦除
         // mask 的不可见末态 + 历史区临时关闭重新出现（Codex P2）。
         compactMinimizeCancelSeq += 1;
+        pendingChatSurfaceMode = null;
     }
     function handleCompactMinimizeRequest() {
+        if (isMinimizeTransitioning) return;
+        rememberCompactMinimizeBallTargetAnchor();
         // reduced-motion：折叠擦除/按压挤压动画已被 CSS（@media prefers-reduced-motion: reduce）
         // 禁用，此时再延时 COMPACT_MINIMIZE_PRESS_MS(280ms) 才折叠，只会让窗口「点了没反应」一段，
         // 无任何动画反馈。无障碍模式下直接立即折叠，保持即时响应（Codex P2）。
@@ -3555,7 +3678,7 @@
         var nextProps = nextViewProps || {};
         var surfaceModeChanged = false;
         if (Object.prototype.hasOwnProperty.call(nextProps, 'chatSurfaceMode')) {
-            var normalizedChatSurfaceMode = normalizeChatSurfaceMode(nextProps.chatSurfaceMode);
+            var normalizedChatSurfaceMode = coerceChatSurfaceModeForHost(nextProps.chatSurfaceMode);
             var previousChatSurfaceMode = getCurrentChatSurfaceMode();
             surfaceModeChanged = normalizedChatSurfaceMode !== previousChatSurfaceMode;
             if (surfaceModeChanged
@@ -3650,9 +3773,12 @@
 
     function setComposerHidden(hidden) {
         var next = !!hidden;
-        var changed = state.composerHidden !== next;
+        var wasEffectiveHidden = getEffectiveComposerHidden();
+        var previousAttachmentsVisible = getEffectiveComposerAttachmentsVisible();
         state.composerHidden = next;
-        if (changed) {
+        var effectiveChanged = wasEffectiveHidden !== getEffectiveComposerHidden();
+        if (effectiveChanged) {
+            syncComposerAttachmentsVisibility(previousAttachmentsVisible);
             // composer 隐藏/显示切换会改变 effective galgame body class（参见
             // applyGalgameBodyClass），同步刷新一次；否则在 galgame ON 期间
             // 触发请她离开，body 仍带 galgame-mode-enabled，min-height:385px 撑住
@@ -3663,6 +3789,74 @@
             dispatchHostEvent('galgame-mode-change', { enabled: getEffectiveGalgameEnabled() });
         }
         renderWindow();
+    }
+
+    function setGoodbyeComposerHidden(hidden, reason) {
+        var next = !!hidden;
+        var wasEffectiveHidden = getEffectiveComposerHidden();
+        var previousAttachmentsVisible = getEffectiveComposerAttachmentsVisible();
+        try {
+            window.__nekoGoodbyeChatComposerHidden = {
+                hidden: next,
+                reason: reason || (next ? 'goodbye' : 'return'),
+                timestamp: Date.now()
+            };
+        } catch (_) {}
+        if (state.goodbyeComposerHidden === next) {
+            if (wasEffectiveHidden !== getEffectiveComposerHidden()) {
+                syncComposerAttachmentsVisibility(previousAttachmentsVisible);
+                renderWindow();
+            }
+            return;
+        }
+        state.goodbyeComposerHidden = next;
+        var isEffectiveHidden = getEffectiveComposerHidden();
+        var restoredEffectiveComposer = wasEffectiveHidden && !isEffectiveHidden;
+        syncComposerAttachmentsVisibility(previousAttachmentsVisible);
+        if (next) {
+            resetCompactChatState();
+            invalidatePendingGalgameRequest();
+        }
+        if (wasEffectiveHidden !== isEffectiveHidden) {
+            applyGalgameBodyClass();
+            dispatchHostEvent('galgame-mode-change', { enabled: getEffectiveGalgameEnabled() });
+            if (restoredEffectiveComposer && getEffectiveGalgameEnabled()) {
+                var overlay = getOverlay();
+                if (overlay && !overlay.hidden) {
+                    fetchGalgameOptionsForLatestTurn();
+                }
+            }
+        }
+        renderWindow();
+    }
+
+    function syncGoodbyeComposerHidden(reason, options) {
+        if (options && options.localOnly && !hasLocalGoodbyeModeSource()) {
+            return;
+        }
+        setGoodbyeComposerHidden(getNekoGoodbyeModeActive(), reason || 'sync');
+    }
+
+    function requestGoodbyeComposerHiddenState(reason) {
+        var resolvedReason = reason || 'react-chat-window';
+        try {
+            if (typeof window.requestGoodbyeChatComposerHiddenState === 'function') {
+                if (window.requestGoodbyeChatComposerHiddenState(resolvedReason)) {
+                    return true;
+                }
+            }
+        } catch (_) {}
+        try {
+            window.dispatchEvent(new CustomEvent('neko:request-goodbye-chat-composer-hidden-state', {
+                detail: {
+                    reason: resolvedReason,
+                    timestamp: Date.now()
+                }
+            }));
+            return true;
+        } catch (_) {
+            return false;
+        }
     }
 
     function setHomeTutorialInteractionLocked(locked, reason) {
@@ -3683,7 +3877,7 @@
     }
 
     function setComposerAttachments(attachments) {
-        var prevHas = state.composerAttachments && state.composerAttachments.length > 0;
+        var previousVisible = getEffectiveComposerAttachmentsVisible();
         state.composerAttachments = Array.isArray(attachments)
             ? attachments.map(function (attachment, index) {
                 if (!attachment || typeof attachment !== 'object' || !attachment.url) return null;
@@ -3694,15 +3888,8 @@
                 };
             }).filter(Boolean)
             : [];
-        var nextHas = state.composerAttachments.length > 0;
-        applyAttachmentsBodyClass(nextHas);
+        syncComposerAttachmentsVisibility(previousVisible);
         renderWindow();
-        if (prevHas !== nextHas) {
-            // chat.html 的 syncWindowToAttachmentsMin 监听这条事件，0→N 时
-            // 主动 setBounds 把 Electron 窗口撑高到能容纳附件 + 输入框，避免
-            // 附件刚贴上来就把输入区顶出可视区。和 galgame-mode-change 对称。
-            dispatchHostEvent('composer-attachments-change', { hasAttachments: nextHas });
-        }
         return state.composerAttachments;
     }
 
@@ -3776,7 +3963,9 @@
             viewProps: Object.assign({}, ensureViewProps()),
             messages: state.messages.map(cloneMessage),
             composerAttachments: state.composerAttachments.slice(),
-            composerHidden: state.composerHidden
+            composerHidden: getEffectiveComposerHidden(),
+            composerHiddenRequested: state.composerHidden,
+            goodbyeComposerHidden: state.goodbyeComposerHidden
         };
     }
 
@@ -3784,6 +3973,8 @@
     var MINIMIZED_DOWN_OFFSET = 24;     // 放大后整体下移，更贴近猫 GIF
     var isMinimizeTransitioning = false;
     var activeAnimationCleanup = null; // 当前进行中动画的清理函数
+    var pendingChatSurfaceMode = null;
+    var pendingMinimizedSurfaceCommit = null;
 
     // ── Idle-dock: independent orchestration (Phase 4) ──────────
     // Positions the minimized ball next to CAT2/CAT3 return-ball.
@@ -4064,6 +4255,7 @@
     }
 
     async function applyElectronCat1PairMoveBounds(bounds) {
+        if (isElectronLinuxRuntime()) return;
         var targetBounds = electronRectToBounds(bounds);
         if (!targetBounds) return;
         var bridge = getElectronIdleDockBridge();
@@ -4083,6 +4275,7 @@
 
     function scheduleElectronCat1PairMoveBounds(bounds) {
         if (!isElectronChatWindow()) return;
+        if (isElectronLinuxRuntime()) return;
         electronCat1PairMovePendingBounds = electronRectToBounds(bounds);
         if (!electronCat1PairMovePendingBounds || electronCat1PairMoveBoundsFrame) return;
         electronCat1PairMoveBoundsFrame = window.requestAnimationFrame(function () {
@@ -4507,7 +4700,7 @@
             }
             savedShellSize = null;
             savedShellPosition = null;
-            state.chatSurfaceMode = normalizeChatSurfaceMode(lastRestorableChatSurfaceMode);
+            state.chatSurfaceMode = coerceChatSurfaceModeForHost(lastRestorableChatSurfaceMode);
             renderWindow();
             syncMinimizeUI();
             syncChatSurfaceModeUI();
@@ -4520,28 +4713,76 @@
         }
 
         if (wasActive && triggered && minimized) {
-            setChatSurfaceMode(normalizeChatSurfaceMode(lastRestorableChatSurfaceMode));
+            setChatSurfaceMode(coerceChatSurfaceModeForHost(lastRestorableChatSurfaceMode));
         }
     }
 
     // ── End idle-dock ────────────────────────────────────────────
 
+    function getCompactMinimizeBallTargetRect() {
+        var root = getRoot();
+        if (!root || typeof root.querySelector !== 'function') return null;
+        var button = root.querySelector('.compact-chat-minimize-ball');
+        if (!button || typeof button.getBoundingClientRect !== 'function') return null;
+        var buttonRect = normalizeCompactDomRect(button.getBoundingClientRect());
+        if (!buttonRect) return null;
+        return {
+            width: MINIMIZED_SIZE,
+            height: MINIMIZED_SIZE,
+            left: buttonRect.left + buttonRect.width / 2 - MINIMIZED_SIZE / 2,
+            top: buttonRect.top + buttonRect.height / 2 - MINIMIZED_SIZE / 2
+        };
+    }
+
+    function rememberCompactMinimizeBallTargetAnchor() {
+        compactMinimizeBallTargetAnchor = null;
+        if (getCurrentChatSurfaceMode() !== 'compact') return null;
+        compactMinimizeBallTargetAnchor = getCompactMinimizeBallTargetRect();
+        return compactMinimizeBallTargetAnchor;
+    }
+
+    function consumeCompactMinimizeBallTargetAnchor() {
+        var targetRect = normalizeCompactDomRect(compactMinimizeBallTargetAnchor);
+        compactMinimizeBallTargetAnchor = null;
+        return targetRect;
+    }
+
+    function getMinimizedTargetFromCompactAnchor(anchorRect) {
+        anchorRect = normalizeCompactDomRect(anchorRect);
+        if (!anchorRect) return null;
+        return {
+            width: MINIMIZED_SIZE,
+            height: MINIMIZED_SIZE,
+            left: Math.max(
+                0,
+                Math.min(
+                    Math.round(anchorRect.left),
+                    window.innerWidth - MINIMIZED_SIZE
+                )
+            ),
+            top: Math.max(
+                0,
+                Math.min(
+                    Math.round(anchorRect.top),
+                    window.innerHeight - MINIMIZED_SIZE
+                )
+            )
+        };
+    }
+
     // 返回最小化后 shell 应达到的像素几何。
-    // 桌面：50x50 圆球，锚定在对话框原左下角（clamp 到视口内）。
-    // 手机：全宽底部胶囊，贴屏幕底边（类似移动 App 的底栏收起态）。
-    // 由于 collapse/expand 动画的 transform-origin = 0% 100%（左下角），
-    // target.left 应等于 rect.left 同列，target 底边应与 rect 底边对齐
-    // （即 target.top = rect.bottom - target.height），这样动画过程中底边不漂移。
+    // compact 折叠时，优先锚定到 React frame 内的毛线球按钮中心；React 在切到 minimized
+    // 后会卸载 compact surface，所以点击入口要先记录 target rect。拿不到 target rect 时才退回
+    // shell 左下角 fallback。
     function getMinimizedTarget(rect) {
-        // Both full and compact collapse to the surface's OWN bottom-left corner:
-        // the dialog folds toward its bottom-left pivot (transform-origin 0% 100%)
-        // and the orb appears right there — NOT compact's avatar/cat dock
-        // (getCompactMinimizeBallTarget) and without the cat-leaning
-        // MINIMIZED_DOWN_OFFSET. This is the pre-#1506 in-place behaviour.
-        // Best-effort for compact: the orb stays where the bar was; carrying a
-        // dragged-orb position into the next expand is the deferred follow-up
-        // (needs the compact surface to become a free-positioned window).
-        // Web-only — Electron short-circuits in setMinimized before this runs.
+        var compactTarget = isLegacyFullMinimizedBall()
+            ? null
+            : getMinimizedTargetFromCompactAnchor(consumeCompactMinimizeBallTargetAnchor());
+        if (compactTarget) return compactTarget;
+
+        // Fallback: collapse to the surface's own bottom-left corner. This keeps
+        // legacy full behavior and covers compact cases where the inline yarn
+        // icon was not measurable.
         return {
             width: MINIMIZED_SIZE,
             height: MINIMIZED_SIZE,
@@ -4611,14 +4852,13 @@
         // 取消进行中的折叠/展开时一并清掉挂起的「按下挤压→瞬时折叠」延时（closeWindow
         // 也走这里），避免该回调在窗口关闭/重开后幽灵触发 setChatSurfaceMode('minimized')。
         clearCompactMinimizePressTimer();
+        pendingChatSurfaceMode = null;
+        pendingMinimizedSurfaceCommit = null;
     }
 
-    // The minimized ball belongs to the surface we'll restore to: the revived
-    // legacy full uses its breathing-light orb, every other surface (compact)
-    // keeps the yarn ball. Gated purely on lastRestorableChatSurfaceMode so the
-    // compact path never sees a behavior change.
+    // 最小化球皮肤跟随可恢复形态；紧凑 Electron 宿主会把历史 full 规整回 compact。
     function isLegacyFullMinimizedBall() {
-        return normalizeChatSurfaceMode(lastRestorableChatSurfaceMode) === 'full';
+        return coerceChatSurfaceModeForHost(lastRestorableChatSurfaceMode) === 'full';
     }
 
     function applyMinimizedBallSkin(ballIcon) {
@@ -4672,21 +4912,50 @@
         return normalized;
     }
 
+    function commitPendingMinimizedSurfaceMode() {
+        if (!pendingMinimizedSurfaceCommit) return false;
+
+        var commit = pendingMinimizedSurfaceCommit;
+        pendingMinimizedSurfaceCommit = null;
+        state.chatSurfaceMode = commit.mode;
+        resetCompactChatState();
+        renderWindow();
+        syncChatSurfaceModeUI();
+        dispatchHostEvent('chat-surface-mode-change', {
+            mode: commit.mode,
+            previousMode: commit.previousMode
+        });
+        return true;
+    }
+
     function setChatSurfaceMode(nextMode) {
-        var normalized = normalizeChatSurfaceMode(nextMode);
+        var normalized = coerceChatSurfaceModeForHost(nextMode);
         var previousMode = getCurrentChatSurfaceMode();
         var nextMinimized = normalized === 'minimized';
         var previousMinimized = previousMode === 'minimized';
         if (previousMode === normalized) {
+            if (isMinimizeTransitioning) {
+                pendingChatSurfaceMode = null;
+            }
             syncChatSurfaceModeUI();
             return normalized;
         }
+
+        if (isMinimizeTransitioning) {
+            pendingChatSurfaceMode = normalized;
+            return previousMode;
+        }
+        pendingChatSurfaceMode = null;
 
         // 任何真实的 surface mode 变更都取消挂起的「按下挤压→延时折叠」：否则 full→compact 之类
         // 快速跳变会让 280ms 内的陈旧折叠回调在 mode 又回到 compact 时误折叠刚恢复的表面（Codex P2，
         // 仅靠回调里 getCurrentChatSurfaceMode()==='compact' 守卫挡不住这种 hop）。timer 自身的
         // minimize 调用此时 timer 已=0，clear 为 no-op，不影响正常折叠。
         clearCompactMinimizePressTimer();
+
+        if (!previousMinimized && nextMinimized && previousMode === 'compact') {
+            rememberCompactMinimizeBallTargetAnchor();
+        }
 
         if (!nextMinimized) {
             lastRestorableChatSurfaceMode = normalized;
@@ -4695,6 +4964,19 @@
         }
 
         resetCompactChatState();
+        syncGoodbyeComposerHidden('chat-surface-mode-change', { localOnly: true });
+        requestGoodbyeComposerHiddenState('chat-surface-mode-change');
+
+        if (!previousMinimized && nextMinimized && previousMode === 'full' && !isElectronChatWindow() && getShell()) {
+            pendingMinimizedSurfaceCommit = {
+                mode: normalized,
+                previousMode: previousMode
+            };
+            setMinimized(true);
+            return normalized;
+        }
+
+        pendingMinimizedSurfaceCommit = null;
         state.chatSurfaceMode = normalized;
         persistChatSurfaceModePreference(normalized);
         if (normalized === 'compact') {
@@ -4717,6 +4999,17 @@
 
     function cycleChatSurfaceMode() {
         return setChatSurfaceMode(getNextChatSurfaceMode(getCurrentChatSurfaceMode()));
+    }
+
+    function flushPendingChatSurfaceModeIfNeeded() {
+        if (isMinimizeTransitioning || !pendingChatSurfaceMode) return;
+
+        var targetMode = pendingChatSurfaceMode;
+        pendingChatSurfaceMode = null;
+        if (targetMode === getCurrentChatSurfaceMode()) {
+            return;
+        }
+        setChatSurfaceMode(targetMode);
     }
 
     function setMinimized(nextMinimized) {
@@ -4769,27 +5062,34 @@
             var targetLeft = target.left;
             var targetTop = target.top;
 
-            // 3. 计算缩放比（transform-origin 为 0% 100% 即左下角，无需 translate）
+            // 3. 计算缩放比，并反推 transform-origin，使缩放后的 shell
+            //    视觉终点落在 target 上。fallback 的 shell 左下角目标会自然得到
+            //    0px 100% 等价原点；compact 的毛线球槽位目标则不会再从左下角跳过去。
             var sx = rect.width > 0 ? target.width / rect.width : 1;
             var sy = rect.height > 0 ? target.height / rect.height : 1;
+            var originX = 0;
+            var originY = rect.height;
+            var originDenomX = 1 - sx;
+            var originDenomY = 1 - sy;
+            if (Math.abs(originDenomX) > 0.0001) {
+                originX = (targetLeft - rect.left) / originDenomX;
+            }
+            if (Math.abs(originDenomY) > 0.0001) {
+                originY = (targetTop - rect.top) / originDenomY;
+            }
+            if (!Number.isFinite(originX)) originX = 0;
+            if (!Number.isFinite(originY)) originY = rect.height;
 
             // 4. 初始 transform = identity，添加过渡类
             shell.style.transform = 'scale(1, 1)';
+            shell.style.transformOrigin = originX + 'px ' + originY + 'px';
             shell.classList.add('is-collapsing');
             void shell.offsetHeight; // 强制 reflow
 
             // 5. 设置目标 transform，触发动画
-            //    full + compact 都：动画期间 left/top **不动**，只缩放（origin 左下角），
-            //    让对话框以自己的左下角为支点原地收缩成球；finishCollapse 再把（已缩成
-            //    球大小的）shell snap 到左下角球位置，视觉无缝。这是 #1506 三态重构前的
-            //    原地折叠行为（best effort：compact 折叠原地、不再滑去贴模型/猫）。
-            var collapseHoldsPosition = true;
+            //    动画期间 left/top 不动，只通过动态 origin 缩放到 target。
             requestAnimationFrame(function () {
                 requestAnimationFrame(function () {
-                    if (!collapseHoldsPosition) {
-                        shell.style.left = targetLeft + 'px';
-                        shell.style.top = targetTop + 'px';
-                    }
                     shell.style.transform = 'scale(' + sx + ', ' + sy + ')';
                 });
             });
@@ -4805,6 +5105,7 @@
                 activeAnimationCleanup = null;
                 shell.classList.remove('is-collapsing');
                 shell.style.transform = 'none';
+                shell.style.removeProperty('transform-origin');
                 // 清除内联尺寸，让 .is-minimized 的 CSS 生效
                 shell.style.removeProperty('width');
                 shell.style.removeProperty('height');
@@ -4820,7 +5121,9 @@
                 // minimize from the revived legacy full shows its breathing-light
                 // orb instead of the stale compact yarn ball.
                 applyMinimizedBallSkin(ensureMinimizedBallIcon());
+                commitPendingMinimizedSurfaceMode();
                 isMinimizeTransitioning = false;
+                flushPendingChatSurfaceModeIfNeeded();
             };
             var onEnd = function (e) {
                 if (e.target !== shell || e.propertyName !== 'transform') return;
@@ -4835,6 +5138,8 @@
                 shell.removeEventListener('transitionend', onEnd);
                 shell.classList.remove('is-collapsing');
                 shell.style.transform = 'none';
+                shell.style.removeProperty('transform-origin');
+                pendingMinimizedSurfaceCommit = null;
                 handled = true;
             };
 
@@ -4910,6 +5215,7 @@
                 savedShellSize = null;
                 savedShellPosition = null;
                 isMinimizeTransitioning = false;
+                flushPendingChatSurfaceModeIfNeeded();
                 restoreSetupVisibility();
                 requestAnimationFrame(function () {
                     var r = shell.getBoundingClientRect();
@@ -4973,6 +5279,7 @@
                 savedShellSize = null;
                 savedShellPosition = null;
                 isMinimizeTransitioning = false;
+                flushPendingChatSurfaceModeIfNeeded();
                 scheduleMobileContentLayout();
                 // 确保位置不溢出；全屏模式（/chat）不持久化，
                 // 否则 (0,0) 会覆盖 index.html 中用户保存的窗口位置
@@ -5074,6 +5381,7 @@
     }
 
     function toggleMinimized() {
+        if (isMinimizeTransitioning) return;
         if (minimized && idleDockActive && idleDockSavedPosition) {
             var shell = getShell();
             if (shell) {
@@ -5133,7 +5441,7 @@
                     // rebuilds the compact body instead of the (blank) minimized
                     // surface; closeWindow performs the same reset when it clears
                     // the minimized shell.
-                    state.chatSurfaceMode = normalizeChatSurfaceMode(lastRestorableChatSurfaceMode);
+                    state.chatSurfaceMode = coerceChatSurfaceModeForHost(lastRestorableChatSurfaceMode);
                     resetCompactChatState();
                 }
                 if (getCurrentChatSurfaceMode() === 'compact') {
@@ -5204,6 +5512,7 @@
         // surfacing stale A/B/C the next time the user opens the window.
         invalidatePendingGalgameRequest();
         cancelActiveAnimation(); // 清理进行中的折叠/展开回调
+        pendingChatSurfaceMode = null;
         clearIdleDockState();
         deactivateToolCursor();
         hideIdleCat1CompactMirror('close-window');
@@ -5232,7 +5541,7 @@
             // openWindow() rebuilds the React props with chatSurfaceMode:
             // 'minimized', rendering a blank body over a no-longer-minimized
             // shell.
-            state.chatSurfaceMode = normalizeChatSurfaceMode(lastRestorableChatSurfaceMode);
+            state.chatSurfaceMode = coerceChatSurfaceModeForHost(lastRestorableChatSurfaceMode);
             resetCompactChatState();
             savedShellSize = null;
             savedShellPosition = null;
@@ -5452,7 +5761,7 @@
     var RESIZE_DIRECTIONS = ['n', 's', 'w', 'e', 'nw', 'ne', 'sw', 'se'];
 
     function getDesktopMinHeight() {
-        if (!state.galgameModeEnabled) return MIN_HEIGHT;
+        if (!getEffectiveGalgameEnabled()) return MIN_HEIGHT;
         // 与 CSS 的 galgame min-height 对齐，避免拖拽时 JS 先把高度压到 280px。
         return Math.min(GALGAME_MIN_HEIGHT, Math.max(MIN_HEIGHT, window.innerHeight - 22));
     }
@@ -5667,6 +5976,11 @@
 
         window.addEventListener(EVENT_PREFIX + 'set-composer-hidden', function (event) {
             setComposerHidden(event.detail && event.detail.hidden);
+        });
+
+        window.addEventListener(EVENT_PREFIX + 'set-goodbye-composer-hidden', function (event) {
+            var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+            setGoodbyeComposerHidden(!!detail.hidden, detail.reason || 'bridge');
         });
 
         window.addEventListener(EVENT_PREFIX + 'set-galgame-mode', function (event) {
@@ -5892,6 +6206,8 @@
             var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
             if (!detail || detail.type !== 'visual-tier') return;
 
+            setGoodbyeComposerHidden(detail.tier !== IDLE_DOCK_TIER_NONE, detail.source || 'visual-tier');
+
             idleDockTier = detail.tier === IDLE_DOCK_TIER_CAT2 || detail.tier === IDLE_DOCK_TIER_CAT3
                 ? detail.tier
                 : IDLE_DOCK_TIER_NONE;
@@ -5926,17 +6242,23 @@
             scheduleElectronCat1PairMoveBounds(detail.screenRect || detail.bounds);
         });
         window.addEventListener('neko:idle-cat1-compact-mirror-state', handleIdleCat1CompactMirrorState);
+        window.addEventListener('live2d-goodbye-click', function () {
+            setGoodbyeComposerHidden(true, 'live2d-goodbye-click');
+        });
         window.addEventListener('live2d-return-click', function () {
+            setGoodbyeComposerHidden(false, 'live2d-return-click');
             if (hasElectronIdleDockPendingOrActive()) { exitElectronIdleDock(); }
             if (hasIdleDockPendingOrActive()) { exitIdleDock(); return; }
             clearIdleDockState();
         });
         window.addEventListener('vrm-return-click', function () {
+            setGoodbyeComposerHidden(false, 'vrm-return-click');
             if (hasElectronIdleDockPendingOrActive()) { exitElectronIdleDock(); }
             if (hasIdleDockPendingOrActive()) { exitIdleDock(); return; }
             clearIdleDockState();
         });
         window.addEventListener('mmd-return-click', function () {
+            setGoodbyeComposerHidden(false, 'mmd-return-click');
             if (hasElectronIdleDockPendingOrActive()) { exitElectronIdleDock(); }
             if (hasIdleDockPendingOrActive()) { exitIdleDock(); return; }
             clearIdleDockState();
@@ -5982,6 +6304,16 @@
             if (initialComposerShouldHide) {
                 setComposerHidden(true);
             }
+            if (window.__nekoGoodbyeChatComposerHidden
+                && typeof window.__nekoGoodbyeChatComposerHidden === 'object') {
+                setGoodbyeComposerHidden(
+                    !!window.__nekoGoodbyeChatComposerHidden.hidden,
+                    window.__nekoGoodbyeChatComposerHidden.reason || 'initial-goodbye-cache'
+                );
+            } else {
+                syncGoodbyeComposerHidden('initial-goodbye-state');
+            }
+            requestGoodbyeComposerHiddenState('initial-goodbye-state');
         } catch (_) {
             // 首绘兜底失败不影响后续 session_started 同步
         }
@@ -6050,6 +6382,8 @@
         setChatSurfaceMode: setChatSurfaceMode,
         cycleChatSurfaceMode: cycleChatSurfaceMode,
         setCompactChatState: setCompactChatState,
+        setGoodbyeComposerHidden: setGoodbyeComposerHidden,
+        syncGoodbyeComposerHidden: syncGoodbyeComposerHidden,
         setGalgameModeEnabled: function (enabled, options) {
             setGalgameModeEnabled(enabled, options || {});
         },

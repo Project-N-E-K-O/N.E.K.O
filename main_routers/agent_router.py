@@ -566,8 +566,19 @@ async def proxy_task_cancel(task_id: str):
         client = _get_http_client()
         r = await client.post(f"{TOOL_SERVER_BASE}/tasks/{task_id}/cancel", timeout=5.0)
         if not r.is_success:
-            return JSONResponse({"success": False, "error": f"tool_server responded {r.status_code}"}, status_code=502)
+            # Pass the tool server's status through (e.g. 404 task-not-found)
+            # so the HUD can tell an orphan card from a proxy-layer failure.
+            return JSONResponse({"success": False, "error": f"tool_server responded {r.status_code}"}, status_code=r.status_code)
         return r.json()
+    except httpx.ReadTimeout as e:
+        # Timed out waiting for the response: the tool server received the
+        # cancel but responded too slowly. 504 tells the HUD the request did
+        # land, so its local terminal fallback is safe to apply.
+        return JSONResponse({"success": False, "error": f"proxy timeout: {e}"}, status_code=504)
+    except (httpx.ConnectError, httpx.TimeoutException) as e:
+        # Connect failure or connect/write/pool timeout: the request cannot
+        # be proven to have reached the tool server.
+        return JSONResponse({"success": False, "error": f"proxy error: {e}"}, status_code=502)
     except Exception as e:
         return JSONResponse({"success": False, "error": f"proxy error: {e}"}, status_code=502)
 
@@ -583,11 +594,26 @@ async def proxy_admin_control(payload: dict = Body(...)):
         r = await client.post(f"{TOOL_SERVER_BASE}/admin/control", json=payload, timeout=5.0)
         if not r.is_success:
             return JSONResponse({"success": False, "error": f"tool_server responded {r.status_code}"}, status_code=502)
-        
+
         result = r.json()
         logger.info(f"Admin control result: {result}")
         return result
-        
+
+    except httpx.ReadTimeout as e:
+        # Timed out waiting for the response: end_all keeps running to
+        # completion on the tool server. 504 tells the HUD the request did
+        # land, so its local terminal fallback is safe to apply.
+        return JSONResponse({
+            "success": False,
+            "error": f"admin control timed out after forwarding: {str(e)}"
+        }, status_code=504)
+    except (httpx.ConnectError, httpx.TimeoutException) as e:
+        # Connect failure or connect/write/pool timeout: the request cannot
+        # be proven to have reached the tool server — nothing was cancelled.
+        return JSONResponse({
+            "success": False,
+            "error": f"Failed to execute admin control: {str(e)}"
+        }, status_code=500)
     except Exception as e:
         return JSONResponse({
             "success": False,

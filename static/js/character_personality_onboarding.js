@@ -100,6 +100,43 @@
         return element;
     }
 
+    function findLoadedCharacterAvatarSrc(characterName) {
+        const targetName = String(characterName || '').trim();
+        if (!targetName || typeof document === 'undefined') {
+            return '';
+        }
+        const imageSrc = (image) => {
+            const src = image && image.getAttribute && image.getAttribute('src');
+            if (!src) {
+                return '';
+            }
+            if (/default_character_card\.png|sidebar_logo|paw_ui\.png/i.test(src)) {
+                return '';
+            }
+            return image.src || src;
+        };
+
+        const panelImg = Array.from(document.querySelectorAll('.catgirl-panel-wrapper')).find((wrapper) => {
+            return String(wrapper && wrapper.dataset && wrapper.dataset.catgirlName || '').trim() === targetName;
+        })?.querySelector('.catgirl-panel-card-image img.card-face-img');
+        const panelSrc = imageSrc(panelImg);
+        if (panelSrc) {
+            return panelSrc;
+        }
+
+        const gridCard = Array.from(document.querySelectorAll('.chara-card-item')).find((card) => {
+            const nameEl = card.querySelector('.card-name');
+            return String(nameEl && nameEl.textContent || '').trim() === targetName;
+        });
+        const gridImg = gridCard ? gridCard.querySelector('.card-avatar img.card-face-img') : null;
+        const gridSrc = imageSrc(gridImg);
+        if (gridSrc) {
+            return gridSrc;
+        }
+
+        return '';
+    }
+
     class CharacterPersonalityOnboardingManager {
         constructor() {
             this.overlay = null;
@@ -1043,11 +1080,33 @@
             previewSection.appendChild(previewLabel);
 
             const bubbleWrapper = createElement('div', 'preview-bubble-wrapper');
-            const avatar = createElement(
-                'div',
-                'preview-avatar',
-                this.currentCharacterName || translate('memory.characterSelection.currentCharacterEmpty', '当前角色')
-            );
+            const avatar = createElement('div', 'preview-avatar');
+            const avatarLabel = this.currentCharacterName
+                ? translate(
+                    'memory.characterSelection.currentCharacterAvatarAlt',
+                    '{{characterName}} 的头像',
+                    { characterName: this.currentCharacterName }
+                )
+                : translate('memory.characterSelection.currentCharacterEmpty', '当前角色');
+            avatar.setAttribute('aria-label', avatarLabel);
+            avatar.title = avatarLabel;
+            if (this.currentCharacterName) {
+                const avatarImg = document.createElement('img');
+                avatarImg.className = 'preview-avatar-img';
+                avatarImg.alt = avatarLabel;
+                avatarImg.draggable = false;
+                avatarImg.src = (
+                    findLoadedCharacterAvatarSrc(this.currentCharacterName)
+                    || `/api/characters/catgirl/${encodeURIComponent(this.currentCharacterName)}/card-face`
+                );
+                avatarImg.addEventListener('error', () => {
+                    avatarImg.remove();
+                    avatar.classList.add('is-empty');
+                }, { once: true });
+                avatar.appendChild(avatarImg);
+            } else {
+                avatar.classList.add('is-empty');
+            }
             bubbleWrapper.appendChild(avatar);
 
             const bubble = createElement('div', 'preview-bubble');

@@ -3520,6 +3520,12 @@ class ConfigManager:
                 file_data = json.load(f)
             if isinstance(file_data, dict):
                 core_cfg.update(file_data)
+                # 模板默认 assistApi='qwen' 会把文件里从未保存过的 assistApi 填
+                # 上，导致下方「core=free 时 assist 默认 free」的跟随逻辑收不到
+                # 缺失信号。仅当文件显式选了 core=free 且从未保存 assistApi 时
+                # 恢复跟随语义；其余缺失场景维持模板默认。
+                if 'assistApi' not in file_data and file_data.get('coreApi') == 'free':
+                    core_cfg['assistApi'] = 'free'
             else:
                 logger.warning("core_config.json 格式异常，使用默认配置。")
 
