@@ -35,16 +35,55 @@ def test_cat1_return_button_assets_are_version_tracked():
 def test_cat1_minimized_side_target_separates_look_and_move_direction():
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
 
+    # #1749 的“朝毛球前进、避免倒退”的取侧逻辑只用于本次走路首次决策，已抽到 forward picker。
+    forward_pick_block = source.split("function _pickNekoIdleCat1ForwardSideTarget", 1)[1].split(
+        "function _clearNekoIdleCat1WalkApproachSide",
+        1,
+    )[0]
+    assert "const lookFacingRight = chatCenterX > catCenterX;" in forward_pick_block
+    assert "sideTarget.moveFacingRight === lookFacingRight" in forward_pick_block
+    assert "alternateTarget.moveFacingRight === null || alternateTarget.moveFacingRight === lookFacingRight" in forward_pick_block
+    assert "facingRight: facingRight," in source
+    assert "lookFacingRight: facingRight" in source
+    assert "moveFacingRight: moveFacingRight" in source
+
+
+def test_cat1_minimized_side_target_commits_approach_side_to_prevent_center_straddle():
+    """Approach side must be committed with hysteresis, never re-judged each frame via catCenter vs chatCenter (which makes the cat straddle the ball center and jitter against it)."""
+    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+
     side_target_block = source.split("function _getNekoIdleCat1SideTarget", 1)[1].split(
         "function _getNekoIdleCat1CompactTopEdgeBounds",
         1,
     )[0]
-    assert "const lookFacingRight = chatCenterX > catCenterX;" in side_target_block
-    assert "sideTarget.moveFacingRight === lookFacingRight" in side_target_block
-    assert "alternateTarget.moveFacingRight === null || alternateTarget.moveFacingRight === lookFacingRight" in side_target_block
-    assert "facingRight: facingRight," in source
-    assert "lookFacingRight: facingRight" in source
-    assert "moveFacingRight: moveFacingRight" in source
+    assert "_NEKO_IDLE_CAT1_WALK_SIDE_COMMIT_PROP" in side_target_block
+    # 仍在毛球水平跨度内 -> 保持提交侧，不在球心附近翻面
+    assert "catCenterX >= chatRect.left && catCenterX <= chatRect.right" in side_target_block
+    # 只在猫已整体越到毛球另一侧时才重选接近侧
+    assert "committed === true && catCenterX > chatRect.right" in side_target_block
+    assert "committed === false && catCenterX < chatRect.left" in side_target_block
+    # 提交侧持有期间，禁止再出现旧的“每帧重判 lookFacingRight”
+    assert "const lookFacingRight = chatCenterX > catCenterX;" not in side_target_block
+
+    # 走完/取消时必须清掉提交侧，便于下次重新决策
+    assert "function _clearNekoIdleCat1WalkApproachSide" in source
+    finish_block = source.split("function _finishNekoIdleCat1Walk", 1)[1].split(
+        "function _finishNekoIdleCat1CompactTopEdgeWalk",
+        1,
+    )[0]
+    assert "_clearNekoIdleCat1WalkApproachSide(" in finish_block
+
+
+def test_cat1_walk_speed_rate_relaxes_when_converging():
+    """Catch-up speed rate must relax while converging, so one momentary distance spike does not pin the speed at maxRate forever."""
+    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+
+    speed_block = source.split("function _updateNekoIdleCat1WalkSpeedRate", 1)[1].split(
+        "function _stepNekoIdleCat1Walk",
+        1,
+    )[0]
+    assert "currentDistance < previousDistance" in speed_block
+    assert "(previousDistance - currentDistance)" in speed_block
 
 
 def test_cat1_walk_uses_resolved_target_facing_instead_of_raw_chat_side():
@@ -91,4 +130,4 @@ def test_cat1_external_chat_position_updates_interrupt_pair_move_for_retarget():
         "function _shouldRecheckNekoIdleCat1AfterManualMove",
         1,
     )[0]
-    assert "_interruptNekoIdleCat1PairMovesForRetarget({ scheduleSync: !dragging });" in compact_move_block
+    assert "_interruptNekoIdleCat1PairMovesForRetarget({ scheduleSync: !activeSurfaceAdjustment });" in compact_move_block

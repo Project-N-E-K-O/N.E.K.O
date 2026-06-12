@@ -690,6 +690,10 @@ def test_goodbye_composer_hidden_syncs_to_chat_window():
         "function isGoodbyeChatComposerHiddenMessageForCurrentLanlan(data)",
         1,
     )[1].split("function handleGoodbyeChatComposerHiddenMessage", 1)[0]
+    goodbye_request_block = interpage_source.split(
+        "function requestGoodbyeChatComposerHiddenState(reason)",
+        1,
+    )[1].split("function isGoodbyeChatComposerHiddenMessageForCurrentLanlan", 1)[0]
     goodbye_post_block = interpage_source.split(
         "function postGoodbyeChatComposerHiddenState(hidden, reason)",
         1,
@@ -723,18 +727,35 @@ def test_goodbye_composer_hidden_syncs_to_chat_window():
     assert "var lanlanName = getCurrentLanlanName();" in goodbye_post_block
     assert "if (!lanlanName) return;" in goodbye_post_block
     assert "lanlan_name: lanlanName" in goodbye_post_block
-    assert "var lanlanName = getCurrentLanlanName();" in goodbye_initial_request_block
-    assert "if (!lanlanName) return;" in goodbye_initial_request_block
-    assert "lanlan_name: lanlanName" in goodbye_initial_request_block
+    assert "window.appState && typeof window.appState.lanlan_name === 'string'" in interpage_source
+    assert "var lanlanName = getCurrentLanlanName();" in goodbye_request_block
+    assert "if (!lanlanName) return false;" in goodbye_request_block
+    assert "reason: reason || 'request-goodbye-chat-composer-hidden'" in goodbye_request_block
+    assert "lanlan_name: lanlanName" in goodbye_request_block
+    assert "requestGoodbyeChatComposerHiddenState('standalone-chat-state-request')" in goodbye_initial_request_block
+    assert "GOODBYE_COMPOSER_REQUEST_RETRY_DELAYS_MS[goodbyeComposerRequestRetryIndex++]" in interpage_source
+    assert "scheduleGoodbyeComposerRequest(0);" in interpage_source
     assert "if (isStandaloneChatPage()) return true;" in goodbye_handler_block
     assert (
         "postGoodbyeChatComposerHiddenState(undefined, 'request-goodbye-chat-composer-hidden');"
         in goodbye_handler_block
     )
     assert "nekoBroadcastChannel || getGoodbyeChatComposerHiddenElectronBridge()" in interpage_source
-    assert "postGoodbyeChatComposerHiddenPayload(payload);" in interpage_source
+    assert "postGoodbyeChatComposerHiddenPayload({" in interpage_source
     assert "postGoodbyeComposerRequest();" in interpage_source
-    assert "window.addEventListener('neko:config-injected', postGoodbyeComposerRequest" in interpage_source
+    # config 注入后只通过 postStandaloneChatStateRequests 统一补发，不再单独注册 once 监听，避免重复请求
+    assert (
+        "window.addEventListener('neko:config-injected', postGoodbyeComposerRequest"
+        not in interpage_source
+    )
+    assert (
+        "window.addEventListener('neko:config-injected', postAvatarRequest"
+        not in interpage_source
+    )
+    assert "window.addEventListener('neko:config-injected', postStandaloneChatStateRequests);" in interpage_source
+    assert "window.addEventListener('neko:request-goodbye-chat-composer-hidden-state'" in interpage_source
+    assert "window.addEventListener('focus', function ()" in interpage_source
+    assert "document.addEventListener('visibilitychange', function ()" in interpage_source
     assert (
         "mod.postGoodbyeChatComposerHiddenElectron = postGoodbyeChatComposerHiddenElectron;"
         in interpage_source
@@ -744,7 +765,9 @@ def test_goodbye_composer_hidden_syncs_to_chat_window():
         in interpage_source
     )
     assert "mod.postGoodbyeChatComposerHiddenState = postGoodbyeChatComposerHiddenState;" in interpage_source
+    assert "mod.requestGoodbyeChatComposerHiddenState = requestGoodbyeChatComposerHiddenState;" in interpage_source
     assert "window.postGoodbyeChatComposerHiddenState = postGoodbyeChatComposerHiddenState;" in interpage_source
+    assert "window.requestGoodbyeChatComposerHiddenState = requestGoodbyeChatComposerHiddenState;" in interpage_source
     assert "postGoodbyeChatComposerHiddenState(true, 'live2d-goodbye-click')" in app_ui_source
     assert "postGoodbyeChatComposerHiddenState(false, 'return-click')" in app_ui_source
 
