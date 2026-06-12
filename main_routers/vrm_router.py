@@ -524,6 +524,7 @@ async def get_vrm_config():
 DEFAULT_MOOD_MAP = {
     "neutral": ["neutral"],
     "happy": ["happy", "joy", "fun", "smile", "joy_01"],
+    "shy": ["shy", "blush", "bashful", "embarrassed"],
     "relaxed": ["relaxed", "joy", "fun", "content"],
     "sad": ["sad", "sorrow", "grief"],
     "angry": ["angry", "anger"],
@@ -762,6 +763,7 @@ async def get_model_expressions(model_name: str):
 
         common_expressions = [
             "neutral", "happy", "joy", "fun", "smile", "joy_01",
+            "shy", "blush", "bashful", "embarrassed",
             "relaxed", "content",
             "sad", "sorrow", "grief",
             "angry", "anger",

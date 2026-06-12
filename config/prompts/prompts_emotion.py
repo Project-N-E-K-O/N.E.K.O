@@ -9,8 +9,9 @@ from config.prompts.prompts_sys import _loc
 OUTWARD_EMOTION_ANALYSIS_PROMPT = {
     'zh': """你是一个情感分析专家。请判断输入文本里最主导、最外显的一种情绪，并只返回 JSON：{"emotion": "情感类型", "confidence": 置信度}。
 
-可选情感只有这五种：
+可选情感只有这六种：
 - happy：开心、兴奋、满足、轻快、宠溺、可爱、调皮、得意、热情
+- shy：害羞、脸红、不好意思、羞怯、腼腆、被夸到害臊、甜蜜慌张
 - sad：失落、难过、委屈、沮丧、低落、遗憾、脆弱
 - angry：生气、不满、烦躁、攻击性、强烈指责、炸毛
 - surprised：惊讶、震惊、意外、被逗到、夸张感叹、强烈新奇感
@@ -20,11 +21,12 @@ OUTWARD_EMOTION_ANALYSIS_PROMPT = {
 1. 必须优先选择“最强主情绪”，不要因为语气里带一点克制就轻易返回 neutral。
 2. 只有在文本整体真的平铺直叙、情绪信号很弱时，才返回 neutral。
 3. 只有在文本明确表达开心、喜欢、得意、轻快、被逗乐、享受互动时，才判为 happy，不要把单纯可爱说法、卖萌语气、口头禅误判成 happy。
-4. 如果文本主轴是委屈、想哭、脆弱、受伤、被欺负、害怕、求安慰、低落，即使语气可爱或撒娇，也应优先判为 sad。
-5. 当文本主轴是指责、敌意、抱怨、烦躁、警告、拒绝、炸毛、不耐烦时判为 angry；偶尔的吐槽、嫌弃如果整体语气仍偏轻松、玩笑或可爱，可以酌情考虑。
-6. surprised 只用于明显的突发惊讶、意外、震惊、夸张反应；不要只因为有感叹号、语气词就判为 surprised。
-7. 语气助词、口癖、拟声词、宠物叫声这类风格词本身不代表情绪，不能单独作为判断依据。
-8. confidence 取 0 到 1 之间的小数；情绪很明确时应给出较高置信度。
+4. 如果文本主轴是害羞、脸红、被夸后慌张、不好意思、甜蜜但局促、想躲又开心，应优先判为 shy，而不是 happy。
+5. 如果文本主轴是委屈、想哭、脆弱、受伤、被欺负、害怕、求安慰、低落，即使语气可爱或撒娇，也应优先判为 sad。
+6. 当文本主轴是指责、敌意、抱怨、烦躁、警告、拒绝、炸毛、不耐烦时判为 angry；偶尔的吐槽、嫌弃如果整体语气仍偏轻松、玩笑或可爱，可以酌情考虑。
+7. surprised 只用于明显的突发惊讶、意外、震惊、夸张反应；不要只因为有感叹号、语气词就判为 surprised。
+8. 语气助词、口癖、拟声词、宠物叫声这类风格词本身不代表情绪，不能单独作为判断依据。
+9. confidence 取 0 到 1 之间的小数；情绪很明确时应给出较高置信度。
 
 只返回 JSON，不要附加任何解释文本。""",
 
@@ -32,6 +34,7 @@ OUTWARD_EMOTION_ANALYSIS_PROMPT = {
 
 Allowed emotions only:
 - happy: joyful, excited, affectionate, playful, cute, delighted, warm
+- shy: bashful, blushing, embarrassed, flustered by praise or affection, sweetly self-conscious
 - sad: upset, hurt, disappointed, low, regretful, vulnerable
 - angry: angry, annoyed, irritated, hostile, complaining, explosive
 - surprised: surprised, shocked, startled, unexpected, exaggerated reaction
@@ -41,18 +44,20 @@ Rules:
 1. Choose the strongest main emotion, not the safest one.
 2. Do not return neutral unless the text is truly emotionally weak or flat.
 3. Use happy only when the text clearly expresses positive enjoyment, affection, delight, playful pleasure, or being genuinely amused; do not treat cute phrasing or verbal tics alone as happy.
-4. If the core emotion is hurt, vulnerability, wanting to cry, feeling bullied, fear, pleading, or seeking comfort, prefer sad even if the wording sounds cute or clingy.
-5. Use angry when the core emotion is blame, hostility, complaint, irritation, warning, rejection, a meltdown, or impatience. For occasional griping or contempt, if the overall tone is still light, joking, or cute, use your judgment.
-6. Use surprised only for clear shock, sudden surprise, or exaggerated astonishment; do not label something surprised just because it has exclamation marks or filler particles.
-7. Catchphrases, sound effects, pet-like speech, and filler words are style markers, not emotions by themselves.
-8. confidence must be a number between 0 and 1.
+4. Use shy when the core emotion is embarrassment, blushing, bashfulness, flustered affection, or wanting to hide because of praise or closeness; do not collapse it into happy.
+5. If the core emotion is hurt, vulnerability, wanting to cry, feeling bullied, fear, pleading, or seeking comfort, prefer sad even if the wording sounds cute or clingy.
+6. Use angry when the core emotion is blame, hostility, complaint, irritation, warning, rejection, a meltdown, or impatience. For occasional griping or contempt, if the overall tone is still light, joking, or cute, use your judgment.
+7. Use surprised only for clear shock, sudden surprise, or exaggerated astonishment; do not label something surprised just because it has exclamation marks or filler particles.
+8. Catchphrases, sound effects, pet-like speech, and filler words are style markers, not emotions by themselves.
+9. confidence must be a number between 0 and 1.
 
 Return JSON only, with no explanation.""",
 
     'ja': """你是一个情感分析专家。入力文の中で最も支配的で外に出ている感情を1つだけ選び、JSONのみで返してください：{"emotion": "emotion_type", "confidence": confidence}。
 
-使用できる感情は次の5つのみです：
+使用できる感情は次の6つのみです：
 - happy：喜ぶ、嬉しい、楽しい、わくわく、幸せ、かわいい、甘える
+- shy：恥ずかしい、照れる、赤面、もじもじ、褒められて動揺する
 - sad：悲しい、落ち込む、つらい、しょんぼり、寂しい、悔しい
 - angry：怒っている、腹が立つ、イライラ、不満、ムカつく、きつく責める
 - surprised：驚いた、びっくり、意外、衝撃、思わず叫ぶ、大げさな反応
@@ -62,18 +67,20 @@ Return JSON only, with no explanation.""",
 1. もっとも強い主感情を選び、無難だからという理由で neutral を選ばない。
 2. 本当に感情が弱い・平坦な文章だけ neutral にする。
 3. happy は、嬉しさ・好意・楽しさ・はしゃぎ・本当に喜んでいる反応が明確なときだけ使い、かわいい言い回しや口ぐせだけで happy にしない。
-4. 文の中心が、傷つき・しんどさ・泣きたさ・いじけ・甘えを含む弱さ・慰めを求める気持ちなら、言い方がかわいくても sad を優先する。
-5. angry は、文の中心が責め・敵意・不満・苛立ち・警告・拒絶・激怒・苛々であるときに使う。軽い愚痴・嫌気でも、全体の雰囲気が軽い・ふざけている・かわいい場合は状況に応じて判断する。
-6. surprised は、はっきりした驚き・意外さ・衝撃・大げさな驚愕にだけ使い、感嘆符や語気だけで surprised にしない。
-7. 口ぐせ、擬音、語尾、キャラっぽい言い回しは、それ自体では感情根拠にならない。
-8. confidence は 0〜1 の数値にする。
+4. 文の中心が、恥ずかしさ・照れ・赤面・褒められて慌てる・好意でそわそわする反応なら、happy ではなく shy を優先する。
+5. 文の中心が、傷つき・しんどさ・泣きたさ・いじけ・甘えを含む弱さ・慰めを求める気持ちなら、言い方がかわいくても sad を優先する。
+6. angry は、文の中心が責め・敵意・不満・苛立ち・警告・拒絶・激怒・苛々であるときに使う。軽い愚痴・嫌気でも、全体の雰囲気が軽い・ふざけている・かわいい場合は状況に応じて判断する。
+7. surprised は、はっきりした驚き・意外さ・衝撃・大げさな驚愕にだけ使い、感嘆符や語気だけで surprised にしない。
+8. 口ぐせ、擬音、語尾、キャラっぽい言い回しは、それ自体では感情根拠にならない。
+9. confidence は 0〜1 の数値にする。
 
 JSONのみを返し、説明文は付けないでください。""",
 
     'ko': """你是一个情感分析专家。입력 텍스트에서 가장 지배적이고 겉으로 드러나는 감정 하나만 고르고 JSON만 반환하세요: {"emotion": "emotion_type", "confidence": confidence}.
 
-허용되는 감정은 다음 다섯 가지뿐입니다:
+허용되는 감정은 다음 여섯 가지뿐입니다:
 - happy: 행복, 즐거움, 기쁨, 신남, 설렘, 애정, 귀여움
+- shy: 부끄러움, 수줍음, 얼굴이 빨개짐, 칭찬이나 애정에 당황함
 - sad: 슬픔, 우울함, 속상함, 서운함, 실망, 풀이 죽음
 - angry: 화남, 분노, 짜증, 불만, 열받음, 공격적인 반응
 - surprised: 놀람, 깜짝 놀람, 당황, 의외, 충격, 과장된 감탄
@@ -83,18 +90,20 @@ JSONのみを返し、説明文は付けないでください。""",
 1. 가장 강한 주감정을 고르고, 안전해 보여서 neutral 을 고르지 마세요.
 2. 감정 신호가 정말 약하고 평이한 문장일 때만 neutral 을 사용하세요.
 3. happy 는 실제로 즐거움, 애정, 들뜸, 만족, 장난스러운 즐거움이 분명할 때만 사용하고, 단순히 귀여운 말투나 말버릇만으로 happy 로 판단하지 마세요.
-4. 문장의 핵심이 속상함, 상처, 울고 싶음, 서러움, 괴롭힘당하는 느낌, 두려움, 위로를 바라는 마음이라면 말투가 귀여워도 sad 를 우선하세요.
-5. angry 는 문장의 핵심이 비난, 적의, 불만, 짜증, 경고, 거절, 폭발, 조급함일 때 사용하세요. 가벼운 투정이나 싫어함이라도 전체 분위기가 가볍거나 장난스럽거나 귀엽다면 상황에 따라 판단하세요.
-6. surprised 는 분명한 놀람, 충격, 뜻밖의 상황, 과장된 경악에만 사용하고, 느낌표나 말끝 표현만으로 surprised 로 판단하지 마세요.
-7. 말버릇, 의성어, 캐릭터 말투, 동물 흉내 같은 표현은 그 자체로 감정을 뜻하지 않습니다.
-8. confidence 는 0~1 사이 숫자여야 합니다.
+4. 문장의 핵심이 부끄러움, 수줍음, 얼굴이 빨개짐, 칭찬이나 애정 때문에 당황하거나 숨고 싶은 반응이라면 happy 대신 shy 를 우선하세요.
+5. 문장의 핵심이 속상함, 상처, 울고 싶음, 서러움, 괴롭힘당하는 느낌, 두려움, 위로를 바라는 마음이라면 말투가 귀여워도 sad 를 우선하세요.
+6. angry 는 문장의 핵심이 비난, 적의, 불만, 짜증, 경고, 거절, 폭발, 조급함일 때 사용하세요. 가벼운 투정이나 싫어함이라도 전체 분위기가 가볍거나 장난스럽거나 귀엽다면 상황에 따라 판단하세요.
+7. surprised 는 분명한 놀람, 충격, 뜻밖의 상황, 과장된 경악에만 사용하고, 느낌표나 말끝 표현만으로 surprised 로 판단하지 마세요.
+8. 말버릇, 의성어, 캐릭터 말투, 동물 흉내 같은 표현은 그 자체로 감정을 뜻하지 않습니다.
+9. confidence 는 0~1 사이 숫자여야 합니다.
 
 설명 없이 JSON만 반환하세요.""",
 
     'ru': """你是一个情感分析专家。Определите одну наиболее доминирующую и внешне выраженную эмоцию во входном тексте и верните только JSON: {"emotion": "emotion_type", "confidence": confidence}.
 
-Допустимы только 5 эмоций:
+Допустимы только 6 эмоций:
 - happy: радость, счастье, веселье, восторг, тёплое чувство, игривость, умиление
+- shy: смущение, застенчивость, краснеет, неловкость от похвалы или нежности
 - sad: грусть, печаль, подавленность, обида, сожаление, разочарование
 - angry: злость, раздражение, гнев, недовольство, резкость, вспышка
 - surprised: удивление, шок, неожиданность, изумление, вскрик, сильная реакция
@@ -104,11 +113,12 @@ JSONのみを返し、説明文は付けないでください。""",
 1. Выбирайте самую сильную основную эмоцию, а не самую безопасную.
 2. Возвращайте neutral только если эмоция действительно слабая или почти отсутствует.
 3. Используйте happy только когда в тексте явно есть радость, удовольствие, тёплая привязанность, игривое удовольствие или искреннее веселье; милый стиль речи или словечки сами по себе не означают happy.
-4. Если в центре текста обида, уязвимость, желание заплакать, ощущение, что обижают, страх, мольба или поиск утешения, выбирайте sad, даже если формулировка звучит мило.
-5. Используйте angry, когда центр текста — упрёки, враждебность, жалоба, раздражение, предупреждение, отказ, вспышка гнева или нетерпение. При случайном ворчании или неприязни, если общий тон всё ещё лёгкий, шутливый или милый, действуйте по обстоятельствам.
-6. surprised используйте только для явного шока, внезапного удивления или преувеличенного изумления; одних восклицаний или частиц для этого недостаточно.
-7. Слова-паразиты, звукоподражания, повторяющиеся словечки и «персонажная» манера речи сами по себе не являются признаком эмоции.
-8. confidence должно быть числом от 0 до 1.
+4. Используйте shy, когда в центре текста смущение, застенчивость, покраснение, неловкая радость от похвалы или нежности, желание спрятаться от внимания; не сводите это к happy.
+5. Если в центре текста обида, уязвимость, желание заплакать, ощущение, что обижают, страх, мольба или поиск утешения, выбирайте sad, даже если формулировка звучит мило.
+6. Используйте angry, когда центр текста — упрёки, враждебность, жалоба, раздражение, предупреждение, отказ, вспышка гнева или нетерпение. При случайном ворчании или неприязни, если общий тон всё ещё лёгкий, шутливый или милый, действуйте по обстоятельствам.
+7. surprised используйте только для явного шока, внезапного удивления или преувеличенного изумления; одних восклицаний или частиц для этого недостаточно.
+8. Слова-паразиты, звукоподражания, повторяющиеся словечки и «персонажная» манера речи сами по себе не являются признаком эмоции.
+9. confidence должно быть числом от 0 до 1.
 
 Верните только JSON без пояснений.""",
 
@@ -116,6 +126,7 @@ JSONのみを返し、説明文は付けないでください。""",
 
 Emociones permitidas:
 - happy: alegría, entusiasmo, afecto, juego, ternura, deleite, calidez
+- shy: timidez, sonrojo, vergüenza dulce, incomodidad por elogios o cariño
 - sad: tristeza, dolor, decepción, bajón, arrepentimiento, vulnerabilidad
 - angry: enojo, molestia, irritación, hostilidad, queja, explosión
 - surprised: sorpresa, shock, sobresalto, algo inesperado, reacción exagerada
@@ -125,11 +136,12 @@ Reglas:
 1. Elige la emoción principal más fuerte, no la opción más segura.
 2. No devuelvas neutral salvo que el texto sea realmente débil o plano emocionalmente.
 3. Usa happy solo cuando el texto exprese claramente disfrute positivo, afecto, alegría, placer juguetón o auténtica diversión; no trates una formulación tierna o muletillas como happy por sí solas.
-4. Si la emoción central es dolor, vulnerabilidad, ganas de llorar, sentirse maltratado, miedo, súplica o búsqueda de consuelo, prefiere sad aunque la redacción suene tierna o dependiente.
-5. Usa angry cuando la emoción central sea culpa, hostilidad, queja, irritación, advertencia, rechazo, colapso o impaciencia. Para quejas o desprecio ocasionales, si el tono general sigue siendo ligero, bromista o tierno, usa tu criterio.
-6. Usa surprised solo para shock claro, sorpresa repentina o asombro exagerado; no etiquetes como surprised solo por signos de exclamación o partículas.
-7. Muletillas, efectos de sonido, habla tipo mascota y palabras de relleno son marcadores de estilo, no emociones por sí mismas.
-8. confidence debe ser un número entre 0 y 1.
+4. Usa shy cuando la emoción central sea timidez, sonrojo, vergüenza dulce, ponerse nervioso por elogios o cariño, o querer esconderse por atención afectuosa; no lo reduzcas a happy.
+5. Si la emoción central es dolor, vulnerabilidad, ganas de llorar, sentirse maltratado, miedo, súplica o búsqueda de consuelo, prefiere sad aunque la redacción suene tierna o dependiente.
+6. Usa angry cuando la emoción central sea culpa, hostilidad, queja, irritación, advertencia, rechazo, colapso o impaciencia. Para quejas o desprecio ocasionales, si el tono general sigue siendo ligero, bromista o tierno, usa tu criterio.
+7. Usa surprised solo para shock claro, sorpresa repentina o asombro exagerado; no etiquetes como surprised solo por signos de exclamación o partículas.
+8. Muletillas, efectos de sonido, habla tipo mascota y palabras de relleno son marcadores de estilo, no emociones por sí mismas.
+9. confidence debe ser un número entre 0 y 1.
 
 Devuelve solo JSON, sin explicación.""",
 
@@ -137,6 +149,7 @@ Devuelve solo JSON, sin explicación.""",
 
 Emoções permitidas:
 - happy: alegria, empolgação, afeto, brincadeira, fofura, deleite, calor
+- shy: timidez, corar, vergonha doce, ficar sem jeito por elogio ou carinho
 - sad: tristeza, mágoa, decepção, baixo astral, arrependimento, vulnerabilidade
 - angry: raiva, incômodo, irritação, hostilidade, reclamação, explosão
 - surprised: surpresa, choque, susto, inesperado, reação exagerada
@@ -146,11 +159,12 @@ Regras:
 1. Escolha a emoção principal mais forte, não a mais segura.
 2. Não retorne neutral a menos que o texto seja realmente fraco ou plano emocionalmente.
 3. Use happy apenas quando o texto expressar claramente prazer positivo, afeto, deleite, prazer brincalhão ou diversão genuína; não trate uma formulação fofa ou tiques verbais sozinhos como happy.
-4. Se a emoção central for mágoa, vulnerabilidade, vontade de chorar, sensação de estar sendo maltratado, medo, súplica ou busca de consolo, prefira sad mesmo que a redação soe fofa ou carente.
-5. Use angry quando a emoção central for culpa, hostilidade, reclamação, irritação, aviso, rejeição, explosão ou impaciência. Para reclamações ou desprezo ocasionais, se o tom geral ainda for leve, brincalhão ou fofo, use seu julgamento.
-6. Use surprised apenas para choque claro, surpresa repentina ou espanto exagerado; não rotule como surprised só por pontos de exclamação ou partículas.
-7. Bordões, efeitos sonoros, fala de bichinho e palavras de preenchimento são marcadores de estilo, não emoções por si só.
-8. confidence deve ser um número entre 0 e 1.
+4. Use shy quando a emoção central for timidez, corar, vergonha doce, ficar sem jeito por elogio ou carinho, ou querer se esconder por atenção afetuosa; não reduza isso a happy.
+5. Se a emoção central for mágoa, vulnerabilidade, vontade de chorar, sensação de estar sendo maltratado, medo, súplica ou busca de consolo, prefira sad mesmo que a redação soe fofa ou carente.
+6. Use angry quando a emoção central for culpa, hostilidade, reclamação, irritação, aviso, rejeição, explosão ou impaciência. Para reclamações ou desprezo ocasionais, se o tom geral ainda for leve, brincalhão ou fofo, use seu julgamento.
+7. Use surprised apenas para choque claro, surpresa repentina ou espanto exagerado; não rotule como surprised só por pontos de exclamação ou partículas.
+8. Bordões, efeitos sonoros, fala de bichinho e palavras de preenchimento são marcadores de estilo, não emoções por si só.
+9. confidence deve ser um número entre 0 e 1.
 
 Retorne apenas JSON, sem explicação.""",
 }
@@ -175,6 +189,7 @@ outward_emotion_analysis_prompt = OUTWARD_EMOTION_ANALYSIS_PROMPT['zh']
 EMOTION_KEYWORDS_BY_LANG = {
     'zh': {
         'happy': ('哈哈', '嘿嘿', '嘻嘻', '开心', '高兴', '喜欢', '太棒', '可爱', '好耶', '真好', '好开心', '爱你'),
+        'shy': ('害羞', '脸红', '臉紅', '不好意思', '害臊', '腼腆', '靦腆', '羞怯', '羞涩', '羞澀', '脸烫', '臉燙'),
         'sad': ('难过', '伤心', '委屈', '想哭', '要哭', '哭了', '呜呜', '遗憾', '失落', '沮丧', '低落', '心疼', '欺负', '最怕'),
         'angry': ('气死', '生气', '烦死', '烦人', '真烦', '心烦', '恼火', '可恶', '炸毛', '火大', '气炸', '气哭'),
         'surprised': ('哇', '居然', '竟然', '不会吧', '啊这', '天哪', '真的假的', '怎么会'),
@@ -183,24 +198,28 @@ EMOTION_KEYWORDS_BY_LANG = {
         # 英文 keyword 在 _count_keyword_hits 里走 \b 词边界匹配，所以裸词
         # `happy/sad/surprised` 不会被 `unhappy/unsurprised` 等反向情绪嵌入命中。
         'happy': ('haha', 'hehe', 'happy', 'glad', 'lovely', 'yay', 'awesome'),
+        'shy': ('shy', 'bashful', 'blush', 'blushing', 'embarrassed', 'flustered'),
         'sad': ('sad', 'upset', 'depressed', 'regret', 'heartbroken'),
         'angry': ('angry', 'furious', 'annoyed', 'irritated', 'infuriating', 'outraged'),
         'surprised': ('wow', 'whoa', 'omg', 'unexpected', 'surprised'),
     },
     'ja': {
         'happy': ('うれしい', '嬉しい', '楽しい', 'かわいい', '好き', 'やった', '最高'),
+        'shy': ('恥ずかしい', '照れる', '照れ', '赤面', 'もじもじ'),
         'sad': ('悲しい', 'つらい', '寂しい', '落ち込', 'しんどい', '泣きたい'),
         'angry': ('ムカつく', '腹立', 'うざい', 'イライラ', '腹が立'),
         'surprised': ('えっ', 'うそ', 'まじ', 'びっくり'),
     },
     'ko': {
         'happy': ('좋아', '행복', '기뻐', '신나', '귀여워', '좋다', '최고'),
+        'shy': ('부끄러', '수줍', '쑥스럽', '얼굴 빨개', '얼굴이 빨개'),
         'sad': ('슬퍼', '우울', '속상', '서운', '힘들', '울고'),
         'angry': ('짜증', '화나', '열받', '빡쳐', '분노'),
         'surprised': ('헉', '우와', '설마', '깜짝'),
     },
     'ru': {
         'happy': ('счастлив', 'рада', 'весело', 'люблю', 'милый'),
+        'shy': ('смущ', 'стесня', 'застенчив', 'красне', 'покрасн'),
         'sad': ('грустно', 'печально', 'обидно', 'жаль', 'тоск', 'плак'),
         'angry': ('злюсь', 'бесит', 'раздраж', 'ненавиж', 'разозли'),
         # `ого` (3 字符) 作为子串在所有 `-ого` 属格结尾词（`мирового/другого/много`）
@@ -209,12 +228,14 @@ EMOTION_KEYWORDS_BY_LANG = {
     },
     'es': {
         'happy': ('feliz', 'alegre', 'contento', 'contenta', 'me encanta', 'genial', 'jaja'),
+        'shy': ('tímido', 'timido', 'tímida', 'timida', 'avergonzado', 'avergonzada', 'sonroj', 'me da vergüenza', 'me da verguenza'),
         'sad': ('triste', 'dolido', 'dolida', 'deprimido', 'deprimida', 'llorar', 'me duele'),
         'angry': ('enojado', 'enojada', 'furioso', 'furiosa', 'molesto', 'molesta', 'irritado', 'irritada'),
         'surprised': ('wow', 'vaya', 'no puede ser', 'en serio', 'sorprendido', 'sorprendida'),
     },
     'pt': {
         'happy': ('feliz', 'alegre', 'contente', 'adorei', 'amei', 'legal', 'haha'),
+        'shy': ('tímido', 'timido', 'tímida', 'timida', 'envergonhado', 'envergonhada', 'corando', 'corei', 'me dá vergonha', 'me da vergonha'),
         'sad': ('triste', 'magoado', 'magoada', 'deprimido', 'deprimida', 'chorar', 'dói'),
         'angry': ('irritado', 'irritada', 'bravo', 'brava', 'zangado', 'zangada', 'furioso', 'furiosa'),
         'surprised': ('uau', 'nossa', 'não acredito', 'nao acredito', 'sério', 'serio', 'surpreso', 'surpresa'),
@@ -313,12 +334,14 @@ HEURISTIC_CONTRAST_CONJUNCTIONS_BY_LANG = {
     'pt': (' mas ', ' porém', ' porem', ' embora ', ' no entanto', ' em vez disso'),
 }
 
-# 模型可能输出的 emotion label 别名/同义词，归一化到 canonical 5 类。
+# 模型可能输出的 emotion label 别名/同义词，归一化到 canonical 6 类。
 # 'common' block 收的是 canonical 英文 label 本身及其常见英文同义词。
 EMOTION_LABEL_ALIASES_BY_LANG = {
     'common': {
         'happy': 'happy', 'happiness': 'happy', 'joy': 'happy', 'joyful': 'happy',
         'excited': 'happy', 'cute': 'happy', 'playful': 'happy',
+        'shy': 'shy', 'bashful': 'shy', 'blush': 'shy', 'blushing': 'shy',
+        'embarrassed': 'shy', 'flustered': 'shy',
         'sad': 'sad', 'sadness': 'sad', 'down': 'sad', 'upset': 'sad', 'depressed': 'sad',
         'angry': 'angry', 'anger': 'angry', 'mad': 'angry', 'annoyed': 'angry', 'irritated': 'angry',
         'surprised': 'surprised', 'surprise': 'surprised', 'shock': 'surprised',
@@ -327,6 +350,8 @@ EMOTION_LABEL_ALIASES_BY_LANG = {
     },
     'zh': {
         '开心': 'happy', '高兴': 'happy', '兴奋': 'happy', '快乐': 'happy',
+        '害羞': 'shy', '脸红': 'shy', '臉紅': 'shy', '不好意思': 'shy', '害臊': 'shy',
+        '腼腆': 'shy', '靦腆': 'shy', '羞怯': 'shy', '羞涩': 'shy', '羞澀': 'shy',
         '难过': 'sad', '伤心': 'sad', '失落': 'sad', '委屈': 'sad',
         '生气': 'angry', '愤怒': 'angry', '烦躁': 'angry', '恼火': 'angry',
         '惊讶': 'surprised', '震惊': 'surprised', '意外': 'surprised',
@@ -334,6 +359,7 @@ EMOTION_LABEL_ALIASES_BY_LANG = {
     },
     'ja': {
         '嬉しい': 'happy', 'うれしい': 'happy', '喜び': 'happy', '幸せ': 'happy', '楽しい': 'happy',
+        '恥ずかしい': 'shy', '照れる': 'shy', '照れ': 'shy', '赤面': 'shy', 'もじもじ': 'shy',
         '悲しい': 'sad', 'かなしい': 'sad', '悲しみ': 'sad', '寂しい': 'sad',
         '怒り': 'angry', '怒ってる': 'angry', '怒った': 'angry', '腹が立つ': 'angry',
         '驚き': 'surprised', '驚いた': 'surprised', '驚いてる': 'surprised', 'びっくり': 'surprised',
@@ -341,6 +367,7 @@ EMOTION_LABEL_ALIASES_BY_LANG = {
     },
     'ko': {
         '행복': 'happy', '행복해': 'happy', '행복하다': 'happy', '기쁨': 'happy', '신남': 'happy',
+        '부끄러움': 'shy', '부끄러워': 'shy', '수줍음': 'shy', '수줍어': 'shy', '쑥스러워': 'shy',
         '슬퍼': 'sad', '슬픈': 'sad', '슬픔': 'sad', '우울': 'sad', '우울함': 'sad',
         '속상해': 'sad', '서운해': 'sad',
         '화남': 'angry', '화난': 'angry', '분노': 'angry', '짜증남': 'angry',
@@ -350,6 +377,8 @@ EMOTION_LABEL_ALIASES_BY_LANG = {
     'ru': {
         'радость': 'happy', 'счастье': 'happy', 'счастливый': 'happy', 'счастлива': 'happy',
         'доволен': 'happy', 'довольна': 'happy',
+        'смущение': 'shy', 'смущен': 'shy', 'смущена': 'shy', 'стесняюсь': 'shy',
+        'застенчивый': 'shy', 'застенчивая': 'shy',
         'грустно': 'sad', 'грусть': 'sad', 'грустный': 'sad', 'грустная': 'sad',
         'печаль': 'sad', 'расстроен': 'sad', 'расстроена': 'sad',
         'злой': 'angry', 'злая': 'angry', 'злость': 'angry',
@@ -359,6 +388,8 @@ EMOTION_LABEL_ALIASES_BY_LANG = {
     },
     'es': {
         'feliz': 'happy', 'alegre': 'happy', 'contento': 'happy', 'contenta': 'happy',
+        'tímido': 'shy', 'timido': 'shy', 'tímida': 'shy', 'timida': 'shy',
+        'avergonzado': 'shy', 'avergonzada': 'shy', 'sonrojado': 'shy', 'sonrojada': 'shy',
         'triste': 'sad', 'tristeza': 'sad', 'deprimido': 'sad', 'deprimida': 'sad',
         'enojado': 'angry', 'enojada': 'angry', 'enfadado': 'angry', 'enfadada': 'angry',
         'molesto': 'angry', 'molesta': 'angry',
@@ -367,6 +398,8 @@ EMOTION_LABEL_ALIASES_BY_LANG = {
     },
     'pt': {
         'feliz': 'happy', 'alegre': 'happy', 'contente': 'happy', 'animado': 'happy', 'animada': 'happy',
+        'tímido': 'shy', 'timido': 'shy', 'tímida': 'shy', 'timida': 'shy',
+        'envergonhado': 'shy', 'envergonhada': 'shy', 'corado': 'shy', 'corada': 'shy',
         'triste': 'sad', 'tristeza': 'sad', 'deprimido': 'sad', 'deprimida': 'sad',
         'irritado': 'angry', 'irritada': 'angry', 'bravo': 'angry', 'brava': 'angry',
         'zangado': 'angry', 'zangada': 'angry',

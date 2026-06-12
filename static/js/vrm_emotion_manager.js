@@ -18,7 +18,7 @@
     const previewButtons = document.getElementById('preview-buttons');
 
     // 状态变量
-    const emotions = ['neutral', 'happy', 'relaxed', 'sad', 'angry', 'surprised'];
+    const emotions = ['neutral', 'happy', 'shy', 'relaxed', 'sad', 'angry', 'surprised'];
     let currentModelInfo = null;
     let availableExpressions = [];
     let currentSelectionId = 0;
@@ -84,6 +84,7 @@
     const defaultMoodMap = {
         'neutral': ['neutral'],
         'happy': ['happy', 'joy', 'fun', 'smile', 'joy_01'],
+        'shy': ['shy', 'blush', 'bashful', 'embarrassed'],
         'relaxed': ['relaxed', 'joy', 'fun', 'content'],
         'sad': ['sad', 'sorrow', 'grief'],
         'angry': ['angry', 'anger'],
@@ -320,6 +321,7 @@
             // 如果API不可用，使用默认表情列表
             availableExpressions = [
                 'neutral', 'happy', 'joy', 'fun', 'relaxed',
+                'shy', 'blush', 'bashful', 'embarrassed',
                 'sad', 'angry', 'surprised', 'blink', 'blink_l', 'blink_r'
             ];
             populateSelects();

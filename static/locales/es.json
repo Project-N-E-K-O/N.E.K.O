@@ -1461,6 +1461,7 @@
             "title": "Gerente de Mapeo de Emociones",
             "description": "Configurar movimientos y expresiones para diferentes emociones.",
             "happy": "Feliz",
+            "shy": "Tímido",
             "sad": "Triste",
             "angry": "Enojado",
             "neutral": "Neutral",
@@ -3409,6 +3410,7 @@
         "configReset": "La configuración ha sido restablecida",
         "emotions": {
             "happy": "Feliz",
+            "shy": "Tímido",
             "sad": "Triste",
             "angry": "Enojado",
             "neutral": "Neutral",
@@ -3448,6 +3450,7 @@
         "emotions": {
             "neutral": "Neutral",
             "happy": "Feliz",
+            "shy": "Tímido",
             "relaxed": "Relajado",
             "sad": "Triste",
             "angry": "Enojado",
@@ -3487,6 +3490,7 @@
         "emotions": {
             "neutral": "Neutral",
             "happy": "Feliz",
+            "shy": "Tímido",
             "relaxed": "Relajado",
             "sad": "Triste",
             "angry": "Enojado",

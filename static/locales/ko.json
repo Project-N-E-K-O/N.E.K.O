@@ -1461,6 +1461,7 @@
             "title": "감정 매핑 관리자",
             "description": "다양한 감정에 대한 동작과 표현 구성",
             "happy": "행복하다",
+            "shy": "부끄러움",
             "sad": "슬프다",
             "angry": "화남",
             "neutral": "중립",
@@ -3409,6 +3410,7 @@
         "configReset": "설정이 초기화되었습니다",
         "emotions": {
             "happy": "행복 (Happy)",
+            "shy": "부끄러움 (Shy)",
             "sad": "슬픔 (Sad)",
             "angry": "화남 (Angry)",
             "neutral": "평온 (Neutral)",
@@ -3448,6 +3450,7 @@
         "emotions": {
             "neutral": "평온 (Neutral)",
             "happy": "행복 (Happy)",
+            "shy": "부끄러움 (Shy)",
             "relaxed": "편안함 (Relaxed)",
             "sad": "슬픔 (Sad)",
             "angry": "화남 (Angry)",
@@ -3487,6 +3490,7 @@
         "emotions": {
             "neutral": "평온 (Neutral)",
             "happy": "행복 (Happy)",
+            "shy": "부끄러움 (Shy)",
             "relaxed": "편안함 (Relaxed)",
             "sad": "슬픔 (Sad)",
             "angry": "화남 (Angry)",

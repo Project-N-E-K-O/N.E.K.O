@@ -1461,6 +1461,7 @@
             "title": "情感映射管理",
             "description": "配置不同情緒下的動作和表情",
             "happy": "開心 (Happy)",
+            "shy": "害羞 (Shy)",
             "sad": "悲傷 (Sad)",
             "angry": "生氣 (Angry)",
             "neutral": "平靜 (Neutral)",
@@ -3409,6 +3410,7 @@
         "configReset": "已重置配置",
         "emotions": {
             "happy": "開心 (Happy)",
+            "shy": "害羞 (Shy)",
             "sad": "悲傷 (Sad)",
             "angry": "生氣 (Angry)",
             "neutral": "平靜 (Neutral)",
@@ -3448,6 +3450,7 @@
         "emotions": {
             "neutral": "平靜 (Neutral)",
             "happy": "開心 (Happy)",
+            "shy": "害羞 (Shy)",
             "relaxed": "放鬆 (Relaxed)",
             "sad": "悲傷 (Sad)",
             "angry": "生氣 (Angry)",
@@ -3487,6 +3490,7 @@
         "emotions": {
             "neutral": "平靜 (Neutral)",
             "happy": "開心 (Happy)",
+            "shy": "害羞 (Shy)",
             "relaxed": "放鬆 (Relaxed)",
             "sad": "悲傷 (Sad)",
             "angry": "生氣 (Angry)",

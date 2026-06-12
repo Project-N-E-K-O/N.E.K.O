@@ -769,6 +769,29 @@
                 </div>
             </div>
 
+            <!-- Shy -->
+            <div class="emotion-section">
+                <div class="emotion-header" data-i18n="emotionManager.emotions.shy">害羞 (Shy)</div>
+                <div class="select-group">
+                    <label data-i18n="emotionManager.motion">动作</label>
+                    <div class="custom-multiselect emotion-motion-select" data-emotion="shy">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="selected-text" data-i18n="emotionManager.selectMotion">选择动作</span>
+                        </div>
+                        <div class="multiselect-options"></div>
+                    </div>
+                </div>
+                <div class="select-group">
+                    <label data-i18n="emotionManager.expression">表情</label>
+                    <div class="custom-multiselect emotion-expression-select" data-emotion="shy">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="selected-text" data-i18n="emotionManager.selectExpression">选择表情</span>
+                        </div>
+                        <div class="multiselect-options"></div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Idle -->
             <div class="emotion-section">
                 <div class="emotion-header" data-i18n="emotionManager.emotions.idle">待机 (Idle)</div>
@@ -813,7 +836,7 @@
         const resetBtn = document.getElementById('reset-btn');
         const statusMessage = document.getElementById('status-message');
 
-        const emotions = ['happy', 'sad', 'angry', 'neutral', 'surprised', 'Idle'];
+        const emotions = ['happy', 'shy', 'sad', 'angry', 'neutral', 'surprised', 'Idle'];
         let currentModelInfo = null;
         let availableMotions = [];
         let availableExpressions = [];

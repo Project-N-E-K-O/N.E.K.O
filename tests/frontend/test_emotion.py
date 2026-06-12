@@ -14,12 +14,12 @@ def test_live2d_emotion_manager_page_load(mock_page: Page, running_server: str):
     expect(model_select).to_be_attached(timeout=5000)
     
     # The emotion sections should be present (hidden until a model is selected)
-    # There are 6 emotions: happy, sad, angry, neutral, surprised, Idle
+    # There are 7 emotions: happy, shy, sad, angry, neutral, surprised, Idle
     emotion_config = mock_page.locator("#emotion-config")
     expect(emotion_config).to_be_attached()
     
     # Verify emotion sections exist for each emotion type
-    for emotion in ["happy", "sad", "angry", "neutral", "surprised", "Idle"]:
+    for emotion in ["happy", "shy", "sad", "angry", "neutral", "surprised", "Idle"]:
         motion_select = mock_page.locator(f".emotion-motion-select[data-emotion='{emotion}']")
         expect(motion_select).to_be_attached()
         expression_select = mock_page.locator(f".emotion-expression-select[data-emotion='{emotion}']")

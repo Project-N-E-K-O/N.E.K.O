@@ -19,7 +19,7 @@
     const previewButtons = document.getElementById('preview-buttons');
 
     // 状态变量
-    const emotions = ['neutral', 'happy', 'relaxed', 'sad', 'angry', 'surprised', 'fear'];
+    const emotions = ['neutral', 'happy', 'shy', 'relaxed', 'sad', 'angry', 'surprised', 'fear'];
     let currentModelInfo = null;
     let availableMorphs = [];
     let currentSelectionId = 0;
@@ -85,6 +85,7 @@
     const defaultMoodMap = {
         'neutral': ['default', 'ニュートラル'],
         'happy': ['笑い', 'にやり', 'にこり', 'smile', 'happy', 'joy', 'ワ'],
+        'shy': ['照れ', '照れ顔', '赤面', '恥ずかしい', 'shy', 'blush'],
         'sad': ['悲しい', '泣き', 'sad', 'sorrow', 'しょんぼり'],
         'angry': ['怒り', 'angry', 'anger', 'むっ'],
         'surprised': ['驚き', 'びっくり', 'surprised', 'shock', 'おっ'],
@@ -282,6 +283,7 @@
             // 表情
             'default', 'ニュートラル',
             '笑い', 'にやり', 'にこり', 'smile', 'happy', 'joy', 'ワ',
+            '照れ', '照れ顔', '赤面', '恥ずかしい', 'shy', 'blush',
             '悲しい', '泣き', 'sad', 'sorrow', 'しょんぼり',
             '怒り', 'angry', 'anger', 'むっ',
             '驚き', 'びっくり', 'surprised', 'shock', 'おっ',

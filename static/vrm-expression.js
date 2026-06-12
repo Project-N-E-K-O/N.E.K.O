@@ -38,6 +38,8 @@ class VRMExpression {
             'neutral': ['neutral'],
             // 开心类：兼容 VRM1.0(happy), VRM0.0(joy, fun), 其他(smile, warau)
             'happy': ['happy', 'joy', 'fun', 'smile', 'joy_01'],
+            // 害羞类：优先匹配显式害羞/脸红表情，具体模型可在情感配置中覆盖
+            'shy': ['shy', 'blush', 'bashful', 'embarrassed'],
             // 放松类：
             'relaxed': ['relaxed', 'joy', 'fun', 'content'],
             // 惊讶类：
