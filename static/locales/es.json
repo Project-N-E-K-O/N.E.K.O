@@ -1003,7 +1003,8 @@
             "elevenlabs": "ElevenLabs (clonación de voz)",
             "claude": "Claude (antrópico)",
             "grok": "Grok (xAI)",
-            "openrouter": "OpenRouter (agregador de modelos)"
+            "openrouter": "OpenRouter (agregador de modelos)",
+            "vllm_omni": "vLLM-Omni (TTS)"
         },
         "coreApiAutoFillHint": "Clave autocompletada desde el Libro de claves API, o ingrésela directamente",
         "assistApiSelectLabel": "Ayudar al proveedor de API",

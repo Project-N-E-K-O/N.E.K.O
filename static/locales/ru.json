@@ -1003,7 +1003,8 @@
             "elevenlabs": "ElevenLabs (клонирование голоса)",
             "claude": "Claude (Anthropic)",
             "grok": "Grok (xAI)",
-            "openrouter": "OpenRouter (агрегатор моделей)"
+            "openrouter": "OpenRouter (агрегатор моделей)",
+            "vllm_omni": "vLLM-Omni (TTS)"
         },
         "coreApiAutoFillHint": "Ключ автоматически заполняется из справочника API, можно ввести вручную",
         "assistApiSelectLabel": "Провайдер вспомогательного API",
