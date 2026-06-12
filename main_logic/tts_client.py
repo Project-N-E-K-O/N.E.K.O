@@ -4292,11 +4292,18 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
             or 'default'
         vllm_key = (_raw_cfg_for_route.get('ttsModelApiKey') or '') \
             or (core_cfg.get('TTS_MODEL_API_KEY') or '') \
-            or None
+            or ''
+        # 修复 PR #1764 review 第三轮 #3（CodeRabbit Major）：跨 provider 凭证泄漏防护
+        # 若用户没为 vllm_omni 单独配置 key，必须返回空字符串而非 None，
+        # 否则 core.py 中 `api_key = api_key_override or tts_config['api_key']`
+        # 会 fallback 到默认 TTS provider（Qwen/Gemini/Step/OpenAI/Grok）的 key，
+        # 进而把别家 provider 的凭证 Bearer 发送到用户配置的 vLLM-Omni endpoint。
+        # 用空字符串 + core.py 中 provider_key == 'vllm_omni' 的特判共同保证：
+        # vllm_omni 显式无 key 时不允许通用 fallback，本地 vLLM 服务通常无需 Auth。
         logger.info(
             "[get_tts_worker] 用户选择 vllm_omni provider，绕过原生 TTS 路由 "
-            "(core_api_type=%s, has_custom_voice=%s)",
-            core_api_type, has_custom_voice,
+            "(core_api_type=%s, has_custom_voice=%s, key_present=%s)",
+            core_api_type, has_custom_voice, bool(vllm_key),
         )
         worker = partial(
             vllm_omni_tts_worker,
