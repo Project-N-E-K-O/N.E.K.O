@@ -799,8 +799,12 @@ def test_compact_geometry_snapshot_separates_base_surface_from_extra_islands():
     assert "return item && item.geometryRole === 'extraIsland';" in snapshot_block
     assert "var baseSurfaceNativeItems = surfaceItems.filter(function (item) {" in snapshot_block
     assert "item.geometryRole === 'baseAnchor' || item.geometryRole === 'baseHit'" in snapshot_block
-    assert "var surfaceRects = surfaceItems.map(function (item) { return item.visualRect || item.nativeRect; });" in snapshot_block
-    assert "var baseSurfaceRects = baseSurfaceItems.map(function (item) { return item.visualRect || item.nativeRect; });" in snapshot_block
+    assert "function getCompactGeometryItemBoundsRects(item)" in script
+    assert "if (item.visualRect) rects.push(item.visualRect);" in script
+    assert "if (item.nativeRect) rects.push(item.nativeRect);" in script
+    assert "var surfaceRects = surfaceItems.reduce(function (rects, item) {" in snapshot_block
+    assert "var baseSurfaceRects = baseSurfaceItems.reduce(function (rects, item) {" in snapshot_block
+    assert "return rects.concat(getCompactGeometryItemBoundsRects(item));" in snapshot_block
     assert "baseSurfaceItems: baseSurfaceItems" in snapshot_block
     assert "baseSurfaceRect: unionCompactRects(baseSurfaceRects)" in snapshot_block
     assert "baseSurfaceNativeRects: baseSurfaceNativeItems.map(function (item) { return item.nativeRect; }).filter(Boolean)" in snapshot_block
@@ -1417,7 +1421,9 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     )[0]
     assert "if (hitStyle && hitStyle.pointerEvents === 'none') return null;" in scrollbar_block
     assert "style.pointerEvents === 'none'" not in scrollbar_block
-    assert "data-compact-hit-region" not in scroll_jsx_block
+    assert "data-compact-hit-region={historyInteractive && !choiceLayerAbove ? 'true' : undefined}" in scroll_jsx_block
+    assert "data-compact-hit-region-id={historyInteractive && !choiceLayerAbove ? 'history:scroll' : undefined}" in scroll_jsx_block
+    assert "data-compact-hit-region-kind={historyInteractive && !choiceLayerAbove ? 'scroll' : undefined}" in scroll_jsx_block
     assert 'className="compact-export-history-scrollbar-hit"' in panel_source
     assert 'data-compact-scrollbar-hit="true"' in panel_source
     assert "hasPointerCapture?.(event.pointerId)" in panel_source

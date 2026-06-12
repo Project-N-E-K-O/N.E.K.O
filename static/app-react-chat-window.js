@@ -1577,6 +1577,14 @@
         return item;
     }
 
+    function getCompactGeometryItemBoundsRects(item) {
+        if (!item) return [];
+        var rects = [];
+        if (item.visualRect) rects.push(item.visualRect);
+        if (item.nativeRect) rects.push(item.nativeRect);
+        return rects;
+    }
+
     function collectCompactToolFanGeometryItems(element) {
         if (!element || element.getAttribute('data-compact-geometry-item') !== 'toolFan') return [];
         var parentRect = getCompactGeometryElementRect(element);
@@ -1806,8 +1814,12 @@
         var baseSurfaceNativeItems = surfaceItems.filter(function (item) {
             return item && (item.geometryRole === 'baseAnchor' || item.geometryRole === 'baseHit');
         });
-        var surfaceRects = surfaceItems.map(function (item) { return item.visualRect || item.nativeRect; });
-        var baseSurfaceRects = baseSurfaceItems.map(function (item) { return item.visualRect || item.nativeRect; });
+        var surfaceRects = surfaceItems.reduce(function (rects, item) {
+            return rects.concat(getCompactGeometryItemBoundsRects(item));
+        }, []);
+        var baseSurfaceRects = baseSurfaceItems.reduce(function (rects, item) {
+            return rects.concat(getCompactGeometryItemBoundsRects(item));
+        }, []);
         // compact 态不再渲染模型旁的悬浮最小化球，故不再上报其 hit/native 区域，
         // 避免 Electron 桌面壳为一个不可见的球保留点击区域（externalBall 仍走桌面外部球）。
         var ballRect = null;
