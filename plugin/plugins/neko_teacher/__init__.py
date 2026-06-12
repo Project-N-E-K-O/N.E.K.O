@@ -937,6 +937,8 @@ class NekoTeacherPlugin(NekoPluginBase):
     )
     async def import_vault_files(self, vault_name: str = "", files: list = None, **_):
         """把前端上传的 vault 文件写到本地临时目录，然后扫描返回树结构"""
+        self.logger.info("[import_vault_files] START vault_name={}, files_count={}",
+                        vault_name, len(files) if files else 0)
         if not vault_name:
             return Err(SdkError("vault_name 不能为空"))
         if not files or not isinstance(files, list):
@@ -945,9 +947,11 @@ class NekoTeacherPlugin(NekoPluginBase):
         # 安全清理 vault_name（防止路径穿越）
         safe_name = "".join(c for c in vault_name if c.isalnum() or c in "_-").strip() or "vault"
         vault_dir = self.config_dir / "vaults" / safe_name
+        self.logger.info("[import_vault_files] safe_name={}, vault_dir={}", safe_name, vault_dir)
         try:
             vault_dir.mkdir(parents=True, exist_ok=True)
         except Exception as e:
+            self.logger.error("[import_vault_files] mkdir failed: {}", e)
             return Err(SdkError(f"无法创建 vault 目录: {e}"))
 
         written = 0
@@ -984,12 +988,15 @@ class NekoTeacherPlugin(NekoPluginBase):
                 self.logger.warning("write vault file failed: {} - {}", f.get("relpath", ""), e)
                 skipped += 1
 
+        self.logger.info("[import_vault_files] DONE written={}, skipped={}", written, skipped)
         if written == 0:
             return Err(SdkError("没有成功写入任何 .md 文件"))
 
         tree = self._build_folder_tree(str(vault_dir))
         if "error" in tree:
+            self.logger.error("[import_vault_files] tree error: {}", tree["error"])
             return Err(SdkError(tree["error"]))
+        self.logger.info("[import_vault_files] SUCCESS file_count={}", tree.get("file_count", 0))
         return Ok({
             "path": str(vault_dir),
             "vault_name": safe_name,
