@@ -17,6 +17,7 @@ import json
 import os
 import random
 import re
+import shutil
 import socket
 import time
 from datetime import datetime, timezone
@@ -423,8 +424,16 @@ class MusicPusherPlugin(NekoPluginBase):
         return self.data_path(_STATE_FILE_NAME)
 
     @property
+    def _static_ui_dir(self) -> Path:
+        return self.data_path("static_ui")
+
+    @property
+    def _source_static_dir(self) -> Path:
+        return self.config_dir / "static"
+
+    @property
     def _upload_dir(self) -> Path:
-        return self.config_dir / "static" / _UPLOAD_SUBDIR
+        return self._static_ui_dir / _UPLOAD_SUBDIR
 
     @property
     def _upload_name_map_file(self) -> Path:
@@ -436,6 +445,67 @@ class MusicPusherPlugin(NekoPluginBase):
 
     def _build_ui_file_url(self, stored_filename: str) -> str:
         return f"/plugin/{self.plugin_id}/ui/{_UPLOAD_SUBDIR}/{stored_filename}"
+
+    def _copy_static_ui_assets(self) -> None:
+        source_dir = self._source_static_dir
+        target_dir = self._static_ui_dir
+        if not source_dir.is_dir():
+            return
+
+        for source_path in source_dir.rglob("*"):
+            rel_path = source_path.relative_to(source_dir)
+            if not rel_path.parts or rel_path.parts[0] == _UPLOAD_SUBDIR:
+                continue
+            target_path = target_dir / rel_path
+            if source_path.is_dir():
+                target_path.mkdir(parents=True, exist_ok=True)
+                continue
+            if not source_path.is_file():
+                continue
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            should_copy = True
+            if target_path.is_file():
+                try:
+                    src_stat = source_path.stat()
+                    dst_stat = target_path.stat()
+                    should_copy = (
+                        src_stat.st_size != dst_stat.st_size
+                        or int(src_stat.st_mtime) != int(dst_stat.st_mtime)
+                    )
+                except OSError:
+                    should_copy = True
+            if should_copy:
+                shutil.copy2(source_path, target_path)
+
+    def _migrate_legacy_uploads(self) -> None:
+        legacy_dir = self._source_static_dir / _UPLOAD_SUBDIR
+        target_dir = self._upload_dir
+        if not legacy_dir.is_dir():
+            return
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for source_path in legacy_dir.iterdir():
+            if not source_path.is_file() or source_path.suffix.lower() not in _ALLOWED_AUDIO_EXTENSIONS:
+                continue
+            target_path = target_dir / source_path.name
+            if not target_path.exists():
+                shutil.copy2(source_path, target_path)
+
+    def _register_writable_static_ui(self) -> bool:
+        self._copy_static_ui_assets()
+        self._upload_dir.mkdir(parents=True, exist_ok=True)
+        index_path = self._static_ui_dir / "index.html"
+        if not self._static_ui_dir.is_dir() or not index_path.is_file():
+            return self.register_static_ui("static")
+
+        self._static_ui_config = {
+            "enabled": True,
+            "directory": str(self._static_ui_dir),
+            "index_file": "index.html",
+            "cache_control": "public, max-age=3600",
+            "plugin_id": self.plugin_id,
+        }
+        self._notify_static_ui_registered(self._static_ui_config)
+        return True
 
     def _resolve_public_origin(self) -> str:
         candidates = (
@@ -1520,6 +1590,8 @@ class MusicPusherPlugin(NekoPluginBase):
             "track_title": "",
         }
 
+        self._copy_static_ui_assets()
+        self._migrate_legacy_uploads()
         self._upload_dir.mkdir(parents=True, exist_ok=True)
         self._state_file.parent.mkdir(parents=True, exist_ok=True)
         async with self._state_lock:
@@ -1532,7 +1604,7 @@ class MusicPusherPlugin(NekoPluginBase):
             self._save_lyrics_map_locked()
             self._save_state_locked()
         self._install_push_mapper()
-        self.register_static_ui("static")
+        self._register_writable_static_ui()
         self._scheduler_stop.clear()
         self._ensure_scheduler_task()
         return Ok("音乐推送插件已启动（含定时队列）")
@@ -2188,7 +2260,19 @@ class MusicPusherPlugin(NekoPluginBase):
             if str(task.get("status") or "") == "running":
                 return Err(SdkError("任务执行中，暂不允许编辑"))
 
+            trigger_changed = False
             if parsed_trigger is not None:
+                old_trigger: datetime | None = None
+                try:
+                    old_trigger = _parse_datetime_to_utc(str(task.get("trigger_at") or ""))
+                except Exception:
+                    old_trigger = None
+                trigger_changed = (
+                    old_trigger is None
+                    or abs((parsed_trigger - old_trigger).total_seconds()) >= 60
+                )
+                if trigger_changed and parsed_trigger <= _utc_now():
+                    return Err(SdkError("新的触发时间必须晚于当前时间"))
                 task["trigger_at"] = _iso(parsed_trigger)
 
             if name is not None:
@@ -2206,11 +2290,13 @@ class MusicPusherPlugin(NekoPluginBase):
                 if self._gc_tombstoned_uploads_locked():
                     self._save_upload_name_map_locked()
 
-            task["status"] = "pending"
-            task["finished_at"] = None
-            task["last_error"] = ""
+            should_reset_execution = trigger_changed or str(task.get("status") or "") == "pending"
+            if should_reset_execution:
+                task["status"] = "pending"
+                task["finished_at"] = None
+                task["last_error"] = ""
+                task["current_index"] = 0
             task["updated_at"] = _iso()
-            task["current_index"] = 0
             self._save_state_locked()
 
         self._ensure_scheduler_task()

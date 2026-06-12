@@ -1448,6 +1448,7 @@
         title: item.title || "未命名音乐",
         artist: item.artist || "未知",
         duration_sec: normalizeDuration(item.duration_sec),
+        lyric_text: String(item.lyric_text || ""),
       };
     }
 
@@ -2094,6 +2095,7 @@
         title: q.title,
         artist: q.artist,
         duration_sec: normalizeDuration(q.duration_sec),
+        lyric_text: String(q.lyric_text || ""),
       }));
 
       const payload = { trigger_at: triggerIso, name, duration_mode: mode, queue_items: queueItems };
