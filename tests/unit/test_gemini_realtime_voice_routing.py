@@ -6,6 +6,7 @@ import pytest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
+import main_logic.core as core_module
 import main_routers.characters_router as characters_router
 from main_logic.core import LLMSessionManager
 from utils.config_manager import ConfigManager
@@ -436,6 +437,83 @@ def test_custom_tts_config_requires_gptsovits_enabled():
         )
         is True
     )
+
+
+def test_explicit_vllm_tts_uses_external_tts_before_native_voice():
+    mgr = _make_mgr("Puck")
+    realtime_config = {"base_url": "https://generativelanguage.googleapis.com"}
+
+    assert (
+        LLMSessionManager._resolve_session_use_tts(
+            mgr,
+            "audio",
+            realtime_config,
+            {
+                "ENABLE_CUSTOM_API": True,
+                "ttsModelProvider": "vllm_omni",
+                "ttsVoiceId": "Puck",
+                "GPTSOVITS_ENABLED": False,
+            },
+        )
+        is True
+    )
+    assert (
+        LLMSessionManager._resolve_session_use_tts(
+            mgr,
+            "audio",
+            realtime_config,
+            {
+                "ENABLE_CUSTOM_API": False,
+                "ttsModelProvider": "vllm_omni",
+                "ttsVoiceId": "Puck",
+                "GPTSOVITS_ENABLED": False,
+            },
+        )
+        is False
+    )
+
+
+def test_vllm_runtime_key_tracks_global_fallback_voice(monkeypatch):
+    class _CM:
+        def __init__(self, voice_id):
+            self.voice_id = voice_id
+
+        def get_core_config(self):
+            return {
+                "ENABLE_CUSTOM_API": True,
+                "ttsModelProvider": "vllm_omni",
+                "ttsVoiceId": self.voice_id,
+                "DISABLE_TTS": False,
+            }
+
+        def get_model_api_config(self, model_type):
+            if model_type == "realtime":
+                return {"base_url": ""}
+            assert model_type == "tts_default"
+            return {
+                "base_url": "http://localhost:8091",
+                "model": "Qwen3-TTS",
+                "api_key": "fallback-key",
+            }
+
+        def voice_id_exists_in_any_storage(self, voice_id):
+            return False
+
+    monkeypatch.setattr(
+        core_module,
+        "get_tts_worker",
+        lambda **kwargs: (object(), "", "vllm_omni"),
+    )
+
+    mgr = _make_mgr("")
+    mgr._config_manager = _CM("voice-a")
+    key_a = LLMSessionManager._build_tts_runtime_key(mgr)
+    mgr._config_manager = _CM("voice-b")
+    key_b = LLMSessionManager._build_tts_runtime_key(mgr)
+
+    assert key_a != key_b
+    assert "voice-a" in key_a
+    assert "voice-b" in key_b
 
 
 @pytest.mark.asyncio

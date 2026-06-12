@@ -201,6 +201,7 @@ def test_get_tts_worker_routes_explicit_vllm_before_assist_mimo(monkeypatch):
                 "assistApi": "mimo",
                 "OPENROUTER_URL": "https://api.xiaomimimo.com/v1",
                 "TTS_PROVIDER": "",
+                "ENABLE_CUSTOM_API": True,
                 "GPTSOVITS_ENABLED": False,
             }
 
@@ -238,6 +239,42 @@ def test_get_tts_worker_routes_explicit_vllm_before_assist_mimo(monkeypatch):
     }
     assert api_key == ""
     assert provider_key == "vllm_omni"
+
+
+@pytest.mark.unit
+def test_get_tts_worker_ignores_stale_vllm_when_custom_api_disabled(monkeypatch):
+    class _CM:
+        def get_core_config(self):
+            return {
+                "assistApi": "qwen",
+                "TTS_PROVIDER": "",
+                "ENABLE_CUSTOM_API": False,
+                "GPTSOVITS_ENABLED": False,
+            }
+
+        def load_json_config(self, filename, default):
+            assert filename == "core_config.json"
+            return {
+                "ttsModelProvider": "vllm_omni",
+                "ttsModelUrl": "http://stale-vllm.local",
+                "ttsModelId": "Qwen3-TTS",
+                "ttsVoiceId": "stale-voice",
+            }
+
+        def get_model_api_config(self, model_type):
+            assert model_type == "tts_custom"
+            return {"is_custom": False, "base_url": "http://fallback.invalid"}
+
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM())
+
+    worker, _, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen",
+        has_custom_voice=False,
+        voice_id="",
+    )
+
+    assert provider_key != "vllm_omni"
+    assert not (isinstance(worker, partial) and worker.func is tts_client.vllm_omni_tts_worker)
 
 
 @pytest.mark.unit

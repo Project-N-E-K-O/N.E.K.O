@@ -4534,7 +4534,7 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     # 修复 PR #1764 review #4（Codex P2）：vllm_omni 路由优先级提前
     # 用户在 TTS 下拉里显式选 vllm_omni 时，不能被 assistApi=mimo 或 native TTS
     # fallback 截走；但 GPT-SoVITS enabled 是显式本地 TTS 开关，仍应优先。
-    if _tts_provider_sel == 'vllm_omni':
+    if core_cfg.get('ENABLE_CUSTOM_API') and _tts_provider_sel == 'vllm_omni':
         try:
             _tts_config_vllm = _tts_config_for_route or cm.get_model_api_config('tts_custom')
             _vllm_base_fallback = _tts_config_vllm.get('base_url') or ''

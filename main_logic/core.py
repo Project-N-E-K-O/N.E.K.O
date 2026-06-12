@@ -1358,6 +1358,22 @@ class LLMSessionManager:
             return api_key_override or ''
         return api_key_override or tts_config.get('api_key', '')
 
+    @staticmethod
+    def _is_vllm_omni_tts_enabled(core_config: dict) -> bool:
+        return bool(core_config.get('ENABLE_CUSTOM_API')) and (
+            str(core_config.get('ttsModelProvider') or '').strip() == 'vllm_omni'
+        )
+
+    @classmethod
+    def _resolve_vllm_omni_runtime_voice(cls, core_config: dict) -> str:
+        if not cls._is_vllm_omni_tts_enabled(core_config):
+            return ''
+        return (
+            str(core_config.get('ttsVoiceId') or '').strip()
+            or str(core_config.get('TTS_VOICE_ID') or '').strip()
+            or 'default'
+        )
+
     def _build_tts_runtime_key(self) -> tuple:
         """Return the effective TTS worker identity for ready-state reuse."""
         try:
@@ -1382,6 +1398,7 @@ class LLMSessionManager:
                 bool(has_custom),
                 tts_config.get('base_url', ''),
                 tts_config.get('model', ''),
+                self._resolve_vllm_omni_runtime_voice(core_config),
                 api_key,
             )
         except Exception:
@@ -3768,6 +3785,9 @@ class LLMSessionManager:
         if self._is_livestream_active():
             logger.info(f"{log_prefix}🎙️ livestream 模式：使用服务端原生语音，跳过外部 TTS")
             return False
+        if self._is_vllm_omni_tts_enabled(core_config_snapshot):
+            logger.info(f"{log_prefix}🔊 语音模式：检测到 vLLM-Omni TTS provider，将使用外部 TTS")
+            return True
         base_url = realtime_config.get('base_url', '')
         _, uses_provider_native_voice = resolve_native_voice_for_routing(
             self.core_api_type,
