@@ -28,7 +28,7 @@ jobs:
           echo "curl_exit=$CURL_EXIT" >> "$GITHUB_OUTPUT"
 
           if [ "$HTTP_CODE" = "200" ]; then
-            if echo "$BODY" | jq -e '(.choices | type) == "array" and (.choices | length) > 0 and (.choices[0].message | type) == "object" and .choices[0].message.role == "assistant" and (.choices[0].message | has("content"))' >/dev/null 2>&1; then
+            if echo "$BODY" | jq -e '(.choices | type) == "array" and (.choices | length) > 0 and (.choices[0].message | type) == "object" and .choices[0].message.role == "assistant" and (.choices[0].message.content | type) == "string" and (.choices[0].message.content | length) > 0' >/dev/null 2>&1; then
               echo "healthy=true" >> "$GITHUB_OUTPUT"
             else
               echo "healthy=false" >> "$GITHUB_OUTPUT"
@@ -54,7 +54,7 @@ jobs:
           echo "curl_exit=$CURL_EXIT" >> "$GITHUB_OUTPUT"
 
           if [ "$HTTP_CODE" = "200" ]; then
-            if echo "$BODY" | jq -e '(.choices | type) == "array" and (.choices | length) > 0 and (.choices[0].message | type) == "object" and .choices[0].message.role == "assistant" and (.choices[0].message | has("content"))' >/dev/null 2>&1; then
+            if echo "$BODY" | jq -e '(.choices | type) == "array" and (.choices | length) > 0 and (.choices[0].message | type) == "object" and .choices[0].message.role == "assistant" and (.choices[0].message.content | type) == "string" and (.choices[0].message.content | length) > 0' >/dev/null 2>&1; then
               echo "healthy=true" >> "$GITHUB_OUTPUT"
             else
               echo "healthy=false" >> "$GITHUB_OUTPUT"
