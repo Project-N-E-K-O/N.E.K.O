@@ -3076,7 +3076,6 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                     "type": "input.text",
                     "text": replay_text,
                 }))
-                _record_tts_telemetry(effective_model, len(replay_text))
                 return True
             except Exception as e:
                 logger.error(f"[vLLM-Omni TTS] 重放 pending_text 失败: {e}")
@@ -3122,15 +3121,16 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                 pending_text_sid = None
                 continue
 
-            # 修复 PR #1764 review #3：发送前检查会话是否仍然活跃
-            # session.done 已触发或上次 send 失败时，先重建连接再发
-            if not session_state["active"] or ws is None:
-                logger.info("[vLLM-Omni TTS] 会话已结束/失效，重建连接以发送新输入")
-                if not await _rebuild_session():
-                    logger.error("[vLLM-Omni TTS] 重建会话失败，丢弃当前请求")
-                    continue
-
             if sid is None:
+                if not pending_text:
+                    continue
+                if not session_state["active"] or ws is None:
+                    logger.info("[vLLM-Omni TTS] 会话已结束/失效，重建连接以发送 flush")
+                    if not await _rebuild_session():
+                        logger.error("[vLLM-Omni TTS] 重建会话失败，丢弃 flush 信号")
+                        continue
+                    if not await _replay_pending_text():
+                        continue
                 if ws is not None:
                     try:
                         await ws.send(json.dumps({"type": "input.done"}))
@@ -3150,6 +3150,14 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                                 logger.warning(f"[vLLM-Omni TTS] 重发 input.done 仍失败: {e2}")
                                 session_state["active"] = False
                 continue
+
+            # 修复 PR #1764 review #3：发送前检查会话是否仍然活跃
+            # session.done 已触发或上次 send 失败时，先重建连接再发
+            if not session_state["active"] or ws is None:
+                logger.info("[vLLM-Omni TTS] 会话已结束/失效，重建连接以发送新输入")
+                if not await _rebuild_session():
+                    logger.error("[vLLM-Omni TTS] 重建会话失败，丢弃当前请求")
+                    continue
 
             if tts_text and tts_text.strip() and ws is not None:
                 if pending_text and pending_text_sid not in (None, sid):
