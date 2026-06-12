@@ -42,6 +42,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/app-interpage.js",
     _PROJECT_ROOT / "static/common_ui.js",
     _PROJECT_ROOT / "static/common-ui-hud.js",
+    _PROJECT_ROOT / "static/i18n-i18next.js",
     _PROJECT_ROOT / "static/app-react-chat-window.js",
     _PROJECT_ROOT / "static/app-chat-export.js",
     _PROJECT_ROOT / "static/avatar-ui-buttons.js",
