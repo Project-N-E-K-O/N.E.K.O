@@ -118,6 +118,13 @@ button:hover {
   background: #f8fafc;
 }
 
+button:focus-visible,
+textarea:focus-visible,
+a:focus-visible {
+  outline: 3px solid rgba(46, 91, 255, 0.36);
+  outline-offset: 2px;
+}
+
 button.is-active {
   background: #2e5bff;
   border-color: #2e5bff;
@@ -245,6 +252,23 @@ pre {
   background: #ffffff;
   padding: 12px;
   line-height: 1.5;
+}
+
+#replyText .katex {
+  font-size: 1.02em;
+}
+
+#replyText .katex-display {
+  margin: 0.75rem 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+#replyText code {
+  border-radius: 5px;
+  background: #eef2f7;
+  padding: 2px 5px;
+  color: #1d2430;
 }
 
 #questionText {

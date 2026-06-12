@@ -273,13 +273,15 @@ class _NekoCommandsMixin:
 
         handler_name = _NEKO_COMMAND_HANDLERS.get(cmd)
         if handler_name is None:
+            message = f"unknown command: {cmd}"
             self.logger.warning("_on_neko_command unknown command: {}", cmd)
-            return Err(SdkError(f"unknown command: {cmd}"))
+            return Err(SdkError(message))
 
         handler = getattr(self, handler_name, None)
         if handler is None:
+            message = f"handler not found: {handler_name}"
             self.logger.error("_on_neko_command handler not found: {}", handler_name)
-            return Err(SdkError(f"handler not found: {handler_name}"))
+            return Err(SdkError(message))
 
         if cmd in _INTERRUPT_COMMANDS:
             current = self._interruptible_task
@@ -298,8 +300,9 @@ class _NekoCommandsMixin:
             return Ok(None)
 
         if cmd not in _QUEUE_COMMANDS:
+            message = f"unclassified command: {cmd}"
             self.logger.warning("_on_neko_command unclassified command: {}", cmd)
-            return Err(SdkError(f"unclassified command: {cmd}"))
+            return Err(SdkError(message))
 
         if self._command_worker_task is None or self._command_worker_task.done():
             self.logger.warning("_on_neko_command: worker not running, restarting")

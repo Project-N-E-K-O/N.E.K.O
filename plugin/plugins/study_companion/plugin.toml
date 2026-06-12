@@ -192,6 +192,12 @@ title = "Study Companion Quickstart"
 entry = "surfaces/quickstart.tsx"
 permissions = ["state:read"]
 
+[[plugin.ui.docs]]
+id = "onboarding"
+title = "Study Companion Onboarding"
+entry = "onboarding.md"
+permissions = ["state:read"]
+
 [plugin.i18n]
 default_locale = "zh-CN"
 locales_dir = "i18n"

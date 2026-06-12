@@ -115,6 +115,43 @@
     box-sizing: border-box;
 }
 
+html:has(body > .container > .container-header),
+html:has(body > #main-content > .container > .container-header) {
+    height: 100%;
+    overflow: hidden;
+}
+
+body:has(> .container > .container-header),
+body:has(> #main-content > .container > .container-header) {
+    height: 100%;
+    overflow: hidden;
+}
+
+body:has(> .container > .container-header) > .container,
+body:has(> #main-content > .container > .container-header) > #main-content,
+body:has(> #main-content > .container > .container-header) > #main-content > .container {
+    height: 100%;
+    min-height: 0;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+body:has(> .container > .container-header) > .container > .container-header,
+body:has(> #main-content > .container > .container-header) > #main-content > .container > .container-header {
+    flex: 0 0 auto;
+}
+
+body:has(> .container > .container-header) > .container > .container-content,
+body:has(> #main-content > .container > .container-header) > #main-content > .container > .container-content {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
 @media (max-width: 520px) {
     .neko-window-actions {
         width: 100%;

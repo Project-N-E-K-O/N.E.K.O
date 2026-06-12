@@ -78,6 +78,24 @@ def test_model_interactions_report_supported_bounces_and_display_switch_success(
     assert "markDisplaySwitchSuccess('vrm')" in vrm
 
 
+def test_model_renderers_refresh_pixel_density_after_display_switch():
+    live2d_core = _source("static/live2d-core.js")
+    mmd_core = _source("static/mmd-core.js")
+    vrm_core = _source("static/vrm-core.js")
+
+    assert "lastDevicePixelRatio = window.devicePixelRatio || 1;" in live2d_core
+    assert "renderer.resolution = nextResolution;" in live2d_core
+    assert "electron-display-changed:settled" in live2d_core
+
+    assert "syncRendererPixelRatio(reason = 'resize')" in vrm_core
+    assert "window.addEventListener('electron-display-changed', this.manager._displayChangeHandler);" in vrm_core
+    assert "this.manager.core.syncRendererPixelRatio('electron-display-changed:settled');" in vrm_core
+
+    assert "syncRendererPixelRatio(reason = 'resize')" in mmd_core
+    assert "window.addEventListener('electron-display-changed', this.manager._displayChangeHandler);" in mmd_core
+    assert "this.onWindowResize('electron-display-changed:settled')" in mmd_core
+
+
 def test_multiscreen_drag_hint_script_loads_before_model_interactions():
     source = _source("templates/index.html")
 

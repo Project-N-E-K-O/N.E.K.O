@@ -75,7 +75,7 @@
 1. 文档级交互守卫注册与销毁
 2. `overlay.setTakingOver()` 生命周期
 3. 首页接管期正脸锁 / 鼠标跟踪关闭与恢复
-4. 外置聊天窗按钮禁用与 spotlight 同步
+4. 外置聊天窗按钮禁用与 spotlight 同步；聊天 spotlight 由 Director 指向 compact 胶囊对话输入框
 5. 触控 passthrough 特判
 
 它不负责：
@@ -152,7 +152,7 @@ this.setTutorialTakingOver(false)
 白名单判断仍然留在 Director 的页面语义层，例如：
 
 1. skip 按钮
-2. 首页输入框激活
+2. 首页 compact 胶囊输入框激活
 3. 手动打开插件管理面板入口
 4. 系统弹窗
 
@@ -412,7 +412,7 @@ restoreTutorialAvatarOverride() {
 2. 允许点击的白名单是否都在 `isAllowedTutorialInteractionTarget()` 里
 3. skip 后是否还能落到统一 `requestTutorialDestroy()`
 4. destroy / pagehide / remote terminate 时是否会走到 `restoreTutorialAvatarOverride()`
-5. 是否有外置聊天窗模式，需要同步按钮禁用或 spotlight
+5. 是否有外置聊天窗模式，需要同步按钮禁用或 spotlight；不要把聊天高亮目标退回旧整窗 shell
 
 ## 当前接入文件
 

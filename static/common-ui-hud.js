@@ -345,7 +345,9 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                     existingWindow.focus();
                     openedWindow = existingWindow;
                 } else if (typeof window.openOrFocusWindow === 'function') {
-                    openedWindow = window.openOrFocusWindow(targetUrl, actionConfig.windowName, features);
+                    openedWindow = window.openOrFocusWindow(targetUrl, actionConfig.windowName, features, {
+                        navigateOnReuse: !!actionConfig.forceReloadOnReuse
+                    });
                 } else {
                     openedWindow = window.open(targetUrl, actionConfig.windowName, features);
                 }
@@ -545,11 +547,22 @@ window.AgentHUD.createAgentTaskHUD = function () {
         try {
             cancelBtn.style.opacity = '0.5';
             cancelBtn.style.pointerEvents = 'none';
-            await fetch('/api/agent/admin/control', {
+            const r = await fetch('/api/agent/admin/control', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: 'end_all' })
             });
+            // 2xx → end_all ran; 504 → the proxy timed out AFTER forwarding,
+            // so the tool server keeps executing end_all to completion.
+            // Either way the backend registry ends up cleared — apply the
+            // terminal state locally in case its task_update events never
+            // arrive (stuck dispatch). Other failures (500 connect error,
+            // 501 remote block) mean the request never landed: don't lie.
+            if (r.ok || r.status === 504) {
+                if (window.AgentHUD._markTasksCancelledLocally) {
+                    window.AgentHUD._markTasksCancelledLocally();
+                }
+            }
         } catch (err) {
             console.error('[AgentHUD] Cancel all tasks failed:', err);
         } finally {
@@ -773,6 +786,68 @@ window.AgentHUD.updateAgentTaskHUD = function (tasksData) {
     this._updateRafId = requestAnimationFrame(() => {
         this._updateRafId = null;
         this._doUpdateAgentTaskHUD();
+    });
+};
+
+// Local fallback: mark tasks cancelled in the shared task map and re-render.
+// The HUD is purely event-driven; when the backend is wedged (the very
+// situation the user is cancelling out of) its task_update(cancelled) events
+// may never arrive, leaving cards stuck on "running" forever. The cancel
+// click handlers below call this after reaching the server so the UI always
+// converges. Backend events for the same tasks merge idempotently in
+// app-websocket.js.
+window.AgentHUD._markTasksCancelledLocally = function (taskIds, status) {
+    const map = window._agentTaskMap;
+    if (!map || typeof map.forEach !== 'function' || map.size === 0) return;
+    if (!window._agentTaskRemoveTimers) window._agentTaskRemoveTimers = new Map();
+    const ids = Array.isArray(taskIds) ? new Set(taskIds) : null;
+    // Optional status override: when the backend reports the task already
+    // reached a different terminal state, mirror it instead of "cancelled".
+    const terminalStatus = status || 'cancelled';
+    const now = Date.now();
+    let changed = false;
+    map.forEach((t, id) => {
+        if (!t || (ids && !ids.has(id))) return;
+        if (t.status !== 'running' && t.status !== 'queued') return;
+        map.set(id, Object.assign({}, t, { status: terminalStatus, terminal_at: now }));
+        changed = true;
+        // Schedule the same 10s map removal as the websocket event path —
+        // otherwise the entry outlives the HUD's 30s terminal cache and a
+        // later full-map refresh would re-show it as a "new" terminal task.
+        // If the backend's own cancelled event arrives later, app-websocket
+        // clears this timer and installs its own (idempotent handoff).
+        if (window._agentTaskRemoveTimers.has(id)) {
+            clearTimeout(window._agentTaskRemoveTimers.get(id));
+        }
+        window._agentTaskRemoveTimers.set(id, setTimeout(() => {
+            window._agentTaskRemoveTimers.delete(id);
+            const current = window._agentTaskMap && window._agentTaskMap.get(id);
+            if (!current || current.status !== terminalStatus) return;
+            window._agentTaskMap.delete(id);
+            const remaining = Array.from(window._agentTaskMap.values());
+            window.AgentHUD.updateAgentTaskHUD({
+                success: true,
+                tasks: remaining,
+                total_count: remaining.length,
+                running_count: remaining.filter(t2 => t2.status === 'running').length,
+                queued_count: remaining.filter(t2 => t2.status === 'queued').length,
+                completed_count: remaining.filter(t2 => t2.status === 'completed').length,
+                failed_count: remaining.filter(t2 => t2.status === 'failed').length,
+                timestamp: new Date().toISOString()
+            });
+        }, 10000));
+    });
+    if (!changed) return;
+    const tasks = Array.from(map.values());
+    this.updateAgentTaskHUD({
+        success: true,
+        tasks: tasks,
+        total_count: tasks.length,
+        running_count: tasks.filter(t => t.status === 'running').length,
+        queued_count: tasks.filter(t => t.status === 'queued').length,
+        completed_count: tasks.filter(t => t.status === 'completed').length,
+        failed_count: tasks.filter(t => t.status === 'failed').length,
+        timestamp: new Date().toISOString()
     });
 };
 
@@ -1234,12 +1309,45 @@ window.AgentHUD._createTaskCard = function (task) {
         taskCancelBtn.style.opacity = '0.4';
         taskCancelBtn.style.pointerEvents = 'none';
         try {
-            await fetch(`/api/agent/tasks/${encodeURIComponent(task.id)}/cancel`, {
+            const r = await fetch(`/api/agent/tasks/${encodeURIComponent(task.id)}/cancel`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' }
             });
+            // 2xx → the backend handled the cancel (marking locally is an
+            // idempotent fallback for when its event can't arrive);
+            // 404 → the backend no longer tracks this task, the card is an
+            // orphan (e.g. left behind by an earlier end_all) — clear it;
+            // 504 → proxy timed out AFTER forwarding, the cancel did land.
+            // Anything else (502 connect error, 501 remote block) means the
+            // request never reached the tool server — keep the card and
+            // re-enable the button for retry.
+            if (r.ok || r.status === 404 || r.status === 504) {
+                // "task is not active" (200 + success:false) means the task
+                // hit a different terminal state right before the click —
+                // mirror that status instead of faking "cancelled".
+                let realStatus = null;
+                if (r.ok) {
+                    try {
+                        const body = await r.json();
+                        if (body && body.success === false
+                            && ['completed', 'failed', 'cancelled'].indexOf(body.status) !== -1) {
+                            realStatus = body.status;
+                        }
+                    } catch (_) { /* empty or non-JSON body */ }
+                }
+                if (window.AgentHUD._markTasksCancelledLocally) {
+                    window.AgentHUD._markTasksCancelledLocally([task.id], realStatus || undefined);
+                }
+            } else {
+                taskCancelBtn.style.opacity = '1';
+                taskCancelBtn.style.pointerEvents = 'auto';
+            }
         } catch (err) {
             console.error('[AgentHUD] Cancel task failed:', err);
+            // Network-level failure: the request never reached the server.
+            // Re-enable the button so the user can retry.
+            taskCancelBtn.style.opacity = '1';
+            taskCancelBtn.style.pointerEvents = 'auto';
         }
     });
 

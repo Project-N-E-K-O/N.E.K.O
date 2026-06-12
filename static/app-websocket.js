@@ -1363,10 +1363,60 @@
             sendHomeTutorialState('ws-open');
 
             // ── 首次连接 / 切换角色：标记 greeting 意图，若模型已就绪则立即发送 ──
+            var goodbyeActiveOnOpen = false;
+            var goodbyeSyncOnOpen = null;
+            try {
+                var pendingGoodbyeState = window.__nekoGoodbyeSilentState;
+                if (pendingGoodbyeState && pendingGoodbyeState.pending === true) {
+                    goodbyeSyncOnOpen = {
+                        active: !!pendingGoodbyeState.active,
+                        reason: pendingGoodbyeState.reason || (pendingGoodbyeState.active ? 'goodbye' : 'return')
+                    };
+                }
+                goodbyeActiveOnOpen = (typeof window.isNekoGoodbyeModeActive === 'function')
+                    ? window.isNekoGoodbyeModeActive()
+                    : !!((window.live2dManager && window.live2dManager._goodbyeClicked)
+                        || (window.vrmManager && window.vrmManager._goodbyeClicked)
+                        || (window.mmdManager && window.mmdManager._goodbyeClicked));
+                if (!goodbyeSyncOnOpen && goodbyeActiveOnOpen) {
+                    goodbyeSyncOnOpen = {
+                        active: true,
+                        reason: 'ws-open-goodbye'
+                    };
+                }
+                if (!goodbyeSyncOnOpen && pendingGoodbyeState && pendingGoodbyeState.active === true) {
+                    goodbyeSyncOnOpen = {
+                        active: true,
+                        reason: 'ws-open-goodbye-from-sync'
+                    };
+                }
+                if (goodbyeSyncOnOpen && _thisSocket && _thisSocket.readyState === WebSocket.OPEN) {
+                    _thisSocket.send(JSON.stringify({
+                        action: 'goodbye_state',
+                        active: !!goodbyeSyncOnOpen.active,
+                        reason: goodbyeSyncOnOpen.reason
+                    }));
+                    window.__nekoGoodbyeSilentState = {
+                        active: !!goodbyeSyncOnOpen.active,
+                        reason: goodbyeSyncOnOpen.reason,
+                        pending: false,
+                        updatedAt: Date.now()
+                    };
+                }
+            } catch (_) {
+                goodbyeActiveOnOpen = false;
+            }
             _resetGreetingCheckRetry(true);
-            _markGreetingCheckPending(!!S._pendingGreetingSwitch, S._greetingCheckReason || 'ws-open');
-            S._pendingGreetingSwitch = false;
-            _sendGreetingCheckIfReady();
+            if (goodbyeActiveOnOpen || (goodbyeSyncOnOpen && goodbyeSyncOnOpen.active)) {
+                S._greetingCheckPending = false;
+                S._greetingCheckIsSwitch = false;
+                S._greetingCheckReason = '';
+                S._pendingGreetingSwitch = false;
+            } else {
+                _markGreetingCheckPending(!!S._pendingGreetingSwitch, S._greetingCheckReason || 'ws-open');
+                S._pendingGreetingSwitch = false;
+                _sendGreetingCheckIfReady();
+            }
 
             // ── game-window-state 重连兜底（codex P2）──
             // game_window_state_change 是 edge-triggered WS 事件——只在 activate
@@ -2539,6 +2589,31 @@
 
                 // -------- session_started --------
                 } else if (response.type === 'session_started') {
+                    if (response.input_mode !== 'text'
+                            && typeof window.isNekoGoodbyeModeActive === 'function'
+                            && window.isNekoGoodbyeModeActive()) {
+                        console.log('[App] ignore stale audio session_started while goodbye is active');
+                        if (typeof window.cancelPendingSessionStart === 'function') {
+                            window.cancelPendingSessionStart('Voice start cancelled by goodbye');
+                        } else {
+                            S.voiceStartPending = false;
+                            window.isMicStarting = false;
+                            S.sessionStartedResolver = null;
+                            S.sessionStartedRejecter = null;
+                        }
+                        S.isTextSessionActive = false;
+                        S.voiceChatActive = false;
+                        if (window.sessionTimeoutId) {
+                            clearTimeout(window.sessionTimeoutId);
+                            window.sessionTimeoutId = null;
+                        }
+                        if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
+                        if (S.socket && S.socket.readyState === WebSocket.OPEN) {
+                            S._suppressCharacterLeft = true;
+                            S.socket.send(JSON.stringify({ action: 'end_session' }));
+                        }
+                        return;
+                    }
                     console.log(window.t('console.sessionStartedReceived'), response.input_mode);
                     S.isTextSessionActive = response.input_mode === 'text';
                     S.voiceChatActive = response.input_mode !== 'text';
@@ -3245,6 +3320,39 @@
                 S._greetingCheckReason = detail.reason;
             }
             _sendGreetingCheckIfReady();
+        }
+    });
+
+    // 从猫咪形态变回猫娘（请她回来）时，按猫咪停留时长 + tier 请求一次专属问候。
+    // 与 greeting_check 对偶，但走独立 action，时长由 app-auto-goodbye 测量传入。
+    // 变回不重连 WS，所以这里直接在事件触发时发；若无连接则静默放弃（普通 greeting
+    // 会在下次 WS 重连时按对话 gap 兜底）。
+    window.addEventListener('neko:cat-greeting-check', function (event) {
+        var detail = (event && event.detail && typeof event.detail === 'object') ? event.detail : {};
+        if (!S.socket || S.socket.readyState !== WebSocket.OPEN) {
+            return;
+        }
+        var durationSeconds = Number(detail.durationSeconds) || 0;
+        if (durationSeconds < 180) {
+            return; // < 3min 静默（前端先挡一道，后端 get_cat_greeting_prompt 再挡一道）
+        }
+        var catLang = '';
+        try {
+            if (window.i18next && window.i18next.language) catLang = window.i18next.language;
+            else catLang = localStorage.getItem('i18nextLng') || '';
+            if (!catLang && typeof navigator !== 'undefined' && navigator.language) catLang = navigator.language;
+        } catch (_) { catLang = ''; }
+        try {
+            S.socket.send(JSON.stringify({
+                action: 'cat_greeting_check',
+                cat_duration_seconds: durationSeconds,
+                tier: detail.tier || '',
+                was_auto: !!detail.wasAuto,
+                language: catLang
+            }));
+            console.log('[cat_greeting_check] sent, duration=' + durationSeconds + 's tier=' + (detail.tier || '-') + ' was_auto=' + (!!detail.wasAuto));
+        } catch (e) {
+            console.warn('[cat_greeting_check] send failed:', e);
         }
     });
 

@@ -122,6 +122,35 @@ RUN mkdir -p /root/.config/uv && \
 # 6. Copy N.E.K.O. project from local build context (with correct ownership)
 COPY --chown=neko:neko . /app
 
+# 6b. Verify (and, only for non-CI builds, download) the pinned local embedding
+# model. CI pre-fetches these weights on the native runner and caches them with
+# actions/cache, then ships them in the build context (.dockerignore no longer
+# excludes data/embedding_models), so this step finds them already present via
+# `COPY . /app` above and runs FULLY OFFLINE — no huggingface.co call. That
+# anonymous per-IP HTTP 429 throttle on shared runner egress is exactly what kept
+# failing the build at this point with no recovery. A plain `docker build` with
+# no pre-fetched weights falls back to downloading here (honoring the proxy ARGs).
+# The script force-re-downloads when the bundled (repo, revision) doesn't match
+# the pin, so a developer's stale local copy can't ship. repo+revision are pinned
+# identically to .github/workflows/{build-desktop,docker-multi-arch}.yml so every
+# build path resolves the same on-disk profile. Standard image ships only the
+# int8 variant (the runtime `auto` default) to stay lightweight; the full image
+# bundles fp32 too.
+ARG EMBEDDING_MODEL_REPO=jinaai/jina-embeddings-v5-text-nano-retrieval
+ARG EMBEDDING_MODEL_REVISION=ac5d898c8d382b17167c33e5c8af644a3519b47d
+ARG EMBEDDING_MODEL_PROFILE_ID=local-text-retrieval-v1
+RUN cd /app && \
+    if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
+    if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
+    python3 scripts/prepare_embedding_model.py \
+        --repo "$EMBEDDING_MODEL_REPO" \
+        --revision "$EMBEDDING_MODEL_REVISION" \
+        --profile-id "$EMBEDDING_MODEL_PROFILE_ID" \
+        --output-root data/embedding_models \
+        --variant int8 && \
+    unset http_proxy && \
+    unset https_proxy
+
 # 7. Copy frontend build artifacts
 # Note: react-neko-chat's vite.config.ts writes to outDir `../../static/react/neko-chat`
 # (relative to its package root), so the actual build output lives at
@@ -138,28 +167,6 @@ RUN cd /app && \
     if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
     if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
     uv sync --frozen && \
-    unset http_proxy && \
-    unset https_proxy
-
-# 8b. Bundle the local embedding model so vectors work out-of-the-box (offline).
-# Without this the image ships no weights and EmbeddingService sticky-disables
-# at first load (NO_MODEL_FILE) — vector recall / fact dedup silently degrade.
-# repo+revision are pinned identically to .github/workflows/build-desktop.yml so
-# every build path resolves the same on-disk profile. Standard image ships only
-# the int8 variant (the runtime `auto` default) to stay lightweight; the full
-# image bundles fp32 too. Pure-stdlib downloader; needs network (honors proxy ARGs).
-ARG EMBEDDING_MODEL_REPO=jinaai/jina-embeddings-v5-text-nano-retrieval
-ARG EMBEDDING_MODEL_REVISION=ac5d898c8d382b17167c33e5c8af644a3519b47d
-ARG EMBEDDING_MODEL_PROFILE_ID=local-text-retrieval-v1
-RUN cd /app && \
-    if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
-    if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
-    uv run --no-sync python scripts/prepare_embedding_model.py \
-        --repo "$EMBEDDING_MODEL_REPO" \
-        --revision "$EMBEDDING_MODEL_REVISION" \
-        --profile-id "$EMBEDDING_MODEL_PROFILE_ID" \
-        --output-root data/embedding_models \
-        --variant int8 && \
     unset http_proxy && \
     unset https_proxy
 

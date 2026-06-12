@@ -177,7 +177,7 @@ def test_active_realtime_base_is_route_agnostic_on_lanlan_app():
     assert get_active_realtime_native_provider(_CM()) == "free"
 
 
-def test_active_realtime_for_ui_hides_free_provider_on_lanlan_app_route():
+def test_active_realtime_for_ui_remaps_free_to_free_intl_on_lanlan_app_route():
     class _CM:
         def get_model_api_config(self, model_type):
             assert model_type == "realtime"
@@ -186,10 +186,10 @@ def test_active_realtime_for_ui_hides_free_provider_on_lanlan_app_route():
         def get_core_config(self):
             return {"CORE_API_TYPE": "free", "CORE_URL": "wss://lanlan.app/realtime"}
 
-    assert get_active_realtime_native_provider_for_ui(_CM()) is None
+    assert get_active_realtime_native_provider_for_ui(_CM()) == "free_intl"
 
 
-def test_active_realtime_for_ui_hides_free_provider_on_lanlan_app_subdomain():
+def test_active_realtime_for_ui_remaps_free_to_free_intl_on_lanlan_app_subdomain():
     class _CM:
         def get_model_api_config(self, model_type):
             assert model_type == "realtime"
@@ -198,7 +198,7 @@ def test_active_realtime_for_ui_hides_free_provider_on_lanlan_app_subdomain():
         def get_core_config(self):
             return {"CORE_API_TYPE": "free", "CORE_URL": "wss://edge.lanlan.app/realtime"}
 
-    assert get_active_realtime_native_provider_for_ui(_CM()) is None
+    assert get_active_realtime_native_provider_for_ui(_CM()) == "free_intl"
 
 
 def test_active_realtime_for_ui_does_not_match_lanlan_app_substring():
@@ -226,7 +226,7 @@ def test_active_realtime_for_ui_keeps_free_provider_on_lanlan_tech_route():
 
 
 def test_active_realtime_for_ui_falls_back_to_core_url_when_base_url_empty():
-    """realtime.base_url 缺失时回退读 CORE_URL，仍能识别 lanlan.app 路由。"""
+    """realtime.base_url 缺失时回退读 CORE_URL，仍能识别 lanlan.app 路由并重映射 free_intl。"""
 
     class _CM:
         def get_model_api_config(self, model_type):
@@ -235,7 +235,7 @@ def test_active_realtime_for_ui_falls_back_to_core_url_when_base_url_empty():
         def get_core_config(self):
             return {"CORE_API_TYPE": "free", "CORE_URL": "wss://lanlan.app/realtime"}
 
-    assert get_active_realtime_native_provider_for_ui(_CM()) is None
+    assert get_active_realtime_native_provider_for_ui(_CM()) == "free_intl"
 
 
 def test_get_native_tts_worker_requires_voice_match_and_resolver():

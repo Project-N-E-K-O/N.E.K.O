@@ -3334,7 +3334,13 @@ async def set_achievement_status(name: str, request: Request):
                     logger.info(f"成功设置成就: {name}")
                     steamworks.UserStats.StoreStats()
                     steamworks.run_callbacks()
-                    return JSONResponse(content={"success": True, "message": f"成就 {name} 处理完成"})
+                    return JSONResponse(content={
+                        "success": True,
+                        "achievement": name,
+                        "newlyUnlocked": True,
+                        "alreadyUnlocked": False,
+                        "message": f"成就 {name} 已解锁",
+                    })
                 else:
                     # 第一次失败，等待后重试一次
                     logger.warning(f"设置成就首次尝试失败，正在重试: {name}")
@@ -3345,13 +3351,25 @@ async def set_achievement_status(name: str, request: Request):
                         logger.info(f"成功设置成就（重试后）: {name}")
                         steamworks.UserStats.StoreStats()
                         steamworks.run_callbacks()
-                        return JSONResponse(content={"success": True, "message": f"成就 {name} 处理完成"})
+                        return JSONResponse(content={
+                            "success": True,
+                            "achievement": name,
+                            "newlyUnlocked": True,
+                            "alreadyUnlocked": False,
+                            "message": f"成就 {name} 已解锁",
+                        })
                     else:
                         logger.error(f"设置成就失败: {name}，请确认成就ID在Steam后台已配置")
                         return JSONResponse(content={"success": False, "error": f"设置成就失败: {name}，请确认成就ID在Steam后台已配置"}, status_code=500)
             else:
                 logger.info(f"成就已解锁，无需重复设置: {name}")
-                return JSONResponse(content={"success": True, "message": f"成就 {name} 处理完成"})
+                return JSONResponse(content={
+                    "success": True,
+                    "achievement": name,
+                    "newlyUnlocked": False,
+                    "alreadyUnlocked": True,
+                    "message": f"成就 {name} 已经解锁",
+                })
         except Exception as e:
             logger.error(f"设置成就失败: {e}")
             return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
@@ -4597,9 +4615,18 @@ async def proactive_chat(request: Request):
         if not mgr:
             return JSONResponse({"success": False, "error": f"角色 {lanlan_name} 不存在"}, status_code=404)
 
+        if getattr(mgr, "is_goodbye_silent", lambda: False)():
+            logger.info("[%s] 主动搭话本轮未发起：goodbye silent", lanlan_name)
+            return JSONResponse({
+                "success": True,
+                "action": "pass",
+                "message": "goodbye silent; proactive skipped",
+            })
+
         try:
             from main_routers.game_router import is_game_route_active
             if is_game_route_active(lanlan_name):
+                logger.info("[%s] 主动搭话本轮未发起：游戏路由 active", lanlan_name)
                 return JSONResponse({
                     "success": True,
                     "action": "pass",
@@ -4623,12 +4650,20 @@ async def proactive_chat(request: Request):
         # can_start_proactive 做 409 判定即可。
         if data.get('voice_mode') and mgr.is_active and isinstance(mgr.session, OmniRealtimeClient):
             # Mini-game invite 状态机推进：voice fast path 不走 activity tracker，
-            # 直接用 mgr.last_user_activity_time（session 自己跟踪 RMS / 文本输入
-            # 活动）作为「用户最后一次活动时间」喂给 advance_response。否则纯
-            # voice 用户收到 mini-game 邀请回应后，pending 永远翻不掉，邀请会被
-            # 永久抑制；CodeRabbit Major review 指出。
+            # 直接用 session 自己跟踪的「用户最后一次真实消息时间」喂给
+            # advance_response。否则纯 voice 用户收到 mini-game 邀请回应后，
+            # pending 永远翻不掉，邀请会被永久抑制；CodeRabbit Major review 指出。
+            #
+            # ⚠️ 用 last_user_message_time（仅真实非空非 echo 用户输入）而非
+            # last_user_activity_time（顶部无条件刷新，含 VAD 空噪声 + 麦克风录回
+            # AI 自己 TTS 的回声）。后者会被 AI 念邀请台词的回声污染：邀请投递后
+            # 回声立刻把 activity 刷到 > delivered_at，下一个 tick 的隐式 dismiss
+            # 误判「用户已回应」→ 把 pending 邀请清成 'later'（5min）+ 撤掉按钮，
+            # 用户随后点「现在不想玩」落到 expired、真正的 5h decline 起不来、邀请
+            # 5min 后反复重来。改用真消息时间戳后，纯点按钮（不说话）的用户活动
+            # 时间不会越过 delivered_at，pending 一直留到用户显式点按钮 / 说话。
             _voice_advance_outcome = _mini_game_invite_advance_response(
-                lanlan_name, getattr(mgr, 'last_user_activity_time', None),
+                lanlan_name, getattr(mgr, 'last_user_message_time', None),
             )
             # advance 触发了隐式 dismiss → 推 WS 让前端清掉 prompt UI（cross-window
             # 一致性）。codex P2 指出非按钮路径漏推 WS 让 UI 挂着。
@@ -4639,6 +4674,7 @@ async def proactive_chat(request: Request):
                     action=_voice_advance_outcome.get('action', 'suppress'),
                 )
             if not mgr.state.can_start_proactive(session=probe_session):
+                logger.info("[%s] 主动搭话本轮未发起：语音模式 AI 正在响应中（409）", lanlan_name)
                 return JSONResponse({
                     "success": False,
                     "error": "AI正在响应中，无法主动搭话",
@@ -4652,6 +4688,8 @@ async def proactive_chat(request: Request):
                 _mini_game_invite_count_post_response_chat(lanlan_name)
                 # 持久化"累计成功投递的主动搭话总数"，给 force-first 用。
                 await _increment_proactive_chat_total(lanlan_name)
+            else:
+                logger.info("[%s] 主动搭话本轮未发起：语音 nudge 被 guard 跳过", lanlan_name)
             return JSONResponse({
                 "success": True,
                 "action": "chat" if delivered else "pass",
@@ -4664,6 +4702,7 @@ async def proactive_chat(request: Request):
         # 各自 fire(PROACTIVE_START) 导致两路 proactive 同时进入 PHASE1。
         from main_logic.session_state import SessionEvent as _SE
         if not await mgr.state.try_start_proactive(session=probe_session):
+            logger.info("[%s] 主动搭话本轮未发起：AI 正在响应或已有一轮在跑（409）", lanlan_name)
             return JSONResponse({
                 "success": False,
                 "error": "AI正在响应中，无法主动搭话",
@@ -4699,13 +4738,28 @@ async def proactive_chat(request: Request):
                 return resp
             if not isinstance(body, dict):
                 return resp
+            # text-mode 占坑后的所有出口都经过这里。本轮最终没把话说出来
+            # （action != "chat"：各种 guard/skip/内容为空/被用户接管）就在
+            # info 留一条带原因的日志，原因取响应体 message（无则 error）。
+            # 散落各分支无需各自记；排查"她这轮为什么没主动说话"看这条即可。
+            # 占坑前的早退（游戏路由 / voice 与 text 的 409 并发拒绝）不经过
+            # 本出口，各自就地补了同前缀（"主动搭话本轮未发起："）的 info。
+            if body.get("action") != "chat":
+                logger.info(
+                    "[%s] 主动搭话本轮未发起：%s",
+                    lanlan_name,
+                    body.get("message") or body.get("error") or "(无原因说明)",
+                )
             if 'next_schedule_fixed_mode' in body:
                 return resp
             body['next_schedule_fixed_mode'] = _next_schedule_fixed_mode
             return JSONResponse(body, status_code=resp.status_code)
 
         def _proactive_preempted_json(where: str) -> dict:
-            logger.info(
+            # 细粒度的 state 快照留 debug；面向排查的"本轮未发起 + 原因"由统一
+            # 出口 _end_proactive 按 message 打 info（这些 dict 全部经它返回），
+            # 避免同一轮 skip 打出两条重复 info。
+            logger.debug(
                 "[%s] proactive %s preempted by user takeover (state=%s)",
                 lanlan_name, where, mgr.state.snapshot(),
             )

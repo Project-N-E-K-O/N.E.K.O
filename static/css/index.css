@@ -1,4 +1,13 @@
 @import url('base.css');
+/* Frozen legacy `full` minimized breathing-light orb — isolated, gated on
+   .is-legacy-full-ball; never affects the compact yarn ball. */
+@import url('full-chat-minimize.css');
+
+:root {
+    --neko-model-opacity-transition: opacity 280ms ease-in;
+    --neko-model-transform-transition: transform 400ms cubic-bezier(0.22, 1, 0.36, 1);
+    --neko-model-visibility-delay: 400ms;
+}
 
 html,
 body {
@@ -233,18 +242,18 @@ button * {
     opacity: 1;
     overflow: hidden;
     visibility: visible;
-    transition: all 1s ease-in-out, height 0ms 1s, width 0ms 1s, visibility 0ms 1s;
+    transition: var(--neko-model-opacity-transition), var(--neko-model-transform-transition), height 0ms var(--neko-model-visibility-delay), width 0ms var(--neko-model-visibility-delay), visibility 0ms var(--neko-model-visibility-delay);
     /* GPU 合成层隔离：减少窗口级重绘对 canvas 的影响 */
     will-change: transform;
     transform: translateZ(0);
+    transform-origin: var(--neko-model-exit-origin-x, 50%) var(--neko-model-exit-origin-y, 50%);
 }
 
 /* 看板娘判定框-最小化状态 */
 #live2d-container.minimized {
-    transform: translateX(300px) translateZ(0);
-    /* 向右平滑滑出（配合 opacity 渐隐） */
+    transform: scale(0.38) translateZ(0);
+    /* 原处缩小渐隐（配合模型/猫切换遮罩） */
     opacity: 0;
-    visibility: hidden;
 }
 
 /* 看板娘判定框-悬停时半透明 */
@@ -268,6 +277,7 @@ button * {
     /* GPU 合成层隔离 */
     will-change: transform;
     transform: translateZ(0);
+    transform-origin: var(--neko-model-exit-origin-x, 50%) var(--neko-model-exit-origin-y, 50%);
 }
 
 /* 看板娘判定框-最小化状态时画布透明 */
@@ -292,10 +302,11 @@ button * {
     /* 【修复】仅过渡 opacity 和 transform，排除 visibility 的过渡影响，
      * 避免 MMD 模式下隐藏 VRM 容器时因 transition: all 导致约 1s 的视觉
      * 残留窗口，使 VRM canvas 中缓存的旧模型（如 sister1.0）短暂可见。 */
-    transition: opacity 1s ease-in-out, transform 1s ease-in-out;
+    transition: var(--neko-model-opacity-transition), var(--neko-model-transform-transition);
     /* GPU 合成层隔离：减少窗口级重绘对 canvas 的影响 */
     will-change: transform;
     transform: translateZ(0);
+    transform-origin: var(--neko-model-exit-origin-x, 50%) var(--neko-model-exit-origin-y, 50%);
 }
 
 /* 看板娘MMD模型判定框-容器 */
@@ -310,17 +321,21 @@ button * {
     z-index: 10;
     pointer-events: none;
     background: none;
+    opacity: 1;
     overflow: hidden;
+    visibility: visible;
+    transition: var(--neko-model-opacity-transition), var(--neko-model-transform-transition);
     /* GPU 合成层隔离 */
     will-change: transform;
     transform: translateZ(0);
+    transform-origin: var(--neko-model-exit-origin-x, 50%) var(--neko-model-exit-origin-y, 50%);
 }
 
-/* 看板娘VR模型判定框-最小化状态 */
-#vrm-container.minimized {
-    transform: translateX(300px) translateZ(0);
+/* 看板娘VR/MMD模型判定框-最小化状态 */
+#vrm-container.minimized,
+#mmd-container.minimized {
+    transform: scale(0.38) translateZ(0);
     opacity: 0;
-    visibility: hidden;
 }
 
 /* 游戏路由激活期间隐藏 pet 透明窗口上一切可见的可交互 UI，让 mini-game
@@ -359,6 +374,48 @@ body.neko-game-active [id$="-lock-icon"] {
     touch-action: none;
 }
 
+.neko-idle-return-button-container.is-cat1-on-compact-top-edge {
+    z-index: 100050 !important; /* 高于 dialog(100000) 和 tooltip(100030)，避免使用最大整数层级。 */
+    isolation: isolate; /* 主动创建独立层叠上下文，避免子元素层级泄出。 */
+}
+
+.neko-idle-return-button-container.is-cat1-on-compact-top-edge > .neko-idle-return-btn {
+    z-index: 100050 !important;
+}
+
+.neko-idle-return-button-container.is-cat1-dropping-from-compact-top-edge > .neko-idle-return-btn {
+    animation: nekoIdleCat1CompactDrop 360ms cubic-bezier(0.22, 0.72, 0.2, 1) both;
+}
+
+.neko-idle-return-button-container.is-cat1-compact-mirror-active {
+    pointer-events: none;
+}
+
+.neko-idle-return-button-container.is-cat1-compact-mirror-active > .neko-idle-return-btn {
+    opacity: 0;
+    pointer-events: none;
+}
+
+.neko-idle-cat1-compact-mirror {
+    position: fixed;
+    z-index: 100050;
+    pointer-events: none;
+    overflow: visible;
+    isolation: isolate;
+}
+
+.neko-idle-cat1-compact-mirror[hidden] {
+    display: none !important;
+}
+
+.neko-idle-cat1-compact-mirror-art {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: contain;
+    object-position: center;
+}
+
 .neko-idle-return-btn {
     --neko-idle-return-size: clamp(96px, 14vw, 122px);
     position: relative;
@@ -388,6 +445,97 @@ body.neko-game-active [id$="-lock-icon"] {
 
 .neko-idle-return-btn.is-cat1-facing-right > .neko-idle-return-art {
     --neko-idle-return-facing-transform: scaleX(-1);
+}
+
+.neko-idle-thought-bubble {
+    --neko-idle-bubble-size: clamp(52px, 9vw, 78px);
+    position: absolute;
+    z-index: 3;
+    width: var(--neko-idle-bubble-size);
+    height: var(--neko-idle-bubble-size);
+    right: calc(var(--neko-idle-bubble-size) * -0.18);
+    top: calc(var(--neko-idle-bubble-size) * -0.45);
+    display: block;
+    transform: translate3d(0, 0, 0);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 360ms ease, visibility 0s linear 360ms;
+    pointer-events: none;
+    user-select: none;
+}
+
+.neko-idle-thought-bubble-bg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+    pointer-events: none;
+    user-select: none;
+}
+
+.neko-idle-thought-bubble-item {
+    position: absolute;
+    left: 50%;
+    top: 36%;
+    width: 47%;
+    max-height: 38%;
+    object-fit: contain;
+    display: block;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    user-select: none;
+}
+
+@keyframes neko-idle-thought-bubble-item-float {
+    0% { transform: translate(-50%, -50%); }
+    8.333% { transform: translate(-50%, calc(-50% - 0.5px)); }
+    16.667% { transform: translate(-50%, calc(-50% - 0.75px)); }
+    25% { transform: translate(-50%, calc(-50% - 1px)); }
+    33.333% { transform: translate(-50%, calc(-50% - 0.75px)); }
+    41.667% { transform: translate(-50%, calc(-50% - 0.5px)); }
+    50% { transform: translate(-50%, -50%); }
+    58.333% { transform: translate(-50%, calc(-50% + 0.5px)); }
+    66.667% { transform: translate(-50%, calc(-50% + 0.75px)); }
+    75% { transform: translate(-50%, calc(-50% + 1px)); }
+    83.333% { transform: translate(-50%, calc(-50% + 0.75px)); }
+    91.667% { transform: translate(-50%, calc(-50% + 0.5px)); }
+    100% { transform: translate(-50%, -50%); }
+}
+
+.neko-idle-return-btn.is-thought-bubble-active .neko-idle-thought-bubble {
+    opacity: 1;
+    visibility: visible;
+    transition-delay: 0s;
+}
+
+.neko-idle-return-btn.is-thought-bubble-active .neko-idle-thought-bubble-item {
+    animation: neko-idle-thought-bubble-item-float 3600ms steps(24, end) infinite;
+}
+
+.neko-idle-return-btn.is-thought-bubble-sleeping .neko-idle-thought-bubble-item {
+    display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .neko-idle-return-btn.is-thought-bubble-active .neko-idle-thought-bubble-item {
+        animation: none;
+    }
+}
+
+.neko-idle-return-btn[data-neko-idle-tier="cat1"] .neko-idle-thought-bubble {
+    right: calc(var(--neko-idle-bubble-size) * -0.42);
+    top: calc(var(--neko-idle-bubble-size) * -0.72);
+}
+
+.neko-idle-return-btn[data-neko-idle-tier="none"] .neko-idle-thought-bubble,
+.neko-idle-return-btn.is-drag-action-pending .neko-idle-thought-bubble,
+.neko-idle-return-btn.is-drag-action .neko-idle-thought-bubble,
+.neko-idle-return-btn.is-cat1-walking .neko-idle-thought-bubble,
+.neko-idle-return-btn.is-cat1-stretching .neko-idle-thought-bubble,
+.neko-idle-return-btn.is-cat1-hover-paused .neko-idle-thought-bubble {
+    display: none;
 }
 
 .neko-idle-return-art-next {
@@ -441,9 +589,22 @@ body.neko-game-active [id$="-lock-icon"] {
     }
 }
 
+@keyframes nekoIdleCat1CompactDrop {
+    0% {
+        transform: translate3d(0, clamp(-52px, -4vw, -34px), 0) rotate(0deg);
+    }
+    70% {
+        transform: translate3d(0, clamp(2px, 0.25vw, 4px), 0) rotate(-2deg);
+    }
+    100% {
+        transform: translate3d(0, 0, 0) rotate(0deg);
+    }
+}
+
 @media (prefers-reduced-motion: reduce) {
     .neko-idle-return-btn.is-tier-transitioning > .neko-idle-return-art,
-    .neko-idle-return-btn.is-tier-transitioning > .neko-idle-return-art-next {
+    .neko-idle-return-btn.is-tier-transitioning > .neko-idle-return-art-next,
+    .neko-idle-return-button-container.is-cat1-dropping-from-compact-top-edge > .neko-idle-return-btn {
         animation: none;
     }
 }
@@ -851,23 +1012,21 @@ body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"
     display: none;
 }
 
-/* ---- 最小化：50px 圆形悬浮窗 + 呼吸灯 ---- */
+/* ---- 最小化：51px 毛线球悬浮窗 ---- */
 body.subtitle-web-host #react-chat-window-shell.is-minimized {
-    width: 50px !important;
-    height: 50px !important;
+    width: 51px !important;
+    height: 51px !important;
     border-radius: 50%;
-    background: rgba(68, 183, 254, 0.15);
-    box-shadow: 0 0 8px rgba(68, 183, 254, 0.6);
-    animation: breathingGlow 2s ease-in-out infinite;
-    will-change: box-shadow;
+    background: transparent;
+    box-shadow: none;
+    animation: none;
+    will-change: auto;
     cursor: pointer;
-    overflow: hidden;
+    overflow: visible;
 }
 
 body.subtitle-web-host #react-chat-window-shell.is-minimized.is-idle-docked:not(.is-dragging) {
-    transition: left 0.22s ease, top 0.22s ease, box-shadow 0.22s ease, filter 0.22s ease;
-    box-shadow: 0 0 12px rgba(68, 183, 254, 0.82);
-    filter: saturate(1.04);
+    transition: left 0.22s ease, top 0.22s ease;
 }
 
 body.subtitle-web-host #react-chat-window-shell.is-minimized #react-chat-window-root,
@@ -902,6 +1061,7 @@ body.subtitle-web-host #react-chat-window-shell.is-minimized .react-chat-resize-
 
 /* ---- 折叠动画（向左下角缩放） ---- */
 body.subtitle-web-host #react-chat-window-shell.is-collapsing {
+    box-shadow: none !important;
     transform-origin: 0% 100%;
     transition:
         transform 0.38s cubic-bezier(0.4, 0, 0.2, 1),
@@ -912,6 +1072,7 @@ body.subtitle-web-host #react-chat-window-shell.is-collapsing {
 
 /* ---- 展开动画（从左下角放大） ---- */
 body.subtitle-web-host #react-chat-window-shell.is-expanding {
+    box-shadow: none !important;
     transform-origin: 0% 100%;
     transition:
         transform 0.35s cubic-bezier(0.2, 0, 0, 1),
@@ -922,6 +1083,66 @@ body.subtitle-web-host #react-chat-window-shell.is-expanding {
 
 body.subtitle-web-host #react-chat-window-shell.is-dragging {
     box-shadow: 0 36px 110px rgba(12, 20, 34, 0.36);
+}
+
+/* compact 输入框左侧毛绒球「按下挤压回弹」弹性动画：点按折叠时由 app-react-chat-window.js
+   handleCompactMinimizeRequest 给图标加 .neko-minimize-ball-pressing 触发（与展开时按独立
+   球的 squash bounce 对偶；折叠原本无动画）。运行中的动画 transform 会盖过 :active 的 scale(1.08)。
+   transform-origin 底部 + scale Y 变矮/X 变宽 = 向下挤扁（不是均匀缩小），与 neko-ball-bounce 同手感。 */
+@keyframes neko-compact-minimize-press {
+    0%   { transform: scale(1, 1); }
+    30%  { transform: scale(1.12, 0.74); }  /* 向下挤扁（squash：变宽变矮） */
+    58%  { transform: scale(0.94, 1.08); }  /* 回弹拉伸 */
+    80%  { transform: scale(1.03, 0.97); }  /* 小回压 */
+    100% { transform: scale(1, 1); }        /* 落定 */
+}
+.compact-chat-minimize-ball-icon.neko-minimize-ball-pressing {
+    transform-origin: center bottom;
+    animation: neko-compact-minimize-press 420ms cubic-bezier(0.3, 0.8, 0.4, 1) both;
+}
+
+/* compact 对话条折叠/展开的「方向性渐变擦除」：折叠＝从右往左收（右先消失），展开＝反向从左往右展。
+   作用在 .compact-chat-surface-shell（position:fixed 的胶囊本体）上 —— 不能擦 #react-chat-window-root，
+   因为 fixed 子元素可能在 root 盒子外、mask 盖不到。用 mask 渐变 + 动 mask-position（gradient 本身
+   不可 tween，但 mask-position 可以）实现软边扫过。
+   安全：展开用 forwards 让保留态 = mask-position 0%（全可见），即使清理失败也不隐身；折叠类由宿主
+   setChatSurfaceMode 顶部无条件复位兜底（频繁点击也不会卡在「擦没了」）。 */
+@keyframes neko-compact-collapse-wipe {
+    from { -webkit-mask-position: 0% 0;   mask-position: 0% 0; }
+    to   { -webkit-mask-position: 100% 0; mask-position: 100% 0; }
+}
+@keyframes neko-compact-expand-wipe {
+    from { -webkit-mask-position: 100% 0; mask-position: 100% 0; }
+    to   { -webkit-mask-position: 0% 0;   mask-position: 0% 0; }
+}
+.compact-chat-surface-shell.neko-compact-collapsing,
+.compact-chat-surface-shell.neko-compact-expanding {
+    /* mask 300% 宽 + 渐变软边落在中间三分之一：mask-position 0% 时胶囊只看到纯黑（全可见），
+       100% 时只看到全透明（全隐），软边在 0%↔100% 之间从右向左/左向右扫过。 */
+    -webkit-mask-image: linear-gradient(to right, #000 33%, transparent 50%);
+    mask-image: linear-gradient(to right, #000 33%, transparent 50%);
+    -webkit-mask-size: 300% 100%; mask-size: 300% 100%;
+    -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+}
+.compact-chat-surface-shell.neko-compact-collapsing {
+    animation: neko-compact-collapse-wipe 280ms ease forwards;
+}
+.compact-chat-surface-shell.neko-compact-expanding {
+    animation: neko-compact-expand-wipe 300ms ease forwards;
+}
+
+/* 减少动态效果偏好下，禁用毛绒球按压挤压与折叠/展开方向性擦除动画，给动画敏感用户
+   即时的折叠/展开（CodeRabbit 无障碍 nitpick）。仅影响开启该系统设置的用户。
+   必须放在上面动画规则之后：同特异性（两类选择器）下 CSS 后定义者胜，media query 不加
+   特异性，若放在文件靠前的 @media 块里会被这些动画规则覆盖、override 不生效（Codex P2）。 */
+@media (prefers-reduced-motion: reduce) {
+    .compact-chat-minimize-ball-icon.neko-minimize-ball-pressing {
+        animation: none;
+    }
+    .compact-chat-surface-shell.neko-compact-collapsing,
+    .compact-chat-surface-shell.neko-compact-expanding {
+        animation: none;
+    }
 }
 
 /* GalGame 模式：撑高聊天框最小高度，避免移动/桌面下选项被裁切 */
@@ -1044,12 +1265,12 @@ body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"
     display: none;
 }
 
-body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root,
-body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell,
-body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .chat-window,
-body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .composer-panel,
-body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .composer,
-body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .compact-chat-surface-shell {
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized) #react-chat-window-root,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized) #react-chat-window-root .app-shell,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized) #react-chat-window-root .chat-window,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized) #react-chat-window-root .composer-panel,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized) #react-chat-window-root .composer,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized) #react-chat-window-root .compact-chat-surface-shell {
     background: transparent !important;
     box-shadow: none !important;
     border: 0 !important;
@@ -1071,15 +1292,18 @@ body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {
     overscroll-behavior: contain;
     scrollbar-width: none;
     z-index: 100002;
+    pointer-events: none;
 }
 
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"]::-webkit-scrollbar {
     display: none;
 }
 
-/* The compact choice portal itself is transparent; only its scroll surface and options should receive input. */
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-slot,
-body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-options,
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-options {
+    pointer-events: none;
+}
+
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option {
     pointer-events: auto;
 }
@@ -1128,6 +1352,20 @@ body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"
     pointer-events: auto;
 }
 
+/* 紧凑历史面板点击穿透契约：上方通用规则会重新开启 surface 子节点命中，
+   因此透明包装层必须回到 none，只保留气泡、控制区和预览可交互。 */
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #music-player-mount,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #music-player-mount * {
+    pointer-events: auto;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closing"],
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closing"] *,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closed"],
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closed"] * {
+    pointer-events: none;
+}
+
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-anchor,
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-panel,
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-scroll,
@@ -1142,6 +1380,62 @@ body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"
     pointer-events: auto;
 }
 
+/* 工具轮盘打开且历史操作/预览未打开时，历史记录退到工具轮盘下方，避免遮挡和抢命中。
+   历史操作/预览打开后，只让透明外壳穿透，消息气泡和控制条仍需可交互。 */
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"]:not([data-compact-export-controls-open="true"]):not([data-compact-export-preview-open="true"]) .compact-export-history-anchor {
+    z-index: 1 !important;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"]:not([data-compact-export-controls-open="true"]):not([data-compact-export-preview-open="true"]) .compact-export-history-anchor,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"]:not([data-compact-export-controls-open="true"]):not([data-compact-export-preview-open="true"]) .compact-export-history-anchor * {
+    pointer-events: none !important;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-controls-open="true"] .compact-export-history-anchor:not(.under-choice-prompt),
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-preview-open="true"] .compact-export-history-anchor:not(.under-choice-prompt) {
+    z-index: 100006 !important;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-controls-open="true"] .compact-export-history-anchor,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-preview-open="true"] .compact-export-history-anchor,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-controls-open="true"] .compact-export-history-panel,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-preview-open="true"] .compact-export-history-panel,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-controls-open="true"] .compact-export-history-scroll,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-preview-open="true"] .compact-export-history-scroll,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-controls-open="true"] .compact-export-history-scroll-content,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-preview-open="true"] .compact-export-history-scroll-content,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-controls-open="true"] .compact-export-history-message,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-preview-open="true"] .compact-export-history-message {
+    pointer-events: none !important;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-controls-open="true"] .compact-export-history-bubble,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-preview-open="true"] .compact-export-history-bubble,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-controls-open="true"] .compact-export-history-controls,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-preview-open="true"] .compact-export-history-controls,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-controls-open="true"] .compact-export-preview-region,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-preview-open="true"] .compact-export-preview-region,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-controls-open="true"] .compact-export-history-resize-bar,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-preview-open="true"] .compact-export-history-resize-bar,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-controls-open="true"] .compact-export-history-scrollbar-hit,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-preview-open="true"] .compact-export-history-scrollbar-hit {
+    pointer-events: auto !important;
+}
+
+/* Keep choice prompts above dimmed history hit regions. */
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"] .compact-export-history-anchor.under-choice-prompt,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"] .compact-export-history-anchor.under-choice-prompt * {
+    pointer-events: none !important;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"] .compact-chat-surface-shell {
+    z-index: 100004 !important;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"] .compact-input-tool-fan,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"] .composer-icon-popover {
+    z-index: 100005 !important;
+}
 /* compact 态不再把最小化按钮渲染成模型旁的悬浮球：呼吸灯外发光会被 Electron 窗口形状裁切，
    且球漂在角色旁观感很怪。最小化的宿主管线（按钮 DOM、toggleMinimized、折叠动画）保留，
    compact 态下的最小化入口呈现方式后续单独设计。 */
@@ -1268,7 +1562,8 @@ body.react-chat-window-resizing {
 }
 
 [data-theme="dark"] #react-chat-window-shell.is-minimized {
-    background: rgba(68, 183, 254, 0.2);
+    background: transparent;
+    box-shadow: none;
 }
 
 [data-theme="dark"] #avatarPreviewHeaderButton,
@@ -2688,19 +2983,20 @@ body.react-chat-window-dragging {
 }
 
 #chat-container.minimized {
-    background: rgba(68, 183, 254, 0.15);
+    background: transparent;
+    box-shadow: none;
     opacity: 1;
-    width: 50px !important;
-    height: 50px !important;
-    max-height: 50px !important;
+    width: 51px !important;
+    height: 51px !important;
+    max-height: 51px !important;
     min-width: 0 !important;
     min-height: 0 !important;
     padding: 0;
     cursor: pointer;
     border-radius: 50%;
     transition: none;
-    animation: breathingGlow 2s ease-in-out infinite;
-    will-change: box-shadow;
+    animation: none;
+    will-change: auto;
 }
 
 #chat-container.minimized #chat-header {
@@ -2769,19 +3065,6 @@ body.react-chat-window-dragging {
 #chat-container.minimized #toggle-chat-btn img {
     width: 100% !important;
     height: 100% !important;
-}
-
-/* 折叠状态下的呼吸特效动画 */
-@keyframes breathingGlow {
-
-    0%,
-    100% {
-        box-shadow: 0 0 8px rgba(68, 183, 254, 0.6);
-    }
-
-    50% {
-        box-shadow: 0 0 16px rgba(68, 183, 254, 1);
-    }
 }
 
 #input-row {
@@ -3032,12 +3315,13 @@ body.react-chat-window-dragging {
     }
 
     body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
-        width: calc(100vw - 16px) !important;
-        left: 8px !important;
-        right: 8px;
+        width: var(--compact-surface-width, calc(100vw - 16px)) !important;
+        left: var(--compact-surface-left, 8px) !important;
+        right: auto;
         bottom: 8px !important;
         margin-left: 0 !important;
         transform: none !important;
+        overflow: visible;
     }
 
     body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell #react-chat-window-root {
@@ -3045,6 +3329,11 @@ body.react-chat-window-dragging {
         flex: 1 1 auto;
         overflow: hidden;
         min-height: 0;
+    }
+
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root,
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .chat-window.chat-surface-mode-compact {
+        overflow: visible;
     }
 
     body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell .app-shell {
@@ -3130,11 +3419,11 @@ body.react-chat-window-dragging {
         background: rgba(150, 160, 175, 0.4);
     }
 
-    /* ---- 手机端最小化：50px 圆形悬浮球（与桌面端一致）----
+    /* ---- 手机端最小化：51px 毛线球（与桌面端一致）----
        替代原先的全宽底部胶囊，使用圆形小球，可自由拖动 */
     body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell.is-minimized {
-        width: 50px !important;
-        height: 50px !important;
+        width: 51px !important;
+        height: 51px !important;
         border-radius: 50%;
     }
 

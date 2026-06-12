@@ -407,7 +407,11 @@ async def get_conversation_settings():
     控制组/实验组在客户端跟 server 端出现不一致。
     """
     try:
-        settings = await aload_global_conversation_settings()
+        # 先解析 telemetry branch、再 load settings：get_telemetry_branch 可能在 slow
+        # path 触发退役实验（proactive_interval_20s）的一次性偏好回滚（20s→15s）。若按
+        # 旧顺序先 load，会拿到回滚前的 20s 返回前端；而存量用户没有首启 pending marker、
+        # 会直接应用并经 periodic sync 把 20s POST 回来，撤销本次迁移（见 token_tracker
+        # ._rollback_retired_proactive_interval）。
         try:
             from utils.token_tracker import get_telemetry_branch
             telemetry_branch = await asyncio.to_thread(get_telemetry_branch)
@@ -418,6 +422,7 @@ async def get_conversation_settings():
             # 下次 fetch 成功再决议
             logger.exception("解析 telemetry branch 失败，返回 null 让前端保留 pending marker")
             telemetry_branch = None
+        settings = await aload_global_conversation_settings()
         return {"success": True, "settings": settings, "telemetryBranch": telemetry_branch}
     except Exception as e:
         logger.exception(f"获取对话设置失败: {e}")
@@ -682,30 +687,8 @@ async def update_core_config(request: Request):
         if not data:
             return {"success": False, "error": "无效的数据"}
         
-        # 检查是否启用了自定义API
         enable_custom_api = data.get('enableCustomApi', False)
-        
-        # 如果启用了自定义API，不需要强制检查核心API key
-        if not enable_custom_api:
-            # 检查是否为免费版配置
-            is_free_version = data.get('coreApi') == 'free' or data.get('assistApi') == 'free'
-            
-            if 'coreApiKey' not in data:
-                return {"success": False, "error": "缺少coreApiKey字段"}
-            
-            api_key = data['coreApiKey']
-            if api_key is None:
-                return {"success": False, "error": "API Key不能为null"}
-            
-            if not isinstance(api_key, str):
-                return {"success": False, "error": "API Key必须是字符串类型"}
-            
-            api_key = api_key.strip()
-            
-            # 免费版允许使用 'free-access' 作为API key，不进行空值检查
-            if not is_free_version and not api_key:
-                return {"success": False, "error": "API Key不能为空"}
-        
+
         # 保存到core_config.json
         from utils.config_manager import get_config_manager
         config_manager = get_config_manager()
@@ -719,6 +702,31 @@ async def update_core_config(request: Request):
         except Exception:
             existing_core_cfg = {}
         core_cfg = dict(existing_core_cfg) if isinstance(existing_core_cfg, dict) else {}
+
+        def _incoming_provider(field, error_message):
+            if field not in data:
+                return None
+            provider = data.get(field)
+            if provider is not None and not isinstance(provider, str):
+                raise TypeError(error_message)
+            provider = (provider or "").strip()
+            return provider or None
+
+        def _stored_provider(field):
+            provider = core_cfg.get(field)
+            if not isinstance(provider, str):
+                return None
+            provider = provider.strip()
+            return provider or None
+
+        try:
+            incoming_core_api = _incoming_provider('coreApi', 'coreApi must be a string')
+            incoming_assist_api = _incoming_provider('assistApi', 'assistApi must be a string')
+        except TypeError as exc:
+            return {"success": False, "error": str(exc)}
+
+        effective_core_api = incoming_core_api or _stored_provider('coreApi')
+        core_uses_free_provider = effective_core_api == 'free'
         
         def _is_masked_secret(value) -> bool:
             if not isinstance(value, str):
@@ -747,16 +755,27 @@ async def update_core_config(request: Request):
                     core_cfg['coreApiKey'] = api_key
         else:
             # 未启用自定义API时，必须设置coreApiKey
+            if 'coreApiKey' not in data and not core_uses_free_provider:
+                return {"success": False, "error": "缺少coreApiKey字段"}
             try:
-                api_key = _normalize_core_api_key(data.get('coreApiKey', ''))
+                api_key = (
+                    _normalize_core_api_key(data['coreApiKey'])
+                    if 'coreApiKey' in data
+                    else None
+                )
             except (TypeError, ValueError) as exc:
                 return {"success": False, "error": str(exc)}
+            if not core_uses_free_provider and not api_key:
+                return {"success": False, "error": "API Key不能为空"}
             if api_key is not None:
                 core_cfg['coreApiKey'] = api_key
-        if 'coreApi' in data:
-            core_cfg['coreApi'] = data['coreApi']
-        if 'assistApi' in data:
-            core_cfg['assistApi'] = data['assistApi']
+        # coreApi / assistApi 为空串 = 前端在配置尚未加载完成（下拉被清空）时提交。
+        # 绝不能用空值覆盖已存的有效 provider——否则重新加载时空值会被兜底成别的服务商，
+        # 把免费版用户悄悄切走。仅在非空时写入；空值保留 existing_core_cfg 里的旧值。
+        if incoming_core_api:
+            core_cfg['coreApi'] = incoming_core_api
+        if incoming_assist_api:
+            core_cfg['assistApi'] = incoming_assist_api
         if 'resolvedProviderUrls' in data:
             resolved_urls = data.get('resolvedProviderUrls')
             if not isinstance(resolved_urls, dict):
@@ -1618,9 +1637,12 @@ def _build_save_connectivity_targets(core_cfg: dict, api_config: dict) -> dict[s
         }
 
     core_provider = str(core_cfg.get("coreApi") or "qwen").strip()
-    assist_provider = str(core_cfg.get("assistApi") or "qwen").strip()
-    if core_provider == "free":
-        assist_provider = "free"
+    # 显式选择的 assistApi 一律被尊重（free 与付费可双向组合）；
+    # 仅在缺失时沿用 coreApi 偏好做默认：core=free 默认 free，其他默认 qwen。
+    # 与 ConfigManager.get_core_config() 的解析规则保持一致。
+    assist_provider = str(core_cfg.get("assistApi") or "").strip()
+    if not assist_provider:
+        assist_provider = "free" if core_provider == "free" else "qwen"
 
     _add("core", core_provider)
     _add("assist", assist_provider)

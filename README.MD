@@ -466,6 +466,16 @@ uv run python app/agent_server.py
 # 5. 访问 http://localhost:48911 配置 API Key 并开始使用
 ```
 
+**调试聊天界面形态（full / compact）**：Web 端默认 `full`（完整聊天窗口），Electron 端默认 `compact`（悬浮对话条）。在浏览器控制台用 localStorage 切换测试（硬刷新生效）：
+
+```js
+localStorage.setItem('neko.reactChatWindow.chatSurfaceMode','full');    location.reload(); // 进 full
+localStorage.setItem('neko.reactChatWindow.chatSurfaceMode','compact'); location.reload(); // 进 compact
+localStorage.removeItem('neko.reactChatWindow.chatSurfaceMode');        location.reload(); // 回默认
+```
+
+形态说明、各形态自测点与三端验证详见 [`docs/design/compact-chat-mode-design.md`](docs/design/compact-chat-mode-design.md) 的「形态切换与本地测试」。
+
 开发者建议加入企鹅群 995414391 交流。
 
 </details>

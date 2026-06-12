@@ -62,19 +62,20 @@ const PLUGIN_MAIN_SPOTLIGHT_INSET = -25
 const PLUGIN_DASHBOARD_DEFAULT_TOTAL_MS = 9000
 const MIN_SPOTLIGHT_RADIUS = 4
 const RESISTANCE_LINES = [
-  '喂！不要拽我啦，还没轮到你的回合呢！',
-  '等一下啦！还没结束呢，不要随便打断我啦！',
+  '喂！不要拽我啦，现在还没轮到你的回合呢！',
+  '等一下啦！还没结束呢，不要这么随便打断我啦！',
 ] as const
 const RESISTANCE_VOICE_KEYS = [
   'interrupt_resist_light_1',
   'interrupt_resist_light_3',
 ] as const
-const ANGRY_EXIT_LINE = '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！'
+const ANGRY_EXIT_LINE = '人类！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！'
 const GUIDE_AUDIO_FILE_NAMES = {
   takeover_plugin_preview_dashboard: '有了它们，我不光能看.mp3',
   interrupt_resist_light_1: '喂！不要拽我啦，还没.mp3',
+  interrupt_resist_light_1_zh: '喂！不要拽我啦，现在.mp3',
   interrupt_resist_light_3: '等一下啦！还没结束呢.mp3',
-  interrupt_angry_exit: '人类~~~~！你真的.mp3',
+  interrupt_angry_exit: '人类！你真的很没礼貌.mp3',
 } as const
 const GUIDE_AUDIO_BY_KEY = {
   takeover_plugin_preview_dashboard: {
@@ -85,7 +86,7 @@ const GUIDE_AUDIO_BY_KEY = {
     ru: GUIDE_AUDIO_FILE_NAMES.takeover_plugin_preview_dashboard,
   },
   interrupt_resist_light_1: {
-    zh: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1,
+    zh: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1_zh,
     en: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1,
     ja: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1,
     ko: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1,

@@ -22,8 +22,6 @@ import router from './router'
 import { useConnectionStore } from './stores/connection'
 import { initPluginDashboardYuiGuideRuntime } from './yui-guide-runtime'
 
-// 初始化深色模式（在应用挂载前）
-// 这样可以避免页面闪烁，并确保状态在应用启动时就正确初始化
 initDarkMode()
 initPluginDashboardYuiGuideRuntime()
 
@@ -76,31 +74,21 @@ function initNativeDragGuard() {
 
 initNativeDragGuard()
 
-console.log('🚀 Starting N.E.K.O Plugin Management System...')
-
 const app = createApp(App)
 
-// 注册所有图标
-console.log('📦 Registering Element Plus icons...')
 for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
   app.component(key, component)
 }
 
-console.log('✅ Setting up Pinia...')
 const pinia = createPinia()
 app.use(pinia)
 
-console.log('✅ Setting up Router...')
 app.use(router)
 
-console.log('✅ Setting up i18n...')
 app.use(i18n)
 
-console.log('✅ Setting up Motion...')
 app.use(MotionPlugin)
 
-console.log('✅ Setting up Element Plus...')
-// 根据当前语言设置 Element Plus 的 locale
 const currentLocale = getLocale()
 const elLocaleMap: Record<string, typeof zhCn> = {
   'zh-CN': zhCn,
@@ -113,16 +101,15 @@ const elLocaleMap: Record<string, typeof zhCn> = {
   'pt': ptLocale
 }
 app.use(ElementPlus, {
-  locale: elLocaleMap[currentLocale] ?? zhCn
+  locale: elLocaleMap[currentLocale] ?? zhCn,
+  zIndex: 12000,
+  message: {
+    offset: 54
+  }
 })
 
-console.log('✅ Mounting app to #app...')
 app.mount('#app')
 
-console.log('✅ App mounted successfully!')
-
-// 启动连接健康检查
 const connectionStore = useConnectionStore()
 connectionStore.startHealthCheck()
 window.addEventListener('beforeunload', () => connectionStore.stopHealthCheck())
-console.log('✅ Health check started!')

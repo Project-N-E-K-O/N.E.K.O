@@ -342,6 +342,33 @@ class TestAssistFollowsCore:
         assert response['assistApiKeyQwen'] == ''
 
     @pytest.mark.unit
+    def test_free_core_defaults_assist_to_free_when_key_missing(self, config_manager):
+        """Legacy file with only coreApi=free and no saved assistApi: assist follows free.
+
+        The template default assistApi='qwen' swallows the "key missing" signal
+        during merge; without the special case, assist lands on qwen with no
+        API key (voice works, but text/memory etc. all fail auth).
+        """
+        _write_core_config(config_manager, {
+            'coreApi': 'free',
+        })
+        cfg = config_manager.get_core_config()
+
+        assert cfg['assistApi'] == 'free'
+        assert cfg.get('CORE_API_TYPE') == 'free'
+
+    @pytest.mark.unit
+    def test_non_free_core_keeps_template_assist_when_key_missing(self, config_manager):
+        """coreApi=qwen with assistApi key missing keeps template default qwen."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+        })
+        cfg = config_manager.get_core_config()
+
+        assert cfg['assistApi'] == 'qwen'
+
+    @pytest.mark.unit
     def test_free_core_honors_explicit_assist(self, config_manager):
         """coreApi=free + assistApi=silicon → 显式选择被保留，agent/text 走 silicon。"""
         _write_core_config(config_manager, {
@@ -371,6 +398,49 @@ class TestAssistFollowsCore:
 
         assert cfg['assistApi'] == 'silicon'
         assert cfg['OPENROUTER_URL'] == 'https://api.siliconflow.cn/v1'
+
+
+# ---------------------------------------------------------------------------
+# 3b. 默认兜底：coreApi 为空/缺失时保持历史默认 qwen
+# ---------------------------------------------------------------------------
+class TestEmptyCoreApiFallsBackToDefaultQwen:
+
+    @pytest.mark.unit
+    def test_empty_core_api_falls_back_to_qwen(self, config_manager):
+        """coreApi/assistApi='' → 兜底到默认 qwen。"""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'free-access',
+            'coreApi': '',
+            'assistApi': '',
+        })
+        cfg = config_manager.get_core_config()
+
+        assert cfg['CORE_API_TYPE'] == 'qwen'
+        assert cfg['assistApi'] == 'qwen'
+        assert 'dashscope.aliyuncs.com' in (cfg.get('CORE_URL') or '')
+
+    @pytest.mark.unit
+    def test_missing_core_api_keys_fall_back_to_qwen(self, config_manager):
+        """core_config.json 缺少 coreApi/assistApi 字段 → 兜底 qwen。"""
+        _write_core_config(config_manager, {'coreApiKey': 'free-access'})
+        cfg = config_manager.get_core_config()
+
+        assert cfg['CORE_API_TYPE'] == 'qwen'
+        assert cfg['assistApi'] == 'qwen'
+        assert 'dashscope.aliyuncs.com' in (cfg.get('CORE_URL') or '')
+
+    @pytest.mark.unit
+    def test_explicit_paid_provider_still_honored(self, config_manager):
+        """用户显式选了 qwen 必须被尊重。"""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-real-qwen',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+        })
+        cfg = config_manager.get_core_config()
+
+        assert cfg['CORE_API_TYPE'] == 'qwen'
+        assert 'dashscope.aliyuncs.com' in (cfg.get('CORE_URL') or '')
 
 
 # ---------------------------------------------------------------------------
@@ -708,6 +778,33 @@ class TestAgentUrlRegionRouting:
     def test_normalize_agent_url_non_string_passthrough(self, config_manager):
         config_manager._check_non_mainland = lambda: True
         assert config_manager._normalize_agent_url(None) is None
+
+
+# ---------------------------------------------------------------------------
+# 7c. Free API URL region routing: 海外统一走 www.lanlan.app（含 /tts）
+# ---------------------------------------------------------------------------
+class TestFreeApiUrlRegionRouting:
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ('non_mainland', 'url_in', 'expected'),
+        [
+            # 海外：lanlan.tech → lanlan.app，/tts 不再降级到裸 lanlan.app，
+            # 统一停在 www.lanlan.app（透传 voice 到 Gemini）。
+            (True, 'wss://www.lanlan.tech/tts', 'wss://www.lanlan.app/tts'),
+            (True, 'wss://www.lanlan.tech/core', 'wss://www.lanlan.app/core'),
+            (True, 'https://www.lanlan.tech/text/v1', 'https://www.lanlan.app/text/v1'),
+            # 国内：原样保留。
+            (False, 'wss://www.lanlan.tech/tts', 'wss://www.lanlan.tech/tts'),
+            # 非 lanlan.tech 自定义 URL 不受影响。
+            (True, 'wss://api.stepfun.com/v1/realtime/audio', 'wss://api.stepfun.com/v1/realtime/audio'),
+        ],
+    )
+    def test_adjust_free_api_url_keeps_tts_on_www_lanlan_app(
+        self, config_manager, non_mainland, url_in, expected,
+    ):
+        config_manager._check_non_mainland = lambda: non_mainland
+        assert config_manager._adjust_free_api_url(url_in, True) == expected
 
 
 # ---------------------------------------------------------------------------

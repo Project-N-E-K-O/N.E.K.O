@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import os
 import shutil
+import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -71,6 +73,7 @@ from plugin.plugins.study_companion.study_ocr_pipeline import (
     StudyCaptureProfile,
     StudyOcrPipeline,
 )
+from plugin.plugins.study_companion._event_bus import StudyEvent
 from plugin.plugins.study_companion import service as study_service
 from plugin.plugins.study_companion import tesseract_support as study_tesseract_support
 from plugin.plugins.study_companion.screen_classifier import (
@@ -90,6 +93,7 @@ from plugin.sdk.plugin import Err, Ok
 class _Logger:
     def __init__(self) -> None:
         self.warnings: list[tuple[tuple[object, ...], dict[str, object]]] = []
+        self.exceptions: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     def info(self, *args, **kwargs):
         return None
@@ -105,6 +109,7 @@ class _Logger:
         return None
 
     def exception(self, *args, **kwargs):
+        self.exceptions.append((args, kwargs))
         return None
 
 
@@ -437,6 +442,7 @@ def test_study_store_round_trip_and_export(tmp_path: Path) -> None:
     config = StudyConfig(language="en", history_limit=2)
     state = build_initial_state(mode=config.mode)
     state.last_ocr_text = "photosynthesis"
+    store._INTERACTION_TRIM_INTERVAL = 3
 
     store.save_config(config)
     store.save_state(state)
@@ -578,6 +584,351 @@ def test_study_store_enforces_sqlite_foreign_keys(tmp_path: Path) -> None:
         row = store._require_conn().execute("PRAGMA foreign_keys").fetchone()
         assert row is not None
         assert int(row[0]) == 1
+    finally:
+        store.close()
+
+
+def test_study_store_enables_wal_and_read_connection(tmp_path: Path) -> None:
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+    try:
+        write_mode = store._require_conn().execute("PRAGMA journal_mode").fetchone()
+        read_mode = store._require_read_conn().execute("PRAGMA journal_mode").fetchone()
+
+        assert write_mode is not None
+        assert read_mode is not None
+        assert str(write_mode[0]).lower() == "wal"
+        assert str(read_mode[0]).lower() == "wal"
+    finally:
+        store.close()
+
+
+def test_study_store_open_falls_back_when_wal_pragma_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_connect = sqlite3.connect
+    created: list[_ProxyConnection] = []
+
+    class _ProxyConnection:
+        def __init__(self, conn: sqlite3.Connection) -> None:
+            object.__setattr__(self, "_conn", conn)
+            object.__setattr__(self, "wal_failures", 0)
+            object.__setattr__(self, "closed", False)
+
+        def execute(self, sql, *args, **kwargs):  # noqa: ANN001
+            if str(sql).strip().upper().startswith("PRAGMA JOURNAL_MODE=WAL"):
+                object.__setattr__(self, "wal_failures", self.wal_failures + 1)
+                raise sqlite3.OperationalError("wal denied")
+            return self._conn.execute(sql, *args, **kwargs)
+
+        def close(self) -> None:
+            object.__setattr__(self, "closed", True)
+            self._conn.close()
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._conn, name)
+
+        def __setattr__(self, name: str, value: object) -> None:
+            if name.startswith("_") or name in {"wal_failures", "closed"}:
+                object.__setattr__(self, name, value)
+            else:
+                setattr(self._conn, name, value)
+
+    def connect_spy(*args, **kwargs):  # noqa: ANN001
+        proxy = _ProxyConnection(real_connect(*args, **kwargs))
+        created.append(proxy)
+        return proxy
+
+    logger = _Logger()
+    monkeypatch.setattr(sqlite3, "connect", connect_spy)
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", logger)
+    store.open()
+    try:
+        assert created[0].wal_failures == 1
+        assert logger.warnings
+        assert "falling back" in str(logger.warnings[-1][0][0])
+    finally:
+        store.close()
+
+
+def test_study_store_open_closes_connection_when_initialization_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_connect = sqlite3.connect
+    created: list[_CloseTrackingConnection] = []
+
+    class _CloseTrackingConnection:
+        def __init__(self, conn: sqlite3.Connection) -> None:
+            object.__setattr__(self, "_conn", conn)
+            object.__setattr__(self, "closed", False)
+
+        def close(self) -> None:
+            object.__setattr__(self, "closed", True)
+            self._conn.close()
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._conn, name)
+
+        def __setattr__(self, name: str, value: object) -> None:
+            if name.startswith("_") or name == "closed":
+                object.__setattr__(self, name, value)
+            else:
+                setattr(self._conn, name, value)
+
+    def connect_spy(*args, **kwargs):  # noqa: ANN001
+        proxy = _CloseTrackingConnection(real_connect(*args, **kwargs))
+        created.append(proxy)
+        return proxy
+
+    def fail_init(self):  # noqa: ANN001
+        raise RuntimeError("init failed")
+
+    monkeypatch.setattr(sqlite3, "connect", connect_spy)
+    monkeypatch.setattr(StudyStore, "_init_db", fail_init)
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+
+    with pytest.raises(RuntimeError, match="init failed"):
+        store.open()
+
+    assert created
+    assert created[0].closed is True
+    assert store._conn is None
+
+
+def test_study_store_read_connection_requests_wal_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_connect = sqlite3.connect
+    statements: list[str] = []
+
+    class _StatementProxy:
+        def __init__(self, conn: sqlite3.Connection) -> None:
+            object.__setattr__(self, "_conn", conn)
+
+        def execute(self, sql, *args, **kwargs):  # noqa: ANN001
+            statements.append(str(sql))
+            return self._conn.execute(sql, *args, **kwargs)
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._conn, name)
+
+        def __setattr__(self, name: str, value: object) -> None:
+            if name.startswith("_"):
+                object.__setattr__(self, name, value)
+            else:
+                setattr(self._conn, name, value)
+
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+
+    def connect_spy(*args, **kwargs):  # noqa: ANN001
+        return _StatementProxy(real_connect(*args, **kwargs))
+
+    monkeypatch.setattr(sqlite3, "connect", connect_spy)
+    try:
+        store._require_read_conn()
+
+        assert any(
+            statement.strip().upper().startswith("PRAGMA JOURNAL_MODE=WAL")
+            for statement in statements
+        )
+    finally:
+        store.close()
+
+
+def test_study_store_journal_config_falls_back_when_wal_returns_non_wal(
+    tmp_path: Path,
+) -> None:
+    class _Cursor:
+        def __init__(self, value: str) -> None:
+            self.value = value
+
+        def fetchone(self) -> tuple[str]:
+            return (self.value,)
+
+    class _Connection:
+        def __init__(self) -> None:
+            self.statements: list[str] = []
+
+        def execute(self, sql: str) -> _Cursor:
+            self.statements.append(sql)
+            if sql == "PRAGMA journal_mode=WAL":
+                return _Cursor("delete")
+            if sql == "PRAGMA journal_mode=DELETE":
+                return _Cursor("delete")
+            return _Cursor("")
+
+    conn = _Connection()
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+
+    mode = store._configure_connection_journal(conn, role="read")  # type: ignore[arg-type]
+
+    assert mode == "delete"
+    assert conn.statements == ["PRAGMA journal_mode=WAL", "PRAGMA journal_mode=DELETE"]
+
+
+def test_study_store_serializes_fallback_reads_when_wal_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def configure_journal(self, conn, *, role: str):  # noqa: ANN001
+        del self, conn
+        return "delete" if role == "write" else "wal"
+
+    monkeypatch.setattr(StudyStore, "_configure_connection_journal", configure_journal)
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+
+    def unexpected_read_connect(*_args, **_kwargs):
+        raise AssertionError("read connection should be disabled without WAL")
+
+    monkeypatch.setattr(sqlite3, "connect", unexpected_read_connect)
+    try:
+        class _TrackingRLock:
+            def __init__(self) -> None:
+                self._lock = threading.RLock()
+                self.depth = 0
+
+            def acquire(self, *args, **kwargs) -> bool:  # noqa: ANN002, ANN003
+                acquired = self._lock.acquire(*args, **kwargs)
+                if acquired:
+                    self.depth += 1
+                return acquired
+
+            def release(self) -> None:
+                self.depth -= 1
+                self._lock.release()
+
+            def __enter__(self) -> "_TrackingRLock":
+                self.acquire()
+                return self
+
+            def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+                self.release()
+                return False
+
+            @property
+            def held(self) -> bool:
+                return self.depth > 0
+
+        lock = _TrackingRLock()
+        store._lock = lock  # type: ignore[assignment]
+        observed: list[bool] = []
+
+        def lock_held() -> int:
+            observed.append(lock.held)
+            return int(lock.held)
+
+        store._require_conn().create_function("lock_held", 0, lock_held)
+
+        row = (
+            store._require_read_conn()
+            .execute("SELECT lock_held() AS held")
+            .fetchone()
+        )
+
+        assert row is not None
+        assert int(row["held"]) == 1
+        assert observed == [True]
+        assert lock.held is False
+    finally:
+        store.close()
+
+
+def test_study_store_uses_thread_local_read_connections(tmp_path: Path) -> None:
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+    try:
+        main_conn = store._require_read_conn()
+        barrier = threading.Barrier(3)
+
+        def read_conn_ids() -> tuple[int, int]:
+            barrier.wait(timeout=1.0)
+            first = store._require_read_conn()
+            second = store._require_read_conn()
+            return id(first), id(second)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(read_conn_ids) for _ in range(2)]
+            barrier.wait(timeout=1.0)
+            thread_results = [future.result(timeout=1.0) for future in futures]
+
+        assert id(main_conn) not in {item[0] for item in thread_results}
+        assert all(first == second for first, second in thread_results)
+        assert len({item[0] for item in thread_results}) == 2
+    finally:
+        store.close()
+
+
+def test_study_store_append_interaction_trims_on_interval(tmp_path: Path) -> None:
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+    try:
+        store._INTERACTION_TRIM_INTERVAL = 3
+        for index in range(2):
+            store.append_interaction(
+                kind="concept_explain",
+                input_text=f"before-{index}",
+                output_text="ok",
+                history_limit=1,
+            )
+
+        assert len(store.list_interactions(limit=10)) == 2
+
+        store.append_interaction(
+            kind="concept_explain",
+            input_text="trim",
+            output_text="ok",
+            history_limit=1,
+        )
+
+        remaining = store.list_interactions(limit=10)
+        assert len(remaining) == 1
+        assert remaining[0]["input_text"] == "trim"
+    finally:
+        store.close()
+
+
+def test_study_store_open_resets_interaction_trim_counter(tmp_path: Path) -> None:
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+    store._interaction_count = 99
+    store.close()
+
+    store.open()
+    try:
+        assert store._interaction_count == 0
+    finally:
+        store.close()
+
+
+def test_study_store_batch_write_answer_data_logs_rollback_context(
+    tmp_path: Path,
+) -> None:
+    logger = _Logger()
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", logger)
+    store.open()
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            store.batch_write_answer_data(
+                session_id="rollback-session",
+                mode="teaching",
+                topic_id="missing-topic",
+                question={"question": "q"},
+                user_answer="a",
+                eval_result={"verdict": "correct"},
+                response_time_ms=None,
+                fsrs_card={"topic_id": "missing-topic", "state": "new"},
+                fsrs_rating=3,
+            )
+
+        assert logger.exceptions
+        assert "batch_write_answer_data failed" in str(logger.exceptions[-1][0][0])
+        assert "rollback-session" in str(logger.exceptions[-1][0])
+        assert "missing-topic" in str(logger.exceptions[-1][0])
     finally:
         store.close()
 
@@ -3607,6 +3958,70 @@ async def test_communication_disabled_skips_eventbus(
         }
     finally:
         await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_stops_event_bus_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en"},
+            "study_companion": {"communication": {"enabled": True}},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    assert plugin._event_bus is not None
+    bus = plugin._event_bus
+
+    task = bus.schedule_emit(
+        StudyEvent(
+            name="session_summarized",
+            payload={"duration_minutes": 1, "questions_attempted": 1},
+        )
+    )
+    assert task is not None
+
+    await plugin.shutdown()
+
+    assert bus._worker_task is None
+    assert task.done()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_clears_ocr_pipeline_when_close_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+
+    class _FailingClosePipeline:
+        def close(self) -> None:
+            raise RuntimeError("ocr close failed")
+
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    plugin.logger = ctx.logger
+    plugin._ocr_pipeline = _FailingClosePipeline()  # type: ignore[assignment]
+
+    shutdown_result = await plugin.shutdown()
+
+    assert isinstance(shutdown_result, Ok)
+    assert plugin._ocr_pipeline is None
+    assert any(
+        "study shutdown OCR pipeline cleanup failed" in str(item[0][0])
+        for item in ctx.logger.warnings
+    )
+    assert any("ocr close failed" in str(item) for item in ctx.logger.warnings)
 
 
 @pytest.mark.asyncio

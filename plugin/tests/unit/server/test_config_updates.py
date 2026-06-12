@@ -57,3 +57,23 @@ def test_update_plugin_config_toml_rejects_none() -> None:
         module.update_plugin_config_toml("demo", None)  # type: ignore[arg-type]
 
     assert exc_info.value.status_code == 400
+
+
+@pytest.mark.plugin_unit
+def test_update_plugin_config_open_failure_reports_path_and_stage(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "missing" / "plugin.toml"
+
+    monkeypatch.setattr(module, "get_plugin_update_lock", lambda plugin_id: threading.Lock())
+    monkeypatch.setattr(module, "get_plugin_config_path", lambda plugin_id: config_path)
+
+    with pytest.raises(HTTPException) as exc_info:
+        module.update_plugin_config("demo", {"runtime": {"enabled": False}})
+
+    detail = str(exc_info.value.detail)
+    assert exc_info.value.status_code == 500
+    assert str(config_path) in detail
+    assert "while open" in detail
+    assert "FileNotFoundError" in detail

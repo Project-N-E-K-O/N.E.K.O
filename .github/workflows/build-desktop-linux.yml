@@ -178,6 +178,16 @@ jobs:
       # anonymous profile folder so the bundled app can run vector memory
       # offline. The runtime (memory/embeddings.py) auto-falls back to bundled
       # assets when the user's app-data profile is incomplete.
+      # Cache the weights by revision so huggingface.co is hit at most once per
+      # pin (per OS) instead of every build — the same per-IP HTTP 429 throttle
+      # that broke the Docker build can bite here too. Cache hit -> the next step
+      # is a no-op ("keep existing"); only a cold cache actually downloads.
+      - name: Cache embedding model weights
+        uses: actions/cache@v4
+        with:
+          path: data/embedding_models
+          key: embedding-model-${{ runner.os }}-${{ env.EMBEDDING_MODEL_REVISION }}-both
+
       - name: Prepare embedding model assets
         shell: bash
         run: |
@@ -278,6 +288,12 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package=tiktoken"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=tiktoken_ext"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=onnxruntime"
+          # onnxruntime.transformers/ is a benchmark + model-conversion toolbox
+          # nothing at runtime imports (rapidocr uses only the core InferenceSession).
+          # --include-package=onnxruntime would recurse and compile the whole subtree,
+          # including a 130k+ line gpt2 benchmark C unit that crashes the C backend.
+          # Mirrors build-desktop.yml.
+          NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=onnxruntime.transformers"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=tokenizers"
 
           # Package data

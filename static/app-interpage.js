@@ -61,7 +61,6 @@
             'body.neko-main-ui-hidden-by-model-manager #live2d-canvas,',
             'body.neko-main-ui-hidden-by-model-manager #vrm-canvas,',
             'body.neko-main-ui-hidden-by-model-manager #mmd-canvas,',
-            'body.neko-main-ui-hidden-by-model-manager #chat-container,',
             'body.neko-main-ui-hidden-by-model-manager #react-chat-window-overlay,',
             'body.neko-main-ui-hidden-by-model-manager #live2d-floating-buttons,',
             'body.neko-main-ui-hidden-by-model-manager #vrm-floating-buttons,',
@@ -1450,6 +1449,11 @@
     var _voiceConfigSwitchWaiters = [];
 
     function getCurrentLanlanName() {
+        try {
+            if (window.appState && typeof window.appState.lanlan_name === 'string' && window.appState.lanlan_name) {
+                return window.appState.lanlan_name;
+            }
+        } catch (_) {}
         return (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
     }
 
@@ -1477,6 +1481,118 @@
                 textInputArea.classList.remove('hidden');
             }
         }
+    }
+
+    function readGoodbyeChatComposerHidden() {
+        try {
+            if (typeof window.isNekoGoodbyeModeActive === 'function'
+                && window.isNekoGoodbyeModeActive()) {
+                return true;
+            }
+        } catch (_) {}
+        if (window.__nekoGoodbyeChatComposerHidden
+            && typeof window.__nekoGoodbyeChatComposerHidden === 'object'
+            && window.__nekoGoodbyeChatComposerHidden.hidden === true) {
+            return true;
+        }
+        return !!(
+            (window.live2dManager && window.live2dManager._goodbyeClicked)
+            || (window.vrmManager && window.vrmManager._goodbyeClicked)
+            || (window.mmdManager && window.mmdManager._goodbyeClicked)
+            || (window.__nekoGoodbyeSilentState && window.__nekoGoodbyeSilentState.active === true)
+        );
+    }
+
+    function applyGoodbyeChatComposerHidden(hidden, reason) {
+        hidden = !!hidden;
+        var detail = {
+            hidden: hidden,
+            reason: reason || (hidden ? 'goodbye' : 'return'),
+            timestamp: Date.now()
+        };
+        window.__nekoGoodbyeChatComposerHidden = detail;
+        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setGoodbyeComposerHidden === 'function') {
+            window.reactChatWindowHost.setGoodbyeComposerHidden(hidden, detail.reason);
+        } else {
+            try {
+                window.dispatchEvent(new CustomEvent('react-chat-window:set-goodbye-composer-hidden', {
+                    detail: detail
+                }));
+            } catch (_) {}
+        }
+    }
+
+    function getGoodbyeChatComposerHiddenElectronBridge() {
+        var bridge = window.nekoElectronGoodbyeChatComposerHidden;
+        return bridge && typeof bridge.send === 'function' ? bridge : null;
+    }
+
+    function postGoodbyeChatComposerHiddenElectron(payload) {
+        var bridge = getGoodbyeChatComposerHiddenElectronBridge();
+        if (!bridge) return false;
+        try {
+            bridge.send(payload || {});
+            return true;
+        } catch (err) {
+            console.warn('[Goodbye] Electron composer hidden bridge failed:', err);
+            return false;
+        }
+    }
+
+    function postGoodbyeChatComposerHiddenPayload(payload) {
+        if (nekoBroadcastChannel) {
+            nekoBroadcastChannel.postMessage(payload);
+        }
+        postGoodbyeChatComposerHiddenElectron(payload);
+    }
+
+    function requestGoodbyeChatComposerHiddenState(reason) {
+        var lanlanName = getCurrentLanlanName();
+        if (!lanlanName) return false;
+        postGoodbyeChatComposerHiddenPayload({
+            action: 'request_goodbye_chat_composer_hidden',
+            reason: reason || 'request-goodbye-chat-composer-hidden',
+            lanlan_name: lanlanName,
+            timestamp: Date.now()
+        });
+        return true;
+    }
+
+    function isGoodbyeChatComposerHiddenMessageForCurrentLanlan(data) {
+        if (!data || !data.lanlan_name) return false;
+        var currentName = getCurrentLanlanName();
+        return !!currentName && data.lanlan_name === currentName;
+    }
+
+    function handleGoodbyeChatComposerHiddenMessage(data, via) {
+        if (!data || !data.action) return false;
+        if (data.action === 'goodbye_chat_composer_hidden') {
+            if (!isGoodbyeChatComposerHiddenMessageForCurrentLanlan(data)) return true;
+            applyGoodbyeChatComposerHidden(!!data.hidden, data.reason || via || 'broadcast');
+            return true;
+        }
+        if (data.action === 'request_goodbye_chat_composer_hidden') {
+            if (isStandaloneChatPage()) return true;
+            if (!isGoodbyeChatComposerHiddenMessageForCurrentLanlan(data)) return true;
+            postGoodbyeChatComposerHiddenState(undefined, 'request-goodbye-chat-composer-hidden');
+            return true;
+        }
+        return false;
+    }
+
+    function postGoodbyeChatComposerHiddenState(hidden, reason) {
+        var lanlanName = getCurrentLanlanName();
+        var nextHidden = hidden === undefined ? readGoodbyeChatComposerHidden() : !!hidden;
+        var nextReason = reason || (nextHidden ? 'goodbye' : 'return');
+        applyGoodbyeChatComposerHidden(nextHidden, nextReason);
+        if (!lanlanName) return;
+        postGoodbyeChatComposerHiddenPayload({
+            action: 'goodbye_chat_composer_hidden',
+            hidden: nextHidden,
+            reason: nextReason,
+            lanlan_name: lanlanName,
+            timestamp: Date.now()
+        });
     }
 
     function pruneVoiceConfigSwitchOps(now) {
@@ -1647,6 +1763,59 @@
     var _yuiGuideChatFlushTimer = null;
     var _yuiGuideChatFlushAttempts = 0;
     var YUI_GUIDE_CHAT_FLUSH_MAX_ATTEMPTS = 50;
+    var IDLE_CHAT_COMPACT_SURFACE_HEARTBEAT_MS = 1000;
+    var idleChatCompactSurfaceHeartbeatTimer = 0;
+    var idleChatCompactSurfaceLastPayload = null;
+
+    function stopIdleChatCompactSurfaceHeartbeat() {
+        if (!idleChatCompactSurfaceHeartbeatTimer) return;
+        window.clearInterval(idleChatCompactSurfaceHeartbeatTimer);
+        idleChatCompactSurfaceHeartbeatTimer = 0;
+    }
+
+    function startIdleChatCompactSurfaceHeartbeat() {
+        if (idleChatCompactSurfaceHeartbeatTimer) return;
+        idleChatCompactSurfaceHeartbeatTimer = window.setInterval(function () {
+            if (!nekoBroadcastChannel ||
+                !idleChatCompactSurfaceLastPayload ||
+                !idleChatCompactSurfaceLastPayload.visible ||
+                !idleChatCompactSurfaceLastPayload.screenRect) {
+                stopIdleChatCompactSurfaceHeartbeat();
+                return;
+            }
+            nekoBroadcastChannel.postMessage(Object.assign({}, idleChatCompactSurfaceLastPayload, {
+                lanlan_name: getCurrentLanlanName(),
+                timestamp: Date.now(),
+                heartbeat: true
+            }));
+        }, IDLE_CHAT_COMPACT_SURFACE_HEARTBEAT_MS);
+    }
+
+    function syncIdleChatCompactSurfaceHeartbeat(payload) {
+        idleChatCompactSurfaceLastPayload = payload || null;
+        if (payload && payload.visible && payload.screenRect) {
+            startIdleChatCompactSurfaceHeartbeat();
+            return;
+        }
+        stopIdleChatCompactSurfaceHeartbeat();
+    }
+
+    function postIdleChatCompactSurfaceState(detail) {
+        if (!nekoBroadcastChannel) return;
+        var screenRect = detail && detail.screenRect ? detail.screenRect : null;
+        var payload = {
+            action: 'idle_chat_compact_surface_state',
+            source: 'chat-window',
+            lanlan_name: getCurrentLanlanName(),
+            visible: !!screenRect,
+            screenRect: screenRect,
+            resizeActive: !!(detail && detail.resizeActive),
+            dragging: !!(detail && detail.dragging),
+            timestamp: Date.now()
+        };
+        nekoBroadcastChannel.postMessage(payload);
+        syncIdleChatCompactSurfaceHeartbeat(payload);
+    }
 
     function scheduleYuiGuideChatMessageFlush(delay) {
         if (_yuiGuideChatFlushTimer) return;
@@ -1692,6 +1861,13 @@
         }
     }
 
+    function appendYuiGuideChatMessage(message) {
+        if (!isStandaloneChatPage()) return;
+        if (!message || typeof message !== 'object') return;
+        _pendingYuiGuideChatMessages.push(message);
+        scheduleYuiGuideChatMessageFlush(0);
+    }
+
     function updatePendingYuiGuideChatMessage(messageId, patch) {
         var targetId = String(messageId || '');
         if (!targetId || !patch || typeof patch !== 'object') {
@@ -1707,13 +1883,6 @@
             return Object.assign({}, message, patch);
         });
         return updated;
-    }
-
-    function appendYuiGuideChatMessage(message) {
-        if (!isStandaloneChatPage()) return;
-        if (!message || typeof message !== 'object') return;
-        _pendingYuiGuideChatMessages.push(message);
-        scheduleYuiGuideChatMessageFlush(0);
     }
 
     function updateYuiGuideChatMessage(messageId, patch) {
@@ -1797,6 +1966,14 @@
                         applyVoiceChatComposerHidden(vcEffectiveHidden);
                         break;
                     }
+                    case 'goodbye_chat_composer_hidden': {
+                        handleGoodbyeChatComposerHiddenMessage(event.data, 'broadcast');
+                        break;
+                    }
+                    case 'request_goodbye_chat_composer_hidden': {
+                        handleGoodbyeChatComposerHiddenMessage(event.data, 'broadcast-request');
+                        break;
+                    }
                     case 'idle_activity': {
                         var idleCurrentName = getCurrentLanlanName();
                         if (event.data.lanlan_name && (!idleCurrentName || event.data.lanlan_name !== idleCurrentName)) break;
@@ -1818,6 +1995,18 @@
                         var idleChatCurrentName = getCurrentLanlanName();
                         if (event.data.lanlan_name && (!idleChatCurrentName || event.data.lanlan_name !== idleChatCurrentName)) break;
                         dispatchIdleChatMinimizedState(event.data);
+                        break;
+                    }
+                    case 'idle_chat_compact_surface_state': {
+                        var compactSurfaceCurrentName = getCurrentLanlanName();
+                        if (event.data.lanlan_name && (!compactSurfaceCurrentName || event.data.lanlan_name !== compactSurfaceCurrentName)) break;
+                        dispatchIdleChatCompactSurfaceState(event.data);
+                        break;
+                    }
+                    case 'idle_cat1_compact_mirror_state': {
+                        var cat1MirrorCurrentName = getCurrentLanlanName();
+                        if (event.data.lanlan_name && (!cat1MirrorCurrentName || event.data.lanlan_name !== cat1MirrorCurrentName)) break;
+                        dispatchIdleCat1CompactMirrorState(event.data);
                         break;
                     }
                     case 'idle_chat_pair_move_bounds': {
@@ -2069,7 +2258,7 @@
 
     function isStandaloneChatPage() {
         var pathname = (window.location && window.location.pathname) || '';
-        return pathname === '/chat' || pathname === '/chat/';
+        return pathname === '/chat' || pathname === '/chat/' || pathname === '/chat_full' || pathname === '/chat_full/';
     }
 
     function dispatchCrossWindowIdleActivity(detail) {
@@ -2105,6 +2294,40 @@
                 reason: '',
                 minimized: false,
                 screenRect: null,
+                timestamp: Date.now(),
+                via: 'broadcast-channel'
+            }, detail || {}, {
+                via: 'broadcast-channel'
+            })
+        }));
+    }
+
+    function dispatchIdleChatCompactSurfaceState(detail) {
+        window.dispatchEvent(new CustomEvent('neko:idle-chat-compact-surface-state', {
+            detail: Object.assign({
+                action: 'idle_chat_compact_surface_state',
+                source: '',
+                reason: '',
+                visible: false,
+                screenRect: null,
+                timestamp: Date.now(),
+                via: 'broadcast-channel'
+            }, detail || {}, {
+                via: 'broadcast-channel'
+            })
+        }));
+    }
+
+    function dispatchIdleCat1CompactMirrorState(detail) {
+        window.dispatchEvent(new CustomEvent('neko:idle-cat1-compact-mirror-state', {
+            detail: Object.assign({
+                action: 'idle_cat1_compact_mirror_state',
+                source: '',
+                reason: '',
+                active: false,
+                surfaceScreenRect: null,
+                anchorRatio: null,
+                catRect: null,
                 timestamp: Date.now(),
                 via: 'broadcast-channel'
             }, detail || {}, {
@@ -2192,7 +2415,11 @@
         }
 
         if (kind === 'input') {
-            return document.querySelector('#react-chat-window-root .composer-panel')
+            return document.querySelector('#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="input"]')
+                || document.querySelector('#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="capsule"]')
+                || document.querySelector('#react-chat-window-root .compact-chat-surface-frame')
+                || document.querySelector('#react-chat-window-root .compact-chat-surface-shell')
+                || document.querySelector('#react-chat-window-root .composer-panel')
                 || document.querySelector('#react-chat-window-root .composer-input-shell')
                 || document.getElementById('text-input-area');
         }
@@ -2229,7 +2456,7 @@
         }
 
         var padding = kind === 'window' ? 10 : 8;
-        var radius = kind === 'window' ? 26 : 18;
+        var radius = kind === 'window' ? 26 : Math.min(34, Math.max(18, Math.round((rect.height + padding * 2) / 2)));
         spotlight.hidden = false;
         spotlight.classList.remove('is-window', 'is-input');
         spotlight.classList.add(kind === 'window' ? 'is-window' : 'is-input');
@@ -2308,29 +2535,71 @@
         }, detail));
     });
 
+    window.addEventListener('neko:compact-surface-layout-change', function (evt) {
+        var detail = evt && evt.detail && typeof evt.detail === 'object' ? evt.detail : null;
+        postIdleChatCompactSurfaceState(detail);
+    });
+
     // Chat 窗口初始化时，向 Pet 窗口请求当前已缓存的头像
-    if (isStandaloneChatPage() && nekoBroadcastChannel) {
-        var initialLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+    if (isStandaloneChatPage() && (nekoBroadcastChannel || getGoodbyeChatComposerHiddenElectronBridge())) {
+        var GOODBYE_COMPOSER_REQUEST_RETRY_DELAYS_MS = [100, 300, 700, 1500, 3000, 5000];
+        var goodbyeComposerRequestRetryIndex = 0;
+        var goodbyeComposerRequestTimer = 0;
         var postAvatarRequest = function () {
+            if (!nekoBroadcastChannel) return;
             nekoBroadcastChannel.postMessage({
                 action: 'request_avatar',
-                lanlan_name: (window.lanlan_config && window.lanlan_config.lanlan_name) || '',
+                lanlan_name: getCurrentLanlanName(),
                 timestamp: Date.now()
             });
         };
+        var scheduleGoodbyeComposerRequest = function (delayMs) {
+            clearTimeout(goodbyeComposerRequestTimer);
+            goodbyeComposerRequestTimer = setTimeout(function () {
+                goodbyeComposerRequestTimer = 0;
+                postGoodbyeComposerRequest();
+            }, Math.max(0, delayMs || 0));
+        };
+        var postGoodbyeComposerRequest = function () {
+            if (requestGoodbyeChatComposerHiddenState('standalone-chat-state-request')) {
+                goodbyeComposerRequestRetryIndex = 0;
+                return;
+            }
+            if (goodbyeComposerRequestRetryIndex < GOODBYE_COMPOSER_REQUEST_RETRY_DELAYS_MS.length) {
+                scheduleGoodbyeComposerRequest(
+                    GOODBYE_COMPOSER_REQUEST_RETRY_DELAYS_MS[goodbyeComposerRequestRetryIndex++]
+                );
+            }
+        };
+        var postStandaloneChatStateRequests = function () {
+            postAvatarRequest();
+            scheduleGoodbyeComposerRequest(0);
+        };
         postAvatarRequest();
-        nekoBroadcastChannel.postMessage({
-            action: 'request_tutorial_chat_identity',
-            timestamp: Date.now()
-        });
-        nekoBroadcastChannel.postMessage({
-            action: 'yui_guide_chat_ready',
-            timestamp: Date.now()
-        });
-        // 配置可能尚未注入（lanlan_name 为空），等 IPC 注入后补发一次
-        if (!initialLanlanName) {
-            window.addEventListener('neko:config-injected', postAvatarRequest, { once: true });
+        postGoodbyeComposerRequest();
+        if (nekoBroadcastChannel) {
+            nekoBroadcastChannel.postMessage({
+                action: 'request_tutorial_chat_identity',
+                timestamp: Date.now()
+            });
+            nekoBroadcastChannel.postMessage({
+                action: 'yui_guide_chat_ready',
+                timestamp: Date.now()
+            });
         }
+        // 配置注入后统一重新请求状态（postStandaloneChatStateRequests 内部已含头像与 goodbye composer 隐藏状态请求，避免重复补发）
+        window.addEventListener('neko:config-injected', postStandaloneChatStateRequests);
+        window.addEventListener('neko:request-goodbye-chat-composer-hidden-state', function () {
+            scheduleGoodbyeComposerRequest(0);
+        });
+        window.addEventListener('focus', function () {
+            scheduleGoodbyeComposerRequest(0);
+        });
+        document.addEventListener('visibilitychange', function () {
+            if (!document.hidden) {
+                scheduleGoodbyeComposerRequest(0);
+            }
+        });
     }
 
     // =====================================================================
@@ -2386,6 +2655,10 @@
             return;
         }
         handleVoiceConfigSwitchingMessage(data);
+    });
+
+    window.addEventListener('neko:electron-goodbye-chat-composer-hidden', function (event) {
+        handleGoodbyeChatComposerHiddenMessage((event && event.detail) || {}, 'electron-ipc');
     });
 
     window.addEventListener('message', function (event) {
@@ -2523,6 +2796,11 @@
     mod.cleanupMMDOverlayUI = cleanupMMDOverlayUI;
     mod.syncVoiceChatComposerHidden = syncVoiceChatComposerHidden;
     mod.shouldKeepVoiceComposerHidden = shouldKeepVoiceComposerHidden;
+    mod.applyGoodbyeChatComposerHidden = applyGoodbyeChatComposerHidden;
+    mod.postGoodbyeChatComposerHiddenElectron = postGoodbyeChatComposerHiddenElectron;
+    mod.handleGoodbyeChatComposerHiddenMessage = handleGoodbyeChatComposerHiddenMessage;
+    mod.postGoodbyeChatComposerHiddenState = postGoodbyeChatComposerHiddenState;
+    mod.requestGoodbyeChatComposerHiddenState = requestGoodbyeChatComposerHiddenState;
     mod.isVoiceConfigSwitching = isVoiceConfigSwitching;
     mod.waitForVoiceConfigSwitchReady = waitForVoiceConfigSwitchReady;
     mod.applyTutorialChatIdentityOverride = applyTutorialChatIdentityOverride;
@@ -2538,6 +2816,9 @@
     window.cleanupMMDOverlayUI = cleanupMMDOverlayUI;
     window.syncVoiceChatComposerHidden = syncVoiceChatComposerHidden;
     window.shouldKeepVoiceComposerHidden = shouldKeepVoiceComposerHidden;
+    window.applyGoodbyeChatComposerHidden = applyGoodbyeChatComposerHidden;
+    window.postGoodbyeChatComposerHiddenState = postGoodbyeChatComposerHiddenState;
+    window.requestGoodbyeChatComposerHiddenState = requestGoodbyeChatComposerHiddenState;
     window.isVoiceConfigSwitching = isVoiceConfigSwitching;
     window.waitForVoiceConfigSwitchReady = waitForVoiceConfigSwitchReady;
 

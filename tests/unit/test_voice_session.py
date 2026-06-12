@@ -804,3 +804,169 @@ async def test_connect_websocket_invalid_turn_detection_mode_raises_before_webso
             await client.connect(instructions="hi", native_audio=True)
 
         mock_ws_connect.assert_not_called()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Uplink sample rate — OpenAI Realtime PCM input only accepts 24kHz, every
+# other provider takes the internal 16kHz unchanged. The client keeps the
+# whole pipeline at 16kHz and upsamples to 24kHz only at the send boundary
+# (and only for gpt models). See OmniRealtimeClient._resample_uplink.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _make_server_vad_client(model: str, api_type: str = "", base_url: str = "wss://example.test/realtime"):
+    return OmniRealtimeClient(
+        base_url=base_url,
+        api_key="sk-test",
+        model=model,
+        turn_detection_mode=TurnDetectionMode.SERVER_VAD,
+        api_type=api_type,
+    )
+
+
+@pytest.mark.unit
+def test_uplink_rate_gpt_is_24k_with_resampler():
+    """gpt models must target a 24kHz uplink and own a stream resampler."""
+    client = _make_server_vad_client(model="gpt-realtime", api_type="openai")
+    assert client._uplink_sample_rate == 24000
+    assert client._uplink_resampler is not None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "model,api_type",
+    [
+        ("qwen-omni-turbo-realtime", "qwen"),
+        ("glm-realtime", "glm"),
+        ("step-1o-audio", "step"),
+        ("grok-realtime", "grok"),
+        ("free-model", "free"),
+    ],
+)
+def test_uplink_rate_non_gpt_is_16k_no_resampler(model, api_type):
+    """Every 16kHz-native provider keeps rate=16000 and no resampler, so the
+    uplink resample path is fully short-circuited (zero behaviour change)."""
+    client = _make_server_vad_client(model=model, api_type=api_type)
+    assert client._uplink_sample_rate == 16000
+    assert client._uplink_resampler is None
+
+
+@pytest.mark.unit
+async def test_stream_audio_gpt_upsamples_16k_to_24k():
+    """A 16kHz chunk sent through a gpt client must reach the wire as ~1.5×
+    the samples (24kHz). Without this OpenAI reads our 16k bytes as 24k and
+    the model hears 1.5× speed-shifted audio."""
+    import numpy as np
+
+    client = _make_server_vad_client(model="gpt-realtime", api_type="openai")
+    sent: list[dict] = []
+
+    async def fake_send(payload):
+        sent.append(json.loads(payload))
+
+    client.ws = AsyncMock()
+    client.ws.send = AsyncMock(side_effect=fake_send)
+
+    # 1 second of 16kHz PCM16 (16000 samples → 32000 bytes). A full second
+    # dwarfs the resampler's FIR latency so the ratio lands cleanly on ~1.5.
+    in_samples = 16000
+    chunk = (np.zeros(in_samples, dtype=np.int16)).tobytes()
+    await client.stream_audio(chunk)
+
+    appends = [e for e in sent if e.get("type") == "input_audio_buffer.append"]
+    assert appends, "no input_audio_buffer.append emitted"
+    out_bytes = base64.b64decode(appends[0]["audio"])
+    out_samples = len(out_bytes) // 2
+    ratio = out_samples / in_samples
+    assert 1.4 < ratio < 1.6, f"expected ~1.5× (24k/16k) upsample, got {ratio:.3f}"
+
+
+@pytest.mark.unit
+async def test_stream_audio_non_gpt_passes_16k_through_unchanged():
+    """A 16kHz chunk through a 16k-native provider must reach the wire byte-
+    identical — the resample helper is a no-op when _uplink_resampler is None."""
+    import numpy as np
+
+    client = _make_server_vad_client(model="qwen-omni-turbo-realtime", api_type="qwen")
+    sent: list[dict] = []
+
+    async def fake_send(payload):
+        sent.append(json.loads(payload))
+
+    client.ws = AsyncMock()
+    client.ws.send = AsyncMock(side_effect=fake_send)
+
+    # 512 samples @16k = 1024 bytes — not the 480-sample RNNoise frame, so it
+    # bypasses AudioProcessor and should pass straight through.
+    chunk = np.arange(512, dtype=np.int16).tobytes()
+    await client.stream_audio(chunk)
+
+    appends = [e for e in sent if e.get("type") == "input_audio_buffer.append"]
+    assert appends, "no input_audio_buffer.append emitted"
+    assert base64.b64decode(appends[0]["audio"]) == chunk
+
+
+@pytest.mark.unit
+async def test_connect_gpt_session_declares_24k_pcm_input_format():
+    """gpt session.update must declare audio.input.format = audio/pcm @24kHz
+    so the server interprets our upsampled bytes at the correct rate."""
+    client = _make_server_vad_client(
+        model="gpt-realtime",
+        api_type="openai",
+        base_url="wss://api.openai.com/v1/realtime",
+    )
+    session = await _run_connect_and_capture_session(client)
+
+    assert session is not None
+    fmt = session.get("audio", {}).get("input", {}).get("format")
+    assert fmt == {"type": "audio/pcm", "rate": 24000}, f"got {fmt!r}"
+
+
+@pytest.mark.unit
+async def test_clear_audio_buffer_drops_uplink_resampler_tail_for_gpt():
+    """clear_audio_buffer must also clear the uplink resampler. soxr holds
+    ~21ms of FIR tail; on a server-buffer clear (e.g. 4s-silence reset) that
+    tail must be dropped, not prepended to the next utterance."""
+    from unittest.mock import MagicMock
+
+    client = _make_server_vad_client(model="gpt-realtime", api_type="openai")
+    client.ws = AsyncMock()
+    fake_resampler = MagicMock()
+    client._uplink_resampler = fake_resampler
+
+    await client.clear_audio_buffer()
+
+    fake_resampler.clear.assert_called_once()
+
+
+@pytest.mark.unit
+async def test_signal_user_activity_end_gpt_manual_clears_uplink_resampler():
+    """MANUAL commit excludes soxr's held ~21ms tail; that tail must be
+    dropped so it isn't carried into the next turn (Codex P2 on PR #1644)."""
+    from unittest.mock import MagicMock
+
+    client = _make_manual_client(
+        model="gpt-realtime",
+        base_url="wss://api.openai.com/v1/realtime",
+        api_type="openai",
+    )
+    sent: list[dict] = []
+
+    async def fake_send(payload):
+        try:
+            sent.append(json.loads(payload))
+        except json.JSONDecodeError:
+            # Why: payload may be bytes audio frames, not JSON — ignore non-JSON in this collector.
+            pass
+
+    client.ws = AsyncMock()
+    client.ws.send = AsyncMock(side_effect=fake_send)
+    fake_resampler = MagicMock()
+    client._uplink_resampler = fake_resampler
+
+    await client.signal_user_activity_end()
+
+    types_sent = [e.get("type") for e in sent]
+    assert "input_audio_buffer.commit" in types_sent
+    assert "response.create" in types_sent
+    fake_resampler.clear.assert_called_once()
