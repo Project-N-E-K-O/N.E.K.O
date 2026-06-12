@@ -275,11 +275,15 @@ class LiveDanmaku:
     def from_entry_effect(cls, data: dict) -> "LiveDanmaku":
         """从 ENTRY_EFFECT 解析高能用户进场"""
         d = data.get("data", {})
+        uid = int(d.get("uid", 0))
+        # uname 优先，copy_writing 仅作兜底文本
+        nickname = str(d.get("uname") or d.get("username") or "").strip()
+        copy_writing = str(d.get("copy_writing", "高能用户进场"))
         return cls(
             msg_type=MessageType.MSG_WELCOME_GUARD,
-            uid=int(d.get("uid", 0)),
-            nickname=str(d.get("copy_writing", "")).split(" ")[0] if d.get("copy_writing") else str(d.get("uname", "")),
-            text=str(d.get("copy_writing", "高能用户进场")),
+            uid=uid,
+            nickname=nickname or f"用户{uid}",
+            text=copy_writing,
             room_id=int(d.get("room_id", 0)),
             guard_level=3,  # ENTRY_EFFECT 通常为舰长以上
             extra_json=json.dumps(data, ensure_ascii=False),

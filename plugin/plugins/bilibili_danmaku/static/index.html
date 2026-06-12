@@ -805,10 +805,6 @@
         <div class="stat-value" id="statQueue">0</div>
         <div class="stat-label" data-i18n="stat.queue">缓冲</div>
       </div>
-      <div class="stat">
-        <div class="stat-value" id="statViewers">—</div>
-        <div class="stat-label" data-i18n="stat.viewers">人气</div>
-      </div>
     </div>
   </div>
 
@@ -1559,7 +1555,6 @@
     document.getElementById('statReceived').textContent = data.stats?.received ?? 0;
     document.getElementById('statFiltered').textContent = data.stats?.filtered ?? 0;
     document.getElementById('statQueue').textContent = data.queue_size ?? 0;
-    document.getElementById('statViewers').textContent = data.connection?.viewer_count?.toLocaleString() ?? '—';
 
     if (data.room_id && !document.getElementById('roomIdInput').value) {
       document.getElementById('roomIdInput').value = data.room_id;
