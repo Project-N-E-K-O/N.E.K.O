@@ -14,8 +14,10 @@ STATIC_INDEX_JS_PATH = Path(__file__).resolve().parents[2] / "static" / "js" / "
 REACT_CHAT_STYLES_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "styles.css"
 REACT_CHAT_APP_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "App.tsx"
 CHAT_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "chat.html"
+INDEX_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "index.html"
 SUBTITLE_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "subtitle.html"
 PAGES_ROUTER_PATH = Path(__file__).resolve().parents[2] / "main_routers" / "pages_router.py"
+MAIN_SERVER_PATH = Path(__file__).resolve().parents[2] / "app" / "main_server.py"
 COMPACT_EXPORT_HISTORY_PANEL_PATH = (
     Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "CompactExportHistoryPanel.tsx"
 )
@@ -210,9 +212,36 @@ def test_full_inset_layout_gated_by_electron_runtime_marker():
 
 def test_chat_templates_version_react_chat_bundle_from_react_assets():
     chat_template = CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
+    index_template = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
 
     assert 'neko-chat-window.css?v={{ react_chat_asset_version }}' in chat_template
     assert 'neko-chat-window.iife.js?v={{ react_chat_asset_version }}' in chat_template
+    assert 'neko-chat-window.css?v={{ react_chat_asset_version }}' in index_template
+    assert 'neko-chat-window.iife.js?v={{ react_chat_asset_version }}' in index_template
+
+
+def test_web_chat_compact_endpoint_uses_index_template_with_initial_compact_surface():
+    router_source = PAGES_ROUTER_PATH.read_text(encoding="utf-8")
+    index_template = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
+
+    assert '@router.get("/web_chat_compact", response_class=HTMLResponse)' in router_source
+    assert "{% if initial_chat_surface_mode is defined and initial_chat_surface_mode %}" in index_template
+    assert 'data-initial-chat-surface-mode="{{ initial_chat_surface_mode }}"' in index_template
+
+    route_block = router_source.split("async def get_web_chat_compact_page", 1)[1].split(
+        '@router.get("/subtitle"',
+        1,
+    )[0]
+    assert 'TemplateResponse("templates/index.html"' in route_block
+    assert 'TemplateResponse("templates/chat.html"' not in route_block
+    assert '"initial_chat_surface_mode": "compact"' in route_block
+    assert '"initial_chat_surface_mode": "full"' not in route_block
+
+    root_route_block = router_source.split('async def get_default_index', 1)[1].split(
+        'def _render_model_manager',
+        1,
+    )[0]
+    assert '"initial_chat_surface_mode"' not in root_route_block
 
 
 def test_chat_full_is_reserved_from_character_page_config_routing():
@@ -221,8 +250,19 @@ def test_chat_full_is_reserved_from_character_page_config_routing():
     assert "const RESERVED_PAGE_PATHS = new Set([" in source
     assert "'chat'" in source
     assert "'chat_full'" in source
+    assert "'web_chat_compact'" in source
     assert "RESERVED_PAGE_PATHS.has(pathParts[0])" in source
     assert "isReservedPagePath(window.location.pathname)" in source
+
+
+def test_web_chat_compact_is_allowed_during_main_limited_mode():
+    source = MAIN_SERVER_PATH.read_text(encoding="utf-8")
+
+    allowed_page_paths_block = source.split("_MAIN_LIMITED_MODE_ALLOWED_PAGE_PATHS = {", 1)[1].split(
+        "_MAIN_LIMITED_MODE_ALLOWED_PREFIXES",
+        1,
+    )[0]
+    assert '"/web_chat_compact"' in allowed_page_paths_block
 
 
 def test_chat_host_initial_surface_mode_prefers_template_override_before_storage():

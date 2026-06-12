@@ -62,7 +62,8 @@
     <script src="/static/libs/APlayer.min.js?v={{ static_asset_version }}"></script>
 </head>
 
-<body class="subtitle-web-host">
+<body class="subtitle-web-host"{% if initial_chat_surface_mode is defined and initial_chat_surface_mode %}
+      data-initial-chat-surface-mode="{{ initial_chat_surface_mode }}"{% endif %}>
     <!-- 同步把 Electron Pet 标记补到 body（head 脚本执行时 body 尚不存在）；
          在 chat-container 等内容解析之前执行，避免窄窗口下手机布局闪一帧。 -->
     <script>(function () {
