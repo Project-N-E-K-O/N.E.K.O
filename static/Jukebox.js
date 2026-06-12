@@ -106,6 +106,8 @@ window.Jukebox = {
     isMuted: false,
     progressTimer: null,
     isSeeking: false,
+    playbackMode: 'sequence',
+    draggedSongId: null,
     isOpen: false,
     isHidden: false,
     container: null,
@@ -161,6 +163,145 @@ window.Jukebox = {
   setupTooltip: function(element, text) {
     element.addEventListener('mouseenter', () => Jukebox.showTooltip(element, text));
     element.addEventListener('mouseleave', () => Jukebox.hideTooltip());
+  },
+
+  getStorageKey: function(name) {
+    return 'neko.jukebox.' + name;
+  },
+
+  getStoredJson: function(name, fallback) {
+    try {
+      const raw = window.localStorage ? window.localStorage.getItem(Jukebox.getStorageKey(name)) : null;
+      if (!raw) return fallback;
+      return JSON.parse(raw);
+    } catch (error) {
+      console.warn('[Jukebox] 读取本地偏好失败:', name, error);
+      return fallback;
+    }
+  },
+
+  setStoredJson: function(name, value) {
+    try {
+      if (window.localStorage) {
+        window.localStorage.setItem(Jukebox.getStorageKey(name), JSON.stringify(value));
+      }
+    } catch (error) {
+      console.warn('[Jukebox] 保存本地偏好失败:', name, error);
+    }
+  },
+
+  loadPlaybackPreferences: function() {
+    const savedMode = Jukebox.getStoredJson('playbackMode', 'sequence');
+    Jukebox.State.playbackMode = ['sequence', 'single', 'random'].includes(savedMode) ? savedMode : 'sequence';
+  },
+
+  setPlaybackMode: function(mode) {
+    const nextMode = ['single', 'random'].includes(mode) ? mode : 'sequence';
+    Jukebox.State.playbackMode = nextMode;
+    Jukebox.setStoredJson('playbackMode', nextMode);
+    Jukebox.updatePlaybackModeButtons();
+  },
+
+  togglePlaybackMode: function(mode) {
+    const nextMode = Jukebox.State.playbackMode === mode ? 'sequence' : mode;
+    Jukebox.setPlaybackMode(nextMode);
+  },
+
+  getPlaybackModeLabel: function(mode) {
+    if (mode === 'single') return window.t('Jukebox.singleLoop', '单曲循环');
+    if (mode === 'random') return window.t('Jukebox.randomPlay', '随机播放');
+    return window.t('Jukebox.sequencePlay', '顺序播放');
+  },
+
+  getPlaybackModeIcon: function(mode) {
+    if (mode === 'single') {
+      return '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/><path fill="currentColor" d="M11 9h2v6h-2z"/></svg>';
+    }
+    return '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M10.6 5.6 9.2 7 6.4 4.2C5.6 3.4 4.6 3 3.5 3H2v2h1.5c.6 0 1.1.2 1.5.6L7.8 8.4 5 11.2c-.4.4-.9.6-1.5.6H2v2h1.5c1.1 0 2.1-.4 2.9-1.2l2.8-2.8 1.4 1.4L8.8 13l5.2 5.2c.8.8 1.8 1.2 2.9 1.2H18v3l4-4-4-4v3h-1.1c-.6 0-1.1-.2-1.5-.6L10.2 9.6l1.8-1.8L10.6 5.6zM18 3v3h-1.1c-1.1 0-2.1.4-2.9 1.2l-1.2 1.2 1.4 1.4 1.2-1.2c.4-.4.9-.6 1.5-.6H18v3l4-4-4-4z"/></svg>';
+  },
+
+  createPlaybackModeButton: function(mode) {
+    const button = document.createElement('button');
+    const label = Jukebox.getPlaybackModeLabel(mode);
+    button.type = 'button';
+    button.className = 'play-btn jukebox-mode-btn';
+    button.dataset.mode = mode;
+    button.setAttribute('aria-label', label);
+    button.setAttribute('aria-pressed', Jukebox.State.playbackMode === mode ? 'true' : 'false');
+    button.innerHTML = Jukebox.getPlaybackModeIcon(mode);
+    if (Jukebox.State.playbackMode === mode) {
+      button.classList.add('active');
+    }
+    Jukebox.setupTooltip(button, label);
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      Jukebox.togglePlaybackMode(mode);
+    });
+    return button;
+  },
+
+  appendPlaybackModeButtons: function(container) {
+    container.appendChild(Jukebox.createPlaybackModeButton('single'));
+    container.appendChild(Jukebox.createPlaybackModeButton('random'));
+  },
+
+  updatePlaybackModeButtons: function(root) {
+    const scope = root || document;
+    scope.querySelectorAll('.jukebox-mode-btn').forEach((button) => {
+      const mode = button.dataset.mode;
+      const active = Jukebox.State.playbackMode === mode;
+      const label = Jukebox.getPlaybackModeLabel(mode);
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', active ? 'true' : 'false');
+      button.setAttribute('aria-label', label);
+    });
+  },
+
+  getSavedSongOrder: function() {
+    const saved = Jukebox.getStoredJson('songOrder', []);
+    return Array.isArray(saved) ? saved.filter(id => typeof id === 'string') : [];
+  },
+
+  applySavedSongOrder: function(songs) {
+    const savedOrder = Jukebox.getSavedSongOrder();
+    if (!savedOrder.length) return songs;
+    const byId = new Map(songs.map(song => [song.id, song]));
+    const ordered = [];
+    savedOrder.forEach((id) => {
+      if (byId.has(id)) {
+        ordered.push(byId.get(id));
+        byId.delete(id);
+      }
+    });
+    return ordered.concat(Array.from(byId.values()));
+  },
+
+  saveSongOrder: function() {
+    Jukebox.setStoredJson('songOrder', Jukebox.State.songs.map(song => song.id));
+  },
+
+  moveSongInPlaylist: function(draggedId, targetId, placeAfter) {
+    if (!draggedId || !targetId || draggedId === targetId) return false;
+    const fromIndex = Jukebox.State.songs.findIndex(song => song.id === draggedId);
+    const targetIndex = Jukebox.State.songs.findIndex(song => song.id === targetId);
+    if (fromIndex < 0 || targetIndex < 0) return false;
+
+    const [moved] = Jukebox.State.songs.splice(fromIndex, 1);
+    let insertIndex = Jukebox.State.songs.findIndex(song => song.id === targetId);
+    if (insertIndex < 0) insertIndex = Jukebox.State.songs.length;
+    if (placeAfter) insertIndex += 1;
+    Jukebox.State.songs.splice(insertIndex, 0, moved);
+    Jukebox.saveSongOrder();
+    Jukebox.renderList();
+    return true;
+  },
+
+  clearSongDragState: function() {
+    document.querySelectorAll('#jukebox-song-list tr').forEach((row) => {
+      row.classList.remove('jukebox-row-dragging', 'jukebox-row-drop-before', 'jukebox-row-drop-after');
+    });
+    Jukebox.State.draggedSongId = null;
   },
 
   easeInOutMarquee: function(t) {
@@ -4458,6 +4599,7 @@ window.Jukebox = {
   
   init: function() {
     console.log('[Jukebox]', window.t('Jukebox.initialized', '初始化点歌台...'));
+    Jukebox.loadPlaybackPreferences();
 
     window.Jukebox_playSong = Jukebox.playSong;
     window.Jukebox_close = Jukebox.close;
@@ -4751,6 +4893,8 @@ window.Jukebox = {
   },
   
   buildUI: function() {
+    Jukebox.loadPlaybackPreferences();
+
     const wrapper = document.createElement('div');
     wrapper.className = 'jukebox-wrapper';
     
@@ -5644,7 +5788,7 @@ window.Jukebox = {
 
       .jukebox-table th:nth-child(4),
       .jukebox-table td.song-action {
-        width: 48px;
+        width: 124px;
       }
 
       .jukebox-table td.song-name,
@@ -5664,6 +5808,22 @@ window.Jukebox = {
       .jukebox-table tbody tr:hover {
         background: ${Jukebox.Config.table.rowHoverBg};
       }
+
+      .jukebox-table tbody tr[draggable="true"] {
+        cursor: grab;
+      }
+
+      .jukebox-table tbody tr.jukebox-row-dragging {
+        opacity: 0.55;
+      }
+
+      .jukebox-table tbody tr.jukebox-row-drop-before td {
+        box-shadow: inset 0 2px 0 rgba(0, 60, 100, 0.75);
+      }
+
+      .jukebox-table tbody tr.jukebox-row-drop-after td {
+        box-shadow: inset 0 -2px 0 rgba(0, 60, 100, 0.75);
+      }
       
       .jukebox-table tbody tr:last-child td {
         border-bottom: none;
@@ -5679,6 +5839,7 @@ window.Jukebox = {
         display: inline-flex;
         gap: 4px;
         align-items: center;
+        white-space: nowrap;
       }
 
       .play-btn {
@@ -5725,6 +5886,26 @@ window.Jukebox = {
 
       .play-btn.resume-btn:hover {
         background: ${Jukebox.Config.button.resumeHoverBg};
+      }
+
+      .play-btn.jukebox-mode-btn {
+        background: rgba(255, 255, 255, 0.18);
+        border: 1px solid rgba(255, 255, 255, 0.24);
+        padding: 6px 7px;
+      }
+
+      .play-btn.jukebox-mode-btn:hover {
+        background: rgba(255, 255, 255, 0.28);
+      }
+
+      .play-btn.jukebox-mode-btn.active {
+        background: rgba(0, 60, 100, 0.58);
+        border-color: rgba(255, 255, 255, 0.42);
+        box-shadow: inset 0 0 0 1px rgba(0, 30, 70, 0.32);
+      }
+
+      .play-btn.jukebox-mode-btn.active:hover {
+        background: rgba(0, 48, 86, 0.72);
       }
       
       .jukebox-controls-row {
@@ -6019,7 +6200,7 @@ window.Jukebox = {
       const actions = data.actions || {};
       const bindings = data.bindings || {};
       
-      Jukebox.State.songs = Object.entries(songs).map(([id, song]) => {
+      Jukebox.State.songs = Jukebox.applySavedSongOrder(Object.entries(songs).map(([id, song]) => {
         // 获取该歌曲绑定的动画
         const songBindings = bindings[id] || {};
         const boundActions = Object.keys(songBindings)
@@ -6048,7 +6229,7 @@ window.Jukebox = {
           isBuiltin: song.isBuiltin || false, // 传递自带资源标记
           boundActions: boundActions // 绑定的动画列表
         };
-      }).filter(song => song.visible); // 只显示可见的歌曲
+      }).filter(song => song.visible)); // 只显示可见的歌曲
       
       console.log('[Jukebox]', window.t('Jukebox.songsLoaded', '歌曲列表已加载'), Jukebox.State.songs.length, '首歌曲');
       
@@ -6097,22 +6278,25 @@ window.Jukebox = {
       }
     }
 
-    // 创建或更新歌曲行
+    // 创建、更新并按当前排序重新排列歌曲行
     Jukebox.State.songs.forEach((song, index) => {
       const existingRow = Jukebox.State.songElements[song.id];
+      let row;
 
       if (existingRow) {
         // 更新现有行（只更新非播放状态的内容）
         Jukebox.updateSongRow(existingRow, song, index);
+        row = existingRow;
       } else {
         // 创建新行
-        const newRow = Jukebox.createSongRow(song, index);
-        tbody.appendChild(newRow);
-        Jukebox.State.songElements[song.id] = newRow;
+        row = Jukebox.createSongRow(song, index);
+        Jukebox.State.songElements[song.id] = row;
       }
+      tbody.appendChild(row);
     });
 
     console.log('[Jukebox]', window.t('Jukebox.songsRendered', '歌曲列表已渲染'));
+    Jukebox.updatePlaybackModeButtons(tbody);
     Jukebox.scheduleMarqueeTextUpdate(tbody);
   },
 
@@ -6120,6 +6304,7 @@ window.Jukebox = {
   createSongRow: function(song, index) {
     const tr = document.createElement('tr');
     tr.dataset.songId = song.id;
+    tr.draggable = true;
     tr.innerHTML = `
       <td class="song-index">${index + 1}</td>
       <td class="song-name" data-neko-marquee title="${Jukebox.escapeHtml(song.name)}">${Jukebox.escapeHtml(song.name)}</td>
@@ -6136,6 +6321,11 @@ window.Jukebox = {
     btn.addEventListener('click', () => {
       Jukebox_playSong(song.id);
     });
+    const actionCell = tr.querySelector('.song-action');
+    if (actionCell) {
+      Jukebox.appendPlaybackModeButtons(actionCell);
+    }
+    Jukebox.bindSongRowDragEvents(tr);
 
     return tr;
   },
@@ -6163,6 +6353,96 @@ window.Jukebox = {
     Jukebox.scheduleMarqueeTextUpdate(row);
 
     // 注意：不更新播放按钮，以保持播放状态
+  },
+
+  bindSongRowDragEvents: function(row) {
+    row.addEventListener('dragstart', (event) => {
+      if (event.target && event.target.closest('button, input, a, select, textarea')) {
+        event.preventDefault();
+        return;
+      }
+      Jukebox.State.draggedSongId = row.dataset.songId;
+      row.classList.add('jukebox-row-dragging');
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', row.dataset.songId);
+      }
+    });
+
+    row.addEventListener('dragover', (event) => {
+      if (!Jukebox.State.draggedSongId || Jukebox.State.draggedSongId === row.dataset.songId) return;
+      event.preventDefault();
+      const rect = row.getBoundingClientRect();
+      const placeAfter = event.clientY > rect.top + rect.height / 2;
+      row.classList.toggle('jukebox-row-drop-before', !placeAfter);
+      row.classList.toggle('jukebox-row-drop-after', placeAfter);
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+    });
+
+    row.addEventListener('dragleave', () => {
+      row.classList.remove('jukebox-row-drop-before', 'jukebox-row-drop-after');
+    });
+
+    row.addEventListener('drop', (event) => {
+      if (!Jukebox.State.draggedSongId) return;
+      event.preventDefault();
+      const rect = row.getBoundingClientRect();
+      const placeAfter = event.clientY > rect.top + rect.height / 2;
+      const moved = Jukebox.moveSongInPlaylist(Jukebox.State.draggedSongId, row.dataset.songId, placeAfter);
+      if (!moved) Jukebox.clearSongDragState();
+    });
+
+    row.addEventListener('dragend', () => {
+      Jukebox.clearSongDragState();
+    });
+  },
+
+  getNextSongToPlay: function(endedSong) {
+    const songs = Jukebox.State.songs || [];
+    if (!endedSong || songs.length === 0) return null;
+
+    if (Jukebox.State.playbackMode === 'single') {
+      return songs.find(song => song.id === endedSong.id) || endedSong;
+    }
+
+    if (Jukebox.State.playbackMode === 'random') {
+      const candidates = songs.length > 1
+        ? songs.filter(song => song.id !== endedSong.id)
+        : songs;
+      if (!candidates.length) return null;
+      return candidates[Math.floor(Math.random() * candidates.length)];
+    }
+
+    const currentIndex = songs.findIndex(song => song.id === endedSong.id);
+    if (currentIndex >= 0 && currentIndex < songs.length - 1) {
+      return songs[currentIndex + 1];
+    }
+    return null;
+  },
+
+  handleAudioEnded: function(player) {
+    const endedSong = Jukebox.State.currentSong;
+    console.log('[Jukebox]', window.t('Jukebox.audioEnded', '音频播放结束'), {
+      isPlaying: Jukebox.State.isPlaying,
+      currentSong: endedSong,
+      playerLoop: player && player.options ? player.options.loop : undefined,
+      playbackMode: Jukebox.State.playbackMode
+    });
+
+    Jukebox.stopVMD();
+    Jukebox.State.isPlaying = false;
+    Jukebox.State.isPaused = false;
+
+    const nextSong = Jukebox.getNextSongToPlay(endedSong);
+    Jukebox.State.currentSong = null;
+    Jukebox.updateStoppedStatus();
+
+    if (nextSong) {
+      setTimeout(() => {
+        if (!Jukebox.State.isOpen && !window.__NEKO_JUKEBOX_STANDALONE__) return;
+        Jukebox.playSong(nextSong.id);
+      }, 0);
+    }
   },
   
   playSong: async function(songId) {
@@ -6267,16 +6547,7 @@ window.Jukebox = {
     
     if (Jukebox.State.boundPlayer !== player) {
       player.on('ended', () => {
-        console.log('[Jukebox]', window.t('Jukebox.audioEnded', '音频播放结束'), {
-          isPlaying: Jukebox.State.isPlaying,
-          currentSong: Jukebox.State.currentSong,
-          playerLoop: player.options.loop
-        });
-        Jukebox.stopVMD();
-        Jukebox.State.isPlaying = false;
-        Jukebox.State.isPaused = false;
-        Jukebox.State.currentSong = null;
-        Jukebox.updateStoppedStatus();
+        Jukebox.handleAudioEnded(player);
       });
       Jukebox.State.boundPlayer = player;
     }
@@ -7151,6 +7422,7 @@ window.Jukebox = {
 
         td.appendChild(pauseBtn);
         td.appendChild(stopBtn);
+        Jukebox.appendPlaybackModeButtons(td);
       }
     }
   },
@@ -7183,6 +7455,7 @@ window.Jukebox = {
 
         td.appendChild(resumeBtn);
         td.appendChild(stopBtn);
+        Jukebox.appendPlaybackModeButtons(td);
       }
     }
   },
@@ -7199,6 +7472,7 @@ window.Jukebox = {
       Jukebox.setupTooltip(btn, window.t('Jukebox.play', '播放'));
       btn.addEventListener('click', () => Jukebox_playSong(songId));
       td.appendChild(btn);
+      Jukebox.appendPlaybackModeButtons(td);
     });
   },
   
