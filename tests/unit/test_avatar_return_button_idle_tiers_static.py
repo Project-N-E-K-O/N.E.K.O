@@ -1195,19 +1195,18 @@ def test_cat1_minimized_ball_inside_cat_finishes_without_side_retarget_jitter():
         "function _getNekoIdleCat1CompactTopEdgeBounds",
         1,
     )[0]
-    assert "const approachOffsetPx = _getNekoIdleCat1MinimizedSideApproachOffsetPx(lookFacingRight, chatRect);" in side_target_block
-    assert "const sideTarget = _makeNekoIdleCat1SideTarget(rect, chatRect" in side_target_block
+    # #1758 把“按朝向算侧位点”的计算抽到了 _computeNekoIdleCat1SideTargetForLook /
+    # _pickNekoIdleCat1ForwardSideTarget，_getNekoIdleCat1SideTarget 里只剩“提交侧 + 滞回”选向，
+    # 再对最终 target（无论来自首帧 forward-pick 还是提交侧）套用本贴球护栏——避免贴球时倒退取侧抽搐。
+    assert "_pickNekoIdleCat1ForwardSideTarget(rect, chatRect)" in side_target_block
+    assert "_computeNekoIdleCat1SideTargetForLook(rect, chatRect, lookFacingRight)" in side_target_block
     assert "_isNekoIdleRectCenterInsideRect(chatRect, rect)" in side_target_block
-    assert "sideTarget.moveFacingRight !== lookFacingRight" in side_target_block
+    assert "target.moveFacingRight !== target.lookFacingRight" in side_target_block
     assert "_makeNekoIdleCat1CurrentSideTarget(rect, chatRect" in side_target_block
     assert "contactDistance <= profile.target.exitDistancePx" not in side_target_block
-    assert side_target_block.index("const approachOffsetPx = _getNekoIdleCat1MinimizedSideApproachOffsetPx(lookFacingRight, chatRect);") < side_target_block.index(
-        "const rawLeft = lookFacingRight"
-    )
-    assert side_target_block.index("const rawLeft = lookFacingRight") < side_target_block.index("const sideTarget = _makeNekoIdleCat1SideTarget")
-    assert side_target_block.index("const sideTarget = _makeNekoIdleCat1SideTarget") < side_target_block.index("_isNekoIdleRectCenterInsideRect(chatRect, rect)")
-    assert side_target_block.index("sideTarget.moveFacingRight !== lookFacingRight") < side_target_block.index("_makeNekoIdleCat1CurrentSideTarget(rect, chatRect")
-    assert side_target_block.index("_isNekoIdleRectCenterInsideRect(chatRect, rect)") < side_target_block.index("if (!sideTarget || sideTarget.moveFacingRight === null || sideTarget.moveFacingRight === lookFacingRight)")
+    # 护栏必须在解析出 target 之后、提交/返回之前生效，且 inside 判定先于取“原地侧目标”。
+    assert side_target_block.index("const target = lookFacingRight === null") < side_target_block.index("_isNekoIdleRectCenterInsideRect(chatRect, rect)")
+    assert side_target_block.index("_isNekoIdleRectCenterInsideRect(chatRect, rect)") < side_target_block.index("_makeNekoIdleCat1CurrentSideTarget(rect, chatRect")
 
     center_inside_block = source.split("function _isNekoIdleRectCenterInsideRect(innerRect, outerRect)", 1)[1].split(
         "function _makeNekoIdleCat1CurrentSideTarget",
