@@ -3331,7 +3331,7 @@ describe('App', () => {
 
     const preview = container.querySelector('.compact-chat-capsule-text');
     expect(preview).toHaveAttribute('data-compact-preview-streaming', 'false');
-    expect(preview).toHaveTextContent(DEFAULT_CHAT_EMPTY_STATE_FALLBACK);
+    expect(preview).toHaveTextContent(DEFAULT_CHAT_COMPANION_EMPTY_STATE_FALLBACK);
     expect(preview).not.toHaveTextContent(settledText.slice(0, 20));
   });
 
@@ -3492,6 +3492,13 @@ describe('App', () => {
     const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
 
     expect(container.querySelector('[data-compact-geometry-part="inputBody"]')).not.toBeNull();
+    expect(container.querySelector('[data-compact-geometry-part="inputBody"]')).toHaveAttribute('data-compact-geometry-hit-scope', 'children');
+    expect(container.querySelector('.composer-input')).toHaveAttribute('data-compact-hit-region-id', 'input:text');
+    expect(container.querySelector('.composer-input')).toHaveAttribute('data-compact-hit-region-kind', 'input-text');
+    expect(container.querySelector('.compact-chat-minimize-ball')).toHaveAttribute('data-compact-hit-region-id', 'input:minimize');
+    expect(container.querySelector('.compact-chat-minimize-ball')).toHaveAttribute('data-compact-hit-region-kind', 'input-minimize');
+    expect(container.querySelector('.compact-input-tool-toggle')).toHaveAttribute('data-compact-hit-region-id', 'input:tool-toggle');
+    expect(container.querySelector('.compact-input-tool-toggle')).toHaveAttribute('data-compact-hit-region-kind', 'input-tool-toggle');
     expect(container.querySelector('.compact-chat-capsule-button')).toBeNull();
     expect(container.querySelector('.composer-bottom-bar')).toBeNull();
     expect(container.querySelectorAll('.send-button-circle')).toHaveLength(1);
@@ -4289,6 +4296,14 @@ describe('App', () => {
       expect(emojiButton).toHaveClass('is-active');
 
       fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
+
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+      expect(fan.querySelector('#composer-tool-popover-compact')).toBeNull();
+
+      fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(240);
+      });
 
       expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
       expect(avatarTool).toHaveAttribute('data-compact-tool-active', 'true');
@@ -5840,7 +5855,7 @@ describe('App', () => {
     }
   });
 
-  it('keeps the lollipop avatar-range image through transient avatar bounds loss', async () => {
+  it('keeps the lollipop desktop cursor image stable across avatar range changes', async () => {
     vi.useFakeTimers();
     const live2dContainer = document.createElement('div');
     live2dContainer.id = 'live2d-container';
@@ -5883,7 +5898,7 @@ describe('App', () => {
       });
 
       const avatarImage = () => document.body.querySelector('.avatar-cursor-overlay-image-lollipop');
-      expect(avatarImage()).toHaveAttribute('src', '/static/icons/chat_sugar1.png');
+      expect(avatarImage()).toHaveAttribute('src', '/static/icons/chat_sugar1_cursor.png');
 
       boundsAvailable = false;
       fireEvent.pointerMove(window, { clientX: 150, clientY: 150 });
@@ -5892,7 +5907,7 @@ describe('App', () => {
         await vi.advanceTimersByTimeAsync(90);
       });
 
-      expect(avatarImage()).toHaveAttribute('src', '/static/icons/chat_sugar1.png');
+      expect(avatarImage()).toHaveAttribute('src', '/static/icons/chat_sugar1_cursor.png');
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(200);
@@ -6042,6 +6057,20 @@ describe('App', () => {
     expect(screen.queryByRole('button', { name: 'Emoji: 棒棒糖' })).not.toBeInTheDocument();
   });
 
+  it('closes the transparent compact tool fan after selecting an avatar cursor tool', async () => {
+    renderInputApp();
+
+    await openCompactInputTools();
+    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
+
+    const fan = document.body.querySelector<HTMLElement>('.compact-input-tool-fan');
+    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+    expect(fan).toHaveAttribute('aria-hidden', 'true');
+    expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+    expect(queryAvatarCursorOverlay()).not.toBeNull();
+  });
+
   it('clears the selected avatar tool from the icon badge', async () => {
     renderInputApp();
 
@@ -6084,6 +6113,10 @@ describe('App', () => {
         cursorImagePath: '/static/icons/chat_hammer1_cursor.png',
         cursorHotspotX: 50,
         cursorHotspotY: 54,
+        cursorNaturalWidth: 100,
+        cursorNaturalHeight: 96,
+        cursorDisplayWidth: 100,
+        cursorDisplayHeight: 96,
       }),
     }));
   });
@@ -6100,7 +6133,25 @@ describe('App', () => {
 
     const overlay = queryAvatarCursorOverlay();
     expect(overlay).not.toBeNull();
-    expect((overlay as HTMLDivElement).style.transform).toBe('translate3d(201px, 274px, 0)');
+    expect((overlay as HTMLDivElement).style.transform).toBe('translate3d(218.16px, 294.24px, 0)');
+  });
+
+  it('moves the desktop cursor overlay synchronously with pointer movement', async () => {
+    renderInputApp();
+
+    await openCompactInputTools();
+    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    fireEvent.click(screen.getByRole('button', { name: '猫爪' }), {
+      clientX: 240,
+      clientY: 320,
+    });
+
+    const overlay = queryAvatarCursorOverlay();
+    expect(overlay).not.toBeNull();
+
+    fireEvent.pointerMove(window, { clientX: 420, clientY: 360 });
+
+    expect((overlay as HTMLDivElement).style.transform).toBe('translate3d(398.16px, 334.24px, 0)');
   });
 
   it('clears the tool cursor when the composer is hidden for voice mode', async () => {

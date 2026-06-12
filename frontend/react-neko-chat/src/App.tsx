@@ -591,6 +591,10 @@ type ToolIconItem = {
   cursorImagePathAlt2?: string;
   cursorHotspotX?: number;
   cursorHotspotY?: number;
+  cursorNaturalWidth?: number;
+  cursorNaturalHeight?: number;
+  cursorDisplayWidth?: number;
+  cursorDisplayHeight?: number;
 };
 
 const toolIconItems: ToolIconItem[] = [
@@ -606,6 +610,10 @@ const toolIconItems: ToolIconItem[] = [
     menuIconScale: 1.18,
     cursorHotspotX: 27,
     cursorHotspotY: 46,
+    cursorNaturalWidth: 55,
+    cursorNaturalHeight: 80,
+    cursorDisplayWidth: 74,
+    cursorDisplayHeight: 108,
   },
   {
     id: 'fist',
@@ -617,6 +625,10 @@ const toolIconItems: ToolIconItem[] = [
     cursorImagePathAlt: '/static/icons/cat_claw2_cursor.png',
     cursorHotspotX: 39,
     cursorHotspotY: 46,
+    cursorNaturalWidth: 78,
+    cursorNaturalHeight: 80,
+    cursorDisplayWidth: 78,
+    cursorDisplayHeight: 80,
   },
   {
     id: 'hammer',
@@ -633,6 +645,10 @@ const toolIconItems: ToolIconItem[] = [
     menuIconOffsetYAlt: -1,
     cursorHotspotX: 50,
     cursorHotspotY: 54,
+    cursorNaturalWidth: 100,
+    cursorNaturalHeight: 96,
+    cursorDisplayWidth: 100,
+    cursorDisplayHeight: 96,
   },
 ];
 
@@ -911,6 +927,38 @@ function resolveCursorValue(item: ToolIconItem, variant: CursorVariant): string 
   const hotspotX = typeof item.cursorHotspotX === 'number' ? item.cursorHotspotX : 18;
   const hotspotY = typeof item.cursorHotspotY === 'number' ? item.cursorHotspotY : 18;
   return `url("${imagePath}") ${hotspotX} ${hotspotY}, auto`;
+}
+
+function getToolCursorOverlayScale(toolId: AvatarInteractionToolId | null, compact: boolean): number {
+  if (!compact) return 1;
+  return toolId === 'hammer' ? 0.52 : 0.56;
+}
+
+function getPositiveCursorMetric(value: number | undefined, fallback: number): number {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : fallback;
+}
+
+function getScaledToolCursorHotspot(
+  item: Pick<ToolIconItem, 'cursorHotspotX' | 'cursorHotspotY' | 'cursorNaturalWidth' | 'cursorNaturalHeight' | 'cursorDisplayWidth' | 'cursorDisplayHeight'>,
+  scale: number,
+) {
+  const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
+  const naturalWidth = getPositiveCursorMetric(item.cursorNaturalWidth, 0);
+  const naturalHeight = getPositiveCursorMetric(item.cursorNaturalHeight, 0);
+  const displayWidth = getPositiveCursorMetric(item.cursorDisplayWidth, naturalWidth);
+  const displayHeight = getPositiveCursorMetric(item.cursorDisplayHeight, naturalHeight);
+  const displayRatioX = naturalWidth > 0 && displayWidth > 0 ? displayWidth / naturalWidth : 1;
+  const displayRatioY = naturalHeight > 0 && displayHeight > 0 ? displayHeight / naturalHeight : 1;
+  return {
+    x: (item.cursorHotspotX ?? 18) * displayRatioX * safeScale,
+    y: (item.cursorHotspotY ?? 18) * displayRatioY * safeScale,
+  };
+}
+
+function formatCursorOverlayPx(value: number): string {
+  const rounded = Math.round(value * 100) / 100;
+  return `${Object.is(rounded, -0) ? 0 : rounded}px`;
 }
 
 function playAvatarToolSound(soundPath: string) {
@@ -2025,28 +2073,27 @@ function CompactChatApp({
     && !isElectronMultiWindow;
   const shouldRenderLocalDesktopCursorOverlay = shouldUseLocalDesktopCursorOverlay
     && isCursorInsideHostWindow;
-  const shouldRenderAvatarRangeOverlay = isCursorOverAvatarRange && !isCursorOverCompactCursorZone;
   const avatarCursorOverlayActive = !!activeToolItem
     && activeCursorToolId !== 'hammer'
     && shouldRenderLocalDesktopCursorOverlay;
-  const avatarCursorOverlayCompact = avatarCursorOverlayActive && !shouldRenderAvatarRangeOverlay;
+  const avatarCursorOverlayCompact = avatarCursorOverlayActive;
   const hammerCursorOverlayActive = activeCursorToolId === 'hammer' && shouldRenderLocalDesktopCursorOverlay;
-  const hammerCursorOverlayCompact = hammerCursorOverlayActive && !shouldRenderAvatarRangeOverlay;
   const hammerCursorOverlayMotionActive = hammerSwingPhase !== 'idle';
+  const hammerCursorOverlayCompact = hammerCursorOverlayActive && !hammerCursorOverlayMotionActive;
   const hammerCompactImagePaths = hammerToolItem
     ? resolveToolImagePaths(hammerToolItem, effectiveCursorVariant)
     : null;
   const hammerCursorOverlayUsesCompactImage = hammerCursorOverlayCompact && !hammerCursorOverlayMotionActive;
   const avatarCursorOverlayImagePath = activeToolItem && activeCursorToolId !== 'hammer'
-    ? (
-      avatarCursorOverlayCompact
-        ? (activeToolImagePaths?.cursorImagePath ?? '')
-        : (activeToolImagePaths?.iconImagePath ?? '')
-    )
+    ? (activeToolImagePaths?.cursorImagePath ?? '')
     : '';
+  const avatarCursorOverlayScale = activeToolItem
+    ? getToolCursorOverlayScale(activeToolItem.id, avatarCursorOverlayCompact)
+    : 1;
   const hammerCursorOverlayCompactImagePath = hammerCursorOverlayUsesCompactImage
     ? (hammerCompactImagePaths?.cursorImagePath ?? '')
     : '';
+  const hammerCursorOverlayScale = getToolCursorOverlayScale('hammer', hammerCursorOverlayCompact);
   const hammerCursorOverlayPrimaryImagePath = hammerToolItem
     ? resolveToolImagePaths(hammerToolItem, 'primary').iconImagePath
     : '';
@@ -4274,6 +4321,10 @@ function CompactChatApp({
           cursorImagePathAlt2: activeToolItem.cursorImagePathAlt2,
           cursorHotspotX: activeToolItem.cursorHotspotX,
           cursorHotspotY: activeToolItem.cursorHotspotY,
+          cursorNaturalWidth: activeToolItem.cursorNaturalWidth,
+          cursorNaturalHeight: activeToolItem.cursorNaturalHeight,
+          cursorDisplayWidth: activeToolItem.cursorDisplayWidth,
+          cursorDisplayHeight: activeToolItem.cursorDisplayHeight,
           menuIconScale: activeToolItem.menuIconScale,
         }
         : null,
@@ -4366,18 +4417,16 @@ function CompactChatApp({
     latestPointerPositionRef.current = { x: clientX, y: clientY };
     const overlayNode = hammerCursorOverlayRef.current;
     if (!overlayNode || !hammerToolItem) return;
-    const hotspotX = hammerToolItem.cursorHotspotX ?? 18;
-    const hotspotY = hammerToolItem.cursorHotspotY ?? 18;
-    overlayNode.style.transform = `translate3d(${clientX - hotspotX}px, ${clientY - hotspotY}px, 0)`;
+    const hotspot = getScaledToolCursorHotspot(hammerToolItem, hammerCursorOverlayScale);
+    overlayNode.style.transform = `translate3d(${formatCursorOverlayPx(clientX - hotspot.x)}, ${formatCursorOverlayPx(clientY - hotspot.y)}, 0)`;
   }
 
   function updateAvatarCursorOverlayPosition(clientX: number, clientY: number) {
     latestPointerPositionRef.current = { x: clientX, y: clientY };
     const overlayNode = avatarCursorOverlayRef.current;
     if (!overlayNode || !activeToolItem) return;
-    const hotspotX = activeToolItem.cursorHotspotX ?? 18;
-    const hotspotY = activeToolItem.cursorHotspotY ?? 18;
-    overlayNode.style.transform = `translate3d(${clientX - hotspotX}px, ${clientY - hotspotY}px, 0)`;
+    const hotspot = getScaledToolCursorHotspot(activeToolItem, avatarCursorOverlayScale);
+    overlayNode.style.transform = `translate3d(${formatCursorOverlayPx(clientX - hotspot.x)}, ${formatCursorOverlayPx(clientY - hotspot.y)}, 0)`;
   }
 
   function emitAvatarInteraction<T extends AvatarInteractionToolId>(
@@ -4653,17 +4702,17 @@ function CompactChatApp({
       setIsCursorInsideHostWindow(true);
       latestPointerPositionRef.current = { x: event.clientX, y: event.clientY };
       latestPointerTargetRef.current = event.target;
+      if (activeCursorToolId === 'hammer') {
+        updateHammerCursorOverlayPosition(event.clientX, event.clientY);
+      } else if (activeCursorToolId) {
+        updateAvatarCursorOverlayPosition(event.clientX, event.clientY);
+      }
       if (frameId) return;
 
       frameId = window.requestAnimationFrame(() => {
         frameId = 0;
         const { x, y } = latestPointerPositionRef.current;
         const isOverCompactCursorZone = isPointerOverCompactCursorZone(latestPointerTargetRef.current);
-        if (activeCursorToolId === 'hammer') {
-          updateHammerCursorOverlayPosition(x, y);
-        } else if (activeCursorToolId) {
-          updateAvatarCursorOverlayPosition(x, y);
-        }
         updateCursorRangeState(x, y);
         setIsCursorOverCompactCursorZone(previousValue => (
           previousValue === isOverCompactCursorZone ? previousValue : isOverCompactCursorZone
@@ -4779,7 +4828,7 @@ function CompactChatApp({
       latestPointerPositionRef.current.x,
       latestPointerPositionRef.current.y,
     );
-  }, [avatarCursorOverlayActive, avatarCursorOverlayImagePath, activeToolItem]);
+  }, [avatarCursorOverlayActive, avatarCursorOverlayImagePath, activeToolItem, avatarCursorOverlayScale]);
 
   useEffect(() => {
     if (!hammerCursorOverlayActive) return;
@@ -4787,7 +4836,7 @@ function CompactChatApp({
       latestPointerPositionRef.current.x,
       latestPointerPositionRef.current.y,
     );
-  }, [hammerCursorOverlayActive, hammerSwingPhase]);
+  }, [hammerCursorOverlayActive, hammerCursorOverlayScale, hammerSwingPhase]);
 
   useEffect(() => {
     if (composerHidden || composerDisabled) {
@@ -4930,6 +4979,9 @@ function CompactChatApp({
       ref={compactInputToolToggleRef}
       type={compactToolToggleActsAsSubmit ? 'submit' : 'button'}
       data-compact-no-drag="true"
+      data-compact-hit-region="true"
+      data-compact-hit-region-id="input:tool-toggle"
+      data-compact-hit-region-kind="input-tool-toggle"
       aria-label={compactToolToggleActsAsSubmit ? sendButtonLabel : overflowMenuAriaLabel}
       aria-haspopup={compactToolToggleActsAsSubmit ? undefined : 'true'}
       aria-expanded={compactToolToggleActsAsSubmit ? undefined : compactInputToolFanOpen}
@@ -4973,6 +5025,9 @@ function CompactChatApp({
       aria-label={i18n('chat.reactWindowMinimize', 'Minimize')}
       title={i18n('chat.reactWindowMinimize', 'Minimize')}
       data-compact-no-drag="true"
+      data-compact-hit-region="true"
+      data-compact-hit-region-id="input:minimize"
+      data-compact-hit-region-kind="input-minimize"
       onPointerDown={beginCompactToolOriginDrag}
       onPointerMove={updateCompactToolOriginDrag}
       onPointerUp={endCompactToolOriginDrag}
@@ -5305,6 +5360,7 @@ function CompactChatApp({
               setIsCursorInsideHostWindow(true);
               setActiveCursorToolId(null);
               setToolMenuOpen(false);
+              closeCompactInputToolFan();
             }}
           >
             <span className="composer-tool-clear-icon" aria-hidden="true" />
@@ -5353,12 +5409,14 @@ function CompactChatApp({
                 if (activeCursorToolId === item.id) {
                   setActiveCursorToolId(null);
                   setToolMenuOpen(false);
+                  closeCompactInputToolFan();
                   return;
                 }
                 setAvatarRangeCursorVariants(prev => ({ ...prev, [item.id]: 'primary' }));
                 setOutsideRangeCursorVariants(prev => ({ ...prev, [item.id]: 'primary' }));
                 setActiveCursorToolId(item.id);
                 setToolMenuOpen(false);
+                closeCompactInputToolFan();
               }}
             >
               <img
@@ -5580,7 +5638,7 @@ function CompactChatApp({
       <div
         className="avatar-cursor-overlay-stage"
         style={{
-          transformOrigin: `${activeToolItem.cursorHotspotX ?? 18}px ${activeToolItem.cursorHotspotY ?? 18}px`,
+          transformOrigin: '0 0',
         }}
       >
         <img
@@ -5600,7 +5658,7 @@ function CompactChatApp({
       <div
         className="hammer-cursor-overlay-stage"
         style={{
-          transformOrigin: `${hammerToolItem.cursorHotspotX ?? 18}px ${hammerToolItem.cursorHotspotY ?? 18}px`,
+          transformOrigin: '0 0',
         }}
       >
         {hammerCursorOverlayUsesCompactImage ? (
@@ -5877,6 +5935,7 @@ function CompactChatApp({
                     data-compact-drag-surface="true"
                     data-compact-chat-state={effectiveCompactChatState}
                     data-compact-geometry-part={effectiveCompactChatState === 'input' ? 'inputBody' : 'capsuleBody'}
+                    data-compact-geometry-hit-scope={effectiveCompactChatState === 'input' ? 'children' : undefined}
                     data-compact-tool-toggle-visible={compactToolToggleVisible ? 'true' : 'false'}
                   >
                     {effectiveCompactChatState === 'input' ? (
@@ -5888,6 +5947,9 @@ function CompactChatApp({
                           className="composer-input"
                           ref={compactInputRef}
                           data-compact-no-drag="true"
+                          data-compact-hit-region="true"
+                          data-compact-hit-region-id="input:text"
+                          data-compact-hit-region-kind="input-text"
                           placeholder={inputPlaceholder}
                           aria-label={inputPlaceholder}
                           rows={1}
