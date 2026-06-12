@@ -2949,11 +2949,21 @@ const ConnectivityManager = {
                         if (basePath === '' || basePath === '/') {
                             basePath = '/v1';
                         }
-                        u.pathname = basePath + '/audio/speech/stream';
+                        // 修复 PR #1764 review 第三轮 #2：URL 规整幂等——
+                        // 若 path 已是完整 endpoint 则不重复拼接，与后端 vllm_omni_tts_worker 保持一致，
+                        // 避免用户填完整 endpoint 时连通性测试探测到 /audio/speech/stream/audio/speech/stream
+                        if (basePath.endsWith('/audio/speech/stream')) {
+                            u.pathname = basePath;
+                        } else {
+                            u.pathname = basePath + '/audio/speech/stream';
+                        }
                         wsEndpoint = u.toString();
                     } catch (e) {
-                        // URL 解析失败：退化为直接字符串拼接，仍优于完全空
-                        wsEndpoint = wsUrl + '/audio/speech/stream';
+                        // URL 解析失败：退化为直接字符串拼接，同样做幂等检查
+                        const stripped = wsUrl.replace(/\/+$/, '');
+                        wsEndpoint = stripped.endsWith('/audio/speech/stream')
+                            ? stripped
+                            : stripped + '/audio/speech/stream';
                     }
                 }
                 result.url = wsEndpoint;
