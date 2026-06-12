@@ -3252,7 +3252,13 @@ export default function FullChatSurface({
       window.removeEventListener('blur', hideLocalCursorOverlay);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [activeCursorToolId, avatarToolCacheState, setCursorOverAvatarRange]);
+  }, [
+    activeCursorToolId,
+    avatarCursorOverlayScale,
+    avatarToolCacheState,
+    hammerCursorOverlayScale,
+    setCursorOverAvatarRange,
+  ]);
 
   useEffect(() => {
     const root = document.documentElement;
