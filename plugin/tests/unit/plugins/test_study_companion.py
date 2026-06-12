@@ -1580,6 +1580,62 @@ def test_study_companion_hosted_panel_uses_long_running_entry_poll_budget() -> N
     assert "status.mode.companion" in source
 
 
+def test_study_companion_hosted_panel_supports_image_paste_contract() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    source = (plugin_dir / "surfaces" / "study_panel.tsx").read_text(encoding="utf-8")
+    css_source = (plugin_dir / "static" / "style.css").read_text(encoding="utf-8")
+
+    assert "async function compressImageForStudy(blob: Blob, signal?: AbortSignal): Promise<string | null>" in source
+    assert "const LOAD_IMAGE_TIMEOUT_MS = 30000;" in source
+    assert "const TARGET_DATA_URL_LENGTH = 1_000_000;" in source
+    assert "Promise.race" in source
+    assert "Image load timeout" in source
+    assert "图片加载超时" not in source
+    assert "Canvas 2D context is unavailable" in source
+    assert "readAsDataUrl" not in source
+    assert "function createPasteHandler(" in source
+    assert "if (getBusy()) return;" in source
+    assert "item.type.startsWith('image/')" in source
+    assert "SUPPORTED_PASTE_IMAGE_TYPES.has(item.type)" in source
+    assert "item.type === 'text/plain'" in source
+    assert "setPasteError" in source
+    assert "setPastePending?: (value: boolean) => void;" in source
+    assert "setters.setPastePending?.(true);" in source
+    assert "setters.setPastePending?.(false);" in source
+    assert "onImageAccepted?: () => void;" in source
+    assert "setters.onImageAccepted?.();" in source
+    assert "study-panel__paste-error" in source
+    assert "beginPasteSignal" in source
+    assert "signal.aborted" in source
+    assert "onPaste={handleTextPaste}" in source
+    assert "onPaste={handleAnswerPaste}" in source
+    assert "const [pastePending, setPastePending] = useState(false);" in source
+    assert "pastePendingRef.current = value;" in source
+    assert "const interactionBusy = busy || pastePending;" in source
+    assert "return busy || pastePendingRef.current;" in source
+    assert "readOnly={interactionBusy}" in source
+    assert "if (textImage) explainArgs.vision_image_base64 = textImage;" in source
+    assert "if (textImage) genArgs.vision_image_base64 = textImage;" in source
+    assert "if (!answer.trim() && !answerImage)" in source
+    assert "if (answerImage) evalArgs.vision_image_base64 = answerImage;" in source
+    assert "const textAutoFilledFromOcrRef = useRef(false);" in source
+    assert "const textImageRef = useRef('');" in source
+    assert "textAutoFilledFromOcrRef.current = true;" in source
+    assert "textImageRef.current = value;" in source
+    assert "if (textImageRef.current || prev.trim() || !data.last_ocr_text)" in source
+    assert "setPastePending: setPastePendingState," in source
+    assert "onImageAccepted: clearAutoFilledTextOnImagePaste," in source
+    assert "setTextImageValue('');" in source
+    assert "setAnswerImage('');" in source
+    assert 'data-busy={interactionBusy ? "true" : "false"}' in source
+    assert "disabled={interactionBusy}" in source
+    assert "study-panel__image-preview" in source
+    assert "study-panel__image-remove" in source
+    assert "warnInDev" in source
+    assert '.study-panel[data-busy="true"] .study-panel__image-remove' in css_source
+    assert ".study-panel__paste-error" in css_source
+
+
 def test_study_companion_note_exporter_uses_backend_export_poll_budget() -> None:
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
     source = (plugin_dir / "surfaces" / "note_exporter.tsx").read_text(encoding="utf-8")
