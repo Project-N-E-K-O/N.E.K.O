@@ -2122,9 +2122,16 @@
                     document.body.appendChild(overlay);
                 }
             };
-            const startTransitionPlayback = () => {
+            const startVisibleSmokePlayback = () => {
                 if (didFinish || didStartPlayback) return;
                 didStartPlayback = true;
+                if (!isCurrentTransition()) return;
+                image.src = src;
+                playbackStartedAt = getNekoTransitionNowMs();
+                ensureOverlayVisible();
+            };
+            const startTransitionPlayback = () => {
+                if (didFinish || didSchedulePlayback) return;
                 if (imageLoadFallbackTimer) {
                     clearTimeout(imageLoadFallbackTimer);
                     imageLoadFallbackTimer = null;
@@ -2133,11 +2140,7 @@
                     finishTransition(resolve);
                     return;
                 }
-                ensureOverlayVisible();
-                image.removeAttribute('src');
-                void image.offsetWidth;
-                image.src = src;
-                playbackStartedAt = getNekoTransitionNowMs();
+                startVisibleSmokePlayback();
                 scheduleTransitionTimers(resolve);
             };
             const preloadImage = new Image();
@@ -2149,7 +2152,7 @@
                 didImageLoad = true;
                 startTransitionPlayback();
             }, { once: true });
-            ensureOverlayVisible();
+            startVisibleSmokePlayback();
             preloadImage.src = src;
             imageLoadFallbackTimer = setTimeout(() => {
                 didImageLoad = true;

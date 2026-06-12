@@ -196,10 +196,11 @@ def test_model_cat_transition_contract_is_present():
     assert "applyNekoTransitionMask(overlay)" in source
     assert "applyNekoTransitionMask(image)" in source
     assert "const ensureOverlayVisible = () => {" in source
+    assert "const startVisibleSmokePlayback = () => {" in source
     _assert_source_order(
         source,
         "transition preload ordering",
-        "ensureOverlayVisible();",
+        "startVisibleSmokePlayback();",
         "preloadImage.src = src",
     )
     assert "parseGifDurationMs" not in source
@@ -247,6 +248,7 @@ def test_model_cat_transition_contract_is_present():
     assert "preloadImage.addEventListener('load'" in transition_promise_block
     assert "preloadImage.addEventListener('error'" in transition_promise_block
     assert "document.body.appendChild(overlay);" in transition_promise_block
+    assert "image.removeAttribute('src')" not in transition_promise_block
     assert "imageLoadFallbackTimer = setTimeout" in transition_promise_block
     assert "image.src = src;" in transition_promise_block
     _assert_source_order(
