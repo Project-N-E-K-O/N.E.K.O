@@ -2913,7 +2913,39 @@ const ConnectivityManager = {
             } else if (provider === 'vllm_omni' && mt === 'tts') {
                 // vllm_omni + tts: 走 Mode 2（custom 路径），复用后端 _test_websocket
                 // 不设 providerKey / providerScope → 后端进入 Mode 2，用用户输入的 URL
-                result.url = urlInput ? urlInput.value.trim() : '';
+                //
+                // 修复 PR #1764 review #7（Codex P2）：把 base_url 规整成 worker 实际
+                // 使用的 ws endpoint，保证 _test_websocket 的握手真实命中
+                // /audio/speech/stream，而不是探测错误的端点
+                // 与后端 vllm_omni_tts_worker 中的 URL 拼接逻辑保持一致
+                const rawUrl = (urlInput ? urlInput.value.trim() : '').replace(/\/+$/, '');
+                let wsEndpoint = '';
+                if (rawUrl) {
+                    let wsUrl;
+                    if (rawUrl.startsWith('https://')) {
+                        wsUrl = 'wss://' + rawUrl.slice('https://'.length);
+                    } else if (rawUrl.startsWith('http://')) {
+                        wsUrl = 'ws://' + rawUrl.slice('http://'.length);
+                    } else if (rawUrl.startsWith('ws://') || rawUrl.startsWith('wss://')) {
+                        wsUrl = rawUrl;
+                    } else {
+                        wsUrl = 'ws://' + rawUrl;
+                    }
+                    try {
+                        // 用 URL 构造器解析（注意 ws:// 在浏览器里合法）
+                        const u = new URL(wsUrl);
+                        let basePath = (u.pathname || '').replace(/\/+$/, '');
+                        if (basePath === '' || basePath === '/') {
+                            basePath = '/v1';
+                        }
+                        u.pathname = basePath + '/audio/speech/stream';
+                        wsEndpoint = u.toString();
+                    } catch (e) {
+                        // URL 解析失败：退化为直接字符串拼接，仍优于完全空
+                        wsEndpoint = wsUrl + '/audio/speech/stream';
+                    }
+                }
+                result.url = wsEndpoint;
                 result.providerType = 'websocket';
                 result.key = keyInput ? getRealKey(keyInput) : '';
                 result.model = modelIdInput ? modelIdInput.value.trim() : '';
@@ -2940,7 +2972,10 @@ const ConnectivityManager = {
                 if (result.providerKey && result.providerScope) {
                     result.cacheId = buildConnectivityCacheId(result.providerScope, result.providerKey, result.key, result.url);
                 } else {
-                    result.cacheId = `custom|${mt}|${result.url || ''}|${result.key || ''}`;
+                    // 修复 PR #1764 review #6（CodeRabbit）：自定义路径 cacheId 纳入 model
+                    // vllm_omni + tts 切换 model 后必须重新探测（不同 model 可达性不同）
+                    const modelPart = result.model ? `|${result.model}` : '';
+                    result.cacheId = `custom|${mt}|${result.url || ''}|${result.key || ''}${modelPart}`;
                 }
             }
             return result;
