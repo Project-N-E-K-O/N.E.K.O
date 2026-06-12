@@ -427,18 +427,18 @@ class MusicPusherPlugin(NekoPluginBase):
                 return val
 
         try:
+            env_port = int(os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", "").strip())
+            if 1 <= env_port <= 65535:
+                return f"http://127.0.0.1:{env_port}"
+        except Exception:
+            pass
+
+        try:
             from config import USER_PLUGIN_SERVER_PORT
 
             port = int(USER_PLUGIN_SERVER_PORT)
             if 1 <= port <= 65535:
                 return f"http://127.0.0.1:{port}"
-        except Exception:
-            pass
-
-        try:
-            env_port = int(os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", "").strip())
-            if 1 <= env_port <= 65535:
-                return f"http://127.0.0.1:{env_port}"
         except Exception:
             pass
 
@@ -460,6 +460,10 @@ class MusicPusherPlugin(NekoPluginBase):
             return ""
         text = text.replace("/plugin/emoji_pusher/ui/", "/plugin/music_pusher/ui/")
         return self._to_absolute_ui_url(text) if text.startswith("/") else text
+
+    def _is_http_music_url(self, url: str) -> bool:
+        parsed = urlparse(str(url or "").strip())
+        return parsed.scheme in {"http", "https"} and bool(str(parsed.hostname or "").strip())
 
     def _music_allowlist_domains_for_url(self, url: str) -> list[str]:
         parsed = urlparse(url)
@@ -569,6 +573,7 @@ class MusicPusherPlugin(NekoPluginBase):
                 "title": title,
                 "artist": artist,
                 "duration_sec": _normalize_duration(raw.get("duration_sec")),
+                "deleted": _coerce_bool(raw.get("deleted"), False),
                 "created_at": _safe_text(raw.get("created_at"), _iso()),
                 "updated_at": _safe_text(raw.get("updated_at"), _iso()),
             }
@@ -805,6 +810,8 @@ class MusicPusherPlugin(NekoPluginBase):
                 continue
 
             mapped = self._upload_name_map.get(stored_name)
+            if mapped and _coerce_bool(mapped.get("deleted"), False):
+                continue
             if mapped is None:
                 guessed_title = Path(stored_name).stem
                 self._upsert_upload_name_map_locked(
@@ -844,6 +851,25 @@ class MusicPusherPlugin(NekoPluginBase):
             if item_id in valid_item_ids
         }
 
+    def _upload_file_referenced_by_tasks_locked(self, stored_filename: str) -> bool:
+        name = str(stored_filename or "").strip()
+        if not name or name != Path(name).name:
+            return False
+
+        upload_path = self._build_ui_file_url(name)
+        for task in self._tasks.values():
+            queue = task.get("queue") if isinstance(task, dict) else None
+            if not isinstance(queue, list):
+                continue
+            for track in queue:
+                if not isinstance(track, dict):
+                    continue
+                parsed = urlparse(self._normalize_legacy_url(str(track.get("url") or "").strip()))
+                if parsed.path == upload_path:
+                    return True
+
+        return False
+
     def _make_queue_item_from_music_item(
         self,
         music_item: dict[str, Any],
@@ -869,6 +895,8 @@ class MusicPusherPlugin(NekoPluginBase):
         url = self._normalize_legacy_url(str(raw.get("url") or "").strip())
         if not url:
             raise ValueError("队列中的 url 不能为空")
+        if not self._is_http_music_url(url):
+            raise ValueError("队列中的 url 必须是 http/https 绝对链接")
         return {
             "queue_id": f"q_{uuid4().hex[:10]}",
             "item_id": str(raw.get("item_id") or "").strip() or None,
@@ -1564,6 +1592,8 @@ class MusicPusherPlugin(NekoPluginBase):
         link = self._normalize_legacy_url(str(url or "").strip())
         if not link:
             return Err(SdkError("url 不能为空"))
+        if not self._is_http_music_url(link):
+            return Err(SdkError("url 必须是 http/https 绝对链接"))
 
         target_lanlan = self._resolve_target_lanlan(kwargs)
         attach_prompt = self._resolve_attach_prompt_on_push(kwargs, attach_prompt_on_push)
@@ -1800,13 +1830,34 @@ class MusicPusherPlugin(NekoPluginBase):
                 self._lyrics_map.pop(target, None)
                 stored_filename = str((deleted_item or {}).get("stored_filename") or "").strip()
                 if stored_filename and stored_filename == Path(stored_filename).name:
-                    self._upload_name_map.pop(stored_filename, None)
-                    upload_path = self._upload_dir / stored_filename
-                    try:
-                        if upload_path.exists() and upload_path.is_file():
-                            upload_path.unlink()
-                    except Exception as exc:
-                        self.logger.warning(f"删除上传音乐文件失败[{stored_filename}]: {exc}")
+                    if self._upload_file_referenced_by_tasks_locked(stored_filename):
+                        prev = self._upload_name_map.get(stored_filename) or {}
+                        self._upload_name_map[stored_filename] = {
+                            "stored_filename": stored_filename,
+                            "original_filename": _safe_text(
+                                (deleted_item or {}).get("original_filename") or prev.get("original_filename"),
+                                stored_filename,
+                            ),
+                            "title": _safe_text(
+                                (deleted_item or {}).get("title") or prev.get("title"),
+                                Path(stored_filename).stem,
+                            ),
+                            "artist": _safe_text((deleted_item or {}).get("artist") or prev.get("artist"), "未知"),
+                            "duration_sec": _normalize_duration(
+                                (deleted_item or {}).get("duration_sec") or prev.get("duration_sec")
+                            ),
+                            "deleted": True,
+                            "created_at": _safe_text(prev.get("created_at"), _iso()),
+                            "updated_at": _iso(),
+                        }
+                    else:
+                        self._upload_name_map.pop(stored_filename, None)
+                        upload_path = self._upload_dir / stored_filename
+                        try:
+                            if upload_path.exists() and upload_path.is_file():
+                                upload_path.unlink()
+                        except Exception as exc:
+                            self.logger.warning(f"删除上传音乐文件失败[{stored_filename}]: {exc}")
                     self._save_upload_name_map_locked()
                 self._save_lyrics_map_locked()
                 self._save_state_locked()
@@ -1858,10 +1909,13 @@ class MusicPusherPlugin(NekoPluginBase):
         final_target = target_lanlan.strip() or self._resolve_target_lanlan(kwargs)
 
         async with self._state_lock:
-            queue = self._build_queue_for_task(
-                queue_item_ids=queue_item_ids,
-                queue_items=queue_items,
-            )
+            try:
+                queue = self._build_queue_for_task(
+                    queue_item_ids=queue_item_ids,
+                    queue_items=queue_items,
+                )
+            except ValueError as exc:
+                return Err(SdkError(str(exc)))
             if not queue:
                 return Err(SdkError("队列不能为空，请先添加音频"))
 
@@ -1957,10 +2011,13 @@ class MusicPusherPlugin(NekoPluginBase):
                 task["target_lanlan"] = target_lanlan.strip() or self._resolve_target_lanlan(kwargs)
 
             if queue_item_ids is not None or queue_items is not None:
-                queue = self._build_queue_for_task(
-                    queue_item_ids=queue_item_ids,
-                    queue_items=queue_items,
-                )
+                try:
+                    queue = self._build_queue_for_task(
+                        queue_item_ids=queue_item_ids,
+                        queue_items=queue_items,
+                    )
+                except ValueError as exc:
+                    return Err(SdkError(str(exc)))
                 if not queue:
                     return Err(SdkError("队列不能为空"))
                 task["queue"] = queue
