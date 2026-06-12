@@ -200,6 +200,8 @@ const _NEKO_IDLE_CAT1_SUBSTATE_STRETCH = 'stretch-near-chat';
 const _NEKO_IDLE_CAT1_CHAT_GAP_PX = -12;
 const _NEKO_IDLE_CAT1_MINIMIZED_RIGHT_TO_LEFT_APPROACH_PX = 35;
 const _NEKO_IDLE_CAT1_MINIMIZED_BACKWARD_RETREAT_TOLERANCE_PX = 2;
+// 容器属性名：本次走路提交的接近侧（true=站毛球左侧/朝右，false=站毛球右侧/朝左）。
+const _NEKO_IDLE_CAT1_WALK_SIDE_COMMIT_PROP = '__nekoIdleCat1WalkApproachLookRight';
 const _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE = 'compact-top-edge';
 const _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE = 'minimized-side';
 const _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_OVERLAP_PX = 28;
@@ -2051,6 +2053,7 @@ function _cancelNekoIdleCat1Journey(button, options = {}) {
     _cancelNekoIdleReturnSubactionState(state, {
         preserveObservers: options.preserveObservers === true
     });
+    _clearNekoIdleCat1WalkApproachSide(_getNekoIdleReturnContainerFromButton(button));
     const profile = state.profile || _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
     state.substate = profile.idleSubstate;
     state.target = null;
@@ -2643,6 +2646,44 @@ function _makeNekoIdleCat1SideTarget(rect, chatRect, options) {
     };
 }
 
+function _computeNekoIdleCat1SideTargetForLook(rect, chatRect, lookFacingRight) {
+    const profile = _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
+    const approachOffsetPx = _getNekoIdleCat1MinimizedSideApproachOffsetPx(lookFacingRight, chatRect);
+    const rawLeft = lookFacingRight
+        ? chatRect.left - rect.width - profile.target.gapPx
+        : chatRect.right + profile.target.gapPx - approachOffsetPx;
+    return _makeNekoIdleCat1SideTarget(rect, chatRect, {
+        facingRight: lookFacingRight,
+        rawLeft: rawLeft,
+        approachOffsetPx: approachOffsetPx
+    });
+}
+
+// #1749 的本意：在毛球两侧站位点里挑“朝毛球前进即可到达”的那个，避免明显倒退。
+// 仅用于本次走路“首次”决定接近侧；之后由提交侧 + 滞回保持，避免每帧重判导致横跳。
+function _pickNekoIdleCat1ForwardSideTarget(rect, chatRect) {
+    const catCenterX = rect.left + rect.width / 2;
+    const chatCenterX = chatRect.left + chatRect.width / 2;
+    const lookFacingRight = chatCenterX > catCenterX;
+    const sideTarget = _computeNekoIdleCat1SideTargetForLook(rect, chatRect, lookFacingRight);
+    if (!sideTarget || sideTarget.moveFacingRight === null || sideTarget.moveFacingRight === lookFacingRight) {
+        return sideTarget;
+    }
+    const alternateTarget = _computeNekoIdleCat1SideTargetForLook(rect, chatRect, !lookFacingRight);
+    if (alternateTarget &&
+        (alternateTarget.moveFacingRight === null || alternateTarget.moveFacingRight === lookFacingRight)) {
+        return alternateTarget;
+    }
+    return sideTarget;
+}
+
+function _clearNekoIdleCat1WalkApproachSide(container) {
+    if (container && _NEKO_IDLE_CAT1_WALK_SIDE_COMMIT_PROP in container) {
+        delete container[_NEKO_IDLE_CAT1_WALK_SIDE_COMMIT_PROP];
+    }
+}
+
+// #1754：判定毛球中心是否已落进猫体 rect（猫已贴上球），贴球后据此避免再朝倒退方向取侧而前后蹭动。
 function _isNekoIdleRectCenterInsideRect(innerRect, outerRect) {
     if (!innerRect || !outerRect) return false;
     const innerLeft = Number(innerRect.left);
@@ -2668,6 +2709,7 @@ function _isNekoIdleRectCenterInsideRect(innerRect, outerRect) {
         innerCenterY >= outerTop && innerCenterY <= outerBottom;
 }
 
+// #1754：贴球后“原地以当前朝向站住”的侧目标（distance 0、moveFacingRight null，不再走动）。
 function _makeNekoIdleCat1CurrentSideTarget(rect, chatRect, options) {
     const facingRight = !!(options && options.facingRight);
     return {
@@ -2684,49 +2726,52 @@ function _makeNekoIdleCat1CurrentSideTarget(rect, chatRect, options) {
 
 function _getNekoIdleCat1SideTarget(container, chatRect) {
     if (!container || !chatRect || typeof container.getBoundingClientRect !== 'function') return null;
-    const profile = _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
     const rect = container.getBoundingClientRect();
     if (!rect || rect.width <= 0 || rect.height <= 0) return null;
 
+    // 提交本次走路的接近侧，且只在“猫已整体越到毛球另一侧”时才重选。
+    // 若像旧实现那样每帧用 catCenter vs chatCenter 重判接近侧：两侧站位点都落在毛球“对侧”，
+    // 猫一旦进入两站位点之间的区间，每帧目标都被指到对面 → 跨过球心就翻面、永不收敛，
+    // 表现为返回猫贴着毛球一直抽搐（#1749 残留）。提交侧 + 滞回即可根除该横跳。
     const catCenterX = rect.left + rect.width / 2;
-    const chatCenterX = chatRect.left + chatRect.width / 2;
-    const lookFacingRight = chatCenterX > catCenterX;
-    const approachOffsetPx = _getNekoIdleCat1MinimizedSideApproachOffsetPx(lookFacingRight, chatRect);
-    const rawLeft = lookFacingRight
-        ? chatRect.left - rect.width - profile.target.gapPx
-        : chatRect.right + profile.target.gapPx - approachOffsetPx;
-    const sideTarget = _makeNekoIdleCat1SideTarget(rect, chatRect, {
-        facingRight: lookFacingRight,
-        rawLeft: rawLeft,
-        approachOffsetPx: approachOffsetPx
-    });
-    if (_isNekoIdleRectCenterInsideRect(chatRect, rect) &&
-        sideTarget &&
-        sideTarget.moveFacingRight !== null &&
-        sideTarget.moveFacingRight !== lookFacingRight) {
-        return _makeNekoIdleCat1CurrentSideTarget(rect, chatRect, {
-            facingRight: lookFacingRight
-        });
-    }
-    if (!sideTarget || sideTarget.moveFacingRight === null || sideTarget.moveFacingRight === lookFacingRight) {
-        return sideTarget;
+    const committed = container[_NEKO_IDLE_CAT1_WALK_SIDE_COMMIT_PROP];
+    const hasCommitted = committed === true || committed === false;
+    let lookFacingRight = null;
+    if (hasCommitted) {
+        if (catCenterX >= chatRect.left && catCenterX <= chatRect.right) {
+            lookFacingRight = committed; // 仍在毛球水平跨度内：保持提交侧，不在球心附近翻面
+        } else if (committed === true && catCenterX > chatRect.right) {
+            lookFacingRight = false; // 已整体越到毛球右侧 → 重选接近侧
+        } else if (committed === false && catCenterX < chatRect.left) {
+            lookFacingRight = true; // 已整体越到毛球左侧 → 重选接近侧
+        } else {
+            lookFacingRight = committed; // 在毛球外、且就处于提交侧 → 保持
+        }
     }
 
-    const alternateRawLeft = lookFacingRight
-        ? chatRect.right + profile.target.gapPx - _getNekoIdleCat1MinimizedSideApproachOffsetPx(false, chatRect)
-        : chatRect.left - rect.width - profile.target.gapPx;
-    const alternateTarget = _makeNekoIdleCat1SideTarget(rect, chatRect, {
-        facingRight: !lookFacingRight,
-        rawLeft: alternateRawLeft,
-        approachOffsetPx: lookFacingRight
-            ? _getNekoIdleCat1MinimizedSideApproachOffsetPx(false, chatRect)
-            : 0
-    });
-    if (alternateTarget &&
-        (alternateTarget.moveFacingRight === null || alternateTarget.moveFacingRight === lookFacingRight)) {
-        return alternateTarget;
+    const target = lookFacingRight === null
+        ? _pickNekoIdleCat1ForwardSideTarget(rect, chatRect)
+        : _computeNekoIdleCat1SideTargetForLook(rect, chatRect, lookFacingRight);
+
+    // #1754：毛球中心已落进猫体 rect（猫已贴上球），且到该侧位点仍需倒退（moveFacingRight 与朝向
+    // 相反）时就别再走过去——原地以当前朝向站住，避免贴球时反复前后蹭动抽搐。提交侧随之钉在当前朝向。
+    if (target &&
+        _isNekoIdleRectCenterInsideRect(chatRect, rect) &&
+        target.moveFacingRight !== null &&
+        target.moveFacingRight !== target.lookFacingRight) {
+        const currentSideTarget = _makeNekoIdleCat1CurrentSideTarget(rect, chatRect, {
+            facingRight: target.lookFacingRight
+        });
+        if (currentSideTarget) {
+            container[_NEKO_IDLE_CAT1_WALK_SIDE_COMMIT_PROP] = !!currentSideTarget.lookFacingRight;
+            return currentSideTarget;
+        }
     }
-    return sideTarget;
+
+    if (target) {
+        container[_NEKO_IDLE_CAT1_WALK_SIDE_COMMIT_PROP] = !!target.lookFacingRight;
+    }
+    return target;
 }
 
 function _getNekoIdleCat1CompactTopEdgeBounds(surfaceRect) {
@@ -3121,6 +3166,7 @@ function _finishNekoIdleCat1Walk(button) {
     const state = _getNekoIdleCat1Journey(button);
     if (!state) return;
     _cancelNekoIdleCat1Frame(state);
+    _clearNekoIdleCat1WalkApproachSide(_getNekoIdleReturnContainerFromButton(button));
     _dispatchNekoIdleCat1MotionInputRegionState(state, false, 'cat1-walk-finish');
     state.target = null;
     state.lastStepAt = 0;
@@ -3289,14 +3335,26 @@ function _updateNekoIdleCat1WalkSpeedRate(button, state, distance) {
     const threshold = Math.max(0, Number(targetConfig.distanceIncreaseThresholdPx) || 0);
     const growthForMaxRate = Math.max(1, Number(targetConfig.distanceGrowthForMaxRatePx) || 1);
 
-    if (previousDistance > 0 && currentDistance > previousDistance + threshold) {
-        state.walkDistanceGrowthPx = Math.max(
-            0,
-            (Number(state.walkDistanceGrowthPx) || 0) + (currentDistance - previousDistance)
-        );
-        const progress = Math.min(1, state.walkDistanceGrowthPx / growthForMaxRate);
-        state.walkSpeedRate = Math.min(maxRate, 1 + (maxRate - 1) * progress);
-        _setNekoIdleCat1Classes(button, state);
+    if (previousDistance > 0) {
+        if (currentDistance > previousDistance + threshold) {
+            // 落后了（毛球被移远）：累计落后量，提升追赶倍率
+            state.walkDistanceGrowthPx = Math.max(
+                0,
+                (Number(state.walkDistanceGrowthPx) || 0) + (currentDistance - previousDistance)
+            );
+        } else if (currentDistance < previousDistance) {
+            // 正在收敛：回落累计落后量，避免一次瞬时变远把倍率永久钉死在 maxRate
+            state.walkDistanceGrowthPx = Math.max(
+                0,
+                (Number(state.walkDistanceGrowthPx) || 0) - (previousDistance - currentDistance)
+            );
+        }
+        const progress = Math.min(1, (Number(state.walkDistanceGrowthPx) || 0) / growthForMaxRate);
+        const nextRate = Math.min(maxRate, 1 + (maxRate - 1) * progress);
+        if (nextRate !== state.walkSpeedRate) {
+            state.walkSpeedRate = nextRate;
+            _setNekoIdleCat1Classes(button, state);
+        }
     }
 
     state.walkPreviousDistance = currentDistance;
