@@ -2922,7 +2922,7 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
         )
 
     effective_model = (model or '').strip() or 'Qwen3-TTS'
-    effective_voice = (voice or '').strip() or (voice_id or '').strip() or 'default'
+    effective_voice = (voice_id or '').strip() or (voice or '').strip() or 'default'
 
     logger.info(
         "[vLLM-Omni TTS] ws=%s model=%s voice=%s",
@@ -4515,39 +4515,6 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
 
     tts_provider = str(core_cfg.get('TTS_PROVIDER') or core_cfg.get('ttsProvider') or '').strip().lower()
     assist_api_type = str(core_cfg.get('assistApi') or '').strip().lower()
-    if tts_provider == 'mimo' or assist_api_type == 'mimo':
-        try:
-            tts_config = cm.get_model_api_config('tts_custom')
-            if tts_config.get('is_custom') and core_cfg.get('GPTSOVITS_ENABLED', False):
-                return gptsovits_tts_worker, None, 'gptsovits'
-        except Exception as e:
-            logger.warning(f'TTS调度器检查报告:{e}')
-
-        mimo_base_url = core_cfg.get('OPENROUTER_URL') if assist_api_type == 'mimo' else None
-        mimo_api_key = (cm.get_tts_api_key('mimo') or '').strip()
-        if not mimo_api_key:
-            logger.warning(
-                "MiMo TTS 已选中但 MiMo API Key 缺失，改用 dummy TTS worker 避免复用主 TTS Key")
-            return dummy_tts_worker, None, None
-        return (
-            partial(mimo_tts_worker, base_url=mimo_base_url),
-            mimo_api_key,
-            'mimo',
-        )
-
-    # core_api_type 命中 native voice provider + 用户选了该 provider 的原生声线
-    # (e.g. Gemini Puck/Leda/中文男) 时优先走原生 worker，不能被 has_custom_voice=False
-    # 的 GPT-SoVITS / local CosyVoice fallthrough 拦截 —— _has_custom_tts 已经判断
-    # voice_id 不是用户克隆音色，这里 has_custom_voice 必为 False，是用户显式选择的
-    # 原生路径，应当尊重该选择喵。api_key 由 provider 注册的 resolver 提供
-    # (Gemini 用 CORE_API_KEY；若 fallback 到 get_model_api_config('tts_default')
-    # 会拿到自定义 TTS 的 key，鉴权必失败)。
-    # 修复 PR #1764 review #4（Codex P2）：vllm_omni 路由优先级提前
-    # 原实现：has_custom_voice=False 时先走 get_native_tts_worker early return，
-    # 导致用户在 TTS 下拉里选 vllm_omni 仍然会被原生 TTS（Qwen/OpenAI/Gemini/Grok/Step）
-    # 拦截，vllm_omni 分支永远不会被命中。
-    # 新逻辑：先读 ttsModelProvider，若用户显式选了 vllm_omni 则直接走 vllm_omni 路径，
-    # 否则按原有流程走 native → custom 兜底。
     try:
         _raw_cfg_for_route = cm.load_json_config('core_config.json', {})
         _tts_provider_sel = (_raw_cfg_for_route.get('ttsModelProvider') or '').strip()
@@ -4556,9 +4523,20 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
         _tts_provider_sel = ''
         logger.warning(f"读取 ttsModelProvider 失败，跳过 vllm_omni 优先检查: {_e}")
 
+    _tts_config_for_route = None
+    try:
+        _tts_config_for_route = cm.get_model_api_config('tts_custom')
+        if _tts_config_for_route.get('is_custom') and core_cfg.get('GPTSOVITS_ENABLED', False):
+            return gptsovits_tts_worker, None, 'gptsovits'
+    except Exception as e:
+        logger.warning(f'TTS调度器检查报告:{e}')
+
+    # 修复 PR #1764 review #4（Codex P2）：vllm_omni 路由优先级提前
+    # 用户在 TTS 下拉里显式选 vllm_omni 时，不能被 assistApi=mimo 或 native TTS
+    # fallback 截走；但 GPT-SoVITS enabled 是显式本地 TTS 开关，仍应优先。
     if _tts_provider_sel == 'vllm_omni':
         try:
-            _tts_config_vllm = cm.get_model_api_config('tts_custom')
+            _tts_config_vllm = _tts_config_for_route or cm.get_model_api_config('tts_custom')
             _vllm_base_fallback = _tts_config_vllm.get('base_url') or ''
         except Exception:
             _vllm_base_fallback = ''
@@ -4590,6 +4568,26 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
         )
         return worker, vllm_key, 'vllm_omni'
 
+    if tts_provider == 'mimo' or assist_api_type == 'mimo':
+        mimo_base_url = core_cfg.get('OPENROUTER_URL') if assist_api_type == 'mimo' else None
+        mimo_api_key = (cm.get_tts_api_key('mimo') or '').strip()
+        if not mimo_api_key:
+            logger.warning(
+                "MiMo TTS 已选中但 MiMo API Key 缺失，改用 dummy TTS worker 避免复用主 TTS Key")
+            return dummy_tts_worker, None, None
+        return (
+            partial(mimo_tts_worker, base_url=mimo_base_url),
+            mimo_api_key,
+            'mimo',
+        )
+
+    # core_api_type 命中 native voice provider + 用户选了该 provider 的原生声线
+    # (e.g. Gemini Puck/Leda/中文男) 时优先走原生 worker，不能被 has_custom_voice=False
+    # 的 GPT-SoVITS / local CosyVoice fallthrough 拦截 —— _has_custom_tts 已经判断
+    # voice_id 不是用户克隆音色，这里 has_custom_voice 必为 False，是用户显式选择的
+    # 原生路径，应当尊重该选择喵。api_key 由 provider 注册的 resolver 提供
+    # (Gemini 用 CORE_API_KEY；若 fallback 到 get_model_api_config('tts_default')
+    # 会拿到自定义 TTS 的 key，鉴权必失败)。
     # 显式选择 MiMo 时已在上方短路，避免 Gemini/Grok 等 core-native voice
     # 覆盖 MiMo 的辅助 API TTS 路由。
     if not has_custom_voice:

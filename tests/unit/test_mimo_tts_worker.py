@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 import queue
@@ -190,6 +191,132 @@ def test_get_tts_worker_routes_assist_mimo_to_mimo_worker(monkeypatch):
     assert worker.keywords == {"base_url": "https://api.xiaomimimo.com/v1"}
     assert api_key == "test-mimo-key"
     assert provider_key == "mimo"
+
+
+@pytest.mark.unit
+def test_get_tts_worker_routes_explicit_vllm_before_assist_mimo(monkeypatch):
+    class _CM:
+        def get_core_config(self):
+            return {
+                "assistApi": "mimo",
+                "OPENROUTER_URL": "https://api.xiaomimimo.com/v1",
+                "TTS_PROVIDER": "",
+                "GPTSOVITS_ENABLED": False,
+            }
+
+        def load_json_config(self, filename, default):
+            assert filename == "core_config.json"
+            return {
+                "ttsModelProvider": "vllm_omni",
+                "ttsModelUrl": "http://localhost:8091",
+                "ttsModelId": "Qwen3-TTS",
+                "ttsVoiceId": "global-vllm-voice",
+                "ttsModelApiKey": "",
+            }
+
+        def get_model_api_config(self, model_type):
+            assert model_type == "tts_custom"
+            return {"is_custom": False, "base_url": "http://fallback.invalid"}
+
+        def get_tts_api_key(self, provider):
+            pytest.fail("explicit vllm_omni should bypass assistApi=mimo fallback")
+
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM())
+
+    worker, api_key, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen",
+        has_custom_voice=False,
+        voice_id="",
+    )
+
+    assert isinstance(worker, partial)
+    assert worker.func is tts_client.vllm_omni_tts_worker
+    assert worker.keywords == {
+        "base_url": "http://localhost:8091",
+        "model": "Qwen3-TTS",
+        "voice": "global-vllm-voice",
+    }
+    assert api_key == ""
+    assert provider_key == "vllm_omni"
+
+
+@pytest.mark.unit
+def test_get_tts_worker_keeps_gptsovits_ahead_of_explicit_vllm(monkeypatch):
+    class _CM:
+        def get_core_config(self):
+            return {
+                "assistApi": "qwen",
+                "TTS_PROVIDER": "",
+                "GPTSOVITS_ENABLED": True,
+            }
+
+        def load_json_config(self, filename, default):
+            assert filename == "core_config.json"
+            return {"ttsModelProvider": "vllm_omni"}
+
+        def get_model_api_config(self, model_type):
+            assert model_type == "tts_custom"
+            return {"is_custom": True, "base_url": "http://gsv.local"}
+
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM())
+
+    worker, api_key, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen",
+        has_custom_voice=False,
+        voice_id="",
+    )
+
+    assert worker is tts_client.gptsovits_tts_worker
+    assert api_key is None
+    assert provider_key == "gptsovits"
+
+
+@pytest.mark.unit
+def test_vllm_omni_worker_prefers_character_voice_over_global(monkeypatch):
+    sent_messages = []
+
+    class _FakeWS:
+        async def send(self, payload):
+            sent_messages.append(json.loads(payload))
+
+        async def close(self):
+            pass
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await asyncio.sleep(60)
+            raise StopAsyncIteration
+
+    async def _connect(*args, **kwargs):
+        return _FakeWS()
+
+    monkeypatch.setattr(tts_client.websockets, "connect", _connect)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = threading.Thread(
+        target=tts_client.vllm_omni_tts_worker,
+        kwargs={
+            "request_queue": request_queue,
+            "response_queue": response_queue,
+            "audio_api_key": "",
+            "voice_id": "character-voice",
+            "base_url": "http://localhost:8091",
+            "model": "Qwen3-TTS",
+            "voice": "global-default",
+        },
+    )
+    thread.start()
+
+    assert response_queue.get(timeout=3.0) == ("__ready__", True)
+    request_queue.close()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+    assert sent_messages[0]["type"] == "session.config"
+    assert sent_messages[0]["voice"] == "character-voice"
 
 
 @pytest.mark.unit

@@ -588,3 +588,32 @@ def test_explicit_mimo_tts_provider_is_saved_for_runtime_routing(mock_page: Page
     assert payload["assistApi"] == "qwen"
     assert payload["ttsModelProvider"] == "mimo"
     assert payload["ttsProvider"] == "mimo"
+
+
+@pytest.mark.frontend
+def test_switching_tts_provider_to_vllm_resets_stale_model(mock_page: Page, running_server: str):
+    """Switching from another TTS provider to vLLM should not keep stale model IDs."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#ttsModelProvider option[value='vllm_omni']", state="attached", timeout=10000)
+
+    values = mock_page.evaluate("""
+        () => {
+            const provider = document.getElementById('ttsModelProvider');
+            const model = document.getElementById('ttsModelId');
+            const voice = document.getElementById('ttsVoiceId');
+
+            model.value = 'tts-1-hd';
+            voice.value = 'alloy';
+            provider.value = 'vllm_omni';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+
+            return {
+                model: model.value,
+                voice: voice.value,
+            };
+        }
+    """)
+
+    assert values == {"model": "Qwen3-TTS", "voice": "default"}

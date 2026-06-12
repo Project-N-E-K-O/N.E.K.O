@@ -1097,11 +1097,11 @@ function onCustomModelProviderChange(modelType) {
             urlInput.removeAttribute('readonly');
         }
         const modelIdInput2 = document.getElementById(`${modelType}ModelId`);
-        if (modelIdInput2 && (!modelIdInput2.value || !modelIdInput2.value.trim())) {
+        if (modelIdInput2 && (!_isLoadingSavedConfig || !modelIdInput2.value || !modelIdInput2.value.trim())) {
             modelIdInput2.value = pInfo.tts_default_model || '';
         }
         const voiceInput = document.getElementById(`${modelType}VoiceId`);
-        if (voiceInput && (!voiceInput.value || !voiceInput.value.trim())) {
+        if (voiceInput && (!_isLoadingSavedConfig || !voiceInput.value || !voiceInput.value.trim())) {
             voiceInput.value = pInfo.tts_default_voice || '';
         }
         setKeyEditable(keyInput);
