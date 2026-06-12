@@ -344,6 +344,18 @@ def _parse_http_url(url: str) -> ParseResult | None:
     return parsed
 
 
+def _is_public_unicast_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return (
+        ip.is_global
+        and not ip.is_multicast
+        and not ip.is_reserved
+        and not ip.is_loopback
+        and not ip.is_link_local
+        and not ip.is_private
+        and not ip.is_unspecified
+    )
+
+
 def _validate_url_for_av_open(url: str) -> bool:
     """仅允许公网可路由地址给 PyAV 打开，防止 SSRF。"""
     parsed = _parse_http_url(url)
@@ -363,7 +375,7 @@ def _validate_url_for_av_open(url: str) -> bool:
             ip = ipaddress.ip_address(sockaddr[0])
         except Exception:
             continue
-        if not ip.is_global:
+        if not _is_public_unicast_ip(ip):
             return False
 
     return True
@@ -1544,21 +1556,24 @@ class MusicPusherPlugin(NekoPluginBase):
 
         if _stopped():
             return True
-        self._push_proactive_text(
-            content=(
-                "【用户身份消息】\n"
-                "发送者: 用户\n"
-                "类型: 音乐链接\n"
-                f"标题: {title or '未命名音乐'}\n"
-                f"歌手: {artist or '未知'}\n"
-                f"链接: {url}\n"
-                f"{prompt_block}"
-            ),
-            description="🎵 用户分享了音乐",
-            target_lanlan=target_lanlan,
-            metadata=proactive_meta,
-            priority=8,
-        )
+        try:
+            self._push_proactive_text(
+                content=(
+                    "【用户身份消息】\n"
+                    "发送者: 用户\n"
+                    "类型: 音乐链接\n"
+                    f"标题: {title or '未命名音乐'}\n"
+                    f"歌手: {artist or '未知'}\n"
+                    f"链接: {url}\n"
+                    f"{prompt_block}"
+                ),
+                description="🎵 用户分享了音乐",
+                target_lanlan=target_lanlan,
+                metadata=proactive_meta,
+                priority=8,
+            )
+        except Exception as exc:
+            self.logger.warning(f"推送音乐后续提示失败，已按播放成功处理: {exc}")
         return True
 
     def _resolve_attach_prompt_on_push(self, kwargs: dict[str, Any], explicit: object = None) -> bool:
