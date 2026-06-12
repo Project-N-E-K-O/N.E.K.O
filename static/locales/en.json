@@ -1191,7 +1191,12 @@
         },
         "loadConfigFailed": "Failed to load configuration, please refresh the page and try again",
         "errorGettingCurrentApiKey": "Error getting current API Key",
-        "getCurrentApiKeyFailed": "Failed to get current API Key"
+        "getCurrentApiKeyFailed": "Failed to get current API Key",
+        "useMimoTokenPlan": "Use MiMo Token Plan",
+        "mimoTokenPlanKeyLabel": "MiMo Token Plan Key",
+        "mimoTokenPlanKeyPlaceholder": "Enter Token Plan key (tp-xxxxx)",
+        "mimoTokenPlanKeyHint": "When enabled, MiMo uses only this Token Plan key and endpoint; the normal MiMo API key is locked.",
+        "mimoApiKeyLockedByTokenPlan": "MiMo Token Plan is enabled; this key is not used"
     },
     "live2d": {
         "manager": "Live2D Model Manager",

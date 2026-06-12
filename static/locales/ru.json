@@ -1191,7 +1191,12 @@
         },
         "loadConfigFailed": "Не удалось загрузить конфигурацию, обновите страницу",
         "errorGettingCurrentApiKey": "Ошибка получения текущего API Key",
-        "getCurrentApiKeyFailed": "Не удалось получить текущий API Key"
+        "getCurrentApiKeyFailed": "Не удалось получить текущий API Key",
+        "useMimoTokenPlan": "Использовать MiMo Token Plan",
+        "mimoTokenPlanKeyLabel": "Ключ MiMo Token Plan",
+        "mimoTokenPlanKeyPlaceholder": "Введите ключ Token Plan (tp-xxxxx)",
+        "mimoTokenPlanKeyHint": "Если включено, MiMo использует только этот ключ и endpoint Token Plan; обычный ключ MiMo API блокируется.",
+        "mimoApiKeyLockedByTokenPlan": "MiMo Token Plan включен; этот ключ не используется"
     },
     "live2d": {
         "manager": "Менеджер моделей Live2D",

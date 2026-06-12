@@ -688,6 +688,9 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeyGemini": "",
     "assistApiKeyQwenIntl": "",
     "assistApiKeyMinimax": "",
+    "assistApiKeyMimo": "",
+    "useMimoTokenPlan": False,
+    "assistApiKeyMimoTokenPlan": "",
     "assistApiKeyElevenlabs": "",
     "assistApiKeyClaude": "",
     "assistApiKeyGrok": "",
@@ -869,6 +872,21 @@ DEFAULT_ASSIST_API_PROFILES = {
         'VISION_MODEL': "doubao-seed-2-0-lite-260215",
         'AGENT_MODEL': "doubao-seed-2-0-pro-260215",
     },
+    'mimo': {
+        'OPENROUTER_URL': "https://api.xiaomimimo.com/v1",
+        'MIMO_TOKEN_PLAN_OPENROUTER_URL': "https://token-plan-cn.xiaomimimo.com/v1",
+        'MIMO_TOKEN_PLAN_OPENROUTER_URLS': [
+            "https://token-plan-cn.xiaomimimo.com/v1",
+            "https://token-plan-sgp.xiaomimimo.com/v1",
+            "https://token-plan-ams.xiaomimimo.com/v1",
+        ],
+        'CONVERSATION_MODEL': "mimo-v2.5",
+        'SUMMARY_MODEL': "mimo-v2.5",
+        'CORRECTION_MODEL': "mimo-v2.5",
+        'EMOTION_MODEL': "mimo-v2.5",
+        'VISION_MODEL': "mimo-v2.5",
+        'AGENT_MODEL': "mimo-v2.5",
+    },
 }
 
 DEFAULT_ASSIST_API_KEY_FIELDS = {
@@ -881,6 +899,7 @@ DEFAULT_ASSIST_API_KEY_FIELDS = {
     'kimi': 'ASSIST_API_KEY_KIMI',
     'qwen_intl': 'ASSIST_API_KEY_QWEN_INTL',
     'minimax': 'ASSIST_API_KEY_MINIMAX',
+    'mimo': 'ASSIST_API_KEY_MIMO',
     'elevenlabs': 'ASSIST_API_KEY_ELEVENLABS',
     'claude': 'ASSIST_API_KEY_CLAUDE',
     'openrouter': 'ASSIST_API_KEY_OPENROUTER',
