@@ -59,6 +59,7 @@ _DEFAULT_MAX_DURATION_HOURS = 20000
 _DEFAULT_MAX_DURATION_SECONDS = _DEFAULT_MAX_DURATION_HOURS * 3600
 _AV_TIME_BASE = 1000000.0
 _LYRIC_PUSH_MAX_CHARS = 18000
+_MAX_LYRIC_UPLOAD_BYTES = 256 * 1024
 _LYRIC_PUSH_TARGET_LINES = 5
 _DEFAULT_ATTACH_PROMPT_ON_PUSH = True
 _PROACTIVE_PROMPT_EXPIRE_SECONDS = 20
@@ -217,13 +218,20 @@ def _decode_optional_lyric(lyric_base64: str | None, filename: str | None) -> tu
     if ext not in _ALLOWED_LYRIC_EXTENSIONS:
         return "", "", f"不支持的歌词格式 '{ext}'，支持: {', '.join(sorted(_ALLOWED_LYRIC_EXTENSIONS))}"
 
+    encoded_lyric = _strip_data_uri(raw_data)
+    max_encoded_chars = ((_MAX_LYRIC_UPLOAD_BYTES + 2) // 3) * 4
+    if len(encoded_lyric) > max_encoded_chars:
+        return "", "", f"歌词文件超过限制 {_format_bytes(_MAX_LYRIC_UPLOAD_BYTES)}"
+
     try:
-        binary = base64.b64decode(_strip_data_uri(raw_data), validate=True)
+        binary = base64.b64decode(encoded_lyric, validate=True)
     except Exception as exc:
         return "", "", f"歌词 Base64 解码失败: {exc}"
 
     if not binary:
         return "", "", "歌词文件为空"
+    if len(binary) > _MAX_LYRIC_UPLOAD_BYTES:
+        return "", "", f"歌词文件超过限制 {_format_bytes(_MAX_LYRIC_UPLOAD_BYTES)}"
 
     for enc in ("utf-8-sig", "utf-8", "gb18030", "utf-16"):
         try:
@@ -313,7 +321,7 @@ def _calc_total_duration(queue: list[dict[str, Any]]) -> int:
 
 
 def _validate_url_for_av_open(url: str) -> bool:
-    """拒绝私有/回环/链路本地/IPv6 ULA 地址，防止 SSRF。"""
+    """仅允许公网可路由地址给 PyAV 打开，防止 SSRF。"""
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         return False
@@ -331,7 +339,7 @@ def _validate_url_for_av_open(url: str) -> bool:
             ip = ipaddress.ip_address(sockaddr[0])
         except Exception:
             continue
-        if ip.is_loopback or ip.is_private or ip.is_link_local:
+        if not ip.is_global:
             return False
 
     return True
@@ -452,6 +460,21 @@ class MusicPusherPlugin(NekoPluginBase):
             return ""
         text = text.replace("/plugin/emoji_pusher/ui/", "/plugin/music_pusher/ui/")
         return self._to_absolute_ui_url(text) if text.startswith("/") else text
+
+    def _music_allowlist_domains_for_url(self, url: str) -> list[str]:
+        parsed = urlparse(url)
+        host = str(parsed.hostname or "").strip().lower()
+        if not host:
+            return []
+
+        upload_prefix = f"/plugin/{self.plugin_id}/ui/{_UPLOAD_SUBDIR}/"
+        if host in {"127.0.0.1", "localhost", "::1"} and str(parsed.path or "").startswith(upload_prefix):
+            return ["127.0.0.1", "localhost"]
+
+        if _validate_url_for_av_open(url):
+            return [host]
+
+        return []
 
     def _save_upload_file(self, binary: bytes, ext: str) -> tuple[str, str]:
         self._upload_dir.mkdir(parents=True, exist_ok=True)
@@ -1165,16 +1188,12 @@ class MusicPusherPlugin(NekoPluginBase):
     ) -> None:
         event_id = f"music_push_{uuid4().hex[:12]}"
         expire_at = int(time.time()) + int(_PROACTIVE_PROMPT_EXPIRE_SECONDS)
-        parsed = urlparse(url)
-        host = str(parsed.hostname or "").strip().lower()
-        if host and _validate_url_for_av_open(url):
-            domains = [host]
-            if host in {"127.0.0.1", "localhost"}:
-                domains = ["127.0.0.1", "localhost"]
+        domains = self._music_allowlist_domains_for_url(url)
+        if domains:
             self.ctx.push_message(
                 source="music_pusher",
                 message_type="music_allowlist_add",
-                description=f"Allow music host: {host}",
+                description=f"Allow music host: {domains[0]}",
                 priority=7,
                 metadata={"domains": domains, "event_id": event_id},
                 target_lanlan=target_lanlan,
@@ -1773,11 +1792,22 @@ class MusicPusherPlugin(NekoPluginBase):
             return Err(SdkError("item_id 不能为空"))
 
         async with self._state_lock:
+            deleted_item = self._find_music_item_locked(item_id=target)
             before = len(self._music_items)
             self._music_items = [it for it in self._music_items if str(it.get("item_id") or "") != target]
             deleted = len(self._music_items) != before
             if deleted:
                 self._lyrics_map.pop(target, None)
+                stored_filename = str((deleted_item or {}).get("stored_filename") or "").strip()
+                if stored_filename and stored_filename == Path(stored_filename).name:
+                    self._upload_name_map.pop(stored_filename, None)
+                    upload_path = self._upload_dir / stored_filename
+                    try:
+                        if upload_path.exists() and upload_path.is_file():
+                            upload_path.unlink()
+                    except Exception as exc:
+                        self.logger.warning(f"删除上传音乐文件失败[{stored_filename}]: {exc}")
+                    self._save_upload_name_map_locked()
                 self._save_lyrics_map_locked()
                 self._save_state_locked()
 
@@ -2281,6 +2311,7 @@ class MusicPusherPlugin(NekoPluginBase):
                         task_live = self._tasks.get(task_id)
                         if task_live is None:
                             break
+                        attach_prompt_on_push = bool(self._attach_prompt_on_push)
                         task_live["current_index"] = index + 1
                         task_live["updated_at"] = _iso()
                         self._active_track = {
@@ -2311,6 +2342,7 @@ class MusicPusherPlugin(NekoPluginBase):
                                 artist=artist,
                                 target_lanlan=target_lanlan,
                                 lyric_text=lyric_text,
+                                attach_prompt_on_push=attach_prompt_on_push,
                             ),
                             timeout=_PUSH_TIMEOUT_SECONDS,
                         )
