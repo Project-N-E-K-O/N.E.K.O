@@ -827,6 +827,9 @@ def test_compact_input_geometry_keeps_transparent_surface_out_of_native_regions(
     assert "kind: 'input'" in input_collector
     assert "hitRect: null" in input_collector
     assert "nativeRect: null" in input_collector
+    assert "var hitRegionElements = [];" in input_collector
+    assert 'element.getAttribute(\'data-compact-hit-region\') === \'true\'' in input_collector
+    assert "hitRegionElements.push(element);" in input_collector
     assert 'element.querySelectorAll(\'[data-compact-hit-region="true"]\')' in input_collector
     assert "kind: 'inputControl'" in input_collector
     assert "hitRect: clippedRect" in input_collector

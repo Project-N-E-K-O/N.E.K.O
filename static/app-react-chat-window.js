@@ -1636,7 +1636,14 @@
                 interactive: false
             });
         }
-        return items.concat(Array.prototype.slice.call(element.querySelectorAll('[data-compact-hit-region="true"]'))
+        var hitRegionElements = [];
+        if (element.getAttribute('data-compact-hit-region') === 'true') {
+            hitRegionElements.push(element);
+        }
+        hitRegionElements = hitRegionElements.concat(
+            Array.prototype.slice.call(element.querySelectorAll('[data-compact-hit-region="true"]'))
+        );
+        return items.concat(hitRegionElements
             .map(function (child, index) {
                 var style = window.getComputedStyle ? window.getComputedStyle(child) : null;
                 if (style && (style.display === 'none' || style.visibility === 'hidden')) return null;

@@ -3815,7 +3815,7 @@ export default function FullChatSurface({
             }
             if (activeToolItem) {
               clearActiveCursorToolSelection();
-              closeCompactInputToolFan();
+              closeCompactInputToolFanFromUserClick();
               return;
             }
             compactInputToolFanOpenIntentRef.current = 'click';
@@ -3850,7 +3850,7 @@ export default function FullChatSurface({
               setIsCursorInsideHostWindow(true);
               setActiveCursorToolId(null);
               setToolMenuOpen(false);
-              closeCompactInputToolFan();
+              closeCompactInputToolFanFromUserClick();
             }}
           >
             <span aria-hidden="true">×</span>
@@ -3899,14 +3899,14 @@ export default function FullChatSurface({
                 if (activeCursorToolId === item.id) {
                   setActiveCursorToolId(null);
                   setToolMenuOpen(false);
-                  closeCompactInputToolFan();
+                  closeCompactInputToolFanFromUserClick();
                   return;
                 }
                 setAvatarRangeCursorVariants(prev => ({ ...prev, [item.id]: 'primary' }));
                 setOutsideRangeCursorVariants(prev => ({ ...prev, [item.id]: 'primary' }));
                 setActiveCursorToolId(item.id);
                 setToolMenuOpen(false);
-                closeCompactInputToolFan();
+                closeCompactInputToolFanFromUserClick();
               }}
             >
               <img
