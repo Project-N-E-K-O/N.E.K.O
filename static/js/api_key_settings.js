@@ -1138,6 +1138,12 @@ async function loadApiProviders() {
                     assistSelect.innerHTML = ''; // 清空现有选项
                     const assistList = Array.isArray(data.assist_api_providers) ? data.assist_api_providers : [];
                     assistList.forEach(provider => {
+                        // 修复 PR #1764 review 第三轮 #1：vllm_omni 是 TTS-only provider，
+                        // 不应出现在主 assistApiSelect 下拉框（否则被选作辅助 API 时
+                        // ConfigManager 会把 TTS WebSocket URL 复制到 OpenAI-compatible 配置，
+                        // summary/correction/agent 等 LLM 调用会打到错误的 endpoint）
+                        if (provider.key === 'vllm_omni') return;
+
                         // 如果是大陆用户，过滤掉受限的服务商
                         if (isProviderRestricted(provider.key)) {
                             console.log(`[Region] 隐藏辅助API选项: ${provider.key}（大陆用户）`);
