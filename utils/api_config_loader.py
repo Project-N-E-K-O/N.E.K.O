@@ -124,6 +124,8 @@ def _convert_assist_api_profile(json_profile: Dict[str, Any]) -> Dict[str, Any]:
     field_mapping = {
         'openrouter_url': 'OPENROUTER_URL',
         'openrouter_urls': 'OPENROUTER_URLS',
+        'token_plan_openrouter_url': 'MIMO_TOKEN_PLAN_OPENROUTER_URL',
+        'token_plan_openrouter_urls': 'MIMO_TOKEN_PLAN_OPENROUTER_URLS',
         'conversation_model': 'CONVERSATION_MODEL',
         'summary_model': 'SUMMARY_MODEL',
         'correction_model': 'CORRECTION_MODEL',

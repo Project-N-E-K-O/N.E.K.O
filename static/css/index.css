@@ -1380,13 +1380,51 @@ body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"
     pointer-events: auto;
 }
 
-/* 工具轮盘打开时，历史记录和音乐播放器退到表情三按钮下方，避免遮挡和抢命中。 */
-body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"] .compact-export-history-anchor {
+/* 工具轮盘打开且历史操作/预览未打开时，历史记录退到工具轮盘下方，避免遮挡和抢命中。
+   历史操作/预览打开后，只让透明外壳穿透，消息气泡和控制条仍需可交互。 */
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"]:not([data-compact-export-controls-open="true"]):not([data-compact-export-preview-open="true"]) .compact-export-history-anchor {
     z-index: 1 !important;
 }
 
-body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"] .compact-export-history-anchor,
-body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"] .compact-export-history-anchor * {
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"]:not([data-compact-export-controls-open="true"]):not([data-compact-export-preview-open="true"]) .compact-export-history-anchor,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"]:not([data-compact-export-controls-open="true"]):not([data-compact-export-preview-open="true"]) .compact-export-history-anchor * {
+    pointer-events: none !important;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-controls-open="true"] .compact-export-history-anchor:not(.under-choice-prompt),
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-preview-open="true"] .compact-export-history-anchor:not(.under-choice-prompt) {
+    z-index: 100006 !important;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-controls-open="true"] .compact-export-history-anchor,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-preview-open="true"] .compact-export-history-anchor,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-controls-open="true"] .compact-export-history-panel,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-preview-open="true"] .compact-export-history-panel,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-controls-open="true"] .compact-export-history-scroll,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-preview-open="true"] .compact-export-history-scroll,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-controls-open="true"] .compact-export-history-scroll-content,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-preview-open="true"] .compact-export-history-scroll-content,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-controls-open="true"] .compact-export-history-message,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-preview-open="true"] .compact-export-history-message {
+    pointer-events: none !important;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-controls-open="true"] .compact-export-history-bubble,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-preview-open="true"] .compact-export-history-bubble,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-controls-open="true"] .compact-export-history-controls,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-preview-open="true"] .compact-export-history-controls,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-controls-open="true"] .compact-export-preview-region,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-preview-open="true"] .compact-export-preview-region,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-controls-open="true"] .compact-export-history-resize-bar,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-preview-open="true"] .compact-export-history-resize-bar,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-controls-open="true"] .compact-export-history-scrollbar-hit,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"][data-compact-export-preview-open="true"] .compact-export-history-scrollbar-hit {
+    pointer-events: auto !important;
+}
+
+/* Keep choice prompts above dimmed history hit regions. */
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"] .compact-export-history-anchor.under-choice-prompt,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"] .compact-export-history-anchor.under-choice-prompt * {
     pointer-events: none !important;
 }
 

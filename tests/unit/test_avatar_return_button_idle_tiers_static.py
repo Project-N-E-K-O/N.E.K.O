@@ -142,6 +142,7 @@ def test_model_cat_transition_contract_is_present():
     assert "function isNekoModelCatTransitionActive(direction = '')" in source
     assert "function reserveNekoModelCatTransition(direction)" in source
     assert "function releaseNekoModelCatTransition(token)" in source
+    assert "function isNekoModelCatTransitionTokenCurrent(token)" in source
     assert "const goodbyeTransitionToken = reserveNekoModelCatTransition('model-to-cat')" in source
     assert "transitionToken: goodbyeTransitionToken" in source
     assert "releaseNekoModelCatTransition(goodbyeTransitionToken)" in source
@@ -174,8 +175,10 @@ def test_model_cat_transition_contract_is_present():
     assert "function getActiveModelTransitionRect()" in source
     assert "getModelScreenBounds" in source
     assert "savedGoodbyeRect = savedModelRect || savedGoodbyeRect" in source
+    assert "NEKO_MODEL_CAT_REVEAL_BEFORE_SMOKE_HIDE_MS = 48" in source
     assert "NEKO_MODEL_CAT_TRANSITION_DURATION_MS = 850" in source
     assert "NEKO_MODEL_CAT_TRANSITION_LOOP_GUARD_MS = 70" in source
+    assert "NEKO_MODEL_CAT_TRANSITION_LOAD_FALLBACK_MS = 1200" in source
     assert "NEKO_MODEL_CAT_TO_MODEL_LOCK_MS = 1120" in source
     assert "function getNekoModelCatOverlayVisibleMs()" in source
     assert "function getNekoModelCatSettleMs(direction)" in source
@@ -192,6 +195,14 @@ def test_model_cat_transition_contract_is_present():
     assert "function createNekoModelCatTransitionOverlay(rect, direction, token)" in source
     assert "applyNekoTransitionMask(overlay)" in source
     assert "applyNekoTransitionMask(image)" in source
+    assert "const ensureOverlayVisible = () => {" in source
+    assert "const startVisibleSmokePlayback = () => {" in source
+    _assert_source_order(
+        source,
+        "transition preload ordering",
+        "startVisibleSmokePlayback();",
+        "preloadImage.src = src",
+    )
     assert "parseGifDurationMs" not in source
     assert "getNekoModelCatTransitionDurationMs" not in source
     assert "NEKO_MODEL_CAT_TRANSITION_MIN_SIZE = 260" in source
@@ -220,6 +231,39 @@ def test_model_cat_transition_contract_is_present():
     assert "window.playNekoModelCatTransition" in avatar_source
     assert "window.dispatchEvent(event);" in avatar_source
     assert "dispatchReturnEvent();" in avatar_source
+    assert "let nekoModelCatRevealPlaybackToken = 0" in source
+    assert "function buildNekoModelCatRevealPlaybackUrl(src, playbackToken)" in source
+    assert "url.searchParams.set('reveal'" in source
+    assert "function restartNekoModelCatRevealArt(container)" in source
+    assert "const isCurrentTransition = () => isNekoModelCatTransitionTokenCurrent(token)" in source
+    assert "if (!isCurrentTransition()) return;" in source
+
+    transition_promise_start = source.index("const transitionPromise = new Promise((resolve) => {")
+    transition_promise_block = source[
+        transition_promise_start:
+        source.index("if (nekoModelCatTransitionActive && nekoModelCatTransitionActive.token === token)", transition_promise_start)
+    ]
+    assert "const startTransitionPlayback = () => {" in transition_promise_block
+    assert "const preloadImage = new Image()" in transition_promise_block
+    assert "preloadImage.addEventListener('load'" in transition_promise_block
+    assert "preloadImage.addEventListener('error'" in transition_promise_block
+    assert "document.body.appendChild(overlay);" in transition_promise_block
+    assert "image.removeAttribute('src')" not in transition_promise_block
+    assert "imageLoadFallbackTimer = setTimeout" in transition_promise_block
+    assert "image.src = src;" in transition_promise_block
+    _assert_source_order(
+        transition_promise_block,
+        "transition playback scheduling",
+        "image.src = src;",
+        "playbackStartedAt = getNekoTransitionNowMs();",
+        "scheduleTransitionTimers(resolve);",
+    )
+
+    reveal_active_block = source[
+        source.index("const revealActiveReturnBall = (reason) => {"):
+        source.index("requestAnimationFrame(() => {", source.index("const revealActiveReturnBall = (reason) => {"))
+    ]
+    assert reveal_active_block.index("restartNekoModelCatRevealArt(activeReturnButtonContainer)") < reveal_active_block.index("revealReturnBallContainer(activeReturnButtonContainer, reason)")
 
 
 def test_return_button_idle_tier_styles_are_present():

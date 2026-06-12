@@ -19,7 +19,8 @@
     const NEKO_MODEL_CAT_TRANSITION_ASSET = '/static/assets/neko-idle/cat_model_change.gif';
     const NEKO_MODEL_CAT_TRANSITION_DURATION_MS = 850;
     const NEKO_MODEL_CAT_TRANSITION_LOOP_GUARD_MS = 70;
-    const NEKO_MODEL_CAT_REVEAL_BEFORE_SMOKE_HIDE_MS = 150;
+    const NEKO_MODEL_CAT_REVEAL_BEFORE_SMOKE_HIDE_MS = 48;
+    const NEKO_MODEL_CAT_TRANSITION_LOAD_FALLBACK_MS = 1200;
     const NEKO_MODEL_CAT_TO_MODEL_LOCK_MS = 1120;
     const NEKO_MODEL_CAT_TRANSITION_MODEL_SCALE = 0.38;
     const NEKO_MODEL_CAT_TRANSITION_MIN_SIZE = 260;
@@ -42,6 +43,7 @@
     })();
     let nekoModelCatTransitionToken = 0;
     let nekoModelCatTransitionActive = null;
+    let nekoModelCatRevealPlaybackToken = 0;
 
     // ================================================================
     //  1. Status toast  (app.js lines 86-145)
@@ -750,7 +752,7 @@
                     if (button) {
                         button.dataset.active = isActive ? 'true' : 'false';
                         if (imgOff && imgOn) {
-                            imgOff.style.opacity = isActive ? '0' : '1';
+                            imgOff.style.opacity = isActive ? '0' : '0.75';
                             imgOn.style.opacity = isActive ? '1' : '0';
                         }
                         if (typeof manager.updateSeparatePopupTriggerIcon === 'function') {
@@ -779,7 +781,7 @@
                     if (button) {
                         button.dataset.active = isActive ? 'true' : 'false';
                         if (imgOff && imgOn) {
-                            imgOff.style.opacity = isActive ? '0' : '1';
+                            imgOff.style.opacity = isActive ? '0' : '0.75';
                             imgOn.style.opacity = isActive ? '1' : '0';
                         }
                         if (typeof manager.updateSeparatePopupTriggerIcon === 'function') {
@@ -1630,6 +1632,39 @@
         return `${NEKO_MODEL_CAT_TRANSITION_ASSET}${separator}${params.join('&')}`;
     }
 
+    function buildNekoModelCatRevealPlaybackUrl(src, playbackToken) {
+        if (!src) return '';
+        try {
+            const url = new URL(src, window.location.href);
+            if (!/\/static\/assets\/neko-idle\/.+\.gif$/i.test(url.pathname)) {
+                return src;
+            }
+            url.searchParams.set('reveal', String(playbackToken || Date.now()));
+            return url.href;
+        } catch (_) {
+            return src;
+        }
+    }
+
+    function restartNekoModelCatRevealArt(container) {
+        const art = container && typeof container.querySelector === 'function'
+            ? container.querySelector('.neko-idle-return-art:not(.neko-idle-return-art-next)')
+            : null;
+        if (!art) return false;
+        const currentSrc = art.getAttribute('src') || art.currentSrc || '';
+        if (!currentSrc) return false;
+        const nextSrc = buildNekoModelCatRevealPlaybackUrl(
+            currentSrc,
+            ++nekoModelCatRevealPlaybackToken
+        );
+        art.__nekoIdleGifPlaybackToken = (art.__nekoIdleGifPlaybackToken || 0) + 1;
+        art.__nekoIdleHoverToken = (art.__nekoIdleHoverToken || 0) + 1;
+        art.removeAttribute('src');
+        void art.offsetWidth;
+        art.src = nextSrc || currentSrc;
+        return true;
+    }
+
     function normalizeNekoScreenRect(rect) {
         if (!rect) return null;
         const left = Number(rect.left);
@@ -1954,6 +1989,13 @@
         }
     }
 
+    function isNekoModelCatTransitionTokenCurrent(token) {
+        return !!(
+            nekoModelCatTransitionActive &&
+            nekoModelCatTransitionActive.token === token
+        );
+    }
+
     function playNekoModelCatTransition(options = {}) {
         const container = options.container || null;
         const anchorRect = options.anchorRect || null;
@@ -2004,11 +2046,16 @@
         let overlayCleanupTimer = null;
         let beforeOverlayCleanupTimer = null;
         let finishTimer = null;
+        let imageLoadFallbackTimer = null;
         let didImageLoad = false;
+        let didStartPlayback = false;
+        let didSchedulePlayback = false;
         let didCallBeforeOverlayCleanup = false;
         let didCleanupOverlay = false;
         let didFinish = false;
+        const isCurrentTransition = () => isNekoModelCatTransitionTokenCurrent(token);
         const runBeforeOverlayCleanup = () => {
+            if (!isCurrentTransition()) return;
             if (didFinish || didCallBeforeOverlayCleanup || !onBeforeOverlayCleanup) return;
             didCallBeforeOverlayCleanup = true;
             try {
@@ -2018,6 +2065,7 @@
             }
         };
         const cleanupOverlay = () => {
+            if (!isCurrentTransition()) return;
             if (didCleanupOverlay) return;
             didCleanupOverlay = true;
             if (overlay.parentNode) {
@@ -2027,18 +2075,30 @@
         const finishTransition = (resolve) => {
             if (didFinish) return;
             didFinish = true;
-            cleanupOverlay();
-            if (container && container.isConnected) {
-                container.removeAttribute('data-neko-model-cat-transitioning');
-                if (direction === 'cat-to-model') {
-                    container.style.removeProperty('visibility');
-                }
+            if (imageLoadFallbackTimer) {
+                clearTimeout(imageLoadFallbackTimer);
+                imageLoadFallbackTimer = null;
             }
-            releaseNekoModelCatTransition(token);
+            if (isCurrentTransition()) {
+                cleanupOverlay();
+                if (container && container.isConnected) {
+                    container.removeAttribute('data-neko-model-cat-transitioning');
+                    if (direction === 'cat-to-model') {
+                        container.style.removeProperty('visibility');
+                    }
+                }
+                releaseNekoModelCatTransition(token);
+            }
             resolve({ completed: true, direction });
         };
         const scheduleTransitionTimers = (resolve) => {
             if (didFinish) return;
+            if (didSchedulePlayback) return;
+            didSchedulePlayback = true;
+            if (imageLoadFallbackTimer) {
+                clearTimeout(imageLoadFallbackTimer);
+                imageLoadFallbackTimer = null;
+            }
             if (overlayCleanupTimer) clearTimeout(overlayCleanupTimer);
             if (beforeOverlayCleanupTimer) clearTimeout(beforeOverlayCleanupTimer);
             if (finishTimer) clearTimeout(finishTimer);
@@ -2056,21 +2116,48 @@
                 finishTransition(resolve);
             }, finishRemainingMs);
         };
-        image.addEventListener('load', () => {
-            didImageLoad = true;
-            playbackStartedAt = getNekoTransitionNowMs();
-        }, { once: true });
-        document.body.appendChild(overlay);
-
         const transitionPromise = new Promise((resolve) => {
-            image.addEventListener('load', () => {
+            const ensureOverlayVisible = () => {
+                if (!overlay.parentNode) {
+                    document.body.appendChild(overlay);
+                }
+            };
+            const startVisibleSmokePlayback = () => {
+                if (didFinish || didStartPlayback) return;
+                didStartPlayback = true;
+                if (!isCurrentTransition()) return;
+                image.src = src;
+                playbackStartedAt = getNekoTransitionNowMs();
+                ensureOverlayVisible();
+            };
+            const startTransitionPlayback = () => {
+                if (didFinish || didSchedulePlayback) return;
+                if (imageLoadFallbackTimer) {
+                    clearTimeout(imageLoadFallbackTimer);
+                    imageLoadFallbackTimer = null;
+                }
+                if (!isCurrentTransition()) {
+                    finishTransition(resolve);
+                    return;
+                }
+                startVisibleSmokePlayback();
                 scheduleTransitionTimers(resolve);
+            };
+            const preloadImage = new Image();
+            preloadImage.addEventListener('load', () => {
+                didImageLoad = true;
+                startTransitionPlayback();
             }, { once: true });
-            image.addEventListener('error', () => {
-                scheduleTransitionTimers(resolve);
+            preloadImage.addEventListener('error', () => {
+                didImageLoad = true;
+                startTransitionPlayback();
             }, { once: true });
-            image.src = src;
-            scheduleTransitionTimers(resolve);
+            startVisibleSmokePlayback();
+            preloadImage.src = src;
+            imageLoadFallbackTimer = setTimeout(() => {
+                didImageLoad = true;
+                startTransitionPlayback();
+            }, NEKO_MODEL_CAT_TRANSITION_LOAD_FALLBACK_MS);
         });
         if (nekoModelCatTransitionActive && nekoModelCatTransitionActive.token === token) {
             nekoModelCatTransitionActive.promise = transitionPromise;
@@ -3411,6 +3498,7 @@
                         activeReturnButtonContainer.getAttribute('data-neko-return-visible') === 'true'
                     ) {
                         didRevealActiveReturnBall = true;
+                        restartNekoModelCatRevealArt(activeReturnButtonContainer);
                         revealReturnBallContainer(activeReturnButtonContainer, reason);
                     }
                 };
@@ -3846,7 +3934,7 @@
                     if (buttonData && buttonData.button) {
                         buttonData.button.dataset.active = 'false';
                         if (buttonData.imgOff) {
-                            buttonData.imgOff.style.opacity = '1';
+                            buttonData.imgOff.style.opacity = '0.75';
                         }
                         if (buttonData.imgOn) {
                             buttonData.imgOn.style.opacity = '0';
@@ -3866,7 +3954,7 @@
                     if (buttonData && buttonData.button) {
                         buttonData.button.dataset.active = 'false';
                         if (buttonData.imgOff) {
-                            buttonData.imgOff.style.opacity = '1';
+                            buttonData.imgOff.style.opacity = '0.75';
                         }
                         if (buttonData.imgOn) {
                             buttonData.imgOn.style.opacity = '0';
@@ -3886,7 +3974,7 @@
                     if (buttonData && buttonData.button) {
                         buttonData.button.dataset.active = 'false';
                         if (buttonData.imgOff) {
-                            buttonData.imgOff.style.opacity = '1';
+                            buttonData.imgOff.style.opacity = '0.75';
                         }
                         if (buttonData.imgOn) {
                             buttonData.imgOn.style.opacity = '0';

@@ -5092,7 +5092,7 @@ const AvatarButtonMixin = {
                 : 'var(--neko-btn-bg, rgba(255, 255, 255, 0.65))';
 
             if (buttonData.imgOff) {
-                buttonData.imgOff.style.opacity = active ? '0' : '1';
+                buttonData.imgOff.style.opacity = active ? '0' : '0.75';
             }
             if (buttonData.imgOn) {
                 buttonData.imgOn.style.opacity = active ? '1' : '0';

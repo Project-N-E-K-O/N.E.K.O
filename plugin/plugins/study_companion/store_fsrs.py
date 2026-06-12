@@ -50,11 +50,10 @@ def append_mastery_snapshot(
 
 
 def get_latest_mastery(self, topic_id: str) -> dict[str, Any] | None:
-    with self._lock:
-        row = (
-            self._require_conn()
-            .execute(
-                """
+    row = (
+        self._require_read_conn()
+        .execute(
+            """
             SELECT ms.*, t.name AS topic_name, t.chapter AS chapter, t.subject AS subject
             FROM mastery_snapshots ms
             LEFT JOIN topics t ON t.id = ms.topic_id
@@ -62,19 +61,18 @@ def get_latest_mastery(self, topic_id: str) -> dict[str, Any] | None:
             ORDER BY ms.id DESC
             LIMIT 1
             """,
-                (str(topic_id or ""),),
-            )
-            .fetchone()
+            (str(topic_id or ""),),
         )
+        .fetchone()
+    )
     return self._mastery_from_row(row)
 
 
 def list_mastery_overview(self, limit: int = 20) -> list[dict[str, Any]]:
-    with self._lock:
-        rows = (
-            self._require_conn()
-            .execute(
-                """
+    rows = (
+        self._require_read_conn()
+        .execute(
+            """
             SELECT ms.*, t.name AS topic_name, t.chapter AS chapter, t.subject AS subject
             FROM mastery_snapshots ms
             JOIN (
@@ -86,10 +84,10 @@ def list_mastery_overview(self, limit: int = 20) -> list[dict[str, Any]]:
             ORDER BY ms.updated_at DESC, ms.id DESC
             LIMIT ?
             """,
-                (max(1, int(limit)),),
-            )
-            .fetchall()
+            (max(1, int(limit)),),
         )
+        .fetchall()
+    )
     return [
         item
         for item in (self._mastery_from_row(row) for row in rows)
@@ -98,25 +96,15 @@ def list_mastery_overview(self, limit: int = 20) -> list[dict[str, Any]]:
 
 
 def get_fsrs_card(self, topic_id: str) -> dict[str, Any] | None:
-    with self._lock:
-        row = (
-            self._require_conn()
-            .execute(
-                "SELECT * FROM fsrs_cards WHERE topic_id = ?",
-                (str(topic_id or ""),),
-            )
-            .fetchone()
+    row = (
+        self._require_read_conn()
+        .execute(
+            "SELECT * FROM fsrs_cards WHERE topic_id = ?",
+            (str(topic_id or ""),),
         )
-    if row is None:
-        return None
-    return {
-        "id": int(row["id"]),
-        "topic_id": str(row["topic_id"]),
-        "card": self._json_loads(row["card_data"], {}),
-        "fsrs_state": str(row["fsrs_state"] or ""),
-        "last_rating": int(row["last_rating"] or 0),
-        "updated_at": str(row["updated_at"] or ""),
-    }
+        .fetchone()
+    )
+    return self._fsrs_card_from_row(row)
 
 
 def upsert_fsrs_card(
@@ -145,24 +133,23 @@ def upsert_fsrs_card(
 
 
 def list_fsrs_cards(self, limit: int | None = 100) -> list[dict[str, Any]]:
-    with self._lock:
-        if limit is None:
-            rows = (
-                self._require_conn()
-                .execute(
-                    "SELECT * FROM fsrs_cards ORDER BY updated_at DESC, id DESC",
-                )
-                .fetchall()
+    if limit is None:
+        rows = (
+            self._require_read_conn()
+            .execute(
+                "SELECT * FROM fsrs_cards ORDER BY updated_at DESC, id DESC",
             )
-        else:
-            rows = (
-                self._require_conn()
-                .execute(
-                    "SELECT * FROM fsrs_cards ORDER BY updated_at DESC, id DESC LIMIT ?",
-                    (max(1, int(limit)),),
-                )
-                .fetchall()
+            .fetchall()
+        )
+    else:
+        rows = (
+            self._require_read_conn()
+            .execute(
+                "SELECT * FROM fsrs_cards ORDER BY updated_at DESC, id DESC LIMIT ?",
+                (max(1, int(limit)),),
             )
+            .fetchall()
+        )
     return [
         {
             "id": int(row["id"]),
@@ -213,20 +200,19 @@ def append_review_log(
 
 
 def list_review_log(self, limit: int = 100) -> list[dict[str, Any]]:
-    with self._lock:
-        rows = (
-            self._require_conn()
-            .execute(
-                """
+    rows = (
+        self._require_read_conn()
+        .execute(
+            """
             SELECT *
             FROM review_log
             ORDER BY id DESC
             LIMIT ?
             """,
-                (max(1, int(limit)),),
-            )
-            .fetchall()
+            (max(1, int(limit)),),
         )
+        .fetchall()
+    )
     return [
         {
             "id": int(row["id"]),

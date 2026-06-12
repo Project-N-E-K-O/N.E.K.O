@@ -16,6 +16,7 @@
     <link rel="stylesheet" href="/static/css/index.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/subtitle.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/dark-mode.css?v={{ static_asset_version }}">
+    <script>window.__NEKO_REACT_CHAT_ASSET_VERSION__={{ react_chat_asset_version | tojson }};</script>
     <link rel="stylesheet" href="/static/react/neko-chat/neko-chat-window.css?v={{ react_chat_asset_version }}">
     <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
     <link rel="stylesheet" href="/static/libs/APlayer.min.css?v={{ static_asset_version }}">
@@ -829,7 +830,7 @@
     <script src="/static/app-character.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-websocket.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-telemetry.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-buttons.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-buttons.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app.js?v={{ static_asset_version }}"></script>
     <script src="/static/subtitle.js?v={{ static_asset_version }}"></script>
 
@@ -839,8 +840,8 @@
          在 app-react-chat-window.js 之前加载，与 index.html 同序。 -->
     <script src="/static/app-prompt-shared.js?v={{ static_asset_version }}"></script>
     <script src="/static/react/neko-chat/neko-chat-window.iife.js?v={{ react_chat_asset_version }}"></script>
-    <script src="/static/app-react-chat-window.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-chat-adapter.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-react-chat-window.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app-chat-adapter.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app-chat-export.js?v={{ static_asset_version }}"></script>
 
     <script>
