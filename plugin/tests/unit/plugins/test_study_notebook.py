@@ -60,10 +60,10 @@ class _FakeNotebookAgent:
         self.calls: list[dict[str, str]] = []
         self.message_texts: list[str] = []
 
-    async def _call_model(self, messages, *, operation, model_group_override=None):
-        self.calls.append(
-            {"operation": operation, "model_group": str(model_group_override or "")}
-        )
+    async def _call_model(self, messages, *, operation):
+        # Mirrors main's TutorLLMAgent._call_model signature, which routes by
+        # `operation` and does not accept a model-group override.
+        self.calls.append({"operation": operation})
         self.message_texts.append(str(messages[-1]["content"]))
         if operation == "expand_note":
             return "> [!ai]\n> 补充一个例子。"
@@ -395,7 +395,7 @@ async def test_note_ai_expand_rejects_missing_content_without_model_call(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_notebook_llm_operations_use_expected_model_tiers() -> None:
+async def test_notebook_llm_operations_use_expected_operations() -> None:
     agent = _FakeNotebookAgent()
 
     expanded = await expand_note(agent, "原始内容", topic_context="topic")
@@ -404,9 +404,11 @@ async def test_notebook_llm_operations_use_expected_model_tiers() -> None:
     assert expanded.reply.startswith("原始内容")
     assert "> [!ai]" in expanded.reply
     assert summarized.payload["title"] == "标题"
+    # Notebook ops route by `operation` through main's default agent model;
+    # there is no separate tutor/summary model tier on main.
     assert agent.calls == [
-        {"operation": "expand_note", "model_group": "tutor"},
-        {"operation": "summarize_to_note", "model_group": "summary"},
+        {"operation": "expand_note"},
+        {"operation": "summarize_to_note"},
     ]
 
 
