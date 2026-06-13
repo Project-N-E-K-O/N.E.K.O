@@ -1462,11 +1462,10 @@
 
                 if (pngtuberContainer) {
                     prepareModelReturnContainer(pngtuberContainer, consumeModelReturnEnterRect(), { clearPointerEvents: true });
-                    pngtuberContainer.style.removeProperty('pointer-events');
-                    pngtuberContainer.style.pointerEvents = 'none';
+                    pngtuberContainer.style.setProperty('pointer-events', 'auto', 'important');
                     const pngtuberImage = pngtuberContainer.querySelector('.pngtuber-image');
                     if (pngtuberImage) {
-                        pngtuberImage.style.removeProperty('pointer-events');
+                        pngtuberImage.style.setProperty('pointer-events', 'auto', 'important');
                     }
                 }
 

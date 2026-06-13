@@ -188,6 +188,7 @@ def test_model_cat_transition_contract_is_present():
     assert "NEKO_MODEL_CAT_TRANSITION_EDGE_MASK = 'radial-gradient(circle at center" in source
     assert "rgba(0,0,0,0.18) 72%" in source
     assert "rgba(0,0,0,0) 88%" in source
+
     assert "function applyNekoTransitionMask(element)" in source
     assert "maskImage: NEKO_MODEL_CAT_TRANSITION_EDGE_MASK" in source
     assert "element.style.webkitMaskImage = NEKO_MODEL_CAT_TRANSITION_EDGE_MASK" in source
@@ -264,6 +265,19 @@ def test_model_cat_transition_contract_is_present():
         source.index("requestAnimationFrame(() => {", source.index("const revealActiveReturnBall = (reason) => {"))
     ]
     assert reveal_active_block.index("restartNekoModelCatRevealArt(activeReturnButtonContainer)") < reveal_active_block.index("revealReturnBallContainer(activeReturnButtonContainer, reason)")
+
+
+def test_pngtuber_return_restores_pointer_events():
+    source = APP_UI_PATH.read_text(encoding="utf-8")
+    branch = source[
+        source.index("} else if (effectiveModelType === 'pngtuber') {"):
+        source.index("const live2dContainerPngtuber = document.getElementById('live2d-container');")
+    ]
+
+    assert "prepareModelReturnContainer(pngtuberContainer, consumeModelReturnEnterRect(), { clearPointerEvents: true });" in branch
+    assert "pngtuberContainer.style.setProperty('pointer-events', 'auto', 'important');" in branch
+    assert "pngtuberImage.style.setProperty('pointer-events', 'auto', 'important');" in branch
+    assert "pngtuberContainer.style.pointerEvents = 'none';" not in branch
 
 
 def test_return_button_idle_tier_styles_are_present():
