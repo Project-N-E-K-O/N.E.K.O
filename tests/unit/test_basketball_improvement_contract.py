@@ -121,6 +121,46 @@ def test_basketball_hidden_tab_keeps_route_alive():
 
 
 @pytest.mark.unit
+def test_basketball_invite_launches_challenge_mode_and_marks_started():
+    html = _basketball_html()
+
+    assert "var launchedFromInvite = !!(modeParams && modeParams.get('session_id'));" in html
+    assert (
+        "var currentMode = requestedMode === 'shooter' || (!requestedMode && launchedFromInvite) ? 'shooter' : 'spectator';"
+        in html
+    )
+    assert "gameStarted: true, game_started: true" in html
+
+
+@pytest.mark.unit
+def test_basketball_restart_rotates_route_session():
+    html = _basketball_html()
+
+    assert "function createBasketballSessionId() {" in html
+    assert "var sessionId = window.__nekoMiniGameInviteSessionId || createBasketballSessionId();" in html
+    assert "sessionId = createBasketballSessionId();" in html
+    assert "startRoute();" in html
+
+
+@pytest.mark.unit
+def test_basketball_personal_stats_ignore_neko_shots():
+    html = _basketball_html()
+
+    assert "if (resultEntry && resultEntry.shooter && resultEntry.shooter !== 'player') return;" in html
+    assert "recordShotHistory(game.attemptsResults[game.attemptsResults.length - 1]);" in html
+
+
+@pytest.mark.unit
+def test_basketball_duel_applies_llm_difficulty_before_neko_shot():
+    html = _basketball_html()
+
+    assert "var pendingControl = game.duel.pendingVoiceControl || null;" in html
+    assert "if (pendingControl && pendingControl.difficulty) setDuelDifficulty(pendingControl.difficulty);" in html
+    assert "var shot = getNekoDuelShot();" in html
+    assert "var shot = game.duel.pendingShot || getNekoDuelShot();" not in html
+
+
+@pytest.mark.unit
 def test_basketball_audio_config_contract():
     source = (ROOT / "static" / "game" / "games" / "basketball" / "basketball-audio-config.js")
     assert source.exists()

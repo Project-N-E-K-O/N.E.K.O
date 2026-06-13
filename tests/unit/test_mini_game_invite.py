@@ -1524,4 +1524,14 @@ def test_accept_basketball_invite_returns_basketball_url():
     assert result['action'] == 'open_game'
     assert result['game_type'] == 'basketball'
     assert result['game_url'].startswith('/basketball_demo?')
+    assert 'mode=shooter' in result['game_url']
     assert 'session_id=bb-sess' in result['game_url']
+
+
+def test_direct_basketball_request_returns_shooter_mode_url():
+    result = sr._build_direct_mini_game_open_result(LANLAN, 'basketball')
+
+    assert result is not None
+    assert result['game_type'] == 'basketball'
+    assert result['game_url'].startswith('/basketball_demo?')
+    assert 'mode=shooter' in result['game_url']

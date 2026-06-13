@@ -380,6 +380,55 @@ async def test_basketball_quick_lines_fallback_uses_request_language(monkeypatch
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_basketball_quick_lines_uses_requested_character(monkeypatch):
+    game_router._basketball_quick_lines_cache.clear()
+    captured = {}
+
+    def fake_character_info(lanlan_name=None):
+        name = str(lanlan_name or "CurrentLan")
+        return {
+            "lanlan_name": name,
+            "lanlan_prompt": "Requested persona." if name == "InviteLan" else "Current persona.",
+            "user_language": "en",
+            "model": "fake",
+            "base_url": "http://fake",
+            "api_key": "fake",
+        }
+
+    class _FakeResult:
+        content = '{"swish":["Nice arc"]}'
+
+    class _FakeLLM:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def ainvoke(self, messages):
+            captured["system"] = messages[0].content
+            return _FakeResult()
+
+    monkeypatch.setattr(game_router, "_get_current_character_info", lambda: fake_character_info("CurrentLan"))
+    monkeypatch.setattr(game_router, "_get_character_info", fake_character_info)
+
+    import utils.llm_client as llm_client
+    monkeypatch.setattr(llm_client, "create_chat_llm", lambda *_args, **_kwargs: _FakeLLM())
+
+    result = await game_router.game_quick_lines(
+        "basketball",
+        _FakeRequest({"lanlan_name": "InviteLan", "session_id": "bb-1", "mode": "shooter"}),
+    )
+
+    assert result["ok"] is True
+    assert result["character"] == "InviteLan"
+    assert result["lines"]["swish"] == ["Nice arc"]
+    assert "Requested persona." in captured["system"]
+    assert "Current persona." not in captured["system"]
+
+
+@pytest.mark.unit
 def test_basketball_template_contract():
     from pathlib import Path
 
@@ -473,7 +522,8 @@ def test_basketball_template_contract():
     assert "YUI_PASSIVE_LINES_SHOOTER" in html
     assert "YUI_PASSIVE_LINES_DUEL" in html
     assert "mode: currentMode" in html
-    assert "currentMode = requestedMode === 'shooter' ? 'shooter' : 'spectator'" in html
+    assert "launchedFromInvite" in html
+    assert "currentMode = requestedMode === 'shooter' || (!requestedMode && launchedFromInvite) ? 'shooter' : 'spectator'" in html
     assert "if (requestedMode === 'duel') currentMode = 'duel'" in html
     assert "await initLive2DAvatar('/static/yui-origin/yui-origin.model3.json')" in html
     assert "aim_duration_seconds" in html

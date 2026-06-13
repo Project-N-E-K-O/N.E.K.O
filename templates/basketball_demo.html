@@ -765,8 +765,9 @@
   var modeParams = null;
   try { modeParams = new URLSearchParams(window.location.search); } catch (_) { modeParams = null; }
   var requestedMode = modeParams ? String(modeParams.get('mode') || '').toLowerCase() : '';
+  var launchedFromInvite = !!(modeParams && modeParams.get('session_id'));
   var debugMode = modeParams ? modeParams.get('debug') === '1' : false;
-  var currentMode = requestedMode === 'shooter' ? 'shooter' : 'spectator';
+  var currentMode = requestedMode === 'shooter' || (!requestedMode && launchedFromInvite) ? 'shooter' : 'spectator';
   if (requestedMode === 'duel') currentMode = 'duel';
   if (requestedMode === 'timed') currentMode = 'timed';
   if (requestedMode === 'horse') currentMode = 'horse';
@@ -809,7 +810,10 @@
   var shotAnimationTimer = 0;
   var yuiActionTimer = 0;
   var latestShooterRating = '';
-  var sessionId = window.__nekoMiniGameInviteSessionId || ('basketball-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2));
+  function createBasketballSessionId() {
+    return 'basketball-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+  }
+  var sessionId = window.__nekoMiniGameInviteSessionId || createBasketballSessionId();
   var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || 'basketball_demo';
   var routeActive = false;
   var endedRoute = false;
@@ -2500,6 +2504,7 @@
     return safe;
   }
   function recordShotHistory(resultEntry) {
+    if (resultEntry && resultEntry.shooter && resultEntry.shooter !== 'player') return;
     var history = readJson('bb_shot_history', []);
     if (!Array.isArray(history)) history = [];
     history.push({
@@ -2992,6 +2997,7 @@
   function resetGame() {
     if (endedRoute) {
       endedRoute = false;
+      sessionId = createBasketballSessionId();
       startRoute();
     }
     game.state = 'ready';
@@ -3405,13 +3411,15 @@
   }
   function startNekoDuelTurn() {
     if (!isDuelMode() || game.state !== 'neko_thinking') return;
-    var shot = game.duel.pendingShot || getNekoDuelShot();
+    var pendingControl = game.duel.pendingVoiceControl || null;
+    if (pendingControl && pendingControl.difficulty) setDuelDifficulty(pendingControl.difficulty);
+    var shot = getNekoDuelShot();
     var event = buildNekoDuelTurnEvent();
     var pressureLine = getPressureLine();
     var line = game.duel.pendingVoiceLine || pressureLine || (shot.overrideReason === 'clutch'
       ? _i18n('lines.duel.clutch', '……这球必须进')
       : (shot.overrideReason === 'excuse' ? _i18n('lines.duel.excuse', '哎，手有点酸了') : pickLine('long_aim')));
-    var control = game.duel.pendingVoiceControl || { expression: shot.confident ? 'anticipate' : 'tease', intensity: shot.confident ? 'medium' : 'low' };
+    var control = pendingControl || { expression: shot.confident ? 'anticipate' : 'tease', intensity: shot.confident ? 'medium' : 'low' };
     game.duel.pendingVoiceLine = '';
     game.duel.pendingVoiceControl = null;
     game.duel.pendingShot = null;
@@ -3436,13 +3444,13 @@
     game.power = 0;
     updateDuelShooterAvatars();
     updateHud();
-    var shot = getNekoDuelShot();
-    game.duel.pendingShot = shot;
+    var previewDiff = DUEL_DIFFICULTY[duelDifficultyIdx];
+    game.duel.pendingShot = null;
     showAssistHint(_i18n('toast.nekoThinking', 'Neko思考中'));
-    setYuiAction('charging', shot.windupMs || 0);
+    setYuiAction('charging', previewDiff.windupMs || 0);
     queueNekoDuelTurnVoice();
     clearTimeout(game.duel.timer);
-    game.duel.timer = setTimeout(startNekoDuelTurn, (shot.reactionMs || 500) + (shot.windupMs || 450));
+    game.duel.timer = setTimeout(startNekoDuelTurn, (previewDiff.reactionMs || 500) + (previewDiff.windupMs || 450));
   }
   function horseLetters(count) {
     return HORSE_WORD.slice(0, clamp(count, 0, HORSE_WORD.length)) || '-';
@@ -4564,6 +4572,7 @@
     post('/route/start', Object.assign({
       session_id: sessionId, lanlan_name: lanlanName, source: 'basketball_demo',
       game_type: 'basketball', mode: currentMode, i18n_language: getRequestLanguage(),
+      gameStarted: true, game_started: true,
       character_name: lanlanName,
       best_record_distance: game.recordDistance,
       personal_best: localLeaderboard.personal_best || null,
@@ -4576,7 +4585,7 @@
       if (res && res.state) applyPreGameContext(res.state);
     }).catch(function () {});
     heartbeatTimer = setInterval(function () {
-      post('/route/heartbeat', Object.assign({ session_id: sessionId, lanlan_name: lanlanName, visible: !document.hidden, mode: currentMode, i18n_language: getRequestLanguage() }, _basketballGameMemoryPolicyPayload()), 2500).catch(function () {});
+      post('/route/heartbeat', Object.assign({ session_id: sessionId, lanlan_name: lanlanName, visible: !document.hidden, mode: currentMode, gameStarted: true, game_started: true, i18n_language: getRequestLanguage() }, _basketballGameMemoryPolicyPayload()), 2500).catch(function () {});
     }, 2500);
     drainTimer = setInterval(function () {
       post('/route/drain', Object.assign({ session_id: sessionId, lanlan_name: lanlanName, mode: currentMode, i18n_language: getRequestLanguage() }, _basketballGameMemoryPolicyPayload()), 2500).then(function (res) {
@@ -4599,6 +4608,8 @@
     var payloadObj = {
       session_id: sessionId, lanlan_name: lanlanName, reason: 'basketball_game_over',
       mode: currentMode,
+      gameStarted: true,
+      game_started: true,
       i18n_language: getRequestLanguage(),
       final_streak: game.bestStreak, final_distance: game.lastShotDistance || game.distance, record_distance: game.recordDistance,
       attempts_remaining: game.attemptsRemaining,

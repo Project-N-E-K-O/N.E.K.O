@@ -2179,6 +2179,22 @@ def _mini_game_invite_count_post_response_chat(lanlan_name: str) -> None:
     state['chats_since_response'] += 1
 
 
+def _mini_game_launch_url(game_type: str, lanlan_name: str, session_id: str) -> str | None:
+    url_template = MINI_GAME_LAUNCH_URL_BY_GAME.get(game_type)
+    if not url_template:
+        return None
+    from urllib.parse import urlencode as _urlencode
+
+    query = {
+        "lanlan_name": lanlan_name,
+        "session_id": session_id,
+    }
+    if game_type == "basketball":
+        query["mode"] = "shooter"
+    separator = "&" if "?" in url_template else "?"
+    return f"{url_template}{separator}{_urlencode(query)}"
+
+
 def _pick_mini_game_type(lanlan_name: str | None = None) -> str | None:
     """Pick an available mini-game type with invite copy configured.
 
@@ -7118,22 +7134,16 @@ def _apply_mini_game_invite_choice(
         # 触发会双开窗口）。
         invite_session_id = state.get('pending_session_id') or ''
         game_type = state.get('last_game_type') or 'soccer'
-        url_template = MINI_GAME_LAUNCH_URL_BY_GAME.get(game_type)
-        if not url_template:
+        game_url = _mini_game_launch_url(game_type, lanlan_name, invite_session_id)
+        if not game_url:
             logger.warning(
                 "[%s] accept invite but no launch URL for game_type=%r; "
                 "fallback /soccer_demo", lanlan_name, game_type,
             )
-            url_template = '/soccer_demo'
-        from urllib.parse import urlencode as _urlencode
-        query = _urlencode({
-            'lanlan_name': lanlan_name,
-            'session_id': invite_session_id,
-        })
-        game_url = f"{url_template}?{query}"
+            game_url = _mini_game_launch_url("soccer", lanlan_name, invite_session_id) or "/soccer_demo"
         logger.info(
             "[%s] mini-game invite accepted via %s -> %s",
-            lanlan_name, source, url_template,
+            lanlan_name, source, game_url,
         )
         return {
             'action': 'open_game',
@@ -7421,19 +7431,14 @@ def _direct_request_pair_has_scoped_negation(
 
 
 def _build_direct_mini_game_open_result(lanlan_name: str, game_type: str) -> dict[str, Any] | None:
-    url_template = MINI_GAME_LAUNCH_URL_BY_GAME.get(game_type)
-    if not url_template:
-        return None
     invite_session_id = str(uuid4())
-    from urllib.parse import urlencode as _urlencode
-    query = _urlencode({
-        "lanlan_name": lanlan_name,
-        "session_id": invite_session_id,
-    })
+    game_url = _mini_game_launch_url(game_type, lanlan_name, invite_session_id)
+    if not game_url:
+        return None
     return {
         "action": "open_game",
         "game_type": game_type,
-        "game_url": f"{url_template}?{query}",
+        "game_url": game_url,
         "session_id": invite_session_id,
         "source": "direct_request",
     }

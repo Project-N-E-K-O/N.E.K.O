@@ -6892,17 +6892,18 @@ async def game_quick_lines(game_type: str, request: Request):
             current_name = _get_current_character_info().get("lanlan_name") or ""
         except Exception:
             current_name = ""
+        requested_name = _resolve_lanlan_name(data.get("lanlan_name") or current_name)
         # quick-lines 是 soccer 流程里第一个 LLM 端点：接住 _absorb_request_language
         # 的返回值，避免在 SessionManager 还没 ready / mgr 拿不到的窗口下，char_info 的
         # user_language 仍 stale 在全局缓存的旧值（首批 quick lines 落英文）。
-        request_language = _absorb_request_language(data, current_name)
-        char_info = _get_current_character_info()
+        request_language = _absorb_request_language(data, requested_name)
+        char_info = _get_character_info(requested_name)
         language = request_language or char_info.get("user_language")
         fallback_language = language
         cache_key = ""
         if game_type == "basketball":
             cache_lanlan = _normalize_short_text(
-                data.get("lanlan_name") or char_info.get("lanlan_name") or "",
+                char_info.get("lanlan_name") or requested_name or "",
                 max_chars=80,
             )
             cache_lang = _normalize_short_text(language or "", max_chars=20)
