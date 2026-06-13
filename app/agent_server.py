@@ -1108,6 +1108,25 @@ def _openclaw_notification(code: str, reasons: Any) -> str:
     })
 
 
+def _start_openclaw_enable_probe(lanlan_name: Optional[str]) -> None:
+    adapter = Modules.openclaw
+    if not adapter:
+        _cancel_openclaw_enable_probe()
+        Modules.agent_flags["openclaw_enabled"] = False
+        _set_capability("openclaw", False, "AGENT_OPENCLAW_MODULE_NOT_LOADED")
+        Modules.notification = json.dumps({"code": "AGENT_OPENCLAW_MODULE_NOT_LOADED"})
+        return
+
+    _cancel_openclaw_enable_probe()
+    Modules.agent_flags["openclaw_enabled"] = True
+    _set_capability("openclaw", False, "AGENT_PRECHECK_PENDING")
+    Modules.notification = json.dumps({"code": "AGENT_OPENCLAW_ENABLED_CHECKING"})
+    task = asyncio.create_task(_run_openclaw_enable_probe(Modules.openclaw_enable_seq, lanlan_name))
+    Modules.openclaw_enable_task = task
+    Modules._persistent_tasks.add(task)
+    task.add_done_callback(Modules._persistent_tasks.discard)
+
+
 async def _run_openclaw_enable_probe(seq: int, lanlan_name: Optional[str]) -> None:
     last_reasons: list[str] = []
     try:
@@ -4878,21 +4897,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
 
     if isinstance(nf, bool):
         if nf:
-            adapter = Modules.openclaw
-            if not adapter:
-                _cancel_openclaw_enable_probe()
-                Modules.agent_flags["openclaw_enabled"] = False
-                _set_capability("openclaw", False, "AGENT_OPENCLAW_MODULE_NOT_LOADED")
-                Modules.notification = json.dumps({"code": "AGENT_OPENCLAW_MODULE_NOT_LOADED"})
-            else:
-                _cancel_openclaw_enable_probe()
-                Modules.agent_flags["openclaw_enabled"] = True
-                _set_capability("openclaw", False, "AGENT_PRECHECK_PENDING")
-                Modules.notification = json.dumps({"code": "AGENT_OPENCLAW_ENABLED_CHECKING"})
-                _bg = asyncio.create_task(_run_openclaw_enable_probe(Modules.openclaw_enable_seq, lanlan_name))
-                Modules.openclaw_enable_task = _bg
-                Modules._persistent_tasks.add(_bg)
-                _bg.add_done_callback(Modules._persistent_tasks.discard)
+            _start_openclaw_enable_probe(lanlan_name)
         else:
             _cancel_openclaw_enable_probe()
             Modules.agent_flags["openclaw_enabled"] = False
@@ -5008,6 +5013,8 @@ async def agent_command(payload: Dict[str, Any]):
                 else:
                     _set_capability("computer_use", False, "AGENT_CU_MODULE_NOT_LOADED")
                     _set_capability("browser_use", False, "AGENT_CU_MODULE_NOT_LOADED")
+                if Modules.agent_flags.get("openclaw_enabled"):
+                    _start_openclaw_enable_probe(lanlan_name)
             else:
                 first_reason = (gate.get("reasons") or ["AGENT_ENDPOINT_NOT_CONFIGURED"])[0]
                 _set_capability("computer_use", False, first_reason)

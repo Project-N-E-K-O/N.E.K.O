@@ -626,15 +626,18 @@ async def _handle_agent_event(event: dict):
             if isinstance(snapshot, dict):
                 flags = snapshot.get("flags")
                 if isinstance(flags, dict):
+                    flags_for_sync = dict(flags)
+                    if isinstance(snapshot.get("analyzer_enabled"), bool):
+                        flags_for_sync["agent_enabled"] = bool(snapshot.get("analyzer_enabled"))
                     if lanlan and mgr_for_status is not None:
                         try:
-                            mgr_for_status.update_agent_flags(flags)
+                            mgr_for_status.update_agent_flags(flags_for_sync)
                         except Exception as e:
                             logger.debug("[EventBus] agent_status_update flag sync failed: %s", e)
                     elif not lanlan:
                         for _, mgr in _iter_session_managers():
                             try:
-                                mgr.update_agent_flags(flags)
+                                mgr.update_agent_flags(flags_for_sync)
                             except Exception as e:
                                 logger.debug("[EventBus] agent_status_update broadcast flag sync failed: %s", e)
             if lanlan and mgr_for_status is not None:

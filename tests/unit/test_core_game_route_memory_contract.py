@@ -877,6 +877,50 @@ def test_late_text_mode_screenshot_does_not_attach_to_next_turn():
 
 
 @pytest.mark.unit
+def test_live_screen_frame_without_request_id_attaches_to_tagged_turn():
+    """Live screen-share frames without request ids still belong to the active turn."""
+    pending = [
+        {"data": "data:image/jpeg;base64,old", "request_id": "req-old"},
+        {"data": "data:image/jpeg;base64,live", "request_id": ""},
+        "data:image/jpeg;base64,legacy",
+    ]
+
+    selected = cross_server_module._select_pending_user_images_for_turn(pending, "req-current")
+    recent = cross_server_module._build_recent_analyze_messages(
+        [{"role": "user", "content": [{"type": "text", "text": "what is on screen"}]}],
+        selected,
+        allow_attach_to_last_user=True,
+    )
+
+    assert selected == [
+        {"data": "data:image/jpeg;base64,live", "request_id": ""},
+    ]
+    urls = [item["url"] for item in recent[-1]["attachments"]]
+    assert urls == ["data:image/jpeg;base64,live"]
+
+
+@pytest.mark.unit
+def test_turn_image_partition_retains_later_request_images():
+    """An earlier turn end must not clear screenshots already tagged for a later turn."""
+    pending = [
+        {"data": "data:image/jpeg;base64,first", "request_id": "req-first"},
+        {"data": "data:image/jpeg;base64,next", "request_id": "req-next"},
+        {"data": "data:image/jpeg;base64,live", "request_id": ""},
+        "data:image/jpeg;base64,legacy",
+    ]
+
+    selected, remaining = cross_server_module._partition_pending_user_images_for_turn(pending, "req-first")
+
+    assert selected == [
+        {"data": "data:image/jpeg;base64,first", "request_id": "req-first"},
+        {"data": "data:image/jpeg;base64,live", "request_id": ""},
+    ]
+    assert remaining == [
+        {"data": "data:image/jpeg;base64,next", "request_id": "req-next"},
+    ]
+
+
+@pytest.mark.unit
 def test_session_end_request_tagged_screenshot_selection_falls_back_to_latest_request():
     """Session-end cleanup may not carry request_id, but must not drop tagged images."""
     pending = [

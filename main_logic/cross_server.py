@@ -218,10 +218,25 @@ def _select_pending_user_images_for_turn(pending_user_images: list, request_id: 
         image_request_id = str(raw.get("request_id") or "")
         if image_request_id and image_request_id != turn_request_id:
             continue
-        if not image_request_id and turn_request_id:
-            continue
         selected.append(raw)
     return selected
+
+
+def _partition_pending_user_images_for_turn(pending_user_images: list, request_id: object) -> tuple[list, list]:
+    turn_request_id = str(request_id or "")
+    selected = []
+    remaining = []
+    for raw in pending_user_images or []:
+        if not isinstance(raw, dict):
+            if not turn_request_id:
+                selected.append(raw)
+            continue
+        image_request_id = str(raw.get("request_id") or "")
+        if image_request_id and image_request_id != turn_request_id:
+            remaining.append(raw)
+            continue
+        selected.append(raw)
+    return selected, remaining
 
 
 def _select_pending_user_images_for_session_end(pending_user_images: list, request_id: object) -> list:
@@ -926,11 +941,17 @@ async def run_sync_connector(
                                 # 非阻塞地向tool_server发送最近对话，供分析器识别潜在任务。
                                 # 仅 agent-callback 专用通道会显式跳过，避免任务结果回调引发二次分析。
                                 if not shutdown_event.is_set():
+                                    selected_pending_user_images, remaining_pending_user_images = (
+                                        _partition_pending_user_images_for_turn(
+                                            pending_user_images,
+                                            turn_request_id,
+                                        )
+                                    )
                                     try:
                                         # 构造最近的消息摘要，并保留本轮最近的图片附件
                                         recent = _build_recent_analyze_messages(
                                             chat_history,
-                                            _select_pending_user_images_for_turn(pending_user_images, turn_request_id),
+                                            selected_pending_user_images,
                                             allow_attach_to_last_user=had_user_input_this_turn,
                                         )
                                         has_user = any(m.get('role') == 'user' for m in recent)
@@ -961,7 +982,7 @@ async def run_sync_connector(
                                     except Exception as e:
                                         logger.debug(f"[{lanlan_name}] 发送到analyzer失败: {e}")
                                     finally:
-                                        pending_user_images = []
+                                        pending_user_images = remaining_pending_user_images
 
                                 # Turn end 轻量缓存：仅写入 recent history，不触发 LLM 摘要/整理
                                 # 主动搭话不写缓存——等用户回应后随下一轮正常 turn 一起入库

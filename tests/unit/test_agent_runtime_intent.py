@@ -339,6 +339,29 @@ async def test_set_agent_enabled_off_preserves_sub_flags(
 
 
 @pytest.mark.asyncio
+async def test_set_agent_enabled_on_reprobes_openclaw_when_intent_survives(
+    agent_state_isolation, isolated_intent_store: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Master ON must refresh OpenClaw readiness when the sub-toggle intent survived OFF."""
+    srv = agent_state_isolation
+    started: list[str | None] = []
+
+    srv.Modules.agent_flags["openclaw_enabled"] = True
+    srv.Modules.capability_cache["openclaw"] = {"ready": False, "reason": ""}
+    monkeypatch.setattr(srv, "_start_openclaw_enable_probe", lambda lanlan_name=None: started.append(lanlan_name))
+
+    with patch.object(srv, "_check_agent_api_gate", return_value={"ready": True, "reasons": [], "is_free_version": False}):
+        await srv.agent_command({
+            "command": "set_agent_enabled",
+            "enabled": True,
+            "lanlan_name": "lanlan-test",
+            "_persist_intent": False,
+        })
+
+    assert started == ["lanlan-test"]
+
+
+@pytest.mark.asyncio
 async def test_gate_fail_preserves_user_plugin_enabled(
     agent_state_isolation, isolated_intent_store: Path
 ):
