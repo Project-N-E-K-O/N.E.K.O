@@ -11,9 +11,12 @@ from plugin.server.application import config as config_application
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.application.plugins.ui_query_service import (
     _build_plugin_list_actions_from_meta,
+    _collect_hosted_tsx_modules_sync,
     _get_static_ui_config_from_meta,
     _hosted_plugin_not_running_message,
+    _module_key,
     _PLUGIN_NOT_RUNNING_MESSAGES,
+    _resolve_hosted_module_path,
     PluginUiQueryService,
 )
 
@@ -288,3 +291,82 @@ def test_call_surface_action_localizes_plugin_not_running(tmp_path) -> None:
 )
 def test_hosted_plugin_not_running_message_locale_mapping(locale, expected_key) -> None:
     assert _hosted_plugin_not_running_message(locale) == _PLUGIN_NOT_RUNNING_MESSAGES[expected_key]
+
+
+def _write_hosted_surface_tree(root):
+    """Build a plugin surface tree with named/default/transitive/type imports."""
+    surfaces = root / "surfaces"
+    surfaces.mkdir(parents=True)
+    (surfaces / "panel.tsx").write_text(
+        "import { useState } from '@neko/plugin-ui'\n"
+        "import { callPlugin, text } from './shared'\n"
+        "import NoteCard from './note_card'\n"
+        "import type { NoteItem } from './note_card'\n"
+        "export default function Panel() { return null }\n",
+        encoding="utf-8",
+    )
+    (surfaces / "shared.ts").write_text(
+        "import type { PluginSurfaceProps } from '@neko/plugin-ui'\n"
+        "export function callPlugin() { return {} }\n"
+        "export function text() { return '' }\n",
+        encoding="utf-8",
+    )
+    # note_card depends transitively on shared and lives as a .tsx default export.
+    (surfaces / "note_card.tsx").write_text(
+        "import { text } from './shared'\n"
+        "export default function NoteCard() { return null }\n",
+        encoding="utf-8",
+    )
+    return surfaces / "panel.tsx"
+
+
+def test_collect_hosted_modules_follows_relative_import_graph(tmp_path) -> None:
+    root = (tmp_path / "demo_plugin").resolve()
+    entry = _write_hosted_surface_tree(root)
+
+    modules = _collect_hosted_tsx_modules_sync(entry, root)
+
+    keys = {module["path"] for module in modules}
+    # shared is reachable directly and transitively but appears exactly once.
+    assert keys == {"surfaces/shared", "surfaces/note_card"}
+    assert len(modules) == 2
+    assert _module_key(entry, root) == "surfaces/panel"
+    shared = next(m for m in modules if m["path"] == "surfaces/shared")
+    assert "export function callPlugin" in shared["source"]
+
+
+def test_collect_hosted_modules_ignores_bare_and_escaping_specifiers(tmp_path) -> None:
+    root = (tmp_path / "demo_plugin").resolve()
+    surfaces = root / "surfaces"
+    surfaces.mkdir(parents=True)
+    # A secret file outside the plugin root must never be collected.
+    (tmp_path / "secret.ts").write_text("export const token = 'leak'\n", encoding="utf-8")
+    entry = surfaces / "panel.tsx"
+    entry.write_text(
+        "import { useState } from '@neko/plugin-ui'\n"
+        "import { token } from '../../secret'\n"
+        "export default function Panel() { return null }\n",
+        encoding="utf-8",
+    )
+
+    modules = _collect_hosted_tsx_modules_sync(entry, root)
+
+    assert modules == []
+
+
+def test_resolve_hosted_module_path_tries_suffixes_and_index(tmp_path) -> None:
+    root = (tmp_path / "demo_plugin").resolve()
+    surfaces = root / "surfaces"
+    nested = surfaces / "widgets"
+    nested.mkdir(parents=True)
+    (surfaces / "shared.ts").write_text("export const x = 1\n", encoding="utf-8")
+    (nested / "index.tsx").write_text("export default function W() { return null }\n", encoding="utf-8")
+
+    shared = _resolve_hosted_module_path("./shared", surfaces, root)
+    assert shared is not None and shared.name == "shared.ts"
+
+    barrel = _resolve_hosted_module_path("./widgets", surfaces, root)
+    assert barrel is not None and barrel.name == "index.tsx"
+
+    # Escaping the plugin root is rejected.
+    assert _resolve_hosted_module_path("../../secret", surfaces, root) is None

@@ -2,12 +2,25 @@ import { transform } from 'sucrase'
 import type { PluginUiContext, PluginUiSurface } from '@/types/api'
 import { buildUiKitBundle } from './uiKitBundle'
 
+type HostedModule = {
+  path: string
+  source: string
+}
+
 type BuildHostedTsxDocumentOptions = {
   source: string
   pluginId: string
   surface: PluginUiSurface
   context?: PluginUiContext | null
   locale: string
+  /**
+   * Sibling modules reachable from the entry through relative imports, shipped
+   * by the backend so the bundler-less runtime can assemble them. When empty,
+   * the single-file fast path is used (unchanged behaviour).
+   */
+  modules?: HostedModule[] | null
+  /** Root-relative, extension-less key of the entry, used for import resolution. */
+  entryModule?: string | null
 }
 
 function escapeScriptContent(value: string) {
@@ -76,8 +89,76 @@ function buildPayload(options: BuildHostedTsxDocumentOptions) {
   }
 }
 
+// Module-mode compile: keep the plugin-ui imports stripped (those symbols are
+// runtime globals) and let Sucrase's `imports` transform rewrite the remaining
+// relative ESM imports/exports into CommonJS so a tiny require registry can wire
+// the sibling modules together.
+function compileHostedTsxModule(source: string) {
+  return transform(normalizeSource(source), {
+    transforms: ['typescript', 'jsx', 'imports'],
+    jsxPragma: 'h',
+    jsxFragmentPragma: 'Fragment',
+    production: true,
+  }).code
+}
+
+function jsStringLiteral(value: string) {
+  return JSON.stringify(value)
+}
+
+// Assemble the entry plus its sibling modules into one classic-script body that
+// ends with `const __Panel = ...`, matching the single-file contract. Each
+// module runs in its own CommonJS-style scope; `require` resolves relative
+// specifiers against the importer and maps `@neko/plugin-ui` to the UI kit.
+function buildHostedModuleBody(options: BuildHostedTsxDocumentOptions) {
+  const entryKey = options.entryModule || 'entry'
+  const defines = (options.modules || [])
+    .map((module) => {
+      const compiled = compileHostedTsxModule(module.source)
+      return `__defineHostedModule(${jsStringLiteral(module.path)}, function(module, exports, require) {\n${compiled}\n});`
+    })
+    .join('\n')
+  const entryCompiled = compileHostedTsxModule(options.source)
+
+  return `
+    const __hostedModules = Object.create(null);
+    function __defineHostedModule(key, factory) {
+      __hostedModules[key] = { factory: factory, module: { exports: {} }, loaded: false };
+    }
+    function __resolveHostedModule(importer, spec) {
+      const parts = importer.split('/');
+      parts.pop();
+      for (const segment of spec.split('/')) {
+        if (segment === '' || segment === '.') continue;
+        if (segment === '..') parts.pop();
+        else parts.push(segment);
+      }
+      return parts.join('/').replace(/\\.(tsx?|jsx?|mjs)$/, '');
+    }
+    function __hostedRequire(importer, spec) {
+      if (spec === '@neko/plugin-ui' || spec === 'neko:ui') return window.NekoUiKit;
+      const key = __resolveHostedModule(importer, spec);
+      const record = __hostedModules[key];
+      if (!record) throw new Error('Hosted module not found: ' + spec + ' (imported from ' + importer + ')');
+      if (!record.loaded) {
+        record.loaded = true;
+        record.factory(record.module, record.module.exports, function(s) { return __hostedRequire(key, s); });
+      }
+      return record.module.exports;
+    }
+${defines}
+    const __entryModule = { exports: {} };
+    (function(module, exports, require) {
+${entryCompiled}
+    })(__entryModule, __entryModule.exports, function(s) { return __hostedRequire(${jsStringLiteral(entryKey)}, s); });
+    const __Panel = (__entryModule.exports && (__entryModule.exports.default || __entryModule.exports.Panel)) || null;
+`
+}
+
 export function buildHostedTsxDocument(options: BuildHostedTsxDocumentOptions) {
-  const compiled = compileHostedTsx(options.source)
+  const compiled = (options.modules && options.modules.length > 0)
+    ? buildHostedModuleBody(options)
+    : compileHostedTsx(options.source)
   const payload = escapeScriptContent(JSON.stringify(buildPayload(options)))
   const locale = escapeHtmlAttribute(options.locale)
   const uiKit = buildUiKitBundle()

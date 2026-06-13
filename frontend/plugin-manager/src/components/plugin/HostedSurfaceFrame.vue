@@ -410,6 +410,8 @@ async function loadHostedTsx() {
         surface: props.surface,
         context,
         locale: String(locale.value),
+        modules: response.modules,
+        entryModule: response.entry_module,
       })
     }
     iframeKey.value += 1

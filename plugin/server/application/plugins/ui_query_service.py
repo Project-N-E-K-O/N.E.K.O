@@ -100,6 +100,113 @@ def _hosted_plugin_not_running_message(locale: str | None) -> str:
     return _PLUGIN_NOT_RUNNING_MESSAGES[key]
 
 
+# hosted-tsx surfaces may import sibling helper modules (e.g. `./memory_shared`).
+# The browser runtime fetches a single entry source and compiles it without a
+# bundler, so any such relative import would survive as a bare ESM `import` and
+# throw at render time. We resolve the relative-import graph here, inside the
+# plugin root, and ship every reachable module alongside the entry so the
+# runtime can assemble them into one document.
+_HOSTED_MODULE_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".mjs")
+_HOSTED_MODULE_MAX_COUNT = 64
+_HOSTED_MODULE_MAX_TOTAL_BYTES = 512 * 1024
+# Captures the specifier of `from '...'`, side-effect `import '...'`, and
+# `export ... from '...'`. Relative specifiers (starting with `.`) are followed.
+_HOSTED_IMPORT_SPEC_RE = None
+
+
+def _hosted_import_spec_re():
+    global _HOSTED_IMPORT_SPEC_RE
+    if _HOSTED_IMPORT_SPEC_RE is None:
+        import re
+
+        _HOSTED_IMPORT_SPEC_RE = re.compile(
+            r"""(?:\bfrom|\bimport)\s+['"]([^'"]+)['"]""",
+        )
+    return _HOSTED_IMPORT_SPEC_RE
+
+
+def _resolve_hosted_module_path(spec: str, importer_dir: Path, root: Path) -> Path | None:
+    """Resolve a relative import *spec* to a file inside the plugin *root*.
+
+    Tries the literal target, then the known source suffixes, then an
+    ``index.*`` barrel. Returns ``None`` for anything that escapes ``root``
+    or does not resolve to a regular file.
+    """
+    try:
+        base = (importer_dir / spec).resolve()
+    except OSError:
+        return None
+
+    candidates: list[Path] = []
+    if base.suffix:
+        candidates.append(base)
+    else:
+        candidates.extend(base.with_suffix(suffix) for suffix in _HOSTED_MODULE_SUFFIXES)
+        candidates.extend(base / f"index{suffix}" for suffix in _HOSTED_MODULE_SUFFIXES)
+
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(root)
+        except (OSError, ValueError):
+            continue
+        if resolved.is_file():
+            return resolved
+    return None
+
+
+def _module_key(path: Path, root: Path) -> str:
+    """Root-relative, POSIX, extension-stripped key used to address a module."""
+    rel = path.resolve().relative_to(root)
+    return rel.with_suffix("").as_posix()
+
+
+def _collect_hosted_tsx_modules_sync(entry_path: Path, root: Path) -> list[dict[str, str]]:
+    """Walk the relative-import graph from *entry_path* (exclusive).
+
+    Returns ``[{"path": <module key>, "source": <text>}, ...]`` for every
+    sibling module reachable through relative imports, deduped by resolved
+    path and bounded by count/byte caps. The entry itself is not included —
+    the runtime already has its source.
+    """
+    spec_re = _hosted_import_spec_re()
+    seen: set[Path] = {entry_path.resolve()}
+    queue: list[Path] = [entry_path.resolve()]
+    modules: list[dict[str, str]] = []
+    total_bytes = 0
+
+    while queue:
+        current = queue.pop(0)
+        try:
+            text = current.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        for spec in spec_re.findall(text):
+            if not spec.startswith("."):
+                continue
+            resolved = _resolve_hosted_module_path(spec, current.parent, root)
+            if resolved is None or resolved in seen:
+                continue
+            seen.add(resolved)
+            try:
+                module_text = resolved.read_text(encoding="utf-8")
+            except (OSError, UnicodeError):
+                continue
+            total_bytes += len(module_text.encode("utf-8"))
+            if len(modules) >= _HOSTED_MODULE_MAX_COUNT or total_bytes > _HOSTED_MODULE_MAX_TOTAL_BYTES:
+                logger.warning(
+                    "hosted-tsx module graph exceeded limits: entry=%s count=%d bytes=%d",
+                    entry_path,
+                    len(modules),
+                    total_bytes,
+                )
+                return modules
+            modules.append({"path": _module_key(resolved, root), "source": module_text})
+            queue.append(resolved)
+
+    return modules
+
+
 def _get_plugin_meta_sync(plugin_id: str) -> dict[str, object] | None:
     with state.acquire_plugins_read_lock():
         plugin_meta_obj = state.plugins.get(plugin_id)
@@ -674,6 +781,30 @@ class PluginUiQueryService:
 
             source = await asyncio.to_thread(entry_path.read_text, encoding="utf-8")
             translations_payload = await asyncio.to_thread(_load_surface_translations_sync, entry_path)
+
+            # hosted-tsx surfaces may import sibling modules; ship the resolved
+            # relative-import graph so the bundler-less browser runtime can
+            # assemble them. markdown surfaces never import anything.
+            modules: list[dict[str, str]] = []
+            entry_module = ""
+            config_path_obj = plugin_meta.get("config_path")
+            if mode == "hosted-tsx" and isinstance(config_path_obj, str) and config_path_obj:
+                root = Path(config_path_obj).parent.resolve()
+                try:
+                    entry_module = _module_key(entry_path, root)
+                    modules = await asyncio.to_thread(
+                        _collect_hosted_tsx_modules_sync, entry_path, root
+                    )
+                except (OSError, ValueError) as exc:
+                    logger.warning(
+                        "hosted-tsx module collection failed: plugin_id=%s entry=%s err=%s",
+                        plugin_id,
+                        entry_obj,
+                        str(exc),
+                    )
+                    modules = []
+                    entry_module = ""
+
             return {
                 "plugin_id": plugin_id,
                 "kind": kind,
@@ -681,6 +812,8 @@ class PluginUiQueryService:
                 "mode": mode,
                 "entry": entry_obj,
                 "source": source,
+                "entry_module": entry_module,
+                "modules": modules,
                 "source_locale": hit_locale or translations_payload["source_locale"],
                 "translations": translations_payload["translations"],
                 "warnings": warnings,
