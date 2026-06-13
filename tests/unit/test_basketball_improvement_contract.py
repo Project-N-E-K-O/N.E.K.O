@@ -714,6 +714,19 @@ def test_basketball_chat_payload_contains_horse_state():
 
 
 @pytest.mark.unit
+def test_basketball_horse_player_game_over_does_not_emit_extra_shot_event():
+    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+    finish_horse = html[
+        html.index("function finishHorseShot("):
+        html.index("function finishDuelShot(", html.index("function finishHorseShot("))
+    ]
+
+    game_over_guard = finish_horse.index("if (endHorseIfNeeded()) {")
+    shot_event = finish_horse.index("sendGameEvent({", game_over_guard)
+    assert "updateHud();\n        return;" in finish_horse[game_over_guard:shot_event]
+
+
+@pytest.mark.unit
 def test_basketball_duel_player_shots_update_recorded_stats():
     html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
     finish_duel = html[html.index("function finishDuelShot("):html.index("function finishShot(", html.index("function finishDuelShot("))]

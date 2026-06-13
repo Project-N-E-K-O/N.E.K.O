@@ -7507,6 +7507,10 @@ _DIRECT_REQUEST_DISCUSSION_RE = re.compile(
     r"\b(?:start|play|open)\s+by\b|"
     r"\b(?:talk|talking|chat|discuss|discussion)\s+(?:about|around)\b"
 )
+_DIRECT_REQUEST_CJK_DISCUSSION_CUES = (
+    "讲讲", "说说", "聊聊", "介绍", "解释", "了解", "玩法", "规则", "教程", "攻略",
+    "教学", "新闻", "怎么打", "怎么玩", "如何打", "如何玩",
+)
 
 
 def _direct_request_pair_is_explicit(
@@ -7528,6 +7532,8 @@ def _direct_request_pair_is_explicit(
             return False
         if action_hit[0] == 0 or norm[action_hit[0] - 1] in " \t\r\n,!.?;:":
             return bool(_DIRECT_REQUEST_ENGLISH_CUE_RE.search(window))
+        return False
+    if any(cue in window for cue in _DIRECT_REQUEST_CJK_DISCUSSION_CUES):
         return False
     if action_hit[0] == 0 or any(cue in window for cue in _DIRECT_REQUEST_CJK_CUES):
         return True

@@ -3629,14 +3629,16 @@
         game.horse.lettersPlayer += 1;
         speakLine(_i18n('lines.horse.playerMiss', '你也记一个 {{letters}}', { letters: horseLetters(game.horse.lettersPlayer) }), { expression: 'tease', intensity: 'medium', mood: currentMood }, { kind: 'shot_missed', label: 'horse_player_miss' });
       }
-      if (!endHorseIfNeeded()) {
-        game.horse.phase = 'player_set';
-        game.horse.challenge = null;
-        game.horse.turnOwner = 'player';
-        game.distance = clamp(game.distance + 30, 120, 620);
-        game.state = 'ready';
-        showAssistHint(_i18n('toast.yourSet', '你来出题'));
+      if (endHorseIfNeeded()) {
+        updateHud();
+        return;
       }
+      game.horse.phase = 'player_set';
+      game.horse.challenge = null;
+      game.horse.turnOwner = 'player';
+      game.distance = clamp(game.distance + 30, 120, 620);
+      game.state = 'ready';
+      showAssistHint(_i18n('toast.yourSet', '你来出题'));
     }
     sendGameEvent({
       kind: scored ? 'shot_result' : 'shot_missed',
