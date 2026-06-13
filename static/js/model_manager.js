@@ -2974,7 +2974,28 @@ document.addEventListener('DOMContentLoaded', async () => {
         return true;
     }
 
-    async function selectAndPreviewFirstPNGTuberModelAfterModeSwitch() {
+    function findPNGTuberOptionByConfig(pngtuberConfig) {
+        if (!modelSelect || !pngtuberConfig) return null;
+        const idleImage = String(pngtuberConfig.idle_image || '');
+        const talkingImage = String(pngtuberConfig.talking_image || '');
+        const metadataPath = String(pngtuberConfig.layered_metadata || '');
+        const folderFromIdle = idleImage.split('/').filter(Boolean).slice(-2, -1)[0] || '';
+
+        return Array.from(modelSelect.options).find(option => {
+            if (option.dataset.modelType !== 'pngtuber' || !option.value) return false;
+            if (folderFromIdle && option.getAttribute('data-folder') === folderFromIdle) return true;
+            try {
+                const cfg = JSON.parse(option.getAttribute('data-pngtuber') || '{}');
+                return (!!idleImage && cfg.idle_image === idleImage)
+                    || (!!talkingImage && cfg.talking_image === talkingImage)
+                    || (!!metadataPath && cfg.layered_metadata === metadataPath);
+            } catch (_) {
+                return false;
+            }
+        }) || null;
+    }
+
+    async function selectAndPreviewFirstPNGTuberModelAfterModeSwitch(preferredConfig = null) {
         if (currentModelType !== 'pngtuber' || !modelSelect) return;
 
         let rememberedPNGTuber = null;
@@ -3003,8 +3024,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         };
 
         let selectedOption = modelSelect.selectedOptions && modelSelect.selectedOptions[0];
+        const preferredOption = findPNGTuberOptionByConfig(preferredConfig);
         const rememberedOption = findRememberedOption();
-        if (rememberedOption) {
+        if (preferredOption) {
+            selectedOption = preferredOption;
+            modelSelect.value = preferredOption.value;
+        } else if (rememberedOption) {
             selectedOption = rememberedOption;
             modelSelect.value = rememberedOption.value;
         }
@@ -3023,7 +3048,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             updateLive2DModelSelectButtonText();
         }
 
-        await loadSelectedPNGTuberOption(selectedOption, { markDirty: false });
+        return await loadSelectedPNGTuberOption(selectedOption, { markDirty: false });
     }
 
     function rememberSelectedPNGTuberModel(option, pngtuberConfig = null) {
@@ -3457,7 +3482,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 模型类型切换处理
     // subType: 当 type === 'live3d' 时，传入 'vrm' 或 'mmd' 以区分子类型
-    async function switchModelDisplay(type, subType) {
+    async function switchModelDisplay(type, subType, options = {}) {
         const previousModelType = currentModelType;
         currentModelType = type;
         window._modelManagerCurrentAvatarType = type;
@@ -3567,7 +3592,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             try {
                 await loadPNGTuberModels();
-                await selectAndPreviewFirstPNGTuberModelAfterModeSwitch();
+                await selectAndPreviewFirstPNGTuberModelAfterModeSwitch(options.preferredPNGTuberConfig || null);
             } catch (error) {
                 console.error('加载PNGTuber模型列表失败:', error);
             }
@@ -10085,32 +10110,24 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (modelType === 'vrm') modelType = 'live3d';
 
             if (modelType === 'pngtuber' && hasValidPNGTuber) {
-                await switchModelDisplay('pngtuber', '');
-                if (modelSelect) {
-                    const idleImage = String(pngtuberConfig.idle_image || '');
-                    const matchedOption = Array.from(modelSelect.options).find(opt => {
-                        try {
-                            const cfg = JSON.parse(opt.getAttribute('data-pngtuber') || '{}');
-                            return cfg.idle_image === idleImage;
-                        } catch (_) {
-                            return false;
-                        }
-                    });
-                    if (matchedOption) {
-                        modelSelect.value = matchedOption.value;
-                        updateLive2DModelSelectButtonText();
-                        rememberSelectedPNGTuberModel(matchedOption, pngtuberConfig);
+                await switchModelDisplay('pngtuber', '', { preferredPNGTuberConfig: pngtuberConfig });
+                const matchedOption = findPNGTuberOptionByConfig(pngtuberConfig);
+                if (matchedOption) {
+                    modelSelect.value = matchedOption.value;
+                    updateLive2DModelSelectButtonText();
+                    rememberSelectedPNGTuberModel(matchedOption, pngtuberConfig);
+                } else {
+                    currentModelInfo = {
+                        name: lanlanName,
+                        folder: pngtuberConfig.idle_image.split('/').slice(-2, -1)[0] || '',
+                        path: pngtuberConfig.idle_image,
+                        type: 'pngtuber',
+                        pngtuber: pngtuberConfig,
+                    };
+                    if (window.loadPNGTuberAvatar) {
+                        await window.loadPNGTuberAvatar(pngtuberConfig);
                     }
-                }
-                currentModelInfo = {
-                    name: lanlanName,
-                    folder: pngtuberConfig.idle_image.split('/').slice(-2, -1)[0] || '',
-                    path: pngtuberConfig.idle_image,
-                    type: 'pngtuber',
-                    pngtuber: pngtuberConfig,
-                };
-                if (window.loadPNGTuberAvatar) {
-                    await window.loadPNGTuberAvatar(pngtuberConfig);
+                    await loadPNGTuberPreviewControls(pngtuberConfig);
                 }
                 showStatus(`已加载角色 ${lanlanName} 的 PNGTuber 模型`, 2000);
                 return;
