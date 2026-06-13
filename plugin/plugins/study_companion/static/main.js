@@ -544,7 +544,7 @@ function openHostedSurface(surfaceId) {
     payload: {
       pluginId: PLUGIN_ID,
       surfaceId,
-      kind: 'panel',
+      kind: 'guide',
     },
   }, window.location.origin);
 }

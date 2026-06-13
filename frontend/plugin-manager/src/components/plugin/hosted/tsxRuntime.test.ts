@@ -288,6 +288,37 @@ describe('hosted TSX document runtime', () => {
     expect(root.querySelector('strong')?.textContent).toBe('CBA')
   })
 
+  it('rewrites hosted dependency re-exports before executing', () => {
+    const { root } = executeHostedDocument(`
+      import { label, alias, nested, helper, default as accidentalDefault } from "./barrel"
+
+      export default function Panel() {
+        return <strong>{label + "-" + alias + "-" + nested + "-" + helper.label + "-" + (accidentalDefault ?? "no-default")}</strong>
+      }
+    `, baseContext(), baseContext(), [{
+      path: 'ui/barrel.tsx',
+      source: `
+        export { label, renamed as alias } from "./helper"
+        export * from "./extra"
+        export * as helper from "./helper"
+      `,
+    }, {
+      path: 'ui/extra.ts',
+      source: `
+        export const nested = "star"
+        export default "hidden"
+      `,
+    }, {
+      path: 'ui/helper.ts',
+      source: `
+        export const label = "named"
+        export const renamed = "alias"
+      `,
+    }])
+
+    expect(root.querySelector('strong')?.textContent).toBe('named-alias-star-named-no-default')
+  })
+
   it('rejects hosted imports that escape the plugin UI root', () => {
     expect(() => executeHostedDocument(`
       import { label } from "../../escape"

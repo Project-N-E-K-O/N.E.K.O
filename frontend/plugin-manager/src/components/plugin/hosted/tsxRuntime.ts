@@ -31,6 +31,7 @@ function escapeHtmlAttribute(value: string) {
 }
 
 const IMPORT_SOURCE_PATTERN = /^[^\S\r\n]*import(?:([\s\S]*?)\sfrom\s+|[^\S\r\n]+)['"]([^'"]+)['"][^\S\r\n]*;?[^\S\r\n]*(?:\r?\n|$)/gm
+const RE_EXPORT_SOURCE_PATTERN = /^[^\S\r\n]*export\s+(type\s+)?(?:\{([^}]+)\}|\*\s+as\s+([A-Za-z_$][\w$]*)|\*)\s+from\s+['"]([^'"]+)['"][^\S\r\n]*;?[^\S\r\n]*(?:\r?\n|$)/gm
 const HOSTED_CODE_EXTENSIONS = ['.tsx', '.ts', '.jsx', '.js']
 
 function normalizeHostedPath(path: string) {
@@ -125,6 +126,19 @@ function hostedRelativeImportPaths(
     }
     return match
   })
+  source.replace(RE_EXPORT_SOURCE_PATTERN, (
+    match,
+    _typeOnly: string | undefined,
+    _rawNames: string | undefined,
+    _namespaceName: string | undefined,
+    specifier: string,
+  ) => {
+    if (specifier.startsWith('./') || specifier.startsWith('../')) {
+      const modulePath = resolveHostedImport(fromPath, specifier, dependenciesByPath)
+      if (modulePath) paths.push(modulePath)
+    }
+    return match
+  })
   return paths
 }
 
@@ -177,6 +191,52 @@ function transformHostedImports(
 
 function exportAssignment(name: string, localName = name) {
   return `__exports[${JSON.stringify(name)}] = ${localName};`
+}
+
+function moduleReExportStatements(rawNames: string, modulePath: string) {
+  const statements: string[] = []
+  const moduleRef = `__modules[${JSON.stringify(modulePath)}]`
+  for (const item of rawNames.split(',')) {
+    const trimmed = item.trim()
+    if (!trimmed || trimmed.startsWith('type ')) continue
+    const aliasMatch = trimmed.match(/^([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)$/)
+    if (aliasMatch?.[1] && aliasMatch[2]) {
+      statements.push(`__exports[${JSON.stringify(aliasMatch[2])}] = ${moduleRef}[${JSON.stringify(aliasMatch[1])}];`)
+    } else {
+      statements.push(`__exports[${JSON.stringify(trimmed)}] = ${moduleRef}[${JSON.stringify(trimmed)}];`)
+    }
+  }
+  return statements.join('\n')
+}
+
+function transformHostedReExports(
+  source: string,
+  fromPath: string,
+  dependenciesByPath: Map<string, HostedTsxDependency>,
+) {
+  return source.replace(RE_EXPORT_SOURCE_PATTERN, (
+    match,
+    typeOnly: string | undefined,
+    rawNames: string | undefined,
+    namespaceName: string | undefined,
+    specifier: string,
+  ) => {
+    if (typeOnly) return ''
+    if (!specifier.startsWith('./') && !specifier.startsWith('../')) {
+      return match
+    }
+    const modulePath = resolveHostedImport(fromPath, specifier, dependenciesByPath)
+    if (!modulePath) return ''
+    const moduleRef = `__modules[${JSON.stringify(modulePath)}]`
+    if (namespaceName) {
+      return `__exports[${JSON.stringify(namespaceName)}] = ${moduleRef};\n`
+    }
+    if (!rawNames) {
+      return `for (const key of Object.keys(${moduleRef})) {\n  if (key !== 'default') __exports[key] = ${moduleRef}[key];\n}\n`
+    }
+    const statements = moduleReExportStatements(rawNames, modulePath)
+    return statements ? `${statements}\n` : ''
+  })
 }
 
 function transformModuleExports(source: string) {
@@ -239,7 +299,11 @@ function bundleHostedTsxSource(
   )
   const chunks = orderedHostedDependencyEntries(dependenciesByPath)
     .map(([path, dependency]) => {
-      const moduleSource = transformModuleExports(transformHostedImports(dependency.source, path, dependenciesByPath))
+      const moduleSource = transformModuleExports(transformHostedReExports(
+        transformHostedImports(dependency.source, path, dependenciesByPath),
+        path,
+        dependenciesByPath,
+      ))
       return `
 /* hosted dependency: ${sourceCommentPath(path)} */
 __modules[${JSON.stringify(path)}] = (() => {

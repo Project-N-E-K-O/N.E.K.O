@@ -1605,6 +1605,8 @@ def test_study_companion_ui_refactor_static_and_hosted_contracts() -> None:
     assert "origin === 'null'" not in main_js
     assert "const STUDY_SURFACE_INCOMING_MESSAGE_TYPES = new Set" in main_js
     assert "function isTrustedStudySurfaceMessage(message)" in main_js
+    assert "kind: 'guide'" in main_js
+    assert "kind: 'panel'" not in main_js
 
     assert "export const BRAND_CSS" in surface_utils
     assert "export function ensureBrandCSS()" in surface_utils
