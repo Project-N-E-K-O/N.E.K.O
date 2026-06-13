@@ -2622,7 +2622,7 @@ class ConfigManager:
     def _is_vllm_omni_tts_selected(core_config: dict | None) -> bool:
         if not isinstance(core_config, dict):
             return False
-        return bool(core_config.get('ENABLE_CUSTOM_API')) and (
+        return _as_bool(core_config.get('ENABLE_CUSTOM_API'), False) and (
             str(core_config.get('ttsModelProvider') or '').strip() == 'vllm_omni'
         )
 
@@ -3035,12 +3035,12 @@ class ConfigManager:
         if voice_id.startswith('eleven:'):
             return len(voice_id) > len('eleven:')
 
-        if self._is_vllm_omni_tts_selected(self.get_core_config()):
-            return True
-
         custom_tts_allowed = check_custom_tts_voice_allowed(voice_id, self.get_model_api_config)
         if custom_tts_allowed is not None:
             return custom_tts_allowed
+
+        if self._is_vllm_omni_tts_selected(self.get_core_config()):
+            return True
 
         voices = self.get_voices_for_current_api()
         if voice_id in voices:

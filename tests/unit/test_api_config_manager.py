@@ -1238,6 +1238,23 @@ class TestVllmOmniRawKeyPassthrough:
         assert LLMSessionManager._is_vllm_omni_tts_enabled(cfg) is False
 
     @pytest.mark.unit
+    def test_vllm_omni_selection_uses_strict_boolean_parsing(self):
+        from utils.config_manager import ConfigManager
+
+        assert ConfigManager._is_vllm_omni_tts_selected({
+            'ENABLE_CUSTOM_API': 'false',
+            'ttsModelProvider': 'vllm_omni',
+        }) is False
+        assert ConfigManager._is_vllm_omni_tts_selected({
+            'ENABLE_CUSTOM_API': '0',
+            'ttsModelProvider': 'vllm_omni',
+        }) is False
+        assert ConfigManager._is_vllm_omni_tts_selected({
+            'ENABLE_CUSTOM_API': 'true',
+            'ttsModelProvider': 'vllm_omni',
+        }) is True
+
+    @pytest.mark.unit
     def test_vllm_omni_voice_ids_are_valid_while_provider_selected(self, config_manager):
         """vLLM voice names are provider-local strings and are not stored clone IDs."""
         _write_core_config(config_manager, {
@@ -1249,6 +1266,25 @@ class TestVllmOmniRawKeyPassthrough:
             'ttsModelId': 'Qwen3-TTS',
         })
 
+        assert config_manager.validate_voice_id('speaker-from-vllm-server') is True
+
+    @pytest.mark.unit
+    def test_vllm_omni_keeps_custom_tts_adapter_rejections(self, config_manager, monkeypatch):
+        """Provider-local voices are allowed only after custom TTS prefixes are rejected or accepted."""
+        _write_core_config(config_manager, {
+            'coreApi': 'gemini',
+            'assistApi': 'gemini',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'vllm_omni',
+            'ttsModelUrl': 'ws://localhost:8091/v1',
+            'ttsModelId': 'Qwen3-TTS',
+        })
+        monkeypatch.setattr(
+            'utils.config_manager.check_custom_tts_voice_allowed',
+            lambda voice_id, _getter: False if voice_id == 'gsv:missing' else None,
+        )
+
+        assert config_manager.validate_voice_id('gsv:missing') is False
         assert config_manager.validate_voice_id('speaker-from-vllm-server') is True
 
     @pytest.mark.unit

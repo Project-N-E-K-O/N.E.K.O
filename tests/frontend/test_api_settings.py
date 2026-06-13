@@ -657,8 +657,14 @@ def test_switching_tts_provider_away_from_vllm_clears_fallback_voice(mock_page: 
 
     values = mock_page.evaluate("""
         () => {
+            const enableCustomApi = document.getElementById('enableCustomApi');
             const provider = document.getElementById('ttsModelProvider');
             const voice = document.getElementById('ttsVoiceId');
+
+            if (enableCustomApi && !enableCustomApi.checked) {
+                enableCustomApi.checked = true;
+                toggleCustomApi();
+            }
 
             provider.value = 'vllm_omni';
             provider.dispatchEvent(new Event('change', { bubbles: true }));
