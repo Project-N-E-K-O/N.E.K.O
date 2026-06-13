@@ -285,13 +285,19 @@ function main() {
       baseUrl: repoRoot,
       rootDirs: [tempDir, repoRoot],
       paths: {
+        // The runtime maps both specifiers to the UI-kit global; mirror both so
+        // a real sibling helper importing either form resolves under rootDirs.
         '@neko/plugin-ui': ['plugin/sdk/hosted-ui'],
+        'neko:ui': ['plugin/sdk/hosted-ui'],
       },
       noEmit: true,
       strict: false,
       skipLibCheck: true,
       esModuleInterop: true,
       allowSyntheticDefaultImports: true,
+      // rootDirs now follows sibling imports into the real repo, which may
+      // include .js helpers; allow them so the program loads instead of erroring.
+      allowJs: true,
     })
     const diagnostics = ts.getPreEmitDiagnostics(program)
     if (warnings.length > 0) {

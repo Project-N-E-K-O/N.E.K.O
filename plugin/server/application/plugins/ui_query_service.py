@@ -139,7 +139,14 @@ def _iter_hosted_import_specs(text: str):
     comment_re, spec_re = _hosted_scan_regexes()
     for raw_line in comment_re.sub("", text).split("\n"):
         line = raw_line.strip()
-        if not (line.startswith(("import ", "import'", 'import"', "export ", "} from", "}from"))):
+        # `import ...` (side-effect or `from`) is always a dependency; `export`
+        # and a multi-line continuation are only dependencies when they re-export
+        # `from '...'` — a plain `export const x = "./y"` is not an import.
+        is_import = line.startswith(("import ", "import'", 'import"'))
+        is_reexport_from = (
+            line.startswith(("export ", "export{", "export*", "} ", "}")) and " from " in line
+        )
+        if not (is_import or is_reexport_from):
             continue
         match = spec_re.search(line)
         if match:

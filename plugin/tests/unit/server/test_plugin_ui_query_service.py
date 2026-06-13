@@ -355,6 +355,27 @@ def test_collect_hosted_modules_ignores_commented_and_quoted_imports(tmp_path) -
     assert modules == []
 
 
+def test_collect_hosted_modules_follows_reexports_not_value_exports(tmp_path) -> None:
+    root = (tmp_path / "demo_plugin").resolve()
+    surfaces = root / "surfaces"
+    surfaces.mkdir(parents=True)
+    (surfaces / "scratch.ts").write_text("export const junk = 1\n", encoding="utf-8")
+    (surfaces / "real.ts").write_text("export const value = 2\n", encoding="utf-8")
+    entry = surfaces / "panel.tsx"
+    entry.write_text(
+        # value export that merely contains a path-like string — NOT a dependency
+        "export const SCRATCH_PATH = './scratch'\n"
+        # genuine re-export — IS a dependency
+        "export { value } from './real'\n"
+        "export default function Panel() { return null }\n",
+        encoding="utf-8",
+    )
+
+    modules = _collect_hosted_tsx_modules_sync(entry, root)
+
+    assert {m["path"] for m in modules} == {"surfaces/real"}
+
+
 def test_collect_hosted_modules_fails_closed_when_graph_too_large(tmp_path) -> None:
     root = (tmp_path / "demo_plugin").resolve()
     surfaces = root / "surfaces"
