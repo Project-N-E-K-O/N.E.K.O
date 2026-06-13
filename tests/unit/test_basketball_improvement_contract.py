@@ -646,13 +646,16 @@ def test_basketball_scoring_waits_for_route_end_and_records_run_max():
     assert "function getRunMaxDistancePx() {" in html
     assert "var routeEndPromise = null;" in html
     assert "var completedSessionId = sessionId;" in html
-    assert "var completedLanlanName = lanlanName;" in html
+    assert "var completedLanlanName = getRouteLanlanName();" in html
     assert "var routeEndReady = endedRoute && routeEndPromise ? routeEndPromise.catch(function () {}) : Promise.resolve();" in html
+    assert "if (routeEndResult && routeEndResult.state) applyRouteIdentity(routeEndResult.state);" in html
+    assert "var scoreLanlanName = completedLanlanName || getRouteLanlanName();" in html
     assert "session_id: completedSessionId," in html
-    assert "lanlan_name: completedLanlanName," in html
+    assert "lanlan_name: scoreLanlanName," in html
     assert "var duelEntry = recordGame(game.bestStreak, getRunMaxDistancePx(), game.totalScore, game.shotTypeCount);" in html
     assert "var savedEntry = recordGame(game.bestStreak, getRunMaxDistancePx(), game.totalScore, game.shotTypeCount);" in html
     assert "routeEndPromise = fetch(url, { method: 'POST'" in html
+    assert "return res.json().catch(function () { return { ok: res.ok }; });" in html
 
     session_capture_index = html.index("var completedSessionId = sessionId;")
     route_ready_index = html.index("var routeEndReady = endedRoute && routeEndPromise ? routeEndPromise.catch(function () {}) : Promise.resolve();")
@@ -668,7 +671,10 @@ def test_basketball_route_end_payload_contains_archive_score():
     assert "finalScore: {" in html
     assert "player: game.totalScore," in html
     assert "ai: isDuelMode() ? game.duel.nekoScore : 0," in html
-    assert "currentState: {\n        game: 'basketball',\n        mode: currentMode,\n        score: {" in html
+    assert "roundCompleted: game.state === 'game_over'," in html
+    assert "round_completed: game.state === 'game_over'," in html
+    assert "state: game.state," in html
+    assert "currentState: {\n        game: 'basketball',\n        state: game.state,\n        mode: currentMode,\n        score: {" in html
     assert "max_distance_px: getRunMaxDistancePx()," in html
 
 

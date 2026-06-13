@@ -4869,6 +4869,22 @@ def _remember_basketball_score_session(lanlan_name: str, session_id: str, mode: 
     }
 
 
+def _basketball_end_payload_completed_round(data: dict) -> bool:
+    if _coerce_payload_bool(data.get("round_completed")) is True:
+        return True
+    if _coerce_payload_bool(data.get("roundCompleted")) is True:
+        return True
+    current_state = data.get("currentState")
+    if isinstance(current_state, dict):
+        if _normalize_short_text(current_state.get("state"), max_chars=40) == "game_over":
+            return True
+        if _coerce_payload_bool(current_state.get("round_completed")) is True:
+            return True
+        if _coerce_payload_bool(current_state.get("roundCompleted")) is True:
+            return True
+    return False
+
+
 def _basketball_score_session_key_from_payload(data: dict) -> tuple[str, str, str] | None:
     session_id = _normalize_short_text(data.get("session_id"), max_chars=120)
     lanlan_name = _normalize_short_text(data.get("lanlan_name"), max_chars=80)
@@ -7006,7 +7022,11 @@ async def _complete_game_end_from_payload(
             )
         archive = finalized["archive"]
         archive_memory = finalized["archive_memory"]
-        if game_type == "basketball" and state.get("game_started") is True:
+        if (
+            game_type == "basketball"
+            and state.get("game_started") is True
+            and _basketball_end_payload_completed_round(data)
+        ):
             _remember_basketball_score_session(
                 lanlan_name,
                 session_id,
@@ -7050,6 +7070,7 @@ async def _complete_game_end_from_payload(
     if state:
         result["should_resume_external_on_exit"] = state.get("should_resume_external_on_exit")
         result["before_game_external_mode"] = state.get("before_game_external_mode")
+        result["state"] = _public_route_state(state)
     return result
 
 

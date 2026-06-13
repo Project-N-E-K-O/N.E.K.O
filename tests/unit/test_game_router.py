@@ -897,6 +897,70 @@ async def test_basketball_route_end_uses_server_mode_for_score_session(monkeypat
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_basketball_route_end_requires_completed_round_for_score_session(monkeypatch):
+    async def fake_deliver_postgame(*_args, **_kwargs):
+        return {"ok": True, "action": "skip", "reason": "test"}
+
+    monkeypatch.setattr(game_router, "_deliver_game_postgame", fake_deliver_postgame)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    with reset_game_route_state():
+        state = game_router._activate_game_route("basketball", "early-exit-session", "Lan Early")
+        state["mode"] = "shooter"
+        _mark_game_started(state)
+
+        result = await game_router._complete_game_end_from_payload(
+            "basketball",
+            {
+                "session_id": "early-exit-session",
+                "lanlan_name": "Lan Early",
+                "mode": "shooter",
+                "gameStarted": True,
+                "finalScore": {"mode": "shooter", "score": 999999},
+            },
+            default_reason="route_end",
+        )
+
+        assert result["ok"] is True
+        assert result["route_closed"] is True
+        assert game_router._basketball_recent_score_sessions == {}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_basketball_route_end_remembers_completed_round_score_session(monkeypatch):
+    async def fake_deliver_postgame(*_args, **_kwargs):
+        return {"ok": True, "action": "skip", "reason": "test"}
+
+    monkeypatch.setattr(game_router, "_deliver_game_postgame", fake_deliver_postgame)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    with reset_game_route_state():
+        state = game_router._activate_game_route("basketball", "completed-session", "Lan Done")
+        state["mode"] = "timed"
+        _mark_game_started(state)
+
+        result = await game_router._complete_game_end_from_payload(
+            "basketball",
+            {
+                "session_id": "completed-session",
+                "lanlan_name": "Lan Done",
+                "mode": "timed",
+                "gameStarted": True,
+                "round_completed": True,
+                "finalScore": {"mode": "timed", "score": 12},
+            },
+            default_reason="route_end",
+        )
+
+        assert result["ok"] is True
+        assert result["route_closed"] is True
+        assert result["state"]["lanlan_name"] == "Lan Done"
+        assert game_router._basketball_recent_score_sessions[("Lan Done", "completed-session")]["mode"] == "timed"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_basketball_leaderboard_rejects_live_active_route_score(tmp_path, monkeypatch):
     monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", tmp_path / "basketball_scores.db")
 

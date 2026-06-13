@@ -2618,12 +2618,14 @@
   }
   function submitScore(entry) {
     var completedSessionId = sessionId;
-    var completedLanlanName = lanlanName;
+    var completedLanlanName = getRouteLanlanName();
     var routeEndReady = endedRoute && routeEndPromise ? routeEndPromise.catch(function () {}) : Promise.resolve();
-    return routeEndReady.then(function () {
+    return routeEndReady.then(function (routeEndResult) {
+      if (routeEndResult && routeEndResult.state) applyRouteIdentity(routeEndResult.state);
+      var scoreLanlanName = completedLanlanName || getRouteLanlanName();
       return post('/leaderboard', {
         session_id: completedSessionId,
-        lanlan_name: completedLanlanName,
+        lanlan_name: scoreLanlanName,
         score: entry.score,
         streak: entry.streak,
         max_distance_px: entry.maxDistancePx,
@@ -4693,6 +4695,8 @@
       mode: currentMode,
       gameStarted: true,
       game_started: true,
+      roundCompleted: game.state === 'game_over',
+      round_completed: game.state === 'game_over',
       i18n_language: getRequestLanguage(),
       final_streak: game.bestStreak, final_distance: game.lastShotDistance || game.distance, record_distance: game.recordDistance,
       attempts_remaining: game.attemptsRemaining,
@@ -4710,6 +4714,7 @@
       },
       currentState: {
         game: 'basketball',
+        state: game.state,
         mode: currentMode,
         score: {
           player: game.totalScore,
@@ -4763,6 +4768,9 @@
     routeEndFetchPending = true;
     routeEndPromise = fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload }).then(function (res) {
       routeEndFetchPending = false;
+      return res.json().catch(function () { return { ok: res.ok }; });
+    }).then(function (res) {
+      if (res && res.state) applyRouteIdentity(res.state);
       return res;
     }).catch(function (err) {
       routeEndFetchPending = false;
