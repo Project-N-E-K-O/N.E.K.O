@@ -1513,8 +1513,8 @@
         "expressionCleared": "表情をクリアしました",
         "cannotDeleteBoundModel": "現在使用中のモデルは削除できません",
         "modelInUse": "使用中",
-        "pngtuberTalkPreview": "Test Talking",
-        "pngtuberStatePreview": "State Preview"
+        "pngtuberTalkPreview": "発話をテスト",
+        "pngtuberStatePreview": "状態プレビュー"
     },
     "voice": {
         "title": "ボイス登録",

@@ -1513,8 +1513,8 @@
         "expressionCleared": "Expresión borrada",
         "cannotDeleteBoundModel": "No se puede eliminar el modelo en uso",
         "modelInUse": "En uso",
-        "pngtuberTalkPreview": "Test Talking",
-        "pngtuberStatePreview": "State Preview"
+        "pngtuberTalkPreview": "Probar habla",
+        "pngtuberStatePreview": "Vista previa de estado"
     },
     "voice": {
         "title": "Registro de voz",
