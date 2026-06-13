@@ -190,7 +190,6 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
             onClick={() => setSelectedNotebookId('')}
           >
             <span>{text(props, 'ui.notebook.all_notes', 'All notes')}</span>
-            <strong>{notes.length}</strong>
           </button>
           {notebooks.map((notebook) => (
             <button

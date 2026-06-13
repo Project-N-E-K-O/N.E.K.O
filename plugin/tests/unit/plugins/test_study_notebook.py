@@ -9,7 +9,7 @@ from plugin.plugins.study_companion.doc_exporter import DocExporter
 from plugin.plugins.study_companion.entry_notebook import _NotebookEntriesMixin
 from plugin.plugins.study_companion.models import DocExportConfig
 from plugin.plugins.study_companion.store import StudyStore
-from plugin.plugins.study_companion.store_notebook import NotebookStore
+from plugin.plugins.study_companion.store_notebook import NotebookStore, _strip_markdown
 from plugin.plugins.study_companion.tutor_llm_agent_notebook import (
     expand_note,
     summarize_to_note,
@@ -412,6 +412,14 @@ async def test_notebook_llm_operations_use_expected_operations() -> None:
     ]
 
 
+def test_strip_markdown_keeps_fenced_code_text_searchable() -> None:
+    plain = _strip_markdown("intro paragraph\n```python\nwidgetfactory()\n```\nouttro")
+    # the fenced block's inner code must survive into content_plain (it feeds
+    # search / FTS), only the ``` fences + lang tag are dropped
+    assert "widgetfactory" in plain
+    assert "```" not in plain
+
+
 @pytest.mark.asyncio
 async def test_note_ai_expand_preserves_full_long_original() -> None:
     long_original = "原始内容开头。" + "中间的正文段落需要完整保留。" * 40
@@ -444,7 +452,7 @@ async def test_notebook_summary_headings_follow_language() -> None:
 @pytest.mark.asyncio
 async def test_notebook_expand_fallback_follows_language() -> None:
     class _BrokenNotebookAgent(_FakeNotebookAgent):
-        async def _call_model(self, messages, *, operation, model_group_override=None):
+        async def _call_model(self, messages, *, operation):
             raise RuntimeError("model unavailable")
 
     agent = _BrokenNotebookAgent()

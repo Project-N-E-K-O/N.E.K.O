@@ -183,8 +183,11 @@ class _NotebookEntriesMixin:
         try:
             note_key = str(note_id or "").strip()
             update_kwargs = {"note_id": note_key or None}
-            if notebook_id is not None:
-                update_kwargs["notebook_id"] = notebook_id or None
+            # Only a non-empty notebook_id files the note; the schema default ""
+            # (sent by generated forms) must NOT unfile an existing note on a
+            # partial title/content edit — leave the field unchanged for "".
+            if notebook_id:
+                update_kwargs["notebook_id"] = notebook_id
             if title is not None:
                 update_kwargs["title"] = title
             if content is not None:
@@ -513,7 +516,7 @@ class _NotebookEntriesMixin:
                     self._memory_deck_store.get_or_create_default_deck,
                     deck_type="custom",
                 )
-                card = await asyncio.to_thread(
+                result = await asyncio.to_thread(
                     self._memory_deck_store.upsert_item,
                     deck_id=deck["id"],
                     item_type="custom",
@@ -524,7 +527,16 @@ class _NotebookEntriesMixin:
                         "note_id": str(note_id or ""),
                     },
                 )
-                return Ok({"action": normalized_action, "card": card})
+                item = result.get("item") if isinstance(result, dict) else {}
+                return Ok(
+                    {
+                        "action": normalized_action,
+                        "created": bool(result.get("created"))
+                        if isinstance(result, dict)
+                        else False,
+                        "card": self._memory_deck_store.compat_card_payload(item or {}),
+                    }
+                )
             if normalized_action == "view_topic":
                 resolved_topic = str(topic_id or "").strip()
                 if not resolved_topic and note_id:

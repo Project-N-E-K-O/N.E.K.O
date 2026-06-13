@@ -14,7 +14,7 @@ except Exception:  # pragma: no cover - optional during partial dev installs.
 
 
 NotebookFilter = Literal["all", "unfiled", "specific"]
-_MARKDOWN_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
+_MARKDOWN_FENCE_RE = re.compile(r"```[^\n]*\n?(.*?)```", re.DOTALL)
 _MARKDOWN_INLINE_CODE_RE = re.compile(r"`([^`]*)`")
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]+\)")
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
@@ -26,7 +26,8 @@ _UNSET = object()
 
 def _strip_markdown(content: str) -> str:
     text = str(content or "")
-    text = _MARKDOWN_FENCE_RE.sub(" ", text)
+    # Keep the inner code text searchable; only drop the ``` fences + lang tag.
+    text = _MARKDOWN_FENCE_RE.sub(lambda m: " " + m.group(1) + " ", text)
     text = _MARKDOWN_IMAGE_RE.sub(" ", text)
     text = _MARKDOWN_LINK_RE.sub(r"\1", text)
     text = _MARKDOWN_INLINE_CODE_RE.sub(r"\1", text)
