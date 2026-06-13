@@ -125,6 +125,17 @@ _API_KEY_REJECTED_KEYWORDS = (
     "invalid key",
     "api key is invalid",
 )
+_SAFETY_VIOLATION_KEYWORDS = (
+    "safety",
+    "content_filter",
+    "content filter",
+    "policy violation",
+    "policy_violation",
+    "prohibited",
+    "recitation",
+    "responsibleaipolicyviolation",
+    "responsible ai policy",
+)
 
 
 def _is_api_key_rejected_error(error: BaseException | str) -> bool:
@@ -146,6 +157,14 @@ def _is_api_key_rejected_error(error: BaseException | str) -> bool:
         ("authenticationerror" in text or "authentication" in text or "unauthorized" in text)
         and "api key" in text
     )
+
+
+def _is_safety_violation_signal(*values: object) -> bool:
+    """Return True when provider diagnostics point to safety/policy blocking."""
+    text = " ".join(str(value) for value in values if value).lower()
+    if not text:
+        return False
+    return any(keyword in text for keyword in _SAFETY_VIOLATION_KEYWORDS)
 
 
 def _truncate_to_last_sentence_end(text: str) -> str:
@@ -2575,7 +2594,23 @@ class OmniOfflineClient:
                     getattr(self, "model", None),
                 )
                 if self.on_status_message:
-                    await self.on_status_message(json.dumps({"code": "LLM_NO_RESPONSE"}))
+                    finish_reason = getattr(self, "_last_finish_reason", None)
+                    block_reason = getattr(self, "_last_block_reason", None)
+                    prompt_tokens = getattr(self, "_last_prompt_tokens", None)
+                    model = getattr(self, "model", None)
+                    if _is_safety_violation_signal(finish_reason, block_reason):
+                        await self.on_status_message(json.dumps({
+                            "code": "API_POLICY_VIOLATION",
+                            "details": {
+                                "msg": "LLM completion was blocked by upstream safety policy.",
+                                "finish_reason": finish_reason,
+                                "block_reason": block_reason,
+                                "prompt_tokens": prompt_tokens,
+                                "model": model,
+                            },
+                        }))
+                    else:
+                        await self.on_status_message(json.dumps({"code": "LLM_NO_RESPONSE"}))
             
             # Call response done callback
             if self.on_response_done:
