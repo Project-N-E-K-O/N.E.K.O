@@ -4786,6 +4786,13 @@ def _normalize_basketball_distance(value: Any, *, default: float = 0.0, max_valu
     return max(0.0, min(number, float(max_value)))
 
 
+_BASKETBALL_PX_PER_METER = 12.0 * 3.28084
+
+
+def _format_basketball_distance_meters(distance_px: float) -> str:
+    return f"{distance_px / _BASKETBALL_PX_PER_METER:.1f}"
+
+
 def _get_basketball_scores_db_path() -> Path:
     override = _BASKETBALL_SCORES_DB_PATH
     if override is not None:
@@ -4909,7 +4916,7 @@ def _basketball_row_to_public_dict(row: sqlite3.Row, rank: int) -> dict:
         "name": _normalize_short_text(row["lanlan_name"], max_chars=80),
         "score": _normalize_basketball_non_negative_int(row["score"]),
         "streak": _normalize_basketball_non_negative_int(row["streak"]),
-        "max_distance_m": f"{distance_px / 60.0:.1f}",
+        "max_distance_m": _format_basketball_distance_meters(distance_px),
         "mode": _normalize_basketball_mode(row["mode"]),
         "date": created_at[:10],
     }

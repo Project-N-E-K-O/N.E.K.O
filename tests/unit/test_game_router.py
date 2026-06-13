@@ -739,11 +739,17 @@ async def test_basketball_leaderboard_post_and_get_sorting(tmp_path, monkeypatch
         assert leaderboard["top"][0]["name"] == "Lan A"
         assert leaderboard["top"][0]["score"] == 20
         assert leaderboard["top"][0]["streak"] == 5
-        assert leaderboard["top"][0]["max_distance_m"] == "4.2"
+        assert leaderboard["top"][0]["max_distance_m"] == "6.3"
         assert leaderboard["top"][1]["name"] == "Lan B"
         assert leaderboard["top"][1]["score"] == 20
         assert leaderboard["top"][1]["streak"] == 3
-        assert leaderboard["top"][1]["max_distance_m"] == "5.0"
+        assert leaderboard["top"][1]["max_distance_m"] == "7.6"
+
+
+@pytest.mark.unit
+def test_basketball_leaderboard_distance_uses_client_court_scale():
+    assert game_router._BASKETBALL_PX_PER_METER == pytest.approx(12 * 3.28084)
+    assert game_router._format_basketball_distance_meters(300) == "7.6"
 
 
 @pytest.mark.unit
