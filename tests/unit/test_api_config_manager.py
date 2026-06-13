@@ -1134,8 +1134,8 @@ class TestVllmOmniRawKeyPassthrough:
 
     @pytest.mark.unit
     def test_ttsModelProvider_passes_through_to_snapshot(self, config_manager):
-        """用户在 core_config.json 里写 ttsModelProvider=vllm_omni，
-        snapshot 必须包含同名 raw key。"""
+        """When the user writes ttsModelProvider=vllm_omni in core_config.json,
+        the snapshot must carry the same raw key."""
         _write_core_config(config_manager, {
             'coreApi': 'gemini',
             'assistApi': 'gemini',
@@ -1151,8 +1151,9 @@ class TestVllmOmniRawKeyPassthrough:
 
     @pytest.mark.unit
     def test_missing_raw_keys_default_to_empty_string(self, config_manager):
-        """老用户 core_config.json 不含 ttsModelProvider/ttsVoiceId，
-        snapshot 必须有这两个 key 且值为空串（向后兼容）。"""
+        """Legacy core_config.json files lack ttsModelProvider/ttsVoiceId; the
+        snapshot must still expose both keys with empty-string defaults
+        (backward compatibility)."""
         _write_core_config(config_manager, {
             'coreApi': 'qwen',
             'assistApi': 'qwen',
@@ -1169,8 +1170,9 @@ class TestVllmOmniRawKeyPassthrough:
 
     @pytest.mark.unit
     def test_none_value_in_raw_config_normalized_to_empty_string(self, config_manager):
-        """core_config.json 被手动编辑后字段为 null，
-        snapshot 必须把 None 兜底成空串，避免下游 .strip() AttributeError。"""
+        """When core_config.json is hand-edited to a null value, the snapshot
+        must coerce None to an empty string so downstream .strip() does not
+        raise AttributeError."""
         _write_core_config(config_manager, {
             'coreApi': 'qwen',
             'assistApi': 'qwen',
@@ -1188,9 +1190,10 @@ class TestVllmOmniRawKeyPassthrough:
 
     @pytest.mark.unit
     def test_snapshot_drives_is_vllm_omni_tts_enabled(self, config_manager):
-        """端到端：core_config.json 含 ttsModelProvider=vllm_omni + enableCustomApi=True，
-        经过 get_core_config() 出来的 snapshot 应让 _is_vllm_omni_tts_enabled 返回 True。
-        这是 codex review #3403710558 的核心契约。"""
+        """End-to-end: when core_config.json has ttsModelProvider=vllm_omni and
+        enableCustomApi=True, the snapshot returned by get_core_config() must
+        make _is_vllm_omni_tts_enabled return True. This is the core contract
+        from codex review #3403710558."""
         from main_logic.core import LLMSessionManager
         _write_core_config(config_manager, {
             'coreApi': 'gemini',
@@ -1205,7 +1208,7 @@ class TestVllmOmniRawKeyPassthrough:
 
     @pytest.mark.unit
     def test_snapshot_disabled_when_custom_api_off(self, config_manager):
-        """关掉 enableCustomApi 后即使 ttsModelProvider=vllm_omni 仍然停用。"""
+        """When enableCustomApi is off, ttsModelProvider=vllm_omni still stays disabled."""
         from main_logic.core import LLMSessionManager
         _write_core_config(config_manager, {
             'coreApi': 'gemini',

@@ -1182,13 +1182,14 @@ class TestEndpointExceptionHandling:
 # ===========================================================================
 
 class TestVllmOmniWsHandshake:
-    """vLLM-Omni 的 /v1/audio/speech/stream 走 Qwen 自定义协议
-    (session.config / input.text / input.done)，不识别 OpenAI Realtime
-    的 session.update。_test_vllm_omni_ws_handshake 仅做 WebSocket 握手 +
-    立即关闭，不发任何应用层帧。"""
+    """vLLM-Omni's /v1/audio/speech/stream uses the Qwen custom protocol
+    (session.config / input.text / input.done) and does not understand the
+    OpenAI Realtime session.update message. _test_vllm_omni_ws_handshake only
+    performs the WebSocket handshake and immediately closes — it never sends
+    any application-layer frame."""
 
     async def test_handshake_succeeds_without_sending_session_update(self):
-        """握手成功 + 不调用 ws.send（核心断言：不发 session.update）。"""
+        """Handshake succeeds and ws.send is never called (core assertion: no session.update)."""
         mock_conn = AsyncMock()
         mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_conn.__aexit__ = AsyncMock(return_value=False)
@@ -1206,7 +1207,7 @@ class TestVllmOmniWsHandshake:
         mock_conn.recv.assert_not_called()
 
     async def test_handshake_with_api_key_sets_authorization_header(self):
-        """有 api_key 时设置 Authorization header（与 _test_websocket 行为一致）。"""
+        """When api_key is provided, the Authorization header is set (matches _test_websocket behaviour)."""
         mock_conn = AsyncMock()
         mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_conn.__aexit__ = AsyncMock(return_value=False)
@@ -1219,7 +1220,7 @@ class TestVllmOmniWsHandshake:
             assert headers.get("Authorization") == "Bearer sk-test"
 
     async def test_handshake_empty_api_key_no_authorization_header(self):
-        """空 api_key 不发 Authorization header（vLLM 自部署常见无鉴权）。"""
+        """When api_key is empty, no Authorization header is sent (vLLM self-hosted deployments commonly run without auth)."""
         mock_conn = AsyncMock()
         mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_conn.__aexit__ = AsyncMock(return_value=False)
@@ -1232,7 +1233,7 @@ class TestVllmOmniWsHandshake:
             assert "Authorization" not in headers
 
     async def test_handshake_url_passed_through_unchanged(self):
-        """URL 原样透传，不像 _test_websocket 那样追加 ?model= 查询参数。"""
+        """URL is passed through unchanged; unlike _test_websocket it does NOT append a ?model= query parameter."""
         mock_conn = AsyncMock()
         mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_conn.__aexit__ = AsyncMock(return_value=False)
@@ -1246,7 +1247,7 @@ class TestVllmOmniWsHandshake:
             assert "?model=" not in ws_url
 
     async def test_handshake_auth_failed_401(self):
-        """握手期间 401 → auth_failed（与 _test_websocket 错误码对齐）。"""
+        """A 401 during handshake → auth_failed (matches _test_websocket's error_code)."""
         exc = Exception("HTTP 401")
         exc.status_code = 401
         with patch("websockets.connect", side_effect=exc):
@@ -1294,8 +1295,9 @@ class TestVllmOmniWsHandshake:
         assert result["error_code"] == "timeout"
 
     async def test_endpoint_dispatches_sub_type_to_handshake(self):
-        """端到端：sub_type='vllm_omni_tts' 进 _test_vllm_omni_ws_handshake，
-        而不是 _test_websocket。这是连通性误判修复的核心契约。"""
+        """End-to-end: sub_type='vllm_omni_tts' must dispatch to
+        _test_vllm_omni_ws_handshake instead of _test_websocket. This is the
+        core contract behind the connectivity-mis-detection fix."""
         with patch(
             "main_routers.config_router._test_vllm_omni_ws_handshake",
             new=AsyncMock(return_value={"success": True}),
@@ -1316,8 +1318,9 @@ class TestVllmOmniWsHandshake:
         mock_realtime_ws.assert_not_called()
 
     async def test_endpoint_websocket_without_sub_type_uses_realtime_probe(self):
-        """端到端反向契约：未传 sub_type 时仍走 _test_websocket（OpenAI Realtime 路径），
-        防止误伤 Qwen Realtime / Step 等真正的 Realtime provider。"""
+        """End-to-end inverse contract: when sub_type is omitted, the request
+        still routes to _test_websocket (the OpenAI Realtime path) so genuine
+        Realtime providers like Qwen Realtime / Step are not hit by mistake."""
         with patch(
             "main_routers.config_router._test_vllm_omni_ws_handshake",
             new=AsyncMock(return_value={"success": True}),
@@ -1384,7 +1387,7 @@ class TestVllmOmniWsHandshake:
         built-in provider), sub_type is dropped and Mode 1's resolved provider_type drives the
         probe. A malicious frontend cannot force handshake-only probe on a non-vllm-omni
         built-in provider via sub_type injection.
-        (#1764 review 第六轮 — gating at config_router.py line ~1937-1942)"""
+        (#1764 review round 6 - gating at config_router.py line ~1937-1942)"""
         with patch(
             "main_routers.config_router._test_vllm_omni_ws_handshake",
             new=AsyncMock(return_value={"success": True}),

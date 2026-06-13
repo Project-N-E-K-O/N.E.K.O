@@ -2848,13 +2848,13 @@ def openai_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
 
 def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                           base_url='', model='', voice=''):
-    """vLLM-Omni TTS Worker —  WebSocket 双工流式合成。
+    """vLLM-Omni TTS worker — full-duplex WebSocket streaming synthesis.
 
-    协议：``ws://{base_url}/v1/audio/speech/stream``
+    Protocol: ``ws://{base_url}/v1/audio/speech/stream``
 
     Client → Server:
       1. ``{"type": "session.config", "model": "...", "voice": "...", ...}``
-      2. ``{"type": "input.text", "text": "..."}``  （可多次发送）
+      2. ``{"type": "input.text", "text": "..."}``  (may be sent multiple times)
       3. ``{"type": "input.done"}``
 
     Server → Client:
@@ -2863,11 +2863,11 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
       3. ``{"type": "audio.done", "sentence_index": N}``
       4. ``{"type": "session.done", "total_sentences": N}``
 
-    参数：
-        base_url:  vLLM-Omni 服务根地址（如 ``http://localhost:8091``），
-                   自动转为 ws:// 协议。
-        model:     模型名（默认 ``Qwen3-TTS``）。
-        voice:     vllm-omni 提供的 voice 名。
+    Args:
+        base_url:  vLLM-Omni service root URL (e.g. ``http://localhost:8091``);
+                   automatically rewritten to ws:// scheme.
+        model:     Model name (defaults to ``Qwen3-TTS``).
+        voice:     Voice id exposed by vllm-omni.
     """
     raw_base_url = (base_url or '').strip().rstrip('/')
     if not raw_base_url:
@@ -2941,11 +2941,11 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
         pending_text_sid: str | None = None
 
         async def _connect_and_config() -> bool:
-            """建立 WS 连接并发送 session.config，返回是否成功。
+            """Open the WS connection and send session.config; return success.
 
-            修复 PR #1764 review #2（CodeRabbit）：将 audio_api_key 同时通过
-            WS 握手的 Authorization header 和 session.config.api_key 字段
-            发给 vLLM-Omni 服务端，覆盖大多数反代/鉴权部署的场景。
+            PR #1764 review #2 (CodeRabbit) fix: forward audio_api_key both via
+            the WS handshake Authorization header and the session.config.api_key
+            field so deployments behind reverse proxies / auth layers are covered.
             """
             nonlocal ws
             ws_kwargs = {"max_size": None}
@@ -2995,7 +2995,7 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                 return False
 
         async def _receive_loop():
-            """接收 WS 消息：JSON 事件 + binary PCM 帧。"""
+            """Receive WS messages: JSON events plus binary PCM frames."""
             try:
                 async for message in ws:
                     if isinstance(message, bytes):
@@ -3056,10 +3056,10 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
         logger.info("[vLLM-Omni TTS] 已就绪")
 
         async def _rebuild_session() -> bool:
-            """修复 PR #1764 review #3 辅助函数：销毁旧 session、重建新 session。
+            """PR #1764 review #3 helper: tear down the old session and rebuild a new one.
 
-            供 session.done 后 / ws.send 失败后 / __interrupt__ 时调用。
-            返回 True 表示重建成功，False 表示失败（外层应据此终止）。
+            Called after session.done / on ws.send failure / on __interrupt__.
+            Returns True on success, False on failure (outer loop should stop).
             """
             nonlocal ws, receive_task
             if receive_task is not None and not receive_task.done():

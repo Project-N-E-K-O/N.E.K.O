@@ -1509,17 +1509,19 @@ async def _test_websocket(url: str, api_key: str, model: str = "") -> dict:
 
 
 async def _test_vllm_omni_ws_handshake(url: str, api_key: str) -> dict:
-    """vLLM-Omni TTS 专用 WebSocket 握手探测（不发任何应用层帧）。
+    """vLLM-Omni TTS WebSocket handshake-only probe (no application frames).
 
-    背景：vLLM-Omni 的 /v1/audio/speech/stream 走 Qwen 自定义协议
-    (session.config / input.text / input.done)，不识别 OpenAI Realtime 的
-    session.update。直接用 _test_websocket 会让 vLLM 主动断连导致连通性
-    误判。本函数仅做 WebSocket 握手 + 立即关闭——握手能完成即说明端点
-    可达且 (空) 鉴权通过；HTTP 401/403 与 _test_websocket 同步识别为
-    auth_failed。错误码与 _test_websocket 保持完全一致以便前端统一处理
-    (#1764 review 第六轮)。
+    Background: vLLM-Omni's /v1/audio/speech/stream speaks the Qwen custom
+    protocol (session.config / input.text / input.done) and does not understand
+    OpenAI Realtime's session.update. Reusing _test_websocket would cause vLLM
+    to drop the connection and produce a false connectivity failure. This
+    function performs the WebSocket handshake and immediately closes — a
+    successful handshake proves the endpoint is reachable and (empty) auth
+    passes; HTTP 401/403 is mapped to auth_failed exactly like _test_websocket
+    so the frontend handles them uniformly (#1764 review round 6).
 
-    api_key 为空时不发送 Authorization header（vLLM 自部署常见无鉴权）。
+    When api_key is empty no Authorization header is sent (vLLM self-hosted
+    deployments commonly run without auth).
     """
     import websockets
 
@@ -1593,12 +1595,13 @@ async def _test_connectivity_candidates(
     is_free: bool,
     sub_type: str = "",
 ) -> dict:
-    """并发测试候选 URL；任一通过即返回该 URL。
+    """Probe the candidate URLs concurrently; return the first that succeeds.
 
-    sub_type='vllm_omni_tts' 时绕开 _test_websocket 的 OpenAI Realtime
-    session.update 探测，改用握手 + 立即关闭的轻量探测，因为 vLLM-Omni 的
-    /v1/audio/speech/stream 不识别 Realtime 协议帧，发 session.update 会被
-    主动断连进而误判 (#1764 review 第六轮)。
+    When sub_type='vllm_omni_tts' the OpenAI Realtime session.update probe in
+    _test_websocket is bypassed in favour of a lightweight handshake-and-close
+    probe, because vLLM-Omni's /v1/audio/speech/stream does not understand
+    Realtime protocol frames — sending session.update would trigger an early
+    server-side disconnect and produce a false negative (#1764 review round 6).
     """
     if not urls:
         return {"success": False, "error": "缺少必要参数", "error_code": "missing_params"}

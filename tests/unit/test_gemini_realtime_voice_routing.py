@@ -546,7 +546,7 @@ async def test_hot_swap_to_external_tts_starts_pipeline(monkeypatch):
 
 
 def test_is_vllm_omni_tts_enabled_returns_false_when_ttsModelProvider_missing():
-    """向后兼容：老用户的 core_config.json 不含 ttsModelProvider key。"""
+    """Backward compatibility: legacy core_config.json files lack the ttsModelProvider key."""
     snapshot = {
         "ENABLE_CUSTOM_API": True,
         "GPTSOVITS_ENABLED": False,
@@ -556,7 +556,7 @@ def test_is_vllm_omni_tts_enabled_returns_false_when_ttsModelProvider_missing():
 
 
 def test_is_vllm_omni_tts_enabled_returns_false_for_empty_string():
-    """前端清空 select 后写入空字符串，不应触发 vllm_omni 路由。"""
+    """When the frontend clears the select, an empty string is written and must not trigger vllm_omni routing."""
     snapshot = {
         "ENABLE_CUSTOM_API": True,
         "ttsModelProvider": "",
@@ -566,7 +566,7 @@ def test_is_vllm_omni_tts_enabled_returns_false_for_empty_string():
 
 
 def test_is_vllm_omni_tts_enabled_is_case_sensitive():
-    """provider key 比较区分大小写：VLLM_OMNI / Vllm_Omni 不应被识别为 vllm_omni。"""
+    """The provider key comparison is case-sensitive: VLLM_OMNI / Vllm_Omni must not be recognised as vllm_omni."""
     for variant in ("VLLM_OMNI", "Vllm_Omni", "vLLM_omni"):
         snapshot = {
             "ENABLE_CUSTOM_API": True,
@@ -578,7 +578,7 @@ def test_is_vllm_omni_tts_enabled_is_case_sensitive():
 
 
 def test_is_vllm_omni_tts_enabled_strips_whitespace():
-    """前端可能在保存时附带前后空白，应能正确识别。"""
+    """The frontend may persist values with surrounding whitespace; the helper must still recognise them."""
     snapshot = {
         "ENABLE_CUSTOM_API": True,
         "ttsModelProvider": "  vllm_omni  ",
@@ -588,7 +588,7 @@ def test_is_vllm_omni_tts_enabled_strips_whitespace():
 
 
 def test_livestream_overrides_vllm_omni_tts_routing(monkeypatch):
-    """livestream 模式应早退优先于 vllm_omni 外部 TTS 选择。"""
+    """Livestream mode must short-circuit before the vllm_omni external-TTS branch is selected."""
     mgr = _make_mgr("Puck")
     monkeypatch.setattr(
         LLMSessionManager,
