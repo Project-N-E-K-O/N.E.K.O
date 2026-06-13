@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -763,9 +764,12 @@ def test_basketball_heartbeat_sends_live_current_state():
 
     assert "post('/route/heartbeat'" in heartbeat_section
     assert "currentState: buildBasketballCurrentStatePayload()" in heartbeat_section
-    assert "score: {\n        player: game.totalScore," in current_state_section
-    assert "ai: isDuelMode() ? game.duel.nekoScore : 0," in current_state_section
-    assert "total_score: game.totalScore," in current_state_section
+    assert re.search(r"score:\s*{\s*player:\s*game\.totalScore", current_state_section)
+    assert re.search(
+        r"ai:\s*isDuelMode\(\)\s*\?\s*game\.duel\.nekoScore\s*:\s*0",
+        current_state_section,
+    )
+    assert re.search(r"total_score:\s*game\.totalScore", current_state_section)
 
 
 @pytest.mark.unit
