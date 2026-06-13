@@ -23,6 +23,7 @@ from typing import Any, Awaitable, Callable, Optional
 # None collapses both into the same code path and would let recovery /
 # proactive paths accidentally bind their messages to a newer request_id.
 _REQUEST_ID_UNSET: Any = object()
+_MAGIC_COMMAND_IMAGE_DROP_REQUEST_MAX = 64
 from datetime import datetime
 from websockets import exceptions as web_exceptions
 from fastapi import WebSocket, WebSocketDisconnect
@@ -892,6 +893,8 @@ class LLMSessionManager:
         self._tts_done_queued_for_turn: bool = False  # 防止同一轮次多次排入 TTS 结束信号
         self._tts_done_pending_until_ready: bool = False  # TTS未就绪时延迟到 flush 后再排入结束信号
         self._active_text_request_id: Optional[str] = None
+        self._magic_command_image_drop_request_ids: set[str] = set()
+        self._magic_command_image_drop_request_order: deque[str] = deque()
         
         # 输入数据缓存机制：确保session初始化期间的输入不丢失
         self.session_ready = False  # Session是否完全就绪
@@ -1697,6 +1700,20 @@ class LLMSessionManager:
                 await self.websocket.send_json(turn_end_msg)
         except Exception as e:
             logger.error(f"💥 WS Send Agent Callback Turn End Error: {e}")
+
+    def _mark_magic_command_image_drop_request(self, request_id: object) -> None:
+        request_id_str = str(request_id or "")
+        if not request_id_str or request_id_str in self._magic_command_image_drop_request_ids:
+            return
+        self._magic_command_image_drop_request_ids.add(request_id_str)
+        self._magic_command_image_drop_request_order.append(request_id_str)
+        while len(self._magic_command_image_drop_request_order) > _MAGIC_COMMAND_IMAGE_DROP_REQUEST_MAX:
+            stale_request_id = self._magic_command_image_drop_request_order.popleft()
+            self._magic_command_image_drop_request_ids.discard(stale_request_id)
+
+    def _should_drop_magic_command_image(self, request_id: object) -> bool:
+        request_id_str = str(request_id or "")
+        return bool(request_id_str and request_id_str in self._magic_command_image_drop_request_ids)
 
     async def handle_response_complete(self):
         """Qwen完成回调：用于处理Core API的响应完成事件，包含TTS和热切换逻辑"""
@@ -7305,6 +7322,7 @@ class LLMSessionManager:
                     ):
                         self._session_turn_count += 1
                         self._clear_text_pending_images()
+                        self._mark_magic_command_image_drop_request(message.get("request_id"))
                         await self.mirror_user_input(
                             data,
                             metadata={
@@ -7492,6 +7510,8 @@ class LLMSessionManager:
 
             elif input_type in ['screen', 'camera']:
                 try:
+                    if self._should_drop_magic_command_image(message.get("request_id")):
+                        return
                     # 使用统一的屏幕分享工具处理数据（只验证，不缩放）
                     image_b64 = await process_screen_data(data)
 

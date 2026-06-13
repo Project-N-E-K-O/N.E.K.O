@@ -127,6 +127,8 @@ def _make_manager():
     mgr._tts_done_pending_until_ready = False
     mgr.state = _FakeState()
     mgr._active_text_request_id = None
+    mgr._magic_command_image_drop_request_ids = set()
+    mgr._magic_command_image_drop_request_order = deque()
     mgr._pending_turn_meta = None
     mgr._current_ai_turn_text = ""
     mgr._recent_ai_voice_echo_text = ""
@@ -784,6 +786,48 @@ async def test_explicit_openclaw_magic_command_clears_pending_text_images(monkey
     assert mgr.session._pending_images == []
     assert mgr.session.stream_text.await_count == 0
     assert mgr.sync_message_queue.messages[-1]["data"] == "turn end agent_callback"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_late_magic_command_screenshot_is_discarded(monkeypatch):
+    """Late screenshots for a magic-command request must not leak into later text turns."""
+    mgr = _make_transcript_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session._pending_images = []
+    mgr.session.update_max_response_length = Mock()
+    mgr.session.stream_text = AsyncMock()
+    mgr.session.stream_image = AsyncMock()
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._is_agent_enabled = Mock(return_value=True)
+    mgr.agent_flags = {"openclaw_enabled": True, "openclaw_ready": True}
+
+    def fake_fire_task(coro):
+        coro.close()
+
+    mgr._fire_task = fake_fire_task
+    monkeypatch.setattr(core_module, "dispatch_text_user_message", lambda name, text: None)
+    monkeypatch.setattr(core_module, "process_screen_data", AsyncMock(return_value="late-img"))
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "/stop", "request_id": "req-stop"},
+    )
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "screen", "data": "raw-image", "request_id": "req-stop"},
+    )
+
+    mgr.session.stream_image.assert_not_awaited()
+    assert mgr.session._pending_images == []
+    assert all(
+        msg.get("data", {}).get("input_type") != "screen"
+        for msg in mgr.sync_message_queue.messages
+        if isinstance(msg.get("data"), dict)
+    )
 
 
 @pytest.mark.unit

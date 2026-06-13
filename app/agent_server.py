@@ -4543,10 +4543,14 @@ async def openclaw_availability():
             status["pending"] = True
         return status
     reason = reasons[0] if reasons else ""
+    was_openclaw_enabled = bool(Modules.agent_flags.get("openclaw_enabled"))
+    was_ready = bool(((Modules.capability_cache or {}).get("openclaw") or {}).get("ready"))
     _set_capability("openclaw", False, reason)
-    if Modules.agent_flags.get("openclaw_enabled"):
+    if was_openclaw_enabled:
         Modules.agent_flags["openclaw_enabled"] = False
         Modules.notification = _openclaw_notification("AGENT_OPENCLAW_CAPABILITY_LOST", reasons)
+    if was_openclaw_enabled or was_ready:
+        await _emit_agent_status_update()
     return status
 
 
