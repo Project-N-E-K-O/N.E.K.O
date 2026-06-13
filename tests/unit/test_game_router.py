@@ -637,8 +637,10 @@ def test_basketball_template_contract():
     assert "applyRouteIdentity(res.state);" in html
     assert "lanlan_name: lanlanName, source: 'basketball_demo'" not in html
     assert "initNekoAvatar().finally(function () { startRoute(); })" not in html
-    startup = html[html.rindex("startRoute();"):]
-    assert startup.index("startRoute();") < startup.index("initNekoAvatar();")
+    assert "var basketballCharacterPromise = null;" in html
+    assert "loadBasketballCharacter().finally(function () { startRoute(); });" in html
+    startup = html[html.rindex("startRouteAfterCharacterReady();"):]
+    assert startup.index("startRouteAfterCharacterReady();") < startup.index("initNekoAvatar();")
     assert "voiceArbiter" in html
     assert "mirror_text: false" in html
     assert "post('/mirror-assistant'" in html

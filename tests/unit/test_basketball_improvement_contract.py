@@ -849,17 +849,21 @@ def test_basketball_delayed_results_are_bound_to_session():
 
 
 @pytest.mark.unit
-def test_basketball_starts_route_before_avatar_loading():
+def test_basketball_starts_route_after_character_resolution_before_avatar_loading():
     html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
 
     assert "initNekoAvatar().finally(function () { startRoute(); });" not in html
+    assert "var basketballCharacterPromise = null;" in html
+    assert "return basketballCharacterPromise;" in html
+    assert "function startRouteAfterCharacterReady() {" in html
+    assert "loadBasketballCharacter().finally(function () { startRoute(); });" in html
     assert "var routeLanlanName = getRouteLanlanName();" in html
     assert "var routeSessionId = sessionId;" in html
     assert "lanlan_name: routeLanlanName" in html
     assert "if (sessionId !== routeSessionId || endedRoute || game.state === 'game_over') return;" in html
     assert "applyRouteIdentity(res.state);" in html
-    startup = html[html.rindex("startRoute();"):]
-    assert startup.index("startRoute();") < startup.index("initNekoAvatar();")
+    startup = html[html.rindex("startRouteAfterCharacterReady();"):]
+    assert startup.index("startRouteAfterCharacterReady();") < startup.index("initNekoAvatar();")
 
 
 @pytest.mark.unit

@@ -2341,21 +2341,27 @@
   function applyRouteIdentity(state) {
     applyResolvedLanlanName(state && (state.lanlan_name || state.lanlanName));
   }
+  var basketballCharacterPromise = null;
   async function loadBasketballCharacter() {
-    var charData = {};
-    try {
-      var characterPath = api('/character');
-      var requestedLanlanName = String(window.__nekoBasketballQueryLanlanName || '').trim();
-      if (requestedLanlanName) {
-        characterPath += '?lanlan_name=' + encodeURIComponent(requestedLanlanName);
-      }
-      var charResp = await fetch(characterPath);
-      if (charResp.ok) charData = await charResp.json();
-    } catch (err) {
-      console.warn('[basketball_demo] 获取角色信息失败:', err);
+    if (!basketballCharacterPromise) {
+      basketballCharacterPromise = (async function () {
+        var charData = {};
+        try {
+          var characterPath = api('/character');
+          var requestedLanlanName = String(window.__nekoBasketballQueryLanlanName || '').trim();
+          if (requestedLanlanName) {
+            characterPath += '?lanlan_name=' + encodeURIComponent(requestedLanlanName);
+          }
+          var charResp = await fetch(characterPath);
+          if (charResp.ok) charData = await charResp.json();
+        } catch (err) {
+          console.warn('[basketball_demo] 获取角色信息失败:', err);
+        }
+        applyCharacterIdentity(charData);
+        return charData;
+      })();
     }
-    applyCharacterIdentity(charData);
-    return charData;
+    return basketballCharacterPromise;
   }
   async function initNekoAvatar() {
     var charData = await loadBasketballCharacter();
@@ -4726,6 +4732,9 @@
     loadGeneratedQuickLines();
     return routeStartPromise;
   }
+  function startRouteAfterCharacterReady() {
+    loadBasketballCharacter().finally(function () { startRoute(); });
+  }
   function endRoute(useBeacon) {
     if (endedRoute && !(useBeacon && routeEndFetchPending && !routeEndBeaconDelivered)) return;
     endedRoute = true;
@@ -5161,7 +5170,7 @@
   if (lastFinalStreak >= 15) applyNekoControl({ expression: 'anticipate', intensity: 'medium' }, {});
   updateTutorial(_i18n('tutorial.aim', '上下移动鼠标调整投篮角度'));
   checkSeasonalEasterEggs();
-  startRoute();
+  startRouteAfterCharacterReady();
   initPlayerAvatar();
   initNekoAvatar();
   requestAnimationFrame(loop);

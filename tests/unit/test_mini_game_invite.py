@@ -1589,12 +1589,18 @@ def test_keywords_cover_all_native_locales():
 
 def test_basketball_invite_config_and_i18n_complete():
     from config import MINI_GAME_INVITE_AVAILABLE_GAMES, MINI_GAME_LAUNCH_URL_BY_GAME
+    from config.prompts.prompts_activity import WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME
     from config.prompts.prompts_proactive import MINI_GAME_INVITE_LINES_BY_GAME
 
     assert 'basketball' in MINI_GAME_INVITE_AVAILABLE_GAMES
     assert MINI_GAME_LAUNCH_URL_BY_GAME['basketball'] == '/basketball_demo'
     for lang in ('zh', 'en', 'ja', 'ko', 'ru', 'es', 'pt'):
         assert MINI_GAME_INVITE_LINES_BY_GAME['basketball'][lang].strip()
+        work_break_prompt = WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME['basketball'][lang]
+        assert work_break_prompt.strip()
+        assert '{master}' in work_break_prompt
+        assert '{app}' in work_break_prompt
+        assert '{minutes}' in work_break_prompt
 
 
 def test_accept_basketball_invite_returns_basketball_url():
