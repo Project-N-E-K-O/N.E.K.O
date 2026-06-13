@@ -423,9 +423,22 @@
                 return window._modelReloadPromise;
             }
             console.log('[Model] 模型重载已在进行，记录最后一次不同的重载请求');
-            window._pendingModelReload = { targetLanlanName: targetLanlanName, reloadOptions: reloadOptions };
-            await window._modelReloadPromise;
-            return;
+            var pendingResolve;
+            var pendingReject;
+            var pendingPromise = new Promise(function (resolve, reject) {
+                pendingResolve = resolve;
+                pendingReject = reject;
+            });
+            if (window._pendingModelReload && typeof window._pendingModelReload.resolve === 'function') {
+                window._pendingModelReload.resolve(false);
+            }
+            window._pendingModelReload = {
+                targetLanlanName: targetLanlanName,
+                reloadOptions: reloadOptions,
+                resolve: pendingResolve,
+                reject: pendingReject
+            };
+            return pendingPromise;
         }
 
         // Mark in-flight
@@ -1049,6 +1062,12 @@
                         restoredPngtuberContainer.classList.remove('hidden');
                         restoredPngtuberContainer.style.display = 'block';
                         restoredPngtuberContainer.style.visibility = 'visible';
+                        restoredPngtuberContainer.style.pointerEvents = 'auto';
+                        var restoredPngtuberImage = restoredPngtuberContainer.querySelector('.pngtuber-image');
+                        if (restoredPngtuberImage) {
+                            restoredPngtuberImage.style.visibility = 'visible';
+                            restoredPngtuberImage.style.pointerEvents = 'auto';
+                        }
                     }
                 } catch (restoreError) {
                     console.warn('[Model] PNGTuber restore after failed switch failed:', restoreError);
@@ -1088,7 +1107,15 @@
                 console.log('[Model] 执行待处理的模型重载请求');
                 var pendingReload = window._pendingModelReload;
                 window._pendingModelReload = null;
-                setTimeout(function () { handleModelReload(pendingReload.targetLanlanName, pendingReload.reloadOptions); }, 100);
+                setTimeout(function () {
+                    handleModelReload(pendingReload.targetLanlanName, pendingReload.reloadOptions)
+                        .then(function (result) {
+                            if (typeof pendingReload.resolve === 'function') pendingReload.resolve(result);
+                        })
+                        .catch(function (error) {
+                            if (typeof pendingReload.reject === 'function') pendingReload.reject(error);
+                        });
+                }, 100);
             }
         }
     }

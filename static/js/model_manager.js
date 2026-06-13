@@ -1404,11 +1404,20 @@ function waitForPNGTuberImageDrawable(drawable) {
     });
 }
 
+function isRemotePNGTuberDrawable(drawable) {
+    if (!(drawable instanceof HTMLImageElement)) return false;
+    const src = drawable.currentSrc || drawable.src || '';
+    return /^https?:\/\//i.test(src) && !src.startsWith(window.location.origin);
+}
+
 async function capturePNGTuberPreviewToCanvas() {
     await new Promise(resolve => requestAnimationFrame(resolve));
     const drawable = getPNGTuberCaptureDrawable();
     if (!drawable) throw new Error('pngtuber_drawable_not_ready');
     await waitForPNGTuberImageDrawable(drawable);
+    if (isRemotePNGTuberDrawable(drawable)) {
+        throw new Error('pngtuber_remote_card_face_unsupported');
+    }
     const { width, height } = getPNGTuberDrawableSize(drawable);
     if (!width || !height) throw new Error('pngtuber_drawable_not_ready');
     const canvas = document.createElement('canvas');
