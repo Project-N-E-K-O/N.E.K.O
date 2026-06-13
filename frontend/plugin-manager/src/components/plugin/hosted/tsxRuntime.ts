@@ -95,6 +95,10 @@ function moduleImportStatement(rawBindings: string | undefined, modulePath: stri
   if (!bindings || bindings === 'type' || bindings.startsWith('type ')) {
     return bindings.startsWith('type ') ? '' : `${moduleRef};\n`
   }
+  const defaultNamespaceMatch = bindings.match(/^([A-Za-z_$][\w$]*)\s*,\s*\*\s+as\s+([A-Za-z_$][\w$]*)$/)
+  if (defaultNamespaceMatch?.[1] && defaultNamespaceMatch[2]) {
+    return `const ${defaultNamespaceMatch[1]} = ${moduleRef}.default;\nconst ${defaultNamespaceMatch[2]} = ${moduleRef};\n`
+  }
   if (bindings.startsWith('* as ')) {
     return `const ${bindings.slice(5).trim()} = ${moduleRef};\n`
   }

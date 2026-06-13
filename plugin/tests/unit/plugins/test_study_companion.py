@@ -617,6 +617,55 @@ def test_study_store_round_trip_and_export(tmp_path: Path) -> None:
     store.close()
 
 
+@pytest.mark.asyncio
+async def test_study_settings_entry_persists_and_updates_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "default_mode": MODE_COMPANION},
+            "ocr_reader": {"enabled": True, "languages": "eng"},
+            "llm": {"llm_call_timeout_seconds": 45},
+            "study_companion": {"communication": {"enabled": False}},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    startup = await plugin.startup()
+    assert isinstance(startup, Ok)
+    plugin._agent = _FakeTutorAgent()
+
+    try:
+        result = await plugin.study_update_settings_config(
+            config={
+                "study": {"default_mode": MODE_TEACHING},
+                "ocr_reader": {"enabled": False, "languages": "chi_sim+eng"},
+                "llm": {"llm_call_timeout_seconds": 90},
+            }
+        )
+
+        assert isinstance(result, Ok)
+        assert result.value["config"]["study"]["default_mode"] == MODE_TEACHING
+        assert result.value["config"]["ocr_reader"]["enabled"] is False
+        assert result.value["config"]["ocr_reader"]["languages"] == "chi_sim+eng"
+        assert result.value["config"]["llm"]["llm_call_timeout_seconds"] == 90.0
+        assert plugin._cfg.default_mode == MODE_TEACHING
+        assert plugin._cfg.ocr_enabled is False
+        assert plugin._cfg.ocr_languages == "chi_sim+eng"
+        assert plugin._cfg.llm_call_timeout_seconds == 90.0
+        persisted = plugin._store.load_config(StudyConfig())
+        assert persisted.default_mode == MODE_TEACHING
+        assert persisted.ocr_enabled is False
+        assert persisted.ocr_languages == "chi_sim+eng"
+        assert persisted.llm_call_timeout_seconds == 90.0
+        assert plugin._agent._config is plugin._cfg
+        assert plugin._ocr_pipeline is not None
+        assert plugin._ocr_pipeline._config is plugin._cfg
+    finally:
+        await plugin.shutdown()
+
+
 def test_study_store_seed_topic_upsert_preserves_seed_metadata(tmp_path: Path) -> None:
     store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
     store.open()
@@ -2067,7 +2116,7 @@ window.console.error = (...args) => {
 };
 
 const runEntries = [];
-const configRequests = [];
+const runById = new Map();
 let configPayload = {
   plugin_id: 'study_companion',
   config: {
@@ -2095,40 +2144,35 @@ window.fetch = async (rawUrl, options = {}) => {
   if (url === '/plugin/study_companion/ui-api/i18n/en.json') {
     return Response.json(enBundle);
   }
-  if (url === '/plugin/study_companion/config' && (!options.method || options.method === 'GET')) {
-    configRequests.push({ method: 'GET', url });
-    return Response.json(configPayload);
-  }
-  if (url === '/plugin/study_companion/config' && options.method === 'PUT') {
-    const body = JSON.parse(String(options.body || '{}'));
-    configRequests.push({ method: 'PUT', url, body });
-    configPayload = {
-      ...configPayload,
-      config: body.config,
-    };
-    return Response.json({
-      success: true,
-      plugin_id: 'study_companion',
-      config: body.config,
-      requires_reload: true,
-      message: 'Config updated successfully',
-    });
-  }
   if (url === '/runs' && options.method === 'POST') {
     const body = JSON.parse(String(options.body || '{}'));
-    runEntries.push(body);
-    return Response.json({ run_id: `run-${runEntries.length}`, status: 'queued' });
+    const runId = `run-${runEntries.length + 1}`;
+    runEntries.push({ runId, ...body });
+    runById.set(runId, body);
+    return Response.json({ run_id: runId, status: 'queued' });
   }
   if (/^\/runs\/run-\d+$/.test(url)) {
     return Response.json({ status: 'succeeded' });
   }
   if (/^\/runs\/run-\d+\/export$/.test(url)) {
+    const runId = url.match(/^\/runs\/(run-\d+)\/export$/)[1];
+    const run = runById.get(runId) || {};
+    let data = statusPayload;
+    if (run.entry_id === 'study_get_settings_config') {
+      data = { config: configPayload.config };
+    } else if (run.entry_id === 'study_update_settings_config') {
+      configPayload = {
+        ...configPayload,
+        config: run.args.config,
+      };
+      data = { config: configPayload.config };
+    }
     return Response.json({
       items: [{
         type: 'json',
         json: {
           success: true,
-          data: statusPayload,
+          data,
         },
       }],
     });
@@ -2218,10 +2262,10 @@ document.getElementById('settingsOcrLanguages').value = 'chi_sim+eng';
 document.getElementById('settingsLlmTimeout').value = '90';
 document.getElementById('settingsSaveBtn').click();
 await waitFor(
-  () => configRequests.some((request) => request.method === 'PUT'),
+  () => runEntries.some((entry) => entry.entry_id === 'study_update_settings_config'),
   'advanced settings config save',
 );
-const savedConfig = configRequests.find((request) => request.method === 'PUT').body.config;
+const savedConfig = runEntries.find((entry) => entry.entry_id === 'study_update_settings_config').args.config;
 if (
   savedConfig.study.default_mode !== 'teaching'
   || savedConfig.ocr_reader.enabled !== true

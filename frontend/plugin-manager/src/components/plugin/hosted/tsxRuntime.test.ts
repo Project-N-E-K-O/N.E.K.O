@@ -339,6 +339,30 @@ describe('hosted TSX document runtime', () => {
     expect(root.querySelector('strong')?.textContent).toBe('ABC')
   })
 
+  it('rewrites default plus namespace hosted imports before executing', () => {
+    const { root } = executeHostedDocument(`
+      import { label } from "./consumer"
+
+      export default function Panel() {
+        return <strong>{label}</strong>
+      }
+    `, baseContext(), baseContext(), [{
+      path: 'ui/consumer.ts',
+      source: `
+        import fallback, * as helper from "./helper"
+        export const label = fallback + "-" + helper.suffix
+      `,
+    }, {
+      path: 'ui/helper.ts',
+      source: `
+        export default "default"
+        export const suffix = "namespace"
+      `,
+    }])
+
+    expect(root.querySelector('strong')?.textContent).toBe('default-namespace')
+  })
+
   it('rejects hosted imports that escape the plugin UI root', () => {
     expect(() => executeHostedDocument(`
       import { label } from "../../escape"

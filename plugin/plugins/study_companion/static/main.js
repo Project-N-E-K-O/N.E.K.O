@@ -1,6 +1,5 @@
 const PLUGIN_ID = 'study_companion';
 const RUNS_URL = '/runs';
-const CONFIG_URL = `/plugin/${PLUGIN_ID}/config`;
 const RUN_TIMEOUT_MS = 60000;
 const RUN_EXPORT_RETRY_COUNT = 3;
 const RUN_EXPORT_RETRY_DELAY_MS = 400;
@@ -692,9 +691,7 @@ async function loadSettingsConfig(options = {}) {
   settingsConfigLoading = true;
   setSettingsConfigStatus('ui.status.config_loading', 'Loading settings...');
   try {
-    const response = await fetchWithTimeout(CONFIG_URL, {}, 15000);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    settingsConfig = cloneConfig(getConfigRoot(await response.json()));
+    settingsConfig = cloneConfig(getConfigRoot(await callPlugin('study_get_settings_config')));
     applySettingsConfig(settingsConfig);
     setSettingsConfigStatus('ui.status.config_loaded', 'Settings loaded');
   } catch (error) {
@@ -726,13 +723,7 @@ async function saveSettingsConfig() {
   if (settingsSaveBtn) settingsSaveBtn.disabled = true;
   setSettingsConfigStatus('ui.status.config_saving', 'Saving settings...');
   try {
-    const response = await fetchWithTimeout(CONFIG_URL, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ config: next }),
-    }, 30000);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    settingsConfig = cloneConfig(getConfigRoot(await response.json()) || next);
+    settingsConfig = cloneConfig(getConfigRoot(await callPlugin('study_update_settings_config', { config: next })) || next);
     applySettingsConfig(settingsConfig);
     setSettingsConfigStatus('ui.status.config_saved', 'Saved');
   } catch (error) {
