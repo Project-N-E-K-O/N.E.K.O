@@ -104,6 +104,8 @@
     "ui.surface.knowledge_map":  "지식 맵",
     "ui.surface.knowledge_contribution_settings":  "지식 기여 설정",
     "ui.surface.note_exporter":  "노트 내보내기",
+    "ui.surface.quickstart":  "빠른 시작",
+    "ui.quickstart.subtitle":  "캡처, 질문, 복습, 내보내기",
     "ui.label.topics":  "주제",
     "ui.label.edges":  "연결",
     "ui.label.weak_topics":  "취약 주제",

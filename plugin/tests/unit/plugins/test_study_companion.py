@@ -1436,6 +1436,7 @@ def test_study_companion_i18n_bundles_are_present() -> None:
         "ui.surface.knowledge_contribution_settings",
         "ui.surface.note_exporter",
         "ui.surface.quickstart",
+        "ui.quickstart.subtitle",
         "ui.button.export",
     ]
     bundles: dict[str, dict[str, str]] = {}
@@ -1585,10 +1586,12 @@ def test_study_companion_ui_refactor_static_and_hosted_contracts() -> None:
     assert "body::before" not in style_css
     assert "paw-pattern" not in style_css
     assert "paw-pattern.svg" not in index_html
+    assert 'data-i18n-aria-label="ui.memory.ratings_aria" aria-label="Memory ratings"' in index_html
     assert ".mode-switch::before" in style_css
     assert "@keyframes pawBounce" not in style_css
     assert "@media (max-width" not in style_css
     assert "@media (prefers-reduced-motion: reduce)" in style_css
+    assert "clip-path: inset(50%);" in style_css
 
     assert "const modeSwitch = document.getElementById('modeSwitch');" in main_js
     assert "function updateModeIndicator()" in main_js
@@ -1609,6 +1612,28 @@ def test_study_companion_ui_refactor_static_and_hosted_contracts() -> None:
     assert "ensureBrandCSS();" in study_panel
     assert 'className="mode-switch study-panel__modes"' in study_panel
     assert 'style={{' not in study_panel
+
+    plugin_ui_frame = (
+        Path(__file__).resolve().parents[4]
+        / "frontend"
+        / "plugin-manager"
+        / "src"
+        / "components"
+        / "plugin"
+        / "PluginUIFrame.vue"
+    ).read_text(encoding="utf-8")
+    plugin_detail = (
+        Path(__file__).resolve().parents[4]
+        / "frontend"
+        / "plugin-manager"
+        / "src"
+        / "views"
+        / "PluginDetail.vue"
+    ).read_text(encoding="utf-8")
+    assert "neko-study-open-surface" in plugin_ui_frame
+    assert "openSurface" in plugin_ui_frame
+    assert '@open-surface="openHostedSurfaceFromStaticUi"' in plugin_detail
+    assert "activeGuideSurfaceId.value = guide.id" in plugin_detail
 
 
 def test_study_companion_static_ui_smoke_with_mocked_runs() -> None:
@@ -2241,7 +2266,7 @@ for (const surfaceId of ['pomodoro-panel', 'due-review-panel', 'habit-dashboard'
 
 const statusRunCountBeforeMessage = runEntries.filter((entry) => entry.entry_id === 'study_status').length;
 window.dispatchEvent(new window.MessageEvent('message', {
-  origin: 'null',
+  origin: window.location.origin,
   data: {
     type: 'neko-study-review-completed',
     payload: {

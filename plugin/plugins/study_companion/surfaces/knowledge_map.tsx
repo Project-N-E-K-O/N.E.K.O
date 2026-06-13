@@ -131,11 +131,16 @@ export default function KnowledgeMap(props: PluginSurfaceProps) {
         </div>
       </section>
       <div className="study-panel__actions">
-        {nodes.slice(0, 60).map((node) => (
-          <button key={node.id} type="button" className="knowledge-node" data-mastery={nodeMasteryLevel(node)}>
-            {node.label} {node.mastery !== undefined && node.mastery !== null ? `${Math.round(node.mastery * 100)}%` : ''}
-          </button>
-        ))}
+        {nodes.slice(0, 60).map((node) => {
+          const mastery = Number(node.mastery);
+          const masteryText = Number.isFinite(mastery) ? ` ${Math.round(mastery * 100)}%` : '';
+          return (
+            <button key={node.id} type="button" className="knowledge-node" data-mastery={nodeMasteryLevel(node)}>
+              {node.label}
+              {masteryText}
+            </button>
+          );
+        })}
       </div>
       <div className="study-panel__reply-label">{text(props, 'ui.label.edges', 'Edges')}</div>
       <pre>{edges.slice(0, 30).map((edge) => `${edge.from} -> ${edge.to}${edge.relation ? ` (${edge.relation})` : ''}`).join('\n')}</pre>

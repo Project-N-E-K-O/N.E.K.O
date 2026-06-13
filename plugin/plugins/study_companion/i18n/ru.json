@@ -104,6 +104,8 @@
     "ui.surface.knowledge_map":  "Карта знаний",
     "ui.surface.knowledge_contribution_settings":  "Настройки вклада в знания",
     "ui.surface.note_exporter":  "Экспорт заметок",
+    "ui.surface.quickstart":  "Быстрый старт",
+    "ui.quickstart.subtitle":  "Захват, вопросы, повторение, экспорт",
     "ui.label.topics":  "Темы",
     "ui.label.edges":  "Связи",
     "ui.label.weak_topics":  "Слабые темы",

@@ -83,7 +83,7 @@
         </el-tab-pane>
 
         <el-tab-pane v-if="hasStaticUI" :label="$t('plugins.ui.title')" name="ui">
-          <PluginUIFrame :plugin-id="pluginId" height="560px" />
+          <PluginUIFrame :plugin-id="pluginId" height="560px" @open-surface="openHostedSurfaceFromStaticUi" />
         </el-tab-pane>
 
         <el-tab-pane :label="$t('plugins.basicInfo')" name="info">
@@ -294,6 +294,26 @@ function openLogsTab() {
     query: {
       ...route.query,
       tab: 'logs',
+    },
+  })
+}
+
+function openHostedSurfaceFromStaticUi(payload: { pluginId?: string; surfaceId: string; kind?: string }) {
+  if (payload.pluginId && payload.pluginId !== pluginId.value) return
+  const panel = panelSurfaces.value.find((surface) => surface.id === payload.surfaceId)
+  if (panel) {
+    activePanelSurfaceId.value = panel.id
+    activeTab.value = 'panel'
+  } else {
+    const guide = guideSurfaces.value.find((surface) => surface.id === payload.surfaceId)
+    if (!guide) return
+    activeGuideSurfaceId.value = guide.id
+    activeTab.value = 'guide'
+  }
+  router.replace({
+    query: {
+      ...route.query,
+      tab: activeTab.value,
     },
   })
 }

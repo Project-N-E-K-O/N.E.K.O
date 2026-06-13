@@ -53,6 +53,7 @@ const emit = defineEmits<{
   (e: 'load'): void
   (e: 'error', error: string): void
   (e: 'message', data: any): void
+  (e: 'openSurface', payload: { pluginId?: string; surfaceId: string; kind?: string }): void
 }>()
 
 const { t } = useI18n()
@@ -143,6 +144,16 @@ function handleMessage(event: MessageEvent) {
   const data = event.data
   if (data && typeof data === 'object' && data.type === 'plugin-ui-message') {
     emit('message', data.payload)
+  } else if (data && typeof data === 'object' && data.type === 'neko-study-open-surface') {
+    const payload = data.payload && typeof data.payload === 'object' ? data.payload : {}
+    const surfaceId = typeof payload.surfaceId === 'string' ? payload.surfaceId.trim() : ''
+    if (surfaceId) {
+      emit('openSurface', {
+        pluginId: typeof payload.pluginId === 'string' ? payload.pluginId : undefined,
+        surfaceId,
+        kind: typeof payload.kind === 'string' ? payload.kind : undefined,
+      })
+    }
   }
 }
 

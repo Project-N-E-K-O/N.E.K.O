@@ -98,6 +98,8 @@ def test_study_companion_surfaces_share_ui8_interaction_styles_and_messages() ->
     assert "STUDY_SURFACE_MESSAGE_TYPES.memoryDeckUpdated" in due_review
     assert "STUDY_SURFACE_MESSAGE_TYPES.memoryDeckUpdated" in memory_decks
     assert "data-mastery={nodeMasteryLevel(node)}" in knowledge_map
+    assert "Number.isFinite(mastery)" in knowledge_map
+    assert "masteryText" in knowledge_map
     assert 'className="pomodoro-ring"' in pomodoro
     assert "useRef<AbortController | null>(null)" in study_panel
     assert "event.key !== 'Escape'" in study_panel
