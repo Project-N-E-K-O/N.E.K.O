@@ -12,7 +12,7 @@
     var querySession = (params && params.get('session_id')) || '';
     window.__nekoBasketballQueryLanlanName = queryLanlan || '';
     window.lanlan_config = window.lanlan_config || {
-      lanlan_name: queryLanlan || 'basketball_demo',
+      lanlan_name: queryLanlan || '',
       master_name: '', master_profile_name: '', master_nickname: '', master_display_name: '',
       model_type: 'live2d', live3d_sub_type: ''
     };
@@ -815,7 +815,7 @@
     return 'basketball-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
   }
   var sessionId = window.__nekoMiniGameInviteSessionId || createBasketballSessionId();
-  var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || 'basketball_demo';
+  var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
   var routeActive = false;
   var endedRoute = false;
   var routeEndFetchPending = false;
@@ -2323,12 +2323,18 @@
     window.basketballMmdManager = null;
     showAvatarFallback('MMD audience embed is waiting for a safe independent manager API; not loading Live2D fallback for MMD');
   }
-  function applyCharacterIdentity(charData) {
-    var resolvedName = String(charData && charData.lanlan_name || '').trim();
+  function applyResolvedLanlanName(resolvedName) {
+    resolvedName = String(resolvedName || '').trim();
     if (!resolvedName) return;
     lanlanName = resolvedName;
     window.lanlan_config = window.lanlan_config || {};
     window.lanlan_config.lanlan_name = resolvedName;
+  }
+  function applyCharacterIdentity(charData) {
+    applyResolvedLanlanName(charData && charData.lanlan_name);
+  }
+  function applyRouteIdentity(state) {
+    applyResolvedLanlanName(state && (state.lanlan_name || state.lanlanName));
   }
   async function loadBasketballCharacter() {
     var charData = {};
@@ -4621,13 +4627,18 @@
     requestAnimationFrame(loop);
   }
 
+  function getRouteLanlanName() {
+    var name = String(lanlanName || '').trim();
+    return name === 'basketball_demo' ? '' : name;
+  }
   function startRoute() {
     var localLeaderboard = loadLocalLeaderboard();
+    var routeLanlanName = getRouteLanlanName();
     var routeStartPromise = post('/route/start', Object.assign({
-      session_id: sessionId, lanlan_name: lanlanName, source: 'basketball_demo',
+      session_id: sessionId, lanlan_name: routeLanlanName, source: 'basketball_demo',
       game_type: 'basketball', mode: currentMode, i18n_language: getRequestLanguage(),
       gameStarted: true, game_started: true,
-      character_name: lanlanName,
+      character_name: routeLanlanName,
       best_record_distance: game.recordDistance,
       personal_best: localLeaderboard.personal_best || null,
       difficulty: getDuelDifficultyName(),
@@ -4636,13 +4647,16 @@
       last_played_date: (localLeaderboard.recent_games && localLeaderboard.recent_games[0] && localLeaderboard.recent_games[0].date) || ''
     }, _basketballGameMemoryPolicyPayload()), 9000).then(function (res) {
       routeActive = true;
-      if (res && res.state) applyPreGameContext(res.state);
+      if (res && res.state) {
+        applyRouteIdentity(res.state);
+        applyPreGameContext(res.state);
+      }
     }).catch(function () {});
     heartbeatTimer = setInterval(function () {
-      post('/route/heartbeat', Object.assign({ session_id: sessionId, lanlan_name: lanlanName, visible: !document.hidden, mode: currentMode, gameStarted: true, game_started: true, i18n_language: getRequestLanguage() }, _basketballGameMemoryPolicyPayload()), 2500).catch(function () {});
+      post('/route/heartbeat', Object.assign({ session_id: sessionId, lanlan_name: getRouteLanlanName(), visible: !document.hidden, mode: currentMode, gameStarted: true, game_started: true, i18n_language: getRequestLanguage() }, _basketballGameMemoryPolicyPayload()), 2500).catch(function () {});
     }, 2500);
     drainTimer = setInterval(function () {
-      post('/route/drain', Object.assign({ session_id: sessionId, lanlan_name: lanlanName, mode: currentMode, i18n_language: getRequestLanguage() }, _basketballGameMemoryPolicyPayload()), 2500).then(function (res) {
+      post('/route/drain', Object.assign({ session_id: sessionId, lanlan_name: getRouteLanlanName(), mode: currentMode, i18n_language: getRequestLanguage() }, _basketballGameMemoryPolicyPayload()), 2500).then(function (res) {
         var items = (res && (res.outputs || res.items || res.lines)) || [];
         if (Array.isArray(items)) {
           items.forEach(function (item) {
@@ -4672,7 +4686,7 @@
     clearInterval(heartbeatTimer);
     clearInterval(drainTimer);
     var payloadObj = {
-      session_id: sessionId, lanlan_name: lanlanName, reason: 'basketball_game_over',
+      session_id: sessionId, lanlan_name: getRouteLanlanName(), reason: 'basketball_game_over',
       mode: currentMode,
       gameStarted: true,
       game_started: true,

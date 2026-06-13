@@ -4869,21 +4869,50 @@ def _remember_basketball_score_session(lanlan_name: str, session_id: str, mode: 
     }
 
 
-def _basketball_score_submission_allowed(data: dict) -> bool:
+def _basketball_score_session_key_from_payload(data: dict) -> tuple[str, str, str] | None:
     session_id = _normalize_short_text(data.get("session_id"), max_chars=120)
     lanlan_name = _normalize_short_text(data.get("lanlan_name"), max_chars=80)
     if not session_id or not lanlan_name:
-        return False
+        return None
     mode = _normalize_basketball_mode(data.get("mode"))
     if not _is_basketball_scoring_mode(mode):
+        return None
+    return lanlan_name, session_id, mode
+
+
+def _basketball_score_submission_allowed(data: dict, *, reserve: bool = False) -> bool:
+    session_key = _basketball_score_session_key_from_payload(data)
+    if not session_key:
         return False
+    lanlan_name, session_id, mode = session_key
     _prune_basketball_score_sessions()
     key = (lanlan_name, session_id)
     meta = _basketball_recent_score_sessions.get(key)
     if not (meta and meta.get("mode") == mode):
         return False
-    _basketball_recent_score_sessions.pop(key, None)
+    if meta.get("reserved") is True:
+        return False
+    if reserve:
+        meta["reserved"] = True
     return True
+
+
+def _release_basketball_score_session_reservation(data: dict) -> None:
+    session_key = _basketball_score_session_key_from_payload(data)
+    if not session_key:
+        return
+    lanlan_name, session_id, _mode = session_key
+    meta = _basketball_recent_score_sessions.get((lanlan_name, session_id))
+    if meta:
+        meta.pop("reserved", None)
+
+
+def _consume_basketball_score_session(data: dict) -> None:
+    session_key = _basketball_score_session_key_from_payload(data)
+    if not session_key:
+        return
+    lanlan_name, session_id, _mode = session_key
+    _basketball_recent_score_sessions.pop((lanlan_name, session_id), None)
 
 
 def _basketball_leaderboard_total_players(conn: sqlite3.Connection) -> int:
@@ -7165,9 +7194,14 @@ async def game_basketball_leaderboard_submit(game_type: str, request: Request):
         return {"ok": False, "reason": "invalid_body"}
     if not isinstance(data, dict):
         return {"ok": False, "reason": "invalid_body"}
-    if not _basketball_score_submission_allowed(data):
+    if not _basketball_score_submission_allowed(data, reserve=True):
         return {"ok": False, "reason": "invalid_session"}
-    rank, total_players, is_personal_best = _basketball_insert_score(data)
+    try:
+        rank, total_players, is_personal_best = _basketball_insert_score(data)
+    except Exception:
+        _release_basketball_score_session_reservation(data)
+        raise
+    _consume_basketball_score_session(data)
     return {
         "ok": True,
         "rank": rank,

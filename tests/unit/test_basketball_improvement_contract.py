@@ -94,6 +94,8 @@ def test_basketball_invite_character_request_uses_invited_lanlan_name():
     html = _basketball_html()
 
     assert "window.__nekoBasketballQueryLanlanName = queryLanlan || '';" in html
+    assert "lanlan_name: queryLanlan || ''" in html
+    assert "lanlan_name: queryLanlan || 'basketball_demo'" not in html
     assert (
         "var requestedLanlanName = String(window.__nekoBasketballQueryLanlanName || '').trim();"
         in html
@@ -714,6 +716,9 @@ def test_basketball_starts_route_before_avatar_loading():
     html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
 
     assert "initNekoAvatar().finally(function () { startRoute(); });" not in html
+    assert "var routeLanlanName = getRouteLanlanName();" in html
+    assert "lanlan_name: routeLanlanName" in html
+    assert "applyRouteIdentity(res.state);" in html
     startup = html[html.rindex("startRoute();"):]
     assert startup.index("startRoute();") < startup.index("initNekoAvatar();")
 

@@ -602,7 +602,17 @@ def test_basketball_template_contract():
     assert "function getRequestLanguage()" in html
     assert "i18n_language: getRequestLanguage()" in html
     assert "function applyCharacterIdentity(charData)" in html
+    assert "function applyResolvedLanlanName(resolvedName)" in html
+    assert "function applyRouteIdentity(state)" in html
     assert "lanlanName = resolvedName" in html
+    assert "lanlan_name: queryLanlan || ''" in html
+    assert "lanlan_name: queryLanlan || 'basketball_demo'" not in html
+    assert "var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';" in html
+    assert "var routeLanlanName = getRouteLanlanName();" in html
+    assert "lanlan_name: routeLanlanName" in html
+    assert "character_name: routeLanlanName" in html
+    assert "applyRouteIdentity(res.state);" in html
+    assert "lanlan_name: lanlanName, source: 'basketball_demo'" not in html
     assert "initNekoAvatar().finally(function () { startRoute(); })" not in html
     startup = html[html.rindex("startRoute();"):]
     assert startup.index("startRoute();") < startup.index("initNekoAvatar();")
@@ -924,6 +934,44 @@ async def test_basketball_leaderboard_allows_recently_ended_route_score(tmp_path
         assert duplicate == {"ok": False, "reason": "invalid_session"}
         leaderboard = await game_router.game_basketball_leaderboard("basketball")
         assert leaderboard["total_scores"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_basketball_leaderboard_keeps_score_session_when_insert_fails(monkeypatch):
+    calls = 0
+
+    def flaky_insert(_data):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return 1, 1, True
+
+    monkeypatch.setattr(game_router, "_basketball_insert_score", flaky_insert)
+
+    with reset_game_route_state():
+        _allow_basketball_score_session("Lan Retry", "retry-session", "shooter")
+        payload = {
+            "session_id": "retry-session",
+            "lanlan_name": "Lan Retry",
+            "score": 42,
+            "streak": 2,
+            "max_distance_px": 180,
+            "mode": "shooter",
+        }
+
+        with pytest.raises(sqlite3.OperationalError):
+            await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest(payload))
+
+        assert game_router._basketball_recent_score_sessions[("Lan Retry", "retry-session")]["mode"] == "shooter"
+        assert "reserved" not in game_router._basketball_recent_score_sessions[("Lan Retry", "retry-session")]
+
+        retry = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest(payload))
+
+        assert retry == {"ok": True, "rank": 1, "total_players": 1, "is_personal_best": True}
+        assert ("Lan Retry", "retry-session") not in game_router._basketball_recent_score_sessions
+        assert calls == 2
 
 
 @pytest.mark.unit
