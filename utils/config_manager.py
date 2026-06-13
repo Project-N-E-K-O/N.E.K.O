@@ -3747,10 +3747,10 @@ class ConfigManager:
         config['ELEVENLABS_API_KEY'] = core_cfg.get('assistApiKeyElevenlabs', '')
         config['TTS_PROVIDER'] = core_cfg.get('ttsProvider', '')
 
-        # vllm_omni 路由检测和 runtime key 读取 raw camelCase key，不读映射后的
-        # UPPER_SNAKE。透传 raw key 以保证检测与 worker 复用判断都使用用户保存值。
-        # ttsModelApiKey 仍由 main_logic/tts_client.py 通过 load_json_config 绕过
-        # snapshot 读取，避免在通用 snapshot 中扩大凭证暴露面。
+        # 将 vLLM-Omni TTS 的前端原始字段放进 core_config snapshot，供
+        # core.py 判断是否启用外部 TTS，并生成与实际 worker 参数一致的复用 key。
+        # 凭证字段 ttsModelApiKey 不放入 snapshot；它仍由 tts_client.py 从持久化
+        # 配置读取，避免扩大通用配置快照中的敏感字段范围。
         config['ttsModelProvider'] = str(core_cfg.get('ttsModelProvider', '') or '')
         config['ttsModelUrl'] = str(core_cfg.get('ttsModelUrl', '') or '')
         config['ttsModelId'] = str(core_cfg.get('ttsModelId', '') or '')
