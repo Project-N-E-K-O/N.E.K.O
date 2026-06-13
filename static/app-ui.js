@@ -3854,6 +3854,34 @@
                             liveModel.y += screenDy;
                         }
                     }
+                    if (isReturningToPngtuber && window.pngtuberManager && window.pngtuberManager.config) {
+                        const pngtuberManager = window.pngtuberManager;
+                        const currentOffsetX = Number(pngtuberManager.config.offset_x) || 0;
+                        const currentOffsetY = Number(pngtuberManager.config.offset_y) || 0;
+                        pngtuberManager.config.offset_x = Math.max(-5000, Math.min(5000, currentOffsetX + screenDx));
+                        pngtuberManager.config.offset_y = Math.max(-5000, Math.min(5000, currentOffsetY + screenDy));
+                        if (typeof pngtuberManager.applyTransform === 'function') {
+                            pngtuberManager.applyTransform();
+                        }
+                        if (typeof pngtuberManager.syncGlobalConfig === 'function') {
+                            pngtuberManager.syncGlobalConfig();
+                        } else if (window.lanlan_config && typeof window.lanlan_config === 'object') {
+                            window.lanlan_config.pngtuber = Object.assign({}, pngtuberManager.config);
+                        }
+                        if (typeof pngtuberManager.updateFloatingButtonsPosition === 'function') {
+                            pngtuberManager.updateFloatingButtonsPosition();
+                        }
+                        if (typeof pngtuberManager.updateLockIconPosition === 'function') {
+                            pngtuberManager.updateLockIconPosition();
+                        }
+                        if (typeof pngtuberManager.saveCurrentConfig === 'function') {
+                            try {
+                                await pngtuberManager.saveCurrentConfig();
+                            } catch (saveError) {
+                                console.warn('[App] PNGTuber return offset save failed:', saveError);
+                            }
+                        }
+                    }
                     returnModelWasMoved = true;
                 }
             }
