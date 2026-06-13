@@ -372,21 +372,53 @@ window.Jukebox = {
     Jukebox.clearRandomQueue();
   },
 
+  pruneRandomQueue: function(anchorSongId) {
+    const validIds = new Set((Jukebox.State.songs || []).map(song => song.id));
+    if (anchorSongId && !validIds.has(anchorSongId)) {
+      Jukebox.clearRandomQueue();
+      return false;
+    }
+
+    const filteredQueue = (Jukebox.State.randomQueue || []).filter(songId => validIds.has(songId));
+    Jukebox.State.randomQueue = filteredQueue;
+
+    if (!anchorSongId) {
+      if (!filteredQueue.length) {
+        Jukebox.State.randomQueueIndex = -1;
+        return false;
+      }
+      const index = Jukebox.State.randomQueueIndex;
+      if (index < 0 || index >= filteredQueue.length) {
+        Jukebox.State.randomQueueIndex = filteredQueue.length - 1;
+      }
+      return true;
+    }
+
+    const anchorIndex = filteredQueue.lastIndexOf(anchorSongId);
+    if (anchorIndex === -1) {
+      Jukebox.State.randomQueue = [anchorSongId];
+      Jukebox.State.randomQueueIndex = 0;
+      return true;
+    }
+
+    Jukebox.State.randomQueueIndex = anchorIndex;
+    return true;
+  },
+
   syncRandomQueueWithSongs: function() {
     if (Jukebox.State.playbackMode !== 'random') {
       const pendingSongId = Jukebox.State.randomQueueExitSongId;
       const currentSongId = Jukebox.State.currentSong ? Jukebox.State.currentSong.id : null;
       if (!pendingSongId || pendingSongId !== currentSongId) {
         Jukebox.clearRandomQueue();
+      } else {
+        Jukebox.pruneRandomQueue(pendingSongId);
       }
       return;
     }
 
-    const validIds = new Set((Jukebox.State.songs || []).map(song => song.id));
-    Jukebox.State.randomQueue = (Jukebox.State.randomQueue || []).filter(songId => validIds.has(songId));
-
     const currentSongId = Jukebox.State.currentSong ? Jukebox.State.currentSong.id : null;
-    if (!currentSongId || !validIds.has(currentSongId)) {
+    if (!currentSongId || !Jukebox.pruneRandomQueue(currentSongId)) {
       Jukebox.clearRandomQueue();
       return;
     }

@@ -578,6 +578,42 @@ def test_jukebox_random_exit_is_delayed_until_current_song_ends(mock_page: Page)
 
 
 @pytest.mark.frontend
+def test_jukebox_random_exit_prunes_removed_songs_while_preserving_anchor(mock_page: Page):
+    setup_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        () => {
+          const J = window.Jukebox;
+          J.State.playbackMode = 'sequence';
+          J.State.currentSong = J.State.songs[1];
+          J.State.randomQueue = ['song1', 'song2', 'song3'];
+          J.State.randomQueueIndex = 1;
+          J.State.randomQueueExitSongId = 'song2';
+
+          J.State.songs = [
+            { id: 'song2', name: 'Song 2', artist: 'B' },
+            { id: 'song4', name: 'Song 4', artist: 'D' }
+          ];
+          J.syncRandomQueueWithSongs();
+
+          return {
+            queue: [...J.State.randomQueue],
+            index: J.State.randomQueueIndex,
+            pendingExit: J.State.randomQueueExitSongId
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "queue": ["song2"],
+        "index": 0,
+        "pendingExit": "song2",
+    }
+
+
+@pytest.mark.frontend
 def test_jukebox_random_next_appends_only_at_queue_end(mock_page: Page):
     setup_jukebox_page(mock_page)
 
