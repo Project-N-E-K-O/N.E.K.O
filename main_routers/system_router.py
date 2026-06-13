@@ -7501,7 +7501,7 @@ _DIRECT_REQUEST_CJK_CUES = (
 )
 _DIRECT_REQUEST_ENGLISH_CUE_RE = re.compile(
     r"(?:^|[\s,!.?])(?:please|pls|let's|lets|can we|could we|wanna|want to|"
-    r"i want to|i'd like to|open|start|play)\b"
+    r"i want to|i'd like to|open|start)\b|(?:^|[,!.?]\s*)play\b"
 )
 _DIRECT_REQUEST_ENGLISH_CASUAL_RE = re.compile(
     r"\bi\s+(?:usually\s+|often\s+|sometimes\s+|always\s+|still\s+|just\s+)?"

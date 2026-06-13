@@ -1293,6 +1293,8 @@ def test_direct_basketball_request_ignores_casual_or_negated_mentions():
     assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, "I don't want to play basketball") is None
     assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, "I do not want to start soccer") is None
     assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'I play basketball every week') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'we play basketball every week') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'kids play soccer after school') is None
     assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, "let's start by talking about basketball") is None
     assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '可以讲讲篮球怎么打吗') is None
     assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '我想了解篮球怎么玩') is None
@@ -1300,10 +1302,14 @@ def test_direct_basketball_request_ignores_casual_or_negated_mentions():
 
 def test_direct_basketball_request_keeps_imperative_english_matching():
     result = sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'please play basketball')
+    bare_result = sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'play basketball')
 
     assert result is not None
     assert result['action'] == 'open_game'
     assert result['game_type'] == 'basketball'
+    assert bare_result is not None
+    assert bare_result['action'] == 'open_game'
+    assert bare_result['game_type'] == 'basketball'
 
 
 def test_direct_request_negation_is_scoped_to_matched_game():
