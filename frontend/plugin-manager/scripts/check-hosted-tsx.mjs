@@ -223,6 +223,7 @@ function parseTomlSurfaces(text) {
   let current = null
   let inPluginUi = false
   let pendingInline = null
+  let pluginUiDisabled = false
 
   const stripComment = (line) => {
     let quote = null
@@ -331,6 +332,11 @@ function parseTomlSurfaces(text) {
       continue
     }
     if (inPluginUi) {
+      const enabledMatch = line.match(/^enabled\s*=\s*(true|false)\b/)
+      if (enabledMatch) {
+        pluginUiDisabled = enabledMatch[1] === 'false'
+        continue
+      }
       const inlineMatch = line.match(/^(panel|guide|docs)\s*=\s*(.+)$/)
       if (inlineMatch) {
         const kind = inlineMatch[1]
@@ -349,6 +355,9 @@ function parseTomlSurfaces(text) {
       current[keyValueMatch[1]] = keyValueMatch[2]
     }
   }
+  // `[plugin.ui] enabled = false` means the server never exposes these surfaces,
+  // so the checker should not validate them. Flag it on the returned array.
+  surfaces.pluginUiDisabled = pluginUiDisabled
   return surfaces
 }
 
@@ -591,6 +600,9 @@ function main() {
         errors.push(`${tomlPath}:1:1 - ${formatError(error)}`)
         continue
       }
+      // Skip plugins whose UI manifest is disabled — the server won't expose
+      // these surfaces, so they shouldn't be able to fail the check.
+      if (surfaces.pluginUiDisabled) continue
       for (const surface of surfaces) {
         const entry = surface.entry
         const mode = surface.mode || inferMode(entry)
