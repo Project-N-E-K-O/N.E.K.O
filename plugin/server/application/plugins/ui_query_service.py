@@ -541,6 +541,47 @@ def _hosted_skip_template(source: str, index: int) -> int:
     return index
 
 
+def _hosted_previous_significant_char(source: str, index: int) -> str:
+    index -= 1
+    while index >= 0:
+        char = source[index]
+        if char.isspace():
+            index -= 1
+            continue
+        return char
+    return ""
+
+
+def _hosted_can_start_regex_literal(source: str, index: int) -> bool:
+    previous = _hosted_previous_significant_char(source, index)
+    return previous == "" or previous in "=([{,:!?&|^~+-*%<>;"
+
+
+def _hosted_skip_regex_literal(source: str, index: int) -> int:
+    in_class = False
+    index += 1
+    while index < len(source):
+        char = source[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == "[":
+            in_class = True
+            index += 1
+            continue
+        if char == "]":
+            in_class = False
+            index += 1
+            continue
+        if char == "/" and not in_class:
+            index += 1
+            while index < len(source) and source[index].isalpha():
+                index += 1
+            return index
+        index += 1
+    return index
+
+
 def _hosted_looks_like_jsx_start(source: str, index: int) -> bool:
     if source[index] != "<" or index + 1 >= len(source):
         return False
@@ -560,6 +601,9 @@ def _hosted_skip_jsx_expression(source: str, index: int) -> int:
                 continue
             if next_char == "*":
                 index = _hosted_skip_block_comment(source, index)
+                continue
+            if _hosted_can_start_regex_literal(source, index):
+                index = _hosted_skip_regex_literal(source, index)
                 continue
         if char in {"'", '"'}:
             index = _hosted_skip_quoted(source, index)
@@ -686,6 +730,7 @@ def _hosted_export_specifier(source: str, index: int) -> str | None:
 def _hosted_tsx_relative_import_specifiers(source: str) -> list[str]:
     specifiers: list[str] = []
     index = 0
+    depth = 0
     while index < len(source):
         char = source[index]
         if char == "/" and index + 1 < len(source):
@@ -696,6 +741,9 @@ def _hosted_tsx_relative_import_specifiers(source: str) -> list[str]:
             if next_char == "*":
                 index = _hosted_skip_block_comment(source, index)
                 continue
+            if _hosted_can_start_regex_literal(source, index):
+                index = _hosted_skip_regex_literal(source, index)
+                continue
         if char in {"'", '"'}:
             index = _hosted_skip_quoted(source, index)
             continue
@@ -705,11 +753,19 @@ def _hosted_tsx_relative_import_specifiers(source: str) -> list[str]:
         if char == "<" and _hosted_looks_like_jsx_start(source, index):
             index = _hosted_skip_jsx_element(source, index)
             continue
+        if char in {"(", "[", "{"}:
+            depth += 1
+            index += 1
+            continue
+        if char in {")", "]", "}"}:
+            depth = max(0, depth - 1)
+            index += 1
+            continue
         specifier: str | None = None
-        if _hosted_matches_keyword(source, index, "import"):
+        if depth == 0 and _hosted_matches_keyword(source, index, "import"):
             specifier = _hosted_import_specifier(source, index)
             index += len("import")
-        elif _hosted_matches_keyword(source, index, "export"):
+        elif depth == 0 and _hosted_matches_keyword(source, index, "export"):
             specifier = _hosted_export_specifier(source, index)
             index += len("export")
         else:

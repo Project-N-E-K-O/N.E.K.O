@@ -954,7 +954,7 @@ function transformModuleExports(source: string) {
   next = transformVariableExports(next, exports)
   next = next
     .replace(
-      /^\s*export\s+(async\s+function|function|abstract\s+class|class)\s+([A-Za-z_$][\w$]*)/gm,
+      /^\s*export\s+((?:async\s+)?function\s*\*?|abstract\s+class|class)\s+([A-Za-z_$][\w$]*)/gm,
       (_match, declaration, name) => {
         exports.push(exportAssignment(name))
         return `${declaration} ${name}`

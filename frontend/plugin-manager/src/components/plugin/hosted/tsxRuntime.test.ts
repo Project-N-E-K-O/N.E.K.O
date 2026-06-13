@@ -399,6 +399,29 @@ import ghost from "./missing"
     expect(root.querySelector('strong')?.textContent).toBe('[a/b;]')
   })
 
+  it('exports generator functions from hosted dependencies', () => {
+    const { root } = executeHostedDocument(`
+      import { range, asyncRange } from "./generators"
+
+      export default function Panel() {
+        return <strong>{[...range()].join('') + '-' + typeof asyncRange}</strong>
+      }
+    `, baseContext(), baseContext(), [{
+      path: 'ui/generators.ts',
+      source: `
+        export function* range() {
+          yield "A"
+          yield "B"
+        }
+        export async function* asyncRange() {
+          yield "C"
+        }
+      `,
+    }])
+
+    expect(root.querySelector('strong')?.textContent).toBe('AB-function')
+  })
+
   it('stops semicolon-less exported declarations before trailing line comments', () => {
     const { root } = executeHostedDocument(`
       import { first, second } from "./comments"

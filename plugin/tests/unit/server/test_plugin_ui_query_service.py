@@ -267,8 +267,9 @@ def test_surface_source_ignores_commented_and_string_imports(tmp_path) -> None:
         "/* import { fake } from './missing-block' */\n"
         "// export { fake } from './missing-line'\n"
         "const sample = `import { fake } from './missing-template'`\n"
+        r"const re = /import { fake } from '.\/missing-regex'/" "\n"
         "import { label } from './shared'\n"
-        "export default function Panel() { return <strong>{label + sample}</strong> }\n",
+        "export default function Panel() { return <strong>{label + sample + re.source}</strong> }\n",
         encoding="utf-8",
     )
     (ui_dir / "shared.ts").write_text("export const label = 'ok'\n", encoding="utf-8")
