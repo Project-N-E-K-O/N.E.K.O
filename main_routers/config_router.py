@@ -29,7 +29,7 @@ from pydantic import BaseModel
 from .shared_state import ensure_steamworks, get_config_manager, get_session_manager, get_initialize_character_data
 from .characters_router import get_current_live2d_model
 from utils.file_utils import atomic_write_json_async, read_json_async
-from utils.preferences import aload_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top, aload_global_conversation_settings, save_global_conversation_settings, GLOBAL_CONVERSATION_KEY
+from utils.preferences import aload_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top, aload_global_conversation_settings, save_global_conversation_settings, aload_ui_language_override, GLOBAL_CONVERSATION_KEY
 from utils.cloudsave_runtime import MaintenanceModeError
 from utils.logger_config import get_module_logger
 from utils.config_manager import ensure_default_yui_voice_for_free_api, get_reserved
@@ -463,6 +463,7 @@ async def get_steam_language():
     
     返回字段：
     - success: 是否成功
+    - uiLanguage: 手工配置的 UI 语言覆盖（无前端生产者）
     - steam_language: Steam 原始语言设置
     - i18n_language: 归一化的 i18n 语言代码
     - ip_country: 用户 IP 所在国家代码（如 "CN"）
@@ -475,7 +476,14 @@ async def get_steam_language():
     """
     from utils.language_utils import normalize_language_code, refresh_global_language, is_supported_language_code
 
+    ui_language = None
     try:
+        try:
+            ui_language = await aload_ui_language_override()
+        except Exception:
+            logger.debug("读取 UI 语言覆盖失败", exc_info=True)
+            ui_language = None
+
         steamworks = ensure_steamworks()
         
         if steamworks is None:
@@ -483,6 +491,7 @@ async def get_steam_language():
             return {
                 "success": False,
                 "error": "Steamworks 未初始化",
+                "uiLanguage": ui_language,
                 "steam_language": None,
                 "i18n_language": None,
                 "ip_country": None,
@@ -549,6 +558,7 @@ async def get_steam_language():
         
         return {
             "success": True,
+            "uiLanguage": ui_language,
             "steam_language": steam_language,
             "i18n_language": i18n_language,
             "ip_country": ip_country,
@@ -560,6 +570,7 @@ async def get_steam_language():
         return {
             "success": False,
             "error": str(e),
+            "uiLanguage": ui_language,
             "steam_language": None,
             "i18n_language": None,
             "ip_country": None,

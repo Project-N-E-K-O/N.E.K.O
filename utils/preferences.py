@@ -347,6 +347,31 @@ async def aload_global_conversation_settings() -> Dict[str, Any]:
     return await asyncio.to_thread(load_global_conversation_settings)
 
 
+def load_ui_language_override() -> Optional[str]:
+    """Load the optional UI language override from the raw global settings entry."""
+    try:
+        global PREFERENCES_FILE
+        PREFERENCES_FILE = _get_active_preferences_path()
+        if os.path.exists(PREFERENCES_FILE):
+            with open(PREFERENCES_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                for pref in data:
+                    if pref.get('model_path') == GLOBAL_CONVERSATION_KEY:
+                        value = pref.get('uiLanguage')
+                        if isinstance(value, str):
+                            value = value.strip()
+                            return value or None
+    except Exception as e:
+        print(f"加载 UI 语言覆盖失败: {e}")
+    return None
+
+
+async def aload_ui_language_override() -> Optional[str]:
+    """Async wrapper for ``load_ui_language_override``."""
+    return await asyncio.to_thread(load_ui_language_override)
+
+
 def is_privacy_mode_enabled() -> bool:
     """前端"隐私模式"开关是否开启。
 

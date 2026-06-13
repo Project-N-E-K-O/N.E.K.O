@@ -13,6 +13,7 @@ CLOUDSAVE_TEMPLATE = PROJECT_ROOT / "templates" / "cloudsave_manager.html"
 CHARA_TEMPLATE = PROJECT_ROOT / "templates" / "character_card_manager.html"
 CHARA_MANAGER_JS = PROJECT_ROOT / "static" / "js" / "character_card_manager.js"
 I18N_JS = PROJECT_ROOT / "static" / "i18n-i18next.js"
+APP_SETTINGS_JS = PROJECT_ROOT / "static" / "app-settings.js"
 
 
 def _get_nested_value(payload: dict, dotted_key: str):
@@ -506,6 +507,32 @@ def test_i18n_script_supports_explicit_popup_language_query():
 
     assert "function getLanguageFromQuery()" in script
     assert "params.get('ui_lang')" in script
+
+
+@pytest.mark.unit
+def test_i18n_script_prefers_manual_ui_language_override_without_persisting_it():
+    script = I18N_JS.read_text(encoding="utf-8")
+
+    assert "function getServerLanguagePreferences()" in script
+    assert "fetch('/api/config/steam_language'" in script
+    assert "fetch('/api/config/ui_language'" not in script
+    assert "const uiLanguage = normalizeSupportedLanguageCode(data && data.uiLanguage);" in script
+    assert "const serverLanguages = await getServerLanguagePreferences();" in script
+    assert re.search(
+        r"async function getInitialLanguage\(\) \{\s*"
+        r"const serverLanguages = await getServerLanguagePreferences\(\);[\s\S]*?"
+        r"if \(serverLanguages\.uiLanguage\) \{[\s\S]*?"
+        r"const queryLanguage = getLanguageFromQuery\(\);",
+        script,
+    )
+    assert "localStorage.setItem('i18nextLng', serverLanguages.uiLanguage)" not in script
+
+
+@pytest.mark.unit
+def test_app_settings_does_not_produce_manual_ui_language_override():
+    script = APP_SETTINGS_JS.read_text(encoding="utf-8")
+
+    assert "uiLanguage" not in script
 
 
 @pytest.mark.unit
