@@ -2445,14 +2445,8 @@
       challenge: game.horse.challenge ? Object.assign({}, game.horse.challenge) : null
     };
   }
-  function sendGameEvent(event) {
-    event.session_id = sessionId;
-    event.mode = currentMode;
-    event.mood = currentMood;
-    event.difficulty = getDuelDifficultyName();
-    event.aim_duration_seconds = Math.max(0, Math.min(60, (performance.now() - (game.aimStartAt || performance.now())) / 1000));
-    event.record_distance = game.recordDistance;
-    event.currentState = {
+  function buildBasketballCurrentStatePayload() {
+    var state = {
       game: 'basketball',
       mode: currentMode,
       streak: game.streak,
@@ -2468,6 +2462,28 @@
       mood: currentMood
     };
     if (isDuelMode()) {
+      state.duel = {
+        player_score: game.duel.playerScore,
+        neko_score: game.duel.nekoScore,
+        round: game.duel.round,
+        active_shooter: game.duel.activeShooter,
+        max_rounds: game.duel.maxRounds
+      };
+    }
+    if (isHorseMode()) {
+      state.horse = buildHorseStatePayload();
+    }
+    return state;
+  }
+  function sendGameEvent(event) {
+    event.session_id = sessionId;
+    event.mode = currentMode;
+    event.mood = currentMood;
+    event.difficulty = getDuelDifficultyName();
+    event.aim_duration_seconds = Math.max(0, Math.min(60, (performance.now() - (game.aimStartAt || performance.now())) / 1000));
+    event.record_distance = game.recordDistance;
+    event.currentState = buildBasketballCurrentStatePayload();
+    if (isDuelMode()) {
       event.duel = {
         player_score: game.duel.playerScore,
         neko_score: game.duel.nekoScore,
@@ -2475,13 +2491,7 @@
         active_shooter: game.duel.activeShooter,
         max_rounds: game.duel.maxRounds
       };
-      event.currentState.duel = {
-        player_score: game.duel.playerScore,
-        neko_score: game.duel.nekoScore,
-        round: game.duel.round,
-        active_shooter: game.duel.activeShooter,
-        max_rounds: game.duel.maxRounds
-      };
+      event.currentState.duel = event.duel;
     }
     if (isHorseMode()) {
       event.horse = buildHorseStatePayload();
@@ -2517,6 +2527,7 @@
       event: Object.assign({}, event, _basketballGameMemoryPolicyPayload())
     }), 6500)
       .then(function (res) {
+        if (event.session_id !== sessionId || event.mode !== currentMode) return;
         if (res && res.shooter_rating) {
           latestShooterRating = res.shooter_rating;
           if (resultPanel.classList.contains('show')) showResult();
@@ -2530,7 +2541,10 @@
         if (res && res.line) speakLine(moodStyleLine(res.line, currentMood), res.control || {}, event);
         else speakLine(pickLine(getFallbackLineKey(event)), {}, event);
       })
-      .catch(function () { speakLine(pickLine(getFallbackLineKey(event)), {}, event); });
+      .catch(function () {
+        if (event.session_id !== sessionId || event.mode !== currentMode) return;
+        speakLine(pickLine(getFallbackLineKey(event)), {}, event);
+      });
   }
 
   function loadLocalLeaderboard() {
@@ -4677,7 +4691,7 @@
       mood: currentMood,
       theme: currentThemeKey,
       last_played_date: (localLeaderboard.recent_games && localLeaderboard.recent_games[0] && localLeaderboard.recent_games[0].date) || ''
-    }, _basketballGameMemoryPolicyPayload()), 9000).then(function (res) {
+    }, _basketballGameMemoryPolicyPayload()), 22000).then(function (res) {
       if (sessionId !== routeSessionId || endedRoute || game.state === 'game_over') return;
       routeActive = true;
       if (res && res.state) {
@@ -4686,7 +4700,7 @@
       }
     }).catch(function () {});
     heartbeatTimer = setInterval(function () {
-      post('/route/heartbeat', Object.assign({ session_id: sessionId, lanlan_name: getRouteLanlanName(), visible: !document.hidden, mode: currentMode, gameStarted: true, game_started: true, i18n_language: getRequestLanguage() }, _basketballGameMemoryPolicyPayload()), 2500).catch(function () {});
+      post('/route/heartbeat', Object.assign({ session_id: sessionId, lanlan_name: getRouteLanlanName(), visible: !document.hidden, mode: currentMode, gameStarted: true, game_started: true, i18n_language: getRequestLanguage(), currentState: buildBasketballCurrentStatePayload() }, _basketballGameMemoryPolicyPayload()), 2500).catch(function () {});
     }, 2500);
     drainTimer = setInterval(function () {
       post('/route/drain', Object.assign({ session_id: sessionId, lanlan_name: getRouteLanlanName(), mode: currentMode, i18n_language: getRequestLanguage() }, _basketballGameMemoryPolicyPayload()), 2500).then(function (res) {

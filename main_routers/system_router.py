@@ -2191,9 +2191,12 @@ def _mini_game_invite_count_post_response_chat(lanlan_name: str) -> None:
     no-ops so the invite message itself does not spend the response gate.
     """
     state = _mini_game_invite_state.get(lanlan_name)
-    if not state or state['responded_at'] is None:
+    if not state:
         return
-    state['chats_since_response'] += 1
+    if state.get('delivered_at') is not None and state.get('responded_at') is None:
+        return
+    if state.get('responded_at') is not None:
+        state['chats_since_response'] += 1
     cooldowns = state.get('response_cooldowns')
     if isinstance(cooldowns, dict):
         for response_state in cooldowns.values():
@@ -7523,7 +7526,7 @@ _DIRECT_REQUEST_CJK_CUES = (
 )
 _DIRECT_REQUEST_ENGLISH_CUE_RE = re.compile(
     r"(?:^|[\s,!.?])(?:please|pls|let's|lets|can we|could we|wanna|want to|"
-    r"i want to|i'd like to|open|start)\b|(?:^|[,!.?]\s*)play\b"
+    r"i want to|i'd like to|start)\b|(?:^|[,!.?]\s*)(?:play|open)\b"
 )
 _DIRECT_REQUEST_ENGLISH_CASUAL_RE = re.compile(
     r"\bi\s+(?:usually\s+|often\s+|sometimes\s+|always\s+|still\s+|just\s+)?"

@@ -720,8 +720,39 @@ def test_basketball_route_end_payload_contains_horse_state():
 def test_basketball_chat_payload_contains_horse_state():
     html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
 
+    assert "function buildBasketballCurrentStatePayload() {" in html
+    assert "event.currentState = buildBasketballCurrentStatePayload();" in html
     assert "event.horse = buildHorseStatePayload();" in html
     assert "event.currentState.horse = event.horse;" in html
+
+
+@pytest.mark.unit
+def test_basketball_chat_replies_are_ignored_after_session_or_mode_changes():
+    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+    send_event = html[html.index("function sendGameEvent("):html.index("function loadLocalLeaderboard(", html.index("function sendGameEvent("))]
+
+    assert "if (event.session_id !== sessionId || event.mode !== currentMode) return;" in send_event
+    guard_index = send_event.index("if (event.session_id !== sessionId || event.mode !== currentMode) return;")
+    control_index = send_event.index("if (res && res.control) {")
+    line_index = send_event.index("if (res && res.line) speakLine(")
+    assert guard_index < control_index
+    assert guard_index < line_index
+    assert ".catch(function () {\n        if (event.session_id !== sessionId || event.mode !== currentMode) return;" in send_event
+
+
+@pytest.mark.unit
+def test_basketball_route_start_timeout_covers_backend_pregame_generation():
+    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+
+    assert "_basketballGameMemoryPolicyPayload()), 22000).then(function (res) {" in html
+
+
+@pytest.mark.unit
+def test_basketball_heartbeat_sends_live_current_state():
+    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+
+    assert "currentState: buildBasketballCurrentStatePayload()" in html
+    assert "post('/route/heartbeat'" in html
 
 
 @pytest.mark.unit

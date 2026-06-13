@@ -1300,6 +1300,8 @@ def test_direct_basketball_request_ignores_casual_or_negated_mentions():
     assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, "let's start by talking about basketball") is None
     assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'when does basketball start?') is None
     assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'what time does soccer start?') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'is the basketball court open?') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'the basketball court is open today') is None
     assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'can we play basketball later?') is None
     assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'could we start soccer tomorrow?') is None
     assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '可以讲讲篮球怎么打吗') is None
@@ -1351,6 +1353,40 @@ def test_response_cooldowns_are_kept_per_game_after_later_invites():
 
     assert sr._mini_game_invite_in_cooldown(LANLAN, 'soccer') is True
     assert sr._mini_game_invite_in_cooldown(LANLAN, 'basketball') is True
+
+
+def test_response_cooldowns_advance_after_top_level_later_reset():
+    state = sr._mini_game_invite_get_state(LANLAN)
+    state['delivered_at'] = None
+    state['responded_at'] = None
+    state['response_cooldowns'] = {
+        'soccer': {
+            'responded_at': time.time() - 60,
+            'chats_since_response': 0,
+            'last_response_choice': 'decline',
+        },
+    }
+
+    sr._mini_game_invite_count_post_response_chat(LANLAN)
+
+    assert state['response_cooldowns']['soccer']['chats_since_response'] == 1
+
+
+def test_response_cooldowns_do_not_advance_for_pending_invite_message():
+    state = sr._mini_game_invite_get_state(LANLAN)
+    state['delivered_at'] = time.time()
+    state['responded_at'] = None
+    state['response_cooldowns'] = {
+        'soccer': {
+            'responded_at': time.time() - 60,
+            'chats_since_response': 0,
+            'last_response_choice': 'decline',
+        },
+    }
+
+    sr._mini_game_invite_count_post_response_chat(LANLAN)
+
+    assert state['response_cooldowns']['soccer']['chats_since_response'] == 0
 
 
 def test_maybe_apply_keyword_accept_returns_open_game():
@@ -1524,7 +1560,7 @@ async def test_invite_delivery_pushes_options_via_websocket(monkeypatch):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_option_labels_cover_all_native_locales():
-    """5 个 native locale × 3 个 choice 必须有非空 label。"""
+    """Every native locale must define a non-empty label for each choice."""
     from config.prompts.prompts_proactive import MINI_GAME_INVITE_OPTION_LABELS
     for lang in ('zh', 'en', 'ja', 'ko', 'ru'):
         assert lang in MINI_GAME_INVITE_OPTION_LABELS, f"缺 {lang} option labels"
