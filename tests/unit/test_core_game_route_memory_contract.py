@@ -364,7 +364,7 @@ async def test_no_takeover_voice_transcript_uses_ordinary_flow():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_voice_plugin_cancel_action_does_not_skip_user_context_side_effects():
+async def test_voice_plugin_observer_noop_preserves_user_context_side_effects():
     mgr = _make_transcript_manager()
     routed = []
 
