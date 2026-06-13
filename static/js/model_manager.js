@@ -3247,17 +3247,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function mergePNGTuberConfigForSave(selectedConfig, currentConfig, runtimeConfig) {
-        const runtimeForSave = Object.assign({}, runtimeConfig || {});
-        ['scale', 'offset_x', 'offset_y', 'mirror'].forEach((key) => {
-            if (currentConfig && Object.prototype.hasOwnProperty.call(currentConfig, key)) {
-                runtimeForSave[key] = currentConfig[key];
-            }
-        });
         return Object.assign(
             {},
             selectedConfig || {},
             currentConfig || {},
-            runtimeForSave
+            runtimeConfig || {}
         );
     }
 

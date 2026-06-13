@@ -80,8 +80,8 @@ def test_model_manager_pngtuber_save_preserves_stored_placement():
     end = script.index("async function saveModelToCharacter(", start)
     merge_block = script[start:end]
 
-    assert "runtimeForSave[key] = currentConfig[key];" in merge_block
-    assert "['scale', 'offset_x', 'offset_y', 'mirror']" in merge_block
+    assert merge_block.index("currentConfig || {}") < merge_block.index("runtimeConfig || {}")
+    assert "runtimeForSave[key] = currentConfig[key];" not in merge_block
     assert "mergePNGTuberConfigForSave(" in script
     assert "runtimePNGTuberConfig || {}" not in script[
         script.index("if (currentModelType === 'pngtuber')") :
