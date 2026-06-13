@@ -475,10 +475,11 @@ def test_explicit_vllm_tts_uses_external_tts_before_native_voice():
 
 def test_vllm_runtime_key_tracks_raw_runtime_config(monkeypatch):
     class _CM:
-        def __init__(self, url, model, voice_id):
+        def __init__(self, url, model, voice_id, tts_model=""):
             self.url = url
             self.model = model
             self.voice_id = voice_id
+            self.tts_model = tts_model
 
         def get_core_config(self):
             return {
@@ -486,6 +487,7 @@ def test_vllm_runtime_key_tracks_raw_runtime_config(monkeypatch):
                 "ttsModelProvider": "vllm_omni",
                 "ttsModelUrl": self.url,
                 "ttsModelId": self.model,
+                "TTS_MODEL": self.tts_model,
                 "ttsVoiceId": self.voice_id,
                 "DISABLE_TTS": False,
             }
@@ -514,10 +516,13 @@ def test_vllm_runtime_key_tracks_raw_runtime_config(monkeypatch):
     key_a = LLMSessionManager._build_tts_runtime_key(mgr)
     mgr._config_manager = _CM("http://localhost:8092", "Qwen3-TTS-v2", "voice-b")
     key_b = LLMSessionManager._build_tts_runtime_key(mgr)
+    mgr._config_manager = _CM("http://localhost:8093", "", "voice-c", "RouteModel")
+    key_c = LLMSessionManager._build_tts_runtime_key(mgr)
 
     assert key_a != key_b
     assert ("http://localhost:8091", "Qwen3-TTS", "voice-a") in key_a
     assert ("http://localhost:8092", "Qwen3-TTS-v2", "voice-b") in key_b
+    assert ("http://localhost:8093", "RouteModel", "voice-c") in key_c
     assert "Qwen3-TTS-v2" not in key_a
 
 

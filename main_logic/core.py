@@ -1370,7 +1370,9 @@ class LLMSessionManager:
             return ('', '', '')
         return (
             str(core_config.get('ttsModelUrl') or '').strip(),
-            str(core_config.get('ttsModelId') or '').strip() or 'Qwen3-TTS',
+            str(core_config.get('ttsModelId') or '').strip()
+            or str(core_config.get('TTS_MODEL') or '').strip()
+            or 'Qwen3-TTS',
             str(core_config.get('ttsVoiceId') or '').strip()
             or str(core_config.get('TTS_VOICE_ID') or '').strip()
             or 'default',
