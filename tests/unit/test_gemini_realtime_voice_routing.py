@@ -522,8 +522,66 @@ def test_vllm_runtime_key_tracks_raw_runtime_config(monkeypatch):
     assert key_a != key_b
     assert ("http://localhost:8091", "Qwen3-TTS", "voice-a") in key_a
     assert ("http://localhost:8092", "Qwen3-TTS-v2", "voice-b") in key_b
-    assert ("http://localhost:8093", "RouteModel", "voice-c") in key_c
+    assert ("http://localhost:8093", "Qwen3-TTS", "voice-c") in key_c
+    assert "RouteModel" not in key_c
     assert "Qwen3-TTS-v2" not in key_a
+
+
+def test_vllm_runtime_key_uses_provider_defaults_without_raw_runtime_config():
+    class _CM:
+        def get_core_config(self):
+            return {
+                "ENABLE_CUSTOM_API": True,
+                "ttsModelProvider": "vllm_omni",
+                "ttsModelUrl": "",
+                "ttsModelId": "",
+                "ttsVoiceId": "",
+                "TTS_MODEL": "qwen3-tts-flash-realtime-2025-11-27",
+                "TTS_VOICE_ID": "assistant-voice",
+                "DISABLE_TTS": False,
+            }
+
+        def get_model_api_config(self, model_type):
+            if model_type == "realtime":
+                return {"base_url": ""}
+            assert model_type == "tts_default"
+            return {
+                "base_url": "https://assist.invalid/v1",
+                "model": "qwen3-tts-flash-realtime-2025-11-27",
+                "api_key": "fallback-key",
+            }
+
+        def voice_id_exists_in_any_storage(self, voice_id):
+            return False
+
+    mgr = _make_mgr("")
+    mgr._config_manager = _CM()
+    key = LLMSessionManager._build_tts_runtime_key(mgr)
+
+    assert ("ws://localhost:8091/v1", "Qwen3-TTS", "default") in key
+    assert "assistant-voice" not in key
+
+
+def test_vllm_tts_url_is_not_treated_as_local_voice_clone_server():
+    tts_config = {
+        "is_custom": True,
+        "base_url": "ws://localhost:8091/v1/audio/speech/stream",
+    }
+
+    assert (
+        characters_router._is_local_voice_clone_tts_config(
+            tts_config,
+            {"ttsModelProvider": "vllm_omni"},
+        )
+        is False
+    )
+    assert (
+        characters_router._is_local_voice_clone_tts_config(
+            tts_config,
+            {"ttsModelProvider": "cosyvoice"},
+        )
+        is True
+    )
 
 
 @pytest.mark.asyncio

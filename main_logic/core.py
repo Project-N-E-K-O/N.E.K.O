@@ -31,7 +31,13 @@ from utils.frontend_utils import contains_chinese, replace_blank, replace_corner
 from utils.screenshot_utils import process_screen_data, overlay_avatar_annotation
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
-from main_logic.tts_client import get_tts_worker, dummy_tts_worker, TTS_PROVIDER_REGISTRY
+from main_logic.tts_client import (
+    get_tts_worker,
+    dummy_tts_worker,
+    TTS_PROVIDER_REGISTRY,
+    VLLM_OMNI_DEFAULT_BASE_URL,
+    VLLM_OMNI_DEFAULT_MODEL,
+)
 from utils.gptsovits_config import is_gsv_disabled_voice_id
 from main_logic.tool_calling import (
     ToolCall,
@@ -1369,12 +1375,11 @@ class LLMSessionManager:
         if not cls._is_vllm_omni_tts_enabled(core_config):
             return ('', '', '')
         return (
-            str(core_config.get('ttsModelUrl') or '').strip(),
+            str(core_config.get('ttsModelUrl') or '').strip()
+            or VLLM_OMNI_DEFAULT_BASE_URL,
             str(core_config.get('ttsModelId') or '').strip()
-            or str(core_config.get('TTS_MODEL') or '').strip()
-            or 'Qwen3-TTS',
+            or VLLM_OMNI_DEFAULT_MODEL,
             str(core_config.get('ttsVoiceId') or '').strip()
-            or str(core_config.get('TTS_VOICE_ID') or '').strip()
             or 'default',
         )
 

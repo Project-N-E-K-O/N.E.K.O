@@ -1271,6 +1271,14 @@ async def _elevenlabs_clone_voice(
     return _prefixed_elevenlabs_voice_id(raw_voice_id)
 
 
+def _is_local_voice_clone_tts_config(tts_config: dict, core_config: dict | None = None) -> bool:
+    provider = str((core_config or {}).get('ttsModelProvider') or '').strip()
+    if provider == 'vllm_omni':
+        return False
+    base_url = str(tts_config.get('base_url') or '')
+    return bool(tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://')))
+
+
 async def _elevenlabs_synthesize_preview(
     config_manager,
     voice_id: str,
@@ -4593,8 +4601,12 @@ async def voice_clone(
     # 检测是否使用本地 TTS（ws/wss 协议）
     _config_manager = get_config_manager()
     tts_config = _config_manager.get_model_api_config('tts_custom')
+    try:
+        core_config = _config_manager.get_core_config() or {}
+    except Exception:
+        core_config = {}
     base_url = tts_config.get('base_url', '')
-    is_local_tts = tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://'))
+    is_local_tts = _is_local_voice_clone_tts_config(tts_config, core_config)
 
     if is_local_tts:
         # ==================== 本地 TTS 注册流程 ====================

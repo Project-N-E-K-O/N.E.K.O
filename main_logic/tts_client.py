@@ -65,6 +65,8 @@ TTS_SHUTDOWN_SENTINEL = "__shutdown__"
 
 _QWEN_REALTIME_TTS_MODEL = "qwen3-tts-flash-realtime-2025-11-27"
 _DASHSCOPE_DEFAULT_REALTIME_WS_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+VLLM_OMNI_DEFAULT_BASE_URL = "ws://localhost:8091/v1"
+VLLM_OMNI_DEFAULT_MODEL = "Qwen3-TTS"
 
 
 def _resolve_qwen_realtime_tts_url() -> str:
@@ -3056,6 +3058,11 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
 
         # 首次连接 + 就绪信号
         if not await _connect_and_config():
+            _enqueue_error(response_queue, {
+                "code": "TTS_CONNECTION_FAILED",
+                "provider": "vllm_omni",
+                "message": "vLLM-Omni TTS 初始连接失败",
+            })
             response_queue.put(("__ready__", False))
             return
 
@@ -4573,21 +4580,12 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     # 用户在 TTS 下拉里显式选 vllm_omni 时，应优先于克隆音色 / assistApi
     # fallback；但 GPT-SoVITS enabled 是显式本地 TTS 开关，仍在上方优先。
     if core_cfg.get('ENABLE_CUSTOM_API') and _tts_provider_sel == 'vllm_omni':
-        try:
-            _tts_config_vllm = _tts_config_for_route or cm.get_model_api_config('tts_custom')
-            _vllm_base_fallback = _tts_config_vllm.get('base_url') or ''
-        except Exception:
-            _vllm_base_fallback = ''
-        vllm_url = (_raw_cfg_for_route.get('ttsModelUrl') or '').strip() or _vllm_base_fallback
+        vllm_url = (_raw_cfg_for_route.get('ttsModelUrl') or '').strip() or VLLM_OMNI_DEFAULT_BASE_URL
         vllm_model = (_raw_cfg_for_route.get('ttsModelId') or '').strip() \
-            or (core_cfg.get('TTS_MODEL') or '').strip() \
-            or 'Qwen3-TTS'
+            or VLLM_OMNI_DEFAULT_MODEL
         vllm_voice = (_raw_cfg_for_route.get('ttsVoiceId') or '').strip() \
-            or (core_cfg.get('TTS_VOICE_ID') or '').strip() \
             or 'default'
-        vllm_key = (_raw_cfg_for_route.get('ttsModelApiKey') or '') \
-            or (core_cfg.get('TTS_MODEL_API_KEY') or '') \
-            or ''
+        vllm_key = (_raw_cfg_for_route.get('ttsModelApiKey') or '')
         # 修复 PR #1764 review 第三轮 #3（CodeRabbit Major）：跨 provider 凭证泄漏防护
         # 若用户没为 vllm_omni 单独配置 key，必须返回空字符串而非 None，
         # 否则 core.py 中 `api_key = api_key_override or tts_config['api_key']`
