@@ -459,20 +459,20 @@ async def save_conversation_settings(request: Request):
 
 @router.get("/steam_language")
 async def get_steam_language():
-    """获取 Steam 客户端的语言设置和 GeoIP 信息，用于前端 i18n 初始化和区域检测
-    
-    返回字段：
-    - success: 是否成功
-    - uiLanguage: 手工配置的 UI 语言覆盖（无前端生产者）
-    - steam_language: Steam 原始语言设置
-    - i18n_language: 归一化的 i18n 语言代码
-    - ip_country: 用户 IP 所在国家代码（如 "CN"）
-    - is_mainland_china: 是否为中国大陆用户（基于语言设置存在 + IP 为 CN）
-    
-    判断逻辑：
-    - 如果存在 Steam 语言设置（即有 Steam 环境），则检查 GeoIP
-    - 如果 IP 国家代码为 "CN"，则标记为中国大陆用户
-    - 如果不存在 Steam 语言设置（无 Steam 环境），默认为非大陆用户
+    """Return Steam language and GeoIP hints for frontend locale setup.
+
+    Response fields:
+    - success: whether the lookup succeeded
+    - uiLanguage: manual UI language override with no frontend producer
+    - steam_language: raw Steam language setting
+    - i18n_language: normalized i18n language code
+    - ip_country: country code from the user's IP, such as "CN"
+    - is_mainland_china: whether the user is in mainland China
+
+    Decision rules:
+    - When a Steam language exists, check GeoIP as well
+    - When the IP country code is "CN", mark the user as mainland China
+    - When no Steam language exists, default to non-mainland behavior
     """
     from utils.language_utils import normalize_language_code, refresh_global_language, is_supported_language_code
 
