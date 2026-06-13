@@ -7533,6 +7533,14 @@ _DIRECT_REQUEST_DISCUSSION_RE = re.compile(
     r"\b(?:start|play|open)\s+by\b|"
     r"\b(?:talk|talking|chat|discuss|discussion)\s+(?:about|around)\b"
 )
+_DIRECT_REQUEST_START_QUESTION_RE = re.compile(
+    r"\b(?:when|what\s+time|what\s+day|what\s+date)\b[^?!.]{0,48}\bstart\b|"
+    r"\bstart\b[^?!.]{0,48}\b(?:when|what\s+time|what\s+day|what\s+date)\b"
+)
+_DIRECT_REQUEST_DEFER_RE = re.compile(
+    r"\b(?:later|tomorrow|tonight|next\s+(?:time|week|month)|another\s+time|"
+    r"not\s+now|some\s+other\s+time|after(?:ward|wards)?|in\s+a\s+bit)\b"
+)
 _DIRECT_REQUEST_CJK_DISCUSSION_CUES = (
     "讲讲", "说说", "聊聊", "介绍", "解释", "了解", "玩法", "规则", "教程", "攻略",
     "教学", "新闻", "怎么打", "怎么玩", "如何打", "如何玩",
@@ -7553,6 +7561,8 @@ def _direct_request_pair_is_explicit(
     action_term = action_hit[2]
     if _direct_request_is_ascii_word_term(action_term):
         if _DIRECT_REQUEST_DISCUSSION_RE.search(between) or _DIRECT_REQUEST_DISCUSSION_RE.search(window):
+            return False
+        if _DIRECT_REQUEST_START_QUESTION_RE.search(window) or _DIRECT_REQUEST_DEFER_RE.search(window):
             return False
         if _DIRECT_REQUEST_ENGLISH_CASUAL_RE.search(window) and not re.search(r"\bi\s+(?:want|wanna|would like)\b", window):
             return False

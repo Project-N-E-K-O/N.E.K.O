@@ -929,6 +929,7 @@
     streak_15: ['十五连也太夸张', '这次真稳'],
     streak_20: ['二十连？！', '这回合离谱喵']
   };
+  var generatedQuickLines = {};
   var YUI_PASSIVE_LINES_SHOOTER = {
     swish: ['哼，控制得还行', '这次算你准'],
     bank: ['擦板也算你会控', '角度还凑合'],
@@ -1558,6 +1559,8 @@
     window.location.assign(url.toString());
   }
   function pickLocalizedLine(scope, key, fallback) {
+    var generated = generatedQuickLines[key] || [];
+    if (generated.length) return generated[Math.floor(Math.random() * generated.length)] || '';
     var lines = _i18nArray('lines.' + scope + '.' + key, fallback || []);
     if (!lines.length && scope !== 'default') lines = _i18nArray('lines.default.' + key, quickLines[key] || []);
     if (!lines.length) lines = _i18nArray('lines.fallback', ['再来一次喵']);
@@ -1804,7 +1807,10 @@
       if (!res || !res.lines) return;
       QUICK_LINE_KEYS.forEach(function (key) {
         var pool = (res.lines[key] || []).map(function (v) { return String(v).trim(); }).filter(Boolean).slice(0, 4);
-        if (pool.length) quickLines[key] = pool;
+        if (pool.length) {
+          generatedQuickLines[key] = pool;
+          quickLines[key] = pool;
+        }
       });
     }).catch(function () {});
   }
@@ -3524,8 +3530,8 @@
         shot_type: game.lastShotType || '',
         label: 'horse_game_over'
       });
-      scheduleShowResult(500);
       endRoute(false);
+      scheduleShowResult(500);
       return true;
     }
     return false;
@@ -3728,8 +3734,8 @@
         shot_type: shotType,
         label: 'duel_game_over'
       });
-      scheduleShowResult(900);
       endRoute(false);
+      scheduleShowResult(900);
     } else {
       game.duel.round += 1;
       game.duel.activeShooter = 'player';
@@ -3878,8 +3884,8 @@
           attempts_results: game.attemptsResults.slice(-12),
           was_perfect: ball.wasPerfect, shot_angle: ball.angle, shot_power: ball.power
         });
-        scheduleShowResult(900);
         endRoute(false);
+        scheduleShowResult(900);
       }
     }
     updateHud();
@@ -3904,14 +3910,10 @@
   }
   function showResult() {
     basketballGameAudio.sync('game-over');
+    persistCompletedResult();
     var localRating = game.bestStreak >= 15 ? 'S' : (game.bestStreak >= 10 ? 'A' : (game.bestStreak >= 5 ? 'B' : (game.bestStreak >= 2 ? 'C' : 'D')));
     var ratingText = currentMode === 'shooter' ? (' | ' + _i18n('result.rating', '操控评级：{{rating}}', { rating: latestShooterRating || localRating })) : '';
     if (isDuelMode()) {
-      if (!game.resultRecorded) {
-        var duelEntry = recordGame(game.bestStreak, getRunMaxDistancePx(), game.totalScore, game.shotTypeCount);
-        game.resultRecorded = true;
-        submitScore(duelEntry).catch(function () {});
-      }
       var outcome = game.duel.playerScore > game.duel.nekoScore
         ? _i18n('result.outcome.youWin', '你赢了')
         : (game.duel.playerScore < game.duel.nekoScore ? _i18n('result.outcome.nekoWin', 'Neko赢了') : _i18n('result.outcome.tie', '平局'));
@@ -3926,11 +3928,6 @@
       return;
     }
     if (isHorseMode()) {
-      if (!game.resultRecorded) {
-        var horseEntry = recordGame(game.bestStreak, getRunMaxDistancePx(), game.totalScore, game.shotTypeCount);
-        game.resultRecorded = true;
-        submitScore(horseEntry).catch(function () {});
-      }
       var horseOutcome = game.horse.lettersNeko >= HORSE_WORD.length
         ? _i18n('result.outcome.youWin', '你赢了')
         : (game.horse.lettersPlayer >= HORSE_WORD.length ? _i18n('result.outcome.nekoWin', 'Neko赢了') : _i18n('result.outcome.undecided', '未分胜负'));
@@ -3945,11 +3942,6 @@
       return;
     }
     if (isTimeAttackMode()) {
-      if (!game.resultRecorded) {
-        var timedEntry = recordGame(game.bestStreak, getRunMaxDistancePx(), game.totalScore, game.shotTypeCount);
-        game.resultRecorded = true;
-        submitScore(timedEntry).catch(function () {});
-      }
       resultStats.textContent = _i18n('result.timed', '限时挑战：命中 {{made}} 球，最长连中 {{best}}，总分 {{score}}', {
         made: game.madeCount,
         best: game.bestStreak,
@@ -3967,19 +3959,6 @@
       });
       resultPanel.classList.add('show');
       return;
-    }
-    if (!game.resultRecorded) {
-      var savedEntry = recordGame(game.bestStreak, getRunMaxDistancePx(), game.totalScore, game.shotTypeCount);
-      game.resultRecorded = true;
-      submitScore(savedEntry).then(function (res) {
-        if (res && typeof res.rank === 'number') {
-          game.globalRank = res.rank;
-        }
-        if (res && typeof res.total_players === 'number') {
-          game.globalTotalPlayers = res.total_players;
-        }
-        if (resultPanel.classList.contains('show')) showResult();
-      }).catch(function () {});
     }
     var personalBest = loadLocalLeaderboard().personal_best;
     var scoreText = _i18n('result.summary', '总分：{{score}} | 命中：{{made}} | 当前连中：{{streak}} | 最佳连中：{{best}} | 最远：{{record}} | 本球距离：{{distance}}', {
@@ -4004,9 +3983,30 @@
     resultStats.textContent = scoreText + ratingText;
     resultPanel.classList.add('show');
   }
+  function persistCompletedResult() {
+    if (game.resultRecorded || isPracticeMode()) return null;
+    var entry = recordGame(game.bestStreak, getRunMaxDistancePx(), game.totalScore, game.shotTypeCount);
+    game.resultRecorded = true;
+    var submitPromise = submitScore(entry);
+    if (isDuelMode() || isHorseMode() || isTimeAttackMode()) {
+      submitPromise.catch(function () {});
+    } else {
+      submitPromise.then(function (res) {
+        if (res && typeof res.rank === 'number') {
+          game.globalRank = res.rank;
+        }
+        if (res && typeof res.total_players === 'number') {
+          game.globalTotalPlayers = res.total_players;
+        }
+        if (resultPanel.classList.contains('show')) showResult();
+      }).catch(function () {});
+    }
+    return entry;
+  }
   function scheduleShowResult(delayMs) {
     var resultSessionId = sessionId;
     clearTimeout(resultTimer);
+    persistCompletedResult();
     resultTimer = setTimeout(function () {
       resultTimer = 0;
       if (sessionId !== resultSessionId || game.state !== 'game_over') return;

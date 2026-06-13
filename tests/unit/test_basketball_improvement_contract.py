@@ -634,9 +634,10 @@ def test_game_memory_generic_keys_update_legacy_policy_fields():
 def test_basketball_horse_result_records_score_before_returning():
     html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
 
-    assert "if (isHorseMode()) {\n      if (!game.resultRecorded) {" in html
-    assert "var horseEntry = recordGame(game.bestStreak, getRunMaxDistancePx(), game.totalScore, game.shotTypeCount);" in html
-    assert "submitScore(horseEntry).catch(function () {});" in html
+    assert "function persistCompletedResult() {" in html
+    assert "if (game.resultRecorded || isPracticeMode()) return null;" in html
+    assert "var entry = recordGame(game.bestStreak, getRunMaxDistancePx(), game.totalScore, game.shotTypeCount);" in html
+    assert "persistCompletedResult();" in html
 
 
 @pytest.mark.unit
@@ -652,16 +653,26 @@ def test_basketball_scoring_waits_for_route_end_and_records_run_max():
     assert "var scoreLanlanName = completedLanlanName || getRouteLanlanName();" in html
     assert "session_id: completedSessionId," in html
     assert "lanlan_name: scoreLanlanName," in html
-    assert "var duelEntry = recordGame(game.bestStreak, getRunMaxDistancePx(), game.totalScore, game.shotTypeCount);" in html
-    assert "var savedEntry = recordGame(game.bestStreak, getRunMaxDistancePx(), game.totalScore, game.shotTypeCount);" in html
+    assert "var entry = recordGame(game.bestStreak, getRunMaxDistancePx(), game.totalScore, game.shotTypeCount);" in html
     assert "routeEndPromise = fetch(url, { method: 'POST'" in html
     assert "return res.json().catch(function () { return { ok: res.ok }; });" in html
 
     session_capture_index = html.index("var completedSessionId = sessionId;")
     route_ready_index = html.index("var routeEndReady = endedRoute && routeEndPromise ? routeEndPromise.catch(function () {}) : Promise.resolve();")
+    persist_index = html.index("function persistCompletedResult() {")
+    record_index = html.index("var entry = recordGame(", persist_index)
     assert session_capture_index < route_ready_index
-    assert route_ready_index < html.index("var duelEntry = recordGame(", route_ready_index)
-    assert route_ready_index < html.index("var savedEntry = recordGame(", route_ready_index)
+    assert route_ready_index < record_index
+
+
+@pytest.mark.unit
+def test_basketball_generated_quick_lines_override_static_i18n_lines():
+    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+
+    assert "var generatedQuickLines = {};" in html
+    assert "var generated = generatedQuickLines[key] || [];" in html
+    assert "if (generated.length) return generated[Math.floor(Math.random() * generated.length)] || '';" in html
+    assert "generatedQuickLines[key] = pool;" in html
 
 
 @pytest.mark.unit
@@ -770,6 +781,7 @@ def test_basketball_delayed_results_are_bound_to_session():
     assert "var resultTimer = 0;" in html
     assert "function scheduleShowResult(delayMs) {" in html
     assert "var resultSessionId = sessionId;" in html
+    assert "persistCompletedResult();" in html
     assert "if (sessionId !== resultSessionId || game.state !== 'game_over') return;" in html
     assert "clearTimeout(resultTimer);" in html
     assert "setTimeout(showResult, 900);" not in html
