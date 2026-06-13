@@ -673,6 +673,18 @@ def test_basketball_route_end_payload_contains_archive_score():
 
 
 @pytest.mark.unit
+def test_basketball_timed_game_over_event_contains_score():
+    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+    timed_timeout = html[
+        html.index("if (game.timedRemaining <= 0) {"):
+        html.index("endRoute(false);", html.index("if (game.timedRemaining <= 0) {"))
+    ]
+
+    assert "kind: 'game_over'," in timed_timeout
+    assert "score: game.totalScore," in timed_timeout
+
+
+@pytest.mark.unit
 def test_basketball_route_end_payload_contains_horse_state():
     html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
 

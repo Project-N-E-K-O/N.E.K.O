@@ -5304,12 +5304,16 @@ def _sanitize_basketball_event(event: Any) -> tuple[dict | None, str]:
     if kind not in allowed_kinds:
         return None, "invalid kind"
 
-    clean = dict(event)
-    clean["kind"] = kind
-    if "mode" in clean:
-        clean["mode"] = _normalize_basketball_mode(clean.get("mode"))
-    result = str(clean.get("result") or "").strip()
-    shot_type = str(clean.get("shot_type") or "").strip()
+    clean: dict[str, Any] = {"kind": kind}
+    if "mode" in event:
+        clean["mode"] = _normalize_basketball_mode(event.get("mode"))
+    for keys in _game_memory_payload_keys("basketball").values():
+        for key in keys:
+            if key in event:
+                clean[key] = event.get(key) is True
+
+    result = str(event.get("result") or "").strip()
+    shot_type = str(event.get("shot_type") or "").strip()
     if result not in allowed_results:
         clean.pop("result", None)
     else:
@@ -5322,39 +5326,39 @@ def _sanitize_basketball_event(event: Any) -> tuple[dict | None, str]:
     for key in (
         "streak", "distance", "shot_angle", "shot_power", "record_distance",
         "final_streak", "final_distance", "aim_duration", "aim_duration_seconds",
-        "current_distance", "record",
+        "current_distance", "record", "best_streak", "made_count",
+        "attempts_remaining", "attempts_total", "score", "total_score",
     ):
-        if key not in clean:
+        if key not in event:
             continue
         try:
-            value = float(clean[key])
+            value = float(event[key])
         except (TypeError, ValueError):
-            clean.pop(key, None)
             continue
         if not math.isfinite(value):
-            clean.pop(key, None)
             continue
-        if key in {"streak", "final_streak"}:
+        if key in {
+            "streak", "final_streak", "best_streak", "made_count",
+            "attempts_remaining", "attempts_total",
+        }:
             clean[key] = max(0, min(int(value), 999))
+        elif key in {"score", "total_score"}:
+            clean[key] = max(0, min(int(value), 999999))
         elif key in {"aim_duration", "aim_duration_seconds"}:
             clean[key] = max(0.0, min(value, 60.0))
         else:
             clean[key] = max(-1000.0, min(value, 5000.0))
 
     for key in ("was_perfect", "is_new_record"):
-        if key in clean:
-            clean[key] = clean[key] is True
-    duel_state = _sanitize_basketball_duel_state(clean.get("duel"))
+        if key in event:
+            clean[key] = event.get(key) is True
+    duel_state = _sanitize_basketball_duel_state(event.get("duel"))
     if duel_state:
         clean["duel"] = duel_state
-    elif "duel" in clean:
-        clean.pop("duel", None)
-    horse_state = _sanitize_basketball_horse_state(clean.get("horse"))
+    horse_state = _sanitize_basketball_horse_state(event.get("horse"))
     if horse_state:
         clean["horse"] = horse_state
-    elif "horse" in clean:
-        clean.pop("horse", None)
-    current_state = clean.get("currentState")
+    current_state = event.get("currentState")
     if isinstance(current_state, dict):
         state_clean = {}
         for key in ("game", "last_shot_type"):
@@ -5362,7 +5366,10 @@ def _sanitize_basketball_event(event: Any) -> tuple[dict | None, str]:
                 state_clean[key] = _normalize_short_text(current_state.get(key), max_chars=40)
         if "mode" in current_state:
             state_clean["mode"] = _normalize_basketball_mode(current_state.get("mode"))
-        for key in ("streak", "distance", "record_distance", "final_streak", "final_distance"):
+        for key in (
+            "streak", "distance", "record_distance", "final_streak", "final_distance",
+            "best_streak", "made_count", "attempts_remaining", "attempts_total",
+        ):
             if key not in current_state:
                 continue
             try:
@@ -5371,10 +5378,39 @@ def _sanitize_basketball_event(event: Any) -> tuple[dict | None, str]:
                 continue
             if not math.isfinite(value):
                 continue
-            if key in {"streak", "final_streak"}:
+            if key in {
+                "streak", "final_streak", "best_streak", "made_count",
+                "attempts_remaining", "attempts_total",
+            }:
                 state_clean[key] = max(0, min(int(value), 999))
             else:
                 state_clean[key] = max(-1000.0, min(value, 5000.0))
+        score_state = current_state.get("score")
+        if isinstance(score_state, dict):
+            score_clean: dict[str, Any] = {}
+            for key in ("player", "ai", "score", "best_streak", "made_count"):
+                if key not in score_state:
+                    continue
+                try:
+                    value = float(score_state[key])
+                except (TypeError, ValueError):
+                    continue
+                if not math.isfinite(value):
+                    continue
+                score_clean[key] = max(0, min(int(value), 999999))
+            for src_key, dst_key in (("max_distance_px", "max_distance_px"), ("maxDistancePx", "max_distance_px")):
+                if src_key not in score_state:
+                    continue
+                try:
+                    value = float(score_state[src_key])
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(value):
+                    score_clean[dst_key] = max(0.0, min(value, 5000.0))
+            if "mode" in score_state:
+                score_clean["mode"] = _normalize_basketball_mode(score_state.get("mode"))
+            if score_clean:
+                state_clean["score"] = score_clean
         duel_state = _sanitize_basketball_duel_state(current_state.get("duel"))
         if duel_state:
             state_clean["duel"] = duel_state
@@ -5387,11 +5423,12 @@ def _sanitize_basketball_event(event: Any) -> tuple[dict | None, str]:
         if attempts_results:
             state_clean["attempts_results"] = attempts_results
         clean["currentState"] = state_clean
-    elif "currentState" in clean:
-        clean.pop("currentState", None)
     for key in ("label", "textRaw", "userText", "userVoiceText"):
-        if key in clean:
-            clean[key] = _normalize_short_text(clean[key], max_chars=180)
+        if key in event:
+            clean[key] = _normalize_short_text(event.get(key), max_chars=180)
+    for key in ("mood", "difficulty", "i18n_language"):
+        if key in event:
+            clean[key] = _normalize_short_text(event.get(key), max_chars=40)
     return clean, ""
 
 

@@ -147,15 +147,31 @@ def test_basketball_event_sanitizer_keeps_current_state_and_drops_invalid_fields
             "final_streak": "7",
             "final_distance": "380",
             "last_shot_type": "swish",
+            "score": {
+                "score": "42",
+                "best_streak": "7",
+                "made_count": "9",
+                "maxDistancePx": "380",
+                "mode": "timed",
+                "unsafe": "<tag>",
+            },
             "unsafe": "<tag>",
         },
+        "score": "42",
         "was_perfect": True,
+        "basketballGameMemoryEnabled": False,
+        "gameMemoryEnabled": False,
+        "debugBlob": "x" * 5000,
     })
 
     assert error == ""
     assert event["streak"] == 7
     assert event["distance"] == 380
+    assert event["score"] == 42
     assert event["was_perfect"] is True
+    assert event["basketballGameMemoryEnabled"] is False
+    assert event["gameMemoryEnabled"] is False
+    assert "debugBlob" not in event
     assert event["currentState"] == {
         "game": "basketball",
         "last_shot_type": "swish",
@@ -164,6 +180,13 @@ def test_basketball_event_sanitizer_keeps_current_state_and_drops_invalid_fields
         "record_distance": 520,
         "final_streak": 7,
         "final_distance": 380,
+        "score": {
+            "score": 42,
+            "best_streak": 7,
+            "made_count": 9,
+            "max_distance_px": 380.0,
+            "mode": "timed",
+        },
     }
 
     invalid, invalid_error = game_router._sanitize_basketball_event({
