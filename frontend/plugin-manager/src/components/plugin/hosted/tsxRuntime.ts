@@ -319,6 +319,7 @@ function readHostedReExportStatement(source: string, index: number): HostedReExp
 
 function hostedImportStatements(source: string) {
   const statements: HostedImportStatement[] = []
+  let depth = 0
   for (let index = 0; index < source.length;) {
     const char = source[index]
     if (char === '/' && index + 1 < source.length) {
@@ -340,13 +341,23 @@ function hostedImportStatements(source: string) {
       index = skipTemplate(source, index)
       continue
     }
-    if (isStatementLineStart(source, index) && matchesKeyword(source, index, 'import')) {
+    if (depth === 0 && isStatementLineStart(source, index) && matchesKeyword(source, index, 'import')) {
       const statement = readHostedImportStatement(source, index)
       if (statement) {
         statements.push(statement)
         index = statement.end
         continue
       }
+    }
+    if (char === '(' || char === '[' || char === '{') {
+      depth += 1
+      index += 1
+      continue
+    }
+    if (char === ')' || char === ']' || char === '}') {
+      depth = Math.max(0, depth - 1)
+      index += 1
+      continue
     }
     index += 1
   }
@@ -355,6 +366,7 @@ function hostedImportStatements(source: string) {
 
 function hostedReExportStatements(source: string) {
   const statements: HostedReExportStatement[] = []
+  let depth = 0
   for (let index = 0; index < source.length;) {
     const char = source[index]
     if (char === '/' && index + 1 < source.length) {
@@ -376,13 +388,23 @@ function hostedReExportStatements(source: string) {
       index = skipTemplate(source, index)
       continue
     }
-    if (isStatementLineStart(source, index) && matchesKeyword(source, index, 'export')) {
+    if (depth === 0 && isStatementLineStart(source, index) && matchesKeyword(source, index, 'export')) {
       const statement = readHostedReExportStatement(source, index)
       if (statement) {
         statements.push(statement)
         index = statement.end
         continue
       }
+    }
+    if (char === '(' || char === '[' || char === '{') {
+      depth += 1
+      index += 1
+      continue
+    }
+    if (char === ')' || char === ']' || char === '}') {
+      depth = Math.max(0, depth - 1)
+      index += 1
+      continue
     }
     index += 1
   }

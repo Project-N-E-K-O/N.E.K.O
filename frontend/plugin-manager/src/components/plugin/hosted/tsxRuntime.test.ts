@@ -273,6 +273,18 @@ describe('hosted TSX document runtime', () => {
     expect(root.querySelector('strong')?.textContent).toBe('sharedtrue')
   })
 
+  it('keeps JSX text that looks like hosted imports', () => {
+    const { root } = executeHostedDocument(`
+      export default function Panel() {
+        return <pre>
+import ghost from "./missing"
+</pre>
+      }
+    `)
+
+    expect(root.querySelector('pre')?.textContent).toContain('import ghost from "./missing"')
+  })
+
   it('prefers TSX over TS for extensionless hosted imports at runtime', () => {
     const { root } = executeHostedDocument(`
       import { label } from "./shared"
