@@ -752,7 +752,7 @@
         "avatarCropZoomOut": "縮小",
         "avatarCropCancel": "キャンセル",
         "avatarCropSave": "保存",
-        "emptyState":  "チャット内容が接続されると、ここに表示されます。",
+        "emptyState": "チャット内容が接続されると、ここに表示されます。",
         "companionEmptyState": "（ここでそばにいるよ。）",
         "messageStreaming": "生成中",
         "messageFailed": "送信失敗",
@@ -1512,7 +1512,9 @@
         "motionStopped": "モーションを停止しました",
         "expressionCleared": "表情をクリアしました",
         "cannotDeleteBoundModel": "現在使用中のモデルは削除できません",
-        "modelInUse": "使用中"
+        "modelInUse": "使用中",
+        "pngtuberTalkPreview": "Test Talking",
+        "pngtuberStatePreview": "State Preview"
     },
     "voice": {
         "title": "ボイス登録",

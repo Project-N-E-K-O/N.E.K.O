@@ -1340,6 +1340,22 @@ async function captureCurrentModelManagerCanvas(state = {}) {
     };
 }
 
+async function capturePNGTuberPreviewToCanvas() {
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    const drawable = document.querySelector('#pngtuber-container canvas.pngtuber-layered-canvas, #pngtuber-container img.pngtuber-image');
+    if (!drawable) throw new Error('pngtuber_drawable_not_ready');
+    const width = drawable.width || drawable.naturalWidth || drawable.clientWidth;
+    const height = drawable.height || drawable.naturalHeight || drawable.clientHeight;
+    if (!width || !height) throw new Error('pngtuber_drawable_not_ready');
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('pngtuber_canvas_context_failed');
+    ctx.drawImage(drawable, 0, 0, width, height);
+    return canvas;
+}
+
 function resolveDefaultCardFacePortraitModelType(state = {}) {
     const modelType = String(state.currentModelType || 'live2d').toLowerCase();
     const live3dSubType = String(state.currentLive3dSubType || '').toLowerCase();
@@ -1354,6 +1370,17 @@ function resolveDefaultCardFacePortraitModelType(state = {}) {
 }
 
 async function captureDefaultCardFaceModelImage(state = {}, width, height) {
+    const portraitModelType = resolveDefaultCardFacePortraitModelType(state);
+    if (portraitModelType === 'pngtuber') {
+        return {
+            canvas: await capturePNGTuberPreviewToCanvas(),
+            drawOptions: {
+                zoom: 1.2,
+                focusY: 0.45
+            }
+        };
+    }
+
     if (window.avatarPortrait && typeof window.avatarPortrait.capture === 'function') {
         try {
             const portrait = await window.avatarPortrait.capture({
@@ -1364,7 +1391,7 @@ async function captureDefaultCardFaceModelImage(state = {}, width, height) {
                 shape: 'square',
                 radius: 0,
                 cropMode: 'headshot',
-                modelType: resolveDefaultCardFacePortraitModelType(state)
+                modelType: portraitModelType
             });
 
             if (portrait?.canvas && portrait.canvas.width > 0 && portrait.canvas.height > 0) {
@@ -4528,7 +4555,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             pngtuberTalkPreviewBtn.classList.remove('active');
         }
         if (pngtuberStatePreviewSelect) {
-            pngtuberStatePreviewSelect.innerHTML = '<option value="">状态预览</option>';
+            pngtuberStatePreviewSelect.innerHTML = `<option value="">${t('live2d.pngtuberStatePreview', '状态预览')}</option>`;
             pngtuberStatePreviewSelect.value = '';
         }
         if (pngtuberStatePreviewManager) {
@@ -4589,7 +4616,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function renderPNGTuberStatePreviewDropdown(metadata) {
         if (!pngtuberStatePreviewSelect || !pngtuberStatePreviewSection) return;
-        pngtuberStatePreviewSelect.innerHTML = '<option value="">状态预览</option>';
+        pngtuberStatePreviewSelect.innerHTML = `<option value="">${t('live2d.pngtuberStatePreview', '状态预览')}</option>`;
         pngtuberStatePreviewSelect.value = '';
         const labels = getPNGTuberStateLabels(metadata);
         if (labels.length === 0) {
@@ -9647,7 +9674,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         updateConfirmDeleteButton();
 
         // 刷新 Live2D 模型列表
-        if (deletedLive2D) {
+        if (deletedLive2D && currentModelType === 'live2d') {
             try {
                 availableModels = await RequestHelper.fetchJson('/api/live2d/models');
                 modelSelect.innerHTML = `<option value="">${t('live2d.pleaseSelectModel', '选择模型')}</option>`;
@@ -9683,7 +9710,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
 
-        if (deletedPNGTuber) {
+        if (deletedPNGTuber && currentModelType === 'pngtuber') {
             try {
                 if (typeof loadPNGTuberModels === 'function') await loadPNGTuberModels();
             } catch (e) {
@@ -10114,12 +10141,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const matchedOption = findPNGTuberOptionByConfig(pngtuberConfig);
                 if (matchedOption) {
                     modelSelect.value = matchedOption.value;
-                    updateLive2DModelSelectButtonText();
-                    rememberSelectedPNGTuberModel(matchedOption, pngtuberConfig);
+                    await loadSelectedPNGTuberOption(matchedOption, { markDirty: false });
                 } else {
                     currentModelInfo = {
                         name: lanlanName,
-                        folder: pngtuberConfig.idle_image.split('/').slice(-2, -1)[0] || '',
+                        folder: pngtuberConfig.folder || pngtuberConfig.model_folder || '',
                         path: pngtuberConfig.idle_image,
                         type: 'pngtuber',
                         pngtuber: pngtuberConfig,

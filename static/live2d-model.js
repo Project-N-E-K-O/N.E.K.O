@@ -252,6 +252,8 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
             try { model && model.destroy && model.destroy({ children: true }); } catch (_) {}
             this._activeLoadToken = (this._activeLoadToken || 0) + 1;
             this.currentModel = null;
+            this._modelLoadState = 'idle';
+            this._isModelReadyForInteraction = false;
             const cancelError = new Error('Live2D load cancelled because PNGTuber mode became active.');
             cancelError.name = 'PNGTuberActiveLive2DSkip';
             throw cancelError;

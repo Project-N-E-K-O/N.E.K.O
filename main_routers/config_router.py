@@ -227,6 +227,11 @@ def _resolve_pngtuber_image_path(image_path: str, _config_manager, target_name: 
     if image_path.startswith('/'):
         if image_path.startswith(PNGTUBER_USER_PATH + '/'):
             rel = image_path[len(PNGTUBER_USER_PATH) + 1:]
+            from pathlib import PurePosixPath
+            safe_rel = PurePosixPath(rel)
+            if safe_rel.is_absolute() or '..' in safe_rel.parts:
+                logger.warning(f"Invalid PNGTuber image path for {target_name}: {image_path}")
+                return ""
             if (_config_manager.pngtuber_dir / rel).exists():
                 return image_path
             logger.warning(f"PNGTuber image not found for {target_name}: {image_path}")

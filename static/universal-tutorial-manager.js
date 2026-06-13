@@ -3085,7 +3085,7 @@ class UniversalTutorialManager {
     getTutorialInteractiveSelectors() {
         return [
             '#live2d-canvas', '#vrm-canvas', '#mmd-canvas',
-            '#live2d-container', '#vrm-container', '#mmd-container',
+            '#live2d-container', '#vrm-container', '#mmd-container', '#pngtuber-container',
             '#chat-container',
             '#live2d-floating-buttons', '#vrm-floating-buttons', '#mmd-floating-buttons', '#pngtuber-floating-buttons',
             '#live2d-return-button-container', '#vrm-return-button-container', '#mmd-return-button-container', '#pngtuber-return-button-container',
@@ -3094,10 +3094,10 @@ class UniversalTutorialManager {
             '#returnSessionButton',
             '#live2d-lock-icon', '#vrm-lock-icon', '#mmd-lock-icon', '#pngtuber-lock-icon',
             '#toggle-chat-btn',
-            '.live2d-floating-btn', '.vrm-floating-btn', '.mmd-floating-btn',
-            '.live2d-trigger-btn', '.vrm-trigger-btn', '.mmd-trigger-btn',
+            '.live2d-floating-btn', '.vrm-floating-btn', '.mmd-floating-btn', '.pngtuber-floating-btn',
+            '.live2d-trigger-btn', '.vrm-trigger-btn', '.mmd-trigger-btn', '.pngtuber-trigger-btn',
             // 宽泛匹配：所有以模型前缀开头 ID 的元素都将被教程系统自动识别并控制交互状态
-            '[id^="live2d-"]', '[id^="vrm-"]', '[id^="mmd-"]'
+            '[id^="live2d-"]', '[id^="vrm-"]', '[id^="mmd-"]', '[id^="pngtuber-"]'
         ];
     }
 

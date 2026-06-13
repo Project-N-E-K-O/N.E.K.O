@@ -752,7 +752,7 @@
         "avatarCropZoomOut": "축소",
         "avatarCropCancel": "취소",
         "avatarCropSave": "저장",
-        "emptyState":  "채팅 내용이 연결되면 여기에 표시됩니다.",
+        "emptyState": "채팅 내용이 연결되면 여기에 표시됩니다.",
         "companionEmptyState": "（여기서 곁에 있을게요.）",
         "messageStreaming": "생성 중",
         "messageFailed": "전송 실패",
@@ -1512,7 +1512,9 @@
         "motionStopped": "동작이 중지되었습니다",
         "expressionCleared": "표정이 지워졌습니다",
         "cannotDeleteBoundModel": "현재 사용 중인 모델은 삭제할 수 없습니다",
-        "modelInUse": "사용 중"
+        "modelInUse": "사용 중",
+        "pngtuberTalkPreview": "Test Talking",
+        "pngtuberStatePreview": "State Preview"
     },
     "voice": {
         "title": "음성 등록",

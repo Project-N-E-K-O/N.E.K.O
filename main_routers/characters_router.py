@@ -1970,14 +1970,24 @@ async def update_catgirl_l2d(name: str, request: Request):
             ).strip().replace('\\', '/')
 
             def _infer_pngtuber_metadata_from_idle(idle_path: str) -> str:
-                if not idle_path.startswith('/user_pngtuber/'):
-                    return ''
                 parts = [part for part in idle_path.split('/') if part]
-                if len(parts) < 3 or parts[0] != 'user_pngtuber':
+                if len(parts) < 3:
                     return ''
+                source_prefix = parts[0]
                 model_folder = parts[1]
                 try:
-                    root = get_config_manager().pngtuber_dir / model_folder
+                    config_manager = get_config_manager()
+                    if source_prefix == 'user_pngtuber':
+                        root = config_manager.pngtuber_dir / model_folder
+                        url_prefix = '/user_pngtuber'
+                    elif source_prefix == 'static':
+                        root = config_manager.project_root / 'static' / model_folder
+                        url_prefix = '/static'
+                    elif source_prefix == 'workshop':
+                        root = config_manager.workshop_dir / model_folder
+                        url_prefix = '/workshop'
+                    else:
+                        return ''
                 except Exception:
                     return ''
                 for filename in (
@@ -1986,7 +1996,7 @@ async def update_catgirl_l2d(name: str, request: Request):
                     'metadata.json',
                 ):
                     if (root / filename).is_file():
-                        return f'/user_pngtuber/{model_folder}/{filename}'
+                        return f'{url_prefix}/{model_folder}/{filename}'
                 return ''
 
             if not metadata_path:
@@ -2025,7 +2035,7 @@ async def update_catgirl_l2d(name: str, request: Request):
             pngtuber_payload['scale'] = _bounded_number(pngtuber_payload.get('scale'), 1, 0.1, 5)
             pngtuber_payload['offset_x'] = _bounded_number(pngtuber_payload.get('offset_x'), 0, -5000, 5000)
             pngtuber_payload['offset_y'] = _bounded_number(pngtuber_payload.get('offset_y'), 0, -5000, 5000)
-            pngtuber_payload['mirror'] = bool(pngtuber_payload.get('mirror'))
+            pngtuber_payload['mirror'] = _config_value_is_enabled(pngtuber_payload.get('mirror'))
 
         if model_type_str == 'live3d':
             # Live3D 模式：接受 VRM 或 MMD 模型
@@ -2187,8 +2197,17 @@ async def update_catgirl_l2d(name: str, request: Request):
             set_reserved(characters['猫娘'][name], 'avatar', 'model_type', 'pngtuber')
             set_reserved(characters['猫娘'][name], 'avatar', 'live3d_sub_type', '')
             set_reserved(characters['猫娘'][name], 'avatar', 'pngtuber', pngtuber_payload)
-            set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', '')
-            set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', 'local_imported')
+            pngtuber_binding_path = str(
+                idle_image
+                or pngtuber_payload.get('layered_metadata')
+                or ''
+            ).strip()
+            current_asset_source, current_asset_source_id = _derive_model_asset_binding(
+                pngtuber_binding_path,
+                item_id=str(item_id or ""),
+            )
+            set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', current_asset_source_id)
+            set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', current_asset_source or 'local_imported')
             logger.debug(f"已保存角色 {name} 的PNGTuber配置")
         else:
             # 更新Live2D模型设置，同时保存item_id（如果有）

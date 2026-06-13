@@ -752,7 +752,7 @@
         "avatarCropZoomOut": "Уменьшить",
         "avatarCropCancel": "Отмена",
         "avatarCropSave": "Сохранить",
-        "emptyState":  "Сообщения появятся здесь после подключения чата.",
+        "emptyState": "Сообщения появятся здесь после подключения чата.",
         "companionEmptyState": "(Я рядом с тобой.)",
         "messageStreaming": "Генерация",
         "messageFailed": "Ошибка отправки",
@@ -1512,7 +1512,9 @@
         "motionStopped": "Анимация остановлена",
         "expressionCleared": "Выражение очищено",
         "cannotDeleteBoundModel": "Нельзя удалить модель, которая сейчас используется",
-        "modelInUse": "Используется"
+        "modelInUse": "Используется",
+        "pngtuberTalkPreview": "Test Talking",
+        "pngtuberStatePreview": "State Preview"
     },
     "voice": {
         "title": "Регистрация голоса",

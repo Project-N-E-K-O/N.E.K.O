@@ -23,8 +23,7 @@
         const path = sanitizePath(value);
         if (!path) return '';
         if (/^https?:\/\//i.test(path) || path.startsWith('/')) return path;
-        const filename = path.split('/').filter(Boolean).pop();
-        return filename ? `/user_pngtuber/${filename}` : '';
+        return path;
     }
 
     function normalizeAssetPath(value) {
@@ -79,7 +78,8 @@
         normalized.offset_y = centerPreview ? 0 : (Number.isFinite(Number(source.offset_y)) ? Number(source.offset_y) : 0);
         normalized.mirror = !!source.mirror;
         normalized.adapter = sanitizePath(source.adapter);
-        normalized.layered_metadata = normalizeAssetPath(source.layered_metadata || source.metadata);
+        const layeredMetadata = normalizeAssetPath(source.layered_metadata || source.metadata);
+        normalized.layered_metadata = resolveSiblingAsset(normalized.idle_image, layeredMetadata);
         normalized.source_format = sanitizePath(source.source_format || source.source_type);
         return normalized;
     }

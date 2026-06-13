@@ -841,6 +841,9 @@
                 if (window.pngtuberManager && typeof window.pngtuberManager.hide === 'function') {
                     window.pngtuberManager.hide();
                 }
+                if (typeof window.cleanupPNGTuberOverlayUI === 'function') {
+                    window.cleanupPNGTuberOverlayUI();
+                }
                 const pngtuberContainer = document.getElementById('pngtuber-container');
                 if (pngtuberContainer) {
                     pngtuberContainer.style.display = 'none';

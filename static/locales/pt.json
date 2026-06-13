@@ -752,7 +752,7 @@
         "avatarCropZoomOut": "Diminuir zoom",
         "avatarCropCancel": "Cancelar",
         "avatarCropSave": "Salvar",
-        "emptyState":  "As mensagens aparecerão aqui depois que o feed do bate-papo for conectado.",
+        "emptyState": "As mensagens aparecerão aqui depois que o feed do bate-papo for conectado.",
         "companionEmptyState": "(Estou aqui com você.)",
         "messageStreaming": "Gerando",
         "messageFailed": "Falha no envio",
@@ -1512,7 +1512,9 @@
         "motionStopped": "Movimento interrompido",
         "expressionCleared": "Expressão limpa",
         "cannotDeleteBoundModel": "Não é possível excluir o modelo em uso",
-        "modelInUse": "Em uso"
+        "modelInUse": "Em uso",
+        "pngtuberTalkPreview": "Test Talking",
+        "pngtuberStatePreview": "State Preview"
     },
     "voice": {
         "title": "Registro de voz",

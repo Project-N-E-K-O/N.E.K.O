@@ -441,6 +441,7 @@
         console.log('[Model] 开始热切换模型');
         let mmdRequestSessionId = '';
         let activeMmdLoadingSessionId = '';
+        var reloadSucceeded = false;
 
         try {
             // 1. Re-fetch page config, or use a caller-provided temporary runtime config.
@@ -504,7 +505,19 @@
                         cleanupVRMOverlayUI();
                         cleanupMMDOverlayUI();
                     }
-                    if (oldModelType === 'pngtuber') cleanupPNGTuberOverlayUI();
+                    if (oldModelType === 'pngtuber') {
+                        if (window.pngtuberManager && typeof window.pngtuberManager.hide === 'function') {
+                            window.pngtuberManager.hide();
+                        }
+                        cleanupPNGTuberOverlayUI();
+                        var oldPngtuberContainer = document.getElementById('pngtuber-container');
+                        if (oldPngtuberContainer) {
+                            oldPngtuberContainer.style.display = 'none';
+                            oldPngtuberContainer.style.visibility = 'hidden';
+                            oldPngtuberContainer.classList.add('hidden');
+                            oldPngtuberContainer.style.pointerEvents = 'none';
+                        }
+                    }
                 }
 
                 // 3. Switch based on model type
@@ -847,11 +860,10 @@
                     if (window.lanlan_config) {
                         window.lanlan_config.pngtuber = Object.assign({}, pngtuberConfig);
                     }
-                    if (typeof window.loadPNGTuberAvatar === 'function') {
-                        await window.loadPNGTuberAvatar(pngtuberConfig);
-                    } else {
-                        console.warn('[Model] PNGTuber runtime 未加载，无法显示 PNGTuber 模型');
+                    if (typeof window.loadPNGTuberAvatar !== 'function') {
+                        throw new Error('PNGTuber runtime not loaded');
                     }
+                    await window.loadPNGTuberAvatar(pngtuberConfig);
                 } else {
                     // Live2D mode
                     window.cubism4Model = newModelPath;
@@ -997,6 +1009,7 @@
                         2000
                     );
                 }
+                reloadSucceeded = true;
             } else {
                 console.error('[Model] 获取页面配置失败:', data.error);
                 if (!suppressToast) {
@@ -1036,9 +1049,13 @@
         } finally {
             // Clear in-flight flag
             window._modelReloadInFlight = false;
-            window._lastModelReloadKey = reloadKey;
-            window._lastModelReloadAt = Date.now();
-            window._lastModelReloadResult = true;
+            if (reloadSucceeded) {
+                window._lastModelReloadKey = reloadKey;
+                window._lastModelReloadAt = Date.now();
+                window._lastModelReloadResult = true;
+            } else {
+                window._lastModelReloadResult = false;
+            }
             window._modelReloadKey = '';
             resolveReload(window._lastModelReloadResult);
 
@@ -1547,6 +1564,24 @@
                         window.vrmManager._snapUIPosition = true;
                         window.vrmManager._startUIUpdateLoop();
                     }
+                }
+            } else if (currentModelType === 'pngtuber') {
+                var pngtuberContainer = document.getElementById('pngtuber-container');
+                if (pngtuberContainer) {
+                    pngtuberContainer.style.display = 'block';
+                    pngtuberContainer.style.visibility = 'visible';
+                    pngtuberContainer.classList.remove('hidden');
+                    pngtuberContainer.style.pointerEvents = 'auto';
+                }
+                var pngtuberImage = pngtuberContainer ? pngtuberContainer.querySelector('.pngtuber-image') : null;
+                if (pngtuberImage) {
+                    pngtuberImage.style.visibility = 'visible';
+                    pngtuberImage.style.pointerEvents = 'auto';
+                }
+                if (window.pngtuberManager && typeof window.pngtuberManager.show === 'function') {
+                    window.pngtuberManager.show();
+                } else if (window.pngtuberManager && typeof window.pngtuberManager.resumeRendering === 'function') {
+                    window.pngtuberManager.resumeRendering();
                 }
             } else {
                 // Show Live2D

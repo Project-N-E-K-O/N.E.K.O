@@ -1512,7 +1512,9 @@
         "motionStopped": "動作已停止",
         "expressionCleared": "表情已清除",
         "cannotDeleteBoundModel": "無法刪除目前正在使用的模型",
-        "modelInUse": "使用中"
+        "modelInUse": "使用中",
+        "pngtuberTalkPreview": "測試說話",
+        "pngtuberStatePreview": "狀態預覽"
     },
     "voice": {
         "title": "音色注冊",
