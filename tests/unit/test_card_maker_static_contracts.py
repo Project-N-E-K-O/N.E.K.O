@@ -63,6 +63,17 @@ def test_model_manager_pngtuber_preview_dropdown_uses_i18n_config():
     assert "iconAltKey: 'live2d.pngtuberStatePreview'" in config_block
 
 
+def test_model_manager_pngtuber_card_face_prefers_visible_drawable():
+    script = MODEL_MANAGER_JS.read_text(encoding="utf-8")
+    start = script.index("function getPNGTuberCaptureDrawable()")
+    end = script.index("async function capturePNGTuberPreviewToCanvas()", start)
+    capture_block = script[start:end]
+
+    assert "manager?.image" in capture_block
+    assert "drawables.find(isVisiblePNGTuberDrawable)" in capture_block
+    assert "document.querySelector('#pngtuber-container canvas.pngtuber-layered-canvas" not in script
+
+
 def test_model_manager_parameter_save_restores_unsaved_and_offers_card_face():
     script = MODEL_MANAGER_JS.read_text(encoding="utf-8")
     parameter_editor = (PROJECT_ROOT / "static" / "js" / "live2d_parameter_editor.js").read_text(encoding="utf-8")

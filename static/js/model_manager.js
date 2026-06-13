@@ -1340,12 +1340,76 @@ async function captureCurrentModelManagerCanvas(state = {}) {
     };
 }
 
+function getPNGTuberDrawableSize(drawable) {
+    if (!drawable) return { width: 0, height: 0 };
+    return {
+        width: drawable.width || drawable.naturalWidth || drawable.clientWidth || 0,
+        height: drawable.height || drawable.naturalHeight || drawable.clientHeight || 0
+    };
+}
+
+function isVisiblePNGTuberDrawable(drawable) {
+    if (!drawable) return false;
+    const size = getPNGTuberDrawableSize(drawable);
+    if (!size.width || !size.height) return false;
+    if (drawable.hidden || drawable.classList?.contains('hidden')) return false;
+    if (drawable.style?.display === 'none') return false;
+    if (typeof window.getComputedStyle === 'function') {
+        const style = window.getComputedStyle(drawable);
+        if (style.display === 'none' || style.visibility === 'hidden') return false;
+    }
+    return true;
+}
+
+function getPNGTuberCaptureDrawable() {
+    const manager = window.pngtuberManager;
+    if (manager && typeof manager.ensureContainer === 'function') {
+        try {
+            manager.ensureContainer();
+        } catch (error) {
+            console.warn('[model_manager] PNGTuber 容器准备失败:', error);
+        }
+    }
+
+    if (isVisiblePNGTuberDrawable(manager?.image)) {
+        return manager.image;
+    }
+
+    const container = document.getElementById('pngtuber-container');
+    if (!container) return null;
+    const drawables = Array.from(container.querySelectorAll('canvas.pngtuber-layered-canvas, img.pngtuber-image'));
+    return drawables.find(isVisiblePNGTuberDrawable) || null;
+}
+
+function waitForPNGTuberImageDrawable(drawable) {
+    if (!(drawable instanceof HTMLImageElement)) return Promise.resolve();
+    if (drawable.complete && drawable.naturalWidth > 0 && drawable.naturalHeight > 0) {
+        return Promise.resolve();
+    }
+    return new Promise((resolve, reject) => {
+        const cleanup = () => {
+            drawable.removeEventListener('load', onLoad);
+            drawable.removeEventListener('error', onError);
+        };
+        const onLoad = () => {
+            cleanup();
+            resolve();
+        };
+        const onError = () => {
+            cleanup();
+            reject(new Error('pngtuber_image_load_failed'));
+        };
+        drawable.addEventListener('load', onLoad, { once: true });
+        drawable.addEventListener('error', onError, { once: true });
+    });
+}
+
 async function capturePNGTuberPreviewToCanvas() {
     await new Promise(resolve => requestAnimationFrame(resolve));
-    const drawable = document.querySelector('#pngtuber-container canvas.pngtuber-layered-canvas, #pngtuber-container img.pngtuber-image');
+    const drawable = getPNGTuberCaptureDrawable();
     if (!drawable) throw new Error('pngtuber_drawable_not_ready');
-    const width = drawable.width || drawable.naturalWidth || drawable.clientWidth;
-    const height = drawable.height || drawable.naturalHeight || drawable.clientHeight;
+    await waitForPNGTuberImageDrawable(drawable);
+    const { width, height } = getPNGTuberDrawableSize(drawable);
     if (!width || !height) throw new Error('pngtuber_drawable_not_ready');
     const canvas = document.createElement('canvas');
     canvas.width = width;
