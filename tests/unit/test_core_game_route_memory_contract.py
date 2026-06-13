@@ -571,6 +571,94 @@ async def test_non_voice_transcript_skips_mini_game_invite_keyword(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_text_input_transcript_callback_uses_non_voice_path(monkeypatch):
+    """Text-mode session callbacks must not emit voice-only side effects."""
+    mgr = _make_transcript_manager()
+    seen = []
+    monkeypatch.setattr(
+        core_module, "dispatch_text_user_message",
+        lambda name, text: seen.append((name, text)),
+    )
+
+    await core_module.LLMSessionManager.handle_text_input_transcript(
+        mgr, "现在不想玩",
+    )
+
+    assert seen == []
+    assert mgr._activity_tracker.voice_rms_count == 0
+    mgr._publish_user_utterance_to_plugin_bus.assert_not_called()
+    assert mgr.sync_message_queue.messages == [{
+        "type": "user",
+        "data": {"input_type": "transcript", "data": "现在不想玩"},
+    }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_text_mode_image_input_is_mirrored_to_analyzer_queue(monkeypatch):
+    """Text-mode screenshots must stay available to turn-end analysis."""
+    mgr = _make_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session.stream_image = AsyncMock()
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    monkeypatch.setattr(core_module, "process_screen_data", AsyncMock(return_value="img-b64"))
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "screen", "data": "raw-image"},
+    )
+
+    mgr.session.stream_image.assert_awaited_once_with("img-b64")
+    assert mgr.sync_message_queue.messages == [{
+        "type": "user",
+        "data": {
+            "input_type": "screen",
+            "data": "data:image/jpeg;base64,img-b64",
+        },
+    }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_explicit_openclaw_magic_command_skips_local_text_stream(monkeypatch):
+    """Explicit OpenClaw slash commands use the manual-control fast path only."""
+    mgr = _make_transcript_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session.update_max_response_length = Mock()
+    mgr.session.stream_text = AsyncMock()
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._is_agent_enabled = Mock(return_value=True)
+    mgr.agent_flags = {"openclaw_enabled": True}
+    fired = []
+
+    def fake_fire_task(coro):
+        fired.append(coro)
+        coro.close()
+
+    mgr._fire_task = fake_fire_task
+    monkeypatch.setattr(core_module, "dispatch_text_user_message", lambda name, text: None)
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "/stop", "request_id": "req-1"},
+    )
+
+    assert len(fired) == 1
+    mgr.session.stream_text.assert_not_called()
+    assert mgr.sync_message_queue.messages == [{
+        "type": "user",
+        "data": {"input_type": "transcript", "data": "/stop"},
+    }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_genuine_voice_transcript_stamps_last_user_message_time(monkeypatch):
     """真实非空语音消息既刷 last_user_activity_time 也刷 last_user_message_time。
     后者喂给 mini-game 邀请隐式 dismiss，必须只反映真用户输入。"""

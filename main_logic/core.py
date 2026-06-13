@@ -46,6 +46,7 @@ from main_logic.proactive_delivery import ProactiveDeliveryManager
 from main_logic.agent_event_bus import (
     dispatch_text_user_message,
     dispatch_user_utterance,
+    publish_analyze_request_reliably,
     publish_voice_transcript_observed_best_effort,
 )
 from utils.preferences import load_global_conversation_settings, aload_global_conversation_settings
@@ -2201,6 +2202,36 @@ class LLMSessionManager:
                 f"[{self.lanlan_name}] mini_game_invite_resolved "
                 f"WS push failed: {_push_err}",
             )
+
+    async def handle_text_input_transcript(self, transcript: str):
+        """Reuse transcript queue/cache plumbing for text-mode sessions."""
+        await self.handle_input_transcript(transcript, is_voice_source=False)
+
+    @staticmethod
+    def _normalize_explicit_openclaw_magic_command(text: str) -> Optional[str]:
+        stripped = str(text or "").strip()
+        if stripped == "/clear":
+            return "/clear"
+        if stripped == "/new":
+            return "/new"
+        if stripped == "/stop":
+            return "/stop"
+        if stripped == "/daemon approve":
+            return "/daemon approve"
+        return None
+
+    async def _publish_openclaw_magic_command(self, command: str) -> None:
+        try:
+            await publish_analyze_request_reliably(
+                lanlan_name=self.lanlan_name,
+                trigger="text_openclaw_magic_command",
+                messages=[{"role": "user", "content": command}],
+                ack_timeout_s=0.8,
+                retries=1,
+                conversation_id=uuid4().hex,
+            )
+        except Exception as exc:
+            logger.info("[%s] openclaw magic command publish failed: %s", self.lanlan_name, exc)
 
     async def handle_input_transcript(self, transcript: str, *, is_voice_source: bool = True):
         """Sync transcript text into queues/cache and push it to the frontend.
@@ -4500,7 +4531,7 @@ class LLMSessionManager:
                         vision_base_url=vision_config['base_url'],
                         vision_api_key=vision_config['api_key'],
                         on_text_delta=self.handle_text_data,
-                        on_input_transcript=self.handle_input_transcript,
+                        on_input_transcript=self.handle_text_input_transcript,
                         on_output_transcript=self.handle_output_transcript,
                         on_connection_error=self.handle_connection_error,
                         on_response_done=self.handle_response_complete,
@@ -4974,7 +5005,7 @@ class LLMSessionManager:
                     vision_base_url=vision_config['base_url'],
                     vision_api_key=vision_config['api_key'],
                     on_text_delta=self.handle_text_data,
-                    on_input_transcript=self.handle_input_transcript,
+                    on_input_transcript=self.handle_text_input_transcript,
                     on_output_transcript=self.handle_output_transcript,
                     on_connection_error=self.handle_connection_error,
                     on_response_done=self.handle_response_complete,
@@ -7219,6 +7250,17 @@ class LLMSessionManager:
                         data if isinstance(data, str) else '',
                     )
 
+                    openclaw_magic_command = self._normalize_explicit_openclaw_magic_command(data)
+                    if (
+                        openclaw_magic_command
+                        and self._is_agent_enabled()
+                        and self.agent_flags.get("openclaw_enabled", False)
+                    ):
+                        await self.handle_text_input_transcript(data)
+                        self._fire_task(self._publish_openclaw_magic_command(openclaw_magic_command))
+                        logger.info("[%s] text input sent explicit openclaw magic command", self.lanlan_name)
+                        return
+
                     # 文本模式：把挂起的 agent 任务回调**就地拼到本轮 user
                     # message 的 content 前缀**——LLM 把它当作"用户当前发声那
                     # 一刻附带的额外上下文"，在同一轮回答里自然提及，不再起
@@ -7415,6 +7457,13 @@ class LLMSessionManager:
                         if isinstance(self.session, OmniOfflineClient):
                             # 只添加到待发送队列，等待与文本一起发送
                             await self.session.stream_image(image_b64)
+                            self.sync_message_queue.put({
+                                "type": "user",
+                                "data": {
+                                    "input_type": input_type,
+                                    "data": f"data:image/jpeg;base64,{image_b64}",
+                                },
+                            })
 
                         # 如果是语音模式（OmniRealtimeClient），检查是否支持视觉并直接发送
                         elif isinstance(self.session, OmniRealtimeClient):
