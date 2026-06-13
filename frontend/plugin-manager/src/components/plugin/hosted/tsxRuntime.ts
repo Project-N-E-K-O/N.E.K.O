@@ -239,6 +239,77 @@ function exportedVariableNames(declarationList: string) {
     .filter(Boolean)
 }
 
+function continuesVariableDeclarationAfterNewline(source: string, declarationStart: number, newlineIndex: number) {
+  const before = source.slice(declarationStart, newlineIndex).trimEnd()
+  const lastChar = before.at(-1) || ''
+  if (!lastChar) return true
+  if ('=,?:+-*/%&|^!~<>{([.'.includes(lastChar)) return true
+  const nextChar = source.slice(newlineIndex + 1).match(/^[^\S\r\n]*(\S)/)?.[1] || ''
+  return '?:.,+-*/%&|^!=<>'.includes(nextChar)
+}
+
+function variableDeclarationEnd(source: string, declarationStart: number) {
+  let depth = 0
+  let quote: string | null = null
+  let escaped = false
+
+  for (let index = declarationStart; index < source.length; index += 1) {
+    const char = source[index]
+    if (quote) {
+      if (escaped) {
+        escaped = false
+      } else if (char === '\\') {
+        escaped = true
+      } else if (char === quote) {
+        quote = null
+      }
+      continue
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char
+      continue
+    }
+    if (char === '(' || char === '[' || char === '{') {
+      depth += 1
+      continue
+    }
+    if (char === ')' || char === ']' || char === '}') {
+      depth = Math.max(0, depth - 1)
+      continue
+    }
+    if (char === ';' && depth === 0) {
+      return index + 1
+    }
+    if ((char === '\n' || char === '\r') && depth === 0) {
+      if (continuesVariableDeclarationAfterNewline(source, declarationStart, index)) {
+        continue
+      }
+      return index
+    }
+  }
+  return source.length
+}
+
+function transformVariableExports(source: string, exports: string[]) {
+  const pattern = /^([^\S\r\n]*)export\s+(const|let|var)\s+/gm
+  let result = ''
+  let cursor = 0
+  let match: RegExpExecArray | null = null
+  while ((match = pattern.exec(source))) {
+    const declarationStart = pattern.lastIndex
+    const declarationEnd = variableDeclarationEnd(source, declarationStart)
+    const declarationList = source.slice(declarationStart, declarationEnd)
+    for (const name of exportedVariableNames(declarationList)) {
+      exports.push(exportAssignment(name))
+    }
+    result += source.slice(cursor, match.index)
+    result += `${match[1]}${match[2]} ${declarationList}`
+    cursor = declarationEnd
+    pattern.lastIndex = declarationEnd
+  }
+  return `${result}${source.slice(cursor)}`
+}
+
 function moduleReExportStatements(rawNames: string, modulePath: string) {
   const statements: string[] = []
   const moduleRef = `__modules[${JSON.stringify(modulePath)}]`
@@ -290,15 +361,8 @@ function transformModuleExports(source: string) {
   let next = source
     .replace(/^\s*export\s+type\s+\{[^}]*\}\s*;?\s*$/gm, '')
     .replace(/^\s*export\s+(?=(interface|type)\b)/gm, '')
-    .replace(
-      /^\s*export\s+(const|let|var)\s+([^\n;]*)(;?)/gm,
-      (_match, declaration, declarationList, semicolon) => {
-        for (const name of exportedVariableNames(declarationList)) {
-          exports.push(exportAssignment(name))
-        }
-        return `${declaration} ${declarationList}${semicolon}`
-      },
-    )
+  next = transformVariableExports(next, exports)
+  next = next
     .replace(
       /^\s*export\s+(async\s+function|function|class)\s+([A-Za-z_$][\w$]*)/gm,
       (_match, declaration, name) => {

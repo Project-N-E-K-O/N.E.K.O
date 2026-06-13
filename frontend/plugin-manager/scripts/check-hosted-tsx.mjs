@@ -160,7 +160,10 @@ function extractRelativeImportSpecifiers(sourcePath, source) {
       node.expression.kind === ts.SyntaxKind.ImportKeyword &&
       node.arguments.length === 1
     ) {
-      addSpecifier(moduleSpecifierText(node.arguments[0]))
+      const specifier = moduleSpecifierText(node.arguments[0])
+      if (specifier && isRelativeSpecifier(specifier)) {
+        throw new Error(`Relative dynamic import is not supported in hosted TSX: ${sourcePath} imports ${specifier}`)
+      }
     }
     ts.forEachChild(node, visit)
   }

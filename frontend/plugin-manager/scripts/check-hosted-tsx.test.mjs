@@ -73,6 +73,29 @@ export default function Panel() {
   })
 })
 
+test('rejects relative dynamic imports in hosted TSX', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'dynamic-import')
+    writePluginToml(pluginDir, 'main.tsx')
+    writeFixtureFile(
+      join(pluginDir, 'main.tsx'),
+      `export default function Panel() {
+  async function load() {
+    return import('./helper')
+  }
+  return <Page title={String(load)} />
+}
+`,
+    )
+    writeFixtureFile(join(pluginDir, 'helper.ts'), 'export const label = "helper"\n')
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /Relative dynamic import is not supported in hosted TSX/)
+  })
+})
+
 test('limits plugin TOML input size', () => {
   withFixture((root) => {
     const pluginDir = join(root, 'large-toml')

@@ -329,8 +329,10 @@ describe('hosted TSX document runtime', () => {
     `, baseContext(), baseContext(), [{
       path: 'ui/multi.ts',
       source: `
-        export const first = ["A", "ignored"].slice(0, 1).join(""), second = "B";
-        export let third = "C", spare = "D";
+        export const first = ["A", "ignored"].slice(0, 1).join(""),
+          second = "B";
+        export let third = "C",
+          spare = "D";
       `,
     }])
 
