@@ -2116,20 +2116,13 @@ def _mini_game_invite_advance_response(
 
 
 def _mini_game_invite_in_cooldown(lanlan_name: str, game_type: str | None = None) -> bool:
-    """是否处于冷却期。True = 本轮不该掷骰。
+    """Return whether this character is in a mini-game invite cooldown.
 
-    覆盖：
-      - D2「回头再说」短期抑制（suppressed_until > now）→ True
-      - pending（投递了但 responded_at=None）→ True
-      - 已回应但 时间(by choice) 或 10 chats 任一未跨过 → True
-      - 从未投递 / 已完整跨过两道 → False
-
-    时间阈值按 last_response_choice 分：accept=2h、decline=5h。fallback 取 accept
-    阈值（短），避免遗留 state 没该字段时把用户卡到长 cooldown。
-
-    game_type 非空时，已完成回应后的长冷却/短抑制只作用于同一个游戏：
-    拒绝足球邀请不应挡住篮球邀请。pending 仍按角色全局抑制，避免一个
-    ChoicePrompt 还挂着时又投第二个邀请。
+    A true value means the current turn should not roll another invite. This
+    covers short suppression from the "later" choice, pending invites, and
+    replied invites that have not crossed both the time and chat-count gates.
+    Cooldowns after completed responses are scoped to the same game type, while
+    pending invites still suppress all game types for the character.
     """
     state = _mini_game_invite_state.get(lanlan_name)
     if not state:
@@ -2187,12 +2180,11 @@ def _mini_game_invite_count_post_response_chat(lanlan_name: str) -> None:
 
 
 def _pick_mini_game_type(lanlan_name: str | None = None) -> str | None:
-    """从 MINI_GAME_INVITE_AVAILABLE_GAMES 选一个 game_type。
+    """Pick an available mini-game type with invite copy configured.
 
-    必须是 MINI_GAME_INVITE_LINES_BY_GAME 里有文案的——如果配置错位（available
-    list 里有但 lines 里没），跳过那条。空 → None（caller 短路返回）。
-    lanlan_name 非空时，跳过该角色当前仍在冷却的游戏；这样拒绝 soccer
-    后仍可继续收到 basketball 邀请。"""
+    Games missing invite lines are skipped, and character-specific cooldowns are
+    respected when a character name is provided.
+    """
     candidates = [
         g for g in MINI_GAME_INVITE_AVAILABLE_GAMES
         if g in MINI_GAME_INVITE_LINES_BY_GAME
@@ -2209,23 +2201,12 @@ def _pick_mini_game_type(lanlan_name: str | None = None) -> str | None:
 
 
 def _resolve_proactive_locale(data: dict, mgr) -> str:
-    """主动搭话路径解析"用户当前 locale"的统一入口（短码 zh / en / ja / ko / ru / es / pt）。
+    """Resolve the active user locale for proactive chat flows.
 
-    proactive_chat 路径解 locale 历来三层兜底，但前两层之前漏了 session 真值：
-
-      1. request body 显式 ``language`` / ``lang`` / ``i18n_language`` —— 前端请求可
-         以一锤定音，最高优先。
-      2. ``mgr.user_language`` —— websocket 建连时由前端 i18n 推上来（见
-         ``main_routers/websocket_router.py`` 处理 ``message['language']`` 的分支），
-         in-game / Phase 2 LLM 都已在用，proactive 早先没接，导致 Steam SDK 在后端
-         启动时拿不到值就一直缓存系统 locale。
-      3. ``get_global_language()`` —— 进程级缓存，从 Steam SDK / 系统 locale 读一次。
-         Steam SDK 启动期 race 失败（schinese 没拿到）就退化为系统 locale，前后端
-         看到不同结果（前端异步 ``/api/config/steam_language`` 端点重读，能拿到对的
-         schinese → zh）。在 Steam=zh / 系统=en 的场景下尤其明显。
-
-    把 session 真值塞进第二层，proactive 邀请文案 / Phase 1-2 LLM 输出语言都跟在线
-    会话保持一致；仅在没有任何 session 上下文时才退到全局缓存。
+    Request data wins first, websocket session language is the second source of
+    truth, and the process-level global language is only a final fallback. This
+    keeps proactive invite copy and Phase 1-2 LLM output aligned with the live
+    session whenever frontend i18n has already reported the user's language.
     """
     request_lang = data.get('language') or data.get('lang') or data.get('i18n_language')
     # 与 ``main_routers/game_router._absorb_request_language`` 同形：第三方客户端 /
@@ -7459,10 +7440,12 @@ def _build_direct_mini_game_open_result(lanlan_name: str, game_type: str) -> dic
 
 
 def _match_direct_mini_game_request(text: str) -> str | None:
-    """用户主动说"玩一局投篮/打篮球"时直接启动对应小游戏。
+    """Match explicit user requests to start a supported mini game.
 
-    这条路径不依赖 pending invite；它是用户主动请求，所以不进入 invite cooldown。
-    匹配要求同时出现游戏词和行动词，避免"篮球新闻"这类闲聊误开页面。"""
+    This path does not depend on a pending invite and does not enter invite
+    cooldown. It requires both game and action terms so casual mentions do not
+    accidentally open a game page.
+    """
     norm = str(text or "").lower().strip()
     if not norm:
         return None
@@ -7479,19 +7462,12 @@ def _match_direct_mini_game_request(text: str) -> str | None:
 def _maybe_apply_mini_game_invite_keyword(
     lanlan_name: str, text: str,
 ) -> dict[str, Any] | None:
-    """文本入口（core.py user message handler）调一次。
+    """Apply mini-game invite keywords for one user-message text entry.
 
-    1. pending invite 时尝试 accept/decline/later 关键词，命中即触发 state 转换；
-    2. 没有 pending invite 时，如果用户直接请求"玩一局投篮/打篮球"，返回
-       open_game，让 caller 推 WS 打开对应小游戏。
-
-    **不吃掉用户消息**——caller 应继续走普通 chat 流水线，AI 仍然会回应这条
-    话。仅做 state side effect。
-
-    - 文本空 / 没命中 → None
-    - 命中 accept → ``{action: 'open_game', game_type, game_url}``
-    - 命中 decline / later → ``{action: 'cooldown' | 'suppress'}``
-    - 命中直接请求 → ``{action: 'open_game', game_type, game_url}``
+    Pending invites try accept, decline, and later keywords. Without a pending
+    invite, direct game requests can still return an open-game action for the
+    caller to forward over the websocket. This helper does not consume the user
+    message; normal chat handling should still continue.
     """
     state = _mini_game_invite_state.get(lanlan_name)
     if not state or state.get('delivered_at') is None or state.get('responded_at') is not None:
@@ -7510,11 +7486,11 @@ def _maybe_apply_mini_game_invite_keyword(
 
 @router.post('/proactive/music_played_through')
 async def proactive_music_played_through(request: Request):
-    """
-    用户把推荐的歌完整听完后由前端 fire（aplayer 'ended' 事件）。
-    后端把 _proactive_chat_history 中该角色所有 channel == 'music' 的 entry 的
-    通道字段清空，从而让 _compute_source_weights 不再把"刚刚共享过音乐"
-    继续计入对 music 通道的衰减惩罚——完整播放是用户对该通道最强的正向反馈。
+    """Record that the user finished a recommended song.
+
+    Completed playback is strong positive feedback for the music channel, so
+    matching proactive history entries are cleared from the channel-specific
+    decay calculation.
     """
     validation_error = _validate_local_mutation_request(request)
     if validation_error is not None:

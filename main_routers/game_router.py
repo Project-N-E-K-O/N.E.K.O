@@ -4486,7 +4486,7 @@ def _safe_int(value: Any, default: int = 0) -> int:
 
 
 def _build_basketball_duel_balance_hint(event: Any) -> Dict[str, Any]:
-    """基于 Basketball duel 比分生成软提示。"""
+    """Build a soft balance hint from the Basketball duel score."""
     if not isinstance(event, dict):
         return {}
     duel = event.get("duel") if isinstance(event.get("duel"), dict) else {}
@@ -4559,7 +4559,7 @@ def _build_basketball_duel_anger_pressure_cap(
     lanlan_prompt: str = "",
     language: str | None = None,
 ) -> Dict[str, Any]:
-    """Duel 模式下 angry + punishing 的情绪压力上限。"""
+    """Build the anger pressure cap for angry and punishing duel mode."""
     if not isinstance(event, dict) or not isinstance(route_state, dict):
         return {}
     pre_game = route_state.get("preGameContext")
@@ -4616,7 +4616,7 @@ def _build_basketball_duel_anger_pressure_cap(
 
 
 def _apply_basketball_anger_pressure_cap(result: Dict[str, Any], event: Any) -> Dict[str, Any]:
-    """Duel 模式压力上限后处理：阻止 LLM 继续 max 压制。"""
+    """Apply duel pressure cap post-processing to avoid continued max pressure."""
     if not isinstance(result, dict) or not isinstance(event, dict):
         return result
     cap = event.get("angerPressureCap") if isinstance(event.get("angerPressureCap"), dict) else {}
@@ -6994,10 +6994,11 @@ async def game_basketball_leaderboard_submit(game_type: str, request: Request):
 
 @router.get("/{game_type}/character")
 async def game_character(game_type: str, request: Request = None):
-    """获取当前角色信息（需求 2：角色替换用）。
+    """Return current character information for model replacement.
 
-    返回当前角色的模型类型和可由前端直接请求的模型路径。
-    各小游戏按自身能力选择 Live2D / VRM / MMD 渲染或明确 fallback。
+    The response includes the current model type and a frontend-addressable
+    model path. Each mini game chooses Live2D, VRM, MMD, or an explicit fallback
+    according to its own rendering support.
     """
     def normalize_live3d_path(raw: str, static_dir: str) -> str:
         if not raw or not isinstance(raw, str):

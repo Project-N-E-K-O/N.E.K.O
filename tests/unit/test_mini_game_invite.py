@@ -145,7 +145,7 @@ def test_in_cooldown_true_when_responded_within_24h_and_under_10_chats():
 
 
 def test_game_specific_cooldown_does_not_cross_block_other_game():
-    """拒绝 soccer 后，soccer 在冷却；basketball 不应被这次冷却挡住。"""
+    """Declining soccer should not block a basketball invite cooldown."""
     state = sr._mini_game_invite_get_state(LANLAN)
     state['delivered_at'] = time.time() - 60
     state['responded_at'] = time.time() - 60
@@ -970,7 +970,7 @@ def test_cooldown_decline_is_5h_by_default():
 
 @pytest.mark.asyncio
 async def test_declined_soccer_invite_still_allows_basketball_invite(monkeypatch):
-    """同角色下 soccer 已回应进入冷却时，邀请选择器应跳过 soccer 并仍可投 basketball。"""
+    """A soccer cooldown should still allow a basketball invite for the character."""
     monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
     monkeypatch.setattr(sr, 'MINI_GAME_INVITE_AVAILABLE_GAMES', ('soccer', 'basketball'))
     state = sr._mini_game_invite_get_state(LANLAN)
