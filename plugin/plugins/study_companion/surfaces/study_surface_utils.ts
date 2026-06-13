@@ -537,9 +537,13 @@ function waitForPluginPoll(signal?: AbortSignal): Promise<void> {
 export async function callPlugin(
   entryId: string,
   args: Record<string, unknown> = {},
-  options: CallPluginOptions = {},
+  options: CallPluginOptions | AbortSignal = {},
 ) {
-  const { signal, timeoutMs = DEFAULT_PLUGIN_CALL_TIMEOUT_MS } = options;
+  // Backward compatible with callers passing a bare AbortSignal as the 3rd
+  // argument (e.g. study_panel's status/mode/explain calls). Without this they
+  // would destructure an AbortSignal as options and silently lose cancellation.
+  const normalized = options instanceof AbortSignal ? { signal: options } : options;
+  const { signal, timeoutMs = DEFAULT_PLUGIN_CALL_TIMEOUT_MS } = normalized;
   const created = await readJsonResponse(await fetch('/runs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
