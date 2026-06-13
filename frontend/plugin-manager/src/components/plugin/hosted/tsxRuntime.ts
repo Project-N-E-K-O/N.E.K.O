@@ -31,13 +31,16 @@ function escapeHtmlAttribute(value: string) {
 }
 
 const IMPORT_SOURCE_PATTERN = /^[^\S\r\n]*import(?:([\s\S]*?)\sfrom\s+|[^\S\r\n]+)['"]([^'"]+)['"][^\S\r\n]*;?[^\S\r\n]*(?:\r?\n|$)/gm
-const HOSTED_CODE_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx']
+const HOSTED_CODE_EXTENSIONS = ['.tsx', '.ts', '.jsx', '.js']
 
 function normalizeHostedPath(path: string) {
   const parts: string[] = []
   for (const segment of path.replace(/\\/g, '/').split('/')) {
     if (!segment || segment === '.') continue
     if (segment === '..') {
+      if (parts.length === 0) {
+        throw new Error(`Hosted TSX path escapes root: ${path}`)
+      }
       parts.pop()
       continue
     }
@@ -107,6 +110,52 @@ function moduleImportStatement(rawBindings: string | undefined, modulePath: stri
     statements.push(`const { ${namedBindings.join(', ')} } = ${moduleRef};`)
   }
   return statements.length > 0 ? `${statements.join('\n')}\n` : ''
+}
+
+function hostedRelativeImportPaths(
+  source: string,
+  fromPath: string,
+  dependenciesByPath: Map<string, HostedTsxDependency>,
+) {
+  const paths: string[] = []
+  source.replace(IMPORT_SOURCE_PATTERN, (match, _rawBindings: string | undefined, specifier: string) => {
+    if (specifier.startsWith('./') || specifier.startsWith('../')) {
+      const modulePath = resolveHostedImport(fromPath, specifier, dependenciesByPath)
+      if (modulePath) paths.push(modulePath)
+    }
+    return match
+  })
+  return paths
+}
+
+function orderedHostedDependencyEntries(dependenciesByPath: Map<string, HostedTsxDependency>) {
+  const ordered: Array<[string, HostedTsxDependency]> = []
+  const visited = new Set<string>()
+  const visiting: string[] = []
+
+  function visit(path: string) {
+    if (visited.has(path)) return
+    const cycleStart = visiting.indexOf(path)
+    if (cycleStart >= 0) {
+      const cycle = [...visiting.slice(cycleStart), path].join(' -> ')
+      throw new Error(`Circular hosted TSX dependency: ${cycle}`)
+    }
+    const dependency = dependenciesByPath.get(path)
+    if (!dependency) return
+
+    visiting.push(path)
+    for (const nextPath of hostedRelativeImportPaths(dependency.source, path, dependenciesByPath)) {
+      visit(nextPath)
+    }
+    visiting.pop()
+    visited.add(path)
+    ordered.push([path, dependency])
+  }
+
+  for (const path of dependenciesByPath.keys()) {
+    visit(path)
+  }
+  return ordered
 }
 
 function transformHostedImports(
@@ -188,7 +237,7 @@ function bundleHostedTsxSource(
       .filter((dependency) => dependency && typeof dependency.source === 'string')
       .map((dependency) => [normalizeHostedPath(String(dependency.path || 'inline')), dependency] as const),
   )
-  const chunks = Array.from(dependenciesByPath.entries())
+  const chunks = orderedHostedDependencyEntries(dependenciesByPath)
     .map(([path, dependency]) => {
       const moduleSource = transformModuleExports(transformHostedImports(dependency.source, path, dependenciesByPath))
       return `

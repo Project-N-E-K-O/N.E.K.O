@@ -22,6 +22,11 @@ const STUDY_SURFACE_MESSAGE_TYPES = Object.freeze({
   refreshSummary: 'neko-study-refresh-summary',
   memoryDeckUpdated: 'neko-study-memory-deck-updated',
 });
+const STUDY_SURFACE_INCOMING_MESSAGE_TYPES = new Set([
+  STUDY_SURFACE_MESSAGE_TYPES.reviewCompleted,
+  STUDY_SURFACE_MESSAGE_TYPES.refreshSummary,
+  STUDY_SURFACE_MESSAGE_TYPES.memoryDeckUpdated,
+]);
 let currentMode = 'companion';
 let currentMemoryCard = null;
 
@@ -545,7 +550,20 @@ function openHostedSurface(surfaceId) {
 }
 
 function trustedStudySurfaceOrigin(origin) {
-  return origin === window.location.origin || origin === 'null';
+  return origin === window.location.origin;
+}
+
+function isTrustedStudySurfaceMessage(message) {
+  if (!message || typeof message !== 'object') {
+    return false;
+  }
+  if (!STUDY_SURFACE_INCOMING_MESSAGE_TYPES.has(message.type)) {
+    return false;
+  }
+  if (message.type !== STUDY_SURFACE_MESSAGE_TYPES.memoryDeckUpdated) {
+    return message.payload === undefined || (message.payload !== null && typeof message.payload === 'object');
+  }
+  return message.payload !== null && typeof message.payload === 'object' && !Array.isArray(message.payload);
 }
 
 function requestStudyStatusRefresh() {
@@ -568,6 +586,9 @@ function handleStudySurfaceMessage(event) {
     return;
   }
   const message = event.data || {};
+  if (!isTrustedStudySurfaceMessage(message)) {
+    return;
+  }
   if (
     message.type === STUDY_SURFACE_MESSAGE_TYPES.reviewCompleted
     || message.type === STUDY_SURFACE_MESSAGE_TYPES.refreshSummary

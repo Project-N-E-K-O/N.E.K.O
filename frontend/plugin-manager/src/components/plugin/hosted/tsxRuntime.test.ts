@@ -243,6 +243,86 @@ describe('hosted TSX document runtime', () => {
     expect(root.querySelector('strong')?.textContent).toBe('shared helper')
   })
 
+  it('prefers TSX over TS for extensionless hosted imports at runtime', () => {
+    const { root } = executeHostedDocument(`
+      import { label } from "./shared"
+
+      export default function Panel() {
+        return <strong>{label}</strong>
+      }
+    `, baseContext(), baseContext(), [{
+      path: 'ui/shared.ts',
+      source: 'export const label = "ts"',
+    }, {
+      path: 'ui/shared.tsx',
+      source: 'export const label = "tsx"',
+    }])
+
+    expect(root.querySelector('strong')?.textContent).toBe('tsx')
+  })
+
+  it('orders multi-level hosted dependencies before dependents', () => {
+    const { root } = executeHostedDocument(`
+      import { value } from "./a"
+
+      export default function Panel() {
+        return <strong>{value}</strong>
+      }
+    `, baseContext(), baseContext(), [{
+      path: 'ui/a.tsx',
+      source: `
+        import { value as child } from "./b"
+        export const value = child + "A"
+      `,
+    }, {
+      path: 'ui/b.tsx',
+      source: `
+        import { value as child } from "./c"
+        export const value = child + "B"
+      `,
+    }, {
+      path: 'ui/c.tsx',
+      source: 'export const value = "C"',
+    }])
+
+    expect(root.querySelector('strong')?.textContent).toBe('CBA')
+  })
+
+  it('rejects hosted imports that escape the plugin UI root', () => {
+    expect(() => executeHostedDocument(`
+      import { label } from "../../escape"
+
+      export default function Panel() {
+        return <strong>{label}</strong>
+      }
+    `, baseContext(), baseContext(), [{
+      path: 'escape.tsx',
+      source: 'export const label = "escape"',
+    }])).toThrow(/escapes root/)
+  })
+
+  it('rejects circular hosted TSX dependencies with the cycle path', () => {
+    expect(() => executeHostedDocument(`
+      import { value } from "./a"
+
+      export default function Panel() {
+        return <strong>{value}</strong>
+      }
+    `, baseContext(), baseContext(), [{
+      path: 'ui/a.tsx',
+      source: `
+        import { value as child } from "./b"
+        export const value = child + "A"
+      `,
+    }, {
+      path: 'ui/b.tsx',
+      source: `
+        import { value as child } from "./a"
+        export const value = child + "B"
+      `,
+    }])).toThrow(/Circular hosted TSX dependency: ui\/a\.tsx -> ui\/b\.tsx -> ui\/a\.tsx/)
+  })
+
   it('bridges api.call and api.refresh through parent postMessage', async () => {
     const { root, messages } = executeHostedDocument(`
       export default function Panel(props) {

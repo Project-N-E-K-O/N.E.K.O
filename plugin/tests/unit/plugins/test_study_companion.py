@@ -284,6 +284,32 @@ async def test_study_plugin_startup_auto_opens_static_ui(
 
 
 @pytest.mark.asyncio
+async def test_study_plugin_startup_auto_open_falls_back_for_invalid_port(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened: list[str] = []
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setenv("NEKO_USER_PLUGIN_SERVER_PORT", "70000")
+    monkeypatch.setattr(study_companion_module, "_open_url_in_browser", opened.append)
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "auto_open_ui": True},
+            "study_companion": {"communication": {"enabled": False}},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+
+    result = await plugin.startup()
+
+    try:
+        assert isinstance(result, Ok)
+        assert opened == ["http://127.0.0.1:48916/plugin/study_companion/ui/"]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_study_plugin_auto_open_failure_does_not_block_startup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1572,6 +1598,10 @@ def test_study_companion_ui_refactor_static_and_hosted_contracts() -> None:
     assert "modeSwitch.style.setProperty('--indicator-left'" in main_js
     assert "modeSwitch.style.setProperty('--indicator-width'" in main_js
     assert "modeSwitch.setAttribute('data-ready', 'true')" in main_js
+    assert "return origin === window.location.origin;" in main_js
+    assert "origin === 'null'" not in main_js
+    assert "const STUDY_SURFACE_INCOMING_MESSAGE_TYPES = new Set" in main_js
+    assert "function isTrustedStudySurfaceMessage(message)" in main_js
 
     assert "export const BRAND_CSS" in surface_utils
     assert "export function ensureBrandCSS()" in surface_utils

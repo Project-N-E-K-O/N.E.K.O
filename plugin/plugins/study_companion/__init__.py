@@ -359,7 +359,14 @@ class StudyCompanionPlugin(
     async def _auto_open_ui_if_enabled(self) -> None:
         if not self._cfg.auto_open_ui:
             return
-        port = os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", "48916")
+        raw_port = str(os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", "48916") or "48916").strip()
+        try:
+            port_num = int(raw_port)
+        except ValueError:
+            port_num = 48916
+        if not (1 <= port_num <= 65535):
+            port_num = 48916
+        port = str(port_num)
         url = f"http://127.0.0.1:{port}/plugin/{self.plugin_id}/ui/"
         try:
             await asyncio.to_thread(_open_url_in_browser, url)
