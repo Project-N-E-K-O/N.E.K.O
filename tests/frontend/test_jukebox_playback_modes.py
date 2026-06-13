@@ -244,6 +244,7 @@ def test_jukebox_next_song_respects_sequence_single_and_random(mock_page: Page):
 
           J.State.playbackMode = 'single';
           const singleNext = J.getNextSongToPlay(ended)?.id;
+          const removedSingleNext = J.getNextSongToPlay({ id: 'removed-song' });
 
           const originalRandom = Math.random;
           Math.random = () => 0;
@@ -256,6 +257,7 @@ def test_jukebox_next_song_respects_sequence_single_and_random(mock_page: Page):
             sequenceEnd,
             noneNext,
             singleNext,
+            removedSingleNext,
             randomNext
           };
         }
@@ -267,6 +269,7 @@ def test_jukebox_next_song_respects_sequence_single_and_random(mock_page: Page):
         "sequenceEnd": None,
         "noneNext": None,
         "singleNext": "song1",
+        "removedSingleNext": None,
         "randomNext": "song2",
     }
 
@@ -288,17 +291,26 @@ def test_jukebox_auto_next_skips_idle_restore_only_when_next_song_has_animation(
           J.playSong = async (songId) => {
             played.push(songId);
           };
-          J.getActionForModel = (song) => song.hasAnimation ? { id: `action-${song.id}` } : null;
+          J.getModelType = () => 'mmd';
           J.State.isOpen = true;
           J.State.playbackMode = 'sequence';
-          J.State.songs[1].hasAnimation = true;
+          J.State.songs[1].boundActions = [{ id: 'action-song2', name: 'Action', format: 'vmd' }];
+          J.State.songs[1].defaultAction = 'action-song2';
           J.State.currentSong = J.State.songs[0];
 
           J.handleAudioEnded({ options: { loop: 'none' } });
           await new Promise((resolve) => setTimeout(resolve, 0));
 
-          J.State.songs[1].hasAnimation = false;
+          J.State.songs[1].boundActions = [];
+          J.State.songs[1].defaultAction = '';
           J.State.currentSong = J.State.songs[0];
+          J.handleAudioEnded({ options: { loop: 'none' } });
+          await new Promise((resolve) => setTimeout(resolve, 0));
+
+          J.State.songs[1].boundActions = [{ id: 'missing-song2', name: 'Missing', format: 'vmd', missing: true }];
+          J.State.songs[1].defaultAction = 'missing-song2';
+          J.State.currentSong = J.State.songs[0];
+          const missingAction = J.getActionForModel(J.State.songs[1]);
           J.handleAudioEnded({ options: { loop: 'none' } });
           await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -306,14 +318,55 @@ def test_jukebox_auto_next_skips_idle_restore_only_when_next_song_has_animation(
           J.handleAudioEnded({ options: { loop: 'none' } });
           await new Promise((resolve) => setTimeout(resolve, 0));
 
-          return { stopArgs, played };
+          return { missingAction, stopArgs, played };
         }
         """
     )
 
     assert result == {
-        "stopArgs": [True, False, False],
-        "played": ["song2", "song2"],
+        "missingAction": None,
+        "stopArgs": [True, False, False, False],
+        "played": ["song2", "song2", "song2"],
+    }
+
+
+@pytest.mark.frontend
+def test_jukebox_single_loop_removed_current_song_restores_idle(mock_page: Page):
+    setup_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+          const J = window.Jukebox;
+          const stopArgs = [];
+          const played = [];
+          J.stopVMD = (skipIdleRestore) => {
+            stopArgs.push(skipIdleRestore);
+          };
+          J.updateStoppedStatus = () => {};
+          J.playSong = async (songId) => {
+            played.push(songId);
+          };
+          J.getActionForModel = () => ({ id: 'stale-action' });
+          J.State.isOpen = true;
+          J.State.playbackMode = 'single';
+          J.State.songs = J.State.songs.filter(song => song.id !== 'song1');
+          const removedSong = { id: 'song1', name: 'Removed Song' };
+          J.State.currentSong = removedSong;
+          const nextSong = J.getNextSongToPlay(removedSong);
+
+          J.handleAudioEnded({ options: { loop: 'none' } });
+          await new Promise((resolve) => setTimeout(resolve, 0));
+
+          return { nextSong, stopArgs, played };
+        }
+        """
+    )
+
+    assert result == {
+        "nextSong": None,
+        "stopArgs": [False],
+        "played": [],
     }
 
 

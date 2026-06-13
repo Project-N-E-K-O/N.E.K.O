@@ -6828,7 +6828,7 @@ window.Jukebox = {
     }
 
     if (Jukebox.State.playbackMode === 'single') {
-      return songs.find(song => song.id === endedSong.id) || endedSong;
+      return songs.find(song => song.id === endedSong.id) || null;
     }
 
     if (Jukebox.State.playbackMode === 'random') {
@@ -7791,7 +7791,8 @@ window.Jukebox = {
 
     // 获取绑定的动画中对应格式的动画
     const boundActions = song.boundActions || [];
-    const formatActions = boundActions.filter(a =>
+    const availableActions = boundActions.filter(a => a.missing !== true);
+    const formatActions = availableActions.filter(a =>
       (a.format || 'vmd').toLowerCase() === targetFormat
     );
 
