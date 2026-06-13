@@ -1904,6 +1904,7 @@
       line: entry.line,
       expiresAt: Date.now() + holdMs
     };
+    showBubble(entry.line, entry.control);
     return _mirrorAndSpeak(entry).finally(function () {
       if (voiceArbiter.inFlight && voiceArbiter.inFlight.id === entry.id) {
         setTimeout(function () {
@@ -1949,7 +1950,6 @@
     assistToastTimer = setTimeout(function () { assistHint.classList.remove('show'); }, 1500);
   }
   function speakLine(line, control, event) {
-    showBubble(line, control);
     var isUserReply = !!(event && (event.kind === 'user_reply' || event.isUserReply || event.source === 'user_reply'));
     var entrySessionId = String((event && event.session_id) || sessionId || '');
     var entryLanlanName = String((event && (event.lanlan_name || event.lanlanName)) || getRouteLanlanName() || lanlanName || '');
@@ -4007,7 +4007,9 @@
         game.timedDeadline = performance.now() + TIME_ATTACK_DURATION * 1000;
         game.timedTimerStarted = true;
       }
+      var previousTimedSeconds = Math.max(0, Math.ceil(game.timedRemaining));
       game.timedRemaining = Math.max(0, (game.timedDeadline - performance.now()) / 1000);
+      if (Math.max(0, Math.ceil(game.timedRemaining)) !== previousTimedSeconds) updateHud();
       if (game.timedRemaining <= 0) {
         game.state = 'game_over';
         game.ball = null;

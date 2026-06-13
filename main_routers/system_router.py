@@ -7492,7 +7492,29 @@ def _direct_request_pair_has_scoped_negation(
                 if not any(mark in between for mark in ",;.!?，。！？；"):
                     return True
             start = norm.find(token, start + 1)
+    if _direct_request_pair_has_cjk_negation_before_action(norm, action_hit):
+        return True
     return False
+
+
+def _direct_request_pair_has_cjk_negation_before_action(
+    norm: str,
+    action_hit: tuple[int, int, str],
+) -> bool:
+    action_start, _, action_term = action_hit
+    if _direct_request_is_ascii_word_term(action_term):
+        return False
+    window = norm[max(0, action_start - 8):action_start]
+    negation_index = max(window.rfind("不"), window.rfind("别"))
+    if negation_index < 0:
+        return False
+    between = window[negation_index + 1:]
+    if any(mark in between for mark in ",;.!?，。！？；"):
+        return False
+    return not between or any(
+        cue in between
+        for cue in ("想", "要", "太", "很", "再", "怎么", "愿意", "打", "踢", "玩", "开", "投")
+    )
 
 
 _DIRECT_REQUEST_CJK_CUES = (
