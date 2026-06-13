@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 from pathlib import Path, PurePosixPath
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Body, File, UploadFile
 from fastapi.responses import JSONResponse
@@ -38,6 +39,38 @@ def _safe_relative_path(raw_path: str) -> PurePosixPath | None:
     if rel.is_absolute() or any(part in ("", ".", "..") for part in rel.parts):
         return None
     return rel
+
+
+def _resolve_delete_folder_from_key(key: str) -> str | None:
+    normalized = (key or "").replace("\\", "/").strip()
+    if not normalized:
+        return None
+
+    parsed = urlsplit(normalized)
+    if parsed.scheme and parsed.path:
+        normalized = parsed.path
+    else:
+        normalized = normalized.split("?", 1)[0].split("#", 1)[0]
+
+    rel = _safe_relative_path(normalized)
+    if rel is None:
+        return None
+
+    parts = rel.parts
+    user_prefix = PNGTUBER_USER_PATH.strip("/")
+    if parts and parts[0] == user_prefix:
+        parts = parts[1:]
+    if not parts:
+        return None
+
+    if parts[-1].lower() == "model.json":
+        if len(parts) != 2:
+            return None
+        return parts[-2]
+
+    if len(parts) != 1:
+        return None
+    return parts[0]
 
 
 def _split_upload_root(paths: list[PurePosixPath]) -> tuple[str, dict[PurePosixPath, PurePosixPath]]:
@@ -285,8 +318,9 @@ async def delete_pngtuber_model(payload: dict = Body(...)):
     key = payload.get("folder") or payload.get("url") or payload.get("name")
     if not isinstance(key, str) or not key.strip():
         return JSONResponse(status_code=400, content={"success": False, "error": "缺少PNGTuber模型标识"})
-    folder = key.replace("\\", "/").strip("/").split("/")[-2 if key.endswith("/model.json") else -1]
-    folder = _slugify_name(folder)
+    folder = _resolve_delete_folder_from_key(key)
+    if not folder:
+        return JSONResponse(status_code=400, content={"success": False, "error": "无效的PNGTuber模型标识"})
 
     config_mgr = get_config_manager()
     config_mgr.ensure_pngtuber_directory()
