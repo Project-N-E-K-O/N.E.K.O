@@ -7487,6 +7487,10 @@ def _direct_request_pair_has_scoped_negation(
                 return True
             if end <= first_start and first_start - end <= 4:
                 return True
+            if _direct_request_is_ascii_word_term(token) and end <= first_start and first_start - end <= 24:
+                between = norm[end:first_start]
+                if not any(mark in between for mark in ",;.!?，。！？；"):
+                    return True
             start = norm.find(token, start + 1)
     return False
 
