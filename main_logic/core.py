@@ -2209,9 +2209,19 @@ class LLMSessionManager:
 
     @staticmethod
     def _normalize_explicit_openclaw_magic_command(text: str) -> Optional[str]:
-        from brain.openclaw_adapter import OpenClawAdapter
-
-        return OpenClawAdapter.normalize_magic_command(text)
+        raw = str(text or "").strip()
+        if not raw:
+            return None
+        lowered = raw.lower()
+        if lowered in {"/clear", "clear"}:
+            return "/clear"
+        if lowered in {"/new", "new"}:
+            return "/new"
+        if lowered in {"/stop", "stop"}:
+            return "/stop"
+        if lowered in {"/daemon approve", "daemon approve", "/approve", "approve"}:
+            return "/daemon approve"
+        return None
 
     def _clear_text_pending_images(self) -> None:
         if not isinstance(self.session, OmniOfflineClient):
