@@ -965,6 +965,24 @@ def test_turn_image_partition_retains_later_request_images():
 
 
 @pytest.mark.unit
+def test_turn_image_partition_retains_untagged_images_without_user_input():
+    """Agent/proactive turn ends must not steal image-only screenshots before the user's text."""
+    pending = [
+        {"data": "data:image/jpeg;base64,screen", "request_id": ""},
+        "data:image/jpeg;base64,legacy",
+    ]
+
+    selected, remaining = cross_server_module._partition_pending_user_images_for_turn(
+        pending,
+        None,
+        consume_untagged=False,
+    )
+
+    assert selected == []
+    assert remaining == pending
+
+
+@pytest.mark.unit
 def test_session_end_request_tagged_screenshot_selection_falls_back_to_latest_request():
     """Session-end cleanup may not carry request_id, but must not drop tagged images."""
     pending = [

@@ -222,17 +222,28 @@ def _select_pending_user_images_for_turn(pending_user_images: list, request_id: 
     return selected
 
 
-def _partition_pending_user_images_for_turn(pending_user_images: list, request_id: object) -> tuple[list, list]:
+def _partition_pending_user_images_for_turn(
+    pending_user_images: list,
+    request_id: object,
+    *,
+    consume_untagged: bool = True,
+) -> tuple[list, list]:
     turn_request_id = str(request_id or "")
     selected = []
     remaining = []
     for raw in pending_user_images or []:
         if not isinstance(raw, dict):
+            if not consume_untagged:
+                remaining.append(raw)
+                continue
             if not turn_request_id:
                 selected.append(raw)
             continue
         image_request_id = str(raw.get("request_id") or "")
         if image_request_id and image_request_id != turn_request_id:
+            remaining.append(raw)
+            continue
+        if not image_request_id and not consume_untagged:
             remaining.append(raw)
             continue
         selected.append(raw)
@@ -945,6 +956,7 @@ async def run_sync_connector(
                                         _partition_pending_user_images_for_turn(
                                             pending_user_images,
                                             turn_request_id,
+                                            consume_untagged=had_user_input_this_turn,
                                         )
                                     )
                                     try:
