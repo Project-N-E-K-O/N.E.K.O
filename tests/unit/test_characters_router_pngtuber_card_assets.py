@@ -74,6 +74,40 @@ def test_copy_imported_pngtuber_assets_renames_conflicts_and_rewrites_refs(tmp_p
     assert pngtuber["talking_image"] == "/static/pngtuber/default/talk.png"
 
 
+def test_restore_imported_pngtuber_avatar_config_without_copied_assets():
+    source_data = {
+        "_reserved": {
+            "avatar": {
+                "model_type": "pngtuber",
+                "pngtuber": {
+                    "idle_image": "/static/pngtuber/default/idle.png",
+                    "talking_image": "https://example.invalid/pngtuber/talk.webp",
+                    "offset_x": 32,
+                    "offset_y": -16,
+                    "mirror": True,
+                },
+            }
+        }
+    }
+    filtered_character_data = {}
+
+    restored = characters_router._restore_imported_pngtuber_avatar_config(
+        filtered_character_data,
+        source_data,
+        {},
+    )
+
+    avatar = restored["_reserved"]["avatar"]
+    pngtuber = avatar["pngtuber"]
+
+    assert avatar["model_type"] == "pngtuber"
+    assert pngtuber["idle_image"] == "/static/pngtuber/default/idle.png"
+    assert pngtuber["talking_image"] == "https://example.invalid/pngtuber/talk.webp"
+    assert pngtuber["offset_x"] == 32
+    assert pngtuber["offset_y"] == -16
+    assert pngtuber["mirror"] is True
+
+
 def test_restore_imported_pngtuber_avatar_config_after_mutable_field_filter():
     source_data = {
         "档案名": "PNGTuber",

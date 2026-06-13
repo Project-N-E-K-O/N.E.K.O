@@ -6305,11 +6305,6 @@ async def import_character_card(
                     )
                     if pngtuber_rel_map:
                         character_data = _rewrite_imported_pngtuber_refs(character_data, pngtuber_rel_map)
-                        character_data = _restore_imported_pngtuber_avatar_config(
-                            character_data,
-                            imported_card_character_data,
-                            pngtuber_rel_map,
-                        )
 
                     for model_item in model_dir.iterdir():
                         if model_item.name == _PNGTUBER_CARD_MODEL_DIR:
@@ -6451,6 +6446,12 @@ async def import_character_card(
                         logger.info(f'已自动为角色 {character_name} 设置MMD模型: {imported_model_info["name"]}')
                 elif not pngtuber_rel_map:
                     logger.warning("[导入角色卡] 没有找到可导入的模型")
+
+            character_data = _restore_imported_pngtuber_avatar_config(
+                character_data,
+                imported_card_character_data,
+                pngtuber_rel_map,
+            )
 
             # 添加角色到characters.json
             if '猫娘' not in characters:
