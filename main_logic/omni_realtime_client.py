@@ -3046,6 +3046,9 @@ class OmniRealtimeClient:
                     _is_new_turn = _user_spoke_after_ai or not _still_within_ai_window
                     self._is_responding = True
                     if _is_new_turn:
+                        # Gemini has no response.created event; clear stale interrupt state only
+                        # when we have identified a real new model turn.
+                        self._interrupted = False
                         # 在AI开始响应前，发送累积的用户输入
                         if self._gemini_user_transcript and self.on_input_transcript:
                             await self.on_input_transcript(self._gemini_user_transcript)
