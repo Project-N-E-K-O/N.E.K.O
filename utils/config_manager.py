@@ -2574,6 +2574,9 @@ class ConfigManager:
         - mimo: ASSIST_API_KEY_MIMO
         """
         if provider == 'cosyvoice':
+            core_config = self.get_core_config()
+            if self._is_vllm_omni_tts_selected(core_config):
+                return None
             tts_config = self.get_model_api_config('tts_custom')
             key = (tts_config.get('api_key') or '').strip()
             return key or None
@@ -2615,6 +2618,14 @@ class ConfigManager:
             return key or None
         return None
 
+    @staticmethod
+    def _is_vllm_omni_tts_selected(core_config: dict | None) -> bool:
+        if not isinstance(core_config, dict):
+            return False
+        return bool(core_config.get('ENABLE_CUSTOM_API')) and (
+            str(core_config.get('ttsModelProvider') or '').strip() == 'vllm_omni'
+        )
+
     def get_cosyvoice_clone_runtime(self, provider: str = 'cosyvoice') -> dict:
         """返回声音克隆页显式选择的阿里国内/国际运行时配置。"""
         normalized_provider = str(provider or 'cosyvoice').strip().lower()
@@ -2647,19 +2658,20 @@ class ConfigManager:
             base_url = profile.get('OPENROUTER_URL', '')
 
         if normalized_provider == 'cosyvoice' and not api_key:
-            try:
-                legacy_tts_config = self.get_model_api_config('tts_custom')
-            except Exception:
-                legacy_tts_config = {}
-            legacy_key = (legacy_tts_config.get('api_key') or '').strip()
-            legacy_url = (legacy_tts_config.get('base_url') or '').strip()
-            if legacy_key and not (
-                'dashscope-intl.aliyuncs.com' in legacy_url
-                or 'dashscope-us.aliyuncs.com' in legacy_url
-            ):
-                api_key = legacy_key
-                if legacy_url:
-                    base_url = legacy_url
+            if not self._is_vllm_omni_tts_selected(core_config):
+                try:
+                    legacy_tts_config = self.get_model_api_config('tts_custom')
+                except Exception:
+                    legacy_tts_config = {}
+                legacy_key = (legacy_tts_config.get('api_key') or '').strip()
+                legacy_url = (legacy_tts_config.get('base_url') or '').strip()
+                if legacy_key and not (
+                    'dashscope-intl.aliyuncs.com' in legacy_url
+                    or 'dashscope-us.aliyuncs.com' in legacy_url
+                ):
+                    api_key = legacy_key
+                    if legacy_url:
+                        base_url = legacy_url
 
         if normalized_provider == 'cosyvoice_intl' and api_key:
             suffix = api_key[-8:] if len(api_key) >= 8 else api_key
@@ -3022,6 +3034,9 @@ class ConfigManager:
 
         if voice_id.startswith('eleven:'):
             return len(voice_id) > len('eleven:')
+
+        if self._is_vllm_omni_tts_selected(self.get_core_config()):
+            return True
 
         custom_tts_allowed = check_custom_tts_voice_allowed(voice_id, self.get_model_api_config)
         if custom_tts_allowed is not None:

@@ -1005,14 +1005,26 @@ function onCustomModelProviderChange(modelType) {
 
     syncProviderSelectDropdowns(sel);
 
+    const previousProvider = sel.dataset.currentProvider || '';
     const provider = sel.value;
     const urlInput = document.getElementById(`${modelType}ModelUrl`);
     const keyInput = document.getElementById(`${modelType}ModelApiKey`);
     const modelIdInput = document.getElementById(`${modelType}ModelId`);
+    const voiceInput = document.getElementById(`${modelType}VoiceId`);
 
     // Model ID is NEVER readonly
     if (modelIdInput) {
         modelIdInput.removeAttribute('readonly');
+    }
+
+    if (
+        modelType === 'tts'
+        && previousProvider === 'vllm_omni'
+        && provider !== 'vllm_omni'
+        && !_isLoadingSavedConfig
+        && voiceInput
+    ) {
+        voiceInput.value = '';
     }
 
     /**
@@ -1099,7 +1111,6 @@ function onCustomModelProviderChange(modelType) {
         if (modelIdInput2 && (!_isLoadingSavedConfig || !modelIdInput2.value || !modelIdInput2.value.trim())) {
             modelIdInput2.value = pInfo.tts_default_model || '';
         }
-        const voiceInput = document.getElementById(`${modelType}VoiceId`);
         if (voiceInput && (!_isLoadingSavedConfig || !voiceInput.value || !voiceInput.value.trim())) {
             voiceInput.value = pInfo.tts_default_voice || '';
         }
@@ -1126,6 +1137,7 @@ function onCustomModelProviderChange(modelType) {
         const bookKey = getEffectiveAssistKey(provider, null, { useTokenPlan: false });
         setKeyReadonly(keyInput, bookKey);
     }
+    sel.dataset.currentProvider = provider;
 }
 
 /**

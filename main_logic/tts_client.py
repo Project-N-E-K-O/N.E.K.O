@@ -3049,14 +3049,32 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                             session_state["speech_id"] = None
                             response_queue.put(("__ready__", False))
             except websockets.exceptions.ConnectionClosed:
+                was_awaiting_done = bool(session_state.get("awaiting_done"))
                 # 修复 PR #1764 review 第六轮：WS 关闭后必须同步本地状态，
                 # 否则主循环会试图往已死连接发送，依赖 send 异常才触发重建（噪声+延迟）
                 session_state["active"] = False
                 session_state["awaiting_done"] = False
+                session_state["speech_id"] = None
+                if was_awaiting_done:
+                    _enqueue_error(response_queue, {
+                        "code": "TTS_CONNECTION_FAILED",
+                        "provider": "vllm_omni",
+                        "message": "vLLM-Omni TTS 连接在 session.done 前关闭",
+                    })
+                    response_queue.put(("__ready__", False))
             except Exception as e:
+                was_awaiting_done = bool(session_state.get("awaiting_done"))
                 logger.error(f"[vLLM-Omni TTS] 接收异常: {e}")
                 session_state["active"] = False
                 session_state["awaiting_done"] = False
+                session_state["speech_id"] = None
+                if was_awaiting_done:
+                    _enqueue_error(response_queue, {
+                        "code": "TTS_CONNECTION_FAILED",
+                        "provider": "vllm_omni",
+                        "message": "vLLM-Omni TTS 接收异常，session.done 未完成",
+                    })
+                    response_queue.put(("__ready__", False))
 
         # 首次连接 + 就绪信号
         if not await _connect_and_config():

@@ -1237,6 +1237,69 @@ class TestVllmOmniRawKeyPassthrough:
         cfg = config_manager.get_core_config()
         assert LLMSessionManager._is_vllm_omni_tts_enabled(cfg) is False
 
+    @pytest.mark.unit
+    def test_vllm_omni_voice_ids_are_valid_while_provider_selected(self, config_manager):
+        """vLLM voice names are provider-local strings and are not stored clone IDs."""
+        _write_core_config(config_manager, {
+            'coreApi': 'gemini',
+            'assistApi': 'gemini',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'vllm_omni',
+            'ttsModelUrl': 'ws://localhost:8091/v1',
+            'ttsModelId': 'Qwen3-TTS',
+        })
+
+        assert config_manager.validate_voice_id('speaker-from-vllm-server') is True
+
+    @pytest.mark.unit
+    def test_cleanup_keeps_vllm_omni_character_voice(self, config_manager):
+        """cleanup_invalid_voice_ids must not clear provider-local vLLM voices."""
+        _write_core_config(config_manager, {
+            'coreApi': 'gemini',
+            'assistApi': 'gemini',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'vllm_omni',
+            'ttsModelUrl': 'ws://localhost:8091/v1',
+            'ttsModelId': 'Qwen3-TTS',
+        })
+        character_data = {
+            '猫娘': {
+                'YUI': {
+                    '昵称': 'YUI',
+                    '_reserved': {'voice_id': 'speaker-from-vllm-server'},
+                }
+            }
+        }
+        saved = {}
+        config_manager.load_characters = lambda: character_data
+        config_manager.save_characters = lambda data: saved.setdefault('data', data)
+
+        cleaned, legacy = config_manager.cleanup_invalid_voice_ids()
+
+        assert cleaned == 0
+        assert legacy == []
+        assert character_data['猫娘']['YUI']['_reserved']['voice_id'] == 'speaker-from-vllm-server'
+        assert saved == {}
+
+    @pytest.mark.unit
+    def test_vllm_omni_tts_slot_does_not_feed_cosyvoice_clone_runtime(self, config_manager):
+        """CosyVoice clone should require Qwen/CosyVoice credentials, not reuse vLLM TTS."""
+        _write_core_config(config_manager, {
+            'coreApi': 'gemini',
+            'assistApi': 'gemini',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'vllm_omni',
+            'ttsModelUrl': 'ws://localhost:8091/v1',
+            'ttsModelId': 'Qwen3-TTS',
+            'ttsModelApiKey': 'sk-vllm-should-not-be-used',
+        })
+
+        runtime = config_manager.get_cosyvoice_clone_runtime('cosyvoice')
+
+        assert runtime['api_key'] == ''
+        assert runtime['base_url'] != 'ws://localhost:8091/v1'
+        assert config_manager.get_tts_api_key('cosyvoice') is None
+
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

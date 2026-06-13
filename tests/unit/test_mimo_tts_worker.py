@@ -524,6 +524,69 @@ def test_vllm_omni_worker_marks_not_ready_on_server_error_event(monkeypatch):
 
 
 @pytest.mark.unit
+def test_vllm_omni_worker_marks_not_ready_when_socket_closes_before_session_done(monkeypatch):
+    class _FakeWS:
+        def __init__(self):
+            self.done_sent = False
+
+        async def send(self, payload):
+            event = json.loads(payload)
+            if event.get("type") == "input.done":
+                self.done_sent = True
+
+        async def close(self):
+            pass
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            while not self.done_sent:
+                await asyncio.sleep(0.01)
+            raise tts_client.websockets.exceptions.ConnectionClosedError(None, None)
+
+    async def _connect(*args, **kwargs):
+        return _FakeWS()
+
+    monkeypatch.setattr(tts_client.websockets, "connect", _connect)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = threading.Thread(
+        target=tts_client.vllm_omni_tts_worker,
+        kwargs={
+            "request_queue": request_queue,
+            "response_queue": response_queue,
+            "audio_api_key": "",
+            "voice_id": "",
+            "base_url": "http://localhost:8091",
+            "model": "Qwen3-TTS",
+            "voice": "global-default",
+        },
+    )
+    thread.start()
+
+    assert response_queue.get(timeout=3.0) == ("__ready__", True)
+    request_queue.put(("sid-a", "hello"))
+    request_queue.put((None, None))
+    _, seen = _wait_for_queue_item(
+        response_queue,
+        lambda item: item == ("__ready__", False),
+        timeout=3.0,
+    )
+    request_queue.close()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+    assert any(
+        isinstance(item, tuple)
+        and item[0] == "__error__"
+        and "TTS_CONNECTION_FAILED" in str(item[1])
+        for item in seen
+    )
+
+
+@pytest.mark.unit
 def test_vllm_omni_worker_reports_initial_connection_failure(monkeypatch):
     async def _connect(*args, **kwargs):
         raise OSError("server unavailable")
