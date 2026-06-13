@@ -7065,6 +7065,9 @@ window.Jukebox = {
         return;
       }
       if (Jukebox.State.isPlaying) {
+        if (options.fromQueue === true) {
+          return;
+        }
         console.log('[Jukebox] 停止当前播放的歌曲:', song.name);
         Jukebox.stopPlayback();
         return;

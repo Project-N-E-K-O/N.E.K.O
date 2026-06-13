@@ -729,6 +729,49 @@ def test_jukebox_random_rapid_next_uses_advanced_queue_anchor(mock_page: Page):
 
 
 @pytest.mark.frontend
+def test_jukebox_random_rapid_previous_does_not_stop_stale_current_song(mock_page: Page):
+    setup_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        () => {
+          const J = window.Jukebox;
+          let stopped = false;
+          J.stopPlayback = () => {
+            stopped = true;
+            J.State.isPlaying = false;
+          };
+
+          J.State.playbackMode = 'random';
+          J.State.currentSong = J.State.songs[0];
+          J.State.isPlaying = true;
+          J.State.isPaused = false;
+          J.State.randomQueue = ['song1', 'song2'];
+          J.State.randomQueueIndex = 1;
+
+          J.playAdjacentSong(-1);
+
+          return {
+            stopped,
+            currentSong: J.State.currentSong && J.State.currentSong.id,
+            isPlaying: J.State.isPlaying,
+            queue: [...J.State.randomQueue],
+            index: J.State.randomQueueIndex
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "stopped": False,
+        "currentSong": "song1",
+        "isPlaying": True,
+        "queue": ["song1", "song2"],
+        "index": 0,
+    }
+
+
+@pytest.mark.frontend
 def test_jukebox_random_previous_uses_accumulated_queue(mock_page: Page):
     setup_jukebox_page(mock_page)
 
