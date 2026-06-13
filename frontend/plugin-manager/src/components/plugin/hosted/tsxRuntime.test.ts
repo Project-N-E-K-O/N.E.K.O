@@ -387,6 +387,24 @@ describe('hosted TSX document runtime', () => {
     expect(root.querySelector('strong')?.textContent).toBe('[a/b;]')
   })
 
+  it('stops semicolon-less exported declarations before trailing line comments', () => {
+    const { root } = executeHostedDocument(`
+      import { first, second } from "./comments"
+
+      export default function Panel() {
+        return <strong>{first + second}</strong>
+      }
+    `, baseContext(), baseContext(), [{
+      path: 'ui/comments.ts',
+      source: `
+        export const first = "A" // trailing note
+        export const second = "B"
+      `,
+    }])
+
+    expect(root.querySelector('strong')?.textContent).toBe('AB')
+  })
+
   it('exports destructured variable declarations from hosted dependencies', () => {
     const { root } = executeHostedDocument(`
       import { label, renamed, first, rest } from "./destructured"

@@ -799,6 +799,9 @@ function variableDeclarationEnd(source: string, declarationStart: number) {
       continue
     }
     if (char === '/' && source[index + 1] === '/') {
+      if (depth === 0) {
+        return index
+      }
       index = skipLineComment(source, index) - 1
       continue
     }
