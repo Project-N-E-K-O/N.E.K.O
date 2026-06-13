@@ -495,7 +495,6 @@ def extract_audio_metadata(file_path: Path) -> dict:
                 merged_metadata,
                 "title",
                 "song",
-                "track",
                 "tracktitle",
                 "track_title",
                 "标题",

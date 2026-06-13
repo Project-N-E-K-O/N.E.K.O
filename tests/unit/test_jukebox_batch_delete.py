@@ -305,6 +305,38 @@ async def test_upload_song_falls_back_when_audio_metadata_extraction_fails(
     assert fake.saved is True
 
 
+@pytest.mark.asyncio
+async def test_upload_song_uses_filename_when_audio_metadata_title_is_missing(
+    monkeypatch, tmp_path
+):
+    jukebox_dir = tmp_path / "jukebox"
+    fake = _FakeJukeboxConfig(
+        {
+            "songs": {},
+            "actions": {},
+            "bindings": {},
+            "md5Index": {"songs": {}, "actions": {}},
+        },
+        jukebox_dir,
+    )
+    fake.songs_dir.mkdir(parents=True)
+    _install_fake_config(monkeypatch, fake)
+    monkeypatch.setattr(
+        jukebox_router,
+        "extract_audio_metadata",
+        lambda _path: {"name": "", "artist": "Metadata Artist"},
+    )
+
+    result = await jukebox_router.upload_songs(
+        [UploadFile(filename="fallback-title.mp3", file=io.BytesIO(b"audio-bytes"))],
+        metadata=json.dumps([{}], ensure_ascii=False),
+    )
+
+    assert result["success"] is True
+    assert result["song"]["name"] == "fallback-title"
+    assert result["song"]["artist"] == "Metadata Artist"
+
+
 def test_extract_audio_metadata_picks_common_artist_tags(monkeypatch, tmp_path):
     audio_path = tmp_path / "tagged.mp3"
     audio_path.write_bytes(b"not-real-audio")
@@ -333,6 +365,33 @@ def test_extract_audio_metadata_picks_common_artist_tags(monkeypatch, tmp_path):
     assert jukebox_router.extract_audio_metadata(audio_path) == {
         "name": "Meta Title",
         "artist": "Stream Artist",
+    }
+
+
+def test_extract_audio_metadata_ignores_track_number_as_title(monkeypatch, tmp_path):
+    audio_path = tmp_path / "track-only.mp3"
+    audio_path.write_bytes(b"not-real-audio")
+
+    class _FakeContainer:
+        metadata = {"track": "03/12", "artist": "Metadata Artist"}
+        streams = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    class _FakeAv:
+        @staticmethod
+        def open(_path):
+            return _FakeContainer()
+
+    monkeypatch.setitem(__import__("sys").modules, "av", _FakeAv)
+
+    assert jukebox_router.extract_audio_metadata(audio_path) == {
+        "name": "",
+        "artist": "Metadata Artist",
     }
 
 
