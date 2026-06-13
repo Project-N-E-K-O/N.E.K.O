@@ -2179,7 +2179,7 @@
         container.setAttribute('data-dragging', 'false');
     }
 
-    function hideReturnBallContainer(container) {
+    function hideReturnBallContainer(container, reason = 'return-ball-hide') {
         if (!container) return;
         cancelReturnBallReveal(container);
         restoreSavedReturnBallStyle(container);
@@ -2188,8 +2188,10 @@
         container.style.display = 'none';
         container.style.pointerEvents = 'none';
         container.style.removeProperty('visibility');
-        scheduleIdleReturnBallDesktopBridge('return-ball-hide', container);
+        scheduleIdleReturnBallDesktopBridge(reason || 'return-ball-hide', container);
     }
+
+    window.hideNekoReturnBallContainer = hideReturnBallContainer;
 
     function positionReturnBallContainer(container, anchorRect) {
         if (!container) return;
@@ -3130,6 +3132,13 @@
 
         multiWindowReturnBallDragState = state;
     }
+
+    window.hideAllNekoReturnBallContainers = function(reason = 'return-ball-hide') {
+        hideReturnBallContainer(document.getElementById('live2d-return-button-container'), reason);
+        hideReturnBallContainer(document.getElementById('vrm-return-button-container'), reason);
+        hideReturnBallContainer(document.getElementById('mmd-return-button-container'), reason);
+        ensureMultiWindowReturnBallDrag(null);
+    };
 
     /**
      * Wire up floating-button event listeners.

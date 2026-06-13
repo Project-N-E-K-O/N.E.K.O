@@ -2210,6 +2210,14 @@ function _isNekoIdleCat1SettledOnCompactTopEdge(state, profile) {
         state.targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE);
 }
 
+function _isNekoIdleCat1SettledOnMinimizedSide(state, profile) {
+    return !!(state &&
+        profile &&
+        state.substate === profile.idleSubstate &&
+        state.actionSettled &&
+        state.targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE);
+}
+
 function _getNekoIdleCat1CompactFollowSpeed(state, surfaceRect, nowMs) {
     const previousRect = state && state.compactFollowLastSurfaceRect;
     const previousAt = state ? Number(state.compactFollowLastAt) || 0 : 0;
@@ -3227,6 +3235,9 @@ function _settleNekoIdleReturnSubactionToIdle(button) {
     const state = _getNekoIdleCat1Journey(button);
     if (!state || state.substate !== state.profile.finishingSubstate || state.paused) return;
     const profile = state.profile;
+    const shouldRecheckTargetAfterSettle = !!(state.target ||
+        state.targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE ||
+        state.targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE);
     _cancelNekoIdleReturnSubactionSettleTimer(state);
     state.substate = profile.idleSubstate;
     state.target = null;
@@ -3243,6 +3254,11 @@ function _settleNekoIdleReturnSubactionToIdle(button) {
             profile.tier,
             { animate: true }
         );
+    }
+
+    if (shouldRecheckTargetAfterSettle &&
+        (_getNekoIdleChatMinimizedRect() || _getNekoIdleChatCompactSurfaceRect())) {
+        _scheduleNekoIdleCat1JourneySync(button);
     }
 
     setTimeout(() => {
@@ -3469,6 +3485,8 @@ function _scheduleNekoIdleCat1WalkStart(button, target) {
     _setNekoIdleCat1Classes(button, state);
     const art = button.querySelector('.neko-idle-return-art');
     if (art && art.__nekoIdleHoverSrc) {
+        state.pendingWalkReady = true;
+        state.pendingWalkDelayMs = 0;
         if (!art.__nekoIdleHoverTimer) {
             _finishNekoIdleHoverArtAfterPlayback(art, profile.tier);
         }
@@ -3754,9 +3772,18 @@ function _syncNekoIdleCat1Journey(button, tier) {
         state.compactTopEdgeDropUntil = 0;
     }
 
+    const previousTargetKind = state.targetKind || '';
     state.target = target;
     state.targetKind = target.kind || '';
     const compactTopEdgeTarget = target.kind === _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE;
+    const switchingFromCompactTopEdgeToMinimizedSide =
+        previousTargetKind === _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE &&
+        target.kind === _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE;
+    const followingMovedMinimizedSideTarget =
+        previousTargetKind === _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE &&
+        target.kind === _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE &&
+        state.actionSettled &&
+        target.distance > profile.target.exitDistancePx;
     if (compactTopEdgeTarget) {
         _cancelNekoIdleCat1PairMove(state);
         if (target.distance <= profile.target.exitDistancePx) {
@@ -3774,9 +3801,15 @@ function _syncNekoIdleCat1Journey(button, tier) {
     }
 
     if (target.distance >= profile.target.enterDistancePx ||
-        (compactTopEdgeTarget && target.distance > profile.target.exitDistancePx)) {
+        (compactTopEdgeTarget && target.distance > profile.target.exitDistancePx) ||
+        (switchingFromCompactTopEdgeToMinimizedSide && target.distance > profile.target.exitDistancePx) ||
+        followingMovedMinimizedSideTarget) {
         state.actionSettled = false;
         _cancelNekoIdleCat1PairMove(state);
+        if (switchingFromCompactTopEdgeToMinimizedSide || followingMovedMinimizedSideTarget) {
+            state.pendingWalkReady = true;
+            state.pendingWalkDelayMs = 0;
+        }
         _scheduleNekoIdleCat1WalkStart(button, target);
         return;
     }
@@ -4154,7 +4187,11 @@ function _ensureNekoIdleReturnPresentationBridge() {
                 _scheduleNekoIdleCat1JourneySync(button);
                 return;
             }
-            if (isSmallDesktopChatMove && !_isNekoIdleCat1Walking(button)) return;
+            const settledMinimizedSide = _isNekoIdleCat1SettledOnMinimizedSide(
+                currentState,
+                currentState && currentState.profile
+            );
+            if (isSmallDesktopChatMove && !_isNekoIdleCat1Walking(button) && !settledMinimizedSide) return;
             _scheduleNekoIdleCat1JourneySync(button);
         });
     });
