@@ -9,7 +9,7 @@ runtime. family/model can not single out this one part (06_3FH is shared by
 the whole Haswell-EP cohort, most of which run fine), so the only way to
 blocklist it is a brand-string substring match. On a hit the service is
 disabled before the session loads, and callers fall back to the pre-vector
-path. ``XIAO8_VECTORS_FORCE_ENABLE=1`` is a runtime ``os.getenv`` escape
+path. ``NEKO_VECTORS_FORCE_ENABLE=1`` is a runtime ``os.getenv`` escape
 hatch (still effective after Nuitka compilation) for a false positive.
 
 The tests touch no heavy deps: brand reads and the construction path are
@@ -30,7 +30,8 @@ _E5_1680 = "Intel(R) Xeon(R) CPU E5-1680 v4 @ 3.40GHz"
 def test_blocklist_matches_brand_substring_case_insensitive(monkeypatch):
     """A brand string containing ``E5-2666 v3`` (case-insensitive, as a
     substring) trips the blocklist."""
-    monkeypatch.delenv("XIAO8_VECTORS_FORCE_ENABLE", raising=False)
+    monkeypatch.delenv("NEKO_VECTORS_FORCE_ENABLE", raising=False)
+    monkeypatch.delenv("VECTORS_FORCE_ENABLE", raising=False)
     monkeypatch.setattr(embeddings, "_read_cpu_brand_string", lambda: _E5_2666)
     assert embeddings._cpu_is_blocklisted() is True
 
@@ -38,7 +39,8 @@ def test_blocklist_matches_brand_substring_case_insensitive(monkeypatch):
 def test_blocklist_passes_sibling_haswell_cohort_cpu(monkeypatch):
     """A sibling SKU (e.g. Broadwell E5-1680 v4) must not be caught: the
     list matches an exact brand substring, never family/model wholesale."""
-    monkeypatch.delenv("XIAO8_VECTORS_FORCE_ENABLE", raising=False)
+    monkeypatch.delenv("NEKO_VECTORS_FORCE_ENABLE", raising=False)
+    monkeypatch.delenv("VECTORS_FORCE_ENABLE", raising=False)
     monkeypatch.setattr(embeddings, "_read_cpu_brand_string", lambda: _E5_1680)
     assert embeddings._cpu_is_blocklisted() is False
 
@@ -47,25 +49,37 @@ def test_blocklist_missing_brand_string_does_not_disable(monkeypatch):
     """When the brand string can not be read (None), treat it as unknown
     and do not disable — same optimistic stance the module takes for
     inconclusive CPU detection."""
-    monkeypatch.delenv("XIAO8_VECTORS_FORCE_ENABLE", raising=False)
+    monkeypatch.delenv("NEKO_VECTORS_FORCE_ENABLE", raising=False)
+    monkeypatch.delenv("VECTORS_FORCE_ENABLE", raising=False)
     monkeypatch.setattr(embeddings, "_read_cpu_brand_string", lambda: None)
     assert embeddings._cpu_is_blocklisted() is False
 
 
 @pytest.mark.parametrize("val", ["1", "true", "TRUE", "yes", "on"])
 def test_force_enable_env_overrides_blocklist(monkeypatch, val):
-    """A truthy ``XIAO8_VECTORS_FORCE_ENABLE`` forces the CPU through even
+    """A truthy ``NEKO_VECTORS_FORCE_ENABLE`` forces the CPU through even
     when the brand matches (per-machine escape hatch, Nuitka-safe)."""
+    monkeypatch.delenv("VECTORS_FORCE_ENABLE", raising=False)
     monkeypatch.setattr(embeddings, "_read_cpu_brand_string", lambda: _E5_2666)
-    monkeypatch.setenv("XIAO8_VECTORS_FORCE_ENABLE", val)
+    monkeypatch.setenv("NEKO_VECTORS_FORCE_ENABLE", val)
+    assert embeddings._cpu_is_blocklisted() is False
+
+
+def test_force_enable_bare_name_fallback_overrides_blocklist(monkeypatch):
+    """The bare ``VECTORS_FORCE_ENABLE`` (no NEKO_ prefix) is honored too,
+    matching config's NEKO_<NAME>-first / bare-<NAME>-fallback key order."""
+    monkeypatch.delenv("NEKO_VECTORS_FORCE_ENABLE", raising=False)
+    monkeypatch.setattr(embeddings, "_read_cpu_brand_string", lambda: _E5_2666)
+    monkeypatch.setenv("VECTORS_FORCE_ENABLE", "1")
     assert embeddings._cpu_is_blocklisted() is False
 
 
 def test_force_enable_env_falsey_keeps_blocklist(monkeypatch):
     """A non-truthy value (empty / ``0``) is not the switch; the blocklist
     still applies."""
+    monkeypatch.delenv("VECTORS_FORCE_ENABLE", raising=False)
     monkeypatch.setattr(embeddings, "_read_cpu_brand_string", lambda: _E5_2666)
-    monkeypatch.setenv("XIAO8_VECTORS_FORCE_ENABLE", "0")
+    monkeypatch.setenv("NEKO_VECTORS_FORCE_ENABLE", "0")
     assert embeddings._cpu_is_blocklisted() is True
 
 

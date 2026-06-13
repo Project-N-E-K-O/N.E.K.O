@@ -164,7 +164,7 @@ class _DisableReason(enum.Enum):
     # CPU brand string is on _CPU_BRAND_BLOCKLIST: it advertises a usable
     # int8 SIMD path but crashes onnxruntime/MLAS at runtime (illegal
     # instruction). Disabled *before* the session loads so the crash never
-    # happens; override per machine with XIAO8_VECTORS_FORCE_ENABLE=1.
+    # happens; override per machine with NEKO_VECTORS_FORCE_ENABLE=1.
     CPU_BLOCKLISTED = "cpu_on_known_bad_blocklist"
     LOW_RAM = "ram_below_threshold"
     LOAD_ERROR = "load_raised"
@@ -333,17 +333,23 @@ _INTEL_VNNI_MIN_MODEL_FAMILY_6 = 0x97  # Alder Lake — also covers Raptor,
 
 # CPUs that advertise a usable int8 SIMD path through every numeric signal
 # we trust (family/model, numpy AVX2/VNNI flags) yet still crash
-# onnxruntime/MLAS at runtime with an illegal-instruction fault. Matched as
-# a case-insensitive substring of the CPU *brand string* ("model name" on
+# onnxruntime at runtime with an illegal-instruction fault. Matched as a
+# case-insensitive substring of the CPU *brand string* ("model name" on
 # Linux / ``ProcessorNameString`` on Windows), because family/model can not
 # single out one SKU — e.g. Haswell-EP E5-2666 v3 shares 06_3FH with the
 # entire Haswell-EP cohort, the bulk of which run fine. Brand-string
 # matching is the fragile py-cpuinfo pattern this module otherwise avoids,
 # so keep this list SHORT and evidence-backed (a real SIGILL in
 # onnxruntime's .so, confirmed via ``dmesg``), never a catch-all guess.
-# ``XIAO8_VECTORS_FORCE_ENABLE=1`` overrides it per machine.
+#
+# A hit disables the WHOLE onnxruntime session — int8 *and* fp32 — not just
+# the int8 kernel. The root cause is not yet pinned to a specific kernel, so
+# we can not assume the fp32 weights (if an operator shipped them) are safe
+# on this silicon; shipping a path we believe still SIGILLs would defeat the
+# guard. The fp32 / forced-load recovery path is not removed, only gated:
+# ``NEKO_VECTORS_FORCE_ENABLE=1`` overrides the blocklist per machine.
 _CPU_BRAND_BLOCKLIST = (
-    "e5-2666 v3",  # AWS-custom Haswell-EP; onnxruntime MLAS int8 SIGILL
+    "e5-2666 v3",  # AWS-custom Haswell-EP; user-reported onnxruntime crash (SIGILL)
 )
 
 # AMD Family 0x19 is shared between Zen 3 (no AVX-VNNI) and Zen 4 (yes), so
@@ -467,18 +473,20 @@ def _read_cpu_brand_string() -> str | None:
 
 def _cpu_is_blocklisted() -> bool:
     """True when the CPU brand string matches :data:`_CPU_BRAND_BLOCKLIST`
-    and the operator has not set ``XIAO8_VECTORS_FORCE_ENABLE``.
+    and the operator has not set ``NEKO_VECTORS_FORCE_ENABLE``.
 
-    The env override is a runtime ``os.getenv`` read, so it keeps working
-    after the app is Nuitka-compiled: the ``config`` module is frozen into
-    the binary, but the process environment is not. This is the per-machine
-    escape hatch for a false positive (a chip on the list that actually
-    runs fine, or a future microcode fix).
+    The override is read straight from the environment (not via the
+    ``config`` module), so it keeps working after the app is Nuitka-compiled:
+    the frozen module is baked into the binary, the process environment is
+    not. It follows the documented env convention — ``NEKO_`` prefix, with
+    the bare name accepted as a fallback, matching config's ``_read_str_env``
+    key order. This is the per-machine escape hatch for a false positive (a
+    listed chip that actually runs fine, or a later microcode fix) and the
+    way to re-try a forced fp32 / int8 load on a blocklisted host.
     """
-    if os.getenv("XIAO8_VECTORS_FORCE_ENABLE", "").strip().lower() in (
-        "1", "true", "yes", "on",
-    ):
-        return False
+    for _key in ("NEKO_VECTORS_FORCE_ENABLE", "VECTORS_FORCE_ENABLE"):
+        if os.getenv(_key, "").strip().lower() in ("1", "true", "yes", "on"):
+            return False
     brand = _read_cpu_brand_string()
     if not brand:
         return False
