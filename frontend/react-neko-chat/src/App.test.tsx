@@ -1465,6 +1465,52 @@ describe('App', () => {
     expect(document.documentElement.style.getPropertyValue('--compact-history-slot-height')).toBe('');
   });
 
+  it('reverts compact history height when a resize is canceled', () => {
+    const message = parseChatMessage({
+      id: 'assistant-history-resize-cancel',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: 'Cancel resize.' }],
+      status: 'sent',
+    });
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />,
+    );
+    const resizeBar = container.querySelector<HTMLDivElement>('.compact-export-history-resize-bar');
+    expect(resizeBar).not.toBeNull();
+
+    fireEvent.pointerDown(resizeBar!, {
+      pointerId: 94,
+      clientY: 500,
+      screenY: 500,
+      button: 0,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    fireEvent.pointerMove(resizeBar!, {
+      pointerId: 94,
+      clientY: 440,
+      screenY: 440,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    expect(document.documentElement.style.getPropertyValue('--compact-history-slot-height')).not.toBe('');
+    fireEvent.pointerCancel(resizeBar!, {
+      pointerId: 94,
+      clientY: 440,
+      screenY: 440,
+      buttons: 0,
+      pointerType: 'mouse',
+    });
+
+    expect(window.localStorage.getItem(COMPACT_HISTORY_HEIGHT_STORAGE_KEY)).toBeNull();
+    expect(document.documentElement.style.getPropertyValue('--compact-history-slot-height')).toBe('');
+    expect(container.querySelector('.compact-export-history-anchor'))
+      .toHaveAttribute('data-compact-export-history-resizing', 'false');
+  });
+
   it('hides compact inline history outside compact mode and restores it when compact returns', async () => {
     const message = parseChatMessage({
       id: 'assistant-history-close',
