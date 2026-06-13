@@ -28,22 +28,22 @@ export default function NoteCard({ note, selected = false, onSelect }: NoteCardP
   return (
     <button
       type="button"
-      className={`study-note-card${selected ? ' study-note-card--selected' : ''}`}
+      className={`study-panel__note-card${selected ? ' is-selected' : ''}`}
       onClick={() => onSelect?.(note)}
     >
-      <span className="study-note-card__title">{note.title || 'Untitled Note'}</span>
-      <span className="study-note-card__meta">
+      <span className="study-panel__note-title">{note.title || 'Untitled Note'}</span>
+      <span className="study-panel__note-meta">
         {note.source_type || 'manual'} / {note.word_count || 0}
       </span>
-      <span className="study-note-card__snippet">{note.snippet || 'Empty note'}</span>
-      <span className="study-note-card__chips">
+      <span className="study-panel__note-snippet">{note.snippet || 'Empty note'}</span>
+      <span className="study-panel__chips">
         {topics.slice(0, 3).map((topic) => (
-          <span key={`topic-${topic}`} className="study-chip study-chip--topic">
+          <span key={`topic-${topic}`} className="study-panel__chip is-topic">
             {topic}
           </span>
         ))}
         {tags.slice(0, 3).map((tag) => (
-          <span key={`tag-${tag}`} className="study-chip">
+          <span key={`tag-${tag}`} className="study-panel__chip">
             #{tag}
           </span>
         ))}

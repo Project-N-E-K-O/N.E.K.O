@@ -420,6 +420,200 @@ export const BRAND_CSS = `
     border-color: var(--pomodoro-break-long);
   }
 
+  .study-panel__toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  .study-panel__note-list {
+    display: grid;
+    gap: 10px;
+    align-content: start;
+  }
+
+  .study-panel__note-card {
+    display: grid;
+    gap: 6px;
+    text-align: left;
+    padding: 12px;
+    border: 1px solid rgba(47, 125, 87, 0.14);
+    border-left: 3px solid rgba(47, 125, 87, 0.28);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.84);
+    color: var(--ink);
+    font-weight: 400;
+  }
+
+  .study-panel__note-card.is-selected {
+    border-left-color: var(--brand);
+    background: var(--paper-strong);
+    box-shadow: var(--shadow);
+  }
+
+  .study-panel__note-title {
+    font-size: 15px;
+    font-weight: 800;
+    color: var(--ink);
+  }
+
+  .study-panel__note-meta {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+
+  .study-panel__note-snippet {
+    color: var(--ink);
+    font-size: 13px;
+    overflow-wrap: anywhere;
+  }
+
+  .study-panel__chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .study-panel__chip {
+    padding: 2px 8px;
+    border: 1px solid rgba(47, 125, 87, 0.18);
+    border-radius: 999px;
+    background: rgba(47, 125, 87, 0.07);
+    color: var(--brand-strong);
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  .study-panel__chip.is-topic {
+    border-color: rgba(83, 106, 163, 0.22);
+    background: rgba(83, 106, 163, 0.09);
+    color: var(--study-interactive);
+  }
+
+  .study-panel__empty {
+    padding: 18px;
+    border: 1px dashed rgba(47, 125, 87, 0.24);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.62);
+    color: var(--muted);
+    text-align: center;
+    font-size: 13px;
+  }
+
+  .study-panel__layout {
+    display: grid;
+    grid-template-columns: minmax(180px, 0.7fr) minmax(220px, 1fr) minmax(220px, 1fr);
+    gap: 14px;
+    align-items: start;
+  }
+
+  .study-panel__sidebar {
+    display: grid;
+    gap: 8px;
+    align-content: start;
+  }
+
+  .study-panel__folder {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px;
+    align-items: center;
+    text-align: left;
+    padding: 10px 12px;
+    border: 1px solid rgba(47, 125, 87, 0.14);
+    border-left: 3px solid rgba(47, 125, 87, 0.28);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.84);
+    color: var(--ink);
+  }
+
+  .study-panel__folder.is-selected {
+    border-left-color: var(--brand);
+    background: var(--paper-strong);
+    box-shadow: var(--shadow);
+  }
+
+  .study-panel__inline-form {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .study-panel__column {
+    display: grid;
+    gap: 10px;
+    align-content: start;
+  }
+
+  .study-panel__search-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .study-panel__detail {
+    display: grid;
+    gap: 10px;
+    align-content: start;
+    padding: 14px;
+    border: 1px solid rgba(47, 125, 87, 0.14);
+    border-left: 3px solid rgba(47, 125, 87, 0.34);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.84);
+  }
+
+  .study-panel__detail h2 {
+    margin: 0;
+    font-size: 18px;
+  }
+
+  .study-panel__tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .study-panel__tab.is-active {
+    border-color: rgba(23, 86, 61, 0.42);
+    background: var(--paper-strong);
+    color: var(--brand-strong);
+    box-shadow: 0 6px 16px rgba(31, 52, 40, 0.10);
+  }
+
+  .study-panel__result-row {
+    display: grid;
+    gap: 4px;
+    padding: 12px;
+    border: 1px solid rgba(47, 125, 87, 0.14);
+    border-left: 3px solid rgba(47, 125, 87, 0.28);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.84);
+  }
+
+  .study-panel__result-row span {
+    color: var(--muted);
+    font-size: 13px;
+    overflow-wrap: anywhere;
+  }
+
+  .study-panel__preview {
+    width: 100%;
+    min-height: 180px;
+    margin: 0;
+    border: 1px solid rgba(31, 35, 41, 0.12);
+    border-radius: var(--radius-sm);
+    background: var(--paper-strong);
+    color: var(--ink);
+    padding: 12px;
+    line-height: 1.5;
+    overflow-wrap: break-word;
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .study-panel *,
     .study-panel *::before,

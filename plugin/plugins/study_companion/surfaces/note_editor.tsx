@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 import { callPlugin, errorMessage, text } from './memory_shared';
+import { ensureBrandCSS } from './study_surface_utils';
 import type { NoteItem } from './note_card';
 
 type NoteGetPayload = {
@@ -122,6 +123,10 @@ export default function NoteEditor(props: PluginSurfaceProps) {
     topics: '',
     tags: '',
   });
+
+  useEffect(() => {
+    ensureBrandCSS();
+  }, []);
 
   async function loadNote(id: string, signal?: AbortSignal) {
     if (!id.trim()) {
@@ -271,7 +276,7 @@ export default function NoteEditor(props: PluginSurfaceProps) {
   }, []);
 
   return (
-    <div className="study-panel study-notebook-editor">
+    <div className="study-panel surface-shell">
       <header className="study-panel__header">
         <div>
           <h1>{text(props, 'ui.surface.note_editor', 'Note Editor')}</h1>
@@ -289,7 +294,7 @@ export default function NoteEditor(props: PluginSurfaceProps) {
           </button>
         </div>
       </header>
-      <section className="study-panel__state study-notebook-editor__meta">
+      <section className="study-panel__state">
         <label>
           <span>{text(props, 'ui.label.title', 'Title')}</span>
           <input value={title} disabled={busy} onChange={(event) => setTitle(event.target.value)} />
@@ -308,10 +313,9 @@ export default function NoteEditor(props: PluginSurfaceProps) {
         </label>
       </section>
       {preview ? (
-        <main className="study-note-preview">{markdownPreview(content)}</main>
+        <main className="study-panel__preview">{markdownPreview(content)}</main>
       ) : (
         <textarea
-          className="study-note-textarea"
           value={content}
           disabled={busy}
           onChange={(event) => setContent(event.target.value)}

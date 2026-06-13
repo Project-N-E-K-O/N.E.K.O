@@ -1,6 +1,7 @@
 import { useEffect, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 import { callPlugin, errorMessage, text } from './memory_shared';
+import { ensureBrandCSS } from './study_surface_utils';
 import NoteCard from './note_card';
 import type { NoteItem } from './note_card';
 
@@ -29,6 +30,10 @@ export default function NoteSearch(props: PluginSurfaceProps) {
   const [payload, setPayload] = useState<SearchPayload>({});
   const [status, setStatus] = useState('');
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    ensureBrandCSS();
+  }, []);
 
   async function runSearch(signal?: AbortSignal) {
     const trimmed = query.trim();
@@ -82,14 +87,14 @@ export default function NoteSearch(props: PluginSurfaceProps) {
   const records = Array.isArray(payload[activeTab]) ? payload[activeTab] as Array<Record<string, unknown>> : [];
 
   return (
-    <div className="study-panel study-search-surface">
+    <div className="study-panel surface-shell">
       <header className="study-panel__header">
         <div>
           <h1>{text(props, 'ui.surface.note_search', 'Study Search')}</h1>
           <span>{busy ? text(props, 'ui.status.searching', 'Searching...') : status}</span>
         </div>
       </header>
-      <section className="study-search-row">
+      <section className="study-panel__search-row">
         <input
           value={query}
           placeholder={text(props, 'ui.notebook.search_all_placeholder', 'Search notes, topics, sessions, wrong questions')}
@@ -99,12 +104,12 @@ export default function NoteSearch(props: PluginSurfaceProps) {
           {text(props, 'ui.button.search', 'Search')}
         </button>
       </section>
-      <nav className="study-tabs">
+      <nav className="study-panel__tabs">
         {TABS.map((tab) => (
           <button
             type="button"
             key={tab}
-            className={activeTab === tab ? 'study-tab study-tab--active' : 'study-tab'}
+            className={activeTab === tab ? 'study-panel__tab is-active' : 'study-panel__tab'}
             onClick={() => setActiveTab(tab)}
           >
             {text(props, `ui.notebook.tab_${tab}`, tab.replace('_', ' '))} ({Array.isArray(payload[tab]) ? payload[tab]?.length || 0 : 0})
@@ -112,21 +117,21 @@ export default function NoteSearch(props: PluginSurfaceProps) {
         ))}
       </nav>
       {activeTab === 'notes' ? (
-        <div className="study-note-list study-search-results">
+        <div className="study-panel__note-list">
           {notes.map((note) => (
             <NoteCard key={note.id} note={note} />
           ))}
-          {notes.length === 0 ? <div className="study-empty">{text(props, 'ui.notebook.no_results', 'No results')}</div> : null}
+          {notes.length === 0 ? <div className="study-panel__empty">{text(props, 'ui.notebook.no_results', 'No results')}</div> : null}
         </div>
       ) : (
-        <div className="study-search-results">
+        <div className="study-panel__note-list">
           {records.map((item, index) => (
-            <article key={`${activeTab}-${index}`} className="study-result-row">
+            <article key={`${activeTab}-${index}`} className="study-panel__result-row">
               <strong>{itemTitle(item)}</strong>
               <span>{itemSubtitle(item)}</span>
             </article>
           ))}
-          {records.length === 0 ? <div className="study-empty">{text(props, 'ui.notebook.no_results', 'No results')}</div> : null}
+          {records.length === 0 ? <div className="study-panel__empty">{text(props, 'ui.notebook.no_results', 'No results')}</div> : null}
         </div>
       )}
     </div>

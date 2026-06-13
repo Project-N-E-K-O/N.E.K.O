@@ -1,6 +1,7 @@
 import { useEffect, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 import { callPlugin, errorMessage, text } from './memory_shared';
+import { ensureBrandCSS } from './study_surface_utils';
 import NoteCard from './note_card';
 import type { NoteItem } from './note_card';
 
@@ -37,6 +38,10 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
   const [notebookName, setNotebookName] = useState('');
   const [status, setStatus] = useState('');
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    ensureBrandCSS();
+  }, []);
 
   async function loadNotebooks(signal?: AbortSignal) {
     const notebookPayload = await callPlugin<NotebookListPayload>('study_notebook_list', { limit: 100 }, signal);
@@ -151,7 +156,7 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
   }, [selectedNotebookId, debouncedQuery]);
 
   return (
-    <div className="study-panel study-notebook-shell">
+    <div className="study-panel surface-shell">
       <header className="study-panel__header">
         <div>
           <h1>{text(props, 'ui.surface.notebook_panel', 'Study Notebook')}</h1>
@@ -166,9 +171,9 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
           </button>
         </div>
       </header>
-      <main className="study-notebook-layout">
-        <aside className="study-notebook-sidebar">
-          <div className="study-inline-form">
+      <main className="study-panel__layout">
+        <aside className="study-panel__sidebar">
+          <div className="study-panel__inline-form">
             <input
               value={notebookName}
               disabled={busy}
@@ -181,7 +186,7 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
           </div>
           <button
             type="button"
-            className={`study-notebook-folder${selectedNotebookId === '' ? ' study-notebook-folder--selected' : ''}`}
+            className={`study-panel__folder${selectedNotebookId === '' ? ' is-selected' : ''}`}
             onClick={() => setSelectedNotebookId('')}
           >
             <span>{text(props, 'ui.notebook.all_notes', 'All notes')}</span>
@@ -191,7 +196,7 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
             <button
               type="button"
               key={notebook.id}
-              className={`study-notebook-folder${selectedNotebookId === notebook.id ? ' study-notebook-folder--selected' : ''}`}
+              className={`study-panel__folder${selectedNotebookId === notebook.id ? ' is-selected' : ''}`}
               onClick={() => setSelectedNotebookId(notebook.id)}
             >
               <span>{notebook.name}</span>
@@ -199,15 +204,15 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
             </button>
           ))}
         </aside>
-        <section className="study-notebook-list">
-          <div className="study-search-row">
+        <section className="study-panel__column">
+          <div className="study-panel__search-row">
             <input
               value={query}
               placeholder={text(props, 'ui.notebook.search_placeholder', 'Search notes')}
               onChange={(event) => setQuery(event.target.value)}
             />
           </div>
-          <div className="study-note-list">
+          <div className="study-panel__note-list">
             {notes.map((note) => (
               <NoteCard
                 key={note.id}
@@ -217,11 +222,11 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
               />
             ))}
             {notes.length === 0 ? (
-              <div className="study-empty">{text(props, 'ui.notebook.empty', 'No notes yet')}</div>
+              <div className="study-panel__empty">{text(props, 'ui.notebook.empty', 'No notes yet')}</div>
             ) : null}
           </div>
         </section>
-        <section className="study-notebook-detail">
+        <section className="study-panel__detail">
           {selectedNote ? (
             <>
               <div>
@@ -236,7 +241,7 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
               </div>
             </>
           ) : (
-            <div className="study-empty">{text(props, 'ui.notebook.select_note', 'Select a note')}</div>
+            <div className="study-panel__empty">{text(props, 'ui.notebook.select_note', 'Select a note')}</div>
           )}
         </section>
       </main>
