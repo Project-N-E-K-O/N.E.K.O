@@ -40,6 +40,23 @@ function assertPathInsideRepo(sourcePath, label) {
   return resolvedPath
 }
 
+function assertPathInsidePluginRoot(sourcePath, pluginRoot, label) {
+  const resolvedPath = assertPathInsideRepo(sourcePath, label)
+  const resolvedPluginRoot = assertPathInsideRepo(pluginRoot, 'Plugin root')
+  let realPath
+  let realPluginRoot
+  try {
+    realPath = realpathSync(resolvedPath)
+    realPluginRoot = realpathSync(resolvedPluginRoot)
+  } catch (error) {
+    throw new Error(`Unable to resolve ${label} plugin path: ${resolvedPath}: ${formatError(error)}`, { cause: error })
+  }
+  if (!isPathInside(resolvedPluginRoot, resolvedPath) || !isPathInside(realPluginRoot, realPath)) {
+    throw new Error(`${label} outside plugin root: ${sourcePath}`)
+  }
+  return resolvedPath
+}
+
 function statPath(targetPath, label) {
   try {
     return statSync(targetPath)
@@ -412,10 +429,11 @@ function tempPathForSource(sourcePath, tempDir) {
   return targetPath
 }
 
-function resolveRelativeImport(fromPath, specifier) {
+function resolveRelativeImport(fromPath, specifier, pluginRoot) {
   if (!isRelativeSpecifier(specifier)) return null
   const fromResolved = assertPathInsideRepo(fromPath, 'Import source path')
-  const cacheKey = `${fromResolved}\0${specifier}`
+  const resolvedPluginRoot = assertPathInsideRepo(pluginRoot, 'Plugin root')
+  const cacheKey = `${fromResolved}\0${specifier}\0${resolvedPluginRoot}`
   if (importResolutionCache.has(cacheKey)) {
     return importResolutionCache.get(cacheKey)
   }
@@ -440,7 +458,11 @@ function resolveRelativeImport(fromPath, specifier) {
       throw new Error(`Relative import candidate outside repo root: ${fromPath} imports ${specifier}`)
     }
     if (isFilePath(resolvedCandidate, 'relative import candidate')) {
-      const dependencyPath = assertPathInsideRepo(resolvedCandidate, 'Relative import dependency')
+      const dependencyPath = assertPathInsidePluginRoot(
+        resolvedCandidate,
+        resolvedPluginRoot,
+        'Relative import dependency',
+      )
       importResolutionCache.set(cacheKey, dependencyPath)
       return dependencyPath
     }
@@ -455,7 +477,7 @@ function dependencyCycleMessage(cyclePaths) {
     .join(' -> ')
 }
 
-function copyRelativeDependencies(sourcePath, tempDir, copied = new Set(), visiting = [], depth = 0) {
+function copyRelativeDependencies(sourcePath, tempDir, pluginRoot, copied = new Set(), visiting = [], depth = 0) {
   const resolvedPath = assertPathInsideRepo(sourcePath, 'Source path')
   const cycleStart = visiting.indexOf(resolvedPath)
   if (cycleStart >= 0) {
@@ -474,9 +496,9 @@ function copyRelativeDependencies(sourcePath, tempDir, copied = new Set(), visit
 
   try {
     for (const specifier of extractRelativeImportSpecifiers(resolvedPath, source)) {
-      const dependencyPath = resolveRelativeImport(resolvedPath, specifier)
+      const dependencyPath = resolveRelativeImport(resolvedPath, specifier, pluginRoot)
       if (dependencyPath) {
-        copyRelativeDependencies(dependencyPath, tempDir, copied, visiting, depth + 1)
+        copyRelativeDependencies(dependencyPath, tempDir, pluginRoot, copied, visiting, depth + 1)
       }
     }
     copied.add(resolvedPath)
@@ -487,11 +509,12 @@ function copyRelativeDependencies(sourcePath, tempDir, copied = new Set(), visit
 
 function createCheckFile(entryPath, tempDir, surface, tomlPath) {
   const resolvedEntryPath = assertPathInsideRepo(entryPath, 'Hosted TSX entry')
+  const pluginRoot = dirname(tomlPath)
   const source = readSourceFile(resolvedEntryPath)
   const stripped = stripHostedUiImports(resolvedEntryPath, source)
   const checkPath = tempPathForSource(resolvedEntryPath, tempDir)
   const prefixLines = 6
-  copyRelativeDependencies(resolvedEntryPath, tempDir)
+  copyRelativeDependencies(resolvedEntryPath, tempDir, pluginRoot)
   mkdirForFile(checkPath, 'hosted TSX check')
   writeTextFile(
     checkPath,

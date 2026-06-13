@@ -77,6 +77,28 @@ export default function Panel() {
   })
 })
 
+test('rejects relative imports that escape the plugin root', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'escape-plugin')
+    writePluginToml(pluginDir, 'main.tsx')
+    writeFixtureFile(
+      join(pluginDir, 'main.tsx'),
+      `import { label } from '../shared/helper'
+
+export default function Panel() {
+  return <Page title={label} />
+}
+`,
+    )
+    writeFixtureFile(join(root, 'shared', 'helper.ts'), `export const label = 'outside plugin'\n`)
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /Relative import dependency outside plugin root/)
+  })
+})
+
 test('rejects relative dynamic imports in hosted TSX', () => {
   withFixture((root) => {
     const pluginDir = join(root, 'dynamic-import')
