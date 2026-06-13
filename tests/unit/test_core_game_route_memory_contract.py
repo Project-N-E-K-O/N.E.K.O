@@ -849,6 +849,31 @@ def test_late_text_mode_screenshot_does_not_attach_to_next_turn():
 
 
 @pytest.mark.unit
+def test_session_end_request_tagged_screenshot_selection_falls_back_to_latest_request():
+    """Session-end cleanup may not carry request_id, but must not drop tagged images."""
+    pending = [
+        {"data": "data:image/jpeg;base64,old", "request_id": "req-old"},
+        {"data": "data:image/jpeg;base64,current", "request_id": "req-current"},
+        "data:image/jpeg;base64,legacy",
+    ]
+
+    selected = cross_server_module._select_pending_user_images_for_session_end(pending, None)
+    recent = cross_server_module._build_recent_analyze_messages(
+        [{"role": "user", "content": [{"type": "text", "text": "bye"}]}],
+        selected,
+        allow_attach_to_last_user=True,
+    )
+
+    assert selected == [
+        {"data": "data:image/jpeg;base64,current", "request_id": "req-current"},
+    ]
+    urls = [item["url"] for item in recent[-1]["attachments"]]
+    assert urls == ["data:image/jpeg;base64,current"]
+    assert "data:image/jpeg;base64,old" not in urls
+    assert "data:image/jpeg;base64,legacy" not in urls
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_genuine_voice_transcript_stamps_last_user_message_time(monkeypatch):
     """真实非空语音消息既刷 last_user_activity_time 也刷 last_user_message_time。

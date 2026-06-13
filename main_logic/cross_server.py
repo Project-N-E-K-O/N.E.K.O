@@ -224,6 +224,16 @@ def _select_pending_user_images_for_turn(pending_user_images: list, request_id: 
     return selected
 
 
+def _select_pending_user_images_for_session_end(pending_user_images: list, request_id: object) -> list:
+    session_request_id = str(request_id or "")
+    if not session_request_id:
+        for raw in reversed(pending_user_images or []):
+            if isinstance(raw, dict) and str(raw.get("request_id") or ""):
+                session_request_id = str(raw.get("request_id") or "")
+                break
+    return _select_pending_user_images_for_turn(pending_user_images, session_request_id)
+
+
 def _build_recent_analyze_messages(
     chat_history: list,
     pending_user_images: list,
@@ -1016,7 +1026,10 @@ async def run_sync_connector(
                                         # 构造最近的消息摘要，并保留本轮最近的图片附件
                                         recent = _build_recent_analyze_messages(
                                             chat_history,
-                                            _select_pending_user_images_for_turn(pending_user_images, message.get("request_id")),
+                                            _select_pending_user_images_for_session_end(
+                                                pending_user_images,
+                                                message.get("request_id"),
+                                            ),
                                             allow_attach_to_last_user=had_user_input_this_turn,
                                         )
                                         has_user = any(m.get('role') == 'user' for m in recent)
