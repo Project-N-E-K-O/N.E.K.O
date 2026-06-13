@@ -1039,6 +1039,15 @@ def _openclaw_pending() -> bool:
     return bool(task and not task.done())
 
 
+def _agent_flags_snapshot() -> Dict[str, Any]:
+    flags = dict(Modules.agent_flags or {})
+    openclaw_capability = (Modules.capability_cache or {}).get("openclaw") or {}
+    flags["openclaw_ready"] = bool(flags.get("openclaw_enabled")) and bool(
+        openclaw_capability.get("ready")
+    )
+    return flags
+
+
 def _cancel_openclaw_enable_probe() -> None:
     Modules.openclaw_enable_seq += 1
     task = getattr(Modules, "openclaw_enable_task", None)
@@ -1372,7 +1381,7 @@ async def _emit_main_event(event_type: str, lanlan_name: Optional[str], **payloa
 
 def _collect_agent_status_snapshot() -> Dict[str, Any]:
     gate = _check_agent_api_gate()
-    flags = dict(Modules.agent_flags or {})
+    flags = _agent_flags_snapshot()
     capabilities = dict(Modules.capability_cache or {})
     # Periodic cleanup of completed tasks to prevent memory leak
     # Note: _emit_agent_status_update also calls this and handles timed_out tasks
@@ -4689,7 +4698,7 @@ async def get_agent_flags():
         
     return {
         "success": True, 
-        "agent_flags": Modules.agent_flags,
+        "agent_flags": _agent_flags_snapshot(),
         "analyzer_enabled": Modules.analyzer_enabled,
         "agent_api_gate": _check_agent_api_gate(),
         "revision": Modules.state_revision,
@@ -4967,7 +4976,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
     if changed:
         _bump_state_revision()
     await _emit_agent_status_update(lanlan_name=lanlan_name)
-    return {"success": True, "agent_flags": Modules.agent_flags}
+    return {"success": True, "agent_flags": _agent_flags_snapshot()}
 
 
 @app.post("/agent/command")

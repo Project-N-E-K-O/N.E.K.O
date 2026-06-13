@@ -616,12 +616,27 @@ async def _handle_agent_event(event: dict):
 
         # Agent status updates may be broadcast (lanlan_name omitted).
         if event_type == "agent_status_update":
+            snapshot = event.get("snapshot", {})
             payload = {
                 "type": "agent_status_update",
-                "snapshot": event.get("snapshot", {}),
+                "snapshot": snapshot,
                 "lanlan_name": lanlan or "",
             }
             mgr_for_status = _get_session_manager(lanlan)
+            if isinstance(snapshot, dict):
+                flags = snapshot.get("flags")
+                if isinstance(flags, dict):
+                    if lanlan and mgr_for_status is not None:
+                        try:
+                            mgr_for_status.update_agent_flags(flags)
+                        except Exception as e:
+                            logger.debug("[EventBus] agent_status_update flag sync failed: %s", e)
+                    elif not lanlan:
+                        for _, mgr in _iter_session_managers():
+                            try:
+                                mgr.update_agent_flags(flags)
+                            except Exception as e:
+                                logger.debug("[EventBus] agent_status_update broadcast flag sync failed: %s", e)
             if lanlan and mgr_for_status is not None:
                 mgr = mgr_for_status
                 ws = getattr(mgr, "websocket", None) if mgr else None

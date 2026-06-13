@@ -1651,3 +1651,19 @@ def test_chat_image_file_drop_uses_import_pipeline_and_blocks_browser_navigation
     assert "e.stopPropagation();" in drop_block
     assert "showHomeTutorialLockedToast();" in drop_block
     assert "mod.importImageFilesToPendingList(files, { logPrefix: '[拖放图片]' });" in drop_block
+
+
+def test_text_mode_screenshot_payload_shares_text_request_id():
+    script = APP_BUTTONS_PATH.read_text(encoding="utf-8")
+
+    screenshot_block = script.split("// Send screenshots first", 1)[1].split(
+        "if (!isReactWindowSource)",
+        1,
+    )[0]
+    text_block = script.split("// Then send text (if any)", 1)[1].split(
+        "if (!options.preserveInputValue)",
+        1,
+    )[0]
+
+    assert "request_id: requestId" in screenshot_block
+    assert "request_id: requestId" in text_block

@@ -652,7 +652,7 @@ async def test_explicit_openclaw_magic_command_skips_local_text_stream(monkeypat
     mgr._session_start_circuit_open = False
     mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
     mgr._is_agent_enabled = Mock(return_value=True)
-    mgr.agent_flags = {"openclaw_enabled": True}
+    mgr.agent_flags = {"openclaw_enabled": True, "openclaw_ready": True}
     fired = []
 
     def fake_fire_task(coro):
@@ -694,6 +694,34 @@ async def test_explicit_openclaw_magic_command_skips_local_text_stream(monkeypat
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_openclaw_magic_command_falls_back_when_openclaw_not_ready(monkeypatch):
+    """A stale OpenClaw flag must not swallow local text replies."""
+    mgr = _make_transcript_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session._pending_images = []
+    mgr.session.update_max_response_length = Mock()
+    mgr.session.stream_text = AsyncMock()
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._is_agent_enabled = Mock(return_value=True)
+    mgr.agent_flags = {"openclaw_enabled": True, "openclaw_ready": False}
+    mgr.pending_agent_callbacks = []
+    mgr._fire_task = Mock()
+    monkeypatch.setattr(core_module, "dispatch_text_user_message", lambda name, text: None)
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "/stop", "request_id": "req-stale"},
+    )
+
+    mgr._fire_task.assert_not_called()
+    mgr.session.stream_text.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_explicit_openclaw_magic_command_reuses_adapter_aliases(monkeypatch):
     """The immediate fast path must match OpenClaw's documented aliases."""
     mgr = _make_transcript_manager()
@@ -706,7 +734,7 @@ async def test_explicit_openclaw_magic_command_reuses_adapter_aliases(monkeypatc
     mgr._session_start_circuit_open = False
     mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
     mgr._is_agent_enabled = Mock(return_value=True)
-    mgr.agent_flags = {"openclaw_enabled": True}
+    mgr.agent_flags = {"openclaw_enabled": True, "openclaw_ready": True}
     fired = []
 
     def fake_fire_task(coro):
@@ -740,7 +768,7 @@ async def test_explicit_openclaw_magic_command_clears_pending_text_images(monkey
     mgr._session_start_circuit_open = False
     mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
     mgr._is_agent_enabled = Mock(return_value=True)
-    mgr.agent_flags = {"openclaw_enabled": True}
+    mgr.agent_flags = {"openclaw_enabled": True, "openclaw_ready": True}
 
     def fake_fire_task(coro):
         coro.close()
@@ -773,7 +801,7 @@ async def test_explicit_openclaw_magic_command_emits_websocket_turn_end(monkeypa
     mgr._session_start_circuit_open = False
     mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
     mgr._is_agent_enabled = Mock(return_value=True)
-    mgr.agent_flags = {"openclaw_enabled": True}
+    mgr.agent_flags = {"openclaw_enabled": True, "openclaw_ready": True}
 
     def fake_fire_task(coro):
         coro.close()

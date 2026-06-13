@@ -2444,7 +2444,8 @@
                                 var msg = {
                                     action: 'stream_data',
                                     data: img.src,
-                                    input_type: U.isMobile() ? 'camera' : 'screen'
+                                    input_type: U.isMobile() ? 'camera' : 'screen',
+                                    request_id: requestId
                                 };
                                 // Attach paired avatar position metadata (captured at screenshot time)
                                 var storedPos = screenshotItems[i].dataset.avatarPosition;

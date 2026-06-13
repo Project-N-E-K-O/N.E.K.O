@@ -855,6 +855,7 @@ class LLMSessionManager:
             'browser_use_enabled': False,
             'user_plugin_enabled': False,
             'openclaw_enabled': False,
+            'openclaw_ready': False,
             'openfang_enabled': False,
         }
         
@@ -5163,7 +5164,15 @@ class LLMSessionManager:
     # 供主服务调用，更新Agent模式相关开关
     def update_agent_flags(self, flags: dict):
         try:
-            for k in ['agent_enabled', 'computer_use_enabled', 'browser_use_enabled', 'user_plugin_enabled', 'openclaw_enabled', 'openfang_enabled']:
+            for k in [
+                'agent_enabled',
+                'computer_use_enabled',
+                'browser_use_enabled',
+                'user_plugin_enabled',
+                'openclaw_enabled',
+                'openclaw_ready',
+                'openfang_enabled',
+            ]:
                 if k in flags and isinstance(flags[k], bool):
                     self.agent_flags[k] = flags[k]
         except Exception:
@@ -7292,6 +7301,7 @@ class LLMSessionManager:
                         openclaw_magic_command
                         and self._is_agent_enabled()
                         and self.agent_flags.get("openclaw_enabled", False)
+                        and self.agent_flags.get("openclaw_ready", False)
                     ):
                         self._session_turn_count += 1
                         self._clear_text_pending_images()
