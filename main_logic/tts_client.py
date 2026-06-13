@@ -2133,6 +2133,9 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
 
                 if not ws:
                     # 连接已因空闲超时断开，暂存当前片段并重置 speech_id 以触发重连
+                    # 断线前先冲刷抖动缓冲残留 PCM：重连会走 speech_id 切换分支并 reset()，
+                    # 未达阈值的当前轮尾音否则会被清掉；此处仍是同一 speech_id，顺序连续
+                    qwen_audio_jitter.flush()
                     current_speech_id = None
                     pending = (sid, tts_text)
                     continue
