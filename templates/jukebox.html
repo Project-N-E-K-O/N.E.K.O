@@ -14,15 +14,23 @@
 
     <style>
         html, body {
+            --neko-jukebox-bg: #87CEEB;
             margin: 0;
             padding: 0;
             width: 100%;
             height: 100%;
             overflow: hidden;
-            background: #87CEEB;
+            background: var(--neko-jukebox-bg);
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             user-select: none;
             -webkit-user-select: none;
+        }
+
+        html.neko-jukebox-standalone-host,
+        html.neko-jukebox-standalone-host body,
+        html[data-theme="dark"].neko-jukebox-standalone-host,
+        html[data-theme="dark"].neko-jukebox-standalone-host body.neko-jukebox-standalone-page {
+            background: var(--neko-jukebox-bg) !important;
         }
 
         .jukebox-wrapper {
@@ -101,10 +109,22 @@
         body.neko-jukebox-standalone-page .jukebox-resize-handle {
             touch-action: none;
         }
+
+        /* Keep this in sync with Jukebox.injectStyles() so first paint cannot animate during standalone resize. */
+        body.neko-jukebox-standalone-page .jukebox-container,
+        body.neko-jukebox-standalone-page .jukebox-container.open,
+        body.neko-jukebox-standalone-page .jukebox-container.hidden {
+            width: 100% !important;
+            height: 100% !important;
+            transition: none !important;
+            transform: none !important;
+        }
     </style>
 </head>
 <body>
     <script>
+        // Applied before JS mount so dark-mode global styles cannot flash a black standalone background.
+        document.documentElement.classList.add('neko-jukebox-standalone-host');
         window.__NEKO_JUKEBOX_STANDALONE__ = true;
     </script>
     <script src="/static/Jukebox.js"></script>

@@ -127,6 +127,7 @@ window.Jukebox = {
     tooltipTextProvider: null,
     marqueeItems: new Map(),
     marqueeRaf: null,
+    hasCustomWindowSize: false,
     // 窗口拖拽状态
     isDragging: false,
     dragOffset: { x: 0, y: 0 }
@@ -215,6 +216,46 @@ window.Jukebox = {
     } catch (error) {
       console.warn('[Jukebox] 保存本地偏好失败:', name, error);
     }
+  },
+
+  applyStoredWindowSize: function(container) {
+    if (window.__NEKO_JUKEBOX_STANDALONE__ || !container) return;
+
+    const saved = Jukebox.getStoredJson('windowSize', null);
+    if (!saved || typeof saved !== 'object') return;
+
+    const minWidth = 360;
+    const minHeight = 300;
+    const maxWidth = Math.max(minWidth, (window.innerWidth || minWidth) - 16);
+    const maxHeight = Math.max(minHeight, (window.innerHeight || minHeight) - 16);
+    const width = Number(saved.width);
+    const height = Number(saved.height);
+    let applied = false;
+
+    if (Number.isFinite(width) && width >= minWidth) {
+      container.style.width = Math.min(Math.max(width, minWidth), maxWidth) + 'px';
+      applied = true;
+    }
+    if (Number.isFinite(height) && height >= minHeight) {
+      container.style.height = Math.min(Math.max(height, minHeight), maxHeight) + 'px';
+      applied = true;
+    }
+
+    if (applied) {
+      Jukebox.State.hasCustomWindowSize = true;
+    }
+  },
+
+  saveWindowSize: function(container) {
+    if (window.__NEKO_JUKEBOX_STANDALONE__ || !container) return;
+
+    const rect = container.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0) return;
+
+    Jukebox.setStoredJson('windowSize', {
+      width: Math.round(rect.width),
+      height: Math.round(rect.height)
+    });
   },
 
   loadPlaybackPreferences: function() {
@@ -5192,6 +5233,9 @@ window.Jukebox = {
     }
 
     if (Jukebox.State.container) {
+      if (Jukebox.State.hasCustomWindowSize) {
+        Jukebox.saveWindowSize(Jukebox.State.container.querySelector('.jukebox-container'));
+      }
       Jukebox.State.container.remove();
       Jukebox.State.container = null;
     }
@@ -5203,6 +5247,7 @@ window.Jukebox = {
 
     Jukebox.State.isOpen = false;
     Jukebox.State.isHidden = false;
+    Jukebox.State.hasCustomWindowSize = false;
     Jukebox.stopConfigPolling();
     Jukebox.State.configRevision = null;
 
@@ -5251,6 +5296,9 @@ window.Jukebox = {
     }
 
     if (Jukebox.State.container) {
+      if (Jukebox.State.hasCustomWindowSize) {
+        Jukebox.saveWindowSize(Jukebox.State.container.querySelector('.jukebox-container'));
+      }
       Jukebox.State.container.remove();
       Jukebox.State.container = null;
     }
@@ -5267,6 +5315,7 @@ window.Jukebox = {
     
     Jukebox.State.isOpen = false;
     Jukebox.State.isHidden = false;
+    Jukebox.State.hasCustomWindowSize = false;
     Jukebox.State.songs = [];
     Jukebox.State.songElements = {}; // 清空元素映射
 
@@ -5283,6 +5332,7 @@ window.Jukebox = {
     
     const jukeboxContainer = document.createElement('div');
     jukeboxContainer.className = 'jukebox-container';
+    Jukebox.applyStoredWindowSize(jukeboxContainer);
     jukeboxContainer.innerHTML = `
       <div class="jukebox-drag-overlay"></div>
       <div class="jukebox-header">
@@ -5535,8 +5585,11 @@ window.Jukebox = {
       const computed = window.getComputedStyle(container);
       const widthExtras = startRect.width - parseFloat(computed.width);
       const heightExtras = startRect.height - parseFloat(computed.height);
+      const initialContentWidth = Math.max(0, startRect.width - widthExtras);
+      const initialContentHeight = Math.max(0, startRect.height - heightExtras);
       const maxWidth = Math.max(MIN_WIDTH, window.innerWidth - 16);
       const maxHeight = Math.max(MIN_HEIGHT, window.innerHeight - 16);
+      let didResize = false;
 
       document.body.classList.add('jukebox-resizing');
 
@@ -5566,8 +5619,15 @@ window.Jukebox = {
           newTop = startTop + (startRect.height - newOuterH);
         }
 
-        container.style.width = Math.max(0, newOuterW - widthExtras) + 'px';
-        container.style.height = Math.max(0, newOuterH - heightExtras) + 'px';
+        const nextWidth = Math.max(0, newOuterW - widthExtras);
+        const nextHeight = Math.max(0, newOuterH - heightExtras);
+        container.style.width = nextWidth + 'px';
+        container.style.height = nextHeight + 'px';
+        if (!didResize) {
+          didResize =
+            Math.abs(nextWidth - initialContentWidth) > 0.5 ||
+            Math.abs(nextHeight - initialContentHeight) > 0.5;
+        }
 
         const wrapper = container.parentElement;
         if (wrapper && (dir.includes('w') || dir.includes('n'))) {
@@ -5579,6 +5639,10 @@ window.Jukebox = {
       };
 
       const cleanup = () => {
+        if (didResize) {
+          Jukebox.State.hasCustomWindowSize = true;
+          Jukebox.saveWindowSize(container);
+        }
         document.body.classList.remove('jukebox-resizing');
         document.removeEventListener('mousemove', onPointerMove);
         document.removeEventListener('touchmove', onPointerMove);
@@ -5829,18 +5893,36 @@ window.Jukebox = {
         pointer-events: auto;
       }
 
+      html.neko-jukebox-standalone-host,
+      html.neko-jukebox-standalone-host body,
+      html[data-theme="dark"].neko-jukebox-standalone-host,
+      html[data-theme="dark"].neko-jukebox-standalone-host body.neko-jukebox-standalone-page {
+        background: ${Jukebox.Config.container.background} !important;
+      }
+
+      body.neko-jukebox-standalone-page .jukebox-wrapper {
+        position: fixed !important;
+        inset: 0 !important;
+        bottom: 0 !important;
+        right: 0 !important;
+      }
+
       ${Jukebox.SongActionManager.getStyles()}
 
       .jukebox-container {
         width: ${Jukebox.Config.width};
+        height: calc(100vh - 40px);
+        max-height: calc(100vh - 40px);
         background: ${Jukebox.Config.container.background};
         border-radius: 12px;
         box-shadow: ${Jukebox.Config.container.boxShadow};
         color: ${Jukebox.Config.container.color};
         padding: 0;
+        display: flex;
+        flex-direction: column;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         transition: transform 0.3s ease, opacity 0.3s ease;
-        overflow: auto;
+        overflow: hidden;
         opacity: 0;
         transform: translateY(20px);
         pointer-events: auto;
@@ -5862,9 +5944,19 @@ window.Jukebox = {
         pointer-events: none;
         transform: translateY(20px);
       }
+
+      body.neko-jukebox-standalone-page .jukebox-container,
+      body.neko-jukebox-standalone-page .jukebox-container.open,
+      body.neko-jukebox-standalone-page .jukebox-container.hidden {
+        width: 100% !important;
+        height: 100% !important;
+        transition: none !important;
+        transform: none !important;
+      }
       
       .jukebox-header {
         display: flex;
+        flex: 0 0 auto;
         justify-content: space-between;
         align-items: center;
         margin-bottom: 12px;
@@ -6183,10 +6275,9 @@ window.Jukebox = {
       }
       
       .jukebox-content {
-        flex: 1;
+        flex: 1 1 auto;
         overflow-y: auto;
         min-height: 0;
-        max-height: 270px;
         margin: 0 20px;
         scrollbar-width: none;
         -ms-overflow-style: none;
@@ -6446,6 +6537,7 @@ window.Jukebox = {
       }
       
       .jukebox-controls-row {
+        flex: 0 0 auto;
         margin: 15px 20px 20px;
         padding: 10px;
         background: ${Jukebox.Config.progress.containerBg};
@@ -7337,6 +7429,42 @@ window.Jukebox = {
     if (volumeValueEl) {
       volumeValueEl.addEventListener('click', Jukebox.startVolumeEdit);
     }
+
+    Jukebox.bindVolumeWheel();
+  },
+
+  bindVolumeWheel: function() {
+    const volumeWrapper = document.querySelector('.jukebox-volume-wrapper');
+    if (!volumeWrapper || volumeWrapper.dataset.wheelBound === 'true') return;
+
+    volumeWrapper.dataset.wheelBound = 'true';
+    volumeWrapper.addEventListener('wheel', Jukebox.handleVolumeWheel, { passive: false });
+  },
+
+  handleVolumeWheel: function(e) {
+    if (!e) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (e.deltaY === 0) return;
+
+    const volumeSlider = document.getElementById('jukebox-volume-slider');
+    const player = Jukebox.getPlayer();
+    const sliderVolume = volumeSlider ? parseFloat(volumeSlider.value) : NaN;
+    const playerVolume = player && player.audio ? parseFloat(player.audio.volume) : NaN;
+    const fallbackVolume = Jukebox.State.isMuted ? 0 : (Jukebox.State.savedVolume || 1);
+    const currentVolume = Number.isFinite(sliderVolume)
+      ? sliderVolume
+      : (Number.isFinite(playerVolume) ? playerVolume : fallbackVolume);
+    const wheelStep = 0.05;
+    const nextVolume = Math.max(0, Math.min(1, Math.round((currentVolume + (e.deltaY < 0 ? wheelStep : -wheelStep)) * 100) / 100));
+
+    if (volumeSlider) {
+      volumeSlider.value = nextVolume;
+    }
+
+    Jukebox.updateVolume(nextVolume);
   },
 
   startVolumeEdit: function() {
