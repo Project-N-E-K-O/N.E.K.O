@@ -75,6 +75,7 @@ const emit = defineEmits<{
   load: []
   error: [error: string]
   openLogs: []
+  message: [data: unknown]
 }>()
 
 const { locale, t } = useI18n()
@@ -465,6 +466,10 @@ function handleMessage(event: MessageEvent) {
   }
   if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-request') {
     handleHostedRequest(data)
+    return
+  }
+  if (data && typeof data === 'object' && typeof data.type === 'string') {
+    emit('message', data)
   }
 }
 

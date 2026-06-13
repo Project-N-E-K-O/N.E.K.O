@@ -148,10 +148,12 @@ function handleMessage(event: MessageEvent) {
     const payload = data.payload && typeof data.payload === 'object' ? data.payload : {}
     const surfaceId = typeof payload.surfaceId === 'string' ? payload.surfaceId.trim() : ''
     if (surfaceId) {
+      const pluginId = typeof payload.pluginId === 'string' ? payload.pluginId.trim() : ''
+      const kind = typeof payload.kind === 'string' ? payload.kind.trim() : ''
       emit('openSurface', {
-        pluginId: typeof payload.pluginId === 'string' ? payload.pluginId : undefined,
+        pluginId: pluginId || undefined,
         surfaceId,
-        kind: typeof payload.kind === 'string' ? payload.kind : undefined,
+        kind: kind || undefined,
       })
     }
   }
@@ -166,9 +168,15 @@ function sendMessage(payload: any) {
   }, expectedOrigin)
 }
 
+function sendStudySurfaceMessage(message: { type: string; payload?: unknown }) {
+  if (!iframeRef.value?.contentWindow) return
+  iframeRef.value.contentWindow.postMessage(message, expectedOrigin)
+}
+
 defineExpose({
   reload,
   sendMessage,
+  sendStudySurfaceMessage,
   hasUI
 })
 
