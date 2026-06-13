@@ -6855,11 +6855,11 @@ window.Jukebox = {
       playbackMode: Jukebox.State.playbackMode
     });
 
-    Jukebox.stopVMD();
+    const nextSong = Jukebox.getNextSongToPlay(endedSong);
+    Jukebox.stopVMD(!!nextSong);
     Jukebox.State.isPlaying = false;
     Jukebox.State.isPaused = false;
 
-    const nextSong = Jukebox.getNextSongToPlay(endedSong);
     Jukebox.State.currentSong = null;
     Jukebox.updateStoppedStatus();
 
