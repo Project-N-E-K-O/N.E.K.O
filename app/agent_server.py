@@ -1656,18 +1656,18 @@ async def _emit_agent_status_update(lanlan_name: Optional[str] = None) -> None:
 async def _handle_voice_transcript_request(event: Dict[str, Any]) -> None:
     event_id = str((event or {}).get("event_id") or "")
     lanlan_name = (event or {}).get("lanlan_name")
-    result: Dict[str, Any] = {"action": "noop", "reason": "unavailable"}
 
     try:
         from plugin.server.application.plugins import voice_transcript_bridge
 
         if not voice_transcript_bridge.voice_transcript_request_has_text(event):
-            result = voice_transcript_bridge.voice_transcript_noop("empty_transcript")
+            logger.debug("[VoiceBridge] observed transcript skipped: empty event_id=%s", event_id)
         elif not Modules.analyzer_enabled:
-            result = voice_transcript_bridge.voice_transcript_noop("agent_disabled")
+            logger.debug("[VoiceBridge] observed transcript skipped: agent disabled event_id=%s", event_id)
         elif not Modules.agent_flags.get("user_plugin_enabled", False):
-            result = voice_transcript_bridge.voice_transcript_noop(
-                "user_plugin_disabled"
+            logger.debug(
+                "[VoiceBridge] observed transcript skipped: user plugins disabled event_id=%s",
+                event_id,
             )
         else:
             lifecycle_ready = bool(Modules.plugin_lifecycle_started)
@@ -1675,13 +1675,20 @@ async def _handle_voice_transcript_request(event: Dict[str, Any]) -> None:
                 lifecycle_ready = await _ensure_plugin_lifecycle_started()
 
             if not lifecycle_ready:
-                result = voice_transcript_bridge.voice_transcript_noop(
-                    "plugin_lifecycle_start_failed"
+                logger.debug(
+                    "[VoiceBridge] observed transcript skipped: plugin lifecycle unavailable event_id=%s",
+                    event_id,
                 )
             else:
                 result = await voice_transcript_bridge.resolve_voice_transcript_request(
                     event,
                     timeout=voice_transcript_bridge.VOICE_TRANSCRIPT_DISPATCH_TIMEOUT_SECONDS,
+                )
+                logger.debug(
+                    "[VoiceBridge] observed transcript dispatched: event_id=%s lanlan=%s action=%s",
+                    event_id,
+                    lanlan_name,
+                    result.get("action") if isinstance(result, dict) else "",
                 )
     except Exception as exc:
         logger.debug(
@@ -1690,18 +1697,6 @@ async def _handle_voice_transcript_request(event: Dict[str, Any]) -> None:
             lanlan_name,
             exc,
         )
-        result = {
-            "action": "noop",
-            "reason": "dispatch_failed",
-            "error_type": type(exc).__name__,
-        }
-
-    await _emit_main_event(
-        "voice_bridge_result",
-        lanlan_name if isinstance(lanlan_name, str) else None,
-        event_id=event_id,
-        result=result,
-    )
 
 
 async def _on_session_event(event: Dict[str, Any]) -> None:
@@ -1716,7 +1711,7 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
         # has its own once-flag, so this is safe to spam.
         await _maybe_restore_agent_intent()
         return
-    if event_type == "voice_transcript_request":
+    if event_type in {"voice_transcript_observed", "voice_transcript_request"}:
         task = asyncio.create_task(_handle_voice_transcript_request(event))
         Modules._background_tasks.add(task)
         task.add_done_callback(Modules._background_tasks.discard)

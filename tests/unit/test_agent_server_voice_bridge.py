@@ -36,16 +36,14 @@ async def test_voice_transcript_request_reports_lifecycle_start_failure(
     from app import agent_server as srv
     from plugin.server.application.plugins import voice_transcript_bridge
 
-    emitted: dict[str, Any] = {}
+    emitted: list[tuple[str, str | None, dict[str, Any]]] = []
     resolve_called = False
 
     async def _start_plugin_lifecycle() -> bool:
         return False
 
     async def _emit_main_event(event_type: str, lanlan_name: str | None, **payload: Any) -> None:
-        emitted["event_type"] = event_type
-        emitted["lanlan_name"] = lanlan_name
-        emitted["payload"] = payload
+        emitted.append((event_type, lanlan_name, payload))
 
     async def _resolve_voice_transcript_request(*_: Any, **__: Any) -> dict[str, Any]:
         nonlocal resolve_called
@@ -72,13 +70,7 @@ async def test_voice_transcript_request_reports_lifecycle_start_failure(
     )
 
     assert resolve_called is False
-    assert emitted["event_type"] == "voice_bridge_result"
-    assert emitted["lanlan_name"] == "Yui"
-    assert emitted["payload"]["event_id"] == "voice-1"
-    assert emitted["payload"]["result"] == {
-        "action": "noop",
-        "reason": "plugin_lifecycle_start_failed",
-    }
+    assert emitted == []
 
 
 @pytest.mark.asyncio
@@ -88,7 +80,7 @@ async def test_voice_transcript_request_skips_plugins_when_agent_disabled(
     from app import agent_server as srv
     from plugin.server.application.plugins import voice_transcript_bridge
 
-    emitted: dict[str, Any] = {}
+    emitted: list[tuple[str, str | None, dict[str, Any]]] = []
     start_called = False
     resolve_called = False
 
@@ -98,9 +90,7 @@ async def test_voice_transcript_request_skips_plugins_when_agent_disabled(
         return True
 
     async def _emit_main_event(event_type: str, lanlan_name: str | None, **payload: Any) -> None:
-        emitted["event_type"] = event_type
-        emitted["lanlan_name"] = lanlan_name
-        emitted["payload"] = payload
+        emitted.append((event_type, lanlan_name, payload))
 
     async def _resolve_voice_transcript_request(*_: Any, **__: Any) -> dict[str, Any]:
         nonlocal resolve_called
@@ -128,13 +118,7 @@ async def test_voice_transcript_request_skips_plugins_when_agent_disabled(
 
     assert start_called is False
     assert resolve_called is False
-    assert emitted["event_type"] == "voice_bridge_result"
-    assert emitted["lanlan_name"] == "Yui"
-    assert emitted["payload"]["event_id"] == "voice-disabled"
-    assert emitted["payload"]["result"] == {
-        "action": "noop",
-        "reason": "agent_disabled",
-    }
+    assert emitted == []
 
 
 @pytest.mark.asyncio
@@ -144,13 +128,11 @@ async def test_voice_transcript_request_skips_plugins_for_empty_transcript(
     from app import agent_server as srv
     from plugin.server.application.plugins import voice_transcript_bridge
 
-    emitted: dict[str, Any] = {}
+    emitted: list[tuple[str, str | None, dict[str, Any]]] = []
     resolve_called = False
 
     async def _emit_main_event(event_type: str, lanlan_name: str | None, **payload: Any) -> None:
-        emitted["event_type"] = event_type
-        emitted["lanlan_name"] = lanlan_name
-        emitted["payload"] = payload
+        emitted.append((event_type, lanlan_name, payload))
 
     async def _resolve_voice_transcript_request(*_: Any, **__: Any) -> dict[str, Any]:
         nonlocal resolve_called
@@ -176,13 +158,7 @@ async def test_voice_transcript_request_skips_plugins_for_empty_transcript(
     )
 
     assert resolve_called is False
-    assert emitted["event_type"] == "voice_bridge_result"
-    assert emitted["lanlan_name"] == "Yui"
-    assert emitted["payload"]["event_id"] == "voice-empty"
-    assert emitted["payload"]["result"] == {
-        "action": "noop",
-        "reason": "empty_transcript",
-    }
+    assert emitted == []
 
 
 @pytest.mark.asyncio
@@ -192,7 +168,7 @@ async def test_voice_transcript_request_skips_plugins_when_user_plugin_disabled(
     from app import agent_server as srv
     from plugin.server.application.plugins import voice_transcript_bridge
 
-    emitted: dict[str, Any] = {}
+    emitted: list[tuple[str, str | None, dict[str, Any]]] = []
     start_called = False
     resolve_called = False
 
@@ -202,9 +178,7 @@ async def test_voice_transcript_request_skips_plugins_when_user_plugin_disabled(
         return True
 
     async def _emit_main_event(event_type: str, lanlan_name: str | None, **payload: Any) -> None:
-        emitted["event_type"] = event_type
-        emitted["lanlan_name"] = lanlan_name
-        emitted["payload"] = payload
+        emitted.append((event_type, lanlan_name, payload))
 
     async def _resolve_voice_transcript_request(*_: Any, **__: Any) -> dict[str, Any]:
         nonlocal resolve_called
@@ -232,13 +206,7 @@ async def test_voice_transcript_request_skips_plugins_when_user_plugin_disabled(
 
     assert start_called is False
     assert resolve_called is False
-    assert emitted["event_type"] == "voice_bridge_result"
-    assert emitted["lanlan_name"] == "Yui"
-    assert emitted["payload"]["event_id"] == "voice-user-plugin-disabled"
-    assert emitted["payload"]["result"] == {
-        "action": "noop",
-        "reason": "user_plugin_disabled",
-    }
+    assert emitted == []
 
 
 @pytest.mark.asyncio
@@ -248,13 +216,11 @@ async def test_voice_transcript_request_uses_arbitrated_custom_event(
     from app import agent_server as srv
     from plugin.server.application.plugins import voice_transcript_bridge
 
-    emitted: dict[str, Any] = {}
+    emitted: list[tuple[str, str | None, dict[str, Any]]] = []
     captured: dict[str, Any] = {}
 
     async def _emit_main_event(event_type: str, lanlan_name: str | None, **payload: Any) -> None:
-        emitted["event_type"] = event_type
-        emitted["lanlan_name"] = lanlan_name
-        emitted["payload"] = payload
+        emitted.append((event_type, lanlan_name, payload))
 
     async def _resolve_voice_transcript_request(
         event: dict[str, Any],
@@ -291,10 +257,4 @@ async def test_voice_transcript_request_uses_arbitrated_custom_event(
     assert captured["event"]["transcript"] == "Yui explain this step"
     assert captured["event"]["metadata"] == {"session_id": "s1"}
     assert captured["timeout"] == voice_transcript_bridge.VOICE_TRANSCRIPT_DISPATCH_TIMEOUT_SECONDS
-    assert emitted["event_type"] == "voice_bridge_result"
-    assert emitted["payload"]["event_id"] == "voice-2"
-    assert emitted["payload"]["result"] == {
-        "action": "prime_context",
-        "context": "screen context",
-        "source_plugin": "study_companion",
-    }
+    assert emitted == []

@@ -17,145 +17,73 @@ def _reset_agent_bridge_liveness() -> None:
 
 
 @pytest.mark.asyncio
-async def test_voice_bridge_notify_keeps_waiter_until_loop_resolves() -> None:
-    event_id = "voice-race-regression"
-    loop = asyncio.get_running_loop()
-    waiter: asyncio.Future = loop.create_future()
-    with agent_event_bus._voice_bridge_waiters_lock:
-        agent_event_bus._voice_bridge_waiters[event_id] = waiter
-        agent_event_bus._voice_bridge_waiters_resolving.discard(event_id)
-
-    try:
-        agent_event_bus.notify_voice_bridge_result(event_id, {"action": "noop"})
-
-        with agent_event_bus._voice_bridge_waiters_lock:
-            assert agent_event_bus._voice_bridge_waiters.get(event_id) is waiter
-            assert event_id in agent_event_bus._voice_bridge_waiters_resolving
-        assert not waiter.done()
-
-        await asyncio.sleep(0)
-
-        assert waiter.done()
-        assert waiter.result() == {"action": "noop"}
-        with agent_event_bus._voice_bridge_waiters_lock:
-            assert event_id not in agent_event_bus._voice_bridge_waiters
-            assert event_id not in agent_event_bus._voice_bridge_waiters_resolving
-    finally:
-        with agent_event_bus._voice_bridge_waiters_lock:
-            agent_event_bus._voice_bridge_waiters.pop(event_id, None)
-            agent_event_bus._voice_bridge_waiters_resolving.discard(event_id)
-        if not waiter.done():
-            waiter.cancel()
-
-
-def test_voice_bridge_notify_cancels_waiter_when_loop_is_closed() -> None:
-    event_id = "voice-closed-loop"
-
-    class _ClosedLoop:
-        def call_soon_threadsafe(self, _callback):
-            raise RuntimeError("event loop is closed")
-
-    class _Waiter:
-        def __init__(self):
-            self.cancelled = False
-
-        def done(self):
-            return self.cancelled
-
-        def cancel(self):
-            self.cancelled = True
-
-        def get_loop(self):
-            return _ClosedLoop()
-
-    waiter = _Waiter()
-    with agent_event_bus._voice_bridge_waiters_lock:
-        agent_event_bus._voice_bridge_waiters[event_id] = waiter
-        agent_event_bus._voice_bridge_waiters_resolving.discard(event_id)
-
-    try:
-        agent_event_bus.notify_voice_bridge_result(event_id, {"action": "noop"})
-
-        assert waiter.cancelled is True
-        with agent_event_bus._voice_bridge_waiters_lock:
-            assert event_id not in agent_event_bus._voice_bridge_waiters
-            assert event_id not in agent_event_bus._voice_bridge_waiters_resolving
-    finally:
-        with agent_event_bus._voice_bridge_waiters_lock:
-            agent_event_bus._voice_bridge_waiters.pop(event_id, None)
-            agent_event_bus._voice_bridge_waiters_resolving.discard(event_id)
-
-
-@pytest.mark.asyncio
-async def test_voice_transcript_request_returns_agent_result(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_voice_transcript_observed_broadcasts_without_waiter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     captured: dict[str, object] = {}
 
     class _Bridge:
+        ready = True
+        pub = object()
+
         async def publish_session_event(self, event: dict) -> bool:
             captured.update(event)
-            asyncio.get_running_loop().call_soon(
-                agent_event_bus.notify_voice_bridge_result,
-                str(event["event_id"]),
-                {"action": "cancel_response"},
-            )
             return True
 
     monkeypatch.setattr(agent_event_bus, "_main_bridge_ref", _Bridge())
     agent_event_bus._mark_agent_bridge_seen()
 
-    result = await agent_event_bus.publish_voice_transcript_request_reliably(
+    sent = await agent_event_bus.publish_voice_transcript_observed_best_effort(
         "Yui",
         "hm this is 3x^2",
-        timeout_s=0.2,
+        metadata={"session_id": "s1"},
     )
 
-    assert result == {"action": "cancel_response"}
-    assert captured["event_type"] == "voice_transcript_request"
+    assert sent is True
+    assert captured["event_type"] == "voice_transcript_observed"
     assert captured["lanlan_name"] == "Yui"
     assert captured["transcript"] == "hm this is 3x^2"
-    assert agent_event_bus._voice_bridge_waiters == {}
+    assert captured["metadata"] == {"session_id": "s1"}
+    assert isinstance(captured["event_id"], str)
 
 
 @pytest.mark.asyncio
-async def test_voice_transcript_request_skips_publish_without_agent_liveness(
+async def test_voice_transcript_observed_skips_publish_without_agent_liveness(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     published: list[dict] = []
 
     class _Bridge:
+        ready = True
+        pub = object()
+
         async def publish_session_event(self, event: dict) -> bool:
             published.append(event)
             return True
 
     monkeypatch.setattr(agent_event_bus, "_main_bridge_ref", _Bridge())
 
-    result = await agent_event_bus.publish_voice_transcript_request_reliably(
+    sent = await agent_event_bus.publish_voice_transcript_observed_best_effort(
         "Yui",
         "agent server is gone",
-        timeout_s=0.2,
     )
 
-    assert result is None
+    assert sent is False
     assert published == []
-    assert agent_event_bus._voice_bridge_waiters == {}
 
 
 @pytest.mark.asyncio
-async def test_voice_transcript_request_retries_after_send_failure(
+async def test_legacy_voice_request_wrapper_does_not_wait_for_plugin_action(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    attempts: list[int] = []
+    captured: dict[str, object] = {}
 
     class _Bridge:
+        ready = True
+        pub = object()
+
         async def publish_session_event(self, event: dict) -> bool:
-            attempts.append(int(event["attempt"]))
-            if len(attempts) == 1:
-                return False
-            asyncio.get_running_loop().call_soon(
-                agent_event_bus.notify_voice_bridge_result,
-                str(event["event_id"]),
-                {"action": "prime_context", "context": "screen context"},
-            )
+            captured.update(event)
             return True
 
     monkeypatch.setattr(agent_event_bus, "_main_bridge_ref", _Bridge())
@@ -164,13 +92,16 @@ async def test_voice_transcript_request_retries_after_send_failure(
     result = await agent_event_bus.publish_voice_transcript_request_reliably(
         "Yui",
         "Yui explain this step",
-        timeout_s=0.2,
-        retries=1,
+        timeout_s=0.001,
+        retries=3,
     )
 
-    assert attempts == [0, 1]
-    assert result == {"action": "prime_context", "context": "screen context"}
-    assert agent_event_bus._voice_bridge_waiters == {}
+    assert result is None
+    assert captured["event_type"] == "voice_transcript_observed"
+
+
+def test_notify_voice_bridge_result_is_ignored() -> None:
+    agent_event_bus.notify_voice_bridge_result("late-event", {"action": "cancel_response"})
 
 
 @pytest.mark.asyncio

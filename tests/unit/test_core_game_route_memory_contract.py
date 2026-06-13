@@ -131,6 +131,7 @@ def _make_manager():
     mgr.tts_handler_task = None
     mgr._takeover_active = False
     mgr._takeover_input_dispatcher = None
+    mgr._bg_tasks = set()
     mgr.sent_responses = []
     mgr.user_activity = []
     mgr.last_user_activity_time = None
@@ -363,28 +364,35 @@ async def test_no_takeover_voice_transcript_uses_ordinary_flow():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_voice_bridge_cancel_skips_user_context_side_effects():
+async def test_voice_plugin_cancel_action_does_not_skip_user_context_side_effects():
     mgr = _make_transcript_manager()
     routed = []
 
-    async def fake_voice_bridge(text):
+    async def fake_voice_broadcast(text):
         routed.append(text)
-        return "cancel_response"
+        return None
 
-    mgr._dispatch_voice_transcript_bridge = fake_voice_bridge
+    mgr._broadcast_voice_transcript_observed = fake_voice_broadcast
 
     await core_module.LLMSessionManager.handle_input_transcript(
         mgr,
         "  f(x)=x^3 derivative answer is 3x^2  ",
         is_voice_source=True,
     )
+    await asyncio.sleep(0)
 
     assert routed == ["f(x)=x^3 derivative answer is 3x^2"]
     assert mgr._activity_tracker.voice_rms_count == 1
-    assert mgr._activity_tracker.user_messages == []
-    assert mgr._session_turn_count == 0
-    mgr._publish_user_utterance_to_plugin_bus.assert_not_called()
-    assert mgr.sync_message_queue.messages == []
+    assert mgr._activity_tracker.user_messages == ["  f(x)=x^3 derivative answer is 3x^2  "]
+    assert mgr._session_turn_count == 1
+    mgr._publish_user_utterance_to_plugin_bus.assert_called_once_with(
+        "  f(x)=x^3 derivative answer is 3x^2  ",
+        is_voice_source=True,
+    )
+    assert mgr.sync_message_queue.messages == [{
+        "type": "user",
+        "data": {"input_type": "transcript", "data": "f(x)=x^3 derivative answer is 3x^2"},
+    }]
 
 
 @pytest.mark.unit
@@ -395,18 +403,19 @@ async def test_voice_bridge_session_change_continues_ordinary_transcript_flow():
     replacement_session = object()
     routed = []
 
-    async def fake_voice_bridge(text):
+    async def fake_voice_broadcast(text):
         routed.append(text)
         mgr.session = replacement_session
-        return ""
+        return None
 
-    mgr._dispatch_voice_transcript_bridge = fake_voice_bridge
+    mgr._broadcast_voice_transcript_observed = fake_voice_broadcast
 
     await core_module.LLMSessionManager.handle_input_transcript(
         mgr,
         "  Yui explain this step  ",
         is_voice_source=True,
     )
+    await asyncio.sleep(0)
 
     assert routed == ["Yui explain this step"]
     assert original_session is not replacement_session
@@ -426,20 +435,16 @@ async def test_voice_bridge_session_change_continues_ordinary_transcript_flow():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_voice_bridge_cancel_failure_continues_ordinary_transcript_flow(monkeypatch):
+async def test_voice_observer_broadcast_failure_continues_ordinary_transcript_flow(monkeypatch):
     mgr = _make_transcript_manager()
     mgr.session = _FakeVoiceBridgeSession()
 
     async def fake_publish(*_args, **_kwargs):
-        return {"action": "cancel_response"}
+        raise RuntimeError("broadcast failed")
 
-    async def fail_cancel_response():
-        raise RuntimeError("cancel failed")
-
-    mgr.session.cancel_response = fail_cancel_response
     monkeypatch.setattr(
         core_module,
-        "publish_voice_transcript_request_reliably",
+        "publish_voice_transcript_observed_best_effort",
         fake_publish,
     )
 
@@ -464,31 +469,26 @@ async def test_voice_bridge_cancel_failure_continues_ordinary_transcript_flow(mo
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_voice_bridge_gemini_prime_context_does_not_skip_current_response(monkeypatch):
+async def test_voice_observer_does_not_prime_gemini_context_from_main(monkeypatch):
     mgr = _make_transcript_manager()
     session = _FakeGeminiVoiceBridgeSession()
     mgr.session = session
 
     async def fake_publish(*_args, **_kwargs):
-        return {
-            "action": "prime_context",
-            "context": "screen context",
-            "skipped": True,
-        }
+        return True
 
     monkeypatch.setattr(
         core_module,
-        "publish_voice_transcript_request_reliably",
+        "publish_voice_transcript_observed_best_effort",
         fake_publish,
     )
 
-    action = await core_module.LLMSessionManager._dispatch_voice_transcript_bridge(
+    await core_module.LLMSessionManager._broadcast_voice_transcript_observed(
         mgr,
         "explain this screen",
     )
 
-    assert action == "prime_context"
-    assert session.primed == [("screen context", False)]
+    assert session.primed == []
 
 
 @pytest.mark.unit
