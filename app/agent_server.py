@@ -1508,6 +1508,17 @@ def _build_user_turn_fingerprint(messages: Any) -> Optional[str]:
     return hashlib.sha256(payload_bytes).hexdigest()
 
 
+def _build_analyze_event_fingerprint(event: Dict[str, Any]) -> Optional[str]:
+    fp = _build_user_turn_fingerprint(event.get("messages", []))
+    if fp is None:
+        return None
+    if event.get("trigger") == "text_openclaw_magic_command":
+        turn_marker = str(event.get("event_id") or event.get("conversation_id") or "").strip()
+        if turn_marker:
+            fp = f"{fp}\n[openclaw_magic_turn:{turn_marker}]"
+    return fp
+
+
 def _user_message_signature(message: Any) -> Optional[str]:
     """Stable per-message signature for a single user turn.
 
@@ -1754,7 +1765,7 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
         if isinstance(messages, list) and messages:
             # Consume only new user turn. Assistant turn_end without new user input should be ignored.
             lanlan_key = _normalize_lanlan_key(lanlan_name)
-            fp = _build_user_turn_fingerprint(messages)
+            fp = _build_analyze_event_fingerprint(event)
             if fp is None:
                 logger.info("[AgentAnalyze] skip analyze: no user message found (trigger=%s lanlan=%s)", event.get("trigger"), lanlan_name)
                 return

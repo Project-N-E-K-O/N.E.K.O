@@ -1768,6 +1768,35 @@ def test_agent_server_user_turn_fingerprint_includes_attachments():
     assert image_only is not None
 
 
+def test_openclaw_magic_analyze_fingerprint_uses_turn_marker():
+    from app.agent_server import _build_analyze_event_fingerprint
+
+    messages = [{"role": "user", "content": "/stop"}]
+    first = _build_analyze_event_fingerprint({
+        "trigger": "text_openclaw_magic_command",
+        "event_id": "event-a",
+        "messages": messages,
+    })
+    second = _build_analyze_event_fingerprint({
+        "trigger": "text_openclaw_magic_command",
+        "event_id": "event-b",
+        "messages": messages,
+    })
+    ordinary_first = _build_analyze_event_fingerprint({
+        "trigger": "turn_end",
+        "event_id": "event-a",
+        "messages": messages,
+    })
+    ordinary_second = _build_analyze_event_fingerprint({
+        "trigger": "turn_end",
+        "event_id": "event-b",
+        "messages": messages,
+    })
+
+    assert first != second
+    assert ordinary_first == ordinary_second
+
+
 def test_user_message_signature_ignores_metadata_and_role():
     from app.agent_server import _user_message_signature, _last_user_message_signature
 

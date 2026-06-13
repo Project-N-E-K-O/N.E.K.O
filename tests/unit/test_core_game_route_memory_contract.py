@@ -627,6 +627,7 @@ async def test_explicit_openclaw_magic_command_skips_local_text_stream(monkeypat
     """Explicit OpenClaw slash commands use the manual-control fast path only."""
     mgr = _make_transcript_manager()
     mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session._pending_images = []
     mgr.session.update_max_response_length = Mock()
     mgr.session.stream_text = AsyncMock()
     mgr.is_active = True
@@ -651,10 +652,93 @@ async def test_explicit_openclaw_magic_command_skips_local_text_stream(monkeypat
 
     assert len(fired) == 1
     mgr.session.stream_text.assert_not_called()
-    assert mgr.sync_message_queue.messages == [{
-        "type": "user",
-        "data": {"input_type": "transcript", "data": "/stop"},
-    }]
+    assert mgr.sync_message_queue.messages == [
+        {
+            "type": "user",
+            "data": {
+                "input_type": "mirror_text",
+                "data": "/stop",
+                "source": "openclaw",
+                "metadata": {
+                    "source": "openclaw",
+                    "kind": "magic_command",
+                    "command": "/stop",
+                },
+                "request_id": "req-1",
+            },
+        },
+        {
+            "type": "system",
+            "data": "turn end agent_callback",
+            "request_id": "req-1",
+        },
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_explicit_openclaw_magic_command_reuses_adapter_aliases(monkeypatch):
+    """The immediate fast path must match OpenClaw's documented aliases."""
+    mgr = _make_transcript_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session._pending_images = []
+    mgr.session.update_max_response_length = Mock()
+    mgr.session.stream_text = AsyncMock()
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._is_agent_enabled = Mock(return_value=True)
+    mgr.agent_flags = {"openclaw_enabled": True}
+    fired = []
+
+    def fake_fire_task(coro):
+        fired.append(coro)
+        coro.close()
+
+    mgr._fire_task = fake_fire_task
+    monkeypatch.setattr(core_module, "dispatch_text_user_message", lambda name, text: None)
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "APPROVE", "request_id": "req-approve"},
+    )
+
+    assert len(fired) == 1
+    mgr.session.stream_text.assert_not_called()
+    assert mgr.sync_message_queue.messages[0]["data"]["metadata"]["command"] == "/daemon approve"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_explicit_openclaw_magic_command_clears_pending_text_images(monkeypatch):
+    """Magic-command handoff must not leak queued screenshots into the next text turn."""
+    mgr = _make_transcript_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session._pending_images = ["old-screen"]
+    mgr.session.update_max_response_length = Mock()
+    mgr.session.stream_text = AsyncMock()
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._is_agent_enabled = Mock(return_value=True)
+    mgr.agent_flags = {"openclaw_enabled": True}
+
+    def fake_fire_task(coro):
+        coro.close()
+
+    mgr._fire_task = fake_fire_task
+    monkeypatch.setattr(core_module, "dispatch_text_user_message", lambda name, text: None)
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "/new", "request_id": "req-new"},
+    )
+
+    assert mgr.session._pending_images == []
+    assert mgr.session.stream_text.await_count == 0
+    assert mgr.sync_message_queue.messages[-1]["data"] == "turn end agent_callback"
 
 
 @pytest.mark.unit

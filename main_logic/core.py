@@ -2209,16 +2209,16 @@ class LLMSessionManager:
 
     @staticmethod
     def _normalize_explicit_openclaw_magic_command(text: str) -> Optional[str]:
-        stripped = str(text or "").strip()
-        if stripped == "/clear":
-            return "/clear"
-        if stripped == "/new":
-            return "/new"
-        if stripped == "/stop":
-            return "/stop"
-        if stripped == "/daemon approve":
-            return "/daemon approve"
-        return None
+        from brain.openclaw_adapter import OpenClawAdapter
+
+        return OpenClawAdapter.normalize_magic_command(text)
+
+    def _clear_text_pending_images(self) -> None:
+        if not isinstance(self.session, OmniOfflineClient):
+            return
+        pending_images = getattr(self.session, "_pending_images", None)
+        if hasattr(pending_images, "clear"):
+            pending_images.clear()
 
     async def _publish_openclaw_magic_command(self, command: str) -> None:
         try:
@@ -7267,7 +7267,22 @@ class LLMSessionManager:
                         and self._is_agent_enabled()
                         and self.agent_flags.get("openclaw_enabled", False)
                     ):
-                        await self.handle_text_input_transcript(data)
+                        self._session_turn_count += 1
+                        self._clear_text_pending_images()
+                        await self.mirror_user_input(
+                            data,
+                            metadata={
+                                "source": "openclaw",
+                                "kind": "magic_command",
+                                "command": openclaw_magic_command,
+                            },
+                            request_id=message.get("request_id"),
+                        )
+                        self.sync_message_queue.put({
+                            "type": "system",
+                            "data": "turn end agent_callback",
+                            "request_id": message.get("request_id"),
+                        })
                         self._fire_task(self._publish_openclaw_magic_command(openclaw_magic_command))
                         logger.info("[%s] text input sent explicit openclaw magic command", self.lanlan_name)
                         return
