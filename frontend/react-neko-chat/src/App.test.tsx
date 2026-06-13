@@ -408,6 +408,94 @@ describe('App', () => {
     }
   });
 
+  it('starts compact input resize from the visible frame width instead of the carrier shell width', () => {
+    const resizeRequests: Array<{
+      side: string;
+      width: number;
+      phase: string;
+      screenRect?: { left: number; width: number; right: number };
+    }> = [];
+    const handleResizeRequest = (event: Event) => {
+      resizeRequests.push((event as CustomEvent).detail);
+    };
+    window.addEventListener('neko:compact-surface-resize-request', handleResizeRequest);
+    const desktopWindow = window as typeof window & { __nekoDesktopCompactLayout?: unknown };
+    const originalDesktopLayout = desktopWindow.__nekoDesktopCompactLayout;
+    desktopWindow.__nekoDesktopCompactLayout = {
+      windowBounds: { x: 0, y: 0, width: 760, height: 80 },
+      surfaceScreenRect: { left: 0, top: 0, right: 720, bottom: 54, width: 720, height: 54 },
+    };
+    const getBoundingClientRectSpy = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function mockCompactSurfaceStartWidth(this: HTMLElement) {
+        if (this.classList.contains('compact-chat-surface-shell')) {
+          return {
+            x: 0,
+            y: 0,
+            top: 0,
+            left: 0,
+            right: 720,
+            bottom: 60,
+            width: 720,
+            height: 60,
+            toJSON: () => ({}),
+          } as DOMRect;
+        }
+        if (this.classList.contains('compact-chat-surface-frame')) {
+          return {
+            x: 0,
+            y: 0,
+            top: 0,
+            left: 0,
+            right: 430,
+            bottom: 54,
+            width: 430,
+            height: 54,
+            toJSON: () => ({}),
+          } as DOMRect;
+        }
+        return {
+          x: 0,
+          y: 0,
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          width: 0,
+          height: 0,
+          toJSON: () => ({}),
+        } as DOMRect;
+      });
+    const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+
+    try {
+      const rightHandle = container.querySelector<HTMLDivElement>('[data-compact-resize-side="right"]');
+      expect(rightHandle).not.toBeNull();
+      fireEvent.pointerDown(rightHandle!, {
+        pointerId: 41,
+        clientX: 430,
+        screenX: 430,
+        button: 0,
+        buttons: 1,
+        pointerType: 'mouse',
+      });
+
+      expect(document.documentElement.style.getPropertyValue('--compact-surface-resize-width')).toBe('');
+      expect(resizeRequests).toEqual([
+        expect.objectContaining({
+          side: 'right',
+          width: 430,
+          phase: 'start',
+          screenRect: expect.objectContaining({ left: 0, width: 430, right: 430 }),
+        }),
+      ]);
+    } finally {
+      getBoundingClientRectSpy.mockRestore();
+      desktopWindow.__nekoDesktopCompactLayout = originalDesktopLayout;
+      window.removeEventListener('neko:compact-surface-resize-request', handleResizeRequest);
+    }
+  });
+
   it('defaults compact history open and preserves history controls through visibility toggles', async () => {
     const onExportConversationClick = vi.fn();
     const message = parseChatMessage({
@@ -1183,6 +1271,65 @@ describe('App', () => {
     fireEvent.click(bubble!);
 
     expect(message).not.toHaveClass('is-selected');
+  });
+
+  it('shrinks compact history immediately after overdragging past the maximum height', () => {
+    const message = parseChatMessage({
+      id: 'assistant-history-resize-limit',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: 'Resize me.' }],
+      status: 'sent',
+    });
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />,
+    );
+    const resizeBar = container.querySelector<HTMLDivElement>('.compact-export-history-resize-bar');
+    expect(resizeBar).not.toBeNull();
+    const maxHeight = Math.round(Math.max(120, window.innerHeight * 0.78 - 72));
+
+    fireEvent.pointerDown(resizeBar!, {
+      pointerId: 91,
+      clientY: 500,
+      screenY: 500,
+      button: 0,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    expect(container.querySelector('.compact-export-history-anchor'))
+      .toHaveAttribute('data-compact-export-history-resizing', 'true');
+    expect(container.querySelector('.compact-export-history-anchor'))
+      .toHaveAttribute('data-compact-export-history-content-locked', 'false');
+    fireEvent.pointerMove(resizeBar!, {
+      pointerId: 91,
+      clientY: -500,
+      screenY: -500,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    expect(container.querySelector('.compact-export-history-anchor'))
+      .toHaveAttribute('data-compact-export-history-content-locked', 'true');
+    expect(document.documentElement.style.getPropertyValue('--compact-history-slot-height')).toBe(`${maxHeight}px`);
+
+    fireEvent.pointerMove(resizeBar!, {
+      pointerId: 91,
+      clientY: -700,
+      screenY: -700,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    expect(document.documentElement.style.getPropertyValue('--compact-history-slot-height')).toBe(`${maxHeight}px`);
+
+    fireEvent.pointerMove(resizeBar!, {
+      pointerId: 91,
+      clientY: -660,
+      screenY: -660,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    expect(document.documentElement.style.getPropertyValue('--compact-history-slot-height')).toBe(`${maxHeight - 40}px`);
   });
 
   it('hides compact inline history outside compact mode and restores it when compact returns', async () => {
@@ -6348,7 +6495,7 @@ describe('App', () => {
 
   it('marks the cursor back inside the host when clearing a tool from the composer', async () => {
     const onAvatarToolStateChange = vi.fn();
-    const { container } = renderInputApp({ onAvatarToolStateChange });
+    renderInputApp({ onAvatarToolStateChange });
 
     await openCompactInputTools();
     fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));

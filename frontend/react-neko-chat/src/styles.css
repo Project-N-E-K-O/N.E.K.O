@@ -2482,7 +2482,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
    于是缩小 scroll 盒高度时内容不再 reflow 重排，只由 scroll 盒裁剪可视窗口（上端被顶部 mask
    渐隐折起、下端最新消息靠钉底锚定）——卷帘从上往下收。拖动结束回落 100%、内容重新贴合（单次 reflow，
    不抖动）。仅在拖动中切换，避免稳态下 content>scroll 多出的空白可滚区。 */
-.compact-export-history-anchor[data-compact-export-history-resizing="true"] .compact-export-history-scroll-content {
+.compact-export-history-anchor[data-compact-export-history-content-locked="true"] .compact-export-history-scroll-content {
   min-height: var(--compact-history-slot-max-height, 100%);
 }
 
