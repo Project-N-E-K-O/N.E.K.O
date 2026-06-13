@@ -138,15 +138,17 @@ except Exception:  # noqa: BLE001 - route registration should not block package 
 
 
 _REVIEW_DUE_INTERVAL_SECONDS = 1800.0
+_AUTO_OPEN_UI_BROWSER_TIMEOUT_SECONDS = 3.0
+_AUTO_OPEN_UI_TASK_TIMEOUT_SECONDS = 3.5
 
 
 def _open_url_in_browser(url: str) -> None:
     if sys.platform == "win32":
         os.startfile(url)
     elif sys.platform == "darwin":
-        subprocess.run(["open", url], check=True)
+        subprocess.run(["open", url], check=True, timeout=_AUTO_OPEN_UI_BROWSER_TIMEOUT_SECONDS)
     else:
-        subprocess.run(["xdg-open", url], check=True)
+        subprocess.run(["xdg-open", url], check=True, timeout=_AUTO_OPEN_UI_BROWSER_TIMEOUT_SECONDS)
 
 
 from .entry_tutor_context_support import _TutorContextSupportMixin
@@ -375,7 +377,10 @@ class StudyCompanionPlugin(
         port = str(port_num)
         url = _plugin_detail_ui_url(plugin_id=self.plugin_id, port=port)
         try:
-            await asyncio.to_thread(_open_url_in_browser, url)
+            await asyncio.wait_for(
+                asyncio.to_thread(_open_url_in_browser, url),
+                timeout=_AUTO_OPEN_UI_TASK_TIMEOUT_SECONDS,
+            )
         except Exception as exc:
             self.logger.warning("study auto-open UI failed: {}", exc)
 

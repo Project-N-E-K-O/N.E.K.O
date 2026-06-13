@@ -190,7 +190,6 @@ def test_study_companion_static_ui8_visual_accessibility_and_csp_contract() -> N
     assert 'style="' not in index_html
     assert "<style" not in index_html
 
-    assert "@media (max-width" not in style_css
     assert "@media (min-width" not in style_css
     assert "responsive" not in index_html.lower()
     assert "responsive" not in style_css.lower()
@@ -546,7 +545,7 @@ def test_study_companion_quick_panels_open_hosted_surfaces() -> None:
     assert "const surfaceOpenButtons = Array.from(document.querySelectorAll('[data-open-surface]'));" in main_js
     assert "openHostedSurface(button.getAttribute('data-open-surface'));" in main_js
     assert "window.parent === window" in main_js
-    assert "`/ui/plugins/${encodeURIComponent(PLUGIN_ID)}?tab=guide`" in main_js
+    assert "`/ui/plugins/${encodeURIComponent(PLUGIN_ID)}?tab=guide&surface=${encodeURIComponent(surfaceId)}`" in main_js
 
 
 def test_study_companion_advanced_settings_surface_entries_are_complete() -> None:

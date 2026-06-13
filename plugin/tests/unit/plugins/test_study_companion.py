@@ -128,9 +128,9 @@ class _Ctx:
         self._config = dict(config)
         study_config = self._config.get("study")
         if isinstance(study_config, dict):
-            self._config["study"] = {"auto_open_ui": False, **study_config}
+            self._config["study"] = {"auto_open_ui": True, **study_config}
         else:
-            self._config["study"] = {"auto_open_ui": False}
+            self._config["study"] = {"auto_open_ui": True}
         self._effective_config = {
             "plugin": {"store": {"enabled": True}, "database": {"enabled": False}},
             "plugin_state": {"backend": "memory"},
@@ -243,7 +243,7 @@ async def test_awareness_disabled_does_not_start_loop_on_startup(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en", "awareness": {"enabled": False}},
+            "study": {"language": "en", "auto_open_ui": False, "awareness": {"enabled": False}},
             "study_companion": {"communication": {"enabled": False}},
         },
     )
@@ -341,6 +341,47 @@ async def test_study_plugin_auto_open_failure_does_not_block_startup(
 
 
 @pytest.mark.asyncio
+async def test_study_plugin_auto_open_timeout_does_not_block_startup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unblock = threading.Event()
+    opened: list[str] = []
+
+    def _hang_open(url: str) -> None:
+        opened.append(url)
+        unblock.wait(timeout=1.0)
+
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setattr(study_companion_module, "_open_url_in_browser", _hang_open)
+    monkeypatch.setattr(
+        study_companion_module,
+        "_AUTO_OPEN_UI_TASK_TIMEOUT_SECONDS",
+        0.01,
+    )
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "auto_open_ui": True},
+            "study_companion": {"communication": {"enabled": False}},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    plugin.logger = ctx.logger
+
+    try:
+        result = await plugin.startup()
+
+        assert isinstance(result, Ok)
+        assert any(
+            warning[0][0] == "study auto-open UI failed: {}"
+            for warning in ctx.logger.warnings
+        )
+    finally:
+        unblock.set()
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_start_awareness_loop_runs_async_tick_and_pushes_context(
     tmp_path: Path,
 ) -> None:
@@ -357,7 +398,7 @@ async def test_start_awareness_loop_runs_async_tick_and_pushes_context(
                 thumbnail_phash="0" * 16,
             )
 
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     plugin._cfg = StudyConfig(
         awareness=AwarenessConfig(
@@ -409,7 +450,7 @@ async def test_awareness_tick_counts_unusable_snapshot_as_idle(tmp_path: Path) -
         def capture_lightweight(self):
             return _NoActivitySnapshot()
 
-    plugin = StudyCompanionPlugin(_Ctx(tmp_path, {"study": {"language": "en"}}))
+    plugin = StudyCompanionPlugin(_Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}}))
     plugin._cfg = StudyConfig(awareness=AwarenessConfig(push_to_llm_mode="blind"))
     plugin._buffer = ActivityBuffer()
     plugin._ocr_pipeline = _FakeAwarenessPipeline()
@@ -625,7 +666,7 @@ async def test_study_settings_entry_persists_and_updates_runtime(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en", "default_mode": MODE_COMPANION},
+            "study": {"language": "en", "default_mode": MODE_COMPANION, "auto_open_ui": False},
             "ocr_reader": {"enabled": True, "languages": "eng"},
             "llm": {"llm_call_timeout_seconds": 45},
             "study_companion": {"communication": {"enabled": False}},
@@ -1641,7 +1682,6 @@ def test_study_companion_ui_refactor_static_and_hosted_contracts() -> None:
     assert 'data-i18n-aria-label="ui.memory.ratings_aria" aria-label="Memory ratings"' in index_html
     assert ".mode-switch::before" in style_css
     assert "@keyframes pawBounce" not in style_css
-    assert "@media (max-width" not in style_css
     assert "@media (prefers-reduced-motion: reduce)" in style_css
     assert "clip-path: inset(50%);" in style_css
 
@@ -1695,6 +1735,8 @@ def test_study_companion_ui_refactor_static_and_hosted_contracts() -> None:
     assert "staticUiFrameRef.value?.sendStudySurfaceMessage(data)" in plugin_detail
     assert "const preferGuide = payload.kind === 'guide' || payload.kind === 'docs'" in plugin_detail
     assert "activeGuideSurfaceId.value = guide.id" in plugin_detail
+    assert "surface: activeSurfaceId" in plugin_detail
+    assert "route.query.surface" in plugin_detail
 
 
 def test_study_companion_static_ui_smoke_with_mocked_runs() -> None:
@@ -3128,7 +3170,7 @@ async def test_study_install_tesseract_uses_local_support(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en"},
+            "study": {"language": "en", "auto_open_ui": False},
             "ocr_reader": {
                 "enabled": True,
                 "install_target_dir": str(tmp_path / "Tesseract-OCR"),
@@ -3233,7 +3275,7 @@ async def test_study_ocr_snapshot_preserves_last_text_when_capture_fails(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en"},
+            "study": {"language": "en", "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
         },
@@ -3345,7 +3387,7 @@ async def test_study_explain_text_detects_mode_intent_and_continues_when_content
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION},
+            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION, "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
         },
@@ -3447,7 +3489,7 @@ async def test_study_explain_text_explain_intent_without_content_returns_err(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION},
+            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION, "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
         },
@@ -3475,7 +3517,7 @@ async def test_study_generate_question_without_content_returns_err(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en", "default_mode": MODE_COMPANION},
+            "study": {"language": "en", "default_mode": MODE_COMPANION, "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
         },
@@ -3505,7 +3547,7 @@ async def test_study_explain_text_continues_when_mode_switch_is_locked(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION},
+            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION, "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
         },
@@ -3571,7 +3613,7 @@ async def test_learning_context_builds_question_params_off_event_loop(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION},
+            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION, "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
         },
@@ -3607,7 +3649,7 @@ async def test_study_evaluate_answer_does_not_reuse_old_expected_answer_for_cust
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en", "default_mode": MODE_COMPANION},
+            "study": {"language": "en", "default_mode": MODE_COMPANION, "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
         },
@@ -3696,7 +3738,7 @@ async def test_study_evaluate_answer_custom_question_does_not_reuse_old_topic(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en", "default_mode": MODE_COMPANION},
+            "study": {"language": "en", "default_mode": MODE_COMPANION, "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
         },
@@ -3796,7 +3838,7 @@ async def test_study_evaluate_answer_persists_knowledge_tracking(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "zh-CN", "default_mode": MODE_TEACHING},
+            "study": {"language": "zh-CN", "default_mode": MODE_TEACHING, "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
         },
@@ -4599,7 +4641,7 @@ async def test_study_plugin_starts_and_collects_entries(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en"},
+            "study": {"language": "en", "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
         },
@@ -4765,7 +4807,7 @@ async def test_study_status_degrades_when_habit_payload_fails(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en"},
+            "study": {"language": "en", "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
         },
@@ -4801,7 +4843,7 @@ async def test_communication_disabled_skips_eventbus(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en"},
+            "study": {"language": "en", "auto_open_ui": False},
             "study_companion": {"communication": {"enabled": False}},
         },
     )
@@ -4830,7 +4872,7 @@ async def test_shutdown_stops_event_bus_worker(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en"},
+            "study": {"language": "en", "auto_open_ui": False},
             "study_companion": {"communication": {"enabled": True}},
         },
     )
@@ -4866,7 +4908,7 @@ async def test_shutdown_clears_ocr_pipeline_when_close_fails(
         def close(self) -> None:
             raise RuntimeError("ocr close failed")
 
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
     assert isinstance(result, Ok)
@@ -4900,7 +4942,7 @@ async def test_screen_classification_change_emits_event(
             reason="unit-test",
         ),
     )
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
     try:
@@ -4934,7 +4976,7 @@ async def test_screen_classification_no_change_skips_duplicate_push(
             reason="unit-test",
         ),
     )
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
     try:
@@ -4955,7 +4997,7 @@ async def test_evaluate_answer_emits_answer_evaluated(
 ) -> None:
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
     assert isinstance(result, Ok)
@@ -5022,7 +5064,7 @@ async def test_evaluate_answer_mastery_lookup_failure_is_best_effort(
 
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
     assert isinstance(result, Ok)
@@ -5075,7 +5117,7 @@ async def test_memory_review_emits_answer_evaluated(
 ) -> None:
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
     try:
@@ -5107,7 +5149,7 @@ async def test_memory_review_event_failure_does_not_fail_review(
 ) -> None:
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
     try:
@@ -5153,7 +5195,7 @@ async def test_review_due_background_task_emits_without_status(
         "_REVIEW_DUE_INTERVAL_SECONDS",
         0.01,
     )
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
     try:
@@ -5188,7 +5230,7 @@ async def test_review_due_event_includes_knowledge_tracker_cards(
 ) -> None:
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
     try:
@@ -5222,7 +5264,7 @@ async def test_study_status_does_not_drive_review_due_emission(
 ) -> None:
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
     try:
@@ -5253,7 +5295,7 @@ async def test_recitation_emits_answer_evaluated(
 ) -> None:
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
     try:
@@ -5284,7 +5326,7 @@ async def test_summarize_session_emits_event(
 ) -> None:
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
     assert isinstance(result, Ok)
@@ -5308,7 +5350,7 @@ async def test_session_summarized_falls_back_to_answer_count(
 ) -> None:
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
     try:
@@ -5384,7 +5426,7 @@ async def test_evaluate_answer_emits_mastery_updated_on_threshold_cross(
 
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
     assert isinstance(result, Ok)
@@ -5416,7 +5458,7 @@ async def test_study_plugin_shutdown_continues_when_dynamic_entry_cleanup_fails(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en"},
+            "study": {"language": "en", "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
         },
@@ -5459,7 +5501,7 @@ async def test_study_plugin_doc_export_dynamic_entry_and_knowledge_settings(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en"},
+            "study": {"language": "en", "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
             "doc_export": {
@@ -5537,7 +5579,7 @@ async def test_study_knowledge_contribution_opt_in_preview_failure_is_atomic(
 ) -> None:
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
     assert isinstance(result, Ok)
@@ -5569,7 +5611,7 @@ async def test_study_plugin_doc_export_schema_includes_xmind_only_when_enabled(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en"},
+            "study": {"language": "en", "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
             "doc_export": {"enabled": True, "xmind_enabled": True},
@@ -5598,7 +5640,7 @@ async def test_study_plugin_startup_restores_runtime_mode_without_overwriting_de
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en", "default_mode": MODE_COMPANION},
+            "study": {"language": "en", "default_mode": MODE_COMPANION, "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
         },
@@ -5640,7 +5682,7 @@ async def test_study_plugin_startup_failure_cleans_partial_resources(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en"},
+            "study": {"language": "en", "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
         },

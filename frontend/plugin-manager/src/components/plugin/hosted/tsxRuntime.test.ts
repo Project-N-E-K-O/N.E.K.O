@@ -429,6 +429,55 @@ describe('hosted TSX document runtime', () => {
     expect(root.querySelector('strong')?.textContent).toBe('good')
   })
 
+  it('exports abstract classes from hosted dependencies', () => {
+    const { root } = executeHostedDocument(`
+      import { BasePanel } from "./base"
+
+      class Panel extends BasePanel {}
+
+      export default function Main() {
+        return <strong>{new Panel().label()}</strong>
+      }
+    `, baseContext(), baseContext(), [{
+      path: 'ui/base.ts',
+      source: `
+        export abstract class BasePanel {
+          label() {
+            return "abstract-base"
+          }
+        }
+      `,
+    }])
+
+    expect(root.querySelector('strong')?.textContent).toBe('abstract-base')
+  })
+
+  it('rejects missing hosted dependency imports', () => {
+    expect(() => executeHostedDocument(`
+      import { label } from "./missing"
+
+      export default function Panel() {
+        return <strong>{label}</strong>
+      }
+    `)).toThrow(/Missing hosted TSX dependency: \.\/missing \(from ui\/panel\.tsx\)/)
+  })
+
+  it('rejects duplicate normalized hosted dependency paths', () => {
+    expect(() => executeHostedDocument(`
+      import { label } from "./helper"
+
+      export default function Panel() {
+        return <strong>{label}</strong>
+      }
+    `, baseContext(), baseContext(), [{
+      path: 'ui/helper.ts',
+      source: 'export const label = "first"',
+    }, {
+      path: './ui/helper.ts',
+      source: 'export const label = "second"',
+    }])).toThrow(/Duplicate hosted TSX dependency path: ui\/helper\.ts/)
+  })
+
   it('rejects hosted imports that escape the plugin UI root', () => {
     expect(() => executeHostedDocument(`
       import { label } from "../../escape"

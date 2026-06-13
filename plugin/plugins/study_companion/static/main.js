@@ -538,7 +538,7 @@ function openHostedSurface(surfaceId) {
   if (!surfaceId) {
     return;
   }
-  const managerUrl = `/ui/plugins/${encodeURIComponent(PLUGIN_ID)}?tab=guide`;
+  const managerUrl = `/ui/plugins/${encodeURIComponent(PLUGIN_ID)}?tab=guide&surface=${encodeURIComponent(surfaceId)}`;
   if (window.parent === window) {
     window.location.assign(managerUrl);
     return;

@@ -68,7 +68,11 @@ function resolveHostedImport(
     candidates.push(...HOSTED_CODE_EXTENSIONS.map((extension) => `${base}${extension}`))
   }
   candidates.push(...HOSTED_CODE_EXTENSIONS.map((extension) => `${base}/index${extension}`))
-  return candidates.find((candidate) => dependenciesByPath.has(candidate)) || ''
+  const resolved = candidates.find((candidate) => dependenciesByPath.has(candidate))
+  if (!resolved) {
+    throw new Error(`Missing hosted TSX dependency: ${specifier} (from ${fromPath})`)
+  }
+  return resolved
 }
 
 function parseNamedBindings(bindings: string) {
@@ -483,7 +487,7 @@ function transformModuleExports(source: string) {
   next = transformVariableExports(next, exports)
   next = next
     .replace(
-      /^\s*export\s+(async\s+function|function|class)\s+([A-Za-z_$][\w$]*)/gm,
+      /^\s*export\s+(async\s+function|function|abstract\s+class|class)\s+([A-Za-z_$][\w$]*)/gm,
       (_match, declaration, name) => {
         exports.push(exportAssignment(name))
         return `${declaration} ${name}`
@@ -523,11 +527,15 @@ function bundleHostedTsxSource(
   dependencies: HostedTsxDependency[] = [],
   entryPath = 'entry.tsx',
 ) {
-  const dependenciesByPath = new Map(
-    dependencies
-      .filter((dependency) => dependency && typeof dependency.source === 'string')
-      .map((dependency) => [normalizeHostedPath(String(dependency.path || 'inline')), dependency] as const),
-  )
+  const dependenciesByPath = new Map<string, HostedTsxDependency>()
+  for (const dependency of dependencies) {
+    if (!dependency || typeof dependency.source !== 'string') continue
+    const normalizedPath = normalizeHostedPath(String(dependency.path || 'inline'))
+    if (dependenciesByPath.has(normalizedPath)) {
+      throw new Error(`Duplicate hosted TSX dependency path: ${normalizedPath}`)
+    }
+    dependenciesByPath.set(normalizedPath, dependency)
+  }
   const chunks = orderedHostedDependencyEntries(dependenciesByPath)
     .map(([path, dependency]) => {
       const moduleSource = transformModuleExports(transformHostedReExports(

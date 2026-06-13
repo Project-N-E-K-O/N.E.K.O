@@ -286,6 +286,22 @@ function resolveDefaultTab(value: unknown): string {
 }
 
 function syncSurfaceTabs() {
+  const requestedSurfaceId = typeof route.query.surface === 'string' ? route.query.surface : ''
+  const requestedTab = resolveActiveTab(route.query.tab)
+  if (requestedSurfaceId) {
+    const panel = requestedTab !== 'guide'
+      ? panelSurfaces.value.find((surface) => surface.id === requestedSurfaceId)
+      : undefined
+    if (panel) {
+      activePanelSurfaceId.value = panel.id
+    }
+    const guide = requestedTab !== 'panel'
+      ? guideSurfaces.value.find((surface) => surface.id === requestedSurfaceId)
+      : undefined
+    if (guide) {
+      activeGuideSurfaceId.value = guide.id
+    }
+  }
   if (!activePanelSurfaceId.value && panelSurfaces.value[0]) {
     activePanelSurfaceId.value = panelSurfaces.value[0].id
   }
@@ -306,6 +322,7 @@ function openLogsTab() {
 
 function openHostedSurfaceFromStaticUi(payload: { pluginId?: string; surfaceId: string; kind?: string }) {
   if (payload.pluginId && payload.pluginId !== pluginId.value) return
+  let activeSurfaceId = ''
   const preferPanel = payload.kind === 'panel'
   const preferGuide = payload.kind === 'guide' || payload.kind === 'docs'
   const panel = (preferPanel || !preferGuide)
@@ -313,6 +330,7 @@ function openHostedSurfaceFromStaticUi(payload: { pluginId?: string; surfaceId: 
     : undefined
   if (panel) {
     activePanelSurfaceId.value = panel.id
+    activeSurfaceId = panel.id
     activeTab.value = 'panel'
   } else {
     const guide = (preferGuide || !preferPanel)
@@ -320,12 +338,14 @@ function openHostedSurfaceFromStaticUi(payload: { pluginId?: string; surfaceId: 
       : undefined
     if (!guide) return
     activeGuideSurfaceId.value = guide.id
+    activeSurfaceId = guide.id
     activeTab.value = 'guide'
   }
   router.replace({
     query: {
       ...route.query,
       tab: activeTab.value,
+      surface: activeSurfaceId,
     },
   })
 }
@@ -392,8 +412,9 @@ onMounted(async () => {
 })
 
 watch(
-  () => route.query.tab,
-  (tab) => {
+  () => [route.query.tab, route.query.surface],
+  ([tab]) => {
+    syncSurfaceTabs()
     activeTab.value = resolveDefaultTab(tab)
   },
 )
