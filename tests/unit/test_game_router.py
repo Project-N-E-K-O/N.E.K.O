@@ -35,7 +35,7 @@ def _put_game_session(lanlan_name, game_type, session_id, session):
     return key
 
 
-def _allow_basketball_score_session(lanlan_name, session_id, mode="spectator"):
+def _allow_basketball_score_session(lanlan_name, session_id, mode="shooter"):
     state = {
         "game_type": "basketball",
         "session_id": session_id,
@@ -219,6 +219,61 @@ def test_basketball_event_sanitizer_keeps_duel_state_and_shot_missed():
 
 
 @pytest.mark.unit
+def test_basketball_event_sanitizer_keeps_horse_state():
+    event, error = game_router._sanitize_basketball_event({
+        "kind": "shot_missed",
+        "mode": "horse",
+        "horse": {
+            "word": "HORSE",
+            "lettersPlayer": "2",
+            "letters_neko": "1",
+            "phase": "player_reply",
+            "turnOwner": "player",
+            "challenge": {
+                "distance": "220",
+                "angle": "58",
+                "sweet": ["38", "44"],
+                "owner": "neko",
+                "unsafe": "<tag>",
+            },
+        },
+        "currentState": {
+            "game": "basketball",
+            "mode": "horse",
+            "horse": {
+                "letters_player": 2,
+                "lettersNeko": 1,
+                "phase": "player_reply",
+                "turn_owner": "player",
+                "challenge": None,
+            },
+        },
+    })
+
+    assert error == ""
+    assert event["horse"] == {
+        "word": "HORSE",
+        "letters_player": 2,
+        "letters_neko": 1,
+        "phase": "player_reply",
+        "turn_owner": "player",
+        "challenge": {
+            "owner": "neko",
+            "distance": 220.0,
+            "angle": 58.0,
+            "sweet": [38.0, 44.0],
+        },
+    }
+    assert event["currentState"]["horse"] == {
+        "letters_player": 2,
+        "letters_neko": 1,
+        "phase": "player_reply",
+        "turn_owner": "player",
+        "challenge": None,
+    }
+
+
+@pytest.mark.unit
 def test_basketball_event_sanitizer_keeps_bounded_current_state_attempts():
     attempts = [
         {
@@ -307,9 +362,10 @@ def test_basketball_shooter_evaluation_and_sanitizer_fields():
     assert event["currentState"]["mode"] == "shooter"
 
     evaluation = game_router._compute_shooter_evaluation(event)
-    assert evaluation["best_angle"] == 48.0
-    assert evaluation["angle_deviation"] == 2.0
-    assert evaluation["power_deviation"] == 0.0
+    assert evaluation["best_angle"] == 58.0
+    assert evaluation["sweet_power"] == {"min": 38.0, "max": 44.0}
+    assert evaluation["angle_deviation"] == 8.0
+    assert evaluation["power_deviation"] == 4.0
     assert evaluation["aim_duration_seconds"] == 60.0
     assert evaluation["distance_tier"] == "mid"
     assert evaluation["streak_tier"] == "warming"
@@ -320,8 +376,8 @@ def test_basketball_shooter_evaluation_and_sanitizer_fields():
         "shot_power": 25,
         "aim_duration": -2,
     })
-    assert weak["angle_deviation"] == 8.0
-    assert weak["power_deviation"] == 6.0
+    assert weak["angle_deviation"] == 18.0
+    assert weak["power_deviation"] == 13.0
     assert weak["aim_duration_seconds"] == 0.0
 
     invalid_mode, invalid_error = game_router._sanitize_basketball_event({
@@ -594,7 +650,7 @@ async def test_basketball_leaderboard_post_and_get_sorting(tmp_path, monkeypatch
     monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", tmp_path / "basketball_scores.db")
 
     with reset_game_route_state():
-        _allow_basketball_score_session("Lan A", "s1", "spectator")
+        _allow_basketball_score_session("Lan A", "s1", "shooter")
         first = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
             "session_id": "s1",
             "lanlan_name": "Lan A",
@@ -604,7 +660,7 @@ async def test_basketball_leaderboard_post_and_get_sorting(tmp_path, monkeypatch
             "swish_count": 1,
             "bank_count": 0,
             "rim_in_count": 0,
-            "mode": "spectator",
+            "mode": "shooter",
         }))
         _allow_basketball_score_session("Lan B", "s2", "shooter")
         second = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
@@ -618,7 +674,7 @@ async def test_basketball_leaderboard_post_and_get_sorting(tmp_path, monkeypatch
             "rim_in_count": 0,
             "mode": "shooter",
         }))
-        _allow_basketball_score_session("Lan A", "s3", "spectator")
+        _allow_basketball_score_session("Lan A", "s3", "timed")
         third = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
             "session_id": "s3",
             "lanlan_name": "Lan A",
@@ -628,7 +684,7 @@ async def test_basketball_leaderboard_post_and_get_sorting(tmp_path, monkeypatch
             "swish_count": 2,
             "bank_count": 0,
             "rim_in_count": 1,
-            "mode": "spectator",
+            "mode": "timed",
         }))
 
         assert first["ok"] is True
@@ -662,7 +718,7 @@ async def test_basketball_leaderboard_get_paginates_results(tmp_path, monkeypatc
 
     with reset_game_route_state():
         for index in range(12):
-            _allow_basketball_score_session(f"Lan {index}", f"s{index}", "spectator")
+            _allow_basketball_score_session(f"Lan {index}", f"s{index}", "shooter")
             await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
                 "session_id": f"s{index}",
                 "lanlan_name": f"Lan {index}",
@@ -672,7 +728,7 @@ async def test_basketball_leaderboard_get_paginates_results(tmp_path, monkeypatc
                 "swish_count": 0,
                 "bank_count": 0,
                 "rim_in_count": 0,
-                "mode": "spectator",
+                "mode": "shooter",
             }))
 
         page = await game_router.game_basketball_leaderboard(
@@ -705,7 +761,7 @@ async def test_basketball_leaderboard_sanitizes_inputs_and_normalizes_mode(tmp_p
     monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", tmp_path / "basketball_scores.db")
 
     with reset_game_route_state():
-        _allow_basketball_score_session("Lan C", "session-9", "spectator")
+        _allow_basketball_score_session("Lan C", "session-9", "timed")
         result = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
             "session_id": "  session-9  ",
             "lanlan_name": "  Lan C  ",
@@ -715,7 +771,7 @@ async def test_basketball_leaderboard_sanitizes_inputs_and_normalizes_mode(tmp_p
             "swish_count": "-2",
             "bank_count": "2.8",
             "rim_in_count": "3.2",
-            "mode": "arcade",
+            "mode": "timed",
         }))
 
         assert result["ok"] is True
@@ -732,7 +788,7 @@ async def test_basketball_leaderboard_sanitizes_inputs_and_normalizes_mode(tmp_p
         assert leaderboard["top"][0]["name"] == "Lan C"
         assert leaderboard["top"][0]["score"] == 0
         assert leaderboard["top"][0]["streak"] == 4
-        assert leaderboard["top"][0]["mode"] == "spectator"
+        assert leaderboard["top"][0]["mode"] == "timed"
         assert leaderboard["your_best"] == {"rank": 1, "score": 0}
 
 
@@ -752,6 +808,58 @@ async def test_basketball_leaderboard_rejects_unknown_score_session(tmp_path, mo
         assert result == {"ok": False, "reason": "invalid_session"}
         leaderboard = await game_router.game_basketball_leaderboard("basketball")
         assert leaderboard["total_scores"] == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_basketball_leaderboard_rejects_spectator_score_session(tmp_path, monkeypatch):
+    monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", tmp_path / "basketball_scores.db")
+
+    with reset_game_route_state():
+        game_router._remember_basketball_score_session("Lan Practice", "practice-session", "spectator")
+
+        result = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+            "session_id": "practice-session",
+            "lanlan_name": "Lan Practice",
+            "score": 999999,
+            "mode": "spectator",
+        }))
+
+        assert result == {"ok": False, "reason": "invalid_session"}
+        assert game_router._basketball_recent_score_sessions == {}
+        leaderboard = await game_router.game_basketball_leaderboard("basketball")
+        assert leaderboard["total_scores"] == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_basketball_route_end_uses_server_mode_for_score_session(monkeypatch):
+    async def fake_deliver_postgame(*_args, **_kwargs):
+        return {"ok": True, "action": "skip", "reason": "test"}
+
+    monkeypatch.setattr(game_router, "_deliver_game_postgame", fake_deliver_postgame)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    with reset_game_route_state():
+        state = game_router._activate_game_route("basketball", "practice-session", "Lan Practice")
+        state["mode"] = "spectator"
+        _mark_game_started(state)
+
+        result = await game_router._complete_game_end_from_payload(
+            "basketball",
+            {
+                "session_id": "practice-session",
+                "lanlan_name": "Lan Practice",
+                "mode": "shooter",
+                "gameStarted": True,
+                "finalScore": {"mode": "shooter", "score": 999999},
+            },
+            default_reason="route_end",
+        )
+
+        assert result["ok"] is True
+        assert result["route_closed"] is True
+        assert game_router._basketball_recent_score_sessions == {}
 
 
 @pytest.mark.unit

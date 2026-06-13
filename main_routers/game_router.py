@@ -97,6 +97,7 @@ _game_sessions: Dict[str, dict] = {}
 _SESSION_TIMEOUT_SECONDS = 30 * 60
 _GAME_ROUTE_ACTIVATION_LOG_LIMIT = 32
 _BASKETBALL_SCORE_SESSION_TTL_SECONDS = 10 * 60
+_BASKETBALL_SCORING_MODES = {"shooter", "duel", "timed", "horse"}
 _basketball_recent_score_sessions: Dict[tuple[str, str], dict] = {}
 
 _SOCCER_QUICK_LINE_KEYS = {
@@ -4496,33 +4497,40 @@ def _build_basketball_duel_balance_hint(event: Any) -> Dict[str, Any]:
     neko_score = _safe_int(duel.get("neko_score"), 0)
     max_rounds = _safe_int(duel.get("max_rounds"), 0)
     round_num = _safe_int(duel.get("round"), 0)
-    remaining = max(0, max_rounds - round_num) if max_rounds else 999
+    remaining_rounds = max(0, max_rounds - round_num) if max_rounds else 999
 
     diff = neko_score - player_score
+    active_shooter = str(duel.get("active_shooter") or "").strip().lower()
+    trailing_shooter = "player" if diff > 0 else ("neko" if diff < 0 else "")
+    pending_shot_points = 2 if active_shooter == trailing_shooter else 0
+    remaining_points = remaining_rounds * 2 + pending_shot_points if max_rounds else 999
     abs_diff = abs(diff)
     if abs_diff <= 1:
         return {
             "state": "close",
             "diff": diff,
-            "remainingRounds": remaining,
+            "remainingRounds": remaining_rounds,
+            "remainingPoints": remaining_points,
             "intensity": "low",
             "message": "比分接近，自由发挥。",
         }
 
     neko_leading = diff > 0
-    if neko_leading and diff > remaining:
+    if neko_leading and diff > remaining_points:
         return {
             "state": "neko_leading_decided",
             "diff": diff,
-            "remainingRounds": remaining,
+            "remainingRounds": remaining_rounds,
+            "remainingPoints": remaining_points,
             "intensity": "low",
             "message": "已经锁定胜局，可以嘴硬庆祝或温和收尾。",
         }
-    if not neko_leading and abs_diff > remaining:
+    if not neko_leading and abs_diff > remaining_points:
         return {
             "state": "player_leading_decided",
             "diff": diff,
-            "remainingRounds": remaining,
+            "remainingRounds": remaining_rounds,
+            "remainingPoints": remaining_points,
             "intensity": "low",
             "message": "确定输定了，可以不服气、认输或要求再来一局。",
         }
@@ -4530,14 +4538,16 @@ def _build_basketball_duel_balance_hint(event: Any) -> Dict[str, Any]:
         return {
             "state": "neko_leading",
             "diff": diff,
-            "remainingRounds": remaining,
+            "remainingRounds": remaining_rounds,
+            "remainingPoints": remaining_points,
             "intensity": "high" if abs_diff >= 5 else "medium",
             "message": "你领先中。可以考虑放水搞笑，也可以继续认真；台词里表达原因。",
         }
     return {
         "state": "player_leading",
         "diff": diff,
-        "remainingRounds": remaining,
+        "remainingRounds": remaining_rounds,
+        "remainingPoints": remaining_points,
         "intensity": "high" if abs_diff >= 5 else "medium",
         "message": "玩家领先中。可以认真起来、不服气、要求重赛。",
     }
@@ -4677,6 +4687,10 @@ def _check_basketball_chat_rate(lanlan_name: str, session_id: str) -> bool:
 def _normalize_basketball_mode(value: Any) -> str:
     mode = str(value or "").strip().lower()
     return mode if mode in {"spectator", "shooter", "duel", "timed", "horse"} else "spectator"
+
+
+def _is_basketball_scoring_mode(value: Any) -> bool:
+    return _normalize_basketball_mode(value) in _BASKETBALL_SCORING_MODES
 
 
 def _normalize_basketball_non_negative_int(value: Any, *, default: int = 0, max_value: int = 999999) -> int:
@@ -4842,12 +4856,15 @@ def _prune_basketball_score_sessions(now: float | None = None) -> None:
 
 
 def _remember_basketball_score_session(lanlan_name: str, session_id: str, mode: Any) -> None:
+    clean_mode = _normalize_basketball_mode(mode)
+    if not _is_basketball_scoring_mode(clean_mode):
+        return
     clean_name, clean_session = _basketball_player_identity(lanlan_name, session_id)
     if not clean_name or not clean_session:
         return
     _prune_basketball_score_sessions()
     _basketball_recent_score_sessions[(clean_name, clean_session)] = {
-        "mode": _normalize_basketball_mode(mode),
+        "mode": clean_mode,
         "expires_at": time.time() + _BASKETBALL_SCORE_SESSION_TTL_SECONDS,
     }
 
@@ -4858,6 +4875,8 @@ def _basketball_score_submission_allowed(data: dict) -> bool:
     if not session_id or not lanlan_name:
         return False
     mode = _normalize_basketball_mode(data.get("mode"))
+    if not _is_basketball_scoring_mode(mode):
+        return False
     _prune_basketball_score_sessions()
     key = (lanlan_name, session_id)
     meta = _basketball_recent_score_sessions.get(key)
@@ -4993,18 +5012,16 @@ def _get_best_params(distance: Any) -> dict:
         dist = 80.0
     if not math.isfinite(dist):
         dist = 80.0
-    if dist < 100:
-        angle, sweet = 55.0, (18.0, 24.0)
-    elif dist < 180:
-        angle, sweet = 52.0, (24.0, 31.0)
-    elif dist < 280:
-        angle, sweet = 48.0, (31.0, 37.0)
+    if dist < 300:
+        angle, sweet = 58.0, (38.0, 44.0)
     elif dist < 400:
-        angle, sweet = 44.0, (37.0, 44.0)
-    elif dist < 520:
-        angle, sweet = 40.0, (44.0, 50.0)
+        angle, sweet = 54.0, (43.0, 49.0)
+    elif dist < 500:
+        angle, sweet = 50.0, (48.0, 54.0)
+    elif dist < 600:
+        angle, sweet = 47.0, (53.0, 59.0)
     else:
-        angle, sweet = 37.0, (50.0, 58.0)
+        angle, sweet = 44.0, (57.0, 64.0)
     return {"angle": angle, "sweet_power": {"min": sweet[0], "max": sweet[1]}}
 
 
@@ -5135,6 +5152,74 @@ def _sanitize_basketball_duel_state(value: Any) -> dict | None:
     return clean or None
 
 
+def _sanitize_basketball_horse_state(value: Any) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    clean: dict[str, Any] = {}
+    word = _normalize_short_text(value.get("word"), max_chars=16)
+    if word:
+        clean["word"] = word
+    for src_key, dst_key in (
+        ("letters_player", "letters_player"),
+        ("lettersPlayer", "letters_player"),
+        ("letters_neko", "letters_neko"),
+        ("lettersNeko", "letters_neko"),
+    ):
+        if src_key not in value:
+            continue
+        try:
+            number = int(float(value.get(src_key)))
+        except (TypeError, ValueError):
+            continue
+        clean[dst_key] = max(0, min(number, 999))
+    phase = _normalize_short_text(value.get("phase"), max_chars=40)
+    if phase:
+        clean["phase"] = phase
+    turn_owner = _normalize_short_text(
+        value.get("turn_owner", value.get("turnOwner")),
+        max_chars=20,
+    ).lower()
+    if turn_owner in {"player", "neko"}:
+        clean["turn_owner"] = turn_owner
+    challenge = value.get("challenge")
+    if isinstance(challenge, dict):
+        clean_challenge: dict[str, Any] = {}
+        owner = _normalize_short_text(challenge.get("owner"), max_chars=20).lower()
+        if owner in {"player", "neko"}:
+            clean_challenge["owner"] = owner
+        for key in ("distance", "angle"):
+            if key not in challenge:
+                continue
+            try:
+                number = float(challenge.get(key))
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(number):
+                continue
+            limit = 5000.0 if key == "distance" else 1000.0
+            clean_challenge[key] = max(-limit, min(number, limit))
+        sweet = challenge.get("sweet")
+        if isinstance(sweet, list) and len(sweet) >= 2:
+            sweet_values: list[float] = []
+            for raw in sweet[:2]:
+                try:
+                    number = float(raw)
+                except (TypeError, ValueError):
+                    sweet_values = []
+                    break
+                if not math.isfinite(number):
+                    sweet_values = []
+                    break
+                sweet_values.append(max(0.0, min(number, 1000.0)))
+            if len(sweet_values) == 2:
+                clean_challenge["sweet"] = sweet_values
+        if clean_challenge:
+            clean["challenge"] = clean_challenge
+    elif "challenge" in value and value.get("challenge") is None:
+        clean["challenge"] = None
+    return clean or None
+
+
 def _sanitize_basketball_attempts_results(value: Any, *, max_items: int = 12) -> list[dict]:
     if not isinstance(value, list):
         return []
@@ -5235,6 +5320,11 @@ def _sanitize_basketball_event(event: Any) -> tuple[dict | None, str]:
         clean["duel"] = duel_state
     elif "duel" in clean:
         clean.pop("duel", None)
+    horse_state = _sanitize_basketball_horse_state(clean.get("horse"))
+    if horse_state:
+        clean["horse"] = horse_state
+    elif "horse" in clean:
+        clean.pop("horse", None)
     current_state = clean.get("currentState")
     if isinstance(current_state, dict):
         state_clean = {}
@@ -5259,6 +5349,9 @@ def _sanitize_basketball_event(event: Any) -> tuple[dict | None, str]:
         duel_state = _sanitize_basketball_duel_state(current_state.get("duel"))
         if duel_state:
             state_clean["duel"] = duel_state
+        horse_state = _sanitize_basketball_horse_state(current_state.get("horse"))
+        if horse_state:
+            state_clean["horse"] = horse_state
         attempts_results = _sanitize_basketball_attempts_results(
             current_state.get("attempts_results"),
         )
@@ -6818,6 +6911,7 @@ async def _complete_game_end_from_payload(
     archive_memory = None
     postgame_result = None
     if state and str(state.get("session_id") or "") == session_id:
+        score_session_mode = _normalize_basketball_mode(state.get("mode")) if game_type == "basketball" else ""
         _update_route_start_state_from_payload(state, data, exiting=True)
         current_state = data.get("currentState")
         if isinstance(current_state, dict):
@@ -6850,7 +6944,7 @@ async def _complete_game_end_from_payload(
             _remember_basketball_score_session(
                 lanlan_name,
                 session_id,
-                data.get("mode", state.get("mode")),
+                score_session_mode,
             )
         if _game_memory_postgame_context_enabled(archive) is False:
             postgame_options["enabled"] = False

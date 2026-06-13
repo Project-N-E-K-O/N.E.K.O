@@ -574,6 +574,14 @@ def test_basketball_duel_balance_hint_and_anger_cap():
     )
     assert hint["state"] == "neko_leading"
     assert hint["diff"] == 5
+    assert hint["remainingPoints"] == 12
+
+    final_pending = game_router._build_basketball_duel_balance_hint(
+        {"duel": {"player_score": 6, "neko_score": 4, "round": 5, "max_rounds": 5, "active_shooter": "neko"}}
+    )
+    assert final_pending["state"] == "player_leading"
+    assert final_pending["remainingRounds"] == 0
+    assert final_pending["remainingPoints"] == 2
 
     route_state = {
         "preGameContext": {"gameStance": "punishing", "initialMood": "angry"},
@@ -658,14 +666,36 @@ def test_basketball_route_end_payload_contains_archive_score():
 def test_basketball_route_end_payload_contains_horse_state():
     html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
 
+    assert "function buildHorseStatePayload() {" in html
     assert "if (isHorseMode()) {" in html
-    assert "payloadObj.horse = {" in html
+    assert "payloadObj.horse = buildHorseStatePayload();" in html
     assert "letters_player: game.horse.lettersPlayer," in html
     assert "letters_neko: game.horse.lettersNeko," in html
     assert "phase: game.horse.phase," in html
     assert "turn_owner: game.horse.turnOwner," in html
     assert "challenge: game.horse.challenge ? Object.assign({}, game.horse.challenge) : null" in html
     assert "payloadObj.currentState.horse = payloadObj.horse;" in html
+
+
+@pytest.mark.unit
+def test_basketball_chat_payload_contains_horse_state():
+    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+
+    assert "event.horse = buildHorseStatePayload();" in html
+    assert "event.currentState.horse = event.horse;" in html
+
+
+@pytest.mark.unit
+def test_basketball_duel_player_shots_update_recorded_stats():
+    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+    finish_duel = html[html.index("function finishDuelShot("):html.index("function finishShot(", html.index("function finishDuelShot("))]
+
+    assert "if (shooter === 'player') {" in finish_duel
+    assert "game.streak += 1;" in finish_duel
+    assert "game.madeCount += 1;" in finish_duel
+    assert "game.bestStreak = Math.max(game.bestStreak, game.streak);" in finish_duel
+    assert "if (game.shotTypeCount[shotType] != null) game.shotTypeCount[shotType] += 1;" in finish_duel
+    assert "game.streak = 0;" in finish_duel
 
 
 @pytest.mark.unit

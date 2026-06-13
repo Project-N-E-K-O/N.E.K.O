@@ -2410,6 +2410,18 @@
     if (event.kind === 'shot_missed' || event.kind === 'game_over') return event.kind;
     return event.shot_type || event.kind;
   }
+  function buildHorseStatePayload() {
+    return {
+      word: HORSE_WORD,
+      letters_player: game.horse.lettersPlayer,
+      letters_neko: game.horse.lettersNeko,
+      lettersPlayer: game.horse.lettersPlayer,
+      lettersNeko: game.horse.lettersNeko,
+      phase: game.horse.phase,
+      turn_owner: game.horse.turnOwner,
+      challenge: game.horse.challenge ? Object.assign({}, game.horse.challenge) : null
+    };
+  }
   function sendGameEvent(event) {
     event.session_id = sessionId;
     event.mode = currentMode;
@@ -2447,6 +2459,10 @@
         active_shooter: game.duel.activeShooter,
         max_rounds: game.duel.maxRounds
       };
+    }
+    if (isHorseMode()) {
+      event.horse = buildHorseStatePayload();
+      event.currentState.horse = event.horse;
     }
     if (event.best_streak == null) event.best_streak = game.bestStreak;
     if (event.made_count == null) event.made_count = game.madeCount;
@@ -3634,6 +3650,17 @@
     game.lastShotScore = point;
     if (shooter === 'player') game.duel.playerScore += point;
     else game.duel.nekoScore += point;
+    if (shooter === 'player') {
+      if (scored) {
+        game.streak += 1;
+        game.madeCount += 1;
+        game.bestStreak = Math.max(game.bestStreak, game.streak);
+        if (game.shotTypeCount[shotType] != null) game.shotTypeCount[shotType] += 1;
+      } else {
+        fireExtinguishedUntil = performance.now() + 300;
+        game.streak = 0;
+      }
+    }
     game.totalScore = game.duel.playerScore;
     game.attemptsResults.push({
       shooter: shooter,
@@ -4696,16 +4723,7 @@
       payloadObj.currentState.duel = payloadObj.duel;
     }
     if (isHorseMode()) {
-      payloadObj.horse = {
-        word: HORSE_WORD,
-        letters_player: game.horse.lettersPlayer,
-        letters_neko: game.horse.lettersNeko,
-        lettersPlayer: game.horse.lettersPlayer,
-        lettersNeko: game.horse.lettersNeko,
-        phase: game.horse.phase,
-        turn_owner: game.horse.turnOwner,
-        challenge: game.horse.challenge ? Object.assign({}, game.horse.challenge) : null
-      };
+      payloadObj.horse = buildHorseStatePayload();
       payloadObj.currentState.horse = payloadObj.horse;
     }
     Object.assign(payloadObj, _basketballGameMemoryPolicyPayload());
