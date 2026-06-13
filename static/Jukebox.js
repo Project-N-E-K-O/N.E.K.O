@@ -463,9 +463,11 @@ window.Jukebox = {
       return null;
     }
 
+    const queue = Jukebox.State.randomQueue || [];
+    const queuedSongId = queue[Jukebox.State.randomQueueIndex];
     const currentSongId = anchorSongId
+      || (Jukebox.findSongById(queuedSongId) ? queuedSongId : null)
       || (Jukebox.State.currentSong ? Jukebox.State.currentSong.id : null)
-      || (Jukebox.State.randomQueue || [])[Jukebox.State.randomQueueIndex]
       || null;
 
     if (currentSongId) {

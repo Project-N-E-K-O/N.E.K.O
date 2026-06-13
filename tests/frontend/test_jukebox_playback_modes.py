@@ -680,6 +680,55 @@ def test_jukebox_random_next_appends_only_at_queue_end(mock_page: Page):
 
 
 @pytest.mark.frontend
+def test_jukebox_random_rapid_next_uses_advanced_queue_anchor(mock_page: Page):
+    setup_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        () => {
+          const J = window.Jukebox;
+          const played = [];
+          let randomCalls = 0;
+          const randomValues = [0, 0.9];
+          const originalRandom = Math.random;
+          Math.random = () => randomValues[randomCalls++] || 0;
+          J.playSong = (songId, options = {}) => {
+            played.push({ songId, fromQueue: options.fromQueue === true });
+          };
+
+          J.State.playbackMode = 'random';
+          J.State.currentSong = J.State.songs[0];
+          J.State.randomQueue = ['song1'];
+          J.State.randomQueueIndex = 0;
+
+          J.playAdjacentSong(1);
+          J.playAdjacentSong(1);
+          Math.random = originalRandom;
+
+          return {
+            currentSong: J.State.currentSong && J.State.currentSong.id,
+            played,
+            queue: [...J.State.randomQueue],
+            index: J.State.randomQueueIndex,
+            randomCalls
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "currentSong": "song1",
+        "played": [
+            {"songId": "song2", "fromQueue": True},
+            {"songId": "song3", "fromQueue": True},
+        ],
+        "queue": ["song1", "song2", "song3"],
+        "index": 2,
+        "randomCalls": 2,
+    }
+
+
+@pytest.mark.frontend
 def test_jukebox_random_previous_uses_accumulated_queue(mock_page: Page):
     setup_jukebox_page(mock_page)
 
