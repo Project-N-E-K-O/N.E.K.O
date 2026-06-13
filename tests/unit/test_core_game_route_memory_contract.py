@@ -554,8 +554,7 @@ async def test_voice_transcript_keyword_outcome_pushes_invite_resolved(monkeypat
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_non_voice_transcript_skips_mini_game_invite_keyword(monkeypatch):
-    """非语音复用（openclaw 文本 handoff，is_voice_source=False）不重复跑关键词——
-    文本入口 _process_stream_data_internal 已经跑过一次，避免双触发。"""
+    """Non-voice transcript reuse skips invite keywords already handled by text input."""
     mgr = _make_transcript_manager()
     seen = []
     monkeypatch.setattr(

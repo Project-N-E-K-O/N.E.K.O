@@ -3675,68 +3675,6 @@ async def health():
     )
 
 
-@app.post("/openclaw/preflight")
-async def openclaw_preflight(payload: Dict[str, Any]):
-    """快速判断当前输入是否应由 OpenClaw(QwenPaw) 接管。"""
-    if not Modules.task_executor:
-        raise HTTPException(503, "Task executor not ready")
-
-    if not Modules.analyzer_enabled:
-        return {
-            "success": True,
-            "should_handoff": False,
-            "reason": "analyzer_disabled",
-        }
-
-    if not Modules.agent_flags.get("openclaw_enabled", False):
-        return {
-            "success": True,
-            "should_handoff": False,
-            "reason": "openclaw_disabled",
-        }
-
-    messages = (payload or {}).get("messages") or []
-    if not isinstance(messages, list) or not messages:
-        raise HTTPException(400, "messages required")
-
-    lanlan_name = (payload or {}).get("lanlan_name")
-    conversation_id = (payload or {}).get("conversation_id")
-    lang = str((payload or {}).get("lang") or "en")
-
-    flags = {
-        "computer_use_enabled": False,
-        "browser_use_enabled": False,
-        "user_plugin_enabled": False,
-        "openclaw_enabled": True,
-        "openfang_enabled": False,
-    }
-
-    result = await Modules.task_executor.analyze_and_execute(
-        messages=messages,
-        lanlan_name=lanlan_name,
-        agent_flags=flags,
-        conversation_id=conversation_id,
-        lang=lang,
-    )
-
-    should_handoff = bool(
-        result
-        and getattr(result, "has_task", False)
-        and getattr(result, "execution_method", "") == "openclaw"
-    )
-    tool_args = result.tool_args if isinstance(getattr(result, "tool_args", None), dict) else {}
-
-    return {
-        "success": True,
-        "should_handoff": should_handoff,
-        "execution_method": getattr(result, "execution_method", None) if result else None,
-        "task_description": getattr(result, "task_description", "") if result else "",
-        "reason": getattr(result, "reason", "") if result else "",
-        "magic_command": tool_args.get("magic_command"),
-        "direct_reply": bool(tool_args.get("direct_reply")) if tool_args else False,
-    }
-
-
 # 插件直接触发路由（放在顶层，确保不在其它函数体内）
 @app.post("/plugin/execute")
 async def plugin_execute_direct(payload: Dict[str, Any]):
