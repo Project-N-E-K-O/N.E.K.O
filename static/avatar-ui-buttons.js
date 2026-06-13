@@ -619,6 +619,13 @@ function _playNekoIdleSound(state, src, volume) {
             }
         }, { once: true });
         const playResult = audio.play();
+        if (playResult && typeof playResult.then === 'function') {
+            const playStarted = playResult.then(() => audio);
+            playStarted.catch(() => {});
+            audio.__nekoIdlePlayStarted = playStarted;
+        } else {
+            audio.__nekoIdlePlayStarted = null;
+        }
         if (playResult && typeof playResult.catch === 'function') {
             playResult.catch(() => {
                 if (state.audio === audio) {
@@ -634,6 +641,21 @@ function _playNekoIdleSound(state, src, volume) {
         state.audio = null;
         return null;
     }
+}
+
+function _runAfterNekoIdleSoundStarted(state, audio, callback) {
+    if (!state || !audio || typeof callback !== 'function') return;
+
+    const run = () => {
+        if (state.audio !== audio || audio.paused || audio.ended) return;
+        callback(audio);
+    };
+    const playStarted = audio.__nekoIdlePlayStarted;
+    if (playStarted && typeof playStarted.then === 'function') {
+        playStarted.then(run).catch(() => {});
+        return;
+    }
+    run();
 }
 
 function _clearNekoIdleThoughtBubble(button) {
@@ -840,7 +862,10 @@ function _playNekoIdleSleepSound(tier, token) {
     }
 
     const audio = _playNekoIdleSound(_nekoIdleSleepSoundState, _pickNekoIdleSleepSoundSrc(config), config.volume);
-    if (audio) _showNekoIdleThoughtBubbleForSound(tier, audio);
+    _runAfterNekoIdleSoundStarted(_nekoIdleSleepSoundState, audio, () => {
+        if (token !== _nekoIdleSleepSoundState.token || _nekoIdleSleepSoundState.tier !== tier) return;
+        _showNekoIdleThoughtBubbleForSound(tier, audio);
+    });
 }
 
 function _scheduleNekoIdleSleepSoundInterval(tier, intervalStartedAt) {
@@ -915,8 +940,15 @@ function _playNekoIdleCat1AmbientSound(token) {
         _pickNekoIdleCat1AmbientSoundUrl(),
         _NEKO_IDLE_CAT1_AMBIENT_SOUND_VOLUME
     );
-    if (audio) _showNekoIdleThoughtBubbleForSound(_NEKO_IDLE_TIER_CAT1);
-    _playNekoIdleCat1SoundReaction();
+    _runAfterNekoIdleSoundStarted(_nekoIdleCat1AmbientSoundState, audio, () => {
+        if (!_nekoIdleCat1AmbientSoundState.active ||
+            token !== _nekoIdleCat1AmbientSoundState.token ||
+            _isAnyNekoIdleReturnDragActionActive()) {
+            return;
+        }
+        _showNekoIdleThoughtBubbleForSound(_NEKO_IDLE_TIER_CAT1, audio);
+        _playNekoIdleCat1SoundReaction();
+    });
 }
 
 function _scheduleNekoIdleCat1AmbientSoundInterval(intervalStartedAt) {
@@ -1641,8 +1673,30 @@ function _restoreNekoIdleCat1EdgePeekBeforeDrag(container) {
     if (!_isNekoIdleCat1EdgePeekEligible(container)) return;
     const w = container.offsetWidth || 64;
     const h = container.offsetHeight || 64;
-    const viewportW = window.innerWidth || w;
-    const viewportH = window.innerHeight || h;
+    const viewportW = Math.max(w, window.innerWidth || 0);
+    const viewportH = Math.max(h, window.innerHeight || 0);
+    const rawLeft = parseFloat(container.style.left);
+    const rawTop = parseFloat(container.style.top);
+    const rect = container.getBoundingClientRect && container.getBoundingClientRect();
+    const currentLeft = Number.isFinite(rawLeft) ? rawLeft : (rect ? rect.left : 0);
+    const currentTop = Number.isFinite(rawTop) ? rawTop : (rect ? rect.top : 0);
+    container.style.left = `${Math.round(_clampNekoIdleCat1EdgePeekCoordinate(currentLeft, 0, viewportW - w))}px`;
+    container.style.top = `${Math.round(_clampNekoIdleCat1EdgePeekCoordinate(currentTop, 0, viewportH - h))}px`;
+    container.style.right = '';
+    container.style.bottom = '';
+    container.style.transform = 'none';
+}
+
+function _clearNekoIdleCat1EdgePeekForTierExit(container) {
+    if (!container) return;
+    const wasEdgePeekActive = _isNekoIdleCat1EdgePeekActive(container);
+    _clearNekoIdleCat1EdgePeek(container);
+    if (!wasEdgePeekActive) return;
+
+    const w = container.offsetWidth || 64;
+    const h = container.offsetHeight || 64;
+    const viewportW = Math.max(w, window.innerWidth || 0);
+    const viewportH = Math.max(h, window.innerHeight || 0);
     const rawLeft = parseFloat(container.style.left);
     const rawTop = parseFloat(container.style.top);
     const rect = container.getBoundingClientRect && container.getBoundingClientRect();
@@ -4525,7 +4579,7 @@ function _applyNekoIdleReturnPresentation(button, tier) {
     if (container) {
         container.setAttribute('data-neko-idle-tier', normalizedTier);
         if (normalizedTier !== _NEKO_IDLE_TIER_CAT1) {
-            _clearNekoIdleCat1EdgePeek(container);
+            _clearNekoIdleCat1EdgePeekForTierExit(container);
         }
     }
 

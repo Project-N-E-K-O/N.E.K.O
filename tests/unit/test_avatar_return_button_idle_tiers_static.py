@@ -362,6 +362,7 @@ def test_cat1_edge_peek_only_applies_after_drag_release():
     assert "_getNekoIdleCat1EdgePeekPlacement(left, top, w, h, viewportWidth, viewportHeight)" in edge_apply_block
     assert "function _isNekoIdleCat1EdgePeekActive(containerOrButton)" in source
     assert "return button.classList.contains(className);" in source
+    assert "function _clearNekoIdleCat1EdgePeekForTierExit(container)" in source
 
     apply_edge_block = _source_slice_between(
         source,
@@ -538,7 +539,25 @@ def test_cat1_edge_peek_only_applies_after_drag_release():
         "return presentation",
     )
     assert "if (normalizedTier !== _NEKO_IDLE_TIER_CAT1) {" in presentation_block
-    assert "_clearNekoIdleCat1EdgePeek(container);" in presentation_block
+    assert "_clearNekoIdleCat1EdgePeekForTierExit(container);" in presentation_block
+
+    tier_exit_block = _source_slice_between(
+        source,
+        "function _clearNekoIdleCat1EdgePeekForTierExit(container)",
+        "function _getNekoIdleCat1RapidDragAssetUrl(button, tier)",
+        "cat1 edge peek tier exit",
+    )
+    _assert_source_order(
+        tier_exit_block,
+        "cat1 edge peek tier exit clamps the non-cat1 position on-screen",
+        "const wasEdgePeekActive = _isNekoIdleCat1EdgePeekActive(container);",
+        "_clearNekoIdleCat1EdgePeek(container);",
+        "if (!wasEdgePeekActive) return;",
+        "const w = container.offsetWidth || 64;",
+        "const viewportW = Math.max(w, window.innerWidth || 0);",
+        "container.style.left = `${Math.round(_clampNekoIdleCat1EdgePeekCoordinate(currentLeft, 0, viewportW - w))}px`;",
+        "container.style.top = `${Math.round(_clampNekoIdleCat1EdgePeekCoordinate(currentTop, 0, viewportH - h))}px`;",
+    )
 
     manual_move_block = _source_slice_between(
         source,
@@ -1161,6 +1180,10 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
     assert "function _handleNekoIdleThoughtBubbleClick(button, event)" in source
     assert "function _clearNekoIdleThoughtBubble(button)" in source
     assert "function _showNekoIdleThoughtBubbleForSound(tier, audio = null)" in source
+    assert "function _runAfterNekoIdleSoundStarted(state, audio, callback)" in source
+    assert "audio.__nekoIdlePlayStarted = playStarted;" in source
+    assert "if (state.audio !== audio || audio.paused || audio.ended) return;" in source
+    assert "playStarted.then(run).catch(() => {});" in source
     assert "button.__nekoIdleThoughtBubbleTier = normalizedTier;" in source
     assert "if (button.__nekoIdleThoughtBubbleTier && button.__nekoIdleThoughtBubbleTier !== normalizedTier)" in source
     assert "_NEKO_IDLE_THOUGHT_BUBBLE_VISIBLE_MS" in source
@@ -1279,7 +1302,9 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
         sleep_play_block,
         "sleep sound playback",
         "const audio = _playNekoIdleSound(_nekoIdleSleepSoundState, _pickNekoIdleSleepSoundSrc(config), config.volume);",
-        "if (audio) _showNekoIdleThoughtBubbleForSound(tier, audio);",
+        "_runAfterNekoIdleSoundStarted(_nekoIdleSleepSoundState, audio, () => {",
+        "if (token !== _nekoIdleSleepSoundState.token || _nekoIdleSleepSoundState.tier !== tier) return;",
+        "_showNekoIdleThoughtBubbleForSound(tier, audio);",
     )
 
     ambient_play_block = _source_slice_between(
@@ -1292,8 +1317,14 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
         ambient_play_block,
         "cat1 ambient sound playback",
         "const audio = _playNekoIdleSound(",
-        "if (audio) _showNekoIdleThoughtBubbleForSound(_NEKO_IDLE_TIER_CAT1);",
+        "_runAfterNekoIdleSoundStarted(_nekoIdleCat1AmbientSoundState, audio, () => {",
+        "_showNekoIdleThoughtBubbleForSound(_NEKO_IDLE_TIER_CAT1, audio);",
         "_playNekoIdleCat1SoundReaction();",
+    )
+    _assert_source_contains(
+        ambient_play_block,
+        "token !== _nekoIdleCat1AmbientSoundState.token ||",
+        "cat1 ambient sound playback",
     )
 
     bubble_block = _extract_css_block(css_source, ".neko-idle-thought-bubble")
@@ -1491,6 +1522,7 @@ def test_sleeping_cat_tiers_schedule_soft_random_sound_once_per_interval():
     assert "Math.floor(Math.random() * srcs.length)" in source
     assert "_playNekoIdleSound(_nekoIdleSleepSoundState, _pickNekoIdleSleepSoundSrc(config), config.volume)" in source
     assert "audio.volume = Math.max(0, Math.min(1, Number(volume) || 0.2))" in source
+    assert "audio.__nekoIdlePlayStarted = playStarted;" in source
     assert "audio.dispatchEvent(new Event('error'));" in source
     assert "Math.random() * _NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS" in source
     assert "_scheduleNekoIdleSleepSoundInterval(tier, startedAt + _NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS)" in source
