@@ -603,3 +603,22 @@ def test_game_memory_generic_keys_update_legacy_policy_fields():
     assert state["soccer_game_memory_postgame_context_enabled"] is True
     assert state["game_memory_enabled"] is True
     assert state["game_memory_archive_enabled"] is False
+
+
+@pytest.mark.unit
+def test_basketball_horse_result_records_score_before_returning():
+    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+
+    assert "if (isHorseMode()) {\n      if (!game.resultRecorded) {" in html
+    assert "var horseEntry = recordGame(game.bestStreak, game.recordDistance, game.totalScore, game.shotTypeCount);" in html
+    assert "submitScore(horseEntry).catch(function () {});" in html
+
+
+@pytest.mark.unit
+def test_basketball_unload_can_retry_pending_route_end_with_beacon():
+    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+
+    assert "var routeEndFetchPending = false;" in html
+    assert "if (endedRoute && !(useBeacon && routeEndFetchPending && !routeEndBeaconDelivered)) return;" in html
+    assert "routeEndFetchPending = true;" in html
+    assert "routeEndBeaconDelivered = true;" in html

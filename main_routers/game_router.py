@@ -96,6 +96,8 @@ _game_sessions: Dict[str, dict] = {}
 # 超时清理：30 分钟无活动自动销毁
 _SESSION_TIMEOUT_SECONDS = 30 * 60
 _GAME_ROUTE_ACTIVATION_LOG_LIMIT = 32
+_BASKETBALL_SCORE_SESSION_TTL_SECONDS = 10 * 60
+_basketball_recent_score_sessions: Dict[tuple[str, str], dict] = {}
 
 _SOCCER_QUICK_LINE_KEYS = {
     "goal-scored", "goal-conceded", "own-goal-by-ai", "own-goal-by-player",
@@ -4832,6 +4834,44 @@ def _basketball_player_identity(lanlan_name: str, session_id: str) -> tuple[str,
     return clean_name, clean_session
 
 
+def _prune_basketball_score_sessions(now: float | None = None) -> None:
+    current = time.time() if now is None else now
+    for key, meta in list(_basketball_recent_score_sessions.items()):
+        if float(meta.get("expires_at") or 0.0) <= current:
+            _basketball_recent_score_sessions.pop(key, None)
+
+
+def _remember_basketball_score_session(lanlan_name: str, session_id: str, mode: Any) -> None:
+    clean_name, clean_session = _basketball_player_identity(lanlan_name, session_id)
+    if not clean_name or not clean_session:
+        return
+    _prune_basketball_score_sessions()
+    _basketball_recent_score_sessions[(clean_name, clean_session)] = {
+        "mode": _normalize_basketball_mode(mode),
+        "expires_at": time.time() + _BASKETBALL_SCORE_SESSION_TTL_SECONDS,
+    }
+
+
+def _basketball_score_submission_allowed(data: dict) -> bool:
+    session_id = _normalize_short_text(data.get("session_id"), max_chars=120)
+    lanlan_name = _normalize_short_text(data.get("lanlan_name"), max_chars=80)
+    if not session_id or not lanlan_name:
+        return False
+    mode = _normalize_basketball_mode(data.get("mode"))
+    state = _game_route_states.get(_route_state_key(lanlan_name, "basketball"))
+    if (
+        state
+        and state.get("game_route_active")
+        and str(state.get("session_id") or "") == session_id
+        and state.get("game_started") is True
+        and _normalize_basketball_mode(state.get("mode")) == mode
+    ):
+        return True
+    _prune_basketball_score_sessions()
+    meta = _basketball_recent_score_sessions.get((lanlan_name, session_id))
+    return bool(meta and meta.get("mode") == mode)
+
+
 def _basketball_leaderboard_total_players(conn: sqlite3.Connection) -> int:
     row = conn.execute(
         """
@@ -5892,16 +5932,13 @@ async def game_route_state(game_type: str, lanlan_name: str = ""):
 
 @router.get("/route/active")
 async def game_route_any_active(lanlan_name: str = ""):
-    """Bootstrap reconciliation endpoint：返回当前 lanlan_name 是否有任意活跃
-    game_route，给 chat.html / pet 等 game_window_state_change 事件订阅者用。
+    """Reconcile late subscribers with the current game window route state.
 
-    场景：edge-triggered 的 game_window_state_change WS 事件只在 activate /
-    finalize 那一瞬间推；订阅者初次加载（或 WS reconnect）时若 route 已经在
-    active，听不到历史 opened，UI 永远停在普通态。订阅者在 init 路径调本
-    endpoint，发现 active 就自己 dispatch 一次 opened DOM 事件，UI 与后端
-    state 对齐。codex P1。
-
-    单 GET、参数仅 lanlan_name、无副作用——不需要 CSRF 防护。"""
+    ``game_window_state_change`` is edge-triggered, so a newly loaded or
+    reconnected chat/pet subscriber can miss the historical ``opened`` event
+    while a route is already active. This read-only endpoint lets init code
+    query the current state and dispatch its local opened event if needed.
+    """
     resolved = _resolve_lanlan_name(lanlan_name)
     state = _get_active_game_route_state(resolved) if resolved else None
     if state is None:
@@ -6814,6 +6851,12 @@ async def _complete_game_end_from_payload(
             )
         archive = finalized["archive"]
         archive_memory = finalized["archive_memory"]
+        if game_type == "basketball" and state.get("game_started") is True:
+            _remember_basketball_score_session(
+                lanlan_name,
+                session_id,
+                data.get("mode", state.get("mode")),
+            )
         if _game_memory_postgame_context_enabled(archive) is False:
             postgame_options["enabled"] = False
         if isinstance(archive_memory, dict) and archive_memory.get("status") == "skipped":
@@ -7033,6 +7076,8 @@ async def game_basketball_leaderboard_submit(game_type: str, request: Request):
         return {"ok": False, "reason": "invalid_body"}
     if not isinstance(data, dict):
         return {"ok": False, "reason": "invalid_body"}
+    if not _basketball_score_submission_allowed(data):
+        return {"ok": False, "reason": "invalid_session"}
     rank, total_players, is_personal_best = _basketball_insert_score(data)
     return {
         "ok": True,

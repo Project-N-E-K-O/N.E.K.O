@@ -817,6 +817,8 @@
   var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || 'basketball_demo';
   var routeActive = false;
   var endedRoute = false;
+  var routeEndFetchPending = false;
+  var routeEndBeaconDelivered = false;
   var live2dReady = false;
   var heartbeatTimer = 0;
   var drainTimer = 0;
@@ -2997,6 +2999,8 @@
   function resetGame() {
     if (endedRoute) {
       endedRoute = false;
+      routeEndFetchPending = false;
+      routeEndBeaconDelivered = false;
       sessionId = createBasketballSessionId();
       startRoute();
     }
@@ -3852,6 +3856,11 @@
       return;
     }
     if (isHorseMode()) {
+      if (!game.resultRecorded) {
+        var horseEntry = recordGame(game.bestStreak, game.recordDistance, game.totalScore, game.shotTypeCount);
+        game.resultRecorded = true;
+        submitScore(horseEntry).catch(function () {});
+      }
       var horseOutcome = game.horse.lettersNeko >= HORSE_WORD.length
         ? _i18n('result.outcome.youWin', '你赢了')
         : (game.horse.lettersPlayer >= HORSE_WORD.length ? _i18n('result.outcome.nekoWin', 'Neko赢了') : _i18n('result.outcome.undecided', '未分胜负'));
@@ -4601,7 +4610,7 @@
     loadGeneratedQuickLines();
   }
   function endRoute(useBeacon) {
-    if (endedRoute) return;
+    if (endedRoute && !(useBeacon && routeEndFetchPending && !routeEndBeaconDelivered)) return;
     endedRoute = true;
     clearInterval(heartbeatTimer);
     clearInterval(drainTimer);
@@ -4647,10 +4656,17 @@
     var url = api('/route/end');
     if (useBeacon && navigator.sendBeacon) {
       try {
-        if (navigator.sendBeacon(url, new Blob([payload], { type: 'application/json' }))) return;
+        if (navigator.sendBeacon(url, new Blob([payload], { type: 'application/json' }))) {
+          routeEndBeaconDelivered = true;
+          routeEndFetchPending = false;
+          return;
+        }
       } catch (_) {}
     }
-    fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload }).catch(function () {});
+    routeEndFetchPending = true;
+    fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload }).then(function () {
+      routeEndFetchPending = false;
+    }).catch(function () {});
   }
 
   function cycleTheme() {

@@ -1288,6 +1288,16 @@ def test_direct_basketball_request_opens_game_without_pending():
 def test_direct_basketball_request_ignores_casual_or_negated_mentions():
     assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '篮球新闻挺有意思') is None
     assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '我现在不想玩投篮') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'I play basketball every week') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, "let's start by talking about basketball") is None
+
+
+def test_direct_basketball_request_keeps_imperative_english_matching():
+    result = sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'please play basketball')
+
+    assert result is not None
+    assert result['action'] == 'open_game'
+    assert result['game_type'] == 'basketball'
 
 
 def test_direct_request_negation_is_scoped_to_matched_game():

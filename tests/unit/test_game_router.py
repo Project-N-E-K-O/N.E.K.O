@@ -7,6 +7,7 @@ from starlette.responses import JSONResponse
 
 from .game_route_test_helpers import (
     mark_game_started as _mark_game_started,
+    reset_game_route_state,
     set_soccer_game_memory_policy as _set_soccer_game_memory_policy,
 )
 from main_routers import game_router
@@ -32,6 +33,19 @@ def _put_game_session(lanlan_name, game_type, session_id, session):
         "lock": None,
     }
     return key
+
+
+def _allow_basketball_score_session(lanlan_name, session_id, mode="spectator"):
+    state = {
+        "game_type": "basketball",
+        "session_id": session_id,
+        "lanlan_name": lanlan_name,
+        "game_route_active": True,
+        "mode": mode,
+    }
+    _mark_game_started(state)
+    game_router._game_route_states[game_router._route_state_key(lanlan_name, "basketball")] = state
+    return state
 
 
 @pytest.mark.unit
@@ -576,62 +590,66 @@ def test_strip_ssml_like_tags_only_removes_known_ssml_tags():
 async def test_basketball_leaderboard_post_and_get_sorting(tmp_path, monkeypatch):
     monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", tmp_path / "basketball_scores.db")
 
-    first = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
-        "session_id": "s1",
-        "lanlan_name": "Lan A",
-        "score": 15,
-        "streak": 4,
-        "max_distance_px": 200,
-        "swish_count": 1,
-        "bank_count": 0,
-        "rim_in_count": 0,
-        "mode": "spectator",
-    }))
-    second = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
-        "session_id": "s2",
-        "lanlan_name": "Lan B",
-        "score": 20,
-        "streak": 3,
-        "max_distance_px": 300,
-        "swish_count": 0,
-        "bank_count": 1,
-        "rim_in_count": 0,
-        "mode": "shooter",
-    }))
-    third = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
-        "session_id": "s3",
-        "lanlan_name": "Lan A",
-        "score": 20,
-        "streak": 5,
-        "max_distance_px": 250,
-        "swish_count": 2,
-        "bank_count": 0,
-        "rim_in_count": 1,
-        "mode": "spectator",
-    }))
+    with reset_game_route_state():
+        _allow_basketball_score_session("Lan A", "s1", "spectator")
+        first = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+            "session_id": "s1",
+            "lanlan_name": "Lan A",
+            "score": 15,
+            "streak": 4,
+            "max_distance_px": 200,
+            "swish_count": 1,
+            "bank_count": 0,
+            "rim_in_count": 0,
+            "mode": "spectator",
+        }))
+        _allow_basketball_score_session("Lan B", "s2", "shooter")
+        second = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+            "session_id": "s2",
+            "lanlan_name": "Lan B",
+            "score": 20,
+            "streak": 3,
+            "max_distance_px": 300,
+            "swish_count": 0,
+            "bank_count": 1,
+            "rim_in_count": 0,
+            "mode": "shooter",
+        }))
+        _allow_basketball_score_session("Lan A", "s3", "spectator")
+        third = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+            "session_id": "s3",
+            "lanlan_name": "Lan A",
+            "score": 20,
+            "streak": 5,
+            "max_distance_px": 250,
+            "swish_count": 2,
+            "bank_count": 0,
+            "rim_in_count": 1,
+            "mode": "spectator",
+        }))
 
-    assert first["ok"] is True
-    assert second["ok"] is True
-    assert third["ok"] is True
-    assert third["rank"] == 1
-    assert third["is_personal_best"] is True
+        assert first["ok"] is True
+        assert second["ok"] is True
+        assert third["ok"] is True
+        assert third["rank"] == 1
+        assert third["is_personal_best"] is True
 
-    leaderboard = await game_router.game_basketball_leaderboard(
-        "basketball",
-        session_id="s3",
-        lanlan_name="Lan A",
-    )
+        leaderboard = await game_router.game_basketball_leaderboard(
+            "basketball",
+            session_id="s3",
+            lanlan_name="Lan A",
+        )
 
-    assert leaderboard["total_players"] == 2
-    assert leaderboard["your_best"] == {"rank": 1, "score": 20}
-    assert leaderboard["top"][0]["name"] == "Lan A"
-    assert leaderboard["top"][0]["score"] == 20
-    assert leaderboard["top"][0]["streak"] == 5
-    assert leaderboard["top"][0]["max_distance_m"] == "4.2"
-    assert leaderboard["top"][1]["name"] == "Lan B"
-    assert leaderboard["top"][1]["score"] == 20
-    assert leaderboard["top"][1]["streak"] == 3
-    assert leaderboard["top"][1]["max_distance_m"] == "5.0"
+        assert leaderboard["total_players"] == 2
+        assert leaderboard["your_best"] == {"rank": 1, "score": 20}
+        assert leaderboard["top"][0]["name"] == "Lan A"
+        assert leaderboard["top"][0]["score"] == 20
+        assert leaderboard["top"][0]["streak"] == 5
+        assert leaderboard["top"][0]["max_distance_m"] == "4.2"
+        assert leaderboard["top"][1]["name"] == "Lan B"
+        assert leaderboard["top"][1]["score"] == 20
+        assert leaderboard["top"][1]["streak"] == 3
+        assert leaderboard["top"][1]["max_distance_m"] == "5.0"
 
 
 @pytest.mark.unit
@@ -639,41 +657,43 @@ async def test_basketball_leaderboard_post_and_get_sorting(tmp_path, monkeypatch
 async def test_basketball_leaderboard_get_paginates_results(tmp_path, monkeypatch):
     monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", tmp_path / "basketball_scores.db")
 
-    for index in range(12):
-        await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
-            "session_id": f"s{index}",
-            "lanlan_name": f"Lan {index}",
-            "score": 120 - index,
-            "streak": 1,
-            "max_distance_px": 200,
-            "swish_count": 0,
-            "bank_count": 0,
-            "rim_in_count": 0,
-            "mode": "spectator",
-        }))
+    with reset_game_route_state():
+        for index in range(12):
+            _allow_basketball_score_session(f"Lan {index}", f"s{index}", "spectator")
+            await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+                "session_id": f"s{index}",
+                "lanlan_name": f"Lan {index}",
+                "score": 120 - index,
+                "streak": 1,
+                "max_distance_px": 200,
+                "swish_count": 0,
+                "bank_count": 0,
+                "rim_in_count": 0,
+                "mode": "spectator",
+            }))
 
-    page = await game_router.game_basketball_leaderboard(
-        "basketball",
-        limit=5,
-        offset=5,
-    )
+        page = await game_router.game_basketball_leaderboard(
+            "basketball",
+            limit=5,
+            offset=5,
+        )
 
-    assert page["limit"] == 5
-    assert page["offset"] == 5
-    assert page["total_scores"] == 12
-    assert page["has_more"] is True
-    assert [row["score"] for row in page["top"]] == [115, 114, 113, 112, 111]
-    assert [row["rank"] for row in page["top"]] == [6, 7, 8, 9, 10]
+        assert page["limit"] == 5
+        assert page["offset"] == 5
+        assert page["total_scores"] == 12
+        assert page["has_more"] is True
+        assert [row["score"] for row in page["top"]] == [115, 114, 113, 112, 111]
+        assert [row["rank"] for row in page["top"]] == [6, 7, 8, 9, 10]
 
-    last_page = await game_router.game_basketball_leaderboard(
-        "basketball",
-        limit=5,
-        offset=10,
-    )
+        last_page = await game_router.game_basketball_leaderboard(
+            "basketball",
+            limit=5,
+            offset=10,
+        )
 
-    assert last_page["has_more"] is False
-    assert [row["score"] for row in last_page["top"]] == [110, 109]
-    assert [row["rank"] for row in last_page["top"]] == [11, 12]
+        assert last_page["has_more"] is False
+        assert [row["score"] for row in last_page["top"]] == [110, 109]
+        assert [row["rank"] for row in last_page["top"]] == [11, 12]
 
 
 @pytest.mark.unit
@@ -681,34 +701,77 @@ async def test_basketball_leaderboard_get_paginates_results(tmp_path, monkeypatc
 async def test_basketball_leaderboard_sanitizes_inputs_and_normalizes_mode(tmp_path, monkeypatch):
     monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", tmp_path / "basketball_scores.db")
 
-    result = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
-        "session_id": "  session-9  ",
-        "lanlan_name": "  Lan C  ",
-        "score": "-7",
-        "streak": "4.9",
-        "max_distance_px": "nan",
-        "swish_count": "-2",
-        "bank_count": "2.8",
-        "rim_in_count": "3.2",
-        "mode": "arcade",
-    }))
+    with reset_game_route_state():
+        _allow_basketball_score_session("Lan C", "session-9", "spectator")
+        result = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+            "session_id": "  session-9  ",
+            "lanlan_name": "  Lan C  ",
+            "score": "-7",
+            "streak": "4.9",
+            "max_distance_px": "nan",
+            "swish_count": "-2",
+            "bank_count": "2.8",
+            "rim_in_count": "3.2",
+            "mode": "arcade",
+        }))
 
-    assert result["ok"] is True
-    assert result["rank"] == 1
-    assert result["total_players"] == 1
-    assert result["is_personal_best"] is True
+        assert result["ok"] is True
+        assert result["rank"] == 1
+        assert result["total_players"] == 1
+        assert result["is_personal_best"] is True
 
-    leaderboard = await game_router.game_basketball_leaderboard(
-        "basketball",
-        session_id="session-9",
-        lanlan_name="Lan C",
-    )
+        leaderboard = await game_router.game_basketball_leaderboard(
+            "basketball",
+            session_id="session-9",
+            lanlan_name="Lan C",
+        )
 
-    assert leaderboard["top"][0]["name"] == "Lan C"
-    assert leaderboard["top"][0]["score"] == 0
-    assert leaderboard["top"][0]["streak"] == 4
-    assert leaderboard["top"][0]["mode"] == "spectator"
-    assert leaderboard["your_best"] == {"rank": 1, "score": 0}
+        assert leaderboard["top"][0]["name"] == "Lan C"
+        assert leaderboard["top"][0]["score"] == 0
+        assert leaderboard["top"][0]["streak"] == 4
+        assert leaderboard["top"][0]["mode"] == "spectator"
+        assert leaderboard["your_best"] == {"rank": 1, "score": 0}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_basketball_leaderboard_rejects_unknown_score_session(tmp_path, monkeypatch):
+    monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", tmp_path / "basketball_scores.db")
+
+    with reset_game_route_state():
+        result = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+            "session_id": "fake-session",
+            "lanlan_name": "Lan Fake",
+            "score": 999999,
+            "mode": "shooter",
+        }))
+
+        assert result == {"ok": False, "reason": "invalid_session"}
+        leaderboard = await game_router.game_basketball_leaderboard("basketball")
+        assert leaderboard["total_scores"] == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_basketball_leaderboard_allows_recently_ended_route_score(tmp_path, monkeypatch):
+    monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", tmp_path / "basketball_scores.db")
+
+    with reset_game_route_state():
+        state = _allow_basketball_score_session("Lan Ended", "ended-session", "horse")
+        state["game_route_active"] = False
+        game_router._remember_basketball_score_session("Lan Ended", "ended-session", "horse")
+
+        result = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+            "session_id": "ended-session",
+            "lanlan_name": "Lan Ended",
+            "score": 42,
+            "streak": 2,
+            "max_distance_px": 180,
+            "mode": "horse",
+        }))
+
+        assert result["ok"] is True
+        assert result["rank"] == 1
 
 
 @pytest.mark.unit

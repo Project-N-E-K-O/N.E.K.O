@@ -7401,20 +7401,38 @@ _MINI_GAME_DIRECT_REQUEST_RULES: tuple[tuple[str, tuple[str, ...], tuple[str, ..
 )
 
 
-def _iter_direct_request_term_hits(norm: str, terms: tuple[str, ...]) -> list[tuple[int, int]]:
-    hits: list[tuple[int, int]] = []
+def _direct_request_is_ascii_word_term(term: str) -> bool:
+    return bool(term) and all(ord(ch) < 128 for ch in term) and any(ch.isalnum() for ch in term)
+
+
+def _direct_request_is_ascii_word_char(ch: str) -> bool:
+    return bool(ch) and (ch.isalnum() or ch == "'")
+
+
+def _direct_request_has_word_boundaries(norm: str, start: int, end: int, term: str) -> bool:
+    if not _direct_request_is_ascii_word_term(term):
+        return True
+    before = norm[start - 1] if start > 0 else ""
+    after = norm[end] if end < len(norm) else ""
+    return not _direct_request_is_ascii_word_char(before) and not _direct_request_is_ascii_word_char(after)
+
+
+def _iter_direct_request_term_hits(norm: str, terms: tuple[str, ...]) -> list[tuple[int, int, str]]:
+    hits: list[tuple[int, int, str]] = []
     for term in terms:
         start = norm.find(term)
         while start >= 0:
-            hits.append((start, start + len(term)))
+            end = start + len(term)
+            if _direct_request_has_word_boundaries(norm, start, end, term):
+                hits.append((start, end, term))
             start = norm.find(term, start + 1)
     return hits
 
 
 def _direct_request_pair_has_scoped_negation(
     norm: str,
-    game_hit: tuple[int, int],
-    action_hit: tuple[int, int],
+    game_hit: tuple[int, int, str],
+    action_hit: tuple[int, int, str],
 ) -> bool:
     first_start = min(game_hit[0], action_hit[0])
     last_end = max(game_hit[1], action_hit[1])
@@ -7427,6 +7445,49 @@ def _direct_request_pair_has_scoped_negation(
             if end <= first_start and first_start - end <= 4:
                 return True
             start = norm.find(token, start + 1)
+    return False
+
+
+_DIRECT_REQUEST_CJK_CUES = (
+    "来", "想", "要", "一起", "陪", "可以", "能不能", "能否", "帮我",
+    "开", "开始", "一局", "一把", "一下", "玩一", "打一", "踢一", "投一",
+)
+_DIRECT_REQUEST_ENGLISH_CUE_RE = re.compile(
+    r"(?:^|[\s,!.?])(?:please|pls|let's|lets|can we|could we|wanna|want to|"
+    r"i want to|i'd like to|open|start|play)\b"
+)
+_DIRECT_REQUEST_ENGLISH_CASUAL_RE = re.compile(
+    r"\bi\s+(?:usually\s+|often\s+|sometimes\s+|always\s+|still\s+|just\s+)?"
+    r"(?:play|start|open)\b"
+)
+_DIRECT_REQUEST_DISCUSSION_RE = re.compile(
+    r"\b(?:start|play|open)\s+by\b|"
+    r"\b(?:talk|talking|chat|discuss|discussion)\s+(?:about|around)\b"
+)
+
+
+def _direct_request_pair_is_explicit(
+    norm: str,
+    game_hit: tuple[int, int, str],
+    action_hit: tuple[int, int, str],
+) -> bool:
+    first_start = min(game_hit[0], action_hit[0])
+    last_end = max(game_hit[1], action_hit[1])
+    if max(game_hit[0], action_hit[0]) - min(game_hit[1], action_hit[1]) > 18:
+        return False
+    window = norm[max(0, first_start - 16):min(len(norm), last_end + 16)]
+    between = norm[min(game_hit[1], action_hit[1]):max(game_hit[0], action_hit[0])]
+    action_term = action_hit[2]
+    if _direct_request_is_ascii_word_term(action_term):
+        if _DIRECT_REQUEST_DISCUSSION_RE.search(between) or _DIRECT_REQUEST_DISCUSSION_RE.search(window):
+            return False
+        if _DIRECT_REQUEST_ENGLISH_CASUAL_RE.search(window) and not re.search(r"\bi\s+(?:want|wanna|would like)\b", window):
+            return False
+        if action_hit[0] == 0 or norm[action_hit[0] - 1] in " \t\r\n,!.?;:":
+            return bool(_DIRECT_REQUEST_ENGLISH_CUE_RE.search(window))
+        return False
+    if action_hit[0] == 0 or any(cue in window for cue in _DIRECT_REQUEST_CJK_CUES):
+        return True
     return False
 
 
@@ -7459,7 +7520,10 @@ def _match_direct_mini_game_request(text: str) -> str | None:
         action_hits = _iter_direct_request_term_hits(norm, action_terms)
         for game_hit in game_hits:
             for action_hit in action_hits:
-                if not _direct_request_pair_has_scoped_negation(norm, game_hit, action_hit):
+                if (
+                    _direct_request_pair_is_explicit(norm, game_hit, action_hit)
+                    and not _direct_request_pair_has_scoped_negation(norm, game_hit, action_hit)
+                ):
                     return game_type
     return None
 
