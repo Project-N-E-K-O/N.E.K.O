@@ -258,6 +258,18 @@ const _NEKO_IDLE_CAT1_RAPID_DRAG_MIN_SPAN_MS = 420;
 const _NEKO_IDLE_CAT1_RAPID_DRAG_MIN_SUSTAINED_SPEED_PX_PER_SEC = 800;
 const _NEKO_IDLE_CAT1_RAPID_DRAG_REQUIRED_REVERSALS = 6;
 const _NEKO_IDLE_CAT1_RAPID_DRAG_REVERSE_DOT_THRESHOLD = 0;
+const _NEKO_IDLE_CAT1_EDGE_PEEK_TRIGGER_RATIO = 0.025;
+const _NEKO_IDLE_CAT1_EDGE_PEEK_HIDDEN_RATIO = 0.4;
+const _NEKO_IDLE_CAT1_EDGE_PEEK_CLASSES = Object.freeze([
+    'is-cat1-edge-peek-left',
+    'is-cat1-edge-peek-right',
+    'is-cat1-edge-peek-top',
+    'is-cat1-edge-peek-bottom',
+    'is-cat1-edge-peek-top-left',
+    'is-cat1-edge-peek-top-right',
+    'is-cat1-edge-peek-bottom-left',
+    'is-cat1-edge-peek-bottom-right'
+]);
 const _NEKO_IDLE_RETURN_DRAG_ASSET_URLS_BY_TIER = Object.freeze({
     [_NEKO_IDLE_TIER_CAT1]: Object.freeze([
         '/static/assets/neko-idle/cat-idle-cat-move-1.gif',
@@ -289,8 +301,7 @@ const _NEKO_IDLE_THOUGHT_BUBBLE_POP_VISIBLE_MS = 540;
 const _NEKO_IDLE_CAT1_LAYER_REQUEST_HEARTBEAT_MS = 250;
 const _NEKO_IDLE_CAT1_LAYER_FOLLOW_REASSERT_MS = 80;
 const _NEKO_IDLE_CAT1_LAYER_RELEASE_DELAY_MS = 2600;
-// Dev-only short interval for tuning cat sounds and the linked thought bubble.
-const _NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS = 10 * 1000;
+const _NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS = 3 * 60 * 1000;
 const _NEKO_IDLE_CAT1_AMBIENT_SOUND_VOLUME = 0.14;
 const _NEKO_IDLE_CAT1_DRAG_SOUND_VOLUME = 0.16;
 const _NEKO_IDLE_CAT1_DRAG_SOUND_FADE_OUT_MS = 900;
@@ -302,8 +313,7 @@ const _NEKO_IDLE_CAT1_AMBIENT_SOUND_URLS = Object.freeze([
     '/static/assets/neko-idle/cat1-voice3.mp3'
 ]);
 const _NEKO_IDLE_CAT1_DRAG_SOUND_URL = '/static/assets/neko-idle/cat1-voice-click.mp3';
-// Dev-only short interval for CAT2/CAT3 sleep sounds and their thought bubble.
-const _NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS = 10 * 1000;
+const _NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS = 5 * 60 * 1000;
 const _NEKO_IDLE_SLEEP_SOUND_VOLUME = 0.09;
 const _NEKO_IDLE_SLEEP_SOUND_BY_TIER = Object.freeze({
     [_NEKO_IDLE_TIER_CAT2]: Object.freeze({
@@ -1504,6 +1514,145 @@ function _isAnyNekoIdleReturnDragActionActive() {
         active = _isNekoIdleReturnDragActionActive(button);
     });
     return active;
+}
+
+function _clampNekoIdleCat1EdgePeekCoordinate(value, minValue, maxValue) {
+    const normalized = Number(value);
+    const min = Number(minValue);
+    const max = Number(maxValue);
+    if (!Number.isFinite(normalized)) return Number.isFinite(min) ? min : 0;
+    if (!Number.isFinite(min) || !Number.isFinite(max) || max < min) return normalized;
+    return Math.max(min, Math.min(normalized, max));
+}
+
+function _getNekoIdleCat1EdgePeekButton(containerOrButton) {
+    if (!containerOrButton) return null;
+    if (containerOrButton.classList && containerOrButton.classList.contains('neko-idle-return-btn')) {
+        return containerOrButton;
+    }
+    return _getNekoIdleReturnButtonFromContainer(containerOrButton);
+}
+
+function _clearNekoIdleCat1EdgePeek(containerOrButton) {
+    const button = _getNekoIdleCat1EdgePeekButton(containerOrButton);
+    if (!button) return;
+    _NEKO_IDLE_CAT1_EDGE_PEEK_CLASSES.forEach((className) => {
+        button.classList.remove(className);
+    });
+}
+
+function _isNekoIdleCat1EdgePeekActive(containerOrButton) {
+    const button = _getNekoIdleCat1EdgePeekButton(containerOrButton);
+    return !!(button && _NEKO_IDLE_CAT1_EDGE_PEEK_CLASSES.some((className) => {
+        return button.classList.contains(className);
+    }));
+}
+
+function _isNekoIdleCat1EdgePeekEligible(containerOrButton) {
+    const button = _getNekoIdleCat1EdgePeekButton(containerOrButton);
+    return _normalizeNekoIdleReturnTier(button && button.getAttribute('data-neko-idle-tier')) === _NEKO_IDLE_TIER_CAT1;
+}
+
+function _getNekoIdleCat1EdgePeekPlacement(left, top, width, height, viewportWidth, viewportHeight) {
+    const w = Math.max(1, Number(width) || 0);
+    const h = Math.max(1, Number(height) || 0);
+    const viewportW = Math.max(w, Number(viewportWidth) || 0);
+    const viewportH = Math.max(h, Number(viewportHeight) || 0);
+    const currentLeft = Number(left);
+    const currentTop = Number(top);
+    if (!Number.isFinite(currentLeft) || !Number.isFinite(currentTop)) return null;
+
+    const horizontalThreshold = w * _NEKO_IDLE_CAT1_EDGE_PEEK_TRIGGER_RATIO;
+    const verticalThreshold = h * _NEKO_IDLE_CAT1_EDGE_PEEK_TRIGGER_RATIO;
+    const nearLeft = currentLeft <= horizontalThreshold;
+    const nearRight = viewportW - (currentLeft + w) <= horizontalThreshold;
+    const nearTop = currentTop <= verticalThreshold;
+    const nearBottom = viewportH - (currentTop + h) <= verticalThreshold;
+    if (!nearLeft && !nearRight && !nearTop && !nearBottom) return null;
+
+    let edge = '';
+    const centerX = currentLeft + w / 2;
+    if (nearTop) {
+        if (nearLeft || centerX <= w) edge = 'top-left';
+        else if (nearRight || centerX >= viewportW - w) edge = 'top-right';
+        else edge = 'top';
+    } else if (nearBottom) {
+        if (nearLeft || centerX <= w) edge = 'bottom-left';
+        else if (nearRight || centerX >= viewportW - w) edge = 'bottom-right';
+        else edge = 'bottom';
+    } else if (nearLeft) {
+        edge = 'left';
+    } else if (nearRight) {
+        edge = 'right';
+    }
+
+    const hiddenX = w * _NEKO_IDLE_CAT1_EDGE_PEEK_HIDDEN_RATIO;
+    const hiddenY = h * _NEKO_IDLE_CAT1_EDGE_PEEK_HIDDEN_RATIO;
+    let nextLeft = currentLeft;
+    let nextTop = currentTop;
+    if (edge === 'left' || edge === 'top-left' || edge === 'bottom-left') {
+        nextLeft = -hiddenX;
+    } else if (edge === 'right' || edge === 'top-right' || edge === 'bottom-right') {
+        nextLeft = viewportW - w + hiddenX;
+    } else {
+        nextLeft = _clampNekoIdleCat1EdgePeekCoordinate(currentLeft, 0, viewportW - w);
+    }
+
+    if (edge === 'top' || edge === 'top-left' || edge === 'top-right') {
+        nextTop = -hiddenY;
+    } else if (edge === 'bottom' || edge === 'bottom-left' || edge === 'bottom-right') {
+        nextTop = viewportH - h + hiddenY;
+    } else {
+        nextTop = _clampNekoIdleCat1EdgePeekCoordinate(currentTop, 0, viewportH - h);
+    }
+
+    return {
+        edge,
+        left: Math.round(nextLeft),
+        top: Math.round(nextTop)
+    };
+}
+
+function _applyNekoIdleCat1EdgePeek(container, placement) {
+    const button = _getNekoIdleCat1EdgePeekButton(container);
+    if (!container || !button || !placement || !placement.edge) return false;
+    _clearNekoIdleCat1EdgePeek(button);
+    button.classList.add(`is-cat1-edge-peek-${placement.edge}`);
+    _cancelNekoIdleCat1Journey(button, { resetArt: false, preserveObservers: true });
+    container.style.left = `${placement.left}px`;
+    container.style.top = `${placement.top}px`;
+    container.style.right = '';
+    container.style.bottom = '';
+    container.style.transform = 'none';
+    return true;
+}
+
+function _applyNekoIdleCat1EdgePeekAfterDrag(container, left, top, viewportWidth, viewportHeight) {
+    if (!container || !_isNekoIdleCat1EdgePeekEligible(container)) return false;
+    const w = container.offsetWidth || 64;
+    const h = container.offsetHeight || 64;
+    const placement = _getNekoIdleCat1EdgePeekPlacement(left, top, w, h, viewportWidth, viewportHeight);
+    return _applyNekoIdleCat1EdgePeek(container, placement);
+}
+
+function _restoreNekoIdleCat1EdgePeekBeforeDrag(container) {
+    if (!container) return;
+    _clearNekoIdleCat1EdgePeek(container);
+    if (!_isNekoIdleCat1EdgePeekEligible(container)) return;
+    const w = container.offsetWidth || 64;
+    const h = container.offsetHeight || 64;
+    const viewportW = window.innerWidth || w;
+    const viewportH = window.innerHeight || h;
+    const rawLeft = parseFloat(container.style.left);
+    const rawTop = parseFloat(container.style.top);
+    const rect = container.getBoundingClientRect && container.getBoundingClientRect();
+    const currentLeft = Number.isFinite(rawLeft) ? rawLeft : (rect ? rect.left : 0);
+    const currentTop = Number.isFinite(rawTop) ? rawTop : (rect ? rect.top : 0);
+    container.style.left = `${Math.round(_clampNekoIdleCat1EdgePeekCoordinate(currentLeft, 0, viewportW - w))}px`;
+    container.style.top = `${Math.round(_clampNekoIdleCat1EdgePeekCoordinate(currentTop, 0, viewportH - h))}px`;
+    container.style.right = '';
+    container.style.bottom = '';
+    container.style.transform = 'none';
 }
 
 function _getNekoIdleCat1RapidDragAssetUrl(button, tier) {
@@ -3739,6 +3888,10 @@ function _stepNekoIdleCat1Walk(button, timestamp) {
 function _startNekoIdleCat1Walk(button, target) {
     const state = _getNekoIdleCat1Journey(button);
     if (!state) return;
+    if (_isNekoIdleCat1EdgePeekActive(button)) {
+        _cancelNekoIdleCat1Journey(button, { resetArt: false, preserveObservers: true });
+        return;
+    }
     if (_isNekoIdleReturnDragActionActive(button)) return;
     const walkContainer = _getNekoIdleReturnContainerFromButton(button);
     const walkDragging = walkContainer && walkContainer.getAttribute('data-dragging');
@@ -3770,6 +3923,10 @@ function _startNekoIdleCat1Walk(button, target) {
 function _scheduleNekoIdleCat1WalkStart(button, target) {
     const state = _getNekoIdleCat1Journey(button);
     if (!state || state.paused) return;
+    if (_isNekoIdleCat1EdgePeekActive(button)) {
+        _cancelNekoIdleCat1Journey(button, { resetArt: false, preserveObservers: true });
+        return;
+    }
     const profile = state.profile || _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
     _cancelNekoIdleCat1PairMove(state);
     if (state.substate === profile.walkingSubstate) {
@@ -3821,6 +3978,7 @@ function _scheduleNekoIdleCat1WalkStart(button, target) {
 
 function _canScheduleNekoIdleCat1PairMove(button, state) {
     if (!button || !state || state.paused || state.pairMovePlan || state.pairMoveFrame) return false;
+    if (_isNekoIdleCat1EdgePeekActive(button)) return false;
     const profile = state.profile || _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
     if (state.substate !== profile.idleSubstate || !state.actionSettled) return false;
     if (state.targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE) return false;
@@ -3921,6 +4079,10 @@ function _stepNekoIdleCat1PairMove(button, startedAt, timestamp) {
 
 function _startNekoIdleCat1PairMove(button) {
     const state = _getNekoIdleCat1Journey(button);
+    if (_isNekoIdleCat1EdgePeekActive(button)) {
+        _cancelNekoIdleCat1Journey(button, { resetArt: false, preserveObservers: true });
+        return false;
+    }
     if (!state || !_canScheduleNekoIdleCat1PairMove(button, state)) {
         return false;
     }
@@ -4009,6 +4171,10 @@ function _refreshNekoIdleCat1Observer(button) {
 
 function _syncNekoIdleCat1Journey(button, tier) {
     if (!button) return;
+    if (_isNekoIdleCat1EdgePeekActive(button)) {
+        _cancelNekoIdleCat1Journey(button, { resetArt: false, preserveObservers: true });
+        return;
+    }
     if (_isNekoIdleCompactSurfaceDragging()) return;
     const initialContainer = _getNekoIdleReturnContainerFromButton(button);
     const initialDragging = initialContainer && initialContainer.getAttribute('data-dragging');
@@ -4163,6 +4329,10 @@ function _syncNekoIdleCat1Journey(button, tier) {
 }
 
 function _scheduleNekoIdleCat1JourneySync(button) {
+    if (_isNekoIdleCat1EdgePeekActive(button)) {
+        _cancelNekoIdleCat1Journey(button, { resetArt: false, preserveObservers: true });
+        return;
+    }
     const state = _getNekoIdleCat1Journey(button);
     if (!state || state.syncFrame) return;
     if (_isNekoIdleCompactSurfaceDragging() || _nekoIdleCompactSurfaceSettleTimer) return;
@@ -4354,6 +4524,9 @@ function _applyNekoIdleReturnPresentation(button, tier) {
     const container = button.closest('[id$="-return-button-container"]');
     if (container) {
         container.setAttribute('data-neko-idle-tier', normalizedTier);
+        if (normalizedTier !== _NEKO_IDLE_TIER_CAT1) {
+            _clearNekoIdleCat1EdgePeek(container);
+        }
     }
 
     const art = button.querySelector('.neko-idle-return-art');
@@ -4418,6 +4591,13 @@ function _ensureNekoIdleReturnPresentationBridge() {
         if (!detail || !detail.container) return;
         if (detail.reason === 'return-ball-drag-end') {
             _finishNekoIdleReturnDragActionForContainer(detail.container);
+            if (_isNekoIdleCat1EdgePeekActive(detail.container)) {
+                _cancelNekoIdleCat1JourneyForContainer(detail.container, {
+                    resetArt: false,
+                    preserveObservers: true
+                });
+                return;
+            }
             const compactTopEdgeRearmState = _updateNekoIdleCat1CompactTopEdgeRearmAfterManualMove(detail.container);
             if (compactTopEdgeRearmState.shouldSync || _shouldRecheckNekoIdleCat1AfterManualMove(detail)) {
                 _scheduleNekoIdleCat1JourneySyncForContainer(detail.container);
@@ -5151,12 +5331,25 @@ const AvatarButtonMixin = {
 
             const finishDragState = (moved, safetyToken) => {
                 if (safetyToken !== dragSafetyToken) return;
+                if (moved) {
+                    const finalLeft = parseFloat(container.style.left);
+                    const finalTop = parseFloat(container.style.top);
+                    _applyNekoIdleCat1EdgePeekAfterDrag(
+                        container,
+                        Number.isFinite(finalLeft) ? finalLeft : containerStartX,
+                        Number.isFinite(finalTop) ? finalTop : containerStartY,
+                        window.innerWidth,
+                        window.innerHeight
+                    );
+                }
                 container.setAttribute('data-dragging', 'false');
                 if (moved) {
+                    const dispatchLeft = parseFloat(container.style.left);
+                    const dispatchTop = parseFloat(container.style.top);
                     _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-end', {
                         movedDistancePx: Math.hypot(
-                            (parseFloat(container.style.left) || containerStartX) - containerStartX,
-                            (parseFloat(container.style.top) || containerStartY) - containerStartY
+                            (Number.isFinite(dispatchLeft) ? dispatchLeft : containerStartX) - containerStartX,
+                            (Number.isFinite(dispatchTop) ? dispatchTop : containerStartY) - containerStartY
                         )
                     });
                 } else {
@@ -5191,6 +5384,7 @@ const AvatarButtonMixin = {
 
             const handleStart = (clientX, clientY, pointerType = 'mouse') => {
                 clearDragSafetyTimer();
+                _restoreNekoIdleCat1EdgePeekBeforeDrag(container);
                 _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-start');
                 isDragging = true;
                 dragActiveDispatched = false;

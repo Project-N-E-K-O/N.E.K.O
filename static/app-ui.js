@@ -2406,6 +2406,129 @@
         return Number.isFinite(value) ? value : fallback;
     }
 
+    const NEKO_IDLE_CAT1_EDGE_PEEK_TRIGGER_RATIO = 0.025;
+    const NEKO_IDLE_CAT1_EDGE_PEEK_HIDDEN_RATIO = 0.4;
+    const NEKO_IDLE_CAT1_EDGE_PEEK_CLASSES = [
+        'is-cat1-edge-peek-left',
+        'is-cat1-edge-peek-right',
+        'is-cat1-edge-peek-top',
+        'is-cat1-edge-peek-bottom',
+        'is-cat1-edge-peek-top-left',
+        'is-cat1-edge-peek-top-right',
+        'is-cat1-edge-peek-bottom-left',
+        'is-cat1-edge-peek-bottom-right'
+    ];
+
+    function clampNekoIdleCat1EdgePeekCoordinate(value, minValue, maxValue) {
+        const normalized = Number(value);
+        const min = Number(minValue);
+        const max = Number(maxValue);
+        if (!Number.isFinite(normalized)) return Number.isFinite(min) ? min : 0;
+        if (!Number.isFinite(min) || !Number.isFinite(max) || max < min) return normalized;
+        return Math.max(min, Math.min(normalized, max));
+    }
+
+    function getNekoIdleCat1EdgePeekButton(container) {
+        return container && typeof container.querySelector === 'function'
+            ? container.querySelector('.neko-idle-return-btn')
+            : null;
+    }
+
+    function clearNekoIdleCat1EdgePeek(container) {
+        const button = getNekoIdleCat1EdgePeekButton(container);
+        if (!button) return;
+        NEKO_IDLE_CAT1_EDGE_PEEK_CLASSES.forEach((className) => {
+            button.classList.remove(className);
+        });
+    }
+
+    function isNekoIdleCat1EdgePeekEligible(container) {
+        const button = getNekoIdleCat1EdgePeekButton(container);
+        return (button && button.getAttribute('data-neko-idle-tier')) === 'cat1';
+    }
+
+    function getNekoIdleCat1EdgePeekPlacement(left, top, width, height, viewportWidth, viewportHeight) {
+        const w = Math.max(1, Number(width) || 0);
+        const h = Math.max(1, Number(height) || 0);
+        const viewportW = Math.max(w, Number(viewportWidth) || 0);
+        const viewportH = Math.max(h, Number(viewportHeight) || 0);
+        const currentLeft = Number(left);
+        const currentTop = Number(top);
+        if (!Number.isFinite(currentLeft) || !Number.isFinite(currentTop)) return null;
+
+        const nearLeft = currentLeft <= w * NEKO_IDLE_CAT1_EDGE_PEEK_TRIGGER_RATIO;
+        const nearRight = viewportW - (currentLeft + w) <= w * NEKO_IDLE_CAT1_EDGE_PEEK_TRIGGER_RATIO;
+        const nearTop = currentTop <= h * NEKO_IDLE_CAT1_EDGE_PEEK_TRIGGER_RATIO;
+        const nearBottom = viewportH - (currentTop + h) <= h * NEKO_IDLE_CAT1_EDGE_PEEK_TRIGGER_RATIO;
+        if (!nearLeft && !nearRight && !nearTop && !nearBottom) return null;
+
+        let edge = '';
+        const centerX = currentLeft + w / 2;
+        if (nearTop) {
+            if (nearLeft || centerX <= w) edge = 'top-left';
+            else if (nearRight || centerX >= viewportW - w) edge = 'top-right';
+            else edge = 'top';
+        } else if (nearBottom) {
+            if (nearLeft || centerX <= w) edge = 'bottom-left';
+            else if (nearRight || centerX >= viewportW - w) edge = 'bottom-right';
+            else edge = 'bottom';
+        } else if (nearLeft) {
+            edge = 'left';
+        } else if (nearRight) {
+            edge = 'right';
+        }
+
+        const hiddenX = w * NEKO_IDLE_CAT1_EDGE_PEEK_HIDDEN_RATIO;
+        const hiddenY = h * NEKO_IDLE_CAT1_EDGE_PEEK_HIDDEN_RATIO;
+        const nextLeft = edge === 'left' || edge === 'top-left' || edge === 'bottom-left'
+            ? -hiddenX
+            : (edge === 'right' || edge === 'top-right' || edge === 'bottom-right'
+                ? viewportW - w + hiddenX
+                : clampNekoIdleCat1EdgePeekCoordinate(currentLeft, 0, viewportW - w));
+        const nextTop = edge === 'top' || edge === 'top-left' || edge === 'top-right'
+            ? -hiddenY
+            : (edge === 'bottom' || edge === 'bottom-left' || edge === 'bottom-right'
+                ? viewportH - h + hiddenY
+                : clampNekoIdleCat1EdgePeekCoordinate(currentTop, 0, viewportH - h));
+
+        return {
+            edge,
+            left: Math.round(nextLeft),
+            top: Math.round(nextTop)
+        };
+    }
+
+    function applyNekoIdleCat1EdgePeek(container, placement) {
+        const button = getNekoIdleCat1EdgePeekButton(container);
+        if (!container || !button || !placement || !placement.edge) return false;
+        clearNekoIdleCat1EdgePeek(container);
+        button.classList.add(`is-cat1-edge-peek-${placement.edge}`);
+        container.style.left = `${placement.left}px`;
+        container.style.top = `${placement.top}px`;
+        container.style.right = '';
+        container.style.bottom = '';
+        container.style.transform = 'none';
+        return true;
+    }
+
+    function restoreNekoIdleCat1EdgePeekBeforeDrag(container) {
+        if (!container) return;
+        clearNekoIdleCat1EdgePeek(container);
+        if (!isNekoIdleCat1EdgePeekEligible(container)) return;
+        const w = container.offsetWidth || 64;
+        const h = container.offsetHeight || 64;
+        const rect = container.getBoundingClientRect && container.getBoundingClientRect();
+        const rawLeft = parseFloat(container.style.left);
+        const rawTop = parseFloat(container.style.top);
+        const currentLeft = Number.isFinite(rawLeft) ? rawLeft : (rect ? rect.left : 0);
+        const currentTop = Number.isFinite(rawTop) ? rawTop : (rect ? rect.top : 0);
+        container.style.left = `${Math.round(clampNekoIdleCat1EdgePeekCoordinate(currentLeft, 0, (window.innerWidth || w) - w))}px`;
+        container.style.top = `${Math.round(clampNekoIdleCat1EdgePeekCoordinate(currentTop, 0, (window.innerHeight || h) - h))}px`;
+        container.style.right = '';
+        container.style.bottom = '';
+        container.style.transform = 'none';
+    }
+
     function isNativeReturnBallDragDisabled() {
         const runtime = window.__NEKO_DESKTOP_RUNTIME__ || {};
         return !!(
@@ -2812,6 +2935,7 @@
                 }
             }));
 
+            restoreNekoIdleCat1EdgePeekBeforeDrag(container);
             state.isDragging = true;
             state.hasMoved = false;
             state.startScreenX = screenX;
@@ -3003,16 +3127,31 @@
             if (finalBounds) {
                 const width = state.savedBallWidth || container.offsetWidth || 64;
                 const height = state.savedBallHeight || container.offsetHeight || 64;
+                const rawLeft = screenX - finalBounds.x - width / 2;
+                const rawTop = screenY - finalBounds.y - height / 2;
                 const maxLeft = Math.max(0, finalBounds.width - width);
                 const maxTop = Math.max(0, finalBounds.height - height);
-                const newLeft = Math.max(0, Math.min(Math.round(screenX - finalBounds.x - width / 2), maxLeft));
-                const newTop = Math.max(0, Math.min(Math.round(screenY - finalBounds.y - height / 2), maxTop));
+                const newLeft = Math.max(0, Math.min(Math.round(rawLeft), maxLeft));
+                const newTop = Math.max(0, Math.min(Math.round(rawTop), maxTop));
+                const placement = isNekoIdleCat1EdgePeekEligible(container)
+                    ? getNekoIdleCat1EdgePeekPlacement(
+                        newLeft,
+                        newTop,
+                        width,
+                        height,
+                        finalBounds.width,
+                        finalBounds.height
+                    )
+                    : null;
 
-                container.style.left = `${newLeft}px`;
-                container.style.top = `${newTop}px`;
-                container.style.right = '';
-                container.style.bottom = '';
-                container.style.transform = 'none';
+                if (!applyNekoIdleCat1EdgePeek(container, placement)) {
+                    clearNekoIdleCat1EdgePeek(container);
+                    container.style.left = `${newLeft}px`;
+                    container.style.top = `${newTop}px`;
+                    container.style.right = '';
+                    container.style.bottom = '';
+                    container.style.transform = 'none';
+                }
             } else {
                 shouldRestoreSavedBallStyle = true;
             }
