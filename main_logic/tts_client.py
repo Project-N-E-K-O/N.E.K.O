@@ -2924,7 +2924,7 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
         )
 
     effective_model = (model or '').strip() or 'Qwen3-TTS'
-    effective_voice = (voice or '').strip() or (voice_id or '').strip() or 'default'
+    effective_voice = (voice_id or '').strip() or (voice or '').strip() or 'default'
 
     logger.info(
         "[vLLM-Omni TTS] ws=%s model=%s voice=%s",
@@ -3046,6 +3046,8 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                             # 标记 session 失效，主循环下次 input 前会主动重建（与 session.done 处理对齐）
                             session_state["active"] = False
                             session_state["awaiting_done"] = False
+                            session_state["speech_id"] = None
+                            response_queue.put(("__ready__", False))
             except websockets.exceptions.ConnectionClosed:
                 # 修复 PR #1764 review 第六轮：WS 关闭后必须同步本地状态，
                 # 否则主循环会试图往已死连接发送，依赖 send 异常才触发重建（噪声+延迟）

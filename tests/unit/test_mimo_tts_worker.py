@@ -411,7 +411,7 @@ def test_get_tts_worker_keeps_gptsovits_ahead_of_explicit_vllm(monkeypatch):
 
 
 @pytest.mark.unit
-def test_vllm_omni_worker_prefers_provider_voice_over_character_voice(monkeypatch):
+def test_vllm_omni_worker_prefers_character_voice_over_provider_fallback(monkeypatch):
     sent_messages = []
 
     class _FakeWS:
@@ -455,7 +455,72 @@ def test_vllm_omni_worker_prefers_provider_voice_over_character_voice(monkeypatc
     assert not thread.is_alive()
 
     assert sent_messages[0]["type"] == "session.config"
-    assert sent_messages[0]["voice"] == "global-default"
+    assert sent_messages[0]["voice"] == "character-voice"
+
+
+@pytest.mark.unit
+def test_vllm_omni_worker_marks_not_ready_on_server_error_event(monkeypatch):
+    class _FakeWS:
+        def __init__(self):
+            self._sent_error = False
+
+        async def send(self, payload):
+            pass
+
+        async def close(self):
+            pass
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self._sent_error:
+                self._sent_error = True
+                return json.dumps({
+                    "type": "error",
+                    "code": "BAD_MODEL",
+                    "message": "invalid model",
+                })
+            await asyncio.sleep(60)
+            raise StopAsyncIteration
+
+    async def _connect(*args, **kwargs):
+        return _FakeWS()
+
+    monkeypatch.setattr(tts_client.websockets, "connect", _connect)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = threading.Thread(
+        target=tts_client.vllm_omni_tts_worker,
+        kwargs={
+            "request_queue": request_queue,
+            "response_queue": response_queue,
+            "audio_api_key": "",
+            "voice_id": "",
+            "base_url": "http://localhost:8091",
+            "model": "bad-model",
+            "voice": "global-default",
+        },
+    )
+    thread.start()
+
+    _, seen = _wait_for_queue_item(
+        response_queue,
+        lambda item: item == ("__ready__", False),
+        timeout=3.0,
+    )
+    request_queue.close()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+    assert ("__ready__", True) in seen
+    assert any(
+        isinstance(item, tuple)
+        and item[0] == "__error__"
+        and "BAD_MODEL" in str(item[1])
+        for item in seen
+    )
 
 
 @pytest.mark.unit
