@@ -315,3 +315,276 @@ def test_paid_core_key_not_overwritten_by_free_assist_on_save(mock_page: Page, r
     assert payload["coreApi"] == "qwen"
     assert payload["assistApi"] == "free"
     assert payload["apiKey"] == test_key, f"付费 core Key 被改写: {payload['apiKey']!r}"
+
+
+@pytest.mark.frontend
+def test_mimo_token_plan_locks_regular_mimo_key(mock_page: Page, running_server: str):
+    """MiMo Token Plan is a MiMo-only mode and must not overwrite the normal MiMo key."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#assistApiSelect option[value='mimo']", state="attached", timeout=10000)
+
+    result = mock_page.evaluate("""
+        async () => {
+            const core = document.getElementById('coreApiSelect');
+            core.value = 'qwen';
+            core.dispatchEvent(new Event('change', { bubbles: true }));
+            setMaskedInput(document.getElementById('apiKeyInput'), 'sk-core-test');
+
+            syncKeyToBook('mimo', 'sk-regular-mimo');
+            const assist = document.getElementById('assistApiSelect');
+            assist.value = 'mimo';
+            assist.dispatchEvent(new Event('change', { bubbles: true }));
+
+            const tokenToggle = document.getElementById('useMimoTokenPlan');
+            tokenToggle.checked = true;
+            tokenToggle.dispatchEvent(new Event('change', { bubbles: true }));
+            const tokenInput = document.getElementById('mimoTokenPlanKeyInput');
+            setMaskedInput(tokenInput, 'tp-token-plan-key');
+
+            window.__captured = null;
+            window.saveApiKey = async (p) => { window.__captured = JSON.parse(JSON.stringify(p)); };
+            const div = document.getElementById('current-api-key');
+            if (div) div.dataset.hasKey = 'false';
+            await save_button_down({ preventDefault() {} });
+            const payload = window.__captured;
+
+            const resolved = ConnectivityManager.resolveEffectiveKey({ type: 'assist' });
+            return {
+                payload,
+                assistDisabled: document.getElementById('assistApiKeyInput').disabled,
+                tokenRowVisible: document.getElementById('mimoTokenPlanKeyRow').style.display !== 'none',
+                resolved,
+            };
+        }
+    """)
+
+    payload = result["payload"]
+    assert payload["assistApi"] == "mimo"
+    assert payload["useMimoTokenPlan"] is True
+    assert payload["assistApiKeyMimo"] == "sk-regular-mimo"
+    assert payload["assistApiKeyMimoTokenPlan"] == "tp-token-plan-key"
+    assert result["assistDisabled"] is True
+    assert result["tokenRowVisible"] is True
+    assert result["resolved"]["providerKey"] == "mimo"
+    assert result["resolved"]["key"] == "tp-token-plan-key"
+    assert "token-plan-cn.xiaomimimo.com" in result["resolved"]["url"]
+
+
+@pytest.mark.frontend
+def test_mimo_token_plan_connectivity_tries_endpoint_candidates(mock_page: Page, running_server: str):
+    """Token Plan connectivity should try regional MiMo endpoints until one succeeds."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#assistApiSelect option[value='mimo']", state="attached", timeout=10000)
+
+    result = mock_page.evaluate("""
+        async () => {
+            const cnUrl = 'https://token-plan-cn.xiaomimimo.com/v1';
+            const sgpUrl = 'https://token-plan-sgp.xiaomimimo.com/v1';
+            const originalFetch = window.fetch.bind(window);
+            const calls = [];
+
+            _resolvedProviderUrls = {};
+            _assistApiProviders.mimo.token_plan_openrouter_url = '';
+            _assistApiProviders.mimo.token_plan_openrouter_urls = [cnUrl, sgpUrl];
+
+            const assist = document.getElementById('assistApiSelect');
+            assist.value = 'mimo';
+            assist.dispatchEvent(new Event('change', { bubbles: true }));
+
+            const tokenToggle = document.getElementById('useMimoTokenPlan');
+            tokenToggle.checked = true;
+            tokenToggle.dispatchEvent(new Event('change', { bubbles: true }));
+            setMaskedInput(document.getElementById('mimoTokenPlanKeyInput'), 'tp-token-plan-key');
+
+            window.fetch = async (input, init = {}) => {
+                const requestUrl = typeof input === 'string' ? input : input.url;
+                if (requestUrl.endsWith('/api/config/test_connectivity')) {
+                    const body = JSON.parse(init.body || '{}');
+                    calls.push(body.url || '');
+                    if (body.url === cnUrl) {
+                        return new Response(JSON.stringify({
+                            success: false,
+                            error: 'cn failed',
+                            error_code: 'upstream_error'
+                        }), {
+                            status: 200,
+                            headers: { 'Content-Type': 'application/json' }
+                        });
+                    }
+                    if (body.url === sgpUrl) {
+                        return new Response(JSON.stringify({
+                            success: true,
+                            resolved_url: sgpUrl
+                        }), {
+                            status: 200,
+                            headers: { 'Content-Type': 'application/json' }
+                        });
+                    }
+                    return new Response(JSON.stringify({
+                        success: false,
+                        error: 'unexpected endpoint',
+                        error_code: 'unexpected_endpoint'
+                    }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                return originalFetch(input, init);
+            };
+
+            try {
+                const resolved = ConnectivityManager.resolveEffectiveKey({ type: 'assist' });
+                const connectivity = await ConnectivityManager.testKey({
+                    provider_key: resolved.providerKey,
+                    provider_scope: resolved.providerScope,
+                    url: resolved.url,
+                    api_key: resolved.key || '',
+                    provider_type: resolved.providerType,
+                    cache_id: resolved.cacheId
+                });
+                return {
+                    calls,
+                    connectivity,
+                    remembered: _resolvedProviderUrls['assist:mimo_token_plan'] || ''
+                };
+            } finally {
+                window.fetch = originalFetch;
+            }
+        }
+    """)
+
+    assert result["calls"] == [
+        "https://token-plan-cn.xiaomimimo.com/v1",
+        "https://token-plan-sgp.xiaomimimo.com/v1",
+    ]
+    assert result["connectivity"]["success"] is True
+    assert result["connectivity"]["resolved_url"] == "https://token-plan-sgp.xiaomimimo.com/v1"
+    assert result["remembered"] == "https://token-plan-sgp.xiaomimimo.com/v1"
+
+
+@pytest.mark.frontend
+def test_mimo_token_plan_hidden_when_assist_api_is_not_mimo(mock_page: Page, running_server: str):
+    """Leaving MiMo must hide Token Plan controls and use the selected assist provider normally."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#assistApiSelect option[value='qwen']", state="attached", timeout=10000)
+
+    result = mock_page.evaluate("""
+        () => {
+            syncKeyToBook('qwen', 'sk-qwen-assist');
+            const assist = document.getElementById('assistApiSelect');
+            assist.value = 'qwen';
+            assist.dispatchEvent(new Event('change', { bubbles: true }));
+            const toggle = document.getElementById('useMimoTokenPlan');
+            toggle.checked = true;
+            toggle.dispatchEvent(new Event('change', { bubbles: true }));
+            const resolved = ConnectivityManager.resolveEffectiveKey({ type: 'assist' });
+            return {
+                toggleVisible: document.getElementById('mimoTokenPlanToggleRow').style.display !== 'none',
+                tokenRowVisible: document.getElementById('mimoTokenPlanKeyRow').style.display !== 'none',
+                resolved,
+            };
+        }
+    """)
+
+    assert result["toggleVisible"] is False
+    assert result["tokenRowVisible"] is False
+    assert result["resolved"]["providerKey"] == "qwen"
+    assert result["resolved"]["key"] == "sk-qwen-assist"
+    assert "dashscope.aliyuncs.com" in result["resolved"]["url"]
+
+
+@pytest.mark.frontend
+def test_explicit_mimo_provider_ignores_assist_token_plan(mock_page: Page, running_server: str):
+    """Explicit MiMo model providers should keep normal MiMo even when assist follows Token Plan."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#assistApiSelect option[value='mimo']", state="attached", timeout=10000)
+
+    result = mock_page.evaluate("""
+        () => {
+            syncKeyToBook('mimo', 'sk-regular-mimo');
+            const assist = document.getElementById('assistApiSelect');
+            assist.value = 'mimo';
+            assist.dispatchEvent(new Event('change', { bubbles: true }));
+
+            const tokenToggle = document.getElementById('useMimoTokenPlan');
+            tokenToggle.checked = true;
+            tokenToggle.dispatchEvent(new Event('change', { bubbles: true }));
+            setMaskedInput(document.getElementById('mimoTokenPlanKeyInput'), 'tp-token-plan-key');
+
+            const provider = document.getElementById('conversationModelProvider');
+            provider.value = 'mimo';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+
+            const explicit = ConnectivityManager.resolveEffectiveKey({
+                type: 'custom',
+                modelType: 'conversation'
+            });
+            const followAssist = (() => {
+                provider.value = 'follow_assist';
+                provider.dispatchEvent(new Event('change', { bubbles: true }));
+                return ConnectivityManager.resolveEffectiveKey({
+                    type: 'custom',
+                    modelType: 'conversation'
+                });
+            })();
+            return { explicit, followAssist };
+        }
+    """)
+
+    assert result["explicit"]["providerKey"] == "mimo"
+    assert result["explicit"]["key"] == "sk-regular-mimo"
+    assert "api.xiaomimimo.com" in result["explicit"]["url"]
+    assert "token-plan" not in result["explicit"]["url"]
+    assert result["followAssist"]["providerKey"] == "mimo"
+    assert result["followAssist"]["key"] == "tp-token-plan-key"
+    assert "token-plan-cn.xiaomimimo.com" in result["followAssist"]["url"]
+
+
+@pytest.mark.frontend
+def test_explicit_mimo_tts_provider_is_saved_for_runtime_routing(mock_page: Page, running_server: str):
+    """Saving explicit MiMo TTS must preserve ttsProvider so runtime dispatch selects MiMo."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#assistApiSelect option[value='qwen']", state="attached", timeout=10000)
+    mock_page.wait_for_selector("#ttsModelProvider option[value='mimo']", state="attached", timeout=10000)
+
+    payload = mock_page.evaluate("""
+        async () => {
+            document.getElementById('enableCustomApi').checked = true;
+            toggleCustomApi();
+
+            const assist = document.getElementById('assistApiSelect');
+            assist.value = 'qwen';
+            assist.dispatchEvent(new Event('change', { bubbles: true }));
+
+            const provider = document.getElementById('ttsModelProvider');
+            provider.value = 'mimo';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+
+            window.__capturedSavePayload = null;
+            window.saveApiKey = async (params) => {
+                window.__capturedSavePayload = JSON.parse(JSON.stringify(params));
+            };
+
+            const currentApiKeyDiv = document.getElementById('current-api-key');
+            if (currentApiKeyDiv) {
+                currentApiKeyDiv.dataset.hasKey = 'false';
+            }
+
+            await save_button_down({ preventDefault() {} });
+            return window.__capturedSavePayload;
+        }
+    """)
+
+    assert payload["assistApi"] == "qwen"
+    assert payload["ttsModelProvider"] == "mimo"
+    assert payload["ttsProvider"] == "mimo"

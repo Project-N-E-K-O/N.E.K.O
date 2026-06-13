@@ -5,6 +5,7 @@ import sqlite3
 import pytest
 
 from plugin.plugins.study_companion.memory_schema import (
+    _ensure_column,
     ensure_memory_schema,
     normalize_deck_type,
     normalize_item_type,
@@ -58,6 +59,17 @@ def test_memory_schema_adds_next_due_to_existing_card_table() -> None:
         for row in conn.execute("PRAGMA table_info(memory_fsrs_cards)").fetchall()
     }
     assert "next_due" in columns
+
+
+def test_memory_schema_rejects_invalid_column_identifiers() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE safe_table (id INTEGER PRIMARY KEY)")
+
+    with pytest.raises(ValueError, match="invalid sqlite identifier"):
+        _ensure_column(conn, "safe_table; DROP TABLE safe_table", "next_due", "TEXT")
+    with pytest.raises(ValueError, match="invalid sqlite identifier"):
+        _ensure_column(conn, "safe_table", "next_due; DROP TABLE safe_table", "TEXT")
 
 
 def test_memory_schema_normalizes_unknown_deck_and_item_types() -> None:

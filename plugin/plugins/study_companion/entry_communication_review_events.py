@@ -21,7 +21,14 @@ class _CommunicationReviewEventsMixin:
         if bus is None:
             return
         try:
-            payload = await asyncio.to_thread(self._build_review_due_payload)
+            loop = asyncio.get_running_loop()
+            payload_future = loop.run_in_executor(None, self._build_review_due_payload)
+            self._review_due_payload_future = payload_future
+            try:
+                payload = await asyncio.shield(payload_future)
+            finally:
+                if payload_future.done() and self._review_due_payload_future is payload_future:
+                    self._review_due_payload_future = None
             if not payload:
                 return
             bus.schedule_emit(StudyEvent(name="review_due", payload=payload))

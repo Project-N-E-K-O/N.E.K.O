@@ -1488,6 +1488,77 @@ def test_api_key_error_helper_does_not_treat_plain_403_as_invalid_key():
     assert _is_api_key_rejected_error(RuntimeError("AuthenticationError: OAuth token expired")) is False
 
 
+def test_safety_violation_helper_detects_provider_block_signals():
+    from main_logic.omni_offline_client import _is_safety_violation_signal
+
+    assert _is_safety_violation_signal("content_filter") is True
+    assert _is_safety_violation_signal(None, "SAFETY") is True
+    assert _is_safety_violation_signal("ResponsibleAIPolicyViolation") is True
+    assert _is_safety_violation_signal("connection blocked by proxy") is False
+    assert _is_safety_violation_signal("BLOCK_REASON_UNSPECIFIED") is False
+    assert _is_safety_violation_signal("1008 connection closed") is False
+    assert _is_safety_violation_signal("1008 policy violation") is True
+    assert _is_safety_violation_signal("stop", None) is False
+    assert _is_safety_violation_signal(None, None) is False
+
+
+@pytest.mark.asyncio
+async def test_stream_text_empty_safety_completion_reports_policy_violation(monkeypatch):
+    """Safety-blocked empty completions should not surface as generic no-response."""
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import LLMStreamChunk, SystemMessage
+
+    async def _astream_empty_safety(self, messages, **overrides):
+        self._last_finish_reason = "content_filter"
+        self._last_block_reason = "SAFETY"
+        self._last_prompt_tokens = 123
+        yield LLMStreamChunk(content="", finish_reason="content_filter")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream_empty_safety)
+
+    status_messages: list[dict] = []
+
+    async def fake_status(msg):
+        status_messages.append(json.loads(msg))
+
+    async def fake_done():
+        pass
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.lanlan_name = "Test"
+    client.master_name = "M"
+    client._prefix_buffer_size = 0
+    client._conversation_history = [SystemMessage(content="sys")]
+    client._pending_images = []
+    client._is_responding = False
+    client._recent_responses = []
+    client._repetition_threshold = 0.8
+    client._max_recent_responses = 3
+    client.max_response_length = 300
+    client.max_response_rerolls = 0
+    client.enable_response_guard = False
+    client.vision_model = ""
+    client.model = "gemini-2.5-flash"
+    client.on_text_delta = None
+    client.on_input_transcript = None
+    client.on_response_done = fake_done
+    client.on_response_discarded = None
+    client.on_status_message = fake_status
+    client.on_repetition_detected = None
+    client._last_finish_reason = None
+    client._last_block_reason = None
+    client._last_prompt_tokens = None
+
+    await client.stream_text("hi")
+
+    assert len(status_messages) == 1
+    assert status_messages[0]["code"] == "API_POLICY_VIOLATION"
+    assert status_messages[0]["details"]["finish_reason"] == "content_filter"
+    assert status_messages[0]["details"]["block_reason"] == "SAFETY"
+    assert status_messages[0]["details"]["prompt_tokens"] == 123
+    assert status_messages[0]["details"]["model"] == "gemini-2.5-flash"
+
+
 @pytest.mark.asyncio
 async def test_prompt_ephemeral_reports_key_error_from_catch_all(monkeypatch):
     from main_logic.omni_offline_client import OmniOfflineClient

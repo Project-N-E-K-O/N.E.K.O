@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import logging
 import importlib.util
 import subprocess
@@ -7,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .models import OcrSnapshot, StudyConfig, StudyState, TutorReply, json_copy
+from .models import OcrSnapshot, StudyConfig, StudyState, TutorReply
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -21,7 +22,7 @@ def build_status_payload(
     knowledge: dict[str, Any] | None = None,
     is_first_run: bool = False,
 ) -> dict[str, Any]:
-    knowledge_payload = json_copy(knowledge or {})
+    knowledge_payload = knowledge or {}
     return {
         "status": state.status,
         "is_first_run": bool(is_first_run),
@@ -29,40 +30,46 @@ def build_status_payload(
         "default_mode": config.default_mode,
         "active_mode": state.active_mode,
         "mode_started_at": state.mode_started_at,
-        "recent_mode_switches": json_copy(state.recent_mode_switches),
-        "suggestion_cooldowns": json_copy(state.suggestion_cooldowns),
-        "session_suggestions": json_copy(state.session_suggestions),
+        "recent_mode_switches": copy.deepcopy(state.recent_mode_switches),
+        "suggestion_cooldowns": copy.deepcopy(state.suggestion_cooldowns),
+        "session_suggestions": copy.deepcopy(state.session_suggestions),
         "mode_lock_until": state.mode_lock_until,
         "last_error": state.last_error,
         "last_started_at": state.last_started_at,
         "last_ocr_text": state.last_ocr_text,
         "last_ocr_at": state.last_ocr_at,
-        "screen_classification": json_copy(state.last_screen_classification),
-        "recent_screen_classifications": json_copy(state.recent_screen_classifications),
-        "current_question": json_copy(state.current_question),
-        "last_answer_evaluation": json_copy(state.last_answer_evaluation),
-        "session_summary_seed": json_copy(state.session_summary_seed),
-        "recent_learning_events": json_copy(state.recent_learning_events),
+        "screen_classification": copy.deepcopy(state.last_screen_classification),
+        "recent_screen_classifications": copy.deepcopy(
+            state.recent_screen_classifications
+        ),
+        "current_question": copy.deepcopy(state.current_question),
+        "last_answer_evaluation": copy.deepcopy(state.last_answer_evaluation),
+        "session_summary_seed": copy.deepcopy(state.session_summary_seed),
+        "recent_learning_events": copy.deepcopy(state.recent_learning_events),
         "last_question_at": state.last_question_at,
         "last_answer_evaluated_at": state.last_answer_evaluated_at,
         "last_session_summary": state.last_session_summary,
         "last_session_summary_at": state.last_session_summary_at,
         "last_reply": state.last_reply,
         "last_reply_at": state.last_reply_at,
-        "checkpoint": json_copy(state.checkpoint),
-        "dependencies": json_copy(state.dependency_status),
-        "knowledge_summary": knowledge_payload.get("knowledge_summary") or {},
-        "knowledge_quality_summary": knowledge_payload.get("knowledge_quality_summary")
-        or {},
-        "anonymous_knowledge_stats_summary": knowledge_payload.get(
-            "anonymous_knowledge_stats_summary"
-        )
-        or {},
-        "habit": knowledge_payload.get("habit") or {},
-        "review_queue": knowledge_payload.get("review_queue") or [],
-        "memory_deck": knowledge_payload.get("memory_deck") or {},
-        "weak_topics": knowledge_payload.get("weak_topics") or [],
-        "mastery_overview": knowledge_payload.get("mastery_overview") or [],
+        "checkpoint": copy.deepcopy(state.checkpoint),
+        "dependencies": copy.deepcopy(state.dependency_status),
+        "knowledge_summary": copy.deepcopy(
+            knowledge_payload.get("knowledge_summary") or {}
+        ),
+        "knowledge_quality_summary": copy.deepcopy(
+            knowledge_payload.get("knowledge_quality_summary") or {}
+        ),
+        "anonymous_knowledge_stats_summary": copy.deepcopy(
+            knowledge_payload.get("anonymous_knowledge_stats_summary") or {}
+        ),
+        "habit": copy.deepcopy(knowledge_payload.get("habit") or {}),
+        "review_queue": copy.deepcopy(knowledge_payload.get("review_queue") or []),
+        "memory_deck": copy.deepcopy(knowledge_payload.get("memory_deck") or {}),
+        "weak_topics": copy.deepcopy(knowledge_payload.get("weak_topics") or []),
+        "mastery_overview": copy.deepcopy(
+            knowledge_payload.get("mastery_overview") or []
+        ),
         "config": config.to_dict(),
         "history": list(history or []),
     }
@@ -190,7 +197,7 @@ def _inspect_dxcam() -> dict[str, Any]:
 def build_tutor_payload(reply: TutorReply) -> dict[str, Any]:
     payload = reply.to_dict()
     if reply.payload:
-        payload.update(json_copy(reply.payload))
+        payload.update(copy.deepcopy(reply.payload))
     if not payload.get("summary"):
         payload["summary"] = reply.reply
     return payload

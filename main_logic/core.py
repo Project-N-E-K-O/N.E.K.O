@@ -30,7 +30,7 @@ from utils.frontend_utils import contains_chinese, replace_blank, replace_corner
     is_only_punctuation, TtsStreamNormalizer, TtsBracketStripper, TtsMarkdownStripper
 from utils.screenshot_utils import process_screen_data, overlay_avatar_annotation
 from main_logic.omni_realtime_client import OmniRealtimeClient
-from main_logic.omni_offline_client import OmniOfflineClient
+from main_logic.omni_offline_client import OmniOfflineClient, _is_safety_violation_signal
 from main_logic.tts_client import get_tts_worker, dummy_tts_worker, TTS_PROVIDER_REGISTRY
 from utils.gptsovits_config import is_gsv_disabled_voice_id
 from main_logic.tool_calling import (
@@ -2885,7 +2885,7 @@ class LLMSessionManager:
                     or 'invalid_api_key' in message_text_lower
                     or ('invalid' in message_text_lower and 'key' in message_text_lower)):
                 await self.send_status(json.dumps({"code": "API_KEY_REJECTED"}))
-            elif 'policy violation' in message_text_lower:
+            elif _is_safety_violation_signal(message_text_lower):
                 await self.send_status(json.dumps({"code": "API_POLICY_VIOLATION", "details": {"msg": message_text}}))
             elif '1008' in message_text_lower:
                 await self.send_status(json.dumps({"code": "API_1008_FALLBACK", "details": {"msg": message_text}}))
@@ -8044,7 +8044,7 @@ class LLMSessionManager:
                             elif '429' in error_msg_lower or 'too many' in error_msg_lower:
                                 user_msg = json.dumps({"code": "API_RATE_LIMIT"})
                                 self._last_tts_error_code = 'API_RATE_LIMIT'
-                            elif 'policy violation' in error_msg_lower:
+                            elif _is_safety_violation_signal(error_msg_lower):
                                 user_msg = json.dumps({"code": "API_POLICY_VIOLATION", "details": {"msg": error_msg_text}})
                                 self._last_tts_error_code = 'API_POLICY_VIOLATION'
                             elif '1008' in error_msg_lower:

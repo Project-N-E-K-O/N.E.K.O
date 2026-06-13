@@ -40,6 +40,12 @@ from config import (
     CHARACTER_RESERVED_FIELDS,
 )
 
+_MIMO_TOKEN_PLAN_HOSTS = {
+    "token-plan-cn.xiaomimimo.com",
+    "token-plan-sgp.xiaomimimo.com",
+    "token-plan-ams.xiaomimimo.com",
+}
+
 
 router = APIRouter(prefix="/api/config", tags=["config"])
 
@@ -643,11 +649,13 @@ async def get_core_config_api():
             "assistApiKeyKimi": core_cfg.get('assistApiKeyKimi', '') or _fb('kimi'),
             "assistApiKeyDeepseek": core_cfg.get('assistApiKeyDeepseek', '') or _fb('deepseek'),
             "assistApiKeyDoubao": core_cfg.get('assistApiKeyDoubao', '') or _fb('doubao'),
-            # MiniMax 是 assist-only（TTS 专用），不在 coreApi 候选集里，
-            # coreApiKey 永远不是 minimax 兼容的；不 fallback，以免把无效 key
-            # 塞进 TTS 凭证槽位导致 401，掩盖"未配置 minimax key"的真实提示。
+            # MiniMax / MiMo 是 assist-only TTS provider，coreApiKey 不保证兼容；
+            # 不 fallback，以免把无效 key 塞进 TTS 凭证槽位导致 401。
             "assistApiKeyMinimax": core_cfg.get('assistApiKeyMinimax', ''),
             "assistApiKeyMinimaxIntl": core_cfg.get('assistApiKeyMinimaxIntl', ''),
+            "assistApiKeyMimo": core_cfg.get('assistApiKeyMimo', ''),
+            "useMimoTokenPlan": core_cfg.get('useMimoTokenPlan', False) is True or str(core_cfg.get('useMimoTokenPlan', False)).lower() in ('true', '1', 'yes', 'on'),
+            "assistApiKeyMimoTokenPlan": core_cfg.get('assistApiKeyMimoTokenPlan', ''),
             "assistApiKeyElevenlabs": core_cfg.get('assistApiKeyElevenlabs', ''),
             "assistApiKeyGrok": core_cfg.get('assistApiKeyGrok', '') or _fb('grok'),
             "assistApiKeyClaude": core_cfg.get('assistApiKeyClaude', '') or _fb('claude'),
@@ -793,7 +801,8 @@ async def update_core_config(request: Request):
             'assistApiKeyQwen', 'assistApiKeyQwenIntl', 'assistApiKeyOpenai', 'assistApiKeyDeepseek',
             'assistApiKeyGlm', 'assistApiKeyStep', 'assistApiKeySilicon',
             'assistApiKeyGemini', 'assistApiKeyKimi', 'assistApiKeyDoubao',
-            'assistApiKeyMinimax', 'assistApiKeyMinimaxIntl', 'assistApiKeyElevenlabs', 'assistApiKeyGrok',
+            'assistApiKeyMinimax', 'assistApiKeyMinimaxIntl', 'assistApiKeyMimo',
+            'assistApiKeyMimoTokenPlan', 'assistApiKeyElevenlabs', 'assistApiKeyGrok',
             'assistApiKeyClaude', 'assistApiKeyOpenrouter',
         ]
         for field in _api_key_fields:
@@ -812,6 +821,10 @@ async def update_core_config(request: Request):
             core_cfg['openclawDefaultSenderId'] = data['openclawDefaultSenderId']
         if 'enableCustomApi' in data:
             core_cfg['enableCustomApi'] = data['enableCustomApi']
+        if 'useMimoTokenPlan' in data:
+            if not isinstance(data['useMimoTokenPlan'], bool):
+                return {"success": False, "error": "useMimoTokenPlan must be a boolean"}
+            core_cfg['useMimoTokenPlan'] = data['useMimoTokenPlan']
         if 'gptsovitsEnabled' in data:
             core_cfg['gptsovitsEnabled'] = data['gptsovitsEnabled']
         for field in (
@@ -1831,6 +1844,13 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
                 _source_label = assist_profile.get("name", profile.get("name", provider_key)) + "（通过辅助端点验证）"
             else:
                 return {"success": False, "error": f"供应商 {_source_label} 暂不支持连通测试", "error_code": "missing_params"}
+        elif req.url and req.url.strip():
+            override_url = req.url.strip()
+            override_host = (urllib.parse.urlsplit(override_url).hostname or "").lower()
+            if scope != "assist" or provider_key != "mimo" or override_host not in _MIMO_TOKEN_PLAN_HOSTS:
+                return {"success": False, "error": "无效的 provider URL override", "error_code": "missing_params"}
+            url_stripped = override_url
+            url_candidates = [url_stripped]
 
     # --- Mode 2: Custom API (use frontend-provided params directly) ---
     else:
@@ -1880,6 +1900,10 @@ def _identify_provider_label(url: str, is_free: bool) -> str:
         "api.siliconflow.cn": "硅基流动",
         "generativelanguage.googleapis.com": "Gemini",
         "api.moonshot.cn": "Kimi",
+        "api.xiaomimimo.com": "MiMo",
+        "token-plan-cn.xiaomimimo.com": "MiMo Token Plan",
+        "token-plan-sgp.xiaomimimo.com": "MiMo Token Plan",
+        "token-plan-ams.xiaomimimo.com": "MiMo Token Plan",
     }
     url_lower = url.lower()
     for domain, name in _KNOWN_PROVIDERS.items():
