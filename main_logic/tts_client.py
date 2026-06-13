@@ -2924,7 +2924,7 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
         )
 
     effective_model = (model or '').strip() or 'Qwen3-TTS'
-    effective_voice = (voice_id or '').strip() or (voice or '').strip() or 'default'
+    effective_voice = (voice or '').strip() or (voice_id or '').strip() or 'default'
 
     logger.info(
         "[vLLM-Omni TTS] ws=%s model=%s voice=%s",
@@ -3222,17 +3222,18 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                     break
                 continue
 
-            # 修复 PR #1764 review #3：发送前检查会话是否仍然活跃
-            # session.done 已触发或上次 send 失败时，先重建连接再发
+            # 修复 PR #1764 review #3：发送前检查会话是否仍然可复用
+            # active session 只能承载同一个 utterance；sid 切换时先重建，避免串音
             if (
                 session_state["active"]
-                and session_state["awaiting_done"]
                 and session_state.get("speech_id") not in (None, sid)
             ):
                 logger.info(
-                    "[vLLM-Omni TTS] flush 后收到新 sid=%s，重建会话避免复用已 done 的输入",
+                    "[vLLM-Omni TTS] 收到新 sid=%s，重建会话避免跨 utterance 复用",
                     sid,
                 )
+                pending_text.clear()
+                pending_text_sid = None
                 session_state["active"] = False
             if not session_state["active"] or ws is None:
                 logger.info("[vLLM-Omni TTS] 会话已结束/失效，重建连接以发送新输入")
