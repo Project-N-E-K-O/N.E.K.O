@@ -272,7 +272,7 @@ def test_jukebox_next_song_respects_sequence_single_and_random(mock_page: Page):
 
 
 @pytest.mark.frontend
-def test_jukebox_auto_next_skips_idle_restore_only_when_next_song_exists(mock_page: Page):
+def test_jukebox_auto_next_skips_idle_restore_only_when_next_song_has_animation(mock_page: Page):
     setup_jukebox_page(mock_page)
 
     result = mock_page.evaluate(
@@ -288,10 +288,17 @@ def test_jukebox_auto_next_skips_idle_restore_only_when_next_song_exists(mock_pa
           J.playSong = async (songId) => {
             played.push(songId);
           };
+          J.getActionForModel = (song) => song.hasAnimation ? { id: `action-${song.id}` } : null;
           J.State.isOpen = true;
           J.State.playbackMode = 'sequence';
+          J.State.songs[1].hasAnimation = true;
           J.State.currentSong = J.State.songs[0];
 
+          J.handleAudioEnded({ options: { loop: 'none' } });
+          await new Promise((resolve) => setTimeout(resolve, 0));
+
+          J.State.songs[1].hasAnimation = false;
+          J.State.currentSong = J.State.songs[0];
           J.handleAudioEnded({ options: { loop: 'none' } });
           await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -305,8 +312,8 @@ def test_jukebox_auto_next_skips_idle_restore_only_when_next_song_exists(mock_pa
     )
 
     assert result == {
-        "stopArgs": [True, False],
-        "played": ["song2"],
+        "stopArgs": [True, False, False],
+        "played": ["song2", "song2"],
     }
 
 

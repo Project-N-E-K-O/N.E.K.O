@@ -6856,7 +6856,8 @@ window.Jukebox = {
     });
 
     const nextSong = Jukebox.getNextSongToPlay(endedSong);
-    Jukebox.stopVMD(!!nextSong);
+    const nextAction = nextSong ? Jukebox.getActionForModel(nextSong) : null;
+    Jukebox.stopVMD(!!nextAction);
     Jukebox.State.isPlaying = false;
     Jukebox.State.isPaused = false;
 
