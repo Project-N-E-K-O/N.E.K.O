@@ -637,6 +637,69 @@ def test_return_button_drag_randomizes_asset_once_per_drag_action():
     )
 
 
+def test_local_return_button_drag_safety_timer_does_not_end_active_drag():
+    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+
+    safety_block = _source_slice_between(
+        source,
+        "const resetDragStateAfterMissingEnd = (safetyToken) => {",
+        "const handleStart = (clientX, clientY, pointerType = 'mouse') => {",
+        "local return-ball drag safety timer",
+    )
+    _assert_source_order(
+        safety_block,
+        "local return-ball drag safety timer",
+        "const moved = container.getAttribute('data-dragging') === 'true';",
+        "if (moved) return;",
+        "finishDragState(moved, safetyToken);",
+    )
+
+
+def test_local_return_button_drag_recovers_lost_release_without_active_timeout():
+    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+
+    drag_setup = _source_slice_between(
+        source,
+        "ManagerPrototype._setupReturnButtonDrag = function(container) {",
+        "ManagerPrototype._addReturnButtonBreathingAnimation = function() {",
+        "local return-ball drag setup",
+    )
+    _assert_source_contains(
+        drag_setup,
+        "let dragPointerType = '';",
+        "local return-ball drag setup",
+    )
+    _assert_source_contains(
+        drag_setup,
+        "const cancelDragState = () => {",
+        "local return-ball drag setup",
+    )
+    mouse_move_block = _source_slice_between(
+        drag_setup,
+        "mouseMove: (e) => {",
+        "mouseUp: handleEnd,",
+        "local return-ball mousemove handler",
+    )
+    _assert_source_order(
+        mouse_move_block,
+        "local return-ball lost mouseup recovery",
+        "if (isDragging && dragPointerType === 'mouse' && e.buttons === 0) {",
+        "handleEnd();",
+        "return;",
+        "handleMove(e.clientX, e.clientY);",
+    )
+    _assert_source_order(
+        drag_setup,
+        "local return-ball cancel recovery",
+        "touchCancel: cancelDragState,",
+        "windowBlur: cancelDragState,",
+        "visibilityChange: () => {",
+        "if (document.hidden) cancelDragState();",
+    )
+    assert "_NEKO_IDLE_RETURN_BALL_ACTIVE_DRAG_STALE_MS" not in source
+    assert "scheduleActiveDragStaleRecovery" not in source
+
+
 def test_cat1_rapid_drag_reaction_is_same_drag_motion_only():
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
     app_ui_source = APP_UI_PATH.read_text(encoding="utf-8")
@@ -1223,7 +1286,7 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
     )
     handle_start = _source_slice_between(
         source,
-        "const handleStart = (clientX, clientY) => {",
+        "const handleStart = (clientX, clientY, pointerType = 'mouse') => {",
         "const handleMove = (clientX, clientY) => {",
         "return button drag start handler",
     )

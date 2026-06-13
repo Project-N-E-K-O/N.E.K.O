@@ -286,7 +286,8 @@ const _NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_FALLBACK_VISIBLE_MS = 8000;
 const _NEKO_IDLE_CAT1_LAYER_REQUEST_HEARTBEAT_MS = 250;
 const _NEKO_IDLE_CAT1_LAYER_FOLLOW_REASSERT_MS = 80;
 const _NEKO_IDLE_CAT1_LAYER_RELEASE_DELAY_MS = 2600;
-const _NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS = 3 * 60 * 1000;
+// Dev-only short interval for tuning cat sounds and the linked thought bubble.
+const _NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS = 10 * 1000;
 const _NEKO_IDLE_CAT1_AMBIENT_SOUND_VOLUME = 0.14;
 const _NEKO_IDLE_CAT1_DRAG_SOUND_VOLUME = 0.16;
 const _NEKO_IDLE_CAT1_DRAG_SOUND_FADE_OUT_MS = 900;
@@ -298,7 +299,8 @@ const _NEKO_IDLE_CAT1_AMBIENT_SOUND_URLS = Object.freeze([
     '/static/assets/neko-idle/cat1-voice3.mp3'
 ]);
 const _NEKO_IDLE_CAT1_DRAG_SOUND_URL = '/static/assets/neko-idle/cat1-voice-click.mp3';
-const _NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS = 5 * 60 * 1000;
+// Dev-only short interval for CAT2/CAT3 sleep sounds and their thought bubble.
+const _NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS = 10 * 1000;
 const _NEKO_IDLE_SLEEP_SOUND_VOLUME = 0.09;
 const _NEKO_IDLE_SLEEP_SOUND_BY_TIER = Object.freeze({
     [_NEKO_IDLE_TIER_CAT2]: Object.freeze({
@@ -4526,6 +4528,9 @@ const AvatarButtonMixin = {
                 document.removeEventListener('mouseup', this._returnButtonDragHandlers.mouseUp);
                 document.removeEventListener('touchmove', this._returnButtonDragHandlers.touchMove);
                 document.removeEventListener('touchend', this._returnButtonDragHandlers.touchEnd);
+                document.removeEventListener('touchcancel', this._returnButtonDragHandlers.touchCancel);
+                document.removeEventListener('visibilitychange', this._returnButtonDragHandlers.visibilityChange);
+                window.removeEventListener('blur', this._returnButtonDragHandlers.windowBlur);
                 this._returnButtonDragHandlers = null;
             }
 
@@ -5007,6 +5012,7 @@ const AvatarButtonMixin = {
             let dragActiveDispatched = false;
             let dragSafetyTimer = 0;
             let dragSafetyToken = 0;
+            let dragPointerType = '';
             let dragStartX = 0, dragStartY = 0, containerStartX = 0, containerStartY = 0;
 
             const clearDragSafetyTimer = () => {
@@ -5036,17 +5042,31 @@ const AvatarButtonMixin = {
             const resetDragStateAfterMissingEnd = (safetyToken) => {
                 if (dragSafetyToken !== safetyToken || !isDragging) return;
                 const moved = container.getAttribute('data-dragging') === 'true';
+                if (moved) return;
                 isDragging = false;
                 dragActiveDispatched = false;
+                dragPointerType = '';
                 container.style.cursor = 'grab';
                 finishDragState(moved, safetyToken);
             };
 
-            const handleStart = (clientX, clientY) => {
+            const cancelDragState = () => {
+                clearDragSafetyTimer();
+                if (!isDragging) return;
+                const safetyToken = dragSafetyToken;
+                isDragging = false;
+                dragActiveDispatched = false;
+                dragPointerType = '';
+                container.style.cursor = 'grab';
+                finishDragState(false, safetyToken);
+            };
+
+            const handleStart = (clientX, clientY, pointerType = 'mouse') => {
                 clearDragSafetyTimer();
                 _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-start');
                 isDragging = true;
                 dragActiveDispatched = false;
+                dragPointerType = pointerType;
                 dragStartX = clientX;
                 dragStartY = clientY;
                 const rect = container.getBoundingClientRect();
@@ -5098,6 +5118,7 @@ const AvatarButtonMixin = {
                     const moved = container.getAttribute('data-dragging') === 'true';
                     isDragging = false;
                     dragActiveDispatched = false;
+                    dragPointerType = '';
                     container.style.cursor = 'grab';
                     setTimeout(() => {
                         finishDragState(moved, safetyToken);
@@ -5118,26 +5139,40 @@ const AvatarButtonMixin = {
             });
 
             this._returnButtonDragHandlers = {
-                mouseMove: (e) => handleMove(e.clientX, e.clientY),
+                mouseMove: (e) => {
+                    if (isDragging && dragPointerType === 'mouse' && e.buttons === 0) {
+                        handleEnd();
+                        return;
+                    }
+                    handleMove(e.clientX, e.clientY);
+                },
                 mouseUp: handleEnd,
                 touchMove: (e) => {
-                    if (isDragging) {
+                    if (isDragging && e.touches && e.touches[0]) {
                         e.preventDefault();
                         handleMove(e.touches[0].clientX, e.touches[0].clientY);
                     }
                 },
-                touchEnd: handleEnd
+                touchEnd: handleEnd,
+                touchCancel: cancelDragState,
+                windowBlur: cancelDragState,
+                visibilityChange: () => {
+                    if (document.hidden) cancelDragState();
+                }
             };
 
             document.addEventListener('mousemove', this._returnButtonDragHandlers.mouseMove);
             document.addEventListener('mouseup', this._returnButtonDragHandlers.mouseUp);
             container.addEventListener('touchstart', (e) => {
-                if (container.contains(e.target)) {
-                    handleStart(e.touches[0].clientX, e.touches[0].clientY);
+                if (container.contains(e.target) && e.touches && e.touches[0]) {
+                    handleStart(e.touches[0].clientX, e.touches[0].clientY, 'touch');
                 }
             }, { passive: true });
             document.addEventListener('touchmove', this._returnButtonDragHandlers.touchMove, { passive: false });
             document.addEventListener('touchend', this._returnButtonDragHandlers.touchEnd);
+            document.addEventListener('touchcancel', this._returnButtonDragHandlers.touchCancel);
+            window.addEventListener('blur', this._returnButtonDragHandlers.windowBlur);
+            document.addEventListener('visibilitychange', this._returnButtonDragHandlers.visibilityChange);
             container.style.cursor = 'grab';
         };
 
@@ -5433,6 +5468,9 @@ const AvatarButtonMixin = {
                 document.removeEventListener('mouseup', this._returnButtonDragHandlers.mouseUp);
                 document.removeEventListener('touchmove', this._returnButtonDragHandlers.touchMove);
                 document.removeEventListener('touchend', this._returnButtonDragHandlers.touchEnd);
+                document.removeEventListener('touchcancel', this._returnButtonDragHandlers.touchCancel);
+                document.removeEventListener('visibilitychange', this._returnButtonDragHandlers.visibilityChange);
+                window.removeEventListener('blur', this._returnButtonDragHandlers.windowBlur);
                 this._returnButtonDragHandlers = null;
             }
 
