@@ -224,9 +224,10 @@ def _resolve_pngtuber_image_path(image_path: str, _config_manager, target_name: 
         return ""
     if image_path.startswith('http://') or image_path.startswith('https://'):
         return image_path
+    lookup_path = urllib.parse.urlsplit(image_path).path
     if image_path.startswith('/'):
-        if image_path.startswith(PNGTUBER_USER_PATH + '/'):
-            rel = image_path[len(PNGTUBER_USER_PATH) + 1:]
+        if lookup_path.startswith(PNGTUBER_USER_PATH + '/'):
+            rel = lookup_path[len(PNGTUBER_USER_PATH) + 1:]
             from pathlib import PurePosixPath
             safe_rel = PurePosixPath(rel)
             if safe_rel.is_absolute() or '..' in safe_rel.parts:
@@ -239,7 +240,7 @@ def _resolve_pngtuber_image_path(image_path: str, _config_manager, target_name: 
         return image_path
 
     from pathlib import PurePosixPath
-    safe_rel = PurePosixPath(image_path)
+    safe_rel = PurePosixPath(lookup_path)
     if safe_rel.is_absolute() or '..' in safe_rel.parts:
         logger.warning(f"Invalid PNGTuber image path for {target_name}: {image_path}")
         return ""
