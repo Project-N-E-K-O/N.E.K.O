@@ -361,6 +361,72 @@ def test_surface_source_allows_comments_after_from_keyword(tmp_path) -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("sources", "expected_cycle"),
+    [
+        (
+            {
+                "panel.tsx": "import { value } from './a'\nexport default function Panel() { return value }\n",
+                "a.ts": "import Panel from './panel'\nexport const value = String(Panel)\n",
+            },
+            ["ui/panel.tsx", "ui/a.ts", "ui/panel.tsx"],
+        ),
+        (
+            {
+                "panel.tsx": "import { value } from './a'\nexport default function Panel() { return value }\n",
+                "a.ts": "import { value as next } from './b'\nexport const value = next\n",
+                "b.ts": "import { value } from './a'\nexport const value = String(value)\n",
+            },
+            ["ui/a.ts", "ui/b.ts", "ui/a.ts"],
+        ),
+    ],
+)
+def test_surface_source_rejects_circular_relative_dependencies(tmp_path, sources, expected_cycle) -> None:
+    plugin_dir = tmp_path / "demo_plugin"
+    ui_dir = plugin_dir / "ui"
+    ui_dir.mkdir(parents=True)
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
+    for filename, source in sources.items():
+        (ui_dir / filename).write_text(source, encoding="utf-8")
+    plugin_ui = normalize_plugin_ui_manifest(
+        {
+            "plugin": {
+                "ui": {
+                    "panel": [{
+                        "id": "main",
+                        "entry": "ui/panel.tsx",
+                        "permissions": ["state:read"],
+                    }],
+                },
+            },
+        },
+        plugin_id="demo",
+    )
+
+    plugins_backup = dict(state.plugins)
+    try:
+        with state.acquire_plugins_write_lock():
+            state.plugins.clear()
+            state.plugins["demo"] = {
+                "id": "demo",
+                "config_path": str(config_path),
+                "plugin_ui": plugin_ui,
+                "entries": [],
+            }
+
+        with pytest.raises(ServerDomainError) as exc_info:
+            asyncio.run(PluginUiQueryService().get_surface_source("demo", kind="panel", surface_id="main"))
+    finally:
+        with state.acquire_plugins_write_lock():
+            state.plugins.clear()
+            state.plugins.update(plugins_backup)
+
+    assert exc_info.value.code == "PLUGIN_UI_DEPENDENCY_CYCLE"
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.details == {"cycle": expected_cycle}
+
+
 def test_call_surface_action_preserves_plugin_entry_error(monkeypatch, tmp_path) -> None:
     plugin_dir = tmp_path / "demo_plugin"
     plugin_dir.mkdir()

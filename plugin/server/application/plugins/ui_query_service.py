@@ -654,7 +654,21 @@ def _load_hosted_tsx_dependencies_sync(
 
     dependencies: list[dict[str, str]] = []
     seen: set[Path] = set()
+    visiting: list[Path] = []
     total_bytes = 0
+
+    def hosted_path(path: Path) -> str:
+        return path.relative_to(root).as_posix()
+
+    def raise_dependency_cycle(path: Path) -> None:
+        cycle_start = visiting.index(path)
+        cycle = [hosted_path(item) for item in [*visiting[cycle_start:], path]]
+        raise ServerDomainError(
+            code="PLUGIN_UI_DEPENDENCY_CYCLE",
+            message="Hosted UI dependencies contain a cycle",
+            status_code=400,
+            details={"cycle": cycle},
+        )
 
     def read_source(path: Path) -> str:
         nonlocal total_bytes
@@ -687,35 +701,39 @@ def _load_hosted_tsx_dependencies_sync(
 
     def visit(path: Path) -> str:
         source = read_source(path)
-        for specifier in _hosted_tsx_relative_import_specifiers(source):
-            dependency_path = _resolve_hosted_tsx_relative_dependency(root, path, specifier)
-            if dependency_path is None:
-                raise ServerDomainError(
-                    code="PLUGIN_UI_DEPENDENCY_NOT_FOUND",
-                    message=f"Hosted UI dependency '{specifier}' was not found",
-                    status_code=404,
-                    details={
-                        "specifier": specifier,
-                        "importer": path.relative_to(root).as_posix(),
-                    },
-                )
-            if dependency_path == entry_path:
-                continue
-            if dependency_path in seen:
-                continue
-            if len(seen) >= _HOSTED_TSX_DEPENDENCIES_MAX_FILES:
-                raise ServerDomainError(
-                    code="PLUGIN_UI_DEPENDENCIES_TOO_MANY",
-                    message="Hosted UI declares too many dependencies",
-                    status_code=500,
-                    details={"max_files": _HOSTED_TSX_DEPENDENCIES_MAX_FILES},
-                )
-            seen.add(dependency_path)
-            dependency_source = visit(dependency_path)
-            dependencies.append({
-                "path": dependency_path.relative_to(root).as_posix(),
-                "source": dependency_source,
-            })
+        visiting.append(path)
+        try:
+            for specifier in _hosted_tsx_relative_import_specifiers(source):
+                dependency_path = _resolve_hosted_tsx_relative_dependency(root, path, specifier)
+                if dependency_path is None:
+                    raise ServerDomainError(
+                        code="PLUGIN_UI_DEPENDENCY_NOT_FOUND",
+                        message=f"Hosted UI dependency '{specifier}' was not found",
+                        status_code=404,
+                        details={
+                            "specifier": specifier,
+                            "importer": hosted_path(path),
+                        },
+                    )
+                if dependency_path in visiting:
+                    raise_dependency_cycle(dependency_path)
+                if dependency_path in seen:
+                    continue
+                if len(seen) >= _HOSTED_TSX_DEPENDENCIES_MAX_FILES:
+                    raise ServerDomainError(
+                        code="PLUGIN_UI_DEPENDENCIES_TOO_MANY",
+                        message="Hosted UI declares too many dependencies",
+                        status_code=500,
+                        details={"max_files": _HOSTED_TSX_DEPENDENCIES_MAX_FILES},
+                    )
+                seen.add(dependency_path)
+                dependency_source = visit(dependency_path)
+                dependencies.append({
+                    "path": hosted_path(dependency_path),
+                    "source": dependency_source,
+                })
+        finally:
+            visiting.pop()
         return source
 
     visit(entry_path)
