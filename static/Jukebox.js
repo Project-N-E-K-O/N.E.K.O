@@ -7117,9 +7117,11 @@ window.Jukebox = {
 
     console.log('[Jukebox] 播放歌曲:', song.name);
     
-    const preserveRandomQueue = Jukebox.State.playbackMode !== 'random'
-      && Jukebox.State.randomQueueExitSongId
-      && Jukebox.State.randomQueueExitSongId === songId;
+    const preserveRandomQueue = Jukebox.State.playbackMode === 'random'
+      || (
+        Jukebox.State.randomQueueExitSongId
+        && Jukebox.State.randomQueueExitSongId === songId
+      );
     Jukebox.stopPlayback({ preserveRandomQueue });
     
     const requestId = ++Jukebox.State.playRequestId;
@@ -7479,7 +7481,7 @@ window.Jukebox = {
     Jukebox.State.isPlaying = false;
     Jukebox.State.isPaused = false;
     Jukebox.State.isVMDPlaying = false;
-    if (Jukebox.State.playbackMode !== 'random' && !preserveRandomQueue) {
+    if (!preserveRandomQueue) {
       Jukebox.clearRandomQueue();
     }
 
