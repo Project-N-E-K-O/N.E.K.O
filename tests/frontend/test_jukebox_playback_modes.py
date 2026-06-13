@@ -739,6 +739,50 @@ def test_jukebox_random_exit_sync_preserves_queued_pending_anchor(mock_page: Pag
 
 
 @pytest.mark.frontend
+def test_jukebox_random_exit_pending_song_start_preserves_queue(mock_page: Page):
+    setup_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+          const J = window.Jukebox;
+          J.stopAudio = () => {};
+          J.stopVMD = () => {};
+          J.updateStoppedStatus = () => {};
+          J.updatePlayingStatus = () => {};
+          J.updateCalibrationDisplay = () => {};
+          J.playAudio = async () => {};
+          J.getActionForModel = () => null;
+
+          J.State.playbackMode = 'sequence';
+          J.State.currentSong = null;
+          J.State.randomQueue = ['song1', 'song2'];
+          J.State.randomQueueIndex = 1;
+          J.State.randomQueueExitSongId = 'song2';
+
+          await J.playSong('song2');
+
+          return {
+            currentSong: J.State.currentSong && J.State.currentSong.id,
+            isPlaying: J.State.isPlaying,
+            queue: [...J.State.randomQueue],
+            index: J.State.randomQueueIndex,
+            pendingExit: J.State.randomQueueExitSongId
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "currentSong": "song2",
+        "isPlaying": True,
+        "queue": ["song1", "song2"],
+        "index": 1,
+        "pendingExit": "song2",
+    }
+
+
+@pytest.mark.frontend
 def test_jukebox_random_sync_preserves_current_duplicate_queue_entry(mock_page: Page):
     setup_jukebox_page(mock_page)
 
