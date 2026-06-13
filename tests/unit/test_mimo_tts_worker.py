@@ -217,7 +217,7 @@ def test_get_tts_worker_routes_explicit_vllm_before_assist_mimo(monkeypatch):
 
         def get_model_api_config(self, model_type):
             assert model_type == "tts_custom"
-            return {"is_custom": False, "base_url": "http://fallback.invalid"}
+            return {"is_custom": False, "base_url": "https://fallback.invalid"}
 
         def get_tts_api_key(self, provider):
             pytest.fail("explicit vllm_omni should bypass assistApi=mimo fallback")
@@ -264,7 +264,7 @@ def test_get_tts_worker_routes_explicit_vllm_before_cloned_voice(monkeypatch):
 
         def get_model_api_config(self, model_type):
             assert model_type == "tts_custom"
-            return {"is_custom": False, "base_url": "http://fallback.invalid"}
+            return {"is_custom": False, "base_url": "https://fallback.invalid"}
 
         def get_tts_api_key(self, provider):
             pytest.fail("explicit vllm_omni should bypass cloned voice providers")
@@ -315,7 +315,7 @@ def test_get_tts_worker_ignores_stale_vllm_when_custom_api_disabled(monkeypatch)
 
         def get_model_api_config(self, model_type):
             assert model_type == "tts_custom"
-            return {"is_custom": False, "base_url": "http://fallback.invalid"}
+            return {"is_custom": False, "base_url": "https://fallback.invalid"}
 
     monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM())
 
@@ -538,6 +538,87 @@ def test_vllm_omni_worker_marks_not_ready_when_reconnect_fails(monkeypatch):
     thread.join(timeout=3.0)
     assert not thread.is_alive()
 
+    assert any(
+        isinstance(item, tuple)
+        and item[0] == "__error__"
+        and "TTS_CONNECTION_FAILED" in str(item[1])
+        for item in seen
+    )
+
+
+@pytest.mark.unit
+def test_vllm_omni_worker_marks_not_ready_when_flush_reconnect_fails(monkeypatch):
+    calls = {"connect": 0}
+    sent_messages = []
+
+    class _FakeWS:
+        async def send(self, payload):
+            event = json.loads(payload)
+            sent_messages.append(event)
+            if event.get("type") == "input.done":
+                raise OSError("flush failed")
+
+        async def close(self):
+            pass
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await asyncio.sleep(60)
+            raise StopAsyncIteration
+
+    async def _connect(*args, **kwargs):
+        calls["connect"] += 1
+        if calls["connect"] > 1:
+            raise OSError("server unavailable")
+        return _FakeWS()
+
+    def _wait_until(predicate, timeout=3.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if predicate():
+                return
+            time.sleep(0.01)
+        raise AssertionError("condition was not reached")
+
+    monkeypatch.setattr(tts_client.websockets, "connect", _connect)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = threading.Thread(
+        target=tts_client.vllm_omni_tts_worker,
+        kwargs={
+            "request_queue": request_queue,
+            "response_queue": response_queue,
+            "audio_api_key": "",
+            "voice_id": "",
+            "base_url": "http://localhost:8091",
+            "model": "Qwen3-TTS",
+            "voice": "global-default",
+        },
+    )
+    thread.start()
+
+    assert response_queue.get(timeout=3.0) == ("__ready__", True)
+    request_queue.put(("sid-a", "hello"))
+    _wait_until(lambda: any(item.get("type") == "input.text" for item in sent_messages))
+    request_queue.put((None, None))
+    _, seen = _wait_for_queue_item(
+        response_queue,
+        lambda item: item == ("__ready__", False),
+        timeout=3.0,
+    )
+    request_queue.close()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+    assert calls["connect"] == 2
+    assert [item["type"] for item in sent_messages] == [
+        "session.config",
+        "input.text",
+        "input.done",
+    ]
     assert any(
         isinstance(item, tuple)
         and item[0] == "__error__"

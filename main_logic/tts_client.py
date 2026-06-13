@@ -3118,6 +3118,20 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                 session_state["active"] = False
                 return False
 
+        def _fail_pending_flush(message: str):
+            nonlocal pending_text_sid
+            pending_text.clear()
+            pending_text_sid = None
+            session_state["active"] = False
+            session_state["awaiting_done"] = False
+            session_state["speech_id"] = None
+            _enqueue_error(response_queue, {
+                "code": "TTS_CONNECTION_FAILED",
+                "provider": "vllm_omni",
+                "message": message,
+            })
+            response_queue.put(("__ready__", False))
+
         loop = asyncio.get_running_loop()
 
         while True:
@@ -3164,10 +3178,12 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                 if not session_state["active"] or ws is None:
                     logger.info("[vLLM-Omni TTS] 会话已结束/失效，重建连接以发送 flush")
                     if not await _rebuild_session():
-                        logger.error("[vLLM-Omni TTS] 重建会话失败，丢弃 flush 信号")
-                        continue
+                        logger.error("[vLLM-Omni TTS] 重建会话失败，标记 worker 未就绪")
+                        _fail_pending_flush("vLLM-Omni TTS flush 重连失败")
+                        break
                     if not await _replay_pending_text():
-                        continue
+                        _fail_pending_flush("vLLM-Omni TTS flush 重放失败")
+                        break
                 if ws is not None:
                     try:
                         await ws.send(json.dumps({"type": "input.done"}))
@@ -3178,17 +3194,25 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                         logger.warning(f"[vLLM-Omni TTS] 发送 input.done 失败: {e}")
                         session_state["active"] = False
                         session_state["awaiting_done"] = False
-                        if await _rebuild_session():
-                            try:
-                                if await _replay_pending_text():
-                                    await ws.send(json.dumps({"type": "input.done"}))
-                                    pending_text.clear()
-                                    pending_text_sid = None
-                                    session_state["awaiting_done"] = True
-                                    logger.info("[vLLM-Omni TTS] 重放 pending_text 并重发 input.done 成功")
-                            except Exception as e2:
-                                logger.warning(f"[vLLM-Omni TTS] 重发 input.done 仍失败: {e2}")
-                                session_state["active"] = False
+                        if not await _rebuild_session():
+                            _fail_pending_flush("vLLM-Omni TTS flush 重连失败")
+                            break
+                        try:
+                            if not await _replay_pending_text():
+                                _fail_pending_flush("vLLM-Omni TTS flush 重放失败")
+                                break
+                            await ws.send(json.dumps({"type": "input.done"}))
+                            pending_text.clear()
+                            pending_text_sid = None
+                            session_state["awaiting_done"] = True
+                            logger.info("[vLLM-Omni TTS] 重放 pending_text 并重发 input.done 成功")
+                        except Exception as e2:
+                            logger.warning(f"[vLLM-Omni TTS] 重发 input.done 仍失败: {e2}")
+                            _fail_pending_flush("vLLM-Omni TTS flush 重发失败")
+                            break
+                else:
+                    _fail_pending_flush("vLLM-Omni TTS flush 连接不可用")
+                    break
                 continue
 
             # 修复 PR #1764 review #3：发送前检查会话是否仍然活跃
