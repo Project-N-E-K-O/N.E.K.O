@@ -643,7 +643,7 @@ async def test_text_mode_image_input_is_mirrored_to_analyzer_queue(monkeypatch):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_explicit_openclaw_magic_command_skips_local_text_stream(monkeypatch):
-    """Explicit OpenClaw slash commands use the manual-control fast path only."""
+    """Namespaced OpenClaw slash commands use the manual-control fast path only."""
     mgr = _make_transcript_manager()
     mgr.session = object.__new__(core_module.OmniOfflineClient)
     mgr.session._pending_images = []
@@ -666,7 +666,7 @@ async def test_explicit_openclaw_magic_command_skips_local_text_stream(monkeypat
 
     await core_module.LLMSessionManager._process_stream_data_internal(
         mgr,
-        {"input_type": "text", "data": "/stop", "request_id": "req-1"},
+        {"input_type": "text", "data": "/openclaw stop", "request_id": "req-1"},
     )
 
     assert len(fired) == 1
@@ -676,7 +676,7 @@ async def test_explicit_openclaw_magic_command_skips_local_text_stream(monkeypat
             "type": "user",
             "data": {
                 "input_type": "mirror_text",
-                "data": "/stop",
+                "data": "/openclaw stop",
                 "source": "openclaw",
                 "metadata": {
                     "source": "openclaw",
@@ -715,7 +715,7 @@ async def test_openclaw_magic_command_falls_back_when_openclaw_not_ready(monkeyp
 
     await core_module.LLMSessionManager._process_stream_data_internal(
         mgr,
-        {"input_type": "text", "data": "/stop", "request_id": "req-stale"},
+        {"input_type": "text", "data": "/openclaw stop", "request_id": "req-stale"},
     )
 
     mgr._fire_task.assert_not_called()
@@ -725,7 +725,7 @@ async def test_openclaw_magic_command_falls_back_when_openclaw_not_ready(monkeyp
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_explicit_openclaw_magic_command_reuses_adapter_aliases(monkeypatch):
-    """The immediate fast path must match OpenClaw's documented aliases."""
+    """The immediate fast path must map namespaced aliases to OpenClaw commands."""
     mgr = _make_transcript_manager()
     mgr.session = object.__new__(core_module.OmniOfflineClient)
     mgr.session._pending_images = []
@@ -748,12 +748,40 @@ async def test_explicit_openclaw_magic_command_reuses_adapter_aliases(monkeypatc
 
     await core_module.LLMSessionManager._process_stream_data_internal(
         mgr,
-        {"input_type": "text", "data": "APPROVE", "request_id": "req-approve"},
+        {"input_type": "text", "data": "/openclaw APPROVE", "request_id": "req-approve"},
     )
 
     assert len(fired) == 1
     mgr.session.stream_text.assert_not_called()
     assert mgr.sync_message_queue.messages[0]["data"]["metadata"]["command"] == "/daemon approve"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_bare_openclaw_magic_words_do_not_short_circuit_text_stream(monkeypatch):
+    """Generic slash commands are left for normal text/action handling."""
+    mgr = _make_transcript_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session._pending_images = []
+    mgr.session.update_max_response_length = Mock()
+    mgr.session.stream_text = AsyncMock()
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._is_agent_enabled = Mock(return_value=True)
+    mgr.agent_flags = {"openclaw_enabled": True, "openclaw_ready": True}
+    mgr.pending_agent_callbacks = []
+    mgr._fire_task = Mock()
+    monkeypatch.setattr(core_module, "dispatch_text_user_message", lambda name, text: None)
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "/stop", "request_id": "req-stop"},
+    )
+
+    mgr._fire_task.assert_not_called()
+    mgr.session.stream_text.assert_awaited_once()
 
 
 @pytest.mark.unit
@@ -780,7 +808,7 @@ async def test_explicit_openclaw_magic_command_clears_pending_text_images(monkey
 
     await core_module.LLMSessionManager._process_stream_data_internal(
         mgr,
-        {"input_type": "text", "data": "/new", "request_id": "req-new"},
+        {"input_type": "text", "data": "/openclaw new", "request_id": "req-new"},
     )
 
     assert mgr.session._pending_images == []
@@ -814,7 +842,7 @@ async def test_late_magic_command_screenshot_is_discarded(monkeypatch):
 
     await core_module.LLMSessionManager._process_stream_data_internal(
         mgr,
-        {"input_type": "text", "data": "/stop", "request_id": "req-stop"},
+        {"input_type": "text", "data": "/openclaw stop", "request_id": "req-stop"},
     )
     await core_module.LLMSessionManager._process_stream_data_internal(
         mgr,
@@ -855,7 +883,7 @@ async def test_explicit_openclaw_magic_command_emits_websocket_turn_end(monkeypa
 
     await core_module.LLMSessionManager._process_stream_data_internal(
         mgr,
-        {"input_type": "text", "data": "/stop", "request_id": "req-stop"},
+        {"input_type": "text", "data": "/openclaw stop", "request_id": "req-stop"},
     )
 
     assert mgr.websocket.sent == [{

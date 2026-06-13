@@ -2243,14 +2243,22 @@ class LLMSessionManager:
         raw = str(text or "").strip()
         if not raw:
             return None
-        lowered = raw.lower()
-        if lowered in {"/clear", "clear"}:
+        lowered = " ".join(raw.lower().split())
+        prefix = None
+        for candidate in ("/openclaw ", "/qwenpaw "):
+            if lowered.startswith(candidate):
+                prefix = candidate
+                break
+        if prefix is None:
+            return None
+        command = lowered[len(prefix):].strip()
+        if command in {"/clear", "clear"}:
             return "/clear"
-        if lowered in {"/new", "new"}:
+        if command in {"/new", "new"}:
             return "/new"
-        if lowered in {"/stop", "stop"}:
+        if command in {"/stop", "stop"}:
             return "/stop"
-        if lowered in {"/daemon approve", "daemon approve", "/approve", "approve"}:
+        if command in {"/daemon approve", "daemon approve", "/approve", "approve"}:
             return "/daemon approve"
         return None
 
