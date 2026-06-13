@@ -436,7 +436,8 @@ window.Jukebox = {
   syncRandomQueueWithSongs: function() {
     if (Jukebox.State.playbackMode !== 'random') {
       const pendingSongId = Jukebox.State.randomQueueExitSongId;
-      const currentSongId = Jukebox.State.currentSong ? Jukebox.State.currentSong.id : null;
+      const currentSongId = (Jukebox.State.currentSong ? Jukebox.State.currentSong.id : null)
+        || Jukebox.getCurrentRandomQueueSongId();
       if (!pendingSongId || pendingSongId !== currentSongId) {
         Jukebox.clearRandomQueue();
       } else {

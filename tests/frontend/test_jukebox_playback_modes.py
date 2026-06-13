@@ -684,6 +684,61 @@ def test_jukebox_random_exit_prunes_removed_songs_while_preserving_anchor(mock_p
 
 
 @pytest.mark.frontend
+def test_jukebox_random_exit_sync_preserves_queued_pending_anchor(mock_page: Page):
+    setup_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        () => {
+          const J = window.Jukebox;
+          J.State.playbackMode = 'sequence';
+          J.State.currentSong = null;
+          J.State.randomQueue = ['song1', 'song2'];
+          J.State.randomQueueIndex = 1;
+          J.State.randomQueueExitSongId = 'song2';
+
+          J.syncRandomQueueWithSongs();
+
+          const retainedQueuedPending = {
+            queue: [...J.State.randomQueue],
+            index: J.State.randomQueueIndex,
+            pendingExit: J.State.randomQueueExitSongId
+          };
+
+          J.State.currentSong = null;
+          J.State.randomQueue = ['song1', 'song2'];
+          J.State.randomQueueIndex = 1;
+          J.State.randomQueueExitSongId = 'song1';
+
+          J.syncRandomQueueWithSongs();
+
+          return {
+            retainedQueuedPending,
+            clearedMismatchedPending: {
+              queue: [...J.State.randomQueue],
+              index: J.State.randomQueueIndex,
+              pendingExit: J.State.randomQueueExitSongId
+            }
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "retainedQueuedPending": {
+            "queue": ["song1", "song2"],
+            "index": 1,
+            "pendingExit": "song2",
+        },
+        "clearedMismatchedPending": {
+            "queue": [],
+            "index": -1,
+            "pendingExit": None,
+        },
+    }
+
+
+@pytest.mark.frontend
 def test_jukebox_random_sync_preserves_current_duplicate_queue_entry(mock_page: Page):
     setup_jukebox_page(mock_page)
 
