@@ -845,6 +845,10 @@ def _gemini_output_text(text: str):
     return SimpleNamespace(text=text)
 
 
+def _gemini_input_text(text: str):
+    return SimpleNamespace(text=text)
+
+
 def _gemini_model_turn_audio(data: bytes = b"audio"):
     return SimpleNamespace(
         parts=[
@@ -874,7 +878,11 @@ async def test_gemini_interruption_clears_on_true_new_turn():
     assert client._interrupted is True
     client.on_input_transcript.assert_awaited_once_with("hello")
 
-    client._ai_recent_activity_time = 0.0
+    await client._process_gemini_response(
+        _gemini_response(input_transcription=_gemini_input_text("next question"))
+    )
+
+    client._ai_recent_activity_time = time.time() - 0.5
     client._user_recent_activity_time = time.time()
     await client._process_gemini_response(
         _gemini_response(
@@ -884,6 +892,8 @@ async def test_gemini_interruption_clears_on_true_new_turn():
     )
 
     assert client._interrupted is False
+    assert client.on_input_transcript.await_count == 2
+    client.on_input_transcript.assert_awaited_with("next question")
     client.on_new_message.assert_awaited_once()
     client.on_text_delta.assert_awaited_once_with("hi", True)
     client.on_audio_delta.assert_awaited_once_with(b"pcm")
@@ -909,6 +919,35 @@ async def test_gemini_interrupted_late_continuation_stays_suppressed():
         _gemini_response(
             output_transcription=_gemini_output_text("late"),
             model_turn=_gemini_model_turn_audio(b"late-audio"),
+        )
+    )
+
+    assert client._interrupted is True
+    client.on_new_message.assert_not_awaited()
+    client.on_text_delta.assert_not_awaited()
+    client.on_audio_delta.assert_not_awaited()
+
+
+@pytest.mark.unit
+async def test_gemini_interrupted_user_audio_without_transcript_stays_suppressed():
+    client = _make_server_vad_client(
+        model="gemini-2.0-flash-exp",
+        api_type="gemini",
+        base_url="https://generativelanguage.googleapis.com",
+    )
+    client.on_new_message = AsyncMock()
+    client.on_text_delta = AsyncMock()
+    client.on_audio_delta = AsyncMock()
+
+    client._interrupted = True
+    client._is_responding = False
+    client._ai_recent_activity_time = time.time() - 0.5
+    client._user_recent_activity_time = time.time()
+
+    await client._process_gemini_response(
+        _gemini_response(
+            output_transcription=_gemini_output_text("canceled tail"),
+            model_turn=_gemini_model_turn_audio(b"canceled-tail-audio"),
         )
     )
 
