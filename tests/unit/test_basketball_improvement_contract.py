@@ -751,6 +751,19 @@ def test_basketball_drain_reads_nested_result_line():
 
 
 @pytest.mark.unit
+def test_basketball_voice_entries_freeze_route_identity():
+    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+
+    assert "var entrySessionId = String((event && event.session_id) || sessionId || '');" in html
+    assert "var entryLanlanName = String((event && (event.lanlan_name || event.lanlanName)) || getRouteLanlanName() || lanlanName || '');" in html
+    assert "sessionId: entrySessionId," in html
+    assert "lanlanName: entryLanlanName," in html
+    assert "var entrySessionId = entry.sessionId || sessionId;" in html
+    assert "session_id: entrySessionId," in html
+    assert "lanlan_name: entryLanlanName," in html
+
+
+@pytest.mark.unit
 def test_basketball_starts_route_before_avatar_loading():
     html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
 

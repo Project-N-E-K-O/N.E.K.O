@@ -1859,14 +1859,19 @@
   }
   function _mirrorAndSpeak(entry) {
     if (debugMode) return Promise.resolve();
+    var entrySessionId = entry.sessionId || sessionId;
+    var entryLanlanName = entry.lanlanName || lanlanName;
+    var entryMode = entry.mode || currentMode;
     var payloadEvent = Object.assign({}, entry.event || {}, {
-      mode: currentMode,
+      session_id: entrySessionId,
+      lanlan_name: entryLanlanName,
+      mode: entryMode,
       i18n_language: getRequestLanguage(),
     });
     var mirrorPayload = {
       source: 'game-llm-result',
-      session_id: sessionId,
-      lanlan_name: lanlanName,
+      session_id: entrySessionId,
+      lanlan_name: entryLanlanName,
       request_id: 'bb-' + entry.id,
       turn_id: 'bb-turn-' + entry.id,
       finalize_turn: false,
@@ -1876,8 +1881,8 @@
     };
     var speakPayload = {
       source: 'game-llm-result',
-      session_id: sessionId,
-      lanlan_name: lanlanName,
+      session_id: entrySessionId,
+      lanlan_name: entryLanlanName,
       request_id: 'bb-' + entry.id,
       mirror_text: false,
       emit_turn_end: false,
@@ -1946,11 +1951,16 @@
   function speakLine(line, control, event) {
     showBubble(line, control);
     var isUserReply = !!(event && (event.kind === 'user_reply' || event.isUserReply || event.source === 'user_reply'));
+    var entrySessionId = String((event && event.session_id) || sessionId || '');
+    var entryLanlanName = String((event && (event.lanlan_name || event.lanlanName)) || getRouteLanlanName() || lanlanName || '');
     var entry = {
       id: ++voiceArbiter.seq,
       line: line,
       control: control || {},
       event: event || {},
+      sessionId: entrySessionId,
+      lanlanName: entryLanlanName,
+      mode: String((event && event.mode) || currentMode || ''),
       priority: _voicePriorityForEvent(event),
       tailWaitMs: VOICE_ARBITER_DEFAULTS.tailWaitMs,
       expiresAt: event && event.voice_deadline_ms ? Date.now() + Math.max(0, event.voice_deadline_ms) : 0,

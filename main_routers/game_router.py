@@ -4882,6 +4882,55 @@ def _basketball_player_identity(lanlan_name: str, session_id: str) -> tuple[str,
     return clean_name, clean_session
 
 
+def _basketball_score_totals_from_data(data: Any) -> dict | None:
+    if not isinstance(data, dict):
+        return None
+
+    score_value = None
+    for key in ("score", "totalScore", "total_score", "player"):
+        if key in data:
+            score_value = data.get(key)
+            break
+    if score_value is None:
+        return None
+
+    streak_value = 0
+    for key in ("streak", "best_streak", "bestStreak", "final_streak", "finalStreak"):
+        if key in data:
+            streak_value = data.get(key)
+            break
+
+    distance_value = 0.0
+    for key in ("max_distance_px", "maxDistancePx", "max_distance", "maxDistance", "final_distance", "finalDistance"):
+        if key in data:
+            distance_value = data.get(key)
+            break
+
+    return {
+        "score": _normalize_basketball_non_negative_int(score_value),
+        "streak": _normalize_basketball_non_negative_int(streak_value),
+        "max_distance_px": _normalize_basketball_distance(distance_value),
+    }
+
+
+def _basketball_score_totals_match_submission(data: dict, expected: Any) -> bool:
+    if not isinstance(expected, dict):
+        return True
+    actual = _basketball_score_totals_from_data(data)
+    if not actual:
+        return False
+    return (
+        actual["score"] == _normalize_basketball_non_negative_int(expected.get("score"))
+        and actual["streak"] == _normalize_basketball_non_negative_int(expected.get("streak"))
+        and math.isclose(
+            actual["max_distance_px"],
+            _normalize_basketball_distance(expected.get("max_distance_px")),
+            rel_tol=0.0,
+            abs_tol=0.001,
+        )
+    )
+
+
 def _prune_basketball_score_sessions(now: float | None = None) -> None:
     current = time.time() if now is None else now
     for key, meta in list(_basketball_recent_score_sessions.items()):
@@ -4889,7 +4938,12 @@ def _prune_basketball_score_sessions(now: float | None = None) -> None:
             _basketball_recent_score_sessions.pop(key, None)
 
 
-def _remember_basketball_score_session(lanlan_name: str, session_id: str, mode: Any) -> None:
+def _remember_basketball_score_session(
+    lanlan_name: str,
+    session_id: str,
+    mode: Any,
+    score_totals: dict | None = None,
+) -> None:
     clean_mode = _normalize_basketball_mode(mode)
     if not _is_basketball_scoring_mode(clean_mode):
         return
@@ -4897,10 +4951,14 @@ def _remember_basketball_score_session(lanlan_name: str, session_id: str, mode: 
     if not clean_name or not clean_session:
         return
     _prune_basketball_score_sessions()
-    _basketball_recent_score_sessions[(clean_name, clean_session)] = {
+    meta = {
         "mode": clean_mode,
         "expires_at": time.time() + _BASKETBALL_SCORE_SESSION_TTL_SECONDS,
     }
+    clean_totals = _basketball_score_totals_from_data(score_totals)
+    if clean_totals:
+        meta["score_totals"] = clean_totals
+    _basketball_recent_score_sessions[(clean_name, clean_session)] = meta
 
 
 def _basketball_end_payload_completed_round(data: dict) -> bool:
@@ -4940,11 +4998,32 @@ def _basketball_score_submission_allowed(data: dict, *, reserve: bool = False) -
     meta = _basketball_recent_score_sessions.get(key)
     if not (meta and meta.get("mode") == mode):
         return False
+    if not _basketball_score_totals_match_submission(data, meta.get("score_totals")):
+        return False
     if meta.get("reserved") is True:
         return False
     if reserve:
         meta["reserved"] = True
     return True
+
+
+def _basketball_score_data_for_insert(data: dict) -> dict:
+    session_key = _basketball_score_session_key_from_payload(data)
+    if not session_key:
+        return data
+    lanlan_name, session_id, mode = session_key
+    meta = _basketball_recent_score_sessions.get((lanlan_name, session_id))
+    totals = meta.get("score_totals") if isinstance(meta, dict) else None
+    if not isinstance(totals, dict):
+        return data
+    insert_data = dict(data)
+    insert_data.update({
+        "score": _normalize_basketball_non_negative_int(totals.get("score")),
+        "streak": _normalize_basketball_non_negative_int(totals.get("streak")),
+        "max_distance_px": _normalize_basketball_distance(totals.get("max_distance_px")),
+        "mode": mode,
+    })
+    return insert_data
 
 
 def _release_basketball_score_session_reservation(data: dict) -> None:
@@ -7073,11 +7152,14 @@ async def _complete_game_end_from_payload(
             and state.get("game_started") is True
             and _basketball_end_payload_completed_round(data)
         ):
-            _remember_basketball_score_session(
-                lanlan_name,
-                session_id,
-                score_session_mode,
-            )
+            score_session_totals = _basketball_score_totals_from_data(state.get("finalScore"))
+            if score_session_totals:
+                _remember_basketball_score_session(
+                    lanlan_name,
+                    session_id,
+                    score_session_mode,
+                    score_session_totals,
+                )
         if _game_memory_postgame_context_enabled(archive) is False:
             postgame_options["enabled"] = False
         if isinstance(archive_memory, dict) and archive_memory.get("status") == "skipped":
@@ -7300,8 +7382,9 @@ async def game_basketball_leaderboard_submit(game_type: str, request: Request):
         return {"ok": False, "reason": "invalid_body"}
     if not _basketball_score_submission_allowed(data, reserve=True):
         return {"ok": False, "reason": "invalid_session"}
+    insert_data = _basketball_score_data_for_insert(data)
     try:
-        rank, total_players, is_personal_best = _basketball_insert_score(data)
+        rank, total_players, is_personal_best = _basketball_insert_score(insert_data)
     except Exception:
         _release_basketball_score_session_reservation(data)
         raise

@@ -948,7 +948,7 @@ async def test_basketball_route_end_remembers_completed_round_score_session(monk
                 "mode": "timed",
                 "gameStarted": True,
                 "round_completed": True,
-                "finalScore": {"mode": "timed", "score": 12},
+                "finalScore": {"mode": "timed", "score": 12, "best_streak": 4, "max_distance_px": 240},
             },
             default_reason="route_end",
         )
@@ -956,7 +956,65 @@ async def test_basketball_route_end_remembers_completed_round_score_session(monk
         assert result["ok"] is True
         assert result["route_closed"] is True
         assert result["state"]["lanlan_name"] == "Lan Done"
-        assert game_router._basketball_recent_score_sessions[("Lan Done", "completed-session")]["mode"] == "timed"
+        score_session = game_router._basketball_recent_score_sessions[("Lan Done", "completed-session")]
+        assert score_session["mode"] == "timed"
+        assert score_session["score_totals"] == {"score": 12, "streak": 4, "max_distance_px": 240.0}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_basketball_leaderboard_rejects_score_mismatched_from_route_end(tmp_path, monkeypatch):
+    async def fake_deliver_postgame(*_args, **_kwargs):
+        return {"ok": True, "action": "skip", "reason": "test"}
+
+    monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", tmp_path / "basketball_scores.db")
+    monkeypatch.setattr(game_router, "_deliver_game_postgame", fake_deliver_postgame)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    with reset_game_route_state():
+        state = game_router._activate_game_route("basketball", "bound-session", "Lan Bound")
+        state["mode"] = "shooter"
+        _mark_game_started(state)
+
+        await game_router._complete_game_end_from_payload(
+            "basketball",
+            {
+                "session_id": "bound-session",
+                "lanlan_name": "Lan Bound",
+                "mode": "shooter",
+                "gameStarted": True,
+                "round_completed": True,
+                "finalScore": {"mode": "shooter", "score": 12, "best_streak": 3, "max_distance_px": 240},
+            },
+            default_reason="route_end",
+        )
+
+        tampered = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+            "session_id": "bound-session",
+            "lanlan_name": "Lan Bound",
+            "score": 999999,
+            "streak": 3,
+            "max_distance_px": 240,
+            "mode": "shooter",
+        }))
+
+        assert tampered == {"ok": False, "reason": "invalid_session"}
+        assert "reserved" not in game_router._basketball_recent_score_sessions[("Lan Bound", "bound-session")]
+
+        accepted = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+            "session_id": "bound-session",
+            "lanlan_name": "Lan Bound",
+            "score": 12,
+            "streak": 3,
+            "max_distance_px": 240,
+            "mode": "shooter",
+        }))
+
+        assert accepted["ok"] is True
+        leaderboard = await game_router.game_basketball_leaderboard("basketball")
+        assert leaderboard["total_scores"] == 1
+        assert leaderboard["top"][0]["score"] == 12
+        assert leaderboard["top"][0]["streak"] == 3
 
 
 @pytest.mark.unit
