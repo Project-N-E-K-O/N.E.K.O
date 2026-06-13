@@ -17,7 +17,7 @@ from functools import partial
 from urllib.parse import quote, urlparse, urlunparse
 from config import GSV_VOICE_PREFIX
 from utils.aiohttp_proxy_utils import aiohttp_session_kwargs_for_url
-from utils.config_manager import get_config_manager
+from utils.config_manager import _as_bool, get_config_manager
 from utils.gptsovits_config import (
     gsv_ws_url_from_http_base,
     is_local_http_url,
@@ -3266,6 +3266,10 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                     })
                     response_queue.put(("__ready__", False))
                     break
+                if pending_text and pending_text_sid == sid:
+                    if not await _replay_pending_text():
+                        _fail_pending_flush("vLLM-Omni TTS input.text 重连后重放失败")
+                        break
 
             if tts_text and tts_text.strip() and ws is not None:
                 if pending_text and pending_text_sid not in (None, sid):
@@ -4600,7 +4604,7 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
 
     # 用户在 TTS 下拉里显式选 vllm_omni 时，应优先于克隆音色 / assistApi
     # fallback；但 GPT-SoVITS enabled 是显式本地 TTS 开关，仍在上方优先。
-    if core_cfg.get('ENABLE_CUSTOM_API') and _tts_provider_sel == 'vllm_omni':
+    if _as_bool(core_cfg.get('ENABLE_CUSTOM_API'), False) and _tts_provider_sel == 'vllm_omni':
         vllm_url = (_raw_cfg_for_route.get('ttsModelUrl') or '').strip() or VLLM_OMNI_DEFAULT_BASE_URL
         vllm_model = (_raw_cfg_for_route.get('ttsModelId') or '').strip() \
             or VLLM_OMNI_DEFAULT_MODEL

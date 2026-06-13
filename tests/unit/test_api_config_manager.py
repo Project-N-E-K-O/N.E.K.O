@@ -1288,6 +1288,32 @@ class TestVllmOmniRawKeyPassthrough:
         assert config_manager.validate_voice_id('speaker-from-vllm-server') is True
 
     @pytest.mark.unit
+    def test_vllm_omni_does_not_expose_or_delete_local_tts_storage(self, config_manager, monkeypatch):
+        _write_core_config(config_manager, {
+            'coreApi': 'gemini',
+            'assistApi': 'gemini',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'vllm_omni',
+            'ttsModelUrl': 'ws://localhost:8091/v1',
+            'ttsModelId': 'Qwen3-TTS',
+        })
+        config_manager.save_voice_storage({
+            '__LOCAL_TTS__': {
+                'local-speaker': {'name': 'Local Speaker'},
+            },
+        })
+
+        def _fake_model_config(model_type):
+            assert model_type == 'tts_custom'
+            return {'is_custom': True, 'base_url': 'ws://localhost:8091/v1', 'api_key': ''}
+
+        monkeypatch.setattr(config_manager, 'get_model_api_config', _fake_model_config)
+
+        assert 'local-speaker' not in config_manager.get_voices_for_current_api(for_listing=True)
+        assert config_manager.delete_voice_for_current_api('local-speaker') is False
+        assert 'local-speaker' in config_manager.load_voice_storage()['__LOCAL_TTS__']
+
+    @pytest.mark.unit
     def test_cleanup_keeps_vllm_omni_character_voice(self, config_manager):
         """cleanup_invalid_voice_ids must not clear provider-local vLLM voices."""
         _write_core_config(config_manager, {

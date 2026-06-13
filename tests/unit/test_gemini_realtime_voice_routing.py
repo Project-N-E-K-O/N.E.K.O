@@ -633,6 +633,34 @@ def test_is_vllm_omni_tts_enabled_returns_false_for_empty_string():
     assert LLMSessionManager._is_vllm_omni_tts_enabled(snapshot) is False
 
 
+def test_is_vllm_omni_tts_enabled_parses_string_false():
+    snapshot = {
+        "ENABLE_CUSTOM_API": "false",
+        "ttsModelProvider": "vllm_omni",
+        "GPTSOVITS_ENABLED": False,
+    }
+    assert LLMSessionManager._is_vllm_omni_tts_enabled(snapshot) is False
+
+
+def test_session_use_tts_ignores_stale_vllm_when_custom_api_string_false():
+    mgr = _make_mgr("Puck")
+    realtime_config = {"base_url": "https://generativelanguage.googleapis.com"}
+    assert (
+        LLMSessionManager._resolve_session_use_tts(
+            mgr,
+            "audio",
+            realtime_config,
+            {
+                "ENABLE_CUSTOM_API": "false",
+                "ttsModelProvider": "vllm_omni",
+                "ttsVoiceId": "Puck",
+                "GPTSOVITS_ENABLED": False,
+            },
+        )
+        is False
+    )
+
+
 def test_is_vllm_omni_tts_enabled_is_case_sensitive():
     """The provider key comparison is case-sensitive: VLLM_OMNI / Vllm_Omni must not be recognised as vllm_omni."""
     for variant in ("VLLM_OMNI", "Vllm_Omni", "vLLM_omni"):

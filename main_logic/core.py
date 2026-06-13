@@ -505,7 +505,7 @@ from config.prompts.prompts_avatar_interaction import (
 #     AGENT_CAPABILITY_USER_PLUGIN_USE, AGENT_CAPABILITY_GENERIC, AGENT_CAPABILITY_SEPARATOR,
 #     AGENT_PLUGINS_HEADER, AGENT_PLUGINS_COUNT,
 # )
-from utils.config_manager import get_config_manager, get_reserved
+from utils.config_manager import _as_bool, get_config_manager, get_reserved
 from utils.logger_config import get_module_logger
 from utils.native_voice_registry import (
     is_free_preset_voice_id,
@@ -1366,7 +1366,7 @@ class LLMSessionManager:
 
     @staticmethod
     def _is_vllm_omni_tts_enabled(core_config: dict) -> bool:
-        return bool(core_config.get('ENABLE_CUSTOM_API')) and (
+        return _as_bool(core_config.get('ENABLE_CUSTOM_API'), False) and (
             str(core_config.get('ttsModelProvider') or '').strip() == 'vllm_omni'
         )
 
@@ -4254,7 +4254,7 @@ class LLMSessionManager:
                     tts_voice_id
                     and not is_gsv_disabled_voice_id(tts_voice_id)
                     and (
-                        core_config_snapshot.get('ENABLE_CUSTOM_API')
+                        _as_bool(core_config_snapshot.get('ENABLE_CUSTOM_API'), False)
                         or core_config_snapshot.get('GPTSOVITS_ENABLED')
                     )
                 ):
@@ -4943,7 +4943,7 @@ class LLMSessionManager:
                     tts_voice_id
                     and not is_gsv_disabled_voice_id(tts_voice_id)
                     and (
-                        core_config_snapshot.get('ENABLE_CUSTOM_API')
+                        _as_bool(core_config_snapshot.get('ENABLE_CUSTOM_API'), False)
                         or core_config_snapshot.get('GPTSOVITS_ENABLED')
                     )
                 ):

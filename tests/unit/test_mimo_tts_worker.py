@@ -380,6 +380,42 @@ def test_get_tts_worker_ignores_stale_vllm_when_custom_api_disabled(monkeypatch)
 
 
 @pytest.mark.unit
+def test_get_tts_worker_ignores_stale_vllm_when_custom_api_string_false(monkeypatch):
+    class _CM:
+        def get_core_config(self):
+            return {
+                "assistApi": "qwen",
+                "TTS_PROVIDER": "",
+                "ENABLE_CUSTOM_API": "false",
+                "GPTSOVITS_ENABLED": False,
+            }
+
+        def load_json_config(self, filename, default):
+            assert filename == "core_config.json"
+            return {
+                "ttsModelProvider": "vllm_omni",
+                "ttsModelUrl": "http://stale-vllm.local",
+                "ttsModelId": "Qwen3-TTS",
+                "ttsVoiceId": "stale-voice",
+            }
+
+        def get_model_api_config(self, model_type):
+            assert model_type == "tts_custom"
+            return {"is_custom": False, "base_url": "https://fallback.invalid"}
+
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM())
+
+    worker, _, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen",
+        has_custom_voice=False,
+        voice_id="",
+    )
+
+    assert provider_key != "vllm_omni"
+    assert not (isinstance(worker, partial) and worker.func is tts_client.vllm_omni_tts_worker)
+
+
+@pytest.mark.unit
 def test_get_tts_worker_keeps_gptsovits_ahead_of_explicit_vllm(monkeypatch):
     class _CM:
         def get_core_config(self):
@@ -773,6 +809,83 @@ def test_vllm_omni_worker_rebuilds_when_sid_changes_before_flush(monkeypatch):
         "input.text",
     ]
     assert connections[1].messages[1]["text"] == "world"
+
+
+@pytest.mark.unit
+def test_vllm_omni_worker_replays_pending_text_after_same_sid_reconnect(monkeypatch):
+    connections = []
+
+    class _FakeWS:
+        def __init__(self):
+            self.messages = []
+            self._drop_after_text = asyncio.Event()
+            self.failed = False
+
+        async def send(self, payload):
+            event = json.loads(payload)
+            self.messages.append(event)
+            if len(connections) == 1 and event.get("type") == "input.text":
+                self._drop_after_text.set()
+
+        async def close(self):
+            pass
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await self._drop_after_text.wait()
+            await asyncio.sleep(0)
+            self.failed = True
+            raise RuntimeError("socket dropped mid-stream")
+
+    async def _connect(*args, **kwargs):
+        ws = _FakeWS()
+        connections.append(ws)
+        return ws
+
+    def _wait_until(predicate, timeout=3.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if predicate():
+                return
+            time.sleep(0.01)
+        raise AssertionError("condition was not reached")
+
+    monkeypatch.setattr(tts_client.websockets, "connect", _connect)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = threading.Thread(
+        target=tts_client.vllm_omni_tts_worker,
+        kwargs={
+            "request_queue": request_queue,
+            "response_queue": response_queue,
+            "audio_api_key": "",
+            "voice_id": "",
+            "base_url": "http://localhost:8091",
+            "model": "Qwen3-TTS",
+            "voice": "global-default",
+        },
+    )
+    thread.start()
+
+    assert response_queue.get(timeout=3.0) == ("__ready__", True)
+    request_queue.put(("sid-a", "hello"))
+    _wait_until(lambda: connections and connections[0].failed)
+    request_queue.put(("sid-a", " world"))
+    _wait_until(lambda: len(connections) >= 2 and len(connections[1].messages) >= 3)
+    request_queue.close()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+    assert [msg["type"] for msg in connections[1].messages[:3]] == [
+        "session.config",
+        "input.text",
+        "input.text",
+    ]
+    assert connections[1].messages[1]["text"] == "hello"
+    assert connections[1].messages[2]["text"] == " world"
 
 
 @pytest.mark.unit

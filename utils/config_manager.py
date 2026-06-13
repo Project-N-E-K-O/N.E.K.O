@@ -2626,6 +2626,21 @@ class ConfigManager:
             str(core_config.get('ttsModelProvider') or '').strip() == 'vllm_omni'
         )
 
+    def _is_local_tts_storage_active(
+        self,
+        tts_config: dict | None = None,
+        core_config: dict | None = None,
+    ) -> bool:
+        """Return True when the current TTS config should use __LOCAL_TTS__ voices."""
+        if tts_config is None:
+            tts_config = self.get_model_api_config('tts_custom')
+        if core_config is None:
+            core_config = self.get_core_config()
+        base_url = str((tts_config or {}).get('base_url') or '')
+        return _as_bool((tts_config or {}).get('is_custom'), False) and base_url.startswith(('ws://', 'wss://')) and (
+            not self._is_vllm_omni_tts_selected(core_config)
+        )
+
     def get_cosyvoice_clone_runtime(self, provider: str = 'cosyvoice') -> dict:
         """返回声音克隆页显式选择的阿里国内/国际运行时配置。"""
         normalized_provider = str(provider or 'cosyvoice').strip().lower()
@@ -2797,8 +2812,8 @@ class ConfigManager:
         result: dict = {}
 
         tts_config = self.get_model_api_config('tts_custom')
-        base_url = tts_config.get('base_url', '')
-        is_local_tts = tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://'))
+        core_config = self.get_core_config()
+        is_local_tts = self._is_local_tts_storage_active(tts_config, core_config)
         hide_cloud_main = for_listing and self.is_free_voice()
 
         if is_local_tts:
@@ -2813,7 +2828,6 @@ class ConfigManager:
                 all_voices = voice_storage.get(storage_key, {})
                 result = dict(all_voices)
             else:
-                core_config = self.get_core_config()
                 audio_api_key = core_config.get('AUDIO_API_KEY', '')
                 if audio_api_key:
                     storage_key = audio_api_key
@@ -2993,8 +3007,7 @@ class ConfigManager:
                 return True
         
         tts_config = self.get_model_api_config('tts_custom')
-        base_url = tts_config.get('base_url', '')
-        is_local_tts = tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://'))
+        is_local_tts = self._is_local_tts_storage_active(tts_config)
 
         if is_local_tts:
             api_key = '__LOCAL_TTS__'
