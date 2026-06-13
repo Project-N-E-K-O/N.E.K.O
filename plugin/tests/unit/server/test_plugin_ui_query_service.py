@@ -205,6 +205,58 @@ def test_surface_source_includes_same_plugin_relative_dependencies(tmp_path) -> 
     ]
 
 
+def test_surface_source_rejects_unresolved_relative_dependencies(tmp_path) -> None:
+    plugin_dir = tmp_path / "demo_plugin"
+    ui_dir = plugin_dir / "ui"
+    ui_dir.mkdir(parents=True)
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
+    (ui_dir / "panel.tsx").write_text(
+        "import { label } from './missing'\n"
+        "export default function Panel() { return <strong>{label}</strong> }\n",
+        encoding="utf-8",
+    )
+    plugin_ui = normalize_plugin_ui_manifest(
+        {
+            "plugin": {
+                "ui": {
+                    "panel": [{
+                        "id": "main",
+                        "entry": "ui/panel.tsx",
+                        "permissions": ["state:read"],
+                    }],
+                },
+            },
+        },
+        plugin_id="demo",
+    )
+
+    plugins_backup = dict(state.plugins)
+    try:
+        with state.acquire_plugins_write_lock():
+            state.plugins.clear()
+            state.plugins["demo"] = {
+                "id": "demo",
+                "config_path": str(config_path),
+                "plugin_ui": plugin_ui,
+                "entries": [],
+            }
+
+        with pytest.raises(ServerDomainError) as exc_info:
+            asyncio.run(PluginUiQueryService().get_surface_source("demo", kind="panel", surface_id="main"))
+    finally:
+        with state.acquire_plugins_write_lock():
+            state.plugins.clear()
+            state.plugins.update(plugins_backup)
+
+    assert exc_info.value.code == "PLUGIN_UI_DEPENDENCY_NOT_FOUND"
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.details == {
+        "specifier": "./missing",
+        "importer": "ui/panel.tsx",
+    }
+
+
 def test_call_surface_action_preserves_plugin_entry_error(monkeypatch, tmp_path) -> None:
     plugin_dir = tmp_path / "demo_plugin"
     plugin_dir.mkdir()

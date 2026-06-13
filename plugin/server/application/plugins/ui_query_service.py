@@ -517,7 +517,17 @@ def _load_hosted_tsx_dependencies_sync(
         ]
         for specifier in specifiers:
             dependency_path = _resolve_hosted_tsx_relative_dependency(root, path, specifier)
-            if dependency_path is None or dependency_path == entry_path:
+            if dependency_path is None:
+                raise ServerDomainError(
+                    code="PLUGIN_UI_DEPENDENCY_NOT_FOUND",
+                    message=f"Hosted UI dependency '{specifier}' was not found",
+                    status_code=404,
+                    details={
+                        "specifier": specifier,
+                        "importer": path.relative_to(root).as_posix(),
+                    },
+                )
+            if dependency_path == entry_path:
                 continue
             if dependency_path in seen:
                 continue

@@ -545,6 +545,8 @@ def test_study_companion_quick_panels_open_hosted_surfaces() -> None:
 
     assert "const surfaceOpenButtons = Array.from(document.querySelectorAll('[data-open-surface]'));" in main_js
     assert "openHostedSurface(button.getAttribute('data-open-surface'));" in main_js
+    assert "window.parent === window" in main_js
+    assert "`/ui/plugins/${encodeURIComponent(PLUGIN_ID)}?tab=guide`" in main_js
 
 
 def test_study_companion_advanced_settings_surface_entries_are_complete() -> None:

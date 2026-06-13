@@ -538,6 +538,11 @@ function openHostedSurface(surfaceId) {
   if (!surfaceId) {
     return;
   }
+  const managerUrl = `/ui/plugins/${encodeURIComponent(PLUGIN_ID)}?tab=guide`;
+  if (window.parent === window) {
+    window.location.assign(managerUrl);
+    return;
+  }
   window.parent?.postMessage?.({
     type: STUDY_SURFACE_MESSAGE_TYPES.openSurface,
     payload: {
