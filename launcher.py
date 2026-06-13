@@ -42,6 +42,59 @@ _configure_stdio_utf8()
 # 检测打包环境（PyInstaller 设 sys.frozen，Nuitka 设 __compiled__）
 IS_FROZEN = getattr(sys, 'frozen', False) or '__compiled__' in globals()
 
+
+def _ensure_utf8_filesystem_encoding() -> None:
+    """确保解释器的文件系统编码为 UTF-8，否则带 PYTHONUTF8=1 重启自身一次。
+
+    AppImage 内嵌 / 某些精简 Linux 环境的 Python，在 C/POSIX locale 下
+    （且 C.UTF-8 不可用、PEP 538 locale coercion 失败时）
+    sys.getfilesystemencoding() 会退化成 'ascii'。此后任何含中文的路径
+    （如角色目录 memory/玖儿/…）在 os.makedirs / open 时抛 UnicodeEncodeError，
+    整个后端无法启动——即使系统 LANG=zh_CN.UTF-8 也没用，因为壳层往往
+    没把 locale 透传进内嵌解释器。
+
+    fs 编码在解释器启动时即固定，运行时改不了，只能设 PYTHONUTF8=1
+    （PEP 540 UTF-8 Mode）后 os.execv 重启自身。execv 不换 PID，Electron
+    壳对后端进程的生命周期跟踪不受影响；PYTHONUTF8 也会被本进程后续
+    Popen 出来的各 server 子进程继承。Windows 默认 fs 编码已是 utf-8，跳过。
+    """
+    if sys.platform == 'win32':
+        return
+    enc = (sys.getfilesystemencoding() or '').lower().replace('-', '')
+    if enc == 'utf8':
+        return
+    # 已经重启过一次：即便仍非 utf-8（例如 PYTHONUTF8 未被尊重）也放行，
+    # 绝不二次 execv，避免无限重启。
+    if os.environ.get('_NEKO_FS_UTF8_REEXEC') == '1':
+        return
+    os.environ['PYTHONUTF8'] = '1'
+    os.environ['_NEKO_FS_UTF8_REEXEC'] = '1'
+    if IS_FROZEN:
+        argv = [sys.executable, *sys.argv[1:]]
+    else:
+        argv = [sys.executable, os.path.abspath(__file__), *sys.argv[1:]]
+    try:
+        sys.stderr.write(
+            f'[launcher] filesystem encoding is {enc!r}; '
+            're-exec with PYTHONUTF8=1 to support non-ASCII paths\n'
+        )
+    except Exception:
+        pass
+    try:
+        os.execv(argv[0], argv)
+    except Exception:
+        # execv 失败（极少见）就放行：本进程仍是 ascii，但 PYTHONUTF8 已留在
+        # os.environ 里，后续 Popen 的子进程仍能拿到 utf-8。好过完全起不来。
+        pass
+
+
+# 仅在作为入口运行时才可能 re-exec：被 tests 当模块 import 时（__name__ !=
+# '__main__'）跳过，否则 ascii-fs 环境下的一次 import 会用 execv 把 pytest
+# 进程顶替掉。__name__ 在模块体执行前即确定，放这里能赶在任何中文路径操作之前。
+if __name__ == '__main__':
+    _ensure_utf8_filesystem_encoding()
+
+
 # 处理 PyInstaller 和 Nuitka 打包后的路径
 if IS_FROZEN:
     # 运行在打包后的环境

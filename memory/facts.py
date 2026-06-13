@@ -276,7 +276,7 @@ class FactStore:
                         return
                 self._archive_absorbed(name)
                 # 更新 marker（无论归档是否有实际条目都 touch 一次）
-                with open(marker_path, 'w') as f:
+                with open(marker_path, 'w', encoding='utf-8') as f:
                     f.write(datetime.now().isoformat())
             except Exception:
                 pass

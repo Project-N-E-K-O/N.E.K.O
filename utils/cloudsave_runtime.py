@@ -4073,7 +4073,7 @@ def acquire_cloud_apply_lock(config_manager) -> bool:
         import fcntl
 
         lock_path = config_manager.local_state_dir / "cloud_apply.lock"
-        lock_file = open(lock_path, "w")
+        lock_file = open(lock_path, "w", encoding="utf-8")
         try:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except (OSError, IOError):

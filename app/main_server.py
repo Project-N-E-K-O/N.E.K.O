@@ -159,7 +159,7 @@ def initialize_steamworks(*, quiet: bool = False):
         app_id = None
         app_id_file = os.path.join(_get_app_root(), 'steam_appid.txt')
         if os.path.exists(app_id_file):
-            with open(app_id_file, 'r') as f:
+            with open(app_id_file, 'r', encoding='utf-8') as f:
                 app_id = f.read().strip()
             _trace(f"从steam_appid.txt读取到应用ID: {app_id}")
         

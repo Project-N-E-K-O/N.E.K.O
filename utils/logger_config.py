@@ -295,7 +295,7 @@ class RobustLoggerConfig:
             
             # 尝试创建一个测试文件
             test_file = directory / ".write_test"
-            test_file.write_text("test")
+            test_file.write_text("test", encoding="utf-8")
             test_file.unlink()
             return True
         except Exception:

@@ -278,7 +278,7 @@ def _acquire_file_lock() -> bool:
     try:
         import fcntl
 
-        fd = open(_LOCK_FILE, "w")
+        fd = open(_LOCK_FILE, "w", encoding="utf-8")
         try:
             fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except (OSError, IOError):
