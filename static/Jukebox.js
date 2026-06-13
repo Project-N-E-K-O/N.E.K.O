@@ -231,7 +231,8 @@ window.Jukebox = {
     const previousMode = Jukebox.State.playbackMode;
     Jukebox.State.playbackMode = nextMode;
     if (nextMode === 'random' && previousMode !== 'random') {
-      const currentSongId = Jukebox.State.currentSong ? Jukebox.State.currentSong.id : null;
+      const currentSongId = (Jukebox.State.currentSong ? Jukebox.State.currentSong.id : null)
+        || Jukebox.getCurrentRandomQueueSongId();
       if (Jukebox.State.randomQueueExitSongId === currentSongId && Jukebox.State.randomQueue.length) {
         Jukebox.State.randomQueueExitSongId = null;
         Jukebox.ensureRandomQueueAnchor(currentSongId);
@@ -239,9 +240,12 @@ window.Jukebox = {
         Jukebox.resetRandomQueue(currentSongId);
       }
     } else if (previousMode === 'random' && nextMode !== 'random') {
-      const currentSongId = Jukebox.State.currentSong ? Jukebox.State.currentSong.id : null;
-      if (currentSongId && (Jukebox.State.isPlaying || Jukebox.State.isPaused) && Jukebox.State.randomQueue.length) {
-        Jukebox.State.randomQueueExitSongId = currentSongId;
+      const activeSongId = Jukebox.State.currentSong ? Jukebox.State.currentSong.id : null;
+      const queuedSongId = !activeSongId ? Jukebox.getCurrentRandomQueueSongId() : null;
+      if (activeSongId && (Jukebox.State.isPlaying || Jukebox.State.isPaused) && Jukebox.State.randomQueue.length) {
+        Jukebox.State.randomQueueExitSongId = activeSongId;
+      } else if (queuedSongId && Jukebox.State.randomQueue.length) {
+        Jukebox.State.randomQueueExitSongId = queuedSongId;
       } else {
         Jukebox.clearRandomQueue();
       }
@@ -355,6 +359,12 @@ window.Jukebox = {
     return (Jukebox.State.songs || []).find(song => song.id === songId) || null;
   },
 
+  getCurrentRandomQueueSongId: function() {
+    const queue = Jukebox.State.randomQueue || [];
+    const queuedSongId = queue[Jukebox.State.randomQueueIndex];
+    return Jukebox.findSongById(queuedSongId) ? queuedSongId : null;
+  },
+
   clearRandomQueue: function() {
     Jukebox.State.randomQueue = [];
     Jukebox.State.randomQueueIndex = -1;
@@ -435,10 +445,8 @@ window.Jukebox = {
       return;
     }
 
-    const queue = Jukebox.State.randomQueue || [];
-    const queuedSongId = queue[Jukebox.State.randomQueueIndex];
     const currentSongId = (Jukebox.State.currentSong ? Jukebox.State.currentSong.id : null)
-      || (Jukebox.findSongById(queuedSongId) ? queuedSongId : null)
+      || Jukebox.getCurrentRandomQueueSongId()
       || null;
     if (!currentSongId || !Jukebox.pruneRandomQueue(currentSongId)) {
       Jukebox.clearRandomQueue();

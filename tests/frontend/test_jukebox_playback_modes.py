@@ -578,6 +578,76 @@ def test_jukebox_random_exit_is_delayed_until_current_song_ends(mock_page: Page)
 
 
 @pytest.mark.frontend
+def test_jukebox_random_exit_uses_queued_anchor_without_current_song(mock_page: Page):
+    setup_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        () => {
+          const J = window.Jukebox;
+          J.State.playbackMode = 'random';
+          J.State.currentSong = null;
+          J.State.isPlaying = false;
+          J.State.isPaused = false;
+          J.State.randomQueue = ['song1', 'song2'];
+          J.State.randomQueueIndex = 1;
+
+          J.setPlaybackMode('sequence');
+          const afterExit = {
+            mode: J.State.playbackMode,
+            queue: [...J.State.randomQueue],
+            index: J.State.randomQueueIndex,
+            pendingExit: J.State.randomQueueExitSongId
+          };
+
+          J.setPlaybackMode('random');
+          const afterReturn = {
+            mode: J.State.playbackMode,
+            queue: [...J.State.randomQueue],
+            index: J.State.randomQueueIndex,
+            pendingExit: J.State.randomQueueExitSongId
+          };
+
+          J.State.currentSong = null;
+          J.State.randomQueue = ['missing-song'];
+          J.State.randomQueueIndex = 0;
+          J.setPlaybackMode('sequence');
+
+          return {
+            afterExit,
+            afterReturn,
+            invalidQueuedAnchor: {
+              queue: [...J.State.randomQueue],
+              index: J.State.randomQueueIndex,
+              pendingExit: J.State.randomQueueExitSongId
+            }
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "afterExit": {
+            "mode": "sequence",
+            "queue": ["song1", "song2"],
+            "index": 1,
+            "pendingExit": "song2",
+        },
+        "afterReturn": {
+            "mode": "random",
+            "queue": ["song1", "song2"],
+            "index": 1,
+            "pendingExit": None,
+        },
+        "invalidQueuedAnchor": {
+            "queue": [],
+            "index": -1,
+            "pendingExit": None,
+        },
+    }
+
+
+@pytest.mark.frontend
 def test_jukebox_random_exit_prunes_removed_songs_while_preserving_anchor(mock_page: Page):
     setup_jukebox_page(mock_page)
 
