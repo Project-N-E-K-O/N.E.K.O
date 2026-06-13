@@ -2617,11 +2617,13 @@
       .catch(function () { return { top: [], total_players: 0, your_best: null }; });
   }
   function submitScore(entry) {
+    var completedSessionId = sessionId;
+    var completedLanlanName = lanlanName;
     var routeEndReady = endedRoute && routeEndPromise ? routeEndPromise.catch(function () {}) : Promise.resolve();
     return routeEndReady.then(function () {
       return post('/leaderboard', {
-        session_id: sessionId,
-        lanlan_name: lanlanName,
+        session_id: completedSessionId,
+        lanlan_name: completedLanlanName,
         score: entry.score,
         streak: entry.streak,
         max_distance_px: entry.maxDistancePx,
@@ -4697,6 +4699,8 @@
       attempts_results: game.attemptsResults.slice(-12),
       game_summary: buildGameSummary(),
       finalScore: {
+        player: game.totalScore,
+        ai: isDuelMode() ? game.duel.nekoScore : 0,
         score: game.totalScore,
         best_streak: game.bestStreak,
         made_count: game.madeCount,
@@ -4707,6 +4711,8 @@
         game: 'basketball',
         mode: currentMode,
         score: {
+          player: game.totalScore,
+          ai: isDuelMode() ? game.duel.nekoScore : 0,
           score: game.totalScore,
           best_streak: game.bestStreak,
           made_count: game.madeCount,

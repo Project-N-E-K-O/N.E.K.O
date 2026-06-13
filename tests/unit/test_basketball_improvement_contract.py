@@ -645,12 +645,18 @@ def test_basketball_scoring_waits_for_route_end_and_records_run_max():
 
     assert "function getRunMaxDistancePx() {" in html
     assert "var routeEndPromise = null;" in html
+    assert "var completedSessionId = sessionId;" in html
+    assert "var completedLanlanName = lanlanName;" in html
     assert "var routeEndReady = endedRoute && routeEndPromise ? routeEndPromise.catch(function () {}) : Promise.resolve();" in html
+    assert "session_id: completedSessionId," in html
+    assert "lanlan_name: completedLanlanName," in html
     assert "var duelEntry = recordGame(game.bestStreak, getRunMaxDistancePx(), game.totalScore, game.shotTypeCount);" in html
     assert "var savedEntry = recordGame(game.bestStreak, getRunMaxDistancePx(), game.totalScore, game.shotTypeCount);" in html
     assert "routeEndPromise = fetch(url, { method: 'POST'" in html
 
+    session_capture_index = html.index("var completedSessionId = sessionId;")
     route_ready_index = html.index("var routeEndReady = endedRoute && routeEndPromise ? routeEndPromise.catch(function () {}) : Promise.resolve();")
+    assert session_capture_index < route_ready_index
     assert route_ready_index < html.index("var duelEntry = recordGame(", route_ready_index)
     assert route_ready_index < html.index("var savedEntry = recordGame(", route_ready_index)
 
@@ -660,6 +666,8 @@ def test_basketball_route_end_payload_contains_archive_score():
     html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
 
     assert "finalScore: {" in html
+    assert "player: game.totalScore," in html
+    assert "ai: isDuelMode() ? game.duel.nekoScore : 0," in html
     assert "currentState: {\n        game: 'basketball',\n        mode: currentMode,\n        score: {" in html
     assert "max_distance_px: getRunMaxDistancePx()," in html
 
