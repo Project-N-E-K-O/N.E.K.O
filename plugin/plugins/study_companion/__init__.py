@@ -123,7 +123,7 @@ def _register_install_routes() -> None:
 
 def _plugin_detail_ui_url(*, plugin_id: str, port: str) -> str:
     safe_plugin_id = quote(plugin_id, safe="")
-    return f"http://127.0.0.1:{port}/plugins/{safe_plugin_id}?tab=ui"
+    return f"http://127.0.0.1:{port}/ui/plugins/{safe_plugin_id}?tab=ui"
 
 
 try:
