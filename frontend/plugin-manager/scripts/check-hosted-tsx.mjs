@@ -449,23 +449,39 @@ function resolveRelativeImport(fromPath, specifier) {
   return null
 }
 
-function copyRelativeDependencies(sourcePath, tempDir, copied = new Set(), depth = 0) {
+function dependencyCycleMessage(cyclePaths) {
+  return cyclePaths
+    .map((cyclePath) => relative(repoRoot, cyclePath).replace(/\\/g, '/'))
+    .join(' -> ')
+}
+
+function copyRelativeDependencies(sourcePath, tempDir, copied = new Set(), visiting = [], depth = 0) {
   const resolvedPath = assertPathInsideRepo(sourcePath, 'Source path')
+  const cycleStart = visiting.indexOf(resolvedPath)
+  if (cycleStart >= 0) {
+    const cycle = [...visiting.slice(cycleStart), resolvedPath]
+    throw new Error(`Circular hosted TSX dependency: ${dependencyCycleMessage(cycle)}`)
+  }
   if (copied.has(resolvedPath)) return
   if (depth > maxRelativeImportDepth) {
     throw new Error(`Relative import depth exceeded ${maxRelativeImportDepth}: ${resolvedPath}`)
   }
-  copied.add(resolvedPath)
+  visiting.push(resolvedPath)
   const source = readSourceFile(resolvedPath)
   const targetPath = tempPathForSource(resolvedPath, tempDir)
   mkdirForFile(targetPath, 'hosted TSX copy')
   writeTextFile(targetPath, source, 'hosted TSX dependency copy')
 
-  for (const specifier of extractRelativeImportSpecifiers(resolvedPath, source)) {
-    const dependencyPath = resolveRelativeImport(resolvedPath, specifier)
-    if (dependencyPath) {
-      copyRelativeDependencies(dependencyPath, tempDir, copied, depth + 1)
+  try {
+    for (const specifier of extractRelativeImportSpecifiers(resolvedPath, source)) {
+      const dependencyPath = resolveRelativeImport(resolvedPath, specifier)
+      if (dependencyPath) {
+        copyRelativeDependencies(dependencyPath, tempDir, copied, visiting, depth + 1)
+      }
     }
+    copied.add(resolvedPath)
+  } finally {
+    visiting.pop()
   }
 }
 

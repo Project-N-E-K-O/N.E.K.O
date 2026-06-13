@@ -201,3 +201,33 @@ ${index === 0 ? 'export default function Panel() { return <Page title={String(va
     assert.match(result.stderr, /Relative import depth exceeded 64/)
   })
 })
+
+test('rejects circular relative hosted dependencies', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'circular-imports')
+    writePluginToml(pluginDir, 'main.tsx')
+    writeFixtureFile(
+      join(pluginDir, 'main.tsx'),
+      `import { value } from './a'
+export default function Panel() { return <Page title={String(value)} /> }
+`,
+    )
+    writeFixtureFile(
+      join(pluginDir, 'a.ts'),
+      `import { value as nextValue } from './b'
+export const value = nextValue + 1
+`,
+    )
+    writeFixtureFile(
+      join(pluginDir, 'b.ts'),
+      `import { value as nextValue } from './a'
+export const value = nextValue + 1
+`,
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /Circular hosted TSX dependency: .*a\.ts -> .*b\.ts -> .*a\.ts/)
+  })
+})

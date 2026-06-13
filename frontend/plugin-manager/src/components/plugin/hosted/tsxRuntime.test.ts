@@ -363,6 +363,25 @@ describe('hosted TSX document runtime', () => {
     expect(root.querySelector('strong')?.textContent).toBe('default-namespace')
   })
 
+  it('exports TypeScript enums from hosted dependencies', () => {
+    const { root } = executeHostedDocument(`
+      import { Rating } from "./ratings"
+
+      export default function Panel() {
+        return <strong>{Rating.Good}</strong>
+      }
+    `, baseContext(), baseContext(), [{
+      path: 'ui/ratings.ts',
+      source: `
+        export enum Rating {
+          Good = "good",
+        }
+      `,
+    }])
+
+    expect(root.querySelector('strong')?.textContent).toBe('good')
+  })
+
   it('rejects hosted imports that escape the plugin UI root', () => {
     expect(() => executeHostedDocument(`
       import { label } from "../../escape"

@@ -365,6 +365,10 @@ function transformModuleExports(source: string) {
   let next = source
     .replace(/^\s*export\s+type\s+\{[^}]*\}\s*;?\s*$/gm, '')
     .replace(/^\s*export\s+(?=(interface|type)\b)/gm, '')
+    .replace(/^([^\S\r\n]*)export\s+(?:const\s+)?enum\s+([A-Za-z_$][\w$]*)/gm, (_match, indent, name) => {
+      exports.push(exportAssignment(name))
+      return `${indent}enum ${name}`
+    })
   next = transformVariableExports(next, exports)
   next = next
     .replace(
