@@ -229,6 +229,8 @@ body {
     overflow-y: auto;
     overflow-x: hidden;
     box-sizing: border-box;
+    direction: rtl;
+    scrollbar-gutter: stable;
     scrollbar-width: thin;
     scrollbar-color: rgba(150, 232, 255, 0.6) rgba(240, 248, 255, 0.3);
     pointer-events: auto;
@@ -236,6 +238,10 @@ body {
 }
 
 /* 侧边栏滚动条样式 - 与Live2D模式一致 */
+#sidebar > * {
+    direction: ltr;
+}
+
 #sidebar::-webkit-scrollbar {
     width: 8px;
 }
