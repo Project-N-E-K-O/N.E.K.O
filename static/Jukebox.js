@@ -446,12 +446,14 @@ window.Jukebox = {
     }
   },
 
-  pickRandomSongExcluding: function(excludedId) {
+  pickRandomSongExcluding: function(excludedIds) {
     const songs = Jukebox.State.songs || [];
     if (!songs.length) return null;
-    const candidates = songs.length > 1
-      ? songs.filter(song => song.id !== excludedId)
-      : songs;
+    const excludedSet = new Set((Array.isArray(excludedIds) ? excludedIds : [excludedIds]).filter(Boolean));
+    let candidates = songs.filter(song => !excludedSet.has(song.id));
+    if (!candidates.length && songs.length === 1) {
+      candidates = songs;
+    }
     if (!candidates.length) return null;
     return candidates[Math.floor(Math.random() * candidates.length)];
   },
@@ -492,7 +494,12 @@ window.Jukebox = {
       return Jukebox.findSongById(Jukebox.State.randomQueue[Jukebox.State.randomQueueIndex]);
     }
 
-    const nextRandomSong = Jukebox.pickRandomSongExcluding(currentSongId);
+    const staleCurrentSongId = Jukebox.State.currentSong ? Jukebox.State.currentSong.id : null;
+    const excludedIds = [currentSongId];
+    if (staleCurrentSongId && staleCurrentSongId !== currentSongId) {
+      excludedIds.push(staleCurrentSongId);
+    }
+    const nextRandomSong = Jukebox.pickRandomSongExcluding(excludedIds);
     if (!nextRandomSong) return null;
     Jukebox.State.randomQueue.push(nextRandomSong.id);
     Jukebox.State.randomQueueIndex = Jukebox.State.randomQueue.length - 1;

@@ -689,7 +689,7 @@ def test_jukebox_random_rapid_next_uses_advanced_queue_anchor(mock_page: Page):
           const J = window.Jukebox;
           const played = [];
           let randomCalls = 0;
-          const randomValues = [0, 0.9];
+          const randomValues = [0, 0];
           const originalRandom = Math.random;
           Math.random = () => randomValues[randomCalls++] || 0;
           J.playSong = (songId, options = {}) => {
