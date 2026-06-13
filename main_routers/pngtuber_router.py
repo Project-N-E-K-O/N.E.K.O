@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """PNGTuber model package endpoints."""
 
+import asyncio
 import json
 import re
 import shutil
@@ -161,7 +162,7 @@ async def upload_pngtuber_model(files: list[UploadFile] = File(...)):
 
     temp_dir = config_mgr.pngtuber_dir / f".{model_dir_name}.uploading"
     if temp_dir.exists():
-        shutil.rmtree(temp_dir)
+        await asyncio.to_thread(shutil.rmtree, temp_dir)
     temp_dir.mkdir(parents=True, exist_ok=True)
 
     total_size = 0
@@ -242,7 +243,7 @@ async def upload_pngtuber_model(files: list[UploadFile] = File(...)):
             except Exception:
                 pass
         if temp_dir.exists():
-            shutil.rmtree(temp_dir, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
 
 
 @router.get("/models")
@@ -255,7 +256,7 @@ async def get_pngtuber_models():
             if not package_dir.is_dir() or not (package_dir / "model.json").exists():
                 continue
             try:
-                model_json = _read_model_json(package_dir)
+                model_json = await asyncio.to_thread(_read_model_json, package_dir)
                 if model_json.get("model_type") != "pngtuber":
                     continue
                 pngtuber = _normalize_pngtuber_config(package_dir.name, model_json)
@@ -297,5 +298,5 @@ async def delete_pngtuber_model(payload: dict = Body(...)):
         return JSONResponse(status_code=400, content={"success": False, "error": "路径越界"})
     if not target_dir.exists() or not target_dir.is_dir():
         return JSONResponse(status_code=404, content={"success": False, "error": "PNGTuber模型不存在"})
-    shutil.rmtree(target_dir)
+    await asyncio.to_thread(shutil.rmtree, target_dir)
     return JSONResponse(content={"success": True, "message": f"PNGTuber模型 {folder} 已删除"})
