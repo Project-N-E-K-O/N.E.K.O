@@ -82,8 +82,8 @@
     function getLanguageFromQuery() {
         try {
             const params = new URLSearchParams(window.location.search || '');
-            const queryLanguage = String(params.get('ui_lang') || params.get('lang') || '').trim();
-            if (queryLanguage && SUPPORTED_LANGUAGES.includes(queryLanguage)) {
+            const queryLanguage = normalizeSupportedLanguageCode(params.get('ui_lang') || params.get('lang'));
+            if (queryLanguage) {
                 return queryLanguage;
             }
         } catch (error) {

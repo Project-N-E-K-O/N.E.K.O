@@ -507,6 +507,8 @@ def test_i18n_script_supports_explicit_popup_language_query():
 
     assert "function getLanguageFromQuery()" in script
     assert "params.get('ui_lang')" in script
+    assert "normalizeSupportedLanguageCode(params.get('ui_lang') || params.get('lang'))" in script
+    assert "SUPPORTED_LANGUAGES.includes(queryLanguage)" not in script
 
 
 @pytest.mark.unit
