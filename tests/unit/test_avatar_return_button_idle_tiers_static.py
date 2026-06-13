@@ -522,7 +522,7 @@ def test_cat1_edge_peek_only_applies_after_drag_release():
     drag_start_block = _source_slice_between(
         source,
         "const handleStart = (clientX, clientY, pointerType = 'mouse') => {",
-        "const handleMove = (clientX, clientY) => {",
+        "const handleMove = (clientX, clientY, sourceEvent = null) => {",
         "return button drag start",
     )
     _assert_source_order(
@@ -604,10 +604,17 @@ def test_cat1_edge_peek_only_applies_after_drag_release():
     native_begin_block = _source_slice_between(
         app_ui_source,
         "function beginDrag(screenX, screenY, event)",
-        "function updateDrag(screenX, screenY)",
+        "function updateDrag(screenX, screenY, sourcePoint = null)",
         "native return-ball drag start",
     )
-    assert "restoreNekoIdleCat1EdgePeekBeforeDrag(container);" in native_begin_block
+    _assert_source_order(
+        native_begin_block,
+        "native return-ball drag start restores edge peek before dispatch",
+        "const dragStarted = window.nekoPetDrag.start(screenX, screenY);",
+        "restoreNekoIdleCat1EdgePeekBeforeDrag(container);",
+        "window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {",
+        "state.isDragging = true;",
+    )
 
 
 def test_model_goodbye_exit_shrinks_in_place_instead_of_sliding_right():
@@ -932,12 +939,22 @@ def test_return_button_drag_randomizes_asset_once_per_drag_action():
     )
     _assert_source_contains(
         set_drag_art_block,
-        "const dragSrc = rapidSrc || button.__nekoIdleReturnDragAssetUrl || _pickNekoIdleReturnDragAssetUrl(tier);",
+        "const cachedDragSrc = button.__nekoIdleReturnDragAssetTier === normalizedTier",
+        "return drag action art",
+    )
+    _assert_source_contains(
+        set_drag_art_block,
+        "const dragSrc = rapidSrc || cachedDragSrc || _pickNekoIdleReturnDragAssetUrl(normalizedTier);",
         "return drag action art",
     )
     _assert_source_contains(
         set_drag_art_block,
         "button.__nekoIdleReturnDragAssetUrl = dragSrc;",
+        "return drag action art",
+    )
+    _assert_source_contains(
+        set_drag_art_block,
+        "button.__nekoIdleReturnDragAssetTier = normalizedTier;",
         "return drag action art",
     )
 
@@ -951,6 +968,7 @@ def test_return_button_drag_randomizes_asset_once_per_drag_action():
         start_drag_block,
         "return drag action start",
         "state.tier = tier;",
+        "button.__nekoIdleReturnDragAssetTier = tier;",
         "button.__nekoIdleReturnDragAssetUrl = _pickNekoIdleReturnDragAssetUrl(tier);",
         "_setNekoIdleReturnDragActionArt(button, tier);",
     )
@@ -965,6 +983,11 @@ def test_return_button_drag_randomizes_asset_once_per_drag_action():
     _assert_source_contains(
         finish_drag_block,
         "button.__nekoIdleReturnDragAssetUrl = '';",
+        "return drag action finish",
+    )
+    _assert_source_contains(
+        finish_drag_block,
+        "button.__nekoIdleReturnDragAssetTier = _NEKO_IDLE_TIER_NONE;",
         "return drag action finish",
     )
 
@@ -1018,7 +1041,7 @@ def test_local_return_button_drag_recovers_lost_release_without_active_timeout()
         "if (isDragging && dragPointerType === 'mouse' && e.buttons === 0) {",
         "handleEnd();",
         "return;",
-        "handleMove(e.clientX, e.clientY);",
+        "handleMove(e.clientX, e.clientY, e);",
     )
     _assert_source_order(
         drag_setup,
@@ -1048,6 +1071,7 @@ def test_cat1_rapid_drag_reaction_is_same_drag_motion_only():
     assert "function _handleNekoIdleCat1RapidDragMotionForContainer(container, detail)" in source
     assert "function _activateNekoIdleCat1RapidDragReaction(button, tier)" in source
     assert "function _clearNekoIdleCat1RapidDragReaction(button)" in source
+    assert "function _isNekoIdleCat1RapidDragCurrentTier(button)" in source
     assert "function _restoreNekoIdleCat1NormalDragArt(button)" in source
     assert "function _isNekoIdleCat1RapidDragWindowReady(reversals)" in source
     assert "function _getNekoIdleCat1RapidDragVector(point, motion)" in source
@@ -1063,6 +1087,98 @@ def test_cat1_rapid_drag_reaction_is_same_drag_motion_only():
     assert "dot / (previousLength * currentLength)" in source
     assert "cosine <= _NEKO_IDLE_CAT1_RAPID_DRAG_REVERSE_DOT_THRESHOLD" in source
 
+    current_tier_block = _source_slice_between(
+        source,
+        "function _isNekoIdleCat1RapidDragCurrentTier(button)",
+        "function _resetNekoIdleCat1RapidDragMotion(button)",
+        "cat1 rapid drag current tier gate",
+    )
+    _assert_source_contains(
+        current_tier_block,
+        "return _normalizeNekoIdleReturnTier(button && button.getAttribute('data-neko-idle-tier')) === _NEKO_IDLE_TIER_CAT1;",
+        "cat1 rapid drag current tier gate",
+    )
+
+    restore_drag_block = _source_slice_between(
+        source,
+        "function _restoreNekoIdleCat1NormalDragArt(button)",
+        "function _clearNekoIdleCat1RapidDragReaction(button)",
+        "cat1 rapid drag restore",
+    )
+    _assert_source_order(
+        restore_drag_block,
+        "cat1 rapid drag restore gates against current tier",
+        "const currentTier = _normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier'));",
+        "if (currentTier !== _NEKO_IDLE_TIER_CAT1 || state.tier !== _NEKO_IDLE_TIER_CAT1) return;",
+        "_setNekoIdleReturnDragActionArt(button, currentTier);",
+        "_playNekoIdleCat1DragSound(currentTier);",
+    )
+    assert "state.tier || button.getAttribute('data-neko-idle-tier')" not in restore_drag_block
+
+    activate_drag_block = _source_slice_between(
+        source,
+        "function _activateNekoIdleCat1RapidDragReaction(button, tier)",
+        "function _getNekoIdleDragMotionPoint(detail)",
+        "cat1 rapid drag activation",
+    )
+    _assert_source_order(
+        activate_drag_block,
+        "cat1 rapid drag activation gates against current tier",
+        "if (!button || normalizedTier !== _NEKO_IDLE_TIER_CAT1) return false;",
+        "if (!_isNekoIdleCat1RapidDragCurrentTier(button)) return false;",
+        "const state = _getNekoIdleReturnDragActionState(button);",
+    )
+    rapid_timer_block = _source_slice_between(
+        activate_drag_block,
+        "state.rapidTimer = setTimeout(() => {",
+        "}, _NEKO_IDLE_CAT1_RAPID_DRAG_REACTION_MS);",
+        "cat1 rapid drag timer",
+    )
+    _assert_source_order(
+        rapid_timer_block,
+        "cat1 rapid drag timer clears without restoring after tier drift",
+        "if (state.rapidToken !== rapidToken || !state.active || state.tier !== _NEKO_IDLE_TIER_CAT1) return;",
+        "const currentTier = _normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier'));",
+        "state.rapidTimer = 0;",
+        "state.rapidActive = false;",
+        "_resetNekoIdleCat1RapidDragMotion(button);",
+        "if (currentTier !== _NEKO_IDLE_TIER_CAT1) return;",
+        "_restoreNekoIdleCat1NormalDragArt(button);",
+    )
+
+    motion_point_block = _source_slice_between(
+        source,
+        "function _getNekoIdleDragMotionPoint(detail)",
+        "function _isNekoIdleCat1RapidDragWindowReady(reversals)",
+        "cat1 rapid drag motion point",
+    )
+    _assert_source_order(
+        motion_point_block,
+        "cat1 rapid drag motion uses screen coordinates before client fallback",
+        "const screenX = Number(detail && detail.screenX);",
+        "const screenY = Number(detail && detail.screenY);",
+        "const clientX = Number(detail && detail.clientX);",
+        "const clientY = Number(detail && detail.clientY);",
+        "const hasScreenPoint = Number.isFinite(screenX) && Number.isFinite(screenY);",
+        "const rawX = hasScreenPoint ? screenX : clientX;",
+        "const rawY = hasScreenPoint ? screenY : clientY;",
+    )
+
+    motion_block = _source_slice_between(
+        source,
+        "function _handleNekoIdleCat1RapidDragMotionForContainer(container, detail)",
+        "function _setNekoIdleReturnDragActionArt(button, tier)",
+        "cat1 rapid drag motion handler",
+    )
+    _assert_source_order(
+        motion_block,
+        "cat1 rapid drag motion gates against current tier before tracking movement",
+        "const tier = _normalizeNekoIdleReturnTier(state && state.tier);",
+        "if (!state || !state.active || tier !== _NEKO_IDLE_TIER_CAT1 || state.rapidActive) return false;",
+        "if (!_isNekoIdleCat1RapidDragCurrentTier(button)) return false;",
+        "const point = _getNekoIdleDragMotionPoint(detail);",
+    )
+
     set_drag_art_block = _source_slice_between(
         source,
         "function _setNekoIdleReturnDragActionArt(button, tier)",
@@ -1072,8 +1188,10 @@ def test_cat1_rapid_drag_reaction_is_same_drag_motion_only():
     _assert_source_order(
         set_drag_art_block,
         "return drag action art",
-        "const rapidSrc = _getNekoIdleCat1RapidDragAssetUrl(button, tier);",
-        "const dragSrc = rapidSrc || button.__nekoIdleReturnDragAssetUrl || _pickNekoIdleReturnDragAssetUrl(tier);",
+        "const normalizedTier = _normalizeNekoIdleReturnTier(tier);",
+        "const rapidSrc = _getNekoIdleCat1RapidDragAssetUrl(button, normalizedTier);",
+        "const cachedDragSrc = button.__nekoIdleReturnDragAssetTier === normalizedTier",
+        "const dragSrc = rapidSrc || cachedDragSrc || _pickNekoIdleReturnDragAssetUrl(normalizedTier);",
     )
 
     start_drag_block = _source_slice_between(
@@ -1086,6 +1204,7 @@ def test_cat1_rapid_drag_reaction_is_same_drag_motion_only():
         start_drag_block,
         "return drag action start",
         "_resetNekoIdleCat1RapidDragMotion(button);",
+        "button.__nekoIdleReturnDragAssetTier = tier;",
         "button.__nekoIdleReturnDragAssetUrl = _pickNekoIdleReturnDragAssetUrl(tier);",
     )
 
@@ -1100,6 +1219,26 @@ def test_cat1_rapid_drag_reaction_is_same_drag_motion_only():
         "return drag action finish",
         "_clearNekoIdleCat1RapidDragReaction(button);",
         "button.__nekoIdleReturnDragAssetUrl = '';",
+        "button.__nekoIdleReturnDragAssetTier = _NEKO_IDLE_TIER_NONE;",
+    )
+
+    presentation_block = _source_slice_between(
+        source,
+        "function _applyNekoIdleReturnPresentation(button, tier)",
+        "function _readNekoAutoGoodbyeVisualTier()",
+        "return presentation",
+    )
+    _assert_source_order(
+        presentation_block,
+        "tier changes clear cat1 rapid drag state before repaint",
+        "const dragState = button.__nekoIdleReturnDragActionState;",
+        "const dragActive = _isNekoIdleReturnDragActionActive(button);",
+        "if (dragActive && normalizedTier !== _NEKO_IDLE_TIER_CAT1) {",
+        "const wasCat1Drag = dragState && dragState.tier === _NEKO_IDLE_TIER_CAT1;",
+        "_clearNekoIdleCat1RapidDragReaction(button);",
+        "if (wasCat1Drag) _fadeOutNekoIdleCat1DragSound();",
+        "button.setAttribute('data-neko-idle-tier', normalizedTier);",
+        "_setNekoIdleReturnDragActionArt(button, normalizedTier);",
     )
 
     manual_move_handler = _source_slice_between(
@@ -1131,10 +1270,53 @@ def test_cat1_rapid_drag_reaction_is_same_drag_motion_only():
         "_dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-active');",
         "_dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-motion'",
     )
+    _assert_source_contains(
+        local_drag_setup,
+        "const handleMove = (clientX, clientY, sourceEvent = null) => {",
+        "return button drag setup",
+    )
+    _assert_source_order(
+        local_drag_setup,
+        "local return-ball drag motion emits client and screen coordinates",
+        "clientX: clientX,",
+        "clientY: clientY,",
+        "screenX: sourceEvent && Number.isFinite(sourceEvent.screenX) ? sourceEvent.screenX : clientX,",
+        "screenY: sourceEvent && Number.isFinite(sourceEvent.screenY) ? sourceEvent.screenY : clientY,",
+        "deltaX: deltaX,",
+        "deltaY: deltaY,",
+        "timestamp: Date.now()",
+    )
+    _assert_source_contains(
+        local_drag_setup,
+        "handleMove(e.clientX, e.clientY, e);",
+        "return button drag setup",
+    )
+    _assert_source_contains(
+        local_drag_setup,
+        "handleMove(e.touches[0].clientX, e.touches[0].clientY, e.touches[0]);",
+        "return button drag setup",
+    )
 
-    assert "reason: 'return-ball-drag-motion'" in app_ui_source
-    assert "screenX: screenX" in app_ui_source
-    assert "screenY: screenY" in app_ui_source
+    native_drag_motion_block = _source_slice_between(
+        app_ui_source,
+        "function updateDrag(screenX, screenY, sourcePoint = null)",
+        "async function finishDrag(screenX, screenY)",
+        "native return-ball drag motion",
+    )
+    _assert_source_order(
+        native_drag_motion_block,
+        "native return-ball drag motion emits client and screen coordinates",
+        "reason: 'return-ball-drag-motion'",
+        "clientX: sourcePoint && Number.isFinite(sourcePoint.clientX) ? sourcePoint.clientX : screenX,",
+        "clientY: sourcePoint && Number.isFinite(sourcePoint.clientY) ? sourcePoint.clientY : screenY,",
+        "screenX: screenX",
+        "screenY: screenY",
+        "deltaX: dx",
+        "deltaY: dy",
+        "timestamp: Date.now()",
+    )
+    assert "updateDrag(event.screenX, event.screenY, event);" in app_ui_source
+    assert "updateDrag(point.x, point.y, event.touches[0]);" in app_ui_source
 
 
 def test_idle_thought_bubble_is_sound_triggered_with_fade():
@@ -1459,20 +1641,20 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
     assert "object-fit: contain;" in bubble_bg_block
     assert "transform-origin: center center;" in bubble_bg_block
 
-    pop_asset = Image.open(THOUGHT_BUBBLE_POP_ASSET_PATH)
-    pop_durations = []
-    pop_bboxes = []
-    for frame_index in range(pop_asset.n_frames):
-        pop_asset.seek(frame_index)
-        pop_durations.append(pop_asset.info.get("duration"))
-        pop_bboxes.append(pop_asset.convert("RGBA").getchannel("A").getbbox())
-    assert pop_asset.size == (248, 244)
-    assert pop_asset.n_frames == 6
-    assert pop_durations == [80, 90, 100, 120, 150, 520]
-    assert sum(pop_durations) == 1060
-    assert sum(duration for duration, bbox in zip(pop_durations, pop_bboxes) if bbox is not None) == 540
-    assert pop_bboxes[-1] is None
-    assert pop_bboxes[0] == (8, 49, 248, 202)
+    with Image.open(THOUGHT_BUBBLE_POP_ASSET_PATH) as pop_asset:
+        pop_durations = []
+        pop_bboxes = []
+        for frame_index in range(pop_asset.n_frames):
+            pop_asset.seek(frame_index)
+            pop_durations.append(pop_asset.info.get("duration"))
+            pop_bboxes.append(pop_asset.convert("RGBA").getchannel("A").getbbox())
+        assert pop_asset.size == (248, 244)
+        assert pop_asset.n_frames == 6
+        assert pop_durations == [80, 90, 100, 120, 150, 520]
+        assert sum(pop_durations) == 1060
+        assert sum(duration for duration, bbox in zip(pop_durations, pop_bboxes) if bbox is not None) == 540
+        assert pop_bboxes[-1] is None
+        assert pop_bboxes[0] == (8, 49, 248, 202)
 
     bubble_item_block = _extract_css_block(css_source, ".neko-idle-thought-bubble-item")
     assert "position: absolute;" in bubble_item_block
@@ -1781,7 +1963,7 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
     handle_start = _source_slice_between(
         source,
         "const handleStart = (clientX, clientY, pointerType = 'mouse') => {",
-        "const handleMove = (clientX, clientY) => {",
+        "const handleMove = (clientX, clientY, sourceEvent = null) => {",
         "return button drag start handler",
     )
     handle_end = _source_slice_between(

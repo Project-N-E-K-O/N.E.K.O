@@ -2928,14 +2928,13 @@
                 return;
             }
 
+            restoreNekoIdleCat1EdgePeekBeforeDrag(container);
             window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
                 detail: {
                     reason: 'return-ball-drag-start',
                     container: container
                 }
             }));
-
-            restoreNekoIdleCat1EdgePeekBeforeDrag(container);
             state.isDragging = true;
             state.hasMoved = false;
             state.startScreenX = screenX;
@@ -3017,7 +3016,7 @@
             }
         }
 
-        function updateDrag(screenX, screenY) {
+        function updateDrag(screenX, screenY, sourcePoint = null) {
             if (!state.isDragging) return;
             markDragPointerActivity();
             state.releaseScreenX = screenX;
@@ -3041,6 +3040,8 @@
                     detail: {
                         reason: 'return-ball-drag-motion',
                         container: container,
+                        clientX: sourcePoint && Number.isFinite(sourcePoint.clientX) ? sourcePoint.clientX : screenX,
+                        clientY: sourcePoint && Number.isFinite(sourcePoint.clientY) ? sourcePoint.clientY : screenY,
                         screenX: screenX,
                         screenY: screenY,
                         deltaX: dx,
@@ -3223,7 +3224,7 @@
         };
         state.handleMouseMove = (event) => {
             if (finishDragIfMouseButtonReleased(event, 'mousemove-buttons-released')) return;
-            updateDrag(event.screenX, event.screenY);
+            updateDrag(event.screenX, event.screenY, event);
         };
         state.handleMouseUp = (event) => {
             void finishDrag(event.screenX, event.screenY);
@@ -3231,7 +3232,7 @@
         state.handlePointerMove = (event) => {
             if (finishDragIfMouseButtonReleased(event, 'pointermove-buttons-released')) return;
             if (event && event.pointerType === 'mouse') {
-                updateDrag(event.screenX, event.screenY);
+                updateDrag(event.screenX, event.screenY, event);
             }
         };
         state.handlePointerUp = (event) => {
@@ -3251,7 +3252,7 @@
             const point = getTouchScreenPoint(event.touches[0]);
             if (!point) return;
             event.preventDefault();
-            updateDrag(point.x, point.y);
+            updateDrag(point.x, point.y, event.touches[0]);
         };
         state.handleTouchEnd = (event) => {
             const point = getTouchScreenPoint(event.changedTouches && event.changedTouches[0]);

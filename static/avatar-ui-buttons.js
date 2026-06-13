@@ -1717,6 +1717,10 @@ function _getNekoIdleCat1RapidDragAssetUrl(button, tier) {
         : '';
 }
 
+function _isNekoIdleCat1RapidDragCurrentTier(button) {
+    return _normalizeNekoIdleReturnTier(button && button.getAttribute('data-neko-idle-tier')) === _NEKO_IDLE_TIER_CAT1;
+}
+
 function _resetNekoIdleCat1RapidDragMotion(button) {
     const state = _getNekoIdleReturnDragActionState(button);
     if (!state) return;
@@ -1733,10 +1737,10 @@ function _restoreNekoIdleCat1NormalDragArt(button) {
     if (!button) return;
     const state = button.__nekoIdleReturnDragActionState;
     if (!state || !state.active) return;
-    const tier = _normalizeNekoIdleReturnTier(state.tier || button.getAttribute('data-neko-idle-tier'));
-    if (tier !== _NEKO_IDLE_TIER_CAT1) return;
-    _setNekoIdleReturnDragActionArt(button, tier);
-    _playNekoIdleCat1DragSound(tier);
+    const currentTier = _normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier'));
+    if (currentTier !== _NEKO_IDLE_TIER_CAT1 || state.tier !== _NEKO_IDLE_TIER_CAT1) return;
+    _setNekoIdleReturnDragActionArt(button, currentTier);
+    _playNekoIdleCat1DragSound(currentTier);
 }
 
 function _clearNekoIdleCat1RapidDragReaction(button) {
@@ -1754,6 +1758,7 @@ function _clearNekoIdleCat1RapidDragReaction(button) {
 function _activateNekoIdleCat1RapidDragReaction(button, tier) {
     const normalizedTier = _normalizeNekoIdleReturnTier(tier);
     if (!button || normalizedTier !== _NEKO_IDLE_TIER_CAT1) return false;
+    if (!_isNekoIdleCat1RapidDragCurrentTier(button)) return false;
     const state = _getNekoIdleReturnDragActionState(button);
     if (!state || !state.active) return false;
     if (state.rapidActive) return true;
@@ -1769,17 +1774,24 @@ function _activateNekoIdleCat1RapidDragReaction(button, tier) {
     _playNekoIdleCat1RapidDragSound(normalizedTier);
     state.rapidTimer = setTimeout(() => {
         if (state.rapidToken !== rapidToken || !state.active || state.tier !== _NEKO_IDLE_TIER_CAT1) return;
+        const currentTier = _normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier'));
         state.rapidTimer = 0;
         state.rapidActive = false;
         _resetNekoIdleCat1RapidDragMotion(button);
+        if (currentTier !== _NEKO_IDLE_TIER_CAT1) return;
         _restoreNekoIdleCat1NormalDragArt(button);
     }, _NEKO_IDLE_CAT1_RAPID_DRAG_REACTION_MS);
     return true;
 }
 
 function _getNekoIdleDragMotionPoint(detail) {
-    const rawX = Number(detail && (detail.clientX ?? detail.screenX));
-    const rawY = Number(detail && (detail.clientY ?? detail.screenY));
+    const screenX = Number(detail && detail.screenX);
+    const screenY = Number(detail && detail.screenY);
+    const clientX = Number(detail && detail.clientX);
+    const clientY = Number(detail && detail.clientY);
+    const hasScreenPoint = Number.isFinite(screenX) && Number.isFinite(screenY);
+    const rawX = hasScreenPoint ? screenX : clientX;
+    const rawY = hasScreenPoint ? screenY : clientY;
     if (!Number.isFinite(rawX) || !Number.isFinite(rawY)) return null;
     const rawAt = Number(detail && detail.timestamp);
     return {
@@ -1832,6 +1844,7 @@ function _handleNekoIdleCat1RapidDragMotionForContainer(container, detail) {
     const state = _getNekoIdleReturnDragActionState(button);
     const tier = _normalizeNekoIdleReturnTier(state && state.tier);
     if (!state || !state.active || tier !== _NEKO_IDLE_TIER_CAT1 || state.rapidActive) return false;
+    if (!_isNekoIdleCat1RapidDragCurrentTier(button)) return false;
 
     const point = _getNekoIdleDragMotionPoint(detail);
     if (!point) return false;
@@ -1895,14 +1908,21 @@ function _setNekoIdleReturnDragPendingClasses(button, active) {
 function _setNekoIdleReturnDragActionArt(button, tier) {
     if (!button) return;
     const art = button && button.querySelector('.neko-idle-return-art');
-    const rapidSrc = _getNekoIdleCat1RapidDragAssetUrl(button, tier);
-    const dragSrc = rapidSrc || button.__nekoIdleReturnDragAssetUrl || _pickNekoIdleReturnDragAssetUrl(tier);
+    const normalizedTier = _normalizeNekoIdleReturnTier(tier);
+    const rapidSrc = _getNekoIdleCat1RapidDragAssetUrl(button, normalizedTier);
+    const cachedDragSrc = button.__nekoIdleReturnDragAssetTier === normalizedTier
+        ? button.__nekoIdleReturnDragAssetUrl
+        : '';
+    const dragSrc = rapidSrc || cachedDragSrc || _pickNekoIdleReturnDragAssetUrl(normalizedTier);
     if (!art || !dragSrc) return;
-    if (!rapidSrc) button.__nekoIdleReturnDragAssetUrl = dragSrc;
+    if (!rapidSrc) {
+        button.__nekoIdleReturnDragAssetUrl = dragSrc;
+        button.__nekoIdleReturnDragAssetTier = normalizedTier;
+    }
     _setNekoIdleReturnArtSource(
         art,
         dragSrc,
-        _normalizeNekoIdleReturnTier(tier),
+        normalizedTier,
         { animate: false }
     );
 }
@@ -1936,6 +1956,7 @@ function _startNekoIdleReturnDragActionForContainer(container) {
     state.token += 1;
     state.tier = tier;
     _resetNekoIdleCat1RapidDragMotion(button);
+    button.__nekoIdleReturnDragAssetTier = tier;
     button.__nekoIdleReturnDragAssetUrl = _pickNekoIdleReturnDragAssetUrl(tier);
     _cancelNekoIdleCat1Journey(button, {
         resetArt: false,
@@ -1964,6 +1985,7 @@ function _finishNekoIdleReturnDragAction(button, options = {}) {
     });
     _clearNekoIdleCat1RapidDragReaction(button);
     button.__nekoIdleReturnDragAssetUrl = '';
+    button.__nekoIdleReturnDragAssetTier = _NEKO_IDLE_TIER_NONE;
     state.active = false;
     state.token += 1;
     state.tier = _NEKO_IDLE_TIER_NONE;
@@ -4567,11 +4589,17 @@ function _applyNekoIdleReturnPresentation(button, tier) {
     if (button.__nekoIdleThoughtBubbleTier && button.__nekoIdleThoughtBubbleTier !== normalizedTier) {
         _clearNekoIdleThoughtBubble(button);
     }
+    const dragState = button.__nekoIdleReturnDragActionState;
     const dragActive = _isNekoIdleReturnDragActionActive(button);
     _syncNekoIdleSleepSoundForTier(normalizedTier);
     _syncNekoIdleCat1AmbientSoundForTier(normalizedTier);
     if (normalizedTier !== _NEKO_IDLE_TIER_CAT1) {
         _cancelNekoIdleCat1Journey(button);
+    }
+    if (dragActive && normalizedTier !== _NEKO_IDLE_TIER_CAT1) {
+        const wasCat1Drag = dragState && dragState.tier === _NEKO_IDLE_TIER_CAT1;
+        _clearNekoIdleCat1RapidDragReaction(button);
+        if (wasCat1Drag) _fadeOutNekoIdleCat1DragSound();
     }
     button.setAttribute('data-neko-idle-tier', normalizedTier);
 
@@ -5463,7 +5491,7 @@ const AvatarButtonMixin = {
                 }, 5000);
             };
 
-            const handleMove = (clientX, clientY) => {
+            const handleMove = (clientX, clientY, sourceEvent = null) => {
                 if (!isDragging) return;
                 const deltaX = clientX - dragStartX;
                 const deltaY = clientY - dragStartY;
@@ -5476,6 +5504,8 @@ const AvatarButtonMixin = {
                     _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-motion', {
                         clientX: clientX,
                         clientY: clientY,
+                        screenX: sourceEvent && Number.isFinite(sourceEvent.screenX) ? sourceEvent.screenX : clientX,
+                        screenY: sourceEvent && Number.isFinite(sourceEvent.screenY) ? sourceEvent.screenY : clientY,
                         deltaX: deltaX,
                         deltaY: deltaY,
                         timestamp: Date.now()
@@ -5525,13 +5555,13 @@ const AvatarButtonMixin = {
                         handleEnd();
                         return;
                     }
-                    handleMove(e.clientX, e.clientY);
+                    handleMove(e.clientX, e.clientY, e);
                 },
                 mouseUp: handleEnd,
                 touchMove: (e) => {
                     if (isDragging && e.touches && e.touches[0]) {
                         e.preventDefault();
-                        handleMove(e.touches[0].clientX, e.touches[0].clientY);
+                        handleMove(e.touches[0].clientX, e.touches[0].clientY, e.touches[0]);
                     }
                 },
                 touchEnd: handleEnd,
