@@ -15,6 +15,7 @@ def _settings_config_payload(config: StudyConfig) -> dict:
     return {
         "study": {
             "default_mode": config.default_mode,
+            "auto_open_ui": config.auto_open_ui,
         },
         "ocr_reader": {
             "enabled": config.ocr_enabled,
@@ -26,6 +27,21 @@ def _settings_config_payload(config: StudyConfig) -> dict:
     }
 
 
+def _coerce_bool(value: object, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off", ""}:
+            return False
+        return default
+    return bool(value)
+
+
 def _apply_settings_config(current: StudyConfig, raw: dict) -> StudyConfig:
     next_values = current.to_dict()
     study = raw.get("study") if isinstance(raw.get("study"), dict) else {}
@@ -34,8 +50,14 @@ def _apply_settings_config(current: StudyConfig, raw: dict) -> StudyConfig:
 
     if "default_mode" in study:
         next_values["default_mode"] = study.get("default_mode")
+    if "auto_open_ui" in study:
+        next_values["auto_open_ui"] = _coerce_bool(
+            study.get("auto_open_ui"), current.auto_open_ui
+        )
     if "enabled" in ocr:
-        next_values["ocr_enabled"] = bool(ocr.get("enabled"))
+        next_values["ocr_enabled"] = _coerce_bool(
+            ocr.get("enabled"), current.ocr_enabled
+        )
     if "languages" in ocr:
         next_values["ocr_languages"] = str(ocr.get("languages") or "").strip()
     if "llm_call_timeout_seconds" in llm:

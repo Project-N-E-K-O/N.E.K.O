@@ -339,6 +339,53 @@ describe('hosted TSX document runtime', () => {
     expect(root.querySelector('strong')?.textContent).toBe('ABC')
   })
 
+  it('exports destructured variable declarations from hosted dependencies', () => {
+    const { root } = executeHostedDocument(`
+      import { label, renamed, first, rest } from "./destructured"
+
+      export default function Panel() {
+        return <strong>{label + "-" + renamed + "-" + first + "-" + rest.suffix}</strong>
+      }
+    `, baseContext(), baseContext(), [{
+      path: 'ui/destructured.ts',
+      source: `
+        const source = {
+          label: "label",
+          alias: "renamed",
+          items: ["first"],
+          suffix: "rest",
+        }
+        export const { label, alias: renamed, items: [first], ...rest } = source
+      `,
+    }])
+
+    expect(root.querySelector('strong')?.textContent).toBe('label-renamed-first-rest')
+  })
+
+  it('trims spaced default plus named hosted imports before executing', () => {
+    const { root } = executeHostedDocument(`
+      import { label } from "./consumer"
+
+      export default function Panel() {
+        return <strong>{label}</strong>
+      }
+    `, baseContext(), baseContext(), [{
+      path: 'ui/consumer.ts',
+      source: `
+        import fallback, { suffix } from "./helper"
+        export const label = fallback + "-" + suffix
+      `,
+    }, {
+      path: 'ui/helper.ts',
+      source: `
+        export default "default"
+        export const suffix = "named"
+      `,
+    }])
+
+    expect(root.querySelector('strong')?.textContent).toBe('default-named')
+  })
+
   it('rewrites default plus namespace hosted imports before executing', () => {
     const { root } = executeHostedDocument(`
       import { label } from "./consumer"

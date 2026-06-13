@@ -639,23 +639,26 @@ async def test_study_settings_entry_persists_and_updates_runtime(
     try:
         result = await plugin.study_update_settings_config(
             config={
-                "study": {"default_mode": MODE_TEACHING},
-                "ocr_reader": {"enabled": False, "languages": "chi_sim+eng"},
+                "study": {"default_mode": MODE_TEACHING, "auto_open_ui": True},
+                "ocr_reader": {"enabled": "false", "languages": "chi_sim+eng"},
                 "llm": {"llm_call_timeout_seconds": 90},
             }
         )
 
         assert isinstance(result, Ok)
         assert result.value["config"]["study"]["default_mode"] == MODE_TEACHING
+        assert result.value["config"]["study"]["auto_open_ui"] is True
         assert result.value["config"]["ocr_reader"]["enabled"] is False
         assert result.value["config"]["ocr_reader"]["languages"] == "chi_sim+eng"
         assert result.value["config"]["llm"]["llm_call_timeout_seconds"] == 90.0
         assert plugin._cfg.default_mode == MODE_TEACHING
+        assert plugin._cfg.auto_open_ui is True
         assert plugin._cfg.ocr_enabled is False
         assert plugin._cfg.ocr_languages == "chi_sim+eng"
         assert plugin._cfg.llm_call_timeout_seconds == 90.0
         persisted = plugin._store.load_config(StudyConfig())
         assert persisted.default_mode == MODE_TEACHING
+        assert persisted.auto_open_ui is True
         assert persisted.ocr_enabled is False
         assert persisted.ocr_languages == "chi_sim+eng"
         assert persisted.llm_call_timeout_seconds == 90.0
@@ -2121,7 +2124,7 @@ let configPayload = {
   plugin_id: 'study_companion',
   config: {
     plugin: { id: 'study_companion', entry: 'plugin.plugins.study_companion:StudyCompanionPlugin' },
-    study: { default_mode: 'interactive', language: 'en', history_limit: 50 },
+    study: { default_mode: 'interactive', language: 'en', history_limit: 50, auto_open_ui: false },
     ocr_reader: { enabled: false, backend_selection: 'rapidocr', languages: 'eng' },
     llm: { llm_call_timeout_seconds: 45, llm_vision_enabled: false },
   },
@@ -2268,6 +2271,7 @@ await waitFor(
 const savedConfig = runEntries.find((entry) => entry.entry_id === 'study_update_settings_config').args.config;
 if (
   savedConfig.study.default_mode !== 'teaching'
+  || savedConfig.study.auto_open_ui !== false
   || savedConfig.ocr_reader.enabled !== true
   || savedConfig.ocr_reader.languages !== 'chi_sim+eng'
   || savedConfig.llm.llm_call_timeout_seconds !== 90

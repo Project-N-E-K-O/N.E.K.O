@@ -105,7 +105,7 @@ function moduleImportStatement(rawBindings: string | undefined, modulePath: stri
   const namedStart = bindings.indexOf('{')
   const statements: string[] = []
   if (namedStart > 0) {
-    const defaultName = bindings.slice(0, namedStart).replace(/,$/, '').trim()
+    const defaultName = bindings.slice(0, namedStart).trim().replace(/,$/, '').trim()
     if (defaultName) statements.push(`const ${defaultName} = ${moduleRef}.default;`)
   } else if (namedStart < 0) {
     statements.push(`const ${bindings.replace(/,$/, '').trim()} = ${moduleRef}.default;`)
@@ -237,10 +237,121 @@ function splitTopLevelDeclarators(declarationList: string) {
   return declarators
 }
 
+function topLevelIndexOf(source: string, needle: string) {
+  let depth = 0
+  let quote: string | null = null
+  let escaped = false
+
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index]
+    if (quote) {
+      if (escaped) {
+        escaped = false
+      } else if (char === '\\') {
+        escaped = true
+      } else if (char === quote) {
+        quote = null
+      }
+      continue
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char
+      continue
+    }
+    if (char === '(' || char === '[' || char === '{') {
+      depth += 1
+      continue
+    }
+    if (char === ')' || char === ']' || char === '}') {
+      depth = Math.max(0, depth - 1)
+      continue
+    }
+    if (depth === 0 && char === needle) {
+      return index
+    }
+  }
+  return -1
+}
+
+function matchingPatternEnd(source: string) {
+  const open = source[0]
+  const close = open === '{' ? '}' : open === '[' ? ']' : ''
+  if (!close) return -1
+  let depth = 0
+  let quote: string | null = null
+  let escaped = false
+
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index]
+    if (quote) {
+      if (escaped) {
+        escaped = false
+      } else if (char === '\\') {
+        escaped = true
+      } else if (char === quote) {
+        quote = null
+      }
+      continue
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char
+      continue
+    }
+    if (char === open) {
+      depth += 1
+      continue
+    }
+    if (char === close) {
+      depth -= 1
+      if (depth === 0) return index
+    }
+  }
+  return -1
+}
+
+function bindingTargetText(declarator: string) {
+  const initializerIndex = topLevelIndexOf(declarator, '=')
+  return (initializerIndex >= 0 ? declarator.slice(0, initializerIndex) : declarator).trim()
+}
+
+function bindingNamesFromTarget(target: string): string[] {
+  const trimmed = target.trim()
+  const identifierMatch = trimmed.match(/^([A-Za-z_$][\w$]*)\b/)
+  if (identifierMatch?.[1]) {
+    return [identifierMatch[1]]
+  }
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
+    return []
+  }
+  const end = matchingPatternEnd(trimmed)
+  if (end < 0) return []
+  const body = trimmed.slice(1, end)
+  const names: string[] = []
+  for (const part of splitTopLevelDeclarators(body)) {
+    const item = part.trim()
+    if (!item) continue
+    const rest = item.startsWith('...') ? item.slice(3).trim() : ''
+    if (rest) {
+      names.push(...bindingNamesFromTarget(bindingTargetText(rest)))
+      continue
+    }
+    if (trimmed.startsWith('[')) {
+      names.push(...bindingNamesFromTarget(bindingTargetText(item)))
+      continue
+    }
+    const colonIndex = topLevelIndexOf(item, ':')
+    const binding = colonIndex >= 0 ? item.slice(colonIndex + 1) : item
+    names.push(...bindingNamesFromTarget(bindingTargetText(binding)))
+  }
+  return names
+}
+
 function exportedVariableNames(declarationList: string) {
-  return splitTopLevelDeclarators(declarationList)
-    .map((declarator) => declarator.trim().match(/^([A-Za-z_$][\w$]*)\b/)?.[1] || '')
-    .filter(Boolean)
+  const names: string[] = []
+  for (const declarator of splitTopLevelDeclarators(declarationList)) {
+    names.push(...bindingNamesFromTarget(bindingTargetText(declarator)))
+  }
+  return names.filter(Boolean)
 }
 
 function continuesVariableDeclarationAfterNewline(source: string, declarationStart: number, newlineIndex: number) {
