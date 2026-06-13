@@ -1018,8 +1018,13 @@ ${moduleSource}
   return __exports;
 })();`
     })
-  const entrySource = transformHostedImports(source, normalizeHostedPath(entryPath), dependenciesByPath)
-  return `const __modules = Object.create(null);\n${chunks.join('\n')}\n${entrySource}`
+  const normalizedEntryPath = normalizeHostedPath(entryPath)
+  const entrySource = transformHostedReExports(
+    transformHostedImports(source, normalizedEntryPath, dependenciesByPath),
+    normalizedEntryPath,
+    dependenciesByPath,
+  )
+  return `const __modules = Object.create(null);\n${chunks.join('\n')}\nconst __exports = {};\n${entrySource}`
 }
 
 function compileHostedTsx(source: string, dependencies: HostedTsxDependency[] = [], entryPath = 'entry.tsx') {

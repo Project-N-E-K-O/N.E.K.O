@@ -361,6 +361,21 @@ import ghost from "./missing"
     expect(root.querySelector('strong')?.textContent).toBe('named-alias-star-named-no-default')
   })
 
+  it('rewrites entry re-exports before executing the default component', () => {
+    const { root } = executeHostedDocument(`
+      export { label } from "./helper"
+
+      export default function Panel() {
+        return <strong>entry-ready</strong>
+      }
+    `, baseContext(), baseContext(), [{
+      path: 'ui/helper.ts',
+      source: 'export const label = "hidden"',
+    }])
+
+    expect(root.querySelector('strong')?.textContent).toBe('entry-ready')
+  })
+
   it('exports every variable declarator from hosted dependencies', () => {
     const { root } = executeHostedDocument(`
       import { first, second, third } from "./multi"
