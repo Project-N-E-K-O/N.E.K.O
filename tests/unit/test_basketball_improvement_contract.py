@@ -719,25 +719,31 @@ def test_basketball_route_end_payload_contains_horse_state():
 @pytest.mark.unit
 def test_basketball_chat_payload_contains_horse_state():
     html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+    send_event_start = html.index("function sendGameEvent(")
+    send_event = html[send_event_start:html.index("function loadLocalLeaderboard(", send_event_start)]
 
     assert "function buildBasketballCurrentStatePayload() {" in html
-    assert "event.currentState = buildBasketballCurrentStatePayload();" in html
-    assert "event.horse = buildHorseStatePayload();" in html
-    assert "event.currentState.horse = event.horse;" in html
+    assert "event.currentState = buildBasketballCurrentStatePayload();" in send_event
+    assert "event.horse = buildHorseStatePayload();" in send_event
+    assert "event.currentState.horse = event.horse;" in send_event
 
 
 @pytest.mark.unit
 def test_basketball_chat_replies_are_ignored_after_session_or_mode_changes():
     html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
-    send_event = html[html.index("function sendGameEvent("):html.index("function loadLocalLeaderboard(", html.index("function sendGameEvent("))]
+    send_event_start = html.index("function sendGameEvent(")
+    send_event = html[send_event_start:html.index("function loadLocalLeaderboard(", send_event_start)]
 
-    assert "if (event.session_id !== sessionId || event.mode !== currentMode) return;" in send_event
-    guard_index = send_event.index("if (event.session_id !== sessionId || event.mode !== currentMode) return;")
+    stale_reply_guard = "if (event.session_id !== sessionId || event.mode !== currentMode) return;"
+    assert stale_reply_guard in send_event
+    guard_index = send_event.index(stale_reply_guard)
     control_index = send_event.index("if (res && res.control) {")
     line_index = send_event.index("if (res && res.line) speakLine(")
     assert guard_index < control_index
     assert guard_index < line_index
-    assert ".catch(function () {\n        if (event.session_id !== sessionId || event.mode !== currentMode) return;" in send_event
+    catch_index = send_event.index(".catch(function () {")
+    catch_guard_index = send_event.index(stale_reply_guard, catch_index)
+    assert catch_index < catch_guard_index
 
 
 @pytest.mark.unit
@@ -750,9 +756,11 @@ def test_basketball_route_start_timeout_covers_backend_pregame_generation():
 @pytest.mark.unit
 def test_basketball_heartbeat_sends_live_current_state():
     html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+    heartbeat_index = html.index("post('/route/heartbeat'")
+    heartbeat_section = html[max(0, heartbeat_index - 500):heartbeat_index + 500]
 
-    assert "currentState: buildBasketballCurrentStatePayload()" in html
-    assert "post('/route/heartbeat'" in html
+    assert "post('/route/heartbeat'" in heartbeat_section
+    assert "currentState: buildBasketballCurrentStatePayload()" in heartbeat_section
 
 
 @pytest.mark.unit
