@@ -1666,6 +1666,8 @@ class LLMSessionManager:
         if pending_meta:
             turn_end_msg['meta'] = pending_meta
             self._pending_turn_meta = None
+        if active_request_id:
+            turn_end_msg['request_id'] = active_request_id
         self.sync_message_queue.put(turn_end_msg)
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
@@ -1683,6 +1685,17 @@ class LLMSessionManager:
         # 走这里）。text 用于 unfinished_thread 检测——tracker 跑问号启发式决定
         # 要不要开 5min 跟进窗口；为 None 时不开窗，但仍更新 seconds_since_ai_msg。
         self._flush_ai_turn_text_to_tracker()
+
+    async def _emit_agent_callback_turn_end(self, active_request_id) -> None:
+        turn_end_msg: dict = {'type': 'system', 'data': 'turn end agent_callback'}
+        if active_request_id:
+            turn_end_msg['request_id'] = active_request_id
+        self.sync_message_queue.put(turn_end_msg)
+        try:
+            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                await self.websocket.send_json(turn_end_msg)
+        except Exception as e:
+            logger.error(f"💥 WS Send Agent Callback Turn End Error: {e}")
 
     async def handle_response_complete(self):
         """Qwen完成回调：用于处理Core API的响应完成事件，包含TTS和热切换逻辑"""
@@ -2372,7 +2385,10 @@ class LLMSessionManager:
                 self._session_turn_count += 1
 
         # 推送到同步消息队列
-        self.sync_message_queue.put({"type": "user", "data": {"input_type": "transcript", "data": transcript.strip()}})
+        user_message = {"input_type": "transcript", "data": transcript.strip()}
+        if not is_voice_source and self._active_text_request_id:
+            user_message["request_id"] = self._active_text_request_id
+        self.sync_message_queue.put({"type": "user", "data": user_message})
         
         # 只在语音模式（OmniRealtimeClient）下发送到前端显示用户转录
         # 文本模式下前端会自己显示，无需后端发送，避免重复
@@ -7288,11 +7304,7 @@ class LLMSessionManager:
                             },
                             request_id=message.get("request_id"),
                         )
-                        self.sync_message_queue.put({
-                            "type": "system",
-                            "data": "turn end agent_callback",
-                            "request_id": message.get("request_id"),
-                        })
+                        await self._emit_agent_callback_turn_end(message.get("request_id"))
                         self._fire_task(self._publish_openclaw_magic_command(openclaw_magic_command))
                         logger.info("[%s] text input sent explicit openclaw magic command", self.lanlan_name)
                         return
@@ -7493,12 +7505,15 @@ class LLMSessionManager:
                         if isinstance(self.session, OmniOfflineClient):
                             # 只添加到待发送队列，等待与文本一起发送
                             await self.session.stream_image(image_b64)
+                            image_message = {
+                                "input_type": input_type,
+                                "data": f"data:image/jpeg;base64,{image_b64}",
+                            }
+                            if message.get("request_id"):
+                                image_message["request_id"] = message.get("request_id")
                             self.sync_message_queue.put({
                                 "type": "user",
-                                "data": {
-                                    "input_type": input_type,
-                                    "data": f"data:image/jpeg;base64,{image_b64}",
-                                },
+                                "data": image_message,
                             })
 
                         # 如果是语音模式（OmniRealtimeClient），检查是否支持视觉并直接发送

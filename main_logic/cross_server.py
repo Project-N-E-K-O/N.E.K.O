@@ -193,7 +193,10 @@ def _should_persist_avatar_interaction_memory(
 def _normalize_pending_user_attachments(pending_user_images: list) -> list[dict]:
     attachments = []
     for raw in pending_user_images or []:
-        url = str(raw or "").strip()
+        if isinstance(raw, dict):
+            url = str(raw.get("data") or raw.get("url") or "").strip()
+        else:
+            url = str(raw or "").strip()
         if not url:
             continue
         attachments.append({
@@ -201,6 +204,24 @@ def _normalize_pending_user_attachments(pending_user_images: list) -> list[dict]
             "url": url,
         })
     return attachments
+
+
+def _select_pending_user_images_for_turn(pending_user_images: list, request_id: object) -> list:
+    turn_request_id = str(request_id or "")
+    selected = []
+    for raw in pending_user_images or []:
+        if not isinstance(raw, dict):
+            if turn_request_id:
+                continue
+            selected.append(raw)
+            continue
+        image_request_id = str(raw.get("request_id") or "")
+        if image_request_id and image_request_id != turn_request_id:
+            continue
+        if not image_request_id and turn_request_id:
+            continue
+        selected.append(raw)
+    return selected
 
 
 def _build_recent_analyze_messages(
@@ -661,13 +682,19 @@ async def run_sync_connector(
                         elif input_type == "screen":
                             last_screen = data
                             if data:
-                                pending_user_images.append(data)
+                                pending_user_images.append({
+                                    "data": data,
+                                    "request_id": message["data"].get("request_id") or "",
+                                })
                                 if len(pending_user_images) > PENDING_USER_IMAGES_MAX:
                                     del pending_user_images[:-PENDING_USER_IMAGES_MAX]
                         elif input_type == "camera":
                             last_screen = data
                             if data:
-                                pending_user_images.append(data)
+                                pending_user_images.append({
+                                    "data": data,
+                                    "request_id": message["data"].get("request_id") or "",
+                                })
                                 if len(pending_user_images) > PENDING_USER_IMAGES_MAX:
                                     del pending_user_images[:-PENDING_USER_IMAGES_MAX]
 
@@ -754,6 +781,7 @@ async def run_sync_connector(
                                 turn_end_meta = message.get("meta") if isinstance(message, dict) else None
                                 if not isinstance(turn_end_meta, dict):
                                     turn_end_meta = None
+                                turn_request_id = message.get("request_id") if isinstance(message, dict) else None
                                 was_assistant_turn = current_turn == 'assistant'
                                 if is_mirror_turn_end_meta(turn_end_meta):
                                     # Mirror turn-end: mirror assistant messages
@@ -892,7 +920,7 @@ async def run_sync_connector(
                                         # 构造最近的消息摘要，并保留本轮最近的图片附件
                                         recent = _build_recent_analyze_messages(
                                             chat_history,
-                                            pending_user_images,
+                                            _select_pending_user_images_for_turn(pending_user_images, turn_request_id),
                                             allow_attach_to_last_user=had_user_input_this_turn,
                                         )
                                         has_user = any(m.get('role') == 'user' for m in recent)
@@ -988,7 +1016,7 @@ async def run_sync_connector(
                                         # 构造最近的消息摘要，并保留本轮最近的图片附件
                                         recent = _build_recent_analyze_messages(
                                             chat_history,
-                                            pending_user_images,
+                                            _select_pending_user_images_for_turn(pending_user_images, message.get("request_id")),
                                             allow_attach_to_last_user=had_user_input_this_turn,
                                         )
                                         has_user = any(m.get('role') == 'user' for m in recent)

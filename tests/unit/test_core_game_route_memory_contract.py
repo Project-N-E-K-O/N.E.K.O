@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 
+import main_logic.cross_server as cross_server_module
 import main_logic.core as core_module
 
 
@@ -53,6 +54,22 @@ class _FakeQueue:
         if not self.messages:
             raise queue.Empty
         return self.messages.pop(0)
+
+
+class _ConnectedClientState:
+    CONNECTED = "connected"
+
+    def __eq__(self, other):
+        return other == self.CONNECTED
+
+
+class _FakeConnectedWebSocket:
+    def __init__(self):
+        self.client_state = _ConnectedClientState()
+        self.sent = []
+
+    async def send_json(self, payload):
+        self.sent.append(payload)
 
 
 class _FakeActivityTracker:
@@ -743,6 +760,42 @@ async def test_explicit_openclaw_magic_command_clears_pending_text_images(monkey
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_explicit_openclaw_magic_command_emits_websocket_turn_end(monkeypatch):
+    """Magic-command fast path must clear the matching frontend request."""
+    mgr = _make_transcript_manager()
+    mgr.websocket = _FakeConnectedWebSocket()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session._pending_images = []
+    mgr.session.update_max_response_length = Mock()
+    mgr.session.stream_text = AsyncMock()
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._is_agent_enabled = Mock(return_value=True)
+    mgr.agent_flags = {"openclaw_enabled": True}
+
+    def fake_fire_task(coro):
+        coro.close()
+
+    mgr._fire_task = fake_fire_task
+    monkeypatch.setattr(core_module, "dispatch_text_user_message", lambda name, text: None)
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "/stop", "request_id": "req-stop"},
+    )
+
+    assert mgr.websocket.sent == [{
+        "type": "system",
+        "data": "turn end agent_callback",
+        "request_id": "req-stop",
+    }]
+    assert mgr.sync_message_queue.messages[-1] == mgr.websocket.sent[0]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_openclaw_magic_command_publish_failure_reports_status(monkeypatch):
     """Manual OpenClaw command dispatch failures must be visible to users."""
     mgr = _make_transcript_manager()
@@ -767,6 +820,32 @@ async def test_openclaw_magic_command_publish_failure_reports_status(monkeypatch
         "code": "OPENCLAW_COMMAND_DISPATCH_FAILED",
         "details": {"command": "/stop"},
     }]
+
+
+@pytest.mark.unit
+def test_late_text_mode_screenshot_does_not_attach_to_next_turn():
+    """Request-tagged screenshots must not leak into a later analyzer turn."""
+    pending = [
+        {"data": "data:image/jpeg;base64,old", "request_id": "req-old"},
+        {"data": "data:image/jpeg;base64,current", "request_id": "req-current"},
+        "data:image/jpeg;base64,legacy",
+    ]
+
+    selected = cross_server_module._select_pending_user_images_for_turn(pending, "req-current")
+    recent = cross_server_module._build_recent_analyze_messages(
+        [{"role": "user", "content": [{"type": "text", "text": "what now"}]}],
+        selected,
+        allow_attach_to_last_user=True,
+    )
+
+    assert selected == [
+        {"data": "data:image/jpeg;base64,current", "request_id": "req-current"},
+    ]
+    attachments = recent[-1]["attachments"]
+    urls = [item["url"] for item in attachments]
+    assert urls == ["data:image/jpeg;base64,current"]
+    assert "data:image/jpeg;base64,old" not in urls
+    assert "data:image/jpeg;base64,legacy" not in urls
 
 
 @pytest.mark.unit
