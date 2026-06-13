@@ -353,6 +353,17 @@ async def test_set_agent_enabled_on_reprobes_openclaw_when_intent_survives(
     with patch.object(srv, "_check_agent_api_gate", return_value={"ready": True, "reasons": [], "is_free_version": False}):
         await srv.agent_command({
             "command": "set_agent_enabled",
+            "enabled": False,
+            "_persist_intent": False,
+        })
+
+        assert srv.Modules.analyzer_enabled is False
+        assert srv.Modules.agent_flags["openclaw_enabled"] is True
+
+        started.clear()
+
+        await srv.agent_command({
+            "command": "set_agent_enabled",
             "enabled": True,
             "lanlan_name": "lanlan-test",
             "_persist_intent": False,

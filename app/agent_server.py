@@ -4897,7 +4897,11 @@ async def set_agent_flags(payload: Dict[str, Any]):
 
     if isinstance(nf, bool):
         if nf:
-            _start_openclaw_enable_probe(lanlan_name)
+            if Modules.analyzer_enabled:
+                _start_openclaw_enable_probe(lanlan_name)
+            else:
+                Modules.agent_flags["openclaw_enabled"] = True
+                _set_capability("openclaw", False, "")
         else:
             _cancel_openclaw_enable_probe()
             Modules.agent_flags["openclaw_enabled"] = False
