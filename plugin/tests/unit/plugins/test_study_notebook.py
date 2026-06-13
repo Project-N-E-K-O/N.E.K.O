@@ -412,6 +412,29 @@ async def test_notebook_llm_operations_use_expected_operations() -> None:
     ]
 
 
+@pytest.mark.asyncio
+async def test_note_upsert_omitted_keeps_filing_explicit_empty_unfiles(tmp_path) -> None:
+    store, notebooks, _logger = _make_store(tmp_path)
+    harness = _EntryHarness(notebooks)
+    try:
+        nb = await harness.study_notebook_create(name="Algebra")
+        notebook_id = nb.value["notebook"]["id"]
+        saved = await harness.study_note_upsert(
+            notebook_id=notebook_id, title="T", content="C"
+        )
+        note_id = saved.value["note"]["id"]
+
+        # omitted notebook_id (partial edit) must keep the existing filing
+        edited = await harness.study_note_upsert(note_id=note_id, title="T2")
+        assert edited.value["note"]["notebook_id"] == notebook_id
+
+        # an explicit "" is an intentional unfile
+        unfiled = await harness.study_note_upsert(note_id=note_id, notebook_id="")
+        assert unfiled.value["note"]["notebook_id"] is None
+    finally:
+        store.close()
+
+
 def test_strip_markdown_keeps_fenced_code_text_searchable() -> None:
     plain = _strip_markdown("intro paragraph\n```python\nwidgetfactory()\n```\nouttro")
     # the fenced block's inner code must survive into content_plain (it feeds

@@ -154,7 +154,9 @@ class _NotebookEntriesMixin:
             "type": "object",
             "properties": {
                 "note_id": {"type": "string", "default": ""},
-                "notebook_id": {"type": "string", "default": ""},
+                # No default: an omitted notebook_id (partial edit) leaves the
+                # filing unchanged, while an explicit "" is an intentional unfile.
+                "notebook_id": {"type": "string"},
                 "title": {"type": "string", "default": ""},
                 "content": {"type": "string", "default": ""},
                 "topic_ids": {"type": "array", "items": {"type": "string"}, "default": []},
@@ -183,11 +185,11 @@ class _NotebookEntriesMixin:
         try:
             note_key = str(note_id or "").strip()
             update_kwargs = {"note_id": note_key or None}
-            # Only a non-empty notebook_id files the note; the schema default ""
-            # (sent by generated forms) must NOT unfile an existing note on a
-            # partial title/content edit — leave the field unchanged for "".
-            if notebook_id:
-                update_kwargs["notebook_id"] = notebook_id
+            # None = field omitted (partial edit) → leave filing unchanged;
+            # "" = explicit unfile (e.g. the editor's cleared Notebook field) →
+            # pass None to upsert_note; a real id files into that notebook.
+            if notebook_id is not None:
+                update_kwargs["notebook_id"] = notebook_id or None
             if title is not None:
                 update_kwargs["title"] = title
             if content is not None:
