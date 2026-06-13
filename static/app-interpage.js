@@ -1037,6 +1037,23 @@
                 window.lanlan_config.live3d_sub_type = oldLive3dSubType || '';
                 console.warn('[Model] 已回滚 config:', { model_type: oldModelType, live3d_sub_type: oldLive3dSubType });
             }
+            if (typeChanged && oldModelType === 'pngtuber') {
+                try {
+                    if (window.lanlan_config && window.lanlan_config.pngtuber && typeof window.loadPNGTuberAvatar === 'function') {
+                        await window.loadPNGTuberAvatar(window.lanlan_config.pngtuber);
+                    } else if (window.pngtuberManager && typeof window.pngtuberManager.show === 'function') {
+                        window.pngtuberManager.show();
+                    }
+                    var restoredPngtuberContainer = document.getElementById('pngtuber-container');
+                    if (restoredPngtuberContainer) {
+                        restoredPngtuberContainer.classList.remove('hidden');
+                        restoredPngtuberContainer.style.display = 'block';
+                        restoredPngtuberContainer.style.visibility = 'visible';
+                    }
+                } catch (restoreError) {
+                    console.warn('[Model] PNGTuber restore after failed switch failed:', restoreError);
+                }
+            }
             if (!suppressToast) {
                 window.showStatusToast(
                     window.t ? window.t('app.modelSwitchFailed') : '模型切换失败',

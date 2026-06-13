@@ -2202,9 +2202,12 @@ async def update_catgirl_l2d(name: str, request: Request):
                 or pngtuber_payload.get('layered_metadata')
                 or ''
             ).strip()
+            pngtuber_binding_item_id = str(item_id or "").strip()
+            if not pngtuber_binding_path.startswith('/workshop/'):
+                pngtuber_binding_item_id = ''
             current_asset_source, current_asset_source_id = _derive_model_asset_binding(
                 pngtuber_binding_path,
-                item_id=str(item_id or ""),
+                item_id=pngtuber_binding_item_id,
             )
             set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', current_asset_source_id)
             set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', current_asset_source or 'local_imported')

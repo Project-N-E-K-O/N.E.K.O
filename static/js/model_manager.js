@@ -3072,13 +3072,24 @@ document.addEventListener('DOMContentLoaded', async () => {
         const idleImage = String(pngtuberConfig.idle_image || '');
         const talkingImage = String(pngtuberConfig.talking_image || '');
         const metadataPath = String(pngtuberConfig.layered_metadata || '');
-        const folderFromIdle = idleImage.split('/').filter(Boolean).slice(-2, -1)[0] || '';
+        const deriveFolder = (value) => {
+            const parts = String(value || '').split('?')[0].split('#')[0].replace(/\\/g, '/').split('/').filter(Boolean);
+            if (parts[0] === 'user_pngtuber' && parts.length >= 2) return parts[1];
+            if (parts[0] === 'static' && parts.length >= 2) return parts[1];
+            if (parts[0] === 'workshop' && parts.length >= 2) return parts[1];
+            return '';
+        };
+        const folderFromConfig = pngtuberConfig.folder
+            || pngtuberConfig.model_folder
+            || deriveFolder(idleImage)
+            || deriveFolder(talkingImage)
+            || deriveFolder(metadataPath);
 
         return Array.from(modelSelect.options).find(option => {
             if (option.dataset.modelType !== 'pngtuber' || !option.value) return false;
-            if (folderFromIdle && option.getAttribute('data-folder') === folderFromIdle) return true;
             try {
                 const cfg = JSON.parse(option.getAttribute('data-pngtuber') || '{}');
+                if (folderFromConfig && option.getAttribute('data-folder') === folderFromConfig) return true;
                 return (!!idleImage && cfg.idle_image === idleImage)
                     || (!!talkingImage && cfg.talking_image === talkingImage)
                     || (!!metadataPath && cfg.layered_metadata === metadataPath);
@@ -3127,6 +3138,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             modelSelect.value = rememberedOption.value;
         }
         if (!selectedOption || selectedOption.dataset.modelType !== 'pngtuber' || !selectedOption.value) {
+            if (preferredConfig) return false;
             selectedOption = Array.from(modelSelect.options).find(option =>
                 option.dataset.modelType === 'pngtuber' && option.value
             );

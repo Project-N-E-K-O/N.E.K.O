@@ -30,8 +30,7 @@
         const path = sanitizePath(value);
         if (!path) return '';
         if (/^https?:\/\//i.test(path) || path.startsWith('/')) return path;
-        const filename = path.split('/').filter(Boolean).pop();
-        return filename ? `/user_pngtuber/${filename}` : '';
+        return path;
     }
 
     function resolveSiblingAsset(baseUrl, value) {
