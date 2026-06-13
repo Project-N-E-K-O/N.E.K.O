@@ -16,6 +16,8 @@ export type NoteItem = {
 };
 
 type NoteCardProps = {
+  // Not React's reserved key: hosted surfaces use a custom `h` JSX pragma, so
+  // `key` passed by list callers is a regular prop and must be typed here.
   key?: string;
   note: NoteItem;
   selected?: boolean;
