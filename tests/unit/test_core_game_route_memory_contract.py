@@ -659,6 +659,34 @@ async def test_explicit_openclaw_magic_command_skips_local_text_stream(monkeypat
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_openclaw_magic_command_publish_failure_reports_status(monkeypatch):
+    """Manual OpenClaw command dispatch failures must be visible to users."""
+    mgr = _make_transcript_manager()
+    sent_statuses = []
+
+    async def fake_send_status(message):
+        sent_statuses.append(core_module.json.loads(message))
+
+    mgr.send_status = fake_send_status
+    monkeypatch.setattr(
+        core_module,
+        "publish_analyze_request_reliably",
+        AsyncMock(return_value=False),
+    )
+
+    await core_module.LLMSessionManager._publish_openclaw_magic_command(
+        mgr,
+        "/stop",
+    )
+
+    assert sent_statuses == [{
+        "code": "OPENCLAW_COMMAND_DISPATCH_FAILED",
+        "details": {"command": "/stop"},
+    }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_genuine_voice_transcript_stamps_last_user_message_time(monkeypatch):
     """真实非空语音消息既刷 last_user_activity_time 也刷 last_user_message_time。
     后者喂给 mini-game 邀请隐式 dismiss，必须只反映真用户输入。"""

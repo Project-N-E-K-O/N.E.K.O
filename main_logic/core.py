@@ -2222,7 +2222,7 @@ class LLMSessionManager:
 
     async def _publish_openclaw_magic_command(self, command: str) -> None:
         try:
-            await publish_analyze_request_reliably(
+            sent = await publish_analyze_request_reliably(
                 lanlan_name=self.lanlan_name,
                 trigger="text_openclaw_magic_command",
                 messages=[{"role": "user", "content": command}],
@@ -2231,7 +2231,18 @@ class LLMSessionManager:
                 conversation_id=uuid4().hex,
             )
         except Exception as exc:
-            logger.info("[%s] openclaw magic command publish failed: %s", self.lanlan_name, exc)
+            logger.warning("[%s] openclaw magic command publish failed: %s", self.lanlan_name, exc)
+            await self.send_status(json.dumps({
+                "code": "OPENCLAW_COMMAND_DISPATCH_FAILED",
+                "details": {"command": command},
+            }))
+            return
+        if not sent:
+            logger.warning("[%s] openclaw magic command publish failed: no ack", self.lanlan_name)
+            await self.send_status(json.dumps({
+                "code": "OPENCLAW_COMMAND_DISPATCH_FAILED",
+                "details": {"command": command},
+            }))
 
     async def handle_input_transcript(self, transcript: str, *, is_voice_source: bool = True):
         """Sync transcript text into queues/cache and push it to the frontend.
