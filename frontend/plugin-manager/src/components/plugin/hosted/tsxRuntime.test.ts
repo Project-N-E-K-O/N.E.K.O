@@ -130,7 +130,12 @@ function mcpContext(): PluginUiContext {
   }
 }
 
-function executeHostedDocument(source: string, context: PluginUiContext = baseContext(), refreshContext: PluginUiContext = context) {
+function executeHostedDocument(
+  source: string,
+  context: PluginUiContext = baseContext(),
+  refreshContext: PluginUiContext = context,
+  extra: { modules?: Array<{ path: string; source: string }>; entryModule?: string } = {},
+) {
   const messages: any[] = []
   document.documentElement.innerHTML = '<head></head><body><main id="root"></main></body>'
   window.confirm = vi.fn(() => true)
@@ -159,6 +164,8 @@ function executeHostedDocument(source: string, context: PluginUiContext = baseCo
     surface: baseSurface(),
     context,
     locale: 'en',
+    modules: extra.modules,
+    entryModule: extra.entryModule,
   })
 
   new Function(extractScript(html)).call(window)
@@ -213,6 +220,51 @@ describe('hosted TSX document runtime', () => {
 
     expect(root.textContent).toContain('Imported')
     expect(root.textContent).toContain('ok')
+  })
+
+  it('bundles sibling modules (named, default, transitive, type-only imports)', () => {
+    const { root } = executeHostedDocument(
+      `
+        import { Page, Text } from "@neko/plugin-ui"
+        import { greeting, shout } from "./utils"
+        import Badge from "./badge"
+        import type { Unused } from "./utils"
+
+        export default function Panel() {
+          const _typecheck: Unused | null = null
+          return <Page title={greeting("Neko")}><Text>{shout("hi")}</Text><Badge label="ok" /></Page>
+        }
+      `,
+      baseContext(),
+      baseContext(),
+      {
+        entryModule: 'surfaces/main',
+        modules: [
+          {
+            path: 'surfaces/utils',
+            source: `
+              export type Unused = string
+              export function greeting(name: string) { return "Hello " + name }
+              export function shout(text: string) { return text.toUpperCase() }
+            `,
+          },
+          {
+            path: 'surfaces/badge',
+            // default export plus a transitive sibling import
+            source: `
+              import { shout } from "./utils"
+              export default function Badge(props) {
+                return <span class="badge">{shout(props.label)}</span>
+              }
+            `,
+          },
+        ],
+      },
+    )
+
+    expect(root.textContent).toContain('Hello Neko')
+    expect(root.textContent).toContain('HI')
+    expect(root.querySelector('.badge')?.textContent).toBe('OK')
   })
 
   it('bridges api.call and api.refresh through parent postMessage', async () => {

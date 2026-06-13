@@ -224,6 +224,8 @@ export function getPluginHostedSurfaceSource(pluginId: string, params: {
   mode: string
   entry: string
   source: string
+  entry_module?: string
+  modules?: Array<{ path: string; source: string }>
   source_locale?: string
   translations?: Record<string, Record<string, string>>
   warnings?: PluginUiWarning[]
