@@ -8,10 +8,8 @@ fd 轮询（add_reader），而该机制在 Windows ProactorEventLoop 上不可�
 """
 
 import asyncio
-import contextlib
 import os
 import threading
-import time
 import uuid
 from typing import Any, Awaitable, Callable, Dict, Optional
 
@@ -42,49 +40,10 @@ def _zmq_addr(env_key: str, default_port: int) -> str:
 SESSION_PUB_ADDR  = _zmq_addr("NEKO_ZMQ_SESSION_PUB_PORT", 48961)   # main -> agent（PUB/SUB）
 AGENT_PUSH_ADDR   = _zmq_addr("NEKO_ZMQ_AGENT_PUSH_PORT", 48962)    # agent -> main（PUSH/PULL）
 ANALYZE_PUSH_ADDR = _zmq_addr("NEKO_ZMQ_ANALYZE_PUSH_PORT", 48963)  # main -> agent（PUSH/PULL，可靠分析队列）
-AGENT_BRIDGE_HEARTBEAT_INTERVAL_S = 1.0
-AGENT_BRIDGE_VOICE_TTL_S = 3.0
-_AGENT_BRIDGE_LIVENESS_EVENTS = frozenset({
-    "agent_bridge_ready",
-    "agent_bridge_heartbeat",
-})
 
 _main_bridge_ref: Optional["MainServerAgentBridge"] = None
 _ack_waiters: dict[str, asyncio.Future] = {}
 _ack_waiters_lock = threading.Lock()
-_agent_bridge_last_seen_monotonic = 0.0
-_agent_bridge_liveness_lock = threading.Lock()
-
-
-def _mark_agent_bridge_seen(now: Optional[float] = None) -> None:
-    global _agent_bridge_last_seen_monotonic
-    seen_at = time.monotonic() if now is None else float(now)
-    with _agent_bridge_liveness_lock:
-        _agent_bridge_last_seen_monotonic = seen_at
-
-
-def _clear_agent_bridge_seen() -> None:
-    global _agent_bridge_last_seen_monotonic
-    with _agent_bridge_liveness_lock:
-        _agent_bridge_last_seen_monotonic = 0.0
-
-
-def _agent_bridge_recently_seen(now: Optional[float] = None) -> bool:
-    current = time.monotonic() if now is None else float(now)
-    with _agent_bridge_liveness_lock:
-        last_seen = _agent_bridge_last_seen_monotonic
-    return last_seen > 0.0 and current - last_seen <= AGENT_BRIDGE_VOICE_TTL_S
-
-
-def _voice_bridge_has_live_agent_subscriber() -> bool:
-    bridge = _main_bridge_ref
-    if bridge is None:
-        return False
-    if hasattr(bridge, "ready") and not bool(getattr(bridge, "ready")):
-        return False
-    if hasattr(bridge, "pub") and getattr(bridge, "pub") is None:
-        return False
-    return _agent_bridge_recently_seen()
 
 
 # ---------------------------------------------------------------------------
@@ -142,10 +101,6 @@ class MainServerAgentBridge:
         while not self._stop.is_set():
             try:
                 msg = orjson.loads(self.pull.recv())
-                if isinstance(msg, dict):
-                    _mark_agent_bridge_seen()
-                    if msg.get("event_type") in _AGENT_BRIDGE_LIVENESS_EVENTS:
-                        continue
                 if isinstance(msg, dict) and self.owner_loop is not None:
                     asyncio.run_coroutine_threadsafe(
                         self.on_agent_event(msg), self.owner_loop,
@@ -227,7 +182,6 @@ class AgentServerEventBridge:
         self.push: Any = None
         self._recv_thread: Optional[threading.Thread] = None
         self._analyze_recv_thread: Optional[threading.Thread] = None
-        self._heartbeat_task: Optional[asyncio.Task] = None
         self._stop = threading.Event()
         self._owner_loop: Optional[asyncio.AbstractEventLoop] = None
         self.ready = False
@@ -266,28 +220,12 @@ class AgentServerEventBridge:
             target=self._recv_analyze_fn, name="zmq-agent-analyze", daemon=True,
         )
         self._analyze_recv_thread.start()
-        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         logger.info("[EventBus] Agent bridge started (pid=%s)", os.getpid())
 
-    async def _heartbeat_loop(self) -> None:
-        while not self._stop.is_set():
-            await self.emit_to_main({
-                "event_type": "agent_bridge_heartbeat",
-                "pid": os.getpid(),
-            })
-            await asyncio.sleep(AGENT_BRIDGE_HEARTBEAT_INTERVAL_S)
-
     async def stop(self) -> None:
-        """Shut down ZMQ resources, receiver threads, and heartbeat task."""
+        """Shut down ZMQ resources and receiver threads."""
         self._stop.set()
         self.ready = False
-
-        heartbeat_task = self._heartbeat_task
-        self._heartbeat_task = None
-        if heartbeat_task is not None:
-            heartbeat_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await heartbeat_task
 
         recv_threads = [
             thread
@@ -384,8 +322,6 @@ class AgentServerEventBridge:
 def set_main_bridge(bridge: Optional[MainServerAgentBridge]) -> None:
     global _main_bridge_ref
     _main_bridge_ref = bridge
-    if bridge is None:
-        _clear_agent_bridge_seen()
 
 
 async def publish_session_event(event: Dict[str, Any]) -> bool:
@@ -623,12 +559,6 @@ async def publish_voice_transcript_observed_best_effort(
     """
     text = str(transcript or "").strip()
     if not text:
-        return False
-    if not _voice_bridge_has_live_agent_subscriber():
-        logger.debug(
-            "[EventBus] voice_transcript_observed skipped: agent bridge not alive lanlan=%s",
-            lanlan_name,
-        )
         return False
     event_id = uuid.uuid4().hex
     event = {
