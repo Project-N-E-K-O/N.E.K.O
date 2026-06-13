@@ -1807,6 +1807,40 @@ def _public_route_state(state: dict | None) -> dict:
     return public
 
 
+def _game_route_stale_session_response(
+    state: dict | None,
+    session_id: str,
+    *,
+    lanlan_name: str,
+    method: str,
+) -> dict | None:
+    if not (state and session_id and session_id != str(state.get("session_id") or "")):
+        return None
+
+    result: dict[str, Any] = {
+        "ok": True,
+        "skipped": "stale_session",
+        "reason": "session_id_mismatch",
+        "handled": False,
+        "lanlan_name": lanlan_name,
+        "method": method,
+        "state": _public_route_state(state),
+    }
+    if method == "project_text_mirror":
+        result["mirrored"] = False
+    elif method == "project_tts":
+        result.update({
+            "audio_sent": False,
+            "audio_committed": False,
+            "voice_source": {
+                "provider": "project_tts",
+                "method": "project_tts",
+                "skipped": "stale_session",
+            },
+        })
+    return result
+
+
 def _detect_before_game_external_state(mgr: Any) -> tuple[str, bool]:
     """Return (mode, active) for the current ordinary external session."""
     if not mgr or not getattr(mgr, "is_active", False):
@@ -6329,8 +6363,14 @@ async def game_project_mirror_assistant(game_type: str, request: Request):
 
     session_id = str(data.get("session_id") or "")
     state = _get_active_game_route_state(lanlan_name, game_type)
-    if state and session_id and session_id != str(state.get("session_id") or ""):
-        state = None
+    stale_response = _game_route_stale_session_response(
+        state,
+        session_id,
+        lanlan_name=lanlan_name,
+        method="project_text_mirror",
+    )
+    if stale_response:
+        return stale_response
     event = _attach_game_memory_flag_to_event(
         data.get("event") if isinstance(data.get("event"), dict) else {},
         state,
@@ -6389,8 +6429,14 @@ async def game_project_speak(game_type: str, request: Request):
     interrupt_audio = _coerce_payload_bool(data.get("interrupt_audio")) is True
     session_id = str(data.get("session_id") or "")
     state = _get_active_game_route_state(lanlan_name, game_type)
-    if state and session_id and session_id != str(state.get("session_id") or ""):
-        state = None
+    stale_response = _game_route_stale_session_response(
+        state,
+        session_id,
+        lanlan_name=lanlan_name,
+        method="project_tts",
+    )
+    if stale_response:
+        return stale_response
     result = await _speak_game_line_via_project_tts(
         mgr,
         line,

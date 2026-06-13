@@ -3126,6 +3126,35 @@ async def test_project_speak_forwards_interrupt_audio(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_project_speak_rejects_stale_route_session(monkeypatch):
+    with reset_game_route_state():
+        mgr = _FakeGameRouteManager()
+        monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+        state = game_router._activate_game_route("soccer", "match_new", "Lan")
+
+        result = await game_router.game_project_speak(
+            "soccer",
+            _FakeRequest({
+                "line": "old line",
+                "session_id": "match_old",
+                "lanlan_name": "Lan",
+                "request_id": "req-stale-speak",
+            }),
+        )
+
+        assert result["ok"] is True
+        assert result["skipped"] == "stale_session"
+        assert result["reason"] == "session_id_mismatch"
+        assert result["handled"] is False
+        assert result["method"] == "project_tts"
+        assert result["audio_sent"] is False
+        assert result["state"]["session_id"] == "match_new"
+        assert mgr.spoken == []
+        assert state["game_route_active"] is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_project_mirror_assistant_uses_text_only_mirror(monkeypatch):
     mgr = _FakeGameRouteManager()
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
@@ -3156,6 +3185,37 @@ async def test_project_mirror_assistant_uses_text_only_mirror(monkeypatch):
         "finalize_turn": False,
     })]
     assert mgr.spoken == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_project_mirror_assistant_rejects_stale_route_session(monkeypatch):
+    with reset_game_route_state():
+        mgr = _FakeGameRouteManager()
+        monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+        state = game_router._activate_game_route("soccer", "match_new", "Lan")
+
+        result = await game_router.game_project_mirror_assistant(
+            "soccer",
+            _FakeRequest({
+                "line": "old mirror line",
+                "session_id": "match_old",
+                "lanlan_name": "Lan",
+                "request_id": "req-stale-mirror",
+                "turn_id": "turn-stale-mirror",
+            }),
+        )
+
+        assert result["ok"] is True
+        assert result["skipped"] == "stale_session"
+        assert result["reason"] == "session_id_mismatch"
+        assert result["handled"] is False
+        assert result["method"] == "project_text_mirror"
+        assert result["mirrored"] is False
+        assert result["state"]["session_id"] == "match_new"
+        assert mgr.assistant_mirrored == []
+        assert mgr.spoken == []
+        assert state["game_dialog_log"] == []
 
 
 @pytest.mark.unit
