@@ -74,6 +74,31 @@ def test_model_manager_pngtuber_card_face_prefers_visible_drawable():
     assert "document.querySelector('#pngtuber-container canvas.pngtuber-layered-canvas" not in script
 
 
+def test_model_manager_pngtuber_save_preserves_stored_placement():
+    script = MODEL_MANAGER_JS.read_text(encoding="utf-8")
+    start = script.index("function mergePNGTuberConfigForSave(")
+    end = script.index("async function saveModelToCharacter(", start)
+    merge_block = script[start:end]
+
+    assert "runtimeForSave[key] = currentConfig[key];" in merge_block
+    assert "['scale', 'offset_x', 'offset_y', 'mirror']" in merge_block
+    assert "mergePNGTuberConfigForSave(" in script
+    assert "runtimePNGTuberConfig || {}" not in script[
+        script.index("if (currentModelType === 'pngtuber')") :
+        script.index("['adapter', 'layered_metadata', 'source_format', 'source_type']", script.index("if (currentModelType === 'pngtuber')"))
+    ]
+
+
+def test_card_maker_rejects_remote_pngtuber_assets_before_export():
+    script = CARD_MAKER_JS.read_text(encoding="utf-8")
+
+    assert "function assertExportablePNGTuberConfig(config)" in script
+    assert "remote_pngtuber_export_unsupported" in script
+    assert "assertExportablePNGTuberConfig(pngtuberConfig);" in script
+    assert "function assertExportablePNGTuberDrawable(source)" in script
+    assert "assertExportablePNGTuberDrawable(source);" in script
+
+
 def test_model_manager_parameter_save_restores_unsaved_and_offers_card_face():
     script = MODEL_MANAGER_JS.read_text(encoding="utf-8")
     parameter_editor = (PROJECT_ROOT / "static" / "js" / "live2d_parameter_editor.js").read_text(encoding="utf-8")

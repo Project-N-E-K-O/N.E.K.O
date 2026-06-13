@@ -3246,6 +3246,21 @@ document.addEventListener('DOMContentLoaded', async () => {
         return { status, message, details };
     }
 
+    function mergePNGTuberConfigForSave(selectedConfig, currentConfig, runtimeConfig) {
+        const runtimeForSave = Object.assign({}, runtimeConfig || {});
+        ['scale', 'offset_x', 'offset_y', 'mirror'].forEach((key) => {
+            if (currentConfig && Object.prototype.hasOwnProperty.call(currentConfig, key)) {
+                runtimeForSave[key] = currentConfig[key];
+            }
+        });
+        return Object.assign(
+            {},
+            selectedConfig || {},
+            currentConfig || {},
+            runtimeForSave
+        );
+    }
+
     async function saveModelToCharacter(modelName, itemId = null, vrmAnimation = null) {
         let effectiveLive3dSubType = currentLive3dSubType || '';
 
@@ -3354,11 +3369,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const runtimePNGTuberConfig = window.pngtuberManager && window.pngtuberManager.config
                     ? window.pngtuberManager.config
                     : null;
-                const pngtuberConfig = Object.assign(
-                    {},
-                    selectedPNGTuberConfig || {},
-                    currentPNGTuberConfig || {},
-                    runtimePNGTuberConfig || {}
+                const pngtuberConfig = mergePNGTuberConfigForSave(
+                    selectedPNGTuberConfig,
+                    currentPNGTuberConfig,
+                    runtimePNGTuberConfig
                 );
                 ['adapter', 'layered_metadata', 'source_format', 'source_type'].forEach((key) => {
                     if (!pngtuberConfig[key] && selectedPNGTuberConfig && selectedPNGTuberConfig[key]) {

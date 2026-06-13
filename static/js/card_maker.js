@@ -656,6 +656,7 @@
         if (!pngtuberConfig.idle_image && cfg?.model_path) {
             pngtuberConfig.idle_image = cfg.model_path;
         }
+        assertExportablePNGTuberConfig(pngtuberConfig);
         window.lanlan_config = window.lanlan_config || {};
         window.lanlan_config.model_type = 'pngtuber';
         window.lanlan_config.pngtuber = Object.assign({}, pngtuberConfig);
@@ -886,6 +887,39 @@
         };
     }
 
+    function isCrossOriginHttpUrl(value) {
+        if (!value || typeof value !== 'string') return false;
+        try {
+            const url = new URL(value, window.location.href);
+            return /^https?:$/i.test(url.protocol) && url.origin !== window.location.origin;
+        } catch (_) {
+            return /^https?:\/\//i.test(value);
+        }
+    }
+
+    function assertExportablePNGTuberConfig(config) {
+        const imageKeys = ['idle_image', 'talking_image', 'drag_image', 'click_image', 'happy_image', 'sad_image', 'angry_image', 'surprised_image'];
+        const remoteKey = imageKeys.concat(['layered_metadata']).find((key) => isCrossOriginHttpUrl(config && config[key]));
+        if (remoteKey) {
+            throw new Error(`remote_pngtuber_export_unsupported:${remoteKey}`);
+        }
+    }
+
+    function assertExportablePNGTuberDrawable(source) {
+        if (!source) return;
+        if (source.tagName === 'IMG' && isCrossOriginHttpUrl(source.currentSrc || source.src || source.getAttribute('src'))) {
+            throw new Error('remote_pngtuber_export_unsupported:drawable');
+        }
+        if (source.tagName === 'CANVAS') {
+            try {
+                const ctx = source.getContext('2d');
+                ctx?.getImageData(0, 0, 1, 1);
+            } catch (_) {
+                throw new Error('remote_pngtuber_export_unsupported:canvas');
+            }
+        }
+    }
+
     function getPNGTuberDrawableSource(mgr = window.cardMakerPNGTuberManager) {
         if (mgr?.isLayeredActive?.() && mgr.canvasElement) {
             return mgr.canvasElement;
@@ -930,6 +964,7 @@
         if (size.width <= 0 || size.height <= 0) {
             throw new Error('PNGTuber drawable source is empty');
         }
+        assertExportablePNGTuberDrawable(source);
     }
 
     // ====== 模型画布直接截图 ======
