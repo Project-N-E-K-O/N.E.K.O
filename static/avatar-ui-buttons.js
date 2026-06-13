@@ -680,7 +680,6 @@ function _hideNekoIdleThoughtBubble(button, token) {
     button.__nekoIdleThoughtBubbleTier = '';
     button.__nekoIdleThoughtBubbleAudio = null;
     button.classList.remove(_NEKO_IDLE_THOUGHT_BUBBLE_ACTIVE_CLASS);
-    button.classList.remove(_NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_CLASS);
     _setNekoIdleThoughtBubbleFocusable(button, false);
 }
 

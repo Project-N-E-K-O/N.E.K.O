@@ -947,6 +947,17 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
         "void button.offsetWidth;",
         "thought bubble restart helper",
     )
+    bubble_clear_block = _source_slice_between(
+        source,
+        "function _clearNekoIdleThoughtBubble(button)",
+        "function _getNekoIdleAudioRemainingMs(audio)",
+        "thought bubble clear helper",
+    )
+    _assert_source_contains(
+        bubble_clear_block,
+        "button.classList.remove(_NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_CLASS);",
+        "thought bubble clear helper",
+    )
 
     sleep_play_block = _source_slice_between(
         source,
@@ -1063,6 +1074,7 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
         "thought bubble hide helper",
     )
     assert "_NEKO_IDLE_THOUGHT_BUBBLE_POPPING_CLASS" not in hide_bubble_block
+    assert "_NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_CLASS" not in hide_bubble_block
 
     return_click_block = _source_slice_between(
         source,
