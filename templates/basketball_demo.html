@@ -1218,21 +1218,9 @@
     if (bgmVolumeValue) bgmVolumeValue.textContent = Math.round(bgmVolume * 100) + '%';
     if (sfxVolumeValue) sfxVolumeValue.textContent = Math.round(sfxVolume * 100) + '%';
   }
-  function _hasHistoricalBasketballRecord() {
-    try {
-      if (localStorage.getItem('bb_record')) return true;
-      if ((Number(localStorage.getItem('bb_record_distance') || '0') || 0) > 0) return true;
-      var leaderboard = localStorage.getItem('bb_leaderboard');
-      if (leaderboard) {
-        var parsed = JSON.parse(leaderboard);
-        if (parsed && (parsed.personal_best || (Array.isArray(parsed.recent_games) && parsed.recent_games.length > 0))) return true;
-      }
-    } catch (_) {}
-    return false;
-  }
   function _initBasketballGameMemoryToggle() {
     if (!gameMemoryToggle) return;
-    if (_hasHistoricalBasketballRecord()) gameMemoryToggle.checked = true;
+    gameMemoryToggle.checked = false;
     gameMemoryToggle.addEventListener('change', function () {
       console.log('[BasketballMemory] 本局进入记忆=' + (_isBasketballGameMemoryEnabled() ? 'on' : 'off'));
     });
@@ -2448,7 +2436,18 @@
   function buildBasketballCurrentStatePayload() {
     var state = {
       game: 'basketball',
+      state: game.state,
       mode: currentMode,
+      score: {
+        player: game.totalScore,
+        ai: isDuelMode() ? game.duel.nekoScore : 0,
+        score: game.totalScore,
+        best_streak: game.bestStreak,
+        made_count: game.madeCount,
+        max_distance_px: getRunMaxDistancePx(),
+        mode: currentMode
+      },
+      total_score: game.totalScore,
       streak: game.streak,
       best_streak: game.bestStreak,
       made_count: game.madeCount,

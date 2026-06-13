@@ -7548,6 +7548,22 @@ _DIRECT_REQUEST_CJK_DISCUSSION_CUES = (
     "讲讲", "说说", "聊聊", "介绍", "解释", "了解", "玩法", "规则", "教程", "攻略",
     "教学", "新闻", "怎么打", "怎么玩", "如何打", "如何玩",
 )
+_DIRECT_REQUEST_CJK_START_STATUS_QUESTION_CUES = (
+    "什么时候开始", "何时开始", "几点开始", "哪天开始", "几号开始",
+    "开始了吗", "开始了么", "开始了没", "开始没",
+    "能开始了吗", "可以开始了吗",
+    "开了吗", "开了么", "开了没", "开没开",
+)
+
+
+def _direct_request_pair_is_cjk_start_status_question(
+    action_hit: tuple[int, int, str],
+    window: str,
+) -> bool:
+    action_term = action_hit[2]
+    if _direct_request_is_ascii_word_term(action_term) or action_term not in {"开始", "开"}:
+        return False
+    return any(cue in window for cue in _DIRECT_REQUEST_CJK_START_STATUS_QUESTION_CUES)
 
 
 def _direct_request_pair_is_explicit(
@@ -7573,6 +7589,8 @@ def _direct_request_pair_is_explicit(
             return bool(_DIRECT_REQUEST_ENGLISH_CUE_RE.search(window))
         return False
     if any(cue in window for cue in _DIRECT_REQUEST_CJK_DISCUSSION_CUES):
+        return False
+    if _direct_request_pair_is_cjk_start_status_question(action_hit, window):
         return False
     if action_hit[0] == 0 or any(cue in window for cue in _DIRECT_REQUEST_CJK_CUES):
         return True

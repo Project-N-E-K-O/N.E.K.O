@@ -758,9 +758,26 @@ def test_basketball_heartbeat_sends_live_current_state():
     html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
     heartbeat_index = html.index("post('/route/heartbeat'")
     heartbeat_section = html[max(0, heartbeat_index - 500):heartbeat_index + 500]
+    current_state_start = html.index("function buildBasketballCurrentStatePayload() {")
+    current_state_section = html[current_state_start:html.index("function sendGameEvent(", current_state_start)]
 
     assert "post('/route/heartbeat'" in heartbeat_section
     assert "currentState: buildBasketballCurrentStatePayload()" in heartbeat_section
+    assert "score: {\n        player: game.totalScore," in current_state_section
+    assert "ai: isDuelMode() ? game.duel.nekoScore : 0," in current_state_section
+    assert "total_score: game.totalScore," in current_state_section
+
+
+@pytest.mark.unit
+def test_basketball_memory_toggle_does_not_auto_enable_from_history():
+    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+    init_start = html.index("function _initBasketballGameMemoryToggle() {")
+    init_section = html[init_start:html.index("function getAudioCtx()", init_start)]
+
+    assert "gameMemoryToggle.checked = false;" in init_section
+    assert "_hasHistoricalBasketballRecord" not in html
+    assert "bb_record_distance" not in init_section
+    assert "bb_leaderboard" not in init_section
 
 
 @pytest.mark.unit
