@@ -455,9 +455,7 @@ async def test_voice_observer_broadcast_failure_continues_ordinary_transcript_fl
         "  continue this transcript  ",
         is_voice_source=True,
     )
-    await asyncio.sleep(0)
-
-    assert called.is_set()
+    await asyncio.wait_for(called.wait(), timeout=1)
     assert mgr._activity_tracker.voice_rms_count == 1
     assert mgr._activity_tracker.user_messages == ["  continue this transcript  "]
     assert mgr._session_turn_count == 1
