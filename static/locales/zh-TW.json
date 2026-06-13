@@ -2204,6 +2204,7 @@
         "sessionFailed": "Session啟動失敗"
     },
     "buttons": {
+        "thoughtBubblePop": "戳破想法氣泡",
         "voiceControl": "語音控製",
         "screenShare": "屏幕分享",
         "agentTools": "猫爪",

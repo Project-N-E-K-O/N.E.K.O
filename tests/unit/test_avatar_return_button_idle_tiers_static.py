@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from PIL import Image
+
 from main_routers import pages_router
 
 
@@ -38,6 +40,7 @@ CAT1_RAPID_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / 
 CAT1_RAPID_DRAG_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat1-voice-funny.mp3"
 CAT_MODEL_CHANGE_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat_model_change.gif"
 THOUGHT_BUBBLE_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "thought-items" / "cloud-thought-bubble.gif"
+THOUGHT_BUBBLE_POP_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "thought-items" / "cloud-thought-bubble-pop.gif"
 SLEEPING_THOUGHT_BUBBLE_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "thought-items" / "sleeping-zzz.gif"
 THOUGHT_BUBBLE_ITEM_ASSET_PATHS = (
     PROJECT_ROOT / "static" / "assets" / "neko-idle" / "thought-items" / "catnip-pouch.png",
@@ -807,12 +810,15 @@ def test_cat1_rapid_drag_reaction_is_same_drag_motion_only():
 
 def test_idle_thought_bubble_is_sound_triggered_with_fade():
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    app_ui_source = APP_UI_PATH.read_text(encoding="utf-8")
     css_source = INDEX_CSS_PATH.read_text(encoding="utf-8")
 
     assert "_NEKO_IDLE_THOUGHT_BUBBLE_ACTIVE_CLASS = 'is-thought-bubble-active'" in source
     assert "_NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_CLASS = 'is-thought-bubble-sleeping'" in source
+    assert "_NEKO_IDLE_THOUGHT_BUBBLE_POPPING_CLASS = 'is-thought-bubble-popping'" in source
     assert "_NEKO_IDLE_THOUGHT_BUBBLE_ASSET_URL = '/static/assets/neko-idle/thought-items/cloud-thought-bubble.gif'" in source
     assert "_NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_ASSET_URL = '/static/assets/neko-idle/thought-items/sleeping-zzz.gif'" in source
+    assert "_NEKO_IDLE_THOUGHT_BUBBLE_POP_ASSET_URL = '/static/assets/neko-idle/thought-items/cloud-thought-bubble-pop.gif'" in source
     assert "const _NEKO_IDLE_THOUGHT_BUBBLE_ITEM_ASSET_URLS = Object.freeze([" in source
     assert "'/static/assets/neko-idle/thought-items/catnip-pouch.png'" in source
     assert "'/static/assets/neko-idle/thought-items/fish-cookie.png'" in source
@@ -820,6 +826,7 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
     assert "fish-cookie-transparent.png" not in source
     assert "_NEKO_IDLE_THOUGHT_BUBBLE_VISIBLE_MS = 5000" in source
     assert "_NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_FALLBACK_VISIBLE_MS = 8000" in source
+    assert "_NEKO_IDLE_THOUGHT_BUBBLE_POP_VISIBLE_MS = 540" in source
     assert "_NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_VISIBLE_MS" not in source
     assert "function _pickNekoIdleThoughtBubbleBgAsset(tier)" in source
     assert "normalizedTier === _NEKO_IDLE_TIER_CAT2 && roll < 1 / 3" in source
@@ -827,6 +834,11 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
     assert "function _getNekoIdleAudioRemainingMs(audio)" in source
     assert "function _getNekoIdleThoughtBubbleVisibleMs(bubbleConfig, audio)" in source
     assert "function _scheduleNekoIdleThoughtBubbleHide(button, token, visibleMs)" in source
+    assert "let _nekoIdleThoughtBubblePopPreloadImage = null;" in source
+    assert "function _preloadNekoIdleThoughtBubblePopAsset()" in source
+    assert "function _setNekoIdleThoughtBubbleFocusable(button, focusable)" in source
+    assert "function _isNekoIdleThoughtBubbleEventTarget(event)" in source
+    assert "function _isNekoIdleThoughtBubbleEventHit(button, event)" in source
     assert "if (audio) return _getNekoIdleAudioRemainingMs(audio) || _NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_FALLBACK_VISIBLE_MS;" in source
     assert "function _getNekoIdleThoughtBubbleBgAssetUrl(assetUrl, restartToken = 0)" in source
     assert "function _getNekoIdleThoughtBubbleItemAssetUrl(assetUrl)" in source
@@ -834,6 +846,9 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
     assert "const availableUrls = urls.length > 1 && previousAssetUrl" in source
     assert "urls.filter((url) => url !== previousAssetUrl)" in source
     assert "function _restartNekoIdleThoughtBubbleArt(button, tier)" in source
+    assert "function _dispatchNekoIdleThoughtBubblePop(button, detail = {})" in source
+    assert "function _popNekoIdleThoughtBubble(button, detail = {})" in source
+    assert "function _handleNekoIdleThoughtBubbleClick(button, event)" in source
     assert "function _clearNekoIdleThoughtBubble(button)" in source
     assert "function _showNekoIdleThoughtBubbleForSound(tier, audio = null)" in source
     assert "button.__nekoIdleThoughtBubbleTier = normalizedTier;" in source
@@ -850,7 +865,9 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
         bubble_helper_block,
         "thought bubble helper",
         "const bubbleConfig = _restartNekoIdleThoughtBubbleArt(button, normalizedTier);",
+        "_preloadNekoIdleThoughtBubblePopAsset();",
         "button.classList.add(_NEKO_IDLE_THOUGHT_BUBBLE_ACTIVE_CLASS);",
+        "_setNekoIdleThoughtBubbleFocusable(button, true);",
         "const visibleMs = _getNekoIdleThoughtBubbleVisibleMs(bubbleConfig, audio);",
         "_scheduleNekoIdleThoughtBubbleHide(button, timerToken, visibleMs);",
     )
@@ -878,6 +895,11 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
     _assert_source_contains(
         bubble_restart_block,
         "button.classList.remove(_NEKO_IDLE_THOUGHT_BUBBLE_ACTIVE_CLASS);",
+        "thought bubble restart helper",
+    )
+    _assert_source_contains(
+        bubble_restart_block,
+        "button.classList.remove(_NEKO_IDLE_THOUGHT_BUBBLE_POPPING_CLASS);",
         "thought bubble restart helper",
     )
     _assert_source_contains(
@@ -965,8 +987,35 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
     assert "opacity: 1;" in active_block
     assert "visibility: visible;" in active_block
     assert "transition-delay: 0s;" in active_block
+    assert "pointer-events: auto;" in active_block
+    assert "cursor: pointer;" in active_block
+
+    popping_block = _extract_css_block(
+        css_source,
+        ".neko-idle-return-btn.is-thought-bubble-popping .neko-idle-thought-bubble",
+    )
+    assert "pointer-events: none;" in popping_block
+    popping_item_block = _extract_css_block(
+        css_source,
+        ".neko-idle-return-btn.is-thought-bubble-popping .neko-idle-thought-bubble-item",
+    )
+    assert "display: none;" in popping_item_block
+    assert "scale(1.18)" not in css_source
 
     assert "const thoughtBubble = document.createElement('span');" in source
+    assert "thoughtBubble.setAttribute('role', 'button');" in source
+    assert "thoughtBubble.setAttribute('tabindex', '-1');" in source
+    assert "const thoughtBubbleAriaLabel = typeof window.t === 'function'" in source
+    assert "? window.t('buttons.thoughtBubblePop')" in source
+    assert ": 'Pop thought bubble';" in source
+    assert "thoughtBubble.setAttribute('aria-label', thoughtBubbleAriaLabel);" in source
+    assert "thoughtBubble.setAttribute('data-i18n-aria', 'buttons.thoughtBubblePop');" in source
+    assert "const stopThoughtBubblePointerStart = (event) => {" in source
+    assert "thoughtBubble.addEventListener('mousedown', stopThoughtBubblePointerStart);" in source
+    assert "event.preventDefault();" in source
+    assert "thoughtBubble.addEventListener('touchstart', stopThoughtBubblePointerStart, { passive: false });" in source
+    assert "thoughtBubble.addEventListener('touchend', (event) => {" in source
+    assert "_handleNekoIdleThoughtBubbleClick(returnBtn, event);" in source
     assert "const thoughtBubbleBg = document.createElement('img');" in source
     assert "thoughtBubbleBg.className = 'neko-idle-thought-bubble-bg';" in source
     assert "thoughtBubbleBg.src = _getNekoIdleThoughtBubbleBgAssetUrl(_NEKO_IDLE_THOUGHT_BUBBLE_ASSET_URL);" in source
@@ -976,12 +1025,101 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
     assert "thoughtBubble.appendChild(thoughtBubbleBg);" in source
     assert "thoughtBubble.appendChild(thoughtBubbleItem);" in source
 
+    bubble_pop_block = _source_slice_between(
+        source,
+        "function _popNekoIdleThoughtBubble(button, detail = {})",
+        "function _handleNekoIdleThoughtBubbleClick(button, event)",
+        "thought bubble pop helper",
+    )
+    _assert_source_order(
+        bubble_pop_block,
+        "thought bubble pop helper",
+        "_preloadNekoIdleThoughtBubblePopAsset();",
+        "button.__nekoIdleThoughtBubbleTimerToken = (button.__nekoIdleThoughtBubbleTimerToken || 0) + 1;",
+        "button.classList.remove(_NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_CLASS);",
+        "button.classList.add(_NEKO_IDLE_THOUGHT_BUBBLE_POPPING_CLASS);",
+        "_setNekoIdleThoughtBubbleFocusable(button, false);",
+        "_NEKO_IDLE_THOUGHT_BUBBLE_POP_ASSET_URL,",
+        "_dispatchNekoIdleThoughtBubblePop(button, detail);",
+        "_scheduleNekoIdleThoughtBubbleHide(button, timerToken, _NEKO_IDLE_THOUGHT_BUBBLE_POP_VISIBLE_MS);",
+    )
+    _assert_source_contains(
+        bubble_pop_block,
+        "button.__nekoIdleThoughtBubbleAudio = null;",
+        "thought bubble pop helper",
+    )
+    dispatch_pop_block = _source_slice_between(
+        source,
+        "function _dispatchNekoIdleThoughtBubblePop(button, detail = {})",
+        "function _popNekoIdleThoughtBubble(button, detail = {})",
+        "thought bubble pop dispatch helper",
+    )
+    assert "new CustomEvent('neko:thought-bubble-pop'" in dispatch_pop_block
+    assert "source: detail.source || 'click'" in dispatch_pop_block
+    hide_bubble_block = _source_slice_between(
+        source,
+        "function _hideNekoIdleThoughtBubble(button, token)",
+        "function _restartNekoIdleThoughtBubbleArt(button, tier)",
+        "thought bubble hide helper",
+    )
+    assert "_NEKO_IDLE_THOUGHT_BUBBLE_POPPING_CLASS" not in hide_bubble_block
+
+    return_click_block = _source_slice_between(
+        source,
+        "returnBtn.addEventListener('click', (e) => {",
+        "const thoughtBubble = document.createElement('span');",
+        "return button click handler before thought bubble",
+    )
+    _assert_source_order(
+        return_click_block,
+        "return button ignores thought bubble clicks",
+        "if (_isNekoIdleThoughtBubbleEventHit(returnBtn, e)) {",
+        "e.preventDefault();",
+        "e.stopPropagation();",
+        "return;",
+        "_finishNekoIdleReturnDragAction(returnBtn, { restoreArt: false });",
+    )
+    assert "returnBtn.addEventListener('mouseenter', (event) => {" in source
+    assert "if (_isNekoIdleThoughtBubbleEventHit(returnBtn, event)) return;" in source
+    native_drag_block = _source_slice_between(
+        app_ui_source,
+        "function isThoughtBubbleEventTarget(event) {",
+        "state.handleMouseMove = (event) => {",
+        "desktop native return-ball drag thought bubble guard",
+    )
+    _assert_source_order(
+        native_drag_block,
+        "desktop native return-ball drag thought bubble guard",
+        "const bubble = target.closest('.neko-idle-thought-bubble');",
+        "return !!(bubble && bubble.closest('.neko-idle-return-btn.is-thought-bubble-active'));",
+        "state.handleMouseDown = (event) => {",
+        "if (isThoughtBubbleEventTarget(event)) return;",
+        "beginDrag(event.screenX, event.screenY, event);",
+    )
+    assert "state.handleTouchStart = (event) => {\n            if (isThoughtBubbleEventTarget(event)) return;" in app_ui_source
+
     bubble_bg_block = _extract_css_block(css_source, ".neko-idle-thought-bubble-bg")
     assert "position: absolute;" in bubble_bg_block
     assert "inset: 0;" in bubble_bg_block
     assert "width: 100%;" in bubble_bg_block
     assert "height: 100%;" in bubble_bg_block
     assert "object-fit: contain;" in bubble_bg_block
+    assert "transform-origin: center center;" in bubble_bg_block
+
+    pop_asset = Image.open(THOUGHT_BUBBLE_POP_ASSET_PATH)
+    pop_durations = []
+    pop_bboxes = []
+    for frame_index in range(pop_asset.n_frames):
+        pop_asset.seek(frame_index)
+        pop_durations.append(pop_asset.info.get("duration"))
+        pop_bboxes.append(pop_asset.convert("RGBA").getchannel("A").getbbox())
+    assert pop_asset.size == (248, 244)
+    assert pop_asset.n_frames == 6
+    assert pop_durations == [80, 90, 100, 120, 150, 520]
+    assert sum(pop_durations) == 1060
+    assert sum(duration for duration, bbox in zip(pop_durations, pop_bboxes) if bbox is not None) == 540
+    assert pop_bboxes[-1] is None
+    assert pop_bboxes[0] == (8, 49, 248, 202)
 
     bubble_item_block = _extract_css_block(css_source, ".neko-idle-thought-bubble-item")
     assert "position: absolute;" in bubble_item_block
@@ -1016,7 +1154,8 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
 def test_sleeping_cat_tiers_schedule_soft_random_sound_once_per_interval():
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
 
-    assert "_NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS = 5 * 60 * 1000" in source
+    assert "Dev-only short interval for CAT2/CAT3 sleep sounds and their thought bubble." in source
+    assert "_NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS = 10 * 1000" in source
     assert "_NEKO_IDLE_SLEEP_SOUND_VOLUME = 0.09" in source
     assert "function _playNekoIdleSound(state, src, volume)" in source
     assert "[_NEKO_IDLE_TIER_CAT2]" in source
@@ -1041,7 +1180,8 @@ def test_sleeping_cat_tiers_schedule_soft_random_sound_once_per_interval():
 def test_cat1_voice_sounds_are_limited_to_non_drag_and_drag_states():
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
 
-    assert "_NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS = 3 * 60 * 1000" in source
+    assert "Dev-only short interval for tuning cat sounds and the linked thought bubble." in source
+    assert "_NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS = 10 * 1000" in source
     assert "_NEKO_IDLE_CAT1_AMBIENT_SOUND_VOLUME = 0.14" in source
     assert "_NEKO_IDLE_CAT1_DRAG_SOUND_VOLUME = 0.16" in source
     assert "_NEKO_IDLE_CAT1_DRAG_SOUND_FADE_OUT_MS = 900" in source
@@ -1500,7 +1640,8 @@ def test_return_button_idle_tier_assets_are_version_tracked():
                  CAT3_DRAG_ASSET_PATH, CAT4_DRAG_ASSET_PATH,
                  CAT1_RAPID_DRAG_ASSET_PATH, CAT1_RAPID_DRAG_SOUND_PATH,
                  CAT_MODEL_CHANGE_ASSET_PATH,
-                 THOUGHT_BUBBLE_ASSET_PATH, SLEEPING_THOUGHT_BUBBLE_ASSET_PATH,
+                 THOUGHT_BUBBLE_ASSET_PATH, THOUGHT_BUBBLE_POP_ASSET_PATH,
+                 SLEEPING_THOUGHT_BUBBLE_ASSET_PATH,
                  *THOUGHT_BUBBLE_ITEM_ASSET_PATHS):
         assert path in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
         assert path.is_file()

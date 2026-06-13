@@ -2204,6 +2204,7 @@
         "sessionFailed": "세션 시작 실패"
     },
     "buttons": {
+        "thoughtBubblePop": "생각 말풍선 터뜨리기",
         "voiceControl": "음성 제어",
         "screenShare": "화면 공유",
         "agentTools": "네코클로",

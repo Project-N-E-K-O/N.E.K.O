@@ -471,6 +471,7 @@ body.neko-game-active [id$="-lock-icon"] {
     height: 100%;
     object-fit: contain;
     display: block;
+    transform-origin: center center;
     pointer-events: none;
     user-select: none;
 }
@@ -508,10 +509,20 @@ body.neko-game-active [id$="-lock-icon"] {
     opacity: 1;
     visibility: visible;
     transition-delay: 0s;
+    pointer-events: auto;
+    cursor: pointer;
 }
 
 .neko-idle-return-btn.is-thought-bubble-active .neko-idle-thought-bubble-item {
     animation: neko-idle-thought-bubble-item-float 3600ms steps(24, end) infinite;
+}
+
+.neko-idle-return-btn.is-thought-bubble-popping .neko-idle-thought-bubble {
+    pointer-events: none;
+}
+
+.neko-idle-return-btn.is-thought-bubble-popping .neko-idle-thought-bubble-item {
+    display: none;
 }
 
 .neko-idle-return-btn.is-thought-bubble-sleeping .neko-idle-thought-bubble-item {

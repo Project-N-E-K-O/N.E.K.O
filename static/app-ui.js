@@ -3066,12 +3066,20 @@
             });
         }
 
+        function isThoughtBubbleEventTarget(event) {
+            const target = event && event.target;
+            if (!target || typeof target.closest !== 'function') return false;
+            const bubble = target.closest('.neko-idle-thought-bubble');
+            return !!(bubble && bubble.closest('.neko-idle-return-btn.is-thought-bubble-active'));
+        }
+
         state.handleMouseDown = (event) => {
             if (event.button !== 0) {
                 event.preventDefault();
                 event.stopImmediatePropagation();
                 return;
             }
+            if (isThoughtBubbleEventTarget(event)) return;
             beginDrag(event.screenX, event.screenY, event);
         };
         state.handleMouseMove = (event) => {
@@ -3094,6 +3102,7 @@
             cancelActiveDrag('pointercancel');
         };
         state.handleTouchStart = (event) => {
+            if (isThoughtBubbleEventTarget(event)) return;
             const point = getTouchScreenPoint(event.touches[0]);
             if (!point) return;
             beginDrag(point.x, point.y, event);

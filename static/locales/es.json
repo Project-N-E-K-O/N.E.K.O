@@ -2204,6 +2204,7 @@
         "sessionFailed": "La sesión no pudo iniciarse"
     },
     "buttons": {
+        "thoughtBubblePop": "Explotar burbuja de pensamiento",
         "voiceControl": "Control de voz",
         "screenShare": "Compartir pantalla",
         "agentTools": "Neko Garra",
