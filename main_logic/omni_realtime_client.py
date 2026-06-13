@@ -3063,7 +3063,7 @@ class OmniRealtimeClient:
                         if self._gemini_user_transcript and self.on_input_transcript:
                             await self.on_input_transcript(self._gemini_user_transcript)
                             self._gemini_user_transcript = ""  # 清空累积
-                            self._gemini_user_transcript_after_interrupt = False
+                        self._gemini_user_transcript_after_interrupt = False
                         self._is_first_text_chunk = True  # 重置第一个 chunk 标记
                         self._gemini_current_transcript = ""  # 清空累积
                         if not self._skip_until_next_response and not self._interrupted and self.on_new_message:
@@ -3129,8 +3129,10 @@ class OmniRealtimeClient:
                     self._interrupted = True
                     self._is_responding = False
                     # 被中断时也发送已累积的用户输入
-                    if self._gemini_user_transcript and self.on_input_transcript:
-                        await self.on_input_transcript(self._gemini_user_transcript)
+                    if self._gemini_user_transcript:
+                        self._gemini_user_transcript_after_interrupt = True
+                        if self.on_input_transcript:
+                            await self.on_input_transcript(self._gemini_user_transcript)
                         self._gemini_user_transcript = ""
                     logger.info("Gemini response was interrupted by user")
         

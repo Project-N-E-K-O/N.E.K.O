@@ -958,6 +958,45 @@ async def test_gemini_interrupted_user_audio_without_transcript_stays_suppressed
 
 
 @pytest.mark.unit
+async def test_gemini_interrupted_same_event_transcript_allows_next_turn():
+    client = _make_server_vad_client(
+        model="gemini-2.0-flash-exp",
+        api_type="gemini",
+        base_url="https://generativelanguage.googleapis.com",
+    )
+    client.on_input_transcript = AsyncMock()
+    client.on_new_message = AsyncMock()
+    client.on_text_delta = AsyncMock()
+    client.on_audio_delta = AsyncMock()
+
+    await client._process_gemini_response(
+        _gemini_response(
+            input_transcription=_gemini_input_text("barge in"),
+            interrupted=True,
+        )
+    )
+
+    assert client._interrupted is True
+    assert client._gemini_user_transcript_after_interrupt is True
+    client.on_input_transcript.assert_awaited_once_with("barge in")
+
+    client._ai_recent_activity_time = time.time() - 0.5
+    client._user_recent_activity_time = time.time()
+    await client._process_gemini_response(
+        _gemini_response(
+            output_transcription=_gemini_output_text("next"),
+            model_turn=_gemini_model_turn_audio(b"next-audio"),
+        )
+    )
+
+    assert client._interrupted is False
+    assert client._gemini_user_transcript_after_interrupt is False
+    client.on_new_message.assert_awaited_once()
+    client.on_text_delta.assert_awaited_once_with("next", True)
+    client.on_audio_delta.assert_awaited_once_with(b"next-audio")
+
+
+@pytest.mark.unit
 def test_uplink_rate_gpt_is_24k_with_resampler():
     """gpt models must target a 24kHz uplink and own a stream resampler."""
     client = _make_server_vad_client(model="gpt-realtime", api_type="openai")
