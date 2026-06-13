@@ -96,6 +96,8 @@ def _search_terms(query: str) -> list[str]:
         try:
             terms.extend(str(item).strip() for item in jieba.cut(text) if str(item).strip())
         except Exception:
+            # Segmentation is best-effort; on failure keep the regex tokens
+            # (and the `terms or [text]` fallback below) so search still works.
             pass
     result: list[str] = []
     seen: set[str] = set()
@@ -129,6 +131,7 @@ class NotebookStore:
             try:
                 warning(message, *args)
             except Exception:
+                # Diagnostics must never break the notebook store's main flow.
                 pass
 
     def create_notebook(
