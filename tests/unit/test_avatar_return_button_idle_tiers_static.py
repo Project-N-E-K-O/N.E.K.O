@@ -1027,7 +1027,8 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert '_isNekoIdleCat1Walking' in source
     assert 'movedDistancePx' in source
     assert 'isSmallDesktopChatMove' in source
-    assert 'if (isSmallDesktopChatMove && !_isNekoIdleCat1Walking(button)) return;' in source
+    assert '_isNekoIdleCat1SettledOnMinimizedSide' in source
+    assert 'if (isSmallDesktopChatMove && !_isNekoIdleCat1Walking(button) && !settledMinimizedSide) return;' in source
     assert '_dispatchNekoIdleReturnBallManualMove' in source
     assert '_getNekoIdleDesktopChatMinimizedRect' in source
     assert '_getNekoIdleChatMinimizedRect' in source
