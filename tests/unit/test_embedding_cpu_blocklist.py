@@ -83,6 +83,26 @@ def test_force_enable_env_falsey_keeps_blocklist(monkeypatch):
     assert embeddings._cpu_is_blocklisted() is True
 
 
+def test_explicit_neko_false_beats_bare_true(monkeypatch):
+    """NEKO_ precedence: an explicit falsey ``NEKO_VECTORS_FORCE_ENABLE``
+    wins over a truthy bare ``VECTORS_FORCE_ENABLE`` — the first present,
+    non-empty key decides and we do not fall through to the bare name.
+    Mirrors config's ``_read_str_env`` key order."""
+    monkeypatch.setattr(embeddings, "_read_cpu_brand_string", lambda: _E5_2666)
+    monkeypatch.setenv("NEKO_VECTORS_FORCE_ENABLE", "0")
+    monkeypatch.setenv("VECTORS_FORCE_ENABLE", "1")
+    assert embeddings._cpu_is_blocklisted() is True
+
+
+def test_empty_neko_falls_through_to_bare(monkeypatch):
+    """An empty ``NEKO_VECTORS_FORCE_ENABLE`` is treated as unset (not a
+    falsey decision), so a truthy bare ``VECTORS_FORCE_ENABLE`` still wins."""
+    monkeypatch.setattr(embeddings, "_read_cpu_brand_string", lambda: _E5_2666)
+    monkeypatch.setenv("NEKO_VECTORS_FORCE_ENABLE", "")
+    monkeypatch.setenv("VECTORS_FORCE_ENABLE", "1")
+    assert embeddings._cpu_is_blocklisted() is False
+
+
 def test_blocklisted_cpu_disables_service_at_construction(monkeypatch):
     """A blocklisted CPU drives the service straight to DISABLED at
     construction with reason ``cpu_on_known_bad_blocklist`` — ahead of the

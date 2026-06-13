@@ -480,13 +480,29 @@ def _cpu_is_blocklisted() -> bool:
     the frozen module is baked into the binary, the process environment is
     not. It follows the documented env convention — ``NEKO_`` prefix, with
     the bare name accepted as a fallback, matching config's ``_read_str_env``
-    key order. This is the per-machine escape hatch for a false positive (a
-    listed chip that actually runs fine, or a later microcode fix) and the
-    way to re-try a forced fp32 / int8 load on a blocklisted host.
+    key order: the FIRST env name that is present and non-empty wins, so an
+    explicit ``NEKO_VECTORS_FORCE_ENABLE`` takes precedence over the bare
+    name even when its value is falsey (it does not fall through). This is
+    the per-machine escape hatch for a false positive (a listed chip that
+    actually runs fine, or a later microcode fix) and the way to re-try a
+    forced fp32 / int8 load on a blocklisted host.
     """
     for _key in ("NEKO_VECTORS_FORCE_ENABLE", "VECTORS_FORCE_ENABLE"):
-        if os.getenv(_key, "").strip().lower() in ("1", "true", "yes", "on"):
-            return False
+        _raw = os.getenv(_key)
+        if _raw is None or not _raw.strip():
+            continue
+        # First present-and-non-empty key decides; a later key (the bare
+        # name) never overrides an explicitly-set earlier one, even if that
+        # value is falsey — so NEKO_ precedence holds.
+        if _raw.strip().lower() in ("1", "true", "yes", "on"):
+            return False        # force-enabled → never blocklisted
+        break                   # explicit falsey override → fall to brand check
+    return _brand_blocklisted()
+
+
+def _brand_blocklisted() -> bool:
+    """Pure brand-string side of :func:`_cpu_is_blocklisted` (no env
+    override): True iff the CPU brand matches :data:`_CPU_BRAND_BLOCKLIST`."""
     brand = _read_cpu_brand_string()
     if not brand:
         return False
