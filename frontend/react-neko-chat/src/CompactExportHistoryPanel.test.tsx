@@ -415,6 +415,7 @@ describe('CompactExportHistoryPanel', () => {
       await waitFor(() => {
         expect(screen.getByTitle('Export Preview')).toBeInTheDocument();
       });
+      expect(screen.getByTitle('Export Preview')).toHaveAttribute('sandbox', 'allow-scripts');
 
       const copyButton = screen.getByRole('button', { name: 'Copy to Clipboard' });
       fireEvent.click(copyButton);
@@ -433,6 +434,58 @@ describe('CompactExportHistoryPanel', () => {
     } finally {
       consoleError.mockRestore();
     }
+  });
+
+  it('restores Markdown as an export format for preview, copy, and download', async () => {
+    const onBuildPreview = vi.fn().mockResolvedValue({
+      previewKind: 'document',
+      previewDocument: '<!doctype html><html><body>Markdown Preview</body></html>',
+    });
+    const onCopyExport = vi.fn();
+    const onDownloadExport = vi.fn();
+
+    renderPanel({ onBuildPreview, onCopyExport, onDownloadExport });
+
+    await waitFor(() => {
+      expect(onBuildPreview).toHaveBeenCalledWith({
+        messageIds: [message.id],
+        format: 'image',
+        imageStyle: 'neko',
+        imageFormat: 'png',
+      });
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Markdown' }));
+
+    await waitFor(() => {
+      expect(onBuildPreview).toHaveBeenCalledWith({
+        messageIds: [message.id],
+        format: 'markdown',
+        imageStyle: 'neko',
+        imageFormat: 'png',
+      });
+    });
+    expect(screen.queryByRole('button', { name: 'N.E.K.O' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy to Clipboard' }));
+    await waitFor(() => {
+      expect(onCopyExport).toHaveBeenCalledWith({
+        messageIds: [message.id],
+        format: 'markdown',
+        imageStyle: 'neko',
+        imageFormat: 'png',
+      });
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Export' }));
+    await waitFor(() => {
+      expect(onDownloadExport).toHaveBeenCalledWith({
+        messageIds: [message.id],
+        format: 'markdown',
+        imageStyle: 'neko',
+        imageFormat: 'png',
+      });
+    });
   });
 
   it('clears rejected export action errors when the preview closes', async () => {

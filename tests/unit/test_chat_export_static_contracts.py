@@ -22,3 +22,14 @@ def test_export_preview_waits_for_shell_before_rewriting_document():
     stop_index = script.index("if (typeof previewWindow.stop === 'function') previewWindow.stop();", gate_index)
     doc_open_index = script.index("var doc = previewWindow.document;", gate_index)
     assert gate_index < guard_index < stop_index < doc_open_index
+
+
+def test_neko_export_group_time_uses_single_send_time():
+    script = CHAT_EXPORT_JS.read_text(encoding="utf-8")
+
+    function_start = script.index("function getGroupTime(group)")
+    function_end = script.index("function fitMetaText", function_start)
+    get_group_time = script[function_start:function_end]
+
+    assert "return times[0];" in get_group_time
+    assert "times[0] + ' - ' + times[times.length - 1]" not in get_group_time

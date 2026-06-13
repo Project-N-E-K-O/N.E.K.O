@@ -1,0 +1,19 @@
+[plugin]
+name = "Claude 伙伴陪伴"
+description = "监测 Claude Code 工作活动，让 NEKO 伙伴温暖陪伴你开发。Web UI：http://127.0.0.1:48916/plugin/claude_companion/ui/"
+short_description = "Monitors Claude Code activity and lets your NEKO companion encourage you while coding."
+keywords = ["claude", "companion", "陪伴", "开发", "coding", "鼓励", "monitor", "activity"]
+version = "1.0.0"
+id = "claude_companion"
+entry = "plugin.plugins.claude_companion:ClaudeCompanionPlugin"
+
+[plugin.author]
+name = "NEKO Community"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin_runtime]
+enabled = true
+auto_start = true

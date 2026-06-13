@@ -1032,6 +1032,40 @@ def test_pages_router_static_asset_version_tracks_tutorial_runtime_modules():
     assert '_PROJECT_ROOT / "static/tutorial-avatar-reload-controller.js"' in source
 
 
+def test_react_chat_templates_use_react_asset_version_for_chat_bundle():
+    react_version = "{{ react_chat_asset_version }}"
+    static_version = "{{ static_asset_version }}"
+    react_assets = (
+        "/static/react/neko-chat/neko-chat-window.css",
+        "/static/react/neko-chat/neko-chat-window.iife.js",
+        "/static/app-react-chat-window.js",
+        "/static/app-chat-adapter.js",
+        "/static/app-buttons.js",
+    )
+
+    for template_path in ("templates/index.html", "templates/chat.html"):
+        source = Path(template_path).read_text(encoding="utf-8")
+        assert "window.__NEKO_REACT_CHAT_ASSET_VERSION__={{ react_chat_asset_version | tojson }};" in source
+        for asset_path in react_assets:
+            assert f"{asset_path}?v={react_version}" in source
+            assert f"{asset_path}?v={static_version}" not in source
+
+
+def test_pages_router_react_chat_asset_version_tracks_avatar_tool_icons():
+    source = Path("main_routers/pages_router.py").read_text(encoding="utf-8")
+
+    for asset_path in (
+        "static/icons/edit_tool_unified.png",
+        "static/icons/chat_sugar1.png",
+        "static/icons/cat_claw1.png",
+        "static/icons/chat_hammer1.png",
+        "static/app-react-chat-window.js",
+        "static/app-chat-adapter.js",
+        "static/app-buttons.js",
+    ):
+        assert f'_PROJECT_ROOT / "{asset_path}"' in source
+
+
 def test_home_yui_guide_does_not_route_to_steam_workshop():
     yui_source = Path("static/yui-guide-steps.js").read_text(encoding="utf-8")
     tutorial_source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
@@ -1212,6 +1246,35 @@ def test_character_card_manager_cloudsave_button_uses_icon_badge():
         ".sidebar-cloudsave-icon",
         ".sidebar-cloudsave-btn:focus-visible",
         "[data-theme=\"dark\"] .sidebar-cloudsave-icon",
+    ):
+        assert expected in css_source
+
+
+def test_character_card_companion_uses_liquid_glass_surface():
+    css_source = Path("static/css/character_card_manager.css").read_text(encoding="utf-8")
+
+    for expected in (
+        "--companion-glass-border",
+        "--companion-glass-highlight",
+        ".card-companion-panel::before",
+        ".card-companion-panel::after",
+        "backdrop-filter: blur(7px) saturate(1.18) contrast(1.04) brightness(1.05);",
+        "inset 0 1px 0 var(--companion-glass-highlight)",
+        ".card-companion-header::before",
+        ".card-companion-thread::before",
+        ".card-companion-input-bar::before",
+        ".card-companion-input-row::before",
+        "0 0 0 2px rgba(64, 197, 241, 0.18)",
+        ".card-companion-panel.card-companion-dragging::before",
+        ".card-companion-panel.card-companion-dragging::after",
+        "backdrop-filter: none;",
+        "[data-theme=\"dark\"] .card-companion-panel::before",
+        "[data-theme=\"dark\"] .card-companion-panel::after",
+        "[data-theme=\"dark\"] .card-companion-header::before",
+        "[data-theme=\"dark\"] .card-companion-thread::before",
+        "[data-theme=\"dark\"] .card-companion-input-bar::before",
+        "[data-theme=\"dark\"] .card-companion-input-bar::after",
+        "[data-theme=\"dark\"] .card-companion-input-row::before",
     ):
         assert expected in css_source
 

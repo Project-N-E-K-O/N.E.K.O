@@ -9,20 +9,21 @@ function guideSidebar(lang: 'en' | 'zh-CN' | 'ja') {
     en: {
       group: 'Getting Started',
       intro: 'Introduction', prereq: 'Prerequisites', dev: 'Development Setup',
-      quick: 'Quick Start', struct: 'Project Structure',
+      quick: 'Quick Start', struct: 'Project Structure', linux: 'Linux Desktop Runtime',
     },
     'zh-CN': {
       group: '快速上手',
       intro: '简介', prereq: '前置条件', dev: '开发环境搭建',
-      quick: '快速开始', struct: '项目结构',
+      quick: '快速开始', struct: '项目结构', linux: 'Linux 桌面运行时',
     },
     ja: {
       group: 'はじめに',
       intro: 'はじめに', prereq: '前提条件', dev: '開発環境の構築',
-      quick: 'クイックスタート', struct: 'プロジェクト構造',
+      quick: 'クイックスタート', struct: 'プロジェクト構造', linux: 'Linux デスクトップランタイム',
     },
   }[lang]
   const p = lang === 'en' ? '' : `/${lang}`
+  const linuxDesktopItems = [{ text: t.linux, link: `${p}/guide/linux-desktop-runtime` }]
   return [
     {
       text: t.group,
@@ -31,6 +32,7 @@ function guideSidebar(lang: 'en' | 'zh-CN' | 'ja') {
         { text: t.prereq, link: `${p}/guide/prerequisites` },
         { text: t.dev, link: `${p}/guide/dev-setup` },
         { text: t.quick, link: `${p}/guide/quick-start` },
+        ...linuxDesktopItems,
         { text: t.struct, link: `${p}/guide/project-structure` },
       ],
     },

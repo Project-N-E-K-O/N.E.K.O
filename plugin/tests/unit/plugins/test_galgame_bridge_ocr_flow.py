@@ -1853,6 +1853,11 @@ def test_ocr_reader_foreground_refresh_updates_target_without_capture(
 
     monkeypatch.setattr(galgame_ocr_reader, "_foreground_window_handle", lambda: 888888)
     monkeypatch.setattr(galgame_ocr_reader, "_window_process_id", lambda hwnd: target.pid)
+    # _foreground_matches_target lives in ocr_window_scanner and resolves its
+    # helpers in that module's namespace; patching only the ocr_reader
+    # re-exports would leave the real win32 lookups in place.
+    monkeypatch.setattr(galgame_ocr_window_scanner, "_root_window_handle", lambda hwnd: int(hwnd or 0))
+    monkeypatch.setattr(galgame_ocr_window_scanner, "_window_process_id", lambda hwnd: target.pid)
     runtime = manager.refresh_foreground_state()
 
     assert runtime["target_is_foreground"] is True
@@ -2614,11 +2619,14 @@ def test_ocr_window_inventory_uses_root_hwnd_foreground_match(
         ocr_backend=_FakeOcrBackend(),
     )
     monkeypatch.setattr(galgame_ocr_reader, "_foreground_window_handle", lambda: 201)
-    monkeypatch.setattr(
-        galgame_ocr_reader,
-        "_root_window_handle",
-        lambda hwnd: 100 if hwnd in {200, 201} else hwnd,
-    )
+    # _foreground_matches_target resolves _root_window_handle in
+    # ocr_window_scanner's namespace, so patch the source module as well.
+    for module in (galgame_ocr_reader, galgame_ocr_window_scanner):
+        monkeypatch.setattr(
+            module,
+            "_root_window_handle",
+            lambda hwnd: 100 if hwnd in {200, 201} else hwnd,
+        )
 
     eligible, _excluded = manager._scan_window_inventory()
 
@@ -2734,6 +2742,7 @@ def test_ocr_reader_capture_backend_switch_clears_stale_capture_diagnostics(
 @pytest.mark.plugin_unit
 async def test_auto_recalibrate_ocr_dialogue_profile_persists_bucket_and_survives_restart(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     ctx = _Ctx(
@@ -2771,6 +2780,9 @@ async def test_auto_recalibrate_ocr_dialogue_profile_persists_bucket_and_survive
     manager._runtime.status = "active"
     manager._runtime.capture_stage = OCR_CAPTURE_PROFILE_STAGE_DIALOGUE
     plugin._ocr_reader_manager = manager
+    # auto_recalibrate_dialogue_profile requires the target to be foreground;
+    # keep the check away from the real GetForegroundWindow.
+    monkeypatch.setattr(galgame_ocr_reader, "_foreground_window_handle", lambda: target.hwnd)
     with plugin._state_lock:
         plugin._state.ocr_reader_runtime = {
             "enabled": True,
@@ -2847,6 +2859,7 @@ async def test_auto_recalibrate_ocr_dialogue_profile_persists_bucket_and_survive
 @pytest.mark.plugin_unit
 async def test_auto_recalibrate_ocr_dialogue_profile_failure_does_not_write_store(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     ctx = _Ctx(
@@ -2875,6 +2888,9 @@ async def test_auto_recalibrate_ocr_dialogue_profile_failure_does_not_write_stor
         height=500,
         is_foreground=True,
     )
+    # auto_recalibrate_dialogue_profile requires the target to be foreground;
+    # keep the check away from the real GetForegroundWindow.
+    monkeypatch.setattr(galgame_ocr_reader, "_foreground_window_handle", lambda: 601)
 
     result = await plugin.galgame_auto_recalibrate_ocr_dialogue_profile()
 

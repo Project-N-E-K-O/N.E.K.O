@@ -7,6 +7,7 @@ from .entry_common import (
     SdkError,
     _entry_exception_error,
     _normalize_submitted_image_payload,
+    _validate_optional_vision_image_payload,
     _plugin_lock,
     plugin_entry,
     tr,
@@ -15,6 +16,20 @@ from .entry_common import (
     MODE_CONCEPT_EXPLAIN,
     handle_user_intent,
 )
+
+
+IMAGE_ONLY_EXPLAIN_PROMPT_EN = "Please explain the pasted image."
+IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN = "请解释这张图片的内容"
+IMAGE_ONLY_EXPLAIN_PROMPT_ZH_TW = "請解釋這張圖片的內容"
+
+
+def _image_only_explain_prompt(language: str) -> str:
+    normalized = str(language or "").strip().lower()
+    if normalized.startswith(("zh-tw", "zh-hk", "zh-hant")):
+        return IMAGE_ONLY_EXPLAIN_PROMPT_ZH_TW
+    if normalized.startswith("zh"):
+        return IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
+    return IMAGE_ONLY_EXPLAIN_PROMPT_EN
 
 
 class _TutorExplainEntriesMixin:
@@ -47,7 +62,9 @@ class _TutorExplainEntriesMixin:
         if normalized_text:
             async with _plugin_lock(self._lock):
                 self._state.last_ocr_text = normalized_text
-        source_text = normalized_text or "请查看这张图片的内容"
+        source_text = normalized_text or _image_only_explain_prompt(
+            self._cfg.language
+        )
         return await self.study_explain_text(
             text=source_text,
             vision_image_base64=image_payload,
@@ -121,13 +138,13 @@ class _TutorExplainEntriesMixin:
         source_text = str(intent.get("remaining_text") or "").strip()
         if not source_text and intent_kind != "concept_explain":
             source_text = raw_text
+        vision_image_payload = str(vision_image_base64 or "").strip()
         used_ocr_fallback = False
-        if not source_text:
+        if not source_text and not vision_image_payload:
             async with _plugin_lock(self._lock):
                 source_text = self._state.last_ocr_text
             used_ocr_fallback = bool(source_text.strip())
         source_text = source_text.strip()
-        vision_image_payload = str(vision_image_base64 or "").strip()
         if not source_text and not vision_image_payload:
             return Err(
                 SdkError(
@@ -137,20 +154,26 @@ class _TutorExplainEntriesMixin:
             )
         # Phase 3: explain with the active mode selected above.
         try:
+            image_only_source = False
+            if vision_image_payload:
+                validated_vision_image = _validate_optional_vision_image_payload(
+                    self, vision_image_payload, operation="study_explain_text"
+                )
+                if isinstance(validated_vision_image, Err):
+                    return validated_vision_image
+                vision_image_payload = validated_vision_image
+                if not source_text:
+                    source_text = _image_only_explain_prompt(self._cfg.language)
+                    image_only_source = True
             extra_context: dict[str, Any] = {
                 "source": "ocr_snapshot"
-                if used_ocr_fallback or not raw_text
-                else "manual",
+                if used_ocr_fallback
+                else ("vision_image" if image_only_source else "manual"),
                 "mode": active_mode,
                 "mode_switch": bool(mode_switch.get("changed")),
                 "source_text": source_text,
             }
             if vision_image_payload:
-                if not bool(self._cfg.llm_vision_enabled):
-                    return Err(SdkError("llm_vision_enabled is not enabled"))
-                vision_image_payload = _normalize_submitted_image_payload(
-                    vision_image_payload,
-                )
                 extra_context["vision_enabled"] = True
                 extra_context["vision_image_base64"] = vision_image_payload
             tutor_context = await self._build_learning_context(

@@ -15,6 +15,7 @@ const RESERVED_PAGE_PATHS = new Set([
     'static',
     'templates',
     'toast',
+    'web_chat_compact',
 ]);
 
 function isReservedPagePath(pathname) {

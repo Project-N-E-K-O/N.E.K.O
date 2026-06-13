@@ -19,6 +19,8 @@
     const NEKO_MODEL_CAT_TRANSITION_ASSET = '/static/assets/neko-idle/cat_model_change.gif';
     const NEKO_MODEL_CAT_TRANSITION_DURATION_MS = 850;
     const NEKO_MODEL_CAT_TRANSITION_LOOP_GUARD_MS = 70;
+    const NEKO_MODEL_CAT_REVEAL_BEFORE_SMOKE_HIDE_MS = 48;
+    const NEKO_MODEL_CAT_TRANSITION_LOAD_FALLBACK_MS = 1200;
     const NEKO_MODEL_CAT_TO_MODEL_LOCK_MS = 1120;
     const NEKO_MODEL_CAT_TRANSITION_MODEL_SCALE = 0.38;
     const NEKO_MODEL_CAT_TRANSITION_MIN_SIZE = 260;
@@ -41,6 +43,7 @@
     })();
     let nekoModelCatTransitionToken = 0;
     let nekoModelCatTransitionActive = null;
+    let nekoModelCatRevealPlaybackToken = 0;
 
     // ================================================================
     //  1. Status toast  (app.js lines 86-145)
@@ -749,7 +752,7 @@
                     if (button) {
                         button.dataset.active = isActive ? 'true' : 'false';
                         if (imgOff && imgOn) {
-                            imgOff.style.opacity = isActive ? '0' : '1';
+                            imgOff.style.opacity = isActive ? '0' : '0.75';
                             imgOn.style.opacity = isActive ? '1' : '0';
                         }
                         if (typeof manager.updateSeparatePopupTriggerIcon === 'function') {
@@ -778,7 +781,7 @@
                     if (button) {
                         button.dataset.active = isActive ? 'true' : 'false';
                         if (imgOff && imgOn) {
-                            imgOff.style.opacity = isActive ? '0' : '1';
+                            imgOff.style.opacity = isActive ? '0' : '0.75';
                             imgOn.style.opacity = isActive ? '1' : '0';
                         }
                         if (typeof manager.updateSeparatePopupTriggerIcon === 'function') {
@@ -1693,11 +1696,52 @@
         return true;
     }
 
-    function buildNekoModelCatTransitionAssetUrl() {
-        if (!NEKO_MODEL_CAT_TRANSITION_VERSION) {
+    function buildNekoModelCatTransitionAssetUrl(playbackToken = '') {
+        const params = [];
+        if (NEKO_MODEL_CAT_TRANSITION_VERSION) {
+            params.push(`v=${encodeURIComponent(NEKO_MODEL_CAT_TRANSITION_VERSION)}`);
+        }
+        if (playbackToken) {
+            params.push(`play=${encodeURIComponent(String(playbackToken))}`);
+        }
+        if (!params.length) {
             return NEKO_MODEL_CAT_TRANSITION_ASSET;
         }
-        return `${NEKO_MODEL_CAT_TRANSITION_ASSET}?v=${encodeURIComponent(NEKO_MODEL_CAT_TRANSITION_VERSION)}`;
+        const separator = NEKO_MODEL_CAT_TRANSITION_ASSET.includes('?') ? '&' : '?';
+        return `${NEKO_MODEL_CAT_TRANSITION_ASSET}${separator}${params.join('&')}`;
+    }
+
+    function buildNekoModelCatRevealPlaybackUrl(src, playbackToken) {
+        if (!src) return '';
+        try {
+            const url = new URL(src, window.location.href);
+            if (!/\/static\/assets\/neko-idle\/.+\.gif$/i.test(url.pathname)) {
+                return src;
+            }
+            url.searchParams.set('reveal', String(playbackToken || Date.now()));
+            return url.href;
+        } catch (_) {
+            return src;
+        }
+    }
+
+    function restartNekoModelCatRevealArt(container) {
+        const art = container && typeof container.querySelector === 'function'
+            ? container.querySelector('.neko-idle-return-art:not(.neko-idle-return-art-next)')
+            : null;
+        if (!art) return false;
+        const currentSrc = art.getAttribute('src') || art.currentSrc || '';
+        if (!currentSrc) return false;
+        const nextSrc = buildNekoModelCatRevealPlaybackUrl(
+            currentSrc,
+            ++nekoModelCatRevealPlaybackToken
+        );
+        art.__nekoIdleGifPlaybackToken = (art.__nekoIdleGifPlaybackToken || 0) + 1;
+        art.__nekoIdleHoverToken = (art.__nekoIdleHoverToken || 0) + 1;
+        art.removeAttribute('src');
+        void art.offsetWidth;
+        art.src = nextSrc || currentSrc;
+        return true;
     }
 
     function normalizeNekoScreenRect(rect) {
@@ -1941,11 +1985,15 @@
         };
     }
 
-    function clearNekoModelCatTransitionOverlay() {
-        const existing = document.getElementById('neko-model-cat-transition');
-        if (existing && existing.parentNode) {
-            existing.parentNode.removeChild(existing);
-        }
+    function clearNekoModelCatTransitionOverlay(keepToken = '') {
+        document.querySelectorAll('#neko-model-cat-transition').forEach((existing) => {
+            if (keepToken && existing.getAttribute('data-neko-model-cat-transition-token') === String(keepToken)) {
+                return;
+            }
+            if (existing.parentNode) {
+                existing.parentNode.removeChild(existing);
+            }
+        });
     }
 
     function getNekoModelCatOverlayVisibleMs() {
@@ -1958,10 +2006,11 @@
             : NEKO_MODEL_CAT_TRANSITION_DURATION_MS;
     }
 
-    function createNekoModelCatTransitionOverlay(rect, direction) {
+    function createNekoModelCatTransitionOverlay(rect, direction, token) {
         const overlay = document.createElement('div');
         overlay.id = 'neko-model-cat-transition';
         overlay.setAttribute('data-neko-model-cat-transition-direction', direction);
+        overlay.setAttribute('data-neko-model-cat-transition-token', String(token || ''));
         Object.assign(overlay.style, {
             position: 'fixed',
             left: `${rect.left}px`,
@@ -2019,12 +2068,25 @@
         }
     }
 
+    function isNekoModelCatTransitionTokenCurrent(token) {
+        return !!(
+            nekoModelCatTransitionActive &&
+            nekoModelCatTransitionActive.token === token
+        );
+    }
+
     function playNekoModelCatTransition(options = {}) {
         const container = options.container || null;
         const anchorRect = options.anchorRect || null;
         const coverRect = options.coverRect || null;
         const direction = options.direction || 'model-to-cat';
         const transitionToken = options.transitionToken || null;
+        const onBeforeOverlayCleanup = typeof options.onBeforeOverlayCleanup === 'function'
+            ? options.onBeforeOverlayCleanup
+            : null;
+        const beforeOverlayCleanupMs = Number.isFinite(Number(options.beforeOverlayCleanupMs))
+            ? Math.max(0, Number(options.beforeOverlayCleanupMs))
+            : NEKO_MODEL_CAT_REVEAL_BEFORE_SMOKE_HIDE_MS;
         let token = transitionToken;
         if (nekoModelCatTransitionActive) {
             const ownsActiveTransition = transitionToken &&
@@ -2046,7 +2108,7 @@
             });
         }
         const rect = normalizeNekoTransitionRect(anchorRect, container, coverRect);
-        const src = buildNekoModelCatTransitionAssetUrl();
+        const src = buildNekoModelCatTransitionAssetUrl(token);
 
         if (container) {
             container.setAttribute('data-neko-model-cat-transitioning', direction);
@@ -2057,14 +2119,32 @@
             }
         }
 
-        clearNekoModelCatTransitionOverlay();
-        const { overlay, image } = createNekoModelCatTransitionOverlay(rect, direction);
+        clearNekoModelCatTransitionOverlay(token);
+        const { overlay, image } = createNekoModelCatTransitionOverlay(rect, direction, token);
         let playbackStartedAt = getNekoTransitionNowMs();
         let overlayCleanupTimer = null;
+        let beforeOverlayCleanupTimer = null;
         let finishTimer = null;
+        let imageLoadFallbackTimer = null;
+        let didImageLoad = false;
+        let didStartPlayback = false;
+        let didSchedulePlayback = false;
+        let didCallBeforeOverlayCleanup = false;
         let didCleanupOverlay = false;
         let didFinish = false;
+        const isCurrentTransition = () => isNekoModelCatTransitionTokenCurrent(token);
+        const runBeforeOverlayCleanup = () => {
+            if (!isCurrentTransition()) return;
+            if (didFinish || didCallBeforeOverlayCleanup || !onBeforeOverlayCleanup) return;
+            didCallBeforeOverlayCleanup = true;
+            try {
+                onBeforeOverlayCleanup();
+            } catch (error) {
+                console.warn('[App] model/cat transition before-overlay-cleanup callback failed:', error);
+            }
+        };
         const cleanupOverlay = () => {
+            if (!isCurrentTransition()) return;
             if (didCleanupOverlay) return;
             didCleanupOverlay = true;
             if (overlay.parentNode) {
@@ -2074,44 +2154,89 @@
         const finishTransition = (resolve) => {
             if (didFinish) return;
             didFinish = true;
-            cleanupOverlay();
-            if (container && container.isConnected) {
-                container.removeAttribute('data-neko-model-cat-transitioning');
-                if (direction === 'cat-to-model') {
-                    container.style.removeProperty('visibility');
-                }
+            if (imageLoadFallbackTimer) {
+                clearTimeout(imageLoadFallbackTimer);
+                imageLoadFallbackTimer = null;
             }
-            releaseNekoModelCatTransition(token);
+            if (isCurrentTransition()) {
+                cleanupOverlay();
+                if (container && container.isConnected) {
+                    container.removeAttribute('data-neko-model-cat-transitioning');
+                    if (direction === 'cat-to-model') {
+                        container.style.removeProperty('visibility');
+                    }
+                }
+                releaseNekoModelCatTransition(token);
+            }
             resolve({ completed: true, direction });
         };
         const scheduleTransitionTimers = (resolve) => {
             if (didFinish) return;
+            if (didSchedulePlayback) return;
+            didSchedulePlayback = true;
+            if (imageLoadFallbackTimer) {
+                clearTimeout(imageLoadFallbackTimer);
+                imageLoadFallbackTimer = null;
+            }
             if (overlayCleanupTimer) clearTimeout(overlayCleanupTimer);
+            if (beforeOverlayCleanupTimer) clearTimeout(beforeOverlayCleanupTimer);
             if (finishTimer) clearTimeout(finishTimer);
             const elapsedMs = Math.max(0, getNekoTransitionNowMs() - playbackStartedAt);
             const visibleDurationMs = getNekoModelCatOverlayVisibleMs();
             const settleDurationMs = getNekoModelCatSettleMs(direction);
             const overlayRemainingMs = Math.max(0, visibleDurationMs - elapsedMs);
             const finishRemainingMs = Math.max(0, settleDurationMs - elapsedMs);
+            if (onBeforeOverlayCleanup && didImageLoad && !didCallBeforeOverlayCleanup) {
+                const revealRemainingMs = Math.max(0, overlayRemainingMs - beforeOverlayCleanupMs);
+                beforeOverlayCleanupTimer = setTimeout(runBeforeOverlayCleanup, revealRemainingMs);
+            }
             overlayCleanupTimer = setTimeout(cleanupOverlay, overlayRemainingMs);
             finishTimer = setTimeout(() => {
                 finishTransition(resolve);
             }, finishRemainingMs);
         };
-        image.addEventListener('load', () => {
-            playbackStartedAt = getNekoTransitionNowMs();
-        }, { once: true });
-        document.body.appendChild(overlay);
-
         const transitionPromise = new Promise((resolve) => {
-            image.addEventListener('load', () => {
+            const ensureOverlayVisible = () => {
+                if (!overlay.parentNode) {
+                    document.body.appendChild(overlay);
+                }
+            };
+            const startVisibleSmokePlayback = () => {
+                if (didFinish || didStartPlayback) return;
+                didStartPlayback = true;
+                if (!isCurrentTransition()) return;
+                image.src = src;
+                playbackStartedAt = getNekoTransitionNowMs();
+                ensureOverlayVisible();
+            };
+            const startTransitionPlayback = () => {
+                if (didFinish || didSchedulePlayback) return;
+                if (imageLoadFallbackTimer) {
+                    clearTimeout(imageLoadFallbackTimer);
+                    imageLoadFallbackTimer = null;
+                }
+                if (!isCurrentTransition()) {
+                    finishTransition(resolve);
+                    return;
+                }
+                startVisibleSmokePlayback();
                 scheduleTransitionTimers(resolve);
+            };
+            const preloadImage = new Image();
+            preloadImage.addEventListener('load', () => {
+                didImageLoad = true;
+                startTransitionPlayback();
             }, { once: true });
-            image.addEventListener('error', () => {
-                scheduleTransitionTimers(resolve);
+            preloadImage.addEventListener('error', () => {
+                didImageLoad = true;
+                startTransitionPlayback();
             }, { once: true });
-            image.src = src;
-            scheduleTransitionTimers(resolve);
+            startVisibleSmokePlayback();
+            preloadImage.src = src;
+            imageLoadFallbackTimer = setTimeout(() => {
+                didImageLoad = true;
+                startTransitionPlayback();
+            }, NEKO_MODEL_CAT_TRANSITION_LOAD_FALLBACK_MS);
         });
         if (nekoModelCatTransitionActive && nekoModelCatTransitionActive.token === token) {
             nekoModelCatTransitionActive.promise = transitionPromise;
@@ -2133,7 +2258,7 @@
         container.setAttribute('data-dragging', 'false');
     }
 
-    function hideReturnBallContainer(container) {
+    function hideReturnBallContainer(container, reason = 'return-ball-hide') {
         if (!container) return;
         cancelReturnBallReveal(container);
         restoreSavedReturnBallStyle(container);
@@ -2142,8 +2267,10 @@
         container.style.display = 'none';
         container.style.pointerEvents = 'none';
         container.style.removeProperty('visibility');
-        scheduleIdleReturnBallDesktopBridge('return-ball-hide', container);
+        scheduleIdleReturnBallDesktopBridge(reason || 'return-ball-hide', container);
     }
+
+    window.hideNekoReturnBallContainer = hideReturnBallContainer;
 
     function positionReturnBallContainer(container, anchorRect) {
         if (!container) return;
@@ -2181,7 +2308,7 @@
         scheduleIdleReturnBallDesktopBridge(reason, container);
     }
 
-    function showReturnBallContainer(container, anchorRect) {
+    function showReturnBallContainer(container, anchorRect, options = {}) {
         if (!container) return null;
 
         cancelReturnBallReveal(container);
@@ -2199,12 +2326,14 @@
 
         void container.offsetWidth;
 
-        const revealFrameId = requestAnimationFrame(() => {
-            if (container.__nekoReturnBallRevealFrame !== revealFrameId) return;
-            revealReturnBallContainer(container, 'return-ball-revealed');
-        });
-        container.__nekoReturnBallRevealFrame = revealFrameId;
-        scheduleIdleReturnBallDesktopBridge('return-ball-show', container);
+        if (!options.deferReveal) {
+            const revealFrameId = requestAnimationFrame(() => {
+                if (container.__nekoReturnBallRevealFrame !== revealFrameId) return;
+                revealReturnBallContainer(container, 'return-ball-revealed');
+            });
+            container.__nekoReturnBallRevealFrame = revealFrameId;
+            scheduleIdleReturnBallDesktopBridge('return-ball-show', container);
+        }
         return container;
     }
 
@@ -2236,7 +2365,11 @@
     function postIdleReturnBallDesktopState(reason, container, overrideScreenRect) {
         if (!canPostIdleReturnBallDesktopState()) return;
         const target = container || getVisibleIdleReturnBallContainer();
-        const visible = !!(target && target.getAttribute('data-neko-return-visible') === 'true' && target.style.display !== 'none');
+        const visible = !!(target &&
+            target.getAttribute('data-neko-return-visible') === 'true' &&
+            target.style.display !== 'none' &&
+            target.style.visibility !== 'hidden' &&
+            target.style.opacity !== '0');
         const tier = visible
             ? (target.getAttribute('data-neko-idle-tier') || 'none')
             : 'none';
@@ -3048,7 +3181,10 @@
             );
         };
         state.handleWindowBlur = () => {
-            cancelActiveDrag('window-blur');
+            if (!state.isDragging) return;
+            // Native return-ball dragging may legitimately blur the Pet window when
+            // the companion chat layer has focus; stale recovery handles lost release.
+            scheduleReturnBallDragRecoveryCheck();
         };
         state.handlePageHide = () => {
             cancelActiveDrag('pagehide');
@@ -3075,6 +3211,13 @@
 
         multiWindowReturnBallDragState = state;
     }
+
+    window.hideAllNekoReturnBallContainers = function(reason = 'return-ball-hide') {
+        hideReturnBallContainer(document.getElementById('live2d-return-button-container'), reason);
+        hideReturnBallContainer(document.getElementById('vrm-return-button-container'), reason);
+        hideReturnBallContainer(document.getElementById('mmd-return-button-container'), reason);
+        ensureMultiWindowReturnBallDrag(null);
+    };
 
     /**
      * Wire up floating-button event listeners.
@@ -3184,6 +3327,11 @@
             }
             if (window.mmdManager) {
                 window.mmdManager._goodbyeClicked = true;
+            }
+            if (window.appInterpage && typeof window.appInterpage.postGoodbyeChatComposerHiddenState === 'function') {
+                window.appInterpage.postGoodbyeChatComposerHiddenState(true, 'live2d-goodbye-click');
+            } else if (typeof window.postGoodbyeChatComposerHiddenState === 'function') {
+                window.postGoodbyeChatComposerHiddenState(true, 'live2d-goodbye-click');
             }
             console.log('[App] 设置 goodbyeClicked 为 true，当前状态:', window.live2dManager ? window.live2dManager._goodbyeClicked : 'undefined', 'VRM:', window.vrmManager ? window.vrmManager._goodbyeClicked : 'undefined');
 
@@ -3450,14 +3598,14 @@
                 }
             }
             if (useMmdReturn && mmdReturnButtonContainer) {
-                activeReturnButtonContainer = showReturnBallContainer(mmdReturnButtonContainer, savedGoodbyeRect);
+                activeReturnButtonContainer = showReturnBallContainer(mmdReturnButtonContainer, savedGoodbyeRect, { deferReveal: true });
             } else {
                 hideReturnBallContainer(mmdReturnButtonContainer);
             }
 
-            // 显示Live2D的返回按钮（仅在非VRM/非MMD模式时显示）
+            // 显示Live2D的返回按钮（仅在非VRM/非MMD/非PNGTuber模式时显示）
             if (!useVrmReturn && !useMmdReturn && !usePngtuberReturn && live2dReturnButtonContainer) {
-                activeReturnButtonContainer = showReturnBallContainer(live2dReturnButtonContainer, savedGoodbyeRect);
+                activeReturnButtonContainer = showReturnBallContainer(live2dReturnButtonContainer, savedGoodbyeRect, { deferReveal: true });
             } else {
                 hideReturnBallContainer(live2dReturnButtonContainer);
             }
@@ -3487,13 +3635,27 @@
             }
 
             if (useVrmReturn && vrmReturnButtonContainer) {
-                activeReturnButtonContainer = showReturnBallContainer(vrmReturnButtonContainer, savedGoodbyeRect);
+                activeReturnButtonContainer = showReturnBallContainer(vrmReturnButtonContainer, savedGoodbyeRect, { deferReveal: true });
             } else {
                 hideReturnBallContainer(vrmReturnButtonContainer);
             }
 
             ensureMultiWindowReturnBallDrag(activeReturnButtonContainer);
             if (activeReturnButtonContainer) {
+                let didRevealActiveReturnBall = false;
+                const revealActiveReturnBall = (reason) => {
+                    if (didRevealActiveReturnBall) return;
+                    if (
+                        activeReturnButtonContainer &&
+                        activeReturnButtonContainer.isConnected &&
+                        activeReturnButtonContainer.style.display !== 'none' &&
+                        activeReturnButtonContainer.getAttribute('data-neko-return-visible') === 'true'
+                    ) {
+                        didRevealActiveReturnBall = true;
+                        restartNekoModelCatRevealArt(activeReturnButtonContainer);
+                        revealReturnBallContainer(activeReturnButtonContainer, reason);
+                    }
+                };
                 requestAnimationFrame(() => {
                     if (
                         activeReturnButtonContainer &&
@@ -3506,26 +3668,15 @@
                             direction: 'model-to-cat',
                             anchorRect: transitionAnchorRect,
                             transitionToken: goodbyeTransitionToken,
-                            container: activeReturnButtonContainer
+                            container: activeReturnButtonContainer,
+                            onBeforeOverlayCleanup: () => {
+                                revealActiveReturnBall('return-ball-model-cat-transition-smoke-cover');
+                            }
                         }).then((transitionResult) => {
                             if (transitionResult && transitionResult.blocked) return;
-                            if (
-                                activeReturnButtonContainer &&
-                                activeReturnButtonContainer.isConnected &&
-                                activeReturnButtonContainer.style.display !== 'none' &&
-                                activeReturnButtonContainer.getAttribute('data-neko-return-visible') === 'true'
-                            ) {
-                                revealReturnBallContainer(activeReturnButtonContainer, 'return-ball-model-cat-transition-done');
-                            }
+                            revealActiveReturnBall('return-ball-model-cat-transition-done');
                         }).catch(() => {
-                            if (
-                                activeReturnButtonContainer &&
-                                activeReturnButtonContainer.isConnected &&
-                                activeReturnButtonContainer.style.display !== 'none' &&
-                                activeReturnButtonContainer.getAttribute('data-neko-return-visible') === 'true'
-                            ) {
-                                revealReturnBallContainer(activeReturnButtonContainer, 'return-ball-model-cat-transition-fallback');
-                            }
+                            revealActiveReturnBall('return-ball-model-cat-transition-fallback');
                         });
                     } else {
                         releaseNekoModelCatTransition(goodbyeTransitionToken);
@@ -3653,6 +3804,11 @@
             }
             if (window.mmdManager) {
                 window.mmdManager._goodbyeClicked = false;
+            }
+            if (window.appInterpage && typeof window.appInterpage.postGoodbyeChatComposerHiddenState === 'function') {
+                window.appInterpage.postGoodbyeChatComposerHiddenState(false, 'return-click');
+            } else if (typeof window.postGoodbyeChatComposerHiddenState === 'function') {
+                window.postGoodbyeChatComposerHiddenState(false, 'return-click');
             }
 
             console.log('[App] 标志清除后 - live2dManager._goodbyeClicked:', window.live2dManager?._goodbyeClicked);
@@ -3960,7 +4116,7 @@
                     if (buttonData && buttonData.button) {
                         buttonData.button.dataset.active = 'false';
                         if (buttonData.imgOff) {
-                            buttonData.imgOff.style.opacity = '1';
+                            buttonData.imgOff.style.opacity = '0.75';
                         }
                         if (buttonData.imgOn) {
                             buttonData.imgOn.style.opacity = '0';
@@ -3980,7 +4136,7 @@
                     if (buttonData && buttonData.button) {
                         buttonData.button.dataset.active = 'false';
                         if (buttonData.imgOff) {
-                            buttonData.imgOff.style.opacity = '1';
+                            buttonData.imgOff.style.opacity = '0.75';
                         }
                         if (buttonData.imgOn) {
                             buttonData.imgOn.style.opacity = '0';
@@ -4000,7 +4156,7 @@
                     if (buttonData && buttonData.button) {
                         buttonData.button.dataset.active = 'false';
                         if (buttonData.imgOff) {
-                            buttonData.imgOff.style.opacity = '1';
+                            buttonData.imgOff.style.opacity = '0.75';
                         }
                         if (buttonData.imgOn) {
                             buttonData.imgOn.style.opacity = '0';

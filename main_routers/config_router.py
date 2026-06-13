@@ -40,6 +40,12 @@ from config import (
     CHARACTER_RESERVED_FIELDS,
 )
 
+_MIMO_TOKEN_PLAN_HOSTS = {
+    "token-plan-cn.xiaomimimo.com",
+    "token-plan-sgp.xiaomimimo.com",
+    "token-plan-ams.xiaomimimo.com",
+}
+
 
 router = APIRouter(prefix="/api/config", tags=["config"])
 
@@ -692,11 +698,13 @@ async def get_core_config_api():
             "assistApiKeyKimi": core_cfg.get('assistApiKeyKimi', '') or _fb('kimi'),
             "assistApiKeyDeepseek": core_cfg.get('assistApiKeyDeepseek', '') or _fb('deepseek'),
             "assistApiKeyDoubao": core_cfg.get('assistApiKeyDoubao', '') or _fb('doubao'),
-            # MiniMax 是 assist-only（TTS 专用），不在 coreApi 候选集里，
-            # coreApiKey 永远不是 minimax 兼容的；不 fallback，以免把无效 key
-            # 塞进 TTS 凭证槽位导致 401，掩盖"未配置 minimax key"的真实提示。
+            # MiniMax / MiMo 是 assist-only TTS provider，coreApiKey 不保证兼容；
+            # 不 fallback，以免把无效 key 塞进 TTS 凭证槽位导致 401。
             "assistApiKeyMinimax": core_cfg.get('assistApiKeyMinimax', ''),
             "assistApiKeyMinimaxIntl": core_cfg.get('assistApiKeyMinimaxIntl', ''),
+            "assistApiKeyMimo": core_cfg.get('assistApiKeyMimo', ''),
+            "useMimoTokenPlan": core_cfg.get('useMimoTokenPlan', False) is True or str(core_cfg.get('useMimoTokenPlan', False)).lower() in ('true', '1', 'yes', 'on'),
+            "assistApiKeyMimoTokenPlan": core_cfg.get('assistApiKeyMimoTokenPlan', ''),
             "assistApiKeyElevenlabs": core_cfg.get('assistApiKeyElevenlabs', ''),
             "assistApiKeyGrok": core_cfg.get('assistApiKeyGrok', '') or _fb('grok'),
             "assistApiKeyClaude": core_cfg.get('assistApiKeyClaude', '') or _fb('claude'),
@@ -736,30 +744,8 @@ async def update_core_config(request: Request):
         if not data:
             return {"success": False, "error": "无效的数据"}
         
-        # 检查是否启用了自定义API
         enable_custom_api = data.get('enableCustomApi', False)
-        
-        # 如果启用了自定义API，不需要强制检查核心API key
-        if not enable_custom_api:
-            # 检查是否为免费版配置
-            is_free_version = data.get('coreApi') == 'free' or data.get('assistApi') == 'free'
-            
-            if 'coreApiKey' not in data:
-                return {"success": False, "error": "缺少coreApiKey字段"}
-            
-            api_key = data['coreApiKey']
-            if api_key is None:
-                return {"success": False, "error": "API Key不能为null"}
-            
-            if not isinstance(api_key, str):
-                return {"success": False, "error": "API Key必须是字符串类型"}
-            
-            api_key = api_key.strip()
-            
-            # 免费版允许使用 'free-access' 作为API key，不进行空值检查
-            if not is_free_version and not api_key:
-                return {"success": False, "error": "API Key不能为空"}
-        
+
         # 保存到core_config.json
         from utils.config_manager import get_config_manager
         config_manager = get_config_manager()
@@ -773,6 +759,31 @@ async def update_core_config(request: Request):
         except Exception:
             existing_core_cfg = {}
         core_cfg = dict(existing_core_cfg) if isinstance(existing_core_cfg, dict) else {}
+
+        def _incoming_provider(field, error_message):
+            if field not in data:
+                return None
+            provider = data.get(field)
+            if provider is not None and not isinstance(provider, str):
+                raise TypeError(error_message)
+            provider = (provider or "").strip()
+            return provider or None
+
+        def _stored_provider(field):
+            provider = core_cfg.get(field)
+            if not isinstance(provider, str):
+                return None
+            provider = provider.strip()
+            return provider or None
+
+        try:
+            incoming_core_api = _incoming_provider('coreApi', 'coreApi must be a string')
+            incoming_assist_api = _incoming_provider('assistApi', 'assistApi must be a string')
+        except TypeError as exc:
+            return {"success": False, "error": str(exc)}
+
+        effective_core_api = incoming_core_api or _stored_provider('coreApi')
+        core_uses_free_provider = effective_core_api == 'free'
         
         def _is_masked_secret(value) -> bool:
             if not isinstance(value, str):
@@ -801,16 +812,27 @@ async def update_core_config(request: Request):
                     core_cfg['coreApiKey'] = api_key
         else:
             # 未启用自定义API时，必须设置coreApiKey
+            if 'coreApiKey' not in data and not core_uses_free_provider:
+                return {"success": False, "error": "缺少coreApiKey字段"}
             try:
-                api_key = _normalize_core_api_key(data.get('coreApiKey', ''))
+                api_key = (
+                    _normalize_core_api_key(data['coreApiKey'])
+                    if 'coreApiKey' in data
+                    else None
+                )
             except (TypeError, ValueError) as exc:
                 return {"success": False, "error": str(exc)}
+            if not core_uses_free_provider and not api_key:
+                return {"success": False, "error": "API Key不能为空"}
             if api_key is not None:
                 core_cfg['coreApiKey'] = api_key
-        if 'coreApi' in data:
-            core_cfg['coreApi'] = data['coreApi']
-        if 'assistApi' in data:
-            core_cfg['assistApi'] = data['assistApi']
+        # coreApi / assistApi 为空串 = 前端在配置尚未加载完成（下拉被清空）时提交。
+        # 绝不能用空值覆盖已存的有效 provider——否则重新加载时空值会被兜底成别的服务商，
+        # 把免费版用户悄悄切走。仅在非空时写入；空值保留 existing_core_cfg 里的旧值。
+        if incoming_core_api:
+            core_cfg['coreApi'] = incoming_core_api
+        if incoming_assist_api:
+            core_cfg['assistApi'] = incoming_assist_api
         if 'resolvedProviderUrls' in data:
             resolved_urls = data.get('resolvedProviderUrls')
             if not isinstance(resolved_urls, dict):
@@ -828,7 +850,8 @@ async def update_core_config(request: Request):
             'assistApiKeyQwen', 'assistApiKeyQwenIntl', 'assistApiKeyOpenai', 'assistApiKeyDeepseek',
             'assistApiKeyGlm', 'assistApiKeyStep', 'assistApiKeySilicon',
             'assistApiKeyGemini', 'assistApiKeyKimi', 'assistApiKeyDoubao',
-            'assistApiKeyMinimax', 'assistApiKeyMinimaxIntl', 'assistApiKeyElevenlabs', 'assistApiKeyGrok',
+            'assistApiKeyMinimax', 'assistApiKeyMinimaxIntl', 'assistApiKeyMimo',
+            'assistApiKeyMimoTokenPlan', 'assistApiKeyElevenlabs', 'assistApiKeyGrok',
             'assistApiKeyClaude', 'assistApiKeyOpenrouter',
         ]
         for field in _api_key_fields:
@@ -847,6 +870,10 @@ async def update_core_config(request: Request):
             core_cfg['openclawDefaultSenderId'] = data['openclawDefaultSenderId']
         if 'enableCustomApi' in data:
             core_cfg['enableCustomApi'] = data['enableCustomApi']
+        if 'useMimoTokenPlan' in data:
+            if not isinstance(data['useMimoTokenPlan'], bool):
+                return {"success": False, "error": "useMimoTokenPlan must be a boolean"}
+            core_cfg['useMimoTokenPlan'] = data['useMimoTokenPlan']
         if 'gptsovitsEnabled' in data:
             core_cfg['gptsovitsEnabled'] = data['gptsovitsEnabled']
         for field in (
@@ -1672,9 +1699,12 @@ def _build_save_connectivity_targets(core_cfg: dict, api_config: dict) -> dict[s
         }
 
     core_provider = str(core_cfg.get("coreApi") or "qwen").strip()
-    assist_provider = str(core_cfg.get("assistApi") or "qwen").strip()
-    if core_provider == "free":
-        assist_provider = "free"
+    # 显式选择的 assistApi 一律被尊重（free 与付费可双向组合）；
+    # 仅在缺失时沿用 coreApi 偏好做默认：core=free 默认 free，其他默认 qwen。
+    # 与 ConfigManager.get_core_config() 的解析规则保持一致。
+    assist_provider = str(core_cfg.get("assistApi") or "").strip()
+    if not assist_provider:
+        assist_provider = "free" if core_provider == "free" else "qwen"
 
     _add("core", core_provider)
     _add("assist", assist_provider)
@@ -1863,6 +1893,13 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
                 _source_label = assist_profile.get("name", profile.get("name", provider_key)) + "（通过辅助端点验证）"
             else:
                 return {"success": False, "error": f"供应商 {_source_label} 暂不支持连通测试", "error_code": "missing_params"}
+        elif req.url and req.url.strip():
+            override_url = req.url.strip()
+            override_host = (urllib.parse.urlsplit(override_url).hostname or "").lower()
+            if scope != "assist" or provider_key != "mimo" or override_host not in _MIMO_TOKEN_PLAN_HOSTS:
+                return {"success": False, "error": "无效的 provider URL override", "error_code": "missing_params"}
+            url_stripped = override_url
+            url_candidates = [url_stripped]
 
     # --- Mode 2: Custom API (use frontend-provided params directly) ---
     else:
@@ -1912,6 +1949,10 @@ def _identify_provider_label(url: str, is_free: bool) -> str:
         "api.siliconflow.cn": "硅基流动",
         "generativelanguage.googleapis.com": "Gemini",
         "api.moonshot.cn": "Kimi",
+        "api.xiaomimimo.com": "MiMo",
+        "token-plan-cn.xiaomimimo.com": "MiMo Token Plan",
+        "token-plan-sgp.xiaomimimo.com": "MiMo Token Plan",
+        "token-plan-ams.xiaomimimo.com": "MiMo Token Plan",
     }
     url_lower = url.lower()
     for domain, name in _KNOWN_PROVIDERS.items():

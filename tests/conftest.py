@@ -134,7 +134,9 @@ KEY_MAPPING = {
     "assistApiKeyStep": "ASSIST_API_KEY_STEP",
     "assistApiKeySilicon": "ASSIST_API_KEY_SILICON",
     "assistApiKeyGemini": "ASSIST_API_KEY_GEMINI",
-    "assistApiKeyKimi": "ASSIST_API_KEY_KIMI"
+    "assistApiKeyKimi": "ASSIST_API_KEY_KIMI",
+    "assistApiKeyMimo": "ASSIST_API_KEY_MIMO",
+    "assistApiKeyMimoTokenPlan": "ASSIST_API_KEY_MIMO_TOKEN_PLAN",
 }
 
 def pytest_addoption(parser):
