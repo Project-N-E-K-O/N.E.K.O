@@ -826,6 +826,7 @@
   var drainTimer = 0;
   var assistToastTimer = 0;
   var bubbleTimer = 0;
+  var resultTimer = 0;
   var nekoControlTimer = 0;
   var audioCtx = null;
   var bgmTimer = 0;
@@ -3045,6 +3046,8 @@
     }
   }
   function resetGame() {
+    clearTimeout(resultTimer);
+    resultTimer = 0;
     if (endedRoute) {
       endedRoute = false;
       routeEndFetchPending = false;
@@ -3521,7 +3524,7 @@
         shot_type: game.lastShotType || '',
         label: 'horse_game_over'
       });
-      setTimeout(showResult, 500);
+      scheduleShowResult(500);
       endRoute(false);
       return true;
     }
@@ -3725,7 +3728,7 @@
         shot_type: shotType,
         label: 'duel_game_over'
       });
-      setTimeout(showResult, 900);
+      scheduleShowResult(900);
       endRoute(false);
     } else {
       game.duel.round += 1;
@@ -3875,7 +3878,7 @@
           attempts_results: game.attemptsResults.slice(-12),
           was_perfect: ball.wasPerfect, shot_angle: ball.angle, shot_power: ball.power
         });
-        setTimeout(showResult, 900);
+        scheduleShowResult(900);
         endRoute(false);
       }
     }
@@ -4000,6 +4003,15 @@
     }
     resultStats.textContent = scoreText + ratingText;
     resultPanel.classList.add('show');
+  }
+  function scheduleShowResult(delayMs) {
+    var resultSessionId = sessionId;
+    clearTimeout(resultTimer);
+    resultTimer = setTimeout(function () {
+      resultTimer = 0;
+      if (sessionId !== resultSessionId || game.state !== 'game_over') return;
+      showResult();
+    }, delayMs);
   }
   function update(dt) {
     if (isTimeAttackMode() && game.state !== 'game_over') {
@@ -4653,6 +4665,7 @@
   function startRoute() {
     var localLeaderboard = loadLocalLeaderboard();
     var routeLanlanName = getRouteLanlanName();
+    var routeSessionId = sessionId;
     var routeStartPromise = post('/route/start', Object.assign({
       session_id: sessionId, lanlan_name: routeLanlanName, source: 'basketball_demo',
       game_type: 'basketball', mode: currentMode, i18n_language: getRequestLanguage(),
@@ -4665,6 +4678,7 @@
       theme: currentThemeKey,
       last_played_date: (localLeaderboard.recent_games && localLeaderboard.recent_games[0] && localLeaderboard.recent_games[0].date) || ''
     }, _basketballGameMemoryPolicyPayload()), 9000).then(function (res) {
+      if (sessionId !== routeSessionId || endedRoute || game.state === 'game_over') return;
       routeActive = true;
       if (res && res.state) {
         applyRouteIdentity(res.state);

@@ -1841,6 +1841,45 @@ def _game_route_stale_session_response(
     return result
 
 
+def _game_route_closed_session_response(
+    data: dict[str, Any],
+    *,
+    session_id: str,
+    lanlan_name: str,
+    method: str,
+) -> dict | None:
+    source = str(data.get("source") or "")
+    if (
+        not session_id
+        or not data.get("lanlan_name")
+        or source not in {"game-llm-result", "game_llm", "game_route"}
+    ):
+        return None
+
+    result: dict[str, Any] = {
+        "ok": True,
+        "skipped": "stale_session",
+        "reason": "route_closed",
+        "handled": False,
+        "lanlan_name": lanlan_name,
+        "method": method,
+        "state": _public_route_state(None),
+    }
+    if method == "project_text_mirror":
+        result["mirrored"] = False
+    elif method == "project_tts":
+        result.update({
+            "audio_sent": False,
+            "audio_committed": False,
+            "voice_source": {
+                "provider": "project_tts",
+                "method": "project_tts",
+                "skipped": "stale_session",
+            },
+        })
+    return result
+
+
 def _detect_before_game_external_state(mgr: Any) -> tuple[str, bool]:
     """Return (mode, active) for the current ordinary external session."""
     if not mgr or not getattr(mgr, "is_active", False):
@@ -6442,6 +6481,15 @@ async def game_project_mirror_assistant(game_type: str, request: Request):
 
     session_id = str(data.get("session_id") or "")
     state = _get_active_game_route_state(lanlan_name, game_type)
+    if not state:
+        closed_response = _game_route_closed_session_response(
+            data,
+            session_id=session_id,
+            lanlan_name=lanlan_name,
+            method="project_text_mirror",
+        )
+        if closed_response:
+            return closed_response
     stale_response = _game_route_stale_session_response(
         state,
         session_id,
@@ -6508,6 +6556,15 @@ async def game_project_speak(game_type: str, request: Request):
     interrupt_audio = _coerce_payload_bool(data.get("interrupt_audio")) is True
     session_id = str(data.get("session_id") or "")
     state = _get_active_game_route_state(lanlan_name, game_type)
+    if not state:
+        closed_response = _game_route_closed_session_response(
+            data,
+            session_id=session_id,
+            lanlan_name=lanlan_name,
+            method="project_tts",
+        )
+        if closed_response:
+            return closed_response
     stale_response = _game_route_stale_session_response(
         state,
         session_id,

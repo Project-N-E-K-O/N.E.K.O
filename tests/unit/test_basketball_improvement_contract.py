@@ -764,12 +764,27 @@ def test_basketball_voice_entries_freeze_route_identity():
 
 
 @pytest.mark.unit
+def test_basketball_delayed_results_are_bound_to_session():
+    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+
+    assert "var resultTimer = 0;" in html
+    assert "function scheduleShowResult(delayMs) {" in html
+    assert "var resultSessionId = sessionId;" in html
+    assert "if (sessionId !== resultSessionId || game.state !== 'game_over') return;" in html
+    assert "clearTimeout(resultTimer);" in html
+    assert "setTimeout(showResult, 900);" not in html
+    assert "setTimeout(showResult, 500);" not in html
+
+
+@pytest.mark.unit
 def test_basketball_starts_route_before_avatar_loading():
     html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
 
     assert "initNekoAvatar().finally(function () { startRoute(); });" not in html
     assert "var routeLanlanName = getRouteLanlanName();" in html
+    assert "var routeSessionId = sessionId;" in html
     assert "lanlan_name: routeLanlanName" in html
+    assert "if (sessionId !== routeSessionId || endedRoute || game.state === 'game_over') return;" in html
     assert "applyRouteIdentity(res.state);" in html
     startup = html[html.rindex("startRoute();"):]
     assert startup.index("startRoute();") < startup.index("initNekoAvatar();")

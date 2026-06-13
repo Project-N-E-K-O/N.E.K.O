@@ -3213,6 +3213,34 @@ async def test_project_speak_rejects_stale_route_session(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_project_speak_rejects_closed_game_route_output(monkeypatch):
+    with reset_game_route_state():
+        mgr = _FakeGameRouteManager()
+        monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+
+        result = await game_router.game_project_speak(
+            "basketball",
+            _FakeRequest({
+                "line": "stale line",
+                "session_id": "closed-session",
+                "lanlan_name": "Lan",
+                "source": "game-llm-result",
+                "request_id": "req-closed-speak",
+            }),
+        )
+
+        assert result["ok"] is True
+        assert result["skipped"] == "stale_session"
+        assert result["reason"] == "route_closed"
+        assert result["handled"] is False
+        assert result["method"] == "project_tts"
+        assert result["audio_sent"] is False
+        assert result["state"]["game_route_active"] is False
+        assert mgr.spoken == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_project_mirror_assistant_uses_text_only_mirror(monkeypatch):
     mgr = _FakeGameRouteManager()
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
@@ -3274,6 +3302,36 @@ async def test_project_mirror_assistant_rejects_stale_route_session(monkeypatch)
         assert mgr.assistant_mirrored == []
         assert mgr.spoken == []
         assert state["game_dialog_log"] == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_project_mirror_assistant_rejects_closed_game_route_output(monkeypatch):
+    with reset_game_route_state():
+        mgr = _FakeGameRouteManager()
+        monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+
+        result = await game_router.game_project_mirror_assistant(
+            "basketball",
+            _FakeRequest({
+                "line": "stale mirror line",
+                "session_id": "closed-session",
+                "lanlan_name": "Lan",
+                "source": "game-llm-result",
+                "request_id": "req-closed-mirror",
+                "turn_id": "turn-closed-mirror",
+            }),
+        )
+
+        assert result["ok"] is True
+        assert result["skipped"] == "stale_session"
+        assert result["reason"] == "route_closed"
+        assert result["handled"] is False
+        assert result["method"] == "project_text_mirror"
+        assert result["mirrored"] is False
+        assert result["state"]["game_route_active"] is False
+        assert mgr.assistant_mirrored == []
+        assert mgr.spoken == []
 
 
 @pytest.mark.unit
