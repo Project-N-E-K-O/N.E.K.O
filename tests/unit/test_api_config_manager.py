@@ -1125,10 +1125,9 @@ class TestFollowProviderNotLocal:
 
 
 # ---------------------------------------------------------------------------
-# PR #1764 review #3403710558: get_core_config() 必须把 ttsModelProvider /
-# ttsVoiceId raw camelCase key 透传到 normalized snapshot，否则
-# main_logic/core.py 的 _is_vllm_omni_tts_enabled / _resolve_vllm_omni_runtime_voice
-# 拿不到字段，vLLM-Omni TTS 在原生 voice（如 Gemini Puck）场景被静默跳过。
+# PR #1764 reviews #3403710558 / #3404339374: get_core_config() 必须把
+# vLLM-Omni TTS raw camelCase key 透传到 normalized snapshot，否则
+# main_logic/core.py 的路由检测和 runtime key 拿不到用户保存字段。
 # ---------------------------------------------------------------------------
 class TestVllmOmniRawKeyPassthrough:
 
@@ -1141,18 +1140,24 @@ class TestVllmOmniRawKeyPassthrough:
             'assistApi': 'gemini',
             'enableCustomApi': True,
             'ttsModelProvider': 'vllm_omni',
+            'ttsModelUrl': 'http://localhost:8091',
+            'ttsModelId': 'Qwen3-TTS',
             'ttsVoiceId': 'Puck',
         })
         cfg = config_manager.get_core_config()
         assert cfg.get('ttsModelProvider') == 'vllm_omni', \
             f"snapshot 应透传 ttsModelProvider=vllm_omni，实际={cfg.get('ttsModelProvider')!r}"
+        assert cfg.get('ttsModelUrl') == 'http://localhost:8091', \
+            f"snapshot 应透传 ttsModelUrl，实际={cfg.get('ttsModelUrl')!r}"
+        assert cfg.get('ttsModelId') == 'Qwen3-TTS', \
+            f"snapshot 应透传 ttsModelId，实际={cfg.get('ttsModelId')!r}"
         assert cfg.get('ttsVoiceId') == 'Puck', \
             f"snapshot 应透传 ttsVoiceId=Puck，实际={cfg.get('ttsVoiceId')!r}"
 
     @pytest.mark.unit
     def test_missing_raw_keys_default_to_empty_string(self, config_manager):
-        """Legacy core_config.json files lack ttsModelProvider/ttsVoiceId; the
-        snapshot must still expose both keys with empty-string defaults
+        """Legacy core_config.json files lack vLLM raw TTS keys; the
+        snapshot must still expose them with empty-string defaults
         (backward compatibility)."""
         _write_core_config(config_manager, {
             'coreApi': 'qwen',
@@ -1161,11 +1166,17 @@ class TestVllmOmniRawKeyPassthrough:
         cfg = config_manager.get_core_config()
         assert cfg.get('ttsModelProvider') == '', \
             f"缺失时应兜底为空串，实际={cfg.get('ttsModelProvider')!r}"
+        assert cfg.get('ttsModelUrl') == '', \
+            f"缺失时应兜底为空串，实际={cfg.get('ttsModelUrl')!r}"
+        assert cfg.get('ttsModelId') == '', \
+            f"缺失时应兜底为空串，实际={cfg.get('ttsModelId')!r}"
         assert cfg.get('ttsVoiceId') == '', \
             f"缺失时应兜底为空串，实际={cfg.get('ttsVoiceId')!r}"
-        # 关键：两个 key 必须存在于 dict 中（即使值为空串），
+        # 关键：这些 key 必须存在于 dict 中（即使值为空串），
         # 否则 _is_vllm_omni_tts_enabled 的 .get() 会返回 None 触发 .strip() 链路异常
         assert 'ttsModelProvider' in cfg
+        assert 'ttsModelUrl' in cfg
+        assert 'ttsModelId' in cfg
         assert 'ttsVoiceId' in cfg
 
     @pytest.mark.unit
@@ -1177,11 +1188,17 @@ class TestVllmOmniRawKeyPassthrough:
             'coreApi': 'qwen',
             'assistApi': 'qwen',
             'ttsModelProvider': None,
+            'ttsModelUrl': None,
+            'ttsModelId': None,
             'ttsVoiceId': None,
         })
         cfg = config_manager.get_core_config()
         assert cfg.get('ttsModelProvider') == '', \
             f"None 应兜底为空串，实际={cfg.get('ttsModelProvider')!r}"
+        assert cfg.get('ttsModelUrl') == '', \
+            f"None 应兜底为空串，实际={cfg.get('ttsModelUrl')!r}"
+        assert cfg.get('ttsModelId') == '', \
+            f"None 应兜底为空串，实际={cfg.get('ttsModelId')!r}"
         assert cfg.get('ttsVoiceId') == '', \
             f"None 应兜底为空串，实际={cfg.get('ttsVoiceId')!r}"
         # 验证下游真实消费方不会抛 AttributeError

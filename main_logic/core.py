@@ -1365,13 +1365,15 @@ class LLMSessionManager:
         )
 
     @classmethod
-    def _resolve_vllm_omni_runtime_voice(cls, core_config: dict) -> str:
+    def _resolve_vllm_omni_runtime_config(cls, core_config: dict) -> tuple[str, str, str]:
         if not cls._is_vllm_omni_tts_enabled(core_config):
-            return ''
+            return ('', '', '')
         return (
+            str(core_config.get('ttsModelUrl') or '').strip(),
+            str(core_config.get('ttsModelId') or '').strip() or 'Qwen3-TTS',
             str(core_config.get('ttsVoiceId') or '').strip()
             or str(core_config.get('TTS_VOICE_ID') or '').strip()
-            or 'default'
+            or 'default',
         )
 
     def _build_tts_runtime_key(self) -> tuple:
@@ -1398,7 +1400,7 @@ class LLMSessionManager:
                 bool(has_custom),
                 tts_config.get('base_url', ''),
                 tts_config.get('model', ''),
-                self._resolve_vllm_omni_runtime_voice(core_config),
+                self._resolve_vllm_omni_runtime_config(core_config),
                 api_key,
             )
         except Exception:

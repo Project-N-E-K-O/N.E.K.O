@@ -473,15 +473,19 @@ def test_explicit_vllm_tts_uses_external_tts_before_native_voice():
     )
 
 
-def test_vllm_runtime_key_tracks_global_fallback_voice(monkeypatch):
+def test_vllm_runtime_key_tracks_raw_runtime_config(monkeypatch):
     class _CM:
-        def __init__(self, voice_id):
+        def __init__(self, url, model, voice_id):
+            self.url = url
+            self.model = model
             self.voice_id = voice_id
 
         def get_core_config(self):
             return {
                 "ENABLE_CUSTOM_API": True,
                 "ttsModelProvider": "vllm_omni",
+                "ttsModelUrl": self.url,
+                "ttsModelId": self.model,
                 "ttsVoiceId": self.voice_id,
                 "DISABLE_TTS": False,
             }
@@ -506,14 +510,15 @@ def test_vllm_runtime_key_tracks_global_fallback_voice(monkeypatch):
     )
 
     mgr = _make_mgr("")
-    mgr._config_manager = _CM("voice-a")
+    mgr._config_manager = _CM("http://localhost:8091", "Qwen3-TTS", "voice-a")
     key_a = LLMSessionManager._build_tts_runtime_key(mgr)
-    mgr._config_manager = _CM("voice-b")
+    mgr._config_manager = _CM("http://localhost:8092", "Qwen3-TTS-v2", "voice-b")
     key_b = LLMSessionManager._build_tts_runtime_key(mgr)
 
     assert key_a != key_b
-    assert "voice-a" in key_a
-    assert "voice-b" in key_b
+    assert ("http://localhost:8091", "Qwen3-TTS", "voice-a") in key_a
+    assert ("http://localhost:8092", "Qwen3-TTS-v2", "voice-b") in key_b
+    assert "Qwen3-TTS-v2" not in key_a
 
 
 @pytest.mark.asyncio
