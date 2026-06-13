@@ -118,7 +118,31 @@ test('rejects relative dynamic imports in hosted TSX', () => {
     const result = runCheck(pluginDir)
 
     assert.equal(result.status, 1)
-    assert.match(result.stderr, /Relative dynamic import is not supported in hosted TSX/)
+    assert.match(result.stderr, /Dynamic import is not supported in hosted TSX/)
+  })
+})
+
+test('rejects non-literal dynamic imports in hosted TSX', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'dynamic-import-var')
+    writePluginToml(pluginDir, 'main.tsx')
+    writeFixtureFile(
+      join(pluginDir, 'main.tsx'),
+      `export default function Panel() {
+  async function load() {
+    const path = './helper'
+    return import(path)
+  }
+  return <Page title={String(load)} />
+}
+`,
+    )
+    writeFixtureFile(join(pluginDir, 'helper.ts'), 'export const label = "helper"\n')
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /Dynamic import is not supported in hosted TSX/)
   })
 })
 

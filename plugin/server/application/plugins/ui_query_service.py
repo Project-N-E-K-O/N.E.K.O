@@ -698,6 +698,9 @@ def _hosted_import_specifier(source: str, index: int) -> str | None:
     index = _hosted_skip_trivia(source, index + len("import"))
     if index >= len(source) or source[index] in {"(", "."}:
         return None
+    if _hosted_matches_keyword(source, index, "type"):
+        # `import type { Foo } from './types'` is erased at runtime — no dep.
+        return None
     if source[index] in {"'", '"'}:
         read = _hosted_read_quoted(source, index)
         return _hosted_relative_specifier(read[0]) if read else None
@@ -714,7 +717,9 @@ def _hosted_import_specifier(source: str, index: int) -> str | None:
 def _hosted_export_specifier(source: str, index: int) -> str | None:
     index = _hosted_skip_trivia(source, index + len("export"))
     if _hosted_matches_keyword(source, index, "type"):
-        index = _hosted_skip_trivia(source, index + len("type"))
+        # `export type { Foo } from './types'` is erased at runtime — no dep
+        # (and the sibling may be a .d.ts the resolver wouldn't accept anyway).
+        return None
     if index >= len(source) or source[index] not in {"{", "*"}:
         return None
     from_index = _hosted_find_keyword_before_statement_end(source, index, "from")

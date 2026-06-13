@@ -1020,7 +1020,7 @@ function transformHostedReExports(
   return `${result}${source.slice(cursor)}`
 }
 
-function transformModuleExports(source: string) {
+function transformModuleExports(source: string, { handleDefault = true }: { handleDefault?: boolean } = {}) {
   const exports: string[] = []
   let next = source
     .replace(/^\s*export\s+type\s+\{[^}]*\}\s*;?\s*$/gm, '')
@@ -1051,15 +1051,17 @@ function transformModuleExports(source: string) {
       }
       return ''
     })
-  next = next.replace(/^\s*export\s+default\s+function\s+([A-Za-z_$][\w$]*)?\s*\(/m, (_match, name) => {
-    const localName = name || '__default'
-    exports.push(exportAssignment('default', localName))
-    return `function ${localName}(`
-  })
-  next = next.replace(/^\s*export\s+default\s+/m, () => {
-    exports.push(exportAssignment('default', '__default'))
-    return 'const __default = '
-  })
+  if (handleDefault) {
+    next = next.replace(/^\s*export\s+default\s+function\s+([A-Za-z_$][\w$]*)?\s*\(/m, (_match, name) => {
+      const localName = name || '__default'
+      exports.push(exportAssignment('default', localName))
+      return `function ${localName}(`
+    })
+    next = next.replace(/^\s*export\s+default\s+/m, () => {
+      exports.push(exportAssignment('default', '__default'))
+      return 'const __default = '
+    })
+  }
   return `${next}\n${exports.join('\n')}`
 }
 
@@ -1097,10 +1099,16 @@ ${moduleSource}
 })();`
     })
   const normalizedEntryPath = normalizeHostedPath(entryPath)
-  const entrySource = transformHostedReExports(
-    transformHostedImports(source, normalizedEntryPath, dependenciesByPath),
-    normalizedEntryPath,
-    dependenciesByPath,
+  // Transform the entry's NAMED exports too (e.g. `export const title = ...`),
+  // which would otherwise survive into the classic <script> as a syntax error;
+  // keep `export default` for compileHostedTsx to turn into __Panel.
+  const entrySource = transformModuleExports(
+    transformHostedReExports(
+      transformHostedImports(source, normalizedEntryPath, dependenciesByPath),
+      normalizedEntryPath,
+      dependenciesByPath,
+    ),
+    { handleDefault: false },
   )
   return `const __modules = Object.create(null);\n${chunks.join('\n')}\nconst __exports = {};\n${entrySource}`
 }

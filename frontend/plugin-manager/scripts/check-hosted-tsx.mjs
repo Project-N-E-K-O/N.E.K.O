@@ -12,6 +12,18 @@ const maxPluginTomlBytes = 1024 * 1024
 const maxRelativeImportDepth = 64
 const importResolutionCache = new Map()
 const fileExistsCache = new Map()
+// UI-kit names the runtime exposes as bare globals (via `Object.assign(window,
+// NekoUiKit)`). Entry check files destructure them from NekoUi; copied
+// dependency files use them bare, so they get these as ambient declarations.
+const HOSTED_UI_GLOBAL_NAMES = [
+  'Page', 'Card', 'Section', 'Heading', 'Stack', 'Grid', 'Text', 'Button', 'ButtonGroup',
+  'StatusBadge', 'StatCard', 'KeyValue', 'DataTable', 'Divider', 'Toolbar', 'ToolbarGroup',
+  'Alert', 'EmptyState', 'ErrorBoundary', 'Modal', 'ConfirmDialog', 'List', 'Progress', 'JsonView', 'Field', 'Input', 'Select',
+  'Textarea', 'Switch', 'Form', 'ActionButton', 'RefreshButton', 'ActionForm', 'AsyncBlock', 'InlineError', 'CodeBlock',
+  'Tip', 'Warning', 'Steps', 'Step', 'Tabs', 'useI18n',
+  'useState', 'useReducer', 'useEffect', 'useLayoutEffect', 'useMemo', 'useCallback', 'useRef', 'useLocalState',
+  'useDebounce', 'useDebouncedState', 'useForm', 'useAsync', 'useToast', 'useConfirm',
+]
 const sourceTextCache = new Map()
 
 function formatError(error) {
@@ -177,10 +189,14 @@ function extractRelativeImportSpecifiers(sourcePath, source) {
       node.expression.kind === ts.SyntaxKind.ImportKeyword &&
       node.arguments.length === 1
     ) {
+      // Only static import/export declarations are scanned and bundled; a
+      // dynamic import() — literal or not — resolves against the srcdoc at
+      // runtime and fails, so reject all of them rather than just the literal
+      // relative form (a non-literal specifier returns null here too).
       const specifier = moduleSpecifierText(node.arguments[0])
-      if (specifier && isRelativeSpecifier(specifier)) {
-        throw new Error(`Relative dynamic import is not supported in hosted TSX: ${sourcePath} imports ${specifier}`)
-      }
+      throw new Error(
+        `Dynamic import is not supported in hosted TSX: ${sourcePath}${specifier ? ` imports ${specifier}` : ''}`,
+      )
     }
     ts.forEachChild(node, visit)
   }
@@ -518,15 +534,7 @@ function createCheckFile(entryPath, tempDir, surface, tomlPath) {
   mkdirForFile(checkPath, 'hosted TSX check')
   writeTextFile(
     checkPath,
-    `/// <reference path="${hostedUiGlobalsPath}" />\nimport * as NekoUi from "@neko/plugin-ui";\nimport type { PluginSurfaceProps, HostedAction, JsonSchema, HostedApi } from "@neko/plugin-ui";\nconst { ${[
-      'Page', 'Card', 'Section', 'Heading', 'Stack', 'Grid', 'Text', 'Button', 'ButtonGroup',
-      'StatusBadge', 'StatCard', 'KeyValue', 'DataTable', 'Divider', 'Toolbar', 'ToolbarGroup',
-      'Alert', 'EmptyState', 'ErrorBoundary', 'Modal', 'ConfirmDialog', 'List', 'Progress', 'JsonView', 'Field', 'Input', 'Select',
-      'Textarea', 'Switch', 'Form', 'ActionButton', 'RefreshButton', 'ActionForm', 'AsyncBlock', 'InlineError', 'CodeBlock',
-      'Tip', 'Warning', 'Steps', 'Step', 'Tabs', 'useI18n',
-      'useState', 'useReducer', 'useEffect', 'useLayoutEffect', 'useMemo', 'useCallback', 'useRef', 'useLocalState',
-      'useDebounce', 'useDebouncedState', 'useForm', 'useAsync', 'useToast', 'useConfirm',
-    ].join(', ')} } = NekoUi;\ndeclare const h: any;\ndeclare const Fragment: any;\n${stripped}\n`,
+    `/// <reference path="${hostedUiGlobalsPath}" />\nimport * as NekoUi from "@neko/plugin-ui";\nimport type { PluginSurfaceProps, HostedAction, JsonSchema, HostedApi } from "@neko/plugin-ui";\nconst { ${HOSTED_UI_GLOBAL_NAMES.join(', ')} } = NekoUi;\ndeclare const h: any;\ndeclare const Fragment: any;\n${stripped}\n`,
     'hosted TSX check file',
   )
   return {
@@ -556,6 +564,7 @@ function formatDiagnostic(diagnostic, metaByCheckPath) {
 
 function main() {
   let tempDir = null
+  let ambientGlobalsPath = null
   const checkFiles = []
   const errors = []
   const warnings = []
@@ -563,6 +572,15 @@ function main() {
   try {
     const pluginTomls = findPluginTomls(process.argv.slice(2))
     tempDir = createTempDir()
+    // Ambient declarations so copied dependency files (checked verbatim, without
+    // the entry's destructuring prelude) can use the runtime's bare UI globals.
+    ambientGlobalsPath = join(tempDir, '__hosted_globals.d.ts')
+    writeTextFile(
+      ambientGlobalsPath,
+      HOSTED_UI_GLOBAL_NAMES.map((name) => `declare const ${name}: any;`).join('\n') +
+        '\ndeclare const h: any;\ndeclare const Fragment: any;\n',
+      'hosted TSX ambient globals',
+    )
 
     for (const tomlPath of pluginTomls) {
       const pluginDir = dirname(tomlPath)
@@ -616,7 +634,7 @@ function main() {
     let metaByCheckPath = new Map()
     if (checkFiles.length > 0) {
       metaByCheckPath = new Map(checkFiles.map((item) => [item.checkPath, item]))
-      const program = ts.createProgram(checkFiles.map((item) => item.checkPath), {
+      const program = ts.createProgram([ambientGlobalsPath, ...checkFiles.map((item) => item.checkPath)], {
         jsx: ts.JsxEmit.React,
         jsxFactory: 'h',
         jsxFragmentFactory: 'Fragment',
@@ -632,6 +650,10 @@ function main() {
         skipLibCheck: true,
         esModuleInterop: true,
         allowSyntheticDefaultImports: true,
+        // The dependency resolver bundles .js/.jsx/.mjs helpers; include them in
+        // the program so a syntactically broken JS helper is diagnosed here
+        // instead of passing the check and failing in the iframe.
+        allowJs: true,
       })
       diagnostics = ts.getPreEmitDiagnostics(program)
     }
