@@ -13,11 +13,13 @@ import { parseChatMessage, type CompactChatState } from './message-schema';
 
 describe('App', () => {
   const COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY = 'neko.reactChatWindow.compactExportHistoryOpen';
+  const COMPACT_HISTORY_HEIGHT_STORAGE_KEY = 'neko.reactChatWindow.compactHistorySlotHeight';
   const COMPACT_INPUT_TOOL_WHEEL_INDEX_STORAGE_KEY = 'neko.reactChatWindow.compactInputToolWheelIndex';
   const DEFAULT_CHAT_EMPTY_STATE_FALLBACK = getChatEmptyStateFallback('en');
   const DEFAULT_CHAT_COMPANION_EMPTY_STATE_FALLBACK = getChatCompanionEmptyStateFallback('en');
   const LOCAL_STORAGE_KEYS_TO_RESET = [
     COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY,
+    COMPACT_HISTORY_HEIGHT_STORAGE_KEY,
     COMPACT_INPUT_TOOL_WHEEL_INDEX_STORAGE_KEY,
     ACTIVE_AVATAR_TOOLS_STORAGE_KEY,
   ];
@@ -413,7 +415,7 @@ describe('App', () => {
       side: string;
       width: number;
       phase: string;
-      screenRect?: { left: number; width: number; right: number };
+      screenRect?: { left: number; top: number; width: number; height: number; right: number; bottom: number };
     }> = [];
     const handleResizeRequest = (event: Event) => {
       resizeRequests.push((event as CustomEvent).detail);
@@ -423,7 +425,7 @@ describe('App', () => {
     const originalDesktopLayout = desktopWindow.__nekoDesktopCompactLayout;
     desktopWindow.__nekoDesktopCompactLayout = {
       windowBounds: { x: 0, y: 0, width: 760, height: 80 },
-      surfaceScreenRect: { left: 0, top: 0, right: 720, bottom: 54, width: 720, height: 54 },
+      surfaceScreenRect: { left: 0, top: -80, right: 720, bottom: -26, width: 720, height: 54 },
     };
     const getBoundingClientRectSpy = vi
       .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
@@ -445,10 +447,10 @@ describe('App', () => {
           return {
             x: 0,
             y: 0,
-            top: 0,
+            top: 12,
             left: 0,
             right: 430,
-            bottom: 54,
+            bottom: 66,
             width: 430,
             height: 54,
             toJSON: () => ({}),
@@ -469,12 +471,12 @@ describe('App', () => {
     const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
 
     try {
-      const rightHandle = container.querySelector<HTMLDivElement>('[data-compact-resize-side="right"]');
-      expect(rightHandle).not.toBeNull();
-      fireEvent.pointerDown(rightHandle!, {
+      const leftHandle = container.querySelector<HTMLDivElement>('[data-compact-resize-side="left"]');
+      expect(leftHandle).not.toBeNull();
+      fireEvent.pointerDown(leftHandle!, {
         pointerId: 41,
-        clientX: 430,
-        screenX: 430,
+        clientX: 0,
+        screenX: 0,
         button: 0,
         buttons: 1,
         pointerType: 'mouse',
@@ -483,12 +485,26 @@ describe('App', () => {
       expect(document.documentElement.style.getPropertyValue('--compact-surface-resize-width')).toBe('');
       expect(resizeRequests).toEqual([
         expect.objectContaining({
-          side: 'right',
+          side: 'left',
           width: 430,
           phase: 'start',
-          screenRect: expect.objectContaining({ left: 0, width: 430, right: 430 }),
+          screenRect: expect.objectContaining({
+            left: 0,
+            top: 12,
+            width: 430,
+            height: 54,
+            right: 430,
+            bottom: 66,
+          }),
         }),
       ]);
+      fireEvent.pointerUp(leftHandle!, {
+        pointerId: 41,
+        clientX: 0,
+        screenX: 0,
+        buttons: 0,
+        pointerType: 'mouse',
+      });
     } finally {
       getBoundingClientRectSpy.mockRestore();
       desktopWindow.__nekoDesktopCompactLayout = originalDesktopLayout;
@@ -1330,6 +1346,70 @@ describe('App', () => {
       pointerType: 'mouse',
     });
     expect(document.documentElement.style.getPropertyValue('--compact-history-slot-height')).toBe(`${maxHeight - 40}px`);
+    fireEvent.pointerUp(resizeBar!, {
+      pointerId: 91,
+      clientY: -660,
+      screenY: -660,
+      buttons: 0,
+      pointerType: 'mouse',
+    });
+    expect(container.querySelector('.compact-export-history-anchor'))
+      .toHaveAttribute('data-compact-export-history-resizing', 'false');
+    expect(container.querySelector('.compact-export-history-anchor'))
+      .toHaveAttribute('data-compact-export-history-content-locked', 'false');
+  });
+
+  it('keeps responsive compact history height when a resize returns to the starting height', () => {
+    const message = parseChatMessage({
+      id: 'assistant-history-resize-return',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: 'Resize and return.' }],
+      status: 'sent',
+    });
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />,
+    );
+    const resizeBar = container.querySelector<HTMLDivElement>('.compact-export-history-resize-bar');
+    expect(resizeBar).not.toBeNull();
+    const defaultHeight = Math.round(Math.max(120, Math.min(430 * 1.18, window.innerHeight * 0.63)));
+
+    fireEvent.pointerDown(resizeBar!, {
+      pointerId: 92,
+      clientY: 500,
+      screenY: 500,
+      button: 0,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    fireEvent.pointerMove(resizeBar!, {
+      pointerId: 92,
+      clientY: 460,
+      screenY: 460,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    expect(document.documentElement.style.getPropertyValue('--compact-history-slot-height')).toBe(`${defaultHeight + 40}px`);
+    fireEvent.pointerMove(resizeBar!, {
+      pointerId: 92,
+      clientY: 500,
+      screenY: 500,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    expect(document.documentElement.style.getPropertyValue('--compact-history-slot-height')).toBe(`${defaultHeight}px`);
+    fireEvent.pointerUp(resizeBar!, {
+      pointerId: 92,
+      clientY: 500,
+      screenY: 500,
+      buttons: 0,
+      pointerType: 'mouse',
+    });
+
+    expect(window.localStorage.getItem(COMPACT_HISTORY_HEIGHT_STORAGE_KEY)).toBeNull();
+    expect(document.documentElement.style.getPropertyValue('--compact-history-slot-height')).toBe('');
   });
 
   it('hides compact inline history outside compact mode and restores it when compact returns', async () => {

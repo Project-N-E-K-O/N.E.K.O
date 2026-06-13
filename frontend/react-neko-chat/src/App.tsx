@@ -200,6 +200,7 @@ type CompactHistoryResizeState = {
   startPointerY: number;
   startHeight: number;
   lastHeight: number;
+  startedSlotHeight: number | null;
   heightChanged: boolean;
   limitStalled: boolean;
   captureTarget: Element | null;
@@ -1577,6 +1578,36 @@ function CompactChatApp({
     }
     return getClampedCompactSurfaceResizeWidth(COMPACT_SURFACE_DEFAULT_WIDTH);
   }, [getClampedCompactSurfaceResizeWidth]);
+  const getCurrentCompactSurfaceFrameRect = useCallback(() => {
+    const shell = compactInputShellRef.current;
+    const rect = shell
+      ?.querySelector<HTMLElement>('.compact-chat-surface-frame, [data-compact-geometry-part="inputBody"], [data-compact-geometry-part="capsuleBody"]')
+      ?.getBoundingClientRect();
+    if (
+      rect
+      && Number.isFinite(rect.left)
+      && Number.isFinite(rect.top)
+      && Number.isFinite(rect.width)
+      && Number.isFinite(rect.height)
+      && rect.width > 0
+      && rect.height > 0
+    ) {
+      return rect;
+    }
+    const shellRect = shell?.getBoundingClientRect();
+    if (
+      shellRect
+      && Number.isFinite(shellRect.left)
+      && Number.isFinite(shellRect.top)
+      && Number.isFinite(shellRect.width)
+      && Number.isFinite(shellRect.height)
+      && shellRect.width > 0
+      && shellRect.height > 0
+    ) {
+      return shellRect;
+    }
+    return null;
+  }, []);
   const compactSurfaceEffectiveWidth = isCompactSurface
     && compactSurfaceResizeWidth !== null
     ? getClampedCompactSurfaceResizeWidth(compactSurfaceResizeWidth)
@@ -2795,6 +2826,7 @@ function CompactChatApp({
     event.preventDefault();
     event.stopPropagation();
     const startWidth = getCurrentCompactSurfaceWidth();
+    const frameRect = getCurrentCompactSurfaceFrameRect();
     const shellRect = compactInputShellRef.current?.getBoundingClientRect();
     const desktopLayout = (window as typeof window & {
       __nekoDesktopCompactLayout?: {
@@ -2808,18 +2840,34 @@ function CompactChatApp({
       };
     }).__nekoDesktopCompactLayout;
     const desktopSurface = desktopLayout?.surfaceScreenRect;
-    const anchorLeftScreen = Number.isFinite(desktopSurface?.left)
-      ? Number(desktopSurface?.left)
-      : (shellRect ? window.screenX + shellRect.left : 0);
-    const anchorRightScreen = Number.isFinite(desktopSurface?.right)
-      ? Number(desktopSurface?.right)
-      : anchorLeftScreen + startWidth;
-    const anchorTopScreen = Number.isFinite(desktopSurface?.top)
-      ? Number(desktopSurface?.top)
-      : (shellRect ? window.screenY + shellRect.top : 0);
-    const surfaceHeight = Number.isFinite(desktopSurface?.height) && Number(desktopSurface?.height) > 0
-      ? Number(desktopSurface?.height)
-      : Math.max(1, shellRect?.height ?? 58);
+    const anchorLeftScreen = frameRect
+      ? window.screenX + frameRect.left
+      : (
+        Number.isFinite(desktopSurface?.left)
+          ? Number(desktopSurface?.left)
+          : (shellRect ? window.screenX + shellRect.left : 0)
+      );
+    const anchorRightScreen = frameRect
+      ? anchorLeftScreen + startWidth
+      : (
+        Number.isFinite(desktopSurface?.right)
+          ? Number(desktopSurface?.right)
+          : anchorLeftScreen + startWidth
+      );
+    const anchorTopScreen = frameRect
+      ? window.screenY + frameRect.top
+      : (
+        Number.isFinite(desktopSurface?.top)
+          ? Number(desktopSurface?.top)
+          : (shellRect ? window.screenY + shellRect.top : 0)
+      );
+    const surfaceHeight = frameRect
+      ? Math.max(1, frameRect.height)
+      : (
+        Number.isFinite(desktopSurface?.height) && Number(desktopSurface?.height) > 0
+          ? Number(desktopSurface?.height)
+          : Math.max(1, shellRect?.height ?? 58)
+      );
     compactSurfaceResizeStateRef.current = {
       pointerId: event.pointerId,
       side,
@@ -2845,6 +2893,7 @@ function CompactChatApp({
   }, [
     applyCompactSurfaceResizeWidthVar,
     dispatchCompactSurfaceResizeRequest,
+    getCurrentCompactSurfaceFrameRect,
     getCurrentCompactSurfaceWidth,
     isCompactSurface,
   ]);
@@ -2962,16 +3011,7 @@ function CompactChatApp({
     }));
   }, []);
 
-  const finishCompactHistoryResize = useCallback((event?: ReactPointerEvent<HTMLDivElement>) => {
-    const resizeState = compactHistoryResizeStateRef.current;
-    if (!resizeState) return;
-    if (event && resizeState.pointerId !== event.pointerId) return;
-    const phase = event && event.type === 'pointercancel' ? 'cancel' : 'end';
-    // 只在真正拖动过才落库：纯点击不该把响应式默认高度锁成固定像素值（否则之后视口/宽度变化不再响应）。
-    if (resizeState.heightChanged) {
-      persistCompactHistorySlotHeight(resizeState.lastHeight);
-      setCompactHistorySlotHeight(resizeState.lastHeight);
-    }
+  const releaseCompactHistoryResizeCapture = useCallback((resizeState: CompactHistoryResizeState) => {
     const captureTarget = resizeState.captureTarget;
     if (captureTarget && typeof captureTarget.releasePointerCapture === 'function') {
       try {
@@ -2980,11 +3020,41 @@ function CompactChatApp({
         }
       } catch (_) {}
     }
+  }, []);
+
+  const cancelCompactHistoryResize = useCallback(() => {
+    const resizeState = compactHistoryResizeStateRef.current;
+    if (!resizeState) return;
+    releaseCompactHistoryResizeCapture(resizeState);
+    if (resizeState.heightChanged) {
+      setCompactHistorySlotHeight(resizeState.startedSlotHeight);
+      applyCompactHistorySlotHeightVar(resizeState.startedSlotHeight);
+    }
+    compactHistoryResizeStateRef.current = null;
+    setCompactHistoryResizeActive(false);
+    setCompactHistoryResizeContentLocked(false);
+    dispatchCompactHistoryResizeRequest('cancel', { keepCarrier: resizeState.limitStalled });
+  }, [applyCompactHistorySlotHeightVar, dispatchCompactHistoryResizeRequest, releaseCompactHistoryResizeCapture]);
+
+  const finishCompactHistoryResize = useCallback((event?: ReactPointerEvent<HTMLDivElement>) => {
+    const resizeState = compactHistoryResizeStateRef.current;
+    if (!resizeState) return;
+    if (event && resizeState.pointerId !== event.pointerId) return;
+    const phase = event && event.type === 'pointercancel' ? 'cancel' : 'end';
+    // 只在真正拖动过才落库：纯点击不该把响应式默认高度锁成固定像素值（否则之后视口/宽度变化不再响应）。
+    if (resizeState.heightChanged && resizeState.lastHeight !== resizeState.startHeight) {
+      persistCompactHistorySlotHeight(resizeState.lastHeight);
+      setCompactHistorySlotHeight(resizeState.lastHeight);
+    } else if (resizeState.heightChanged) {
+      setCompactHistorySlotHeight(resizeState.startedSlotHeight);
+      applyCompactHistorySlotHeightVar(resizeState.startedSlotHeight);
+    }
+    releaseCompactHistoryResizeCapture(resizeState);
     compactHistoryResizeStateRef.current = null;
     setCompactHistoryResizeActive(false);
     setCompactHistoryResizeContentLocked(false);
     dispatchCompactHistoryResizeRequest(phase, { keepCarrier: resizeState.limitStalled });
-  }, [dispatchCompactHistoryResizeRequest]);
+  }, [applyCompactHistorySlotHeightVar, dispatchCompactHistoryResizeRequest, releaseCompactHistoryResizeCapture]);
 
   const handleCompactHistoryResizePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (!isCompactSurface) return;
@@ -2997,6 +3067,7 @@ function CompactChatApp({
       startPointerY: getCompactHistoryResizePointerY(event),
       startHeight,
       lastHeight: getClampedCompactHistorySlotHeight(startHeight),
+      startedSlotHeight: compactHistorySlotHeight,
       heightChanged: false,
       limitStalled: false,
       captureTarget: event.currentTarget,
@@ -3007,7 +3078,7 @@ function CompactChatApp({
     try {
       event.currentTarget.setPointerCapture?.(event.pointerId);
     } catch (_) {}
-  }, [dispatchCompactHistoryResizeRequest, getClampedCompactHistorySlotHeight, getCompactHistoryStartHeight, isCompactSurface]);
+  }, [compactHistorySlotHeight, dispatchCompactHistoryResizeRequest, getClampedCompactHistorySlotHeight, getCompactHistoryStartHeight, isCompactSurface]);
 
   const handleCompactHistoryResizePointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const resizeState = compactHistoryResizeStateRef.current;
@@ -3052,6 +3123,15 @@ function CompactChatApp({
     event.stopPropagation();
     finishCompactHistoryResize(event);
   }, [finishCompactHistoryResize]);
+
+  useEffect(() => {
+    if (isCompactSurface && compactExportHistoryMounted) return;
+    cancelCompactHistoryResize();
+  }, [cancelCompactHistoryResize, compactExportHistoryMounted, isCompactSurface]);
+
+  useEffect(() => () => {
+    cancelCompactHistoryResize();
+  }, [cancelCompactHistoryResize]);
 
   // 把已存/恢复的高度写进 CSS 变量（覆盖默认公式）；slot 为 null 时清掉、回落默认。
   useEffect(() => {

@@ -86,6 +86,9 @@ describe('CompactExportHistoryPanel', () => {
     const scrollHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight');
     const clientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight');
     const scrollTopDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollTop');
+    const requestAnimationFrameSpy = vi
+      .spyOn(window, 'requestAnimationFrame')
+      .mockImplementation(() => 0);
 
     Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
       configurable: true,
@@ -146,6 +149,7 @@ describe('CompactExportHistoryPanel', () => {
       } else {
         Reflect.deleteProperty(HTMLElement.prototype, 'scrollTop');
       }
+      requestAnimationFrameSpy.mockRestore();
     }
   });
 
