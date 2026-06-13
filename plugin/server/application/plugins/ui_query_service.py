@@ -541,6 +541,81 @@ def _hosted_skip_template(source: str, index: int) -> int:
     return index
 
 
+def _hosted_looks_like_jsx_start(source: str, index: int) -> bool:
+    if source[index] != "<" or index + 1 >= len(source):
+        return False
+    next_char = source[index + 1]
+    return next_char in {"/", ">"} or next_char.isalpha()
+
+
+def _hosted_skip_jsx_expression(source: str, index: int) -> int:
+    depth = 1
+    index += 1
+    while index < len(source) and depth > 0:
+        char = source[index]
+        if char == "/" and index + 1 < len(source):
+            next_char = source[index + 1]
+            if next_char == "/":
+                index = _hosted_skip_line_comment(source, index)
+                continue
+            if next_char == "*":
+                index = _hosted_skip_block_comment(source, index)
+                continue
+        if char in {"'", '"'}:
+            index = _hosted_skip_quoted(source, index)
+            continue
+        if char == "`":
+            index = _hosted_skip_template(source, index)
+            continue
+        if char == "<" and _hosted_looks_like_jsx_start(source, index):
+            index = _hosted_skip_jsx_element(source, index)
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+        index += 1
+    return index
+
+
+def _hosted_skip_jsx_tag(source: str, index: int) -> tuple[int, bool, bool]:
+    closing = index + 1 < len(source) and source[index + 1] == "/"
+    index += 2 if closing else 1
+    while index < len(source):
+        char = source[index]
+        if char in {"'", '"'}:
+            index = _hosted_skip_quoted(source, index)
+            continue
+        if char == "{":
+            index = _hosted_skip_jsx_expression(source, index)
+            continue
+        if char == ">":
+            self_closing = index > 0 and source[index - 1] == "/"
+            return index + 1, closing, self_closing
+        index += 1
+    return index, closing, False
+
+
+def _hosted_skip_jsx_element(source: str, index: int) -> int:
+    depth = 0
+    while index < len(source):
+        char = source[index]
+        if char == "{":
+            index = _hosted_skip_jsx_expression(source, index)
+            continue
+        if char == "<" and _hosted_looks_like_jsx_start(source, index):
+            index, closing, self_closing = _hosted_skip_jsx_tag(source, index)
+            if closing:
+                depth -= 1
+                if depth <= 0:
+                    return index
+            elif not self_closing:
+                depth += 1
+            continue
+        index += 1
+    return index
+
+
 def _hosted_find_keyword_before_statement_end(source: str, index: int, keyword: str) -> int:
     while index < len(source):
         char = source[index]
@@ -559,6 +634,9 @@ def _hosted_find_keyword_before_statement_end(source: str, index: int, keyword: 
             continue
         if char == "`":
             index = _hosted_skip_template(source, index)
+            continue
+        if char == "<" and _hosted_looks_like_jsx_start(source, index):
+            index = _hosted_skip_jsx_element(source, index)
             continue
         if _hosted_matches_keyword(source, index, keyword):
             return index
@@ -623,6 +701,9 @@ def _hosted_tsx_relative_import_specifiers(source: str) -> list[str]:
             continue
         if char == "`":
             index = _hosted_skip_template(source, index)
+            continue
+        if char == "<" and _hosted_looks_like_jsx_start(source, index):
+            index = _hosted_skip_jsx_element(source, index)
             continue
         specifier: str | None = None
         if _hosted_matches_keyword(source, index, "import"):
