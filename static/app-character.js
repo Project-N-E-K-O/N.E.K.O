@@ -122,6 +122,16 @@
                 }
                 const lockIcon = document.getElementById('mmd-lock-icon');
                 if (lockIcon) lockIcon.style.backgroundImage = 'url(/static/icons/unlocked_icon.png)';
+            } else if (modelType === 'pngtuber' && window.pngtuberManager) {
+                if (typeof window.pngtuberManager.setLocked === 'function') {
+                    window.pngtuberManager.setLocked(false, { updateFloatingButtons: !hiddenByModelManager });
+                } else {
+                    window.pngtuberManager.isLocked = false;
+                    if (window.pngtuberManager.image) {
+                        window.pngtuberManager.image.style.pointerEvents = 'auto';
+                        window.pngtuberManager.image.classList.remove('is-locked');
+                    }
+                }
             } else if (window.live2dManager) {
                 if (typeof window.live2dManager.setLocked === 'function') {
                     window.live2dManager.setLocked(false, { updateFloatingButtons: !hiddenByModelManager });
@@ -963,6 +973,7 @@
                 }
                 await window.loadPNGTuberAvatar(pngtuberConfig);
                 throwIfStale();
+                resetAvatarLockForCharacterSwitch('pngtuber');
             } else if (effectiveModelType === 'vrm') {
                 // 加载 VRM 模型（currentSwitchId 在 try 顶部已无条件刷过，VRM 分支直接复用）
                 console.log('[猫娘切换] 进入VRM加载分支');
