@@ -112,6 +112,7 @@ export default function NoteEditor(props: PluginSurfaceProps) {
   const [preview, setPreview] = useState(false);
   const [status, setStatus] = useState('');
   const [busy, setBusy] = useState(false);
+  const savingRef = useRef(false);
   const latestDraft = useRef({ noteId: '', notebookId: '', title: '', content: '', topics: '', tags: '' });
   const savedSnapshot = useRef<NoteDraftSnapshot>({
     noteId: '',
@@ -152,6 +153,7 @@ export default function NoteEditor(props: PluginSurfaceProps) {
   async function saveNote() {
     const draft = latestDraft.current;
     setBusy(true);
+    savingRef.current = true;
     try {
       const payload = await callPlugin<NoteSavePayload>('study_note_upsert', {
         note_id: draft.noteId,
@@ -176,6 +178,7 @@ export default function NoteEditor(props: PluginSurfaceProps) {
     } catch (error) {
       setStatus(errorMessage(error));
     } finally {
+      savingRef.current = false;
       setBusy(false);
     }
   }
@@ -242,6 +245,10 @@ export default function NoteEditor(props: PluginSurfaceProps) {
     });
     return () => {
       controller.abort();
+      // A save is already in flight (it will persist, allocating the id for a
+      // new note); a second autosave with the still-empty note_id would create
+      // a duplicate, so skip cleanup autosave while saving.
+      if (savingRef.current) return;
       const draft = latestDraft.current;
       const snap = savedSnapshot.current;
       const dirty =

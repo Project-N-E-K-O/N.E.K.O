@@ -1270,10 +1270,17 @@ class StudyStore:
         }
 
     def export_json(self) -> dict[str, Any]:
+        from dataclasses import asdict
+
+        from .store_notebook import NotebookStore
+
         memory_decks = MemoryDeckStore(self)
+        notebooks = NotebookStore(self)
         return {
             STORE_CONFIG: self.get_raw(STORE_CONFIG) or {},
             STORE_STATE: self.get_raw(STORE_STATE) or {},
+            "notebooks": [asdict(nb) for nb in notebooks.list_notebooks(limit=5000)],
+            "notes": [asdict(note) for note in notebooks.list_notes(limit=5000)],
             "interactions": self.list_interactions(limit=1000),
             "topics": self.list_topics(limit=5000),
             "mastery_overview": self.list_mastery_overview(limit=5000),

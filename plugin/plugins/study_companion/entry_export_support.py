@@ -51,6 +51,11 @@ class _ExportSupportMixin:
                         "items": {"type": "string"},
                         "default": [],
                     },
+                    "note_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "default": [],
+                    },
                 },
             },
             timeout=75.0,

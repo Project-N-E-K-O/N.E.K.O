@@ -188,8 +188,11 @@ def _ensure_expanded_note_preserves_original(
     generated = str(raw or "").strip()
     if not generated:
         return _fallback_expand_note(original, language=language)
-    original_probe = original[:120].strip()
-    has_original = bool(original_probe and original_probe in generated)
+    # Trust the model output as-is only when the COMPLETE original is present;
+    # matching just a prefix would let a model that echoes the first lines drop
+    # the rest of a longer note (the editor then overwrites + autosaves it).
+    original_full = original.strip()
+    has_original = bool(original_full and original_full in generated)
     has_ai_callout = "> [!ai]" in generated
     if has_original and has_ai_callout:
         return generated

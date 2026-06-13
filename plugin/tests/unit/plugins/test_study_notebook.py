@@ -413,6 +413,24 @@ async def test_notebook_llm_operations_use_expected_operations() -> None:
 
 
 @pytest.mark.asyncio
+async def test_note_ai_expand_preserves_full_long_original() -> None:
+    long_original = "原始内容开头。" + "中间的正文段落需要完整保留。" * 40
+
+    class _PrefixEchoAgent:
+        def __init__(self) -> None:
+            self._config = SimpleNamespace(language="zh-CN")
+
+        async def _call_model(self, messages, *, operation):
+            # Model echoes only a leading slice plus the required callout — the
+            # rest of the user's note must NOT be dropped.
+            return long_original[:120] + "\n\n> [!ai]\n> 补充说明。"
+
+    expanded = await expand_note(_PrefixEchoAgent(), long_original, topic_context="t")
+
+    assert long_original in expanded.reply
+
+
+@pytest.mark.asyncio
 async def test_notebook_summary_headings_follow_language() -> None:
     agent = _FakeNotebookAgent()
     agent._config.language = "en"
