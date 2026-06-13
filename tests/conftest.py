@@ -416,7 +416,6 @@ def clean_user_data_dir(tmp_path_factory):
     original_vrm_animation_dir = cm.vrm_animation_dir
     original_mmd_dir = cm.mmd_dir
     original_mmd_animation_dir = cm.mmd_animation_dir
-    original_pngtuber_dir = cm.pngtuber_dir
     original_workshop_dir = cm.workshop_dir
     original_chara_dir = cm.chara_dir
     original_project_config_dir = cm.project_config_dir
@@ -453,12 +452,10 @@ def clean_user_data_dir(tmp_path_factory):
     cm.vrm_animation_dir = cm.vrm_dir / "animation"
     cm.mmd_dir = cm.app_docs_dir / "mmd"
     cm.mmd_animation_dir = cm.mmd_dir / "animation"
-    cm.pngtuber_dir = cm.app_docs_dir / "pngtuber"
     cm.workshop_dir = cm.app_docs_dir / "workshop"
     cm.chara_dir = cm.app_docs_dir / "character_cards"
     cm.mmd_dir.mkdir(parents=True, exist_ok=True)
     cm.mmd_animation_dir.mkdir(parents=True, exist_ok=True)
-    cm.pngtuber_dir.mkdir(parents=True, exist_ok=True)
     
     # Update project dirs to mimic app/config separation or point to temp if needed
     cm.project_config_dir = cm.config_dir
@@ -506,7 +503,6 @@ def clean_user_data_dir(tmp_path_factory):
         cm.vrm_animation_dir = original_vrm_animation_dir
         cm.mmd_dir = original_mmd_dir
         cm.mmd_animation_dir = original_mmd_animation_dir
-        cm.pngtuber_dir = original_pngtuber_dir
         cm.workshop_dir = original_workshop_dir
         cm.chara_dir = original_chara_dir
         cm.project_config_dir = original_project_config_dir

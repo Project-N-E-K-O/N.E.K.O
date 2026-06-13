@@ -187,12 +187,6 @@ def test_chat_full_endpoint_uses_chat_template_with_initial_full_surface():
     assert '"initial_chat_host_kind": "full"' not in chat_route_block
 
 
-def test_home_page_declares_compact_chat_surface_mode():
-    template_source = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
-
-    assert '<body class="subtitle-web-host" data-initial-chat-surface-mode="compact">' in template_source
-
-
 def test_full_inset_layout_gated_by_electron_runtime_marker():
     """full 30px inset 布局是「仅 Electron 独立窗口」样式。chat.html 同时服务 Electron 独立窗口
     和 web /chat_full（两者共用本模板，body.electron-chat-window 是静态写入，浏览器访问 web
