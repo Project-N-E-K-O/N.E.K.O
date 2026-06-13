@@ -314,6 +314,35 @@ describe('hosted TSX document runtime', () => {
     expect(root.textContent).toContain('>> HI')
   })
 
+  it('keeps aliased and namespaced UI-kit imports working in bundled modules', () => {
+    const { root } = executeHostedDocument(
+      `
+        import { Page as UiPage } from "@neko/plugin-ui"
+        import { shout } from "./helper"
+        export default function Panel() { return <UiPage title={shout("ok")} /> }
+      `,
+      baseContext(),
+      baseContext(),
+      {
+        entryModule: 'surfaces/main',
+        modules: [
+          {
+            path: 'surfaces/helper',
+            // sibling import sits next to an aliased UI-kit import with no semicolons
+            source: `
+              import { text } from "./strings"
+              import * as Ui from "@neko/plugin-ui"
+              export function shout(s) { return Ui.h ? text(s).toUpperCase() : s }
+            `,
+          },
+          { path: 'surfaces/strings', source: `export function text(s) { return ">> " + s }` },
+        ],
+      },
+    )
+
+    expect(root.textContent).toContain('>> OK')
+  })
+
   it('bridges api.call and api.refresh through parent postMessage', async () => {
     const { root, messages } = executeHostedDocument(`
       export default function Panel(props) {

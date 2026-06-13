@@ -109,20 +109,41 @@ def _hosted_plugin_not_running_message(locale: str | None) -> str:
 _HOSTED_MODULE_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".mjs")
 _HOSTED_MODULE_MAX_COUNT = 64
 _HOSTED_MODULE_MAX_TOTAL_BYTES = 512 * 1024
-# Captures the specifier of `from '...'`, side-effect `import '...'`, and
-# `export ... from '...'`. Relative specifiers (starting with `.`) are followed.
-_HOSTED_IMPORT_SPEC_RE = None
+_HOSTED_COMMENT_RE = None
+# The specifier is the first quoted string on an import/export statement line
+# (`import './x'`, `import X from './x'`, `export {y} from './x'`, or a
+# multi-line import's closing `} from './x'`).
+_HOSTED_SPEC_IN_LINE_RE = None
 
 
-def _hosted_import_spec_re():
-    global _HOSTED_IMPORT_SPEC_RE
-    if _HOSTED_IMPORT_SPEC_RE is None:
+def _hosted_scan_regexes():
+    global _HOSTED_COMMENT_RE, _HOSTED_SPEC_IN_LINE_RE
+    if _HOSTED_COMMENT_RE is None:
         import re
 
-        _HOSTED_IMPORT_SPEC_RE = re.compile(
-            r"""(?:\bfrom|\bimport)\s+['"]([^'"]+)['"]""",
-        )
-    return _HOSTED_IMPORT_SPEC_RE
+        _HOSTED_COMMENT_RE = re.compile(r"/\*.*?\*/|//[^\n]*", re.DOTALL)
+        _HOSTED_SPEC_IN_LINE_RE = re.compile(r"""['"]([^'"]+)['"]""")
+    return _HOSTED_COMMENT_RE, _HOSTED_SPEC_IN_LINE_RE
+
+
+def _iter_hosted_import_specs(text: str):
+    """Yield the module specifier of each import/export statement in *text*.
+
+    Line-anchored on purpose: only lines that begin with ``import``/``export``
+    (or a multi-line import's closing ``} from``) are treated as statements, so
+    an import-looking fragment inside a comment or string literal (e.g.
+    ``const s = "import x from './scratch'"``) is not mistaken for a real
+    dependency. Comments are stripped first. The original source is still
+    shipped verbatim; this scan only drives dependency discovery.
+    """
+    comment_re, spec_re = _hosted_scan_regexes()
+    for raw_line in comment_re.sub("", text).split("\n"):
+        line = raw_line.strip()
+        if not (line.startswith(("import ", "import'", 'import"', "export ", "} from", "}from"))):
+            continue
+        match = spec_re.search(line)
+        if match:
+            yield match.group(1)
 
 
 def _resolve_hosted_module_path(spec: str, importer_dir: Path, root: Path) -> Path | None:
@@ -174,7 +195,6 @@ def _collect_hosted_tsx_modules_sync(entry_path: Path, root: Path) -> list[dict[
     path and bounded by count/byte caps. The entry itself is not included —
     the runtime already has its source.
     """
-    spec_re = _hosted_import_spec_re()
     seen: set[Path] = {entry_path.resolve()}
     queue: list[Path] = [entry_path.resolve()]
     modules: list[dict[str, str]] = []
@@ -186,7 +206,7 @@ def _collect_hosted_tsx_modules_sync(entry_path: Path, root: Path) -> list[dict[
             text = current.read_text(encoding="utf-8")
         except (OSError, UnicodeError):
             continue
-        for spec in spec_re.findall(text):
+        for spec in _iter_hosted_import_specs(text):
             if not spec.startswith("."):
                 continue
             resolved = _resolve_hosted_module_path(spec, current.parent, root)
@@ -199,13 +219,19 @@ def _collect_hosted_tsx_modules_sync(entry_path: Path, root: Path) -> list[dict[
                 continue
             total_bytes += len(module_text.encode("utf-8"))
             if len(modules) >= _HOSTED_MODULE_MAX_COUNT or total_bytes > _HOSTED_MODULE_MAX_TOTAL_BYTES:
-                logger.warning(
-                    "hosted-tsx module graph exceeded limits: entry=%s count=%d bytes=%d",
-                    entry_path,
-                    len(modules),
-                    total_bytes,
+                # Fail closed: a truncated graph would silently omit modules and
+                # surface as a runtime "Hosted module not found" with a green
+                # check, so reject the whole request with a deterministic error.
+                raise ServerDomainError(
+                    code="PLUGIN_UI_MODULE_GRAPH_TOO_LARGE",
+                    message=(
+                        "hosted-tsx surface imports too many sibling modules "
+                        f"(limit {_HOSTED_MODULE_MAX_COUNT} modules / "
+                        f"{_HOSTED_MODULE_MAX_TOTAL_BYTES} bytes)"
+                    ),
+                    status_code=400,
+                    details={"count": len(modules) + 1, "bytes": total_bytes},
                 )
-                return modules
             modules.append({"path": _module_key(resolved, root), "source": module_text})
             queue.append(resolved)
 

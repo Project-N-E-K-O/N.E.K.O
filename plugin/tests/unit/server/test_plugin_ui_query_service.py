@@ -335,6 +335,47 @@ def test_collect_hosted_modules_follows_relative_import_graph(tmp_path) -> None:
     assert "export function callPlugin" in shared["source"]
 
 
+def test_collect_hosted_modules_ignores_commented_and_quoted_imports(tmp_path) -> None:
+    root = (tmp_path / "demo_plugin").resolve()
+    surfaces = root / "surfaces"
+    surfaces.mkdir(parents=True)
+    # A real file that must NOT be pulled in just because it is named in a comment.
+    (surfaces / "scratch.ts").write_text("export const junk = 1\n", encoding="utf-8")
+    entry = surfaces / "panel.tsx"
+    entry.write_text(
+        "// import { junk } from './scratch'\n"
+        "const example = \"import { x } from './scratch'\"\n"
+        "/* import './scratch' */\n"
+        "export default function Panel() { return null }\n",
+        encoding="utf-8",
+    )
+
+    modules = _collect_hosted_tsx_modules_sync(entry, root)
+
+    assert modules == []
+
+
+def test_collect_hosted_modules_fails_closed_when_graph_too_large(tmp_path) -> None:
+    root = (tmp_path / "demo_plugin").resolve()
+    surfaces = root / "surfaces"
+    surfaces.mkdir(parents=True)
+    # A single helper larger than the byte cap must reject the whole request
+    # rather than silently shipping a truncated graph.
+    (surfaces / "huge.ts").write_text(
+        "export const blob = '" + ("x" * (600 * 1024)) + "'\n", encoding="utf-8"
+    )
+    entry = surfaces / "panel.tsx"
+    entry.write_text(
+        "import { blob } from './huge'\n"
+        "export default function Panel() { return null }\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ServerDomainError) as exc_info:
+        _collect_hosted_tsx_modules_sync(entry, root)
+    assert exc_info.value.code == "PLUGIN_UI_MODULE_GRAPH_TOO_LARGE"
+
+
 def test_collect_hosted_modules_ignores_bare_and_escaping_specifiers(tmp_path) -> None:
     root = (tmp_path / "demo_plugin").resolve()
     surfaces = root / "surfaces"

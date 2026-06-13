@@ -89,12 +89,15 @@ function buildPayload(options: BuildHostedTsxDocumentOptions) {
   }
 }
 
-// Module-mode compile: keep the plugin-ui imports stripped (those symbols are
-// runtime globals) and let Sucrase's `imports` transform rewrite the remaining
-// relative ESM imports/exports into CommonJS so a tiny require registry can wire
-// the sibling modules together.
+// Module-mode compile: let Sucrase's `imports` transform rewrite every ESM
+// import/export (relative siblings AND `@neko/plugin-ui`) into CommonJS so the
+// require registry can wire them. We do NOT pre-strip the UI-kit import here:
+// `__hostedRequire` maps `@neko/plugin-ui` to the global UI kit, which preserves
+// aliased (`import { Text as UiText }`) and namespace (`import * as Ui`) imports
+// that a regex strip would silently drop. Regex stripping could also span a
+// semicolon-less newline and eat an adjacent sibling import.
 function compileHostedTsxModule(source: string) {
-  return transform(normalizeSource(source), {
+  return transform(source, {
     transforms: ['typescript', 'jsx', 'imports'],
     jsxPragma: 'h',
     jsxFragmentPragma: 'Fragment',
