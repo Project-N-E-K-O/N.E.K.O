@@ -214,8 +214,13 @@ def test_jukebox_playback_mode_tooltip_uses_current_mode(mock_page: Page):
     assert mode_button.get_attribute("title") is None
 
     mode_button.hover()
-    mock_page.wait_for_timeout(450)
     tooltip = mock_page.locator(".jukebox-tooltip")
+    mock_page.wait_for_function(
+        "() => {"
+        " const el = document.querySelector('.jukebox-tooltip');"
+        " return !!el && el.textContent.includes('顺序播放');"
+        "}"
+    )
     assert "顺序播放" in tooltip.inner_text()
 
     mode_button.click()
