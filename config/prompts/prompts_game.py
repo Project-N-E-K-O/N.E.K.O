@@ -997,9 +997,39 @@ BASKETBALL_SHOOTER_SYSTEM_PROMPTS = {
     "pt": _BASKETBALL_SHOOTER_SYSTEM_PROMPT_PT,
 }
 
-# Timed is a solo shooting mode; HORSE is turn-based like duel.
-BASKETBALL_TIMED_SYSTEM_PROMPTS = BASKETBALL_SHOOTER_SYSTEM_PROMPTS
-BASKETBALL_HORSE_SYSTEM_PROMPTS = BASKETBALL_DUEL_SYSTEM_PROMPTS
+_BASKETBALL_TIMED_SYSTEM_PROMPT_SUFFIX = {
+    "zh": "\n模式补充：event.mode=timed 表示 60 秒限时挑战，不是三次失误结束的 shooter 模式。根据 made_count、final_streak、score、attempts_results 总结限时内的命中节奏，不要提剩余三次机会。",
+    "en": "\nMode override: event.mode=timed means a 60-second time attack, not the three-miss shooter mode. Summarize the timed pace using made_count, final_streak, score, and attempts_results; do not mention three remaining chances.",
+    "ja": "\nモード補足：event.mode=timed は 60 秒のタイムアタックで、3 ミス終了の shooter モードではありません。made_count、final_streak、score、attempts_results から時間内の命中ペースを要約し、残り 3 回のチャンスとは言わないでください。",
+    "ko": "\n모드 보충: event.mode=timed 는 60초 타임어택이며, 세 번 실패하면 끝나는 shooter 모드가 아닙니다. made_count, final_streak, score, attempts_results 로 제한 시간 안의 흐름을 요약하고 남은 세 번의 기회라고 말하지 마세요.",
+    "ru": "\nУточнение режима: event.mode=timed означает 60-секундную гонку на время, а не shooter с тремя промахами. Подводи итог темпу по made_count, final_streak, score и attempts_results; не говори про три оставшиеся попытки.",
+    "es": "\nAjuste de modo: event.mode=timed es un reto de 60 segundos, no el modo shooter que termina por tres fallos. Resume el ritmo con made_count, final_streak, score y attempts_results; no menciones tres oportunidades restantes.",
+    "pt": "\nAjuste de modo: event.mode=timed é um desafio de 60 segundos, não o modo shooter que termina com três erros. Resuma o ritmo usando made_count, final_streak, score e attempts_results; não mencione três chances restantes.",
+}
+
+_BASKETBALL_HORSE_SYSTEM_PROMPT_SUFFIX = {
+    "zh": "\n模式补充：event.mode=horse 表示 HORSE 复刻模式，不是 duel 比分对战。根据 horse_phase、HORSE 字母、challenge、made_count、final_streak 描述谁出题、谁复刻、谁吃到字母，不要要求 duel.player_score/neko_score。",
+    "en": "\nMode override: event.mode=horse means HORSE copy-the-shot play, not duel scoring. Use horse_phase, HORSE letters, challenge, made_count, and final_streak to describe who set the shot, who copied it, and who took a letter; do not require duel.player_score/neko_score.",
+    "ja": "\nモード補足：event.mode=horse は HORSE の再現モードで、duel の得点対決ではありません。horse_phase、HORSE の文字、challenge、made_count、final_streak から、誰が出題し誰が再現し誰に文字が付いたかを表現し、duel.player_score/neko_score は要求しないでください。",
+    "ko": "\n모드 보충: event.mode=horse 는 HORSE 복각 모드이며 duel 점수 대결이 아닙니다. horse_phase, HORSE 글자, challenge, made_count, final_streak 로 누가 문제를 냈고 누가 따라 했고 누가 글자를 받았는지 말하며 duel.player_score/neko_score 를 요구하지 마세요.",
+    "ru": "\nУточнение режима: event.mode=horse означает HORSE с повторением броска, а не duel по счету. Используй horse_phase, буквы HORSE, challenge, made_count и final_streak, чтобы описать, кто задал бросок, кто повторял и кто получил букву; не требуй duel.player_score/neko_score.",
+    "es": "\nAjuste de modo: event.mode=horse es HORSE de copiar el tiro, no puntuación duel. Usa horse_phase, letras HORSE, challenge, made_count y final_streak para decir quién propuso el tiro, quién lo copió y quién recibió una letra; no exijas duel.player_score/neko_score.",
+    "pt": "\nAjuste de modo: event.mode=horse é HORSE de copiar o arremesso, não pontuação duel. Use horse_phase, letras HORSE, challenge, made_count e final_streak para dizer quem propôs o arremesso, quem copiou e quem recebeu uma letra; não exija duel.player_score/neko_score.",
+}
+
+
+def _basketball_prompt_variants(base: dict[str, str], suffixes: dict[str, str]) -> dict[str, str]:
+    return {lang: text + suffixes.get(lang, suffixes["en"]) for lang, text in base.items()}
+
+
+BASKETBALL_TIMED_SYSTEM_PROMPTS = _basketball_prompt_variants(
+    BASKETBALL_SHOOTER_SYSTEM_PROMPTS,
+    _BASKETBALL_TIMED_SYSTEM_PROMPT_SUFFIX,
+)
+BASKETBALL_HORSE_SYSTEM_PROMPTS = _basketball_prompt_variants(
+    BASKETBALL_DUEL_SYSTEM_PROMPTS,
+    _BASKETBALL_HORSE_SYSTEM_PROMPT_SUFFIX,
+)
 
 BASKETBALL_SYSTEM_PROMPT_WATERMARK = "\n======以上为投篮小游戏会话系统提示======\n"
 
@@ -1200,8 +1230,23 @@ _BASKETBALL_QUICK_LINES_PROMPTS_SHOOTER = {
     "pt": _BASKETBALL_QUICK_LINES_PROMPT_PT,
 }
 
-_BASKETBALL_QUICK_LINES_PROMPTS_TIMED = _BASKETBALL_QUICK_LINES_PROMPTS_SHOOTER
-_BASKETBALL_QUICK_LINES_PROMPTS_HORSE = _BASKETBALL_QUICK_LINES_PROMPTS_DUEL
+_BASKETBALL_TIMED_QUICK_LINES_SUFFIX = {
+    "zh": "\n当前模式是 timed：短台词要围绕倒计时、限时冲分、命中节奏，不要提三次机会。",
+    "en": "\nCurrent mode is timed: focus on countdown pressure, time-attack scoring, and shot rhythm; do not mention three chances.",
+}
+_BASKETBALL_HORSE_QUICK_LINES_SUFFIX = {
+    "zh": "\n当前模式是 HORSE：短台词要围绕出题、复刻、字母惩罚和轮到谁，不要写成 duel 比分对战。",
+    "en": "\nCurrent mode is HORSE: focus on setting shots, copying shots, letter penalties, and whose turn it is; do not write duel-score lines.",
+}
+
+_BASKETBALL_QUICK_LINES_PROMPTS_TIMED = _basketball_prompt_variants(
+    _BASKETBALL_QUICK_LINES_PROMPTS_SHOOTER,
+    _BASKETBALL_TIMED_QUICK_LINES_SUFFIX,
+)
+_BASKETBALL_QUICK_LINES_PROMPTS_HORSE = _basketball_prompt_variants(
+    _BASKETBALL_QUICK_LINES_PROMPTS_DUEL,
+    _BASKETBALL_HORSE_QUICK_LINES_SUFFIX,
+)
 
 BASKETBALL_PREGAME_CONTEXT_PROMPT = """\
 你是投篮小游戏开局上下文分析器。只输出 JSON，不要 Markdown，不要解释。

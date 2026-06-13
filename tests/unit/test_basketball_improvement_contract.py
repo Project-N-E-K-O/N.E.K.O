@@ -100,12 +100,16 @@ def test_basketball_invite_character_request_uses_invited_lanlan_name():
     )
     assert "characterPath += '?lanlan_name=' + encodeURIComponent(requestedLanlanName);" in html
     assert "var charResp = await fetch(characterPath);" in html
+    assert "var live2dPath = charData.live2d_path || '/static/yui-origin/yui-origin.model3.json';" in html
+    assert "await initLive2DAvatar(live2dPath);" in html
 
 
 @pytest.mark.unit
 def test_basketball_i18n_placeholder_token_avoids_jinja_braces():
     html = _basketball_html()
 
+    assert "{% raw %}" in html
+    assert "{% endraw %}" in html
     assert "return s.replace('{{' + k + '}}', String(params[k]));" not in html
     assert "var token = '{' + '{' + k + '}' + '}';" in html
     assert "return s.split(token).join(String(params[k]));" in html
@@ -139,6 +143,7 @@ def test_basketball_restart_rotates_route_session():
     assert "function createBasketballSessionId() {" in html
     assert "var sessionId = window.__nekoMiniGameInviteSessionId || createBasketballSessionId();" in html
     assert "sessionId = createBasketballSessionId();" in html
+    assert "url.searchParams.delete('session_id');" in html
     assert "startRoute();" in html
 
 
@@ -495,6 +500,16 @@ def test_basketball_prompt_localizations_do_not_fallback_to_english():
 
     assert english_timed != english_spectator
     assert english_horse != english_spectator
+    assert english_timed != english_shooter
+    assert english_horse != english_duel
+    assert "event.mode=timed" in english_timed
+    assert "event.mode=horse" in english_horse
+    assert prompts_game.get_basketball_quick_lines_prompt("zh", mode="timed") != (
+        prompts_game.get_basketball_quick_lines_prompt("zh", mode="shooter")
+    )
+    assert prompts_game.get_basketball_quick_lines_prompt("zh", mode="horse") != (
+        prompts_game.get_basketball_quick_lines_prompt("zh", mode="duel")
+    )
 
     for lang in ("ja", "ko", "ru", "es", "pt"):
         assert prompts_game.get_basketball_system_prompt(lang, mode="spectator") != english_spectator
@@ -610,8 +625,45 @@ def test_basketball_horse_result_records_score_before_returning():
     html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
 
     assert "if (isHorseMode()) {\n      if (!game.resultRecorded) {" in html
-    assert "var horseEntry = recordGame(game.bestStreak, game.recordDistance, game.totalScore, game.shotTypeCount);" in html
+    assert "var horseEntry = recordGame(game.bestStreak, getRunMaxDistancePx(), game.totalScore, game.shotTypeCount);" in html
     assert "submitScore(horseEntry).catch(function () {});" in html
+
+
+@pytest.mark.unit
+def test_basketball_scoring_waits_for_route_end_and_records_run_max():
+    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+
+    assert "function getRunMaxDistancePx() {" in html
+    assert "var routeEndPromise = null;" in html
+    assert "var routeEndReady = endedRoute && routeEndPromise ? routeEndPromise.catch(function () {}) : Promise.resolve();" in html
+    assert "var duelEntry = recordGame(game.bestStreak, getRunMaxDistancePx(), game.totalScore, game.shotTypeCount);" in html
+    assert "var savedEntry = recordGame(game.bestStreak, getRunMaxDistancePx(), game.totalScore, game.shotTypeCount);" in html
+    assert "routeEndPromise = fetch(url, { method: 'POST'" in html
+
+
+@pytest.mark.unit
+def test_basketball_route_end_payload_contains_archive_score():
+    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+
+    assert "finalScore: {" in html
+    assert "currentState: {\n        game: 'basketball',\n        mode: currentMode,\n        score: {" in html
+    assert "max_distance_px: getRunMaxDistancePx()," in html
+
+
+@pytest.mark.unit
+def test_basketball_drain_reads_nested_result_line():
+    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+
+    assert "var result = item && typeof item.result === 'object' ? item.result : null;" in html
+    assert "(result && (result.line || result.text || result.content))" in html
+    assert "var control = (item && item.control) || (result && result.control) || {};" in html
+
+
+@pytest.mark.unit
+def test_basketball_first_tutorial_swish_is_practice_only():
+    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+
+    assert "var shouldGuaranteeFirstTutorialShot = firstTutorialShotGuaranteed && isPracticeMode() && game.tutorialStep === 3;" in html
 
 
 @pytest.mark.unit

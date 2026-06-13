@@ -4858,15 +4858,6 @@ def _basketball_score_submission_allowed(data: dict) -> bool:
     if not session_id or not lanlan_name:
         return False
     mode = _normalize_basketball_mode(data.get("mode"))
-    state = _game_route_states.get(_route_state_key(lanlan_name, "basketball"))
-    if (
-        state
-        and state.get("game_route_active")
-        and str(state.get("session_id") or "") == session_id
-        and state.get("game_started") is True
-        and _normalize_basketball_mode(state.get("mode")) == mode
-    ):
-        return True
     _prune_basketball_score_sessions()
     meta = _basketball_recent_score_sessions.get((lanlan_name, session_id))
     return bool(meta and meta.get("mode") == mode)

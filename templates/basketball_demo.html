@@ -546,6 +546,7 @@
 <script src="/static/game/games/basketball/basketball-audio-config.js?v={{ static_asset_version }}"></script>
 
 <script>
+{% raw %}
 (function () {
   'use strict';
 
@@ -819,6 +820,7 @@
   var endedRoute = false;
   var routeEndFetchPending = false;
   var routeEndBeaconDelivered = false;
+  var routeEndPromise = null;
   var live2dReady = false;
   var heartbeatTimer = 0;
   var drainTimer = 0;
@@ -1550,6 +1552,7 @@
     try { endRoute(true); } catch (_) {}
     var url = new URL(window.location.href);
     url.searchParams.set('mode', mode);
+    url.searchParams.delete('session_id');
     if (!url.searchParams.get('i18n_language')) url.searchParams.set('i18n_language', getRequestLanguage());
     window.location.assign(url.toString());
   }
@@ -2345,10 +2348,11 @@
   }
   async function initNekoAvatar() {
     var charData = await loadBasketballCharacter();
-    if (currentMode === 'shooter' || currentMode === 'duel') {
+    if (currentMode === 'shooter' || currentMode === 'duel' || currentMode === 'timed' || currentMode === 'horse') {
+      var live2dPath = charData.live2d_path || '/static/yui-origin/yui-origin.model3.json';
       window.lanlan_config.model_type = 'live2d';
       window.lanlan_config.live3d_sub_type = '';
-      await initLive2DAvatar('/static/yui-origin/yui-origin.model3.json');
+      await initLive2DAvatar(live2dPath);
       updateYuiPosition(game.distance);
       updateDuelShooterAvatars();
       return;
@@ -2576,6 +2580,11 @@
     saveLocalLeaderboard(leaderboard);
     return entry;
   }
+  function getRunMaxDistancePx() {
+    return Math.max.apply(null, [0].concat(game.attemptsResults.map(function (item) {
+      return Number(item && item.shooter !== 'neko' && item.scored ? item.distance || 0 : 0) || 0;
+    })));
+  }
   function fetchGlobalLeaderboard() {
     var params = new URLSearchParams();
     if (sessionId) params.set('session_id', sessionId);
@@ -2586,17 +2595,20 @@
       .catch(function () { return { top: [], total_players: 0, your_best: null }; });
   }
   function submitScore(entry) {
-    return post('/leaderboard', {
-      session_id: sessionId,
-      lanlan_name: lanlanName,
-      score: entry.score,
-      streak: entry.streak,
-      max_distance_px: entry.maxDistancePx,
-      swish_count: (entry.shotTypes && entry.shotTypes.swish) || 0,
-      bank_count: (entry.shotTypes && entry.shotTypes.bank) || 0,
-      rim_in_count: (entry.shotTypes && entry.shotTypes.rim_in) || 0,
-      mode: entry.mode
-    }, 5000);
+    var routeEndReady = endedRoute && routeEndPromise ? routeEndPromise.catch(function () {}) : Promise.resolve();
+    return routeEndReady.then(function () {
+      return post('/leaderboard', {
+        session_id: sessionId,
+        lanlan_name: lanlanName,
+        score: entry.score,
+        streak: entry.streak,
+        max_distance_px: entry.maxDistancePx,
+        swish_count: (entry.shotTypes && entry.shotTypes.swish) || 0,
+        bank_count: (entry.shotTypes && entry.shotTypes.bank) || 0,
+        rim_in_count: (entry.shotTypes && entry.shotTypes.rim_in) || 0,
+        mode: entry.mode
+      }, 5000);
+    });
   }
   function getFilteredLeaderboard(mode) {
     var data = loadLocalLeaderboard();
@@ -3001,6 +3013,7 @@
       endedRoute = false;
       routeEndFetchPending = false;
       routeEndBeaconDelivered = false;
+      routeEndPromise = null;
       sessionId = createBasketballSessionId();
       startRoute();
     }
@@ -3187,7 +3200,7 @@
       game.bestStreak = 0;
       game.madeCount = 0;
     }
-    var shouldGuaranteeFirstTutorialShot = firstTutorialShotGuaranteed;
+    var shouldGuaranteeFirstTutorialShot = firstTutorialShotGuaranteed && isPracticeMode() && game.tutorialStep === 3;
     launchShot(game.aimAngle, game.power, 'player');
     if (game.ball && shouldGuaranteeFirstTutorialShot) {
       game.ball.forceScore = true;
@@ -3842,6 +3855,11 @@
     var localRating = game.bestStreak >= 15 ? 'S' : (game.bestStreak >= 10 ? 'A' : (game.bestStreak >= 5 ? 'B' : (game.bestStreak >= 2 ? 'C' : 'D')));
     var ratingText = currentMode === 'shooter' ? (' | ' + _i18n('result.rating', '操控评级：{{rating}}', { rating: latestShooterRating || localRating })) : '';
     if (isDuelMode()) {
+      if (!game.resultRecorded) {
+        var duelEntry = recordGame(game.bestStreak, getRunMaxDistancePx(), game.totalScore, game.shotTypeCount);
+        game.resultRecorded = true;
+        submitScore(duelEntry).catch(function () {});
+      }
       var outcome = game.duel.playerScore > game.duel.nekoScore
         ? _i18n('result.outcome.youWin', '你赢了')
         : (game.duel.playerScore < game.duel.nekoScore ? _i18n('result.outcome.nekoWin', 'Neko赢了') : _i18n('result.outcome.tie', '平局'));
@@ -3857,7 +3875,7 @@
     }
     if (isHorseMode()) {
       if (!game.resultRecorded) {
-        var horseEntry = recordGame(game.bestStreak, game.recordDistance, game.totalScore, game.shotTypeCount);
+        var horseEntry = recordGame(game.bestStreak, getRunMaxDistancePx(), game.totalScore, game.shotTypeCount);
         game.resultRecorded = true;
         submitScore(horseEntry).catch(function () {});
       }
@@ -3876,7 +3894,7 @@
     }
     if (isTimeAttackMode()) {
       if (!game.resultRecorded) {
-        var timedEntry = recordGame(game.bestStreak, game.recordDistance, game.totalScore, game.shotTypeCount);
+        var timedEntry = recordGame(game.bestStreak, getRunMaxDistancePx(), game.totalScore, game.shotTypeCount);
         game.resultRecorded = true;
         submitScore(timedEntry).catch(function () {});
       }
@@ -3899,7 +3917,7 @@
       return;
     }
     if (!game.resultRecorded) {
-      var savedEntry = recordGame(game.bestStreak, game.recordDistance, game.totalScore, game.shotTypeCount);
+      var savedEntry = recordGame(game.bestStreak, getRunMaxDistancePx(), game.totalScore, game.shotTypeCount);
       game.resultRecorded = true;
       submitScore(savedEntry).then(function (res) {
         if (res && typeof res.rank === 'number') {
@@ -3955,8 +3973,8 @@
           final_distance: game.lastShotDistance || game.distance,
           shot_type: game.lastShotType || ''
         });
-        showResult();
         endRoute(false);
+        showResult();
         updateHud();
         return;
       }
@@ -4601,8 +4619,10 @@
         var items = (res && (res.outputs || res.items || res.lines)) || [];
         if (Array.isArray(items)) {
           items.forEach(function (item) {
-            var line = (item && (item.line || item.text || item.content)) || '';
-            if (line) showBubble(line, item.control || {});
+            var result = item && typeof item.result === 'object' ? item.result : null;
+            var line = (item && (item.line || item.text || item.content)) || (result && (result.line || result.text || result.content)) || '';
+            var control = (item && item.control) || (result && result.control) || {};
+            if (line) showBubble(line, control);
           });
         }
       }).catch(function () {});
@@ -4625,9 +4645,23 @@
       attempts_total: game.attemptsTotal,
       attempts_results: game.attemptsResults.slice(-12),
       game_summary: buildGameSummary(),
+      finalScore: {
+        score: game.totalScore,
+        best_streak: game.bestStreak,
+        made_count: game.madeCount,
+        max_distance_px: getRunMaxDistancePx(),
+        mode: currentMode
+      },
       currentState: {
         game: 'basketball',
         mode: currentMode,
+        score: {
+          score: game.totalScore,
+          best_streak: game.bestStreak,
+          made_count: game.madeCount,
+          max_distance_px: getRunMaxDistancePx(),
+          mode: currentMode
+        },
         streak: game.streak,
         best_streak: game.bestStreak,
         made_count: game.madeCount,
@@ -4659,14 +4693,20 @@
         if (navigator.sendBeacon(url, new Blob([payload], { type: 'application/json' }))) {
           routeEndBeaconDelivered = true;
           routeEndFetchPending = false;
+          routeEndPromise = Promise.resolve({ ok: true, beacon: true });
           return;
         }
       } catch (_) {}
     }
     routeEndFetchPending = true;
-    fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload }).then(function () {
+    routeEndPromise = fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload }).then(function (res) {
       routeEndFetchPending = false;
-    }).catch(function () {});
+      return res;
+    }).catch(function (err) {
+      routeEndFetchPending = false;
+      throw err;
+    });
+    return routeEndPromise;
   }
 
   function cycleTheme() {
@@ -4741,8 +4781,8 @@
     } else if (event) {
       if (event === 'game_over') {
         game.state = 'game_over';
-        showResult();
         endRoute(false);
+        showResult();
       } else {
         debugFinishShot(event === 'swish', event, { startDistance: game.distance, wasPerfect: event === 'swish' });
       }
@@ -5014,6 +5054,7 @@
   initNekoAvatar().finally(function () { startRoute(); });
   requestAnimationFrame(loop);
 })();
+{% endraw %}
 </script>
 </body>
 </html>

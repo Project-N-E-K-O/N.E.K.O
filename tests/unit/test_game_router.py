@@ -40,11 +40,12 @@ def _allow_basketball_score_session(lanlan_name, session_id, mode="spectator"):
         "game_type": "basketball",
         "session_id": session_id,
         "lanlan_name": lanlan_name,
-        "game_route_active": True,
+        "game_route_active": False,
         "mode": mode,
     }
     _mark_game_started(state)
     game_router._game_route_states[game_router._route_state_key(lanlan_name, "basketball")] = state
+    game_router._remember_basketball_score_session(lanlan_name, session_id, mode)
     return state
 
 
@@ -742,6 +743,34 @@ async def test_basketball_leaderboard_rejects_unknown_score_session(tmp_path, mo
         result = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
             "session_id": "fake-session",
             "lanlan_name": "Lan Fake",
+            "score": 999999,
+            "mode": "shooter",
+        }))
+
+        assert result == {"ok": False, "reason": "invalid_session"}
+        leaderboard = await game_router.game_basketball_leaderboard("basketball")
+        assert leaderboard["total_scores"] == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_basketball_leaderboard_rejects_live_active_route_score(tmp_path, monkeypatch):
+    monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", tmp_path / "basketball_scores.db")
+
+    with reset_game_route_state():
+        state = {
+            "game_type": "basketball",
+            "session_id": "live-session",
+            "lanlan_name": "Lan Live",
+            "game_route_active": True,
+            "mode": "shooter",
+        }
+        _mark_game_started(state)
+        game_router._game_route_states[game_router._route_state_key("Lan Live", "basketball")] = state
+
+        result = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+            "session_id": "live-session",
+            "lanlan_name": "Lan Live",
             "score": 999999,
             "mode": "shooter",
         }))
