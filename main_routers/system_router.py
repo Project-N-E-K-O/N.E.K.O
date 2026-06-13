@@ -2127,14 +2127,14 @@ def _mini_game_invite_in_cooldown(lanlan_name: str, game_type: str | None = None
     state = _mini_game_invite_state.get(lanlan_name)
     if not state:
         return False
+    suppressed_until = state.get('suppressed_until')
+    if suppressed_until is not None and time.time() < float(suppressed_until):
+        return True
     if game_type:
         last_game_type = state.get('last_game_type')
         pending = state.get('delivered_at') is not None and state.get('responded_at') is None
         if last_game_type and last_game_type != game_type and not pending:
             return False
-    suppressed_until = state.get('suppressed_until')
-    if suppressed_until is not None and time.time() < float(suppressed_until):
-        return True
     if state['delivered_at'] is None:
         return False
     if state['responded_at'] is None:

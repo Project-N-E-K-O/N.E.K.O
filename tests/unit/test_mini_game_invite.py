@@ -156,6 +156,16 @@ def test_game_specific_cooldown_does_not_cross_block_other_game():
     assert sr._mini_game_invite_in_cooldown(LANLAN, 'basketball') is False
 
 
+def test_later_suppression_cross_blocks_other_games():
+    state = sr._mini_game_invite_get_state(LANLAN)
+    state['delivered_at'] = None
+    state['responded_at'] = None
+    state['last_game_type'] = 'soccer'
+    state['suppressed_until'] = time.time() + 60
+
+    assert sr._mini_game_invite_in_cooldown(LANLAN, 'basketball') is True
+
+
 def test_in_cooldown_true_when_only_time_elapsed_chats_short():
     """时间阈值已过但 chats 没到 10 次 → 仍 cooldown（AND 语义）。
 
@@ -959,12 +969,12 @@ async def test_invite_skipped_when_no_game_available(monkeypatch):
 
 
 def test_cooldown_accept_is_2h_by_default():
-    """spec：accept 后 cooldown = 2h。pin 住避免回归（曾从 24h→1h→2h）。"""
+    """Accept keeps the invite cooldown at 2 hours by default."""
     assert sr.MINI_GAME_INVITE_COOLDOWN_AFTER_ACCEPT_SECONDS == 2 * 3600
 
 
 def test_cooldown_decline_is_5h_by_default():
-    """spec：decline 后 cooldown = 5h（>accept，"拒绝"信号需更久静默）。"""
+    """Decline keeps the invite cooldown at 5 hours by default."""
     assert sr.MINI_GAME_INVITE_COOLDOWN_AFTER_DECLINE_SECONDS == 5 * 3600
 
 
@@ -1259,7 +1269,7 @@ def test_keyword_matcher_no_false_positive_on_common_english_phrases():
 
 
 def test_maybe_apply_keyword_noop_when_no_pending():
-    """没 pending invite → keyword matcher hook 直接 None，不动 state。"""
+    """Keyword matching is a no-op when there is no pending invite."""
     result = sr._maybe_apply_mini_game_invite_keyword(LANLAN, '好啊')
     assert result is None
 
@@ -1480,7 +1490,7 @@ def test_option_labels_cover_all_native_locales():
 
 
 def test_keywords_cover_all_native_locales():
-    """5 个 native locale × 3 个 choice 必须各有非空关键词列表。"""
+    """Every native locale must define non-empty keyword lists for each choice."""
     from config.prompts.prompts_proactive import MINI_GAME_INVITE_KEYWORDS
     for lang in ('zh', 'en', 'ja', 'ko', 'ru'):
         assert lang in MINI_GAME_INVITE_KEYWORDS, f"缺 {lang} keywords"

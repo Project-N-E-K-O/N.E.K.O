@@ -4952,9 +4952,6 @@
   restartButton.addEventListener('click', resetGame);
   window.addEventListener('resize', resize);
   window.addEventListener('beforeunload', function () { endRoute(true); });
-  document.addEventListener('visibilitychange', function () {
-    if (document.hidden) endRoute(true);
-  });
   window.addEventListener('localechange', function () {
     applyStaticI18n();
     updateHud();
