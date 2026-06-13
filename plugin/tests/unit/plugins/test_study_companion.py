@@ -1619,7 +1619,8 @@ def test_study_companion_ui7_surfaces_use_brand_css_and_quickstart_is_removed() 
     index_html = (plugin_dir / "static" / "index.html").read_text(encoding="utf-8")
     assert 'http-equiv="Content-Security-Policy"' in index_html
     assert "style-src 'self'" in index_html
-    assert "'unsafe-inline'" not in index_html
+    assert "script-src 'self'" in index_html
+    assert "style-src-attr 'unsafe-inline'" in index_html
     assert "connect-src 'self'" in index_html
     assert ":*" not in index_html
     assert "meta CSP cannot express dynamic localhost ports" in index_html

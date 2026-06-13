@@ -181,8 +181,14 @@ def test_study_companion_static_ui8_visual_accessibility_and_csp_contract() -> N
     )
     assert csp_match is not None
     csp = csp_match.group(1)
-    assert "style-src 'self'" in csp
-    assert "'unsafe-inline'" not in csp
+    directives = {
+        directive.strip().split()[0]: directive.strip().split()[1:]
+        for directive in csp.split(";")
+        if directive.strip()
+    }
+    assert directives["script-src"] == ["'self'"]
+    assert directives["style-src"] == ["'self'"]
+    assert directives["style-src-attr"] == ["'unsafe-inline'"]
     assert "connect-src 'self'" in csp
     assert ":*" not in csp
     assert "frame-ancestors" not in csp
