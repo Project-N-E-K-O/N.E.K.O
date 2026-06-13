@@ -93,9 +93,22 @@ def test_basketball_improvement_static_contract():
 def test_basketball_invite_character_request_uses_invited_lanlan_name():
     html = _basketball_html()
 
-    assert "var requestedLanlanName = String(queryLanlan || '').trim();" in html
+    assert "window.__nekoBasketballQueryLanlanName = queryLanlan || '';" in html
+    assert (
+        "var requestedLanlanName = String(window.__nekoBasketballQueryLanlanName || '').trim();"
+        in html
+    )
     assert "characterPath += '?lanlan_name=' + encodeURIComponent(requestedLanlanName);" in html
     assert "var charResp = await fetch(characterPath);" in html
+
+
+@pytest.mark.unit
+def test_basketball_i18n_placeholder_token_avoids_jinja_braces():
+    html = _basketball_html()
+
+    assert "return s.replace('{{' + k + '}}', String(params[k]));" not in html
+    assert "var token = '{' + '{' + k + '}' + '}';" in html
+    assert "return s.split(token).join(String(params[k]));" in html
 
 
 @pytest.mark.unit

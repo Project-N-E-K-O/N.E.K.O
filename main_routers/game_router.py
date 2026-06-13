@@ -5100,6 +5100,48 @@ def _sanitize_basketball_duel_state(value: Any) -> dict | None:
     return clean or None
 
 
+def _sanitize_basketball_attempts_results(value: Any, *, max_items: int = 12) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    allowed_text = {"shooter", "shot_type", "horse_phase"}
+    allowed_numbers = {
+        "distance", "distance_m", "score", "angle", "power", "round",
+        "streak_before", "streak_after", "best_streak_after", "made_count_after",
+        "attempt_number",
+    }
+    sanitized: list[dict] = []
+    for item in value[-max_items:]:
+        if not isinstance(item, dict):
+            continue
+        clean_item: dict[str, Any] = {}
+        for key in allowed_text:
+            if key in item:
+                clean_item[key] = _normalize_short_text(item.get(key), max_chars=40)
+        if "scored" in item:
+            clean_item["scored"] = item.get("scored") is True
+        for key in allowed_numbers:
+            if key not in item:
+                continue
+            try:
+                number = float(item[key])
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(number):
+                continue
+            if key in {
+                "score", "round", "streak_before", "streak_after",
+                "best_streak_after", "made_count_after", "attempt_number",
+            }:
+                clean_item[key] = max(0, min(int(number), 999))
+            elif key in {"angle", "power"}:
+                clean_item[key] = max(-1000.0, min(number, 1000.0))
+            else:
+                clean_item[key] = max(-1000.0, min(number, 5000.0))
+        if clean_item:
+            sanitized.append(clean_item)
+    return sanitized
+
+
 def _sanitize_basketball_event(event: Any) -> tuple[dict | None, str]:
     if not isinstance(event, dict):
         return None, "event must be object"
@@ -5182,6 +5224,11 @@ def _sanitize_basketball_event(event: Any) -> tuple[dict | None, str]:
         duel_state = _sanitize_basketball_duel_state(current_state.get("duel"))
         if duel_state:
             state_clean["duel"] = duel_state
+        attempts_results = _sanitize_basketball_attempts_results(
+            current_state.get("attempts_results"),
+        )
+        if attempts_results:
+            state_clean["attempts_results"] = attempts_results
         clean["currentState"] = state_clean
     elif "currentState" in clean:
         clean.pop("currentState", None)
@@ -6810,7 +6857,7 @@ async def _complete_game_end_from_payload(
 
 @router.post("/{game_type}/end")
 async def game_end(game_type: str, request: Request):
-    """结束一局游戏并清理对应的 LLM session。"""
+    """End a game round and clean up the matching LLM session."""
     try:
         data = await request.json()
     except Exception:
@@ -6820,15 +6867,17 @@ async def game_end(game_type: str, request: Request):
 
 @router.post("/{game_type}/quick-lines")
 async def game_quick_lines(game_type: str, request: Request):
-    """进入游戏时生成一组当前猫娘专属快路径台词。
+    """Generate character-specific quick lines when entering a game.
 
-    产品语义：这是“游戏内上下文初始化”的一部分。代码告诉 LLM：
-    接下来当前猫娘要和玩家踢足球，请按当前人设生成备用短句。
-    成功时前端用这些短句替换内建快路径；失败时仍使用前端内建文案。
+    Product-wise, this is part of in-game context initialization: the backend
+    tells the LLM that the current character is about to play with the user and
+    asks it to generate backup short lines for that persona. On success the
+    frontend replaces built-in quick lines; on failure it keeps the built-ins.
 
-    quick-lines 是 soccer 流程里第一个命中 LLM 的端点（在 /route/start 之前），
-    所以这里要从请求体吸收 ``i18n_language`` 主动 heal mgr.user_language——
-    否则首批 quick lines 会用 ``start_session`` 时全局缓存覆盖出来的英文。
+    quick-lines is the first soccer endpoint that hits the LLM before
+    /route/start, so this absorbs ``i18n_language`` from the request body and
+    heals mgr.user_language. Otherwise the first quick lines can inherit English
+    from the global cache populated during ``start_session``.
     """
     if game_type not in {"soccer", "basketball"}:
         return {"ok": False, "error": f"暂不支持 {game_type} 的快路径文案生成", "lines": {}}

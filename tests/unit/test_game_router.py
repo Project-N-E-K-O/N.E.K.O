@@ -204,6 +204,52 @@ def test_basketball_event_sanitizer_keeps_duel_state_and_shot_missed():
 
 
 @pytest.mark.unit
+def test_basketball_event_sanitizer_keeps_bounded_current_state_attempts():
+    attempts = [
+        {
+            "shooter": "player",
+            "shot_type": "swish",
+            "distance": str(100 + index),
+            "distance_m": "3.5",
+            "scored": index % 2 == 0,
+            "score": "2",
+            "round": str(index),
+            "angle": "44.5",
+            "power": "82.1",
+            "unsafe": "<tag>",
+        }
+        for index in range(14)
+    ]
+
+    event, error = game_router._sanitize_basketball_event({
+        "kind": "game_over",
+        "mode": "duel",
+        "currentState": {
+            "game": "basketball",
+            "mode": "duel",
+            "attempts_results": attempts,
+        },
+    })
+
+    assert error == ""
+    sanitized_attempts = event["currentState"]["attempts_results"]
+    assert len(sanitized_attempts) == 12
+    assert sanitized_attempts[0]["round"] == 2
+    assert sanitized_attempts[-1] == {
+        "shooter": "player",
+        "shot_type": "swish",
+        "scored": False,
+        "score": 2,
+        "round": 13,
+        "distance": 113,
+        "distance_m": 3.5,
+        "angle": 44.5,
+        "power": 82.1,
+    }
+    assert "unsafe" not in sanitized_attempts[-1]
+
+
+@pytest.mark.unit
 def test_basketball_shooter_helper_boundaries():
     assert game_router._compute_distance_tier(80) == "close"
     assert game_router._compute_distance_tier(150) == "mid"

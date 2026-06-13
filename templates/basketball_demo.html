@@ -10,6 +10,7 @@
     try { params = new URLSearchParams(window.location.search); } catch (_) { params = null; }
     var queryLanlan = (params && params.get('lanlan_name')) || '';
     var querySession = (params && params.get('session_id')) || '';
+    window.__nekoBasketballQueryLanlanName = queryLanlan || '';
     window.lanlan_config = window.lanlan_config || {
       lanlan_name: queryLanlan || 'basketball_demo',
       master_name: '', master_profile_name: '', master_nickname: '', master_display_name: '',
@@ -551,7 +552,8 @@
   function _formatI18nFallback(fallback, params) {
     if (!params || typeof fallback !== 'string') return fallback;
     return Object.keys(params).reduce(function (s, k) {
-      return s.replace('{{' + k + '}}', String(params[k]));
+      var token = '{' + '{' + k + '}' + '}';
+      return s.split(token).join(String(params[k]));
     }, fallback);
   }
   function _isUsableTranslation(value, key, fullKey) {
@@ -2323,7 +2325,7 @@
     var charData = {};
     try {
       var characterPath = api('/character');
-      var requestedLanlanName = String(queryLanlan || '').trim();
+      var requestedLanlanName = String(window.__nekoBasketballQueryLanlanName || '').trim();
       if (requestedLanlanName) {
         characterPath += '?lanlan_name=' + encodeURIComponent(requestedLanlanName);
       }
