@@ -23,12 +23,16 @@ function writeFixtureFile(path, source) {
   writeFileSync(path, source, 'utf8')
 }
 
-function writePluginToml(pluginDir, entry) {
+function writePluginToml(pluginDir, entry, fields = {}) {
+  const extraFields = Object.entries(fields)
+    .map(([key, value]) => `${key} = ${JSON.stringify(value)}`)
+    .join('\n')
   writeFixtureFile(
     join(pluginDir, 'plugin.toml'),
     `[[plugin.ui.panel]]
 id = "test"
 entry = "${entry}"
+${extraFields ? `${extraFields}\n` : ''}
 `,
   )
 }
@@ -229,5 +233,24 @@ export const value = nextValue + 1
 
     assert.equal(result.status, 1)
     assert.match(result.stderr, /Circular hosted TSX dependency: .*a\.ts -> .*b\.ts -> .*a\.ts/)
+  })
+})
+
+test('checks explicit hosted-tsx mode for TS entries', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'explicit-mode-ts')
+    writePluginToml(pluginDir, 'main.ts', { mode: 'hosted-tsx' })
+    writeFixtureFile(
+      join(pluginDir, 'main.ts'),
+      `export function Panel() {
+  return Page({ title: 'missing default' })
+}
+`,
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /Hosted TSX must export a default function component/)
   })
 })

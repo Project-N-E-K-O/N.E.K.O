@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -44,17 +43,6 @@ _HOSTED_TRANSLATIONS_DEFAULT_SOURCE_LOCALE = "en-US"
 _HOSTED_TSX_DEPENDENCIES_MAX_FILES = 32
 _HOSTED_TSX_DEPENDENCIES_MAX_BYTES = 512 * 1024
 _HOSTED_TSX_CODE_EXTENSIONS = (".tsx", ".ts", ".jsx", ".js")
-_HOSTED_TSX_RELATIVE_IMPORT_RE = re.compile(
-    r"^[^\S\r\n]*import(?:[\s\S]*?\sfrom\s+|[^\S\r\n]+)['\"](\.{1,2}/[^'\"]+)['\"][^\S\r\n]*;?[^\S\r\n]*(?:\r?\n|$)",
-    re.MULTILINE,
-)
-_HOSTED_TSX_RE_EXPORT_RE = re.compile(
-    r"^[^\S\r\n]*export\s+(?:type\s+)?"
-    r"(?:\{[^}]*\}|\*(?:\s+as\s+[A-Za-z_$][\w$]*)?)"
-    r"\s+from\s+['\"](\.{1,2}/[^'\"]+)['\"]"
-    r"[^\S\r\n]*;?[^\S\r\n]*(?:\r?\n|$)",
-    re.MULTILINE,
-)
 _PLUGIN_NOT_RUNNING_MESSAGES = {
     "en": "The plugin is not running. Start the plugin before using this action.",
     "zh-CN": "插件未运行。请先启动该插件，再执行这个操作。",
@@ -463,6 +451,178 @@ def _resolve_hosted_tsx_relative_dependency(root: Path, from_path: Path, specifi
     return None
 
 
+def _hosted_is_identifier_char(value: str) -> bool:
+    return value.isalnum() or value in {"_", "$"}
+
+
+def _hosted_matches_keyword(source: str, index: int, keyword: str) -> bool:
+    end = index + len(keyword)
+    if source[index:end] != keyword:
+        return False
+    before = source[index - 1] if index > 0 else ""
+    after = source[end] if end < len(source) else ""
+    return not _hosted_is_identifier_char(before) and not _hosted_is_identifier_char(after)
+
+
+def _hosted_skip_whitespace(source: str, index: int) -> int:
+    while index < len(source) and source[index].isspace():
+        index += 1
+    return index
+
+
+def _hosted_skip_quoted(source: str, index: int) -> int:
+    quote = source[index]
+    index += 1
+    while index < len(source):
+        char = source[index]
+        if char == "\\":
+            index += 2
+            continue
+        index += 1
+        if char == quote:
+            break
+    return index
+
+
+def _hosted_read_quoted(source: str, index: int) -> tuple[str, int] | None:
+    quote = source[index]
+    index += 1
+    value: list[str] = []
+    while index < len(source):
+        char = source[index]
+        if char == "\\":
+            if index + 1 < len(source):
+                value.append(source[index + 1])
+            index += 2
+            continue
+        if char == quote:
+            return "".join(value), index + 1
+        value.append(char)
+        index += 1
+    return None
+
+
+def _hosted_skip_line_comment(source: str, index: int) -> int:
+    newline = source.find("\n", index + 2)
+    return len(source) if newline < 0 else newline + 1
+
+
+def _hosted_skip_block_comment(source: str, index: int) -> int:
+    end = source.find("*/", index + 2)
+    return len(source) if end < 0 else end + 2
+
+
+def _hosted_skip_template(source: str, index: int) -> int:
+    index += 1
+    while index < len(source):
+        char = source[index]
+        if char == "\\":
+            index += 2
+            continue
+        index += 1
+        if char == "`":
+            break
+    return index
+
+
+def _hosted_find_keyword_before_statement_end(source: str, index: int, keyword: str) -> int:
+    while index < len(source):
+        char = source[index]
+        if char == ";":
+            return -1
+        if char == "/" and index + 1 < len(source):
+            next_char = source[index + 1]
+            if next_char == "/":
+                index = _hosted_skip_line_comment(source, index)
+                continue
+            if next_char == "*":
+                index = _hosted_skip_block_comment(source, index)
+                continue
+        if char in {"'", '"'}:
+            index = _hosted_skip_quoted(source, index)
+            continue
+        if char == "`":
+            index = _hosted_skip_template(source, index)
+            continue
+        if _hosted_matches_keyword(source, index, keyword):
+            return index
+        index += 1
+    return -1
+
+
+def _hosted_relative_specifier(value: str | None) -> str | None:
+    if isinstance(value, str) and (value.startswith("./") or value.startswith("../")):
+        return value
+    return None
+
+
+def _hosted_import_specifier(source: str, index: int) -> str | None:
+    index = _hosted_skip_whitespace(source, index + len("import"))
+    if index >= len(source) or source[index] in {"(", "."}:
+        return None
+    if source[index] in {"'", '"'}:
+        read = _hosted_read_quoted(source, index)
+        return _hosted_relative_specifier(read[0]) if read else None
+    from_index = _hosted_find_keyword_before_statement_end(source, index, "from")
+    if from_index < 0:
+        return None
+    specifier_index = _hosted_skip_whitespace(source, from_index + len("from"))
+    if specifier_index >= len(source) or source[specifier_index] not in {"'", '"'}:
+        return None
+    read = _hosted_read_quoted(source, specifier_index)
+    return _hosted_relative_specifier(read[0]) if read else None
+
+
+def _hosted_export_specifier(source: str, index: int) -> str | None:
+    index = _hosted_skip_whitespace(source, index + len("export"))
+    if _hosted_matches_keyword(source, index, "type"):
+        index = _hosted_skip_whitespace(source, index + len("type"))
+    if index >= len(source) or source[index] not in {"{", "*"}:
+        return None
+    from_index = _hosted_find_keyword_before_statement_end(source, index, "from")
+    if from_index < 0:
+        return None
+    specifier_index = _hosted_skip_whitespace(source, from_index + len("from"))
+    if specifier_index >= len(source) or source[specifier_index] not in {"'", '"'}:
+        return None
+    read = _hosted_read_quoted(source, specifier_index)
+    return _hosted_relative_specifier(read[0]) if read else None
+
+
+def _hosted_tsx_relative_import_specifiers(source: str) -> list[str]:
+    specifiers: list[str] = []
+    index = 0
+    while index < len(source):
+        char = source[index]
+        if char == "/" and index + 1 < len(source):
+            next_char = source[index + 1]
+            if next_char == "/":
+                index = _hosted_skip_line_comment(source, index)
+                continue
+            if next_char == "*":
+                index = _hosted_skip_block_comment(source, index)
+                continue
+        if char in {"'", '"'}:
+            index = _hosted_skip_quoted(source, index)
+            continue
+        if char == "`":
+            index = _hosted_skip_template(source, index)
+            continue
+        specifier: str | None = None
+        if _hosted_matches_keyword(source, index, "import"):
+            specifier = _hosted_import_specifier(source, index)
+            index += len("import")
+        elif _hosted_matches_keyword(source, index, "export"):
+            specifier = _hosted_export_specifier(source, index)
+            index += len("export")
+        else:
+            index += 1
+            continue
+        if specifier is not None:
+            specifiers.append(specifier)
+    return specifiers
+
+
 def _load_hosted_tsx_dependencies_sync(
     plugin_meta: Mapping[str, object],
     entry_path: Path,
@@ -511,11 +671,7 @@ def _load_hosted_tsx_dependencies_sync(
 
     def visit(path: Path) -> str:
         source = read_source(path)
-        specifiers = [
-            *_HOSTED_TSX_RELATIVE_IMPORT_RE.findall(source),
-            *_HOSTED_TSX_RE_EXPORT_RE.findall(source),
-        ]
-        for specifier in specifiers:
+        for specifier in _hosted_tsx_relative_import_specifiers(source):
             dependency_path = _resolve_hosted_tsx_relative_dependency(root, path, specifier)
             if dependency_path is None:
                 raise ServerDomainError(

@@ -552,7 +552,8 @@ function main() {
       }
       for (const surface of surfaces) {
         const entry = surface.entry
-        if (!entry || inferMode(entry) !== 'hosted-tsx') continue
+        const mode = surface.mode || inferMode(entry)
+        if (!entry || mode !== 'hosted-tsx') continue
         const label = surfaceLabel(surface)
         const entryPath = resolve(pluginDir, entry)
         if (!isPathInside(repoRoot, entryPath)) {
