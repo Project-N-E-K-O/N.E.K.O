@@ -1653,7 +1653,7 @@ def test_chat_image_file_drop_uses_import_pipeline_and_blocks_browser_navigation
     assert "mod.importImageFilesToPendingList(files, { logPrefix: '[拖放图片]' });" in drop_block
 
 
-def test_text_mode_screenshot_payload_shares_text_request_id():
+def test_text_mode_screenshot_payload_only_tags_paired_text_turn():
     script = APP_BUTTONS_PATH.read_text(encoding="utf-8")
 
     screenshot_block = script.split("// Send screenshots first", 1)[1].split(
@@ -1665,5 +1665,7 @@ def test_text_mode_screenshot_payload_shares_text_request_id():
         1,
     )[0]
 
-    assert "request_id: requestId" in screenshot_block
+    assert "request_id: requestId" not in screenshot_block
+    assert "if (text)" in screenshot_block
+    assert "msg.request_id = requestId" in screenshot_block
     assert "request_id: requestId" in text_block

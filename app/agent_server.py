@@ -4529,9 +4529,12 @@ async def openclaw_availability():
     reasons = status.get("reasons", []) if isinstance(status, dict) else []
     pending = _openclaw_pending()
     if ready:
+        was_ready = bool(((Modules.capability_cache or {}).get("openclaw") or {}).get("ready"))
         if pending:
             _cancel_openclaw_enable_probe()
         _set_capability("openclaw", True, "")
+        if pending or not was_ready:
+            await _emit_agent_status_update()
         return status
     if pending and Modules.agent_flags.get("openclaw_enabled"):
         _set_capability("openclaw", False, "AGENT_PRECHECK_PENDING")
