@@ -2565,12 +2565,13 @@ class ConfigManager:
         return voice_id
 
     def get_tts_api_key(self, provider: str) -> str | None:
-        """根据 provider 统一获取 TTS API Key，返回 None 表示未配置。
+        """Return the configured TTS API key for a provider, or None.
 
-        - cosyvoice: tts_custom 配置的 api_key
-        - cosyvoice_intl: ASSIST_API_KEY_QWEN_INTL（阿里国际版）
+        - cosyvoice: api_key from the tts_custom model config
+        - cosyvoice_intl: API key resolved by the CosyVoice intl runtime
         - minimax:   ASSIST_API_KEY_MINIMAX → MINIMAX_API_KEY fallback
         - minimax_intl: ASSIST_API_KEY_MINIMAX_INTL → MINIMAX_INTL_API_KEY fallback
+        - mimo: ASSIST_API_KEY_MIMO
         """
         if provider == 'cosyvoice':
             tts_config = self.get_model_api_config('tts_custom')
@@ -2598,6 +2599,17 @@ class ConfigManager:
             key = (core_config.get('ASSIST_API_KEY_ELEVENLABS') or '').strip()
             if not key:
                 key = (core_config.get('ELEVENLABS_API_KEY') or '').strip()
+            if '***' in key:
+                return None
+            return key or None
+        if provider == 'mimo':
+            core_config = self.get_core_config()
+            use_token_plan = (
+                (core_config.get('assistApi') or '').strip() == 'mimo'
+                and _as_bool(core_config.get('useMimoTokenPlan', False))
+            )
+            key_field = 'ASSIST_API_KEY_MIMO_TOKEN_PLAN' if use_token_plan else 'ASSIST_API_KEY_MIMO'
+            key = (core_config.get(key_field) or '').strip()
             if '***' in key:
                 return None
             return key or None
@@ -3486,6 +3498,8 @@ class ConfigManager:
             'ASSIST_API_KEY_QWEN_INTL': '',
             'ASSIST_API_KEY_MINIMAX': '',
             'ASSIST_API_KEY_MINIMAX_INTL': '',
+            'ASSIST_API_KEY_MIMO': '',
+            'ASSIST_API_KEY_MIMO_TOKEN_PLAN': '',
             'ASSIST_API_KEY_GROK': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_OPENROUTER': DEFAULT_CORE_API_KEY,
             'VISION_MODEL': DEFAULT_VISION_MODEL,
@@ -3520,6 +3534,12 @@ class ConfigManager:
                 file_data = json.load(f)
             if isinstance(file_data, dict):
                 core_cfg.update(file_data)
+                # 模板默认 assistApi='qwen' 会把文件里从未保存过的 assistApi 填
+                # 上，导致下方「core=free 时 assist 默认 free」的跟随逻辑收不到
+                # 缺失信号。仅当文件显式选了 core=free 且从未保存 assistApi 时
+                # 恢复跟随语义；其余缺失场景维持模板默认。
+                if 'assistApi' not in file_data and file_data.get('coreApi') == 'free':
+                    core_cfg['assistApi'] = 'free'
             else:
                 logger.warning("core_config.json 格式异常，使用默认配置。")
 
@@ -3560,11 +3580,14 @@ class ConfigManager:
         config['ASSIST_API_KEY_KIMI'] = core_cfg.get('assistApiKeyKimi', '') or _fb('kimi')
         config['ASSIST_API_KEY_DEEPSEEK'] = core_cfg.get('assistApiKeyDeepseek', '') or _fb('deepseek')
         config['ASSIST_API_KEY_DOUBAO'] = core_cfg.get('assistApiKeyDoubao', '') or _fb('doubao')
-        # MiniMax 是 assist-only（TTS 专用），不在 coreApi 候选集里，
-        # coreApiKey 永远不是 minimax 兼容的；不 fallback，以免把无效 key
-        # 塞进 TTS 凭证槽位导致 401，掩盖"未配置 minimax key"的真实提示。
+        # MiniMax / MiMo 是 assist-only TTS provider，coreApiKey 不保证兼容；
+        # 不 fallback，以免把无效 key 塞进 TTS 凭证槽位导致 401，
+        # 掩盖"未配置 TTS provider key"的真实提示。
         config['ASSIST_API_KEY_MINIMAX'] = core_cfg.get('assistApiKeyMinimax', '')
         config['ASSIST_API_KEY_MINIMAX_INTL'] = core_cfg.get('assistApiKeyMinimaxIntl', '')
+        config['ASSIST_API_KEY_MIMO'] = core_cfg.get('assistApiKeyMimo', '')
+        config['ASSIST_API_KEY_MIMO_TOKEN_PLAN'] = core_cfg.get('assistApiKeyMimoTokenPlan', '')
+        config['useMimoTokenPlan'] = _as_bool(core_cfg.get('useMimoTokenPlan', False))
         config['ASSIST_API_KEY_ELEVENLABS'] = core_cfg.get('assistApiKeyElevenlabs', '')
         config['ASSIST_API_KEY_GROK'] = core_cfg.get('assistApiKeyGrok', '') or _fb('grok')
         config['ASSIST_API_KEY_CLAUDE'] = core_cfg.get('assistApiKeyClaude', '') or _fb('claude')
@@ -3660,12 +3683,44 @@ class ConfigManager:
             )
             if resolved_assist_url:
                 config['OPENROUTER_URL'] = resolved_assist_url
+        use_mimo_token_plan = (
+            assist_api_value == 'mimo'
+            and _as_bool(core_cfg.get('useMimoTokenPlan', False))
+        )
+        if use_mimo_token_plan:
+            token_plan_urls = config.get('MIMO_TOKEN_PLAN_OPENROUTER_URLS')
+            if not isinstance(token_plan_urls, list):
+                token_plan_urls = []
+            token_plan_profile = {
+                'OPENROUTER_URL': config.get(
+                    'MIMO_TOKEN_PLAN_OPENROUTER_URL',
+                    'https://token-plan-cn.xiaomimimo.com/v1',
+                ),
+                'OPENROUTER_URLS': token_plan_urls or [
+                    'https://token-plan-cn.xiaomimimo.com/v1',
+                    'https://token-plan-sgp.xiaomimimo.com/v1',
+                    'https://token-plan-ams.xiaomimimo.com/v1',
+                ],
+            }
+            token_plan_url = self._get_saved_provider_url(
+                core_cfg,
+                'assist',
+                'mimo_token_plan',
+                token_plan_profile,
+                'OPENROUTER_URL',
+                'OPENROUTER_URLS',
+            )
+            config['OPENROUTER_URL'] = token_plan_url or token_plan_profile['OPENROUTER_URL']
         # agent api 默认跟随辅助 API 的 agent_model，缺失时回退到 VISION_MODEL
         config['AGENT_MODEL'] = config.get('AGENT_MODEL') or config.get('VISION_MODEL', '')
         config['AGENT_MODEL_URL'] = config.get('AGENT_MODEL_URL') or config.get('VISION_MODEL_URL', '') or config.get('OPENROUTER_URL', '')
         config['AGENT_MODEL_URL'] = self._normalize_agent_url(config['AGENT_MODEL_URL'])
 
-        key_field = assist_api_key_fields.get(assist_api_value)
+        key_field = (
+            'ASSIST_API_KEY_MIMO_TOKEN_PLAN'
+            if use_mimo_token_plan
+            else assist_api_key_fields.get(assist_api_value)
+        )
         derived_key = ''
         if key_field:
             derived_key = config.get(key_field, '')

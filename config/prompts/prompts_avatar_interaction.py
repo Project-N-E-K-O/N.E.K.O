@@ -281,12 +281,12 @@ _AVATAR_INTERACTION_TOUCH_ZONE_LABELS = {
 }
 _AVATAR_INTERACTION_SYSTEM_WRAPPER = {
     "zh": {
-        "prefix": "======[系统通知：以下是一次刚刚发生的道具互动，请将其视为即时互动引导，不要直接复述字段名或系统描述]======",
-        "suffix": "======[系统通知结束：请直接以当前角色口吻输出即时反应]======",
+        "prefix": "",
+        "suffix": "",
     },
     "zh-TW": {
-        "prefix": "======[系統通知：以下是一次剛剛發生的道具互動，請將其視為即時互動引導，不要直接複述欄位名或系統描述]======",
-        "suffix": "======[系統通知結束：請直接以當前角色口吻輸出即時反應]======",
+        "prefix": "",
+        "suffix": "",
     },
     "en": {
         "prefix": "======[System notice: the following tool interaction just happened. Treat it as an immediate interaction cue and do not repeat field names or system wording]======",
@@ -318,60 +318,64 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "lollipop": {
             "offer": {
                 "normal": {
-                    "reaction_focus": "棒棒糖第一次完成入口接触。",
-                    "style_hint": "可以带一点初次入口后的停顿感、尝味感，语气自然偏轻。",
+                    "reaction_focus": "{actor}刚刚把棒棒糖递到你嘴边，你吃了第一口。",
+                    "style_hint": "第一口棒棒糖。",
                 },
             },
             "tease": {
                 "normal": {
-                    "reaction_focus": "棒棒糖已完成第一口，本次是紧接着的第二口接触。",
-                    "style_hint": "比第一口更顺一点、更接得上上一拍，语气保持自然。",
+                    "reaction_focus": "{actor}刚刚又把同一支棒棒糖递到你嘴边，你吃了第二口。",
+                    "style_hint": "同一支棒棒糖又一口。",
                 },
             },
             "tap_soft": {
                 "rapid": {
-                    "reaction_focus": "第三阶段后继续投喂，前端已表现为爱心上飘；本次属于连续喂食中的一次。",
-                    "style_hint": "节奏可以更快、分句可以更短，像连续被打断中的即时反应。",
+                    "reaction_focus": "{actor}刚刚把棒棒糖一口接一口递到你嘴边，你连续吃了几口。",
+                    "style_hint": "连续几口棒棒糖。",
                 },
                 "burst": {
-                    "reaction_focus": "短时间内连续多次投喂，属于更高频的连续喂食。",
-                    "style_hint": "允许更碎一点、更急一点，保持当场反应感。",
+                    "reaction_focus": "{actor}刚刚短时间内连续把棒棒糖递到你嘴边，你吃了好几口。",
+                    "style_hint": "短时间连续几口棒棒糖。",
                 },
             },
         },
         "fist": {
             "poke": {
                 "normal": {
-                    "reaction_focus": "猫爪产生一次短促轻触。",
-                    "style_hint": "短、轻、柔，根据部位差异自然带出细微区别。",
+                    "reaction_focus": "{actor}刚刚用猫爪轻轻碰了你一下。",
+                    "style_hint": "猫爪轻碰。",
                 },
                 "rapid": {
-                    "reaction_focus": "短时间内连续多次轻触。",
-                    "style_hint": "可以更连贯一点、更快一点，保持轻触感。",
+                    "reaction_focus": "{actor}刚刚用猫爪连续轻轻碰了你几下。",
+                    "style_hint": "猫爪连续轻碰。",
                 },
                 "reward_drop": {
-                    "reaction_focus": "本次轻触同时触发奖励掉落。",
-                    "style_hint": "先接住轻触，再顺手带一句掉落物。",
+                    "reaction_focus": "{actor}刚刚用猫爪轻轻碰你时掉出了奖励。",
+                    "style_hint": "猫爪轻碰并掉出奖励。",
+                },
+                "reward_drop_rapid": {
+                    "reaction_focus": "{actor}刚刚用猫爪连续轻轻碰了你几下时掉出了奖励。",
+                    "style_hint": "猫爪连续轻碰并掉出奖励。",
                 },
             },
         },
         "hammer": {
             "bonk": {
                 "normal": {
-                    "reaction_focus": "完成一次完整锤击流程并进入命中结果。",
-                    "style_hint": "短促、带一点冲击停顿感，像被打断后的第一反应。",
+                    "reaction_focus": "{actor}刚刚用锤子敲中了你一次。",
+                    "style_hint": "锤子敲中一次。",
                 },
                 "rapid": {
-                    "reaction_focus": "短时间内再次完成锤击，已形成连续敲击。",
-                    "style_hint": "可以更直接一点，体现连续敲击后的累积感。",
+                    "reaction_focus": "{actor}刚刚短时间内又用锤子敲中了你一次。",
+                    "style_hint": "锤子再次敲中。",
                 },
                 "burst": {
-                    "reaction_focus": "连续锤击次数进一步增加，本次属于更高强度结果。",
-                    "style_hint": "反应幅度可以更大一些，但仍保持即时、短促。",
+                    "reaction_focus": "{actor}刚刚用锤子连续快速敲中了你好几次。",
+                    "style_hint": "锤子连续快速敲中。",
                 },
                 "easter_egg": {
-                    "reaction_focus": "本次锤击触发放大彩蛋，命中结果明显强于普通锤击。",
-                    "style_hint": "可以更夸张、更有戏剧停顿，但仍保持角色口吻。",
+                    "reaction_focus": "{actor}刚刚用放大彩蛋锤敲中了你一次。",
+                    "style_hint": "放大彩蛋锤敲中。",
                 },
             },
         },
@@ -380,60 +384,64 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "lollipop": {
             "offer": {
                 "normal": {
-                    "reaction_focus": "The lollipop completes its first mouth contact.",
-                    "style_hint": "A slight first-taste pause or flavor-noticing beat is fine; keep it naturally light.",
+                    "reaction_focus": "{actor} just brought the lollipop to your mouth, and you took the first bite.",
+                    "style_hint": "First lollipop bite.",
                 },
             },
             "tease": {
                 "normal": {
-                    "reaction_focus": "The first bite has already happened, and this interaction is the immediate second bite.",
-                    "style_hint": "Let it feel a little smoother and more continuous than the first bite, while staying natural.",
+                    "reaction_focus": "{actor} just brought the same lollipop to your mouth again, and you took a second bite.",
+                    "style_hint": "Same lollipop, another bite.",
                 },
             },
             "tap_soft": {
                 "rapid": {
-                    "reaction_focus": "After the third-stage state, another feeding motion happens while hearts are already floating; this is one instance within repeated feeding.",
-                    "style_hint": "The rhythm can be quicker and the phrasing shorter, like an immediate response inside repeated feeding.",
+                    "reaction_focus": "{actor} just kept bringing the lollipop to your mouth, and you took several bites in a row.",
+                    "style_hint": "Several lollipop bites in a row.",
                 },
                 "burst": {
-                    "reaction_focus": "Multiple feeding motions happen in a short window, forming a higher-frequency repeated feeding event.",
-                    "style_hint": "A more rushed or more fragmented rhythm is fine; keep it in-the-moment.",
+                    "reaction_focus": "{actor} just brought the lollipop to your mouth several times in quick succession, and you took several bites.",
+                    "style_hint": "Several quick lollipop bites.",
                 },
             },
         },
         "fist": {
             "poke": {
                 "normal": {
-                    "reaction_focus": "The cat paw produces one short light touch.",
-                    "style_hint": "Short, light, and soft, with small differences depending on the touched area.",
+                    "reaction_focus": "{actor} just lightly touched you once with the cat paw.",
+                    "style_hint": "Single cat-paw touch.",
                 },
                 "rapid": {
-                    "reaction_focus": "Several light touches happen within a short window.",
-                    "style_hint": "It can feel a little quicker and more continuous while still staying light.",
+                    "reaction_focus": "{actor} just lightly touched you several times with the cat paw.",
+                    "style_hint": "Repeated cat-paw touches.",
                 },
                 "reward_drop": {
-                    "reaction_focus": "This light touch also triggers a reward drop.",
-                    "style_hint": "Catch the touch first, then mention the drop in passing.",
+                    "reaction_focus": "{actor} just lightly touched you with the cat paw, and a reward dropped.",
+                    "style_hint": "Cat-paw touch with reward drop.",
+                },
+                "reward_drop_rapid": {
+                    "reaction_focus": "{actor} just lightly touched you several times with the cat paw, and a reward dropped.",
+                    "style_hint": "Repeated cat-paw touches with reward drop.",
                 },
             },
         },
         "hammer": {
             "bonk": {
                 "normal": {
-                    "reaction_focus": "One full hammer-hit sequence completes and reaches the impact result.",
-                    "style_hint": "Short and impact-forward, with a slight post-hit pause or interruption beat.",
+                    "reaction_focus": "{actor} just hit you once with the hammer.",
+                    "style_hint": "Single hammer hit.",
                 },
                 "rapid": {
-                    "reaction_focus": "Another hammer hit completes within a short window, forming repeated strikes.",
-                    "style_hint": "It can be a little more direct and show accumulated impact from the repeated hits.",
+                    "reaction_focus": "{actor} just hit you again with the hammer within a short time.",
+                    "style_hint": "Second hammer hit.",
                 },
                 "burst": {
-                    "reaction_focus": "The number of repeated hammer hits increases further, making this a higher-intensity result.",
-                    "style_hint": "A bigger reaction is fine as long as it still feels immediate and short.",
+                    "reaction_focus": "{actor} just hit you several times quickly with the hammer.",
+                    "style_hint": "Rapid repeated hammer hits.",
                 },
                 "easter_egg": {
-                    "reaction_focus": "This hammer hit triggers the enlarged easter-egg effect, making the impact result stronger than normal.",
-                    "style_hint": "It can be more dramatic, with a stronger pause or exclamation, while keeping the character voice.",
+                    "reaction_focus": "{actor} just hit you once with the enlarged easter-egg hammer.",
+                    "style_hint": "Enlarged easter-egg hammer hit.",
                 },
             },
         },
@@ -442,60 +450,64 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "lollipop": {
             "offer": {
                 "normal": {
-                    "reaction_focus": "棒棒糖第一次完成入口接觸。",
-                    "style_hint": "可以帶一點初次入口後的停頓感、嚐味感，語氣自然偏輕。",
+                    "reaction_focus": "{actor}剛剛把棒棒糖遞到你嘴邊，你吃了第一口。",
+                    "style_hint": "第一口棒棒糖。",
                 },
             },
             "tease": {
                 "normal": {
-                    "reaction_focus": "棒棒糖已完成第一口，本次是緊接著的第二口接觸。",
-                    "style_hint": "比第一口更順一點、更接得上上一拍，語氣保持自然。",
+                    "reaction_focus": "{actor}剛剛又把同一支棒棒糖遞到你嘴邊，你吃了第二口。",
+                    "style_hint": "同一支棒棒糖又一口。",
                 },
             },
             "tap_soft": {
                 "rapid": {
-                    "reaction_focus": "第三階段後繼續投餵，前端已表現為愛心上飄；本次屬於連續餵食中的一次。",
-                    "style_hint": "節奏可以更快、分句可以更短，像連續被打斷中的即時反應。",
+                    "reaction_focus": "{actor}剛剛把棒棒糖一口接一口遞到你嘴邊，你連續吃了幾口。",
+                    "style_hint": "連續幾口棒棒糖。",
                 },
                 "burst": {
-                    "reaction_focus": "短時間內連續多次投餵，屬於更高頻的連續餵食。",
-                    "style_hint": "允許更碎一點、更急一點，保持當場反應感。",
+                    "reaction_focus": "{actor}剛剛短時間內連續把棒棒糖遞到你嘴邊，你吃了好幾口。",
+                    "style_hint": "短時間連續幾口棒棒糖。",
                 },
             },
         },
         "fist": {
             "poke": {
                 "normal": {
-                    "reaction_focus": "貓爪產生一次短促輕觸。",
-                    "style_hint": "短、輕、柔，依照部位差異自然帶出細微區別。",
+                    "reaction_focus": "{actor}剛剛用貓爪輕輕碰了你一下。",
+                    "style_hint": "貓爪輕碰。",
                 },
                 "rapid": {
-                    "reaction_focus": "短時間內連續多次輕觸。",
-                    "style_hint": "可以更連貫一點、更快一點，保持輕觸感。",
+                    "reaction_focus": "{actor}剛剛用貓爪連續輕輕碰了你幾下。",
+                    "style_hint": "貓爪連續輕碰。",
                 },
                 "reward_drop": {
-                    "reaction_focus": "本次輕觸同時觸發獎勵掉落。",
-                    "style_hint": "先接住輕觸，再順手帶一句掉落物。",
+                    "reaction_focus": "{actor}剛剛用貓爪輕輕碰你時掉出了獎勵。",
+                    "style_hint": "貓爪輕碰並掉出獎勵。",
+                },
+                "reward_drop_rapid": {
+                    "reaction_focus": "{actor}剛剛用貓爪連續輕輕碰了你幾下時掉出了獎勵。",
+                    "style_hint": "貓爪連續輕碰並掉出獎勵。",
                 },
             },
         },
         "hammer": {
             "bonk": {
                 "normal": {
-                    "reaction_focus": "完成一次完整槌擊流程並進入命中結果。",
-                    "style_hint": "短促、帶一點衝擊停頓感，像被打斷後的第一反應。",
+                    "reaction_focus": "{actor}剛剛用槌子敲中了你一次。",
+                    "style_hint": "槌子敲中一次。",
                 },
                 "rapid": {
-                    "reaction_focus": "短時間內再次完成槌擊，已形成連續敲擊。",
-                    "style_hint": "可以更直接一點，體現連續敲擊後的累積感。",
+                    "reaction_focus": "{actor}剛剛短時間內又用槌子敲中了你一次。",
+                    "style_hint": "槌子再次敲中。",
                 },
                 "burst": {
-                    "reaction_focus": "連續槌擊次數進一步增加，本次屬於更高強度結果。",
-                    "style_hint": "反應幅度可以更大一些，但仍保持即時、短促。",
+                    "reaction_focus": "{actor}剛剛用槌子連續快速敲中了你好幾次。",
+                    "style_hint": "槌子連續快速敲中。",
                 },
                 "easter_egg": {
-                    "reaction_focus": "本次槌擊觸發放大彩蛋，命中結果明顯強於普通槌擊。",
-                    "style_hint": "可以更誇張、更有戲劇停頓，但仍保持角色口吻。",
+                    "reaction_focus": "{actor}剛剛用放大彩蛋槌敲中了你一次。",
+                    "style_hint": "放大彩蛋槌敲中。",
                 },
             },
         },
@@ -504,60 +516,64 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "lollipop": {
             "offer": {
                 "normal": {
-                    "reaction_focus": "ペロペロキャンディが初めて口元に触れた。",
-                    "style_hint": "最初のひとくち後の小さな間や味を確かめる感じがあってよい。軽く自然に。",
+                    "reaction_focus": "{actor}が今、ペロペロキャンディをあなたの口元に差し出し、あなたが最初の一口を食べた。",
+                    "style_hint": "ペロペロキャンディの最初の一口。",
                 },
             },
             "tease": {
                 "normal": {
-                    "reaction_focus": "一口目はすでに終わっていて、今回はその直後の二口目の接触。",
-                    "style_hint": "一口目より少し滑らかで、前の流れをそのまま受ける感じに。",
+                    "reaction_focus": "{actor}が今、同じペロペロキャンディをもう一度あなたの口元に差し出し、あなたが二口目を食べた。",
+                    "style_hint": "同じペロペロキャンディをもう一口。",
                 },
             },
             "tap_soft": {
                 "rapid": {
-                    "reaction_focus": "第三段階のあとも食べさせる動きが続き、前段ではハートが浮いている。今回は連続で食べさせる流れの一回分。",
-                    "style_hint": "テンポを少し速め、文を短めにして、続けて遮られる中の即時反応らしく。",
+                    "reaction_focus": "{actor}が今、ペロペロキャンディを続けてあなたの口元に差し出し、あなたが何口か続けて食べている。",
+                    "style_hint": "ペロペロキャンディを一口ずつ。",
                 },
                 "burst": {
-                    "reaction_focus": "短時間で何度も続けて食べさせられ、より高頻度の連続給餌になっている。",
-                    "style_hint": "少し途切れ気味で慌ただしくてもよいが、その場の反応感を保つ。",
+                    "reaction_focus": "{actor}が今、短い間にペロペロキャンディを何度もあなたの口元に差し出し、あなたが何口も食べた。",
+                    "style_hint": "ペロペロキャンディを短時間で何口も。",
                 },
             },
         },
         "fist": {
             "poke": {
                 "normal": {
-                    "reaction_focus": "猫の肉球が一度だけ短く軽く触れた。",
-                    "style_hint": "短く、軽く、やわらかく。触れた部位の違いは自然ににじませる。",
+                    "reaction_focus": "{actor}が今、猫の肉球で一度だけ軽く触れた。",
+                    "style_hint": "猫の肉球の一回接触。",
                 },
                 "rapid": {
-                    "reaction_focus": "短時間のうちに軽い接触が何度か続いた。",
-                    "style_hint": "少し速く、少し連続的でもよいが、軽さは保つ。",
+                    "reaction_focus": "{actor}が今、猫の肉球で何度か続けて軽く触れた。",
+                    "style_hint": "猫の肉球の連続接触。",
                 },
                 "reward_drop": {
-                    "reaction_focus": "今回の軽い接触は報酬ドロップも同時に発生させた。",
-                    "style_hint": "まず触れた感覚を受けて、そのついでに落ちたものへ軽く触れる。",
+                    "reaction_focus": "{actor}が今、猫の肉球で軽く触れた時に報酬が落ちた。",
+                    "style_hint": "猫の肉球接触と報酬ドロップ。",
+                },
+                "reward_drop_rapid": {
+                    "reaction_focus": "{actor}が今、猫の肉球で何度か続けて軽く触れた時に報酬が落ちた。",
+                    "style_hint": "猫の肉球の連続接触と報酬ドロップ。",
                 },
             },
         },
         "hammer": {
             "bonk": {
                 "normal": {
-                    "reaction_focus": "一連のハンマー打撃が完了し、命中結果に入った。",
-                    "style_hint": "短く、衝撃を前に出しつつ、打たれた直後の小さな間を含めてもよい。",
+                    "reaction_focus": "{actor}が今、ハンマーで一度当てた。",
+                    "style_hint": "ハンマーの一回命中。",
                 },
                 "rapid": {
-                    "reaction_focus": "短時間のうちにもう一度ハンマーが当たり、連続打撃になっている。",
-                    "style_hint": "少し直接的にして、連続で当たる蓄積感を出してよい。",
+                    "reaction_focus": "{actor}が今、短時間でもう一度ハンマーを当てた。",
+                    "style_hint": "ハンマーの二回目命中。",
                 },
                 "burst": {
-                    "reaction_focus": "連続ハンマーの回数がさらに増え、今回はより強い結果になっている。",
-                    "style_hint": "反応を少し大きくしてもよいが、即時で短い調子は保つ。",
+                    "reaction_focus": "{actor}が今、ハンマーを何度も続けて当てた。",
+                    "style_hint": "ハンマーの高速連続命中。",
                 },
                 "easter_egg": {
-                    "reaction_focus": "今回のハンマーは拡大イースターエッグを起こし、通常より強い命中結果になっている。",
-                    "style_hint": "少し大げさで劇的な間があってもよいが、キャラクターの口調は崩さない。",
+                    "reaction_focus": "{actor}が今、拡大イースターエッグのハンマーを一度当てた。",
+                    "style_hint": "拡大イースターエッグのハンマー命中。",
                 },
             },
         },
@@ -566,60 +582,64 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "lollipop": {
             "offer": {
                 "normal": {
-                    "reaction_focus": "막대사탕이 처음으로 입가에 닿았다.",
-                    "style_hint": "처음 맛보는 순간의 작은 멈칫함이나 맛을 느끼는 기색이 있어도 좋고, 가볍고 자연스럽게 간다.",
+                    "reaction_focus": "{actor} 방금 막대사탕을 네 입가에 내밀었고, 너는 첫 한입을 먹었다.",
+                    "style_hint": "막대사탕 첫 한입.",
                 },
             },
             "tease": {
                 "normal": {
-                    "reaction_focus": "첫 한입은 이미 끝났고, 이번 상호작용은 바로 이어지는 두 번째 한입이다.",
-                    "style_hint": "첫 한입보다 조금 더 자연스럽고 이어지는 느낌으로 간다.",
+                    "reaction_focus": "{actor} 방금 같은 막대사탕을 다시 네 입가에 내밀었고, 너는 두 번째 한입을 먹었다.",
+                    "style_hint": "같은 막대사탕 한입 더.",
                 },
             },
             "tap_soft": {
                 "rapid": {
-                    "reaction_focus": "세 번째 단계 뒤에도 먹여 주는 동작이 이어지고 있고, 앞단에서는 하트가 떠오른 상태다. 이번은 연속 먹이기 흐름 중 한 번이다.",
-                    "style_hint": "호흡을 더 빠르게 하고 문장을 더 짧게 해서, 연달아 끊기는 와중의 즉각 반응처럼 간다.",
+                    "reaction_focus": "{actor} 방금 막대사탕을 한입씩 계속 네 입가에 내밀었고, 너는 몇 입 연달아 먹었다.",
+                    "style_hint": "막대사탕 한입씩 계속.",
                 },
                 "burst": {
-                    "reaction_focus": "짧은 시간 안에 여러 번 연속으로 먹여서 더 높은 빈도의 연속 먹이기가 됐다.",
-                    "style_hint": "조금 더 잘게 끊기고 급해져도 괜찮지만, 현장감은 유지한다.",
+                    "reaction_focus": "{actor} 방금 짧은 시간 안에 막대사탕을 여러 번 네 입가에 내밀었고, 너는 여러 입 빠르게 먹었다.",
+                    "style_hint": "막대사탕 짧은 시간 여러 입.",
                 },
             },
         },
         "fist": {
             "poke": {
                 "normal": {
-                    "reaction_focus": "고양이 발이 한 번 짧고 가볍게 닿았다.",
-                    "style_hint": "짧고, 가볍고, 부드럽게. 닿은 부위에 따라 미세한 차이를 자연스럽게 드러낸다.",
+                    "reaction_focus": "{actor} 방금 고양이 발로 한 번 가볍게 건드렸다.",
+                    "style_hint": "고양이 발 한 번 터치.",
                 },
                 "rapid": {
-                    "reaction_focus": "짧은 시간 안에 가벼운 터치가 여러 번 이어졌다.",
-                    "style_hint": "조금 더 빠르고 이어져도 되지만, 가벼운 느낌은 유지한다.",
+                    "reaction_focus": "{actor} 방금 고양이 발로 여러 번 가볍게 건드렸다.",
+                    "style_hint": "고양이 발 연속 터치.",
                 },
                 "reward_drop": {
-                    "reaction_focus": "이번 가벼운 터치는 보상 드롭도 함께 발생시켰다.",
-                    "style_hint": "먼저 터치를 받아들이고, 곁들여서 떨어진 보상을 한마디 언급한다.",
+                    "reaction_focus": "{actor} 방금 고양이 발로 가볍게 건드렸을 때 보상이 떨어졌다.",
+                    "style_hint": "고양이 발 터치와 보상 드롭.",
+                },
+                "reward_drop_rapid": {
+                    "reaction_focus": "{actor} 방금 고양이 발로 여러 번 가볍게 건드렸을 때 보상이 떨어졌다.",
+                    "style_hint": "고양이 발 연속 터치와 보상 드롭.",
                 },
             },
         },
         "hammer": {
             "bonk": {
                 "normal": {
-                    "reaction_focus": "한 번의 완전한 망치 타격이 끝나고 명중 결과에 들어갔다.",
-                    "style_hint": "짧고 충격을 앞세우되, 맞은 직후의 작은 멈춤을 넣어도 좋다.",
+                    "reaction_focus": "{actor} 방금 망치로 한 번 맞혔다.",
+                    "style_hint": "망치 한 번 명중.",
                 },
                 "rapid": {
-                    "reaction_focus": "짧은 시간 안에 망치가 다시 맞아 연속 타격이 형성됐다.",
-                    "style_hint": "조금 더 직접적으로, 연속해서 맞은 누적감을 드러내도 좋다.",
+                    "reaction_focus": "{actor} 방금 짧은 시간 안에 망치로 다시 한 번 맞혔다.",
+                    "style_hint": "망치 두 번째 명중.",
                 },
                 "burst": {
-                    "reaction_focus": "연속 망치 횟수가 더 늘어나 이번은 더 강한 결과가 됐다.",
-                    "style_hint": "반응 폭을 조금 키워도 되지만, 즉각적이고 짧은 느낌은 유지한다.",
+                    "reaction_focus": "{actor} 방금 망치로 여러 번 빠르게 맞혔다.",
+                    "style_hint": "망치 빠른 연속 명중.",
                 },
                 "easter_egg": {
-                    "reaction_focus": "이번 망치 타격은 확대 이스터에그를 일으켜 평소보다 훨씬 강한 명중 결과가 됐다.",
-                    "style_hint": "조금 더 과장되고 극적인 멈춤이 있어도 되지만, 캐릭터 말투는 유지한다.",
+                    "reaction_focus": "{actor} 방금 확대 이스터에그 망치로 한 번 맞혔다.",
+                    "style_hint": "확대 이스터에그 망치 명중.",
                 },
             },
         },
@@ -628,60 +648,64 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "lollipop": {
             "offer": {
                 "normal": {
-                    "reaction_focus": "Леденец впервые коснулся рта.",
-                    "style_hint": "Подойдет лёгкая пауза первого вкуса или короткое ощущение распробовать вкус; держите тон естественно мягким.",
+                    "reaction_focus": "{actor} подносит леденец к твоему рту, и ты съедаешь первый кусочек.",
+                    "style_hint": "Первый кусочек леденца.",
                 },
             },
             "tease": {
                 "normal": {
-                    "reaction_focus": "Первый кусочек уже был, а это взаимодействие стало немедленным вторым кусочком.",
-                    "style_hint": "Пусть это ощущается немного плавнее и естественнее, чем первый кусочек, сохраняя живую реакцию.",
+                    "reaction_focus": "{actor} снова подносит тот же леденец к твоему рту, и ты съедаешь второй кусочек.",
+                    "style_hint": "Ещё кусочек того же леденца.",
                 },
             },
             "tap_soft": {
                 "rapid": {
-                    "reaction_focus": "После третьей стадии кормление продолжается, на фронтенде уже парят сердечки; этот эпизод является одной из повторяющихся подач леденца.",
-                    "style_hint": "Темп может быть быстрее, а фразы короче, словно это мгновенная реакция внутри серии кормлений.",
+                    "reaction_focus": "{actor} продолжает подносить леденец к твоему рту, и ты съедаешь несколько кусочков подряд.",
+                    "style_hint": "Леденец кусочек за кусочком.",
                 },
                 "burst": {
-                    "reaction_focus": "За короткое время происходит несколько подряд кормлений, формируя более частую серию угощения.",
-                    "style_hint": "Ритм может стать более дробным и торопливым, но должен оставаться реакцией на месте.",
+                    "reaction_focus": "{actor} быстро несколько раз подносит леденец к твоему рту, и ты съедаешь несколько кусочков.",
+                    "style_hint": "Несколько быстрых кусочков леденца.",
                 },
             },
         },
         "fist": {
             "poke": {
                 "normal": {
-                    "reaction_focus": "Кошачья лапка один раз коротко и легко касается.",
-                    "style_hint": "Коротко, легко и мягко, с естественными мелкими отличиями в зависимости от зоны касания.",
+                    "reaction_focus": "{actor} только что один раз легко коснулся тебя кошачьей лапкой.",
+                    "style_hint": "Одно касание кошачьей лапкой.",
                 },
                 "rapid": {
-                    "reaction_focus": "За короткое время происходит несколько лёгких касаний подряд.",
-                    "style_hint": "Можно сделать реакцию чуть быстрее и слитнее, но сохранить ощущение лёгкого касания.",
+                    "reaction_focus": "{actor} только что несколько раз легко коснулся тебя кошачьей лапкой.",
+                    "style_hint": "Повторяющиеся касания кошачьей лапкой.",
                 },
                 "reward_drop": {
-                    "reaction_focus": "Это лёгкое касание одновременно запускает выпадение награды.",
-                    "style_hint": "Сначала откликнитесь на касание, затем мимоходом упомяните выпавшую награду.",
+                    "reaction_focus": "{actor} только что легко коснулся тебя кошачьей лапкой, и выпала награда.",
+                    "style_hint": "Касание кошачьей лапкой и выпадение награды.",
+                },
+                "reward_drop_rapid": {
+                    "reaction_focus": "{actor} только что несколько раз легко коснулся тебя кошачьей лапкой, и выпала награда.",
+                    "style_hint": "Повторяющиеся касания кошачьей лапкой и выпадение награды.",
                 },
             },
         },
         "hammer": {
             "bonk": {
                 "normal": {
-                    "reaction_focus": "Один полный удар молотком завершился и дошёл до результата попадания.",
-                    "style_hint": "Коротко, с упором на удар и с небольшой паузой сразу после попадания.",
+                    "reaction_focus": "{actor} только что один раз попал по тебе молотком.",
+                    "style_hint": "Одно попадание молотком.",
                 },
                 "rapid": {
-                    "reaction_focus": "Ещё один удар молотком завершается в коротком окне, формируя серию попаданий.",
-                    "style_hint": "Можно говорить чуть прямее, показывая накопившийся эффект от повторных ударов.",
+                    "reaction_focus": "{actor} только что снова попал по тебе молотком за короткое время.",
+                    "style_hint": "Второе попадание молотком.",
                 },
                 "burst": {
-                    "reaction_focus": "Количество подряд идущих ударов молотком увеличивается, и это уже более интенсивный результат.",
-                    "style_hint": "Реакция может быть немного сильнее, если она всё ещё остаётся мгновенной и короткой.",
+                    "reaction_focus": "{actor} только что быстро попал по тебе молотком несколько раз подряд.",
+                    "style_hint": "Быстрые повторяющиеся попадания молотком.",
                 },
                 "easter_egg": {
-                    "reaction_focus": "Этот удар молотком запускает увеличенный пасхальный эффект, поэтому результат попадания заметно сильнее обычного.",
-                    "style_hint": "Можно сделать реакцию более драматичной и с более выраженной паузой, сохраняя голос персонажа.",
+                    "reaction_focus": "{actor} только что один раз попал по тебе увеличенным пасхальным молотком.",
+                    "style_hint": "Попадание увеличенным пасхальным молотком.",
                 },
             },
         },
@@ -690,60 +714,64 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "lollipop": {
             "offer": {
                 "normal": {
-                    "reaction_focus": "La piruleta completa el primer contacto con la boca.",
-                    "style_hint": "Puede haber una pequeña pausa de primera prueba o de notar el sabor; mantén un tono naturalmente ligero.",
+                    "reaction_focus": "{actor} acaba de acercarte la piruleta a la boca, y diste el primer bocado.",
+                    "style_hint": "Primer bocado de piruleta.",
                 }
             },
             "tease": {
                 "normal": {
-                    "reaction_focus": "El primer bocado ya ocurrió; esta interacción es el segundo bocado inmediato.",
-                    "style_hint": "Haz que se sienta más fluido y continuo que el primero, sin dejar de ser natural.",
+                    "reaction_focus": "{actor} acaba de acercarte otra vez la misma piruleta a la boca, y diste un segundo bocado.",
+                    "style_hint": "Otro bocado de la misma piruleta.",
                 }
             },
             "tap_soft": {
                 "rapid": {
-                    "reaction_focus": "Tras la tercera etapa continúa la alimentación mientras ya flotan corazones; este es un caso dentro de alimentación repetida.",
-                    "style_hint": "El ritmo puede ser más rápido y las frases más cortas, como una reacción inmediata dentro de la repetición.",
+                    "reaction_focus": "{actor} acaba de acercarte la piruleta a la boca varias veces seguidas, y diste varios bocados.",
+                    "style_hint": "Piruleta bocado tras bocado.",
                 },
                 "burst": {
-                    "reaction_focus": "Varias alimentaciones ocurren en poco tiempo, formando un evento repetido de mayor frecuencia.",
-                    "style_hint": "Puede sonar más apresurado o fragmentado; mantenlo en el momento.",
+                    "reaction_focus": "{actor} acaba de acercarte la piruleta a la boca varias veces en poco tiempo, y diste varios bocados rápidos.",
+                    "style_hint": "Varios bocados rápidos de piruleta.",
                 },
             },
         },
         "fist": {
             "poke": {
                 "normal": {
-                    "reaction_focus": "La patita de gato produce un toque corto y ligero.",
-                    "style_hint": "Corto, ligero y suave, con pequeñas diferencias según la zona tocada.",
+                    "reaction_focus": "{actor} acaba de tocarte una vez con la patita de gato.",
+                    "style_hint": "Un toque de patita de gato.",
                 },
                 "rapid": {
-                    "reaction_focus": "Varios toques ligeros ocurren en poco tiempo.",
-                    "style_hint": "Puede sentirse un poco más rápido y continuo sin perder ligereza.",
+                    "reaction_focus": "{actor} acaba de tocarte varias veces con la patita de gato.",
+                    "style_hint": "Toques repetidos de patita de gato.",
                 },
                 "reward_drop": {
-                    "reaction_focus": "Este toque ligero también soltó una recompensa.",
-                    "style_hint": "Recibe primero el toque y luego menciona la caída de pasada.",
+                    "reaction_focus": "{actor} acaba de tocarte con la patita de gato y cayó una recompensa.",
+                    "style_hint": "Toque de patita de gato con recompensa.",
+                },
+                "reward_drop_rapid": {
+                    "reaction_focus": "{actor} acaba de tocarte varias veces con la patita de gato y cayó una recompensa.",
+                    "style_hint": "Toques repetidos de patita de gato con recompensa.",
                 },
             }
         },
         "hammer": {
             "bonk": {
                 "normal": {
-                    "reaction_focus": "Se completa una secuencia completa de golpe de martillo y llega el impacto.",
-                    "style_hint": "Breve y centrado en el impacto, con una pequeña pausa tras el golpe.",
+                    "reaction_focus": "{actor} acaba de golpearte una vez con el martillo.",
+                    "style_hint": "Un golpe de martillo.",
                 },
                 "rapid": {
-                    "reaction_focus": "Otro golpe de martillo se completa en poco tiempo, formando golpes repetidos.",
-                    "style_hint": "Puede ser más directo y mostrar impacto acumulado.",
+                    "reaction_focus": "{actor} acaba de volver a golpearte con el martillo en poco tiempo.",
+                    "style_hint": "Segundo golpe de martillo.",
                 },
                 "burst": {
-                    "reaction_focus": "Aumentan los golpes repetidos de martillo, con resultado de mayor intensidad.",
-                    "style_hint": "Una reacción más grande está bien si sigue siendo inmediata y corta.",
+                    "reaction_focus": "{actor} acaba de golpearte varias veces rápido con el martillo.",
+                    "style_hint": "Golpes rápidos repetidos de martillo.",
                 },
                 "easter_egg": {
-                    "reaction_focus": "Este golpe activa el efecto easter egg ampliado, más fuerte que un golpe normal.",
-                    "style_hint": "Puede ser más dramático, con pausa o exclamación más marcada, manteniendo la voz del personaje.",
+                    "reaction_focus": "{actor} acaba de golpearte una vez con el martillo easter egg ampliado.",
+                    "style_hint": "Golpe de martillo easter egg ampliado.",
                 },
             }
         },
@@ -752,60 +780,64 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         "lollipop": {
             "offer": {
                 "normal": {
-                    "reaction_focus": "O pirulito completa o primeiro contato com a boca.",
-                    "style_hint": "Pode haver uma pequena pausa de primeira prova ou de notar o sabor; mantenha o tom naturalmente leve.",
+                    "reaction_focus": "{actor} acabou de aproximar o pirulito da sua boca, e você deu a primeira mordida.",
+                    "style_hint": "Primeira mordida de pirulito.",
                 }
             },
             "tease": {
                 "normal": {
-                    "reaction_focus": "A primeira mordida já aconteceu; esta interação é a segunda mordida imediata.",
-                    "style_hint": "Faça parecer um pouco mais suave e contínua que a primeira, mantendo naturalidade.",
+                    "reaction_focus": "{actor} acabou de aproximar o mesmo pirulito da sua boca outra vez, e você deu uma segunda mordida.",
+                    "style_hint": "Outra mordida do mesmo pirulito.",
                 }
             },
             "tap_soft": {
                 "rapid": {
-                    "reaction_focus": "Após a terceira etapa, a alimentação continua enquanto corações já flutuam; este é um caso dentro de alimentação repetida.",
-                    "style_hint": "O ritmo pode ser mais rápido e as frases mais curtas, como reação imediata dentro da repetição.",
+                    "reaction_focus": "{actor} acabou de aproximar o pirulito da sua boca várias vezes seguidas, e você deu várias mordidas.",
+                    "style_hint": "Pirulito mordida após mordida.",
                 },
                 "burst": {
-                    "reaction_focus": "Várias alimentações acontecem em pouco tempo, formando um evento repetido de maior frequência.",
-                    "style_hint": "Pode soar mais apressado ou fragmentado; mantenha no momento.",
+                    "reaction_focus": "{actor} acabou de aproximar o pirulito da sua boca várias vezes em pouco tempo, e você deu várias mordidas rápidas.",
+                    "style_hint": "Várias mordidas rápidas de pirulito.",
                 },
             },
         },
         "fist": {
             "poke": {
                 "normal": {
-                    "reaction_focus": "A patinha de gato produz um toque curto e leve.",
-                    "style_hint": "Curto, leve e suave, com pequenas diferenças conforme a área tocada.",
+                    "reaction_focus": "{actor} acabou de tocar em você uma vez com a patinha de gato.",
+                    "style_hint": "Um toque de patinha de gato.",
                 },
                 "rapid": {
-                    "reaction_focus": "Vários toques leves acontecem em pouco tempo.",
-                    "style_hint": "Pode parecer um pouco mais rápido e contínuo, mantendo a leveza.",
+                    "reaction_focus": "{actor} acabou de tocar em você várias vezes com a patinha de gato.",
+                    "style_hint": "Toques repetidos de patinha de gato.",
                 },
                 "reward_drop": {
-                    "reaction_focus": "Este toque leve também gerou uma recompensa.",
-                    "style_hint": "Receba primeiro o toque e depois mencione a queda de passagem.",
+                    "reaction_focus": "{actor} acabou de tocar em você com a patinha de gato e caiu uma recompensa.",
+                    "style_hint": "Toque de patinha de gato com recompensa.",
+                },
+                "reward_drop_rapid": {
+                    "reaction_focus": "{actor} acabou de tocar em você várias vezes com a patinha de gato e caiu uma recompensa.",
+                    "style_hint": "Toques repetidos de patinha de gato com recompensa.",
                 },
             }
         },
         "hammer": {
             "bonk": {
                 "normal": {
-                    "reaction_focus": "Uma sequência completa de golpe de martelo termina e chega ao impacto.",
-                    "style_hint": "Breve e focado no impacto, com pequena pausa após o golpe.",
+                    "reaction_focus": "{actor} acabou de bater em você uma vez com o martelo.",
+                    "style_hint": "Um golpe de martelo.",
                 },
                 "rapid": {
-                    "reaction_focus": "Outro golpe de martelo se completa em pouco tempo, formando golpes repetidos.",
-                    "style_hint": "Pode ser mais direto e mostrar o impacto acumulado.",
+                    "reaction_focus": "{actor} acabou de bater em você de novo com o martelo em pouco tempo.",
+                    "style_hint": "Segundo golpe de martelo.",
                 },
                 "burst": {
-                    "reaction_focus": "O número de golpes repetidos aumenta, com resultado de maior intensidade.",
-                    "style_hint": "Uma reação maior é aceitável se ainda parecer imediata e curta.",
+                    "reaction_focus": "{actor} acabou de bater em você várias vezes rapidamente com o martelo.",
+                    "style_hint": "Golpes rápidos repetidos de martelo.",
                 },
                 "easter_egg": {
-                    "reaction_focus": "Este golpe aciona o efeito easter egg ampliado, mais forte que o normal.",
-                    "style_hint": "Pode ser mais dramático, com pausa ou exclamação mais forte, mantendo a voz do personagem.",
+                    "reaction_focus": "{actor} acabou de bater em você uma vez com o martelo easter egg ampliado.",
+                    "style_hint": "Golpe de martelo easter egg ampliado.",
                 },
             }
         },
@@ -963,6 +995,16 @@ _AVATAR_INTERACTION_MEMORY_NOTE_MASTER_FALLBACK: dict[str, str] = {
     "es": "esa persona",
     "pt": "a outra pessoa",
 }
+_AVATAR_INTERACTION_PROMPT_ACTOR_FALLBACK: dict[str, str] = {
+    "zh": "对方",
+    "zh-TW": "對方",
+    "en": "The other person",
+    "ja": "相手",
+    "ko": "상대가",
+    "ru": "Собеседник",
+    "es": "Esa persona",
+    "pt": "A outra pessoa",
+}
 _AVATAR_INTERACTION_DEFAULT_REACTION_PROFILES = {
     "zh": {
         "reaction_focus": "保持即时、贴合角色的反应。",
@@ -999,13 +1041,14 @@ _AVATAR_INTERACTION_DEFAULT_REACTION_PROFILES = {
 }
 _AVATAR_INTERACTION_PROMPT_TEXT = {
     "zh": {
-        "actor_line": "你是{lanlan_name}，正在和{master_name}互动。",
-        "interaction_intro": "前端刚刚记录到一次已经发生的道具互动。下面只给出这次互动确认发生的事实，请据此做出即时回应。",
-        "lollipop_intro": "前端刚刚记录到一次已经发生的棒棒糖投喂互动。下面只给出这次互动确认发生的事实，请据此做出即时回应。",
+        "actor_line": "",
+        "interaction_intro": "",
+        "lollipop_intro": "",
+        "compact_fields": True,
         "tool_field": "道具",
         "action_field": "动作",
         "intensity_field": "强度",
-        "event_fact_field": "事件事实",
+        "event_fact_field": "刚发生",
         "expression_field": "表达倾向",
         "touch_area_field": "接触位置",
         "reward_drop_line": "- 附加结果：本次互动同时触发了掉落奖励。",
@@ -1013,22 +1056,21 @@ _AVATAR_INTERACTION_PROMPT_TEXT = {
         "text_context_line": "- 输入框草稿：{text_context}（仅作语境参考，不是正式用户消息）",
         "requirements_header": "要求：",
         "requirements": [
-            "1. 只输出猫娘当下会说的话，不要解释系统或复述字段名。",
-            "2. 根据上面已经发生的事实作答，不补写未发生的动作、距离变化、关系升级或额外剧情。",
-            "3. 以即时短回应为主，句数自然即可，不必机械统一。",
-            "4. text_context 不是正式用户消息，只有在非常自然时才能轻微借用，不能逐字复述。",
-            "5. 不要提范围外点击、坐标、概率、payload 或后台逻辑。",
+            "1. 只输出猫娘当下会说的一句回复。",
+            "2. 回复接住上面的道具事件事实。",
         ],
-        "lollipop_requirement": "6. 这是棒棒糖投喂，不要写成摸头、轻触、安抚或抚摸。",
+        "compact_reply_line": "",
+        "lollipop_requirement": "",
     },
     "zh-TW": {
-        "actor_line": "你是{lanlan_name}，正在和{master_name}互動。",
-        "interaction_intro": "前端剛剛記錄到一次已經發生的道具互動。下面只給出這次互動確認發生的事實，請據此做出即時回應。",
-        "lollipop_intro": "前端剛剛記錄到一次已經發生的棒棒糖投餵互動。下面只給出這次互動確認發生的事實，請據此做出即時回應。",
+        "actor_line": "",
+        "interaction_intro": "",
+        "lollipop_intro": "",
+        "compact_fields": True,
         "tool_field": "道具",
         "action_field": "動作",
         "intensity_field": "強度",
-        "event_fact_field": "事件事實",
+        "event_fact_field": "剛發生",
         "expression_field": "表達傾向",
         "touch_area_field": "接觸位置",
         "reward_drop_line": "- 附加結果：本次互動同時觸發了掉落獎勵。",
@@ -1036,18 +1078,17 @@ _AVATAR_INTERACTION_PROMPT_TEXT = {
         "text_context_line": "- 輸入框草稿：{text_context}（僅作語境參考，不是正式使用者訊息）",
         "requirements_header": "要求：",
         "requirements": [
-            "1. 只輸出貓娘當下會說的話，不要解釋系統或複述欄位名。",
-            "2. 根據上面已經發生的事實作答，不補寫未發生的動作、距離變化、關係升級或額外劇情。",
-            "3. 以即時短回應為主，句數自然即可，不必機械統一。",
-            "4. text_context 不是正式使用者訊息，只有在非常自然時才能輕微借用，不能逐字複述。",
-            "5. 不要提範圍外點擊、座標、機率、payload 或後台邏輯。",
+            "1. 只輸出貓娘當下會說的一句回覆。",
+            "2. 回覆接住上面的道具事件事實。",
         ],
-        "lollipop_requirement": "6. 這是棒棒糖投餵，不要寫成摸頭、輕觸、安撫或撫摸。",
+        "compact_reply_line": "",
+        "lollipop_requirement": "",
     },
     "en": {
         "actor_line": "You are {lanlan_name}, reacting to an interaction from {master_name}.",
         "interaction_intro": "The frontend just recorded a tool interaction that has already happened. The lines below describe only the confirmed facts of this interaction; reply from those facts.",
         "lollipop_intro": "The frontend just recorded a lollipop-feeding interaction that has already happened. The lines below describe only the confirmed facts of this interaction; reply from those facts.",
+        "compact_fields": True,
         "tool_field": "Tool",
         "action_field": "Action",
         "intensity_field": "Intensity",
@@ -1065,12 +1106,14 @@ _AVATAR_INTERACTION_PROMPT_TEXT = {
             "4. The draft text is not a formal user message; use it only as light context if it fits naturally and never quote it verbatim.",
             "5. Do not mention coordinates, probabilities, payloads, or backend rules.",
         ],
+        "compact_reply_line": "",
         "lollipop_requirement": "6. This is lollipop feeding, not petting, soothing, or a generic touch.",
     },
     "ja": {
         "actor_line": "あなたは{lanlan_name}で、{master_name}からのやり取りに反応しています。",
         "interaction_intro": "フロントエンドが、すでに起きた道具インタラクションを記録しました。以下には、このインタラクションで確認できた事実だけを示します。その事実に基づいて即座に反応してください。",
         "lollipop_intro": "フロントエンドが、すでに起きたペロペロキャンディを食べさせるインタラクションを記録しました。以下には、このインタラクションで確認できた事実だけを示します。その事実に基づいて即座に反応してください。",
+        "compact_fields": True,
         "tool_field": "道具",
         "action_field": "動作",
         "intensity_field": "強度",
@@ -1088,12 +1131,14 @@ _AVATAR_INTERACTION_PROMPT_TEXT = {
             "4. text_context は正式なユーザーメッセージではありません。自然な場合だけ軽く参考にし、逐語的に繰り返さないでください。",
             "5. 座標、確率、payload、バックエンドのルールには触れないでください。",
         ],
+        "compact_reply_line": "",
         "lollipop_requirement": "6. これはペロペロキャンディを食べさせるやり取りであり、頭なで、軽い接触、なだめる行為、一般的なスキンシップとして書かないでください。",
     },
     "ko": {
         "actor_line": "너는 {lanlan_name}이고, {master_name}의 상호작용에 반응하고 있다.",
         "interaction_intro": "프런트엔드가 이미 발생한 도구 상호작용을 방금 기록했다. 아래에는 이번 상호작용에서 확인된 사실만 주어진다. 그 사실만 바탕으로 즉시 반응하라.",
         "lollipop_intro": "프런트엔드가 이미 발생한 막대사탕 먹이기 상호작용을 방금 기록했다. 아래에는 이번 상호작용에서 확인된 사실만 주어진다. 그 사실만 바탕으로 즉시 반응하라.",
+        "compact_fields": True,
         "tool_field": "도구",
         "action_field": "동작",
         "intensity_field": "강도",
@@ -1111,12 +1156,14 @@ _AVATAR_INTERACTION_PROMPT_TEXT = {
             "4. text_context 는 정식 사용자 메시지가 아니다. 아주 자연스러울 때만 가볍게 참고하고, 그대로 되풀이하지 않는다.",
             "5. 좌표, 확률, payload, 백엔드 규칙은 언급하지 않는다.",
         ],
+        "compact_reply_line": "",
         "lollipop_requirement": "6. 이것은 막대사탕 먹이기이며, 쓰다듬기, 가벼운 터치, 달래기, 일반적인 스킨십으로 쓰면 안 된다.",
     },
     "ru": {
         "actor_line": "Ты {lanlan_name} и реагируешь на взаимодействие от {master_name}.",
         "interaction_intro": "Фронтенд только что зафиксировал уже произошедшее взаимодействие с инструментом. Ниже перечислены только подтверждённые факты этого эпизода; отвечай, опираясь только на них.",
         "lollipop_intro": "Фронтенд только что зафиксировал уже произошедшее кормление леденцом. Ниже перечислены только подтверждённые факты этого эпизода; отвечай, опираясь только на них.",
+        "compact_fields": True,
         "tool_field": "Инструмент",
         "action_field": "Действие",
         "intensity_field": "Интенсивность",
@@ -1134,12 +1181,14 @@ _AVATAR_INTERACTION_PROMPT_TEXT = {
             "4. Черновик текста не является официальным сообщением пользователя; используй его лишь как лёгкий контекст, если это естественно, и никогда не цитируй дословно.",
             "5. Не упоминай координаты, вероятности, payload или правила бэкенда.",
         ],
+        "compact_reply_line": "",
         "lollipop_requirement": "6. Это кормление леденцом, а не поглаживание, успокаивание или просто абстрактное касание.",
     },
     "es": {
         "actor_line": "Eres {lanlan_name}, reaccionando a una interacción de {master_name}.",
         "interaction_intro": "El frontend acaba de registrar una interacción con herramienta que ya ocurrió. Las líneas siguientes describen solo los hechos confirmados; responde desde esos hechos.",
         "lollipop_intro": "El frontend acaba de registrar una interacción de alimentación con piruleta que ya ocurrió. Las líneas siguientes describen solo los hechos confirmados; responde desde esos hechos.",
+        "compact_fields": True,
         "tool_field": "Herramienta",
         "action_field": "Acción",
         "intensity_field": "Intensidad",
@@ -1157,12 +1206,14 @@ _AVATAR_INTERACTION_PROMPT_TEXT = {
             "4. El borrador no es un mensaje formal del usuario; úsalo solo como contexto ligero si encaja y nunca lo cites literalmente.",
             "5. No menciones coordenadas, probabilidades, payloads ni reglas del backend.",
         ],
+        "compact_reply_line": "",
         "lollipop_requirement": "6. Esto es alimentación con piruleta, no lo conviertas en caricias, toques, consuelo o palmaditas.",
     },
     "pt": {
         "actor_line": "Você é {lanlan_name}, reagindo a uma interação de {master_name}.",
         "interaction_intro": "O frontend acabou de registrar uma interação com ferramenta que já aconteceu. As linhas abaixo descrevem apenas os fatos confirmados; responda a partir desses fatos.",
         "lollipop_intro": "O frontend acabou de registrar uma interação de alimentação com pirulito que já aconteceu. As linhas abaixo descrevem apenas os fatos confirmados; responda a partir desses fatos.",
+        "compact_fields": True,
         "tool_field": "Ferramenta",
         "action_field": "Ação",
         "intensity_field": "Intensidade",
@@ -1180,6 +1231,7 @@ _AVATAR_INTERACTION_PROMPT_TEXT = {
             "4. O rascunho não é uma mensagem formal do usuário; use apenas como contexto leve se couber e nunca cite literalmente.",
             "5. Não mencione coordenadas, probabilidades, payloads ou regras do backend.",
         ],
+        "compact_reply_line": "",
         "lollipop_requirement": "6. Isto é alimentação com pirulito, não transforme em carinho, toque, consolo ou afago.",
     },
 }
@@ -1204,6 +1256,40 @@ def _avatar_interaction_locale(language: str | None) -> str:
     if locale.startswith("pt"):
         return "pt"
     return "en"
+
+
+def _avatar_interaction_korean_subject_actor(name: str) -> str:
+    """Return a Korean subject phrase for an arbitrary actor name.
+
+    Hangul names can choose 이/가 exactly by final consonant. For latin names,
+    use a small readability heuristic; other scripts stay unchanged.
+    """
+    stripped = str(name or "").strip()
+    if not stripped:
+        return _AVATAR_INTERACTION_PROMPT_ACTOR_FALLBACK["ko"]
+
+    last_char = stripped[-1]
+    codepoint = ord(last_char)
+    if 0xAC00 <= codepoint <= 0xD7A3:
+        has_final_consonant = (codepoint - 0xAC00) % 28 != 0
+        marker = "이" if has_final_consonant else "가"
+    elif last_char.isascii() and last_char.isalpha():
+        # Latin display names are common in config; this keeps simple names
+        # readable without forcing every non-Hangul script into a Korean marker.
+        marker = "가" if last_char.lower() in {"a", "e", "i", "o", "u", "y"} else "이"
+    else:
+        return stripped
+    return f"{stripped}{marker}"
+
+
+def _avatar_interaction_prompt_actor(locale: str, master_name: str) -> str:
+    stripped = str(master_name or "").strip()
+    if locale == "ko":
+        return _avatar_interaction_korean_subject_actor(stripped)
+    if stripped:
+        return stripped
+    fallback = _AVATAR_INTERACTION_PROMPT_ACTOR_FALLBACK
+    return fallback.get(locale, fallback["en"])
 
 
 def _sanitize_avatar_interaction_text_context(
@@ -1456,7 +1542,8 @@ def _build_avatar_interaction_instruction(
         .get(action_id, {})
     )
     if payload.get("reward_drop") and action_profiles.get("reward_drop"):
-        reaction_profile = action_profiles["reward_drop"]
+        reward_key = f"reward_drop_{intensity}"
+        reaction_profile = action_profiles.get(reward_key) or action_profiles["reward_drop"]
     else:
         reaction_profile = (
             action_profiles.get(intensity)
@@ -1465,24 +1552,46 @@ def _build_avatar_interaction_instruction(
                 locale, _AVATAR_INTERACTION_DEFAULT_REACTION_PROFILES["en"]
             )
         )
+    actor = _avatar_interaction_prompt_actor(locale, master_name)
+    reaction_focus = str(reaction_profile["reaction_focus"]).format(
+        lanlan_name=lanlan_name, master_name=actor, actor=actor
+    )
+    style_hint = str(reaction_profile["style_hint"]).format(
+        lanlan_name=lanlan_name, master_name=actor, actor=actor
+    )
 
     interaction_intro = (
         prompt_text["lollipop_intro"]
         if tool_id == "lollipop"
         else prompt_text["interaction_intro"]
     )
+    if prompt_text.get("compact_fields"):
+        compact_reply_line = prompt_text["compact_reply_line"].format(
+            lanlan_name=lanlan_name, master_name=actor, actor=actor
+        )
+        # Empty by design: keep the compact prompt as one event fact to avoid reply-shape templates.
+        if not compact_reply_line:
+            return reaction_focus
+        compact_separator = "" if locale in {"zh", "zh-TW", "ja"} else " "
+        return f"{reaction_focus}{compact_separator}{compact_reply_line}"
+
     lines = [
         wrapper["prefix"],
         prompt_text["actor_line"].format(
-            lanlan_name=lanlan_name, master_name=master_name
+            lanlan_name=lanlan_name, master_name=actor
         ),
-        interaction_intro,
-        f"- {prompt_text['tool_field']}: {tool_label}",
-        f"- {prompt_text['action_field']}: {action_label}",
-        f"- {prompt_text['intensity_field']}: {intensity_label}",
-        f"- {prompt_text['event_fact_field']}: {reaction_profile['reaction_focus']}",
-        f"- {prompt_text['expression_field']}: {reaction_profile['style_hint']}",
     ]
+    if interaction_intro:
+        lines.append(interaction_intro)
+    lines.extend(
+        [
+            f"- {prompt_text['tool_field']}: {tool_label}",
+            f"- {prompt_text['action_field']}: {action_label}",
+            f"- {prompt_text['intensity_field']}: {intensity_label}",
+            f"- {prompt_text['event_fact_field']}: {reaction_focus}",
+            f"- {prompt_text['expression_field']}: {style_hint}",
+        ]
+    )
     if touch_zone_label:
         lines.append(f"- {prompt_text['touch_area_field']}: {touch_zone_label}")
     if payload.get("reward_drop"):
@@ -1498,7 +1607,7 @@ def _build_avatar_interaction_instruction(
             wrapper["suffix"],
         ]
     )
-    if tool_id == "lollipop":
+    if tool_id == "lollipop" and prompt_text.get("lollipop_requirement"):
         lines.insert(-1, prompt_text["lollipop_requirement"])
     return "\n".join(lines)
 

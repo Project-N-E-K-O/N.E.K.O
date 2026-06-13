@@ -97,6 +97,156 @@
         }
     }
 
+    function resetAvatarLockForCharacterSwitch(modelType) {
+        const hiddenByModelManager = isMainUIHiddenByModelManager();
+
+        try {
+            if (modelType === 'vrm' && window.vrmManager) {
+                if (window.vrmManager.core && typeof window.vrmManager.core.setLocked === 'function') {
+                    window.vrmManager.core.setLocked(false);
+                } else if (window.vrmManager.interaction && typeof window.vrmManager.interaction.setLocked === 'function') {
+                    window.vrmManager.interaction.setLocked(false);
+                } else {
+                    window.vrmManager.isLocked = false;
+                }
+                const lockIcon = document.getElementById('vrm-lock-icon');
+                if (lockIcon) lockIcon.style.backgroundImage = 'url(/static/icons/unlocked_icon.png)';
+            } else if (modelType === 'mmd' && window.mmdManager) {
+                if (window.mmdManager.core && typeof window.mmdManager.core.setLocked === 'function') {
+                    window.mmdManager.core.setLocked(false);
+                } else if (window.mmdManager.interaction && typeof window.mmdManager.interaction.setLocked === 'function') {
+                    window.mmdManager.interaction.setLocked(false);
+                    window.mmdManager.isLocked = false;
+                } else {
+                    window.mmdManager.isLocked = false;
+                }
+                const lockIcon = document.getElementById('mmd-lock-icon');
+                if (lockIcon) lockIcon.style.backgroundImage = 'url(/static/icons/unlocked_icon.png)';
+            } else if (window.live2dManager) {
+                if (typeof window.live2dManager.setLocked === 'function') {
+                    window.live2dManager.setLocked(false, { updateFloatingButtons: !hiddenByModelManager });
+                } else {
+                    window.live2dManager.isLocked = false;
+                }
+            }
+
+            if (hiddenByModelManager) {
+                rehideMainUIIfModelManagerOwnsVisibility('character-switch-lock-reset');
+            }
+        } catch (err) {
+            console.warn('[猫娘切换] 重置模型锁定状态失败:', err);
+        }
+    }
+
+    function clearGoodbyeStateForCharacterSwitch() {
+        const reason = 'character-switch';
+
+        const postFallbackReturnBallHiddenState = () => {
+            const payload = {
+                action: 'idle_return_ball_state',
+                source: 'pet-window',
+                reason: reason,
+                visible: false,
+                tier: 'none',
+                screenRect: null,
+                lanlan_name: (window.lanlan_config && window.lanlan_config.lanlan_name) || '',
+                timestamp: Date.now()
+            };
+            window.dispatchEvent(new CustomEvent('neko:idle-return-ball-state', { detail: payload }));
+            const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
+            if (channel && typeof channel.postMessage === 'function') {
+                try {
+                    channel.postMessage(payload);
+                } catch (_) {}
+            }
+        };
+
+        const hideReturnButtonContainer = (container) => {
+            if (!container) return;
+            if (typeof window.hideNekoReturnBallContainer === 'function') {
+                window.hideNekoReturnBallContainer(container, reason);
+                return;
+            }
+
+            container.removeAttribute('data-neko-return-visible');
+            container.style.display = 'none';
+            container.style.pointerEvents = 'none';
+            container.style.removeProperty('visibility');
+            postFallbackReturnBallHiddenState();
+        };
+
+        const hideAllReturnButtonContainers = () => {
+            if (typeof window.hideAllNekoReturnBallContainers === 'function') {
+                window.hideAllNekoReturnBallContainers(reason);
+                return;
+            }
+            [
+                window.live2dManager && window.live2dManager._returnButtonContainer,
+                window.vrmManager && window.vrmManager._returnButtonContainer,
+                window.mmdManager && window.mmdManager._returnButtonContainer,
+                document.getElementById('live2d-return-button-container'),
+                document.getElementById('vrm-return-button-container'),
+                document.getElementById('mmd-return-button-container')
+            ].forEach(hideReturnButtonContainer);
+        };
+
+        const clearManagerReturnState = (manager) => {
+            if (!manager) return;
+            manager._goodbyeClicked = false;
+            if (Object.prototype.hasOwnProperty.call(manager, '_isInReturnState')) {
+                manager._isInReturnState = false;
+            }
+        };
+
+        try {
+            clearManagerReturnState(window.live2dManager);
+            clearManagerReturnState(window.vrmManager);
+            clearManagerReturnState(window.mmdManager);
+            hideAllReturnButtonContainers();
+
+            window.__nekoGoodbyeSilentState = {
+                active: false,
+                reason: reason,
+                pending: true,
+                updatedAt: Date.now()
+            };
+
+            const socket = S && S.socket;
+            if (socket && typeof socket.send === 'function' && socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({
+                    action: 'goodbye_state',
+                    active: false,
+                    reason: reason
+                }));
+                window.__nekoGoodbyeSilentState.pending = false;
+                window.__nekoGoodbyeSilentState.updatedAt = Date.now();
+            }
+        } catch (err) {
+            console.warn('[猫娘切换] 清理 goodbye 静默状态失败:', err);
+        }
+
+        try {
+            if (window.appInterpage && typeof window.appInterpage.postGoodbyeChatComposerHiddenState === 'function') {
+                window.appInterpage.postGoodbyeChatComposerHiddenState(false, reason);
+            } else if (typeof window.postGoodbyeChatComposerHiddenState === 'function') {
+                window.postGoodbyeChatComposerHiddenState(false, reason);
+            } else if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setGoodbyeComposerHidden === 'function') {
+                window.reactChatWindowHost.setGoodbyeComposerHidden(false, reason);
+            } else {
+                window.__nekoGoodbyeChatComposerHidden = {
+                    hidden: false,
+                    reason: reason,
+                    timestamp: Date.now()
+                };
+                window.dispatchEvent(new CustomEvent('react-chat-window:set-goodbye-composer-hidden', {
+                    detail: window.__nekoGoodbyeChatComposerHidden
+                }));
+            }
+        } catch (err) {
+            console.warn('[猫娘切换] 清理 goodbye 聊天框状态失败:', err);
+        }
+    }
+
     function supportsLocalModelRuntime() {
         return !/^\/chat(?:_full)?(?:\/|$)/.test(window.location.pathname || '');
     }
@@ -1004,6 +1154,7 @@
                 await window.vrmManager.loadModel(modelUrl);
                 throwIfStale();
                 console.log('[猫娘切换] VRM模型加载完成');
+                resetAvatarLockForCharacterSwitch('vrm');
 
                 // 【关键修复】确保VRM渲染循环已启动（loadModel内部会调用startAnimation，但为了保险再次确认）
                 if (!window.vrmManager._animationFrameId) {
@@ -1341,6 +1492,7 @@
                     await window.mmdManager.loadModel(mmdModelUrl, { loadingSessionId: mmdLoadingSessionId });
                     throwIfStale();
                     console.log('[猫娘切换] MMD 模型加载完成');
+                    resetAvatarLockForCharacterSwitch('mmd');
 
                     // 应用完整设置（光照、渲染、物理、鼠标跟踪）
                     if (savedSettings) {
@@ -1473,6 +1625,7 @@
                             isMobile: typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (window.innerWidth <= 768)
                         });
                         throwIfStale();
+                        resetAvatarLockForCharacterSwitch('live2d');
 
                         if (window.LanLan1) {
                             window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
@@ -1514,6 +1667,7 @@
                                     isMobile: typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (window.innerWidth <= 768)
                                 });
                                 throwIfStale();
+                                resetAvatarLockForCharacterSwitch('live2d');
                                 if (window.LanLan1) {
                                     window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
                                     window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
@@ -1655,6 +1809,7 @@
             // commit 之后再 dispose 延后保留的旧 MMD 实例（MMD→非 MMD 路径）。
             // commit 前 dispose 会让中途失败的 rollback 没法恢复旧 MMD（容器没渲染 + 实例已销毁）。
             _disposeDeferredMmd();
+            clearGoodbyeStateForCharacterSwitch();
             // 角色卡切换后猫爪必须重新归零并拉取新快照，防止工具服务的旧全局状态污染新角色。
             if (typeof window.resetAgentUiForCharacterSwitch === 'function') {
                 Promise.resolve(window.resetAgentUiForCharacterSwitch(newCatgirl))

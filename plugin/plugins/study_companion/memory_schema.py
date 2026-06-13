@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
 DECK_TYPES = {"word", "passage", "formula", "custom"}
 ITEM_TYPES = {"word", "sentence", "paragraph", "cloze", "custom"}
+_SQLITE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def normalize_deck_type(value: object) -> str:
@@ -145,9 +147,16 @@ def ensure_memory_schema(conn: Any) -> None:
 
 
 def _ensure_column(conn: Any, table: str, column: str, definition: str) -> None:
+    _validate_sqlite_identifier(table)
+    _validate_sqlite_identifier(column)
     existing = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})")}
     if column not in existing:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _validate_sqlite_identifier(value: str) -> None:
+    if not _SQLITE_IDENTIFIER_RE.fullmatch(str(value or "")):
+        raise ValueError(f"invalid sqlite identifier: {value!r}")
 
 
 __all__ = [
