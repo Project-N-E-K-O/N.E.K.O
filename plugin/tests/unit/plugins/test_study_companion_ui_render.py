@@ -253,7 +253,7 @@ def test_study_companion_static_ui8_visual_accessibility_and_csp_contract() -> N
     assert '<span data-i18n="ui.title">Study Companion</span>' in index_html
     assert ".hero-paw" in style_css
     assert ".hero-title__cat" in style_css
-    assert "@keyframes pawBounce" in style_css
+    assert "@keyframes pawBounce" not in style_css
     assert "🐾" in index_html
     assert "🐱" in index_html
     assert '.memory-card[data-empty="true"]::before' in style_css
@@ -643,9 +643,16 @@ def test_study_companion_brand_contract_rejects_legacy_neutral_theme() -> None:
     combined = "\n".join([index_html, style_css, surface_utils])
     variables = _css_variables(style_css)
 
-    assert variables["brand"] == "#40C5F1"
+    assert variables["brand"] == "#2f7d57"
     assert '"Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif' in style_css
     assert '"Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif' in surface_utils
     assert not re.search(r"font-family\s*:[^;]*\bInter\b", combined)
-    for legacy_color in ("#f6f7f9", "#d8dde6", "#6a7484"):
+    for legacy_color in (
+        "#f6f7f9",
+        "#d8dde6",
+        "#6a7484",
+        "#40c5f1",
+        "#f08c99",
+        "#3da5d9",
+    ):
         assert legacy_color not in combined.lower(), legacy_color

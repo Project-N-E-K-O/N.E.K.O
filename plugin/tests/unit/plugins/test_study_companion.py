@@ -1531,7 +1531,7 @@ def test_study_companion_ui7_surfaces_use_brand_css_and_quickstart_is_removed() 
     assert "reviewCompleted: 'neko-study-review-completed'" in surface_utils
     assert "refreshSummary: 'neko-study-refresh-summary'" in surface_utils
     assert "memoryDeckUpdated: 'neko-study-memory-deck-updated'" in surface_utils
-    assert "--mastery-mastered: #22c55e;" in surface_utils
+    assert "--mastery-mastered: #82d99e;" in surface_utils
     assert ".surface-shell" in surface_utils
 
 
@@ -1554,13 +1554,13 @@ def test_study_companion_ui_refactor_static_and_hosted_contracts() -> None:
     assert 'class="mode-switch"' in index_html
     assert "mode-strip" not in index_html
 
-    assert "--brand: #40C5F1;" in style_css
-    assert "--study-companion: #3da5d9;" in style_css
+    assert "--brand: #2f7d57;" in style_css
+    assert "--study-companion: #2f7d57;" in style_css
     assert "body::before" not in style_css
     assert "paw-pattern" not in style_css
     assert "paw-pattern.svg" not in index_html
     assert ".mode-switch::before" in style_css
-    assert "@keyframes pawBounce" in style_css
+    assert "@keyframes pawBounce" not in style_css
     assert "@media (max-width" not in style_css
     assert "@media (prefers-reduced-motion: reduce)" in style_css
 

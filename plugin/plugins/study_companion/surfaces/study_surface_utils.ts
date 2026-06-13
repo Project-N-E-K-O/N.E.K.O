@@ -28,27 +28,27 @@ function isJsonRunExportItem(candidate: RunExportItem): candidate is JsonRunExpo
 export const BRAND_CSS = `
   :host, :root {
     color-scheme: light;
-    --bg: rgba(255, 255, 255, 0.12);
-    --paper: rgba(255, 255, 255, 0.88);
-    --paper-strong: rgba(255, 255, 255, 0.96);
-    --ink: #1f2329;
-    --muted: #596775;
-    --line: rgba(31, 35, 41, 0.10);
-    --brand: #40C5F1;
-    --brand-strong: #1b6d8a;
-    --accent: #f08c99;
-    --accent-strong: #b23241;
-    --warning: #c7851e;
-    --warning-strong: #8a5c15;
-    --warning-bg: rgba(200, 133, 30, 0.10);
-    --study-companion: #3da5d9;
-    --study-interactive: #7c6db5;
-    --study-teaching: #e8864a;
-    --mastery-new: #cbd5e1;
-    --mastery-weak: #f08c99;
-    --mastery-progress: #fbbf24;
-    --mastery-good: #40C5F1;
-    --mastery-mastered: #22c55e;
+    --bg: #f3f7f1;
+    --paper: rgba(253, 255, 250, 0.94);
+    --paper-strong: rgba(255, 255, 255, 0.98);
+    --ink: #1f2924;
+    --muted: #607168;
+    --line: rgba(31, 41, 36, 0.13);
+    --brand: #2f7d57;
+    --brand-strong: #17563d;
+    --accent: #d58b2b;
+    --accent-strong: #8a5317;
+    --warning: #b7791f;
+    --warning-strong: #784910;
+    --warning-bg: rgba(183, 121, 31, 0.10);
+    --study-companion: #2f7d57;
+    --study-interactive: #536aa3;
+    --study-teaching: #c8762c;
+    --mastery-new: #cbd5d0;
+    --mastery-weak: #e89a90;
+    --mastery-progress: #e2b85a;
+    --mastery-good: #9bd9b8;
+    --mastery-mastered: #82d99e;
     --pomodoro-focus: #ef4444;
     --pomodoro-break-short: #22c55e;
     --pomodoro-break-long: #3b82f6;
@@ -56,10 +56,10 @@ export const BRAND_CSS = `
     --fsrs-hard: #b45309;
     --fsrs-good: #15803d;
     --fsrs-easy: #2563eb;
-    --shadow: 0 8px 24px rgba(23, 37, 43, 0.08);
-    --shadow-strong: 0 18px 42px rgba(23, 37, 43, 0.12);
-    --radius: 16px;
-    --radius-sm: 10px;
+    --shadow: 0 10px 24px rgba(31, 52, 40, 0.07);
+    --shadow-strong: 0 16px 34px rgba(31, 52, 40, 0.12);
+    --radius: 8px;
+    --radius-sm: 6px;
     --transition-fast: 150ms ease;
     --transition-normal: 300ms cubic-bezier(0.4, 0, 0.2, 1);
     --transition-slow: 500ms ease;
@@ -77,20 +77,25 @@ export const BRAND_CSS = `
   .surface-shell {
     min-width: 760px;
     padding: 18px;
-    border: 1px solid rgba(64, 197, 241, 0.18);
+    border: 1px solid rgba(47, 125, 87, 0.18);
+    border-left: 5px solid rgba(47, 125, 87, 0.62);
     border-radius: var(--radius);
     background:
-      linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(246, 253, 255, 0.82)),
+      linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(244, 249, 241, 0.86)),
       var(--paper);
     box-shadow: var(--shadow);
   }
 
   .surface-shell::before {
-    content: "(=^・ω・^=)";
+    content: "";
     justify-self: start;
-    color: rgba(27, 109, 138, 0.36);
-    font-size: 13px;
-    font-weight: 800;
+    width: 96px;
+    height: 2px;
+    background: repeating-linear-gradient(
+      90deg,
+      rgba(47, 125, 87, 0.24) 0 14px,
+      transparent 14px 22px
+    );
   }
 
   .study-panel__header {
@@ -121,15 +126,14 @@ export const BRAND_CSS = `
     gap: 4px;
     min-width: 330px;
     padding: 5px;
-    border: 1px solid rgba(64, 197, 241, 0.18);
+    border: 1px solid rgba(47, 125, 87, 0.18);
     border-radius: var(--radius-sm);
     background:
-      linear-gradient(180deg, rgba(246, 253, 255, 0.94), rgba(230, 248, 253, 0.70)),
-      rgba(64, 197, 241, 0.055);
+      linear-gradient(180deg, rgba(247, 250, 244, 0.96), rgba(232, 243, 235, 0.78)),
+      rgba(47, 125, 87, 0.055);
     box-shadow:
-      0 8px 22px rgba(23, 37, 43, 0.045),
-      0 6px 18px rgba(64, 197, 241, 0.07),
-      inset 0 1px 0 rgba(255, 255, 255, 0.80);
+      inset 0 1px 0 rgba(255, 255, 255, 0.86),
+      inset 0 -1px 0 rgba(47, 125, 87, 0.08);
     isolation: isolate;
   }
 
@@ -164,12 +168,11 @@ export const BRAND_CSS = `
     width: var(--indicator-width);
     height: calc(100% - 10px);
     z-index: 0;
-    border: 1px solid rgba(64, 197, 241, 0.14);
-    border-radius: 7px;
-    background: rgba(64, 197, 241, 0.10);
+    border: 1px solid rgba(47, 125, 87, 0.16);
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.92);
     box-shadow:
-      0 5px 14px rgba(23, 37, 43, 0.06),
-      0 4px 12px rgba(64, 197, 241, 0.08),
+      0 5px 14px rgba(31, 52, 40, 0.06),
       inset 0 1px 0 rgba(255, 255, 255, 0.88);
   }
 
@@ -180,23 +183,25 @@ export const BRAND_CSS = `
     height: 3px;
     z-index: 1;
     border-radius: 999px;
-    background: rgba(64, 197, 241, 0.62);
+    background: rgba(47, 125, 87, 0.68);
   }
 
   .mode-switch[data-active="interactive"]::before {
-    background: rgba(124, 109, 181, 0.10);
+    border-color: rgba(83, 106, 163, 0.18);
+    background: rgba(83, 106, 163, 0.08);
   }
 
   .mode-switch[data-active="interactive"]::after {
-    background: rgba(124, 109, 181, 0.58);
+    background: rgba(83, 106, 163, 0.62);
   }
 
   .mode-switch[data-active="teaching"]::before {
-    background: rgba(232, 134, 74, 0.10);
+    border-color: rgba(200, 118, 44, 0.18);
+    background: rgba(200, 118, 44, 0.09);
   }
 
   .mode-switch[data-active="teaching"]::after {
-    background: rgba(232, 134, 74, 0.58);
+    background: rgba(200, 118, 44, 0.64);
   }
 
   .mode-btn {
@@ -207,7 +212,7 @@ export const BRAND_CSS = `
     min-height: 38px;
     padding: 8px 14px 10px;
     border: none;
-    border-radius: 7px;
+    border-radius: 5px;
     background: transparent;
     color: var(--muted);
     font-size: 13px;
@@ -241,9 +246,10 @@ export const BRAND_CSS = `
     display: grid;
     gap: 4px;
     padding: 12px;
-    border: 1px solid rgba(64, 197, 241, 0.14);
+    border: 1px solid rgba(47, 125, 87, 0.14);
+    border-left: 3px solid rgba(47, 125, 87, 0.34);
     border-radius: var(--radius-sm);
-    background: rgba(255, 255, 255, 0.72);
+    background: rgba(255, 255, 255, 0.84);
   }
 
   .study-panel__state span {
@@ -271,7 +277,9 @@ export const BRAND_CSS = `
     line-height: 1.5;
     white-space: pre-wrap;
     overflow-wrap: break-word;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.88),
+      inset 4px 0 0 rgba(47, 125, 87, 0.08);
   }
 
   .study-panel__math-reply .katex {
@@ -280,6 +288,9 @@ export const BRAND_CSS = `
 
   .study-panel textarea {
     resize: vertical;
+    background-image:
+      linear-gradient(transparent calc(1.5em - 1px), rgba(47, 125, 87, 0.055) calc(1.5em - 1px));
+    background-size: 100% 1.5em;
   }
 
   .study-panel__actions {
@@ -296,9 +307,10 @@ export const BRAND_CSS = `
     align-items: center;
     width: 100%;
     padding: 12px;
-    border: 1px solid rgba(64, 197, 241, 0.14);
+    border: 1px solid rgba(47, 125, 87, 0.14);
+    border-left: 3px solid rgba(47, 125, 87, 0.28);
     border-radius: var(--radius-sm);
-    background: rgba(255, 255, 255, 0.70);
+    background: rgba(255, 255, 255, 0.84);
   }
 
   .study-panel label {
@@ -310,7 +322,7 @@ export const BRAND_CSS = `
   .study-panel select {
     min-height: 36px;
     border: 1px solid rgba(31, 35, 41, 0.12);
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     background: var(--paper-strong);
     color: var(--ink);
     padding: 7px 10px;
@@ -319,9 +331,9 @@ export const BRAND_CSS = `
 
   .study-panel button {
     min-height: 36px;
-    border: 1px solid rgba(64, 197, 241, 0.20);
-    border-radius: 8px;
-    background: rgba(255, 255, 255, 0.86);
+    border: 1px solid rgba(23, 86, 61, 0.24);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.92);
     color: var(--brand-strong);
     font: inherit;
     font-weight: 800;
@@ -333,8 +345,8 @@ export const BRAND_CSS = `
   }
 
   .study-panel button:hover:not(:disabled) {
-    border-color: rgba(64, 197, 241, 0.42);
-    box-shadow: 0 6px 16px rgba(64, 197, 241, 0.12);
+    border-color: rgba(23, 86, 61, 0.42);
+    box-shadow: 0 6px 16px rgba(31, 52, 40, 0.10);
   }
 
   .study-panel button:active:not(:disabled) {
@@ -382,27 +394,27 @@ export const BRAND_CSS = `
 
   .knowledge-node[data-mastery="new"] {
     background: var(--mastery-new);
-    border-color: rgba(203, 213, 225, 0.72);
+    border-color: rgba(203, 213, 208, 0.72);
   }
 
   .knowledge-node[data-mastery="weak"] {
     background: var(--mastery-weak);
-    border-color: rgba(240, 140, 153, 0.46);
+    border-color: rgba(214, 106, 95, 0.42);
   }
 
   .knowledge-node[data-mastery="progress"] {
     background: var(--mastery-progress);
-    border-color: rgba(251, 191, 36, 0.48);
+    border-color: rgba(217, 164, 65, 0.46);
   }
 
   .knowledge-node[data-mastery="good"] {
     background: var(--mastery-good);
-    border-color: rgba(64, 197, 241, 0.46);
+    border-color: rgba(47, 125, 87, 0.34);
   }
 
   .knowledge-node[data-mastery="mastered"] {
     background: var(--mastery-mastered);
-    border-color: rgba(34, 197, 94, 0.42);
+    border-color: rgba(31, 157, 98, 0.34);
   }
 
   .pomodoro-ring {
