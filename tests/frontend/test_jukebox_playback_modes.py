@@ -614,6 +614,52 @@ def test_jukebox_random_exit_prunes_removed_songs_while_preserving_anchor(mock_p
 
 
 @pytest.mark.frontend
+def test_jukebox_random_sync_preserves_current_duplicate_queue_entry(mock_page: Page):
+    setup_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        () => {
+          const J = window.Jukebox;
+          J.State.playbackMode = 'random';
+          J.State.currentSong = J.State.songs[0];
+          J.State.randomQueue = ['song1', 'song2', 'song1', 'song3'];
+          J.State.randomQueueIndex = 0;
+
+          J.syncRandomQueueWithSongs();
+
+          const afterFirstDuplicate = {
+            queue: [...J.State.randomQueue],
+            index: J.State.randomQueueIndex
+          };
+
+          J.State.randomQueueIndex = 2;
+          J.syncRandomQueueWithSongs();
+
+          return {
+            afterFirstDuplicate,
+            afterSecondDuplicate: {
+              queue: [...J.State.randomQueue],
+              index: J.State.randomQueueIndex
+            }
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "afterFirstDuplicate": {
+            "queue": ["song1", "song2", "song1", "song3"],
+            "index": 0,
+        },
+        "afterSecondDuplicate": {
+            "queue": ["song1", "song2", "song1", "song3"],
+            "index": 2,
+        },
+    }
+
+
+@pytest.mark.frontend
 def test_jukebox_random_next_appends_only_at_queue_end(mock_page: Page):
     setup_jukebox_page(mock_page)
 

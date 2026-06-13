@@ -379,7 +379,17 @@ window.Jukebox = {
       return false;
     }
 
-    const filteredQueue = (Jukebox.State.randomQueue || []).filter(songId => validIds.has(songId));
+    const queue = Jukebox.State.randomQueue || [];
+    const currentQueueIndex = Jukebox.State.randomQueueIndex;
+    const filteredQueue = [];
+    let retainedQueueIndex = -1;
+    queue.forEach((songId, queueIndex) => {
+      if (!validIds.has(songId)) return;
+      if (queueIndex === currentQueueIndex) {
+        retainedQueueIndex = filteredQueue.length;
+      }
+      filteredQueue.push(songId);
+    });
     Jukebox.State.randomQueue = filteredQueue;
 
     if (!anchorSongId) {
@@ -387,10 +397,18 @@ window.Jukebox = {
         Jukebox.State.randomQueueIndex = -1;
         return false;
       }
-      const index = Jukebox.State.randomQueueIndex;
-      if (index < 0 || index >= filteredQueue.length) {
+      if (retainedQueueIndex !== -1) {
+        Jukebox.State.randomQueueIndex = retainedQueueIndex;
+      } else if (currentQueueIndex < 0 || currentQueueIndex >= filteredQueue.length) {
         Jukebox.State.randomQueueIndex = filteredQueue.length - 1;
+      } else {
+        Jukebox.State.randomQueueIndex = currentQueueIndex;
       }
+      return true;
+    }
+
+    if (retainedQueueIndex !== -1 && filteredQueue[retainedQueueIndex] === anchorSongId) {
+      Jukebox.State.randomQueueIndex = retainedQueueIndex;
       return true;
     }
 
