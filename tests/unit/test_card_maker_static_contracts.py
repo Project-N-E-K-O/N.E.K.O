@@ -53,6 +53,16 @@ def test_model_manager_default_card_face_fallback_uses_full_card_canvas():
     assert "800 - Math.floor(800 / 6)" not in script
 
 
+def test_model_manager_pngtuber_preview_dropdown_uses_i18n_config():
+    script = MODEL_MANAGER_JS.read_text(encoding="utf-8")
+    start = script.index("buttonId: 'pngtuber-state-preview-select-btn'")
+    end = script.index("shouldSkipOption: (option) => !option.value", start)
+    config_block = script[start:end]
+
+    assert "defaultTextKey: 'live2d.pngtuberStatePreview'" in config_block
+    assert "iconAltKey: 'live2d.pngtuberStatePreview'" in config_block
+
+
 def test_model_manager_parameter_save_restores_unsaved_and_offers_card_face():
     script = MODEL_MANAGER_JS.read_text(encoding="utf-8")
     parameter_editor = (PROJECT_ROOT / "static" / "js" / "live2d_parameter_editor.js").read_text(encoding="utf-8")
