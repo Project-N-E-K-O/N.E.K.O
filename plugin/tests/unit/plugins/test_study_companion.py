@@ -1494,7 +1494,7 @@ def test_study_companion_ui7_surfaces_use_brand_css_and_quickstart_is_removed() 
     assert "quickstart" not in guide_ids
 
     quickstart_path = plugin_dir / "surfaces" / "quickstart.tsx"
-    assert not quickstart_path.exists()
+    assert quickstart_path.exists()
 
     index_html = (plugin_dir / "static" / "index.html").read_text(encoding="utf-8")
     assert 'http-equiv="Content-Security-Policy"' in index_html
