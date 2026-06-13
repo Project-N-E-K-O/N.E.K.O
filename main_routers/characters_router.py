@@ -261,6 +261,34 @@ def _rewrite_imported_pngtuber_refs(character_data: dict, rel_map: dict[str, str
     return _with_pngtuber_model_path_rewrites(character_data, rewrites)
 
 
+def _restore_imported_pngtuber_avatar_config(character_data: dict, source_data: dict, rel_map: dict[str, str]) -> dict:
+    if not isinstance(character_data, dict) or not isinstance(source_data, dict):
+        return character_data
+
+    model_type = get_reserved(
+        source_data,
+        "avatar",
+        "model_type",
+        default="",
+        legacy_keys=("model_type",),
+    )
+    pngtuber_config = get_reserved(source_data, "avatar", "pngtuber", default={})
+    if model_type != "pngtuber" or not isinstance(pngtuber_config, dict):
+        return character_data
+
+    restored = {"_reserved": {"avatar": {"pngtuber": copy.deepcopy(pngtuber_config)}}}
+    if rel_map:
+        restored = _rewrite_imported_pngtuber_refs(restored, rel_map)
+
+    avatar = character_data.setdefault("_reserved", {}).setdefault("avatar", {})
+    avatar["model_type"] = "pngtuber"
+    avatar["live3d_sub_type"] = ""
+    avatar["pngtuber"] = restored["_reserved"]["avatar"]["pngtuber"]
+    avatar["asset_source"] = "local_imported"
+    avatar["asset_source_id"] = ""
+    return character_data
+
+
 def _copy_imported_pngtuber_assets(model_dir: Path, config_manager) -> dict[str, str]:
     pngtuber_model_dir = model_dir / _PNGTUBER_CARD_MODEL_DIR
     if not pngtuber_model_dir.exists() or not pngtuber_model_dir.is_dir():
@@ -6188,6 +6216,7 @@ async def import_character_card(
             # 读取角色设定（支持加密和非加密格式）
             character_json_path = extract_path / 'character.json'
             character_json_encrypted_path = extract_path / 'character.json.encrypted'
+            imported_card_character_data = {}
 
             if character_json_path.exists():
                 # 非加密格式
@@ -6198,6 +6227,7 @@ async def import_character_card(
                     return JSONResponse({'success': False, 'error': f'角色卡解析失败: {str(e)}'}, status_code=400)
                 if not isinstance(character_data, dict):
                     return JSONResponse({'success': False, 'error': '角色卡数据格式无效'}, status_code=400)
+                imported_card_character_data = copy.deepcopy(character_data)
                 character_data = _filter_mutable_catgirl_fields(character_data)
                 character_name = str(character_data.get('档案名', '')).strip()
                 character_data['档案名'] = character_name
@@ -6216,6 +6246,7 @@ async def import_character_card(
                     return JSONResponse({'success': False, 'error': f'角色卡解析失败: {str(e)}'}, status_code=400)
                 if not isinstance(character_data, dict):
                     return JSONResponse({'success': False, 'error': '角色卡数据格式无效'}, status_code=400)
+                imported_card_character_data = copy.deepcopy(character_data)
                 character_data = _filter_mutable_catgirl_fields(character_data)
                 character_name = str(character_data.get('档案名', '')).strip()
                 character_data['档案名'] = character_name
@@ -6274,6 +6305,11 @@ async def import_character_card(
                     )
                     if pngtuber_rel_map:
                         character_data = _rewrite_imported_pngtuber_refs(character_data, pngtuber_rel_map)
+                        character_data = _restore_imported_pngtuber_avatar_config(
+                            character_data,
+                            imported_card_character_data,
+                            pngtuber_rel_map,
+                        )
 
                     for model_item in model_dir.iterdir():
                         if model_item.name == _PNGTUBER_CARD_MODEL_DIR:

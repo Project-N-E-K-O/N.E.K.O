@@ -72,3 +72,32 @@ def test_copy_imported_pngtuber_assets_renames_conflicts_and_rewrites_refs(tmp_p
     assert pngtuber["idle_image"] == "/user_pngtuber/avatar(1)/idle.png?v=1#preview"
     assert pngtuber["layered_metadata"] == "/user_pngtuber/avatar(1)/metadata.json"
     assert pngtuber["talking_image"] == "/static/pngtuber/default/talk.png"
+
+
+def test_restore_imported_pngtuber_avatar_config_after_mutable_field_filter():
+    source_data = {
+        "档案名": "PNGTuber",
+        **_pngtuber_character_config(),
+    }
+    filtered_character_data = {"档案名": "PNGTuber"}
+    rel_map = {
+        "avatar/idle.png": "avatar(1)/idle.png",
+        "avatar/metadata.json": "avatar(1)/metadata.json",
+    }
+
+    restored = characters_router._restore_imported_pngtuber_avatar_config(
+        filtered_character_data,
+        source_data,
+        rel_map,
+    )
+
+    avatar = restored["_reserved"]["avatar"]
+    pngtuber = avatar["pngtuber"]
+
+    assert avatar["model_type"] == "pngtuber"
+    assert avatar["live3d_sub_type"] == ""
+    assert avatar["asset_source"] == "local_imported"
+    assert avatar["asset_source_id"] == ""
+    assert pngtuber["idle_image"] == "/user_pngtuber/avatar(1)/idle.png?v=1#preview"
+    assert pngtuber["layered_metadata"] == "/user_pngtuber/avatar(1)/metadata.json"
+    assert pngtuber["talking_image"] == "/static/pngtuber/default/talk.png"
