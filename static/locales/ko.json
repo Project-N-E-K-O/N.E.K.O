@@ -752,7 +752,7 @@
         "avatarCropZoomOut": "축소",
         "avatarCropCancel": "취소",
         "avatarCropSave": "저장",
-        "emptyState":  "채팅 내용이 연결되면 여기에 표시됩니다.",
+        "emptyState": "채팅 내용이 연결되면 여기에 표시됩니다.",
         "companionEmptyState": "（여기서 곁에 있을게요.）",
         "messageStreaming": "생성 중",
         "messageFailed": "전송 실패",

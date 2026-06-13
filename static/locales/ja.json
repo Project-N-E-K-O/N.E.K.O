@@ -752,7 +752,7 @@
         "avatarCropZoomOut": "縮小",
         "avatarCropCancel": "キャンセル",
         "avatarCropSave": "保存",
-        "emptyState":  "チャット内容が接続されると、ここに表示されます。",
+        "emptyState": "チャット内容が接続されると、ここに表示されます。",
         "companionEmptyState": "（ここでそばにいるよ。）",
         "messageStreaming": "生成中",
         "messageFailed": "送信失敗",
