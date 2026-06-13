@@ -82,6 +82,32 @@ def test_card_maker_supports_closeup_model_scale():
     assert 'id="portrait-scale" min="50" max="600"' in template
 
 
+def test_card_maker_supports_pngtuber_idle_card_faces():
+    script = CARD_MAKER_JS.read_text(encoding="utf-8")
+    template = CARD_MAKER_TEMPLATE.read_text(encoding="utf-8")
+    styles = CARD_MAKER_CSS.read_text(encoding="utf-8")
+
+    assert 'id="pngtuber-container"' in template
+    assert "/static/pngtuber-core.js" in template
+    assert "#model-viewport #pngtuber-container" in styles
+    assert "#model-viewport #pngtuber-container .pngtuber-image" in styles
+    assert "let currentModelType = '';   // 'live2d' | 'vrm' | 'mmd' | 'pngtuber'" in script
+    assert "cfg.model_type === 'pngtuber'" in script
+    assert "window.lanlan_config.pngtuber = Object.assign({}, cfg.pngtuber || {});" in script
+    assert "effectiveType = 'pngtuber';" in script
+    assert "async function loadPNGTuberModel(cfg)" in script
+    assert "new window.PNGTuberManager('pngtuber-container')" in script
+    assert "mgr.detachSpeechListeners?.();" in script
+    assert "mgr.detachDragListeners?.();" in script
+    assert "mgr.cleanupFloatingButtons?.();" in script
+    assert "mgr.setState?.('idle');" in script
+    assert "mgr.drawLayeredState?.('idle');" in script
+    assert "currentModelType === 'pngtuber'" in script
+    assert "return getPNGTuberDrawableSource();" in script
+    assert "getDrawableSourceSize(srcCanvas)" in script
+    assert "waitForPNGTuberDrawable(mgr)" in script
+
+
 def test_card_maker_registers_variant_stickers():
     script = CARD_MAKER_JS.read_text(encoding="utf-8")
     template = CARD_MAKER_TEMPLATE.read_text(encoding="utf-8")
