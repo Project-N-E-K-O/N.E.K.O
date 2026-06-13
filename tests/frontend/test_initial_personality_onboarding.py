@@ -1090,11 +1090,18 @@ def test_onboarding_overlay_uses_non_blurred_scrim_for_readability(mock_page: Pa
         """
         () => {
             const overlay = document.querySelector("[data-testid='character-personality-overlay']");
+            const shell = document.querySelector(".character-personality-shell");
             const style = getComputedStyle(overlay);
+            const shellStyle = getComputedStyle(shell);
             return {
                 backgroundColor: style.backgroundColor,
                 backdropFilter: style.backdropFilter,
                 webkitBackdropFilter: style.webkitBackdropFilter,
+                shellBackgroundColor: shellStyle.backgroundColor,
+                shellBackdropFilter: shellStyle.backdropFilter,
+                shellScrollbarWidth: shellStyle.scrollbarWidth,
+                titleTextShadow: getComputedStyle(document.querySelector(".character-personality-title")).textShadow,
+                cardBackdropFilter: getComputedStyle(document.querySelector(".character-personality-card")).backdropFilter,
             };
         }
         """
@@ -1105,6 +1112,11 @@ def test_onboarding_overlay_uses_non_blurred_scrim_for_readability(mock_page: Pa
     assert "blur(" not in (
         overlay_style["backdropFilter"] or overlay_style["webkitBackdropFilter"] or ""
     )
+    assert "0.58" in overlay_style["shellBackgroundColor"]
+    assert "blur(30px)" in overlay_style["shellBackdropFilter"]
+    assert overlay_style["shellScrollbarWidth"] == "none"
+    assert overlay_style["titleTextShadow"] != "none"
+    assert "blur(10px)" in overlay_style["cardBackdropFilter"]
 
 
 @pytest.mark.frontend
