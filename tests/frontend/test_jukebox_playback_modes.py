@@ -255,6 +255,8 @@ def test_jukebox_next_song_respects_sequence_single_and_random(mock_page: Page):
           Math.random = () => 0;
           J.State.playbackMode = 'random';
           const randomNext = J.getNextSongToPlay(ended)?.id;
+          const randomQueue = [...J.State.randomQueue];
+          const randomQueueIndex = J.State.randomQueueIndex;
           Math.random = originalRandom;
 
           return {
@@ -263,7 +265,9 @@ def test_jukebox_next_song_respects_sequence_single_and_random(mock_page: Page):
             noneNext,
             singleNext,
             removedSingleNext,
-            randomNext
+            randomNext,
+            randomQueue,
+            randomQueueIndex
           };
         }
         """
@@ -276,6 +280,8 @@ def test_jukebox_next_song_respects_sequence_single_and_random(mock_page: Page):
         "singleNext": "song1",
         "removedSingleNext": None,
         "randomNext": "song2",
+        "randomQueue": ["song1", "song2"],
+        "randomQueueIndex": 1,
     }
 
 
@@ -421,7 +427,7 @@ def test_jukebox_global_transport_controls_follow_sorted_playlist(mock_page: Pag
 
 
 @pytest.mark.frontend
-def test_jukebox_manual_previous_next_ignore_playback_mode(mock_page: Page):
+def test_jukebox_non_random_manual_previous_next_follow_sorted_playlist(mock_page: Page):
     setup_jukebox_page(mock_page)
 
     result = mock_page.evaluate(
@@ -436,7 +442,7 @@ def test_jukebox_manual_previous_next_ignore_playback_mode(mock_page: Page):
 
           J.State.songs = [J.State.songs[2], J.State.songs[0], J.State.songs[1]];
           const song1 = J.State.songs[1];
-          for (const mode of ['random', 'none', 'single']) {
+          for (const mode of ['none', 'single', 'sequence']) {
             J.State.playbackMode = mode;
             J.State.currentSong = song1;
             J.playAdjacentSong(1);
@@ -453,12 +459,311 @@ def test_jukebox_manual_previous_next_ignore_playback_mode(mock_page: Page):
     )
 
     assert result == {
-        "randomNext": "song2",
-        "randomPrevious": "song3",
         "noneNext": "song2",
         "nonePrevious": "song3",
         "singleNext": "song2",
         "singlePrevious": "song3",
+        "sequenceNext": "song2",
+        "sequencePrevious": "song3",
+    }
+
+
+@pytest.mark.frontend
+def test_jukebox_random_mode_starts_queue_from_current_song(mock_page: Page):
+    setup_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        () => {
+          const J = window.Jukebox;
+          J.State.currentSong = J.State.songs[1];
+          J.setPlaybackMode('random');
+          const entered = {
+            queue: [...J.State.randomQueue],
+            index: J.State.randomQueueIndex,
+            pendingExit: J.State.randomQueueExitSongId
+          };
+
+          J.setPlaybackMode('sequence');
+          const exited = {
+            queue: [...J.State.randomQueue],
+            index: J.State.randomQueueIndex,
+            pendingExit: J.State.randomQueueExitSongId
+          };
+
+          J.State.currentSong = J.State.songs[2];
+          J.setPlaybackMode('random');
+          const reentered = {
+            queue: [...J.State.randomQueue],
+            index: J.State.randomQueueIndex,
+            pendingExit: J.State.randomQueueExitSongId
+          };
+
+          return { entered, exited, reentered };
+        }
+        """
+    )
+
+    assert result == {
+        "entered": {"queue": ["song2"], "index": 0, "pendingExit": None},
+        "exited": {"queue": [], "index": -1, "pendingExit": None},
+        "reentered": {"queue": ["song3"], "index": 0, "pendingExit": None},
+    }
+
+
+@pytest.mark.frontend
+def test_jukebox_random_exit_is_delayed_until_current_song_ends(mock_page: Page):
+    setup_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        () => {
+          const J = window.Jukebox;
+          J.State.playbackMode = 'random';
+          J.State.currentSong = J.State.songs[1];
+          J.State.isPlaying = true;
+          J.State.randomQueue = ['song1', 'song2'];
+          J.State.randomQueueIndex = 1;
+
+          J.setPlaybackMode('sequence');
+          const afterExit = {
+            mode: J.State.playbackMode,
+            queue: [...J.State.randomQueue],
+            index: J.State.randomQueueIndex,
+            pendingExit: J.State.randomQueueExitSongId
+          };
+
+          J.setPlaybackMode('random');
+          const afterReturn = {
+            mode: J.State.playbackMode,
+            queue: [...J.State.randomQueue],
+            index: J.State.randomQueueIndex,
+            pendingExit: J.State.randomQueueExitSongId
+          };
+
+          J.setPlaybackMode('sequence');
+          const nextSong = J.getNextSongToPlay(J.State.songs[1])?.id;
+          const afterEndedOutsideRandom = {
+            nextSong,
+            queue: [...J.State.randomQueue],
+            index: J.State.randomQueueIndex,
+            pendingExit: J.State.randomQueueExitSongId
+          };
+
+          return { afterExit, afterReturn, afterEndedOutsideRandom };
+        }
+        """
+    )
+
+    assert result == {
+        "afterExit": {
+            "mode": "sequence",
+            "queue": ["song1", "song2"],
+            "index": 1,
+            "pendingExit": "song2",
+        },
+        "afterReturn": {
+            "mode": "random",
+            "queue": ["song1", "song2"],
+            "index": 1,
+            "pendingExit": None,
+        },
+        "afterEndedOutsideRandom": {
+            "nextSong": "song3",
+            "queue": [],
+            "index": -1,
+            "pendingExit": None,
+        },
+    }
+
+
+@pytest.mark.frontend
+def test_jukebox_random_next_appends_only_at_queue_end(mock_page: Page):
+    setup_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        () => {
+          const J = window.Jukebox;
+          const played = [];
+          let randomCalls = 0;
+          const originalRandom = Math.random;
+          Math.random = () => {
+            randomCalls += 1;
+            return 0;
+          };
+          J.playSong = (songId, options = {}) => {
+            played.push({ songId, fromQueue: options.fromQueue === true });
+            J.State.currentSong = J.State.songs.find((song) => song.id === songId) || null;
+          };
+
+          J.State.playbackMode = 'random';
+          J.State.currentSong = J.State.songs[0];
+          J.State.randomQueue = ['song1'];
+          J.State.randomQueueIndex = 0;
+          J.playAdjacentSong(1);
+          const appended = {
+            played: [...played],
+            queue: [...J.State.randomQueue],
+            index: J.State.randomQueueIndex,
+            randomCalls
+          };
+
+          J.State.currentSong = J.State.songs[1];
+          J.State.randomQueue = ['song1', 'song2', 'song3'];
+          J.State.randomQueueIndex = 1;
+          J.playAdjacentSong(1);
+          Math.random = originalRandom;
+
+          return {
+            appended,
+            finalPlayed: played,
+            finalQueue: J.State.randomQueue,
+            finalIndex: J.State.randomQueueIndex,
+            finalRandomCalls: randomCalls
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "appended": {
+            "played": [{"songId": "song2", "fromQueue": True}],
+            "queue": ["song1", "song2"],
+            "index": 1,
+            "randomCalls": 1,
+        },
+        "finalPlayed": [
+            {"songId": "song2", "fromQueue": True},
+            {"songId": "song3", "fromQueue": True},
+        ],
+        "finalQueue": ["song1", "song2", "song3"],
+        "finalIndex": 2,
+        "finalRandomCalls": 1,
+    }
+
+
+@pytest.mark.frontend
+def test_jukebox_random_previous_uses_accumulated_queue(mock_page: Page):
+    setup_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        () => {
+          const J = window.Jukebox;
+          const played = [];
+          J.playSong = (songId, options = {}) => {
+            played.push({ songId, fromQueue: options.fromQueue === true });
+            J.State.currentSong = J.State.songs.find((song) => song.id === songId) || null;
+          };
+
+          J.State.playbackMode = 'random';
+          J.State.currentSong = J.State.songs[1];
+          J.State.randomQueue = ['song1', 'song2', 'song3'];
+          J.State.randomQueueIndex = 1;
+          J.playAdjacentSong(-1);
+          J.playAdjacentSong(-1);
+
+          return {
+            played,
+            queue: J.State.randomQueue,
+            index: J.State.randomQueueIndex
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "played": [{"songId": "song1", "fromQueue": True}],
+        "queue": ["song1", "song2", "song3"],
+        "index": 0,
+    }
+
+
+@pytest.mark.frontend
+def test_jukebox_random_audio_end_advances_queue_and_skips_idle_restore(mock_page: Page):
+    setup_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+          const J = window.Jukebox;
+          const stopArgs = [];
+          const played = [];
+          const originalRandom = Math.random;
+          Math.random = () => 0;
+          J.stopVMD = (skipIdleRestore) => {
+            stopArgs.push(skipIdleRestore);
+          };
+          J.updateStoppedStatus = () => {};
+          J.playSong = async (songId, options = {}) => {
+            played.push({ songId, fromQueue: options.fromQueue === true });
+            J.State.currentSong = J.State.songs.find((song) => song.id === songId) || null;
+          };
+          J.getModelType = () => 'mmd';
+          J.State.isOpen = true;
+          J.State.playbackMode = 'random';
+          J.State.songs[1].boundActions = [{ id: 'action-song2', name: 'Action', format: 'vmd' }];
+          J.State.songs[1].defaultAction = 'action-song2';
+          J.State.currentSong = J.State.songs[0];
+          J.State.randomQueue = ['song1'];
+          J.State.randomQueueIndex = 0;
+
+          J.handleAudioEnded({ options: { loop: 'none' } });
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          Math.random = originalRandom;
+
+          return {
+            stopArgs,
+            played,
+            queue: J.State.randomQueue,
+            index: J.State.randomQueueIndex
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "stopArgs": [True],
+        "played": [{"songId": "song2", "fromQueue": True}],
+        "queue": ["song1", "song2"],
+        "index": 1,
+    }
+
+
+@pytest.mark.frontend
+def test_jukebox_random_user_selected_song_resets_queue_anchor(mock_page: Page):
+    setup_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+          const J = window.Jukebox;
+          J.stopPlayback = () => {};
+          J.playAudio = async () => {};
+          J.getActionForModel = () => null;
+          J.updatePlayingStatus = () => {};
+          J.updateCalibrationDisplay = () => {};
+          J.State.playbackMode = 'random';
+          J.State.currentSong = J.State.songs[0];
+          J.State.randomQueue = ['song1', 'song3'];
+          J.State.randomQueueIndex = 1;
+
+          await J.playSong('song2');
+
+          return {
+            currentSong: J.State.currentSong && J.State.currentSong.id,
+            queue: J.State.randomQueue,
+            index: J.State.randomQueueIndex
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "currentSong": "song2",
+        "queue": ["song2"],
+        "index": 0,
     }
 
 

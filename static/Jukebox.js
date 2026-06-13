@@ -107,6 +107,9 @@ window.Jukebox = {
     progressTimer: null,
     isSeeking: false,
     playbackMode: 'sequence',
+    randomQueue: [],
+    randomQueueIndex: -1,
+    randomQueueExitSongId: null,
     songSortUnlocked: false,
     draggedSongId: null,
     configRevision: null,
@@ -225,7 +228,24 @@ window.Jukebox = {
 
   setPlaybackMode: function(mode) {
     const nextMode = Jukebox.getPlaybackModeOrder().includes(mode) ? mode : 'sequence';
+    const previousMode = Jukebox.State.playbackMode;
     Jukebox.State.playbackMode = nextMode;
+    if (nextMode === 'random' && previousMode !== 'random') {
+      const currentSongId = Jukebox.State.currentSong ? Jukebox.State.currentSong.id : null;
+      if (Jukebox.State.randomQueueExitSongId === currentSongId && Jukebox.State.randomQueue.length) {
+        Jukebox.State.randomQueueExitSongId = null;
+        Jukebox.ensureRandomQueueAnchor(currentSongId);
+      } else {
+        Jukebox.resetRandomQueue(currentSongId);
+      }
+    } else if (previousMode === 'random' && nextMode !== 'random') {
+      const currentSongId = Jukebox.State.currentSong ? Jukebox.State.currentSong.id : null;
+      if (currentSongId && (Jukebox.State.isPlaying || Jukebox.State.isPaused) && Jukebox.State.randomQueue.length) {
+        Jukebox.State.randomQueueExitSongId = currentSongId;
+      } else {
+        Jukebox.clearRandomQueue();
+      }
+    }
     Jukebox.setStoredJson('playbackMode', nextMode);
     Jukebox.updatePlaybackModeButtons();
   },
@@ -330,10 +350,127 @@ window.Jukebox = {
     return songs[nextIndex];
   },
 
+  findSongById: function(songId) {
+    if (!songId) return null;
+    return (Jukebox.State.songs || []).find(song => song.id === songId) || null;
+  },
+
+  clearRandomQueue: function() {
+    Jukebox.State.randomQueue = [];
+    Jukebox.State.randomQueueIndex = -1;
+    Jukebox.State.randomQueueExitSongId = null;
+  },
+
+  resetRandomQueue: function(anchorSongId) {
+    const anchorSong = Jukebox.findSongById(anchorSongId);
+    if (anchorSong) {
+      Jukebox.State.randomQueue = [anchorSong.id];
+      Jukebox.State.randomQueueIndex = 0;
+      Jukebox.State.randomQueueExitSongId = null;
+      return;
+    }
+    Jukebox.clearRandomQueue();
+  },
+
+  syncRandomQueueWithSongs: function() {
+    if (Jukebox.State.playbackMode !== 'random') {
+      const pendingSongId = Jukebox.State.randomQueueExitSongId;
+      const currentSongId = Jukebox.State.currentSong ? Jukebox.State.currentSong.id : null;
+      if (!pendingSongId || pendingSongId !== currentSongId) {
+        Jukebox.clearRandomQueue();
+      }
+      return;
+    }
+
+    const validIds = new Set((Jukebox.State.songs || []).map(song => song.id));
+    Jukebox.State.randomQueue = (Jukebox.State.randomQueue || []).filter(songId => validIds.has(songId));
+
+    const currentSongId = Jukebox.State.currentSong ? Jukebox.State.currentSong.id : null;
+    if (!currentSongId || !validIds.has(currentSongId)) {
+      Jukebox.clearRandomQueue();
+      return;
+    }
+
+    Jukebox.ensureRandomQueueAnchor(currentSongId);
+  },
+
+  ensureRandomQueueAnchor: function(songId) {
+    if (!Jukebox.findSongById(songId)) {
+      Jukebox.clearRandomQueue();
+      return;
+    }
+
+    const queue = Jukebox.State.randomQueue || [];
+    const index = Jukebox.State.randomQueueIndex;
+    if (!queue.length || index < 0 || index >= queue.length || queue[index] !== songId) {
+      Jukebox.resetRandomQueue(songId);
+    }
+  },
+
+  expireRandomQueueIfPendingSongEnded: function(endedSongId) {
+    if (Jukebox.State.playbackMode === 'random') return;
+    if (Jukebox.State.randomQueueExitSongId && Jukebox.State.randomQueueExitSongId === endedSongId) {
+      Jukebox.clearRandomQueue();
+    }
+  },
+
+  pickRandomSongExcluding: function(excludedId) {
+    const songs = Jukebox.State.songs || [];
+    if (!songs.length) return null;
+    const candidates = songs.length > 1
+      ? songs.filter(song => song.id !== excludedId)
+      : songs;
+    if (!candidates.length) return null;
+    return candidates[Math.floor(Math.random() * candidates.length)];
+  },
+
+  getRandomAdjacentSong: function(direction, anchorSongId) {
+    const songs = Jukebox.State.songs || [];
+    if (!songs.length) {
+      Jukebox.clearRandomQueue();
+      return null;
+    }
+
+    const currentSongId = anchorSongId
+      || (Jukebox.State.currentSong ? Jukebox.State.currentSong.id : null)
+      || (Jukebox.State.randomQueue || [])[Jukebox.State.randomQueueIndex]
+      || null;
+
+    if (currentSongId) {
+      Jukebox.ensureRandomQueueAnchor(currentSongId);
+    } else if (!Jukebox.State.randomQueue.length) {
+      if (direction < 0) return null;
+      const firstRandomSong = Jukebox.pickRandomSongExcluding(null);
+      if (!firstRandomSong) return null;
+      Jukebox.State.randomQueue = [firstRandomSong.id];
+      Jukebox.State.randomQueueIndex = 0;
+      return firstRandomSong;
+    }
+
+    if (direction < 0) {
+      if (Jukebox.State.randomQueueIndex <= 0) return null;
+      Jukebox.State.randomQueueIndex -= 1;
+      return Jukebox.findSongById(Jukebox.State.randomQueue[Jukebox.State.randomQueueIndex]);
+    }
+
+    if (Jukebox.State.randomQueueIndex < Jukebox.State.randomQueue.length - 1) {
+      Jukebox.State.randomQueueIndex += 1;
+      return Jukebox.findSongById(Jukebox.State.randomQueue[Jukebox.State.randomQueueIndex]);
+    }
+
+    const nextRandomSong = Jukebox.pickRandomSongExcluding(currentSongId);
+    if (!nextRandomSong) return null;
+    Jukebox.State.randomQueue.push(nextRandomSong.id);
+    Jukebox.State.randomQueueIndex = Jukebox.State.randomQueue.length - 1;
+    return nextRandomSong;
+  },
+
   playAdjacentSong: function(direction) {
-    const nextSong = Jukebox.getManualAdjacentSong(direction);
+    const nextSong = Jukebox.State.playbackMode === 'random'
+      ? Jukebox.getRandomAdjacentSong(direction)
+      : Jukebox.getManualAdjacentSong(direction);
     if (nextSong) {
-      Jukebox.playSong(nextSong.id);
+      Jukebox.playSong(nextSong.id, { fromQueue: Jukebox.State.playbackMode === 'random' });
     }
   },
 
@@ -6645,6 +6782,7 @@ window.Jukebox = {
       
       console.log('[Jukebox]', window.t('Jukebox.songsLoaded', '歌曲列表已加载'), Jukebox.State.songs.length, '首歌曲');
       
+      Jukebox.syncRandomQueueWithSongs();
       Jukebox.renderList();
       
     } catch (error) {
@@ -6824,22 +6962,22 @@ window.Jukebox = {
     if (!endedSong || songs.length === 0) return null;
 
     if (Jukebox.State.playbackMode === 'none') {
+      Jukebox.expireRandomQueueIfPendingSongEnded(endedSong.id);
       return null;
     }
 
     if (Jukebox.State.playbackMode === 'single') {
+      Jukebox.expireRandomQueueIfPendingSongEnded(endedSong.id);
       return songs.find(song => song.id === endedSong.id) || null;
     }
 
     if (Jukebox.State.playbackMode === 'random') {
-      const candidates = songs.length > 1
-        ? songs.filter(song => song.id !== endedSong.id)
-        : songs;
-      if (!candidates.length) return null;
-      return candidates[Math.floor(Math.random() * candidates.length)];
+      Jukebox.ensureRandomQueueAnchor(endedSong.id);
+      return Jukebox.getRandomAdjacentSong(1, endedSong.id);
     }
 
     const currentIndex = songs.findIndex(song => song.id === endedSong.id);
+    Jukebox.expireRandomQueueIfPendingSongEnded(endedSong.id);
     if (currentIndex >= 0 && currentIndex < songs.length - 1) {
       return songs[currentIndex + 1];
     }
@@ -6867,12 +7005,12 @@ window.Jukebox = {
     if (nextSong) {
       setTimeout(() => {
         if (!Jukebox.State.isOpen && !window.__NEKO_JUKEBOX_STANDALONE__) return;
-        Jukebox.playSong(nextSong.id);
+        Jukebox.playSong(nextSong.id, { fromQueue: Jukebox.State.playbackMode === 'random' });
       }, 0);
     }
   },
   
-  playSong: async function(songId) {
+  playSong: async function(songId, options = {}) {
     const song = Jukebox.State.songs.find(s => s.id === songId);
     if (!song) {
       console.error('[Jukebox]', window.t('Jukebox.notFound', '找不到歌曲'), songId);
@@ -6892,6 +7030,16 @@ window.Jukebox = {
       }
     }
     
+    if (Jukebox.State.playbackMode === 'random') {
+      if (options.fromQueue === true) {
+        Jukebox.ensureRandomQueueAnchor(songId);
+      } else {
+        Jukebox.resetRandomQueue(songId);
+      }
+    } else if (Jukebox.State.randomQueueExitSongId && Jukebox.State.randomQueueExitSongId !== songId) {
+      Jukebox.clearRandomQueue();
+    }
+
     console.log('[Jukebox] 播放歌曲:', song.name);
     
     Jukebox.stopPlayback();
@@ -7252,6 +7400,9 @@ window.Jukebox = {
     Jukebox.State.isPlaying = false;
     Jukebox.State.isPaused = false;
     Jukebox.State.isVMDPlaying = false;
+    if (Jukebox.State.playbackMode !== 'random') {
+      Jukebox.clearRandomQueue();
+    }
 
     Jukebox.updateStoppedStatus();
   },
