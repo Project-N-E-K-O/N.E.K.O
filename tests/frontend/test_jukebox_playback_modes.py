@@ -137,11 +137,15 @@ def test_jukebox_config_poll_fetches_full_config_only_after_revision_change(mock
         async () => {
           const J = window.Jukebox;
           const urls = [];
+          const managerLoads = [];
           J.State.isOpen = true;
           J.State.configRevision = 'rev-a';
           J.loadSongs = async () => {
             urls.push('/api/jukebox/config');
             J.State.configRevision = 'rev-b';
+          };
+          J.SongActionManager.load = async () => {
+            managerLoads.push('manager');
           };
           window.fetch = async (url) => {
             urls.push(String(url));
@@ -161,7 +165,7 @@ def test_jukebox_config_poll_fetches_full_config_only_after_revision_change(mock
           };
           await J.checkConfigUpdates();
 
-          return { urls, revision: J.State.configRevision };
+          return { urls, revision: J.State.configRevision, managerLoads };
         }
         """
     )
@@ -173,6 +177,7 @@ def test_jukebox_config_poll_fetches_full_config_only_after_revision_change(mock
             "/api/jukebox/config",
         ],
         "revision": "rev-b",
+        "managerLoads": ["manager"],
     }
 
 
@@ -350,6 +355,40 @@ def test_jukebox_manual_previous_next_ignore_playback_mode(mock_page: Page):
         "nonePrevious": "song3",
         "singleNext": "song2",
         "singlePrevious": "song3",
+    }
+
+
+@pytest.mark.frontend
+def test_jukebox_manual_previous_uses_last_song_without_current_song(mock_page: Page):
+    setup_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        () => {
+          const J = window.Jukebox;
+          J.State.currentSong = null;
+          const noCurrentPrevious = J.getManualAdjacentSong(-1)?.id;
+          const noCurrentNext = J.getManualAdjacentSong(1)?.id;
+
+          J.State.currentSong = { id: 'missing-song' };
+          const missingCurrentPrevious = J.getManualAdjacentSong(-1)?.id;
+          const missingCurrentNext = J.getManualAdjacentSong(1)?.id;
+
+          return {
+            noCurrentPrevious,
+            noCurrentNext,
+            missingCurrentPrevious,
+            missingCurrentNext
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "noCurrentPrevious": "song3",
+        "noCurrentNext": "song1",
+        "missingCurrentPrevious": "song3",
+        "missingCurrentNext": "song1",
     }
 
 

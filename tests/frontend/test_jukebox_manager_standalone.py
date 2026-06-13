@@ -171,7 +171,10 @@ def test_jukebox_manager_standalone_uses_native_drag_regions():
     assert "padding: 15px 15px 10px !important;" in MANAGER_TEMPLATE
     assert "document.head.appendChild(standaloneStyle)" in MANAGER_TEMPLATE
     assert "neko-jukebox-manager-bridge-drag" in MANAGER_TEMPLATE
-    assert "window.nekoJukeboxBridge || window.nekoJukeboxManagerBridge" in MANAGER_TEMPLATE
+    assert "function _selectManagerDragBridge()" in MANAGER_TEMPLATE
+    assert "var candidates = [window.nekoJukeboxBridge, window.nekoJukeboxManagerBridge];" in MANAGER_TEMPLATE
+    assert "typeof candidate.dragStart === 'function' && typeof candidate.dragStop === 'function'" in MANAGER_TEMPLATE
+    assert "var bridge = _selectManagerDragBridge();" in MANAGER_TEMPLATE
     assert "bridge.dragStart(point.x, point.y)" in MANAGER_TEMPLATE
     assert "bridge.dragStop()" in MANAGER_TEMPLATE
     assert "_setManagerAppRegion(header, 'no-drag')" in MANAGER_TEMPLATE

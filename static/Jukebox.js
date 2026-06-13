@@ -322,10 +322,10 @@ window.Jukebox = {
     const songs = Jukebox.State.songs || [];
     if (!songs.length) return null;
     if (!Jukebox.State.currentSong) {
-      return songs[0];
+      return direction === -1 ? songs[songs.length - 1] : songs[0];
     }
     const currentIndex = songs.findIndex(song => song.id === Jukebox.State.currentSong.id);
-    if (currentIndex < 0) return songs[0];
+    if (currentIndex < 0) return direction === -1 ? songs[songs.length - 1] : songs[0];
     const nextIndex = (currentIndex + direction + songs.length) % songs.length;
     return songs[nextIndex];
   },
@@ -6580,6 +6580,9 @@ window.Jukebox = {
       if (currentRevision && currentRevision !== nextRevision) {
         console.log('[Jukebox] 检测到歌单配置更新，重新加载歌曲');
         await Jukebox.loadSongs();
+        if (Jukebox.SongActionManager && typeof Jukebox.SongActionManager.load === 'function') {
+          await Jukebox.SongActionManager.load();
+        }
       } else if (!currentRevision) {
         Jukebox.State.configRevision = nextRevision;
       }

@@ -145,11 +145,20 @@
             };
         }
 
-        function _enableManagerBridgeCursorDrag(panel) {
-            var bridge = window.nekoJukeboxBridge || window.nekoJukeboxManagerBridge || null;
-            if (!bridge || typeof bridge.dragStart !== 'function' || typeof bridge.dragStop !== 'function') {
-                return false;
+        function _selectManagerDragBridge() {
+            var candidates = [window.nekoJukeboxBridge, window.nekoJukeboxManagerBridge];
+            for (var i = 0; i < candidates.length; i++) {
+                var candidate = candidates[i];
+                if (candidate && typeof candidate.dragStart === 'function' && typeof candidate.dragStop === 'function') {
+                    return candidate;
+                }
             }
+            return null;
+        }
+
+        function _enableManagerBridgeCursorDrag(panel) {
+            var bridge = _selectManagerDragBridge();
+            if (!bridge) return false;
 
             var header = panel.querySelector('.sam-header');
             if (!header) return false;
