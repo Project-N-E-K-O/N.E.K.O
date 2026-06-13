@@ -2936,7 +2936,11 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
         resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
         # 修复 PR #1764 review #3（CodeRabbit）：会话生命周期状态
         # session.done 后置为 False，下次 input 前重建连接 + 重发 session.config
-        session_state = {"active": False}
+        session_state = {
+            "active": False,
+            "awaiting_done": False,
+            "speech_id": None,
+        }
         pending_text: list[str] = []
         pending_text_sid: str | None = None
 
@@ -3020,6 +3024,8 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                             # 修复 PR #1764 review #3：标记会话结束 + 清重采样器
                             # 主循环在下次 input.text 前会重建连接并重发 session.config
                             session_state["active"] = False
+                            session_state["awaiting_done"] = False
+                            session_state["speech_id"] = None
                             try:
                                 resampler.clear()
                             except Exception:
@@ -3037,13 +3043,16 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                             # 修复 PR #1764 review 第六轮：服务端 error 事件后会话已不可用，
                             # 标记 session 失效，主循环下次 input 前会主动重建（与 session.done 处理对齐）
                             session_state["active"] = False
+                            session_state["awaiting_done"] = False
             except websockets.exceptions.ConnectionClosed:
                 # 修复 PR #1764 review 第六轮：WS 关闭后必须同步本地状态，
                 # 否则主循环会试图往已死连接发送，依赖 send 异常才触发重建（噪声+延迟）
                 session_state["active"] = False
+                session_state["awaiting_done"] = False
             except Exception as e:
                 logger.error(f"[vLLM-Omni TTS] 接收异常: {e}")
                 session_state["active"] = False
+                session_state["awaiting_done"] = False
 
         # 首次连接 + 就绪信号
         if not await _connect_and_config():
@@ -3083,8 +3092,12 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                 pass
             if not await _connect_and_config():
                 session_state["active"] = False
+                session_state["awaiting_done"] = False
+                session_state["speech_id"] = None
                 return False
             session_state["active"] = True
+            session_state["awaiting_done"] = False
+            session_state["speech_id"] = None
             receive_task = asyncio.create_task(_receive_loop())
             return True
 
@@ -3097,6 +3110,8 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                     "type": "input.text",
                     "text": replay_text,
                 }))
+                session_state["speech_id"] = pending_text_sid
+                session_state["awaiting_done"] = False
                 return True
             except Exception as e:
                 logger.error(f"[vLLM-Omni TTS] 重放 pending_text 失败: {e}")
@@ -3138,6 +3153,7 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                 except Exception:
                     pass
                 session_state["active"] = False
+                session_state["awaiting_done"] = False
                 pending_text.clear()
                 pending_text_sid = None
                 continue
@@ -3157,15 +3173,18 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                         await ws.send(json.dumps({"type": "input.done"}))
                         pending_text.clear()
                         pending_text_sid = None
+                        session_state["awaiting_done"] = True
                     except Exception as e:
                         logger.warning(f"[vLLM-Omni TTS] 发送 input.done 失败: {e}")
                         session_state["active"] = False
+                        session_state["awaiting_done"] = False
                         if await _rebuild_session():
                             try:
                                 if await _replay_pending_text():
                                     await ws.send(json.dumps({"type": "input.done"}))
                                     pending_text.clear()
                                     pending_text_sid = None
+                                    session_state["awaiting_done"] = True
                                     logger.info("[vLLM-Omni TTS] 重放 pending_text 并重发 input.done 成功")
                             except Exception as e2:
                                 logger.warning(f"[vLLM-Omni TTS] 重发 input.done 仍失败: {e2}")
@@ -3174,11 +3193,27 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
 
             # 修复 PR #1764 review #3：发送前检查会话是否仍然活跃
             # session.done 已触发或上次 send 失败时，先重建连接再发
+            if (
+                session_state["active"]
+                and session_state["awaiting_done"]
+                and session_state.get("speech_id") not in (None, sid)
+            ):
+                logger.info(
+                    "[vLLM-Omni TTS] flush 后收到新 sid=%s，重建会话避免复用已 done 的输入",
+                    sid,
+                )
+                session_state["active"] = False
             if not session_state["active"] or ws is None:
                 logger.info("[vLLM-Omni TTS] 会话已结束/失效，重建连接以发送新输入")
                 if not await _rebuild_session():
-                    logger.error("[vLLM-Omni TTS] 重建会话失败，丢弃当前请求")
-                    continue
+                    logger.error("[vLLM-Omni TTS] 重建会话失败，标记 worker 未就绪")
+                    _enqueue_error(response_queue, {
+                        "code": "TTS_CONNECTION_FAILED",
+                        "provider": "vllm_omni",
+                        "message": "vLLM-Omni TTS 重连失败",
+                    })
+                    response_queue.put(("__ready__", False))
+                    break
 
             if tts_text and tts_text.strip() and ws is not None:
                 if pending_text and pending_text_sid not in (None, sid):
@@ -3199,9 +3234,12 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                     _record_tts_telemetry(effective_model, len(tts_text))
                     pending_text.append(tts_text)
                     pending_text_sid = sid
+                    session_state["speech_id"] = sid
+                    session_state["awaiting_done"] = False
                 except Exception as e:
                     logger.error(f"[vLLM-Omni TTS] 发送 input.text 失败: {e}，尝试重建并重发")
                     session_state["active"] = False
+                    session_state["awaiting_done"] = False
                     if await _rebuild_session():
                         try:
                             if not await _replay_pending_text():
@@ -3210,10 +3248,27 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                             _record_tts_telemetry(effective_model, len(tts_text))
                             pending_text.append(tts_text)
                             pending_text_sid = sid
+                            session_state["speech_id"] = sid
+                            session_state["awaiting_done"] = False
                             logger.info("[vLLM-Omni TTS] 重发 input.text 成功")
                         except Exception as e2:
-                            logger.error(f"[vLLM-Omni TTS] 重发 input.text 仍失败: {e2}，丢弃该 chunk")
+                            logger.error(f"[vLLM-Omni TTS] 重发 input.text 仍失败: {e2}，标记 worker 未就绪")
                             session_state["active"] = False
+                            _enqueue_error(response_queue, {
+                                "code": "TTS_CONNECTION_FAILED",
+                                "provider": "vllm_omni",
+                                "message": "vLLM-Omni TTS 发送失败",
+                            })
+                            response_queue.put(("__ready__", False))
+                            break
+                    else:
+                        _enqueue_error(response_queue, {
+                            "code": "TTS_CONNECTION_FAILED",
+                            "provider": "vllm_omni",
+                            "message": "vLLM-Omni TTS 重连失败",
+                        })
+                        response_queue.put(("__ready__", False))
+                        break
 
         # 清理
         if receive_task and not receive_task.done():
@@ -4472,6 +4527,60 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
         logger.info("TTS disabled; using dummy TTS worker")
         return dummy_tts_worker, None, None
 
+    tts_provider = str(core_cfg.get('TTS_PROVIDER') or core_cfg.get('ttsProvider') or '').strip().lower()
+    assist_api_type = str(core_cfg.get('assistApi') or '').strip().lower()
+    try:
+        _raw_cfg_for_route = cm.load_json_config('core_config.json', {})
+        _tts_provider_sel = (_raw_cfg_for_route.get('ttsModelProvider') or '').strip()
+    except Exception as _e:
+        _raw_cfg_for_route = {}
+        _tts_provider_sel = ''
+        logger.warning(f"读取 ttsModelProvider 失败，跳过 vllm_omni 优先检查: {_e}")
+
+    _tts_config_for_route = None
+    try:
+        _tts_config_for_route = cm.get_model_api_config('tts_custom')
+        if _tts_config_for_route.get('is_custom') and core_cfg.get('GPTSOVITS_ENABLED', False):
+            return gptsovits_tts_worker, None, 'gptsovits'
+    except Exception as e:
+        logger.warning(f'TTS调度器检查报告:{e}')
+
+    # 用户在 TTS 下拉里显式选 vllm_omni 时，应优先于克隆音色 / assistApi
+    # fallback；但 GPT-SoVITS enabled 是显式本地 TTS 开关，仍在上方优先。
+    if core_cfg.get('ENABLE_CUSTOM_API') and _tts_provider_sel == 'vllm_omni':
+        try:
+            _tts_config_vllm = _tts_config_for_route or cm.get_model_api_config('tts_custom')
+            _vllm_base_fallback = _tts_config_vllm.get('base_url') or ''
+        except Exception:
+            _vllm_base_fallback = ''
+        vllm_url = (_raw_cfg_for_route.get('ttsModelUrl') or '').strip() or _vllm_base_fallback
+        vllm_model = (_raw_cfg_for_route.get('ttsModelId') or '').strip() \
+            or (core_cfg.get('TTS_MODEL') or '').strip() \
+            or 'Qwen3-TTS'
+        vllm_voice = (_raw_cfg_for_route.get('ttsVoiceId') or '').strip() \
+            or (core_cfg.get('TTS_VOICE_ID') or '').strip() \
+            or 'default'
+        vllm_key = (_raw_cfg_for_route.get('ttsModelApiKey') or '') \
+            or (core_cfg.get('TTS_MODEL_API_KEY') or '') \
+            or ''
+        # 修复 PR #1764 review 第三轮 #3（CodeRabbit Major）：跨 provider 凭证泄漏防护
+        # 若用户没为 vllm_omni 单独配置 key，必须返回空字符串而非 None，
+        # 否则 core.py 中 `api_key = api_key_override or tts_config['api_key']`
+        # 会 fallback 到默认 TTS provider（Qwen/Gemini/Step/OpenAI/Grok）的 key，
+        # 进而把别家 provider 的凭证 Bearer 发送到用户配置的 vLLM-Omni endpoint。
+        # 用空字符串 + core.py 中 provider_key == 'vllm_omni' 的特判共同保证：
+        # vllm_omni 显式无 key 时不允许通用 fallback，本地 vLLM 服务通常无需 Auth。
+        logger.info(
+            "[get_tts_worker] 用户选择 vllm_omni provider，绕过克隆/原生 TTS 路由 "
+            "(core_api_type=%s, has_custom_voice=%s, key_present=%s)",
+            core_api_type, has_custom_voice, bool(vllm_key),
+        )
+        worker = partial(
+            vllm_omni_tts_worker,
+            base_url=vllm_url, model=vllm_model, voice=vllm_voice,
+        )
+        return worker, vllm_key, 'vllm_omni'
+
     # voice_meta 提到 outer scope：cosyvoice 分支也需要它来跟"已存 clone"区分
     # "xAI 自定义 voice / 未知 voice"。MiniMax / ElevenLabs 分支保持嵌套以保留现有日志。
     voice_meta = None
@@ -4518,61 +4627,6 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
             logger.info("检测到阿里 CosyVoice 克隆音色: %s (provider=%s)，使用 CosyVoice TTS Worker",
                         voice_id, provider)
             return cosyvoice_vc_tts_worker, (runtime_key or None), 'cosyvoice'
-
-    tts_provider = str(core_cfg.get('TTS_PROVIDER') or core_cfg.get('ttsProvider') or '').strip().lower()
-    assist_api_type = str(core_cfg.get('assistApi') or '').strip().lower()
-    try:
-        _raw_cfg_for_route = cm.load_json_config('core_config.json', {})
-        _tts_provider_sel = (_raw_cfg_for_route.get('ttsModelProvider') or '').strip()
-    except Exception as _e:
-        _raw_cfg_for_route = {}
-        _tts_provider_sel = ''
-        logger.warning(f"读取 ttsModelProvider 失败，跳过 vllm_omni 优先检查: {_e}")
-
-    _tts_config_for_route = None
-    try:
-        _tts_config_for_route = cm.get_model_api_config('tts_custom')
-        if _tts_config_for_route.get('is_custom') and core_cfg.get('GPTSOVITS_ENABLED', False):
-            return gptsovits_tts_worker, None, 'gptsovits'
-    except Exception as e:
-        logger.warning(f'TTS调度器检查报告:{e}')
-
-    # 修复 PR #1764 review #4（Codex P2）：vllm_omni 路由优先级提前
-    # 用户在 TTS 下拉里显式选 vllm_omni 时，不能被 assistApi=mimo 或 native TTS
-    # fallback 截走；但 GPT-SoVITS enabled 是显式本地 TTS 开关，仍应优先。
-    if core_cfg.get('ENABLE_CUSTOM_API') and _tts_provider_sel == 'vllm_omni':
-        try:
-            _tts_config_vllm = _tts_config_for_route or cm.get_model_api_config('tts_custom')
-            _vllm_base_fallback = _tts_config_vllm.get('base_url') or ''
-        except Exception:
-            _vllm_base_fallback = ''
-        vllm_url = (_raw_cfg_for_route.get('ttsModelUrl') or '').strip() or _vllm_base_fallback
-        vllm_model = (_raw_cfg_for_route.get('ttsModelId') or '').strip() \
-            or (core_cfg.get('TTS_MODEL') or '').strip() \
-            or 'Qwen3-TTS'
-        vllm_voice = (_raw_cfg_for_route.get('ttsVoiceId') or '').strip() \
-            or (core_cfg.get('TTS_VOICE_ID') or '').strip() \
-            or 'default'
-        vllm_key = (_raw_cfg_for_route.get('ttsModelApiKey') or '') \
-            or (core_cfg.get('TTS_MODEL_API_KEY') or '') \
-            or ''
-        # 修复 PR #1764 review 第三轮 #3（CodeRabbit Major）：跨 provider 凭证泄漏防护
-        # 若用户没为 vllm_omni 单独配置 key，必须返回空字符串而非 None，
-        # 否则 core.py 中 `api_key = api_key_override or tts_config['api_key']`
-        # 会 fallback 到默认 TTS provider（Qwen/Gemini/Step/OpenAI/Grok）的 key，
-        # 进而把别家 provider 的凭证 Bearer 发送到用户配置的 vLLM-Omni endpoint。
-        # 用空字符串 + core.py 中 provider_key == 'vllm_omni' 的特判共同保证：
-        # vllm_omni 显式无 key 时不允许通用 fallback，本地 vLLM 服务通常无需 Auth。
-        logger.info(
-            "[get_tts_worker] 用户选择 vllm_omni provider，绕过原生 TTS 路由 "
-            "(core_api_type=%s, has_custom_voice=%s, key_present=%s)",
-            core_api_type, has_custom_voice, bool(vllm_key),
-        )
-        worker = partial(
-            vllm_omni_tts_worker,
-            base_url=vllm_url, model=vllm_model, voice=vllm_voice,
-        )
-        return worker, vllm_key, 'vllm_omni'
 
     if tts_provider == 'mimo' or assist_api_type == 'mimo':
         mimo_base_url = core_cfg.get('OPENROUTER_URL') if assist_api_type == 'mimo' else None
