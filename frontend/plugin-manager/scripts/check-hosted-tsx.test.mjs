@@ -132,6 +132,29 @@ export default function Panel() {
   })
 })
 
+test('resolves extensionless hosted imports to TSX before TS', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'extension-priority')
+    writePluginToml(pluginDir, 'main.tsx')
+    writeFixtureFile(
+      join(pluginDir, 'main.tsx'),
+      `import { label } from './shared'
+
+export default function Panel() {
+  return <Page title={label} />
+}
+`,
+    )
+    writeFixtureFile(join(pluginDir, 'shared.ts'), 'export const label: number = "wrong extension"\n')
+    writeFixtureFile(join(pluginDir, 'shared.tsx'), "export const label = 'tsx wins'\n")
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /Hosted TSX check passed \(1 file\)/)
+  })
+})
+
 test('limits relative import recursion depth', () => {
   withFixture((root) => {
     const pluginDir = join(root, 'deep-imports')

@@ -131,8 +131,7 @@ function isFilePath(candidate, label) {
 }
 
 function sourceFileFor(sourcePath, source) {
-  const scriptKind = sourcePath.endsWith('.tsx') || sourcePath.endsWith('.jsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS
-  return ts.createSourceFile(sourcePath, source, ts.ScriptTarget.Latest, true, scriptKind)
+  return ts.createSourceFile(sourcePath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
 }
 
 function moduleSpecifierText(node) {
@@ -423,14 +422,14 @@ function resolveRelativeImport(fromPath, specifier) {
   }
   const candidates = [
     basePath,
-    `${basePath}.ts`,
     `${basePath}.tsx`,
-    `${basePath}.js`,
+    `${basePath}.ts`,
     `${basePath}.jsx`,
-    join(basePath, 'index.ts'),
+    `${basePath}.js`,
     join(basePath, 'index.tsx'),
-    join(basePath, 'index.js'),
+    join(basePath, 'index.ts'),
     join(basePath, 'index.jsx'),
+    join(basePath, 'index.js'),
   ]
   for (const candidate of candidates) {
     const resolvedCandidate = resolve(candidate)

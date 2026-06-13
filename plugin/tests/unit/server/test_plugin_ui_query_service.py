@@ -140,8 +140,13 @@ def test_surface_source_includes_same_plugin_relative_dependencies(tmp_path) -> 
     config_path = plugin_dir / "plugin.toml"
     config_path.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
     (ui_dir / "panel.tsx").write_text(
-        "import { label } from './shared'\n"
-        "export default function Panel() { return <strong>{label}</strong> }\n",
+        "import { label, suffix } from './barrel'\n"
+        "export default function Panel() { return <strong>{label} {suffix}</strong> }\n",
+        encoding="utf-8",
+    )
+    (ui_dir / "barrel.ts").write_text(
+        "export { label } from './shared'\n"
+        "export * from './nested/suffix'\n",
         encoding="utf-8",
     )
     (ui_dir / "shared.ts").write_text(
@@ -149,7 +154,11 @@ def test_surface_source_includes_same_plugin_relative_dependencies(tmp_path) -> 
         "export const label = `shared ${suffix}`\n",
         encoding="utf-8",
     )
-    (nested_dir / "suffix.ts").write_text("export const suffix = 'ok'\n", encoding="utf-8")
+    (nested_dir / "suffix.ts").write_text(
+        "export const suffix = 'wrong extension'\n",
+        encoding="utf-8",
+    )
+    (nested_dir / "suffix.tsx").write_text("export const suffix = 'ok'\n", encoding="utf-8")
     plugin_ui = normalize_plugin_ui_manifest(
         {
             "plugin": {
@@ -182,12 +191,16 @@ def test_surface_source_includes_same_plugin_relative_dependencies(tmp_path) -> 
             state.plugins.clear()
             state.plugins.update(plugins_backup)
 
-    assert payload["source"].startswith("import { label }")
+    assert payload["source"].startswith("import { label, suffix }")
     assert payload["dependencies"] == [
-        {"path": "ui/nested/suffix.ts", "source": "export const suffix = 'ok'\n"},
+        {"path": "ui/nested/suffix.tsx", "source": "export const suffix = 'ok'\n"},
         {
             "path": "ui/shared.ts",
             "source": "import { suffix } from './nested/suffix'\nexport const label = `shared ${suffix}`\n",
+        },
+        {
+            "path": "ui/barrel.ts",
+            "source": "export { label } from './shared'\nexport * from './nested/suffix'\n",
         },
     ]
 

@@ -43,9 +43,16 @@ _HOSTED_TRANSLATIONS_MAX_BYTES = 128 * 1024
 _HOSTED_TRANSLATIONS_DEFAULT_SOURCE_LOCALE = "en-US"
 _HOSTED_TSX_DEPENDENCIES_MAX_FILES = 32
 _HOSTED_TSX_DEPENDENCIES_MAX_BYTES = 512 * 1024
-_HOSTED_TSX_CODE_EXTENSIONS = {".js", ".jsx", ".ts", ".tsx"}
+_HOSTED_TSX_CODE_EXTENSIONS = (".tsx", ".ts", ".jsx", ".js")
 _HOSTED_TSX_RELATIVE_IMPORT_RE = re.compile(
     r"^[^\S\r\n]*import(?:[\s\S]*?\sfrom\s+|[^\S\r\n]+)['\"](\.{1,2}/[^'\"]+)['\"][^\S\r\n]*;?[^\S\r\n]*(?:\r?\n|$)",
+    re.MULTILINE,
+)
+_HOSTED_TSX_RE_EXPORT_RE = re.compile(
+    r"^[^\S\r\n]*export\s+(?:type\s+)?"
+    r"(?:\{[^}]*\}|\*(?:\s+as\s+[A-Za-z_$][\w$]*)?)"
+    r"\s+from\s+['\"](\.{1,2}/[^'\"]+)['\"]"
+    r"[^\S\r\n]*;?[^\S\r\n]*(?:\r?\n|$)",
     re.MULTILINE,
 )
 _PLUGIN_NOT_RUNNING_MESSAGES = {
@@ -504,7 +511,11 @@ def _load_hosted_tsx_dependencies_sync(
 
     def visit(path: Path) -> str:
         source = read_source(path)
-        for specifier in _HOSTED_TSX_RELATIVE_IMPORT_RE.findall(source):
+        specifiers = [
+            *_HOSTED_TSX_RELATIVE_IMPORT_RE.findall(source),
+            *_HOSTED_TSX_RE_EXPORT_RE.findall(source),
+        ]
+        for specifier in specifiers:
             dependency_path = _resolve_hosted_tsx_relative_dependency(root, path, specifier)
             if dependency_path is None or dependency_path == entry_path:
                 continue
