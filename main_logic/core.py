@@ -52,6 +52,7 @@ from main_logic.proactive_delivery import ProactiveDeliveryManager
 from main_logic.agent_event_bus import (
     dispatch_text_user_message,
     dispatch_user_utterance,
+    publish_voice_transcript_observed_best_effort,
 )
 from utils.preferences import load_global_conversation_settings, aload_global_conversation_settings
 from config import (
@@ -523,7 +524,9 @@ from uuid import uuid4
 import numpy as np
 import soxr
 import httpx
-from main_logic.agent_event_bus import publish_analyze_request_reliably
+from main_logic.agent_event_bus import (
+    publish_analyze_request_reliably,
+)
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
@@ -2039,6 +2042,26 @@ class LLMSessionManager:
             # swallowed inside the dispatcher.
             dispatch_user_utterance(bucket, event)
 
+    async def _broadcast_voice_transcript_observed(self, transcript: str) -> None:
+        """Best-effort fan-out of voice transcripts to plugins.
+
+        Plugins are observers here, not arbiters for the current user turn.
+        Main must never wait for or apply plugin-produced actions from this
+        path.
+        """
+        session_snapshot = self.session
+        try:
+            await publish_voice_transcript_observed_best_effort(
+                self.lanlan_name,
+                transcript,
+                metadata={
+                    "session_type": type(session_snapshot).__name__ if session_snapshot else "",
+                    "voice_source": True,
+                },
+            )
+        except Exception as exc:
+            logger.debug("[%s] voice transcript observer broadcast failed: %s", self.lanlan_name, exc)
+
     def _reset_voice_echo_suppression_cache(self) -> None:
         self._recent_ai_voice_echo_text = ''
         self._recent_ai_voice_echo_at = 0.0
@@ -2283,6 +2306,9 @@ class LLMSessionManager:
             # 即使转录为空（VAD 误触发或转录失败）也算一次"用户在发声"，
             # 维持 voice_engaged 状态。
             self._activity_tracker.on_voice_rms()
+
+        if is_voice_source and transcript_text:
+            self._fire_task(self._broadcast_voice_transcript_observed(transcript_text))
 
         if is_voice_source:
             # 仅非空转录才算"用户消息"：on_user_message 会清掉 unfinished_thread、
@@ -3460,7 +3486,11 @@ class LLMSessionManager:
         )
         if uses_provider_native_voice:
             return False
-        gsv_enabled = bool(core_config.get('GPTSOVITS_ENABLED'))
+        gsv_voice_id = str(core_config.get('TTS_VOICE_ID') or '')
+        gsv_enabled = (
+            bool(core_config.get('GPTSOVITS_ENABLED'))
+            and not is_gsv_disabled_voice_id(gsv_voice_id)
+        )
         if gsv_enabled:
             return True
         # 克隆音色始终走 custom 路径。
@@ -4674,6 +4704,8 @@ class LLMSessionManager:
                 self.session_start_last_failure_time = None
                 self._memory_error_retry_after = 0
                 self._session_start_circuit_open = False
+                if self.is_goodbye_silent():
+                    self.set_goodbye_silent(False)
 
                 logger.info(f"[语音会话诊断] 即将通知前端 session_started (start_session 总耗时: {time.time() - _diag_start:.2f}秒)")
                 # 通知前端 session 已成功启动
@@ -6597,7 +6629,10 @@ class LLMSessionManager:
         """
         if self.is_goodbye_silent():
             self.enqueue_agent_callback(callback)
-            logger.info("[%s] proactive callback queued: goodbye silent", self.lanlan_name)
+            logger.debug(
+                "[%s] goodbye_silent queued proactive callback for later delivery",
+                self.lanlan_name,
+            )
             return
         self.proactive_manager.submit(callback, priority=priority, coalesce_key=coalesce_key)
 

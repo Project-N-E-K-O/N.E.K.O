@@ -223,6 +223,47 @@ class AgentServerEventBridge:
         self._analyze_recv_thread.start()
         logger.info("[EventBus] Agent bridge started (pid=%s)", os.getpid())
 
+    async def stop(self) -> None:
+        """Shut down ZMQ resources and receiver threads."""
+        self._stop.set()
+        self.ready = False
+
+        recv_threads = [
+            thread
+            for thread in (self._recv_thread, self._analyze_recv_thread)
+            if thread is not None
+        ]
+        if recv_threads:
+            await asyncio.gather(
+                *(asyncio.to_thread(thread.join, 2.0) for thread in recv_threads),
+                return_exceptions=True,
+            )
+        self._recv_thread = None
+        self._analyze_recv_thread = None
+
+        for sock_name in ("sub", "analyze_pull", "push"):
+            sock = getattr(self, sock_name, None)
+            if sock is None:
+                continue
+            try:
+                sock.close(linger=0)
+            except Exception as exc:
+                logger.debug("[EventBus] Agent bridge socket %s close error: %s", sock_name, exc)
+            setattr(self, sock_name, None)
+
+        if self.ctx is not None:
+            ctx = self.ctx
+            self.ctx = None
+            try:
+                await asyncio.wait_for(asyncio.to_thread(ctx.term), timeout=3.0)
+            except asyncio.TimeoutError:
+                logger.warning("[EventBus] Agent bridge ctx.term timed out, skipping")
+            except Exception as exc:
+                logger.debug("[EventBus] Agent bridge ctx.term error: %s", exc)
+
+        self._owner_loop = None
+        logger.debug("[EventBus] Agent bridge stopped")
+
     # -- 后台接收线程 -------------------------------------------------------
 
     def _recv_sub_fn(self) -> None:
@@ -314,6 +355,17 @@ def notify_analyze_ack(event_id: str) -> None:
             waiter.set_result(True)
 
     loop.call_soon_threadsafe(_resolve)
+
+
+def notify_voice_bridge_result(event_id: str, result: Dict[str, Any]) -> None:
+    """Compatibility sink for old voice bridge replies.
+
+    Voice transcript plugin dispatch is best-effort telemetry now: main never
+    waits for, trusts, or applies plugin-produced actions to the current turn.
+    Late replies from an older agent are intentionally ignored.
+    """
+    if event_id:
+        logger.debug("[EventBus] ignored voice bridge result: event_id=%s", event_id)
 
 
 # ---------------------------------------------------------------------------
@@ -492,3 +544,58 @@ async def publish_analyze_request_reliably(
             )
 
     return False
+
+
+async def publish_voice_transcript_observed_best_effort(
+    lanlan_name: str,
+    transcript: str,
+    *,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Broadcast a realtime voice transcript to agent/plugins without waiting.
+
+    This is intentionally best-effort. Main voice handling must not be blocked
+    or controlled by plugins; plugin handlers may receive the event late, not at
+    all, or after it is no longer relevant.
+    """
+    text = str(transcript or "").strip()
+    if not text:
+        return False
+    event_id = uuid.uuid4().hex
+    event = {
+        "event_type": "voice_transcript_observed",
+        "event_id": event_id,
+        "lanlan_name": lanlan_name,
+        "transcript": text,
+        "metadata": dict(metadata or {}),
+    }
+    sent = await publish_session_event(event)
+    if not sent:
+        logger.debug(
+            "[EventBus] voice_transcript_observed not sent: no main bridge lanlan=%s",
+            lanlan_name,
+        )
+    return sent
+
+
+async def publish_voice_transcript_request_reliably(
+    lanlan_name: str,
+    transcript: str,
+    *,
+    timeout_s: float = 1.2,
+    retries: int = 0,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Backward-compatible wrapper for the old request API.
+
+    The old API waited for a plugin action. Main no longer waits for or applies
+    those actions, so callers get ``None`` after the best-effort broadcast is
+    queued. ``timeout_s`` and ``retries`` are accepted only for source
+    compatibility.
+    """
+    await publish_voice_transcript_observed_best_effort(
+        lanlan_name,
+        transcript,
+        metadata=metadata,
+    )
+    return None

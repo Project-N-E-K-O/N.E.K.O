@@ -16,8 +16,12 @@ from utils.native_voice_registry import (
 
 
 class _FakeConfigManager:
-    def __init__(self, stored_voice_ids=()):
+    def __init__(self, stored_voice_ids=(), core_config=None):
         self._stored_voice_ids = set(stored_voice_ids)
+        self._core_config = dict(core_config or {"CORE_API_TYPE": "gemini"})
+
+    def get_core_config(self):
+        return dict(self._core_config)
 
     def voice_id_exists_in_any_storage(self, voice_id):
         return voice_id.casefold() in {
@@ -57,12 +61,12 @@ class _FakeCharactersRouterConfigManager:
         return {"猫娘": {}}
 
 
-def _make_mgr(voice_id, stored_voice_ids=()):
+def _make_mgr(voice_id, stored_voice_ids=(), core_config=None):
     mgr = object.__new__(LLMSessionManager)
     mgr.core_api_type = "gemini"
     mgr.voice_id = voice_id
     mgr._is_free_preset_voice = False
-    mgr._config_manager = _FakeConfigManager(stored_voice_ids)
+    mgr._config_manager = _FakeConfigManager(stored_voice_ids, core_config)
     return mgr
 
 
@@ -582,6 +586,19 @@ def test_vllm_tts_url_is_not_treated_as_local_voice_clone_server():
         )
         is True
     )
+
+
+def test_has_custom_tts_ignores_disabled_gptsovits_placeholder():
+    mgr = _make_mgr(
+        "",
+        core_config={
+            "CORE_API_TYPE": "gemini",
+            "GPTSOVITS_ENABLED": True,
+            "TTS_VOICE_ID": "__gptsovits_disabled__|local",
+        },
+    )
+
+    assert LLMSessionManager._has_custom_tts(mgr) is False
 
 
 @pytest.mark.asyncio

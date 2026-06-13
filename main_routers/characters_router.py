@@ -4602,7 +4602,7 @@ async def voice_clone(
     _config_manager = get_config_manager()
     tts_config = _config_manager.get_model_api_config('tts_custom')
     try:
-        core_config = _config_manager.get_core_config() or {}
+        core_config = await _config_manager.aget_core_config() or {}
     except Exception:
         core_config = {}
     base_url = tts_config.get('base_url', '')

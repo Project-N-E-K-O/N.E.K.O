@@ -1926,6 +1926,7 @@ eval(source);
   if (!bundleRequests[0] || !bundleRequests[0].endsWith('/zh-TW.json')) {
     throw new Error(`unexpected hant locale request order: ${JSON.stringify(bundleRequests)}`);
   }
+  process.exit(0);
 })().catch((error) => {
   console.error(error);
   process.exit(1);

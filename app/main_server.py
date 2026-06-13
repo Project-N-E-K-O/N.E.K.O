@@ -609,6 +609,11 @@ async def _handle_agent_event(event: dict):
             notify_analyze_ack(str(event.get("event_id") or ""))
             return
 
+        if event_type == "voice_bridge_result":
+            event_id = str(event.get("event_id") or "")
+            logger.debug("[EventBus] ignored voice_bridge_result: event_id=%s", event_id)
+            return
+
         # Agent status updates may be broadcast (lanlan_name omitted).
         if event_type == "agent_status_update":
             payload = {
@@ -1623,6 +1628,7 @@ if _IS_MAIN_PROCESS:
 # --- 初始化共享状态并挂载路由 ---
 # 显式从各子模块导入 router，避免与包级模块导出产生同名遮蔽。
 from main_routers.agent_router import router as agent_router # noqa
+from main_routers.card_assist_router import router as card_assist_router # noqa
 from main_routers.capture_router import router as capture_router # noqa
 from main_routers.characters_router import router as characters_router # noqa
 from main_routers.cloudsave_router import router as cloudsave_router # noqa
@@ -1643,7 +1649,6 @@ from main_routers.websocket_router import router as websocket_router # noqa
 from main_routers.workshop_router import router as workshop_router # noqa
 from main_routers.cookies_login_router import router as cookies_login_router # noqa
 from main_routers.game_router import router as game_router # noqa
-from main_routers.card_assist_router import router as card_assist_router # noqa
 from main_routers.debug_router import router as debug_router, start_watchdog as _start_debug_health_watchdog # noqa
 from main_routers.shared_state import init_shared_state, set_steamworks_initializer # noqa
 
