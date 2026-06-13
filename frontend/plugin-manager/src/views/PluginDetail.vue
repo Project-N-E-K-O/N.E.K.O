@@ -358,7 +358,24 @@ function isStudySurfaceRelayMessage(data: unknown): data is { type: string; payl
     && studySurfaceRelayMessageTypes.has((data as { type: string }).type)
 }
 
+function isStudyOpenSurfaceMessage(data: unknown): data is {
+  type: 'neko-study-open-surface'
+  payload: { pluginId?: string; surfaceId: string; kind?: string }
+} {
+  if (!data || typeof data !== 'object') return false
+  const message = data as { type?: unknown; payload?: unknown }
+  if (message.type !== 'neko-study-open-surface' || !message.payload || typeof message.payload !== 'object') return false
+  const payload = message.payload as { pluginId?: unknown; surfaceId?: unknown; kind?: unknown }
+  return typeof payload.surfaceId === 'string'
+    && (!payload.pluginId || typeof payload.pluginId === 'string')
+    && (!payload.kind || typeof payload.kind === 'string')
+}
+
 function relayHostedSurfaceMessageToStaticUi(data: unknown) {
+  if (isStudyOpenSurfaceMessage(data)) {
+    openHostedSurfaceFromStaticUi(data.payload)
+    return
+  }
   if (!isStudySurfaceRelayMessage(data)) return
   staticUiFrameRef.value?.sendStudySurfaceMessage(data)
 }

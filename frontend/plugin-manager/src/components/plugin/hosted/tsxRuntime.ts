@@ -498,6 +498,32 @@ function moduleImportStatement(rawBindings: string | undefined, modulePath: stri
   return statements.length > 0 ? `${statements.join('\n')}\n` : ''
 }
 
+function uiKitImportStatement(rawBindings: string | undefined) {
+  const bindings = String(rawBindings || '').trim()
+  const moduleRef = 'window.NekoUiKit'
+  if (!bindings || bindings === 'type' || bindings.startsWith('type ')) return ''
+  const defaultNamespaceMatch = bindings.match(/^([A-Za-z_$][\w$]*)\s*,\s*\*\s+as\s+([A-Za-z_$][\w$]*)$/)
+  if (defaultNamespaceMatch?.[1] && defaultNamespaceMatch[2]) {
+    return `const ${defaultNamespaceMatch[1]} = ${moduleRef};\nconst ${defaultNamespaceMatch[2]} = ${moduleRef};\n`
+  }
+  if (bindings.startsWith('* as ')) {
+    return `const ${bindings.slice(5).trim()} = ${moduleRef};\n`
+  }
+  const namedStart = bindings.indexOf('{')
+  const statements: string[] = []
+  if (namedStart > 0) {
+    const defaultName = bindings.slice(0, namedStart).trim().replace(/,$/, '').trim()
+    if (defaultName) statements.push(`const ${defaultName} = ${moduleRef};`)
+  } else if (namedStart < 0) {
+    statements.push(`const ${bindings.replace(/,$/, '').trim()} = ${moduleRef};`)
+  }
+  const namedBindings = namedStart >= 0 ? parseNamedBindings(bindings.slice(namedStart)) : []
+  if (namedBindings.length > 0) {
+    statements.push(`const { ${namedBindings.join(', ')} } = ${moduleRef};`)
+  }
+  return statements.length > 0 ? `${statements.join('\n')}\n` : ''
+}
+
 function hostedRelativeImportPaths(
   source: string,
   fromPath: string,
@@ -507,13 +533,13 @@ function hostedRelativeImportPaths(
   for (const statement of hostedImportStatements(source)) {
     if (statement.specifier.startsWith('./') || statement.specifier.startsWith('../')) {
       const modulePath = resolveHostedImport(fromPath, statement.specifier, dependenciesByPath)
-      if (modulePath) paths.push(modulePath)
+      paths.push(modulePath)
     }
   }
   for (const statement of hostedReExportStatements(source)) {
     if (statement.specifier.startsWith('./') || statement.specifier.startsWith('../')) {
       const modulePath = resolveHostedImport(fromPath, statement.specifier, dependenciesByPath)
-      if (modulePath) paths.push(modulePath)
+      paths.push(modulePath)
     }
   }
   return paths
@@ -559,6 +585,7 @@ function transformHostedImports(
   for (const statement of hostedImportStatements(source)) {
     result += source.slice(cursor, statement.start)
     if (statement.specifier === '@neko/plugin-ui' || statement.specifier === 'neko:ui') {
+      result += uiKitImportStatement(statement.rawBindings)
       cursor = statement.end
       continue
     }
@@ -568,7 +595,7 @@ function transformHostedImports(
       continue
     }
     const modulePath = resolveHostedImport(fromPath, statement.specifier, dependenciesByPath)
-    result += modulePath ? moduleImportStatement(statement.rawBindings, modulePath) : ''
+    result += moduleImportStatement(statement.rawBindings, modulePath)
     cursor = statement.end
   }
   return `${result}${source.slice(cursor)}`
@@ -865,22 +892,77 @@ function variableDeclarationEnd(source: string, declarationStart: number) {
   return source.length
 }
 
+function hostedVariableExportStatements(source: string) {
+  const statements: Array<{
+    start: number
+    declarationStart: number
+    indent: string
+    kind: string
+  }> = []
+  let depth = 0
+  for (let index = 0; index < source.length;) {
+    const char = source[index]
+    if (char === '/' && index + 1 < source.length) {
+      const nextChar = source[index + 1]
+      if (nextChar === '/') {
+        index = skipLineComment(source, index)
+        continue
+      }
+      if (nextChar === '*') {
+        index = skipBlockComment(source, index)
+        continue
+      }
+    }
+    if (char === '"' || char === "'") {
+      index = skipQuoted(source, index)
+      continue
+    }
+    if (char === '`') {
+      index = skipTemplate(source, index)
+      continue
+    }
+    if (depth === 0 && isStatementLineStart(source, index)) {
+      const match = source.slice(index).match(/^([^\S\r\n]*)export\s+(const|let|var)\s+/)
+      if (match?.[0] && match[1] !== undefined && match[2]) {
+        statements.push({
+          start: index,
+          declarationStart: index + match[0].length,
+          indent: match[1],
+          kind: match[2],
+        })
+        index += match[0].length
+        continue
+      }
+    }
+    if (char === '(' || char === '[' || char === '{') {
+      depth += 1
+      index += 1
+      continue
+    }
+    if (char === ')' || char === ']' || char === '}') {
+      depth = Math.max(0, depth - 1)
+      index += 1
+      continue
+    }
+    index += 1
+  }
+  return statements
+}
+
 function transformVariableExports(source: string, exports: string[]) {
-  const pattern = /^([^\S\r\n]*)export\s+(const|let|var)\s+/gm
   let result = ''
   let cursor = 0
-  let match: RegExpExecArray | null = null
-  while ((match = pattern.exec(source))) {
-    const declarationStart = pattern.lastIndex
+  for (const statement of hostedVariableExportStatements(source)) {
+    if (statement.start < cursor) continue
+    const declarationStart = statement.declarationStart
     const declarationEnd = variableDeclarationEnd(source, declarationStart)
     const declarationList = source.slice(declarationStart, declarationEnd)
     for (const name of exportedVariableNames(declarationList)) {
       exports.push(exportAssignment(name))
     }
-    result += source.slice(cursor, match.index)
-    result += `${match[1]}${match[2]} ${declarationList}`
+    result += source.slice(cursor, statement.start)
+    result += `${statement.indent}${statement.kind} ${declarationList}`
     cursor = declarationEnd
-    pattern.lastIndex = declarationEnd
   }
   return `${result}${source.slice(cursor)}`
 }
@@ -920,10 +1002,6 @@ function transformHostedReExports(
       continue
     }
     const modulePath = resolveHostedImport(fromPath, statement.specifier, dependenciesByPath)
-    if (!modulePath) {
-      cursor = statement.end
-      continue
-    }
     const moduleRef = `__modules[${JSON.stringify(modulePath)}]`
     if (statement.namespaceName) {
       result += `__exports[${JSON.stringify(statement.namespaceName)}] = ${moduleRef};\n`

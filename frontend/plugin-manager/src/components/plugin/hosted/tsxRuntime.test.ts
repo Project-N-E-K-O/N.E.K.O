@@ -221,6 +221,26 @@ describe('hosted TSX document runtime', () => {
     expect(root.textContent).toContain('ok')
   })
 
+  it('rewrites UI kit aliases and namespaces inside hosted dependencies', () => {
+    const { root } = executeHostedDocument(`
+      import { label } from "./helper"
+
+      export default function Panel() {
+        return <strong>{label}</strong>
+      }
+    `, baseContext(), baseContext(), [{
+      path: 'ui/helper.tsx',
+      source: `
+        import { Button as UiButton } from "@neko/plugin-ui"
+        import * as UI from "@neko/plugin-ui"
+
+        export const label = typeof UiButton + "-" + typeof UI.Page
+      `,
+    }])
+
+    expect(root.querySelector('strong')?.textContent).toBe('function-function')
+  })
+
   it('inlines same-plugin relative TSX dependencies before executing', () => {
     const { root } = executeHostedDocument(`
       import { decorate, label } from "./shared"
@@ -267,6 +287,29 @@ describe('hosted TSX document runtime', () => {
         \`
         export const label = "shared"
         export const used = sample.length
+      `,
+    }])
+
+    expect(root.querySelector('strong')?.textContent).toBe('sharedtrue')
+  })
+
+  it('ignores commented and template export text while collecting dependency exports', () => {
+    const { root } = executeHostedDocument(`
+      import { label } from "./shared"
+
+      export default function Panel() {
+        return <strong>{label}</strong>
+      }
+    `, baseContext(), baseContext(), [{
+      path: 'ui/shared.ts',
+      source: `
+        /*
+        export const ghost = "bad"
+        */
+        const sample = \`
+        export const phantom = "bad"
+        \`
+        export const label = "shared" + sample.includes("phantom")
       `,
     }])
 
