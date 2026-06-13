@@ -319,6 +319,24 @@ describe('hosted TSX document runtime', () => {
     expect(root.querySelector('strong')?.textContent).toBe('named-alias-star-named-no-default')
   })
 
+  it('exports every variable declarator from hosted dependencies', () => {
+    const { root } = executeHostedDocument(`
+      import { first, second, third } from "./multi"
+
+      export default function Panel() {
+        return <strong>{first + second + third}</strong>
+      }
+    `, baseContext(), baseContext(), [{
+      path: 'ui/multi.ts',
+      source: `
+        export const first = ["A", "ignored"].slice(0, 1).join(""), second = "B";
+        export let third = "C", spare = "D";
+      `,
+    }])
+
+    expect(root.querySelector('strong')?.textContent).toBe('ABC')
+  })
+
   it('rejects hosted imports that escape the plugin UI root', () => {
     expect(() => executeHostedDocument(`
       import { label } from "../../escape"

@@ -13,6 +13,7 @@ import sys
 from types import SimpleNamespace
 import time
 from typing import Any
+from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from plugin.sdk.plugin import (
@@ -118,6 +119,11 @@ def _register_install_routes() -> None:
         ui_i18n_dir=Path(__file__).resolve().parent / "i18n",
         tutorial_enabled=True,
     )
+
+
+def _plugin_detail_ui_url(*, plugin_id: str, port: str) -> str:
+    safe_plugin_id = quote(plugin_id, safe="")
+    return f"http://127.0.0.1:{port}/plugins/{safe_plugin_id}?tab=ui"
 
 
 try:
@@ -367,7 +373,7 @@ class StudyCompanionPlugin(
         if not (1 <= port_num <= 65535):
             port_num = 48916
         port = str(port_num)
-        url = f"http://127.0.0.1:{port}/plugin/{self.plugin_id}/ui/"
+        url = _plugin_detail_ui_url(plugin_id=self.plugin_id, port=port)
         try:
             await asyncio.to_thread(_open_url_in_browser, url)
         except Exception as exc:

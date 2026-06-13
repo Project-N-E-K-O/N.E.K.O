@@ -193,6 +193,52 @@ function exportAssignment(name: string, localName = name) {
   return `__exports[${JSON.stringify(name)}] = ${localName};`
 }
 
+function splitTopLevelDeclarators(declarationList: string) {
+  const declarators: string[] = []
+  let start = 0
+  let depth = 0
+  let quote: string | null = null
+  let escaped = false
+
+  for (let index = 0; index < declarationList.length; index += 1) {
+    const char = declarationList[index]
+    if (quote) {
+      if (escaped) {
+        escaped = false
+      } else if (char === '\\') {
+        escaped = true
+      } else if (char === quote) {
+        quote = null
+      }
+      continue
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char
+      continue
+    }
+    if (char === '(' || char === '[' || char === '{') {
+      depth += 1
+      continue
+    }
+    if (char === ')' || char === ']' || char === '}') {
+      depth = Math.max(0, depth - 1)
+      continue
+    }
+    if (char === ',' && depth === 0) {
+      declarators.push(declarationList.slice(start, index))
+      start = index + 1
+    }
+  }
+  declarators.push(declarationList.slice(start))
+  return declarators
+}
+
+function exportedVariableNames(declarationList: string) {
+  return splitTopLevelDeclarators(declarationList)
+    .map((declarator) => declarator.trim().match(/^([A-Za-z_$][\w$]*)\b/)?.[1] || '')
+    .filter(Boolean)
+}
+
 function moduleReExportStatements(rawNames: string, modulePath: string) {
   const statements: string[] = []
   const moduleRef = `__modules[${JSON.stringify(modulePath)}]`
@@ -245,10 +291,12 @@ function transformModuleExports(source: string) {
     .replace(/^\s*export\s+type\s+\{[^}]*\}\s*;?\s*$/gm, '')
     .replace(/^\s*export\s+(?=(interface|type)\b)/gm, '')
     .replace(
-      /^\s*export\s+(const|let|var)\s+([A-Za-z_$][\w$]*)/gm,
-      (_match, declaration, name) => {
-        exports.push(exportAssignment(name))
-        return `${declaration} ${name}`
+      /^\s*export\s+(const|let|var)\s+([^\n;]*)(;?)/gm,
+      (_match, declaration, declarationList, semicolon) => {
+        for (const name of exportedVariableNames(declarationList)) {
+          exports.push(exportAssignment(name))
+        }
+        return `${declaration} ${declarationList}${semicolon}`
       },
     )
     .replace(

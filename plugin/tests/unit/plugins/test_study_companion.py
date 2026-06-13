@@ -278,7 +278,7 @@ async def test_study_plugin_startup_auto_opens_static_ui(
 
     try:
         assert isinstance(result, Ok)
-        assert opened == ["http://127.0.0.1:49888/plugin/study_companion/ui/"]
+        assert opened == ["http://127.0.0.1:49888/plugins/study_companion?tab=ui"]
     finally:
         await plugin.shutdown()
 
@@ -304,7 +304,7 @@ async def test_study_plugin_startup_auto_open_falls_back_for_invalid_port(
 
     try:
         assert isinstance(result, Ok)
-        assert opened == ["http://127.0.0.1:48916/plugin/study_companion/ui/"]
+        assert opened == ["http://127.0.0.1:48916/plugins/study_companion?tab=ui"]
     finally:
         await plugin.shutdown()
 
