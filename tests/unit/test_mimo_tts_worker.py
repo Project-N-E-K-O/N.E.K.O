@@ -628,6 +628,105 @@ def test_vllm_omni_worker_marks_not_ready_when_flush_reconnect_fails(monkeypatch
 
 
 @pytest.mark.unit
+def test_vllm_omni_worker_marks_not_ready_when_pending_replay_fails(monkeypatch):
+    connections = []
+
+    class _FakeWS:
+        def __init__(self, index):
+            self.index = index
+            self.messages = []
+
+        async def send(self, payload):
+            event = json.loads(payload)
+            self.messages.append(event)
+            if (
+                self.index == 0
+                and event.get("type") == "input.text"
+                and event.get("text") == "new"
+            ):
+                raise OSError("send current failed")
+            if (
+                self.index == 1
+                and event.get("type") == "input.text"
+                and event.get("text") == "old"
+            ):
+                raise OSError("replay failed")
+
+        async def close(self):
+            pass
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await asyncio.sleep(60)
+            raise StopAsyncIteration
+
+    async def _connect(*args, **kwargs):
+        ws = _FakeWS(len(connections))
+        connections.append(ws)
+        return ws
+
+    def _wait_until(predicate, timeout=3.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if predicate():
+                return
+            time.sleep(0.01)
+        raise AssertionError("condition was not reached")
+
+    monkeypatch.setattr(tts_client.websockets, "connect", _connect)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = threading.Thread(
+        target=tts_client.vllm_omni_tts_worker,
+        kwargs={
+            "request_queue": request_queue,
+            "response_queue": response_queue,
+            "audio_api_key": "",
+            "voice_id": "",
+            "base_url": "http://localhost:8091",
+            "model": "Qwen3-TTS",
+            "voice": "global-default",
+        },
+    )
+    thread.start()
+
+    assert response_queue.get(timeout=3.0) == ("__ready__", True)
+    request_queue.put(("sid-a", "old"))
+    _wait_until(lambda: len(connections[0].messages) >= 2)
+    request_queue.put(("sid-a", "new"))
+    _, seen = _wait_for_queue_item(
+        response_queue,
+        lambda item: item == ("__ready__", False),
+        timeout=3.0,
+    )
+    request_queue.close()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+    assert [item["type"] for item in connections[0].messages] == [
+        "session.config",
+        "input.text",
+        "input.text",
+    ]
+    assert connections[0].messages[1]["text"] == "old"
+    assert connections[0].messages[2]["text"] == "new"
+    assert [item["type"] for item in connections[1].messages] == [
+        "session.config",
+        "input.text",
+    ]
+    assert connections[1].messages[1]["text"] == "old"
+    assert any(
+        isinstance(item, tuple)
+        and item[0] == "__error__"
+        and "TTS_CONNECTION_FAILED" in str(item[1])
+        for item in seen
+    )
+
+
+@pytest.mark.unit
 def test_get_tts_worker_routes_mimo_before_core_native_voice(monkeypatch):
     class _CM:
         def get_core_config(self):

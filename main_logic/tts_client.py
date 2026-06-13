@@ -3267,7 +3267,8 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                     if await _rebuild_session():
                         try:
                             if not await _replay_pending_text():
-                                continue
+                                _fail_pending_flush("vLLM-Omni TTS input.text 重放失败")
+                                break
                             await ws.send(payload)
                             _record_tts_telemetry(effective_model, len(tts_text))
                             pending_text.append(tts_text)
