@@ -90,6 +90,15 @@ def test_basketball_improvement_static_contract():
 
 
 @pytest.mark.unit
+def test_basketball_invite_character_request_uses_invited_lanlan_name():
+    html = _basketball_html()
+
+    assert "var requestedLanlanName = String(queryLanlan || '').trim();" in html
+    assert "characterPath += '?lanlan_name=' + encodeURIComponent(requestedLanlanName);" in html
+    assert "var charResp = await fetch(characterPath);" in html
+
+
+@pytest.mark.unit
 def test_basketball_audio_config_contract():
     source = (ROOT / "static" / "game" / "games" / "basketball" / "basketball-audio-config.js")
     assert source.exists()

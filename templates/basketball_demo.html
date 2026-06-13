@@ -2322,7 +2322,12 @@
   async function loadBasketballCharacter() {
     var charData = {};
     try {
-      var charResp = await fetch(api('/character'));
+      var characterPath = api('/character');
+      var requestedLanlanName = String(queryLanlan || '').trim();
+      if (requestedLanlanName) {
+        characterPath += '?lanlan_name=' + encodeURIComponent(requestedLanlanName);
+      }
+      var charResp = await fetch(characterPath);
       if (charResp.ok) charData = await charResp.json();
     } catch (err) {
       console.warn('[basketball_demo] 获取角色信息失败:', err);
