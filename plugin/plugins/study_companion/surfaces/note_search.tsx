@@ -1,4 +1,4 @@
-import { useEffect, useState } from '@neko/plugin-ui';
+import { useEffect, useRef, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 import { callPlugin, errorMessage, text } from './memory_shared';
 import { ensureBrandCSS } from './study_surface_utils';
@@ -30,33 +30,50 @@ export default function NoteSearch(props: PluginSurfaceProps) {
   const [payload, setPayload] = useState<SearchPayload>({});
   const [status, setStatus] = useState('');
   const [busy, setBusy] = useState(false);
+  // Single in-flight controller shared by both entry points (debounced effect
+  // and the explicit button). Each new search aborts the previous one, so a
+  // slow stale response can never clobber a newer query's results.
+  const activeController = useRef<AbortController | null>(null);
 
   useEffect(() => {
     ensureBrandCSS();
   }, []);
 
-  async function runSearch(signal?: AbortSignal) {
+  function resetResults() {
+    activeController.current?.abort();
+    activeController.current = null;
+    setPayload({});
+    setStatus('');
+    setBusy(false);
+  }
+
+  async function runSearch() {
     const trimmed = query.trim();
     if (!trimmed) {
-      setPayload({});
-      setStatus('');
-      setBusy(false);
+      resetResults();
       return;
     }
+    activeController.current?.abort();
+    const controller = new AbortController();
+    activeController.current = controller;
+    const { signal } = controller;
     setBusy(true);
     try {
       const result = await callPlugin<SearchPayload>('study_note_search_all', {
         query: trimmed,
         limit: 50,
       }, signal);
+      if (signal.aborted) {
+        return;
+      }
       setPayload(result);
       setStatus(trimmed);
     } catch (error) {
-      if (!signal?.aborted) {
+      if (!signal.aborted) {
         setStatus(errorMessage(error));
       }
     } finally {
-      if (!signal?.aborted) {
+      if (!signal.aborted) {
         setBusy(false);
       }
     }
@@ -64,24 +81,22 @@ export default function NoteSearch(props: PluginSurfaceProps) {
 
   useEffect(() => {
     if (!query.trim()) {
-      setPayload({});
-      setStatus('');
-      setBusy(false);
+      resetResults();
       return;
     }
-    const controller = new AbortController();
     const timeoutId = window.setTimeout(() => {
-      runSearch(controller.signal).catch((error) => {
-        if (!controller.signal.aborted) {
+      runSearch().catch((error) => {
+        if (!activeController.current?.signal.aborted) {
           setStatus(errorMessage(error));
         }
       });
     }, 250);
     return () => {
       window.clearTimeout(timeoutId);
-      controller.abort();
     };
   }, [query]);
+
+  useEffect(() => () => activeController.current?.abort(), []);
 
   const notes = Array.isArray(payload.notes) ? payload.notes : [];
   const records = Array.isArray(payload[activeTab]) ? payload[activeTab] as Array<Record<string, unknown>> : [];

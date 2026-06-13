@@ -154,14 +154,16 @@ class _NotebookEntriesMixin:
             "type": "object",
             "properties": {
                 "note_id": {"type": "string", "default": ""},
-                # No default: an omitted notebook_id (partial edit) leaves the
-                # filing unchanged, while an explicit "" is an intentional unfile.
+                # No defaults on update fields: an omitted field (partial edit)
+                # is left unchanged by upsert_note, instead of a generated form's
+                # "" / [] / false silently overwriting title/content/topics/tags.
+                # An explicit "" notebook_id is still an intentional unfile.
                 "notebook_id": {"type": "string"},
-                "title": {"type": "string", "default": ""},
-                "content": {"type": "string", "default": ""},
-                "topic_ids": {"type": "array", "items": {"type": "string"}, "default": []},
-                "tags": {"type": "array", "items": {"type": "string"}, "default": []},
-                "is_ai_generated": {"type": "boolean", "default": False},
+                "title": {"type": "string"},
+                "content": {"type": "string"},
+                "topic_ids": {"type": "array", "items": {"type": "string"}},
+                "tags": {"type": "array", "items": {"type": "string"}},
+                "is_ai_generated": {"type": "boolean"},
                 "source_type": {"type": "string", "default": "manual"},
                 "source_ref": {"type": "string", "default": ""},
             },

@@ -424,15 +424,29 @@ async def test_note_upsert_omitted_keeps_filing_explicit_empty_unfiles(tmp_path)
         )
         note_id = saved.value["note"]["id"]
 
-        # omitted notebook_id (partial edit) must keep the existing filing
+        # omitted notebook_id (partial edit) must keep the existing filing,
+        # and omitted title-only edit must not wipe the stored content.
         edited = await harness.study_note_upsert(note_id=note_id, title="T2")
         assert edited.value["note"]["notebook_id"] == notebook_id
+        assert edited.value["note"]["title"] == "T2"
+        assert edited.value["note"]["content"] == "C"
 
         # an explicit "" is an intentional unfile
         unfiled = await harness.study_note_upsert(note_id=note_id, notebook_id="")
         assert unfiled.value["note"]["notebook_id"] is None
     finally:
         store.close()
+
+
+def test_note_upsert_schema_has_no_destructive_update_defaults() -> None:
+    # A generated form must not pre-fill ""/[]/false for update fields, or a
+    # single-field edit would silently overwrite the rest. note_id/source_type
+    # keep their defaults (identity + provenance, not user content).
+    meta = getattr(_NotebookEntriesMixin.study_note_upsert, "__neko_event_meta__")
+    props = meta.input_schema["properties"]
+    for field in ("title", "content", "topic_ids", "tags", "is_ai_generated", "notebook_id"):
+        assert "default" not in props[field], field
+    assert props["note_id"]["default"] == ""
 
 
 def test_strip_markdown_keeps_fenced_code_text_searchable() -> None:
