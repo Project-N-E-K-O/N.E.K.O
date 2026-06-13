@@ -4859,8 +4859,12 @@ def _basketball_score_submission_allowed(data: dict) -> bool:
         return False
     mode = _normalize_basketball_mode(data.get("mode"))
     _prune_basketball_score_sessions()
-    meta = _basketball_recent_score_sessions.get((lanlan_name, session_id))
-    return bool(meta and meta.get("mode") == mode)
+    key = (lanlan_name, session_id)
+    meta = _basketball_recent_score_sessions.get(key)
+    if not (meta and meta.get("mode") == mode):
+        return False
+    _basketball_recent_score_sessions.pop(key, None)
+    return True
 
 
 def _basketball_leaderboard_total_players(conn: sqlite3.Connection) -> int:

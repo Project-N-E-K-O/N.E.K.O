@@ -4596,7 +4596,7 @@
 
   function startRoute() {
     var localLeaderboard = loadLocalLeaderboard();
-    post('/route/start', Object.assign({
+    var routeStartPromise = post('/route/start', Object.assign({
       session_id: sessionId, lanlan_name: lanlanName, source: 'basketball_demo',
       game_type: 'basketball', mode: currentMode, i18n_language: getRequestLanguage(),
       gameStarted: true, game_started: true,
@@ -4622,12 +4622,22 @@
             var result = item && typeof item.result === 'object' ? item.result : null;
             var line = (item && (item.line || item.text || item.content)) || (result && (result.line || result.text || result.content)) || '';
             var control = (item && item.control) || (result && result.control) || {};
-            if (line) showBubble(line, control);
+            if (line) {
+              var event = (item && item.event) || (result && result.event) || {};
+              speakLine(line, control, Object.assign({
+                kind: 'user_reply',
+                source: 'user_reply',
+                label: 'route_drain',
+                mode: currentMode,
+                voice_deadline_ms: 900
+              }, event));
+            }
           });
         }
       }).catch(function () {});
     }, 1800);
     loadGeneratedQuickLines();
+    return routeStartPromise;
   }
   function endRoute(useBeacon) {
     if (endedRoute && !(useBeacon && routeEndFetchPending && !routeEndBeaconDelivered)) return;
@@ -4684,6 +4694,19 @@
         max_rounds: game.duel.maxRounds
       };
       payloadObj.currentState.duel = payloadObj.duel;
+    }
+    if (isHorseMode()) {
+      payloadObj.horse = {
+        word: HORSE_WORD,
+        letters_player: game.horse.lettersPlayer,
+        letters_neko: game.horse.lettersNeko,
+        lettersPlayer: game.horse.lettersPlayer,
+        lettersNeko: game.horse.lettersNeko,
+        phase: game.horse.phase,
+        turn_owner: game.horse.turnOwner,
+        challenge: game.horse.challenge ? Object.assign({}, game.horse.challenge) : null
+      };
+      payloadObj.currentState.horse = payloadObj.horse;
     }
     Object.assign(payloadObj, _basketballGameMemoryPolicyPayload());
     var payload = JSON.stringify(payloadObj);
@@ -5050,8 +5073,9 @@
   if (lastFinalStreak >= 15) applyNekoControl({ expression: 'anticipate', intensity: 'medium' }, {});
   updateTutorial(_i18n('tutorial.aim', '上下移动鼠标调整投篮角度'));
   checkSeasonalEasterEggs();
+  startRoute();
   initPlayerAvatar();
-  initNekoAvatar().finally(function () { startRoute(); });
+  initNekoAvatar();
   requestAnimationFrame(loop);
 })();
 {% endraw %}

@@ -1930,6 +1930,7 @@ def _mini_game_invite_get_state(lanlan_name: str) -> dict[str, Any]:
             'responded_at': None,
             'chats_since_response': 0,
             'last_game_type': None,
+            'response_cooldowns': {},
             # 当前 pending 邀请的 session_id；endpoint 收到回应时校验匹配，避免
             # 用户点击过期邀请被错算成响应当前 pending。一旦投递新邀请会被刷新。
             'pending_session_id': None,
@@ -1942,6 +1943,8 @@ def _mini_game_invite_get_state(lanlan_name: str) -> dict[str, Any]:
             'last_response_choice': None,
         }
         _mini_game_invite_state[lanlan_name] = state
+    else:
+        state.setdefault('response_cooldowns', {})
     return state
 
 
@@ -2131,6 +2134,19 @@ def _mini_game_invite_in_cooldown(lanlan_name: str, game_type: str | None = None
     if suppressed_until is not None and time.time() < float(suppressed_until):
         return True
     if game_type:
+        cooldowns = state.get('response_cooldowns')
+        if isinstance(cooldowns, dict) and isinstance(cooldowns.get(game_type), dict):
+            response_state = cooldowns[game_type]
+            elapsed = time.time() - float(response_state.get('responded_at') or 0.0)
+            if response_state.get('last_response_choice') == 'decline':
+                time_threshold = MINI_GAME_INVITE_COOLDOWN_AFTER_DECLINE_SECONDS
+            else:
+                time_threshold = MINI_GAME_INVITE_COOLDOWN_AFTER_ACCEPT_SECONDS
+            chats_since_response = int(response_state.get('chats_since_response') or 0)
+            if elapsed < time_threshold or chats_since_response < MINI_GAME_INVITE_COOLDOWN_CHATS:
+                return True
+            cooldowns.pop(game_type, None)
+    if game_type:
         last_game_type = state.get('last_game_type')
         pending = state.get('delivered_at') is not None and state.get('responded_at') is None
         if last_game_type and last_game_type != game_type and not pending:
@@ -2168,15 +2184,38 @@ def _mini_game_invite_record_delivered(lanlan_name: str, session_id: str) -> Non
 
 
 def _mini_game_invite_count_post_response_chat(lanlan_name: str) -> None:
-    """每次成功投递的主动搭话调一次：若上次邀请已被回应，counter +1。
+    """Advance invite cooldown chat counters after a delivered proactive turn.
 
-    在 _record_proactive_chat 后立即调。任何 channel 都计——只要 AI 真发了
-    一条主动搭话出去，"24h+10次"里的 10 次门就推进一格。pending 期间（还没
-    被回应）此函数 no-op，避免靠"邀请自身这一条"提前耗 counter。"""
+    This runs immediately after _record_proactive_chat. Any channel counts as
+    long as the AI actually delivered a proactive message. Pending invites are
+    no-ops so the invite message itself does not spend the response gate.
+    """
     state = _mini_game_invite_state.get(lanlan_name)
     if not state or state['responded_at'] is None:
         return
     state['chats_since_response'] += 1
+    cooldowns = state.get('response_cooldowns')
+    if isinstance(cooldowns, dict):
+        for response_state in cooldowns.values():
+            if isinstance(response_state, dict) and response_state.get('responded_at') is not None:
+                response_state['chats_since_response'] = int(response_state.get('chats_since_response') or 0) + 1
+
+
+def _mini_game_invite_record_response_cooldown(
+    state: dict[str, Any],
+    game_type: str,
+    choice: str,
+    responded_at: float,
+) -> None:
+    cooldowns = state.setdefault('response_cooldowns', {})
+    if not isinstance(cooldowns, dict):
+        cooldowns = {}
+        state['response_cooldowns'] = cooldowns
+    cooldowns[game_type] = {
+        'responded_at': responded_at,
+        'chats_since_response': 0,
+        'last_response_choice': choice,
+    }
 
 
 def _mini_game_launch_url(game_type: str, lanlan_name: str, session_id: str) -> str | None:
@@ -7134,6 +7173,7 @@ def _apply_mini_game_invite_choice(
         # 触发会双开窗口）。
         invite_session_id = state.get('pending_session_id') or ''
         game_type = state.get('last_game_type') or 'soccer'
+        _mini_game_invite_record_response_cooldown(state, game_type, 'accept', now)
         game_url = _mini_game_launch_url(game_type, lanlan_name, invite_session_id)
         if not game_url:
             logger.warning(
@@ -7155,9 +7195,11 @@ def _apply_mini_game_invite_choice(
         # 留 session_id 给 caller 推 mini_game_invite_resolved 用——所有
         # outcome 都需要前端 dismiss prompt（codex P2）。
         decline_session_id = state.get('pending_session_id') or ''
+        game_type = state.get('last_game_type') or 'soccer'
         state['responded_at'] = now
         state['chats_since_response'] = 0
         state['last_response_choice'] = 'decline'
+        _mini_game_invite_record_response_cooldown(state, game_type, 'decline', now)
         logger.info(
             "[%s] mini-game invite declined via %s; cooldown started",
             lanlan_name, source,
@@ -7344,20 +7386,18 @@ def _keyword_matches(keyword: str, norm_text: str) -> bool:
 
 
 def _match_mini_game_invite_keyword(text: str) -> str | None:
-    """扫一遍用户文本（小写 + strip），命中 accept/decline/later 关键词返
-    choice，未命中返 None。
+    """Return accept/decline/later for a user text, or None when unmatched.
 
-    所有 native locale 的关键词列表全扫一遍——用户可能切了 UI 语言但仍用
-    原语言打字。匹配走 ``_keyword_matches`` —— ASCII / Cyrillic 用 word-boundary
-    防止 'yes' 命中 'yesterday' / 'no' 命中 'no idea' 这种 codex P1 指出的英文
-    误命中；CJK 仍走 substring（语言特性使然）。
+    All native locale keyword lists are scanned because users may type in a
+    language different from the active UI language. ASCII and Cyrillic keywords
+    use word-boundary matching to avoid substring false positives; CJK keywords
+    keep substring matching.
 
-    **优先级 decline > later > accept**：句子里同时含 negation 和接受词时，
-    decline 永远优先于 later 优先于 accept——含明确 negation 的句子绝不能因
-    accept 关键词凑巧匹配就反向触发开游戏。CodeRabbit Major 指出后从
-    accept-priority 改成 decline-priority。
+    **Priority decline > later > accept**: a sentence with an explicit negation
+    must not open a game just because it also contains an accept keyword.
 
-    空 text / 命中无视为 None。"""
+    Empty text and unmatched text return None.
+    """
     if not text:
         return None
     norm = text.lower().strip()
@@ -7385,7 +7425,7 @@ def _match_mini_game_invite_keyword(text: str) -> str | None:
 
 _MINI_GAME_DIRECT_REQUEST_NEGATIONS = (
     "不想", "不玩", "不要", "不打", "别开", "算了", "没空", "拒绝",
-    "don't", "do not", "not now", "no thanks", "nope", "pass",
+    "don't", "do not", "not", "not now", "no thanks", "nope", "pass",
 )
 _MINI_GAME_DIRECT_REQUEST_RULES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
     (
@@ -7440,6 +7480,9 @@ def _direct_request_pair_has_scoped_negation(
         start = norm.find(token)
         while start >= 0:
             end = start + len(token)
+            if not _direct_request_has_word_boundaries(norm, start, end, token):
+                start = norm.find(token, start + 1)
+                continue
             if start < last_end and end > first_start:
                 return True
             if end <= first_start and first_start - end <= 4:

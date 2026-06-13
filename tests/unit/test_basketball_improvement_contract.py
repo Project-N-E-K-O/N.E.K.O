@@ -363,7 +363,7 @@ def test_basketball_i18n_keys_are_registered_in_main_locales():
 
     for locale_path in LOCALES_DIR.glob("*.json"):
         payload = json.loads(locale_path.read_text(encoding="utf-8"))
-        missing = sorted(key for key in required_keys if not _get_nested(payload, key))
+        missing = sorted(key for key in required_keys if _get_nested(payload, key) is None)
         assert not missing, f"{locale_path.name} missing basketball i18n keys: {missing}"
 
 
@@ -511,7 +511,7 @@ def test_basketball_prompt_localizations_do_not_fallback_to_english():
         prompts_game.get_basketball_quick_lines_prompt("zh", mode="duel")
     )
 
-    for lang in ("ja", "ko", "ru", "es", "pt"):
+    for lang in ("zh", "ja", "ko", "ru", "es", "pt"):
         assert prompts_game.get_basketball_system_prompt(lang, mode="spectator") != english_spectator
         assert prompts_game.get_basketball_system_prompt(lang, mode="duel") != english_duel
         assert prompts_game.get_basketball_system_prompt(lang, mode="shooter") != english_shooter
@@ -640,6 +640,10 @@ def test_basketball_scoring_waits_for_route_end_and_records_run_max():
     assert "var savedEntry = recordGame(game.bestStreak, getRunMaxDistancePx(), game.totalScore, game.shotTypeCount);" in html
     assert "routeEndPromise = fetch(url, { method: 'POST'" in html
 
+    route_ready_index = html.index("var routeEndReady = endedRoute && routeEndPromise ? routeEndPromise.catch(function () {}) : Promise.resolve();")
+    assert route_ready_index < html.index("var duelEntry = recordGame(", route_ready_index)
+    assert route_ready_index < html.index("var savedEntry = recordGame(", route_ready_index)
+
 
 @pytest.mark.unit
 def test_basketball_route_end_payload_contains_archive_score():
@@ -651,12 +655,37 @@ def test_basketball_route_end_payload_contains_archive_score():
 
 
 @pytest.mark.unit
+def test_basketball_route_end_payload_contains_horse_state():
+    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+
+    assert "if (isHorseMode()) {" in html
+    assert "payloadObj.horse = {" in html
+    assert "letters_player: game.horse.lettersPlayer," in html
+    assert "letters_neko: game.horse.lettersNeko," in html
+    assert "phase: game.horse.phase," in html
+    assert "turn_owner: game.horse.turnOwner," in html
+    assert "challenge: game.horse.challenge ? Object.assign({}, game.horse.challenge) : null" in html
+    assert "payloadObj.currentState.horse = payloadObj.horse;" in html
+
+
+@pytest.mark.unit
 def test_basketball_drain_reads_nested_result_line():
     html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
 
     assert "var result = item && typeof item.result === 'object' ? item.result : null;" in html
     assert "(result && (result.line || result.text || result.content))" in html
     assert "var control = (item && item.control) || (result && result.control) || {};" in html
+    assert "speakLine(line, control, Object.assign({" in html
+    assert "kind: 'user_reply'," in html
+
+
+@pytest.mark.unit
+def test_basketball_starts_route_before_avatar_loading():
+    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+
+    assert "initNekoAvatar().finally(function () { startRoute(); });" not in html
+    startup = html[html.rindex("startRoute();"):]
+    assert startup.index("startRoute();") < startup.index("initNekoAvatar();")
 
 
 @pytest.mark.unit

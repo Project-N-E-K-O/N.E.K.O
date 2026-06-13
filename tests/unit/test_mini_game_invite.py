@@ -1288,6 +1288,8 @@ def test_direct_basketball_request_opens_game_without_pending():
 def test_direct_basketball_request_ignores_casual_or_negated_mentions():
     assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '篮球新闻挺有意思') is None
     assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '我现在不想玩投篮') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'can we not play basketball?') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'can we not start soccer?') is None
     assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'I play basketball every week') is None
     assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, "let's start by talking about basketball") is None
 
@@ -1315,6 +1317,24 @@ def test_direct_soccer_request_opens_game_without_pending():
     assert result['action'] == 'open_game'
     assert result['game_type'] == 'soccer'
     assert result['game_url'].startswith('/soccer_demo?')
+
+
+def test_response_cooldowns_are_kept_per_game_after_later_invites():
+    state = sr._mini_game_invite_get_state(LANLAN)
+    state['delivered_at'] = time.time() - 60
+    state['responded_at'] = None
+    state['pending_session_id'] = 'soccer-sess'
+    state['last_game_type'] = 'soccer'
+    soccer_result = sr._apply_mini_game_invite_choice(LANLAN, 'decline', source='unit')
+    assert soccer_result['action'] == 'cooldown'
+
+    sr._mini_game_invite_record_delivered(LANLAN, 'basketball-sess')
+    state['last_game_type'] = 'basketball'
+    basketball_result = sr._apply_mini_game_invite_choice(LANLAN, 'accept', source='unit')
+    assert basketball_result['action'] == 'open_game'
+
+    assert sr._mini_game_invite_in_cooldown(LANLAN, 'soccer') is True
+    assert sr._mini_game_invite_in_cooldown(LANLAN, 'basketball') is True
 
 
 def test_maybe_apply_keyword_accept_returns_open_game():
@@ -1454,8 +1474,7 @@ def test_advance_response_returns_outcome_for_caller_ws_push():
 
 @pytest.mark.asyncio
 async def test_invite_delivery_pushes_options_via_websocket(monkeypatch):
-    """投递成功后必须 push 一条 mini_game_invite_options WS message 给前端，
-    带 options + session_id + game_type。前端 ChoicePrompt 渲染依赖这条。"""
+    """Successful invite delivery pushes mini_game_invite_options to the client."""
     monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
     mgr = _make_mgr()
     mgr.websocket = MagicMock()

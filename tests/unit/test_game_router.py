@@ -547,7 +547,9 @@ def test_basketball_template_contract():
     assert "i18n_language: getRequestLanguage()" in html
     assert "function applyCharacterIdentity(charData)" in html
     assert "lanlanName = resolvedName" in html
-    assert "initNekoAvatar().finally(function () { startRoute(); })" in html
+    assert "initNekoAvatar().finally(function () { startRoute(); })" not in html
+    startup = html[html.rindex("startRoute();"):]
+    assert startup.index("startRoute();") < startup.index("initNekoAvatar();")
     assert "voiceArbiter" in html
     assert "mirror_text: false" in html
     assert "post('/mirror-assistant'" in html
@@ -801,6 +803,19 @@ async def test_basketball_leaderboard_allows_recently_ended_route_score(tmp_path
 
         assert result["ok"] is True
         assert result["rank"] == 1
+
+        duplicate = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+            "session_id": "ended-session",
+            "lanlan_name": "Lan Ended",
+            "score": 99,
+            "streak": 9,
+            "max_distance_px": 500,
+            "mode": "horse",
+        }))
+
+        assert duplicate == {"ok": False, "reason": "invalid_session"}
+        leaderboard = await game_router.game_basketball_leaderboard("basketball")
+        assert leaderboard["total_scores"] == 1
 
 
 @pytest.mark.unit
