@@ -5026,7 +5026,10 @@ describe('App', () => {
     fireEvent.pointerUp(fan, { pointerId: 7, clientX: 101, clientY: 100, buttons: 0, pointerType: 'mouse' });
   });
 
-  it('reopens compact input tools at the last wheel position', () => {
+  // 折中语义（取舍脉络见 App.tsx openCompactInputToolFan 注释）：
+  // 轮盘转角在「会话内」（组件存活期间）延续上次滚到的位置，关闭再展开不弹回默认；
+  // 但「不」持久化到 localStorage —— 页面刷新/组件重挂后随 useState 初值复位到环位 0。
+  it('keeps the compact input tool wheel position within a session but resets after remount', () => {
     const { unmount } = render(
       <App
         chatSurfaceMode="compact"
@@ -5041,14 +5044,17 @@ describe('App', () => {
 
     fireEvent.wheel(fan, { deltaY: 80 });
     expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
-    expect(window.localStorage.getItem(COMPACT_INPUT_TOOL_WHEEL_INDEX_STORAGE_KEY)).toBe('1');
+    // 转角不再写入 localStorage —— 该 key 始终为空。
+    expect(window.localStorage.getItem(COMPACT_INPUT_TOOL_WHEEL_INDEX_STORAGE_KEY)).toBeNull();
 
+    // 会话内关闭再展开：保持上次转出来的位置（avatar 仍在正中槽位 0）。
     fireEvent.click(actionButton);
     expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
     fireEvent.click(actionButton);
     fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
     expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
 
+    // 卸载再重挂（模拟页面刷新）：转角复位回默认环位 0（screenshot 居中）。
     unmount();
     render(
       <App
@@ -5058,7 +5064,9 @@ describe('App', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
     fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
-    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+    // 重挂后依然不产生持久化写入。
+    expect(window.localStorage.getItem(COMPACT_INPUT_TOOL_WHEEL_INDEX_STORAGE_KEY)).toBeNull();
   });
 
   it('stops compact input tool wheel motion on pointer release', async () => {
