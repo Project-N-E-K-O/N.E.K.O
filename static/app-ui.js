@@ -1446,7 +1446,11 @@
 
             } else if (effectiveModelType === 'pngtuber') {
                 const pngtuberContainer = document.getElementById('pngtuber-container');
-                const pngtuberConfig = catgirlConfig.pngtuber || catgirlConfig._reserved?.avatar?.pngtuber || window.lanlan_config?.pngtuber || {};
+                const basePngtuberConfig = catgirlConfig.pngtuber || catgirlConfig._reserved?.avatar?.pngtuber || window.lanlan_config?.pngtuber || {};
+                const pngtuberConfig = pendingPngtuberReturnConfig
+                    ? Object.assign({}, basePngtuberConfig, pendingPngtuberReturnConfig)
+                    : basePngtuberConfig;
+                pendingPngtuberReturnConfig = null;
 
                 if (window.loadPNGTuberAvatar) {
                     await window.loadPNGTuberAvatar(pngtuberConfig);
@@ -1559,6 +1563,7 @@
     let multiWindowReturnBallDragState = null;
     let idleReturnBallDesktopDragStateFrame = 0;
     let idleReturnBallDesktopDragStatePending = null;
+    let pendingPngtuberReturnConfig = null;
 
     function waitForAnimationFrames(count) {
         const remaining = Math.max(1, Number(count) || 1);
@@ -1581,6 +1586,112 @@
         return style.display !== 'none' && style.visibility !== 'hidden';
     }
 
+    function clampPngtuberOffset(value) {
+        return Math.max(-5000, Math.min(5000, Number(value) || 0));
+    }
+
+    function getPngtuberManager() {
+        return window.pngtuberManager || null;
+    }
+
+    function syncPngtuberReturnConfig(config) {
+        if (!config) return null;
+        const manager = getPngtuberManager();
+        if (manager && manager.config) {
+            manager.config = Object.assign({}, manager.config, config);
+            if (typeof manager.applyTransform === 'function') {
+                manager.applyTransform();
+            }
+            if (typeof manager.syncGlobalConfig === 'function') {
+                manager.syncGlobalConfig();
+            } else if (window.lanlan_config && typeof window.lanlan_config === 'object') {
+                window.lanlan_config.pngtuber = Object.assign({}, manager.config);
+            }
+            if (typeof manager.updateFloatingButtonsPosition === 'function') {
+                manager.updateFloatingButtonsPosition();
+            }
+            if (typeof manager.updateLockIconPosition === 'function') {
+                manager.updateLockIconPosition();
+            }
+            return Object.assign({}, manager.config);
+        }
+        if (window.lanlan_config && typeof window.lanlan_config === 'object') {
+            window.lanlan_config.pngtuber = Object.assign({}, window.lanlan_config.pngtuber || {}, config);
+            return Object.assign({}, window.lanlan_config.pngtuber);
+        }
+        return Object.assign({}, config);
+    }
+
+    function applyPngtuberScreenDelta(screenDx, screenDy) {
+        const manager = getPngtuberManager();
+        const baseConfig = Object.assign(
+            {},
+            window.lanlan_config && window.lanlan_config.pngtuber ? window.lanlan_config.pngtuber : {},
+            manager && manager.config ? manager.config : {}
+        );
+        baseConfig.offset_x = clampPngtuberOffset((Number(baseConfig.offset_x) || 0) + screenDx);
+        baseConfig.offset_y = clampPngtuberOffset((Number(baseConfig.offset_y) || 0) + screenDy);
+        return syncPngtuberReturnConfig(baseConfig);
+    }
+
+    function getPngtuberScreenRect() {
+        const manager = getPngtuberManager();
+        const candidates = [
+            manager && manager.image,
+            manager && manager.canvasElement,
+            manager && manager.imageElement,
+            document.querySelector('#pngtuber-container .pngtuber-image'),
+            document.getElementById('pngtuber-container')
+        ];
+        for (const candidate of candidates) {
+            if (!candidate || typeof candidate.getBoundingClientRect !== 'function') continue;
+            try {
+                const rect = normalizeNekoScreenRect(candidate.getBoundingClientRect());
+                if (rect) return rect;
+            } catch (_) {}
+        }
+        return null;
+    }
+
+    function getPngtuberSnapDelta(rect) {
+        const normalized = normalizeNekoScreenRect(rect);
+        if (!normalized) return null;
+        const viewportWidth = Math.max(1, window.innerWidth || document.documentElement.clientWidth || 1);
+        const viewportHeight = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 1);
+        const margin = 12;
+
+        let dx = 0;
+        let dy = 0;
+        if (normalized.width <= viewportWidth - margin * 2) {
+            if (normalized.left < margin) dx = margin - normalized.left;
+            if (normalized.right + dx > viewportWidth - margin) dx = viewportWidth - margin - normalized.right;
+        } else {
+            dx = viewportWidth / 2 - (normalized.left + normalized.width / 2);
+        }
+        if (normalized.height <= viewportHeight - margin * 2) {
+            if (normalized.top < margin) dy = margin - normalized.top;
+            if (normalized.bottom + dy > viewportHeight - margin) dy = viewportHeight - margin - normalized.bottom;
+        } else {
+            dy = viewportHeight / 2 - (normalized.top + normalized.height / 2);
+        }
+
+        if (Math.abs(dx) < 1) dx = 0;
+        if (Math.abs(dy) < 1) dy = 0;
+        return { dx, dy };
+    }
+
+    async function snapPngtuberIntoScreen() {
+        const manager = getPngtuberManager();
+        if (!manager || !manager.config || !isModelContainerVisible('pngtuber-container')) {
+            return false;
+        }
+        const delta = getPngtuberSnapDelta(getPngtuberScreenRect());
+        if (!delta || (!delta.dx && !delta.dy)) return false;
+        applyPngtuberScreenDelta(delta.dx, delta.dy);
+        await waitForAnimationFrames(1);
+        return true;
+    }
+
     async function saveReturnModelPosition(modelType) {
         try {
             if (modelType === 'mmd') {
@@ -1594,6 +1705,13 @@
                 const interaction = window.vrmManager && window.vrmManager.interaction;
                 if (interaction && typeof interaction._savePositionAfterInteraction === 'function') {
                     await interaction._savePositionAfterInteraction();
+                }
+                return;
+            }
+            if (modelType === 'pngtuber') {
+                const manager = getPngtuberManager();
+                if (manager && typeof manager.saveCurrentConfig === 'function') {
+                    await manager.saveCurrentConfig();
                 }
                 return;
             }
@@ -1638,6 +1756,17 @@
                     }
                 } else if (shouldSaveWhenUnchanged) {
                     await saveReturnModelPosition('vrm');
+                }
+                return;
+            }
+
+            if ((window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber'
+                && getPngtuberManager()
+                && isModelContainerVisible('pngtuber-container')) {
+                activeModelType = 'pngtuber';
+                const snapped = await snapPngtuberIntoScreen();
+                if (snapped || shouldSaveWhenUnchanged) {
+                    await saveReturnModelPosition('pngtuber');
                 }
                 return;
             }
@@ -1774,6 +1903,13 @@
             } catch (_) {}
         }
 
+        if (manager.image && typeof manager.image.getBoundingClientRect === 'function') {
+            try {
+                const rect = normalizeNekoScreenRect(manager.image.getBoundingClientRect());
+                if (rect) return rect;
+            } catch (_) {}
+        }
+
         const model = typeof manager.getCurrentModel === 'function'
             ? manager.getCurrentModel()
             : manager.currentModel;
@@ -1793,7 +1929,10 @@
     }
 
     function getActiveModelTransitionRect() {
+        const isPngtuberModelActive = (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber'
+            && isModelContainerActive('pngtuber-container');
         const candidates = [
+            { active: isPngtuberModelActive, manager: window.pngtuberManager },
             { active: isModelContainerActive('mmd-container'), manager: window.mmdManager },
             { active: isModelContainerActive('vrm-container'), manager: window.vrmManager },
             { active: true, manager: window.live2dManager }
@@ -3296,8 +3435,9 @@
             const _live2dGoodbyeBtn = document.getElementById('live2d-btn-goodbye');
             const _vrmGoodbyeBtn = document.getElementById('vrm-btn-goodbye');
             const _mmdGoodbyeBtn = document.getElementById('mmd-btn-goodbye');
+            const _pngtuberGoodbyeBtn = document.getElementById('pngtuber-btn-goodbye');
             let savedGoodbyeRect = null;
-            for (const btn of [_mmdGoodbyeBtn, _vrmGoodbyeBtn, _live2dGoodbyeBtn]) {
+            for (const btn of [_mmdGoodbyeBtn, _vrmGoodbyeBtn, _pngtuberGoodbyeBtn, _live2dGoodbyeBtn]) {
                 if (!btn) continue;
                 try {
                     const r = btn.getBoundingClientRect();
@@ -3855,32 +3995,7 @@
                         }
                     }
                     if (isReturningToPngtuber && window.pngtuberManager && window.pngtuberManager.config) {
-                        const pngtuberManager = window.pngtuberManager;
-                        const currentOffsetX = Number(pngtuberManager.config.offset_x) || 0;
-                        const currentOffsetY = Number(pngtuberManager.config.offset_y) || 0;
-                        pngtuberManager.config.offset_x = Math.max(-5000, Math.min(5000, currentOffsetX + screenDx));
-                        pngtuberManager.config.offset_y = Math.max(-5000, Math.min(5000, currentOffsetY + screenDy));
-                        if (typeof pngtuberManager.applyTransform === 'function') {
-                            pngtuberManager.applyTransform();
-                        }
-                        if (typeof pngtuberManager.syncGlobalConfig === 'function') {
-                            pngtuberManager.syncGlobalConfig();
-                        } else if (window.lanlan_config && typeof window.lanlan_config === 'object') {
-                            window.lanlan_config.pngtuber = Object.assign({}, pngtuberManager.config);
-                        }
-                        if (typeof pngtuberManager.updateFloatingButtonsPosition === 'function') {
-                            pngtuberManager.updateFloatingButtonsPosition();
-                        }
-                        if (typeof pngtuberManager.updateLockIconPosition === 'function') {
-                            pngtuberManager.updateLockIconPosition();
-                        }
-                        if (typeof pngtuberManager.saveCurrentConfig === 'function') {
-                            try {
-                                await pngtuberManager.saveCurrentConfig();
-                            } catch (saveError) {
-                                console.warn('[App] PNGTuber return offset save failed:', saveError);
-                            }
-                        }
+                        pendingPngtuberReturnConfig = applyPngtuberScreenDelta(screenDx, screenDy);
                     }
                     returnModelWasMoved = true;
                 }
@@ -4256,6 +4371,7 @@
         window.addEventListener('live2d-return-click', handleReturnClick);
         window.addEventListener('vrm-return-click', handleReturnClick);
         window.addEventListener('mmd-return-click', handleReturnClick);
+        window.addEventListener('pngtuber-return-click', handleReturnClick);
     }
 
     mod.initFloatingButtonListeners = initFloatingButtonListeners;
