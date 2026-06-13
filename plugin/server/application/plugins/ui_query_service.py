@@ -470,6 +470,22 @@ def _hosted_skip_whitespace(source: str, index: int) -> int:
     return index
 
 
+def _hosted_skip_trivia(source: str, index: int) -> int:
+    while index < len(source):
+        index = _hosted_skip_whitespace(source, index)
+        if index + 1 >= len(source) or source[index] != "/":
+            return index
+        next_char = source[index + 1]
+        if next_char == "/":
+            index = _hosted_skip_line_comment(source, index)
+            continue
+        if next_char == "*":
+            index = _hosted_skip_block_comment(source, index)
+            continue
+        return index
+    return index
+
+
 def _hosted_skip_quoted(source: str, index: int) -> int:
     quote = source[index]
     index += 1
@@ -557,7 +573,7 @@ def _hosted_relative_specifier(value: str | None) -> str | None:
 
 
 def _hosted_import_specifier(source: str, index: int) -> str | None:
-    index = _hosted_skip_whitespace(source, index + len("import"))
+    index = _hosted_skip_trivia(source, index + len("import"))
     if index >= len(source) or source[index] in {"(", "."}:
         return None
     if source[index] in {"'", '"'}:
@@ -566,7 +582,7 @@ def _hosted_import_specifier(source: str, index: int) -> str | None:
     from_index = _hosted_find_keyword_before_statement_end(source, index, "from")
     if from_index < 0:
         return None
-    specifier_index = _hosted_skip_whitespace(source, from_index + len("from"))
+    specifier_index = _hosted_skip_trivia(source, from_index + len("from"))
     if specifier_index >= len(source) or source[specifier_index] not in {"'", '"'}:
         return None
     read = _hosted_read_quoted(source, specifier_index)
@@ -574,15 +590,15 @@ def _hosted_import_specifier(source: str, index: int) -> str | None:
 
 
 def _hosted_export_specifier(source: str, index: int) -> str | None:
-    index = _hosted_skip_whitespace(source, index + len("export"))
+    index = _hosted_skip_trivia(source, index + len("export"))
     if _hosted_matches_keyword(source, index, "type"):
-        index = _hosted_skip_whitespace(source, index + len("type"))
+        index = _hosted_skip_trivia(source, index + len("type"))
     if index >= len(source) or source[index] not in {"{", "*"}:
         return None
     from_index = _hosted_find_keyword_before_statement_end(source, index, "from")
     if from_index < 0:
         return None
-    specifier_index = _hosted_skip_whitespace(source, from_index + len("from"))
+    specifier_index = _hosted_skip_trivia(source, from_index + len("from"))
     if specifier_index >= len(source) or source[specifier_index] not in {"'", '"'}:
         return None
     read = _hosted_read_quoted(source, specifier_index)
