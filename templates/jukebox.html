@@ -25,6 +25,13 @@
             -webkit-user-select: none;
         }
 
+        html.neko-jukebox-standalone-host,
+        html.neko-jukebox-standalone-host body,
+        html[data-theme="dark"].neko-jukebox-standalone-host,
+        html[data-theme="dark"].neko-jukebox-standalone-host body.neko-jukebox-standalone-page {
+            background: #87CEEB !important;
+        }
+
         .jukebox-wrapper {
             position: fixed !important;
             inset: 0 !important;
@@ -101,10 +108,20 @@
         body.neko-jukebox-standalone-page .jukebox-resize-handle {
             touch-action: none;
         }
+
+        body.neko-jukebox-standalone-page .jukebox-container,
+        body.neko-jukebox-standalone-page .jukebox-container.open,
+        body.neko-jukebox-standalone-page .jukebox-container.hidden {
+            width: 100% !important;
+            height: 100% !important;
+            transition: none !important;
+            transform: none !important;
+        }
     </style>
 </head>
 <body>
     <script>
+        document.documentElement.classList.add('neko-jukebox-standalone-host');
         window.__NEKO_JUKEBOX_STANDALONE__ = true;
     </script>
     <script src="/static/Jukebox.js"></script>

@@ -537,6 +537,7 @@
     }
 
     neutralizeLegacyRegions(container, controller);
+    document.documentElement.classList.add('neko-jukebox-standalone-host');
     document.body.classList.add('neko-jukebox-standalone-page');
 
     bindStandaloneDrag(container, controller);

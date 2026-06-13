@@ -7,44 +7,67 @@ from playwright.sync_api import Page
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 JUKEBOX_SCRIPT = (REPO_ROOT / "static" / "Jukebox.js").read_text(encoding="utf-8")
+JUKEBOX_TEMPLATE = (REPO_ROOT / "templates" / "jukebox.html").read_text(encoding="utf-8")
 
 HARNESS_HTML = """
 <!DOCTYPE html>
 <html>
 <body>
-  <table class="jukebox-table">
-    <colgroup>
-      <col class="jukebox-col-sequence">
-      <col class="jukebox-col-song">
-      <col class="jukebox-col-artist">
-      <col class="jukebox-col-action">
-    </colgroup>
-    <thead>
-      <tr>
-        <th class="jukebox-sequence-th">
-          <div class="jukebox-sequence-header">
-            <span>序号</span>
-            <button type="button" class="jukebox-sort-lock-btn" onclick="Jukebox.toggleSongSortLock(event)" aria-label="解锁歌曲排序" aria-pressed="false"></button>
-          </div>
-        </th>
-        <th>歌曲</th>
-        <th>艺术家</th>
-        <th>操作</th>
-      </tr>
-    </thead>
-    <tbody id="jukebox-song-list"></tbody>
-  </table>
-  <div class="jukebox-controls-row">
-    <div class="jukebox-progress">
-      <span id="jukebox-time-current">0:00</span>
-      <input type="range" id="jukebox-progress-slider" min="0" max="100" step="0.1" value="0">
-      <span id="jukebox-time-total">0:00</span>
+  <div class="jukebox-container open">
+    <div class="jukebox-header">
+      <div class="jukebox-header-left"></div>
+      <div class="jukebox-header-drag-fill"></div>
+      <div class="jukebox-header-buttons"></div>
     </div>
-    <div class="jukebox-playback-controls">
-      <div id="jukebox-mode-controls" class="jukebox-mode-controls"></div>
-      <button id="jukebox-control-prev" type="button" onclick="Jukebox.playAdjacentSong(-1)"></button>
-      <button id="jukebox-control-play-pause" type="button" onclick="Jukebox.toggleGlobalPlayPause()"></button>
-      <button id="jukebox-control-next" type="button" onclick="Jukebox.playAdjacentSong(1)"></button>
+    <div class="jukebox-content">
+      <table class="jukebox-table">
+        <colgroup>
+          <col class="jukebox-col-sequence">
+          <col class="jukebox-col-song">
+          <col class="jukebox-col-artist">
+          <col class="jukebox-col-action">
+        </colgroup>
+        <thead>
+          <tr>
+            <th class="jukebox-sequence-th">
+              <div class="jukebox-sequence-header">
+                <span>序号</span>
+                <button type="button" class="jukebox-sort-lock-btn" onclick="Jukebox.toggleSongSortLock(event)" aria-label="解锁歌曲排序" aria-pressed="false"></button>
+              </div>
+            </th>
+            <th>歌曲</th>
+            <th>艺术家</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="jukebox-song-list"></tbody>
+      </table>
+    </div>
+    <div class="jukebox-controls-row">
+      <div class="jukebox-progress">
+        <span id="jukebox-time-current">0:00</span>
+        <input type="range" id="jukebox-progress-slider" min="0" max="100" step="0.1" value="0">
+        <span id="jukebox-time-total">0:00</span>
+      </div>
+      <div class="jukebox-playback-controls">
+        <div id="jukebox-mode-controls" class="jukebox-mode-controls"></div>
+        <button id="jukebox-control-prev" type="button" onclick="Jukebox.playAdjacentSong(-1)"></button>
+        <button id="jukebox-control-play-pause" type="button" onclick="Jukebox.toggleGlobalPlayPause()"></button>
+        <button id="jukebox-control-next" type="button" onclick="Jukebox.playAdjacentSong(1)"></button>
+        <div class="jukebox-volume-wrapper">
+          <button id="jukebox-speaker-btn" class="jukebox-speaker-btn" type="button">
+            <span class="speaker-icon"></span>
+            <span class="speaker-muted-icon" style="display: none;"></span>
+          </button>
+          <div class="jukebox-volume-popup">
+            <div class="jukebox-volume-slider-container">
+              <div class="jukebox-volume-track"></div>
+              <input type="range" id="jukebox-volume-slider" min="0" max="1" step="0.01" value="1">
+            </div>
+            <div id="jukebox-volume-value">100%</div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </body>
@@ -81,6 +104,7 @@ def setup_jukebox_page(mock_page: Page) -> None:
         """
     )
     mock_page.add_script_tag(content=JUKEBOX_SCRIPT)
+    mock_page.evaluate("() => window.Jukebox.injectStyles()")
     mock_page.evaluate(
         """
         () => {
@@ -126,6 +150,185 @@ def test_jukebox_header_owns_top_drag_region_instead_of_container_padding():
 
     assert re.search(r"\.jukebox-content\s*\{[\s\S]*?margin:\s*0 20px;", JUKEBOX_SCRIPT)
     assert re.search(r"\.jukebox-controls-row\s*\{[\s\S]*?margin:\s*15px 20px 20px;", JUKEBOX_SCRIPT)
+
+
+def test_jukebox_list_area_flexes_between_header_and_bottom_player():
+    container_match = re.search(r"\.jukebox-container\s*\{(?P<body>[\s\S]*?)\n\s*\}", JUKEBOX_SCRIPT)
+    assert container_match is not None
+    container_body = container_match.group("body")
+    assert re.search(r"display:\s*flex;", container_body)
+    assert re.search(r"flex-direction:\s*column;", container_body)
+    assert re.search(r"overflow:\s*hidden;", container_body)
+
+    content_match = re.search(r"\.jukebox-content\s*\{(?P<body>[\s\S]*?)\n\s*\}", JUKEBOX_SCRIPT)
+    assert content_match is not None
+    content_body = content_match.group("body")
+    assert re.search(r"flex:\s*1 1 auto;", content_body)
+    assert re.search(r"overflow-y:\s*auto;", content_body)
+    assert re.search(r"min-height:\s*0;", content_body)
+    assert not re.search(r"max-height:\s*270px;", content_body)
+
+    controls_match = re.search(r"\.jukebox-controls-row\s*\{(?P<body>[\s\S]*?)\n\s*\}", JUKEBOX_SCRIPT)
+    assert controls_match is not None
+    assert re.search(r"flex:\s*0 0 auto;", controls_match.group("body"))
+
+
+def test_jukebox_standalone_container_disables_open_close_transform_transition():
+    assert "html.neko-jukebox-standalone-host" in JUKEBOX_SCRIPT
+    assert "html[data-theme=\"dark\"].neko-jukebox-standalone-host" in JUKEBOX_SCRIPT
+    assert "body.neko-jukebox-standalone-page .jukebox-container.open" in JUKEBOX_SCRIPT
+    assert "body.neko-jukebox-standalone-page .jukebox-container.hidden" in JUKEBOX_SCRIPT
+    assert "body.neko-jukebox-standalone-page .jukebox-container.open" in JUKEBOX_TEMPLATE
+    assert "body.neko-jukebox-standalone-page .jukebox-container.hidden" in JUKEBOX_TEMPLATE
+    assert "transition: none !important;" in JUKEBOX_TEMPLATE
+    assert "transform: none !important;" in JUKEBOX_TEMPLATE
+
+
+@pytest.mark.frontend
+def test_jukebox_web_window_size_is_saved_and_restored(mock_page: Page):
+    setup_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        () => {
+          const J = window.Jukebox;
+          const container = document.querySelector('.jukebox-container');
+          container.style.width = '432px';
+          container.style.height = '376px';
+          J.saveWindowSize(container);
+
+          container.style.width = '';
+          container.style.height = '';
+          J.applyStoredWindowSize(container);
+
+          return {
+            stored: JSON.parse(window.__jukeboxLocalStore['neko.jukebox.windowSize']),
+            width: container.style.width,
+            height: container.style.height
+          };
+        }
+        """
+    )
+
+    assert result["stored"] == {"width": 432, "height": 376}
+    assert result["width"] == "432px"
+    assert result["height"] == "376px"
+
+
+@pytest.mark.frontend
+def test_jukebox_content_height_expands_while_bottom_player_stays_inside(mock_page: Page):
+    setup_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        () => {
+          const J = window.Jukebox;
+          J.State.songs = Array.from({ length: 30 }, (_, index) => ({
+            id: `song-${index}`,
+            name: `Song ${index}`,
+            artist: 'Artist'
+          }));
+          J.State.songElements = {};
+          J.renderList();
+
+          const container = document.querySelector('.jukebox-container');
+          const content = document.querySelector('.jukebox-content');
+          const controls = document.querySelector('.jukebox-controls-row');
+
+          const measure = (height) => {
+            container.style.height = `${height}px`;
+            const containerRect = container.getBoundingClientRect();
+            const contentRect = content.getBoundingClientRect();
+            const controlsRect = controls.getBoundingClientRect();
+            return {
+              contentHeight: contentRect.height,
+              controlsBottomGap: containerRect.bottom - controlsRect.bottom,
+              contentClientHeight: content.clientHeight,
+              contentScrollHeight: content.scrollHeight
+            };
+          };
+
+          return {
+            compact: measure(360),
+            roomy: measure(560),
+            containerOverflow: getComputedStyle(container).overflow,
+            contentOverflowY: getComputedStyle(content).overflowY,
+            controlsFlex: getComputedStyle(controls).flex
+          };
+        }
+        """
+    )
+
+    assert result["containerOverflow"] == "hidden"
+    assert result["contentOverflowY"] == "auto"
+    assert result["controlsFlex"] == "0 0 auto"
+    assert result["compact"]["contentScrollHeight"] > result["compact"]["contentClientHeight"]
+    assert result["roomy"]["contentHeight"] - result["compact"]["contentHeight"] > 150
+    assert abs(result["compact"]["controlsBottomGap"] - 20) <= 1
+    assert abs(result["roomy"]["controlsBottomGap"] - 20) <= 1
+
+
+@pytest.mark.frontend
+def test_jukebox_volume_wheel_adjusts_volume_without_scrolling_container(mock_page: Page):
+    setup_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        () => {
+          const J = window.Jukebox;
+          const calls = [];
+          J.State.player = {
+            audio: { volume: 0.5 },
+            volume(value) {
+              this.audio.volume = value;
+              calls.push(value);
+            }
+          };
+          J.State.isMuted = false;
+          J.State.savedVolume = 0.5;
+          J.initVolumeSlider();
+
+          const container = document.querySelector('.jukebox-container');
+          const slider = document.getElementById('jukebox-volume-slider');
+          const value = document.getElementById('jukebox-volume-value');
+          let containerWheelCount = 0;
+          container.addEventListener('wheel', () => {
+            containerWheelCount += 1;
+          });
+
+          const upEvent = new WheelEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true });
+          const upDispatchResult = slider.dispatchEvent(upEvent);
+          const afterUp = { slider: slider.value, value: value.textContent, volume: J.State.player.audio.volume };
+
+          const downEvent = new WheelEvent('wheel', { deltaY: 120, bubbles: true, cancelable: true });
+          const downDispatchResult = slider.dispatchEvent(downEvent);
+
+          return {
+            calls,
+            afterUp,
+            finalSlider: slider.value,
+            finalValue: value.textContent,
+            finalVolume: J.State.player.audio.volume,
+            upDefaultPrevented: upEvent.defaultPrevented,
+            downDefaultPrevented: downEvent.defaultPrevented,
+            upDispatchResult,
+            downDispatchResult,
+            containerWheelCount
+          };
+        }
+        """
+    )
+
+    assert result["calls"] == [0.55, 0.5]
+    assert result["afterUp"] == {"slider": "0.55", "value": "55%", "volume": 0.55}
+    assert result["finalSlider"] == "0.5"
+    assert result["finalValue"] == "50%"
+    assert result["finalVolume"] == 0.5
+    assert result["upDefaultPrevented"] is True
+    assert result["downDefaultPrevented"] is True
+    assert result["upDispatchResult"] is False
+    assert result["downDispatchResult"] is False
+    assert result["containerWheelCount"] == 0
 
 
 @pytest.mark.frontend
