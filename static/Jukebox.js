@@ -5379,8 +5379,11 @@ window.Jukebox = {
       const computed = window.getComputedStyle(container);
       const widthExtras = startRect.width - parseFloat(computed.width);
       const heightExtras = startRect.height - parseFloat(computed.height);
+      const initialContentWidth = Math.max(0, startRect.width - widthExtras);
+      const initialContentHeight = Math.max(0, startRect.height - heightExtras);
       const maxWidth = Math.max(MIN_WIDTH, window.innerWidth - 16);
       const maxHeight = Math.max(MIN_HEIGHT, window.innerHeight - 16);
+      let didResize = false;
 
       document.body.classList.add('jukebox-resizing');
 
@@ -5410,8 +5413,15 @@ window.Jukebox = {
           newTop = startTop + (startRect.height - newOuterH);
         }
 
-        container.style.width = Math.max(0, newOuterW - widthExtras) + 'px';
-        container.style.height = Math.max(0, newOuterH - heightExtras) + 'px';
+        const nextWidth = Math.max(0, newOuterW - widthExtras);
+        const nextHeight = Math.max(0, newOuterH - heightExtras);
+        container.style.width = nextWidth + 'px';
+        container.style.height = nextHeight + 'px';
+        if (!didResize) {
+          didResize =
+            Math.abs(nextWidth - initialContentWidth) > 0.5 ||
+            Math.abs(nextHeight - initialContentHeight) > 0.5;
+        }
 
         const wrapper = container.parentElement;
         if (wrapper && (dir.includes('w') || dir.includes('n'))) {
@@ -5423,8 +5433,10 @@ window.Jukebox = {
       };
 
       const cleanup = () => {
-        Jukebox.State.hasCustomWindowSize = true;
-        Jukebox.saveWindowSize(container);
+        if (didResize) {
+          Jukebox.State.hasCustomWindowSize = true;
+          Jukebox.saveWindowSize(container);
+        }
         document.body.classList.remove('jukebox-resizing');
         document.removeEventListener('mousemove', onPointerMove);
         document.removeEventListener('touchmove', onPointerMove);
@@ -5693,6 +5705,8 @@ window.Jukebox = {
 
       .jukebox-container {
         width: ${Jukebox.Config.width};
+        height: calc(100vh - 40px);
+        max-height: calc(100vh - 40px);
         background: ${Jukebox.Config.container.background};
         border-radius: 12px;
         box-shadow: ${Jukebox.Config.container.boxShadow};

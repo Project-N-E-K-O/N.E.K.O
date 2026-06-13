@@ -158,6 +158,8 @@ def test_jukebox_list_area_flexes_between_header_and_bottom_player():
     container_body = container_match.group("body")
     assert re.search(r"display:\s*flex;", container_body)
     assert re.search(r"flex-direction:\s*column;", container_body)
+    assert re.search(r"height:\s*calc\(100vh - 40px\);", container_body)
+    assert re.search(r"max-height:\s*calc\(100vh - 40px\);", container_body)
     assert re.search(r"overflow:\s*hidden;", container_body)
 
     content_match = re.search(r"\.jukebox-content\s*\{(?P<body>[\s\S]*?)\n\s*\}", JUKEBOX_SCRIPT)
@@ -173,7 +175,7 @@ def test_jukebox_list_area_flexes_between_header_and_bottom_player():
     assert re.search(r"flex:\s*0 0 auto;", controls_match.group("body"))
 
 
-def test_jukebox_standalone_container_disables_open_close_transform_transition():
+def test_jukebox_injected_standalone_styles_disable_open_close_transform_transition():
     assert "html.neko-jukebox-standalone-host" in JUKEBOX_SCRIPT
     assert "html[data-theme=\"dark\"].neko-jukebox-standalone-host" in JUKEBOX_SCRIPT
     assert "body.neko-jukebox-standalone-page .jukebox-container.open" in JUKEBOX_SCRIPT
@@ -213,6 +215,52 @@ def test_jukebox_web_window_size_is_saved_and_restored(mock_page: Page):
     assert result["stored"] == {"width": 432, "height": 376}
     assert result["width"] == "432px"
     assert result["height"] == "376px"
+
+
+@pytest.mark.frontend
+def test_jukebox_web_resize_click_without_delta_does_not_save_size(mock_page: Page):
+    setup_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        () => {
+          const J = window.Jukebox;
+          const container = document.querySelector('.jukebox-container');
+          const handle = document.createElement('div');
+          handle.className = 'jukebox-resize-handle';
+          handle.dataset.dir = 'se';
+          container.appendChild(handle);
+
+          J.State.hasCustomWindowSize = false;
+          J.bindResize(container);
+
+          handle.dispatchEvent(new MouseEvent('mousedown', {
+            bubbles: true,
+            cancelable: true,
+            clientX: 100,
+            clientY: 100
+          }));
+          document.dispatchEvent(new MouseEvent('mouseup', {
+            bubbles: true,
+            cancelable: true,
+            clientX: 100,
+            clientY: 100
+          }));
+
+          return {
+            hasCustomWindowSize: J.State.hasCustomWindowSize,
+            stored: window.__jukeboxLocalStore['neko.jukebox.windowSize'] || null,
+            resizingClass: document.body.classList.contains('jukebox-resizing')
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "hasCustomWindowSize": False,
+        "stored": None,
+        "resizingClass": False,
+    }
 
 
 @pytest.mark.frontend

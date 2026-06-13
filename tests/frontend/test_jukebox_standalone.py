@@ -84,7 +84,7 @@ def test_jukebox_header_buttons_are_outside_native_drag_region():
     assert "setAppRegion(el, 'no-drag')" in STANDALONE_SCRIPT
 
 
-def test_jukebox_standalone_container_disables_open_close_transform_transition():
+def test_jukebox_standalone_template_disables_open_close_transform_transition():
     assert "body.neko-jukebox-standalone-page .jukebox-container.open" in JUKEBOX_TEMPLATE
     assert "body.neko-jukebox-standalone-page .jukebox-container.hidden" in JUKEBOX_TEMPLATE
     assert "transition: none !important;" in JUKEBOX_TEMPLATE
