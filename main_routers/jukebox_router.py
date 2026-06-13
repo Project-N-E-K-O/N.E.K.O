@@ -47,6 +47,7 @@ CHUNK_SIZE = 1024 * 1024  # 1MB chunks
 ALLOWED_AUDIO_EXTENSIONS = {'.mp3', '.wav', '.ogg', '.flac'}
 ALLOWED_ACTION_EXTENSIONS = {'.vmd', '.bvh', '.fbx', '.vrma'}
 
+import re
 import io
 
 def check_file_size(file: UploadFile, max_size: int) -> int:
@@ -448,7 +449,7 @@ async def get_config():
 
 @router.get("/config/summary")
 async def get_config_summary():
-    """获取轻量配置摘要，用于前端轮询判断是否需要重新拉取完整歌单。"""
+    """Return a lightweight config summary for polling full playlist refreshes."""
     config_mgr = get_config_manager()
     jukebox_config = JukeboxConfig(config_mgr)
     return build_config_summary(jukebox_config.data)
