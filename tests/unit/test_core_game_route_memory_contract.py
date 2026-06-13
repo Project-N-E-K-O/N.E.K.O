@@ -438,8 +438,10 @@ async def test_voice_bridge_session_change_continues_ordinary_transcript_flow():
 async def test_voice_observer_broadcast_failure_continues_ordinary_transcript_flow(monkeypatch):
     mgr = _make_transcript_manager()
     mgr.session = _FakeVoiceBridgeSession()
+    called = asyncio.Event()
 
     async def fake_publish(*_args, **_kwargs):
+        called.set()
         raise RuntimeError("broadcast failed")
 
     monkeypatch.setattr(
@@ -453,7 +455,9 @@ async def test_voice_observer_broadcast_failure_continues_ordinary_transcript_fl
         "  continue this transcript  ",
         is_voice_source=True,
     )
+    await asyncio.sleep(0)
 
+    assert called.is_set()
     assert mgr._activity_tracker.voice_rms_count == 1
     assert mgr._activity_tracker.user_messages == ["  continue this transcript  "]
     assert mgr._session_turn_count == 1
