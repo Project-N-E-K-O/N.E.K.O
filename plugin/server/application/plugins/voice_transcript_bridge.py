@@ -20,10 +20,13 @@ def voice_transcript_noop(reason: str, **extra: object) -> dict[str, object]:
     }
 
 
-def voice_transcript_request_has_text(event: Mapping[str, object] | None) -> bool:
+def voice_transcript_event_has_text(event: Mapping[str, object] | None) -> bool:
     if not isinstance(event, Mapping):
         return False
     return bool(str(event.get("transcript") or "").strip())
+
+
+voice_transcript_request_has_text = voice_transcript_event_has_text
 
 
 def _args_from_bridge_event(event: Mapping[str, object]) -> dict[str, object]:
@@ -41,7 +44,7 @@ async def resolve_voice_transcript_request(
     dispatch_service: PluginDispatchService | None = None,
     timeout: float = VOICE_TRANSCRIPT_DISPATCH_TIMEOUT_SECONDS,
 ) -> dict[str, object]:
-    if not isinstance(event, Mapping) or not voice_transcript_request_has_text(event):
+    if not isinstance(event, Mapping) or not voice_transcript_event_has_text(event):
         return voice_transcript_noop("empty_transcript")
     service = dispatch_service or PluginDispatchService()
     return await service.trigger_arbitrated_custom_event(
@@ -54,6 +57,7 @@ async def resolve_voice_transcript_request(
 __all__ = [
     "VOICE_TRANSCRIPT_DISPATCH_TIMEOUT_SECONDS",
     "resolve_voice_transcript_request",
+    "voice_transcript_event_has_text",
     "voice_transcript_noop",
     "voice_transcript_request_has_text",
 ]

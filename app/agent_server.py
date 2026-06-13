@@ -1653,6 +1653,32 @@ async def _emit_agent_status_update(lanlan_name: Optional[str] = None) -> None:
         pass
 
 
+def _track_background_task(task: asyncio.Task) -> asyncio.Task:
+    Modules._background_tasks.add(task)
+    task.add_done_callback(Modules._background_tasks.discard)
+    return task
+
+
+def _create_tracked_task(coro: Any) -> asyncio.Task:
+    return _track_background_task(asyncio.create_task(coro))
+
+
+def _agent_master_enabled() -> bool:
+    return bool(Modules.analyzer_enabled)
+
+
+def _user_plugins_enabled() -> bool:
+    return bool((Modules.agent_flags or {}).get("user_plugin_enabled", False))
+
+
+def _voice_transcript_plugin_gate_reason() -> str:
+    if not _agent_master_enabled():
+        return "agent_disabled"
+    if not _user_plugins_enabled():
+        return "user_plugin_disabled"
+    return ""
+
+
 async def _handle_voice_transcript_request(event: Dict[str, Any]) -> None:
     event_id = str((event or {}).get("event_id") or "")
     lanlan_name = (event or {}).get("lanlan_name")
@@ -1660,15 +1686,16 @@ async def _handle_voice_transcript_request(event: Dict[str, Any]) -> None:
     try:
         from plugin.server.application.plugins import voice_transcript_bridge
 
-        if not voice_transcript_bridge.voice_transcript_request_has_text(event):
+        if not voice_transcript_bridge.voice_transcript_event_has_text(event):
             logger.debug("[VoiceBridge] observed transcript skipped: empty event_id=%s", event_id)
-        elif not Modules.analyzer_enabled:
-            logger.debug("[VoiceBridge] observed transcript skipped: agent disabled event_id=%s", event_id)
-        elif not Modules.agent_flags.get("user_plugin_enabled", False):
-            logger.debug(
-                "[VoiceBridge] observed transcript skipped: user plugins disabled event_id=%s",
-                event_id,
-            )
+        elif gate_reason := _voice_transcript_plugin_gate_reason():
+            if gate_reason == "agent_disabled":
+                logger.debug("[VoiceBridge] observed transcript skipped: agent disabled event_id=%s", event_id)
+            else:
+                logger.debug(
+                    "[VoiceBridge] observed transcript skipped: user plugins disabled event_id=%s",
+                    event_id,
+                )
         else:
             lifecycle_ready = bool(Modules.plugin_lifecycle_started)
             if not lifecycle_ready:
@@ -1712,9 +1739,7 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
         await _maybe_restore_agent_intent()
         return
     if event_type in {"voice_transcript_observed", "voice_transcript_request"}:
-        task = asyncio.create_task(_handle_voice_transcript_request(event))
-        Modules._background_tasks.add(task)
-        task.add_done_callback(Modules._background_tasks.discard)
+        _create_tracked_task(_handle_voice_transcript_request(event))
         return
     if event_type == "analyze_request":
         messages = event.get("messages", [])
@@ -1722,10 +1747,8 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
         event_id = event.get("event_id")
         logger.info("[AgentAnalyze] analyze_request received: trigger=%s lanlan=%s messages=%d", event.get("trigger"), lanlan_name, len(messages) if isinstance(messages, list) else 0)
         if event_id:
-            ack_task = asyncio.create_task(_emit_main_event("analyze_ack", lanlan_name, event_id=event_id))
-            Modules._background_tasks.add(ack_task)
-            ack_task.add_done_callback(Modules._background_tasks.discard)
-        if not Modules.analyzer_enabled:
+            _create_tracked_task(_emit_main_event("analyze_ack", lanlan_name, event_id=event_id))
+        if not _agent_master_enabled():
             logger.info("[AgentAnalyze] skip: analyzer disabled (master switch off)")
             return
         if isinstance(messages, list) and messages:
@@ -1745,9 +1768,7 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
             # - Voice-mode hot-swap sending 'turn end agent_callback'
             Modules.last_user_turn_fingerprint[lanlan_key] = fp
             conversation_id = event.get("conversation_id")
-            task = asyncio.create_task(_background_analyze_and_plan(messages, lanlan_name, conversation_id=conversation_id))
-            Modules._background_tasks.add(task)
-            task.add_done_callback(Modules._background_tasks.discard)
+            _create_tracked_task(_background_analyze_and_plan(messages, lanlan_name, conversation_id=conversation_id))
 
 
 
