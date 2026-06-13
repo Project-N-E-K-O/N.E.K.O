@@ -15,9 +15,9 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
 import asyncio
-import io
 import json
 import hashlib
+import re
 import shutil
 import zipfile
 import tempfile
@@ -46,9 +46,6 @@ CHUNK_SIZE = 1024 * 1024  # 1MB chunks
 # 允许的文件扩展名
 ALLOWED_AUDIO_EXTENSIONS = {'.mp3', '.wav', '.ogg', '.flac'}
 ALLOWED_ACTION_EXTENSIONS = {'.vmd', '.bvh', '.fbx', '.vrma'}
-
-import re
-import io
 
 def check_file_size(file: UploadFile, max_size: int) -> int:
     """检查文件大小，返回文件大小（字节），超过限制则抛出异常"""
@@ -429,7 +426,7 @@ def build_config_summary(data: dict) -> dict:
 
 
 def calculate_md5(file_path: Path) -> str:
-    """计算文件 MD5"""
+    """Calculate the MD5 hash for a file."""
     md5_hash = hashlib.md5()
     with open(file_path, "rb") as f:
         for chunk in iter(lambda: f.read(CHUNK_SIZE), b""):
