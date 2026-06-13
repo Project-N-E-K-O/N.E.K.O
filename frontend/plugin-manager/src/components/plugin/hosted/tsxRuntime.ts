@@ -722,10 +722,65 @@ function continuesVariableDeclarationAfterNewline(source: string, declarationSta
   return '?:.,+-*/%&|^!=<>'.includes(nextChar)
 }
 
+function previousSignificantChar(source: string, index: number, lowerBound: number) {
+  let cursor = index - 1
+  while (cursor >= lowerBound) {
+    const char = source[cursor]
+    if (!char || /\s/.test(char)) {
+      cursor -= 1
+      continue
+    }
+    if (char === '/' && source[cursor - 1] === '*') {
+      const commentStart = source.lastIndexOf('/*', cursor - 2)
+      if (commentStart >= lowerBound) {
+        cursor = commentStart - 1
+        continue
+      }
+    }
+    return char
+  }
+  return ''
+}
+
+function canStartRegexLiteral(source: string, index: number, lowerBound: number) {
+  const previous = previousSignificantChar(source, index, lowerBound)
+  return !previous || '=([{,:!?&|^~+-*%<>;'.includes(previous)
+}
+
+function skipRegexLiteral(source: string, index: number) {
+  let inClass = false
+  index += 1
+  while (index < source.length) {
+    const char = source[index]
+    if (char === '\\') {
+      index += 2
+      continue
+    }
+    if (char === '[') {
+      inClass = true
+      index += 1
+      continue
+    }
+    if (char === ']') {
+      inClass = false
+      index += 1
+      continue
+    }
+    if (char === '/' && !inClass) {
+      index += 1
+      while (index < source.length && /[A-Za-z]/.test(source[index] || '')) index += 1
+      return index
+    }
+    index += 1
+  }
+  return index
+}
+
 function variableDeclarationEnd(source: string, declarationStart: number) {
   let depth = 0
   let quote: string | null = null
   let escaped = false
+  let lastTokenEndedRegex = false
 
   for (let index = declarationStart; index < source.length; index += 1) {
     const char = source[index]
@@ -743,11 +798,26 @@ function variableDeclarationEnd(source: string, declarationStart: number) {
       quote = char
       continue
     }
+    if (char === '/' && source[index + 1] === '/') {
+      index = skipLineComment(source, index) - 1
+      continue
+    }
+    if (char === '/' && source[index + 1] === '*') {
+      index = skipBlockComment(source, index) - 1
+      continue
+    }
+    if (char === '/' && canStartRegexLiteral(source, index, declarationStart)) {
+      index = skipRegexLiteral(source, index) - 1
+      lastTokenEndedRegex = true
+      continue
+    }
     if (char === '(' || char === '[' || char === '{') {
+      lastTokenEndedRegex = false
       depth += 1
       continue
     }
     if (char === ')' || char === ']' || char === '}') {
+      lastTokenEndedRegex = false
       depth = Math.max(0, depth - 1)
       continue
     }
@@ -755,10 +825,16 @@ function variableDeclarationEnd(source: string, declarationStart: number) {
       return index + 1
     }
     if ((char === '\n' || char === '\r') && depth === 0) {
+      if (lastTokenEndedRegex) {
+        return index
+      }
       if (continuesVariableDeclarationAfterNewline(source, declarationStart, index)) {
         continue
       }
       return index
+    }
+    if (!/\s/.test(char || '')) {
+      lastTokenEndedRegex = false
     }
   }
   return source.length

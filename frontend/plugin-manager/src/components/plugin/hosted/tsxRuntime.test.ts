@@ -369,6 +369,24 @@ describe('hosted TSX document runtime', () => {
     expect(root.querySelector('strong')?.textContent).toBe('ABC')
   })
 
+  it('exports regex literal declarations from hosted dependencies', () => {
+    const { root } = executeHostedDocument(`
+      import { sep, withClass } from "./patterns"
+
+      export default function Panel() {
+        return <strong>{sep.test(';') ? withClass.source : 'missing'}</strong>
+      }
+    `, baseContext(), baseContext(), [{
+      path: 'ui/patterns.ts',
+      source: `
+        export const sep = /;/
+        export const withClass = /[a/b;]/g
+      `,
+    }])
+
+    expect(root.querySelector('strong')?.textContent).toBe('[a/b;]')
+  })
+
   it('exports destructured variable declarations from hosted dependencies', () => {
     const { root } = executeHostedDocument(`
       import { label, renamed, first, rest } from "./destructured"
