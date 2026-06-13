@@ -361,6 +361,8 @@ def test_cat1_edge_peek_only_applies_after_drag_release():
     assert "if (!container || !_isNekoIdleCat1EdgePeekEligible(container)) return false;" in edge_apply_block
     assert "_getNekoIdleCat1EdgePeekPlacement(left, top, w, h, viewportWidth, viewportHeight)" in edge_apply_block
     assert "function _isNekoIdleCat1EdgePeekActive(containerOrButton)" in source
+    assert "function _getNekoIdleCat1EdgePeekActiveEdge(containerOrButton)" in source
+    assert "function _reclampNekoIdleCat1EdgePeekToViewport(containerOrButton)" in source
     assert "return button.classList.contains(className);" in source
     assert "function _clearNekoIdleCat1EdgePeekForTierExit(container)" in source
 
@@ -376,6 +378,37 @@ def test_cat1_edge_peek_only_applies_after_drag_release():
         "button.classList.add(`is-cat1-edge-peek-${placement.edge}`);",
         "_cancelNekoIdleCat1Journey(button, { resetArt: false, preserveObservers: true });",
         "container.style.left = `${placement.left}px`;",
+    )
+
+    edge_reclamp_block = _source_slice_between(
+        source,
+        "function _reclampNekoIdleCat1EdgePeekToViewport(containerOrButton)",
+        "function _restoreNekoIdleCat1EdgePeekBeforeDrag(container)",
+        "cat1 edge peek viewport reclamp",
+    )
+    _assert_source_order(
+        edge_reclamp_block,
+        "cat1 edge peek viewport reclamp preserves the active edge",
+        "const edge = _getNekoIdleCat1EdgePeekActiveEdge(button);",
+        "const viewportW = Math.max(w, window.innerWidth || 0);",
+        "const viewportH = Math.max(h, window.innerHeight || 0);",
+        "const nextLeft = edge.includes('left')",
+        "? -hiddenX",
+        "? viewportW - w + hiddenX",
+        ": _clampNekoIdleCat1EdgePeekCoordinate(currentLeft, 0, viewportW - w));",
+        "const nextTop = edge.includes('top')",
+        "? -hiddenY",
+        "? viewportH - h + hiddenY",
+        ": _clampNekoIdleCat1EdgePeekCoordinate(currentTop, 0, viewportH - h));",
+    )
+    _assert_source_order(
+        edge_reclamp_block,
+        "cat1 edge peek viewport reclamp rewrites fixed position",
+        "container.style.left = `${Math.round(nextLeft)}px`;",
+        "container.style.top = `${Math.round(nextTop)}px`;",
+        "container.style.right = '';",
+        "container.style.bottom = '';",
+        "container.style.transform = 'none';",
     )
 
     finish_drag_block = _source_slice_between(
@@ -504,14 +537,16 @@ def test_cat1_edge_peek_only_applies_after_drag_release():
     )
     _assert_source_order(
         journey_schedule_block,
-        "cat1 edge peek blocks queued journey sync",
+        "cat1 edge peek reclamps before blocking queued journey sync",
         "if (_isNekoIdleCat1EdgePeekActive(button)) {",
+        "_reclampNekoIdleCat1EdgePeekToViewport(button);",
         "_cancelNekoIdleCat1Journey(button, { resetArt: false, preserveObservers: true });",
         "const state = _getNekoIdleCat1Journey(button);",
         "if (!state || state.syncFrame) return;",
     )
     assert (
-        "_cancelNekoIdleCat1Journey(button, { resetArt: false, preserveObservers: true });\n"
+        "_reclampNekoIdleCat1EdgePeekToViewport(button);\n"
+        "        _cancelNekoIdleCat1Journey(button, { resetArt: false, preserveObservers: true });\n"
         "        return;\n"
         "    }\n"
         "    const state = _getNekoIdleCat1Journey(button);\n"

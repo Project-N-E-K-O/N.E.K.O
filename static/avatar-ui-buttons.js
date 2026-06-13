@@ -1580,6 +1580,15 @@ function _isNekoIdleCat1EdgePeekActive(containerOrButton) {
     }));
 }
 
+function _getNekoIdleCat1EdgePeekActiveEdge(containerOrButton) {
+    const button = _getNekoIdleCat1EdgePeekButton(containerOrButton);
+    if (!button) return '';
+    const activeClass = _NEKO_IDLE_CAT1_EDGE_PEEK_CLASSES.find((className) => {
+        return button.classList.contains(className);
+    });
+    return activeClass ? activeClass.replace('is-cat1-edge-peek-', '') : '';
+}
+
 function _isNekoIdleCat1EdgePeekEligible(containerOrButton) {
     const button = _getNekoIdleCat1EdgePeekButton(containerOrButton);
     return _normalizeNekoIdleReturnTier(button && button.getAttribute('data-neko-idle-tier')) === _NEKO_IDLE_TIER_CAT1;
@@ -1665,6 +1674,43 @@ function _applyNekoIdleCat1EdgePeekAfterDrag(container, left, top, viewportWidth
     const h = container.offsetHeight || 64;
     const placement = _getNekoIdleCat1EdgePeekPlacement(left, top, w, h, viewportWidth, viewportHeight);
     return _applyNekoIdleCat1EdgePeek(container, placement);
+}
+
+function _reclampNekoIdleCat1EdgePeekToViewport(containerOrButton) {
+    const button = _getNekoIdleCat1EdgePeekButton(containerOrButton);
+    const container = _getNekoIdleReturnContainerFromButton(button);
+    const edge = _getNekoIdleCat1EdgePeekActiveEdge(button);
+    if (!container || !button || !edge || !_isNekoIdleCat1EdgePeekEligible(button)) return false;
+
+    const w = container.offsetWidth || 64;
+    const h = container.offsetHeight || 64;
+    const viewportW = Math.max(w, window.innerWidth || 0);
+    const viewportH = Math.max(h, window.innerHeight || 0);
+    const hiddenX = w * _NEKO_IDLE_CAT1_EDGE_PEEK_HIDDEN_RATIO;
+    const hiddenY = h * _NEKO_IDLE_CAT1_EDGE_PEEK_HIDDEN_RATIO;
+    const rawLeft = parseFloat(container.style.left);
+    const rawTop = parseFloat(container.style.top);
+    const rect = container.getBoundingClientRect && container.getBoundingClientRect();
+    const currentLeft = Number.isFinite(rawLeft) ? rawLeft : (rect ? rect.left : 0);
+    const currentTop = Number.isFinite(rawTop) ? rawTop : (rect ? rect.top : 0);
+
+    const nextLeft = edge.includes('left')
+        ? -hiddenX
+        : (edge.includes('right')
+            ? viewportW - w + hiddenX
+            : _clampNekoIdleCat1EdgePeekCoordinate(currentLeft, 0, viewportW - w));
+    const nextTop = edge.includes('top')
+        ? -hiddenY
+        : (edge.includes('bottom')
+            ? viewportH - h + hiddenY
+            : _clampNekoIdleCat1EdgePeekCoordinate(currentTop, 0, viewportH - h));
+
+    container.style.left = `${Math.round(nextLeft)}px`;
+    container.style.top = `${Math.round(nextTop)}px`;
+    container.style.right = '';
+    container.style.bottom = '';
+    container.style.transform = 'none';
+    return true;
 }
 
 function _restoreNekoIdleCat1EdgePeekBeforeDrag(container) {
@@ -4406,6 +4452,7 @@ function _syncNekoIdleCat1Journey(button, tier) {
 
 function _scheduleNekoIdleCat1JourneySync(button) {
     if (_isNekoIdleCat1EdgePeekActive(button)) {
+        _reclampNekoIdleCat1EdgePeekToViewport(button);
         _cancelNekoIdleCat1Journey(button, { resetArt: false, preserveObservers: true });
         return;
     }
