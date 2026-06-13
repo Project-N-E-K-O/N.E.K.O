@@ -132,12 +132,9 @@ _SAFETY_VIOLATION_KEYWORDS = (
     "policy violation",
     "policy_violation",
     "prohibited",
-    "blocked",
-    "block_reason",
     "recitation",
     "responsibleaipolicyviolation",
     "responsible ai policy",
-    "1008",
 )
 
 

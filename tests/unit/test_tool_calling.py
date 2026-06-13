@@ -1494,6 +1494,10 @@ def test_safety_violation_helper_detects_provider_block_signals():
     assert _is_safety_violation_signal("content_filter") is True
     assert _is_safety_violation_signal(None, "SAFETY") is True
     assert _is_safety_violation_signal("ResponsibleAIPolicyViolation") is True
+    assert _is_safety_violation_signal("connection blocked by proxy") is False
+    assert _is_safety_violation_signal("BLOCK_REASON_UNSPECIFIED") is False
+    assert _is_safety_violation_signal("1008 connection closed") is False
+    assert _is_safety_violation_signal("1008 policy violation") is True
     assert _is_safety_violation_signal("stop", None) is False
     assert _is_safety_violation_signal(None, None) is False
 
@@ -1541,6 +1545,9 @@ async def test_stream_text_empty_safety_completion_reports_policy_violation(monk
     client.on_response_discarded = None
     client.on_status_message = fake_status
     client.on_repetition_detected = None
+    client._last_finish_reason = None
+    client._last_block_reason = None
+    client._last_prompt_tokens = None
 
     await client.stream_text("hi")
 
@@ -1549,6 +1556,7 @@ async def test_stream_text_empty_safety_completion_reports_policy_violation(monk
     assert status_messages[0]["details"]["finish_reason"] == "content_filter"
     assert status_messages[0]["details"]["block_reason"] == "SAFETY"
     assert status_messages[0]["details"]["prompt_tokens"] == 123
+    assert status_messages[0]["details"]["model"] == "gemini-2.5-flash"
 
 
 @pytest.mark.asyncio

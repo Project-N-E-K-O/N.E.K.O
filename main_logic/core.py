@@ -2885,10 +2885,10 @@ class LLMSessionManager:
                     or 'invalid_api_key' in message_text_lower
                     or ('invalid' in message_text_lower and 'key' in message_text_lower)):
                 await self.send_status(json.dumps({"code": "API_KEY_REJECTED"}))
-            elif '1008' in message_text_lower:
-                await self.send_status(json.dumps({"code": "API_1008_FALLBACK", "details": {"msg": message_text}}))
             elif _is_safety_violation_signal(message_text_lower):
                 await self.send_status(json.dumps({"code": "API_POLICY_VIOLATION", "details": {"msg": message_text}}))
+            elif '1008' in message_text_lower:
+                await self.send_status(json.dumps({"code": "API_1008_FALLBACK", "details": {"msg": message_text}}))
             else:
                 await self.send_status(json.dumps({"code": "API_UNKNOWN_ERROR", "details": {"msg": message_text}}))
         logger.info("💥 Session closed by API Server.")
@@ -8044,12 +8044,12 @@ class LLMSessionManager:
                             elif '429' in error_msg_lower or 'too many' in error_msg_lower:
                                 user_msg = json.dumps({"code": "API_RATE_LIMIT"})
                                 self._last_tts_error_code = 'API_RATE_LIMIT'
-                            elif '1008' in error_msg_lower:
-                                user_msg = json.dumps({"code": "API_1008_FALLBACK", "details": {"msg": error_msg_text}})
-                                self._last_tts_error_code = 'API_1008_FALLBACK'
                             elif _is_safety_violation_signal(error_msg_lower):
                                 user_msg = json.dumps({"code": "API_POLICY_VIOLATION", "details": {"msg": error_msg_text}})
                                 self._last_tts_error_code = 'API_POLICY_VIOLATION'
+                            elif '1008' in error_msg_lower:
+                                user_msg = json.dumps({"code": "API_1008_FALLBACK", "details": {"msg": error_msg_text}})
+                                self._last_tts_error_code = 'API_1008_FALLBACK'
                             elif ('401' in error_msg_lower or 'unauthorized' in error_msg_lower
                                     or 'authentication' in error_msg_lower
                                     or 'incorrect api key' in error_msg_lower
