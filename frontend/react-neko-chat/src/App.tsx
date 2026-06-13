@@ -199,6 +199,7 @@ type CompactHistoryResizeState = {
   pointerId: number;
   startPointerY: number;
   startHeight: number;
+  initialHeight: number;
   lastHeight: number;
   startedSlotHeight: number | null;
   heightChanged: boolean;
@@ -3042,7 +3043,7 @@ function CompactChatApp({
     if (event && resizeState.pointerId !== event.pointerId) return;
     const phase = event && event.type === 'pointercancel' ? 'cancel' : 'end';
     // 只在真正拖动过才落库：纯点击不该把响应式默认高度锁成固定像素值（否则之后视口/宽度变化不再响应）。
-    if (resizeState.heightChanged && resizeState.lastHeight !== resizeState.startHeight) {
+    if (resizeState.heightChanged && resizeState.lastHeight !== resizeState.initialHeight) {
       persistCompactHistorySlotHeight(resizeState.lastHeight);
       setCompactHistorySlotHeight(resizeState.lastHeight);
     } else if (resizeState.heightChanged) {
@@ -3066,6 +3067,7 @@ function CompactChatApp({
       pointerId: event.pointerId,
       startPointerY: getCompactHistoryResizePointerY(event),
       startHeight,
+      initialHeight: startHeight,
       lastHeight: getClampedCompactHistorySlotHeight(startHeight),
       startedSlotHeight: compactHistorySlotHeight,
       heightChanged: false,

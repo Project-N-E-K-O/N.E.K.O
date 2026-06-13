@@ -1357,6 +1357,59 @@ describe('App', () => {
       .toHaveAttribute('data-compact-export-history-resizing', 'false');
     expect(container.querySelector('.compact-export-history-anchor'))
       .toHaveAttribute('data-compact-export-history-content-locked', 'false');
+    expect(window.localStorage.getItem(COMPACT_HISTORY_HEIGHT_STORAGE_KEY)).toBe(`${maxHeight - 40}`);
+  });
+
+  it('keeps the max compact history height after releasing at an overdragged limit', () => {
+    const message = parseChatMessage({
+      id: 'assistant-history-resize-max-release',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: 'Max me.' }],
+      status: 'sent',
+    });
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />,
+    );
+    const resizeBar = container.querySelector<HTMLDivElement>('.compact-export-history-resize-bar');
+    expect(resizeBar).not.toBeNull();
+    const maxHeight = Math.round(Math.max(120, window.innerHeight * 0.78 - 72));
+
+    fireEvent.pointerDown(resizeBar!, {
+      pointerId: 93,
+      clientY: 500,
+      screenY: 500,
+      button: 0,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    fireEvent.pointerMove(resizeBar!, {
+      pointerId: 93,
+      clientY: -500,
+      screenY: -500,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    fireEvent.pointerMove(resizeBar!, {
+      pointerId: 93,
+      clientY: -700,
+      screenY: -700,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    expect(document.documentElement.style.getPropertyValue('--compact-history-slot-height')).toBe(`${maxHeight}px`);
+    fireEvent.pointerUp(resizeBar!, {
+      pointerId: 93,
+      clientY: -700,
+      screenY: -700,
+      buttons: 0,
+      pointerType: 'mouse',
+    });
+
+    expect(window.localStorage.getItem(COMPACT_HISTORY_HEIGHT_STORAGE_KEY)).toBe(`${maxHeight}`);
+    expect(document.documentElement.style.getPropertyValue('--compact-history-slot-height')).toBe(`${maxHeight}px`);
   });
 
   it('keeps responsive compact history height when a resize returns to the starting height', () => {
