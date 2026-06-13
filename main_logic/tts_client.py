@@ -7,6 +7,8 @@ import soxr
 import time
 import json
 import re
+import os
+import math
 import base64
 import websockets
 import io
@@ -173,7 +175,21 @@ def _resolve_elevenlabs_api_key(cm) -> str:
     return (cm.get_tts_api_key('elevenlabs') or '').strip()
 
 
-def _resample_audio(audio_int16: np.ndarray, src_rate: int, dst_rate: int, 
+def _parse_env_float(env_name: str, default: float, min_value: float) -> float:
+    raw = os.getenv(env_name)
+    if raw is None or raw == "":
+        value = default
+    else:
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = default
+    if not math.isfinite(value):
+        value = default
+    return max(value, min_value)
+
+
+def _resample_audio(audio_int16: np.ndarray, src_rate: int, dst_rate: int,
                     resampler: 'soxr.ResampleStream | None' = None) -> bytes:
     """使用 soxr 进行高质量音频重采样
     
@@ -1775,6 +1791,44 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         pending_text_buffer = ""  # 延迟发送的文本缓冲，用于首 N 字语言检测
         # 流式重采样器（24kHz→48kHz）- 维护 chunk 边界状态
         resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
+        # Qwen realtime can produce 1-2s inter-chunk gaps. A small jitter buffer
+        # gives the client enough queued PCM to ride over short upstream stalls.
+        qwen_audio_bytes_per_second = 48000 * 2
+        qwen_initial_buffer_bytes = int(_parse_env_float("NEKO_QWEN_TTS_INITIAL_BUFFER_MS", 800, 0) / 1000 * qwen_audio_bytes_per_second)
+        qwen_steady_buffer_bytes = int(_parse_env_float("NEKO_QWEN_TTS_STEADY_BUFFER_MS", 200, 0) / 1000 * qwen_audio_bytes_per_second)
+
+        class QwenAudioJitterBuffer:
+            def __init__(self):
+                self.buffer = bytearray()
+                self.started = False
+
+            def reset(self):
+                self.buffer.clear()
+                self.started = False
+
+            def append(self, audio_bytes):
+                if not audio_bytes:
+                    return
+                self.buffer.extend(audio_bytes)
+                if not self.started:
+                    if len(self.buffer) < qwen_initial_buffer_bytes:
+                        return
+                    self._flush()
+                    self.started = True
+                    return
+                if len(self.buffer) >= qwen_steady_buffer_bytes:
+                    self._flush()
+
+            def flush(self):
+                self._flush()
+
+            def _flush(self):
+                if not self.buffer:
+                    return
+                response_queue.put(bytes(self.buffer))
+                self.buffer.clear()
+
+        qwen_audio_jitter = QwenAudioJitterBuffer()
 
         def build_config_message(lang_hint=None):
             """构造 session.update 消息；lang_hint='ja' 时指定 Japanese，其他走服务端 Auto。"""
@@ -1901,12 +1955,13 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                 audio_bytes = base64.b64decode(event.get("delta", ""))
                                 audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
                                 # 使用流式重采样器 24000Hz -> 48000Hz
-                                response_queue.put(_resample_audio(audio_array, 24000, 48000, resampler))
+                                qwen_audio_jitter.append(_resample_audio(audio_array, 24000, 48000, resampler))
                             except Exception as e:
                                 logger.error(f"处理音频数据时出错: {e}")
                         elif event_type in ["response.done", "response.audio.done", "output.done"]:
                             # 服务器明确表示音频生成完成，设置完成标志
                             logger.debug(f"收到响应完成事件: {event_type}")
+                            qwen_audio_jitter.flush()
                             response_done.set()
                 except websockets.exceptions.ConnectionClosed:
                     pass
@@ -1961,6 +2016,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     buffer_committed = False
                     session_configured = False
                     pending_text_buffer = ""
+                    qwen_audio_jitter.reset()
                     continue
 
                 if sid is None:
@@ -1997,6 +2053,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     pending_text_buffer = ""
                     response_done.clear()
                     resampler.clear()  # 重置重采样器状态（新轮次音频不应与上轮次连续）
+                    qwen_audio_jitter.reset()
                     if ws:
                         try:
                             await ws.close()
@@ -2036,12 +2093,13 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                             audio_bytes = base64.b64decode(event.get("delta", ""))
                                             audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
                                             # 使用流式重采样器 24000Hz -> 48000Hz
-                                            response_queue.put(_resample_audio(audio_array, 24000, 48000, resampler))
+                                            qwen_audio_jitter.append(_resample_audio(audio_array, 24000, 48000, resampler))
                                         except Exception as e:
                                             logger.error(f"处理音频数据时出错: {e}")
                                     elif event_type in ["response.done", "response.audio.done", "output.done"]:
                                         # 服务器明确表示音频生成完成，设置完成标志
                                         logger.debug(f"收到响应完成事件: {event_type}")
+                                        qwen_audio_jitter.flush()
                                         response_done.set()
                             except websockets.exceptions.ConnectionClosed:
                                 pass
