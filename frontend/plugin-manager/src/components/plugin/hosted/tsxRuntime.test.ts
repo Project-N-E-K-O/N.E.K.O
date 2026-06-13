@@ -243,6 +243,36 @@ describe('hosted TSX document runtime', () => {
     expect(root.querySelector('strong')?.textContent).toBe('shared helper')
   })
 
+  it('ignores commented and template import text while rewriting hosted TSX', () => {
+    const { root } = executeHostedDocument(`
+      /*
+      import { ghost } from "./missing-comment"
+      */
+      const sample = \`
+      export { ghost } from "./missing-template"
+      \`
+      import { label } from "./shared"
+
+      export default function Panel() {
+        return <strong>{label + sample.includes('ghost')}</strong>
+      }
+    `, baseContext(), baseContext(), [{
+      path: 'ui/shared.ts',
+      source: `
+        /*
+        export { ghost } from "./missing-reexport"
+        */
+        const sample = \`
+        import { ghost } from "./missing-dependency-template"
+        \`
+        export const label = "shared"
+        export const used = sample.length
+      `,
+    }])
+
+    expect(root.querySelector('strong')?.textContent).toBe('sharedtrue')
+  })
+
   it('prefers TSX over TS for extensionless hosted imports at runtime', () => {
     const { root } = executeHostedDocument(`
       import { label } from "./shared"

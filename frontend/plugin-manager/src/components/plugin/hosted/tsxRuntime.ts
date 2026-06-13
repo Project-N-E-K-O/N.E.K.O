@@ -16,6 +16,22 @@ type HostedTsxDependency = {
   source: string
 }
 
+type HostedImportStatement = {
+  start: number
+  end: number
+  rawBindings?: string
+  specifier: string
+}
+
+type HostedReExportStatement = {
+  start: number
+  end: number
+  rawNames?: string
+  namespaceName?: string
+  specifier: string
+  typeOnly: boolean
+}
+
 function escapeScriptContent(value: string) {
   return value
     .replace(/<\/script/g, '<\\/script')
@@ -30,9 +46,348 @@ function escapeHtmlAttribute(value: string) {
     .replace(/>/g, '&gt;')
 }
 
-const IMPORT_SOURCE_PATTERN = /^[^\S\r\n]*import(?:([\s\S]*?)\sfrom\s+|[^\S\r\n]+)['"]([^'"]+)['"][^\S\r\n]*;?[^\S\r\n]*(?:\r?\n|$)/gm
-const RE_EXPORT_SOURCE_PATTERN = /^[^\S\r\n]*export\s+(type\s+)?(?:\{([^}]+)\}|\*\s+as\s+([A-Za-z_$][\w$]*)|\*)\s+from\s+['"]([^'"]+)['"][^\S\r\n]*;?[^\S\r\n]*(?:\r?\n|$)/gm
 const HOSTED_CODE_EXTENSIONS = ['.tsx', '.ts', '.jsx', '.js']
+
+function isIdentifierChar(value: string) {
+  return /[A-Za-z0-9_$]/.test(value)
+}
+
+function matchesKeyword(source: string, index: number, keyword: string) {
+  const end = index + keyword.length
+  if (source.slice(index, end) !== keyword) return false
+  const before = index > 0 ? source[index - 1] || '' : ''
+  const after = end < source.length ? source[end] || '' : ''
+  return !isIdentifierChar(before) && !isIdentifierChar(after)
+}
+
+function isHorizontalWhitespace(value: string) {
+  return value !== '\r' && value !== '\n' && /\s/.test(value)
+}
+
+function isStatementLineStart(source: string, index: number) {
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    const char = source[cursor]
+    if (char === '\n' || char === '\r') return true
+    if (!char || !isHorizontalWhitespace(char)) return false
+  }
+  return true
+}
+
+function skipWhitespace(source: string, index: number) {
+  while (index < source.length && /\s/.test(source[index] || '')) index += 1
+  return index
+}
+
+function skipHorizontalWhitespace(source: string, index: number) {
+  while (index < source.length && isHorizontalWhitespace(source[index] || '')) index += 1
+  return index
+}
+
+function skipLineComment(source: string, index: number) {
+  const newline = source.indexOf('\n', index + 2)
+  return newline < 0 ? source.length : newline + 1
+}
+
+function skipBlockComment(source: string, index: number) {
+  const end = source.indexOf('*/', index + 2)
+  return end < 0 ? source.length : end + 2
+}
+
+function skipQuoted(source: string, index: number) {
+  const quote = source[index]
+  index += 1
+  while (index < source.length) {
+    const char = source[index]
+    if (char === '\\') {
+      index += 2
+      continue
+    }
+    index += 1
+    if (char === quote) break
+  }
+  return index
+}
+
+function readQuoted(source: string, index: number) {
+  const quote = source[index]
+  index += 1
+  let value = ''
+  while (index < source.length) {
+    const char = source[index]
+    if (char === '\\') {
+      if (index + 1 < source.length) value += source[index + 1]
+      index += 2
+      continue
+    }
+    if (char === quote) return { value, end: index + 1 }
+    value += char
+    index += 1
+  }
+  return null
+}
+
+function skipTemplate(source: string, index: number) {
+  index += 1
+  while (index < source.length) {
+    const char = source[index]
+    if (char === '\\') {
+      index += 2
+      continue
+    }
+    index += 1
+    if (char === '`') break
+  }
+  return index
+}
+
+function skipTrivia(source: string, index: number) {
+  while (index < source.length) {
+    index = skipWhitespace(source, index)
+    if (index + 1 >= source.length || source[index] !== '/') return index
+    const nextChar = source[index + 1]
+    if (nextChar === '/') {
+      index = skipLineComment(source, index)
+      continue
+    }
+    if (nextChar === '*') {
+      index = skipBlockComment(source, index)
+      continue
+    }
+    return index
+  }
+  return index
+}
+
+function findKeywordBeforeStatementEnd(source: string, index: number, keyword: string) {
+  while (index < source.length) {
+    const char = source[index]
+    if (char === ';') return -1
+    if (char === '/' && index + 1 < source.length) {
+      const nextChar = source[index + 1]
+      if (nextChar === '/') {
+        index = skipLineComment(source, index)
+        continue
+      }
+      if (nextChar === '*') {
+        index = skipBlockComment(source, index)
+        continue
+      }
+    }
+    if (char === '"' || char === "'") {
+      index = skipQuoted(source, index)
+      continue
+    }
+    if (char === '`') {
+      index = skipTemplate(source, index)
+      continue
+    }
+    if (matchesKeyword(source, index, keyword)) return index
+    index += 1
+  }
+  return -1
+}
+
+function statementEndAfterSpecifier(source: string, index: number) {
+  let cursor = index
+  while (cursor < source.length) {
+    cursor = skipHorizontalWhitespace(source, cursor)
+    if (source[cursor] === '/' && source[cursor + 1] === '*') {
+      cursor = skipBlockComment(source, cursor)
+      continue
+    }
+    break
+  }
+  if (source[cursor] === ';') {
+    cursor += 1
+    while (cursor < source.length) {
+      cursor = skipHorizontalWhitespace(source, cursor)
+      if (source[cursor] === '/' && source[cursor + 1] === '*') {
+        cursor = skipBlockComment(source, cursor)
+        continue
+      }
+      break
+    }
+  }
+  if (source[cursor] === '/' && source[cursor + 1] === '/') return skipLineComment(source, cursor)
+  if (source[cursor] === '\r' && source[cursor + 1] === '\n') return cursor + 2
+  if (source[cursor] === '\r' || source[cursor] === '\n') return cursor + 1
+  return cursor
+}
+
+function readIdentifier(source: string, index: number) {
+  let cursor = index
+  if (!/[A-Za-z_$]/.test(source[cursor] || '')) return null
+  cursor += 1
+  while (cursor < source.length && isIdentifierChar(source[cursor] || '')) cursor += 1
+  return { value: source.slice(index, cursor), end: cursor }
+}
+
+function findClosingBrace(source: string, index: number) {
+  if (source[index] !== '{') return -1
+  index += 1
+  while (index < source.length) {
+    const char = source[index]
+    if (char === '/' && index + 1 < source.length) {
+      const nextChar = source[index + 1]
+      if (nextChar === '/') {
+        index = skipLineComment(source, index)
+        continue
+      }
+      if (nextChar === '*') {
+        index = skipBlockComment(source, index)
+        continue
+      }
+    }
+    if (char === '"' || char === "'") {
+      index = skipQuoted(source, index)
+      continue
+    }
+    if (char === '`') {
+      index = skipTemplate(source, index)
+      continue
+    }
+    if (char === '}') return index
+    index += 1
+  }
+  return -1
+}
+
+function readHostedImportStatement(source: string, index: number): HostedImportStatement | null {
+  const start = index
+  index = skipTrivia(source, index + 'import'.length)
+  if (index >= source.length || source[index] === '(' || source[index] === '.') return null
+  if (source[index] === '"' || source[index] === "'") {
+    const read = readQuoted(source, index)
+    if (!read) return null
+    return { start, end: statementEndAfterSpecifier(source, read.end), specifier: read.value }
+  }
+  const bindingStart = index
+  const fromIndex = findKeywordBeforeStatementEnd(source, index, 'from')
+  if (fromIndex < 0) return null
+  const specifierIndex = skipTrivia(source, fromIndex + 'from'.length)
+  if (source[specifierIndex] !== '"' && source[specifierIndex] !== "'") return null
+  const read = readQuoted(source, specifierIndex)
+  if (!read) return null
+  return {
+    start,
+    end: statementEndAfterSpecifier(source, read.end),
+    rawBindings: source.slice(bindingStart, fromIndex).trim(),
+    specifier: read.value,
+  }
+}
+
+function readHostedReExportStatement(source: string, index: number): HostedReExportStatement | null {
+  const start = index
+  let typeOnly = false
+  let rawNames: string | undefined
+  let namespaceName: string | undefined
+  index = skipTrivia(source, index + 'export'.length)
+  if (matchesKeyword(source, index, 'type')) {
+    typeOnly = true
+    index = skipTrivia(source, index + 'type'.length)
+  }
+  if (source[index] === '{') {
+    const closingBrace = findClosingBrace(source, index)
+    if (closingBrace < 0) return null
+    rawNames = source.slice(index + 1, closingBrace)
+    index = skipTrivia(source, closingBrace + 1)
+  } else if (source[index] === '*') {
+    index = skipTrivia(source, index + 1)
+    if (matchesKeyword(source, index, 'as')) {
+      const identifier = readIdentifier(source, skipTrivia(source, index + 'as'.length))
+      if (!identifier) return null
+      namespaceName = identifier.value
+      index = skipTrivia(source, identifier.end)
+    }
+  } else {
+    return null
+  }
+  if (!matchesKeyword(source, index, 'from')) return null
+  const specifierIndex = skipTrivia(source, index + 'from'.length)
+  if (source[specifierIndex] !== '"' && source[specifierIndex] !== "'") return null
+  const read = readQuoted(source, specifierIndex)
+  if (!read) return null
+  return {
+    start,
+    end: statementEndAfterSpecifier(source, read.end),
+    rawNames,
+    namespaceName,
+    specifier: read.value,
+    typeOnly,
+  }
+}
+
+function hostedImportStatements(source: string) {
+  const statements: HostedImportStatement[] = []
+  for (let index = 0; index < source.length;) {
+    const char = source[index]
+    if (char === '/' && index + 1 < source.length) {
+      const nextChar = source[index + 1]
+      if (nextChar === '/') {
+        index = skipLineComment(source, index)
+        continue
+      }
+      if (nextChar === '*') {
+        index = skipBlockComment(source, index)
+        continue
+      }
+    }
+    if (char === '"' || char === "'") {
+      index = skipQuoted(source, index)
+      continue
+    }
+    if (char === '`') {
+      index = skipTemplate(source, index)
+      continue
+    }
+    if (isStatementLineStart(source, index) && matchesKeyword(source, index, 'import')) {
+      const statement = readHostedImportStatement(source, index)
+      if (statement) {
+        statements.push(statement)
+        index = statement.end
+        continue
+      }
+    }
+    index += 1
+  }
+  return statements
+}
+
+function hostedReExportStatements(source: string) {
+  const statements: HostedReExportStatement[] = []
+  for (let index = 0; index < source.length;) {
+    const char = source[index]
+    if (char === '/' && index + 1 < source.length) {
+      const nextChar = source[index + 1]
+      if (nextChar === '/') {
+        index = skipLineComment(source, index)
+        continue
+      }
+      if (nextChar === '*') {
+        index = skipBlockComment(source, index)
+        continue
+      }
+    }
+    if (char === '"' || char === "'") {
+      index = skipQuoted(source, index)
+      continue
+    }
+    if (char === '`') {
+      index = skipTemplate(source, index)
+      continue
+    }
+    if (isStatementLineStart(source, index) && matchesKeyword(source, index, 'export')) {
+      const statement = readHostedReExportStatement(source, index)
+      if (statement) {
+        statements.push(statement)
+        index = statement.end
+        continue
+      }
+    }
+    index += 1
+  }
+  return statements
+}
 
 function normalizeHostedPath(path: string) {
   const parts: string[] = []
@@ -127,26 +482,18 @@ function hostedRelativeImportPaths(
   dependenciesByPath: Map<string, HostedTsxDependency>,
 ) {
   const paths: string[] = []
-  source.replace(IMPORT_SOURCE_PATTERN, (match, _rawBindings: string | undefined, specifier: string) => {
-    if (specifier.startsWith('./') || specifier.startsWith('../')) {
-      const modulePath = resolveHostedImport(fromPath, specifier, dependenciesByPath)
+  for (const statement of hostedImportStatements(source)) {
+    if (statement.specifier.startsWith('./') || statement.specifier.startsWith('../')) {
+      const modulePath = resolveHostedImport(fromPath, statement.specifier, dependenciesByPath)
       if (modulePath) paths.push(modulePath)
     }
-    return match
-  })
-  source.replace(RE_EXPORT_SOURCE_PATTERN, (
-    match,
-    _typeOnly: string | undefined,
-    _rawNames: string | undefined,
-    _namespaceName: string | undefined,
-    specifier: string,
-  ) => {
-    if (specifier.startsWith('./') || specifier.startsWith('../')) {
-      const modulePath = resolveHostedImport(fromPath, specifier, dependenciesByPath)
+  }
+  for (const statement of hostedReExportStatements(source)) {
+    if (statement.specifier.startsWith('./') || statement.specifier.startsWith('../')) {
+      const modulePath = resolveHostedImport(fromPath, statement.specifier, dependenciesByPath)
       if (modulePath) paths.push(modulePath)
     }
-    return match
-  })
+  }
   return paths
 }
 
@@ -185,16 +532,24 @@ function transformHostedImports(
   fromPath: string,
   dependenciesByPath: Map<string, HostedTsxDependency>,
 ) {
-  return source.replace(IMPORT_SOURCE_PATTERN, (match, rawBindings: string | undefined, specifier: string) => {
-    if (specifier === '@neko/plugin-ui' || specifier === 'neko:ui') {
-      return ''
+  let result = ''
+  let cursor = 0
+  for (const statement of hostedImportStatements(source)) {
+    result += source.slice(cursor, statement.start)
+    if (statement.specifier === '@neko/plugin-ui' || statement.specifier === 'neko:ui') {
+      cursor = statement.end
+      continue
     }
-    if (!specifier.startsWith('./') && !specifier.startsWith('../')) {
-      return match
+    if (!statement.specifier.startsWith('./') && !statement.specifier.startsWith('../')) {
+      result += source.slice(statement.start, statement.end)
+      cursor = statement.end
+      continue
     }
-    const modulePath = resolveHostedImport(fromPath, specifier, dependenciesByPath)
-    return modulePath ? moduleImportStatement(rawBindings, modulePath) : ''
-  })
+    const modulePath = resolveHostedImport(fromPath, statement.specifier, dependenciesByPath)
+    result += modulePath ? moduleImportStatement(statement.rawBindings, modulePath) : ''
+    cursor = statement.end
+  }
+  return `${result}${source.slice(cursor)}`
 }
 
 function exportAssignment(name: string, localName = name) {
@@ -450,29 +805,40 @@ function transformHostedReExports(
   fromPath: string,
   dependenciesByPath: Map<string, HostedTsxDependency>,
 ) {
-  return source.replace(RE_EXPORT_SOURCE_PATTERN, (
-    match,
-    typeOnly: string | undefined,
-    rawNames: string | undefined,
-    namespaceName: string | undefined,
-    specifier: string,
-  ) => {
-    if (typeOnly) return ''
-    if (!specifier.startsWith('./') && !specifier.startsWith('../')) {
-      return match
+  let result = ''
+  let cursor = 0
+  for (const statement of hostedReExportStatements(source)) {
+    result += source.slice(cursor, statement.start)
+    if (statement.typeOnly) {
+      cursor = statement.end
+      continue
     }
-    const modulePath = resolveHostedImport(fromPath, specifier, dependenciesByPath)
-    if (!modulePath) return ''
+    if (!statement.specifier.startsWith('./') && !statement.specifier.startsWith('../')) {
+      result += source.slice(statement.start, statement.end)
+      cursor = statement.end
+      continue
+    }
+    const modulePath = resolveHostedImport(fromPath, statement.specifier, dependenciesByPath)
+    if (!modulePath) {
+      cursor = statement.end
+      continue
+    }
     const moduleRef = `__modules[${JSON.stringify(modulePath)}]`
-    if (namespaceName) {
-      return `__exports[${JSON.stringify(namespaceName)}] = ${moduleRef};\n`
+    if (statement.namespaceName) {
+      result += `__exports[${JSON.stringify(statement.namespaceName)}] = ${moduleRef};\n`
+      cursor = statement.end
+      continue
     }
-    if (!rawNames) {
-      return `for (const key of Object.keys(${moduleRef})) {\n  if (key !== 'default') __exports[key] = ${moduleRef}[key];\n}\n`
+    if (!statement.rawNames) {
+      result += `for (const key of Object.keys(${moduleRef})) {\n  if (key !== 'default') __exports[key] = ${moduleRef}[key];\n}\n`
+      cursor = statement.end
+      continue
     }
-    const statements = moduleReExportStatements(rawNames, modulePath)
-    return statements ? `${statements}\n` : ''
-  })
+    const statements = moduleReExportStatements(statement.rawNames, modulePath)
+    result += statements ? `${statements}\n` : ''
+    cursor = statement.end
+  }
+  return `${result}${source.slice(cursor)}`
 }
 
 function transformModuleExports(source: string) {
