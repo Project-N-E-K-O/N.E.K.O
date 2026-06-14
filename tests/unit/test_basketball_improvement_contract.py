@@ -520,6 +520,21 @@ def test_basketball_horse_system_prompt_does_not_inherit_duel_rules(lang):
 
 
 @pytest.mark.unit
+def test_basketball_horse_system_prompt_uses_horse_end_contract():
+    zh = prompts_game.get_basketball_system_prompt("zh", mode="horse")
+    en = prompts_game.get_basketball_system_prompt("en", mode="horse")
+
+    assert "本局共有三次失误机会" not in zh
+    assert "三次机会用完" not in zh
+    assert "attempts_remaining" not in zh
+    assert "HORSE 字母已经结算出胜负" in zh
+    assert "the run has three miss chances" not in en
+    assert "all three chances are gone" not in en
+    assert "attempts_remaining" not in en
+    assert "HORSE letters have decided the winner" in en
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("lang", ("zh", "en", "ja", "ko", "ru", "es", "pt"))
 def test_basketball_quick_lines_mode_prompts_are_distinct_and_localized(lang):
     spectator = prompts_game.get_basketball_quick_lines_prompt(lang, mode="spectator")
@@ -540,6 +555,17 @@ def test_basketball_english_quick_lines_do_not_mix_mode_suffixes():
     assert "Current mode is shooter" not in timed
     assert "Current mode is HORSE" in horse
     assert "Current mode is duel" not in horse
+
+
+@pytest.mark.unit
+def test_basketball_zh_horse_quick_lines_do_not_inherit_duel_prompt():
+    prompt = prompts_game.get_basketball_quick_lines_prompt("zh", mode="horse")
+
+    assert "当前模式是 HORSE" in prompt
+    assert "篮球对战回合" not in prompt
+    assert "轮流出手" not in prompt
+    assert "比分和对战节奏" not in prompt
+    assert "duel" not in prompt
 
 
 @pytest.mark.unit
