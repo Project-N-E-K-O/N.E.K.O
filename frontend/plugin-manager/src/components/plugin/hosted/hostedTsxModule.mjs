@@ -392,11 +392,22 @@ function isTypeOnlyBinding(value) {
   return /^type\s+[A-Za-z_$][\w$]*(?:\s+as\s+[A-Za-z_$][\w$]*)?$/.test(trimmed)
 }
 
-// Whether a relative import is purely erased at runtime (`import type …`). Bare
-// `import './x'` and empty `import {} from './x'` are NOT type-only — they're
-// bundled so the dependency runs for its side effects.
+// Whether a relative import is fully erased at runtime, i.e. has no value
+// binding: `import type …`, or named lists whose every binding is inline-type
+// (`import { type A, type B } from …`). Bare `import './x'` and empty
+// `import {} from './x'` are NOT type-only — they're bundled so the dependency
+// runs for its side effects. `import { type as x }` imports a *value* named
+// `type`, so it is a runtime import too.
 function isHostedTypeOnlyImport(rawBindings) {
-  return isTypeOnlyBinding(String(rawBindings || '').trim())
+  const bindings = String(rawBindings || '').trim()
+  if (!bindings) return false
+  if (isTypeOnlyBinding(bindings)) return true
+  const namedStart = bindings.indexOf('{')
+  if (namedStart < 0) return false
+  if (bindings.slice(0, namedStart).trim().replace(/,$/, '').trim()) return false
+  const inner = bindings.slice(namedStart).trim()
+  if (/^\{\s*\}$/.test(inner)) return false
+  return parseNamedBindings(inner).length === 0
 }
 
 function moduleImportStatement(rawBindings, modulePath) {

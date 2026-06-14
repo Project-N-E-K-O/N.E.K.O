@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -710,27 +711,49 @@ def _hosted_named_bindings_have_runtime(raw_bindings: str) -> bool:
 
 
 def _hosted_is_type_only_binding(raw_binding: str) -> bool:
+    # Mirror the frontend scanner's isTypeOnlyBinding so the server and the
+    # bundler agree: `type Foo` / `type Foo as Bar` / `type { ... }` / `type * as
+    # ns` are erased, but `type as kind` imports a value literally named `type`.
     stripped = raw_binding.strip()
-    return stripped == "type" or (
-        stripped.startswith("type")
-        and len(stripped) > 4
-        and stripped[4].isspace()
-    )
+    if re.match(r"type\s*\{", stripped):
+        return True
+    if re.fullmatch(r"type\s+\*\s+as\s+[A-Za-z_$][\w$]*", stripped):
+        return True
+    if re.match(r"type\s+[A-Za-z_$][\w$]*\s*,", stripped):
+        return True
+    return bool(re.fullmatch(r"type\s+[A-Za-z_$][\w$]*(?:\s+as\s+[A-Za-z_$][\w$]*)?", stripped))
 
 
-def _hosted_import_bindings_have_runtime(raw_bindings: str) -> bool:
+def _hosted_import_is_type_only(raw_bindings: str) -> bool:
+    # Fully-erased imports only: `import type …` and named lists whose every
+    # binding is inline-type. Bare `import './x'` and empty `import {} from './x'`
+    # are runtime side-effect deps, not type-only.
     bindings = raw_bindings.strip()
     if not bindings:
-        return True
-    if _hosted_is_type_only_binding(bindings):
         return False
+    if _hosted_is_type_only_binding(bindings):
+        return True
     named_start = bindings.find("{")
     if named_start < 0:
-        return True
-    default_part = bindings[:named_start].strip().rstrip(",").strip()
-    if default_part:
-        return True
-    return _hosted_named_bindings_have_runtime(bindings[named_start:])
+        return False
+    if bindings[:named_start].strip().rstrip(",").strip():
+        return False
+    inner = bindings[named_start:].strip()
+    if re.fullmatch(r"\{\s*\}", inner):
+        return False
+    return not _hosted_named_bindings_have_runtime(inner)
+
+
+def _hosted_raise_bare_import_unsupported(specifier: str) -> None:
+    raise ServerDomainError(
+        code="PLUGIN_UI_BARE_IMPORT_UNSUPPORTED",
+        message=(
+            f"Bare import '{specifier}' cannot resolve inside the surface iframe; "
+            "import only relative helpers and '@neko/plugin-ui'"
+        ),
+        status_code=400,
+        details={"specifier": specifier},
+    )
 
 
 def _hosted_is_dynamic_import_call(source: str, index: int) -> bool:
@@ -738,6 +761,22 @@ def _hosted_is_dynamic_import_call(source: str, index: int) -> bool:
         return False
     import_target = _hosted_skip_trivia(source, index + len("import"))
     return import_target < len(source) and source[import_target] == "("
+
+
+def _hosted_classify_import_specifier(specifier: str | None) -> str | None:
+    # Relative → a bundled dependency. '@neko/plugin-ui' / 'neko:ui' → rewritten
+    # by the frontend, no dep. Any other bare/external module can't resolve inside
+    # the iframe and would leave a raw ESM import in the classic script — reject it
+    # (installed plugins reach this endpoint without running check-hosted-tsx).
+    if specifier is None:
+        return None
+    relative = _hosted_relative_specifier(specifier)
+    if relative is not None:
+        return relative
+    if specifier in {"@neko/plugin-ui", "neko:ui"}:
+        return None
+    _hosted_raise_bare_import_unsupported(specifier)
+    return None
 
 
 def _hosted_import_specifier(source: str, index: int) -> str | None:
@@ -751,19 +790,19 @@ def _hosted_import_specifier(source: str, index: int) -> str | None:
         # `import type { Foo } from './types'` is erased at runtime — no dep.
         return None
     if source[index] in {"'", '"'}:
+        # Bare `import './x'` runs for side effects — a runtime dependency.
         read = _hosted_read_quoted(source, index)
-        return _hosted_relative_specifier(read[0]) if read else None
+        return _hosted_classify_import_specifier(read[0] if read else None)
     from_index = _hosted_find_keyword_before_statement_end(source, index, "from")
     if from_index < 0:
         return None
-    if not _hosted_import_bindings_have_runtime(source[index:from_index]):
+    if _hosted_import_is_type_only(source[index:from_index]):
         return None
     specifier_index = _hosted_skip_trivia(source, from_index + len("from"))
     if specifier_index >= len(source) or source[specifier_index] not in {"'", '"'}:
         return None
     read = _hosted_read_quoted(source, specifier_index)
-    specifier = read[0] if read else None
-    return _hosted_relative_specifier(specifier)
+    return _hosted_classify_import_specifier(read[0] if read else None)
 
 
 def _hosted_raise_dynamic_import_unsupported() -> None:

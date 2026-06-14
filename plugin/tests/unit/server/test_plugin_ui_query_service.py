@@ -663,6 +663,92 @@ def test_surface_source_rejects_dynamic_imports(tmp_path) -> None:
     assert exc_info.value.status_code == 400
 
 
+def _run_single_surface(tmp_path, panel_source: str, extra_files: dict[str, str]):
+    plugin_dir = tmp_path / "demo_plugin"
+    ui_dir = plugin_dir / "ui"
+    ui_dir.mkdir(parents=True)
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
+    (ui_dir / "panel.tsx").write_text(panel_source, encoding="utf-8")
+    for name, body in extra_files.items():
+        (ui_dir / name).write_text(body, encoding="utf-8")
+    plugin_ui = normalize_plugin_ui_manifest(
+        {
+            "plugin": {
+                "ui": {
+                    "panel": [{
+                        "id": "main",
+                        "entry": "ui/panel.tsx",
+                        "permissions": ["state:read"],
+                    }],
+                },
+            },
+        },
+        plugin_id="demo",
+    )
+    plugins_backup = dict(state.plugins)
+    try:
+        with state.acquire_plugins_write_lock():
+            state.plugins.clear()
+            state.plugins["demo"] = {
+                "id": "demo",
+                "config_path": str(config_path),
+                "plugin_ui": plugin_ui,
+                "entries": [],
+            }
+        return asyncio.run(PluginUiQueryService().get_surface_source("demo", kind="panel", surface_id="main"))
+    finally:
+        with state.acquire_plugins_write_lock():
+            state.plugins.clear()
+            state.plugins.update(plugins_backup)
+
+
+def test_surface_source_includes_empty_named_imports_as_side_effect_deps(tmp_path) -> None:
+    payload = _run_single_surface(
+        tmp_path,
+        "import {} from './setup'\n"
+        "export default function Panel() { return <strong>ok</strong> }\n",
+        {"setup.ts": "globalThis.__hostedSetupRan = true\n"},
+    )
+    assert payload["dependencies"] == [
+        {"path": "ui/setup.ts", "source": "globalThis.__hostedSetupRan = true\n"},
+    ]
+
+
+def test_surface_source_keeps_value_import_named_type(tmp_path) -> None:
+    payload = _run_single_surface(
+        tmp_path,
+        "import { type as kind } from './helper'\n"
+        "export default function Panel() { return <strong>{kind}</strong> }\n",
+        {"helper.ts": "export const type = 'value'\n"},
+    )
+    assert payload["dependencies"] == [
+        {"path": "ui/helper.ts", "source": "export const type = 'value'\n"},
+    ]
+
+
+def test_surface_source_skips_fully_inline_type_only_imports(tmp_path) -> None:
+    payload = _run_single_surface(
+        tmp_path,
+        "import { type Theme } from './types'\n"
+        "export default function Panel() { const t: Theme = 'x'; return <strong>{t}</strong> }\n",
+        {"types.ts": "export type Theme = string\n"},
+    )
+    assert payload["dependencies"] == []
+
+
+def test_surface_source_rejects_bare_external_imports(tmp_path) -> None:
+    with pytest.raises(ServerDomainError) as exc_info:
+        _run_single_surface(
+            tmp_path,
+            "import { debounce } from 'lodash-es'\n"
+            "export default function Panel() { return <strong>{String(debounce)}</strong> }\n",
+            {},
+        )
+    assert exc_info.value.code == "PLUGIN_UI_BARE_IMPORT_UNSUPPORTED"
+    assert exc_info.value.status_code == 400
+
+
 def test_surface_source_rejects_dynamic_imports_in_template_expressions(tmp_path) -> None:
     plugin_dir = tmp_path / "demo_plugin"
     ui_dir = plugin_dir / "ui"

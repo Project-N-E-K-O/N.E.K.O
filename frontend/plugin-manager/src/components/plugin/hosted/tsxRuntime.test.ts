@@ -480,6 +480,19 @@ import ghost from "./missing"
     expect(root.querySelector('strong')?.textContent).toBe('AB')
   })
 
+  it('treats fully inline type-only named imports as erased', () => {
+    const { root } = executeHostedDocument(`
+      import { type Foo } from "./types"
+
+      export default function Panel() {
+        const value: Foo = "ok"
+        return <strong>{value}</strong>
+      }
+    `, baseContext(), baseContext(), [])
+
+    expect(root.querySelector('strong')?.textContent).toBe('ok')
+  })
+
   it('runs empty named imports for their side effects', () => {
     const { root } = executeHostedDocument(`
       import {} from "./setup"
