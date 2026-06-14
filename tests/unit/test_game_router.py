@@ -1792,6 +1792,36 @@ def test_game_archive_memory_prefers_final_score_over_oral_concession_text():
 
 
 @pytest.mark.unit
+def test_game_archive_memory_prefers_explicit_score_text_for_horse_results():
+    archive = {
+        "game_type": "basketball",
+        "session_id": "horse_1",
+        "lanlan_name": "Neko",
+        "summary": "basketball 小游戏结束。",
+        "finalScore": {
+            "player": 3,
+            "ai": 0,
+            "score_text": "HORSE HOR : HORSE",
+            "winner": "player",
+            "outcome": "player_win",
+        },
+        "last_state": {"score": {"player": 3, "ai": 0}},
+        "basketball_game_memory_enabled": True,
+        "basketball_game_memory_player_interaction_enabled": True,
+        "basketball_game_memory_event_reply_enabled": True,
+        "basketball_game_memory_archive_enabled": True,
+        "basketball_game_memory_postgame_context_enabled": True,
+        "full_dialogues": [],
+    }
+
+    messages = game_router._build_game_archive_memory_messages(archive, tail_count=1)
+    system_text = messages[-1]["content"][0]["text"]
+
+    assert "官方结果：HORSE HOR : HORSE。口头让步不改官方结果。" in system_text
+    assert "玩家 3 : 0 Neko" not in system_text
+
+
+@pytest.mark.unit
 def test_game_archive_tail_respects_independent_soccer_memory_policy():
     archive = {
         "game_type": "soccer",
@@ -2146,6 +2176,39 @@ async def test_basketball_game_chat_rejects_missing_route_before_llm(monkeypatch
         "lanlan_name": "Lan",
         "method": "game_chat",
     }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_basketball_game_chat_does_not_archive_late_client_timeout_reply(monkeypatch):
+    async def fake_run_game_chat(*_args, **_kwargs):
+        return {
+            "line": "这句来晚了",
+            "control": {},
+            "metrics": {"total_ms": 2300, "llm_ms": 2290},
+        }
+
+    monkeypatch.setattr(game_router, "_run_game_chat", fake_run_game_chat)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    with reset_game_route_state():
+        state = game_router._activate_game_route("basketball", "duel-session", "Lan")
+        state["mode"] = "duel"
+
+        result = await game_router.game_chat("basketball", _FakeRequest({
+            "session_id": "duel-session",
+            "lanlan_name": "Lan",
+            "event": {
+                "kind": "long_aim",
+                "mode": "duel",
+                "label": "neko_duel_turn",
+                "client_timeout_ms": 2200,
+            },
+        }))
+
+    assert result["line"] == "这句来晚了"
+    assert result["skipped_memory"] == "client_timeout"
+    assert state["game_dialog_log"] == []
 
 
 @pytest.mark.unit
@@ -2621,9 +2684,7 @@ async def test_route_start_finalizes_old_active_route_before_replacing(monkeypat
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_route_start_finalizes_other_game_types_for_same_lanlan(monkeypatch):
-    """启动新路由前要结束同角色下所有 active 路由（即使 game_type 不同），
-    否则 is_game_route_active(lanlan_name) / _get_active_game_route_state(lanlan_name)
-    会按 dict 迭代顺序拿到歧义 route，导致输入归属不确定。"""
+    """Starting a route must close every active route for the same character."""
     fake_session = type("FakeSession", (), {"close": AsyncMock()})()
     game_router._game_sessions[game_router._game_session_key("Lan", "soccer", "soccer_match")] = {
         "session": fake_session,

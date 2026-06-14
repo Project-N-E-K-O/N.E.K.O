@@ -2592,6 +2592,9 @@ def _extract_score_text(state: dict) -> str:
         score = last_state.get("score") if isinstance(last_state.get("score"), dict) else {}
     if not score:
         return "结果未知"
+    score_text = _normalize_short_text(score.get("score_text"), max_chars=120)
+    if score_text:
+        return score_text
     player = score.get("player", "?")
     ai = score.get("ai", "?")
     return f"玩家 {player} : {ai} {state.get('lanlan_name') or 'AI'}"
@@ -5519,6 +5522,7 @@ def _sanitize_basketball_event(event: Any) -> tuple[dict | None, str]:
         "final_streak", "final_distance", "aim_duration", "aim_duration_seconds",
         "current_distance", "record", "best_streak", "made_count",
         "attempts_remaining", "attempts_total", "score", "total_score",
+        "client_timeout_ms",
     ):
         if key not in event:
             continue
@@ -5535,6 +5539,8 @@ def _sanitize_basketball_event(event: Any) -> tuple[dict | None, str]:
             clean[key] = max(0, min(int(value), 999))
         elif key in {"score", "total_score"}:
             clean[key] = max(0, min(int(value), 999999))
+        elif key == "client_timeout_ms":
+            clean[key] = max(0, min(int(value), 60000))
         elif key in {"aim_duration", "aim_duration_seconds"}:
             clean[key] = max(0.0, min(value, 60.0))
         else:
@@ -6107,13 +6113,26 @@ async def game_chat(game_type: str, request: Request):
         current_state = event.get("currentState")
         if isinstance(current_state, dict):
             state["last_state"] = current_state
-        _append_game_dialog(state, {
-            "type": "game_event",
-            "kind": event.get("kind"),
-            "text": event.get("textRaw") or event.get("label") or "",
-            "result_line": result.get("line", ""),
-            "control": result.get("control", {}),
-        })
+        client_timeout_ms = event.get("client_timeout_ms")
+        try:
+            client_timeout_ms = int(float(client_timeout_ms))
+        except (TypeError, ValueError):
+            client_timeout_ms = 0
+        metrics = result.get("metrics") if isinstance(result, dict) else {}
+        try:
+            total_ms = int(float(metrics.get("total_ms"))) if isinstance(metrics, dict) else 0
+        except (TypeError, ValueError):
+            total_ms = 0
+        if client_timeout_ms > 0 and total_ms >= client_timeout_ms:
+            result["skipped_memory"] = "client_timeout"
+        else:
+            _append_game_dialog(state, {
+                "type": "game_event",
+                "kind": event.get("kind"),
+                "text": event.get("textRaw") or event.get("label") or "",
+                "result_line": result.get("line", ""),
+                "control": result.get("control", {}),
+            })
     return result
 
 

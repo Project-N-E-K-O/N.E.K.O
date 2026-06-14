@@ -844,6 +844,15 @@ def test_basketball_drain_reads_nested_result_line():
 
 
 @pytest.mark.unit
+def test_basketball_duel_voice_request_carries_client_timeout_for_memory_guard():
+    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+    voice_start = html.index("function buildNekoDuelTurnEvent() {")
+    voice_section = html[voice_start:html.index("function queueNekoDuelTurnVoice()", voice_start)]
+
+    assert "client_timeout_ms: 2200" in voice_section
+
+
+@pytest.mark.unit
 def test_basketball_voice_entries_freeze_route_identity():
     html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
 
