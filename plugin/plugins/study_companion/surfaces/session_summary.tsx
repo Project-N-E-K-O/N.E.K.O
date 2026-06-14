@@ -9,7 +9,7 @@ export default function SessionSummary(props: PluginSurfaceProps) {
 
   useEffect(() => {
     ensureBrandCSS();
-    callPlugin('study_session_summary')
+    callPlugin(props.api, 'study_session_summary')
       .then(setSummary)
       .catch((err) => setError(formatError(err)));
   }, []);

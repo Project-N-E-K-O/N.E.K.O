@@ -33,7 +33,7 @@ export default function PassageRecitation(props: PluginSurfaceProps) {
     setBusy(true);
     try {
       const sanitizedHintCount = sanitizeHintCount(hintCount);
-      const payload = await callPlugin<RecitationPayload>('study_memory_recitation_attempt', {
+      const payload = await callPlugin<RecitationPayload>(props.api, 'study_memory_recitation_attempt', {
         item_id: itemId,
         user_input_text: userInput,
         hint_count: sanitizedHintCount,

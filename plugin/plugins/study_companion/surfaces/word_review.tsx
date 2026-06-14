@@ -33,7 +33,7 @@ export default function WordReview(props: PluginSurfaceProps) {
   const current = reviews[0];
 
   async function refresh(signal?: AbortSignal): Promise<DueReview[]> {
-    const payload = await callPlugin<{ due_reviews?: DueReview[] }>('study_memory_due_reviews', { item_type: 'word', limit: 50 }, signal);
+    const payload = await callPlugin<{ due_reviews?: DueReview[] }>(props.api, 'study_memory_due_reviews', { item_type: 'word', limit: 50 }, signal);
     const due = Array.isArray(payload.due_reviews) ? payload.due_reviews : [];
     const wordReviews = due.filter((item: DueReview) => item.item?.item_type === 'word');
     setReviews(wordReviews);
@@ -65,7 +65,7 @@ export default function WordReview(props: PluginSurfaceProps) {
     setSubmitting(true);
     try {
       const reviewed = current;
-      const payload = await callPlugin<ReviewResult>('study_memory_review_item', { item_id: reviewed.item_id, rating });
+      const payload = await callPlugin<ReviewResult>(props.api, 'study_memory_review_item', { item_id: reviewed.item_id, rating });
       const nextReviews = await refresh();
       notifyReviewCompleted(reviewed, nextReviews.length);
       if (payload.habit_progress?.applied) {

@@ -8,6 +8,7 @@ from .entry_common import (
     _validate_optional_vision_image_payload,
     plugin_entry,
     tr,
+    ui,
     LLM_OPERATION_QUESTION_GENERATE,
 )
 
@@ -27,6 +28,7 @@ def _image_only_question_prompt(language: str) -> str:
 
 
 class _TutorQuestionEntriesMixin:
+    @ui.action()
     @plugin_entry(
         id="study_generate_question",
         name=tr("entries.generate_question.name", default="Generate Study Question"),

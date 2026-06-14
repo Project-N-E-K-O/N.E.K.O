@@ -9,11 +9,11 @@ export default function HabitDashboard(props: PluginSurfaceProps) {
 
   async function refresh() {
     const [status, goals, checkin, summary, supervision] = await Promise.all([
-      callPlugin('study_pomodoro_status'),
-      callPlugin('study_goals'),
-      callPlugin('study_checkin_status'),
-      callPlugin('study_session_summary'),
-      callPlugin('study_supervision_status'),
+      callPlugin(props.api, 'study_pomodoro_status'),
+      callPlugin(props.api, 'study_goals'),
+      callPlugin(props.api, 'study_checkin_status'),
+      callPlugin(props.api, 'study_session_summary'),
+      callPlugin(props.api, 'study_supervision_status'),
     ]);
     const goalPayload = goals as { goals?: unknown };
     setPayload({ status, goals: Array.isArray(goalPayload.goals) ? goalPayload.goals : [], checkin, summary, supervision });
@@ -21,7 +21,7 @@ export default function HabitDashboard(props: PluginSurfaceProps) {
 
   async function act(entryId: string, args: Record<string, unknown> = {}) {
     try {
-      await callPlugin(entryId, args);
+      await callPlugin(props.api, entryId, args);
       await refresh();
       setError('');
     } catch (err) {

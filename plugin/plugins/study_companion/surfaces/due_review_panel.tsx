@@ -45,7 +45,7 @@ export default function DueReviewPanel(props: PluginSurfaceProps) {
   const current = reviews[0];
 
   async function refresh(signal?: AbortSignal): Promise<DueReview[]> {
-    const payload = await callPlugin<{ due_reviews?: DueReview[] }>('study_memory_due_reviews', { limit: 100 }, signal);
+    const payload = await callPlugin<{ due_reviews?: DueReview[] }>(props.api, 'study_memory_due_reviews', { limit: 100 }, signal);
     const nextReviews = Array.isArray(payload.due_reviews) ? payload.due_reviews : [];
     setReviews(nextReviews);
     setShowAnswer(false);
@@ -84,7 +84,7 @@ export default function DueReviewPanel(props: PluginSurfaceProps) {
     setBusy(true);
     try {
       const reviewed = current;
-      const payload = await callPlugin<ReviewResult>('study_memory_review_item', { item_id: reviewed.item_id, rating });
+      const payload = await callPlugin<ReviewResult>(props.api, 'study_memory_review_item', { item_id: reviewed.item_id, rating });
       const nextReviews = await refresh();
       notifyReviewCompleted(reviewed, nextReviews.length);
       setStatus(
@@ -102,8 +102,8 @@ export default function DueReviewPanel(props: PluginSurfaceProps) {
   async function handleStartFocus(deckId: string) {
     setBusy(true);
     try {
-      const before = await getPomodoroStatus();
-      const after = await startDeckFocus(deckId, normalizePositiveInteger(focusMinutes, 1));
+      const before = await getPomodoroStatus(props.api);
+      const after = await startDeckFocus(props.api, deckId, normalizePositiveInteger(focusMinutes, 1));
       setStatus(
         startedNewFocusSession(before, after)
           ? text(props, 'ui.memory.focus_started', 'Focus started')
@@ -119,7 +119,7 @@ export default function DueReviewPanel(props: PluginSurfaceProps) {
   useEffect(() => {
     ensureBrandCSS();
     const controller = new AbortController();
-    getMemoryHabitStatus(controller.signal)
+    getMemoryHabitStatus(props.api, controller.signal)
       .then(setHabitStatus)
       .catch(() => setHabitStatus({ available: false }));
     refresh(controller.signal).catch((error) => {

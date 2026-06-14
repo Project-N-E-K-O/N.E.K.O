@@ -10,14 +10,14 @@ export default function DailyGoalEditor(props: PluginSurfaceProps) {
   const [error, setError] = useState('');
 
   async function refresh() {
-    const payload = await callPlugin('study_goals');
+    const payload = await callPlugin(props.api, 'study_goals');
     const goalPayload = payload as { goals?: unknown };
     setGoals(Array.isArray(goalPayload.goals) ? goalPayload.goals : []);
   }
 
   async function createGoal() {
     try {
-      await callPlugin('study_goal_create', { target_type: 'subject', subject, target_amount: targetAmount, unit: 'minute' });
+      await callPlugin(props.api, 'study_goal_create', { target_type: 'subject', subject, target_amount: targetAmount, unit: 'minute' });
       await refresh();
       setError('');
     } catch (err) {
@@ -27,7 +27,7 @@ export default function DailyGoalEditor(props: PluginSurfaceProps) {
 
   async function deleteGoal(goalId: string) {
     try {
-      await callPlugin('study_goal_delete', { goal_id: goalId });
+      await callPlugin(props.api, 'study_goal_delete', { goal_id: goalId });
       await refresh();
       setError('');
     } catch (err) {

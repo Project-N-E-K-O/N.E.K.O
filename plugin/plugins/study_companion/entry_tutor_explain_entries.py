@@ -11,6 +11,7 @@ from .entry_common import (
     _plugin_lock,
     plugin_entry,
     tr,
+    ui,
     LLM_OPERATION_CONCEPT_EXPLAIN,
     MODE_COMPANION,
     MODE_CONCEPT_EXPLAIN,
@@ -70,6 +71,7 @@ class _TutorExplainEntriesMixin:
             vision_image_base64=image_payload,
         )
 
+    @ui.action()
     @plugin_entry(
         id="study_explain_text",
         name=tr("entries.explain_text.name", default="Explain Study Text"),

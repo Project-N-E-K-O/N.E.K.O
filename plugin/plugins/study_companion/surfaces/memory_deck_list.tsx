@@ -29,7 +29,7 @@ export default function MemoryDeckList(props: PluginSurfaceProps) {
   const [busy, setBusy] = useState(false);
 
   async function refresh(signal?: AbortSignal) {
-    const payload = await callPlugin<{ decks?: MemoryDeck[] }>('study_memory_list_decks', { limit: 100 }, signal);
+    const payload = await callPlugin<{ decks?: MemoryDeck[] }>(props.api, 'study_memory_list_decks', { limit: 100 }, signal);
     const nextDecks = Array.isArray(payload.decks) ? payload.decks : [];
     setDecks(nextDecks);
     postStudySurfaceMessage({
@@ -48,7 +48,7 @@ export default function MemoryDeckList(props: PluginSurfaceProps) {
     }
     setBusy(true);
     try {
-      await callPlugin('study_memory_create_deck', { name: trimmedName, deck_type: deckType });
+      await callPlugin(props.api, 'study_memory_create_deck', { name: trimmedName, deck_type: deckType });
       setName('');
       await refresh();
       setStatus(text(props, 'ui.status.reply_ready', 'Reply ready'));
@@ -62,7 +62,7 @@ export default function MemoryDeckList(props: PluginSurfaceProps) {
   async function deleteDeck(deckId: string) {
     setBusy(true);
     try {
-      await callPlugin('study_memory_delete_deck', { deck_id: deckId });
+      await callPlugin(props.api, 'study_memory_delete_deck', { deck_id: deckId });
       await refresh();
     } catch (error) {
       setStatus(errorMessage(error));
@@ -76,7 +76,7 @@ export default function MemoryDeckList(props: PluginSurfaceProps) {
     try {
       const amount = normalizePositiveInteger(goalAmount, 1);
       setGoalAmount(amount);
-      const payload = await setDeckGoal(deckId, amount, goalUnit);
+      const payload = await setDeckGoal(props.api, deckId, amount, goalUnit);
       setStatus(deckGoalSavedMessage(props, payload));
       await refresh();
     } catch (error) {
@@ -89,7 +89,7 @@ export default function MemoryDeckList(props: PluginSurfaceProps) {
   useEffect(() => {
     ensureBrandCSS();
     const controller = new AbortController();
-    getMemoryHabitStatus(controller.signal)
+    getMemoryHabitStatus(props.api, controller.signal)
       .then(setHabitStatus)
       .catch(() => setHabitStatus({ available: false }));
     refresh(controller.signal).catch((error) => {

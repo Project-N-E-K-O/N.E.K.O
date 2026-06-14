@@ -6,6 +6,7 @@ from .entry_common import (
     _entry_exception_error,
     plugin_entry,
     tr,
+    ui,
 )
 
 
@@ -120,6 +121,7 @@ class _MemoryDeckEntriesMixin:
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_memory_deck")
 
+    @ui.action()
     @plugin_entry(
         id="study_memory_create_deck",
         name=tr("entries.memory_create_deck.name", default="Create Study Memory Deck"),
@@ -166,6 +168,7 @@ class _MemoryDeckEntriesMixin:
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_memory_create_deck")
 
+    @ui.action()
     @plugin_entry(
         id="study_memory_list_decks",
         name=tr("entries.memory_list_decks.name", default="List Study Memory Decks"),
@@ -189,6 +192,7 @@ class _MemoryDeckEntriesMixin:
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_memory_list_decks")
 
+    @ui.action()
     @plugin_entry(
         id="study_memory_delete_deck",
         name=tr("entries.memory_delete_deck.name", default="Delete Study Memory Deck"),

@@ -113,7 +113,7 @@ enabled = true
 id = "study-panel"
 title = "Study Panel"
 entry = "surfaces/study_panel.tsx"
-permissions = ["state:read"]
+permissions = ["state:read", "action:call"]
 
 [[plugin.ui.guide]]
 id = "knowledge-map"

@@ -4,6 +4,7 @@ import asyncio
 import concurrent.futures
 import json
 import os
+import re
 import shutil
 import sqlite3
 import threading
@@ -16,6 +17,40 @@ from types import SimpleNamespace
 import pytest
 
 pytestmark = pytest.mark.unit
+
+HOSTED_SURFACE_ACTION_IDS = [
+    "study_anonymous_knowledge_preview",
+    "study_checkin_manual",
+    "study_checkin_status",
+    "study_evaluate_answer",
+    "study_explain_text",
+    "study_generate_question",
+    "study_goal_create",
+    "study_goal_delete",
+    "study_goals",
+    "study_knowledge_map",
+    "study_memory_create_deck",
+    "study_memory_delete_deck",
+    "study_memory_due_reviews",
+    "study_memory_habit_status",
+    "study_memory_import_words",
+    "study_memory_list_decks",
+    "study_memory_recitation_attempt",
+    "study_memory_review_item",
+    "study_memory_set_deck_goal",
+    "study_pomodoro_pause",
+    "study_pomodoro_resume",
+    "study_pomodoro_skip_break",
+    "study_pomodoro_start",
+    "study_pomodoro_status",
+    "study_session_summary",
+    "study_set_knowledge_contribution_opt_in",
+    "study_set_mode",
+    "study_status",
+    "study_summarize_session",
+    "study_supervision_status",
+    "study_supervision_toggle",
+]
 
 try:
     import tomllib
@@ -1581,6 +1616,10 @@ def test_study_companion_i18n_bundles_are_present() -> None:
         surface["id"] == "study-panel" and surface["available"] is True
         for surface in surfaces
     )
+    study_panel_surface = next(
+        surface for surface in surfaces if surface["id"] == "study-panel"
+    )
+    assert "action:call" in study_panel_surface["permissions"]
     assert any(
         surface["id"] == "knowledge-map" and surface["available"] is True
         for surface in surfaces
@@ -2410,7 +2449,13 @@ def test_study_companion_hosted_panel_uses_long_running_entry_poll_budget() -> N
     assert "ENTRY_TIMEOUT_MS" in source
     assert "study_set_mode: 15000" in source
     assert "study_explain_text: 60000" in source
-    assert "const deadline = Date.now() + timeoutForEntry(entryId);" in source
+    assert "callPlugin as callHostedPlugin" in source
+    assert (
+        "return callHostedPlugin<T>(api, entryId, args, { signal, timeoutMs: timeoutForEntry(entryId) });"
+        in source
+    )
+    assert "fetch('/runs'" not in source
+    assert "fetch(`/runs/" not in source
     assert "for (let i = 0; i < 40; i += 1)" not in source
     assert (
         "async function refresh(signal?: AbortSignal, options: { updateReply?: boolean } = {})"
@@ -2424,6 +2469,29 @@ def test_study_companion_hosted_panel_uses_long_running_entry_poll_budget() -> N
     assert "study-panel__modes" in source
     assert "study_set_mode" in source
     assert "status.mode.companion" in source
+
+
+def test_study_companion_hosted_surface_actions_are_bridge_authorized() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    entry_sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(plugin_dir.glob("entry_*.py"))
+    )
+    for action_id in HOSTED_SURFACE_ACTION_IDS:
+        assert re.search(
+            rf"@ui\.action\([^)]*\)\s+@plugin_entry\(\s+id=[\"']{re.escape(action_id)}[\"']",
+            entry_sources,
+            re.MULTILINE,
+        ), action_id
+
+    export_source = (plugin_dir / "entry_export_support.py").read_text(
+        encoding="utf-8"
+    )
+    assert re.search(
+        r"@ui\.action\([^)]*\)\s+async def _study_export_notes_entry",
+        export_source,
+        re.MULTILINE,
+    )
 
 
 def test_study_companion_hosted_panel_supports_image_paste_contract() -> None:
@@ -2490,12 +2558,10 @@ def test_study_companion_note_exporter_uses_backend_export_poll_budget() -> None
     assert "POLL_TIMEOUT_BUFFER_MS = 5_000" in source
     assert "const timeoutSeconds = Number(entry?.timeout);" in source
     assert "return timeoutSeconds * 1000 + POLL_TIMEOUT_BUFFER_MS;" in source
-    assert (
-        "const deadline = Date.now() + Math.max(timeoutMs, POLL_INTERVAL_MS);" in source
-    )
-    assert "while (Date.now() < deadline)" in source
     assert "pollTimeoutMs = getEntryTimeoutMs(exportEntry)" in source
-    assert "}, pollTimeoutMs);" in source
+    assert "{ timeoutMs: pollTimeoutMs }" in source
+    assert "fetch('/runs'" not in source
+    assert "fetch(`/runs/" not in source
     assert "for (let attempt = 0; attempt < 40; attempt += 1)" not in source
     assert "for (let i = 0; i < 40; i += 1)" not in source
 
@@ -2507,13 +2573,11 @@ def test_study_companion_ui_export_failures_are_not_silent_successes() -> None:
     )
     static_source = (plugin_dir / "static" / "main.js").read_text(encoding="utf-8")
 
-    assert "RUN_EXPORT_RETRY_COUNT = 3" in hosted_source
-    assert "throw new Error(`Run export failed: HTTP ${lastStatus}`);" in hosted_source
-    assert (
-        "const exported = exportResp.ok ? await exportResp.json() : {};"
-        not in hosted_source
-    )
-    assert "return item?.json?.data || {};" not in hosted_source
+    assert "callPlugin as callHostedPlugin" in hosted_source
+    assert "RUN_EXPORT_RETRY_COUNT = 3" not in hosted_source
+    assert "throw new Error(`Run export failed: HTTP ${lastStatus}`);" not in hosted_source
+    assert "fetch('/runs'" not in hosted_source
+    assert "fetch(`/runs/" not in hosted_source
     assert "study_set_mode" in hosted_source
 
     assert "RUN_EXPORT_RETRY_COUNT = 3" in static_source
@@ -2689,7 +2753,7 @@ def test_study_surface_utils_preserves_nonstandard_backend_error_details() -> No
     assert "function pluginErrorMessage" in source
     assert "typeof error === 'string'" in source
     assert "JSON.stringify(error)" in source
-    assert "throw new Error(pluginErrorMessage(item.json.error))" in source
+    assert "throw new Error(pluginErrorMessage(payload.error || payload.message))" in source
 
 
 def test_study_companion_i18n_prefers_traditional_chinese_bundle() -> None:

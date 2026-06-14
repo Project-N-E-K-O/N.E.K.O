@@ -7,6 +7,7 @@ from .entry_common import (
     _entry_exception_error,
     plugin_entry,
     tr,
+    ui,
     build_open_ui_payload,
 )
 
@@ -149,6 +150,7 @@ class _StatusEntriesMixin:
                 self, exc, operation="study_update_settings_config"
             )
 
+    @ui.action()
     @plugin_entry(
         id="study_status",
         name=tr("entries.status.name", default="Study Companion Status"),
@@ -195,6 +197,7 @@ class _StatusEntriesMixin:
             }
         )
 
+    @ui.action()
     @plugin_entry(
         id="study_memory_habit_status",
         name=tr(

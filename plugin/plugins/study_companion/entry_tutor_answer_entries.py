@@ -9,11 +9,13 @@ from .entry_common import (
     _validate_optional_vision_image_payload,
     plugin_entry,
     tr,
+    ui,
     LLM_OPERATION_ANSWER_EVALUATE,
 )
 
 
 class _TutorAnswerEntriesMixin:
+    @ui.action()
     @plugin_entry(
         id="study_evaluate_answer",
         name=tr("entries.evaluate_answer.name", default="Evaluate Study Answer"),

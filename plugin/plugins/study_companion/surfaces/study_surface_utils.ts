@@ -1,17 +1,6 @@
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 
-type RunExportItem = {
-  type?: string;
-  json?: {
-    success?: boolean;
-    error?: unknown;
-    data?: unknown;
-  };
-};
-
-type JsonRunExportItem = RunExportItem & {
-  json: NonNullable<RunExportItem['json']>;
-};
+type HostedApi = PluginSurfaceProps['api'];
 
 type CallPluginOptions = {
   signal?: AbortSignal;
@@ -19,11 +8,6 @@ type CallPluginOptions = {
 };
 
 const DEFAULT_PLUGIN_CALL_TIMEOUT_MS = 90000;
-const PLUGIN_CALL_POLL_INTERVAL_MS = 250;
-
-function isJsonRunExportItem(candidate: RunExportItem): candidate is JsonRunExportItem {
-  return candidate.type === 'json' && !!candidate.json;
-}
 
 export const BRAND_CSS = `
   :host, :root {
@@ -494,13 +478,6 @@ export function ensureBrandCSS() {
   brandCSSInjected = true;
 }
 
-export async function readJsonResponse(response: Response, label: string) {
-  if (!response.ok) {
-    throw new Error(`${label} failed: HTTP ${response.status}`);
-  }
-  return await response.json();
-}
-
 function pluginErrorMessage(error: unknown) {
   if (typeof error === 'string') {
     return error;
@@ -521,60 +498,74 @@ function pluginErrorMessage(error: unknown) {
   return 'Plugin call failed';
 }
 
-function waitForPluginPoll(signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted) {
-    return Promise.reject(new DOMException('Aborted', 'AbortError'));
-  }
-  return new Promise((resolve, reject) => {
-    const timeout = window.setTimeout(resolve, PLUGIN_CALL_POLL_INTERVAL_MS);
-    signal?.addEventListener('abort', () => {
-      window.clearTimeout(timeout);
-      reject(new DOMException('Aborted', 'AbortError'));
-    }, { once: true });
-  });
+function abortError() {
+  return new DOMException('Aborted', 'AbortError');
 }
 
-export async function callPlugin(
+function isAbortSignal(value: CallPluginOptions | AbortSignal): value is AbortSignal {
+  return typeof AbortSignal !== 'undefined' && value instanceof AbortSignal;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object';
+}
+
+function unwrapPluginResult<T>(rawResult: unknown): T {
+  let payload = rawResult;
+  if (isObject(payload) && 'result' in payload && ('plugin_id' in payload || 'action_id' in payload)) {
+    payload = payload.result;
+  }
+  if (isObject(payload) && (payload.success === false || 'error' in payload || 'data' in payload)) {
+    if (payload.success === false || payload.error) {
+      throw new Error(pluginErrorMessage(payload.error || payload.message));
+    }
+    if ('data' in payload) {
+      return (payload.data ?? {}) as T;
+    }
+  }
+  return (payload ?? {}) as T;
+}
+
+export async function callPlugin<T = Record<string, unknown>>(
+  api: HostedApi,
   entryId: string,
   args: Record<string, unknown> = {},
   options: CallPluginOptions | AbortSignal = {},
-) {
-  // Backward compatible with callers passing a bare AbortSignal as the 3rd
-  // argument (e.g. study_panel's status/mode/explain calls). Without this they
-  // would destructure an AbortSignal as options and silently lose cancellation.
-  const normalized = options instanceof AbortSignal ? { signal: options } : options;
+): Promise<T> {
+  const normalized = isAbortSignal(options) ? { signal: options } : options;
   const { signal, timeoutMs = DEFAULT_PLUGIN_CALL_TIMEOUT_MS } = normalized;
-  const created = await readJsonResponse(await fetch('/runs', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ plugin_id: 'study_companion', entry_id: entryId, args }),
-    signal,
-  }), 'Run create');
-  const runId = created.run_id || created.id;
-  if (!runId) {
-    throw new Error('Run id missing');
+  if (!api || typeof api.call !== 'function') {
+    throw new Error('Hosted API call bridge unavailable');
   }
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    await waitForPluginPoll(signal);
-    const run = await readJsonResponse(await fetch(`/runs/${runId}`, { signal }), 'Run poll');
-    if (run.status === 'succeeded') {
-      const exported = await readJsonResponse(await fetch(`/runs/${runId}/export`, { signal }), 'Run export');
-      const items = Array.isArray(exported.items) ? exported.items as RunExportItem[] : [];
-      const item = items.find(isJsonRunExportItem);
-      if (!item) {
-        throw new Error('Run export missing JSON result');
-      }
-      if (item.json.success === false || item.json.error) {
-        throw new Error(pluginErrorMessage(item.json.error));
-      }
-      return item.json.data || {};
+  if (signal?.aborted) {
+    throw abortError();
+  }
+
+  let timeoutId = 0;
+  let abortHandler: (() => void) | undefined;
+  const pending: Array<Promise<unknown>> = [api.call(entryId, args)];
+  if (timeoutMs > 0) {
+    pending.push(new Promise((_, reject) => {
+      timeoutId = window.setTimeout(() => reject(new Error('Plugin call timed out')), timeoutMs);
+    }));
+  }
+  if (signal) {
+    pending.push(new Promise((_, reject) => {
+      abortHandler = () => reject(abortError());
+      signal.addEventListener('abort', abortHandler, { once: true });
+    }));
+  }
+
+  try {
+    return unwrapPluginResult<T>(await Promise.race(pending));
+  } finally {
+    if (timeoutId) {
+      window.clearTimeout(timeoutId);
     }
-    if (['failed', 'error', 'canceled', 'cancelled', 'timeout', 'timed_out'].includes(run.status)) {
-      throw new Error(run.error?.message || run.error_message || run.message || run.status);
+    if (signal && abortHandler) {
+      signal.removeEventListener('abort', abortHandler);
     }
   }
-  throw new Error('Plugin call timed out');
 }
 
 export function text(props: PluginSurfaceProps, key: string, fallback: string) {

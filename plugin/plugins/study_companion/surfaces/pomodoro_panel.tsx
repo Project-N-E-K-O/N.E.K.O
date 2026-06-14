@@ -14,11 +14,11 @@ export default function PomodoroPanel(props: PluginSurfaceProps) {
   const [error, setError] = useState('');
 
   async function refresh() {
-    setStatus(await callPlugin('study_pomodoro_status'));
+    setStatus(await callPlugin(props.api, 'study_pomodoro_status'));
   }
   async function act(entryId: string) {
     try {
-      setStatus(await callPlugin(entryId));
+      setStatus(await callPlugin(props.api, entryId));
       setError('');
     } catch (err) {
       setError(formatError(err));
