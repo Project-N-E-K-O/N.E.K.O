@@ -531,7 +531,20 @@ def test_basketball_horse_system_prompt_uses_horse_end_contract():
     assert "the run has three miss chances" not in en
     assert "all three chances are gone" not in en
     assert "attempts_remaining" not in en
-    assert "HORSE letters have decided the winner" in en
+    assert "HORSE letters have decided the result" in en
+
+
+@pytest.mark.unit
+def test_basketball_horse_system_prompt_matches_chat_event_payload():
+    zh = prompts_game.get_basketball_system_prompt("zh", mode="horse")
+    en = prompts_game.get_basketball_system_prompt("en", mode="horse")
+
+    assert "只有复刻失败才描述谁吃到字母" in zh
+    assert "结合 winner" not in zh
+    assert "winner 字段" in zh
+    assert "mention a letter only for failed copy attempts" in en
+    assert "summarize with winner" not in en
+    assert "do not rely on a winner field" in en
 
 
 @pytest.mark.unit

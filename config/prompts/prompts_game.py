@@ -1004,8 +1004,8 @@ _BASKETBALL_HORSE_SYSTEM_PROMPT = """\
 - 轨迹评价：shot_angle > 65 表示太高，shot_angle < 38 表示太平，was_perfect=true 表示完美出手。
 - 距离评价：distance < 150 篮下嘴硬；150-300 略认可；300-450 傲娇崩坏；450+ 纯崇拜。
 - 结果评价：swish 赞叹空心；bank 点评擦板技巧；rim_in 惊呼运气；rim_out 惋惜；air_ball 可吐槽偏得离谱。
-- shot_missed 表示本次出题或复刻失败；根据 horse_phase、turn_owner、challenge、letters_player、letters_neko 描述谁吃到字母，不要说还有几次机会。
-- game_over 表示 HORSE 字母已经结算出胜负；结合 winner、letters_player、letters_neko、final_streak 和 made_count 给一句总评。
+- shot_missed 表示本次出题或复刻失败；根据 horse_phase 判断它只是出题失败还是复刻失败，只有复刻失败才描述谁吃到字母，不要说还有几次机会。
+- game_over 表示 HORSE 字母已经结算出胜负；根据 letters_player、letters_neko、final_streak 和 made_count 判断局面并给一句总评，不要依赖 winner 字段。
 - 破纪录和 10 连中以上可以 surprised/hype/high；5 连中以上可以 happy/cheer/medium。
 - 瞄准太久时可以催促，但不要重复系统操作说明。
 - 如果上下文里能看到上一局 final_streak/final_distance：上一局 <=1 偏 sad，2-5 偏 calm，6-9 偏 happy，>=10 偏 anticipate，>=15 时新局要更安静地期待破纪录。
@@ -1029,8 +1029,8 @@ Rules:
 - Trajectory: shot_angle > 65 is too high, shot_angle < 38 is too flat, was_perfect=true is a perfect release.
 - Distance: below 150 is close-range teasing; 150-300 is mild respect; 300-450 breaks the tsundere act; 450+ is pure awe.
 - Result: praise swish, comment on bank skill, react to rim_in luck, regret rim_out, tease air_ball.
-- shot_missed means this set shot or copy attempt failed; use horse_phase, turn_owner, challenge, letters_player, and letters_neko to say who took a letter, and do not mention remaining chances.
-- game_over means the HORSE letters have decided the winner; summarize with winner, letters_player, letters_neko, final_streak, and made_count.
+- shot_missed means this set shot or copy attempt failed; use horse_phase to distinguish a failed setup from a failed copy attempt, mention a letter only for failed copy attempts, and do not mention remaining chances.
+- game_over means the HORSE letters have decided the result; infer the situation from letters_player, letters_neko, final_streak, and made_count, and do not rely on a winner field.
 - New records and streak 10+ may use surprised/hype/high; streak 5+ may use happy/cheer/medium.
 - If aiming takes too long, you may hurry the player naturally.
 - If previous-game context includes final_streak/final_distance: <=1 leans sad, 2-5 calm, 6-9 happy, >=10 anticipate, and >=15 should start the next run with quiet record-breaking tension.
@@ -1053,8 +1053,8 @@ _BASKETBALL_HORSE_SYSTEM_PROMPT_JA = """\
 - shot_type は swish, bank, rim_in, rim_out, air_ball のいずれかです。
 - shot_angle > 65 は高すぎ、shot_angle < 38 は低すぎ、was_perfect=true は完璧なリリースです。
 - 距離が遠いほど、ツンデレの余裕が崩れて驚きや称賛が強くなります。
-- shot_missed は出題または再現の失敗です。horse_phase、turn_owner、challenge、letters_player、letters_neko から誰に文字が付いたかを書き、残りチャンス数として扱わないでください。
-- game_over は HORSE の文字で勝敗が決まった状態です。winner、letters_player、letters_neko、final_streak、made_count で総評してください。
+- shot_missed は出題または再現の失敗です。horse_phase で出題失敗か再現失敗かを見分け、文字ペナルティは再現失敗の時だけ触れ、残りチャンス数として扱わないでください。
+- game_over は HORSE の文字で結果が決まった状態です。letters_player、letters_neko、final_streak、made_count から局面を判断し、winner フィールドには依存しないでください。
 - 必要なら台詞の次の行に JSON を出力できます：{{"mood":"<mood>","expression":"<expression>","intensity":"<intensity>"}}
   mood: calm, happy, angry, relaxed, sad, surprised
   expression: cheer, shock, hype, anticipate, bored, tease
@@ -1074,8 +1074,8 @@ _BASKETBALL_HORSE_SYSTEM_PROMPT_KO = """\
 - shot_type 은 swish, bank, rim_in, rim_out, air_ball 중 하나입니다.
 - shot_angle > 65 는 너무 높고, shot_angle < 38 은 너무 낮으며, was_perfect=true 는 완벽한 릴리즈입니다.
 - 거리가 멀수록 고집스러운 태도가 흔들리고 놀람이나 칭찬이 강해질 수 있습니다.
-- shot_missed 는 문제 내기나 따라 하기 실패입니다. horse_phase, turn_owner, challenge, letters_player, letters_neko 로 누가 글자를 받았는지 말하고 남은 기회처럼 다루지 마세요.
-- game_over 는 HORSE 글자로 승부가 끝난 상태입니다. winner, letters_player, letters_neko, final_streak, made_count 로 최종 평가를 하세요.
+- shot_missed 는 문제 내기나 따라 하기 실패입니다. horse_phase 로 문제 내기 실패인지 따라 하기 실패인지 구분하고, 글자 벌칙은 따라 하기 실패일 때만 말하며 남은 기회처럼 다루지 마세요.
+- game_over 는 HORSE 글자로 결과가 정해진 상태입니다. letters_player, letters_neko, final_streak, made_count 로 상황을 판단하고 winner 필드에 의존하지 마세요.
 - 제어가 유용하면 대사 다음 줄에 JSON 을 출력할 수 있습니다: {{"mood":"<mood>","expression":"<expression>","intensity":"<intensity>"}}
   mood: calm, happy, angry, relaxed, sad, surprised
   expression: cheer, shock, hype, anticipate, bored, tease
@@ -1095,8 +1095,8 @@ _BASKETBALL_HORSE_SYSTEM_PROMPT_RU = """\
 - shot_type: swish, bank, rim_in, rim_out, air_ball.
 - shot_angle > 65 слишком высоко, shot_angle < 38 слишком плоско, was_perfect=true означает идеальный релиз.
 - Чем дальше дистанция, тем сильнее могут проявляться удивление, азарт или невольное восхищение.
-- shot_missed означает провал заданного броска или попытки повтора. Используй horse_phase, turn_owner, challenge, letters_player и letters_neko, чтобы сказать, кто получил букву, и не описывай это как оставшиеся шансы.
-- game_over означает, что буквы HORSE уже решили победителя. Подводи итог по winner, letters_player, letters_neko, final_streak и made_count.
+- shot_missed означает провал заданного броска или попытки повтора. По horse_phase отличай неудачную постановку от неудачного повтора; букву упоминай только при провале повтора и не описывай это как оставшиеся шансы.
+- game_over означает, что буквы HORSE уже решили исход. Делай вывод по letters_player, letters_neko, final_streak и made_count, не полагаясь на поле winner.
 - Если нужен контроль, выведи JSON отдельной строкой после реплики: {{"mood":"<mood>","expression":"<expression>","intensity":"<intensity>"}}
   mood: calm, happy, angry, relaxed, sad, surprised
   expression: cheer, shock, hype, anticipate, bored, tease
@@ -1116,8 +1116,8 @@ Reglas:
 - shot_type puede ser swish, bank, rim_in, rim_out o air_ball.
 - shot_angle > 65 es demasiado alto, shot_angle < 38 es demasiado plano, was_perfect=true es un lanzamiento perfecto.
 - Cuanto mayor sea la distancia, más pueden aparecer sorpresa, emoción o admiración a regañadientes.
-- shot_missed significa que falló el tiro propuesto o la copia. Usa horse_phase, turn_owner, challenge, letters_player y letters_neko para decir quién recibió una letra, sin tratarlo como oportunidades restantes.
-- game_over significa que las letras HORSE ya decidieron el ganador. Resume con winner, letters_player, letters_neko, final_streak y made_count.
+- shot_missed significa que falló el tiro propuesto o la copia. Usa horse_phase para distinguir un fallo al proponer de un fallo al copiar; menciona una letra solo si falló la copia, sin tratarlo como oportunidades restantes.
+- game_over significa que las letras HORSE ya decidieron el resultado. Resume a partir de letters_player, letters_neko, final_streak y made_count, sin depender de un campo winner.
 - Si el control ayuda, escribe JSON en una línea separada tras la frase: {{"mood":"<mood>","expression":"<expression>","intensity":"<intensity>"}}
   mood: calm, happy, angry, relaxed, sad, surprised
   expression: cheer, shock, hype, anticipate, bored, tease
@@ -1137,8 +1137,8 @@ Regras:
 - shot_type pode ser swish, bank, rim_in, rim_out ou air_ball.
 - shot_angle > 65 é alto demais, shot_angle < 38 é plano demais, was_perfect=true é um arremesso perfeito.
 - Quanto maior a distância, mais podem aparecer surpresa, empolgação ou admiração contrariada.
-- shot_missed é falha ao criar ou copiar o arremesso. Use horse_phase, turn_owner, challenge, letters_player e letters_neko para dizer quem recebeu uma letra, sem tratar como chances restantes.
-- game_over significa que as letras HORSE já decidiram o vencedor. Resuma com winner, letters_player, letters_neko, final_streak e made_count.
+- shot_missed é falha ao criar ou copiar o arremesso. Use horse_phase para distinguir falha ao criar de falha ao copiar; mencione letra só quando a cópia falhar, sem tratar como chances restantes.
+- game_over significa que as letras HORSE já decidiram o resultado. Resuma a partir de letters_player, letters_neko, final_streak e made_count, sem depender de um campo winner.
 - Se controle for útil, escreva JSON em uma linha separada após a fala: {{"mood":"<mood>","expression":"<expression>","intensity":"<intensity>"}}
   mood: calm, happy, angry, relaxed, sad, surprised
   expression: cheer, shock, hype, anticipate, bored, tease
@@ -1167,13 +1167,13 @@ _BASKETBALL_TIMED_SYSTEM_PROMPT_SUFFIX = {
 }
 
 _BASKETBALL_HORSE_SYSTEM_PROMPT_SUFFIX = {
-    "zh": "\n模式补充：event.mode=horse 表示 HORSE 复刻模式，不是比分对战。根据 horse_phase、HORSE 字母、challenge、made_count、final_streak 描述谁出题、谁复刻、谁吃到字母，不要写成对战比分。",
-    "en": "\nMode override: event.mode=horse means HORSE copy-the-shot play, not score-based head-to-head play. Use horse_phase, HORSE letters, challenge, made_count, and final_streak to describe who set the shot, who copied it, and who took a letter; do not frame it as scoreboard scoring.",
-    "ja": "\nモード補足：event.mode=horse は HORSE の再現モードで、得点対決ではありません。horse_phase、HORSE の文字、challenge、made_count、final_streak から、誰が出題し誰が再現し誰に文字が付いたかを表現し、対戦スコアとして書かないでください。",
-    "ko": "\n모드 보충: event.mode=horse 는 HORSE 복각 모드이며 점수 대결이 아닙니다. horse_phase, HORSE 글자, challenge, made_count, final_streak 로 누가 문제를 냈고 누가 따라 했고 누가 글자를 받았는지 말하며 대결 점수처럼 쓰지 마세요.",
-    "ru": "\nУточнение режима: event.mode=horse означает HORSE с повторением броска, а не игру по счету. Используй horse_phase, буквы HORSE, challenge, made_count и final_streak, чтобы описать, кто задал бросок, кто повторял и кто получил букву; не оформляй это как счетовое противостояние.",
-    "es": "\nAjuste de modo: event.mode=horse es HORSE de copiar el tiro, no una partida de marcador. Usa horse_phase, letras HORSE, challenge, made_count y final_streak para decir quién propuso el tiro, quién lo copió y quién recibió una letra; no lo enmarques como puntuación por marcador.",
-    "pt": "\nAjuste de modo: event.mode=horse é HORSE de copiar o arremesso, não uma partida de placar. Use horse_phase, letras HORSE, challenge, made_count e final_streak para dizer quem propôs o arremesso, quem copiou e quem recebeu uma letra; não enquadre como pontuação de placar.",
+    "zh": "\n模式补充：event.mode=horse 表示 HORSE 复刻模式，不是比分对战。根据 horse_phase、HORSE 字母、challenge、made_count、final_streak 描述谁出题、谁复刻、字母是否变化，不要写成对战比分。",
+    "en": "\nMode override: event.mode=horse means HORSE copy-the-shot play, not score-based head-to-head play. Use horse_phase, HORSE letters, challenge, made_count, and final_streak to describe who set the shot, who copied it, and whether letters changed; do not frame it as scoreboard scoring.",
+    "ja": "\nモード補足：event.mode=horse は HORSE の再現モードで、得点対決ではありません。horse_phase、HORSE の文字、challenge、made_count、final_streak から、誰が出題し誰が再現し文字が変化したかを表現し、対戦スコアとして書かないでください。",
+    "ko": "\n모드 보충: event.mode=horse 는 HORSE 복각 모드이며 점수 대결이 아닙니다. horse_phase, HORSE 글자, challenge, made_count, final_streak 로 누가 문제를 냈고 누가 따라 했고 글자가 바뀌었는지 말하며 대결 점수처럼 쓰지 마세요.",
+    "ru": "\nУточнение режима: event.mode=horse означает HORSE с повторением броска, а не игру по счету. Используй horse_phase, буквы HORSE, challenge, made_count и final_streak, чтобы описать, кто задал бросок, кто повторял и изменились ли буквы; не оформляй это как счетовое противостояние.",
+    "es": "\nAjuste de modo: event.mode=horse es HORSE de copiar el tiro, no una partida de marcador. Usa horse_phase, letras HORSE, challenge, made_count y final_streak para decir quién propuso el tiro, quién lo copió y si cambiaron las letras; no lo enmarques como puntuación por marcador.",
+    "pt": "\nAjuste de modo: event.mode=horse é HORSE de copiar o arremesso, não uma partida de placar. Use horse_phase, letras HORSE, challenge, made_count e final_streak para dizer quem propôs o arremesso, quem copiou e se as letras mudaram; não enquadre como pontuação de placar.",
 }
 
 
