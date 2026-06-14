@@ -728,7 +728,11 @@ function _restartNekoIdleThoughtBubbleArt(button, tier) {
     button.classList.remove(_NEKO_IDLE_THOUGHT_BUBBLE_POPPING_CLASS);
     _setNekoIdleThoughtBubbleFocusable(button, false);
     button.classList.toggle(_NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_CLASS, !!bubbleConfig.sleeping);
-    button.__nekoIdleThoughtBubbleRestartToken = (button.__nekoIdleThoughtBubbleRestartToken || 0) + 1;
+    // cache-bust 用有界的 1/2 交替：相邻两次 URL 不同足以让浏览器重载、重启 GIF 动画从头播，
+    // 同时把唯一 URL 总数钉死在每个 asset 最多 2 个。此前用单调递增 token（…?restart=N，N 永增）
+    // 会让每次待机气泡的图都是全新 URL，Chromium 按 URL 缓存解码位图（~2MB/张，mapped 共享内存、
+    // 不计入进程私有提交），猫咪待机数日后累积到 10G+ committed —— 「挂机久了已提交内存暴涨」的根因。
+    button.__nekoIdleThoughtBubbleRestartToken = ((button.__nekoIdleThoughtBubbleRestartToken || 0) % 2) + 1;
     const bg = button.querySelector('.neko-idle-thought-bubble-bg');
     if (bg) {
         bg.src = _getNekoIdleThoughtBubbleBgAssetUrl(bubbleConfig.assetUrl, button.__nekoIdleThoughtBubbleRestartToken);
@@ -771,7 +775,11 @@ function _popNekoIdleThoughtBubble(button, detail = {}) {
     }
     button.__nekoIdleThoughtBubbleAudio = null;
     button.__nekoIdleThoughtBubbleTimerToken = (button.__nekoIdleThoughtBubbleTimerToken || 0) + 1;
-    button.__nekoIdleThoughtBubbleRestartToken = (button.__nekoIdleThoughtBubbleRestartToken || 0) + 1;
+    // cache-bust 用有界的 1/2 交替：相邻两次 URL 不同足以让浏览器重载、重启 GIF 动画从头播，
+    // 同时把唯一 URL 总数钉死在每个 asset 最多 2 个。此前用单调递增 token（…?restart=N，N 永增）
+    // 会让每次待机气泡的图都是全新 URL，Chromium 按 URL 缓存解码位图（~2MB/张，mapped 共享内存、
+    // 不计入进程私有提交），猫咪待机数日后累积到 10G+ committed —— 「挂机久了已提交内存暴涨」的根因。
+    button.__nekoIdleThoughtBubbleRestartToken = ((button.__nekoIdleThoughtBubbleRestartToken || 0) % 2) + 1;
     const timerToken = button.__nekoIdleThoughtBubbleTimerToken;
 
     button.classList.remove(_NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_CLASS);
