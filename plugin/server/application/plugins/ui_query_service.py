@@ -714,6 +714,14 @@ def _hosted_import_specifier(source: str, index: int) -> str | None:
     return _hosted_relative_specifier(read[0]) if read else None
 
 
+def _hosted_raise_dynamic_import_unsupported() -> None:
+    raise ServerDomainError(
+        code="PLUGIN_UI_DYNAMIC_IMPORT_UNSUPPORTED",
+        message="Dynamic import is not supported in hosted TSX",
+        status_code=400,
+    )
+
+
 def _hosted_export_specifier(source: str, index: int) -> str | None:
     index = _hosted_skip_trivia(source, index + len("export"))
     if _hosted_matches_keyword(source, index, "type"):
@@ -767,6 +775,10 @@ def _hosted_tsx_relative_import_specifiers(source: str) -> list[str]:
             index += 1
             continue
         specifier: str | None = None
+        if _hosted_matches_keyword(source, index, "import"):
+            import_target = _hosted_skip_trivia(source, index + len("import"))
+            if import_target < len(source) and source[import_target] == "(":
+                _hosted_raise_dynamic_import_unsupported()
         if depth == 0 and _hosted_matches_keyword(source, index, "import"):
             specifier = _hosted_import_specifier(source, index)
             index += len("import")

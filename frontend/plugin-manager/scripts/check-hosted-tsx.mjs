@@ -288,11 +288,24 @@ function parseTomlSurfaces(text) {
     return fields.filter(Boolean)
   }
 
+  const parseTomlStringValue = (rawValue) => {
+    const value = String(rawValue || '').trim()
+    if (value.startsWith('"') && value.endsWith('"')) {
+      return value.slice(1, -1).replace(/\\"/g, '"')
+    }
+    if (value.startsWith("'") && value.endsWith("'")) {
+      return value.slice(1, -1)
+    }
+    return null
+  }
+
   const parseInlineTable = (body, kind) => {
     const surface = { kind }
     for (const field of splitInlineFields(body)) {
-      const match = field.match(/^([A-Za-z0-9_-]+)\s*=\s*"((?:\\.|[^"])*)"$/)
-      if (match) surface[match[1]] = match[2].replace(/\\"/g, '"')
+      const match = field.match(/^([A-Za-z0-9_-]+)\s*=\s*(.+)$/)
+      if (!match) continue
+      const value = parseTomlStringValue(match[2])
+      if (value !== null) surface[match[1]] = value
     }
     return surface
   }
@@ -350,9 +363,10 @@ function parseTomlSurfaces(text) {
         continue
       }
     }
-    const keyValueMatch = line.match(/^([A-Za-z0-9_-]+)\s*=\s*"(.*)"$/)
+    const keyValueMatch = line.match(/^([A-Za-z0-9_-]+)\s*=\s*(.+)$/)
     if (current && keyValueMatch) {
-      current[keyValueMatch[1]] = keyValueMatch[2]
+      const value = parseTomlStringValue(keyValueMatch[2])
+      if (value !== null) current[keyValueMatch[1]] = value
     }
   }
   // `[plugin.ui] enabled = false` means the server never exposes these surfaces,
@@ -613,13 +627,24 @@ function main() {
           errors.push(`${tomlPath}:1:1 [${label}] - Hosted TSX entry outside repo root: ${entry}`)
           continue
         }
+        if (!isPathInside(pluginDir, entryPath)) {
+          errors.push(`${tomlPath}:1:1 [${label}] - Hosted TSX entry outside plugin root: ${entry}`)
+          continue
+        }
         if (!existsSync(entryPath)) {
           errors.push(`${tomlPath}:1:1 [${label}] - hosted-tsx entry not found: ${entry}`)
           continue
         }
+        let checkedEntryPath
+        try {
+          checkedEntryPath = assertPathInsidePluginRoot(entryPath, pluginDir, 'Hosted TSX entry')
+        } catch (error) {
+          errors.push(`${entryPath}:1:1 [${label}] - ${formatError(error)}`)
+          continue
+        }
         let checkFile
         try {
-          checkFile = createCheckFile(entryPath, tempDir, surface, tomlPath)
+          checkFile = createCheckFile(checkedEntryPath, tempDir, surface, tomlPath)
         } catch (error) {
           errors.push(`${entryPath}:1:1 [${label}] - ${formatError(error)}`)
           continue

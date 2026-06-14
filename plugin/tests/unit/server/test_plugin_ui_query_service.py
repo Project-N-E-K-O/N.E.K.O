@@ -414,6 +414,59 @@ def test_surface_source_allows_comments_after_from_keyword(tmp_path) -> None:
     ]
 
 
+def test_surface_source_rejects_dynamic_imports(tmp_path) -> None:
+    plugin_dir = tmp_path / "demo_plugin"
+    ui_dir = plugin_dir / "ui"
+    ui_dir.mkdir(parents=True)
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
+    (ui_dir / "panel.tsx").write_text(
+        "export default function Panel() {\n"
+        "  async function load() {\n"
+        "    return import('./shared')\n"
+        "  }\n"
+        "  return <strong>{String(load)}</strong>\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (ui_dir / "shared.ts").write_text("export const label = 'bad'\n", encoding="utf-8")
+    plugin_ui = normalize_plugin_ui_manifest(
+        {
+            "plugin": {
+                "ui": {
+                    "panel": [{
+                        "id": "main",
+                        "entry": "ui/panel.tsx",
+                        "permissions": ["state:read"],
+                    }],
+                },
+            },
+        },
+        plugin_id="demo",
+    )
+
+    plugins_backup = dict(state.plugins)
+    try:
+        with state.acquire_plugins_write_lock():
+            state.plugins.clear()
+            state.plugins["demo"] = {
+                "id": "demo",
+                "config_path": str(config_path),
+                "plugin_ui": plugin_ui,
+                "entries": [],
+            }
+
+        with pytest.raises(ServerDomainError) as exc_info:
+            asyncio.run(PluginUiQueryService().get_surface_source("demo", kind="panel", surface_id="main"))
+    finally:
+        with state.acquire_plugins_write_lock():
+            state.plugins.clear()
+            state.plugins.update(plugins_backup)
+
+    assert exc_info.value.code == "PLUGIN_UI_DYNAMIC_IMPORT_UNSUPPORTED"
+    assert exc_info.value.status_code == 400
+
+
 @pytest.mark.parametrize(
     ("sources", "expected_cycle"),
     [

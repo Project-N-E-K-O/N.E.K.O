@@ -263,6 +263,19 @@ describe('hosted TSX document runtime', () => {
     expect(root.querySelector('strong')?.textContent).toBe('shared helper')
   })
 
+  it('does not resolve type-only relative imports at runtime', () => {
+    const { root } = executeHostedDocument(`
+      import type { Label } from "./types"
+
+      export default function Panel() {
+        const label = "ok" as Label
+        return <strong>{label}</strong>
+      }
+    `)
+
+    expect(root.querySelector('strong')?.textContent).toBe('ok')
+  })
+
   it('ignores commented and template import text while rewriting hosted TSX', () => {
     const { root } = executeHostedDocument(`
       /*

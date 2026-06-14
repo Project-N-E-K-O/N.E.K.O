@@ -56,6 +56,51 @@ test('rejects hosted TSX entries outside the repository root', () => {
   })
 })
 
+test('rejects hosted TSX entries outside the plugin root', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'escape-plugin-entry')
+    writePluginToml(pluginDir, '../shared/panel.tsx')
+    writeFixtureFile(
+      join(root, 'shared', 'panel.tsx'),
+      `export default function Panel() {
+  return <Page title="outside" />
+}
+`,
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /Hosted TSX entry outside plugin root/)
+  })
+})
+
+test('parses single-quoted hosted TSX surface fields', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'single-quoted-fields')
+    writeFixtureFile(
+      join(pluginDir, 'plugin.toml'),
+      `[[plugin.ui.panel]]
+id = 'test'
+entry = 'main.tsx'
+mode = 'hosted-tsx'
+`,
+    )
+    writeFixtureFile(
+      join(pluginDir, 'main.tsx'),
+      `export default function Panel() {
+  return <Page title="ok" />
+}
+`,
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /Hosted TSX check passed \(1 file\)/)
+  })
+})
+
 test('rejects relative imports that escape the repository root', () => {
   withFixture((root) => {
     const pluginDir = join(root, 'escape-import')

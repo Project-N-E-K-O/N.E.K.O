@@ -498,6 +498,11 @@ function moduleImportStatement(rawBindings: string | undefined, modulePath: stri
   return statements.length > 0 ? `${statements.join('\n')}\n` : ''
 }
 
+function isTypeOnlyImportBindings(rawBindings: string | undefined) {
+  const bindings = String(rawBindings || '').trim()
+  return bindings === 'type' || bindings.startsWith('type ')
+}
+
 function uiKitImportStatement(rawBindings: string | undefined) {
   const bindings = String(rawBindings || '').trim()
   const moduleRef = 'window.NekoUiKit'
@@ -532,6 +537,7 @@ function hostedRelativeImportPaths(
   const paths: string[] = []
   for (const statement of hostedImportStatements(source)) {
     if (statement.specifier.startsWith('./') || statement.specifier.startsWith('../')) {
+      if (isTypeOnlyImportBindings(statement.rawBindings)) continue
       const modulePath = resolveHostedImport(fromPath, statement.specifier, dependenciesByPath)
       paths.push(modulePath)
     }
@@ -591,6 +597,10 @@ function transformHostedImports(
     }
     if (!statement.specifier.startsWith('./') && !statement.specifier.startsWith('../')) {
       result += source.slice(statement.start, statement.end)
+      cursor = statement.end
+      continue
+    }
+    if (isTypeOnlyImportBindings(statement.rawBindings)) {
       cursor = statement.end
       continue
     }
