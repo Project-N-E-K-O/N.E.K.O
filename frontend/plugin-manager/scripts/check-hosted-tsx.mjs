@@ -495,6 +495,23 @@ function hasDefaultExport(sourcePath, source) {
   })
 }
 
+// Dynamic import() can't resolve inside the iframe srcdoc, so the gate rejects
+// it. This is done on the TS AST (not the shared text scanner) because the AST
+// correctly ignores `import(` that appears in JSX text or a template expression
+// — a string scanner would either miss it (templates) or false-reject it (JSX).
+function assertNoDynamicImport(sourcePath, source) {
+  const sourceFile = sourceFileFor(sourcePath, source)
+  const visit = (node) => {
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      throw new Error(
+        `Dynamic import is not supported in hosted TSX: ${relative(repoRoot, sourcePath).replace(/\\/g, '/')}`,
+      )
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sourceFile)
+}
+
 function stripHostedUiImports(sourcePath, source) {
   const sourceFile = sourceFileFor(sourcePath, source)
   const ranges = sourceFile.statements
@@ -571,23 +588,22 @@ function resolveRelativeTypeDeclaration(fromPath, specifier, pluginRoot) {
   if (!isPathInside(repoRoot, basePath)) {
     throw new Error(`Relative type import outside repo root: ${fromPath} imports ${specifier}`)
   }
-  const candidates = [basePath]
-  if (!/\.[A-Za-z0-9]+$/.test(basePath)) {
-    candidates.push(
-      `${basePath}.d.ts`,
-      `${basePath}.tsx`,
-      `${basePath}.ts`,
-      `${basePath}.jsx`,
-      `${basePath}.js`,
-    )
-  }
-  candidates.push(
+  // Always try appending declaration/source extensions, even when the basename
+  // already looks like it has one (e.g. `./theme.dark` backed by
+  // `theme.dark.d.ts`) — same as the runtime dependency resolver.
+  const candidates = [
+    basePath,
+    `${basePath}.d.ts`,
+    `${basePath}.tsx`,
+    `${basePath}.ts`,
+    `${basePath}.jsx`,
+    `${basePath}.js`,
     join(basePath, 'index.d.ts'),
     join(basePath, 'index.tsx'),
     join(basePath, 'index.ts'),
     join(basePath, 'index.jsx'),
     join(basePath, 'index.js'),
-  )
+  ]
   for (const candidate of candidates) {
     const resolvedCandidate = resolve(candidate)
     if (!isPathInside(repoRoot, resolvedCandidate)) {
@@ -650,6 +666,7 @@ function copyRelativeDependencies(
   visiting.push(resolvedPath)
   const source = readSourceFile(resolvedPath)
   assertHostedExportContract(source)
+  assertNoDynamicImport(resolvedPath, source)
   const targetPath = tempPathForSource(resolvedPath, tempDir)
   mkdirForFile(targetPath, 'hosted TSX copy')
   writeTextFile(targetPath, source, 'hosted TSX dependency copy')

@@ -592,6 +592,43 @@ export default function Panel(props: Props) {
   })
 })
 
+test('allows import() that appears only as JSX text', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'jsx-import-text')
+    writePluginToml(pluginDir, 'main.tsx')
+    writeFixtureFile(
+      join(pluginDir, 'main.tsx'),
+      'export default function Panel() {\n'
+        + '  return <code>import(\'./helper\')</code>\n'
+        + '}\n',
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /Hosted TSX check passed/)
+  })
+})
+
+test('rejects dynamic import inside a template expression', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'template-dynamic-import')
+    writePluginToml(pluginDir, 'main.tsx')
+    writeFixtureFile(
+      join(pluginDir, 'main.tsx'),
+      'const label = `${import(\'./helper\')}`\n'
+        + 'export default function Panel() {\n'
+        + '  return <Page title={String(label)} />\n'
+        + '}\n',
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /Dynamic import is not supported/)
+  })
+})
+
 test('skips regex literals with braces and commas when scanning exports', () => {
   withFixture((root) => {
     const pluginDir = join(root, 'regex-exports')

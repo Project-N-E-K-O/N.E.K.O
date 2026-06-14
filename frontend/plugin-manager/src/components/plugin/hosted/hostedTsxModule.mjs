@@ -688,17 +688,12 @@ ${moduleSource}
 // above relies on, so the gate and the linker stay in lockstep.
 // ---------------------------------------------------------------------------
 
-function isHostedPropertyAccess(source, index) {
-  let cursor = index - 1
-  while (cursor >= 0 && isHorizontalWhitespace(source[cursor] || '')) cursor -= 1
-  return cursor >= 0 && source[cursor] === '.'
-}
-
 /**
  * Walk a hosted module and collect its relative import specifiers, split into
  * runtime (bundled) and type-only (erased, resolved against .d.ts for the
- * checker's type program). Throws on dynamic import, which cannot resolve inside
- * the iframe srcdoc.
+ * checker's type program). Only static top-level imports are collected; dynamic
+ * `import()` is rejected by the checker's AST pass, which — unlike a text scanner
+ * — correctly ignores `import(` inside JSX text and template expressions.
  */
 export function findHostedRelativeImportSpecifiers(source) {
   const runtime = []
@@ -729,24 +724,18 @@ export function findHostedRelativeImportSpecifiers(source) {
       index = skipTemplate(source, index)
       continue
     }
-    if (matchesKeyword(source, index, 'import') && !isHostedPropertyAccess(source, index)) {
-      const afterImport = skipTrivia(source, index + 'import'.length)
-      if (source[afterImport] === '(') {
-        throw new Error('Dynamic import is not supported in hosted TSX')
-      }
-      if (depth === 0 && isHostedStatementStart(source, index)) {
-        const statement = readHostedImportStatement(source, index)
-        if (statement) {
-          if (statement.specifier.startsWith('./') || statement.specifier.startsWith('../')) {
-            if (hasRuntimeImportBindings(statement.rawBindings)) {
-              runtime.push(statement.specifier)
-            } else {
-              typeOnly.push(statement.specifier)
-            }
+    if (depth === 0 && isHostedStatementStart(source, index) && matchesKeyword(source, index, 'import')) {
+      const statement = readHostedImportStatement(source, index)
+      if (statement) {
+        if (statement.specifier.startsWith('./') || statement.specifier.startsWith('../')) {
+          if (hasRuntimeImportBindings(statement.rawBindings)) {
+            runtime.push(statement.specifier)
+          } else {
+            typeOnly.push(statement.specifier)
           }
-          index = statement.end
-          continue
         }
+        index = statement.end
+        continue
       }
     }
     if (char === '(' || char === '[' || char === '{') {
