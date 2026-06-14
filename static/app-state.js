@@ -257,12 +257,14 @@
      */
     function kneeTrackToValue(pos, base, max, knee) {
         if (pos <= knee) return knee > 0 ? (pos / knee) * base : base;
-        return base + ((pos - knee) / (1 - knee)) * (max - base);
+        // knee >= 1 时无右段（增强区），整条轨道都是 [0, base]，膝点即终点
+        return knee < 1 ? base + ((pos - knee) / (1 - knee)) * (max - base) : max;
     }
     /** kneeTrackToValue 的逆映射：数值 → 轨道位置(0..1)。 */
     function valueToKneeTrack(value, base, max, knee) {
         if (value <= base) return base > 0 ? (value / base) * knee : 0;
-        return knee + ((value - base) / (max - base)) * (1 - knee);
+        // max <= base 时无增强区，超过 base 的值一律钉在轨道末端
+        return max > base ? knee + ((value - base) / (max - base)) * (1 - knee) : 1;
     }
 
     window.appUtils = { dbToLinear, linearToDb, mapRenderQualityToFollowPerf, isMobile, kneeTrackToValue, valueToKneeTrack };
