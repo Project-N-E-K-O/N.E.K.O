@@ -1,0 +1,45 @@
+name: PR report gate
+
+# Enforces two project policies against the PR DESCRIPTION:
+#   · touching app/ | main_logic/ | memory/ (*.py) → "回归报告" required
+#   · changing > 20 files                          → "不拆分理由" required
+#
+# Kept separate from analyze.yml on purpose: this gate must re-run when the
+# PR body is edited (author adds the report) or a label changes (maintainer
+# applies `report-exempt`), so it listens to `edited` / `labeled` /
+# `unlabeled` on top of the usual code-push events. The heavy lint jobs in
+# analyze.yml should NOT re-run on every body edit, hence the split.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, edited, labeled, unlabeled]
+
+# Read-only: the check reads the diff and the PR body, posts nothing.
+permissions:
+  contents: read
+
+jobs:
+  pr-report-gate:
+    name: Require regression-report / no-split-rationale in PR body
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The check diffs HEAD against origin/<base> to list changed files.
+          fetch-depth: 0
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Require change reports in the PR body
+        env:
+          # Pass PR data through env (not inlined into the run: line) — same
+          # zizmor template-injection indirection as analyze.yml's i18n step.
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          BASE_REF: ${{ github.base_ref }}
+        run: python scripts/check_pr_report.py --base "origin/${BASE_REF}"
