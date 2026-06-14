@@ -1,0 +1,17 @@
+{
+    "name": "PNGTuber Neko GIF Test",
+    "model_type": "pngtuber",
+    "pngtuber": {
+        "idle_image": "/static/assets/neko-idle/cat-idle-cat1.gif",
+        "talking_image": "/static/assets/neko-idle/cat-idle-cat1-click.gif",
+        "happy_image": "/static/icons/happy_cat.png",
+        "sad_image": "/static/icons/sad_cat.png",
+        "angry_image": "/static/icons/angry_cat.png",
+        "surprised_image": "/static/icons/surprise_cat.png",
+        "source_type": "gif",
+        "scale": 1,
+        "offset_x": 0,
+        "offset_y": 0,
+        "mirror": false
+    }
+}

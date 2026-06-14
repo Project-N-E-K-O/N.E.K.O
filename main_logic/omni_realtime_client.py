@@ -488,6 +488,7 @@ class OmniRealtimeClient:
         self._gemini_context_manager = None  # For proper cleanup
         self._gemini_current_transcript = ""  # Current response transcript for Gemini
         self._gemini_user_transcript = ""  # Accumulated user input transcript
+        self._gemini_user_transcript_after_interrupt = False
 
         # ── Tool calling state ────────────────────────────────────────
         # ``_tool_definitions`` is the canonical list (ToolDefinition);
@@ -1097,6 +1098,8 @@ class OmniRealtimeClient:
             # 设置 ws 为 session，用于兼容性检查
             self.ws = self._gemini_session
             self._fatal_error_occurred = False
+            self._gemini_user_transcript = ""
+            self._gemini_user_transcript_after_interrupt = False
 
             self._last_speech_time = time.time()
             self.instructions = instructions
@@ -3039,6 +3042,8 @@ class OmniRealtimeClient:
                     input_trans = server_content.input_transcription
                     if hasattr(input_trans, 'text') and input_trans.text:
                         self._gemini_user_transcript += input_trans.text
+                        if self._interrupted:
+                            self._gemini_user_transcript_after_interrupt = True
                 
                 # 检查是否有 AI 内容（model_turn 或 output_transcription）
                 has_ai_content = (
@@ -3066,19 +3071,28 @@ class OmniRealtimeClient:
                         <= self._ai_recent_activity_window
                     )
                     _is_new_turn = _user_spoke_after_ai or not _still_within_ai_window
+                    _can_clear_interrupted = (
+                        not self._interrupted
+                        or self._gemini_user_transcript_after_interrupt
+                        or not _still_within_ai_window
+                    )
                     self._is_responding = True
-                    if _is_new_turn:
+                    if _is_new_turn and _can_clear_interrupted:
+                        # Gemini has no response.created event; clear stale interrupt state only
+                        # after SDK transcription or a quiet gap proves this is not a canceled tail.
+                        self._interrupted = False
                         # 在AI开始响应前，发送累积的用户输入
                         if self._gemini_user_transcript and self.on_input_transcript:
                             await self.on_input_transcript(self._gemini_user_transcript)
                             self._gemini_user_transcript = ""  # 清空累积
+                        self._gemini_user_transcript_after_interrupt = False
                         self._is_first_text_chunk = True  # 重置第一个 chunk 标记
                         self._gemini_current_transcript = ""  # 清空累积
                         if not self._skip_until_next_response and not self._interrupted and self.on_new_message:
                             await self.on_new_message()
                     else:
                         logger.debug(
-                            "Gemini: late content after premature turn_complete (%.2fs ago), treating as continuation",
+                            "Gemini: late content after premature turn_complete/interruption (%.2fs ago), treating as continuation",
                             time.time() - self._ai_recent_activity_time,
                         )
 
@@ -3137,8 +3151,10 @@ class OmniRealtimeClient:
                     self._interrupted = True
                     self._is_responding = False
                     # 被中断时也发送已累积的用户输入
-                    if self._gemini_user_transcript and self.on_input_transcript:
-                        await self.on_input_transcript(self._gemini_user_transcript)
+                    if self._gemini_user_transcript:
+                        self._gemini_user_transcript_after_interrupt = True
+                        if self.on_input_transcript:
+                            await self.on_input_transcript(self._gemini_user_transcript)
                         self._gemini_user_transcript = ""
                     logger.info("Gemini response was interrupted by user")
         

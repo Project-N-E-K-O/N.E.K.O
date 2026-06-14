@@ -206,6 +206,16 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
 
 // 加载模型
 Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
+    const isModelManagerPage = document.body?.classList.contains('model-manager-page')
+        || window.location.pathname.includes('model_manager');
+    const isPNGTuberPageMode = (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber';
+    if (isPNGTuberPageMode && !isModelManagerPage) {
+        console.log('[Live2D] 当前为 PNGTuber 模式，跳过 Live2D 模型加载:', modelPath);
+        const skipError = new Error('Live2D load skipped while PNGTuber mode is active.');
+        skipError.name = 'PNGTuberActiveLive2DSkip';
+        return Promise.reject(skipError);
+    }
+
     if (!this.pixi_app) {
         throw new Error('PIXI 应用未初始化，请先调用 initPIXI()');
     }
@@ -238,6 +248,16 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
         }
 
         const model = await Live2DModel.from(modelPath, { autoFocus: false });
+        if ((window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber' && !isModelManagerPage) {
+            try { model && model.destroy && model.destroy({ children: true }); } catch (_) {}
+            this._activeLoadToken = (this._activeLoadToken || 0) + 1;
+            this.currentModel = null;
+            this._modelLoadState = 'idle';
+            this._isModelReadyForInteraction = false;
+            const cancelError = new Error('Live2D load cancelled because PNGTuber mode became active.');
+            cancelError.name = 'PNGTuberActiveLive2DSkip';
+            throw cancelError;
+        }
         this.currentModel = model;
 
         // 使用统一的模型配置方法
@@ -245,6 +265,10 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
 
         return model;
     } catch (error) {
+        if (error && error.name === 'PNGTuberActiveLive2DSkip') {
+            console.log('[Live2D] PNGTuber 模式已接管，取消 Live2D 加载且不回退默认模型');
+            throw error;
+        }
         console.error('加载模型失败:', error);
         
         // 尝试回退到默认模型

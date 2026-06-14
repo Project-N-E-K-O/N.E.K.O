@@ -157,8 +157,27 @@ def test_jukebox_manager_standalone_uses_native_drag_regions():
     """
     # The panel must stay no-drag so frameless resize edges and scroll areas are not claimed by HTCAPTION.
     assert re.search(r"\.jukebox-sam-panel\s*\{[\s\S]*?-webkit-app-region:\s*no-drag\s*!important", MANAGER_TEMPLATE)
+    assert re.search(r"\.jukebox-sam-panel\s*\{[\s\S]*?padding:\s*0;", JUKEBOX_SCRIPT)
+    assert re.search(r"\.sam-header\s*\{[\s\S]*?padding:\s*15px 15px 10px;", JUKEBOX_SCRIPT)
     # The header must remain the drag region; whitespace is relaxed for CSS formatting tools.
     assert re.search(r"\.jukebox-sam-panel\s+\.sam-header\s*\{[\s\S]*?-webkit-app-region:\s*drag\s*!important", MANAGER_TEMPLATE)
+    assert ".sam-drag-fill" in JUKEBOX_SCRIPT
+    assert re.search(r"\.jukebox-sam-panel\s+\.sam-title,\s*\n\s*\.jukebox-sam-panel\s+\.sam-drag-fill\s*\{[\s\S]*?-webkit-app-region:\s*drag\s*!important", MANAGER_TEMPLATE)
+    assert "body .jukebox-sam-panel" in MANAGER_TEMPLATE
+    assert "width: 100vw !important" in MANAGER_TEMPLATE
+    assert re.search(r"body\s+\.jukebox-sam-panel\s*\{[\s\S]*?padding:\s*0\s*!important", MANAGER_TEMPLATE)
+    assert re.search(r"body\s+\.jukebox-sam-panel\s+\.sam-header\s*\{[\s\S]*?cursor:\s*grab\s*!important", MANAGER_TEMPLATE)
+    assert "padding: 0 !important;" in MANAGER_TEMPLATE
+    assert "padding: 15px 15px 10px !important;" in MANAGER_TEMPLATE
+    assert "document.head.appendChild(standaloneStyle)" in MANAGER_TEMPLATE
+    assert "neko-jukebox-manager-bridge-drag" in MANAGER_TEMPLATE
+    assert "function _selectManagerDragBridge()" in MANAGER_TEMPLATE
+    assert "var candidates = [window.nekoJukeboxBridge, window.nekoJukeboxManagerBridge];" in MANAGER_TEMPLATE
+    assert "typeof candidate.dragStart === 'function' && typeof candidate.dragStop === 'function'" in MANAGER_TEMPLATE
+    assert "var bridge = _selectManagerDragBridge();" in MANAGER_TEMPLATE
+    assert "bridge.dragStart(point.x, point.y)" in MANAGER_TEMPLATE
+    assert "bridge.dragStop()" in MANAGER_TEMPLATE
+    assert "_setManagerAppRegion(header, 'no-drag')" in MANAGER_TEMPLATE
     # Interactive elements must be no-drag or native dragging can consume clicks.
     assert re.search(r"\.jukebox-sam-panel\s+button\b[\s\S]*?\{[\s\S]*?-webkit-app-region:\s*no-drag\s*!important", MANAGER_TEMPLATE)
     assert re.search(r"\.jukebox-sam-panel\s+\.sam-close-btn\b[\s\S]*?\{[\s\S]*?-webkit-app-region:\s*no-drag\s*!important", MANAGER_TEMPLATE)
@@ -166,6 +185,75 @@ def test_jukebox_manager_standalone_uses_native_drag_regions():
     for source in (MANAGER_TEMPLATE, JUKEBOX_STANDALONE_SCRIPT, JUKEBOX_SCRIPT):
         assert "_bindManagerStandaloneDrag" not in source
         assert "neko-jukebox-manager-standalone-dragging" not in source
+
+
+@pytest.mark.frontend
+def test_jukebox_web_manager_drag_starts_only_from_header(mock_page: Page):
+    setup_song_manager_page(
+        mock_page,
+        """
+        {
+          song1: { name: 'Song 1', artist: 'A', visible: true }
+        }
+        """,
+    )
+    metrics = mock_page.evaluate(
+        """
+        () => {
+          const panel = document.querySelector('.jukebox-sam-panel');
+          panel.style.display = 'flex';
+          panel.style.left = '100px';
+          panel.style.top = '80px';
+          window.Jukebox.bindPanelDrag(panel);
+
+          const content = panel.querySelector('.sam-content');
+          const contentRect = content.getBoundingClientRect();
+          content.dispatchEvent(new MouseEvent('mousedown', {
+            bubbles: true,
+            cancelable: true,
+            clientX: contentRect.left + 20,
+            clientY: contentRect.top + 20
+          }));
+          const afterContentDown = document.body.classList.contains('sam-panel-dragging');
+
+          const header = panel.querySelector('.sam-header');
+          const headerRect = header.getBoundingClientRect();
+          header.dispatchEvent(new MouseEvent('mousedown', {
+            bubbles: true,
+            cancelable: true,
+            clientX: headerRect.left + 20,
+            clientY: headerRect.top + 10
+          }));
+          const afterHeaderDown = document.body.classList.contains('sam-panel-dragging');
+          document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+          const afterMouseUp = document.body.classList.contains('sam-panel-dragging');
+
+          return {
+            afterContentDown,
+            afterHeaderDown,
+            afterMouseUp,
+            headerTopGap: headerRect.top - panel.getBoundingClientRect().top,
+            panelCursor: getComputedStyle(panel).cursor,
+            headerCursor: getComputedStyle(header).cursor,
+            itemCursor: getComputedStyle(panel.querySelector('.sam-item')).cursor,
+            titleCursor: getComputedStyle(panel.querySelector('.sam-title')).cursor,
+            fillCursor: getComputedStyle(panel.querySelector('.sam-drag-fill')).cursor,
+            tabsCursor: getComputedStyle(panel.querySelector('.sam-tabs')).cursor
+          };
+        }
+        """
+    )
+
+    assert metrics["afterContentDown"] is False
+    assert metrics["afterHeaderDown"] is True
+    assert metrics["afterMouseUp"] is False
+    assert metrics["headerTopGap"] <= 3
+    assert metrics["panelCursor"] == "default"
+    assert metrics["headerCursor"] == "grab"
+    assert metrics["itemCursor"] == "default"
+    assert metrics["titleCursor"] == "grab"
+    assert metrics["fillCursor"] == "grab"
+    assert metrics["tabsCursor"] == "grab"
 
 
 @pytest.mark.frontend

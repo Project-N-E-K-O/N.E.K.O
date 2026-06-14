@@ -1364,8 +1364,6 @@ def _check_agent_api_gate() -> Dict[str, Any]:
     try:
         cm = get_config_manager()
         ok, reasons = cm.is_agent_api_ready()
-        # 字段名保留 is_free_version（前端/下游 gate 消费者沿用），值取 agent 维度的
-        # is_agent_free()：判 agent 是否走内置免费模型，而非 core/assist 的版本免费。
         return {"ready": ok, "reasons": reasons, "is_free_version": cm.is_agent_free()}
     except Exception as e:
         return {"ready": False, "reasons": [f"Agent API check failed: {e}"], "is_free_version": False}
@@ -1672,6 +1670,79 @@ async def _emit_agent_status_update(lanlan_name: Optional[str] = None) -> None:
         pass
 
 
+def _track_background_task(task: asyncio.Task) -> asyncio.Task:
+    Modules._background_tasks.add(task)
+    task.add_done_callback(Modules._background_tasks.discard)
+    return task
+
+
+def _create_tracked_task(coro: Any) -> asyncio.Task:
+    return _track_background_task(asyncio.create_task(coro))
+
+
+def _agent_master_enabled() -> bool:
+    return bool(Modules.analyzer_enabled)
+
+
+def _user_plugins_enabled() -> bool:
+    return bool((Modules.agent_flags or {}).get("user_plugin_enabled", False))
+
+
+def _voice_transcript_plugin_gate_reason() -> str:
+    if not _agent_master_enabled():
+        return "agent_disabled"
+    if not _user_plugins_enabled():
+        return "user_plugin_disabled"
+    return ""
+
+
+async def _handle_voice_transcript_request(event: Dict[str, Any]) -> None:
+    event_id = str((event or {}).get("event_id") or "")
+    lanlan_name = (event or {}).get("lanlan_name")
+
+    try:
+        from plugin.server.application.plugins import voice_transcript_bridge
+
+        if not voice_transcript_bridge.voice_transcript_event_has_text(event):
+            logger.debug("[VoiceBridge] observed transcript skipped: empty event_id=%s", event_id)
+        elif gate_reason := _voice_transcript_plugin_gate_reason():
+            if gate_reason == "agent_disabled":
+                logger.debug("[VoiceBridge] observed transcript skipped: agent disabled event_id=%s", event_id)
+            else:
+                logger.debug(
+                    "[VoiceBridge] observed transcript skipped: user plugins disabled event_id=%s",
+                    event_id,
+                )
+        else:
+            lifecycle_ready = bool(Modules.plugin_lifecycle_started)
+            if not lifecycle_ready:
+                lifecycle_ready = await _ensure_plugin_lifecycle_started()
+
+            if not lifecycle_ready:
+                logger.debug(
+                    "[VoiceBridge] observed transcript skipped: plugin lifecycle unavailable event_id=%s",
+                    event_id,
+                )
+            else:
+                result = await voice_transcript_bridge.resolve_voice_transcript_request(
+                    event,
+                    timeout=voice_transcript_bridge.VOICE_TRANSCRIPT_DISPATCH_TIMEOUT_SECONDS,
+                )
+                logger.debug(
+                    "[VoiceBridge] observed transcript dispatched: event_id=%s lanlan=%s action=%s",
+                    event_id,
+                    lanlan_name,
+                    result.get("action") if isinstance(result, dict) else "",
+                )
+    except Exception as exc:
+        logger.debug(
+            "[VoiceBridge] plugin dispatch failed: event_id=%s lanlan=%s err=%s",
+            event_id,
+            lanlan_name,
+            exc,
+        )
+
+
 async def _on_session_event(event: Dict[str, Any]) -> None:
     event_type = (event or {}).get("event_type")
     if event_type == "agent_intent_restore_signal":
@@ -1684,16 +1755,17 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
         # has its own once-flag, so this is safe to spam.
         await _maybe_restore_agent_intent()
         return
+    if event_type in {"voice_transcript_observed", "voice_transcript_request"}:
+        _create_tracked_task(_handle_voice_transcript_request(event))
+        return
     if event_type == "analyze_request":
         messages = event.get("messages", [])
         lanlan_name = event.get("lanlan_name")
         event_id = event.get("event_id")
         logger.info("[AgentAnalyze] analyze_request received: trigger=%s lanlan=%s messages=%d", event.get("trigger"), lanlan_name, len(messages) if isinstance(messages, list) else 0)
         if event_id:
-            ack_task = asyncio.create_task(_emit_main_event("analyze_ack", lanlan_name, event_id=event_id))
-            Modules._background_tasks.add(ack_task)
-            ack_task.add_done_callback(Modules._background_tasks.discard)
-        if not Modules.analyzer_enabled:
+            _create_tracked_task(_emit_main_event("analyze_ack", lanlan_name, event_id=event_id))
+        if not _agent_master_enabled():
             logger.info("[AgentAnalyze] skip: analyzer disabled (master switch off)")
             return
         if isinstance(messages, list) and messages:
@@ -1713,9 +1785,7 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
             # - Voice-mode hot-swap sending 'turn end agent_callback'
             Modules.last_user_turn_fingerprint[lanlan_key] = fp
             conversation_id = event.get("conversation_id")
-            task = asyncio.create_task(_background_analyze_and_plan(messages, lanlan_name, conversation_id=conversation_id))
-            Modules._background_tasks.add(task)
-            task.add_done_callback(Modules._background_tasks.discard)
+            _create_tracked_task(_background_analyze_and_plan(messages, lanlan_name, conversation_id=conversation_id))
 
 
 
@@ -3578,38 +3648,7 @@ async def shutdown():
     bridge = Modules.agent_bridge
     if bridge is not None:
         try:
-            bridge._stop.set()
-            # 等 recv 线程退出（RCVTIMEO=1s，最多等 2s）—— 两个线程并行 join，避免串行 4s
-            _recv_threads = [t for t in (getattr(bridge, '_recv_thread', None), getattr(bridge, '_analyze_recv_thread', None)) if t is not None]
-            if _recv_threads:
-                await asyncio.gather(
-                    *(asyncio.to_thread(_t.join, 2.0) for _t in _recv_threads),
-                    return_exceptions=True,
-                )
-            try:
-                import zmq as _zmq
-
-                _LINGER = _zmq.LINGER
-            except Exception:
-                _LINGER = 17
-            for sock_name in ("sub", "analyze_pull", "push"):
-                sock = getattr(bridge, sock_name, None)
-                if sock is not None:
-                    try:
-                        sock.setsockopt(_LINGER, 0)
-                        sock.close()
-                    except Exception as e:
-                        logger.debug("[Agent] ZMQ socket %s close error: %s", sock_name, e)
-            if bridge.ctx is not None:
-                _ctx = bridge.ctx
-                bridge.ctx = None
-                try:
-                    await asyncio.wait_for(asyncio.to_thread(_ctx.term), timeout=3.0)
-                except asyncio.TimeoutError:
-                    logger.warning("[Agent] ZMQ context term timed out, skipping")
-                except Exception as e:
-                    logger.debug("[Agent] ZMQ context term error: %s", e)
-            bridge.ready = False
+            await bridge.stop()
             Modules.agent_bridge = None
             logger.debug("[Agent] ✅ ZMQ event bridge cleaned up")
         except Exception as e:

@@ -6,10 +6,14 @@ from collections.abc import Mapping
 from datetime import datetime
 import json
 import math
+import os
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 import time
 from typing import Any
+from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from plugin.sdk.plugin import (
@@ -71,6 +75,7 @@ from .memory_deck_store import MemoryDeckStore, MemoryItemNotFoundError
 from .memory_habit_bridge import MemoryHabitBridge
 from .state import build_initial_state
 from .store import StudyStore
+from .store_notebook import NotebookStore
 from .study_habit_store import StudyHabitStore
 from .study_ocr_pipeline import StudyOcrPipeline
 from .supervision import SupervisionController
@@ -117,6 +122,11 @@ def _register_install_routes() -> None:
     )
 
 
+def _plugin_detail_ui_url(*, plugin_id: str, port: str) -> str:
+    safe_plugin_id = quote(plugin_id, safe="")
+    return f"http://127.0.0.1:{port}/ui/plugins/{safe_plugin_id}?tab=ui"
+
+
 try:
     _register_install_routes()
 except Exception:  # noqa: BLE001 - route registration should not block package import.
@@ -129,6 +139,17 @@ except Exception:  # noqa: BLE001 - route registration should not block package 
 
 
 _REVIEW_DUE_INTERVAL_SECONDS = 1800.0
+_AUTO_OPEN_UI_BROWSER_TIMEOUT_SECONDS = 3.0
+_AUTO_OPEN_UI_TASK_TIMEOUT_SECONDS = 3.5
+
+
+def _open_url_in_browser(url: str) -> None:
+    if sys.platform == "win32":
+        os.startfile(url)
+    elif sys.platform == "darwin":
+        subprocess.run(["open", url], check=True, timeout=_AUTO_OPEN_UI_BROWSER_TIMEOUT_SECONDS)
+    else:
+        subprocess.run(["xdg-open", url], check=True, timeout=_AUTO_OPEN_UI_BROWSER_TIMEOUT_SECONDS)
 
 
 from .entry_tutor_context_support import _TutorContextSupportMixin
@@ -157,6 +178,7 @@ from .entry_neko_commands import (
     _NekoCommandsMixin,
     _QUEUE_COMMANDS,
 )
+from .entry_notebook import _NotebookEntriesMixin
 
 
 @neko_plugin
@@ -185,6 +207,7 @@ class StudyCompanionPlugin(
     _TutorAnswerEntriesMixin,
     _TutorSummaryEntriesMixin,
     _OcrEntriesMixin,
+    _NotebookEntriesMixin,
     _NekoCommandsMixin,
     NekoPluginBase,
 ):
@@ -203,6 +226,7 @@ class StudyCompanionPlugin(
             self.logger,
             Path(__file__).resolve().parent / "static" / "knowledge_graph_seed.json",
         )
+        self._notebook_store = NotebookStore(self._store)
         self._ocr_pipeline: StudyOcrPipeline | None = None
         self._agent: TutorLLMAgent | None = None
         self._mode_manager = ModeManager()
@@ -230,6 +254,7 @@ class StudyCompanionPlugin(
         self._awareness_idle_ticks = 0
         self._voice_filter = VoiceFilter()
         self._review_due_task: asyncio.Task[None] | None = None
+        self._review_due_payload_future: asyncio.Future[dict[str, Any]] | None = None
         self._command_queue: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue()
         self._command_worker_task: asyncio.Task[None] | None = None
         self._interruptible_task: asyncio.Task[None] | None = None
@@ -310,6 +335,7 @@ class StudyCompanionPlugin(
                 )
             self._ocr_pipeline = StudyOcrPipeline(logger=self.logger, config=self._cfg)
             self._agent = TutorLLMAgent(logger=self.logger, config=self._cfg)
+            self._assert_notebook_agent_methods(self._agent)
             await self._refresh_dependency_status()
             self.register_static_ui("static")
             self.set_list_actions(
@@ -322,6 +348,7 @@ class StudyCompanionPlugin(
                     }
                 ]
             )
+            await self._auto_open_ui_if_enabled()
             self._sync_doc_export_entry()
             await self._persist_state()
             self._start_review_due_task()
@@ -342,13 +369,35 @@ class StudyCompanionPlugin(
                 self._state.last_error = "startup_failed"
             return Err(SdkError("failed to start study_companion"))
 
+    async def _auto_open_ui_if_enabled(self) -> None:
+        if not self._cfg.auto_open_ui:
+            return
+        raw_port = str(os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", "48916") or "48916").strip()
+        try:
+            port_num = int(raw_port)
+        except ValueError:
+            port_num = 48916
+        if not (1 <= port_num <= 65535):
+            port_num = 48916
+        port = str(port_num)
+        url = _plugin_detail_ui_url(plugin_id=self.plugin_id, port=port)
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(_open_url_in_browser, url),
+                timeout=_AUTO_OPEN_UI_TASK_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            self.logger.warning("study auto-open UI failed: {}", exc)
+
     async def _cleanup_after_failed_startup(self) -> None:
         self.stop_awareness_loop()
         await self._await_awareness_stop()
         await self._unsubscribe_neko_commands()
         await self._cancel_command_worker()
         await self._cancel_review_due_task()
+        event_bus = self._event_bus
         agent = self._agent
+        ocr_pipeline = self._ocr_pipeline
         self._agent = None
         self._ocr_pipeline = None
         self._knowledge_tracker = None
@@ -359,6 +408,11 @@ class StudyCompanionPlugin(
         self._supervision = None
         self._memory_habit_bridge = None
         self._event_bus = None
+        if event_bus is not None:
+            try:
+                await event_bus.stop_worker()
+            except Exception as exc:
+                self.logger.warning("study startup cleanup event bus failed: {}", exc)
         try:
             self.clear_list_actions()
         except Exception as exc:
@@ -378,6 +432,13 @@ class StudyCompanionPlugin(
                 self.logger.warning(
                     "study startup cleanup agent shutdown failed: {}", exc
                 )
+        if ocr_pipeline is not None:
+            try:
+                close_ocr = getattr(ocr_pipeline, "close", None)
+                if callable(close_ocr):
+                    close_ocr()
+            except Exception as exc:
+                self.logger.warning("study startup cleanup OCR pipeline failed: {}", exc)
         try:
             await asyncio.to_thread(self._store.close)
         except Exception as exc:
@@ -390,12 +451,30 @@ class StudyCompanionPlugin(
         await self._unsubscribe_neko_commands()
         await self._cancel_command_worker()
         await self._cancel_review_due_task()
+        event_bus = self._event_bus
+        self._event_bus = None
+        if event_bus is not None:
+            try:
+                await event_bus.stop_worker()
+            except Exception as exc:
+                self.logger.warning("study shutdown event bus cleanup failed: {}", exc)
         try:
             self.unregister_dynamic_entry("study_export_notes")
         except Exception as exc:
             self.logger.warning("study shutdown dynamic entry cleanup failed: {}", exc)
         if self._agent is not None:
             await self._agent.shutdown()
+        ocr_pipeline = self._ocr_pipeline
+        self._ocr_pipeline = None
+        if ocr_pipeline is not None:
+            try:
+                close_ocr = getattr(ocr_pipeline, "close", None)
+                if callable(close_ocr):
+                    close_ocr()
+            except Exception as exc:
+                self.logger.warning(
+                    "study shutdown OCR pipeline cleanup failed: {}", exc
+                )
         async with self._lock:
             self._state.status = STATUS_STOPPED
         await asyncio.to_thread(self._store.save_state, self._state)
@@ -607,9 +686,24 @@ class StudyCompanionPlugin(
         try:
             await task
         except asyncio.CancelledError:
-            return
+            pass
         except Exception as exc:
             self.logger.warning("study review due task cleanup failed: {}", exc)
+        await self._await_review_due_payload_future()
+
+    async def _await_review_due_payload_future(self) -> None:
+        future = self._review_due_payload_future
+        if future is None:
+            return
+        try:
+            await asyncio.shield(future)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.logger.warning("study review due payload cleanup failed: {}", exc)
+        finally:
+            if self._review_due_payload_future is future:
+                self._review_due_payload_future = None
 
     def _on_review_due_task_done(self, task: asyncio.Task[None]) -> None:
         if self._review_due_task is task:
@@ -713,6 +807,20 @@ class StudyCompanionPlugin(
             for key, value in summary.items()
             if key != "app_distribution"
         }
+
+    @staticmethod
+    def _assert_notebook_agent_methods(agent: TutorLLMAgent | None) -> None:
+        if agent is None:
+            raise RuntimeError("study tutor agent is not initialized")
+        missing = [
+            name
+            for name in ("expand_note", "summarize_to_note")
+            if not callable(getattr(agent, name, None))
+        ]
+        if missing:
+            raise RuntimeError(
+                f"study tutor agent missing notebook methods: {', '.join(missing)}"
+            )
 
     async def _refresh_dependency_status(self) -> dict[str, Any]:
         status = await asyncio.to_thread(build_dependency_status, self._cfg)

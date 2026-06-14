@@ -633,6 +633,11 @@ async def _handle_agent_event(event: dict):
             notify_analyze_ack(str(event.get("event_id") or ""))
             return
 
+        if event_type == "voice_bridge_result":
+            event_id = str(event.get("event_id") or "")
+            logger.debug("[EventBus] ignored voice_bridge_result: event_id=%s", event_id)
+            return
+
         # Agent status updates may be broadcast (lanlan_name omitted).
         if event_type == "agent_status_update":
             payload = {
@@ -1486,6 +1491,7 @@ _MAIN_LIMITED_MODE_ALLOWED_PAGE_PATHS = {
     "/model_manager",
     "/live2d_parameter_editor",
     "/soccer_demo",
+    "/basketball_demo",
     "/live2d_emotion_manager",
     "/vrm_emotion_manager",
     "/mmd_emotion_manager",
@@ -1497,6 +1503,7 @@ _MAIN_LIMITED_MODE_ALLOWED_PAGE_PATHS = {
     "/memory_browser",
     "/cookies_login",
     "/chat",
+    "/web_chat_compact",
     "/subtitle",
     "/agenthud",
     "/card_maker",
@@ -1582,6 +1589,7 @@ if _IS_MAIN_PROCESS:
     _config_manager.ensure_live2d_directory()
     _config_manager.ensure_vrm_directory()
     _config_manager.ensure_mmd_directory()
+    _config_manager.ensure_pngtuber_directory()
     _config_manager.ensure_chara_directory()
 
     # CFA (反勒索防护) 感知挂载：
@@ -1635,7 +1643,12 @@ if _IS_MAIN_PROCESS:
     if os.path.exists(user_mmd_path):
         app.mount("/user_mmd", CustomStaticFiles(directory=user_mmd_path), name="user_mmd")
         logger.info(f"已挂载MMD目录: {user_mmd_path}")
-    
+
+    user_pngtuber_path = str(_config_manager.pngtuber_dir)
+    if os.path.exists(user_pngtuber_path):
+        app.mount("/user_pngtuber", CustomStaticFiles(directory=user_pngtuber_path), name="user_pngtuber")
+        logger.info(f"已挂载PNGTuber目录: {user_pngtuber_path}")
+
     # 挂载项目目录下的static/mmd（作为备用）
     project_mmd_path = os.path.join(static_dir, 'mmd')
     if os.path.exists(project_mmd_path) and os.path.isdir(project_mmd_path):
@@ -1650,6 +1663,7 @@ if _IS_MAIN_PROCESS:
 # --- 初始化共享状态并挂载路由 ---
 # 显式从各子模块导入 router，避免与包级模块导出产生同名遮蔽。
 from main_routers.agent_router import router as agent_router # noqa
+from main_routers.card_assist_router import router as card_assist_router # noqa
 from main_routers.capture_router import router as capture_router # noqa
 from main_routers.characters_router import router as characters_router # noqa
 from main_routers.cloudsave_router import router as cloudsave_router # noqa
@@ -1662,6 +1676,7 @@ from main_routers.memory_router import router as memory_router # noqa
 from main_routers.mmd_router import router as mmd_router # noqa
 from main_routers.music_router import router as music_router # noqa
 from main_routers.pages_router import router as pages_router # noqa
+from main_routers.pngtuber_router import router as pngtuber_router # noqa
 from main_routers.storage_location_router import router as storage_location_router # noqa
 from main_routers.system_router import router as system_router # noqa
 from main_routers.tool_router import router as tool_router # noqa
@@ -1670,7 +1685,6 @@ from main_routers.websocket_router import router as websocket_router # noqa
 from main_routers.workshop_router import router as workshop_router # noqa
 from main_routers.cookies_login_router import router as cookies_login_router # noqa
 from main_routers.game_router import router as game_router # noqa
-from main_routers.card_assist_router import router as card_assist_router # noqa
 from main_routers.debug_router import router as debug_router, start_watchdog as _start_debug_health_watchdog # noqa
 from main_routers.shared_state import init_shared_state, set_steamworks_initializer # noqa
 
@@ -1789,6 +1803,7 @@ app.include_router(characters_router)
 app.include_router(live2d_router)
 app.include_router(vrm_router)
 app.include_router(mmd_router)
+app.include_router(pngtuber_router)
 app.include_router(jukebox_router)
 app.include_router(workshop_router)
 app.include_router(memory_router)

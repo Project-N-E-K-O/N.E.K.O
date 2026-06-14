@@ -639,10 +639,14 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
     model_type = str(
         get_reserved(catgirl_data, "avatar", "model_type", default="", legacy_keys=("model_type",))
     ).strip().lower()
-    if model_type not in {"live2d", "vrm", "live3d"}:
+    if model_type not in {"live2d", "vrm", "live3d", "pngtuber"}:
         has_vrm = catgirl_data.get("vrm") or get_reserved(catgirl_data, "avatar", "vrm", "model_path")
         has_mmd = catgirl_data.get("mmd") or get_reserved(catgirl_data, "avatar", "mmd", "model_path")
-        model_type = "live3d" if (has_vrm or has_mmd) else "live2d"
+        has_pngtuber = catgirl_data.get("pngtuber") or get_reserved(catgirl_data, "avatar", "pngtuber", default={})
+        if has_pngtuber:
+            model_type = "pngtuber"
+        else:
+            model_type = "live3d" if (has_vrm or has_mmd) else "live2d"
     # 归一化：旧配置中的 'vrm' 统一为 'live3d'
     if model_type == "vrm":
         model_type = "live3d"
@@ -765,6 +769,26 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
     if mmd_animation is not None:
         changed |= set_reserved(catgirl_data, "avatar", "mmd", "animation", mmd_animation)
 
+    pngtuber_config = get_reserved(catgirl_data, "avatar", "pngtuber", default=None, legacy_keys=("pngtuber",))
+    if pngtuber_config is None:
+        pngtuber_config = {}
+    if not isinstance(pngtuber_config, dict):
+        pngtuber_config = {"idle_image": str(pngtuber_config)} if str(pngtuber_config or "").strip() else {}
+    pngtuber_config = dict(pngtuber_config)
+    legacy_pngtuber_fields = {
+        "idle_image": "pngtuber_idle_image",
+        "talking_image": "pngtuber_talking_image",
+        "happy_image": "pngtuber_happy_image",
+        "sad_image": "pngtuber_sad_image",
+        "angry_image": "pngtuber_angry_image",
+        "surprised_image": "pngtuber_surprised_image",
+    }
+    for reserved_key, legacy_key in legacy_pngtuber_fields.items():
+        if not pngtuber_config.get(reserved_key) and catgirl_data.get(legacy_key):
+            pngtuber_config[reserved_key] = str(catgirl_data.get(legacy_key) or "")
+    if pngtuber_config:
+        changed |= set_reserved(catgirl_data, "avatar", "pngtuber", pngtuber_config)
+
     mmd_idle_animation = get_reserved(
         catgirl_data,
         "avatar",
@@ -833,6 +857,13 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         "mmd_animation",
         "mmd_idle_animation",
         "mmd_idle_animations",
+        "pngtuber",
+        "pngtuber_idle_image",
+        "pngtuber_talking_image",
+        "pngtuber_happy_image",
+        "pngtuber_sad_image",
+        "pngtuber_angry_image",
+        "pngtuber_surprised_image",
     ):
         if legacy_key in catgirl_data:
             catgirl_data.pop(legacy_key, None)
@@ -921,6 +952,20 @@ def flatten_reserved(catgirl_data: dict) -> dict:
         else:
             result["mmd_idle_animation"] = ""
             result["mmd_idle_animations"] = []
+
+    pngtuber_config = get_reserved(result, "avatar", "pngtuber", default=None)
+    if isinstance(pngtuber_config, dict) and pngtuber_config:
+        result["pngtuber"] = dict(pngtuber_config)
+        for key in (
+            "idle_image",
+            "talking_image",
+            "happy_image",
+            "sad_image",
+            "angry_image",
+            "surprised_image",
+        ):
+            if pngtuber_config.get(key):
+                result[f"pngtuber_{key}"] = pngtuber_config.get(key)
 
     touch_set = get_reserved(result, 'touch_set', default=None)
     if touch_set:
@@ -1074,6 +1119,7 @@ class ConfigManager:
         # MMD模型存储在用户文档目录下
         self.mmd_dir = self.app_docs_dir / "mmd"
         self.mmd_animation_dir = self.mmd_dir / "animation"  # VMD动画文件目录
+        self.pngtuber_dir = self.app_docs_dir / "pngtuber"
         self.workshop_dir = self.app_docs_dir / "workshop"
         self._steam_workshop_path = None
         self._user_workshop_folder_persisted = False
@@ -1651,6 +1697,17 @@ class ConfigManager:
             return True
         except Exception as e:
             print(f"Warning: Failed to create mmd directory: {e}", file=sys.stderr)
+            return False
+
+    def ensure_pngtuber_directory(self):
+        """Ensure the user PNGTuber asset directory exists."""
+        try:
+            if not self._ensure_app_docs_directory():
+                return False
+            self.pngtuber_dir.mkdir(parents=True, exist_ok=True)
+            return True
+        except Exception as e:
+            print(f"Warning: Failed to create pngtuber directory: {e}", file=sys.stderr)
             return False
         
     def ensure_chara_directory(self):
@@ -2595,14 +2652,18 @@ class ConfigManager:
         return voice_id
 
     def get_tts_api_key(self, provider: str) -> str | None:
-        """Get the TTS API key uniformly by provider; None means not configured.
+        """Return the configured TTS API key for a provider, or None.
 
-        - cosyvoice: api_key from the tts_custom config
-        - cosyvoice_intl: ASSIST_API_KEY_QWEN_INTL (Alibaba international)
+        - cosyvoice: api_key from the tts_custom model config
+        - cosyvoice_intl: API key resolved by the CosyVoice intl runtime
         - minimax:   ASSIST_API_KEY_MINIMAX → MINIMAX_API_KEY fallback
         - minimax_intl: ASSIST_API_KEY_MINIMAX_INTL → MINIMAX_INTL_API_KEY fallback
+        - mimo: ASSIST_API_KEY_MIMO
         """
         if provider == 'cosyvoice':
+            core_config = self.get_core_config()
+            if self._is_vllm_omni_tts_selected(core_config):
+                return None
             tts_config = self.get_model_api_config('tts_custom')
             key = (tts_config.get('api_key') or '').strip()
             return key or None
@@ -2631,7 +2692,41 @@ class ConfigManager:
             if '***' in key:
                 return None
             return key or None
+        if provider == 'mimo':
+            core_config = self.get_core_config()
+            use_token_plan = (
+                (core_config.get('assistApi') or '').strip() == 'mimo'
+                and _as_bool(core_config.get('useMimoTokenPlan', False))
+            )
+            key_field = 'ASSIST_API_KEY_MIMO_TOKEN_PLAN' if use_token_plan else 'ASSIST_API_KEY_MIMO'
+            key = (core_config.get(key_field) or '').strip()
+            if '***' in key:
+                return None
+            return key or None
         return None
+
+    @staticmethod
+    def _is_vllm_omni_tts_selected(core_config: dict | None) -> bool:
+        if not isinstance(core_config, dict):
+            return False
+        return _as_bool(core_config.get('ENABLE_CUSTOM_API'), False) and (
+            str(core_config.get('ttsModelProvider') or '').strip() == 'vllm_omni'
+        )
+
+    def _is_local_tts_storage_active(
+        self,
+        tts_config: dict | None = None,
+        core_config: dict | None = None,
+    ) -> bool:
+        """Return True when the current TTS config should use __LOCAL_TTS__ voices."""
+        if tts_config is None:
+            tts_config = self.get_model_api_config('tts_custom')
+        if core_config is None:
+            core_config = self.get_core_config()
+        base_url = str((tts_config or {}).get('base_url') or '')
+        return _as_bool((tts_config or {}).get('is_custom'), False) and base_url.startswith(('ws://', 'wss://')) and (
+            not self._is_vllm_omni_tts_selected(core_config)
+        )
 
     def get_cosyvoice_clone_runtime(self, provider: str = 'cosyvoice') -> dict:
         """Return the Alibaba CN/international runtime config explicitly selected on the voice-clone page."""
@@ -2665,19 +2760,20 @@ class ConfigManager:
             base_url = profile.get('OPENROUTER_URL', '')
 
         if normalized_provider == 'cosyvoice' and not api_key:
-            try:
-                legacy_tts_config = self.get_model_api_config('tts_custom')
-            except Exception:
-                legacy_tts_config = {}
-            legacy_key = (legacy_tts_config.get('api_key') or '').strip()
-            legacy_url = (legacy_tts_config.get('base_url') or '').strip()
-            if legacy_key and not (
-                'dashscope-intl.aliyuncs.com' in legacy_url
-                or 'dashscope-us.aliyuncs.com' in legacy_url
-            ):
-                api_key = legacy_key
-                if legacy_url:
-                    base_url = legacy_url
+            if not self._is_vllm_omni_tts_selected(core_config):
+                try:
+                    legacy_tts_config = self.get_model_api_config('tts_custom')
+                except Exception:
+                    legacy_tts_config = {}
+                legacy_key = (legacy_tts_config.get('api_key') or '').strip()
+                legacy_url = (legacy_tts_config.get('base_url') or '').strip()
+                if legacy_key and not (
+                    'dashscope-intl.aliyuncs.com' in legacy_url
+                    or 'dashscope-us.aliyuncs.com' in legacy_url
+                ):
+                    api_key = legacy_key
+                    if legacy_url:
+                        base_url = legacy_url
 
         if normalized_provider == 'cosyvoice_intl' and api_key:
             suffix = api_key[-8:] if len(api_key) >= 8 else api_key
@@ -2804,8 +2900,8 @@ class ConfigManager:
         result: dict = {}
 
         tts_config = self.get_model_api_config('tts_custom')
-        base_url = tts_config.get('base_url', '')
-        is_local_tts = tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://'))
+        core_config = self.get_core_config()
+        is_local_tts = self._is_local_tts_storage_active(tts_config, core_config)
         hide_cloud_main = for_listing and self.is_free_voice()
 
         if is_local_tts:
@@ -2820,7 +2916,6 @@ class ConfigManager:
                 all_voices = voice_storage.get(storage_key, {})
                 result = dict(all_voices)
             else:
-                core_config = self.get_core_config()
                 audio_api_key = core_config.get('AUDIO_API_KEY', '')
                 if audio_api_key:
                     storage_key = audio_api_key
@@ -3001,8 +3096,7 @@ class ConfigManager:
                 return True
         
         tts_config = self.get_model_api_config('tts_custom')
-        base_url = tts_config.get('base_url', '')
-        is_local_tts = tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://'))
+        is_local_tts = self._is_local_tts_storage_active(tts_config)
 
         if is_local_tts:
             api_key = '__LOCAL_TTS__'
@@ -3047,6 +3141,9 @@ class ConfigManager:
         custom_tts_allowed = check_custom_tts_voice_allowed(voice_id, self.get_model_api_config)
         if custom_tts_allowed is not None:
             return custom_tts_allowed
+
+        if self._is_vllm_omni_tts_selected(self.get_core_config()):
+            return True
 
         voices = self.get_voices_for_current_api()
         if voice_id in voices:
@@ -3520,6 +3617,8 @@ class ConfigManager:
             'ASSIST_API_KEY_QWEN_INTL': '',
             'ASSIST_API_KEY_MINIMAX': '',
             'ASSIST_API_KEY_MINIMAX_INTL': '',
+            'ASSIST_API_KEY_MIMO': '',
+            'ASSIST_API_KEY_MIMO_TOKEN_PLAN': '',
             'ASSIST_API_KEY_GROK': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_OPENROUTER': DEFAULT_CORE_API_KEY,
             'VISION_MODEL': DEFAULT_VISION_MODEL,
@@ -3600,11 +3699,14 @@ class ConfigManager:
         config['ASSIST_API_KEY_KIMI'] = core_cfg.get('assistApiKeyKimi', '') or _fb('kimi')
         config['ASSIST_API_KEY_DEEPSEEK'] = core_cfg.get('assistApiKeyDeepseek', '') or _fb('deepseek')
         config['ASSIST_API_KEY_DOUBAO'] = core_cfg.get('assistApiKeyDoubao', '') or _fb('doubao')
-        # MiniMax 是 assist-only（TTS 专用），不在 coreApi 候选集里，
-        # coreApiKey 永远不是 minimax 兼容的；不 fallback，以免把无效 key
-        # 塞进 TTS 凭证槽位导致 401，掩盖"未配置 minimax key"的真实提示。
+        # MiniMax / MiMo 是 assist-only TTS provider，coreApiKey 不保证兼容；
+        # 不 fallback，以免把无效 key 塞进 TTS 凭证槽位导致 401，
+        # 掩盖"未配置 TTS provider key"的真实提示。
         config['ASSIST_API_KEY_MINIMAX'] = core_cfg.get('assistApiKeyMinimax', '')
         config['ASSIST_API_KEY_MINIMAX_INTL'] = core_cfg.get('assistApiKeyMinimaxIntl', '')
+        config['ASSIST_API_KEY_MIMO'] = core_cfg.get('assistApiKeyMimo', '')
+        config['ASSIST_API_KEY_MIMO_TOKEN_PLAN'] = core_cfg.get('assistApiKeyMimoTokenPlan', '')
+        config['useMimoTokenPlan'] = _as_bool(core_cfg.get('useMimoTokenPlan', False))
         config['ASSIST_API_KEY_ELEVENLABS'] = core_cfg.get('assistApiKeyElevenlabs', '')
         config['ASSIST_API_KEY_GROK'] = core_cfg.get('assistApiKeyGrok', '') or _fb('grok')
         config['ASSIST_API_KEY_CLAUDE'] = core_cfg.get('assistApiKeyClaude', '') or _fb('claude')
@@ -3700,12 +3802,44 @@ class ConfigManager:
             )
             if resolved_assist_url:
                 config['OPENROUTER_URL'] = resolved_assist_url
+        use_mimo_token_plan = (
+            assist_api_value == 'mimo'
+            and _as_bool(core_cfg.get('useMimoTokenPlan', False))
+        )
+        if use_mimo_token_plan:
+            token_plan_urls = config.get('MIMO_TOKEN_PLAN_OPENROUTER_URLS')
+            if not isinstance(token_plan_urls, list):
+                token_plan_urls = []
+            token_plan_profile = {
+                'OPENROUTER_URL': config.get(
+                    'MIMO_TOKEN_PLAN_OPENROUTER_URL',
+                    'https://token-plan-cn.xiaomimimo.com/v1',
+                ),
+                'OPENROUTER_URLS': token_plan_urls or [
+                    'https://token-plan-cn.xiaomimimo.com/v1',
+                    'https://token-plan-sgp.xiaomimimo.com/v1',
+                    'https://token-plan-ams.xiaomimimo.com/v1',
+                ],
+            }
+            token_plan_url = self._get_saved_provider_url(
+                core_cfg,
+                'assist',
+                'mimo_token_plan',
+                token_plan_profile,
+                'OPENROUTER_URL',
+                'OPENROUTER_URLS',
+            )
+            config['OPENROUTER_URL'] = token_plan_url or token_plan_profile['OPENROUTER_URL']
         # agent api 默认跟随辅助 API 的 agent_model，缺失时回退到 VISION_MODEL
         config['AGENT_MODEL'] = config.get('AGENT_MODEL') or config.get('VISION_MODEL', '')
         config['AGENT_MODEL_URL'] = config.get('AGENT_MODEL_URL') or config.get('VISION_MODEL_URL', '') or config.get('OPENROUTER_URL', '')
         config['AGENT_MODEL_URL'] = self._normalize_agent_url(config['AGENT_MODEL_URL'])
 
-        key_field = assist_api_key_fields.get(assist_api_value)
+        key_field = (
+            'ASSIST_API_KEY_MIMO_TOKEN_PLAN'
+            if use_mimo_token_plan
+            else assist_api_key_fields.get(assist_api_value)
+        )
         derived_key = ''
         if key_field:
             derived_key = config.get(key_field, '')
@@ -3731,6 +3865,15 @@ class ConfigManager:
 
         config['ELEVENLABS_API_KEY'] = core_cfg.get('assistApiKeyElevenlabs', '')
         config['TTS_PROVIDER'] = core_cfg.get('ttsProvider', '')
+
+        # 将 vLLM-Omni TTS 的前端原始字段放进 core_config snapshot，供
+        # core.py 判断是否启用外部 TTS，并生成与实际 worker 参数一致的复用 key。
+        # 凭证字段 ttsModelApiKey 不放入 snapshot；它仍由 tts_client.py 从持久化
+        # 配置读取，避免扩大通用配置快照中的敏感字段范围。
+        config['ttsModelProvider'] = str(core_cfg.get('ttsModelProvider', '') or '')
+        config['ttsModelUrl'] = str(core_cfg.get('ttsModelUrl', '') or '')
+        config['ttsModelId'] = str(core_cfg.get('ttsModelId', '') or '')
+        config['ttsVoiceId'] = str(core_cfg.get('ttsVoiceId', '') or '')
 
         # 禁用TTS
         _raw_disable_tts = core_cfg.get('disableTts', False)

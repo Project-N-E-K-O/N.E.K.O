@@ -1,7 +1,7 @@
 import { useEffect, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 
-import { callPlugin, formatError, text } from './study_surface_utils';
+import { callPlugin, ensureBrandCSS, formatError, text } from './study_surface_utils';
 
 export default function DailyGoalEditor(props: PluginSurfaceProps) {
   const [goals, setGoals] = useState<any[]>([]);
@@ -10,13 +10,14 @@ export default function DailyGoalEditor(props: PluginSurfaceProps) {
   const [error, setError] = useState('');
 
   async function refresh() {
-    const payload = await callPlugin('study_goals');
-    setGoals(Array.isArray(payload.goals) ? payload.goals : []);
+    const payload = await callPlugin(props.api, 'study_goals');
+    const goalPayload = payload as { goals?: unknown };
+    setGoals(Array.isArray(goalPayload.goals) ? goalPayload.goals : []);
   }
 
   async function createGoal() {
     try {
-      await callPlugin('study_goal_create', { target_type: 'subject', subject, target_amount: targetAmount, unit: 'minute' });
+      await callPlugin(props.api, 'study_goal_create', { target_type: 'subject', subject, target_amount: targetAmount, unit: 'minute' });
       await refresh();
       setError('');
     } catch (err) {
@@ -26,7 +27,7 @@ export default function DailyGoalEditor(props: PluginSurfaceProps) {
 
   async function deleteGoal(goalId: string) {
     try {
-      await callPlugin('study_goal_delete', { goal_id: goalId });
+      await callPlugin(props.api, 'study_goal_delete', { goal_id: goalId });
       await refresh();
       setError('');
     } catch (err) {
@@ -35,11 +36,12 @@ export default function DailyGoalEditor(props: PluginSurfaceProps) {
   }
 
   useEffect(() => {
+    ensureBrandCSS();
     refresh().catch((err) => setError(formatError(err)));
   }, []);
 
   return (
-    <div className="study-panel">
+    <div className="study-panel surface-shell">
       <header className="study-panel__header">
         <div>
           <h1>{text(props, 'ui.surface.daily_goal_editor', 'Daily Goals')}</h1>

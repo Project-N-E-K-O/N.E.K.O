@@ -397,7 +397,9 @@ def _validate_local_mutation_request(
 
     logger.warning(
         "Rejected local mutation request due to failed CSRF/origin validation: "
-        "origin=%r allowed_origins=%r has_csrf=%s referer=%r",
+        "method=%r path=%r origin=%r allowed_origins=%r has_csrf=%s referer=%r",
+        request.method,
+        request.url.path,
         request_origin,
         sorted(allowed_origins),
         has_valid_csrf,
@@ -1953,6 +1955,7 @@ def _mini_game_invite_get_state(lanlan_name: str) -> dict[str, Any]:
             'responded_at': None,
             'chats_since_response': 0,
             'last_game_type': None,
+            'response_cooldowns': {},
             # 当前 pending 邀请的 session_id；endpoint 收到回应时校验匹配，避免
             # 用户点击过期邀请被错算成响应当前 pending。一旦投递新邀请会被刷新。
             'pending_session_id': None,
@@ -1965,6 +1968,8 @@ def _mini_game_invite_get_state(lanlan_name: str) -> dict[str, Any]:
             'last_response_choice': None,
         }
         _mini_game_invite_state[lanlan_name] = state
+    else:
+        state.setdefault('response_cooldowns', {})
     return state
 
 
@@ -2153,18 +2158,14 @@ def _mini_game_invite_advance_response(
     )
 
 
-def _mini_game_invite_in_cooldown(lanlan_name: str) -> bool:
-    """Whether we are in a cooldown period. True = do not roll the dice this round.
+def _mini_game_invite_in_cooldown(lanlan_name: str, game_type: str | None = None) -> bool:
+    """Return whether this character is in a mini-game invite cooldown.
 
-    Covers:
-      - D2 "maybe later" short suppression (suppressed_until > now) → True
-      - pending (delivered but responded_at=None) → True
-      - responded but either the time gate (by choice) or the 10-chats gate not yet crossed → True
-      - never delivered / both gates fully crossed → False
-
-    The time threshold depends on last_response_choice: accept=2h, decline=5h.
-    The fallback uses the accept threshold (the short one), so legacy state
-    missing the field does not lock users into the long cooldown.
+    A true value means the current turn should not roll another invite. This
+    covers short suppression from the "later" choice, pending invites, and
+    replied invites that have not crossed both the time and chat-count gates.
+    Cooldowns after completed responses are scoped to the same game type, while
+    pending invites still suppress all game types for the character.
     """
     state = _mini_game_invite_state.get(lanlan_name)
     if not state:
@@ -2172,6 +2173,24 @@ def _mini_game_invite_in_cooldown(lanlan_name: str) -> bool:
     suppressed_until = state.get('suppressed_until')
     if suppressed_until is not None and time.time() < float(suppressed_until):
         return True
+    if game_type:
+        cooldowns = state.get('response_cooldowns')
+        if isinstance(cooldowns, dict) and isinstance(cooldowns.get(game_type), dict):
+            response_state = cooldowns[game_type]
+            elapsed = time.time() - float(response_state.get('responded_at') or 0.0)
+            if response_state.get('last_response_choice') == 'decline':
+                time_threshold = MINI_GAME_INVITE_COOLDOWN_AFTER_DECLINE_SECONDS
+            else:
+                time_threshold = MINI_GAME_INVITE_COOLDOWN_AFTER_ACCEPT_SECONDS
+            chats_since_response = int(response_state.get('chats_since_response') or 0)
+            if elapsed < time_threshold or chats_since_response < MINI_GAME_INVITE_COOLDOWN_CHATS:
+                return True
+            cooldowns.pop(game_type, None)
+    if game_type:
+        last_game_type = state.get('last_game_type')
+        pending = state.get('delivered_at') is not None and state.get('responded_at') is None
+        if last_game_type and last_game_type != game_type and not pending:
+            return False
     if state['delivered_at'] is None:
         return False
     if state['responded_at'] is None:
@@ -2207,28 +2226,74 @@ def _mini_game_invite_record_delivered(lanlan_name: str, session_id: str) -> Non
 
 
 def _mini_game_invite_count_post_response_chat(lanlan_name: str) -> None:
-    """Called once per successfully delivered proactive chat: if the last invite was responded to, counter +1.
+    """Advance invite cooldown chat counters after a delivered proactive turn.
 
-    Called immediately after _record_proactive_chat. Every channel counts — as
-    long as the AI actually sent out a proactive chat, the 10-chats gate of
-    "24h+10 chats" advances one notch. During pending (not yet responded) this
-    function is a no-op, so the invite itself cannot prematurely consume the counter."""
+    This runs immediately after _record_proactive_chat. Any channel counts as
+    long as the AI actually delivered a proactive message. Pending invites are
+    no-ops so the invite message itself does not spend the response gate.
+    """
     state = _mini_game_invite_state.get(lanlan_name)
-    if not state or state['responded_at'] is None:
+    if not state:
         return
-    state['chats_since_response'] += 1
+    if state.get('delivered_at') is not None and state.get('responded_at') is None:
+        return
+    if state.get('responded_at') is not None:
+        state['chats_since_response'] += 1
+    cooldowns = state.get('response_cooldowns')
+    if isinstance(cooldowns, dict):
+        for response_state in cooldowns.values():
+            if isinstance(response_state, dict) and response_state.get('responded_at') is not None:
+                response_state['chats_since_response'] = int(response_state.get('chats_since_response') or 0) + 1
 
 
-def _pick_mini_game_type() -> str | None:
-    """Pick a game_type from MINI_GAME_INVITE_AVAILABLE_GAMES.
+def _mini_game_invite_record_response_cooldown(
+    state: dict[str, Any],
+    game_type: str,
+    choice: str,
+    responded_at: float,
+) -> None:
+    cooldowns = state.setdefault('response_cooldowns', {})
+    if not isinstance(cooldowns, dict):
+        cooldowns = {}
+        state['response_cooldowns'] = cooldowns
+    cooldowns[game_type] = {
+        'responded_at': responded_at,
+        'chats_since_response': 0,
+        'last_response_choice': choice,
+    }
 
-    It must have lines in MINI_GAME_INVITE_LINES_BY_GAME — if the config is
-    misaligned (present in the available list but missing from lines), skip that
-    entry. Empty → None (the caller short-circuits)."""
+
+def _mini_game_launch_url(game_type: str, lanlan_name: str, session_id: str) -> str | None:
+    url_template = MINI_GAME_LAUNCH_URL_BY_GAME.get(game_type)
+    if not url_template:
+        return None
+    from urllib.parse import urlencode as _urlencode
+
+    query = {
+        "lanlan_name": lanlan_name,
+        "session_id": session_id,
+    }
+    if game_type == "basketball":
+        query["mode"] = "shooter"
+    separator = "&" if "?" in url_template else "?"
+    return f"{url_template}{separator}{_urlencode(query)}"
+
+
+def _pick_mini_game_type(lanlan_name: str | None = None) -> str | None:
+    """Pick an available mini-game type with invite copy configured.
+
+    Games missing invite lines are skipped, and character-specific cooldowns are
+    respected when a character name is provided.
+    """
     candidates = [
         g for g in MINI_GAME_INVITE_AVAILABLE_GAMES
         if g in MINI_GAME_INVITE_LINES_BY_GAME
     ]
+    if lanlan_name:
+        candidates = [
+            g for g in candidates
+            if not _mini_game_invite_in_cooldown(lanlan_name, g)
+        ]
     if not candidates:
         return None
     import random as _random
@@ -2236,28 +2301,12 @@ def _pick_mini_game_type() -> str | None:
 
 
 def _resolve_proactive_locale(data: dict, mgr) -> str:
-    """The unified entry for resolving the user's current locale on the proactive-chat path (short codes zh / en / ja / ko / ru / es / pt).
+    """Resolve the active user locale for proactive chat flows.
 
-    Locale resolution on the proactive_chat path has always had three fallback
-    layers, but the first two used to miss the session ground truth:
-
-      1. Explicit ``language`` / ``lang`` / ``i18n_language`` in the request body
-         — the frontend request is decisive, highest priority.
-      2. ``mgr.user_language`` — pushed up by the frontend i18n at websocket
-         connect (see the branch handling ``message['language']`` in
-         ``main_routers/websocket_router.py``); in-game / Phase 2 LLM already use
-         it, but proactive did not, so when the Steam SDK could not provide a
-         value at backend startup it kept caching the system locale.
-      3. ``get_global_language()`` — process-level cache, read once from the
-         Steam SDK / system locale. When the Steam SDK startup race fails
-         (schinese not obtained) it degrades to the system locale, and frontend
-         and backend see different results (the frontend's async
-         ``/api/config/steam_language`` endpoint rereads it and does get the
-         right schinese → zh). Especially visible with Steam=zh / system=en.
-
-    Plugging the session truth into the second layer keeps proactive invite copy
-    / Phase 1-2 LLM output language consistent with the live session; only
-    without any session context do we fall back to the global cache.
+    Request data wins first, websocket session language is the second source of
+    truth, and the process-level global language is only a final fallback. This
+    keeps proactive invite copy and Phase 1-2 LLM output aligned with the live
+    session whenever frontend i18n has already reported the user's language.
     """
     request_lang = data.get('language') or data.get('lang') or data.get('i18n_language')
     # 与 ``main_routers/game_router._absorb_request_language`` 同形：第三方客户端 /
@@ -2366,9 +2415,6 @@ async def _maybe_deliver_mini_game_invite(
         # 优先级，统一不让 mini-game 邀请把 promised follow-up 抢走。
         if getattr(activity_snapshot, 'unfinished_thread', None) is not None:
             return None
-        if _mini_game_invite_in_cooldown(lanlan_name):
-            return None
-
         # Force-first：从未发过邀请 + 累计已成功投递 N-1 条主动搭话 → 本条强制变邀请。
         # proactive_chat_total 在 _record_proactive_chat 之后才 +1，所以"第 N 次"的
         # 当下值是 N-1。计数走持久化文件，跨重启保留——否则用户每次重启都再"第 N 次"
@@ -2386,12 +2432,7 @@ async def _maybe_deliver_mini_game_invite(
             and total_so_far >= max(0, MINI_GAME_INVITE_NEW_USER_FORCE_AT - 1)
         )
 
-        if not force_first:
-            import random as _random
-            if _random.random() >= MINI_GAME_INVITE_TRIGGER_PROBABILITY:
-                return None
-
-        game_type = _pick_mini_game_type()
+        game_type = _pick_mini_game_type(lanlan_name)
         if game_type is None:
             logger.warning(
                 "[%s] mini-game invite skipped: no game_type available "
@@ -2401,6 +2442,11 @@ async def _maybe_deliver_mini_game_invite(
                 list(MINI_GAME_INVITE_LINES_BY_GAME.keys()),
             )
             return None
+
+        if not force_first:
+            import random as _random
+            if _random.random() >= MINI_GAME_INVITE_TRIGGER_PROBABILITY:
+                return None
     template = _loc(MINI_GAME_INVITE_LINES_BY_GAME[game_type], invite_lang)
     safe_master = (master_name or '').strip()
     try:
@@ -5080,12 +5126,11 @@ async def proactive_chat(request: Request):
             if (
                 MINI_GAME_INVITE_ENABLED
                 and _user_invite_toggle
-                and not _mini_game_invite_in_cooldown(lanlan_name)
                 and _gi_prob > 0
             ):
                 import random as _random
                 if _random.random() < _gi_prob:
-                    chosen_game_type = _pick_mini_game_type()
+                    chosen_game_type = _pick_mini_game_type(lanlan_name)
                     if chosen_game_type is not None:
                         gi_prompt = _render_work_break_game_invite_prompt(
                             pending=water_pending,
@@ -7188,22 +7233,17 @@ def _apply_mini_game_invite_choice(
         # 触发会双开窗口）。
         invite_session_id = state.get('pending_session_id') or ''
         game_type = state.get('last_game_type') or 'soccer'
-        url_template = MINI_GAME_LAUNCH_URL_BY_GAME.get(game_type)
-        if not url_template:
+        _mini_game_invite_record_response_cooldown(state, game_type, 'accept', now)
+        game_url = _mini_game_launch_url(game_type, lanlan_name, invite_session_id)
+        if not game_url:
             logger.warning(
                 "[%s] accept invite but no launch URL for game_type=%r; "
                 "fallback /soccer_demo", lanlan_name, game_type,
             )
-            url_template = '/soccer_demo'
-        from urllib.parse import urlencode as _urlencode
-        query = _urlencode({
-            'lanlan_name': lanlan_name,
-            'session_id': invite_session_id,
-        })
-        game_url = f"{url_template}?{query}"
+            game_url = _mini_game_launch_url("soccer", lanlan_name, invite_session_id) or "/soccer_demo"
         logger.info(
             "[%s] mini-game invite accepted via %s -> %s",
-            lanlan_name, source, url_template,
+            lanlan_name, source, game_url,
         )
         return {
             'action': 'open_game',
@@ -7215,9 +7255,11 @@ def _apply_mini_game_invite_choice(
         # 留 session_id 给 caller 推 mini_game_invite_resolved 用——所有
         # outcome 都需要前端 dismiss prompt（codex P2）。
         decline_session_id = state.get('pending_session_id') or ''
+        game_type = state.get('last_game_type') or 'soccer'
         state['responded_at'] = now
         state['chats_since_response'] = 0
         state['last_response_choice'] = 'decline'
+        _mini_game_invite_record_response_cooldown(state, game_type, 'decline', now)
         logger.info(
             "[%s] mini-game invite declined via %s; cooldown started",
             lanlan_name, source,
@@ -7406,23 +7448,18 @@ def _keyword_matches(keyword: str, norm_text: str) -> bool:
 
 
 def _match_mini_game_invite_keyword(text: str) -> str | None:
-    """Scan the user text (lowercased + stripped) once; returns the choice on an
-    accept/decline/later keyword hit, None otherwise.
+    """Return accept/decline/later for a user text, or None when unmatched.
 
-    The keyword lists of all native locales are all scanned — the user may have
-    switched the UI language but still type in their original language. Matching
-    goes through ``_keyword_matches`` — ASCII / Cyrillic use word boundaries to
-    keep 'yes' from matching 'yesterday' / 'no' from matching 'no idea' (the
-    English false hits codex P1 pointed out); CJK still uses substring matching
-    (a property of those languages).
+    All native locale keyword lists are scanned because users may type in a
+    language different from the active UI language. ASCII and Cyrillic keywords
+    use word-boundary matching to avoid substring false positives; CJK keywords
+    keep substring matching.
 
-    **Priority decline > later > accept**: when a sentence contains both a
-    negation and an accept word, decline always beats later, which beats accept
-    — a sentence with an explicit negation must never launch the game in reverse
-    just because an accept keyword happens to match. Switched from
-    accept-priority to decline-priority after CodeRabbit Major pointed it out.
+    **Priority decline > later > accept**: a sentence with an explicit negation
+    must not open a game just because it also contains an accept keyword.
 
-    Empty text / no hit is treated as None."""
+    Empty text and unmatched text return None.
+    """
     if not text:
         return None
     norm = text.lower().strip()
@@ -7451,22 +7488,16 @@ def _match_mini_game_invite_keyword(text: str) -> str | None:
 def _maybe_apply_mini_game_invite_keyword(
     lanlan_name: str, text: str,
 ) -> dict[str, Any] | None:
-    """Called once from the text entry point (the core.py user message handler).
-    With a pending invite, tries keyword matching; on a hit, triggers the
-    corresponding state transition and returns a dict for the caller to decide
-    on side effects (e.g. push a WS message so the frontend window.opens the game).
+    """Apply mini-game invite keywords for one user-message text entry.
 
-    **Does not swallow the user message** — the caller should continue the
-    normal chat pipeline; the AI still responds to this message. State side
-    effects only.
-
-    - no pending invite / empty text / no hit → None
-    - accept hit → ``{action: 'open_game', game_type, game_url}``
-    - decline / later hit → ``{action: 'cooldown' | 'suppress'}``
+    Pending invites try accept, decline, and later keywords. Without a pending
+    invite this helper is a no-op: ordinary chat text must not launch mini
+    games implicitly. This helper does not consume the user message; normal
+    chat handling should still continue.
     """
     state = _mini_game_invite_state.get(lanlan_name)
     if not state or state.get('delivered_at') is None or state.get('responded_at') is not None:
-        return None  # 没 pending
+        return None
     choice = _match_mini_game_invite_keyword(text)
     if choice is None:
         return None
@@ -7478,13 +7509,11 @@ def _maybe_apply_mini_game_invite_keyword(
 
 @router.post('/proactive/music_played_through')
 async def proactive_music_played_through(request: Request):
-    """
-    Fired by the frontend when the user listens to a recommended song to the end (aplayer 'ended' event).
-    The backend blanks the channel field of every entry with channel == 'music'
-    for that character in _proactive_chat_history, so _compute_source_weights no
-    longer counts "just shared music" as a decay penalty against the music
-    channel — playing a song all the way through is the user's strongest
-    positive feedback for this channel.
+    """Record that the user finished a recommended song.
+
+    Completed playback is strong positive feedback for the music channel, so
+    matching proactive history entries are cleared from the channel-specific
+    decay calculation.
     """
     validation_error = _validate_local_mutation_request(request)
     if validation_error is not None:

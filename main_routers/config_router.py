@@ -43,7 +43,7 @@ from pydantic import BaseModel
 from .shared_state import ensure_steamworks, get_config_manager, get_session_manager, get_initialize_character_data
 from .characters_router import get_current_live2d_model
 from utils.file_utils import atomic_write_json_async, read_json_async
-from utils.preferences import aload_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top, aload_global_conversation_settings, save_global_conversation_settings, GLOBAL_CONVERSATION_KEY
+from utils.preferences import aload_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top, aload_global_conversation_settings, save_global_conversation_settings, aload_ui_language_override, GLOBAL_CONVERSATION_KEY
 from utils.cloudsave_runtime import MaintenanceModeError
 from utils.logger_config import get_module_logger
 from utils.config_manager import ensure_default_yui_voice_for_free_api, get_reserved
@@ -53,6 +53,12 @@ from config import (
     CHARACTER_WORKSHOP_RESERVED_FIELDS,
     CHARACTER_RESERVED_FIELDS,
 )
+
+_MIMO_TOKEN_PLAN_HOSTS = {
+    "token-plan-cn.xiaomimimo.com",
+    "token-plan-sgp.xiaomimimo.com",
+    "token-plan-ams.xiaomimimo.com",
+}
 
 
 router = APIRouter(prefix="/api/config", tags=["config"])
@@ -87,6 +93,8 @@ VRM_USER_PATH = "/user_vrm"  # 用户文档目录下的 VRM 模型路径
 # MMD 模型路径常量
 MMD_STATIC_PATH = "/static/mmd"  # 项目目录下的 MMD 模型路径
 MMD_USER_PATH = "/user_mmd"  # 用户文档目录下的 MMD 模型路径
+PNGTUBER_USER_PATH = "/user_pngtuber"
+PNGTUBER_EXTENSIONS = {'.png', '.gif', '.jpg', '.jpeg', '.webp'}
 
 
 def _resolve_master_display_name(master_basic_config: dict, fallback_name: str = "") -> str:
@@ -223,6 +231,43 @@ def _resolve_mmd_path(mmd_path: str, _config_manager, target_name: str) -> str:
         return ""
 
 
+def _resolve_pngtuber_image_path(image_path: str, _config_manager, target_name: str) -> str:
+    """Resolve a PNGTuber image reference to a browser-loadable URL."""
+    image_path = str(image_path or '').strip().replace('\\', '/')
+    if not image_path or image_path.lower() in {'undefined', 'null'}:
+        return ""
+    if image_path.startswith('http://') or image_path.startswith('https://'):
+        return image_path
+    lookup_path = urllib.parse.urlsplit(image_path).path
+    if image_path.startswith('/'):
+        if lookup_path.startswith(PNGTUBER_USER_PATH + '/'):
+            rel = lookup_path[len(PNGTUBER_USER_PATH) + 1:]
+            from pathlib import PurePosixPath
+            safe_rel = PurePosixPath(rel)
+            if safe_rel.is_absolute() or '..' in safe_rel.parts:
+                logger.warning(f"Invalid PNGTuber image path for {target_name}: {image_path}")
+                return ""
+            if (_config_manager.pngtuber_dir / rel).exists():
+                return image_path
+            logger.warning(f"PNGTuber image not found for {target_name}: {image_path}")
+            return ""
+        return image_path
+
+    from pathlib import PurePosixPath
+    safe_rel = PurePosixPath(lookup_path)
+    if safe_rel.is_absolute() or '..' in safe_rel.parts:
+        logger.warning(f"Invalid PNGTuber image path for {target_name}: {image_path}")
+        return ""
+    if safe_rel.suffix.lower() not in PNGTUBER_EXTENSIONS:
+        logger.warning(f"Unsupported PNGTuber image extension for {target_name}: {image_path}")
+        return ""
+    user_path = _config_manager.pngtuber_dir / str(safe_rel)
+    if user_path.exists():
+        return f'{PNGTUBER_USER_PATH}/{safe_rel}'
+    logger.warning(f"PNGTuber image not found for {target_name}: {image_path}")
+    return ""
+
+
 @router.get("/page_config")
 async def get_page_config(response: Response, lanlan_name: str = ""):
     """Get page config (lanlan_name and model_path); supports Live2D, VRM and MMD (Live3D) models."""
@@ -241,6 +286,7 @@ async def get_page_config(response: Response, lanlan_name: str = ""):
         # 获取角色配置
         catgirl_config = lanlan_basic_config.get(target_name, {})
         model_type = get_reserved(catgirl_config, 'avatar', 'model_type', default='live2d', legacy_keys=('model_type',))
+        model_type = str(model_type or 'live2d').strip().lower()
         # 归一化：旧配置中的 'vrm' 统一为 'live3d'
         if model_type == 'vrm':
             model_type = 'live3d'
@@ -249,9 +295,22 @@ async def get_page_config(response: Response, lanlan_name: str = ""):
         lighting = None
         # live3d_sub_type: 前端用于区分 Live3D 模式下加载 VRM 还是 MMD 渲染器
         live3d_sub_type = ""
+        pngtuber_config = None
         
         # 根据模型类型获取模型路径
-        if model_type == 'live3d' and _get_live3d_sub_type(catgirl_config) == 'vrm':
+        if model_type == 'pngtuber':
+            raw_pngtuber = get_reserved(catgirl_config, 'avatar', 'pngtuber', default={})
+            if not isinstance(raw_pngtuber, dict):
+                raw_pngtuber = {}
+            pngtuber_config = dict(raw_pngtuber)
+            for key in ('idle_image', 'talking_image', 'drag_image', 'click_image', 'happy_image', 'sad_image', 'angry_image', 'surprised_image'):
+                pngtuber_config[key] = _resolve_pngtuber_image_path(
+                    str(raw_pngtuber.get(key) or ''),
+                    _config_manager,
+                    target_name,
+                )
+            model_path = pngtuber_config.get('idle_image', '') or ''
+        elif model_type == 'live3d' and _get_live3d_sub_type(catgirl_config) == 'vrm':
             live3d_sub_type = 'vrm'
             # VRM模型：处理路径转换
             vrm_path = get_reserved(catgirl_config, 'avatar', 'vrm', 'model_path', default='', legacy_keys=('vrm',))
@@ -315,6 +374,8 @@ async def get_page_config(response: Response, lanlan_name: str = ""):
         }
         if model_type == 'live3d':
             result["live3d_sub_type"] = live3d_sub_type
+        if model_type == 'pngtuber':
+            result["pngtuber"] = pngtuber_config or {}
         return result
     except Exception as e:
         logger.error(f"获取页面配置失败: {str(e)}")
@@ -468,23 +529,31 @@ async def save_conversation_settings(request: Request):
 
 @router.get("/steam_language")
 async def get_steam_language():
-    """Get the Steam client language setting and GeoIP info, used for frontend i18n initialization and region detection
-    
-    Returned fields:
-    - success: whether the call succeeded
+    """Return Steam language and GeoIP hints for frontend locale setup.
+
+    Response fields:
+    - success: whether the lookup succeeded
+    - uiLanguage: manual UI language override with no frontend producer
     - steam_language: raw Steam language setting
     - i18n_language: normalized i18n language code
-    - ip_country: country code of the user's IP (e.g. "CN")
-    - is_mainland_china: whether the user is in mainland China (based on a language setting existing + the IP being CN)
-    
-    Logic:
-    - If a Steam language setting exists (i.e. there is a Steam environment), check GeoIP
-    - If the IP country code is "CN", mark as a mainland China user
-    - If no Steam language setting exists (no Steam environment), default to non-mainland
+    - ip_country: country code from the user's IP, such as "CN"
+    - is_mainland_china: whether the user is in mainland China
+
+    Decision rules:
+    - When a Steam language exists, check GeoIP as well
+    - When the IP country code is "CN", mark the user as mainland China
+    - When no Steam language exists, default to non-mainland behavior
     """
     from utils.language_utils import normalize_language_code, refresh_global_language, is_supported_language_code
 
+    ui_language = None
     try:
+        try:
+            ui_language = await aload_ui_language_override()
+        except Exception:
+            logger.debug("读取 UI 语言覆盖失败", exc_info=True)
+            ui_language = None
+
         steamworks = ensure_steamworks()
         
         if steamworks is None:
@@ -492,6 +561,7 @@ async def get_steam_language():
             return {
                 "success": False,
                 "error": "Steamworks 未初始化",
+                "uiLanguage": ui_language,
                 "steam_language": None,
                 "i18n_language": None,
                 "ip_country": None,
@@ -558,6 +628,7 @@ async def get_steam_language():
         
         return {
             "success": True,
+            "uiLanguage": ui_language,
             "steam_language": steam_language,
             "i18n_language": i18n_language,
             "ip_country": ip_country,
@@ -569,6 +640,7 @@ async def get_steam_language():
         return {
             "success": False,
             "error": str(e),
+            "uiLanguage": ui_language,
             "steam_language": None,
             "i18n_language": None,
             "ip_country": None,
@@ -658,11 +730,13 @@ async def get_core_config_api():
             "assistApiKeyKimi": core_cfg.get('assistApiKeyKimi', '') or _fb('kimi'),
             "assistApiKeyDeepseek": core_cfg.get('assistApiKeyDeepseek', '') or _fb('deepseek'),
             "assistApiKeyDoubao": core_cfg.get('assistApiKeyDoubao', '') or _fb('doubao'),
-            # MiniMax 是 assist-only（TTS 专用），不在 coreApi 候选集里，
-            # coreApiKey 永远不是 minimax 兼容的；不 fallback，以免把无效 key
-            # 塞进 TTS 凭证槽位导致 401，掩盖"未配置 minimax key"的真实提示。
+            # MiniMax / MiMo 是 assist-only TTS provider，coreApiKey 不保证兼容；
+            # 不 fallback，以免把无效 key 塞进 TTS 凭证槽位导致 401。
             "assistApiKeyMinimax": core_cfg.get('assistApiKeyMinimax', ''),
             "assistApiKeyMinimaxIntl": core_cfg.get('assistApiKeyMinimaxIntl', ''),
+            "assistApiKeyMimo": core_cfg.get('assistApiKeyMimo', ''),
+            "useMimoTokenPlan": core_cfg.get('useMimoTokenPlan', False) is True or str(core_cfg.get('useMimoTokenPlan', False)).lower() in ('true', '1', 'yes', 'on'),
+            "assistApiKeyMimoTokenPlan": core_cfg.get('assistApiKeyMimoTokenPlan', ''),
             "assistApiKeyElevenlabs": core_cfg.get('assistApiKeyElevenlabs', ''),
             "assistApiKeyGrok": core_cfg.get('assistApiKeyGrok', '') or _fb('grok'),
             "assistApiKeyClaude": core_cfg.get('assistApiKeyClaude', '') or _fb('claude'),
@@ -808,7 +882,8 @@ async def update_core_config(request: Request):
             'assistApiKeyQwen', 'assistApiKeyQwenIntl', 'assistApiKeyOpenai', 'assistApiKeyDeepseek',
             'assistApiKeyGlm', 'assistApiKeyStep', 'assistApiKeySilicon',
             'assistApiKeyGemini', 'assistApiKeyKimi', 'assistApiKeyDoubao',
-            'assistApiKeyMinimax', 'assistApiKeyMinimaxIntl', 'assistApiKeyElevenlabs', 'assistApiKeyGrok',
+            'assistApiKeyMinimax', 'assistApiKeyMinimaxIntl', 'assistApiKeyMimo',
+            'assistApiKeyMimoTokenPlan', 'assistApiKeyElevenlabs', 'assistApiKeyGrok',
             'assistApiKeyClaude', 'assistApiKeyOpenrouter',
         ]
         for field in _api_key_fields:
@@ -827,6 +902,10 @@ async def update_core_config(request: Request):
             core_cfg['openclawDefaultSenderId'] = data['openclawDefaultSenderId']
         if 'enableCustomApi' in data:
             core_cfg['enableCustomApi'] = data['enableCustomApi']
+        if 'useMimoTokenPlan' in data:
+            if not isinstance(data['useMimoTokenPlan'], bool):
+                return {"success": False, "error": "useMimoTokenPlan must be a boolean"}
+            core_cfg['useMimoTokenPlan'] = data['useMimoTokenPlan']
         if 'gptsovitsEnabled' in data:
             core_cfg['gptsovitsEnabled'] = data['gptsovitsEnabled']
         for field in (
@@ -1304,6 +1383,11 @@ class ConnectivityTestRequest(BaseModel):
     api_key: Optional[str] = ""
     model: Optional[str] = ""
     provider_type: Optional[str] = "openai_compatible"
+    # Sub-type used to dispatch to a non-Realtime probe when provider_type=='websocket'.
+    # Currently the only recognized value is 'vllm_omni_tts'; vLLM-Omni's WebSocket
+    # speech endpoint does NOT speak the OpenAI Realtime protocol (no session.update),
+    # so it requires a handshake-only probe instead of _test_websocket. (#1764 review 第六轮)
+    sub_type: Optional[str] = ""
     is_free: Optional[bool] = False
 
 
@@ -1505,6 +1589,64 @@ async def _test_websocket(url: str, api_key: str, model: str = "") -> dict:
         return {"success": False, "error": f"WebSocket连接失败: {e}", "error_code": "ws_error"}
 
 
+async def _test_vllm_omni_ws_handshake(url: str, api_key: str) -> dict:
+    """vLLM-Omni TTS WebSocket handshake-only probe (no application frames).
+
+    Background: vLLM-Omni's /v1/audio/speech/stream speaks the Qwen custom
+    protocol (session.config / input.text / input.done) and does not understand
+    OpenAI Realtime's session.update. Reusing _test_websocket would cause vLLM
+    to drop the connection and produce a false connectivity failure. This
+    function performs the WebSocket handshake and immediately closes — a
+    successful handshake proves the endpoint is reachable and (empty) auth
+    passes; HTTP 401/403 is mapped to auth_failed exactly like _test_websocket
+    so the frontend handles them uniformly (#1764 review round 6).
+
+    When api_key is empty no Authorization header is sent (vLLM self-hosted
+    deployments commonly run without auth).
+    """
+    import websockets
+
+    # 兼容旧版 websockets：<12 用 extra_headers，>=12 用 additional_headers
+    # 与 vllm_omni_tts_worker._connect_and_config 保持一致 (#1764 review 第六轮+)
+    ws_kwargs = {"open_timeout": 10, "close_timeout": 5}
+    if api_key:
+        ws_kwargs["additional_headers"] = {"Authorization": f"Bearer {api_key}"}
+
+    try:
+        async with asyncio.timeout(10):
+            try:
+                async with websockets.connect(url, **ws_kwargs) as ws:
+                    _ = ws  # 防止未使用告警
+                    return {"success": True}
+            except TypeError:
+                if "additional_headers" in ws_kwargs:
+                    ws_kwargs["extra_headers"] = ws_kwargs.pop("additional_headers")
+                async with websockets.connect(url, **ws_kwargs) as ws:
+                    _ = ws
+                    return {"success": True}
+
+    except (TimeoutError, asyncio.TimeoutError):
+        return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
+    except ssl.SSLError:
+        return {"success": False, "error": "SSL证书验证失败", "error_code": "ssl_error"}
+    except OSError as e:
+        err_str = str(e).lower()
+        if "getaddrinfo" in err_str or "name or service not known" in err_str or "nodename nor servname" in err_str:
+            return {"success": False, "error": "域名解析失败", "error_code": "dns_error"}
+        if "connection refused" in err_str or "connect call failed" in err_str:
+            return {"success": False, "error": "无法连接到目标服务器", "error_code": "connection_refused"}
+        return {"success": False, "error": f"WebSocket连接失败: {e}", "error_code": "ws_error"}
+    except Exception as e:
+        # websockets 15.0.1: 401/403 走 e.response.status_code；与 _test_websocket 对齐。
+        status_code = getattr(e, "status_code", None)
+        if status_code is None:
+            _resp = getattr(e, "response", None)
+            status_code = getattr(_resp, "status_code", None)
+        if status_code in (401, 403):
+            return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
+        return {"success": False, "error": f"WebSocket连接失败: {e}", "error_code": "ws_error"}
+
+
 def _normalize_provider_url_candidates(profile: dict[str, Any], primary_field: str) -> list[str]:
     """Read the provider's primary URL and candidate URLs, removing blanks and duplicates while preserving order."""
     raw_candidates: list[Any] = [profile.get(primary_field)]
@@ -1532,14 +1674,25 @@ async def _test_connectivity_candidates(
     model: str,
     provider_type: str,
     is_free: bool,
+    sub_type: str = "",
 ) -> dict:
-    """Test candidate URLs concurrently; return the first URL that passes."""
+    """Probe the candidate URLs concurrently; return the first that succeeds.
+
+    When sub_type='vllm_omni_tts' the OpenAI Realtime session.update probe in
+    _test_websocket is bypassed in favour of a lightweight handshake-and-close
+    probe, because vLLM-Omni's /v1/audio/speech/stream does not understand
+    Realtime protocol frames — sending session.update would trigger an early
+    server-side disconnect and produce a false negative (#1764 review round 6).
+    """
     if not urls:
         return {"success": False, "error": "缺少必要参数", "error_code": "missing_params"}
 
     async def _run_one(candidate_url: str) -> tuple[str, dict]:
         if provider_type == "websocket":
-            result = await _test_websocket(candidate_url, api_key, model=model)
+            if sub_type == "vllm_omni_tts":
+                result = await _test_vllm_omni_ws_handshake(candidate_url, api_key)
+            else:
+                result = await _test_websocket(candidate_url, api_key, model=model)
         else:
             result = await _test_openai_compatible(candidate_url, api_key, model=model, is_free=is_free)
         return candidate_url, result
@@ -1846,6 +1999,13 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
                 _source_label = assist_profile.get("name", profile.get("name", provider_key)) + "（通过辅助端点验证）"
             else:
                 return {"success": False, "error": f"供应商 {_source_label} 暂不支持连通测试", "error_code": "missing_params"}
+        elif req.url and req.url.strip():
+            override_url = req.url.strip()
+            override_host = (urllib.parse.urlsplit(override_url).hostname or "").lower()
+            if scope != "assist" or provider_key != "mimo" or override_host not in _MIMO_TOKEN_PLAN_HOSTS:
+                return {"success": False, "error": "无效的 provider URL override", "error_code": "missing_params"}
+            url_stripped = override_url
+            url_candidates = [url_stripped]
 
     # --- Mode 2: Custom API (use frontend-provided params directly) ---
     else:
@@ -1859,6 +2019,13 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
         is_free = bool(req.is_free)
         _source_label = _identify_provider_label(url_stripped, is_free)
 
+    # sub_type 仅 Mode 2 (custom URL) 允许使用；Mode 1 built-in provider 由
+    # api_providers.json 决定 provider_type，不应被前端 sub_type 覆盖
+    # (#1764 review 第六轮)。
+    sub_type = ""
+    if not (req.provider_key and req.provider_scope):
+        sub_type = (req.sub_type or "").strip().lower()
+
     try:
         result = await _test_connectivity_candidates(
             url_candidates or [url_stripped],
@@ -1866,6 +2033,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
             model,
             provider_type,
             is_free,
+            sub_type=sub_type,
         )
     except Exception as e:
         logger.exception("[ConnectivityTest] 未预期的异常")
@@ -1895,6 +2063,10 @@ def _identify_provider_label(url: str, is_free: bool) -> str:
         "api.siliconflow.cn": "硅基流动",
         "generativelanguage.googleapis.com": "Gemini",
         "api.moonshot.cn": "Kimi",
+        "api.xiaomimimo.com": "MiMo",
+        "token-plan-cn.xiaomimimo.com": "MiMo Token Plan",
+        "token-plan-sgp.xiaomimimo.com": "MiMo Token Plan",
+        "token-plan-ams.xiaomimimo.com": "MiMo Token Plan",
     }
     url_lower = url.lower()
     for domain, name in _KNOWN_PROVIDERS.items():

@@ -16,6 +16,7 @@
     <link rel="stylesheet" href="/static/css/index.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/subtitle.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/dark-mode.css?v={{ static_asset_version }}">
+    <script>window.__NEKO_REACT_CHAT_ASSET_VERSION__={{ react_chat_asset_version | tojson }};</script>
     <link rel="stylesheet" href="/static/react/neko-chat/neko-chat-window.css?v={{ react_chat_asset_version }}">
     <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
     <link rel="stylesheet" href="/static/libs/APlayer.min.css?v={{ static_asset_version }}">
@@ -45,7 +46,7 @@
         #react-chat-window-backdrop { display: none !important; }
         /* Electron 缩/展窗期间主进程会先 setBounds，再由 renderer 收到 resize 后更新
            React compact 几何。隐藏这段中间态，避免透明窗口左上角画出一帧旧布局。 */
-        body.neko-electron-runtime #react-chat-window-shell.neko-e-animating {
+        body.neko-electron-runtime #react-chat-window-shell[data-chat-surface-mode="compact"].neko-e-animating {
             visibility: hidden !important;
         }
         /* Electron 独立 full 窗口（part B）：full shell 改用「固定 30px inset 充满窗口」定位 +
@@ -812,6 +813,7 @@
 
     <!-- app 模块（与 index.html 完全相同的加载顺序）-->
     <script src="/static/subtitle-shared.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-prompt-shared.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-state.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-ui.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-chat-text-utils.js?v={{ static_asset_version }}"></script>
@@ -829,7 +831,7 @@
     <script src="/static/app-character.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-websocket.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-telemetry.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-buttons.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-buttons.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app.js?v={{ static_asset_version }}"></script>
     <script src="/static/subtitle.js?v={{ static_asset_version }}"></script>
 
@@ -837,10 +839,9 @@
     <!-- Local-mutation CSRF helper：mini-game invite respond endpoint 等本地
          mutation 共用 window.nekoLocalMutationSecurity 拿 X-CSRF-Token；必须
          在 app-react-chat-window.js 之前加载，与 index.html 同序。 -->
-    <script src="/static/app-prompt-shared.js?v={{ static_asset_version }}"></script>
     <script src="/static/react/neko-chat/neko-chat-window.iife.js?v={{ react_chat_asset_version }}"></script>
-    <script src="/static/app-react-chat-window.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-chat-adapter.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-react-chat-window.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app-chat-adapter.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app-chat-export.js?v={{ static_asset_version }}"></script>
 
     <script>

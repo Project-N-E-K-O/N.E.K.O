@@ -8,10 +8,12 @@ from .entry_common import (
     _entry_exception_error,
     plugin_entry,
     tr,
+    ui,
 )
 
 
 class _GoalEntriesMixin:
+    @ui.action()
     @plugin_entry(
         id="study_goals",
         name="Study Daily Goals",
@@ -37,6 +39,7 @@ class _GoalEntriesMixin:
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_goals")
 
+    @ui.action()
     @plugin_entry(
         id="study_goal_create",
         name="Create Study Daily Goal",
@@ -116,6 +119,7 @@ class _GoalEntriesMixin:
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_goal_update")
 
+    @ui.action()
     @plugin_entry(
         id="study_goal_delete",
         name="Delete Study Daily Goal",
@@ -135,6 +139,7 @@ class _GoalEntriesMixin:
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_goal_delete")
 
+    @ui.action()
     @plugin_entry(
         id="study_memory_set_deck_goal",
         name=tr("entries.memory_set_deck_goal.name", default="Set Memory Deck Goal"),

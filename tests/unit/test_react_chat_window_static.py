@@ -14,8 +14,10 @@ STATIC_INDEX_JS_PATH = Path(__file__).resolve().parents[2] / "static" / "js" / "
 REACT_CHAT_STYLES_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "styles.css"
 REACT_CHAT_APP_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "App.tsx"
 CHAT_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "chat.html"
+INDEX_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "index.html"
 SUBTITLE_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "subtitle.html"
 PAGES_ROUTER_PATH = Path(__file__).resolve().parents[2] / "main_routers" / "pages_router.py"
+MAIN_SERVER_PATH = Path(__file__).resolve().parents[2] / "app" / "main_server.py"
 COMPACT_EXPORT_HISTORY_PANEL_PATH = (
     Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "CompactExportHistoryPanel.tsx"
 )
@@ -105,6 +107,64 @@ def test_chat_surface_mode_preference_is_shared_with_electron():
     assert "localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, mode)" in persist_block
 
 
+def test_goodbye_composer_hidden_survives_surface_mode_switches():
+    source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    build_render_block = source.split("function buildRenderProps()", 1)[1].split(
+        "function showToast",
+        1,
+    )[0]
+    submit_block = source.split("function handleComposerSubmit(payload)", 1)[1].split(
+        "function prepareCompactHistoryDropSubmit",
+        1,
+    )[0]
+    set_mode_block = source.split("function setChatSurfaceMode(nextMode)", 1)[1].split(
+        "function cycleChatSurfaceMode()",
+        1,
+    )[0]
+    goodbye_set_block = source.split("function setGoodbyeComposerHidden(hidden, reason)", 1)[1].split(
+        "function syncGoodbyeComposerHidden",
+        1,
+    )[0]
+    attachments_set_block = source.split("function setComposerAttachments(attachments)", 1)[1].split(
+        "var MAX_MESSAGES",
+        1,
+    )[0]
+    desktop_min_height_block = source.split("function getDesktopMinHeight()", 1)[1].split(
+        "function createResizeEdges",
+        1,
+    )[0]
+
+    assert "goodbyeComposerHidden: false" in source
+    assert "function getEffectiveComposerHidden()" in source
+    assert "function hasLocalGoodbyeModeSource()" in source
+    assert "Standalone chat pages inherit window.isNekoGoodbyeModeActive" in source
+    assert "typeof window.isNekoGoodbyeModeActive === 'function'" in source
+    assert "&& window.isNekoGoodbyeModeActive()" in source
+    assert "function getEffectiveComposerAttachmentsVisible()" in source
+    assert "function syncComposerAttachmentsVisibility(previousVisible)" in source
+    assert "return !!(state.composerHidden || state.goodbyeComposerHidden);" in source
+    assert "composerHidden: getEffectiveComposerHidden()" in build_render_block
+    assert "state.homeTutorialInteractionLocked || getEffectiveComposerHidden()" in submit_block
+    assert "syncGoodbyeComposerHidden('chat-surface-mode-change', { localOnly: true });" in set_mode_block
+    assert "requestGoodbyeComposerHiddenState('chat-surface-mode-change');" in set_mode_block
+    assert "options && options.localOnly && !hasLocalGoodbyeModeSource()" in source
+    assert "function requestGoodbyeComposerHiddenState(reason)" in source
+    assert "window.requestGoodbyeChatComposerHiddenState(resolvedReason)" in source
+    assert "neko:request-goodbye-chat-composer-hidden-state" in source
+    assert "requestGoodbyeComposerHiddenState('initial-goodbye-state');" in source
+    assert "syncComposerAttachmentsVisibility(previousAttachmentsVisible);" in goodbye_set_block
+    assert "restoredEffectiveComposer && getEffectiveGalgameEnabled()" in goodbye_set_block
+    assert "fetchGalgameOptionsForLatestTurn();" in goodbye_set_block
+    assert "var previousVisible = getEffectiveComposerAttachmentsVisible();" in attachments_set_block
+    assert "syncComposerAttachmentsVisibility(previousVisible);" in attachments_set_block
+    assert "if (!getEffectiveGalgameEnabled()) return MIN_HEIGHT;" in desktop_min_height_block
+    assert "EVENT_PREFIX + 'set-goodbye-composer-hidden'" in source
+    assert "window.addEventListener('live2d-goodbye-click'" in source
+    assert "setGoodbyeComposerHidden(true, 'live2d-goodbye-click')" in source
+    assert "setGoodbyeComposerHidden(false, 'live2d-return-click')" in source
+
+
 def test_chat_full_endpoint_uses_chat_template_with_initial_full_surface():
     router_source = PAGES_ROUTER_PATH.read_text(encoding="utf-8")
     template_source = CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
@@ -152,9 +212,36 @@ def test_full_inset_layout_gated_by_electron_runtime_marker():
 
 def test_chat_templates_version_react_chat_bundle_from_react_assets():
     chat_template = CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
+    index_template = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
 
     assert 'neko-chat-window.css?v={{ react_chat_asset_version }}' in chat_template
     assert 'neko-chat-window.iife.js?v={{ react_chat_asset_version }}' in chat_template
+    assert 'neko-chat-window.css?v={{ react_chat_asset_version }}' in index_template
+    assert 'neko-chat-window.iife.js?v={{ react_chat_asset_version }}' in index_template
+
+
+def test_web_chat_compact_endpoint_uses_index_template_with_initial_compact_surface():
+    router_source = PAGES_ROUTER_PATH.read_text(encoding="utf-8")
+    index_template = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
+
+    assert '@router.get("/web_chat_compact", response_class=HTMLResponse)' in router_source
+    assert "{% if initial_chat_surface_mode is defined and initial_chat_surface_mode %}" in index_template
+    assert 'data-initial-chat-surface-mode="{{ initial_chat_surface_mode }}"' in index_template
+
+    route_block = router_source.split("async def get_web_chat_compact_page", 1)[1].split(
+        '@router.get("/subtitle"',
+        1,
+    )[0]
+    assert 'TemplateResponse("templates/index.html"' in route_block
+    assert 'TemplateResponse("templates/chat.html"' not in route_block
+    assert '"initial_chat_surface_mode": "compact"' in route_block
+    assert '"initial_chat_surface_mode": "full"' not in route_block
+
+    root_route_block = router_source.split('async def get_default_index', 1)[1].split(
+        'def _render_model_manager',
+        1,
+    )[0]
+    assert '"initial_chat_surface_mode"' not in root_route_block
 
 
 def test_chat_full_is_reserved_from_character_page_config_routing():
@@ -163,8 +250,19 @@ def test_chat_full_is_reserved_from_character_page_config_routing():
     assert "const RESERVED_PAGE_PATHS = new Set([" in source
     assert "'chat'" in source
     assert "'chat_full'" in source
+    assert "'web_chat_compact'" in source
     assert "RESERVED_PAGE_PATHS.has(pathParts[0])" in source
     assert "isReservedPagePath(window.location.pathname)" in source
+
+
+def test_web_chat_compact_is_allowed_during_main_limited_mode():
+    source = MAIN_SERVER_PATH.read_text(encoding="utf-8")
+
+    allowed_page_paths_block = source.split("_MAIN_LIMITED_MODE_ALLOWED_PAGE_PATHS = {", 1)[1].split(
+        "_MAIN_LIMITED_MODE_ALLOWED_PREFIXES",
+        1,
+    )[0]
+    assert '"/web_chat_compact"' in allowed_page_paths_block
 
 
 def test_chat_host_initial_surface_mode_prefers_template_override_before_storage():

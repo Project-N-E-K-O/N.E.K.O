@@ -113,30 +113,28 @@ def add_knowledge_evidence(
 
 
 def get_candidate_item(self, item_id: str) -> dict[str, Any] | None:
-    with self._lock:
-        row = (
-            self._require_conn()
-            .execute(
-                "SELECT * FROM candidate_knowledge_items WHERE id = ?",
-                (str(item_id or ""),),
-            )
-            .fetchone()
+    row = (
+        self._require_read_conn()
+        .execute(
+            "SELECT * FROM candidate_knowledge_items WHERE id = ?",
+            (str(item_id or ""),),
         )
+        .fetchone()
+    )
     return self._candidate_from_row(row)
 
 
 def get_candidate_by_key(
     self, *, item_type: str, dedupe_key: str
 ) -> dict[str, Any] | None:
-    with self._lock:
-        row = (
-            self._require_conn()
-            .execute(
-                "SELECT * FROM candidate_knowledge_items WHERE item_type = ? AND dedupe_key = ? LIMIT 1",
-                (str(item_type or ""), str(dedupe_key or "")),
-            )
-            .fetchone()
+    row = (
+        self._require_read_conn()
+        .execute(
+            "SELECT * FROM candidate_knowledge_items WHERE item_type = ? AND dedupe_key = ? LIMIT 1",
+            (str(item_type or ""), str(dedupe_key or "")),
         )
+        .fetchone()
+    )
     return self._candidate_from_row(row)
 
 
@@ -177,21 +175,22 @@ def list_candidate_items(
         params.extend([topic_value, topic_value, topic_value, topic_value])
     where = "WHERE " + " AND ".join(clauses) if clauses else ""
     params.append(max(1, int(limit)))
-    with self._lock:
-        rows = (
-            self._require_conn()
-            .execute(
-                f"""
+    rows = (
+        self._require_read_conn()
+        .execute(
+            # `where` is assembled only from static clause templates above; all
+            # external values remain bound through `params`.
+            f"""
             SELECT *
             FROM candidate_knowledge_items
             {where}
             ORDER BY updated_at DESC, created_at DESC, id DESC
             LIMIT ?
             """,
-                tuple(params),
-            )
-            .fetchall()
+            tuple(params),
         )
+        .fetchall()
+    )
     return [
         item
         for item in (self._candidate_from_row(row) for row in rows)
@@ -204,40 +203,38 @@ def list_knowledge_evidence(
 ) -> list[dict[str, Any]]:
     item_key = str(item_id or "").strip()
     if not item_key:
-        with self._lock:
-            rows = (
-                self._require_conn()
-                .execute(
-                    """
+        rows = (
+            self._require_read_conn()
+            .execute(
+                """
                 SELECT *
                 FROM knowledge_evidence
                 ORDER BY id DESC
                 LIMIT ?
                 """,
-                    (max(1, int(limit)),),
-                )
-                .fetchall()
+                (max(1, int(limit)),),
             )
+            .fetchall()
+        )
         return [
             item
             for item in (self._evidence_from_row(row) for row in reversed(rows))
             if item is not None
         ]
-    with self._lock:
-        rows = (
-            self._require_conn()
-            .execute(
-                """
+    rows = (
+        self._require_read_conn()
+        .execute(
+            """
             SELECT *
             FROM knowledge_evidence
             WHERE item_id = ?
             ORDER BY id DESC
             LIMIT ?
             """,
-                (item_key, max(1, int(limit))),
-            )
-            .fetchall()
+            (item_key, max(1, int(limit))),
         )
+        .fetchall()
+    )
     return [
         item
         for item in (self._evidence_from_row(row) for row in reversed(rows))
@@ -246,20 +243,19 @@ def list_knowledge_evidence(
 
 
 def list_recent_knowledge_evidence(self, limit: int = 20) -> list[dict[str, Any]]:
-    with self._lock:
-        rows = (
-            self._require_conn()
-            .execute(
-                """
+    rows = (
+        self._require_read_conn()
+        .execute(
+            """
             SELECT *
             FROM knowledge_evidence
             ORDER BY id DESC
             LIMIT ?
             """,
-                (max(1, int(limit)),),
-            )
-            .fetchall()
+            (max(1, int(limit)),),
         )
+        .fetchall()
+    )
     return [
         item
         for item in (self._evidence_from_row(row) for row in rows)
@@ -305,33 +301,29 @@ def update_candidate_score_status(
 
 
 def candidate_status_counts(self) -> dict[str, Any]:
-    with self._lock:
-        rows = (
-            self._require_conn()
-            .execute(
-                """
+    rows = (
+        self._require_read_conn()
+        .execute(
+            """
             SELECT status, item_type, COUNT(*) AS count
             FROM candidate_knowledge_items
             GROUP BY status, item_type
             """
-            )
-            .fetchall()
         )
-        total_row = (
-            self._require_conn()
-            .execute("SELECT COUNT(*) AS count FROM candidate_knowledge_items")
-            .fetchone()
-        )
+        .fetchall()
+    )
     by_status: dict[str, int] = {}
     by_type: dict[str, int] = {}
+    total = 0
     for row in rows:
         status = str(row["status"] or "candidate")
         item_type = str(row["item_type"] or "")
         count = int(row["count"] or 0)
+        total += count
         by_status[status] = by_status.get(status, 0) + count
         by_type[item_type] = by_type.get(item_type, 0) + count
     return {
-        "total": int(total_row["count"] if total_row is not None else 0),
+        "total": total,
         "by_status": by_status,
         "by_type": by_type,
     }

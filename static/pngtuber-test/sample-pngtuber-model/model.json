@@ -1,0 +1,238 @@
+{
+  "name": "Sample PNGTuber Test Model",
+  "version": 3,
+  "model_type": "pngtuber",
+  "description": "Importable PNGTuber test model package covering idle/talking GIF playback, drag-image feedback, optional emotion images, built-in GIF variants, position persistence, scale persistence, and model-manager import round trips.",
+  "author": "N.E.K.O-Himifox test fixtures",
+  "license": "test-fixture",
+  "tags": [
+    "pngtuber",
+    "test-model",
+    "gif-idle",
+    "gif-talking",
+    "gif-drag",
+    "gif-variants",
+    "emotion-images",
+    "lightweight-avatar"
+  ],
+  "capabilities": {
+    "idle_state": true,
+    "talking_state": true,
+    "emotion_images": [
+      "happy",
+      "sad",
+      "angry",
+      "surprised"
+    ],
+    "gif_playback": true,
+    "drag_image": true,
+    "click_image": true,
+    "gif_variant_presets": true,
+    "transparent_image_playback": true,
+    "drag_position": true,
+    "wheel_scale": true,
+    "pinch_scale": true,
+    "lock_button": true,
+    "floating_buttons": true,
+    "model_manager_import": true,
+    "character_binding": true
+  },
+  "asset_manifest": [
+    {
+      "file": "idle.gif",
+      "role": "idle_image",
+      "format": "gif",
+      "width": 512,
+      "height": 512,
+      "frames": 253,
+      "purpose": "Default idle animation and one-image fallback test."
+    },
+    {
+      "file": "talking.gif",
+      "role": "talking_image",
+      "format": "gif",
+      "width": 512,
+      "height": 512,
+      "frames": 81,
+      "purpose": "Assistant speech and TTS talking-state switching test."
+    },
+    {
+      "file": "talking.gif",
+      "role": "click_image",
+      "format": "gif",
+      "width": 512,
+      "height": 512,
+      "frames": 81,
+      "purpose": "Click feedback animation for direct PNGTuber image interaction tests."
+    },
+    {
+      "file": "/static/assets/neko-idle/cat-idle-cat-move-1.gif",
+      "role": "drag_image",
+      "format": "gif",
+      "purpose": "Built-in hold/drag visual feedback fallback used while the PNGTuber image is dragged or pinch-moved."
+    },
+    {
+      "file": "/static/assets/neko-idle/cat-idle-cat2.gif",
+      "role": "variant_idle_image",
+      "variant": "cat2",
+      "format": "gif",
+      "purpose": "Alternate idle GIF for variant switching tests."
+    },
+    {
+      "file": "/static/assets/neko-idle/cat-idle-cat2-click.gif",
+      "role": "variant_talking_and_click_image",
+      "variant": "cat2",
+      "format": "gif",
+      "purpose": "Alternate talking GIF for variant switching tests."
+    },
+    {
+      "file": "/static/assets/neko-idle/cat-idle-cat-move-2.gif",
+      "role": "variant_drag_image",
+      "variant": "cat2",
+      "format": "gif",
+      "purpose": "Alternate drag GIF for hold/drag feedback tests."
+    },
+    {
+      "file": "/static/assets/neko-idle/cat-idle-cat3.gif",
+      "role": "variant_idle_image",
+      "variant": "cat3",
+      "format": "gif",
+      "purpose": "Third idle GIF variant for variant switching tests."
+    },
+    {
+      "file": "/static/assets/neko-idle/cat-idle-cat3-click.gif",
+      "role": "variant_talking_and_click_image",
+      "variant": "cat3",
+      "format": "gif",
+      "purpose": "Third talking GIF variant for variant switching tests."
+    },
+    {
+      "file": "/static/assets/neko-idle/cat-idle-cat-move-3.gif",
+      "role": "variant_drag_image",
+      "variant": "cat3",
+      "format": "gif",
+      "purpose": "Third drag GIF variant for hold/drag feedback tests."
+    },
+    {
+      "file": "/static/assets/neko-idle/cat-idle-cat4-1.gif",
+      "role": "action_image",
+      "variant": "walk",
+      "format": "gif",
+      "purpose": "Optional action GIF that can be manually assigned to an expression field for stress testing."
+    },
+    {
+      "file": "/static/assets/neko-idle/cat-idle-cat4-2.gif",
+      "role": "action_image",
+      "variant": "stretch",
+      "format": "gif",
+      "purpose": "Optional action GIF that can be manually assigned to an expression field for stress testing."
+    },
+    {
+      "file": "/static/assets/neko-idle/cat-idle-cat4-3.gif",
+      "role": "action_image",
+      "variant": "interactive",
+      "format": "gif",
+      "purpose": "Small optional action GIF for lightweight playback checks."
+    },
+    {
+      "file": "/static/assets/neko-idle/cat_model_change.gif",
+      "role": "transition_image",
+      "format": "gif",
+      "purpose": "Optional transition GIF for model-change or temporary-state checks."
+    },
+    {
+      "file": "happy.png",
+      "role": "happy_image",
+      "format": "png",
+      "width": 2480,
+      "height": 2480,
+      "purpose": "Optional happy expression state image."
+    },
+    {
+      "file": "sad.png",
+      "role": "sad_image",
+      "format": "png",
+      "width": 2480,
+      "height": 2480,
+      "purpose": "Optional sad expression state image."
+    },
+    {
+      "file": "angry.png",
+      "role": "angry_image",
+      "format": "png",
+      "width": 2480,
+      "height": 2480,
+      "purpose": "Optional angry expression state image."
+    },
+    {
+      "file": "surprised.png",
+      "role": "surprised_image",
+      "format": "png",
+      "width": 2480,
+      "height": 2480,
+      "purpose": "Optional surprised expression state image."
+    }
+  ],
+  "runtime_expectations": {
+    "frontend_manager": "window.PNGTuberManager",
+    "load_function": "window.loadPNGTuberAvatar(config)",
+    "dom_container": "#pngtuber-container",
+    "image_element": "#pngtuber-container .pngtuber-image",
+    "static_mount_after_import": "/user_pngtuber/Sample_PNGTuber_Test_Model/",
+    "no_webgl_required": true,
+    "no_dedicated_process": true
+  },
+  "gif_presets": {
+    "cat1_default": {
+      "idle_image": "idle.gif",
+      "talking_image": "talking.gif",
+      "click_image": "talking.gif",
+      "drag_image": "/static/assets/neko-idle/cat-idle-cat-move-1.gif"
+    },
+    "cat2_static_assets": {
+      "idle_image": "/static/assets/neko-idle/cat-idle-cat2.gif",
+      "talking_image": "/static/assets/neko-idle/cat-idle-cat2-click.gif",
+      "click_image": "/static/assets/neko-idle/cat-idle-cat2-click.gif",
+      "drag_image": "/static/assets/neko-idle/cat-idle-cat-move-2.gif"
+    },
+    "cat3_static_assets": {
+      "idle_image": "/static/assets/neko-idle/cat-idle-cat3.gif",
+      "talking_image": "/static/assets/neko-idle/cat-idle-cat3-click.gif",
+      "click_image": "/static/assets/neko-idle/cat-idle-cat3-click.gif",
+      "drag_image": "/static/assets/neko-idle/cat-idle-cat-move-3.gif"
+    },
+    "action_gif_examples": {
+      "happy_image": "/static/assets/neko-idle/cat-idle-cat4-1.gif",
+      "sad_image": "/static/assets/neko-idle/cat-idle-cat4-2.gif",
+      "surprised_image": "/static/assets/neko-idle/cat-idle-cat4-3.gif"
+    },
+    "transition_example": {
+      "drag_image": "/static/assets/neko-idle/cat_model_change.gif"
+    }
+  },
+  "verification_targets": [
+    "Upload this folder through /api/model/pngtuber/upload_model.",
+    "Confirm /api/model/pngtuber/models returns folder Sample_PNGTuber_Test_Model.",
+    "Bind the returned pngtuber config to a character with model_type pngtuber.",
+    "Confirm the homepage loads idle.gif without falling back to Live2D.",
+    "Trigger assistant/TTS speech and confirm talking.gif is displayed.",
+    "Drag, wheel-scale, lock, unlock, and verify the floating buttons follow the image.",
+    "Swap pngtuber fields with gif_presets.cat2_static_assets or gif_presets.cat3_static_assets to validate alternate idle/talking/drag GIF sets.",
+    "Assign gif_presets.action_gif_examples to expression image fields to validate GIF playback in optional states."
+  ],
+  "pngtuber": {
+    "idle_image": "idle.gif",
+    "talking_image": "talking.gif",
+    "click_image": "talking.gif",
+    "drag_image": "/static/assets/neko-idle/cat-idle-cat-move-1.gif",
+    "happy_image": "happy.png",
+    "sad_image": "sad.png",
+    "angry_image": "angry.png",
+    "surprised_image": "surprised.png",
+    "source_type": "gif",
+    "scale": 1,
+    "offset_x": 0,
+    "offset_y": 0,
+    "mirror": false
+  }
+}

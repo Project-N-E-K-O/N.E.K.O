@@ -1,7 +1,14 @@
-import { useState } from '@neko/plugin-ui';
+import { useEffect, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
+import { callPlugin, ensureBrandCSS } from './study_surface_utils';
 
 type ExportFormat = 'markdown' | 'pdf' | 'docx' | 'xmind';
+type ExportNotesPayload = {
+  markdown?: string;
+  content_base64?: string;
+  filename?: string;
+  content_type?: string;
+};
 
 const EXPORT_FORMAT_OPTIONS: Array<{ value: ExportFormat; label: string }> = [
   { value: 'markdown', label: 'Markdown' },
@@ -9,49 +16,8 @@ const EXPORT_FORMAT_OPTIONS: Array<{ value: ExportFormat; label: string }> = [
   { value: 'docx', label: 'DOCX' },
   { value: 'xmind', label: 'XMind' },
 ];
-const POLL_INTERVAL_MS = 350;
 const DEFAULT_EXPORT_TIMEOUT_MS = 80_000;
 const POLL_TIMEOUT_BUFFER_MS = 5_000;
-
-async function readJsonResponse(response: Response, label: string) {
-  if (!response.ok) {
-    throw new Error(`${label} failed: HTTP ${response.status}`);
-  }
-  return await response.json();
-}
-
-async function callPlugin(entryId: string, args: Record<string, unknown> = {}, timeoutMs = DEFAULT_EXPORT_TIMEOUT_MS) {
-  const createResp = await fetch('/runs', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ plugin_id: 'study_companion', entry_id: entryId, args }),
-  });
-  const created = await readJsonResponse(createResp, 'Run create');
-  const runId = created.run_id || created.id;
-  if (!runId) {
-    throw new Error('Run id missing');
-  }
-  const deadline = Date.now() + Math.max(timeoutMs, POLL_INTERVAL_MS);
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => window.setTimeout(resolve, POLL_INTERVAL_MS));
-    const run = await readJsonResponse(await fetch(`/runs/${runId}`), 'Run poll');
-    if (run.status === 'succeeded') {
-      const exported = await readJsonResponse(await fetch(`/runs/${runId}/export`), 'Run export');
-      const item = (exported.items || []).find((candidate: any) => candidate.type === 'json' && candidate.json);
-      if (!item) {
-        throw new Error('Run export missing JSON result');
-      }
-      if (item.json.success === false || item.json.error) {
-        throw new Error(item.json.error?.message || item.json.message || 'Plugin call failed');
-      }
-      return item.json.data || {};
-    }
-    if (['failed', 'canceled', 'timeout'].includes(run.status)) {
-      throw new Error(run.error?.message || run.message || run.status);
-    }
-  }
-  throw new Error('Plugin call timed out');
-}
 
 function text(props: PluginSurfaceProps, key: string, fallback: string) {
   const value = props.t?.(key);
@@ -117,6 +83,10 @@ export default function NoteExporter(props: PluginSurfaceProps) {
   const xmindUnavailable = !exportUnavailable && !allowedFormats.includes('xmind');
   const statusText = status || (exportUnavailable ? text(props, 'ui.status.export_unavailable', 'Export is disabled by doc_export.enabled') : '');
 
+  useEffect(() => {
+    ensureBrandCSS();
+  }, []);
+
   async function exportNotes(previewOnly: boolean) {
     if (exportUnavailable) {
       setStatus(text(props, 'ui.status.export_unavailable', 'Export is disabled by doc_export.enabled'));
@@ -125,7 +95,7 @@ export default function NoteExporter(props: PluginSurfaceProps) {
     setBusy(true);
     setStatus(text(props, 'ui.status.exporting', 'Exporting...'));
     try {
-      const payload = await callPlugin('study_export_notes', { fmt: selectedFmt, style, preview_only: previewOnly }, pollTimeoutMs);
+      const payload = await callPlugin<ExportNotesPayload>(props.api, 'study_export_notes', { fmt: selectedFmt, style, preview_only: previewOnly }, { timeoutMs: pollTimeoutMs });
       setMarkdown(payload.markdown || '');
       if (!previewOnly && payload.content_base64) {
         downloadBase64File(payload.content_base64, payload.filename, payload.content_type);
@@ -139,7 +109,7 @@ export default function NoteExporter(props: PluginSurfaceProps) {
   }
 
   return (
-    <div className="study-panel">
+    <div className="study-panel surface-shell">
       <header className="study-panel__header">
         <div>
           <h1>{text(props, 'ui.surface.note_exporter', 'Note Exporter')}</h1>

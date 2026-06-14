@@ -26,7 +26,7 @@ import CompactExportHistoryPanel, {
   type CompactExportActionRequest,
   type CompactExportPreviewResult,
 } from './CompactExportHistoryPanel';
-import { getChatEmptyStateFallback } from './chat-copy';
+import { getChatCompanionEmptyStateFallback, getChatEmptyStateFallback } from './chat-copy';
 import { i18n } from './i18n';
 import {
   type ChatMessage,
@@ -1060,7 +1060,8 @@ export default function FullChatSurface({
   const lastRollbackKeyRef = useRef('');
   const lastToolCursorResetKeyRef = useRef('');
   const compactInputHasPayload = draft.trim().length > 0 || composerAttachments.length > 0;
-  const canSubmit = !composerDisabled && compactInputHasPayload;
+  const composerInteractionsDisabled = composerDisabled || composerHidden;
+  const canSubmit = !composerInteractionsDisabled && compactInputHasPayload;
   const clearActiveCursorToolSelection = useCallback(() => {
     clearGlobalToolCursorState();
     latestPointerTargetRef.current = null;
@@ -1405,6 +1406,9 @@ export default function FullChatSurface({
   const compactSpeechPreservedText = compactSpeechModeActive && !compactMessagePreview?.isStreaming
     ? compactSpeechPreviewTextRef.current
     : '';
+  const compactEmptyStateText = composerHidden
+    ? i18n('chat.companionEmptyState', getChatCompanionEmptyStateFallback())
+    : i18n('chat.emptyState', getChatEmptyStateFallback());
   const compactPreviewText = compactSpeechModeActive
     ? (
       compactMessagePreview?.isStreaming
@@ -1412,7 +1416,7 @@ export default function FullChatSurface({
         : compactSpeechPreservedText || compactMessagePreview?.fullText || ''
     )
     : compactMessagePreview?.text
-    || i18n('chat.emptyState', getChatEmptyStateFallback());
+    || compactEmptyStateText;
   const compactPreviewIsStreaming = compactSpeechModeActive;
   const compactPreviewSpeechDuration = useMemo(() => {
     if (!compactPreviewIsStreaming || !speechPlaybackState) {
@@ -1813,14 +1817,14 @@ export default function FullChatSurface({
   useEffect(() => {
     if (!isCompactSurface) return;
     if (effectiveCompactChatState !== 'input') return;
-    if (composerDisabled) return;
+    if (composerInteractionsDisabled) return;
     const inputNode = compactInputRef.current;
     if (!inputNode) return;
     if (document.activeElement === inputNode) return;
     inputNode.focus();
     const selectionEnd = inputNode.value.length;
     inputNode.setSelectionRange(selectionEnd, selectionEnd);
-  }, [composerDisabled, effectiveCompactChatState, isCompactSurface]);
+  }, [composerInteractionsDisabled, effectiveCompactChatState, isCompactSurface]);
 
   useEffect(() => {
     if (!isCompactSurface) return;
@@ -2222,7 +2226,7 @@ export default function FullChatSurface({
   }, [clearCompactInputToolFanCloseTimer, closeCompactInputToolFan]);
 
   const openCompactInputToolFan = useCallback((intent: 'click' | 'hover') => {
-    if (composerDisabled || compactInputHasPayload) return;
+    if (composerInteractionsDisabled || compactInputHasPayload) return;
     clearCompactInputToolFanCloseTimer();
     clearCompactInputToolFanInteractiveTimer();
     compactInputToolFanOpenIntentRef.current = intent;
@@ -2239,7 +2243,7 @@ export default function FullChatSurface({
     clearCompactInputToolFanCloseTimer,
     clearCompactInputToolFanInteractiveTimer,
     compactInputHasPayload,
-    composerDisabled,
+    composerInteractionsDisabled,
     setCompactInputToolFanInteractiveState,
     updateCompactInputToolFanPosition,
   ]);
@@ -2495,15 +2499,14 @@ export default function FullChatSurface({
 
   useEffect(() => {
     if (!compactInputToolFanOpen) return;
-    if (!isCompactSurface || effectiveCompactChatState !== 'input' || composerHidden || composerDisabled || compactInputHasPayload) {
+    if (!isCompactSurface || effectiveCompactChatState !== 'input' || composerInteractionsDisabled || compactInputHasPayload) {
       closeCompactInputToolFan();
     }
   }, [
     closeCompactInputToolFan,
     compactInputHasPayload,
     compactInputToolFanOpen,
-    composerDisabled,
-    composerHidden,
+    composerInteractionsDisabled,
     effectiveCompactChatState,
     isCompactSurface,
   ]);
@@ -3267,10 +3270,10 @@ export default function FullChatSurface({
   }, [hammerCursorOverlayActive, hammerSwingPhase]);
 
   useEffect(() => {
-    if (composerHidden || composerDisabled) {
+    if (composerInteractionsDisabled) {
       clearActiveCursorToolSelection();
     }
-  }, [clearActiveCursorToolSelection, composerHidden, composerDisabled]);
+  }, [clearActiveCursorToolSelection, composerInteractionsDisabled]);
 
   useEffect(() => {
     function handleDeactivate() {
@@ -3291,7 +3294,7 @@ export default function FullChatSurface({
   }
 
   function submitDraft() {
-    if (composerDisabled) return;
+    if (composerInteractionsDisabled) return;
     if (submittingRef.current) return;
     const text = draft.trim();
     if (!text && composerAttachments.length === 0) return;
@@ -3335,7 +3338,7 @@ export default function FullChatSurface({
       aria-label={resolvedTranslateAriaLabel}
       aria-pressed={translateEnabled}
       title={translateButtonLabel}
-      disabled={composerDisabled}
+      disabled={composerInteractionsDisabled}
       onClick={() => onTranslateToggle?.()}
     >
       <img src="/static/icons/translate_icon.png" alt="" aria-hidden="true" />
@@ -3348,7 +3351,7 @@ export default function FullChatSurface({
       type="button"
       aria-label={jukeboxButtonAriaLabel}
       title={jukeboxButtonLabel}
-      disabled={composerDisabled}
+      disabled={composerInteractionsDisabled}
       onClick={() => onJukeboxClick?.()}
     >
       <img src="/static/icons/jukebox_icon.png" alt="" aria-hidden="true" />
@@ -3362,7 +3365,7 @@ export default function FullChatSurface({
       aria-label={resolvedGalgameAriaLabel}
       aria-pressed={galgameModeEnabled}
       title={galgameToggleButtonLabel}
-      disabled={composerDisabled}
+      disabled={composerInteractionsDisabled}
       onClick={() => onGalgameModeToggle?.()}
     >
       <span className="composer-galgame-btn-glyph" aria-hidden="true">G</span>
@@ -3378,7 +3381,7 @@ export default function FullChatSurface({
         title={selectedEmojiButtonAriaLabel}
         aria-controls={toolMenuOpen ? 'composer-tool-popover' : undefined}
         aria-expanded={toolMenuOpen}
-        disabled={composerDisabled}
+        disabled={composerInteractionsDisabled}
         onClick={() => {
           if (activeToolItem) {
             clearActiveCursorToolSelection();
@@ -3402,7 +3405,7 @@ export default function FullChatSurface({
           type="button"
           aria-label={clearCursorToolAriaLabel}
           title={clearCursorToolAriaLabel}
-          disabled={composerDisabled}
+          disabled={composerInteractionsDisabled}
           onClick={(event) => {
             event.stopPropagation();
             setIsCursorInsideHostWindow(true);
@@ -3434,7 +3437,7 @@ export default function FullChatSurface({
               aria-pressed={activeCursorToolId === item.id}
               aria-label={itemLabel}
               title={itemLabel}
-              disabled={composerDisabled}
+              disabled={composerInteractionsDisabled}
               onClick={(event) => {
                 latestPointerPositionRef.current = {
                   x: event.clientX,
@@ -3525,7 +3528,7 @@ export default function FullChatSurface({
     return slot === null ? 'hidden' : String(slot);
   };
 
-  const compactInputToolFanActionsDisabled = composerDisabled
+  const compactInputToolFanActionsDisabled = composerInteractionsDisabled
     || !compactInputToolFanOpen
     || !compactInputToolFanInteractive;
 
@@ -3895,7 +3898,7 @@ export default function FullChatSurface({
                     type="button"
                     className="composer-galgame-option"
                     title={option.text}
-                    disabled={composerDisabled || galgameOptionsLoading}
+                    disabled={composerInteractionsDisabled || galgameOptionsLoading}
                     tabIndex={compactChoiceLayerOpen && galgameOptionsVisible ? 0 : -1}
                     onClick={() => {
                       if (submittingRef.current) return;
@@ -3949,7 +3952,7 @@ export default function FullChatSurface({
                 type="button"
                 className="composer-galgame-option composer-choice-option"
                 title={option.label}
-                disabled={composerDisabled}
+                disabled={composerInteractionsDisabled}
                 onClick={() => {
                   if (submittingRef.current) return;
                   submittingRef.current = true;
@@ -4112,6 +4115,7 @@ export default function FullChatSurface({
       {messageListNode}
     </section>
   );
+  const shouldRenderComposerPanel = isCompactSurface || !composerHidden;
 
   return (
     <main
@@ -4186,9 +4190,9 @@ export default function FullChatSurface({
 
         {chatBodyNode}
 
+        {shouldRenderComposerPanel ? (
         <footer
           className={`composer-panel ${surfaceModeClassName}${galgameModeEnabled ? ' is-galgame-mode' : ''}`}
-          style={composerHidden && !isCompactSurface ? { display: 'none' } : undefined}
           data-chat-surface-mode={chatSurfaceMode}
           data-compact-chat-state={effectiveCompactChatState}
         >
@@ -4207,10 +4211,10 @@ export default function FullChatSurface({
                     className="composer-attachment-remove"
                     type="button"
                     aria-label={`${removeAttachmentButtonAriaLabel}: ${attachment.alt || attachment.id}`}
-                    aria-disabled={composerDisabled}
-                    disabled={composerDisabled}
+                    aria-disabled={composerInteractionsDisabled}
+                    disabled={composerInteractionsDisabled}
                     onClick={() => {
-                      if (!composerDisabled) {
+                      if (!composerInteractionsDisabled) {
                         onComposerRemoveAttachment?.(attachment.id);
                       }
                     }}
@@ -4280,8 +4284,8 @@ export default function FullChatSurface({
                         aria-label={inputPlaceholder}
                         rows={1}
                         value={draft}
-                        readOnly={composerDisabled}
-                        disabled={composerDisabled}
+                        readOnly={composerInteractionsDisabled}
+                        disabled={composerInteractionsDisabled}
                         onChange={(event) => {
                           setDraft(event.target.value);
                           if (event.target.value.trim().length > 0) {
@@ -4304,7 +4308,7 @@ export default function FullChatSurface({
                         aria-label={compactInputHasPayload ? sendButtonLabel : overflowMenuAriaLabel}
                         aria-haspopup={compactInputHasPayload ? undefined : 'true'}
                         aria-expanded={compactInputHasPayload ? undefined : compactInputToolFanOpen}
-                        disabled={compactInputHasPayload ? !canSubmit : composerDisabled}
+                        disabled={compactInputHasPayload ? !canSubmit : composerInteractionsDisabled}
                         onPointerDown={compactInputHasPayload ? undefined : (event) => {
                           event.preventDefault();
                           compactInputToolTogglePointerHandledRef.current = true;
@@ -4337,7 +4341,7 @@ export default function FullChatSurface({
                     <button
                       className="compact-chat-capsule-button"
                       type="button"
-                      disabled={composerDisabled}
+                      disabled={composerInteractionsDisabled}
                       onClick={() => {
                         if (composerHidden) return;
                         requestCompactChatState('input');
@@ -4366,8 +4370,8 @@ export default function FullChatSurface({
                 aria-label={inputPlaceholder}
                 rows={1}
                 value={draft}
-                readOnly={composerDisabled}
-                disabled={composerDisabled}
+                readOnly={composerInteractionsDisabled}
+                disabled={composerInteractionsDisabled}
                 onChange={(event) => { setDraft(event.target.value); }}
                 onKeyDown={(event) => {
                   if (event.nativeEvent.isComposing) return;
@@ -4388,7 +4392,7 @@ export default function FullChatSurface({
                     type="button"
                     aria-label={resolvedImportImageAriaLabel}
                     title={importImageButtonLabel}
-                    disabled={composerDisabled}
+                    disabled={composerInteractionsDisabled}
                     onClick={() => onComposerImportImage?.()}
                   >
                     <img src="/static/icons/import_image_icon.png" alt="" aria-hidden="true" />
@@ -4399,7 +4403,7 @@ export default function FullChatSurface({
                     type="button"
                     aria-label={resolvedScreenshotAriaLabel}
                     title={screenshotButtonLabel}
-                    disabled={composerDisabled}
+                    disabled={composerInteractionsDisabled}
                     onClick={() => onComposerScreenshot?.()}
                   >
                     <img src="/static/icons/screenshot_new_icon.png" alt="" aria-hidden="true" />
@@ -4438,7 +4442,7 @@ export default function FullChatSurface({
                         title={overflowMenuAriaLabel}
                         aria-haspopup="true"
                         aria-expanded={overflowMenuOpen}
-                        disabled={composerDisabled}
+                        disabled={composerInteractionsDisabled}
                         onClick={() => setOverflowMenuOpen(open => !open)}
                       >
                         <svg
@@ -4477,6 +4481,7 @@ export default function FullChatSurface({
             )}
           </form>
         </footer>
+        ) : null}
       </section>
     </main>
   );

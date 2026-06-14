@@ -1,6 +1,8 @@
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 import { callPlugin, text } from './memory_shared';
 
+type HostedApi = PluginSurfaceProps['api'];
+
 export type MemoryHabitStatus = {
   available?: boolean;
   error?: string;
@@ -23,28 +25,29 @@ export type PomodoroStatus = {
   };
 };
 
-export async function getMemoryHabitStatus(signal?: AbortSignal): Promise<MemoryHabitStatus> {
-  return await callPlugin<MemoryHabitStatus>('study_memory_habit_status', {}, signal);
+export async function getMemoryHabitStatus(api: HostedApi, signal?: AbortSignal): Promise<MemoryHabitStatus> {
+  return await callPlugin<MemoryHabitStatus>(api, 'study_memory_habit_status', {}, signal);
 }
 
-export async function getPomodoroStatus(): Promise<PomodoroStatus> {
-  return await callPlugin<PomodoroStatus>('study_pomodoro_status', {});
+export async function getPomodoroStatus(api: HostedApi): Promise<PomodoroStatus> {
+  return await callPlugin<PomodoroStatus>(api, 'study_pomodoro_status', {});
 }
 
 export async function setDeckGoal(
+  api: HostedApi,
   deckId: string,
   targetAmount: number,
   unit: string,
 ): Promise<MemoryDeckGoalPayload> {
-  return await callPlugin<MemoryDeckGoalPayload>('study_memory_set_deck_goal', {
+  return await callPlugin<MemoryDeckGoalPayload>(api, 'study_memory_set_deck_goal', {
     deck_id: deckId,
     target_amount: normalizePositiveInteger(targetAmount, 1),
     unit,
   });
 }
 
-export async function startDeckFocus(deckId: string, focusMinutes: number): Promise<PomodoroStatus> {
-  return await callPlugin<PomodoroStatus>('study_pomodoro_start', {
+export async function startDeckFocus(api: HostedApi, deckId: string, focusMinutes: number): Promise<PomodoroStatus> {
+  return await callPlugin<PomodoroStatus>(api, 'study_pomodoro_start', {
     deck_id: deckId,
     focus_minutes: normalizePositiveInteger(focusMinutes, 1),
   });

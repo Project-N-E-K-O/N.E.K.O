@@ -42,6 +42,7 @@ import asyncio
 import copy
 import base64
 import hashlib
+import math
 import struct
 import tempfile
 import wave
@@ -152,6 +153,190 @@ VOICE_SESSION_STARTING_ERROR = "语音会话正在启动，请稍后再切换音
 DEFAULT_NEW_CATGIRL_FREE_VOICE_ID = "voice-tone-PGLiyZt65w"
 _DIRECT_LINK_MAX_REDIRECTS = 10
 _DIRECT_LINK_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+_PNGTUBER_CARD_MODEL_DIR = "pngtuber"
+_PNGTUBER_IMAGE_KEYS = (
+    "idle_image",
+    "talking_image",
+    "drag_image",
+    "click_image",
+    "happy_image",
+    "sad_image",
+    "angry_image",
+    "surprised_image",
+)
+_PNGTUBER_PACKABLE_KEYS = (*_PNGTUBER_IMAGE_KEYS, "layered_metadata", "metadata")
+
+
+def _strip_url_suffix(path: str) -> str:
+    return str(path or "").split("?", 1)[0].split("#", 1)[0]
+
+
+def _pngtuber_user_rel_from_url(value: str) -> str:
+    normalized = _strip_url_suffix(str(value or "").strip().replace("\\", "/"))
+    prefix = "/user_pngtuber/"
+    if not normalized.startswith(prefix):
+        return ""
+    rel = normalized[len(prefix):]
+    rel_path = Path(rel)
+    if rel_path.is_absolute() or ".." in rel_path.parts:
+        return ""
+    return rel
+
+
+def _collect_pngtuber_user_asset_refs(pngtuber_config: dict) -> dict[str, str]:
+    refs: dict[str, str] = {}
+    if not isinstance(pngtuber_config, dict):
+        return refs
+    for key in _PNGTUBER_PACKABLE_KEYS:
+        rel = _pngtuber_user_rel_from_url(str(pngtuber_config.get(key) or ""))
+        if rel:
+            refs[key] = rel
+    return refs
+
+
+def _pngtuber_package_roots_from_refs(refs: dict[str, str]) -> list[str]:
+    roots: list[str] = []
+    seen: set[str] = set()
+    for rel in refs.values():
+        parts = Path(rel).parts
+        if not parts:
+            continue
+        root = parts[0]
+        if root in ("", ".", "..") or root in seen:
+            continue
+        roots.append(root)
+        seen.add(root)
+    return roots
+
+
+def _with_pngtuber_model_path_rewrites(data, rewrites: dict[str, str]):
+    if not rewrites:
+        return data
+    if isinstance(data, dict):
+        return {
+            key: _with_pngtuber_model_path_rewrites(value, rewrites)
+            for key, value in data.items()
+        }
+    if isinstance(data, list):
+        return [_with_pngtuber_model_path_rewrites(item, rewrites) for item in data]
+    if isinstance(data, str):
+        rel = _pngtuber_user_rel_from_url(data)
+        if rel in rewrites:
+            suffix = ""
+            for marker in ("?", "#"):
+                index = data.find(marker)
+                if index >= 0:
+                    suffix = data[index:]
+                    break
+            return rewrites[rel] + suffix
+    return data
+
+
+def _add_pngtuber_assets_to_character_zip(zf, catgirl_data: dict, config_manager) -> bool:
+    pngtuber_config = get_reserved(catgirl_data, "avatar", "pngtuber", default={})
+    refs = _collect_pngtuber_user_asset_refs(pngtuber_config)
+    if not refs:
+        return False
+    added = False
+    added_arcs: set[str] = set()
+    for root_name in _pngtuber_package_roots_from_refs(refs):
+        source_root = config_manager.pngtuber_dir / root_name
+        if source_root.is_file():
+            rel = source_root.relative_to(config_manager.pngtuber_dir).as_posix()
+            arc_name = f"model/{_PNGTUBER_CARD_MODEL_DIR}/{rel}"
+            if arc_name not in added_arcs:
+                zf.write(source_root, arc_name)
+                added_arcs.add(arc_name)
+                added = True
+            continue
+
+        if not source_root.is_dir():
+            logger.warning(f"PNGTuber export asset missing, skipping: {source_root}")
+            continue
+
+        for file_path in sorted(source_root.rglob("*")):
+            if not file_path.is_file():
+                continue
+            rel = file_path.relative_to(config_manager.pngtuber_dir).as_posix()
+            arc_name = f"model/{_PNGTUBER_CARD_MODEL_DIR}/{rel}"
+            if arc_name in added_arcs:
+                continue
+            zf.write(file_path, arc_name)
+            added_arcs.add(arc_name)
+            added = True
+    return added
+
+
+def _rewrite_imported_pngtuber_refs(character_data: dict, rel_map: dict[str, str]) -> dict:
+    rewrites = {
+        rel: f"/user_pngtuber/{new_rel}"
+        for rel, new_rel in rel_map.items()
+    }
+    return _with_pngtuber_model_path_rewrites(character_data, rewrites)
+
+
+def _restore_imported_pngtuber_avatar_config(character_data: dict, source_data: dict, rel_map: dict[str, str]) -> dict:
+    if not isinstance(character_data, dict) or not isinstance(source_data, dict):
+        return character_data
+
+    model_type = get_reserved(
+        source_data,
+        "avatar",
+        "model_type",
+        default="",
+        legacy_keys=("model_type",),
+    )
+    pngtuber_config = get_reserved(source_data, "avatar", "pngtuber", default={})
+    if model_type != "pngtuber" or not isinstance(pngtuber_config, dict):
+        return character_data
+
+    restored = {"_reserved": {"avatar": {"pngtuber": copy.deepcopy(pngtuber_config)}}}
+    if rel_map:
+        restored = _rewrite_imported_pngtuber_refs(restored, rel_map)
+
+    avatar = character_data.setdefault("_reserved", {}).setdefault("avatar", {})
+    avatar["model_type"] = "pngtuber"
+    avatar["live3d_sub_type"] = ""
+    avatar["pngtuber"] = restored["_reserved"]["avatar"]["pngtuber"]
+    avatar["asset_source"] = "local_imported"
+    avatar["asset_source_id"] = ""
+    return character_data
+
+
+def _copy_imported_pngtuber_assets(model_dir: Path, config_manager) -> dict[str, str]:
+    pngtuber_model_dir = model_dir / _PNGTUBER_CARD_MODEL_DIR
+    if not pngtuber_model_dir.exists() or not pngtuber_model_dir.is_dir():
+        return {}
+
+    config_manager.pngtuber_dir.mkdir(parents=True, exist_ok=True)
+    rel_map: dict[str, str] = {}
+
+    for item in pngtuber_model_dir.iterdir():
+        if item.name in ("", ".", ".."):
+            continue
+        target_name = item.name
+        target_path = config_manager.pngtuber_dir / target_name
+        if target_path.exists():
+            counter = 1
+            stem = item.stem
+            suffix = item.suffix
+            while target_path.exists():
+                target_name = f"{stem}({counter}){suffix}" if item.is_file() else f"{item.name}({counter})"
+                target_path = config_manager.pngtuber_dir / target_name
+                counter += 1
+
+        if item.is_dir():
+            shutil.copytree(item, target_path)
+            for copied in item.rglob("*"):
+                if copied.is_file():
+                    old_rel = str(copied.relative_to(pngtuber_model_dir)).replace("\\", "/")
+                    new_rel = str((Path(target_name) / copied.relative_to(item)).as_posix())
+                    rel_map[old_rel] = new_rel
+        elif item.is_file():
+            shutil.copy2(item, target_path)
+            rel_map[item.name] = target_name
+
+    return rel_map
 
 
 class DirectLinkSecurityError(Exception):
@@ -1285,6 +1470,14 @@ async def _elevenlabs_clone_voice(
     return _prefixed_elevenlabs_voice_id(raw_voice_id)
 
 
+def _is_local_voice_clone_tts_config(tts_config: dict, core_config: dict | None = None) -> bool:
+    provider = str((core_config or {}).get('ttsModelProvider') or '').strip()
+    if provider == 'vllm_omni':
+        return False
+    base_url = str(tts_config.get('base_url') or '')
+    return bool(tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://')))
+
+
 async def _elevenlabs_synthesize_preview(
     config_manager,
     voice_id: str,
@@ -1934,12 +2127,12 @@ async def update_catgirl_l2d(name: str, request: Request):
         # 根据model_type检查相应的模型字段
         model_type_str = str(model_type).lower() if model_type else 'live2d'
 
-        # 【修复】model_type 只允许 {live2d, vrm, live3d}，否则 400
-        if model_type_str not in ['live2d', 'vrm', 'live3d']:
+        # 【修复】model_type 只允许 {live2d, vrm, live3d, pngtuber}，否则 400
+        if model_type_str not in ['live2d', 'vrm', 'live3d', 'pngtuber']:
             return JSONResponse(
                 content={
                     'success': False,
-                    'error': f'无效的模型类型: {model_type}，只允许 live2d、vrm 或 live3d'
+                    'error': f'无效的模型类型: {model_type}，只允许 live2d、vrm、live3d 或 pngtuber'
                 },
                 status_code=400
             )
@@ -1947,6 +2140,108 @@ async def update_catgirl_l2d(name: str, request: Request):
         # 归一化：旧客户端发送的 'vrm' 统一为 'live3d'（走 Live3D VRM 子分支处理）
         if model_type_str == 'vrm':
             model_type_str = 'live3d'
+
+        if model_type_str == 'pngtuber':
+            raw_pngtuber = data.get('pngtuber') if isinstance(data.get('pngtuber'), dict) else {}
+            pngtuber_payload = dict(raw_pngtuber)
+            for key in ('idle_image', 'talking_image', 'drag_image', 'click_image', 'happy_image', 'sad_image', 'angry_image', 'surprised_image'):
+                if key not in pngtuber_payload and key in data:
+                    pngtuber_payload[key] = data.get(key)
+            allowed_prefixes = ('/user_pngtuber/', '/static/', '/workshop/')
+            allowed_exts = ('.png', '.gif', '.jpg', '.jpeg', '.webp')
+            idle_image = str(pngtuber_payload.get('idle_image') or '').strip().replace('\\', '/')
+            if not idle_image:
+                return JSONResponse(content={'success': False, 'error': '未提供PNGTuber idle_image'}, status_code=400)
+            for key in ('idle_image', 'talking_image', 'drag_image', 'click_image', 'happy_image', 'sad_image', 'angry_image', 'surprised_image'):
+                image_path = str(pngtuber_payload.get(key) or '').strip().replace('\\', '/')
+                if not image_path:
+                    pngtuber_payload[key] = ''
+                    continue
+                if image_path.startswith('data:'):
+                    return JSONResponse(content={'success': False, 'error': f'PNGTuber图片路径不能使用data URL: {key}'}, status_code=400)
+                if '..' in image_path:
+                    return JSONResponse(content={'success': False, 'error': f'PNGTuber图片路径不能包含路径遍历（..）: {key}'}, status_code=400)
+                is_remote_image = image_path.startswith('http://') or image_path.startswith('https://')
+                if not is_remote_image and not any(image_path.startswith(prefix) for prefix in allowed_prefixes):
+                    return JSONResponse(content={'success': False, 'error': f'PNGTuber图片路径必须以 /user_pngtuber/、/static/ 或 /workshop/ 开头: {key}'}, status_code=400)
+                extension_path = image_path.lower().split('?', 1)[0].split('#', 1)[0]
+                if not extension_path.endswith(allowed_exts):
+                    return JSONResponse(content={'success': False, 'error': f'PNGTuber图片格式必须是 PNG/GIF/JPG/JPEG/WebP: {key}'}, status_code=400)
+                pngtuber_payload[key] = image_path
+
+            metadata_path = str(
+                pngtuber_payload.get('layered_metadata')
+                or pngtuber_payload.get('metadata')
+                or ''
+            ).strip().replace('\\', '/')
+
+            def _infer_pngtuber_metadata_from_idle(idle_path: str) -> str:
+                parts = [part for part in idle_path.split('/') if part]
+                if len(parts) < 3:
+                    return ''
+                source_prefix = parts[0]
+                model_folder = parts[1]
+                try:
+                    config_manager = get_config_manager()
+                    if source_prefix == 'user_pngtuber':
+                        root = config_manager.pngtuber_dir / model_folder
+                        url_prefix = '/user_pngtuber'
+                    elif source_prefix == 'static':
+                        root = config_manager.project_root / 'static' / model_folder
+                        url_prefix = '/static'
+                    elif source_prefix == 'workshop':
+                        root = config_manager.workshop_dir / model_folder
+                        url_prefix = '/workshop'
+                    else:
+                        return ''
+                except Exception:
+                    return ''
+                for filename in (
+                    'metadata.pngtube-remix.json',
+                    'metadata.pngtuber-plus.json',
+                    'metadata.json',
+                ):
+                    if (root / filename).is_file():
+                        return f'{url_prefix}/{model_folder}/{filename}'
+                return ''
+
+            if not metadata_path:
+                metadata_path = _infer_pngtuber_metadata_from_idle(idle_image)
+
+            if metadata_path:
+                if metadata_path.startswith('data:'):
+                    return JSONResponse(content={'success': False, 'error': 'PNGTuber分层metadata路径不能使用data URL'}, status_code=400)
+                if '..' in metadata_path:
+                    return JSONResponse(content={'success': False, 'error': 'PNGTuber分层metadata路径不能包含路径遍历（..）'}, status_code=400)
+                is_remote_metadata = metadata_path.startswith('http://') or metadata_path.startswith('https://')
+                if not is_remote_metadata and not any(metadata_path.startswith(prefix) for prefix in allowed_prefixes):
+                    return JSONResponse(content={'success': False, 'error': 'PNGTuber分层metadata路径必须以 /user_pngtuber/、/static/ 或 /workshop/ 开头'}, status_code=400)
+                metadata_ext_path = metadata_path.lower().split('?', 1)[0].split('#', 1)[0]
+                if not metadata_ext_path.endswith('.json'):
+                    return JSONResponse(content={'success': False, 'error': 'PNGTuber分层metadata必须是 JSON 文件'}, status_code=400)
+                pngtuber_payload['layered_metadata'] = metadata_path
+                pngtuber_payload['adapter'] = 'layered_canvas_v1'
+            else:
+                pngtuber_payload['layered_metadata'] = ''
+                pngtuber_payload['adapter'] = ''
+
+            for key in ('source_type', 'source_format'):
+                value = str(pngtuber_payload.get(key) or '').strip()
+                pngtuber_payload[key] = value
+
+            def _bounded_number(value, default, min_value, max_value):
+                try:
+                    parsed = float(value)
+                except (TypeError, ValueError):
+                    return default
+                if not math.isfinite(parsed):
+                    return default
+                return max(min_value, min(max_value, parsed))
+
+            pngtuber_payload['scale'] = _bounded_number(pngtuber_payload.get('scale'), 1, 0.1, 5)
+            pngtuber_payload['offset_x'] = _bounded_number(pngtuber_payload.get('offset_x'), 0, -5000, 5000)
+            pngtuber_payload['offset_y'] = _bounded_number(pngtuber_payload.get('offset_y'), 0, -5000, 5000)
+            pngtuber_payload['mirror'] = _config_value_is_enabled(pngtuber_payload.get('mirror'))
 
         if model_type_str == 'live3d':
             # Live3D 模式：接受 VRM 或 MMD 模型
@@ -1976,7 +2271,7 @@ async def update_catgirl_l2d(name: str, request: Request):
                 mmd_model = mmd_model_str
             else:
                 return JSONResponse(content={'success': False, 'error': '未提供VRM或MMD模型路径'}, status_code=400)
-        else:
+        elif model_type_str != 'pngtuber':
             if not live2d_model:
                 return JSONResponse(
                     content={
@@ -2104,6 +2399,25 @@ async def update_catgirl_l2d(name: str, request: Request):
                 'asset_source',
                 current_asset_source or 'local_imported',
             )
+        elif model_type_str == 'pngtuber':
+            set_reserved(characters['猫娘'][name], 'avatar', 'model_type', 'pngtuber')
+            set_reserved(characters['猫娘'][name], 'avatar', 'live3d_sub_type', '')
+            set_reserved(characters['猫娘'][name], 'avatar', 'pngtuber', pngtuber_payload)
+            pngtuber_binding_path = str(
+                idle_image
+                or pngtuber_payload.get('layered_metadata')
+                or ''
+            ).strip()
+            pngtuber_binding_item_id = str(item_id or "").strip()
+            if not pngtuber_binding_path.startswith('/workshop/'):
+                pngtuber_binding_item_id = ''
+            current_asset_source, current_asset_source_id = _derive_model_asset_binding(
+                pngtuber_binding_path,
+                item_id=pngtuber_binding_item_id,
+            )
+            set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', current_asset_source_id)
+            set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', current_asset_source or 'local_imported')
+            logger.debug(f"已保存角色 {name} 的PNGTuber配置")
         else:
             # 更新Live2D模型设置，同时保存item_id（如果有）
             live2d_model_path, resolved_item_id, resolved_asset_source = _resolve_live2d_model_binding(
@@ -2167,6 +2481,8 @@ async def update_catgirl_l2d(name: str, request: Request):
             active_model = vrm_model or mmd_model
             sub_type = 'VRM' if vrm_model else 'MMD'
             message = f'已更新角色 {name} 的Live3D({sub_type})模型为 {active_model}'
+        elif model_type_str == 'pngtuber':
+            message = f'已更新角色 {name} 的PNGTuber配置'
         else:
             message = f'已更新角色 {name} 的Live2D模型为 {live2d_model}'
 
@@ -3428,9 +3744,9 @@ async def update_catgirl(name: str, request: Request):
         requested_model_type = str(raw_data.get('model_type') or '').strip().lower()
         if requested_model_type == 'vrm':
             requested_model_type = 'live3d'
-        if requested_model_type and requested_model_type not in ('live2d', 'live3d'):
+        if requested_model_type and requested_model_type not in ('live2d', 'live3d', 'pngtuber'):
             return JSONResponse(
-                {'success': False, 'error': f'无效的模型类型: {requested_model_type}，只允许 live2d 或 live3d'},
+                {'success': False, 'error': f'无效的模型类型: {requested_model_type}，只允许 live2d、live3d 或 pngtuber'},
                 status_code=400,
             )
 
@@ -4612,8 +4928,12 @@ async def voice_clone(
     # 检测是否使用本地 TTS（ws/wss 协议）
     _config_manager = get_config_manager()
     tts_config = _config_manager.get_model_api_config('tts_custom')
+    try:
+        core_config = await _config_manager.aget_core_config() or {}
+    except Exception:
+        core_config = {}
     base_url = tts_config.get('base_url', '')
-    is_local_tts = tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://'))
+    is_local_tts = _is_local_voice_clone_tts_config(tts_config, core_config)
 
     if is_local_tts:
         # ==================== 本地 TTS 注册流程 ====================
@@ -5620,6 +5940,10 @@ async def export_catgirl_card(name: str):
                             else:
                                 logger.warning(f'找不到VRM模型文件: {vrm_path}')
 
+                elif model_type == 'pngtuber':
+                    if _add_pngtuber_assets_to_character_zip(zf, catgirl_data, _config_manager):
+                        model_added = True
+
                 # 3. 读取卡面元数据 sidecar（作者 / 创建时间）
                 _sidecar_meta_path = _config_manager.card_face_meta_path(name)
                 _sidecar_existed = await asyncio.to_thread(_sidecar_meta_path.exists)
@@ -5925,6 +6249,7 @@ async def import_character_card(
             # 读取角色设定（支持加密和非加密格式）
             character_json_path = extract_path / 'character.json'
             character_json_encrypted_path = extract_path / 'character.json.encrypted'
+            imported_card_character_data = {}
 
             if character_json_path.exists():
                 # 非加密格式
@@ -5935,6 +6260,7 @@ async def import_character_card(
                     return JSONResponse({'success': False, 'error': f'角色卡解析失败: {str(e)}'}, status_code=400)
                 if not isinstance(character_data, dict):
                     return JSONResponse({'success': False, 'error': '角色卡数据格式无效'}, status_code=400)
+                imported_card_character_data = copy.deepcopy(character_data)
                 character_data = _filter_mutable_catgirl_fields(character_data)
                 character_name = str(character_data.get('档案名', '')).strip()
                 character_data['档案名'] = character_name
@@ -5953,6 +6279,7 @@ async def import_character_card(
                     return JSONResponse({'success': False, 'error': f'角色卡解析失败: {str(e)}'}, status_code=400)
                 if not isinstance(character_data, dict):
                     return JSONResponse({'success': False, 'error': '角色卡数据格式无效'}, status_code=400)
+                imported_card_character_data = copy.deepcopy(character_data)
                 character_data = _filter_mutable_catgirl_fields(character_data)
                 character_name = str(character_data.get('档案名', '')).strip()
                 character_data['档案名'] = character_name
@@ -5987,6 +6314,7 @@ async def import_character_card(
 
             # 处理模型文件（仅当不是 .nekocfg 文件时）
             imported_model_info = None  # 记录导入的模型信息，用于自动使用
+            pngtuber_rel_map: dict[str, str] = {}
 
             def _find_model3_json(directory):
                 """Recursively find the .model3.json file."""
@@ -6003,8 +6331,17 @@ async def import_character_card(
                 model_dir = extract_path / 'model'
                 if model_dir.exists() and model_dir.is_dir():
                     model_type = metadata.get('model_type', 'live2d')
+                    pngtuber_rel_map = await asyncio.to_thread(
+                        _copy_imported_pngtuber_assets,
+                        model_dir,
+                        _config_manager,
+                    )
+                    if pngtuber_rel_map:
+                        character_data = _rewrite_imported_pngtuber_refs(character_data, pngtuber_rel_map)
 
                     for model_item in model_dir.iterdir():
+                        if model_item.name == _PNGTUBER_CARD_MODEL_DIR:
+                            continue
                         if model_item.is_dir():
                             # 检查是 Live2D 还是 MMD 模型文件夹
                             # MMD 模型文件夹通常包含 .pmx, .pmd 文件
@@ -6140,8 +6477,14 @@ async def import_character_card(
                         character_data['_reserved']['avatar']['mmd']['model_path'] = imported_model_info['path']
                         character_data['_reserved']['avatar']['model_type'] = 'live3d'
                         logger.info(f'已自动为角色 {character_name} 设置MMD模型: {imported_model_info["name"]}')
-                else:
+                elif not pngtuber_rel_map:
                     logger.warning("[导入角色卡] 没有找到可导入的模型")
+
+            character_data = _restore_imported_pngtuber_avatar_config(
+                character_data,
+                imported_card_character_data,
+                pngtuber_rel_map,
+            )
 
             # 添加角色到characters.json
             if '猫娘' not in characters:
@@ -6709,6 +7052,10 @@ async def export_catgirl_with_portrait(
                                 zf.write(model_full_path, arc_name)
                                 logger.info(f'已添加VRM模型到压缩包: {model_full_path.name}')
                                 model_added = True
+
+                elif model_type == 'pngtuber':
+                    if _add_pngtuber_assets_to_character_zip(zf, catgirl_data, _config_manager):
+                        model_added = True
 
             # 添加元数据文件
             metadata = {

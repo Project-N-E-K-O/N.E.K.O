@@ -344,6 +344,41 @@ def _read_realtime_base_url(cm: "ConfigManager") -> str:
     return base_url
 
 
+def _gptsovits_tts_overrides_native_tts_for_ui(
+    cm: "ConfigManager",
+    core_config: Mapping[str, Any],
+) -> bool:
+    if not core_config.get('GPTSOVITS_ENABLED', False):
+        return False
+    try:
+        tts_config = cm.get_model_api_config('tts_custom') or {}
+    except Exception:
+        return False
+    return bool(tts_config.get('is_custom'))
+
+
+def _read_tts_native_provider_for_ui(cm: "ConfigManager") -> str | None:
+    try:
+        core_config = cm.get_core_config() or {}
+    except Exception:
+        core_config = {}
+
+    if _gptsovits_tts_overrides_native_tts_for_ui(cm, core_config):
+        return None
+
+    assist_api = str(core_config.get('assistApi') or '').strip().lower()
+    if assist_api == 'mimo' and assist_api in _PROVIDERS:
+        return assist_api
+
+    tts_provider = str(
+        core_config.get('TTS_PROVIDER') or core_config.get('ttsProvider') or ''
+    ).strip().lower()
+    if tts_provider in _PROVIDERS:
+        return tts_provider
+
+    return None
+
+
 def get_active_realtime_native_provider(cm: "ConfigManager") -> str | None:
     """Return the native voice provider key registered for the current realtime API (route-agnostic).
 
@@ -367,7 +402,11 @@ def is_saveable_native_voice(cm: "ConfigManager", voice_id: str | None) -> bool:
     """
     api_type = _read_realtime_api_type(cm)
     base_url = _read_realtime_base_url(cm)
-    candidates = {api_type, _effective_native_provider_key(api_type, base_url)}
+    candidates = {
+        api_type,
+        _effective_native_provider_key(api_type, base_url),
+        _read_tts_native_provider_for_ui(cm),
+    }
     return any(is_native_voice(voice_id, key) for key in candidates if key)
 
 
@@ -379,6 +418,10 @@ def get_active_realtime_native_provider_for_ui(cm: "ConfigManager") -> str | Non
     displays 'free' (StepFun native). The UI only exposes the voice catalog actually
     usable on the route.
     """
+    tts_provider = _read_tts_native_provider_for_ui(cm)
+    if tts_provider:
+        return tts_provider
+
     api_type = _read_realtime_api_type(cm)
     base_url = _read_realtime_base_url(cm)
     key = _effective_native_provider_key(api_type, base_url)
@@ -389,6 +432,7 @@ _BUILTIN_PROVIDER_MODULES: tuple[str, ...] = (
     "utils.gemini_tts_voices",
     "utils.stepfun_tts_voices",
     "utils.grok_tts_voices",
+    "utils.mimo_tts_voices",
 )
 
 

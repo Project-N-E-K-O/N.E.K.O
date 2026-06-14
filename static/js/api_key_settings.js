@@ -30,6 +30,12 @@ const MODEL_TYPES = ['conversation', 'summary', 'correction', 'emotion', 'vision
 // provider resolution logic (follow_core/follow_assist/custom).
 // Future: GPT-SoVITS custom TTS may need dedicated WebSocket test path.
 const CONNECTIVITY_TESTABLE_TYPES = MODEL_TYPES;
+const MIMO_TOKEN_PLAN_PROVIDER_KEY = 'mimo_token_plan';
+const MIMO_TOKEN_PLAN_OPENROUTER_URLS = [
+    'https://token-plan-cn.xiaomimimo.com/v1',
+    'https://token-plan-sgp.xiaomimimo.com/v1',
+    'https://token-plan-ams.xiaomimimo.com/v1',
+];
 // 当前加载到页面中的 GPT-SoVITS 状态：none | enabled | disabled
 let _loadedGptSovitsState = 'none';
 // 上方普通 TTS 配置是否被用户在本页改动过
@@ -165,6 +171,97 @@ function getProviderCoreUrl(providerKey, profile) {
         || profile.core_url
         || (Array.isArray(profile.core_urls) ? profile.core_urls[0] : '')
         || '';
+}
+
+function isMimoAssistSelected() {
+    const assistSelect = document.getElementById('assistApiSelect');
+    return !!assistSelect && assistSelect.value === 'mimo';
+}
+
+function isMimoTokenPlanActive() {
+    const toggle = document.getElementById('useMimoTokenPlan');
+    return isMimoAssistSelected() && !!toggle && toggle.checked;
+}
+
+function getMimoTokenPlanUrl() {
+    return getMimoTokenPlanUrlCandidates()[0] || MIMO_TOKEN_PLAN_OPENROUTER_URLS[0];
+}
+
+function getMimoTokenPlanUrlCandidates() {
+    const mimoProfile = _assistApiProviders.mimo || {};
+    const candidates = [
+        getProviderResolvedUrl('assist', MIMO_TOKEN_PLAN_PROVIDER_KEY),
+        mimoProfile.token_plan_openrouter_url,
+        ...(Array.isArray(mimoProfile.token_plan_openrouter_urls) ? mimoProfile.token_plan_openrouter_urls : []),
+        ...MIMO_TOKEN_PLAN_OPENROUTER_URLS
+    ];
+    const seen = new Set();
+    return candidates
+        .map(item => String(item || '').trim())
+        .filter(item => {
+            if (!item || seen.has(item)) return false;
+            seen.add(item);
+            return true;
+        });
+}
+
+function isMimoTokenPlanUrl(url) {
+    const rawUrl = String(url || '').toLowerCase();
+    return rawUrl.includes('token-plan-cn.xiaomimimo.com')
+        || rawUrl.includes('token-plan-sgp.xiaomimimo.com')
+        || rawUrl.includes('token-plan-ams.xiaomimimo.com');
+}
+
+function getEffectiveAssistProviderKey(providerKey) {
+    return providerKey === 'mimo' && isMimoTokenPlanActive()
+        ? MIMO_TOKEN_PLAN_PROVIDER_KEY
+        : providerKey;
+}
+
+function getEffectiveAssistKey(providerKey, fallbackInput = null, { useTokenPlan = true } = {}) {
+    if (useTokenPlan && providerKey === 'mimo' && isMimoTokenPlanActive()) {
+        const tokenPlanInput = document.getElementById('mimoTokenPlanKeyInput');
+        return tokenPlanInput ? getRealKey(tokenPlanInput) : '';
+    }
+    if (fallbackInput) {
+        return getRealKey(fallbackInput);
+    }
+    const bookKey = syncKeyFromBook(providerKey);
+    return (bookKey !== null) ? bookKey : '';
+}
+
+function getEffectiveAssistUrl(providerKey, profile, { useTokenPlan = true } = {}) {
+    if (useTokenPlan && providerKey === 'mimo' && isMimoTokenPlanActive()) {
+        return getMimoTokenPlanUrl();
+    }
+    return getProviderOpenrouterUrl(providerKey, profile);
+}
+
+function updateMimoTokenPlanControls() {
+    const showMimoControls = isMimoAssistSelected();
+    const active = isMimoTokenPlanActive();
+    const toggleRow = document.getElementById('mimoTokenPlanToggleRow');
+    const toggle = document.getElementById('useMimoTokenPlan');
+    const keyRow = document.getElementById('mimoTokenPlanKeyRow');
+    const tokenPlanInput = document.getElementById('mimoTokenPlanKeyInput');
+    const assistInput = document.getElementById('assistApiKeyInput');
+
+    if (toggleRow) toggleRow.style.display = showMimoControls ? 'inline-flex' : 'none';
+    if (toggle) toggle.disabled = !showMimoControls;
+    if (keyRow) keyRow.style.display = active ? 'flex' : 'none';
+    if (tokenPlanInput) tokenPlanInput.disabled = !active;
+
+    if (assistInput) {
+        assistInput.disabled = active || (assistInput.dataset.disabledByFreeAssist === 'true');
+        assistInput.readOnly = active;
+        if (active) {
+            assistInput.placeholder = window.t
+                ? window.t('api.mimoApiKeyLockedByTokenPlan')
+                : 'MiMo Token Plan is enabled; this key is not used';
+        } else if (assistInput.dataset.disabledByFreeAssist !== 'true') {
+            assistInput.placeholder = window.t ? window.t('api.assistApiKeyPlaceholder') : '留空使用管理簿对应 Key';
+        }
+    }
 }
 
 function isAliyunUsApiUrl(url) {
@@ -862,6 +959,9 @@ function populateModelProviderDropdowns() {
         Object.keys(_assistApiProviders).forEach(pk => {
             if (pk === 'free') return;
             if (isProviderRestricted(pk)) return;
+            // vllm_omni 是 TTS 专用 provider，仅在 TTS 下拉里出现，
+            // 不污染 conversation/summary/correction/emotion/vision/agent/omni 的下拉
+            if (pk === 'vllm_omni' && mt !== 'tts') return;
             const pInfo = _assistApiProviders[pk];
             const opt = document.createElement('option');
             opt.value = pk;
@@ -905,14 +1005,26 @@ function onCustomModelProviderChange(modelType) {
 
     syncProviderSelectDropdowns(sel);
 
+    const previousProvider = sel.dataset.currentProvider || '';
     const provider = sel.value;
     const urlInput = document.getElementById(`${modelType}ModelUrl`);
     const keyInput = document.getElementById(`${modelType}ModelApiKey`);
     const modelIdInput = document.getElementById(`${modelType}ModelId`);
+    const voiceInput = document.getElementById(`${modelType}VoiceId`);
 
     // Model ID is NEVER readonly
     if (modelIdInput) {
         modelIdInput.removeAttribute('readonly');
+    }
+
+    if (
+        modelType === 'tts'
+        && previousProvider === 'vllm_omni'
+        && provider !== 'vllm_omni'
+        && !_isLoadingSavedConfig
+        && voiceInput
+    ) {
+        voiceInput.value = '';
     }
 
     /**
@@ -969,10 +1081,10 @@ function onCustomModelProviderChange(modelType) {
             } else {
                 const pInfo = _assistApiProviders[sourceProviderKey] || _coreApiProviders[sourceProviderKey] || {};
                 if (urlInput) {
-                    urlInput.value = getProviderOpenrouterUrl(sourceProviderKey, pInfo) || getProviderCoreUrl(sourceProviderKey, pInfo);
+                    urlInput.value = getEffectiveAssistUrl(sourceProviderKey, pInfo) || getProviderCoreUrl(sourceProviderKey, pInfo);
                     urlInput.setAttribute('readonly', 'readonly');
                 }
-                const bookKey = syncKeyFromBook(sourceProviderKey);
+                const bookKey = getEffectiveAssistKey(sourceProviderKey);
                 setKeyReadonly(keyInput, bookKey);
             }
         } else {
@@ -980,6 +1092,29 @@ function onCustomModelProviderChange(modelType) {
             if (urlInput) { urlInput.value = ''; urlInput.setAttribute('readonly', 'readonly'); }
             setKeyReadonly(keyInput, '');
         }
+    } else if (provider === 'vllm_omni' && modelType === 'tts') {
+        // vllm-omni: TTS 标准 provider，但 URL/Key/ModelId/Voice 全部可编辑可保存
+        // （类似 custom，但 dropdown 里有自己的名字与默认 URL）
+        const pInfo = _assistApiProviders[provider] || {};
+        if (urlInput) {
+            // 切换到 vllm_omni 时：
+            // - 若 URL 为空，或当前 URL 是从其他 provider 自动填充的 readonly 值（用户没主动编辑过），
+            //   覆盖为 vllm_omni 默认 URL；
+            // - 若 URL 是用户主动编辑过的地址（非 readonly），保留。
+            const wasReadonly = urlInput.hasAttribute('readonly');
+            if (!urlInput.value || !urlInput.value.trim() || wasReadonly) {
+                urlInput.value = getProviderOpenrouterUrl(provider, pInfo) || '';
+            }
+            urlInput.removeAttribute('readonly');
+        }
+        const modelIdInput2 = document.getElementById(`${modelType}ModelId`);
+        if (modelIdInput2 && (!_isLoadingSavedConfig || !modelIdInput2.value || !modelIdInput2.value.trim())) {
+            modelIdInput2.value = pInfo.tts_default_model || '';
+        }
+        if (voiceInput && (!_isLoadingSavedConfig || !voiceInput.value || !voiceInput.value.trim())) {
+            voiceInput.value = pInfo.tts_default_voice || '';
+        }
+        setKeyEditable(keyInput);
     } else if (provider === 'custom') {
         // custom: remove readonly
         if (urlInput) urlInput.removeAttribute('readonly');
@@ -995,13 +1130,14 @@ function onCustomModelProviderChange(modelType) {
             }
         } else {
             if (urlInput) {
-                urlInput.value = getProviderOpenrouterUrl(provider, pInfo) || getProviderCoreUrl(provider, pInfo);
+                urlInput.value = getEffectiveAssistUrl(provider, pInfo, { useTokenPlan: false }) || getProviderCoreUrl(provider, pInfo);
                 urlInput.setAttribute('readonly', 'readonly');
             }
         }
-        const bookKey = syncKeyFromBook(provider);
+        const bookKey = getEffectiveAssistKey(provider, null, { useTokenPlan: false });
         setKeyReadonly(keyInput, bookKey);
     }
+    sel.dataset.currentProvider = provider;
 }
 
 /**
@@ -1110,6 +1246,12 @@ async function loadApiProviders() {
                     assistSelect.innerHTML = ''; // 清空现有选项
                     const assistList = Array.isArray(data.assist_api_providers) ? data.assist_api_providers : [];
                     assistList.forEach(provider => {
+                        // 修复 PR #1764 review 第三轮 #1：vllm_omni 是 TTS-only provider，
+                        // 不应出现在主 assistApiSelect 下拉框（否则被选作辅助 API 时
+                        // ConfigManager 会把 TTS WebSocket URL 复制到 OpenAI-compatible 配置，
+                        // summary/correction/agent 等 LLM 调用会打到错误的 endpoint）
+                        if (provider.key === 'vllm_omni') return;
+
                         // 如果是大陆用户，过滤掉受限的服务商
                         if (isProviderRestricted(provider.key)) {
                             console.log(`[Region] 隐藏辅助API选项: ${provider.key}（大陆用户）`);
@@ -1272,6 +1414,16 @@ async function loadCurrentApiKey() {
                     waitForOptions(assistApiSelect, data.assistApi);
                 }
             }
+            const useMimoTokenPlanToggle = document.getElementById('useMimoTokenPlan');
+            if (useMimoTokenPlanToggle) {
+                useMimoTokenPlanToggle.checked = data.useMimoTokenPlan === true;
+            }
+            const mimoTokenPlanKeyInput = document.getElementById('mimoTokenPlanKeyInput');
+            if (mimoTokenPlanKeyInput && data.assistApiKeyMimoTokenPlan) {
+                setMaskedInput(mimoTokenPlanKeyInput, data.assistApiKeyMimoTokenPlan);
+                attachMaskBehavior(mimoTokenPlanKeyInput);
+            }
+            updateMimoTokenPlanControls();
 
             // Sync the core API key into the Key Book for the selected core provider
             // so autoFillCoreApiKey() can find it later
@@ -1672,7 +1824,9 @@ function updateAssistApiKeyInputAvailability() {
     if (!assistApiSelect || !assistApiKeyInput) return;
 
     const isFreeAssistApi = assistApiSelect.value === 'free';
+    assistApiKeyInput.dataset.disabledByFreeAssist = isFreeAssistApi ? 'true' : 'false';
     assistApiKeyInput.disabled = isFreeAssistApi;
+    assistApiKeyInput.readOnly = false;
     assistApiKeyInput.required = false;
 
     if (isFreeAssistApi) {
@@ -1681,6 +1835,7 @@ function updateAssistApiKeyInputAvailability() {
         assistApiKeyInput.dataset.realKey = '';
         assistApiKeyInput.value = freeText;
         attachMaskBehavior(assistApiKeyInput);
+        updateMimoTokenPlanControls();
         return;
     }
 
@@ -1688,6 +1843,7 @@ function updateAssistApiKeyInputAvailability() {
     if (isFreeVersionText(getRealKey(assistApiKeyInput))) {
         setMaskedInput(assistApiKeyInput, '');
     }
+    updateMimoTokenPlanControls();
 }
 
 // 切换自定义API启用状态
@@ -1931,7 +2087,10 @@ async function save_button_down(e) {
 
     // 读取辅助API Key
     const assistKeyInput = document.getElementById('assistApiKeyInput');
-    const assistKeyVal = getRealKey(assistKeyInput);
+    const assistKeyVal = getEffectiveAssistKey(assistApi, assistKeyInput);
+    const useMimoTokenPlan = isMimoTokenPlanActive();
+    const mimoTokenPlanKeyInput = document.getElementById('mimoTokenPlanKeyInput');
+    const mimoTokenPlanKey = mimoTokenPlanKeyInput ? getRealKey(mimoTokenPlanKeyInput) : '';
 
     // Collect keys from keyBookInput_* via _apiKeyRegistry.
     // syncKeyFromBook returns null when DOM is absent (restricted/hidden provider)
@@ -1954,7 +2113,7 @@ async function save_button_down(e) {
             allBookKeys[coreApi] = apiKey;
         }
     }
-    if (assistApi && assistApi !== 'free' && _apiKeyRegistry[assistApi]) {
+    if (assistApi && assistApi !== 'free' && _apiKeyRegistry[assistApi] && !useMimoTokenPlan) {
         allBookKeys[assistApi] = assistKeyVal;
     }
 
@@ -2076,11 +2235,15 @@ async function save_button_down(e) {
         omniModelUrl, omniModelId, omniModelApiKey,
         ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId,
         mcpToken, enableCustomApi, gptsovitsEnabled,
+        useMimoTokenPlan,
+        assistApiKeyMimoTokenPlan: mimoTokenPlanKey,
         resolvedProviderUrls: _resolvedProviderUrls,
         ...modelProviders
     };
     if (gptsovitsEnabled) {
         payload.ttsProvider = 'gptsovits';
+    } else if (selectedTtsProvider === 'mimo') {
+        payload.ttsProvider = 'mimo';
     } else if (_loadedGptSovitsState !== 'none') {
         payload.ttsProvider = '';
     } else if (selectedTtsProvider) {
@@ -2137,7 +2300,7 @@ function refreshAutoResolvedModelUrlsForSave(params) {
     if (!params || typeof params !== 'object') return;
 
     const resolveUrl = (modelType, providerMode) => {
-        if (!providerMode || providerMode === 'custom') return '';
+        if (!providerMode || providerMode === 'custom' || (providerMode === 'vllm_omni' && modelType === 'tts')) return '';
 
         let providerKey = providerMode;
         let scope = 'assist';
@@ -2157,7 +2320,8 @@ function refreshAutoResolvedModelUrlsForSave(params) {
         }
 
         const assistProfile = _assistApiProviders[providerKey] || _coreApiProviders[providerKey] || {};
-        return getProviderOpenrouterUrl(providerKey, assistProfile) || getProviderCoreUrl(providerKey, assistProfile);
+        const useTokenPlan = providerMode === 'follow_assist';
+        return getEffectiveAssistUrl(providerKey, assistProfile, { useTokenPlan }) || getProviderCoreUrl(providerKey, assistProfile);
     };
 
     MODEL_TYPES.forEach(modelType => {
@@ -2432,6 +2596,10 @@ function autoFillAssistApiKey(force) {
         return;
     }
     updateAssistApiKeyInputAvailability();
+
+    if (isMimoTokenPlanActive()) {
+        return;
+    }
 
     const bookKey = syncKeyFromBook(selectedAssistApi);
     // When forced (provider switch, disabling custom API, or init), clear input if no book key
@@ -2780,7 +2948,7 @@ const ConnectivityManager = {
      * @returns {{ key: string, url: string, providerType: string }} 解析结果
      */
     resolveEffectiveKey(context) {
-        const result = { key: '', url: '', providerType: 'openai_compatible', providerKey: '', providerScope: '', cacheId: '' };
+        const result = { key: '', url: '', providerType: 'openai_compatible', subType: '', providerKey: '', providerScope: '', cacheId: '' };
 
         if (!context || !context.type) return result;
 
@@ -2828,10 +2996,12 @@ const ConnectivityManager = {
                 result.providerType = 'openai_compatible';
             } else {
                 const assistProfile = _assistApiProviders[assistProvider] || {};
-                result.url = getProviderOpenrouterUrl(assistProvider, assistProfile);
+                result.url = getEffectiveAssistUrl(assistProvider, assistProfile);
                 // 优先从输入框读取，其次从 Key Book
                 const inputKey = getRealKey(assistApiKeyInput);
-                if (inputKey && !isFreeVersionText(inputKey)) {
+                if (assistProvider === 'mimo' && isMimoTokenPlanActive()) {
+                    result.key = getEffectiveAssistKey(assistProvider);
+                } else if (inputKey && !isFreeVersionText(inputKey)) {
                     result.key = inputKey;
                 } else {
                     const bookKey = syncKeyFromBook(assistProvider);
@@ -2839,7 +3009,8 @@ const ConnectivityManager = {
                 }
                 result.providerType = 'openai_compatible';
             }
-            result.cacheId = buildConnectivityCacheId(result.providerScope, result.providerKey, result.key, result.url);
+            const cacheProviderKey = getEffectiveAssistProviderKey(result.providerKey);
+            result.cacheId = buildConnectivityCacheId(result.providerScope, cacheProviderKey, result.key, result.url);
             return result;
         }
 
@@ -2848,6 +3019,7 @@ const ConnectivityManager = {
             const providerSel = document.getElementById(`${mt}ModelProvider`);
             const urlInput = document.getElementById(`${mt}ModelUrl`);
             const keyInput = document.getElementById(`${mt}ModelApiKey`);
+            const modelIdInput = document.getElementById(`${mt}ModelId`);
 
             if (!providerSel) return result;
 
@@ -2886,10 +3058,63 @@ const ConnectivityManager = {
                 // 自定义：直接从输入框读取，不设 providerKey（走自定义模式）
                 result.key = keyInput ? getRealKey(keyInput) : '';
                 result.providerType = (mt === 'omni') ? 'websocket' : 'openai_compatible';
+            } else if (provider === 'vllm_omni' && mt === 'tts') {
+                // vllm_omni + tts: 走 Mode 2（custom 路径），复用后端 _test_websocket
+                // 不设 providerKey / providerScope → 后端进入 Mode 2，用用户输入的 URL
+                //
+                // 修复 PR #1764 review #7（Codex P2）：把 base_url 规整成 worker 实际
+                // 使用的 ws endpoint，保证 _test_websocket 的握手真实命中
+                // /audio/speech/stream，而不是探测错误的端点
+                // 与后端 vllm_omni_tts_worker 中的 URL 拼接逻辑保持一致
+                const rawUrl = (urlInput ? urlInput.value.trim() : '').replace(/\/+$/, '');
+                let wsEndpoint = '';
+                if (rawUrl) {
+                    let wsUrl;
+                    if (rawUrl.startsWith('https://')) {
+                        wsUrl = 'wss://' + rawUrl.slice('https://'.length);
+                    } else if (rawUrl.startsWith('http://')) {
+                        wsUrl = 'ws://' + rawUrl.slice('http://'.length);
+                    } else if (rawUrl.startsWith('ws://') || rawUrl.startsWith('wss://')) {
+                        wsUrl = rawUrl;
+                    } else {
+                        wsUrl = 'ws://' + rawUrl;
+                    }
+                    try {
+                        // 用 URL 构造器解析（注意 ws:// 在浏览器里合法）
+                        const u = new URL(wsUrl);
+                        let basePath = (u.pathname || '').replace(/\/+$/, '');
+                        if (basePath === '' || basePath === '/') {
+                            basePath = '/v1';
+                        }
+                        // 修复 PR #1764 review 第三轮 #2：URL 规整幂等——
+                        // 若 path 已是完整 endpoint 则不重复拼接，与后端 vllm_omni_tts_worker 保持一致，
+                        // 避免用户填完整 endpoint 时连通性测试探测到 /audio/speech/stream/audio/speech/stream
+                        if (basePath.endsWith('/audio/speech/stream')) {
+                            u.pathname = basePath;
+                        } else {
+                            u.pathname = basePath + '/audio/speech/stream';
+                        }
+                        wsEndpoint = u.toString();
+                    } catch (e) {
+                        // URL 解析失败：退化为直接字符串拼接，同样做幂等检查
+                        const stripped = wsUrl.replace(/\/+$/, '');
+                        wsEndpoint = stripped.endsWith('/audio/speech/stream')
+                            ? stripped
+                            : stripped + '/audio/speech/stream';
+                    }
+                }
+                result.url = wsEndpoint;
+                result.providerType = 'websocket';
+                // 修复 PR #1764 review 第六轮：vLLM-Omni 的 /v1/audio/speech/stream 走
+                // Qwen 自定义协议，不识别 OpenAI Realtime 的 session.update。后端会
+                // 按 sub_type 分流到 _test_vllm_omni_ws_handshake 仅做握手探测，
+                // 避免发 session.update 触发 vLLM 主动断连导致连通性误判。
+                result.subType = 'vllm_omni_tts';
+                result.key = keyInput ? getRealKey(keyInput) : '';
+                result.model = modelIdInput ? modelIdInput.value.trim() : '';
             } else {
                 // 指定服务商：从 Key Book 读取
-                const bookKey = syncKeyFromBook(provider);
-                result.key = (bookKey !== null) ? bookKey : '';
+                result.key = getEffectiveAssistKey(provider, null, { useTokenPlan: false });
                 if (mt === 'omni') {
                     const coreProfile = _coreApiProviders[provider] || {};
                     result.url = getProviderCoreUrl(provider, coreProfile);
@@ -2898,7 +3123,7 @@ const ConnectivityManager = {
                     result.providerScope = 'core';
                 } else {
                     const pInfo = _assistApiProviders[provider] || _coreApiProviders[provider] || {};
-                    result.url = getProviderOpenrouterUrl(provider, pInfo) || getProviderCoreUrl(provider, pInfo);
+                    result.url = getEffectiveAssistUrl(provider, pInfo, { useTokenPlan: false }) || getProviderCoreUrl(provider, pInfo);
                     result.providerType = 'openai_compatible';
                     result.providerKey = provider;
                     result.providerScope = 'assist';
@@ -2909,7 +3134,10 @@ const ConnectivityManager = {
                 if (result.providerKey && result.providerScope) {
                     result.cacheId = buildConnectivityCacheId(result.providerScope, result.providerKey, result.key, result.url);
                 } else {
-                    result.cacheId = `custom|${mt}|${result.url || ''}|${result.key || ''}`;
+                    // 修复 PR #1764 review #6（CodeRabbit）：自定义路径 cacheId 纳入 model
+                    // vllm_omni + tts 切换 model 后必须重新探测（不同 model 可达性不同）
+                    const modelPart = result.model ? `|${result.model}` : '';
+                    result.cacheId = `custom|${mt}|${result.url || ''}|${result.key || ''}${modelPart}`;
                 }
             }
             return result;
@@ -2974,7 +3202,7 @@ const ConnectivityManager = {
      * @returns {Promise<{success: boolean, error?: string, error_code?: string}>}
      */
     async testKey(params) {
-        const { provider_key, provider_scope, url, api_key: apiKey, model, provider_type: providerType, is_free: isFree, cache_id: cacheId } = params;
+        const { provider_key, provider_scope, url, api_key: apiKey, model, provider_type: providerType, sub_type: subType, is_free: isFree, cache_id: cacheId } = params;
         console.log('[ConnectivityManager] testKey called:', {
             provider_key: provider_key || '(custom)',
             provider_scope: provider_scope || '(none)',
@@ -3002,51 +3230,96 @@ const ConnectivityManager = {
         }, 15000);
 
         try {
-            // Build request body based on mode
-            const body = { api_key: apiKey || '' };
-            if (provider_key && provider_scope) {
-                // Built-in provider mode
-                body.provider_key = provider_key;
-                body.provider_scope = provider_scope;
-            } else {
-                // Custom API mode
-                body.url = url || '';
-                body.model = model || '';
-                body.provider_type = providerType || 'openai_compatible';
-                body.is_free = !!isFree;
-            }
+            const cleanupRequest = () => {
+                clearTimeout(timeoutId);
+                // Only delete if map still points to this controller (avoid race with newer request)
+                if (cacheId && this._abortControllers[cacheId] === controllerState) {
+                    delete this._abortControllers[cacheId];
+                }
+            };
+            const buildBody = (overrideUrl = '') => {
+                const body = { api_key: apiKey || '' };
+                if (provider_key && provider_scope) {
+                    // Built-in provider mode
+                    body.provider_key = provider_key;
+                    body.provider_scope = provider_scope;
+                    if (provider_scope === 'assist' && provider_key === 'mimo' && isMimoTokenPlanUrl(overrideUrl)) {
+                        body.url = overrideUrl;
+                    }
+                } else {
+                    // Custom API mode
+                    body.url = url || '';
+                    body.model = model || '';
+                    body.provider_type = providerType || 'openai_compatible';
+                    // 修复 PR #1764 review 第六轮：vllm_omni TTS 透传 sub_type，
+                    // 让后端走 _test_vllm_omni_ws_handshake 而非 _test_websocket。
+                    if (subType) {
+                        body.sub_type = subType;
+                    }
+                    body.is_free = !!isFree;
+                }
+                return body;
+            };
+            const sendRequest = async (overrideUrl = '') => {
+                const response = await fetch('/api/config/test_connectivity', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(buildBody(overrideUrl)),
+                    signal: controller.signal
+                });
 
-            const response = await fetch('/api/config/test_connectivity', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body),
-                signal: controller.signal
-            });
+                if (!response.ok) {
+                    return {
+                        success: false,
+                        error: `HTTP ${response.status}`,
+                        error_code: 'backend_unavailable',
+                        resolved_url: overrideUrl || null
+                    };
+                }
 
-            clearTimeout(timeoutId);
-            // Only delete if map still points to this controller (avoid race with newer request)
-            if (cacheId && this._abortControllers[cacheId] === controllerState) {
-                delete this._abortControllers[cacheId];
-            }
-
-            if (!response.ok) {
+                const data = await response.json();
                 return {
+                    success: !!data.success,
+                    error: data.error || null,
+                    error_code: data.error_code || null,
+                    resolved_url: data.resolved_url || (data.success ? overrideUrl : null) || null
+                };
+            };
+            const shouldProbeMimoTokenPlan = provider_scope === 'assist' && provider_key === 'mimo' && isMimoTokenPlanUrl(url);
+            if (shouldProbeMimoTokenPlan) {
+                const seenUrls = new Set();
+                const candidates = [url, ...getMimoTokenPlanUrlCandidates()]
+                    .map(item => String(item || '').trim())
+                    .filter(item => {
+                        if (!item || seenUrls.has(item)) return false;
+                        seenUrls.add(item);
+                        return true;
+                    });
+                let lastResult = null;
+                for (const candidateUrl of candidates) {
+                    const result = await sendRequest(candidateUrl);
+                    lastResult = result;
+                    if (result.success) {
+                        rememberResolvedProviderUrl(provider_scope, MIMO_TOKEN_PLAN_PROVIDER_KEY, result.resolved_url || candidateUrl);
+                        cleanupRequest();
+                        return result;
+                    }
+                }
+                cleanupRequest();
+                return lastResult || {
                     success: false,
-                    error: `HTTP ${response.status}`,
-                    error_code: 'backend_unavailable'
+                    error: 'No MiMo Token Plan endpoint configured',
+                    error_code: 'provider_url_missing',
+                    resolved_url: null
                 };
             }
 
-            const data = await response.json();
-            if (data.success && data.resolved_url && provider_key && provider_scope) {
-                rememberResolvedProviderUrl(provider_scope, provider_key, data.resolved_url);
+            const result = await sendRequest(url);
+            cleanupRequest();
+            if (result.success && result.resolved_url && provider_key && provider_scope) {
+                rememberResolvedProviderUrl(provider_scope, provider_key, result.resolved_url);
             }
-            return {
-                success: !!data.success,
-                error: data.error || null,
-                error_code: data.error_code || null,
-                resolved_url: data.resolved_url || null
-            };
+            return result;
         } catch (err) {
             clearTimeout(timeoutId);
             if (cacheId && this._abortControllers[cacheId] === controllerState) {
@@ -3128,7 +3401,7 @@ const ConnectivityManager = {
                     keyConfigs[customCacheId] = {
                         provider_key: customResult.providerKey, provider_scope: customResult.providerScope,
                         url: customResult.url, api_key: customResult.key || '', model: model,
-                        provider_type: customResult.providerType, is_free: isFree
+                        provider_type: customResult.providerType, sub_type: customResult.subType || '', is_free: isFree
                     };
                 }
             });
@@ -3280,7 +3553,7 @@ const ConnectivityManager = {
                     keyConfigs[cacheId] = {
                         provider_key: customResult.providerKey, provider_scope: customResult.providerScope,
                         url: customResult.url, api_key: customResult.key || '', model: model,
-                        provider_type: customResult.providerType, is_free: isFree
+                        provider_type: customResult.providerType, sub_type: customResult.subType || '', is_free: isFree
                     };
                 }
             });
@@ -3718,6 +3991,12 @@ function initConnectivityLights() {
 
         assistApiKeyInput.addEventListener('input', handleAssistKeyChange);
         assistApiKeyInput.addEventListener('change', handleAssistKeyChange);
+        const mimoTokenPlanKeyInput = document.getElementById('mimoTokenPlanKeyInput');
+        if (mimoTokenPlanKeyInput) {
+            mimoTokenPlanKeyInput.addEventListener('input', handleAssistKeyChange);
+            mimoTokenPlanKeyInput.addEventListener('change', handleAssistKeyChange);
+            attachMaskBehavior(mimoTokenPlanKeyInput);
+        }
     }
 
     // Custom model key input changes
@@ -3779,12 +4058,39 @@ function initConnectivityLights() {
     // Assist API provider change
     if (assistApiSelect) {
         assistApiSelect.addEventListener('change', () => {
+            updateMimoTokenPlanControls();
             const oldKey = assistCurrentKey;
             assistCurrentKey = reRegister(
                 lightRefs.assist.light, lightRefs.assist.errorDisplay,
                 { type: 'assist' }, oldKey
             );
             // Also re-register custom models that follow_assist
+            CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
+                const providerSel = document.getElementById(`${mt}ModelProvider`);
+                if (providerSel && providerSel.value === 'follow_assist' && lightRefs.custom[mt]) {
+                    const oldCustomKey = customCurrentKeys[mt];
+                    customCurrentKeys[mt] = reRegister(
+                        lightRefs.custom[mt].light, lightRefs.custom[mt].errorDisplay,
+                        { type: 'custom', modelType: mt }, oldCustomKey,
+                        lightRefs.custom[mt].summaryLight
+                    );
+                }
+            });
+        });
+    }
+
+    const useMimoTokenPlanToggle = document.getElementById('useMimoTokenPlan');
+    if (useMimoTokenPlanToggle) {
+        useMimoTokenPlanToggle.addEventListener('change', () => {
+            updateMimoTokenPlanControls();
+            const oldKey = assistCurrentKey;
+            assistCurrentKey = reRegister(
+                lightRefs.assist.light, lightRefs.assist.errorDisplay,
+                { type: 'assist' }, oldKey
+            );
+            if (oldKey && oldKey !== assistCurrentKey) {
+                cascadeResetForKey(oldKey);
+            }
             CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
                 const providerSel = document.getElementById(`${mt}ModelProvider`);
                 if (providerSel && providerSel.value === 'follow_assist' && lightRefs.custom[mt]) {
@@ -4024,6 +4330,7 @@ async function initializePage() {
         const assistApiSelect = document.getElementById('assistApiSelect');
         if (assistApiSelect) {
             assistApiSelect.addEventListener('change', function () {
+                updateMimoTokenPlanControls();
                 updateAssistApiRecommendation();
                 autoFillAssistApiKey(true);
                 // Recompute all follow_assist model slots

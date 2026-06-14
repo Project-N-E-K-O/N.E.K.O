@@ -29,9 +29,9 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
 import asyncio
-import io
 import json
 import hashlib
+import re
 import shutil
 import zipfile
 import tempfile
@@ -60,9 +60,6 @@ CHUNK_SIZE = 1024 * 1024  # 1MB chunks
 # 允许的文件扩展名
 ALLOWED_AUDIO_EXTENSIONS = {'.mp3', '.wav', '.ogg', '.flac'}
 ALLOWED_ACTION_EXTENSIONS = {'.vmd', '.bvh', '.fbx', '.vrma'}
-
-import re
-import io
 
 def check_file_size(file: UploadFile, max_size: int) -> int:
     """Check file size; returns the size in bytes, raising an exception if the limit is exceeded."""
@@ -419,8 +416,31 @@ class JukeboxConfig:
         return f"{prefix}_{max_num + 1:03d}"
 
 
+def build_config_revision(data: dict) -> str:
+    """Build a small stable token for polling whether jukebox data changed."""
+    payload = {
+        "version": data.get("version", "1.0"),
+        "songs": data.get("songs", {}),
+        "actions": data.get("actions", {}),
+        "bindings": data.get("bindings", {}),
+    }
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.blake2s(serialized.encode("utf-8"), digest_size=12).hexdigest()
+
+
+def build_config_summary(data: dict) -> dict:
+    songs = data.get("songs", {})
+    actions = data.get("actions", {})
+    return {
+        "configRevision": build_config_revision(data),
+        "songCount": len(songs),
+        "visibleSongCount": sum(1 for song in songs.values() if song.get("visible") is not False),
+        "actionCount": len(actions),
+    }
+
+
 def calculate_md5(file_path: Path) -> str:
-    """Compute the MD5 of a file."""
+    """Calculate the MD5 hash for a file."""
     md5_hash = hashlib.md5()
     with open(file_path, "rb") as f:
         for chunk in iter(lambda: f.read(CHUNK_SIZE), b""):
@@ -428,7 +448,86 @@ def calculate_md5(file_path: Path) -> str:
     return md5_hash.hexdigest()
 
 
+def _clean_audio_metadata_value(value) -> str:
+    """Normalize one audio metadata value for jukebox display."""
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple)):
+        value = next((item for item in value if item), "")
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="ignore")
+    value = str(value).replace("\x00", "").strip()
+    value = re.sub(r"\s+", " ", value)
+    if not value:
+        return ""
+    if value.lower() in {
+        "unknown",
+        "unknown artist",
+        "unknown title",
+        "unknown singer",
+        "none",
+        "null",
+        "未知",
+        "未知艺术家",
+        "未知歌手",
+    }:
+        return ""
+    return value[:200]
 
+
+def _pick_audio_metadata_value(metadata: dict, *keys: str) -> str:
+    normalized = {
+        str(key).strip().lower().replace("-", "_").replace(" ", "_"): value
+        for key, value in metadata.items()
+    }
+    for key in keys:
+        value = _clean_audio_metadata_value(
+            normalized.get(key.strip().lower().replace("-", "_").replace(" ", "_"))
+        )
+        if value:
+            return value
+    return ""
+
+
+def extract_audio_metadata(file_path: Path) -> dict:
+    """Best-effort audio tag extraction. Failures must not block upload."""
+    try:
+        import av
+    except Exception:
+        return {}
+
+    try:
+        with av.open(str(file_path)) as container:
+            merged_metadata = dict(getattr(container, "metadata", {}) or {})
+            for stream in getattr(container, "streams", []) or []:
+                if getattr(stream, "type", "") == "audio":
+                    for key, value in (getattr(stream, "metadata", {}) or {}).items():
+                        merged_metadata.setdefault(key, value)
+
+        return {
+            "name": _pick_audio_metadata_value(
+                merged_metadata,
+                "title",
+                "song",
+                "tracktitle",
+                "track_title",
+                "标题",
+            ),
+            "artist": _pick_audio_metadata_value(
+                merged_metadata,
+                "artist",
+                "album_artist",
+                "albumartist",
+                "performer",
+                "author",
+                "composer",
+                "singer",
+                "歌手",
+                "艺术家",
+            ),
+        }
+    except Exception:
+        return {}
 
 
 # ═══════════════════ API 路由 ═══════════════════
@@ -438,7 +537,15 @@ async def get_config():
     """Get the full config (local bindings are already ID-level; returned as-is)."""
     config_mgr = get_config_manager()
     jukebox_config = JukeboxConfig(config_mgr)
-    return jukebox_config.data
+    return {**jukebox_config.data, **build_config_summary(jukebox_config.data)}
+
+
+@router.get("/config/summary")
+async def get_config_summary():
+    """Return a lightweight config summary for polling full playlist refreshes."""
+    config_mgr = get_config_manager()
+    jukebox_config = JukeboxConfig(config_mgr)
+    return build_config_summary(jukebox_config.data)
 
 
 @router.post("/songs")
@@ -466,6 +573,9 @@ async def upload_songs(
     results = []
     for i, (file, meta) in enumerate(zip(files, meta_list)):
         try:
+            if not isinstance(meta, dict):
+                meta = {}
+
             # 检查文件大小
             check_file_size(file, MAX_FILE_SIZE)
 
@@ -507,10 +617,23 @@ async def upload_songs(
                 results.append({"success": False, "error": f"歌曲已存在: {existing_song_id}"})
                 continue
 
-            # 使用提供的值或文件名作为默认显示名称
+            try:
+                audio_metadata = await asyncio.to_thread(extract_audio_metadata, target_path)
+            except Exception:
+                audio_metadata = {}
+
+            # 使用提供的值、音频元信息或文件名作为默认显示名称
             # 如果文件名有数字后缀（如"歌曲(1).mp3"），默认显示名称也保留这个后缀
-            song_name = meta.get("name") or Path(target_filename).stem
-            song_artist = meta.get("artist") or "未知"
+            song_name = (
+                _clean_audio_metadata_value(meta.get("name"))
+                or audio_metadata.get("name")
+                or Path(target_filename).stem
+            )
+            song_artist = (
+                _clean_audio_metadata_value(meta.get("artist"))
+                or audio_metadata.get("artist")
+                or "未知"
+            )
 
             # 创建歌曲记录
             song = Song(

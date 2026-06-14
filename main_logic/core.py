@@ -44,8 +44,14 @@ from utils.frontend_utils import contains_chinese, replace_blank, replace_corner
     is_only_punctuation, TtsStreamNormalizer, TtsBracketStripper, TtsMarkdownStripper
 from utils.screenshot_utils import process_screen_data, overlay_avatar_annotation
 from main_logic.omni_realtime_client import OmniRealtimeClient
-from main_logic.omni_offline_client import OmniOfflineClient
-from main_logic.tts_client import get_tts_worker, dummy_tts_worker, TTS_PROVIDER_REGISTRY
+from main_logic.omni_offline_client import OmniOfflineClient, _is_safety_violation_signal
+from main_logic.tts_client import (
+    get_tts_worker,
+    dummy_tts_worker,
+    TTS_PROVIDER_REGISTRY,
+    VLLM_OMNI_DEFAULT_BASE_URL,
+    VLLM_OMNI_DEFAULT_MODEL,
+)
 from utils.gptsovits_config import is_gsv_disabled_voice_id
 from main_logic.tool_calling import (
     ToolCall,
@@ -60,6 +66,7 @@ from main_logic.proactive_delivery import ProactiveDeliveryManager
 from main_logic.agent_event_bus import (
     dispatch_text_user_message,
     dispatch_user_utterance,
+    publish_voice_transcript_observed_best_effort,
 )
 from utils.preferences import load_global_conversation_settings, aload_global_conversation_settings
 from config import (
@@ -513,7 +520,7 @@ from config.prompts.prompts_avatar_interaction import (
 #     AGENT_CAPABILITY_USER_PLUGIN_USE, AGENT_CAPABILITY_GENERIC, AGENT_CAPABILITY_SEPARATOR,
 #     AGENT_PLUGINS_HEADER, AGENT_PLUGINS_COUNT,
 # )
-from utils.config_manager import get_config_manager, get_reserved
+from utils.config_manager import _as_bool, get_config_manager, get_reserved
 from utils.logger_config import get_module_logger
 from utils.native_voice_registry import (
     is_free_preset_voice_id,
@@ -531,7 +538,9 @@ from uuid import uuid4
 import numpy as np
 import soxr
 import httpx
-from main_logic.agent_event_bus import publish_analyze_request_reliably
+from main_logic.agent_event_bus import (
+    publish_analyze_request_reliably,
+)
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
@@ -1378,6 +1387,31 @@ class LLMSessionManager:
             and current_key == worker_key
         )
 
+    @staticmethod
+    def resolve_tts_api_key(provider_key: str | None, api_key_override: str | None, tts_config: dict) -> str:
+        if provider_key == 'vllm_omni':
+            return api_key_override or ''
+        return api_key_override or tts_config.get('api_key', '')
+
+    @staticmethod
+    def _is_vllm_omni_tts_enabled(core_config: dict) -> bool:
+        return _as_bool(core_config.get('ENABLE_CUSTOM_API'), False) and (
+            str(core_config.get('ttsModelProvider') or '').strip() == 'vllm_omni'
+        )
+
+    @classmethod
+    def _resolve_vllm_omni_runtime_config(cls, core_config: dict) -> tuple[str, str, str]:
+        if not cls._is_vllm_omni_tts_enabled(core_config):
+            return ('', '', '')
+        return (
+            str(core_config.get('ttsModelUrl') or '').strip()
+            or VLLM_OMNI_DEFAULT_BASE_URL,
+            str(core_config.get('ttsModelId') or '').strip()
+            or VLLM_OMNI_DEFAULT_MODEL,
+            str(core_config.get('ttsVoiceId') or '').strip()
+            or 'default',
+        )
+
     def _build_tts_runtime_key(self) -> tuple:
         """Return the effective TTS worker identity for ready-state reuse."""
         try:
@@ -1393,7 +1427,7 @@ class LLMSessionManager:
             tts_config = self._config_manager.get_model_api_config(
                 'tts_custom' if has_custom else 'tts_default'
             )
-            api_key = api_key_override or tts_config.get('api_key', '')
+            api_key = self.resolve_tts_api_key(provider_key, api_key_override, tts_config)
             return (
                 provider_key,
                 self.core_api_type,
@@ -1402,6 +1436,7 @@ class LLMSessionManager:
                 bool(has_custom),
                 tts_config.get('base_url', ''),
                 tts_config.get('model', ''),
+                self._resolve_vllm_omni_runtime_config(core_config),
                 api_key,
             )
         except Exception:
@@ -2041,6 +2076,26 @@ class LLMSessionManager:
             # swallowed inside the dispatcher.
             dispatch_user_utterance(bucket, event)
 
+    async def _broadcast_voice_transcript_observed(self, transcript: str) -> None:
+        """Best-effort fan-out of voice transcripts to plugins.
+
+        Plugins are observers here, not arbiters for the current user turn.
+        Main must never wait for or apply plugin-produced actions from this
+        path.
+        """
+        session_snapshot = self.session
+        try:
+            await publish_voice_transcript_observed_best_effort(
+                self.lanlan_name,
+                transcript,
+                metadata={
+                    "session_type": type(session_snapshot).__name__ if session_snapshot else "",
+                    "voice_source": True,
+                },
+            )
+        except Exception as exc:
+            logger.debug("[%s] voice transcript observer broadcast failed: %s", self.lanlan_name, exc)
+
     def _reset_voice_echo_suppression_cache(self) -> None:
         self._recent_ai_voice_echo_text = ''
         self._recent_ai_voice_echo_at = 0.0
@@ -2288,6 +2343,9 @@ class LLMSessionManager:
             # 即使转录为空（VAD 误触发或转录失败）也算一次"用户在发声"，
             # 维持 voice_engaged 状态。
             self._activity_tracker.on_voice_rms()
+
+        if is_voice_source and transcript_text:
+            self._fire_task(self._broadcast_voice_transcript_observed(transcript_text))
 
         if is_voice_source:
             # 仅非空转录才算"用户消息"：on_user_message 会清掉 unfinished_thread、
@@ -2927,7 +2985,7 @@ class LLMSessionManager:
                     or 'invalid_api_key' in message_text_lower
                     or ('invalid' in message_text_lower and 'key' in message_text_lower)):
                 await self.send_status(json.dumps({"code": "API_KEY_REJECTED"}))
-            elif 'policy violation' in message_text_lower:
+            elif _is_safety_violation_signal(message_text_lower):
                 await self.send_status(json.dumps({"code": "API_POLICY_VIOLATION", "details": {"msg": message_text}}))
             elif '1008' in message_text_lower:
                 await self.send_status(json.dumps({"code": "API_1008_FALLBACK", "details": {"msg": message_text}}))
@@ -3483,7 +3541,11 @@ class LLMSessionManager:
         )
         if uses_provider_native_voice:
             return False
-        gsv_enabled = bool(core_config.get('GPTSOVITS_ENABLED'))
+        gsv_voice_id = str(core_config.get('TTS_VOICE_ID') or '')
+        gsv_enabled = (
+            bool(core_config.get('GPTSOVITS_ENABLED'))
+            and not is_gsv_disabled_voice_id(gsv_voice_id)
+        )
         if gsv_enabled:
             return True
         # 克隆音色始终走 custom 路径。
@@ -3521,7 +3583,7 @@ class LLMSessionManager:
             tts_config = self._config_manager.get_model_api_config(
                 'tts_custom' if has_custom else 'tts_default'
             )
-            api_key = api_key_override or tts_config['api_key']
+            api_key = self.resolve_tts_api_key(provider_key, api_key_override, tts_config)
 
         # 根据实际选中的 TTS provider 类别决定是否启用流式文本规范化。
         # ws_bistream 类（qwen / step / cosyvoice）直接把文本碎片发给服务端处理，
@@ -3820,6 +3882,9 @@ class LLMSessionManager:
         if self._is_livestream_active():
             logger.info(f"{log_prefix}🎙️ livestream 模式：使用服务端原生语音，跳过外部 TTS")
             return False
+        if self._is_vllm_omni_tts_enabled(core_config_snapshot):
+            logger.info(f"{log_prefix}🔊 语音模式：检测到 vLLM-Omni TTS provider，将使用外部 TTS")
+            return True
         base_url = realtime_config.get('base_url', '')
         _, uses_provider_native_voice = resolve_native_voice_for_routing(
             self.core_api_type,
@@ -4298,7 +4363,7 @@ class LLMSessionManager:
                     tts_voice_id
                     and not is_gsv_disabled_voice_id(tts_voice_id)
                     and (
-                        core_config_snapshot.get('ENABLE_CUSTOM_API')
+                        _as_bool(core_config_snapshot.get('ENABLE_CUSTOM_API'), False)
                         or core_config_snapshot.get('GPTSOVITS_ENABLED')
                     )
                 ):
@@ -4718,6 +4783,8 @@ class LLMSessionManager:
                 self.session_start_last_failure_time = None
                 self._memory_error_retry_after = 0
                 self._session_start_circuit_open = False
+                if self.is_goodbye_silent():
+                    self.set_goodbye_silent(False)
 
                 logger.info(f"[语音会话诊断] 即将通知前端 session_started (start_session 总耗时: {time.time() - _diag_start:.2f}秒)")
                 # 通知前端 session 已成功启动
@@ -4987,7 +5054,7 @@ class LLMSessionManager:
                     tts_voice_id
                     and not is_gsv_disabled_voice_id(tts_voice_id)
                     and (
-                        core_config_snapshot.get('ENABLE_CUSTOM_API')
+                        _as_bool(core_config_snapshot.get('ENABLE_CUSTOM_API'), False)
                         or core_config_snapshot.get('GPTSOVITS_ENABLED')
                     )
                 ):
@@ -6656,7 +6723,10 @@ class LLMSessionManager:
         """
         if self.is_goodbye_silent():
             self.enqueue_agent_callback(callback)
-            logger.info("[%s] proactive callback queued: goodbye silent", self.lanlan_name)
+            logger.debug(
+                "[%s] goodbye_silent queued proactive callback for later delivery",
+                self.lanlan_name,
+            )
             return
         self.proactive_manager.submit(callback, priority=priority, coalesce_key=coalesce_key)
 
@@ -8138,7 +8208,7 @@ class LLMSessionManager:
                             elif '429' in error_msg_lower or 'too many' in error_msg_lower:
                                 user_msg = json.dumps({"code": "API_RATE_LIMIT"})
                                 self._last_tts_error_code = 'API_RATE_LIMIT'
-                            elif 'policy violation' in error_msg_lower:
+                            elif _is_safety_violation_signal(error_msg_lower):
                                 user_msg = json.dumps({"code": "API_POLICY_VIOLATION", "details": {"msg": error_msg_text}})
                                 self._last_tts_error_code = 'API_POLICY_VIOLATION'
                             elif '1008' in error_msg_lower:

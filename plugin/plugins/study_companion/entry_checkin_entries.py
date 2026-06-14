@@ -7,10 +7,12 @@ from .entry_common import (
     SdkError,
     _entry_exception_error,
     plugin_entry,
+    ui,
 )
 
 
 class _CheckinEntriesMixin:
+    @ui.action()
     @plugin_entry(
         id="study_checkin_status",
         name="Study Check-In Status",
@@ -35,6 +37,7 @@ class _CheckinEntriesMixin:
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_checkin_status")
 
+    @ui.action()
     @plugin_entry(
         id="study_checkin_manual",
         name="Manual Study Check-In",
@@ -61,6 +64,7 @@ class _CheckinEntriesMixin:
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_checkin_manual")
 
+    @ui.action()
     @plugin_entry(
         id="study_session_summary",
         name="Study Habit Session Summary",
