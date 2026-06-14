@@ -550,7 +550,9 @@ function hostedRelativeImportPaths(
   }
   for (const statement of hostedReExportStatements(source)) {
     if (statement.specifier.startsWith('./') || statement.specifier.startsWith('../')) {
-      if (statement.typeOnly || !hasRuntimeReExportBindings(statement)) continue
+      if (statement.typeOnly) continue
+      const isEmptyNamedReExport = hasEmptyNamedReExport(statement)
+      if (!isEmptyNamedReExport && !hasRuntimeReExportBindings(statement)) continue
       const modulePath = resolveHostedImport(fromPath, statement.specifier, dependenciesByPath)
       paths.push(modulePath)
     }
@@ -1002,8 +1004,13 @@ function moduleReExportStatements(rawNames: string, modulePath: string) {
   return statements.join('\n')
 }
 
+function hasEmptyNamedReExport(statement: HostedReExportStatement) {
+  return statement.rawNames !== undefined && statement.rawNames.trim() === ''
+}
+
 function hasRuntimeReExportBindings(statement: HostedReExportStatement) {
-  if (statement.namespaceName || !statement.rawNames) return true
+  if (statement.namespaceName) return true
+  if (statement.rawNames === undefined) return true
   return parseNamedBindings(`{${statement.rawNames}}`).length > 0
 }
 
@@ -1025,7 +1032,8 @@ function transformHostedReExports(
       cursor = statement.end
       continue
     }
-    if (!hasRuntimeReExportBindings(statement)) {
+    const isEmptyNamedReExport = hasEmptyNamedReExport(statement)
+    if (!isEmptyNamedReExport && !hasRuntimeReExportBindings(statement)) {
       cursor = statement.end
       continue
     }
@@ -1036,8 +1044,13 @@ function transformHostedReExports(
       cursor = statement.end
       continue
     }
-    if (!statement.rawNames) {
+    if (statement.rawNames === undefined) {
       result += `for (const key of Object.keys(${moduleRef})) {\n  if (key !== 'default') __exports[key] = ${moduleRef}[key];\n}\n`
+      cursor = statement.end
+      continue
+    }
+    if (isEmptyNamedReExport) {
+      result += `${moduleRef};\n`
       cursor = statement.end
       continue
     }

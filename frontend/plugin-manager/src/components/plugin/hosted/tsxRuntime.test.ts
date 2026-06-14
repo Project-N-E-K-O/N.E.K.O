@@ -347,6 +347,30 @@ describe('hosted TSX document runtime', () => {
     expect(root.querySelector('strong')?.textContent).toBe('mixed-reexport')
   })
 
+  it('keeps empty re-exports as side-effect dependencies without exporting names', () => {
+    const { root } = executeHostedDocument(`
+      import { hidden, label } from "./barrel"
+
+      export default function Panel() {
+        return <strong>{String(hidden) + "-" + label}</strong>
+      }
+    `, baseContext(), baseContext(), [{
+      path: 'ui/barrel.ts',
+      source: `
+        export {} from "./side-effect"
+        export const label = (window as any).__emptyReExportSideEffect ?? "missing"
+      `,
+    }, {
+      path: 'ui/side-effect.ts',
+      source: `
+        ;(window as any).__emptyReExportSideEffect = "side"
+        export const hidden = "hidden"
+      `,
+    }])
+
+    expect(root.querySelector('strong')?.textContent).toBe('undefined-side')
+  })
+
   it('ignores commented and template import text while rewriting hosted TSX', () => {
     const { root } = executeHostedDocument(`
       /*

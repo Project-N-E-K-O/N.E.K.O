@@ -171,19 +171,52 @@ function isRelativeSpecifier(specifier) {
   return specifier.startsWith('./') || specifier.startsWith('../')
 }
 
+function importDeclarationHasRuntimeBindings(node) {
+  const clause = node.importClause
+  if (!clause) return true
+  if (clause.isTypeOnly) return false
+  if (clause.name) return true
+  const bindings = clause.namedBindings
+  if (!bindings) return false
+  if (ts.isNamespaceImport(bindings)) return true
+  if (ts.isNamedImports(bindings)) {
+    return bindings.elements.some((element) => !element.isTypeOnly)
+  }
+  return true
+}
+
+function exportDeclarationHasRuntimeBindings(node) {
+  if (node.isTypeOnly) return false
+  const clause = node.exportClause
+  if (!clause) return true
+  if (clause.kind === ts.SyntaxKind.NamespaceExport) return true
+  if (ts.isNamedExports(clause)) {
+    if (clause.elements.length === 0) return true
+    return clause.elements.some((element) => !element.isTypeOnly)
+  }
+  return true
+}
+
 function extractRelativeImportSpecifiers(sourcePath, source) {
   const sourceFile = sourceFileFor(sourcePath, source)
-  const specifiers = []
+  const runtimeSpecifiers = []
+  const typeOnlySpecifiers = []
 
-  const addSpecifier = (specifier) => {
+  const addSpecifier = (specifier, typeOnly) => {
     if (specifier && isRelativeSpecifier(specifier)) {
-      specifiers.push(specifier)
+      if (typeOnly) {
+        typeOnlySpecifiers.push(specifier)
+      } else {
+        runtimeSpecifiers.push(specifier)
+      }
     }
   }
 
   const visit = (node) => {
-    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
-      addSpecifier(moduleSpecifierText(node.moduleSpecifier))
+    if (ts.isImportDeclaration(node)) {
+      addSpecifier(moduleSpecifierText(node.moduleSpecifier), !importDeclarationHasRuntimeBindings(node))
+    } else if (ts.isExportDeclaration(node)) {
+      addSpecifier(moduleSpecifierText(node.moduleSpecifier), !exportDeclarationHasRuntimeBindings(node))
     } else if (
       ts.isCallExpression(node) &&
       node.expression.kind === ts.SyntaxKind.ImportKeyword &&
@@ -202,7 +235,7 @@ function extractRelativeImportSpecifiers(sourcePath, source) {
   }
 
   visit(sourceFile)
-  return specifiers
+  return { runtimeSpecifiers, typeOnlySpecifiers }
 }
 
 function replaceRangesWithWhitespace(source, ranges) {
@@ -510,13 +543,80 @@ function resolveRelativeImport(fromPath, specifier, pluginRoot) {
   return null
 }
 
+function resolveRelativeTypeDeclaration(fromPath, specifier, pluginRoot) {
+  if (!isRelativeSpecifier(specifier)) return null
+  const fromResolved = assertPathInsideRepo(fromPath, 'Import source path')
+  const resolvedPluginRoot = assertPathInsideRepo(pluginRoot, 'Plugin root')
+  const basePath = resolve(dirname(fromResolved), specifier)
+  if (!isPathInside(repoRoot, basePath)) {
+    throw new Error(`Relative type import outside repo root: ${fromPath} imports ${specifier}`)
+  }
+  const candidates = [basePath]
+  if (!/\.[A-Za-z0-9]+$/.test(basePath)) {
+    candidates.push(
+      `${basePath}.d.ts`,
+      `${basePath}.tsx`,
+      `${basePath}.ts`,
+      `${basePath}.jsx`,
+      `${basePath}.js`,
+    )
+  }
+  candidates.push(
+    join(basePath, 'index.d.ts'),
+    join(basePath, 'index.tsx'),
+    join(basePath, 'index.ts'),
+    join(basePath, 'index.jsx'),
+    join(basePath, 'index.js'),
+  )
+  for (const candidate of candidates) {
+    const resolvedCandidate = resolve(candidate)
+    if (!isPathInside(repoRoot, resolvedCandidate)) {
+      throw new Error(`Relative type import candidate outside repo root: ${fromPath} imports ${specifier}`)
+    }
+    if (isFilePath(resolvedCandidate, 'relative type import candidate')) {
+      return assertPathInsidePluginRoot(
+        resolvedCandidate,
+        resolvedPluginRoot,
+        'Relative type import declaration',
+      )
+    }
+  }
+  return null
+}
+
 function dependencyCycleMessage(cyclePaths) {
   return cyclePaths
     .map((cyclePath) => relative(repoRoot, cyclePath).replace(/\\/g, '/'))
     .join(' -> ')
 }
 
-function copyRelativeDependencies(sourcePath, tempDir, pluginRoot, copied = new Set(), visiting = [], depth = 0) {
+function copyRelativeTypeDeclaration(sourcePath, tempDir, pluginRoot, copiedDeclarations) {
+  const resolvedPath = assertPathInsideRepo(sourcePath, 'Type declaration path')
+  if (copiedDeclarations.has(resolvedPath)) return
+  const source = readSourceFile(resolvedPath)
+  const targetPath = tempPathForSource(resolvedPath, tempDir)
+  mkdirForFile(targetPath, 'hosted TSX type declaration copy')
+  writeTextFile(targetPath, source, 'hosted TSX type declaration copy')
+  copiedDeclarations.add(resolvedPath)
+
+  const { runtimeSpecifiers, typeOnlySpecifiers } = extractRelativeImportSpecifiers(resolvedPath, source)
+  for (const specifier of [...runtimeSpecifiers, ...typeOnlySpecifiers]) {
+    const dependencyPath = resolveRelativeTypeDeclaration(resolvedPath, specifier, pluginRoot)
+    if (dependencyPath) {
+      copyRelativeTypeDeclaration(dependencyPath, tempDir, pluginRoot, copiedDeclarations)
+    }
+  }
+}
+
+function copyRelativeDependencies(
+  sourcePath,
+  tempDir,
+  pluginRoot,
+  copied = new Set(),
+  visiting = [],
+  depth = 0,
+  copiedDeclarations = new Set(),
+) {
   const resolvedPath = assertPathInsideRepo(sourcePath, 'Source path')
   const cycleStart = visiting.indexOf(resolvedPath)
   if (cycleStart >= 0) {
@@ -534,10 +634,25 @@ function copyRelativeDependencies(sourcePath, tempDir, pluginRoot, copied = new 
   writeTextFile(targetPath, source, 'hosted TSX dependency copy')
 
   try {
-    for (const specifier of extractRelativeImportSpecifiers(resolvedPath, source)) {
+    const { runtimeSpecifiers, typeOnlySpecifiers } = extractRelativeImportSpecifiers(resolvedPath, source)
+    for (const specifier of runtimeSpecifiers) {
       const dependencyPath = resolveRelativeImport(resolvedPath, specifier, pluginRoot)
       if (dependencyPath) {
-        copyRelativeDependencies(dependencyPath, tempDir, pluginRoot, copied, visiting, depth + 1)
+        copyRelativeDependencies(
+          dependencyPath,
+          tempDir,
+          pluginRoot,
+          copied,
+          visiting,
+          depth + 1,
+          copiedDeclarations,
+        )
+      }
+    }
+    for (const specifier of typeOnlySpecifiers) {
+      const dependencyPath = resolveRelativeTypeDeclaration(resolvedPath, specifier, pluginRoot)
+      if (dependencyPath) {
+        copyRelativeTypeDeclaration(dependencyPath, tempDir, pluginRoot, copiedDeclarations)
       }
     }
     copied.add(resolvedPath)

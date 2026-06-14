@@ -191,6 +191,44 @@ test('rejects non-literal dynamic imports in hosted TSX', () => {
   })
 })
 
+test('allows type-only relative declarations backed by type files', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'type-only-declarations')
+    writePluginToml(pluginDir, 'main.tsx')
+    writeFixtureFile(
+      join(pluginDir, 'main.tsx'),
+      `import type { Label } from './types'
+import type { RuntimeBacked } from './runtime-types'
+import { type Extra } from './types'
+export type { Label as ExportedLabel } from './types'
+export { type Extra as ExportedExtra } from './types'
+
+export default function Panel() {
+  const label: Label = 'ok'
+  const extra: Extra = 'extra'
+  const backed: RuntimeBacked = 'backed'
+  return <Page title={label + '-' + extra + '-' + backed} />
+}
+`,
+    )
+    writeFixtureFile(
+      join(pluginDir, 'types.d.ts'),
+      `export type Label = string
+export type Extra = string
+`,
+    )
+    writeFixtureFile(
+      join(pluginDir, 'runtime-types.ts'),
+      "export type RuntimeBacked = 'backed'\n",
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /Hosted TSX check passed \(1 file\)/)
+  })
+})
+
 test('limits plugin TOML input size', () => {
   withFixture((root) => {
     const pluginDir = join(root, 'large-toml')
