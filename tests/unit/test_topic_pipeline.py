@@ -222,7 +222,7 @@ async def test_topic_pool_discards_stale_analysis_when_new_turn_arrives():
     await asyncio.sleep(0)
     pool.note_user_message("妮可", "第二句又补充说我主要怕选错以后回不了头")
     release.set()
-    await task
+    assert await task is None
 
     assert calls == [["第一句认真说一下我最近一直在纠结要不要换工作"]]
     assert pool.get_ready_materials("妮可") == []
@@ -263,7 +263,7 @@ async def test_topic_pool_discards_stale_analysis_when_new_turn_arrives_during_e
     await entered_enrich.wait()
     pool.note_user_message("妮可", "第二句又补充说我主要怕选错以后回不了头")
     release_enrich.set()
-    await task
+    assert await task is None
 
     assert pool.get_ready_materials("妮可") == []
 
