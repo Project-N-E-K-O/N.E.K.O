@@ -417,6 +417,32 @@ async def test_text_mode_acks_only_callbacks_that_reach_prompt():
     assert active_future.result() is True
 
 
+async def test_text_mode_resolves_delivery_ack_before_prompt_completion_flush():
+    class _FlushCancellingSess(_FakeOmniOffline):
+        async def prompt_ephemeral(self, instruction: str, *, images=None) -> bool:
+            self.called_with.append(instruction)
+            assert future.done()
+            assert future.result() is True
+            return True
+
+    sess = _FlushCancellingSess(delivered=True)
+    mgr = _make_mgr(session=sess)
+    future = asyncio.get_running_loop().create_future()
+    cb = {
+        "_callback_delivery_id": "id-text-ack-before-flush",
+        "status": "completed",
+        "summary": "shown before flush",
+        DELIVERY_ACK_FUTURE_KEY: future,
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    delivered = await LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert future.done()
+    assert future.result() is True
+
+
 async def test_text_mode_success_keeps_late_extra_replies():
     class _QueueingSess(_FakeOmniOffline):
         async def prompt_ephemeral(self, instruction: str, *, images=None) -> bool:

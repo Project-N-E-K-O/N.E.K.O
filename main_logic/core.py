@@ -6227,6 +6227,8 @@ class LLMSessionManager:
                 master_name=self.master_name,
                 passive=False,
             )
+            for cb in active_callbacks:
+                resolve_callback_delivery_ack(cb, True)
             _sid_token = _proactive_expected_sid.set(proactive_sid)
             # Text-mode playback boundary for the pacing manager: no frontend
             # audio signal arrives for text delivery, so bracket prompt_ephemeral
