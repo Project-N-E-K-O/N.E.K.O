@@ -163,10 +163,10 @@ class ToolLeakFilter:
 
     def _possible_marker_tail_len(self, text: str) -> int:
         lower = text.lower()
-        markers = ["<seed:tool_call", "seed:tool_call"]
+        best = self._seed_marker_tail_len(text)
+        markers = []
         markers.extend(name.lower() + "</name><parameter name=" for name in self._tool_names)
         markers.extend(name.lower() + "</name>" for name in self._tool_names)
-        best = 0
         for marker in markers:
             max_prefix = min(len(marker) - 1, len(lower), self._max_tail)
             for size in range(max_prefix, 0, -1):
@@ -174,6 +174,97 @@ class ToolLeakFilter:
                     best = max(best, size)
                     break
         return best
+
+    def _seed_marker_tail_len(self, text: str) -> int:
+        min_start = max(0, len(text) - self._max_tail)
+        for start in range(min_start, len(text)):
+            first = text[start]
+            if first != "<" and first.lower() != "s":
+                continue
+            tail = text[start:]
+            if self._is_seed_opener_prefix(tail):
+                return len(tail)
+        return 0
+
+    @classmethod
+    def _is_seed_opener_prefix(cls, text: str) -> bool:
+        return cls._is_bracketed_seed_opener_prefix(text) or cls._is_bare_seed_opener_prefix(text)
+
+    @staticmethod
+    def _consume_literal_prefix(text: str, pos: int, literal: str) -> tuple[bool, int, bool]:
+        fragment = text[pos : pos + len(literal)].lower()
+        if not literal.startswith(fragment):
+            return False, pos, False
+        if len(fragment) < len(literal):
+            return True, len(text), True
+        return True, pos + len(literal), False
+
+    @staticmethod
+    def _consume_whitespace(text: str, pos: int) -> int:
+        while pos < len(text) and text[pos].isspace():
+            pos += 1
+        return pos
+
+    @staticmethod
+    def _is_word_char(char: str) -> bool:
+        return char == "_" or char.isalnum()
+
+    @classmethod
+    def _is_bracketed_seed_opener_prefix(cls, text: str) -> bool:
+        if not text or text[0] != "<":
+            return False
+
+        pos = cls._consume_whitespace(text, 1)
+        if pos == len(text):
+            return True
+
+        ok, pos, partial = cls._consume_literal_prefix(text, pos, "seed")
+        if not ok:
+            return False
+        if partial:
+            return True
+
+        pos = cls._consume_whitespace(text, pos)
+        if pos == len(text):
+            return True
+        if text[pos] != ":":
+            return False
+
+        pos = cls._consume_whitespace(text, pos + 1)
+        if pos == len(text):
+            return True
+
+        ok, pos, partial = cls._consume_literal_prefix(text, pos, "tool_call")
+        if not ok:
+            return False
+        if partial or pos == len(text):
+            return True
+
+        return not cls._is_word_char(text[pos]) and ">" not in text[pos:]
+
+    @classmethod
+    def _is_bare_seed_opener_prefix(cls, text: str) -> bool:
+        if not text or text[0].lower() != "s":
+            return False
+
+        ok, pos, partial = cls._consume_literal_prefix(text, 0, "seed")
+        if not ok:
+            return False
+        if partial:
+            return True
+
+        pos = cls._consume_whitespace(text, pos)
+        if pos == len(text):
+            return True
+        if text[pos] != ":":
+            return False
+
+        pos = cls._consume_whitespace(text, pos + 1)
+        if pos == len(text):
+            return True
+
+        ok, _pos, partial = cls._consume_literal_prefix(text, pos, "tool_call")
+        return ok and partial
 
 
 def log_tool_leak_filtered(

@@ -64,6 +64,21 @@ def test_seed_marker_across_chunks_is_stripped():
     assert events[0].cross_chunk is True
 
 
+def test_whitespace_tolerant_seed_marker_across_chunks_is_stripped():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    visible, events = _drain(
+        ToolLeakFilter(tool_names={"recall_memory"}),
+        ["before <seed: ", "tool_call>secret</seed:tool_call> after"],
+    )
+
+    assert visible == "before  after"
+    assert "secret" not in visible
+    assert len(events) == 1
+    assert events[0].pattern == "seed_tool_call"
+    assert events[0].cross_chunk is True
+
+
 def test_suppressed_long_arguments_are_not_output():
     from utils.llm_tool_leak_filter import ToolLeakFilter
 
