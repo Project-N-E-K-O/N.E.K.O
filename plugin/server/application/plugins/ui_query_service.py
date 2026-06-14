@@ -856,7 +856,7 @@ def _load_hosted_tsx_dependencies_sync(
             details={"cycle": cycle},
         )
 
-    def read_source(path: Path) -> str:
+    def read_source(path: Path, *, count_bytes: bool = True) -> str:
         nonlocal total_bytes
         try:
             size = path.stat().st_size
@@ -867,14 +867,17 @@ def _load_hosted_tsx_dependencies_sync(
                 status_code=500,
                 details={"path": str(path), "error_type": type(exc).__name__},
             ) from exc
-        total_bytes += size
-        if total_bytes > _HOSTED_TSX_DEPENDENCIES_MAX_BYTES:
-            raise ServerDomainError(
-                code="PLUGIN_UI_DEPENDENCIES_TOO_LARGE",
-                message="Hosted UI dependencies are too large",
-                status_code=500,
-                details={"max_bytes": _HOSTED_TSX_DEPENDENCIES_MAX_BYTES},
-            )
+        # The budget bounds the returned *dependency* payload. The entry's own
+        # source is returned separately by the endpoint, so it must not count.
+        if count_bytes:
+            total_bytes += size
+            if total_bytes > _HOSTED_TSX_DEPENDENCIES_MAX_BYTES:
+                raise ServerDomainError(
+                    code="PLUGIN_UI_DEPENDENCIES_TOO_LARGE",
+                    message="Hosted UI dependencies are too large",
+                    status_code=500,
+                    details={"max_bytes": _HOSTED_TSX_DEPENDENCIES_MAX_BYTES},
+                )
         try:
             return path.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
@@ -885,8 +888,8 @@ def _load_hosted_tsx_dependencies_sync(
                 details={"path": str(path), "error_type": type(exc).__name__},
             ) from exc
 
-    def visit(path: Path) -> str:
-        source = read_source(path)
+    def visit(path: Path, *, count_bytes: bool = True) -> str:
+        source = read_source(path, count_bytes=count_bytes)
         visiting.append(path)
         try:
             for specifier in _hosted_tsx_relative_import_specifiers(source):
@@ -922,7 +925,7 @@ def _load_hosted_tsx_dependencies_sync(
             visiting.pop()
         return source
 
-    visit(entry_path)
+    visit(entry_path, count_bytes=False)
     return dependencies
 
 

@@ -9,6 +9,7 @@ from plugin.core.ui_manifest import normalize_plugin_ui_manifest
 from plugin._types.exceptions import PluginExecutionError
 from plugin.server.application import config as config_application
 from plugin.server.domain.errors import ServerDomainError
+from plugin.server.application.plugins import ui_query_service as ui_query_module
 from plugin.server.application.plugins.ui_query_service import (
     _build_plugin_list_actions_from_meta,
     _get_static_ui_config_from_meta,
@@ -987,3 +988,56 @@ def test_call_surface_action_localizes_plugin_not_running(tmp_path) -> None:
 )
 def test_hosted_plugin_not_running_message_locale_mapping(locale, expected_key) -> None:
     assert _hosted_plugin_not_running_message(locale) == _PLUGIN_NOT_RUNNING_MESSAGES[expected_key]
+
+
+def test_surface_source_excludes_entry_from_dependency_byte_budget(tmp_path, monkeypatch) -> None:
+    # The byte budget bounds the returned dependency payload; the entry's own
+    # source is returned separately, so a large entry with no relative deps must
+    # not trip PLUGIN_UI_DEPENDENCIES_TOO_LARGE.
+    monkeypatch.setattr(ui_query_module, "_HOSTED_TSX_DEPENDENCIES_MAX_BYTES", 64)
+    plugin_dir = tmp_path / "demo_plugin"
+    ui_dir = plugin_dir / "ui"
+    ui_dir.mkdir(parents=True)
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
+    large_entry = (
+        "export default function Panel() {\n"
+        f"  const note = '{'x' * 256}'\n"
+        "  return <strong>{note.length}</strong>\n"
+        "}\n"
+    )
+    (ui_dir / "panel.tsx").write_text(large_entry, encoding="utf-8")
+    plugin_ui = normalize_plugin_ui_manifest(
+        {
+            "plugin": {
+                "ui": {
+                    "panel": [{
+                        "id": "main",
+                        "entry": "ui/panel.tsx",
+                        "permissions": ["state:read"],
+                    }],
+                },
+            },
+        },
+        plugin_id="demo",
+    )
+
+    plugins_backup = dict(state.plugins)
+    try:
+        with state.acquire_plugins_write_lock():
+            state.plugins.clear()
+            state.plugins["demo"] = {
+                "id": "demo",
+                "config_path": str(config_path),
+                "plugin_ui": plugin_ui,
+                "entries": [],
+            }
+
+        payload = asyncio.run(PluginUiQueryService().get_surface_source("demo", kind="panel", surface_id="main"))
+    finally:
+        with state.acquire_plugins_write_lock():
+            state.plugins.clear()
+            state.plugins.update(plugins_backup)
+
+    assert payload["dependencies"] == []
+    assert payload["source"] == large_entry
