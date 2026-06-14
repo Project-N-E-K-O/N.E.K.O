@@ -507,6 +507,20 @@ def test_basketball_non_duel_prompts_do_not_advertise_difficulty_control(lang, m
 
 @pytest.mark.unit
 @pytest.mark.parametrize("lang", ("zh", "en", "ja", "ko", "ru", "es", "pt"))
+def test_basketball_horse_system_prompt_does_not_inherit_duel_rules(lang):
+    prompt = prompts_game.get_basketball_system_prompt(lang, mode="horse")
+
+    assert "event.mode=horse" in prompt
+    assert "event.mode=duel" not in prompt
+    assert "player_duel_shot" not in prompt
+    assert "neko_duel_shot" not in prompt
+    assert "neko_duel_turn" not in prompt
+    assert "duel.player_score" not in prompt
+    assert "duel.neko_score" not in prompt
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("lang", ("zh", "en", "ja", "ko", "ru", "es", "pt"))
 def test_basketball_quick_lines_mode_prompts_are_distinct_and_localized(lang):
     spectator = prompts_game.get_basketball_quick_lines_prompt(lang, mode="spectator")
 

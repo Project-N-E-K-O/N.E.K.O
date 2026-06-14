@@ -1002,13 +1002,13 @@ _BASKETBALL_TIMED_SYSTEM_PROMPT_SUFFIX = {
 }
 
 _BASKETBALL_HORSE_SYSTEM_PROMPT_SUFFIX = {
-    "zh": "\n模式补充：event.mode=horse 表示 HORSE 复刻模式，不是 duel 比分对战。根据 horse_phase、HORSE 字母、challenge、made_count、final_streak 描述谁出题、谁复刻、谁吃到字母，不要要求 duel.player_score/neko_score。",
-    "en": "\nMode override: event.mode=horse means HORSE copy-the-shot play, not duel scoring. Use horse_phase, HORSE letters, challenge, made_count, and final_streak to describe who set the shot, who copied it, and who took a letter; do not require duel.player_score/neko_score.",
-    "ja": "\nモード補足：event.mode=horse は HORSE の再現モードで、duel の得点対決ではありません。horse_phase、HORSE の文字、challenge、made_count、final_streak から、誰が出題し誰が再現し誰に文字が付いたかを表現し、duel.player_score/neko_score は要求しないでください。",
-    "ko": "\n모드 보충: event.mode=horse 는 HORSE 복각 모드이며 duel 점수 대결이 아닙니다. horse_phase, HORSE 글자, challenge, made_count, final_streak 로 누가 문제를 냈고 누가 따라 했고 누가 글자를 받았는지 말하며 duel.player_score/neko_score 를 요구하지 마세요.",
-    "ru": "\nУточнение режима: event.mode=horse означает HORSE с повторением броска, а не duel по счету. Используй horse_phase, буквы HORSE, challenge, made_count и final_streak, чтобы описать, кто задал бросок, кто повторял и кто получил букву; не требуй duel.player_score/neko_score.",
-    "es": "\nAjuste de modo: event.mode=horse es HORSE de copiar el tiro, no puntuación duel. Usa horse_phase, letras HORSE, challenge, made_count y final_streak para decir quién propuso el tiro, quién lo copió y quién recibió una letra; no exijas duel.player_score/neko_score.",
-    "pt": "\nAjuste de modo: event.mode=horse é HORSE de copiar o arremesso, não pontuação duel. Use horse_phase, letras HORSE, challenge, made_count e final_streak para dizer quem propôs o arremesso, quem copiou e quem recebeu uma letra; não exija duel.player_score/neko_score.",
+    "zh": "\n模式补充：event.mode=horse 表示 HORSE 复刻模式，不是比分对战。根据 horse_phase、HORSE 字母、challenge、made_count、final_streak 描述谁出题、谁复刻、谁吃到字母，不要写成对战比分。",
+    "en": "\nMode override: event.mode=horse means HORSE copy-the-shot play, not score-duel play. Use horse_phase, HORSE letters, challenge, made_count, and final_streak to describe who set the shot, who copied it, and who took a letter; do not frame it as duel scoring.",
+    "ja": "\nモード補足：event.mode=horse は HORSE の再現モードで、得点対決ではありません。horse_phase、HORSE の文字、challenge、made_count、final_streak から、誰が出題し誰が再現し誰に文字が付いたかを表現し、対戦スコアとして書かないでください。",
+    "ko": "\n모드 보충: event.mode=horse 는 HORSE 복각 모드이며 점수 대결이 아닙니다. horse_phase, HORSE 글자, challenge, made_count, final_streak 로 누가 문제를 냈고 누가 따라 했고 누가 글자를 받았는지 말하며 대결 점수처럼 쓰지 마세요.",
+    "ru": "\nУточнение режима: event.mode=horse означает HORSE с повторением броска, а не дуэль по счету. Используй horse_phase, буквы HORSE, challenge, made_count и final_streak, чтобы описать, кто задал бросок, кто повторял и кто получил букву; не оформляй это как счетовую дуэль.",
+    "es": "\nAjuste de modo: event.mode=horse es HORSE de copiar el tiro, no un duelo de marcador. Usa horse_phase, letras HORSE, challenge, made_count y final_streak para decir quién propuso el tiro, quién lo copió y quién recibió una letra; no lo enmarques como puntuación de duelo.",
+    "pt": "\nAjuste de modo: event.mode=horse é HORSE de copiar o arremesso, não um duelo de placar. Use horse_phase, letras HORSE, challenge, made_count e final_streak para dizer quem propôs o arremesso, quem copiou e quem recebeu uma letra; não enquadre como pontuação de duelo.",
 }
 
 
@@ -1016,21 +1016,12 @@ def _basketball_prompt_variants(base: dict[str, str], suffixes: dict[str, str]) 
     return {lang: text + suffixes.get(lang, suffixes["en"]) for lang, text in base.items()}
 
 
-def _basketball_prompt_without_difficulty_control(text: str) -> str:
-    return (
-        text.replace(',"difficulty":"<difficulty>"', "")
-        .replace(',"difficulty":"<难度>"', "")
-        .replace("  difficulty: max, lv2, lv3, lv4\n", "")
-        .replace("  difficulty 可选：max, lv2, lv3, lv4\n", "")
-    )
-
-
 BASKETBALL_TIMED_SYSTEM_PROMPTS = _basketball_prompt_variants(
     BASKETBALL_SHOOTER_SYSTEM_PROMPTS,
     _BASKETBALL_TIMED_SYSTEM_PROMPT_SUFFIX,
 )
 BASKETBALL_HORSE_SYSTEM_PROMPTS = _basketball_prompt_variants(
-    {lang: _basketball_prompt_without_difficulty_control(text) for lang, text in BASKETBALL_DUEL_SYSTEM_PROMPTS.items()},
+    BASKETBALL_SYSTEM_PROMPTS,
     _BASKETBALL_HORSE_SYSTEM_PROMPT_SUFFIX,
 )
 
