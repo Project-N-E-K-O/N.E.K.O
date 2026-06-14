@@ -125,6 +125,64 @@ panel = [{ id = "main", title = { en = "Main" }, mode = "hosted-tsx", entry = "m
   })
 })
 
+test('checks hosted surfaces declared with plugin-level inline UI tables', () => {
+  for (const [name, toml] of [
+    ['plugin-inline-ui', `[plugin]
+ui = { panel = [{ id = "main", mode = "hosted-tsx", entry = "main.tsx" }] }
+`],
+    ['plugin-dotted-inline-surface', `[plugin]
+ui.panel = { id = "main", mode = "hosted-tsx", entry = "main.tsx" }
+`],
+    ['single-surface-table', `[plugin.ui.panel]
+id = "main"
+mode = "hosted-tsx"
+entry = "main.tsx"
+`],
+  ]) {
+    withFixture((root) => {
+      const pluginDir = join(root, name)
+      writeFixtureFile(join(pluginDir, 'plugin.toml'), toml)
+      writeFixtureFile(
+        join(pluginDir, 'main.tsx'),
+        `export function Panel() {
+  return <Page title="missing default" />
+}
+`,
+      )
+
+      const result = runCheck(pluginDir)
+
+      assert.equal(result.status, 1)
+      assert.match(result.stderr, /Hosted TSX must export a default function component/)
+    })
+  }
+})
+
+test('skips plugin-level dotted disabled UI surfaces', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'plugin-dotted-ui-disabled')
+    writeFixtureFile(
+      join(pluginDir, 'plugin.toml'),
+      `[plugin]
+ui.enabled = false
+ui.panel = { id = "main", mode = "hosted-tsx", entry = "main.tsx" }
+`,
+    )
+    writeFixtureFile(
+      join(pluginDir, 'main.tsx'),
+      `export function Panel() {
+  return <Page title="disabled" />
+}
+`,
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /No hosted-tsx surfaces found/)
+  })
+})
+
 test('rejects relative imports that escape the repository root', () => {
   withFixture((root) => {
     const pluginDir = join(root, 'escape-import')
@@ -223,9 +281,11 @@ test('allows type-only relative declarations backed by type files', () => {
       join(pluginDir, 'main.tsx'),
       `import type { Label } from './types'
 import type { RuntimeBacked } from './runtime-types'
-import { type Extra } from './types'
+import { type
+  Extra } from './types'
 export type { Label as ExportedLabel } from './types'
-export { type Extra as ExportedExtra } from './types'
+export { type
+  Extra as ExportedExtra } from './types'
 
 export default function Panel() {
   const label: Label = 'ok'

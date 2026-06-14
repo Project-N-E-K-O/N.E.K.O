@@ -326,6 +326,29 @@ describe('hosted TSX document runtime', () => {
     expect(root.querySelector('strong')?.textContent).toBe('ok')
   })
 
+  it('does not resolve multiline named type-only imports and re-exports at runtime', () => {
+    const { root } = executeHostedDocument(`
+      import { type
+        Label } from "./types"
+      import { label } from "./barrel"
+      export { type
+        EntryOnly } from "./entry-types"
+
+      export default function Panel() {
+        return <strong>{label as Label}</strong>
+      }
+    `, baseContext(), baseContext(), [{
+      path: 'ui/barrel.ts',
+      source: `
+        export { type
+          BarrelOnly } from "./barrel-types"
+        export const label = "ok"
+      `,
+    }])
+
+    expect(root.querySelector('strong')?.textContent).toBe('ok')
+  })
+
   it('still resolves relative re-exports with mixed runtime and type bindings', () => {
     const { root } = executeHostedDocument(`
       import { label } from "./barrel"

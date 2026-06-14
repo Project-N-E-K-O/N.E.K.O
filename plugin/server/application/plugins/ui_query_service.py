@@ -704,9 +704,18 @@ def _hosted_named_bindings_have_runtime(raw_bindings: str) -> bool:
     if not (stripped.startswith("{") and stripped.endswith("}")):
         return bool(stripped)
     for item in stripped[1:-1].split(","):
-        if item.strip() and not item.strip().startswith("type "):
+        if item.strip() and not _hosted_is_type_only_binding(item):
             return True
     return False
+
+
+def _hosted_is_type_only_binding(raw_binding: str) -> bool:
+    stripped = raw_binding.strip()
+    return stripped == "type" or (
+        stripped.startswith("type")
+        and len(stripped) > 4
+        and stripped[4].isspace()
+    )
 
 
 def _hosted_named_bindings_are_empty(raw_bindings: str) -> bool:
@@ -718,7 +727,7 @@ def _hosted_import_bindings_have_runtime(raw_bindings: str) -> bool:
     bindings = raw_bindings.strip()
     if not bindings:
         return True
-    if bindings == "type" or bindings.startswith("type "):
+    if _hosted_is_type_only_binding(bindings):
         return False
     named_start = bindings.find("{")
     if named_start < 0:

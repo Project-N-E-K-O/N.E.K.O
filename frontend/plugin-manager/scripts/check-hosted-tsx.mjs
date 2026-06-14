@@ -254,6 +254,7 @@ function replaceRangesWithWhitespace(source, ranges) {
 function parseTomlSurfaces(text) {
   const surfaces = []
   let current = null
+  let inPlugin = false
   let inPluginUi = false
   let pendingInline = null
   let pluginUiDisabled = false
@@ -275,7 +276,7 @@ function parseTomlSurfaces(text) {
     return line
   }
 
-  const bracketDelta = (line) => {
+  const inlineNestingDelta = (line) => {
     let quote = null
     let delta = 0
     for (let index = 0; index < line.length; index += 1) {
@@ -286,9 +287,9 @@ function parseTomlSurfaces(text) {
       }
       if (char === '"' || char === "'") {
         quote = char
-      } else if (char === '[') {
+      } else if (char === '[' || char === '{') {
         delta += 1
-      } else if (char === ']') {
+      } else if (char === ']' || char === '}') {
         delta -= 1
       }
     }
@@ -374,30 +375,90 @@ function parseTomlSurfaces(text) {
     }
   }
 
+  const addInlineUiTable = (rawValue) => {
+    const value = rawValue.trim()
+    if (!value.startsWith('{') || !value.endsWith('}')) return
+    for (const field of splitInlineFields(value.slice(1, -1))) {
+      const match = field.match(/^([A-Za-z0-9_.-]+)\s*=\s*(.+)$/)
+      if (!match) continue
+      if (match[1] === 'enabled') {
+        const enabledMatch = match[2].trim().match(/^(true|false)\b/)
+        if (enabledMatch) pluginUiDisabled = enabledMatch[1] === 'false'
+        continue
+      }
+      const surfaceMatch = match[1].match(/^(?:ui\.)?(panel|guide|docs)$/)
+      if (surfaceMatch) addInlineSurfaces(surfaceMatch[1], match[2])
+    }
+  }
+
   for (const rawLine of text.split(/\r?\n/)) {
     const lineWithoutComment = stripComment(rawLine)
     if (pendingInline) {
       pendingInline.value += `\n${lineWithoutComment}`
-      pendingInline.depth += bracketDelta(lineWithoutComment)
+      pendingInline.depth += inlineNestingDelta(lineWithoutComment)
       if (pendingInline.depth <= 0) {
-        addInlineSurfaces(pendingInline.kind, pendingInline.value)
+        if (pendingInline.uiTable) {
+          addInlineUiTable(pendingInline.value)
+        } else {
+          addInlineSurfaces(pendingInline.kind, pendingInline.value)
+        }
         pendingInline = null
       }
       continue
     }
     const line = lineWithoutComment.trim()
     if (!line) continue
+    const arrayTableMatch = line.match(/^\[\[plugin\.ui\.(panel|guide|docs)\]\]$/)
+    if (arrayTableMatch) {
+      inPlugin = false
+      inPluginUi = false
+      current = { kind: arrayTableMatch[1] }
+      surfaces.push(current)
+      continue
+    }
+    const singleTableMatch = line.match(/^\[plugin\.ui\.(panel|guide|docs)\]$/)
+    if (singleTableMatch) {
+      inPlugin = false
+      inPluginUi = false
+      current = { kind: singleTableMatch[1] }
+      surfaces.push(current)
+      continue
+    }
     const tableHeaderMatch = line.match(/^\[([^\]]+)\]$/)
     if (tableHeaderMatch) {
+      inPlugin = tableHeaderMatch[1] === 'plugin'
       inPluginUi = tableHeaderMatch[1] === 'plugin.ui'
       current = null
     }
-    const tableMatch = line.match(/^\[\[plugin\.ui\.(panel|guide|docs)\]\]$/)
-    if (tableMatch) {
-      inPluginUi = false
-      current = { kind: tableMatch[1] }
-      surfaces.push(current)
-      continue
+    if (inPlugin) {
+      const dottedEnabledMatch = line.match(/^ui\.enabled\s*=\s*(true|false)\b/)
+      if (dottedEnabledMatch) {
+        pluginUiDisabled = dottedEnabledMatch[1] === 'false'
+        continue
+      }
+      const inlineUiMatch = line.match(/^ui\s*=\s*(.+)$/)
+      if (inlineUiMatch) {
+        const value = inlineUiMatch[1]
+        const depth = inlineNestingDelta(value)
+        if (depth > 0) {
+          pendingInline = { value, depth, uiTable: true }
+        } else {
+          addInlineUiTable(value)
+        }
+        continue
+      }
+      const inlineSurfaceMatch = line.match(/^ui\.(panel|guide|docs)\s*=\s*(.+)$/)
+      if (inlineSurfaceMatch) {
+        const kind = inlineSurfaceMatch[1]
+        const value = inlineSurfaceMatch[2]
+        const depth = inlineNestingDelta(value)
+        if (depth > 0) {
+          pendingInline = { kind, value, depth, uiTable: false }
+        } else {
+          addInlineSurfaces(kind, value)
+        }
+        continue
+      }
     }
     if (inPluginUi) {
       const enabledMatch = line.match(/^enabled\s*=\s*(true|false)\b/)
@@ -409,9 +470,9 @@ function parseTomlSurfaces(text) {
       if (inlineMatch) {
         const kind = inlineMatch[1]
         const value = inlineMatch[2]
-        const depth = bracketDelta(value)
+        const depth = inlineNestingDelta(value)
         if (depth > 0) {
-          pendingInline = { kind, value, depth }
+          pendingInline = { kind, value, depth, uiTable: false }
         } else {
           addInlineSurfaces(kind, value)
         }

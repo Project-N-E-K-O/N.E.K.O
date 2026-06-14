@@ -462,7 +462,7 @@ function parseNamedBindings(bindings: string) {
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean)
-    .filter((item) => !item.startsWith('type '))
+    .filter((item) => !isTypeOnlyBinding(item))
     .map((item) => {
       const aliasMatch = item.match(/^([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)$/)
       if (aliasMatch) return `${aliasMatch[1]}: ${aliasMatch[2]}`
@@ -470,11 +470,15 @@ function parseNamedBindings(bindings: string) {
     })
 }
 
+function isTypeOnlyBinding(value: string) {
+  return /^type(?:\s|$)/.test(value.trim())
+}
+
 function moduleImportStatement(rawBindings: string | undefined, modulePath: string) {
   const bindings = String(rawBindings || '').trim()
   const moduleRef = `__modules[${JSON.stringify(modulePath)}]`
-  if (!bindings || bindings === 'type' || bindings.startsWith('type ')) {
-    return bindings.startsWith('type ') ? '' : `${moduleRef};\n`
+  if (!bindings || isTypeOnlyBinding(bindings)) {
+    return isTypeOnlyBinding(bindings) ? '' : `${moduleRef};\n`
   }
   const defaultNamespaceMatch = bindings.match(/^([A-Za-z_$][\w$]*)\s*,\s*\*\s+as\s+([A-Za-z_$][\w$]*)$/)
   if (defaultNamespaceMatch?.[1] && defaultNamespaceMatch[2]) {
@@ -501,7 +505,7 @@ function moduleImportStatement(rawBindings: string | undefined, modulePath: stri
 function hasRuntimeImportBindings(rawBindings: string | undefined) {
   const bindings = String(rawBindings || '').trim()
   if (!bindings) return true
-  if (bindings === 'type' || bindings.startsWith('type ')) return false
+  if (isTypeOnlyBinding(bindings)) return false
   const namedStart = bindings.indexOf('{')
   if (namedStart < 0) return true
   const defaultPart = bindings.slice(0, namedStart).trim().replace(/,$/, '').trim()
@@ -512,7 +516,7 @@ function hasRuntimeImportBindings(rawBindings: string | undefined) {
 function uiKitImportStatement(rawBindings: string | undefined) {
   const bindings = String(rawBindings || '').trim()
   const moduleRef = 'window.NekoUiKit'
-  if (!bindings || bindings === 'type' || bindings.startsWith('type ')) return ''
+  if (!bindings || isTypeOnlyBinding(bindings)) return ''
   const defaultNamespaceMatch = bindings.match(/^([A-Za-z_$][\w$]*)\s*,\s*\*\s+as\s+([A-Za-z_$][\w$]*)$/)
   if (defaultNamespaceMatch?.[1] && defaultNamespaceMatch[2]) {
     return `const ${defaultNamespaceMatch[1]} = ${moduleRef};\nconst ${defaultNamespaceMatch[2]} = ${moduleRef};\n`
@@ -993,7 +997,7 @@ function moduleReExportStatements(rawNames: string, modulePath: string) {
   const moduleRef = `__modules[${JSON.stringify(modulePath)}]`
   for (const item of rawNames.split(',')) {
     const trimmed = item.trim()
-    if (!trimmed || trimmed.startsWith('type ')) continue
+    if (!trimmed || isTypeOnlyBinding(trimmed)) continue
     const aliasMatch = trimmed.match(/^([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)$/)
     if (aliasMatch?.[1] && aliasMatch[2]) {
       statements.push(`__exports[${JSON.stringify(aliasMatch[2])}] = ${moduleRef}[${JSON.stringify(aliasMatch[1])}];`)
@@ -1082,7 +1086,7 @@ function transformModuleExports(source: string, { handleDefault = true }: { hand
     .replace(/^\s*export\s+\{([^}]+)\}\s*;?\s*$/gm, (_match, names) => {
       for (const item of String(names).split(',')) {
         const trimmed = item.trim()
-        if (!trimmed || trimmed.startsWith('type ')) continue
+        if (!trimmed || isTypeOnlyBinding(trimmed)) continue
         const aliasMatch = trimmed.match(/^([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)$/)
         if (aliasMatch?.[1] && aliasMatch[2]) {
           exports.push(exportAssignment(aliasMatch[2], aliasMatch[1]))
