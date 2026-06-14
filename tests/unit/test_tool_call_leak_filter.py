@@ -70,6 +70,19 @@ def test_structured_tool_call_variant_across_chunks_is_stripped():
     assert events[0].cross_chunk is True
 
 
+def test_structured_tool_call_closes_at_function_end_without_seed_close():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    leak = 'recall_memory</name><parameter name="query">secret</parameter></function> after'
+    visible, events = _drain(ToolLeakFilter(tool_names={"recall_memory"}), ["before ", leak])
+
+    assert visible == "before  after"
+    assert "secret" not in visible
+    assert len(events) == 1
+    assert events[0].pattern == "structured_tool_call"
+    assert events[0].finalized is False
+
+
 def test_seed_marker_across_chunks_is_stripped():
     from utils.llm_tool_leak_filter import ToolLeakFilter
 

@@ -50,7 +50,7 @@ class ToolLeakFilter:
 
         while text:
             if self._suppressing:
-                close_match = _SEED_CLOSE_RE.search(text)
+                close_match = self._suppression_close_match(text)
                 if close_match:
                     self._suppressed_chars += close_match.end()
                     text = text[close_match.end():]
@@ -112,6 +112,20 @@ class ToolLeakFilter:
         self._suppression_pattern = ""
         self._cross_chunk = False
         return event
+
+    def _suppression_close_match(self, text: str) -> re.Match[str] | None:
+        if self._suppression_pattern != "structured_tool_call":
+            return _SEED_CLOSE_RE.search(text)
+
+        seed_close = _SEED_CLOSE_RE.search(text)
+        function_close = _FUNCTION_CLOSE_RE.search(text)
+        if function_close is None:
+            return seed_close
+        if seed_close is not None and seed_close.start() < function_close.start():
+            return seed_close
+
+        trailing_seed_close = _SEED_CLOSE_RE.match(text, function_close.end())
+        return trailing_seed_close or function_close
 
     def _find_leak_start(self, text: str) -> Optional[tuple[int, int, str]]:
         seed = _SEED_OPEN_RE.search(text)
