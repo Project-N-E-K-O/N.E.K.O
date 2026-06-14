@@ -296,6 +296,76 @@ async def test_offline_openai_path_runs_tool_then_text():
 
 
 @pytest.mark.asyncio
+async def test_offline_openai_path_filters_pretool_leak_before_history():
+    from utils.llm_client import LLMStreamChunk
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    async def recall_handler(args):
+        return {"hits": []}
+
+    tool_def = ToolDefinition(
+        name="recall_memory",
+        description="recall",
+        parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+        handler=recall_handler,
+    )
+    leak = 'recall_memory</name><parameter name="query">secret</parameter></function></seed:tool_call>'
+    chunks_call_1 = [
+        LLMStreamChunk(content="让我查一下。"),
+        LLMStreamChunk(content=leak),
+        LLMStreamChunk(
+            content="",
+            tool_call_deltas=[{
+                "index": 0,
+                "id": "call_m",
+                "type": "function",
+                "function": {"name": "recall_memory", "arguments": '{"query":"x"}'},
+            }],
+        ),
+        LLMStreamChunk(content="", finish_reason="tool_calls"),
+    ]
+    chunks_call_2 = [LLMStreamChunk(content="没有查到。", finish_reason="stop")]
+    fake_llm = _FakeLLM([chunks_call_1, chunks_call_2])
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.base_url = "free"
+    client.llm = fake_llm
+    client._tool_definitions = [tool_def]
+    client.max_tool_iterations = 4
+    client._use_genai_sdk = False
+    client._genai_tools_unsupported = False
+
+    async def handler(call: ToolCall) -> ToolResult:
+        return ToolResult(call_id=call.call_id, name=call.name, output=await recall_handler(call.arguments))
+
+    client.on_tool_call = handler
+
+    messages = [{"role": "user", "content": "以前聊过什么？"}]
+    out_chunks = []
+    leak_filter = ToolLeakFilter(tool_names={"recall_memory"})
+    async for ch in client._astream_with_tools(
+        messages,
+        _tool_leak_filter=leak_filter,
+        _tool_leak_provider="free",
+    ):
+        out_chunks.append(ch)
+    tail, _event = leak_filter.finalize()
+    if tail:
+        out_chunks.append(LLMStreamChunk(content=tail))
+
+    visible = "".join(ch.content for ch in out_chunks)
+    assert visible == "让我查一下。没有查到。"
+    assistant_with_tool = next(
+        m for m in messages if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")
+    )
+    assert assistant_with_tool["content"] == "让我查一下。"
+    assert "recall_memory</name>" not in assistant_with_tool["content"]
+    assert "secret" not in assistant_with_tool["content"]
+
+
+@pytest.mark.asyncio
 async def test_offline_openai_path_persists_reasoning_content_with_tool_call():
     """Thinking 模型（DeepSeek-R / Qwen / GLM thinking 等 OpenAI-compat 端点）
     在多轮 tool calling 时，发起 tool_calls 的那条 assistant 消息必须把本轮流出的
@@ -2849,3 +2919,143 @@ async def test_stream_text_summary_disabled_keeps_old_truncate_behavior(monkeypa
         assert c["ui_enabled"] and c["tts_enabled"]
     # 关键回归：禁用模式下小模型摘要器一次都不能被调
     assert summarize_calls == []
+
+
+def _minimal_offline_client_for_leak_tests(monkeypatch):
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from main_logic.tool_calling import ToolDefinition
+    from utils.llm_client import SystemMessage
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.base_url = "free"
+    client.lanlan_name = "T"
+    client.master_name = "M"
+    client._prefix_buffer_size = 0
+    client._conversation_history = [SystemMessage(content="sys")]
+    client._pending_images = []
+    client._is_responding = False
+    client._recent_responses = []
+    client._repetition_threshold = 0.8
+    client._max_recent_responses = 3
+    client.max_response_length = 9999
+    client.max_response_rerolls = 0
+    client.max_tool_iterations = 1
+    client.enable_response_guard = False
+    client.enable_long_response_summary = False
+    client.vision_model = ""
+    client.model = "x"
+    client._tool_definitions = [ToolDefinition(name="recall_memory", description="")]
+    return client
+
+
+@pytest.mark.asyncio
+async def test_stream_text_filters_tool_call_leak_before_ui_and_history(monkeypatch):
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import AIMessage, LLMStreamChunk
+
+    async def _astream(self, messages, **overrides):
+        yield LLMStreamChunk(content="before ")
+        yield LLMStreamChunk(
+            content='recall_memory</name><parameter name="query">secret</parameter></function></seed:tool_call>'
+        )
+        yield LLMStreamChunk(content=" after")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream)
+
+    emitted: list[str] = []
+
+    async def fake_text_delta(text, is_first, **kwargs):
+        emitted.append(text)
+
+    async def noop(*_a, **_kw):
+        pass
+
+    client = _minimal_offline_client_for_leak_tests(monkeypatch)
+    client.on_text_delta = fake_text_delta
+    client.on_input_transcript = noop
+    client.on_response_done = noop
+    client.on_response_discarded = None
+    client.on_status_message = noop
+    client.on_repetition_detected = None
+
+    await client.stream_text("hello")
+
+    visible = "".join(emitted)
+    assert visible == "before  after"
+    assert "recall_memory" not in visible
+    ai_messages = [m for m in client._conversation_history if isinstance(m, AIMessage)]
+    assert ai_messages[-1].content == "before  after"
+    assert "secret" not in ai_messages[-1].content
+
+
+@pytest.mark.asyncio
+async def test_prompt_ephemeral_filters_tool_call_leak_before_ui_and_history(monkeypatch):
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import AIMessage, LLMStreamChunk
+
+    async def _astream(self, messages, **overrides):
+        yield LLMStreamChunk(content="hi ")
+        yield LLMStreamChunk(content="<seed:tool_call>secret</seed:tool_call>")
+        yield LLMStreamChunk(content=" done")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream)
+
+    emitted: list[str] = []
+
+    async def fake_text_delta(text, is_first, **kwargs):
+        emitted.append(text)
+
+    async def noop(*_a, **_kw):
+        pass
+
+    client = _minimal_offline_client_for_leak_tests(monkeypatch)
+    client.on_text_delta = fake_text_delta
+    client.on_response_done = noop
+    client.on_status_message = noop
+    client.on_proactive_done = noop
+
+    assert await client.prompt_ephemeral("nudge", completion_mode="response") is True
+
+    visible = "".join(emitted)
+    assert visible == "hi  done"
+    assert "seed:tool_call" not in visible
+    ai_messages = [m for m in client._conversation_history if isinstance(m, AIMessage)]
+    assert ai_messages[-1].content == "hi  done"
+    assert "secret" not in ai_messages[-1].content
+
+
+@pytest.mark.asyncio
+async def test_stream_text_only_leak_yields_no_visible_output(monkeypatch):
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import AIMessage, LLMStreamChunk
+
+    async def _astream(self, messages, **overrides):
+        yield LLMStreamChunk(content="<seed:tool_call>secret</seed:tool_call>")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream)
+
+    emitted: list[str] = []
+    statuses: list[str] = []
+
+    async def fake_text_delta(text, is_first, **kwargs):
+        emitted.append(text)
+
+    async def fake_status(message):
+        statuses.append(message)
+
+    async def noop(*_a, **_kw):
+        pass
+
+    client = _minimal_offline_client_for_leak_tests(monkeypatch)
+    client.on_text_delta = fake_text_delta
+    client.on_input_transcript = noop
+    client.on_response_done = noop
+    client.on_response_discarded = None
+    client.on_status_message = fake_status
+    client.on_repetition_detected = None
+
+    await client.stream_text("hello")
+
+    assert emitted == []
+    assert not any(isinstance(m, AIMessage) for m in client._conversation_history)
+    assert statuses

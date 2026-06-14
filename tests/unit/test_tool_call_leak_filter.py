@@ -1,0 +1,162 @@
+# -*- coding: utf-8 -*-
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+
+_ROOT = Path(__file__).resolve().parents[2]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+
+def _drain(filter_, chunks: list[str]) -> tuple[str, list[object]]:
+    output: list[str] = []
+    events: list[object] = []
+    for chunk in chunks:
+        visible, event = filter_.feed(chunk)
+        output.append(visible)
+        if event:
+            events.append(event)
+    visible, event = filter_.finalize()
+    output.append(visible)
+    if event:
+        events.append(event)
+    return "".join(output), events
+
+
+def test_complete_seed_tool_call_is_stripped():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    visible, events = _drain(
+        ToolLeakFilter(tool_names={"recall_memory"}),
+        ["before <seed:tool_call><function><name>recall_memory</name></function></seed:tool_call> after"],
+    )
+
+    assert visible == "before  after"
+    assert len(events) == 1
+    assert events[0].pattern == "seed_tool_call"
+
+
+def test_recall_memory_tail_fragment_is_stripped_without_open_seed():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    leak = 'recall_memory</name><parameter name="query" string="true">secret</parameter></function></seed:tool_call>'
+    visible, events = _drain(ToolLeakFilter(tool_names={"recall_memory"}), ["before ", leak, " after"])
+
+    assert visible == "before  after"
+    assert len(events) == 1
+    assert events[0].pattern == "structured_tool_call"
+
+
+def test_seed_marker_across_chunks_is_stripped():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    visible, events = _drain(
+        ToolLeakFilter(tool_names={"recall_memory"}),
+        ["before <seed:tool_", "call>secret</seed:tool_call> after"],
+    )
+
+    assert visible == "before  after"
+    assert len(events) == 1
+    assert events[0].cross_chunk is True
+
+
+def test_suppressed_long_arguments_are_not_output():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    secret = "x" * 5000
+    visible, events = _drain(
+        ToolLeakFilter(tool_names={"recall_memory"}),
+        ["ok ", "<seed:tool_call>", secret, "</seed:tool_call>", " done"],
+    )
+
+    assert visible == "ok  done"
+    assert secret not in visible
+    assert events[0].chars >= len(secret)
+
+
+def test_unclosed_seed_fragment_is_dropped_on_finalize():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    visible, events = _drain(
+        ToolLeakFilter(tool_names={"recall_memory"}),
+        ["before ", "<seed:tool_call>secret"],
+    )
+
+    assert visible == "before "
+    assert len(events) == 1
+    assert events[0].finalized is True
+
+
+def test_normal_xml_html_and_code_examples_are_preserved():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    text = '<div data-x="1">ok</div>\n```xml\n<function><name>demo</name></function>\n```'
+    visible, events = _drain(ToolLeakFilter(tool_names={"recall_memory"}), [text])
+
+    assert visible == text
+    assert events == []
+
+
+def test_tool_call_markup_inside_code_fence_is_replaced_not_revealed():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    text = "```xml\n<seed:tool_call>secret query</seed:tool_call>\n```"
+    visible, events = _drain(ToolLeakFilter(tool_names={"recall_memory"}), [text])
+
+    assert visible == "```xml\n[tool-call markup omitted]\n```"
+    assert "secret query" not in visible
+    assert len(events) == 1
+    assert events[0].pattern == "seed_tool_call"
+
+
+def test_structured_tool_call_inside_code_fence_is_replaced_not_revealed():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    text = (
+        "```xml\n"
+        'recall_memory</name><parameter name="query">secret query</parameter></function></seed:tool_call>\n'
+        "```"
+    )
+    visible, events = _drain(ToolLeakFilter(tool_names={"recall_memory"}), [text])
+
+    assert visible == "```xml\n[tool-call markup omitted]\n```"
+    assert "secret query" not in visible
+    assert "recall_memory</name>" not in visible
+    assert len(events) == 1
+    assert events[0].pattern == "structured_tool_call"
+
+
+def test_lonely_tool_name_close_is_preserved():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    text = "这里是代码示例：recall_memory</name>"
+    visible, events = _drain(ToolLeakFilter(tool_names={"recall_memory"}), [text])
+
+    assert visible == text
+    assert events == []
+
+
+def test_no_seed_requires_registered_tool_and_strong_structure():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    leak = 'unknown_tool</name><parameter name="query">secret</parameter></function></seed:tool_call>'
+    visible, events = _drain(ToolLeakFilter(tool_names={"recall_memory"}), [leak])
+
+    assert "unknown_tool" in visible
+    assert events == []
+
+
+def test_event_metadata_does_not_include_raw_text_or_query():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    query = "secret query"
+    _visible, events = _drain(
+        ToolLeakFilter(tool_names={"recall_memory"}),
+        [f'recall_memory</name><parameter name="query">{query}</parameter></function></seed:tool_call>'],
+    )
+
+    event_text = repr(events[0])
+    assert query not in event_text
+    assert "parameter" not in event_text

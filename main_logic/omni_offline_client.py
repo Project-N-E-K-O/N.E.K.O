@@ -5,7 +5,7 @@ import json
 import re
 import time
 from typing import Optional, Callable, Dict, Any, Awaitable, List
-from utils.llm_client import SystemMessage, HumanMessage, AIMessage, create_chat_llm
+from utils.llm_client import SystemMessage, HumanMessage, AIMessage, LLMStreamChunk, create_chat_llm
 from openai import APIConnectionError, AuthenticationError, InternalServerError, RateLimitError
 from utils.frontend_utils import calculate_text_similarity
 from utils.tokenize import count_tokens, truncate_to_tokens
@@ -17,6 +17,7 @@ from main_logic.tool_calling import (
     ToolResult,
     parse_arguments_json,
 )
+from utils.llm_tool_leak_filter import ToolLeakFilter, log_tool_leak_filtered
 
 # google-genai 懒加载。该 SDK import 很重（~0.6s），且在 import 时会捎带 mcp
 # （~0.5s），但 offline 路径只有用户用 native-Gemini 端点时才需要它。改成首次使用
@@ -784,6 +785,8 @@ class OmniOfflineClient:
           documented lanlan.app/free trade-off).
         - Otherwise: ``_astream_openai_with_tools``.
         """
+        tool_leak_filter = overrides.pop("_tool_leak_filter", None)
+        tool_leak_provider = overrides.pop("_tool_leak_provider", None)
         if self._use_genai_sdk and not self._genai_tools_unsupported:
             # 跟踪本轮 Gemini 路径是否已经把 text chunk yield 给上游。如果
             # 已经吐过文本，再 fallback 到 OpenAI-compat 会让用户在同一轮
@@ -792,7 +795,12 @@ class OmniOfflineClient:
             # 触发"清空气泡 + 通知 response_discarded"的标准处理。
             genai_emitted_text = False
             try:
-                async for chunk in self._astream_genai_with_tools(messages, **overrides):
+                async for chunk in self._astream_genai_with_tools(
+                    messages,
+                    _tool_leak_filter=tool_leak_filter,
+                    _tool_leak_provider=tool_leak_provider,
+                    **overrides,
+                ):
                     if getattr(chunk, "content", None):
                         genai_emitted_text = True
                     yield chunk
@@ -819,14 +827,61 @@ class OmniOfflineClient:
                     # 流程清空气泡后基于 attempt+1 重试（下一次仍会先尝试
                     # genai，因为 transient 不翻 _genai_tools_unsupported）。
                     raise
-        async for chunk in self._astream_openai_with_tools(messages, **overrides):
+        async for chunk in self._astream_openai_with_tools(
+            messages,
+            _tool_leak_filter=tool_leak_filter,
+            _tool_leak_provider=tool_leak_provider,
+            **overrides,
+        ):
             yield chunk
+
+    async def _astream_visible_with_tools(self, messages, **overrides):
+        tool_names = {
+            tool.name for tool in getattr(self, "_tool_definitions", [])
+            if getattr(tool, "name", None)
+        }
+        leak_filter = ToolLeakFilter(tool_names=tool_names)
+        provider = getattr(self, "base_url", None) or getattr(self, "model", None)
+
+        async for chunk in self._astream_with_tools(
+            messages, _tool_leak_filter=leak_filter, _tool_leak_provider=provider, **overrides
+        ):
+            if getattr(chunk, "_tool_leak_filtered", False):
+                yield chunk
+                continue
+            content = getattr(chunk, "content", None)
+            if content:
+                chunk.content = self._filter_tool_leak_content(content, leak_filter, provider=provider)
+                setattr(chunk, "_tool_leak_filtered", True)
+            yield chunk
+
+        visible, event = leak_filter.finalize()
+        if event:
+            log_tool_leak_filtered(event, provider=provider)
+        if visible:
+            chunk = LLMStreamChunk(content=visible)
+            setattr(chunk, "_tool_leak_filtered", True)
+            yield chunk
+
+    def _filter_tool_leak_content(
+        self,
+        content: str,
+        leak_filter: ToolLeakFilter,
+        *,
+        provider: str | None = None,
+    ) -> str:
+        visible, event = leak_filter.feed(content)
+        if event:
+            log_tool_leak_filtered(event, provider=provider)
+        return visible
 
     async def _astream_openai_with_tools(self, messages, **overrides):
         """OpenAI Chat Completions tool loop. Streams text chunks; on
         ``finish_reason == "tool_calls"`` runs the tools, appends the
         results to ``messages``, and re-invokes — up to
         ``self.max_tool_iterations`` total LLM calls."""
+        tool_leak_filter = overrides.pop("_tool_leak_filter", None)
+        tool_leak_provider = overrides.pop("_tool_leak_provider", None)
         tools_payload = self._openai_tools_payload()
         if tools_payload:
             overrides.setdefault("tools", tools_payload)
@@ -849,6 +904,11 @@ class OmniOfflineClient:
             streamed_reasoning_buffer = ""
             async for chunk in self.llm.astream(messages, **overrides):
                 if getattr(chunk, "content", None):
+                    if tool_leak_filter is not None:
+                        chunk.content = self._filter_tool_leak_content(
+                            chunk.content, tool_leak_filter, provider=tool_leak_provider
+                        )
+                        setattr(chunk, "_tool_leak_filtered", True)
                     streamed_text_buffer += chunk.content
                 if getattr(chunk, "reasoning_content", None):
                     streamed_reasoning_buffer += chunk.reasoning_content
@@ -905,6 +965,13 @@ class OmniOfflineClient:
                 and tools_payload
                 and self.on_tool_call is not None
             ):
+                if tool_leak_filter is not None:
+                    tail, event = tool_leak_filter.finalize()
+                    if event:
+                        log_tool_leak_filtered(event, provider=tool_leak_provider)
+                    if tail:
+                        streamed_text_buffer += tail
+                    tool_leak_filter.reset()
                 # ChatOpenAI is the right import even though we're outside
                 # ChatOpenAI — `collect_tool_calls` is a staticmethod.
                 from utils.llm_client import ChatOpenAI as _ChatOpenAI
@@ -954,6 +1021,11 @@ class OmniOfflineClient:
                 and not chunk.usage_metadata
             ):
                 continue
+            if getattr(chunk, "content", None) and tool_leak_filter is not None:
+                chunk.content = self._filter_tool_leak_content(
+                    chunk.content, tool_leak_filter, provider=tool_leak_provider
+                )
+                setattr(chunk, "_tool_leak_filtered", True)
             yield chunk
         # prompt_tokens 走局部变量、流结束后无条件回填（与 genai 路径同口径）：这次
         # forced-finalize 没给 usage 时写回 None，而非沿用上一轮 tool-iteration 的旧
@@ -976,7 +1048,8 @@ class OmniOfflineClient:
 
         Raises ``_GenaiToolsUnsupported`` if the SDK or this model
         cannot handle tools — caller falls back to OpenAI-compat."""
-        from utils.llm_client import LLMStreamChunk
+        tool_leak_filter = overrides.pop("_tool_leak_filter", None)
+        tool_leak_provider = overrides.pop("_tool_leak_provider", None)
         if not _ensure_genai():
             raise _GenaiToolsUnsupported("google-genai SDK not importable")
         types = _genai_types
@@ -1101,9 +1174,16 @@ class OmniOfflineClient:
                                 raw_args,
                             ))
                         elif text:
+                            if tool_leak_filter is not None:
+                                text = self._filter_tool_leak_content(
+                                    text, tool_leak_filter, provider=tool_leak_provider,
+                                )
                             had_text = True
                             streamed_text_buffer += text
-                            yield LLMStreamChunk(content=text)
+                            chunk_out = LLMStreamChunk(content=text)
+                            if tool_leak_filter is not None:
+                                setattr(chunk_out, "_tool_leak_filtered", True)
+                            yield chunk_out
                     # Usage metadata may arrive on the chunk.
                     usage_meta = getattr(chunk, "usage_metadata", None)
                     if usage_meta is not None and not usage_emitted:
@@ -1171,6 +1251,13 @@ class OmniOfflineClient:
                     }
                     for i, (tc_id, tc_name, _args, tc_raw) in enumerate(collected_tool_calls)
                 ]
+                if tool_leak_filter is not None:
+                    tail, event = tool_leak_filter.finalize()
+                    if event:
+                        log_tool_leak_filtered(event, provider=tool_leak_provider)
+                    if tail:
+                        streamed_text_buffer += tail
+                    tool_leak_filter.reset()
                 # 把本轮已经流给用户的 text 一起写进历史。Gemini 在同一 turn
                 # 里允许 text part 与 function_call part 并存；如果这里仍写
                 # ``content=""``，下一轮 LLM 看到的上下文会缺掉前半句，模型
@@ -1266,8 +1353,15 @@ class OmniOfflineClient:
                     continue
                 text = getattr(part, "text", None) or ""
                 if text:
+                    if tool_leak_filter is not None:
+                        text = self._filter_tool_leak_content(
+                            text, tool_leak_filter, provider=tool_leak_provider,
+                        )
                     final_had_text = True
-                    yield LLMStreamChunk(content=text)
+                    chunk_out = LLMStreamChunk(content=text)
+                    if tool_leak_filter is not None:
+                        setattr(chunk_out, "_tool_leak_filtered", True)
+                    yield chunk_out
         # 统一回填本次 forced-finalize 自己的诊断值（含 prompt_tokens）。prompt_tokens
         # 走局部变量、流结束后无条件回填：若这次被挡住/没给 usage，写回 None 而非沿用
         # 上一轮 tool-iteration 的旧值，避免 INFO log / 上层 LLM_NO_RESPONSE 诊断串台。
@@ -1776,7 +1870,7 @@ class OmniOfflineClient:
                         # PLACE). The yielded chunks are exactly the same
                         # shape as raw ``self.llm.astream``, so the existing
                         # prefix/fence/length-guard logic below is untouched.
-                        async for chunk in self._astream_with_tools(self._conversation_history):
+                        async for chunk in self._astream_visible_with_tools(self._conversation_history):
                             if not _ttft_recorded:
                                 _ttft_recorded = True
                                 try:
@@ -2869,7 +2963,7 @@ class OmniOfflineClient:
                 try:
                     # 主动搭话同样走 tool-aware streaming —— agent 注入的 stage
                     # direction 也可能让模型决定调用工具（比如 "讲一下今天天气"）。
-                    async for chunk in self._astream_with_tools(messages_to_send):
+                    async for chunk in self._astream_visible_with_tools(messages_to_send):
                         if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
                             logger.debug(f"🔍 [Usage-Proactive] {chunk.usage_metadata}")
                         if hasattr(chunk, 'response_metadata') and chunk.response_metadata:
