@@ -539,11 +539,15 @@ def test_basketball_horse_system_prompt_matches_chat_event_payload():
     zh = prompts_game.get_basketball_system_prompt("zh", mode="horse")
     en = prompts_game.get_basketball_system_prompt("en", mode="horse")
 
+    assert "只有复刻失败的一方吃到 HORSE 字母" in zh
+    assert "出题失败只是换对方出题" in zh
     assert "只有复刻失败才描述谁吃到字母" in zh
     assert "currentState.attempts_results 最后一条的 horse_phase" in zh
     assert "不要用 event.horse.phase 判断" in zh
     assert "结合 winner" not in zh
     assert "winner 字段" in zh
+    assert "only a side that fails a copy attempt takes a HORSE letter" in en
+    assert "failed setup just passes setup to the other side" in en
     assert "mention a letter only for failed copy attempts" in en
     assert "last currentState.attempts_results entry's horse_phase" in en
     assert "do not infer it from event.horse.phase" in en
