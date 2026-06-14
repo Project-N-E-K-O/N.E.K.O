@@ -709,6 +709,11 @@ def _hosted_named_bindings_have_runtime(raw_bindings: str) -> bool:
     return False
 
 
+def _hosted_named_bindings_are_empty(raw_bindings: str) -> bool:
+    stripped = raw_bindings.strip()
+    return stripped.startswith("{") and stripped.endswith("}") and not stripped[1:-1].strip()
+
+
 def _hosted_import_bindings_have_runtime(raw_bindings: str) -> bool:
     bindings = raw_bindings.strip()
     if not bindings:
@@ -776,7 +781,12 @@ def _hosted_export_specifier(source: str, index: int) -> str | None:
     from_index = _hosted_find_keyword_before_statement_end(source, index, "from")
     if from_index < 0:
         return None
-    if not _hosted_named_bindings_have_runtime(source[index:from_index]):
+    raw_bindings = source[index:from_index]
+    if (
+        source[index] != "*"
+        and not _hosted_named_bindings_are_empty(raw_bindings)
+        and not _hosted_named_bindings_have_runtime(raw_bindings)
+    ):
         return None
     specifier_index = _hosted_skip_trivia(source, from_index + len("from"))
     if specifier_index >= len(source) or source[specifier_index] not in {"'", '"'}:
