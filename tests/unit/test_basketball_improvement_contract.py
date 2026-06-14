@@ -496,6 +496,28 @@ def test_basketball_duel_prompt_mentions_difficulty_control():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("mode", ("spectator", "shooter", "timed"))
+@pytest.mark.parametrize("lang", ("zh", "en", "ja", "ko", "ru", "es", "pt"))
+def test_basketball_non_duel_prompts_do_not_advertise_difficulty_control(lang, mode):
+    prompt = prompts_game.get_basketball_system_prompt(lang, mode=mode)
+
+    assert '"difficulty"' not in prompt
+    assert "max, lv2, lv3, lv4" not in prompt
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("lang", ("zh", "en", "ja", "ko", "ru", "es", "pt"))
+def test_basketball_quick_lines_mode_prompts_are_distinct_and_localized(lang):
+    spectator = prompts_game.get_basketball_quick_lines_prompt(lang, mode="spectator")
+
+    for mode in ("duel", "shooter", "timed", "horse"):
+        prompt = prompts_game.get_basketball_quick_lines_prompt(lang, mode=mode)
+        assert prompt != spectator
+        if lang != "en":
+            assert "Current mode is" not in prompt
+
+
+@pytest.mark.unit
 def test_basketball_prompt_localizations_do_not_fallback_to_english():
     english_spectator = prompts_game.get_basketball_system_prompt("en", mode="spectator")
     english_duel = prompts_game.get_basketball_system_prompt("en", mode="duel")

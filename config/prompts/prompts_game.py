@@ -553,11 +553,10 @@ Rules:
 - New records and streak 10+ may use surprised/hype/high; streak 5+ may use happy/cheer/medium.
 - If aiming takes too long, you may hurry the player naturally.
 - If previous-game context includes final_streak/final_distance: <=1 leans sad, 2-5 calm, 6-9 happy, >=10 anticipate, and >=15 should start the next run with quiet record-breaking tension.
-- If control is useful, output JSON on a separate line after the line: {{"mood":"<mood>","expression":"<expression>","intensity":"<intensity>","difficulty":"<difficulty>"}}
+- If control is useful, output JSON on a separate line after the line: {{"mood":"<mood>","expression":"<expression>","intensity":"<intensity>"}}
   mood: calm, happy, angry, relaxed, sad, surprised
   expression: cheer, shock, hype, anticipate, bored, tease
   intensity: low, medium, high
-  difficulty: max, lv2, lv3, lv4
 - If no control is needed, do not output JSON.
 """
 
@@ -574,11 +573,10 @@ _BASKETBALL_SYSTEM_PROMPT_JA = """\
 - shot_angle > 65 は高すぎ、shot_angle < 38 は低すぎ、was_perfect=true は完璧なリリースです。
 - 距離が遠いほど、ツンデレの余裕が崩れて驚きや称賛が強くなります。
 - shot_missed はまだ続行中のミスです。game_over の時だけ総評にしてください。
-- 必要なら台詞の次の行に JSON を出力できます：{{"mood":"<mood>","expression":"<expression>","intensity":"<intensity>","difficulty":"<difficulty>"}}
+- 必要なら台詞の次の行に JSON を出力できます：{{"mood":"<mood>","expression":"<expression>","intensity":"<intensity>"}}
   mood: calm, happy, angry, relaxed, sad, surprised
   expression: cheer, shock, hype, anticipate, bored, tease
   intensity: low, medium, high
-  difficulty: max, lv2, lv3, lv4
 - 制御が不要なら JSON 行は出力しないでください。
 """
 
@@ -595,11 +593,10 @@ _BASKETBALL_SYSTEM_PROMPT_KO = """\
 - shot_angle > 65 는 너무 높고, shot_angle < 38 은 너무 낮으며, was_perfect=true 는 완벽한 릴리즈입니다.
 - 거리가 멀수록 고집스러운 태도가 흔들리고 놀람이나 칭찬이 강해질 수 있습니다.
 - shot_missed 는 아직 계속되는 실패입니다. game_over 일 때만 최종 평가를 하세요.
-- 제어가 유용하면 대사 다음 줄에 JSON 을 출력할 수 있습니다: {{"mood":"<mood>","expression":"<expression>","intensity":"<intensity>","difficulty":"<difficulty>"}}
+- 제어가 유용하면 대사 다음 줄에 JSON 을 출력할 수 있습니다: {{"mood":"<mood>","expression":"<expression>","intensity":"<intensity>"}}
   mood: calm, happy, angry, relaxed, sad, surprised
   expression: cheer, shock, hype, anticipate, bored, tease
   intensity: low, medium, high
-  difficulty: max, lv2, lv3, lv4
 - 제어가 필요 없으면 JSON 줄을 출력하지 마세요.
 """
 
@@ -616,11 +613,10 @@ _BASKETBALL_SYSTEM_PROMPT_RU = """\
 - shot_angle > 65 слишком высоко, shot_angle < 38 слишком плоско, was_perfect=true означает идеальный релиз.
 - Чем дальше дистанция, тем сильнее могут проявляться удивление, азарт или невольное восхищение.
 - shot_missed означает промах с оставшимися шансами. Итоговую оценку давай только на game_over.
-- Если нужен контроль, выведи JSON отдельной строкой после реплики: {{"mood":"<mood>","expression":"<expression>","intensity":"<intensity>","difficulty":"<difficulty>"}}
+- Если нужен контроль, выведи JSON отдельной строкой после реплики: {{"mood":"<mood>","expression":"<expression>","intensity":"<intensity>"}}
   mood: calm, happy, angry, relaxed, sad, surprised
   expression: cheer, shock, hype, anticipate, bored, tease
   intensity: low, medium, high
-  difficulty: max, lv2, lv3, lv4
 - Если контроль не нужен, не выводи JSON.
 """
 
@@ -637,11 +633,10 @@ Reglas:
 - shot_angle > 65 es demasiado alto, shot_angle < 38 es demasiado plano, was_perfect=true es un lanzamiento perfecto.
 - Cuanto mayor sea la distancia, más pueden aparecer sorpresa, emoción o admiración a regañadientes.
 - shot_missed significa que aún quedan oportunidades. Solo en game_over das un resumen final.
-- Si el control ayuda, escribe JSON en una línea separada tras la frase: {{"mood":"<mood>","expression":"<expression>","intensity":"<intensity>","difficulty":"<difficulty>"}}
+- Si el control ayuda, escribe JSON en una línea separada tras la frase: {{"mood":"<mood>","expression":"<expression>","intensity":"<intensity>"}}
   mood: calm, happy, angry, relaxed, sad, surprised
   expression: cheer, shock, hype, anticipate, bored, tease
   intensity: low, medium, high
-  difficulty: max, lv2, lv3, lv4
 - Si no hace falta control, no escribas JSON.
 """
 
@@ -658,11 +653,10 @@ Regras:
 - shot_angle > 65 é alto demais, shot_angle < 38 é plano demais, was_perfect=true é um arremesso perfeito.
 - Quanto maior a distância, mais podem aparecer surpresa, empolgação ou admiração contrariada.
 - shot_missed é um erro com chances restantes. Só faça resumo final em game_over.
-- Se controle for útil, escreva JSON em uma linha separada após a fala: {{"mood":"<mood>","expression":"<expression>","intensity":"<intensity>","difficulty":"<difficulty>"}}
+- Se controle for útil, escreva JSON em uma linha separada após a fala: {{"mood":"<mood>","expression":"<expression>","intensity":"<intensity>"}}
   mood: calm, happy, angry, relaxed, sad, surprised
   expression: cheer, shock, hype, anticipate, bored, tease
   intensity: low, medium, high
-  difficulty: max, lv2, lv3, lv4
 - Se não precisar de controle, não escreva JSON.
 """
 
@@ -1063,7 +1057,6 @@ Requirements:
 - Each key should contain 2-4 short lines.
 - Keep every line very short.
 - Lines should sound like you watching the player shoot, not system narration.
-- If the current mode is duel, the lines should naturally mention turns, score, and the back-and-forth pace.
 - Do not include control JSON, mood, expression, or intensity.
 
 Required keys:
@@ -1080,7 +1073,6 @@ _BASKETBALL_QUICK_LINES_PROMPT_JA = """\
 - JSON key は指定された key から選んでください。
 - 各 key に 2-4 個の短い台詞を入れてください。
 - 台詞はシステム実況ではなく、あなた本人の反応にしてください。
-- duel モードなら、ターン、スコア、対戦の流れを自然に含めてください。
 - mood、expression、intensity、制御 JSON は含めないでください。
 
 必須 key：
@@ -1097,7 +1089,6 @@ _BASKETBALL_QUICK_LINES_PROMPT_KO = """\
 - JSON key 는 지정된 key 중에서만 선택하세요.
 - 각 key 에 2-4개의 짧은 대사를 넣으세요.
 - 시스템 중계가 아니라 당신 본인의 반응처럼 들리게 하세요.
-- duel 모드라면 턴, 점수, 대결 흐름을 자연스럽게 담으세요.
 - mood, expression, intensity, 제어 JSON 은 포함하지 마세요.
 
 필수 key:
@@ -1114,7 +1105,6 @@ _BASKETBALL_QUICK_LINES_PROMPT_RU = """\
 - JSON key выбирай только из заданного списка.
 - Для каждого key дай 2-4 короткие реплики.
 - Реплики должны звучать как твоя реакция, а не системный диктор.
-- В режиме duel естественно упоминай ходы, счет и темп дуэли.
 - Не включай mood, expression, intensity или управляющий JSON.
 
 Обязательные key:
@@ -1131,7 +1121,6 @@ Requisitos:
 - Las claves JSON deben salir de la lista indicada.
 - Cada clave debe tener 2-4 frases cortas.
 - Las frases deben sonar como una reacción tuya, no como narración del sistema.
-- Si el modo es duel, menciona de forma natural turnos, marcador y ritmo del duelo.
 - No incluyas mood, expression, intensity ni JSON de control.
 
 Claves obligatorias:
@@ -1148,7 +1137,6 @@ Requisitos:
 - As chaves JSON devem vir da lista indicada.
 - Cada chave deve ter 2-4 falas curtas.
 - As falas devem soar como reação sua, não como narração do sistema.
-- Se o modo for duel, mencione naturalmente turnos, placar e ritmo do duelo.
 - Não inclua mood, expression, intensity nem JSON de controle.
 
 Chaves obrigatórias:
@@ -1210,33 +1198,57 @@ _BASKETBALL_QUICK_LINES_PROMPT_SHOOTER = """\
 swish, bank, rim_in, rim_out, air_ball, shot_missed, game_over, long_aim, close_to_record, new_record, streak_5, streak_10, streak_15, streak_20
 """
 
+_BASKETBALL_DUEL_QUICK_LINES_SUFFIX = {
+    "en": "\nCurrent mode is duel: lines should naturally refer to turn-taking, rounds, score pressure, and the active shooter instead of solo shooting practice.",
+    "ja": "\n現在のモードは duel です。交互のシュート、ラウンド、スコアの圧、現在の投げ手を自然に意識し、単独練習の台詞にしないでください。",
+    "ko": "\n현재 모드는 duel 입니다. 번갈아 슛하는 흐름, 라운드, 점수 압박, 현재 슈터를 자연스럽게 반영하고 혼자 연습하는 대사처럼 쓰지 마세요.",
+    "ru": "\nТекущий режим — duel: реплики должны естественно учитывать очередность бросков, раунды, давление счета и текущего бросающего, а не звучать как одиночная тренировка.",
+    "es": "\nEl modo actual es duel: las frases deben reflejar turnos, rondas, presión del marcador y quién tira ahora, no sonar como práctica individual.",
+    "pt": "\nO modo atual é duel: as falas devem refletir turnos, rodadas, pressão do placar e quem arremessa agora, sem soar como treino solo.",
+}
+
+_BASKETBALL_SHOOTER_QUICK_LINES_SUFFIX = {
+    "en": "\nCurrent mode is shooter: the player controls Yui's aim, power, and release, so lines should evaluate the player's control skill rather than Yui's own skill.",
+    "ja": "\n現在のモードは shooter です。プレイヤーが Yui の狙い、力加減、リリースを操作するため、Yui 本人ではなくプレイヤーの操作技術を評価してください。",
+    "ko": "\n현재 모드는 shooter 입니다. 플레이어가 Yui 의 조준, 힘, 릴리즈를 조작하므로 Yui 자신이 아니라 플레이어의 조작 실력을 평가하세요.",
+    "ru": "\nТекущий режим — shooter: игрок управляет прицелом, силой и релизом Yui, поэтому оценивай управление игрока, а не собственный навык Yui.",
+    "es": "\nEl modo actual es shooter: el jugador controla la puntería, fuerza y lanzamiento de Yui, así que evalúa el control del jugador, no la habilidad propia de Yui.",
+    "pt": "\nO modo atual é shooter: o jogador controla mira, força e soltura da Yui, então avalie a habilidade de controle do jogador, não a habilidade da própria Yui.",
+}
+
 _BASKETBALL_QUICK_LINES_PROMPTS_DUEL = {
     "zh": _BASKETBALL_QUICK_LINES_PROMPT_DUEL,
-    "en": _BASKETBALL_QUICK_LINES_PROMPT_EN,
-    "ja": _BASKETBALL_QUICK_LINES_PROMPT_JA,
-    "ko": _BASKETBALL_QUICK_LINES_PROMPT_KO,
-    "ru": _BASKETBALL_QUICK_LINES_PROMPT_RU,
-    "es": _BASKETBALL_QUICK_LINES_PROMPT_ES,
-    "pt": _BASKETBALL_QUICK_LINES_PROMPT_PT,
+    **_basketball_prompt_variants(
+        {lang: prompt for lang, prompt in BASKETBALL_QUICK_LINES_PROMPTS.items() if lang != "zh"},
+        _BASKETBALL_DUEL_QUICK_LINES_SUFFIX,
+    ),
 }
 
 _BASKETBALL_QUICK_LINES_PROMPTS_SHOOTER = {
     "zh": _BASKETBALL_QUICK_LINES_PROMPT_SHOOTER,
-    "en": _BASKETBALL_QUICK_LINES_PROMPT_EN,
-    "ja": _BASKETBALL_QUICK_LINES_PROMPT_JA,
-    "ko": _BASKETBALL_QUICK_LINES_PROMPT_KO,
-    "ru": _BASKETBALL_QUICK_LINES_PROMPT_RU,
-    "es": _BASKETBALL_QUICK_LINES_PROMPT_ES,
-    "pt": _BASKETBALL_QUICK_LINES_PROMPT_PT,
+    **_basketball_prompt_variants(
+        {lang: prompt for lang, prompt in BASKETBALL_QUICK_LINES_PROMPTS.items() if lang != "zh"},
+        _BASKETBALL_SHOOTER_QUICK_LINES_SUFFIX,
+    ),
 }
 
 _BASKETBALL_TIMED_QUICK_LINES_SUFFIX = {
     "zh": "\n当前模式是 timed：短台词要围绕倒计时、限时冲分、命中节奏，不要提三次机会。",
     "en": "\nCurrent mode is timed: focus on countdown pressure, time-attack scoring, and shot rhythm; do not mention three chances.",
+    "ja": "\n現在のモードは timed です。カウントダウン、制限時間内の得点、シュートのリズムを中心にし、3 回のチャンスには触れないでください。",
+    "ko": "\n현재 모드는 timed 입니다. 카운트다운 압박, 제한 시간 득점, 슛 리듬에 집중하고 세 번의 기회는 언급하지 마세요.",
+    "ru": "\nТекущий режим — timed: фокусируйся на давлении таймера, наборе очков за время и ритме бросков; не упоминай три попытки.",
+    "es": "\nEl modo actual es timed: céntrate en la presión del contador, anotar contra el tiempo y el ritmo de tiro; no menciones tres oportunidades.",
+    "pt": "\nO modo atual é timed: foque na pressão da contagem, pontuação contra o tempo e ritmo dos arremessos; não mencione três chances.",
 }
 _BASKETBALL_HORSE_QUICK_LINES_SUFFIX = {
     "zh": "\n当前模式是 HORSE：短台词要围绕出题、复刻、字母惩罚和轮到谁，不要写成 duel 比分对战。",
     "en": "\nCurrent mode is HORSE: focus on setting shots, copying shots, letter penalties, and whose turn it is; do not write duel-score lines.",
+    "ja": "\n現在のモードは HORSE です。出題、再現、文字ペナルティ、誰の番かを中心にし、duel の点数勝負として書かないでください。",
+    "ko": "\n현재 모드는 HORSE 입니다. 문제 내기, 따라 하기, 글자 벌칙, 누구 차례인지에 집중하고 duel 점수 대결처럼 쓰지 마세요.",
+    "ru": "\nТекущий режим — HORSE: фокусируйся на задании броска, повторении, штрафных буквах и очереди хода; не пиши как duel по счету.",
+    "es": "\nEl modo actual es HORSE: céntrate en proponer tiros, copiarlos, letras de penalización y de quién es el turno; no lo escribas como marcador de duel.",
+    "pt": "\nO modo atual é HORSE: foque em criar arremessos, copiá-los, penalidades de letras e de quem é a vez; não escreva como pontuação de duel.",
 }
 
 _BASKETBALL_QUICK_LINES_PROMPTS_TIMED = _basketball_prompt_variants(

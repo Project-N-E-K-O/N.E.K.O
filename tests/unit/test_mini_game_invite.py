@@ -1269,87 +1269,17 @@ def test_keyword_matcher_no_false_positive_on_common_english_phrases():
 
 
 def test_maybe_apply_keyword_noop_when_no_pending():
-    """Keyword matching is a no-op when there is no pending invite."""
-    result = sr._maybe_apply_mini_game_invite_keyword(LANLAN, '好啊')
-    assert result is None
-
-
-def test_direct_basketball_request_opens_game_without_pending():
-    result = sr._maybe_apply_mini_game_invite_keyword(LANLAN, '来玩一句投篮')
-
-    assert result is not None
-    assert result['action'] == 'open_game'
-    assert result['game_type'] == 'basketball'
-    assert result['game_url'].startswith('/basketball_demo?')
-    assert f'lanlan_name={LANLAN}' in result['game_url']
-    assert result['session_id']
-
-
-def test_direct_basketball_request_ignores_casual_or_negated_mentions():
-    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '篮球新闻挺有意思') is None
-    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '我现在不想玩投篮') is None
-    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'can we not play basketball?') is None
-    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'can we not start soccer?') is None
-    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, "I don't want to play basketball") is None
-    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, "I do not want to start soccer") is None
-    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '我不太想玩篮球') is None
-    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '我不怎么想打篮球') is None
-    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'I play basketball every week') is None
-    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'we play basketball every week') is None
-    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'kids play soccer after school') is None
-    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, "let's start by talking about basketball") is None
-    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'can we discuss basketball play styles?') is None
-    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'how to play basketball better?') is None
-    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'when does basketball start?') is None
-    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'what time does soccer start?') is None
-    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'is the basketball court open?') is None
-    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'the basketball court is open today') is None
-    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'can we play basketball later?') is None
-    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'could we start soccer tomorrow?') is None
-    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '等会儿想玩篮球') is None
-    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '明天来一局足球') is None
-    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '可以讲讲篮球怎么打吗') is None
-    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '我想了解篮球怎么玩') is None
-    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '篮球比赛开始了吗') is None
-    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '足球什么时候开始') is None
-    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '投篮能开始了吗') is None
-    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '篮球场开了吗') is None
-
-
-def test_direct_basketball_request_keeps_imperative_english_matching():
-    result = sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'please play basketball')
-    bare_result = sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'play basketball')
-    what_about_result = sr._maybe_apply_mini_game_invite_keyword(
-        LANLAN,
+    """Ordinary chat text must not launch games without a pending invite."""
+    for text in (
+        '好啊',
+        '来玩一句投篮',
+        '来一局足球',
+        'please play basketball',
+        'play basketball',
         'what about basketball, can we play?',
-    )
-
-    assert result is not None
-    assert result['action'] == 'open_game'
-    assert result['game_type'] == 'basketball'
-    assert bare_result is not None
-    assert bare_result['action'] == 'open_game'
-    assert bare_result['game_type'] == 'basketball'
-    assert what_about_result is not None
-    assert what_about_result['action'] == 'open_game'
-    assert what_about_result['game_type'] == 'basketball'
-
-
-def test_direct_request_negation_is_scoped_to_matched_game():
-    result = sr._maybe_apply_mini_game_invite_keyword(LANLAN, '不想踢足球，想打篮球')
-
-    assert result is not None
-    assert result['action'] == 'open_game'
-    assert result['game_type'] == 'basketball'
-
-
-def test_direct_soccer_request_opens_game_without_pending():
-    result = sr._maybe_apply_mini_game_invite_keyword(LANLAN, '来一局足球')
-
-    assert result is not None
-    assert result['action'] == 'open_game'
-    assert result['game_type'] == 'soccer'
-    assert result['game_url'].startswith('/soccer_demo?')
+        '不想踢足球，想打篮球',
+    ):
+        assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, text) is None
 
 
 def test_response_cooldowns_are_kept_per_game_after_later_invites():
@@ -1628,12 +1558,3 @@ def test_accept_basketball_invite_returns_basketball_url():
     assert result['game_url'].startswith('/basketball_demo?')
     assert 'mode=shooter' in result['game_url']
     assert 'session_id=bb-sess' in result['game_url']
-
-
-def test_direct_basketball_request_returns_shooter_mode_url():
-    result = sr._build_direct_mini_game_open_result(LANLAN, 'basketball')
-
-    assert result is not None
-    assert result['game_type'] == 'basketball'
-    assert result['game_url'].startswith('/basketball_demo?')
-    assert 'mode=shooter' in result['game_url']
