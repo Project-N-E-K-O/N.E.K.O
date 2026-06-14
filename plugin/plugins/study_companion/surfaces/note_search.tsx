@@ -59,7 +59,7 @@ export default function NoteSearch(props: PluginSurfaceProps) {
     const { signal } = controller;
     setBusy(true);
     try {
-      const result = await callPlugin<SearchPayload>('study_note_search_all', {
+      const result = await callPlugin<SearchPayload>(props.api, 'study_note_search_all', {
         query: trimmed,
         limit: 50,
       }, signal);

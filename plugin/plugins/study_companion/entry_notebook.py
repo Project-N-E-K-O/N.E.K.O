@@ -11,6 +11,7 @@ from .entry_common import (
     _entry_exception_error,
     plugin_entry,
     tr,
+    ui,
 )
 
 
@@ -27,6 +28,7 @@ def _notebook_dict(notebook: Any) -> dict[str, Any]:
 
 
 class _NotebookEntriesMixin:
+    @ui.action()
     @plugin_entry(
         id="study_notebook_create",
         name=tr("entries.notebook_create.name", default="Create Study Notebook"),
@@ -59,6 +61,7 @@ class _NotebookEntriesMixin:
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_notebook_create")
 
+    @ui.action()
     @plugin_entry(
         id="study_notebook_list",
         name=tr("entries.notebook_list.name", default="List Study Notebooks"),
@@ -143,6 +146,7 @@ class _NotebookEntriesMixin:
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_notebook_delete")
 
+    @ui.action()
     @plugin_entry(
         id="study_note_upsert",
         name=tr("entries.note_upsert.name", default="Save Study Note"),
@@ -219,6 +223,7 @@ class _NotebookEntriesMixin:
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_note_upsert")
 
+    @ui.action()
     @plugin_entry(
         id="study_note_get",
         name=tr("entries.note_get.name", default="Get Study Note"),
@@ -242,6 +247,7 @@ class _NotebookEntriesMixin:
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_note_get")
 
+    @ui.action()
     @plugin_entry(
         id="study_note_delete",
         name=tr("entries.note_delete.name", default="Delete Study Note"),
@@ -263,6 +269,7 @@ class _NotebookEntriesMixin:
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_note_delete")
 
+    @ui.action()
     @plugin_entry(
         id="study_note_list",
         name=tr("entries.note_list.name", default="List Study Notes"),
@@ -312,6 +319,7 @@ class _NotebookEntriesMixin:
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_note_list")
 
+    @ui.action()
     @plugin_entry(
         id="study_note_search_all",
         name=tr("entries.note_search_all.name", default="Search Study Notes"),
@@ -338,6 +346,7 @@ class _NotebookEntriesMixin:
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_note_search_all")
 
+    @ui.action()
     @plugin_entry(
         id="study_note_ai_expand",
         name=tr("entries.note_ai_expand.name", default="Expand Study Note"),

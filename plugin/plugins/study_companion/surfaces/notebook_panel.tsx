@@ -64,12 +64,12 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
   }, []);
 
   async function loadNotebooks(signal?: AbortSignal) {
-    const notebookPayload = await callPlugin<NotebookListPayload>('study_notebook_list', { limit: 100 }, signal);
+    const notebookPayload = await callPlugin<NotebookListPayload>(props.api, 'study_notebook_list', { limit: 100 }, signal);
     setNotebooks(Array.isArray(notebookPayload.notebooks) ? notebookPayload.notebooks : []);
   }
 
   async function loadNotes(signal?: AbortSignal, notebookId = selectedNotebookId, searchQuery = debouncedQuery) {
-    const notePayload = await callPlugin<NoteListPayload>('study_note_list', {
+    const notePayload = await callPlugin<NoteListPayload>(props.api, 'study_note_list', {
       notebook_id: notebookId,
       search_query: searchQuery,
       limit: 100,
@@ -99,7 +99,7 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
     }
     setBusy(true);
     try {
-      const payload = await callPlugin<NotebookCreatePayload>('study_notebook_create', { name });
+      const payload = await callPlugin<NotebookCreatePayload>(props.api, 'study_notebook_create', { name });
       setNotebookName('');
       await loadNotebooks();
       if (payload.notebook?.id) {
@@ -119,7 +119,7 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
   async function createNote() {
     setBusy(true);
     try {
-      const payload = await callPlugin<NoteSavePayload>('study_note_upsert', {
+      const payload = await callPlugin<NoteSavePayload>(props.api, 'study_note_upsert', {
         notebook_id: selectedNotebookId,
         title: text(props, 'ui.notebook.new_note', 'New note'),
         content: '',
@@ -139,7 +139,7 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
   async function deleteNote(noteId: string) {
     setBusy(true);
     try {
-      await callPlugin('study_note_delete', { note_id: noteId });
+      await callPlugin(props.api, 'study_note_delete', { note_id: noteId });
       await refresh();
     } catch (error) {
       setStatus(errorMessage(error));
@@ -157,7 +157,7 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
     try {
       // The list payload only carries a snippet, so fetch the full note before
       // editing to avoid overwriting the body with a truncated preview.
-      const payload = await callPlugin<NoteSavePayload>('study_note_get', { note_id: noteId });
+      const payload = await callPlugin<NoteSavePayload>(props.api, 'study_note_get', { note_id: noteId });
       // The user may have switched notes while the fetch was in flight; drop the
       // result so we never load note A's body into note B's editor.
       if (selectedNoteIdRef.current !== noteId) {
@@ -189,7 +189,7 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
     const noteId = selectedNote.id;
     setBusy(true);
     try {
-      const payload = await callPlugin<NoteSavePayload>('study_note_upsert', {
+      const payload = await callPlugin<NoteSavePayload>(props.api, 'study_note_upsert', {
         note_id: noteId,
         title: editTitle,
         content: editContent,

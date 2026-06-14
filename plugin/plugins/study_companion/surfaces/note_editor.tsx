@@ -12,8 +12,6 @@ type NoteSavePayload = {
   note?: NoteItem;
 };
 
-const AI_EXPAND_POLL_TIMEOUT_MS = 90000;
-
 type NoteDraftSnapshot = {
   noteId: string;
   notebookId: string;
@@ -132,7 +130,7 @@ export default function NoteEditor(props: PluginSurfaceProps) {
     if (!id.trim()) {
       return;
     }
-    const payload = await callPlugin<NoteGetPayload>('study_note_get', { note_id: id.trim() }, signal);
+    const payload = await callPlugin<NoteGetPayload>(props.api, 'study_note_get', { note_id: id.trim() }, signal);
     const note = payload.note;
     if (!note) {
       return;
@@ -166,7 +164,7 @@ export default function NoteEditor(props: PluginSurfaceProps) {
     setBusy(true);
     savingRef.current = true;
     try {
-      const payload = await callPlugin<NoteSavePayload>('study_note_upsert', {
+      const payload = await callPlugin<NoteSavePayload>(props.api, 'study_note_upsert', {
         note_id: draft.noteId,
         notebook_id: draft.notebookId,
         title: draft.title,
@@ -199,14 +197,13 @@ export default function NoteEditor(props: PluginSurfaceProps) {
     setStatus(text(props, 'ui.notebook.ai_working', 'AI working...'));
     try {
       const payload = await callPlugin<{ content?: string }>(
+        props.api,
         'study_note_ai_expand',
         {
           note_id: noteId,
           content,
           topic_context: topics,
         },
-        undefined,
-        AI_EXPAND_POLL_TIMEOUT_MS,
       );
       if (payload.content) {
         setContent(payload.content);
@@ -280,7 +277,7 @@ export default function NoteEditor(props: PluginSurfaceProps) {
         draft.topics !== snap.topics ||
         draft.tags !== snap.tags;
       if (dirty && (draft.title.trim() || draft.content.trim())) {
-        void callPlugin('study_note_upsert', {
+        void callPlugin(props.api, 'study_note_upsert', {
           note_id: draft.noteId,
           notebook_id: draft.notebookId,
           title: draft.title,
