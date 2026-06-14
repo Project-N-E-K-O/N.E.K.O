@@ -4,6 +4,10 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import process from 'node:process'
 import ts from 'typescript'
+import {
+  assertHostedExportContract,
+  findHostedRelativeImportSpecifiers,
+} from '../src/components/plugin/hosted/hostedTsxModule.mjs'
 
 const repoRoot = resolve(fileURLToPath(new URL('../../../', import.meta.url)))
 const repoRealRoot = realpathSync(repoRoot)
@@ -169,133 +173,6 @@ function moduleSpecifierText(node) {
 
 function isRelativeSpecifier(specifier) {
   return specifier.startsWith('./') || specifier.startsWith('../')
-}
-
-function importDeclarationHasRuntimeBindings(node) {
-  const clause = node.importClause
-  if (!clause) return true
-  if (clause.isTypeOnly) return false
-  if (clause.name) return true
-  const bindings = clause.namedBindings
-  if (!bindings) return false
-  if (ts.isNamespaceImport(bindings)) return true
-  if (ts.isNamedImports(bindings)) {
-    return bindings.elements.some((element) => !element.isTypeOnly)
-  }
-  return true
-}
-
-function exportDeclarationHasRuntimeBindings(node) {
-  if (node.isTypeOnly) return false
-  const clause = node.exportClause
-  if (!clause) return true
-  if (clause.kind === ts.SyntaxKind.NamespaceExport) return true
-  if (ts.isNamedExports(clause)) {
-    if (clause.elements.length === 0) return true
-    return clause.elements.some((element) => !element.isTypeOnly)
-  }
-  return true
-}
-
-// The browser runtime (src/components/plugin/hosted/tsxRuntime.ts) links hosted
-// modules by stripping the leading `export ` keyword off simple declaration
-// exports and recording the declared name. It deliberately does NOT parse
-// re-exports, `export { … }` lists, enums, generators, abstract classes, or
-// destructured/multi-declarator exports — those forms used to drag a hand-rolled
-// scanner into an open-ended tail of edge cases. This gate rejects them up front
-// so a plugin can't pass the check and then mis-bundle (or silently drop an
-// export) at runtime. Supported: `export const/let/var NAME = …`,
-// `export function/async function NAME`, `export class NAME`, type-only
-// declarations, and the entry's `export default`.
-function rejectUnsupportedHostedExport(sourcePath, message) {
-  throw new Error(
-    `Unsupported hosted TSX export in ${relative(repoRoot, sourcePath).replace(/\\/g, '/')}: ${message}`,
-  )
-}
-
-function assertHostedRuntimeModuleContract(sourcePath, source) {
-  const sourceFile = sourceFileFor(sourcePath, source)
-  for (const statement of sourceFile.statements) {
-    if (ts.isExportDeclaration(statement)) {
-      if (statement.moduleSpecifier) {
-        rejectUnsupportedHostedExport(
-          sourcePath,
-          're-export (`export … from`) is not supported; import the binding and re-declare it (use `import type` for types), or inline the helper',
-        )
-      }
-      // `export type { … }` (no `from`) is erased by the TS transform — harmless.
-      if (statement.isTypeOnly) continue
-      rejectUnsupportedHostedExport(
-        sourcePath,
-        '`export { … }` lists are not supported; put `export` on the declaration (`export const NAME = …`)',
-      )
-    }
-    const modifiers = statement.modifiers || []
-    if (!modifiers.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) continue
-    if (modifiers.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword)) continue
-    if (ts.isEnumDeclaration(statement)) {
-      rejectUnsupportedHostedExport(sourcePath, 'exported enums are not supported; export a plain `const` object instead')
-    }
-    if (ts.isFunctionDeclaration(statement) && statement.asteriskToken) {
-      rejectUnsupportedHostedExport(sourcePath, 'exported generator functions are not supported')
-    }
-    if (ts.isClassDeclaration(statement) && modifiers.some((modifier) => modifier.kind === ts.SyntaxKind.AbstractKeyword)) {
-      rejectUnsupportedHostedExport(sourcePath, 'exported abstract classes are not supported')
-    }
-    if (ts.isVariableStatement(statement)) {
-      const declarations = statement.declarationList.declarations
-      if (declarations.length > 1) {
-        rejectUnsupportedHostedExport(
-          sourcePath,
-          'multiple declarators in one `export const/let/var` are not supported; split them into separate statements',
-        )
-      }
-      if (declarations[0] && !ts.isIdentifier(declarations[0].name)) {
-        rejectUnsupportedHostedExport(sourcePath, 'destructured exports are not supported; export a single named binding')
-      }
-    }
-  }
-}
-
-function extractRelativeImportSpecifiers(sourcePath, source) {
-  const sourceFile = sourceFileFor(sourcePath, source)
-  const runtimeSpecifiers = []
-  const typeOnlySpecifiers = []
-
-  const addSpecifier = (specifier, typeOnly) => {
-    if (specifier && isRelativeSpecifier(specifier)) {
-      if (typeOnly) {
-        typeOnlySpecifiers.push(specifier)
-      } else {
-        runtimeSpecifiers.push(specifier)
-      }
-    }
-  }
-
-  const visit = (node) => {
-    if (ts.isImportDeclaration(node)) {
-      addSpecifier(moduleSpecifierText(node.moduleSpecifier), !importDeclarationHasRuntimeBindings(node))
-    } else if (ts.isExportDeclaration(node)) {
-      addSpecifier(moduleSpecifierText(node.moduleSpecifier), !exportDeclarationHasRuntimeBindings(node))
-    } else if (
-      ts.isCallExpression(node) &&
-      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-      node.arguments.length === 1
-    ) {
-      // Only static import/export declarations are scanned and bundled; a
-      // dynamic import() — literal or not — resolves against the srcdoc at
-      // runtime and fails, so reject all of them rather than just the literal
-      // relative form (a non-literal specifier returns null here too).
-      const specifier = moduleSpecifierText(node.arguments[0])
-      throw new Error(
-        `Dynamic import is not supported in hosted TSX: ${sourcePath}${specifier ? ` imports ${specifier}` : ''}`,
-      )
-    }
-    ts.forEachChild(node, visit)
-  }
-
-  visit(sourceFile)
-  return { runtimeSpecifiers, typeOnlySpecifiers }
 }
 
 function replaceRangesWithWhitespace(source, ranges) {
@@ -742,7 +619,7 @@ function copyRelativeTypeDeclaration(sourcePath, tempDir, pluginRoot, copiedDecl
   writeTextFile(targetPath, source, 'hosted TSX type declaration copy')
   copiedDeclarations.add(resolvedPath)
 
-  const { runtimeSpecifiers, typeOnlySpecifiers } = extractRelativeImportSpecifiers(resolvedPath, source)
+  const { runtime: runtimeSpecifiers, typeOnly: typeOnlySpecifiers } = findHostedRelativeImportSpecifiers(source)
   for (const specifier of [...runtimeSpecifiers, ...typeOnlySpecifiers]) {
     const dependencyPath = resolveRelativeTypeDeclaration(resolvedPath, specifier, pluginRoot)
     if (dependencyPath) {
@@ -772,13 +649,13 @@ function copyRelativeDependencies(
   }
   visiting.push(resolvedPath)
   const source = readSourceFile(resolvedPath)
-  assertHostedRuntimeModuleContract(resolvedPath, source)
+  assertHostedExportContract(source)
   const targetPath = tempPathForSource(resolvedPath, tempDir)
   mkdirForFile(targetPath, 'hosted TSX copy')
   writeTextFile(targetPath, source, 'hosted TSX dependency copy')
 
   try {
-    const { runtimeSpecifiers, typeOnlySpecifiers } = extractRelativeImportSpecifiers(resolvedPath, source)
+    const { runtime: runtimeSpecifiers, typeOnly: typeOnlySpecifiers } = findHostedRelativeImportSpecifiers(source)
     for (const specifier of runtimeSpecifiers) {
       const dependencyPath = resolveRelativeImport(resolvedPath, specifier, pluginRoot)
       if (dependencyPath) {

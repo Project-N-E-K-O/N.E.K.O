@@ -465,6 +465,21 @@ import ghost from "./missing"
     expect(root.querySelector('strong')?.textContent).toBe('AB')
   })
 
+  it('links exports that share a line after a semicolon', () => {
+    const { root } = executeHostedDocument(`
+      import { first, second } from "./inline"
+
+      export default function Panel() {
+        return <strong>{first + second}</strong>
+      }
+    `, baseContext(), baseContext(), [{
+      path: 'ui/inline.ts',
+      source: 'export const first = "A"; export const second = "B"\n',
+    }])
+
+    expect(root.querySelector('strong')?.textContent).toBe('AB')
+  })
+
   it('trims spaced default plus named hosted imports before executing', () => {
     const { root } = executeHostedDocument(`
       import { label } from "./consumer"

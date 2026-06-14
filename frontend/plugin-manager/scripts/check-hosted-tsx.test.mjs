@@ -521,6 +521,11 @@ const unsupportedExportCases = [
     pattern: /exported abstract classes are not supported/,
   },
   {
+    name: 'namespaces',
+    source: 'export namespace Theme { export const color = "#fff" }',
+    pattern: /exported namespaces are not supported/,
+  },
+  {
     name: 'destructured exports',
     source: 'const source = { label: "x" }\nexport const { label } = source',
     pattern: /destructured exports are not supported/,
