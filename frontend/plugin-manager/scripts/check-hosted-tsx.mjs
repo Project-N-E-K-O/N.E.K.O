@@ -299,6 +299,7 @@ function parseTomlSurfaces(text) {
     const fields = []
     let quote = null
     let bracketDepth = 0
+    let braceDepth = 0
     let start = 0
     for (let index = 0; index < body.length; index += 1) {
       const char = body[index]
@@ -312,7 +313,11 @@ function parseTomlSurfaces(text) {
         bracketDepth += 1
       } else if (char === ']') {
         bracketDepth -= 1
-      } else if (char === ',' && bracketDepth === 0) {
+      } else if (char === '{') {
+        braceDepth += 1
+      } else if (char === '}') {
+        braceDepth -= 1
+      } else if (char === ',' && bracketDepth === 0 && braceDepth === 0) {
         fields.push(body.slice(start, index).trim())
         start = index + 1
       }
@@ -345,10 +350,27 @@ function parseTomlSurfaces(text) {
 
   const addInlineSurfaces = (kind, rawValue) => {
     const textValue = rawValue.trim()
-    const tablePattern = /\{([^{}]*)\}/g
-    let match
-    while ((match = tablePattern.exec(textValue)) !== null) {
-      surfaces.push(parseInlineTable(match[1], kind))
+    let quote = null
+    let depth = 0
+    let tableStart = -1
+    for (let index = 0; index < textValue.length; index += 1) {
+      const char = textValue[index]
+      if (quote) {
+        if (char === quote && textValue[index - 1] !== '\\') quote = null
+        continue
+      }
+      if (char === '"' || char === "'") {
+        quote = char
+      } else if (char === '{') {
+        if (depth === 0) tableStart = index + 1
+        depth += 1
+      } else if (char === '}') {
+        depth -= 1
+        if (depth === 0 && tableStart >= 0) {
+          surfaces.push(parseInlineTable(textValue.slice(tableStart, index), kind))
+          tableStart = -1
+        }
+      }
     }
   }
 

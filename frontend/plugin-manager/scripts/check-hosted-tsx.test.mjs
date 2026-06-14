@@ -101,6 +101,30 @@ mode = 'hosted-tsx'
   })
 })
 
+test('checks inline hosted surfaces with localized titles', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'inline-localized-title')
+    writeFixtureFile(
+      join(pluginDir, 'plugin.toml'),
+      `[plugin.ui]
+panel = [{ id = "main", title = { en = "Main" }, mode = "hosted-tsx", entry = "main.tsx" }]
+`,
+    )
+    writeFixtureFile(
+      join(pluginDir, 'main.tsx'),
+      `export function Panel() {
+  return <Page title="missing default" />
+}
+`,
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /Hosted TSX must export a default function component/)
+  })
+})
+
 test('rejects relative imports that escape the repository root', () => {
   withFixture((root) => {
     const pluginDir = join(root, 'escape-import')
