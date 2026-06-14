@@ -131,7 +131,14 @@ class ToolLeakFilter:
             return seed_close
 
         trailing_seed_close = _SEED_CLOSE_RE.match(text, function_close.end())
-        return trailing_seed_close or function_close
+        if trailing_seed_close is not None:
+            return trailing_seed_close
+
+        trailing = text[function_close.end():]
+        if trailing and self._is_seed_close_prefix(trailing):
+            return None
+
+        return function_close
 
     def _suppression_close_tail_len(self, text: str) -> int:
         min_start = max(0, len(text) - self._max_tail)
