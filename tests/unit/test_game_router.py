@@ -518,6 +518,7 @@ async def test_basketball_quick_lines_uses_requested_character(monkeypatch):
     assert result["ok"] is True
     assert result["character"] == "InviteLan"
     assert result["lines"]["swish"] == ["Nice arc"]
+    assert "game_over" not in result["lines"]
     assert "Requested persona." in captured["system"]
     assert "Current persona." not in captured["system"]
 
@@ -536,6 +537,10 @@ def test_basketball_template_contract():
     assert "/api/game/basketball/route/drain" in html
     assert "/api/game/basketball/route/heartbeat" in html
     assert "/api/game/basketball/route/end" in html
+    assert "pageVisible: pageVisible" in html
+    assert "visibilityState: document.visibilityState" in html
+    assert "var drainSessionId = sessionId" in html
+    assert "if (sessionId !== drainSessionId || currentMode !== drainMode) return" in html
     assert "/api/game/basketball/character" in html
     assert "/api/game/basketball/leaderboard" in html
     assert "initNekoAvatar" in html

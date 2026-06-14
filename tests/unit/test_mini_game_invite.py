@@ -1304,6 +1304,8 @@ def test_direct_basketball_request_ignores_casual_or_negated_mentions():
     assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'the basketball court is open today') is None
     assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'can we play basketball later?') is None
     assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'could we start soccer tomorrow?') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '等会儿想玩篮球') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '明天来一局足球') is None
     assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '可以讲讲篮球怎么打吗') is None
     assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '我想了解篮球怎么玩') is None
     assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '篮球比赛开始了吗') is None

@@ -4708,10 +4708,26 @@
       }
     }).catch(function () {});
     heartbeatTimer = setInterval(function () {
-      post('/route/heartbeat', Object.assign({ session_id: sessionId, lanlan_name: getRouteLanlanName(), visible: !document.hidden, mode: currentMode, gameStarted: true, game_started: true, i18n_language: getRequestLanguage(), currentState: buildBasketballCurrentStatePayload() }, _basketballGameMemoryPolicyPayload()), 2500).catch(function () {});
+      var pageVisible = !document.hidden;
+      post('/route/heartbeat', Object.assign({
+        session_id: sessionId,
+        lanlan_name: getRouteLanlanName(),
+        visible: pageVisible,
+        pageVisible: pageVisible,
+        visibilityState: document.visibilityState || (pageVisible ? 'visible' : 'hidden'),
+        mode: currentMode,
+        gameStarted: true,
+        game_started: true,
+        i18n_language: getRequestLanguage(),
+        currentState: buildBasketballCurrentStatePayload()
+      }, _basketballGameMemoryPolicyPayload()), 2500).catch(function () {});
     }, 2500);
     drainTimer = setInterval(function () {
-      post('/route/drain', Object.assign({ session_id: sessionId, lanlan_name: getRouteLanlanName(), mode: currentMode, i18n_language: getRequestLanguage() }, _basketballGameMemoryPolicyPayload()), 2500).then(function (res) {
+      var drainSessionId = sessionId;
+      var drainMode = currentMode;
+      var drainLanlanName = getRouteLanlanName();
+      post('/route/drain', Object.assign({ session_id: drainSessionId, lanlan_name: drainLanlanName, mode: drainMode, i18n_language: getRequestLanguage() }, _basketballGameMemoryPolicyPayload()), 2500).then(function (res) {
+        if (sessionId !== drainSessionId || currentMode !== drainMode) return;
         var items = (res && (res.outputs || res.items || res.lines)) || [];
         if (Array.isArray(items)) {
           items.forEach(function (item) {
@@ -4724,7 +4740,9 @@
                 kind: 'user_reply',
                 source: 'user_reply',
                 label: 'route_drain',
-                mode: currentMode,
+                session_id: drainSessionId,
+                lanlan_name: drainLanlanName,
+                mode: drainMode,
                 voice_deadline_ms: 900
               }, event));
             }

@@ -7554,6 +7554,10 @@ _DIRECT_REQUEST_CJK_START_STATUS_QUESTION_CUES = (
     "能开始了吗", "可以开始了吗",
     "开了吗", "开了么", "开了没", "开没开",
 )
+_DIRECT_REQUEST_CJK_DEFER_CUES = (
+    "等会", "等会儿", "等下", "等一下", "晚点", "迟点", "回头",
+    "以后", "稍后", "一会儿", "一会", "明天", "后天", "下次", "改天",
+)
 
 
 def _direct_request_pair_is_cjk_start_status_question(
@@ -7589,6 +7593,8 @@ def _direct_request_pair_is_explicit(
             return bool(_DIRECT_REQUEST_ENGLISH_CUE_RE.search(window))
         return False
     if any(cue in window for cue in _DIRECT_REQUEST_CJK_DISCUSSION_CUES):
+        return False
+    if any(cue in window for cue in _DIRECT_REQUEST_CJK_DEFER_CUES):
         return False
     if _direct_request_pair_is_cjk_start_status_question(action_hit, window):
         return False

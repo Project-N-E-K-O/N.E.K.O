@@ -7371,7 +7371,6 @@ async def game_quick_lines(game_type: str, request: Request):
         parsed = robust_json_loads(raw)
         lines = _normalize_quick_lines(parsed, allowed_keys)
         if game_type == "basketball":
-            lines = {**_get_basketball_quick_lines_fallback(language), **lines}
             if cache_key:
                 _basketball_quick_lines_cache[cache_key] = lines
                 _basketball_quick_lines_cache.move_to_end(cache_key)
