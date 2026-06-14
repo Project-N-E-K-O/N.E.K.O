@@ -128,18 +128,27 @@ _DETAIL_TEMPLATES = {
         ),
         "final": "请只生成一句自然开场，像随口想起来，不要说“根据你的近期兴趣”，不要像问卷。",
     },
+    "zh-TW": {
+        "intro": "這是一個已經篩好的低頻深話題 hook。",
+        "interest": "關係點：{value}",
+        "hook": "切入角度：{value}",
+        "opening": "開口方向：{value}",
+        "deepening": "接話後展開：{value}",
+        "why_now": "為什麼現在適合：{value}",
+        "hint": "可借素材：{value}",
+        "online": (
+            "聯網補充：查詢「{query}」後得到的具體角度：{angle}。"
+            "必須自然用上其中一個具體資訊；如果這輪用不上，就不要觸發這個 hook。"
+        ),
+        "final": "請只生成一句自然開場，像隨口想起來，不要說「根據你的近期興趣」，不要像問卷。",
+    },
 }
-
-
-def _callback_priority(callback: Mapping[str, Any]) -> int:
-    try:
-        return int(callback.get("priority", 0))
-    except (TypeError, ValueError):
-        return 0
 
 
 def _detail_template_for_lang(lang: str) -> dict[str, str]:
     raw = (lang or "").strip().lower().replace("_", "-")
+    if raw.startswith(("zh-tw", "zh-hant", "zh-hk")):
+        return _DETAIL_TEMPLATES["zh-TW"]
     if raw.startswith("zh"):
         return _DETAIL_TEMPLATES["zh"]
     key = raw.split("-", 1)[0] if raw else "en"
@@ -259,15 +268,6 @@ async def trigger_topic_hook_once(
         return False
 
     callback = build_topic_hook_callback(material, lang=lang)
-    submit = getattr(mgr, "submit_proactive_callback", None)
-    if callable(submit):
-        submit(
-            callback,
-            priority=_callback_priority(callback),
-            coalesce_key=str(callback.get("coalesce_key") or ""),
-        )
-        return True
-
     enqueue = getattr(mgr, "enqueue_agent_callback", None)
     trigger = getattr(mgr, "trigger_agent_callbacks", None)
     if not callable(enqueue) or not callable(trigger):

@@ -276,3 +276,19 @@ async def test_default_topic_fetchers_keep_traditional_chinese_locale_distinct(m
     await fetchers["meme"]("補漆翻車", 2)
 
     assert calls == [("meme", "zh-TW")]
+
+
+@pytest.mark.asyncio
+async def test_default_topic_fetchers_pass_non_chinese_locale_to_media_fetchers(monkeypatch):
+    calls = []
+
+    async def fake_music_content(*, keyword, limit, source_locale=None):
+        calls.append((keyword, limit, source_locale))
+        return {"success": False, "data": []}
+
+    monkeypatch.setattr("utils.music_crawlers.fetch_music_content", fake_music_content)
+
+    fetchers = await _default_fetchers("ja")
+    await fetchers["music"]("city pop", 2)
+
+    assert calls == [("city pop", 2, "ja")]

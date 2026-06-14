@@ -76,6 +76,29 @@ def test_build_topic_hook_callback_localizes_detail_for_japanese():
     assert "请只生成一句自然开场" not in detail
 
 
+def test_build_topic_hook_callback_preserves_traditional_chinese():
+    callback = build_topic_hook_callback(
+        {
+            "hook_id": "topic_music",
+            "interest": "最近想聽城市流行",
+            "hook": "從晚上散步時想聽的歌切入",
+            "opening_intent": "像朋友隨口一提",
+            "online_query": "台灣 城市流行 夜晚 歌單",
+            "online_angle": "搜尋結果提到夜晚通勤歌單",
+        },
+        lang="zh-TW",
+    )
+
+    detail = callback["detail"]
+    assert "這是一個已經篩好的低頻深話題 hook" in detail
+    assert "關係點：最近想聽城市流行" in detail
+    assert "請只生成一句自然開場" in detail
+    assert "聯網補充" in detail
+    assert "这是一个已经筛好的低频深话题 hook" not in detail
+    assert "关系点：" not in detail
+    assert "请只生成一句自然开场" not in detail
+
+
 @pytest.mark.asyncio
 async def test_trigger_topic_hook_once_enqueues_existing_manager_callback(monkeypatch):
     mgr = MagicMock()
@@ -106,7 +129,7 @@ async def test_trigger_topic_hook_once_enqueues_existing_manager_callback(monkey
 
 
 @pytest.mark.asyncio
-async def test_trigger_topic_hook_once_prefers_proactive_manager(monkeypatch):
+async def test_trigger_topic_hook_once_waits_for_confirmed_delivery(monkeypatch):
     mgr = MagicMock()
     mgr.submit_proactive_callback = MagicMock()
     mgr.enqueue_agent_callback = MagicMock()
@@ -126,13 +149,10 @@ async def test_trigger_topic_hook_once_prefers_proactive_manager(monkeypatch):
     )
 
     assert delivered is True
-    mgr.submit_proactive_callback.assert_called_once()
-    callback = mgr.submit_proactive_callback.call_args.args[0]
-    kwargs = mgr.submit_proactive_callback.call_args.kwargs
+    mgr.submit_proactive_callback.assert_not_called()
+    callback = mgr.enqueue_agent_callback.call_args.args[0]
     assert callback["task_id"] == "topic_car"
-    assert kwargs == {"priority": -20, "coalesce_key": "topic_car"}
-    mgr.enqueue_agent_callback.assert_not_called()
-    mgr.trigger_agent_callbacks.assert_not_awaited()
+    mgr.trigger_agent_callbacks.assert_awaited_once()
     clear_topic_session_manager_getter()
 
 

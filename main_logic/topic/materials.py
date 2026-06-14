@@ -118,7 +118,7 @@ def _source_locale_for_lang(lang: str | None) -> str | None:
         return "zh-TW"
     if lower.startswith("zh-"):
         return normalized
-    return None
+    return normalized
 
 
 def _summary_template_for_lang(lang: str | None) -> str:

@@ -321,6 +321,56 @@ async def test_topic_pool_debounce_retries_after_background_analyzer_failure():
 
 
 @pytest.mark.asyncio
+async def test_topic_pool_keeps_dirty_when_analyzer_returns_none():
+    calls = 0
+    retried = asyncio.Event()
+
+    async def flaky_analyzer(*, user_msgs, ai_msgs, lang, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return None
+        retried.set()
+        return [
+            {
+                "interest": "稳定换城市话题",
+                "hook": "接住用户想换城市生活的念头",
+                "collection_score": 90,
+                "readiness": 88,
+                "confidence": 84,
+                "risk": 10,
+                "priority": 90,
+            }
+        ]
+
+    pool = TopicHookPool(
+        analyzer=flaky_analyzer,
+        auto_schedule=True,
+        enable_online_enrichment=False,
+        debounce_seconds=0.001,
+        min_user_turns_for_topic=1,
+    )
+
+    pool.note_user_message("妮可", "我最近一直想换个城市生活，但又怕重新开始太难")
+    pool.note_user_message("妮可", "换城市这件事反复想了很久，主要是想改变现在的节奏")
+
+    await asyncio.wait_for(retried.wait(), timeout=1.0)
+
+    async def wait_for_materials():
+        for _ in range(50):
+            materials = pool.get_ready_materials("妮可")
+            if materials:
+                return materials
+            await asyncio.sleep(0.01)
+        return []
+
+    materials = await wait_for_materials()
+
+    assert calls == 2
+    assert materials[0]["interest"] == "稳定换城市话题"
+
+
+@pytest.mark.asyncio
 async def test_topic_pool_triggers_ready_hook_after_quiet_window():
     delivered = []
 

@@ -315,11 +315,14 @@ class TopicHookPool:
             lang=topic_lang,
             global_signals=global_signals,
         )
+        if raw_materials is None:
+            logger.info("[%s] topic analyzer returned no result; keeping dirty for retry", name)
+            return
         if self._seq.get(name, 0) != seen_seq:
             return
         cleaned = [
             material
-            for material in (_clean_material(item) for item in (raw_materials or []))
+            for material in (_clean_material(item) for item in raw_materials)
             if material is not None and _material_is_ready(material)
         ]
         cleaned = sorted(
