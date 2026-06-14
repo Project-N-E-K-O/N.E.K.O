@@ -392,6 +392,13 @@ function isTypeOnlyBinding(value) {
   return /^type\s+[A-Za-z_$][\w$]*(?:\s+as\s+[A-Za-z_$][\w$]*)?$/.test(trimmed)
 }
 
+// Whether a relative import is purely erased at runtime (`import type …`). Bare
+// `import './x'` and empty `import {} from './x'` are NOT type-only — they're
+// bundled so the dependency runs for its side effects.
+function isHostedTypeOnlyImport(rawBindings) {
+  return isTypeOnlyBinding(String(rawBindings || '').trim())
+}
+
 function moduleImportStatement(rawBindings, modulePath) {
   const bindings = String(rawBindings || '').trim()
   const moduleRef = `__modules[${JSON.stringify(modulePath)}]`
@@ -461,7 +468,9 @@ function hostedRelativeImportPaths(source, fromPath, dependenciesByPath) {
   const paths = []
   for (const statement of hostedImportStatements(source)) {
     if (statement.specifier.startsWith('./') || statement.specifier.startsWith('../')) {
-      if (!hasRuntimeImportBindings(statement.rawBindings)) continue
+      // Type-only imports are erased; everything else — including `import {}` and
+      // bare `import './x'` — is bundled so its module IIFE runs for side effects.
+      if (isHostedTypeOnlyImport(statement.rawBindings)) continue
       const modulePath = resolveHostedImport(fromPath, statement.specifier, dependenciesByPath)
       paths.push(modulePath)
     }
@@ -728,10 +737,10 @@ export function findHostedRelativeImportSpecifiers(source) {
       const statement = readHostedImportStatement(source, index)
       if (statement) {
         if (statement.specifier.startsWith('./') || statement.specifier.startsWith('../')) {
-          if (hasRuntimeImportBindings(statement.rawBindings)) {
-            runtime.push(statement.specifier)
-          } else {
+          if (isHostedTypeOnlyImport(statement.rawBindings)) {
             typeOnly.push(statement.specifier)
+          } else {
+            runtime.push(statement.specifier)
           }
         }
         index = statement.end
@@ -912,5 +921,24 @@ export function assertHostedExportContract(source) {
       continue
     }
     index += 1
+  }
+}
+
+/**
+ * Throw if a hosted module imports a bare/external module. Only relative helpers
+ * and the UI kit ('@neko/plugin-ui' / 'neko:ui') resolve inside the surface
+ * iframe; an installed-package import (e.g. `import { debounce } from 'lodash-es'`)
+ * would be copied verbatim into the classic <script> and fail at load. Type-only
+ * imports are erased by the TS transform, so they're allowed.
+ */
+export function assertHostedImportContract(source) {
+  for (const statement of hostedImportStatements(source)) {
+    const specifier = statement.specifier
+    if (specifier.startsWith('./') || specifier.startsWith('../')) continue
+    if (specifier === '@neko/plugin-ui' || specifier === 'neko:ui') continue
+    if (isHostedTypeOnlyImport(statement.rawBindings)) continue
+    throw new Error(
+      `Unsupported hosted TSX import: bare module '${specifier}' cannot resolve inside the surface iframe; import only relative helpers and '@neko/plugin-ui'`,
+    )
   }
 }

@@ -480,6 +480,21 @@ import ghost from "./missing"
     expect(root.querySelector('strong')?.textContent).toBe('AB')
   })
 
+  it('runs empty named imports for their side effects', () => {
+    const { root } = executeHostedDocument(`
+      import {} from "./setup"
+
+      export default function Panel() {
+        return <strong>{String((window as any).__nekoEmptyImportRan)}</strong>
+      }
+    `, baseContext(), baseContext(), [{
+      path: 'ui/setup.ts',
+      source: '(window as any).__nekoEmptyImportRan = "ran"\n',
+    }])
+
+    expect(root.querySelector('strong')?.textContent).toBe('ran')
+  })
+
   it('skips regex literals with braces so later exports still link', () => {
     const { root } = executeHostedDocument(`
       import { pattern, label } from "./re"

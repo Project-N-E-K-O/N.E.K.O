@@ -629,6 +629,25 @@ test('rejects dynamic import inside a template expression', () => {
   })
 })
 
+test('rejects bare/external package imports', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'external-import')
+    writePluginToml(pluginDir, 'main.tsx')
+    writeFixtureFile(
+      join(pluginDir, 'main.tsx'),
+      'import { debounce } from \'lodash-es\'\n'
+        + 'export default function Panel() {\n'
+        + '  return <Page title={String(debounce)} />\n'
+        + '}\n',
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /bare module 'lodash-es' cannot resolve/)
+  })
+})
+
 test('skips regex literals with braces and commas when scanning exports', () => {
   withFixture((root) => {
     const pluginDir = join(root, 'regex-exports')

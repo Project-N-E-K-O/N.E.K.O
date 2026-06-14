@@ -29,3 +29,6 @@ export function findHostedRelativeImportSpecifiers(source: string): {
 
 /** Throw if a hosted module uses an export form the linker cannot handle. */
 export function assertHostedExportContract(source: string): void
+
+/** Throw if a hosted module imports a bare/external (non-relative, non-UI) module. */
+export function assertHostedImportContract(source: string): void

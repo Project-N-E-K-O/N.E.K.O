@@ -6,6 +6,7 @@ import process from 'node:process'
 import ts from 'typescript'
 import {
   assertHostedExportContract,
+  assertHostedImportContract,
   findHostedRelativeImportSpecifiers,
 } from '../src/components/plugin/hosted/hostedTsxModule.mjs'
 
@@ -666,6 +667,7 @@ function copyRelativeDependencies(
   visiting.push(resolvedPath)
   const source = readSourceFile(resolvedPath)
   assertHostedExportContract(source)
+  assertHostedImportContract(source)
   assertNoDynamicImport(resolvedPath, source)
   const targetPath = tempPathForSource(resolvedPath, tempDir)
   mkdirForFile(targetPath, 'hosted TSX copy')
