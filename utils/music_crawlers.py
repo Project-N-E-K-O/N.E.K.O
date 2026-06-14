@@ -269,6 +269,12 @@ except ImportError:
         except Exception:
             return False
 
+try:
+    from utils.source_locale import source_region_from_locale
+except ImportError:
+    def source_region_from_locale(source_locale: str | None) -> str | None:
+        return None
+
 # =======================================================
 # 2. 爬虫基类
 # =======================================================
@@ -1030,12 +1036,13 @@ async def close_all_crawlers():
 # 4. 主调度函数
 # =======================================================
 
-async def fetch_music_content(keyword: str, limit: int = 1, prefer_china: bool | None = None) -> Dict[str, Any]:
+async def fetch_music_content(keyword: str, limit: int = 1, source_locale: str | None = None) -> Dict[str, Any]:
     """
-    主音乐获取函数，带有“分段截断”的智能并发调度。
+    Fetch music content with staged fallback and locale-aware source ordering.
     """
-    china = is_china_region() if prefer_china is None else bool(prefer_china)
-    logger.info(f"音乐搜索请求: keyword='{keyword}', limit={limit}, is_china_region={china}")
+    source_region = source_region_from_locale(source_locale)
+    china = is_china_region() if source_region is None else source_region == "china"
+    logger.info(f"音乐搜索请求: keyword='{keyword}', limit={limit}, is_china_region={china}, source_locale={source_locale}")
 
     all_results = []
     

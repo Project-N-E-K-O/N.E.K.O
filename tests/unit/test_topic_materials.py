@@ -200,3 +200,44 @@ async def test_default_topic_fetchers_keep_chinese_search_local_and_fallback_ins
     assert result["success"] is True
     assert result["region"] == "china"
     assert result["search"]["results"][0]["title"] == "脑机接口大众款最新进展"
+
+
+@pytest.mark.asyncio
+async def test_default_topic_fetchers_pass_source_locale_to_media_fetchers(monkeypatch):
+    calls = []
+
+    async def fake_meme_content(*, keyword, limit, source_locale=None):
+        calls.append(("meme", keyword, limit, source_locale))
+        return {"success": False, "data": []}
+
+    async def fake_music_content(*, keyword, limit, source_locale=None):
+        calls.append(("music", keyword, limit, source_locale))
+        return {"success": False, "data": []}
+
+    monkeypatch.setattr("utils.meme_fetcher.fetch_meme_content", fake_meme_content)
+    monkeypatch.setattr("utils.music_crawlers.fetch_music_content", fake_music_content)
+
+    fetchers = await _default_fetchers("zh-CN")
+    await fetchers["meme"]("补漆翻车", 2)
+    await fetchers["music"]("周杰伦", 1)
+
+    assert calls == [
+        ("meme", "补漆翻车", 2, "zh-CN"),
+        ("music", "周杰伦", 1, "zh-CN"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_default_topic_fetchers_keep_traditional_chinese_locale_distinct(monkeypatch):
+    calls = []
+
+    async def fake_meme_content(*, keyword, limit, source_locale=None):
+        calls.append(("meme", source_locale))
+        return {"success": False, "data": []}
+
+    monkeypatch.setattr("utils.meme_fetcher.fetch_meme_content", fake_meme_content)
+
+    fetchers = await _default_fetchers("zh-TW")
+    await fetchers["meme"]("補漆翻車", 2)
+
+    assert calls == [("meme", "zh-TW")]

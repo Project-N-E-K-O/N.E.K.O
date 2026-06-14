@@ -105,6 +105,22 @@ def build_topic_materials(
     return materials
 
 
+def _source_locale_for_lang(lang: str | None) -> str | None:
+    normalized = str(lang or "").strip().replace("_", "-")
+    if not normalized:
+        return None
+    lower = normalized.lower()
+    if lower == "zh":
+        return "zh-CN"
+    if lower.startswith("zh-hans"):
+        return "zh-CN"
+    if lower.startswith("zh-hant"):
+        return "zh-TW"
+    if lower.startswith("zh-"):
+        return normalized
+    return None
+
+
 async def _default_fetchers(lang: str | None = None) -> dict[str, Fetcher]:
     from utils.meme_fetcher import fetch_meme_content
     from utils.music_crawlers import fetch_music_content
@@ -138,14 +154,14 @@ async def _default_fetchers(lang: str | None = None) -> dict[str, Fetcher]:
         return await fetch_meme_content(
             keyword=keyword,
             limit=limit,
-            prefer_china=True if is_zh_lang(lang) else None,
+            source_locale=_source_locale_for_lang(lang),
         )
 
     async def music(keyword: str, limit: int) -> Mapping[str, Any]:
         return await fetch_music_content(
             keyword=keyword,
             limit=limit,
-            prefer_china=True if is_zh_lang(lang) else None,
+            source_locale=_source_locale_for_lang(lang),
         )
 
     return {
