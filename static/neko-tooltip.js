@@ -34,7 +34,7 @@
                 border: 1px solid var(--neko-popup-border-color, rgba(0, 0, 0, 0.12));
                 background: var(--neko-popup-bg, rgba(255, 255, 255, 0.96));
                 color: var(--neko-popup-text, #222);
-                box-shadow: var(--neko-popup-shadow, 0 8px 24px rgba(0, 0, 0, 0.16));
+                box-shadow: var(--neko-popup-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04));
                 font-size: 12px;
                 line-height: 1.45;
                 white-space: pre-wrap;
