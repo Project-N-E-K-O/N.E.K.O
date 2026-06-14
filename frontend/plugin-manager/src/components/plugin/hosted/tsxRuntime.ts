@@ -606,12 +606,14 @@ function transformHostedImports(
       cursor = statement.end
       continue
     }
-    if (!hasRuntimeImportBindings(statement.rawBindings)) {
-      cursor = statement.end
-      continue
+    if (hasRuntimeImportBindings(statement.rawBindings)) {
+      const modulePath = resolveHostedImport(
+        fromPath,
+        statement.specifier,
+        dependenciesByPath,
+      )
+      result += moduleImportStatement(statement.rawBindings, modulePath)
     }
-    const modulePath = resolveHostedImport(fromPath, statement.specifier, dependenciesByPath)
-    result += moduleImportStatement(statement.rawBindings, modulePath)
     cursor = statement.end
   }
   return `${result}${source.slice(cursor)}`
