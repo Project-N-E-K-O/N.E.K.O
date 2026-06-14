@@ -172,6 +172,7 @@ async def test_trigger_topic_hook_once_waits_for_confirmed_delivery(monkeypatch)
 @pytest.mark.asyncio
 async def test_trigger_topic_hook_once_retracts_submitted_callback_when_cancelled(monkeypatch):
     delivered_batches = []
+    submitted = asyncio.Event()
 
     async def deliver(batch):
         delivered_batches.append(batch)
@@ -188,6 +189,7 @@ async def test_trigger_topic_hook_once_retracts_submitted_callback_when_cancelle
         def submit_proactive_callback(self, callback, *, priority=0, coalesce_key=None):
             self.submitted_callback = callback
             self.proactive_manager.submit(callback, priority=priority, coalesce_key=coalesce_key)
+            submitted.set()
 
         def enqueue_agent_callback(self, callback):
             self.pending_agent_callbacks.append(callback)
@@ -206,7 +208,7 @@ async def test_trigger_topic_hook_once_retracts_submitted_callback_when_cancelle
             lang="zh-CN",
         )
     )
-    await asyncio.sleep(0)
+    await asyncio.wait_for(submitted.wait(), timeout=1)
 
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -227,6 +229,7 @@ async def test_trigger_topic_hook_once_treats_cancelled_after_ack_as_delivered(m
         def submit_proactive_callback(self, callback, *, priority=0, coalesce_key=None):
             loop = asyncio.get_running_loop()
             future = callback[DELIVERY_ACK_FUTURE_KEY]
+            assert current_task is not None
             loop.call_soon(future.set_result, True)
             loop.call_soon(current_task.cancel)
 

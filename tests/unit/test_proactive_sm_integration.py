@@ -25,9 +25,13 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 # _loc、normalize_language_code、httpx 等），测试不直接跑整段函数，而是对
 # SM 的契约做黑盒回归 —— 让一个 minimal mgr 模拟真实 LLMSessionManager 的
 # state/session/lock 结构，然后直接调用 trigger_agent_callbacks 的关键分支。
-from main_logic.core import LLMSessionManager, _proactive_expected_sid
+from main_logic.core import (
+    LLMSessionManager,
+    _VOICE_PROACTIVE_ACK_GRACE_S,
+    _proactive_expected_sid,
+)
 from main_logic.omni_offline_client import OmniOfflineClient
-from main_logic.proactive_delivery import DELIVERY_ACK_FUTURE_KEY
+from main_logic.proactive_delivery import DELIVERY_ACK_FUTURE_KEY, DELIVERY_RETRACTED_KEY
 from main_logic.session_state import (
     ProactivePhase,
     SessionEvent,
@@ -299,6 +303,84 @@ async def test_voice_mode_server_rejection_re_enqueues_cb():
     # re-reject 死循环。retry 交给那个 active response 的 response.done →
     # _finalize_turn_after_emit。所以这里不应有立即调度。
     assert mgr._fired_tasks == []
+
+
+async def test_voice_mode_late_rejection_keeps_delivery_ack_pending():
+    captured_rejection: list = []
+
+    sess = _make_voice_sess()
+
+    async def _inject(text, *, on_rejected=None):
+        sess.inject_calls += 1
+        sess.injected.append(text)
+        captured_rejection.append(on_rejected)
+    sess.inject_text_and_request_response = _inject
+
+    mgr = _make_mgr(session=sess)
+    future = asyncio.get_running_loop().create_future()
+    cb = {
+        "_callback_delivery_id": "id-ack-race",
+        "status": "completed",
+        "summary": "ack race",
+        DELIVERY_ACK_FUTURE_KEY: future,
+    }
+    extra = {"_callback_delivery_id": "id-ack-race", "origin": "task_result", "summary": "ack race"}
+    mgr.pending_agent_callbacks = [cb]
+    mgr.pending_extra_replies = [extra]
+
+    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    assert not future.done()
+
+    captured_rejection[0]("response_already_active")
+    await asyncio.sleep(_VOICE_PROACTIVE_ACK_GRACE_S + 0.02)
+
+    assert not future.done()
+    assert mgr.pending_agent_callbacks == [cb]
+    assert mgr.pending_extra_replies == [extra]
+
+
+async def test_voice_mode_success_resolves_delivery_ack_after_rejection_window():
+    sess = _make_voice_sess()
+    mgr = _make_mgr(session=sess)
+    future = asyncio.get_running_loop().create_future()
+    cb = {
+        "_callback_delivery_id": "id-ack-ok",
+        "status": "completed",
+        "summary": "ack ok",
+        DELIVERY_ACK_FUTURE_KEY: future,
+    }
+    extra = {"_callback_delivery_id": "id-ack-ok", "origin": "task_result", "summary": "ack ok"}
+    mgr.pending_agent_callbacks = [cb]
+    mgr.pending_extra_replies = [extra]
+
+    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    assert not future.done()
+
+    await asyncio.sleep(_VOICE_PROACTIVE_ACK_GRACE_S + 0.02)
+
+    assert future.done()
+    assert future.result() is True
+
+
+async def test_voice_mode_rechecks_retracted_callbacks_before_inject():
+    sess = _make_voice_sess()
+    mgr = _make_mgr(session=sess)
+    cb = {"_callback_delivery_id": "id-retracted", "status": "completed", "summary": "cancelled"}
+    mgr.pending_agent_callbacks = [cb]
+    mgr.pending_extra_replies = [
+        {"_callback_delivery_id": "id-retracted", "origin": "task_result", "summary": "cancelled"}
+    ]
+
+    async def _stream_then_retract(callbacks, session):
+        cb[DELIVERY_RETRACTED_KEY] = True
+        return True
+    mgr._stream_cb_media = _stream_then_retract
+
+    delivered = await LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is False
+    assert sess.injected == []
+    assert mgr.pending_agent_callbacks == [cb]
 
 
 async def test_voice_mode_reject_during_await_not_pruned():
@@ -716,7 +798,7 @@ async def test_deliver_proactive_batch_does_not_fail_ack_when_inner_trigger_defe
     assert not future.done()
 
 
-async def test_deliver_proactive_batch_resolves_ack_on_delivery():
+async def test_deliver_proactive_batch_leaves_ack_to_delivery_path():
     mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
     future = asyncio.get_running_loop().create_future()
     cb = {"status": "completed", "summary": "queued", DELIVERY_ACK_FUTURE_KEY: future}
@@ -724,8 +806,7 @@ async def test_deliver_proactive_batch_resolves_ack_on_delivery():
 
     await LLMSessionManager._deliver_proactive_batch(mgr, [cb])
 
-    assert future.done()
-    assert future.result() is True
+    assert not future.done()
 
 
 async def test_text_mode_successful_delivery_fires_full_event_sequence():
@@ -889,7 +970,7 @@ async def test_user_input_between_claim_and_lock_is_detected():
     # 现在直接调 _deliver_agent_callbacks_text（绕过 trigger_agent_callbacks
     # 的 claim，因为我们已经手动模拟了 claim + user 抢占）
     callbacks_snapshot = [{"status": "completed", "summary": "slow"}]
-    await LLMSessionManager._deliver_agent_callbacks_text(mgr, "instr", callbacks_snapshot)
+    await LLMSessionManager._deliver_agent_callbacks_text(mgr, callbacks_snapshot)
 
     # 关键断言：current_speech_id 保留为用户的 sid，没被 proactive 覆盖
     assert mgr.current_speech_id == pre_user_sid
