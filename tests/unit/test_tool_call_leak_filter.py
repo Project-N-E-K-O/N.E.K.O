@@ -102,6 +102,26 @@ def test_structured_tool_call_split_close_preserves_following_text():
     assert events[0].finalized is False
 
 
+def test_structured_tool_call_split_wrapped_close_preserves_following_text():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    visible, events = _drain(
+        ToolLeakFilter(tool_names={"recall_memory"}),
+        [
+            "before ",
+            'recall_memory</name><parameter name="query">secret</parameter></function></seed:tool_',
+            "call> after",
+        ],
+    )
+
+    assert visible == "before  after"
+    assert "</seed:tool_call>" not in visible
+    assert "secret" not in visible
+    assert len(events) == 1
+    assert events[0].pattern == "structured_tool_call"
+    assert events[0].finalized is False
+
+
 def test_structured_tool_call_strips_function_name_opener():
     from utils.llm_tool_leak_filter import ToolLeakFilter
 
