@@ -1,7 +1,9 @@
 from types import SimpleNamespace
-from pathlib import Path
 
-from main_routers.system_router import _allow_open_threads_for_topic_hooks
+from main_routers.system_router import (
+    _allow_open_threads_for_topic_hooks,
+    _render_followup_topic_hooks,
+)
 
 
 def test_topic_hooks_open_threads_respect_restricted_screen_only():
@@ -19,9 +21,22 @@ def test_topic_hooks_open_threads_respect_restricted_screen_only():
 
 
 def test_followup_surfaced_ids_are_limited_to_rendered_topics():
-    source = Path("main_routers/system_router.py").read_text(encoding="utf-8")
+    topics = [
+        {
+            "id": f"reflection-{idx}",
+            "text": f"follow-up memory {idx}",
+        }
+        for idx in range(4)
+    ]
 
-    assert "_rendered_followup_topics = _followup_topics[:3]" in source
-    assert "followup_topics=_rendered_followup_topics" in source
-    assert "for topic in _rendered_followup_topics:" in source
-    assert "for topic in _followup_topics:\n                            if topic.get('id')" not in source
+    prompt, surfaced_ids = _render_followup_topic_hooks("en", topics)
+
+    assert "follow-up memory 0" in prompt
+    assert "follow-up memory 1" in prompt
+    assert "follow-up memory 2" in prompt
+    assert "follow-up memory 3" not in prompt
+    assert surfaced_ids == [
+        "reflection-0",
+        "reflection-1",
+        "reflection-2",
+    ]

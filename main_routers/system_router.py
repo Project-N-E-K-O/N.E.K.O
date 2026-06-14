@@ -1915,6 +1915,32 @@ def _allow_open_threads_for_topic_hooks(activity_snapshot) -> bool:
     return getattr(activity_snapshot, 'unfinished_thread', None) is not None
 
 
+def _render_followup_topic_hooks(
+    proactive_lang: str,
+    followup_topics: list[dict[str, Any]],
+) -> tuple[str, list[Any]]:
+    """Render follow-up topic hooks and return the surfaced reflection ids."""
+    if not followup_topics:
+        return "", []
+
+    from main_logic.topic.hooks import build_topic_hook_prompt
+
+    rendered_followup_topics = followup_topics[:3]
+    prompt = build_topic_hook_prompt(
+        proactive_lang,
+        followup_topics=rendered_followup_topics,
+    )
+    if not prompt:
+        return "", []
+
+    surfaced_reflection_ids = [
+        topic['id']
+        for topic in rendered_followup_topics
+        if topic.get('id')
+    ]
+    return prompt, surfaced_reflection_ids
+
+
 # ---------- Mini-game 邀请短路状态管理 ----------
 # 入口在 proactive_chat 内部、过完 propensity / skip_probability /
 # restricted_screen_only 几道门之后调 _maybe_deliver_mini_game_invite。命中
@@ -5537,16 +5563,13 @@ async def proactive_chat(request: Request):
                     _followup_topics = _topics_resp.json().get('topics', [])
                     if _followup_topics:
                         try:
-                            from main_logic.topic.hooks import build_topic_hook_prompt
-                            _rendered_followup_topics = _followup_topics[:3]
-                            followup_topics_prompt = build_topic_hook_prompt(
+                            (
+                                followup_topics_prompt,
+                                _surfaced_reflection_ids,
+                            ) = _render_followup_topic_hooks(
                                 proactive_lang,
-                                followup_topics=_rendered_followup_topics,
+                                _followup_topics,
                             )
-                            if followup_topics_prompt:
-                                for topic in _rendered_followup_topics:
-                                    if topic.get('id'):
-                                        _surfaced_reflection_ids.append(topic['id'])
                         except Exception as _followup_prompt_err:
                             logger.debug(f"[{lanlan_name}] followup topic prompt build failed: {_followup_prompt_err}")
                         print(f"[{lanlan_name}] 回调话题候选: {len(_followup_topics)} 条")
