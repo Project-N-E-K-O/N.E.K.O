@@ -1099,6 +1099,29 @@ def test_apply_choice_accept_returns_open_game_with_url():
     assert state['chats_since_response'] == 0
 
 
+def test_apply_choice_accept_fallback_reports_launched_game_type(monkeypatch):
+    """If the chosen game has no launch URL, report the soccer fallback consistently."""
+    state = sr._mini_game_invite_get_state(LANLAN)
+    state['delivered_at'] = time.time() - 30
+    state['responded_at'] = None
+    state['pending_session_id'] = 'sess-fallback'
+    state['last_game_type'] = 'basketball'
+
+    def _fake_launch_url(game_type: str, lanlan_name: str, session_id: str) -> str | None:
+        if game_type == 'basketball':
+            return None
+        return f'/soccer_demo?lanlan_name={lanlan_name}&session_id={session_id}'
+
+    monkeypatch.setattr(sr, '_mini_game_launch_url', _fake_launch_url)
+
+    result = sr._apply_mini_game_invite_choice(LANLAN, 'accept', source='button')
+
+    assert result['action'] == 'open_game'
+    assert result['game_type'] == 'soccer'
+    assert result['game_url'] == f'/soccer_demo?lanlan_name={LANLAN}&session_id=sess-fallback'
+    assert state['last_game_type'] == 'soccer'
+
+
 def test_apply_choice_decline_starts_cooldown_no_url():
     """decline → mark responded（同样启动冷却），不开游戏。"""
     state = sr._mini_game_invite_get_state(LANLAN)

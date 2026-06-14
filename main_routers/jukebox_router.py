@@ -946,6 +946,8 @@ async def upload_actions(
 
             # 使用提供的名称或文件名作为默认显示名称
             # 如果文件名有数字后缀（如"动画(1).vmd"），默认显示名称也保留这个后缀
+            if not isinstance(meta, dict):
+                meta = {}
             action_name = meta.get("name") or Path(target_filename).stem
 
             # 创建动画记录

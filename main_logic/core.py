@@ -3543,7 +3543,7 @@ class LLMSessionManager:
             return False
         gsv_voice_id = str(core_config.get('TTS_VOICE_ID') or '')
         gsv_enabled = (
-            bool(core_config.get('GPTSOVITS_ENABLED'))
+            _as_bool(core_config.get('GPTSOVITS_ENABLED'), False)
             and not is_gsv_disabled_voice_id(gsv_voice_id)
         )
         if gsv_enabled:

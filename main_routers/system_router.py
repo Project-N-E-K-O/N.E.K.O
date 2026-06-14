@@ -7233,21 +7233,24 @@ def _apply_mini_game_invite_choice(
         # 触发会双开窗口）。
         invite_session_id = state.get('pending_session_id') or ''
         game_type = state.get('last_game_type') or 'soccer'
-        _mini_game_invite_record_response_cooldown(state, game_type, 'accept', now)
-        game_url = _mini_game_launch_url(game_type, lanlan_name, invite_session_id)
+        launch_game_type = game_type
+        game_url = _mini_game_launch_url(launch_game_type, lanlan_name, invite_session_id)
         if not game_url:
             logger.warning(
                 "[%s] accept invite but no launch URL for game_type=%r; "
                 "fallback /soccer_demo", lanlan_name, game_type,
             )
-            game_url = _mini_game_launch_url("soccer", lanlan_name, invite_session_id) or "/soccer_demo"
+            launch_game_type = "soccer"
+            game_url = _mini_game_launch_url(launch_game_type, lanlan_name, invite_session_id) or "/soccer_demo"
+        state['last_game_type'] = launch_game_type
+        _mini_game_invite_record_response_cooldown(state, launch_game_type, 'accept', now)
         logger.info(
             "[%s] mini-game invite accepted via %s -> %s",
             lanlan_name, source, game_url,
         )
         return {
             'action': 'open_game',
-            'game_type': game_type,
+            'game_type': launch_game_type,
             'game_url': game_url,
             'session_id': invite_session_id,
         }

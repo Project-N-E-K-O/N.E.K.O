@@ -6,7 +6,7 @@ sections are located by their Chinese heading keywords, defined as the
 ``REGRESSION_KEYWORD`` / ``NO_SPLIT_KEYWORD`` constants below.
 
 REGRESSION_REPORT
-    If the PR touches app/, main_logic/, or memory/ (any ``*.py`` file),
+    If the PR touches app/, main_logic/, main_routers/, or memory/ (any ``*.py`` file),
     the body must carry a non-empty regression-report section documenting
     the change, its rationale / necessity, before-and-after behaviour, and
     the potential regressions. These three are the project's highest-risk
@@ -53,7 +53,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Modules whose every *.py change must ship a regression report.
-WATCHED_PREFIXES = ("app/", "main_logic/", "memory/")
+WATCHED_PREFIXES = ("app/", "main_logic/", "main_routers/", "memory/")
 # A PR touching more than this many NON-TEST files must justify not splitting.
 FILE_COUNT_LIMIT = 20
 

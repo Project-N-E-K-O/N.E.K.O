@@ -1474,7 +1474,13 @@ def _is_local_voice_clone_tts_config(tts_config: dict, core_config: dict | None 
     provider = str((core_config or {}).get('ttsModelProvider') or '').strip()
     if provider == 'vllm_omni':
         return False
-    base_url = str(tts_config.get('base_url') or '')
+    base_url = str(
+        tts_config.get('base_url')
+        or tts_config.get('url')
+        or (core_config or {}).get('ttsModelUrl')
+        or (core_config or {}).get('TTS_MODEL_URL')
+        or ''
+    )
     return bool(tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://')))
 
 
@@ -2235,12 +2241,15 @@ async def update_catgirl_l2d(name: str, request: Request):
                 except (TypeError, ValueError):
                     return default
                 if not math.isfinite(parsed):
-                    return default
+                    raise ValueError('数值字段必须是有限值')
                 return max(min_value, min(max_value, parsed))
 
-            pngtuber_payload['scale'] = _bounded_number(pngtuber_payload.get('scale'), 1, 0.1, 5)
-            pngtuber_payload['offset_x'] = _bounded_number(pngtuber_payload.get('offset_x'), 0, -5000, 5000)
-            pngtuber_payload['offset_y'] = _bounded_number(pngtuber_payload.get('offset_y'), 0, -5000, 5000)
+            try:
+                pngtuber_payload['scale'] = _bounded_number(pngtuber_payload.get('scale'), 1, 0.1, 5)
+                pngtuber_payload['offset_x'] = _bounded_number(pngtuber_payload.get('offset_x'), 0, -5000, 5000)
+                pngtuber_payload['offset_y'] = _bounded_number(pngtuber_payload.get('offset_y'), 0, -5000, 5000)
+            except ValueError as exc:
+                return JSONResponse(content={'success': False, 'error': str(exc)}, status_code=400)
             pngtuber_payload['mirror'] = _config_value_is_enabled(pngtuber_payload.get('mirror'))
 
         if model_type_str == 'live3d':

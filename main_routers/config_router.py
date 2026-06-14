@@ -238,6 +238,9 @@ def _resolve_pngtuber_image_path(image_path: str, _config_manager, target_name: 
         return ""
     if image_path.startswith('http://') or image_path.startswith('https://'):
         return image_path
+    if image_path.startswith('//'):
+        logger.warning(f"Invalid PNGTuber protocol-relative image path for {target_name}: {image_path}")
+        return ""
     lookup_path = urllib.parse.urlsplit(image_path).path
     if image_path.startswith('/'):
         if lookup_path.startswith(PNGTUBER_USER_PATH + '/'):
