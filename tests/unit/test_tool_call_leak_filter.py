@@ -51,6 +51,21 @@ def test_recall_memory_tail_fragment_is_stripped_without_open_seed():
     assert events[0].pattern == "structured_tool_call"
 
 
+def test_structured_tool_call_does_not_strip_prior_tool_name_mention():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    leak = 'recall_memory</name><parameter name="query">secret</parameter></function>'
+    visible, events = _drain(
+        ToolLeakFilter(tool_names={"recall_memory"}),
+        [f"recall_memory is available; {leak} after"],
+    )
+
+    assert visible == "recall_memory is available;  after"
+    assert "secret" not in visible
+    assert len(events) == 1
+    assert events[0].pattern == "structured_tool_call"
+
+
 def test_structured_tool_call_variant_across_chunks_is_stripped():
     from utils.llm_tool_leak_filter import ToolLeakFilter
 

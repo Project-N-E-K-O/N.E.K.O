@@ -1848,6 +1848,50 @@ async def test_offline_silent_fallback_when_genai_did_not_emit(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_offline_silent_fallback_resets_unemitted_genai_filter_state(monkeypatch):
+    """genai 路径没 yield 文本但已让 leak filter 持有 pending/suppressing 状态时，
+    静默 fallback 到 OpenAI-compat 前必须清空过滤器状态，避免污染 fallback 文本。"""
+    from main_logic import omni_offline_client as _ofc
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import LLMStreamChunk
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    monkeypatch.setattr(_ofc, "_GENAI_AVAILABLE", True)
+
+    async def _genai_consumes_filter_then_raises(self, messages, **overrides):
+        leak_filter = overrides["_tool_leak_filter"]
+        leak_filter.feed("<seed:tool_call>secret")
+        if False:
+            yield  # make it an async generator
+        raise RuntimeError("HTTP 503 transient before visible output")
+
+    async def _openai_emits(self, messages, **overrides):
+        leak_filter = overrides["_tool_leak_filter"]
+        visible, _event = leak_filter.feed("Hello")
+        yield LLMStreamChunk(content=visible)
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_genai_with_tools", _genai_consumes_filter_then_raises)
+    monkeypatch.setattr(OmniOfflineClient, "_astream_openai_with_tools", _openai_emits)
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client._use_genai_sdk = True
+    client._genai_tools_unsupported = False
+
+    yielded = []
+    leak_filter = ToolLeakFilter(tool_names={"recall_memory"})
+    async for ch in client._astream_with_tools(
+        [{"role": "user", "content": "x"}],
+        _tool_leak_filter=leak_filter,
+        _tool_leak_provider="free",
+    ):
+        yielded.append(ch.content)
+
+    assert yielded == ["Hello"]
+    assert leak_filter.finalize() == ("", None)
+    assert client._genai_tools_unsupported is False
+
+
+@pytest.mark.asyncio
 async def test_offline_genai_tools_unsupported_error_correctly_disables_path(monkeypatch):
     """与上一条对偶：当 genai 真的报"tools not supported"时，必须被包装成
     `_GenaiToolsUnsupported`，让 `_astream_with_tools` 翻 `_genai_tools_unsupported`
