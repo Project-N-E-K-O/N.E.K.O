@@ -479,6 +479,34 @@ def test_strip_markdown_keeps_fenced_code_text_searchable() -> None:
     assert "```" not in plain
 
 
+def test_strip_markdown_keeps_comparisons_and_generics_but_drops_tags() -> None:
+    plain = _strip_markdown("if a < b and x > 0 then List<T> works <div>tag</div>")
+    # math comparisons must stay searchable; only real tags are removed
+    assert "a < b" in plain
+    assert "x > 0" in plain
+    assert "tag" in plain
+    assert "<div>" not in plain and "</div>" not in plain
+
+
+def test_build_notes_markdown_escapes_metadata(tmp_path) -> None:
+    store, notebooks, _logger = _make_store(tmp_path)
+    try:
+        note = notebooks.create_note(
+            title="# Not A Heading [x]",
+            content="body text",
+            tags=["c#", "a`b"],
+        )
+        md = notebooks.build_notes_markdown([note.id], title="My # Export")
+        # the note title must not start a real markdown heading inside the body
+        assert "## \\# Not A Heading \\[x\\]" in md
+        assert "\\# Export" in md
+        assert "c\\#" in md and "a\\`b" in md
+        # the note content stays verbatim
+        assert "body text" in md
+    finally:
+        store.close()
+
+
 @pytest.mark.asyncio
 async def test_note_ai_expand_preserves_full_long_original() -> None:
     long_original = "原始内容开头。" + "中间的正文段落需要完整保留。" * 40

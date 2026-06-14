@@ -18,7 +18,10 @@ _MARKDOWN_FENCE_RE = re.compile(r"```[^\n]*\n?(.*?)```", re.DOTALL)
 _MARKDOWN_INLINE_CODE_RE = re.compile(r"`([^`]*)`")
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]+\)")
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
-_MARKDOWN_MARKUP_RE = re.compile(r"(^|\s)[>#*+\-]{1,3}\s+|[*_~]{1,3}|^#{1,6}\s*", re.MULTILINE)
+# Block markers (blockquote / list / heading) are only stripped at the start of
+# a line so inline math like ``x > 0`` or ``a - b`` stays searchable; inline
+# emphasis runs (``**`` / ``__`` / ``~~``) are still stripped anywhere.
+_MARKDOWN_MARKUP_RE = re.compile(r"^[ \t]*[>#*+\-]{1,3}\s+|[*_~]{1,3}|^#{1,6}\s*", re.MULTILINE)
 _SEARCH_TOKEN_RE = re.compile(r"[\w\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]+", re.UNICODE)
 _SNIPPET_CHARS = 200
 _UNSET = object()
@@ -32,7 +35,9 @@ def _strip_markdown(content: str) -> str:
     text = _MARKDOWN_LINK_RE.sub(r"\1", text)
     text = _MARKDOWN_INLINE_CODE_RE.sub(r"\1", text)
     text = _MARKDOWN_MARKUP_RE.sub(" ", text)
-    text = re.sub(r"<[^>]+>", " ", text)
+    # Only strip things that look like real HTML/XML tags, so common note
+    # content like ``a < b``, ``x > 0`` stays searchable instead of being eaten.
+    text = re.sub(r"</?[A-Za-z][^>]*>", " ", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
@@ -680,23 +685,34 @@ class NotebookStore:
     def build_notes_markdown(
         self, note_ids: object, *, title: str | None = None
     ) -> str:
+        # Lazy import avoids a circular dependency (doc_exporter imports this
+        # module). Escape the metadata bits the same way the regular export path
+        # does so a title/tag with #, backticks, [], or newlines can't break the
+        # heading/list structure; note.content is emitted verbatim.
+        from .doc_exporter import escape_markdown
+
         notes = self.get_notes_by_ids(note_ids)
         heading = str(title or "Study Notes").strip() or "Study Notes"
         lines = [
-            f"# {heading}",
+            f"# {escape_markdown(heading)}",
             "",
             f"- Exported at: `{utc_now_iso()}`",
             f"- Notes included: {len(notes)}",
             "",
         ]
         for note in notes:
+            source = f"`{escape_markdown(note.source_type)}`"
+            if note.source_ref:
+                source += f" / `{escape_markdown(note.source_ref)}`"
+            topics = ", ".join(escape_markdown(t) for t in note.topic_ids) if note.topic_ids else "-"
+            tags = ", ".join(escape_markdown(t) for t in note.tags) if note.tags else "-"
             lines.extend(
                 [
-                    f"## {note.title}",
+                    f"## {escape_markdown(note.title)}",
                     "",
-                    f"- Source: `{note.source_type}`{f' / `{note.source_ref}`' if note.source_ref else ''}",
-                    f"- Topics: {', '.join(note.topic_ids) if note.topic_ids else '-'}",
-                    f"- Tags: {', '.join(note.tags) if note.tags else '-'}",
+                    f"- Source: {source}",
+                    f"- Topics: {topics}",
+                    f"- Tags: {tags}",
                     "",
                     note.content.strip() or note.snippet or "_Empty note._",
                     "",
