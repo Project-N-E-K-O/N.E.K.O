@@ -714,21 +714,29 @@ def test_basketball_timed_game_over_event_contains_score():
 @pytest.mark.unit
 def test_basketball_route_end_payload_contains_horse_state():
     html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+    horse_payload_section = html[
+        html.index("function buildHorseStatePayload() {"):
+        html.index("function buildBasketballCurrentStatePayload()", html.index("function buildHorseStatePayload() {"))
+    ]
+    end_route_section = html[
+        html.index("function endRoute("):
+        html.index("function updateThemeButton(", html.index("function endRoute("))
+    ]
 
-    assert "function buildHorseStatePayload() {" in html
-    assert "function buildHorseFinalScorePayload(horseState) {" in html
-    assert "if (isHorseMode()) {" in html
-    assert "payloadObj.horse = buildHorseStatePayload();" in html
-    assert "Object.assign(payloadObj.finalScore, buildHorseFinalScorePayload(payloadObj.horse));" in html
-    assert "payloadObj.currentState.score = Object.assign({}, payloadObj.finalScore);" in html
-    assert "letters_player: game.horse.lettersPlayer," in html
-    assert "letters_neko: game.horse.lettersNeko," in html
-    assert "winner: winner," in html
-    assert "score_text: 'HORSE ' + playerLetters + ' : ' + nekoLetters" in html
-    assert "phase: game.horse.phase," in html
-    assert "turn_owner: game.horse.turnOwner," in html
-    assert "challenge: game.horse.challenge ? Object.assign({}, game.horse.challenge) : null" in html
-    assert "payloadObj.currentState.horse = payloadObj.horse;" in html
+    assert "function buildHorseStatePayload() {" in horse_payload_section
+    assert "function buildHorseFinalScorePayload(horseState) {" in horse_payload_section
+    assert "letters_player: game.horse.lettersPlayer," in horse_payload_section
+    assert "letters_neko: game.horse.lettersNeko," in horse_payload_section
+    assert "winner: winner," in horse_payload_section
+    assert "score_text: 'HORSE ' + playerLetters + ' : ' + nekoLetters" in horse_payload_section
+    assert "phase: game.horse.phase," in horse_payload_section
+    assert "turn_owner: game.horse.turnOwner," in horse_payload_section
+    assert "challenge: game.horse.challenge ? Object.assign({}, game.horse.challenge) : null" in horse_payload_section
+    assert "if (isHorseMode()) {" in end_route_section
+    assert "payloadObj.horse = buildHorseStatePayload();" in end_route_section
+    assert "Object.assign(payloadObj.finalScore, buildHorseFinalScorePayload(payloadObj.horse));" in end_route_section
+    assert "payloadObj.currentState.score = Object.assign({}, payloadObj.finalScore);" in end_route_section
+    assert "payloadObj.currentState.horse = payloadObj.horse;" in end_route_section
 
 
 @pytest.mark.unit
