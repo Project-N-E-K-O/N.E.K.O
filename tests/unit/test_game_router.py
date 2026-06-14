@@ -2095,6 +2095,60 @@ async def test_game_chat_event_user_turn_keeps_watermark(monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_basketball_game_chat_rejects_stale_session_before_llm(monkeypatch):
+    async def fake_run_game_chat(*_args, **_kwargs):
+        raise AssertionError("stale basketball chat should not start an LLM session")
+
+    monkeypatch.setattr(game_router, "_run_game_chat", fake_run_game_chat)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    with reset_game_route_state():
+        state = game_router._activate_game_route("basketball", "fresh-session", "Lan")
+        state["mode"] = "shooter"
+
+        result = await game_router.game_chat("basketball", _FakeRequest({
+            "session_id": "old-session",
+            "lanlan_name": "Lan",
+            "event": {"kind": "shot_missed", "mode": "shooter"},
+        }))
+
+    assert result["ok"] is True
+    assert result["skipped"] == "stale_session"
+    assert result["reason"] == "session_id_mismatch"
+    assert result["line"] == ""
+    assert result["control"] == {}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_basketball_game_chat_rejects_missing_route_before_llm(monkeypatch):
+    async def fake_run_game_chat(*_args, **_kwargs):
+        raise AssertionError("inactive basketball chat should not start an LLM session")
+
+    monkeypatch.setattr(game_router, "_run_game_chat", fake_run_game_chat)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    with reset_game_route_state():
+        result = await game_router.game_chat("basketball", _FakeRequest({
+            "session_id": "old-session",
+            "lanlan_name": "Lan",
+            "event": {"kind": "shot_missed", "mode": "shooter"},
+        }))
+
+    assert result == {
+        "ok": True,
+        "skipped": "route_inactive",
+        "reason": "route_not_active",
+        "handled": False,
+        "line": "",
+        "control": {},
+        "lanlan_name": "Lan",
+        "method": "game_chat",
+    }
+
+
+@pytest.mark.unit
 def test_route_state_key_is_tuple_no_collision_no_prefix_false_match(monkeypatch):
     """The previous f"{lanlan}:{game_type}" string key collided when a
     lanlan_name contained a literal ':' and the prefix-style lookup

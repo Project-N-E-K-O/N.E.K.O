@@ -6074,6 +6074,25 @@ async def game_chat(game_type: str, request: Request):
             _update_game_memory_enabled_from_payload(state, event, game_type=game_type)
             event = _attach_game_memory_flag_to_event(event, state, game_type=game_type)
     if game_type == "basketball":
+        stale_result = _game_route_stale_session_response(
+            state,
+            session_id,
+            lanlan_name=lanlan_name,
+            method="game_chat",
+        )
+        if stale_result is not None:
+            return {**stale_result, "line": "", "control": {}}
+        if lanlan_name and state is None:
+            return {
+                "ok": True,
+                "skipped": "route_inactive",
+                "reason": "route_not_active",
+                "handled": False,
+                "line": "",
+                "control": {},
+                "lanlan_name": lanlan_name,
+                "method": "game_chat",
+            }
         if not _check_basketball_chat_rate(lanlan_name, session_id):
             return {"error": "rate_limited", "line": "", "control": {}, "retry_after": 2}
         event, validation_error = _sanitize_basketball_event(event)

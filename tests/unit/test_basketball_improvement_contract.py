@@ -149,6 +149,7 @@ def test_basketball_restart_rotates_route_session():
     assert "function createBasketballSessionId() {" in html
     assert "var sessionId = window.__nekoMiniGameInviteSessionId || createBasketballSessionId();" in html
     assert "sessionId = createBasketballSessionId();" in html
+    assert "resetVoiceArbiter();" in html
     assert "url.searchParams.delete('session_id');" in html
     assert "startRoute();" in html
 
@@ -698,11 +699,13 @@ def test_basketball_timed_game_over_event_contains_score():
     html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
     timed_timeout = html[
         html.index("if (game.timedRemaining <= 0) {"):
-        html.index("endRoute(false);", html.index("if (game.timedRemaining <= 0) {"))
+        html.index("updateHud();", html.index("if (game.timedRemaining <= 0) {"))
     ]
 
     assert "kind: 'game_over'," in timed_timeout
     assert "score: game.totalScore," in timed_timeout
+    assert "endRoute(false);" in timed_timeout
+    assert "scheduleShowResult(0);" in timed_timeout
 
 
 @pytest.mark.unit
@@ -828,6 +831,12 @@ def test_basketball_drain_reads_nested_result_line():
 def test_basketball_voice_entries_freeze_route_identity():
     html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
 
+    assert "function resetVoiceArbiter() {" in html
+    assert "voiceArbiter.pending = null;" in html
+    assert "voiceArbiter.inFlight = null;" in html
+    assert "function _voiceEntryMatchesCurrentSession(entry) {" in html
+    assert "if (!_voiceEntryMatchesCurrentSession(entry)) return Promise.resolve();" in html
+    assert "if (!_voiceEntryMatchesCurrentSession(pending)) {" in html
     assert "var entrySessionId = String((event && event.session_id) || sessionId || '');" in html
     assert "var entryLanlanName = String((event && (event.lanlan_name || event.lanlanName)) || getRouteLanlanName() || lanlanName || '');" in html
     assert "sessionId: entrySessionId," in html

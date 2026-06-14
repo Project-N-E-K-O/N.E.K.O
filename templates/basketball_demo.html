@@ -1834,6 +1834,16 @@
       voiceArbiter.timer = 0;
     }
   }
+  function resetVoiceArbiter() {
+    _clearVoiceArbiterTimer();
+    voiceArbiter.pending = null;
+    voiceArbiter.inFlight = null;
+    voiceArbiter.userReplyProtectedUntil = 0;
+    voiceArbiter.waitingForUserReply = false;
+  }
+  function _voiceEntryMatchesCurrentSession(entry) {
+    return !entry || !entry.sessionId || entry.sessionId === sessionId;
+  }
   function _scheduleVoiceArbiterFlush(delayMs) {
     _clearVoiceArbiterTimer();
     voiceArbiter.timer = setTimeout(function () {
@@ -1893,6 +1903,7 @@
       });
   }
   function _requestVoicePlayback(entry) {
+    if (!_voiceEntryMatchesCurrentSession(entry)) return Promise.resolve();
     var holdMs = Math.max(VOICE_ARBITER_DEFAULTS.inFlightGuardMs, Math.round(_estimateVoiceDuration(entry.line) * 1000));
     voiceArbiter.inFlight = {
       id: entry.id,
@@ -1917,6 +1928,10 @@
   function _flushVoiceArbiter() {
     var pending = voiceArbiter.pending;
     if (!pending) return;
+    if (!_voiceEntryMatchesCurrentSession(pending)) {
+      voiceArbiter.pending = null;
+      return;
+    }
     if (_voiceEntryExpired(pending)) {
       voiceArbiter.pending = null;
       return;
@@ -3079,6 +3094,7 @@
       routeEndFetchPending = false;
       routeEndBeaconDelivered = false;
       routeEndPromise = null;
+      resetVoiceArbiter();
       sessionId = createBasketballSessionId();
       startRoute();
     }
@@ -4060,7 +4076,7 @@
           shot_type: game.lastShotType || ''
         });
         endRoute(false);
-        showResult();
+        scheduleShowResult(0);
         updateHud();
         return;
       }
