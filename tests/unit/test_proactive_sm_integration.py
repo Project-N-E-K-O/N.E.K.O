@@ -467,6 +467,25 @@ def test_drain_agent_callbacks_purges_retracted_callbacks_and_extras():
     assert mgr.pending_extra_replies == [active_extra]
 
 
+async def test_drain_agent_callbacks_resolves_delivery_ack():
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    future = asyncio.get_running_loop().create_future()
+    cb = {
+        "_callback_delivery_id": "id-drain-ack",
+        "status": "completed",
+        "summary": "shown",
+        DELIVERY_ACK_FUTURE_KEY: future,
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    rendered = LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
+
+    assert "shown" in rendered
+    assert future.done()
+    assert future.result() is True
+    assert mgr.pending_agent_callbacks == []
+
+
 async def test_voice_mode_reject_during_await_not_pruned():
     """TOCTOU 回归（Codex P1）：error 事件可能在 inject 仍 await 期间由
     handle_messages 派发 on_rejected——此时 cb 还在队列里（乐观 prune 还没跑）。

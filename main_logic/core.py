@@ -5800,7 +5800,6 @@ class LLMSessionManager:
                     return False
                 # Re-filter inside the lock: a concurrent task may have already
                 # injected+pruned these cbs while we waited on the lock.
-                proactive_cbs = _active_proactive_callbacks(self.pending_agent_callbacks)
                 self._purge_retracted_agent_callbacks()
                 proactive_cbs = _active_proactive_callbacks(self.pending_agent_callbacks)
                 if not proactive_cbs:
@@ -7014,16 +7013,23 @@ class LLMSessionManager:
         self._purge_retracted_agent_callbacks()
         if not self.pending_agent_callbacks:
             return ""
+        callbacks_snapshot = list(self.pending_agent_callbacks)
+        delivered_to_prompt = False
         try:
             _lang = normalize_language_code(getattr(self, 'user_language', '') or '', format='short') or get_global_language()
-            return _build_callback_instruction(
-                self.pending_agent_callbacks,
+            rendered = _build_callback_instruction(
+                callbacks_snapshot,
                 lang=_lang,
                 lanlan_name=getattr(self, "lanlan_name", "") or "",
                 master_name=getattr(self, "master_name", "") or "",
                 passive=False,
             )
+            delivered_to_prompt = True
+            return rendered
         finally:
+            if delivered_to_prompt:
+                for cb in callbacks_snapshot:
+                    resolve_callback_delivery_ack(cb, True)
             self.pending_agent_callbacks.clear()
 
     async def _perform_final_swap_sequence(self):
