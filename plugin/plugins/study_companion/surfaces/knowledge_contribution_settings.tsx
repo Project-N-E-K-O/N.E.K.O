@@ -1,17 +1,12 @@
 import { useEffect, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 
-import { callPlugin, ensureBrandCSS } from './study_surface_utils';
+import { callPlugin, ensureBrandCSS, text } from './study_surface_utils';
 
 type KnowledgeContributionPayload = {
   opt_in?: boolean;
   summary?: Record<string, number>;
 };
-
-function text(props: PluginSurfaceProps, key: string, fallback: string) {
-  const value = props.t?.(key);
-  return value && value !== key ? value : fallback;
-}
 
 export default function KnowledgeContributionSettings(props: PluginSurfaceProps) {
   const [optIn, setOptIn] = useState(false);

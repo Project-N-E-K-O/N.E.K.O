@@ -289,6 +289,21 @@ describe('hosted TSX document runtime', () => {
     expect(root.querySelector('strong')?.textContent).toBe('ok')
   })
 
+  it('preserves runtime import bindings named type', () => {
+    const { root } = executeHostedDocument(`
+      import { type as kind } from "./helper"
+
+      export default function Panel() {
+        return <strong>{kind}</strong>
+      }
+    `, baseContext(), baseContext(), [{
+      path: 'ui/helper.ts',
+      source: 'export const type = "value-binding"',
+    }])
+
+    expect(root.querySelector('strong')?.textContent).toBe('value-binding')
+  })
+
   it('still resolves relative imports with mixed runtime and type bindings', () => {
     const { root } = executeHostedDocument(`
       import { type Label, label } from "./types"
@@ -394,6 +409,25 @@ describe('hosted TSX document runtime', () => {
     expect(root.querySelector('strong')?.textContent).toBe('undefined-side')
   })
 
+  it('strips empty export markers from hosted modules', () => {
+    const { root } = executeHostedDocument(`
+      export {}
+      import { label } from "./helper"
+
+      export default function Panel() {
+        return <strong>{label}</strong>
+      }
+    `, baseContext(), baseContext(), [{
+      path: 'ui/helper.ts',
+      source: `
+        export {}
+        export const label = "empty-marker"
+      `,
+    }])
+
+    expect(root.querySelector('strong')?.textContent).toBe('empty-marker')
+  })
+
   it('ignores commented and template import text while rewriting hosted TSX', () => {
     const { root } = executeHostedDocument(`
       /*
@@ -475,6 +509,21 @@ import ghost from "./missing"
     }])
 
     expect(root.querySelector('strong')?.textContent).toBe('tsx')
+  })
+
+  it('resolves dotted basename hosted imports at runtime', () => {
+    const { root } = executeHostedDocument(`
+      import { label } from "./theme.dark"
+
+      export default function Panel() {
+        return <strong>{label}</strong>
+      }
+    `, baseContext(), baseContext(), [{
+      path: 'ui/theme.dark.ts',
+      source: 'export const label = "dark-theme"',
+    }])
+
+    expect(root.querySelector('strong')?.textContent).toBe('dark-theme')
   })
 
   it('orders multi-level hosted dependencies before dependents', () => {
@@ -572,16 +621,17 @@ import ghost from "./missing"
 
   it('exports regex literal declarations from hosted dependencies', () => {
     const { root } = executeHostedDocument(`
-      import { sep, withClass } from "./patterns"
+      import { sep, withClass, withComment } from "./patterns"
 
       export default function Panel() {
-        return <strong>{sep.test(';') ? withClass.source : 'missing'}</strong>
+        return <strong>{sep.test(', stale') && withComment === 'ok' ? withClass.source : 'missing'}</strong>
       }
     `, baseContext(), baseContext(), [{
       path: 'ui/patterns.ts',
       source: `
-        export const sep = /;/
-        export const withClass = /[a/b;]/g
+        export const sep = /, stale/,
+          withComment = "ok" /* , phantom */,
+          withClass = /[a/b;]/g
       `,
     }])
 

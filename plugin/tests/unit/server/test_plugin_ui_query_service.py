@@ -623,6 +623,58 @@ def test_surface_source_keeps_mixed_inline_type_and_runtime_imports(tmp_path) ->
     ]
 
 
+def test_surface_source_resolves_dotted_basename_dependency(tmp_path) -> None:
+    plugin_dir = tmp_path / "demo_plugin"
+    ui_dir = plugin_dir / "ui"
+    ui_dir.mkdir(parents=True)
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
+    (ui_dir / "panel.tsx").write_text(
+        "import { label } from './theme.dark'\n"
+        "export default function Panel() { return <strong>{label}</strong> }\n",
+        encoding="utf-8",
+    )
+    (ui_dir / "theme.dark.ts").write_text(
+        "export const label = 'dark'\n",
+        encoding="utf-8",
+    )
+    plugin_ui = normalize_plugin_ui_manifest(
+        {
+            "plugin": {
+                "ui": {
+                    "panel": [{
+                        "id": "main",
+                        "entry": "ui/panel.tsx",
+                        "permissions": ["state:read"],
+                    }],
+                },
+            },
+        },
+        plugin_id="demo",
+    )
+
+    plugins_backup = dict(state.plugins)
+    try:
+        with state.acquire_plugins_write_lock():
+            state.plugins.clear()
+            state.plugins["demo"] = {
+                "id": "demo",
+                "config_path": str(config_path),
+                "plugin_ui": plugin_ui,
+                "entries": [],
+            }
+
+        payload = asyncio.run(PluginUiQueryService().get_surface_source("demo", kind="panel", surface_id="main"))
+    finally:
+        with state.acquire_plugins_write_lock():
+            state.plugins.clear()
+            state.plugins.update(plugins_backup)
+
+    assert payload["dependencies"] == [
+        {"path": "ui/theme.dark.ts", "source": "export const label = 'dark'\n"},
+    ]
+
+
 def test_surface_source_rejects_dynamic_imports(tmp_path) -> None:
     plugin_dir = tmp_path / "demo_plugin"
     ui_dir = plugin_dir / "ui"

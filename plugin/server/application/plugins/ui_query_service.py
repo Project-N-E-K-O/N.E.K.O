@@ -434,7 +434,7 @@ def _resolve_hosted_tsx_relative_dependency(root: Path, from_path: Path, specifi
         base_path = (from_path.parent / clean_specifier).resolve()
         candidates = [
             base_path,
-            *(base_path.with_suffix(ext) for ext in _HOSTED_TSX_CODE_EXTENSIONS if not base_path.suffix),
+            *(Path(f"{base_path}{ext}") for ext in _HOSTED_TSX_CODE_EXTENSIONS),
             *(base_path / f"index{ext}" for ext in _HOSTED_TSX_CODE_EXTENSIONS),
         ]
     except (OSError, ValueError):

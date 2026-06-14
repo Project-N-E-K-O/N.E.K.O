@@ -441,9 +441,7 @@ function resolveHostedImport(
   const cleanSpecifier = specifier.split('?', 1)[0]?.split('#', 1)[0] || ''
   const base = normalizeHostedPath(`${dirnameHostedPath(fromPath)}/${cleanSpecifier}`)
   const candidates = [base]
-  if (!/\.[A-Za-z0-9]+$/.test(base)) {
-    candidates.push(...HOSTED_CODE_EXTENSIONS.map((extension) => `${base}${extension}`))
-  }
+  candidates.push(...HOSTED_CODE_EXTENSIONS.map((extension) => `${base}${extension}`))
   candidates.push(...HOSTED_CODE_EXTENSIONS.map((extension) => `${base}/index${extension}`))
   const resolved = candidates.find((candidate) => dependenciesByPath.has(candidate))
   if (!resolved) {
@@ -471,7 +469,11 @@ function parseNamedBindings(bindings: string) {
 }
 
 function isTypeOnlyBinding(value: string) {
-  return /^type(?:\s|$)/.test(value.trim())
+  const trimmed = value.trim()
+  if (/^type\s*\{/.test(trimmed)) return true
+  if (/^type\s+\*\s+as\s+[A-Za-z_$][\w$]*$/.test(trimmed)) return true
+  if (/^type\s+[A-Za-z_$][\w$]*\s*,/.test(trimmed)) return true
+  return /^type\s+[A-Za-z_$][\w$]*(?:\s+as\s+[A-Za-z_$][\w$]*)?$/.test(trimmed)
 }
 
 function moduleImportStatement(rawBindings: string | undefined, modulePath: string) {
@@ -651,6 +653,18 @@ function splitTopLevelDeclarators(declarationList: string) {
     }
     if (char === '"' || char === "'" || char === '`') {
       quote = char
+      continue
+    }
+    if (char === '/' && declarationList[index + 1] === '/') {
+      index = skipLineComment(declarationList, index) - 1
+      continue
+    }
+    if (char === '/' && declarationList[index + 1] === '*') {
+      index = skipBlockComment(declarationList, index) - 1
+      continue
+    }
+    if (char === '/' && canStartRegexLiteral(declarationList, index, 0)) {
+      index = skipRegexLiteral(declarationList, index) - 1
       continue
     }
     if (char === '(' || char === '[' || char === '{') {
@@ -1083,7 +1097,7 @@ function transformModuleExports(source: string, { handleDefault = true }: { hand
         return `${declaration} ${name}`
       },
     )
-    .replace(/^\s*export\s+\{([^}]+)\}\s*;?\s*$/gm, (_match, names) => {
+    .replace(/^\s*export\s+\{([^}]*)\}\s*;?\s*$/gm, (_match, names) => {
       for (const item of String(names).split(',')) {
         const trimmed = item.trim()
         if (!trimmed || isTypeOnlyBinding(trimmed)) continue

@@ -2477,6 +2477,18 @@ def test_study_companion_hosted_surface_actions_are_bridge_authorized() -> None:
         path.read_text(encoding="utf-8")
         for path in sorted(plugin_dir.glob("entry_*.py"))
     )
+    assert re.search(
+        r"@ui\.context\(id=[\"']study[\"']",
+        entry_sources,
+        re.MULTILINE,
+    )
+
+    with (plugin_dir / "plugin.toml").open("rb") as handle:
+        config = tomllib.load(handle)
+    for surface in config["plugin"]["ui"]["guide"]:
+        assert surface["context"] == "study", surface["id"]
+        assert "action:call" in surface["permissions"], surface["id"]
+
     for action_id in HOSTED_SURFACE_ACTION_IDS:
         assert re.search(
             rf"@ui\.action\([^)]*\)\s+@plugin_entry\(\s+id=[\"']{re.escape(action_id)}[\"']",

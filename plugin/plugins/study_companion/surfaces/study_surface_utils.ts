@@ -543,7 +543,7 @@ export async function callPlugin<T = Record<string, unknown>>(
 
   let timeoutId = 0;
   let abortHandler: (() => void) | undefined;
-  const pending: Array<Promise<unknown>> = [api.call(entryId, args)];
+  const pending: Array<Promise<unknown>> = [api.call(entryId, args, { timeoutMs })];
   if (timeoutMs > 0) {
     pending.push(new Promise((_, reject) => {
       timeoutId = window.setTimeout(() => reject(new Error('Plugin call timed out')), timeoutMs);

@@ -395,6 +395,28 @@ export default function Panel() {
   })
 })
 
+test('resolves dotted basename hosted imports', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'dotted-basename-imports')
+    writePluginToml(pluginDir, 'main.tsx')
+    writeFixtureFile(
+      join(pluginDir, 'main.tsx'),
+      `import { label } from './theme.dark'
+
+export default function Panel() {
+  return <Page title={label} />
+}
+`,
+    )
+    writeFixtureFile(join(pluginDir, 'theme.dark.ts'), "export const label = 'dark'\n")
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /Hosted TSX check passed \(1 file\)/)
+  })
+})
+
 test('limits relative import recursion depth', () => {
   withFixture((root) => {
     const pluginDir = join(root, 'deep-imports')

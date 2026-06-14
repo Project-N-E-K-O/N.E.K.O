@@ -69,6 +69,10 @@ def _apply_settings_config(current: StudyConfig, raw: dict) -> StudyConfig:
 
 
 class _StatusEntriesMixin:
+    @ui.context(id="study", title="Study Companion")
+    async def study_hosted_ui_context(self, **_):
+        return {"ready": True}
+
     @plugin_entry(
         id="study_open_ui",
         name=tr("entries.open_ui.name", default="Open Study Companion UI"),
