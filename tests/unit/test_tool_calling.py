@@ -366,6 +366,70 @@ async def test_offline_openai_path_filters_pretool_leak_before_history():
 
 
 @pytest.mark.asyncio
+async def test_offline_openai_path_emits_finalized_pretool_tail():
+    from utils.llm_client import LLMStreamChunk
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    async def recall_handler(args):
+        return {"hits": []}
+
+    tool_def = ToolDefinition(
+        name="recall_memory",
+        description="recall",
+        parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+        handler=recall_handler,
+    )
+    chunks_call_1 = [
+        LLMStreamChunk(content="Let"),
+        LLMStreamChunk(content="s"),
+        LLMStreamChunk(
+            content="",
+            tool_call_deltas=[{
+                "index": 0,
+                "id": "call_m",
+                "type": "function",
+                "function": {"name": "recall_memory", "arguments": '{"query":"x"}'},
+            }],
+        ),
+        LLMStreamChunk(content="", finish_reason="tool_calls"),
+    ]
+    chunks_call_2 = [LLMStreamChunk(content=" continue.", finish_reason="stop")]
+    fake_llm = _FakeLLM([chunks_call_1, chunks_call_2])
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.base_url = "free"
+    client.llm = fake_llm
+    client._tool_definitions = [tool_def]
+    client.max_tool_iterations = 4
+    client._use_genai_sdk = False
+    client._genai_tools_unsupported = False
+
+    async def handler(call: ToolCall) -> ToolResult:
+        return ToolResult(call_id=call.call_id, name=call.name, output=await recall_handler(call.arguments))
+
+    client.on_tool_call = handler
+
+    messages = [{"role": "user", "content": "以前聊过什么？"}]
+    out_chunks = []
+    leak_filter = ToolLeakFilter(tool_names={"recall_memory"})
+    async for ch in client._astream_with_tools(
+        messages,
+        _tool_leak_filter=leak_filter,
+        _tool_leak_provider="free",
+    ):
+        out_chunks.append(ch)
+
+    visible = "".join(ch.content for ch in out_chunks)
+    assert visible == "Lets continue."
+    assistant_with_tool = next(
+        m for m in messages if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")
+    )
+    assert assistant_with_tool["content"] == "Lets"
+
+
+@pytest.mark.asyncio
 async def test_offline_openai_path_persists_reasoning_content_with_tool_call():
     """Thinking 模型（DeepSeek-R / Qwen / GLM thinking 等 OpenAI-compat 端点）
     在多轮 tool calling 时，发起 tool_calls 的那条 assistant 消息必须把本轮流出的

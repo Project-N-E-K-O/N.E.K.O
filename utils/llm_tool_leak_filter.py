@@ -162,18 +162,8 @@ class ToolLeakFilter:
                 self._fence_marker = ""
 
     def _possible_marker_tail_len(self, text: str) -> int:
-        lower = text.lower()
         best = self._seed_marker_tail_len(text)
-        markers = []
-        markers.extend(name.lower() + "</name><parameter name=" for name in self._tool_names)
-        markers.extend(name.lower() + "</name>" for name in self._tool_names)
-        for marker in markers:
-            max_prefix = min(len(marker) - 1, len(lower), self._max_tail)
-            for size in range(max_prefix, 0, -1):
-                if lower.endswith(marker[:size]):
-                    best = max(best, size)
-                    break
-        return best
+        return max(best, self._structured_marker_tail_len(text))
 
     def _seed_marker_tail_len(self, text: str) -> int:
         min_start = max(0, len(text) - self._max_tail)
@@ -265,6 +255,100 @@ class ToolLeakFilter:
 
         ok, _pos, partial = cls._consume_literal_prefix(text, pos, "tool_call")
         return ok and partial
+
+    def _structured_marker_tail_len(self, text: str) -> int:
+        min_start = max(0, len(text) - self._max_tail)
+        tool_names = sorted(self._tool_names, key=len, reverse=True)
+        for start in range(min_start, len(text)):
+            tail = text[start:]
+            if any(self._is_structured_tool_prefix(tail, tool_name) for tool_name in tool_names):
+                return len(tail)
+        return 0
+
+    @classmethod
+    def _is_structured_tool_prefix(cls, text: str, tool_name: str) -> bool:
+        if not text:
+            return False
+
+        ok, pos, partial = cls._consume_literal_prefix(text, 0, tool_name)
+        if not ok:
+            return False
+        if partial or pos == len(text):
+            return True
+
+        ok, pos, partial = cls._consume_name_close_prefix(text, pos)
+        if not ok:
+            return False
+        if partial or pos == len(text):
+            return True
+
+        ok, _pos, partial = cls._consume_parameter_open_prefix(text, pos)
+        return ok and partial
+
+    @classmethod
+    def _consume_name_close_prefix(cls, text: str, pos: int) -> tuple[bool, int, bool]:
+        if pos == len(text):
+            return True, pos, True
+        if text[pos] != "<":
+            return False, pos, False
+
+        pos += 1
+        if pos == len(text):
+            return True, pos, True
+        if text[pos] != "/":
+            return False, pos, False
+
+        pos = cls._consume_whitespace(text, pos + 1)
+        if pos == len(text):
+            return True, pos, True
+
+        ok, pos, partial = cls._consume_literal_prefix(text, pos, "name")
+        if not ok or partial:
+            return ok, pos, partial
+
+        pos = cls._consume_whitespace(text, pos)
+        if pos == len(text):
+            return True, pos, True
+        if text[pos] != ">":
+            return False, pos, False
+        return True, pos + 1, False
+
+    @classmethod
+    def _consume_parameter_open_prefix(cls, text: str, pos: int) -> tuple[bool, int, bool]:
+        if pos == len(text):
+            return True, pos, True
+        if text[pos] != "<":
+            return False, pos, False
+
+        pos = cls._consume_whitespace(text, pos + 1)
+        if pos == len(text):
+            return True, pos, True
+
+        ok, pos, partial = cls._consume_literal_prefix(text, pos, "parameter")
+        if not ok or partial:
+            return ok, pos, partial
+
+        if pos < len(text) and cls._is_word_char(text[pos]):
+            return False, pos, False
+
+        while pos < len(text):
+            if text[pos] == ">":
+                return False, pos, False
+            if text[pos].lower() == "n":
+                ok, name_pos, name_partial = cls._consume_literal_prefix(text, pos, "name")
+                if ok:
+                    if name_partial:
+                        return True, name_pos, True
+                    after_name = cls._consume_whitespace(text, name_pos)
+                    if after_name == len(text):
+                        return True, after_name, True
+                    if text[after_name] == "=":
+                        return True, after_name + 1, False
+                    if not cls._is_word_char(text[after_name]):
+                        return False, after_name, False
+            pos += 1
+
+        return True, pos, True
 
 
 def log_tool_leak_filtered(

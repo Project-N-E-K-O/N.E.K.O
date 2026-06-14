@@ -971,6 +971,9 @@ class OmniOfflineClient:
                         log_tool_leak_filtered(event, provider=tool_leak_provider)
                     if tail:
                         streamed_text_buffer += tail
+                        tail_chunk = LLMStreamChunk(content=tail)
+                        setattr(tail_chunk, "_tool_leak_filtered", True)
+                        yield tail_chunk
                     tool_leak_filter.reset()
                 # ChatOpenAI is the right import even though we're outside
                 # ChatOpenAI — `collect_tool_calls` is a staticmethod.
@@ -1257,6 +1260,9 @@ class OmniOfflineClient:
                         log_tool_leak_filtered(event, provider=tool_leak_provider)
                     if tail:
                         streamed_text_buffer += tail
+                        tail_chunk = LLMStreamChunk(content=tail)
+                        setattr(tail_chunk, "_tool_leak_filtered", True)
+                        yield tail_chunk
                     tool_leak_filter.reset()
                 # 把本轮已经流给用户的 text 一起写进历史。Gemini 在同一 turn
                 # 里允许 text part 与 function_call part 并存；如果这里仍写
