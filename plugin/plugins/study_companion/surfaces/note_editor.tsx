@@ -156,6 +156,12 @@ export default function NoteEditor(props: PluginSurfaceProps) {
   }
 
   async function saveNote() {
+    // Re-entry guard: rapid Ctrl/Cmd+S (or button + shortcut) must not fire
+    // concurrent upserts. While a new note's first save is in flight its id is
+    // still empty, so a second call would allocate a second note.
+    if (savingRef.current) {
+      return;
+    }
     const draft = latestDraft.current;
     setBusy(true);
     savingRef.current = true;
@@ -237,8 +243,11 @@ export default function NoteEditor(props: PluginSurfaceProps) {
     }
     event.preventDefault();
     const wrap = key === 'b' ? ['**', '**'] : key === 'i' ? ['_', '_'] : ['[', '](url)'];
-    const { next, cursor } = insertWrap(textarea, content, wrap[0], wrap[1]);
+    // Base the wrap on the live textarea value, not the onChange (blur-only)
+    // state, so a shortcut pressed mid-typing does not revert unsaved input.
+    const { next, cursor } = insertWrap(textarea, textarea.value, wrap[0], wrap[1]);
     setContent(next);
+    latestDraft.current = { ...latestDraft.current, content: next };
     window.setTimeout(() => {
       textarea.focus();
       textarea.setSelectionRange(cursor, cursor);

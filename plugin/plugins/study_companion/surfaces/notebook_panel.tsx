@@ -1,4 +1,4 @@
-import { useEffect, useState } from '@neko/plugin-ui';
+import { useEffect, useRef, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 import { callPlugin, errorMessage, text } from './memory_shared';
 import { ensureBrandCSS } from './study_surface_utils';
@@ -54,6 +54,10 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
   const [editContent, setEditContent] = useState('');
   const [editTopics, setEditTopics] = useState('');
   const [editTags, setEditTags] = useState('');
+  // Tracks the currently selected note id for async edit guards. State closures
+  // capture the value at call time, so an in-flight fetch/save compares against
+  // this ref to detect the user switching notes mid-request.
+  const selectedNoteIdRef = useRef('');
 
   useEffect(() => {
     ensureBrandCSS();
@@ -148,11 +152,17 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
     if (!selectedNote) {
       return;
     }
+    const noteId = selectedNote.id;
     setBusy(true);
     try {
       // The list payload only carries a snippet, so fetch the full note before
       // editing to avoid overwriting the body with a truncated preview.
-      const payload = await callPlugin<NoteSavePayload>('study_note_get', { note_id: selectedNote.id });
+      const payload = await callPlugin<NoteSavePayload>('study_note_get', { note_id: noteId });
+      // The user may have switched notes while the fetch was in flight; drop the
+      // result so we never load note A's body into note B's editor.
+      if (selectedNoteIdRef.current !== noteId) {
+        return;
+      }
       const note = payload.note || selectedNote;
       setEditTitle(note.title || '');
       setEditContent(note.content || '');
@@ -174,10 +184,13 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
     if (!selectedNote) {
       return;
     }
+    // Pin the note being edited so the save always targets it, even if the
+    // selection changes before the request resolves.
+    const noteId = selectedNote.id;
     setBusy(true);
     try {
       const payload = await callPlugin<NoteSavePayload>('study_note_upsert', {
-        note_id: selectedNote.id,
+        note_id: noteId,
         title: editTitle,
         content: editContent,
         topic_ids: csvToList(editTopics),
@@ -185,7 +198,9 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
       });
       setEditing(false);
       await refresh();
-      if (payload.note) {
+      // Only re-select the saved note if the user is still on it; otherwise
+      // respect their newer selection.
+      if (payload.note && selectedNoteIdRef.current === noteId) {
         setSelectedNote(payload.note);
       }
       setStatus(text(props, 'ui.notebook.saved', 'Saved'));
@@ -226,6 +241,7 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
   // Selecting a different note (or clearing the selection) leaves edit mode so
   // the form never shows stale fields from the previously edited note.
   useEffect(() => {
+    selectedNoteIdRef.current = selectedNote?.id || '';
     setEditing(false);
   }, [selectedNote?.id]);
 
@@ -315,7 +331,10 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
                   <span>{text(props, 'ui.notebook.tags', 'Tags')}</span>
                   <input value={editTags} disabled={busy} onChange={(event) => setEditTags(event.target.value)} />
                 </label>
-                <textarea value={editContent} disabled={busy} onChange={(event) => setEditContent(event.target.value)} />
+                <label>
+                  <span>{text(props, 'ui.notebook.content', 'Content')}</span>
+                  <textarea value={editContent} disabled={busy} onChange={(event) => setEditContent(event.target.value)} />
+                </label>
                 <div className="study-panel__toolbar">
                   <button type="button" disabled={busy} onClick={saveEdit}>
                     {text(props, 'ui.button.save', 'Save')}
