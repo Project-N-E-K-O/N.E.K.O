@@ -748,7 +748,8 @@ def _hosted_import_specifier(source: str, index: int) -> str | None:
     if specifier_index >= len(source) or source[specifier_index] not in {"'", '"'}:
         return None
     read = _hosted_read_quoted(source, specifier_index)
-    return _hosted_relative_specifier(read[0]) if read else None
+    specifier = read[0] if read else None
+    return _hosted_relative_specifier(specifier)
 
 
 def _hosted_raise_dynamic_import_unsupported() -> None:
@@ -814,9 +815,11 @@ def _hosted_tsx_relative_import_specifiers(source: str) -> list[str]:
             index += 1
             continue
         specifier: str | None = None
-        if _hosted_matches_keyword(source, index, "import"):
-            if _hosted_is_dynamic_import_call(source, index):
-                _hosted_raise_dynamic_import_unsupported()
+        if (
+            _hosted_matches_keyword(source, index, "import")
+            and _hosted_is_dynamic_import_call(source, index)
+        ):
+            _hosted_raise_dynamic_import_unsupported()
         if depth == 0 and _hosted_matches_keyword(source, index, "import"):
             specifier = _hosted_import_specifier(source, index)
             index += len("import")
