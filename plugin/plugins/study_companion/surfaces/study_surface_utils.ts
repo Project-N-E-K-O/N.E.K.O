@@ -516,7 +516,11 @@ function unwrapPluginResult<T>(rawResult: unknown): T {
     payload = payload.result;
   }
   if (isObject(payload) && (payload.success === false || 'error' in payload || 'data' in payload)) {
-    if (payload.success === false || payload.error) {
+    // Only the legacy `/runs` envelope signals failure with `success === false`.
+    // A hosted action result may legitimately carry an `error` field as domain
+    // data (e.g. `{available: false, error: "..."}` for a disabled state), so the
+    // mere presence of `error` must not be turned into a thrown exception.
+    if (payload.success === false) {
       throw new Error(pluginErrorMessage(payload.error || payload.message));
     }
     if ('data' in payload) {
