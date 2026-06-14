@@ -15,7 +15,7 @@ Thank you for your interest in contributing to Project N.E.K.O.!
 - **Discord**: [Join Us](https://discord.gg/5kgHfepNJr) — best for international contributors
 - **QQ Group**: [1022939659](https://qm.qq.com/q/HxeaMdSkQW) — best for Chinese-speaking contributors
 
-For bugs or feature requests, please [open an Issue](https://github.com/Project-N-E-K-O/N.E.K.O/issues/new/choose) first. **PRs without a corresponding Issue may be closed.**
+For bugs or feature requests, [opening an Issue](https://github.com/Project-N-E-K-O/N.E.K.O/issues/new/choose) first is recommended (not required) so we can give early feedback and avoid duplicated effort.
 
 ## Workflow
 
@@ -23,7 +23,7 @@ For bugs or feature requests, please [open an Issue](https://github.com/Project-
 2. Get a thumbs-up from a maintainer
 3. Fork the repository and create a feature branch: `git checkout -b feature/your-feature`
 4. Make your changes and test locally
-5. Push and open a Pull Request against `main`, referencing the Issue
+5. Push and open a Pull Request against `main` (reference the Issue if there is one)
 
 ## Development Setup
 
@@ -90,7 +90,7 @@ By contributing, you agree that your contributions will be licensed under the [M
 - **QQ群**：[1022939659](https://qm.qq.com/q/HxeaMdSkQW)
 - **Discord**：[加入我们](https://discord.gg/5kgHfepNJr)
 
-Bug 或功能建议请先[提交 Issue](https://github.com/Project-N-E-K-O/N.E.K.O/issues/new/choose)。**没有对应 Issue 的 PR 可能会被直接关闭。**
+Bug 或功能建议建议先[提交 Issue](https://github.com/Project-N-E-K-O/N.E.K.O/issues/new/choose)（非必须），方便我们尽早给反馈、避免重复劳动。
 
 ## 工作流程
 
@@ -98,7 +98,7 @@ Bug 或功能建议请先[提交 Issue](https://github.com/Project-N-E-K-O/N.E.K
 2. 等待维护者确认
 3. Fork 仓库并创建功能分支：`git checkout -b feature/your-feature`
 4. 修改代码并本地测试
-5. Push 并向 `main` 提交 Pull Request，引用对应的 Issue
+5. Push 并向 `main` 提交 Pull Request（有对应 Issue 就引用）
 
 ## 开发环境
 
