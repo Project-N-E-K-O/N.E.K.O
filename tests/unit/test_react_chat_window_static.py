@@ -82,6 +82,32 @@ def test_standalone_subtitle_page_initializes_theme_before_subtitle_scripts():
     assert source.index('/static/theme-manager.js') < source.index('/static/subtitle-shared.js')
 
 
+def test_react_chat_translate_button_follows_shared_subtitle_state():
+    source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    assert "function readSubtitleEnabledSetting()" in source
+    assert "window.nekoSubtitleShared" in source
+    assert "subtitleStore.subscribeSettings(onSubtitleSettings)" in source
+    assert "neko-subtitle-settings-change" in source
+
+    base_props_block = source.split("function createBaseViewProps()", 1)[1].split(
+        "function ensureViewProps()",
+        1,
+    )[0]
+    set_view_props_block = source.split("function setViewProps(nextViewProps)", 1)[1].split(
+        "function invalidatePendingGalgameRequest()",
+        1,
+    )[0]
+    init_block = source.split("function init()", 1)[1].split(
+        "function applyInitialComposerHiddenState()",
+        1,
+    )[0]
+
+    assert "translateEnabled: readSubtitleEnabledSetting()" in base_props_block
+    assert "translateEnabled: readSubtitleEnabledSetting()" in set_view_props_block
+    assert "bindSubtitleSettingsSync();" in init_block
+
+
 def test_chat_surface_mode_preference_is_shared_with_electron():
     source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 

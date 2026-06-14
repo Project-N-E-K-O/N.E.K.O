@@ -2239,6 +2239,52 @@
         return role === 'user' ? getCurrentUserName() : getCurrentAssistantName();
     }
 
+    function readSubtitleEnabledSetting() {
+        var subtitleStore = window.nekoSubtitleShared;
+        if (subtitleStore && typeof subtitleStore.getSettings === 'function') {
+            try {
+                var subtitleSettings = subtitleStore.getSettings();
+                if (subtitleSettings && typeof subtitleSettings.subtitleEnabled !== 'undefined') {
+                    return !!subtitleSettings.subtitleEnabled;
+                }
+            } catch (_) {}
+        }
+        if (window.appState && typeof window.appState.subtitleEnabled !== 'undefined') {
+            return !!window.appState.subtitleEnabled;
+        }
+        try {
+            return localStorage.getItem('subtitleEnabled') === 'true';
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function syncTranslateEnabledView(nextEnabled) {
+        var next = !!nextEnabled;
+        var currentProps = ensureViewProps();
+        if (currentProps.translateEnabled === next) return;
+        state.viewProps = Object.assign({}, currentProps, { translateEnabled: next });
+        renderWindow();
+    }
+
+    function bindSubtitleSettingsSync() {
+        var subtitleStore = window.nekoSubtitleShared;
+        var onSubtitleSettings = function (settings) {
+            if (!settings || typeof settings !== 'object') return;
+            if (typeof settings.subtitleEnabled === 'undefined') return;
+            syncTranslateEnabledView(!!settings.subtitleEnabled);
+        };
+
+        if (subtitleStore && typeof subtitleStore.subscribeSettings === 'function') {
+            subtitleStore.subscribeSettings(onSubtitleSettings);
+            return;
+        }
+
+        window.addEventListener('neko-subtitle-settings-change', function (event) {
+            onSubtitleSettings(event && event.detail ? event.detail.state : null);
+        });
+    }
+
     function createBaseViewProps() {
         var titleNode = $('chat-title');
         var textSendButton = $('textSendButton');
@@ -2283,9 +2329,7 @@
             exportConversationButtonAriaLabel: getI18nText('chat.exportConversation', '导出对话'),
             chatSurfaceMode: getCurrentChatSurfaceMode(),
             compactChatState: getCurrentCompactChatState(),
-            translateEnabled: (window.appState && typeof window.appState.subtitleEnabled !== 'undefined')
-                ? !!window.appState.subtitleEnabled
-                : localStorage.getItem('subtitleEnabled') === 'true',
+            translateEnabled: readSubtitleEnabledSetting(),
             translateButtonLabel: getI18nText('subtitle.enable', '字幕翻译'),
             translateButtonAriaLabel: getI18nText('subtitle.enableAriaLabel', '字幕翻译开关'),
             galgameToggleButtonLabel: getI18nText('chat.galgameToggle', 'GalGame 模式'),
@@ -3725,7 +3769,8 @@
         }
         state.viewProps = Object.assign({}, ensureViewProps(), nextProps, {
             chatSurfaceMode: getCurrentChatSurfaceMode(),
-            compactChatState: getCurrentCompactChatState()
+            compactChatState: getCurrentCompactChatState(),
+            translateEnabled: readSubtitleEnabledSetting()
         });
         renderWindow();
         // setViewProps can now land a real surface change (e.g. compact -> the
@@ -6133,6 +6178,7 @@
         createResizeEdges();
         bindResizing();
         bindBridgeEvents();
+        bindSubtitleSettingsSync();
         ensureElectronChatMinimizedStateBridge();
 
         // 恢复手机端用户设置的高度

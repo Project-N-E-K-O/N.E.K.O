@@ -9,15 +9,27 @@
     <link rel="stylesheet" href="/static/css/dark-mode.css">
 </head>
 <body class="subtitle-window-host">
-    <div id="subtitle-display">
+    <div id="subtitle-display" data-subtitle-panel-state="clean">
         <div id="subtitle-scroll">
-            <span id="subtitle-text"></span>
+            <span id="subtitle-text" data-subtitle-placeholder="暂无翻译内容"></span>
         </div>
-        <button type="button" id="subtitle-settings-btn" title="Subtitle Settings" aria-label="Subtitle Settings">
-            <svg viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg" width="14" height="14">
-                <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 00-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1115.6 12 3.61 3.61 0 0112 15.6z"/>
-            </svg>
-        </button>
+        <div id="subtitle-panel-controls" aria-hidden="true">
+            <button type="button" id="subtitle-lock-btn" class="subtitle-panel-control-btn" title="锁定位置" aria-label="锁定位置" aria-pressed="false">
+                <svg viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" width="14" height="14" aria-hidden="true">
+                    <path d="M7 10V7a5 5 0 0110 0v3h1a1 1 0 011 1v9a1 1 0 01-1 1H6a1 1 0 01-1-1v-9a1 1 0 011-1h1zm2 0h6V7a3 3 0 00-6 0v3z"/>
+                </svg>
+            </button>
+            <button type="button" id="subtitle-settings-btn" class="subtitle-panel-control-btn" title="Subtitle Settings" aria-label="Subtitle Settings" aria-expanded="false">
+                <svg viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" width="14" height="14" aria-hidden="true">
+                    <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 00-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1115.6 12 3.61 3.61 0 0112 15.6z"/>
+                </svg>
+            </button>
+            <button type="button" id="subtitle-close-btn" class="subtitle-panel-control-btn" title="关闭翻译面板" aria-label="关闭翻译面板">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg" width="14" height="14" aria-hidden="true">
+                    <path d="M6 6l12 12M18 6L6 18"/>
+                </svg>
+            </button>
+        </div>
         <div id="subtitle-settings-panel" class="hidden">
             <div class="subtitle-settings-row">
                 <span class="subtitle-settings-label" data-subtitle-label="targetLang">目标语言</span>
@@ -27,39 +39,32 @@
                     <option value="ja">日本語</option>
                     <option value="ko">한국어</option>
                     <option value="ru">Русский</option>
+                    <option value="es">Español</option>
+                    <option value="pt">Português</option>
                 </select>
             </div>
             <div class="subtitle-settings-row">
-                <span class="subtitle-settings-label" data-subtitle-label="opacity">不透明度</span>
-                <input type="range" id="subtitle-opacity-slider" min="20" max="100" value="95" title="不透明度">
+                <span class="subtitle-settings-label" data-subtitle-label="opacity">背景不透明度</span>
+                <input type="range" id="subtitle-opacity-slider" min="0" max="100" value="95" title="背景不透明度">
                 <span id="subtitle-opacity-value">95%</span>
             </div>
-            <div class="subtitle-settings-row">
-                <span class="subtitle-settings-label" data-subtitle-label="dragAnywhere">整体拖动</span>
+            <div class="subtitle-settings-row subtitle-passthrough-setting-row">
+                <span class="subtitle-settings-label" data-subtitle-label="passthroughInteraction">透明区域穿透</span>
                 <label class="subtitle-settings-switch">
-                    <input type="checkbox" id="subtitle-drag-mode-toggle" aria-label="整体拖动开关">
+                    <input type="checkbox" id="subtitle-passthrough-toggle" checked title="透明区域穿透">
                     <span class="subtitle-settings-track"></span>
                 </label>
             </div>
-            <div class="subtitle-settings-row">
-                <span class="subtitle-settings-label" data-subtitle-label="size">大小</span>
-                <div class="subtitle-size-group">
-                    <button type="button" class="subtitle-size-btn" data-size="small">小</button>
-                    <button type="button" class="subtitle-size-btn active" data-size="medium">中</button>
-                    <button type="button" class="subtitle-size-btn" data-size="large">大</button>
-                </div>
-            </div>
         </div>
-        <div id="subtitle-drag-handle">
-            <div id="subtitle-drag-arrows">
-                <svg viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M12 3L8.5 8H10.5V10.5H13.5V8H15.5L12 3Z"/>
-                    <path d="M12 21L15.5 16H13.5V13.5H10.5V16H8.5L12 21Z"/>
-                    <path d="M3 12L8 8.5V10.5H10.5V13.5H8V15.5L3 12Z"/>
-                    <path d="M21 12L16 15.5V13.5H13.5V10.5H16V8.5L21 12Z"/>
-                    <circle cx="12" cy="12" r="1.2"/>
-                </svg>
-            </div>
+        <div id="subtitle-resize-handles" aria-hidden="true">
+            <span class="subtitle-resize-edge subtitle-resize-n" data-resize-dir="n"></span>
+            <span class="subtitle-resize-edge subtitle-resize-e" data-resize-dir="e"></span>
+            <span class="subtitle-resize-edge subtitle-resize-s" data-resize-dir="s"></span>
+            <span class="subtitle-resize-edge subtitle-resize-w" data-resize-dir="w"></span>
+            <span class="subtitle-resize-edge subtitle-resize-ne" data-resize-dir="ne"></span>
+            <span class="subtitle-resize-edge subtitle-resize-se" data-resize-dir="se"></span>
+            <span class="subtitle-resize-edge subtitle-resize-sw" data-resize-dir="sw"></span>
+            <span class="subtitle-resize-edge subtitle-resize-nw" data-resize-dir="nw"></span>
         </div>
     </div>
 

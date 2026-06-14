@@ -15,21 +15,21 @@
         var refs = subtitleWindowController.refs;
         var api = window.nekoSubtitle;
         var state = SubtitleShared.getSettings();
-        var preset = SubtitleShared.getSizePreset(state.subtitleSize);
+        var bounds = SubtitleShared.getPanelBounds(state.subtitlePanelBounds);
         var settingsPanelOpen = refs.settingsPanel && !refs.settingsPanel.classList.contains('hidden');
         var panelHeight = settingsPanelOpen && refs.settingsPanel
             ? refs.settingsPanel.offsetHeight
             : 0;
         var panelGap = settingsPanelOpen ? 8 : 0;
 
-        SubtitleShared.applySubtitlePreset(refs.display, state.subtitleSize, { host: 'window' });
-        refs.display.style.maxHeight = preset.maxHeight + 'px';
+        SubtitleShared.applySubtitlePanelBounds(refs.display, bounds, { host: 'window' });
+        refs.display.style.maxHeight = 'none';
 
         if (!refs.text) return;
         if (!currentTranscript.trim()) {
             refs.text.style.fontSize = '';
             if (api && typeof api.setSize === 'function') {
-                api.setSize(preset.width, preset.minHeight + panelGap + panelHeight);
+                api.setSize(bounds.width, bounds.height + panelGap + panelHeight);
             }
             return;
         }
@@ -37,15 +37,15 @@
         var layout = SubtitleShared.measureSubtitleLayout({
             mode: 'window',
             text: currentTranscript,
-            presetKey: state.subtitleSize,
-            maxWidth: preset.width,
-            minHeight: preset.minHeight,
-            maxHeight: preset.maxHeight,
-            baseFont: preset.fontSize
+            panelBounds: bounds,
+            maxWidth: bounds.width,
+            minHeight: bounds.height,
+            maxHeight: bounds.height,
+            baseFont: 17
         });
-        refs.text.style.fontSize = layout.fontSize < preset.fontSize ? layout.fontSize + 'px' : '';
+        refs.text.style.fontSize = layout.fontSize < 17 ? layout.fontSize + 'px' : '';
         if (api && typeof api.setSize === 'function') {
-            api.setSize(layout.width, Math.max(layout.height + panelGap + panelHeight, preset.minHeight));
+            api.setSize(bounds.width, bounds.height + panelGap + panelHeight);
         }
     }
 
@@ -55,6 +55,11 @@
             subtitleWindowController.refs.text.textContent = currentTranscript;
         }
         resizeWindowToTranscript();
+    }
+
+    function applyTranslatedTranscript(data) {
+        if (!data || data.translated !== true) return;
+        applyTranscript(data.transcript || '');
     }
 
     function applyStateSync(data) {
@@ -73,11 +78,22 @@
         if (Object.prototype.hasOwnProperty.call(data, 'opacity')) {
             patch.subtitleOpacity = data.opacity;
         }
-        if (Object.prototype.hasOwnProperty.call(data, 'dragAnywhere')) {
-            patch.subtitleDragAnywhere = !!data.dragAnywhere;
+        if (Object.prototype.hasOwnProperty.call(data, 'bounds')) {
+            patch.subtitlePanelBounds = data.bounds;
+        } else if (Object.prototype.hasOwnProperty.call(data, 'subtitlePanelBounds')) {
+            patch.subtitlePanelBounds = data.subtitlePanelBounds;
         }
-        if (Object.prototype.hasOwnProperty.call(data, 'size')) {
-            patch.subtitleSize = data.size;
+        if (Object.prototype.hasOwnProperty.call(data, 'locked')) {
+            patch.subtitlePanelLocked = !!data.locked;
+        } else if (Object.prototype.hasOwnProperty.call(data, 'panelLocked')) {
+            patch.subtitlePanelLocked = !!data.panelLocked;
+        } else if (Object.prototype.hasOwnProperty.call(data, 'subtitlePanelLocked')) {
+            patch.subtitlePanelLocked = !!data.subtitlePanelLocked;
+        }
+        if (Object.prototype.hasOwnProperty.call(data, 'interactionPassthrough')) {
+            patch.subtitleInteractionPassthrough = data.interactionPassthrough !== false;
+        } else if (Object.prototype.hasOwnProperty.call(data, 'subtitleInteractionPassthrough')) {
+            patch.subtitleInteractionPassthrough = data.subtitleInteractionPassthrough !== false;
         }
 
         if (Object.keys(patch).length) {
@@ -111,7 +127,7 @@
                 });
             },
             onSettingsApplied: function(state, refs) {
-                SubtitleShared.applySubtitlePreset(refs.display, state.subtitleSize, { host: 'window' });
+                SubtitleShared.applySubtitlePanelBounds(refs.display, state.subtitlePanelBounds, { host: 'window' });
                 resizeWindowToTranscript();
             }
         });
@@ -126,14 +142,14 @@
 
         window.addEventListener('neko-ws-transcript', function(e) {
             var data = e.detail || {};
-            applyTranscript(data.transcript || '');
+            applyTranslatedTranscript(data);
         });
 
         if (window.__nekoSubtitleLatestState) {
             applyStateSync(window.__nekoSubtitleLatestState);
         }
         if (window.__nekoSubtitleLatestTranscript) {
-            applyTranscript(window.__nekoSubtitleLatestTranscript.transcript || '');
+            applyTranslatedTranscript(window.__nekoSubtitleLatestTranscript);
         }
 
         resizeWindowToTranscript();
