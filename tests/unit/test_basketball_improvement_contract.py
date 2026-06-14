@@ -540,9 +540,13 @@ def test_basketball_horse_system_prompt_matches_chat_event_payload():
     en = prompts_game.get_basketball_system_prompt("en", mode="horse")
 
     assert "只有复刻失败才描述谁吃到字母" in zh
+    assert "currentState.attempts_results 最后一条的 horse_phase" in zh
+    assert "不要用 event.horse.phase 判断" in zh
     assert "结合 winner" not in zh
     assert "winner 字段" in zh
     assert "mention a letter only for failed copy attempts" in en
+    assert "last currentState.attempts_results entry's horse_phase" in en
+    assert "do not infer it from event.horse.phase" in en
     assert "summarize with winner" not in en
     assert "do not rely on a winner field" in en
 
@@ -853,6 +857,23 @@ def test_basketball_chat_payload_contains_horse_state():
     assert "event.currentState = buildBasketballCurrentStatePayload();" in send_event
     assert "event.horse = buildHorseStatePayload();" in send_event
     assert "event.currentState.horse = event.horse;" in send_event
+
+
+@pytest.mark.unit
+def test_basketball_horse_player_event_keeps_shot_time_phase():
+    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+    finish_horse = html[
+        html.index("function finishHorseShot("):
+        html.index("function finishDuelShot(", html.index("function finishHorseShot("))
+    ]
+
+    record_phase_index = finish_horse.index("horse_phase: game.horse.phase")
+    push_index = finish_horse.index("game.attemptsResults.push(resultEntry);")
+    player_set_index = finish_horse.index("if (game.horse.phase === 'player_set') {")
+    player_reply_index = finish_horse.index("} else if (game.horse.phase === 'player_reply') {")
+
+    assert record_phase_index < push_index < player_set_index < player_reply_index
+    assert "currentState.attempts_results" in prompts_game.get_basketball_system_prompt("en", mode="horse")
 
 
 @pytest.mark.unit
