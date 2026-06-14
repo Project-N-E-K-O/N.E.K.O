@@ -1979,6 +1979,12 @@
     if (isUserReply) {
       voiceArbiter.userReplyProtectedUntil = Date.now() + 5000;
       voiceArbiter.waitingForUserReply = true;
+      if (voiceArbiter.inFlight && Date.now() < voiceArbiter.inFlight.expiresAt) {
+        entry.expiresAt = Math.max(
+          entry.expiresAt || 0,
+          voiceArbiter.inFlight.expiresAt + VOICE_ARBITER_DEFAULTS.tailWaitMs
+        );
+      }
     }
     if (Date.now() < voiceArbiter.userReplyProtectedUntil && !entry.isUserReply) {
       entry.priority = Math.max(9, entry.priority + 3);
@@ -2563,13 +2569,16 @@
       speakLine(pickLine(getFallbackLineKey(event)), {}, event);
       return;
     }
+    var chatClientTimeoutMs = 6500;
     post('/chat', Object.assign({
       session_id: sessionId,
       lanlan_name: lanlanName,
       i18n_language: getRequestLanguage()
     }, _basketballGameMemoryPolicyPayload(), {
-      event: Object.assign({}, event, _basketballGameMemoryPolicyPayload())
-    }), 6500)
+      event: Object.assign({}, event, _basketballGameMemoryPolicyPayload(), {
+        client_timeout_ms: chatClientTimeoutMs
+      })
+    }), chatClientTimeoutMs)
       .then(function (res) {
         if (event.session_id !== sessionId || event.mode !== currentMode) return;
         if (res && res.shooter_rating) {
@@ -3739,6 +3748,7 @@
     game.lastShotType = shotType;
     game.lastShotDistance = previousDistance;
     game.lastShotScore = point;
+    var newRecord = false;
     if (shooter === 'player') game.duel.playerScore += point;
     else game.duel.nekoScore += point;
     if (shooter === 'player') {
@@ -3747,6 +3757,12 @@
         game.madeCount += 1;
         game.bestStreak = Math.max(game.bestStreak, game.streak);
         if (game.shotTypeCount[shotType] != null) game.shotTypeCount[shotType] += 1;
+        newRecord = previousDistance > game.recordDistance;
+        if (newRecord) {
+          game.recordDistance = previousDistance;
+          localStorage.setItem('bb_record_distance', String(Math.round(game.recordDistance)));
+          playYuiVoice('record');
+        }
       } else {
         fireExtinguishedUntil = performance.now() + 300;
         game.streak = 0;
@@ -3768,12 +3784,13 @@
     playShotResultSound(shotType, scored);
     if (shooter === 'neko') setYuiAction(scored ? 'react-celebrate' : 'react-disappointed', 620);
     sendGameEvent({
-      kind: scored ? 'shot_result' : 'shot_missed',
+      kind: newRecord ? 'new_record' : (scored ? 'shot_result' : 'shot_missed'),
       result: scored ? 'scored' : 'missed',
       streak: game.streak,
       distance: previousDistance,
       shot_type: shotType,
       label: shooter === 'neko' ? 'neko_duel_shot' : 'player_duel_shot',
+      is_new_record: newRecord,
       was_perfect: ball.wasPerfect,
       shot_angle: ball.angle,
       shot_power: ball.power

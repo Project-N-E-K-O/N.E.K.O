@@ -829,7 +829,33 @@ def test_basketball_duel_player_shots_update_recorded_stats():
     assert "game.madeCount += 1;" in finish_duel
     assert "game.bestStreak = Math.max(game.bestStreak, game.streak);" in finish_duel
     assert "if (game.shotTypeCount[shotType] != null) game.shotTypeCount[shotType] += 1;" in finish_duel
+    assert "newRecord = previousDistance > game.recordDistance;" in finish_duel
+    assert "game.recordDistance = previousDistance;" in finish_duel
+    assert "localStorage.setItem('bb_record_distance', String(Math.round(game.recordDistance)));" in finish_duel
+    assert "kind: newRecord ? 'new_record' : (scored ? 'shot_result' : 'shot_missed')," in finish_duel
+    assert "is_new_record: newRecord," in finish_duel
     assert "game.streak = 0;" in finish_duel
+
+
+@pytest.mark.unit
+def test_basketball_normal_chat_request_carries_client_timeout_for_memory_guard():
+    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+    chat_start = html.index("var chatClientTimeoutMs = 6500;")
+    chat_section = html[chat_start:html.index(".then(function (res) {", chat_start)]
+
+    assert "client_timeout_ms: chatClientTimeoutMs" in chat_section
+    assert "}), chatClientTimeoutMs)" in chat_section
+
+
+@pytest.mark.unit
+def test_basketball_user_reply_voice_deadline_survives_inflight_guard():
+    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+    speak_start = html.index("function speakLine(line, control, event) {")
+    speak_section = html[speak_start:html.index("function getActiveAvatarContainer()", speak_start)]
+
+    assert "if (isUserReply) {" in speak_section
+    assert "voiceArbiter.inFlight.expiresAt + VOICE_ARBITER_DEFAULTS.tailWaitMs" in speak_section
+    assert "entry.expiresAt = Math.max(" in speak_section
 
 
 @pytest.mark.unit
