@@ -1441,8 +1441,14 @@ function _cleanupNekoIdleArtTransition(art) {
         clearTimeout(art.__nekoIdleTransitionTimer);
         art.__nekoIdleTransitionTimer = 0;
     }
-    if (art.__nekoIdleTransitionNext && art.__nekoIdleTransitionNext.parentNode) {
-        art.__nekoIdleTransitionNext.parentNode.removeChild(art.__nekoIdleTransitionNext);
+    if (art.__nekoIdleTransitionNext) {
+        // 丢弃过渡临时 <img> 前先清空 src，让 Blink 立即释放该动画 GIF 的解码帧缓存
+        // （MEM_MAPPED 共享内存）。否则每次 idle 美术过渡都 createElement 一个新 <img>
+        // 播 cat-idle GIF，removeChild 后解码缓冲不及时回收，长期累积撑高 committed。
+        try { art.__nekoIdleTransitionNext.removeAttribute('src'); } catch (_) {}
+        if (art.__nekoIdleTransitionNext.parentNode) {
+            art.__nekoIdleTransitionNext.parentNode.removeChild(art.__nekoIdleTransitionNext);
+        }
     }
     art.__nekoIdleTransitionNext = null;
     art.__nekoIdleTransitionTo = '';
