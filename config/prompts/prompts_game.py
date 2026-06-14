@@ -1016,12 +1016,21 @@ def _basketball_prompt_variants(base: dict[str, str], suffixes: dict[str, str]) 
     return {lang: text + suffixes.get(lang, suffixes["en"]) for lang, text in base.items()}
 
 
+def _basketball_prompt_without_difficulty_control(text: str) -> str:
+    return (
+        text.replace(',"difficulty":"<difficulty>"', "")
+        .replace(',"difficulty":"<难度>"', "")
+        .replace("  difficulty: max, lv2, lv3, lv4\n", "")
+        .replace("  difficulty 可选：max, lv2, lv3, lv4\n", "")
+    )
+
+
 BASKETBALL_TIMED_SYSTEM_PROMPTS = _basketball_prompt_variants(
     BASKETBALL_SHOOTER_SYSTEM_PROMPTS,
     _BASKETBALL_TIMED_SYSTEM_PROMPT_SUFFIX,
 )
 BASKETBALL_HORSE_SYSTEM_PROMPTS = _basketball_prompt_variants(
-    BASKETBALL_DUEL_SYSTEM_PROMPTS,
+    {lang: _basketball_prompt_without_difficulty_control(text) for lang, text in BASKETBALL_DUEL_SYSTEM_PROMPTS.items()},
     _BASKETBALL_HORSE_SYSTEM_PROMPT_SUFFIX,
 )
 
@@ -1216,10 +1225,14 @@ _BASKETBALL_SHOOTER_QUICK_LINES_SUFFIX = {
     "pt": "\nO modo atual é shooter: o jogador controla mira, força e soltura da Yui, então avalie a habilidade de controle do jogador, não a habilidade da própria Yui.",
 }
 
+_BASKETBALL_QUICK_LINES_PROMPTS_NON_ZH = {
+    lang: prompt for lang, prompt in BASKETBALL_QUICK_LINES_PROMPTS.items() if lang != "zh"
+}
+
 _BASKETBALL_QUICK_LINES_PROMPTS_DUEL = {
     "zh": _BASKETBALL_QUICK_LINES_PROMPT_DUEL,
     **_basketball_prompt_variants(
-        {lang: prompt for lang, prompt in BASKETBALL_QUICK_LINES_PROMPTS.items() if lang != "zh"},
+        _BASKETBALL_QUICK_LINES_PROMPTS_NON_ZH,
         _BASKETBALL_DUEL_QUICK_LINES_SUFFIX,
     ),
 }
@@ -1227,7 +1240,7 @@ _BASKETBALL_QUICK_LINES_PROMPTS_DUEL = {
 _BASKETBALL_QUICK_LINES_PROMPTS_SHOOTER = {
     "zh": _BASKETBALL_QUICK_LINES_PROMPT_SHOOTER,
     **_basketball_prompt_variants(
-        {lang: prompt for lang, prompt in BASKETBALL_QUICK_LINES_PROMPTS.items() if lang != "zh"},
+        _BASKETBALL_QUICK_LINES_PROMPTS_NON_ZH,
         _BASKETBALL_SHOOTER_QUICK_LINES_SUFFIX,
     ),
 }
@@ -1251,14 +1264,20 @@ _BASKETBALL_HORSE_QUICK_LINES_SUFFIX = {
     "pt": "\nO modo atual é HORSE: foque em criar arremessos, copiá-los, penalidades de letras e de quem é a vez; não escreva como pontuação de duel.",
 }
 
-_BASKETBALL_QUICK_LINES_PROMPTS_TIMED = _basketball_prompt_variants(
-    _BASKETBALL_QUICK_LINES_PROMPTS_SHOOTER,
-    _BASKETBALL_TIMED_QUICK_LINES_SUFFIX,
-)
-_BASKETBALL_QUICK_LINES_PROMPTS_HORSE = _basketball_prompt_variants(
-    _BASKETBALL_QUICK_LINES_PROMPTS_DUEL,
-    _BASKETBALL_HORSE_QUICK_LINES_SUFFIX,
-)
+_BASKETBALL_QUICK_LINES_PROMPTS_TIMED = {
+    "zh": _BASKETBALL_QUICK_LINES_PROMPT_SHOOTER + _BASKETBALL_TIMED_QUICK_LINES_SUFFIX["zh"],
+    **_basketball_prompt_variants(
+        _BASKETBALL_QUICK_LINES_PROMPTS_NON_ZH,
+        _BASKETBALL_TIMED_QUICK_LINES_SUFFIX,
+    ),
+}
+_BASKETBALL_QUICK_LINES_PROMPTS_HORSE = {
+    "zh": _BASKETBALL_QUICK_LINES_PROMPT_DUEL + _BASKETBALL_HORSE_QUICK_LINES_SUFFIX["zh"],
+    **_basketball_prompt_variants(
+        _BASKETBALL_QUICK_LINES_PROMPTS_NON_ZH,
+        _BASKETBALL_HORSE_QUICK_LINES_SUFFIX,
+    ),
+}
 
 BASKETBALL_PREGAME_CONTEXT_PROMPT = """\
 你是投篮小游戏开局上下文分析器。只输出 JSON，不要 Markdown，不要解释。

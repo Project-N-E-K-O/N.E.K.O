@@ -496,7 +496,7 @@ def test_basketball_duel_prompt_mentions_difficulty_control():
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("mode", ("spectator", "shooter", "timed"))
+@pytest.mark.parametrize("mode", ("spectator", "shooter", "timed", "horse"))
 @pytest.mark.parametrize("lang", ("zh", "en", "ja", "ko", "ru", "es", "pt"))
 def test_basketball_non_duel_prompts_do_not_advertise_difficulty_control(lang, mode):
     prompt = prompts_game.get_basketball_system_prompt(lang, mode=mode)
@@ -515,6 +515,17 @@ def test_basketball_quick_lines_mode_prompts_are_distinct_and_localized(lang):
         assert prompt != spectator
         if lang != "en":
             assert "Current mode is" not in prompt
+
+
+@pytest.mark.unit
+def test_basketball_english_quick_lines_do_not_mix_mode_suffixes():
+    timed = prompts_game.get_basketball_quick_lines_prompt("en", mode="timed")
+    horse = prompts_game.get_basketball_quick_lines_prompt("en", mode="horse")
+
+    assert "Current mode is timed" in timed
+    assert "Current mode is shooter" not in timed
+    assert "Current mode is HORSE" in horse
+    assert "Current mode is duel" not in horse
 
 
 @pytest.mark.unit
