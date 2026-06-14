@@ -7234,16 +7234,20 @@ async def _complete_game_end_from_payload(
         _update_game_memory_enabled_from_payload(state, data, game_type=game_type)
         # B1: serialize against /route/start supersede + heartbeat sweep
         # finalize. ``_finalize_game_route_state`` itself dedupes via the
-        # state-attached ``_exit_task``, but acquiring the lock first
-        # guarantees that a fresh ``/route/start`` waits for our archive
-        # to land before activating a new state slot.
+        # state-attached ``_exit_task``, but ``/route/start`` scans across
+        # all game types for this lanlan. Take the same per-lanlan OUTER
+        # supersede lock before the per-(lanlan, game_type) INNER lock so a
+        # late basketball end cannot clear the takeover for a freshly
+        # started soccer route.
+        supersede_lock = _get_supersede_lock(lanlan_name)
         end_route_lock = _get_route_lock(lanlan_name, game_type)
-        async with end_route_lock:
-            finalized = await _finalize_game_route_state(
-                state,
-                reason=exit_reason,
-                close_game_session=True,
-            )
+        async with supersede_lock:
+            async with end_route_lock:
+                finalized = await _finalize_game_route_state(
+                    state,
+                    reason=exit_reason,
+                    close_game_session=True,
+                )
         archive = finalized["archive"]
         archive_memory = finalized["archive_memory"]
         if (

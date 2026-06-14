@@ -2455,6 +2455,23 @@
       challenge: game.horse.challenge ? Object.assign({}, game.horse.challenge) : null
     };
   }
+  function buildHorseFinalScorePayload(horseState) {
+    var playerLetters = horseLetters(horseState.letters_player);
+    var nekoLetters = horseLetters(horseState.letters_neko);
+    var winner = horseState.letters_neko >= HORSE_WORD.length
+      ? 'player'
+      : (horseState.letters_player >= HORSE_WORD.length ? 'neko' : '');
+    return {
+      horse: Object.assign({}, horseState),
+      letters_player: horseState.letters_player,
+      letters_neko: horseState.letters_neko,
+      player_letters: playerLetters,
+      neko_letters: nekoLetters,
+      winner: winner,
+      outcome: winner ? (winner === 'player' ? 'player_win' : 'neko_win') : 'undecided',
+      score_text: 'HORSE ' + playerLetters + ' : ' + nekoLetters
+    };
+  }
   function buildBasketballCurrentStatePayload() {
     var state = {
       game: 'basketball',
@@ -4840,7 +4857,9 @@
     }
     if (isHorseMode()) {
       payloadObj.horse = buildHorseStatePayload();
+      Object.assign(payloadObj.finalScore, buildHorseFinalScorePayload(payloadObj.horse));
       payloadObj.currentState.horse = payloadObj.horse;
+      payloadObj.currentState.score = Object.assign({}, payloadObj.finalScore);
     }
     Object.assign(payloadObj, _basketballGameMemoryPolicyPayload());
     var payload = JSON.stringify(payloadObj);

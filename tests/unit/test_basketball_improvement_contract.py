@@ -716,10 +716,15 @@ def test_basketball_route_end_payload_contains_horse_state():
     html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
 
     assert "function buildHorseStatePayload() {" in html
+    assert "function buildHorseFinalScorePayload(horseState) {" in html
     assert "if (isHorseMode()) {" in html
     assert "payloadObj.horse = buildHorseStatePayload();" in html
+    assert "Object.assign(payloadObj.finalScore, buildHorseFinalScorePayload(payloadObj.horse));" in html
+    assert "payloadObj.currentState.score = Object.assign({}, payloadObj.finalScore);" in html
     assert "letters_player: game.horse.lettersPlayer," in html
     assert "letters_neko: game.horse.lettersNeko," in html
+    assert "winner: winner," in html
+    assert "score_text: 'HORSE ' + playerLetters + ' : ' + nekoLetters" in html
     assert "phase: game.horse.phase," in html
     assert "turn_owner: game.horse.turnOwner," in html
     assert "challenge: game.horse.challenge ? Object.assign({}, game.horse.challenge) : null" in html

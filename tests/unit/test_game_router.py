@@ -2657,6 +2657,64 @@ async def test_route_start_finalizes_other_game_types_for_same_lanlan(monkeypatc
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_route_end_holds_supersede_lock_until_finalize_releases_takeover(monkeypatch):
+    mgr = _FakeGameRouteManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+
+    old_state = game_router._activate_game_route("basketball", "old_match", "Lan")
+    _mark_game_started(old_state)
+    mgr._takeover_active = True
+    mgr._takeover_input_dispatcher = object()
+
+    release_finalize = asyncio.Event()
+    finalize_started = asyncio.Event()
+
+    async def fake_push(*_args, **_kwargs):
+        finalize_started.set()
+        await release_finalize.wait()
+
+    monkeypatch.setattr(game_router, "_push_game_window_state_change", fake_push)
+    monkeypatch.setattr(game_router, "_submit_game_archive_to_memory", AsyncMock(return_value={"ok": True}))
+    monkeypatch.setattr(
+        game_router,
+        "_build_soccer_pregame_context",
+        AsyncMock(return_value=(game_router._default_soccer_pregame_context(initial_difficulty="lv2"), "fallback", "")),
+    )
+
+    end_task = asyncio.create_task(game_router.game_route_end(
+        "basketball",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "session_id": "old_match",
+            "reason": "basketball_game_over",
+            "game_started": True,
+            "round_completed": True,
+            "currentState": {"score": {"player": 1, "ai": 0}},
+            "finalScore": {"player": 1, "ai": 0},
+        }),
+    ))
+    await asyncio.wait_for(finalize_started.wait(), timeout=1)
+
+    start_task = asyncio.create_task(game_router.game_route_start(
+        "soccer",
+        _FakeRequest({"lanlan_name": "Lan", "session_id": "new_match"}),
+    ))
+    await asyncio.sleep(0)
+    assert not start_task.done()
+
+    release_finalize.set()
+    end_result = await asyncio.wait_for(end_task, timeout=1)
+    start_result = await asyncio.wait_for(start_task, timeout=1)
+
+    assert end_result["ok"] is True
+    assert start_result["ok"] is True
+    assert old_state["game_route_active"] is False
+    assert game_router._game_route_states[game_router._route_state_key("Lan", "soccer")]["session_id"] == "new_match"
+    assert mgr._takeover_active is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_route_external_text_to_game_llm_defers_voice_to_frontend_arbiter(monkeypatch):
     mgr = _FakeGameRouteManager()
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
