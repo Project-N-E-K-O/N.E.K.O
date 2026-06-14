@@ -2261,6 +2261,21 @@ def _resolve_proactive_locale(data: dict, mgr) -> str:
     return get_global_language() or 'en'
 
 
+def _resolve_topic_hook_locale(data: dict, mgr, *, fallback: str) -> str:
+    """Resolve the locale for topic-hook prompts without collapsing zh-TW."""
+    for raw_lang in (
+        data.get('language'),
+        data.get('lang'),
+        data.get('i18n_language'),
+        getattr(mgr, 'user_language', None),
+    ):
+        if raw_lang and is_supported_language_code(raw_lang):
+            normalized = normalize_language_code(raw_lang, format='full')
+            if normalized:
+                return normalized
+    return fallback
+
+
 async def _maybe_deliver_mini_game_invite(
     *,
     lanlan_name: str,
@@ -5518,6 +5533,7 @@ async def proactive_chat(request: Request):
             proactive_lang = _resolve_proactive_locale(data, mgr)
         except Exception:
             proactive_lang = 'zh'
+        topic_hook_lang = _resolve_topic_hook_locale(data, mgr, fallback=proactive_lang)
         
         # ========== 3. 注入近期搭话记录 ==========
         proactive_chat_history_prompt = _format_recent_proactive_chats(lanlan_name, proactive_lang)
@@ -5567,7 +5583,7 @@ async def proactive_chat(request: Request):
                                 followup_topics_prompt,
                                 _surfaced_reflection_ids,
                             ) = _render_followup_topic_hooks(
-                                proactive_lang,
+                                topic_hook_lang,
                                 _followup_topics,
                             )
                         except Exception as _followup_prompt_err:
@@ -6338,7 +6354,7 @@ async def proactive_chat(request: Request):
             try:
                 from main_logic.topic.hooks import build_topic_hook_prompt
                 refreshed_topic_hook_prompt = build_topic_hook_prompt(
-                    proactive_lang,
+                    topic_hook_lang,
                     followup_topics=_followup_topics if _allow_reminiscence else [],
                     open_threads=open_threads_for_topic_hooks,
                 )

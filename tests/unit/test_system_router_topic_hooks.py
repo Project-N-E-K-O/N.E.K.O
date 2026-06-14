@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from main_routers.system_router import (
     _allow_open_threads_for_topic_hooks,
     _render_followup_topic_hooks,
+    _resolve_topic_hook_locale,
 )
 
 
@@ -40,3 +41,21 @@ def test_followup_surfaced_ids_are_limited_to_rendered_topics():
         "reflection-1",
         "reflection-2",
     ]
+
+
+def test_topic_hook_locale_preserves_traditional_chinese_request_language():
+    mgr = SimpleNamespace(user_language="zh-CN")
+
+    topic_hook_lang = _resolve_topic_hook_locale(
+        {"language": "zh-TW"},
+        mgr,
+        fallback="zh",
+    )
+    prompt, _surfaced_ids = _render_followup_topic_hooks(
+        topic_hook_lang,
+        [{"id": "reflection-tw", "text": "最近想用繁體中文聊城市流行"}],
+    )
+
+    assert topic_hook_lang == "zh-TW"
+    assert "低頻深話題候選" in prompt
+    assert "低频深话题候选" not in prompt
