@@ -694,11 +694,44 @@ def _hosted_relative_specifier(value: str | None) -> str | None:
     return None
 
 
+def _hosted_named_bindings_have_runtime(raw_bindings: str) -> bool:
+    stripped = raw_bindings.strip()
+    if not (stripped.startswith("{") and stripped.endswith("}")):
+        return bool(stripped)
+    for item in stripped[1:-1].split(","):
+        if item.strip() and not item.strip().startswith("type "):
+            return True
+    return False
+
+
+def _hosted_import_bindings_have_runtime(raw_bindings: str) -> bool:
+    bindings = raw_bindings.strip()
+    if not bindings:
+        return True
+    if bindings == "type" or bindings.startswith("type "):
+        return False
+    named_start = bindings.find("{")
+    if named_start < 0:
+        return True
+    default_part = bindings[:named_start].strip().rstrip(",").strip()
+    if default_part:
+        return True
+    return _hosted_named_bindings_have_runtime(bindings[named_start:])
+
+
+def _hosted_is_dynamic_import_call(source: str, index: int) -> bool:
+    if _hosted_previous_significant_char(source, index) == ".":
+        return False
+    import_target = _hosted_skip_trivia(source, index + len("import"))
+    return import_target < len(source) and source[import_target] == "("
+
+
 def _hosted_import_specifier(source: str, index: int) -> str | None:
+    import_index = index
     index = _hosted_skip_trivia(source, index + len("import"))
-    if index < len(source) and source[index] == "(":
+    if _hosted_is_dynamic_import_call(source, import_index):
         _hosted_raise_dynamic_import_unsupported()
-    if index >= len(source) or source[index] == ".":
+    if index >= len(source) or source[index] in {"(", "."}:
         return None
     if _hosted_matches_keyword(source, index, "type"):
         # `import type { Foo } from './types'` is erased at runtime — no dep.
@@ -708,6 +741,8 @@ def _hosted_import_specifier(source: str, index: int) -> str | None:
         return _hosted_relative_specifier(read[0]) if read else None
     from_index = _hosted_find_keyword_before_statement_end(source, index, "from")
     if from_index < 0:
+        return None
+    if not _hosted_import_bindings_have_runtime(source[index:from_index]):
         return None
     specifier_index = _hosted_skip_trivia(source, from_index + len("from"))
     if specifier_index >= len(source) or source[specifier_index] not in {"'", '"'}:
@@ -734,6 +769,8 @@ def _hosted_export_specifier(source: str, index: int) -> str | None:
         return None
     from_index = _hosted_find_keyword_before_statement_end(source, index, "from")
     if from_index < 0:
+        return None
+    if not _hosted_named_bindings_have_runtime(source[index:from_index]):
         return None
     specifier_index = _hosted_skip_trivia(source, from_index + len("from"))
     if specifier_index >= len(source) or source[specifier_index] not in {"'", '"'}:
@@ -778,8 +815,7 @@ def _hosted_tsx_relative_import_specifiers(source: str) -> list[str]:
             continue
         specifier: str | None = None
         if _hosted_matches_keyword(source, index, "import"):
-            import_target = _hosted_skip_trivia(source, index + len("import"))
-            if import_target < len(source) and source[import_target] == "(":
+            if _hosted_is_dynamic_import_call(source, index):
                 _hosted_raise_dynamic_import_unsupported()
         if depth == 0 and _hosted_matches_keyword(source, index, "import"):
             specifier = _hosted_import_specifier(source, index)

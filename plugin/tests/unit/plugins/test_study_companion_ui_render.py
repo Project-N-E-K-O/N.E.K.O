@@ -193,6 +193,7 @@ def test_study_companion_static_ui8_visual_accessibility_and_csp_contract() -> N
     assert ":*" not in csp
     assert "frame-ancestors" not in csp
     assert "meta CSP cannot express dynamic localhost ports" in index_html
+    assert '<meta name="viewport" content="width=device-width, initial-scale=1" />' in index_html
     assert 'style="' not in index_html
     assert "<style" not in index_html
 
