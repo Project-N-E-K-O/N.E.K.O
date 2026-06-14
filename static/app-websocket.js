@@ -892,7 +892,7 @@
         }, 100);
 
         // Frontend subtitle finalization: subtitle.js 内部根据开关决定是否
-        // 补齐剩余句子的翻译队列；字幕面板不回落显示整段原文。
+        // 真正发请求；不需要的语言会保留流式累积的原文，不会清空字幕。
         // 结构化 turn 收尾为 [markdown] 占位，跳过翻译链路。
         if (window._turnIsStructured) {
             if (typeof window.finalizeSubtitleAsStructured === 'function') {

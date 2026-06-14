@@ -685,7 +685,15 @@ def test_subtitle_panel_lock_and_close_buttons_update_runtime_state(
                 <button type="button" id="subtitle-settings-btn"></button>
                 <button type="button" id="subtitle-close-btn"></button>
             </div>
-            <div id="subtitle-settings-panel" class="hidden"></div>
+            <div id="subtitle-settings-panel" class="hidden">
+                <div class="subtitle-settings-row subtitle-lock-setting-row">
+                    <span class="subtitle-settings-label" data-subtitle-label="lockPosition">锁定位置</span>
+                    <label class="subtitle-settings-switch">
+                        <input type="checkbox" id="subtitle-lock-toggle">
+                        <span class="subtitle-settings-track"></span>
+                    </label>
+                </div>
+            </div>
         </div>
         """,
     )
@@ -717,6 +725,7 @@ def test_subtitle_panel_lock_and_close_buttons_update_runtime_state(
             });
             const display = document.getElementById('subtitle-display');
             const lockBtn = document.getElementById('subtitle-lock-btn');
+            const lockToggle = document.getElementById('subtitle-lock-toggle');
             const closeBtn = document.getElementById('subtitle-close-btn');
             lockBtn.click();
             await new Promise((resolve) => setTimeout(resolve, 0));
@@ -724,8 +733,20 @@ def test_subtitle_panel_lock_and_close_buttons_update_runtime_state(
                 locked: shared.getSettings().subtitlePanelLocked,
                 storedLocked: window.localStorage.getItem('subtitlePanelLocked'),
                 ariaPressed: lockBtn.getAttribute('aria-pressed'),
+                toggleChecked: lockToggle.checked,
                 renderLocked: shared.getRenderState().subtitlePanelLocked,
                 panelState: display.dataset.subtitlePanelState,
+                propagated: propagated.slice(),
+            };
+            lockToggle.checked = false;
+            lockToggle.dispatchEvent(new Event('change', { bubbles: true }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const afterLockToggleOff = {
+                locked: shared.getSettings().subtitlePanelLocked,
+                storedLocked: window.localStorage.getItem('subtitlePanelLocked'),
+                ariaPressed: lockBtn.getAttribute('aria-pressed'),
+                toggleChecked: lockToggle.checked,
+                renderLocked: shared.getRenderState().subtitlePanelLocked,
                 propagated: propagated.slice(),
             };
             closeBtn.click();
@@ -737,7 +758,7 @@ def test_subtitle_panel_lock_and_close_buttons_update_runtime_state(
                 panelState: display.dataset.subtitlePanelState,
             };
             controller.destroy();
-            return { afterLock, afterClose };
+            return { afterLock, afterLockToggleOff, afterClose };
         }
         """
     )
@@ -746,9 +767,21 @@ def test_subtitle_panel_lock_and_close_buttons_update_runtime_state(
         "locked": True,
         "storedLocked": "true",
         "ariaPressed": "true",
+        "toggleChecked": True,
         "renderLocked": True,
         "panelState": "controls",
         "propagated": [{"type": "lock", "value": True}],
+    }
+    assert result["afterLockToggleOff"] == {
+        "locked": False,
+        "storedLocked": "false",
+        "ariaPressed": "false",
+        "toggleChecked": False,
+        "renderLocked": False,
+        "propagated": [
+            {"type": "lock", "value": True},
+            {"type": "lock", "value": False},
+        ],
     }
     assert result["afterClose"] == {
         "closeCalls": ["closed"],
@@ -2265,7 +2298,7 @@ def test_subtitle_empty_turn_does_not_request_translation_or_show_original_text(
 @pytest.mark.frontend
 @pytest.mark.parametrize(
     "template_name",
-    ["index.html", "chat.html", "subtitle.html"],
+    ["index.html", "subtitle.html"],
 )
 def test_subtitle_templates_share_new_panel_control_scaffold(
     template_name: str,
@@ -2293,6 +2326,8 @@ def test_subtitle_templates_share_new_panel_control_scaffold(
     assert 'data-subtitle-placeholder="暂无翻译内容"' in template
     assert 'data-subtitle-label="opacity">背景不透明度</span>' in template
     assert 'id="subtitle-opacity-slider" min="0" max="100"' in template
+    assert 'data-subtitle-label="lockPosition"' in template
+    assert 'id="subtitle-lock-toggle"' in template
     assert 'data-subtitle-label="passthroughInteraction"' in template
     assert 'id="subtitle-passthrough-toggle"' in template
     assert 'id="subtitle-resize-handles"' in template
@@ -2305,6 +2340,72 @@ def test_subtitle_templates_share_new_panel_control_scaffold(
     assert 'data-size="small"' not in template
     assert template.index('id="subtitle-scroll"') < template.index('id="subtitle-panel-controls"')
     assert template.index('id="subtitle-panel-controls"') < template.index('id="subtitle-settings-panel"')
+
+
+@pytest.mark.frontend
+def test_chat_template_keeps_subtitle_as_hidden_bridge_placeholder():
+    template = (PROJECT_ROOT / "templates" / "chat.html").read_text(encoding="utf-8")
+
+    assert '<div id="subtitle-display" class="hidden" style="display:none;"><span id="subtitle-text"></span></div>' in template
+    assert 'id="subtitle-panel-controls"' not in template
+    assert 'id="subtitle-settings-panel"' not in template
+    assert 'id="subtitle-resize-handles"' not in template
+    assert 'id="subtitle-lock-toggle"' not in template
+    assert 'id="subtitle-passthrough-toggle"' not in template
+
+
+@pytest.mark.frontend
+def test_subtitle_window_settings_keeps_passthrough_visible_and_allows_small_bounds():
+    css = (PROJECT_ROOT / "static/css/subtitle.css").read_text(encoding="utf-8")
+    assert "body.subtitle-window-host .subtitle-passthrough-setting-row" not in css
+    assert "min-width: 200px" not in css
+    assert "min-width: 180px" not in css
+
+
+@pytest.mark.frontend
+def test_subtitle_panel_bounds_are_free_not_legacy_size_limited(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-web-host",
+        """
+        <div id="subtitle-display" class="show" style="display:flex; opacity:1; visibility:visible; animation:none; transform:none;">
+            <div id="subtitle-scroll"><span id="subtitle-text">Translated text.</span></div>
+        </div>
+        """,
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const shared = window.nekoSubtitleShared;
+            const display = document.getElementById('subtitle-display');
+            const bounds = shared.getPanelBounds({ width: 80, height: 36 });
+            shared.applySubtitlePanelBounds(display, bounds, { host: 'web' });
+            const rect = display.getBoundingClientRect();
+            const style = getComputedStyle(display);
+            return {
+                bounds,
+                rect: {
+                    width: Math.round(rect.width),
+                    height: Math.round(rect.height),
+                },
+                cssMinWidth: style.minWidth,
+                legacySlider: document.querySelectorAll('#subtitle-size-slider').length,
+                legacyButtons: document.querySelectorAll('.subtitle-size-btn').length,
+            };
+        }
+        """
+    )
+
+    assert result["bounds"] == {"width": 80, "height": 36}
+    assert result["rect"] == {"width": 80, "height": 36}
+    assert result["cssMinWidth"] == "0px"
+    assert result["legacySlider"] == 0
+    assert result["legacyButtons"] == 0
 
 
 @pytest.mark.frontend

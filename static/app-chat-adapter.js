@@ -683,8 +683,8 @@
             var prevFull = typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : '';
             window._geminiTurnFullText = prevFull + normalizeGeminiText(text);
 
-            // 常驻字幕流式入口（adapter 是生产常驻路径）；这里交给字幕翻译队列，
-            // 字幕面板只显示译文/状态，不把原文直接写进面板。
+            // 常驻字幕流式写入（adapter 是生产常驻路径；PR #777 漏了这段，导致 React
+            // 聊天窗口下字幕只能等 turn_end 才首次出现，视觉上像"一口气显示"）。
             // 结构化命中时改走 [markdown] 占位，turn_end 跳过翻译。
             var streamingText = window._geminiTurnFullText.replace(/\[play_music:[^\]]*(\]|$)/g, '');
             if (!window._turnIsStructured && looksLikeStructuredRichText(streamingText)) {

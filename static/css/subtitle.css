@@ -35,7 +35,10 @@ body.subtitle-window-host {
     --subtitle-scroll-thumb: rgba(32, 38, 45, 0.28);
     --subtitle-scroll-thumb-hover: rgba(32, 38, 45, 0.42);
     --subtitle-focus-ring: rgba(52, 112, 179, 0.32);
-    padding: 12px 86px 12px 24px;
+    --subtitle-panel-padding-block: clamp(4px, calc(var(--subtitle-panel-height, 68px) * 0.18), 12px);
+    --subtitle-panel-padding-right: clamp(8px, calc(var(--subtitle-panel-width, 600px) * 0.14), 86px);
+    --subtitle-panel-padding-left: clamp(8px, calc(var(--subtitle-panel-width, 600px) * 0.04), 24px);
+    padding: var(--subtitle-panel-padding-block) var(--subtitle-panel-padding-right) var(--subtitle-panel-padding-block) var(--subtitle-panel-padding-left);
     /* width, height, font-size are controlled by the shared subtitle bounds. */
     background: rgba(var(--subtitle-panel-bg-rgb), var(--subtitle-panel-alpha));
     color: var(--subtitle-panel-text);
@@ -98,7 +101,7 @@ body.subtitle-web-host #subtitle-display {
     left: 50%;
     transform: translateX(-50%);
     z-index: 99998;
-    min-width: 200px;
+    min-width: 0;
     max-width: none;
     opacity: 0;
     visibility: hidden;
@@ -129,6 +132,7 @@ body.subtitle-window-host.subtitle-linux-host #subtitle-display {
 
 #subtitle-scroll {
     width: 100%;
+    min-width: 0;
     max-height: var(--subtitle-content-max-height, 120px);
     overflow: hidden;
     overscroll-behavior: none;
@@ -302,10 +306,6 @@ body.subtitle-window-host.subtitle-linux-host #subtitle-settings-panel {
     color: var(--subtitle-settings-text);
     font-size: 13px;
     white-space: nowrap;
-}
-
-body.subtitle-window-host .subtitle-passthrough-setting-row {
-    display: none;
 }
 
 #subtitle-lang-select {
@@ -560,9 +560,11 @@ body.subtitle-web-host #subtitle-display.show {
 @media only screen and (max-width: 768px) {
     body.subtitle-web-host #subtitle-display {
         bottom: 80px;
-        min-width: 180px;
+        min-width: 0;
         max-width: none;
-        padding: 10px 58px 10px 16px;
+        --subtitle-panel-padding-block: clamp(4px, calc(var(--subtitle-panel-height, 68px) * 0.18), 10px);
+        --subtitle-panel-padding-right: clamp(8px, calc(var(--subtitle-panel-width, 600px) * 0.12), 58px);
+        --subtitle-panel-padding-left: clamp(8px, calc(var(--subtitle-panel-width, 600px) * 0.035), 16px);
     }
 
     #subtitle-panel-controls {

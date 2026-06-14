@@ -907,8 +907,8 @@
                     window.markSubtitleStructured();
                 }
             } else if (typeof window.updateSubtitleStreamingText === 'function') {
-                // 把整轮累积原文交给字幕翻译队列；字幕面板只写译文/状态，不预览原文。
-                // turn 结束时由 app-websocket.js 补齐剩余句子；turn-start 事件清空状态
+                // 把整轮累积的原文流式写入字幕（常驻字幕，跨气泡持续显示）
+                // turn 结束时由 app-websocket.js 调用翻译替换；turn-start 事件清空
                 window.updateSubtitleStreamingText(streamingText);
             }
         }

@@ -9,8 +9,8 @@
     var RENDER_EVENT = 'neko-subtitle-render-state';
     var DEFAULT_BACKGROUND_OPACITY = 95;
     var DEFAULT_PANEL_BOUNDS = { width: 600, height: 68 };
-    var MIN_PANEL_WIDTH = 220;
-    var MIN_PANEL_HEIGHT = 56;
+    var MIN_PANEL_WIDTH = 48;
+    var MIN_PANEL_HEIGHT = 28;
     var DEFAULT_TRANSLATION_LANGUAGE = 'zh';
     var DEFAULT_UI_LOCALE = 'zh-CN';
     var CONTROLS_HIDE_DELAY_MS = 1200;
@@ -583,6 +583,7 @@
             langSelect: query(root, '#subtitle-lang-select'),
             opacitySlider: query(root, '#subtitle-opacity-slider'),
             opacityValue: query(root, '#subtitle-opacity-value'),
+            lockToggle: query(root, '#subtitle-lock-toggle'),
             passthroughToggle: query(root, '#subtitle-passthrough-toggle'),
             resizeHandles: root && typeof root.querySelectorAll === 'function' ? root.querySelectorAll('.subtitle-resize-edge') : []
         };
@@ -649,6 +650,9 @@
         if (refs.opacityValue) {
             refs.opacityValue.textContent = state.subtitleOpacity + '%';
         }
+        if (refs.lockToggle) {
+            refs.lockToggle.checked = !!state.subtitlePanelLocked;
+        }
         if (refs.passthroughToggle) {
             refs.passthroughToggle.checked = passthroughEnabled;
         }
@@ -682,6 +686,9 @@
         }
         if (refs.opacitySlider) {
             refs.opacitySlider.title = getUiText('opacity', locale);
+        }
+        if (refs.lockToggle) {
+            refs.lockToggle.title = getUiText('lockPosition', locale);
         }
         if (refs.passthroughToggle) {
             refs.passthroughToggle.title = getUiText('passthroughInteraction', locale);
@@ -1389,6 +1396,22 @@
         applyPanelState(panelState, 'subtitle-ui-init');
         cleanupFns.push(subscribeSettings(applyState, { immediate: false }));
 
+        function setPanelLocked(nextLocked, source) {
+            var locked = !!nextLocked;
+            var nextState = updateSettings({ subtitlePanelLocked: locked }, {
+                source: source || 'subtitle-ui-lock'
+            });
+            if (typeof options.propagateSetting === 'function') {
+                options.propagateSetting({
+                    type: 'lock',
+                    value: locked,
+                    patch: { subtitlePanelLocked: locked },
+                    state: nextState
+                });
+            }
+            return nextState;
+        }
+
         var observedThemeDark = isDarkThemeActive();
         var applyThemeStateIfChanged = function(source) {
             var nextThemeDark = isDarkThemeActive();
@@ -1489,19 +1512,21 @@
                 e.stopPropagation();
                 showControls('subtitle-ui-lock');
                 var nextLocked = !getSettings().subtitlePanelLocked;
-                var nextState = updateSettings({ subtitlePanelLocked: nextLocked }, { source: 'subtitle-ui-lock' });
-                if (typeof options.propagateSetting === 'function') {
-                    options.propagateSetting({
-                        type: 'lock',
-                        value: nextLocked,
-                        patch: { subtitlePanelLocked: nextLocked },
-                        state: nextState
-                    });
-                }
+                setPanelLocked(nextLocked, 'subtitle-ui-lock');
             };
             refs.lockBtn.addEventListener('click', onLockClick);
             cleanupFns.push(function() {
                 refs.lockBtn.removeEventListener('click', onLockClick);
+            });
+        }
+
+        if (refs.lockToggle) {
+            var onLockToggleChange = function() {
+                setPanelLocked(!!refs.lockToggle.checked, 'subtitle-ui-lock-setting');
+            };
+            refs.lockToggle.addEventListener('change', onLockToggleChange);
+            cleanupFns.push(function() {
+                refs.lockToggle.removeEventListener('change', onLockToggleChange);
             });
         }
 
