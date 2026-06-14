@@ -76,10 +76,11 @@ _HEADER_RE = re.compile(r"^(#{1,6})\s")
 # Markdown emphasis / code chars stripped before the placeholder test, so a
 # decorated placeholder is recognised too.
 _EMPHASIS_RE = re.compile(r"[*_`]")
-# Separator chars stripped from each whitespace-split token, so a combined
-# placeholder collapses to all-placeholder tokens while an internal-slash
-# token like "n/a" stays intact (we split on whitespace, NOT on these).
-_TOKEN_TRIM_CHARS = "/|,，、-—:："
+# Separator / punctuation chars stripped from each whitespace-split token, so
+# a combined or punctuated placeholder (e.g. "不适用 / N/A", "不适用。", "N/A.")
+# collapses to all-placeholder tokens while an internal-slash token like "n/a"
+# stays intact (we split on whitespace, NOT on these).
+_TOKEN_TRIM_CHARS = "/|,，、-—:：.。!！?？;；"
 
 
 # ---------------------------------------------------------------------------
@@ -102,8 +103,15 @@ def _git(*args: str) -> str:
 def _changed_files(base: str) -> list[str]:
     """All files changed in HEAD relative to the merge-base with `base`.
     Posix-style repo-relative paths; deletions are included (a deletion is a
-    change for the purpose of the file-count rule)."""
-    out = _git("diff", "--name-only", f"{base}...HEAD")
+    change for the purpose of the file-count rule).
+
+    ``--no-renames`` disables rename collapsing on purpose: a move OUT of a
+    watched module (e.g. ``memory/foo.py`` -> ``tools/foo.py``) would otherwise
+    report only the destination path and slip past the watched-prefix check.
+    With renames split into delete(old) + add(new), the old watched path still
+    shows up, and a bulk rename counts both ends toward the file-count rule
+    (pure renames are the documented `report-exempt` case)."""
+    out = _git("diff", "--no-renames", "--name-only", f"{base}...HEAD")
     return [ln.strip().replace("\\", "/") for ln in out.splitlines() if ln.strip()]
 
 
