@@ -221,6 +221,14 @@ export default function NoteEditor(props: PluginSurfaceProps) {
     const key = String(event.key || '').toLowerCase();
     if (key === 's') {
       event.preventDefault();
+      // In hosted surfaces onChange binds the native `change` event (fires on
+      // blur), so a Ctrl/Cmd+S while the textarea still has focus would save the
+      // last-blurred content. Sync the live value before saving.
+      const live = textarea.value;
+      if (live !== content) {
+        setContent(live);
+      }
+      latestDraft.current = { ...latestDraft.current, content: live };
       void saveNote();
       return;
     }
