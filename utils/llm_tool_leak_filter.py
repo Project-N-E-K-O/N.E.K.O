@@ -158,15 +158,20 @@ class ToolLeakFilter:
         if self._tool_names:
             lower_text = text.lower()
             for tool_name in sorted(self._tool_names, key=len, reverse=True):
-                idx = lower_text.find(tool_name.lower())
-                if idx < 0:
-                    continue
-                suffix = text[idx:]
-                if _NAME_CLOSE_RE.search(suffix) and (
-                    _PARAMETER_RE.search(suffix) or _FUNCTION_CLOSE_RE.search(suffix)
-                ):
-                    start = self._structured_tool_start(text, idx)
-                    return start, idx + len(tool_name), "structured_tool_call"
+                search_from = 0
+                lower_tool_name = tool_name.lower()
+                while True:
+                    idx = lower_text.find(lower_tool_name, search_from)
+                    if idx < 0:
+                        break
+                    suffix = text[idx + len(tool_name):]
+                    name_close = _NAME_CLOSE_RE.match(suffix)
+                    if name_close is not None:
+                        structured_suffix = suffix[name_close.end():]
+                        if _PARAMETER_RE.search(structured_suffix) or _FUNCTION_CLOSE_RE.search(structured_suffix):
+                            start = self._structured_tool_start(text, idx)
+                            return start, idx + len(tool_name), "structured_tool_call"
+                    search_from = idx + len(tool_name)
         return None
 
     @staticmethod

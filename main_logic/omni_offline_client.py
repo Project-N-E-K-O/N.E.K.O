@@ -816,6 +816,8 @@ class OmniOfflineClient:
                     # 让上游 retry 路径基于 attempt+1 重新走（下次会直接
                     # 进 OpenAI-compat，因为 _genai_tools_unsupported=True）。
                     raise
+                if tool_leak_filter is not None:
+                    tool_leak_filter.reset()
             except Exception as e:
                 # Don't break user requests on transient genai SDK errors —
                 # log loudly and fall through. ``_genai_tools_unsupported``
@@ -827,6 +829,8 @@ class OmniOfflineClient:
                     # 流程清空气泡后基于 attempt+1 重试（下一次仍会先尝试
                     # genai，因为 transient 不翻 _genai_tools_unsupported）。
                     raise
+                if tool_leak_filter is not None:
+                    tool_leak_filter.reset()
         async for chunk in self._astream_openai_with_tools(
             messages,
             _tool_leak_filter=tool_leak_filter,
