@@ -526,6 +526,11 @@ const unsupportedExportCases = [
     pattern: /exported namespaces are not supported/,
   },
   {
+    name: 'mutable let/var exports',
+    source: 'export let counter = 0',
+    pattern: /mutable exports/,
+  },
+  {
     name: 'destructured exports',
     source: 'const source = { label: "x" }\nexport const { label } = source',
     pattern: /destructured exports are not supported/,
@@ -533,7 +538,7 @@ const unsupportedExportCases = [
   {
     name: 'multi-declarator exports',
     source: 'export const first = "A", second = "B"',
-    pattern: /multiple declarators in one `export const\/let\/var` are not supported/,
+    pattern: /multiple declarators in one `export const` are not supported/,
   },
 ]
 
@@ -565,7 +570,6 @@ test('allows the supported hosted export declaration forms', () => {
       `export type Label = string
 export interface Props { label: Label }
 export const label: Label = 'value'
-export let counter = 0
 export function makeLabel(): string { return label }
 export async function loadLabel(): Promise<string> { return label }
 export class Helper { value() { return label } }
@@ -645,6 +649,28 @@ test('rejects bare/external package imports', () => {
 
     assert.equal(result.status, 1)
     assert.match(result.stderr, /bare module 'lodash-es' cannot resolve/)
+  })
+})
+
+test('follows type-only re-exports inside declaration files', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'type-reexport')
+    writePluginToml(pluginDir, 'main.tsx')
+    writeFixtureFile(
+      join(pluginDir, 'main.tsx'),
+      'import type { Base } from \'./types\'\n'
+        + 'export default function Panel() {\n'
+        + '  const b: Base = \'x\'\n'
+        + '  return <Page title={b} />\n'
+        + '}\n',
+    )
+    writeFixtureFile(join(pluginDir, 'types.d.ts'), 'export type { Base } from \'./base\'\n')
+    writeFixtureFile(join(pluginDir, 'base.d.ts'), 'export type Base = string\n')
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /Hosted TSX check passed/)
   })
 })
 

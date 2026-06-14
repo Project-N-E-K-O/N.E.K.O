@@ -176,6 +176,22 @@ function isRelativeSpecifier(specifier) {
   return specifier.startsWith('./') || specifier.startsWith('../')
 }
 
+// `.d.ts` declaration files may re-export types from a sibling
+// (`export type { Base } from './base'`). Runtime modules can't (the contract
+// rejects re-exports), but type files are only type-checked, so the type-decl
+// copier must follow these specifiers or TypeScript reports a missing module.
+function findRelativeReExportSpecifiers(sourcePath, source) {
+  const sourceFile = sourceFileFor(sourcePath, source)
+  const specifiers = []
+  for (const statement of sourceFile.statements) {
+    if (ts.isExportDeclaration(statement) && statement.moduleSpecifier) {
+      const specifier = moduleSpecifierText(statement.moduleSpecifier)
+      if (specifier && isRelativeSpecifier(specifier)) specifiers.push(specifier)
+    }
+  }
+  return specifiers
+}
+
 function replaceRangesWithWhitespace(source, ranges) {
   if (ranges.length === 0) return source
   const chars = source.split('')
@@ -637,7 +653,8 @@ function copyRelativeTypeDeclaration(sourcePath, tempDir, pluginRoot, copiedDecl
   copiedDeclarations.add(resolvedPath)
 
   const { runtime: runtimeSpecifiers, typeOnly: typeOnlySpecifiers } = findHostedRelativeImportSpecifiers(source)
-  for (const specifier of [...runtimeSpecifiers, ...typeOnlySpecifiers]) {
+  const reExportSpecifiers = findRelativeReExportSpecifiers(resolvedPath, source)
+  for (const specifier of [...runtimeSpecifiers, ...typeOnlySpecifiers, ...reExportSpecifiers]) {
     const dependencyPath = resolveRelativeTypeDeclaration(resolvedPath, specifier, pluginRoot)
     if (dependencyPath) {
       copyRelativeTypeDeclaration(dependencyPath, tempDir, pluginRoot, copiedDeclarations)

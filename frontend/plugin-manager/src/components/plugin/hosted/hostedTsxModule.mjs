@@ -872,11 +872,17 @@ function classifyHostedExportRejection(source, start) {
     if (keyword === 'const' && matchesKeyword(source, afterKeyword, 'enum')) {
       return 'exported enums are not supported; export a plain `const` object instead'
     }
+    if (keyword !== 'const') {
+      // The bundler snapshots each export once, so a later mutation of an
+      // `export let`/`export var` would never reach importers (ES modules use
+      // live bindings; this linker can't). Require `const`.
+      return 'mutable exports (`export let`/`export var`) are not supported; export a `const`'
+    }
     if (source[afterKeyword] === '{' || source[afterKeyword] === '[') {
       return 'destructured exports are not supported; export a single named binding'
     }
     if (hostedDeclarationHasTopLevelComma(source, afterKeyword)) {
-      return 'multiple declarators in one `export const/let/var` are not supported; split them into separate statements'
+      return 'multiple declarators in one `export const` are not supported; split them into separate statements'
     }
     return null
   }

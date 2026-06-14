@@ -864,6 +864,145 @@ def _hosted_tsx_relative_import_specifiers(source: str) -> list[str]:
     return specifiers
 
 
+def _hosted_declaration_has_top_level_comma(source: str, index: int) -> bool:
+    depth = 0
+    while index < len(source):
+        char = source[index]
+        if char == "/" and source[index + 1 : index + 2] == "/":
+            index = _hosted_skip_line_comment(source, index)
+            continue
+        if char == "/" and source[index + 1 : index + 2] == "*":
+            index = _hosted_skip_block_comment(source, index)
+            continue
+        if char == "/" and _hosted_can_start_regex_literal(source, index):
+            index = _hosted_skip_regex_literal(source, index)
+            continue
+        if char in {"'", '"'}:
+            index = _hosted_skip_quoted(source, index)
+            continue
+        if char == "`":
+            index = _hosted_skip_template(source, index, scan_expressions=True)
+            continue
+        if char in {"(", "[", "{"}:
+            depth += 1
+            index += 1
+            continue
+        if char in {")", "]", "}"}:
+            if depth == 0:
+                return False
+            depth -= 1
+            index += 1
+            continue
+        if depth == 0 and char == ",":
+            return True
+        if depth == 0 and char in {";", "\n", "\r"}:
+            return False
+        index += 1
+    return False
+
+
+def _hosted_classify_export_rejection(source: str, index: int) -> str | None:
+    # Mirrors the frontend classifyHostedExportRejection so the server rejects the
+    # same unsupported export forms (installed plugins reach /hosted-ui/source
+    # without running check-hosted-tsx, and the bundler only strips simple
+    # declaration exports).
+    cursor = _hosted_skip_trivia(source, index + len("export"))
+    if _hosted_matches_keyword(source, cursor, "default"):
+        return None
+    if _hosted_matches_keyword(source, cursor, "interface"):
+        return None
+    if _hosted_matches_keyword(source, cursor, "type"):
+        after_type = _hosted_skip_trivia(source, cursor + len("type"))
+        if source[after_type : after_type + 1] == "*":
+            return "re-export (`export … from`) is not supported"
+        if source[after_type : after_type + 1] == "{":
+            if _hosted_find_keyword_before_statement_end(source, after_type, "from") >= 0:
+                return "re-export (`export … from`) is not supported"
+            return None
+        return None
+    if source[cursor : cursor + 1] == "*":
+        return "re-export (`export … from`) is not supported"
+    if source[cursor : cursor + 1] == "{":
+        if _hosted_find_keyword_before_statement_end(source, cursor, "from") >= 0:
+            return "re-export (`export … from`) is not supported"
+        return "`export { … }` lists are not supported"
+    if _hosted_matches_keyword(source, cursor, "enum"):
+        return "exported enums are not supported"
+    if _hosted_matches_keyword(source, cursor, "abstract"):
+        return "exported abstract classes are not supported"
+    if _hosted_matches_keyword(source, cursor, "namespace") or _hosted_matches_keyword(source, cursor, "module"):
+        return "exported namespaces are not supported"
+    kw_cursor = cursor
+    if _hosted_matches_keyword(source, kw_cursor, "async"):
+        kw_cursor = _hosted_skip_trivia(source, kw_cursor + len("async"))
+    if _hosted_matches_keyword(source, kw_cursor, "function"):
+        after_function = _hosted_skip_trivia(source, kw_cursor + len("function"))
+        if source[after_function : after_function + 1] == "*":
+            return "exported generator functions are not supported"
+        return None
+    if _hosted_matches_keyword(source, cursor, "class"):
+        return None
+    for keyword in ("const", "let", "var"):
+        if not _hosted_matches_keyword(source, cursor, keyword):
+            continue
+        after_keyword = _hosted_skip_trivia(source, cursor + len(keyword))
+        if keyword == "const" and _hosted_matches_keyword(source, after_keyword, "enum"):
+            return "exported enums are not supported"
+        if keyword != "const":
+            return "mutable exports (`export let`/`export var`) are not supported"
+        if source[after_keyword : after_keyword + 1] in {"{", "["}:
+            return "destructured exports are not supported"
+        if _hosted_declaration_has_top_level_comma(source, after_keyword):
+            return "multiple declarators in one `export const` are not supported"
+        return None
+    return None
+
+
+def _hosted_assert_export_contract(source: str) -> None:
+    depth = 0
+    index = 0
+    while index < len(source):
+        char = source[index]
+        if char == "/" and source[index + 1 : index + 2] == "/":
+            index = _hosted_skip_line_comment(source, index)
+            continue
+        if char == "/" and source[index + 1 : index + 2] == "*":
+            index = _hosted_skip_block_comment(source, index)
+            continue
+        if char == "/" and _hosted_can_start_regex_literal(source, index):
+            index = _hosted_skip_regex_literal(source, index)
+            continue
+        if char in {"'", '"'}:
+            index = _hosted_skip_quoted(source, index)
+            continue
+        if char == "`":
+            index = _hosted_skip_template(source, index, scan_expressions=True)
+            continue
+        if char == "<" and _hosted_looks_like_jsx_start(source, index):
+            index = _hosted_skip_jsx_element(source, index)
+            continue
+        if depth == 0 and _hosted_matches_keyword(source, index, "export"):
+            reason = _hosted_classify_export_rejection(source, index)
+            if reason is not None:
+                raise ServerDomainError(
+                    code="PLUGIN_UI_EXPORT_UNSUPPORTED",
+                    message=f"Unsupported hosted TSX export: {reason}",
+                    status_code=400,
+                    details={"reason": reason},
+                )
+            index += len("export")
+            continue
+        if char in {"(", "[", "{"}:
+            depth += 1
+            index += 1
+            continue
+        if char in {")", "]", "}"}:
+            depth = max(0, depth - 1)
+            index += 1
+            continue
+        index += 1
+
+
 def _load_hosted_tsx_dependencies_sync(
     plugin_meta: Mapping[str, object],
     entry_path: Path,
@@ -929,6 +1068,7 @@ def _load_hosted_tsx_dependencies_sync(
 
     def visit(path: Path, *, count_bytes: bool = True) -> str:
         source = read_source(path, count_bytes=count_bytes)
+        _hosted_assert_export_contract(source)
         visiting.append(path)
         try:
             for specifier in _hosted_tsx_relative_import_specifiers(source):

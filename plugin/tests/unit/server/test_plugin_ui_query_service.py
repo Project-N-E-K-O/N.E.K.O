@@ -411,7 +411,6 @@ def test_surface_source_skips_inline_type_only_imports_and_exports(tmp_path) -> 
     config_path.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
     (ui_dir / "panel.tsx").write_text(
         "import { type Label } from './types'\n"
-        "export { type Extra } from './extra'\n"
         "export default function Panel() {\n"
         "  const label = 'ok' as Label\n"
         "  return <strong>{label}</strong>\n"
@@ -462,8 +461,6 @@ def test_surface_source_skips_multiline_inline_type_only_imports_and_exports(tmp
     (ui_dir / "panel.tsx").write_text(
         "import { type\n"
         "  Label } from './types'\n"
-        "export { type\n"
-        "  Extra } from './extra'\n"
         "export default function Panel() {\n"
         "  const label = 'ok' as Label\n"
         "  return <strong>{label}</strong>\n"
@@ -746,6 +743,18 @@ def test_surface_source_rejects_bare_external_imports(tmp_path) -> None:
             {},
         )
     assert exc_info.value.code == "PLUGIN_UI_BARE_IMPORT_UNSUPPORTED"
+    assert exc_info.value.status_code == 400
+
+
+def test_surface_source_rejects_unsupported_export_forms(tmp_path) -> None:
+    with pytest.raises(ServerDomainError) as exc_info:
+        _run_single_surface(
+            tmp_path,
+            "export enum Rating { Good = 'good' }\n"
+            "export default function Panel() { return <strong>ok</strong> }\n",
+            {},
+        )
+    assert exc_info.value.code == "PLUGIN_UI_EXPORT_UNSUPPORTED"
     assert exc_info.value.status_code == 400
 
 
