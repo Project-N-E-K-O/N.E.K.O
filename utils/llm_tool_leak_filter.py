@@ -135,6 +135,8 @@ class ToolLeakFilter:
             return trailing_seed_close
 
         trailing = text[function_close.end():]
+        if not trailing and function_close.start() > 0:
+            return None
         if trailing and self._is_seed_close_prefix(trailing):
             return None
 
@@ -147,6 +149,8 @@ class ToolLeakFilter:
             if self._is_seed_close_prefix(tail):
                 return len(tail)
             if self._suppression_pattern == "structured_tool_call" and self._is_function_close_prefix(tail):
+                return len(tail)
+            if self._suppression_pattern == "structured_tool_call" and _FUNCTION_CLOSE_RE.fullmatch(tail):
                 return len(tail)
         return 0
 
