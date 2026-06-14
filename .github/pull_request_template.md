@@ -1,5 +1,4 @@
 <!--
-提 PR 前请确认：已对应一个 Issue（无 Issue 的 PR 可能被关闭，见 CONTRIBUTING.md）。
 下面两节是项目硬性规范，CI 会校验（scripts/check_pr_report.py）：
   · 改动了 app/ | main_logic/ | memory/ 任一 *.py → 必须填「回归报告」
   · 单个 PR 改动文件 > 20 个 → 必须填「不拆分理由」
@@ -9,7 +8,7 @@
 
 ## 改动概述 / Summary
 
-<!-- 这个 PR 做了什么，关联哪个 Issue（如 Closes #123）。 -->
+<!-- 这个 PR 做了什么。若有对应 Issue 可关联（如 Closes #123），非必须。 -->
 
 ## 回归报告 / Regression Report
 
