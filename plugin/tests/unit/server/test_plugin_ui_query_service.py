@@ -140,13 +140,8 @@ def test_surface_source_includes_same_plugin_relative_dependencies(tmp_path) -> 
     config_path = plugin_dir / "plugin.toml"
     config_path.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
     (ui_dir / "panel.tsx").write_text(
-        "import { label, suffix } from './barrel'\n"
-        "export default function Panel() { return <strong>{label} {suffix}</strong> }\n",
-        encoding="utf-8",
-    )
-    (ui_dir / "barrel.ts").write_text(
-        "export { label } from './shared'\n"
-        "export * from './nested/suffix'\n",
+        "import { label } from './shared'\n"
+        "export default function Panel() { return <strong>{label}</strong> }\n",
         encoding="utf-8",
     )
     (ui_dir / "shared.ts").write_text(
@@ -191,16 +186,12 @@ def test_surface_source_includes_same_plugin_relative_dependencies(tmp_path) -> 
             state.plugins.clear()
             state.plugins.update(plugins_backup)
 
-    assert payload["source"].startswith("import { label, suffix }")
+    assert payload["source"].startswith("import { label }")
     assert payload["dependencies"] == [
         {"path": "ui/nested/suffix.tsx", "source": "export const suffix = 'ok'\n"},
         {
             "path": "ui/shared.ts",
             "source": "import { suffix } from './nested/suffix'\nexport const label = `shared ${suffix}`\n",
-        },
-        {
-            "path": "ui/barrel.ts",
-            "source": "export { label } from './shared'\nexport * from './nested/suffix'\n",
         },
     ]
 
@@ -370,12 +361,10 @@ def test_surface_source_allows_comments_after_from_keyword(tmp_path) -> None:
     config_path.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
     (ui_dir / "panel.tsx").write_text(
         "import { label } from /* dependency hint */ './shared'\n"
-        "export { suffix } from /* re-export hint */ './suffix'\n"
         "export default function Panel() { return <strong>{label}</strong> }\n",
         encoding="utf-8",
     )
     (ui_dir / "shared.ts").write_text("export const label = 'ok'\n", encoding="utf-8")
-    (ui_dir / "suffix.ts").write_text("export const suffix = '!'\n", encoding="utf-8")
     plugin_ui = normalize_plugin_ui_manifest(
         {
             "plugin": {
@@ -410,7 +399,6 @@ def test_surface_source_allows_comments_after_from_keyword(tmp_path) -> None:
 
     assert payload["dependencies"] == [
         {"path": "ui/shared.ts", "source": "export const label = 'ok'\n"},
-        {"path": "ui/suffix.ts", "source": "export const suffix = '!'\n"},
     ]
 
 
@@ -514,60 +502,6 @@ def test_surface_source_skips_multiline_inline_type_only_imports_and_exports(tmp
             state.plugins.update(plugins_backup)
 
     assert payload["dependencies"] == []
-
-
-def test_surface_source_includes_empty_re_export_dependencies(tmp_path) -> None:
-    plugin_dir = tmp_path / "demo_plugin"
-    ui_dir = plugin_dir / "ui"
-    ui_dir.mkdir(parents=True)
-    config_path = plugin_dir / "plugin.toml"
-    config_path.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
-    (ui_dir / "panel.tsx").write_text(
-        "export {} from './side-effect'\n"
-        "export default function Panel() {\n"
-        "  return <strong>ok</strong>\n"
-        "}\n",
-        encoding="utf-8",
-    )
-    (ui_dir / "side-effect.ts").write_text(
-        "globalThis.__hostedSideEffect = true\n",
-        encoding="utf-8",
-    )
-    plugin_ui = normalize_plugin_ui_manifest(
-        {
-            "plugin": {
-                "ui": {
-                    "panel": [{
-                        "id": "main",
-                        "entry": "ui/panel.tsx",
-                        "permissions": ["state:read"],
-                    }],
-                },
-            },
-        },
-        plugin_id="demo",
-    )
-
-    plugins_backup = dict(state.plugins)
-    try:
-        with state.acquire_plugins_write_lock():
-            state.plugins.clear()
-            state.plugins["demo"] = {
-                "id": "demo",
-                "config_path": str(config_path),
-                "plugin_ui": plugin_ui,
-                "entries": [],
-            }
-
-        payload = asyncio.run(PluginUiQueryService().get_surface_source("demo", kind="panel", surface_id="main"))
-    finally:
-        with state.acquire_plugins_write_lock():
-            state.plugins.clear()
-            state.plugins.update(plugins_backup)
-
-    assert payload["dependencies"] == [
-        {"path": "ui/side-effect.ts", "source": "globalThis.__hostedSideEffect = true\n"},
-    ]
 
 
 def test_surface_source_keeps_mixed_inline_type_and_runtime_imports(tmp_path) -> None:

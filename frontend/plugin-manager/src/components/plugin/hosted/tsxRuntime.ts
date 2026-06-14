@@ -23,15 +23,6 @@ type HostedImportStatement = {
   specifier: string
 }
 
-type HostedReExportStatement = {
-  start: number
-  end: number
-  rawNames?: string
-  namespaceName?: string
-  specifier: string
-  typeOnly: boolean
-}
-
 function escapeScriptContent(value: string) {
   return value
     .replace(/<\/script/g, '<\\/script')
@@ -222,36 +213,6 @@ function readIdentifier(source: string, index: number) {
   return { value: source.slice(index, cursor), end: cursor }
 }
 
-function findClosingBrace(source: string, index: number) {
-  if (source[index] !== '{') return -1
-  index += 1
-  while (index < source.length) {
-    const char = source[index]
-    if (char === '/' && index + 1 < source.length) {
-      const nextChar = source[index + 1]
-      if (nextChar === '/') {
-        index = skipLineComment(source, index)
-        continue
-      }
-      if (nextChar === '*') {
-        index = skipBlockComment(source, index)
-        continue
-      }
-    }
-    if (char === '"' || char === "'") {
-      index = skipQuoted(source, index)
-      continue
-    }
-    if (char === '`') {
-      index = skipTemplate(source, index)
-      continue
-    }
-    if (char === '}') return index
-    index += 1
-  }
-  return -1
-}
-
 function readHostedImportStatement(source: string, index: number): HostedImportStatement | null {
   const start = index
   index = skipTrivia(source, index + 'import'.length)
@@ -273,47 +234,6 @@ function readHostedImportStatement(source: string, index: number): HostedImportS
     end: statementEndAfterSpecifier(source, read.end),
     rawBindings: source.slice(bindingStart, fromIndex).trim(),
     specifier: read.value,
-  }
-}
-
-function readHostedReExportStatement(source: string, index: number): HostedReExportStatement | null {
-  const start = index
-  let typeOnly = false
-  let rawNames: string | undefined
-  let namespaceName: string | undefined
-  index = skipTrivia(source, index + 'export'.length)
-  if (matchesKeyword(source, index, 'type')) {
-    typeOnly = true
-    index = skipTrivia(source, index + 'type'.length)
-  }
-  if (source[index] === '{') {
-    const closingBrace = findClosingBrace(source, index)
-    if (closingBrace < 0) return null
-    rawNames = source.slice(index + 1, closingBrace)
-    index = skipTrivia(source, closingBrace + 1)
-  } else if (source[index] === '*') {
-    index = skipTrivia(source, index + 1)
-    if (matchesKeyword(source, index, 'as')) {
-      const identifier = readIdentifier(source, skipTrivia(source, index + 'as'.length))
-      if (!identifier) return null
-      namespaceName = identifier.value
-      index = skipTrivia(source, identifier.end)
-    }
-  } else {
-    return null
-  }
-  if (!matchesKeyword(source, index, 'from')) return null
-  const specifierIndex = skipTrivia(source, index + 'from'.length)
-  if (source[specifierIndex] !== '"' && source[specifierIndex] !== "'") return null
-  const read = readQuoted(source, specifierIndex)
-  if (!read) return null
-  return {
-    start,
-    end: statementEndAfterSpecifier(source, read.end),
-    rawNames,
-    namespaceName,
-    specifier: read.value,
-    typeOnly,
   }
 }
 
@@ -343,53 +263,6 @@ function hostedImportStatements(source: string) {
     }
     if (depth === 0 && isStatementLineStart(source, index) && matchesKeyword(source, index, 'import')) {
       const statement = readHostedImportStatement(source, index)
-      if (statement) {
-        statements.push(statement)
-        index = statement.end
-        continue
-      }
-    }
-    if (char === '(' || char === '[' || char === '{') {
-      depth += 1
-      index += 1
-      continue
-    }
-    if (char === ')' || char === ']' || char === '}') {
-      depth = Math.max(0, depth - 1)
-      index += 1
-      continue
-    }
-    index += 1
-  }
-  return statements
-}
-
-function hostedReExportStatements(source: string) {
-  const statements: HostedReExportStatement[] = []
-  let depth = 0
-  for (let index = 0; index < source.length;) {
-    const char = source[index]
-    if (char === '/' && index + 1 < source.length) {
-      const nextChar = source[index + 1]
-      if (nextChar === '/') {
-        index = skipLineComment(source, index)
-        continue
-      }
-      if (nextChar === '*') {
-        index = skipBlockComment(source, index)
-        continue
-      }
-    }
-    if (char === '"' || char === "'") {
-      index = skipQuoted(source, index)
-      continue
-    }
-    if (char === '`') {
-      index = skipTemplate(source, index)
-      continue
-    }
-    if (depth === 0 && isStatementLineStart(source, index) && matchesKeyword(source, index, 'export')) {
-      const statement = readHostedReExportStatement(source, index)
       if (statement) {
         statements.push(statement)
         index = statement.end
@@ -554,15 +427,6 @@ function hostedRelativeImportPaths(
       paths.push(modulePath)
     }
   }
-  for (const statement of hostedReExportStatements(source)) {
-    if (statement.specifier.startsWith('./') || statement.specifier.startsWith('../')) {
-      if (statement.typeOnly) continue
-      const isEmptyNamedReExport = hasEmptyNamedReExport(statement)
-      if (!isEmptyNamedReExport && !hasRuntimeReExportBindings(statement)) continue
-      const modulePath = resolveHostedImport(fromPath, statement.specifier, dependenciesByPath)
-      paths.push(modulePath)
-    }
-  }
   return paths
 }
 
@@ -632,312 +496,51 @@ function exportAssignment(name: string, localName = name) {
   return `__exports[${JSON.stringify(name)}] = ${localName};`
 }
 
-function splitTopLevelDeclarators(declarationList: string) {
-  const declarators: string[] = []
-  let start = 0
-  let depth = 0
-  let quote: string | null = null
-  let escaped = false
+// A hosted module (entry or dependency) may only export with simple,
+// single-binding declaration forms: `export const/let/var NAME = ...`,
+// `export function NAME`, `export async function NAME`, `export class NAME`,
+// plus type-only declarations (`export type X`, `export interface X`) the TS
+// transform erases. The check gate (scripts/check-hosted-tsx.mjs) rejects every
+// other export form — re-exports, `export { ... }` lists, `export *`, enums,
+// generators, abstract classes, destructured/multi-declarator exports — so the
+// runtime only strips the leading `export ` keyword and records the declared
+// name. It never parses the initializer, which is what used to drag the scanner
+// into an open-ended tail of regex/template/JSX/declarator edge cases.
+const HOSTED_VALUE_EXPORT_KEYWORDS = ['function', 'class', 'const', 'let', 'var']
 
-  for (let index = 0; index < declarationList.length; index += 1) {
-    const char = declarationList[index]
-    if (quote) {
-      if (escaped) {
-        escaped = false
-      } else if (char === '\\') {
-        escaped = true
-      } else if (char === quote) {
-        quote = null
-      }
-      continue
-    }
-    if (char === '"' || char === "'" || char === '`') {
-      quote = char
-      continue
-    }
-    if (char === '/' && declarationList[index + 1] === '/') {
-      index = skipLineComment(declarationList, index) - 1
-      continue
-    }
-    if (char === '/' && declarationList[index + 1] === '*') {
-      index = skipBlockComment(declarationList, index) - 1
-      continue
-    }
-    if (char === '/' && canStartRegexLiteral(declarationList, index, 0)) {
-      index = skipRegexLiteral(declarationList, index) - 1
-      continue
-    }
-    if (char === '(' || char === '[' || char === '{') {
-      depth += 1
-      continue
-    }
-    if (char === ')' || char === ']' || char === '}') {
-      depth = Math.max(0, depth - 1)
-      continue
-    }
-    if (char === ',' && depth === 0) {
-      declarators.push(declarationList.slice(start, index))
-      start = index + 1
-    }
+type HostedExportDeclaration = {
+  start: number
+  declStart: number
+  name: string | null
+}
+
+function readHostedExportDeclaration(source: string, start: number): HostedExportDeclaration | null {
+  let cursor = skipTrivia(source, start + 'export'.length)
+  if (matchesKeyword(source, cursor, 'default')) return null
+  if (matchesKeyword(source, cursor, 'interface')) {
+    return { start, declStart: cursor, name: null }
   }
-  declarators.push(declarationList.slice(start))
-  return declarators
-}
-
-function topLevelIndexOf(source: string, needle: string) {
-  let depth = 0
-  let quote: string | null = null
-  let escaped = false
-
-  for (let index = 0; index < source.length; index += 1) {
-    const char = source[index]
-    if (quote) {
-      if (escaped) {
-        escaped = false
-      } else if (char === '\\') {
-        escaped = true
-      } else if (char === quote) {
-        quote = null
-      }
-      continue
-    }
-    if (char === '"' || char === "'" || char === '`') {
-      quote = char
-      continue
-    }
-    if (char === '(' || char === '[' || char === '{') {
-      depth += 1
-      continue
-    }
-    if (char === ')' || char === ']' || char === '}') {
-      depth = Math.max(0, depth - 1)
-      continue
-    }
-    if (depth === 0 && char === needle) {
-      return index
-    }
+  if (matchesKeyword(source, cursor, 'type')) {
+    // `export type { ... }` / `export type * ...` are type-only export lists the
+    // gate rejects; leave them verbatim. `export type X = ...` is a declaration.
+    const afterType = skipTrivia(source, cursor + 'type'.length)
+    if (source[afterType] === '{' || source[afterType] === '*') return null
+    return { start, declStart: cursor, name: null }
   }
-  return -1
-}
-
-function matchingPatternEnd(source: string) {
-  const open = source[0]
-  const close = open === '{' ? '}' : open === '[' ? ']' : ''
-  if (!close) return -1
-  let depth = 0
-  let quote: string | null = null
-  let escaped = false
-
-  for (let index = 0; index < source.length; index += 1) {
-    const char = source[index]
-    if (quote) {
-      if (escaped) {
-        escaped = false
-      } else if (char === '\\') {
-        escaped = true
-      } else if (char === quote) {
-        quote = null
-      }
-      continue
-    }
-    if (char === '"' || char === "'" || char === '`') {
-      quote = char
-      continue
-    }
-    if (char === open) {
-      depth += 1
-      continue
-    }
-    if (char === close) {
-      depth -= 1
-      if (depth === 0) return index
-    }
+  const declStart = cursor
+  if (matchesKeyword(source, cursor, 'async')) {
+    cursor = skipTrivia(source, cursor + 'async'.length)
   }
-  return -1
-}
-
-function bindingTargetText(declarator: string) {
-  const initializerIndex = topLevelIndexOf(declarator, '=')
-  return (initializerIndex >= 0 ? declarator.slice(0, initializerIndex) : declarator).trim()
-}
-
-function bindingNamesFromTarget(target: string): string[] {
-  const trimmed = target.trim()
-  const identifierMatch = trimmed.match(/^([A-Za-z_$][\w$]*)\b/)
-  if (identifierMatch?.[1]) {
-    return [identifierMatch[1]]
+  for (const keyword of HOSTED_VALUE_EXPORT_KEYWORDS) {
+    if (!matchesKeyword(source, cursor, keyword)) continue
+    const identifier = readIdentifier(source, skipTrivia(source, cursor + keyword.length))
+    return { start, declStart, name: identifier ? identifier.value : null }
   }
-  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
-    return []
-  }
-  const end = matchingPatternEnd(trimmed)
-  if (end < 0) return []
-  const body = trimmed.slice(1, end)
-  const names: string[] = []
-  for (const part of splitTopLevelDeclarators(body)) {
-    const item = part.trim()
-    if (!item) continue
-    const rest = item.startsWith('...') ? item.slice(3).trim() : ''
-    if (rest) {
-      names.push(...bindingNamesFromTarget(bindingTargetText(rest)))
-      continue
-    }
-    if (trimmed.startsWith('[')) {
-      names.push(...bindingNamesFromTarget(bindingTargetText(item)))
-      continue
-    }
-    const colonIndex = topLevelIndexOf(item, ':')
-    const binding = colonIndex >= 0 ? item.slice(colonIndex + 1) : item
-    names.push(...bindingNamesFromTarget(bindingTargetText(binding)))
-  }
-  return names
+  return null
 }
 
-function exportedVariableNames(declarationList: string) {
-  const names: string[] = []
-  for (const declarator of splitTopLevelDeclarators(declarationList)) {
-    names.push(...bindingNamesFromTarget(bindingTargetText(declarator)))
-  }
-  return names.filter(Boolean)
-}
-
-function continuesVariableDeclarationAfterNewline(source: string, declarationStart: number, newlineIndex: number) {
-  const before = source.slice(declarationStart, newlineIndex).trimEnd()
-  const lastChar = before.at(-1) || ''
-  if (!lastChar) return true
-  if ('=,?:+-*/%&|^!~<>{([.'.includes(lastChar)) return true
-  const nextChar = source.slice(newlineIndex + 1).match(/^[^\S\r\n]*(\S)/)?.[1] || ''
-  return '?:.,+-*/%&|^!=<>'.includes(nextChar)
-}
-
-function previousSignificantChar(source: string, index: number, lowerBound: number) {
-  let cursor = index - 1
-  while (cursor >= lowerBound) {
-    const char = source[cursor]
-    if (!char || /\s/.test(char)) {
-      cursor -= 1
-      continue
-    }
-    if (char === '/' && source[cursor - 1] === '*') {
-      const commentStart = source.lastIndexOf('/*', cursor - 2)
-      if (commentStart >= lowerBound) {
-        cursor = commentStart - 1
-        continue
-      }
-    }
-    return char
-  }
-  return ''
-}
-
-function canStartRegexLiteral(source: string, index: number, lowerBound: number) {
-  const previous = previousSignificantChar(source, index, lowerBound)
-  return !previous || '=([{,:!?&|^~+-*%<>;'.includes(previous)
-}
-
-function skipRegexLiteral(source: string, index: number) {
-  let inClass = false
-  index += 1
-  while (index < source.length) {
-    const char = source[index]
-    if (char === '\\') {
-      index += 2
-      continue
-    }
-    if (char === '[') {
-      inClass = true
-      index += 1
-      continue
-    }
-    if (char === ']') {
-      inClass = false
-      index += 1
-      continue
-    }
-    if (char === '/' && !inClass) {
-      index += 1
-      while (index < source.length && /[A-Za-z]/.test(source[index] || '')) index += 1
-      return index
-    }
-    index += 1
-  }
-  return index
-}
-
-function variableDeclarationEnd(source: string, declarationStart: number) {
-  let depth = 0
-  let quote: string | null = null
-  let escaped = false
-  let lastTokenEndedRegex = false
-
-  for (let index = declarationStart; index < source.length; index += 1) {
-    const char = source[index]
-    if (quote) {
-      if (escaped) {
-        escaped = false
-      } else if (char === '\\') {
-        escaped = true
-      } else if (char === quote) {
-        quote = null
-      }
-      continue
-    }
-    if (char === '"' || char === "'" || char === '`') {
-      quote = char
-      continue
-    }
-    if (char === '/' && source[index + 1] === '/') {
-      if (depth === 0) {
-        return index
-      }
-      index = skipLineComment(source, index) - 1
-      continue
-    }
-    if (char === '/' && source[index + 1] === '*') {
-      index = skipBlockComment(source, index) - 1
-      continue
-    }
-    if (char === '/' && canStartRegexLiteral(source, index, declarationStart)) {
-      index = skipRegexLiteral(source, index) - 1
-      lastTokenEndedRegex = true
-      continue
-    }
-    if (char === '(' || char === '[' || char === '{') {
-      lastTokenEndedRegex = false
-      depth += 1
-      continue
-    }
-    if (char === ')' || char === ']' || char === '}') {
-      lastTokenEndedRegex = false
-      depth = Math.max(0, depth - 1)
-      continue
-    }
-    if (char === ';' && depth === 0) {
-      return index + 1
-    }
-    if ((char === '\n' || char === '\r') && depth === 0) {
-      if (lastTokenEndedRegex) {
-        return index
-      }
-      if (continuesVariableDeclarationAfterNewline(source, declarationStart, index)) {
-        continue
-      }
-      return index
-    }
-    if (!/\s/.test(char || '')) {
-      lastTokenEndedRegex = false
-    }
-  }
-  return source.length
-}
-
-function hostedVariableExportStatements(source: string) {
-  const statements: Array<{
-    start: number
-    declarationStart: number
-    indent: string
-    kind: string
-  }> = []
+function hostedExportDeclarations(source: string) {
+  const statements: HostedExportDeclaration[] = []
   let depth = 0
   for (let index = 0; index < source.length;) {
     const char = source[index]
@@ -960,16 +563,11 @@ function hostedVariableExportStatements(source: string) {
       index = skipTemplate(source, index)
       continue
     }
-    if (depth === 0 && isStatementLineStart(source, index)) {
-      const match = source.slice(index).match(/^([^\S\r\n]*)export\s+(const|let|var)\s+/)
-      if (match?.[0] && match[1] !== undefined && match[2]) {
-        statements.push({
-          start: index,
-          declarationStart: index + match[0].length,
-          indent: match[1],
-          kind: match[2],
-        })
-        index += match[0].length
+    if (depth === 0 && isStatementLineStart(source, index) && matchesKeyword(source, index, 'export')) {
+      const statement = readHostedExportDeclaration(source, index)
+      if (statement) {
+        statements.push(statement)
+        index = statement.declStart
         continue
       }
     }
@@ -988,128 +586,18 @@ function hostedVariableExportStatements(source: string) {
   return statements
 }
 
-function transformVariableExports(source: string, exports: string[]) {
-  let result = ''
-  let cursor = 0
-  for (const statement of hostedVariableExportStatements(source)) {
-    if (statement.start < cursor) continue
-    const declarationStart = statement.declarationStart
-    const declarationEnd = variableDeclarationEnd(source, declarationStart)
-    const declarationList = source.slice(declarationStart, declarationEnd)
-    for (const name of exportedVariableNames(declarationList)) {
-      exports.push(exportAssignment(name))
-    }
-    result += source.slice(cursor, statement.start)
-    result += `${statement.indent}${statement.kind} ${declarationList}`
-    cursor = declarationEnd
-  }
-  return `${result}${source.slice(cursor)}`
-}
-
-function moduleReExportStatements(rawNames: string, modulePath: string) {
-  const statements: string[] = []
-  const moduleRef = `__modules[${JSON.stringify(modulePath)}]`
-  for (const item of rawNames.split(',')) {
-    const trimmed = item.trim()
-    if (!trimmed || isTypeOnlyBinding(trimmed)) continue
-    const aliasMatch = trimmed.match(/^([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)$/)
-    if (aliasMatch?.[1] && aliasMatch[2]) {
-      statements.push(`__exports[${JSON.stringify(aliasMatch[2])}] = ${moduleRef}[${JSON.stringify(aliasMatch[1])}];`)
-    } else {
-      statements.push(`__exports[${JSON.stringify(trimmed)}] = ${moduleRef}[${JSON.stringify(trimmed)}];`)
-    }
-  }
-  return statements.join('\n')
-}
-
-function hasEmptyNamedReExport(statement: HostedReExportStatement) {
-  return statement.rawNames !== undefined && statement.rawNames.trim() === ''
-}
-
-function hasRuntimeReExportBindings(statement: HostedReExportStatement) {
-  if (statement.namespaceName) return true
-  if (statement.rawNames === undefined) return true
-  return parseNamedBindings(`{${statement.rawNames}}`).length > 0
-}
-
-function transformHostedReExports(
-  source: string,
-  fromPath: string,
-  dependenciesByPath: Map<string, HostedTsxDependency>,
-) {
-  let result = ''
-  let cursor = 0
-  for (const statement of hostedReExportStatements(source)) {
-    result += source.slice(cursor, statement.start)
-    if (statement.typeOnly) {
-      cursor = statement.end
-      continue
-    }
-    if (!statement.specifier.startsWith('./') && !statement.specifier.startsWith('../')) {
-      result += source.slice(statement.start, statement.end)
-      cursor = statement.end
-      continue
-    }
-    const isEmptyNamedReExport = hasEmptyNamedReExport(statement)
-    if (!isEmptyNamedReExport && !hasRuntimeReExportBindings(statement)) {
-      cursor = statement.end
-      continue
-    }
-    const modulePath = resolveHostedImport(fromPath, statement.specifier, dependenciesByPath)
-    const moduleRef = `__modules[${JSON.stringify(modulePath)}]`
-    if (statement.namespaceName) {
-      result += `__exports[${JSON.stringify(statement.namespaceName)}] = ${moduleRef};\n`
-      cursor = statement.end
-      continue
-    }
-    if (statement.rawNames === undefined) {
-      result += `for (const key of Object.keys(${moduleRef})) {\n  if (key !== 'default') __exports[key] = ${moduleRef}[key];\n}\n`
-      cursor = statement.end
-      continue
-    }
-    if (isEmptyNamedReExport) {
-      result += `${moduleRef};\n`
-      cursor = statement.end
-      continue
-    }
-    const statements = moduleReExportStatements(statement.rawNames, modulePath)
-    result += statements ? `${statements}\n` : ''
-    cursor = statement.end
-  }
-  return `${result}${source.slice(cursor)}`
-}
-
 function transformModuleExports(source: string, { handleDefault = true }: { handleDefault?: boolean } = {}) {
   const exports: string[] = []
-  let next = source
-    .replace(/^\s*export\s+type\s+\{[^}]*\}\s*;?\s*$/gm, '')
-    .replace(/^\s*export\s+(?=(interface|type)\b)/gm, '')
-    .replace(/^([^\S\r\n]*)export\s+(?:const\s+)?enum\s+([A-Za-z_$][\w$]*)/gm, (_match, indent, name) => {
-      exports.push(exportAssignment(name))
-      return `${indent}enum ${name}`
-    })
-  next = transformVariableExports(next, exports)
-  next = next
-    .replace(
-      /^\s*export\s+((?:async\s+)?function\s*\*?|abstract\s+class|class)\s+([A-Za-z_$][\w$]*)/gm,
-      (_match, declaration, name) => {
-        exports.push(exportAssignment(name))
-        return `${declaration} ${name}`
-      },
-    )
-    .replace(/^\s*export\s+\{([^}]*)\}\s*;?\s*$/gm, (_match, names) => {
-      for (const item of String(names).split(',')) {
-        const trimmed = item.trim()
-        if (!trimmed || isTypeOnlyBinding(trimmed)) continue
-        const aliasMatch = trimmed.match(/^([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)$/)
-        if (aliasMatch?.[1] && aliasMatch[2]) {
-          exports.push(exportAssignment(aliasMatch[2], aliasMatch[1]))
-        } else {
-          exports.push(exportAssignment(trimmed))
-        }
-      }
-      return ''
-    })
+  let result = ''
+  let cursor = 0
+  for (const statement of hostedExportDeclarations(source)) {
+    if (statement.start < cursor) continue
+    // Drop the leading `export ` keyword; the declaration body stays verbatim.
+    result += source.slice(cursor, statement.start)
+    if (statement.name) exports.push(exportAssignment(statement.name))
+    cursor = statement.declStart
+  }
+  let next = `${result}${source.slice(cursor)}`
   if (handleDefault) {
     next = next.replace(/^\s*export\s+default\s+function\s+([A-Za-z_$][\w$]*)?\s*\(/m, (_match, name) => {
       const localName = name || '__default'
@@ -1144,11 +632,9 @@ function bundleHostedTsxSource(
   }
   const chunks = orderedHostedDependencyEntries(dependenciesByPath)
     .map(([path, dependency]) => {
-      const moduleSource = transformModuleExports(transformHostedReExports(
+      const moduleSource = transformModuleExports(
         transformHostedImports(dependency.source, path, dependenciesByPath),
-        path,
-        dependenciesByPath,
-      ))
+      )
       return `
 /* hosted dependency: ${sourceCommentPath(path)} */
 __modules[${JSON.stringify(path)}] = (() => {
@@ -1162,11 +648,7 @@ ${moduleSource}
   // which would otherwise survive into the classic <script> as a syntax error;
   // keep `export default` for compileHostedTsx to turn into __Panel.
   const entrySource = transformModuleExports(
-    transformHostedReExports(
-      transformHostedImports(source, normalizedEntryPath, dependenciesByPath),
-      normalizedEntryPath,
-      dependenciesByPath,
-    ),
+    transformHostedImports(source, normalizedEntryPath, dependenciesByPath),
     { handleDefault: false },
   )
   return `const __modules = Object.create(null);\n${chunks.join('\n')}\nconst __exports = {};\n${entrySource}`

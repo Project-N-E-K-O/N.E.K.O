@@ -283,9 +283,6 @@ test('allows type-only relative declarations backed by type files', () => {
 import type { RuntimeBacked } from './runtime-types'
 import { type
   Extra } from './types'
-export type { Label as ExportedLabel } from './types'
-export { type
-  Extra as ExportedExtra } from './types'
 
 export default function Panel() {
   const label: Label = 'ok'
@@ -487,5 +484,105 @@ test('checks explicit hosted-tsx mode for TS entries', () => {
 
     assert.equal(result.status, 1)
     assert.match(result.stderr, /Hosted TSX must export a default function component/)
+  })
+})
+
+// The runtime only links simple declaration exports, so the gate rejects every
+// other export form up front (see assertHostedRuntimeModuleContract).
+const unsupportedExportCases = [
+  {
+    name: 're-exports',
+    source: "export { label } from './helper'",
+    pattern: /re-export \(`export … from`\) is not supported/,
+  },
+  {
+    name: 'star re-exports',
+    source: "export * from './helper'",
+    pattern: /re-export \(`export … from`\) is not supported/,
+  },
+  {
+    name: 'export lists',
+    source: 'const label = "x"\nexport { label }',
+    pattern: /`export \{ … \}` lists are not supported/,
+  },
+  {
+    name: 'enums',
+    source: 'export enum Rating { Good = "good" }',
+    pattern: /exported enums are not supported/,
+  },
+  {
+    name: 'generator functions',
+    source: 'export function* range() { yield 1 }',
+    pattern: /exported generator functions are not supported/,
+  },
+  {
+    name: 'abstract classes',
+    source: 'export abstract class Base {}',
+    pattern: /exported abstract classes are not supported/,
+  },
+  {
+    name: 'destructured exports',
+    source: 'const source = { label: "x" }\nexport const { label } = source',
+    pattern: /destructured exports are not supported/,
+  },
+  {
+    name: 'multi-declarator exports',
+    source: 'export const first = "A", second = "B"',
+    pattern: /multiple declarators in one `export const\/let\/var` are not supported/,
+  },
+]
+
+for (const { name, source, pattern } of unsupportedExportCases) {
+  test(`rejects unsupported hosted exports: ${name}`, () => {
+    withFixture((root) => {
+      const pluginDir = join(root, `unsupported-${name.replace(/\s+/g, '-')}`)
+      writePluginToml(pluginDir, 'main.tsx')
+      writeFixtureFile(
+        join(pluginDir, 'main.tsx'),
+        `${source}\n\nexport default function Panel() {\n  return <Page title="ok" />\n}\n`,
+      )
+
+      const result = runCheck(pluginDir)
+
+      assert.equal(result.status, 1)
+      assert.match(result.stderr, /Unsupported hosted TSX export/)
+      assert.match(result.stderr, pattern)
+    })
+  })
+}
+
+test('allows the supported hosted export declaration forms', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'supported-exports')
+    writePluginToml(pluginDir, 'main.tsx')
+    writeFixtureFile(
+      join(pluginDir, 'helpers.ts'),
+      `export type Label = string
+export interface Props { label: Label }
+export const label: Label = 'value'
+export let counter = 0
+export function makeLabel(): string { return label }
+export async function loadLabel(): Promise<string> { return label }
+export class Helper { value() { return label } }
+`,
+    )
+    writeFixtureFile(
+      join(pluginDir, 'main.tsx'),
+      `import { label, makeLabel, loadLabel, Helper } from './helpers'
+import type { Props } from './helpers'
+
+export const title = 'study'
+
+export default function Panel(props: Props) {
+  void loadLabel
+  return <Page title={label + makeLabel() + new Helper().value() + props.label} />
+}
+`,
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /Hosted TSX check passed/)
   })
 })

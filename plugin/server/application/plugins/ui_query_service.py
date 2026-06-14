@@ -718,11 +718,6 @@ def _hosted_is_type_only_binding(raw_binding: str) -> bool:
     )
 
 
-def _hosted_named_bindings_are_empty(raw_bindings: str) -> bool:
-    stripped = raw_bindings.strip()
-    return stripped.startswith("{") and stripped.endswith("}") and not stripped[1:-1].strip()
-
-
 def _hosted_import_bindings_have_runtime(raw_bindings: str) -> bool:
     bindings = raw_bindings.strip()
     if not bindings:
@@ -779,31 +774,6 @@ def _hosted_raise_dynamic_import_unsupported() -> None:
     )
 
 
-def _hosted_export_specifier(source: str, index: int) -> str | None:
-    index = _hosted_skip_trivia(source, index + len("export"))
-    if _hosted_matches_keyword(source, index, "type"):
-        # `export type { Foo } from './types'` is erased at runtime — no dep
-        # (and the sibling may be a .d.ts the resolver wouldn't accept anyway).
-        return None
-    if index >= len(source) or source[index] not in {"{", "*"}:
-        return None
-    from_index = _hosted_find_keyword_before_statement_end(source, index, "from")
-    if from_index < 0:
-        return None
-    raw_bindings = source[index:from_index]
-    if (
-        source[index] != "*"
-        and not _hosted_named_bindings_are_empty(raw_bindings)
-        and not _hosted_named_bindings_have_runtime(raw_bindings)
-    ):
-        return None
-    specifier_index = _hosted_skip_trivia(source, from_index + len("from"))
-    if specifier_index >= len(source) or source[specifier_index] not in {"'", '"'}:
-        return None
-    read = _hosted_read_quoted(source, specifier_index)
-    return _hosted_relative_specifier(read[0]) if read else None
-
-
 def _hosted_tsx_relative_import_specifiers(source: str) -> list[str]:
     specifiers: list[str] = []
     index = 0
@@ -847,9 +817,6 @@ def _hosted_tsx_relative_import_specifiers(source: str) -> list[str]:
         if depth == 0 and _hosted_matches_keyword(source, index, "import"):
             specifier = _hosted_import_specifier(source, index)
             index += len("import")
-        elif depth == 0 and _hosted_matches_keyword(source, index, "export"):
-            specifier = _hosted_export_specifier(source, index)
-            index += len("export")
         else:
             index += 1
             continue

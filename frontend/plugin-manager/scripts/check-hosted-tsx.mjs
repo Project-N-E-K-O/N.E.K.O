@@ -197,6 +197,66 @@ function exportDeclarationHasRuntimeBindings(node) {
   return true
 }
 
+// The browser runtime (src/components/plugin/hosted/tsxRuntime.ts) links hosted
+// modules by stripping the leading `export ` keyword off simple declaration
+// exports and recording the declared name. It deliberately does NOT parse
+// re-exports, `export { … }` lists, enums, generators, abstract classes, or
+// destructured/multi-declarator exports — those forms used to drag a hand-rolled
+// scanner into an open-ended tail of edge cases. This gate rejects them up front
+// so a plugin can't pass the check and then mis-bundle (or silently drop an
+// export) at runtime. Supported: `export const/let/var NAME = …`,
+// `export function/async function NAME`, `export class NAME`, type-only
+// declarations, and the entry's `export default`.
+function rejectUnsupportedHostedExport(sourcePath, message) {
+  throw new Error(
+    `Unsupported hosted TSX export in ${relative(repoRoot, sourcePath).replace(/\\/g, '/')}: ${message}`,
+  )
+}
+
+function assertHostedRuntimeModuleContract(sourcePath, source) {
+  const sourceFile = sourceFileFor(sourcePath, source)
+  for (const statement of sourceFile.statements) {
+    if (ts.isExportDeclaration(statement)) {
+      if (statement.moduleSpecifier) {
+        rejectUnsupportedHostedExport(
+          sourcePath,
+          're-export (`export … from`) is not supported; import the binding and re-declare it (use `import type` for types), or inline the helper',
+        )
+      }
+      // `export type { … }` (no `from`) is erased by the TS transform — harmless.
+      if (statement.isTypeOnly) continue
+      rejectUnsupportedHostedExport(
+        sourcePath,
+        '`export { … }` lists are not supported; put `export` on the declaration (`export const NAME = …`)',
+      )
+    }
+    const modifiers = statement.modifiers || []
+    if (!modifiers.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) continue
+    if (modifiers.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword)) continue
+    if (ts.isEnumDeclaration(statement)) {
+      rejectUnsupportedHostedExport(sourcePath, 'exported enums are not supported; export a plain `const` object instead')
+    }
+    if (ts.isFunctionDeclaration(statement) && statement.asteriskToken) {
+      rejectUnsupportedHostedExport(sourcePath, 'exported generator functions are not supported')
+    }
+    if (ts.isClassDeclaration(statement) && modifiers.some((modifier) => modifier.kind === ts.SyntaxKind.AbstractKeyword)) {
+      rejectUnsupportedHostedExport(sourcePath, 'exported abstract classes are not supported')
+    }
+    if (ts.isVariableStatement(statement)) {
+      const declarations = statement.declarationList.declarations
+      if (declarations.length > 1) {
+        rejectUnsupportedHostedExport(
+          sourcePath,
+          'multiple declarators in one `export const/let/var` are not supported; split them into separate statements',
+        )
+      }
+      if (declarations[0] && !ts.isIdentifier(declarations[0].name)) {
+        rejectUnsupportedHostedExport(sourcePath, 'destructured exports are not supported; export a single named binding')
+      }
+    }
+  }
+}
+
 function extractRelativeImportSpecifiers(sourcePath, source) {
   const sourceFile = sourceFileFor(sourcePath, source)
   const runtimeSpecifiers = []
@@ -712,6 +772,7 @@ function copyRelativeDependencies(
   }
   visiting.push(resolvedPath)
   const source = readSourceFile(resolvedPath)
+  assertHostedRuntimeModuleContract(resolvedPath, source)
   const targetPath = tempPathForSource(resolvedPath, tempDir)
   mkdirForFile(targetPath, 'hosted TSX copy')
   writeTextFile(targetPath, source, 'hosted TSX dependency copy')
