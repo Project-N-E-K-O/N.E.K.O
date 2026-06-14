@@ -1849,8 +1849,7 @@ async def test_offline_silent_fallback_when_genai_did_not_emit(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_offline_silent_fallback_resets_unemitted_genai_filter_state(monkeypatch):
-    """genai 路径没 yield 文本但已让 leak filter 持有 pending/suppressing 状态时，
-    静默 fallback 到 OpenAI-compat 前必须清空过滤器状态，避免污染 fallback 文本。"""
+    """Silent fallback must reset leak-filter state that did not emit text."""
     from main_logic import omni_offline_client as _ofc
     from main_logic.omni_offline_client import OmniOfflineClient
     from utils.llm_client import LLMStreamChunk
