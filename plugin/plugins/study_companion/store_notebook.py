@@ -522,7 +522,11 @@ class NotebookStore:
                 )
                 .fetchall()
             )
-        return [item for item in (self._note_from_row(row) for row in rows) if item]
+        return [
+            item
+            for item in (self._note_from_row(row, include_content=False) for row in rows)
+            if item
+        ]
 
     def search_all(self, query: str, *, limit: int = 20) -> NoteSearchResult:
         text = str(query or "").strip()
@@ -743,7 +747,11 @@ class NotebookStore:
         except Exception as exc:
             self._warn("study notebook FTS search failed; falling back to LIKE: {}", exc)
             return []
-        return [item for item in (self._note_from_row(row) for row in rows) if item]
+        return [
+            item
+            for item in (self._note_from_row(row, include_content=False) for row in rows)
+            if item
+        ]
 
     def _list_notes_like(
         self,
@@ -786,7 +794,11 @@ class NotebookStore:
                 )
                 .fetchall()
             )
-        return [item for item in (self._note_from_row(row) for row in rows) if item]
+        return [
+            item
+            for item in (self._note_from_row(row, include_content=False) for row in rows)
+            if item
+        ]
 
     def _filter_clauses(
         self,
@@ -884,15 +896,18 @@ class NotebookStore:
             note_count=int(row["note_count"] or 0) if "note_count" in keys else 0,
         )
 
-    def _note_from_row(self, row: Any) -> NoteItem | None:
+    def _note_from_row(self, row: Any, *, include_content: bool = True) -> NoteItem | None:
         if row is None:
             return None
+        # List/search results render only snippets and fetch the full body via
+        # get_note before editing, so drop content/content_plain there to avoid
+        # shipping every note body (up to the row limit) across the UI bridge.
         return NoteItem(
             id=str(row["id"]),
             notebook_id=_nullable_text(row["notebook_id"]),
             title=str(row["title"] or ""),
-            content=str(row["content"] or ""),
-            content_plain=str(row["content_plain"] or ""),
+            content=str(row["content"] or "") if include_content else "",
+            content_plain=str(row["content_plain"] or "") if include_content else "",
             snippet=str(row["snippet"] or ""),
             is_ai_generated=bool(row["is_ai_generated"]),
             source_type=str(row["source_type"] or "manual"),

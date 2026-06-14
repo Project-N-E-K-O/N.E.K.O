@@ -333,6 +333,12 @@ export default function NoteEditor(props: PluginSurfaceProps) {
           value={content}
           disabled={busy}
           onChange={(event) => setContent(event.target.value)}
+          onInput={(event) => {
+            // onChange is the native blur-only `change` event here, so keep the
+            // autosave draft live per keystroke. Ref-only (no setState) to avoid
+            // re-rendering the textarea mid-IME-composition.
+            latestDraft.current = { ...latestDraft.current, content: (event.target as HTMLTextAreaElement).value };
+          }}
           onKeyDown={handleKeyDown}
         />
       )}

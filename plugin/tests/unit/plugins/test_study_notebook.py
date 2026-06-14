@@ -159,6 +159,28 @@ def test_notebook_search_all_and_note_id_export(tmp_path) -> None:
         store.close()
 
 
+def test_notebook_list_and_search_omit_full_content(tmp_path) -> None:
+    store, notebooks, _logger = _make_store(tmp_path)
+    try:
+        note = notebooks.create_note(
+            title="Long note",
+            content="# Heading\n\n" + "body paragraph. " * 50,
+            topic_ids=["calculus"],
+        )
+        listed = notebooks.list_notes()[0]
+        # List/search rows ship only a snippet; the full body stays behind get_note.
+        assert listed.content == ""
+        assert listed.content_plain == ""
+        assert listed.snippet
+        searched = notebooks.search_all("body")["notes"][0]
+        assert searched["content"] == ""
+        assert searched["snippet"]
+        full = notebooks.get_note(note.id)
+        assert "body paragraph" in full.content
+    finally:
+        store.close()
+
+
 def test_notebook_search_merges_fts_and_like_substring_matches(tmp_path) -> None:
     store, notebooks, _logger = _make_store(tmp_path)
     try:
