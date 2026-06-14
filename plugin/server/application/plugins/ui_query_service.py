@@ -528,12 +528,15 @@ def _hosted_skip_block_comment(source: str, index: int) -> int:
     return len(source) if end < 0 else end + 2
 
 
-def _hosted_skip_template(source: str, index: int) -> int:
+def _hosted_skip_template(source: str, index: int, *, scan_expressions: bool = False) -> int:
     index += 1
     while index < len(source):
         char = source[index]
         if char == "\\":
             index += 2
+            continue
+        if scan_expressions and char == "$" and index + 1 < len(source) and source[index + 1] == "{":
+            index = _hosted_skip_jsx_expression(source, index + 1)
             continue
         index += 1
         if char == "`":
@@ -609,8 +612,10 @@ def _hosted_skip_jsx_expression(source: str, index: int) -> int:
             index = _hosted_skip_quoted(source, index)
             continue
         if char == "`":
-            index = _hosted_skip_template(source, index)
+            index = _hosted_skip_template(source, index, scan_expressions=True)
             continue
+        if _hosted_matches_keyword(source, index, "import") and _hosted_is_dynamic_import_call(source, index):
+            _hosted_raise_dynamic_import_unsupported()
         if char == "<" and _hosted_looks_like_jsx_start(source, index):
             index = _hosted_skip_jsx_element(source, index)
             continue
@@ -677,7 +682,7 @@ def _hosted_find_keyword_before_statement_end(source: str, index: int, keyword: 
             index = _hosted_skip_quoted(source, index)
             continue
         if char == "`":
-            index = _hosted_skip_template(source, index)
+            index = _hosted_skip_template(source, index, scan_expressions=True)
             continue
         if char == "<" and _hosted_looks_like_jsx_start(source, index):
             index = _hosted_skip_jsx_element(source, index)
@@ -801,7 +806,7 @@ def _hosted_tsx_relative_import_specifiers(source: str) -> list[str]:
             index = _hosted_skip_quoted(source, index)
             continue
         if char == "`":
-            index = _hosted_skip_template(source, index)
+            index = _hosted_skip_template(source, index, scan_expressions=True)
             continue
         if char == "<" and _hosted_looks_like_jsx_start(source, index):
             index = _hosted_skip_jsx_element(source, index)

@@ -307,6 +307,46 @@ describe('hosted TSX document runtime', () => {
     expect(root.querySelector('strong')?.textContent).toBe('mixed')
   })
 
+  it('does not resolve named type-only relative re-exports at runtime', () => {
+    const { root } = executeHostedDocument(`
+      import { label } from "./barrel"
+      export { type EntryOnly } from "./entry-types"
+
+      export default function Panel() {
+        return <strong>{label}</strong>
+      }
+    `, baseContext(), baseContext(), [{
+      path: 'ui/barrel.ts',
+      source: `
+        export { type BarrelOnly } from "./barrel-types"
+        export const label = "ok"
+      `,
+    }])
+
+    expect(root.querySelector('strong')?.textContent).toBe('ok')
+  })
+
+  it('still resolves relative re-exports with mixed runtime and type bindings', () => {
+    const { root } = executeHostedDocument(`
+      import { label } from "./barrel"
+
+      export default function Panel() {
+        return <strong>{label}</strong>
+      }
+    `, baseContext(), baseContext(), [{
+      path: 'ui/barrel.ts',
+      source: 'export { type Label, label } from "./types"',
+    }, {
+      path: 'ui/types.ts',
+      source: `
+        export type Label = string
+        export const label = "mixed-reexport"
+      `,
+    }])
+
+    expect(root.querySelector('strong')?.textContent).toBe('mixed-reexport')
+  })
+
   it('ignores commented and template import text while rewriting hosted TSX', () => {
     const { root } = executeHostedDocument(`
       /*

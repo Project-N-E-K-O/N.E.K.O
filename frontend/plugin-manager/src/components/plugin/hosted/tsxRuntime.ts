@@ -550,6 +550,7 @@ function hostedRelativeImportPaths(
   }
   for (const statement of hostedReExportStatements(source)) {
     if (statement.specifier.startsWith('./') || statement.specifier.startsWith('../')) {
+      if (statement.typeOnly || !hasRuntimeReExportBindings(statement)) continue
       const modulePath = resolveHostedImport(fromPath, statement.specifier, dependenciesByPath)
       paths.push(modulePath)
     }
@@ -1001,6 +1002,11 @@ function moduleReExportStatements(rawNames: string, modulePath: string) {
   return statements.join('\n')
 }
 
+function hasRuntimeReExportBindings(statement: HostedReExportStatement) {
+  if (statement.namespaceName || !statement.rawNames) return true
+  return parseNamedBindings(`{${statement.rawNames}}`).length > 0
+}
+
 function transformHostedReExports(
   source: string,
   fromPath: string,
@@ -1016,6 +1022,10 @@ function transformHostedReExports(
     }
     if (!statement.specifier.startsWith('./') && !statement.specifier.startsWith('../')) {
       result += source.slice(statement.start, statement.end)
+      cursor = statement.end
+      continue
+    }
+    if (!hasRuntimeReExportBindings(statement)) {
       cursor = statement.end
       continue
     }
