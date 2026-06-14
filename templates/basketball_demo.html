@@ -1704,7 +1704,7 @@
         mood: MOODS[mood] ? mood : currentMood,
         expression: isBasketballExpression(expression) ? expression : 'anticipate',
         intensity: isBasketballIntensity(intensity) ? intensity : 'low'
-      }, { kind: 'pregame_opening', label: 'basketball_pregame_opening', voice_deadline_ms: 1400 });
+      }, { kind: 'opening-line', label: 'basketball_pregame_opening', voice_deadline_ms: 1400 });
     }
     console.log('[BasketballRoute] pregame context', {
       stance: ctx.gameStance || '',
@@ -2425,6 +2425,7 @@
   function getFallbackLineKey(event) {
     if (!event) return 'game_over';
     if (event.kind === 'shot_missed' || event.kind === 'game_over') return event.kind;
+    if (event.kind === 'very_long_aim') return 'long_aim';
     return event.shot_type || event.kind;
   }
   function buildHorseStatePayload() {
@@ -4006,11 +4007,13 @@
     if (game.resultRecorded || isPracticeMode()) return null;
     var entry = recordGame(game.bestStreak, getRunMaxDistancePx(), game.totalScore, game.shotTypeCount);
     game.resultRecorded = true;
+    var submittedSessionId = sessionId;
     var submitPromise = submitScore(entry);
     if (isDuelMode() || isHorseMode() || isTimeAttackMode()) {
       submitPromise.catch(function () {});
     } else {
       submitPromise.then(function (res) {
+        if (sessionId !== submittedSessionId) return;
         if (res && typeof res.rank === 'number') {
           game.globalRank = res.rank;
         }

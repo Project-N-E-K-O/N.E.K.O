@@ -4854,6 +4854,12 @@ def _ensure_basketball_scores_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    basketball_columns = {
+        str(row["name"])
+        for row in conn.execute("PRAGMA table_info(basketball_scores)").fetchall()
+    }
+    if "mode" not in basketball_columns:
+        conn.execute("ALTER TABLE basketball_scores ADD COLUMN mode TEXT NOT NULL DEFAULT 'spectator'")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_bb_scores_score ON basketball_scores(score DESC)"
     )

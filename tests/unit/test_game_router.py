@@ -754,6 +754,49 @@ def test_basketball_leaderboard_distance_uses_client_court_scale():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_basketball_leaderboard_migrates_legacy_table_without_mode(tmp_path, monkeypatch):
+    db_path = tmp_path / "basketball_scores.db"
+    monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", db_path)
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE basketball_scores (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                lanlan_name TEXT NOT NULL DEFAULT '',
+                score INTEGER NOT NULL,
+                streak INTEGER NOT NULL,
+                max_distance_px REAL NOT NULL,
+                swish_count INTEGER NOT NULL DEFAULT 0,
+                bank_count INTEGER NOT NULL DEFAULT 0,
+                rim_in_count INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+    with reset_game_route_state():
+        _allow_basketball_score_session("Lan Legacy", "legacy-session", "shooter")
+        result = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+            "session_id": "legacy-session",
+            "lanlan_name": "Lan Legacy",
+            "score": 24,
+            "streak": 3,
+            "max_distance_px": 300,
+            "mode": "shooter",
+        }))
+
+        assert result["ok"] is True
+        leaderboard = await game_router.game_basketball_leaderboard("basketball")
+
+    assert leaderboard["top"][0]["mode"] == "shooter"
+    with sqlite3.connect(str(db_path)) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(basketball_scores)").fetchall()}
+    assert "mode" in columns
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_basketball_leaderboard_get_paginates_results(tmp_path, monkeypatch):
     monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", tmp_path / "basketball_scores.db")
 
