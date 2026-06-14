@@ -895,6 +895,18 @@ def test_basketball_starts_route_after_character_resolution_before_avatar_loadin
 
 
 @pytest.mark.unit
+def test_basketball_vrm_waits_for_three_before_resolving_modules():
+    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+    wait_start = html.index("function waitForVRMModules() {")
+    wait_section = html[wait_start:html.index("function fitVRMToContainer(", wait_start)]
+
+    assert "function waitForThreeModule() {" in wait_section
+    assert "if (window.THREE) return Promise.resolve();" in wait_section
+    assert "window.addEventListener('three-ready', resolve, { once: true });" in wait_section
+    assert "return Promise.all([vrmModulesReady, waitForThreeModule()]).then(function () {});" in wait_section
+
+
+@pytest.mark.unit
 def test_basketball_first_tutorial_swish_is_practice_only():
     html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
 

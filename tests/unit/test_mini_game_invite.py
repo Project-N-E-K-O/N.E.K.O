@@ -1298,6 +1298,8 @@ def test_direct_basketball_request_ignores_casual_or_negated_mentions():
     assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'we play basketball every week') is None
     assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'kids play soccer after school') is None
     assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, "let's start by talking about basketball") is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'can we discuss basketball play styles?') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'how to play basketball better?') is None
     assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'when does basketball start?') is None
     assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'what time does soccer start?') is None
     assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'is the basketball court open?') is None

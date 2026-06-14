@@ -2197,13 +2197,19 @@
     }
   }
   function waitForVRMModules() {
-    if (window.vrmModuleLoaded) return Promise.resolve();
-    return new Promise(function (resolve) {
+    var vrmModulesReady = window.vrmModuleLoaded ? Promise.resolve() : new Promise(function (resolve) {
       window.addEventListener('vrm-modules-ready', resolve, { once: true });
       window.addEventListener('vrm-modules-failed', function (e) {
         console.warn('[basketball_demo] VRM modules failed:', e.detail);
         resolve();
       }, { once: true });
+    });
+    return Promise.all([vrmModulesReady, waitForThreeModule()]).then(function () {});
+  }
+  function waitForThreeModule() {
+    if (window.THREE) return Promise.resolve();
+    return new Promise(function (resolve) {
+      window.addEventListener('three-ready', resolve, { once: true });
     });
   }
   function fitVRMToContainer(manager, vrm, container) {
