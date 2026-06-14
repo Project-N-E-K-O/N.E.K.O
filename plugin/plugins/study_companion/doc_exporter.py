@@ -143,7 +143,7 @@ class DocExporter:
         if time_range is None:
             time_range = str(legacy_options.get("range") or "") or None
         export_style = self.normalize_style(style or self._config.default_style)
-        requested_note_ids = _normalized_topic_ids(note_ids)
+        requested_note_ids = _normalized_id_list(note_ids)
         if requested_note_ids:
             return NotebookStore(self._store).build_notes_markdown(
                 requested_note_ids, title=title
@@ -152,7 +152,7 @@ class DocExporter:
         limit = max(1, min(200, int(recent_limit or 30)))
         topics_limit = max(1, min(5000, int(style_payload.get("topics_limit") or 500)))
         tone = str(style_payload.get("tone") or "").strip()
-        requested_topic_ids = _normalized_topic_ids(topic_ids)
+        requested_topic_ids = _normalized_id_list(topic_ids)
 
         interactions = self._store.list_interactions(limit=limit)
         topics = self._resolve_topics(
@@ -492,15 +492,16 @@ def normalize_format(value: str | None) -> str:
     return fmt
 
 
-def _normalized_topic_ids(topic_ids: list[str] | tuple[str, ...] | None) -> list[str]:
+def _normalized_id_list(ids: list[str] | tuple[str, ...] | None) -> list[str]:
+    """De-duplicate and strip a list of identifiers (topic ids, note ids, ...)."""
     result: list[str] = []
     seen: set[str] = set()
-    for item in topic_ids or []:
-        topic_id = str(item).strip()
-        if not topic_id or topic_id in seen:
+    for item in ids or []:
+        value = str(item).strip()
+        if not value or value in seen:
             continue
-        result.append(topic_id)
-        seen.add(topic_id)
+        result.append(value)
+        seen.add(value)
     return result
 
 
