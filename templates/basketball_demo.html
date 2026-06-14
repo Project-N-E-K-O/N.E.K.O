@@ -3121,11 +3121,14 @@
   function resetGame() {
     clearTimeout(resultTimer);
     resultTimer = 0;
-    if (endedRoute) {
+    var shouldRestartRoute = endedRoute || routeActive || heartbeatTimer || drainTimer;
+    if (shouldRestartRoute) {
+      if (!endedRoute) endRoute(false);
       endedRoute = false;
       routeEndFetchPending = false;
       routeEndBeaconDelivered = false;
       routeEndPromise = null;
+      routeActive = false;
       resetVoiceArbiter();
       sessionId = createBasketballSessionId();
       startRoute();
@@ -3678,11 +3681,19 @@
     var previousDistance = ball.startDistance;
     game.lastShotType = shotType;
     game.lastShotDistance = previousDistance;
+    var newRecord = false;
     if (scored) {
       game.streak += 1;
       game.madeCount += 1;
       game.bestStreak = Math.max(game.bestStreak, game.streak);
       game.totalScore += calcShotScore(shotType, previousDistance, game.streak);
+      if (game.shotTypeCount[shotType] != null) game.shotTypeCount[shotType] += 1;
+      newRecord = previousDistance > game.recordDistance;
+      if (newRecord) {
+        game.recordDistance = previousDistance;
+        localStorage.setItem('bb_record_distance', String(Math.round(game.recordDistance)));
+        playYuiVoice('record');
+      }
     } else {
       fireExtinguishedUntil = performance.now() + 300;
       game.streak = 0;
@@ -3728,13 +3739,15 @@
       game.state = 'ready';
       showAssistHint(_i18n('toast.yourSet', '你来出题'));
     }
+    var eventKind = newRecord ? 'new_record' : (scored ? 'shot_result' : 'shot_missed');
     sendGameEvent({
-      kind: scored ? 'shot_result' : 'shot_missed',
+      kind: eventKind,
       result: scored ? 'scored' : 'missed',
       streak: game.streak,
       distance: previousDistance,
       shot_type: shotType,
       label: 'horse_player_shot',
+      is_new_record: newRecord,
       was_perfect: ball.wasPerfect,
       shot_angle: ball.angle,
       shot_power: ball.power
@@ -4816,8 +4829,10 @@
   function endRoute(useBeacon) {
     if (endedRoute && !(useBeacon && routeEndFetchPending && !routeEndBeaconDelivered)) return;
     endedRoute = true;
+    routeActive = false;
     clearInterval(heartbeatTimer);
     clearInterval(drainTimer);
+    var routeEndSessionId = sessionId;
     var roundCompleted = game.state === 'game_over';
     var payloadObj = {
       session_id: sessionId, lanlan_name: getRouteLanlanName(),
@@ -4903,7 +4918,7 @@
       routeEndFetchPending = false;
       return res.json().catch(function () { return { ok: res.ok }; });
     }).then(function (res) {
-      if (res && res.state) applyRouteIdentity(res.state);
+      if (res && res.state && sessionId === routeEndSessionId) applyRouteIdentity(res.state);
       return res;
     }).catch(function (err) {
       routeEndFetchPending = false;

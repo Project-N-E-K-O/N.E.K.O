@@ -671,6 +671,24 @@ def test_basketball_scoring_waits_for_route_end_and_records_run_max():
 
 
 @pytest.mark.unit
+def test_basketball_reset_abandons_active_route_before_rotating_session():
+    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+    reset_start = html.index("function resetGame() {")
+    reset_section = html[reset_start:html.index("function updateHud()", reset_start)]
+    end_route_start = html.index("function endRoute(")
+    end_route_section = html[end_route_start:html.index("function cycleTheme()", end_route_start)]
+
+    assert "var shouldRestartRoute = endedRoute || routeActive || heartbeatTimer || drainTimer;" in reset_section
+    assert "if (!endedRoute) endRoute(false);" in reset_section
+    assert "sessionId = createBasketballSessionId();" in reset_section
+    assert "startRoute();" in reset_section
+    assert reset_section.index("if (!endedRoute) endRoute(false);") < reset_section.index("sessionId = createBasketballSessionId();")
+    assert "routeActive = false;" in end_route_section
+    assert "var routeEndSessionId = sessionId;" in end_route_section
+    assert "if (res && res.state && sessionId === routeEndSessionId) applyRouteIdentity(res.state);" in end_route_section
+
+
+@pytest.mark.unit
 def test_basketball_generated_quick_lines_override_static_i18n_lines():
     html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
 
@@ -817,6 +835,25 @@ def test_basketball_horse_player_game_over_does_not_emit_extra_shot_event():
     game_over_guard = finish_horse.index("if (endHorseIfNeeded()) {")
     shot_event = finish_horse.index("sendGameEvent({", game_over_guard)
     assert "updateHud();\n        return;" in finish_horse[game_over_guard:shot_event]
+
+
+@pytest.mark.unit
+def test_basketball_horse_player_makes_update_recorded_stats():
+    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+    finish_horse = html[
+        html.index("function finishHorseShot("):
+        html.index("function finishDuelShot(", html.index("function finishHorseShot("))
+    ]
+
+    assert "var newRecord = false;" in finish_horse
+    assert "if (game.shotTypeCount[shotType] != null) game.shotTypeCount[shotType] += 1;" in finish_horse
+    assert "newRecord = previousDistance > game.recordDistance;" in finish_horse
+    assert "game.recordDistance = previousDistance;" in finish_horse
+    assert "localStorage.setItem('bb_record_distance', String(Math.round(game.recordDistance)));" in finish_horse
+    assert "playYuiVoice('record');" in finish_horse
+    assert "var eventKind = newRecord ? 'new_record' : (scored ? 'shot_result' : 'shot_missed');" in finish_horse
+    assert "kind: eventKind," in finish_horse
+    assert "is_new_record: newRecord," in finish_horse
 
 
 @pytest.mark.unit
