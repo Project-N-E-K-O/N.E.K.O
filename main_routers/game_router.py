@@ -4860,6 +4860,16 @@ def _ensure_basketball_scores_schema(conn: sqlite3.Connection) -> None:
     }
     if "mode" not in basketball_columns:
         conn.execute("ALTER TABLE basketball_scores ADD COLUMN mode TEXT NOT NULL DEFAULT 'spectator'")
+    basketball_score_count_columns = {
+        "swish_count": "INTEGER NOT NULL DEFAULT 0",
+        "bank_count": "INTEGER NOT NULL DEFAULT 0",
+        "rim_in_count": "INTEGER NOT NULL DEFAULT 0",
+    }
+    for column_name, column_definition in basketball_score_count_columns.items():
+        if column_name not in basketball_columns:
+            conn.execute(
+                f"ALTER TABLE basketball_scores ADD COLUMN {column_name} {column_definition}"
+            )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_bb_scores_score ON basketball_scores(score DESC)"
     )

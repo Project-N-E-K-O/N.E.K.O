@@ -123,7 +123,10 @@ def test_basketball_hidden_tab_keeps_route_alive():
     html = _basketball_html()
 
     assert "window.addEventListener('beforeunload', function () { endRoute(true); });" in html
-    assert "visible: !document.hidden" in html
+    assert "var pageVisible = !document.hidden;" in html
+    assert "visible: pageVisible" in html
+    assert "pageVisible: pageVisible" in html
+    assert "visibilityState: document.visibilityState || (pageVisible ? 'visible' : 'hidden')" in html
     assert "if (document.hidden) endRoute(true);" not in html
 
 
