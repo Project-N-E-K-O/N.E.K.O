@@ -687,8 +687,11 @@ def test_basketball_route_end_payload_contains_archive_score():
     assert "finalScore: {" in html
     assert "player: game.totalScore," in html
     assert "ai: isDuelMode() ? game.duel.nekoScore : 0," in html
-    assert "roundCompleted: game.state === 'game_over'," in html
-    assert "round_completed: game.state === 'game_over'," in html
+    assert "var roundCompleted = game.state === 'game_over';" in html
+    assert "reason: roundCompleted ? 'basketball_game_over' : 'basketball_abandoned'," in html
+    assert "roundCompleted: roundCompleted," in html
+    assert "round_completed: roundCompleted," in html
+    assert "postgameProactive: roundCompleted," in html
     assert "state: game.state," in html
     assert "currentState: {\n        game: 'basketball',\n        state: game.state,\n        mode: currentMode,\n        score: {" in html
     assert "max_distance_px: getRunMaxDistancePx()," in html

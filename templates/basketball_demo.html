@@ -4777,13 +4777,16 @@
     endedRoute = true;
     clearInterval(heartbeatTimer);
     clearInterval(drainTimer);
+    var roundCompleted = game.state === 'game_over';
     var payloadObj = {
-      session_id: sessionId, lanlan_name: getRouteLanlanName(), reason: 'basketball_game_over',
+      session_id: sessionId, lanlan_name: getRouteLanlanName(),
+      reason: roundCompleted ? 'basketball_game_over' : 'basketball_abandoned',
       mode: currentMode,
       gameStarted: true,
       game_started: true,
-      roundCompleted: game.state === 'game_over',
-      round_completed: game.state === 'game_over',
+      roundCompleted: roundCompleted,
+      round_completed: roundCompleted,
+      postgameProactive: roundCompleted,
       i18n_language: getRequestLanguage(),
       final_streak: game.bestStreak, final_distance: game.lastShotDistance || game.distance, record_distance: game.recordDistance,
       attempts_remaining: game.attemptsRemaining,
