@@ -177,6 +177,10 @@ def test_notebook_list_and_search_omit_full_content(tmp_path) -> None:
         assert searched["snippet"]
         full = notebooks.get_note(note.id)
         assert "body paragraph" in full.content
+        # JSON backups must still carry the full body despite the list projection.
+        backup = store.export_json()
+        backup_note = next(n for n in backup["notes"] if n["id"] == note.id)
+        assert "body paragraph" in backup_note["content"]
     finally:
         store.close()
 
@@ -486,6 +490,14 @@ def test_strip_markdown_keeps_comparisons_and_generics_but_drops_tags() -> None:
     assert "x > 0" in plain
     assert "tag" in plain
     assert "<div>" not in plain and "</div>" not in plain
+
+
+def test_strip_markdown_keeps_intraword_underscores() -> None:
+    plain = _strip_markdown("call widget_factory then _emphasis_ done")
+    # underscores inside identifiers stay searchable; only emphasis _..._ is dropped
+    assert "widget_factory" in plain
+    assert "emphasis" in plain
+    assert "_emphasis_" not in plain
 
 
 def test_build_notes_markdown_escapes_metadata(tmp_path) -> None:

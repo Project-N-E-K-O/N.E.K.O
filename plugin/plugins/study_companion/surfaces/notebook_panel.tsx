@@ -58,6 +58,10 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
   // capture the value at call time, so an in-flight fetch/save compares against
   // this ref to detect the user switching notes mid-request.
   const selectedNoteIdRef = useRef('');
+  // Latest list filter, so an in-flight loadNotes (e.g. a refresh fired from an
+  // edit) can drop its result if the user changed notebook/search meanwhile.
+  const selectedNotebookIdRef = useRef('');
+  const debouncedQueryRef = useRef('');
 
   useEffect(() => {
     ensureBrandCSS();
@@ -74,6 +78,12 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
       search_query: searchQuery,
       limit: 100,
     }, signal);
+    // Drop stale results: the user may have switched notebook/search while this
+    // request was in flight (e.g. a refresh() fired from saveEdit), in which case
+    // applying it would overwrite the current view with the previous filter.
+    if (notebookId !== selectedNotebookIdRef.current || searchQuery !== debouncedQueryRef.current) {
+      return;
+    }
     const nextNotes = Array.isArray(notePayload.notes) ? notePayload.notes : [];
     setNotes(nextNotes);
     setSelectedNote((current) => {
@@ -229,6 +239,10 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
   }, []);
 
   useEffect(() => {
+    // Keep the filter refs current so in-flight loadNotes calls can detect a
+    // newer selection and drop their stale results.
+    selectedNotebookIdRef.current = selectedNotebookId;
+    debouncedQueryRef.current = debouncedQuery;
     const controller = new AbortController();
     loadNotes(controller.signal, selectedNotebookId, debouncedQuery).catch((error) => {
       if (!controller.signal.aborted) {

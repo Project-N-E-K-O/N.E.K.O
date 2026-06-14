@@ -19,9 +19,13 @@ _MARKDOWN_INLINE_CODE_RE = re.compile(r"`([^`]*)`")
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]+\)")
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 # Block markers (blockquote / list / heading) are only stripped at the start of
-# a line so inline math like ``x > 0`` or ``a - b`` stays searchable; inline
-# emphasis runs (``**`` / ``__`` / ``~~``) are still stripped anywhere.
-_MARKDOWN_MARKUP_RE = re.compile(r"^[ \t]*[>#*+\-]{1,3}\s+|[*_~]{1,3}|^#{1,6}\s*", re.MULTILINE)
+# a line so inline math like ``x > 0`` or ``a - b`` stays searchable. Inline
+# ``*`` / ``~`` emphasis runs are stripped anywhere, but ``_`` only at word
+# boundaries so identifiers like ``widget_factory`` keep their underscores.
+_MARKDOWN_MARKUP_RE = re.compile(
+    r"^[ \t]*[>#*+\-]{1,3}\s+|[*~]{1,3}|(?<![0-9A-Za-z])_{1,3}|_{1,3}(?![0-9A-Za-z])|^#{1,6}\s*",
+    re.MULTILINE,
+)
 _SEARCH_TOKEN_RE = re.compile(r"[\w\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]+", re.UNICODE)
 _SNIPPET_CHARS = 200
 _UNSET = object()
@@ -465,8 +469,13 @@ class NotebookStore:
         tag: str | None = None,
         search_query: str = "",
         limit: int = 50,
+        include_content: bool = False,
     ) -> list[NoteItem]:
         """List notes.
+
+        include_content defaults to False: list/search rows ship only a snippet
+        (the UI fetches full bodies via get_note). Callers that need the full
+        body for every row — e.g. JSON backups via export_json — pass True.
 
         notebook_filter controls notebook scoping explicitly:
         - "all": no notebook filter; notebook_id is ignored unless non-empty, which
@@ -529,7 +538,7 @@ class NotebookStore:
             )
         return [
             item
-            for item in (self._note_from_row(row, include_content=False) for row in rows)
+            for item in (self._note_from_row(row, include_content=include_content) for row in rows)
             if item
         ]
 
