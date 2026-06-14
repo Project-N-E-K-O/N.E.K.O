@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 """Static check (PR-only): require change reports in the PR description.
 
-Two project policies, both enforced against the pull request body:
+Two project policies, both enforced against the pull request body. The
+sections are located by their Chinese heading keywords, defined as the
+``REGRESSION_KEYWORD`` / ``NO_SPLIT_KEYWORD`` constants below.
 
 REGRESSION_REPORT
     If the PR touches app/, main_logic/, or memory/ (any ``*.py`` file),
-    the body must carry a non-empty "回归报告" section documenting the
-    change, its rationale / necessity, before-and-after behaviour, and the
-    potential regressions. These three are the project's highest-risk
+    the body must carry a non-empty regression-report section documenting
+    the change, its rationale / necessity, before-and-after behaviour, and
+    the potential regressions. These three are the project's highest-risk
     modules (session orchestration, the memory pipeline, the server entry
     points), so every code change to them must come with a written report.
 
 NO_SPLIT_RATIONALE
     If the PR changes more than 20 files, the body must carry a non-empty
-    "不拆分理由" section explaining why it is not split into smaller PRs.
+    no-split-rationale section explaining why it is not split into smaller
+    PRs.
 
 The check only verifies that a substantive section EXISTS — it cannot judge
 whether the report is any good. Report quality is the reviewer's job; the
@@ -57,6 +60,11 @@ EXEMPT_LABEL = "report-exempt"
 REGRESSION_REPORT = "REGRESSION_REPORT"
 NO_SPLIT_RATIONALE = "NO_SPLIT_RATIONALE"
 
+# Heading keywords the PR template uses for the two required sections; the
+# section body is the text under the first heading containing the keyword.
+REGRESSION_KEYWORD = "回归报告"
+NO_SPLIT_KEYWORD = "不拆分理由"
+
 # Section bodies equal to one of these (after stripping) count as "not filled":
 # the author left a placeholder instead of writing the report.
 _PLACEHOLDERS = {
@@ -64,7 +72,14 @@ _PLACEHOLDERS = {
 }
 
 _COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
-_HEADER_RE = re.compile(r"^#{1,6}\s")
+_HEADER_RE = re.compile(r"^(#{1,6})\s")
+# Markdown emphasis / code chars stripped before the placeholder test, so a
+# decorated placeholder is recognised too.
+_EMPHASIS_RE = re.compile(r"[*_`]")
+# Separator chars stripped from each whitespace-split token, so a combined
+# placeholder collapses to all-placeholder tokens while an internal-slash
+# token like "n/a" stays intact (we split on whitespace, NOT on these).
+_TOKEN_TRIM_CHARS = "/|,，、-—:："
 
 
 # ---------------------------------------------------------------------------
@@ -100,28 +115,50 @@ def _changed_files(base: str) -> list[str]:
 def _section_body(body: str, keyword: str) -> str | None:
     """Text under the first heading whose title contains `keyword`, with HTML
     comments stripped. Returns None if no such heading exists (instructions
-    live in <!-- --> comments, so they never count as content)."""
+    live in <!-- --> comments, so they never count as content).
+
+    The section ends at the next heading of the SAME or higher level, so a
+    report written with deeper sub-headings (a level-3 heading under the
+    level-2 section heading) keeps its sub-sections as content instead of
+    being cut off at the first one."""
     text = _COMMENT_RE.sub("", body or "")
     lines = text.splitlines()
     start = None
+    level = 6
     for i, ln in enumerate(lines):
-        if _HEADER_RE.match(ln) and keyword in ln:
+        m = _HEADER_RE.match(ln)
+        if m and keyword in ln:
+            level = len(m.group(1))
             start = i + 1
             break
     if start is None:
         return None
     collected: list[str] = []
     for ln in lines[start:]:
-        if _HEADER_RE.match(ln):
+        m = _HEADER_RE.match(ln)
+        if m and len(m.group(1)) <= level:
             break
         collected.append(ln)
     return "\n".join(collected).strip()
 
 
 def _is_filled(section: str | None) -> bool:
+    """True iff the section has real content — i.e. it is not empty and not made
+    up entirely of placeholder tokens. Splits on whitespace and trims separator
+    chars from each token, so a combined placeholder (e.g. a slash-joined
+    "not-applicable" pair) collapses to all-placeholder tokens and is rejected,
+    while a token whose slash is internal (e.g. "n/a") stays intact."""
     if section is None:
         return False
-    return section.strip().lower() not in _PLACEHOLDERS
+    cleaned = _EMPHASIS_RE.sub("", section).strip().lower()
+    tokens = [
+        trimmed
+        for raw in cleaned.split()
+        if (trimmed := raw.strip(_TOKEN_TRIM_CHARS))
+    ]
+    if not tokens:
+        return False
+    return not all(t in _PLACEHOLDERS for t in tokens)
 
 
 # ---------------------------------------------------------------------------
@@ -158,24 +195,24 @@ def main() -> int:
 
     violations: list[tuple[str, str]] = []
 
-    if watched and not _is_filled(_section_body(body, "回归报告")):
+    if watched and not _is_filled(_section_body(body, REGRESSION_KEYWORD)):
         sample = ", ".join(watched[:5]) + (" …" if len(watched) > 5 else "")
         violations.append((
             REGRESSION_REPORT,
             f"This PR changes {len(watched)} file(s) under app/ | main_logic/ | "
-            f"memory/ ({sample}) but the PR body has no filled-in '回归报告' "
-            f"section. Document the change, its rationale/necessity, "
-            f"before-and-after behaviour, and potential regressions.",
+            f"memory/ ({sample}) but the PR body has no filled-in "
+            f"'{REGRESSION_KEYWORD}' section. Document the change, its "
+            f"rationale/necessity, before-and-after behaviour, and regressions.",
         ))
 
     if len(changed) > FILE_COUNT_LIMIT and not _is_filled(
-        _section_body(body, "不拆分理由")
+        _section_body(body, NO_SPLIT_KEYWORD)
     ):
         violations.append((
             NO_SPLIT_RATIONALE,
             f"This PR changes {len(changed)} files (> {FILE_COUNT_LIMIT}) but the "
-            f"PR body has no filled-in '不拆分理由' section. Explain why this is "
-            f"not split into smaller PRs.",
+            f"PR body has no filled-in '{NO_SPLIT_KEYWORD}' section. Explain why "
+            f"this is not split into smaller PRs.",
         ))
 
     if not violations:

@@ -18,7 +18,7 @@ trigger: always_on
 
 ## 提交规范：高风险模块回归报告 + 大 PR 不拆分理由
 
-两条硬性规范，CI 在 PR 上校验（`scripts/check_pr_report.py`，接在 `.github/workflows/analyze.yml` 的 `pr-report-gate` job），报告写在 **PR 描述**里（模板 `.github/pull_request_template.md`）：
+两条硬性规范，CI 在 PR 上校验（`scripts/check_pr_report.py`，由独立 workflow `.github/workflows/pr-report-gate.yml` 驱动），报告写在 **PR 描述**里（模板 `.github/pull_request_template.md`）：
 
 1. **回归报告**：凡是改动了 `app/`、`main_logic/`、`memory/` 任一目录下的 `*.py`，PR 描述必须有非空的「回归报告」一节，逐项说明——**改动**、**理由 / 必要性**、**前后表现对比**、**潜在回归点**。这三个是项目最高风险模块（会话编排、记忆管线、服务入口）。
 2. **不拆分理由**：单个 PR 改动文件 > 20 个，PR 描述必须有非空的「不拆分理由」一节，说明为什么不拆成更小的 PR。
