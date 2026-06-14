@@ -2645,6 +2645,7 @@
             "statusCancelled": "Cancelled",
             "minimize": "Collapse/Expand",
             "cancelAll": "Cancel all tasks",
+            "cancelTask": "Cancel task",
             "cancelConfirm": "Cancel all running tasks?",
             "typeUserPlugin": "User Plugin",
             "typeComputerUse": "Computer Use",

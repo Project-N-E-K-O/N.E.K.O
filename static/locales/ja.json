@@ -2645,6 +2645,7 @@
             "statusCancelled": "キャンセル済み",
             "minimize": "折りたたみ/展開",
             "cancelAll": "すべてのタスクをキャンセル",
+            "cancelTask": "タスクをキャンセル",
             "cancelConfirm": "実行中のすべてのタスクをキャンセルしますか？",
             "typeUserPlugin": "ユーザープラグイン",
             "typeComputerUse": "キーボード/マウス操作",

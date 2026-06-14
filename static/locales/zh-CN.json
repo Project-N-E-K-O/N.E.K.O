@@ -2645,6 +2645,7 @@
             "statusCancelled": "已取消",
             "minimize": "折叠/展开",
             "cancelAll": "终止所有任务",
+            "cancelTask": "终止任务",
             "cancelConfirm": "确定要终止所有正在进行的任务吗？",
             "typeUserPlugin": "用户插件",
             "typeComputerUse": "键鼠控制",

@@ -2645,6 +2645,7 @@
             "statusCancelled": "Cancelar",
             "minimize": "Contraer/Expandir",
             "cancelAll": "Cancelar todas las tareas",
+            "cancelTask": "Cancelar tarea",
             "cancelConfirm": "¿Cancelar todas las tareas en ejecución?",
             "typeUserPlugin": "Complemento de usuario",
             "typeComputerUse": "Uso de la computadora",

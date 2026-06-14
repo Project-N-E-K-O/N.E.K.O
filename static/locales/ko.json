@@ -2645,6 +2645,7 @@
             "statusCancelled": "취소됨",
             "minimize": "접기/펼치기",
             "cancelAll": "모든 작업 취소",
+            "cancelTask": "작업 취소",
             "cancelConfirm": "진행 중인 모든 작업을 취소하시겠습니까?",
             "typeUserPlugin": "사용자 플러그인",
             "typeComputerUse": "컴퓨터 제어",
