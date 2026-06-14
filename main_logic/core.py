@@ -42,7 +42,10 @@ from main_logic.tool_calling import (
 from utils.llm_client import AIMessage
 from main_logic.session_state import SessionStateMachine, SessionEvent, ProactivePhase
 from main_logic.lifecycle_bus import LifecycleEventBus
-from main_logic.proactive_delivery import ProactiveDeliveryManager
+from main_logic.proactive_delivery import (
+    ProactiveDeliveryManager,
+    resolve_callback_delivery_ack,
+)
 from main_logic.agent_event_bus import (
     dispatch_text_user_message,
     dispatch_user_utterance,
@@ -6568,6 +6571,7 @@ class LLMSessionManager:
         """
         if self.is_goodbye_silent():
             self.enqueue_agent_callback(callback)
+            resolve_callback_delivery_ack(callback, False)
             logger.info("[%s] proactive callback queued: goodbye silent", self.lanlan_name)
             return
         self.proactive_manager.submit(callback, priority=priority, coalesce_key=coalesce_key)
@@ -6590,7 +6594,9 @@ class LLMSessionManager:
         # path (manager release / reconnect redelivery / turn-end retry),
         # instead of streaming into a possibly-None / about-to-be-swapped
         # session at release time (Codex P2).
-        await self.trigger_agent_callbacks()
+        delivered = await self.trigger_agent_callbacks()
+        for callback in callbacks:
+            resolve_callback_delivery_ack(callback, delivered)
 
     async def _stream_cb_media(self, callbacks: list, session) -> bool:
         """Stream images carried by proactive callbacks (push_message

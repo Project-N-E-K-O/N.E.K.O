@@ -12,6 +12,7 @@ import asyncio
 import pytest
 
 from main_logic.proactive_delivery import (
+    DELIVERY_ACK_FUTURE_KEY,
     ProactiveDeliveryManager,
     effective_priority,
 )
@@ -72,6 +73,18 @@ async def test_coalescing_is_opt_in():
     mgr.on_playback_end()
     await _settle()
     assert [c["id"] for c in delivered] == ["new"]
+
+
+async def test_coalescing_resolves_dropped_delivery_ack_false():
+    delivered = []
+    mgr = _make(delivered)
+    mgr.on_playback_start()
+    old_future = asyncio.get_running_loop().create_future()
+    mgr.submit({"id": "old", DELIVERY_ACK_FUTURE_KEY: old_future}, priority=2, coalesce_key="dup")
+    mgr.submit({"id": "new"}, priority=2, coalesce_key="dup")
+
+    assert old_future.done()
+    assert old_future.result() is False
 
 
 async def test_no_coalesce_key_never_collapses():
@@ -160,6 +173,20 @@ async def test_drain_pending_returns_queue_without_delivering():
     mgr.on_playback_end()
     await _settle()
     assert delivered == []
+
+
+async def test_drain_pending_resolves_delivery_ack_false():
+    delivered = []
+    mgr = _make(delivered)
+    mgr.on_playback_start()
+    future = asyncio.get_running_loop().create_future()
+    mgr.submit({"id": "queued", DELIVERY_ACK_FUTURE_KEY: future}, priority=2)
+
+    drained = mgr.drain_pending()
+
+    assert [c["id"] for c in drained] == ["queued"]
+    assert future.done()
+    assert future.result() is False
 
 
 async def test_reset_gate_clears_gate_but_keeps_queue():

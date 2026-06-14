@@ -32,6 +32,20 @@ def test_build_topic_hook_prompt_combines_memory_and_open_threads():
     assert "我们来聊聊" not in prompt
 
 
+def test_build_topic_hook_prompt_uses_traditional_chinese_header():
+    prompt = build_topic_hook_prompt(
+        lang="zh-TW",
+        recent_topics=["最近想用繁體中文聊城市流行"],
+    )
+
+    assert "低頻深話題候選" in prompt
+    assert "關係深度" in prompt
+    assert "寧可不用" in prompt
+    assert "剛聊到的點" in prompt
+    assert "低频深话题候选" not in prompt
+    assert "宁可不用" not in prompt
+
+
 def test_build_topic_hook_prompt_returns_empty_without_candidates():
     assert build_topic_hook_prompt(
         lang="zh-CN",

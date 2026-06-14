@@ -2,6 +2,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from main_logic.proactive_delivery import DELIVERY_ACK_FUTURE_KEY
 from main_logic.topic.delivery import (
     build_topic_hook_callback,
     clear_topic_session_manager_getter,
@@ -131,9 +132,16 @@ async def test_trigger_topic_hook_once_enqueues_existing_manager_callback(monkey
 @pytest.mark.asyncio
 async def test_trigger_topic_hook_once_waits_for_confirmed_delivery(monkeypatch):
     mgr = MagicMock()
-    mgr.submit_proactive_callback = MagicMock()
     mgr.enqueue_agent_callback = MagicMock()
     mgr.trigger_agent_callbacks = AsyncMock(return_value=True)
+
+    def submit(callback, *, priority=0, coalesce_key=None):
+        mgr.submitted_callback = callback
+        mgr.submitted_priority = priority
+        mgr.submitted_coalesce_key = coalesce_key
+        callback[DELIVERY_ACK_FUTURE_KEY].set_result(True)
+
+    mgr.submit_proactive_callback = MagicMock(side_effect=submit)
 
     clear_topic_session_manager_getter()
     register_topic_session_manager_getter(lambda name: mgr)
@@ -149,10 +157,13 @@ async def test_trigger_topic_hook_once_waits_for_confirmed_delivery(monkeypatch)
     )
 
     assert delivered is True
-    mgr.submit_proactive_callback.assert_not_called()
-    callback = mgr.enqueue_agent_callback.call_args.args[0]
+    mgr.submit_proactive_callback.assert_called_once()
+    mgr.enqueue_agent_callback.assert_not_called()
+    mgr.trigger_agent_callbacks.assert_not_called()
+    callback = mgr.submitted_callback
     assert callback["task_id"] == "topic_car"
-    mgr.trigger_agent_callbacks.assert_awaited_once()
+    assert mgr.submitted_priority == -20
+    assert mgr.submitted_coalesce_key == "topic_car"
     clear_topic_session_manager_getter()
 
 

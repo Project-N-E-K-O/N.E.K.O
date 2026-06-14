@@ -50,6 +50,21 @@ from typing import Any, Awaitable, Callable, Optional
 
 logger = logging.getLogger("main_logic.proactive_delivery")
 
+DELIVERY_ACK_FUTURE_KEY = "_proactive_delivery_ack_future"
+
+
+def resolve_callback_delivery_ack(callback: dict, delivered: bool) -> None:
+    """Resolve an optional in-memory delivery acknowledgement future."""
+    future = callback.get(DELIVERY_ACK_FUTURE_KEY)
+    if future is None:
+        return
+    try:
+        if not future.done():
+            future.set_result(bool(delivered))
+    except Exception:
+        logger.debug("delivery ack future resolution failed", exc_info=True)
+
+
 def effective_priority(raw: Any) -> int:
     # Repo-wide convention (the "greatest common denominator" of existing
     # producers): HIGHER number = more important. Matches every current
@@ -177,6 +192,8 @@ class ProactiveDeliveryManager:
             dropped = [c for c in self._queue if c.coalesce_key == key]
             if dropped:
                 self._queue = [c for c in self._queue if c.coalesce_key != key]
+                for cue in dropped:
+                    resolve_callback_delivery_ack(cue.callback, False)
                 logger.debug(
                     "[proactive%s] coalesced %d queued cue(s) on key=%r",
                     self._suffix(), len(dropped), key,
@@ -233,6 +250,8 @@ class ProactiveDeliveryManager:
         behind earlier low-priority ones on redelivery."""
         ordered = sorted(self._queue, key=lambda c: c.sort_key)
         self._queue = []
+        for cue in ordered:
+            resolve_callback_delivery_ack(cue.callback, False)
         return [c.callback for c in ordered]
 
     # ── pump ─────────────────────────────────────────────────────────────
@@ -258,6 +277,7 @@ class ProactiveDeliveryManager:
         fresh: list[_QueuedCue] = []
         for c in self._queue:
             if now - c.submitted_at > self._ttl_s:
+                resolve_callback_delivery_ack(c.callback, False)
                 logger.info(
                     "[proactive%s] dropping stale cue key=%r age=%.1fs (ttl=%.0fs)",
                     self._suffix(), c.coalesce_key, now - c.submitted_at, self._ttl_s,
@@ -342,6 +362,8 @@ class ProactiveDeliveryManager:
         try:
             await self._deliver(callbacks)
         except Exception:
+            for callback in callbacks:
+                resolve_callback_delivery_ack(callback, False)
             logger.exception("[proactive%s] deliver failed", self._suffix())
             # Free the slot so the queue isn't wedged on a failed hand-off.
             self._inflight = False

@@ -238,6 +238,38 @@ async def test_default_topic_fetchers_keep_chinese_search_local_and_fallback_ins
 
 
 @pytest.mark.asyncio
+async def test_default_topic_fetchers_use_non_mainland_search_for_traditional_chinese(monkeypatch):
+    calls = []
+
+    async def fake_baidu(keyword, limit):
+        calls.append(("baidu", keyword, limit))
+        return {
+            "success": True,
+            "results": [{"title": "大陆源", "url": "https://example.test/cn"}],
+        }
+
+    async def fake_google(keyword, limit):
+        calls.append(("google", keyword, limit))
+        return {
+            "success": True,
+            "results": [
+                {"title": "台灣城市流行歌單", "url": "https://example.test/tw"}
+            ],
+        }
+
+    monkeypatch.setattr("utils.web_scraper.search_baidu", fake_baidu)
+    monkeypatch.setattr("utils.web_scraper.search_google", fake_google)
+
+    fetchers = await _default_fetchers("zh-TW")
+    result = await fetchers["news"]("台灣 城市流行", 2)
+
+    assert calls == [("google", "台灣 城市流行", 2)]
+    assert result["success"] is True
+    assert result["region"] == "non-china"
+    assert result["search"]["results"][0]["title"] == "台灣城市流行歌單"
+
+
+@pytest.mark.asyncio
 async def test_default_topic_fetchers_pass_source_locale_to_media_fetchers(monkeypatch):
     calls = []
 

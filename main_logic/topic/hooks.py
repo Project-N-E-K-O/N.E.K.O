@@ -17,6 +17,11 @@ _HEADER_ZH = """【低频深话题候选】
 候选里可能夹着寒暄、语气词或还不值得展开的短句；你先判断，没价值就忽略。
 开口要求：具体、短、像随口一提，可以轻微调侃；最终只选一个，只抛一个自然钩子，后面交给多轮展开；不要暴露素材来源，也不要像问卷。"""
 
+_HEADER_ZH_TW = """【低頻深話題候選】
+下面這些不是必須聊的話題，只是更適合聊深一點的切入點。目標是關係深度，不是觸發頻率；寧可不用，也不要硬聊；這輪最多認真挑 1-2 個最強相關的。
+候選裡可能夾著寒暄、語氣詞或還不值得展開的短句；你先判斷，沒價值就忽略。
+開口要求：具體、短、像隨口一提，可以輕微調侃；最終只選一個，只拋一個自然鉤子，後面交給多輪展開；不要暴露素材來源，也不要像問卷。"""
+
 _HEADER_EN = """[Low-frequency deeper topic candidates]
 These are optional hooks for a slightly deeper proactive chat. Use at most 1-2 only if they are clearly the strongest matches; it is better to use none than force it.
 Some candidates may be greetings, filler, or too thin to continue; judge first and ignore them if they are not useful.
@@ -50,7 +55,7 @@ _HEADER_RU = """[Низкочастотные кандидаты для боле
 _HEADERS = {
     "zh": _HEADER_ZH,
     "zh-CN": _HEADER_ZH,
-    "zh-TW": _HEADER_ZH,
+    "zh-TW": _HEADER_ZH_TW,
     "en": _HEADER_EN,
     "ja": _HEADER_JA,
     "ko": _HEADER_KO,

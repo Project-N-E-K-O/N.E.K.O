@@ -1,12 +1,16 @@
 """One-shot delivery bridge for prepared topic hooks."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from main_logic.proactive_delivery import DELIVERY_ACK_FUTURE_KEY
+
 
 logger = logging.getLogger("N.E.K.O.Main.topic.delivery")
+_DELIVERY_ACK_TIMEOUT_S = 120.0
 
 _SessionManagerGetter = Callable[[str], Any]
 _session_manager_getter: _SessionManagerGetter | None = None
@@ -268,6 +272,26 @@ async def trigger_topic_hook_once(
         return False
 
     callback = build_topic_hook_callback(material, lang=lang)
+    submit = getattr(mgr, "submit_proactive_callback", None)
+    if callable(submit):
+        future = asyncio.get_running_loop().create_future()
+        callback[DELIVERY_ACK_FUTURE_KEY] = future
+        submit(
+            callback,
+            priority=callback.get("priority", 0),
+            coalesce_key=callback.get("coalesce_key"),
+        )
+        try:
+            delivered = bool(await asyncio.wait_for(future, timeout=_DELIVERY_ACK_TIMEOUT_S))
+        except asyncio.TimeoutError:
+            logger.info("[%s] topic hook delivery timed out waiting for proactive ack", lanlan_name)
+            delivered = False
+        finally:
+            callback.pop(DELIVERY_ACK_FUTURE_KEY, None)
+        if not delivered:
+            _remove_callback_from_manager(mgr, callback)
+        return delivered
+
     enqueue = getattr(mgr, "enqueue_agent_callback", None)
     trigger = getattr(mgr, "trigger_agent_callbacks", None)
     if not callable(enqueue) or not callable(trigger):

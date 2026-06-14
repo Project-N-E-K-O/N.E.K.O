@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from main_logic.topic.common import ZH_LINK_STOP_CHARS, clean_text, is_zh_lang, topic_units
+from utils.source_locale import source_region_from_locale
 
 
 Fetcher = Callable[[str, int], Awaitable[Mapping[str, Any]]]
@@ -151,9 +152,13 @@ async def _default_fetchers(lang: str | None = None) -> dict[str, Fetcher]:
     )
 
     async def search(keyword: str, limit: int) -> Mapping[str, Any]:
-        zh_lang = is_zh_lang(lang)
-        primary = search_baidu if zh_lang else search_google
-        fallback = search_google if zh_lang else search_baidu
+        source_region = source_region_from_locale(_source_locale_for_lang(lang))
+        use_mainland_source = (
+            source_region == "china"
+            or (source_region is None and is_zh_lang(lang))
+        )
+        primary = search_baidu if use_mainland_source else search_google
+        fallback = search_google if use_mainland_source else search_baidu
         result = await primary(keyword, limit=limit)
         if not result.get("success"):
             fallback_result = await fallback(keyword, limit=limit)
@@ -161,7 +166,7 @@ async def _default_fetchers(lang: str | None = None) -> dict[str, Fetcher]:
                 result = fallback_result
         return {
             "success": bool(result.get("success")),
-            "region": "china" if zh_lang else "non-china",
+            "region": "china" if use_mainland_source else "non-china",
             "search": result,
         }
 
