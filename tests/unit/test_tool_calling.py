@@ -2921,7 +2921,7 @@ async def test_stream_text_summary_disabled_keeps_old_truncate_behavior(monkeypa
     assert summarize_calls == []
 
 
-def _minimal_offline_client_for_leak_tests(monkeypatch):
+def _minimal_offline_client_for_leak_tests():
     from main_logic.omni_offline_client import OmniOfflineClient
     from main_logic.tool_calling import ToolDefinition
     from utils.llm_client import SystemMessage
@@ -2970,7 +2970,7 @@ async def test_stream_text_filters_tool_call_leak_before_ui_and_history(monkeypa
     async def noop(*_a, **_kw):
         pass
 
-    client = _minimal_offline_client_for_leak_tests(monkeypatch)
+    client = _minimal_offline_client_for_leak_tests()
     client.on_text_delta = fake_text_delta
     client.on_input_transcript = noop
     client.on_response_done = noop
@@ -3008,7 +3008,7 @@ async def test_prompt_ephemeral_filters_tool_call_leak_before_ui_and_history(mon
     async def noop(*_a, **_kw):
         pass
 
-    client = _minimal_offline_client_for_leak_tests(monkeypatch)
+    client = _minimal_offline_client_for_leak_tests()
     client.on_text_delta = fake_text_delta
     client.on_response_done = noop
     client.on_status_message = noop
@@ -3046,7 +3046,7 @@ async def test_stream_text_only_leak_yields_no_visible_output(monkeypatch):
     async def noop(*_a, **_kw):
         pass
 
-    client = _minimal_offline_client_for_leak_tests(monkeypatch)
+    client = _minimal_offline_client_for_leak_tests()
     client.on_text_delta = fake_text_delta
     client.on_input_transcript = noop
     client.on_response_done = noop
@@ -3058,4 +3058,4 @@ async def test_stream_text_only_leak_yields_no_visible_output(monkeypatch):
 
     assert emitted == []
     assert not any(isinstance(m, AIMessage) for m in client._conversation_history)
-    assert statuses
+    assert [json.loads(message) for message in statuses] == [{"code": "LLM_NO_RESPONSE"}]

@@ -9,10 +9,12 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from utils.llm_tool_leak_filter import ToolLeakFilterEvent
 
-def _drain(filter_, chunks: list[str]) -> tuple[str, list[object]]:
+
+def _drain(filter_, chunks: list[str]) -> tuple[str, list[ToolLeakFilterEvent]]:
     output: list[str] = []
-    events: list[object] = []
+    events: list[ToolLeakFilterEvent] = []
     for chunk in chunks:
         visible, event = filter_.feed(chunk)
         output.append(visible)
