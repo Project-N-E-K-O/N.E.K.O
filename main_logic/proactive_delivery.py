@@ -51,6 +51,7 @@ from typing import Any, Awaitable, Callable, Optional
 logger = logging.getLogger("main_logic.proactive_delivery")
 
 DELIVERY_ACK_FUTURE_KEY = "_proactive_delivery_ack_future"
+DELIVERY_RETRACTED_KEY = "_proactive_delivery_retracted"
 
 
 def resolve_callback_delivery_ack(callback: dict, delivered: bool) -> None:
@@ -207,6 +208,28 @@ class ProactiveDeliveryManager:
         )
         self._schedule_pump(0.0)
 
+    def retract(self, callback: dict) -> bool:
+        """Remove a not-yet-released callback from the manager queue."""
+        callback[DELIVERY_RETRACTED_KEY] = True
+        delivery_id = callback.get("_callback_delivery_id")
+        callback_obj_id = id(callback)
+        remaining: list[_QueuedCue] = []
+        removed = False
+        for cue in self._queue:
+            queued = cue.callback
+            same_callback = id(queued) == callback_obj_id
+            same_delivery = (
+                bool(delivery_id)
+                and queued.get("_callback_delivery_id") == delivery_id
+            )
+            if same_callback or same_delivery:
+                removed = True
+                resolve_callback_delivery_ack(queued, False)
+                continue
+            remaining.append(cue)
+        self._queue = remaining
+        return removed
+
     # ── lifecycle signals (from LifecycleEventBus) ───────────────────────
     def on_playback_start(self, **_: Any) -> None:
         self._playing = True
@@ -250,8 +273,6 @@ class ProactiveDeliveryManager:
         behind earlier low-priority ones on redelivery."""
         ordered = sorted(self._queue, key=lambda c: c.sort_key)
         self._queue = []
-        for cue in ordered:
-            resolve_callback_delivery_ack(cue.callback, False)
         return [c.callback for c in ordered]
 
     # ── pump ─────────────────────────────────────────────────────────────
@@ -359,6 +380,11 @@ class ProactiveDeliveryManager:
         self._schedule_pump(self._inflight_timeout_s)
 
     async def _run_deliver(self, callbacks: list[dict]) -> None:
+        callbacks = [cb for cb in callbacks if not cb.get(DELIVERY_RETRACTED_KEY)]
+        if not callbacks:
+            self._inflight = False
+            self._schedule_pump(0.0)
+            return
         try:
             await self._deliver(callbacks)
         except Exception:

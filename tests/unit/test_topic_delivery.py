@@ -1,8 +1,10 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from main_logic.proactive_delivery import DELIVERY_ACK_FUTURE_KEY
+from main_logic.proactive_delivery import ProactiveDeliveryManager
 from main_logic.topic.delivery import (
     build_topic_hook_callback,
     clear_topic_session_manager_getter,
@@ -164,6 +166,88 @@ async def test_trigger_topic_hook_once_waits_for_confirmed_delivery(monkeypatch)
     assert callback["task_id"] == "topic_car"
     assert mgr.submitted_priority == -20
     assert mgr.submitted_coalesce_key == "topic_car"
+    clear_topic_session_manager_getter()
+
+
+@pytest.mark.asyncio
+async def test_trigger_topic_hook_once_retracts_submitted_callback_when_cancelled(monkeypatch):
+    delivered_batches = []
+
+    async def deliver(batch):
+        delivered_batches.append(batch)
+
+    class FakeManager:
+        def __init__(self):
+            self.pending_agent_callbacks = []
+            self.pending_extra_replies = []
+            self.proactive_manager = ProactiveDeliveryManager(
+                deliver=deliver,
+                can_release=lambda: False,
+            )
+
+        def submit_proactive_callback(self, callback, *, priority=0, coalesce_key=None):
+            self.submitted_callback = callback
+            self.proactive_manager.submit(callback, priority=priority, coalesce_key=coalesce_key)
+
+        def enqueue_agent_callback(self, callback):
+            self.pending_agent_callbacks.append(callback)
+
+        async def trigger_agent_callbacks(self):
+            return True
+
+    mgr = FakeManager()
+    clear_topic_session_manager_getter()
+    register_topic_session_manager_getter(lambda name: mgr)
+
+    task = asyncio.create_task(
+        trigger_topic_hook_once(
+            lanlan_name="妮可",
+            material={"hook_id": "topic_car", "interest": "买车"},
+            lang="zh-CN",
+        )
+    )
+    await asyncio.sleep(0)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert mgr.proactive_manager.drain_pending() == []
+    assert delivered_batches == []
+    assert mgr.pending_agent_callbacks == []
+    assert mgr.pending_extra_replies == []
+    clear_topic_session_manager_getter()
+
+
+@pytest.mark.asyncio
+async def test_trigger_topic_hook_once_treats_cancelled_after_ack_as_delivered(monkeypatch):
+    current_task = None
+
+    class FakeManager:
+        def submit_proactive_callback(self, callback, *, priority=0, coalesce_key=None):
+            loop = asyncio.get_running_loop()
+            future = callback[DELIVERY_ACK_FUTURE_KEY]
+            loop.call_soon(future.set_result, True)
+            loop.call_soon(current_task.cancel)
+
+        def enqueue_agent_callback(self, callback):
+            raise AssertionError("submit path should be used")
+
+        async def trigger_agent_callbacks(self):
+            raise AssertionError("submit path should wait for ack")
+
+    mgr = FakeManager()
+    clear_topic_session_manager_getter()
+    register_topic_session_manager_getter(lambda name: mgr)
+
+    current_task = asyncio.current_task()
+    delivered = await trigger_topic_hook_once(
+        lanlan_name="妮可",
+        material={"hook_id": "topic_car", "interest": "买车"},
+        lang="zh-CN",
+    )
+
+    assert delivered is True
     clear_topic_session_manager_getter()
 
 

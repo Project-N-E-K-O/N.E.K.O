@@ -43,6 +43,7 @@ from utils.llm_client import AIMessage
 from main_logic.session_state import SessionStateMachine, SessionEvent, ProactivePhase
 from main_logic.lifecycle_bus import LifecycleEventBus
 from main_logic.proactive_delivery import (
+    DELIVERY_RETRACTED_KEY,
     ProactiveDeliveryManager,
     resolve_callback_delivery_ack,
 )
@@ -6009,6 +6010,8 @@ class LLMSessionManager:
                     "[%s] trigger_agent_callbacks: voice proactive inject sent (n=%d)",
                     self.lanlan_name, len(voice_snapshot),
                 )
+                for cb in voice_snapshot:
+                    resolve_callback_delivery_ack(cb, True)
                 return True
 
         _lang = normalize_language_code(self.user_language, format='short')
@@ -6074,6 +6077,9 @@ class LLMSessionManager:
             self.pending_agent_callbacks.extend(callbacks_snapshot)
         finally:
             await self.state.fire(SessionEvent.PROACTIVE_DONE)
+        if delivered:
+            for cb in callbacks_snapshot:
+                resolve_callback_delivery_ack(cb, True)
         return delivered
 
     async def _deliver_agent_callbacks_text(self, instruction: str, callbacks_snapshot: list) -> bool:
@@ -6571,7 +6577,6 @@ class LLMSessionManager:
         """
         if self.is_goodbye_silent():
             self.enqueue_agent_callback(callback)
-            resolve_callback_delivery_ack(callback, False)
             logger.info("[%s] proactive callback queued: goodbye silent", self.lanlan_name)
             return
         self.proactive_manager.submit(callback, priority=priority, coalesce_key=coalesce_key)
@@ -6583,6 +6588,7 @@ class LLMSessionManager:
         legacy "several near-simultaneous cues batched into one turn"
         behaviour (the manager only governs WHEN the batch is released, not
         how many cues per turn)."""
+        callbacks = [cb for cb in callbacks if not cb.get(DELIVERY_RETRACTED_KEY)]
         if not callbacks:
             return
         for callback in callbacks:
@@ -6595,8 +6601,9 @@ class LLMSessionManager:
         # instead of streaming into a possibly-None / about-to-be-swapped
         # session at release time (Codex P2).
         delivered = await self.trigger_agent_callbacks()
-        for callback in callbacks:
-            resolve_callback_delivery_ack(callback, delivered)
+        if delivered:
+            for callback in callbacks:
+                resolve_callback_delivery_ack(callback, True)
 
     async def _stream_cb_media(self, callbacks: list, session) -> bool:
         """Stream images carried by proactive callbacks (push_message

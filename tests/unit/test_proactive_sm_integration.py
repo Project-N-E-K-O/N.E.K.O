@@ -27,6 +27,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 # state/session/lock 结构，然后直接调用 trigger_agent_callbacks 的关键分支。
 from main_logic.core import LLMSessionManager, _proactive_expected_sid
 from main_logic.omni_offline_client import OmniOfflineClient
+from main_logic.proactive_delivery import DELIVERY_ACK_FUTURE_KEY
 from main_logic.session_state import (
     ProactivePhase,
     SessionEvent,
@@ -689,6 +690,42 @@ def test_submit_proactive_callback_parks_when_goodbye_silent():
 
     assert mgr.pending_agent_callbacks == [cb]
     assert mgr.pending_extra_replies
+
+
+async def test_submit_proactive_callback_does_not_fail_ack_when_goodbye_silent():
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    mgr.goodbye_silent = True
+    future = asyncio.get_running_loop().create_future()
+    cb = {"status": "completed", "summary": "queued", DELIVERY_ACK_FUTURE_KEY: future}
+
+    LLMSessionManager.submit_proactive_callback(mgr, cb)
+
+    assert mgr.pending_agent_callbacks == [cb]
+    assert not future.done()
+
+
+async def test_deliver_proactive_batch_does_not_fail_ack_when_inner_trigger_defers():
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    future = asyncio.get_running_loop().create_future()
+    cb = {"status": "completed", "summary": "queued", DELIVERY_ACK_FUTURE_KEY: future}
+    mgr.trigger_agent_callbacks = AsyncMock(return_value=False)
+
+    await LLMSessionManager._deliver_proactive_batch(mgr, [cb])
+
+    assert mgr.pending_agent_callbacks == [cb]
+    assert not future.done()
+
+
+async def test_deliver_proactive_batch_resolves_ack_on_delivery():
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    future = asyncio.get_running_loop().create_future()
+    cb = {"status": "completed", "summary": "queued", DELIVERY_ACK_FUTURE_KEY: future}
+    mgr.trigger_agent_callbacks = AsyncMock(return_value=True)
+
+    await LLMSessionManager._deliver_proactive_batch(mgr, [cb])
+
+    assert future.done()
+    assert future.result() is True
 
 
 async def test_text_mode_successful_delivery_fires_full_event_sequence():

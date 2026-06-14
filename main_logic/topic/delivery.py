@@ -6,7 +6,7 @@ import logging
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from main_logic.proactive_delivery import DELIVERY_ACK_FUTURE_KEY
+from main_logic.proactive_delivery import DELIVERY_ACK_FUTURE_KEY, DELIVERY_RETRACTED_KEY
 
 
 logger = logging.getLogger("N.E.K.O.Main.topic.delivery")
@@ -230,6 +230,14 @@ def build_topic_hook_callback(material: Mapping[str, Any], *, lang: str) -> dict
 
 
 def _remove_callback_from_manager(mgr: Any, callback: Mapping[str, Any]) -> None:
+    if isinstance(callback, dict):
+        callback[DELIVERY_RETRACTED_KEY] = True
+
+    proactive_manager = getattr(mgr, "proactive_manager", None)
+    retract = getattr(proactive_manager, "retract", None)
+    if callable(retract) and isinstance(callback, dict):
+        retract(callback)
+
     delivery_id = callback.get("_callback_delivery_id")
     callback_obj_id = id(callback)
 
@@ -282,7 +290,14 @@ async def trigger_topic_hook_once(
             coalesce_key=callback.get("coalesce_key"),
         )
         try:
-            delivered = bool(await asyncio.wait_for(future, timeout=_DELIVERY_ACK_TIMEOUT_S))
+            delivered = bool(await asyncio.wait_for(asyncio.shield(future), timeout=_DELIVERY_ACK_TIMEOUT_S))
+        except asyncio.CancelledError:
+            if future.done() and not future.cancelled():
+                delivered = bool(future.result())
+                if delivered:
+                    return True
+            _remove_callback_from_manager(mgr, callback)
+            raise
         except asyncio.TimeoutError:
             logger.info("[%s] topic hook delivery timed out waiting for proactive ack", lanlan_name)
             delivered = False

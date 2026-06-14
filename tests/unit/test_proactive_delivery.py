@@ -175,7 +175,7 @@ async def test_drain_pending_returns_queue_without_delivering():
     assert delivered == []
 
 
-async def test_drain_pending_resolves_delivery_ack_false():
+async def test_drain_pending_keeps_delivery_ack_pending_for_redelivery():
     delivered = []
     mgr = _make(delivered)
     mgr.on_playback_start()
@@ -185,8 +185,7 @@ async def test_drain_pending_resolves_delivery_ack_false():
     drained = mgr.drain_pending()
 
     assert [c["id"] for c in drained] == ["queued"]
-    assert future.done()
-    assert future.result() is False
+    assert not future.done()
 
 
 async def test_reset_gate_clears_gate_but_keeps_queue():
