@@ -7536,7 +7536,7 @@ _DIRECT_REQUEST_DISCUSSION_RE = re.compile(
     r"\b(?:start|play|open)\s+by\b|"
     r"\b(?:talk|talking|chat|discuss|discussion|learn|study|teach|explain)\b"
     r"(?:\s+(?:about|around|through|over))?\b|"
-    r"\b(?:how\s+to|tell\s+me\s+about|what\s+(?:about|are|is))\b"
+    r"\b(?:how\s+to|tell\s+me\s+about|what\s+(?:are|is))\b"
 )
 _DIRECT_REQUEST_START_QUESTION_RE = re.compile(
     r"\b(?:when|what\s+time|what\s+day|what\s+date)\b[^?!.]{0,48}\bstart\b|"

@@ -1319,6 +1319,10 @@ def test_direct_basketball_request_ignores_casual_or_negated_mentions():
 def test_direct_basketball_request_keeps_imperative_english_matching():
     result = sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'please play basketball')
     bare_result = sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'play basketball')
+    what_about_result = sr._maybe_apply_mini_game_invite_keyword(
+        LANLAN,
+        'what about basketball, can we play?',
+    )
 
     assert result is not None
     assert result['action'] == 'open_game'
@@ -1326,6 +1330,9 @@ def test_direct_basketball_request_keeps_imperative_english_matching():
     assert bare_result is not None
     assert bare_result['action'] == 'open_game'
     assert bare_result['game_type'] == 'basketball'
+    assert what_about_result is not None
+    assert what_about_result['action'] == 'open_game'
+    assert what_about_result['game_type'] == 'basketball'
 
 
 def test_direct_request_negation_is_scoped_to_matched_game():
