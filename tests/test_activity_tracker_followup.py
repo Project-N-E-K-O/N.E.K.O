@@ -683,7 +683,7 @@ def test_loader_returns_defaults_when_no_activity_section(tmp_path):
 
 def test_activity_tracker_sends_messages_to_background_topic_pool(monkeypatch):
     from main_logic.activity.tracker import UserActivityTracker
-    from main_logic import topic_pipeline
+    from main_logic.topic import pipeline as topic_pipeline
     from utils import language_utils
 
     calls = []
@@ -710,7 +710,7 @@ def test_activity_tracker_sends_messages_to_background_topic_pool(monkeypatch):
 
 def test_activity_tracker_uses_global_language_for_background_topic_pool(monkeypatch):
     from main_logic.activity.tracker import UserActivityTracker
-    from main_logic import topic_pipeline
+    from main_logic.topic import pipeline as topic_pipeline
     from utils import language_utils
 
     calls = []
@@ -737,7 +737,7 @@ def test_activity_tracker_uses_global_language_for_background_topic_pool(monkeyp
 
 def test_activity_tracker_uses_session_language_for_background_topic_pool(monkeypatch):
     from main_logic.activity.tracker import UserActivityTracker
-    from main_logic import topic_pipeline
+    from main_logic.topic import pipeline as topic_pipeline
     from utils import language_utils
 
     calls = []

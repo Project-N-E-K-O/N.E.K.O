@@ -560,7 +560,7 @@ def _get_session_manager(name):
 
 
 try:
-    from main_logic.topic_delivery import register_topic_session_manager_getter
+    from main_logic.topic.delivery import register_topic_session_manager_getter
     register_topic_session_manager_getter(_get_session_manager)
 except Exception:
     logger.warning("Failed to register topic session manager getter", exc_info=True)

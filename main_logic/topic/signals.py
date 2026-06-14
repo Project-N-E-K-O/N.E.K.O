@@ -12,7 +12,8 @@ from collections import defaultdict, deque
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
-import re
+
+from main_logic.topic.common import ZH_TOPIC_STOP_CHARS, clean_text, topic_units
 
 
 _MAX_SIGNAL_TEXT_CHARS = 500
@@ -34,17 +35,10 @@ _FILLER_TEXTS = {
     "沒事",
     "不知道",
 }
-_ZH_STOP_CHARS = set("的一是在不了和就都而及与着或吗呢啊吧呀也很还再又这那我你他她它")
 
 
 def _clean_text(value: Any, *, limit: int = _MAX_SIGNAL_TEXT_CHARS) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    text = " ".join(text.split())
-    if len(text) > limit:
-        return text[:limit].rstrip() + "..."
-    return text
+    return clean_text(value, limit=limit)
 
 
 @dataclass(frozen=True)
@@ -217,21 +211,7 @@ def _average_information_density(turns: Iterable[TopicTurnSignal]) -> int:
 
 
 def _topic_units(text: str) -> set[str]:
-    cleaned = _clean_text(text, limit=120).lower()
-    units = {
-        token
-        for token in re.findall(r"[a-z0-9]{3,}", cleaned)
-        if token
-    }
-    chars = [
-        char
-        for char in cleaned
-        if "\u4e00" <= char <= "\u9fff" and char not in _ZH_STOP_CHARS
-    ]
-    units.update(chars)
-    for idx in range(len(chars) - 1):
-        units.add(chars[idx] + chars[idx + 1])
-    return units
+    return topic_units(text, limit=120, stop_chars=ZH_TOPIC_STOP_CHARS)
 
 
 def _stability_score(turns: Iterable[TopicTurnSignal]) -> int:

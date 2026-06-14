@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from main_logic.topic_pipeline import TopicHookPool, _clean_material
+from main_logic.topic.pipeline import TopicHookPool, _clean_material
 
 
 def test_clean_material_normalizes_media_intent_string_and_bad_created_at():
@@ -178,7 +178,7 @@ async def test_topic_pool_passes_chat_language_to_online_enrichment(monkeypatch)
         return list(materials)
 
     monkeypatch.setattr(
-        "main_logic.topic_pipeline.enrich_topic_materials_online",
+        "main_logic.topic.pipeline.enrich_topic_materials_online",
         fake_enrich,
     )
 
@@ -247,7 +247,7 @@ async def test_topic_pool_discards_stale_analysis_when_new_turn_arrives_during_e
         return list(materials)
 
     monkeypatch.setattr(
-        "main_logic.topic_pipeline.enrich_topic_materials_online",
+        "main_logic.topic.pipeline.enrich_topic_materials_online",
         fake_enrich,
     )
 
@@ -374,7 +374,7 @@ async def test_topic_pool_clears_pending_trigger_when_privacy_turns_on(monkeypat
         return True
 
     monkeypatch.setattr(
-        "main_logic.topic_pipeline._privacy_mode_active",
+        "main_logic.topic.pipeline._privacy_mode_active",
         lambda: privacy_enabled,
     )
     pool = TopicHookPool(
@@ -476,6 +476,7 @@ async def test_topic_pool_keeps_material_pending_when_delivery_defers():
 @pytest.mark.asyncio
 async def test_topic_pool_retries_pending_material_after_delivery_defers():
     attempts = []
+    retried = asyncio.Event()
 
     async def fake_analyzer(*, user_msgs, ai_msgs, lang, **kwargs):
         return [
@@ -488,7 +489,10 @@ async def test_topic_pool_retries_pending_material_after_delivery_defers():
 
     async def fake_trigger(*, lanlan_name, material, lang):
         attempts.append((lanlan_name, material["interest"], lang))
-        return len(attempts) >= 2
+        if len(attempts) >= 2:
+            retried.set()
+            return True
+        return False
 
     pool = TopicHookPool(
         analyzer=fake_analyzer,
@@ -501,7 +505,7 @@ async def test_topic_pool_retries_pending_material_after_delivery_defers():
     pool.note_user_message("妮可", "我感觉买车算人生大事，最近一直在想它是不是代表生活进入新阶段", lang="zh-CN")
 
     await pool.process_now("妮可")
-    await asyncio.sleep(0.04)
+    await asyncio.wait_for(retried.wait(), timeout=1.0)
 
     assert attempts == [
         ("妮可", "买车像进入新生活阶段", "zh-CN"),

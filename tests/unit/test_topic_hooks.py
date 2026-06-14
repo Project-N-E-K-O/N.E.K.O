@@ -1,4 +1,4 @@
-from main_logic.topic_hooks import build_topic_hook_prompt
+from main_logic.topic.hooks import build_topic_hook_prompt
 
 
 def test_build_topic_hook_prompt_combines_memory_and_open_threads():

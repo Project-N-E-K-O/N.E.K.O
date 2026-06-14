@@ -1,4 +1,4 @@
-from main_logic.topic_signals import TopicSignalStore, TopicTurnSignal, _select_turns_for_prompt
+from main_logic.topic.signals import TopicSignalStore, TopicTurnSignal, _select_turns_for_prompt
 
 
 def test_topic_signal_store_keeps_filler_chat_below_ready_even_after_many_turns():

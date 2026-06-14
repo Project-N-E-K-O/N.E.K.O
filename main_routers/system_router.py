@@ -5540,7 +5540,7 @@ async def proactive_chat(request: Request):
                             if topic.get('id'):
                                 _surfaced_reflection_ids.append(topic['id'])
                         try:
-                            from main_logic.topic_hooks import build_topic_hook_prompt
+                            from main_logic.topic.hooks import build_topic_hook_prompt
                             followup_topics_prompt = build_topic_hook_prompt(
                                 proactive_lang,
                                 followup_topics=_followup_topics,
@@ -6311,7 +6311,7 @@ async def proactive_chat(request: Request):
         )
         if open_threads_for_topic_hooks or _followup_topics:
             try:
-                from main_logic.topic_hooks import build_topic_hook_prompt
+                from main_logic.topic.hooks import build_topic_hook_prompt
                 refreshed_topic_hook_prompt = build_topic_hook_prompt(
                     proactive_lang,
                     followup_topics=_followup_topics if _allow_reminiscence else [],

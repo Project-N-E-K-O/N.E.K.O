@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 
-logger = logging.getLogger("N.E.K.O.Main.topic_delivery")
+logger = logging.getLogger("N.E.K.O.Main.topic.delivery")
 
 _SessionManagerGetter = Callable[[str], Any]
 _session_manager_getter: _SessionManagerGetter | None = None
@@ -142,7 +142,7 @@ def _detail_template_for_lang(lang: str) -> dict[str, str]:
 def register_topic_session_manager_getter(getter: _SessionManagerGetter | None) -> None:
     """Install the runtime session-manager lookup used by topic delivery.
 
-    ``topic_delivery`` lives below the app entrypoint layer, so it must not
+    ``main_logic.topic.delivery`` lives below the app entrypoint layer, so it must not
     import ``app.main_server`` for state: running ``python app/main_server.py``
     stores the real state under ``__main__`` and importing ``app.main_server``
     creates a second, empty module copy.

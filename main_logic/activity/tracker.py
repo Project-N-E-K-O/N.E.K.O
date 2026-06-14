@@ -364,7 +364,7 @@ class UserActivityTracker:
             cleaned = text.strip()[:1000]
             self._user_msg_buffer.append((ts, cleaned))
             try:
-                from main_logic.topic_pipeline import get_topic_hook_pool
+                from main_logic.topic.pipeline import get_topic_hook_pool
                 get_topic_hook_pool().note_user_message(self.lanlan_name, cleaned, lang=self._topic_pool_language())
             except Exception:
                 logger.debug('[%s] topic pool user-message note failed', self.lanlan_name, exc_info=True)
@@ -388,7 +388,7 @@ class UserActivityTracker:
             cleaned = text.strip()[:1000]
             self._ai_msg_buffer.append((ts, cleaned))
             try:
-                from main_logic.topic_pipeline import get_topic_hook_pool
+                from main_logic.topic.pipeline import get_topic_hook_pool
                 get_topic_hook_pool().note_ai_message(self.lanlan_name, cleaned, lang=self._topic_pool_language())
             except Exception:
                 logger.debug('[%s] topic pool ai-message note failed', self.lanlan_name, exc_info=True)

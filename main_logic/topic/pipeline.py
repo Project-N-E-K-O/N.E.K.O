@@ -9,18 +9,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import time
 from collections import defaultdict, deque
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from copy import deepcopy
 from typing import Any
 
-from main_logic.topic_materials import enrich_topic_materials_online
-from main_logic.topic_signals import TopicSignalStore
+from main_logic.topic.common import ZH_TOPIC_STOP_CHARS, clean_text, topic_units
+from main_logic.topic.materials import enrich_topic_materials_online
+from main_logic.topic.signals import TopicSignalStore
 
 
-logger = logging.getLogger("N.E.K.O.Main.topic_pipeline")
+logger = logging.getLogger("N.E.K.O.Main.topic.pipeline")
 
 Analyzer = Callable[
     ...,
@@ -38,17 +38,10 @@ _TRIGGER_AFTER_QUIET_SECONDS = 60.0
 _MIN_TOPIC_TRIGGER_GAP_SECONDS = 4 * 60 * 60
 _MAX_DAILY_TOPIC_TRIGGERS = 2
 _USED_TOPIC_TTL_SECONDS = 24 * 60 * 60
-_ZH_STOP_CHARS = set("的一是在不了和就都而及与着或吗呢啊吧呀也很还再又这那我你他她它")
 
 
 def _clean_text(value: Any, *, limit: int = _MAX_TEXT_CHARS) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    text = " ".join(text.split())
-    if len(text) > limit:
-        return text[:limit].rstrip() + "..."
-    return text
+    return clean_text(value, limit=limit)
 
 
 def _clean_media_intent(value: Any) -> list[str]:
@@ -153,21 +146,7 @@ def _material_log_preview(material: Mapping[str, Any]) -> str:
 
 
 def _topic_units(text: str) -> set[str]:
-    cleaned = _clean_text(text, limit=240).lower()
-    units = {
-        token
-        for token in re.findall(r"[a-z0-9]{3,}", cleaned)
-        if token
-    }
-    chars = [
-        char
-        for char in cleaned
-        if "\u4e00" <= char <= "\u9fff" and char not in _ZH_STOP_CHARS
-    ]
-    units.update(chars)
-    for idx in range(len(chars) - 1):
-        units.add(chars[idx] + chars[idx + 1])
-    return units
+    return topic_units(text, limit=240, stop_chars=ZH_TOPIC_STOP_CHARS)
 
 
 def _material_topic_units(material: Mapping[str, Any]) -> set[str]:
@@ -575,7 +554,7 @@ class TopicHookPool:
 
 
 def _default_topic_trigger():
-    from main_logic.topic_delivery import trigger_topic_hook_once
+    from main_logic.topic.delivery import trigger_topic_hook_once
 
     return trigger_topic_hook_once
 

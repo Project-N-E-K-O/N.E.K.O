@@ -12,18 +12,10 @@ from copy import deepcopy
 from datetime import datetime, timedelta
 from typing import Any
 
+from main_logic.topic.common import ZH_LINK_STOP_CHARS, clean_text, is_zh_lang, topic_units
+
 
 Fetcher = Callable[[str, int], Awaitable[Mapping[str, Any]]]
-
-
-def _clean_text(value: Any, *, limit: int = 120) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    text = " ".join(text.split())
-    if len(text) > limit:
-        return text[:limit].rstrip() + "..."
-    return text
 
 
 def _parse_now(now_iso: str | None) -> datetime:
@@ -46,17 +38,17 @@ def _iter_candidate_texts(
     open_threads: Iterable[Any] | None = None,
 ) -> Iterable[tuple[str, str]]:
     for text in recent_topics or []:
-        cleaned = _clean_text(text)
+        cleaned = clean_text(text)
         if cleaned:
             yield "recent", cleaned
     for topic in followup_topics or []:
         if not isinstance(topic, Mapping):
             continue
-        cleaned = _clean_text(topic.get("text"))
+        cleaned = clean_text(topic.get("text"))
         if cleaned:
             yield "memory", cleaned
     for text in open_threads or []:
-        cleaned = _clean_text(text)
+        cleaned = clean_text(text)
         if cleaned:
             yield "thread", cleaned
 
@@ -113,10 +105,6 @@ def build_topic_materials(
     return materials
 
 
-def _is_zh_lang(lang: str | None) -> bool:
-    return str(lang or "").strip().lower().startswith("zh")
-
-
 async def _default_fetchers(lang: str | None = None) -> dict[str, Fetcher]:
     from utils.meme_fetcher import fetch_meme_content
     from utils.music_crawlers import fetch_music_content
@@ -126,7 +114,7 @@ async def _default_fetchers(lang: str | None = None) -> dict[str, Fetcher]:
     )
 
     async def search(keyword: str, limit: int) -> Mapping[str, Any]:
-        zh_lang = _is_zh_lang(lang)
+        zh_lang = is_zh_lang(lang)
         primary = search_baidu if zh_lang else search_google
         fallback = search_google if zh_lang else search_baidu
         result = await primary(keyword, limit=limit)
@@ -150,14 +138,14 @@ async def _default_fetchers(lang: str | None = None) -> dict[str, Fetcher]:
         return await fetch_meme_content(
             keyword=keyword,
             limit=limit,
-            prefer_china=True if _is_zh_lang(lang) else None,
+            prefer_china=True if is_zh_lang(lang) else None,
         )
 
     async def music(keyword: str, limit: int) -> Mapping[str, Any]:
         return await fetch_music_content(
             keyword=keyword,
             limit=limit,
-            prefer_china=True if _is_zh_lang(lang) else None,
+            prefer_china=True if is_zh_lang(lang) else None,
         )
 
     return {
@@ -169,20 +157,20 @@ async def _default_fetchers(lang: str | None = None) -> dict[str, Fetcher]:
 
 
 def _query_for_material(material: Mapping[str, Any]) -> str:
-    query = _clean_text(material.get("search_query"), limit=80)
+    query = clean_text(material.get("search_query"), limit=80)
     if query:
         return query
-    interest = _clean_text(material.get("interest"), limit=32)
+    interest = clean_text(material.get("interest"), limit=32)
     if interest:
         return interest
-    return _clean_text(material.get("hook"), limit=32)
+    return clean_text(material.get("hook"), limit=32)
 
 
 def _items_from_result(kind: str, result: Mapping[str, Any]) -> list[dict[str, str]]:
     items: list[dict[str, str]] = []
 
     def add(title: Any, url: Any = "") -> None:
-        title_text = _clean_text(title, limit=80)
+        title_text = clean_text(title, limit=80)
         if not title_text:
             return
         items.append({
@@ -226,22 +214,13 @@ def _items_from_result(kind: str, result: Mapping[str, Any]) -> list[dict[str, s
     return items
 
 
-_ZH_STOP_CHARS = set("的一是在不了和就都而及与着或吗呢啊吧呀也很还再又")
-
-
 def _topic_units(text: str) -> set[str]:
-    text = _clean_text(text, limit=120).lower()
-    units = {
-        token
-        for token in __import__("re").findall(r"[a-z0-9]{3,}", text)
-        if token
-    }
-    units.update(
-        char
-        for char in text
-        if "\u4e00" <= char <= "\u9fff" and char not in _ZH_STOP_CHARS
+    return topic_units(
+        text,
+        limit=120,
+        stop_chars=ZH_LINK_STOP_CHARS,
+        include_cjk_bigrams=False,
     )
-    return units
 
 
 def _is_related_link(query: str, link: Mapping[str, str]) -> bool:

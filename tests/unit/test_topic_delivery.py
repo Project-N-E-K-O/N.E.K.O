@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from main_logic.topic_delivery import (
+from main_logic.topic.delivery import (
     build_topic_hook_callback,
     clear_topic_session_manager_getter,
     register_topic_session_manager_getter,

@@ -9,6 +9,8 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from main_logic.topic.common import clean_text
+
 
 _HEADER_ZH = """【低频深话题候选】
 下面这些不是必须聊的话题，只是更适合聊深一点的切入点。目标是关系深度，不是触发频率；宁可不用，也不要硬聊；这轮最多认真挑 1-2 个最强相关的。
@@ -174,23 +176,13 @@ def _lang_key(lang: str) -> str:
     return "en"
 
 
-def _clean_text(value: Any, *, limit: int = 120) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    text = " ".join(text.split())
-    if len(text) > limit:
-        return text[:limit].rstrip() + "..."
-    return text
-
-
 def _iter_followup_texts(followup_topics: Iterable[Mapping[str, Any]] | None) -> list[str]:
     texts: list[str] = []
     seen: set[str] = set()
     for topic in followup_topics or []:
         if not isinstance(topic, Mapping):
             continue
-        text = _clean_text(topic.get("text"))
+        text = clean_text(topic.get("text"))
         if not text or text in seen:
             continue
         seen.add(text)
@@ -202,7 +194,7 @@ def _iter_open_threads(open_threads: Iterable[Any] | None) -> list[str]:
     texts: list[str] = []
     seen: set[str] = set()
     for item in open_threads or []:
-        text = _clean_text(item)
+        text = clean_text(item)
         if not text or text in seen:
             continue
         seen.add(text)
@@ -217,20 +209,20 @@ def _iter_topic_materials(topic_materials: Iterable[Mapping[str, Any]] | None, *
     for material in topic_materials or []:
         if not isinstance(material, Mapping):
             continue
-        interest = _clean_text(material.get("interest"), limit=90)
-        hook = _clean_text(material.get("hook"), limit=120)
-        opening = _clean_text(material.get("opening_intent"), limit=90)
-        deepening = _clean_text(material.get("deepening_hint"), limit=90)
+        interest = clean_text(material.get("interest"), limit=90)
+        hook = clean_text(material.get("hook"), limit=120)
+        opening = clean_text(material.get("opening_intent"), limit=90)
+        deepening = clean_text(material.get("deepening_hint"), limit=90)
         hint = material.get("material_hint")
-        online_angle = _clean_text(material.get("online_angle"), limit=100)
+        online_angle = clean_text(material.get("online_angle"), limit=100)
         hint_summary = ""
         hint_links: list[str] = []
         if isinstance(hint, Mapping):
-            hint_summary = _clean_text(hint.get("summary"), limit=100)
+            hint_summary = clean_text(hint.get("summary"), limit=100)
             for link in hint.get("links") or []:
                 if isinstance(link, Mapping):
-                    title = _clean_text(link.get("title"), limit=60)
-                    link_type = _clean_text(link.get("type"), limit=20)
+                    title = clean_text(link.get("title"), limit=60)
+                    link_type = clean_text(link.get("type"), limit=20)
                     if title:
                         hint_links.append(f"{link_type}:{title}" if link_type else title)
 

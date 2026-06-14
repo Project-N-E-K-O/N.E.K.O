@@ -1,6 +1,6 @@
 import pytest
 
-from main_logic.topic_materials import (
+from main_logic.topic.materials import (
     _default_fetchers,
     build_topic_materials,
     enrich_topic_materials_online,
@@ -76,7 +76,7 @@ async def test_enrich_topic_materials_online_defaults_to_search_fetcher():
 
 @pytest.mark.asyncio
 async def test_enrich_topic_materials_online_respects_explicit_empty_fetchers(monkeypatch):
-    from main_logic import topic_materials
+    from main_logic.topic import materials as topic_materials
 
     async def fail_default_fetchers(lang):
         raise AssertionError("default fetchers should not be used")
