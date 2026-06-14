@@ -2788,7 +2788,9 @@ eval(source);
         env=env,
         capture_output=True,
         text=True,
-        timeout=15,
+        # Windows Actions runners can briefly starve plain Node subprocesses
+        # while the full plugin suite is cleaning up browser-heavy tests.
+        timeout=45,
         check=False,
     )
     assert completed.returncode == 0, completed.stderr or completed.stdout
