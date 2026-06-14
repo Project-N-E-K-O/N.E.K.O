@@ -1532,6 +1532,8 @@ function createSidePanelContainer(manager, prefix, options = {}) {
         container.style.left = `${left}px`;
         container.style.right = 'auto';
         container.style.top = `${top}px`;
+        container.dataset.goDown = 'false';
+        container.dataset.goLeft = String(placeLeft);
         applyAvatarSidePanelTransform(container, placeLeft ? 'translateX(6px)' : 'translateX(-6px)');
         return true;
     };

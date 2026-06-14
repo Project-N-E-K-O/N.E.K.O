@@ -253,16 +253,7 @@
             if (button && popup.parentElement) {
                 const parentRect = popup.parentElement.getBoundingClientRect();
                 const buttonRect = button.getBoundingClientRect();
-                let scale = 1;
-                const scaledContainer = popup.closest('[id$="-floating-buttons"]');
-                if (scaledContainer) {
-                    const transform = getComputedStyle(scaledContainer).transform;
-                    if (transform && transform !== 'none') {
-                        const match = transform.match(/matrix\(([^,]+)/);
-                        if (match) scale = parseFloat(match[1]) || 1;
-                    }
-                }
-                rightClearance = (parentRect.right - buttonRect.left) / scale + gap;
+                rightClearance = toLocalCssPx(parentRect.right - buttonRect.left, sidePanelScale) + gap;
             }
             popup.style.marginRight = `${Math.max(rightClearance, 0)}px`;
             opensLeft = true;
