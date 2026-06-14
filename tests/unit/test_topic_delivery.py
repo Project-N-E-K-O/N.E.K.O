@@ -211,8 +211,8 @@ async def test_trigger_topic_hook_once_retracts_submitted_callback_when_cancelle
     await asyncio.wait_for(submitted.wait(), timeout=1)
 
     task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    cancel_results = await asyncio.gather(task, return_exceptions=True)
+    assert isinstance(cancel_results[0], asyncio.CancelledError)
 
     assert mgr.proactive_manager.drain_pending() == []
     assert delivered_batches == []
