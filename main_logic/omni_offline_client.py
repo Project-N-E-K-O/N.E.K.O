@@ -2731,6 +2731,7 @@ class OmniOfflineClient:
         images: Optional[list] = None,
         completion_mode: str = "proactive",
         persist_response: bool = True,
+        on_committed: Optional[Callable[[], None]] = None,
     ) -> bool:
         """Send a fire-and-forget instruction to the LLM and stream the response.
 
@@ -2760,6 +2761,9 @@ class OmniOfflineClient:
           Uses ``on_response_done()`` so the reply goes through the
           regular user-visible completion path while still keeping the
           injected instruction itself ephemeral.
+        - ``on_committed``:
+          Called after visible text is confirmed but before completion
+          callbacks flush proactive state.
 
         Returns True if any user-visible text was generated, False if aborted
         or only nonverbal directives were emitted.
@@ -2985,6 +2989,11 @@ class OmniOfflineClient:
                     getattr(self, "model", None),
                     completion_mode,
                 )
+            elif on_committed:
+                try:
+                    on_committed()
+                except Exception:
+                    logger.exception("prompt_ephemeral on_committed callback failed")
             if content_committed and persist_response:
                 self._conversation_history.append(AIMessage(content=assistant_message))
                 # 防复读 corpus：只录常规 reply（completion_mode == "response"）。

@@ -6227,8 +6227,16 @@ class LLMSessionManager:
                 master_name=self.master_name,
                 passive=False,
             )
-            for cb in active_callbacks:
-                resolve_callback_delivery_ack(cb, True)
+            ack_resolved = False
+
+            def _resolve_text_delivery_ack(delivered: bool) -> None:
+                nonlocal ack_resolved
+                if ack_resolved:
+                    return
+                ack_resolved = True
+                for cb in active_callbacks:
+                    resolve_callback_delivery_ack(cb, delivered)
+
             _sid_token = _proactive_expected_sid.set(proactive_sid)
             # Text-mode playback boundary for the pacing manager: no frontend
             # audio signal arrives for text delivery, so bracket prompt_ephemeral
@@ -6243,7 +6251,9 @@ class LLMSessionManager:
                 logger.debug("[%s] lifecycle_bus emit(text_start) failed", self.lanlan_name)
             try:
                 delivered = await self.session.prompt_ephemeral(
-                    instruction, images=_proactive_images or None
+                    instruction,
+                    images=_proactive_images or None,
+                    on_committed=lambda: _resolve_text_delivery_ack(True),
                 )
             finally:
                 _proactive_expected_sid.reset(_sid_token)
@@ -6255,6 +6265,7 @@ class LLMSessionManager:
                     logger.debug("[%s] lifecycle_bus emit(text_end) failed", self.lanlan_name)
             logger.debug("[%s] trigger_agent_callbacks: prompt_ephemeral delivered=%s", self.lanlan_name, delivered)
             if delivered:
+                _resolve_text_delivery_ack(True)
                 delivered_ids = {
                     cb.get("_callback_delivery_id")
                     for cb in active_callbacks
@@ -6267,6 +6278,7 @@ class LLMSessionManager:
                     ]
                 return True
             else:
+                _resolve_text_delivery_ack(False)
                 self.pending_agent_callbacks.extend(active_callbacks)
                 return False
 

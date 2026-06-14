@@ -55,10 +55,12 @@ class _FakeOmniOffline(OmniOfflineClient):
         self._raise = raise_exc
         self.called_with: list[str] = []
 
-    async def prompt_ephemeral(self, instruction: str, *, images=None) -> bool:
+    async def prompt_ephemeral(self, instruction: str, *, images=None, on_committed=None) -> bool:
         self.called_with.append(instruction)
         if self._raise is not None:
             raise self._raise
+        if self._delivered and on_committed:
+            on_committed()
         return self._delivered
 
     def update_max_response_length(self, *_a, **_kw):
@@ -417,10 +419,13 @@ async def test_text_mode_acks_only_callbacks_that_reach_prompt():
     assert active_future.result() is True
 
 
-async def test_text_mode_resolves_delivery_ack_before_prompt_completion_flush():
+async def test_text_mode_resolves_delivery_ack_after_committed_output_before_completion_flush():
     class _FlushCancellingSess(_FakeOmniOffline):
-        async def prompt_ephemeral(self, instruction: str, *, images=None) -> bool:
+        async def prompt_ephemeral(self, instruction: str, *, images=None, on_committed=None) -> bool:
             self.called_with.append(instruction)
+            assert not future.done()
+            assert on_committed is not None
+            on_committed()
             assert future.done()
             assert future.result() is True
             return True
@@ -443,10 +448,32 @@ async def test_text_mode_resolves_delivery_ack_before_prompt_completion_flush():
     assert future.result() is True
 
 
+async def test_text_mode_resolves_delivery_ack_false_when_prompt_has_no_committed_output():
+    sess = _FakeOmniOffline(delivered=False)
+    mgr = _make_mgr(session=sess)
+    future = asyncio.get_running_loop().create_future()
+    cb = {
+        "_callback_delivery_id": "id-text-no-output",
+        "status": "completed",
+        "summary": "no visible output",
+        DELIVERY_ACK_FUTURE_KEY: future,
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    delivered = await LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is False
+    assert future.done()
+    assert future.result() is False
+    assert mgr.pending_agent_callbacks == [cb]
+
+
 async def test_text_mode_success_keeps_late_extra_replies():
     class _QueueingSess(_FakeOmniOffline):
-        async def prompt_ephemeral(self, instruction: str, *, images=None) -> bool:
+        async def prompt_ephemeral(self, instruction: str, *, images=None, on_committed=None) -> bool:
             self.called_with.append(instruction)
+            if on_committed:
+                on_committed()
             mgr.pending_agent_callbacks.append(late_cb)
             mgr.pending_extra_replies.append(late_extra)
             return True
@@ -1075,7 +1102,7 @@ async def test_user_input_between_claim_and_lock_is_detected():
         def __init__(self):
             pass
 
-        async def prompt_ephemeral(self, instruction, *, images=None):
+        async def prompt_ephemeral(self, instruction, *, images=None, on_committed=None):
             await sess_wait.wait()
             return True
 
@@ -1125,7 +1152,7 @@ async def test_user_input_during_agent_delivery_sets_preempted():
         def __init__(self):
             pass  # 跳过父类初始化
 
-        async def prompt_ephemeral(self, instruction, *, images=None):
+        async def prompt_ephemeral(self, instruction, *, images=None, on_committed=None):
             # 模拟 LLM 耗时，期间 user input 抢占
             await sess_wait.wait()
             return True
