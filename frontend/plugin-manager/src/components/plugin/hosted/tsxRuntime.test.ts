@@ -480,6 +480,21 @@ import ghost from "./missing"
     expect(root.querySelector('strong')?.textContent).toBe('AB')
   })
 
+  it('skips regex literals with braces so later exports still link', () => {
+    const { root } = executeHostedDocument(`
+      import { pattern, label } from "./re"
+
+      export default function Panel() {
+        return <strong>{pattern.test("{") ? label : "miss"}</strong>
+      }
+    `, baseContext(), baseContext(), [{
+      path: 'ui/re.ts',
+      source: 'export const pattern = /[{]/\nexport const label = "ok"\n',
+    }])
+
+    expect(root.querySelector('strong')?.textContent).toBe('ok')
+  })
+
   it('trims spaced default plus named hosted imports before executing', () => {
     const { root } = executeHostedDocument(`
       import { label } from "./consumer"

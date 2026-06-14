@@ -137,6 +137,57 @@ function skipTrivia(source, index) {
   return index
 }
 
+// Regex-literal handling, kept byte-for-byte in step with the backend scanner
+// (plugin/server/application/plugins/ui_query_service.py). Without it a regex
+// containing brackets/braces, e.g. `const re = /[{]/`, would feed its `[`/`{`
+// into the depth counter and push later top-level import/export out of view.
+function previousSignificantHostedChar(source, index) {
+  let cursor = index - 1
+  while (cursor >= 0) {
+    const char = source[cursor]
+    if (/\s/.test(char)) {
+      cursor -= 1
+      continue
+    }
+    return char
+  }
+  return ''
+}
+
+function canStartHostedRegexLiteral(source, index) {
+  const previous = previousSignificantHostedChar(source, index)
+  return previous === '' || '=([{,:!?&|^~+-*%<>;'.includes(previous)
+}
+
+function skipHostedRegexLiteral(source, index) {
+  let inClass = false
+  index += 1
+  while (index < source.length) {
+    const char = source[index]
+    if (char === '\\') {
+      index += 2
+      continue
+    }
+    if (char === '[') {
+      inClass = true
+      index += 1
+      continue
+    }
+    if (char === ']') {
+      inClass = false
+      index += 1
+      continue
+    }
+    if (char === '/' && !inClass) {
+      index += 1
+      while (index < source.length && /[A-Za-z]/.test(source[index] || '')) index += 1
+      return index
+    }
+    index += 1
+  }
+  return index
+}
+
 function findKeywordBeforeStatementEnd(source, index, keyword) {
   while (index < source.length) {
     const char = source[index]
@@ -149,6 +200,10 @@ function findKeywordBeforeStatementEnd(source, index, keyword) {
       }
       if (nextChar === '*') {
         index = skipBlockComment(source, index)
+        continue
+      }
+      if (canStartHostedRegexLiteral(source, index)) {
+        index = skipHostedRegexLiteral(source, index)
         continue
       }
     }
@@ -238,6 +293,10 @@ function hostedImportStatements(source) {
       }
       if (nextChar === '*') {
         index = skipBlockComment(source, index)
+        continue
+      }
+      if (canStartHostedRegexLiteral(source, index)) {
+        index = skipHostedRegexLiteral(source, index)
         continue
       }
     }
@@ -518,6 +577,10 @@ function hostedExportDeclarations(source) {
         index = skipBlockComment(source, index)
         continue
       }
+      if (canStartHostedRegexLiteral(source, index)) {
+        index = skipHostedRegexLiteral(source, index)
+        continue
+      }
     }
     if (char === '"' || char === "'") {
       index = skipQuoted(source, index)
@@ -653,6 +716,10 @@ export function findHostedRelativeImportSpecifiers(source) {
         index = skipBlockComment(source, index)
         continue
       }
+      if (canStartHostedRegexLiteral(source, index)) {
+        index = skipHostedRegexLiteral(source, index)
+        continue
+      }
     }
     if (char === '"' || char === "'") {
       index = skipQuoted(source, index)
@@ -707,6 +774,10 @@ function hostedDeclarationHasTopLevelComma(source, index) {
     }
     if (char === '/' && source[index + 1] === '*') {
       index = skipBlockComment(source, index)
+      continue
+    }
+    if (char === '/' && canStartHostedRegexLiteral(source, index)) {
+      index = skipHostedRegexLiteral(source, index)
       continue
     }
     if (char === '"' || char === "'") {
@@ -820,6 +891,10 @@ export function assertHostedExportContract(source) {
       }
       if (nextChar === '*') {
         index = skipBlockComment(source, index)
+        continue
+      }
+      if (canStartHostedRegexLiteral(source, index)) {
+        index = skipHostedRegexLiteral(source, index)
         continue
       }
     }

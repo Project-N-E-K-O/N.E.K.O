@@ -591,3 +591,26 @@ export default function Panel(props: Props) {
     assert.match(result.stdout, /Hosted TSX check passed/)
   })
 })
+
+test('skips regex literals with braces and commas when scanning exports', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'regex-exports')
+    writePluginToml(pluginDir, 'main.tsx')
+    writeFixtureFile(
+      join(pluginDir, 'helpers.ts'),
+      `export const brace = /[{]/\nexport const comma = /,/\nexport const after = 'ok'\n`,
+    )
+    writeFixtureFile(
+      join(pluginDir, 'main.tsx'),
+      `import { brace, comma, after } from './helpers'\n`
+        + `export default function Panel() {\n`
+        + `  return <Page title={String(brace.test('{')) + String(comma.test(',')) + after} />\n`
+        + `}\n`,
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /Hosted TSX check passed/)
+  })
+})
