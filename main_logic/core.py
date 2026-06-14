@@ -5689,6 +5689,28 @@ class LLMSessionManager:
         )
         return {"accepted": False, "reason": ack_reason, "interaction_id": interaction_id}
 
+    def _purge_retracted_agent_callbacks(self) -> None:
+        retracted_ids = {
+            cb.get("_callback_delivery_id")
+            for cb in self.pending_agent_callbacks
+            if cb.get(DELIVERY_RETRACTED_KEY) and cb.get("_callback_delivery_id")
+        }
+        has_retracted = any(
+            cb.get(DELIVERY_RETRACTED_KEY)
+            for cb in self.pending_agent_callbacks
+        )
+        if not has_retracted:
+            return
+        self.pending_agent_callbacks = [
+            cb for cb in self.pending_agent_callbacks
+            if not cb.get(DELIVERY_RETRACTED_KEY)
+        ]
+        if retracted_ids:
+            self.pending_extra_replies = [
+                extra for extra in self.pending_extra_replies
+                if extra.get("_callback_delivery_id") not in retracted_ids
+            ]
+
     async def trigger_agent_callbacks(self) -> bool:
         """Proactively deliver pending agent task results via LLM rephrase.
 
@@ -5716,6 +5738,9 @@ class LLMSessionManager:
             "[%s] trigger_agent_callbacks enter: session=%s phase=%s pending=%d",
             self.lanlan_name, sess_type, self.state.phase.value, len(self.pending_agent_callbacks),
         )
+        if not self.pending_agent_callbacks:
+            return False
+        self._purge_retracted_agent_callbacks()
         if not self.pending_agent_callbacks:
             return False
         if self.is_goodbye_silent():
@@ -5775,6 +5800,8 @@ class LLMSessionManager:
                     return False
                 # Re-filter inside the lock: a concurrent task may have already
                 # injected+pruned these cbs while we waited on the lock.
+                proactive_cbs = _active_proactive_callbacks(self.pending_agent_callbacks)
+                self._purge_retracted_agent_callbacks()
                 proactive_cbs = _active_proactive_callbacks(self.pending_agent_callbacks)
                 if not proactive_cbs:
                     return False
@@ -5936,6 +5963,7 @@ class LLMSessionManager:
                     cb for cb in voice_snapshot
                     if not cb.get(DELIVERY_RETRACTED_KEY)
                 ]
+                self._purge_retracted_agent_callbacks()
                 if not voice_snapshot:
                     logger.info(
                         "[%s] trigger_agent_callbacks: voice proactive callbacks retracted before inject",
@@ -6080,6 +6108,7 @@ class LLMSessionManager:
             cb for cb in callbacks_snapshot
             if not cb.get(DELIVERY_RETRACTED_KEY)
         ]
+        self._purge_retracted_agent_callbacks()
         if not callbacks_snapshot:
             await self.state.fire(SessionEvent.PROACTIVE_DONE)
             return False
@@ -6142,6 +6171,7 @@ class LLMSessionManager:
                 if not active_callbacks:
                     logger.info("[%s] trigger_agent_callbacks: text proactive callbacks retracted before prompt", self.lanlan_name)
                     return False
+                callbacks_snapshot[:] = active_callbacks
                 # sticky preempt 复查：与 prepare_proactive_delivery 同样，在持有
                 # self.lock 的临界区内判定。USER_INPUT 路径在本锁段内翻 flag 和
                 # 写 user sid 是原子的，如果此处 preempt==True 说明用户已抢到
@@ -6182,6 +6212,7 @@ class LLMSessionManager:
                 cb for cb in active_callbacks
                 if not cb.get(DELIVERY_RETRACTED_KEY)
             ]
+            callbacks_snapshot[:] = active_callbacks
             if not active_callbacks:
                 logger.info("[%s] trigger_agent_callbacks: text proactive callbacks retracted before prompt", self.lanlan_name)
                 return False
@@ -6223,11 +6254,16 @@ class LLMSessionManager:
                     logger.debug("[%s] lifecycle_bus emit(text_end) failed", self.lanlan_name)
             logger.debug("[%s] trigger_agent_callbacks: prompt_ephemeral delivered=%s", self.lanlan_name, delivered)
             if delivered:
-                # pending_extra_replies parallels pending_agent_callbacks but
-                # is voice-mode-only state. Wiping it on text delivery is the
-                # pre-existing behavior — voice hot-swap that races in after
-                # text-mode delivery would have nothing to inject anyway.
-                self.pending_extra_replies.clear()
+                delivered_ids = {
+                    cb.get("_callback_delivery_id")
+                    for cb in active_callbacks
+                    if cb.get("_callback_delivery_id")
+                }
+                if delivered_ids:
+                    self.pending_extra_replies = [
+                        extra for extra in self.pending_extra_replies
+                        if extra.get("_callback_delivery_id") not in delivered_ids
+                    ]
                 return True
             else:
                 self.pending_agent_callbacks.extend(active_callbacks)
@@ -6975,6 +7011,7 @@ class LLMSessionManager:
         ended up here because the SM denied the claim earlier). The caller
         therefore should NOT prepend an additional notification template.
         """
+        self._purge_retracted_agent_callbacks()
         if not self.pending_agent_callbacks:
             return ""
         try:

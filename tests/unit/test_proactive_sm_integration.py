@@ -380,7 +380,91 @@ async def test_voice_mode_rechecks_retracted_callbacks_before_inject():
 
     assert delivered is False
     assert sess.injected == []
-    assert mgr.pending_agent_callbacks == [cb]
+    assert mgr.pending_agent_callbacks == []
+    assert mgr.pending_extra_replies == []
+
+
+async def test_text_mode_acks_only_callbacks_that_reach_prompt():
+    sess = _FakeOmniOffline(delivered=True)
+    mgr = _make_mgr(session=sess)
+    dropped_future = asyncio.get_running_loop().create_future()
+    active_future = asyncio.get_running_loop().create_future()
+    dropped_cb = {
+        "_callback_delivery_id": "id-dropped",
+        "status": "completed",
+        "summary": "cancelled",
+        DELIVERY_ACK_FUTURE_KEY: dropped_future,
+    }
+    active_cb = {
+        "_callback_delivery_id": "id-active",
+        "status": "completed",
+        "summary": "shown",
+        DELIVERY_ACK_FUTURE_KEY: active_future,
+    }
+    mgr.pending_agent_callbacks = [dropped_cb, active_cb]
+
+    async def _deliver(callbacks_snapshot):
+        dropped_cb[DELIVERY_RETRACTED_KEY] = True
+        callbacks_snapshot[:] = [active_cb]
+        return True
+    mgr._deliver_agent_callbacks_text = _deliver
+
+    delivered = await LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert not dropped_future.done()
+    assert active_future.done()
+    assert active_future.result() is True
+
+
+async def test_text_mode_success_keeps_late_extra_replies():
+    class _QueueingSess(_FakeOmniOffline):
+        async def prompt_ephemeral(self, instruction: str, *, images=None) -> bool:
+            self.called_with.append(instruction)
+            mgr.pending_agent_callbacks.append(late_cb)
+            mgr.pending_extra_replies.append(late_extra)
+            return True
+
+    sess = _QueueingSess(delivered=True)
+    mgr = _make_mgr(session=sess)
+    initial_cb = {"_callback_delivery_id": "id-initial", "status": "completed", "summary": "initial"}
+    initial_extra = {"_callback_delivery_id": "id-initial", "origin": "task_result", "summary": "initial"}
+    late_cb = {"_callback_delivery_id": "id-late", "status": "completed", "summary": "late"}
+    late_extra = {"_callback_delivery_id": "id-late", "origin": "task_result", "summary": "late"}
+    mgr.pending_agent_callbacks = [initial_cb]
+    mgr.pending_extra_replies = [initial_extra]
+
+    delivered = await LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert mgr.pending_agent_callbacks == [late_cb]
+    assert mgr.pending_extra_replies == [late_extra]
+
+
+def test_drain_agent_callbacks_purges_retracted_callbacks_and_extras():
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    retracted_cb = {
+        "_callback_delivery_id": "id-retracted-drain",
+        "status": "completed",
+        "summary": "cancelled",
+        DELIVERY_RETRACTED_KEY: True,
+    }
+    active_cb = {"_callback_delivery_id": "id-active-drain", "status": "completed", "summary": "shown"}
+    retracted_extra = {
+        "_callback_delivery_id": "id-retracted-drain",
+        "origin": "task_result",
+        "summary": "cancelled",
+    }
+    active_extra = {"_callback_delivery_id": "id-active-drain", "origin": "task_result", "summary": "shown"}
+    mgr.pending_agent_callbacks = [retracted_cb, active_cb]
+    mgr.pending_extra_replies = [retracted_extra, active_extra]
+
+    rendered = LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
+
+    assert "shown" in rendered
+    assert "cancelled" not in rendered
+    assert mgr.pending_agent_callbacks == []
+    assert mgr.pending_extra_replies == [active_extra]
 
 
 async def test_voice_mode_reject_during_await_not_pruned():
