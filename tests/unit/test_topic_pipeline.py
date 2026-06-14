@@ -563,6 +563,8 @@ async def test_topic_pool_retries_pending_material_after_trigger_exception():
 
 @pytest.mark.asyncio
 async def test_topic_pool_does_not_cancel_current_trigger_when_ai_turn_is_recorded():
+    triggered = asyncio.Event()
+
     async def fake_analyzer(*, user_msgs, ai_msgs, lang, **kwargs):
         return [
             {
@@ -577,6 +579,7 @@ async def test_topic_pool_does_not_cancel_current_trigger_when_ai_turn_is_record
     async def fake_trigger(*, lanlan_name, material, lang):
         pool.note_ai_message(lanlan_name, "我刚刚把这个话题自然说出来了", lang=lang)
         await asyncio.sleep(0)
+        triggered.set()
         return True
 
     pool = TopicHookPool(
@@ -590,7 +593,7 @@ async def test_topic_pool_does_not_cancel_current_trigger_when_ai_turn_is_record
     pool.note_user_message("妮可", "我感觉买车算人生大事，最近一直在想它是不是代表生活进入新阶段", lang="zh-CN")
 
     await pool.process_now("妮可")
-    await asyncio.sleep(0.04)
+    await asyncio.wait_for(triggered.wait(), timeout=1.0)
 
     assert pool.get_ready_materials("妮可") == []
     assert pool._materials["妮可"][0]["status"] == "used"

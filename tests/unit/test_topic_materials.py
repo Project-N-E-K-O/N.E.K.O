@@ -141,6 +141,41 @@ async def test_enrich_topic_materials_online_uses_model_search_query_and_marks_o
 
 
 @pytest.mark.asyncio
+async def test_enrich_topic_materials_online_localizes_material_hint_summary():
+    async def fake_news(keyword, limit):
+        return {
+            "success": True,
+            "search": {
+                "results": [
+                    {
+                        "title": "quiet city moving checklist",
+                        "url": "https://example.test/move",
+                    }
+                ]
+            },
+        }
+
+    enriched = await enrich_topic_materials_online(
+        [
+            {
+                "interest": "moving to a quiet city",
+                "hook": "start from wanting quieter daily life",
+                "search_query": "quiet city moving checklist",
+                "media_intent": ["news"],
+            }
+        ],
+        fetchers={"news": fake_news},
+        lang="en",
+        max_materials=1,
+    )
+
+    summary = enriched[0]["material_hint"]["summary"]
+    assert 'Found material related to "quiet city moving checklist"' in summary
+    assert "do not turn the search result into a report" in summary
+    assert "找到了" not in summary
+
+
+@pytest.mark.asyncio
 async def test_enrich_topic_materials_online_drops_unrelated_online_titles():
     async def fake_news(keyword, limit):
         return {

@@ -79,6 +79,7 @@ def test_build_topic_hook_callback_localizes_detail_for_japanese():
 @pytest.mark.asyncio
 async def test_trigger_topic_hook_once_enqueues_existing_manager_callback(monkeypatch):
     mgr = MagicMock()
+    mgr.submit_proactive_callback = None
     mgr.enqueue_agent_callback = MagicMock()
     mgr.trigger_agent_callbacks = AsyncMock(return_value=True)
 
@@ -105,8 +106,40 @@ async def test_trigger_topic_hook_once_enqueues_existing_manager_callback(monkey
 
 
 @pytest.mark.asyncio
+async def test_trigger_topic_hook_once_prefers_proactive_manager(monkeypatch):
+    mgr = MagicMock()
+    mgr.submit_proactive_callback = MagicMock()
+    mgr.enqueue_agent_callback = MagicMock()
+    mgr.trigger_agent_callbacks = AsyncMock(return_value=True)
+
+    clear_topic_session_manager_getter()
+    register_topic_session_manager_getter(lambda name: mgr)
+
+    delivered = await trigger_topic_hook_once(
+        lanlan_name="妮可",
+        material={
+            "hook_id": "topic_car",
+            "interest": "用户把买车当成新阶段",
+            "hook": "从买车背后的生活阶段感切入",
+        },
+        lang="zh-CN",
+    )
+
+    assert delivered is True
+    mgr.submit_proactive_callback.assert_called_once()
+    callback = mgr.submit_proactive_callback.call_args.args[0]
+    kwargs = mgr.submit_proactive_callback.call_args.kwargs
+    assert callback["task_id"] == "topic_car"
+    assert kwargs == {"priority": -20, "coalesce_key": "topic_car"}
+    mgr.enqueue_agent_callback.assert_not_called()
+    mgr.trigger_agent_callbacks.assert_not_awaited()
+    clear_topic_session_manager_getter()
+
+
+@pytest.mark.asyncio
 async def test_trigger_topic_hook_once_returns_false_when_manager_defers(monkeypatch):
     mgr = MagicMock()
+    mgr.submit_proactive_callback = None
     mgr.enqueue_agent_callback = MagicMock()
     mgr.trigger_agent_callbacks = AsyncMock(return_value=False)
 

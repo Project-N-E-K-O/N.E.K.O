@@ -37,8 +37,155 @@ _FILLER_TEXTS = {
 }
 
 
+_GLOBAL_SIGNAL_LABELS = {
+    "zh": {
+        "progress": "收集进度",
+        "user_count": "用户证据数",
+        "meaningful_user_count": "有效用户证据数",
+        "ai_count": "AI回应数",
+        "density": "信息密度",
+        "stability": "稳定度",
+        "note": "说明: 这是跨最近窗口的慢收集证据。收集进度只是本地信息量估算；请由模型最终判断哪些点稳定、强相关、适合低频开口；不要按关键词硬凑。",
+        "evidence": "全局证据",
+        "user": "用户",
+        "ai": "AI",
+        "seconds_ago": "{value}s前",
+        "minutes_ago": "{value}min前",
+        "hours_ago": "{value}h前",
+    },
+    "zh-TW": {
+        "progress": "收集進度",
+        "user_count": "使用者證據數",
+        "meaningful_user_count": "有效使用者證據數",
+        "ai_count": "AI 回應數",
+        "density": "資訊密度",
+        "stability": "穩定度",
+        "note": "說明: 這是跨最近視窗的慢收集證據。收集進度只是本地資訊量估算；請由模型最終判斷哪些點穩定、強相關、適合低頻開口；不要按關鍵字硬湊。",
+        "evidence": "全域證據",
+        "user": "使用者",
+        "ai": "AI",
+        "seconds_ago": "{value}s前",
+        "minutes_ago": "{value}min前",
+        "hours_ago": "{value}h前",
+    },
+    "en": {
+        "progress": "Collection progress",
+        "user_count": "User evidence count",
+        "meaningful_user_count": "Useful user evidence count",
+        "ai_count": "AI response count",
+        "density": "Information density",
+        "stability": "Stability",
+        "note": "Note: This is slow evidence collected across the recent window. The progress score is only a local information estimate; the model must decide which points are stable, relevant, and suitable for a low-frequency opening. Do not force topics by keyword.",
+        "evidence": "Global evidence",
+        "user": "User",
+        "ai": "AI",
+        "seconds_ago": "{value}s ago",
+        "minutes_ago": "{value}min ago",
+        "hours_ago": "{value}h ago",
+    },
+    "ja": {
+        "progress": "収集進捗",
+        "user_count": "ユーザー証拠数",
+        "meaningful_user_count": "有効なユーザー証拠数",
+        "ai_count": "AI応答数",
+        "density": "情報密度",
+        "stability": "安定度",
+        "note": "説明: これは直近ウィンドウ全体から集めた遅い証拠です。収集進捗はローカルな情報量の推定にすぎません。安定していて関連が強く、低頻度で自然に切り出せる点をモデルが最終判断してください。キーワードだけで無理に作らないでください。",
+        "evidence": "全体証拠",
+        "user": "ユーザー",
+        "ai": "AI",
+        "seconds_ago": "{value}秒前",
+        "minutes_ago": "{value}分前",
+        "hours_ago": "{value}時間前",
+    },
+    "ko": {
+        "progress": "수집 진행도",
+        "user_count": "사용자 증거 수",
+        "meaningful_user_count": "유효한 사용자 증거 수",
+        "ai_count": "AI 응답 수",
+        "density": "정보 밀도",
+        "stability": "안정도",
+        "note": "설명: 최근 구간 전체에서 천천히 모은 증거입니다. 진행도는 로컬 정보량 추정일 뿐입니다. 어떤 지점이 안정적이고 관련성이 높으며 낮은 빈도로 자연스럽게 꺼내기 좋은지는 모델이 최종 판단하세요. 키워드만 보고 억지로 만들지 마세요.",
+        "evidence": "전역 증거",
+        "user": "사용자",
+        "ai": "AI",
+        "seconds_ago": "{value}초 전",
+        "minutes_ago": "{value}분 전",
+        "hours_ago": "{value}시간 전",
+    },
+    "es": {
+        "progress": "Progreso de recopilación",
+        "user_count": "Evidencias del usuario",
+        "meaningful_user_count": "Evidencias útiles del usuario",
+        "ai_count": "Respuestas de IA",
+        "density": "Densidad de información",
+        "stability": "Estabilidad",
+        "note": "Nota: Esta es evidencia lenta recopilada en la ventana reciente. El progreso es solo una estimación local de información; el modelo debe decidir qué puntos son estables, relevantes y adecuados para abrir un tema de baja frecuencia. No fuerces temas por palabras clave.",
+        "evidence": "Evidencia global",
+        "user": "Usuario",
+        "ai": "IA",
+        "seconds_ago": "hace {value}s",
+        "minutes_ago": "hace {value}min",
+        "hours_ago": "hace {value}h",
+    },
+    "pt": {
+        "progress": "Progresso da coleta",
+        "user_count": "Evidências do usuário",
+        "meaningful_user_count": "Evidências úteis do usuário",
+        "ai_count": "Respostas da IA",
+        "density": "Densidade de informação",
+        "stability": "Estabilidade",
+        "note": "Nota: esta é uma evidência lenta coletada na janela recente. O progresso é apenas uma estimativa local de informação; o modelo deve decidir quais pontos são estáveis, relevantes e adequados para uma abertura de baixa frequência. Não force temas por palavras-chave.",
+        "evidence": "Evidência global",
+        "user": "Usuário",
+        "ai": "IA",
+        "seconds_ago": "há {value}s",
+        "minutes_ago": "há {value}min",
+        "hours_ago": "há {value}h",
+    },
+    "ru": {
+        "progress": "Прогресс сбора",
+        "user_count": "Число пользовательских сигналов",
+        "meaningful_user_count": "Число полезных пользовательских сигналов",
+        "ai_count": "Ответы AI",
+        "density": "Информационная плотность",
+        "stability": "Стабильность",
+        "note": "Примечание: это медленно собранные сигналы за недавнее окно. Прогресс является только локальной оценкой информативности; модель должна сама решить, какие точки стабильны, релевантны и подходят для редкого естественного начала. Не подбирай темы только по ключевым словам.",
+        "evidence": "Глобальные сигналы",
+        "user": "Пользователь",
+        "ai": "AI",
+        "seconds_ago": "{value}с назад",
+        "minutes_ago": "{value}мин назад",
+        "hours_ago": "{value}ч назад",
+    },
+}
+
+
 def _clean_text(value: Any, *, limit: int = _MAX_SIGNAL_TEXT_CHARS) -> str:
     return clean_text(value, limit=limit)
+
+
+def _label_key_for_lang(lang: str | None) -> str:
+    raw = str(lang or "").strip().replace("_", "-")
+    if not raw:
+        return "zh"
+    if raw in _GLOBAL_SIGNAL_LABELS:
+        return raw
+    lower = raw.lower()
+    if lower.startswith(("zh-tw", "zh-hant", "zh-hk")):
+        return "zh-TW"
+    if lower.startswith("zh"):
+        return "zh"
+    short = lower.split("-", 1)[0]
+    return short if short in _GLOBAL_SIGNAL_LABELS else "en"
+
+
+def _format_age(age_s: float, labels: Mapping[str, str]) -> str:
+    if age_s < 90:
+        return labels["seconds_ago"].format(value=int(age_s))
+    if age_s < 3600:
+        return labels["minutes_ago"].format(value=int(age_s / 60))
+    return labels["hours_ago"].format(value=int(age_s / 3600))
 
 
 @dataclass(frozen=True)
@@ -112,8 +259,9 @@ class TopicSignalStore:
     def is_ready(self, lanlan_name: str) -> bool:
         return self.readiness_percent(lanlan_name) >= _READY_SCORE
 
-    def format_global_signals(self, lanlan_name: str, *, max_lines: int = 40) -> str:
+    def format_global_signals(self, lanlan_name: str, *, max_lines: int = 40, lang: str | None = None) -> str:
         name = str(lanlan_name or "default")
+        labels = _GLOBAL_SIGNAL_LABELS[_label_key_for_lang(lang)]
         turns = list(self._turns.get(name, ()))
         user_count = sum(1 for turn in turns if turn.actor == "user")
         ai_count = sum(1 for turn in turns if turn.actor == "ai")
@@ -126,29 +274,24 @@ class TopicSignalStore:
         stability = _stability_score(meaningful_user_turns)
 
         lines = [
-            f"收集进度: {readiness}%",
-            f"用户证据数: {user_count}",
-            f"有效用户证据数: {len(meaningful_user_turns)}",
-            f"AI回应数: {ai_count}",
-            f"信息密度: {density}%",
-            f"稳定度: {stability}%",
-            "说明: 这是跨最近窗口的慢收集证据。收集进度只是本地信息量估算；请由模型最终判断哪些点稳定、强相关、适合低频开口；不要按关键词硬凑。",
+            f"{labels['progress']}: {readiness}%",
+            f"{labels['user_count']}: {user_count}",
+            f"{labels['meaningful_user_count']}: {len(meaningful_user_turns)}",
+            f"{labels['ai_count']}: {ai_count}",
+            f"{labels['density']}: {density}%",
+            f"{labels['stability']}: {stability}%",
+            labels["note"],
         ]
         if not turns:
             return "\n".join(lines)
 
         selected = _select_turns_for_prompt(turns, max_lines=max_lines)
         base_ts = turns[-1].timestamp
-        lines.append("全局证据:")
+        lines.append(f"{labels['evidence']}:")
         for turn in selected:
             age_s = max(0.0, base_ts - turn.timestamp)
-            if age_s < 90:
-                age = f"{int(age_s)}s前"
-            elif age_s < 3600:
-                age = f"{int(age_s / 60)}min前"
-            else:
-                age = f"{int(age_s / 3600)}h前"
-            label = "用户" if turn.actor == "user" else "AI"
+            age = _format_age(age_s, labels)
+            label = labels["user"] if turn.actor == "user" else labels["ai"]
             lines.append(f"- [{age}] {label}: {turn.text}")
         return "\n".join(lines)
 

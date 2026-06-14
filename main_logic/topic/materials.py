@@ -121,6 +121,27 @@ def _source_locale_for_lang(lang: str | None) -> str | None:
     return None
 
 
+def _summary_template_for_lang(lang: str | None) -> str:
+    raw = str(lang or "").strip().replace("_", "-").lower()
+    if not raw:
+        return "找到了和「{query}」有关的素材：{titles}。必须自然借一个具体点开口，别把联网结果讲成报告。"
+    if raw.startswith(("zh-tw", "zh-hant", "zh-hk")):
+        return "找到了和「{query}」有關的素材：{titles}。必須自然借一個具體點開口，別把聯網結果講成報告。"
+    if raw.startswith("zh"):
+        return "找到了和「{query}」有关的素材：{titles}。必须自然借一个具体点开口，别把联网结果讲成报告。"
+    if raw.startswith("ja"):
+        return "「{query}」に関係する素材が見つかりました：{titles}。具体点を一つだけ自然に借りて切り出し、検索結果の報告にしないでください。"
+    if raw.startswith("ko"):
+        return '"{query}"와 관련된 소재를 찾았습니다: {titles}. 구체적인 지점 하나만 자연스럽게 빌려 시작하고, 검색 결과 보고처럼 말하지 마세요.'
+    if raw.startswith("es"):
+        return 'Encontré material relacionado con "{query}": {titles}. Usa un detalle concreto de forma natural para abrir, sin convertirlo en un informe de búsqueda.'
+    if raw.startswith("pt"):
+        return 'Encontrei material relacionado a "{query}": {titles}. Use um detalhe concreto com naturalidade para abrir, sem transformar isso em relatório de busca.'
+    if raw.startswith("ru"):
+        return 'Нашлись материалы по запросу "{query}": {titles}. Естественно используй одну конкретную деталь для начала, не превращая это в отчет о поиске.'
+    return 'Found material related to "{query}": {titles}. Borrow one concrete detail naturally to open; do not turn the search result into a report.'
+
+
 async def _default_fetchers(lang: str | None = None) -> dict[str, Fetcher]:
     from utils.meme_fetcher import fetch_meme_content
     from utils.music_crawlers import fetch_music_content
@@ -306,7 +327,7 @@ async def enrich_topic_materials_online(
         if links:
             titles = "、".join(link["title"] for link in links[:3])
             material["material_hint"] = {
-                "summary": f"找到了和「{query}」有关的素材：{titles}。必须自然借一个具体点开口，别把联网结果讲成报告。",
+                "summary": _summary_template_for_lang(lang).format(query=query, titles=titles),
                 "links": links[:4],
                 "meme_keyword": query if "meme" in intents else "",
                 "music_keyword": query if "music" in intents else "",

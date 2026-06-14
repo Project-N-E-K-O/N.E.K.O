@@ -34,7 +34,10 @@ def topic_units(
     effective_stop_chars = ZH_TOPIC_STOP_CHARS if stop_chars is None else stop_chars
     units = {
         token
-        for token in re.findall(r"[a-z0-9]{3,}", cleaned)
+        for token in re.findall(
+            r"[a-z0-9]{3,}|[\u0400-\u04ff]{3,}|[\uac00-\ud7af]{2,}|[\u3040-\u30ffー]{2,}",
+            cleaned,
+        )
         if token
     }
     chars = [

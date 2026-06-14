@@ -308,7 +308,7 @@ class TopicHookPool:
             self._dirty.discard(name)
             return
         topic_lang = lang or self._langs.get(name, "zh")
-        global_signals = self._signal_store.format_global_signals(name)
+        global_signals = self._signal_store.format_global_signals(name, lang=topic_lang)
         raw_materials = await self._analyzer(
             user_msgs=user_msgs,
             ai_msgs=ai_msgs,

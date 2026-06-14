@@ -131,6 +131,13 @@ _DETAIL_TEMPLATES = {
 }
 
 
+def _callback_priority(callback: Mapping[str, Any]) -> int:
+    try:
+        return int(callback.get("priority", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _detail_template_for_lang(lang: str) -> dict[str, str]:
     raw = (lang or "").strip().lower().replace("_", "-")
     if raw.startswith("zh"):
@@ -252,6 +259,15 @@ async def trigger_topic_hook_once(
         return False
 
     callback = build_topic_hook_callback(material, lang=lang)
+    submit = getattr(mgr, "submit_proactive_callback", None)
+    if callable(submit):
+        submit(
+            callback,
+            priority=_callback_priority(callback),
+            coalesce_key=str(callback.get("coalesce_key") or ""),
+        )
+        return True
+
     enqueue = getattr(mgr, "enqueue_agent_callback", None)
     trigger = getattr(mgr, "trigger_agent_callbacks", None)
     if not callable(enqueue) or not callable(trigger):

@@ -5536,15 +5536,17 @@ async def proactive_chat(request: Request):
                 if _topics_resp.status_code == 200:
                     _followup_topics = _topics_resp.json().get('topics', [])
                     if _followup_topics:
-                        for topic in _followup_topics:
-                            if topic.get('id'):
-                                _surfaced_reflection_ids.append(topic['id'])
                         try:
                             from main_logic.topic.hooks import build_topic_hook_prompt
+                            _rendered_followup_topics = _followup_topics[:3]
                             followup_topics_prompt = build_topic_hook_prompt(
                                 proactive_lang,
-                                followup_topics=_followup_topics,
+                                followup_topics=_rendered_followup_topics,
                             )
+                            if followup_topics_prompt:
+                                for topic in _rendered_followup_topics:
+                                    if topic.get('id'):
+                                        _surfaced_reflection_ids.append(topic['id'])
                         except Exception as _followup_prompt_err:
                             logger.debug(f"[{lanlan_name}] followup topic prompt build failed: {_followup_prompt_err}")
                         print(f"[{lanlan_name}] 回调话题候选: {len(_followup_topics)} 条")

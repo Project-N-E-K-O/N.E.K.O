@@ -59,7 +59,7 @@ def _topic_pool_language(language: str | None = None) -> str:
     try:
         from utils.language_utils import get_global_language, normalize_language_code
         source = language if language else get_global_language()
-        return normalize_language_code(source, format='short') or 'en'
+        return normalize_language_code(source, format='full') or 'en'
     except Exception:
         return 'en'
 

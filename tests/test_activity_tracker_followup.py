@@ -703,8 +703,8 @@ def test_activity_tracker_sends_messages_to_background_topic_pool(monkeypatch):
     tracker.on_ai_message(text='别急着破釜沉舟，先看看预算。', now=2.0)
 
     assert calls == [
-        ('user', 'test_lanlan', '我想买凯迪拉克，但预算有点顶不住', 'zh'),
-        ('ai', 'test_lanlan', '别急着破釜沉舟，先看看预算。', 'zh'),
+        ('user', 'test_lanlan', '我想买凯迪拉克，但预算有点顶不住', 'zh-CN'),
+        ('ai', 'test_lanlan', '别急着破釜沉舟，先看看预算。', 'zh-CN'),
     ]
 
 
@@ -761,6 +761,25 @@ def test_activity_tracker_uses_session_language_for_background_topic_pool(monkey
         ('user', 'test_lanlan', '転職について少し迷っています。', 'ja'),
         ('ai', 'test_lanlan', '焦らず、次の条件を一緒に整理しよう。', 'ja'),
     ]
+
+
+def test_activity_tracker_preserves_traditional_chinese_topic_locale(monkeypatch):
+    from main_logic.activity.tracker import UserActivityTracker
+    from main_logic.topic import pipeline as topic_pipeline
+
+    calls = []
+
+    class FakeTopicPool:
+        def note_user_message(self, lanlan_name, text, *, lang='zh'):
+            calls.append((lanlan_name, text, lang))
+
+    monkeypatch.setattr(topic_pipeline, 'get_topic_hook_pool', lambda: FakeTopicPool())
+
+    tracker = UserActivityTracker('test_lanlan')
+    tracker.set_topic_language('zh-TW')
+    tracker.on_user_message(text='我想用繁體中文聊最近的生活選擇', now=1.0)
+
+    assert calls == [('test_lanlan', '我想用繁體中文聊最近的生活選擇', 'zh-TW')]
 
 
 # ── Hot-reload (Codex P2) ───────────────────────────────────────────

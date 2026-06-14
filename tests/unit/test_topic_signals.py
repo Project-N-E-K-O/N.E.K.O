@@ -29,6 +29,20 @@ def test_topic_signal_store_allows_dense_short_collection_to_be_analyzed():
     assert "换工作" in formatted
 
 
+def test_topic_signal_store_localizes_global_signal_labels():
+    store = TopicSignalStore(min_user_turns_for_topic=1)
+    store.note_turn("neko", actor="user", text="I keep thinking about moving to a quieter city", lang="en", now=1.0)
+    store.note_turn("neko", actor="ai", text="That sounds like a need for more control.", lang="en", now=2.0)
+
+    formatted = store.format_global_signals("neko", lang="en")
+
+    assert "Collection progress:" in formatted
+    assert "User evidence count:" in formatted
+    assert "Global evidence:" in formatted
+    assert "收集进度:" not in formatted
+    assert "用户证据数:" not in formatted
+
+
 def test_topic_signal_store_scores_repeated_theme_higher_than_unrelated_thin_turns():
     repeated = TopicSignalStore(min_user_turns_for_topic=4)
     repeated.note_turn("妮可", actor="user", text="我最近一直在看赛博朋克2077的夜之城细节", now=1.0)
