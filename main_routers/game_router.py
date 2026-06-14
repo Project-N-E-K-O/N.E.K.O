@@ -7423,6 +7423,7 @@ async def game_basketball_leaderboard(
     clean_offset = _normalize_basketball_non_negative_int(offset, default=0, max_value=100000)
     if game_type != "basketball":
         return {
+            "ok": True,
             "top": [],
             "total_players": 0,
             "total_scores": 0,
@@ -7439,6 +7440,7 @@ async def game_basketball_leaderboard(
         top = [_basketball_row_to_public_dict(row, _basketball_rank_for_row(conn, row)) for row in rows]
         your_best = _basketball_personal_best(conn, lanlan_name, session_id)
     return {
+        "ok": True,
         "top": top,
         "total_players": total_players,
         "total_scores": total_scores,

@@ -739,6 +739,7 @@ async def test_basketball_leaderboard_post_and_get_sorting(tmp_path, monkeypatch
             lanlan_name="Lan A",
         )
 
+        assert leaderboard["ok"] is True
         assert leaderboard["total_players"] == 2
         assert leaderboard["your_best"] == {"rank": 1, "score": 20}
         assert leaderboard["top"][0]["name"] == "Lan A"
@@ -749,6 +750,10 @@ async def test_basketball_leaderboard_post_and_get_sorting(tmp_path, monkeypatch
         assert leaderboard["top"][1]["score"] == 20
         assert leaderboard["top"][1]["streak"] == 3
         assert leaderboard["top"][1]["max_distance_m"] == "7.6"
+
+        unsupported = await game_router.game_basketball_leaderboard("football")
+        assert unsupported["ok"] is True
+        assert unsupported["top"] == []
 
 
 @pytest.mark.unit
