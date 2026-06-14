@@ -28,6 +28,17 @@ type NoteSavePayload = {
   note?: NoteItem;
 };
 
+function listToCsv(value: string[] | undefined): string {
+  return Array.isArray(value) ? value.join(', ') : '';
+}
+
+function csvToList(value: string): string[] {
+  return value
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
 export default function NotebookPanel(props: PluginSurfaceProps) {
   const [notebooks, setNotebooks] = useState<NotebookMeta[]>([]);
   const [notes, setNotes] = useState<NoteItem[]>([]);
@@ -38,6 +49,11 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
   const [notebookName, setNotebookName] = useState('');
   const [status, setStatus] = useState('');
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState('');
+  const [editContent, setEditContent] = useState('');
+  const [editTopics, setEditTopics] = useState('');
+  const [editTags, setEditTags] = useState('');
 
   useEffect(() => {
     ensureBrandCSS();
@@ -128,6 +144,58 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
     }
   }
 
+  async function startEdit() {
+    if (!selectedNote) {
+      return;
+    }
+    setBusy(true);
+    try {
+      // The list payload only carries a snippet, so fetch the full note before
+      // editing to avoid overwriting the body with a truncated preview.
+      const payload = await callPlugin<NoteSavePayload>('study_note_get', { note_id: selectedNote.id });
+      const note = payload.note || selectedNote;
+      setEditTitle(note.title || '');
+      setEditContent(note.content || '');
+      setEditTopics(listToCsv(note.topic_ids));
+      setEditTags(listToCsv(note.tags));
+      setEditing(true);
+    } catch (error) {
+      setStatus(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function cancelEdit() {
+    setEditing(false);
+  }
+
+  async function saveEdit() {
+    if (!selectedNote) {
+      return;
+    }
+    setBusy(true);
+    try {
+      const payload = await callPlugin<NoteSavePayload>('study_note_upsert', {
+        note_id: selectedNote.id,
+        title: editTitle,
+        content: editContent,
+        topic_ids: csvToList(editTopics),
+        tags: csvToList(editTags),
+      });
+      setEditing(false);
+      await refresh();
+      if (payload.note) {
+        setSelectedNote(payload.note);
+      }
+      setStatus(text(props, 'ui.notebook.saved', 'Saved'));
+    } catch (error) {
+      setStatus(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
       setDebouncedQuery(query);
@@ -154,6 +222,12 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
     });
     return () => controller.abort();
   }, [selectedNotebookId, debouncedQuery]);
+
+  // Selecting a different note (or clearing the selection) leaves edit mode so
+  // the form never shows stale fields from the previously edited note.
+  useEffect(() => {
+    setEditing(false);
+  }, [selectedNote?.id]);
 
   return (
     <div className="study-panel surface-shell">
@@ -227,18 +301,47 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
         </section>
         <section className="study-panel__detail">
           {selectedNote ? (
-            <>
-              <div>
-                <h2>{selectedNote.title}</h2>
-                <span>{selectedNote.updated_at || selectedNote.edited_at || ''}</span>
-              </div>
-              <p>{selectedNote.snippet || text(props, 'ui.notebook.empty_note', 'Empty note')}</p>
-              <div className="study-panel__toolbar">
-                <button type="button" disabled={busy} onClick={() => deleteNote(selectedNote.id)}>
-                  {text(props, 'ui.button.delete', 'Delete')}
-                </button>
-              </div>
-            </>
+            editing ? (
+              <>
+                <label>
+                  <span>{text(props, 'ui.label.title', 'Title')}</span>
+                  <input value={editTitle} disabled={busy} onChange={(event) => setEditTitle(event.target.value)} />
+                </label>
+                <label>
+                  <span>{text(props, 'ui.notebook.topics', 'Topics')}</span>
+                  <input value={editTopics} disabled={busy} onChange={(event) => setEditTopics(event.target.value)} />
+                </label>
+                <label>
+                  <span>{text(props, 'ui.notebook.tags', 'Tags')}</span>
+                  <input value={editTags} disabled={busy} onChange={(event) => setEditTags(event.target.value)} />
+                </label>
+                <textarea value={editContent} disabled={busy} onChange={(event) => setEditContent(event.target.value)} />
+                <div className="study-panel__toolbar">
+                  <button type="button" disabled={busy} onClick={saveEdit}>
+                    {text(props, 'ui.button.save', 'Save')}
+                  </button>
+                  <button type="button" disabled={busy} onClick={cancelEdit}>
+                    {text(props, 'ui.button.cancel', 'Cancel')}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div>
+                  <h2>{selectedNote.title}</h2>
+                  <span>{selectedNote.updated_at || selectedNote.edited_at || ''}</span>
+                </div>
+                <p>{selectedNote.snippet || text(props, 'ui.notebook.empty_note', 'Empty note')}</p>
+                <div className="study-panel__toolbar">
+                  <button type="button" disabled={busy} onClick={startEdit}>
+                    {text(props, 'ui.button.edit', 'Edit')}
+                  </button>
+                  <button type="button" disabled={busy} onClick={() => deleteNote(selectedNote.id)}>
+                    {text(props, 'ui.button.delete', 'Delete')}
+                  </button>
+                </div>
+              </>
+            )
           ) : (
             <div className="study-panel__empty">{text(props, 'ui.notebook.select_note', 'Select a note')}</div>
           )}
