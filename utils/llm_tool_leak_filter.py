@@ -12,6 +12,7 @@ _SEED_OPEN_RE = re.compile(r"<\s*seed\s*:\s*tool_call\b[^>]*>|(?<!/)\bseed\s*:\s
 _SEED_CLOSE_RE = re.compile(r"<\s*/\s*seed\s*:\s*tool_call\s*>", re.IGNORECASE)
 _PARAMETER_RE = re.compile(r"<\s*parameter\b[^>]*\bname\s*=", re.IGNORECASE)
 _FUNCTION_CLOSE_RE = re.compile(r"<\s*/\s*function\s*>", re.IGNORECASE)
+_FUNCTION_NAME_OPEN_TAIL_RE = re.compile(r"<\s*function\b[^>]*>\s*<\s*name\s*>\s*$", re.IGNORECASE)
 _NAME_CLOSE_RE = re.compile(r"</\s*name\s*>", re.IGNORECASE)
 
 
@@ -56,7 +57,12 @@ class ToolLeakFilter:
                     text = text[close_match.end():]
                     event = self._finish_event()
                     continue
-                self._suppressed_chars += len(text)
+                keep_tail = self._suppression_close_tail_len(text)
+                if keep_tail > 0:
+                    self._suppressed_chars += len(text) - keep_tail
+                    self._pending = text[-keep_tail:]
+                else:
+                    self._suppressed_chars += len(text)
                 text = ""
                 break
 
@@ -127,6 +133,16 @@ class ToolLeakFilter:
         trailing_seed_close = _SEED_CLOSE_RE.match(text, function_close.end())
         return trailing_seed_close or function_close
 
+    def _suppression_close_tail_len(self, text: str) -> int:
+        min_start = max(0, len(text) - self._max_tail)
+        for start in range(min_start, len(text)):
+            tail = text[start:]
+            if self._is_seed_close_prefix(tail):
+                return len(tail)
+            if self._suppression_pattern == "structured_tool_call" and self._is_function_close_prefix(tail):
+                return len(tail)
+        return 0
+
     def _find_leak_start(self, text: str) -> Optional[tuple[int, int, str]]:
         seed = _SEED_OPEN_RE.search(text)
         if seed:
@@ -142,8 +158,16 @@ class ToolLeakFilter:
                 if _NAME_CLOSE_RE.search(suffix) and (
                     _PARAMETER_RE.search(suffix) or _FUNCTION_CLOSE_RE.search(suffix)
                 ):
-                    return idx, idx + len(tool_name), "structured_tool_call"
+                    start = self._structured_tool_start(text, idx)
+                    return start, idx + len(tool_name), "structured_tool_call"
         return None
+
+    @staticmethod
+    def _structured_tool_start(text: str, tool_name_start: int) -> int:
+        opener = _FUNCTION_NAME_OPEN_TAIL_RE.search(text[:tool_name_start])
+        if opener:
+            return opener.start()
+        return tool_name_start
 
     def _split_safe_tail(self, text: str) -> tuple[str, str]:
         keep_tail = self._possible_marker_tail_len(text)
@@ -269,6 +293,64 @@ class ToolLeakFilter:
 
         ok, _pos, partial = cls._consume_literal_prefix(text, pos, "tool_call")
         return ok and partial
+
+    @classmethod
+    def _is_seed_close_prefix(cls, text: str) -> bool:
+        return cls._is_xml_close_prefix(text, "seed", ":", "tool_call")
+
+    @classmethod
+    def _is_function_close_prefix(cls, text: str) -> bool:
+        return cls._is_xml_close_prefix(text, "function")
+
+    @classmethod
+    def _is_xml_close_prefix(
+        cls,
+        text: str,
+        first_literal: str,
+        separator: str | None = None,
+        second_literal: str | None = None,
+    ) -> bool:
+        if not text or text[0] != "<":
+            return False
+
+        pos = cls._consume_whitespace(text, 1)
+        if pos == len(text):
+            return True
+        if text[pos] != "/":
+            return False
+
+        pos = cls._consume_whitespace(text, pos + 1)
+        if pos == len(text):
+            return True
+
+        ok, pos, partial = cls._consume_literal_prefix(text, pos, first_literal)
+        if not ok:
+            return False
+        if partial:
+            return True
+
+        if separator is not None:
+            pos = cls._consume_whitespace(text, pos)
+            if pos == len(text):
+                return True
+            if text[pos] != separator:
+                return False
+
+            pos = cls._consume_whitespace(text, pos + 1)
+            if pos == len(text):
+                return True
+
+            assert second_literal is not None
+            ok, pos, partial = cls._consume_literal_prefix(text, pos, second_literal)
+            if not ok:
+                return False
+            if partial:
+                return True
+
+        pos = cls._consume_whitespace(text, pos)
+        if pos == len(text):
+            return True
+        return text[pos] == ">" and pos == len(text) - 1
 
     def _structured_marker_tail_len(self, text: str) -> int:
         min_start = max(0, len(text) - self._max_tail)
