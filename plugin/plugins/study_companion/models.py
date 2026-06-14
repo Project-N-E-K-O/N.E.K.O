@@ -261,6 +261,7 @@ class StudyConfig:
     default_mode: StudyMode = MODE_COMPANION
     language: str = "zh-CN"
     history_limit: int = 50
+    auto_open_ui: bool = True
     ocr_enabled: bool = True
     ocr_backend_selection: str = "rapidocr"
     ocr_capture_backend: str = "auto"
@@ -297,6 +298,7 @@ class StudyConfig:
         self.default_mode = normalize_mode(self.default_mode or self.mode)
         self.language = str(self.language or "zh-CN").strip() or "zh-CN"
         self.history_limit = max(1, self._coerce_int(self.history_limit, 50))
+        self.auto_open_ui = bool(self.auto_open_ui)
         self.ocr_install_timeout_seconds = self._clamp_float(
             self.ocr_install_timeout_seconds, 1.0, 3600.0, 300.0
         )
@@ -582,6 +584,7 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
         default_mode=default_mode,
         language=_str(study, "language", "zh-CN", "language"),
         history_limit=max(1, _int(study, "history_limit", 50, "history_limit")),
+        auto_open_ui=_bool(study, "auto_open_ui", True, "auto_open_ui"),
         ocr_enabled=_bool(ocr, "enabled", True, "ocr_enabled"),
         ocr_backend_selection=_str(
             ocr, "backend_selection", "rapidocr", "ocr_backend_selection"

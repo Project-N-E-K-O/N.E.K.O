@@ -1,7 +1,7 @@
 import { useEffect, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 
-import { callPlugin, formatError, text } from './study_surface_utils';
+import { callPlugin, ensureBrandCSS, formatError, text } from './study_surface_utils';
 
 function formatSeconds(value: number) {
   const seconds = Math.max(0, Number(value) || 0);
@@ -14,11 +14,11 @@ export default function PomodoroPanel(props: PluginSurfaceProps) {
   const [error, setError] = useState('');
 
   async function refresh() {
-    setStatus(await callPlugin('study_pomodoro_status'));
+    setStatus(await callPlugin(props.api, 'study_pomodoro_status'));
   }
   async function act(entryId: string) {
     try {
-      setStatus(await callPlugin(entryId));
+      setStatus(await callPlugin(props.api, entryId));
       setError('');
     } catch (err) {
       setError(formatError(err));
@@ -26,6 +26,7 @@ export default function PomodoroPanel(props: PluginSurfaceProps) {
   }
 
   useEffect(() => {
+    ensureBrandCSS();
     let disposed = false;
     let timeoutId = 0;
     const tick = async () => {
@@ -46,7 +47,7 @@ export default function PomodoroPanel(props: PluginSurfaceProps) {
   }, []);
 
   return (
-    <div className="study-panel">
+    <div className="study-panel surface-shell">
       <header className="study-panel__header">
         <div>
           <h1>{text(props, 'ui.surface.pomodoro_panel', 'Pomodoro')}</h1>
@@ -59,6 +60,7 @@ export default function PomodoroPanel(props: PluginSurfaceProps) {
         <div><span>{text(props, 'ui.label.sessions', 'Sessions')}</span><strong>{status.session_count || 0}</strong></div>
         <div><span>{text(props, 'ui.label.mode', 'Mode')}</span><strong>{status.mode || 'focus'}</strong></div>
       </section>
+      <div className="pomodoro-ring" data-mode={status.mode || 'focus'}>{formatSeconds(status.remaining_seconds)}</div>
       <div className="study-panel__actions">
         <button type="button" onClick={() => act('study_pomodoro_start')}>{text(props, 'ui.button.start', 'Start')}</button>
         <button type="button" onClick={() => act('study_pomodoro_pause')}>{text(props, 'ui.button.pause', 'Pause')}</button>

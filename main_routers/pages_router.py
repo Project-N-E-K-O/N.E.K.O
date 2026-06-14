@@ -37,6 +37,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/yui-guide-avatar-stage.js",
     _PROJECT_ROOT / "static/yui-guide-wakeup.js",
     _PROJECT_ROOT / "static/yui-guide-director.js",
+    _PROJECT_ROOT / "static/i18n-i18next.js",
     _PROJECT_ROOT / "static/app-auto-goodbye.js",
     _PROJECT_ROOT / "static/app-ui.js",
     _PROJECT_ROOT / "static/app-interpage.js",
@@ -208,6 +209,16 @@ async def soccer_demo(request: Request):
     return templates.TemplateResponse("templates/soccer_demo.html", {
         "request": request,
         **_vrm_defaults_ctx(),
+    })
+
+
+@router.get("/basketball_demo", response_class=HTMLResponse)
+async def basketball_demo(request: Request):
+    """Basketball shooting challenge mini-game."""
+    templates = get_templates()
+    return templates.TemplateResponse("templates/basketball_demo.html", {
+        "request": request,
+        **_static_assets_ctx(),
     })
 
 

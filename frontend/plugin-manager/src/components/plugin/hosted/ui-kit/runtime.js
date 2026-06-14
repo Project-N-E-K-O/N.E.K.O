@@ -1020,8 +1020,10 @@ window.addEventListener('message', (event) => {
   if (data.ok) pending.resolve(data.result);
   else pending.reject(createHostedBridgeError(data));
 });
-function requestHost(method, payload) {
+function requestHost(method, payload, options) {
   const requestId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  const requestedTimeoutMs = Number(options && options.timeoutMs);
+  const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 ? requestedTimeoutMs : 30000;
   return new Promise((resolve, reject) => {
     __pendingRequests.set(requestId, { resolve, reject });
     parent.postMessage({ type: 'neko-hosted-surface-request', requestId, method, payload }, '*');
@@ -1029,11 +1031,11 @@ function requestHost(method, payload) {
       if (!__pendingRequests.has(requestId)) return;
       __pendingRequests.delete(requestId);
       reject(new Error('Hosted surface request timed out'));
-    }, 30000);
+    }, timeoutMs);
   });
 }
 const api = {
-  call(actionId, args) { return requestHost('call', { actionId, args: args || {} }); },
+  call(actionId, args, options) { return requestHost('call', { actionId, args: args || {} }, options || {}); },
   async refresh() {
     const context = await requestHost('refresh', {});
     return refreshHostedPayload(context);

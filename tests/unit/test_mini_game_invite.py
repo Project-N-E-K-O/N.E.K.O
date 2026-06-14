@@ -144,6 +144,28 @@ def test_in_cooldown_true_when_responded_within_24h_and_under_10_chats():
     assert sr._mini_game_invite_in_cooldown(LANLAN) is True
 
 
+def test_game_specific_cooldown_does_not_cross_block_other_game():
+    """Declining soccer should not block a basketball invite cooldown."""
+    state = sr._mini_game_invite_get_state(LANLAN)
+    state['delivered_at'] = time.time() - 60
+    state['responded_at'] = time.time() - 60
+    state['chats_since_response'] = 5
+    state['last_game_type'] = 'soccer'
+
+    assert sr._mini_game_invite_in_cooldown(LANLAN, 'soccer') is True
+    assert sr._mini_game_invite_in_cooldown(LANLAN, 'basketball') is False
+
+
+def test_later_suppression_cross_blocks_other_games():
+    state = sr._mini_game_invite_get_state(LANLAN)
+    state['delivered_at'] = None
+    state['responded_at'] = None
+    state['last_game_type'] = 'soccer'
+    state['suppressed_until'] = time.time() + 60
+
+    assert sr._mini_game_invite_in_cooldown(LANLAN, 'basketball') is True
+
+
 def test_in_cooldown_true_when_only_time_elapsed_chats_short():
     """时间阈值已过但 chats 没到 10 次 → 仍 cooldown（AND 语义）。
 
@@ -644,7 +666,11 @@ async def test_maybe_deliver_uses_localized_template(monkeypatch):
     history = sr._proactive_chat_history[LANLAN]
     _, message, _ = history[0]
     assert 'Alice' in message
-    assert 'soccer' in message.lower()
+    assert (
+        'soccer' in message.lower()
+        or 'basketball' in message.lower()
+        or 'shooting challenge' in message.lower()
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -943,13 +969,34 @@ async def test_invite_skipped_when_no_game_available(monkeypatch):
 
 
 def test_cooldown_accept_is_2h_by_default():
-    """spec：accept 后 cooldown = 2h。pin 住避免回归（曾从 24h→1h→2h）。"""
+    """Accept keeps the invite cooldown at 2 hours by default."""
     assert sr.MINI_GAME_INVITE_COOLDOWN_AFTER_ACCEPT_SECONDS == 2 * 3600
 
 
 def test_cooldown_decline_is_5h_by_default():
-    """spec：decline 后 cooldown = 5h（>accept，"拒绝"信号需更久静默）。"""
+    """Decline keeps the invite cooldown at 5 hours by default."""
     assert sr.MINI_GAME_INVITE_COOLDOWN_AFTER_DECLINE_SECONDS == 5 * 3600
+
+
+@pytest.mark.asyncio
+async def test_declined_soccer_invite_still_allows_basketball_invite(monkeypatch):
+    """A soccer cooldown should still allow a basketball invite for the character."""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_AVAILABLE_GAMES', ('soccer', 'basketball'))
+    state = sr._mini_game_invite_get_state(LANLAN)
+    state['delivered_at'] = time.time() - 60
+    state['responded_at'] = time.time() - 60
+    state['chats_since_response'] = 0
+    state['last_game_type'] = 'soccer'
+
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN, mgr=_make_mgr(),
+        activity_snapshot=_make_snapshot(),
+        invite_lang='zh', master_name=MASTER,
+    )
+
+    assert out is not None
+    assert out['game_type'] == 'basketball'
 
 
 def test_new_user_force_at_is_4_by_default():
@@ -1222,9 +1269,139 @@ def test_keyword_matcher_no_false_positive_on_common_english_phrases():
 
 
 def test_maybe_apply_keyword_noop_when_no_pending():
-    """没 pending invite → keyword matcher hook 直接 None，不动 state。"""
+    """Keyword matching is a no-op when there is no pending invite."""
     result = sr._maybe_apply_mini_game_invite_keyword(LANLAN, '好啊')
     assert result is None
+
+
+def test_direct_basketball_request_opens_game_without_pending():
+    result = sr._maybe_apply_mini_game_invite_keyword(LANLAN, '来玩一句投篮')
+
+    assert result is not None
+    assert result['action'] == 'open_game'
+    assert result['game_type'] == 'basketball'
+    assert result['game_url'].startswith('/basketball_demo?')
+    assert f'lanlan_name={LANLAN}' in result['game_url']
+    assert result['session_id']
+
+
+def test_direct_basketball_request_ignores_casual_or_negated_mentions():
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '篮球新闻挺有意思') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '我现在不想玩投篮') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'can we not play basketball?') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'can we not start soccer?') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, "I don't want to play basketball") is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, "I do not want to start soccer") is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '我不太想玩篮球') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '我不怎么想打篮球') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'I play basketball every week') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'we play basketball every week') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'kids play soccer after school') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, "let's start by talking about basketball") is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'can we discuss basketball play styles?') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'how to play basketball better?') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'when does basketball start?') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'what time does soccer start?') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'is the basketball court open?') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'the basketball court is open today') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'can we play basketball later?') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'could we start soccer tomorrow?') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '等会儿想玩篮球') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '明天来一局足球') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '可以讲讲篮球怎么打吗') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '我想了解篮球怎么玩') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '篮球比赛开始了吗') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '足球什么时候开始') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '投篮能开始了吗') is None
+    assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, '篮球场开了吗') is None
+
+
+def test_direct_basketball_request_keeps_imperative_english_matching():
+    result = sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'please play basketball')
+    bare_result = sr._maybe_apply_mini_game_invite_keyword(LANLAN, 'play basketball')
+    what_about_result = sr._maybe_apply_mini_game_invite_keyword(
+        LANLAN,
+        'what about basketball, can we play?',
+    )
+
+    assert result is not None
+    assert result['action'] == 'open_game'
+    assert result['game_type'] == 'basketball'
+    assert bare_result is not None
+    assert bare_result['action'] == 'open_game'
+    assert bare_result['game_type'] == 'basketball'
+    assert what_about_result is not None
+    assert what_about_result['action'] == 'open_game'
+    assert what_about_result['game_type'] == 'basketball'
+
+
+def test_direct_request_negation_is_scoped_to_matched_game():
+    result = sr._maybe_apply_mini_game_invite_keyword(LANLAN, '不想踢足球，想打篮球')
+
+    assert result is not None
+    assert result['action'] == 'open_game'
+    assert result['game_type'] == 'basketball'
+
+
+def test_direct_soccer_request_opens_game_without_pending():
+    result = sr._maybe_apply_mini_game_invite_keyword(LANLAN, '来一局足球')
+
+    assert result is not None
+    assert result['action'] == 'open_game'
+    assert result['game_type'] == 'soccer'
+    assert result['game_url'].startswith('/soccer_demo?')
+
+
+def test_response_cooldowns_are_kept_per_game_after_later_invites():
+    state = sr._mini_game_invite_get_state(LANLAN)
+    state['delivered_at'] = time.time() - 60
+    state['responded_at'] = None
+    state['pending_session_id'] = 'soccer-sess'
+    state['last_game_type'] = 'soccer'
+    soccer_result = sr._apply_mini_game_invite_choice(LANLAN, 'decline', source='unit')
+    assert soccer_result['action'] == 'cooldown'
+
+    sr._mini_game_invite_record_delivered(LANLAN, 'basketball-sess')
+    state['last_game_type'] = 'basketball'
+    basketball_result = sr._apply_mini_game_invite_choice(LANLAN, 'accept', source='unit')
+    assert basketball_result['action'] == 'open_game'
+
+    assert sr._mini_game_invite_in_cooldown(LANLAN, 'soccer') is True
+    assert sr._mini_game_invite_in_cooldown(LANLAN, 'basketball') is True
+
+
+def test_response_cooldowns_advance_after_top_level_later_reset():
+    state = sr._mini_game_invite_get_state(LANLAN)
+    state['delivered_at'] = None
+    state['responded_at'] = None
+    state['response_cooldowns'] = {
+        'soccer': {
+            'responded_at': time.time() - 60,
+            'chats_since_response': 0,
+            'last_response_choice': 'decline',
+        },
+    }
+
+    sr._mini_game_invite_count_post_response_chat(LANLAN)
+
+    assert state['response_cooldowns']['soccer']['chats_since_response'] == 1
+
+
+def test_response_cooldowns_do_not_advance_for_pending_invite_message():
+    state = sr._mini_game_invite_get_state(LANLAN)
+    state['delivered_at'] = time.time()
+    state['responded_at'] = None
+    state['response_cooldowns'] = {
+        'soccer': {
+            'responded_at': time.time() - 60,
+            'chats_since_response': 0,
+            'last_response_choice': 'decline',
+        },
+    }
+
+    sr._mini_game_invite_count_post_response_chat(LANLAN)
+
+    assert state['response_cooldowns']['soccer']['chats_since_response'] == 0
 
 
 def test_maybe_apply_keyword_accept_returns_open_game():
@@ -1330,7 +1507,7 @@ async def test_push_resolved_includes_game_url_for_open_game(monkeypatch):
     payload = mgr.websocket.send_json.await_args.args[0]
     assert payload['action'] == 'open_game'
     assert payload['game_url'].startswith('/soccer_demo?')
-    assert payload['game_type'] == 'soccer'
+    assert payload['game_type'] in ('soccer', 'basketball')
 
 
 @pytest.mark.asyncio
@@ -1364,8 +1541,7 @@ def test_advance_response_returns_outcome_for_caller_ws_push():
 
 @pytest.mark.asyncio
 async def test_invite_delivery_pushes_options_via_websocket(monkeypatch):
-    """投递成功后必须 push 一条 mini_game_invite_options WS message 给前端，
-    带 options + session_id + game_type。前端 ChoicePrompt 渲染依赖这条。"""
+    """Successful invite delivery pushes mini_game_invite_options to the client."""
     monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
     mgr = _make_mgr()
     mgr.websocket = MagicMock()
@@ -1385,7 +1561,7 @@ async def test_invite_delivery_pushes_options_via_websocket(monkeypatch):
     payload = mgr.websocket.send_json.await_args.args[0]
     assert payload['type'] == 'mini_game_invite_options'
     assert payload['session_id'] == out['invite_session_id']
-    assert payload['game_type'] == 'soccer'
+    assert payload['game_type'] in ('soccer', 'basketball')
     assert isinstance(payload['options'], list) and len(payload['options']) == 3
     choices = [opt['choice'] for opt in payload['options']]
     assert choices == ['accept', 'decline', 'later']
@@ -1399,7 +1575,7 @@ async def test_invite_delivery_pushes_options_via_websocket(monkeypatch):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_option_labels_cover_all_native_locales():
-    """5 个 native locale × 3 个 choice 必须有非空 label。"""
+    """Every native locale must define a non-empty label for each choice."""
     from config.prompts.prompts_proactive import MINI_GAME_INVITE_OPTION_LABELS
     for lang in ('zh', 'en', 'ja', 'ko', 'ru'):
         assert lang in MINI_GAME_INVITE_OPTION_LABELS, f"缺 {lang} option labels"
@@ -1410,7 +1586,7 @@ def test_option_labels_cover_all_native_locales():
 
 
 def test_keywords_cover_all_native_locales():
-    """5 个 native locale × 3 个 choice 必须各有非空关键词列表。"""
+    """Every native locale must define non-empty keyword lists for each choice."""
     from config.prompts.prompts_proactive import MINI_GAME_INVITE_KEYWORDS
     for lang in ('zh', 'en', 'ja', 'ko', 'ru'):
         assert lang in MINI_GAME_INVITE_KEYWORDS, f"缺 {lang} keywords"
@@ -1420,3 +1596,44 @@ def test_keywords_cover_all_native_locales():
             assert isinstance(kws[choice], list) and kws[choice], (
                 f"{lang}/{choice} 关键词列表空"
             )
+
+
+def test_basketball_invite_config_and_i18n_complete():
+    from config import MINI_GAME_INVITE_AVAILABLE_GAMES, MINI_GAME_LAUNCH_URL_BY_GAME
+    from config.prompts.prompts_activity import WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME
+    from config.prompts.prompts_proactive import MINI_GAME_INVITE_LINES_BY_GAME
+
+    assert 'basketball' in MINI_GAME_INVITE_AVAILABLE_GAMES
+    assert MINI_GAME_LAUNCH_URL_BY_GAME['basketball'] == '/basketball_demo'
+    for lang in ('zh', 'en', 'ja', 'ko', 'ru', 'es', 'pt'):
+        assert MINI_GAME_INVITE_LINES_BY_GAME['basketball'][lang].strip()
+        work_break_prompt = WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME['basketball'][lang]
+        assert work_break_prompt.strip()
+        assert '{master}' in work_break_prompt
+        assert '{app}' in work_break_prompt
+        assert '{minutes}' in work_break_prompt
+
+
+def test_accept_basketball_invite_returns_basketball_url():
+    state = sr._mini_game_invite_get_state(LANLAN)
+    state['delivered_at'] = time.time() - 3
+    state['responded_at'] = None
+    state['pending_session_id'] = 'bb-sess'
+    state['last_game_type'] = 'basketball'
+
+    result = sr._apply_mini_game_invite_choice(LANLAN, 'accept', source='unit')
+
+    assert result['action'] == 'open_game'
+    assert result['game_type'] == 'basketball'
+    assert result['game_url'].startswith('/basketball_demo?')
+    assert 'mode=shooter' in result['game_url']
+    assert 'session_id=bb-sess' in result['game_url']
+
+
+def test_direct_basketball_request_returns_shooter_mode_url():
+    result = sr._build_direct_mini_game_open_result(LANLAN, 'basketball')
+
+    assert result is not None
+    assert result['game_type'] == 'basketball'
+    assert result['game_url'].startswith('/basketball_demo?')
+    assert 'mode=shooter' in result['game_url']

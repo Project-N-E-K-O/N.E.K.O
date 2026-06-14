@@ -297,7 +297,7 @@ async def test_finalize_cancels_running_context_organizer_when_game_memory_disab
     )
 
     assert result["archive_memory"]["status"] == "skipped"
-    assert result["archive_memory"]["reason"] == "soccer_game_memory_archive_disabled"
+    assert result["archive_memory"]["reason"] == "game_memory_archive_disabled"
     assert state["game_context_organizer"]["running"] is False
     assert state["game_context_organizer"]["error"] == "archive_disabled"
     assert state["_game_context_organizer_task"].done()

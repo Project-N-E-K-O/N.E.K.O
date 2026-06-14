@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // 更新语言包内容时可以递增此值
-    const LOCALE_VERSION = '2026-06-12-1';
+    const LOCALE_VERSION = '2026-06-13-pr1719-merge';
 
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {

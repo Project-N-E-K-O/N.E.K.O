@@ -1932,6 +1932,7 @@ def _mini_game_invite_get_state(lanlan_name: str) -> dict[str, Any]:
             'responded_at': None,
             'chats_since_response': 0,
             'last_game_type': None,
+            'response_cooldowns': {},
             # 当前 pending 邀请的 session_id；endpoint 收到回应时校验匹配，避免
             # 用户点击过期邀请被错算成响应当前 pending。一旦投递新邀请会被刷新。
             'pending_session_id': None,
@@ -1944,6 +1945,8 @@ def _mini_game_invite_get_state(lanlan_name: str) -> dict[str, Any]:
             'last_response_choice': None,
         }
         _mini_game_invite_state[lanlan_name] = state
+    else:
+        state.setdefault('response_cooldowns', {})
     return state
 
 
@@ -2117,17 +2120,14 @@ def _mini_game_invite_advance_response(
     )
 
 
-def _mini_game_invite_in_cooldown(lanlan_name: str) -> bool:
-    """是否处于冷却期。True = 本轮不该掷骰。
+def _mini_game_invite_in_cooldown(lanlan_name: str, game_type: str | None = None) -> bool:
+    """Return whether this character is in a mini-game invite cooldown.
 
-    覆盖：
-      - D2「回头再说」短期抑制（suppressed_until > now）→ True
-      - pending（投递了但 responded_at=None）→ True
-      - 已回应但 时间(by choice) 或 10 chats 任一未跨过 → True
-      - 从未投递 / 已完整跨过两道 → False
-
-    时间阈值按 last_response_choice 分：accept=2h、decline=5h。fallback 取 accept
-    阈值（短），避免遗留 state 没该字段时把用户卡到长 cooldown。
+    A true value means the current turn should not roll another invite. This
+    covers short suppression from the "later" choice, pending invites, and
+    replied invites that have not crossed both the time and chat-count gates.
+    Cooldowns after completed responses are scoped to the same game type, while
+    pending invites still suppress all game types for the character.
     """
     state = _mini_game_invite_state.get(lanlan_name)
     if not state:
@@ -2135,6 +2135,24 @@ def _mini_game_invite_in_cooldown(lanlan_name: str) -> bool:
     suppressed_until = state.get('suppressed_until')
     if suppressed_until is not None and time.time() < float(suppressed_until):
         return True
+    if game_type:
+        cooldowns = state.get('response_cooldowns')
+        if isinstance(cooldowns, dict) and isinstance(cooldowns.get(game_type), dict):
+            response_state = cooldowns[game_type]
+            elapsed = time.time() - float(response_state.get('responded_at') or 0.0)
+            if response_state.get('last_response_choice') == 'decline':
+                time_threshold = MINI_GAME_INVITE_COOLDOWN_AFTER_DECLINE_SECONDS
+            else:
+                time_threshold = MINI_GAME_INVITE_COOLDOWN_AFTER_ACCEPT_SECONDS
+            chats_since_response = int(response_state.get('chats_since_response') or 0)
+            if elapsed < time_threshold or chats_since_response < MINI_GAME_INVITE_COOLDOWN_CHATS:
+                return True
+            cooldowns.pop(game_type, None)
+    if game_type:
+        last_game_type = state.get('last_game_type')
+        pending = state.get('delivered_at') is not None and state.get('responded_at') is None
+        if last_game_type and last_game_type != game_type and not pending:
+            return False
     if state['delivered_at'] is None:
         return False
     if state['responded_at'] is None:
@@ -2168,26 +2186,74 @@ def _mini_game_invite_record_delivered(lanlan_name: str, session_id: str) -> Non
 
 
 def _mini_game_invite_count_post_response_chat(lanlan_name: str) -> None:
-    """每次成功投递的主动搭话调一次：若上次邀请已被回应，counter +1。
+    """Advance invite cooldown chat counters after a delivered proactive turn.
 
-    在 _record_proactive_chat 后立即调。任何 channel 都计——只要 AI 真发了
-    一条主动搭话出去，"24h+10次"里的 10 次门就推进一格。pending 期间（还没
-    被回应）此函数 no-op，避免靠"邀请自身这一条"提前耗 counter。"""
+    This runs immediately after _record_proactive_chat. Any channel counts as
+    long as the AI actually delivered a proactive message. Pending invites are
+    no-ops so the invite message itself does not spend the response gate.
+    """
     state = _mini_game_invite_state.get(lanlan_name)
-    if not state or state['responded_at'] is None:
+    if not state:
         return
-    state['chats_since_response'] += 1
+    if state.get('delivered_at') is not None and state.get('responded_at') is None:
+        return
+    if state.get('responded_at') is not None:
+        state['chats_since_response'] += 1
+    cooldowns = state.get('response_cooldowns')
+    if isinstance(cooldowns, dict):
+        for response_state in cooldowns.values():
+            if isinstance(response_state, dict) and response_state.get('responded_at') is not None:
+                response_state['chats_since_response'] = int(response_state.get('chats_since_response') or 0) + 1
 
 
-def _pick_mini_game_type() -> str | None:
-    """从 MINI_GAME_INVITE_AVAILABLE_GAMES 选一个 game_type。
+def _mini_game_invite_record_response_cooldown(
+    state: dict[str, Any],
+    game_type: str,
+    choice: str,
+    responded_at: float,
+) -> None:
+    cooldowns = state.setdefault('response_cooldowns', {})
+    if not isinstance(cooldowns, dict):
+        cooldowns = {}
+        state['response_cooldowns'] = cooldowns
+    cooldowns[game_type] = {
+        'responded_at': responded_at,
+        'chats_since_response': 0,
+        'last_response_choice': choice,
+    }
 
-    必须是 MINI_GAME_INVITE_LINES_BY_GAME 里有文案的——如果配置错位（available
-    list 里有但 lines 里没），跳过那条。空 → None（caller 短路返回）。"""
+
+def _mini_game_launch_url(game_type: str, lanlan_name: str, session_id: str) -> str | None:
+    url_template = MINI_GAME_LAUNCH_URL_BY_GAME.get(game_type)
+    if not url_template:
+        return None
+    from urllib.parse import urlencode as _urlencode
+
+    query = {
+        "lanlan_name": lanlan_name,
+        "session_id": session_id,
+    }
+    if game_type == "basketball":
+        query["mode"] = "shooter"
+    separator = "&" if "?" in url_template else "?"
+    return f"{url_template}{separator}{_urlencode(query)}"
+
+
+def _pick_mini_game_type(lanlan_name: str | None = None) -> str | None:
+    """Pick an available mini-game type with invite copy configured.
+
+    Games missing invite lines are skipped, and character-specific cooldowns are
+    respected when a character name is provided.
+    """
     candidates = [
         g for g in MINI_GAME_INVITE_AVAILABLE_GAMES
         if g in MINI_GAME_INVITE_LINES_BY_GAME
     ]
+    if lanlan_name:
+        candidates = [
+            g for g in candidates
+            if not _mini_game_invite_in_cooldown(lanlan_name, g)
+        ]
     if not candidates:
         return None
     import random as _random
@@ -2195,23 +2261,12 @@ def _pick_mini_game_type() -> str | None:
 
 
 def _resolve_proactive_locale(data: dict, mgr) -> str:
-    """主动搭话路径解析"用户当前 locale"的统一入口（短码 zh / en / ja / ko / ru / es / pt）。
+    """Resolve the active user locale for proactive chat flows.
 
-    proactive_chat 路径解 locale 历来三层兜底，但前两层之前漏了 session 真值：
-
-      1. request body 显式 ``language`` / ``lang`` / ``i18n_language`` —— 前端请求可
-         以一锤定音，最高优先。
-      2. ``mgr.user_language`` —— websocket 建连时由前端 i18n 推上来（见
-         ``main_routers/websocket_router.py`` 处理 ``message['language']`` 的分支），
-         in-game / Phase 2 LLM 都已在用，proactive 早先没接，导致 Steam SDK 在后端
-         启动时拿不到值就一直缓存系统 locale。
-      3. ``get_global_language()`` —— 进程级缓存，从 Steam SDK / 系统 locale 读一次。
-         Steam SDK 启动期 race 失败（schinese 没拿到）就退化为系统 locale，前后端
-         看到不同结果（前端异步 ``/api/config/steam_language`` 端点重读，能拿到对的
-         schinese → zh）。在 Steam=zh / 系统=en 的场景下尤其明显。
-
-    把 session 真值塞进第二层，proactive 邀请文案 / Phase 1-2 LLM 输出语言都跟在线
-    会话保持一致；仅在没有任何 session 上下文时才退到全局缓存。
+    Request data wins first, websocket session language is the second source of
+    truth, and the process-level global language is only a final fallback. This
+    keeps proactive invite copy and Phase 1-2 LLM output aligned with the live
+    session whenever frontend i18n has already reported the user's language.
     """
     request_lang = data.get('language') or data.get('lang') or data.get('i18n_language')
     # 与 ``main_routers/game_router._absorb_request_language`` 同形：第三方客户端 /
@@ -2313,9 +2368,6 @@ async def _maybe_deliver_mini_game_invite(
         # 优先级，统一不让 mini-game 邀请把 promised follow-up 抢走。
         if getattr(activity_snapshot, 'unfinished_thread', None) is not None:
             return None
-        if _mini_game_invite_in_cooldown(lanlan_name):
-            return None
-
         # Force-first：从未发过邀请 + 累计已成功投递 N-1 条主动搭话 → 本条强制变邀请。
         # proactive_chat_total 在 _record_proactive_chat 之后才 +1，所以"第 N 次"的
         # 当下值是 N-1。计数走持久化文件，跨重启保留——否则用户每次重启都再"第 N 次"
@@ -2333,12 +2385,7 @@ async def _maybe_deliver_mini_game_invite(
             and total_so_far >= max(0, MINI_GAME_INVITE_NEW_USER_FORCE_AT - 1)
         )
 
-        if not force_first:
-            import random as _random
-            if _random.random() >= MINI_GAME_INVITE_TRIGGER_PROBABILITY:
-                return None
-
-        game_type = _pick_mini_game_type()
+        game_type = _pick_mini_game_type(lanlan_name)
         if game_type is None:
             logger.warning(
                 "[%s] mini-game invite skipped: no game_type available "
@@ -2348,6 +2395,11 @@ async def _maybe_deliver_mini_game_invite(
                 list(MINI_GAME_INVITE_LINES_BY_GAME.keys()),
             )
             return None
+
+        if not force_first:
+            import random as _random
+            if _random.random() >= MINI_GAME_INVITE_TRIGGER_PROBABILITY:
+                return None
     template = _loc(MINI_GAME_INVITE_LINES_BY_GAME[game_type], invite_lang)
     safe_master = (master_name or '').strip()
     try:
@@ -5021,12 +5073,11 @@ async def proactive_chat(request: Request):
             if (
                 MINI_GAME_INVITE_ENABLED
                 and _user_invite_toggle
-                and not _mini_game_invite_in_cooldown(lanlan_name)
                 and _gi_prob > 0
             ):
                 import random as _random
                 if _random.random() < _gi_prob:
-                    chosen_game_type = _pick_mini_game_type()
+                    chosen_game_type = _pick_mini_game_type(lanlan_name)
                     if chosen_game_type is not None:
                         gi_prompt = _render_work_break_game_invite_prompt(
                             pending=water_pending,
@@ -7127,22 +7178,17 @@ def _apply_mini_game_invite_choice(
         # 触发会双开窗口）。
         invite_session_id = state.get('pending_session_id') or ''
         game_type = state.get('last_game_type') or 'soccer'
-        url_template = MINI_GAME_LAUNCH_URL_BY_GAME.get(game_type)
-        if not url_template:
+        _mini_game_invite_record_response_cooldown(state, game_type, 'accept', now)
+        game_url = _mini_game_launch_url(game_type, lanlan_name, invite_session_id)
+        if not game_url:
             logger.warning(
                 "[%s] accept invite but no launch URL for game_type=%r; "
                 "fallback /soccer_demo", lanlan_name, game_type,
             )
-            url_template = '/soccer_demo'
-        from urllib.parse import urlencode as _urlencode
-        query = _urlencode({
-            'lanlan_name': lanlan_name,
-            'session_id': invite_session_id,
-        })
-        game_url = f"{url_template}?{query}"
+            game_url = _mini_game_launch_url("soccer", lanlan_name, invite_session_id) or "/soccer_demo"
         logger.info(
             "[%s] mini-game invite accepted via %s -> %s",
-            lanlan_name, source, url_template,
+            lanlan_name, source, game_url,
         )
         return {
             'action': 'open_game',
@@ -7154,9 +7200,11 @@ def _apply_mini_game_invite_choice(
         # 留 session_id 给 caller 推 mini_game_invite_resolved 用——所有
         # outcome 都需要前端 dismiss prompt（codex P2）。
         decline_session_id = state.get('pending_session_id') or ''
+        game_type = state.get('last_game_type') or 'soccer'
         state['responded_at'] = now
         state['chats_since_response'] = 0
         state['last_response_choice'] = 'decline'
+        _mini_game_invite_record_response_cooldown(state, game_type, 'decline', now)
         logger.info(
             "[%s] mini-game invite declined via %s; cooldown started",
             lanlan_name, source,
@@ -7343,20 +7391,18 @@ def _keyword_matches(keyword: str, norm_text: str) -> bool:
 
 
 def _match_mini_game_invite_keyword(text: str) -> str | None:
-    """扫一遍用户文本（小写 + strip），命中 accept/decline/later 关键词返
-    choice，未命中返 None。
+    """Return accept/decline/later for a user text, or None when unmatched.
 
-    所有 native locale 的关键词列表全扫一遍——用户可能切了 UI 语言但仍用
-    原语言打字。匹配走 ``_keyword_matches`` —— ASCII / Cyrillic 用 word-boundary
-    防止 'yes' 命中 'yesterday' / 'no' 命中 'no idea' 这种 codex P1 指出的英文
-    误命中；CJK 仍走 substring（语言特性使然）。
+    All native locale keyword lists are scanned because users may type in a
+    language different from the active UI language. ASCII and Cyrillic keywords
+    use word-boundary matching to avoid substring false positives; CJK keywords
+    keep substring matching.
 
-    **优先级 decline > later > accept**：句子里同时含 negation 和接受词时，
-    decline 永远优先于 later 优先于 accept——含明确 negation 的句子绝不能因
-    accept 关键词凑巧匹配就反向触发开游戏。CodeRabbit Major 指出后从
-    accept-priority 改成 decline-priority。
+    **Priority decline > later > accept**: a sentence with an explicit negation
+    must not open a game just because it also contains an accept keyword.
 
-    空 text / 命中无视为 None。"""
+    Empty text and unmatched text return None.
+    """
     if not text:
         return None
     norm = text.lower().strip()
@@ -7382,23 +7428,238 @@ def _match_mini_game_invite_keyword(text: str) -> str | None:
     return None
 
 
+_MINI_GAME_DIRECT_REQUEST_NEGATIONS = (
+    "不想", "不玩", "不要", "不打", "别开", "算了", "没空", "拒绝",
+    "don't", "do not", "not", "not now", "no thanks", "nope", "pass",
+)
+_MINI_GAME_DIRECT_REQUEST_RULES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
+    (
+        "basketball",
+        ("投篮", "篮球", "shooting challenge", "basketball"),
+        ("玩", "打", "来一局", "来一把", "开一局", "开一把", "开始", "想玩", "要玩", "play", "start", "open"),
+    ),
+    (
+        "soccer",
+        ("足球", "soccer", "football"),
+        ("玩", "踢", "来一局", "来一把", "开一局", "开一把", "开始", "想玩", "要玩", "play", "start", "open"),
+    ),
+)
+
+
+def _direct_request_is_ascii_word_term(term: str) -> bool:
+    return bool(term) and all(ord(ch) < 128 for ch in term) and any(ch.isalnum() for ch in term)
+
+
+def _direct_request_is_ascii_word_char(ch: str) -> bool:
+    return bool(ch) and (ch.isalnum() or ch == "'")
+
+
+def _direct_request_has_word_boundaries(norm: str, start: int, end: int, term: str) -> bool:
+    if not _direct_request_is_ascii_word_term(term):
+        return True
+    before = norm[start - 1] if start > 0 else ""
+    after = norm[end] if end < len(norm) else ""
+    return not _direct_request_is_ascii_word_char(before) and not _direct_request_is_ascii_word_char(after)
+
+
+def _iter_direct_request_term_hits(norm: str, terms: tuple[str, ...]) -> list[tuple[int, int, str]]:
+    hits: list[tuple[int, int, str]] = []
+    for term in terms:
+        start = norm.find(term)
+        while start >= 0:
+            end = start + len(term)
+            if _direct_request_has_word_boundaries(norm, start, end, term):
+                hits.append((start, end, term))
+            start = norm.find(term, start + 1)
+    return hits
+
+
+def _direct_request_pair_has_scoped_negation(
+    norm: str,
+    game_hit: tuple[int, int, str],
+    action_hit: tuple[int, int, str],
+) -> bool:
+    first_start = min(game_hit[0], action_hit[0])
+    last_end = max(game_hit[1], action_hit[1])
+    for token in _MINI_GAME_DIRECT_REQUEST_NEGATIONS:
+        start = norm.find(token)
+        while start >= 0:
+            end = start + len(token)
+            if not _direct_request_has_word_boundaries(norm, start, end, token):
+                start = norm.find(token, start + 1)
+                continue
+            if start < last_end and end > first_start:
+                return True
+            if end <= first_start and first_start - end <= 4:
+                return True
+            if _direct_request_is_ascii_word_term(token) and end <= first_start and first_start - end <= 24:
+                between = norm[end:first_start]
+                if not any(mark in between for mark in ",;.!?，。！？；"):
+                    return True
+            start = norm.find(token, start + 1)
+    if _direct_request_pair_has_cjk_negation_before_action(norm, action_hit):
+        return True
+    return False
+
+
+def _direct_request_pair_has_cjk_negation_before_action(
+    norm: str,
+    action_hit: tuple[int, int, str],
+) -> bool:
+    action_start, _, action_term = action_hit
+    if _direct_request_is_ascii_word_term(action_term):
+        return False
+    window = norm[max(0, action_start - 8):action_start]
+    negation_index = max(window.rfind("不"), window.rfind("别"))
+    if negation_index < 0:
+        return False
+    between = window[negation_index + 1:]
+    if any(mark in between for mark in ",;.!?，。！？；"):
+        return False
+    return not between or any(
+        cue in between
+        for cue in ("想", "要", "太", "很", "再", "怎么", "愿意", "打", "踢", "玩", "开", "投")
+    )
+
+
+_DIRECT_REQUEST_CJK_CUES = (
+    "来", "想", "要", "一起", "陪", "可以", "能不能", "能否", "帮我",
+    "开", "开始", "一局", "一把", "一下", "玩一", "打一", "踢一", "投一",
+)
+_DIRECT_REQUEST_ENGLISH_CUE_RE = re.compile(
+    r"(?:^|[\s,!.?])(?:please|pls|let's|lets|can we|could we|wanna|want to|"
+    r"i want to|i'd like to|start)\b|(?:^|[,!.?]\s*)(?:play|open)\b"
+)
+_DIRECT_REQUEST_ENGLISH_CASUAL_RE = re.compile(
+    r"\bi\s+(?:usually\s+|often\s+|sometimes\s+|always\s+|still\s+|just\s+)?"
+    r"(?:play|start|open)\b"
+)
+_DIRECT_REQUEST_DISCUSSION_RE = re.compile(
+    r"\b(?:start|play|open)\s+by\b|"
+    r"\b(?:talk|talking|chat|discuss|discussion|learn|study|teach|explain)\b"
+    r"(?:\s+(?:about|around|through|over))?\b|"
+    r"\b(?:how\s+to|tell\s+me\s+about|what\s+(?:are|is))\b"
+)
+_DIRECT_REQUEST_START_QUESTION_RE = re.compile(
+    r"\b(?:when|what\s+time|what\s+day|what\s+date)\b[^?!.]{0,48}\bstart\b|"
+    r"\bstart\b[^?!.]{0,48}\b(?:when|what\s+time|what\s+day|what\s+date)\b"
+)
+_DIRECT_REQUEST_DEFER_RE = re.compile(
+    r"\b(?:later|tomorrow|tonight|next\s+(?:time|week|month)|another\s+time|"
+    r"not\s+now|some\s+other\s+time|after(?:ward|wards)?|in\s+a\s+bit)\b"
+)
+_DIRECT_REQUEST_CJK_DISCUSSION_CUES = (
+    "讲讲", "说说", "聊聊", "介绍", "解释", "了解", "玩法", "规则", "教程", "攻略",
+    "教学", "新闻", "怎么打", "怎么玩", "如何打", "如何玩",
+)
+_DIRECT_REQUEST_CJK_START_STATUS_QUESTION_CUES = (
+    "什么时候开始", "何时开始", "几点开始", "哪天开始", "几号开始",
+    "开始了吗", "开始了么", "开始了没", "开始没",
+    "能开始了吗", "可以开始了吗",
+    "开了吗", "开了么", "开了没", "开没开",
+)
+_DIRECT_REQUEST_CJK_DEFER_CUES = (
+    "等会", "等会儿", "等下", "等一下", "晚点", "迟点", "回头",
+    "以后", "稍后", "一会儿", "一会", "明天", "后天", "下次", "改天",
+)
+
+
+def _direct_request_pair_is_cjk_start_status_question(
+    action_hit: tuple[int, int, str],
+    window: str,
+) -> bool:
+    action_term = action_hit[2]
+    if _direct_request_is_ascii_word_term(action_term) or action_term not in {"开始", "开"}:
+        return False
+    return any(cue in window for cue in _DIRECT_REQUEST_CJK_START_STATUS_QUESTION_CUES)
+
+
+def _direct_request_pair_is_explicit(
+    norm: str,
+    game_hit: tuple[int, int, str],
+    action_hit: tuple[int, int, str],
+) -> bool:
+    first_start = min(game_hit[0], action_hit[0])
+    last_end = max(game_hit[1], action_hit[1])
+    if max(game_hit[0], action_hit[0]) - min(game_hit[1], action_hit[1]) > 18:
+        return False
+    window = norm[max(0, first_start - 16):min(len(norm), last_end + 16)]
+    between = norm[min(game_hit[1], action_hit[1]):max(game_hit[0], action_hit[0])]
+    action_term = action_hit[2]
+    if _direct_request_is_ascii_word_term(action_term):
+        if _DIRECT_REQUEST_DISCUSSION_RE.search(between) or _DIRECT_REQUEST_DISCUSSION_RE.search(window):
+            return False
+        if _DIRECT_REQUEST_START_QUESTION_RE.search(window) or _DIRECT_REQUEST_DEFER_RE.search(window):
+            return False
+        if _DIRECT_REQUEST_ENGLISH_CASUAL_RE.search(window) and not re.search(r"\bi\s+(?:want|wanna|would like)\b", window):
+            return False
+        if action_hit[0] == 0 or norm[action_hit[0] - 1] in " \t\r\n,!.?;:":
+            return bool(_DIRECT_REQUEST_ENGLISH_CUE_RE.search(window))
+        return False
+    if any(cue in window for cue in _DIRECT_REQUEST_CJK_DISCUSSION_CUES):
+        return False
+    if any(cue in window for cue in _DIRECT_REQUEST_CJK_DEFER_CUES):
+        return False
+    if _direct_request_pair_is_cjk_start_status_question(action_hit, window):
+        return False
+    if action_hit[0] == 0 or any(cue in window for cue in _DIRECT_REQUEST_CJK_CUES):
+        return True
+    return False
+
+
+def _build_direct_mini_game_open_result(lanlan_name: str, game_type: str) -> dict[str, Any] | None:
+    invite_session_id = str(uuid4())
+    game_url = _mini_game_launch_url(game_type, lanlan_name, invite_session_id)
+    if not game_url:
+        return None
+    return {
+        "action": "open_game",
+        "game_type": game_type,
+        "game_url": game_url,
+        "session_id": invite_session_id,
+        "source": "direct_request",
+    }
+
+
+def _match_direct_mini_game_request(text: str) -> str | None:
+    """Match explicit user requests to start a supported mini game.
+
+    This path does not depend on a pending invite and does not enter invite
+    cooldown. It requires both game and action terms so casual mentions do not
+    accidentally open a game page.
+    """
+    norm = str(text or "").lower().strip()
+    if not norm:
+        return None
+    for game_type, game_terms, action_terms in _MINI_GAME_DIRECT_REQUEST_RULES:
+        game_hits = _iter_direct_request_term_hits(norm, game_terms)
+        action_hits = _iter_direct_request_term_hits(norm, action_terms)
+        for game_hit in game_hits:
+            for action_hit in action_hits:
+                if (
+                    _direct_request_pair_is_explicit(norm, game_hit, action_hit)
+                    and not _direct_request_pair_has_scoped_negation(norm, game_hit, action_hit)
+                ):
+                    return game_type
+    return None
+
+
 def _maybe_apply_mini_game_invite_keyword(
     lanlan_name: str, text: str,
 ) -> dict[str, Any] | None:
-    """文本入口（core.py user message handler）调一次。pending invite 时尝试
-    关键词匹配；命中即触发对应 state 转换，返回 dict 给 caller 决定是否要做
-    side effect（如 push WS message 让前端 window.open 游戏）。
+    """Apply mini-game invite keywords for one user-message text entry.
 
-    **不吃掉用户消息**——caller 应继续走普通 chat 流水线，AI 仍然会回应这条
-    话。仅做 state side effect。
-
-    - 没 pending invite / 文本空 / 没命中 → None
-    - 命中 accept → ``{action: 'open_game', game_type, game_url}``
-    - 命中 decline / later → ``{action: 'cooldown' | 'suppress'}``
+    Pending invites try accept, decline, and later keywords. Without a pending
+    invite, direct game requests can still return an open-game action for the
+    caller to forward over the websocket. This helper does not consume the user
+    message; normal chat handling should still continue.
     """
     state = _mini_game_invite_state.get(lanlan_name)
     if not state or state.get('delivered_at') is None or state.get('responded_at') is not None:
-        return None  # 没 pending
+        game_type = _match_direct_mini_game_request(text)
+        if game_type is None:
+            return None
+        return _build_direct_mini_game_open_result(lanlan_name, game_type)
     choice = _match_mini_game_invite_keyword(text)
     if choice is None:
         return None
@@ -7410,11 +7671,11 @@ def _maybe_apply_mini_game_invite_keyword(
 
 @router.post('/proactive/music_played_through')
 async def proactive_music_played_through(request: Request):
-    """
-    用户把推荐的歌完整听完后由前端 fire（aplayer 'ended' 事件）。
-    后端把 _proactive_chat_history 中该角色所有 channel == 'music' 的 entry 的
-    通道字段清空，从而让 _compute_source_weights 不再把"刚刚共享过音乐"
-    继续计入对 music 通道的衰减惩罚——完整播放是用户对该通道最强的正向反馈。
+    """Record that the user finished a recommended song.
+
+    Completed playback is strong positive feedback for the music channel, so
+    matching proactive history entries are cleared from the channel-specific
+    decay calculation.
     """
     validation_error = _validate_local_mutation_request(request)
     if validation_error is not None:

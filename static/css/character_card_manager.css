@@ -113,7 +113,7 @@ body .page-title-bar {
     color: transparent;
     text-shadow: none;
     white-space: nowrap;
-}   
+}
 
 .page-title-bar .close-btn {
     background: transparent;
@@ -542,7 +542,7 @@ z-index: 5;
     gap: 10px;
     align-items: center;
     width: 25%;
-    min-width: 280px;
+    min-width: 340px;
 }
 
 .filter-group.action-group .sort-wrapper {
@@ -607,7 +607,7 @@ gap: 8px;
     border-color: #40C5F1;
     box-shadow: 0 0 0 3px rgba(64, 197, 241, 0.15);
 }
-        
+
 /* 标签样式 */
 #notes-tags-container, #character-card-tags-container {
 display: flex;
@@ -628,7 +628,7 @@ min-width: 100%;
 align-items: center;
 align-content: center;
 }
-        
+
 .tag {
 display: inline-flex;
 align-items: center;
@@ -647,7 +647,7 @@ padding: 4px 8px;
 border-radius: 16px;
 font-size: 14px;
 }
-        
+
 .tag-remove {
 background: none;
 border: none;
@@ -664,22 +664,22 @@ align-items: center;
 justify-content: center;
 border-radius: 50%;
 }
-        
+
 .tag-remove:hover {
 background-color: rgba(255, 255, 255, 0.2);
 }
-        
+
 .tag-locked {
 background-color: #6c5ce7;
 cursor: default;
 }
-        
+
 .tag-locked-icon {
 font-size: 12px;
 margin-left: 4px;
 opacity: 0.9;
 }
-        
+
 #workshop-notes-input {
 flex: 1;
 border: none;
@@ -707,7 +707,7 @@ display: flex;
 align-items: center;
 gap: 8px;
 }
-        
+
 /* 角色卡布局样式 */
 .character-card-layout {
 display: flex;
@@ -1144,7 +1144,7 @@ min-height: 0;
 #live2d-preview-controls {
 flex: 0 0 auto;
 }
-        
+
 /* 下方区域：描述 + 标签按钮（合并边框） */
 .character-card-bottom-row {
 display: flex;
@@ -1156,7 +1156,7 @@ padding: 12px;
 box-shadow: 0 2px 4px rgba(0,0,0,0.1);
 overflow: hidden;
 }
-        
+
 /* 左侧：描述区域 */
 .character-card-description-section {
 flex: 1;
@@ -1170,7 +1170,7 @@ display: flex;
 flex-direction: column;
 min-height: 0;
 }
-        
+
 /* 右侧：标签和按钮区域 */
 .character-card-tags-buttons-section {
 flex: 1;
@@ -1197,7 +1197,7 @@ display: flex;
 flex-direction: column;
 min-height: 0;
 }
-        
+
 /* 按钮行：两个按钮并排 - 样式参考 workshop-card，各自独立包裹 */
 .character-card-buttons-row {
     display: flex;
@@ -1257,7 +1257,7 @@ min-height: 0;
     transform: none;
     box-shadow: none;
 }
-        
+
 /* 模型拖放区域样式 */
 .model-drop-area {
 border: 2px dashed #cccccc;
@@ -1269,33 +1269,33 @@ transition: all 0.3s ease;
 background-color: #f9f9f9;
 margin-bottom: 10px;
 }
-        
+
 .model-drop-area:hover {
 border-color: #0078d4;
 background-color: #f0f7ff;
 }
-        
+
 .model-drop-area.dragover {
 border-color: #0078d4;
 background-color: #e1f0ff;
 box-shadow: 0 0 10px rgba(0, 120, 212, 0.2);
 }
-        
+
 .drop-icon {
 font-size: 48px;
 margin-bottom: 15px;
 }
-        
+
 .drop-area-content p {
 margin: 5px 0;
 color: #666;
 }
-        
+
 .drop-hint {
 font-size: 12px;
 color: #999;
 }
-        
+
 /* Fluent Design风格的分割线 */
 .fluent-divider {
 height: 1px;
@@ -1303,7 +1303,7 @@ background-color: #eaeaea;
 margin: 15px 0;
 border: none;
 }
-        
+
 .section-header {
 display: flex;
 justify-content: space-between;
@@ -1311,12 +1311,12 @@ align-items: center;
 padding-bottom: 10px;
 border-bottom: 1px solid #eee;
 }
-        
+
 .header-buttons {
 display: flex;
 gap: 10px;
 }
-        
+
 .save-button-container {
 margin-top: 20px;
 padding-top: 15px;
@@ -1325,13 +1325,13 @@ display: flex;
 gap: 10px;
 flex-wrap: wrap;
 }
-        
+
 .btn-large {
 width: 100%;
 padding: 12px 0;
 font-size: 16px;
 }
-        
+
 /* 响应式设计 */
 @media (max-width: 900px) {
 .layout-container {
@@ -1362,18 +1362,18 @@ font-size: 16px;
 .character-card-layout {
 flex-direction: column;
 }
-            
+
 .character-card-top-row {
 flex-direction: column;
 height: auto;
 max-height: none;
 overflow: visible;
 }
-            
+
 .character-card-bottom-row {
 flex-direction: column;
 }
-            
+
 .character-card-info-section {
 border-bottom: 1.5px solid #9dd7ff;
 height: auto;
@@ -1394,12 +1394,12 @@ overflow: visible;
 #live2d-preview-container {
 min-height: 400px;
 }
-            
+
 .character-card-description-section {
 border-right: none;
 border-bottom: 1px solid #eaeaea;
 }
-            
+
 .character-card-buttons-row {
 flex-direction: column;
 }
@@ -2118,7 +2118,7 @@ display: flex;
 align-items: center;
 justify-content: flex-end;
 }
-        
+
 /* 卡片容器样式 - Fluent Design 风格 */
 .cards-container {
 display: grid;
@@ -2158,7 +2158,7 @@ border-radius: 4px;
 #character-cards-list.cards-container::-webkit-scrollbar-thumb:hover {
 background-color: rgba(155, 155, 155, 0.7);
 }
-        
+
 /* Fluent Design 卡片基础样式 */
 .card, .workshop-card {
 background: #ffffff;
@@ -2211,14 +2211,14 @@ cursor: pointer;
     filter: drop-shadow(0px 1px 2px rgba(91, 210, 255, 0.3));
     pointer-events: none;
 }
-        
+
 /* Fluent Design 卡片悬停效果 */
 .card:hover {
 transform: translateY(-2px);
 box-shadow: 0 12px 32px rgba(0, 0, 0, 0.15), 0 4px 16px rgba(0, 0, 0, 0.1);
 border-color: rgba(0, 0, 0, 0.12);
 }
-        
+
 /* 卡片头部样式 - 上半部分（空白封面区） */
 .workshop-card .card-header {
     background-color: #ffffff;
@@ -2243,7 +2243,7 @@ background: linear-gradient(to bottom, rgba(255, 255, 255, 1), rgba(254, 254, 25
 position: relative;
 overflow: hidden;
 }
-        
+
 .card-header h3 {
 margin: 0;
 font-size: 16px;
@@ -2251,7 +2251,7 @@ font-weight: 600;
 color: rgba(0, 0, 0, 0.9);
 line-height: 1.5;
 }
-        
+
 /* 卡片内容样式 - workshop-card专用（下半部分信息区） */
 .workshop-card .card-content {
     background-color: #ffffff;
@@ -2295,7 +2295,7 @@ display: flex;
 flex-direction: column;
 gap: 12px;
 }
-        
+
 /* 卡片图片样式 - workshop-card专用 */
 .workshop-card .card-image {
     width: 100%;
@@ -2316,7 +2316,7 @@ display: block;
 background-color: #f8f9fa;
 border-bottom: 1px solid rgba(0, 0, 0, 0.04);
 }
-        
+
 /* 卡片文本样式 */
 .card-content p {
 margin: 0;
@@ -2329,7 +2329,7 @@ display: -webkit-box;
 -webkit-line-clamp: 3;
 -webkit-box-orient: vertical;
 }
-        
+
 /* 标签容器样式 */
 .cards-container .tags-container {
 display: flex;
@@ -2363,13 +2363,13 @@ height: 16px;
 border-radius: 50%;
 transition: background-color 0.2s ease;
 }
-        
+
 .tag-remove:hover {
 background-color: rgba(0, 120, 212, 0.2);
 }
-        
+
 /* Fluent Design 按钮样式已合并到.btn-primary类中 */
-        
+
 /* Fluent Design 卡片标题样式 */
 .card-title {
 margin: 0;
@@ -2378,7 +2378,7 @@ font-weight: 600;
 color: rgba(0, 0, 0, 0.9);
 line-height: 1.5;
 }
-        
+
 /* Fluent Design 卡片描述样式 */
 .card-description {
 margin: 0;
@@ -2391,7 +2391,7 @@ display: -webkit-box;
 -webkit-line-clamp: 3;
 -webkit-box-orient: vertical;
 }
-        
+
 /* Fluent Design 加载状态样式 */
 .loading-state {
 display: flex;
@@ -2401,7 +2401,7 @@ padding: 40px;
 color: rgba(0, 0, 0, 0.6);
 font-size: 14px;
 }
-        
+
 /* Fluent Design 空状态样式 */
 .empty-state {
 display: flex;
@@ -2413,13 +2413,13 @@ gap: 12px;
 color: rgba(0, 0, 0, 0.6);
 font-size: 14px;
 }
-        
+
 /* Fluent Design 卡片深度效果 */
 .fluent-card {
 position: relative;
 overflow: hidden;
 }
-        
+
 .fluent-card::before {
 content: '';
 position: absolute;
@@ -2431,7 +2431,7 @@ background: linear-gradient(to right, transparent, rgba(0, 0, 0, 0.1), transpare
 opacity: 0;
 transition: opacity 0.2s ease;
 }
-        
+
 .fluent-card:hover::before {
 opacity: 1;
 }
@@ -2439,7 +2439,7 @@ opacity: 1;
 
 
 
-        
+
 /* 卡片标题样式 - workshop-card专用（标题区域） */
 .workshop-card .card-title {
     margin: 0 0 4px 0;
@@ -2717,19 +2717,19 @@ display: flex;
 flex-direction: column;
 gap: 2px;
 }
-        
+
 .info-label, .card-info-label {
 font-size: 12px;
 color: #888;
 font-weight: 500;
 }
-        
+
 .card-info-item span:not(.info-label):not(.card-info-label) {
 font-size: 14px;
 font-weight: 600;
 color: #333;
 }
-        
+
 .info-value {
 font-size: 14px;
 color: #333;
@@ -3053,15 +3053,15 @@ box-sizing: border-box;
 outline: none;
 border: none;
 }
-        
+
 .modal:focus {
 outline: none;
 }
-        
+
 .modal:focus-within {
 outline: none;
 }
-        
+
 /* !important 用于覆盖 JS 内联 style="display: none" */
 .modal[style*="display: flex"], .modal.show {
 display: flex !important;
@@ -3145,21 +3145,21 @@ padding: 8px;
 overflow-y: auto;
 flex: 1;
 }
-        
+
 /* 上传modal样式修复 */
 #uploadToWorkshopModal .modal-body {
 white-space: normal;
 }
-        
+
 #uploadToWorkshopModal .control-group {
 white-space: normal;
 }
-        
+
 /* 重复上传modal样式修复 */
 #duplicateUploadModal .modal-body {
 white-space: normal;
 }
-        
+
 #duplicateUploadModal .modal-body p {
 white-space: normal;
 }
@@ -3356,7 +3356,7 @@ flex-direction: column;
 height: 300px;
 }
 }
-        
+
 .item-info-grid {
 display: grid;
 grid-template-columns: 1fr 1fr;
@@ -3571,12 +3571,12 @@ flex-direction: column-reverse;
 .modal-footer .btn {
 width: 100%;
 }
-            
+
 .cards-container {
 grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr));
 }
 }
-        
+
 /* 极端窄屏幕适配 */
 @media (max-width: 200px) {
 .cards-container {

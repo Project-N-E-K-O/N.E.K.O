@@ -9,6 +9,7 @@ from .entry_common import (
     _entry_exception_error,
     DocExporter,
     normalize_format,
+    ui,
 )
 
 
@@ -62,6 +63,7 @@ class _ExportSupportMixin:
             ],
         )
 
+    @ui.action()
     async def _study_export_notes_entry(
         self,
         fmt: str = "markdown",

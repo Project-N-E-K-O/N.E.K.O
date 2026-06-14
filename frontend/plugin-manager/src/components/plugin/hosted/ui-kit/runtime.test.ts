@@ -541,6 +541,35 @@ describe('hosted ui runtime', () => {
     })
   })
 
+  it('honors per-call hosted bridge timeouts', async () => {
+    vi.useFakeTimers()
+    try {
+      let requestMessage: any
+      Object.defineProperty(window, 'parent', {
+        value: {
+          postMessage(message: any) {
+            requestMessage = message
+          },
+        },
+        configurable: true,
+      })
+
+      const promise = ui.api.call('study_export_notes', {}, { timeoutMs: 80000 })
+      const settled = vi.fn()
+      promise.then(settled, settled)
+      expect(requestMessage?.type).toBe('neko-hosted-surface-request')
+
+      await vi.advanceTimersByTimeAsync(30000)
+      await flushMicrotasks()
+      expect(settled).not.toHaveBeenCalled()
+
+      await vi.advanceTimersByTimeAsync(50000)
+      await expect(promise).rejects.toThrow('Hosted surface request timed out')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('shows toast notifications and removes them', () => {
     vi.useFakeTimers()
     const remove = ui.showToast ? ui.showToast('Saved', { tone: 'success', timeout: 100 }) : ui.useToast().success('Saved', { timeout: 100 })

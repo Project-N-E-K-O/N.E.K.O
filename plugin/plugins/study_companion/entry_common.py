@@ -28,6 +28,7 @@ from plugin.sdk.plugin import (
     neko_plugin,
     plugin_entry,
     tr,
+    ui,
 )
 
 from .constants import (
@@ -258,6 +259,7 @@ __all__ = [
     "neko_plugin",
     "plugin_entry",
     "tr",
+    "ui",
     "LLM_OPERATION_ANSWER_EVALUATE",
     "LLM_OPERATION_CONCEPT_EXPLAIN",
     "LLM_OPERATION_KNOWLEDGE_TRACK",

@@ -14,9 +14,11 @@ REGRESSION_REPORT
     points), so every code change to them must come with a written report.
 
 NO_SPLIT_RATIONALE
-    If the PR changes more than 20 files, the body must carry a non-empty
-    no-split-rationale section explaining why it is not split into smaller
-    PRs.
+    If the PR changes more than 20 NON-TEST files, the body must carry a
+    non-empty no-split-rationale section explaining why it is not split into
+    smaller PRs. Test files (anywhere — under main or under plugin/) do not
+    count toward this limit: a big PR that is mostly test coverage is exactly
+    the kind of PR we do NOT want to discourage from staying in one piece.
 
 The check only verifies that a substantive section EXISTS — it cannot judge
 whether the report is any good. Report quality is the reviewer's job; the
@@ -52,8 +54,17 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Modules whose every *.py change must ship a regression report.
 WATCHED_PREFIXES = ("app/", "main_logic/", "memory/")
-# A PR touching more than this many files must justify not splitting.
+# A PR touching more than this many NON-TEST files must justify not splitting.
 FILE_COUNT_LIMIT = 20
+
+# Path segments that mark a directory as holding tests (any depth, main or
+# plugin/). A file under one of these never counts toward FILE_COUNT_LIMIT.
+_TEST_DIR_PARTS = {"tests", "test", "__tests__"}
+# Test-file basenames not living in a test dir: pytest's test_*.py / *_test.py
+# and the JS/TS *.test.* / *.spec.* conventions used across the frontends.
+_TEST_FILE_RE = re.compile(
+    r"(^test_.+\.py$|.+_test\.py$|.+\.(test|spec)\.[cm]?[jt]sx?$)"
+)
 # Maintainer escape hatch.
 EXEMPT_LABEL = "report-exempt"
 
@@ -113,6 +124,17 @@ def _changed_files(base: str) -> list[str]:
     (pure renames are the documented `report-exempt` case)."""
     out = _git("diff", "--no-renames", "--name-only", f"{base}...HEAD")
     return [ln.strip().replace("\\", "/") for ln in out.splitlines() if ln.strip()]
+
+
+def _is_test_file(path: str) -> bool:
+    """True for any test file — by directory (a ``tests``/``test``/``__tests__``
+    segment at any depth) or by basename convention (``test_*.py`` / ``*_test.py``
+    / ``*.test.*`` / ``*.spec.*``). Covers both the main tree and ``plugin/``;
+    these files are excluded from the no-split file count."""
+    parts = path.split("/")
+    if any(p in _TEST_DIR_PARTS for p in parts[:-1]):
+        return True
+    return _TEST_FILE_RE.match(parts[-1]) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +222,8 @@ def main() -> int:
         f for f in changed
         if f.endswith(".py") and any(f.startswith(p) for p in WATCHED_PREFIXES)
     ]
+    # Test files (main or plugin/) are exempt from the no-split count.
+    non_test = [f for f in changed if not _is_test_file(f)]
 
     violations: list[tuple[str, str]] = []
 
@@ -213,20 +237,25 @@ def main() -> int:
             f"rationale/necessity, before-and-after behaviour, and regressions.",
         ))
 
-    if len(changed) > FILE_COUNT_LIMIT and not _is_filled(
+    if len(non_test) > FILE_COUNT_LIMIT and not _is_filled(
         _section_body(body, NO_SPLIT_KEYWORD)
     ):
+        test_note = (
+            f" ({len(changed) - len(non_test)} test file(s) excluded)"
+            if len(non_test) != len(changed) else ""
+        )
         violations.append((
             NO_SPLIT_RATIONALE,
-            f"This PR changes {len(changed)} files (> {FILE_COUNT_LIMIT}) but the "
-            f"PR body has no filled-in '{NO_SPLIT_KEYWORD}' section. Explain why "
-            f"this is not split into smaller PRs.",
+            f"This PR changes {len(non_test)} non-test files "
+            f"(> {FILE_COUNT_LIMIT}){test_note} but the PR body has no filled-in "
+            f"'{NO_SPLIT_KEYWORD}' section. Explain why this is not split into "
+            f"smaller PRs.",
         ))
 
     if not violations:
         print(
-            f"[pr-report] OK — {len(changed)} file(s) changed, "
-            f"{len(watched)} under watched modules."
+            f"[pr-report] OK — {len(changed)} file(s) changed "
+            f"({len(non_test)} non-test), {len(watched)} under watched modules."
         )
         return 0
 

@@ -4125,6 +4125,394 @@
             "drawCalls": "Draw calls"
         }
     },
+    "basketball": {
+        "title": "Desafio de basquete",
+        "modeSwitcher": "Modo de basquete",
+        "mode": {
+            "spectator": "Treino livre",
+            "shooter": "Desafio de arremesso",
+            "duel": "Duelo com Yui",
+            "timed": "Contra o tempo",
+            "horse": "HORSE"
+        },
+        "hud": {
+            "score": "Pontos {{score}}",
+            "streak": "Sequência {{streak}}",
+            "record": "Recorde {{distance}}",
+            "duelScore": "Você {{player}} - {{neko}} Neko",
+            "round": "Rodada {{round}}/{{max}}",
+            "timer": "{{seconds}} s",
+            "practice": "Treino livre",
+            "yourTurn": "Sua vez",
+            "nekoTurn": "Arremesso da Neko",
+            "horseLetters": "Você {{player}} / Neko {{neko}}",
+            "horseChallenge": "Copie {{distance}} {{angle}}°",
+            "horseSet": "Defina um arremesso",
+            "unlimitedAttempts": "Ilimitado",
+            "chances": "Chances {{count}}",
+            "practiceTitle": "Treino livre: arremessos ilimitados e sem pontuação no ranking",
+            "attemptsTitle": "Restam {{remaining}}/{{total}}, erros {{missed}}",
+            "duelTitle": "Duelo Neko: você e Neko arremessam em turnos",
+            "timedTitle": "Contra o tempo: arremessos ilimitados em 60 segundos",
+            "horseTitle": "HORSE: copie distância, ângulo e zona ideal do arremesso convertido",
+            "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
+            "on": "lig.",
+            "off": "desl."
+        },
+        "result": {
+            "title": "Fim de jogo",
+            "leaderboard": "Classificação",
+            "stats": "Estatísticas",
+            "retry": "Jogar novamente",
+            "rating": "Avaliação de controle: {{rating}}",
+            "duel": "Resultado do duelo: {{outcome}} | Você {{player}} - {{neko}} Neko | Rodadas: {{rounds}} | Última distância: {{distance}}",
+            "horse": "Resultado HORSE: {{outcome}} | Você {{player}} / Neko {{neko}} | Cestas: {{made}} | Melhor sequência: {{best}}",
+            "timed": "Contra o tempo: {{made}} cestas, melhor sequência {{best}}, pontos {{score}}",
+            "practice": "Treino livre: pontuação não registrada no ranking | Cestas: {{made}} | Sequência atual: {{streak}} | Melhor sequência: {{best}} | Distância: {{distance}}",
+            "summary": "Pontos: {{score}} | Cestas: {{made}} | Sequência atual: {{streak}} | Melhor sequência: {{best}} | Maior distância: {{record}} | Distância: {{distance}}",
+            "attemptsSummary": "Resumo dos arremessos: {{summary}}",
+            "personalBest": "Recorde pessoal: {{score}} pts",
+            "globalRank": "Ranking global: #{{rank}}{{total}}",
+            "outcome": {
+                "youWin": "Você venceu",
+                "nekoWin": "Neko venceu",
+                "tie": "Empate",
+                "undecided": "Indefinido"
+            }
+        },
+        "leaderboard": {
+            "title": "Classificação",
+            "global": "Global",
+            "local": "Local",
+            "shooter": "Arremesso",
+            "duel": "Duelo",
+            "empty": "Ainda sem registros",
+            "totalPlayers": "Jogadores {{count}}",
+            "yourBest": "Seu melhor #{{rank}} / {{score}} pts",
+            "recent": "Últimas {{count}} partidas",
+            "loading": "Carregando...",
+            "mode": {
+                "timed": "Tempo",
+                "horse": "HORSE",
+                "spectator": "Espectador",
+                "shooter": "Arremesso",
+                "duel": "Duelo"
+            }
+        },
+        "debug": {
+            "title": "Painel de depuração",
+            "collapse": "Recolher",
+            "hide": "Ocultar",
+            "distance": "Distância:",
+            "power": "Força:",
+            "event": "Evento:",
+            "streak": "Sequência:",
+            "reset": "Redefinir",
+            "guide": "Linha guia",
+            "sweet": "Zona ideal",
+            "markers": "Marcadores de distância",
+            "readout": {
+                "modeState": "Modo={{mode}}  Estado={{state}}",
+                "distance": "Distância={{px}}px ({{meters}})",
+                "streaks": "Sequência={{streak}}  Melhor={{best}}  Cestas={{made}}",
+                "score": "Pontos={{score}}  Restam={{remaining}}/{{total}}",
+                "difficulty": "Dificuldade={{difficulty}}  Humor={{mood}}  Tema={{theme}}",
+                "duel": "Duelo: Você {{player}}-{{neko}} NEKO R{{round}}",
+                "horse": "HORSE: Você {{player}} / Neko {{neko}} phase={{phase}}"
+            }
+        },
+        "stats": {
+            "title": "Estatísticas pessoais",
+            "close": "Fechar",
+            "totalShots": "Arremessos={{total}}  Cestas={{made}}",
+            "farRate": "Aproveitamento 300px+={{rate}}",
+            "trend": "Tendência recente={{trend}}",
+            "none": "Nenhum"
+        },
+        "theme": {
+            "next": "Trocar tema",
+            "current": "Tema: {{theme}}",
+            "changed": "Tema {{theme}}",
+            "labels": {
+                "default": "Ginásio",
+                "sunset": "Quadra ao pôr do sol",
+                "night": "Luzes noturnas"
+            }
+        },
+        "court": {
+            "restrictedArc": "Área restrita",
+            "freeThrowLine": "Lance livre",
+            "threePointLine": "3 pontos",
+            "midCourtLine": "Meio da quadra"
+        },
+        "close": "Fechar",
+        "audio": {
+            "controls": "Áudio do jogo"
+        },
+        "memoryOption": {
+            "label": "Salvar a conversa desta partida na memória (desativado por padrão)",
+            "hint": "Quando desativado, entradas do jogador, respostas da NEKO, eventos, resumos pós-jogo e contexto de continuação não serão gravados nem lidos da memória."
+        },
+        "table": {
+            "score": "Pontos",
+            "bestStreak": "Melhor sequência",
+            "farthest": "Maior distância",
+            "mode": "Modo",
+            "date": "Data"
+        },
+        "state": {
+            "ready": "Pronto",
+            "in_flight": "No ar",
+            "game_over": "Fim",
+            "neko_thinking": "Neko pensando"
+        },
+        "toast": {
+            "difficulty": "Dificuldade {{difficulty}}",
+            "nekoShoot": "Neko arremessa",
+            "nekoThinking": "Neko está pensando",
+            "nekoTurn": "Vez da Neko",
+            "copyNeko": "Copie a Neko",
+            "nekoFailed": "Neko falhou ao definir",
+            "yourSet": "Defina seu arremesso",
+            "yourTurn": "Sua vez",
+            "reset": "Redefinido",
+            "featureToggled": "{{feature}} {{state}}",
+            "feature": {
+                "guide": "Linha guia",
+                "sweet": "Zona ideal de força",
+                "bgm": "BGM",
+                "markers": "Marcadores de distância"
+            },
+            "state": {
+                "on": "ligado",
+                "off": "desligado"
+            }
+        },
+        "tutorial": {
+            "aim": "Mova o mouse para cima ou baixo para ajustar o ângulo",
+            "charge": "Segure o botão esquerdo para carregar",
+            "release": "Solte para arremessar!"
+        },
+        "shot": {
+            "swish": "Cesta limpa",
+            "bank": "Tabela",
+            "rim_in": "Entrou no aro",
+            "rim_out": "Saiu do aro",
+            "air_ball": "Air ball",
+            "unknown": "Desconhecido",
+            "attempt": "#{{index}} {{distance}} {{type}}"
+        },
+        "lines": {
+            "default": {
+                "swish": [
+                    "Cesta limpa!",
+                    "Cesta limpa!"
+                ],
+                "bank": [
+                    "Com tabela também vale.",
+                    "Com tabela também vale."
+                ],
+                "rim_in": [
+                    "Entrou no quique.",
+                    "Entrou no quique."
+                ],
+                "rim_out": [
+                    "Quase.",
+                    "Quase."
+                ],
+                "air_ball": [
+                    "O aro fica do outro lado.",
+                    "O aro fica do outro lado."
+                ],
+                "shot_missed": [
+                    "Ainda há chance.",
+                    "Ainda há chance."
+                ],
+                "game_over": [
+                    "Mais uma?",
+                    "Mais uma?"
+                ],
+                "long_aim": [
+                    "Arremesse logo.",
+                    "Arremesse logo."
+                ],
+                "close_to_record": [
+                    "Quase no recorde.",
+                    "Quase no recorde."
+                ],
+                "new_record": [
+                    "Novo recorde!",
+                    "Novo recorde!"
+                ],
+                "streak_5": [
+                    "Cinco seguidas!",
+                    "Cinco seguidas!"
+                ],
+                "streak_10": [
+                    "Dez seguidas?",
+                    "Dez seguidas?"
+                ],
+                "streak_15": [
+                    "Quinze seguidas é demais.",
+                    "Quinze seguidas é demais."
+                ],
+                "streak_20": [
+                    "Vinte seguidas? Incrível.",
+                    "Vinte seguidas? Incrível."
+                ]
+            },
+            "shooter": {
+                "swish": [
+                    "Cesta limpa!",
+                    "Cesta limpa!"
+                ],
+                "bank": [
+                    "Com tabela também vale.",
+                    "Com tabela também vale."
+                ],
+                "rim_in": [
+                    "Entrou no quique.",
+                    "Entrou no quique."
+                ],
+                "rim_out": [
+                    "Quase.",
+                    "Quase."
+                ],
+                "air_ball": [
+                    "O aro fica do outro lado.",
+                    "O aro fica do outro lado."
+                ],
+                "shot_missed": [
+                    "Ainda há chance.",
+                    "Ainda há chance."
+                ],
+                "game_over": [
+                    "Mais uma?",
+                    "Mais uma?"
+                ],
+                "long_aim": [
+                    "Arremesse logo.",
+                    "Arremesse logo."
+                ],
+                "close_to_record": [
+                    "Quase no recorde.",
+                    "Quase no recorde."
+                ],
+                "new_record": [
+                    "Novo recorde!",
+                    "Novo recorde!"
+                ],
+                "streak_5": [
+                    "Cinco seguidas!",
+                    "Cinco seguidas!"
+                ],
+                "streak_10": [
+                    "Dez seguidas?",
+                    "Dez seguidas?"
+                ],
+                "streak_15": [
+                    "Quinze seguidas é demais.",
+                    "Quinze seguidas é demais."
+                ],
+                "streak_20": [
+                    "Vinte seguidas? Incrível.",
+                    "Vinte seguidas? Incrível."
+                ]
+            },
+            "duel": {
+                "swish": [
+                    "Cesta limpa!",
+                    "Cesta limpa!"
+                ],
+                "bank": [
+                    "Com tabela também vale.",
+                    "Com tabela também vale."
+                ],
+                "rim_in": [
+                    "Entrou no quique.",
+                    "Entrou no quique."
+                ],
+                "rim_out": [
+                    "Quase.",
+                    "Quase."
+                ],
+                "air_ball": [
+                    "O aro fica do outro lado.",
+                    "O aro fica do outro lado."
+                ],
+                "shot_missed": [
+                    "Ainda há chance.",
+                    "Ainda há chance."
+                ],
+                "game_over": [
+                    "Mais uma?",
+                    "Mais uma?"
+                ],
+                "long_aim": [
+                    "Arremesse logo.",
+                    "Arremesse logo."
+                ],
+                "close_to_record": [
+                    "Quase no recorde.",
+                    "Quase no recorde."
+                ],
+                "new_record": [
+                    "Novo recorde!",
+                    "Novo recorde!"
+                ],
+                "streak_5": [
+                    "Cinco seguidas!",
+                    "Cinco seguidas!"
+                ],
+                "streak_10": [
+                    "Dez seguidas?",
+                    "Dez seguidas?"
+                ],
+                "streak_15": [
+                    "Quinze seguidas é demais.",
+                    "Quinze seguidas é demais."
+                ],
+                "streak_20": [
+                    "Vinte seguidas? Incrível.",
+                    "Vinte seguidas? Incrível."
+                ],
+                "clutch": "...Este precisa entrar.",
+                "excuse": "Ai, meu braço está cansado."
+            },
+            "fallback": [
+                "Mais uma."
+            ],
+            "pressure": {
+                "lastTied": "Arremesso decisivo. Não pisque.",
+                "lastAhead": "Hmph, ainda não acabou.",
+                "lastBehind": "Acerte este e vença.",
+                "playerAhead": "Você até que é bom...",
+                "playerBehind": "Força mais um pouco."
+            },
+            "horse": {
+                "nekoMiss": "Não copiou. Some {{letters}}.",
+                "playerMiss": "Você também soma {{letters}}."
+            },
+            "mindGame": [
+                "Sua mão está tremendo.",
+                "Pense bem, sem pressa.",
+                "Esta distância não é curta."
+            ],
+            "easterEgg": {
+                "lateNight": "Arremessando até esta hora?",
+                "xmas": "Os sinos já estão pendurados e você ainda quer arremessar?",
+                "newYear": "Feliz Ano Novo!",
+                "swish3": "Você está trapaceando?",
+                "swish5": "...Preciso conferir o aro.",
+                "airball3": "...Talvez faça uma pausa."
+            }
+        },
+        "mood": {
+            "happySuffix": " ♪",
+            "sadPrefix": "...",
+            "surprisedPrefix": "Hã?! "
+        }
+    },
     "soccer": {
         "exitGame": {
             "button": "Sair do jogo",

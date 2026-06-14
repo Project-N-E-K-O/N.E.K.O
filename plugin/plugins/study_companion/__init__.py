@@ -6,10 +6,14 @@ from collections.abc import Mapping
 from datetime import datetime
 import json
 import math
+import os
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 import time
 from typing import Any
+from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from plugin.sdk.plugin import (
@@ -117,6 +121,11 @@ def _register_install_routes() -> None:
     )
 
 
+def _plugin_detail_ui_url(*, plugin_id: str, port: str) -> str:
+    safe_plugin_id = quote(plugin_id, safe="")
+    return f"http://127.0.0.1:{port}/ui/plugins/{safe_plugin_id}?tab=ui"
+
+
 try:
     _register_install_routes()
 except Exception:  # noqa: BLE001 - route registration should not block package import.
@@ -129,6 +138,17 @@ except Exception:  # noqa: BLE001 - route registration should not block package 
 
 
 _REVIEW_DUE_INTERVAL_SECONDS = 1800.0
+_AUTO_OPEN_UI_BROWSER_TIMEOUT_SECONDS = 3.0
+_AUTO_OPEN_UI_TASK_TIMEOUT_SECONDS = 3.5
+
+
+def _open_url_in_browser(url: str) -> None:
+    if sys.platform == "win32":
+        os.startfile(url)
+    elif sys.platform == "darwin":
+        subprocess.run(["open", url], check=True, timeout=_AUTO_OPEN_UI_BROWSER_TIMEOUT_SECONDS)
+    else:
+        subprocess.run(["xdg-open", url], check=True, timeout=_AUTO_OPEN_UI_BROWSER_TIMEOUT_SECONDS)
 
 
 from .entry_tutor_context_support import _TutorContextSupportMixin
@@ -323,6 +343,7 @@ class StudyCompanionPlugin(
                     }
                 ]
             )
+            await self._auto_open_ui_if_enabled()
             self._sync_doc_export_entry()
             await self._persist_state()
             self._start_review_due_task()
@@ -342,6 +363,26 @@ class StudyCompanionPlugin(
                 self._state.status = STATUS_ERROR
                 self._state.last_error = "startup_failed"
             return Err(SdkError("failed to start study_companion"))
+
+    async def _auto_open_ui_if_enabled(self) -> None:
+        if not self._cfg.auto_open_ui:
+            return
+        raw_port = str(os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", "48916") or "48916").strip()
+        try:
+            port_num = int(raw_port)
+        except ValueError:
+            port_num = 48916
+        if not (1 <= port_num <= 65535):
+            port_num = 48916
+        port = str(port_num)
+        url = _plugin_detail_ui_url(plugin_id=self.plugin_id, port=port)
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(_open_url_in_browser, url),
+                timeout=_AUTO_OPEN_UI_TASK_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            self.logger.warning("study auto-open UI failed: {}", exc)
 
     async def _cleanup_after_failed_startup(self) -> None:
         self.stop_awareness_loop()
