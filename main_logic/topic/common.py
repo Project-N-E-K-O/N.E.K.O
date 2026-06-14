@@ -31,6 +31,7 @@ def topic_units(
     include_cjk_bigrams: bool = True,
 ) -> set[str]:
     cleaned = clean_text(text, limit=limit).lower()
+    effective_stop_chars = ZH_TOPIC_STOP_CHARS if stop_chars is None else stop_chars
     units = {
         token
         for token in re.findall(r"[a-z0-9]{3,}", cleaned)
@@ -39,7 +40,7 @@ def topic_units(
     chars = [
         char
         for char in cleaned
-        if "\u4e00" <= char <= "\u9fff" and char not in (stop_chars or ZH_TOPIC_STOP_CHARS)
+        if "\u4e00" <= char <= "\u9fff" and char not in effective_stop_chars
     ]
     units.update(chars)
     if include_cjk_bigrams:

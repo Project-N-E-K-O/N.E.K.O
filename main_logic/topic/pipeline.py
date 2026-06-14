@@ -13,6 +13,7 @@ import time
 from collections import defaultdict, deque
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from copy import deepcopy
+from datetime import date, datetime
 from typing import Any
 
 from main_logic.topic.common import ZH_TOPIC_STOP_CHARS, clean_text, topic_units
@@ -37,7 +38,7 @@ _PROCESS_DEBOUNCE_SECONDS = 45.0
 _TRIGGER_AFTER_QUIET_SECONDS = 60.0
 _MIN_TOPIC_TRIGGER_GAP_SECONDS = 4 * 60 * 60
 _MAX_DAILY_TOPIC_TRIGGERS = 2
-_USED_TOPIC_TTL_SECONDS = 24 * 60 * 60
+_USED_TOPIC_RECENT_SECONDS = 24 * 60 * 60
 
 
 def _clean_text(value: Any, *, limit: int = _MAX_TEXT_CHARS) -> str:
@@ -64,6 +65,10 @@ def _clean_timestamp(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return time.time()
+
+
+def _local_day(value: float) -> date:
+    return datetime.fromtimestamp(value).date()
 
 
 def _clean_material(material: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -257,7 +262,11 @@ class TopicHookPool:
     def get_ready_materials(self, lanlan_name: str, *, max_items: int = 2) -> list[dict[str, Any]]:
         name = str(lanlan_name or "default")
         materials = sorted(
-            self._materials.get(name, []),
+            [
+                item
+                for item in self._materials.get(name, [])
+                if item.get("status") == "pending"
+            ],
             key=lambda item: int(item.get("priority", 0)),
             reverse=True,
         )
@@ -406,6 +415,30 @@ class TopicHookPool:
             name=f"topic_trigger_{name}",
         )
 
+    def _reschedule_trigger_retry(
+        self,
+        name: str,
+        material: Mapping[str, Any],
+        lang: str,
+        *,
+        expected_seq: int,
+    ) -> None:
+        if self._seq.get(name, 0) != expected_seq or material.get("status") != "pending":
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._trigger_tasks[name] = loop.create_task(
+            self._run_trigger_after_quiet_window(
+                name,
+                deepcopy(dict(material)),
+                lang,
+                expected_seq=expected_seq,
+            ),
+            name=f"topic_trigger_{name}",
+        )
+
     async def _run_trigger_after_quiet_window(
         self,
         name: str,
@@ -414,6 +447,7 @@ class TopicHookPool:
         *,
         expected_seq: int,
     ) -> None:
+        current_material: dict[str, Any] | None = None
         try:
             wait_seconds = max(
                 self._trigger_delay_seconds,
@@ -452,20 +486,12 @@ class TopicHookPool:
             )
             if not triggered:
                 logger.info("[%s] topic material trigger skipped by delivery bridge", name)
-                if self._seq.get(name, 0) == expected_seq and current_material.get("status") == "pending":
-                    try:
-                        loop = asyncio.get_running_loop()
-                    except RuntimeError:
-                        return
-                    self._trigger_tasks[name] = loop.create_task(
-                        self._run_trigger_after_quiet_window(
-                            name,
-                            deepcopy(dict(current_material)),
-                            lang,
-                            expected_seq=expected_seq,
-                        ),
-                        name=f"topic_trigger_{name}",
-                    )
+                self._reschedule_trigger_retry(
+                    name,
+                    current_material,
+                    lang,
+                    expected_seq=expected_seq,
+                )
                 return
             current_material["status"] = "used"
             current_material["used_at"] = time.time()
@@ -479,6 +505,13 @@ class TopicHookPool:
             raise
         except Exception as exc:
             logger.warning("[%s] topic material trigger failed: %s", name, exc)
+            if current_material is not None:
+                self._reschedule_trigger_retry(
+                    name,
+                    current_material,
+                    lang,
+                    expected_seq=expected_seq,
+                )
         finally:
             task = self._trigger_tasks.get(name)
             if task is asyncio.current_task():
@@ -486,26 +519,39 @@ class TopicHookPool:
 
     def _prune_used_topics(self, name: str, *, now: float | None = None) -> list[dict[str, Any]]:
         current_time = float(now if now is not None else time.time())
-        records = [
-            record
-            for record in self._used_topics.get(name, [])
-            if current_time - float(record.get("used_at") or 0.0) < _USED_TOPIC_TTL_SECONDS
-        ]
+        current_day = _local_day(current_time)
+        records = []
+        today_records = []
+        for record in self._used_topics.get(name, []):
+            used_at = float(record.get("used_at") or 0.0)
+            used_day = _local_day(used_at)
+            if used_day == current_day or current_time - used_at < _USED_TOPIC_RECENT_SECONDS:
+                records.append(record)
+            if used_day == current_day:
+                today_records.append(record)
         if records:
             self._used_topics[name] = records
         else:
             self._used_topics.pop(name, None)
-        return records
+        return today_records
 
-    def _daily_quota_reached(self, name: str) -> bool:
+    def _recent_used_topics(self, name: str, *, now: float | None = None) -> list[dict[str, Any]]:
+        current_time = float(now if now is not None else time.time())
+        return [
+            record
+            for record in self._used_topics.get(name, [])
+            if current_time - float(record.get("used_at") or 0.0) < _USED_TOPIC_RECENT_SECONDS
+        ]
+
+    def _daily_quota_reached(self, name: str, *, now: float | None = None) -> bool:
         if self._daily_topic_limit <= 0:
             return True
-        return len(self._prune_used_topics(name)) >= self._daily_topic_limit
+        return len(self._prune_used_topics(name, now=now)) >= self._daily_topic_limit
 
     def _seconds_until_next_topic_trigger(self, name: str, *, now: float | None = None) -> float:
         if self._min_trigger_gap_seconds <= 0:
             return 0.0
-        records = self._prune_used_topics(name, now=now)
+        records = self._recent_used_topics(name, now=now)
         if not records:
             return 0.0
         latest_used_at = max(float(record.get("used_at") or 0.0) for record in records)

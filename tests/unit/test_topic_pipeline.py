@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 
 import pytest
 
@@ -352,7 +353,8 @@ async def test_topic_pool_triggers_ready_hook_after_quiet_window():
     await asyncio.sleep(0.03)
 
     assert delivered == [("妮可", "买车像进入新生活阶段", "zh-CN")]
-    assert pool.get_ready_materials("妮可")[0]["status"] == "used"
+    assert pool.get_ready_materials("妮可") == []
+    assert pool._materials["妮可"][0]["status"] == "used"
 
 
 @pytest.mark.asyncio
@@ -433,7 +435,9 @@ async def test_topic_pool_triggers_highest_priority_material_first():
     await asyncio.sleep(0.03)
 
     assert delivered == ["高优先级话题"]
-    assert pool.get_ready_materials("妮可")[0]["interest"] == "高优先级话题"
+    assert pool._materials["妮可"][0]["interest"] == "高优先级话题"
+    assert pool._materials["妮可"][0]["status"] == "used"
+    assert pool.get_ready_materials("妮可")[0]["interest"] == "低优先级话题"
 
 
 @pytest.mark.asyncio
@@ -511,7 +515,50 @@ async def test_topic_pool_retries_pending_material_after_delivery_defers():
         ("妮可", "买车像进入新生活阶段", "zh-CN"),
         ("妮可", "买车像进入新生活阶段", "zh-CN"),
     ]
-    assert pool.get_ready_materials("妮可")[0]["status"] == "used"
+    assert pool.get_ready_materials("妮可") == []
+    assert pool._materials["妮可"][0]["status"] == "used"
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_retries_pending_material_after_trigger_exception():
+    attempts = []
+    retried = asyncio.Event()
+
+    async def fake_analyzer(*, user_msgs, ai_msgs, lang, **kwargs):
+        return [
+            {
+                "interest": "买车像进入新生活阶段",
+                "hook": "从买车背后的生活阶段感切入",
+                "priority": 95,
+            }
+        ]
+
+    async def fake_trigger(*, lanlan_name, material, lang):
+        attempts.append((lanlan_name, material["interest"], lang))
+        if len(attempts) == 1:
+            raise RuntimeError("delivery temporarily unavailable")
+        retried.set()
+        return True
+
+    pool = TopicHookPool(
+        analyzer=fake_analyzer,
+        auto_schedule=False,
+        enable_online_enrichment=False,
+        topic_trigger=fake_trigger,
+        trigger_delay_seconds=0.01,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "我感觉买车算人生大事，最近一直在想它是不是代表生活进入新阶段", lang="zh-CN")
+
+    await pool.process_now("妮可")
+    await asyncio.wait_for(retried.wait(), timeout=1.0)
+
+    assert attempts == [
+        ("妮可", "买车像进入新生活阶段", "zh-CN"),
+        ("妮可", "买车像进入新生活阶段", "zh-CN"),
+    ]
+    assert pool.get_ready_materials("妮可") == []
+    assert pool._materials["妮可"][0]["status"] == "used"
 
 
 @pytest.mark.asyncio
@@ -545,7 +592,8 @@ async def test_topic_pool_does_not_cancel_current_trigger_when_ai_turn_is_record
     await pool.process_now("妮可")
     await asyncio.sleep(0.04)
 
-    assert pool.get_ready_materials("妮可")[0]["status"] == "used"
+    assert pool.get_ready_materials("妮可") == []
+    assert pool._materials["妮可"][0]["status"] == "used"
 
 
 @pytest.mark.asyncio
@@ -628,6 +676,42 @@ async def test_topic_pool_limits_daily_topic_triggers_to_two():
 
     assert delivered == ["凯迪拉克预算压力", "周末海边旅行计划"]
     assert pool.get_ready_materials("妮可") == []
+
+
+def test_topic_pool_daily_topic_limit_resets_on_calendar_day():
+    pool = TopicHookPool(
+        auto_schedule=False,
+        enable_online_enrichment=False,
+        min_user_turns_for_topic=1,
+    )
+    day_one_late = datetime(2026, 6, 14, 23, 50).timestamp()
+    day_one_later = datetime(2026, 6, 14, 23, 55).timestamp()
+    day_one_end = datetime(2026, 6, 14, 23, 59).timestamp()
+    day_two_start = datetime(2026, 6, 15, 0, 1).timestamp()
+    pool._used_topics["妮可"] = [
+        {"used_at": day_one_late, "hook_id": "a", "interest": "前一天话题 A", "units": []},
+        {"used_at": day_one_later, "hook_id": "b", "interest": "前一天话题 B", "units": []},
+    ]
+
+    assert pool._daily_quota_reached("妮可", now=day_one_end)
+    assert not pool._daily_quota_reached("妮可", now=day_two_start)
+
+
+def test_topic_pool_min_trigger_gap_survives_calendar_day_reset():
+    pool = TopicHookPool(
+        auto_schedule=False,
+        enable_online_enrichment=False,
+        min_trigger_gap_seconds=4 * 60 * 60,
+        min_user_turns_for_topic=1,
+    )
+    day_one_late = datetime(2026, 6, 14, 23, 50).timestamp()
+    day_two_start = datetime(2026, 6, 15, 0, 1).timestamp()
+    pool._used_topics["妮可"] = [
+        {"used_at": day_one_late, "hook_id": "a", "interest": "前一天话题", "units": []},
+    ]
+
+    assert not pool._daily_quota_reached("妮可", now=day_two_start)
+    assert pool._seconds_until_next_topic_trigger("妮可", now=day_two_start) > 0
 
 
 @pytest.mark.asyncio
