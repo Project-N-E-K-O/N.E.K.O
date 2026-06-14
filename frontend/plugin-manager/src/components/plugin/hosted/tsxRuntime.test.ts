@@ -276,6 +276,37 @@ describe('hosted TSX document runtime', () => {
     expect(root.querySelector('strong')?.textContent).toBe('ok')
   })
 
+  it('does not resolve named type-only relative imports at runtime', () => {
+    const { root } = executeHostedDocument(`
+      import { type Label } from "./types"
+
+      export default function Panel() {
+        const label = "ok" as Label
+        return <strong>{label}</strong>
+      }
+    `)
+
+    expect(root.querySelector('strong')?.textContent).toBe('ok')
+  })
+
+  it('still resolves relative imports with mixed runtime and type bindings', () => {
+    const { root } = executeHostedDocument(`
+      import { type Label, label } from "./types"
+
+      export default function Panel() {
+        return <strong>{label as Label}</strong>
+      }
+    `, baseContext(), baseContext(), [{
+      path: 'ui/types.ts',
+      source: `
+        export type Label = string
+        export const label = "mixed"
+      `,
+    }])
+
+    expect(root.querySelector('strong')?.textContent).toBe('mixed')
+  })
+
   it('ignores commented and template import text while rewriting hosted TSX', () => {
     const { root } = executeHostedDocument(`
       /*

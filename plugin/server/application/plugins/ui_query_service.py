@@ -696,7 +696,9 @@ def _hosted_relative_specifier(value: str | None) -> str | None:
 
 def _hosted_import_specifier(source: str, index: int) -> str | None:
     index = _hosted_skip_trivia(source, index + len("import"))
-    if index >= len(source) or source[index] in {"(", "."}:
+    if index < len(source) and source[index] == "(":
+        _hosted_raise_dynamic_import_unsupported()
+    if index >= len(source) or source[index] == ".":
         return None
     if _hosted_matches_keyword(source, index, "type"):
         # `import type { Foo } from './types'` is erased at runtime — no dep.

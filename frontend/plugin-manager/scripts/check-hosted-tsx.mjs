@@ -623,11 +623,13 @@ function main() {
         if (!entry || mode !== 'hosted-tsx') continue
         const label = surfaceLabel(surface)
         const entryPath = resolve(pluginDir, entry)
-        if (!isPathInside(repoRoot, entryPath)) {
+        const entryInsideRepo = isPathInside(repoRoot, entryPath)
+        const entryInsidePlugin = isPathInside(pluginDir, entryPath)
+        if (!entryInsideRepo) {
           errors.push(`${tomlPath}:1:1 [${label}] - Hosted TSX entry outside repo root: ${entry}`)
           continue
         }
-        if (!isPathInside(pluginDir, entryPath)) {
+        if (!entryInsidePlugin) {
           errors.push(`${tomlPath}:1:1 [${label}] - Hosted TSX entry outside plugin root: ${entry}`)
           continue
         }

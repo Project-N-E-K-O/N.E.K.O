@@ -498,9 +498,15 @@ function moduleImportStatement(rawBindings: string | undefined, modulePath: stri
   return statements.length > 0 ? `${statements.join('\n')}\n` : ''
 }
 
-function isTypeOnlyImportBindings(rawBindings: string | undefined) {
+function hasRuntimeImportBindings(rawBindings: string | undefined) {
   const bindings = String(rawBindings || '').trim()
-  return bindings === 'type' || bindings.startsWith('type ')
+  if (!bindings) return true
+  if (bindings === 'type' || bindings.startsWith('type ')) return false
+  const namedStart = bindings.indexOf('{')
+  if (namedStart < 0) return true
+  const defaultPart = bindings.slice(0, namedStart).trim().replace(/,$/, '').trim()
+  if (defaultPart) return true
+  return parseNamedBindings(bindings.slice(namedStart)).length > 0
 }
 
 function uiKitImportStatement(rawBindings: string | undefined) {
@@ -537,7 +543,7 @@ function hostedRelativeImportPaths(
   const paths: string[] = []
   for (const statement of hostedImportStatements(source)) {
     if (statement.specifier.startsWith('./') || statement.specifier.startsWith('../')) {
-      if (isTypeOnlyImportBindings(statement.rawBindings)) continue
+      if (!hasRuntimeImportBindings(statement.rawBindings)) continue
       const modulePath = resolveHostedImport(fromPath, statement.specifier, dependenciesByPath)
       paths.push(modulePath)
     }
@@ -600,7 +606,7 @@ function transformHostedImports(
       cursor = statement.end
       continue
     }
-    if (isTypeOnlyImportBindings(statement.rawBindings)) {
+    if (!hasRuntimeImportBindings(statement.rawBindings)) {
       cursor = statement.end
       continue
     }
