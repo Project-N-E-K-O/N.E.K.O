@@ -18,6 +18,8 @@
         MAX_MIC_GAIN_DB: 25,                 // 麦克风增益上限 (dB ≈ 18x)
         MIN_MIC_GAIN_DB: -5,                 // 麦克风增益下限 (dB ≈ 0.56x)
         DEFAULT_SPEAKER_VOLUME: 100,         // 扬声器默认音量
+        MAX_SPEAKER_VOLUME: 200,             // 扬声器音量上限（200% ≈ +6 dB 增益）
+        SPEAKER_VOLUME_KNEE_RATIO: 0.75,     // 100% 锚点落在轨道 75% 处：前 3/4 给 0-100%，后 1/4 给 100-200% 增强区
         DEFAULT_SPATIAL_AUDIO_ENABLED: true, // 空间音频默认开启
         SPATIAL_AUDIO_MIN_GAIN: 0.4,         // 副屏远端最低音量保底（防止猫娘飞远后听不见）
         SPATIAL_AUDIO_MAX_PAN: 0.6,          // pan 绝对值上限（防止完全单声道，另一边留 ~31% 信号）
@@ -249,8 +251,21 @@
     function isMobile() {
         return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
     }
+    /**
+     * 带膝点的非线性滑块：轨道位置(0..1) → 数值。
+     * knee 比例处映射到 base（标准锚点），右端到 max（增强区），左段与右段各自线性。
+     */
+    function kneeTrackToValue(pos, base, max, knee) {
+        if (pos <= knee) return knee > 0 ? (pos / knee) * base : base;
+        return base + ((pos - knee) / (1 - knee)) * (max - base);
+    }
+    /** kneeTrackToValue 的逆映射：数值 → 轨道位置(0..1)。 */
+    function valueToKneeTrack(value, base, max, knee) {
+        if (value <= base) return base > 0 ? (value / base) * knee : 0;
+        return knee + ((value - base) / (max - base)) * (1 - knee);
+    }
 
-    window.appUtils = { dbToLinear, linearToDb, mapRenderQualityToFollowPerf, isMobile };
+    window.appUtils = { dbToLinear, linearToDb, mapRenderQualityToFollowPerf, isMobile, kneeTrackToValue, valueToKneeTrack };
 
     // ======================== 向后兼容的全局双向绑定 ========================
     // 使用 defineProperty 使 window.xxx 始终和 S.xxx 同步

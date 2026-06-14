@@ -1340,7 +1340,7 @@
             var saved = localStorage.getItem('neko_speaker_volume');
             if (saved !== null) {
                 var vol = parseInt(saved, 10);
-                if (!isNaN(vol) && vol >= 0 && vol <= 100) {
+                if (!isNaN(vol) && vol >= 0 && vol <= C.MAX_SPEAKER_VOLUME) {
                     S.speakerVolume = vol;
                     console.log('已加载扬声器音量设置: ' + S.speakerVolume + '%');
                 } else {
@@ -1365,17 +1365,27 @@
     // ======================== Window-level backward-compat exports ========================
 
     window.setSpeakerVolume = function (vol) {
-        if (vol >= 0 && vol <= 100) {
+        if (vol >= 0 && vol <= C.MAX_SPEAKER_VOLUME) {
             S.speakerVolume = vol;
             if (S.speakerGainNode) {
                 S.speakerGainNode.gain.setTargetAtTime(vol / 100, S.speakerGainNode.context.currentTime, 0.05);
             }
             saveSpeakerVolumeSetting();
-            // Update UI slider if it exists
+            // Update UI slider if it exists — slider 走非线性轨道(0..1000)，需反向映射；
+            // 色值与 app-audio-capture.js 的 applySpeakerVolumeVisual 保持一致
             var slider = document.getElementById('speaker-volume-slider');
             var valueDisplay = document.getElementById('speaker-volume-value');
-            if (slider) slider.value = String(vol);
-            if (valueDisplay) valueDisplay.textContent = vol + '%';
+            var color = vol > C.DEFAULT_SPEAKER_VOLUME ? '#ff9f43' : '#4f8cff';
+            if (slider) {
+                slider.value = String(Math.round(window.appUtils.valueToKneeTrack(
+                    vol, C.DEFAULT_SPEAKER_VOLUME, C.MAX_SPEAKER_VOLUME, C.SPEAKER_VOLUME_KNEE_RATIO
+                ) * 1000));
+                slider.style.accentColor = color;
+            }
+            if (valueDisplay) {
+                valueDisplay.textContent = vol + '%';
+                valueDisplay.style.color = color;
+            }
             console.log('扬声器音量已设置: ' + vol + '%');
         }
     };
