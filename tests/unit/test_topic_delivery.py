@@ -170,6 +170,31 @@ async def test_trigger_topic_hook_once_waits_for_confirmed_delivery(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_trigger_topic_hook_once_skips_when_activity_gate_closed(monkeypatch):
+    mgr = MagicMock()
+    mgr.topic_hook_delivery_allowed = MagicMock(return_value=False)
+    mgr.submit_proactive_callback = MagicMock()
+    mgr.enqueue_agent_callback = MagicMock()
+    mgr.trigger_agent_callbacks = AsyncMock(return_value=True)
+
+    clear_topic_session_manager_getter()
+    register_topic_session_manager_getter(lambda name: mgr)
+
+    delivered = await trigger_topic_hook_once(
+        lanlan_name="妮可",
+        material={"hook_id": "topic_car", "interest": "用户把买车当成新阶段"},
+        lang="zh-CN",
+    )
+
+    assert delivered is False
+    mgr.topic_hook_delivery_allowed.assert_called_once()
+    mgr.submit_proactive_callback.assert_not_called()
+    mgr.enqueue_agent_callback.assert_not_called()
+    mgr.trigger_agent_callbacks.assert_not_called()
+    clear_topic_session_manager_getter()
+
+
+@pytest.mark.asyncio
 async def test_trigger_topic_hook_once_retracts_submitted_callback_when_cancelled(monkeypatch):
     delivered_batches = []
     submitted = asyncio.Event()

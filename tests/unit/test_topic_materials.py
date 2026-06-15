@@ -2,32 +2,8 @@ import pytest
 
 from main_logic.topic.materials import (
     _default_fetchers,
-    build_topic_materials,
     enrich_topic_materials_online,
 )
-
-
-def test_build_topic_materials_limits_to_two_high_quality_hooks():
-    materials = build_topic_materials(
-        recent_topics=[
-            "我的车是白色的，不会给我用差漆吧，有色差就不好看了",
-            "周末想去看车，但是还没定去哪家店",
-            "外卖酸得离谱，吃完嘴里还怪怪的",
-        ],
-        followup_topics=[
-            {"text": "用户最近在纠结直播里的角色风格和吐槽尺度"},
-        ],
-        max_items=2,
-        now_iso="2026-06-04T10:00:00+08:00",
-    )
-
-    assert len(materials) == 2
-    assert materials[0]["status"] == "pending"
-    assert materials[0]["hook_id"].startswith("topic_")
-    assert materials[0]["source"] == "recent"
-    assert "白色的" in materials[0]["interest"]
-    assert "自然接住" in materials[0]["hook"]
-    assert materials[0]["expires_at"] == "2026-06-05T10:00:00+08:00"
 
 
 @pytest.mark.asyncio
@@ -55,11 +31,12 @@ async def test_enrich_topic_materials_online_defaults_to_search_fetcher():
             "keyword_used": keyword,
         }
 
-    materials = build_topic_materials(
-        recent_topics=["我的车是白色的，不会给我用差漆吧，有色差就不好看了"],
-        max_items=1,
-        now_iso="2026-06-04T10:00:00+08:00",
-    )
+    materials = [
+        {
+            "interest": "我的车是白色的，不会给我用差漆吧，有色差就不好看了",
+            "media_intent": ["news"],
+        }
+    ]
 
     enriched = await enrich_topic_materials_online(
         materials,
@@ -188,11 +165,12 @@ async def test_enrich_topic_materials_online_drops_unrelated_online_titles():
             },
         }
 
-    materials = build_topic_materials(
-        recent_topics=["吉利银河混动和纯电选择纠结"],
-        max_items=1,
-        now_iso="2026-06-04T10:00:00+08:00",
-    )
+    materials = [
+        {
+            "interest": "吉利银河混动和纯电选择纠结",
+            "media_intent": ["news"],
+        }
+    ]
 
     enriched = await enrich_topic_materials_online(
         materials,

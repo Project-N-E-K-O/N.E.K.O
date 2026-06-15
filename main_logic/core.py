@@ -6004,13 +6004,10 @@ class LLMSessionManager:
                 ]
                 if not voice_snapshot:
                     return False
-                instruction = _build_callback_instruction(
-                    voice_snapshot,
-                    lang=_lang,
-                    lanlan_name=self.lanlan_name,
-                    master_name=self.master_name,
-                    passive=False,
-                )
+                # NOTE: the callback instruction is built AFTER the media-stream
+                # gate + retraction re-filter below (right before inject), so it
+                # reflects the final delivered set. Don't build it here — that
+                # copy would be stale the moment a cb retracts during streaming.
                 # Snapshot the paired extras entries NOW (before prune) so the
                 # rejection handler can restore BOTH queues if the server
                 # rejects asynchronously.
@@ -6864,6 +6861,31 @@ class LLMSessionManager:
             finally:
                 await self.state.fire(SessionEvent.PROACTIVE_DONE)
 
+    def topic_hook_delivery_allowed(self) -> bool:
+        """Whether a background deep-topic hook may interrupt right now.
+
+        Deep topic hooks are brand-new text openers — the most intrusive,
+        "宁可不用" kind of proactive content. They must honour the same
+        activity gate as ``/api/proactive_chat``: never surface while the
+        user's propensity is ``closed`` (privacy blacklist) or
+        ``restricted_screen_only`` (gaming / focused_work). Unlike the
+        proactive reminiscence path there is NO open-thread exception — a
+        fresh deep topic is not a follow-up to something already on the
+        table, so it shouldn't borrow that escape hatch.
+
+        Fail-open (return True) when no snapshot is available, mirroring the
+        proactive path's "snapshot None ⇒ open propensity" default.
+        """
+        tracker = getattr(self, '_activity_tracker', None)
+        if tracker is None:
+            return True
+        try:
+            snap = tracker.get_snapshot_sync()
+        except Exception:
+            return True
+        propensity = getattr(snap, 'propensity', None)
+        return propensity not in ('closed', 'restricted_screen_only')
+
     def submit_proactive_callback(
         self,
         callback: dict,
@@ -7681,14 +7703,7 @@ class LLMSessionManager:
                         data if isinstance(data, str) else '',
                     )
 
-                    logger.info("[%s] text stream: before openclaw preflight len=%d", self.lanlan_name, len(data))
                     should_handoff, openclaw_messages = await self._should_handoff_text_to_openclaw(data)
-                    logger.info(
-                        "[%s] text stream: after openclaw preflight should_handoff=%s messages=%d",
-                        self.lanlan_name,
-                        should_handoff,
-                        len(openclaw_messages or []),
-                    )
                     if should_handoff:
                         handed_off = await self._dispatch_openclaw_handoff(data, openclaw_messages)
                         if handed_off:
@@ -7718,19 +7733,16 @@ class LLMSessionManager:
                     _agent_cb_ctx = ""
                     if self.pending_agent_callbacks:
                         try:
-                            logger.info("[%s] text stream: draining agent callbacks n=%d", self.lanlan_name, len(self.pending_agent_callbacks))
                             _agent_cb_ctx = self.drain_agent_callbacks_for_llm() or ""
                         except Exception as _cb_err:
                             logger.warning(f"⚠️ Agent callback drain failed: {_cb_err}")
                             _agent_cb_ctx = ""
 
                     self._active_text_request_id = message.get("request_id")
-                    logger.info("[%s] text stream: before stream_text len=%d", self.lanlan_name, len(data))
                     await self.session.stream_text(
                         data,
                         system_prefix=_agent_cb_ctx or None,
                     )
-                    logger.info("[%s] text stream: after stream_text", self.lanlan_name)
                 else:
                     logger.error(f"💥 Stream: Invalid text data type: {type(data)}")
                 return

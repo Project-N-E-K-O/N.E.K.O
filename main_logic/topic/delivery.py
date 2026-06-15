@@ -279,6 +279,24 @@ async def trigger_topic_hook_once(
         logger.info("[%s] topic hook delivery skipped: no session manager", lanlan_name)
         return False
 
+    # Activity gate: deep topic hooks are fresh text openers, so they must
+    # respect the same propensity gate as /api/proactive_chat and stay quiet
+    # while the user is in a privacy / gaming / focused-work state. Returning
+    # False keeps the material pending so TopicHookPool retries once the state
+    # opens up, without burning the daily quota.
+    gate = getattr(mgr, "topic_hook_delivery_allowed", None)
+    if callable(gate):
+        try:
+            allowed = bool(gate())
+        except Exception:
+            allowed = True
+        if not allowed:
+            logger.info(
+                "[%s] topic hook delivery skipped: activity propensity restricts proactive interruption",
+                lanlan_name,
+            )
+            return False
+
     callback = build_topic_hook_callback(material, lang=lang)
     submit = getattr(mgr, "submit_proactive_callback", None)
     if callable(submit):

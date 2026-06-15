@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from copy import deepcopy
-from datetime import datetime, timedelta
 from typing import Any
 
 from main_logic.topic.common import ZH_LINK_STOP_CHARS, clean_text, is_zh_lang, topic_units
@@ -17,93 +16,6 @@ from utils.source_locale import source_region_from_locale
 
 
 Fetcher = Callable[[str, int], Awaitable[Mapping[str, Any]]]
-
-
-def _parse_now(now_iso: str | None) -> datetime:
-    if now_iso:
-        return datetime.fromisoformat(now_iso)
-    return datetime.now().astimezone()
-
-
-def _hook_id(source: str, interest: str) -> str:
-    import hashlib
-
-    digest = hashlib.sha1(f"{source}:{interest}".encode("utf-8")).hexdigest()[:12]
-    return f"topic_{digest}"
-
-
-def _iter_candidate_texts(
-    *,
-    recent_topics: Iterable[Any] | None = None,
-    followup_topics: Iterable[Mapping[str, Any]] | None = None,
-    open_threads: Iterable[Any] | None = None,
-) -> Iterable[tuple[str, str]]:
-    for text in recent_topics or []:
-        cleaned = clean_text(text)
-        if cleaned:
-            yield "recent", cleaned
-    for topic in followup_topics or []:
-        if not isinstance(topic, Mapping):
-            continue
-        cleaned = clean_text(topic.get("text"))
-        if cleaned:
-            yield "memory", cleaned
-    for text in open_threads or []:
-        cleaned = clean_text(text)
-        if cleaned:
-            yield "thread", cleaned
-
-
-def _infer_media_intent(text: str) -> list[str]:
-    lower = text.lower()
-    if any(token in lower for token in ("表情包", "梗图", "meme", "gif")):
-        return ["meme"]
-    if any(token in lower for token in ("音乐", "歌", "music", "song")):
-        return ["music"]
-    if any(token in lower for token in ("热点", "新闻", "微博", "twitter", "news")):
-        return ["news"]
-    return ["news"]
-
-
-def build_topic_materials(
-    *,
-    recent_topics: Iterable[Any] | None = None,
-    followup_topics: Iterable[Mapping[str, Any]] | None = None,
-    open_threads: Iterable[Any] | None = None,
-    max_items: int = 2,
-    now_iso: str | None = None,
-) -> list[dict[str, Any]]:
-    """Build a small set of high-signal hook materials from existing candidates."""
-    now = _parse_now(now_iso)
-    expires_at = (now + timedelta(days=1)).isoformat()
-    materials: list[dict[str, Any]] = []
-    seen: set[str] = set()
-
-    for source, interest in _iter_candidate_texts(
-        recent_topics=recent_topics,
-        followup_topics=followup_topics,
-        open_threads=open_threads,
-    ):
-        if interest in seen:
-            continue
-        seen.add(interest)
-        priority = max(10, 90 - len(materials) * 8)
-        materials.append({
-            "hook_id": _hook_id(source, interest),
-            "source": source,
-            "interest": interest,
-            "hook": f"围绕「{interest}」自然接住，不做总结报告，只抛一个轻钩子。",
-            "opening_intent": "具体、短、像随口一提；可以轻微调侃，不要像问卷。",
-            "deepening_hint": "如果用户接话，再顺着用户反应聊偏好、原因、选择或情绪。",
-            "media_intent": _infer_media_intent(interest),
-            "priority": priority,
-            "status": "pending",
-            "created_at": now.isoformat(),
-            "expires_at": expires_at,
-        })
-        if len(materials) >= max_items:
-            break
-    return materials
 
 
 def _source_locale_for_lang(lang: str | None) -> str | None:
