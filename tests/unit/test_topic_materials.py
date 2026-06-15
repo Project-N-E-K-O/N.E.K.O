@@ -192,8 +192,8 @@ async def test_default_topic_fetchers_keep_chinese_search_local_and_fallback_ins
         calls.append(("baidu", keyword, limit))
         return {"success": False, "error": "baidu unavailable", "results": []}
 
-    async def fake_google(keyword, limit):
-        calls.append(("google", keyword, limit))
+    async def fake_duckduckgo(keyword, limit):
+        calls.append(("duckduckgo", keyword, limit))
         return {
             "success": True,
             "results": [
@@ -202,14 +202,15 @@ async def test_default_topic_fetchers_keep_chinese_search_local_and_fallback_ins
         }
 
     monkeypatch.setattr("utils.web_scraper.search_baidu", fake_baidu)
-    monkeypatch.setattr("utils.web_scraper.search_google", fake_google)
+    monkeypatch.setattr("utils.web_scraper.search_duckduckgo", fake_duckduckgo)
 
     fetchers = await _default_fetchers("zh-CN")
     result = await fetchers["news"]("脑机接口大众款", 2)
 
+    # mainland: baidu primary, DuckDuckGo (not the 429-prone Google) as fallback
     assert calls == [
         ("baidu", "脑机接口大众款", 2),
-        ("google", "脑机接口大众款", 2),
+        ("duckduckgo", "脑机接口大众款", 2),
     ]
     assert result["success"] is True
     assert result["region"] == "china"
@@ -227,8 +228,8 @@ async def test_default_topic_fetchers_use_non_mainland_search_for_traditional_ch
             "results": [{"title": "大陆源", "url": "https://example.test/cn"}],
         }
 
-    async def fake_google(keyword, limit):
-        calls.append(("google", keyword, limit))
+    async def fake_duckduckgo(keyword, limit):
+        calls.append(("duckduckgo", keyword, limit))
         return {
             "success": True,
             "results": [
@@ -237,12 +238,13 @@ async def test_default_topic_fetchers_use_non_mainland_search_for_traditional_ch
         }
 
     monkeypatch.setattr("utils.web_scraper.search_baidu", fake_baidu)
-    monkeypatch.setattr("utils.web_scraper.search_google", fake_google)
+    monkeypatch.setattr("utils.web_scraper.search_duckduckgo", fake_duckduckgo)
 
     fetchers = await _default_fetchers("zh-TW")
     result = await fetchers["news"]("台灣 城市流行", 2)
 
-    assert calls == [("google", "台灣 城市流行", 2)]
+    # non-mainland (zh-TW) goes to DuckDuckGo, not Google
+    assert calls == [("duckduckgo", "台灣 城市流行", 2)]
     assert result["success"] is True
     assert result["region"] == "non-china"
     assert result["search"]["results"][0]["title"] == "台灣城市流行歌單"

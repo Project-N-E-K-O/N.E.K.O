@@ -6874,8 +6874,19 @@ class LLMSessionManager:
         table, so it shouldn't borrow that escape hatch.
 
         Fail-open (return True) when no snapshot is available, mirroring the
-        proactive path's "snapshot None ⇒ open propensity" default.
+        proactive path's "snapshot None ⇒ open propensity" default. Privacy is
+        the exception: a hook can sit queued in the proactive manager past a
+        later privacy-mode toggle, so re-check the privacy preference here at
+        release time and fail CLOSED — the pool's collection-time check is not
+        enough on its own.
         """
+        try:
+            from utils.preferences import is_privacy_mode_enabled
+            if is_privacy_mode_enabled():
+                return False
+        except Exception:
+            # Can't confirm privacy is off → don't risk surfacing a hook.
+            return False
         tracker = getattr(self, '_activity_tracker', None)
         if tracker is None:
             return True

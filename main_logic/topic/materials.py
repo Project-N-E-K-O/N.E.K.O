@@ -64,7 +64,7 @@ async def _default_fetchers(lang: str | None = None) -> dict[str, Fetcher]:
     from utils.music_crawlers import fetch_music_content
     from utils.web_scraper import (
         search_baidu,
-        search_google,
+        search_duckduckgo,
     )
 
     async def search(keyword: str, limit: int) -> Mapping[str, Any]:
@@ -73,8 +73,12 @@ async def _default_fetchers(lang: str | None = None) -> dict[str, Fetcher]:
             source_region == "china"
             or (source_region is None and is_zh_lang(lang))
         )
-        primary = search_baidu if use_mainland_source else search_google
-        fallback = search_google if use_mainland_source else search_baidu
+        # Non-mainland uses DuckDuckGo, not Google: scripted Google requests
+        # almost always hit the /sorry / 429 anti-bot flow (same reason the
+        # window-search path in utils/web_scraper.py switched). Baidu is the
+        # cross-region fallback of last resort.
+        primary = search_baidu if use_mainland_source else search_duckduckgo
+        fallback = search_duckduckgo if use_mainland_source else search_baidu
         result = await primary(keyword, limit=limit)
         if not result.get("success"):
             fallback_result = await fallback(keyword, limit=limit)
