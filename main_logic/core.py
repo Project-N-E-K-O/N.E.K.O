@@ -5866,6 +5866,18 @@ class LLMSessionManager:
                 if extra.get("_callback_delivery_id") not in retracted_ids
             ]
 
+    def _purge_retracted_agent_callback_extras(self, callbacks: list) -> None:
+        retracted_ids = {
+            cb.get("_callback_delivery_id")
+            for cb in callbacks
+            if cb.get(DELIVERY_RETRACTED_KEY) and cb.get("_callback_delivery_id")
+        }
+        if retracted_ids:
+            self.pending_extra_replies = [
+                extra for extra in self.pending_extra_replies
+                if extra.get("_callback_delivery_id") not in retracted_ids
+            ]
+
     async def trigger_agent_callbacks(self) -> bool:
         """Proactively deliver pending agent task results via LLM rephrase.
 
@@ -6299,7 +6311,9 @@ class LLMSessionManager:
                     delivered = await self._deliver_agent_callbacks_text(callbacks_snapshot)
                     logger.debug("[%s] trigger_agent_callbacks: auto text session delivered", self.lanlan_name)
                 else:
-                    logger.debug("[%s] trigger_agent_callbacks: no websocket/session, keeping for later", self.lanlan_name)
+                    logger.debug("[%s] trigger_agent_callbacks: no websocket/session, re-queueing for later", self.lanlan_name)
+                    self.pending_agent_callbacks.extend(callbacks_snapshot)
+                    callbacks_snapshot[:] = []
         except Exception as e:
             logger.warning("[%s] trigger_agent_callbacks error: %s", self.lanlan_name, e)
             self.pending_agent_callbacks.extend(callbacks_snapshot)
@@ -6321,6 +6335,7 @@ class LLMSessionManager:
         """
         async with self._proactive_write_lock:
             async with self.lock:
+                self._purge_retracted_agent_callback_extras(callbacks_snapshot)
                 active_callbacks = [
                     cb for cb in callbacks_snapshot
                     if not cb.get(DELIVERY_RETRACTED_KEY)
@@ -6365,6 +6380,7 @@ class LLMSessionManager:
             # and re-passes it (preserve-until-success). NOTE: we do NOT call
             # _stream_cb_media for text mode (that's the voice path, which uses
             # the realtime session's persistent conversation.item).
+            self._purge_retracted_agent_callback_extras(active_callbacks)
             active_callbacks = [
                 cb for cb in active_callbacks
                 if not cb.get(DELIVERY_RETRACTED_KEY)
@@ -6408,11 +6424,22 @@ class LLMSessionManager:
                 # this guard only covers an emit() that itself somehow raises.
                 logger.debug("[%s] lifecycle_bus emit(text_start) failed", self.lanlan_name)
             try:
-                delivered = await self.session.prompt_ephemeral(
-                    instruction,
-                    images=_proactive_images or None,
-                    on_committed=lambda: _resolve_text_delivery_ack(True),
-                )
+                try:
+                    delivered = await self.session.prompt_ephemeral(
+                        instruction,
+                        images=_proactive_images or None,
+                        on_committed=lambda: _resolve_text_delivery_ack(True),
+                    )
+                except Exception as exc:
+                    if ack_resolved:
+                        logger.warning(
+                            "[%s] trigger_agent_callbacks: prompt_ephemeral failed after committed output; treating callback delivery as complete: %s",
+                            self.lanlan_name,
+                            exc,
+                        )
+                        delivered = True
+                    else:
+                        raise
             finally:
                 _proactive_expected_sid.reset(_sid_token)
                 try:
@@ -6422,7 +6449,7 @@ class LLMSessionManager:
                     # the delivery path's finally cleanup.
                     logger.debug("[%s] lifecycle_bus emit(text_end) failed", self.lanlan_name)
             logger.debug("[%s] trigger_agent_callbacks: prompt_ephemeral delivered=%s", self.lanlan_name, delivered)
-            if delivered:
+            if delivered or ack_resolved:
                 _resolve_text_delivery_ack(True)
                 delivered_ids = {
                     cb.get("_callback_delivery_id")

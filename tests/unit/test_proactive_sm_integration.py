@@ -471,6 +471,67 @@ async def test_text_mode_resolves_delivery_ack_false_when_prompt_has_no_committe
     assert mgr.pending_agent_callbacks == [cb]
 
 
+async def test_text_mode_requeues_callbacks_when_no_session_or_websocket_after_claim():
+    mgr = _make_mgr(session=None)
+    cb = {"_callback_delivery_id": "id-no-session", "status": "completed", "summary": "keep queued"}
+    mgr.pending_agent_callbacks = [cb]
+
+    delivered = await LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is False
+    assert mgr.pending_agent_callbacks == [cb]
+    assert mgr.state.phase is ProactivePhase.IDLE
+
+
+async def test_text_mode_retraction_after_claim_purges_paired_extra():
+    cb = {"_callback_delivery_id": "id-retracted-text", "status": "completed", "summary": "cancelled"}
+    extra = {"_callback_delivery_id": "id-retracted-text", "origin": "task_result", "summary": "cancelled"}
+
+    class _RetractingSess(_FakeOmniOffline):
+        def update_max_response_length(self, *_a, **_kw):
+            cb[DELIVERY_RETRACTED_KEY] = True
+
+    sess = _RetractingSess(delivered=True)
+    mgr = _make_mgr(session=sess)
+    mgr.pending_agent_callbacks = [cb]
+    mgr.pending_extra_replies = [extra]
+
+    delivered = await LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is False
+    assert sess.called_with == []
+    assert mgr.pending_agent_callbacks == []
+    assert mgr.pending_extra_replies == []
+
+
+async def test_text_mode_committed_then_flush_exception_does_not_requeue_callback():
+    class _CommittedThenFailSess(_FakeOmniOffline):
+        async def prompt_ephemeral(self, instruction: str, *, images=None, on_committed=None) -> bool:
+            self.called_with.append(instruction)
+            assert on_committed is not None
+            on_committed()
+            raise RuntimeError("completion flush failed after committed output")
+
+    sess = _CommittedThenFailSess(delivered=True)
+    mgr = _make_mgr(session=sess)
+    future = asyncio.get_running_loop().create_future()
+    cb = {
+        "_callback_delivery_id": "id-committed-then-fail",
+        "status": "completed",
+        "summary": "already shown",
+        DELIVERY_ACK_FUTURE_KEY: future,
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    delivered = await LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert future.done()
+    assert future.result() is True
+    assert mgr.pending_agent_callbacks == []
+    assert mgr.state.phase is ProactivePhase.IDLE
+
+
 async def test_text_mode_success_keeps_late_extra_replies():
     class _QueueingSess(_FakeOmniOffline):
         async def prompt_ephemeral(self, instruction: str, *, images=None, on_committed=None) -> bool:
