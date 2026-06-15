@@ -94,6 +94,8 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/assets/neko-idle/cat3-sleep2.mp3",
     _PROJECT_ROOT / "static/css/character_card_manager.css",
     _PROJECT_ROOT / "static/js/character_card_manager.js",
+    _PROJECT_ROOT / "static/css/character_personality_onboarding.css",
+    _PROJECT_ROOT / "static/js/character_personality_onboarding.js",
     _PROJECT_ROOT / "static/css/card_maker.css",
     _PROJECT_ROOT / "static/js/card_maker.js",
     _PROJECT_ROOT / "static/css/model_manager.css",
