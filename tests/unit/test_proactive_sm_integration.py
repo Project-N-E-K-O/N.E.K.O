@@ -1031,6 +1031,20 @@ def test_start_session_success_path_clears_goodbye_silent_gate():
     assert success_pos < clear_pos < notify_pos
 
 
+def test_start_session_seeds_topic_hooks_with_full_global_locale():
+    """Topic hooks must keep zh-TW when start_session falls back to global language."""
+    with open(
+        os.path.join(os.path.dirname(__file__), "../../main_logic/core.py"),
+        encoding="utf-8",
+    ) as fh:
+        source = fh.read()
+    normalized_source = re.sub(r"\s+", " ", source)
+
+    assert "topic_language_seed = normalize_language_code(get_global_language_full(), format='full')" in normalized_source
+    assert "self.user_language = normalize_language_code(topic_language_seed, format='short')" in normalized_source
+    assert "self._activity_tracker.set_topic_language(topic_language_seed or self.user_language)" in normalized_source
+
+
 async def test_submit_proactive_callback_does_not_fail_ack_when_goodbye_silent():
     mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
     mgr.goodbye_silent = True

@@ -4244,10 +4244,12 @@ class LLMSessionManager:
         # 全部回退英文。改为：仅在 user_language 还没被设过时才 seed 一次，已经
         # 有 session 真值就保留——全局缓存晚到的更新由 refresh_global_language
         # 路径独立处理（见 main_routers/config_router.py:steam_language 端点）。
+        topic_language_seed = None
         if not getattr(self, 'user_language', None):
-            self.user_language = normalize_language_code(get_global_language(), format='short')
+            topic_language_seed = normalize_language_code(get_global_language_full(), format='full')
+            self.user_language = normalize_language_code(topic_language_seed, format='short')
         if hasattr(self._activity_tracker, 'set_topic_language'):
-            self._activity_tracker.set_topic_language(self.user_language)
+            self._activity_tracker.set_topic_language(topic_language_seed or self.user_language)
         # 重置防刷屏标志
         self.session_closed_by_server = False
         self.last_audio_send_error_time = 0.0
