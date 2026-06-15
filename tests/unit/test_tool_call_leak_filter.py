@@ -261,6 +261,22 @@ def test_structured_tool_call_strips_function_name_opener():
     assert events[0].pattern == "structured_tool_call"
 
 
+def test_structured_tool_call_strips_attributed_function_name_opener():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    leak = (
+        '<function><name type="x">recall_memory</name>'
+        '<parameter name="query">secret</parameter></function> after'
+    )
+    visible, events = _drain(ToolLeakFilter(tool_names={"recall_memory"}), ["before ", leak])
+
+    assert visible == "before  after"
+    assert '<function><name type="x">' not in visible
+    assert "secret" not in visible
+    assert len(events) == 1
+    assert events[0].pattern == "structured_tool_call"
+
+
 def test_structured_tool_call_opener_prefix_across_chunks_is_stripped():
     from utils.llm_tool_leak_filter import ToolLeakFilter
 

@@ -13,7 +13,7 @@ _SEED_CLOSE_RE = re.compile(r"<\s*/\s*seed\s*:\s*tool_call\s*>", re.IGNORECASE)
 _PARAMETER_RE = re.compile(r"<\s*parameter\b[^>]*\bname\s*=", re.IGNORECASE)
 _PARAMETER_CLOSE_RE = re.compile(r"<\s*/\s*parameter\s*>", re.IGNORECASE)
 _FUNCTION_CLOSE_RE = re.compile(r"<\s*/\s*function\s*>", re.IGNORECASE)
-_FUNCTION_NAME_OPEN_TAIL_RE = re.compile(r"<\s*function\b[^>]*>\s*<\s*name\s*>\s*$", re.IGNORECASE)
+_FUNCTION_NAME_OPEN_TAIL_RE = re.compile(r"<\s*function\b[^>]*>\s*<\s*name\b[^>]*>\s*$", re.IGNORECASE)
 _NAME_CLOSE_RE = re.compile(r"</\s*name\s*>", re.IGNORECASE)
 
 
