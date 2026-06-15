@@ -1606,6 +1606,17 @@ class LLMSessionManager:
             return False
         try:
             from config.prompts.prompts_focus import detect_topic_switch
+            # Privacy mode: skip Focus entirely — don't even fetch a snapshot.
+            # Mirrors the proactive path (which sets activity_snapshot=None under
+            # privacy); we should not run "she arrives" magic while the user is in
+            # a sensitive app, and must not touch the activity tracker there.
+            from utils.preferences import ais_privacy_mode_enabled
+            try:
+                if await ais_privacy_mode_enabled():
+                    return False
+            except Exception:
+                # fail-closed: unreadable privacy state → treat as private, skip focus
+                return False
             lang = self.user_language or 'zh'
             snapshot = await self._activity_tracker.get_snapshot()
             scored = self._focus_scorer.score(snapshot, user_text=user_text, lang=lang)

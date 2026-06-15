@@ -1707,6 +1707,19 @@ class OmniOfflineClient:
             return None
         return summary
 
+    @staticmethod
+    def _focus_stream_overrides(thinking_on: bool, has_images: bool) -> dict:
+        """Per-call streaming overrides for a Focus turn.
+
+        Returns ``{"extra_body": None}`` (drop the thinking-off body → reason
+        freely) only when ``thinking_on`` AND there are no pending images;
+        otherwise ``{}`` (instance default, thinking off). The vision guard
+        mirrors the proactive Phase-2 rule: a vision model + thinking reliably
+        times out (see ``main_routers/system_router.py`` Phase-2 note), so a
+        focus turn carrying images must stay thinking-off.
+        """
+        return {"extra_body": None} if (thinking_on and not has_images) else {}
+
     async def stream_text(
         self, text: str, *, system_prefix: str | None = None,
         thinking_on: bool = False,
@@ -1946,7 +1959,7 @@ class OmniOfflineClient:
                         # instance's thinking-off extra_body applies. Routed
                         # through the visible (tool-leak-filtered) variant,
                         # which forwards **overrides to ``_astream_with_tools``.
-                        _focus_overrides = {"extra_body": None} if thinking_on else {}
+                        _focus_overrides = self._focus_stream_overrides(thinking_on, has_images)
                         async for chunk in self._astream_visible_with_tools(
                             self._conversation_history, **_focus_overrides,
                         ):

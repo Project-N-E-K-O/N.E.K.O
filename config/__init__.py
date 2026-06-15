@@ -1746,10 +1746,13 @@ PROACTIVE_CHAT_HISTORY_MAX = 10
 # 信号触发、用户无感的「这一轮开思考 + 换强模型」机制，兑现 90/10 产品命题
 # 里的 10% 神明降临。以下全是 A/B 可调旋钮，集中在此便于灰度调参；情绪关键词
 # 这类多语言词表按 i18n 规约放 config/prompts/prompts_focus.py，不在这里。
-FOCUS_MODE_ENABLED = True
-"""凝神总开关（默认开）。
+FOCUS_MODE_ENABLED = False
+"""凝神总开关（默认关）。
 - 用途：关掉 = FocusScorer 永不评分、SM 永远停在 REGULAR，两条触发路径都退化回
-  常规（proactive 仍 disable_thinking、stream_text 不升档），零行为变化。
+  常规（proactive 仍 disable_thinking、stream_text 不升档），逐字节零行为变化。
+- 默认关原因：阈值尚未用真实信号分布调过、且 thinking-on 的端到端行为（内联推理
+  文本在流式 content 里的泄露、各 provider 思考开销）未对真模型验证过。先 inert
+  落地，验证 + 调参后再按 provider opt-in 打开。详见 docs/design/focus-truename-mode.md。
 - 上游：FocusScorer / SessionStateMachine 入口的早退判定。"""
 
 FOCUS_SCORE_T_IN = 0.6
@@ -1823,12 +1826,9 @@ FOCUS_SILENCE_FULL_SECONDS = 1800
 - 用途：seconds_since_user_msg ≥ 此值 → silence = 1.0；MIN~FULL 间线性。
 - 上游：ActivitySnapshot.seconds_since_user_msg。"""
 
-FOCUS_IDLE_THRESHOLD_MULTIPLIER = 0.4
-"""凝神态下 idle 主动搭话触发阈值的乘数。
-- 用途：用户讲完重话→AI 凝神回复→用户沉默，这种沉默性质不同于日常 idle；凝神态
-  期间把 Path B 的 idle 触发阈值乘以此系数（更敏感、更短沉默就追问），形成「她降临
-  一次后会主动追一两轮才放下」的闭环。常规态乘数恒为 1（不变）。
-- 上游：proactive Path B 的 idle 触发判定。"""
+# NOTE: FOCUS_IDLE_THRESHOLD_MULTIPLIER（凝神态下调低 idle 触发阈值「她降临一次后
+# 主动追一两轮」）属 Path B 的 idle-threshold-drop 子特性，该特性尚未接线，故旋钮
+# 暂不引入，待实现该 feature 时再随它一起加，避免留下死配置。设计见 blueprint。
 
 FOCUS_EPISODE_MEMORY_ENABLED = True
 """凝神退出时顺便批量整理记忆的开关（默认开）。

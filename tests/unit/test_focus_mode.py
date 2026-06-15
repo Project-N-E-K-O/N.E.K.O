@@ -127,8 +127,6 @@ def test_decide_hard_cap_yields_exactly_n_focus_turns():
             count, low = d.turn_count, d.low_streak
             focus_turns += 1
         elif d.action is _FocusAction.EXIT:
-            mode = CognitionMode.REGULAR
-            count, low = 0, 0
             break
     assert focus_turns == 4
 
@@ -293,10 +291,24 @@ async def _drain(agen):
     return [c async for c in agen]
 
 
-async def test_stream_text_thinking_on_threads_extra_body_none():
-    """thinking_on=True must thread ``extra_body=None`` down to ``llm.astream``
-    (per-call override that skips the instance's thinking-off body); regular
-    turns must NOT pass extra_body (instance default applies)."""
+def test_focus_stream_overrides_decision():
+    """The thinking-on override decision, including the vision guard.
+
+    This is the contract ``stream_text`` applies before streaming: thinking-on
+    only when focus is active AND there are no pending images (a vision model +
+    thinking reliably times out, so an image-bearing focus turn stays
+    thinking-off)."""
+    from main_logic.omni_offline_client import OmniOfflineClient as _C
+    assert _C._focus_stream_overrides(True, False) == {"extra_body": None}
+    assert _C._focus_stream_overrides(True, True) == {}    # vision guard
+    assert _C._focus_stream_overrides(False, False) == {}
+    assert _C._focus_stream_overrides(False, True) == {}
+
+
+async def test_focus_override_threads_through_visible_stream():
+    """The override returned above must reach ``llm.astream`` unchanged through
+    the real production path (``_astream_visible_with_tools`` → tool-leak filter
+    → ``_astream_with_tools`` → ``astream``); regular turns thread no extra_body."""
     from main_logic.omni_offline_client import OmniOfflineClient
 
     captured = []
@@ -314,15 +326,18 @@ async def test_stream_text_thinking_on_threads_extra_body_none():
         c.max_tool_iterations = 1
         c.on_tool_call = None
         c._tool_definitions = []
+        c.base_url = "https://example.test/v1"
+        c.model = "test-model"
         c.llm = _FakeLLM()
         return c
 
-    # thinking_on path: extra_body=None present
+    # focus turn (no images): _focus_stream_overrides → {"extra_body": None}
     c = _make_client()
-    await _drain(c._astream_with_tools(["m"], extra_body=None))
+    overrides = OmniOfflineClient._focus_stream_overrides(True, False)
+    await _drain(c._astream_visible_with_tools(["m"], **overrides))
     assert captured[-1].get("extra_body", "MISSING") is None
 
-    # regular path: no extra_body override threaded
+    # regular turn: no extra_body threaded
     c2 = _make_client()
-    await _drain(c2._astream_with_tools(["m"]))
+    await _drain(c2._astream_visible_with_tools(["m"], **OmniOfflineClient._focus_stream_overrides(False, False)))
     assert "extra_body" not in captured[-1]

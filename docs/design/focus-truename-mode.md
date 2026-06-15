@@ -1,13 +1,17 @@
 # Focus / True-Name Modes ("凝神 / 真名")
 
-Status: **v1 Focus — foundation landed, integration pending.** This
-document specifies a two-tier "elevated cognition" mechanism layered on
-top of the existing proactive-chat / activity-tracker / memory pipelines.
-**v1 ships Focus only**; True-Name is specified here for boundary clarity
-but is deferred to v2.
+Status: **v1 Focus — both trigger paths wired, shipped behind
+`FOCUS_MODE_ENABLED` (default OFF).** This document specifies a two-tier
+"elevated cognition" mechanism layered on top of the existing
+proactive-chat / activity-tracker / memory pipelines. **v1 ships Focus
+only**; True-Name is specified here for boundary clarity but is deferred
+to v2. The switch defaults off because thresholds are not yet tuned
+against real signal distributions and the thinking-on behaviour (inline
+reasoning leaking into the streamed `content`, per-provider thinking cost)
+is not yet end-to-end validated — enable per-provider after validation.
 
-Implemented + wired (Focus thinking-on is now LIVE on both trigger paths,
-gated by `FOCUS_MODE_ENABLED`):
+Implemented + wired (the thinking-on path is complete on BOTH triggers but
+inert until `FOCUS_MODE_ENABLED` is turned on):
 * `config/__init__.py` — all `FOCUS_*` tuning knobs (centralised).
 * `config/prompts/prompts_focus.py` — vulnerability lexicon (7 locales) +
   topic-switch markers + `scan_vulnerability_keywords` / `detect_topic_switch`.
@@ -167,7 +171,7 @@ where the user opens up** — which flows through `stream_text`, *not*
 | Path | Scenario | Entry point | Mounting site |
 |---|---|---|---|
 | **A: Inline focus** | user sends a message → score it → if over the bar, upgrade *this* reply | lightweight scorer before `stream_text` generation | `main_logic/core.py` `stream_text` entry (near the `last_user_activity_time` / USER_INPUT fire) |
-| **B: Idle focus** | silence window → score over bar → run `proactive_chat` but thinking-on | `proactive_chat` Phase-1 decision | `main_routers/system_router.py` — replace the hard-coded `disable_thinking=True` (≈ L5037) with a score-driven choice |
+| **B: Idle focus** | silence window → score over bar → run `proactive_chat` but thinking-on | `proactive_chat` Phase-2 generate (after PHASE2 fired) | `main_routers/system_router.py` — the three Phase-2 generate sites take a score-driven `disable_thinking`, suppressed under vision |
 
 ### Path coupling — this is the key to "she lingers"
 
@@ -311,8 +315,10 @@ later, not a reason to build an inverse table up front.
 4. `main_logic/core.py` — Path A: score before `stream_text` generation;
    on over-bar, build the LLM with thinking-on + stronger model.
 5. `main_routers/system_router.py` — Path B: replace the hard-coded
-   `disable_thinking=True` in proactive Phase 1 with the score-driven
-   choice; apply the in-focus idle-threshold drop.
+   `disable_thinking=True` at the proactive **Phase-2** generate sites
+   (main stream / format-fix regen / BM25 regen) with the score-driven
+   choice, suppressed whenever the round uses a vision model. The in-focus
+   idle-threshold drop is a separate deferred sub-feature.
 6. `app/memory_server.py` (+ memory stations) — subscribe to
    `EmotionalEpisodeFinished`; route the episode slice into
    `synthesize_reflections` / `resolve_corrections` / facts / ban-list
