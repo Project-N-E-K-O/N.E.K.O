@@ -139,7 +139,7 @@ class CTCLabelDecode:
             word_list: list of the grouped words
             word_col_list: list of decoding positions corresponding to each character in the grouped word
             state_list: list of marker to identify the type of grouping words, including two types of grouping words:
-                        - 'cn': continous chinese characters (e.g., 你好啊)
+                        - 'cn': continous chinese characters
                         - 'en&num': continous english characters (e.g., hello), number (e.g., 123, 1.123), or mixed of them connected by '-' (e.g., VGG-16)
         """
         state = None

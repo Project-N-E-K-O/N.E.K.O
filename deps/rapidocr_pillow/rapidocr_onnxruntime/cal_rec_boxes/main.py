@@ -14,7 +14,10 @@ from rapidocr_onnxruntime._pillow_cv import (
 
 
 class CalRecBoxes:
-    """计算识别文字的汉字单字和英文单词的坐标框。代码借鉴自PaddlePaddle/PaddleOCR和fanqie03/char-detection"""
+    """Calculate per-character CJK boxes and word-level English boxes.
+
+    Adapted from PaddlePaddle/PaddleOCR and fanqie03/char-detection.
+    """
 
     def __init__(self):
         pass
@@ -67,9 +70,10 @@ class CalRecBoxes:
     def cal_ocr_word_box(
         rec_txt: str, box: np.ndarray, rec_word_info: List[Tuple[str, List[int]]]
     ) -> Tuple[List[str], List[List[int]], List[float]]:
-        """Calculate the detection frame for each word based on the results of recognition and detection of ocr
-        汉字坐标是单字的
-        英语坐标是单词级别的
+        """Calculate word boxes from OCR recognition and detection results.
+
+        CJK coordinates are calculated per character; English coordinates are
+        calculated per word.
         """
 
         col_num, word_list, word_col_list, state_list, conf_list = rec_word_info
@@ -154,11 +158,11 @@ class CalRecBoxes:
         direction: str = "w",
     ) -> List[List[List[int]]]:
         """
-        get_rotate_crop_image的逆操作
-        img为原图
-        part_img为crop后的图
-        bbox_points为part_img中对应在原图的bbox, 四个点，左上，右上，右下，左下
-        part_points为在part_img中的点[(x, y), (x, y)]
+        Reverse the get_rotate_crop_image transformation.
+
+        bbox_points are the crop box points in the original image, ordered as
+        top-left, top-right, bottom-right, and bottom-left. word_points_list
+        contains the points in the cropped image.
         """
         bbox_points = np.float32(bbox_points)
 
@@ -204,7 +208,8 @@ class CalRecBoxes:
 
     @staticmethod
     def s_rotate(angle, valuex, valuey, pointx, pointy):
-        """绕pointx,pointy顺时针旋转
+        """Rotate clockwise around pointx and pointy.
+
         https://blog.csdn.net/qq_38826019/article/details/84233397
         """
         valuex = np.array(valuex)
@@ -223,7 +228,7 @@ class CalRecBoxes:
 
     @staticmethod
     def order_points(box: List[List[int]]) -> List[List[int]]:
-        """矩形框顺序排列"""
+        """Order rectangle points consistently."""
 
         def convert_to_1x2(p):
             if p.shape == (2,):
