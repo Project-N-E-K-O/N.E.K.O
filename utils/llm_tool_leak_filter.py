@@ -133,7 +133,7 @@ class ToolLeakFilter:
             return trailing_seed_close
 
         trailing = text[function_close.end():]
-        if not trailing and function_close.start() > 0:
+        if not trailing:
             return None
         if trailing and self._is_seed_close_prefix(trailing):
             return None
@@ -154,8 +154,9 @@ class ToolLeakFilter:
 
     def _find_leak_start(self, text: str) -> Optional[tuple[int, int, str]]:
         seed = _SEED_OPEN_RE.search(text)
+        best: Optional[tuple[int, int, str]] = None
         if seed:
-            return seed.start(), seed.end(), "seed_tool_call"
+            best = (seed.start(), seed.end(), "seed_tool_call")
 
         if self._tool_names:
             lower_text = text.lower()
@@ -172,9 +173,13 @@ class ToolLeakFilter:
                         structured_suffix = suffix[name_close.end():]
                         if _PARAMETER_RE.search(structured_suffix) or _FUNCTION_CLOSE_RE.search(structured_suffix):
                             start = self._structured_tool_start(text, idx)
-                            return start, idx + len(tool_name), "structured_tool_call"
+                            candidate = (start, idx + len(tool_name), "structured_tool_call")
+                            if best is None or candidate[0] < best[0]:
+                                best = candidate
+                                if best[0] == 0:
+                                    return best
                     search_from = idx + len(tool_name)
-        return None
+        return best
 
     @staticmethod
     def _structured_tool_start(text: str, tool_name_start: int) -> int:
