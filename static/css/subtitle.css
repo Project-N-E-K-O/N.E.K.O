@@ -7,6 +7,7 @@ body.subtitle-window-host {
     overflow: hidden;
     background: transparent;
     font-family: 'Segoe UI', Arial, sans-serif;
+    --subtitle-window-edge-inset: 6px;
 }
 
 #subtitle-display {
@@ -120,14 +121,14 @@ body.subtitle-web-host #subtitle-display.show[data-subtitle-interaction-passthro
 
 body.subtitle-window-host #subtitle-display {
     position: absolute;
-    top: 0;
-    left: 0;
+    top: auto;
+    bottom: var(--subtitle-window-edge-inset, 0px);
+    left: var(--subtitle-window-edge-inset, 0px);
     transition: width 0.2s ease, height 0.2s ease, font-size 0.2s ease;
 }
 
 body.subtitle-window-host.subtitle-linux-host #subtitle-display {
-    top: auto;
-    bottom: 0;
+    bottom: var(--subtitle-window-edge-inset, 0px);
 }
 
 #subtitle-scroll {
@@ -283,9 +284,9 @@ body.subtitle-window-host.subtitle-linux-host #subtitle-display {
 }
 
 body.subtitle-window-host #subtitle-settings-panel {
-    top: calc(100% + 8px);
+    top: auto;
     right: 4px;
-    bottom: auto;
+    bottom: calc(100% + 8px);
 }
 
 body.subtitle-window-host.subtitle-linux-host #subtitle-settings-panel {
@@ -521,6 +522,13 @@ body.subtitle-window-host #subtitle-display[data-subtitle-panel-locked="true"] {
     top: -5px;
     left: -5px;
     cursor: nwse-resize;
+}
+
+body.subtitle-window-host #subtitle-display[data-subtitle-native-resizing="true"] {
+    width: calc(100vw - (var(--subtitle-window-edge-inset, 0px) * 2)) !important;
+    height: calc(100vh - (var(--subtitle-window-edge-inset, 0px) * 2)) !important;
+    max-width: none !important;
+    max-height: none !important;
 }
 
 #subtitle-display[data-subtitle-panel-locked="true"] .subtitle-resize-edge {

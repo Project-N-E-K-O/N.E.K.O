@@ -359,6 +359,7 @@ def test_subtitle_panel_runtime_state_is_render_only_not_persisted(
         }
         """
     )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
     mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
 
     result = mock_page.evaluate(
@@ -685,15 +686,7 @@ def test_subtitle_panel_lock_and_close_buttons_update_runtime_state(
                 <button type="button" id="subtitle-settings-btn"></button>
                 <button type="button" id="subtitle-close-btn"></button>
             </div>
-            <div id="subtitle-settings-panel" class="hidden">
-                <div class="subtitle-settings-row subtitle-lock-setting-row">
-                    <span class="subtitle-settings-label" data-subtitle-label="lockPosition">锁定位置</span>
-                    <label class="subtitle-settings-switch">
-                        <input type="checkbox" id="subtitle-lock-toggle">
-                        <span class="subtitle-settings-track"></span>
-                    </label>
-                </div>
-            </div>
+            <div id="subtitle-settings-panel" class="hidden"></div>
         </div>
         """,
     )
@@ -725,7 +718,6 @@ def test_subtitle_panel_lock_and_close_buttons_update_runtime_state(
             });
             const display = document.getElementById('subtitle-display');
             const lockBtn = document.getElementById('subtitle-lock-btn');
-            const lockToggle = document.getElementById('subtitle-lock-toggle');
             const closeBtn = document.getElementById('subtitle-close-btn');
             lockBtn.click();
             await new Promise((resolve) => setTimeout(resolve, 0));
@@ -733,19 +725,18 @@ def test_subtitle_panel_lock_and_close_buttons_update_runtime_state(
                 locked: shared.getSettings().subtitlePanelLocked,
                 storedLocked: window.localStorage.getItem('subtitlePanelLocked'),
                 ariaPressed: lockBtn.getAttribute('aria-pressed'),
-                toggleChecked: lockToggle.checked,
+                lockToggleExists: !!document.getElementById('subtitle-lock-toggle'),
                 renderLocked: shared.getRenderState().subtitlePanelLocked,
                 panelState: display.dataset.subtitlePanelState,
                 propagated: propagated.slice(),
             };
-            lockToggle.checked = false;
-            lockToggle.dispatchEvent(new Event('change', { bubbles: true }));
+            lockBtn.click();
             await new Promise((resolve) => setTimeout(resolve, 0));
-            const afterLockToggleOff = {
+            const afterUnlock = {
                 locked: shared.getSettings().subtitlePanelLocked,
                 storedLocked: window.localStorage.getItem('subtitlePanelLocked'),
                 ariaPressed: lockBtn.getAttribute('aria-pressed'),
-                toggleChecked: lockToggle.checked,
+                lockToggleExists: !!document.getElementById('subtitle-lock-toggle'),
                 renderLocked: shared.getRenderState().subtitlePanelLocked,
                 propagated: propagated.slice(),
             };
@@ -758,7 +749,7 @@ def test_subtitle_panel_lock_and_close_buttons_update_runtime_state(
                 panelState: display.dataset.subtitlePanelState,
             };
             controller.destroy();
-            return { afterLock, afterLockToggleOff, afterClose };
+            return { afterLock, afterUnlock, afterClose };
         }
         """
     )
@@ -767,16 +758,16 @@ def test_subtitle_panel_lock_and_close_buttons_update_runtime_state(
         "locked": True,
         "storedLocked": "true",
         "ariaPressed": "true",
-        "toggleChecked": True,
+        "lockToggleExists": False,
         "renderLocked": True,
         "panelState": "controls",
         "propagated": [{"type": "lock", "value": True}],
     }
-    assert result["afterLockToggleOff"] == {
+    assert result["afterUnlock"] == {
         "locked": False,
         "storedLocked": "false",
         "ariaPressed": "false",
-        "toggleChecked": False,
+        "lockToggleExists": False,
         "renderLocked": False,
         "propagated": [
             {"type": "lock", "value": True},
@@ -2326,8 +2317,8 @@ def test_subtitle_templates_share_new_panel_control_scaffold(
     assert 'data-subtitle-placeholder="暂无翻译内容"' in template
     assert 'data-subtitle-label="opacity">背景不透明度</span>' in template
     assert 'id="subtitle-opacity-slider" min="0" max="100"' in template
-    assert 'data-subtitle-label="lockPosition"' in template
-    assert 'id="subtitle-lock-toggle"' in template
+    assert 'data-subtitle-label="lockPosition"' not in template
+    assert 'id="subtitle-lock-toggle"' not in template
     assert 'data-subtitle-label="passthroughInteraction"' in template
     assert 'id="subtitle-passthrough-toggle"' in template
     assert 'id="subtitle-resize-handles"' in template
@@ -2360,6 +2351,290 @@ def test_subtitle_window_settings_keeps_passthrough_visible_and_allows_small_bou
     assert "body.subtitle-window-host .subtitle-passthrough-setting-row" not in css
     assert "min-width: 200px" not in css
     assert "min-width: 180px" not in css
+
+
+@pytest.mark.frontend
+def test_subtitle_window_resize_handles_share_web_offsets():
+    css = (PROJECT_ROOT / "static/css/subtitle.css").read_text(encoding="utf-8")
+
+    assert "body.subtitle-window-host .subtitle-resize-n" not in css
+    assert "body.subtitle-window-host .subtitle-resize-s" not in css
+    assert "body.subtitle-window-host .subtitle-resize-e" not in css
+    assert "body.subtitle-window-host .subtitle-resize-w" not in css
+    assert ".subtitle-resize-n {\n    top: -4px;" in css
+    assert ".subtitle-resize-e {\n    right: -4px;" in css
+
+
+@pytest.mark.frontend
+def test_subtitle_window_resize_method_matches_desktop_chat_handle_bridge():
+    script = (PROJECT_ROOT / "static/subtitle-window.js").read_text(encoding="utf-8")
+
+    assert "target.closest('[data-resize-dir]')" in script
+    assert "refs.display.addEventListener('mousedown', onPointerDown, true)" in script
+    assert "document.addEventListener('mousedown', onPointerDown, true)" not in script
+    assert "function getResizeDirectionFromPoint" not in script
+
+
+@pytest.mark.frontend
+def test_subtitle_window_handles_stay_inside_native_window_hit_margin(mock_page: Page):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display" style="display:flex;">
+            <div id="subtitle-scroll"><span id="subtitle-text">Translated text.</span></div>
+            <div id="subtitle-settings-panel" class="hidden"></div>
+            <div id="subtitle-resize-handles" aria-hidden="true">
+                <span class="subtitle-resize-edge subtitle-resize-n" data-resize-dir="n"></span>
+                <span class="subtitle-resize-edge subtitle-resize-e" data-resize-dir="e"></span>
+                <span class="subtitle-resize-edge subtitle-resize-s" data-resize-dir="s"></span>
+                <span class="subtitle-resize-edge subtitle-resize-w" data-resize-dir="w"></span>
+                <span class="subtitle-resize-edge subtitle-resize-se" data-resize-dir="se"></span>
+            </div>
+        </div>
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.nekoSubtitle = {
+                getBounds: () => Promise.resolve({ x: 10, y: 20, width: 272, height: 80 }),
+                getCursorPoint: () => Promise.resolve({ x: 0, y: 0 }),
+                setSize: () => {},
+                changeSettings: () => {},
+                resizeStart: () => {},
+                resizeStop: () => {},
+                dragStart: () => {},
+                dragStop: () => {},
+                enableInteraction: () => {},
+                disableInteraction: () => {},
+            };
+            window.localStorage.setItem('subtitlePanelBounds', JSON.stringify({
+                width: 260,
+                height: 68,
+            }));
+        }
+        """
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            document.dispatchEvent(new Event('DOMContentLoaded'));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const display = document.getElementById('subtitle-display').getBoundingClientRect();
+            const handles = Array.from(document.querySelectorAll('.subtitle-resize-edge')).map((handle) => {
+                const rect = handle.getBoundingClientRect();
+                return {
+                    dir: handle.dataset.resizeDir,
+                    left: Math.round(rect.left),
+                    top: Math.round(rect.top),
+                    right: Math.round(rect.right),
+                    bottom: Math.round(rect.bottom),
+                };
+            });
+            return {
+                display: {
+                    left: Math.round(display.left),
+                    top: Math.round(display.top),
+                    bottom: Math.round(display.bottom),
+                    width: Math.round(display.width),
+                    height: Math.round(display.height),
+                },
+                handles,
+                viewport: {
+                    width: document.documentElement.clientWidth,
+                    height: document.documentElement.clientHeight,
+                },
+            };
+        }
+        """
+    )
+
+    assert result["display"]["left"] == 6
+    assert result["display"]["bottom"] == result["viewport"]["height"] - 6
+    assert result["display"]["width"] == 260
+    assert result["display"]["height"] == 68
+    assert all(handle["left"] >= 0 and handle["top"] >= 0 for handle in result["handles"])
+    assert all(
+        handle["right"] <= result["viewport"]["width"] and
+        handle["bottom"] <= result["viewport"]["height"]
+        for handle in result["handles"]
+    )
+
+
+@pytest.mark.frontend
+def test_subtitle_window_size_bridge_expands_only_native_bounds(mock_page: Page):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display" style="display:flex;">
+            <div id="subtitle-scroll"><span id="subtitle-text"></span></div>
+            <div id="subtitle-settings-panel" class="hidden"></div>
+        </div>
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.__setSizeCalls = [];
+            window.nekoSubtitle = {
+                getBounds: () => Promise.resolve({ x: 10, y: 20, width: 272, height: 80 }),
+                getCursorPoint: () => Promise.resolve({ x: 0, y: 0 }),
+                setSize: (w, h, options) => window.__setSizeCalls.push({
+                    width: w,
+                    height: h,
+                    panelBounds: options && options.panelBounds,
+                    settingsOpen: options && options.settingsOpen,
+                    carrierOffset: options && options.carrierOffset,
+                }),
+                changeSettings: () => {},
+                resizeStart: () => {},
+                resizeStop: () => {},
+                dragStart: () => {},
+                dragStop: () => {},
+                enableInteraction: () => {},
+                disableInteraction: () => {},
+            };
+            window.localStorage.setItem('subtitlePanelBounds', JSON.stringify({
+                width: 260,
+                height: 68,
+            }));
+        }
+        """
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            document.dispatchEvent(new Event('DOMContentLoaded'));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const display = document.getElementById('subtitle-display');
+            return {
+                calls: window.__setSizeCalls,
+                inlineWidth: display.style.width,
+                inlineHeight: display.style.height,
+            };
+        }
+        """
+    )
+
+    assert result["inlineWidth"] == "260px"
+    assert result["inlineHeight"] == "68px"
+    assert result["calls"][-1] == {
+        "width": 272,
+        "height": 80,
+        "panelBounds": {"width": 260, "height": 68},
+        "settingsOpen": False,
+        "carrierOffset": 0,
+    }
+
+
+@pytest.mark.frontend
+def test_subtitle_window_resize_closes_settings_float_before_native_resize(mock_page: Page):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display" style="display:flex;" data-subtitle-panel-state="settings">
+            <div id="subtitle-scroll"><span id="subtitle-text">Translated text.</span></div>
+            <button type="button" id="subtitle-settings-btn" aria-expanded="true"></button>
+            <div id="subtitle-panel-controls" aria-hidden="false"></div>
+            <div id="subtitle-settings-panel">
+                <div class="subtitle-settings-row">
+                    <span class="subtitle-settings-label">目标语言</span>
+                    <select id="subtitle-lang-select"><option value="zh">中文</option></select>
+                </div>
+                <div class="subtitle-settings-row">
+                    <span class="subtitle-settings-label">背景不透明度</span>
+                    <input type="range" id="subtitle-opacity-slider" min="0" max="100" value="95">
+                    <span id="subtitle-opacity-value">95%</span>
+                </div>
+            </div>
+            <div id="subtitle-resize-handles" aria-hidden="true">
+                <span class="subtitle-resize-edge subtitle-resize-se" data-resize-dir="se"></span>
+            </div>
+        </div>
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.__subtitleCalls = [];
+            window.nekoSubtitle = {
+                getBounds: () => Promise.resolve({ x: 10, y: 20, width: 272, height: 80 }),
+                getCursorPoint: () => Promise.resolve({ x: 0, y: 0 }),
+                setSize: (w, h, options) => window.__subtitleCalls.push({
+                    type: 'setSize',
+                    width: w,
+                    height: h,
+                    panelBounds: options && options.panelBounds,
+                    settingsOpen: options && options.settingsOpen,
+                    carrierOffset: options && options.carrierOffset,
+                }),
+                resizeStart: (direction) => window.__subtitleCalls.push({ type: 'resizeStart', direction }),
+                resizeStop: () => window.__subtitleCalls.push({ type: 'resizeStop' }),
+                changeSettings: () => {},
+                dragStart: () => {},
+                dragStop: () => {},
+                enableInteraction: () => {},
+                disableInteraction: () => {},
+            };
+            window.localStorage.setItem('subtitlePanelBounds', JSON.stringify({
+                width: 260,
+                height: 68,
+            }));
+        }
+        """
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            document.dispatchEvent(new Event('DOMContentLoaded'));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            window.__subtitleCalls = [];
+            const handle = document.querySelector('.subtitle-resize-se');
+            const rect = handle.getBoundingClientRect();
+            handle.dispatchEvent(new MouseEvent('mousedown', {
+                bubbles: true,
+                button: 0,
+                clientX: rect.left + rect.width / 2,
+                clientY: rect.top + rect.height / 2,
+            }));
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            return {
+                settingsHidden: document.getElementById('subtitle-settings-panel').classList.contains('hidden'),
+                panelState: document.getElementById('subtitle-display').dataset.subtitlePanelState,
+                expanded: document.getElementById('subtitle-settings-btn').getAttribute('aria-expanded'),
+                calls: window.__subtitleCalls,
+            };
+        }
+        """
+    )
+
+    assert result["settingsHidden"] is True
+    assert result["panelState"] == "controls"
+    assert result["expanded"] == "false"
+    assert result["calls"][0] == {
+        "type": "setSize",
+        "width": 272,
+        "height": 80,
+        "panelBounds": {"width": 260, "height": 68},
+        "settingsOpen": False,
+        "carrierOffset": 0,
+    }
+    assert result["calls"][1] == {"type": "resizeStart", "direction": "se"}
 
 
 @pytest.mark.frontend
@@ -2535,6 +2810,344 @@ def test_subtitle_boundary_resize_persists_free_panel_bounds(
 
 
 @pytest.mark.frontend
+def test_subtitle_window_boundary_resize_uses_main_process_window_resize_channel(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display" style="display:flex;">
+            <div id="subtitle-scroll"><span id="subtitle-text">Translated text.</span></div>
+            <div id="subtitle-settings-panel" class="hidden"></div>
+            <div id="subtitle-resize-handles" aria-hidden="true">
+                <span class="subtitle-resize-edge subtitle-resize-se" data-resize-dir="se"></span>
+            </div>
+        </div>
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.__nativeResizeCalls = [];
+            window.__propagatedSubtitleSettings = [];
+            window.nekoSubtitle = {
+                resizeStart: (direction, options) => window.__nativeResizeCalls.push({
+                    type: 'start',
+                    direction,
+                    minWidth: options && options.minWidth,
+                    minHeight: options && options.minHeight,
+                }),
+                resizeStop: () => window.__nativeResizeCalls.push({ type: 'stop' }),
+                getBounds: () => Promise.resolve({ x: 10, y: 20, width: 420, height: 90 }),
+                setSize: () => window.__nativeResizeCalls.push({ type: 'setSize' }),
+                changeSettings: (change) => window.__propagatedSubtitleSettings.push(change),
+                dragStart: () => {},
+                dragStop: () => {},
+            };
+            window.localStorage.setItem('subtitlePanelBounds', JSON.stringify({
+                width: 260,
+                height: 68,
+            }));
+        }
+        """
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const shared = window.nekoSubtitleShared;
+            document.dispatchEvent(new Event('DOMContentLoaded'));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            window.__nativeResizeCalls = [];
+            const handle = document.querySelector('.subtitle-resize-se');
+            handle.dispatchEvent(new MouseEvent('mousedown', {
+                bubbles: true,
+                button: 0,
+                clientX: 260,
+                clientY: 68,
+            }));
+            Object.defineProperty(window, 'innerWidth', { configurable: true, value: 420 });
+            Object.defineProperty(window, 'innerHeight', { configurable: true, value: 90 });
+            window.dispatchEvent(new Event('resize'));
+            const displayDuringResize = document.getElementById('subtitle-display');
+            const computedDuringResize = getComputedStyle(displayDuringResize);
+            const duringResize = {
+                inlineWidth: displayDuringResize.style.width,
+                inlineHeight: displayDuringResize.style.height,
+                computedWidth: computedDuringResize.width,
+                computedHeight: computedDuringResize.height,
+                viewportWidth: document.documentElement.clientWidth + 'px',
+                viewportHeight: document.documentElement.clientHeight + 'px',
+                expectedPanelWidth: (document.documentElement.clientWidth - 12) + 'px',
+                expectedPanelHeight: (document.documentElement.clientHeight - 12) + 'px',
+                nativeResizing: displayDuringResize.dataset.subtitleNativeResizing,
+                resizingClass: document.documentElement.classList.contains('neko-resizing'),
+            };
+            document.dispatchEvent(new MouseEvent('mouseup', {
+                bubbles: true,
+                clientX: 420,
+                clientY: 90,
+            }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const display = document.getElementById('subtitle-display');
+            const snapshot = {
+                calls: window.__nativeResizeCalls,
+                duringResize,
+                settingsBounds: shared.getSettings().subtitlePanelBounds,
+                storedBounds: JSON.parse(window.localStorage.getItem('subtitlePanelBounds')),
+                displayWidth: display.style.width,
+                displayHeight: display.style.height,
+                propagated: window.__propagatedSubtitleSettings,
+            };
+            return snapshot;
+        }
+        """
+    )
+
+    assert result["calls"] == [
+        {"type": "start", "direction": "se", "minWidth": 60, "minHeight": 40},
+        {"type": "stop"},
+    ]
+    assert result["duringResize"] == {
+        "inlineWidth": "260px",
+        "inlineHeight": "68px",
+        "computedWidth": result["duringResize"]["expectedPanelWidth"],
+        "computedHeight": result["duringResize"]["expectedPanelHeight"],
+        "viewportWidth": result["duringResize"]["viewportWidth"],
+        "viewportHeight": result["duringResize"]["viewportHeight"],
+        "expectedPanelWidth": result["duringResize"]["expectedPanelWidth"],
+        "expectedPanelHeight": result["duringResize"]["expectedPanelHeight"],
+        "nativeResizing": "true",
+        "resizingClass": True,
+    }
+    assert result["settingsBounds"] == {"width": 408, "height": 78}
+    assert result["storedBounds"] == {"width": 408, "height": 78}
+    assert result["displayWidth"] == "408px"
+    assert result["displayHeight"] == "78px"
+    assert result["propagated"] == [
+        {"type": "bounds", "value": {"width": 408, "height": 78}},
+    ]
+
+
+@pytest.mark.frontend
+def test_subtitle_window_resize_handles_do_not_start_window_drag(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display" style="display:flex;">
+            <div id="subtitle-scroll"><span id="subtitle-text">Translated text.</span></div>
+            <div id="subtitle-settings-panel" class="hidden"></div>
+            <div id="subtitle-resize-handles" aria-hidden="true">
+                <span class="subtitle-resize-edge subtitle-resize-n" data-resize-dir="n"></span>
+                <span class="subtitle-resize-edge subtitle-resize-e" data-resize-dir="e"></span>
+                <span class="subtitle-resize-edge subtitle-resize-s" data-resize-dir="s"></span>
+                <span class="subtitle-resize-edge subtitle-resize-w" data-resize-dir="w"></span>
+            </div>
+        </div>
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.__nativeResizeCalls = [];
+            window.__dragCalls = [];
+            window.nekoSubtitle = {
+                resizeStart: (direction, options) => window.__nativeResizeCalls.push({
+                    type: 'start',
+                    direction,
+                    minWidth: options && options.minWidth,
+                    minHeight: options && options.minHeight,
+                }),
+                resizeStop: () => window.__nativeResizeCalls.push({ type: 'stop' }),
+                getBounds: () => Promise.resolve({ x: 10, y: 20, width: 260, height: 68 }),
+                setSize: () => {},
+                changeSettings: () => {},
+                dragStart: () => window.__dragCalls.push('start'),
+                dragStop: () => window.__dragCalls.push('stop'),
+            };
+            window.localStorage.setItem('subtitlePanelBounds', JSON.stringify({
+                width: 260,
+                height: 68,
+            }));
+        }
+        """
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            document.dispatchEvent(new Event('DOMContentLoaded'));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const dispatchHandleDown = (selector) => {
+                const handle = document.querySelector(selector);
+                const rect = handle.getBoundingClientRect();
+                const x = rect.left + rect.width / 2;
+                const y = rect.top + rect.height / 2;
+                handle.dispatchEvent(new MouseEvent('mousedown', {
+                    bubbles: true,
+                    button: 0,
+                    clientX: x,
+                    clientY: y,
+                }));
+                document.dispatchEvent(new MouseEvent('mouseup', {
+                    bubbles: true,
+                    clientX: x,
+                    clientY: y,
+                }));
+            };
+
+            dispatchHandleDown('.subtitle-resize-w');
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            dispatchHandleDown('.subtitle-resize-e');
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            dispatchHandleDown('.subtitle-resize-n');
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            dispatchHandleDown('.subtitle-resize-s');
+            await new Promise((resolve) => setTimeout(resolve, 0));
+
+            const snapshot = {
+                resizeCalls: window.__nativeResizeCalls,
+                dragCalls: window.__dragCalls,
+            };
+            return snapshot;
+        }
+        """
+    )
+
+    assert result["resizeCalls"] == [
+        {"type": "start", "direction": "w", "minWidth": 60, "minHeight": 40},
+        {"type": "stop"},
+        {"type": "start", "direction": "e", "minWidth": 60, "minHeight": 40},
+        {"type": "stop"},
+        {"type": "start", "direction": "n", "minWidth": 60, "minHeight": 40},
+        {"type": "stop"},
+        {"type": "start", "direction": "s", "minWidth": 60, "minHeight": 40},
+        {"type": "stop"},
+    ]
+    assert result["dragCalls"] == []
+
+
+@pytest.mark.frontend
+def test_subtitle_window_drag_starts_only_after_non_edge_movement(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display" style="display:flex;">
+            <div id="subtitle-scroll"><span id="subtitle-text">Translated text.</span></div>
+            <div id="subtitle-settings-panel" class="hidden"></div>
+            <div id="subtitle-resize-handles" aria-hidden="true">
+                <span class="subtitle-resize-edge subtitle-resize-n" data-resize-dir="n"></span>
+                <span class="subtitle-resize-edge subtitle-resize-e" data-resize-dir="e"></span>
+                <span class="subtitle-resize-edge subtitle-resize-s" data-resize-dir="s"></span>
+                <span class="subtitle-resize-edge subtitle-resize-w" data-resize-dir="w"></span>
+            </div>
+        </div>
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.__nativeResizeCalls = [];
+            window.__dragCalls = [];
+            window.nekoSubtitle = {
+                resizeStart: (direction) => window.__nativeResizeCalls.push({ type: 'start', direction }),
+                resizeStop: () => window.__nativeResizeCalls.push({ type: 'stop' }),
+                getBounds: () => Promise.resolve({ x: 10, y: 20, width: 260, height: 68 }),
+                setSize: () => {},
+                changeSettings: () => {},
+                dragStart: () => window.__dragCalls.push('start'),
+                dragStop: () => window.__dragCalls.push('stop'),
+            };
+            window.localStorage.setItem('subtitlePanelBounds', JSON.stringify({
+                width: 260,
+                height: 68,
+            }));
+        }
+        """
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            document.dispatchEvent(new Event('DOMContentLoaded'));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const display = document.getElementById('subtitle-display');
+            const rect = display.getBoundingClientRect();
+            const center = {
+                x: rect.left + rect.width / 2,
+                y: rect.top + rect.height / 2,
+            };
+
+            display.dispatchEvent(new MouseEvent('mousedown', {
+                bubbles: true,
+                button: 0,
+                clientX: center.x,
+                clientY: center.y,
+            }));
+            document.dispatchEvent(new MouseEvent('mouseup', {
+                bubbles: true,
+                clientX: center.x,
+                clientY: center.y,
+            }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const afterClick = {
+                dragCalls: window.__dragCalls.slice(),
+                resizeCalls: window.__nativeResizeCalls.slice(),
+            };
+
+            display.dispatchEvent(new MouseEvent('mousedown', {
+                bubbles: true,
+                button: 0,
+                clientX: center.x,
+                clientY: center.y,
+            }));
+            document.dispatchEvent(new MouseEvent('mousemove', {
+                bubbles: true,
+                clientX: center.x + 12,
+                clientY: center.y + 4,
+            }));
+            document.dispatchEvent(new MouseEvent('mouseup', {
+                bubbles: true,
+                clientX: center.x + 12,
+                clientY: center.y + 4,
+            }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+
+            return {
+                afterClick,
+                finalDragCalls: window.__dragCalls,
+                finalResizeCalls: window.__nativeResizeCalls,
+            };
+        }
+        """
+    )
+
+    assert result["afterClick"] == {
+        "dragCalls": [],
+        "resizeCalls": [],
+    }
+    assert result["finalDragCalls"] == ["start", "stop"]
+    assert result["finalResizeCalls"] == []
+
+
+@pytest.mark.frontend
 def test_subtitle_empty_placeholder_is_visual_only_and_uses_text_edge_protection(
     mock_page: Page,
 ):
@@ -2687,7 +3300,13 @@ def test_subtitle_window_height_uses_content_bounds_not_dropdown_height(
         () => {
             window.__subtitleWindowSizes = [];
             window.nekoSubtitle = {
-                setSize: (width, height) => window.__subtitleWindowSizes.push({ width, height }),
+                setSize: (width, height, options) => window.__subtitleWindowSizes.push({
+                    width,
+                    height,
+                    panelBounds: options && options.panelBounds,
+                    settingsOpen: options && options.settingsOpen,
+                    carrierOffset: options && options.carrierOffset,
+                }),
                 changeSettings: () => {},
                 dragStart: () => {},
                 dragStop: () => {},
@@ -2735,7 +3354,9 @@ def test_subtitle_window_height_uses_content_bounds_not_dropdown_height(
                 scrollRight: scrollRect.right,
                 settingsBtnLeft: settingsBtnRect.left,
                 hasDragHandle: !!document.getElementById('subtitle-drag-handle'),
+                displayTop: displayRect.top,
                 panelBottom: panelRect.bottom,
+                panelTop: panelRect.top,
                 overlapsVertically: panelRect.bottom > scrollRect.top && panelRect.top < scrollRect.bottom,
                 displayOverflow: displayStyle.overflowY,
                 scrollOverflow: scrollStyle.overflowY,
@@ -2753,9 +3374,16 @@ def test_subtitle_window_height_uses_content_bounds_not_dropdown_height(
         """
     )
 
-    assert result["emptySize"]["height"] == 68
-    assert result["longSize"]["height"] == 68
-    assert result["panelOpenSize"]["height"] >= result["panelBottom"]
+    assert result["emptySize"]["height"] == 80
+    assert result["longSize"]["height"] == 80
+    assert result["displayHeight"] == 68
+    assert result["panelOpenSize"]["panelBounds"] == {"width": 600, "height": 68}
+    assert result["panelOpenSize"]["settingsOpen"] is True
+    assert result["panelOpenSize"]["carrierOffset"] > 0
+    assert result["panelOpenSize"]["height"] == (
+        result["displayHeight"] + result["panelOpenSize"]["carrierOffset"] + 12
+    )
+    assert result["panelBottom"] <= result["displayTop"] - 8
     assert result["overlapsVertically"] is False
     assert result["displayOverflow"] == "visible"
     assert result["scrollOverflow"] == "hidden"
@@ -2845,6 +3473,96 @@ def test_subtitle_window_ignores_raw_transcript_after_translated_render_state(
     assert result["afterTranslated"] == "Translated subtitle text."
     assert result["afterRawTranscript"] == "Translated subtitle text."
     assert result["afterTranslatedClear"] == ""
+
+
+@pytest.mark.frontend
+def test_subtitle_window_native_passthrough_toggles_by_cursor_position(
+    mock_page: Page,
+):
+    mock_page.set_viewport_size({"width": 360, "height": 80})
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display" data-subtitle-panel-state="clean">
+            <div id="subtitle-scroll"><span id="subtitle-text">Translated subtitle.</span></div>
+            <div id="subtitle-settings-panel" class="hidden"></div>
+        </div>
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.__subtitleInteractionCalls = [];
+            window.__cursorPoint = { x: 20, y: 18, screenX: 120, screenY: 138 };
+            window.nekoSubtitle = {
+                getBounds: () => Promise.resolve({ x: 100, y: 120, width: 360, height: 80 }),
+                getCursorPoint: () => Promise.resolve(window.__cursorPoint),
+                enableInteraction: () => window.__subtitleInteractionCalls.push('enable'),
+                disableInteraction: () => window.__subtitleInteractionCalls.push('disable'),
+                setSize: () => {},
+                changeSettings: () => {},
+                dragStart: () => {},
+                dragStop: () => {},
+            };
+            window.localStorage.setItem('subtitleInteractionPassthrough', 'true');
+            window.localStorage.setItem('subtitlePanelBounds', JSON.stringify({
+                width: 360,
+                height: 80,
+            }));
+        }
+        """
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            document.dispatchEvent(new Event('DOMContentLoaded'));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const textRect = document.getElementById('subtitle-text').getBoundingClientRect();
+            const textPoint = {
+                x: Math.round(textRect.left + textRect.width / 2),
+                y: Math.round(textRect.top + textRect.height / 2),
+            };
+            await new Promise((resolve) => setTimeout(resolve, 120));
+            const afterTransparentArea = window.__subtitleInteractionCalls.slice();
+            window.__cursorPoint = {
+                x: textPoint.x,
+                y: textPoint.y,
+                screenX: 100 + textPoint.x,
+                screenY: 120 + textPoint.y,
+            };
+            await new Promise((resolve) => setTimeout(resolve, 120));
+            const afterText = window.__subtitleInteractionCalls.slice();
+            window.__cursorPoint = { x: 20, y: 18, screenX: 120, screenY: 138 };
+            await new Promise((resolve) => setTimeout(resolve, 120));
+            const afterTransparentAgain = window.__subtitleInteractionCalls.slice();
+            window.nekoSubtitleShared.updateSettings({
+                subtitleInteractionPassthrough: false,
+            }, { source: 'test-disable-passthrough' });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const afterDisabled = window.__subtitleInteractionCalls.slice();
+            return { afterTransparentArea, afterText, afterTransparentAgain, afterDisabled };
+        }
+        """
+    )
+
+    assert result["afterTransparentArea"] == ["disable"]
+    assert result["afterText"] == ["disable", "enable"]
+    assert result["afterTransparentAgain"] == ["disable", "enable", "disable"]
+    assert result["afterDisabled"] == ["disable", "enable", "disable", "enable"]
+
+
+@pytest.mark.frontend
+def test_subtitle_window_passthrough_poll_matches_desktop_chat_latency():
+    script = (PROJECT_ROOT / "static/subtitle-window.js").read_text()
+
+    assert "var INTERACTION_PASSTHROUGH_POLL_MS = 16;" in script
+    assert "setInterval(updateNativeInteractionPassthrough, INTERACTION_PASSTHROUGH_POLL_MS)" in script
+    assert "setInterval(updateNativeInteractionPassthrough, 80)" not in script
 
 
 @pytest.mark.frontend
@@ -3321,6 +4039,11 @@ def test_subtitle_window_state_sync_lock_blocks_drag_bridge(
                 clientX: 20,
                 clientY: 20,
             }));
+            document.dispatchEvent(new MouseEvent('mousemove', {
+                bubbles: true,
+                clientX: 36,
+                clientY: 24,
+            }));
             document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
             const afterLockedDrag = window.__dragCalls.slice();
 
@@ -3333,6 +4056,11 @@ def test_subtitle_window_state_sync_lock_blocks_drag_bridge(
                 button: 0,
                 clientX: 20,
                 clientY: 20,
+            }));
+            document.dispatchEvent(new MouseEvent('mousemove', {
+                bubbles: true,
+                clientX: 36,
+                clientY: 24,
             }));
             document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
 

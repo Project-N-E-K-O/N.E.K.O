@@ -583,7 +583,6 @@
             langSelect: query(root, '#subtitle-lang-select'),
             opacitySlider: query(root, '#subtitle-opacity-slider'),
             opacityValue: query(root, '#subtitle-opacity-value'),
-            lockToggle: query(root, '#subtitle-lock-toggle'),
             passthroughToggle: query(root, '#subtitle-passthrough-toggle'),
             resizeHandles: root && typeof root.querySelectorAll === 'function' ? root.querySelectorAll('.subtitle-resize-edge') : []
         };
@@ -650,9 +649,6 @@
         if (refs.opacityValue) {
             refs.opacityValue.textContent = state.subtitleOpacity + '%';
         }
-        if (refs.lockToggle) {
-            refs.lockToggle.checked = !!state.subtitlePanelLocked;
-        }
         if (refs.passthroughToggle) {
             refs.passthroughToggle.checked = passthroughEnabled;
         }
@@ -686,9 +682,6 @@
         }
         if (refs.opacitySlider) {
             refs.opacitySlider.title = getUiText('opacity', locale);
-        }
-        if (refs.lockToggle) {
-            refs.lockToggle.title = getUiText('lockPosition', locale);
         }
         if (refs.passthroughToggle) {
             refs.passthroughToggle.title = getUiText('passthroughInteraction', locale);
@@ -1164,10 +1157,14 @@
                 }
                 if (typeof api.setSize === 'function') {
                     var settingsPanelOpen = refs.settingsPanel && !refs.settingsPanel.classList.contains('hidden');
-                    var extraHeight = settingsPanelOpen && refs.settingsPanel
-                        ? refs.settingsPanel.offsetHeight + 8
-                        : 0;
-                    api.setSize(result.bounds.width, result.bounds.height + extraHeight);
+                    api.setSize(
+                        result.bounds.width,
+                        result.bounds.height,
+                        {
+                            panelBounds: result.bounds,
+                            settingsOpen: !!settingsPanelOpen
+                        }
+                    );
                 }
             }
             if (!persist) return;
@@ -1247,8 +1244,8 @@
             if (e.preventDefault) e.preventDefault();
             if (e.stopPropagation) e.stopPropagation();
             document.addEventListener('mousemove', onMove);
-            document.addEventListener('mouseup', endResize);
             document.addEventListener('touchmove', onTouchMove, { passive: false });
+            document.addEventListener('mouseup', endResize);
             document.addEventListener('touchend', endResize);
             document.addEventListener('touchcancel', endResize);
         }
@@ -1520,16 +1517,6 @@
             });
         }
 
-        if (refs.lockToggle) {
-            var onLockToggleChange = function() {
-                setPanelLocked(!!refs.lockToggle.checked, 'subtitle-ui-lock-setting');
-            };
-            refs.lockToggle.addEventListener('change', onLockToggleChange);
-            cleanupFns.push(function() {
-                refs.lockToggle.removeEventListener('change', onLockToggleChange);
-            });
-        }
-
         if (refs.closeBtn) {
             var onCloseClick = function(e) {
                 e.stopPropagation();
@@ -1634,8 +1621,12 @@
             });
         }
 
-        cleanupFns.push(attachPanelResize(refs, options));
-        cleanupFns.push(options.host === 'window' ? attachWindowDrag(refs, options) : attachWebDrag(refs));
+        if (options.host === 'window' && options.windowInteractions === 'external') {
+            refs.display.dataset.subtitleWindowInteractions = 'external';
+        } else {
+            cleanupFns.push(attachPanelResize(refs, options));
+            cleanupFns.push(options.host === 'window' ? attachWindowDrag(refs, options) : attachWebDrag(refs));
+        }
 
         return {
             refs: refs,
