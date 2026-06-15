@@ -105,18 +105,10 @@ class LoadImage:
     def cvt_four_to_three(img: np.ndarray) -> np.ndarray:
         """RGBA → BGR"""
         r, g, b, a = img[..., 0], img[..., 1], img[..., 2], img[..., 3]
-        new_img = np.stack((b, g, r), axis=-1)
-
-        not_a = gray_to_bgr(bitwise_not(a))
-
-        new_img = bitwise_and_with_mask(new_img, a)
-
-        mean_color = np.mean(new_img)
-        if mean_color <= 0.0:
-            new_img = add_uint8(new_img, not_a)
-        else:
-            new_img = bitwise_not(new_img)
-        return new_img
+        bgr = np.stack((b, g, r), axis=-1).astype(np.float32)
+        alpha = (a.astype(np.float32) / 255.0)[..., None]
+        new_img = bgr * alpha + 255.0 * (1.0 - alpha)
+        return np.clip(np.rint(new_img), 0, 255).astype(np.uint8)
 
     @staticmethod
     def verify_exist(file_path: Union[str, Path]):

@@ -16,5 +16,5 @@ from .vis_res import VisRes
 
 def read_yaml(yaml_path: Union[str, Path]) -> Dict[str, Dict]:
     with open(yaml_path, "rb") as f:
-        data = yaml.load(f, Loader=yaml.Loader)
+        data = yaml.load(f, Loader=yaml.SafeLoader)
     return data

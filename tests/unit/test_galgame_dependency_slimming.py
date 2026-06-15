@@ -7,9 +7,11 @@ import re
 import shutil
 import sys
 import tomllib
+import types
 
 import numpy as np
 import pytest
+import yaml
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -315,3 +317,198 @@ def test_rapidocr_pillow_verifier_can_build_manifest_from_category_dirs() -> Non
         ].status == "PASS"
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_rapidocr_pillow_preprocess_accumulates_resize_ratios() -> None:
+    from rapidocr_onnxruntime.main import RapidOCR
+
+    engine = object.__new__(RapidOCR)
+    engine.max_side_len = 2000
+    engine.min_side_len = 64
+
+    img = np.zeros((80, 8000, 3), dtype=np.uint8)
+    resized, ratio_h, ratio_w = engine.preprocess(img)
+
+    assert resized.shape[:2] == (64, 3968)
+    assert ratio_h == pytest.approx(80 / 64)
+    assert ratio_w == pytest.approx(8000 / 3968)
+
+
+def test_rapidocr_call_uses_per_call_thresholds_without_mutating_instance() -> None:
+    from rapidocr_onnxruntime.main import RapidOCR
+
+    engine = object.__new__(RapidOCR)
+    engine.use_det = True
+    engine.use_cls = False
+    engine.use_rec = False
+    engine.text_score = 0.5
+    engine.text_det = types.SimpleNamespace(
+        postprocess_op=types.SimpleNamespace(box_thresh=0.5, unclip_ratio=1.6)
+    )
+    engine.load_img = lambda _img: np.zeros((12, 12, 3), dtype=np.uint8)
+    engine.preprocess = lambda img: (img, 1.0, 1.0)
+    engine.maybe_add_letterbox = lambda img, op_record: (img, op_record)
+    engine.get_crop_img_list = lambda img, boxes: [img]
+
+    seen = {}
+
+    def fake_auto_text_det(img, box_thresh=None, unclip_ratio=None):
+        seen["box_thresh"] = box_thresh
+        seen["unclip_ratio"] = unclip_ratio
+        return [np.array([[0, 0], [5, 0], [5, 5], [0, 5]], dtype=np.float32)], 0.0
+
+    engine.auto_text_det = fake_auto_text_det
+
+    result, elapses = engine("unused", box_thresh=0.8, unclip_ratio=2.1, text_score=0.9)
+
+    assert seen == {"box_thresh": 0.8, "unclip_ratio": 2.1}
+    assert result == [[[0.0, 0.0], [5.0, 0.0], [5.0, 5.0], [0.0, 5.0]]]
+    assert elapses == [0.0]
+    assert engine.text_det.postprocess_op.box_thresh == 0.5
+    assert engine.text_det.postprocess_op.unclip_ratio == 1.6
+    assert engine.text_score == 0.5
+
+
+def test_rapidocr_cli_visualization_handles_empty_and_det_only_results(monkeypatch, tmp_path) -> None:
+    from rapidocr_onnxruntime import main as rapidocr_main
+
+    image_path = tmp_path / "sample.png"
+    image_path.write_bytes(b"placeholder")
+    writes = []
+    calls = []
+
+    class FakeVis:
+        def __call__(self, img_path, boxes, txts=None, scores=None, font_path=None):
+            calls.append(
+                {
+                    "img_path": img_path,
+                    "boxes": boxes,
+                    "txts": txts,
+                    "scores": scores,
+                    "font_path": font_path,
+                }
+            )
+            return np.zeros((2, 2, 3), dtype=np.uint8)
+
+    monkeypatch.setattr(rapidocr_main, "VisRes", FakeVis)
+    monkeypatch.setattr(
+        rapidocr_main,
+        "imwrite",
+        lambda path, img: writes.append((path, img.shape)),
+    )
+
+    class EmptyOCR:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __call__(self, *_args, **_kwargs):
+            return None, None
+
+    monkeypatch.setattr(rapidocr_main, "RapidOCR", EmptyOCR)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["rapidocr", "-img", str(image_path), "-vis", "--vis_save_path", str(tmp_path), "--no_cls", "--no_rec"],
+    )
+    rapidocr_main.main()
+
+    assert calls == []
+    assert writes == []
+
+    class DetOnlyOCR:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __call__(self, *_args, **_kwargs):
+            return [
+                [[0, 0], [4, 0], [4, 4], [0, 4]],
+                [[5, 5], [9, 5], [9, 9], [5, 9]],
+            ], [0.0]
+
+    monkeypatch.setattr(rapidocr_main, "RapidOCR", DetOnlyOCR)
+    rapidocr_main.main()
+
+    assert calls[-1]["boxes"] == [
+        [[0, 0], [4, 0], [4, 4], [0, 4]],
+        [[5, 5], [9, 5], [9, 9], [5, 9]],
+    ]
+    assert writes[-1][0] == tmp_path / "sample_vis.png"
+
+
+def test_rapidocr_pillow_read_yaml_uses_safe_loader(tmp_path) -> None:
+    from rapidocr_onnxruntime.utils import read_yaml
+
+    safe_yaml = tmp_path / "safe.yaml"
+    safe_yaml.write_text("Global:\n  text_score: 0.5\n", encoding="utf-8")
+    assert read_yaml(safe_yaml) == {"Global": {"text_score": 0.5}}
+
+    unsafe_yaml = tmp_path / "unsafe.yaml"
+    unsafe_yaml.write_text("!!python/object/apply:os.system ['echo unsafe']\n", encoding="utf-8")
+    with pytest.raises(yaml.constructor.ConstructorError):
+        read_yaml(unsafe_yaml)
+
+
+def test_rapidocr_pillow_rgba_conversion_uses_white_background_alpha_composite() -> None:
+    from rapidocr_onnxruntime.utils import LoadImage
+
+    rgba = np.array(
+        [
+            [[255, 0, 0, 255], [0, 255, 0, 128]],
+            [[0, 0, 255, 0], [10, 20, 30, 64]],
+        ],
+        dtype=np.uint8,
+    )
+
+    bgr = LoadImage.cvt_four_to_three(rgba)
+
+    assert np.array_equal(bgr[0, 0], np.array([0, 0, 255], dtype=np.uint8))
+    assert np.array_equal(bgr[0, 1], np.array([127, 255, 127], dtype=np.uint8))
+    assert np.array_equal(bgr[1, 0], np.array([255, 255, 255], dtype=np.uint8))
+    assert np.array_equal(bgr[1, 1], np.array([199, 196, 194], dtype=np.uint8))
+
+
+def test_rapidocr_pillow_cli_list_args_parse_comma_separated_values(monkeypatch, tmp_path) -> None:
+    from rapidocr_onnxruntime.utils.parse_parameters import init_args
+
+    image_path = tmp_path / "sample.png"
+    image_path.write_bytes(b"placeholder")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rapidocr",
+            "-img",
+            str(image_path),
+            "--cls_image_shape",
+            "3,48,192",
+            "--cls_label_list",
+            "0,180",
+            "--rec_img_shape",
+            "3,48,320",
+        ],
+    )
+
+    args = init_args()
+
+    assert args.cls_image_shape == [3, 48, 192]
+    assert args.cls_label_list == ["0", "180"]
+    assert args.rec_img_shape == [3, 48, 320]
+
+
+def test_rapidocr_pillow_update_parameters_strips_module_prefixes_consistently() -> None:
+    from rapidocr_onnxruntime.utils.parse_parameters import UpdateParameters
+
+    global_dict, det_dict, cls_dict, rec_dict = UpdateParameters().parse_kwargs(
+        text_score=0.6,
+        det_box_thresh=0.7,
+        det_donot_use_dilation=True,
+        cls_batch_num=8,
+        cls_label_list=["0", "180"],
+        rec_batch_num=12,
+        rec_img_shape=[3, 48, 320],
+    )
+
+    assert global_dict["text_score"] == 0.6
+    assert det_dict == {"box_thresh": 0.7, "use_dilation": False}
+    assert cls_dict == {"batch_num": 8, "label_list": ["0", "180"]}
+    assert rec_dict == {"batch_num": 12, "img_shape": [3, 48, 320]}

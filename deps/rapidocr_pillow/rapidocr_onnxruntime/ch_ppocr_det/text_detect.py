@@ -44,7 +44,12 @@ class TextDetector:
 
         self.infer = OrtInferSession(config)
 
-    def __call__(self, img: np.ndarray) -> Tuple[Optional[np.ndarray], float]:
+    def __call__(
+        self,
+        img: np.ndarray,
+        box_thresh: Optional[float] = None,
+        unclip_ratio: Optional[float] = None,
+    ) -> Tuple[Optional[np.ndarray], float]:
         start_time = time.perf_counter()
 
         if img is None:
@@ -57,7 +62,12 @@ class TextDetector:
             return None, 0
 
         preds = self.infer(prepro_img)[0]
-        dt_boxes, dt_boxes_scores = self.postprocess_op(preds, ori_img_shape)
+        dt_boxes, dt_boxes_scores = self.postprocess_op(
+            preds,
+            ori_img_shape,
+            box_thresh=box_thresh,
+            unclip_ratio=unclip_ratio,
+        )
         dt_boxes = self.filter_tag_det_res(dt_boxes, ori_img_shape)
         elapse = time.perf_counter() - start_time
         return dt_boxes, elapse

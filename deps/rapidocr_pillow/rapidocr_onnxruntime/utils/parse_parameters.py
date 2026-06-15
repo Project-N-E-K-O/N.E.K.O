@@ -12,6 +12,14 @@ root_dir = Path(__file__).resolve().parent.parent
 InputType = Union[str, np.ndarray, bytes, Path, Image.Image]
 
 
+def _parse_int_list(value: str) -> List[int]:
+    return [int(item.strip()) for item in value.split(",") if item.strip()]
+
+
+def _parse_str_list(value: str) -> List[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
 def update_model_path(config: Dict[str, Any]) -> Dict[str, Any]:
     key = "model_path"
     config["Det"][key] = str(root_dir / config["Det"][key])
@@ -64,8 +72,12 @@ def init_args():
     cls_group.add_argument("--cls_use_cuda", action="store_true", default=False)
     cls_group.add_argument("--cls_use_dml", action="store_true", default=False)
     cls_group.add_argument("--cls_model_path", type=str, default=None)
-    cls_group.add_argument("--cls_image_shape", type=list, default=[3, 48, 192])
-    cls_group.add_argument("--cls_label_list", type=list, default=["0", "180"])
+    cls_group.add_argument(
+        "--cls_image_shape", type=_parse_int_list, default=[3, 48, 192]
+    )
+    cls_group.add_argument(
+        "--cls_label_list", type=_parse_str_list, default=["0", "180"]
+    )
     cls_group.add_argument("--cls_batch_num", type=int, default=6)
     cls_group.add_argument("--cls_thresh", type=float, default=0.9)
 
@@ -74,7 +86,7 @@ def init_args():
     rec_group.add_argument("--rec_use_dml", action="store_true", default=False)
     rec_group.add_argument("--rec_model_path", type=str, default=None)
     rec_group.add_argument("--rec_keys_path", type=str, default=None)
-    rec_group.add_argument("--rec_img_shape", type=list, default=[3, 48, 320])
+    rec_group.add_argument("--rec_img_shape", type=_parse_int_list, default=[3, 48, 320])
     rec_group.add_argument("--rec_batch_num", type=int, default=6)
 
     vis_group = parser.add_argument_group(title="Visual Result")
@@ -103,16 +115,18 @@ class UpdateParameters:
     def parse_kwargs(self, **kwargs):
         global_dict, det_dict, cls_dict, rec_dict = {}, {}, {}, {}
         for k, v in kwargs.items():
-            if k.startswith("det"):
-                k = k.split("det_")[1]
+            if k.startswith("det_"):
+                k = k.split("det_", 1)[1]
                 if k == "donot_use_dilation":
                     k = "use_dilation"
                     v = not v
 
                 det_dict[k] = v
-            elif k.startswith("cls"):
+            elif k.startswith("cls_"):
+                k = k.split("cls_", 1)[1]
                 cls_dict[k] = v
-            elif k.startswith("rec"):
+            elif k.startswith("rec_"):
+                k = k.split("rec_", 1)[1]
                 rec_dict[k] = v
             else:
                 global_dict[k] = v

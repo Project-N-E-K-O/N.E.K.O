@@ -116,7 +116,11 @@ class DBPostProcess:
             self.dilation_kernel = np.array([[1, 1], [1, 1]])
 
     def __call__(
-        self, pred: np.ndarray, ori_shape: Tuple[int, int]
+        self,
+        pred: np.ndarray,
+        ori_shape: Tuple[int, int],
+        box_thresh: Optional[float] = None,
+        unclip_ratio: Optional[float] = None,
     ) -> Tuple[np.ndarray, List[float]]:
         src_h, src_w = ori_shape
         pred = pred[:, 0, :, :]
@@ -127,11 +131,24 @@ class DBPostProcess:
             mask = dilate(
                 np.array(segmentation[0]).astype(np.uint8), self.dilation_kernel
             )
-        boxes, scores = self.boxes_from_bitmap(pred[0], mask, src_w, src_h)
+        boxes, scores = self.boxes_from_bitmap(
+            pred[0],
+            mask,
+            src_w,
+            src_h,
+            box_thresh=box_thresh,
+            unclip_ratio=unclip_ratio,
+        )
         return boxes, scores
 
     def boxes_from_bitmap(
-        self, pred: np.ndarray, bitmap: np.ndarray, dest_width: int, dest_height: int
+        self,
+        pred: np.ndarray,
+        bitmap: np.ndarray,
+        dest_width: int,
+        dest_height: int,
+        box_thresh: Optional[float] = None,
+        unclip_ratio: Optional[float] = None,
     ) -> Tuple[np.ndarray, List[float]]:
         """
         bitmap: single map with shape (1, H, W),
@@ -144,6 +161,7 @@ class DBPostProcess:
 
         num_contours = min(len(contours), self.max_candidates)
 
+        effective_box_thresh = self.box_thresh if box_thresh is None else box_thresh
         boxes, scores = [], []
         for index in range(num_contours):
             contour = contours[index]
@@ -156,10 +174,10 @@ class DBPostProcess:
             else:
                 score = self.box_score_slow(pred, contour)
 
-            if self.box_thresh > score:
+            if effective_box_thresh > score:
                 continue
 
-            box = self.unclip(points)
+            box = self.unclip(points, unclip_ratio=unclip_ratio)
             box, sside = self.get_mini_boxes(box)
             if sside < self.min_size + 2:
                 continue
@@ -230,8 +248,10 @@ class DBPostProcess:
         mask = fill_polygon(mask.shape, contour.astype(np.int32))
         return masked_mean(bitmap[ymin : ymax + 1, xmin : xmax + 1], mask)
 
-    def unclip(self, box: np.ndarray) -> np.ndarray:
-        unclip_ratio = self.unclip_ratio
+    def unclip(
+        self, box: np.ndarray, unclip_ratio: Optional[float] = None
+    ) -> np.ndarray:
+        unclip_ratio = self.unclip_ratio if unclip_ratio is None else unclip_ratio
         perimeter = polygon_perimeter(box)
         if perimeter <= 0:
             return box.reshape((-1, 1, 2))

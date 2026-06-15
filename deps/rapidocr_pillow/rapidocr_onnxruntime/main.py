@@ -79,15 +79,16 @@ class RapidOCR:
         use_det = self.use_det if use_det is None else use_det
         use_cls = self.use_cls if use_cls is None else use_cls
         use_rec = self.use_rec if use_rec is None else use_rec
-        return_word_box = False
-        if kwargs:
-            box_thresh = kwargs.get("box_thresh", 0.5)
-            unclip_ratio = kwargs.get("unclip_ratio", 1.6)
-            text_score = kwargs.get("text_score", 0.5)
-            return_word_box = kwargs.get("return_word_box", False)
-            self.text_det.postprocess_op.box_thresh = box_thresh
-            self.text_det.postprocess_op.unclip_ratio = unclip_ratio
-            self.text_score = text_score
+        box_thresh = kwargs.get(
+            "box_thresh",
+            kwargs.get("det_box_thresh", self.text_det.postprocess_op.box_thresh),
+        )
+        unclip_ratio = kwargs.get(
+            "unclip_ratio",
+            kwargs.get("det_unclip_ratio", self.text_det.postprocess_op.unclip_ratio),
+        )
+        text_score = kwargs.get("text_score", self.text_score)
+        return_word_box = kwargs.get("return_word_box", False)
 
         img = self.load_img(img_content)
 
@@ -101,7 +102,11 @@ class RapidOCR:
 
         if use_det:
             img, op_record = self.maybe_add_letterbox(img, op_record)
-            dt_boxes, det_elapse = self.auto_text_det(img)
+            dt_boxes, det_elapse = self.auto_text_det(
+                img,
+                box_thresh=box_thresh,
+                unclip_ratio=unclip_ratio,
+            )
             if dt_boxes is None:
                 return None, None
 
@@ -127,7 +132,13 @@ class RapidOCR:
             dt_boxes = self._get_origin_points(dt_boxes, op_record, raw_h, raw_w)
 
         ocr_res = self.get_final_res(
-            dt_boxes, cls_res, rec_res, det_elapse, cls_elapse, rec_elapse
+            dt_boxes,
+            cls_res,
+            rec_res,
+            det_elapse,
+            cls_elapse,
+            rec_elapse,
+            text_score=text_score,
         )
         return ocr_res
 
@@ -141,7 +152,9 @@ class RapidOCR:
         h, w = img.shape[:2]
         min_value = min(h, w)
         if min_value < self.min_side_len:
-            img, ratio_h, ratio_w = increase_min_side(img, self.min_side_len)
+            img, next_ratio_h, next_ratio_w = increase_min_side(img, self.min_side_len)
+            ratio_h *= next_ratio_h
+            ratio_w *= next_ratio_w
         return img, ratio_h, ratio_w
 
     def maybe_add_letterbox(
@@ -169,9 +182,16 @@ class RapidOCR:
         return padding_h
 
     def auto_text_det(
-        self, img: np.ndarray
+        self,
+        img: np.ndarray,
+        box_thresh: Optional[float] = None,
+        unclip_ratio: Optional[float] = None,
     ) -> Tuple[Optional[List[np.ndarray]], float]:
-        dt_boxes, det_elapse = self.text_det(img)
+        dt_boxes, det_elapse = self.text_det(
+            img,
+            box_thresh=box_thresh,
+            unclip_ratio=unclip_ratio,
+        )
         if dt_boxes is None or len(dt_boxes) < 1:
             return None, 0.0
 
@@ -283,6 +303,7 @@ class RapidOCR:
         det_elapse: float,
         cls_elapse: float,
         rec_elapse: float,
+        text_score: Optional[float] = None,
     ) -> Tuple[Optional[List[List[Union[Any, str]]]], Optional[List[float]]]:
         if dt_boxes is None and rec_res is None and cls_res is not None:
             return cls_res, [cls_elapse]
@@ -296,7 +317,7 @@ class RapidOCR:
         if dt_boxes is not None and rec_res is None:
             return [box.tolist() for box in dt_boxes], [det_elapse]
 
-        dt_boxes, rec_res = self.filter_result(dt_boxes, rec_res)
+        dt_boxes, rec_res = self.filter_result(dt_boxes, rec_res, text_score)
         if not dt_boxes or not rec_res or len(dt_boxes) <= 0:
             return None, None
 
@@ -311,14 +332,16 @@ class RapidOCR:
         self,
         dt_boxes: Optional[List[np.ndarray]],
         rec_res: Optional[List[Tuple[str, float]]],
+        text_score: Optional[float] = None,
     ) -> Tuple[Optional[List[np.ndarray]], Optional[List[Tuple[str, float]]]]:
         if dt_boxes is None or rec_res is None:
             return None, None
 
+        text_score = self.text_score if text_score is None else text_score
         filter_boxes, filter_rec_res = [], []
         for box, rec_reuslt in zip(dt_boxes, rec_res):
             text, score = rec_reuslt[0], rec_reuslt[1]
-            if float(score) >= self.text_score:
+            if float(score) >= text_score:
                 filter_boxes.append(box)
                 filter_rec_res.append(rec_reuslt)
 
@@ -348,9 +371,12 @@ def main():
         vis = VisRes()
         Path(args.vis_save_path).mkdir(parents=True, exist_ok=True)
         save_path = Path(args.vis_save_path) / f"{Path(args.img_path).stem}_vis.png"
+        if not result:
+            logger.warning("No OCR result, skip visualization.")
+            return
 
         if use_det and not use_cls and not use_rec:
-            boxes, *_ = list(zip(*result))
+            boxes = result
             vis_img = vis(args.img_path, boxes)
             imwrite(save_path, vis_img)
             logger.info("The vis result has saved in %s", save_path)
@@ -360,7 +386,9 @@ def main():
             if not font_path.exists():
                 raise FileExistsError(f"{font_path} does not exist!")
 
-            boxes, txts, scores = list(zip(*result))
+            boxes = [item[0] for item in result]
+            txts = [item[1] for item in result]
+            scores = [item[2] for item in result]
             vis_img = vis(args.img_path, boxes, txts, scores, font_path=font_path)
             imwrite(save_path, vis_img)
             logger.info("The vis result has saved in %s", save_path)
