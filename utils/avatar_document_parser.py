@@ -497,7 +497,17 @@ def _child_text(element: ET.Element, tag: str) -> str:
 
 def _extract_drawing_text(xml_bytes: bytes) -> str:
     root = _parse_xml(xml_bytes)
-    values = [node.text or "" for node in root.iter(_A_NS + "t") if node.text]
+    values: list[str] = []
+
+    def walk(node: ET.Element) -> None:
+        if node.tag == _MC_NS + "Fallback":
+            return
+        if node.tag == _A_NS + "t" and node.text:
+            values.append(node.text)
+        for child in node:
+            walk(child)
+
+    walk(root)
     text = "\n".join(value.strip() for value in values if value.strip())
     return text
 

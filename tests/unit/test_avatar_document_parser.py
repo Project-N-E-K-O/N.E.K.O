@@ -104,6 +104,14 @@ def _pptx_bytes(slide_text: str, notes_text: str = "") -> bytes:
     return _zip_bytes(members)
 
 
+def _pptx_with_slide_xml(slide_xml: str) -> bytes:
+    return _zip_bytes({
+        "[Content_Types].xml": CONTENT_TYPES_XML,
+        "ppt/presentation.xml": "<p:presentation xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\"/>",
+        "ppt/slides/slide1.xml": slide_xml,
+    })
+
+
 def _many_pptx_bytes(slide_count: int) -> bytes:
     members: dict[str, str | bytes] = {
         "[Content_Types].xml": CONTENT_TYPES_XML,
@@ -285,6 +293,27 @@ def test_ignores_docx_alternate_content_fallback_text():
 
     assert parsed["content"].count(visible) == 1
     assert "后续新增的卡面图层与自定义贴纸说明" in parsed["content"]
+
+
+@pytest.mark.unit
+def test_ignores_pptx_alternate_content_fallback_text():
+    visible = "卡面图层 自定义贴纸 导出PNG和nekocfg"
+    slide_xml = (
+        f'<p:sld xmlns:p="p" xmlns:a="{DRAWING_NS}" xmlns:mc="{MC_NS}">'
+        "<mc:AlternateContent>"
+        "<mc:Choice Requires=\"p14\">"
+        f"<a:t>{visible}</a:t>"
+        "</mc:Choice>"
+        "<mc:Fallback>"
+        f"<a:t>{visible}</a:t>"
+        "</mc:Fallback>"
+        "</mc:AlternateContent>"
+        "</p:sld>"
+    )
+
+    parsed = parse_avatar_document("alternate-content.pptx", "", _pptx_with_slide_xml(slide_xml))
+
+    assert parsed["content"].count(visible) == 1
 
 
 @pytest.mark.unit
