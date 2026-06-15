@@ -872,7 +872,31 @@ def _rapidocr_lines_from_output(raw_output: Any) -> list[tuple[str, float, OcrTe
                 ),
             )
         )
+    if len(line_results) > 1:
+        has_anchor_line = any(
+            _significant_char_count(text) > 2 or float(score or 0.0) >= 0.80
+            for text, score, _box in line_results
+        )
+        if has_anchor_line:
+            filtered_results = [
+                item
+                for item in line_results
+                if not (
+                    (
+                        _significant_char_count(item[0]) <= 2
+                        and float(item[1] or 0.0) < 0.60
+                    )
+                    or (
+                        bool(re.fullmatch(r"[A-Za-z0-9]", normalize_text(item[0])))
+                        and float(item[1] or 0.0) < 0.80
+                    )
+                )
+            ]
+            if filtered_results:
+                line_results = filtered_results
     text = "\n".join(line for line in rendered_lines if line)
+    if len(line_results) != len(rendered_lines):
+        text = "\n".join(text for text, _score, _box in line_results if text)
     normalized = normalize_text(text)
     if not normalized:
         return []
