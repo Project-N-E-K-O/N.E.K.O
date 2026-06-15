@@ -22,7 +22,6 @@ def test_phase9_static_math_assets_are_local_and_registered() -> None:
     assert (PLUGIN_DIR / "static" / "katex.min.js").is_file()
     assert (PLUGIN_DIR / "static" / "katex.min.css").is_file()
     assert len(list((PLUGIN_DIR / "static" / "fonts").glob("KaTeX_*"))) >= 20
-    css = (PLUGIN_DIR / "static" / "style.css").read_text(encoding="utf-8")
 
     assert '<link rel="stylesheet" href="./katex.min.css?v=study-hotfix-20260615v" />' in index
     assert '<script src="./katex.min.js?v=study-hotfix-20260615v"></script>' in index
@@ -73,6 +72,7 @@ console.log(JSON.stringify(tools.splitByMath({json.dumps(text)})));
         check=True,
         capture_output=True,
         encoding="utf-8",
+        timeout=10,
     )
     return json.loads(result.stdout)
 
@@ -114,6 +114,7 @@ console.log(window.renderMathInText({json.dumps(text)}));
         check=True,
         capture_output=True,
         encoding="utf-8",
+        timeout=10,
     )
     return result.stdout.strip()
 
@@ -311,6 +312,28 @@ def test_phase9_reply_renderer_handles_markdown_without_raw_html() -> None:
     assert '<span class="katex" data-display="false">x^2</span>' in html
     assert "<script>" not in html
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+
+
+@pytest.mark.parametrize("asset_name", ["katex-render.js", "math-parser.js"])
+def test_phase9_math_parser_keeps_punctuated_english_after_bare_latex_as_text(
+    asset_name: str,
+) -> None:
+    parts = _split_math_with_node(asset_name, "Use \\frac{1}{2} as the coefficient.")
+
+    assert parts == [
+        {"type": "text", "value": "Use "},
+        {"type": "math", "value": "\\frac{1}{2}", "display": False},
+        {"type": "text", "value": " as the coefficient."},
+    ]
+
+
+def test_phase9_reply_renderer_accepts_display_block_with_opening_content() -> None:
+    html = _render_reply_with_node("Start\n$$ S = 1 +\n2 $$\nEnd")
+
+    assert '<span class="katex" data-display="true">S = 1 +\n2</span>' in html
+    assert "<p>$$" not in html
+    assert "<p>Start</p>" in html
+    assert "<p>End</p>" in html
 
 
 def test_phase9_reply_renderer_highlights_study_answer_sections() -> None:

@@ -98,7 +98,7 @@
       value = value.slice(0, -trailing[0].length);
       consumeLength -= trailing[0].length;
     }
-    const proseTail = value.match(/\s+[A-Za-z]{2,}(?:\s+[A-Za-z]{2,})*$/);
+    const proseTail = value.match(/\s+[A-Za-z]{2,}(?:\s+[A-Za-z]{2,})*[.,;:!?]*$/);
     if (proseTail) {
       value = value.slice(0, -proseTail[0].length);
       consumeLength -= proseTail[0].length;
@@ -330,14 +330,8 @@
     const renderInline = typeof inlineRenderer === 'function' ? inlineRenderer : renderInlineMarkdown;
     const lines = String(text || '').split(/\r?\n/);
     const blocks = [];
-    let inList = false;
     let inStudySection = false;
-    const closeList = () => {
-      if (inList) {
-        blocks.push('</ul>');
-        inList = false;
-      }
-    };
+    const closeList = () => {};
     const closeStudySection = () => {
       closeList();
       if (inStudySection) {
@@ -358,11 +352,20 @@
         blocks.push(renderMathPart({ type: 'math', value: displayMath[1], display: true }));
         continue;
       }
-      if (trimmed === '$$') {
+      const displayMathBlock = trimmed.match(/^\$\$\s*(.*)$/);
+      if (displayMathBlock) {
         const mathLines = [];
+        if (displayMathBlock[1]) {
+          mathLines.push(displayMathBlock[1]);
+        }
         let closer = -1;
         for (let scan = index + 1; scan < lines.length; scan += 1) {
-          if (lines[scan].trim() === '$$') {
+          const closeAt = lines[scan].indexOf('$$');
+          if (closeAt !== -1) {
+            const beforeClose = lines[scan].slice(0, closeAt).trim();
+            if (beforeClose) {
+              mathLines.push(beforeClose);
+            }
             closer = scan;
             break;
           }

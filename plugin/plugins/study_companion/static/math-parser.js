@@ -92,7 +92,7 @@
       value = value.slice(0, -trailing[0].length);
       consumeLength -= trailing[0].length;
     }
-    const proseTail = value.match(/\s+[A-Za-z]{2,}(?:\s+[A-Za-z]{2,})*$/);
+    const proseTail = value.match(/\s+[A-Za-z]{2,}(?:\s+[A-Za-z]{2,})*[.,;:!?]*$/);
     if (proseTail) {
       value = value.slice(0, -proseTail[0].length);
       consumeLength -= proseTail[0].length;
