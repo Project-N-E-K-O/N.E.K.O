@@ -6865,7 +6865,7 @@ class LLMSessionManager:
         """Whether a background deep-topic hook may interrupt right now.
 
         Deep topic hooks are brand-new text openers — the most intrusive,
-        "宁可不用" kind of proactive content. They must honour the same
+        "better none than forced" kind of proactive content. They must honour the same
         activity gate as ``/api/proactive_chat``: never surface while the
         user's propensity is ``closed`` (privacy blacklist) or
         ``restricted_screen_only`` (gaming / focused_work). Unlike the
