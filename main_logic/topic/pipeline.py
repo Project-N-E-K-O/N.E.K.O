@@ -75,32 +75,23 @@ def _clean_material(material: Mapping[str, Any]) -> dict[str, Any] | None:
     interest = _clean_text(material.get("interest"), limit=90)
     if not interest:
         return None
-    hook = _clean_text(material.get("hook"), limit=120)
-    opening = _clean_text(material.get("opening_intent"), limit=90)
-    deepening = _clean_text(material.get("deepening_hint"), limit=90)
     try:
-        relevance = int(material.get("relevance", material.get("priority", 70)))
+        relevance = int(material.get("relevance", 70))
     except (TypeError, ValueError):
         relevance = 70
     try:
         risk = int(material.get("risk", 20))
     except (TypeError, ValueError):
         risk = 20
-    relevance = max(0, min(100, relevance))
     return {
         "hook_id": str(material.get("hook_id") or ""),
         "source": "background_topic_pool",
         "interest": interest,
-        "hook": hook or f"自然接住「{interest}」，不要像总结报告。",
-        "opening_intent": opening or "具体、短、像随口一提；不要像问卷。",
-        "deepening_hint": deepening or "如果用户接话，再顺着用户反应展开。",
         "media_intent": _clean_media_intent(material.get("media_intent")),
-        "why_now": _clean_text(material.get("why_now"), limit=140),
         "search_query": _clean_text(material.get("search_query"), limit=80),
         "keywords": _clean_keywords(material.get("keywords")),
-        "relevance": relevance,
+        "relevance": max(0, min(100, relevance)),
         "risk": max(0, min(100, risk)),
-        "priority": relevance,
         "status": "pending",
         "created_at": _clean_timestamp(material.get("created_at")),
     }
@@ -108,7 +99,7 @@ def _clean_material(material: Mapping[str, Any]) -> dict[str, Any] | None:
 
 def _material_is_ready(material: Mapping[str, Any]) -> bool:
     try:
-        relevance = int(material.get("relevance", material.get("priority", 0)))
+        relevance = int(material.get("relevance", 0))
         risk = int(material.get("risk", 20))
     except (TypeError, ValueError):
         return False
@@ -124,7 +115,6 @@ def _material_log_preview(material: Mapping[str, Any]) -> str:
         f"relevance={material.get('relevance')}",
         f"risk={material.get('risk')}",
         f"interest={_clean_text(material.get('interest'), limit=80)}",
-        f"hook={_clean_text(material.get('hook'), limit=100)}",
     ]
     if material.get("online_used"):
         parts.append(f"online={_clean_text(material.get('online_angle'), limit=100)}")
@@ -279,7 +269,7 @@ class TopicHookPool:
                 for item in self._materials.get(name, [])
                 if item.get("status") == "pending"
             ],
-            key=lambda item: int(item.get("priority", 0)),
+            key=lambda item: int(item.get("relevance", 0)),
             reverse=True,
         )
         return deepcopy(materials[:max_items])
@@ -339,7 +329,7 @@ class TopicHookPool:
         ]
         cleaned = sorted(
             cleaned,
-            key=lambda item: int(item.get("priority", 0)),
+            key=lambda item: int(item.get("relevance", 0)),
             reverse=True,
         )[:2]
         if cleaned and (self._enable_online_enrichment if enrich_online is None else enrich_online):

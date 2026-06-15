@@ -34,15 +34,10 @@ async def test_call_topic_candidates_parses_model_output(monkeypatch):
     assert topics == [
         {
             "interest": "想买凯迪拉克但预算压力很大",
-            "hook": "接住想买车和现实预算的冲突",
-            "opening_intent": "像朋友随口一提，不像问卷",
-            "deepening_hint": "用户接话后聊目标和现实怎么折中",
-            "relevance": 93,
-            "risk": 20,
-            "why_now": "",
             "search_query": "",
             "keywords": [],
-            "priority": 93,
+            "relevance": 93,
+            "risk": 20,
         }
     ]
 
@@ -86,15 +81,10 @@ async def test_call_topic_candidates_passes_global_signals_and_keeps_online_fiel
     assert topics == [
         {
             "interest": "用户把买车和生活自由感联系在一起",
-            "hook": "先接住不想被人生流程推着走",
-            "opening_intent": "短一点，像随口想起来",
-            "deepening_hint": "用户接话后再聊自由感和现实成本",
-            "why_now": "多次提到买车、预算和不想被固定流程推着走",
             "search_query": "年轻人 买车 通勤 养车 成本",
             "keywords": ["买车", "自由感"],
             "relevance": 91,
             "risk": 18,
-            "priority": 91,
         }
     ]
 

@@ -12,7 +12,7 @@ def test_clean_material_normalizes_media_intent_string_and_bad_created_at():
             "interest": "转职",
             "media_intent": "news",
             "created_at": "not-a-number",
-            "priority": 90,
+            "relevance": 90,
         }
     )
 
@@ -34,7 +34,7 @@ async def test_topic_pool_waits_for_slow_global_collection_before_analysis():
                 "readiness": 91,
                 "confidence": 86,
                 "risk": 12,
-                "priority": 91,
+                "relevance": 91,
             }
         ]
 
@@ -75,7 +75,7 @@ async def test_topic_pool_global_signals_keep_more_than_recent_window():
                 "readiness": 95,
                 "confidence": 90,
                 "risk": 5,
-                "priority": 95,
+                "relevance": 95,
             }
         ]
 
@@ -105,7 +105,7 @@ async def test_topic_pool_collects_silently_until_background_processing():
                 "hook": "从预算压力轻轻接住，别做理财课",
                 "opening_intent": "像朋友随口接一句",
                 "deepening_hint": "用户接话后，再聊目标和现实怎么折中",
-                "priority": 91,
+                "relevance": 91,
             }
         ]
 
@@ -159,7 +159,9 @@ async def test_topic_pool_uses_ai_context_without_blocking_collection():
 
     materials = pool.get_ready_materials("妮可")
     assert materials[0]["interest"] == "想换工作但担心选错"
-    assert materials[0]["hook"] == "接住换工作的犹豫，不催决定"
+    # hook is no longer carried on the cleaned material (slimmed contract)
+    assert "hook" not in materials[0]
+    assert materials[0]["relevance"] == 70
 
 
 @pytest.mark.asyncio
@@ -207,7 +209,7 @@ async def test_topic_pool_discards_stale_analysis_when_new_turn_arrives():
             {
                 "interest": "旧话题",
                 "hook": "这不该覆盖新输入",
-                "priority": 90,
+                "relevance": 90,
             }
         ]
 
@@ -238,7 +240,7 @@ async def test_topic_pool_discards_stale_analysis_when_new_turn_arrives_during_e
             {
                 "interest": "旧话题",
                 "hook": "这不该覆盖新输入",
-                "priority": 90,
+                "relevance": 90,
             }
         ]
 
@@ -287,7 +289,7 @@ async def test_topic_pool_debounce_retries_after_background_analyzer_failure():
                 "readiness": 88,
                 "confidence": 84,
                 "risk": 10,
-                "priority": 90,
+                "relevance": 90,
             }
         ]
 
@@ -339,7 +341,7 @@ async def test_topic_pool_keeps_dirty_when_analyzer_returns_none():
                 "readiness": 88,
                 "confidence": 84,
                 "risk": 10,
-                "priority": 90,
+                "relevance": 90,
             }
         ]
 
@@ -379,7 +381,7 @@ async def test_topic_pool_triggers_ready_hook_after_quiet_window():
             {
                 "interest": "买车像进入新生活阶段",
                 "hook": "从买车背后的生活阶段感切入",
-                "priority": 95,
+                "relevance": 95,
             }
         ]
 
@@ -417,7 +419,7 @@ async def test_topic_pool_clears_pending_trigger_when_privacy_turns_on(monkeypat
             {
                 "interest": "买车像进入新生活阶段",
                 "hook": "从买车背后的生活阶段感切入",
-                "priority": 95,
+                "relevance": 95,
             }
         ]
 
@@ -450,7 +452,7 @@ async def test_topic_pool_clears_pending_trigger_when_privacy_turns_on(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_topic_pool_triggers_highest_priority_material_first():
+async def test_topic_pool_triggers_highest_relevance_material_first():
     delivered = []
 
     async def fake_analyzer(*, user_msgs, ai_msgs, lang, **kwargs):
@@ -458,12 +460,12 @@ async def test_topic_pool_triggers_highest_priority_material_first():
             {
                 "interest": "低优先级话题",
                 "hook": "这个话题先不要浪费触发机会",
-                "priority": 80,
+                "relevance": 80,
             },
             {
                 "interest": "高优先级话题",
                 "hook": "这个才应该先触发",
-                "priority": 96,
+                "relevance": 96,
             },
         ]
 
@@ -500,7 +502,7 @@ async def test_topic_pool_keeps_material_pending_when_delivery_defers():
             {
                 "interest": "买车像进入新生活阶段",
                 "hook": "从买车背后的生活阶段感切入",
-                "priority": 95,
+                "relevance": 95,
             }
         ]
 
@@ -537,7 +539,7 @@ async def test_topic_pool_retries_pending_material_after_delivery_defers():
             {
                 "interest": "买车像进入新生活阶段",
                 "hook": "从买车背后的生活阶段感切入",
-                "priority": 95,
+                "relevance": 95,
             }
         ]
 
@@ -579,7 +581,7 @@ async def test_topic_pool_retries_pending_material_after_trigger_exception():
             {
                 "interest": "买车像进入新生活阶段",
                 "hook": "从买车背后的生活阶段感切入",
-                "priority": 95,
+                "relevance": 95,
             }
         ]
 
@@ -620,7 +622,7 @@ async def test_topic_pool_does_not_cancel_current_trigger_when_ai_turn_is_record
             {
                 "interest": "买车像进入新生活阶段",
                 "hook": "从买车背后的生活阶段感切入",
-                "priority": 95,
+                "relevance": 95,
             }
         ]
 
@@ -658,7 +660,7 @@ async def test_topic_pool_resets_trigger_wait_when_chat_continues():
             {
                 "interest": user_msgs[-1],
                 "hook": "接住最新话题",
-                "priority": 90,
+                "relevance": 90,
             }
         ]
 
@@ -704,7 +706,7 @@ async def test_topic_pool_limits_daily_topic_triggers_to_two():
             {
                 "interest": interests[analyzer_calls - 1],
                 "hook": f"自然接住{interests[analyzer_calls - 1]}",
-                "priority": 95,
+                "relevance": 95,
             }
         ]
 
@@ -780,7 +782,7 @@ async def test_topic_pool_does_not_trigger_second_topic_immediately_after_first(
             {
                 "interest": interest,
                 "hook": f"自然接住{interest}",
-                "priority": 95,
+                "relevance": 95,
             }
         ]
 
@@ -822,7 +824,7 @@ async def test_topic_pool_suppresses_same_topic_after_it_was_used_today():
                 "interest": "文本世界模型的无撤回机制与幻觉问题",
                 "hook": "从模型没有撤回功能切入",
                 "search_query": "文本世界模型 无撤回 幻觉",
-                "priority": 95,
+                "relevance": 95,
             }
         ]
 

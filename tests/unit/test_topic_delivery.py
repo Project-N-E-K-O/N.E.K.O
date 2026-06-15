@@ -32,6 +32,10 @@ def test_build_topic_hook_callback_contains_natural_opening_instruction():
     assert callback["metadata"]["hook_id"] == "topic_car"
     assert "只生成一句自然开场" in callback["detail"]
     assert "根据你的近期兴趣" in callback["detail"]
+    assert "关系点：用户把买车当成新阶段" in callback["detail"]
+    # slimmed: small-model-authored angle/opening/deepening are no longer shipped
+    assert "从买车背后的生活阶段感切入" not in callback["detail"]
+    assert "轻轻调侃" not in callback["detail"]
 
 
 def test_build_topic_hook_callback_requires_visible_online_angle_when_available():
@@ -70,7 +74,8 @@ def test_build_topic_hook_callback_localizes_detail_for_japanese():
     )
 
     detail = callback["detail"]
-    assert "これは、すでに選別済みの低頻度な深掘り話題 hook です。" in detail
+    # intro line removed; detail is interest + online + final only
+    assert "これは、すでに選別済みの低頻度な深掘り話題 hook です。" not in detail
     assert "関係するポイント：夜に聴くインディーポップ" in detail
     assert "オンライン補足：" in detail
     assert "自然な一言の切り出しだけを生成してください" in detail
@@ -93,7 +98,8 @@ def test_build_topic_hook_callback_preserves_traditional_chinese():
     )
 
     detail = callback["detail"]
-    assert "這是一個已經篩好的低頻深話題 hook" in detail
+    # intro line removed; detail is interest + online + final only
+    assert "這是一個已經篩好的低頻深話題 hook" not in detail
     assert "關係點：最近想聽城市流行" in detail
     assert "請只生成一句自然開場" in detail
     assert "聯網補充" in detail

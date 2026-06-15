@@ -351,15 +351,10 @@ async def call_topic_candidates(
                 break
         material = {
             'interest': interest[:90],
-            'hook': str(item.get('hook') or '').strip()[:120],
-            'opening_intent': str(item.get('opening_intent') or '').strip()[:90],
-            'deepening_hint': str(item.get('deepening_hint') or '').strip()[:90],
-            'relevance': relevance,
-            'risk': risk,
-            'why_now': str(item.get('why_now') or '').strip()[:140],
             'search_query': str(item.get('search_query') or '').strip()[:80],
             'keywords': keywords,
-            'priority': relevance,
+            'relevance': relevance,
+            'risk': risk,
         }
         cleaned.append(material)
         if len(cleaned) >= 2:

@@ -262,11 +262,7 @@ TOPIC_CANDIDATE_PROMPTS: dict[str, str] = {
 输出严格 JSON（不带 markdown 代码块）：
 {{"topics": [
   {{
-    "interest": "整理后的关系话题，不超过30字",
-    "hook": "从什么角度接住，不超过45字",
-    "opening_intent": "开口风格，不超过35字",
-    "deepening_hint": "用户接话后的展开方向，不超过40字",
-    "why_now": "为什么现在值得轻轻接一下，不超过50字",
+    "interest": "用户最近在意、纠结、计划或反复提到的一件具体事，整理成一句，不超过30字",
     "search_query": "用于联网补现实细节的查询词；不需要联网就留空",
     "keywords": ["3-6个关系点关键词，用于去重和检索兜底"],
     "relevance": 0-100,
@@ -275,8 +271,8 @@ TOPIC_CANDIDATE_PROMPTS: dict[str, str] = {
 ]}}
 
 评分：
-- relevance：综合「这个话题和用户的相关度」+「证据是否稳定」的单一相关度分数，低于 70 不要输出
-- risk：打扰 / 冒犯 / 误解 / 硬凑的风险，高于 65 不要输出
+- relevance：这个话题和用户的相关度，结合证据是否稳定。明显反复出现、确实是用户在意的事 → 高分；只出现一两次、或只是顺口提一句 → 低分。如实打分，不要为了让它被采用而虚高。
+- risk：主动提起这个话题会打扰、冒犯、误解或显得硬凑的风险。越可能让用户反感或觉得突兀 → 越高分。
 
 如果没有值得以后接的话题，输出 {{"topics": []}}。""",
     "zh-TW": """你是陪伴產品的話題篩選助手。你的任務不是總結最近一句話，而是從「慢收集的全局證據 + 最近對話」裡挑 1-2 個真的值得以後低頻開口的深話題機會。
@@ -302,11 +298,7 @@ TOPIC_CANDIDATE_PROMPTS: dict[str, str] = {
 輸出嚴格 JSON（不帶 markdown 代碼塊）：
 {{"topics": [
   {{
-    "interest": "整理後的關係話題，不超過30字",
-    "hook": "從什麼角度接住，不超過45字",
-    "opening_intent": "開口風格，不超過35字",
-    "deepening_hint": "用戶接話後的展開方向，不超過40字",
-    "why_now": "為什麼現在值得輕輕接一下，不超過50字",
+    "interest": "用戶最近在意、糾結、計劃或反覆提到的一件具體事，整理成一句，不超過30字",
     "search_query": "用於聯網補現實細節的查詢詞；不需要聯網就留空",
     "keywords": ["3-6個關係點關鍵詞，用於去重和檢索兜底"],
     "relevance": 0-100,
@@ -315,8 +307,8 @@ TOPIC_CANDIDATE_PROMPTS: dict[str, str] = {
 ]}}
 
 評分：
-- relevance：綜合「這個話題和用戶的相關度」+「證據是否穩定」的單一相關度分數，低於 70 不要輸出
-- risk：打擾 / 冒犯 / 誤解 / 硬湊的風險，高於 65 不要輸出
+- relevance：這個話題和用戶的相關度，結合證據是否穩定。明顯反覆出現、確實是用戶在意的事 → 高分；只出現一兩次、或只是順口提一句 → 低分。如實打分，不要為了讓它被採用而虛高。
+- risk：主動提起這個話題會打擾、冒犯、誤解或顯得硬湊的風險。越可能讓用戶反感或覺得突兀 → 越高分。
 
 如果沒有值得以後接的話題，輸出 {{"topics": []}}。""",
     "en": """You are a topic-screening assistant for a companionship product. Your job is not to summarize the last message, but to choose 1-2 genuinely worthwhile low-frequency topic opportunities from slow global evidence plus the recent conversation.
@@ -341,11 +333,7 @@ Rules:
 Output strict JSON, no markdown fences:
 {{"topics": [
   {{
-    "interest": "summarized relationship topic, max 30 words",
-    "hook": "angle to naturally pick it up, max 45 words",
-    "opening_intent": "opening style, max 35 words",
-    "deepening_hint": "how to continue if the user responds, max 40 words",
-    "why_now": "why this is worth lightly picking up now, max 50 words",
+    "interest": "a single concrete thing the user recently cares about, worries over, plans, or keeps bringing up, max 30 words",
     "search_query": "query for online enrichment; empty if not needed",
     "keywords": ["3-6 short relationship keywords for dedup and search fallback"],
     "relevance": 0-100,
@@ -354,8 +342,8 @@ Output strict JSON, no markdown fences:
 ]}}
 
 Scoring:
-- relevance: a single score combining topic-user relevance and evidence stability; omit below 70
-- risk: interruption/offense/misread/forced-association risk; omit above 65
+- relevance: how relevant this topic is to the user, combined with whether the evidence is stable. Clearly recurs and genuinely matters to the user → high; appeared only once or twice, or just mentioned in passing → low. Score honestly — do not inflate to get the topic included.
+- risk: the risk that proactively raising this topic would feel intrusive, offensive, misread, or forced. The more likely the user would feel annoyed or caught off-guard → the higher the score.
 
 If nothing is worth keeping, output {{"topics": []}}.""",
     "ja": """あなたはコンパニオン製品の話題選別アシスタントです。直近の一言を要約するのではなく、「ゆっくり集めた全体証拠 + 最近の会話」から、あとで低頻度で自然に切り出す価値がある深めの話題を1〜2個だけ選びます。
@@ -381,11 +369,7 @@ If nothing is worth keeping, output {{"topics": []}}.""",
 厳密な JSON だけを出力（markdown コードブロックなし）：
 {{"topics": [
   {{
-    "interest": "整理した関係話題、30字以内",
-    "hook": "自然に拾う角度、45字以内",
-    "opening_intent": "切り出し方、35字以内",
-    "deepening_hint": "ユーザーが乗った後の広げ方、40字以内",
-    "why_now": "今そっと拾う理由、50字以内",
+    "interest": "ユーザーが最近気にしている、悩んでいる、計画している、または繰り返し口にしている具体的な一件を一文にまとめたもの、30字以内",
     "search_query": "現実情報を補う検索語。不要なら空文字",
     "keywords": ["重複排除と検索の補助用、関係する短いキーワードを3〜6個"],
     "relevance": 0-100,
@@ -394,8 +378,8 @@ If nothing is worth keeping, output {{"topics": []}}.""",
 ]}}
 
 スコア：
-- relevance：話題とユーザーの関連度と証拠の安定度を統合した単一スコア。70未満は出力しない
-- risk：邪魔、失礼、誤読、こじつけのリスク。65超は出力しない
+- relevance：この話題がユーザーにとってどれほど関連があるか、証拠が安定しているかを合わせた評価。明らかに繰り返し出てきて本当にユーザーが気にしていること → 高スコア；一度か二度しか出ておらず、ついでに触れた程度 → 低スコア。採用させるために水増しせず、ありのままのスコアをつけること。
+- risk：この話題を自分から切り出したとき、邪魔・失礼・誤読・こじつけになるリスク。ユーザーが不快に感じたり唐突に思う可能性が高いほど → 高スコア。
 
 価値のある話題がなければ {{"topics": []}} を出力。""",
     "ko": """당신은 동반자 제품의 화제 선별 도우미입니다. 최근 한마디를 요약하는 것이 아니라, "천천히 모은 전역 근거 + 최근 대화"에서 나중에 낮은 빈도로 자연스럽게 꺼낼 만한 깊은 화제 기회를 1-2개만 고릅니다.
@@ -421,11 +405,7 @@ If nothing is worth keeping, output {{"topics": []}}.""",
 엄격한 JSON만 출력하세요（markdown 코드 블록 금지）:
 {{"topics": [
   {{
-    "interest": "정리된 관계 화제, 30자 이내",
-    "hook": "자연스럽게 받아낼 각도, 45자 이내",
-    "opening_intent": "말을 여는 방식, 35자 이내",
-    "deepening_hint": "사용자가 반응한 뒤 이어갈 방향, 40자 이내",
-    "why_now": "지금 가볍게 꺼낼 만한 이유, 50자 이내",
+    "interest": "사용자가 최근 신경 쓰거나 고민하거나 계획하거나 반복해서 언급하는 구체적인 한 가지를 한 문장으로 정리한 것, 30자 이내",
     "search_query": "현실 정보를 보충할 검색어. 필요 없으면 빈 문자열",
     "keywords": ["중복 제거와 검색 보조용 핵심 키워드 3-6개"],
     "relevance": 0-100,
@@ -434,8 +414,8 @@ If nothing is worth keeping, output {{"topics": []}}.""",
 ]}}
 
 점수:
-- relevance: 화제와 사용자의 관련도 및 근거 안정성을 통합한 단일 점수. 70 미만은 출력하지 않음
-- risk: 방해, 무례함, 오해, 억지 연결 위험. 65 초과는 출력하지 않음
+- relevance: 이 화제가 사용자와 얼마나 관련 있는지, 근거가 안정적인지를 합산한 평가. 명확하게 반복 등장하고 사용자가 진심으로 신경 쓰는 것 → 높은 점수; 한두 번만 나왔거나 그냥 지나치듯 언급한 것 → 낮은 점수. 채택시키려고 부풀리지 말고 있는 그대로 점수를 매기세요.
+- risk: 이 화제를 먼저 꺼낼 때 방해가 되거나 무례하거나 오해하거나 억지스럽게 느껴질 위험. 사용자가 불쾌하거나 뜬금없다고 느낄 가능성이 높을수록 → 높은 점수.
 
 가치 있는 화제가 없으면 {{"topics": []}} 를 출력하세요.""",
     "es": """Eres un asistente que selecciona temas para un producto de compañía. Tu tarea no es resumir el último mensaje, sino elegir 1-2 oportunidades de conversación profunda que valga la pena abrir con baja frecuencia a partir de evidencia global acumulada lentamente y la conversación reciente.
@@ -461,11 +441,7 @@ Reglas:
 Devuelve JSON estricto, sin bloques markdown:
 {{"topics": [
   {{
-    "interest": "tema relacional resumido, máximo 30 palabras",
-    "hook": "ángulo para retomarlo naturalmente, máximo 45 palabras",
-    "opening_intent": "estilo de apertura, máximo 35 palabras",
-    "deepening_hint": "cómo seguir si el usuario responde, máximo 40 palabras",
-    "why_now": "por qué vale la pena tocarlo ahora, máximo 50 palabras",
+    "interest": "una sola cosa concreta que el usuario tiene en mente, le preocupa, planea o menciona repetidamente, resumida en una frase, máximo 30 palabras",
     "search_query": "consulta para enriquecer con datos reales; vacío si no hace falta",
     "keywords": ["3-6 palabras clave de la relación para deduplicar y como respaldo de búsqueda"],
     "relevance": 0-100,
@@ -474,8 +450,8 @@ Devuelve JSON estricto, sin bloques markdown:
 ]}}
 
 Puntuación:
-- relevance: puntuación única que integra la relevancia del tema para el usuario y la estabilidad de la evidencia; omite por debajo de 70
-- risk: riesgo de molestar, ofender, malinterpretar o forzar; omite por encima de 65
+- relevance: qué tan relevante es este tema para el usuario, combinado con si la evidencia es estable. Aparece claramente de forma recurrente y es algo que realmente le importa → puntuación alta; apareció solo una o dos veces, o solo se mencionó de pasada → puntuación baja. Puntúa con honestidad, sin inflar para que el tema sea incluido.
+- risk: el riesgo de que plantear este tema activamente resulte intrusivo, ofensivo, malinterpretado o forzado. Cuanto más probable sea que el usuario se sienta molesto o sorprendido → mayor puntuación.
 
 Si no hay nada que valga la pena, devuelve {{"topics": []}}.""",
     "pt": """Voce e um assistente de selecao de assuntos para um produto de companhia. Sua tarefa nao e resumir a ultima mensagem, mas escolher 1-2 oportunidades de conversa profunda que valem ser puxadas com baixa frequencia, usando evidencias globais coletadas aos poucos e a conversa recente.
@@ -501,11 +477,7 @@ Regras:
 Retorne JSON estrito, sem blocos markdown:
 {{"topics": [
   {{
-    "interest": "tema relacional resumido, maximo 30 palavras",
-    "hook": "angulo para retomar naturalmente, maximo 45 palavras",
-    "opening_intent": "estilo de abertura, maximo 35 palavras",
-    "deepening_hint": "como continuar se o usuario responder, maximo 40 palavras",
-    "why_now": "por que vale tocar nisso agora, maximo 50 palavras",
+    "interest": "uma unica coisa concreta que o usuario tem em mente, preocupa, planeja ou menciona repetidamente, resumida em uma frase, maximo 30 palavras",
     "search_query": "consulta para enriquecer com dados reais; vazio se nao precisar",
     "keywords": ["3-6 palavras-chave da relacao para deduplicar e como apoio de busca"],
     "relevance": 0-100,
@@ -514,8 +486,8 @@ Retorne JSON estrito, sem blocos markdown:
 ]}}
 
 Pontuacao:
-- relevance: pontuacao unica que combina a relevancia do tema para o usuario e a estabilidade das evidencias; omita abaixo de 70
-- risk: risco de incomodar, ofender, interpretar errado ou forcar; omita acima de 65
+- relevance: o quanto este tema e relevante para o usuario, combinado com se a evidencia e estavel. Aparece claramente de forma recorrente e e algo que realmente importa ao usuario → pontuacao alta; apareceu apenas uma ou duas vezes, ou foi so uma mencao passageira → pontuacao baixa. Pontue com honestidade, sem inflar para o tema ser incluido.
+- risk: o risco de que trazer este tema ativamente resulte em interrupcao, ofensa, mal-entendido ou algo forcado. Quanto mais provavelmente o usuario se sentiria incomodado ou pego de surpresa → maior a pontuacao.
 
 Se nada valer a pena, retorne {{"topics": []}}.""",
     "ru": """Ты помощник по отбору тем для companion-продукта. Твоя задача не пересказывать последнее сообщение, а выбрать 1-2 действительно ценные возможности для редкого, естественного начала более глубокого разговора на основе медленно собранных общих сигналов и недавней переписки.
@@ -541,11 +513,7 @@ Se nada valer a pena, retorne {{"topics": []}}.""",
 Выводи строго JSON, без markdown-блоков:
 {{"topics": [
   {{
-    "interest": "краткая тема отношений, до 30 слов",
-    "hook": "угол, с которого естественно подхватить, до 45 слов",
-    "opening_intent": "стиль начала, до 35 слов",
-    "deepening_hint": "как развить, если пользователь ответит, до 40 слов",
-    "why_now": "почему стоит мягко поднять это сейчас, до 50 слов",
+    "interest": "одна конкретная вещь, о которой пользователь недавно думает, переживает, планирует или постоянно упоминает, сформулированная в одном предложении, до 30 слов",
     "search_query": "запрос для фактического обогащения; пусто, если не нужно",
     "keywords": ["3-6 ключевых слов темы для дедупликации и подстраховки поиска"],
     "relevance": 0-100,
@@ -554,8 +522,8 @@ Se nada valer a pena, retorne {{"topics": []}}.""",
 ]}}
 
 Оценки:
-- relevance: единый балл, объединяющий релевантность темы для пользователя и стабильность сигналов; ниже 70 не выводить
-- risk: риск помешать, обидеть, неверно понять или натянуть связь; выше 65 не выводить
+- relevance: насколько эта тема актуальна для пользователя с учётом стабильности сигналов. Явно повторяется и действительно важна пользователю → высокий балл; упомянута лишь раз-два или просто вскользь → низкий балл. Оценивай честно, не завышай ради того, чтобы тема прошла отбор.
+- risk: риск того, что активное поднятие этой темы окажется навязчивым, обидным, неверно понятым или натянутым. Чем вероятнее, что пользователь почувствует раздражение или неожиданность → тем выше балл.
 
 Если достойной темы нет, выведи {{"topics": []}}.""",
 }
