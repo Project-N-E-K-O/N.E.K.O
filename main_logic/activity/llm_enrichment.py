@@ -111,6 +111,21 @@ def _normalize_lang(lang: str) -> str:
     return 'en'
 
 
+def _select_lang_template(prompts: dict, lang_key: str):
+    """Pick a prompt template for ``lang_key`` with a zh-family fallback.
+
+    ``_normalize_lang`` can return ``zh-TW`` (Traditional), but not every
+    prompt dict carries a ``zh-TW`` entry. A plain ``.get(lang_key, en)`` would
+    then drop Traditional Chinese sessions straight to English — regressing
+    them from the Simplified ``zh`` prompt. Fall back zh-* → zh → en instead.
+    """
+    if lang_key in prompts:
+        return prompts[lang_key]
+    if lang_key.startswith('zh') and 'zh' in prompts:
+        return prompts['zh']
+    return prompts['en']
+
+
 def _topic_interest_too_short(interest: str) -> bool:
     if len(interest) >= 4:
         return False
@@ -202,7 +217,7 @@ async def call_activity_guess(
         LLM can choose to confirm or override.
     """
     lang_key = _normalize_lang(lang)
-    template = ACTIVITY_GUESS_PROMPTS.get(lang_key, ACTIVITY_GUESS_PROMPTS['en'])
+    template = _select_lang_template(ACTIVITY_GUESS_PROMPTS, lang_key)
 
     prompt = template.format(
         signals=_format_signals(snapshot_signals),
@@ -254,7 +269,7 @@ async def call_open_threads(
     hanging" (``[]``) from "LLM call failed" (``None``).
     """
     lang_key = _normalize_lang(lang)
-    template = OPEN_THREADS_PROMPTS.get(lang_key, OPEN_THREADS_PROMPTS['en'])
+    template = _select_lang_template(OPEN_THREADS_PROMPTS, lang_key)
 
     if not user_msgs and not ai_msgs:
         return []
@@ -295,7 +310,7 @@ async def call_topic_candidates(
     conversation text synchronously.
     """
     lang_key = _normalize_lang(lang)
-    template = TOPIC_CANDIDATE_PROMPTS.get(lang_key, TOPIC_CANDIDATE_PROMPTS['en'])
+    template = _select_lang_template(TOPIC_CANDIDATE_PROMPTS, lang_key)
 
     if not user_msgs and not ai_msgs:
         return []

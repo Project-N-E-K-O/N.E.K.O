@@ -1,6 +1,21 @@
 import pytest
 
 
+def test_select_lang_template_falls_back_zh_family_to_zh():
+    from main_logic.activity.llm_enrichment import _select_lang_template
+
+    # zh-TW with no zh-TW entry must fall back to the Simplified zh prompt,
+    # NOT English (regression guard for activity/open-thread enrichment).
+    zh_only = {"zh": "简体", "en": "english"}
+    assert _select_lang_template(zh_only, "zh-TW") == "简体"
+    assert _select_lang_template(zh_only, "zh") == "简体"
+    assert _select_lang_template(zh_only, "ja") == "english"
+
+    # An explicit zh-TW entry still wins over the zh fallback.
+    with_trad = {"zh": "简体", "zh-TW": "繁體", "en": "english"}
+    assert _select_lang_template(with_trad, "zh-TW") == "繁體"
+
+
 @pytest.mark.asyncio
 async def test_call_topic_candidates_parses_model_output(monkeypatch):
     from main_logic.activity import llm_enrichment
