@@ -1663,6 +1663,7 @@ if _IS_MAIN_PROCESS:
 # --- 初始化共享状态并挂载路由 ---
 # 显式从各子模块导入 router，避免与包级模块导出产生同名遮蔽。
 from main_routers.agent_router import router as agent_router # noqa
+from main_routers.avatar_drop_router import router as avatar_drop_router # noqa
 from main_routers.card_assist_router import router as card_assist_router # noqa
 from main_routers.capture_router import router as capture_router # noqa
 from main_routers.characters_router import router as characters_router # noqa
@@ -1812,6 +1813,7 @@ app.include_router(storage_location_router)
 # 注意：pages_router 含 /{lanlan_name} 兜底路由，应最后挂载
 app.include_router(websocket_router)
 app.include_router(agent_router)
+app.include_router(avatar_drop_router)
 app.include_router(system_router)
 app.include_router(tool_router)
 app.include_router(music_router)
