@@ -156,7 +156,7 @@ from utils.screenshot_utils import (
     COMPRESS_TARGET_HEIGHT,
     COMPRESS_JPEG_QUALITY,
 )
-from utils.language_utils import detect_language, translate_text, normalize_language_code, get_global_language, is_supported_language_code
+from utils.language_utils import detect_language, translate_text, normalize_language_code, get_global_language, get_global_language_full, is_supported_language_code
 from utils.web_scraper import (
     fetch_trending_content, format_trending_content,
     fetch_window_context_content, format_window_context_content,
@@ -2370,6 +2370,9 @@ def _resolve_topic_hook_locale(data: dict, mgr, *, fallback: str) -> str:
             normalized = normalize_language_code(raw_lang, format='full')
             if normalized:
                 return normalized
+    global_lang = normalize_language_code(get_global_language_full(), format='full')
+    if global_lang:
+        return global_lang
     return fallback
 
 

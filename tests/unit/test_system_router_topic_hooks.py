@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import main_routers.system_router as system_router
 from main_routers.system_router import (
     _allow_open_threads_for_topic_hooks,
     _render_followup_topic_hooks,
@@ -54,6 +55,21 @@ def test_topic_hook_locale_preserves_traditional_chinese_request_language():
     prompt, _surfaced_ids = _render_followup_topic_hooks(
         topic_hook_lang,
         [{"id": "reflection-tw", "text": "最近想用繁體中文聊城市流行"}],
+    )
+
+    assert topic_hook_lang == "zh-TW"
+    assert "低頻深話題候選" in prompt
+    assert "低频深话题候选" not in prompt
+
+
+def test_topic_hook_locale_falls_back_to_full_global_language(monkeypatch):
+    mgr = SimpleNamespace(user_language=None)
+    monkeypatch.setattr(system_router, "get_global_language_full", lambda: "zh-TW", raising=False)
+
+    topic_hook_lang = _resolve_topic_hook_locale({}, mgr, fallback="zh")
+    prompt, _surfaced_ids = _render_followup_topic_hooks(
+        topic_hook_lang,
+        [{"id": "reflection-global-tw", "text": "最近想用繁體中文聊城市流行"}],
     )
 
     assert topic_hook_lang == "zh-TW"
