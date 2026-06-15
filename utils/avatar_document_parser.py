@@ -24,6 +24,7 @@ MAX_XLSX_SHEETS = 12
 MAX_XLSX_ROWS_PER_SHEET = 800
 MAX_PPTX_SLIDES = 40
 MIN_DEDUP_TEXT_CHARS = 80
+MIN_DEDUP_UNIT_CHARS = 24
 
 
 class AvatarDocumentParseError(ValueError):
@@ -331,18 +332,29 @@ def _extract_word_text(xml_bytes: bytes) -> str:
     root = _parse_xml(xml_bytes)
     lines: list[str] = []
     for paragraph in root.iter(_WORD_NS + "p"):
-        chunks: list[str] = []
-        for node in paragraph.iter():
-            if node.tag == _WORD_NS + "t" and node.text:
-                chunks.append(node.text)
-            elif node.tag == _WORD_NS + "tab":
-                chunks.append("\t")
-            elif node.tag == _WORD_NS + "br":
-                chunks.append("\n")
-        line = "".join(chunks).strip()
+        line = _extract_word_paragraph_text(paragraph).strip()
         if line:
             lines.append(line)
     return "\n".join(lines)
+
+
+def _extract_word_paragraph_text(paragraph: ET.Element) -> str:
+    chunks: list[str] = []
+
+    def walk(node: ET.Element) -> None:
+        for child in node:
+            if child.tag == _WORD_NS + "p":
+                continue
+            if child.tag == _WORD_NS + "t" and child.text:
+                chunks.append(child.text)
+            elif child.tag == _WORD_NS + "tab":
+                chunks.append("\t")
+            elif child.tag == _WORD_NS + "br":
+                chunks.append("\n")
+            walk(child)
+
+    walk(paragraph)
+    return "".join(chunks)
 
 
 def _add_unique_text_part(
@@ -352,7 +364,7 @@ def _add_unique_text_part(
     label: str,
     text: str,
 ) -> None:
-    value = _clean_text(text)
+    value = _dedupe_repeated_text_units(text)
     if not value:
         return
     key = _text_dedup_key(value)
@@ -361,6 +373,41 @@ def _add_unique_text_part(
             return
         seen_text_keys.add(key)
     budget.add(parts, f"# {label}\n{value}" if label else value)
+
+
+def _dedupe_repeated_text_units(text: str) -> str:
+    value = _clean_text(text)
+    if not value:
+        return ""
+    lines = value.splitlines()
+    deduped: list[str] = []
+    seen_global_keys: set[str] = set()
+    previous_key = ""
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            previous_key = ""
+            if deduped and deduped[-1]:
+                deduped.append("")
+            continue
+        key = _text_unit_key(line)
+        if key and key == previous_key:
+            continue
+        if key and _should_dedupe_repeated_unit(key):
+            if key in seen_global_keys:
+                continue
+            seen_global_keys.add(key)
+        deduped.append(line)
+        previous_key = key
+    return _clean_text("\n".join(deduped))
+
+
+def _text_unit_key(text: str) -> str:
+    return re.sub(r"\s+", " ", _clean_text(text)).strip().casefold()
+
+
+def _should_dedupe_repeated_unit(key: str) -> bool:
+    return len(key) >= MIN_DEDUP_UNIT_CHARS or "://" in key or key.startswith("www.")
 
 
 def _text_dedup_key(text: str) -> str:

@@ -51,6 +51,14 @@ def _word_part_xml(root_name: str, text: str) -> str:
     )
 
 
+def _word_document_xml(body: str) -> str:
+    return f'<w:document xmlns:w="{WORD_NS}"><w:body>{body}</w:body></w:document>'
+
+
+def _word_paragraph_xml(text: str) -> str:
+    return f"<w:p><w:r><w:t>{text}</w:t></w:r></w:p>"
+
+
 def _xlsx_bytes(text: str, sheet_count: int = 1, row_count: int = 1) -> bytes:
     sheets = "".join(
         f'<sheet name="Sheet {index}" sheetId="{index}" r:id="rId{index}"/>'
@@ -229,6 +237,47 @@ def test_deduplicates_repeated_docx_long_text_parts():
     assert parsed["content"].count(repeated.strip()) == 1
     assert "# Header" not in parsed["content"]
     assert "# Footer" not in parsed["content"]
+
+
+@pytest.mark.unit
+def test_deduplicates_nested_docx_paragraph_text():
+    repeated = "卡面图层 自定义贴纸 导出格式说明 " * 8
+    document_xml = _word_document_xml(
+        "<w:p>"
+        "<w:r><w:t>文档开头</w:t></w:r>"
+        "<w:r><w:txbxContent>"
+        f"{_word_paragraph_xml(repeated)}"
+        "</w:txbxContent></w:r>"
+        "</w:p>"
+    )
+
+    parsed = parse_avatar_document(
+        "nested.docx",
+        "",
+        _docx_bytes("placeholder", {"word/document.xml": document_xml}),
+    )
+
+    assert "文档开头" in parsed["content"]
+    assert parsed["content"].count(repeated.strip()) == 1
+
+
+@pytest.mark.unit
+def test_deduplicates_repeated_docx_paragraphs_in_same_text_part():
+    repeated = "Steam GitHub B站 QQ群 Discord 渠道链接说明 " * 6
+    document_xml = _word_document_xml(
+        _word_paragraph_xml(repeated)
+        + _word_paragraph_xml(repeated)
+        + _word_paragraph_xml("后续新增的卡面图层与自定义贴纸说明")
+    )
+
+    parsed = parse_avatar_document(
+        "repeated-paragraphs.docx",
+        "",
+        _docx_bytes("placeholder", {"word/document.xml": document_xml}),
+    )
+
+    assert parsed["content"].count(repeated.strip()) == 1
+    assert "后续新增的卡面图层与自定义贴纸说明" in parsed["content"]
 
 
 @pytest.mark.unit
