@@ -793,7 +793,7 @@ function getCompactToolWheelAudioSystem(): NekoGameAudioSystemInstance | null {
     return null;
   }
   try {
-    compactToolWheelAudioSystem = new GameAudioSystem({
+    const audioSystem = new GameAudioSystem({
       config: {
         audioMix: {
           sfx: {
@@ -804,8 +804,13 @@ function getCompactToolWheelAudioSystem(): NekoGameAudioSystemInstance | null {
         sfx: {},
       },
     });
-    compactToolWheelAudioSystem.preloadSfx?.(COMPACT_TOOL_WHEEL_PRELOAD_SOUND_SRCS);
+    if (typeof audioSystem.playSfx !== 'function') {
+      return null;
+    }
+    audioSystem.preloadSfx?.(COMPACT_TOOL_WHEEL_PRELOAD_SOUND_SRCS);
+    compactToolWheelAudioSystem = audioSystem;
   } catch {
+    compactToolWheelAudioSystem = undefined;
     return null;
   }
   return compactToolWheelAudioSystem;

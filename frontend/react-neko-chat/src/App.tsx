@@ -1004,7 +1004,7 @@ function getCompactToolWheelAudioSystem(): NekoGameAudioSystemInstance | null {
     return null;
   }
   try {
-    compactToolWheelAudioSystem = new GameAudioSystem({
+    const audioSystem = new GameAudioSystem({
       config: {
         audioMix: {
           sfx: {
@@ -1015,8 +1015,13 @@ function getCompactToolWheelAudioSystem(): NekoGameAudioSystemInstance | null {
         sfx: {},
       },
     });
-    compactToolWheelAudioSystem.preloadSfx?.(COMPACT_TOOL_WHEEL_PRELOAD_SOUND_SRCS);
+    if (typeof audioSystem.playSfx !== 'function') {
+      return null;
+    }
+    audioSystem.preloadSfx?.(COMPACT_TOOL_WHEEL_PRELOAD_SOUND_SRCS);
+    compactToolWheelAudioSystem = audioSystem;
   } catch {
+    compactToolWheelAudioSystem = undefined;
     return null;
   }
   return compactToolWheelAudioSystem;
@@ -5405,6 +5410,7 @@ function CompactChatApp({
   const isCompactToolWheelActionDisabled = (toolIndex: number): boolean => (
     compactInputToolFanActionsDisabled || !isCompactToolWheelActionable(toolIndex)
   );
+  const compactAvatarToolActionsDisabled = isCompactToolWheelActionDisabled(1);
   const renderCompactInputToolTooltip = (label: string) => (
     <span className="compact-input-tool-tooltip" aria-hidden="true">{label}</span>
   );
@@ -5778,7 +5784,7 @@ function CompactChatApp({
           aria-label={i18n('chat.avatarToolsButtonAriaLabel', 'Avatar tools')}
           aria-controls={toolMenuOpen ? 'composer-avatar-tool-quickbar' : undefined}
           aria-expanded={toolMenuOpen}
-          disabled={isCompactToolWheelActionDisabled(1)}
+          disabled={compactAvatarToolActionsDisabled}
           tabIndex={getCompactToolWheelTabIndex(1)}
           onClick={(event) => {
             if (shouldSuppressCompactToolClick(event)) {
@@ -5804,8 +5810,8 @@ function CompactChatApp({
             type="button"
             aria-label={clearCursorToolAriaLabel}
             title={clearCursorToolAriaLabel}
-            disabled={compactInputToolFanActionsDisabled}
-            tabIndex={compactInputToolFanOpen ? 0 : -1}
+            disabled={compactAvatarToolActionsDisabled}
+            tabIndex={getCompactToolWheelTabIndex(1)}
             onClick={(event) => {
               if (shouldSuppressCompactToolClick(event)) {
                 event.preventDefault();
@@ -5826,7 +5832,7 @@ function CompactChatApp({
           activeToolIds={activeAvatarToolIds}
           activeCursorToolId={activeCursorToolId}
           availableTools={toolIconItems}
-          disabled={compactInputToolFanActionsDisabled}
+          disabled={compactAvatarToolActionsDisabled}
           getToolVariant={(toolId) => (
             activeCursorToolId === toolId ? effectiveCursorVariant : 'primary'
           )}

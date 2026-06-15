@@ -4768,9 +4768,11 @@ describe('App', () => {
       fireEvent.click(galgameButton, { clientX: 140, clientY: 140 });
       expect(onGalgameModeToggle).toHaveBeenCalledTimes(1);
 
+      expect(container.querySelector('.compact-export-history-controls')).toBeNull();
       fireEvent.click(exportButton, { clientX: 140, clientY: 140 });
       expect(onExportConversationClick).not.toHaveBeenCalled();
-      expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+      expect(container.querySelector('.compact-export-history-controls')).toBeNull();
+      expect(exportButton).toHaveAttribute('aria-pressed', 'false');
     } finally {
       vi.useRealTimers();
     }
@@ -5257,6 +5259,29 @@ describe('App', () => {
     });
   });
 
+  it('silently skips compact tool wheel audio when the host audio API is malformed', () => {
+    const windowWithAudio = window as Window & { NekoGameSystem?: unknown };
+    const malformedAudioSystems: unknown[] = [
+      {},
+      { GameAudioSystem: 'not-a-constructor' },
+      { GameAudioSystem: vi.fn().mockImplementation(() => ({})) },
+    ];
+
+    malformedAudioSystems.forEach(audioSystemShape => {
+      resetCompactToolWheelDetentAudioForTests();
+      windowWithAudio.NekoGameSystem = audioSystemShape;
+      expect(() => playCompactToolWheelDetentSound('/static/sfx/tool-detent-a.ogg')).not.toThrow();
+      expect(() => {
+        render(
+          <App
+            chatSurfaceMode="compact"
+            compactChatState="input"
+          />,
+        );
+      }).not.toThrow();
+    });
+  });
+
   it('preloads compact tool wheel sounds when the chat UI mounts before the wheel opens', async () => {
     const playSfx = vi.fn();
     const preloadSfx = vi.fn();
@@ -5314,6 +5339,51 @@ describe('App', () => {
 
       expect(GameAudioSystem).toHaveBeenCalledTimes(1);
       expect(preloadSfx).toHaveBeenCalledWith([
+        ...COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
+        COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
+      ]);
+      expect(playSfx).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries compact tool wheel preload when the first preload attempt fails', async () => {
+    vi.useFakeTimers();
+    const firstPreloadSfx = vi.fn(() => {
+      throw new Error('preload failed');
+    });
+    const secondPreloadSfx = vi.fn();
+    const playSfx = vi.fn();
+    const GameAudioSystem = vi.fn()
+      .mockImplementationOnce(() => ({ playSfx, preloadSfx: firstPreloadSfx }))
+      .mockImplementationOnce(() => ({ playSfx, preloadSfx: secondPreloadSfx }));
+    (window as Window & {
+      NekoGameSystem?: {
+        GameAudioSystem: new () => { playSfx: typeof playSfx; preloadSfx: typeof secondPreloadSfx };
+      };
+    }).NekoGameSystem = { GameAudioSystem };
+
+    try {
+      render(
+        <App
+          chatSurfaceMode="compact"
+          compactChatState="input"
+        />,
+      );
+
+      expect(GameAudioSystem).toHaveBeenCalledTimes(1);
+      expect(firstPreloadSfx).toHaveBeenCalledWith([
+        ...COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
+        COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
+      ]);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(130);
+      });
+
+      expect(GameAudioSystem).toHaveBeenCalledTimes(2);
+      expect(secondPreloadSfx).toHaveBeenCalledWith([
         ...COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
         COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
       ]);
@@ -6055,30 +6125,33 @@ describe('App', () => {
       fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
       const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
       const fanRectSpy = mockCompactToolFanRect(fan);
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(240);
-      });
-      // 新工具顺序里 galgame 是环位 6（默认 slot -1）。反向拖一步（wheelIndex 0→6）
-      // 把它转到正中 slot 0，再点击验证 toggle 后 fan 保持展开。
-      fireEvent.pointerDown(fan, { pointerId: 1, ...compactToolWheelPoint(0), button: 0, buttons: 1, pointerType: 'mouse' });
-      fireEvent.pointerMove(fan, { pointerId: 1, ...compactToolWheelPoint(-40 * (Math.PI / 180)), buttons: 1, pointerType: 'mouse' });
-      fireEvent.pointerUp(fan, { pointerId: 1, ...compactToolWheelPoint(-40 * (Math.PI / 180)), buttons: 0, pointerType: 'mouse' });
+      try {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(240);
+        });
+        // 新工具顺序里 galgame 是环位 6（默认 slot -1）。反向拖一步（wheelIndex 0→6）
+        // 把它转到正中 slot 0，再点击验证 toggle 后 fan 保持展开。
+        fireEvent.pointerDown(fan, { pointerId: 1, ...compactToolWheelPoint(0), button: 0, buttons: 1, pointerType: 'mouse' });
+        fireEvent.pointerMove(fan, { pointerId: 1, ...compactToolWheelPoint(-40 * (Math.PI / 180)), buttons: 1, pointerType: 'mouse' });
+        fireEvent.pointerUp(fan, { pointerId: 1, ...compactToolWheelPoint(-40 * (Math.PI / 180)), buttons: 0, pointerType: 'mouse' });
 
-      const galgameButton = fan.querySelector('.compact-input-tool-item-galgame') as HTMLButtonElement;
-      expect(galgameButton).toHaveAttribute('data-compact-tool-wheel-slot', '0');
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(0);
-      });
-      await act(async () => {
-        fireEvent.click(galgameButton, { clientX: 140, clientY: 140 });
-      });
-      const activeGalgameButton = fan.querySelector('.compact-input-tool-item-galgame') as HTMLButtonElement;
+        const galgameButton = fan.querySelector('.compact-input-tool-item-galgame') as HTMLButtonElement;
+        expect(galgameButton).toHaveAttribute('data-compact-tool-wheel-slot', '0');
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(0);
+        });
+        await act(async () => {
+          fireEvent.click(galgameButton, { clientX: 140, clientY: 140 });
+        });
+        const activeGalgameButton = fan.querySelector('.compact-input-tool-item-galgame') as HTMLButtonElement;
 
-      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
-      expect(activeGalgameButton).toHaveClass('is-active');
-      expect(activeGalgameButton).toHaveAttribute('data-compact-tool-active', 'true');
-      expect(activeGalgameButton).toHaveAttribute('aria-pressed', 'true');
-      fanRectSpy.mockRestore();
+        expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+        expect(activeGalgameButton).toHaveClass('is-active');
+        expect(activeGalgameButton).toHaveAttribute('data-compact-tool-active', 'true');
+        expect(activeGalgameButton).toHaveAttribute('aria-pressed', 'true');
+      } finally {
+        fanRectSpy.mockRestore();
+      }
     } finally {
       vi.useRealTimers();
     }
@@ -7068,6 +7141,32 @@ describe('App', () => {
     expect(screen.getByRole('group', { name: 'Avatar quick tools' })).toBeInTheDocument();
     expect(lollipopButton).not.toHaveClass('is-active');
     expect(lollipopButton).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('disables avatar sub-actions when the avatar wheel slot is not actionable', async () => {
+    const { container } = renderInputApp();
+
+    await openCompactInputTools();
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+    const lollipopButton = screen.getByRole('button', { name: '棒棒糖' }) as HTMLButtonElement;
+    fireEvent.click(lollipopButton);
+
+    const clearButton = screen.getByRole('button', { name: '恢复鼠标' }) as HTMLButtonElement;
+    const editButton = container.querySelector('.avatar-tool-quickbar-edit') as HTMLButtonElement;
+    expect(clearButton).not.toBeDisabled();
+    expect(lollipopButton).not.toBeDisabled();
+    expect(editButton).not.toBeDisabled();
+
+    fireEvent.wheel(fan, { deltaY: 80 });
+    fireEvent.wheel(fan, { deltaY: 80 });
+    fireEvent.wheel(fan, { deltaY: 80 });
+
+    expect(fan.querySelector('.compact-input-tool-item-avatar')).toHaveAttribute('data-compact-tool-wheel-slot', '-2');
+    expect(clearButton).toBeDisabled();
+    expect(clearButton).toHaveAttribute('tabindex', '-1');
+    expect(lollipopButton).toBeDisabled();
+    expect(editButton).toBeDisabled();
   });
 
   it('clears the selected avatar tool from the quickbar bubble', async () => {
