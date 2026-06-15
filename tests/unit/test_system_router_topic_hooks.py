@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 import main_routers.system_router as system_router
@@ -75,3 +76,10 @@ def test_topic_hook_locale_falls_back_to_full_global_language(monkeypatch):
     assert topic_hook_lang == "zh-TW"
     assert "低頻深話題候選" in prompt
     assert "低频深话题候选" not in prompt
+
+
+def test_open_threads_compute_uses_topic_hook_locale():
+    source = Path(system_router.__file__).read_text(encoding="utf-8")
+
+    assert "topic_hook_lang = _resolve_topic_hook_locale(data, mgr, fallback=proactive_lang)" in source
+    assert "kickoff_open_threads_compute(lang=topic_hook_lang)" in source

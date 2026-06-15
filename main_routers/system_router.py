@@ -5651,7 +5651,7 @@ async def proactive_chat(request: Request):
         # 缓存按用户消息序号失效；没新用户发言就 no-op 直接返回。Phase 2 读
         # snapshot 时会拿到这次的结果（如果赶上了）；赶不上就用上一次的缓存。
         try:
-            mgr._activity_tracker.kickoff_open_threads_compute(lang=proactive_lang)
+            mgr._activity_tracker.kickoff_open_threads_compute(lang=topic_hook_lang)
         except Exception as _ot_err:
             logger.debug(f"[{lanlan_name}] kickoff_open_threads_compute failed: {_ot_err}")
 
