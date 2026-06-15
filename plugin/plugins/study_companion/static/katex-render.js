@@ -1,6 +1,6 @@
 (function () {
-  const CURRENCY_START_PATTERN = /^\$(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?(?:[A-Z]{2,4}|%)?(?=$|[\s)\],.;!?-])/;
-  const CURRENCY_LIKE_LATEX_PATTERN = /^\$(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?\s*(?:\\(?:times|cdot|frac|sqrt|lt|gt|le|ge|leq|geq)(?![A-Za-z])|[+\-*/=^_<>≤≥])/;
+  const CURRENCY_START_PATTERN = /^\$(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?(?:[A-Z]{2,4}|%)?(?=$|[\s)\],.;!?+\-])/;
+  const CURRENCY_AMOUNT_PATTERN = /^\$(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?(?:[A-Z]{2,4}|%)?/;
   const BARE_LATEX_COMMAND_PATTERN = /\\(?:vec|overrightarrow|overline|bar|hat|frac|sqrt|sum|prod|int|lim|cdot|times|angle|sin|cos|tan|log|ln|infty|to|left|right|mathbf|mathbb|mathrm)(?![A-Za-z])/;
   const DOUBLE_ESCAPED_LATEX_COMMAND_PATTERN = /\\\\(?=(?:vec|overrightarrow|overline|bar|hat|frac|sqrt|sum|prod|int|lim|cdot|times|angle|sin|cos|tan|log|ln|infty|to|left|right|mathbf|mathbb|mathrm)(?![A-Za-z]))/g;
   const BARE_LATEX_SPAN_PATTERN = /\$[^\n。；;!?！？]*\\(?:vec|overrightarrow|overline|bar|hat|frac|sqrt|sum|prod|int|lim|cdot|times|angle|sin|cos|tan|log|ln|infty|to|left|right|mathbf|mathbb|mathrm)(?![A-Za-z])[^\n。；;!?！？]*|\|?\\(?:vec|overrightarrow|overline|bar|hat|frac|sqrt|sum|prod|int|lim|cdot|times|angle|sin|cos|tan|log|ln|infty|to|left|right|mathbf|mathbb|mathrm)(?![A-Za-z])(?:\[[^\]\n]{1,40}\]|\{[^{}\n]{1,120}\}|[A-Za-z0-9\\()+\-*/=.,:_|^\s]){0,180}/g;
@@ -23,7 +23,32 @@
 
   function isLikelyCurrencyStart(source, index) {
     const tail = source.slice(index);
-    return CURRENCY_START_PATTERN.test(tail) && !CURRENCY_LIKE_LATEX_PATTERN.test(tail);
+    return CURRENCY_START_PATTERN.test(tail) && !isCurrencyLikeLatexStart(tail);
+  }
+
+  function isCurrencyLikeLatexStart(tail) {
+    const amount = tail.match(CURRENCY_AMOUNT_PATTERN);
+    if (!amount) {
+      return false;
+    }
+    const closer = findMathDelimiter(tail, 1, '$');
+    if (closer === -1) {
+      return false;
+    }
+    const expression = tail.slice(amount[0].length, closer);
+    if (/^\s*\\(?:times|cdot|frac|sqrt|lt|gt|le|ge|leq|geq)(?![A-Za-z])/.test(expression)) {
+      return true;
+    }
+    if (!/^\s*[+\-*/=^_<>≤≥]/.test(expression)) {
+      return false;
+    }
+    if (/[A-Za-z]{2,}/.test(expression.replace(/\\[A-Za-z]+/g, ''))) {
+      return false;
+    }
+    return (
+      /[=+\-*/^_<>≤≥\\]/.test(expression)
+      && /[A-Za-z0-9\\{}()[\]^_<>≤≥]/.test(expression)
+    );
   }
 
   function findMathDelimiter(source, start, delimiter) {

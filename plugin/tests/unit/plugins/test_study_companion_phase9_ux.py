@@ -277,6 +277,22 @@ def test_phase9_math_parser_keeps_plain_currency_as_text(asset_name: str) -> Non
     ]
 
 
+@pytest.mark.parametrize("asset_name", ["katex-render.js", "math-parser.js"])
+def test_phase9_math_parser_keeps_currency_ranges_as_text(asset_name: str) -> None:
+    parts = _split_math_with_node(asset_name, "Cost is $20 - $30, or $20 + tax and $30 max.")
+
+    assert parts == [
+        {"type": "text", "value": "Cost is $20 - $30, or $20 + tax and $30 max."},
+    ]
+
+
+def test_phase9_reply_renderer_keeps_currency_ranges_as_text() -> None:
+    html = _render_reply_with_node("Cost is $20 - $30, or $20 + tax and $30 max.")
+
+    assert "<p>Cost is $20 - $30, or $20 + tax and $30 max.</p>" in html
+    assert 'class="katex"' not in html
+
+
 def test_phase9_reply_renderer_does_not_swallow_markdown_after_bare_latex() -> None:
     html = _render_reply_with_node(
         "*   $8 \\\\times 1 = 8。\n"
