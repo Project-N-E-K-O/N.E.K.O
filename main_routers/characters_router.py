@@ -1474,14 +1474,18 @@ def _is_local_voice_clone_tts_config(tts_config: dict, core_config: dict | None 
     provider = str((core_config or {}).get('ttsModelProvider') or '').strip()
     if provider == 'vllm_omni':
         return False
-    base_url = str(
+    base_url = _local_voice_clone_tts_base_url(tts_config, core_config)
+    return bool(tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://')))
+
+
+def _local_voice_clone_tts_base_url(tts_config: dict, core_config: dict | None = None) -> str:
+    return str(
         tts_config.get('base_url')
         or tts_config.get('url')
         or (core_config or {}).get('ttsModelUrl')
         or (core_config or {}).get('TTS_MODEL_URL')
         or ''
-    )
-    return bool(tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://')))
+    ).strip()
 
 
 async def _elevenlabs_synthesize_preview(
@@ -4941,7 +4945,7 @@ async def voice_clone(
         core_config = await _config_manager.aget_core_config() or {}
     except Exception:
         core_config = {}
-    base_url = tts_config.get('base_url', '')
+    base_url = _local_voice_clone_tts_base_url(tts_config, core_config)
     is_local_tts = _is_local_voice_clone_tts_config(tts_config, core_config)
 
     if is_local_tts:

@@ -588,6 +588,27 @@ def test_vllm_tts_url_is_not_treated_as_local_voice_clone_server():
     )
 
 
+def test_local_voice_clone_uses_tts_url_fallback_for_registration():
+    tts_config = {
+        "is_custom": True,
+        "url": "ws://localhost:8091/v1/audio/speech/stream",
+    }
+
+    assert characters_router._is_local_voice_clone_tts_config(tts_config, {}) is True
+    assert (
+        characters_router._local_voice_clone_tts_base_url(tts_config, {})
+        == "ws://localhost:8091/v1/audio/speech/stream"
+    )
+
+
+def test_local_voice_clone_uses_core_tts_url_fallback_for_registration():
+    tts_config = {"is_custom": True}
+    core_config = {"ttsModelUrl": "ws://localhost:8092/v1"}
+
+    assert characters_router._is_local_voice_clone_tts_config(tts_config, core_config) is True
+    assert characters_router._local_voice_clone_tts_base_url(tts_config, core_config) == "ws://localhost:8092/v1"
+
+
 def test_has_custom_tts_ignores_disabled_gptsovits_placeholder():
     mgr = _make_mgr(
         "",

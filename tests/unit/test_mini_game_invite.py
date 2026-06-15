@@ -1100,7 +1100,7 @@ def test_apply_choice_accept_returns_open_game_with_url():
 
 
 def test_apply_choice_accept_fallback_reports_launched_game_type(monkeypatch):
-    """If the chosen game has no launch URL, report the soccer fallback consistently."""
+    """Report the fallback launch target while preserving cooldown for the invited game."""
     state = sr._mini_game_invite_get_state(LANLAN)
     state['delivered_at'] = time.time() - 30
     state['responded_at'] = None
@@ -1119,7 +1119,9 @@ def test_apply_choice_accept_fallback_reports_launched_game_type(monkeypatch):
     assert result['action'] == 'open_game'
     assert result['game_type'] == 'soccer'
     assert result['game_url'] == f'/soccer_demo?lanlan_name={LANLAN}&session_id=sess-fallback'
-    assert state['last_game_type'] == 'soccer'
+    assert state['last_game_type'] == 'basketball'
+    assert sr._mini_game_invite_in_cooldown(LANLAN, 'basketball') is True
+    assert sr._mini_game_invite_in_cooldown(LANLAN, 'soccer') is False
 
 
 def test_apply_choice_decline_starts_cooldown_no_url():
