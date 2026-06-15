@@ -285,11 +285,12 @@ class ToolLeakFilter:
     @staticmethod
     def _consume_literal_prefix(text: str, pos: int, literal: str) -> tuple[bool, int, bool]:
         fragment = text[pos : pos + len(literal)].lower()
-        if not literal.startswith(fragment):
+        literal_lower = literal.lower()
+        if not literal_lower.startswith(fragment):
             return False, pos, False
-        if len(fragment) < len(literal):
+        if len(fragment) < len(literal_lower):
             return True, len(text), True
-        return True, pos + len(literal), False
+        return True, pos + len(literal_lower), False
 
     @staticmethod
     def _consume_whitespace(text: str, pos: int) -> int:

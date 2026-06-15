@@ -335,6 +335,24 @@ def test_structured_tool_call_opener_prefix_across_chunks_is_stripped():
     assert events[0].pattern == "structured_tool_call"
 
 
+def test_structured_tool_call_uppercase_tool_name_prefix_across_chunks_is_stripped():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    visible, events = _drain(
+        ToolLeakFilter(tool_names={"MyTool"}),
+        [
+            "before <function><name>My",
+            'Tool</name><parameter name="query">secret</parameter></function> after',
+        ],
+    )
+
+    assert visible == "before  after"
+    assert "<function><name>" not in visible
+    assert "secret" not in visible
+    assert len(events) == 1
+    assert events[0].pattern == "structured_tool_call"
+
+
 def test_structured_zero_arg_tool_split_function_close_is_stripped():
     from utils.llm_tool_leak_filter import ToolLeakFilter
 
