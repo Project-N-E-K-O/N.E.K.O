@@ -375,7 +375,13 @@
 
   function renderMathAndInlineMarkdown(value) {
     const renderedMath = [];
-    const html = splitByMath(value).map((part) => {
+    const protectedCodeSpans = [];
+    const source = String(value || '').replace(/`([^`\n]{1,180})`/g, (_match, code) => {
+      const token = `@@STUDY_PROTECTED_CODE_${protectedCodeSpans.length}@@`;
+      protectedCodeSpans.push(`<code>${escapeHTML(code)}</code>`);
+      return token;
+    });
+    const html = splitByMath(source).map((part) => {
       if (part.type !== 'math') {
         return escapeHTML(part.value);
       }
@@ -383,8 +389,11 @@
       renderedMath.push(renderMathPart(part));
       return token;
     }).join('');
-    return renderInlineMarkdown(html).replace(/@@STUDY_MATH_(\d+)@@/g, (_match, index) => (
+    const withMath = renderInlineMarkdown(html).replace(/@@STUDY_MATH_(\d+)@@/g, (_match, index) => (
       renderedMath[Number(index)] || ''
+    ));
+    return withMath.replace(/@@STUDY_PROTECTED_CODE_(\d+)@@/g, (_match, index) => (
+      protectedCodeSpans[Number(index)] || ''
     ));
   }
 
@@ -442,16 +451,21 @@
         blocks.push(renderMathPart({ type: 'math', value: displayMath[1], display: true }));
         continue;
       }
-      const displayMathBlock = trimmed.match(/^\$\$\s*(.*)$/);
-      if (displayMathBlock) {
+      const openerAt = findMathDelimiter(line, 0, '$$');
+      const closesOnOpeningLine = openerAt !== -1
+        ? findMathDelimiter(line, openerAt + 2, '$$') !== -1
+        : false;
+      if (openerAt !== -1 && !closesOnOpeningLine) {
+        const beforeOpen = line.slice(0, openerAt).trim();
+        const afterOpen = line.slice(openerAt + 2).trim();
         const mathLines = [];
-        if (displayMathBlock[1]) {
-          mathLines.push(displayMathBlock[1]);
+        if (afterOpen) {
+          mathLines.push(afterOpen);
         }
         let closer = -1;
         let trailingCloseText = '';
         for (let scan = index + 1; scan < lines.length; scan += 1) {
-          const closeAt = lines[scan].indexOf('$$');
+          const closeAt = findMathDelimiter(lines[scan], 0, '$$');
           if (closeAt !== -1) {
             const beforeClose = lines[scan].slice(0, closeAt).trim();
             if (beforeClose) {
@@ -465,6 +479,9 @@
         }
         if (closer !== -1) {
           closeList();
+          if (beforeOpen) {
+            blocks.push(`<p>${renderInline(beforeOpen)}</p>`);
+          }
           blocks.push(renderMathPart({ type: 'math', value: mathLines.join('\n').trim(), display: true }));
           if (trailingCloseText) {
             blocks.push(`<p>${renderInline(trailingCloseText)}</p>`);

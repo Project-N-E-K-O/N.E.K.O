@@ -187,6 +187,16 @@ def test_phase9_reply_renderer_preserves_text_after_display_math_closer() -> Non
     assert "therefore x=1" in html
 
 
+def test_phase9_reply_renderer_preserves_prose_before_multiline_display_math() -> None:
+    html = _render_reply_with_node("Here is $$\nx=1\n$$ done")
+
+    assert "<p>Here is</p>" in html
+    assert '<span class="katex" data-display="true">x=1</span>' in html
+    assert "<p>done</p>" in html
+    assert "<p>Here is $$</p>" not in html
+    assert "<p>$$ done</p>" not in html
+
+
 @pytest.mark.parametrize("asset_name", ["katex-render.js", "math-parser.js"])
 def test_phase9_math_parser_tolerates_duplicate_inline_closing_dollar(asset_name: str) -> None:
     parts = _split_math_with_node(asset_name, "即 $8 \\times 1 = 8$$。")
@@ -363,6 +373,14 @@ def test_phase9_reply_renderer_preserves_asterisks_inside_code_spans() -> None:
     assert "<code>x**2</code>" in html
     assert "not 2 ** 3" in html
     assert "<code>x2</code>" not in html
+
+
+def test_phase9_reply_renderer_keeps_latex_literal_inside_code_spans() -> None:
+    html = _render_reply_with_node("Use `\\frac{1}{2}` literally, then $x^2$.")
+
+    assert "<code>\\frac{1}{2}</code>" in html
+    assert '<span class="katex" data-display="false">x^2</span>' in html
+    assert '<span class="katex" data-display="false">\\frac{1}{2}</span>' not in html
 
 
 @pytest.mark.parametrize("asset_name", ["katex-render.js", "math-parser.js"])
