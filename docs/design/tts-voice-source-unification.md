@@ -65,6 +65,15 @@ class TTSProvider:
 
 **dispatch 收敛成**：读角色 voice 配置 → 拿 `provider` → 注册表查 provider → `resolve()` 出 worker+auth；`source` 交给 worker 决定怎么用 `ref`。`get_tts_worker` 那串 if-else 退化成"按 provider 查表 + 少量优先级"。
 
+### 3.1 两种选中机制 → 统一 DispatchContext（实现期发现）
+
+provider 的"选中"并非单一机制，实现时必须统一：
+
+- **配置选中**（vllm_omni / gptsovits / 未来 mimo-下拉）：靠 `ttsModelProvider` 下拉 / 开关，只需 `core_config` + `cm` 就能判定。
+- **音色元数据选中**（minimax / elevenlabs / cosyvoice 克隆）：靠用户所选**克隆音色的 `voice_meta.provider`**（`_get_voice_meta(voice_id)`），需要 `voice_id` / `has_custom_voice` / `voice_meta`，外加 cosyvoice_intl 的 key 兜底、grok xAI 自定义 voice 的 interplay 等既有细节。
+
+因此 `is_selected` / `resolve` 的入参从 `(core_config, cm)` 泛化成一个 **`DispatchContext`**（`core_config, cm, voice_id, has_custom_voice, voice_meta`）。配置选中的 provider 忽略多出的字段；音色选中的 provider 读 `voice_meta`。`get_tts_worker` 顶部构建一次 context，注册表按 priority 逐个 `is_selected(ctx)`。**务必保留**的既有行为：cosyvoice_intl key 缺失 → dummy（避免拿国内 key 打 intl 端点 401）、grok voice_meta=None 的 xAI 自定义 voice 短路、free preset voice 跳过 clone。
+
 ## 4. 修正后的 taxonomy（kind）
 
 | kind | 含义 | 成员 | 选中 | 支持的 source |
