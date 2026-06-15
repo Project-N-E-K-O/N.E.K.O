@@ -1830,12 +1830,9 @@ FOCUS_SILENCE_FULL_SECONDS = 1800
 # 主动追一两轮」）属 Path B 的 idle-threshold-drop 子特性，该特性尚未接线，故旋钮
 # 暂不引入，待实现该 feature 时再随它一起加，避免留下死配置。设计见 blueprint。
 
-FOCUS_EPISODE_MEMORY_ENABLED = True
-"""凝神退出时顺便批量整理记忆的开关（默认开）。
-- 用途：FOCUS_EXIT 发 EmotionalEpisodeFinished 事件，把这段情感片段的对话切片喂给
-  reflection synth / persona resolve / facts / ban-list 复审（additive 类）。关掉 =
-  只切模式不联动记忆。destructive 类改写属真名 v2，不在此开关范围。
-- 上游：SM FOCUS_EXIT 事件 + memory 侧订阅者。"""
+# NOTE: FOCUS_EPISODE_MEMORY_ENABLED（凝神退出顺便批量整理 reflection/persona/
+# facts/ban-list 的开关）同理暂不引入——FOCUS_EXIT → memory 订阅者特性尚未接线，
+# 旋钮待该 PR 实现时随它加回，避免死配置。设计见 docs/design/focus-truename-mode.md。
 
 MINI_GAME_INVITE_ENABLED = True
 """Mini-game 邀请短路通道总开关（默认开）。

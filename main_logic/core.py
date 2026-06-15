@@ -1612,14 +1612,20 @@ class LLMSessionManager:
             # a sensitive app, and must not touch the activity tracker there.
             from utils.preferences import ais_privacy_mode_enabled
             try:
-                if await ais_privacy_mode_enabled():
-                    return False
+                _privacy = await ais_privacy_mode_enabled()
             except Exception:
-                # fail-closed: unreadable privacy state → treat as private, skip focus
+                # fail-closed: unreadable privacy state → treat as private
+                _privacy = True
+            if _privacy:
+                # If privacy turns on mid-episode, cleanly exit any active Focus
+                # rather than leaving the SM stuck in FOCUS (we won't score this
+                # turn, so the hysteresis wouldn't otherwise tick). Then skip.
+                if self.state.mode is CognitionMode.FOCUS:
+                    await self.state.update_focus(0.0, topic_changed=True)
                 return False
             lang = self.user_language or 'zh'
             snapshot = await self._activity_tracker.get_snapshot()
-            scored = self._focus_scorer.score(snapshot, user_text=user_text, lang=lang)
+            scored = self._focus_scorer.score(snapshot, user_text=user_text)
             topic_changed = detect_topic_switch(user_text, lang)
             mode = await self.state.update_focus(
                 scored.score, topic_changed=topic_changed,

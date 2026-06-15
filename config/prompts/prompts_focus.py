@@ -232,29 +232,31 @@ FOCUS_TOPIC_SWITCH_MARKERS_I18N: dict[str, frozenset[str]] = {
 }
 
 
-def scan_vulnerability_keywords(message: str, lang: str = "zh") -> int:
-    """Count distinct emotional-vulnerability phrases in *message*.
+def scan_vulnerability_keywords(message: str) -> int:
+    """Count distinct emotional-vulnerability phrases in *message*, across ALL locales.
 
-    Returns the number of distinct phrases from
-    ``FOCUS_VULNERABILITY_KEYWORDS_I18N[lang]`` that appear as substrings
-    (case-insensitive). 0 means no cue. The Focus scorer maps the count to
-    a graded signal (one cue is a nudge; several stacked cues are a strong
-    pull) — see ``FOCUS_SIGNAL_WEIGHTS`` / ``FOCUS_KEYWORD_SATURATION``.
+    Returns the number of distinct phrases (case-insensitive substring
+    match) found in *any* locale table — not just the UI language's. Mixed-
+    language speech is common (a Chinese user typing "so tired", or English
+    interface with Chinese venting), and the convention documented above is
+    to run every locale table in parallel of language detection. 0 means no
+    cue. The Focus scorer maps the count to a graded signal (one cue is a
+    nudge; several stacked cues are a strong pull) — see
+    ``FOCUS_SIGNAL_WEIGHTS`` / ``FOCUS_KEYWORD_SATURATION``.
 
-    Language handling mirrors ``scan_negative_keywords``: strip the region
-    suffix only and fall back to ``zh`` for unknown codes (the contract is
-    "treat unrecognizable language as a Chinese user", not "default to
-    English"). ``zh`` is always populated, so the fallback always yields a
-    frozenset.
+    Distinct by phrase text, so the same phrase living in two locale tables
+    counts once.
     """
     if not message:
         return 0
-    short = (lang or "").strip().lower().split('-', 1)[0].split('_', 1)[0]
-    kws = FOCUS_VULNERABILITY_KEYWORDS_I18N.get(
-        short, FOCUS_VULNERABILITY_KEYWORDS_I18N["zh"],
-    )
     lower = message.lower()
-    return sum(1 for kw in kws if kw.lower() in lower)
+    matched: set[str] = set()
+    for kws in FOCUS_VULNERABILITY_KEYWORDS_I18N.values():
+        for kw in kws:
+            kwl = kw.lower()
+            if kwl in lower:
+                matched.add(kwl)
+    return len(matched)
 
 
 def detect_topic_switch(message: str, lang: str = "zh") -> bool:

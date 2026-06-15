@@ -7,8 +7,8 @@ Coverage:
    vs idle path applicability + weight renormalisation, cadence baseline roll.
 3. ``SessionStateMachine.update_focus``: async enter/exit, FOCUS_EXIT payload,
    reset clearing, master-switch-off degradation.
-4. ``prompts_focus`` lexicon scans: vulnerability count, topic-switch anchoring,
-   locale fallback.
+4. ``prompts_focus`` lexicon scans: vulnerability count, cross-locale (mixed
+   language) scanning, topic-switch anchoring.
 5. ``stream_text`` thinking-on threading (Path A wiring).
 """
 import os
@@ -134,7 +134,7 @@ def test_decide_hard_cap_yields_exactly_n_focus_turns():
 # ── 2. FocusScorer ──────────────────────────────────────────────────
 def test_scorer_keyword_inline():
     s = FocusScorer("x")
-    res = s.score(_Snap(), user_text="今天好累，感觉一个人撑不住了", lang="zh")
+    res = s.score(_Snap(), user_text="今天好累，感觉一个人撑不住了")
     assert res.signals["keyword"] is not None and res.signals["keyword"] > 0
     assert res.signals["silence"] is None  # inline path: silence N/A
     assert res.score > 0
@@ -142,7 +142,7 @@ def test_scorer_keyword_inline():
 
 def test_scorer_no_signal_is_zero():
     s = FocusScorer("x")
-    res = s.score(_Snap(), user_text="嗯，那个文件我改好了发你了", lang="zh")
+    res = s.score(_Snap(), user_text="嗯，那个文件我改好了发你了")
     # No vulnerability keyword, no open thread, cadence not enough samples.
     assert res.signals["keyword"] == 0.0
     assert res.score == 0.0
@@ -152,14 +152,14 @@ def test_scorer_cadence_drop_after_baseline():
     s = FocusScorer("x")
     # Feed long messages to build a baseline (each call appends after scoring).
     for _ in range(4):
-        s.score(_Snap(), user_text="这是一段比较长的正常聊天消息内容大概三十个字符以上", lang="zh")
-    res = s.score(_Snap(), user_text="嗯。", lang="zh")
+        s.score(_Snap(), user_text="这是一段比较长的正常聊天消息内容大概三十个字符以上")
+    res = s.score(_Snap(), user_text="嗯。")
     assert res.signals["cadence"] is not None and res.signals["cadence"] > 0.5
 
 
 def test_scorer_cadence_none_without_baseline():
     s = FocusScorer("x")
-    res = s.score(_Snap(), user_text="嗯。", lang="zh")
+    res = s.score(_Snap(), user_text="嗯。")
     assert res.signals["cadence"] is None  # below FOCUS_CADENCE_MIN_SAMPLES
 
 
@@ -270,13 +270,16 @@ async def test_sm_reset_clears_focus(monkeypatch):
 
 # ── 4. prompts_focus lexicon ────────────────────────────────────────
 def test_vulnerability_keyword_count():
-    assert scan_vulnerability_keywords("好累，一个人，没意思", "zh") >= 3
-    assert scan_vulnerability_keywords("今天天气不错", "zh") == 0
+    assert scan_vulnerability_keywords("好累，一个人，没意思") >= 3
+    assert scan_vulnerability_keywords("今天天气不错") == 0
 
 
-def test_vulnerability_unknown_locale_falls_back_zh():
-    # Unknown lang → zh table (contract: treat unknown as Chinese user).
-    assert scan_vulnerability_keywords("好累", "xx") > 0
+def test_vulnerability_cross_locale_mixed_language():
+    # Scan runs across ALL locale tables (mixed-language speech is common):
+    # an EN cue in an otherwise-CJK message is still counted, and CJK + EN
+    # cues stacked count as distinct hits.
+    assert scan_vulnerability_keywords("今天 so tired，好累") >= 2
+    assert scan_vulnerability_keywords("exhausted and so alone") >= 2
 
 
 def test_topic_switch_anchored_at_start():

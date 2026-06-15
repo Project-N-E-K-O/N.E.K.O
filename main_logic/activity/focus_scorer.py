@@ -79,7 +79,6 @@ class FocusScorer:
         snapshot,
         *,
         user_text: Optional[str] = None,
-        lang: str = "zh",
     ) -> FocusScore:
         """Score the current turn. ``user_text`` non-None ⇒ inline path; None ⇒ idle path.
 
@@ -88,8 +87,12 @@ class FocusScorer:
         cadence signal is computed (so cadence always compares the current
         message against *prior* messages). Idle calls leave the buffer
         untouched.
+
+        No ``lang`` argument: the keyword signal scans every locale's
+        vulnerability table in parallel (mixed-language speech is common),
+        so the score is language-agnostic.
         """
-        kw = self._signal_keyword(user_text, lang)
+        kw = self._signal_keyword(user_text)
         cadence = self._signal_cadence(user_text)
         silence = self._signal_silence(snapshot, user_text)
         open_thread = self._signal_open_thread(snapshot)
@@ -113,10 +116,10 @@ class FocusScorer:
         self._recent_lengths.clear()
 
     # ── sub-signals (each → [0, 1] or None when not applicable) ──────
-    def _signal_keyword(self, user_text: Optional[str], lang: str) -> Optional[float]:
+    def _signal_keyword(self, user_text: Optional[str]) -> Optional[float]:
         if user_text is None:
             return None
-        count = scan_vulnerability_keywords(user_text, lang)
+        count = scan_vulnerability_keywords(user_text)
         sat = max(1, int(config.FOCUS_KEYWORD_SATURATION))
         return min(count / sat, 1.0)
 

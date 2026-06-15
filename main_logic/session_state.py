@@ -291,10 +291,10 @@ class SessionStateMachine:
         outside the lock. Returns the post-tick ``mode`` so the caller can
         immediately build the LLM thinking-on (FOCUS) or off (REGULAR).
 
-        ``FOCUS_EXIT`` carries ``episode_id`` + ``episode_started_at`` so the
-        memory-side subscriber can slice the emotional episode out of recent
-        history and run the additive maintenance batch (see
-        ``FOCUS_EPISODE_MEMORY_ENABLED``).
+        ``FOCUS_EXIT`` carries ``episode_id`` + ``episode_started_at`` so a
+        future memory-side subscriber can slice the emotional episode out of
+        recent history and run the additive maintenance batch (deferred; see
+        docs/design/focus-truename-mode.md).
         """
         th = _focus_thresholds_from_config()
         emit_event: Optional[SessionEvent] = None
