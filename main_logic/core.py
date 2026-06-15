@@ -6886,6 +6886,25 @@ class LLMSessionManager:
         propensity = getattr(snap, 'propensity', None)
         return propensity not in ('closed', 'restricted_screen_only')
 
+    def current_topic_language(self) -> Optional[str]:
+        """Live full-locale topic language, for re-resolving at delivery time.
+
+        A topic hook captures its language when it is scheduled; if the
+        session language changes during the quiet window (``set_user_language``
+        with no new chat turn to reschedule the trigger), that captured value
+        goes stale. Topic delivery re-resolves from here so the hook renders in
+        the current locale (preserving zh-TW etc.). Returns None when no
+        tracker is available so the caller keeps the captured language.
+        """
+        tracker = getattr(self, '_activity_tracker', None)
+        getter = getattr(tracker, '_topic_pool_language', None)
+        if not callable(getter):
+            return None
+        try:
+            return getter()
+        except Exception:
+            return None
+
     def submit_proactive_callback(
         self,
         callback: dict,
@@ -6918,6 +6937,24 @@ class LLMSessionManager:
         behaviour (the manager only governs WHEN the batch is released, not
         how many cues per turn)."""
         callbacks = [cb for cb in callbacks if not cb.get(DELIVERY_RETRACTED_KEY)]
+        # Topic hooks re-validate the activity gate at RELEASE: the submit-time
+        # check in trigger_topic_hook_once can go stale while the manager paces
+        # the cue (min-gap / playback). If the user has since moved into a
+        # restricted activity, drop the topic hook (ack=False) so TopicHookPool
+        # retries later instead of opening a fresh deep topic mid-gaming. Other
+        # channels are unaffected.
+        if callbacks and not self.topic_hook_delivery_allowed():
+            kept = []
+            for cb in callbacks:
+                if cb.get("channel") == "topic_hook":
+                    resolve_callback_delivery_ack(cb, False)
+                    logger.info(
+                        "[%s] topic hook held at release: activity propensity restricts interruption",
+                        self.lanlan_name,
+                    )
+                else:
+                    kept.append(cb)
+            callbacks = kept
         if not callbacks:
             return
         for callback in callbacks:

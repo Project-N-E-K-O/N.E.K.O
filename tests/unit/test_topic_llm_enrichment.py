@@ -120,6 +120,36 @@ async def test_call_topic_candidates_skips_low_relevance(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_call_topic_candidates_skips_high_risk(monkeypatch):
+    from main_logic.activity import llm_enrichment
+
+    async def fake_invoke(prompt, *, timeout, label):
+        return """
+        {
+          "topics": [
+            {
+              "interest": "一个相关但触碰风险偏高的话题",
+              "relevance": 90,
+              "risk": 80
+            }
+          ]
+        }
+        """
+
+    monkeypatch.setattr(llm_enrichment, "_invoke_emotion_tier", fake_invoke)
+
+    topics = await llm_enrichment.call_topic_candidates(
+        user_msgs=[(1.0, "顺口提了一句不太想被追问的事")],
+        ai_msgs=[],
+        lang="zh-CN",
+    )
+
+    # relevance clears the bar but risk > 65 must still reject — guards the
+    # risk gate against regression now that thresholds live only in code.
+    assert topics == []
+
+
+@pytest.mark.asyncio
 async def test_call_topic_candidates_keeps_short_cjk_interests(monkeypatch):
     from main_logic.activity import llm_enrichment
 

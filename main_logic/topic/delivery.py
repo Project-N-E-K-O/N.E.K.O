@@ -197,6 +197,20 @@ async def trigger_topic_hook_once(
             )
             return False
 
+    # Re-resolve the topic language at firing time. The hook captured `lang`
+    # when it was scheduled; if the session language changed during the quiet
+    # window (e.g. set_user_language with no new chat turn to reschedule the
+    # trigger), the live tracker locale is authoritative — otherwise a zh-TW
+    # switch would surface the hook in the previously captured locale.
+    live_lang_getter = getattr(mgr, "current_topic_language", None)
+    if callable(live_lang_getter):
+        try:
+            live_lang = live_lang_getter()
+        except Exception:
+            live_lang = None
+        if isinstance(live_lang, str) and live_lang:
+            lang = live_lang
+
     callback = build_topic_hook_callback(material, lang=lang)
     submit = getattr(mgr, "submit_proactive_callback", None)
     if callable(submit):

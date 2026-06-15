@@ -176,6 +176,37 @@ async def test_trigger_topic_hook_once_waits_for_confirmed_delivery(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_trigger_topic_hook_once_reresolves_live_language(monkeypatch):
+    mgr = MagicMock()
+    mgr.topic_hook_delivery_allowed = MagicMock(return_value=True)
+    mgr.current_topic_language = MagicMock(return_value="zh-TW")
+    mgr.enqueue_agent_callback = MagicMock()
+
+    def submit(callback, *, priority=0, coalesce_key=None):
+        mgr.submitted_callback = callback
+        callback[DELIVERY_ACK_FUTURE_KEY].set_result(True)
+
+    mgr.submit_proactive_callback = MagicMock(side_effect=submit)
+
+    clear_topic_session_manager_getter()
+    register_topic_session_manager_getter(lambda name: mgr)
+
+    delivered = await trigger_topic_hook_once(
+        lanlan_name="妮可",
+        # captured locale is stale zh-CN; the live tracker says zh-TW
+        material={"hook_id": "topic_music", "interest": "最近想聽城市流行"},
+        lang="zh-CN",
+    )
+
+    assert delivered is True
+    detail = mgr.submitted_callback["detail"]
+    assert "關係點：最近想聽城市流行" in detail  # rendered with the live zh-TW template
+    assert "关系点：" not in detail  # not collapsed back to the captured zh
+    mgr.current_topic_language.assert_called_once()
+    clear_topic_session_manager_getter()
+
+
+@pytest.mark.asyncio
 async def test_trigger_topic_hook_once_skips_when_activity_gate_closed(monkeypatch):
     mgr = MagicMock()
     mgr.topic_hook_delivery_allowed = MagicMock(return_value=False)
