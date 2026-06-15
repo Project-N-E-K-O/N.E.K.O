@@ -56,6 +56,75 @@
         );
     }
 
+    function isAvatarDropVoiceSessionActive() {
+        return !!(
+            (S && (S.isRecording || S.voiceChatActive || S.voiceStartPending))
+            || window.isRecording
+            || window.isMicStarting
+        );
+    }
+
+    async function prepareAvatarDropTextMode() {
+        if (!isAvatarDropVoiceSessionActive()) return true;
+        try {
+            if (typeof window.cancelPendingSessionStart === 'function') {
+                window.cancelPendingSessionStart('Voice start cancelled by avatar drop');
+            } else if (S) {
+                S.voiceStartPending = false;
+                S.sessionStartedResolver = null;
+                S.sessionStartedRejecter = null;
+            }
+
+            if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
+            if (typeof window.stopRecording === 'function') window.stopRecording();
+            if (typeof window.stopSilenceDetection === 'function') window.stopSilenceDetection();
+            if (typeof window.updateMicVolumeStatusNow === 'function') window.updateMicVolumeStatusNow(false);
+
+            if (S && S.socket && S.socket.readyState === WebSocket.OPEN) {
+                S.socket.send(JSON.stringify({ action: 'end_session' }));
+            }
+            if (typeof window.clearAudioQueue === 'function') {
+                await window.clearAudioQueue();
+            }
+
+            if (S) {
+                S.isRecording = false;
+                S.voiceChatActive = false;
+                S.voiceStartPending = false;
+                S.isTextSessionActive = false;
+            }
+            window.isRecording = false;
+            window.isMicStarting = false;
+
+            var micButton = document.getElementById('micButton');
+            if (micButton) {
+                micButton.classList.remove('active');
+                micButton.classList.remove('recording');
+                micButton.disabled = false;
+            }
+            var screenButton = document.getElementById('screenButton');
+            if (screenButton) {
+                screenButton.classList.remove('active');
+                screenButton.disabled = true;
+            }
+            var muteButton = document.getElementById('muteButton');
+            if (muteButton) muteButton.disabled = true;
+            var stopButton = document.getElementById('stopButton');
+            if (stopButton) stopButton.disabled = true;
+            var textInputArea = document.getElementById('text-input-area');
+            if (textInputArea) textInputArea.classList.remove('hidden');
+            if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                window.syncVoiceChatComposerHidden(false);
+            }
+            if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(false);
+            if (typeof window.syncFloatingScreenButtonState === 'function') window.syncFloatingScreenButtonState(false);
+            return true;
+        } catch (error) {
+            console.warn('[AvatarDrop] voice cleanup failed:', error);
+            return false;
+        }
+    }
+
     function getImageNaturalSize(image) {
         return {
             width: image.naturalWidth || image.width || 0,
@@ -2775,6 +2844,7 @@
                 .map(function (item) { return item.dataUrl; });
 
             var displayText = formatAvatarDropDisplayText({ items: items, rejected: rejected });
+            if (!await prepareAvatarDropTextMode()) return false;
             return sendTextPayload(prompt, {
                 source: 'avatar-drop',
                 displayText: displayText,

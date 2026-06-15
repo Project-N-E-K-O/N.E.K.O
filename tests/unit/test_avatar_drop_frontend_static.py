@@ -133,6 +133,8 @@ def test_avatar_drop_intake_hides_bubble_when_drag_leaves_model_hit_area():
 def test_avatar_drop_payload_sends_full_prompt_but_records_memory_summary_only():
     source = _read(APP_BUTTONS_PATH)
     build_prompt = _js_function_block(source, "buildAvatarDropPrompt")
+    voice_active = _js_function_block(source, "isAvatarDropVoiceSessionActive")
+    prepare_text_mode = _js_function_block(source, "prepareAvatarDropTextMode")
     send_payload = _js_function_block(source, "sendAvatarDropPayload")
 
     assert "<<<TEXT_FILE_" in build_prompt
@@ -152,11 +154,21 @@ def test_avatar_drop_payload_sends_full_prompt_but_records_memory_summary_only()
     assert "if (!items.length && !rejected.length) return false;" in send_payload
     assert "var prompt = buildAvatarDropPrompt({ items: items, rejected: rejected });" in send_payload
     assert "var displayText = formatAvatarDropDisplayText({ items: items, rejected: rejected });" in send_payload
+    assert "if (!await prepareAvatarDropTextMode()) return false;" in send_payload
+    assert send_payload.index("prepareAvatarDropTextMode()") < send_payload.index("sendTextPayload(prompt")
     assert "displayText: displayText" in send_payload
     assert "memoryText: displayText" in send_payload
     assert "memoryText: prompt" not in send_payload
     assert "extraImageDataUrls: imageDataUrls" in send_payload
     assert "forceReactOptimisticMessage: true" in send_payload
+
+    assert "S.isRecording || S.voiceChatActive || S.voiceStartPending" in voice_active
+    assert "window.isMicStarting" in voice_active
+    assert "window.stopRecording()" in prepare_text_mode
+    assert "S.socket.send(JSON.stringify({ action: 'end_session' }))" in prepare_text_mode
+    assert "window.clearAudioQueue" in prepare_text_mode
+    assert "S.isTextSessionActive = false;" in prepare_text_mode
+    assert "window.syncVoiceChatComposerHidden(false)" in prepare_text_mode
 
 
 @pytest.mark.unit
