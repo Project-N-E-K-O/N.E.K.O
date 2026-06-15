@@ -357,6 +357,14 @@ def test_phase9_reply_renderer_handles_markdown_without_raw_html() -> None:
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
 
 
+def test_phase9_reply_renderer_preserves_asterisks_inside_code_spans() -> None:
+    html = _render_reply_with_node("Use `x**2` in Python, not 2 ** 3.")
+
+    assert "<code>x**2</code>" in html
+    assert "not 2 ** 3" in html
+    assert "<code>x2</code>" not in html
+
+
 @pytest.mark.parametrize("asset_name", ["katex-render.js", "math-parser.js"])
 def test_phase9_math_parser_keeps_punctuated_english_after_bare_latex_as_text(
     asset_name: str,

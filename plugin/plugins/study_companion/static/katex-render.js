@@ -356,10 +356,17 @@
   }
 
   function renderInlineMarkdown(escaped) {
-    return String(escaped || '')
-      .replace(/`([^`\n]{1,180})`/g, '<code>$1</code>')
-      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-      .replace(/\*\*/g, '');
+    const codeSpans = [];
+    const html = String(escaped || '')
+      .replace(/`([^`\n]{1,180})`/g, (_match, code) => {
+        const token = `@@STUDY_CODE_${codeSpans.length}@@`;
+        codeSpans.push(`<code>${code}</code>`);
+        return token;
+      })
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    return html.replace(/@@STUDY_CODE_(\d+)@@/g, (_match, index) => (
+      codeSpans[Number(index)] || ''
+    ));
   }
 
   function renderEscapedInlineMarkdown(value) {
