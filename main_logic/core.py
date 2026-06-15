@@ -6967,6 +6967,11 @@ class LLMSessionManager:
                     kept.append(cb)
             callbacks = kept
         if not callbacks:
+            # This release delivered nothing (everything retracted or dropped
+            # at the gate), so no playback/text lifecycle signal will arrive to
+            # clear the manager's inflight slot. Free it now so the next cue
+            # isn't held behind a phantom in-flight delivery for the timeout.
+            self.proactive_manager.release_inflight_noop()
             return
         for callback in callbacks:
             self.enqueue_agent_callback(callback)

@@ -321,6 +321,19 @@ class ProactiveDeliveryManager:
                 fresh.append(c)
         self._queue = fresh
 
+    def release_inflight_noop(self) -> None:
+        """Free the inflight slot for a release that delivered nothing.
+
+        ``_pump`` arms ``_inflight`` before invoking ``deliver``, expecting a
+        playback/text lifecycle signal (or the inflight timeout) to clear it.
+        When a released batch delivers nothing — e.g. every cue is dropped at a
+        release-time gate — no such signal arrives, so the slot would stay
+        armed for the whole timeout window and hold back the next cue. The
+        deliver callback calls this to release the slot immediately and re-pump.
+        """
+        self._inflight = False
+        self._schedule_pump(0.0)
+
     def _pump(self) -> None:
         self._pump_handle = None
         self._drop_stale()

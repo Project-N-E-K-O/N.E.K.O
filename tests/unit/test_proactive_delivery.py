@@ -130,6 +130,31 @@ async def test_second_batch_waits_for_next_play_end():
     assert [c["id"] for c in delivered] == ["a", "b"]
 
 
+async def test_noop_release_frees_inflight_slot_immediately():
+    # A release that delivers nothing (e.g. every cue dropped at a release-time
+    # gate) emits no playback signal, so without an explicit release the slot
+    # would stay armed for the whole inflight timeout and hold back the next
+    # cue. release_inflight_noop frees it so the follow-up cue goes out promptly.
+    delivered = []
+    mgr = None
+
+    async def deliver(batch):
+        delivered.append([c for c in batch])
+        if len(delivered) == 1:
+            mgr.release_inflight_noop()  # simulate the gate-drop no-op release
+
+    mgr = ProactiveDeliveryManager(deliver=deliver, min_gap_s=0.0, inflight_timeout_s=5.0)
+    mgr.submit({"id": "dropped"}, priority=1)
+    await _settle()
+    assert len(delivered) == 1  # first batch released, delivered nothing
+
+    mgr.submit({"id": "second"}, priority=1)
+    await _settle()
+    # slot was freed immediately, so 'second' is delivered within _settle
+    # rather than after the 5s inflight timeout.
+    assert [batch[0]["id"] for batch in delivered] == ["dropped", "second"]
+
+
 async def test_min_gap_delays_release():
     delivered = []
     mgr = _make(delivered, min_gap_s=0.2)
