@@ -135,14 +135,14 @@ def _changed_file_statuses(base: str) -> list[tuple[str, str]]:
     report only the destination path and slip past the watched-prefix check.
     With renames split into delete(old) + add(new), the old watched path still
     shows up."""
-    out = _git("diff", "--no-renames", "--name-status", f"{base}...HEAD")
+    out = _git("diff", "--no-renames", "--name-status", "-z", f"{base}...HEAD")
+    fields = out.split("\0")
     changes: list[tuple[str, str]] = []
-    for ln in out.splitlines():
-        parts = ln.strip().split("\t")
-        if len(parts) != 2:
-            continue
-        status, path = parts
-        changes.append((status[:1], path.replace("\\", "/")))
+    for i in range(0, len(fields) - 1, 2):
+        status = fields[i]
+        path = fields[i + 1]
+        if status and path:
+            changes.append((status[:1], path.replace("\\", "/")))
     return changes
 
 
@@ -271,10 +271,11 @@ def main() -> int:
 
     if watched and not _is_filled(_section_body(body, REGRESSION_KEYWORD)):
         sample = ", ".join(watched[:5]) + (" …" if len(watched) > 5 else "")
+        watched_dirs = " | ".join(WATCHED_PREFIXES)
         violations.append((
             REGRESSION_REPORT,
-            f"This PR changes {len(watched)} file(s) under app/ | main_logic/ | "
-            f"memory/ ({sample}) but the PR body has no filled-in "
+            f"This PR changes {len(watched)} file(s) under {watched_dirs} "
+            f"({sample}) but the PR body has no filled-in "
             f"'{REGRESSION_KEYWORD}' section. Document the change, its "
             f"rationale/necessity, before-and-after behaviour, and regressions.",
         ))
