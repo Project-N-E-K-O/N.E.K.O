@@ -4724,6 +4724,44 @@ describe('App', () => {
     }
   });
 
+  it('keeps compact tool button clicks after sub-detent pointer jitter', async () => {
+    vi.useFakeTimers();
+    const onGalgameModeToggle = vi.fn();
+    try {
+      render(
+        <App
+          chatSurfaceMode="compact"
+          compactChatState="input"
+          onGalgameModeToggle={onGalgameModeToggle}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+      const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(240);
+      });
+      const fanRectSpy = mockCompactToolFanRect(fan);
+      try {
+        const galgameButton = fan.querySelector('.compact-input-tool-item-galgame') as HTMLButtonElement;
+        expect(galgameButton).toHaveAttribute('data-compact-tool-wheel-slot', '-1');
+        expect(galgameButton).not.toBeDisabled();
+
+        fireEvent.pointerDown(galgameButton, { pointerId: 45, ...compactToolWheelPoint(0), button: 0, buttons: 1, pointerType: 'mouse' });
+        fireEvent.pointerMove(galgameButton, { pointerId: 45, ...compactToolWheelPoint(5 * (Math.PI / 180)), buttons: 1, pointerType: 'mouse' });
+        fireEvent.pointerUp(galgameButton, { pointerId: 45, ...compactToolWheelPoint(5 * (Math.PI / 180)), buttons: 0, pointerType: 'mouse' });
+        fireEvent.click(galgameButton, { clientX: 140, clientY: 140 });
+
+        expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+        expect(onGalgameModeToggle).toHaveBeenCalledTimes(1);
+      } finally {
+        fanRectSpy.mockRestore();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps faded compact tool edge buttons visible but not confirmable', async () => {
     vi.useFakeTimers();
     const onExportConversationClick = vi.fn();

@@ -3884,7 +3884,6 @@ export default function FullChatSurface({
           pointerState.angle = nextAngle;
           if (stepCount <= 0) {
             pointerState.angleRemainder = totalDelta;
-            pointerState.didRotate = pointerState.didRotate || Math.abs(totalDelta) >= 0.01;
             const dragOffsetRatio = clamp(
               getCompactToolWheelDetentDisplayRatio(totalOffsetRatio),
               -0.98,
@@ -3916,7 +3915,6 @@ export default function FullChatSurface({
         const stepCount = getCompactToolWheelDetentStepCount(linearOffsetRatio);
         if (stepCount <= 0) {
           pointerState.angle = nextAngle;
-          pointerState.didRotate = pointerState.didRotate || Math.abs(deltaX) >= 1;
           const dragOffsetRatio = clamp(
             getCompactToolWheelDetentDisplayRatio(linearOffsetRatio),
             -0.98,
