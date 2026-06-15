@@ -4373,6 +4373,9 @@ function CompactChatApp({
     const stepCount = getCompactToolWheelDetentStepCount(directionalOffsetRatio);
     if (stepCount <= 0) {
       pointerState.angle = dragPoint.angle;
+      if (dragPoint.angle !== null) {
+        pointerState.angleRemainder = 0;
+      }
       pointerState.didRotate = pointerState.didRotate || Math.abs(directionalDelta) >= 1;
       const dragOffsetRatio = clamp(
         getCompactToolWheelDetentDisplayRatio(directionalOffsetRatio),
@@ -4398,7 +4401,7 @@ function CompactChatApp({
       pointerState.y = dragPoint.y;
     }
     pointerState.angle = dragPoint.angle;
-    pointerState.angleRemainder = remainingDelta;
+    pointerState.angleRemainder = 0;
     const remainingOffsetRatio = remainingDelta / COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD;
     const dragOffsetRatio = clamp(
       getCompactToolWheelDetentDisplayRatio(remainingOffsetRatio),

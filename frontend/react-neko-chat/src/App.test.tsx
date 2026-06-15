@@ -4863,6 +4863,57 @@ describe('App', () => {
     }
   });
 
+  it('does not carry linear drag remainder into angular compact tool wheel dragging', () => {
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    const fanRectSpy = mockCompactToolFanRect(fan);
+
+    try {
+      fireEvent.pointerDown(fan, {
+        pointerId: 44,
+        clientX: 116,
+        clientY: 116,
+        button: 0,
+        buttons: 1,
+        pointerType: 'mouse',
+      });
+      fireEvent.pointerMove(fan, {
+        pointerId: 44,
+        clientX: 116,
+        clientY: 149,
+        buttons: 1,
+        pointerType: 'mouse',
+      });
+      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
+
+      fireEvent.pointerMove(fan, {
+        pointerId: 44,
+        ...compactToolWheelPoint(100 * (Math.PI / 180)),
+        buttons: 1,
+        pointerType: 'mouse',
+      });
+
+      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
+      expect(Number.parseFloat(fan.style.getPropertyValue('--compact-tool-wheel-drag-angle'))).toBeLessThan(12);
+
+      fireEvent.pointerUp(fan, {
+        pointerId: 44,
+        ...compactToolWheelPoint(100 * (Math.PI / 180)),
+        buttons: 0,
+        pointerType: 'mouse',
+      });
+    } finally {
+      fanRectSpy.mockRestore();
+    }
+  });
+
   it('adds detent resistance before compact tool wheel drag breaks through', () => {
     render(
       <App
