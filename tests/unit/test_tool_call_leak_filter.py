@@ -227,6 +227,46 @@ def test_structured_tool_call_consumes_formatted_seed_close_after_function():
     assert events[0].finalized is False
 
 
+def test_structured_tool_call_keeps_function_close_pending_after_whitespace():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    visible, events = _drain(
+        ToolLeakFilter(tool_names={"recall_memory"}),
+        [
+            "before ",
+            'recall_memory</name><parameter name="query">secret</parameter></function> ',
+            "after",
+        ],
+    )
+
+    assert visible == "before  after"
+    assert "secret" not in visible
+    assert len(events) == 1
+    assert events[0].pattern == "structured_tool_call"
+    assert events[0].finalized is False
+
+
+def test_structured_tool_call_tracks_split_parameter_close_before_seed_close():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    visible, events = _drain(
+        ToolLeakFilter(tool_names={"recall_memory"}),
+        [
+            "before ",
+            'recall_memory</name><parameter name="query">secret</p',
+            "arameter></function><",
+            "/seed:tool_call> after",
+        ],
+    )
+
+    assert visible == "before  after"
+    assert "</seed:tool_call>" not in visible
+    assert "secret" not in visible
+    assert len(events) == 1
+    assert events[0].pattern == "structured_tool_call"
+    assert events[0].finalized is False
+
+
 def test_structured_tool_call_standalone_function_close_waits_for_seed_close():
     from utils.llm_tool_leak_filter import ToolLeakFilter
 

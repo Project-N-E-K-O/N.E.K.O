@@ -37,6 +37,7 @@ class ToolLeakFilter:
         self._suppression_pattern = ""
         self._cross_chunk = False
         self._structured_parameter_closed = False
+        self._structured_tail = ""
         self._in_code_fence = False
         self._fence_marker = ""
         self._fence_line_buffer = ""
@@ -90,6 +91,7 @@ class ToolLeakFilter:
             self._suppression_pattern = pattern
             self._cross_chunk = had_pending
             self._structured_parameter_closed = False
+            self._structured_tail = ""
 
         return "".join(output), event
 
@@ -110,6 +112,7 @@ class ToolLeakFilter:
         self._suppression_pattern = ""
         self._cross_chunk = False
         self._structured_parameter_closed = False
+        self._structured_tail = ""
         self._in_code_fence = False
         self._fence_marker = ""
         self._fence_line_buffer = ""
@@ -126,6 +129,7 @@ class ToolLeakFilter:
         self._suppression_pattern = ""
         self._cross_chunk = False
         self._structured_parameter_closed = False
+        self._structured_tail = ""
         return event
 
     def _suppression_close_match(self, text: str) -> re.Match[str] | None:
@@ -153,10 +157,13 @@ class ToolLeakFilter:
         return function_close
 
     def _track_suppressed_structure(self, text: str) -> None:
-        if self._suppression_pattern != "structured_tool_call" or self._structured_parameter_closed:
+        if self._suppression_pattern != "structured_tool_call" or not text:
             return
-        if _PARAMETER_CLOSE_RE.search(text):
+
+        tracked = self._structured_tail + text
+        if not self._structured_parameter_closed and _PARAMETER_CLOSE_RE.search(tracked):
             self._structured_parameter_closed = True
+        self._structured_tail = tracked[-self._max_tail:]
 
     def _structured_seed_close_can_finish(self, text: str, seed_close: re.Match[str]) -> bool:
         return (
@@ -165,6 +172,11 @@ class ToolLeakFilter:
         )
 
     def _suppression_close_tail_len(self, text: str) -> int:
+        if self._suppression_pattern == "structured_tool_call":
+            function_tail = self._pending_function_close_tail_len(text)
+            if function_tail > 0:
+                return function_tail
+
         min_start = max(0, len(text) - self._max_tail)
         for start in range(min_start, len(text)):
             tail = text[start:]
@@ -175,6 +187,15 @@ class ToolLeakFilter:
             if self._suppression_pattern == "structured_tool_call" and _FUNCTION_CLOSE_RE.fullmatch(tail):
                 return len(tail)
         return 0
+
+    def _pending_function_close_tail_len(self, text: str) -> int:
+        tail_len = 0
+        for match in _FUNCTION_CLOSE_RE.finditer(text):
+            after_function = self._consume_whitespace(text, match.end())
+            trailing = text[after_function:]
+            if not trailing or self._is_seed_close_prefix(trailing):
+                tail_len = len(text) - match.start()
+        return tail_len
 
     def _find_leak_start(self, text: str) -> Optional[tuple[int, int, str]]:
         seed = _SEED_OPEN_RE.search(text)
