@@ -63,9 +63,35 @@ VoiceSource = Literal["preset", "clone", "design"]
 # registry yet (see module docstring); kept out of the Literal until folded in.
 ProviderKind = Literal["local", "hosted"]
 
-SelectPredicate = Callable[[Mapping[str, Any], "ConfigManager"], bool]
+@dataclass(frozen=True)
+class DispatchContext:
+    """Everything a provider needs to decide selection / resolve a worker.
+
+    Unifies the two selection mechanisms (see design doc §3.1):
+
+    * config-selected providers (vLLM-Omni / GPT-SoVITS) read ``core_config`` /
+      ``cm`` only;
+    * voice-metadata-selected providers (the clone families — MiniMax /
+      ElevenLabs / CosyVoice) read ``voice_meta`` (the picked cloned voice's
+      stored metadata), plus ``voice_id`` / ``has_custom_voice``.
+
+    ``get_tts_worker`` builds this once and hands it to every provider's
+    ``is_selected`` / ``resolve``; providers ignore the fields they don't need.
+    """
+
+    core_config: Mapping[str, Any]
+    cm: "ConfigManager"
+    voice_id: str = ""
+    has_custom_voice: bool = False
+    # The picked cloned voice's metadata (``_get_voice_meta(voice_id)``), or None
+    # when there is no custom voice / no local metadata. Precomputed by the caller
+    # so providers don't each re-query.
+    voice_meta: dict | None = None
+
+
+SelectPredicate = Callable[["DispatchContext"], bool]
 DispatchResolver = Callable[
-    [Mapping[str, Any], "ConfigManager"],
+    ["DispatchContext"],
     "tuple[Callable[..., Any], str | None, str]",
 ]
 
@@ -148,19 +174,19 @@ def all_providers() -> list[TTSProvider]:
 
 
 def resolve_selected(
-    core_config: Mapping[str, Any],
-    cm: "ConfigManager",
+    ctx: "DispatchContext",
 ) -> "tuple[Callable[..., Any], str | None, str] | None":
-    """Return the dispatch tuple for the first provider the user has selected, in
+    """Return the dispatch tuple for the first provider selected for ``ctx``, in
     priority order, or ``None`` when none apply.
 
-    ``get_tts_worker`` calls this near the top (after the DISABLE_TTS check) so a
-    user's explicit provider choice wins over clone / native / core default
-    routing, preserving the original hand-written precedence.
+    ``get_tts_worker`` builds ``ctx`` and calls this near the top (after the
+    DISABLE_TTS check) so a user's provider choice — whether an explicit dropdown
+    pick or an implied clone-voice provider — wins over native / core default
+    routing in the original hand-written precedence (priority order).
     """
     for provider in all_providers():
         try:
-            selected = provider.is_selected(core_config, cm)
+            selected = provider.is_selected(ctx)
         except Exception:
             # is_selected 判定异常不应连带打挂整个 dispatch，跳过该 provider 继续；
             # 但静默会掩盖配置/适配器 bug，至少留一条带堆栈的可观测日志。
@@ -170,7 +196,7 @@ def resolve_selected(
             )
             selected = False
         if selected:
-            return provider.resolve(core_config, cm)
+            return provider.resolve(ctx)
     return None
 
 

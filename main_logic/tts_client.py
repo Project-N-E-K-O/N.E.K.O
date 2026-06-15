@@ -4692,9 +4692,20 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     # 本文件末尾 register 一条，不再在此处插内联特判。凭证防泄漏（vllm_omni 无 key
     # 时返回空串而非 None，避免 fallback 到别家 provider 的 key）由各 adapter 内部
     # 保证，配合 core.resolve_tts_api_key 的 provider_key == 'vllm_omni' 特判。
-    special = _tts_providers.resolve_selected(core_cfg, cm)
+    # DispatchContext 统一两种选中机制（见设计文档 §3.1）：配置选中（vllm/gptsovits）
+    # 与音色元数据选中（克隆系，后续增量折入）。voice_meta 此处刻意不预算——配置选中的
+    # provider（vllm/gptsovits）不需要它，且必须在任何 voice_meta 查询之前短路
+    # （见 test_get_tts_worker_routes_explicit_vllm_before_cloned_voice）；克隆系折入时
+    # 改为按需惰性加载。
+    _dispatch_ctx = _tts_providers.DispatchContext(
+        core_config=core_cfg,
+        cm=cm,
+        voice_id=voice_id or '',
+        has_custom_voice=bool(has_custom_voice),
+    )
+    special = _tts_providers.resolve_selected(_dispatch_ctx)
     if special is not None:
-        logger.info("[get_tts_worker] 命中特异 TTS provider: %s", special[2])
+        logger.info("[get_tts_worker] 命中 TTS provider: %s", special[2])
         return special
 
     # voice_meta 提到 outer scope：cosyvoice 分支也需要它来跟"已存 clone"区分
@@ -5065,7 +5076,8 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
 #   get_tts_worker 顶部的早返回分支同源；优先级高于 vllm_omni（沿用原顺序）。
 
 
-def _vllm_omni_is_selected(core_config, cm) -> bool:
+def _vllm_omni_is_selected(ctx) -> bool:
+    core_config, cm = ctx.core_config, ctx.cm
     if not _as_bool(core_config.get('ENABLE_CUSTOM_API'), False):
         return False
     try:
@@ -5075,7 +5087,8 @@ def _vllm_omni_is_selected(core_config, cm) -> bool:
     return (raw.get('ttsModelProvider') or '').strip() == 'vllm_omni'
 
 
-def _vllm_omni_resolve(core_config, cm):
+def _vllm_omni_resolve(ctx):
+    cm = ctx.cm
     try:
         raw = cm.load_json_config('core_config.json', {})
     except Exception:
@@ -5094,7 +5107,8 @@ def _vllm_omni_resolve(core_config, cm):
     return worker, vllm_key, 'vllm_omni'
 
 
-def _gptsovits_is_selected(core_config, cm) -> bool:
+def _gptsovits_is_selected(ctx) -> bool:
+    core_config, cm = ctx.core_config, ctx.cm
     # config_manager 写 snapshot 时已 _as_bool 规整 GPTSOVITS_ENABLED，这里再包一层
     # 防御性对齐隔壁 ENABLE_CUSTOM_API / core.py，避免直接传入未规整 dict 时字符串
     # "false"/"0" 被当真值误抢 GPT-SoVITS。
@@ -5107,7 +5121,7 @@ def _gptsovits_is_selected(core_config, cm) -> bool:
     return bool(tts_config.get('is_custom'))
 
 
-def _gptsovits_resolve(core_config, cm):
+def _gptsovits_resolve(ctx):
     return gptsovits_tts_worker, None, 'gptsovits'
 
 
