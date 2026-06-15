@@ -438,7 +438,7 @@
 
         for (var i = 0; i < files.length; i += 1) {
             var file = files[i];
-            if (accepted.length >= MAX_FILES) {
+            if (i >= MAX_FILES) {
                 rejected.push({ name: safeName(file.name), size: file.size, reason: 'too_many_files' });
                 continue;
             }

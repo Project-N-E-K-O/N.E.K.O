@@ -308,8 +308,9 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 session_manager[lanlan_name].set_goodbye_silent(False, "start_session")
                 input_type = message.get("input_type", "audio")
                 if input_type in ['audio', 'screen', 'camera', 'text', 'avatar_drop_image', 'user_image']:
+                    text_input_types = ['text', 'avatar_drop_image', 'user_image']
                     if is_game_route_active(lanlan_name):
-                        if input_type == "text":
+                        if input_type in text_input_types:
                             logger.info("[%s] game route active: acknowledging text entry without starting ordinary text session", lanlan_name)
                             _fire_task(session_manager[lanlan_name].send_session_started("text"))
                             continue
@@ -322,7 +323,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                             continue
                     # 传递input_mode参数，告知session manager使用何种模式
                     # 注意：音频模块由 main_server 后台预加载，Python import lock 会自动等待首次导入完成
-                    mode = 'text' if input_type in ['text', 'avatar_drop_image', 'user_image'] else 'audio'
+                    mode = 'text' if input_type in text_input_types else 'audio'
                     # 用户显式 start_session（刷新页面 / 点重试）= 清熔断。
                     # 内部 recovery 路径不会走到这里，熔断只能从这条路被清。
                     # 但要避开"上一轮 start_session 还在跑"的 race：那时清零会让

@@ -353,7 +353,16 @@
     }
 
     function handleDragOver(event) {
-        if (busy) return;
+        if (busy) {
+            if (event && dataTransferHasFiles(event.dataTransfer)) {
+                event.preventDefault();
+                event.stopPropagation();
+                if (event.dataTransfer) {
+                    event.dataTransfer.dropEffect = 'none';
+                }
+            }
+            return;
+        }
         var target = getEventTarget(event);
         if (!target) {
             hideOverlay(0);
@@ -369,8 +378,15 @@
     }
 
     async function handleDrop(event) {
+        if (busy) {
+            if (event && dataTransferHasFiles(event.dataTransfer)) {
+                event.preventDefault();
+                event.stopPropagation();
+            }
+            return;
+        }
         var target = getEventTarget(event, { allowRecentTarget: true });
-        if (!target || busy) return;
+        if (!target) return;
 
         event.preventDefault();
         event.stopPropagation();

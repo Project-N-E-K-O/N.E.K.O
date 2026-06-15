@@ -2442,9 +2442,9 @@ class LLMSessionManager:
             if not hasattr(self, 'message_cache_for_new_session'):
                 self.message_cache_for_new_session = []
             if len(self.message_cache_for_new_session) == 0 or self.message_cache_for_new_session[-1]['role'] == self.lanlan_name:
-                self.message_cache_for_new_session.append({"role": self.master_name, "text": transcript.strip()})
+                self.message_cache_for_new_session.append({"role": self.master_name, "text": record_transcript_text})
             elif self.message_cache_for_new_session[-1]['role'] == self.master_name:
-                self.message_cache_for_new_session[-1]['text'] += transcript.strip()
+                self.message_cache_for_new_session[-1]['text'] += record_transcript_text
         # 注意: 这里不能修改 current_speech_id.
         # speech_id 仅应在“模型新回复开始”时更新 (handle_new_message / 文本模式 stream 入口),
         # 否则会导致前端把同一轮 AI 语音误判为新轮次, 出现首包被重置/吞掉的问题.
@@ -3775,6 +3775,7 @@ class LLMSessionManager:
                 # 的合法路径，不能误丢。audio 在 _stream_data_now 缓存阶段已经
                 # 直接 return 不缓存，pending_input_data 不会出现 audio。
                 is_voice_session = isinstance(self.session, OmniRealtimeClient)
+                text_only_input_types = {"text", "avatar_drop_image", "user_image"}
                 dropped_text_for_voice = 0
                 for message in self.pending_input_data:
                     msg_input_type = message.get("input_type")
@@ -3784,7 +3785,7 @@ class LLMSessionManager:
                         if msg_input_type == "audio":
                             await self._enqueue_audio_stream_data(message)
                         else:
-                            if is_voice_session and msg_input_type == "text":
+                            if is_voice_session and msg_input_type in text_only_input_types:
                                 dropped_text_for_voice += 1
                                 continue
                             await self._process_stream_data_internal(message)

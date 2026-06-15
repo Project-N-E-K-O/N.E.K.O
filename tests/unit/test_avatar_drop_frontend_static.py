@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 APP_BUTTONS_PATH = REPO_ROOT / "static" / "app-buttons.js"
@@ -51,6 +53,7 @@ def _js_function_block(source: str, function_name: str) -> str:
     raise AssertionError(f"unterminated JS function {function_name}")
 
 
+@pytest.mark.unit
 def test_avatar_drop_parser_declares_supported_formats_and_limits():
     source = _read(PARSER_PATH)
 
@@ -74,12 +77,15 @@ def test_avatar_drop_parser_declares_supported_formats_and_limits():
     assert "mime === 'image/svg+xml' || ext === 'svg'" in source
     assert "macro_document_unsupported" in source
     assert "legacy_office_unsupported" in source
+    assert "if (i >= MAX_FILES)" in source
+    assert "accepted.length >= MAX_FILES" not in source
     assert "JSON.parse(text)" in source
     assert "garbled_text" in source
     assert "control_chars" in source
     assert "bidi_controls" in source
 
 
+@pytest.mark.unit
 def test_avatar_drop_intake_hides_bubble_when_drag_leaves_model_hit_area():
     source = _read(INTAKE_PATH)
     get_event_target = _js_function_block(source, "getEventTarget")
@@ -90,9 +96,13 @@ def test_avatar_drop_intake_hides_bubble_when_drag_leaves_model_hit_area():
 
     assert "options.allowRecentTarget === true" in get_event_target
     assert "Date.now() - lastTargetAt < 180" in get_event_target
+    assert "if (busy)" in drag_over
+    assert "event.dataTransfer.dropEffect = 'none';" in drag_over
     assert "var target = getEventTarget(event);" in drag_over
     assert "getEventTarget(event, { allowRecentTarget: true })" not in drag_over
     assert "hideOverlay(0);" in drag_over
+    assert "if (busy)" in drop
+    assert "if (!target) return;" in drop
     assert "getEventTarget(event, { allowRecentTarget: true })" in drop
     assert "hideOverlayNow();" in hide_overlay
     assert "window.setTimeout(hideOverlayNow, wait)" in hide_overlay
@@ -102,6 +112,7 @@ def test_avatar_drop_intake_hides_bubble_when_drag_leaves_model_hit_area():
     assert "if (!accepted.length && rejected.length > 0)" in drop
 
 
+@pytest.mark.unit
 def test_avatar_drop_payload_sends_full_prompt_but_records_memory_summary_only():
     source = _read(APP_BUTTONS_PATH)
     build_prompt = _js_function_block(source, "buildAvatarDropPrompt")
@@ -131,6 +142,7 @@ def test_avatar_drop_payload_sends_full_prompt_but_records_memory_summary_only()
     assert "forceReactOptimisticMessage: true" in send_payload
 
 
+@pytest.mark.unit
 def test_avatar_drop_scripts_and_backend_routes_are_wired():
     index_source = _read(INDEX_TEMPLATE_PATH)
     main_server_source = _read(MAIN_SERVER_PATH)
@@ -141,6 +153,7 @@ def test_avatar_drop_scripts_and_backend_routes_are_wired():
     assert "app.include_router(avatar_drop_router)" in main_server_source
 
 
+@pytest.mark.unit
 def test_avatar_drop_image_and_memory_override_are_routed_as_text_session_inputs():
     core_source = _read(CORE_PATH)
     websocket_source = _read(WEBSOCKET_ROUTER_PATH)
@@ -152,5 +165,10 @@ def test_avatar_drop_image_and_memory_override_are_routed_as_text_session_inputs
     assert "routing_data = record_data if memory_text else data" in core_source
     assert "self._next_text_transcript_memory_text = memory_text" in core_source
     assert "record_transcript_text = memory_override_text or transcript_text" in core_source
+    assert '"text": record_transcript_text' in core_source
+    assert 'text_only_input_types = {"text", "avatar_drop_image", "user_image"}' in core_source
+    assert "msg_input_type in text_only_input_types" in core_source
     assert "input_type in ['audio', 'screen', 'camera', 'text', 'avatar_drop_image', 'user_image']" in websocket_source
-    assert "mode = 'text' if input_type in ['text', 'avatar_drop_image', 'user_image'] else 'audio'" in websocket_source
+    assert "text_input_types = ['text', 'avatar_drop_image', 'user_image']" in websocket_source
+    assert "if input_type in text_input_types:" in websocket_source
+    assert "mode = 'text' if input_type in text_input_types else 'audio'" in websocket_source

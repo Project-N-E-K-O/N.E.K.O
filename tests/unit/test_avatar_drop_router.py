@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -13,6 +15,7 @@ def _client() -> TestClient:
     return TestClient(app)
 
 
+@pytest.mark.unit
 def test_parse_document_endpoint_returns_text_item_for_supported_document():
     response = _client().post(
         "/api/avatar-drop/parse-document",
@@ -38,6 +41,7 @@ def test_parse_document_endpoint_returns_text_item_for_supported_document():
     assert item["chars"] == len(item["content"])
 
 
+@pytest.mark.unit
 def test_parse_document_endpoint_surfaces_parser_error_code():
     response = _client().post(
         "/api/avatar-drop/parse-document",

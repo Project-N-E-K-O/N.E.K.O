@@ -236,21 +236,22 @@ def _open_checked_zip(data: bytes, document_type: str) -> zipfile.ZipFile:
     except zipfile.BadZipFile as exc:
         raise AvatarDocumentParseError("invalid_ooxml") from exc
 
-    names = archive.namelist()
-    if len(names) > MAX_ZIP_ENTRIES:
+    try:
+        names = archive.namelist()
+        if len(names) > MAX_ZIP_ENTRIES:
+            raise AvatarDocumentParseError("zip_too_many_entries")
+        total_size = 0
+        for info in archive.infolist():
+            _validate_zip_member_name(info.filename)
+            total_size += max(0, int(info.file_size or 0))
+            if total_size > MAX_ZIP_UNCOMPRESSED_BYTES:
+                raise AvatarDocumentParseError("zip_uncompressed_too_large")
+        if "[Content_Types].xml" not in names:
+            raise AvatarDocumentParseError(f"invalid_{document_type}")
+        return archive
+    except Exception:
         archive.close()
-        raise AvatarDocumentParseError("zip_too_many_entries")
-    total_size = 0
-    for info in archive.infolist():
-        _validate_zip_member_name(info.filename)
-        total_size += max(0, int(info.file_size or 0))
-        if total_size > MAX_ZIP_UNCOMPRESSED_BYTES:
-            archive.close()
-            raise AvatarDocumentParseError("zip_uncompressed_too_large")
-    if "[Content_Types].xml" not in names:
-        archive.close()
-        raise AvatarDocumentParseError(f"invalid_{document_type}")
-    return archive
+        raise
 
 
 def _validate_zip_member_name(name: str) -> None:
