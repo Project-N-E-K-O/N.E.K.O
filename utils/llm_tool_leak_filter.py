@@ -36,6 +36,7 @@ class ToolLeakFilter:
         self._suppressed_chars = 0
         self._suppression_pattern = ""
         self._cross_chunk = False
+        self._structured_parameter_opened = False
         self._structured_parameter_closed = False
         self._structured_tail = ""
         self._in_code_fence = False
@@ -90,6 +91,7 @@ class ToolLeakFilter:
             self._suppressed_chars = 0
             self._suppression_pattern = pattern
             self._cross_chunk = had_pending
+            self._structured_parameter_opened = False
             self._structured_parameter_closed = False
             self._structured_tail = ""
 
@@ -111,6 +113,7 @@ class ToolLeakFilter:
         self._suppressed_chars = 0
         self._suppression_pattern = ""
         self._cross_chunk = False
+        self._structured_parameter_opened = False
         self._structured_parameter_closed = False
         self._structured_tail = ""
         self._in_code_fence = False
@@ -128,6 +131,7 @@ class ToolLeakFilter:
         self._suppressed_chars = 0
         self._suppression_pattern = ""
         self._cross_chunk = False
+        self._structured_parameter_opened = False
         self._structured_parameter_closed = False
         self._structured_tail = ""
         return event
@@ -137,7 +141,7 @@ class ToolLeakFilter:
             return _SEED_CLOSE_RE.search(text)
 
         seed_close = _SEED_CLOSE_RE.search(text)
-        function_close = _FUNCTION_CLOSE_RE.search(text)
+        function_close = self._structured_function_close_match(text)
         if function_close is None:
             if seed_close is not None and self._structured_seed_close_can_finish(text, seed_close):
                 return seed_close
@@ -161,6 +165,8 @@ class ToolLeakFilter:
             return
 
         tracked = self._structured_tail + text
+        if not self._structured_parameter_opened and _PARAMETER_RE.search(tracked):
+            self._structured_parameter_opened = True
         if not self._structured_parameter_closed and _PARAMETER_CLOSE_RE.search(tracked):
             self._structured_parameter_closed = True
         self._structured_tail = tracked[-self._max_tail:]
@@ -169,6 +175,22 @@ class ToolLeakFilter:
         return (
             self._structured_parameter_closed
             or _PARAMETER_CLOSE_RE.search(text[: seed_close.start()]) is not None
+        )
+
+    def _structured_function_close_match(self, text: str) -> re.Match[str] | None:
+        for function_close in _FUNCTION_CLOSE_RE.finditer(text):
+            if self._structured_function_close_can_finish(text, function_close):
+                return function_close
+        return None
+
+    def _structured_function_close_can_finish(self, text: str, function_close: re.Match[str]) -> bool:
+        prefix = text[: function_close.start()]
+        parameter_opened = self._structured_parameter_opened or _PARAMETER_RE.search(prefix) is not None
+        if not parameter_opened:
+            return True
+        return (
+            self._structured_parameter_closed
+            or _PARAMETER_CLOSE_RE.search(prefix) is not None
         )
 
     def _suppression_close_tail_len(self, text: str) -> int:

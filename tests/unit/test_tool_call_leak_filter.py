@@ -113,6 +113,21 @@ def test_structured_tool_call_ignores_seed_close_text_inside_argument():
     assert events[0].pattern == "structured_tool_call"
 
 
+def test_structured_tool_call_ignores_function_close_text_inside_argument():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    leak = (
+        'recall_memory</name><parameter name="query">'
+        "x </function> y</parameter></function> after"
+    )
+    visible, events = _drain(ToolLeakFilter(tool_names={"recall_memory"}), ["before ", leak])
+
+    assert visible == "before  after"
+    assert "y</parameter>" not in visible
+    assert len(events) == 1
+    assert events[0].pattern == "structured_tool_call"
+
+
 def test_structured_tool_call_keeps_suppressing_when_seed_close_precedes_later_function_close():
     from utils.llm_tool_leak_filter import ToolLeakFilter
 
