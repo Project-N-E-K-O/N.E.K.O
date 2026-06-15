@@ -839,6 +839,7 @@
     <!-- Local-mutation CSRF helper：mini-game invite respond endpoint 等本地
          mutation 共用 window.nekoLocalMutationSecurity 拿 X-CSRF-Token；必须
          在 app-react-chat-window.js 之前加载，与 index.html 同序。 -->
+    <script src="/static/game/system/game-audio-system.js?v={{ static_asset_version }}"></script>
     <script src="/static/react/neko-chat/neko-chat-window.iife.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app-react-chat-window.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app-chat-adapter.js?v={{ react_chat_asset_version }}"></script>
