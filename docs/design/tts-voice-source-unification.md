@@ -10,9 +10,9 @@
 
 - **声音身份**：到底是哪个音色（`冰糖` / `default` / 某个克隆 id）。
 - **后端路由**：用哪个 TTS provider、哪个 key、哪个 endpoint——靠**前缀**偷偷编码：
-  - `gsv:<id>`（GPT-SoVITS，[config/__init__.py:34](../../config/__init__.py)）
+  - `gsv:<id>`（GPT-SoVITS，见 `config/__init__.py:34`）
   - `eleven:<id>`（ElevenLabs）
-  - `__gptsovits_disabled__|<url>|<voice_id>` 这种占位符（[gptsovits_config.py:24](../../utils/gptsovits_config.py)，前端 [api_key_settings.js:2197](../../static/js/api_key_settings.js) 写入）——把"被禁用的 gsv 配置"冻结进 voice_id，是最丑的一处。
+  - `__gptsovits_disabled__|<url>|<voice_id>` 这种占位符（`utils/gptsovits_config.py:24`，前端 `static/js/api_key_settings.js:2197` 写入）——把"被禁用的 gsv 配置"冻结进 voice_id，是最丑的一处。
 - **声音来源（preset / clone / design）**：**当前没有这个分层**。预制走 `native_voice_registry`，克隆走 `voice_storage.json` + `voice_meta.provider`，design 还不存在。三者散落、无统一模型。
 
 后果：加一个 provider 要改 8+ 处（#1818 的动机）；`get_tts_worker` 是一长串靠
