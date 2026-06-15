@@ -23,11 +23,12 @@ orthogonal axes (see docs/design/tts-voice-source-unification.md):
   (Gemini/Step/Grok/free) still live in :mod:`utils.native_voice_registry` and
   are folded in later.
 * **capabilities** — which *voice sources* the provider actually supports, any
-  combination of ``preset`` (官方预制) / ``clone`` (用户克隆) / ``design``
-  (文字描述生成, 未来). The three stack on a single provider entry, declared per
-  real capability — this is the organizing principle of the refactor, not a
-  per-provider special-case. e.g. ElevenLabs = {preset, clone, design},
-  CosyVoice = {preset, clone}, GPT-SoVITS = {clone}, vLLM-Omni = {preset}.
+  combination of ``preset`` (official built-in voices) / ``clone`` (user-cloned
+  voices) / ``design`` (text-described, generated; future). The three stack on a
+  single provider entry, declared per real capability — this is the organizing
+  principle of the refactor, not a per-provider special-case. e.g. ElevenLabs =
+  {preset, clone, design}, CosyVoice = {preset, clone}, GPT-SoVITS = {clone},
+  vLLM-Omni = {preset}.
 
 A provider declares how it is selected (``is_selected``) and how it resolves to
 a worker (``resolve``), plus declarative UI / probe metadata so the settings
@@ -43,7 +44,7 @@ defined, via :func:`register`.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
