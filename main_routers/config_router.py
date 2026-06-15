@@ -1057,17 +1057,17 @@ async def get_api_providers_config():
         core_providers = get_core_api_providers_for_frontend()
         assist_providers = get_assist_api_providers_for_frontend()
 
-        # 特异 TTS provider（vllm_omni 等）的前端驱动元数据：单一源来自
-        # utils.special_tts_registry，避免前端把「哪些 provider 只进 TTS 下拉 /
-        # 端点可编辑 / 用哪种连通性探测」再硬编码一遍（见 api_key_settings.js）。
+        # TTS provider 的前端驱动元数据：单一源来自 utils.tts_provider_registry，
+        # 避免前端把「哪些 provider 只进 TTS 下拉 / 端点可编辑 / 支持哪些声音来源 /
+        # 用哪种连通性探测」再硬编码一遍（见 api_key_settings.js）。
         try:
-            from utils import special_tts_registry
+            from utils import tts_provider_registry
             # 触发 worker 侧注册副作用（adapter 在 tts_client 定义 worker 后 register）
             import main_logic.tts_client  # noqa: F401
-            special_tts_providers = special_tts_registry.ui_metadata()
+            tts_providers = tts_provider_registry.ui_metadata()
         except Exception as e:
-            logger.warning(f"加载特异 TTS provider 元数据失败: {e}")
-            special_tts_providers = []
+            logger.warning(f"加载 TTS provider 元数据失败: {e}")
+            tts_providers = []
 
         return {
             "success": True,
@@ -1076,7 +1076,7 @@ async def get_api_providers_config():
             "api_key_registry": full_config.get("api_key_registry", {}),
             "assist_api_providers_full": full_config.get("assist_api_providers", {}),
             "core_api_providers_full": full_config.get("core_api_providers", {}),
-            "special_tts_providers": special_tts_providers,
+            "tts_providers": tts_providers,
         }
     except Exception as e:
         logger.error(f"获取API服务商配置失败: {e}")

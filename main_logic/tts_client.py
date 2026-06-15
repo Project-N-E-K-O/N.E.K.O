@@ -65,7 +65,7 @@ from utils.native_voice_registry import (
     make_native_tts_resolver,
     register_tts_worker_resolver,
 )
-from utils import special_tts_registry as _special_tts
+from utils import tts_provider_registry as _tts_providers
 from utils.stepfun_tts_voices import (
     STEPFUN_TTS_DEFAULT_VOICE,
     get_stepfun_tts_default_voice,
@@ -4686,13 +4686,13 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     assist_api_type = str(core_cfg.get('assistApi') or '').strip().lower()
 
     # 特异 TTS provider（用户显式配置端点的 vllm_omni / 本地 GPT-SoVITS 等）的
-    # 选择与 worker 解析已收敛到 utils.special_tts_registry，按 priority 顺序匹配：
+    # 选择与 worker 解析已收敛到 utils.tts_provider_registry，按 priority 顺序匹配：
     # GPT-SoVITS（本地显式开关）优先于 vLLM-Omni，二者都优先于克隆音色 /
     # assistApi fallback / 原生 TTS（沿用原内联顺序）。新增此类 provider 只需在
     # 本文件末尾 register 一条，不再在此处插内联特判。凭证防泄漏（vllm_omni 无 key
     # 时返回空串而非 None，避免 fallback 到别家 provider 的 key）由各 adapter 内部
     # 保证，配合 core.resolve_tts_api_key 的 provider_key == 'vllm_omni' 特判。
-    special = _special_tts.resolve_selected(core_cfg, cm)
+    special = _tts_providers.resolve_selected(core_cfg, cm)
     if special is not None:
         logger.info("[get_tts_worker] 命中特异 TTS provider: %s", special[2])
         return special
@@ -4771,7 +4771,7 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
         if native is not None:
             return native
 
-    # GPT-SoVITS（is_custom + GPTSOVITS_ENABLED）已由顶部 special_tts_registry
+    # GPT-SoVITS（is_custom + GPTSOVITS_ENABLED）已由顶部 tts_provider_registry
     # 以相同 gate 优先返回，此处不再重复判定（原 fallthrough 分支已并入注册表）。
 
     # 如果有自定义克隆音色，使用 CosyVoice（阿里云）
@@ -5050,7 +5050,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
         response_queue.put(("__ready__", False))
 
 
-# ─── 特异 TTS provider 注册（与 utils.special_tts_registry 对偶）────────────
+# ─── 特异 TTS provider 注册（与 utils.tts_provider_registry 对偶）────────────
 #
 # 在所有 worker 定义之后注册，避免元数据模块过早拉入 soxr/websockets 等重依赖
 # （与 native_voice_registry 的两层注册同源）。各 adapter 精确复刻
@@ -5111,17 +5111,21 @@ def _gptsovits_resolve(core_config, cm):
     return gptsovits_tts_worker, None, 'gptsovits'
 
 
-_special_tts.register(_special_tts.SpecialTTSProvider(
+_tts_providers.register(_tts_providers.TTSProvider(
     key='gptsovits',
+    kind='local',
     priority=10,
+    capabilities=frozenset({'clone'}),  # GPT-SoVITS = 参考音频克隆
     is_selected=_gptsovits_is_selected,
     resolve=_gptsovits_resolve,
     probe_kind='local_http',
 ))
 
-_special_tts.register(_special_tts.SpecialTTSProvider(
+_tts_providers.register(_tts_providers.TTSProvider(
     key='vllm_omni',
+    kind='local',
     priority=20,
+    capabilities=frozenset({'preset'}),  # vLLM-Omni = 选预制音色 id，不克隆
     is_selected=_vllm_omni_is_selected,
     resolve=_vllm_omni_resolve,
     default_url=VLLM_OMNI_DEFAULT_BASE_URL,

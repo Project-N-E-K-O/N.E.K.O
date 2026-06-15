@@ -15,9 +15,9 @@ let _assistApiProviders = {};
 // 核心API服务商完整信息（从后端加载）
 let _coreApiProviders = {};
 // 特异 TTS provider（vllm_omni 等）前端驱动元数据，key→meta；来自后端
-// special_tts_registry，统一驱动下拉过滤 / 端点字段解锁 / 连通性探测，
+// tts_provider_registry，统一驱动下拉过滤 / 端点字段解锁 / 连通性探测，
 // 新增此类 provider 不再需要在本文件多处硬编码 provider key
-let _specialTtsProviders = {};
+let _ttsProviders = {};
 // 连通性测试确认可用的区域 URL，key 形如 "assist:qwen_intl"
 let _resolvedProviderUrls = {};
 // 核心 Key 输入框是否被用户手动改过；未改动时优先采用服务商管理簿的专属 Key
@@ -965,8 +965,8 @@ function populateModelProviderDropdowns() {
             if (isProviderRestricted(pk)) return;
             // 特异 TTS provider（tts_dropdown_only）仅在 TTS 下拉里出现，不污染
             // conversation/summary/correction/emotion/vision/agent/omni 的下拉。
-            // 成员由后端 special_tts_registry 驱动，前端不再硬编码 provider key。
-            const _spFilter = _specialTtsProviders[pk];
+            // 成员由后端 tts_provider_registry 驱动，前端不再硬编码 provider key。
+            const _spFilter = _ttsProviders[pk];
             if (_spFilter && _spFilter.tts_dropdown_only && mt !== 'tts') return;
             const pInfo = _assistApiProviders[pk];
             const opt = document.createElement('option');
@@ -1098,12 +1098,12 @@ function onCustomModelProviderChange(modelType) {
             if (urlInput) { urlInput.value = ''; urlInput.setAttribute('readonly', 'readonly'); }
             setKeyReadonly(keyInput, '');
         }
-    } else if (_specialTtsProviders[provider] && _specialTtsProviders[provider].editable_endpoint && modelType === 'tts') {
+    } else if (_ttsProviders[provider] && _ttsProviders[provider].editable_endpoint && modelType === 'tts') {
         // 特异 TTS provider（端点可编辑，如 vLLM-Omni）：URL/Key/ModelId/Voice 全部
         // 可编辑可保存（类似 custom，但 dropdown 里有自己的名字与默认值）。分支条件由
-        // special_tts_registry 的 editable_endpoint 驱动；预填默认值优先取
+        // tts_provider_registry 的 editable_endpoint 驱动；预填默认值优先取
         // api_providers.json，缺失时回退注册表 default_*（兼容不在 json 里的新 provider）。
-        const _spMeta = _specialTtsProviders[provider];
+        const _spMeta = _ttsProviders[provider];
         const pInfo = _assistApiProviders[provider] || {};
         if (urlInput) {
             // 切换到该 provider 时：
@@ -1194,12 +1194,12 @@ async function loadApiProviders() {
                 _coreApiProviders = data.core_api_providers_full || {};
                 _assistApiProviders = data.assist_api_providers_full || {};
 
-                // 特异 TTS provider 元数据（后端 special_tts_registry → ui_metadata）：
-                // 列表转成 key→meta 映射，供下拉过滤 / 字段解锁 / 探测复用。
-                _specialTtsProviders = {};
-                if (Array.isArray(data.special_tts_providers)) {
-                    data.special_tts_providers.forEach(m => {
-                        if (m && m.key) _specialTtsProviders[m.key] = m;
+                // TTS provider 元数据（后端 tts_provider_registry → ui_metadata）：
+                // 列表转成 key→meta 映射，供下拉过滤 / 字段解锁 / 探测 / 来源能力复用。
+                _ttsProviders = {};
+                if (Array.isArray(data.tts_providers)) {
+                    data.tts_providers.forEach(m => {
+                        if (m && m.key) _ttsProviders[m.key] = m;
                     });
                 }
 
@@ -3075,16 +3075,16 @@ const ConnectivityManager = {
                 // 自定义：直接从输入框读取，不设 providerKey（走自定义模式）
                 result.key = keyInput ? getRealKey(keyInput) : '';
                 result.providerType = (mt === 'omni') ? 'websocket' : 'openai_compatible';
-            } else if (_specialTtsProviders[provider]
-                       && _specialTtsProviders[provider].probe_kind === 'ws_handshake'
+            } else if (_ttsProviders[provider]
+                       && _ttsProviders[provider].probe_kind === 'ws_handshake'
                        && mt === 'tts') {
                 // 特异 TTS provider 的 ws 握手探测（如 vLLM-Omni）：走 Mode 2（custom
                 // 路径），复用后端 _test_websocket，不设 providerKey/providerScope →
                 // 后端用用户输入的 URL。把 base_url 规整成 worker 实际连接的 ws endpoint
                 // （后缀 meta.probe_ws_path），并带 meta.probe_sub_type 让后端分流到对应的
                 // 握手探测，避免发 session.update 触发 vLLM 主动断连导致连通性误判。
-                // 协议细节（ws 后缀 / sub_type）由 special_tts_registry 数据驱动，不再硬编码。
-                const _spProbe = _specialTtsProviders[provider];
+                // 协议细节（ws 后缀 / sub_type）由 tts_provider_registry 数据驱动，不再硬编码。
+                const _spProbe = _ttsProviders[provider];
                 const wsPath = _spProbe.probe_ws_path || '';
                 const rawUrl = (urlInput ? urlInput.value.trim() : '').replace(/\/+$/, '');
                 let wsEndpoint = '';

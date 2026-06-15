@@ -1,7 +1,7 @@
 # TTS 声音来源统一架构（voice-source unification）
 
 > 状态：草案，待 review。本文是 PR #1818（特异 TTS provider 注册表）的演进目标——
-> #1818 已落地的 `special_tts_registry` 是这套架构的种子，本设计把它扩成完整的
+> #1818 已落地的 `tts_provider_registry` 是这套架构的种子，本设计把它扩成完整的
 > provider 注册表，并把"声音来源"提升为一等维度。
 
 ## 1. 问题
@@ -42,7 +42,7 @@ voice = {
 
 ## 3. 统一 provider 注册表
 
-把现有三个分裂的东西（`native_voice_registry` / `special_tts_registry` / 内联 clone 分支）收敛成**一个** provider 注册表。每个 provider 声明自己的特征：
+把现有三个分裂的东西（`native_voice_registry` / `tts_provider_registry` / 内联 clone 分支）收敛成**一个** provider 注册表。每个 provider 声明自己的特征：
 
 ```python
 @dataclass(frozen=True)
@@ -80,7 +80,7 @@ class TTSProvider:
 
 ## 5. 前端：来源优先（source-first）的选声器
 
-前端从注册表元数据（#1818 已开的 `/api_providers → special_tts_providers` 的泛化版）派生 UI：
+前端从注册表元数据（`/api_providers → tts_providers`，#1818 已开）派生 UI：
 
 1. 选 provider（native 由核心隐含）。
 2. 按该 provider 的 `supported_sources` 渲染来源切换：
@@ -109,13 +109,13 @@ design 只是 provider 声明的**第三种 source**，不需要新管线：
 
 ## 8. 与 PR #1818 的关系 / 实施
 
-- #1818 的 `special_tts_registry`（vllm+gptsovits）是本架构 `local` 部分的种子，**演进**成 §3 的统一 `TTSProvider` 注册表即可，不浪费。
+- #1818 的 `tts_provider_registry`（vllm+gptsovits）是本架构 `local` 部分的种子，**演进**成 §3 的统一 `TTSProvider` 注册表即可，不浪费。
 - 按"必须一步完成"：在 #1818 同分支上扩成完整架构（rename、gptsovits 迁下拉、mimo 归 hosted、clone 并入、source 维度、前端选声器、迁移 normalizer），一个 PR 收口。
 - 内部实施顺序（同一 PR 内增量验证）：数据模型 + 注册表骨架 → dispatch 收敛（保 monkeypatch/pickling）→ 迁移 normalizer + 向后兼容测试 → 前端 source-first 选声器 → gsv 远程放宽 + 占位符退役 → 全量回归。
 
 ## 9. 已拍板决策
 
 - **存储 schema**：✅ 单字段结构化对象——characters.json 里 voice 存成 `{source, provider, ref, config}` 对象（不平铺）。
-- **落地方式**：✅ #1818 同分支扩成完整架构，一个 PR 收口；`special_tts_registry` 演进成统一 provider 注册表，已有 commit 当种子不浪费。
+- **落地方式**：✅ #1818 同分支扩成完整架构，一个 PR 收口；`tts_provider_registry` 演进成统一 provider 注册表，已有 commit 当种子不浪费。
 - **ref 命名空间**：默认 `(provider, ref)` 复合键——不强制全局唯一，ref 只在所属 provider 内唯一（克隆 id 本就是 provider scoped）。如 review 有异议再调。
 - **design 首个 provider**：默认锁定 ElevenLabs voice design；其余 provider 不 declare design 即不显示。
