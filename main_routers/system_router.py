@@ -6458,6 +6458,13 @@ async def proactive_chat(request: Request):
         proactive_sid = mgr.current_speech_id
         await mgr.state.fire(_SE.PROACTIVE_PHASE2)
 
+        # Path B (idle) Focus 凝神：this round is now committed to speaking
+        # (PHASE2 fired), so tick the shared hysteresis on the idle-path score
+        # (silence + open-thread) and decide whether Phase-2 generation runs
+        # thinking-on. Dominates all three Phase-2 generate sites below
+        # (main stream / format-fix regen / BM25 anti-repeat regen).
+        _focus_phase2_thinking = await mgr._focus_idle_decision(activity_snapshot)
+
         # --- 构建 LLM + messages (static/dynamic 分离) ---
         phase2_use_vision = bool(screenshot_b64_for_phase2 and has_vision_model)
 
@@ -6524,7 +6531,8 @@ async def proactive_chat(request: Request):
                 # 使用 async with 确保 ChatOpenAI 正确关闭
                 async with _make_llm(temperature=1.0,
                                     max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
-                                    use_vision=phase2_use_vision, disable_thinking=True) as llm:
+                                    use_vision=phase2_use_vision,
+                                    disable_thinking=not _focus_phase2_thinking) as llm:
                     async for chunk in llm.astream(messages):
                         # Phase 2 preempt check：每 chunk 顶端做 O(1) 状态机读，
                         # 用户抢占立刻跳出；_emit_safe 里还有一次保险。
@@ -6655,7 +6663,7 @@ async def proactive_chat(request: Request):
                             temperature=1.0,
                             max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                             use_vision=phase2_use_vision,
-                            disable_thinking=True,
+                            disable_thinking=not _focus_phase2_thinking,
                         ) as _fix_llm:
                             _fix_resp = await _fix_llm.ainvoke(
                                 [messages[0], HumanMessage(content=_fix_human_content)]
@@ -6817,7 +6825,7 @@ async def proactive_chat(request: Request):
                         temperature=1.0,
                         max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                         use_vision=phase2_use_vision,
-                        disable_thinking=True,
+                        disable_thinking=not _focus_phase2_thinking,
                     ) as _regen_llm:
                         _regen_resp = await _regen_llm.ainvoke(regen_messages)
                         regen_text = (

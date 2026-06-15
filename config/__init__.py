@@ -1742,6 +1742,101 @@ PROACTIVE_CHAT_HISTORY_MAX = 10
 - 用途：每个 lanlan 维护的最近主动搭话记录，用于 1h 内去重。
 - 上游：proactive 触发的搭话事件。"""
 
+# ── Focus mode 凝神 (docs/design/focus-truename-mode.md) ───────────────
+# 信号触发、用户无感的「这一轮开思考 + 换强模型」机制，兑现 90/10 产品命题
+# 里的 10% 神明降临。以下全是 A/B 可调旋钮，集中在此便于灰度调参；情绪关键词
+# 这类多语言词表按 i18n 规约放 config/prompts/prompts_focus.py，不在这里。
+FOCUS_MODE_ENABLED = True
+"""凝神总开关（默认开）。
+- 用途：关掉 = FocusScorer 永不评分、SM 永远停在 REGULAR，两条触发路径都退化回
+  常规（proactive 仍 disable_thinking、stream_text 不升档），零行为变化。
+- 上游：FocusScorer / SessionStateMachine 入口的早退判定。"""
+
+FOCUS_SCORE_T_IN = 0.6
+"""进入凝神的评分阈值（迟滞高门）。
+- 用途：FocusScorer 输出的综合分 > 此值 → SM 翻 REGULAR→FOCUS。
+- 上游：归一化到 [0,1] 的加权信号分（见 FOCUS_SIGNAL_WEIGHTS）。
+- 设计依据：先紧（约「一周 1-2 次」水位）后松——上线收紧留底数据，再按漏触发
+  情况回放。魔法稀释 vs 魔法埋没是调参曲线，不是一次性决策。"""
+
+FOCUS_SCORE_T_OUT = 0.2
+"""退出凝神的评分阈值（迟滞低门）。
+- 用途：综合分 < 此值且连续 FOCUS_EXIT_LOW_STREAK 轮，SM 才翻 FOCUS→REGULAR。
+- 设计依据：≈ 0.3 × T_in。进出阈值不对称（Schmitt trigger）避免在阈值附近抖动
+  导致 AI 一句重一句轻的体验断崖。"""
+
+FOCUS_EXIT_LOW_STREAK = 3
+"""退出凝神需要的连续低分轮数 K。
+- 用途：分数掉到 T_out 以下必须连续 K 轮才真正退出，单轮回弹不退。
+- 上游：SM 的 low_streak 计数器。"""
+
+FOCUS_HARD_CAP_TURNS = 8
+"""单次凝神最多持续轮数 M（硬顶）。
+- 用途：即使分数一直在 T_out 以上，满 M 轮也强制退出，防 stuck-on 把降临拖成
+  日常、稀释稀缺感。
+- 上游：SM 的 focus_turn_count 计数器。"""
+
+FOCUS_SIGNAL_WEIGHTS: dict[str, float] = {
+    "keyword": 0.45,      # 用户消息命中脆弱情绪词（inline 路径专属）
+    "cadence": 0.20,      # 回复字数相对基线骤跌（inline 路径专属）
+    "silence": 0.20,      # 静默时长（idle 路径专属）
+    "open_thread": 0.15,  # 存在未收尾话题 / 到点的 followup（两条路径共用）
+}
+"""FocusScorer 各信号的相对权重。
+- 用途：scorer 按当前路径取「适用」信号子集，对子集内权重重新归一后加权平均
+  → 综合分。inline（有新消息）适用 keyword+cadence+open_thread；idle（无新消息）
+  适用 silence+open_thread。不适用的信号不进归一化分母，不会拉低均值。
+- 上游：各子信号各自归一化到 [0,1]。
+- 设计依据：keyword 是 inline 最强单信号故权重最高；open_thread 跨路径共用是凝神
+  「她惦记着上次没聊完的事」闭环的锚。改这里直接改触发性格，慎调。"""
+
+FOCUS_KEYWORD_SATURATION = 3
+"""脆弱情绪关键词命中数的饱和点。
+- 用途：scan_vulnerability_keywords 返回的命中数 / 此值后截到 1.0 作为 keyword
+  子信号——单个「累」是轻推，「撑不住 + 一个人 + 没意思」叠加才是满格。
+- 上游：config/prompts/prompts_focus.scan_vulnerability_keywords 的命中计数。"""
+
+FOCUS_CADENCE_BASELINE_WINDOW = 6
+"""cadence 信号的基线窗口：取最近 N 条用户消息长度算中位数做基线。
+- 用途：FocusScorer 内 per-session 滚动 buffer 的 maxlen。
+- 上游：每条真用户消息的字符长度。"""
+
+FOCUS_CADENCE_MIN_SAMPLES = 3
+"""cadence 信号生效所需的最小样本数。
+- 用途：buffer 内样本不足 N 时 cadence 子信号判为「不适用」（不进归一化），
+  避免会话刚开头基线不稳就乱触发。
+- 上游：滚动 buffer 当前长度。"""
+
+FOCUS_CADENCE_DROP_RATIO = 0.4
+"""cadence 满格所需的「当前长度 / 基线中位数」下跌比。
+- 用途：当前消息长度 ≤ 此比 × 基线中位数 → cadence 子信号 = 1.0；≥ 基线 → 0.0；
+  中间线性。例：基线 30 字、ratio 0.4，则 ≤12 字（「嗯。」「知道了。」）算满格。
+- 上游：当前消息长度与基线中位数之比。"""
+
+FOCUS_SILENCE_MIN_SECONDS = 300
+"""silence 子信号的起跳静默秒数。
+- 用途：seconds_since_user_msg < 此值 → silence 子信号 = 0（日常停顿不算）。
+- 上游：ActivitySnapshot.seconds_since_user_msg。"""
+
+FOCUS_SILENCE_FULL_SECONDS = 1800
+"""silence 子信号满格的静默秒数。
+- 用途：seconds_since_user_msg ≥ 此值 → silence = 1.0；MIN~FULL 间线性。
+- 上游：ActivitySnapshot.seconds_since_user_msg。"""
+
+FOCUS_IDLE_THRESHOLD_MULTIPLIER = 0.4
+"""凝神态下 idle 主动搭话触发阈值的乘数。
+- 用途：用户讲完重话→AI 凝神回复→用户沉默，这种沉默性质不同于日常 idle；凝神态
+  期间把 Path B 的 idle 触发阈值乘以此系数（更敏感、更短沉默就追问），形成「她降临
+  一次后会主动追一两轮才放下」的闭环。常规态乘数恒为 1（不变）。
+- 上游：proactive Path B 的 idle 触发判定。"""
+
+FOCUS_EPISODE_MEMORY_ENABLED = True
+"""凝神退出时顺便批量整理记忆的开关（默认开）。
+- 用途：FOCUS_EXIT 发 EmotionalEpisodeFinished 事件，把这段情感片段的对话切片喂给
+  reflection synth / persona resolve / facts / ban-list 复审（additive 类）。关掉 =
+  只切模式不联动记忆。destructive 类改写属真名 v2，不在此开关范围。
+- 上游：SM FOCUS_EXIT 事件 + memory 侧订阅者。"""
+
 MINI_GAME_INVITE_ENABLED = True
 """Mini-game 邀请短路通道总开关（默认开）。
 - 用途：proactive_chat 在过完 propensity / skip_probability / restricted_screen_only

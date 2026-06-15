@@ -60,7 +60,7 @@ from main_logic.tool_calling import (
     ToolResult,
 )
 from utils.llm_client import AIMessage
-from main_logic.session_state import SessionStateMachine, SessionEvent, ProactivePhase
+from main_logic.session_state import SessionStateMachine, SessionEvent, ProactivePhase, CognitionMode
 from main_logic.lifecycle_bus import LifecycleEventBus
 from main_logic.proactive_delivery import ProactiveDeliveryManager
 from main_logic.agent_event_bus import (
@@ -76,6 +76,7 @@ from config import (
     SESSION_TURN_THRESHOLD,
     AVATAR_INTERACTION_DEDUPE_MAX_ITEMS,
     HIDE_DIRTY_VOICE_TRANSCRIPTS,
+    FOCUS_MODE_ENABLED,
 )
 from config.prompts.prompts_sys import (
     _loc,
@@ -945,8 +946,15 @@ class LLMSessionManager:
         # 用户活动 tracker：把窗口/进程/CPU/idle/语音/对话信号聚合成结构化
         # ActivitySnapshot，供 proactive_chat Phase 1/2 决策搭话倾向。
         # 详见 docs/design/user-activity-tracker.md。
-        from main_logic.activity import UserActivityTracker
+        from main_logic.activity import FocusScorer, UserActivityTracker
         self._activity_tracker = UserActivityTracker(lanlan_name)
+
+        # Focus mode 凝神 scorer（docs/design/focus-truename-mode.md）：把
+        # ActivitySnapshot + 用户消息文本评成一个 [0,1] 分，喂给 self.state
+        # 的迟滞状态机决定这一轮是否「升档」开思考。per-session 实例，仅持有
+        # cadence 基线滚动 buffer。两条触发路径（inline stream_text / idle
+        # proactive）共用同一个 scorer，保证行为不分裂。
+        self._focus_scorer = FocusScorer(lanlan_name)
 
         # 进入游戏/娱乐 或 进入专注工作时，给前端推一次性情境信号——前端（仅 A/B
         # 实验组 vision_chat_default_off、每会话每类一次）据此弹窗问要不要开/关主动搭话
@@ -1580,6 +1588,72 @@ class LLMSessionManager:
         self._tts_done_pending_until_ready = False
         async with self.lock:
             self.current_speech_id = str(uuid4())
+
+    async def _focus_inline_decision(self, user_text: str) -> bool:
+        """Path A (inline) Focus 凝神 gate: score the just-arrived user message and
+        return whether THIS reply should run thinking-on.
+
+        Scores via the shared ``FocusScorer`` (keyword + cadence + open-thread
+        signals), advances ``self.state``'s hysteresis (``update_focus``), and
+        returns ``mode is FOCUS``. An explicit topic switch forces an immediate
+        exit. Best-effort: any failure degrades to regular (thinking-off) and
+        never blocks the user reply. Returns False fast when the master switch
+        is off (skips the snapshot cost).
+        """
+        if not FOCUS_MODE_ENABLED:
+            return False
+        if not (user_text and user_text.strip()):
+            return False
+        try:
+            from config.prompts.prompts_focus import detect_topic_switch
+            lang = self.user_language or 'zh'
+            snapshot = await self._activity_tracker.get_snapshot()
+            scored = self._focus_scorer.score(snapshot, user_text=user_text, lang=lang)
+            topic_changed = detect_topic_switch(user_text, lang)
+            mode = await self.state.update_focus(
+                scored.score, topic_changed=topic_changed,
+            )
+            if mode is CognitionMode.FOCUS:
+                logger.info(
+                    "[%s] 凝神 inline: score=%.2f signals=%s → thinking-on",
+                    self.lanlan_name, scored.score, scored.signals,
+                )
+            return mode is CognitionMode.FOCUS
+        except Exception as e:
+            logger.warning("[%s] focus inline decision failed (degrading to regular): %s",
+                           self.lanlan_name, e)
+            return False
+
+    async def _focus_idle_decision(self, snapshot) -> bool:
+        """Path B (idle) Focus 凝神 gate: score a silence window (no fresh user
+        message) and return whether THIS proactive reply should run thinking-on.
+
+        Idle-path signals are silence + open-thread (keyword/cadence need a
+        message and are N/A). Advances the SAME ``self.state`` hysteresis as
+        the inline path so a focus episode is one shared state regardless of
+        which path drove it. Best-effort; degrades to regular on any failure
+        or when the master switch is off / snapshot unavailable.
+
+        Note (tuning): because proactive fires on a schedule, idle ticks can
+        accumulate toward the low-streak exit faster than conversational turns
+        — the cross-path interaction is a known knob (see
+        docs/design/focus-truename-mode.md).
+        """
+        if not FOCUS_MODE_ENABLED or snapshot is None:
+            return False
+        try:
+            scored = self._focus_scorer.score(snapshot, user_text=None)
+            mode = await self.state.update_focus(scored.score)
+            if mode is CognitionMode.FOCUS:
+                logger.info(
+                    "[%s] 凝神 idle: score=%.2f signals=%s → thinking-on proactive",
+                    self.lanlan_name, scored.score, scored.signals,
+                )
+            return mode is CognitionMode.FOCUS
+        except Exception as e:
+            logger.warning("[%s] focus idle decision failed (degrading to regular): %s",
+                           self.lanlan_name, e)
+            return False
 
     async def handle_text_data(
         self,
@@ -3521,6 +3595,9 @@ class LLMSessionManager:
         # teardown 必须用 force=True：默认 reset() 会在活动 phase 上 no-op（保护
         # auto-start 不被误清），但 end_session 语义就是整轮收尾，必须强制清场。
         await self.state.reset(force=True)
+        # 对偶 SM.reset 清 focus 态：scorer 的 cadence 基线也按会话隔离，新会话
+        # 不继承上一会话的消息长度基线。
+        self._focus_scorer.reset()
 
     def _realtime_base_url(self) -> str:
         """Read the realtime route's base_url, for the native voice routing host remap
@@ -7550,9 +7627,14 @@ class LLMSessionManager:
                             _agent_cb_ctx = ""
 
                     self._active_text_request_id = message.get("request_id")
+                    # Path A (inline) Focus 凝神：score this user message and, if
+                    # over the bar, run THIS reply thinking-on. Scored on the
+                    # raw user text (``data``), not the agent-callback prefix.
+                    _focus_thinking = await self._focus_inline_decision(data)
                     await self.session.stream_text(
                         data,
                         system_prefix=_agent_cb_ctx or None,
+                        thinking_on=_focus_thinking,
                     )
                 else:
                     logger.error(f"💥 Stream: Invalid text data type: {type(data)}")

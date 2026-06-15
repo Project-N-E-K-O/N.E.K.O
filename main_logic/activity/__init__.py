@@ -45,6 +45,7 @@ from main_logic.activity.system_signals import (
     get_system_signal_collector,
 )
 from main_logic.activity.tracker import UserActivityTracker
+from main_logic.activity.focus_scorer import FocusScore, FocusScorer
 
 __all__ = [
     'UserActivityTracker',
@@ -52,4 +53,5 @@ __all__ = [
     'UnfinishedThread', 'WindowObservation',
     'format_activity_state_section', 'state_to_propensity',
     'SystemSignalCollector', 'SystemSnapshot', 'get_system_signal_collector',
+    'FocusScore', 'FocusScorer',
 ]

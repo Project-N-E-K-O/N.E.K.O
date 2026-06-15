@@ -1591,11 +1591,24 @@ class OmniOfflineClient:
             return None
         return summary
 
-    async def stream_text(self, text: str, *, system_prefix: str | None = None) -> None:
+    async def stream_text(
+        self, text: str, *, system_prefix: str | None = None,
+        thinking_on: bool = False,
+    ) -> None:
         """
         Send a text message to the API and stream the response.
         If there are pending images, temporarily switch to vision model for this turn.
         Uses langchain ChatOpenAI for streaming.
+
+        ``thinking_on`` (Focus mode 凝神, docs/design/focus-truename-mode.md):
+        when True, this single turn drops the auto-resolved thinking-off
+        ``extra_body`` so the provider runs its default reasoning ("放飞自我").
+        It is a per-call override (``extra_body=None`` threaded into
+        ``astream``) — the session LLM is NOT rebuilt and the next regular
+        turn falls straight back to thinking-off. Applies to the
+        OpenAI-compat path (where the thinking-off knob lives); the native
+        google-genai path is already thinking-capable by default, so the
+        override is a no-op there.
 
         Purpose of ``system_prefix``: the caller (typically SessionManager rendering a
         passive agent callback into watermarked ``======[系统通知] xxx======`` text)
@@ -1811,7 +1824,14 @@ class OmniOfflineClient:
                         # PLACE). The yielded chunks are exactly the same
                         # shape as raw ``self.llm.astream``, so the existing
                         # prefix/fence/length-guard logic below is untouched.
-                        async for chunk in self._astream_with_tools(self._conversation_history):
+                        # Focus 凝神: thinking_on threads ``extra_body=None``
+                        # down to ``astream`` (per-call override) so this turn
+                        # reasons freely; regular turns pass nothing → the
+                        # instance's thinking-off extra_body applies.
+                        _focus_overrides = {"extra_body": None} if thinking_on else {}
+                        async for chunk in self._astream_with_tools(
+                            self._conversation_history, **_focus_overrides,
+                        ):
                             if not _ttft_recorded:
                                 _ttft_recorded = True
                                 try:
