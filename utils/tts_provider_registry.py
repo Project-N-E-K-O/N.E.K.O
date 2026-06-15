@@ -44,7 +44,7 @@ defined, via :func:`register`.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 from utils.logger_config import get_module_logger
@@ -63,7 +63,10 @@ VoiceSource = Literal["preset", "clone", "design"]
 # registry yet (see module docstring); kept out of the Literal until folded in.
 ProviderKind = Literal["local", "hosted"]
 
-@dataclass(frozen=True)
+_VOICE_META_UNSET = object()
+
+
+@dataclass
 class DispatchContext:
     """Everything a provider needs to decide selection / resolve a worker.
 
@@ -77,16 +80,41 @@ class DispatchContext:
 
     ``get_tts_worker`` builds this once and hands it to every provider's
     ``is_selected`` / ``resolve``; providers ignore the fields they don't need.
+
+    ``voice_meta`` is **lazy**: it is loaded (and cached) only on first access via
+    ``voice_meta_loader``, so config-selected providers — checked first by
+    priority — can win without ever touching voice storage. This preserves the
+    contract that an explicit provider pick short-circuits before any voice
+    metadata lookup (see test_get_tts_worker_routes_explicit_vllm_before_cloned_voice).
     """
 
     core_config: Mapping[str, Any]
     cm: "ConfigManager"
     voice_id: str = ""
     has_custom_voice: bool = False
-    # The picked cloned voice's metadata (``_get_voice_meta(voice_id)``), or None
-    # when there is no custom voice / no local metadata. Precomputed by the caller
-    # so providers don't each re-query.
-    voice_meta: dict | None = None
+    # Injected by the caller (get_tts_worker) — typically ``lambda: _get_voice_meta(voice_id)``.
+    # The registry can't import _get_voice_meta (it lives in tts_client) without a
+    # circular import, so the loader is passed in.
+    voice_meta_loader: "Callable[[], dict | None] | None" = None
+    _voice_meta_cache: Any = field(default=_VOICE_META_UNSET, init=False, repr=False, compare=False)
+
+    @property
+    def voice_meta(self) -> "dict | None":
+        """The picked cloned voice's metadata, or None when there's no custom
+        voice / no local metadata. Computed once on first access, then cached."""
+        if self._voice_meta_cache is _VOICE_META_UNSET:
+            result = None
+            if self.voice_meta_loader and self.has_custom_voice and self.voice_id:
+                try:
+                    result = self.voice_meta_loader()
+                except Exception:
+                    logger.warning(
+                        "voice_meta_loader 失败 (voice_id=%s)，按无元数据处理",
+                        self.voice_id, exc_info=True,
+                    )
+                    result = None
+            self._voice_meta_cache = result
+        return self._voice_meta_cache
 
 
 SelectPredicate = Callable[["DispatchContext"], bool]

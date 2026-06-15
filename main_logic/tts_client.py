@@ -4702,58 +4702,19 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
         cm=cm,
         voice_id=voice_id or '',
         has_custom_voice=bool(has_custom_voice),
+        voice_meta_loader=lambda: _get_voice_meta(voice_id),
     )
     special = _tts_providers.resolve_selected(_dispatch_ctx)
     if special is not None:
         logger.info("[get_tts_worker] 命中 TTS provider: %s", special[2])
         return special
 
-    # voice_meta 提到 outer scope：cosyvoice 分支也需要它来跟"已存 clone"区分
-    # "xAI 自定义 voice / 未知 voice"。MiniMax / ElevenLabs 分支保持嵌套以保留现有日志。
-    voice_meta = None
-
-    # 优先检查克隆音色 provider（MiniMax / ElevenLabs / 阿里 CosyVoice）
-    if has_custom_voice and voice_id:
-        voice_meta = _get_voice_meta(voice_id)
-        if voice_meta is None:
-            # 本地元数据缺失 — 可能是本地 TTS 音色（GPT-SoVITS / CosyVoice local），
-            # 远端 clone 成功但本地保存失败，或 xAI 自定义 voice。
-            # 不要在这里 short-circuit，让下面的 tts_custom（GPT-SoVITS / local
-            # CosyVoice）分支先有机会匹配 — grok 短路放到 cosyvoice 块里。
-            logger.debug("克隆音色 %s 无本地元数据，跳过 MiniMax/ElevenLabs 检测", voice_id)
-        elif voice_meta.get('provider', '').startswith('minimax'):
-            provider = voice_meta['provider']
-            logger.info("检测到 MiniMax 克隆音色: %s (provider=%s)，使用 MiniMax TTS Worker",
-                        voice_id, provider)
-            api_key = cm.get_tts_api_key(provider)
-            from utils.voice_clone import MINIMAX_DOMESTIC_BASE_URL, MINIMAX_INTL_BASE_URL
-            base_url = voice_meta.get('minimax_base_url') or (
-                MINIMAX_INTL_BASE_URL if provider == 'minimax_intl' else MINIMAX_DOMESTIC_BASE_URL
-            )
-            worker = partial(minimax_tts_worker, base_url=base_url)
-            return worker, api_key, 'minimax'
-        elif voice_meta.get('provider') == 'elevenlabs':
-            logger.info("检测到 ElevenLabs 克隆音色: %s，使用 ElevenLabs TTS Worker", voice_id)
-            elevenlabs_options = _get_elevenlabs_options()
-            base_url = voice_meta.get('elevenlabs_base_url') or elevenlabs_options['base_url']
-            worker = partial(elevenlabs_tts_worker, base_url=base_url)
-            return worker, _resolve_elevenlabs_api_key(cm), 'elevenlabs'
-        elif voice_meta.get('provider') in ('cosyvoice', 'cosyvoice_intl'):
-            provider = voice_meta.get('provider') or 'cosyvoice'
-            runtime = cm.get_cosyvoice_clone_runtime(provider)
-            runtime_key = (runtime.get('api_key') or '').strip()
-            # provider=='cosyvoice_intl' 必须用 intl 的 key 调 intl 端点。runtime_key
-            # 缺失时如果只返回 None，core.py 会用 `api_key_override or tts_config['api_key']`
-            # 兜底到 tts_custom 槽位的国内 key，结果拿国内 key 打 intl 端点，每次
-            # utterance 都吃一次上游 401 — 比直接 dummy 静音更难排查。
-            if provider == 'cosyvoice_intl' and not runtime_key:
-                logger.warning(
-                    "阿里国际版 CosyVoice 克隆音色 %s 选中，但 intl key 缺失，"
-                    "改用 dummy TTS worker 避免用错凭证打 intl 端点", voice_id)
-                return dummy_tts_worker, None, None
-            logger.info("检测到阿里 CosyVoice 克隆音色: %s (provider=%s)，使用 CosyVoice TTS Worker",
-                        voice_id, provider)
-            return cosyvoice_vc_tts_worker, (runtime_key or None), 'cosyvoice'
+    # 克隆音色 provider（MiniMax / ElevenLabs / 阿里 CosyVoice）已折入
+    # tts_provider_registry（priority 30/40/50，按 voice_meta.provider 选中），
+    # 由上面的 resolve_selected 统一返回（含 cosyvoice_intl key 缺失 → dummy 的兜底）。
+    # 这里取出 ctx 已惰性算好的 voice_meta 供下方 grok / cosyvoice fallback 块复用：
+    # voice_meta=None 表示远端 clone 无本地元数据 / xAI 自定义 voice，需走 fallback。
+    voice_meta = _dispatch_ctx.voice_meta
 
     if tts_provider == 'mimo' or assist_api_type == 'mimo':
         mimo_base_url = core_cfg.get('OPENROUTER_URL') if assist_api_type == 'mimo' else None
@@ -5125,6 +5086,66 @@ def _gptsovits_resolve(ctx):
     return gptsovits_tts_worker, None, 'gptsovits'
 
 
+# ── 克隆音色 provider（按 voice_meta.provider 选中，hosted SaaS）─────────────
+# 与 vllm/gptsovits 的"配置选中"不同，这三家靠用户所选克隆音色的 voice_meta 路由；
+# is_selected 读 ctx.voice_meta（惰性，vllm/gptsovits 命中时不会触发），resolve 复刻
+# 原 get_tts_worker 克隆块逻辑（含 cosyvoice_intl key 缺失 → dummy 的凭证兜底）。
+
+
+def _minimax_clone_is_selected(ctx) -> bool:
+    vm = ctx.voice_meta
+    return bool(vm and str(vm.get('provider', '')).startswith('minimax'))
+
+
+def _minimax_clone_resolve(ctx):
+    vm = ctx.voice_meta or {}
+    provider = vm.get('provider') or 'minimax'
+    logger.info("检测到 MiniMax 克隆音色: %s (provider=%s)，使用 MiniMax TTS Worker",
+                ctx.voice_id, provider)
+    api_key = ctx.cm.get_tts_api_key(provider)
+    from utils.voice_clone import MINIMAX_DOMESTIC_BASE_URL, MINIMAX_INTL_BASE_URL
+    base_url = vm.get('minimax_base_url') or (
+        MINIMAX_INTL_BASE_URL if provider == 'minimax_intl' else MINIMAX_DOMESTIC_BASE_URL
+    )
+    return partial(minimax_tts_worker, base_url=base_url), api_key, 'minimax'
+
+
+def _elevenlabs_clone_is_selected(ctx) -> bool:
+    vm = ctx.voice_meta
+    return bool(vm and vm.get('provider') == 'elevenlabs')
+
+
+def _elevenlabs_clone_resolve(ctx):
+    vm = ctx.voice_meta or {}
+    logger.info("检测到 ElevenLabs 克隆音色: %s，使用 ElevenLabs TTS Worker", ctx.voice_id)
+    elevenlabs_options = _get_elevenlabs_options()
+    base_url = vm.get('elevenlabs_base_url') or elevenlabs_options['base_url']
+    return partial(elevenlabs_tts_worker, base_url=base_url), _resolve_elevenlabs_api_key(ctx.cm), 'elevenlabs'
+
+
+def _cosyvoice_clone_is_selected(ctx) -> bool:
+    vm = ctx.voice_meta
+    return bool(vm and vm.get('provider') in ('cosyvoice', 'cosyvoice_intl'))
+
+
+def _cosyvoice_clone_resolve(ctx):
+    vm = ctx.voice_meta or {}
+    provider = vm.get('provider') or 'cosyvoice'
+    runtime = ctx.cm.get_cosyvoice_clone_runtime(provider)
+    runtime_key = (runtime.get('api_key') or '').strip()
+    # provider=='cosyvoice_intl' 必须用 intl key 调 intl 端点。runtime_key 缺失时若只返回
+    # None，core.py 会用 `api_key_override or tts_config['api_key']` 兜底到 tts_custom 槽位的
+    # 国内 key，结果拿国内 key 打 intl 端点，每次 utterance 吃一次 401 — 比 dummy 静音更难查。
+    if provider == 'cosyvoice_intl' and not runtime_key:
+        logger.warning(
+            "阿里国际版 CosyVoice 克隆音色 %s 选中，但 intl key 缺失，"
+            "改用 dummy TTS worker 避免用错凭证打 intl 端点", ctx.voice_id)
+        return dummy_tts_worker, None, None
+    logger.info("检测到阿里 CosyVoice 克隆音色: %s (provider=%s)，使用 CosyVoice TTS Worker",
+                ctx.voice_id, provider)
+    return cosyvoice_vc_tts_worker, (runtime_key or None), 'cosyvoice'
+
+
 _tts_providers.register(_tts_providers.TTSProvider(
     key='gptsovits',
     kind='local',
@@ -5149,4 +5170,40 @@ _tts_providers.register(_tts_providers.TTSProvider(
     probe_kind='ws_handshake',
     probe_sub_type='vllm_omni_tts',
     probe_ws_path='/audio/speech/stream',
+))
+
+# 克隆音色 provider（hosted SaaS，按 voice_meta.provider 选中）。priority 30/40/50
+# 沿用原 get_tts_worker 克隆块顺序：都在 vllm(20) 之后、mimo/native 之前。capabilities
+# 暂记 {clone}（当前仅克隆路由经注册表；preset/design 待 wiring 后按实际能力追加）。
+# tts_dropdown_only=False：这几家不靠下拉选中（靠 voice_meta），且 minimax 本身还是
+# LLM provider，绝不能被前端从对话/总结等 LLM 下拉里隐藏。它们在 ui_metadata 里的存在
+# 是给前端 source-first 选声器读 capabilities 用的，不参与下拉过滤。
+_tts_providers.register(_tts_providers.TTSProvider(
+    key='minimax',
+    kind='hosted',
+    priority=30,
+    capabilities=frozenset({'clone'}),
+    is_selected=_minimax_clone_is_selected,
+    resolve=_minimax_clone_resolve,
+    tts_dropdown_only=False,
+))
+
+_tts_providers.register(_tts_providers.TTSProvider(
+    key='elevenlabs',
+    kind='hosted',
+    priority=40,
+    capabilities=frozenset({'clone'}),
+    is_selected=_elevenlabs_clone_is_selected,
+    resolve=_elevenlabs_clone_resolve,
+    tts_dropdown_only=False,
+))
+
+_tts_providers.register(_tts_providers.TTSProvider(
+    key='cosyvoice',
+    kind='hosted',
+    priority=50,
+    capabilities=frozenset({'clone'}),
+    is_selected=_cosyvoice_clone_is_selected,
+    resolve=_cosyvoice_clone_resolve,
+    tts_dropdown_only=False,
 ))
