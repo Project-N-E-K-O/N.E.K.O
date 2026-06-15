@@ -43,6 +43,14 @@ def _docx_bytes(text: str, extra_members: dict[str, str | bytes] | None = None) 
     return _zip_bytes(members)
 
 
+def _word_part_xml(root_name: str, text: str) -> str:
+    return (
+        f'<w:{root_name} xmlns:w="{WORD_NS}"><w:p><w:r>'
+        f"<w:t>{text}</w:t>"
+        f"</w:r></w:p></w:{root_name}>"
+    )
+
+
 def _xlsx_bytes(text: str, sheet_count: int = 1, row_count: int = 1) -> bytes:
     sheets = "".join(
         f'<sheet name="Sheet {index}" sheetId="{index}" r:id="rId{index}"/>'
@@ -200,6 +208,38 @@ def test_parse_supported_document_text_formats():
         assert expected_text in parsed["content"]
         assert parsed["chars"] == len(parsed["content"])
         assert parsed["truncated"] is False
+
+
+@pytest.mark.unit
+def test_deduplicates_repeated_docx_long_text_parts():
+    repeated = "Steam GitHub B站 QQ群 Discord 猫娘计划渠道说明 " * 8
+
+    parsed = parse_avatar_document(
+        "duplicated.docx",
+        "",
+        _docx_bytes(
+            repeated,
+            {
+                "word/header1.xml": _word_part_xml("hdr", repeated),
+                "word/footer1.xml": _word_part_xml("ftr", repeated),
+            },
+        ),
+    )
+
+    assert parsed["content"].count(repeated.strip()) == 1
+    assert "# Header" not in parsed["content"]
+    assert "# Footer" not in parsed["content"]
+
+
+@pytest.mark.unit
+def test_deduplicates_pptx_notes_that_repeat_slide_body():
+    repeated = "日常使用 悬浮菜单操作 角色卡功能 模块说明 " * 8
+
+    parsed = parse_avatar_document("duplicated.pptx", "", _pptx_bytes(repeated, repeated))
+
+    assert parsed["content"].count(repeated.strip()) == 1
+    assert "# Slide 1" in parsed["content"]
+    assert "# Notes 1" not in parsed["content"]
 
 
 @pytest.mark.unit

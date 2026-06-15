@@ -23,6 +23,7 @@ MAX_PDF_PAGES = 40
 MAX_XLSX_SHEETS = 12
 MAX_XLSX_ROWS_PER_SHEET = 800
 MAX_PPTX_SLIDES = 40
+MIN_DEDUP_TEXT_CHARS = 80
 
 
 class AvatarDocumentParseError(ValueError):
@@ -132,6 +133,7 @@ def _parse_pdf(data: bytes) -> dict[str, Any]:
         total_pages = None
     budget = _TextBudget()
     parts: list[str] = []
+    seen_text_keys: set[str] = set()
     observed_pages = 0
     for index, page in enumerate(reader.pages, start=1):
         observed_pages = index
@@ -142,8 +144,7 @@ def _parse_pdf(data: bytes) -> dict[str, Any]:
             text = page.extract_text() or ""
         except Exception:
             text = ""
-        if text.strip():
-            budget.add(parts, f"# Page {index}\n{text}")
+        _add_unique_text_part(budget, parts, seen_text_keys, f"Page {index}", text)
         if budget.truncated:
             break
     if total_pages is not None and total_pages > MAX_PDF_PAGES:
@@ -161,12 +162,12 @@ def _parse_docx(data: bytes) -> dict[str, Any]:
         _reject_macro_members(archive, "word/")
         budget = _TextBudget()
         parts: list[str] = []
+        seen_text_keys: set[str] = set()
         for name in _docx_text_member_names(archive):
             xml_bytes = _read_xml_member(archive, name)
             text = _extract_word_text(xml_bytes)
-            if text:
-                label = _docx_member_label(name)
-                budget.add(parts, f"# {label}\n{text}" if label else text)
+            label = _docx_member_label(name)
+            _add_unique_text_part(budget, parts, seen_text_keys, label, text)
             if budget.truncated:
                 break
         return {
@@ -210,6 +211,7 @@ def _parse_pptx(data: bytes) -> dict[str, Any]:
         _reject_macro_members(archive, "ppt/")
         budget = _TextBudget()
         parts: list[str] = []
+        seen_text_keys: set[str] = set()
         slide_names = sorted(
             (name for name in archive.namelist() if re.fullmatch(r"ppt/slides/slide\d+\.xml", name)),
             key=_natural_key,
@@ -217,8 +219,7 @@ def _parse_pptx(data: bytes) -> dict[str, Any]:
         for index, name in enumerate(slide_names[:MAX_PPTX_SLIDES], start=1):
             xml_bytes = _read_xml_member(archive, name)
             text = _extract_drawing_text(xml_bytes)
-            if text:
-                budget.add(parts, f"# Slide {index}\n{text}")
+            _add_unique_text_part(budget, parts, seen_text_keys, f"Slide {index}", text)
             if budget.truncated:
                 break
         if len(slide_names) > MAX_PPTX_SLIDES:
@@ -231,8 +232,7 @@ def _parse_pptx(data: bytes) -> dict[str, Any]:
             if budget.truncated:
                 break
             text = _extract_drawing_text(_read_xml_member(archive, name))
-            if text:
-                budget.add(parts, f"# Notes {index}\n{text}")
+            _add_unique_text_part(budget, parts, seen_text_keys, f"Notes {index}", text)
         if len(note_names) > MAX_PPTX_SLIDES:
             budget.truncated = True
         return {
@@ -343,6 +343,31 @@ def _extract_word_text(xml_bytes: bytes) -> str:
         if line:
             lines.append(line)
     return "\n".join(lines)
+
+
+def _add_unique_text_part(
+    budget: _TextBudget,
+    parts: list[str],
+    seen_text_keys: set[str],
+    label: str,
+    text: str,
+) -> None:
+    value = _clean_text(text)
+    if not value:
+        return
+    key = _text_dedup_key(value)
+    if key:
+        if key in seen_text_keys:
+            return
+        seen_text_keys.add(key)
+    budget.add(parts, f"# {label}\n{value}" if label else value)
+
+
+def _text_dedup_key(text: str) -> str:
+    normalized = re.sub(r"\s+", " ", _clean_text(text)).strip().casefold()
+    if len(normalized) < MIN_DEDUP_TEXT_CHARS:
+        return ""
+    return normalized
 
 
 def _read_xlsx_shared_strings(archive: zipfile.ZipFile) -> list[str]:
