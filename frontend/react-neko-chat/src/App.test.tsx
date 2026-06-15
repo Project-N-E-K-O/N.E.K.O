@@ -4903,7 +4903,9 @@ describe('App', () => {
       });
 
       expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
-      expect(Number.parseFloat(fan.style.getPropertyValue('--compact-tool-wheel-drag-angle'))).toBeLessThan(12);
+      const residualDragAngle = Number.parseFloat(fan.style.getPropertyValue('--compact-tool-wheel-drag-angle'));
+      expect(residualDragAngle).toBeGreaterThan(1);
+      expect(residualDragAngle).toBeLessThan(12);
 
       fireEvent.pointerUp(fan, {
         pointerId: 44,
