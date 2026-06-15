@@ -179,6 +179,14 @@ def test_phase9_reply_renderer_accepts_multiline_display_cases_block() -> None:
     assert "<p>$$</p>" not in html
 
 
+def test_phase9_reply_renderer_preserves_text_after_display_math_closer() -> None:
+    html = _render_reply_with_node("$$\nx=1\n$$ therefore x=1")
+
+    assert '<span class="katex" data-display="true">x=1</span>' in html
+    assert "<p>therefore x=1</p>" in html
+    assert "therefore x=1" in html
+
+
 @pytest.mark.parametrize("asset_name", ["katex-render.js", "math-parser.js"])
 def test_phase9_math_parser_tolerates_duplicate_inline_closing_dollar(asset_name: str) -> None:
     parts = _split_math_with_node(asset_name, "即 $8 \\times 1 = 8$$。")

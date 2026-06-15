@@ -359,6 +359,7 @@
           mathLines.push(displayMathBlock[1]);
         }
         let closer = -1;
+        let trailingCloseText = '';
         for (let scan = index + 1; scan < lines.length; scan += 1) {
           const closeAt = lines[scan].indexOf('$$');
           if (closeAt !== -1) {
@@ -366,6 +367,7 @@
             if (beforeClose) {
               mathLines.push(beforeClose);
             }
+            trailingCloseText = lines[scan].slice(closeAt + 2).trim();
             closer = scan;
             break;
           }
@@ -374,6 +376,9 @@
         if (closer !== -1) {
           closeList();
           blocks.push(renderMathPart({ type: 'math', value: mathLines.join('\n').trim(), display: true }));
+          if (trailingCloseText) {
+            blocks.push(`<p>${renderInline(trailingCloseText)}</p>`);
+          }
           index = closer;
           continue;
         }
