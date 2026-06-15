@@ -140,12 +140,11 @@ def ensure_topic(
 
 
 def get_topic(self, topic_id: str) -> dict[str, Any] | None:
-    with self._lock:
-        row = (
-            self._require_conn()
-            .execute("SELECT * FROM topics WHERE id = ?", (str(topic_id or ""),))
-            .fetchone()
-        )
+    row = (
+        self._require_read_conn()
+        .execute("SELECT * FROM topics WHERE id = ?", (str(topic_id or ""),))
+        .fetchone()
+    )
     return self._topic_from_row(row)
 
 
@@ -153,40 +152,38 @@ def find_topic_by_name(self, name: str) -> dict[str, Any] | None:
     text = str(name or "").strip()
     if not text:
         return None
-    with self._lock:
-        row = (
-            self._require_conn()
-            .execute(
-                "SELECT * FROM topics WHERE name = ? OR id = ? LIMIT 1",
-                (text, text),
-            )
-            .fetchone()
+    row = (
+        self._require_read_conn()
+        .execute(
+            "SELECT * FROM topics WHERE name = ? OR id = ? LIMIT 1",
+            (text, text),
         )
+        .fetchone()
+    )
     return self._topic_from_row(row)
 
 
 def list_topics(
     self, limit: int = 100, subject: str | None = None
 ) -> list[dict[str, Any]]:
-    with self._lock:
-        if subject:
-            rows = (
-                self._require_conn()
-                .execute(
-                    "SELECT * FROM topics WHERE subject = ? ORDER BY chapter, depth, id LIMIT ?",
-                    (subject, max(1, int(limit))),
-                )
-                .fetchall()
+    if subject:
+        rows = (
+            self._require_read_conn()
+            .execute(
+                "SELECT * FROM topics WHERE subject = ? ORDER BY chapter, depth, id LIMIT ?",
+                (subject, max(1, int(limit))),
             )
-        else:
-            rows = (
-                self._require_conn()
-                .execute(
-                    "SELECT * FROM topics ORDER BY subject, chapter, depth, id LIMIT ?",
-                    (max(1, int(limit)),),
-                )
-                .fetchall()
+            .fetchall()
+        )
+    else:
+        rows = (
+            self._require_read_conn()
+            .execute(
+                "SELECT * FROM topics ORDER BY subject, chapter, depth, id LIMIT ?",
+                (max(1, int(limit)),),
             )
+            .fetchall()
+        )
     return [
         topic
         for topic in (self._topic_from_row(row) for row in rows)
@@ -195,31 +192,28 @@ def list_topics(
 
 
 def count_topics(self) -> int:
-    with self._lock:
-        row = (
-            self._require_conn()
-            .execute("SELECT COUNT(*) AS count FROM topics")
-            .fetchone()
-        )
+    row = (
+        self._require_read_conn()
+        .execute("SELECT COUNT(*) AS count FROM topics")
+        .fetchone()
+    )
     return int(row["count"] if row is not None else 0)
 
 
 def count_tracked_mastery_topics(self) -> int:
-    with self._lock:
-        row = (
-            self._require_conn()
-            .execute("SELECT COUNT(DISTINCT topic_id) AS count FROM mastery_snapshots")
-            .fetchone()
-        )
+    row = (
+        self._require_read_conn()
+        .execute("SELECT COUNT(DISTINCT topic_id) AS count FROM mastery_snapshots")
+        .fetchone()
+    )
     return int(row["count"] if row is not None else 0)
 
 
 def average_latest_mastery(self) -> float:
-    with self._lock:
-        row = (
-            self._require_conn()
-            .execute(
-                """
+    row = (
+        self._require_read_conn()
+        .execute(
+            """
             SELECT AVG(ms.mastery) AS average_mastery
             FROM mastery_snapshots ms
             JOIN (
@@ -228,7 +222,7 @@ def average_latest_mastery(self) -> float:
                 GROUP BY topic_id
             ) latest ON latest.max_id = ms.id
             """
-            )
-            .fetchone()
         )
+        .fetchone()
+    )
     return float(row["average_mastery"] or 0.0) if row is not None else 0.0

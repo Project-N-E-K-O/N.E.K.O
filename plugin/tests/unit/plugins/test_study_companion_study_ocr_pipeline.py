@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from concurrent.futures import Future
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from PIL import Image
 
-from plugin.plugins.study_companion.models import AwarenessConfig, StudyConfig
+from plugin.plugins.study_companion.models import AwarenessConfig, OcrSnapshot, StudyConfig
 from plugin.plugins.study_companion import study_ocr_pipeline as pipeline_module
 from plugin.plugins.study_companion.study_ocr_pipeline import (
     CAPTURE_BACKEND_DXCAM,
@@ -160,6 +161,157 @@ def test_ocr_pipeline_lightweight_jpeg_keeps_shrinking_until_limit() -> None:
     assert len(raw) <= 10_240
 
 
+def test_ocr_pipeline_lightweight_jpeg_disables_optimize(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image = Image.new("RGB", (800, 600), "white")
+    original_save = Image.Image.save
+    optimize_values: list[object] = []
+
+    def save_spy(self, fp, format=None, **params):  # noqa: ANN001
+        optimize_values.append(params.get("optimize"))
+        return original_save(self, fp, format=format, **params)
+
+    monkeypatch.setattr(Image.Image, "save", save_spy)
+
+    raw = StudyOcrPipeline._encode_lightweight_jpeg(image, max_bytes=20_000)
+
+    assert raw
+    assert optimize_values
+    assert set(optimize_values) == {False}
+
+
+def test_ocr_pipeline_imagehash_module_import_is_optional(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pipeline_module, "imagehash", None, raising=False)
+
+    assert StudyOcrPipeline._calculate_thumbnail_phash(
+        Image.new("RGB", (16, 16), "white")
+    ) is None
+
+
+def test_ocr_pipeline_capture_lightweight_allows_missing_imagehash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pipeline_module, "imagehash", None, raising=False)
+    image = Image.new("RGB", (640, 360), "white")
+    pipeline = StudyOcrPipeline(
+        logger=_Logger(),
+        config=StudyConfig(
+            awareness=AwarenessConfig(
+                classify_mode="title_first",
+                image_max_bytes=50_000,
+            )
+        ),
+        ocr_backend=_Backend(RuntimeError("ocr should not run")),
+        capture_backend=_Capture(image),
+    )
+
+    snapshot = pipeline.capture_lightweight(
+        target={"hwnd": 1, "title": "main.py - Visual Studio Code"}
+    )
+
+    assert snapshot.status == "ok"
+    assert snapshot.thumbnail_phash == ""
+    assert snapshot.has_content_change is False
+    assert "phash=" in snapshot.diagnostic
+
+
+def test_ocr_pipeline_capture_lightweight_cancels_timed_out_workers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image = Image.new("RGB", (640, 360), "white")
+    futures: list[_TimeoutFuture] = []
+
+    class _TimeoutFuture:
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        def result(self, timeout: float | None = None) -> object:
+            raise TimeoutError(f"timed out after {timeout}")
+
+        def cancel(self) -> bool:
+            self.cancelled = True
+            return True
+
+    class _TimeoutExecutor:
+        def submit(self, fn, /, *args: Any, **kwargs: Any) -> _TimeoutFuture:  # noqa: ANN001
+            del fn, args, kwargs
+            future = _TimeoutFuture()
+            futures.append(future)
+            return future
+
+    pipeline = StudyOcrPipeline(
+        logger=_Logger(),
+        config=StudyConfig(
+            awareness=AwarenessConfig(classify_mode="ocr_text", image_max_bytes=50_000)
+        ),
+        ocr_backend=_Backend("Question: text"),
+        capture_backend=_Capture(image),
+    )
+    monkeypatch.setattr(pipeline, "_executor", _TimeoutExecutor())
+
+    snapshot = pipeline.capture_lightweight(target={"hwnd": 1, "title": "Quiz"})
+
+    assert snapshot.status == "ok"
+    assert len(futures) == 2
+    assert all(future.cancelled for future in futures)
+    assert pipeline._executor is None
+
+
+def test_ocr_pipeline_capture_lightweight_reports_backend_resolve_failure() -> None:
+    image = Image.new("RGB", (640, 360), "white")
+
+    class _FailingResolvePipeline(StudyOcrPipeline):
+        def _resolve_ocr_backend(self):
+            raise RuntimeError("backend missing")
+
+    pipeline = _FailingResolvePipeline(
+        logger=_Logger(),
+        config=StudyConfig(
+            awareness=AwarenessConfig(classify_mode="ocr_text", image_max_bytes=50_000)
+        ),
+        capture_backend=_Capture(image),
+    )
+
+    snapshot = pipeline.capture_lightweight(target={"hwnd": 1, "title": "Quiz"})
+
+    assert snapshot.status == "ok"
+    assert "ocr_status=ocr_failed" in snapshot.diagnostic
+    assert "backend missing" in snapshot.diagnostic
+
+
+def test_ocr_pipeline_capture_lightweight_reports_sync_jpeg_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image = Image.new("RGB", (640, 360), "white")
+    pipeline = StudyOcrPipeline(
+        logger=_Logger(),
+        config=StudyConfig(awareness=AwarenessConfig(image_max_bytes=50_000)),
+        capture_backend=_Capture(image),
+    )
+
+    def fail_encode(_image: Image.Image, *, max_bytes: int) -> bytes:
+        del max_bytes
+        raise RuntimeError("jpeg encode failed hard")
+
+    monkeypatch.setattr(
+        StudyOcrPipeline,
+        "_encode_lightweight_jpeg",
+        staticmethod(fail_encode),
+    )
+
+    snapshot = pipeline.capture_lightweight(target={"hwnd": 1, "title": "Quiz"})
+
+    assert snapshot.status == "capture_failed"
+    assert "jpeg encode failed hard" in snapshot.diagnostic
+
+
+def test_ocr_pipeline_vision_snapshot_ttl_is_extended() -> None:
+    assert pipeline_module._VISION_SNAPSHOT_TTL_SECONDS == 30.0
+
+
 def test_ocr_pipeline_capture_lightweight_ocr_mode_writes_activity_type() -> None:
     image = Image.new("RGB", (800, 600), "white")
     pipeline = StudyOcrPipeline(
@@ -183,6 +335,86 @@ def test_ocr_pipeline_capture_lightweight_ocr_mode_writes_activity_type() -> Non
     assert activity is not None
     assert activity.classify_method == "both"
     assert activity.activity_type == "question"
+
+
+def test_ocr_pipeline_capture_lightweight_skips_worker_vision_snapshot() -> None:
+    image = Image.new("RGB", (800, 600), "white")
+
+    class _TrackingPipeline(StudyOcrPipeline):
+        def __init__(self) -> None:
+            super().__init__(
+                logger=_Logger(),
+                config=StudyConfig(
+                    awareness=AwarenessConfig(
+                        classify_mode="ocr_text",
+                        image_max_bytes=80_000,
+                    )
+                ),
+                ocr_backend=_Backend("Question: text"),
+                capture_backend=_Capture(image),
+            )
+            self.skip_values: list[bool] = []
+
+        def _extract_image(
+            self,
+            image: Any,
+            *,
+            backend_name: str,
+            _skip_vision_snapshot: bool = False,
+        ) -> OcrSnapshot:
+            self.skip_values.append(_skip_vision_snapshot)
+            return OcrSnapshot(
+                text="Question: text",
+                status="ok",
+                backend=backend_name,
+            )
+
+    pipeline = _TrackingPipeline()
+
+    snapshot = pipeline.capture_lightweight(target={"hwnd": 1, "title": "Quiz"})
+
+    assert snapshot.status == "ok"
+    assert pipeline.skip_values == [True]
+
+
+def test_ocr_pipeline_reuses_executor_and_closes_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image = Image.new("RGB", (800, 600), "white")
+    created: list[_FakeExecutor] = []
+
+    class _FakeExecutor:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.shutdown_calls = 0
+            created.append(self)
+
+        def submit(self, fn, /, *args: Any, **kwargs: Any):  # noqa: ANN001
+            future: Future[Any] = Future()
+            try:
+                future.set_result(fn(*args, **kwargs))
+            except Exception as exc:
+                future.set_exception(exc)
+            return future
+
+        def shutdown(self, *, wait: bool = True) -> None:
+            self.shutdown_calls += 1
+
+    monkeypatch.setattr(pipeline_module, "ThreadPoolExecutor", _FakeExecutor)
+    pipeline = StudyOcrPipeline(
+        logger=_Logger(),
+        config=StudyConfig(
+            awareness=AwarenessConfig(classify_mode="ocr_text", image_max_bytes=80_000)
+        ),
+        ocr_backend=_Backend("Question: text"),
+        capture_backend=_Capture(image),
+    )
+
+    assert pipeline.capture_lightweight(target={"hwnd": 1, "title": "Quiz"}).status == "ok"
+    assert pipeline.capture_lightweight(target={"hwnd": 1, "title": "Quiz"}).status == "ok"
+    pipeline.close()
+
+    assert len(created) == 1
+    assert created[0].shutdown_calls == 1
 
 
 def test_ocr_pipeline_capture_lightweight_content_change_and_failure_paths() -> None:

@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:48920/hook/turn-end",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

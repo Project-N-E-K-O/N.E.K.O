@@ -43,7 +43,8 @@
     <link rel="stylesheet" href="/static/css/subtitle.css?v={{ static_asset_version }}">
     <style>/* React chat adapter: hide old chat */
     #chat-container { display: none !important; visibility: hidden !important; }</style>
-    <link rel="stylesheet" href="/static/react/neko-chat/neko-chat-window.css?v={{ static_asset_version }}">
+    <script>window.__NEKO_REACT_CHAT_ASSET_VERSION__={{ react_chat_asset_version | tojson }};</script>
+    <link rel="stylesheet" href="/static/react/neko-chat/neko-chat-window.css?v={{ react_chat_asset_version }}">
     <link rel="stylesheet" href="/static/css/avatar-reaction-bubble.css?v={{ static_asset_version }}">
     <!-- 暗色模式样式 -->
     <link rel="stylesheet" href="/static/css/dark-mode.css?v={{ static_asset_version }}">
@@ -61,7 +62,8 @@
     <script src="/static/libs/APlayer.min.js?v={{ static_asset_version }}"></script>
 </head>
 
-<body class="subtitle-web-host">
+<body class="subtitle-web-host"{% if initial_chat_surface_mode is defined and initial_chat_surface_mode %}
+      data-initial-chat-surface-mode="{{ initial_chat_surface_mode }}"{% endif %}>
     <!-- 同步把 Electron Pet 标记补到 body（head 脚本执行时 body 尚不存在）；
          在 chat-container 等内容解析之前执行，避免窄窗口下手机布局闪一帧。 -->
     <script>(function () {
@@ -305,6 +307,9 @@
     <div id="mmd-container" style="display: none;">
         <canvas id="mmd-canvas"></canvas>
     </div>
+    <div id="pngtuber-container" style="display: none;">
+        <img class="pngtuber-image" alt="PNGTuber avatar" draggable="false">
+    </div>
 
     <!-- 存储位置首屏哨兵需要尽早建立启动屏障，避免模型与主业务先行初始化 -->
     <script src="/static/app-storage-location.js?v={{ static_asset_version }}"></script>
@@ -326,6 +331,8 @@
     <script src="/static/avatar-ui-popup-config.js?v={{ static_asset_version }}"></script>
     <script src="/static/avatar-ui-buttons.js?v={{ static_asset_version }}"></script>
     <script src="/static/live2d-ui-buttons.js?v={{ static_asset_version }}"></script>
+    <script src="/static/pngtuber-core.js?v={{ static_asset_version }}"></script>
+    <script src="/static/neko-tooltip.js?v={{ static_asset_version }}"></script>
     <script src="/static/common-ui-hud.js?v={{ static_asset_version }}"></script>
     <script src="/static/avatar-ui-drag.js?v={{ static_asset_version }}"></script>
     <script src="/static/live2d-init.js?v={{ static_asset_version }}"></script>
@@ -372,7 +379,7 @@
     <script src="/static/app-chat-text-utils.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-chat.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-chat-avatar.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-chat-adapter.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-chat-adapter.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app-audio-playback.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-spatial-audio.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-audio-capture.js?v={{ static_asset_version }}"></script>
@@ -387,7 +394,7 @@
     <script src="/static/app-character.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-websocket.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-telemetry.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-buttons.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-buttons.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app-prompt-shared.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-autostart-provider.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-tutorial-prompt.js?v={{ static_asset_version }}"></script>
@@ -395,8 +402,8 @@
     <script src="/static/app-autostart-prompt.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/character_personality_onboarding.js?v={{ static_asset_version }}"></script>
     <script src="/static/app.js?v={{ static_asset_version }}"></script>
-    <script src="/static/react/neko-chat/neko-chat-window.iife.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-react-chat-window.js?v={{ static_asset_version }}"></script>
+    <script src="/static/react/neko-chat/neko-chat-window.iife.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app-react-chat-window.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app-chat-export.js?v={{ static_asset_version }}"></script>
 
     <script src="/static/subtitle.js?v={{ static_asset_version }}"></script>

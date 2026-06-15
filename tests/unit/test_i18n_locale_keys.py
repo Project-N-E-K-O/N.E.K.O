@@ -25,6 +25,17 @@ REQUIRED_KEYS = (
     "tutorialPrompt.startFailed",
 )
 
+PNG_TUBER_PREVIEW_LABELS = {
+    "zh-CN.json": ("测试说话", "状态预览"),
+    "zh-TW.json": ("測試說話", "狀態預覽"),
+    "en.json": ("Test Talking", "State Preview"),
+    "ja.json": ("発話をテスト", "状態プレビュー"),
+    "ko.json": ("말하기 테스트", "상태 미리보기"),
+    "ru.json": ("Проверить речь", "Предпросмотр состояния"),
+    "es.json": ("Probar habla", "Vista previa de estado"),
+    "pt.json": ("Testar fala", "Prévia de estado"),
+}
+
 
 @pytest.fixture(scope="session", autouse=True)
 def mock_memory_server():
@@ -109,6 +120,23 @@ def test_tutorial_prompt_locale_keys_exist_in_all_locales():
             missing_by_locale[locale_path.name] = missing
 
     assert missing_by_locale == {}
+
+
+@pytest.mark.unit
+def test_pngtuber_preview_labels_are_localized():
+    mismatches: dict[str, tuple[str | None, str | None]] = {}
+
+    for locale_name, expected in PNG_TUBER_PREVIEW_LABELS.items():
+        data = json.loads((LOCALES_DIR / locale_name).read_text(encoding="utf-8"))
+        live2d = data.get("live2d") if isinstance(data, dict) else None
+        actual = (
+            live2d.get("pngtuberTalkPreview") if isinstance(live2d, dict) else None,
+            live2d.get("pngtuberStatePreview") if isinstance(live2d, dict) else None,
+        )
+        if actual != expected:
+            mismatches[locale_name] = actual
+
+    assert mismatches == {}
 
 
 @pytest.mark.unit

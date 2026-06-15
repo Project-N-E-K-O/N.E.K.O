@@ -3,8 +3,8 @@
 
     const STORAGE_KEY = 'neko:avatar-multiscreen-drag-hint:v1';
     const SNOOZE_MS = 3 * 24 * 60 * 60 * 1000;
-    const BOUNCE_WINDOW_MS = 30 * 1000;
-    const REQUIRED_BOUNCES = 2;
+    const MISS_WINDOW_MS = 30 * 1000;
+    const REQUIRED_MISSES = 2;
 
     const FALLBACK_TEXT = {
         title: 'Move YUI to another screen',
@@ -14,7 +14,7 @@
     };
 
     let isPromptVisible = false;
-    let bounceRecordQueue = Promise.resolve();
+    let missRecordQueue = Promise.resolve();
 
     function now() {
         return Date.now();
@@ -54,16 +54,19 @@
         return Number(state.snoozeUntil) > now();
     }
 
+    function hasDisplaySwitchBridge() {
+        return Boolean(
+            window.electronScreen &&
+            typeof window.electronScreen.getAllDisplays === 'function' &&
+            typeof window.electronScreen.moveWindowToDisplay === 'function'
+        );
+    }
+
     async function hasMultipleDisplays() {
         try {
-            if (!window.electronScreen || typeof window.electronScreen.getAllDisplays !== 'function') {
-                return false;
-            }
+            if (!hasDisplaySwitchBridge()) return false;
             const displays = await window.electronScreen.getAllDisplays();
-            if (!Array.isArray(displays) || displays.length <= 1) {
-                return false;
-            }
-            return true;
+            return Array.isArray(displays) && displays.length > 1;
         } catch (_) {
             return false;
         }
@@ -207,8 +210,8 @@
     function ackPrompt() {
         const state = readState();
         state.snoozeUntil = now() + SNOOZE_MS;
-        state.recentBounceCount = 0;
-        state.lastBounceAt = 0;
+        state.recentMissCount = 0;
+        state.lastMissAt = 0;
         writeState(state);
         removePrompt();
     }
@@ -216,8 +219,8 @@
     function dismissForever() {
         const state = readState();
         state.never = true;
-        state.recentBounceCount = 0;
-        state.lastBounceAt = 0;
+        state.recentMissCount = 0;
+        state.lastMissAt = 0;
         writeState(state);
         removePrompt();
     }
@@ -271,55 +274,95 @@
         isPromptVisible = true;
     }
 
-    function recordEdgeBounce(source) {
-        const nextRecord = bounceRecordQueue.then(function () {
-            return recordEdgeBounceNow(source);
+    function recordDisplaySwitchMiss(source) {
+        const nextRecord = missRecordQueue.then(function () {
+            return recordDisplaySwitchMissNow(source);
         });
-        bounceRecordQueue = nextRecord.catch(function () {});
+        missRecordQueue = nextRecord.catch(function () {});
         return nextRecord;
     }
 
-    async function recordEdgeBounceNow(source) {
+    async function recordDisplaySwitchMissNow(source) {
         const state = readState();
         if (isSuppressed(state) || isPromptVisible) return false;
-
-        const multiDisplay = await hasMultipleDisplays();
-        if (!multiDisplay) return false;
+        if (!(await hasMultipleDisplays())) return false;
 
         const currentTime = now();
-        const lastBounceAt = Number(state.lastBounceAt) || 0;
-        const recentCount = currentTime - lastBounceAt <= BOUNCE_WINDOW_MS
-            ? (Number(state.recentBounceCount) || 0) + 1
+        const lastMissAt = Number(state.lastMissAt) || 0;
+        const recentCount = currentTime - lastMissAt <= MISS_WINDOW_MS
+            ? (Number(state.recentMissCount) || 0) + 1
             : 1;
 
-        state.lastBounceAt = currentTime;
-        state.recentBounceCount = recentCount;
+        state.lastMissAt = currentTime;
+        state.recentMissCount = recentCount;
         state.lastSource = source || 'avatar';
         writeState(state);
 
-        if (state.recentBounceCount >= REQUIRED_BOUNCES) {
+        if (state.recentMissCount >= REQUIRED_MISSES) {
             showPrompt();
             return true;
         }
         return false;
     }
 
+    function isModelCenterOutsideCurrentWindow(model) {
+        try {
+            if (!model || typeof model.getBounds !== 'function') return false;
+            const bounds = model.getBounds();
+            if (!bounds) return false;
+            const centerX = (Number(bounds.left) + Number(bounds.right)) / 2;
+            const centerY = (Number(bounds.top) + Number(bounds.bottom)) / 2;
+            if (!Number.isFinite(centerX) || !Number.isFinite(centerY)) return false;
+            return centerX < 0 || centerX >= window.innerWidth || centerY < 0 || centerY >= window.innerHeight;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function installLive2DDisplaySwitchMissHook() {
+        const Manager = window.Live2DManager;
+        const proto = Manager && Manager.prototype;
+        if (!proto || typeof proto._checkAndSwitchDisplay !== 'function') return false;
+        if (proto._checkAndSwitchDisplay.__nekoDisplaySwitchMissHooked) return true;
+
+        const originalCheckAndSwitchDisplay = proto._checkAndSwitchDisplay;
+        const wrappedCheckAndSwitchDisplay = async function (model) {
+            const displaySwitched = await originalCheckAndSwitchDisplay.apply(this, arguments);
+            if (hasDisplaySwitchBridge() && !displaySwitched && isModelCenterOutsideCurrentWindow(model)) {
+                recordDisplaySwitchMiss('live2d');
+            }
+            return displaySwitched;
+        };
+        wrappedCheckAndSwitchDisplay.__nekoDisplaySwitchMissHooked = true;
+        wrappedCheckAndSwitchDisplay.__nekoOriginalCheckAndSwitchDisplay = originalCheckAndSwitchDisplay;
+        proto._checkAndSwitchDisplay = wrappedCheckAndSwitchDisplay;
+        return true;
+    }
+
+    function scheduleLive2DDisplaySwitchMissHook() {
+        [0, 50, 250, 1000, 3000, 6000].forEach(function (delay) {
+            setTimeout(installLive2DDisplaySwitchMissHook, delay);
+        });
+    }
+
     function markDisplaySwitchSuccess(source) {
         const state = readState();
         state.successAt = now();
         state.successSource = source || 'avatar';
-        state.recentBounceCount = 0;
-        state.lastBounceAt = 0;
+        state.recentMissCount = 0;
+        state.lastMissAt = 0;
         writeState(state);
         removePrompt();
         return true;
     }
 
     window.NekoAvatarMultiScreenDragHint = {
-        recordEdgeBounce,
+        recordDisplaySwitchMiss,
         markDisplaySwitchSuccess,
         ackPrompt,
         dismissForever,
         _readState: readState
     };
+
+    scheduleLive2DDisplaySwitchMissHook();
 })();

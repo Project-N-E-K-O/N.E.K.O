@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Static check: forbid trailing-slash route paths on FastAPI router/app decorators.
 
 Why this exists
@@ -16,7 +30,7 @@ production failure under reverse proxies:
   points at the internal ``127.0.0.1:<port>`` and the browser dies with
   ``ERR_CONNECTION_REFUSED``.
 * PR #938 (chara_manager regression on LAN reverse proxies) was exactly this
-  bug. See ``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") and
+  bug. See ``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠" — "no trailing slash on API URLs") and
   ``main_routers/characters_router.py`` docstring for the full write-up.
 
 Avoiding the redirect entirely (= never declaring a trailing slash) makes
@@ -72,7 +86,7 @@ Exit status is 1 when any violation is found, 0 otherwise.
 Usage::
 
     uv run python scripts/check_api_trailing_slash.py [paths...]
-"""
+"""  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
 import argparse

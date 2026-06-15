@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from __future__ import annotations
 
 import asyncio
@@ -37,7 +51,7 @@ _GRAPHEME_EXTEND_CATEGORIES = frozenset({'Mn', 'Me', 'Mc', 'Cf'})
 
 
 def _is_likely_pollution_char(c: str) -> bool:
-    """非 ASCII 且属 Other Letter (CJK/etc.) 或 Other Symbol (emoji) 类别。"""
+    """Non-ASCII and in the Other Letter (CJK/etc.) or Other Symbol (emoji) category."""
     if ord(c) <= 127:
         return False
     return unicodedata.category(c) in _POLLUTION_UNICODE_CATEGORIES
@@ -47,12 +61,12 @@ _ZWJ = '‍'
 
 
 def _consume_pollution_grapheme(s: str, i: int) -> int:
-    """尝试消费一个污染 grapheme cluster，返回结束位置。
+    """Try to consume one pollution grapheme cluster, returning the end position.
 
-    如果 ``s[i]`` 是 pollution base char (Lo/So)，连同后续 combining marks 与
-    ZWJ 等扩展字符一起视作一个 cluster。ZWJ 后若紧跟另一个 pollution base，则
-    继续并入同一 cluster（emoji 复合体如 ``🧑‍💻`` = PERSON + ZWJ + COMPUTER）。
-    不是 pollution 则返回 i 不变。
+    If ``s[i]`` is a pollution base char (Lo/So), treat it together with subsequent
+    combining marks and extenders like ZWJ as one cluster. If a ZWJ is directly followed
+    by another pollution base, merge it into the same cluster (emoji compounds like
+    ``🧑‍💻`` = PERSON + ZWJ + COMPUTER). Returns i unchanged when not pollution.
     """
     n = len(s)
     if i >= n or not _is_likely_pollution_char(s[i]):
@@ -79,15 +93,16 @@ def _strip_stray_chars_between_tokens(s: str) -> str:
     """Strip 1–2 hallucinated grapheme clusters between `,`/`[` and the next value.
 
     Stateful scanner — only acts outside of quoted strings (with backslash escape
-    handling). 仅剥**非 ASCII Letter / emoji**（LLM 实测幻觉污染源）；ASCII 字符
-    与 Unicode 数字符号 / 标点 / dash / 全角数字一律放行，避免把
-    `+5`、`.5`、`e3`、`−2`（U+2212）、`＋5`（U+FF0B）等半合法值前缀静默改坏。
-    剥不掉就让 json.loads 自己抛 JSONDecodeError 走 fallback。
+    handling). Strips only **non-ASCII Letters / emoji** (the hallucination pollution
+    sources observed from LLMs); ASCII chars and Unicode numeric symbols / punctuation /
+    dashes / fullwidth digits always pass through, avoiding silently corrupting
+    half-legitimate value prefixes like `+5`, `.5`, `e3`, `−2` (U+2212), `＋5` (U+FF0B).
+    If stripping doesn't help, let json.loads raise JSONDecodeError and take the fallback.
 
-    Best-effort 最少破坏：上限 2 个 grapheme cluster，从 k=1 起递增，第一个能让
-    lookahead 命中合法值起始的 k 立刻停 —— 不贪。一个 cluster = 1 个 pollution
-    base char + 0 或多个后续 combining marks/ZWJ，所以 `❤️`(U+2764+U+FE0F) 或
-    `🧑‍💻`(含 ZWJ) 这类 multi-codepoint emoji 也算 1 cluster。
+    Best-effort, least destruction: capped at 2 grapheme clusters, increasing from k=1;
+    the first k whose lookahead hits a legal value start stops immediately — no greed.
+    One cluster = 1 pollution base char + 0+ subsequent combining marks/ZWJ, so
+    multi-codepoint emoji like `❤️` (U+2764+U+FE0F) or `🧑‍💻` (with ZWJ) also count as 1 cluster.
     """
     out: list[str] = []
     i = 0
@@ -147,8 +162,8 @@ def _try_json_loads(s: str) -> tuple[Any, bool]:
 def _apply_outside_strings(s: str, transform: Callable[[str], str]) -> str:
     """Run ``transform`` only on text outside of quoted strings.
 
-    Both ``'...'`` and ``"..."`` are recognized as string boundaries (LLM 常输出
-    Python-repr 风格混合引号). Backslash inside strings escapes the next char.
+    Both ``'...'`` and ``"..."`` are recognized as string boundaries (LLMs often emit
+    Python-repr style mixed quotes). Backslash inside strings escapes the next char.
     Inside-string content is preserved bytewise — protects e.g. the literal value
     ``"True"`` from the Python-literal substitution step.
     """
@@ -187,9 +202,9 @@ def _apply_outside_strings(s: str, transform: Callable[[str], str]) -> str:
 def _normalize_quotes(s: str) -> str:
     """Convert single-quoted strings to double-quoted; preserve inside content.
 
-    段感知：扫一次按 ``'`` / ``"`` 边界切片，仅把 ``'...'`` 段改成 ``"..."``，
-    并对内部出现的 ``\\'`` 解转义、对裸 ``"`` 加转义。已经是双引号字符串的段
-    一字不动。
+    Segment-aware: one scan slices by ``'`` / ``"`` boundaries, rewriting only ``'...'``
+    segments into ``"..."``, unescaping inner ``\\'`` and escaping bare ``"``. Segments
+    that are already double-quoted strings are left byte-for-byte untouched.
     """
     out: list[str] = []
     current: list[str] = []
@@ -242,13 +257,15 @@ _OVERESCAPED_DIVIDER_RE = re.compile(
 
 
 def _normalize_overescaped_newlines(obj: Any) -> Any:
-    """LLM 把 ``\\n`` 在 JSON 源里再转义一遍时，解析后字符串里就是字面量
-    backslash-n（2 字符）而非真换行。这里只把**过度转义的 ``---`` 分隔符区域**
-    替换成规范的 ``\\n\\n---\\n\\n``——同字符串里其它位置的字面量 escape
-    （Windows 路径、regex、code 片段、tool args 等）一字不动。
+    """When the LLM escapes ``\\n`` once more in the JSON source, the parsed string holds a
+    literal backslash-n (2 chars) instead of a real newline. This replaces only the
+    **over-escaped ``---`` divider regions** with a canonical ``\\n\\n---\\n\\n`` —
+    literal escapes elsewhere in the same string (Windows paths, regex, code snippets,
+    tool args, etc.) are left untouched.
 
-    取舍：如果 body / older 段内部还有字面量段落分隔，本函数不管它们——
-    保留字面量比静默改写合法数据更安全；UI 侧最多就是看到几个 ``\\n`` 字面量。
+    Trade-off: if the body / older segments contain further literal paragraph dividers,
+    this function leaves them alone — keeping literals is safer than silently rewriting
+    legitimate data; at worst the UI shows a few literal ``\\n``.
     """
     if isinstance(obj, str):
         return _OVERESCAPED_DIVIDER_RE.sub('\n\n---\n\n', obj)
@@ -262,25 +279,27 @@ def _normalize_overescaped_newlines(obj: Any) -> Any:
 def robust_json_loads(raw: str) -> Any:
     """json.loads with fallback for common LLM JSON quirks.
 
-    原始输入若能直接 parse，无条件返回原结果。否则按 fallback pipeline 逐步
-    修补 —— 每步 transform 后立即 try parse，能 parse 即停，避免后续步骤
-    （尤其是 scanner）在不必要时动文本。
+    If the raw input parses directly, the original result is returned unconditionally.
+    Otherwise patch step by step along the fallback pipeline — try parsing right after
+    each transform and stop as soon as it parses, so later steps (especially the
+    scanner) never touch the text unnecessarily.
 
-    所有"纯文本替换" transform（Python 字面量、`{{}}`、尾逗号、无引号 key）
-    都通过 ``_apply_outside_strings`` 包装，仅在字符串外生效，避免把字符串值
-    （如 ``"True"`` / ``"x,]"``）静默改坏。
+    All "pure text replacement" transforms (Python literals, `{{}}`, trailing commas,
+    unquoted keys) are wrapped by ``_apply_outside_strings`` and only apply outside
+    strings, avoiding silently corrupting string values (like ``"True"`` / ``"x,]"``).
 
-    Parse 成功后还会跑一次 ``_normalize_overescaped_newlines`` 后处理：当某条
-    string value 里出现"过度转义的 ``---`` 分隔符指纹"——即 1+ 字面量换行类
-    escape (``\\n`` / ``\\r\\n`` / ``\\r``) 紧贴 ``---`` 行——就把这一段
-    替换成规范的 ``\\n\\n---\\n\\n``。同字符串里其它位置的字面量 escape
-    （Windows 路径、regex、code 片段等）一字不动。
+    After a successful parse, a ``_normalize_overescaped_newlines`` post-pass also runs:
+    when a string value carries the "over-escaped ``---`` divider fingerprint" — i.e. 1+
+    literal newline-ish escapes (``\\n`` / ``\\r\\n`` / ``\\r``) hugging a ``---`` line —
+    that region is replaced with a canonical ``\\n\\n---\\n\\n``. Literal escapes
+    elsewhere in the same string (Windows paths, regex, code snippets, etc.) are left
+    untouched.
 
     Handles: unquoted keys, trailing commas, ``{{ }}``, Python ``True/False/None``,
     single-quoted strings (including mixed-quote scenarios), stray hallucinated
     chars between structural tokens (e.g. ``,결{`` → ``,{``), and over-escaped
     ``---`` memo dividers in string values.
-    """
+    """  # noqa: DOCSTRING_CJK
     parsed, ok = _try_json_loads(raw)
     if ok:
         return _normalize_overescaped_newlines(parsed)

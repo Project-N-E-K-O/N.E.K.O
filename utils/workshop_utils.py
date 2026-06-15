@@ -1,10 +1,24 @@
 # -*- coding: utf-8 -*-
-"""
-创意工坊路径管理工具模块
-用于处理创意工坊路径的获取、配置和管理
-所有配置路径统一从 config_manager 获取
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-依赖层次: utils层 -> config层 (单向依赖，不依赖main层)
+"""
+Workshop path management utility module
+Handles fetching, configuring and managing Workshop paths
+All configured paths come uniformly from config_manager
+
+Dependency hierarchy: utils layer -> config layer (one-way; no dependency on the main layer)
 """
 
 import os
@@ -26,13 +40,13 @@ from utils.config_manager import (
 
 def ensure_workshop_folder_exists(folder_path: Optional[str] = None) -> bool:
     """
-    确保本地mod文件夹（原创意工坊文件夹）存在，如果不存在则自动创建
+    Ensure the local mod folder (formerly the Workshop folder) exists, creating it if missing
     
     Args:
-        folder_path: 指定的文件夹路径，如果为None则使用配置中的默认路径
+        folder_path: the folder path; uses the configured default when None
         
     Returns:
-        bool: 文件夹是否存在或创建成功
+        bool: whether the folder exists or was created successfully
     """
     # 确定目标文件夹路径
     config = load_workshop_config()
@@ -75,16 +89,16 @@ def ensure_workshop_folder_exists(folder_path: Optional[str] = None) -> bool:
 
 def extract_workshop_root_from_items(items: List[Dict[str, Any]]) -> Optional[str]:
     """
-    从创意工坊物品列表中提取根目录路径
+    Extract the root directory path from a list of Workshop items
     
-    这是一个纯函数，不依赖任何外部状态或模块。
-    由上层（main_server）获取物品列表后传入。
+    A pure function with no external state or module dependencies.
+    The upper layer (main_server) fetches the item list and passes it in.
     
     Args:
-        items: 创意工坊物品列表，每个物品包含 installedFolder 字段
+        items: list of Workshop items; each contains an installedFolder field
         
     Returns:
-        str | None: 创意工坊根目录路径，如果无法提取则返回None
+        str | None: the Workshop root directory path, or None when it cannot be extracted
     """
     if not items:
         logger.warning("未找到任何订阅的创意工坊物品")
@@ -110,18 +124,18 @@ def extract_workshop_root_from_items(items: List[Dict[str, Any]]) -> Optional[st
 
 def get_workshop_root(subscribed_items: Optional[List[Dict[str, Any]]] = None) -> str:
     """
-    获取创意工坊根目录路径，并将路径保存到配置文件中
+    Get the Workshop root directory path and save it into the config file
     
-    设计原则：
-    - 此函数不依赖 main_server 层
-    - 上层负责获取 subscribed_items 并传入
-    - 如果未传入物品列表，则仅使用配置中的路径
+    Design principles:
+    - this function does not depend on the main_server layer
+    - the upper layer is responsible for fetching subscribed_items and passing them in
+    - when no item list is passed, only the configured path is used
     
     Args:
-        subscribed_items: 已获取的创意工坊订阅物品列表（由上层传入）
+        subscribed_items: the fetched list of subscribed Workshop items (passed by the upper layer)
         
     Returns:
-        str: 创意工坊根目录路径
+        str: the Workshop root directory path
     """
     workshop_path = None
     from_steam = False
@@ -157,10 +171,10 @@ def get_workshop_root(subscribed_items: Optional[List[Dict[str, Any]]] = None) -
 
 def get_default_workshop_folder() -> Optional[str]:
     """
-    获取创意工坊目录路径（用于 monitor 等独立进程的静态文件挂载）。
+    Get the Workshop directory path (for static file mounting in standalone processes like monitor).
 
-    与 get_workshop_path() 使用同一优先级链，在 Steam 未运行时
-    会自动回退到上次缓存的 user_workshop_folder 或本地 default_workshop_folder。
+    Uses the same priority chain as get_workshop_path(); when Steam is not running it
+    automatically falls back to the last cached user_workshop_folder or the local default_workshop_folder.
     """
     path = get_workshop_path()
     if path and os.path.isdir(path):

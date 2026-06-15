@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 FactStore — Tier 1 of the three-tier memory hierarchy.
 
@@ -75,18 +89,20 @@ def safe_importance(f: dict, default: int = 5) -> int:
 
 
 def safe_int_field(d: dict, key: str, default: int = 0) -> int:
-    """Defensively coerce ``d[key]`` to int (Codex P2 on PR #1412)。
+    """Defensively coerce ``d[key]`` to int (Codex P2 on PR #1412).
 
     Liveness attempt counters (``refine_attempts`` / ``resolve_attempts`` /
-    ``_attempt_count``) 都从 JSON / ndjson 反序列化出来的 dict 字段读，
-    一旦 manual edit / legacy / migration noise 写进 ``""`` / ``"unknown"``
-    / list / dict 等脏值，原 ``int(d.get(key, 0) or 0)`` 会抛 ValueError /
-    TypeError 让整个 list comprehension（候选 gather）挂掉 → 那条 pass
-    永久 fail → liveness 兜底自己变了新的 liveness 缺口。
+    ``_attempt_count``) are all read from dict fields deserialized from JSON /
+    ndjson; once a manual edit / legacy data / migration noise writes a dirty
+    value like ``""`` / ``"unknown"`` / list / dict, the original
+    ``int(d.get(key, 0) or 0)`` raises ValueError / TypeError and takes down the
+    whole list comprehension (candidate gather) → that pass fails forever → the
+    liveness fallback itself becomes a new liveness gap.
 
-    跟 ``safe_importance`` 的区别：本 helper 把 ``0`` / ``"0"`` 当合法值返回 0
-    （attempt counter 0 是合法计数），不退 default。``safe_importance`` 把
-    falsy 都退 default 是 importance-specific 语义。
+    Difference from ``safe_importance``: this helper treats ``0`` / ``"0"`` as
+    legitimate and returns 0 (an attempt counter of 0 is a valid count) instead
+    of falling back to the default. ``safe_importance`` mapping all falsy values
+    to the default is importance-specific semantics.
     """
     try:
         val = d.get(key)
@@ -98,7 +114,7 @@ def safe_int_field(d: dict, key: str, default: int = 0) -> int:
 
 
 class FactExtractionFailed(RuntimeError):
-    """Stage-1 LLM call exhausted retries (RFC §3.4.2 末段).
+    """Stage-1 LLM call exhausted retries (RFC §3.4.2, last paragraph).
 
     Distinct from "Stage-1 returned an empty list" — the latter is a
     successful zero-result run that should advance the signal-extraction
@@ -118,7 +134,7 @@ class FactStore:
         self._locks_guard = threading.Lock()  # 保护 _locks 字典本身
 
     def _get_lock(self, name: str) -> threading.Lock:
-        """获取角色专属的文件锁（懒创建）"""
+        """Get the character-specific file lock (lazily created)"""
         if name not in self._locks:
             with self._locks_guard:
                 if name not in self._locks:  # double-check
@@ -171,15 +187,16 @@ class FactStore:
         return await asyncio.to_thread(self.load_facts, name)
 
     def load_facts_full(self, name: str) -> list[dict]:
-        """Active + archived 全量 fact 池（Phase C-2）。
+        """Full fact pool: active + archived (Phase C-2).
 
-        Archived = `_archive_absorbed` 已搬到 facts_archive.json 的旧条目
-        （absorbed 超过 _ARCHIVE_AGE_DAYS = 7 天）。
+        Archived = old entries already moved into facts_archive.json by
+        `_archive_absorbed` (absorbed more than _ARCHIVE_AGE_DAYS = 7 days ago).
 
-        用于需要"远期历史可被搜到"的场景，目前是 reflection synthesis
-        的 RELATED_CONTEXT 召回。返回新 list，archive 不入 cache。
+        For scenarios where "distant history must be searchable" — currently the
+        RELATED_CONTEXT recall of reflection synthesis. Returns a new list; the
+        archive never enters the cache.
 
-        Archive 文件损坏时 best-effort 降级为 active-only，不抛。"""
+        A corrupted archive file degrades best-effort to active-only, no raise."""
         active = self.load_facts(name)
         archive_path = self._facts_archive_path(name)
         if not os.path.exists(archive_path):
@@ -289,7 +306,7 @@ class FactStore:
         return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'facts_archive.json')
 
     def _archive_absorbed(self, name: str) -> int:
-        """将已 absorbed 且超过 _ARCHIVE_AGE_DAYS 的 facts 移入归档文件。"""
+        """Move facts that are absorbed and older than _ARCHIVE_AGE_DAYS into the archive file."""
         from datetime import timedelta
         assert_cloudsave_writable(
             self._config_manager,
@@ -374,19 +391,22 @@ class FactStore:
         policy as the old `extract_facts`. Returns parsed JSON or None on
         terminal failure (caller decides whether to abort / swallow).
 
-        Note: 不再接受 temperature。项目级约定一律不下发该参数（守门见
-        scripts/check_no_temperature.py）。模型从 ``tier`` 对应的 api_config
-        直接拿，不再走 SETTING_PROPOSER_MODEL fallback。
+        Note: no longer accepts temperature. The project-wide convention is to
+        never send that parameter (gatekeeper: scripts/check_no_temperature.py).
+        The model comes straight from the api_config of ``tier``; the
+        SETTING_PROPOSER_MODEL fallback is gone.
 
-        timeout 默认 60s 适配后台 LLM（Stage-1 fact extract / Stage-2 signal
-        detect / negative keyword check）；调用方可按需提高（如 Stage-2 开
-        thinking 后传 90s）。SDK max_retries=0 避免双层 retry 叠加（业务层
-        已经有 max_retries 参数控制）。
+        The 60s default timeout suits background LLM calls (Stage-1 fact extract
+        / Stage-2 signal detect / negative keyword check); callers may raise it
+        as needed (e.g. pass 90s for Stage-2 with thinking on). SDK
+        max_retries=0 avoids double-layer retries (the business layer already
+        controls retries via its max_retries parameter).
 
-        extra_body：默认 _DEFAULT_EXTRA_BODY 让 create_chat_llm 自动按模型
-        解析（多数 provider 落地为 disable thinking）；显式传 None 表示"不
-        下发 extra_body" → 模型默认行为（thinking 模型会进入 thinking 模式）。
-        Phase D：Stage-2 signal detection 显式传 None 开 thinking。"""
+        extra_body: the default _DEFAULT_EXTRA_BODY lets create_chat_llm resolve
+        it per model (for most providers this disables thinking); explicitly
+        passing None means "send no extra_body" → the model's default behavior
+        (thinking models enter thinking mode).
+        Phase D: Stage-2 signal detection explicitly passes None to enable thinking."""
         from openai import APIConnectionError, InternalServerError, RateLimitError
         from utils.llm_client import create_chat_llm
 
@@ -447,8 +467,8 @@ class FactStore:
         self, lanlan_name: str, messages: list,
     ) -> list[dict] | None:
         """Stage-1: pure extraction. Prompt carries no existing observations
-        to avoid self-cycling (LLM摘 existing reflection back as new fact).
-        Returns raw LLM-extracted list, or None on terminal failure."""
+        to avoid self-cycling (the LLM quoting an existing reflection back as a
+        new fact). Returns the raw LLM-extracted list, or None on terminal failure."""
         _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
         name_mapping['ai'] = lanlan_name
         conversation_text = self._format_conversation(messages, name_mapping)
@@ -489,16 +509,17 @@ class FactStore:
         (RFC §3.1.3)—downstream `get_unabsorbed_facts(min_importance=5)`
         filters at read time.
 
-        ``default_source``：当 LLM 输出的 fact dict 没有 ``source`` 字段时
-        的回退值。Path A 调用方传 ``'user_observation'``（也是默认），
-        path B 调用方传 ``'ai_disclosure'`` —— LLM 显式输出的 source 字段
-        优先于 default。
+        ``default_source``: the fallback when an LLM-emitted fact dict has no
+        ``source`` field. Path A callers pass ``'user_observation'`` (also the
+        default), path B callers pass ``'ai_disclosure'`` — a source field
+        explicitly emitted by the LLM wins over the default.
 
-        Monotonic source upgrade：SHA-256 命中既有 fact 时，正常 skip 不写。
-        **唯一例外**：既有 fact 的 source 是 'ai_disclosure'、新 fact 的
-        source 是 'user_observation' → in-place 升级 existing.source +
-        重置 signal_processed=False 让 Stage-2 重新评估。反向（user→ai）
-        永不降级——user 印证不可逆。
+        Monotonic source upgrade: when SHA-256 hits an existing fact, normally
+        skip without writing. **Sole exception**: the existing fact's source is
+        'ai_disclosure' and the new fact's is 'user_observation' → upgrade
+        existing.source in place + reset signal_processed=False so Stage-2
+        re-evaluates. The reverse (user→ai) never downgrades — user
+        corroboration is irreversible.
         """
         if default_source not in self._SOURCE_VALUES:
             default_source = self._SOURCE_DEFAULT
@@ -683,8 +704,8 @@ class FactStore:
         """Assemble the Stage-2 `existing_observations` set.
 
         Per RFC §3.4.2 coverage rule:
-          - confirmed + promoted reflection 全量（最 recent 优先）
-          - 非 protected persona entry 全量
+          - all confirmed + promoted reflections (most recent first)
+          - all non-protected persona entries
 
         Scale control (§3.4.2 end):
           - When ``new_facts`` is provided, the pool is routed through
@@ -830,9 +851,10 @@ class FactStore:
         already filtered against existing_observations), or None on
         terminal failure.
 
-        new_facts 的数量上限由调用方在 ``aextract_facts_and_detect_signals``
-        里按 ``EVIDENCE_DETECT_SIGNALS_MAX_NEW_FACTS`` 控制（drain 模式：
-        超出部分留 signal_processed=False 下次 idle 再处理）。"""
+        The cap on new_facts is enforced by the caller in
+        ``aextract_facts_and_detect_signals`` via
+        ``EVIDENCE_DETECT_SIGNALS_MAX_NEW_FACTS`` (drain mode: the overflow
+        stays signal_processed=False, handled on the next idle)."""
         if not new_facts or not existing_observations:
             return []
 
@@ -984,29 +1006,32 @@ class FactStore:
         Stage-2: new_facts × existing_observations → reinforces/negates
         signals (with defensive target_id validation).
 
-        Drain (PR #976)：
-        - Stage-1 抽取后 facts 落盘带 ``signal_processed=False``
-        - Stage-2 拉**所有** signal_processed=False 的 facts（不止本轮新抽
-          的，也包括上轮没处理完的尾部），按 importance DESC 取前 N
-          (=EVIDENCE_DETECT_SIGNALS_MAX_NEW_FACTS) 进 Stage-2，多余的留
-          原状下次 idle tick 再 drain
+        Drain (PR #976):
+        - Facts extracted in Stage-1 are persisted with ``signal_processed=False``
+        - Stage-2 pulls **all** facts with signal_processed=False (not just this
+          round's new ones, also the unfinished tail of previous rounds), takes
+          the top N (=EVIDENCE_DETECT_SIGNALS_MAX_NEW_FACTS) by importance DESC
+          into Stage-2, and leaves the rest untouched for the next idle tick to
+          drain
 
-        Returns ``(new_facts_this_round, signals, batch_fact_ids)``：
-        - ``new_facts_this_round``: 本轮 Stage-1 新抽出 + 落盘的 facts
-          （供 outbox 等审计用途）
-        - ``signals``: 待 dispatch 的 evidence 信号
-        - ``batch_fact_ids``: 本次 Stage-2 处理的 fact id 列表 —— **caller
-          在全部 signal 通过 aapply_signal 应用成功后**必须调用
-          ``amark_signal_processed(lanlan_name, batch_fact_ids)`` 完成
-          checkpoint。若 caller 在 dispatch 中途 / 之后崩溃，下轮 idle 会
-          看到 signal_processed=False 的 facts 重抽 Stage-2 重新生成
-          signals 重试 dispatch（CodeRabbit fingerprint c755101c）。
+        Returns ``(new_facts_this_round, signals, batch_fact_ids)``:
+        - ``new_facts_this_round``: facts newly extracted + persisted by this
+          round's Stage-1 (for outbox and other audit purposes)
+        - ``signals``: evidence signals awaiting dispatch
+        - ``batch_fact_ids``: fact ids processed by this Stage-2 round — **the
+          caller must call ``amark_signal_processed(lanlan_name, batch_fact_ids)``
+          to complete the checkpoint only after every signal has been applied
+          successfully via aapply_signal**. If the caller crashes during/after
+          dispatch, the next idle sees the signal_processed=False facts, re-runs
+          Stage-2, regenerates the signals and retries the dispatch (CodeRabbit
+          fingerprint c755101c).
 
-        Failure semantics (§3.4.2 末段):
+        Failure semantics (§3.4.2, last paragraph):
         - Stage-1 failure → abort, no fact written; caller retries later
-        - Stage-2 LLM failure → batch_fact_ids 仍然返回 []，caller 不会
-          mark，下轮 idle 重试同一批
-        - dispatch failure（caller 端）→ caller 不调 amark，下轮重试
+        - Stage-2 LLM failure → batch_fact_ids still returns []; the caller
+          won't mark, and the next idle retries the same batch
+        - dispatch failure (caller side) → the caller doesn't call amark;
+          retried next round
         """
         extracted = await self._allm_extract_facts(lanlan_name, messages)
         if extracted is None:
@@ -1116,28 +1141,31 @@ class FactStore:
         messages: list,
         known_pool: list[dict],
     ) -> list[dict] | None:
-        """AI-aware Stage-1 (path B) extraction —— 输入是 role-tagged user+ai
-        全消息，prompt 里塞 ``known_pool``（path A 在同窗口已抽过的 fact）
-        作为 "do-not-repeat" 列表，让 LLM 在输出层主动去重。
+        """AI-aware Stage-1 (path B) extraction — input is the role-tagged full
+        user+ai message set; the prompt embeds ``known_pool`` (facts path A
+        already extracted in the same window) as a "do-not-repeat" list so the
+        LLM dedupes proactively at the output layer.
 
-        与 ``extract_facts`` 区别：
-        - 用新 prompt (``FACT_EXTRACTION_AI_AWARE_PROMPT``) 而不是基础 prompt
-        - prompt 多了 known pool 段 + trust-tier 指导 + source 字段输出要求
-        - 落盘 default_source='ai_disclosure'（LLM 显式输出的 source 仍优先）
-        - Stage-2 不走（path B 设计就不进 evidence loop）
+        Differences from ``extract_facts``:
+        - Uses the new prompt (``FACT_EXTRACTION_AI_AWARE_PROMPT``) instead of the basic one
+        - The prompt adds a known-pool section + trust-tier guidance + a source-field output requirement
+        - Persists with default_source='ai_disclosure' (a source explicitly emitted by the LLM still wins)
+        - No Stage-2 (path B by design never enters the evidence loop)
 
         Returns:
-            - ``None``: Stage-1 终态失败——重试耗尽 / LLM 返非数组（如
-              ``{"facts": [...]}`` 包了一层）。caller 应保留 cursor 下次
-              trigger 重试同窗口。
-            - ``[]``: Stage-1 成功且 LLM 判窗口内 0 条新 fact（已 dedupe 完）。
-              caller 可正常推进 cursor。
-            - ``list[dict]``: 成功且抽到 N 条新 fact，已 persist。
+            - ``None``: Stage-1 terminal failure — retries exhausted / LLM
+              returned a non-array (e.g. wrapped as ``{"facts": [...]}``). The
+              caller should keep the cursor so the next trigger retries the same
+              window.
+            - ``[]``: Stage-1 succeeded and the LLM judged the window to contain
+              0 new facts (fully deduped). The caller may advance the cursor.
+            - ``list[dict]``: succeeded with N new facts extracted and persisted.
 
-            None / [] 的区分至关重要：若把 None 折叠成 []，path B 会在 LLM
-            transient failure / 错形态 payload 时把失败窗口当作"成功 0 抽"
-            推进 cursor，导致消息永久 skip（CodeRabbit / Codex P1 round-2 +
-            Codex P1 round-9 on PR #1408）。
+            The None / [] distinction is critical: collapsing None into [] would
+            make path B treat a failed window as "successfully extracted 0" on
+            LLM transient failures / malformed payloads and advance the cursor,
+            permanently skipping those messages (CodeRabbit / Codex P1 round-2 +
+            Codex P1 round-9 on PR #1408).
         """
         extracted = await self._allm_extract_facts_with_known_pool(
             lanlan_name, messages, known_pool,
@@ -1261,12 +1289,13 @@ class FactStore:
         await asyncio.to_thread(self.mark_signal_processed, name, fact_ids)
 
     def _bump_fact_recheck_attempts(self, name: str, fid: str, reason: str) -> None:
-        """递增指定 fact 的 ``recheck_attempts`` 计数。
+        """Increment the given fact's ``recheck_attempts`` counter.
 
-        失败到 ``MEMORY_RECHECK_MAX_ATTEMPTS`` 上限后，candidates filter 把
-        该 fact 排除，让循环把名额匀给其它 v1 entry。直接 mutate cached list
-        + save_facts（对齐 mark_absorbed 写法，save_facts 自取锁）。
-        Best-effort——保存失败不抛。
+        Once failures reach the ``MEMORY_RECHECK_MAX_ATTEMPTS`` cap, the
+        candidates filter excludes the fact so the loop gives its slot to other
+        v1 entries. Directly mutates the cached list + save_facts (mirroring the
+        mark_absorbed style; save_facts takes its own lock).
+        Best-effort — save failures don't raise.
         """
         try:
             current = self.load_facts(name)
@@ -1285,14 +1314,16 @@ class FactStore:
             logger.debug(f"[Recheck-Fact] {name} {fid}: bump attempts 失败: {e}")
 
     async def arecheck_one_legacy_fact(self, name: str) -> bool:
-        """Schema v1 → v2 慢速重判（每次只处理 1 条 fact）。
+        """Schema v1 → v2 slow recheck (processes only 1 fact per call).
 
-        找该角色 schema_version < CURRENT 的最老 fact（不含 archive 分片，
-        只看主 facts.json），喂给 LLM 补 event_when，按 created_at 解算
-        event_start_at / event_end_at 写回。fact 没有 temporal_scope，比
-        reflection recheck 更轻量。
+        Finds the character's oldest fact with schema_version < CURRENT (main
+        facts.json only, archive shards excluded), asks the LLM to fill in
+        event_when, resolves event_start_at / event_end_at against created_at
+        and writes them back. Facts have no temporal_scope, so this is lighter
+        than the reflection recheck.
 
-        Returns: True 表示成功处理了一条；False 表示没找到候选或失败。
+        Returns: True when one fact was processed successfully; False when no
+        candidate was found or processing failed.
         """
         from config import (
             MEMORY_RECHECK_MAX_ATTEMPTS,

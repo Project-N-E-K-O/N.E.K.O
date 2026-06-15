@@ -1071,6 +1071,55 @@ def test_onboarding_marks_overlay_controls_as_no_drag_for_desktop_clicks(mock_pa
 
 
 @pytest.mark.frontend
+def test_onboarding_overlay_uses_non_blurred_scrim_for_readability(mock_page: Page):
+    _bootstrap_page(mock_page)
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static" / "css" / "character_personality_onboarding.css"))
+    mock_page.evaluate("() => { window.universalTutorialManager.isTutorialRunning = false; }")
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / "js" / "character_personality_onboarding.js"))
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.CharacterPersonalityOnboarding.bootstrap();
+        }
+        """
+    )
+
+    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_be_visible()
+    overlay_style = mock_page.evaluate(
+        """
+        () => {
+            const overlay = document.querySelector("[data-testid='character-personality-overlay']");
+            const shell = document.querySelector(".character-personality-shell");
+            const style = getComputedStyle(overlay);
+            const shellStyle = getComputedStyle(shell);
+            return {
+                backgroundColor: style.backgroundColor,
+                backdropFilter: style.backdropFilter,
+                webkitBackdropFilter: style.webkitBackdropFilter,
+                shellBackgroundColor: shellStyle.backgroundColor,
+                shellBackdropFilter: shellStyle.backdropFilter,
+                shellScrollbarWidth: shellStyle.scrollbarWidth,
+                titleTextShadow: getComputedStyle(document.querySelector(".character-personality-title")).textShadow,
+                cardBackdropFilter: getComputedStyle(document.querySelector(".character-personality-card")).backdropFilter,
+            };
+        }
+        """
+    )
+
+    assert re.match(r"rgba?\(18, 42, 58(?:,|\s*/)", overlay_style["backgroundColor"]) is not None
+    assert "0.34" in overlay_style["backgroundColor"]
+    assert "blur(" not in (
+        overlay_style["backdropFilter"] or overlay_style["webkitBackdropFilter"] or ""
+    )
+    assert "0.58" in overlay_style["shellBackgroundColor"]
+    assert "blur(30px)" in overlay_style["shellBackdropFilter"]
+    assert overlay_style["shellScrollbarWidth"] == "none"
+    assert overlay_style["titleTextShadow"] != "none"
+    assert "blur(10px)" in overlay_style["cardBackdropFilter"]
+
+
+@pytest.mark.frontend
 def test_manual_character_personality_reselect_opens_directly_on_home_refresh(mock_page: Page):
     _bootstrap_page(mock_page)
     mock_page.evaluate(

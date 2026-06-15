@@ -73,6 +73,68 @@ window.AgentHUD._shortenDesc = function (desc) {
     return s.slice(0, 50) || desc.slice(0, 50);
 };
 
+window.AgentHUD._getTaskRawDesc = function (task) {
+    const params = task && task.params ? task.params : {};
+    return params.description || params.instruction || '';
+};
+
+// New cards and differential updates share this path so the visible text and
+// tooltip source cannot drift apart while task_update events reuse DOM nodes.
+window.AgentHUD._syncTaskDescriptionRow = function (card, task, isRunning) {
+    if (!card) return;
+    const rawDesc = this._getTaskRawDesc(task);
+    const descText = rawDesc ? window.AgentHUD._shortenDesc(rawDesc) : '';
+    let descRow = card.querySelector('.task-card-desc');
+
+    if (!descText) {
+        if (descRow) {
+            if (window.NekoTooltip && typeof window.NekoTooltip.destroyFor === 'function') {
+                window.NekoTooltip.destroyFor(descRow);
+            }
+            descRow.removeAttribute('title');
+            descRow.remove();
+        }
+        return;
+    }
+
+    if (!descRow) {
+        descRow = document.createElement('div');
+        descRow.className = 'task-card-desc';
+        Object.assign(descRow.style, {
+            color: 'var(--neko-popup-text-sub, #888)',
+            fontSize: '11px',
+            lineHeight: '1.3',
+            marginTop: '3px',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap'
+        });
+        const progressRow = card.querySelector('.task-progress-row');
+        if (progressRow) {
+            card.insertBefore(descRow, progressRow);
+        } else {
+            card.appendChild(descRow);
+        }
+    }
+
+    if (descRow.dataset.rawDesc !== rawDesc) {
+        descRow.textContent = descText;
+        descRow.dataset.rawDesc = rawDesc;
+        // Bind only the description text, not the whole card, so cancel and drag
+        // targets keep their existing pointer behavior.
+        if (window.NekoTooltip && typeof window.NekoTooltip.attach === 'function') {
+            window.NekoTooltip.attach(descRow, { text: rawDesc });
+        } else {
+            descRow.title = rawDesc;
+        }
+    }
+
+    const expectedMargin = isRunning ? '3px' : '0';
+    if (descRow.style.marginBottom !== expectedMargin) {
+        descRow.style.marginBottom = expectedMargin;
+    }
+};
+
 // 缓存当前显示器边界信息（多屏幕支持）
 let cachedDisplayHUD = {
     x: 0,
@@ -747,6 +809,11 @@ window.AgentHUD.hideAgentTaskHUD = function () {
         return;
     }
 
+    // The tooltip lives on document.body, so hide it explicitly when the HUD fades.
+    if (window.NekoTooltip && typeof window.NekoTooltip.hide === 'function') {
+        window.NekoTooltip.hide();
+    }
+
     // 已经处于隐藏状态时跳过重复操作
     if (hud.style.display === 'none') {
         return;
@@ -984,6 +1051,10 @@ window.AgentHUD._doUpdateAgentTaskHUD = function () {
         if (tid && activeIds.has(tid)) {
             existingById.set(tid, card);
         } else {
+            const descRow = card.querySelector('.task-card-desc');
+            if (descRow && window.NekoTooltip && typeof window.NekoTooltip.destroyFor === 'function') {
+                window.NekoTooltip.destroyFor(descRow);
+            }
             card.remove(); // remove cards no longer active
         }
     });
@@ -1082,12 +1153,18 @@ window.AgentHUD._updateTaskCard = function (card, task) {
         if (cardCancelBtn.style.display !== cancelDisplay) cardCancelBtn.style.display = cancelDisplay;
     }
 
+    this._syncTaskDescriptionRow(card, task, isRunning);
+
     // Handle progress row: add if now running but missing, remove if no longer running
     const progressRow = card.querySelector('.task-progress-row');
     if (isRunning && !progressRow) {
         // Status just changed to running — rebuild the card cleanly
         const newCard = this._createTaskCard(task);
         const parent = card.parentNode;
+        const oldDescRow = card.querySelector('.task-card-desc');
+        if (oldDescRow && window.NekoTooltip && typeof window.NekoTooltip.destroyFor === 'function') {
+            window.NekoTooltip.destroyFor(oldDescRow);
+        }
         if (parent) parent.replaceChild(newCard, card);
         return newCard;
     } else if (!isRunning && progressRow) {
@@ -1253,6 +1330,7 @@ window.AgentHUD._createTaskCard = function (task) {
     typeLabel.style.overflow = 'hidden';
     typeLabel.style.textOverflow = 'ellipsis';
     typeLabel.style.minWidth = '0';
+    typeLabel.title = typeName;
 
     // 使用 textContent 防止 XSS（避免 plugin_name 中的 HTML 被解析）
     const iconSpan = document.createElement('span');
@@ -1303,7 +1381,7 @@ window.AgentHUD._createTaskCard = function (task) {
         flexShrink: '0',
         marginLeft: '6px'
     });
-    taskCancelBtn.title = window.t ? window.t('agent.taskHud.cancelAll') : '终止任务';
+    taskCancelBtn.title = window.t ? window.t('agent.taskHud.cancelTask') : '终止任务';
     taskCancelBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
         taskCancelBtn.style.opacity = '0.4';
@@ -1355,25 +1433,7 @@ window.AgentHUD._createTaskCard = function (task) {
     header.appendChild(taskCancelBtn);
     card.appendChild(header);
 
-    // === 描述行：显示任务具体内容（如"15分钟后 起来活动"） ===
-    const rawDesc = params.description || params.instruction || '';
-    const descText = rawDesc ? window.AgentHUD._shortenDesc(rawDesc) : '';
-    if (descText) {
-        const descRow = document.createElement('div');
-        descRow.textContent = descText;
-        if (rawDesc !== descText) descRow.title = rawDesc; // hover 显示完整内容
-        Object.assign(descRow.style, {
-            color: 'var(--neko-popup-text-sub, #888)',
-            fontSize: '11px',
-            lineHeight: '1.3',
-            marginTop: '3px',
-            marginBottom: isRunning ? '3px' : '0',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap'
-        });
-        card.appendChild(descRow);
-    }
+    this._syncTaskDescriptionRow(card, task, isRunning);
 
     // === 第二行：倒计时 + 进度条（仅运行中任务） ===
     if (isRunning) {
@@ -1519,6 +1579,11 @@ window.AgentHUD._setupDragging = function (hud) {
 
         if (isInteractive) return;
 
+        // Body-level tooltips are outside the HUD tree, so close them before moving the HUD.
+        if (window.NekoTooltip && typeof window.NekoTooltip.hide === 'function') {
+            window.NekoTooltip.hide();
+        }
+
         isDragging = true;
         setAgentHudDraggingState(true);
 
@@ -1619,6 +1684,11 @@ window.AgentHUD._setupDragging = function (hud) {
         const isInteractive = e.target.closest(interactiveSelectors.join(','));
 
         if (isInteractive) return;
+
+        // Body-level tooltips are outside the HUD tree, so close them before moving the HUD.
+        if (window.NekoTooltip && typeof window.NekoTooltip.hide === 'function') {
+            window.NekoTooltip.hide();
+        }
 
         touchDragging = true;
         isDragging = true;  // 让performDrag函数能正常工作

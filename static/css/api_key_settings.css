@@ -961,6 +961,23 @@ opacity: 0.95 !important;
     transform: translateX(18px);
 }
 
+.mimo-assist-select-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    max-width: 760px;
+}
+
+.mimo-assist-select-row .api-provider-dropdown,
+.mimo-assist-select-row select {
+    flex: 1 1 420px;
+}
+
+.mimo-token-plan-toggle {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
 .custom-api-toggle-wrapper {
 position: relative;
 margin-bottom: 20px;

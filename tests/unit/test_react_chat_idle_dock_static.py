@@ -28,7 +28,14 @@ def test_idle_dock_is_limited_to_cat2_and_cat3_tiers():
     assert "var IDLE_DOCK_TIER_CAT3 = 'cat3';" in source
     assert "function isIdleDockTierActive()" in source
     assert "detail.tier === IDLE_DOCK_TIER_CAT2 || detail.tier === IDLE_DOCK_TIER_CAT3" in source
-    assert "window.addEventListener('live2d-goodbye-click'" not in source
+    goodbye_click_block = _between(
+        source,
+        "window.addEventListener('live2d-goodbye-click'",
+        "window.addEventListener('live2d-return-click'",
+    )
+    assert "setGoodbyeComposerHidden(true, 'live2d-goodbye-click')" in goodbye_click_block
+    assert "enterIdleDock" not in goodbye_click_block
+    assert "setChatSurfaceMode('minimized')" not in goodbye_click_block
 
 
 def test_idle_dock_does_not_pollute_normal_minimize_export_or_app_ui():
@@ -357,6 +364,44 @@ def test_cat1_compact_mirror_uses_stable_native_reserve_rect():
     assert "var mirrorNativeRect = getIdleCat1CompactMirrorNativeReserveRect(mirrorRect, shellRect);" in collect_block
     assert "visualRect: mirrorRect" in collect_block
     assert "nativeRect: mirrorNativeRect || mirrorRect" in collect_block
+
+
+def test_desktop_compact_resize_broadcasts_surface_state_for_cat1_follow():
+    source = _read(APP_REACT_CHAT_WINDOW_PATH)
+
+    resize_block = _between(
+        source,
+        "function applyCompactSurfaceResizeRequest(detail) {",
+        "function getCompactSurfaceTarget(layoutOverride) {",
+    )
+    assert "isElectronChatWindow() && detail && detail.screenRect" in resize_block
+    assert "new CustomEvent('neko:compact-surface-layout-change'" in resize_block
+    assert "screenRect: detail.screenRect" in resize_block
+    assert "resizeActive: phase !== 'end'" in resize_block
+    assert "reason: phase === 'end' ? 'resize-end' : 'resize'" in resize_block
+
+
+def test_cat1_compact_follow_treats_resize_as_active_surface_adjustment():
+    source = _read(AVATAR_UI_BUTTONS_PATH)
+
+    move_state_block = _between(
+        source,
+        "function _handleNekoIdleCompactSurfaceMoveState(detail) {",
+        "function _shouldRecheckNekoIdleCat1AfterManualMove(detail) {",
+    )
+    assert "const resizeActive = !!(detail && detail.resizeActive);" in move_state_block
+    assert "const activeSurfaceAdjustment = dragging || resizeActive;" in move_state_block
+    assert "_nekoIdleCompactSurfaceDragging = activeSurfaceAdjustment;" in move_state_block
+    assert "_interruptNekoIdleCat1PairMovesForRetarget({ scheduleSync: !activeSurfaceAdjustment });" in move_state_block
+
+    follow_block = _between(
+        source,
+        "function _syncNekoIdleCat1CompactTopEdgeSurfaceFollow(detail) {",
+        "function _isNekoIdleCat1Walking(button) {",
+    )
+    assert "const resizeActive = !!(detail && detail.resizeActive);" in follow_block
+    assert "const fastMove = !resizeActive && motion.hasPrevious" in follow_block
+    assert "reason: resizeActive ? 'compact-surface-resize' : 'compact-surface-drag'" in follow_block
 
 
 def test_idle_dock_uses_mutation_observer_to_detect_minimize_completion():

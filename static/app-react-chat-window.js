@@ -78,6 +78,7 @@
         messages: [],
         composerAttachments: [],
         composerHidden: false,
+        goodbyeComposerHidden: false,
         onMessageAction: null,
         onComposerImportImage: null,
         onComposerScreenshot: null,
@@ -279,8 +280,46 @@
     // 但摘掉 body class，让 chat.html / preload-chat-react 里依赖该 class 的
     // 高最小高度 / 窗口最小高度 CSS 不再撑住空白输入区。
     // body class 切换、change 事件 payload 都走这个 helper，避免逻辑分叉。
+    function getEffectiveComposerHidden() {
+        return !!(state.composerHidden || state.goodbyeComposerHidden);
+    }
+
+    function getNekoGoodbyeModeActive() {
+        try {
+            if (typeof window.isNekoGoodbyeModeActive === 'function') {
+                return !!window.isNekoGoodbyeModeActive();
+            }
+        } catch (_) {}
+        return !!(
+            (window.live2dManager && window.live2dManager._goodbyeClicked)
+            || (window.vrmManager && window.vrmManager._goodbyeClicked)
+            || (window.mmdManager && window.mmdManager._goodbyeClicked)
+            || (window.__nekoGoodbyeSilentState && window.__nekoGoodbyeSilentState.active === true)
+        );
+    }
+
+    function hasLocalGoodbyeModeSource() {
+        // Standalone chat pages inherit window.isNekoGoodbyeModeActive from
+        // app-state.js even though they do not own model managers. A false
+        // hook result is therefore not authoritative here; only a true hook
+        // result or an actual local manager/silent-state object can safely
+        // drive localOnly goodbye recomputation.
+        try {
+            if (typeof window.isNekoGoodbyeModeActive === 'function'
+                && window.isNekoGoodbyeModeActive()) {
+                return true;
+            }
+        } catch (_) {}
+        return !!(
+            window.live2dManager
+            || window.vrmManager
+            || window.mmdManager
+            || (window.__nekoGoodbyeSilentState && typeof window.__nekoGoodbyeSilentState === 'object')
+        );
+    }
+
     function getEffectiveGalgameEnabled() {
-        return !!state.galgameModeEnabled && !state.composerHidden;
+        return !!state.galgameModeEnabled && !getEffectiveComposerHidden();
     }
 
     function applyGalgameBodyClass() {
@@ -295,6 +334,23 @@
     function applyAttachmentsBodyClass(hasAttachments) {
         if (typeof document === 'undefined' || !document.body) return;
         document.body.classList.toggle('composer-has-attachments', !!hasAttachments);
+    }
+
+    function getEffectiveComposerAttachmentsVisible() {
+        return !!(
+            state.composerAttachments
+            && state.composerAttachments.length > 0
+            && !getEffectiveComposerHidden()
+        );
+    }
+
+    function syncComposerAttachmentsVisibility(previousVisible) {
+        var nextVisible = getEffectiveComposerAttachmentsVisible();
+        applyAttachmentsBodyClass(nextVisible);
+        if (previousVisible !== undefined && previousVisible !== nextVisible) {
+            dispatchHostEvent('composer-attachments-change', { hasAttachments: nextVisible });
+        }
+        return nextVisible;
     }
     // No module-eval apply: state defaults to off here; init() resolves the
     // persisted preference and calls setGalgameModeEnabled(...) which flips
@@ -1137,6 +1193,14 @@
             if (phase === 'end') {
                 compactSurfaceResizeSession = null;
             }
+            window.dispatchEvent(new CustomEvent('neko:compact-surface-layout-change', {
+                detail: {
+                    screenRect: detail.screenRect,
+                    resizeActive: phase !== 'end',
+                    dragging: false,
+                    reason: phase === 'end' ? 'resize-end' : 'resize'
+                }
+            }));
             return;
         }
         var currentRect = getCurrentCompactSurfaceRect();
@@ -1526,13 +1590,13 @@
                 });
             });
         }
-        return items.concat(Array.prototype.slice.call(element.querySelectorAll('.compact-input-tool-item, .composer-icon-popover .composer-icon-button'))
+        return items.concat(Array.prototype.slice.call(element.querySelectorAll('.compact-input-tool-item, .composer-icon-popover .composer-icon-button, .avatar-tool-quickbar .composer-icon-button, .avatar-tool-quickbar-edit'))
             .map(function (child, index) {
                 var style = window.getComputedStyle ? window.getComputedStyle(child) : null;
                 if (style && (style.display === 'none' || style.visibility === 'hidden')) return null;
                 if (style && Number(style.opacity) <= 0.01) return null;
                 var slot = child.getAttribute('data-compact-tool-wheel-slot') || '';
-                var isAvatarToolChoice = child.classList && child.classList.contains('composer-icon-button');
+                var isAvatarToolChoice = child.classList && (child.classList.contains('composer-icon-button') || child.classList.contains('avatar-tool-quickbar-edit'));
                 if (!isAvatarToolChoice && (!slot || slot.indexOf('hidden') === 0)) return null;
                 var rect = normalizeCompactDomRect(child.getBoundingClientRect());
                 if (!rect) return null;
@@ -1631,6 +1695,21 @@
             });
         }
         return elements.reduce(function (items, element) {
+            if (element.classList.contains('avatar-tool-manager-dialog')) {
+                var dialogRect = getCompactGeometryElementRect(element);
+                if (dialogRect) {
+                    items.push({
+                        id: 'avatarToolManagerDialog',
+                        owner: 'surface',
+                        kind: 'avatarToolManager',
+                        visualRect: dialogRect,
+                        hitRect: dialogRect,
+                        nativeRect: dialogRect,
+                        interactive: true
+                    });
+                }
+                return items;
+            }
             if (
                 !root.contains(element)
                 && !element.classList.contains('compact-input-tool-fan')
@@ -2320,7 +2399,7 @@
             rollbackDraft: state.rollbackDraft || undefined,
             _rollbackKey: state._rollbackKey || undefined,
             _toolCursorResetKey: state._toolCursorResetKey || undefined,
-            composerHidden: state.composerHidden,
+            composerHidden: getEffectiveComposerHidden(),
             chatSurfaceMode: getCurrentChatSurfaceMode(),
             compactMinimizeCancelSeq: compactMinimizeCancelSeq,
             compactChatState: getCurrentCompactChatState(),
@@ -2632,7 +2711,7 @@
     }
 
     function handleComposerSubmit(payload) {
-        if (state.homeTutorialInteractionLocked) {
+        if (state.homeTutorialInteractionLocked || getEffectiveComposerHidden()) {
             return;
         }
         var requestId = payload && typeof payload.requestId === 'string' && payload.requestId
@@ -3251,7 +3330,7 @@
     }
 
     function handleGalgameOptionSelect(option) {
-        if (isHomeTutorialInteractionLocked()) return;
+        if (isHomeTutorialInteractionLocked() || getEffectiveComposerHidden()) return;
         if (!option || typeof option.text !== 'string') return;
         var text = option.text.trim();
         if (!text) return;
@@ -3278,7 +3357,7 @@
     // 直接 callback；这里只是 BC 兜底）；source==='mini_game_invite' 走新逻辑。
 
     function handleChoiceSelect(option, source) {
-        if (isHomeTutorialInteractionLocked()) return;
+        if (isHomeTutorialInteractionLocked() || getEffectiveComposerHidden()) return;
         if (!option || typeof option.choice !== 'string') return;
         if (source === 'galgame') {
             // Forward to legacy galgame handler if it shows up here
@@ -3709,9 +3788,12 @@
 
     function setComposerHidden(hidden) {
         var next = !!hidden;
-        var changed = state.composerHidden !== next;
+        var wasEffectiveHidden = getEffectiveComposerHidden();
+        var previousAttachmentsVisible = getEffectiveComposerAttachmentsVisible();
         state.composerHidden = next;
-        if (changed) {
+        var effectiveChanged = wasEffectiveHidden !== getEffectiveComposerHidden();
+        if (effectiveChanged) {
+            syncComposerAttachmentsVisibility(previousAttachmentsVisible);
             // composer 隐藏/显示切换会改变 effective galgame body class（参见
             // applyGalgameBodyClass），同步刷新一次；否则在 galgame ON 期间
             // 触发请她离开，body 仍带 galgame-mode-enabled，min-height:385px 撑住
@@ -3722,6 +3804,74 @@
             dispatchHostEvent('galgame-mode-change', { enabled: getEffectiveGalgameEnabled() });
         }
         renderWindow();
+    }
+
+    function setGoodbyeComposerHidden(hidden, reason) {
+        var next = !!hidden;
+        var wasEffectiveHidden = getEffectiveComposerHidden();
+        var previousAttachmentsVisible = getEffectiveComposerAttachmentsVisible();
+        try {
+            window.__nekoGoodbyeChatComposerHidden = {
+                hidden: next,
+                reason: reason || (next ? 'goodbye' : 'return'),
+                timestamp: Date.now()
+            };
+        } catch (_) {}
+        if (state.goodbyeComposerHidden === next) {
+            if (wasEffectiveHidden !== getEffectiveComposerHidden()) {
+                syncComposerAttachmentsVisibility(previousAttachmentsVisible);
+                renderWindow();
+            }
+            return;
+        }
+        state.goodbyeComposerHidden = next;
+        var isEffectiveHidden = getEffectiveComposerHidden();
+        var restoredEffectiveComposer = wasEffectiveHidden && !isEffectiveHidden;
+        syncComposerAttachmentsVisibility(previousAttachmentsVisible);
+        if (next) {
+            resetCompactChatState();
+            invalidatePendingGalgameRequest();
+        }
+        if (wasEffectiveHidden !== isEffectiveHidden) {
+            applyGalgameBodyClass();
+            dispatchHostEvent('galgame-mode-change', { enabled: getEffectiveGalgameEnabled() });
+            if (restoredEffectiveComposer && getEffectiveGalgameEnabled()) {
+                var overlay = getOverlay();
+                if (overlay && !overlay.hidden) {
+                    fetchGalgameOptionsForLatestTurn();
+                }
+            }
+        }
+        renderWindow();
+    }
+
+    function syncGoodbyeComposerHidden(reason, options) {
+        if (options && options.localOnly && !hasLocalGoodbyeModeSource()) {
+            return;
+        }
+        setGoodbyeComposerHidden(getNekoGoodbyeModeActive(), reason || 'sync');
+    }
+
+    function requestGoodbyeComposerHiddenState(reason) {
+        var resolvedReason = reason || 'react-chat-window';
+        try {
+            if (typeof window.requestGoodbyeChatComposerHiddenState === 'function') {
+                if (window.requestGoodbyeChatComposerHiddenState(resolvedReason)) {
+                    return true;
+                }
+            }
+        } catch (_) {}
+        try {
+            window.dispatchEvent(new CustomEvent('neko:request-goodbye-chat-composer-hidden-state', {
+                detail: {
+                    reason: resolvedReason,
+                    timestamp: Date.now()
+                }
+            }));
+            return true;
+        } catch (_) {
+            return false;
+        }
     }
 
     function setHomeTutorialInteractionLocked(locked, reason) {
@@ -3742,7 +3892,7 @@
     }
 
     function setComposerAttachments(attachments) {
-        var prevHas = state.composerAttachments && state.composerAttachments.length > 0;
+        var previousVisible = getEffectiveComposerAttachmentsVisible();
         state.composerAttachments = Array.isArray(attachments)
             ? attachments.map(function (attachment, index) {
                 if (!attachment || typeof attachment !== 'object' || !attachment.url) return null;
@@ -3753,15 +3903,8 @@
                 };
             }).filter(Boolean)
             : [];
-        var nextHas = state.composerAttachments.length > 0;
-        applyAttachmentsBodyClass(nextHas);
+        syncComposerAttachmentsVisibility(previousVisible);
         renderWindow();
-        if (prevHas !== nextHas) {
-            // chat.html 的 syncWindowToAttachmentsMin 监听这条事件，0→N 时
-            // 主动 setBounds 把 Electron 窗口撑高到能容纳附件 + 输入框，避免
-            // 附件刚贴上来就把输入区顶出可视区。和 galgame-mode-change 对称。
-            dispatchHostEvent('composer-attachments-change', { hasAttachments: nextHas });
-        }
         return state.composerAttachments;
     }
 
@@ -3835,7 +3978,9 @@
             viewProps: Object.assign({}, ensureViewProps()),
             messages: state.messages.map(cloneMessage),
             composerAttachments: state.composerAttachments.slice(),
-            composerHidden: state.composerHidden
+            composerHidden: getEffectiveComposerHidden(),
+            composerHiddenRequested: state.composerHidden,
+            goodbyeComposerHidden: state.goodbyeComposerHidden
         };
     }
 
@@ -4834,6 +4979,8 @@
         }
 
         resetCompactChatState();
+        syncGoodbyeComposerHidden('chat-surface-mode-change', { localOnly: true });
+        requestGoodbyeComposerHiddenState('chat-surface-mode-change');
 
         if (!previousMinimized && nextMinimized && previousMode === 'full' && !isElectronChatWindow() && getShell()) {
             pendingMinimizedSurfaceCommit = {
@@ -5629,7 +5776,7 @@
     var RESIZE_DIRECTIONS = ['n', 's', 'w', 'e', 'nw', 'ne', 'sw', 'se'];
 
     function getDesktopMinHeight() {
-        if (!state.galgameModeEnabled) return MIN_HEIGHT;
+        if (!getEffectiveGalgameEnabled()) return MIN_HEIGHT;
         // 与 CSS 的 galgame min-height 对齐，避免拖拽时 JS 先把高度压到 280px。
         return Math.min(GALGAME_MIN_HEIGHT, Math.max(MIN_HEIGHT, window.innerHeight - 22));
     }
@@ -5844,6 +5991,11 @@
 
         window.addEventListener(EVENT_PREFIX + 'set-composer-hidden', function (event) {
             setComposerHidden(event.detail && event.detail.hidden);
+        });
+
+        window.addEventListener(EVENT_PREFIX + 'set-goodbye-composer-hidden', function (event) {
+            var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+            setGoodbyeComposerHidden(!!detail.hidden, detail.reason || 'bridge');
         });
 
         window.addEventListener(EVENT_PREFIX + 'set-galgame-mode', function (event) {
@@ -6069,6 +6221,8 @@
             var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
             if (!detail || detail.type !== 'visual-tier') return;
 
+            setGoodbyeComposerHidden(detail.tier !== IDLE_DOCK_TIER_NONE, detail.source || 'visual-tier');
+
             idleDockTier = detail.tier === IDLE_DOCK_TIER_CAT2 || detail.tier === IDLE_DOCK_TIER_CAT3
                 ? detail.tier
                 : IDLE_DOCK_TIER_NONE;
@@ -6103,17 +6257,23 @@
             scheduleElectronCat1PairMoveBounds(detail.screenRect || detail.bounds);
         });
         window.addEventListener('neko:idle-cat1-compact-mirror-state', handleIdleCat1CompactMirrorState);
+        window.addEventListener('live2d-goodbye-click', function () {
+            setGoodbyeComposerHidden(true, 'live2d-goodbye-click');
+        });
         window.addEventListener('live2d-return-click', function () {
+            setGoodbyeComposerHidden(false, 'live2d-return-click');
             if (hasElectronIdleDockPendingOrActive()) { exitElectronIdleDock(); }
             if (hasIdleDockPendingOrActive()) { exitIdleDock(); return; }
             clearIdleDockState();
         });
         window.addEventListener('vrm-return-click', function () {
+            setGoodbyeComposerHidden(false, 'vrm-return-click');
             if (hasElectronIdleDockPendingOrActive()) { exitElectronIdleDock(); }
             if (hasIdleDockPendingOrActive()) { exitIdleDock(); return; }
             clearIdleDockState();
         });
         window.addEventListener('mmd-return-click', function () {
+            setGoodbyeComposerHidden(false, 'mmd-return-click');
             if (hasElectronIdleDockPendingOrActive()) { exitElectronIdleDock(); }
             if (hasIdleDockPendingOrActive()) { exitIdleDock(); return; }
             clearIdleDockState();
@@ -6159,6 +6319,16 @@
             if (initialComposerShouldHide) {
                 setComposerHidden(true);
             }
+            if (window.__nekoGoodbyeChatComposerHidden
+                && typeof window.__nekoGoodbyeChatComposerHidden === 'object') {
+                setGoodbyeComposerHidden(
+                    !!window.__nekoGoodbyeChatComposerHidden.hidden,
+                    window.__nekoGoodbyeChatComposerHidden.reason || 'initial-goodbye-cache'
+                );
+            } else {
+                syncGoodbyeComposerHidden('initial-goodbye-state');
+            }
+            requestGoodbyeComposerHiddenState('initial-goodbye-state');
         } catch (_) {
             // 首绘兜底失败不影响后续 session_started 同步
         }
@@ -6227,6 +6397,8 @@
         setChatSurfaceMode: setChatSurfaceMode,
         cycleChatSurfaceMode: cycleChatSurfaceMode,
         setCompactChatState: setCompactChatState,
+        setGoodbyeComposerHidden: setGoodbyeComposerHidden,
+        syncGoodbyeComposerHidden: syncGoodbyeComposerHidden,
         setGalgameModeEnabled: function (enabled, options) {
             setGalgameModeEnabled(enabled, options || {});
         },

@@ -1,24 +1,44 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Stop-name helpers for the memory module's keyword / BM25 / extraction layer.
 
-Why this exists: ``master_name``、``lanlan_name`` 以及它们各自的 ``昵称``
-几乎在每一轮对话里都会出现——一旦把它们也喂给 ``_extract_keywords`` /
-``_is_mentioned`` / FTS5 BM25，这些 token 会主导关键词重叠或检索得分，
-触发大量误命中（无关 fact 被判定 "mentioned"、dedup 误判相似、矛盾检测
-误报）。统一在调用关键词层之前剥离这些 stop-name，避免无效匹配。
+Why this exists: ``master_name``, ``lanlan_name`` and their respective ``昵称``
+(nicknames) appear in nearly every conversation turn — once fed into
+``_extract_keywords`` / ``_is_mentioned`` / FTS5 BM25, these tokens dominate
+keyword overlap and retrieval scores, triggering massive false hits (unrelated
+facts judged "mentioned", dedup misjudging similarity, contradiction-detection
+false positives). Stripping these stop-names uniformly before the keyword
+layer avoids the junk matches.
 
 Design notes:
-- 入口集中在 ``collect_stop_names`` / ``acollect_stop_names``，从
-  ``ConfigManager.get_character_data`` 取 ``主人.档案名`` + ``主人.昵称``
-  与给定 ``lanlan_name`` 自身 + 该角色的 ``昵称``。``lanlan_name`` 缺省
-  退回 "当前猫娘"，因为部分调用点只关心当前活跃角色。
-- ``昵称`` 字段是逗号分隔字符串（中英文标点皆可），统一拆成单条别名。
-- 列表按长度倒序去重——substring replace 时长 alias 优先匹配，避免
-  ``T酱`` 先剥离时把 ``小T酱`` 截断成 ``小``。
-- ``strip_stop_names`` 是 substring replace；CJK / 短拉丁名足够用，
-  长拉丁名想做 word-boundary 留给后续按需扩展。
-"""
+- Entry points are centralized in ``collect_stop_names`` /
+  ``acollect_stop_names``, which read ``主人.档案名`` + ``主人.昵称`` from
+  ``ConfigManager.get_character_data`` plus the given ``lanlan_name`` itself +
+  that character's ``昵称``. ``lanlan_name`` defaults to the currently active
+  catgirl, since some call sites only care about the active character.
+- The ``昵称`` field is a comma-separated string (CJK or ASCII punctuation
+  both fine); it is split into individual aliases.
+- The list is deduped and ordered longest-first — in substring replacement the
+  longer alias must match first, so stripping ``T酱`` first can't truncate
+  ``小T酱`` into ``小``.
+- ``strip_stop_names`` is a substring replace; good enough for CJK / short
+  Latin names. Word-boundary handling for long Latin names is left for future
+  need.
+"""  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
 import re
@@ -122,19 +142,22 @@ def strip_stop_names(text: str, stop_names: list[str] | None) -> str:
     (``collect_stop_names`` already guarantees this).
 
     Per-alias strategy (Codex PR-971 P2):
-      * len < 2 → 跳过。单字符 alias（``T`` 或 ``天``）做全文 substring
-        replace 会把所有命中字符抹掉，对 ``_extract_keywords`` 的 n-gram
-        切分是毁灭性的；漏剥一个真单字别名远比悄无声息腐蚀全量 fact 文本
-        要轻。
-      * 纯拉丁 alias (``Tony`` / ``Al``) → word-boundary 替换，否则
-        ``Al`` 会把 ``Algorithm`` 截成 `` gorithm``。boundary 用显式
-        ``[A-Za-z0-9_]`` 前后查 ascii，避免 ``\\b`` 在 Python 默认
-        Unicode 模式下把 CJK 算成 word-char 而失效（``\\bTony\\b`` 在
-        ``今天Tony来了`` 里不命中）。
-      * CJK / 混合脚本 alias (``T酱`` / ``小天``) → 仍走 substring
-        replace。CJK 没有 word boundary 概念，且 ≥2 字符的 CJK 串足够
-        specific，substring 误伤 vanishingly rare。
-    """
+      * len < 2 → skip. A single-character alias (``T`` or ``天``) under
+        full-text substring replace would wipe every matching character —
+        devastating for ``_extract_keywords``' n-gram splitting; failing to
+        strip one genuine single-char alias is far milder than silently
+        corroding the entire fact corpus.
+      * Pure-Latin aliases (``Tony`` / ``Al``) → word-boundary replace,
+        otherwise ``Al`` would cut ``Algorithm`` into `` gorithm``. The
+        boundary checks ascii explicitly with ``[A-Za-z0-9_]`` look-around,
+        because ``\b`` in Python's default Unicode mode counts CJK as
+        word-chars and fails (``\bTony\b`` doesn't match inside
+        ``今天Tony来了``).
+      * CJK / mixed-script aliases (``T酱`` / ``小天``) → still substring
+        replace. CJK has no word-boundary concept, and a CJK string of >= 2
+        chars is specific enough that substring collateral damage is
+        vanishingly rare.
+    """  # noqa: DOCSTRING_CJK
     if not text or not stop_names:
         return text
     out = text

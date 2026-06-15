@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import sys
 import os
 _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -173,26 +187,29 @@ TASK_TRACKER_TTL: float = 600.0     # 记录保留时长（秒）
 
 
 class AgentTaskTracker:
-    """维护 agent 侧的任务分发/完成记录（独立于 core.py 的对话上下文）。
+    """Maintains the agent-side task assignment/completion records (independent of core.py's conversation context).
 
-    每条记录包含：
-      - ts: 时间戳（用于与对话消息交错排序）
+    Each record contains:
+      - ts: timestamp (for interleaved ordering with conversation messages)
       - kind: "assigned" | "completed" | "failed"
-      - method: 执行渠道 (user_plugin / computer_use / browser_use / …)
-      - desc: 任务简述
-      - detail: 可选的结果摘要
-      - task_id: 对应 task_registry 的 id
-      - trigger_user_fingerprint: 触发该任务的那条 user 消息的单条签名
-        （hash），供取消后从 messages 中 redact 对应 user turn 使用。
+      - method: execution channel (user_plugin / computer_use / browser_use / ...)
+      - desc: short task description
+      - detail: optional result summary
+      - task_id: id in task_registry
+      - trigger_user_fingerprint: per-message signature (hash) of the user
+        message that triggered the task, used to redact the corresponding
+        user turn from messages after cancellation.
 
-    当 analyzer 收到 messages 时，调用 inject() 方法把这些记录以
-    role=system 消息的形式插入到 messages 副本中（按时间序），使 LLM
-    能看到"哪些任务已经 assign、哪些已经完成"从而避免重复分派。被用户
-    通过 UI 显式取消的任务，会在 redact 阶段把其触发的 user turn 整段
-    从 messages 副本里移除，因此 inject() 不再为 cancelled 任务输出
-    [CANCELLED] 行——analyzer 视野里那条请求已经"不存在"。
+    When the analyzer receives messages, inject() inserts these records as
+    role=system messages into a copy of messages (in time order), so the
+    LLM can see "which tasks are already assigned and which are done" and
+    avoid duplicate dispatch. Tasks the user explicitly cancelled via the
+    UI have their triggering user turn removed wholesale from the messages
+    copy during the redact phase, so inject() no longer emits [CANCELLED]
+    lines for cancelled tasks — from the analyzer's viewpoint that request
+    no longer "exists".
 
-    这些记录不会同步回 core.py 的对话历史。
+    These records are never synced back into core.py's conversation history.
     """
 
     def __init__(self) -> None:
@@ -279,10 +296,10 @@ class AgentTaskTracker:
         }
 
     def inject(self, messages: list, lanlan_name: Optional[str]) -> list:
-        """返回一份新的 messages 列表，其中按时序插入了任务跟踪记录。
+        """Return a new messages list with task tracking records inserted in time order.
 
-        原始 messages 不会被修改。每条记录被包装成
-        ``{"role": "system", "content": "..."}`` 格式。
+        The original messages are not modified. Each record is wrapped in the
+        ``{"role": "system", "content": "..."}`` format.
         """
         key = _normalize_lanlan_key(lanlan_name)
         records = self._records.get(key)
@@ -527,9 +544,9 @@ async def _cancel_openclaw_tasks_for_stop(
 
 
 def _cleanup_task_registry() -> List[Dict[str, Any]]:
-    """清理 task_registry 中超过 5 分钟的已完成/失败/取消任务，防止内存泄漏；同时检查 deferred 任务超时
+    """Clean up completed/failed/cancelled tasks older than 5 minutes from task_registry to prevent memory leaks; also check deferred task timeouts
 
-    返回超时的 deferred 任务列表（需要发送 task_update 通知前端）
+    Returns the list of timed-out deferred tasks (a task_update notification must be sent to the frontend)
     """
     global _task_registry_last_cleanup
     now = time.time()
@@ -590,8 +607,8 @@ def _cleanup_task_registry() -> List[Dict[str, Any]]:
 
 
 def _bind_deferred_task(plugin_id: str, reminder_id: str, agent_task_id: str) -> None:
-    """通过插件服务将 agent_task_id 关联到提醒记录，供 daemon 触发时回调使用。
-    bind_task 是快速操作（只写文件），触发 run 后短暂轮询等待完成。"""
+    """Bind agent_task_id to the reminder record via the plugin service, for the callback when the daemon fires.
+    bind_task is a fast operation (file write only); after triggering run, poll briefly for completion."""
     try:
         import time as _time
         with httpx.Client(timeout=5.0, proxy=None, trust_env=False) as client:
@@ -623,10 +640,10 @@ def _bind_deferred_task(plugin_id: str, reminder_id: str, agent_task_id: str) ->
 
 
 async def _get_plugin_friendly_name(plugin_id: str) -> str | None:
-    """获取插件的友好名称（用于 HUD 显示）
+    """Get the plugin's friendly name (for HUD display)
 
-    通过 HTTP 调用嵌入式插件服务的 /plugins 端点获取插件列表，
-    并使用缓存减少请求次数。
+    Fetches the plugin list from the embedded plugin service's /plugins endpoint
+    over HTTP, with caching to reduce request count.
     """
     global _plugin_name_cache, _plugin_name_cache_time
 
@@ -1316,7 +1333,7 @@ async def _emit_task_result(
 
 
 def _lookup_llm_result_fields(plugin_id: str, entry_id: Optional[str]) -> Optional[list]:
-    """从 plugin_list 中查找指定 entry 的 llm_result_fields 声明。"""
+    """Look up the llm_result_fields declaration of the given entry in plugin_list."""
     try:
         plugins = getattr(Modules.task_executor, "plugin_list", None) or []
         for p in plugins:
@@ -1343,12 +1360,10 @@ def _is_reply_suppressed(result: Optional[Dict]) -> bool:
     return _resolve_delivery_mode(result) == "silent"
 
 def _check_agent_api_gate() -> Dict[str, Any]:
-    """统一 Agent API 门槛检查。"""
+    """Unified agent API gate check."""
     try:
         cm = get_config_manager()
         ok, reasons = cm.is_agent_api_ready()
-        # 字段名保留 is_free_version（前端/下游 gate 消费者沿用），值取 agent 维度的
-        # is_agent_free()：判 agent 是否走内置免费模型，而非 core/assist 的版本免费。
         return {"ready": ok, "reasons": reasons, "is_free_version": cm.is_agent_free()}
     except Exception as e:
         return {"ready": False, "reasons": [f"Agent API check failed: {e}"], "is_free_version": False}
@@ -1547,7 +1562,7 @@ def _redact_cancelled_user_turns(messages: list, lanlan_name: Optional[str]) -> 
     `cancelled_sigs`) → redact it **unless** it is a "first-time analyze"
     turn. A user message is first-time if it has **exactly one**
     role=='assistant' message after it in `messages` — that one assistant
-    is the猫娘 reply whose turn-end triggered the current analyze call,
+    is the catgirl reply whose turn-end triggered the current analyze call,
     so this is its first analyze pass and it must bypass the cancel set
     (the user has explicitly re-issued / added new input after the
     previous cancel).
@@ -1655,6 +1670,79 @@ async def _emit_agent_status_update(lanlan_name: Optional[str] = None) -> None:
         pass
 
 
+def _track_background_task(task: asyncio.Task) -> asyncio.Task:
+    Modules._background_tasks.add(task)
+    task.add_done_callback(Modules._background_tasks.discard)
+    return task
+
+
+def _create_tracked_task(coro: Any) -> asyncio.Task:
+    return _track_background_task(asyncio.create_task(coro))
+
+
+def _agent_master_enabled() -> bool:
+    return bool(Modules.analyzer_enabled)
+
+
+def _user_plugins_enabled() -> bool:
+    return bool((Modules.agent_flags or {}).get("user_plugin_enabled", False))
+
+
+def _voice_transcript_plugin_gate_reason() -> str:
+    if not _agent_master_enabled():
+        return "agent_disabled"
+    if not _user_plugins_enabled():
+        return "user_plugin_disabled"
+    return ""
+
+
+async def _handle_voice_transcript_request(event: Dict[str, Any]) -> None:
+    event_id = str((event or {}).get("event_id") or "")
+    lanlan_name = (event or {}).get("lanlan_name")
+
+    try:
+        from plugin.server.application.plugins import voice_transcript_bridge
+
+        if not voice_transcript_bridge.voice_transcript_event_has_text(event):
+            logger.debug("[VoiceBridge] observed transcript skipped: empty event_id=%s", event_id)
+        elif gate_reason := _voice_transcript_plugin_gate_reason():
+            if gate_reason == "agent_disabled":
+                logger.debug("[VoiceBridge] observed transcript skipped: agent disabled event_id=%s", event_id)
+            else:
+                logger.debug(
+                    "[VoiceBridge] observed transcript skipped: user plugins disabled event_id=%s",
+                    event_id,
+                )
+        else:
+            lifecycle_ready = bool(Modules.plugin_lifecycle_started)
+            if not lifecycle_ready:
+                lifecycle_ready = await _ensure_plugin_lifecycle_started()
+
+            if not lifecycle_ready:
+                logger.debug(
+                    "[VoiceBridge] observed transcript skipped: plugin lifecycle unavailable event_id=%s",
+                    event_id,
+                )
+            else:
+                result = await voice_transcript_bridge.resolve_voice_transcript_request(
+                    event,
+                    timeout=voice_transcript_bridge.VOICE_TRANSCRIPT_DISPATCH_TIMEOUT_SECONDS,
+                )
+                logger.debug(
+                    "[VoiceBridge] observed transcript dispatched: event_id=%s lanlan=%s action=%s",
+                    event_id,
+                    lanlan_name,
+                    result.get("action") if isinstance(result, dict) else "",
+                )
+    except Exception as exc:
+        logger.debug(
+            "[VoiceBridge] plugin dispatch failed: event_id=%s lanlan=%s err=%s",
+            event_id,
+            lanlan_name,
+            exc,
+        )
+
+
 async def _on_session_event(event: Dict[str, Any]) -> None:
     event_type = (event or {}).get("event_type")
     if event_type == "agent_intent_restore_signal":
@@ -1667,16 +1755,17 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
         # has its own once-flag, so this is safe to spam.
         await _maybe_restore_agent_intent()
         return
+    if event_type in {"voice_transcript_observed", "voice_transcript_request"}:
+        _create_tracked_task(_handle_voice_transcript_request(event))
+        return
     if event_type == "analyze_request":
         messages = event.get("messages", [])
         lanlan_name = event.get("lanlan_name")
         event_id = event.get("event_id")
         logger.info("[AgentAnalyze] analyze_request received: trigger=%s lanlan=%s messages=%d", event.get("trigger"), lanlan_name, len(messages) if isinstance(messages, list) else 0)
         if event_id:
-            ack_task = asyncio.create_task(_emit_main_event("analyze_ack", lanlan_name, event_id=event_id))
-            Modules._background_tasks.add(ack_task)
-            ack_task.add_done_callback(Modules._background_tasks.discard)
-        if not Modules.analyzer_enabled:
+            _create_tracked_task(_emit_main_event("analyze_ack", lanlan_name, event_id=event_id))
+        if not _agent_master_enabled():
             logger.info("[AgentAnalyze] skip: analyzer disabled (master switch off)")
             return
         if isinstance(messages, list) and messages:
@@ -1696,14 +1785,12 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
             # - Voice-mode hot-swap sending 'turn end agent_callback'
             Modules.last_user_turn_fingerprint[lanlan_key] = fp
             conversation_id = event.get("conversation_id")
-            task = asyncio.create_task(_background_analyze_and_plan(messages, lanlan_name, conversation_id=conversation_id))
-            Modules._background_tasks.add(task)
-            task.add_done_callback(Modules._background_tasks.discard)
+            _create_tracked_task(_background_analyze_and_plan(messages, lanlan_name, conversation_id=conversation_id))
 
 
 
 def _spawn_task(kind: str, args: Dict[str, Any]) -> Dict[str, Any]:
-    """生成 computer_use 任务条目并入队等待独占执行。"""
+    """Create a computer_use task entry and enqueue it for exclusive execution."""
     task_id = str(uuid.uuid4())
     info = {
         "id": task_id,
@@ -2007,16 +2094,16 @@ async def _computer_use_scheduler_loop():
 
 async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str], conversation_id: Optional[str] = None):
     """
-    [简化版] 使用 DirectTaskExecutor 一步完成：分析对话 + 判断执行方式 + 执行任务
+    [Simplified] Uses DirectTaskExecutor to do everything in one step: analyze the conversation + decide the execution method + execute the task
     
-    简化链条:
-    - 旧: Analyzer(LLM#1) → Planner(LLM#2) → 子进程Processor(LLM#3) → MCP调用
-    - 新: DirectTaskExecutor(LLM#1) → MCP调用
+    Simplified chain:
+    - old: Analyzer(LLM#1) → Planner(LLM#2) → subprocess Processor(LLM#3) → MCP call
+    - new: DirectTaskExecutor(LLM#1) → MCP call
 
     Args:
-        messages: 对话消息列表
-        lanlan_name: 角色名
-        conversation_id: 对话ID，用于关联触发事件和对话上下文
+        messages: conversation message list
+        lanlan_name: character name
+        conversation_id: conversation ID, used to associate the trigger event with the conversation context
 
     Uses analyze_lock to serialize concurrent calls.  Without this, two
     near-simultaneous analyze_request events can both pass the dedup
@@ -3289,7 +3376,7 @@ async def startup():
         logger.warning(f"[Agent] Failed to start embedded user plugin server: {e}")
     # ── OpenFang 后台初始化 (仅通信层，进程由 Electron 管理) ──
     async def _init_openfang_background():
-        """等待 OpenFang daemon 连通 + 同步配置 + 注册执行 Agent。"""
+        """Wait for OpenFang daemon connectivity + sync config + register the executor agent."""
         try:
             adapter = OpenFangAdapter(base_url=OPENFANG_BASE_URL)
             Modules.openfang = adapter
@@ -3561,38 +3648,7 @@ async def shutdown():
     bridge = Modules.agent_bridge
     if bridge is not None:
         try:
-            bridge._stop.set()
-            # 等 recv 线程退出（RCVTIMEO=1s，最多等 2s）—— 两个线程并行 join，避免串行 4s
-            _recv_threads = [t for t in (getattr(bridge, '_recv_thread', None), getattr(bridge, '_analyze_recv_thread', None)) if t is not None]
-            if _recv_threads:
-                await asyncio.gather(
-                    *(asyncio.to_thread(_t.join, 2.0) for _t in _recv_threads),
-                    return_exceptions=True,
-                )
-            try:
-                import zmq as _zmq
-
-                _LINGER = _zmq.LINGER
-            except Exception:
-                _LINGER = 17
-            for sock_name in ("sub", "analyze_pull", "push"):
-                sock = getattr(bridge, sock_name, None)
-                if sock is not None:
-                    try:
-                        sock.setsockopt(_LINGER, 0)
-                        sock.close()
-                    except Exception as e:
-                        logger.debug("[Agent] ZMQ socket %s close error: %s", sock_name, e)
-            if bridge.ctx is not None:
-                _ctx = bridge.ctx
-                bridge.ctx = None
-                try:
-                    await asyncio.wait_for(asyncio.to_thread(_ctx.term), timeout=3.0)
-                except asyncio.TimeoutError:
-                    logger.warning("[Agent] ZMQ context term timed out, skipping")
-                except Exception as e:
-                    logger.debug("[Agent] ZMQ context term error: %s", e)
-            bridge.ready = False
+            await bridge.stop()
             Modules.agent_bridge = None
             logger.debug("[Agent] ✅ ZMQ event bridge cleaned up")
         except Exception as e:
@@ -3638,7 +3694,7 @@ async def health():
 
 @app.post("/openclaw/preflight")
 async def openclaw_preflight(payload: Dict[str, Any]):
-    """快速判断当前输入是否应由 OpenClaw(QwenPaw) 接管。"""
+    """Quickly decide whether the current input should be taken over by OpenClaw(QwenPaw)."""
     if not Modules.task_executor:
         raise HTTPException(503, "Task executor not ready")
 
@@ -3702,13 +3758,13 @@ async def openclaw_preflight(payload: Dict[str, Any]):
 @app.post("/plugin/execute")
 async def plugin_execute_direct(payload: Dict[str, Any]):
     """
-    新增接口：直接触发 plugin_entry。
-    请求 body 可包含:
-      - plugin_id: str (必需)
-      - entry_id: str (可选)
-      - args: dict (可选)
-      - lanlan_name: str (可选，用于日志/通知)
-    该接口将调用 Modules.task_executor.execute_user_plugin_direct 来执行插件触发。
+    New endpoint: trigger a plugin_entry directly.
+    The request body may contain:
+      - plugin_id: str (required)
+      - entry_id: str (optional)
+      - args: dict (optional)
+      - lanlan_name: str (optional, for logging/notifications)
+    This endpoint calls Modules.task_executor.execute_user_plugin_direct to run the plugin trigger.
     """
     if not Modules.task_executor:
         raise HTTPException(503, "Task executor not ready")
@@ -4170,7 +4226,7 @@ async def submit_task_correction(task_id: str, body: ToolCorrectionPayload):
 
 @app.post("/api/agent/tasks/{task_id}/complete")
 async def complete_deferred_task(task_id: str):
-    """供插件 daemon 回调：将 deferred 任务标记为已完成并通知前端 HUD。"""
+    """Callback for the plugin daemon: mark a deferred task as completed and notify the frontend HUD."""
     info = Modules.task_registry.get(task_id)
     if not info:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -4229,8 +4285,8 @@ from starlette.responses import StreamingResponse as StarletteStreamingResponse
 @app.api_route("/openfang-llm-proxy/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def openfang_llm_proxy(request: Request, path: str):
     """
-    透明代理：OpenFang → 此端点 → lanlan.app（或用户配置的 agent API）。
-    在响应中补全 OpenAI 兼容性字段 (completion_tokens, prompt_tokens 等)。
+    Transparent proxy: OpenFang → this endpoint → lanlan.app (or the user-configured agent API).
+    Fills in OpenAI compatibility fields in the response (completion_tokens, prompt_tokens, etc.).
     """
     # 获取真实 API 地址
     cm = get_config_manager()
@@ -4341,10 +4397,10 @@ async def openfang_llm_proxy(request: Request, path: str):
 
 def _patch_openai_response(data: dict) -> None:
     """
-    全面修补 OpenAI 兼容响应，解决 OpenFang 严格解析的兼容性问题：
-    1. 补全 usage 字段 (completion_tokens 等)
-    2. 修复 malformed_function_call → 标准 tool_calls 格式
-    3. 确保 message.content 不为 None
+    Comprehensively patch the OpenAI-compatible response to fix OpenFang's strict-parsing compatibility issues:
+    1. Fill in usage fields (completion_tokens, etc.)
+    2. Fix malformed_function_call → standard tool_calls format
+    3. Ensure message.content is not None
     """
     if not isinstance(data, dict):
         return
@@ -4354,7 +4410,7 @@ def _patch_openai_response(data: dict) -> None:
 
 
 def _patch_usage(data: dict) -> None:
-    """补全缺失的 usage 字段。"""
+    """Fill in missing usage fields."""
     if not isinstance(data, dict):
         return
 
@@ -4380,13 +4436,14 @@ def _patch_usage(data: dict) -> None:
 
 def _patch_malformed_tool_calls(data: dict) -> None:
     """
-    修复 Gemini/OpenRouter 返回的 malformed_function_call 响应。
+    Fix malformed_function_call responses returned by Gemini/OpenRouter.
 
-    问题：某些模型通过 OpenRouter 时不支持标准 OpenAI function calling，
-    输出 `call:tool_name{json_args}` 格式放在 refusal 字段中。
-    OpenFang 期望标准的 tool_calls 格式。
+    Problem: some models routed through OpenRouter don't support standard OpenAI
+    function calling and emit a `call:tool_name{json_args}` format inside the
+    refusal field. OpenFang expects the standard tool_calls format.
 
-    修复：解析 refusal 中的工具调用，转换为标准 tool_calls 数组。
+    Fix: parse the tool calls out of refusal and convert them into a standard
+    tool_calls array.
     """
     choices = data.get("choices")
     if not isinstance(choices, list):
@@ -4425,14 +4482,14 @@ def _patch_malformed_tool_calls(data: dict) -> None:
 
 def _extract_tool_intent_as_text(refusal_text: str) -> str:
     """
-    从 malformed function call 中提取工具调用意图，转换为自然语言文本。
+    Extract the tool-call intent from a malformed function call and convert it to natural-language text.
 
-    例如:
-    输入: "Malformed function call: call:web_search{queries:["中国到日本 机票价格"]}"
-    输出: "I'll search for: 中国到日本 机票价格, China to Japan flight prices..."
+    Example:
+    input: "Malformed function call: call:web_search{queries:["中国到日本 机票价格"]}"
+    output: "I'll search for: 中国到日本 机票价格, China to Japan flight prices..."
 
-    这样 OpenFang 可以把这段文字作为 agent 的回复，而不是尝试执行一个不兼容的 tool call。
-    """
+    This lets OpenFang use the text as the agent's reply instead of trying to execute an incompatible tool call.
+    """  # noqa: DOCSTRING_CJK
     import re as _re
 
     cleaned = refusal_text.replace("Malformed function call: ", "").strip()
@@ -4498,7 +4555,7 @@ def _extract_tool_intent_as_text(refusal_text: str) -> str:
 
 @app.get("/openfang/availability")
 async def openfang_availability():
-    """检查 OpenFang 可用性。"""
+    """Check OpenFang availability."""
     if not Modules.openfang:
         return {"enabled": False, "ready": False, "reason": "adapter 未加载"}
     return await asyncio.to_thread(Modules.openfang.is_available)
@@ -4533,7 +4590,7 @@ async def openclaw_availability():
 
 @app.post("/openfang/run")
 async def openfang_run(payload: Dict[str, Any]):
-    """直接通过 OpenFang 执行任务 (绕过路由决策)。"""
+    """Execute a task directly via OpenFang (bypassing routing decisions)."""
     instruction = payload.get("instruction")
     if not instruction:
         return JSONResponse({"error": "instruction required"}, status_code=400)
@@ -4679,7 +4736,7 @@ async def openfang_run(payload: Dict[str, Any]):
 
 @app.post("/openfang/sync_config")
 async def openfang_sync_config():
-    """手动触发 API Key 配置同步到 OpenFang。"""
+    """Manually trigger API key config sync to OpenFang."""
     if not Modules.openfang:
         return {"success": False, "error": "adapter 未加载"}
     ok = await Modules.openfang.sync_config()
@@ -4693,7 +4750,7 @@ async def capabilities():
 
 @app.get("/agent/flags")
 async def get_agent_flags():
-    """获取当前 agent flags 状态（供前端同步）"""
+    """Get the current agent flags state (for frontend sync)"""
     note = Modules.notification
     # Read-once notification
     if Modules.notification:
@@ -5368,8 +5425,8 @@ async def notify_config_changed():
     ``computer_use_enabled``/``browser_use_enabled`` can legitimately stay
     True while the master is off. The old ``or`` condition would otherwise
     fire a probe on every voice/chat config save and pop a transient
-    "猫爪预检失败" toast for a feature the user has explicitly disabled at
-    the master.
+    "cat-paw preflight failed" toast for a feature the user has explicitly
+    disabled at the master.
 
     Sub-flag check still gates probes when the master is on but the user
     isn't using CU/BU — same rationale as the original docstring: routine
@@ -5480,7 +5537,7 @@ async def mcp_availability():
 
 @app.get("/tasks")
 async def list_tasks():
-    """快速返回当前所有任务状态，优化响应速度"""
+    """Quickly return the status of all current tasks, optimized for response speed"""
     items = []
     
     try:

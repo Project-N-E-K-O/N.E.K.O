@@ -1,0 +1,17 @@
+# Code owners — high-risk modules.
+#
+# These three modules carry the project's highest regression risk
+# (session orchestration, the memory pipeline, the server entry points).
+# Every PR touching them must ship a 回归报告 (enforced by
+# scripts/check_pr_report.py) AND get a maintainer review.
+#
+# For the review requirement to actually block merge, enable
+# "Require review from Code Owners" in the branch protection rule for `main`
+# (GitHub → Settings → Branches). CODEOWNERS alone only auto-requests review.
+#
+# NOTE: replace @wehos below with the correct maintainer handle / team if it
+# differs. GitHub silently ignores entries whose owner can't review the repo.
+
+/app/         @wehos
+/main_logic/  @wehos
+/memory/      @wehos
