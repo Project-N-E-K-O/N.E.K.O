@@ -98,6 +98,21 @@ def test_structured_tool_call_closes_at_function_end_without_seed_close():
     assert events[0].finalized is False
 
 
+def test_structured_tool_call_ignores_seed_close_text_inside_argument():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    leak = (
+        'recall_memory</name><parameter name="query">'
+        "x </seed:tool_call> y</parameter></function> after"
+    )
+    visible, events = _drain(ToolLeakFilter(tool_names={"recall_memory"}), ["before ", leak])
+
+    assert visible == "before  after"
+    assert "y</parameter>" not in visible
+    assert len(events) == 1
+    assert events[0].pattern == "structured_tool_call"
+
+
 def test_structured_tool_call_split_close_preserves_following_text():
     from utils.llm_tool_leak_filter import ToolLeakFilter
 
@@ -166,6 +181,38 @@ def test_structured_tool_call_strips_function_name_opener():
     assert visible == "before  after"
     assert "<function><name>" not in visible
     assert "secret" not in visible
+    assert len(events) == 1
+    assert events[0].pattern == "structured_tool_call"
+
+
+def test_structured_tool_call_opener_prefix_across_chunks_is_stripped():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    visible, events = _drain(
+        ToolLeakFilter(tool_names={"recall_memory"}),
+        [
+            "before <function><name>rec",
+            'all_memory</name><parameter name="query">secret</parameter></function> after',
+        ],
+    )
+
+    assert visible == "before  after"
+    assert "<function><name>" not in visible
+    assert "secret" not in visible
+    assert len(events) == 1
+    assert events[0].pattern == "structured_tool_call"
+
+
+def test_structured_zero_arg_tool_split_function_close_is_stripped():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    visible, events = _drain(
+        ToolLeakFilter(tool_names={"sts2_get_status"}),
+        ["before ", "sts2_get_status</name></fun", "ction> after"],
+    )
+
+    assert visible == "before  after"
+    assert "sts2_get_status" not in visible
     assert len(events) == 1
     assert events[0].pattern == "structured_tool_call"
 

@@ -127,8 +127,6 @@ class ToolLeakFilter:
         function_close = _FUNCTION_CLOSE_RE.search(text)
         if function_close is None:
             return seed_close
-        if seed_close is not None and seed_close.start() < function_close.start():
-            return seed_close
 
         trailing_seed_close = _SEED_CLOSE_RE.match(text, function_close.end())
         if trailing_seed_close is not None:
@@ -382,7 +380,14 @@ class ToolLeakFilter:
         if not text:
             return False
 
-        ok, pos, partial = cls._consume_literal_prefix(text, 0, tool_name)
+        ok, pos, partial = cls._consume_function_name_open_prefix(text, 0)
+        if ok:
+            if partial or pos == len(text):
+                return True
+        else:
+            pos = 0
+
+        ok, pos, partial = cls._consume_literal_prefix(text, pos, tool_name)
         if not ok:
             return False
         if partial or pos == len(text):
@@ -395,7 +400,44 @@ class ToolLeakFilter:
             return True
 
         ok, _pos, partial = cls._consume_parameter_open_prefix(text, pos)
-        return ok and partial
+        if ok and partial:
+            return True
+        return cls._is_function_close_prefix(text[pos:])
+
+    @classmethod
+    def _consume_function_name_open_prefix(cls, text: str, pos: int) -> tuple[bool, int, bool]:
+        ok, pos, partial = cls._consume_xml_open_prefix(text, pos, "function")
+        if not ok or partial:
+            return ok, pos, partial
+
+        pos = cls._consume_whitespace(text, pos)
+        if pos == len(text):
+            return True, pos, True
+        return cls._consume_xml_open_prefix(text, pos, "name")
+
+    @classmethod
+    def _consume_xml_open_prefix(cls, text: str, pos: int, literal: str) -> tuple[bool, int, bool]:
+        if pos == len(text):
+            return True, pos, True
+        if text[pos] != "<":
+            return False, pos, False
+
+        pos = cls._consume_whitespace(text, pos + 1)
+        if pos == len(text):
+            return True, pos, True
+
+        ok, pos, partial = cls._consume_literal_prefix(text, pos, literal)
+        if not ok or partial:
+            return ok, pos, partial
+
+        if pos < len(text) and cls._is_word_char(text[pos]):
+            return False, pos, False
+
+        while pos < len(text):
+            if text[pos] == ">":
+                return True, pos + 1, False
+            pos += 1
+        return True, pos, True
 
     @classmethod
     def _consume_name_close_prefix(cls, text: str, pos: int) -> tuple[bool, int, bool]:
