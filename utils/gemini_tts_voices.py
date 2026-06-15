@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Gemini TTS adapter: catalog metadata + thin wrappers for wire-format paths.
 
 The cross-cutting decision logic (catalog membership, routing, UI catalog,
@@ -7,13 +21,15 @@ registry and keeps a couple of short aliases for code that's already
 Gemini-bound by virtue of speaking Gemini's wire format (the
 `gemini_tts_worker` HTTP call and the Gemini Live `speech_config` setup).
 
-音色 ID、展示性别和默认值优先读取自 config/api_providers.json 的
-native_tts_voice_providers.gemini，避免修改音色清单要动 Python 代码。
-fallback 常量是 PR #1290 之前的硬编码目录的副本，仅在 JSON 加载失败时兜底
-—— 此时 provider 仍必须留在 registry 里，否则
-`resolve_native_voice_for_routing("gemini", ...)` 会判 native=False，
-`core._has_custom_tts()` 把内置音色当 custom，最终把 Puck/Leda 也路由到
-cosyvoice_vc_tts_worker，比"丢失目录元数据"更隐蔽的 routing 回归。
+Voice IDs, display genders and defaults are read preferentially from
+native_tts_voice_providers.gemini in config/api_providers.json, so changing the
+voice catalog doesn't require touching Python code. The fallback constants are a
+copy of the pre-PR #1290 hardcoded catalog, used only when JSON loading fails —
+even then the provider must stay in the registry, otherwise
+`resolve_native_voice_for_routing("gemini", ...)` decides native=False,
+`core._has_custom_tts()` treats built-in voices as custom, and even Puck/Leda
+get routed to cosyvoice_vc_tts_worker — a routing regression sneakier than
+"lost catalog metadata".
 
 Voice list reference: https://ai.google.dev/gemini-api/docs/speech-generation
 """
@@ -100,9 +116,9 @@ GEMINI_TTS_DEFAULT_MALE_VOICE = (
 
 
 def _build_aliases(configured: dict[str, str]) -> dict[str, str]:
-    """Casefold alias keys so NativeVoiceProvider.normalize 的 casefold 查表能命中。
-    与 stepfun_tts_voices._build_aliases 的差别：Gemini 的 catalog value 是性别
-    (Female/Male) 而非展示名，不应把它当 alias 注入回去。"""
+    """Casefold alias keys so NativeVoiceProvider.normalize's casefold lookup can hit them.
+    Difference from stepfun_tts_voices._build_aliases: Gemini's catalog values are
+    genders (Female/Male) rather than display names, and must not be injected back as aliases."""
     return {
         alias.casefold(): voice_id
         for alias, voice_id in configured.items()
@@ -111,9 +127,10 @@ def _build_aliases(configured: dict[str, str]) -> dict[str, str]:
 
 
 def _create_provider() -> NativeVoiceProvider:
-    """Always succeed — provider 必须留在 registry 里，否则下游 routing 会
-    把内置 Gemini 音色误判为 custom。catalog/默认值上面已经走过 config →
-    fallback 的 OR 链，到这里保证非空。"""
+    """Always succeed — the provider must stay in the registry, otherwise downstream
+    routing misclassifies built-in Gemini voices as custom. The catalog/defaults have
+    already gone through the config → fallback OR chain above and are guaranteed
+    non-empty here."""
     aliases_source = _CFG.get("aliases") or _FALLBACK_GEMINI_TTS_VOICE_ALIASES
     return NativeVoiceProvider(
         key="gemini",
@@ -150,9 +167,10 @@ _FALLBACK_FREE_INTL_VOICE_ALIASES: dict[str, str] = {
 
 
 def _create_free_intl_provider() -> NativeVoiceProvider:
-    """与 _create_provider 同样保证非空注册：缺失 config 时回退到 Gemini 目录
-    叠加 yui，避免 free_intl 缺席导致 yui/Gemini 音色在海外免费路由被当 custom
-    误路由到外部 TTS。"""
+    """Same non-empty registration guarantee as _create_provider: when config is missing,
+    fall back to the Gemini catalog plus yui, so a missing free_intl doesn't cause
+    yui/Gemini voices on the overseas free route to be treated as custom and misrouted
+    to external TTS."""
     cfg = get_native_tts_voice_provider_config("free_intl")
     return NativeVoiceProvider(
         key="free_intl",

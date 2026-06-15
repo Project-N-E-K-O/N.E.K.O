@@ -1,8 +1,22 @@
 # -*- coding: utf-8 -*-
-"""
-Agent 路由 / 评估相关 prompt — 多语言 i18n 格式。
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-所有 prompt 均为 dict[lang_code, str]，使用 _loc() 取值。
+"""
+Agent routing / evaluation prompts — multi-language i18n format.
+
+All prompts are dict[lang_code, str], resolved via _loc().
 lang_code: zh / en / ja / ko / ru / es / pt
 """
 

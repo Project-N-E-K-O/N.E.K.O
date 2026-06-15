@@ -6,13 +6,16 @@ from .entry_common import (
     Ok,
     SdkError,
     _entry_exception_error,
+    _validate_optional_vision_image_payload,
     plugin_entry,
     tr,
+    ui,
     LLM_OPERATION_ANSWER_EVALUATE,
 )
 
 
 class _TutorAnswerEntriesMixin:
+    @ui.action()
     @plugin_entry(
         id="study_evaluate_answer",
         name=tr("entries.evaluate_answer.name", default="Evaluate Study Answer"),
@@ -26,6 +29,7 @@ class _TutorAnswerEntriesMixin:
                 "answer": {"type": "string", "default": ""},
                 "question": {"type": "string", "default": ""},
                 "expected_answer": {"type": "string", "default": ""},
+                "vision_image_base64": {"type": "string", "default": ""},
             },
         },
         timeout=60.0,
@@ -53,6 +57,13 @@ class _TutorAnswerEntriesMixin:
         resolved_question = supplied_question or state_question
         if not resolved_question:
             return Err(SdkError("study tutor requires a question to evaluate against"))
+        vision_image_payload = str(kwargs.get("vision_image_base64") or "").strip()
+        validated_vision_image = _validate_optional_vision_image_payload(
+            self, vision_image_payload, operation="study_evaluate_answer"
+        )
+        if isinstance(validated_vision_image, Err):
+            return validated_vision_image
+        vision_image_payload = validated_vision_image
         resolved_expected = supplied_expected
         if not resolved_expected and (
             not supplied_question or supplied_question == state_question
@@ -89,6 +100,14 @@ class _TutorAnswerEntriesMixin:
                     "run_id": run_id,
                     "session_id": session_id,
                     "mode": active_mode,
+                    **(
+                        {
+                            "vision_enabled": True,
+                            "vision_image_base64": vision_image_payload,
+                        }
+                        if vision_image_payload
+                        else {}
+                    ),
                 },
             )
             reply = await self._agent.answer_evaluate(

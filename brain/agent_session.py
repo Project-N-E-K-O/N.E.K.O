@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Agent Session Manager — manages independent sessions for CUA and Browser Use agents.
 
@@ -82,7 +96,7 @@ class AgentSessionManager:
         mgr = AgentSessionManager()
         sid = mgr.create_session("browser_use")
         session = mgr.get_session(sid)
-        session.add_task("搜索今天的新闻")
+        session.add_task("Search today's news")
         # ... after task completes ...
         session.complete_task("Found 5 results", success=True)
         mgr.close_session(sid)

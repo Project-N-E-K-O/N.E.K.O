@@ -1591,13 +1591,13 @@
                 });
             });
         }
-        return items.concat(Array.prototype.slice.call(element.querySelectorAll('.compact-input-tool-item, .composer-icon-popover .composer-icon-button'))
+        return items.concat(Array.prototype.slice.call(element.querySelectorAll('.compact-input-tool-item, .composer-icon-popover .composer-icon-button, .avatar-tool-quickbar .composer-icon-button, .avatar-tool-quickbar-edit'))
             .map(function (child, index) {
                 var style = window.getComputedStyle ? window.getComputedStyle(child) : null;
                 if (style && (style.display === 'none' || style.visibility === 'hidden')) return null;
                 if (style && Number(style.opacity) <= 0.01) return null;
                 var slot = child.getAttribute('data-compact-tool-wheel-slot') || '';
-                var isAvatarToolChoice = child.classList && child.classList.contains('composer-icon-button');
+                var isAvatarToolChoice = child.classList && (child.classList.contains('composer-icon-button') || child.classList.contains('avatar-tool-quickbar-edit'));
                 if (!isAvatarToolChoice && (!slot || slot.indexOf('hidden') === 0)) return null;
                 var rect = normalizeCompactDomRect(child.getBoundingClientRect());
                 if (!rect) return null;
@@ -1696,6 +1696,21 @@
             });
         }
         return elements.reduce(function (items, element) {
+            if (element.classList.contains('avatar-tool-manager-dialog')) {
+                var dialogRect = getCompactGeometryElementRect(element);
+                if (dialogRect) {
+                    items.push({
+                        id: 'avatarToolManagerDialog',
+                        owner: 'surface',
+                        kind: 'avatarToolManager',
+                        visualRect: dialogRect,
+                        hitRect: dialogRect,
+                        nativeRect: dialogRect,
+                        interactive: true
+                    });
+                }
+                return items;
+            }
             if (
                 !root.contains(element)
                 && !element.classList.contains('compact-input-tool-fan')
@@ -3875,6 +3890,28 @@
         setGoodbyeComposerHidden(getNekoGoodbyeModeActive(), reason || 'sync');
     }
 
+    function requestGoodbyeComposerHiddenState(reason) {
+        var resolvedReason = reason || 'react-chat-window';
+        try {
+            if (typeof window.requestGoodbyeChatComposerHiddenState === 'function') {
+                if (window.requestGoodbyeChatComposerHiddenState(resolvedReason)) {
+                    return true;
+                }
+            }
+        } catch (_) {}
+        try {
+            window.dispatchEvent(new CustomEvent('neko:request-goodbye-chat-composer-hidden-state', {
+                detail: {
+                    reason: resolvedReason,
+                    timestamp: Date.now()
+                }
+            }));
+            return true;
+        } catch (_) {
+            return false;
+        }
+    }
+
     function setHomeTutorialInteractionLocked(locked, reason) {
         var next = !!locked;
         if (state.homeTutorialInteractionLocked === next) {
@@ -4981,6 +5018,7 @@
 
         resetCompactChatState();
         syncGoodbyeComposerHidden('chat-surface-mode-change', { localOnly: true });
+        requestGoodbyeComposerHiddenState('chat-surface-mode-change');
 
         if (!previousMinimized && nextMinimized && previousMode === 'full' && !isElectronChatWindow() && getShell()) {
             pendingMinimizedSurfaceCommit = {
@@ -6328,6 +6366,7 @@
             } else {
                 syncGoodbyeComposerHidden('initial-goodbye-state');
             }
+            requestGoodbyeComposerHiddenState('initial-goodbye-state');
         } catch (_) {
             // 首绘兜底失败不影响后续 session_started 同步
         }

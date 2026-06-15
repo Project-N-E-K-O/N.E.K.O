@@ -56,6 +56,7 @@ INVALID_NAME_CASES = [
     ("foo/bar", "contains_path_separator"),
     ("..", "path_traversal"),
     ("api", "reserved_route_name"),
+    ("basketball_demo", "reserved_route_name"),
     ("AUX", "reserved_device_name"),
     ("bad*", "invalid_character"),
 ]

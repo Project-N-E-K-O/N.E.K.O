@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 System Router
 
@@ -383,7 +397,9 @@ def _validate_local_mutation_request(
 
     logger.warning(
         "Rejected local mutation request due to failed CSRF/origin validation: "
-        "origin=%r allowed_origins=%r has_csrf=%s referer=%r",
+        "method=%r path=%r origin=%r allowed_origins=%r has_csrf=%s referer=%r",
+        request.method,
+        request.url.path,
         request_origin,
         sorted(allowed_origins),
         has_valid_csrf,
@@ -397,11 +413,12 @@ def _validate_local_mutation_request(
 
 
 async def _safe_fire_proactive_done(scope: dict) -> None:
-    """从 proactive_chat 的异常处理路径安全复位状态机。
+    """Safely reset the state machine from proactive_chat's exception-handling path.
 
-    异常可能发生在 PROACTIVE_START 之前（mgr 未绑定、_SE 未 import）或之后，
-    这里统一用 locals() dict 查找避免 NameError。状态机 fire 本身 idempotent：
-    状态已经是 IDLE 时 PROACTIVE_DONE 只是空操作。
+    The exception may occur before PROACTIVE_START (mgr unbound, _SE not imported)
+    or after it; look everything up via the locals() dict to avoid NameError. The
+    state-machine fire itself is idempotent: when the state is already IDLE,
+    PROACTIVE_DONE is just a no-op.
     """
     mgr = scope.get("mgr")
     se = scope.get("_SE")
@@ -1040,17 +1057,18 @@ def _resolve_emotion_prompt_language(text):
 
 @router.get("/token-usage")
 async def get_token_usage(days: int = 7):
-    """返回最近 N 天的 LLM token 用量统计。"""
+    """Return LLM token usage statistics for the last N days."""
     from utils.token_tracker import TokenTracker
     return TokenTracker.get_instance().get_stats(days=min(days, 90))
 
 
 @router.get("/pending-notices")
 async def get_pending_notices():
-    """前端页面加载时拉取待弹通知（只读快照，不清空队列）。
+    """Fetch pending pop-up notices on frontend page load (read-only snapshot; does not clear the queue).
     
-    返回 {"notices": [...], "cursor": N}；前端确认后须将 cursor 回传给 ack 接口，
-    确保只删除本次已展示的通知，不会误删两次请求之间新入队的条目。
+    Returns {"notices": [...], "cursor": N}; after display the frontend must pass the
+    cursor back to the ack endpoint, ensuring only the notices shown this time are
+    deleted and entries enqueued between the two requests are never lost.
     """
     from main_logic.core import peek_prominent_notices
     notices, cursor = peek_prominent_notices()
@@ -1059,7 +1077,7 @@ async def get_pending_notices():
 
 @router.post("/pending-notices/ack")
 async def ack_pending_notices(request: Request):
-    """前端展示完通知后调用，仅删除 cursor 以内的通知（游标确认，避免 TOCTOU）。"""
+    """Called after the frontend has shown the notices; deletes only notices up to the cursor (cursor ack, avoids TOCTOU)."""
     validation_error = _validate_local_mutation_request(request)
     if validation_error is not None:
         return validation_error
@@ -1076,13 +1094,13 @@ async def ack_pending_notices(request: Request):
 
 @router.get("/tutorial-prompt/state")
 async def get_tutorial_prompt_state():
-    """返回新手引导提示状态快照。"""
+    """Return a snapshot of the tutorial prompt state."""
     return get_tutorial_prompt_state_response(config_manager=get_config_manager())
 
 
 @router.post("/tutorial-prompt/heartbeat")
 async def post_tutorial_prompt_heartbeat(request: Request):
-    """记录主页空闲与互动状态，并判断是否需要提示新手引导。"""
+    """Record homepage idle and interaction state, and decide whether to prompt the tutorial."""
     payload = await _read_json_object(request)
     validation_error = _validate_local_mutation_request(request, payload=payload)
     if validation_error is not None:
@@ -1093,7 +1111,7 @@ async def post_tutorial_prompt_heartbeat(request: Request):
 
 @router.post("/tutorial-prompt/shown")
 async def post_tutorial_prompt_shown(request: Request):
-    """记录新手引导提示已实际展示给用户。"""
+    """Record that the tutorial prompt was actually shown to the user."""
     validation_error = _validate_local_mutation_request(request)
     if validation_error is not None:
         return validation_error
@@ -1108,7 +1126,7 @@ async def post_tutorial_prompt_shown(request: Request):
 
 @router.post("/tutorial-prompt/decision")
 async def post_tutorial_prompt_decision(request: Request):
-    """记录用户对新手引导提示的选择。"""
+    """Record the user's decision on the tutorial prompt."""
     validation_error = _validate_local_mutation_request(request)
     if validation_error is not None:
         return validation_error
@@ -1123,7 +1141,7 @@ async def post_tutorial_prompt_decision(request: Request):
 
 @router.post("/tutorial-prompt/reset")
 async def post_tutorial_prompt_reset(request: Request):
-    """重置主页新手引导状态，供记忆浏览的手动重置入口调用。"""
+    """Reset the homepage tutorial state, for the manual reset entry in the memory browser."""
     validation_error = _validate_local_mutation_request(request)
     if validation_error is not None:
         return validation_error
@@ -1133,13 +1151,13 @@ async def post_tutorial_prompt_reset(request: Request):
 
 @router.get("/autostart-prompt/state")
 async def get_autostart_prompt_state():
-    """返回开机自启动提示状态快照。"""
+    """Return a snapshot of the autostart prompt state."""
     return get_autostart_prompt_state_response(config_manager=get_config_manager())
 
 
 @router.post("/autostart-prompt/heartbeat")
 async def post_autostart_prompt_heartbeat(request: Request):
-    """记录主页空闲与互动状态，并判断是否需要提示开机自启动。"""
+    """Record homepage idle and interaction state, and decide whether to prompt about autostart."""
     payload = await _read_json_object(request)
     validation_error = _validate_local_mutation_request(request, payload=payload)
     if validation_error is not None:
@@ -1150,7 +1168,7 @@ async def post_autostart_prompt_heartbeat(request: Request):
 
 @router.post("/autostart-prompt/shown")
 async def post_autostart_prompt_shown(request: Request):
-    """记录开机自启动提示已实际展示给用户。"""
+    """Record that the autostart prompt was actually shown to the user."""
     validation_error = _validate_local_mutation_request(request)
     if validation_error is not None:
         return validation_error
@@ -1165,7 +1183,7 @@ async def post_autostart_prompt_shown(request: Request):
 
 @router.post("/autostart-prompt/decision")
 async def post_autostart_prompt_decision(request: Request):
-    """记录用户对开机自启动提示的选择。"""
+    """Record the user's decision on the autostart prompt."""
     validation_error = _validate_local_mutation_request(request)
     if validation_error is not None:
         return validation_error
@@ -1180,7 +1198,7 @@ async def post_autostart_prompt_decision(request: Request):
 
 @router.post("/tutorial-prompt/tutorial-started")
 async def post_tutorial_started(request: Request):
-    """记录主页新手引导已实际开始。"""
+    """Record that the homepage tutorial actually started."""
     validation_error = _validate_local_mutation_request(request)
     if validation_error is not None:
         return validation_error
@@ -1195,7 +1213,7 @@ async def post_tutorial_started(request: Request):
 
 @router.post("/tutorial-prompt/tutorial-completed")
 async def post_tutorial_completed(request: Request):
-    """记录主页新手引导已完成。"""
+    """Record that the homepage tutorial was completed."""
     validation_error = _validate_local_mutation_request(request)
     if validation_error is not None:
         return validation_error
@@ -1212,18 +1230,20 @@ async def post_tutorial_completed(request: Request):
 
 @router.get("/changelog")
 async def get_changelog(since: str = "", lang: str = ""):
-    """返回自指定版本以来的所有更新日志。
+    """Return all changelog entries since the given version.
 
-    前端传入 localStorage 中保存的 lastNotifiedVersion，后端返回所有 > since 的
-    changelog 条目（按版本升序），以及当前版本号。
-    lang 参数为前端 locale（如 zh-CN / en / ja / ko / ru / zh-TW），非中文时
-    优先返回对应语言翻译，不存在则 fallback 到 en，再 fallback 到中文原文。
+    The frontend passes the lastNotifiedVersion stored in localStorage; the backend
+    returns all changelog entries > since (ascending by version) plus the current
+    version number.
+    The lang parameter is the frontend locale (e.g. zh-CN / en / ja / ko / ru / zh-TW);
+    for non-Chinese locales the matching translation is preferred, falling back to en,
+    then to the original Chinese.
     """
     from config import APP_VERSION
     import glob as _glob
 
     def _parse_ver(s: str) -> tuple[int, ...]:
-        """将 '0.7.3' 转为可比较的 int 元组；解析失败返回 (0,)。"""
+        """Convert '0.7.3' into a comparable int tuple; returns (0,) on parse failure."""
         try:
             return tuple(int(x) for x in s.strip().split("."))
         except (ValueError, AttributeError):
@@ -1243,7 +1263,7 @@ async def get_changelog(since: str = "", lang: str = ""):
             fallback_langs.append("en")
 
     def _read_localized(stem: str, zh_content: str) -> str:
-        """按 fallback 链查找本地化版本，找不到返回中文原文。"""
+        """Look up the localized version along the fallback chain; returns the original Chinese when not found."""
         for loc in fallback_langs:
             loc_file = os.path.join(changelog_dir, loc, f"{stem}.md")
             try:
@@ -1346,7 +1366,7 @@ def _source_history_path() -> Path:
 
 
 def _source_hash(url: str = '', fallback_title: str = '') -> str:
-    """URL 优先，否则归一化 title 兜底。空字符串表示"无法稳定标识"。"""
+    """URL first, otherwise the normalized title as fallback. An empty string means "cannot be identified stably"."""
     norm = (url or '').strip().lower().rstrip('/')
     if norm:
         return hashlib.sha256(norm.encode('utf-8')).hexdigest()
@@ -1368,7 +1388,7 @@ def _source_skip_probability(age: float, half_life: float) -> float:
 
 
 def _should_skip_source(url_hash: str) -> bool:
-    """同步纯内存判定，O(1)，可在同步 picking loop 中直接调用。"""
+    """Synchronous, purely in-memory check, O(1); callable directly inside the synchronous picking loop."""
     if not url_hash:
         return False
     entry = _source_history.get(url_hash)
@@ -1384,7 +1404,7 @@ def _should_skip_source(url_hash: str) -> bool:
 
 
 async def _ensure_source_history_loaded() -> None:
-    """惰性加载，幂等。文件读取放进线程池，不阻塞 event loop。"""
+    """Lazy loading, idempotent. The file read goes to the thread pool and does not block the event loop."""
     global _source_history_loaded
     if _source_history_loaded:
         return
@@ -1423,10 +1443,11 @@ async def _record_source_used(
     kind: str,
     title: str = '',
 ) -> None:
-    """成功消费 source 后调用：更新内存表 → prune → 异步落盘。
+    """Called after a source is successfully consumed: update the in-memory table → prune → persist asynchronously.
 
-    并发记录由 asyncio.Lock 串行化；落盘走 atomic_write_json_async（线程池
-    内 fsync + os.replace），主协程不会被磁盘 IO 卡住。
+    Concurrent records are serialized by an asyncio.Lock; persistence goes through
+    atomic_write_json_async (fsync + os.replace in the thread pool), so the main
+    coroutine is never stalled by disk IO.
     """
     h = _source_hash(url, title)
     if not h:
@@ -1469,12 +1490,12 @@ _SOURCE_WEIGHT_FLOOR = 0.20           # 归一化权重绝对下限
 
 def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
     """
-    从原始 web 数据中提取链接信息列表
+    Extract a list of link info entries from raw web data.
     args:
-    - mode: 数据模式，支持 'news', 'video', 'home', 'personal', 'music'
-    - raw_data: 原始 web 数据
+    - mode: data mode; supports 'news', 'video', 'home', 'personal', 'music'
+    - raw_data: raw web data
     returns:
-    - list[dict]: 包含链接信息的列表，每个元素包含 'title', 'url', 'source' 字段
+    - list[dict]: list of link info entries, each containing 'title', 'url' and 'source' fields
     """
     links = []
     try:
@@ -1580,14 +1601,14 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
 
 def _parse_web_screening_result(text: str) -> dict | None:
     """
-    解析 Phase 1 Web 筛选 LLM 的结构化结果。
-    期望格式：
+    Parse the structured result of the Phase 1 web-screening LLM.
+    Expected format (Chinese or English labels):
       序号：N / No: N
       话题：xxx / Topic: xxx
       来源：xxx / Source: xxx
       简述：xxx / Summary: xxx
-    返回 dict(title, source, number) 或 None
-    """
+    Returns dict(title, source, number) or None
+    """  # noqa: DOCSTRING_CJK
     result = {}
     # ^ + re.MULTILINE 锚定行首，防止匹配到 "有值得分享的话题：" 等前缀行
     # [ \t]* 替代 \s*，只吃水平空白，避免跨行捕获到下一行内容
@@ -1613,19 +1634,19 @@ def _phase1_text_is_pass(text: str) -> bool:
 
 def _parse_unified_phase1_result(text: str) -> dict:
     """
-    解析合并 Phase 1 LLM 输出。
+    Parse the merged Phase 1 LLM output.
 
-    按 [WEB] / [MUSIC] / [MEME] 标记分段：
-    - web 段: 复用现有正则提取 title/source/number/summary
-    - music 段: 提取关键词（或识别 PASS）
-    - meme 段: 同上
+    Split into sections by the [WEB] / [MUSIC] / [MEME] markers:
+    - web section: reuse the existing regexes to extract title/source/number/summary
+    - music section: extract the keyword (or recognize PASS)
+    - meme section: same as above
 
     Returns:
         {
             'web': {'title': ..., 'source': ..., 'number': ...} | None,
-            'music_keyword': str | None,    # None 表示无关键词
-            'meme_keyword': str | None,     # None 表示无关键词
-            'web_pass': bool,               # True 表示该通道明确 PASS
+            'music_keyword': str | None,    # None means no keyword
+            'meme_keyword': str | None,     # None means no keyword
+            'web_pass': bool,               # True means this channel explicitly passed
             'music_pass': bool,
             'meme_pass': bool,
         }
@@ -1737,18 +1758,22 @@ _PROACTIVE_LEGAL_TAG_RE = re.compile(r"^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*", re.I
 
 
 def _strip_proactive_screen_tag_leak(text: str) -> tuple[str, str]:
-    """剥离 Phase 2 文本里误写的屏幕来源标签（如 ``[Screen]``）。
+    """Strip mistakenly emitted screen-source tags (e.g. ``[Screen]``) from Phase 2 text.
 
-    主动搭话屏幕-only 场景下模型偶尔把屏幕来源当成首行标签吐出来。这类标签语义上
-    就是"在聊屏幕里看到的东西"= 普通搭话，统一归一成 ``CHAT``。
+    In proactive screen-only scenarios the model occasionally spits the screen
+    source out as a leading tag. Semantically such a tag just means "chatting
+    about something seen on screen" = an ordinary chat, so it is normalized to
+    ``CHAT``.
 
-    返回 ``(cleaned_text, recovered_source_tag)``：
-    - 命中已知屏幕泄漏标签 → 剥掉它。若其后紧跟合法来源标签（``[Screen][CHAT]``
-      这类组合）则一并剥掉并采用该真实 tag，否则按 ``CHAT`` 兜底。
-    - 未命中（无标签 / 合法标签 / 未知标签）→ 原样返回，recovered 为空串，
-      交回调用方既有的无 tag 处理（格式自救 regen / drop）。
+    Returns ``(cleaned_text, recovered_source_tag)``:
+    - On hitting a known screen-leak tag → strip it. If a legal source tag
+      immediately follows (combinations like ``[Screen][CHAT]``), strip that too
+      and adopt the real tag; otherwise fall back to ``CHAT``.
+    - No hit (no tag / legal tag / unknown tag) → returned unchanged with an
+      empty recovered tag, handing back to the caller's existing no-tag handling
+      (format-rescue regen / drop).
 
-    标签匹配大小写不敏感。
+    Tag matching is case-insensitive.
     """
     if not text:
         return "", ""
@@ -1772,10 +1797,10 @@ def _strip_proactive_screen_tag_leak(text: str) -> tuple[str, str]:
 
 def _lookup_link_by_title(title: str, all_links: list[dict]) -> dict | None:
     """
-    根据 Phase 1 输出的标题在 all_web_links 中查找对应链接
-    匹配逻辑：
-    - 完全匹配（忽略大小写和前后空白）
-    - 部分匹配（标题包含或被包含，忽略大小写和前后空白）
+    Look up the link matching a Phase 1 output title in all_web_links.
+    Matching logic:
+    - exact match (ignoring case and surrounding whitespace)
+    - partial match (title contains or is contained, ignoring case and surrounding whitespace)
     """
     title_lower = title.lower().strip()
     for link in all_links:
@@ -1789,12 +1814,12 @@ def _lookup_link_by_title(title: str, all_links: list[dict]) -> dict | None:
 
 def _format_recent_proactive_chats(lanlan_name: str, lang: str = 'zh') -> str:
     """
-    将近期搭话记录格式化为可注入prompt的文本段（含相对时间和来源通道）
-    逻辑：
-    - 从 _proactive_chat_history 中获取指定模型的搭话记录
-    - 过滤出最近 _RECENT_CHAT_MAX_AGE_SECONDS 秒内的记录
-    - 根据 lang 格式化时间标签（'zh'、'en'、'ja'、'ko'）
-    - 格式化来源通道标签（'vision'、'web'）
+    Format recent proactive-chat records into a text block injectable into the prompt (with relative time and source channel).
+    Logic:
+    - fetch the given model's proactive-chat records from _proactive_chat_history
+    - filter to records within the last _RECENT_CHAT_MAX_AGE_SECONDS seconds
+    - format the time label according to lang ('zh', 'en', 'ja', 'ko')
+    - format the source channel label ('vision', 'web')
     """
     history = _proactive_chat_history.get(lanlan_name)
     if not history:
@@ -1809,11 +1834,11 @@ def _format_recent_proactive_chats(lanlan_name: str, lang: str = 'zh') -> str:
 
     def _rel(ts):
         """
-        格式化时间标签
+        Format the time label.
         args:
-        - ts: 时间戳（秒）
+        - ts: timestamp (seconds)
         returns:
-        - str: 格式化后的时间标签
+        - str: formatted time label
         """
         d = int(now - ts)
         if d < 60:
@@ -1877,15 +1902,15 @@ def _record_reminiscence_usage(lanlan_name: str) -> None:
 
 def _record_proactive_chat(lanlan_name: str, message: str, channel: str = ''):
     """
-    记录一次成功的主动搭话（附带来源通道）
-    逻辑：
-    - 获取当前时间戳
-    - 将搭话记录（时间戳、消息内容、通道）追加到 _proactive_chat_history 中指定模型的队列中
-    - 若队列已满，自动弹出最早的记录,确保队列长度不超过 maxlen（默认 10）
+    Record one successful proactive chat (with its source channel).
+    Logic:
+    - get the current timestamp
+    - append the record (timestamp, message content, channel) to the given model's queue in _proactive_chat_history
+    - if the queue is full, the oldest record is popped automatically, keeping the length within maxlen (default 10)
     args:
-    - lanlan_name: 模型名称
-    - message: 搭话内容
-    - channel: 来源通道（可选，默认 'vision'）
+    - lanlan_name: model name
+    - message: chat content
+    - channel: source channel (optional, default 'vision')
     """
     if lanlan_name not in _proactive_chat_history:
         _proactive_chat_history[lanlan_name] = deque(maxlen=PROACTIVE_CHAT_HISTORY_MAX)
@@ -1930,6 +1955,7 @@ def _mini_game_invite_get_state(lanlan_name: str) -> dict[str, Any]:
             'responded_at': None,
             'chats_since_response': 0,
             'last_game_type': None,
+            'response_cooldowns': {},
             # 当前 pending 邀请的 session_id；endpoint 收到回应时校验匹配，避免
             # 用户点击过期邀请被错算成响应当前 pending。一旦投递新邀请会被刷新。
             'pending_session_id': None,
@@ -1942,6 +1968,8 @@ def _mini_game_invite_get_state(lanlan_name: str) -> dict[str, Any]:
             'last_response_choice': None,
         }
         _mini_game_invite_state[lanlan_name] = state
+    else:
+        state.setdefault('response_cooldowns', {})
     return state
 
 
@@ -1950,17 +1978,18 @@ def _proactive_chat_totals_path() -> Path:
 
 
 async def _ensure_proactive_chat_totals_loaded() -> None:
-    """Lazy-load 持久化的累计计数 + ever_delivered。幂等。文件读取放线程池。
+    """Lazy-load the persisted cumulative counters + ever_delivered. Idempotent. File reads go to the thread pool.
 
     schema: {"version": 2,
              "totals": {<lanlan_name>: <int>, ...},
              "ever_delivered": {<lanlan_name>: true, ...}}
 
-    缺失文件 / JSON 损坏都不致命——按全空起步，下次 increment 写出新文件。
-    旧 schema v1 没有 ever_delivered 字段，加载完是空 dict——升级后第一次
-    proactive 会让现有用户被「force-first 重发一次」（最多一次，因为 deliver
-    后 ever_delivered 立刻置 True 并写盘）；这是 v1→v2 一次性迁移代价，
-    不需要专门写迁移脚本。"""
+    A missing file / corrupted JSON is not fatal — start from empty, and the next
+    increment writes a fresh file. The old schema v1 has no ever_delivered field,
+    so it loads as an empty dict — after upgrading, the first proactive chat will
+    "force-first re-deliver once" for existing users (at most once, because
+    ever_delivered is set True and persisted immediately after delivery); this is
+    a one-off v1→v2 migration cost and needs no dedicated migration script."""
     global _proactive_chat_totals_loaded
     if _proactive_chat_totals_loaded:
         return
@@ -1992,20 +2021,20 @@ async def _ensure_proactive_chat_totals_loaded() -> None:
 def _get_proactive_chat_total(lanlan_name: str) -> int:
     """Synchronous read of cached counter. 0 if loaded-but-unset or not loaded yet.
 
-    `_maybe_deliver_mini_game_invite` 在 caller 已 await
-    `_ensure_proactive_chat_totals_loaded()` 后调用，所以此处不再 await。"""
+    `_maybe_deliver_mini_game_invite` calls this after the caller has already
+    awaited `_ensure_proactive_chat_totals_loaded()`, so there is no await here."""
     return int(_proactive_chat_totals.get(lanlan_name, 0))
 
 
 def _was_invite_ever_delivered(lanlan_name: str) -> bool:
     """Synchronous read of ever-delivered flag.
 
-    Caller 必须先 await ``_ensure_proactive_chat_totals_loaded()``。"""
+    The caller must await ``_ensure_proactive_chat_totals_loaded()`` first."""
     return bool(_invite_ever_delivered.get(lanlan_name, False))
 
 
 async def _persist_totals_unlocked() -> None:
-    """把 totals + ever_delivered 写盘。调用方必须持有 _proactive_chat_totals_lock。"""
+    """Persist totals + ever_delivered to disk. The caller must hold _proactive_chat_totals_lock."""
     try:
         await atomic_write_json_async(
             _proactive_chat_totals_path(),
@@ -2027,9 +2056,10 @@ async def _persist_totals_unlocked() -> None:
 async def _increment_proactive_chat_total(lanlan_name: str) -> int:
     """+1 cached counter and persist atomically. Returns new value.
 
-    序列化通过 ``_proactive_chat_totals_lock`` 保证：并发的 proactive_chat 会
-    各自 await 到串行 update，不会丢 increment。写盘失败不向 caller 抛——
-    counter 是 best-effort，丢一次 +1 不致命，但保留日志。"""
+    Serialization is guaranteed by ``_proactive_chat_totals_lock``: concurrent
+    proactive_chat calls each await a serial update, so no increment is lost.
+    Persistence failures are not raised to the caller — the counter is
+    best-effort; losing one +1 is not fatal, but the log line is kept."""
     await _ensure_proactive_chat_totals_loaded()
     async with _proactive_chat_totals_lock:
         new_value = _proactive_chat_totals.get(lanlan_name, 0) + 1
@@ -2039,15 +2069,17 @@ async def _increment_proactive_chat_total(lanlan_name: str) -> int:
 
 
 async def _mark_invite_ever_delivered(lanlan_name: str) -> None:
-    """一次性置 True + 持久化。已经是 True 时跳过写盘节省 IO。
+    """One-shot set-True + persist. Skips the disk write when already True to save IO.
 
-    与 ``_increment_proactive_chat_total`` 共用 ``_proactive_chat_totals_lock``
-    确保并发 update 时 totals + ever_delivered 一起原子写。
+    Shares ``_proactive_chat_totals_lock`` with ``_increment_proactive_chat_total``
+    so concurrent updates write totals + ever_delivered together atomically.
 
-    ⚠️ 邀请投递路径不要分开调 ``_increment_proactive_chat_total +
-    _mark_invite_ever_delivered``——两次 await 之间 lock 释放，进程在中间挂掉
-    会留下 ``totals: N+1, ever_delivered: 旧`` 的磁盘中间态，重启后 force-first
-    还会再 fire 一次。用 ``_record_invite_delivery_persistent`` 一把锁内原子写。"""
+    ⚠️ The invite delivery path must not call ``_increment_proactive_chat_total +
+    _mark_invite_ever_delivered`` separately — the lock is released between the
+    two awaits, and a process dying in between leaves a ``totals: N+1,
+    ever_delivered: stale`` half-state on disk, making force-first fire once more
+    after restart. Use ``_record_invite_delivery_persistent`` for one atomic
+    write under a single lock."""
     await _ensure_proactive_chat_totals_loaded()
     async with _proactive_chat_totals_lock:
         if _invite_ever_delivered.get(lanlan_name):
@@ -2057,13 +2089,15 @@ async def _mark_invite_ever_delivered(lanlan_name: str) -> None:
 
 
 async def _record_invite_delivery_persistent(lanlan_name: str) -> int:
-    """成功投递一次 mini-game 邀请的原子持久化记录：counter +1 + ever_delivered=True
-    一把锁内一次性写盘。返回新的 total。
+    """Atomic persistent record of one successfully delivered mini-game invite:
+    counter +1 + ever_delivered=True written to disk once under one lock.
+    Returns the new total.
 
-    存在的理由：先 +1 再 mark 两步分开 await，lock 在中间释放，进程崩溃 / 协程
-    cancel 都可能让磁盘留 ``totals: N+1, ever_delivered: 旧`` 的中间态——重启后
-    ``_was_invite_ever_delivered`` 看到旧的 false，force-first 又会 fire 一次。
-    CodeRabbit Major review 指出。"""
+    Reason to exist: doing +1 then mark as two separate awaits releases the lock
+    in between; a process crash / coroutine cancel can leave a ``totals: N+1,
+    ever_delivered: stale`` half-state on disk — after restart
+    ``_was_invite_ever_delivered`` sees the stale false and force-first fires
+    again. Pointed out by CodeRabbit Major review."""
     await _ensure_proactive_chat_totals_loaded()
     async with _proactive_chat_totals_lock:
         new_value = _proactive_chat_totals.get(lanlan_name, 0) + 1
@@ -2076,28 +2110,37 @@ async def _record_invite_delivery_persistent(lanlan_name: str) -> int:
 def _mini_game_invite_advance_response(
     lanlan_name: str, last_user_msg_at: float | None,
 ) -> dict[str, Any] | None:
-    """pending 邀请期间用户发了任意普通消息（非显式 choice / 关键词命中）→
-    把 prompt 静默 dismiss + 5min 短抑制，**不**启动长冷却。
+    """During a pending invite the user sent any ordinary message (not an explicit
+    choice / keyword hit) → silently dismiss the prompt + 5min short suppression,
+    **without** starting the long cooldown.
 
-    Returns: 与 ``_apply_mini_game_invite_choice`` 同 shape 的 dict（含
-    ``action='suppress'`` + ``session_id``），caller 用它去 push
-    ``mini_game_invite_resolved`` WS event 让前端 dismiss UI。无动作时返 None。
+    Returns: a dict with the same shape as ``_apply_mini_game_invite_choice``
+    (containing ``action='suppress'`` + ``session_id``); the caller uses it to
+    push the ``mini_game_invite_resolved`` WS event so the frontend dismisses the
+    UI. Returns None when there is nothing to do.
 
-    每次进 proactive_chat（含 voice fast path 与 text path 两条）都调一次。
-    last_user_msg_at 是「用户最后一次活动的时间戳」——caller 负责从合适来源
-    解出来：text path 用 activity_snapshot.seconds_since_user_msg 反推；voice
-    path 直接用 mgr.last_user_activity_time（voice 不走 activity tracker，但
-    session 自己跟踪 RMS / 文本输入活动）。任一缺失（None）都 noop。
+    Called once on every entry into proactive_chat (both the voice fast path and
+    the text path). last_user_msg_at is "the timestamp of the user's last
+    activity" — the caller is responsible for deriving it from the right source:
+    the text path back-computes it from activity_snapshot.seconds_since_user_msg;
+    the voice path uses mgr.last_user_activity_time directly (voice does not go
+    through the activity tracker, but the session itself tracks RMS / text input
+    activity). If either is missing (None), this is a noop.
 
-    历史与现行语义的差异（CodeRabbit Major 指出后改）：
-    - 旧 PR #1141 时代：没有 ChoicePrompt，「用户在邀请之后说话」=「隐式回应」
-      → 直接 mark responded_at，启动 1h+10 chats 长冷却。
-    - 现在 PR #1145 引入显式三选项按钮 + 关键词文本兜底；长冷却语义只该由
-      **显式选择**（accept / decline）触发。任意非命中消息只是「dismiss
-      prompt」——保留 ever_delivered（force-first 不会再 fire）+ 5min 短抑
-      制（防下次 proactive 立刻又邀请），但不长锁。等同于 'later' choice。
-      否则用户先说一句别的再点按钮 → endpoint 看到 responded_at != None →
-      "expired"，状态已悄悄进 1h 长冷却（违背 D2 语义、用户体验差）。"""
+    Difference between historical and current semantics (changed after CodeRabbit
+    Major):
+    - Old PR #1141 era: no ChoicePrompt; "the user spoke after the invite" =
+      "implicit response" → mark responded_at directly, starting the 1h+10 chats
+      long cooldown.
+    - Now PR #1145 introduces explicit three-option buttons + a keyword text
+      fallback; the long-cooldown semantics should only be triggered by an
+      **explicit choice** (accept / decline). Any non-matching message merely
+      "dismisses the prompt" — keeping ever_delivered (force-first will not fire
+      again) + a 5min short suppression (so the next proactive does not
+      immediately re-invite), but no long lock. Equivalent to the 'later'
+      choice. Otherwise, if the user first says something else and then clicks a
+      button → the endpoint sees responded_at != None → "expired", and the state
+      has quietly entered the 1h long cooldown (violating D2 semantics, bad UX)."""
     state = _mini_game_invite_state.get(lanlan_name)
     if not state:
         return None
@@ -2115,17 +2158,14 @@ def _mini_game_invite_advance_response(
     )
 
 
-def _mini_game_invite_in_cooldown(lanlan_name: str) -> bool:
-    """是否处于冷却期。True = 本轮不该掷骰。
+def _mini_game_invite_in_cooldown(lanlan_name: str, game_type: str | None = None) -> bool:
+    """Return whether this character is in a mini-game invite cooldown.
 
-    覆盖：
-      - D2「回头再说」短期抑制（suppressed_until > now）→ True
-      - pending（投递了但 responded_at=None）→ True
-      - 已回应但 时间(by choice) 或 10 chats 任一未跨过 → True
-      - 从未投递 / 已完整跨过两道 → False
-
-    时间阈值按 last_response_choice 分：accept=2h、decline=5h。fallback 取 accept
-    阈值（短），避免遗留 state 没该字段时把用户卡到长 cooldown。
+    A true value means the current turn should not roll another invite. This
+    covers short suppression from the "later" choice, pending invites, and
+    replied invites that have not crossed both the time and chat-count gates.
+    Cooldowns after completed responses are scoped to the same game type, while
+    pending invites still suppress all game types for the character.
     """
     state = _mini_game_invite_state.get(lanlan_name)
     if not state:
@@ -2133,6 +2173,24 @@ def _mini_game_invite_in_cooldown(lanlan_name: str) -> bool:
     suppressed_until = state.get('suppressed_until')
     if suppressed_until is not None and time.time() < float(suppressed_until):
         return True
+    if game_type:
+        cooldowns = state.get('response_cooldowns')
+        if isinstance(cooldowns, dict) and isinstance(cooldowns.get(game_type), dict):
+            response_state = cooldowns[game_type]
+            elapsed = time.time() - float(response_state.get('responded_at') or 0.0)
+            if response_state.get('last_response_choice') == 'decline':
+                time_threshold = MINI_GAME_INVITE_COOLDOWN_AFTER_DECLINE_SECONDS
+            else:
+                time_threshold = MINI_GAME_INVITE_COOLDOWN_AFTER_ACCEPT_SECONDS
+            chats_since_response = int(response_state.get('chats_since_response') or 0)
+            if elapsed < time_threshold or chats_since_response < MINI_GAME_INVITE_COOLDOWN_CHATS:
+                return True
+            cooldowns.pop(game_type, None)
+    if game_type:
+        last_game_type = state.get('last_game_type')
+        pending = state.get('delivered_at') is not None and state.get('responded_at') is None
+        if last_game_type and last_game_type != game_type and not pending:
+            return False
     if state['delivered_at'] is None:
         return False
     if state['responded_at'] is None:
@@ -2149,11 +2207,13 @@ def _mini_game_invite_in_cooldown(lanlan_name: str) -> bool:
 
 
 def _mini_game_invite_record_delivered(lanlan_name: str, session_id: str) -> None:
-    """记录一次成功投递的邀请。重置 responded/counter 进入新一轮 pending。
+    """Record a successfully delivered invite. Resets responded/counter, entering a new pending round.
 
-    session_id 来自 caller（``_maybe_deliver_mini_game_invite`` 投递时生成的
-    uuid），endpoint 验证用户回应是否匹配当前 pending。新一次投递会刷新这个
-    id——上一次投递留下的过期 session_id 在 endpoint 端会被识别为 stale 拒绝。"""
+    session_id comes from the caller (the uuid generated by
+    ``_maybe_deliver_mini_game_invite`` at delivery); the endpoint verifies the
+    user's response against the current pending one. A new delivery refreshes
+    this id — a stale session_id left by the previous delivery is recognized as
+    stale and rejected on the endpoint side."""
     state = _mini_game_invite_get_state(lanlan_name)
     state['delivered_at'] = time.time()
     state['responded_at'] = None
@@ -2166,26 +2226,74 @@ def _mini_game_invite_record_delivered(lanlan_name: str, session_id: str) -> Non
 
 
 def _mini_game_invite_count_post_response_chat(lanlan_name: str) -> None:
-    """每次成功投递的主动搭话调一次：若上次邀请已被回应，counter +1。
+    """Advance invite cooldown chat counters after a delivered proactive turn.
 
-    在 _record_proactive_chat 后立即调。任何 channel 都计——只要 AI 真发了
-    一条主动搭话出去，"24h+10次"里的 10 次门就推进一格。pending 期间（还没
-    被回应）此函数 no-op，避免靠"邀请自身这一条"提前耗 counter。"""
+    This runs immediately after _record_proactive_chat. Any channel counts as
+    long as the AI actually delivered a proactive message. Pending invites are
+    no-ops so the invite message itself does not spend the response gate.
+    """
     state = _mini_game_invite_state.get(lanlan_name)
-    if not state or state['responded_at'] is None:
+    if not state:
         return
-    state['chats_since_response'] += 1
+    if state.get('delivered_at') is not None and state.get('responded_at') is None:
+        return
+    if state.get('responded_at') is not None:
+        state['chats_since_response'] += 1
+    cooldowns = state.get('response_cooldowns')
+    if isinstance(cooldowns, dict):
+        for response_state in cooldowns.values():
+            if isinstance(response_state, dict) and response_state.get('responded_at') is not None:
+                response_state['chats_since_response'] = int(response_state.get('chats_since_response') or 0) + 1
 
 
-def _pick_mini_game_type() -> str | None:
-    """从 MINI_GAME_INVITE_AVAILABLE_GAMES 选一个 game_type。
+def _mini_game_invite_record_response_cooldown(
+    state: dict[str, Any],
+    game_type: str,
+    choice: str,
+    responded_at: float,
+) -> None:
+    cooldowns = state.setdefault('response_cooldowns', {})
+    if not isinstance(cooldowns, dict):
+        cooldowns = {}
+        state['response_cooldowns'] = cooldowns
+    cooldowns[game_type] = {
+        'responded_at': responded_at,
+        'chats_since_response': 0,
+        'last_response_choice': choice,
+    }
 
-    必须是 MINI_GAME_INVITE_LINES_BY_GAME 里有文案的——如果配置错位（available
-    list 里有但 lines 里没），跳过那条。空 → None（caller 短路返回）。"""
+
+def _mini_game_launch_url(game_type: str, lanlan_name: str, session_id: str) -> str | None:
+    url_template = MINI_GAME_LAUNCH_URL_BY_GAME.get(game_type)
+    if not url_template:
+        return None
+    from urllib.parse import urlencode as _urlencode
+
+    query = {
+        "lanlan_name": lanlan_name,
+        "session_id": session_id,
+    }
+    if game_type == "basketball":
+        query["mode"] = "shooter"
+    separator = "&" if "?" in url_template else "?"
+    return f"{url_template}{separator}{_urlencode(query)}"
+
+
+def _pick_mini_game_type(lanlan_name: str | None = None) -> str | None:
+    """Pick an available mini-game type with invite copy configured.
+
+    Games missing invite lines are skipped, and character-specific cooldowns are
+    respected when a character name is provided.
+    """
     candidates = [
         g for g in MINI_GAME_INVITE_AVAILABLE_GAMES
         if g in MINI_GAME_INVITE_LINES_BY_GAME
     ]
+    if lanlan_name:
+        candidates = [
+            g for g in candidates
+            if not _mini_game_invite_in_cooldown(lanlan_name, g)
+        ]
     if not candidates:
         return None
     import random as _random
@@ -2193,23 +2301,12 @@ def _pick_mini_game_type() -> str | None:
 
 
 def _resolve_proactive_locale(data: dict, mgr) -> str:
-    """主动搭话路径解析"用户当前 locale"的统一入口（短码 zh / en / ja / ko / ru / es / pt）。
+    """Resolve the active user locale for proactive chat flows.
 
-    proactive_chat 路径解 locale 历来三层兜底，但前两层之前漏了 session 真值：
-
-      1. request body 显式 ``language`` / ``lang`` / ``i18n_language`` —— 前端请求可
-         以一锤定音，最高优先。
-      2. ``mgr.user_language`` —— websocket 建连时由前端 i18n 推上来（见
-         ``main_routers/websocket_router.py`` 处理 ``message['language']`` 的分支），
-         in-game / Phase 2 LLM 都已在用，proactive 早先没接，导致 Steam SDK 在后端
-         启动时拿不到值就一直缓存系统 locale。
-      3. ``get_global_language()`` —— 进程级缓存，从 Steam SDK / 系统 locale 读一次。
-         Steam SDK 启动期 race 失败（schinese 没拿到）就退化为系统 locale，前后端
-         看到不同结果（前端异步 ``/api/config/steam_language`` 端点重读，能拿到对的
-         schinese → zh）。在 Steam=zh / 系统=en 的场景下尤其明显。
-
-    把 session 真值塞进第二层，proactive 邀请文案 / Phase 1-2 LLM 输出语言都跟在线
-    会话保持一致；仅在没有任何 session 上下文时才退到全局缓存。
+    Request data wins first, websocket session language is the second source of
+    truth, and the process-level global language is only a final fallback. This
+    keeps proactive invite copy and Phase 1-2 LLM output aligned with the live
+    session whenever frontend i18n has already reported the user's language.
     """
     request_lang = data.get('language') or data.get('lang') or data.get('i18n_language')
     # 与 ``main_routers/game_router._absorb_request_language`` 同形：第三方客户端 /
@@ -2237,36 +2334,43 @@ async def _maybe_deliver_mini_game_invite(
     master_name: str,
     user_toggle_enabled: bool = True,
 ) -> dict | None:
-    """命中即投递 mini-game 邀请、返回 _end_proactive 用的 JSON dict；未命中返 None。
+    """On a hit, deliver the mini-game invite and return the JSON dict for _end_proactive; returns None on no hit.
 
-    短路条件（任一不满足即返 None，由 caller 继续走原 Phase1/2 流水线）：
-      - MINI_GAME_INVITE_ENABLED=False（全局 kill switch，生产侧的总开关）
-      - user_toggle_enabled=False（用户在前端 CHAT_MODE_CONFIG 关掉了
-        ``proactiveMiniGameInviteEnabled`` toggle）
-      - activity_snapshot is None（隐私模式 / tracker 不可用——保守不发）
-      - propensity == 'restricted_screen_only'（focused_work / non-casual gaming）
-      - state == 'away'（用户离场，邀请没人接）
-      - activity_snapshot.unfinished_thread is not None（AI 刚抛了问题用户
-        还没接，跟进 thread 优先于换话题；与 skip_probability /
-        restricted_screen_only 对 unfinished_thread 的优先级约定对齐）
+    Short-circuit conditions (any one unmet → return None and the caller
+    continues the original Phase1/2 pipeline):
+      - MINI_GAME_INVITE_ENABLED=False (global kill switch, the production master toggle)
+      - user_toggle_enabled=False (the user turned the
+        ``proactiveMiniGameInviteEnabled`` toggle off in the frontend CHAT_MODE_CONFIG)
+      - activity_snapshot is None (privacy mode / tracker unavailable — be conservative, do not send)
+      - propensity == 'restricted_screen_only' (focused_work / non-casual gaming)
+      - state == 'away' (user absent; nobody to receive the invite)
+      - activity_snapshot.unfinished_thread is not None (the AI just asked a
+        question the user has not answered; following the thread takes priority
+        over changing topics — aligned with the precedence convention of
+        skip_probability / restricted_screen_only over unfinished_thread)
       - _mini_game_invite_in_cooldown
-      - 非 force-first 路径下 random() >= MINI_GAME_INVITE_TRIGGER_PROBABILITY
+      - on the non-force-first path, random() >= MINI_GAME_INVITE_TRIGGER_PROBABILITY
 
-    调试旗标：``config.MINI_GAME_INVITE_FORCE_GAME_TYPE`` 非 None 时绕开除
-    ``MINI_GAME_INVITE_ENABLED`` 之外的所有 gate（含用户 toggle、cooldown、
-    probability、unfinished_thread、snapshot None / propensity / away、force-first
-    判定），把 game_type 钉到旗标值上。仅供本地手测，生产应保持 None。
+    Debug flag: when ``config.MINI_GAME_INVITE_FORCE_GAME_TYPE`` is non-None it
+    bypasses every gate except ``MINI_GAME_INVITE_ENABLED`` (including the user
+    toggle, cooldown, probability, unfinished_thread, snapshot None / propensity
+    / away, and the force-first decision), pinning game_type to the flag value.
+    Local manual testing only; keep it None in production.
 
-    Force-first 分支：当
-      ``state.delivered_at is None`` 且
+    Force-first branch: when
+      ``state.delivered_at is None`` and
       ``proactive_chat_total >= MINI_GAME_INVITE_NEW_USER_FORCE_AT - 1``
-    时，绕开 10% 骰子直接走邀请——给从未玩过的用户一次确定的「被邀请」机会，
-    不靠概率。其它 gate（propensity / unfinished_thread / cooldown）仍生效。
+    the 10% dice roll is bypassed and the invite goes straight out — giving
+    users who have never played one deterministic "being invited" moment instead
+    of relying on probability. The other gates (propensity / unfinished_thread /
+    cooldown) still apply.
 
-    投递路径完全镜像 ``main_routers/game_router._deliver_postgame_text_bubble``：
-    prepare_proactive_delivery → feed_tts_chunk → finish_proactive_delivery。
-    不走 Phase 1/2 LLM；文案从 ``MINI_GAME_INVITE_LINES_BY_GAME[game_type]`` 选，
-    game_type 从 ``MINI_GAME_INVITE_AVAILABLE_GAMES`` random.choice。"""
+    The delivery path fully mirrors
+    ``main_routers/game_router._deliver_postgame_text_bubble``:
+    prepare_proactive_delivery → feed_tts_chunk → finish_proactive_delivery.
+    No Phase 1/2 LLM involved; the line is picked from
+    ``MINI_GAME_INVITE_LINES_BY_GAME[game_type]`` and game_type comes from
+    random.choice over ``MINI_GAME_INVITE_AVAILABLE_GAMES``."""
     if not MINI_GAME_INVITE_ENABLED:
         return None
 
@@ -2311,9 +2415,6 @@ async def _maybe_deliver_mini_game_invite(
         # 优先级，统一不让 mini-game 邀请把 promised follow-up 抢走。
         if getattr(activity_snapshot, 'unfinished_thread', None) is not None:
             return None
-        if _mini_game_invite_in_cooldown(lanlan_name):
-            return None
-
         # Force-first：从未发过邀请 + 累计已成功投递 N-1 条主动搭话 → 本条强制变邀请。
         # proactive_chat_total 在 _record_proactive_chat 之后才 +1，所以"第 N 次"的
         # 当下值是 N-1。计数走持久化文件，跨重启保留——否则用户每次重启都再"第 N 次"
@@ -2331,12 +2432,7 @@ async def _maybe_deliver_mini_game_invite(
             and total_so_far >= max(0, MINI_GAME_INVITE_NEW_USER_FORCE_AT - 1)
         )
 
-        if not force_first:
-            import random as _random
-            if _random.random() >= MINI_GAME_INVITE_TRIGGER_PROBABILITY:
-                return None
-
-        game_type = _pick_mini_game_type()
+        game_type = _pick_mini_game_type(lanlan_name)
         if game_type is None:
             logger.warning(
                 "[%s] mini-game invite skipped: no game_type available "
@@ -2346,6 +2442,11 @@ async def _maybe_deliver_mini_game_invite(
                 list(MINI_GAME_INVITE_LINES_BY_GAME.keys()),
             )
             return None
+
+        if not force_first:
+            import random as _random
+            if _random.random() >= MINI_GAME_INVITE_TRIGGER_PROBABILITY:
+                return None
     template = _loc(MINI_GAME_INVITE_LINES_BY_GAME[game_type], invite_lang)
     safe_master = (master_name or '').strip()
     try:
@@ -2718,10 +2819,11 @@ def _build_mini_game_invite_options_payload(
     game_type: str,
     session_id: str,
 ) -> dict[str, Any]:
-    """构造前端 ChoicePrompt 用的 WS payload。
+    """Build the WS payload for the frontend ChoicePrompt.
 
-    label 走 i18n（accept/decline/later 三选项），choice 是 wire-format 标识符
-    （前端按钮点击发回 endpoint 时用），不变。"""
+    Labels go through i18n (the accept/decline/later options); choice is the
+    wire-format identifier (used when the frontend button click posts back to
+    the endpoint) and stays unchanged."""
     labels = MINI_GAME_INVITE_OPTION_LABELS.get(
         invite_lang,
         MINI_GAME_INVITE_OPTION_LABELS.get('zh', {}),
@@ -2740,14 +2842,16 @@ def _build_mini_game_invite_options_payload(
 
 
 def _clear_channel_from_proactive_history(lanlan_name: str, channel: str) -> int:
-    """把指定通道在 _proactive_chat_history 中的 channel 标记清空。
+    """Blank out the channel mark of the given channel's entries in _proactive_chat_history.
 
-    用途：用户给出强正向反馈（例如音乐完整播放完毕），相当于明确接受了这一通道
-    最近的输出，这时 _compute_source_weights 不应该继续因为"刚刚用过"惩罚该通道。
-    把 channel 字段置空即可让 raw_score 不再累加该条 entry，但 message 文本仍然
-    保留在 deque 里供 dedup / similarity / format_recent_proactive_chats 复用。
+    Purpose: when the user gives strong positive feedback (e.g. a recommended
+    song played all the way through), that amounts to explicitly accepting this
+    channel's recent output, so _compute_source_weights should no longer
+    penalize the channel for "just used". Clearing the channel field stops
+    raw_score from accumulating those entries, while the message text stays in
+    the deque for dedup / similarity / format_recent_proactive_chats reuse.
 
-    返回被清空的 entry 数。
+    Returns the number of entries cleared.
     """
     history = _proactive_chat_history.get(lanlan_name)
     if not history:
@@ -2769,10 +2873,10 @@ def _clear_channel_from_proactive_history(lanlan_name: str, channel: str) -> int
 
 def _normalize_text_for_similarity(text: str) -> str:
     """
-    文本归一化（保守策略）：
-    - 小写
-    - 合并连续空白
-    仅做轻量归一，避免因过度清洗导致误杀。
+    Text normalization (conservative strategy):
+    - lowercase
+    - collapse consecutive whitespace
+    Only light normalization, to avoid false kills from over-cleaning.
     """
     text = (text or "").strip().lower()
     return re.sub(r'\s+', ' ', text)
@@ -2780,8 +2884,8 @@ def _normalize_text_for_similarity(text: str) -> str:
 
 def _is_similar_to_recent_proactive_chat(lanlan_name: str, message: str) -> tuple[bool, float]:
     """
-    判断 message 是否与近期主动搭话高度相似（高阈值防误杀）。
-    返回 (is_duplicate, best_score)。
+    Check whether message is highly similar to recent proactive chats (high threshold against false kills).
+    Returns (is_duplicate, best_score).
     """
     history = _proactive_chat_history.get(lanlan_name)
     if not history or not message.strip():
@@ -2813,22 +2917,22 @@ def _compute_source_weights(
     candidate_channels: list[str],
 ) -> dict[str, float]:
     """
-    计算各来源的归一化权重。
+    Compute normalized weights for each source.
 
-    算法：
-    1. 从 _proactive_chat_history 取 1h 内记录
-    2. raw_score[ch] = Σ exp(-λ·age)  (每次使用按时间衰减累加)
+    Algorithm:
+    1. take records within 1h from _proactive_chat_history
+    2. raw_score[ch] = Σ exp(-λ·age)  (each use accumulates with time decay)
     3. freshness[ch] = 1 / (1 + k·raw_score[ch])
-    4. 归一化 weight[ch] = freshness[ch] / Σ freshness
+    4. normalize: weight[ch] = freshness[ch] / Σ freshness
 
-    无历史记录时返回均匀分布。
+    With no history, returns a uniform distribution.
 
     Args:
-        lanlan_name: 角色名
-        candidate_channels: 参与权重计算的通道列表（不含 vision）
+        lanlan_name: character name
+        candidate_channels: channels participating in the weighting (excluding vision)
 
     Returns:
-        {channel: normalized_weight}，weight 之和为 1.0
+        {channel: normalized_weight}, with weights summing to 1.0
     """
     import math
     n = len(candidate_channels)
@@ -2877,17 +2981,17 @@ def _compute_source_weights(
 
 def _filter_sources_by_weight(weights: dict[str, float]) -> set[str]:
     """
-    返回应被剔除的 channel 集合。
+    Return the set of channels that should be culled.
 
-    阈值 = min(_SOURCE_WEIGHT_FLOOR, 1 / N)
-    - 4 通道时 threshold=0.20，2 次使用触发剔除
-    - 6 通道时 threshold=0.167，竞争更激烈
+    Threshold = min(_SOURCE_WEIGHT_FLOOR, 1 / N)
+    - with 4 channels, threshold=0.20; 2 uses trigger culling
+    - with 6 channels, threshold=0.167; competition is fiercer
 
     Args:
-        weights: _compute_source_weights 返回的归一化权重
+        weights: normalized weights returned by _compute_source_weights
 
     Returns:
-        应被剔除的 channel 名称集合
+        set of channel names to cull
     """
     n = len(weights)
     if n <= 1:
@@ -2904,15 +3008,16 @@ _SOURCE_WEIGHT_WINDOW = _RECENT_CHAT_MAX_AGE_SECONDS
 def _is_path_within_base(base_dir: str, candidate_path: str) -> bool:
     """
     
-    安全检查 candidate_path 是否在 base_dir 内
-    需要使用 os.path.commonpath 方法,防止路径遍历攻击
-    调用该方法前，必须先将两个路径（candidate_path 和 base_dir）转换为绝对路径，
-    并通过 os.path.realpath 解析（解析符号链接、./.. 等相对路径）
+    Safety check that candidate_path is inside base_dir.
+    Must use os.path.commonpath to prevent path traversal attacks.
+    Before calling, both paths (candidate_path and base_dir) must be converted to
+    absolute paths and resolved via os.path.realpath (resolving symlinks and ./..
+    relative segments).
     args:
-    - base_dir: 基础目录（绝对路径）
-    - candidate_path: 候选路径（绝对路径）
+    - base_dir: base directory (absolute path)
+    - candidate_path: candidate path (absolute path)
     returns:
-    - bool: True 如果 candidate_path 在 base_dir 内，False 否则
+    - bool: True if candidate_path is inside base_dir, False otherwise
     """
     try:
         # Normalize both paths for case-insensitivity on Windows
@@ -2928,7 +3033,7 @@ def _is_path_within_base(base_dir: str, candidate_path: str) -> bool:
 
 def _get_app_root():
     """
-    获取应用根目录，兼容开发环境和PyInstaller打包后的环境
+    Get the application root directory, compatible with both dev environments and PyInstaller-packaged builds.
     """
     if getattr(sys, 'frozen', False):
         if hasattr(sys, '_MEIPASS'):
@@ -2941,7 +3046,7 @@ def _get_app_root():
 
 def _log_news_content(lanlan_name: str, news_content: dict):
     """
-    记录新闻内容获取详情
+    Log news content fetch details.
     """
     region = news_content.get('region', 'china')
     news_data = news_content.get('news', {})
@@ -2957,7 +3062,7 @@ def _log_news_content(lanlan_name: str, news_content: dict):
 
 def _log_video_content(lanlan_name: str, video_content: dict):
     """
-    记录视频内容获取详情
+    Log video content fetch details.
     """
     region = video_content.get('region', 'china')
     video_data = video_content.get('video', {})
@@ -2980,7 +3085,7 @@ def _log_video_content(lanlan_name: str, video_content: dict):
 
 def _log_trending_content(lanlan_name: str, trending_content: dict):
     """
-    记录首页推荐内容获取详情
+    Log homepage recommendation content fetch details.
     """
     content_details = []
     
@@ -3028,7 +3133,7 @@ def _log_trending_content(lanlan_name: str, trending_content: dict):
         print(f"[{lanlan_name}] 成功获取首页推荐 - 但未获取到具体内容")
 
 def _log_music_content(lanlan_name: str, music_content: dict):
-    """记录音乐内容获取详情"""
+    """Log music content fetch details."""
     if music_content.get('success'):
         tracks = music_content.get('data', [])
         titles = [f"{t.get('name', '')} - {t.get('artist', '')}" for t in tracks[:5]]
@@ -3113,7 +3218,7 @@ def _append_music_recommendations(
 
 def _log_personal_dynamics(lanlan_name: str, personal_content: dict):
     """
-    记录个人动态内容获取详情
+    Log personal feed content fetch details.
     """
     content_details = []
     
@@ -3145,13 +3250,13 @@ def _log_personal_dynamics(lanlan_name: str, personal_content: dict):
 @router.post('/emotion/analysis')
 async def emotion_analysis(request: Request):
     """
-    表情分析接口
+    Emotion analysis endpoint.
     func:
-    - 接收文本输入，调用配置的情绪分析模型进行分析，返回情绪类别和置信度
-    - 支持从请求参数覆盖默认配置的API密钥和模型名称，增强灵活性
-    - 对模型响应进行智能解析，兼容不同格式（纯文本、markdown代码块、JSON字符串等），提高鲁棒性
-    - 根据置信度自动调整情绪类别，当置信度较低时将情绪设置为 neutral，提升结果可靠性
-    - 将分析结果推送到监控系统（如果提供了 lanlan_name），实现与前端的实时交互和展示
+    - receives text input, calls the configured emotion analysis model, and returns the emotion class and confidence
+    - supports overriding the default API key and model name from request parameters for flexibility
+    - parses the model response intelligently, tolerating different formats (plain text, markdown code blocks, JSON strings, etc.) for robustness
+    - adjusts the emotion class by confidence, setting it to neutral when confidence is low, improving result reliability
+    - pushes the result to the monitor system (when lanlan_name is provided) for realtime interaction and display with the frontend
     """
     validation_error = _validate_local_mutation_request(request)
     if validation_error is not None:
@@ -3304,13 +3409,13 @@ async def emotion_analysis(request: Request):
 @router.post('/steam/set-achievement-status/{name}')
 async def set_achievement_status(name: str, request: Request):
     """
-    设置Steam成就状态接口
+    Set Steam achievement status endpoint.
     func:
-    - 接收成就名称作为路径参数，调用Steamworks API设置成就状态
-    - 先请求当前统计数据并运行回调，确保数据已加载
-    - 检查成就当前状态，若已解锁则直接返回成功
-    - 若未解锁，尝试设置成就，若成功则返回成功，否则等待1秒后重试一次
-    - 最多重试10次，若仍失败则返回错误，提示可能的配置问题
+    - receives the achievement name as a path parameter and sets the achievement via the Steamworks API
+    - first requests current stats and runs callbacks to ensure the data is loaded
+    - checks the achievement's current state; if already unlocked, returns success directly
+    - if not unlocked, tries to set it; returns success if it works, otherwise waits 1 second and retries
+    - retries at most 10 times; if still failing, returns an error hinting at possible configuration issues
     """
     validation_error = _validate_local_mutation_request(request)
     if validation_error is not None:
@@ -3380,7 +3485,7 @@ async def set_achievement_status(name: str, request: Request):
 @router.post('/steam/update-playtime')
 async def update_playtime(request: Request):
     """
-    更新游戏时长统计（PLAY_TIME_SECONDS）
+    Update playtime statistics (PLAY_TIME_SECONDS).
     """
     validation_error = _validate_local_mutation_request(request)
     if validation_error is not None:
@@ -3466,7 +3571,7 @@ async def update_playtime(request: Request):
 @router.get('/steam/list-achievements')
 async def list_achievements():
     """
-    列出Steam后台已配置的所有成就（调试用）
+    List all achievements configured in the Steam backend (for debugging).
     """
     steamworks = get_steamworks()
     if steamworks is not None:
@@ -3499,7 +3604,7 @@ async def list_achievements():
 @router.get('/file-exists')
 async def check_file_exists(path: str = None):
     """
-    检查文件是否存在
+    Check whether a file exists.
 
     Security: Validates against path traversal attacks by:
     - URL-decoding the path
@@ -3548,14 +3653,14 @@ async def check_file_exists(path: str = None):
 @router.get('/find-first-image')
 async def find_first_image(folder: str = None):
     """
-    查找指定文件夹中的预览图片 - 增强版，添加了严格的安全检查
+    Find a preview image in the given folder — hardened version with strict security checks.
     
-    安全注意事项：
-    1. 只允许访问项目内特定的安全目录
-    2. 防止路径遍历攻击
-    3. 限制返回信息，避免泄露文件系统信息
-    4. 记录可疑访问尝试
-    5. 只返回小于 1MB 的图片（Steam创意工坊预览图大小限制）
+    Security notes:
+    1. only specific safe directories inside the project may be accessed
+    2. prevents path traversal attacks
+    3. limits returned info to avoid leaking filesystem details
+    4. logs suspicious access attempts
+    5. only returns images smaller than 1MB (the Steam Workshop preview size limit)
     """
     MAX_IMAGE_SIZE = 1 * 1024 * 1024  # 1MB
     
@@ -3663,7 +3768,7 @@ MEME_PROXY_CACHE = TTLCache(
 @router.get('/meme/proxy-image')
 async def proxy_meme_image(url: str):
     """
-    代理远程表情包图片，解决跨域问题，包含 SSRF 防护
+    Proxy a remote meme image, solving CORS issues, with SSRF protection.
     """
     import time
     
@@ -3854,7 +3959,7 @@ async def proxy_meme_image(url: str):
 # 辅助函数
 
 def _read_binary_file(path: str) -> bytes:
-    """同步 binary read，给 asyncio.to_thread 调用。"""
+    """Synchronous binary read, called via asyncio.to_thread."""
     with open(path, 'rb') as f:
         return f.read()
 
@@ -3862,7 +3967,7 @@ def _read_binary_file(path: str) -> bytes:
 @router.get('/steam/proxy-image')
 async def proxy_image(image_path: str):
     """
-    代理访问本地图片文件，支持绝对路径和相对路径，特别是Steam创意工坊目录
+    Proxy access to local image files, supporting absolute and relative paths, notably the Steam Workshop directory.
     """
 
     try:
@@ -4065,7 +4170,7 @@ async def proxy_image(image_path: str):
 @router.get('/get_window_title')
 async def get_window_title_api():
     """
-    获取当前活跃窗口标题（仅支持Windows）
+    Get the title of the currently active window (Windows only).
     """
     try:
         from utils.web_scraper import get_active_window_title
@@ -4081,8 +4186,8 @@ async def get_window_title_api():
 @router.post('/screenshot')
 async def backend_screenshot(request: Request):
     """
-    后端截图兜底：当前端所有屏幕捕获 API 都失败时，由后端用 pyautogui 截取本机屏幕。
-    安全限制：仅允许来自 loopback 地址的请求。返回 JPEG base64 DataURL。
+    Backend screenshot fallback: when all frontend screen-capture APIs fail, the backend captures the local screen with pyautogui.
+    Security restriction: only requests from loopback addresses are allowed. Returns a JPEG base64 DataURL.
     """
     validation_error = _validate_local_mutation_request(
         request,
@@ -4146,18 +4251,19 @@ async def backend_screenshot(request: Request):
 @router.post('/screenshot/interactive')
 async def backend_interactive_screenshot(request: Request):
     """
-    系统原生交互截图：优先给聊天截图按钮使用。
-    当前实现:
-      - macOS: `screencapture` 系统级框选
-      - Windows: 本地全桌面遮罩框选
-    返回用户选区的 JPEG DataURL。
-    安全限制：
-      - 仅允许来自 loopback 地址的请求；
-      - 只要请求带 `Origin` 或 `Referer`（即来自浏览器），仍然要走
-        本地 mutation 的 CSRF/origin 校验，避免任意页面通过 localhost
-        盲 POST 触发原生框选 UI 这种 localhost CSRF；
-      - 没有 `Origin`/`Referer` 的纯服务端 loopback 调用允许跳过 CSRF，
-        保留给 curl / 本地脚本 / 测试用。
+    System-native interactive screenshot: preferred by the chat screenshot button.
+    Current implementation:
+      - macOS: `screencapture` system-level region selection
+      - Windows: local full-desktop overlay region selection
+    Returns a JPEG DataURL of the user's selection.
+    Security restrictions:
+      - only requests from loopback addresses are allowed;
+      - any request carrying `Origin` or `Referer` (i.e. coming from a browser)
+        must still pass the local-mutation CSRF/origin checks, preventing
+        arbitrary pages from blind-POSTing localhost to pop up the native
+        selection UI (a localhost CSRF);
+      - pure server-side loopback calls without `Origin`/`Referer` may skip
+        CSRF, reserved for curl / local scripts / tests.
     """
     if not _is_loopback_request(request):
         return _json_no_store_response({"success": False, "error": "only available from localhost"}, status_code=403)
@@ -4592,7 +4698,7 @@ def build_proactive_response(source_tag: str, ctx: dict) -> tuple[str, list]:
 @router.post('/proactive_chat')
 async def proactive_chat(request: Request):
     """
-    主动搭话：两阶段架构 — Phase 1 合并 LLM（web筛选+music/meme关键词，1次调用），Phase 2 结合人设生成搭话
+    Proactive chat: two-phase architecture — Phase 1 merged LLM (web screening + music/meme keywords, 1 call), Phase 2 persona-aware chat generation.
     """
     validation_error = _validate_local_mutation_request(request)
     if validation_error is not None:
@@ -4719,11 +4825,12 @@ async def proactive_chat(request: Request):
         _next_schedule_fixed_mode = False
 
         async def _end_proactive(resp: JSONResponse) -> JSONResponse:
-            """包装所有 proactive 正常/短路退出：幂等地 fire PROACTIVE_DONE。
+            """Wraps every normal/short-circuit proactive exit: idempotently fires PROACTIVE_DONE.
 
-            同时把 ``next_schedule_fixed_mode`` 注入响应体，前端读取后
-            决定下一轮调度走 tier backoff 还是固定 base interval。注入
-            发生在统一出口，新增的响应路径无需逐个修改。
+            Also injects ``next_schedule_fixed_mode`` into the response body; the
+            frontend reads it to decide whether the next round of scheduling uses
+            tier backoff or the fixed base interval. The injection happens at this
+            unified exit, so newly added response paths need no individual changes.
             """
             nonlocal _proactive_done_emitted
             if not _proactive_done_emitted:
@@ -5019,12 +5126,11 @@ async def proactive_chat(request: Request):
             if (
                 MINI_GAME_INVITE_ENABLED
                 and _user_invite_toggle
-                and not _mini_game_invite_in_cooldown(lanlan_name)
                 and _gi_prob > 0
             ):
                 import random as _random
                 if _random.random() < _gi_prob:
-                    chosen_game_type = _pick_mini_game_type()
+                    chosen_game_type = _pick_mini_game_type(lanlan_name)
                     if chosen_game_type is not None:
                         gi_prompt = _render_work_break_game_invite_prompt(
                             pending=water_pending,
@@ -5296,7 +5402,7 @@ async def proactive_chat(request: Request):
         
         async def _fetch_source(mode: str) -> tuple:
             """
-            获取单个信息源，返回 (mode, content_dict) 或抛出异常
+            Fetch a single source; returns (mode, content_dict) or raises an exception.
             """
             if mode == 'vision':
                 if not has_screenshot:
@@ -5581,7 +5687,7 @@ async def proactive_chat(request: Request):
                       max_completion_tokens: int = PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                       use_vision: bool = False, disable_thinking: bool = True):
             """
-            创建 LLM 实例。use_vision=True 时使用 vision 模型；disable_thinking=False 时不注入 extra_body。
+            Create an LLM instance. use_vision=True uses the vision model; when disable_thinking=False, extra_body is not injected.
             """
             if use_vision and has_vision_model:
                 m, bu, ak = vision_model_name, vision_base_url, vision_api_key
@@ -5606,8 +5712,8 @@ async def proactive_chat(request: Request):
             dynamic_context: str = '',
         ) -> str:
             """
-            带重试的 LLM 调用。image_b64 非空时以多模态方式发送截图。
-            dynamic_context: 动态上下文，注入到 HumanMessage 中使 SystemMessage 可被缓存。
+            LLM call with retry. When image_b64 is non-empty, the screenshot is sent multimodally.
+            dynamic_context: dynamic context injected into the HumanMessage so the SystemMessage stays cacheable.
             """
             begin_text = _loc(BEGIN_GENERATE, proactive_lang)
             human_text = f"{dynamic_context}\n\n{begin_text}" if dynamic_context else begin_text
@@ -5941,7 +6047,7 @@ async def proactive_chat(request: Request):
         meme_keyword = unified_parsed.get('meme_keyword')
 
         async def _fetch_music_with_fallback(kw: str):
-            """用 LLM 关键词搜索音乐，失败则随机推荐"""
+            """Search music with the LLM keyword; falls back to a random recommendation on failure."""
             try:
                 raw = await fetch_music_content(keyword=kw, limit=5)
                 if raw and raw.get('success'):
@@ -5955,11 +6061,12 @@ async def proactive_chat(request: Request):
                 return None
 
         async def _fetch_meme_with_fallback(kw: str):
-            """用 LLM 关键词搜索表情包，失败则随机热词。
+            """Search memes with the LLM keyword; falls back to random hot words on failure.
 
-            ``effective_keyword`` 标注本次实际生效的搜索词：关键词命中时即 kw
-            （描述了梗内容，下游话题会带上它）；走随机热词兜底时置空，避免谎报
-            "这是关于 X 的图"。
+            ``effective_keyword`` marks the search term actually in effect this
+            time: on a keyword hit it is kw (it describes the meme content, and
+            the downstream topic carries it); on the random hot-word fallback it
+            is blanked, to avoid falsely claiming "this image is about X".
             """
             try:
                 raw = await asyncio.wait_for(
@@ -6382,7 +6489,7 @@ async def proactive_chat(request: Request):
         _PASS_PROBE_LEN = 5  # len("[PASS]") - 1
 
         async def _emit_safe(text: str) -> bool:
-            """通过 fence/长度检查后送入 TTS。返回 True 表示应 abort。"""
+            """Send to TTS after passing the fence/length checks. Returns True when we should abort."""
             nonlocal pipe_count, full_text, aborted
             if not text:
                 return False
@@ -7097,17 +7204,18 @@ async def proactive_chat(request: Request):
 def _apply_mini_game_invite_choice(
     lanlan_name: str, choice: str, *, source: str,
 ) -> dict[str, Any]:
-    """处理 mini-game 邀请的三选项 state 转换。返回结构化结果给 endpoint /
-    keyword matcher 共用。
+    """Handle the three-option state transition of a mini-game invite. Returns a
+    structured result shared by the endpoint / keyword matcher.
 
-    - accept：mark responded（启动 2h+10 chats 冷却）+ 返回 game_url
-    - decline：mark responded（启动 5h+10 chats 冷却，但不开游戏）
-    - later (D2)：reset state（delivered_at=None，让 force-first / 普通 10% 都
-      恢复正常）+ 加 ``suppressed_until = now + 5min`` 防止下一次 proactive
-      立刻又掷骰
+    - accept: mark responded (starts the 2h+10 chats cooldown) + return game_url
+    - decline: mark responded (starts the 5h+10 chats cooldown, without opening the game)
+    - later (D2): reset state (delivered_at=None, restoring both force-first and
+      the normal 10%) + add ``suppressed_until = now + 5min`` so the next
+      proactive does not immediately roll the dice again
 
-    state 必须 already-pending（delivered_at != None and responded_at is None）；
-    否则当作 stale，返回 ``action='ignored'``，caller 自己决定是否反馈用户。"""
+    state must be already-pending (delivered_at != None and responded_at is None);
+    otherwise treat it as stale and return ``action='ignored'``, letting the
+    caller decide whether to inform the user."""
     state = _mini_game_invite_state.get(lanlan_name)
     if not state or state.get('delivered_at') is None:
         return {'action': 'ignored', 'reason': 'no_pending_invite'}
@@ -7125,26 +7233,24 @@ def _apply_mini_game_invite_choice(
         # 触发会双开窗口）。
         invite_session_id = state.get('pending_session_id') or ''
         game_type = state.get('last_game_type') or 'soccer'
-        url_template = MINI_GAME_LAUNCH_URL_BY_GAME.get(game_type)
-        if not url_template:
+        launch_game_type = game_type
+        game_url = _mini_game_launch_url(launch_game_type, lanlan_name, invite_session_id)
+        if not game_url:
             logger.warning(
                 "[%s] accept invite but no launch URL for game_type=%r; "
                 "fallback /soccer_demo", lanlan_name, game_type,
             )
-            url_template = '/soccer_demo'
-        from urllib.parse import urlencode as _urlencode
-        query = _urlencode({
-            'lanlan_name': lanlan_name,
-            'session_id': invite_session_id,
-        })
-        game_url = f"{url_template}?{query}"
+            launch_game_type = "soccer"
+            game_url = _mini_game_launch_url(launch_game_type, lanlan_name, invite_session_id) or "/soccer_demo"
+        state['last_game_type'] = game_type
+        _mini_game_invite_record_response_cooldown(state, game_type, 'accept', now)
         logger.info(
             "[%s] mini-game invite accepted via %s -> %s",
-            lanlan_name, source, url_template,
+            lanlan_name, source, game_url,
         )
         return {
             'action': 'open_game',
-            'game_type': game_type,
+            'game_type': launch_game_type,
             'game_url': game_url,
             'session_id': invite_session_id,
         }
@@ -7152,9 +7258,11 @@ def _apply_mini_game_invite_choice(
         # 留 session_id 给 caller 推 mini_game_invite_resolved 用——所有
         # outcome 都需要前端 dismiss prompt（codex P2）。
         decline_session_id = state.get('pending_session_id') or ''
+        game_type = state.get('last_game_type') or 'soccer'
         state['responded_at'] = now
         state['chats_since_response'] = 0
         state['last_response_choice'] = 'decline'
+        _mini_game_invite_record_response_cooldown(state, game_type, 'decline', now)
         logger.info(
             "[%s] mini-game invite declined via %s; cooldown started",
             lanlan_name, source,
@@ -7181,25 +7289,25 @@ def _apply_mini_game_invite_choice(
 
 @router.post('/mini_game/invite/respond')
 async def mini_game_invite_respond(request: Request):
-    """前端按钮点击 → 三选项 state 转换 endpoint。
+    """Frontend button click → three-option state transition endpoint.
 
-    Body：
+    Body:
         {
-          "lanlan_name": str,                   // 当前角色（前端从 host 拿）
+          "lanlan_name": str,                   // current character (frontend gets it from the host)
           "choice": "accept" | "decline" | "later",
-          "session_id": str | null,             // 投递时由 backend 生成的 uuid；
-                                                // 必须与 state.pending_session_id
-                                                // 匹配，否则当 stale 处理
+          "session_id": str | null,             // uuid generated by the backend at delivery;
+                                                // must match state.pending_session_id,
+                                                // otherwise treated as stale
         }
 
-    Response：
-        - accept：``{success, action: 'open_game', game_type, game_url}``——前端
-          收到后调 ``window.open(game_url)`` 让 Electron 主进程的
-          setWindowOpenHandler 拦截开独立窗口。
-        - decline：``{success, action: 'cooldown'}``
-        - later：``{success, action: 'suppress'}``
-        - 过期 / 状态不匹配：``{success: true, action: 'expired', message}``——前端
-          应停止显示选项按钮（邀请已过期）。
+    Response:
+        - accept: ``{success, action: 'open_game', game_type, game_url}`` — on
+          receipt the frontend calls ``window.open(game_url)`` so the Electron
+          main process's setWindowOpenHandler intercepts it and opens a standalone window.
+        - decline: ``{success, action: 'cooldown'}``
+        - later: ``{success, action: 'suppress'}``
+        - expired / state mismatch: ``{success: true, action: 'expired', message}`` —
+          the frontend should stop showing the option buttons (the invite has expired).
     """
     payload = await _read_json_object(request)
     # 这是个本地 mutation endpoint，会改写 invite cooldown 状态——必须走和同文件
@@ -7279,14 +7387,15 @@ async def _push_mini_game_invite_resolved(
     game_url: str | None = None,
     game_type: str | None = None,
 ) -> None:
-    """Push WS event让前端 dismiss ChoicePrompt（任一 outcome 都清，跨窗口一致）。
-    accept 时 payload 同时带 game_url，前端按 ``action=='open_game'`` 兼当
-    "launch" 信号 window.open。
+    """Push the WS event so the frontend dismisses the ChoicePrompt (cleared on any outcome, consistent across windows).
+    On accept the payload also carries game_url; the frontend treats
+    ``action=='open_game'`` as the "launch" signal for window.open.
 
-    替代了原 ``mini_game_launch`` event——单一 WS event 兼容 lifecycle 终结
-    （always clear prompt）+ 可选 game launch（accept 时）。codex P2 / CodeRabbit
-    指出：原版只在 accept 推 ``mini_game_launch``，decline / later keyword 命中
-    后前端 prompt 不消失，用户看着按钮但 state 已变。"""
+    Replaces the original ``mini_game_launch`` event — a single WS event covers
+    both lifecycle termination (always clear the prompt) + optional game launch
+    (on accept). codex P2 / CodeRabbit pointed out: the original only pushed
+    ``mini_game_launch`` on accept, so after a decline / later keyword hit the
+    frontend prompt never disappeared even though the state had already changed."""
     if not mgr or not session_id:
         return
     payload: dict[str, Any] = {
@@ -7325,10 +7434,11 @@ _KEYWORD_PATTERN_CACHE: dict[str, "re.Pattern[str]"] = {}
 def _keyword_matches(keyword: str, norm_text: str) -> bool:
     """Locale-aware substring/word-boundary match.
 
-    ASCII / 数字 / Cyrillic / 空格 / 撇号 / 连字符组成的关键词走 word-boundary
-    regex（``\\b...\\b``）；其它脚本（CJK / Hiragana / Katakana / Hangul）走
-    substring——Python regex 把这些字符纳入 \\w，加 \\b 反而会漏命中（"我好啊"
-    中 '好' 前没 boundary）。"""
+    Keywords made of ASCII / digits / Cyrillic / spaces / apostrophes / hyphens
+    go through a word-boundary regex (``\\b...\\b``); other scripts (CJK /
+    Hiragana / Katakana / Hangul) use substring matching — Python's regex counts
+    those characters as \\w, so adding \\b would cause misses (in "我好啊" there
+    is no boundary before '好')."""  # noqa: DOCSTRING_CJK
     if not keyword or not norm_text:
         return False
     if _LETTER_ONLY_KW_RE.fullmatch(keyword):
@@ -7341,20 +7451,18 @@ def _keyword_matches(keyword: str, norm_text: str) -> bool:
 
 
 def _match_mini_game_invite_keyword(text: str) -> str | None:
-    """扫一遍用户文本（小写 + strip），命中 accept/decline/later 关键词返
-    choice，未命中返 None。
+    """Return accept/decline/later for a user text, or None when unmatched.
 
-    所有 native locale 的关键词列表全扫一遍——用户可能切了 UI 语言但仍用
-    原语言打字。匹配走 ``_keyword_matches`` —— ASCII / Cyrillic 用 word-boundary
-    防止 'yes' 命中 'yesterday' / 'no' 命中 'no idea' 这种 codex P1 指出的英文
-    误命中；CJK 仍走 substring（语言特性使然）。
+    All native locale keyword lists are scanned because users may type in a
+    language different from the active UI language. ASCII and Cyrillic keywords
+    use word-boundary matching to avoid substring false positives; CJK keywords
+    keep substring matching.
 
-    **优先级 decline > later > accept**：句子里同时含 negation 和接受词时，
-    decline 永远优先于 later 优先于 accept——含明确 negation 的句子绝不能因
-    accept 关键词凑巧匹配就反向触发开游戏。CodeRabbit Major 指出后从
-    accept-priority 改成 decline-priority。
+    **Priority decline > later > accept**: a sentence with an explicit negation
+    must not open a game just because it also contains an accept keyword.
 
-    空 text / 命中无视为 None。"""
+    Empty text and unmatched text return None.
+    """
     if not text:
         return None
     norm = text.lower().strip()
@@ -7383,20 +7491,16 @@ def _match_mini_game_invite_keyword(text: str) -> str | None:
 def _maybe_apply_mini_game_invite_keyword(
     lanlan_name: str, text: str,
 ) -> dict[str, Any] | None:
-    """文本入口（core.py user message handler）调一次。pending invite 时尝试
-    关键词匹配；命中即触发对应 state 转换，返回 dict 给 caller 决定是否要做
-    side effect（如 push WS message 让前端 window.open 游戏）。
+    """Apply mini-game invite keywords for one user-message text entry.
 
-    **不吃掉用户消息**——caller 应继续走普通 chat 流水线，AI 仍然会回应这条
-    话。仅做 state side effect。
-
-    - 没 pending invite / 文本空 / 没命中 → None
-    - 命中 accept → ``{action: 'open_game', game_type, game_url}``
-    - 命中 decline / later → ``{action: 'cooldown' | 'suppress'}``
+    Pending invites try accept, decline, and later keywords. Without a pending
+    invite this helper is a no-op: ordinary chat text must not launch mini
+    games implicitly. This helper does not consume the user message; normal
+    chat handling should still continue.
     """
     state = _mini_game_invite_state.get(lanlan_name)
     if not state or state.get('delivered_at') is None or state.get('responded_at') is not None:
-        return None  # 没 pending
+        return None
     choice = _match_mini_game_invite_keyword(text)
     if choice is None:
         return None
@@ -7408,11 +7512,11 @@ def _maybe_apply_mini_game_invite_keyword(
 
 @router.post('/proactive/music_played_through')
 async def proactive_music_played_through(request: Request):
-    """
-    用户把推荐的歌完整听完后由前端 fire（aplayer 'ended' 事件）。
-    后端把 _proactive_chat_history 中该角色所有 channel == 'music' 的 entry 的
-    通道字段清空，从而让 _compute_source_weights 不再把"刚刚共享过音乐"
-    继续计入对 music 通道的衰减惩罚——完整播放是用户对该通道最强的正向反馈。
+    """Record that the user finished a recommended song.
+
+    Completed playback is strong positive feedback for the music channel, so
+    matching proactive history entries are cleared from the channel-specific
+    decay calculation.
     """
     validation_error = _validate_local_mutation_request(request)
     if validation_error is not None:
@@ -7441,21 +7545,21 @@ async def proactive_music_played_through(request: Request):
 @router.post('/translate')
 async def translate_text_api(request: Request):
     """
-    翻译文本API（供前端字幕模块使用）
+    Text translation API (used by the frontend subtitle module).
 
-    请求格式:
+    Request format:
     {
-        "text": "要翻译的文本",
-        "target_lang": "目标语言代码 ('zh', 'en', 'ja', 'ko')",
-        "source_lang": "源语言代码 (可选，为null时自动检测)"
+        "text": "text to translate",
+        "target_lang": "target language code ('zh', 'en', 'ja', 'ko')",
+        "source_lang": "source language code (optional; auto-detected when null)"
     }
 
-    响应格式:
+    Response format:
     {
         "success": true/false,
-        "translated_text": "翻译后的文本",
-        "source_lang": "检测到的源语言代码",
-        "target_lang": "目标语言代码"
+        "translated_text": "translated text",
+        "source_lang": "detected source language code",
+        "target_lang": "target language code"
     }
     """
     validation_error = _validate_local_mutation_request(request)
@@ -7540,7 +7644,7 @@ async def translate_text_api(request: Request):
 @router.post('/personal_dynamics')
 async def get_personal_dynamics(request: Request):
     """
-    获取个性化内容数据
+    Get personalized content data.
     """
     validation_error = _validate_local_mutation_request(request)
     if validation_error is not None:

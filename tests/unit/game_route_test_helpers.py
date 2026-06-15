@@ -9,8 +9,10 @@ from main_routers import game_router
 def reset_game_route_state():
     sessions_snapshot = dict(game_router._game_sessions)
     routes_snapshot = dict(game_router._game_route_states)
+    basketball_score_sessions_snapshot = dict(game_router._basketball_recent_score_sessions)
     game_router._game_sessions.clear()
     game_router._game_route_states.clear()
+    game_router._basketball_recent_score_sessions.clear()
     try:
         yield
     finally:
@@ -18,6 +20,8 @@ def reset_game_route_state():
         game_router._game_sessions.update(sessions_snapshot)
         game_router._game_route_states.clear()
         game_router._game_route_states.update(routes_snapshot)
+        game_router._basketball_recent_score_sessions.clear()
+        game_router._basketball_recent_score_sessions.update(basketball_score_sessions_snapshot)
 
 
 def mark_game_started(state, elapsed_ms=12_000):

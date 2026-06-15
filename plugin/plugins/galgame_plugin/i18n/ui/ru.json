@@ -519,7 +519,7 @@
   "ui.install.rapidocr.broken_body": "Не удалось импортировать bundled rapidocr. Пересоберите venv плагина (`uv sync --group galgame`) или переустановите packaged build.",
   "ui.install.rapidocr.kicker_not_ready": "Основной OCR-бэкенд не готов",
   "ui.install.rapidocr.not_ready_title": "RapidOCR пока не готов",
-  "ui.install.rapidocr.not_ready_body": "RapidOCR является внутренним основным бэкендом OCR Reader. Убедитесь, что packaged build или зависимости из исходников включают rapidocr-onnxruntime.",
+  "ui.install.rapidocr.not_ready_body": "RapidOCR является внутренним основным бэкендом OCR Reader. Убедитесь, что packaged build или зависимости из исходников включают RapidOCR runtime.",
   "ui.install.expected_path": "Ожидаемый путь установки",
   "ui.install.task_failed_retry": "Фоновая установка не удалась. Можно нажать кнопку еще раз и повторить.",
   "ui.install.task_done_refreshing": "Задача выполнена — ожидание обновления статуса плагина.",

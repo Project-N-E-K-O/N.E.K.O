@@ -752,7 +752,8 @@
         "avatarCropZoomOut": "Diminuir zoom",
         "avatarCropCancel": "Cancelar",
         "avatarCropSave": "Salvar",
-        "emptyState":  "As mensagens aparecerão aqui depois que o feed do bate-papo for conectado.",
+        "emptyState": "As mensagens aparecerão aqui depois que o feed do bate-papo for conectado.",
+        "companionEmptyState": "(Estou aqui com você.)",
         "messageStreaming": "Gerando",
         "messageFailed": "Falha no envio",
         "reactWindowOpen": "Abra a janela de bate-papo",
@@ -778,6 +779,24 @@
         "toolLollipop": "Pirulito",
         "toolFist": "Pata de gato",
         "toolHammer": "Martelo",
+        "avatarToolsButtonAriaLabel": "Ferramentas do avatar",
+        "clearCursorToolAriaLabel": "Restaurar cursor",
+        "avatarToolQuickbarAriaLabel": "Ferramentas rápidas do avatar",
+        "avatarToolQuickbarEmpty": "Sem ferramentas rápidas",
+        "avatarToolEdit": "Editar ferramentas rápidas",
+        "avatarToolSlotFull": "Remova uma ferramenta primeiro.",
+        "avatarToolManagerTitle": "Gerenciar ferramentas",
+        "avatarToolManagerSubtitle": "Escolha até 3 ferramentas rápidas.",
+        "avatarToolManagerClose": "Fechar",
+        "avatarToolCurrentTools": "Ferramentas atuais",
+        "avatarToolEmptySlot": "Espaço vazio",
+        "avatarToolRemove": "Remover",
+        "avatarToolLibrary": "Biblioteca de ferramentas",
+        "avatarToolEquipped": "Equipada",
+        "avatarToolEquip": "Equipar",
+        "avatarToolNoAvailableTools": "Nenhuma ferramenta disponível",
+        "avatarToolCancel": "Cancelar",
+        "avatarToolSave": "Salvar alterações",
         "attachmentButtonAriaLabel": "Anexo",
         "jukebox": "Juke-box",
         "jukeboxLabel": "Juke-box",
@@ -974,7 +993,8 @@
             "glm": "GLM",
             "step": "StepFun",
             "silicon": "SiliconFlow",
-            "gemini": "Gêmeos"
+            "gemini": "Gêmeos",
+            "vllm_omni": "vLLM-Omni (TTS)"
         },
         "coreProviderNames": {
             "free": "Versão gratuita (benefício exclusivo NEKO, suporta pesquisa na web)",
@@ -1002,7 +1022,8 @@
             "elevenlabs": "ElevenLabs (clonagem de voz)",
             "claude": "Claude (Antrópico)",
             "grok": "Grok (xAI)",
-            "openrouter": "OpenRouter (agregador de modelo)"
+            "openrouter": "OpenRouter (agregador de modelo)",
+            "vllm_omni": "vLLM-Omni (TTS)"
         },
         "coreApiAutoFillHint": "Chave preenchida automaticamente no API Key Book ou insira diretamente",
         "assistApiSelectLabel": "Provedor de API de assistência",
@@ -1190,7 +1211,12 @@
         },
         "loadConfigFailed": "Falha ao carregar a configuração. Atualize a página e tente novamente",
         "errorGettingCurrentApiKey": "Erro ao obter a chave de API atual",
-        "getCurrentApiKeyFailed": "Falha ao obter a chave de API atual"
+        "getCurrentApiKeyFailed": "Falha ao obter a chave de API atual",
+        "useMimoTokenPlan": "Usar MiMo Token Plan",
+        "mimoTokenPlanKeyLabel": "Chave do MiMo Token Plan",
+        "mimoTokenPlanKeyPlaceholder": "Insira a chave do Token Plan (tp-xxxxx)",
+        "mimoTokenPlanKeyHint": "Quando ativado, o MiMo usa apenas esta chave e o endpoint do Token Plan; a chave normal da API MiMo fica bloqueada.",
+        "mimoApiKeyLockedByTokenPlan": "MiMo Token Plan está ativado; esta chave não é usada"
     },
     "live2d": {
         "manager": "Gerenciador de modelos Live2D",
@@ -1488,7 +1514,9 @@
         "motionStopped": "Movimento interrompido",
         "expressionCleared": "Expressão limpa",
         "cannotDeleteBoundModel": "Não é possível excluir o modelo em uso",
-        "modelInUse": "Em uso"
+        "modelInUse": "Em uso",
+        "pngtuberTalkPreview": "Testar fala",
+        "pngtuberStatePreview": "Prévia de estado"
     },
     "voice": {
         "title": "Registro de voz",
@@ -2180,6 +2208,7 @@
         "sessionFailed": "Falha ao iniciar sessão"
     },
     "buttons": {
+        "thoughtBubblePop": "Estourar balão de pensamento",
         "voiceControl": "Controle de voz",
         "screenShare": "Compartilhamento de tela",
         "agentTools": "Neko Garra",
@@ -2616,6 +2645,7 @@
             "statusCancelled": "Cancelar",
             "minimize": "Recolher/Expandir",
             "cancelAll": "Cancelar todas as tarefas",
+            "cancelTask": "Cancelar tarefa",
             "cancelConfirm": "Cancelar todas as tarefas em execução?",
             "typeUserPlugin": "Plug-in do usuário",
             "typeComputerUse": "Uso do computador",
@@ -3703,6 +3733,15 @@
         "duration": "Duração",
         "action": "Ação",
         "play": "Jogar",
+        "sequencePlay": "Reproduzir em ordem",
+        "singleLoop": "Repetir uma vez",
+        "randomPlay": "Aleatório",
+        "noAutoNext": "Não avançar automaticamente",
+        "switchPlaybackMode": "Alternar modo de reprodução",
+        "lockSongSort": "Bloquear ordenação das músicas",
+        "unlockSongSort": "Desbloquear ordenação das músicas",
+        "previousSong": "Faixa anterior",
+        "nextSong": "Próxima faixa",
         "playError": "Leitor de música não inicializado",
         "notFound": "Música não encontrada",
         "audioEnded": "A reprodução de áudio terminou",
@@ -4084,6 +4123,394 @@
             "springJoints": "Spring Bone joints",
             "morphTargets": "Morph Targets",
             "drawCalls": "Draw calls"
+        }
+    },
+    "basketball": {
+        "title": "Desafio de basquete",
+        "modeSwitcher": "Modo de basquete",
+        "mode": {
+            "spectator": "Treino livre",
+            "shooter": "Desafio de arremesso",
+            "duel": "Duelo com Yui",
+            "timed": "Contra o tempo",
+            "horse": "HORSE"
+        },
+        "hud": {
+            "score": "Pontos {{score}}",
+            "streak": "Sequência {{streak}}",
+            "record": "Recorde {{distance}}",
+            "duelScore": "Você {{player}} - {{neko}} Neko",
+            "round": "Rodada {{round}}/{{max}}",
+            "timer": "{{seconds}} s",
+            "practice": "Treino livre",
+            "yourTurn": "Sua vez",
+            "nekoTurn": "Arremesso da Neko",
+            "horseLetters": "Você {{player}} / Neko {{neko}}",
+            "horseChallenge": "Copie {{distance}} {{angle}}°",
+            "horseSet": "Defina um arremesso",
+            "unlimitedAttempts": "Ilimitado",
+            "chances": "Chances {{count}}",
+            "practiceTitle": "Treino livre: arremessos ilimitados e sem pontuação no ranking",
+            "attemptsTitle": "Restam {{remaining}}/{{total}}, erros {{missed}}",
+            "duelTitle": "Duelo Neko: você e Neko arremessam em turnos",
+            "timedTitle": "Contra o tempo: arremessos ilimitados em 60 segundos",
+            "horseTitle": "HORSE: copie distância, ângulo e zona ideal do arremesso convertido",
+            "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
+            "on": "lig.",
+            "off": "desl."
+        },
+        "result": {
+            "title": "Fim de jogo",
+            "leaderboard": "Classificação",
+            "stats": "Estatísticas",
+            "retry": "Jogar novamente",
+            "rating": "Avaliação de controle: {{rating}}",
+            "duel": "Resultado do duelo: {{outcome}} | Você {{player}} - {{neko}} Neko | Rodadas: {{rounds}} | Última distância: {{distance}}",
+            "horse": "Resultado HORSE: {{outcome}} | Você {{player}} / Neko {{neko}} | Cestas: {{made}} | Melhor sequência: {{best}}",
+            "timed": "Contra o tempo: {{made}} cestas, melhor sequência {{best}}, pontos {{score}}",
+            "practice": "Treino livre: pontuação não registrada no ranking | Cestas: {{made}} | Sequência atual: {{streak}} | Melhor sequência: {{best}} | Distância: {{distance}}",
+            "summary": "Pontos: {{score}} | Cestas: {{made}} | Sequência atual: {{streak}} | Melhor sequência: {{best}} | Maior distância: {{record}} | Distância: {{distance}}",
+            "attemptsSummary": "Resumo dos arremessos: {{summary}}",
+            "personalBest": "Recorde pessoal: {{score}} pts",
+            "globalRank": "Ranking global: #{{rank}}{{total}}",
+            "outcome": {
+                "youWin": "Você venceu",
+                "nekoWin": "Neko venceu",
+                "tie": "Empate",
+                "undecided": "Indefinido"
+            }
+        },
+        "leaderboard": {
+            "title": "Classificação",
+            "global": "Global",
+            "local": "Local",
+            "shooter": "Arremesso",
+            "duel": "Duelo",
+            "empty": "Ainda sem registros",
+            "totalPlayers": "Jogadores {{count}}",
+            "yourBest": "Seu melhor #{{rank}} / {{score}} pts",
+            "recent": "Últimas {{count}} partidas",
+            "loading": "Carregando...",
+            "mode": {
+                "timed": "Tempo",
+                "horse": "HORSE",
+                "spectator": "Espectador",
+                "shooter": "Arremesso",
+                "duel": "Duelo"
+            }
+        },
+        "debug": {
+            "title": "Painel de depuração",
+            "collapse": "Recolher",
+            "hide": "Ocultar",
+            "distance": "Distância:",
+            "power": "Força:",
+            "event": "Evento:",
+            "streak": "Sequência:",
+            "reset": "Redefinir",
+            "guide": "Linha guia",
+            "sweet": "Zona ideal",
+            "markers": "Marcadores de distância",
+            "readout": {
+                "modeState": "Modo={{mode}}  Estado={{state}}",
+                "distance": "Distância={{px}}px ({{meters}})",
+                "streaks": "Sequência={{streak}}  Melhor={{best}}  Cestas={{made}}",
+                "score": "Pontos={{score}}  Restam={{remaining}}/{{total}}",
+                "difficulty": "Dificuldade={{difficulty}}  Humor={{mood}}  Tema={{theme}}",
+                "duel": "Duelo: Você {{player}}-{{neko}} NEKO R{{round}}",
+                "horse": "HORSE: Você {{player}} / Neko {{neko}} phase={{phase}}"
+            }
+        },
+        "stats": {
+            "title": "Estatísticas pessoais",
+            "close": "Fechar",
+            "totalShots": "Arremessos={{total}}  Cestas={{made}}",
+            "farRate": "Aproveitamento 300px+={{rate}}",
+            "trend": "Tendência recente={{trend}}",
+            "none": "Nenhum"
+        },
+        "theme": {
+            "next": "Trocar tema",
+            "current": "Tema: {{theme}}",
+            "changed": "Tema {{theme}}",
+            "labels": {
+                "default": "Ginásio",
+                "sunset": "Quadra ao pôr do sol",
+                "night": "Luzes noturnas"
+            }
+        },
+        "court": {
+            "restrictedArc": "Área restrita",
+            "freeThrowLine": "Lance livre",
+            "threePointLine": "3 pontos",
+            "midCourtLine": "Meio da quadra"
+        },
+        "close": "Fechar",
+        "audio": {
+            "controls": "Áudio do jogo"
+        },
+        "memoryOption": {
+            "label": "Salvar a conversa desta partida na memória (desativado por padrão)",
+            "hint": "Quando desativado, entradas do jogador, respostas da NEKO, eventos, resumos pós-jogo e contexto de continuação não serão gravados nem lidos da memória."
+        },
+        "table": {
+            "score": "Pontos",
+            "bestStreak": "Melhor sequência",
+            "farthest": "Maior distância",
+            "mode": "Modo",
+            "date": "Data"
+        },
+        "state": {
+            "ready": "Pronto",
+            "in_flight": "No ar",
+            "game_over": "Fim",
+            "neko_thinking": "Neko pensando"
+        },
+        "toast": {
+            "difficulty": "Dificuldade {{difficulty}}",
+            "nekoShoot": "Neko arremessa",
+            "nekoThinking": "Neko está pensando",
+            "nekoTurn": "Vez da Neko",
+            "copyNeko": "Copie a Neko",
+            "nekoFailed": "Neko falhou ao definir",
+            "yourSet": "Defina seu arremesso",
+            "yourTurn": "Sua vez",
+            "reset": "Redefinido",
+            "featureToggled": "{{feature}} {{state}}",
+            "feature": {
+                "guide": "Linha guia",
+                "sweet": "Zona ideal de força",
+                "bgm": "BGM",
+                "markers": "Marcadores de distância"
+            },
+            "state": {
+                "on": "ligado",
+                "off": "desligado"
+            }
+        },
+        "tutorial": {
+            "aim": "Mova o mouse para cima ou baixo para ajustar o ângulo",
+            "charge": "Segure o botão esquerdo para carregar",
+            "release": "Solte para arremessar!"
+        },
+        "shot": {
+            "swish": "Cesta limpa",
+            "bank": "Tabela",
+            "rim_in": "Entrou no aro",
+            "rim_out": "Saiu do aro",
+            "air_ball": "Air ball",
+            "unknown": "Desconhecido",
+            "attempt": "#{{index}} {{distance}} {{type}}"
+        },
+        "lines": {
+            "default": {
+                "swish": [
+                    "Cesta limpa!",
+                    "Cesta limpa!"
+                ],
+                "bank": [
+                    "Com tabela também vale.",
+                    "Com tabela também vale."
+                ],
+                "rim_in": [
+                    "Entrou no quique.",
+                    "Entrou no quique."
+                ],
+                "rim_out": [
+                    "Quase.",
+                    "Quase."
+                ],
+                "air_ball": [
+                    "O aro fica do outro lado.",
+                    "O aro fica do outro lado."
+                ],
+                "shot_missed": [
+                    "Ainda há chance.",
+                    "Ainda há chance."
+                ],
+                "game_over": [
+                    "Mais uma?",
+                    "Mais uma?"
+                ],
+                "long_aim": [
+                    "Arremesse logo.",
+                    "Arremesse logo."
+                ],
+                "close_to_record": [
+                    "Quase no recorde.",
+                    "Quase no recorde."
+                ],
+                "new_record": [
+                    "Novo recorde!",
+                    "Novo recorde!"
+                ],
+                "streak_5": [
+                    "Cinco seguidas!",
+                    "Cinco seguidas!"
+                ],
+                "streak_10": [
+                    "Dez seguidas?",
+                    "Dez seguidas?"
+                ],
+                "streak_15": [
+                    "Quinze seguidas é demais.",
+                    "Quinze seguidas é demais."
+                ],
+                "streak_20": [
+                    "Vinte seguidas? Incrível.",
+                    "Vinte seguidas? Incrível."
+                ]
+            },
+            "shooter": {
+                "swish": [
+                    "Cesta limpa!",
+                    "Cesta limpa!"
+                ],
+                "bank": [
+                    "Com tabela também vale.",
+                    "Com tabela também vale."
+                ],
+                "rim_in": [
+                    "Entrou no quique.",
+                    "Entrou no quique."
+                ],
+                "rim_out": [
+                    "Quase.",
+                    "Quase."
+                ],
+                "air_ball": [
+                    "O aro fica do outro lado.",
+                    "O aro fica do outro lado."
+                ],
+                "shot_missed": [
+                    "Ainda há chance.",
+                    "Ainda há chance."
+                ],
+                "game_over": [
+                    "Mais uma?",
+                    "Mais uma?"
+                ],
+                "long_aim": [
+                    "Arremesse logo.",
+                    "Arremesse logo."
+                ],
+                "close_to_record": [
+                    "Quase no recorde.",
+                    "Quase no recorde."
+                ],
+                "new_record": [
+                    "Novo recorde!",
+                    "Novo recorde!"
+                ],
+                "streak_5": [
+                    "Cinco seguidas!",
+                    "Cinco seguidas!"
+                ],
+                "streak_10": [
+                    "Dez seguidas?",
+                    "Dez seguidas?"
+                ],
+                "streak_15": [
+                    "Quinze seguidas é demais.",
+                    "Quinze seguidas é demais."
+                ],
+                "streak_20": [
+                    "Vinte seguidas? Incrível.",
+                    "Vinte seguidas? Incrível."
+                ]
+            },
+            "duel": {
+                "swish": [
+                    "Cesta limpa!",
+                    "Cesta limpa!"
+                ],
+                "bank": [
+                    "Com tabela também vale.",
+                    "Com tabela também vale."
+                ],
+                "rim_in": [
+                    "Entrou no quique.",
+                    "Entrou no quique."
+                ],
+                "rim_out": [
+                    "Quase.",
+                    "Quase."
+                ],
+                "air_ball": [
+                    "O aro fica do outro lado.",
+                    "O aro fica do outro lado."
+                ],
+                "shot_missed": [
+                    "Ainda há chance.",
+                    "Ainda há chance."
+                ],
+                "game_over": [
+                    "Mais uma?",
+                    "Mais uma?"
+                ],
+                "long_aim": [
+                    "Arremesse logo.",
+                    "Arremesse logo."
+                ],
+                "close_to_record": [
+                    "Quase no recorde.",
+                    "Quase no recorde."
+                ],
+                "new_record": [
+                    "Novo recorde!",
+                    "Novo recorde!"
+                ],
+                "streak_5": [
+                    "Cinco seguidas!",
+                    "Cinco seguidas!"
+                ],
+                "streak_10": [
+                    "Dez seguidas?",
+                    "Dez seguidas?"
+                ],
+                "streak_15": [
+                    "Quinze seguidas é demais.",
+                    "Quinze seguidas é demais."
+                ],
+                "streak_20": [
+                    "Vinte seguidas? Incrível.",
+                    "Vinte seguidas? Incrível."
+                ],
+                "clutch": "...Este precisa entrar.",
+                "excuse": "Ai, meu braço está cansado."
+            },
+            "fallback": [
+                "Mais uma."
+            ],
+            "pressure": {
+                "lastTied": "Arremesso decisivo. Não pisque.",
+                "lastAhead": "Hmph, ainda não acabou.",
+                "lastBehind": "Acerte este e vença.",
+                "playerAhead": "Você até que é bom...",
+                "playerBehind": "Força mais um pouco."
+            },
+            "horse": {
+                "nekoMiss": "Não copiou. Some {{letters}}.",
+                "playerMiss": "Você também soma {{letters}}."
+            },
+            "mindGame": [
+                "Sua mão está tremendo.",
+                "Pense bem, sem pressa.",
+                "Esta distância não é curta."
+            ],
+            "easterEgg": {
+                "lateNight": "Arremessando até esta hora?",
+                "xmas": "Os sinos já estão pendurados e você ainda quer arremessar?",
+                "newYear": "Feliz Ano Novo!",
+                "swish3": "Você está trapaceando?",
+                "swish5": "...Preciso conferir o aro.",
+                "airball3": "...Talvez faça uma pausa."
+            }
+        },
+        "mood": {
+            "happySuffix": " ♪",
+            "sadPrefix": "...",
+            "surprisedPrefix": "Hã?! "
         }
     },
     "soccer": {

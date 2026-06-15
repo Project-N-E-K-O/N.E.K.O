@@ -1,7 +1,7 @@
 import { useEffect, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 
-import { callPlugin, formatError, text } from './study_surface_utils';
+import { callPlugin, ensureBrandCSS, formatError, text } from './study_surface_utils';
 
 export default function HabitDashboard(props: PluginSurfaceProps) {
   const [payload, setPayload] = useState<any>({});
@@ -9,18 +9,19 @@ export default function HabitDashboard(props: PluginSurfaceProps) {
 
   async function refresh() {
     const [status, goals, checkin, summary, supervision] = await Promise.all([
-      callPlugin('study_pomodoro_status'),
-      callPlugin('study_goals'),
-      callPlugin('study_checkin_status'),
-      callPlugin('study_session_summary'),
-      callPlugin('study_supervision_status'),
+      callPlugin(props.api, 'study_pomodoro_status'),
+      callPlugin(props.api, 'study_goals'),
+      callPlugin(props.api, 'study_checkin_status'),
+      callPlugin(props.api, 'study_session_summary'),
+      callPlugin(props.api, 'study_supervision_status'),
     ]);
-    setPayload({ status, goals: goals.goals || [], checkin, summary, supervision });
+    const goalPayload = goals as { goals?: unknown };
+    setPayload({ status, goals: Array.isArray(goalPayload.goals) ? goalPayload.goals : [], checkin, summary, supervision });
   }
 
   async function act(entryId: string, args: Record<string, unknown> = {}) {
     try {
-      await callPlugin(entryId, args);
+      await callPlugin(props.api, entryId, args);
       await refresh();
       setError('');
     } catch (err) {
@@ -29,6 +30,7 @@ export default function HabitDashboard(props: PluginSurfaceProps) {
   }
 
   useEffect(() => {
+    ensureBrandCSS();
     let disposed = false;
     let inFlight = false;
     const tick = async () => {
@@ -53,7 +55,7 @@ export default function HabitDashboard(props: PluginSurfaceProps) {
 
   const goals = Array.isArray(payload.goals) ? payload.goals : [];
   return (
-    <div className="study-panel">
+    <div className="study-panel surface-shell">
       <header className="study-panel__header">
         <div>
           <h1>{text(props, 'ui.surface.habit_dashboard', 'Habit Dashboard')}</h1>

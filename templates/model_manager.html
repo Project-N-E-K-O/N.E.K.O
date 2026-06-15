@@ -22,7 +22,7 @@
     <script src="/static/theme-manager.js"></script>
 </head>
 
-<body>
+<body class="model-manager-page">
 
 
     <div id="sidebar">
@@ -37,6 +37,7 @@
 
         <div class="control-group">
             <input type="file" id="model-upload" webkitdirectory directory multiple style="display: none;">
+            <input type="file" id="pngtuber-model-upload" webkitdirectory directory multiple style="display: none;">
             <input type="file" id="vrm-file-upload" accept=".vrm,.zip" style="display: none;">
             <input type="file" id="mmd-file-upload" accept=".pmx,.pmd,.zip" style="display: none;">
             <input type="file" id="mmd-animation-file-upload" accept=".vmd" style="display: none;">
@@ -64,10 +65,12 @@
                 <select id="model-type-select" class="control-select" style="display: none;">
                     <option value="live2d">Live2D</option>
                     <option value="live3d">Live3D</option>
+                    <option value="pngtuber">PNGTuber</option>
                 </select>
                 <div id="model-type-dropdown" class="model-type-dropdown" style="display: none;">
                     <div class="dropdown-item" data-value="live2d"><span class="dropdown-item-text" data-text="Live2D">Live2D</span></div>
                     <div class="dropdown-item" data-value="live3d"><span class="dropdown-item-text" data-text="Live3D">Live3D</span></div>
+                    <div class="dropdown-item" data-value="pngtuber"><span class="dropdown-item-text" data-text="PNGTuber">PNGTuber</span></div>
                 </div>
             </div>
         </div>
@@ -235,6 +238,25 @@
                 <button id="play-expression-btn" class="btn btn-primary" type="button" disabled data-i18n-title="common.play" data-i18n-aria="common.play">
                     <img src="/static/icons/motion_play_icon.png?v=1" data-i18n-alt="common.play" class="expression-play-icon">
                 </button>
+            </div>
+        </div>
+
+        <div class="control-group" id="pngtuber-preview-group" style="display: none; flex-direction: column; align-items: stretch; gap: 10px;">
+            <div id="pngtuber-basic-preview-section" style="display: flex; flex-direction: column; gap: 6px;">
+                <button id="pngtuber-talk-preview-btn" class="btn btn-primary" type="button" aria-label="测试说话" data-i18n-title="live2d.pngtuberTalkPreview" data-i18n-aria="live2d.pngtuberTalkPreview">
+                    <span class="round-stroke-text round-stroke-text-center" data-i18n="live2d.pngtuberTalkPreview" data-text="测试说话">测试说话</span>
+                </button>
+            </div>
+            <div id="pngtuber-state-preview-section" style="display: none; flex-direction: column; gap: 6px;">
+                <div id="pngtuber-state-preview-list" style="position: relative;">
+                    <button id="pngtuber-state-preview-select-btn" class="btn btn-primary" type="button" aria-label="状态预览" data-i18n-title="live2d.pngtuberStatePreview" data-i18n-aria="live2d.pngtuberStatePreview">
+                        <span class="round-stroke-text" id="pngtuber-state-preview-select-text" data-i18n="live2d.pngtuberStatePreview" data-text="状态预览">状态预览</span>
+                    </button>
+                    <select id="pngtuber-state-preview-select" class="control-select" style="display: none;">
+                        <option value="" data-i18n="live2d.pngtuberStatePreview">状态预览</option>
+                    </select>
+                    <div id="pngtuber-state-preview-dropdown" class="pngtuber-state-preview-dropdown" style="display: none;"></div>
+                </div>
             </div>
         </div>
 
@@ -537,6 +559,7 @@
     <div id="mmd-container" class="hidden">
         <canvas id="mmd-canvas"></canvas>
     </div>
+    <div id="pngtuber-container" class="hidden"></div>
 
     <div id="delete-model-modal">
         <div class="modal-content">
@@ -639,6 +662,7 @@
     </script>
     <!-- VRM模块（按顺序加载，失败不影响Live2D）-->
     <script src="/static/avatar-portrait.js"></script>
+    <script src="/static/pngtuber-core.js?v={{ static_asset_version | default('0') }}"></script>
 
     <script src="/static/js/model_manager.js?v={{ static_asset_version | default('0') }}"></script>
 

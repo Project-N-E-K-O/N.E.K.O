@@ -1,9 +1,23 @@
-"""阶跃星辰 TTS 原生音色目录注册。
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-音色 ID、展示名和默认值读取自 config/api_providers.json 的
-native_tts_voice_providers 字段，避免把上游 voice_id 写死在业务代码里。
+"""StepFun native TTS voice catalog registration.
 
-官方音色参考：
+Voice IDs, display names and defaults are read from the native_tts_voice_providers
+field of config/api_providers.json, avoiding hardcoded upstream voice_ids in business code.
+
+Official voice reference:
 https://platform.stepfun.com/docs/zh/guides/developer/tts
 """
 
@@ -19,12 +33,12 @@ FALLBACK_STEPFUN_TTS_DEFAULT_MALE_VOICE = "cixingnansheng"
 
 
 def _load_stepfun_provider_config(provider_key: str) -> dict:
-    """从 api_providers.json 读取并规范化阶跃音色 Provider 配置。"""
+    """Read and normalize the StepFun voice provider config from api_providers.json."""
     return get_native_tts_voice_provider_config(provider_key)
 
 
 def _build_aliases(catalog: dict[str, str], configured_aliases: dict[str, str]) -> dict[str, str]:
-    """合并展示名别名与配置别名。"""
+    """Merge display-name aliases with configured aliases."""
     aliases = {
         label.casefold(): voice_id
         for voice_id, label in catalog.items()
@@ -39,7 +53,7 @@ def _build_aliases(catalog: dict[str, str], configured_aliases: dict[str, str]) 
 
 
 def _create_provider(provider_key: str) -> NativeVoiceProvider | None:
-    """根据配置创建 NativeVoiceProvider，配置缺失时跳过注册。"""
+    """Create the NativeVoiceProvider from config; skip registration when config is missing."""
     cfg = _load_stepfun_provider_config(provider_key)
     catalog = cfg.get('voices') or {}
     default_voice = cfg.get('default_voice') or ''
@@ -76,7 +90,7 @@ if FREE_STEPFUN_PROVIDER is not None:
 
 
 def get_stepfun_tts_default_voice(provider_key: str = "step") -> str:
-    """按当前阶跃线路 Provider 读取默认音色。"""
+    """Read the default voice per the current StepFun route provider."""
     provider = get_provider(provider_key if provider_key in ("step", "free") else "step")
     if provider is not None and provider.default_voice:
         return provider.default_voice
@@ -87,7 +101,7 @@ def normalize_stepfun_tts_voice(
     voice_id: str | None,
     provider_key: str = "step",
 ) -> tuple[str, bool]:
-    """阶跃线路内部使用的 voice_id 规范化辅助函数。"""
+    """voice_id normalization helper used internally by StepFun routes."""
     provider = get_provider(provider_key if provider_key in ("step", "free") else "step")
     if provider is None:
         return (voice_id or "").strip(), False

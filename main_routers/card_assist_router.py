@@ -1,9 +1,24 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Card-Assist Router
 
 Four endpoints powering the in-app AI assistant that helps users author a
-catgirl character card (Character Card Manager → "猫猫辅助生成" button):
+catgirl character card (Character Card Manager -> "AI-assisted generation"
+button):
 
   POST /api/card-assist/clarify   — return 2-4 chip-style clarifying questions
   POST /api/card-assist/generate  — return a full field dict (Chinese keys)
@@ -44,14 +59,18 @@ logger = get_module_logger(__name__, "CardAssist")
 
 
 def _reject_untrusted_card_assist(request: Request, payload: Any) -> JSONResponse | None:
-    """本地 Origin/CSRF 守卫：card-assist 这四个 POST 都会真去打用户配置的 agent
-    LLM、消耗其 API / 免费额度，属于「有副作用的浏览器侧请求」，必须和仓库里其它此类
-    端点一样先过统一守卫，挡掉恶意网页用 ``no-cors`` + ``text/plain`` body 伪造合法 JSON
-    偷跑配额——攻击者读不到响应，但不拦就能白嫖配额（Codex #3328998416）。
+    """Local Origin/CSRF guard: all four card-assist POSTs actually call the user's
+    configured agent LLM and consume its API / free quota, making them
+    "browser-side requests with side effects". Like every other such endpoint in
+    the repo, they must pass the unified guard first to block malicious pages
+    from forging legitimate-looking JSON via ``no-cors`` + ``text/plain`` bodies
+    to burn quota — the attacker cannot read the response, but without the guard
+    they could still freeload the quota (Codex #3328998416).
 
-    复用 ``_validate_local_mutation_request``：返回 ``None`` 放行；返回 403
-    JSONResponse(``error_code=csrf_validation_failed``) 表示拒绝，调用方原样 return 即可。
-    payload 仅用于 body 内 ``_csrf_token`` 兜底，非 dict 传 None 避免 ``.get`` 抛错。"""
+    Reuses ``_validate_local_mutation_request``: ``None`` means allow; a 403
+    JSONResponse(``error_code=csrf_validation_failed``) means reject, and the
+    caller should return it as-is. ``payload`` is only used for the in-body
+    ``_csrf_token`` fallback; pass None for non-dict payloads to avoid ``.get`` errors."""
     return _validate_local_mutation_request(
         request,
         payload=payload if isinstance(payload, dict) else None,
@@ -144,9 +163,11 @@ _LOCALE_OUTPUT_LANGUAGE: dict[str, tuple[str, str]] = {
 
 
 def _output_language_directive(locale_code: str) -> str:
-    """对「没有专门 prompt 版本」的 locale 生成一条显式输出语言指示，追加到 prompt 末尾。
-    字段 key 已由 _resolve_target_keys 按 locale 模板给定，这里只约束 values / 问题 / 说明
-    用目标语言。en / zh-CN 与基础 prompt 一致 → 返回空串、不加任何东西。"""
+    """For locales without a dedicated prompt version, generate an explicit output-language
+    directive appended to the end of the prompt. Field keys are already fixed by
+    _resolve_target_keys per the locale template; this only constrains values / questions /
+    descriptions to the target language. en / zh-CN match the base prompt -> return an empty
+    string and add nothing."""
     pair = _LOCALE_OUTPUT_LANGUAGE.get(locale_code)
     if not pair:
         return ""

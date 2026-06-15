@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import sys, os
 _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _repo_root not in sys.path:
@@ -33,12 +47,12 @@ logger, log_config = setup_logging(service_name="Monitor", log_level=logging.INF
 
 # 获取资源路径（支持打包后的环境）
 def get_resource_path(relative_path):
-    """获取资源的绝对路径，支持开发环境和打包后的环境.
+    """Get the absolute path of a resource, supporting both dev and packaged environments.
 
-    monitor.py 现在位于 ``<repo>/app/monitor.py``，因此源码 / Nuitka 场景
-    的资源根都需要 ``dirname(dirname(__file__))`` 才能回到项目根 (static/
-    templates/ 等放在那里)。PyInstaller 把所有资源解压到 ``sys._MEIPASS``
-    顶层，路径不变。
+    monitor.py now lives at ``<repo>/app/monitor.py``, so in the source / Nuitka
+    cases the resource root needs ``dirname(dirname(__file__))`` to get back to
+    the project root (where static/ templates/ etc. live). PyInstaller unpacks
+    all resources to the top level of ``sys._MEIPASS``, so that path is unchanged.
     """
     if getattr(sys, 'frozen', False):
         # 打包后的环境
@@ -91,7 +105,7 @@ async def get_subtitle():
 
 @app.get("/api/config/page_config")
 async def get_page_config(lanlan_name: str = ""):
-    """获取页面配置（lanlan_name 和 model_path）"""
+    """Get page config (lanlan_name and model_path)"""
     try:
         # 获取角色数据
         _, her_name, _, lanlan_basic_config, _, _, _, _, _ = await _config_manager.aget_character_data()
@@ -144,13 +158,13 @@ async def get_page_config(lanlan_name: str = ""):
 
 @app.get("/api/config/preferences")
 async def get_preferences():
-    """获取用户偏好设置（与main_server.py保持一致）"""
+    """Get user preferences (consistent with main_server.py)"""
     preferences = await aload_user_preferences()
     return preferences
 
 @app.get('/api/live2d/emotion_mapping/{model_name}')
 def get_emotion_mapping(model_name: str):
-    """获取情绪映射配置"""
+    """Get the emotion mapping config"""
     try:
         # 使用 find_model_directory 在 static、用户文档目录、创意工坊目录中查找模型
         model_dir, _ = find_model_directory(model_name)

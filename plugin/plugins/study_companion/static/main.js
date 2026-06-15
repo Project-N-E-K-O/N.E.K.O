@@ -15,6 +15,17 @@ const ENTRY_TIMEOUT_MS = {
   study_memory_deck: 30000,
   study_memory_card_review: 30000,
 };
+const STUDY_SURFACE_MESSAGE_TYPES = Object.freeze({
+  openSurface: 'neko-study-open-surface',
+  reviewCompleted: 'neko-study-review-completed',
+  refreshSummary: 'neko-study-refresh-summary',
+  memoryDeckUpdated: 'neko-study-memory-deck-updated',
+});
+const STUDY_SURFACE_INCOMING_MESSAGE_TYPES = new Set([
+  STUDY_SURFACE_MESSAGE_TYPES.reviewCompleted,
+  STUDY_SURFACE_MESSAGE_TYPES.refreshSummary,
+  STUDY_SURFACE_MESSAGE_TYPES.memoryDeckUpdated,
+]);
 let currentMode = 'companion';
 let currentMemoryCard = null;
 
@@ -38,8 +49,46 @@ const memoryBackInput = document.getElementById('memoryBackInput');
 const memoryRefreshBtn = document.getElementById('memoryRefreshBtn');
 const memoryAddBtn = document.getElementById('memoryAddBtn');
 const memoryDueCard = document.getElementById('memoryDueCard');
+const modeSwitch = document.getElementById('modeSwitch');
+const modeSelect = document.getElementById('modeSelect');
+const summaryMode = document.getElementById('summaryMode');
+const summaryDuration = document.getElementById('summaryDuration');
+const summaryGoal = document.getElementById('summaryGoal');
+const quickFocusState = document.getElementById('quickFocusState');
+const quickReviewCount = document.getElementById('quickReviewCount');
+const quickCheckinStatus = document.getElementById('quickCheckinStatus');
+const diagnosisTitle = document.getElementById('diagnosisTitle');
+const diagnosisBody = document.getElementById('diagnosisBody');
+const primaryDiagnosis = document.getElementById('primaryDiagnosis');
+const firstRunGuide = document.getElementById('firstRunGuide');
+const firstRunSteps = document.getElementById('firstRunSteps');
+const firstRunSkipBtn = document.getElementById('firstRunSkipBtn');
+const advancedToggleBtn = document.getElementById('advancedToggleBtn');
+const advancedSettings = document.getElementById('advancedSettings');
+const settingsTabs = Array.from(document.querySelectorAll('[data-settings-tab]'));
+const settingsTabPanels = Array.from(document.querySelectorAll('[data-settings-tab-panel]'));
+const surfaceOpenButtons = Array.from(document.querySelectorAll('[data-open-surface]'));
+const settingsConfigForm = document.getElementById('settingsConfigForm');
+const settingsSaveBtn = document.getElementById('settingsSaveBtn');
+const settingsConfigStatus = document.getElementById('settingsConfigStatus');
+const settingsDefaultMode = document.getElementById('settingsDefaultMode');
+const settingsOcrEnabled = document.getElementById('settingsOcrEnabled');
+const settingsOcrLanguages = document.getElementById('settingsOcrLanguages');
+const settingsLlmTimeout = document.getElementById('settingsLlmTimeout');
 const modeButtons = Array.from(document.querySelectorAll('[data-mode]'));
 const memoryReviewButtons = Array.from(document.querySelectorAll('[data-memory-rating]'));
+const MODE_SHORTCUTS = Object.freeze({
+  1: 'companion',
+  2: 'interactive',
+  3: 'teaching',
+});
+let lastStatusPayload = {};
+let settingsConfig = null;
+let settingsConfigLoading = false;
+let firstRunDismissed = false;
+let advancedSettingsOpen = false;
+let modeChangeInFlight = false;
+let refreshPending = false;
 
 function t(key, fallback) {
   return window.I18n && typeof window.I18n.t === 'function'
@@ -59,6 +108,9 @@ function setStatus(text) {
   statusLine.textContent = text;
 }
 
+// SECURITY: renderMathInText MUST HTML-escape all non-math text.
+// LLM replies echo untrusted user input. Never replace innerHTML with
+// a code path that skips escapeHTML().
 function setReply(text) {
   const value = text || '';
   if (window.renderMathInText && typeof window.renderMathInText === 'function') {
@@ -100,17 +152,259 @@ function compactText(value, fallback = '-') {
   return text.length > 72 ? `${text.slice(0, 72)}...` : text;
 }
 
+function firstRunFromStatus(data = {}) {
+  if (Object.prototype.hasOwnProperty.call(data, 'is_first_run')) {
+    return data.is_first_run !== false;
+  }
+  return true;
+}
+
+function buildFirstRunSteps() {
+  return [
+    {
+      label: t('ui.onboarding.step.mode.label', 'Step 1'),
+      title: t('ui.onboarding.step.mode.title', 'Choose a default mode'),
+      body: t('ui.onboarding.step.mode.body', 'Companion, Interactive, and Teaching tune how the study companion responds.'),
+    },
+    {
+      label: t('ui.onboarding.step.ocr.label', 'Step 2'),
+      title: t('ui.onboarding.step.ocr.title', 'Check OCR capture'),
+      body: t('ui.onboarding.step.ocr.body', 'Use OCR when you want the companion to read the current learning material.'),
+    },
+    {
+      label: t('ui.onboarding.step.goal.label', 'Step 3'),
+      title: t('ui.onboarding.step.goal.title', 'Bind a study goal'),
+      body: t('ui.onboarding.step.goal.body', 'Review cards, focus sessions, and summaries stay useful when tied to a goal.'),
+    },
+  ];
+}
+
+function renderFirstRunGuide(data = {}) {
+  if (!firstRunGuide || !firstRunSteps) {
+    return;
+  }
+  const shouldShow = firstRunFromStatus(data) && !firstRunDismissed && !advancedSettingsOpen;
+  firstRunGuide.hidden = !shouldShow;
+  if (!shouldShow) {
+    return;
+  }
+  firstRunSteps.textContent = '';
+  buildFirstRunSteps().forEach((step, index) => {
+    const item = document.createElement('article');
+    item.className = 'first-run-step';
+    item.setAttribute('data-first-run-step', String(index + 1));
+    const label = document.createElement('span');
+    label.textContent = step.label;
+    const title = document.createElement('strong');
+    title.textContent = step.title;
+    const body = document.createElement('p');
+    body.textContent = step.body;
+    item.append(label, title, body);
+    firstRunSteps.appendChild(item);
+  });
+}
+
+function dependencyReady(status) {
+  if (!status || typeof status !== 'object') {
+    return false;
+  }
+  if (status.available === true || status.ok === true || status.status === 'available') {
+    return true;
+  }
+  if (status.installed === true || status.state === 'ready') {
+    return true;
+  }
+  return false;
+}
+
+function countFromSummary(summary = {}, keys = []) {
+  for (const key of keys) {
+    const value = Number(summary[key]);
+    if (Number.isFinite(value)) {
+      return value;
+    }
+  }
+  return 0;
+}
+
+function formatMinuteCount(value) {
+  const minutes = Math.max(0, Number(value) || 0);
+  const label = Number.isInteger(minutes) ? String(minutes) : minutes.toFixed(1);
+  return `${label} min`;
+}
+
+function goalProgressFromHabit(habit = {}) {
+  const summary = habit.summary || {};
+  const completed = countFromSummary(summary, ['completed_goal_count', 'completed_goals', 'completed']);
+  const total = countFromSummary(summary, ['goal_count', 'total_goal_count', 'goals', 'total_goals'])
+    || (Array.isArray(habit.goals) ? habit.goals.length : 0);
+  return { completed: Math.max(0, completed), total: Math.max(0, total) };
+}
+
+function buildDiagnosis(data = {}) {
+  const dependencies = data.dependencies || {};
+  const dependencyValues = Object.values(dependencies).filter((value) => value && typeof value === 'object');
+  const llm = data.llm || data.llm_status || {};
+  const llmStatus = String(llm.status || llm.state || '').toLowerCase();
+  const llmError = data.llm_available === false || llm.available === false || llm.ok === false || ['error', 'failed', 'unavailable'].includes(llmStatus);
+  const errorBody = data.last_error || llm.message || llm.error || llm.reason;
+  const hasDependencyStatus = dependencyValues.length > 0;
+  const dependenciesReady = hasDependencyStatus && dependencyValues.every(dependencyReady);
+  const topicCount = countFromSummary(data.knowledge_summary || {}, ['topic_count', 'topics', 'node_count', 'nodes']);
+  const hasKnowledge = topicCount > 0 || (Array.isArray(data.mastery_overview) && data.mastery_overview.length > 0);
+  if (errorBody || data.status === 'error' || llmError) {
+    return {
+      severity: 'error',
+      title: t('ui.diagnosis.error.title', 'Attention needed'),
+      body: errorBody || t('ui.diagnosis.error.body', 'Study companion reported an error.'),
+    };
+  }
+  if (dependenciesReady && hasKnowledge) {
+    return {
+      severity: 'ok',
+      title: t('ui.diagnosis.ok.title', 'Ready for study'),
+      body: tf('ui.diagnosis.ok.body', '{count} knowledge topics loaded and OCR dependencies are ready.', { count: topicCount }),
+    };
+  }
+  if (hasDependencyStatus || data.status === 'ready') {
+    return {
+      severity: 'warning',
+      title: t('ui.diagnosis.warning.title', 'Setup can be improved'),
+      body: t('ui.diagnosis.warning.body', 'Check OCR dependencies or load knowledge topics for better study guidance.'),
+    };
+  }
+  return { severity: 'info', title: t('ui.diagnosis.info.title', 'Waiting for status'), body: t('ui.diagnosis.info.body', 'Refresh status to inspect OCR, LLM, and study data.') };
+}
+
+function renderDiagnosis(data = {}) {
+  if (!primaryDiagnosis || !diagnosisTitle || !diagnosisBody) {
+    return;
+  }
+  const diagnosis = buildDiagnosis(data);
+  const prefix = diagnosis.severity === 'ok'
+    ? '\u2713'
+    : (diagnosis.severity === 'error' ? '\u26A0' : (diagnosis.severity === 'warning' ? '!' : 'i'));
+  primaryDiagnosis.dataset.severity = diagnosis.severity;
+  diagnosisTitle.textContent = `${prefix} ${diagnosis.title}`;
+  diagnosisBody.textContent = diagnosis.body;
+}
+
+function updateStudySummaries(data = {}) {
+  const habit = data.habit || {};
+  const pomodoro = habit.pomodoro || {};
+  if (quickFocusState) {
+    quickFocusState.textContent = pomodoro.state
+      ? String(pomodoro.state)
+      : t('ui.status.screen.idle', 'Idle');
+  }
+  if (quickCheckinStatus) {
+    const checkin = habit.checkin || {};
+    quickCheckinStatus.textContent = checkin.checked_in
+      ? t('ui.status.enabled', 'Enabled')
+      : t('ui.status.disabled', 'Disabled');
+  }
+  const deps = data.dependencies || {};
+  const dependencyCount = Object.values(deps).filter((value) => value && typeof value === 'object').length;
+  const readyCount = Object.values(deps).filter(dependencyReady).length;
+  const knowledge = data.knowledge_summary || {};
+  const topicCount = countFromSummary(knowledge, ['topic_count', 'topics', 'node_count', 'nodes']);
+  const edgeCount = countFromSummary(knowledge, ['edge_count', 'edges']);
+  const memoryDeck = data.memory_deck || {};
+  const cardCount = Number.isFinite(Number(memoryDeck.card_count)) ? Number(memoryDeck.card_count) : 0;
+  const dueCount = Number.isFinite(Number(memoryDeck.due_count)) ? Number(memoryDeck.due_count) : 0;
+  const setText = (id, value) => {
+    const node = document.getElementById(id);
+    if (node) {
+      node.textContent = value;
+    }
+  };
+  setText('settingsOcrSummary', dependencyCount
+    ? tf('ui.settings.ocr.ready_summary', '{ready}/{total} OCR dependencies ready', { ready: readyCount, total: dependencyCount })
+    : t('ui.settings.ocr.no_status', 'Dependency status is not loaded yet.'));
+  setText('settingsDependencySummary', dependencyCount
+    ? tf('ui.settings.dependencies.ready_summary', '{ready}/{total} runtime dependencies available', { ready: readyCount, total: dependencyCount })
+    : t('ui.settings.dependencies.no_status', 'Refresh status to inspect OCR backends.'));
+  setText('settingsKnowledgeSummary', topicCount
+    ? tf('ui.settings.knowledge.loaded_summary', '{topics} topics and {edges} edges loaded.', { topics: topicCount, edges: edgeCount })
+    : t('ui.settings.knowledge.empty_summary', 'Knowledge map has no loaded topics yet.'));
+  setText('settingsMemorySummary', tf('ui.settings.memory.loaded_summary', '{cards} cards / {due} due reviews.', { cards: cardCount, due: dueCount }));
+  setText('settingsCheckinSummary', quickCheckinStatus ? quickCheckinStatus.textContent : t('ui.status.pending', 'Pending'));
+  setText('settingsPomodoroSummary', quickFocusState ? quickFocusState.textContent : t('ui.status.screen.idle', 'Idle'));
+}
+
+function updateModeIndicator() {
+  if (!modeSwitch) {
+    return;
+  }
+  modeSwitch.dataset.active = currentMode;
+  if (modeSwitch.offsetParent === null) {
+    return;
+  }
+  const activeButton = modeButtons.find((button) => button.getAttribute('data-mode') === currentMode);
+  if (!activeButton) {
+    return;
+  }
+  const switchRect = modeSwitch.getBoundingClientRect();
+  const buttonRect = activeButton.getBoundingClientRect();
+  if (buttonRect.width > 0) {
+    modeSwitch.style.setProperty('--indicator-left', `${Math.max(0, buttonRect.left - switchRect.left)}px`);
+    modeSwitch.style.setProperty('--indicator-width', `${buttonRect.width}px`);
+  }
+  modeSwitch.setAttribute('data-ready', 'true');
+}
+
+function prefersReducedMotion() {
+  return typeof window.matchMedia === 'function'
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+function scheduleModeIndicatorUpdate() {
+  if (prefersReducedMotion()) {
+    updateModeIndicator();
+    return;
+  }
+  if (typeof window.requestAnimationFrame === 'function') {
+    window.requestAnimationFrame(updateModeIndicator);
+    return;
+  }
+  updateModeIndicator();
+}
+
 function setModeButtons(mode, disabled = false) {
   currentMode = String(mode || 'companion');
+  if (summaryMode) {
+    summaryMode.textContent = modeLabel(currentMode);
+  }
+  if (modeSwitch) {
+    modeSwitch.dataset.active = currentMode;
+  }
+  if (modeSelect) {
+    modeSelect.value = currentMode;
+    modeSelect.disabled = disabled;
+  }
   modeButtons.forEach((button) => {
     const pressed = button.getAttribute('data-mode') === currentMode;
     button.disabled = disabled;
     button.setAttribute('aria-pressed', pressed ? 'true' : 'false');
     button.classList.toggle('is-active', pressed);
+    button.classList.toggle('active', pressed);
   });
+  updateModeIndicator();
+  scheduleModeIndicatorUpdate();
 }
 
 function setStudyState(data = {}) {
+  const habit = data.habit || {};
+  const habitSummary = habit.summary || {};
+  const checkin = habit.checkin || {};
+  if (summaryDuration) {
+    const focusMinutes = Number.isFinite(Number(habitSummary.total_focus_minutes)) ? habitSummary.total_focus_minutes : checkin.total_focus_minutes;
+    summaryDuration.textContent = formatMinuteCount(focusMinutes);
+  }
+  if (summaryGoal) {
+    const progress = goalProgressFromHabit(habit);
+    summaryGoal.textContent = `${progress.completed}/${progress.total}`;
+  }
   const classification = data.screen_classification || {};
   const screenValue = classification.screen_type || data.screen_type || 'idle';
   if (screenType) {
@@ -147,6 +441,9 @@ function setMemoryDeckState(deck = {}) {
     : (Number.isFinite(Number(deck.item_count)) ? Number(deck.item_count) : cards.length);
   const dueCount = Number.isFinite(Number(deck.due_count)) ? Number(deck.due_count) : dueCards.length;
   currentMemoryCard = dueCards[0] || null;
+  if (quickReviewCount) {
+    quickReviewCount.textContent = String(dueCount);
+  }
   if (memoryDeckStatus) {
     memoryDeckStatus.textContent = tf('ui.memory.status', '{card_count} cards / {due_count} due', {
       card_count: cardCount,
@@ -155,6 +452,7 @@ function setMemoryDeckState(deck = {}) {
   }
   if (memoryDueCard) {
     if (currentMemoryCard) {
+      delete memoryDueCard.dataset.empty;
       const front = compactText(
         currentMemoryCard.front || currentMemoryCard.item?.prompt,
         currentMemoryCard.topic_id || currentMemoryCard.item_id || '-',
@@ -165,6 +463,7 @@ function setMemoryDeckState(deck = {}) {
         : '';
       memoryDueCard.textContent = [front, back, retention].filter(Boolean).join('\n\n');
     } else {
+      memoryDueCard.dataset.empty = 'true';
       memoryDueCard.textContent = t('ui.memory.empty_due', 'No due memory cards');
     }
   }
@@ -174,12 +473,148 @@ function setMemoryDeckState(deck = {}) {
 }
 
 function setStatusLine(data) {
+  lastStatusPayload = data || {};
   const statusValue = data.status || 'unknown';
   const modeValue = String(data.active_mode || data.mode || 'companion');
   const statusLabel = t(`status.state.${statusValue}`, statusValue);
   setStatus(`${statusLabel} / ${modeLabel(modeValue)}`);
+  renderDiagnosis(data);
+  renderFirstRunGuide(data);
+  updateStudySummaries(data);
   setModeButtons(modeValue, false);
   setStudyState(data);
+}
+
+function setAdvancedSettingsOpen(open) {
+  advancedSettingsOpen = Boolean(open);
+  if (advancedSettings) {
+    advancedSettings.hidden = !advancedSettingsOpen;
+  }
+  if (advancedToggleBtn) {
+    advancedToggleBtn.setAttribute('aria-expanded', advancedSettingsOpen ? 'true' : 'false');
+  }
+  if (advancedSettingsOpen) {
+    loadSettingsConfig().catch(() => setSettingsConfigStatus('ui.status.config_load_failed', 'Could not load settings'));
+  }
+  renderFirstRunGuide(lastStatusPayload);
+}
+
+function setSettingsTab(tabId, options = {}) {
+  settingsTabs.forEach((tab) => {
+    const selected = tab.getAttribute('data-settings-tab') === tabId;
+    tab.setAttribute('aria-selected', selected ? 'true' : 'false');
+    tab.setAttribute('tabindex', selected ? '0' : '-1');
+    if (selected && options.focus) {
+      tab.focus();
+    }
+  });
+  settingsTabPanels.forEach((panel) => {
+    panel.hidden = panel.getAttribute('data-settings-tab-panel') !== tabId;
+  });
+}
+
+function handleSettingsTabKeydown(event) {
+  const currentIndex = settingsTabs.indexOf(event.currentTarget);
+  if (currentIndex < 0) return;
+  if (event.key === 'Tab' && !event.shiftKey) {
+    const panel = settingsTabPanels.find((item) => item.getAttribute('data-settings-tab-panel') === event.currentTarget.getAttribute('data-settings-tab'));
+    if (panel) { event.preventDefault(); panel.focus(); } return;
+  }
+  let nextIndex = currentIndex;
+  if (event.key === 'ArrowRight') {
+    nextIndex = (currentIndex + 1) % settingsTabs.length;
+  } else if (event.key === 'ArrowLeft') {
+    nextIndex = (currentIndex - 1 + settingsTabs.length) % settingsTabs.length;
+  } else if (event.key === 'Home') {
+    nextIndex = 0;
+  } else if (event.key === 'End') {
+    nextIndex = settingsTabs.length - 1;
+  } else return;
+  event.preventDefault();
+  setSettingsTab(settingsTabs[nextIndex].getAttribute('data-settings-tab'), { focus: true });
+}
+
+function openHostedSurface(surfaceId) {
+  if (!surfaceId) {
+    return;
+  }
+  const managerUrl = `/ui/plugins/${encodeURIComponent(PLUGIN_ID)}?tab=guide&surface=${encodeURIComponent(surfaceId)}`;
+  if (window.parent === window) {
+    window.location.assign(managerUrl);
+    return;
+  }
+  window.parent?.postMessage?.({
+    type: STUDY_SURFACE_MESSAGE_TYPES.openSurface,
+    payload: {
+      pluginId: PLUGIN_ID,
+      surfaceId,
+      kind: 'guide',
+    },
+  }, window.location.origin);
+}
+
+function trustedStudySurfaceOrigin(origin) {
+  return origin === window.location.origin;
+}
+
+function isTrustedStudySurfaceMessage(message) {
+  if (!message || typeof message !== 'object') {
+    return false;
+  }
+  if (!STUDY_SURFACE_INCOMING_MESSAGE_TYPES.has(message.type)) {
+    return false;
+  }
+  if (message.type !== STUDY_SURFACE_MESSAGE_TYPES.memoryDeckUpdated) {
+    return message.payload === undefined || (message.payload !== null && typeof message.payload === 'object');
+  }
+  return message.payload !== null && typeof message.payload === 'object' && !Array.isArray(message.payload);
+}
+
+function requestStudyStatusRefresh() {
+  if (refreshPending) {
+    return;
+  }
+  refreshPending = true;
+  refreshStatus({ updateReply: false })
+    .catch((error) => {
+      setStatus(t('ui.status.error', 'Error'));
+      setReply(formatPluginError(error));
+    })
+    .finally(() => {
+      refreshPending = false;
+    });
+}
+
+function handleStudySurfaceMessage(event) {
+  if (!trustedStudySurfaceOrigin(event.origin)) {
+    return;
+  }
+  const message = event.data || {};
+  if (!isTrustedStudySurfaceMessage(message)) {
+    return;
+  }
+  if (
+    message.type === STUDY_SURFACE_MESSAGE_TYPES.reviewCompleted
+    || message.type === STUDY_SURFACE_MESSAGE_TYPES.refreshSummary
+  ) {
+    requestStudyStatusRefresh();
+    return;
+  }
+  // Ignore unrelated parent/child messages; this surface only owns the study message namespace above.
+  if (message.type !== STUDY_SURFACE_MESSAGE_TYPES.memoryDeckUpdated) {
+    return;
+  }
+  const payload = message.payload && typeof message.payload === 'object' ? message.payload : {};
+  const nextDeck = {
+    ...(lastStatusPayload.memory_deck || {}),
+    ...payload,
+  };
+  lastStatusPayload = {
+    ...lastStatusPayload,
+    memory_deck: nextDeck,
+  };
+  setMemoryDeckState(nextDeck);
+  updateStudySummaries(lastStatusPayload);
 }
 
 function sleep(ms) {
@@ -213,6 +648,93 @@ async function fetchWithTimeout(url, init = {}, timeoutMs = RUN_TIMEOUT_MS) {
     throw error;
   } finally {
     window.clearTimeout(timeout);
+  }
+}
+
+function setSettingsConfigStatus(key, fallback) {
+  if (settingsConfigStatus) {
+    settingsConfigStatus.textContent = t(key, fallback);
+  }
+}
+
+function cloneConfig(value) {
+  // Config is JSON-compatible primitive data; this intentionally drops Date/undefined values.
+  return JSON.parse(JSON.stringify(value || {}));
+}
+
+function getConfigRoot(payload) {
+  return payload && typeof payload.config === 'object' && payload.config ? payload.config : payload;
+}
+
+function ensureConfigSection(config, key) {
+  if (!config[key] || typeof config[key] !== 'object') {
+    config[key] = {};
+  }
+  return config[key];
+}
+
+function applySettingsConfig(config) {
+  const study = config.study || {};
+  const ocr = config.ocr_reader || {};
+  const llm = config.llm || {};
+  if (settingsDefaultMode) {
+    settingsDefaultMode.value = ['companion', 'interactive', 'teaching'].includes(study.default_mode) ? study.default_mode : 'companion';
+  }
+  if (settingsOcrEnabled) {
+    settingsOcrEnabled.checked = ocr.enabled !== false;
+  }
+  if (settingsOcrLanguages) {
+    settingsOcrLanguages.value = String(ocr.languages || 'chi_sim+jpn+eng');
+  }
+  if (settingsLlmTimeout) {
+    settingsLlmTimeout.value = String(Number.isFinite(Number(llm.llm_call_timeout_seconds)) ? Number(llm.llm_call_timeout_seconds) : 30);
+  }
+}
+
+async function loadSettingsConfig(options = {}) {
+  if (!settingsConfigForm || settingsConfigLoading || (settingsConfig && !options.force)) return;
+  settingsConfigLoading = true;
+  setSettingsConfigStatus('ui.status.config_loading', 'Loading settings...');
+  try {
+    settingsConfig = cloneConfig(getConfigRoot(await callPlugin('study_get_settings_config')));
+    applySettingsConfig(settingsConfig);
+    setSettingsConfigStatus('ui.status.config_loaded', 'Settings loaded');
+  } catch (error) {
+    setSettingsConfigStatus('ui.status.config_load_failed', 'Could not load settings');
+  } finally {
+    settingsConfigLoading = false;
+  }
+}
+
+function collectSettingsConfig() {
+  const next = cloneConfig(settingsConfig);
+  const study = ensureConfigSection(next, 'study');
+  const ocr = ensureConfigSection(next, 'ocr_reader');
+  const llm = ensureConfigSection(next, 'llm');
+  study.default_mode = settingsDefaultMode ? settingsDefaultMode.value : 'companion';
+  ocr.enabled = settingsOcrEnabled ? settingsOcrEnabled.checked : true;
+  ocr.languages = settingsOcrLanguages ? settingsOcrLanguages.value.trim() || 'chi_sim+jpn+eng' : 'chi_sim+jpn+eng';
+  llm.llm_call_timeout_seconds = Math.max(1, Math.min(3600, Math.round(Number(settingsLlmTimeout?.value) || 30)));
+  return next;
+}
+
+async function saveSettingsConfig() {
+  if (!settingsConfig) await loadSettingsConfig({ force: true });
+  if (!settingsConfig) {
+    setSettingsConfigStatus('ui.status.config_load_failed', 'Could not load settings');
+    return;
+  }
+  const next = collectSettingsConfig();
+  if (settingsSaveBtn) settingsSaveBtn.disabled = true;
+  setSettingsConfigStatus('ui.status.config_saving', 'Saving settings...');
+  try {
+    settingsConfig = cloneConfig(getConfigRoot(await callPlugin('study_update_settings_config', { config: next })) || next);
+    applySettingsConfig(settingsConfig);
+    setSettingsConfigStatus('ui.status.config_saved', 'Saved');
+  } catch (error) {
+    setSettingsConfigStatus('ui.status.config_save_failed', 'Could not save settings');
+  } finally {
+    if (settingsSaveBtn) settingsSaveBtn.disabled = false;
   }
 }
 
@@ -442,6 +964,42 @@ async function setMode(mode) {
   await refreshStatus({ updateReply: false });
 }
 
+async function requestModeChange(mode) {
+  const requestedMode = String(mode || 'companion');
+  if (modeChangeInFlight || requestedMode === currentMode) {
+    setModeButtons(currentMode, false);
+    return;
+  }
+  modeChangeInFlight = true;
+  setModeButtons(currentMode, true);
+  try {
+    await setMode(requestedMode);
+  } finally {
+    modeChangeInFlight = false;
+    setModeButtons(currentMode, false);
+  }
+}
+
+function isTextEntryTarget(target) {
+  const tag = target && target.tagName ? String(target.tagName).toLowerCase() : '';
+  return tag === 'input' || tag === 'textarea' || tag === 'select' || Boolean(target?.isContentEditable);
+}
+
+function handleModeShortcut(event) {
+  if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || isTextEntryTarget(event.target)) {
+    return;
+  }
+  const mode = MODE_SHORTCUTS[String(event.key)];
+  if (!mode) {
+    return;
+  }
+  event.preventDefault();
+  requestModeChange(mode).catch((error) => {
+    setStatus(t('ui.status.error', 'Error'));
+    setReply(formatPluginError(error));
+  });
+}
+
 function bindButton(button, handler) {
   if (!button) {
     return;
@@ -473,6 +1031,49 @@ async function bootstrap() {
   bindButton(summarizeBtn, summarizeSession);
   bindButton(memoryRefreshBtn, refreshMemoryDeck);
   bindButton(memoryAddBtn, saveMemoryCard);
+  setModeButtons(currentMode, false);
+  document.addEventListener('keydown', handleModeShortcut);
+  if (modeSelect) {
+    modeSelect.addEventListener('change', () => {
+      requestModeChange(modeSelect.value).catch((error) => {
+        setStatus(t('ui.status.error', 'Error'));
+        setReply(formatPluginError(error));
+      });
+    });
+  }
+  if (firstRunSkipBtn) {
+    firstRunSkipBtn.addEventListener('click', () => {
+      firstRunDismissed = true;
+      if (firstRunGuide) {
+        firstRunGuide.dataset.dismissed = 'true';
+      }
+      renderFirstRunGuide(lastStatusPayload);
+    });
+  }
+  if (advancedToggleBtn) {
+    advancedToggleBtn.addEventListener('click', () => {
+      setAdvancedSettingsOpen(!advancedSettingsOpen);
+    });
+  }
+  if (settingsConfigForm) {
+    settingsConfigForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      saveSettingsConfig();
+    });
+  }
+  settingsTabs.forEach((tab) => {
+    tab.addEventListener('click', () => {
+      setSettingsTab(tab.getAttribute('data-settings-tab'));
+    });
+    tab.addEventListener('keydown', handleSettingsTabKeydown);
+  });
+  surfaceOpenButtons.forEach((button) => {
+    button.addEventListener('click', () => {
+      openHostedSurface(button.getAttribute('data-open-surface'));
+    });
+  });
+  setSettingsTab('study');
+  window.addEventListener('message', handleStudySurfaceMessage);
   memoryReviewButtons.forEach((button) => {
     button.addEventListener('click', async () => {
       if (button.disabled) {
@@ -494,21 +1095,15 @@ async function bootstrap() {
     });
   });
   modeButtons.forEach((button) => {
-    button.addEventListener('click', async () => {
+    button.addEventListener('click', () => {
       if (button.disabled) {
         return;
       }
-      try {
-        modeButtons.forEach((candidate) => {
-          candidate.disabled = true;
-        });
-        await setMode(button.getAttribute('data-mode') || 'companion');
-      } catch (error) {
+      requestModeChange(button.getAttribute('data-mode') || 'companion').catch((error) => {
         setStatus(t('ui.status.error', 'Error'));
         setReply(formatPluginError(error));
-      } finally {
         setModeButtons(currentMode, false);
-      }
+      });
     });
   });
   await refreshStatus();
