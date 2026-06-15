@@ -18,9 +18,13 @@ This is the dual of :mod:`utils.native_voice_registry`. Where that registry
 serves providers whose TTS rides on an LLM core's built-in voices (Gemini,
 StepFun, Grok, MiMo), this one serves *special* TTS providers: ones the user
 points at an explicit endpoint and configures with their own URL / model /
-voice / api key, independent of the conversation core. Members today are
-``vllm_omni`` (remote or local vLLM-Omni WebSocket TTS), ``gptsovits`` (local
-GPT-SoVITS) and ``local_cosyvoice`` (local CosyVoice).
+voice / api key, independent of the conversation core. Members registered today
+are ``vllm_omni`` (remote or local vLLM-Omni WebSocket TTS) and ``gptsovits``
+(local GPT-SoVITS) — exactly the two providers ``get_tts_worker`` used to route
+with inline special-cases. ``local_cosyvoice`` is a conceptually similar local
+provider but is intentionally NOT registered here: it is not part of
+``get_tts_worker``'s selection path (it is dispatched through a separate call
+site), so it is out of scope for this selection registry.
 
 Why a registry at all
 ---------------------

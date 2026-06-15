@@ -5095,7 +5095,10 @@ def _vllm_omni_resolve(core_config, cm):
 
 
 def _gptsovits_is_selected(core_config, cm) -> bool:
-    if not core_config.get('GPTSOVITS_ENABLED', False):
+    # config_manager 写 snapshot 时已 _as_bool 规整 GPTSOVITS_ENABLED，这里再包一层
+    # 防御性对齐隔壁 ENABLE_CUSTOM_API / core.py，避免直接传入未规整 dict 时字符串
+    # "false"/"0" 被当真值误抢 GPT-SoVITS。
+    if not _as_bool(core_config.get('GPTSOVITS_ENABLED'), False):
         return False
     try:
         tts_config = cm.get_model_api_config('tts_custom')

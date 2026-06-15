@@ -1116,9 +1116,8 @@ function onCustomModelProviderChange(modelType) {
             }
             urlInput.removeAttribute('readonly');
         }
-        const modelIdInput2 = document.getElementById(`${modelType}ModelId`);
-        if (modelIdInput2 && (!_isLoadingSavedConfig || !modelIdInput2.value || !modelIdInput2.value.trim())) {
-            modelIdInput2.value = pInfo.tts_default_model || _spMeta.default_model || '';
+        if (modelIdInput && (!_isLoadingSavedConfig || !modelIdInput.value || !modelIdInput.value.trim())) {
+            modelIdInput.value = pInfo.tts_default_model || _spMeta.default_model || '';
         }
         if (voiceInput && (!_isLoadingSavedConfig || !voiceInput.value || !voiceInput.value.trim())) {
             voiceInput.value = pInfo.tts_default_voice || _spMeta.default_voice || '';
