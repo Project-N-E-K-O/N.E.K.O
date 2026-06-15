@@ -2151,7 +2151,7 @@
         "avatarDropPartial": "Read {{accepted}} item(s), skipped {{rejected}}",
         "avatarDropNoSupportedItems": "These files cannot be read yet",
         "avatarDropReadFailed": "Failed to read files",
-        "avatarDropUserMessage": "Handed over: {{names}}",
+        "avatarDropUserMessage": "Handed-over items: {{names}}",
         "screenshotAdded": "Screenshot added, click send to send together",
         "screenshotFailed": "Screenshot failed",
         "screenshotCancelled": "User cancelled screenshot",

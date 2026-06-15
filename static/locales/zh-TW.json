@@ -2151,7 +2151,7 @@
         "avatarDropPartial": "已讀取 {{accepted}} 個，{{rejected}} 個未接收",
         "avatarDropNoSupportedItems": "這些文件暫時無法讀取",
         "avatarDropReadFailed": "讀取文件失敗",
-        "avatarDropUserMessage": "遞給貓娘的資料：{{names}}",
+        "avatarDropUserMessage": "遞給貓娘的內容：{{names}}",
         "screenshotAdded": "截圖已添加，點擊發送一起發送",
         "screenshotFailed": "截圖失敗",
         "screenshotCancelled": "用戶取消了截圖",

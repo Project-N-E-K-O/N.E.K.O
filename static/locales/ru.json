@@ -2151,7 +2151,7 @@
         "avatarDropPartial": "Прочитано: {{accepted}}, пропущено: {{rejected}}",
         "avatarDropNoSupportedItems": "Эти файлы пока нельзя прочитать",
         "avatarDropReadFailed": "Не удалось прочитать файлы",
-        "avatarDropUserMessage": "Передано: {{names}}",
+        "avatarDropUserMessage": "Переданные элементы: {{names}}",
         "screenshotAdded": "Скриншот добавлен, нажмите отправить",
         "screenshotFailed": "Ошибка скриншота",
         "screenshotCancelled": "Скриншот отменён пользователем",

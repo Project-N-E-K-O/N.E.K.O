@@ -112,6 +112,8 @@ def test_avatar_drop_payload_sends_full_prompt_but_records_memory_summary_only()
     assert "item.documentType" in build_prompt
     assert "item.type === 'image'" in build_prompt
     assert "item.animated" in build_prompt
+    assert "用户刚把以下内容递给你" in build_prompt
+    assert "资料" not in build_prompt
     assert "直接承认这些文件现在读不了" in build_prompt
     assert "这些文件也被递给你了，但现在读不了" in build_prompt
     assert "读不了的文件" in build_prompt

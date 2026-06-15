@@ -2151,7 +2151,7 @@
         "avatarDropPartial": "{{accepted}} 件を読み取り、{{rejected}} 件をスキップしました",
         "avatarDropNoSupportedItems": "これらのファイルはまだ読み取れません",
         "avatarDropReadFailed": "ファイルの読み取りに失敗しました",
-        "avatarDropUserMessage": "渡した資料: {{names}}",
+        "avatarDropUserMessage": "渡したもの: {{names}}",
         "screenshotAdded": "スクリーンショットを追加しました。送信をクリックして一緒に送信",
         "screenshotFailed": "スクリーンショット失敗",
         "screenshotCancelled": "ユーザーがスクリーンショットをキャンセルしました",

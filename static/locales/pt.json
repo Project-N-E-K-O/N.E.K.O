@@ -2151,7 +2151,7 @@
         "avatarDropPartial": "{{accepted}} item(ns) lidos, {{rejected}} ignorados",
         "avatarDropNoSupportedItems": "Ainda não é possível ler esses arquivos",
         "avatarDropReadFailed": "Falha ao ler arquivos",
-        "avatarDropUserMessage": "Entregue: {{names}}",
+        "avatarDropUserMessage": "Itens entregues: {{names}}",
         "screenshotAdded": "Captura de tela adicionada, clique em enviar para enviar juntos",
         "screenshotFailed": "Falha na captura de tela",
         "screenshotCancelled": "Captura de tela cancelada pelo usuário",
