@@ -11,6 +11,7 @@ _DEFAULT_TOOL_NAMES = frozenset({"recall_memory"})
 _SEED_OPEN_RE = re.compile(r"<\s*seed\s*:\s*tool_call\b[^>]*>|(?<!/)\bseed\s*:\s*tool_call\b", re.IGNORECASE)
 _SEED_CLOSE_RE = re.compile(r"<\s*/\s*seed\s*:\s*tool_call\s*>", re.IGNORECASE)
 _PARAMETER_RE = re.compile(r"<\s*parameter\b[^>]*\bname\s*=", re.IGNORECASE)
+_PARAMETER_CLOSE_RE = re.compile(r"<\s*/\s*parameter\s*>", re.IGNORECASE)
 _FUNCTION_CLOSE_RE = re.compile(r"<\s*/\s*function\s*>", re.IGNORECASE)
 _FUNCTION_NAME_OPEN_TAIL_RE = re.compile(r"<\s*function\b[^>]*>\s*<\s*name\s*>\s*$", re.IGNORECASE)
 _NAME_CLOSE_RE = re.compile(r"</\s*name\s*>", re.IGNORECASE)
@@ -35,6 +36,7 @@ class ToolLeakFilter:
         self._suppressed_chars = 0
         self._suppression_pattern = ""
         self._cross_chunk = False
+        self._structured_parameter_closed = False
         self._in_code_fence = False
         self._fence_marker = ""
         self._fence_line_buffer = ""
@@ -53,15 +55,19 @@ class ToolLeakFilter:
             if self._suppressing:
                 close_match = self._suppression_close_match(text)
                 if close_match:
+                    self._track_suppressed_structure(text[: close_match.end()])
                     self._suppressed_chars += close_match.end()
                     text = text[close_match.end():]
                     event = self._finish_event()
                     continue
                 keep_tail = self._suppression_close_tail_len(text)
                 if keep_tail > 0:
-                    self._suppressed_chars += len(text) - keep_tail
+                    consumed = text[:-keep_tail]
+                    self._track_suppressed_structure(consumed)
+                    self._suppressed_chars += len(consumed)
                     self._pending = text[-keep_tail:]
                 else:
+                    self._track_suppressed_structure(text)
                     self._suppressed_chars += len(text)
                 text = ""
                 break
@@ -83,6 +89,7 @@ class ToolLeakFilter:
             self._suppressed_chars = 0
             self._suppression_pattern = pattern
             self._cross_chunk = had_pending
+            self._structured_parameter_closed = False
 
         return "".join(output), event
 
@@ -102,6 +109,7 @@ class ToolLeakFilter:
         self._suppressed_chars = 0
         self._suppression_pattern = ""
         self._cross_chunk = False
+        self._structured_parameter_closed = False
         self._in_code_fence = False
         self._fence_marker = ""
         self._fence_line_buffer = ""
@@ -117,6 +125,7 @@ class ToolLeakFilter:
         self._suppressed_chars = 0
         self._suppression_pattern = ""
         self._cross_chunk = False
+        self._structured_parameter_closed = False
         return event
 
     def _suppression_close_match(self, text: str) -> re.Match[str] | None:
@@ -126,19 +135,34 @@ class ToolLeakFilter:
         seed_close = _SEED_CLOSE_RE.search(text)
         function_close = _FUNCTION_CLOSE_RE.search(text)
         if function_close is None:
-            return seed_close
+            if seed_close is not None and self._structured_seed_close_can_finish(text, seed_close):
+                return seed_close
+            return None
 
-        trailing_seed_close = _SEED_CLOSE_RE.match(text, function_close.end())
+        after_function = self._consume_whitespace(text, function_close.end())
+        trailing_seed_close = _SEED_CLOSE_RE.match(text, after_function)
         if trailing_seed_close is not None:
             return trailing_seed_close
 
-        trailing = text[function_close.end():]
+        trailing = text[after_function:]
         if not trailing:
             return None
-        if trailing and self._is_seed_close_prefix(trailing):
+        if self._is_seed_close_prefix(trailing):
             return None
 
         return function_close
+
+    def _track_suppressed_structure(self, text: str) -> None:
+        if self._suppression_pattern != "structured_tool_call" or self._structured_parameter_closed:
+            return
+        if _PARAMETER_CLOSE_RE.search(text):
+            self._structured_parameter_closed = True
+
+    def _structured_seed_close_can_finish(self, text: str, seed_close: re.Match[str]) -> bool:
+        return (
+            self._structured_parameter_closed
+            or _PARAMETER_CLOSE_RE.search(text[: seed_close.start()]) is not None
+        )
 
     def _suppression_close_tail_len(self, text: str) -> int:
         min_start = max(0, len(text) - self._max_tail)
