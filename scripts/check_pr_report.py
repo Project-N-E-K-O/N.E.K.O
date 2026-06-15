@@ -14,11 +14,13 @@ REGRESSION_REPORT
     points), so every code change to them must come with a written report.
 
 NO_SPLIT_RATIONALE
-    If the PR changes more than 20 NON-TEST files, the body must carry a
+    If the PR changes more than 20 counted files, the body must carry a
     non-empty no-split-rationale section explaining why it is not split into
-    smaller PRs. Test files (anywhere — under main or under plugin/) do not
-    count toward this limit: a big PR that is mostly test coverage is exactly
-    the kind of PR we do NOT want to discourage from staying in one piece.
+    smaller PRs. New files, i18n locale files, and test files (anywhere —
+    under main or under plugin/) do not count toward this limit: a big PR
+    that is mostly new surface area, locale fan-out, or test coverage is
+    exactly the kind of PR we do NOT want to discourage from staying in one
+    piece.
 
 The check only verifies that a substantive section EXISTS — it cannot judge
 whether the report is any good. Report quality is the reviewer's job; the
@@ -34,7 +36,7 @@ from the ``PR_LABELS`` env var (comma-separated).
 Inputs (all from env, set by the workflow):
     PR_BODY    — the pull request description (markdown)
     PR_LABELS  — comma-separated label names
-Changed files come from ``git diff --name-only <base>...HEAD``.
+Changed files come from ``git diff --name-status <base>...HEAD``.
 
 Exit 1 on any violation, 0 otherwise (2 on git failure).
 
@@ -54,7 +56,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Modules whose every *.py change must ship a regression report.
 WATCHED_PREFIXES = ("app/", "main_logic/", "main_routers/", "memory/")
-# A PR touching more than this many NON-TEST files must justify not splitting.
+# A PR touching more than this many counted files must justify not splitting.
 FILE_COUNT_LIMIT = 20
 
 # Path segments that mark a directory as holding tests (any depth, main or
@@ -65,6 +67,18 @@ _TEST_DIR_PARTS = {"tests", "test", "__tests__"}
 _TEST_FILE_RE = re.compile(
     r"(^test_.+\.py$|.+_test\.py$|.+\.(test|spec)\.[cm]?[jt]sx?$)"
 )
+# Locale files move in lockstep by design; a single user-facing string can
+# touch every supported locale, so they do not count toward FILE_COUNT_LIMIT.
+_I18N_LOCALE_GROUPS = {
+    "static/locales": {
+        "en.json", "es.json", "ja.json", "ko.json",
+        "pt.json", "ru.json", "zh-CN.json", "zh-TW.json",
+    },
+    "frontend/plugin-manager/src/i18n/locales": {
+        "en-US.ts", "es.ts", "ja.ts", "ko.ts",
+        "pt.ts", "ru.ts", "zh-CN.ts", "zh-TW.ts",
+    },
+}
 # Maintainer escape hatch.
 EXEMPT_LABEL = "report-exempt"
 
@@ -111,19 +125,25 @@ def _git(*args: str) -> str:
     return result.stdout
 
 
-def _changed_files(base: str) -> list[str]:
-    """All files changed in HEAD relative to the merge-base with `base`.
-    Posix-style repo-relative paths; deletions are included (a deletion is a
-    change for the purpose of the file-count rule).
+def _changed_file_statuses(base: str) -> list[tuple[str, str]]:
+    """All file changes in HEAD relative to the merge-base with `base`.
+    Returns (status, posix-style path) pairs. Deletions are included, but
+    additions can be excluded from the no-split count by the caller.
 
     ``--no-renames`` disables rename collapsing on purpose: a move OUT of a
     watched module (e.g. ``memory/foo.py`` -> ``tools/foo.py``) would otherwise
     report only the destination path and slip past the watched-prefix check.
     With renames split into delete(old) + add(new), the old watched path still
-    shows up, and a bulk rename counts both ends toward the file-count rule
-    (pure renames are the documented `report-exempt` case)."""
-    out = _git("diff", "--no-renames", "--name-only", f"{base}...HEAD")
-    return [ln.strip().replace("\\", "/") for ln in out.splitlines() if ln.strip()]
+    shows up."""
+    out = _git("diff", "--no-renames", "--name-status", "-z", f"{base}...HEAD")
+    fields = out.split("\0")
+    changes: list[tuple[str, str]] = []
+    for i in range(0, len(fields) - 1, 2):
+        status = fields[i]
+        path = fields[i + 1]
+        if status and path:
+            changes.append((status[:1], path.replace("\\", "/")))
+    return changes
 
 
 def _is_test_file(path: str) -> bool:
@@ -135,6 +155,25 @@ def _is_test_file(path: str) -> bool:
     if any(p in _TEST_DIR_PARTS for p in parts[:-1]):
         return True
     return _TEST_FILE_RE.match(parts[-1]) is not None
+
+
+def _is_i18n_locale_file(path: str) -> bool:
+    """True for locale files that are expected to move as an 8-file group."""
+    for locale_dir, files in _I18N_LOCALE_GROUPS.items():
+        prefix = f"{locale_dir}/"
+        if path.startswith(prefix):
+            name = path[len(prefix):]
+            return "/" not in name and name in files
+    return False
+
+
+def _counts_for_no_split(status: str, path: str) -> bool:
+    """Whether this changed file counts toward the no-split threshold."""
+    return (
+        status != "A"
+        and not _is_test_file(path)
+        and not _is_i18n_locale_file(path)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -217,37 +256,42 @@ def main() -> int:
         return 0
 
     body = os.environ.get("PR_BODY", "")
-    changed = _changed_files(args.base)
+    changed_entries = _changed_file_statuses(args.base)
+    changed = [path for _, path in changed_entries]
     watched = [
         f for f in changed
         if f.endswith(".py") and any(f.startswith(p) for p in WATCHED_PREFIXES)
     ]
-    # Test files (main or plugin/) are exempt from the no-split count.
-    non_test = [f for f in changed if not _is_test_file(f)]
+    counted = [
+        path for status, path in changed_entries
+        if _counts_for_no_split(status, path)
+    ]
 
     violations: list[tuple[str, str]] = []
 
     if watched and not _is_filled(_section_body(body, REGRESSION_KEYWORD)):
         sample = ", ".join(watched[:5]) + (" …" if len(watched) > 5 else "")
+        watched_dirs = " | ".join(WATCHED_PREFIXES)
         violations.append((
             REGRESSION_REPORT,
-            f"This PR changes {len(watched)} file(s) under app/ | main_logic/ | "
-            f"memory/ ({sample}) but the PR body has no filled-in "
+            f"This PR changes {len(watched)} file(s) under {watched_dirs} "
+            f"({sample}) but the PR body has no filled-in "
             f"'{REGRESSION_KEYWORD}' section. Document the change, its "
             f"rationale/necessity, before-and-after behaviour, and regressions.",
         ))
 
-    if len(non_test) > FILE_COUNT_LIMIT and not _is_filled(
+    if len(counted) > FILE_COUNT_LIMIT and not _is_filled(
         _section_body(body, NO_SPLIT_KEYWORD)
     ):
-        test_note = (
-            f" ({len(changed) - len(non_test)} test file(s) excluded)"
-            if len(non_test) != len(changed) else ""
+        excluded = len(changed) - len(counted)
+        excluded_note = (
+            f" ({excluded} new/test/i18n locale file(s) excluded)"
+            if excluded else ""
         )
         violations.append((
             NO_SPLIT_RATIONALE,
-            f"This PR changes {len(non_test)} non-test files "
-            f"(> {FILE_COUNT_LIMIT}){test_note} but the PR body has no filled-in "
+            f"This PR changes {len(counted)} counted files "
+            f"(> {FILE_COUNT_LIMIT}){excluded_note} but the PR body has no filled-in "
             f"'{NO_SPLIT_KEYWORD}' section. Explain why this is not split into "
             f"smaller PRs.",
         ))
@@ -255,7 +299,7 @@ def main() -> int:
     if not violations:
         print(
             f"[pr-report] OK — {len(changed)} file(s) changed "
-            f"({len(non_test)} non-test), {len(watched)} under watched modules."
+            f"({len(counted)} counted), {len(watched)} under watched modules."
         )
         return 0
 

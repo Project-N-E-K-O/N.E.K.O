@@ -21,13 +21,13 @@ trigger: always_on
 两条硬性规范，CI 在 PR 上校验（`scripts/check_pr_report.py`，由独立 workflow `.github/workflows/pr-report-gate.yml` 驱动），报告写在 **PR 描述**里（模板 `.github/pull_request_template.md`）：
 
 1. **回归报告**：凡是改动了 `app/`、`main_logic/`、`memory/` 任一目录下的 `*.py`，PR 描述必须有非空的「回归报告」一节，逐项说明——**改动**、**理由 / 必要性**、**前后表现对比**、**潜在回归点**。这三个是项目最高风险模块（会话编排、记忆管线、服务入口）。
-2. **不拆分理由**：单个 PR 改动**非测试**文件 > 20 个，PR 描述必须有非空的「不拆分理由」一节，说明为什么不拆成更小的 PR。测试文件（主目录或 `plugin/` 下，按目录 `tests/`、`__tests__/` 或 `test_*.py` / `*_test.py` / `*.test.*` / `*.spec.*` 命名识别）不计入。
+2. **不拆分理由**：单个 PR 改动计入上限的文件 > 20 个，PR 描述必须有非空的「不拆分理由」一节，说明为什么不拆成更小的 PR。新增文件、i18n locale 文件（`static/locales/` 与 plugin-manager locale 组）和测试文件（主目录或 `plugin/` 下，按目录 `tests/`、`__tests__/` 或 `test_*.py` / `*_test.py` / `*.test.*` / `*.spec.*` 命名识别）不计入。
 
 要点：
 - CI 只验「区块存在且非空」，**判不了报告质量**——质量由维护者 review 兜底（`app/`、`main_logic/`、`memory/` 经 `.github/CODEOWNERS` 强制指派维护者评审）。所以写报告别糊弄占位符（`不适用` / `无` / `TBD` 在触发条件成立时会被判失败）。
 - 未触发的那一节写「不适用」或删除即可。
 - 维护者可对纯重命名、批量格式化、生成代码等打 `report-exempt` 标签豁免整条门禁。
-- AI agent 在改这三个模块或一次性铺开 >20 个非测试文件时，**主动**在 PR 描述里产出对应报告，不要等门禁红了再补。
+- AI agent 在改这三个模块或一次性铺开 >20 个计入上限的文件时，**主动**在 PR 描述里产出对应报告，不要等门禁红了再补。
 
 ## API URL 末尾不带斜杠（前后端硬性要求）
 
