@@ -65,6 +65,7 @@ from utils.native_voice_registry import (
     make_native_tts_resolver,
     register_tts_worker_resolver,
 )
+from utils import special_tts_registry as _special_tts
 from utils.stepfun_tts_voices import (
     STEPFUN_TTS_DEFAULT_VOICE,
     get_stepfun_tts_default_voice,
@@ -4683,48 +4684,18 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
 
     tts_provider = str(core_cfg.get('TTS_PROVIDER') or core_cfg.get('ttsProvider') or '').strip().lower()
     assist_api_type = str(core_cfg.get('assistApi') or '').strip().lower()
-    try:
-        _raw_cfg_for_route = cm.load_json_config('core_config.json', {})
-        _tts_provider_sel = (_raw_cfg_for_route.get('ttsModelProvider') or '').strip()
-    except Exception as _e:
-        _raw_cfg_for_route = {}
-        _tts_provider_sel = ''
-        logger.warning(f"读取 ttsModelProvider 失败，跳过 vllm_omni 优先检查: {_e}")
 
-    _tts_config_for_route = None
-    try:
-        _tts_config_for_route = cm.get_model_api_config('tts_custom')
-        if _tts_config_for_route.get('is_custom') and core_cfg.get('GPTSOVITS_ENABLED', False):
-            return gptsovits_tts_worker, None, 'gptsovits'
-    except Exception as e:
-        logger.warning(f'TTS调度器检查报告:{e}')
-
-    # 用户在 TTS 下拉里显式选 vllm_omni 时，应优先于克隆音色 / assistApi
-    # fallback；但 GPT-SoVITS enabled 是显式本地 TTS 开关，仍在上方优先。
-    if _as_bool(core_cfg.get('ENABLE_CUSTOM_API'), False) and _tts_provider_sel == 'vllm_omni':
-        vllm_url = (_raw_cfg_for_route.get('ttsModelUrl') or '').strip() or VLLM_OMNI_DEFAULT_BASE_URL
-        vllm_model = (_raw_cfg_for_route.get('ttsModelId') or '').strip() \
-            or VLLM_OMNI_DEFAULT_MODEL
-        vllm_voice = (_raw_cfg_for_route.get('ttsVoiceId') or '').strip() \
-            or 'default'
-        vllm_key = (_raw_cfg_for_route.get('ttsModelApiKey') or '')
-        # 修复 PR #1764 review 第三轮 #3（CodeRabbit Major）：跨 provider 凭证泄漏防护
-        # 若用户没为 vllm_omni 单独配置 key，必须返回空字符串而非 None，
-        # 否则 core.py 中 `api_key = api_key_override or tts_config['api_key']`
-        # 会 fallback 到默认 TTS provider（Qwen/Gemini/Step/OpenAI/Grok）的 key，
-        # 进而把别家 provider 的凭证 Bearer 发送到用户配置的 vLLM-Omni endpoint。
-        # 用空字符串 + core.py 中 provider_key == 'vllm_omni' 的特判共同保证：
-        # vllm_omni 显式无 key 时不允许通用 fallback，本地 vLLM 服务通常无需 Auth。
-        logger.info(
-            "[get_tts_worker] 用户选择 vllm_omni provider，绕过克隆/原生 TTS 路由 "
-            "(core_api_type=%s, has_custom_voice=%s, key_present=%s)",
-            core_api_type, has_custom_voice, bool(vllm_key),
-        )
-        worker = partial(
-            vllm_omni_tts_worker,
-            base_url=vllm_url, model=vllm_model, voice=vllm_voice,
-        )
-        return worker, vllm_key, 'vllm_omni'
+    # 特异 TTS provider（用户显式配置端点的 vllm_omni / 本地 GPT-SoVITS 等）的
+    # 选择与 worker 解析已收敛到 utils.special_tts_registry，按 priority 顺序匹配：
+    # GPT-SoVITS（本地显式开关）优先于 vLLM-Omni，二者都优先于克隆音色 /
+    # assistApi fallback / 原生 TTS（沿用原内联顺序）。新增此类 provider 只需在
+    # 本文件末尾 register 一条，不再在此处插内联特判。凭证防泄漏（vllm_omni 无 key
+    # 时返回空串而非 None，避免 fallback 到别家 provider 的 key）由各 adapter 内部
+    # 保证，配合 core.resolve_tts_api_key 的 provider_key == 'vllm_omni' 特判。
+    special = _special_tts.resolve_selected(core_cfg, cm)
+    if special is not None:
+        logger.info("[get_tts_worker] 命中特异 TTS provider: %s", special[2])
+        return special
 
     # voice_meta 提到 outer scope：cosyvoice 分支也需要它来跟"已存 clone"区分
     # "xAI 自定义 voice / 未知 voice"。MiniMax / ElevenLabs 分支保持嵌套以保留现有日志。
@@ -4800,16 +4771,8 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
         if native is not None:
             return native
 
-    try:
-        tts_config = cm.get_model_api_config('tts_custom')
-        base_url = tts_config.get('base_url') or ''
-
-        if tts_config.get('is_custom'):
-            gsv_enabled = core_cfg.get('GPTSOVITS_ENABLED', False)
-            if gsv_enabled:
-                return gptsovits_tts_worker, None, 'gptsovits'
-    except Exception as e:
-        logger.warning(f'TTS调度器检查报告:{e}')
+    # GPT-SoVITS（is_custom + GPTSOVITS_ENABLED）已由顶部 special_tts_registry
+    # 以相同 gate 优先返回，此处不再重复判定（原 fallthrough 分支已并入注册表）。
 
     # 如果有自定义克隆音色，使用 CosyVoice（阿里云）
     # 必须同时有有效的 voice_id 且不是免费预设音色，否则 fallthrough 到默认 TTS
@@ -5085,3 +5048,84 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
     except Exception as e:
         logger.error(f"Local CosyVoice Worker 崩溃: {e}")
         response_queue.put(("__ready__", False))
+
+
+# ─── 特异 TTS provider 注册（与 utils.special_tts_registry 对偶）────────────
+#
+# 在所有 worker 定义之后注册，避免元数据模块过早拉入 soxr/websockets 等重依赖
+# （与 native_voice_registry 的两层注册同源）。各 adapter 精确复刻
+# get_tts_worker 当前对应分支的读取语义，阶段 1 仅注册、不改 dispatch，保证
+# 零行为变化；阶段 2 再把 get_tts_worker 的内联特判换成 resolve_selected。
+#
+# vllm_omni：从原始 core_config.json 读 ttsModelProvider / ttsModelUrl /
+#   ttsModelId / ttsVoiceId / ttsModelApiKey。必须读原始 json 而非 snapshot —
+#   ttsModelApiKey 不进 snapshot（见 config_manager.py 的凭证字段说明），且
+#   get_tts_worker 历史上整段都走 load_json_config，复刻以保字段一致。
+# gptsovits：走 tts_custom 槽位的 is_custom + GPTSOVITS_ENABLED 开关，与
+#   get_tts_worker 顶部的早返回分支同源；优先级高于 vllm_omni（沿用原顺序）。
+
+
+def _vllm_omni_is_selected(core_config, cm) -> bool:
+    if not _as_bool(core_config.get('ENABLE_CUSTOM_API'), False):
+        return False
+    try:
+        raw = cm.load_json_config('core_config.json', {})
+    except Exception:
+        return False
+    return (raw.get('ttsModelProvider') or '').strip() == 'vllm_omni'
+
+
+def _vllm_omni_resolve(core_config, cm):
+    try:
+        raw = cm.load_json_config('core_config.json', {})
+    except Exception:
+        raw = {}
+    vllm_url = (raw.get('ttsModelUrl') or '').strip() or VLLM_OMNI_DEFAULT_BASE_URL
+    vllm_model = (raw.get('ttsModelId') or '').strip() or VLLM_OMNI_DEFAULT_MODEL
+    vllm_voice = (raw.get('ttsVoiceId') or '').strip() or 'default'
+    # 凭证防泄漏：无 key 时返回空字符串而非 None，配合 core.resolve_tts_api_key
+    # 的 provider_key=='vllm_omni' 特判，禁止 fallback 到别家 provider 的 key
+    # （见 get_tts_worker 原注释 / PR #1764 review 第三轮 #3）。
+    vllm_key = (raw.get('ttsModelApiKey') or '')
+    worker = partial(
+        vllm_omni_tts_worker,
+        base_url=vllm_url, model=vllm_model, voice=vllm_voice,
+    )
+    return worker, vllm_key, 'vllm_omni'
+
+
+def _gptsovits_is_selected(core_config, cm) -> bool:
+    if not core_config.get('GPTSOVITS_ENABLED', False):
+        return False
+    try:
+        tts_config = cm.get_model_api_config('tts_custom')
+    except Exception:
+        return False
+    return bool(tts_config.get('is_custom'))
+
+
+def _gptsovits_resolve(core_config, cm):
+    return gptsovits_tts_worker, None, 'gptsovits'
+
+
+_special_tts.register(_special_tts.SpecialTTSProvider(
+    key='gptsovits',
+    priority=10,
+    is_selected=_gptsovits_is_selected,
+    resolve=_gptsovits_resolve,
+    probe_kind='local_http',
+))
+
+_special_tts.register(_special_tts.SpecialTTSProvider(
+    key='vllm_omni',
+    priority=20,
+    is_selected=_vllm_omni_is_selected,
+    resolve=_vllm_omni_resolve,
+    default_url=VLLM_OMNI_DEFAULT_BASE_URL,
+    default_model=VLLM_OMNI_DEFAULT_MODEL,
+    default_voice='default',
+    editable_endpoint=True,
+    probe_kind='ws_handshake',
+    probe_sub_type='vllm_omni_tts',
+    probe_ws_path='/audio/speech/stream',
+))
