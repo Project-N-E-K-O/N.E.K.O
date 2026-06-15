@@ -47,8 +47,12 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
+from utils.logger_config import get_module_logger
+
 if TYPE_CHECKING:
     from utils.config_manager import ConfigManager
+
+logger = get_module_logger(__name__, "Main")
 
 
 # A voice source — where the actual voice identity comes from. Providers stack
@@ -158,6 +162,12 @@ def resolve_selected(
         try:
             selected = provider.is_selected(core_config, cm)
         except Exception:
+            # is_selected 判定异常不应连带打挂整个 dispatch，跳过该 provider 继续；
+            # 但静默会掩盖配置/适配器 bug，至少留一条带堆栈的可观测日志。
+            logger.warning(
+                "TTS provider %r is_selected 判定异常，跳过该 provider", provider.key,
+                exc_info=True,
+            )
             selected = False
         if selected:
             return provider.resolve(core_config, cm)
