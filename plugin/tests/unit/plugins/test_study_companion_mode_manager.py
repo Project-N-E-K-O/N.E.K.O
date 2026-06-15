@@ -97,3 +97,40 @@ def test_failed_rapid_mode_switch_attempts_count_toward_lock() -> None:
     assert third["lock_reason"] == "mode_lock"
     assert third["lock_until"] > 1015.0
     assert manager.mode_lock_until == third["lock_until"]
+
+
+def test_explicit_ui_mode_switch_bypasses_stale_mode_lock() -> None:
+    mode_manager = _load_mode_manager()
+    manager = mode_manager.ModeManager(
+        current_mode=mode_manager.MODE_COMPANION,
+        mode_started_at=1000.0,
+        mode_lock_until=1200.0,
+    )
+
+    result = manager.switch_to(mode_manager.MODE_TEACHING, "ui", now=1010.0)
+
+    assert result["changed"] is True
+    assert result["new_mode"] == mode_manager.MODE_TEACHING
+    assert result["locked"] is False
+    assert result["lock_reason"] == ""
+    assert result["lock_until"] == 0.0
+    assert manager.mode_lock_until == 0.0
+
+
+def test_explicit_intent_mode_switch_bypasses_minimum_dwell() -> None:
+    mode_manager = _load_mode_manager()
+    manager = mode_manager.ModeManager(
+        current_mode=mode_manager.MODE_INTERACTIVE,
+        mode_started_at=1000.0,
+    )
+
+    result = manager.switch_to(
+        mode_manager.MODE_TEACHING,
+        "intent:teaching mode",
+        now=1010.0,
+    )
+
+    assert result["changed"] is True
+    assert result["new_mode"] == mode_manager.MODE_TEACHING
+    assert result["locked"] is False
+    assert result["lock_until"] == 0.0

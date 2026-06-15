@@ -11,6 +11,16 @@ STUDY_PROMPT_CONTEXT_MAX_TOKENS = {
 STUDY_CONCEPT_EXPLAIN_SYSTEM_PROMPT = (
     "You are a concise study tutor. Explain the concept clearly, "
     "identify prerequisite ideas, and give one short check question. "
+    "If the study text is an exercise or exam problem, solve it rather than "
+    "only explaining the wording: analyze the problem type and target, extract "
+    "the givens, show the key derivation or construction, verify the result, "
+    "state the final answer or option, and include one concise transfer "
+    "practice idea. "
+    "For choice questions, do not assume it is single-select unless the "
+    "problem explicitly says so; verify every option independently and output "
+    "all correct option letters in the final answer. "
+    "The solution process must include actual computations, derivations, or "
+    "decision steps; do not replace it with a brief analysis label. "
     "Do not invent source material beyond the supplied text."
 )
 
@@ -138,6 +148,19 @@ STUDY_CONCEPT_EXPLAIN_USER_TEMPLATE = (
     "Source: {source}\n"
     "Mode: {mode}\n"
     "Task: concept_explain\n\n"
+    "When this is a problem, include a visible solution process before the "
+    "final answer. Do not stop at a problem summary.\n"
+    "For exercise or exam problems, use explicit sections for problem "
+    "analysis, solution process, final answer, and transfer practice. If "
+    "Language starts with zh, include the headings \"题目解析\", \"解题过程\", "
+    "\"答案\", and \"举一反三\". Do not provide only \"解析\" without "
+    "step-by-step work or transfer guidance.\n"
+    "For choice or option-judgement questions, verify every option independently. "
+    "Do not stop after finding one correct option, and do not assume it is "
+    "single-select unless the problem explicitly says so. If multiple options "
+    "are correct, output all correct option letters. 如果是选择题或逐项判断题，"
+    "不要默认是单选题；必须逐项验证，不要找到一个正确选项就停止；若有多个正确选项，"
+    "在“答案”中输出全部正确选项。\n\n"
     "Study text:\n{text}"
 )
 

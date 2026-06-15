@@ -811,6 +811,18 @@ pre,
   font-weight: 800;
 }
 
+.setting-field-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.setting-field-inline input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  min-height: 18px;
+}
+
 .setting-field input,
 .setting-field select {
   min-height: 38px;
@@ -1043,7 +1055,11 @@ pre,
   overflow-wrap: anywhere;
 }
 
-.study-panel__image-preview {
+.study-panel__image-preview[hidden] {
+  display: none;
+}
+
+.study-panel__image-preview:not([hidden]) {
   position: relative;
   display: inline-flex;
   max-width: 220px;
@@ -1094,11 +1110,13 @@ pre,
   line-height: 1.45;
 }
 
-.study-panel[data-busy="true"] .study-panel__image-preview {
+.study-panel[data-busy="true"] .study-panel__image-preview,
+.main-view[data-busy="true"] .study-panel__image-preview {
   opacity: 0.55;
 }
 
-.study-panel[data-busy="true"] .study-panel__image-remove {
+.study-panel[data-busy="true"] .study-panel__image-remove,
+.main-view[data-busy="true"] .study-panel__image-remove {
   pointer-events: none;
   opacity: 0.4;
 }

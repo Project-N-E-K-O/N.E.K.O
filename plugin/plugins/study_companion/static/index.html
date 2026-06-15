@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <!-- Fallback only for local/Electron loads; meta CSP cannot express dynamic localhost ports or frame-ancestors. -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; object-src 'none'" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self'; base-uri 'self'; object-src 'none'" />
     <title>Study Companion</title>
     <link rel="stylesheet" href="./katex.min.css?v=study-hotfix-20260615v" />
     <link rel="stylesheet" href="./style.css?v=study-hotfix-20260615v" />
@@ -113,6 +113,11 @@
               </div>
               <label class="input-label" for="studyInput" data-i18n="ui.label.text">Text</label>
               <textarea id="studyInput" spellcheck="true" placeholder="Paste a concept, problem statement, or OCR text here." data-i18n-placeholder="ui.placeholder.input"></textarea>
+              <div id="studyInputImagePreview" class="study-panel__image-preview" hidden>
+                <img id="studyInputImage" alt="pasted study context" />
+                <button id="studyInputImageRemove" class="study-panel__image-remove" type="button" aria-label="Remove pasted image">x</button>
+              </div>
+              <div id="studyInputPasteError" class="study-panel__paste-error" role="alert" hidden></div>
               <div class="action-row">
                 <button id="generateQuestionBtn" class="button button-secondary" type="button" data-i18n="ui.button.generate_question">Generate Question</button>
                 <button id="explainBtn" class="button button-primary" type="button" data-i18n="ui.button.explain">Explain</button>
@@ -127,6 +132,11 @@
               <pre id="questionText"></pre>
               <label class="input-label" for="answerInput" data-i18n="ui.label.answer">Answer</label>
               <textarea id="answerInput" spellcheck="true"></textarea>
+              <div id="answerInputImagePreview" class="study-panel__image-preview" hidden>
+                <img id="answerInputImage" alt="pasted answer context" />
+                <button id="answerInputImageRemove" class="study-panel__image-remove" type="button" aria-label="Remove pasted answer image">x</button>
+              </div>
+              <div id="answerInputPasteError" class="study-panel__paste-error" role="alert" hidden></div>
               <div class="action-row">
                 <button id="evaluateAnswerBtn" class="button button-secondary" type="button" data-i18n="ui.button.evaluate_answer">Evaluate Answer</button>
                 <button id="summarizeBtn" class="button button-secondary" type="button" data-i18n="ui.button.summarize_session">Summarize Session</button>
@@ -221,6 +231,11 @@
                     <span data-i18n="ui.settings.llm_timeout.label">LLM timeout (seconds)</span>
                     <input id="settingsLlmTimeout" type="number" min="1" max="3600" step="1" />
                   </label>
+                  <label class="setting-field setting-field-inline">
+                    <input id="settingsLlmVisionEnabled" type="checkbox" aria-describedby="settingsLlmVisionHelp" />
+                    <span data-i18n="ui.settings.llm_vision_enabled.label">Enable image explanation</span>
+                  </label>
+                  <p id="settingsLlmVisionHelp" data-i18n="ui.settings.llm_vision_enabled.help">Allows pasted JPEG/PNG images to be used for explanation, question generation, and answer evaluation. Requires a vision-capable model.</p>
                 </article>
               <article class="settings-card">
                 <h3 data-i18n="ui.settings.dependencies.title">Dependencies</h3>

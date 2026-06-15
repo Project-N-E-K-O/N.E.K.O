@@ -27,6 +27,8 @@ def test_phase9_static_math_assets_are_local_and_registered() -> None:
     assert '<script src="./katex.min.js?v=study-hotfix-20260615v"></script>' in index
     assert '<script src="./katex-render.js?v=study-hotfix-20260615v"></script>' in index
     assert '<script src="./main.js?v=study-hotfix-20260615v"></script>' in index
+    assert ".study-panel__image-preview[hidden]" in css
+    assert ".study-panel__image-preview:not([hidden])" in css
     assert "window.renderMathInText" in renderer
     assert "window.__studyCompanionMath" in renderer
     assert "normalizeLatexForKatex" in renderer

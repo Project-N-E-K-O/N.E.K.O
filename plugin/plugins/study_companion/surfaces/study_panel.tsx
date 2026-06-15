@@ -28,9 +28,9 @@ const ENTRY_TIMEOUT_MS: Record<string, number> = {
   study_status: 15000,
   study_ocr_snapshot: 60000,
   study_set_mode: 15000,
-  study_explain_text: 60000,
-  study_generate_question: 75000,
-  study_evaluate_answer: 75000,
+  study_explain_text: 300000,
+  study_generate_question: 300000,
+  study_evaluate_answer: 300000,
   study_summarize_session: 90000,
 };
 
@@ -586,6 +586,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const textImageRef = useRef('');
   const pastePendingRef = useRef(false);
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const replySectionRef = useRef<HTMLDivElement | null>(null);
   const currentMode = String(status.active_mode || status.mode || 'companion');
   const interactionBusy = busy || pastePending;
 
@@ -620,6 +621,10 @@ export default function StudyPanel(props: PluginSurfaceProps) {
 
   function isInteractionBusy() {
     return busy || pastePendingRef.current;
+  }
+
+  function scrollReplyIntoView() {
+    replySectionRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
   }
 
   function modeLabel(mode: string) {
@@ -748,12 +753,23 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     if (isInteractionBusy()) {
       return;
     }
+    const sourceText = text.trim();
+    if (!sourceText && !textImage) {
+      setReply(t('ui.error.missing_study_input', 'Please enter text or paste an image first.'));
+      return;
+    }
     const controller = beginStudyRequest();
     setBusy(true);
-    const explainArgs: Record<string, unknown> = { text };
+    const explainArgs: Record<string, unknown> = { text: sourceText };
     if (textImage) explainArgs.vision_image_base64 = textImage;
     let shouldClearTextImage = false;
     try {
+      setStatus((prev) => ({
+        ...prev,
+        status: textImage ? 'solving_problem' : 'explaining',
+      }));
+      setReply(textImage ? t('ui.status.solving_problem', 'Solving problem...') : t('ui.status.explaining', 'Explaining...'));
+      scrollReplyIntoView();
       const data = await callStudyPlugin(props.api, 'study_explain_text', explainArgs, controller.signal) as {
         reply?: string;
         summary?: string;
@@ -788,9 +804,14 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     if (isInteractionBusy()) {
       return;
     }
+    const sourceText = text.trim();
+    if (!sourceText && !textImage) {
+      setReply(t('ui.error.missing_study_input', 'Please enter text or paste an image first.'));
+      return;
+    }
     const controller = beginStudyRequest();
     setBusy(true);
-    const genArgs: Record<string, unknown> = { text };
+    const genArgs: Record<string, unknown> = { text: sourceText };
     if (textImage) genArgs.vision_image_base64 = textImage;
     let shouldClearTextImage = false;
     try {
@@ -1110,8 +1131,10 @@ export default function StudyPanel(props: PluginSurfaceProps) {
           {interactionBusy ? t('ui.button.loading', 'Loading...') : t('ui.button.summarize_session', 'Summarize Session')}
         </button>
       </div>
-      <div className="study-panel__reply-label">{t('ui.label.reply', 'Reply')}</div>
-      <MathReply text={reply} label={t('ui.label.reply', 'Reply')} />
+      <div ref={replySectionRef}>
+        <div className="study-panel__reply-label">{t('ui.label.reply', 'Reply')}</div>
+        <MathReply text={reply} label={t('ui.label.reply', 'Reply')} />
+      </div>
     </div>
   );
 }

@@ -35,7 +35,32 @@ def test_concept_prompt_templates_require_all_variables() -> None:
     )
     assert "Language: zh-CN" in rendered
     assert "Task: concept_explain" in rendered
+    assert "include a visible solution process" in rendered
+    assert "题目解析" in rendered
+    assert "解题过程" in rendered
+    assert "答案" in rendered
+    assert "举一反三" in rendered
+    assert '"解析"' in rendered
     assert "calculus" in rendered
+
+    assert "solve it rather than only explaining the wording" in (
+        templates.STUDY_CONCEPT_EXPLAIN_SYSTEM_PROMPT
+    )
+    assert "actual computations, derivations, or decision steps" in (
+        templates.STUDY_CONCEPT_EXPLAIN_SYSTEM_PROMPT
+    )
+    assert "state the final answer or option" in (
+        templates.STUDY_CONCEPT_EXPLAIN_SYSTEM_PROMPT
+    )
+    assert "do not assume it is single-select" in (
+        templates.STUDY_CONCEPT_EXPLAIN_SYSTEM_PROMPT
+    )
+    assert "output all correct option letters" in (
+        templates.STUDY_CONCEPT_EXPLAIN_SYSTEM_PROMPT
+    )
+    assert "verify every option independently" in rendered
+    assert "不要默认是单选题" in rendered
+    assert "输出全部正确选项" in rendered
 
 
 def test_prompt_context_limits_cover_all_structured_operations() -> None:

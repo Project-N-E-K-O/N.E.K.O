@@ -16,6 +16,8 @@ MODE_MIN_DWELL_SECONDS = 180.0
 MODE_SWITCH_WINDOW_SECONDS = 180.0
 MODE_LOCK_SECONDS = 180.0
 
+EXPLICIT_MODE_SWITCH_REASONS = ("ui", "intent:")
+
 _MODE_LABELS = {
     "zh": {
         MODE_COMPANION: "伴学模式",
@@ -327,6 +329,14 @@ def _coerce_timestamp(value: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+def _is_explicit_mode_switch_reason(reason: str | None) -> bool:
+    normalized = str(reason or "").strip().lower()
+    return any(
+        normalized == prefix or normalized.startswith(prefix)
+        for prefix in EXPLICIT_MODE_SWITCH_REASONS
+    )
+
+
 @dataclass(slots=True)
 class ModeManager:
     current_mode: str = MODE_COMPANION
@@ -390,8 +400,12 @@ class ModeManager:
         now_ts = float(time.time() if now is None else now)
         current_mode = normalize_mode(self.current_mode)
         checkpoint_before = self.snapshot()
+        explicit_switch = _is_explicit_mode_switch_reason(reason)
 
         if current_mode == requested_mode:
+            if explicit_switch and self.mode_lock_until:
+                self.mode_lock_until = 0.0
+                checkpoint_before = self.snapshot()
             return {
                 "changed": False,
                 "old_mode": current_mode,
@@ -402,6 +416,39 @@ class ModeManager:
                 "lock_reason": "",
                 "lock_until": float(self.mode_lock_until or 0.0),
                 "checkpoint": checkpoint_before,
+            }
+
+        if explicit_switch:
+            self._record_mode_switch_attempt(
+                mode=requested_mode, reason=reason, at=now_ts
+            )
+            self.current_mode = requested_mode
+            self.mode_started_at = now_ts
+            self.mode_lock_until = 0.0
+            checkpoint_after = self.snapshot()
+            checkpoint_after.update(
+                {
+                    "changed": True,
+                    "old_mode": current_mode,
+                    "new_mode": requested_mode,
+                    "reason": reason,
+                    "transition_phrase": build_transition_phrase(
+                        requested_mode,
+                        language=language,
+                        outcome="changed",
+                    ),
+                }
+            )
+            return {
+                "changed": True,
+                "old_mode": current_mode,
+                "new_mode": requested_mode,
+                "transition_phrase": checkpoint_after["transition_phrase"],
+                "reason": reason,
+                "locked": False,
+                "lock_reason": "",
+                "lock_until": 0.0,
+                "checkpoint": checkpoint_after,
             }
 
         if self.mode_lock_until and now_ts < self.mode_lock_until:

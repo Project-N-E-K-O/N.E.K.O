@@ -15,6 +15,10 @@ from plugin.plugins.study_companion.constants import LLM_OPERATION_CONCEPT_EXPLA
 from plugin.plugins.study_companion.entry_common import (
     _validate_optional_vision_image_payload,
 )
+from plugin.plugins.study_companion.entry_tutor_explain_entries import (
+    IMAGE_ONLY_EXPLAIN_PROMPT_EN,
+    IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN,
+)
 from plugin.plugins.study_companion.models import StudyConfig
 from plugin.plugins.study_companion.state import build_initial_state
 from plugin.plugins.study_companion.study_ocr_pipeline import StudyOcrPipeline
@@ -67,6 +71,27 @@ class _VisionPipeline:
 
 JPEG_IMAGE_BASE64 = base64.b64encode(b"\xff\xd8\xff\xe0fake-jpeg").decode("ascii")
 PNG_IMAGE_BASE64 = base64.b64encode(b"\x89PNG\r\n\x1a\nfake-png").decode("ascii")
+ZH_TRANSFER_EXPECTED_TEXT = (
+    "可以把题目中的条件、数值或问法换成同类型设定，"
+    "仍按“题目解析 → 解题过程 → 答案”的顺序梳理。"
+)
+
+
+def test_image_only_explain_prompts_require_solution_process_sections() -> None:
+    assert "Solution Process" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
+    assert "Final Answer" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
+    assert "brief analysis" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
+    assert "Problem Analysis" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
+    assert "Transfer Practice" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
+    assert "do not assume it is single-select" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
+    assert "all correct option letters" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
+    assert "题目解析" in IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
+    assert "解题过程" in IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
+    assert "答案" in IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
+    assert "举一反三" in IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
+    assert "解析" in IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
+    assert "不要默认是单选题" in IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
+    assert "输出全部正确选项" in IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
 
 
 @pytest.mark.parametrize(
@@ -226,6 +251,114 @@ async def test_concept_explain_attaches_vision_context(
     content = seen[-1]["content"]
     assert isinstance(content, list)
     assert content[1]["image_url"]["url"] == "data:image/jpeg;base64,image-payload"
+
+
+@pytest.mark.asyncio
+async def test_concept_explain_appends_missing_zh_transfer_section(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="zh-CN"))
+
+    async def _fake_call_model(_messages: list[dict[str, Any]]):
+        return "题目解析\n分析题意。\n\n解题过程\n列式计算。\n\n答案\nA"
+
+    monkeypatch.setattr(agent, "_call_model", _fake_call_model)
+
+    reply = await agent.concept_explain(
+        IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN,
+        context={"vision_image_base64": JPEG_IMAGE_BASE64},
+    )
+
+    expected_tail = "举一反三\n" + ZH_TRANSFER_EXPECTED_TEXT
+    assert reply.reply.rstrip().endswith(expected_tail)
+    assert reply.reply.count("举一反三") == 1
+
+
+@pytest.mark.asyncio
+async def test_concept_explain_appends_transfer_to_numbered_zh_solution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="zh-CN"))
+
+    async def _fake_call_model(_messages: list[dict[str, Any]]):
+        return "1. 分析条件。\n\n2. 计算总和。\n\n答案\nA"
+
+    monkeypatch.setattr(agent, "_call_model", _fake_call_model)
+
+    reply = await agent.concept_explain(
+        IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN,
+        context={"vision_image_base64": JPEG_IMAGE_BASE64},
+    )
+
+    assert reply.reply.rstrip().endswith("举一反三\n" + ZH_TRANSFER_EXPECTED_TEXT)
+
+
+@pytest.mark.asyncio
+async def test_concept_explain_appends_transfer_when_reply_is_zh_but_locale_is_en(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
+
+    async def _fake_call_model(_messages: list[dict[str, Any]]):
+        return "4. 计算期望并验证\n\n对分数进行约分。\n\n答案\nA"
+
+    monkeypatch.setattr(agent, "_call_model", _fake_call_model)
+
+    reply = await agent.concept_explain(
+        IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN,
+        context={"vision_image_base64": JPEG_IMAGE_BASE64},
+    )
+
+    assert reply.reply.rstrip().endswith("举一反三\n" + ZH_TRANSFER_EXPECTED_TEXT)
+
+
+@pytest.mark.asyncio
+async def test_concept_explain_appends_transfer_to_option_verification_reply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="zh-CN"))
+
+    async def _fake_call_model(_messages: list[dict[str, Any]]):
+        return (
+            "验证 C：若 AB ⊥ CD，则 CD ⊥ 平面 ABD。\n\n"
+            "结论：C 错误。\n\n"
+            "验证 D：若 AB ⊥ 平面 ACD，则 AC ⊥ AD。\n\n"
+            "结论：D 错误。\n\n"
+            "结论：B 正确。"
+        )
+
+    monkeypatch.setattr(agent, "_call_model", _fake_call_model)
+
+    reply = await agent.concept_explain(
+        IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN,
+        context={"vision_image_base64": JPEG_IMAGE_BASE64},
+    )
+
+    assert reply.reply.rstrip().endswith("举一反三\n" + ZH_TRANSFER_EXPECTED_TEXT)
+
+
+@pytest.mark.asyncio
+async def test_concept_explain_vision_failure_uses_image_specific_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="zh-CN"))
+
+    async def _broken_call_model(_messages: list[dict[str, Any]]):
+        raise RuntimeError("llm unavailable")
+
+    monkeypatch.setattr(agent, "_call_model", _broken_call_model)
+
+    reply = await agent.concept_explain(
+        IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN,
+        context={"vision_image_base64": JPEG_IMAGE_BASE64},
+    )
+
+    assert reply.degraded is True
+    assert reply.diagnostic == "llm_call_failed"
+    assert "视觉模型" in reply.reply
+    assert "关键文本" not in reply.reply
+    assert "检查问题" not in reply.reply
+    assert "请先识别图片中的题目" not in reply.reply
 
 
 @pytest.mark.asyncio
@@ -610,7 +743,7 @@ async def test_study_submit_image_without_caption_preserves_ocr_fallback() -> No
     result = await plugin.study_submit_image(JPEG_IMAGE_BASE64)
 
     assert isinstance(result, Ok)
-    assert calls == ["请解释这张图片的内容"]
+    assert calls == [IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN]
     assert plugin._state.last_ocr_text == "previous OCR context"
 
 
@@ -631,7 +764,7 @@ async def test_study_submit_image_without_caption_uses_english_prompt() -> None:
     result = await plugin.study_submit_image(JPEG_IMAGE_BASE64)
 
     assert isinstance(result, Ok)
-    assert calls == ["Please explain the pasted image."]
+    assert calls == [IMAGE_ONLY_EXPLAIN_PROMPT_EN]
 
 
 @pytest.mark.asyncio
@@ -946,7 +1079,7 @@ async def test_study_explain_text_uses_prompt_for_image_only() -> None:
 
     assert isinstance(result, Ok)
     text, context, _mode = plugin._agent.explanations[-1]
-    assert text == "请解释这张图片的内容"
+    assert text == IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
     assert context["source"] == "vision_image"
     assert context["source_text"] == text
     assert context["vision_image_base64"] == f"data:image/jpeg;base64,{JPEG_IMAGE_BASE64}"
@@ -961,7 +1094,7 @@ async def test_study_explain_text_prefers_pasted_image_over_stale_ocr() -> None:
 
     assert isinstance(result, Ok)
     text, context, _mode = plugin._agent.explanations[-1]
-    assert text == "请解释这张图片的内容"
+    assert text == IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
     assert context["source"] == "vision_image"
     assert context["source_text"] == text
     assert "stale OCR text" not in text
@@ -975,7 +1108,7 @@ async def test_study_explain_text_uses_english_prompt_for_image_only() -> None:
 
     assert isinstance(result, Ok)
     text, context, _mode = plugin._agent.explanations[-1]
-    assert text == "Please explain the pasted image."
+    assert text == IMAGE_ONLY_EXPLAIN_PROMPT_EN
     assert context["source"] == "vision_image"
     assert context["source_text"] == text
 

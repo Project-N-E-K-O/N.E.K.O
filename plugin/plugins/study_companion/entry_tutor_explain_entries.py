@@ -19,9 +19,32 @@ from .entry_common import (
 )
 
 
-IMAGE_ONLY_EXPLAIN_PROMPT_EN = "Please explain the pasted image."
-IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN = "请解释这张图片的内容"
-IMAGE_ONLY_EXPLAIN_PROMPT_ZH_TW = "請解釋這張圖片的內容"
+IMAGE_ONLY_EXPLAIN_PROMPT_EN = (
+    "First identify any exercise or problem in the pasted image, then solve it "
+    "with a visible process: list the givens, show the key derivation or "
+    "construction, verify the result, and state the final answer or option. "
+    "Use explicit sections for Problem Analysis, Solution Process, Final "
+    "Answer, and Transfer Practice; do not provide only a brief analysis. "
+    "For choice questions, do not assume it is single-select unless explicitly "
+    "stated; verify every option independently and output all correct option "
+    "letters. "
+    "Do not only summarize the problem. If the image is not a problem, explain "
+    "its contents."
+)
+IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN = (
+    "请先识别图片中的题目，然后给出可见的解答过程：列出已知条件、展示关键推导或构造、"
+    "验证结果，并明确最终答案或选项。回答题目时必须包含“题目解析”“解题过程”“答案”"
+    "和“举一反三”四个小标题，不要只给简短“解析”。不要只总结题意；如果图片不是题目，"
+    "再解释图片内容。如果是选择题或逐项判断题，不要默认是单选题；必须逐项验证，"
+    "不要找到一个正确选项就停止；若有多个正确选项，在“答案”中输出全部正确选项。"
+)
+IMAGE_ONLY_EXPLAIN_PROMPT_ZH_TW = (
+    "請先識別圖片中的題目，然後給出可見的解答過程：列出已知條件、展示關鍵推導或構造、"
+    "驗證結果，並明確最終答案或選項。回答題目時必須包含「題目解析」「解題過程」「答案」"
+    "和「舉一反三」四個小標題，不要只給簡短「解析」。不要只總結題意；如果圖片不是題目，"
+    "再解釋圖片內容。如果是選擇題或逐項判斷題，不要預設是單選題；必須逐項驗證，"
+    "不要找到一個正確選項就停止；若有多個正確選項，在「答案」中輸出全部正確選項。"
+)
 
 
 def _image_only_explain_prompt(language: str) -> str:
@@ -49,7 +72,7 @@ class _TutorExplainEntriesMixin:
             },
             "required": ["image_base64"],
         },
-        timeout=60.0,
+        timeout=300.0,
         llm_result_fields=["summary", "reply", "diagnostic"],
     )
     async def study_submit_image(self, image_base64: str, text: str = "", **_):
@@ -86,7 +109,7 @@ class _TutorExplainEntriesMixin:
                 "vision_image_base64": {"type": "string", "default": ""},
             },
         },
-        timeout=45.0,
+        timeout=300.0,
         llm_result_fields=["summary", "reply", "diagnostic"],
     )
     async def study_explain_text(

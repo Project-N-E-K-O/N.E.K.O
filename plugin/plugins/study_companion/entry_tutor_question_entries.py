@@ -44,7 +44,7 @@ class _TutorQuestionEntriesMixin:
                 "vision_image_base64": {"type": "string", "default": ""},
             },
         },
-        timeout=60.0,
+        timeout=300.0,
         llm_result_fields=[
             "summary",
             "question",
