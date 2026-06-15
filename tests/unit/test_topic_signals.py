@@ -10,8 +10,11 @@ def test_topic_signal_store_keeps_filler_chat_below_ready_even_after_many_turns(
     assert store.readiness_percent("妮可") < 80
     assert store.is_ready("妮可") is False
     formatted = store.format_global_signals("妮可")
-    assert "收集进度:" in formatted
-    assert "信息密度:" in formatted
+    # stats head (readiness/density/stability) is no longer injected into the
+    # prompt — only the raw evidence list remains. readiness stays a backend gate.
+    assert "收集进度:" not in formatted
+    assert "信息密度:" not in formatted
+    assert "全局证据:" in formatted
 
 
 def test_topic_signal_store_allows_dense_short_collection_to_be_analyzed():
@@ -25,7 +28,7 @@ def test_topic_signal_store_allows_dense_short_collection_to_be_analyzed():
     assert store.readiness_percent("妮可") >= 80
     assert store.is_ready("妮可") is True
     formatted = store.format_global_signals("妮可")
-    assert "稳定度:" in formatted
+    assert "稳定度:" not in formatted
     assert "换工作" in formatted
 
 
@@ -36,11 +39,12 @@ def test_topic_signal_store_localizes_global_signal_labels():
 
     formatted = store.format_global_signals("neko", lang="en")
 
-    assert "Collection progress:" in formatted
-    assert "User evidence count:" in formatted
+    # stats head dropped; the evidence-list label still localizes by lang
     assert "Global evidence:" in formatted
+    assert "moving to a quieter city" in formatted
+    assert "Collection progress:" not in formatted
+    assert "User evidence count:" not in formatted
     assert "收集进度:" not in formatted
-    assert "用户证据数:" not in formatted
 
 
 def test_topic_signal_store_scores_repeated_theme_higher_than_unrelated_thin_turns():

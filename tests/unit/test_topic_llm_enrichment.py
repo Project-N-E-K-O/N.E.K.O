@@ -16,9 +16,9 @@ async def test_call_topic_candidates_parses_model_output(monkeypatch):
               "hook": "接住想买车和现实预算的冲突",
               "opening_intent": "像朋友随口一提，不像问卷",
               "deepening_hint": "用户接话后聊目标和现实怎么折中",
-              "priority": 93
+              "relevance": 93
             },
-            {"interest": "你好", "priority": 10}
+            {"interest": "你好", "relevance": 10}
           ]
         }
         ```"""
@@ -37,9 +37,7 @@ async def test_call_topic_candidates_parses_model_output(monkeypatch):
             "hook": "接住想买车和现实预算的冲突",
             "opening_intent": "像朋友随口一提，不像问卷",
             "deepening_hint": "用户接话后聊目标和现实怎么折中",
-            "readiness": 93,
-            "collection_score": 93,
-            "confidence": 93,
+            "relevance": 93,
             "risk": 20,
             "why_now": "",
             "search_query": "",
@@ -66,11 +64,8 @@ async def test_call_topic_candidates_passes_global_signals_and_keeps_online_fiel
               "deepening_hint": "用户接话后再聊自由感和现实成本",
               "why_now": "多次提到买车、预算和不想被固定流程推着走",
               "search_query": "年轻人 买车 通勤 养车 成本",
-              "collection_score": 92,
-              "readiness": 91,
-              "confidence": 88,
-              "risk": 18,
-              "priority": 91
+              "relevance": 91,
+              "risk": 18
             }
           ]
         }
@@ -94,9 +89,7 @@ async def test_call_topic_candidates_passes_global_signals_and_keeps_online_fiel
             "deepening_hint": "用户接话后再聊自由感和现实成本",
             "why_now": "多次提到买车、预算和不想被固定流程推着走",
             "search_query": "年轻人 买车 通勤 养车 成本",
-            "collection_score": 92,
-            "readiness": 91,
-            "confidence": 88,
+            "relevance": 91,
             "risk": 18,
             "priority": 91,
         }
@@ -104,7 +97,7 @@ async def test_call_topic_candidates_passes_global_signals_and_keeps_online_fiel
 
 
 @pytest.mark.asyncio
-async def test_call_topic_candidates_skips_low_collection_score(monkeypatch):
+async def test_call_topic_candidates_skips_low_relevance(monkeypatch):
     from main_logic.activity import llm_enrichment
 
     async def fake_invoke(prompt, *, timeout, label):
@@ -112,13 +105,10 @@ async def test_call_topic_candidates_skips_low_collection_score(monkeypatch):
         {
           "topics": [
             {
-              "interest": "一个还没收集够的薄话题",
+              "interest": "一个相关度还不够的薄话题",
               "hook": "先不要开口",
-              "collection_score": 62,
-              "readiness": 90,
-              "confidence": 90,
-              "risk": 10,
-              "priority": 90
+              "relevance": 62,
+              "risk": 10
             }
           ]
         }
@@ -147,11 +137,8 @@ async def test_call_topic_candidates_keeps_short_cjk_interests(monkeypatch):
             {
               "interest": "转职",
               "hook": "接住用户对转职的犹豫",
-              "collection_score": 90,
-              "readiness": 88,
-              "confidence": 84,
-              "risk": 10,
-              "priority": 90
+              "relevance": 88,
+              "risk": 10
             }
           ]
         }

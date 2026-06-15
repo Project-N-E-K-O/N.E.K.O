@@ -56,7 +56,7 @@ async def test_topic_pool_waits_for_slow_global_collection_before_analysis():
     await pool.process_now("妮可")
 
     assert len(calls) == 1
-    assert "收集进度:" in calls[0]
+    assert "全局证据:" in calls[0]
     assert "第一句只是随口聊聊" in calls[0]
     assert pool.get_ready_materials("妮可")[0]["interest"] == "慢慢形成的长期兴趣"
 

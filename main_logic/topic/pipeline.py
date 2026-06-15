@@ -79,25 +79,14 @@ def _clean_material(material: Mapping[str, Any]) -> dict[str, Any] | None:
     opening = _clean_text(material.get("opening_intent"), limit=90)
     deepening = _clean_text(material.get("deepening_hint"), limit=90)
     try:
-        priority = int(material.get("priority", 80))
+        relevance = int(material.get("relevance", material.get("priority", 70)))
     except (TypeError, ValueError):
-        priority = 80
-    try:
-        readiness = int(material.get("readiness", priority))
-    except (TypeError, ValueError):
-        readiness = priority
-    try:
-        collection_score = int(material.get("collection_score", readiness))
-    except (TypeError, ValueError):
-        collection_score = readiness
-    try:
-        confidence = int(material.get("confidence", priority))
-    except (TypeError, ValueError):
-        confidence = priority
+        relevance = 70
     try:
         risk = int(material.get("risk", 20))
     except (TypeError, ValueError):
         risk = 20
+    relevance = max(0, min(100, relevance))
     return {
         "hook_id": str(material.get("hook_id") or ""),
         "source": "background_topic_pool",
@@ -108,11 +97,9 @@ def _clean_material(material: Mapping[str, Any]) -> dict[str, Any] | None:
         "media_intent": _clean_media_intent(material.get("media_intent")),
         "why_now": _clean_text(material.get("why_now"), limit=140),
         "search_query": _clean_text(material.get("search_query"), limit=80),
-        "collection_score": max(0, min(100, collection_score)),
-        "readiness": max(0, min(100, readiness)),
-        "confidence": max(0, min(100, confidence)),
+        "relevance": relevance,
         "risk": max(0, min(100, risk)),
-        "priority": max(0, min(100, priority)),
+        "priority": relevance,
         "status": "pending",
         "created_at": _clean_timestamp(material.get("created_at")),
     }
@@ -120,13 +107,11 @@ def _clean_material(material: Mapping[str, Any]) -> dict[str, Any] | None:
 
 def _material_is_ready(material: Mapping[str, Any]) -> bool:
     try:
-        collection_score = int(material.get("collection_score", material.get("readiness", material.get("priority", 0))))
-        readiness = int(material.get("readiness", material.get("priority", 0)))
-        confidence = int(material.get("confidence", material.get("priority", 0)))
+        relevance = int(material.get("relevance", material.get("priority", 0)))
         risk = int(material.get("risk", 20))
     except (TypeError, ValueError):
         return False
-    return collection_score >= 80 and readiness >= 70 and confidence >= 55 and risk <= 65
+    return relevance >= 70 and risk <= 65
 
 
 def _material_log_preview(material: Mapping[str, Any]) -> str:
@@ -135,10 +120,7 @@ def _material_log_preview(material: Mapping[str, Any]) -> str:
     if isinstance(hint, Mapping):
         hint_summary = _clean_text(hint.get("summary"), limit=100)
     parts = [
-        f"priority={material.get('priority')}",
-        f"collection={material.get('collection_score')}",
-        f"readiness={material.get('readiness')}",
-        f"confidence={material.get('confidence')}",
+        f"relevance={material.get('relevance')}",
         f"risk={material.get('risk')}",
         f"interest={_clean_text(material.get('interest'), limit=80)}",
         f"hook={_clean_text(material.get('hook'), limit=100)}",

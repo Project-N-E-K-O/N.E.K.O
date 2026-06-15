@@ -268,19 +268,14 @@ TOPIC_CANDIDATE_PROMPTS: dict[str, str] = {
     "deepening_hint": "用户接话后的展开方向，不超过40字",
     "why_now": "为什么现在值得轻轻接一下，不超过50字",
     "search_query": "用于联网补现实细节的查询词；不需要联网就留空",
-    "collection_score": 0-100,
-    "readiness": 0-100,
-    "confidence": 0-100,
-    "risk": 0-100,
-    "priority": 0-100
+    "relevance": 0-100,
+    "risk": 0-100
   }}
 ]}}
 
 评分：
-- collection_score：这批慢收集证据整体是否够开一个深话题，低于 80 不要输出
-- readiness：证据是否已经够稳定，低于 70 不要输出
-- confidence：这个话题和用户的强相关程度，低于 55 不要输出
-- risk：打扰、冒犯、误解、硬凑的风险，高于 65 不要输出
+- relevance：综合「这个话题和用户的相关度」+「证据是否稳定」的单一相关度分数，低于 70 不要输出
+- risk：打扰 / 冒犯 / 误解 / 硬凑的风险，高于 65 不要输出
 
 如果没有值得以后接的话题，输出 {{"topics": []}}。""",
     "zh-TW": """你是陪伴產品的話題篩選助手。你的任務不是總結最近一句話，而是從「慢收集的全局證據 + 最近對話」裡挑 1-2 個真的值得以後低頻開口的深話題機會。
@@ -312,19 +307,14 @@ TOPIC_CANDIDATE_PROMPTS: dict[str, str] = {
     "deepening_hint": "用戶接話後的展開方向，不超過40字",
     "why_now": "為什麼現在值得輕輕接一下，不超過50字",
     "search_query": "用於聯網補現實細節的查詢詞；不需要聯網就留空",
-    "collection_score": 0-100,
-    "readiness": 0-100,
-    "confidence": 0-100,
-    "risk": 0-100,
-    "priority": 0-100
+    "relevance": 0-100,
+    "risk": 0-100
   }}
 ]}}
 
 評分：
-- collection_score：這批慢收集證據整體是否夠開一個深話題，低於 80 不要輸出
-- readiness：證據是否已經夠穩定，低於 70 不要輸出
-- confidence：這個話題和用戶的強相關程度，低於 55 不要輸出
-- risk：打擾、冒犯、誤解、硬湊的風險，高於 65 不要輸出
+- relevance：綜合「這個話題和用戶的相關度」+「證據是否穩定」的單一相關度分數，低於 70 不要輸出
+- risk：打擾 / 冒犯 / 誤解 / 硬湊的風險，高於 65 不要輸出
 
 如果沒有值得以後接的話題，輸出 {{"topics": []}}。""",
     "en": """You are a topic-screening assistant for a companionship product. Your job is not to summarize the last message, but to choose 1-2 genuinely worthwhile low-frequency topic opportunities from slow global evidence plus the recent conversation.
@@ -355,18 +345,13 @@ Output strict JSON, no markdown fences:
     "deepening_hint": "how to continue if the user responds, max 40 words",
     "why_now": "why this is worth lightly picking up now, max 50 words",
     "search_query": "query for online enrichment; empty if not needed",
-    "collection_score": 0-100,
-    "readiness": 0-100,
-    "confidence": 0-100,
-    "risk": 0-100,
-    "priority": 0-100
+    "relevance": 0-100,
+    "risk": 0-100
   }}
 ]}}
 
 Scoring:
-- collection_score: whether this slow-evidence batch is strong enough for one deeper hook; omit below 80
-- readiness: whether the evidence is stable enough; omit below 70
-- confidence: strength of connection to the user; omit below 55
+- relevance: a single score combining topic-user relevance and evidence stability; omit below 70
 - risk: interruption/offense/misread/forced-association risk; omit above 65
 
 If nothing is worth keeping, output {{"topics": []}}.""",
@@ -399,18 +384,13 @@ If nothing is worth keeping, output {{"topics": []}}.""",
     "deepening_hint": "ユーザーが乗った後の広げ方、40字以内",
     "why_now": "今そっと拾う理由、50字以内",
     "search_query": "現実情報を補う検索語。不要なら空文字",
-    "collection_score": 0-100,
-    "readiness": 0-100,
-    "confidence": 0-100,
-    "risk": 0-100,
-    "priority": 0-100
+    "relevance": 0-100,
+    "risk": 0-100
   }}
 ]}}
 
 スコア：
-- collection_score：深い話題にできるだけの証拠量。80未満は出力しない
-- readiness：証拠の安定度。70未満は出力しない
-- confidence：ユーザーとの関連の強さ。55未満は出力しない
+- relevance：話題とユーザーの関連度と証拠の安定度を統合した単一スコア。70未満は出力しない
 - risk：邪魔、失礼、誤読、こじつけのリスク。65超は出力しない
 
 価値のある話題がなければ {{"topics": []}} を出力。""",
@@ -443,18 +423,13 @@ If nothing is worth keeping, output {{"topics": []}}.""",
     "deepening_hint": "사용자가 반응한 뒤 이어갈 방향, 40자 이내",
     "why_now": "지금 가볍게 꺼낼 만한 이유, 50자 이내",
     "search_query": "현실 정보를 보충할 검색어. 필요 없으면 빈 문자열",
-    "collection_score": 0-100,
-    "readiness": 0-100,
-    "confidence": 0-100,
-    "risk": 0-100,
-    "priority": 0-100
+    "relevance": 0-100,
+    "risk": 0-100
   }}
 ]}}
 
 점수:
-- collection_score: 깊은 화제로 삼을 만큼 근거가 충분한가. 80 미만은 출력하지 않음
-- readiness: 근거가 충분히 안정적인가. 70 미만은 출력하지 않음
-- confidence: 사용자와의 관련 강도. 55 미만은 출력하지 않음
+- relevance: 화제와 사용자의 관련도 및 근거 안정성을 통합한 단일 점수. 70 미만은 출력하지 않음
 - risk: 방해, 무례함, 오해, 억지 연결 위험. 65 초과는 출력하지 않음
 
 가치 있는 화제가 없으면 {{"topics": []}} 를 출력하세요.""",
@@ -487,18 +462,13 @@ Devuelve JSON estricto, sin bloques markdown:
     "deepening_hint": "cómo seguir si el usuario responde, máximo 40 palabras",
     "why_now": "por qué vale la pena tocarlo ahora, máximo 50 palabras",
     "search_query": "consulta para enriquecer con datos reales; vacío si no hace falta",
-    "collection_score": 0-100,
-    "readiness": 0-100,
-    "confidence": 0-100,
-    "risk": 0-100,
-    "priority": 0-100
+    "relevance": 0-100,
+    "risk": 0-100
   }}
 ]}}
 
 Puntuación:
-- collection_score: evidencia suficiente para un tema profundo; omite por debajo de 80
-- readiness: estabilidad de la evidencia; omite por debajo de 70
-- confidence: fuerza de la relación con el usuario; omite por debajo de 55
+- relevance: puntuación única que integra la relevancia del tema para el usuario y la estabilidad de la evidencia; omite por debajo de 70
 - risk: riesgo de molestar, ofender, malinterpretar o forzar; omite por encima de 65
 
 Si no hay nada que valga la pena, devuelve {{"topics": []}}.""",
@@ -531,18 +501,13 @@ Retorne JSON estrito, sem blocos markdown:
     "deepening_hint": "como continuar se o usuario responder, maximo 40 palavras",
     "why_now": "por que vale tocar nisso agora, maximo 50 palavras",
     "search_query": "consulta para enriquecer com dados reais; vazio se nao precisar",
-    "collection_score": 0-100,
-    "readiness": 0-100,
-    "confidence": 0-100,
-    "risk": 0-100,
-    "priority": 0-100
+    "relevance": 0-100,
+    "risk": 0-100
   }}
 ]}}
 
 Pontuacao:
-- collection_score: evidencias suficientes para um tema profundo; omita abaixo de 80
-- readiness: estabilidade das evidencias; omita abaixo de 70
-- confidence: forca da relacao com o usuario; omita abaixo de 55
+- relevance: pontuacao unica que combina a relevancia do tema para o usuario e a estabilidade das evidencias; omita abaixo de 70
 - risk: risco de incomodar, ofender, interpretar errado ou forcar; omita acima de 65
 
 Se nada valer a pena, retorne {{"topics": []}}.""",
@@ -575,18 +540,13 @@ Se nada valer a pena, retorne {{"topics": []}}.""",
     "deepening_hint": "как развить, если пользователь ответит, до 40 слов",
     "why_now": "почему стоит мягко поднять это сейчас, до 50 слов",
     "search_query": "запрос для фактического обогащения; пусто, если не нужно",
-    "collection_score": 0-100,
-    "readiness": 0-100,
-    "confidence": 0-100,
-    "risk": 0-100,
-    "priority": 0-100
+    "relevance": 0-100,
+    "risk": 0-100
   }}
 ]}}
 
 Оценки:
-- collection_score: достаточно ли общих сигналов для глубокой темы; ниже 80 не выводить
-- readiness: стабильность сигнала; ниже 70 не выводить
-- confidence: сила связи с пользователем; ниже 55 не выводить
+- relevance: единый балл, объединяющий релевантность темы для пользователя и стабильность сигналов; ниже 70 не выводить
 - risk: риск помешать, обидеть, неверно понять или натянуть связь; выше 65 не выводить
 
 Если достойной темы нет, выведи {{"topics": []}}.""",

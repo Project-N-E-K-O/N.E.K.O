@@ -14,9 +14,14 @@ from dataclasses import dataclass
 from typing import Any
 
 from main_logic.topic.common import ZH_TOPIC_STOP_CHARS, clean_text, topic_units
+from utils.tokenize import truncate_to_tokens
 
 
 _MAX_SIGNAL_TEXT_CHARS = 500
+# Per-turn evidence cap in tokens, unified with the recent-conversation
+# per-turn budget (llm_enrichment._MAX_CONV_TOKENS_PER_TURN) so both inputs
+# to the emotion-tier topic call share one budget unit.
+_MAX_SIGNAL_TOKENS_PER_TURN = 300
 _MAX_GLOBAL_TURNS = 80
 _READY_SCORE = 80
 _FILLER_TEXTS = {
@@ -219,7 +224,7 @@ class TopicSignalStore:
         lang: str = "zh",
         now: float | None = None,
     ) -> None:
-        cleaned = _clean_text(text)
+        cleaned = truncate_to_tokens(_clean_text(text), _MAX_SIGNAL_TOKENS_PER_TURN)
         if not cleaned:
             return
         name = str(lanlan_name or "default")
@@ -260,34 +265,24 @@ class TopicSignalStore:
         return self.readiness_percent(lanlan_name) >= _READY_SCORE
 
     def format_global_signals(self, lanlan_name: str, *, max_lines: int = 40, lang: str | None = None) -> str:
+        """Render the slow-evidence turns as prompt context.
+
+        Only the raw evidence list is emitted. The local heuristic stats
+        (readiness / density / stability / counts) are deliberately NOT
+        injected — they have no grounding or scale the LLM can use, and the
+        model can read stability straight off the evidence. Those scores
+        stay backend-only, feeding the ``is_ready`` gate (see
+        ``readiness_percent``), not the prompt.
+        """
         name = str(lanlan_name or "default")
         labels = _GLOBAL_SIGNAL_LABELS[_label_key_for_lang(lang)]
         turns = list(self._turns.get(name, ()))
-        user_count = sum(1 for turn in turns if turn.actor == "user")
-        ai_count = sum(1 for turn in turns if turn.actor == "ai")
-        readiness = self.readiness_percent(name)
-        meaningful_user_turns = [
-            turn for turn in turns
-            if turn.actor == "user" and _turn_information_score(turn.text) >= 20
-        ]
-        density = _average_information_density(meaningful_user_turns)
-        stability = _stability_score(meaningful_user_turns)
-
-        lines = [
-            f"{labels['progress']}: {readiness}%",
-            f"{labels['user_count']}: {user_count}",
-            f"{labels['meaningful_user_count']}: {len(meaningful_user_turns)}",
-            f"{labels['ai_count']}: {ai_count}",
-            f"{labels['density']}: {density}%",
-            f"{labels['stability']}: {stability}%",
-            labels["note"],
-        ]
         if not turns:
-            return "\n".join(lines)
+            return ""
 
         selected = _select_turns_for_prompt(turns, max_lines=max_lines)
         base_ts = turns[-1].timestamp
-        lines.append(f"{labels['evidence']}:")
+        lines = [f"{labels['evidence']}:"]
         for turn in selected:
             age_s = max(0.0, base_ts - turn.timestamp)
             age = _format_age(age_s, labels)
@@ -344,13 +339,6 @@ def _turn_information_score(text: str) -> int:
     if len(cleaned) >= 30:
         score += 7
     return max(0, min(100, score))
-
-
-def _average_information_density(turns: Iterable[TopicTurnSignal]) -> int:
-    scores = [_turn_information_score(turn.text) for turn in turns]
-    if not scores:
-        return 0
-    return int(sum(scores) / len(scores))
 
 
 def _topic_units(text: str) -> set[str]:

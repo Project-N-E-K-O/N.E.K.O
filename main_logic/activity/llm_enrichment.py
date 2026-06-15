@@ -56,6 +56,7 @@ from config.prompts.prompts_activity import (
     TOPIC_CANDIDATE_PROMPTS,
 )
 from utils.file_utils import robust_json_loads
+from utils.tokenize import truncate_to_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -63,9 +64,10 @@ logger = logging.getLogger(__name__)
 # Input cap: the emotion tier is small and cheap, but we still don't
 # want pathological prompt sizes from a long-running session. 8 turns
 # of each side covers the realistic "what's hanging" window without
-# ballooning latency.
+# ballooning latency. Per-turn cap is in tokens (not chars) so the
+# recent-conversation and global-evidence inputs share one budget unit.
 _MAX_CONV_TURNS_PER_SIDE = 8
-_MAX_CONV_CHARS_PER_TURN = 200
+_MAX_CONV_TOKENS_PER_TURN = 300
 
 # Soft-score keys the LLM is asked to fill. Skipping ``transitioning``,
 # ``away``, ``stale_returning`` because those are purely temporal /
@@ -126,8 +128,8 @@ def _format_conversation(
     """Interleave user / AI messages by timestamp, render as plain lines.
 
     Each side is capped to ``_MAX_CONV_TURNS_PER_SIDE`` (most recent),
-    each text truncated to ``_MAX_CONV_CHARS_PER_TURN``. Empty input
-    returns a placeholder so the prompt still parses.
+    each text truncated to ``_MAX_CONV_TOKENS_PER_TURN`` tokens. Empty
+    input returns a placeholder so the prompt still parses.
     """
     items: list[tuple[float, str, str]] = []
     for ts, text in user_msgs[-_MAX_CONV_TURNS_PER_SIDE:]:
@@ -148,9 +150,10 @@ def _format_conversation(
             age_str = f'{int(age / 60)}min ago'
         else:
             age_str = f'{int(age / 3600)}h ago'
-        clip = text.strip()
-        if len(clip) > _MAX_CONV_CHARS_PER_TURN:
-            clip = clip[:_MAX_CONV_CHARS_PER_TURN] + '…'
+        stripped = text.strip()
+        clip = truncate_to_tokens(stripped, _MAX_CONV_TOKENS_PER_TURN)
+        if clip != stripped:
+            clip = clip + '…'
         out_lines.append(f'[{age_str}] {who}: {clip}')
     return '\n'.join(out_lines)
 
@@ -323,50 +326,28 @@ async def call_topic_candidates(
         if _topic_interest_too_short(interest):
             continue
         try:
-            priority = int(item.get('priority', 80))
+            relevance = int(item.get('relevance', 70))
         except (TypeError, ValueError):
-            priority = 80
-        if priority < 50:
-            continue
-        try:
-            readiness = int(item.get('readiness', priority))
-        except (TypeError, ValueError):
-            readiness = priority
-        try:
-            collection_score = int(item.get('collection_score', readiness))
-        except (TypeError, ValueError):
-            collection_score = readiness
-        try:
-            confidence = int(item.get('confidence', priority))
-        except (TypeError, ValueError):
-            confidence = priority
+            relevance = 70
         try:
             risk = int(item.get('risk', 20))
         except (TypeError, ValueError):
             risk = 20
-        readiness = max(0, min(100, readiness))
-        collection_score = max(0, min(100, collection_score))
-        confidence = max(0, min(100, confidence))
+        relevance = max(0, min(100, relevance))
         risk = max(0, min(100, risk))
-        if collection_score < 80 or readiness < 70 or confidence < 55 or risk > 65:
+        if relevance < 70 or risk > 65:
             continue
         material = {
             'interest': interest[:90],
             'hook': str(item.get('hook') or '').strip()[:120],
             'opening_intent': str(item.get('opening_intent') or '').strip()[:90],
             'deepening_hint': str(item.get('deepening_hint') or '').strip()[:90],
-            'readiness': readiness,
-            'collection_score': collection_score,
-            'confidence': confidence,
+            'relevance': relevance,
             'risk': risk,
             'why_now': str(item.get('why_now') or '').strip()[:140],
             'search_query': str(item.get('search_query') or '').strip()[:80],
-            'priority': max(0, min(100, priority)),
+            'priority': relevance,
         }
-        if not material['why_now']:
-            material['why_now'] = ''
-        if not material['search_query']:
-            material['search_query'] = ''
         cleaned.append(material)
         if len(cleaned) >= 2:
             break
