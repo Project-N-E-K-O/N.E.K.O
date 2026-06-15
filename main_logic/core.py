@@ -914,7 +914,6 @@ class LLMSessionManager:
         self._tts_done_queued_for_turn: bool = False  # 防止同一轮次多次排入 TTS 结束信号
         self._tts_done_pending_until_ready: bool = False  # TTS未就绪时延迟到 flush 后再排入结束信号
         self._active_text_request_id: Optional[str] = None
-        self._next_text_transcript_memory_text: Optional[str] = None
         
         # 输入数据缓存机制：确保session初始化期间的输入不丢失
         self.session_ready = False  # Session是否完全就绪
@@ -2298,15 +2297,8 @@ class LLMSessionManager:
             buffer twice)
         """
         transcript_text = transcript.strip()
-        memory_override_text = ""
-        if isinstance(self.session, OmniOfflineClient):
-            memory_override_text = self._clean_frontend_memory_text(
-                getattr(self, "_next_text_transcript_memory_text", None)
-            )
-            if memory_override_text:
-                self._next_text_transcript_memory_text = None
-        record_transcript_text = memory_override_text or transcript_text
-        effective_is_voice_source = is_voice_source and not memory_override_text
+        record_transcript_text = transcript_text
+        effective_is_voice_source = is_voice_source
         voice_rms_recorded = False
 
         # 更新用户活动时间戳（用于主动搭话检测）。先捕获「转写到达时刻」局部变量，
@@ -7576,16 +7568,15 @@ class LLMSessionManager:
                             _agent_cb_ctx = ""
 
                     self._active_text_request_id = message.get("request_id")
+                    input_transcript_callback = None
                     if memory_text:
-                        self._next_text_transcript_memory_text = memory_text
-                    try:
-                        await self.session.stream_text(
-                            data,
-                            system_prefix=_agent_cb_ctx or None,
-                        )
-                    finally:
-                        if memory_text and self._next_text_transcript_memory_text == memory_text:
-                            self._next_text_transcript_memory_text = None
+                        async def input_transcript_callback(_transcript: str, *, _memory_text: str = memory_text) -> None:
+                            await self.handle_input_transcript(_memory_text, is_voice_source=False)
+
+                    stream_text_kwargs = {"system_prefix": _agent_cb_ctx or None}
+                    if input_transcript_callback:
+                        stream_text_kwargs["input_transcript_callback"] = input_transcript_callback
+                    await self.session.stream_text(data, **stream_text_kwargs)
                 else:
                     logger.error(f"💥 Stream: Invalid text data type: {type(data)}")
                 return

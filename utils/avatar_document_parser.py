@@ -179,10 +179,12 @@ def _parse_xlsx(data: bytes) -> dict[str, Any]:
         budget = _TextBudget()
         parts: list[str] = []
         for sheet_index, sheet in enumerate(sheets[:MAX_XLSX_SHEETS], start=1):
-            text = _extract_xlsx_sheet_text(archive, sheet["path"], shared_strings)
+            text, rows_truncated = _extract_xlsx_sheet_text(archive, sheet["path"], shared_strings)
             if text:
                 name = sheet["name"] or f"Sheet {sheet_index}"
                 budget.add(parts, f"# Sheet: {name}\n{text}")
+            if rows_truncated:
+                budget.truncated = True
             if budget.truncated:
                 break
         if len(sheets) > MAX_XLSX_SHEETS:
@@ -379,23 +381,34 @@ def _extract_xlsx_sheet_text(
     archive: zipfile.ZipFile,
     path: str,
     shared_strings: list[str],
-) -> str:
+) -> tuple[str, bool]:
     if path not in archive.namelist():
-        return ""
-    root = _parse_xml(_read_xml_member(archive, path))
+        return "", False
+    data = _read_xml_member(archive, path)
     lines: list[str] = []
-    rows = root.findall(".//" + _SPREADSHEET_NS + "row")
-    for row in rows[:MAX_XLSX_ROWS_PER_SHEET]:
-        values: list[str] = []
-        for cell in row.findall(_SPREADSHEET_NS + "c"):
-            values.append(_xlsx_cell_text(cell, shared_strings))
-        while values and not values[-1]:
-            values.pop()
-        if any(values):
-            lines.append("\t".join(values))
-    if len(rows) > MAX_XLSX_ROWS_PER_SHEET:
+    truncated = False
+    rows_seen = 0
+    try:
+        for _event, row in ET.iterparse(io.BytesIO(data), events=("end",)):
+            if row.tag != _SPREADSHEET_NS + "row":
+                continue
+            if rows_seen >= MAX_XLSX_ROWS_PER_SHEET:
+                truncated = True
+                break
+            rows_seen += 1
+            values: list[str] = []
+            for cell in row.findall(_SPREADSHEET_NS + "c"):
+                values.append(_xlsx_cell_text(cell, shared_strings))
+            while values and not values[-1]:
+                values.pop()
+            if any(values):
+                lines.append("\t".join(values))
+            row.clear()
+    except ET.ParseError as exc:
+        raise AvatarDocumentParseError("invalid_xml") from exc
+    if truncated:
         lines.append("[Rows truncated]")
-    return "\n".join(lines)
+    return "\n".join(lines), truncated
 
 
 def _xlsx_cell_text(cell: ET.Element, shared_strings: list[str]) -> str:

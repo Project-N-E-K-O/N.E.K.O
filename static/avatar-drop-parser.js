@@ -435,11 +435,14 @@
         var accepted = [];
         var rejected = [];
         var totalTextChars = 0;
+        var overLimitCount = 0;
+        var overLimitBytes = 0;
 
         for (var i = 0; i < files.length; i += 1) {
             var file = files[i];
             if (i >= MAX_FILES) {
-                rejected.push({ name: safeName(file.name), size: file.size, reason: 'too_many_files' });
+                overLimitCount += 1;
+                overLimitBytes += Number(file.size) || 0;
                 continue;
             }
 
@@ -463,6 +466,14 @@
             } catch (_) {
                 rejected.push({ name: safeName(file.name), size: file.size, reason: 'read_failed' });
             }
+        }
+        if (overLimitCount > 0) {
+            rejected.push({
+                name: overLimitCount + ' more files',
+                size: overLimitBytes,
+                reason: 'too_many_files',
+                count: overLimitCount
+            });
         }
 
         return { accepted: accepted, rejected: rejected };

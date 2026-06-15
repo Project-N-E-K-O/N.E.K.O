@@ -1707,7 +1707,13 @@ class OmniOfflineClient:
             return None
         return summary
 
-    async def stream_text(self, text: str, *, system_prefix: str | None = None) -> None:
+    async def stream_text(
+        self,
+        text: str,
+        *,
+        system_prefix: str | None = None,
+        input_transcript_callback: Optional[Callable[[str], Awaitable[None]]] = None,
+    ) -> None:
         """
         Send a text message to the API and stream the response.
         If there are pending images, temporarily switch to vision model for this turn.
@@ -1726,6 +1732,10 @@ class OmniOfflineClient:
         content means accepting that the callback text is persisted into
         ``_conversation_history`` along with the user message (consistent with the
         voice side's user-role injection semantics).
+
+        ``input_transcript_callback`` lets a caller bind the transcript recording
+        callback to this request. This is used when the frontend sends a long prompt
+        but wants memory/history to record a concise user-facing summary.
         """  # noqa: DOCSTRING_CJK
         if not text or not text.strip():
             # If only images without text, use a default prompt
@@ -1785,8 +1795,9 @@ class OmniOfflineClient:
             self._evict_old_images()
 
         # Callback for user input
-        if self.on_input_transcript:
-            await self.on_input_transcript(text.strip())
+        transcript_callback = input_transcript_callback or self.on_input_transcript
+        if transcript_callback:
+            await transcript_callback(text.strip())
 
         # Retry策略：重试2次，间隔1秒、2秒
         max_retries = 3

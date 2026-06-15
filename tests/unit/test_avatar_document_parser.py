@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -12,6 +13,7 @@ from utils.avatar_document_parser import (
 )
 
 
+PARSER_SOURCE_PATH = Path(__file__).resolve().parents[2] / "utils" / "avatar_document_parser.py"
 CONTENT_TYPES_XML = '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>'
 WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 SPREADSHEET_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -41,7 +43,7 @@ def _docx_bytes(text: str, extra_members: dict[str, str | bytes] | None = None) 
     return _zip_bytes(members)
 
 
-def _xlsx_bytes(text: str, sheet_count: int = 1) -> bytes:
+def _xlsx_bytes(text: str, sheet_count: int = 1, row_count: int = 1) -> bytes:
     sheets = "".join(
         f'<sheet name="Sheet {index}" sheetId="{index}" r:id="rId{index}"/>'
         for index in range(1, sheet_count + 1)
@@ -61,10 +63,13 @@ def _xlsx_bytes(text: str, sheet_count: int = 1) -> bytes:
         "xl/sharedStrings.xml": f'<sst xmlns="{SPREADSHEET_NS}"><si><t>{text}</t></si></sst>',
     }
     for index in range(1, sheet_count + 1):
+        rows = "".join(
+            f'<row r="{row_index}"><c r="A{row_index}" t="s"><v>0</v></c>'
+            f'<c r="B{row_index}"><v>{42 if row_count == 1 else row_index}</v></c></row>'
+            for row_index in range(1, row_count + 1)
+        )
         members[f"xl/worksheets/sheet{index}.xml"] = (
-            f'<worksheet xmlns="{SPREADSHEET_NS}"><sheetData><row r="1">'
-            '<c r="A1" t="s"><v>0</v></c><c r="B1"><v>42</v></c>'
-            "</row></sheetData></worksheet>"
+            f'<worksheet xmlns="{SPREADSHEET_NS}"><sheetData>{rows}</sheetData></worksheet>'
         )
     return _zip_bytes(members)
 
@@ -223,6 +228,25 @@ def test_marks_xlsx_truncated_when_sheet_limit_is_exceeded():
     assert parsed["truncated"] is True
     assert "# Sheet: Sheet 12" in parsed["content"]
     assert "# Sheet: Sheet 13" not in parsed["content"]
+
+
+@pytest.mark.unit
+def test_marks_xlsx_truncated_when_row_limit_is_exceeded():
+    parsed = parse_avatar_document("many-rows.xlsx", "", _xlsx_bytes("Shared", row_count=805))
+
+    assert parsed["document_type"] == "xlsx"
+    assert parsed["truncated"] is True
+    assert "Shared\t800" in parsed["content"]
+    assert "Shared\t801" not in parsed["content"]
+    assert "[Rows truncated]" in parsed["content"]
+
+
+@pytest.mark.unit
+def test_xlsx_rows_are_not_materialized_before_limit():
+    source = PARSER_SOURCE_PATH.read_text(encoding="utf-8")
+
+    assert "ET.iterparse(io.BytesIO(data), events=(\"end\",))" in source
+    assert 'rows = root.findall(".//" + _SPREADSHEET_NS + "row")' not in source
 
 
 @pytest.mark.unit

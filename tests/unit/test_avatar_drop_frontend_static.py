@@ -11,6 +11,7 @@ CORE_PATH = REPO_ROOT / "main_logic" / "core.py"
 INDEX_TEMPLATE_PATH = REPO_ROOT / "templates" / "index.html"
 INTAKE_PATH = REPO_ROOT / "static" / "avatar-drop-intake.js"
 MAIN_SERVER_PATH = REPO_ROOT / "app" / "main_server.py"
+OMNI_OFFLINE_PATH = REPO_ROOT / "main_logic" / "omni_offline_client.py"
 PARSER_PATH = REPO_ROOT / "static" / "avatar-drop-parser.js"
 WEBSOCKET_ROUTER_PATH = REPO_ROOT / "main_routers" / "websocket_router.py"
 
@@ -78,7 +79,10 @@ def test_avatar_drop_parser_declares_supported_formats_and_limits():
     assert "macro_document_unsupported" in source
     assert "legacy_office_unsupported" in source
     assert "if (i >= MAX_FILES)" in source
+    assert "var overLimitCount = 0;" in source
+    assert "overLimitCount + ' more files'" in source
     assert "accepted.length >= MAX_FILES" not in source
+    assert "reason: 'too_many_files',\n                count: overLimitCount" in source
     assert "JSON.parse(text)" in source
     assert "garbled_text" in source
     assert "control_chars" in source
@@ -156,6 +160,7 @@ def test_avatar_drop_scripts_and_backend_routes_are_wired():
 @pytest.mark.unit
 def test_avatar_drop_image_and_memory_override_are_routed_as_text_session_inputs():
     core_source = _read(CORE_PATH)
+    offline_source = _read(OMNI_OFFLINE_PATH)
     websocket_source = _read(WEBSOCKET_ROUTER_PATH)
 
     assert 'text_session_input_types = {"text", "avatar_drop_image", "user_image"}' in core_source
@@ -163,11 +168,15 @@ def test_avatar_drop_image_and_memory_override_are_routed_as_text_session_inputs
     assert "memory_text = self._clean_frontend_memory_text(message.get(\"memory_text\"))" in core_source
     assert "record_data = memory_text or data" in core_source
     assert "routing_data = record_data if memory_text else data" in core_source
-    assert "self._next_text_transcript_memory_text = memory_text" in core_source
-    assert "record_transcript_text = memory_override_text or transcript_text" in core_source
+    assert "input_transcript_callback" in core_source
+    assert "self._next_text_transcript_memory_text" not in core_source
+    assert "memory_override_text" not in core_source
+    assert "record_transcript_text = transcript_text" in core_source
     assert '"text": record_transcript_text' in core_source
     assert 'text_only_input_types = {"text", "avatar_drop_image", "user_image"}' in core_source
     assert "msg_input_type in text_only_input_types" in core_source
+    assert "input_transcript_callback: Optional[Callable[[str], Awaitable[None]]] = None" in offline_source
+    assert "transcript_callback = input_transcript_callback or self.on_input_transcript" in offline_source
     assert "input_type in ['audio', 'screen', 'camera', 'text', 'avatar_drop_image', 'user_image']" in websocket_source
     assert "text_input_types = ['text', 'avatar_drop_image', 'user_image']" in websocket_source
     assert "if input_type in text_input_types:" in websocket_source
