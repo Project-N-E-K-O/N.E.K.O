@@ -97,6 +97,7 @@ def _clean_material(material: Mapping[str, Any]) -> dict[str, Any] | None:
         "media_intent": _clean_media_intent(material.get("media_intent")),
         "why_now": _clean_text(material.get("why_now"), limit=140),
         "search_query": _clean_text(material.get("search_query"), limit=80),
+        "keywords": _clean_keywords(material.get("keywords")),
         "relevance": relevance,
         "risk": max(0, min(100, risk)),
         "priority": relevance,
@@ -150,6 +151,35 @@ def _topic_similarity(left: set[str], right: set[str]) -> float:
         return 0.0
     overlap = len(left & right)
     return overlap / max(1, min(len(left), len(right)))
+
+
+def _clean_keywords(value: Any) -> list[str]:
+    if isinstance(value, str):
+        raw_items = [value]
+    elif isinstance(value, Iterable) and not isinstance(value, Mapping):
+        raw_items = list(value)
+    else:
+        raw_items = []
+    out: list[str] = []
+    for item in raw_items:
+        text = _clean_text(item, limit=30)
+        if text and text not in out:
+            out.append(text)
+        if len(out) >= 6:
+            break
+    return out
+
+
+def _material_keywords(material: Mapping[str, Any]) -> set[str]:
+    return {
+        kw.strip().lower()
+        for kw in (material.get("keywords") or [])
+        if isinstance(kw, str) and kw.strip()
+    }
+
+
+def _material_bigram_units(material: Mapping[str, Any]) -> set[str]:
+    return {unit for unit in _material_topic_units(material) if len(unit) >= 2}
 
 
 async def _default_analyzer(
@@ -545,16 +575,31 @@ class TopicHookPool:
         return max(0.0, self._min_trigger_gap_seconds - elapsed)
 
     def _topic_was_used_today(self, name: str, material: Mapping[str, Any]) -> bool:
-        units = _material_topic_units(material)
         hook_id = str(material.get("hook_id") or "").strip()
         interest = _clean_text(material.get("interest"), limit=90)
+        keywords = _material_keywords(material)
+        bigram_units = _material_bigram_units(material)
         for record in self._prune_used_topics(name):
             if hook_id and record.get("hook_id") == hook_id:
                 return True
             if interest and record.get("interest") == interest:
                 return True
-            if _topic_similarity(units, set(record.get("units") or ())) >= 0.55:
+            # Primary: a shared LLM keyword means the same topic.
+            record_keywords = set(record.get("keywords") or ())
+            if keywords and record_keywords and (keywords & record_keywords):
                 return True
+            # Parallel ngram veto: runs even when keywords miss. The ngram view
+            # is noisy, so it only vetoes on a strict AND — sim >= 0.6 AND >= 2
+            # shared 2gram units — and single CJK chars are excluded upstream.
+            record_bigrams = set(record.get("bigram_units") or ())
+            if bigram_units and record_bigrams:
+                shared = len(bigram_units & record_bigrams)
+                if shared >= 2 and _topic_similarity(bigram_units, record_bigrams) >= 0.6:
+                    logger.info(
+                        "[%s] topic dedup veto by ngram fallback (keyword miss): shared=%d interest=%s",
+                        name, shared, interest,
+                    )
+                    return True
         return False
 
     def _filter_available_materials(
@@ -579,7 +624,8 @@ class TopicHookPool:
                 "used_at": float(material.get("used_at") or time.time()),
                 "hook_id": str(material.get("hook_id") or "").strip(),
                 "interest": _clean_text(material.get("interest"), limit=90),
-                "units": sorted(_material_topic_units(material)),
+                "keywords": sorted(_material_keywords(material)),
+                "bigram_units": sorted(_material_bigram_units(material)),
             }
         )
 

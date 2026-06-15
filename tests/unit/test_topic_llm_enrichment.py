@@ -41,6 +41,7 @@ async def test_call_topic_candidates_parses_model_output(monkeypatch):
             "risk": 20,
             "why_now": "",
             "search_query": "",
+            "keywords": [],
             "priority": 93,
         }
     ]
@@ -64,6 +65,7 @@ async def test_call_topic_candidates_passes_global_signals_and_keeps_online_fiel
               "deepening_hint": "用户接话后再聊自由感和现实成本",
               "why_now": "多次提到买车、预算和不想被固定流程推着走",
               "search_query": "年轻人 买车 通勤 养车 成本",
+              "keywords": ["买车", "自由感"],
               "relevance": 91,
               "risk": 18
             }
@@ -89,6 +91,7 @@ async def test_call_topic_candidates_passes_global_signals_and_keeps_online_fiel
             "deepening_hint": "用户接话后再聊自由感和现实成本",
             "why_now": "多次提到买车、预算和不想被固定流程推着走",
             "search_query": "年轻人 买车 通勤 养车 成本",
+            "keywords": ["买车", "自由感"],
             "relevance": 91,
             "risk": 18,
             "priority": 91,

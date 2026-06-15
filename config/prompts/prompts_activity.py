@@ -268,6 +268,7 @@ TOPIC_CANDIDATE_PROMPTS: dict[str, str] = {
     "deepening_hint": "用户接话后的展开方向，不超过40字",
     "why_now": "为什么现在值得轻轻接一下，不超过50字",
     "search_query": "用于联网补现实细节的查询词；不需要联网就留空",
+    "keywords": ["3-6个关系点关键词，用于去重和检索兜底"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -307,6 +308,7 @@ TOPIC_CANDIDATE_PROMPTS: dict[str, str] = {
     "deepening_hint": "用戶接話後的展開方向，不超過40字",
     "why_now": "為什麼現在值得輕輕接一下，不超過50字",
     "search_query": "用於聯網補現實細節的查詢詞；不需要聯網就留空",
+    "keywords": ["3-6個關係點關鍵詞，用於去重和檢索兜底"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -345,6 +347,7 @@ Output strict JSON, no markdown fences:
     "deepening_hint": "how to continue if the user responds, max 40 words",
     "why_now": "why this is worth lightly picking up now, max 50 words",
     "search_query": "query for online enrichment; empty if not needed",
+    "keywords": ["3-6 short relationship keywords for dedup and search fallback"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -384,6 +387,7 @@ If nothing is worth keeping, output {{"topics": []}}.""",
     "deepening_hint": "ユーザーが乗った後の広げ方、40字以内",
     "why_now": "今そっと拾う理由、50字以内",
     "search_query": "現実情報を補う検索語。不要なら空文字",
+    "keywords": ["重複排除と検索の補助用、関係する短いキーワードを3〜6個"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -423,6 +427,7 @@ If nothing is worth keeping, output {{"topics": []}}.""",
     "deepening_hint": "사용자가 반응한 뒤 이어갈 방향, 40자 이내",
     "why_now": "지금 가볍게 꺼낼 만한 이유, 50자 이내",
     "search_query": "현실 정보를 보충할 검색어. 필요 없으면 빈 문자열",
+    "keywords": ["중복 제거와 검색 보조용 핵심 키워드 3-6개"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -462,6 +467,7 @@ Devuelve JSON estricto, sin bloques markdown:
     "deepening_hint": "cómo seguir si el usuario responde, máximo 40 palabras",
     "why_now": "por qué vale la pena tocarlo ahora, máximo 50 palabras",
     "search_query": "consulta para enriquecer con datos reales; vacío si no hace falta",
+    "keywords": ["3-6 palabras clave de la relación para deduplicar y como respaldo de búsqueda"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -501,6 +507,7 @@ Retorne JSON estrito, sem blocos markdown:
     "deepening_hint": "como continuar se o usuario responder, maximo 40 palavras",
     "why_now": "por que vale tocar nisso agora, maximo 50 palavras",
     "search_query": "consulta para enriquecer com dados reais; vazio se nao precisar",
+    "keywords": ["3-6 palavras-chave da relacao para deduplicar e como apoio de busca"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -540,6 +547,7 @@ Se nada valer a pena, retorne {{"topics": []}}.""",
     "deepening_hint": "как развить, если пользователь ответит, до 40 слов",
     "why_now": "почему стоит мягко поднять это сейчас, до 50 слов",
     "search_query": "запрос для фактического обогащения; пусто, если не нужно",
+    "keywords": ["3-6 ключевых слов темы для дедупликации и подстраховки поиска"],
     "relevance": 0-100,
     "risk": 0-100
   }}

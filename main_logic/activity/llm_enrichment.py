@@ -337,6 +337,18 @@ async def call_topic_candidates(
         risk = max(0, min(100, risk))
         if relevance < 70 or risk > 65:
             continue
+        raw_keywords = item.get('keywords')
+        if isinstance(raw_keywords, str):
+            raw_keywords = [raw_keywords]
+        elif not isinstance(raw_keywords, list):
+            raw_keywords = []
+        keywords: list[str] = []
+        for kw in raw_keywords:
+            kw_text = str(kw or '').strip()[:30]
+            if kw_text and kw_text not in keywords:
+                keywords.append(kw_text)
+            if len(keywords) >= 6:
+                break
         material = {
             'interest': interest[:90],
             'hook': str(item.get('hook') or '').strip()[:120],
@@ -346,6 +358,7 @@ async def call_topic_candidates(
             'risk': risk,
             'why_now': str(item.get('why_now') or '').strip()[:140],
             'search_query': str(item.get('search_query') or '').strip()[:80],
+            'keywords': keywords,
             'priority': relevance,
         }
         cleaned.append(material)

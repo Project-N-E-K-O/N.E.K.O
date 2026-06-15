@@ -35,6 +35,7 @@ async def test_enrich_topic_materials_online_defaults_to_search_fetcher():
         {
             "interest": "我的车是白色的，不会给我用差漆吧，有色差就不好看了",
             "media_intent": ["news"],
+            "keywords": ["补漆"],
         }
     ]
 

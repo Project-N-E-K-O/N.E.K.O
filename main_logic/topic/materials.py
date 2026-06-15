@@ -7,12 +7,16 @@ optionally enriching the top hooks with existing lightweight online fetchers.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from copy import deepcopy
 from typing import Any
 
 from main_logic.topic.common import ZH_LINK_STOP_CHARS, clean_text, is_zh_lang, topic_units
 from utils.source_locale import source_region_from_locale
+
+
+logger = logging.getLogger("N.E.K.O.Main.topic.materials")
 
 
 Fetcher = Callable[[str, int], Awaitable[Mapping[str, Any]]]
@@ -168,30 +172,53 @@ def _items_from_result(kind: str, result: Mapping[str, Any]) -> list[dict[str, s
     return items
 
 
-def _topic_units(text: str) -> set[str]:
-    return topic_units(
+def _topic_bigram_units(text: str) -> set[str]:
+    # 2gram-only view: CJK bigrams + multi-char latin/other tokens, dropping
+    # single CJK chars. The single-char overlap is too noisy to gate on, so the
+    # ngram fallback below leans on ≥2-char units only.
+    units = topic_units(
         text,
         limit=120,
         stop_chars=ZH_LINK_STOP_CHARS,
-        include_cjk_bigrams=False,
+        include_cjk_bigrams=True,
     )
+    return {unit for unit in units if len(unit) >= 2}
 
 
-def _is_related_link(query: str, link: Mapping[str, str]) -> bool:
-    query_units = _topic_units(query)
-    if not query_units:
+def _is_related_link(query: str, keywords: Iterable[str], link: Mapping[str, str]) -> bool:
+    """Two-tier relevance: LLM keyword link first, ngram fallback second.
+
+    Primary: keep the link if its title literally contains one of the
+    candidate's keywords. Fallback (only when no keyword matched, kept
+    deliberately strict): require ≥2 shared 2gram units between query and
+    title, so single-char coincidences can't pass an off-topic title.
+    """
+    title = str(link.get("title", "") or "")
+    if not title:
         return False
-    title_units = _topic_units(link.get("title", ""))
-    if not title_units:
+    title_lower = title.lower()
+    for kw in keywords or ():
+        kw_text = str(kw or "").strip().lower()
+        if kw_text and kw_text in title_lower:
+            return True
+
+    query_bigrams = _topic_bigram_units(query)
+    if not query_bigrams:
         return False
-    overlap = query_units & title_units
-    if any(len(unit) >= 3 for unit in overlap):
+    shared = len(query_bigrams & _topic_bigram_units(title))
+    if shared >= 2:
+        logger.info(
+            "topic link ngram fallback matched (keyword miss): shared=%d title=%s",
+            shared, title[:40],
+        )
         return True
-    return len(overlap) >= 2
+    return False
 
 
-def _filter_related_links(query: str, links: list[dict[str, str]]) -> list[dict[str, str]]:
-    return [link for link in links if _is_related_link(query, link)]
+def _filter_related_links(
+    query: str, keywords: Iterable[str], links: list[dict[str, str]]
+) -> list[dict[str, str]]:
+    return [link for link in links if _is_related_link(query, keywords, link)]
 
 
 async def _safe_fetch(kind: str, fetcher: Fetcher, query: str, limit: int, timeout_s: float) -> tuple[str, Mapping[str, Any] | None]:
@@ -239,7 +266,7 @@ async def enrich_topic_materials_online(
             if result is None:
                 continue
             links.extend(_items_from_result(kind, result)[:2])
-        links = _filter_related_links(query, links)
+        links = _filter_related_links(query, material.get("keywords") or [], links)
 
         if links:
             titles = "、".join(link["title"] for link in links[:3])
