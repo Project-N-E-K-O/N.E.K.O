@@ -847,24 +847,36 @@ class OmniOfflineClient:
         leak_filter = ToolLeakFilter(tool_names=tool_names)
         provider = getattr(self, "base_url", None) or getattr(self, "model", None)
 
-        async for chunk in self._astream_with_tools(
-            messages, _tool_leak_filter=leak_filter, _tool_leak_provider=provider, **overrides
-        ):
-            if getattr(chunk, "_tool_leak_filtered", False):
-                yield chunk
-                continue
-            content = getattr(chunk, "content", None)
-            if content:
-                chunk.content = self._filter_tool_leak_content(content, leak_filter, provider=provider)
-                setattr(chunk, "_tool_leak_filtered", True)
-            yield chunk
-
-        visible, event = leak_filter.finalize()
-        if event:
-            log_tool_leak_filtered(event, provider=provider)
-        if visible:
+        def _finalize_filter_chunk():
+            visible, event = leak_filter.finalize()
+            if event:
+                log_tool_leak_filtered(event, provider=provider)
+            if not visible:
+                return None
             chunk = LLMStreamChunk(content=visible)
             setattr(chunk, "_tool_leak_filtered", True)
+            return chunk
+
+        try:
+            async for chunk in self._astream_with_tools(
+                messages, _tool_leak_filter=leak_filter, _tool_leak_provider=provider, **overrides
+            ):
+                if getattr(chunk, "_tool_leak_filtered", False):
+                    yield chunk
+                    continue
+                content = getattr(chunk, "content", None)
+                if content:
+                    chunk.content = self._filter_tool_leak_content(content, leak_filter, provider=provider)
+                    setattr(chunk, "_tool_leak_filtered", True)
+                yield chunk
+        except Exception:
+            chunk = _finalize_filter_chunk()
+            if chunk is not None:
+                yield chunk
+            raise
+
+        chunk = _finalize_filter_chunk()
+        if chunk is not None:
             yield chunk
 
     def _filter_tool_leak_content(

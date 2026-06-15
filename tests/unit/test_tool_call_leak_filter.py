@@ -40,6 +40,22 @@ def test_complete_seed_tool_call_is_stripped():
     assert events[0].pattern == "seed_tool_call"
 
 
+def test_seed_tool_call_ignores_seed_close_text_inside_argument():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    leak = (
+        '<seed:tool_call><function><name>recall_memory</name>'
+        '<parameter name="query">x </seed:tool_call> y</parameter>'
+        "</function></seed:tool_call> after"
+    )
+    visible, events = _drain(ToolLeakFilter(tool_names={"recall_memory"}), ["before ", leak])
+
+    assert visible == "before  after"
+    assert "y</parameter>" not in visible
+    assert len(events) == 1
+    assert events[0].pattern == "seed_tool_call"
+
+
 def test_recall_memory_tail_fragment_is_stripped_without_open_seed():
     from utils.llm_tool_leak_filter import ToolLeakFilter
 
@@ -124,6 +140,21 @@ def test_structured_tool_call_ignores_function_close_text_inside_argument():
 
     assert visible == "before  after"
     assert "y</parameter>" not in visible
+    assert len(events) == 1
+    assert events[0].pattern == "structured_tool_call"
+
+
+def test_structured_tool_call_requires_current_parameter_close_before_function_close():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    leak = (
+        'recall_memory</name><parameter name="scope">recent</parameter>'
+        '<parameter name="query">secret </function> tail</parameter></function> after'
+    )
+    visible, events = _drain(ToolLeakFilter(tool_names={"recall_memory"}), ["before ", leak])
+
+    assert visible == "before  after"
+    assert "tail</parameter>" not in visible
     assert len(events) == 1
     assert events[0].pattern == "structured_tool_call"
 

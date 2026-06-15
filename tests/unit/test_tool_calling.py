@@ -430,6 +430,32 @@ async def test_offline_openai_path_emits_finalized_pretool_tail():
 
 
 @pytest.mark.asyncio
+async def test_visible_tool_leak_filter_flushes_pending_text_before_stream_error(monkeypatch):
+    from utils.llm_client import LLMStreamChunk
+    from main_logic.omni_offline_client import OmniOfflineClient
+
+    async def _astream_with_tools_then_raise(self, messages, **overrides):
+        yield LLMStreamChunk(content="Let")
+        yield LLMStreamChunk(content="s")
+        raise RuntimeError("stream broke")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream_with_tools_then_raise)
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.base_url = "free"
+    client.model = "fake"
+    client._tool_definitions = []
+
+    out_chunks = []
+    with pytest.raises(RuntimeError, match="stream broke"):
+        async for chunk in client._astream_visible_with_tools([{"role": "user", "content": "hi"}]):
+            out_chunks.append(chunk)
+
+    assert "".join(chunk.content for chunk in out_chunks) == "Lets"
+    assert getattr(out_chunks[-1], "_tool_leak_filtered", False) is True
+
+
+@pytest.mark.asyncio
 async def test_offline_openai_path_persists_reasoning_content_with_tool_call():
     """Thinking 模型（DeepSeek-R / Qwen / GLM thinking 等 OpenAI-compat 端点）
     在多轮 tool calling 时，发起 tool_calls 的那条 assistant 消息必须把本轮流出的
