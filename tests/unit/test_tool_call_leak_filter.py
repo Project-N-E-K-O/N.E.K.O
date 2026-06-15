@@ -159,6 +159,18 @@ def test_structured_tool_call_requires_current_parameter_close_before_function_c
     assert events[0].pattern == "structured_tool_call"
 
 
+def test_structured_tool_call_treats_self_closing_parameter_as_closed():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    leak = 'recall_memory</name><parameter name="query"/></function> after'
+    visible, events = _drain(ToolLeakFilter(tool_names={"recall_memory"}), ["before ", leak])
+
+    assert visible == "before  after"
+    assert "<parameter" not in visible
+    assert len(events) == 1
+    assert events[0].pattern == "structured_tool_call"
+
+
 def test_structured_tool_call_keeps_suppressing_when_seed_close_precedes_later_function_close():
     from utils.llm_tool_leak_filter import ToolLeakFilter
 

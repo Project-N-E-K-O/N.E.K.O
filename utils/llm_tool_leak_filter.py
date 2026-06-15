@@ -13,7 +13,7 @@ _SEED_CLOSE_RE = re.compile(r"<\s*/\s*seed\s*:\s*tool_call\s*>", re.IGNORECASE)
 _PARAMETER_RE = re.compile(r"<\s*parameter\b[^>]*\bname\s*=", re.IGNORECASE)
 _PARAMETER_CLOSE_RE = re.compile(r"<\s*/\s*parameter\s*>", re.IGNORECASE)
 _PARAMETER_BOUNDARY_RE = re.compile(
-    r"<\s*parameter\b[^>]*\bname\s*=|<\s*/\s*parameter\s*>",
+    r"<\s*parameter\b[^>]*\bname\s*=[^>]*>|<\s*/\s*parameter\s*>",
     re.IGNORECASE,
 )
 _FUNCTION_CLOSE_RE = re.compile(r"<\s*/\s*function\s*>", re.IGNORECASE)
@@ -194,9 +194,10 @@ class ToolLeakFilter:
     @staticmethod
     def _parameter_depth_after(text: str, depth: int = 0) -> int:
         for match in _PARAMETER_BOUNDARY_RE.finditer(text):
-            if re.match(r"<\s*/", match.group(0)):
+            tag = match.group(0)
+            if re.match(r"<\s*/", tag):
                 depth = max(0, depth - 1)
-            else:
+            elif not re.search(r"/\s*>$", tag):
                 depth += 1
         return depth
 
