@@ -54,6 +54,8 @@
     "ui.label.mode":  "Modo",
     "ui.label.text":  "Texto",
     "ui.label.reply":  "Resposta",
+    "ui.label.remove_pasted_image":  "Remover imagem colada",
+    "ui.label.remove_pasted_answer_image":  "Remover imagem de resposta colada",
     "ui.placeholder.input":  "Cole um conceito, enunciado ou texto OCR.",
     "ui.error.run_create_failed":  "Falha ao criar tarefa: HTTP {status}",
     "ui.error.run_export_failed":  "Falha ao exportar resultado: HTTP {status}",

@@ -54,6 +54,8 @@
     "ui.label.mode":  "Modo",
     "ui.label.text":  "Texto",
     "ui.label.reply":  "Respuesta",
+    "ui.label.remove_pasted_image":  "Eliminar imagen pegada",
+    "ui.label.remove_pasted_answer_image":  "Eliminar imagen de respuesta pegada",
     "ui.placeholder.input":  "Pega un concepto, enunciado o texto OCR.",
     "ui.error.run_create_failed":  "Error al crear tarea: HTTP {status}",
     "ui.error.run_export_failed":  "Error al exportar el resultado: HTTP {status}",

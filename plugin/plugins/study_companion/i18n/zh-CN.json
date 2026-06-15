@@ -54,6 +54,8 @@
     "ui.label.mode":  "模式",
     "ui.label.text":  "文本",
     "ui.label.reply":  "回复",
+    "ui.label.remove_pasted_image":  "移除粘贴的图片",
+    "ui.label.remove_pasted_answer_image":  "移除粘贴的答案图片",
     "ui.placeholder.input":  "粘贴概念、题目或 OCR 文本。",
     "ui.error.run_create_failed":  "创建任务失败：HTTP {status}",
     "ui.error.run_export_failed":  "导出结果失败：HTTP {status}",

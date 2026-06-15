@@ -45,6 +45,13 @@ def _coerce_bool(value: object, default: bool) -> bool:
     return bool(value)
 
 
+def _coerce_int(value: object, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def _apply_settings_config(current: StudyConfig, raw: dict) -> StudyConfig:
     next_values = current.to_dict()
     study = raw.get("study") if isinstance(raw.get("study"), dict) else {}
@@ -72,8 +79,8 @@ def _apply_settings_config(current: StudyConfig, raw: dict) -> StudyConfig:
             llm.get("llm_vision_enabled"), current.llm_vision_enabled
         )
     if "llm_vision_max_image_px" in llm:
-        next_values["llm_vision_max_image_px"] = llm.get(
-            "llm_vision_max_image_px"
+        next_values["llm_vision_max_image_px"] = _coerce_int(
+            llm.get("llm_vision_max_image_px"), current.llm_vision_max_image_px
         )
     return StudyConfig(**next_values)
 

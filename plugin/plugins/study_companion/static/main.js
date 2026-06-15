@@ -105,6 +105,7 @@ let lastReplyValue = '';
 let studyInputImageValue = '';
 let answerInputImageValue = '';
 let pastePendingCount = 0;
+const pasteControllers = { study: null, answer: null };
 
 function t(key, fallback) {
   return window.I18n && typeof window.I18n.t === 'function'
@@ -327,7 +328,9 @@ function createImagePasteHandler(options) {
       return;
     }
     event.preventDefault();
+    pasteControllers[kind]?.abort();
     const controller = new AbortController();
+    pasteControllers[kind] = controller;
     setPasteError(errorTarget, '');
     setPastePending(true);
     try {
@@ -343,6 +346,9 @@ function createImagePasteHandler(options) {
             continue;
           }
           const image = await compressImageForStudy(blob, controller.signal);
+          if (controller.signal.aborted) {
+            return;
+          }
           if (!image) {
             setPasteError(errorTarget, t('ui.error.image_paste_failed', 'Image paste failed. Please try a smaller JPEG or PNG image.'));
             continue;
@@ -350,10 +356,17 @@ function createImagePasteHandler(options) {
           setImagePreview(kind, image);
           setPasteError(errorTarget, '');
         } else if (item.type === 'text/plain') {
-          item.getAsString((pastedText) => insertPastedText(textarea, pastedText));
+          item.getAsString((pastedText) => {
+            if (!controller.signal.aborted) {
+              insertPastedText(textarea, pastedText);
+            }
+          });
         }
       }
     } finally {
+      if (pasteControllers[kind] === controller) {
+        pasteControllers[kind] = null;
+      }
       setPastePending(false);
     }
   };

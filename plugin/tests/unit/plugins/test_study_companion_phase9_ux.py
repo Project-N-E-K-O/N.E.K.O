@@ -508,6 +508,11 @@ def test_phase9_i18n_keys_and_placeholders_are_consistent() -> None:
     assert baseline_name in bundles
     assert expected_locales.issubset(set(bundles))
     assert len(bundles) >= len(expected_locales)
+    assert bundles["en.json"]["ui.label.remove_pasted_image"] == "Remove pasted image"
+    assert (
+        bundles["en.json"]["ui.label.remove_pasted_answer_image"]
+        == "Remove pasted answer image"
+    )
     baseline_keys = set(bundles[baseline_name])
     placeholder_pattern = re.compile(r"\{[a-zA-Z0-9_]+\}")
 

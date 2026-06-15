@@ -718,7 +718,11 @@ async def test_study_settings_entry_persists_and_updates_runtime(
             config={
                 "study": {"default_mode": MODE_TEACHING, "auto_open_ui": True},
                 "ocr_reader": {"enabled": "false", "languages": "chi_sim+eng"},
-                "llm": {"llm_call_timeout_seconds": 90, "llm_vision_enabled": True},
+                "llm": {
+                    "llm_call_timeout_seconds": 90,
+                    "llm_vision_enabled": True,
+                    "llm_vision_max_image_px": "128",
+                },
             }
         )
 
@@ -729,12 +733,14 @@ async def test_study_settings_entry_persists_and_updates_runtime(
         assert result.value["config"]["ocr_reader"]["languages"] == "chi_sim+eng"
         assert result.value["config"]["llm"]["llm_call_timeout_seconds"] == 90.0
         assert result.value["config"]["llm"]["llm_vision_enabled"] is True
+        assert result.value["config"]["llm"]["llm_vision_max_image_px"] == 128
         assert plugin._cfg.default_mode == MODE_TEACHING
         assert plugin._cfg.auto_open_ui is True
         assert plugin._cfg.ocr_enabled is False
         assert plugin._cfg.ocr_languages == "chi_sim+eng"
         assert plugin._cfg.llm_call_timeout_seconds == 90.0
         assert plugin._cfg.llm_vision_enabled is True
+        assert plugin._cfg.llm_vision_max_image_px == 128
         persisted = plugin._store.load_config(StudyConfig())
         assert persisted.default_mode == MODE_TEACHING
         assert persisted.auto_open_ui is True
@@ -742,6 +748,7 @@ async def test_study_settings_entry_persists_and_updates_runtime(
         assert persisted.ocr_languages == "chi_sim+eng"
         assert persisted.llm_call_timeout_seconds == 90.0
         assert persisted.llm_vision_enabled is True
+        assert persisted.llm_vision_max_image_px == 128
         assert plugin._agent._config is plugin._cfg
         assert plugin._ocr_pipeline is not None
         assert plugin._ocr_pipeline._config is plugin._cfg
@@ -2608,14 +2615,23 @@ def test_study_companion_static_ui_supports_image_paste_contract() -> None:
 
     assert 'id="studyInputImagePreview"' in html_source
     assert 'id="answerInputImagePreview"' in html_source
+    assert 'data-i18n-aria-label="ui.label.remove_pasted_image"' in html_source
+    assert 'data-i18n-aria-label="ui.label.remove_pasted_answer_image"' in html_source
+    assert 'aria-label="Remove pasted image"' not in html_source
+    assert 'aria-label="Remove pasted answer image"' not in html_source
     assert 'id="studyInputPasteError"' in html_source
     assert 'id="answerInputPasteError"' in html_source
     assert "img-src 'self' data: blob:" in html_source
     assert "const SUPPORTED_PASTE_IMAGE_TYPES = new Set(['image/png', 'image/jpeg']);" in source
     assert "const LOAD_IMAGE_TIMEOUT_MS = 30000;" in source
     assert "const TARGET_DATA_URL_LENGTH = 1000000;" in source
+    assert "const pasteControllers = { study: null, answer: null };" in source
     assert "async function compressImageForStudy(blob, signal)" in source
     assert "function createImagePasteHandler(options)" in source
+    assert "pasteControllers[kind]?.abort();" in source
+    assert "pasteControllers[kind] = controller;" in source
+    assert "if (controller.signal.aborted)" in source
+    assert "if (pasteControllers[kind] === controller)" in source
     assert "event.clipboardData?.items" in source
     assert "item.type.startsWith('image/')" in source
     assert "SUPPORTED_PASTE_IMAGE_TYPES.has(item.type)" in source

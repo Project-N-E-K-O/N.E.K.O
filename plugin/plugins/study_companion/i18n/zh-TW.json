@@ -54,6 +54,8 @@
     "ui.label.mode":  "模式",
     "ui.label.text":  "文字",
     "ui.label.reply":  "回覆",
+    "ui.label.remove_pasted_image":  "移除貼上的圖片",
+    "ui.label.remove_pasted_answer_image":  "移除貼上的答案圖片",
     "ui.placeholder.input":  "貼上概念、題目或 OCR 文字。",
     "ui.error.run_create_failed":  "建立任務失敗：HTTP {status}",
     "ui.error.run_export_failed":  "匯出結果失敗：HTTP {status}",

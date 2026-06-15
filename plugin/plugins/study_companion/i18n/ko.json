@@ -54,6 +54,8 @@
     "ui.label.mode":  "모드",
     "ui.label.text":  "텍스트",
     "ui.label.reply":  "응답",
+    "ui.label.remove_pasted_image":  "붙여넣은 이미지 제거",
+    "ui.label.remove_pasted_answer_image":  "붙여넣은 답변 이미지 제거",
     "ui.placeholder.input":  "개념, 문제 설명 또는 OCR 텍스트를 붙여넣으세요.",
     "ui.error.run_create_failed":  "작업 생성 실패: HTTP {status}",
     "ui.error.run_export_failed":  "결과 내보내기 실패: HTTP {status}",
