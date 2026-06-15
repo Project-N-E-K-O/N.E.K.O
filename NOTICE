@@ -9,9 +9,22 @@ See the LICENSE file for the full license text.
 
 ------------------------------------------------------------
 
+Third-Party Notices
+
+This product includes software developed by third parties:
+
+- Agent-S, by Simular AI and contributors
+  https://github.com/simular-ai/Agent-S
+  Licensed under the Apache License, Version 2.0.
+  Portions located under brain/cua/ are derived from Agent-S and have been
+  modified by the Project N.E.K.O. Team. See brain/cua/AGENT_LICENSE.txt for
+  the upstream license text.
+
+------------------------------------------------------------
+
 我们种下了人与猫娘幸福共生的种子，我们的征途是星辰大海。
 
-We have planted the seed of a happy symbiosis between humans and catgirls;
+We have planted the seed of a happy symbiosis between humans and nekos;
 our journey is to the sea of stars.
 
         —— Project N.E.K.O. Team

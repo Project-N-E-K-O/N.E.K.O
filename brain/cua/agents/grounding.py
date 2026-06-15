@@ -1,4 +1,8 @@
-# Copyright 2025-2026 Project N.E.K.O. Team
+# Modifications Copyright 2025-2026 Project N.E.K.O. Team
+#
+# This file is derived from simular-ai/Agent-S
+# (https://github.com/simular-ai/Agent-S), licensed under the Apache License,
+# Version 2.0; see brain/cua/AGENT_LICENSE.txt. Modified by the Project N.E.K.O. Team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
