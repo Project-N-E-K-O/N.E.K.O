@@ -114,6 +114,31 @@ def _pdf_bytes(text: str = "Hello PDF") -> bytes:
     return _make_pdf(objects)
 
 
+def _many_pdf_bytes(page_count: int) -> bytes:
+    page_refs = []
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    for index in range(1, page_count + 1):
+        page_object_id = len(objects) + 1
+        content_object_id = page_object_id + 1
+        page_refs.append(f"{page_object_id} 0 R")
+        stream = f"BT /F1 24 Tf 72 720 Td (PDF page {index}) Tj ET".encode("ascii")
+        objects.append(
+            (
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+                b"/Resources << /Font << /F1 3 0 R >> >> /Contents "
+                + str(content_object_id).encode("ascii")
+                + b" 0 R >>"
+            )
+        )
+        objects.append(b"<< /Length " + str(len(stream)).encode("ascii") + b" >>\nstream\n" + stream + b"\nendstream")
+    objects[1] = f"<< /Type /Pages /Kids [{' '.join(page_refs)}] /Count {page_count} >>".encode("ascii")
+    return _make_pdf(objects)
+
+
 def _blank_pdf_bytes() -> bytes:
     objects = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
@@ -217,6 +242,27 @@ def test_marks_extracted_text_truncated_when_document_exceeds_budget():
     assert parsed["chars"] == MAX_EXTRACTED_CHARS
     assert parsed["content"].startswith("# Document\n")
     assert parsed["content"].endswith("A")
+
+
+@pytest.mark.unit
+def test_marks_pdf_truncated_after_first_40_pages():
+    parsed = parse_avatar_document("many.pdf", "", _many_pdf_bytes(41))
+
+    assert parsed["document_type"] == "pdf"
+    assert parsed["meta"]["pages"] == 41
+    assert parsed["truncated"] is True
+    assert "# Page 40" in parsed["content"]
+    assert "PDF page 40" in parsed["content"]
+    assert "# Page 41" not in parsed["content"]
+    assert "PDF page 41" not in parsed["content"]
+
+
+@pytest.mark.unit
+def test_pdf_pages_are_not_materialized_before_limit():
+    source = PARSER_SOURCE_PATH.read_text(encoding="utf-8")
+
+    assert "list(reader.pages)" not in source
+    assert "for index, page in enumerate(reader.pages, start=1):" in source
 
 
 @pytest.mark.unit

@@ -126,10 +126,18 @@ def _parse_pdf(data: bytes) -> dict[str, Any]:
     if getattr(reader, "is_encrypted", False):
         raise AvatarDocumentParseError("encrypted_pdf_unsupported")
 
-    pages = list(reader.pages)
+    try:
+        total_pages = len(reader.pages)
+    except Exception:
+        total_pages = None
     budget = _TextBudget()
     parts: list[str] = []
-    for index, page in enumerate(pages[:MAX_PDF_PAGES], start=1):
+    observed_pages = 0
+    for index, page in enumerate(reader.pages, start=1):
+        observed_pages = index
+        if index > MAX_PDF_PAGES:
+            budget.truncated = True
+            break
         try:
             text = page.extract_text() or ""
         except Exception:
@@ -138,12 +146,12 @@ def _parse_pdf(data: bytes) -> dict[str, Any]:
             budget.add(parts, f"# Page {index}\n{text}")
         if budget.truncated:
             break
-    if len(pages) > MAX_PDF_PAGES:
+    if total_pages is not None and total_pages > MAX_PDF_PAGES:
         budget.truncated = True
     return {
         "content": "\n\n".join(parts),
         "truncated": budget.truncated,
-        "meta": {"pages": len(pages)},
+        "meta": {"pages": total_pages if total_pages is not None else observed_pages},
     }
 
 

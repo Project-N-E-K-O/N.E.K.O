@@ -181,3 +181,5 @@ def test_avatar_drop_image_and_memory_override_are_routed_as_text_session_inputs
     assert "text_input_types = ['text', 'avatar_drop_image', 'user_image']" in websocket_source
     assert "if input_type in text_input_types:" in websocket_source
     assert "mode = 'text' if input_type in text_input_types else 'audio'" in websocket_source
+    assert 'ordered_stream_input_types = {"audio", "avatar_drop_image", "user_image"}' in websocket_source
+    assert "if input_type in ordered_stream_input_types:" in websocket_source

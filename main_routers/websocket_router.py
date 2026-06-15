@@ -362,7 +362,8 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     session_manager[lanlan_name]._avatar_position = av_pos
                 else:
                     session_manager[lanlan_name]._avatar_position = None
-                if message.get("input_type") == "audio":
+                ordered_stream_input_types = {"audio", "avatar_drop_image", "user_image"}
+                if input_type in ordered_stream_input_types:
                     await session_manager[lanlan_name].stream_data(message)
                 else:
                     _fire_task(session_manager[lanlan_name].stream_data(message))
