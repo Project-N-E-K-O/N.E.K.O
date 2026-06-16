@@ -82,7 +82,7 @@ def test_mimo_preset_catalog_for_ui_shape_matches_native():
 
 
 def _selected_catalog(core_config, cm):
-    """模拟 /voices 取目录的两步：先拿赢家 key，再按 key 取其静态预制目录。"""
+    # 模拟 /voices 取目录的两步：先拿赢家 key，再按 key 取其静态预制目录
     key = tts_provider_registry.selected_provider_key(core_config, cm)
     return tts_provider_registry.preset_catalog_for_ui(key) if key else None
 
