@@ -107,6 +107,28 @@ keep working through the deprecation window.
 in-tree consumers were using it. Plugins that called it must migrate
 to the `ui_action: media_allowlist_add` part shape.
 
+## Wire serialisation: legacy `binary_data` is raw `bytes`
+
+The synthesised legacy `binary_data` field on the wire payload carries the
+image as **raw `bytes`** (the canonical, already-encoded copy rides in
+`parts[].binary_base64`). The message_plane PUB publisher serialises every
+event with `json.dumps`, and plain `json.dumps` raises `TypeError` on
+`bytes`. That failure was swallowed by a bare `except: pass` in
+`plugin/message_plane/pub_server.py`, so **every image-bearing
+`push_message` — from any plugin, not just one — was silently dropped before
+it reached `main_server`.** Symptom: the plugin UI shows the message
+`queued`, but the cat never reacts and nothing is logged.
+
+Fixed in `pub_server.py` by passing a `json.dumps(..., default=...)` hook
+that base64-encodes `bytes` (and stringifies any other non-JSON value, so a
+single unexpected field can never drop the whole message); the swallowing
+`except: pass` now logs at `debug`. Subscribers are unaffected — they read
+the image from `parts[].binary_base64`, never from `binary_data`.
+
+This is shared infrastructure: any plugin sending an image part depends on
+it. The whole class of bug disappears once the legacy `binary_data` wire
+field is removed in **v0.9** (see below).
+
 ## Removed in v0.9
 
 * All legacy `push_message` parameters listed above.
