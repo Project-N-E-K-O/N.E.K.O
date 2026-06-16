@@ -276,6 +276,24 @@
         return null;
     }
 
+    async function getImageHeaderSizeForFile(file, kind, prefix) {
+        if (kind !== 'jpeg') {
+            var header = prefix && prefix.length >= 64 ? prefix : await readPrefix(file, 65536);
+            return getImageHeaderSize(header, kind);
+        }
+
+        var maxBytes = Math.min(file.size, MAX_IMAGE_BYTES);
+        var count = Math.min(Math.max((prefix && prefix.length) || 0, 65536), maxBytes);
+        while (count > 0 && count <= maxBytes) {
+            var bytes = prefix && prefix.length >= count ? prefix : await readPrefix(file, count);
+            var size = getImageHeaderSize(bytes, kind);
+            if (size) return size;
+            if (count >= maxBytes) return null;
+            count = Math.min(maxBytes, count * 2);
+        }
+        return null;
+    }
+
     function loadImageFromDataUrl(dataUrl) {
         return new Promise(function (resolve, reject) {
             var image = new Image();
@@ -345,8 +363,7 @@
             return { rejected: { reason: 'image_too_large' } };
         }
 
-        var header = kind === 'jpeg' ? await readPrefix(file, 65536) : (prefix && prefix.length >= 64 ? prefix : await readPrefix(file, 65536));
-        var headerSize = getImageHeaderSize(header, kind);
+        var headerSize = await getImageHeaderSizeForFile(file, kind, prefix);
         if (!headerSize || !headerSize.width || !headerSize.height
                 || headerSize.width * headerSize.height > MAX_IMAGE_PIXELS) {
             return { rejected: { reason: 'image_dimensions_invalid' } };

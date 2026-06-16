@@ -66,6 +66,31 @@ def _word_paragraph_xml(text: str) -> str:
     return f"<w:p><w:r><w:t>{text}</w:t></w:r></w:p>"
 
 
+def _docx_with_referenced_header_footer() -> bytes:
+    header_rel_type = f"{OFFICE_REL_NS}/header"
+    footer_rel_type = f"{OFFICE_REL_NS}/footer"
+    return _zip_bytes({
+        "[Content_Types].xml": CONTENT_TYPES_XML,
+        "word/document.xml": (
+            f'<w:document xmlns:w="{WORD_NS}" xmlns:r="{OFFICE_REL_NS}"><w:body>'
+            f"{_word_paragraph_xml('Visible body')}"
+            '<w:sectPr><w:headerReference r:id="rIdHeader"/>'
+            '<w:footerReference r:id="rIdFooter"/></w:sectPr>'
+            "</w:body></w:document>"
+        ),
+        "word/_rels/document.xml.rels": (
+            f'<Relationships xmlns="{PACKAGE_REL_NS}">'
+            f'<Relationship Id="rIdHeader" Type="{header_rel_type}" Target="header1.xml"/>'
+            f'<Relationship Id="rIdFooter" Type="{footer_rel_type}" Target="footer1.xml"/>'
+            f'<Relationship Id="rIdStale" Type="{header_rel_type}" Target="header2.xml"/>'
+            "</Relationships>"
+        ),
+        "word/header1.xml": _word_part_xml("hdr", "Visible header"),
+        "word/footer1.xml": _word_part_xml("ftr", "Visible footer"),
+        "word/header2.xml": _word_part_xml("hdr", "Stale hidden header"),
+    })
+
+
 def _xlsx_bytes(text: str, sheet_count: int = 1, row_count: int = 1) -> bytes:
     sheets = "".join(
         f'<sheet name="Sheet {index}" sheetId="{index}" r:id="rId{index}"/>'
@@ -95,6 +120,25 @@ def _xlsx_bytes(text: str, sheet_count: int = 1, row_count: int = 1) -> bytes:
             f'<worksheet xmlns="{SPREADSHEET_NS}"><sheetData>{rows}</sheetData></worksheet>'
         )
     return _zip_bytes(members)
+
+
+def _xlsx_sparse_columns_bytes() -> bytes:
+    rows = (
+        '<row r="1">'
+        '<c r="A1" t="inlineStr"><is><t>Name</t></is></c>'
+        '<c r="C1" t="inlineStr"><is><t>Score</t></is></c>'
+        "</row>"
+    )
+    return _zip_bytes({
+        "[Content_Types].xml": CONTENT_TYPES_XML,
+        "xl/workbook.xml": (
+            f'<workbook xmlns="{SPREADSHEET_NS}" xmlns:r="{OFFICE_REL_NS}">'
+            '<sheets><sheet name="Sparse" sheetId="1" r:id="rId1"/></sheets>'
+            "</workbook>"
+        ),
+        "xl/_rels/workbook.xml.rels": f'<Relationships xmlns="{PACKAGE_REL_NS}"><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>',
+        "xl/worksheets/sheet1.xml": f'<worksheet xmlns="{SPREADSHEET_NS}"><sheetData>{rows}</sheetData></worksheet>',
+    })
 
 
 def _pptx_bytes(slide_text: str, notes_text: str = "") -> bytes:
@@ -369,6 +413,16 @@ def test_deduplicates_repeated_docx_long_text_parts():
 
 
 @pytest.mark.unit
+def test_docx_headers_and_footers_follow_document_relationships():
+    parsed = parse_document("referenced.docx", "", _docx_with_referenced_header_footer())
+
+    assert "Visible body" in parsed["content"]
+    assert "Visible header" in parsed["content"]
+    assert "Visible footer" in parsed["content"]
+    assert "Stale hidden header" not in parsed["content"]
+
+
+@pytest.mark.unit
 def test_deduplicates_nested_docx_paragraph_text():
     repeated = "卡面图层 自定义贴纸 导出格式说明 " * 8
     document_xml = _word_document_xml(
@@ -634,6 +688,14 @@ def test_xlsx_empty_rows_do_not_consume_row_limit():
     assert parsed["truncated"] is False
     assert "Real data\t7" in parsed["content"]
     assert "[Rows truncated]" not in parsed["content"]
+
+
+@pytest.mark.unit
+def test_xlsx_preserves_sparse_cell_positions():
+    parsed = parse_document("sparse-columns.xlsx", "", _xlsx_sparse_columns_bytes())
+
+    assert "Name\t\tScore" in parsed["content"]
+    assert "Name\tScore" not in parsed["content"]
 
 
 @pytest.mark.unit

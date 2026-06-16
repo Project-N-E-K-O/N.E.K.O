@@ -70,8 +70,10 @@ def test_avatar_drop_parser_declares_supported_formats_and_limits():
     assert "var MAX_IMAGE_SIDE = 1280;" in source
     assert "var MAX_IMAGE_DATA_URL_BYTES = 1200 * 1024;" in source
     assert "function getImageHeaderSize(bytes, kind)" in source
-    assert "var headerSize = getImageHeaderSize(header, kind);" in source
-    assert source.index("var headerSize = getImageHeaderSize(header, kind);") < source.index("var image = await loadImage(file);")
+    assert "async function getImageHeaderSizeForFile(file, kind, prefix)" in source
+    assert "count = Math.min(maxBytes, count * 2);" in source
+    assert "var headerSize = await getImageHeaderSizeForFile(file, kind, prefix);" in source
+    assert source.index("var headerSize = await getImageHeaderSizeForFile(file, kind, prefix);") < source.index("var image = await loadImage(file);")
 
     assert "var DOCUMENT_EXTENSIONS = ['pdf', 'docx', 'xlsx', 'pptx'];" in source
     for extension in ("'txt'", "'md'", "'json'", "'csv'", "'tsx'", "'py'", "'ps1'", "'sql'"):

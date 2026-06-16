@@ -23,6 +23,7 @@ MAX_EXTRACTED_CHARS = 32000
 MAX_PDF_PAGES = 40
 MAX_XLSX_SHEETS = 12
 MAX_XLSX_ROWS_PER_SHEET = 800
+MAX_XLSX_COLUMNS = 16384
 MAX_PPTX_SLIDES = 40
 MIN_DEDUP_TEXT_CHARS = 80
 
@@ -413,14 +414,48 @@ def _xml_declared_encoding(data: bytes) -> str:
 
 
 def _docx_text_member_names(archive: zipfile.ZipFile) -> list[str]:
-    names = archive.namelist()
+    names = set(archive.namelist())
     ordered = ["word/document.xml"]
-    ordered.extend(sorted(
-        name for name in names
-        if re.fullmatch(r"word/header\d+\.xml", name) or re.fullmatch(r"word/footer\d+\.xml", name)
-    ))
+    ordered.extend(_read_docx_header_footer_names(archive))
     ordered.extend(name for name in ("word/footnotes.xml", "word/endnotes.xml") if name in names)
     return [name for name in ordered if name in names]
+
+
+def _read_docx_header_footer_names(archive: zipfile.ZipFile) -> list[str]:
+    names = set(archive.namelist())
+    rels_path = "word/_rels/document.xml.rels"
+    if rels_path not in names:
+        return []
+
+    rels: dict[str, str] = {}
+    rel_root = _parse_xml(_read_xml_member(archive, rels_path))
+    for rel in rel_root.findall(_REL_NS + "Relationship"):
+        rel_id = rel.attrib.get("Id", "")
+        target = rel.attrib.get("Target", "")
+        rel_type = rel.attrib.get("Type", "")
+        if rel_id and target and (
+            rel_type.endswith("/header") or rel_type.endswith("/footer")
+        ):
+            rels[rel_id] = _resolve_docx_target(target, "word")
+
+    document = _parse_xml(_read_xml_member(archive, "word/document.xml"))
+    ordered: list[str] = []
+    for element in document.iter():
+        if element.tag not in {_WORD_NS + "headerReference", _WORD_NS + "footerReference"}:
+            continue
+        path = rels.get(element.attrib.get(_OFFICE_REL_NS + "id", ""))
+        if path in names and path not in ordered:
+            ordered.append(path)
+    return ordered
+
+
+def _resolve_docx_target(target: str, base_dir: str) -> str:
+    cleaned = str(target or "").replace("\\", "/")
+    if cleaned.startswith("/"):
+        return posixpath.normpath(cleaned.lstrip("/"))
+    if cleaned.startswith("word/"):
+        return posixpath.normpath(cleaned)
+    return posixpath.normpath(posixpath.join(base_dir, cleaned))
 
 
 def _docx_member_label(name: str) -> str:
@@ -645,7 +680,14 @@ def _extract_xlsx_sheet_text(
                 continue
             values: list[str] = []
             for cell in row.findall(_SPREADSHEET_NS + "c"):
-                values.append(_xlsx_cell_text(cell, shared_strings))
+                value = _xlsx_cell_text(cell, shared_strings)
+                column_index = _xlsx_cell_column_index(cell.attrib.get("r", ""))
+                if column_index is None:
+                    values.append(value)
+                    continue
+                while len(values) <= column_index:
+                    values.append("")
+                values[column_index] = value
             while values and not values[-1]:
                 values.pop()
             if not any(values):
@@ -685,6 +727,18 @@ def _xlsx_cell_text(cell: ET.Element, shared_strings: list[str]) -> str:
     if formula:
         return "=" + formula.strip()
     return ""
+
+
+def _xlsx_cell_column_index(reference: str) -> int | None:
+    match = re.match(r"^([A-Za-z]+)", str(reference or ""))
+    if not match:
+        return None
+    index = 0
+    for char in match.group(1).upper():
+        index = index * 26 + (ord(char) - ord("A") + 1)
+    if index <= 0 or index > MAX_XLSX_COLUMNS:
+        return None
+    return index - 1
 
 
 def _child_text(element: ET.Element, tag: str) -> str:
