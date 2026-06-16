@@ -1023,7 +1023,8 @@
             "claude": "Claude (Anthropic)",
             "grok": "Grok (xAI)",
             "openrouter": "OpenRouter (агрегатор моделей)",
-            "vllm_omni": "vLLM-Omni (TTS)"
+            "vllm_omni": "vLLM-Omni (TTS)",
+            "gptsovits": "GPT-SoVITS (свой сервер)"
         },
         "coreApiAutoFillHint": "Ключ автоматически заполняется из справочника API, можно ввести вручную",
         "assistApiSelectLabel": "Провайдер вспомогательного API",

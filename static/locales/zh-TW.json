@@ -1023,7 +1023,8 @@
             "claude": "Claude（Anthropic）",
             "grok": "Grok（xAI）",
             "openrouter": "OpenRouter（模型聚合，國內無法使用）",
-            "vllm_omni": "vLLM-Omni（TTS）"
+            "vllm_omni": "vLLM-Omni（TTS）",
+            "gptsovits": "GPT-SoVITS（自部署）"
         },
         "coreApiAutoFillHint": "Key從API管理簿自動填充，也可在此直接輸入",
         "assistApiSelectLabel": "輔助API服務商",

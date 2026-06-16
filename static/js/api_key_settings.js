@@ -937,6 +937,60 @@ function syncKeyToBook(providerKey, keyValue, sourceInput = null) {
 // ==================== Model Provider Dropdowns ====================
 
 /**
+ * 仅靠 api_providers.json 的结构推断某个 provider 是否「只做 TTS」。
+ *
+ * 用于 fail-safe：当后端 /api_providers 的 tts_provider 元数据加载失败（try/except
+ * 返回 tts_providers:[]，success 仍 true）时，_ttsProviders 为空，原本靠注册表
+ * tts_dropdown_only / editable_endpoint 驱动的判定会全部落空，导致这类 provider
+ * （如 vLLM-Omni）漏进 conversation/summary/... 等 LLM 下拉、并被当成普通
+ * OpenAI-compatible 服务商保存。这里用「声明了 tts_default_model / tts_default_voice
+ * 但没有任何 LLM 模型字段」这个结构信号兜底，避免在前端再 re-hardcode 具体 provider key。
+ */
+function isStructuralTtsOnlyProvider(pk) {
+    const p = _assistApiProviders[pk];
+    if (!p || typeof p !== 'object') return false;
+    if (!p.tts_default_model && !p.tts_default_voice) return false;
+    // 任意 LLM 模型字段（conversation_model / summary_model / ...）非空 → 不是纯 TTS。
+    return !MODEL_TYPES.some(mt => {
+        if (mt === 'tts' || mt === 'omni') return false;
+        const v = p[`${mt}_model`];
+        return v && String(v).trim();
+    });
+}
+
+/**
+ * 取某个 provider 的 TTS 元数据：优先用后端注册表（_ttsProviders），缺失时按结构信号
+ * 合成一份最小元数据（tts_dropdown_only + editable_endpoint），让下拉过滤 / 字段解锁 /
+ * 保存路径在元数据缺失时仍按「纯 TTS、用户自配端点」处理。合成元数据 probe_kind='none'
+ * （注册表缺失时探测降级，可接受），不携带任何 provider 专属探测细节。
+ */
+function getTtsProviderMeta(pk) {
+    if (!pk) return null;
+    const meta = _ttsProviders[pk];
+    if (meta) return meta;
+    if (isStructuralTtsOnlyProvider(pk)) {
+        const p = _assistApiProviders[pk] || {};
+        return {
+            key: pk,
+            tts_dropdown_only: true,
+            editable_endpoint: true,
+            default_url: '',
+            default_model: p.tts_default_model || '',
+            default_voice: p.tts_default_voice || '',
+            url_field: 'ttsModelUrl',
+            model_field: 'ttsModelId',
+            voice_field: 'ttsVoiceId',
+            api_key_field: 'ttsModelApiKey',
+            probe_kind: 'none',
+            probe_sub_type: '',
+            probe_ws_path: '',
+            _synthesized: true,
+        };
+    }
+    return null;
+}
+
+/**
  * 填充所有自定义模型的服务商下拉框
  */
 function populateModelProviderDropdowns() {
@@ -965,8 +1019,9 @@ function populateModelProviderDropdowns() {
             if (isProviderRestricted(pk)) return;
             // 特异 TTS provider（tts_dropdown_only）仅在 TTS 下拉里出现，不污染
             // conversation/summary/correction/emotion/vision/agent/omni 的下拉。
-            // 成员由后端 tts_provider_registry 驱动，前端不再硬编码 provider key。
-            const _spFilter = _ttsProviders[pk];
+            // 成员由后端 tts_provider_registry 驱动；注册表元数据缺失时 getTtsProviderMeta
+            // 用结构信号兜底，前端始终不硬编码 provider key。
+            const _spFilter = getTtsProviderMeta(pk);
             if (_spFilter && _spFilter.tts_dropdown_only && mt !== 'tts') return;
             const pInfo = _assistApiProviders[pk];
             const opt = document.createElement('option');
@@ -980,6 +1035,23 @@ function populateModelProviderDropdowns() {
             }
             sel.appendChild(opt);
         });
+
+        // Registry-only TTS provider（仅在 tts_provider_registry 声明、不在
+        // assist_api_providers 里，如 GPT-SoVITS）：上面的 _assistApiProviders 循环
+        // 遍历不到，否则用户在下拉里永远选不到。这里补进来，且仅进 TTS 下拉。
+        if (mt === 'tts') {
+            Object.keys(_ttsProviders).forEach(pk => {
+                if (_assistApiProviders[pk]) return; // 已在上面的循环里加过
+                const meta = _ttsProviders[pk];
+                if (!meta) return;
+                const opt = document.createElement('option');
+                opt.value = pk;
+                const translationKey = `api.assistProviderNames.${pk}`;
+                const translated = window.t ? window.t(translationKey) : translationKey;
+                opt.textContent = (translated && translated !== translationKey) ? translated : pk;
+                sel.appendChild(opt);
+            });
+        }
 
         // custom
         const optCustom = document.createElement('option');
@@ -1098,12 +1170,12 @@ function onCustomModelProviderChange(modelType) {
             if (urlInput) { urlInput.value = ''; urlInput.setAttribute('readonly', 'readonly'); }
             setKeyReadonly(keyInput, '');
         }
-    } else if (_ttsProviders[provider] && _ttsProviders[provider].editable_endpoint && modelType === 'tts') {
+    } else if (modelType === 'tts' && getTtsProviderMeta(provider) && getTtsProviderMeta(provider).editable_endpoint) {
         // 特异 TTS provider（端点可编辑，如 vLLM-Omni）：URL/Key/ModelId/Voice 全部
         // 可编辑可保存（类似 custom，但 dropdown 里有自己的名字与默认值）。分支条件由
-        // tts_provider_registry 的 editable_endpoint 驱动；预填默认值优先取
-        // api_providers.json，缺失时回退注册表 default_*（兼容不在 json 里的新 provider）。
-        const _spMeta = _ttsProviders[provider];
+        // tts_provider_registry 的 editable_endpoint 驱动（缺失时 getTtsProviderMeta
+        // 结构信号兜底）；预填默认值优先取 api_providers.json，缺失时回退注册表 default_*。
+        const _spMeta = getTtsProviderMeta(provider);
         const pInfo = _assistApiProviders[provider] || {};
         if (urlInput) {
             // 切换到该 provider 时：
@@ -2317,7 +2389,14 @@ function refreshAutoResolvedModelUrlsForSave(params) {
     if (!params || typeof params !== 'object') return;
 
     const resolveUrl = (modelType, providerMode) => {
-        if (!providerMode || providerMode === 'custom' || (providerMode === 'vllm_omni' && modelType === 'tts')) return '';
+        // editable_endpoint 的注册表 TTS provider（vLLM-Omni 等）端点完全由用户填写，
+        // 不能被 provider profile 的 URL 覆盖；按注册表元数据豁免（缺失时结构信号兜底），
+        // 不再单独硬编码 vllm_omni。
+        if (!providerMode || providerMode === 'custom') return '';
+        if (modelType === 'tts') {
+            const ttsMeta = getTtsProviderMeta(providerMode);
+            if (ttsMeta && ttsMeta.editable_endpoint) return '';
+        }
 
         let providerKey = providerMode;
         let scope = 'assist';
@@ -3075,16 +3154,18 @@ const ConnectivityManager = {
                 // 自定义：直接从输入框读取，不设 providerKey（走自定义模式）
                 result.key = keyInput ? getRealKey(keyInput) : '';
                 result.providerType = (mt === 'omni') ? 'websocket' : 'openai_compatible';
-            } else if (_ttsProviders[provider]
-                       && _ttsProviders[provider].probe_kind === 'ws_handshake'
-                       && mt === 'tts') {
-                // 特异 TTS provider 的 ws 握手探测（如 vLLM-Omni）：走 Mode 2（custom
-                // 路径），复用后端 _test_websocket，不设 providerKey/providerScope →
-                // 后端用用户输入的 URL。把 base_url 规整成 worker 实际连接的 ws endpoint
-                // （后缀 meta.probe_ws_path），并带 meta.probe_sub_type 让后端分流到对应的
-                // 握手探测，避免发 session.update 触发 vLLM 主动断连导致连通性误判。
+            } else if (mt === 'tts' && getTtsProviderMeta(provider) && getTtsProviderMeta(provider).editable_endpoint) {
+                // 端点可编辑的 TTS provider（如 vLLM-Omni）：走 Mode 2（custom 路径），
+                // 不设 providerKey/providerScope → 后端用用户输入的 URL，绝不退化成「指定
+                // 服务商」按 OpenAI-compatible profile 保存。具体探测协议由注册表元数据决定；
+                // 注册表缺失（getTtsProviderMeta 结构兜底，probe_kind='none'）时仅做 HTTP 风格
+                // custom 探测，探测降级但不会被错存成内置服务商。
+                const _spProbe = getTtsProviderMeta(provider);
+                if (_spProbe.probe_kind === 'ws_handshake') {
+                // ws 握手探测：复用后端 _test_websocket。把 base_url 规整成 worker 实际连接的
+                // ws endpoint（后缀 meta.probe_ws_path），并带 meta.probe_sub_type 让后端分流到
+                // 对应的握手探测，避免发 session.update 触发 vLLM 主动断连导致连通性误判。
                 // 协议细节（ws 后缀 / sub_type）由 tts_provider_registry 数据驱动，不再硬编码。
-                const _spProbe = _ttsProviders[provider];
                 const wsPath = _spProbe.probe_ws_path || '';
                 const rawUrl = (urlInput ? urlInput.value.trim() : '').replace(/\/+$/, '');
                 let wsEndpoint = '';
@@ -3127,6 +3208,14 @@ const ConnectivityManager = {
                 result.subType = _spProbe.probe_sub_type || '';
                 result.key = keyInput ? getRealKey(keyInput) : '';
                 result.model = modelIdInput ? modelIdInput.value.trim() : '';
+                } else {
+                    // 非 ws 的可编辑端点（结构兜底 / 未来 http 探测的 provider）：当 custom
+                    // 处理——用户填的 URL/Key/Model，不绑定内置 provider profile。
+                    result.url = urlInput ? urlInput.value.trim() : '';
+                    result.providerType = 'openai_compatible';
+                    result.key = keyInput ? getRealKey(keyInput) : '';
+                    result.model = modelIdInput ? modelIdInput.value.trim() : '';
+                }
             } else {
                 // 指定服务商：从 Key Book 读取
                 result.key = getEffectiveAssistKey(provider, null, { useTokenPlan: false });

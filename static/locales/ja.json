@@ -1023,7 +1023,8 @@
             "claude": "Claude（Anthropic）",
             "grok": "Grok（xAI）",
             "openrouter": "OpenRouter（モデルアグリゲーター）",
-            "vllm_omni": "vLLM-Omni（TTS）"
+            "vllm_omni": "vLLM-Omni（TTS）",
+            "gptsovits": "GPT-SoVITS（セルフホスト）"
         },
         "coreApiAutoFillHint": "API管理簿からキーが自動入力されます。直接入力も可能です",
         "assistApiSelectLabel": "アシストAPIプロバイダー",
