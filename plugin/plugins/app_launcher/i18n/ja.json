@@ -119,5 +119,25 @@
   "ui.error.save": "❌ {error}",
   "ui.error.delete": "❌ {error}",
   "ui.error.name_empty": "❌ アプリ名を入力してください",
-  "ui.error.path_empty": "❌ ファイルパスを入力してください"
+  "ui.error.path_empty": "❌ ファイルパスを入力してください",
+  
+  "tutorial.title": "📚 チュートリアル",
+  "tutorial.subtitle": "チュートリアルに沿って、アプリ起動器の使い方を学びましょう~",
+  "tutorial.close": "チュートリアルを閉じる",
+  "tutorial.step1.title": "方法1：ショートカットから追加",
+  "tutorial.step1.1": "デスクトップのアプリアイコンを右クリック",
+  "tutorial.step1.2": "「パスのコピー」を選択",
+  "tutorial.step1.3": "プラグインに貼り付け（引用符付きパス対応）",
+  "tutorial.step1.4": "アプリ名、エイリアス、説明を入力",
+  "tutorial.step1.5": "保存後、「XXを開いて」と話しかける",
+  "tutorial.step2.title": "方法2：実行ファイルから追加",
+  "tutorial.step2.1": "デスクトップアイコンを右クリックし、「ファイルの場所を開く」をクリック",
+  "tutorial.step2.2": ".exeファイルを見つけ、右クリックでパスをコピー",
+  "tutorial.step2.3": "プラグインに貼り付け、名前とエイリアスを入力",
+  "tutorial.step2.4": "保存後、音声コマンドで起動",
+  "tutorial.tip.title": "💡 ヒント",
+  "tutorial.tip.path": "引用符付きパス対応: \"C:\\Program Files\\app.exe\"",
+  "tutorial.tip.alias": "複数のエイリアスを設定すると認識しやすくなります",
+  "tutorial.tip.autostart": ".exeファイルは自動起動を設定可能",
+  "tutorial.btn.show": "📚 チュートリアルを見る"
 }

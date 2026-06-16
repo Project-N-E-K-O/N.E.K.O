@@ -490,6 +490,120 @@
             transform: translateY(0) scale(0.95);
         }
 
+        .btn-tutorial {
+            background: linear-gradient(135deg, rgba(147, 197, 253, 0.2) 0%, rgba(165, 180, 252, 0.2) 100%);
+            color: #6366f1;
+            border: 1px solid rgba(147, 197, 253, 0.3);
+        }
+
+        .btn-tutorial:hover {
+            background: linear-gradient(135deg, rgba(147, 197, 253, 0.35) 0%, rgba(165, 180, 252, 0.35) 100%);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.2);
+        }
+
+        .tutorial-content {
+            max-height: 70vh;
+            overflow-y: auto;
+            padding-right: 10px;
+        }
+
+        .tutorial-content::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .tutorial-content::-webkit-scrollbar-track {
+            background: rgba(243, 232, 255, 0.3);
+            border-radius: 3px;
+        }
+
+        .tutorial-content::-webkit-scrollbar-thumb {
+            background: linear-gradient(135deg, #c084fc, #a855f7);
+            border-radius: 3px;
+        }
+
+        .tutorial-section {
+            margin-bottom: 28px;
+            padding: 20px;
+            background: linear-gradient(135deg, rgba(252, 231, 243, 0.3) 0%, rgba(224, 231, 254, 0.3) 100%);
+            border-radius: 16px;
+            border: 1px solid rgba(192, 132, 252, 0.15);
+        }
+
+        .tutorial-section h4 {
+            font-size: 1.05rem;
+            font-weight: 600;
+            color: #7c3aed;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .tutorial-step {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            margin-bottom: 14px;
+            padding: 12px;
+            background: rgba(255, 255, 255, 0.6);
+            border-radius: 12px;
+            transition: all 0.2s ease;
+        }
+
+        .tutorial-step:hover {
+            background: rgba(255, 255, 255, 0.85);
+            transform: translateX(4px);
+        }
+
+        .step-number {
+            width: 28px;
+            height: 28px;
+            background: linear-gradient(135deg, #c084fc, #a855f7);
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.8rem;
+            font-weight: 600;
+            flex-shrink: 0;
+        }
+
+        .step-text {
+            font-size: 0.9rem;
+            color: #4b5563;
+            line-height: 1.5;
+        }
+
+        .tutorial-tip {
+            padding: 16px;
+            background: linear-gradient(135deg, rgba(251, 191, 36, 0.1) 0%, rgba(245, 158, 11, 0.1) 100%);
+            border-radius: 12px;
+            border: 1px solid rgba(251, 191, 36, 0.2);
+        }
+
+        .tutorial-tip h4 {
+            color: #d97706;
+        }
+
+        .tip-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            margin-bottom: 10px;
+            font-size: 0.85rem;
+            color: #92400e;
+        }
+
+        .tip-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .tip-icon {
+            flex-shrink: 0;
+        }
+
         .empty-state {
             text-align: center;
             padding: 50px 20px;
@@ -773,6 +887,7 @@
             <button id="addAppBtn" class="btn btn-primary">✨ 添加软件</button>
             <button id="refreshBtn" class="btn btn-secondary">🔄 刷新列表</button>
             <button id="exportBtn" class="btn btn-secondary">📤 导出配置</button>
+            <button id="tutorialBtn" class="btn btn-tutorial">📚 查看教程</button>
         </div>
         
         <div class="search-box">
@@ -830,6 +945,79 @@
         <div class="action-bar" style="margin-top: 24px;">
             <button id="saveAppBtn" class="btn btn-primary" onclick="saveApp()">保存</button>
             <button class="btn btn-secondary" onclick="closeModal()">取消</button>
+        </div>
+    </div>
+</div>
+
+<div id="tutorialModal" class="modal">
+    <div class="modal-content" style="max-width: 600px;">
+        <div class="modal-header">
+            <h3>📚 使用教程</h3>
+            <button class="modal-close" onclick="closeTutorial()">&times;</button>
+        </div>
+        <div class="tutorial-content">
+            <div class="tutorial-section">
+                <h4>✨ 方法一：通过快捷方式添加（推荐新手）</h4>
+                <div class="tutorial-step">
+                    <span class="step-number">1</span>
+                    <span class="step-text">在桌面找到软件图标，右键点击</span>
+                </div>
+                <div class="tutorial-step">
+                    <span class="step-number">2</span>
+                    <span class="step-text">选择「复制文件地址」</span>
+                </div>
+                <div class="tutorial-step">
+                    <span class="step-number">3</span>
+                    <span class="step-text">在插件中粘贴地址（支持带引号格式，如 <code>"C:\Users\Public\Desktop\QQ.lnk"</code>）</span>
+                </div>
+                <div class="tutorial-step">
+                    <span class="step-number">4</span>
+                    <span class="step-text">填写软件名称，别名和描述可以填相同的名称</span>
+                </div>
+                <div class="tutorial-step">
+                    <span class="step-number">5</span>
+                    <span class="step-text">点击保存，然后对猫娘说「打开 QQ」即可启动</span>
+                </div>
+            </div>
+
+            <div class="tutorial-section">
+                <h4>🎯 方法二：通过可执行文件添加</h4>
+                <div class="tutorial-step">
+                    <span class="step-number">1</span>
+                    <span class="step-text">右键桌面软件图标，点击「打开文件所在位置」</span>
+                </div>
+                <div class="tutorial-step">
+                    <span class="step-number">2</span>
+                    <span class="step-text">找到 .exe 文件，右键复制文件地址</span>
+                </div>
+                <div class="tutorial-step">
+                    <span class="step-number">3</span>
+                    <span class="step-text">粘贴到插件，填写软件名称和别名</span>
+                </div>
+                <div class="tutorial-step">
+                    <span class="step-number">4</span>
+                    <span class="step-text">保存后即可通过语音启动</span>
+                </div>
+            </div>
+
+            <div class="tutorial-tip">
+                <h4>💡 小贴士</h4>
+                <div class="tip-item">
+                    <span class="tip-icon">📝</span>
+                    <span>支持带双引号的路径，直接粘贴即可</span>
+                </div>
+                <div class="tip-item">
+                    <span class="tip-icon">🏷️</span>
+                    <span>设置多个别名，猫娘更容易识别</span>
+                </div>
+                <div class="tip-item">
+                    <span class="tip-icon">⚡</span>
+                    <span>.exe 文件可设置开机自启</span>
+                </div>
+            </div>
+        </div>
+        <div class="action-bar" style="margin-top: 20px;">
+            <button class="btn btn-primary" onclick="closeTutorial()">我知道了</button>
         </div>
     </div>
 </div>
@@ -1189,10 +1377,23 @@
     document.getElementById('addAppBtn').addEventListener('click', () => openModal());
     document.getElementById('refreshBtn').addEventListener('click', loadApps);
     document.getElementById('exportBtn').addEventListener('click', exportApps);
+    document.getElementById('tutorialBtn').addEventListener('click', openTutorial);
 
     document.getElementById('appModal').addEventListener('click', (e) => {
         if (e.target.id === 'appModal') closeModal();
     });
+
+    document.getElementById('tutorialModal').addEventListener('click', (e) => {
+        if (e.target.id === 'tutorialModal') closeTutorial();
+    });
+
+    function openTutorial() {
+        document.getElementById('tutorialModal').classList.add('active');
+    }
+
+    function closeTutorial() {
+        document.getElementById('tutorialModal').classList.remove('active');
+    }
 
     document.getElementById('appPath').addEventListener('input', (e) => {
         const path = e.target.value.trim().toLowerCase();

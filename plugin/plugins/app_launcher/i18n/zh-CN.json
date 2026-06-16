@@ -119,5 +119,25 @@
   "ui.error.save": "❌ {error}",
   "ui.error.delete": "❌ {error}",
   "ui.error.name_empty": "❌ 请输入软件名称",
-  "ui.error.path_empty": "❌ 请输入文件路径"
+  "ui.error.path_empty": "❌ 请输入文件路径",
+  
+  "tutorial.title": "📚 使用教程",
+  "tutorial.subtitle": "跟着教程，轻松学会使用应用启动器~",
+  "tutorial.close": "关闭教程",
+  "tutorial.step1.title": "方法一：通过快捷方式添加",
+  "tutorial.step1.1": "在桌面找到软件图标，右键点击",
+  "tutorial.step1.2": "选择「复制文件地址」",
+  "tutorial.step1.3": "在插件中粘贴地址（支持带引号格式）",
+  "tutorial.step1.4": "填写软件名称，别名和描述可以填相同的名称",
+  "tutorial.step1.5": "点击保存，然后对猫娘说「打开 XX」即可",
+  "tutorial.step2.title": "方法二：通过可执行文件添加",
+  "tutorial.step2.1": "右键桌面软件图标，点击「打开文件所在位置」",
+  "tutorial.step2.2": "找到 .exe 文件，右键复制文件地址",
+  "tutorial.step2.3": "粘贴到插件，填写软件名称和别名",
+  "tutorial.step2.4": "保存后即可通过语音启动",
+  "tutorial.tip.title": "💡 小贴士",
+  "tutorial.tip.path": "支持带双引号的路径，如 \"C:\\Program Files\\app.exe\"",
+  "tutorial.tip.alias": "设置多个别名，猫娘更容易识别",
+  "tutorial.tip.autostart": ".exe 文件可设置开机自启",
+  "tutorial.btn.show": "📚 查看教程"
 }

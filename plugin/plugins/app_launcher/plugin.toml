@@ -8,7 +8,7 @@ keywords = [
     "program", "exe", "shortcut", "open", "launch", "开机自启", "autostart",
     "自動起動", "アプリ", "ソフト", "프로그램", "앱", "приложение", "программа"
 ]
-version = "1.2.0"
+version = "1.3.0"
 type = "plugin"
 entry = "plugin.plugins.app_launcher:AppLauncherPlugin"
 

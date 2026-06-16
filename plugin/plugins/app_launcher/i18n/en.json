@@ -119,5 +119,25 @@
   "ui.error.save": "❌ {error}",
   "ui.error.delete": "❌ {error}",
   "ui.error.name_empty": "❌ Please enter app name",
-  "ui.error.path_empty": "❌ Please enter file path"
+  "ui.error.path_empty": "❌ Please enter file path",
+  
+  "tutorial.title": "📚 Tutorial",
+  "tutorial.subtitle": "Follow the tutorial to learn how to use App Launcher~",
+  "tutorial.close": "Close Tutorial",
+  "tutorial.step1.title": "Method 1: Add via Shortcut",
+  "tutorial.step1.1": "Find the app icon on desktop, right-click it",
+  "tutorial.step1.2": "Select \"Copy as path\"",
+  "tutorial.step1.3": "Paste the path in the plugin (quotes are supported)",
+  "tutorial.step1.4": "Enter app name, aliases and description",
+  "tutorial.step1.5": "Click save, then tell Neko \"open XX\" to launch",
+  "tutorial.step2.title": "Method 2: Add via Executable",
+  "tutorial.step2.1": "Right-click desktop icon, click \"Open file location\"",
+  "tutorial.step2.2": "Find the .exe file, right-click to copy path",
+  "tutorial.step2.3": "Paste in plugin, fill in name and aliases",
+  "tutorial.step2.4": "Save and launch by voice command",
+  "tutorial.tip.title": "💡 Tips",
+  "tutorial.tip.path": "Supports quoted paths like \"C:\\Program Files\\app.exe\"",
+  "tutorial.tip.alias": "Set multiple aliases for better recognition",
+  "tutorial.tip.autostart": ".exe files can be set to autostart",
+  "tutorial.btn.show": "📚 View Tutorial"
 }
