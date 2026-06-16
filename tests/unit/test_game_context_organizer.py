@@ -186,6 +186,113 @@ def test_degraded_context_does_not_schedule_organizer(monkeypatch):
 
 
 @pytest.mark.unit
+def test_game_context_payload_can_exclude_recent_window_for_stable_system(monkeypatch):
+    state = _new_state(monkeypatch)
+    state["game_context_summary"] = "猫娘领先，玩家正在追分。"
+    state["game_context_signals"] = {
+        "session_facts": [{
+            "signalLabel": "当前比分",
+            "summary": "猫娘暂时领先。",
+            "evidence": [],
+            "lastRound": 2,
+            "count": 1,
+        }],
+    }
+    for index in range(1, 4):
+        game_router._append_game_dialog(state, {
+            "type": "game_event",
+            "kind": "user-text",
+            "text": f"第 {index} 句",
+            "result_line": f"回应 {index}",
+        })
+
+    payload = game_router._build_game_context_prompt_payload(state, include_recent=False)
+    formatted = game_router._format_game_context_for_prompt(payload, "zh")
+
+    assert payload["recent_dialogues"] == []
+    assert "局内滚动摘要：猫娘领先，玩家正在追分。" in formatted
+    assert "局内信号列表：" in formatted
+    assert "最近原文窗口：" not in formatted
+    assert "第 1 句" not in formatted
+
+
+@pytest.mark.unit
+def test_game_session_history_reset_rebuilds_bounded_recent_messages(monkeypatch):
+    from utils.llm_client import AIMessage, HumanMessage, SystemMessage
+
+    class DummySession:
+        pass
+
+    state = _new_state(monkeypatch)
+    for index in range(1, 9):
+        game_router._append_game_dialog(state, {
+            "type": "game_event",
+            "kind": "user-text",
+            "text": f"第 {index} 句",
+            "result_line": f"回应 {index}",
+            "control": {"mood": "happy"} if index == 8 else {},
+        })
+
+    session = DummySession()
+    session._instructions = "旧 system"
+    session._conversation_history = [
+        SystemMessage(content="旧 system"),
+        HumanMessage(content="不应继续留在 history 里的旧输入"),
+        AIMessage(content="不应继续留在 history 里的旧回复"),
+    ]
+    entry = {"session": session, "instructions": "稳定 system"}
+
+    game_router._reset_game_session_text_history_for_turn(entry, state)
+
+    history = session._conversation_history
+    joined = "\n".join(str(getattr(message, "content", "")) for message in history)
+
+    assert isinstance(history[0], SystemMessage)
+    assert history[0].content == "稳定 system"
+    assert session._instructions == "稳定 system"
+    assert len(history) == 1 + game_router._GAME_CONTEXT_RECENT_KEEP_COUNT * 2
+    assert isinstance(history[1], HumanMessage)
+    assert isinstance(history[2], AIMessage)
+    assert "第 1 句" not in joined
+    assert "第 2 句" not in joined
+    assert "第 3 句" in joined
+    assert "回应 8 (mood=happy)" in joined
+    assert "不应继续留在 history" not in joined
+
+
+@pytest.mark.unit
+def test_game_session_history_reset_uses_recent_history_locale_labels(monkeypatch):
+    from utils.llm_client import SystemMessage
+
+    class DummySession:
+        pass
+
+    state = _new_state(monkeypatch)
+    game_router._append_game_dialog(state, {
+        "type": "user",
+        "text": "nice shot",
+    })
+    game_router._append_game_dialog(state, {
+        "type": "assistant",
+        "line": "Thanks.",
+    })
+    session = DummySession()
+    session._instructions = "system"
+    session._conversation_history = [SystemMessage(content="system")]
+    entry = {
+        "session": session,
+        "instructions": "system",
+        "user_language": "en",
+    }
+
+    game_router._reset_game_session_text_history_for_turn(entry, state)
+
+    joined = "\n".join(str(getattr(message, "content", "")) for message in session._conversation_history)
+    assert "Player: nice shot" in joined
+    assert "玩家：nice shot" not in joined
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_finalize_waits_for_running_context_organizer_before_archive(monkeypatch):
     state = _mark_game_started(_new_state(monkeypatch))

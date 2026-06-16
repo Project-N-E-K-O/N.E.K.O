@@ -65,6 +65,7 @@ from config.prompts.prompts_game_route import (
     get_game_postgame_context_labels,
     get_game_postgame_event_texts,
     get_game_postgame_realtime_nudge_labels,
+    get_game_recent_history_message_labels,
 )
 from .shared_state import get_config_manager, get_session_manager
 from main_logic.mirror_meta import (
@@ -1374,17 +1375,98 @@ def _format_game_context_for_prompt(context: Any, language: str | None = None) -
     return "\n".join(parts) + "\n"
 
 
-def _build_game_context_prompt_payload(state: dict | None) -> dict | None:
+def _build_game_context_prompt_payload(state: dict | None, *, include_recent: bool = True) -> dict | None:
     if not isinstance(state, dict):
         return None
     organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
     return {
         "summary": str(state.get("game_context_summary") or ""),
         "signals": _normalize_game_context_signals(state.get("game_context_signals")),
-        "recent_dialogues": _game_context_recent_dialogues(state, _GAME_CONTEXT_RECENT_KEEP_COUNT),
+        "recent_dialogues": (
+            _game_context_recent_dialogues(state, _GAME_CONTEXT_RECENT_KEEP_COUNT)
+            if include_recent else []
+        ),
         "degraded": organizer.get("degraded") is True,
         "organizer": organizer,
     }
+
+
+def _game_dialog_history_user_text(item: dict, labels: dict[str, str]) -> str:
+    item_type = item.get("type")
+    dialog_id = str(item.get("id") or "").strip()
+    prefix = f"{dialog_id}: " if dialog_id else ""
+    if item_type == "user":
+        text = str(item.get("text") or "").strip()
+        return f"{prefix}{labels['player_line'].format(text=text)}" if text else ""
+    if item_type == "game_event":
+        kind = str(item.get("kind") or "event")
+        text = str(item.get("text") or "").strip()
+        if text:
+            return f"{prefix}{labels['game_event_text'].format(kind=kind, text=text)}"
+        return f"{prefix}{labels['game_event'].format(kind=kind)}"
+    return ""
+
+
+def _game_dialog_history_assistant_text(item: dict) -> str:
+    item_type = item.get("type")
+    dialog_id = str(item.get("id") or "").strip()
+    prefix = f"{dialog_id}: " if dialog_id else ""
+    if item_type == "assistant":
+        line = str(item.get("line") or "").strip()
+    elif item_type == "game_event":
+        line = str(item.get("result_line") or "").strip()
+    else:
+        return ""
+    if not line:
+        return ""
+    control = item.get("control") if isinstance(item.get("control"), dict) else {}
+    control_bits = []
+    if control.get("mood"):
+        control_bits.append(f"mood={control['mood']}")
+    if control.get("difficulty"):
+        control_bits.append(f"difficulty={control['difficulty']}")
+    suffix = f" ({', '.join(control_bits)})" if control_bits else ""
+    return f"{prefix}{line}{suffix}"
+
+
+def _build_game_recent_history_messages(state: dict | None, language: str | None = None) -> list:
+    if not isinstance(state, dict):
+        return []
+    from utils.llm_client import AIMessage, HumanMessage
+
+    labels = get_game_recent_history_message_labels(language)
+    messages = []
+    last_role = "system"
+    for item in _game_context_recent_dialogues(state, _GAME_CONTEXT_RECENT_KEEP_COUNT):
+        if not isinstance(item, dict):
+            continue
+        user_text = _game_dialog_history_user_text(item, labels)
+        assistant_text = _game_dialog_history_assistant_text(item)
+        if user_text:
+            messages.append(HumanMessage(content=user_text))
+            last_role = "human"
+        if assistant_text:
+            if last_role == "human":
+                messages.append(AIMessage(content=assistant_text))
+                last_role = "ai"
+            else:
+                messages.append(HumanMessage(content=labels["previous_character_output"].format(text=assistant_text)))
+                last_role = "human"
+    return messages
+
+
+def _reset_game_session_text_history_for_turn(entry: dict, route_state: dict | None) -> None:
+    session = entry.get("session") if isinstance(entry, dict) else None
+    if session is None:
+        return
+    from utils.llm_client import SystemMessage
+
+    instructions = str(entry.get("instructions") or getattr(session, "_instructions", "") or "")
+    language = entry.get("user_language") if isinstance(entry, dict) else None
+    history = [SystemMessage(content=instructions)] if instructions else []
+    history.extend(_build_game_recent_history_messages(route_state, language))
+    session._instructions = instructions
+    session._conversation_history = history
 
 
 def _normalize_quick_lines(value: Any, allowed_keys: set[str] | None = None) -> Dict[str, list[str]]:
@@ -4175,7 +4257,7 @@ async def _build_and_register_game_session(
     else:
         route_state = _find_game_route_state_for_session(game_type, _route_session_id(session_id), lanlan_name)
         pre_game_context = route_state.get("preGameContext") if isinstance(route_state, dict) else None
-        game_context = _build_game_context_prompt_payload(route_state)
+        game_context = _build_game_context_prompt_payload(route_state, include_recent=False)
         route_mode = _normalize_basketball_mode(route_state.get("mode") if isinstance(route_state, dict) else "")
     prompt_args = (
         game_type,
@@ -4267,7 +4349,7 @@ async def _refresh_game_session_instructions(
     else:
         route_state = _find_game_route_state_for_session(game_type, _route_session_id(session_id), char_info["lanlan_name"])
         pre_game_context = route_state.get("preGameContext") if isinstance(route_state, dict) else None
-        game_context = _build_game_context_prompt_payload(route_state)
+        game_context = _build_game_context_prompt_payload(route_state, include_recent=False)
         route_mode = _normalize_basketball_mode(route_state.get("mode") if isinstance(route_state, dict) else "")
     prompt_args = (
         game_type,
@@ -5923,6 +6005,10 @@ async def _run_game_chat(
                     err_result["_postgame_entry"] = entry
                     err_result["_postgame_cache_session_id"] = chat_session_id
                 return err_result
+
+            if not allow_postgame:
+                history_state = _find_game_route_state_for_session(game_type, session_id, lanlan_name)
+                _reset_game_session_text_history_for_turn(entry, history_state)
 
             # 清空上一次的回复
             reply_chunks.clear()

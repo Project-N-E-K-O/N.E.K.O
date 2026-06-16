@@ -14,6 +14,7 @@ from config.prompts.prompts_game_route import (
     get_game_postgame_context_labels,
     get_game_postgame_event_texts,
     get_game_postgame_realtime_nudge_labels,
+    get_game_recent_history_message_labels,
 )
 from main_routers import game_router
 
@@ -35,6 +36,7 @@ def test_game_route_prompt_getters_return_locale_content(locale):
         get_game_archive_memory_summary_labels,
         get_game_archive_memory_text_labels,
         get_game_context_formatter_labels,
+        get_game_recent_history_message_labels,
         get_game_postgame_context_labels,
         get_game_postgame_realtime_nudge_labels,
         get_game_postgame_event_texts,

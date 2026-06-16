@@ -997,6 +997,52 @@ GAME_CONTEXT_FORMATTER_LABELS = {
 }
 
 
+GAME_RECENT_HISTORY_MESSAGE_LABELS = {
+    "zh": {
+        "player_line": "玩家：{text}",
+        "game_event_text": "游戏事件 {kind}：事件原文「{text}」",
+        "game_event": "游戏事件 {kind}",
+        "previous_character_output": "历史猫娘输出：{text}",
+    },
+    "en": {
+        "player_line": "Player: {text}",
+        "game_event_text": "Game event {kind}: event text \"{text}\"",
+        "game_event": "Game event {kind}",
+        "previous_character_output": "Previous character output: {text}",
+    },
+    "ja": {
+        "player_line": "プレイヤー：{text}",
+        "game_event_text": "ゲームイベント {kind}：イベント原文「{text}」",
+        "game_event": "ゲームイベント {kind}",
+        "previous_character_output": "直前のキャラクター出力：{text}",
+    },
+    "ko": {
+        "player_line": "플레이어: {text}",
+        "game_event_text": "게임 이벤트 {kind}: 이벤트 원문 \"{text}\"",
+        "game_event": "게임 이벤트 {kind}",
+        "previous_character_output": "이전 캐릭터 출력: {text}",
+    },
+    "ru": {
+        "player_line": "Игрок: {text}",
+        "game_event_text": "Игровое событие {kind}: исходный текст события «{text}»",
+        "game_event": "Игровое событие {kind}",
+        "previous_character_output": "Предыдущая реплика персонажа: {text}",
+    },
+    "es": {
+        "player_line": "Jugador: {text}",
+        "game_event_text": "Evento de juego {kind}: texto original del evento \"{text}\"",
+        "game_event": "Evento de juego {kind}",
+        "previous_character_output": "Salida anterior del personaje: {text}",
+    },
+    "pt": {
+        "player_line": "Jogador: {text}",
+        "game_event_text": "Evento de jogo {kind}: texto original do evento \"{text}\"",
+        "game_event": "Evento de jogo {kind}",
+        "previous_character_output": "Saida anterior da personagem: {text}",
+    },
+}
+
+
 def get_game_context_organizer_system_prompt(lang: str | None = None) -> str:
     return _localized_template(GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPTS, lang)
 
@@ -1047,3 +1093,7 @@ def get_compact_realtime_context_texts(lang: str | None = None) -> dict[str, str
 
 def get_game_context_formatter_labels(lang: str | None = None) -> dict[str, str]:
     return _labels(GAME_CONTEXT_FORMATTER_LABELS, lang)
+
+
+def get_game_recent_history_message_labels(lang: str | None = None) -> dict[str, str]:
+    return _labels(GAME_RECENT_HISTORY_MESSAGE_LABELS, lang)
