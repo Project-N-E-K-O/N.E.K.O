@@ -614,9 +614,14 @@ class DanmakuListener:
             elif cmd == "INTERACT_WORD":
                 inner = data.get("data", {})
                 user_name = inner.get("uname", "未知")
-                uid = int(inner.get("uid", 0))
+                raw_uid = inner.get("uid")
+                try:
+                    uid = int(raw_uid or 0)
+                except (TypeError, ValueError):
+                    uid = 0
                 msg_type = inner.get("msg_type", 0)
-                if msg_type == 1:
+                # msg_type: 1=进场, 2=关注, 3=进场(另一种形式)
+                if msg_type in (1, 3):
                     await self._emit("on_entry", user_name, uid=uid)
                 elif msg_type == 2:
                     await self._emit("on_follow", user_name, uid=uid)

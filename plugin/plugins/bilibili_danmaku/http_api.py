@@ -37,26 +37,6 @@ logger = logging.getLogger(__name__)
 _HEADER_CACHE_DIR = Path(tempfile.gettempdir()) / "neko_bili_headers"
 
 
-async def _is_safe_url(url: str) -> bool:
-    """SSRF 防护：只允许公网 HTTP/HTTPS 请求（异步 DNS）"""
-    try:
-        parsed = urlparse(url)
-        if parsed.scheme not in ("http", "https"):
-            return False
-        host = parsed.hostname or ""
-        if host in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
-            return False
-        loop = asyncio.get_running_loop()
-        addrs = await loop.getaddrinfo(host, 0)
-        for addr_info in addrs:
-            addr = ipaddress.ip_address(addr_info[4][0])
-            if addr.is_private or addr.is_loopback or addr.is_link_local:
-                return False
-        return True
-    except Exception:
-        return False
-
-
 class HttpApi:
     """
     HTTP API 服务（轻量 aiohttp 服务器）
@@ -144,31 +124,66 @@ class HttpApi:
         if not url:
             return self._json_resp({"error": "missing url parameter"}, status=400)
 
-        if not await _is_safe_url(url):
-            return self._json_resp({"error": "unsafe URL"}, status=403)
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return self._json_resp({"error": "unsafe URL scheme"}, status=403)
+
+        host = parsed.hostname or ""
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+
+        # 单次 DNS 解析 + 验证，避免 DNS 重绑定绕过
+        try:
+            resolved_ip = await self._resolve_and_validate(host, port, parsed.scheme)
+        except ValueError as e:
+            return self._json_resp({"error": str(e)}, status=403)
 
         headers = {}
         # 转发请求头
         for key in request.headers:
             if key.lower() not in ("host", "accept-encoding", "content-length"):
                 headers[key] = request.headers[key]
+        # 保留原始 Host 头避免虚拟主机路由失败
+        headers["Host"] = host
 
         timeout = aiohttp.ClientTimeout(total=30)
         try:
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+            connector = aiohttp.TCPConnector(
+                family=socket.AF_INET,
+                force_close=True,
+                ttl_dns_cache=0,
+            )
+            async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+                target_url = f"{parsed.scheme}://{resolved_ip}:{port}{parsed.path or '/'}"
+                if parsed.query:
+                    target_url += f"?{parsed.query}"
                 if request.method == "POST":
                     body = await request.read()
-                    async with session.post(url, data=body, headers=headers) as resp:
+                    async with session.post(target_url, data=body, headers=headers) as resp:
                         result = await resp.read()
                         content_type = resp.headers.get("Content-Type", "text/plain")
                 else:
-                    async with session.get(url, headers=headers) as resp:
+                    async with session.get(target_url, headers=headers) as resp:
                         result = await resp.read()
                         content_type = resp.headers.get("Content-Type", "text/plain")
 
                 return self._raw_resp(result, content_type)
         except Exception as e:
             return self._json_resp({"error": str(e)}, status=502)
+
+    async def _resolve_and_validate(self, host: str, port: int, scheme: str) -> str:
+        """解析并验证主机地址，返回验证通过的 IP"""
+        if host in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
+            raise ValueError("blocked localhost address")
+        loop = asyncio.get_event_loop()
+        try:
+            addrs = await loop.getaddrinfo(host, port, family=socket.AF_INET, proto=socket.IPPROTO_TCP)
+        except socket.gaierror:
+            raise ValueError(f"DNS resolution failed for {host}")
+        for addr_info in addrs:
+            ip = ipaddress.ip_address(addr_info[4][0])
+            if ip.is_private or ip.is_loopback or ip.is_link_local:
+                raise ValueError(f"blocked private/loopback address: {ip}")
+        return str(addrs[0][4][0])
 
     async def _handle_header(self, request):
         """头像获取并缓存 — 对标 C++ /api/header"""

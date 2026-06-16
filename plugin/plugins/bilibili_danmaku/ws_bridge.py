@@ -186,7 +186,7 @@ class WsBridge:
         payload = json.dumps({"cmd": cmd, "data": danmaku_data}, ensure_ascii=False)
         drop = set()
 
-        for ws in self._clients:
+        for ws in list(self._clients):  # 快照迭代，避免 await 期间 set 被修改
             client_id = id(ws)
             subbed = self._cmd_subscriptions.get(client_id, [])
             # 如果客户端没订阅任何事件 → 推送所有
@@ -205,7 +205,7 @@ class WsBridge:
         """向所有客户端广播 JSON 数据"""
         payload = json.dumps({"cmd": cmd, "data": data}, ensure_ascii=False)
         drop = set()
-        for ws in self._clients:
+        for ws in list(self._clients):
             try:
                 await ws.send(payload)
             except websockets.exceptions.ConnectionClosed:
