@@ -483,7 +483,7 @@ def test_home_tutorial_host_wires_avatar_tool_requests():
     assert "host.rotateCompactToolWheel(payload && payload.direction" in interpage_source
 
 
-def test_day5_home_template_only_loads_delivered_daily_guide_scripts():
+def test_icebreaker_home_template_loads_delivered_daily_guide_scripts():
     source = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
 
     for guide_script in [
@@ -492,17 +492,12 @@ def test_day5_home_template_only_loads_delivered_daily_guide_scripts():
         "tutorial/yui-guide/days/day3-interaction-guide.js",
         "tutorial/yui-guide/days/day4-companion-guide.js",
         "tutorial/yui-guide/days/day5-personalization-guide.js",
-    ]:
-        assert f'<script src="/static/{guide_script}' in source
-        assert (Path(__file__).resolve().parents[2] / "static" / guide_script).exists()
-
-    for future_script in [
         "tutorial/yui-guide/days/day6-agent-guide.js",
         "tutorial/yui-guide/days/day7-graduation-guide.js",
         "tutorial/icebreaker/new-user-icebreaker.js",
     ]:
-        assert f'<script src="/static/{future_script}' not in source
-
+        assert f'<script src="/static/{guide_script}' in source
+        assert (Path(__file__).resolve().parents[2] / "static" / guide_script).exists()
 
 def test_idle_cat1_compact_mirror_ignores_pet_window_local_events():
     source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
