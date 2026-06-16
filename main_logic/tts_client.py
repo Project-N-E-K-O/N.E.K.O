@@ -5218,15 +5218,17 @@ _tts_providers.register(_tts_providers.TTSProvider(
 ))
 
 # MiMo：priority 60（clone 之后、native 之前，沿用原 get_tts_worker 顺序）。
-# capabilities={preset, clone}：preset=现有固定音色目录（mimo_tts_voices；该 catalog 暂
-# 仍由 native_voice_registry 对外提供，待增量 6 的统一 preset catalog 接管后从 native 摘除）；
-# clone=占位（MiMo 有 mimo-v2.5-tts-voiceclone 模型，enrollment 真实现+测后续接手）。
+# capabilities 暂只声明 {preset}（现有固定音色目录；该 catalog 暂仍由 native_voice_registry
+# 对外提供，待统一 preset catalog 接管后从 native 摘除）。MiMo 虽有 mimo-v2.5-tts-voiceclone
+# 模型，但克隆 enrollment 尚未实现——「按实际能力注册」，不在 enrollment 落地前把 clone
+# advertise 进 ui_metadata（否则前端 source-first 选声器会渲染一个不能用的 clone tab）；
+# voiceclone enrollment 真实现时再追加 'clone'（见交接 chip）。
 # tts_dropdown_only=False：MiMo 本身是 assist LLM provider，不能被前端从 LLM 下拉隐藏。
 _tts_providers.register(_tts_providers.TTSProvider(
     key='mimo',
     kind='hosted',
     priority=60,
-    capabilities=frozenset({'preset', 'clone'}),
+    capabilities=frozenset({'preset'}),
     is_selected=_mimo_is_selected,
     resolve=_mimo_resolve,
     tts_dropdown_only=False,
