@@ -156,6 +156,12 @@
             return Promise.resolve(resultPromise);
         }
 
+        watchNonBlockingEvent(resultPromise, event) {
+            Promise.resolve(resultPromise).catch((error) => {
+                console.warn('[TutorialTimelineEngine] Non-blocking event failed:', event && event.id, error);
+            });
+        }
+
         async waitForTimelineTime(targetMs, startedAt, pausedDurationRef, runToken) {
             while (!this.isRunCancelled(runToken)) {
                 if (this.isPaused()) {
@@ -188,7 +194,17 @@
             const timelineEvents = events.filter((event) => event.afterAudioEnd !== true && event.atMs > 0);
 
             if (preAudioEvents.length > 0) {
-                await Promise.all(preAudioEvents.map((event) => this.dispatchEvent(event, context, triggered)));
+                preAudioEvents.forEach((event) => {
+                    const resultPromise = this.dispatchEvent(event, context, triggered);
+                    if (event.blocking === true) {
+                        blockingPromises.push(Promise.resolve(resultPromise));
+                    } else {
+                        this.watchNonBlockingEvent(resultPromise, event);
+                    }
+                });
+                if (blockingPromises.length > 0) {
+                    await Promise.all(blockingPromises);
+                }
             }
 
             if (
@@ -214,6 +230,8 @@
                 const resultPromise = this.dispatchEvent(event, context, triggered);
                 if (event.blocking === true) {
                     blockingPromises.push(Promise.resolve(resultPromise));
+                } else {
+                    this.watchNonBlockingEvent(resultPromise, event);
                 }
             }
 
@@ -235,6 +253,8 @@
                 const resultPromise = this.dispatchEvent(event, context, triggered);
                 if (event.blocking === true) {
                     await Promise.resolve(resultPromise);
+                } else {
+                    this.watchNonBlockingEvent(resultPromise, event);
                 }
                 if (this.isRunCancelled(runToken)) {
                     return {

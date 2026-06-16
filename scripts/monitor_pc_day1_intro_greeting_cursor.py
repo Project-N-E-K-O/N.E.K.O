@@ -96,7 +96,7 @@ def run_monitor() -> dict[str, Any]:
         )
         for script in (
             "tutorial/visual/highlight-controller.js",
-            "tutorial-interrupt-controller.js",
+            "tutorial/visual/resistance-controllers.js",
             "tutorial/core/interaction-takeover.js",
             "tutorial/yui-guide/overlay.js",
             "tutorial/yui-guide/director.js",

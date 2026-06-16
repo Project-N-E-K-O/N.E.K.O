@@ -123,9 +123,12 @@
                     return null;
                 },
                 waitForEnd: () => narrationPromise,
-                getDurationMs: (voiceKey) => {
+                getDurationMs: (voiceKey, locale) => {
                     if (typeof director.getGuideVoiceDurationMs === 'function') {
-                        return director.getGuideVoiceDurationMs(voiceKey || audio.voiceKey || '', '');
+                        return director.getGuideVoiceDurationMs(
+                            voiceKey || audio.voiceKey || '',
+                            locale || audio.locale || ''
+                        );
                     }
                     if (Number.isFinite(audio.durationMs)) {
                         return audio.durationMs;
