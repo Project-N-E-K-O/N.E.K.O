@@ -14,6 +14,10 @@ let _apiKeyRegistry = {};
 let _assistApiProviders = {};
 // 核心API服务商完整信息（从后端加载）
 let _coreApiProviders = {};
+// 特异 TTS provider（vllm_omni 等）前端驱动元数据，key→meta；来自后端
+// tts_provider_registry，统一驱动下拉过滤 / 端点字段解锁 / 连通性探测，
+// 新增此类 provider 不再需要在本文件多处硬编码 provider key
+let _ttsProviders = {};
 // 连通性测试确认可用的区域 URL，key 形如 "assist:qwen_intl"
 let _resolvedProviderUrls = {};
 // 核心 Key 输入框是否被用户手动改过；未改动时优先采用服务商管理簿的专属 Key
@@ -959,9 +963,11 @@ function populateModelProviderDropdowns() {
         Object.keys(_assistApiProviders).forEach(pk => {
             if (pk === 'free') return;
             if (isProviderRestricted(pk)) return;
-            // vllm_omni 是 TTS 专用 provider，仅在 TTS 下拉里出现，
-            // 不污染 conversation/summary/correction/emotion/vision/agent/omni 的下拉
-            if (pk === 'vllm_omni' && mt !== 'tts') return;
+            // 特异 TTS provider（tts_dropdown_only）仅在 TTS 下拉里出现，不污染
+            // conversation/summary/correction/emotion/vision/agent/omni 的下拉。
+            // 成员由后端 tts_provider_registry 驱动，前端不再硬编码 provider key。
+            const _spFilter = _ttsProviders[pk];
+            if (_spFilter && _spFilter.tts_dropdown_only && mt !== 'tts') return;
             const pInfo = _assistApiProviders[pk];
             const opt = document.createElement('option');
             opt.value = pk;
@@ -1092,27 +1098,29 @@ function onCustomModelProviderChange(modelType) {
             if (urlInput) { urlInput.value = ''; urlInput.setAttribute('readonly', 'readonly'); }
             setKeyReadonly(keyInput, '');
         }
-    } else if (provider === 'vllm_omni' && modelType === 'tts') {
-        // vllm-omni: TTS 标准 provider，但 URL/Key/ModelId/Voice 全部可编辑可保存
-        // （类似 custom，但 dropdown 里有自己的名字与默认 URL）
+    } else if (_ttsProviders[provider] && _ttsProviders[provider].editable_endpoint && modelType === 'tts') {
+        // 特异 TTS provider（端点可编辑，如 vLLM-Omni）：URL/Key/ModelId/Voice 全部
+        // 可编辑可保存（类似 custom，但 dropdown 里有自己的名字与默认值）。分支条件由
+        // tts_provider_registry 的 editable_endpoint 驱动；预填默认值优先取
+        // api_providers.json，缺失时回退注册表 default_*（兼容不在 json 里的新 provider）。
+        const _spMeta = _ttsProviders[provider];
         const pInfo = _assistApiProviders[provider] || {};
         if (urlInput) {
-            // 切换到 vllm_omni 时：
+            // 切换到该 provider 时：
             // - 若 URL 为空，或当前 URL 是从其他 provider 自动填充的 readonly 值（用户没主动编辑过），
-            //   覆盖为 vllm_omni 默认 URL；
+            //   覆盖为默认 URL；
             // - 若 URL 是用户主动编辑过的地址（非 readonly），保留。
             const wasReadonly = urlInput.hasAttribute('readonly');
             if (!urlInput.value || !urlInput.value.trim() || wasReadonly) {
-                urlInput.value = getProviderOpenrouterUrl(provider, pInfo) || '';
+                urlInput.value = getProviderOpenrouterUrl(provider, pInfo) || _spMeta.default_url || '';
             }
             urlInput.removeAttribute('readonly');
         }
-        const modelIdInput2 = document.getElementById(`${modelType}ModelId`);
-        if (modelIdInput2 && (!_isLoadingSavedConfig || !modelIdInput2.value || !modelIdInput2.value.trim())) {
-            modelIdInput2.value = pInfo.tts_default_model || '';
+        if (modelIdInput && (!_isLoadingSavedConfig || !modelIdInput.value || !modelIdInput.value.trim())) {
+            modelIdInput.value = pInfo.tts_default_model || _spMeta.default_model || '';
         }
         if (voiceInput && (!_isLoadingSavedConfig || !voiceInput.value || !voiceInput.value.trim())) {
-            voiceInput.value = pInfo.tts_default_voice || '';
+            voiceInput.value = pInfo.tts_default_voice || _spMeta.default_voice || '';
         }
         setKeyEditable(keyInput);
     } else if (provider === 'custom') {
@@ -1185,6 +1193,15 @@ async function loadApiProviders() {
                 _apiKeyRegistry = data.api_key_registry || {};
                 _coreApiProviders = data.core_api_providers_full || {};
                 _assistApiProviders = data.assist_api_providers_full || {};
+
+                // TTS provider 元数据（后端 tts_provider_registry → ui_metadata）：
+                // 列表转成 key→meta 映射，供下拉过滤 / 字段解锁 / 探测 / 来源能力复用。
+                _ttsProviders = {};
+                if (Array.isArray(data.tts_providers)) {
+                    data.tts_providers.forEach(m => {
+                        if (m && m.key) _ttsProviders[m.key] = m;
+                    });
+                }
 
                 // Fallback: build from array if _full not available
                 if (Object.keys(_coreApiProviders).length === 0 && Array.isArray(data.core_api_providers)) {
@@ -3058,14 +3075,17 @@ const ConnectivityManager = {
                 // 自定义：直接从输入框读取，不设 providerKey（走自定义模式）
                 result.key = keyInput ? getRealKey(keyInput) : '';
                 result.providerType = (mt === 'omni') ? 'websocket' : 'openai_compatible';
-            } else if (provider === 'vllm_omni' && mt === 'tts') {
-                // vllm_omni + tts: 走 Mode 2（custom 路径），复用后端 _test_websocket
-                // 不设 providerKey / providerScope → 后端进入 Mode 2，用用户输入的 URL
-                //
-                // 修复 PR #1764 review #7（Codex P2）：把 base_url 规整成 worker 实际
-                // 使用的 ws endpoint，保证 _test_websocket 的握手真实命中
-                // /audio/speech/stream，而不是探测错误的端点
-                // 与后端 vllm_omni_tts_worker 中的 URL 拼接逻辑保持一致
+            } else if (_ttsProviders[provider]
+                       && _ttsProviders[provider].probe_kind === 'ws_handshake'
+                       && mt === 'tts') {
+                // 特异 TTS provider 的 ws 握手探测（如 vLLM-Omni）：走 Mode 2（custom
+                // 路径），复用后端 _test_websocket，不设 providerKey/providerScope →
+                // 后端用用户输入的 URL。把 base_url 规整成 worker 实际连接的 ws endpoint
+                // （后缀 meta.probe_ws_path），并带 meta.probe_sub_type 让后端分流到对应的
+                // 握手探测，避免发 session.update 触发 vLLM 主动断连导致连通性误判。
+                // 协议细节（ws 后缀 / sub_type）由 tts_provider_registry 数据驱动，不再硬编码。
+                const _spProbe = _ttsProviders[provider];
+                const wsPath = _spProbe.probe_ws_path || '';
                 const rawUrl = (urlInput ? urlInput.value.trim() : '').replace(/\/+$/, '');
                 let wsEndpoint = '';
                 if (rawUrl) {
@@ -3086,30 +3106,25 @@ const ConnectivityManager = {
                         if (basePath === '' || basePath === '/') {
                             basePath = '/v1';
                         }
-                        // 修复 PR #1764 review 第三轮 #2：URL 规整幂等——
-                        // 若 path 已是完整 endpoint 则不重复拼接，与后端 vllm_omni_tts_worker 保持一致，
-                        // 避免用户填完整 endpoint 时连通性测试探测到 /audio/speech/stream/audio/speech/stream
-                        if (basePath.endsWith('/audio/speech/stream')) {
+                        // URL 规整幂等：若 path 已是完整 endpoint 则不重复拼接，与后端
+                        // worker 的 URL 拼接保持一致，避免探测到重复后缀。
+                        if (!wsPath || basePath.endsWith(wsPath)) {
                             u.pathname = basePath;
                         } else {
-                            u.pathname = basePath + '/audio/speech/stream';
+                            u.pathname = basePath + wsPath;
                         }
                         wsEndpoint = u.toString();
                     } catch (e) {
                         // URL 解析失败：退化为直接字符串拼接，同样做幂等检查
                         const stripped = wsUrl.replace(/\/+$/, '');
-                        wsEndpoint = stripped.endsWith('/audio/speech/stream')
+                        wsEndpoint = (!wsPath || stripped.endsWith(wsPath))
                             ? stripped
-                            : stripped + '/audio/speech/stream';
+                            : stripped + wsPath;
                     }
                 }
                 result.url = wsEndpoint;
                 result.providerType = 'websocket';
-                // 修复 PR #1764 review 第六轮：vLLM-Omni 的 /v1/audio/speech/stream 走
-                // Qwen 自定义协议，不识别 OpenAI Realtime 的 session.update。后端会
-                // 按 sub_type 分流到 _test_vllm_omni_ws_handshake 仅做握手探测，
-                // 避免发 session.update 触发 vLLM 主动断连导致连通性误判。
-                result.subType = 'vllm_omni_tts';
+                result.subType = _spProbe.probe_sub_type || '';
                 result.key = keyInput ? getRealKey(keyInput) : '';
                 result.model = modelIdInput ? modelIdInput.value.trim() : '';
             } else {
