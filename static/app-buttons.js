@@ -2858,11 +2858,25 @@
             var items = getAvatarDropItems(payload);
             var rejected = getAvatarDropRejected(payload);
             if (!items.length && !rejected.length) return false;
+            var gameRouteBlocksImages = !!(S && S.gameRouteActive);
+            if (gameRouteBlocksImages) {
+                var blockedImages = items.filter(function (item) { return item.type === 'image'; });
+                if (blockedImages.length) {
+                    items = items.filter(function (item) { return item.type !== 'image'; });
+                    rejected = rejected.concat(blockedImages.map(function (item) {
+                        return {
+                            name: item.name,
+                            size: item.size,
+                            reason: 'game_route_image_unsupported'
+                        };
+                    }));
+                }
+            }
 
             var prompt = buildAvatarDropPrompt({ items: items, rejected: rejected });
             if (!prompt) return false;
 
-            var imageDataUrls = items
+            var imageDataUrls = gameRouteBlocksImages ? [] : items
                 .filter(function (item) { return item.type === 'image' && item.dataUrl; })
                 .map(function (item) { return item.dataUrl; });
 

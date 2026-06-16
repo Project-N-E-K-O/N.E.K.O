@@ -1713,6 +1713,7 @@ class OmniOfflineClient:
         *,
         system_prefix: str | None = None,
         input_transcript_callback: Optional[Callable[[str], Awaitable[None]]] = None,
+        history_replacement_text: str | None = None,
     ) -> None:
         """
         Send a text message to the API and stream the response.
@@ -1736,6 +1737,10 @@ class OmniOfflineClient:
         ``input_transcript_callback`` lets a caller bind the transcript recording
         callback to this request. This is used when the frontend sends a long prompt
         but wants memory/history to record a concise user-facing summary.
+
+        ``history_replacement_text`` keeps the full prompt available for the current
+        LLM turn, then replaces the just-appended user history entry before the next
+        turn reuses ``_conversation_history``.
         """  # noqa: DOCSTRING_CJK
         if not text or not text.strip():
             # If only images without text, use a default prompt
@@ -1791,6 +1796,12 @@ class OmniOfflineClient:
             user_message = HumanMessage(content=_user_text_with_prefix)
 
         self._conversation_history.append(user_message)
+        history_replacement_index = len(self._conversation_history) - 1
+        history_replacement_text = (
+            str(history_replacement_text).strip()
+            if history_replacement_text is not None
+            else ""
+        )
         if has_images:
             self._evict_old_images()
 
@@ -2735,6 +2746,15 @@ class OmniOfflineClient:
                     break
         finally:
             self._is_responding = False
+
+            if (
+                history_replacement_text
+                and 0 <= history_replacement_index < len(self._conversation_history)
+                and self._conversation_history[history_replacement_index] is user_message
+            ):
+                self._conversation_history[history_replacement_index] = HumanMessage(
+                    content=history_replacement_text
+                )
 
             # 还原 summary 模式临时抬高的 API budget，别泄漏给 prompt_ephemeral。
             if _summary_prev_max_tokens is not None and getattr(self, "llm", None) is not None:

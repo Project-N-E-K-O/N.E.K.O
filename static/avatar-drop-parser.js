@@ -97,12 +97,15 @@
         return DOCUMENT_EXTENSIONS.indexOf(String(ext || '').toLowerCase()) >= 0;
     }
 
-    function isTextCandidate(file, prefix) {
+    function hasKnownTextType(file) {
         var mime = String(file.type || '').toLowerCase();
         var ext = getExtension(file.name);
         if (mime.indexOf('text/') === 0) return true;
         if (/\/(json|xml|javascript|x-javascript|x-yaml|yaml|csv)$/i.test(mime)) return true;
-        if (TEXT_EXTENSIONS.indexOf(ext) >= 0) return true;
+        return TEXT_EXTENSIONS.indexOf(ext) >= 0;
+    }
+
+    function sniffStrictUtf8Text(prefix) {
         if (prefix && prefix.length > 0) {
             var inspected = Math.min(prefix.length, 512);
             var zeroCount = 0;
@@ -112,7 +115,8 @@
                 if (code === 0) zeroCount += 1;
                 if (code < 32 && code !== 9 && code !== 10 && code !== 13) controlCount += 1;
             }
-            return zeroCount === 0 && controlCount / inspected < 0.02;
+            if (zeroCount > 0 || controlCount / inspected >= 0.02) return false;
+            return decodeWith('utf-8', prefix, true) !== null;
         }
         return false;
     }
@@ -125,7 +129,8 @@
         }
     }
 
-    function decodeText(bytes) {
+    function decodeText(bytes, options) {
+        var requireStrictDecode = !!(options && options.requireStrictDecode);
         if (startsWith(bytes, [0xEF, 0xBB, 0xBF])) {
             return { text: decodeWith('utf-8', bytes.slice(3), true), encoding: 'utf-8-bom' };
         }
@@ -138,6 +143,7 @@
 
         var utf8 = decodeWith('utf-8', bytes, true);
         if (utf8 !== null) return { text: utf8, encoding: 'utf-8' };
+        if (requireStrictDecode) return { text: null, encoding: '' };
 
         var gb = decodeWith('gb18030', bytes, false);
         if (gb !== null) return { text: gb, encoding: 'gb18030' };
@@ -409,7 +415,7 @@
         return { rejected: { reason: 'image_encode_too_large' } };
     }
 
-    async function parseTextFile(file, kind) {
+    async function parseTextFile(file, kind, options) {
         if (kind && kind !== 'text') {
             return { rejected: { reason: 'binary_file' } };
         }
@@ -418,7 +424,10 @@
         }
 
         var bytes = new Uint8Array(await file.arrayBuffer());
-        var decoded = decodeText(bytes);
+        var decoded = decodeText(bytes, options);
+        if (!decoded.text) {
+            return { rejected: { reason: 'binary_file' } };
+        }
         var text = sanitizeText(decoded.text);
         var quality = inspectTextQuality(text);
         if (!quality.ok) {
@@ -531,10 +540,12 @@
         if (looksBinaryPrefix(prefix)) {
             return { rejected: { reason: 'binary_file' } };
         }
-        if (!isTextCandidate(file, prefix)) {
+        var knownTextType = hasKnownTextType(file);
+        var strictSniffedText = !knownTextType && sniffStrictUtf8Text(prefix);
+        if (!knownTextType && !strictSniffedText) {
             return { rejected: { reason: 'unsupported_file' } };
         }
-        return parseTextFile(file, 'text');
+        return parseTextFile(file, 'text', { requireStrictDecode: strictSniffedText });
     }
 
     async function parseFiles(fileList) {

@@ -7795,6 +7795,8 @@ class LLMSessionManager:
                     stream_text_kwargs = {"system_prefix": _agent_cb_ctx or None}
                     if input_transcript_callback:
                         stream_text_kwargs["input_transcript_callback"] = input_transcript_callback
+                    if memory_text:
+                        stream_text_kwargs["history_replacement_text"] = memory_text
                     await self.session.stream_text(data, **stream_text_kwargs)
                 else:
                     logger.error(f"💥 Stream: Invalid text data type: {type(data)}")

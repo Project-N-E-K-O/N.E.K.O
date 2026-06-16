@@ -935,6 +935,32 @@ def test_xlsx_skips_hidden_columns():
 
 
 @pytest.mark.unit
+def test_xlsx_normalizes_relationship_targets_with_dot_segments():
+    data = _zip_bytes({
+        "[Content_Types].xml": CONTENT_TYPES_XML,
+        "xl/workbook.xml": (
+            f'<workbook xmlns="{SPREADSHEET_NS}" xmlns:r="{OFFICE_REL_NS}">'
+            '<sheets><sheet name="Dot" sheetId="1" r:id="rId1"/></sheets>'
+            "</workbook>"
+        ),
+        "xl/_rels/workbook.xml.rels": (
+            f'<Relationships xmlns="{PACKAGE_REL_NS}">'
+            '<Relationship Id="rId1" Target="./worksheets/sheet1.xml"/>'
+            "</Relationships>"
+        ),
+        "xl/worksheets/sheet1.xml": (
+            f'<worksheet xmlns="{SPREADSHEET_NS}"><sheetData>'
+            '<row r="1"><c r="A1" t="inlineStr"><is><t>Dot target</t></is></c></row>'
+            "</sheetData></worksheet>"
+        ),
+    })
+
+    parsed = parse_document("dot-target.xlsx", "", data)
+
+    assert "Dot target" in parsed["content"]
+
+
+@pytest.mark.unit
 def test_xlsx_rows_are_not_materialized_before_limit():
     source = PARSER_SOURCE_PATH.read_text(encoding="utf-8")
 

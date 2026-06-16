@@ -744,10 +744,10 @@ def _read_xlsx_sheets(archive: zipfile.ZipFile) -> list[dict[str, str]]:
 
 
 def _resolve_xlsx_target(target: str) -> str:
-    cleaned = str(target or "").lstrip("/")
+    cleaned = str(target or "").replace("\\", "/").lstrip("/")
     if cleaned.startswith("xl/"):
-        return cleaned
-    return "xl/" + cleaned
+        return posixpath.normpath(cleaned)
+    return posixpath.normpath(posixpath.join("xl", cleaned))
 
 
 def _extract_xlsx_sheet_text(

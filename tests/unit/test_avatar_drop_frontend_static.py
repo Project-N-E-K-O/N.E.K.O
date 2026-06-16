@@ -94,6 +94,11 @@ def test_avatar_drop_parser_declares_supported_formats_and_limits():
     assert "garbled_text" in source
     assert "control_chars" in source
     assert "bidi_controls" in source
+    assert "function hasKnownTextType(file)" in source
+    assert "function sniffStrictUtf8Text(prefix)" in source
+    assert "decodeWith('utf-8', prefix, true) !== null" in source
+    assert "requireStrictDecode" in source
+    assert "return parseTextFile(file, 'text', { requireStrictDecode: strictSniffedText });" in source
 
 
 @pytest.mark.unit
@@ -163,6 +168,9 @@ def test_avatar_drop_payload_sends_full_prompt_but_records_memory_summary_only()
 
     assert "var rejected = getAvatarDropRejected(payload);" in send_payload
     assert "if (!items.length && !rejected.length) return false;" in send_payload
+    assert "var gameRouteBlocksImages = !!(S && S.gameRouteActive);" in send_payload
+    assert "reason: 'game_route_image_unsupported'" in send_payload
+    assert "var imageDataUrls = gameRouteBlocksImages ? [] : items" in send_payload
     assert "var prompt = buildAvatarDropPrompt({ items: items, rejected: rejected });" in send_payload
     assert "var displayText = formatAvatarDropDisplayText({ items: items, rejected: rejected });" in send_payload
     assert "if (!await prepareAvatarDropTextMode()) return false;" in send_payload
@@ -214,6 +222,7 @@ def test_avatar_drop_image_and_memory_override_are_routed_as_text_session_inputs
     assert "openclaw_magic_command = self._normalize_explicit_openclaw_magic_command(data)" in core_source
     assert "_should_handoff_text_to_openclaw" not in core_source
     assert "input_transcript_callback" in core_source
+    assert 'stream_text_kwargs["history_replacement_text"] = memory_text' in core_source
     assert "self._next_text_transcript_memory_text" not in core_source
     assert "memory_override_text" not in core_source
     assert "record_transcript_text = transcript_text" in core_source
@@ -221,6 +230,8 @@ def test_avatar_drop_image_and_memory_override_are_routed_as_text_session_inputs
     assert 'text_only_input_types = {"text", "avatar_drop_image", "user_image"}' in core_source
     assert "msg_input_type in text_only_input_types" in core_source
     assert "input_transcript_callback: Optional[Callable[[str], Awaitable[None]]] = None" in offline_source
+    assert "history_replacement_text: str | None = None" in offline_source
+    assert "self._conversation_history[history_replacement_index] = HumanMessage" in offline_source
     assert "transcript_callback = input_transcript_callback or self.on_input_transcript" in offline_source
     assert "input_type in ['audio', 'screen', 'camera', 'text', 'avatar_drop_image', 'user_image']" in websocket_source
     assert "text_input_types = ['text', 'avatar_drop_image', 'user_image']" in websocket_source
