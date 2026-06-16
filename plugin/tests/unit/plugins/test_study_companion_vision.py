@@ -78,13 +78,16 @@ ZH_TRANSFER_EXPECTED_TEXT = (
 
 
 def test_image_only_explain_prompts_require_solution_process_sections() -> None:
+    assert "detailed solution process" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
     assert "Solution Process" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
-    assert "Final Answer" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
+    assert "Answer" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
     assert "brief analysis" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
     assert "Problem Analysis" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
     assert "Transfer Practice" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
-    assert "do not assume it is single-select" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
-    assert "all correct option letters" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
+    assert "do not assume it is single-choice" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
+    assert "verify each item independently" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
+    assert "output all correct options" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
+    assert "详细的解答过程" in IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
     assert "题目解析" in IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
     assert "解题过程" in IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
     assert "答案" in IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN

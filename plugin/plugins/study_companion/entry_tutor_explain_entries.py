@@ -20,23 +20,23 @@ from .entry_common import (
 
 
 IMAGE_ONLY_EXPLAIN_PROMPT_EN = (
-    "First identify any exercise or problem in the pasted image, then solve it "
-    "with a visible process: list the givens, show the key derivation or "
-    "construction, verify the result, and state the final answer or option. "
-    "Use explicit sections for Problem Analysis, Solution Process, Final "
-    "Answer, and Transfer Practice; do not provide only a brief analysis. "
-    "For choice questions, do not assume it is single-select unless explicitly "
-    "stated; verify every option independently and output all correct option "
-    "letters. "
-    "Do not only summarize the problem. If the image is not a problem, explain "
-    "its contents."
+    "First identify the problem in the image, then provide a detailed solution "
+    "process: list the givens, show the key derivation or construction, verify "
+    "the result, and clearly state the final answer or option. When solving a "
+    "problem, your response must include four headings: \"Problem Analysis\", "
+    "\"Solution Process\", \"Answer\", and \"Transfer Practice\". Do not give "
+    "only a brief \"analysis\". Do not only summarize the problem statement; "
+    "if the image is not a problem, explain the image contents instead. If it "
+    "is a choice question or item-by-item judgment question, do not assume it "
+    "is single-choice; verify each item independently. If there are multiple "
+    "correct options, output all correct options in \"Answer\"."
 )
 IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN = (
-    "请先识别图片中的题目，然后给出可见的解答过程：列出已知条件、展示关键推导或构造、"
+    "请先识别图片中的题目，给出详细的解答过程：列出已知条件、展示关键推导或构造、"
     "验证结果，并明确最终答案或选项。回答题目时必须包含“题目解析”“解题过程”“答案”"
     "和“举一反三”四个小标题，不要只给简短“解析”。不要只总结题意；如果图片不是题目，"
     "再解释图片内容。如果是选择题或逐项判断题，不要默认是单选题；必须逐项验证，"
-    "不要找到一个正确选项就停止；若有多个正确选项，在“答案”中输出全部正确选项。"
+    "若有多个正确选项，需在“答案”中输出全部正确选项。"
 )
 IMAGE_ONLY_EXPLAIN_PROMPT_ZH_TW = (
     "請先識別圖片中的題目，然後給出可見的解答過程：列出已知條件、展示關鍵推導或構造、"
