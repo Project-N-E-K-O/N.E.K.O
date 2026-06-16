@@ -105,7 +105,7 @@
         _galgameRequestSeq: 0,
         // 通用 ChoicePrompt 框架（PR #1141 follow-up #2）。当前承载 mini_game_invite
         // 三选项；galgame mode 仍走 galgameOptions 路径（BC，渐进迁移）。
-        // shape: { source: 'mini_game_invite', sessionId, gameType, options: [{choice,label}] } | null
+        // shape: { source: 'mini_game_invite'|'new_user_icebreaker', sessionId, gameType, options: [{choice,label}] } | null
         choicePrompt: null,
         // dedupe set：已经 window.open 过的 mini-game session_id。键集，行为按 set 用。
         // 防止 endpoint 路径 + WS push 路径同一 session 双开窗口。
@@ -3370,6 +3370,27 @@
             handleMiniGameInviteChoice(option);
             return;
         }
+        if (source === 'new_user_icebreaker') {
+            handleNewUserIcebreakerChoice(option);
+            return;
+        }
+    }
+
+    function handleNewUserIcebreakerChoice(option) {
+        var prompt = state.choicePrompt;
+        if (!prompt || prompt.source !== 'new_user_icebreaker') return;
+        state.choicePrompt = null;
+        renderWindow();
+        try {
+            window.dispatchEvent(new CustomEvent('neko:icebreaker-choice-selected', {
+                detail: {
+                    source: 'new_user_icebreaker',
+                    sessionId: prompt.sessionId || '',
+                    choice: option.choice,
+                    label: option.label || ''
+                }
+            }));
+        } catch (_) {}
     }
 
     function handleCompactChatStateChange(nextCompactChatState) {
@@ -3621,6 +3642,34 @@
         //      让 invite dismiss 后老结果突然冒出来（A/B/C 选项是基于 invite
         //      文本生成的，与后续对话无关）
         invalidatePendingGalgameRequest();
+        renderWindow();
+    }
+
+    function setNewUserIcebreakerPrompt(payload) {
+        if (!payload) return;
+        var sessionId = String(payload.sessionId || '');
+        if (!sessionId) return;
+        var rawOptions = Array.isArray(payload.options) ? payload.options : [];
+        var cleanedOptions = rawOptions.map(function (o) {
+            return {
+                choice: String((o && o.choice) || ''),
+                label: String((o && o.label) || '')
+            };
+        }).filter(function (o) { return o.choice && o.label; });
+        if (!cleanedOptions.length) return;
+        state.choicePrompt = {
+            source: 'new_user_icebreaker',
+            sessionId: sessionId,
+            options: cleanedOptions
+        };
+        invalidatePendingGalgameRequest();
+        renderWindow();
+    }
+
+    function clearNewUserIcebreakerPrompt(sessionId) {
+        if (!state.choicePrompt || state.choicePrompt.source !== 'new_user_icebreaker') return;
+        if (sessionId && state.choicePrompt.sessionId !== sessionId) return;
+        state.choicePrompt = null;
         renderWindow();
     }
 
@@ -6407,6 +6456,8 @@
         refreshGalgameOptions: fetchGalgameOptionsForLatestTurn,
         // Mini-game invite ChoicePrompt：app-websocket.js 收到对应 WS message 时调
         setMiniGameInvitePrompt: setMiniGameInvitePrompt,
+        setNewUserIcebreakerPrompt: setNewUserIcebreakerPrompt,
+        clearNewUserIcebreakerPrompt: clearNewUserIcebreakerPrompt,
         // unified resolved handler：accept 兼 launch / decline / suppress 都通过
         // 这条入口分发——前端 dismiss prompt UI + accept 时 window.open。替代了
         // 旧 launchMiniGame（accept-only）路径，让 codex P2 的 cross-window

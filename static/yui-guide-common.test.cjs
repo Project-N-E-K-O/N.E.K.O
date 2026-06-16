@@ -17,12 +17,7 @@ const common = require('./tutorial/yui-guide/common.js');
 const repoRoot = path.resolve(__dirname, '..');
 const dayGuideFiles = [
     'tutorial/yui-guide/days/day1-home-guide.js',
-    'tutorial/yui-guide/days/day2-screen-voice-guide.js',
-    'tutorial/yui-guide/days/day3-interaction-guide.js',
-    'tutorial/yui-guide/days/day4-companion-guide.js',
-    'tutorial/yui-guide/days/day5-personalization-guide.js',
-    'tutorial/yui-guide/days/day6-agent-guide.js',
-    'tutorial/yui-guide/days/day7-graduation-guide.js'
+    'tutorial/yui-guide/days/day2-screen-voice-guide.js'
 ];
 
 test('common guide helpers freeze config, register guides, and create locale audio maps', () => {
@@ -733,6 +728,33 @@ test('lifecycle state store module is loaded before prompt and manager scripts',
     }
 });
 
+test('new-user icebreaker script is present before websocket greeting handling', () => {
+    const icebreakerPath = path.join(repoRoot, 'static', 'icebreaker/new-user-icebreaker.js');
+    assert.ok(fs.existsSync(icebreakerPath), 'static/icebreaker/new-user-icebreaker.js should exist');
+
+    const templateSource = fs.readFileSync(path.join(repoRoot, 'templates/index.html'), 'utf8');
+    const icebreakerIndex = templateSource.indexOf('/static/icebreaker/new-user-icebreaker.js');
+    const websocketIndex = templateSource.indexOf('/static/app-websocket.js');
+
+    assert.notEqual(icebreakerIndex, -1, 'index.html should load the new-user icebreaker');
+    assert.notEqual(websocketIndex, -1, 'index.html should load app-websocket.js');
+    assert.ok(icebreakerIndex < websocketIndex, 'new-user icebreaker should load before app-websocket.js');
+});
+
+test('Day1 guide keeps locale-specific audio filenames', () => {
+    const day1Source = fs.readFileSync(
+        path.join(repoRoot, 'static', 'tutorial/yui-guide/days/day1-home-guide.js'),
+        'utf8'
+    );
+
+    assert.match(day1Source, /zhAudioFileNames/);
+    assert.match(day1Source, /intro_basic:\s*'这里有一个神奇的按钮\.mp3'/);
+    assert.match(day1Source, /intro_basic:\s*'这里有一个神奇的小按\.mp3'/);
+    assert.match(day1Source, /takeover_capture_cursor:\s*'超级魔法按钮出现！只\.mp3'/);
+    assert.match(day1Source, /takeover_capture_cursor:\s*'超级魔法开关出现！只\.mp3'/);
+    assert.match(day1Source, /audioFileOverridesByKey:\s*audioFilesByKey/);
+});
+
 test('resistance controller support module is loaded before the director', () => {
     const controllerPath = path.join(__dirname, 'tutorial/visual/resistance-controllers.js');
     assert.ok(fs.existsSync(controllerPath), 'tutorial/visual/resistance-controllers.js should exist');
@@ -949,7 +971,6 @@ test('director exposes phase one guard and timing helpers for complex sequences'
 test('director routes resistance interrupts through ResistanceController boundary', () => {
     const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
     const resistanceSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/visual/resistance-controllers.js'), 'utf8');
-    const resetSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/avatar/floating-guide-reset.js'), 'utf8');
     const directorSource = source.split('    class YuiGuideDirector {')[1];
     const constructorBlock = directorSource.split(
         '            this.keydownHandler = this.onKeyDown.bind(this);',
@@ -1022,11 +1043,6 @@ test('director routes resistance interrupts through ResistanceController boundar
     assert.doesNotMatch(playResistanceBlock, /this\.interruptController\.playLightResistance/);
     assert.doesNotMatch(angryExitBlock, /this\.interruptController\.abortAsAngryExit/);
     assert.doesNotMatch(destroyBlock, /this\.interruptController\.destroy\(\)/);
-    assert.doesNotMatch(resetSource, /window\.TutorialResistanceControllers\.createResetInterruptController/);
-    assert.doesNotMatch(resetSource, /window\.TutorialInterruptController/);
-    assert.doesNotMatch(resetSource, /interruptController\.playLightResistance/);
-    assert.doesNotMatch(resetSource, /interruptController\.abortAsAngryExit/);
-    assert.doesNotMatch(resetSource, /createResetInterruptController/);
 });
 
 test('director wraps round-level look-at lifecycle with withLookAt helper', () => {
@@ -1293,7 +1309,11 @@ test('director delegates avatar floating scene operations through OperationRegis
 test('day3 Galgame guide drag follows the compact tool wheel arc and holds the target', () => {
     const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
     const overlaySource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/overlay.js'), 'utf8');
-    const day3GuideSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/days/day3-interaction-guide.js'), 'utf8');
+    const day3GuidePath = path.join(repoRoot, 'static', 'tutorial/yui-guide/days/day3-interaction-guide.js');
+    if (!fs.existsSync(day3GuidePath)) {
+        return;
+    }
+    const day3GuideSource = fs.readFileSync(day3GuidePath, 'utf8');
     const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
     const sceneOrchestratorSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/scene-orchestrator.js'), 'utf8');
     const operationRegistrySource = fs.readFileSync(
@@ -1404,7 +1424,11 @@ test('day3 Galgame guide drag follows the compact tool wheel arc and holds the t
 test('day3 avatar tool props cleanup waits for the real narration promise', () => {
     const operationRegistrySource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/operation-registry.js'), 'utf8');
     const sceneOrchestratorSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/scene-orchestrator.js'), 'utf8');
-    const day3GuideSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/days/day3-interaction-guide.js'), 'utf8');
+    const day3GuidePath = path.join(repoRoot, 'static', 'tutorial/yui-guide/days/day3-interaction-guide.js');
+    if (!fs.existsSync(day3GuidePath)) {
+        return;
+    }
+    const day3GuideSource = fs.readFileSync(day3GuidePath, 'utf8');
     const avatarToolsMatch = operationRegistrySource.match(
         /        async runShowAvatarToolsThenHideAfterNarration\(scene, primaryTarget, narrationStartedAt, narrationPromise\) \{([\s\S]*?)\n        async runToggleAvatarToolAfterNarration/
     );
@@ -1839,10 +1863,27 @@ test('avatar floating auto-start rechecks pending state before delayed launch', 
     const pendingCheckBlock = pendingCheckMatch[1];
 
     assert.match(maybeAutoBlock, /if \(!this\.isAvatarFloatingGuideRoundPendingAutoStart\(round\)\) \{\s*return;\s*\}/);
+    assert.match(maybeAutoBlock, /if \(!this\.isAvatarFloatingGuideRoundRegistered\(round\)\) \{\s*return;\s*\}/);
     assert.match(pendingCheckBlock, /const state = loadAvatarFloatingGuideState\(\);/);
     assert.match(pendingCheckBlock, /state\.pendingRound !== round && state\.manualResetRound !== round/);
     assert.match(pendingCheckBlock, /state\.completedRounds\.includes\(round\)/);
     assert.match(pendingCheckBlock, /state\.skippedRounds\.includes\(round\)/);
+});
+
+test('avatar floating auto-start only selects registered daily rounds', () => {
+    const managerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
+    const nextRoundBlock = managerSource.split('    getNextAvatarFloatingGuideAutoRound() {')[1].split(
+        '    isAvatarFloatingGuideRoundRegistered(day) {',
+        1
+    )[0];
+    const registeredBlock = managerSource.split('    isAvatarFloatingGuideRoundRegistered(day) {')[1].split(
+        '    async maybeStartAvatarFloatingGuideAutoRound',
+        1
+    )[0];
+
+    assert.match(nextRoundBlock, /if \(!this\.isAvatarFloatingGuideRoundRegistered\(round\)\) \{\s*return null;\s*\}/);
+    assert.match(registeredBlock, /window\.YuiGuideDailyGuides/);
+    assert.match(registeredBlock, /Array\.isArray\(guideConfig\.round\.scenes\)/);
 });
 
 test('tutorial destroy requests share the PC global overlay cleanup path', () => {

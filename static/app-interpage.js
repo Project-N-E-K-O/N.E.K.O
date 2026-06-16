@@ -2664,8 +2664,27 @@
     var yuiGuideChatSpotlightKind = '';
     var yuiGuideChatSpotlightTimer = 0;
 
-    function getYuiGuideChatSpotlightElement() {
-        return document.getElementById('yui-guide-chat-spotlight');
+    function getYuiGuideChatSpotlightElement(createIfMissing) {
+        var spotlight = document.getElementById('yui-guide-chat-spotlight');
+        if (spotlight || createIfMissing !== true || !document.body) {
+            return spotlight;
+        }
+
+        spotlight = document.createElement('div');
+        spotlight.id = 'yui-guide-chat-spotlight';
+        spotlight.className = 'yui-guide-chat-spotlight';
+        spotlight.hidden = true;
+        spotlight.setAttribute('aria-hidden', 'true');
+        spotlight.style.position = 'fixed';
+        spotlight.style.boxSizing = 'border-box';
+        spotlight.style.pointerEvents = 'none';
+        spotlight.style.zIndex = '2147483200';
+        spotlight.style.border = '2px solid rgba(96, 173, 255, 0.96)';
+        spotlight.style.boxShadow = '0 0 0 9999px rgba(8, 12, 20, 0.18), 0 0 24px rgba(96, 173, 255, 0.36)';
+        spotlight.style.transition = 'opacity 160ms ease, left 160ms ease, top 160ms ease, width 160ms ease, height 160ms ease';
+        spotlight.style.opacity = '0';
+        document.body.appendChild(spotlight);
+        return spotlight;
     }
 
     function getYuiGuideChatSpotlightTarget(kind) {
@@ -2698,7 +2717,7 @@
     }
 
     function updateYuiGuideChatSpotlight(kind) {
-        var spotlight = getYuiGuideChatSpotlightElement();
+        var spotlight = getYuiGuideChatSpotlightElement(true);
         if (!spotlight) {
             return;
         }
@@ -2710,6 +2729,7 @@
 
         if (!rect || rect.width <= 0 || rect.height <= 0) {
             spotlight.hidden = true;
+            spotlight.style.opacity = '0';
             spotlight.classList.remove('is-visible', 'is-window', 'is-input');
             return;
         }
@@ -2720,6 +2740,7 @@
         spotlight.classList.remove('is-window', 'is-input');
         spotlight.classList.add(kind === 'window' ? 'is-window' : 'is-input');
         spotlight.classList.add('is-visible');
+        spotlight.style.opacity = '1';
         spotlight.style.left = Math.round(rect.left - padding) + 'px';
         spotlight.style.top = Math.round(rect.top - padding) + 'px';
         spotlight.style.width = Math.round(rect.width + padding * 2) + 'px';
@@ -2735,6 +2756,7 @@
             var spotlight = getYuiGuideChatSpotlightElement();
             if (spotlight) {
                 spotlight.hidden = true;
+                spotlight.style.opacity = '0';
                 spotlight.classList.remove('is-visible', 'is-window', 'is-input');
             }
             return;
