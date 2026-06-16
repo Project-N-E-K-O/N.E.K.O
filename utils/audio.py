@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import base64
 import wave
 import io
@@ -36,18 +50,18 @@ def pcm_to_wav(pcm_data, sample_rate=16000, channels=1, sample_width=2):
 
 
 def select_voice_clone_sample_rate(sample_rate: int) -> int:
-    """为语音克隆参考音频选择允许的目标采样率。
+    """Pick an allowed target sample rate for the voice-clone reference audio.
 
-    阿里云 DashScope VoiceEnrollmentService 要求采样率至少为 16kHz。
-    规则：
-    1. 如果原采样率 >= 48000Hz，向下匹配到 48000Hz
-    2. 如果原采样率在 44100-47999Hz 之间，向下匹配到 44100Hz
-    3. 如果原采样率在 22050-44099Hz 之间，向下匹配到 22050Hz
-    4. 如果原采样率在 16000-22049Hz 之间，向下匹配到 16000Hz
-    5. 如果原采样率 < 16000Hz，抛出错误（API最低要求16kHz）
+    Alibaba Cloud DashScope VoiceEnrollmentService requires a sample rate of at least 16kHz.
+    Rules:
+    1. If the original rate >= 48000Hz, match down to 48000Hz
+    2. If the original rate is within 44100-47999Hz, match down to 44100Hz
+    3. If the original rate is within 22050-44099Hz, match down to 22050Hz
+    4. If the original rate is within 16000-22049Hz, match down to 16000Hz
+    5. If the original rate < 16000Hz, raise an error (the API requires at least 16kHz)
 
-    例如：32000 -> 22050，47000 -> 44100，96000 -> 48000。
-    低于16kHz的文件会被拒绝，需要用户自行提供符合要求的音频。
+    Examples: 32000 -> 22050, 47000 -> 44100, 96000 -> 48000.
+    Files below 16kHz are rejected; users must supply audio meeting the requirement.
     """
     if sample_rate < 16000:
         raise ValueError(
@@ -67,21 +81,22 @@ def normalize_voice_clone_api_audio(
     file_buffer: io.BytesIO,
     filename: str,
 ) -> tuple[io.BytesIO, str, dict]:
-    """将上传的语音克隆参考音频重新生成成规范化 WAV。
+    """Re-generate the uploaded voice-clone reference audio as a normalized WAV.
 
-    这里不是只做"校验"，而是无论原文件是否已经满足要求，都会：
-    1. 解析原始音频；
-    2. 将采样率按允许列表向下匹配；
-    3. 转为单声道；
-    4. 转为 16-bit；
-    5. 导出为新的 WAV 文件后再上传。
+    This is not mere "validation"; regardless of whether the original file already
+    meets the requirements, it will:
+    1. decode the original audio;
+    2. match the sample rate down against the allowed list;
+    3. convert to mono;
+    4. convert to 16-bit;
+    5. export as a new WAV file before uploading.
 
-    使用 pyav 进行音频处理。
+    Uses pyav for audio processing.
 
-    返回值：
-    - 规范化后的 WAV 二进制缓冲区
-    - 规范化后的文件名（统一为 .wav）
-    - 原始/规范化后的音频元信息，供日志记录使用
+    Returns:
+    - normalized WAV binary buffer
+    - normalized filename (always .wav)
+    - original/normalized audio metadata for logging
     """
     import numpy as np
     try:
@@ -180,15 +195,15 @@ def normalize_voice_clone_api_audio(
 
 
 def validate_audio_file(file_buffer: io.BytesIO, filename: str) -> tuple[str, str]:
-    """验证音频文件类型和格式。
+    """Validate audio file type and format.
 
     Args:
-        file_buffer: 音频文件的内存缓冲区
-        filename: 原始文件名（用于判断扩展名）
+        file_buffer: in-memory buffer of the audio file
+        filename: original filename (used to determine the extension)
 
     Returns:
-        (mime_type, error_message) — mime_type 为空表示验证失败，
-        error_message 为空表示无错误（或仅为警告）。
+        (mime_type, error_message) — empty mime_type means validation failed,
+        empty error_message means no error (or warning only).
     """
     try:
         import av

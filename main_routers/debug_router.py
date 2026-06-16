@@ -1,26 +1,48 @@
 # -*- coding: utf-8 -*-
-"""诊断观测：长跑健康指标采集。
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-背景
-----
-现场偶发有用户反馈「N.E.K.O 开了两三天后 CPU 慢慢涨到 30%+」。这类「多日
-累积、静置触发」的 leak 仅凭静态读代码命中率个位数，必须**复现时拿到运行时
-counter 曲线**才能定位。这个 router 干两件事：
+"""Diagnostic observability: long-run health metric collection.
 
-1. ``GET /api/debug/health``：返回当前关键 counter 的快照（asyncio 任务数、
-   各 lanlan core 的对话历史长度、agent_event_bus._ack_waiters 大小、
-   proactive_chat_history 大小、进程 RSS、uptime）。
-2. 启动一个 5-min 周期的后台 watchdog 任务，把同样的快照写进一个内存
-   ring buffer（保留最近 ~16 小时 = 200 条）。当 ``NEKO_DEBUG_HEALTH_LOG=1``
-   时还落盘到 ``<user_data>/debug_health.jsonl``，方便用户把文件发回来画曲线。
+Background
+----------
+Occasional field reports say "after N.E.K.O has been running for two or three
+days, CPU slowly climbs to 30%+". For this kind of multi-day, idle-triggered
+leak, static code reading has a single-digit hit rate — we must capture
+runtime counter curves **while it reproduces**. This router does two things:
 
-设计原则
---------
-- **零侵入**：所有 counter 都用 getattr / try-except 容错，本模块挂了不影响主功能。
-- **默认开**：endpoint + 内存 ring buffer 永远在跑，单次代价 ~ms 级；文件落盘默认关，
-  靠 env 显式开启。后续用户报问题时不需要再发新版本——已有数据可直接捞。
-- **不抓隐私**：snapshot 只数大小不读内容；jsonl 里没有任何对话原文（遵循 CLAUDE.md
-  「原始对话只能 print 不能 logger」的规则）。
+1. ``GET /api/debug/health``: returns a snapshot of the key counters (asyncio
+   task count, each lanlan core's conversation history length,
+   agent_event_bus._ack_waiters size, proactive_chat_history size, process
+   RSS, uptime).
+2. Starts a background watchdog task on a 5-min cycle that writes the same
+   snapshot into an in-memory ring buffer (keeping the last ~16 hours = 200
+   entries). With ``NEKO_DEBUG_HEALTH_LOG=1`` it also persists to
+   ``<user_data>/debug_health.jsonl`` so users can send the file back for
+   curve plotting.
+
+Design principles
+-----------------
+- **Zero intrusion**: every counter uses getattr / try-except; if this module
+  breaks, main functionality is unaffected.
+- **On by default**: the endpoint + in-memory ring buffer always run, at ~ms
+  cost per pass; file logging is off by default, enabled explicitly via env.
+  When a user later reports an issue, no new build is needed — the data is
+  already there to collect.
+- **No privacy capture**: snapshots only count sizes, never read contents;
+  the jsonl contains no conversation text (per the CLAUDE.md rule that raw
+  conversations may only be printed, never logged via logger).
 """
 from __future__ import annotations
 
@@ -77,16 +99,18 @@ _PSUTIL_INIT_TRIED = False
 # ---------------------------------------------------------------------------
 
 def _get_psutil_process(channel: str = "watchdog") -> Any:
-    """惰性初始化 + 复用 ``psutil.Process``。两 channel 各自一个实例。
+    """Lazily initialize + reuse ``psutil.Process``. One instance per channel.
 
-    第一次调用时尝试 import psutil 并 prime 两个实例的 ``cpu_percent``（首次
-    约定回 0 建立基线，后续才有意义）。失败则永久返回 None，不再重试——既
-    避免反复 import 噪音，也让缺 psutil 的环境曲线上 cpu_percent/num_handles
-    一律 null 跟「真有 leak」明确区分。
+    The first call tries to import psutil and primes both instances'
+    ``cpu_percent`` (by convention the first call returns 0 to establish a
+    baseline; only later readings are meaningful). On failure it permanently
+    returns None and never retries — this avoids repeated import noise and
+    makes psutil-less environments report cpu_percent/num_handles as null
+    across the curve, clearly distinct from "an actual leak".
 
-    ``channel="watchdog"`` / ``"endpoint"`` 选择独立 baseline 实例。其他无状
-    态 psutil 调用（memory_info/num_handles 等）也走这里，channel 选哪个都行
-    且默认 watchdog。"""
+    ``channel="watchdog"`` / ``"endpoint"`` selects an independent baseline
+    instance. Other stateless psutil calls (memory_info/num_handles etc.) also
+    go through here; either channel works, defaulting to watchdog."""
     global _PSUTIL_PROCESS_WATCHDOG, _PSUTIL_PROCESS_ENDPOINT, _PSUTIL_INIT_TRIED
     if not _PSUTIL_INIT_TRIED:
         _PSUTIL_INIT_TRIED = True
@@ -106,12 +130,14 @@ def _get_psutil_process(channel: str = "watchdog") -> Any:
 
 
 def _safe_rss_mb(channel: str = "watchdog") -> float | None:
-    """读取当前进程**当前** RSS（MB）；只在 psutil 可用时返回，否则 None。
+    """Read the process's **current** RSS (MB); only when psutil is available, otherwise None.
 
-    历史里曾用 ``resource.getrusage(...).ru_maxrss`` 做 fallback，但那是
-    **lifetime peak**——一旦上去就不下降。用来画 leak 趋势会把一次性内存
-    高峰永久误读成 leak，比没有这个字段还误导。所以**宁可返回 None**也不
-    走 ru_maxrss。打包发行版默认就带 psutil，源码模式 ``uv sync`` 也会装。"""
+    Historically ``resource.getrusage(...).ru_maxrss`` was used as a fallback,
+    but that is the **lifetime peak** — once up, it never comes down. Using it
+    for leak trends would permanently misread a one-off memory spike as a leak,
+    more misleading than not having the field at all. So we **prefer returning
+    None** over falling back to ru_maxrss. Packaged builds ship psutil by
+    default, and source mode installs it via ``uv sync``."""
     proc = _get_psutil_process(channel)
     if proc is None:
         return None
@@ -123,19 +149,23 @@ def _safe_rss_mb(channel: str = "watchdog") -> float | None:
 
 
 def _safe_psutil_extras(channel: str = "watchdog") -> dict[str, Any]:
-    """补 psutil 能给的廉价 psutil 指标：cpu%、Win handle/POSIX fd。
+    """Add the cheap psutil metrics: cpu%, Windows handles / POSIX fds.
 
-    所有调用都 < 0.01 ms（Windows 实测）。``num_threads()`` 在 Windows 是
-    ~8 ms 系统调用，挪到 ``_safe_psutil_heavy()`` 走 deep tick。
+    All calls take < 0.01 ms (measured on Windows). ``num_threads()`` is an
+    ~8 ms syscall on Windows and was moved to ``_safe_psutil_heavy()`` on the
+    deep tick.
 
-    - cpu_percent: **原始问题的金线指标**——任务管理器看到 31.9% 就是这个。
-      ⚠️ 关键归一化：``proc.cpu_percent(None)`` 用 UNIX 语义（单核 100% = 100，
-      多核并行可 > 100%），但任务管理器显示「占总 CPU 的百分比」（8 核单核
-      打满 = 12.5%）。为了曲线**直接对得上用户截图**，除以 ``cpu_count``。
-      另外报 ``cpu_percent_raw`` 留 UNIX 原值，方便要看「占了几个核」的场景。
-    - num_handles / num_fds: Windows 句柄 / POSIX fd 泄漏。重启即恢复的 case
-      多数对得上这个。先试 Windows 的 num_handles，再试 POSIX 的 num_fds，
-      都拿不到就 None。
+    - cpu_percent: **the golden metric for the original problem** — the 31.9%
+      in Task Manager is exactly this. ⚠️ Key normalization:
+      ``proc.cpu_percent(None)`` uses UNIX semantics (one full core = 100;
+      multi-core parallelism can exceed 100%), but Task Manager shows "percent
+      of total CPU" (one core maxed out of 8 = 12.5%). To make the curve
+      **directly match user screenshots**, divide by ``cpu_count``. Also
+      report ``cpu_percent_raw`` with the UNIX raw value for "how many cores
+      are busy" scenarios.
+    - num_handles / num_fds: Windows handle / POSIX fd leaks. Most
+      "restart fixes it" cases correlate with this. Try Windows num_handles
+      first, then POSIX num_fds; None when neither is available.
     """
     out: dict[str, Any] = {
         "cpu_percent": None,       # 任务管理器规模（占总 CPU 百分比）
@@ -171,9 +201,9 @@ def _safe_psutil_extras(channel: str = "watchdog") -> dict[str, Any]:
 
 
 def _safe_psutil_heavy(channel: str = "watchdog") -> dict[str, Any]:
-    """psutil 慢调用——``num_threads()`` 在 Windows 8 ms 系统调用。
+    """Slow psutil calls — ``num_threads()`` is an 8 ms syscall on Windows.
 
-    Deep tick 专用，不走每次 watchdog 周期。"""
+    Deep-tick only; not run on every watchdog cycle."""
     out: dict[str, Any] = {"num_threads": None}
     proc = _get_psutil_process(channel)
     if proc is None:
@@ -187,11 +217,12 @@ def _safe_psutil_heavy(channel: str = "watchdog") -> dict[str, Any]:
 
 
 def _safe_asyncio_task_top(n: int = 10) -> list[list[Any]] | None:
-    """按 name 计数当前 asyncio task，返回 top-N。
+    """Count current asyncio tasks by name; return the top N.
 
-    ``asyncio.all_tasks()`` 只给数字时，长跑泄漏只能看到「task 数涨了」却不
-    知道是哪类——加这个分布就能立刻定位（比如「memory_recall_xxx」一路涨）。
-    返回 list[[name, count], ...] 而不是 dict——保留排序、JSON 友好。"""
+    When ``asyncio.all_tasks()`` only yields a number, a long-run leak shows
+    "task count grew" without saying which kind — this distribution pinpoints
+    it instantly (e.g. "memory_recall_xxx" climbing steadily). Returns
+    list[[name, count], ...] rather than a dict — preserves ordering, JSON friendly."""
     try:
         c: Counter[str] = Counter()
         for t in asyncio.all_tasks():
@@ -205,12 +236,13 @@ def _safe_asyncio_task_top(n: int = 10) -> list[list[Any]] | None:
 
 
 def _safe_gc_object_top(n: int = 10) -> list[list[Any]] | None:
-    """按 type 计数所有 GC 跟踪对象，返回 top-N。
+    """Count all GC-tracked objects by type; return the top N.
 
-    一次 ``gc.get_objects()`` 在中等规模 Python 堆上 ~几十 ms，5min 一次完全
-    可接受。这是定位「**是什么对象在涨**」的金线——RSS 数字涨了不知道是谁，
-    type top 直接告诉你 ``HumanMessage`` / ``AIMessage`` / ``Future`` / ``Task``
-    / ``dict`` 哪个在单调增。"""
+    A single ``gc.get_objects()`` pass takes ~tens of ms on a mid-sized Python
+    heap; entirely acceptable every 5 min. This is the golden signal for
+    "**which objects are growing**" — when the RSS number climbs without saying
+    who, the type top tells you directly whether ``HumanMessage`` / ``AIMessage``
+    / ``Future`` / ``Task`` / ``dict`` is increasing monotonically."""
     try:
         c: Counter[str] = Counter()
         for obj in gc.get_objects():
@@ -221,11 +253,12 @@ def _safe_gc_object_top(n: int = 10) -> list[list[Any]] | None:
 
 
 def _safe_tts_queue_sizes() -> dict[str, int]:
-    """每个 lanlan core 的 ``tts_request_queue`` 当前长度。
+    """Current length of each lanlan core's ``tts_request_queue``.
 
-    TTS 卡住 / 网络抖动时队列堆积比 CPU 早出现——是「TTS pipeline 出问题」的
-    早期信号。core.tts_request_queue 是 ``queue.Queue``，qsize 在 Windows 上
-    是估计值但够用。"""
+    When TTS stalls / the network flaps, queue buildup shows up before CPU —
+    an early signal that "the TTS pipeline is in trouble".
+    core.tts_request_queue is a ``queue.Queue``; qsize is an estimate on
+    Windows but good enough."""
     out: dict[str, int] = {}
     try:
         from main_routers.shared_state import get_session_manager
@@ -244,10 +277,10 @@ def _safe_tts_queue_sizes() -> dict[str, int]:
 
 
 def _safe_is_responding_map() -> dict[str, bool]:
-    """每个 lanlan 的 ``session._is_responding`` 状态。
+    """Each lanlan's ``session._is_responding`` state.
 
-    分布异常（如所有 lanlan 都卡在 True 不退）= 死锁 / response handler
-    丢消息的强信号。"""
+    An abnormal distribution (e.g. every lanlan stuck at True) is a strong
+    signal of a deadlock / a response handler dropping messages."""
     out: dict[str, bool] = {}
     try:
         from main_routers.shared_state import get_session_manager
@@ -269,9 +302,9 @@ def _safe_is_responding_map() -> dict[str, bool]:
 
 
 def _safe_conv_history_lengths() -> dict[str, int]:
-    """枚举所有 lanlan core 的 _conversation_history 长度。
+    """Enumerate the _conversation_history length of every lanlan core.
 
-    任何一个 lanlan 抓不到都跳过——shared_state 在启动早期可能还没 ready。"""
+    Any lanlan we cannot reach is skipped — shared_state may not be ready during early startup."""
     out: dict[str, int] = {}
     try:
         from main_routers.shared_state import get_session_manager
@@ -320,19 +353,23 @@ def _safe_proactive_history_size() -> dict[str, int]:
 
 
 def _collect_snapshot(include_deep: bool = False, channel: str = "watchdog") -> dict[str, Any]:
-    """单次快照采集。每个字段独立 try 过——任意一项炸了不影响其他。
+    """Take a single snapshot. Every field is individually try-wrapped — one blowing up does not affect the others.
 
-    Default ``include_deep=False``——cheap-only 采样 ~0.05ms 自身耗时，
-    watchdog 直接同步调即可，对 event loop 几乎无感。
+    Default ``include_deep=False`` — cheap-only sampling costs ~0.05ms of its
+    own time; the watchdog can call it synchronously with virtually no impact
+    on the event loop.
 
-    ``include_deep=True`` 跑慢字段：``gc.get_objects()`` 45ms（统计内存对象
-    type 分布——定位「是什么对象在涨」的金线）+ Windows ``num_threads()``
-    8ms（线程泄漏检测）。两者都是不释放 GIL 的 C 调用，会阻塞 event loop
-    50ms+，所以 **watchdog 永不调它**——仅留给按需 endpoint 主动触发。
+    ``include_deep=True`` runs the slow fields: ``gc.get_objects()`` 45ms
+    (memory object type distribution — the golden signal for "which objects
+    are growing") + Windows ``num_threads()`` 8ms (thread leak detection).
+    Both are C calls that do not release the GIL and block the event loop
+    50ms+, so the **watchdog never calls it** — reserved for on-demand
+    endpoint triggering only.
 
-    ``channel`` 选 psutil cpu_percent baseline：``"watchdog"`` 5min 周期 task
-    专用，``"endpoint"`` HTTP 按需专用，两个 baseline 独立——避免用户访问
-    endpoint 重置 watchdog 的窗口起点。"""
+    ``channel`` selects the psutil cpu_percent baseline: ``"watchdog"`` is
+    dedicated to the 5-min periodic task, ``"endpoint"`` to on-demand HTTP;
+    the two baselines are independent — a user hitting the endpoint cannot
+    reset the watchdog's window start."""
     snap: dict[str, Any] = {
         "ts": time.time(),
         "uptime_sec": time.monotonic() - _PROCESS_START_MONO,
@@ -362,11 +399,11 @@ def _collect_snapshot(include_deep: bool = False, channel: str = "watchdog") -> 
 # ---------------------------------------------------------------------------
 
 def _resolve_log_path() -> Path | None:
-    """返回 jsonl 落盘路径；未启用时返回 None。
+    """Return the jsonl log path; None when disabled.
 
-    启用条件：env ``NEKO_DEBUG_HEALTH_LOG`` 为真值。
-    路径：config_manager 提供的用户配置目录 / ``debug_health.jsonl``；
-    拿不到 config_manager 时退到 sys.executable 同目录。"""
+    Enabled when env ``NEKO_DEBUG_HEALTH_LOG`` is truthy.
+    Path: the user config directory from config_manager / ``debug_health.jsonl``;
+    falls back to the sys.executable directory when config_manager is unavailable."""
     if os.environ.get("NEKO_DEBUG_HEALTH_LOG", "").strip().lower() not in ("1", "true", "yes", "on"):
         return None
     try:
@@ -421,21 +458,26 @@ def _append_to_log(snap: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 def _absorb_recent_client_payload(server_snap: dict[str, Any]) -> None:
-    """Server tick 时回头吸收最近一条 client-only entry（如果在窗口内）。
+    """On a server tick, look back and absorb the most recent client-only entry (if within the window).
 
-    时序约束：debug-health.js 首次 POST 在 t=30s，watchdog 首次 tick 在 t=60s，
-    之后两边都按 5min 节奏跑——所以 client POST 通常落在「下一个」server tick
-    **之前** 30s 左右。client POST 端选择 append client-only entry 暂存；server
-    tick 此处主动吸收：把暂存的 client payload merge 到当前 server snapshot，
-    并把暂存条目从 ring 里 pop 掉（避免砍半 ring 保留期）。
+    Timing constraints: debug-health.js first POSTs at t=30s, the watchdog
+    first ticks at t=60s, and both then run on a 5-min cadence — so a client
+    POST usually lands ~30s **before** the "next" server tick. The client POST
+    side appends a client-only entry as a stash; the server tick absorbs it
+    here: merge the stashed client payload into the current server snapshot
+    and pop the stashed entry off the ring (so the ring's retention is not
+    halved).
 
-    多条 client-only：同一周期内可能有多条 client POST（多标签页 / beforeunload
-    补发 + 定时上报）。while 循环把尾部连续 client-only 全部 pop，避免落下孤儿；
-    最终只保留**最新**一条 payload merge 进 server snapshot——最新 = 最后到达
-    = 最贴近 server tick 时点，诊断价值最高。
+    Multiple client-only entries: a single cycle may see several client POSTs
+    (multiple tabs / beforeunload resend + periodic reporting). The while loop
+    pops all trailing consecutive client-only entries to avoid leaving
+    orphans; only the **latest** payload is merged into the server snapshot —
+    latest = last to arrive = closest to the server tick, highest diagnostic
+    value.
 
-    若 client 没启用（用户没开 localStorage），这里啥也不做，ring 全是
-    server-only entry，~200 条 ≈ 16 小时不变。"""
+    If the client side is not enabled (user did not set localStorage), this
+    does nothing; the ring stays all server-only entries, ~200 entries ≈ 16
+    hours, unchanged."""
     absorbed_client: dict[str, Any] | None = None
     server_ts = float(server_snap.get("ts") or 0)
     # 倒序消化尾部连续 client-only 条目；保留最新（第一次循环取到的）payload。
@@ -456,14 +498,16 @@ def _absorb_recent_client_payload(server_snap: dict[str, Any]) -> None:
 
 
 async def _watchdog_loop() -> None:
-    """5-min 周期采样。任何单轮异常吞掉继续——多日跑下来不能因为一次失败掉队。
+    """5-min periodic sampling. Any single-round exception is swallowed and the loop continues — a multi-day run must not drop out over one failure.
 
-    ⚠️ 关键：``_collect_snapshot()`` 是同步的，里面 ``gc.get_objects()`` 在
-    N.E.K.O 实际堆下扫 28w+ 对象耗时 ~55 ms，``psutil`` / file IO 也有零星
-    几 ms。直接 ``snap = _collect_snapshot()`` 会**阻塞 event loop 50-100 ms**
-    —— 这段时间所有 async 操作（语音 chunk 处理、TTS streaming、WS ping/pong）
-    都被推迟。所以必须用 ``asyncio.to_thread`` 把 collect 跑到 thread pool，
-    event loop 可以继续工作。append/log 操作（≤1ms）继续在 loop 里跑。"""
+    ⚠️ Key point: ``_collect_snapshot()`` is synchronous; its
+    ``gc.get_objects()`` scans 280k+ objects on N.E.K.O's actual heap taking
+    ~55 ms, with ``psutil`` / file IO adding a few more. A direct
+    ``snap = _collect_snapshot()`` would **block the event loop for 50-100 ms**
+    — during which every async operation (voice chunk processing, TTS
+    streaming, WS ping/pong) is delayed. So collect must run in the thread
+    pool via ``asyncio.to_thread`` while the event loop keeps working. The
+    append/log operations (≤1ms) stay on the loop."""
     # 启动后先睡一段，避开冷启动 noise（asyncio task 数在 startup 阶段会高一下）。
     try:
         await asyncio.sleep(60)
@@ -491,7 +535,7 @@ async def _watchdog_loop() -> None:
 
 
 def start_watchdog() -> None:
-    """由 main_server startup 调用。幂等：重复调用不会创建第二个 task。"""
+    """Called from main_server startup. Idempotent: repeated calls do not create a second task."""
     global _WATCHDOG_TASK
     if _WATCHDOG_TASK is not None and not _WATCHDOG_TASK.done():
         return
@@ -510,21 +554,26 @@ def start_watchdog() -> None:
 
 @router.get("/api/debug/health")
 async def debug_health(deep: bool = False) -> dict[str, Any]:
-    """返回当前快照 + 最近 ring buffer。
+    """Return the current snapshot + the recent ring buffer.
 
-    Ring buffer 让用户不用等到下一个 5-min tick——任意时刻请求都能拿到
-    最近 16 小时的曲线，刷新即用。
+    The ring buffer means users need not wait for the next 5-min tick — a
+    request at any moment returns the last 16 hours of curves, fresh on
+    refresh.
 
-    ``deep=true`` 触发慢字段（``gc.get_objects()`` 45ms 内存对象 type 分布 +
-    Windows ``num_threads()`` 8ms 线程数）。Watchdog 永不调它们——用户排查
-    内存泄漏时手动 ``?deep=1`` 一次拿当下数据；想要时序就多次调。
+    ``deep=true`` triggers the slow fields (``gc.get_objects()`` 45ms memory
+    object type distribution + Windows ``num_threads()`` 8ms thread count).
+    The watchdog never calls them — when chasing a memory leak, hit
+    ``?deep=1`` once manually for current data; call repeatedly for a time
+    series.
 
-    实现注释：cheap 路径 ~0.13 ms 自身耗时直接同步调；deep 路径 50 ms 阻塞
-    是用户**主动**触发的代价，自己等就好——不为这个场景做 to_thread 兜底，
-    省一层 thread 调度 overhead，代码直接。
+    Implementation note: the cheap path costs ~0.13 ms of its own time and is
+    called synchronously; the deep path's 50 ms block is the price of a
+    **user-initiated** action — they can just wait. No to_thread fallback for
+    this case: saves a layer of thread scheduling overhead, keeps the code
+    direct.
 
-    传 ``channel="endpoint"`` 走独立的 psutil cpu_percent baseline，不打乱
-    watchdog 的 5min 窗口。"""
+    Passes ``channel="endpoint"`` for an independent psutil cpu_percent
+    baseline that does not disturb the watchdog's 5-min window."""
     current = _collect_snapshot(include_deep=deep, channel="endpoint")
     return {
         "current": current,
@@ -553,7 +602,7 @@ _CLIENT_STRING_FIELDS_WITH_CAP = {"location": 128}
 
 
 def _sanitize_client_payload(raw: Any) -> dict[str, Any]:
-    """裁剪客户端 payload 到白名单字段；非预期类型 / 超长字符串丢弃或截断。"""
+    """Trim the client payload to whitelisted fields; unexpected types / over-long strings are dropped or truncated."""
     if not isinstance(raw, dict):
         return {}
     out: dict[str, Any] = {}
@@ -587,18 +636,23 @@ def _sanitize_client_payload(raw: Any) -> dict[str, Any]:
 
 @router.post("/api/debug/health/client")
 async def debug_health_client(payload: dict[str, Any]) -> dict[str, Any]:
-    """前端 ``debug-health.js`` POST 上来的浏览器侧快照。
+    """Browser-side snapshot POSTed by the frontend ``debug-health.js``.
 
-    流程：
-    - 边界白名单裁剪（``_sanitize_client_payload``），强制「只记计数」契约。
-    - Append client-only entry 到内存 ring 暂存——**不**立刻写 jsonl，避免
-      下次 server tick 吸收时 jsonl 出现「暂存 + 合并」双行污染时间轴。
-    - 写 jsonl 的责任完全交给 watchdog：吸收成功就一条 merged 行，吸收
-      不到（窗口外或 server 未启）也会被 ring 自然 drop。
+    Flow:
+    - Boundary whitelist trimming (``_sanitize_client_payload``) enforces the
+      "counts only" contract.
+    - Append a client-only entry to the in-memory ring as a stash — do **not**
+      write jsonl immediately, so the next server tick's absorption cannot
+      produce a "stash + merged" double line polluting the jsonl timeline.
+    - Writing jsonl is entirely the watchdog's responsibility: a successful
+      absorption yields a single merged line; a failed one (outside the window
+      or server not started) is naturally dropped by the ring.
 
-    错配修复历史：曾尝试在这里倒序找 server entry merge，被 codex 指出会
-    把 client sample 绑到 4.5min 前的旧 snapshot，时间轴错位 270s。所以
-    改成「server tick 反向吸收」，详见 ``_absorb_recent_client_payload``。"""
+    Mismatch fix history: an earlier attempt searched backwards for a server
+    entry to merge into here; codex pointed out it would bind the client
+    sample to a server snapshot up to 4.5 min old, skewing the timeline by
+    270s. Hence the "server tick absorbs backwards" design — see
+    ``_absorb_recent_client_payload``."""
     try:
         sanitized = _sanitize_client_payload(payload)
         entry = {"ts": time.time(), "client": sanitized}

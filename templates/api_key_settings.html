@@ -187,10 +187,17 @@
                             <label for="assistApiSelect">
                                 <span data-i18n="api.assistApiSelectLabel">辅助API服务商</span>
                             </label>
-                            <select id="assistApiSelect" class="api-provider-select"
-                                style="width: 100%; max-width: 600px;">
-                                <!-- 选项将通过 JavaScript 动态加载 -->
-                            </select>
+                            <div class="mimo-assist-select-row">
+                                <select id="assistApiSelect" class="api-provider-select"
+                                    style="width: 100%; max-width: 600px;">
+                                    <!-- 选项将通过 JavaScript 动态加载 -->
+                                </select>
+                                <label id="mimoTokenPlanToggleRow" class="disable-tts-toggle mimo-token-plan-toggle" style="display: none;">
+                                    <input type="checkbox" id="useMimoTokenPlan">
+                                    <span class="disable-tts-slider"></span>
+                                    <span data-i18n="api.useMimoTokenPlan">MiMo Token Plan</span>
+                                </label>
+                            </div>
                         </div>
                         <div class="field-row">
                             <label for="assistApiKeyInput">
@@ -201,6 +208,16 @@
                                 placeholder="留空使用管理簿对应 Key" value=""
                                 style="max-width: 600px; width: 100%;">
                             <em data-i18n="api.assistApiAutoFillHint" style="font-weight: normal; color: #888; font-size: 0.85em;">留空时自动使用管理簿中的Key，手动输入则独立保存</em>
+                        </div>
+                        <div id="mimoTokenPlanKeyRow" class="field-row" style="display: none;">
+                            <label for="mimoTokenPlanKeyInput">
+                                <span data-i18n="api.mimoTokenPlanKeyLabel">MiMo Token Plan Key</span>
+                            </label>
+                            <input type="text" id="mimoTokenPlanKeyInput"
+                                data-i18n-placeholder="api.mimoTokenPlanKeyPlaceholder"
+                                placeholder="tp-xxxxx" value=""
+                                style="max-width: 600px; width: 100%;">
+                            <em data-i18n="api.mimoTokenPlanKeyHint" style="font-weight: normal; color: #888; font-size: 0.85em;">启用 Token Plan 时只使用此 Key，不使用普通 MiMo API Key</em>
                         </div>
                         <div class="field-row" style="margin-top: 10px;">
                             <label class="disable-tts-toggle">

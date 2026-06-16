@@ -1,15 +1,31 @@
 # -*- coding: utf-8 -*-
-"""启动后台模块预热。
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-启动链只 import greeting 真正需要的东西；重型 SDK（google-genai + 它捎带的
-mcp、translatepy 等）改成首次使用时才 lazy import。本模块在服务 ready 之后起
-一个 daemon thread，把这些"首次使用"的 import 提前在后台跑掉，让用户真正用到
-时不必在交互中途承担 import 延迟。
+"""Start background module warmup.
 
-GIL 说明：纯 Python 模块在解析期间持 GIL，但这里的大头是 C 扩展 dlopen（会释放
-GIL）和文件 IO，而事件循环大多在 await IO，所以低优先级 daemon thread 能见缝插针
-推进、不至于卡住 loop。这是 best-effort 预热而非正确性路径——任何失败都吞掉，
-首次使用时的 lazy import 才是唯一真相来源。
+The startup chain imports only what greeting really needs; heavy SDKs (google-genai plus
+the mcp, translatepy etc. it drags in) became lazy imports on first use. After the
+service is ready, this module starts a daemon thread that runs those "first-use" imports
+ahead of time in the background, so users don't pay the import latency mid-interaction
+when they actually use the features.
+
+GIL note: pure-Python modules hold the GIL while being parsed, but the bulk here is C
+extension dlopen (which releases the GIL) and file IO, while the event loop is mostly
+awaiting IO, so a low-priority daemon thread can make progress in the gaps without
+stalling the loop. This is best-effort warmup, not a correctness path — any failure is
+swallowed; the lazy import on first use remains the single source of truth.
 """
 from __future__ import annotations
 
@@ -50,9 +66,9 @@ _warmup_started = False
 
 
 def start_background_warmup(modules, *, label: str = "server") -> bool:
-    """起一个 daemon thread 预热 ``modules``，进程级只跑一次。
+    """Start a daemon thread to warm up ``modules``; runs only once per process.
 
-    返回是否真正启动了线程（已经跑过则返回 ``False``）。
+    Returns whether a thread was actually started (``False`` if it already ran).
     """
     # 测试环境下不预热：daemon 线程跑真实重 import 既拖慢测试、又会在测试 logging
     # 拆除后回写日志报错，且预热是纯优化无行为契约，跳过完全安全。

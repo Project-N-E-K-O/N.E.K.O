@@ -1,6 +1,8 @@
 import pytest
 import json
 import base64
+import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 # Adjust path to import project modules
@@ -822,6 +824,176 @@ def _make_server_vad_client(model: str, api_type: str = "", base_url: str = "wss
         turn_detection_mode=TurnDetectionMode.SERVER_VAD,
         api_type=api_type,
     )
+
+
+def _gemini_response(**server_fields):
+    defaults = {
+        "input_transcription": None,
+        "output_transcription": None,
+        "model_turn": None,
+        "turn_complete": False,
+        "interrupted": False,
+    }
+    defaults.update(server_fields)
+    return SimpleNamespace(
+        tool_call=None,
+        server_content=SimpleNamespace(**defaults),
+    )
+
+
+def _gemini_output_text(text: str):
+    return SimpleNamespace(text=text)
+
+
+def _gemini_input_text(text: str):
+    return SimpleNamespace(text=text)
+
+
+def _gemini_model_turn_audio(data: bytes = b"audio"):
+    return SimpleNamespace(
+        parts=[
+            SimpleNamespace(
+                inline_data=SimpleNamespace(data=data),
+                thought=False,
+            )
+        ]
+    )
+
+
+@pytest.mark.unit
+async def test_gemini_interruption_clears_on_true_new_turn():
+    client = _make_server_vad_client(
+        model="gemini-2.0-flash-exp",
+        api_type="gemini",
+        base_url="https://generativelanguage.googleapis.com",
+    )
+    client.on_input_transcript = AsyncMock()
+    client.on_new_message = AsyncMock()
+    client.on_text_delta = AsyncMock()
+    client.on_audio_delta = AsyncMock()
+
+    client._gemini_user_transcript = "hello"
+    await client._process_gemini_response(_gemini_response(interrupted=True))
+
+    assert client._interrupted is True
+    client.on_input_transcript.assert_awaited_once_with("hello")
+
+    await client._process_gemini_response(
+        _gemini_response(input_transcription=_gemini_input_text("next question"))
+    )
+
+    client._ai_recent_activity_time = time.time() - 0.5
+    client._user_recent_activity_time = time.time()
+    await client._process_gemini_response(
+        _gemini_response(
+            output_transcription=_gemini_output_text("hi"),
+            model_turn=_gemini_model_turn_audio(b"pcm"),
+        )
+    )
+
+    assert client._interrupted is False
+    assert client.on_input_transcript.await_count == 2
+    client.on_input_transcript.assert_awaited_with("next question")
+    client.on_new_message.assert_awaited_once()
+    client.on_text_delta.assert_awaited_once_with("hi", True)
+    client.on_audio_delta.assert_awaited_once_with(b"pcm")
+
+
+@pytest.mark.unit
+async def test_gemini_interrupted_late_continuation_stays_suppressed():
+    client = _make_server_vad_client(
+        model="gemini-2.0-flash-exp",
+        api_type="gemini",
+        base_url="https://generativelanguage.googleapis.com",
+    )
+    client.on_new_message = AsyncMock()
+    client.on_text_delta = AsyncMock()
+    client.on_audio_delta = AsyncMock()
+
+    client._interrupted = True
+    client._is_responding = False
+    client._ai_recent_activity_time = time.time()
+    client._user_recent_activity_time = client._ai_recent_activity_time - 1
+
+    await client._process_gemini_response(
+        _gemini_response(
+            output_transcription=_gemini_output_text("late"),
+            model_turn=_gemini_model_turn_audio(b"late-audio"),
+        )
+    )
+
+    assert client._interrupted is True
+    client.on_new_message.assert_not_awaited()
+    client.on_text_delta.assert_not_awaited()
+    client.on_audio_delta.assert_not_awaited()
+
+
+@pytest.mark.unit
+async def test_gemini_interrupted_user_audio_without_transcript_stays_suppressed():
+    client = _make_server_vad_client(
+        model="gemini-2.0-flash-exp",
+        api_type="gemini",
+        base_url="https://generativelanguage.googleapis.com",
+    )
+    client.on_new_message = AsyncMock()
+    client.on_text_delta = AsyncMock()
+    client.on_audio_delta = AsyncMock()
+
+    client._interrupted = True
+    client._is_responding = False
+    client._ai_recent_activity_time = time.time() - 0.5
+    client._user_recent_activity_time = time.time()
+
+    await client._process_gemini_response(
+        _gemini_response(
+            output_transcription=_gemini_output_text("canceled tail"),
+            model_turn=_gemini_model_turn_audio(b"canceled-tail-audio"),
+        )
+    )
+
+    assert client._interrupted is True
+    client.on_new_message.assert_not_awaited()
+    client.on_text_delta.assert_not_awaited()
+    client.on_audio_delta.assert_not_awaited()
+
+
+@pytest.mark.unit
+async def test_gemini_interrupted_same_event_transcript_allows_next_turn():
+    client = _make_server_vad_client(
+        model="gemini-2.0-flash-exp",
+        api_type="gemini",
+        base_url="https://generativelanguage.googleapis.com",
+    )
+    client.on_input_transcript = AsyncMock()
+    client.on_new_message = AsyncMock()
+    client.on_text_delta = AsyncMock()
+    client.on_audio_delta = AsyncMock()
+
+    await client._process_gemini_response(
+        _gemini_response(
+            input_transcription=_gemini_input_text("barge in"),
+            interrupted=True,
+        )
+    )
+
+    assert client._interrupted is True
+    assert client._gemini_user_transcript_after_interrupt is True
+    client.on_input_transcript.assert_awaited_once_with("barge in")
+
+    client._ai_recent_activity_time = time.time() - 0.5
+    client._user_recent_activity_time = time.time()
+    await client._process_gemini_response(
+        _gemini_response(
+            output_transcription=_gemini_output_text("next"),
+            model_turn=_gemini_model_turn_audio(b"next-audio"),
+        )
+    )
+
+    assert client._interrupted is False
+    assert client._gemini_user_transcript_after_interrupt is False
+    client.on_new_message.assert_awaited_once()
+    client.on_text_delta.assert_awaited_once_with("next", True)
+    client.on_audio_delta.assert_awaited_once_with(b"next-audio")
 
 
 @pytest.mark.unit

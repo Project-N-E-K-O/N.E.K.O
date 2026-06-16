@@ -13,7 +13,7 @@
 
     // ====== 状态 ======
     let currentCharaName = '';
-    let currentModelType = '';   // 'live2d' | 'vrm' | 'mmd'
+    let currentModelType = '';   // 'live2d' | 'vrm' | 'mmd' | 'pngtuber'
     let isModelLoaded = false;
     let isModelLoading = false;
     let primaryActionBusy = false;
@@ -497,6 +497,9 @@
             window.lanlan_config.model_path = cfg.model_path;
             window.lanlan_config.model_type = cfg.model_type;
             window.lanlan_config.lighting = cfg.lighting;
+            if (cfg.model_type === 'pngtuber') {
+                window.lanlan_config.pngtuber = Object.assign({}, cfg.pngtuber || {});
+            }
             if (cfg.model_type === 'live3d') {
                 window.lanlan_config.live3d_sub_type = cfg.live3d_sub_type;
             }
@@ -507,6 +510,8 @@
                 effectiveType = (cfg.live3d_sub_type === 'mmd') ? 'mmd' : 'vrm';
             } else if (cfg.model_type === 'vrm') {
                 effectiveType = 'vrm';
+            } else if (cfg.model_type === 'pngtuber') {
+                effectiveType = 'pngtuber';
             }
             currentModelType = effectiveType;
 
@@ -528,9 +533,14 @@
         const l2dContainer = $('#live2d-container');
         const vrmContainer = $('#vrm-container');
         const mmdContainer = $('#mmd-container');
+        const pngtuberContainer = $('#pngtuber-container');
         l2dContainer.style.display = 'none';
         vrmContainer.style.display = 'none';
         mmdContainer.style.display = 'none';
+        if (pngtuberContainer) pngtuberContainer.style.display = 'none';
+        if (type !== 'pngtuber') {
+            window.cardMakerPNGTuberManager?.hide?.();
+        }
 
         try {
             if (type === 'live2d') {
@@ -542,6 +552,9 @@
             } else if (type === 'mmd') {
                 mmdContainer.style.display = '';
                 await loadMMDModel(cfg.model_path);
+            } else if (type === 'pngtuber') {
+                if (pngtuberContainer) pngtuberContainer.style.display = '';
+                await loadPNGTuberModel(cfg);
             }
 
             isModelLoaded = true;
@@ -636,6 +649,62 @@
         centerThreeCamera(mmdProxy);
     }
 
+    async function loadPNGTuberModel(cfg) {
+        await waitForCondition(() => typeof window.PNGTuberManager === 'function', 10000, 'PNGTuber runtime');
+
+        const pngtuberConfig = Object.assign({}, cfg?.pngtuber || {});
+        if (!pngtuberConfig.idle_image && cfg?.model_path) {
+            pngtuberConfig.idle_image = cfg.model_path;
+        }
+        assertExportablePNGTuberConfig(pngtuberConfig);
+        window.lanlan_config = window.lanlan_config || {};
+        window.lanlan_config.model_type = 'pngtuber';
+        window.lanlan_config.pngtuber = Object.assign({}, pngtuberConfig);
+
+        if (!window.cardMakerPNGTuberManager) {
+            window.cardMakerPNGTuberManager = new window.PNGTuberManager('pngtuber-container');
+        }
+        const mgr = window.cardMakerPNGTuberManager;
+        const originalSetupFloatingButtons = mgr.setupFloatingButtons;
+        const originalSetupHTMLLockIcon = mgr.setupHTMLLockIcon;
+        mgr.setupFloatingButtons = undefined;
+        mgr.setupHTMLLockIcon = function() {};
+        try {
+            await mgr.load(pngtuberConfig);
+        } finally {
+            if (originalSetupFloatingButtons) {
+                mgr.setupFloatingButtons = originalSetupFloatingButtons;
+            } else {
+                delete mgr.setupFloatingButtons;
+            }
+            if (originalSetupHTMLLockIcon) {
+                mgr.setupHTMLLockIcon = originalSetupHTMLLockIcon;
+            } else {
+                delete mgr.setupHTMLLockIcon;
+            }
+        }
+        mgr.detachSpeechListeners?.();
+        mgr.detachDragListeners?.();
+        mgr.detachLayeredHotkeys?.();
+        mgr.detachLayeredPlayEvent?.();
+        mgr.cleanupFloatingButtons?.();
+        removePNGTuberRuntimeControls();
+        mgr.setSpeaking?.(false);
+        if (typeof mgr.setLayeredStateIndex === 'function') {
+            mgr.setLayeredStateIndex(0, { source: 'card_maker' });
+        }
+        mgr.setState?.('idle');
+        mgr.show?.();
+        mgr.clearLayeredTimers?.();
+        mgr.detachLayeredHotkeys?.();
+        mgr.detachLayeredPlayEvent?.();
+        if (mgr.isLayeredActive?.()) {
+            mgr.drawLayeredState?.('idle');
+        }
+        resizeModelRendererForCard('pngtuber');
+        await waitForPNGTuberDrawable(mgr);
+    }
+
     function prepareHiddenModelViewport() {
         const viewport = $('#model-viewport');
         if (!viewport) return;
@@ -668,6 +737,22 @@
                 model.anchor?.set?.(0.5, 0.5);
                 model.x = renderer.screen.width / 2;
                 model.y = renderer.screen.height / 2;
+            }
+            return;
+        }
+
+        if (type === 'pngtuber') {
+            const container = document.getElementById('pngtuber-container');
+            if (container) {
+                container.style.width = w + 'px';
+                container.style.height = h + 'px';
+            }
+            const mgr = window.cardMakerPNGTuberManager;
+            const source = getPNGTuberDrawableSource(mgr);
+            if (source?.style) {
+                source.style.width = w + 'px';
+                source.style.height = h + 'px';
+                source.style.objectFit = 'contain';
             }
             return;
         }
@@ -776,6 +861,110 @@
         if (window.mmdManager?.cursorFollow && typeof window.mmdManager.cursorFollow.setEnabled === 'function') {
             window.mmdManager.cursorFollow.setEnabled(false);
         }
+        const pngtuberMgr = window.cardMakerPNGTuberManager;
+        pngtuberMgr?.detachSpeechListeners?.();
+        pngtuberMgr?.detachDragListeners?.();
+        pngtuberMgr?.setSpeaking?.(false);
+        removePNGTuberRuntimeControls();
+    }
+
+    function removePNGTuberRuntimeControls() {
+        document.querySelectorAll('#pngtuber-floating-buttons, #pngtuber-lock-icon, #pngtuber-return-button-container')
+            .forEach((el) => {
+                if (window._removeNekoFloatingButtonsElement) {
+                    window._removeNekoFloatingButtonsElement(el);
+                } else {
+                    el.remove();
+                }
+            });
+    }
+
+    function getDrawableSourceSize(source) {
+        if (!source) return { width: 0, height: 0 };
+        return {
+            width: source.naturalWidth || source.videoWidth || source.width || 0,
+            height: source.naturalHeight || source.videoHeight || source.height || 0
+        };
+    }
+
+    function isCrossOriginHttpUrl(value) {
+        if (!value || typeof value !== 'string') return false;
+        try {
+            const url = new URL(value, window.location.href);
+            return /^https?:$/i.test(url.protocol) && url.origin !== window.location.origin;
+        } catch (_) {
+            return /^https?:\/\//i.test(value);
+        }
+    }
+
+    function assertExportablePNGTuberConfig(config) {
+        const imageKeys = ['idle_image', 'talking_image', 'drag_image', 'click_image', 'happy_image', 'sad_image', 'angry_image', 'surprised_image'];
+        const remoteKey = imageKeys.concat(['layered_metadata']).find((key) => isCrossOriginHttpUrl(config && config[key]));
+        if (remoteKey) {
+            throw new Error(`remote_pngtuber_export_unsupported:${remoteKey}`);
+        }
+    }
+
+    function assertExportablePNGTuberDrawable(source) {
+        if (!source) return;
+        if (source.tagName === 'IMG' && isCrossOriginHttpUrl(source.currentSrc || source.src || source.getAttribute('src'))) {
+            throw new Error('remote_pngtuber_export_unsupported:drawable');
+        }
+        if (source.tagName === 'CANVAS') {
+            try {
+                const ctx = source.getContext('2d');
+                ctx?.getImageData(0, 0, 1, 1);
+            } catch (_) {
+                throw new Error('remote_pngtuber_export_unsupported:canvas');
+            }
+        }
+    }
+
+    function getPNGTuberDrawableSource(mgr = window.cardMakerPNGTuberManager) {
+        if (mgr?.isLayeredActive?.() && mgr.canvasElement) {
+            return mgr.canvasElement;
+        }
+        if (mgr?.imageElement) {
+            return mgr.imageElement;
+        }
+        const container = document.getElementById('pngtuber-container');
+        return container?.querySelector('canvas.pngtuber-layered-canvas, img.pngtuber-image') || null;
+    }
+
+    async function waitForImageReady(image) {
+        if (!image || image.tagName !== 'IMG') return;
+        if (image.complete && image.naturalWidth > 0 && image.naturalHeight > 0) return;
+        await new Promise((resolve, reject) => {
+            const cleanup = () => {
+                image.removeEventListener('load', onLoad);
+                image.removeEventListener('error', onError);
+            };
+            const onLoad = () => {
+                cleanup();
+                resolve();
+            };
+            const onError = () => {
+                cleanup();
+                reject(new Error('PNGTuber image failed to load'));
+            };
+            image.addEventListener('load', onLoad, { once: true });
+            image.addEventListener('error', onError, { once: true });
+        });
+    }
+
+    async function waitForPNGTuberDrawable(mgr) {
+        const source = getPNGTuberDrawableSource(mgr);
+        if (!source) throw new Error('PNGTuber drawable source is missing');
+        if (source.tagName === 'IMG') {
+            await waitForImageReady(source);
+        } else if (mgr?.isLayeredActive?.()) {
+            mgr.drawLayeredState?.('idle');
+        }
+        const size = getDrawableSourceSize(source);
+        if (size.width <= 0 || size.height <= 0) {
+            throw new Error('PNGTuber drawable source is empty');
+        }
+        assertExportablePNGTuberDrawable(source);
     }
 
     // ====== 模型画布直接截图 ======
@@ -799,6 +988,9 @@
             if (mgr?.core?.renderer?.domElement) return mgr.core.renderer.domElement;
             return document.getElementById('mmd-canvas');
         }
+        if (currentModelType === 'pngtuber') {
+            return getPNGTuberDrawableSource();
+        }
         return null;
     }
 
@@ -821,6 +1013,17 @@
             if (core?.renderer && core?.scene && core?.camera) {
                 core.renderer.render(core.scene, core.camera);
             }
+        } else if (currentModelType === 'pngtuber') {
+            const mgr = window.cardMakerPNGTuberManager;
+            mgr?.setSpeaking?.(false);
+            if (typeof mgr?.setLayeredStateIndex === 'function' && mgr.layeredStateIndex !== 0) {
+                mgr.setLayeredStateIndex(0, { source: 'card_maker' });
+            }
+            mgr?.setState?.('idle');
+            mgr?.clearLayeredTimers?.();
+            if (mgr?.isLayeredActive?.()) {
+                mgr.drawLayeredState?.('idle');
+            }
         }
     }
 
@@ -835,18 +1038,20 @@
      */
     function drawModelWithComposition(ctx, srcCanvas, outW, outH, compositionOverride = composition) {
         // 从源画布中裁剪出 3:4 比例的区域（cover 语义）
-        const srcAspect = srcCanvas.width / srcCanvas.height;
         const dstAspect = outW / outH;           // ≈ 0.75 (3:4)
-        let sx = 0, sy = 0, sw = srcCanvas.width, sh = srcCanvas.height;
+        const sourceSize = getDrawableSourceSize(srcCanvas);
+        if (sourceSize.width <= 0 || sourceSize.height <= 0) return;
+        const srcAspect = sourceSize.width / sourceSize.height;
+        let sx = 0, sy = 0, sw = sourceSize.width, sh = sourceSize.height;
 
         if (srcAspect > dstAspect) {
             // 源更宽 → 裁两侧
-            sw = srcCanvas.height * dstAspect;
-            sx = (srcCanvas.width - sw) / 2;
+            sw = sourceSize.height * dstAspect;
+            sx = (sourceSize.width - sw) / 2;
         } else {
             // 源更高 → 裁上下
-            sh = srcCanvas.width / dstAspect;
-            sy = (srcCanvas.height - sh) / 2;
+            sh = sourceSize.width / dstAspect;
+            sy = (sourceSize.height - sh) / 2;
         }
 
         const activeComposition = compositionOverride;
@@ -908,7 +1113,8 @@
         updatePreviewSourceScaleForZoom();
 
         const srcCanvas = getModelCanvas();
-        if (!srcCanvas || srcCanvas.width <= 0 || srcCanvas.height <= 0) return;
+        const srcSize = getDrawableSourceSize(srcCanvas);
+        if (!srcCanvas || srcSize.width <= 0 || srcSize.height <= 0) return;
 
         ensureRender();
 
@@ -1202,7 +1408,8 @@
         ensureRender();
 
         const srcCanvas = getModelCanvas();
-        if (!srcCanvas || srcCanvas.width <= 0 || srcCanvas.height <= 0) {
+        const srcSize = getDrawableSourceSize(srcCanvas);
+        if (!srcCanvas || srcSize.width <= 0 || srcSize.height <= 0) {
             if (activeModelSourceScale !== previousSourceScale) {
                 resizeModelRendererForCard(currentModelType, previousSourceScale);
                 ensureRender();

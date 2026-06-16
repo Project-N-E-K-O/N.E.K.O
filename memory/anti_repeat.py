@@ -1,44 +1,63 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
-AntiRepeatCorpus — per-character rolling corpus + BM25 scorer 用于 AI 输出
-的自动防复读（与用户行为无关）。
+AntiRepeatCorpus — per-character rolling corpus + BM25 scorer for automatic
+anti-repetition of AI output (unrelated to user behavior).
 
-设计动机
+Motivation
 --------
-LLM 在连续生成 proactive chat 时容易反复绕回同一个 topic（"老虎再次出现"、
-"我们再聊聊..."）。简单的 SequenceMatcher 相似度只能抓"完全重复"，对
-"换一种说法但还在聊同一个 topic" 无效。
+When generating proactive chats back-to-back, the LLM tends to circle back to the
+same topic ("the tiger shows up again", "let's talk about ... again"). Simple
+SequenceMatcher similarity only catches "exact repeats" and is useless against
+"rephrased but still on the same topic".
 
-我们用 BM25：
-- 背景 corpus = 最近 ``ANTI_REPEAT_BG_WINDOW`` 条 AI 输出，每条记 ngram set
-- 前景 query = 最近 ``ANTI_REPEAT_FG_WINDOW`` 条（背景的子集，靠后那段）
-- 新 draft 评分 = Σ BM25(term, fg) over draft 的 ngram
-- 关键性质：高频公共词（"今天/觉得/哈哈/嗯"）DF 高 → IDF 低 → 几乎不打分；
-  topic 词（"老虎/纳米机器/那个 bug"）DF 低 → IDF 高 → 强信号
+We use BM25:
+- background corpus = the most recent ``ANTI_REPEAT_BG_WINDOW`` AI outputs, each
+  stored as an ngram set
+- foreground query = the most recent ``ANTI_REPEAT_FG_WINDOW`` entries (a subset of
+  the background, the trailing slice)
+- new draft score = Σ BM25(term, fg) over the draft's ngrams
+- key property: frequent common words ("今天/觉得/哈哈/嗯") have high DF → low IDF →
+  contribute almost nothing; topic words ("老虎/纳米机器/那个 bug") have low DF →
+  high IDF → strong signal
 
-两条路径共享 corpus：
-- proactive: BM25 总分超 ``ANTI_REPEAT_REGEN_THRESHOLD`` → 触发 1 次 regen；
-  仍超 ``ANTI_REPEAT_DROP_THRESHOLD`` → drop 本次投递
-- regular reply: 只把 top-K BM25 ngram 注入下次会话 system prompt 提示模型
-  "最近你已经聊过 X / Y / Z"，不做硬拦
+Two paths share the corpus:
+- proactive: total BM25 above ``ANTI_REPEAT_REGEN_THRESHOLD`` → trigger 1 regen;
+  still above ``ANTI_REPEAT_DROP_THRESHOLD`` → drop this delivery
+- regular reply: only inject the top-K BM25 ngrams into the next session's system
+  prompt to tell the model "you've recently talked about X / Y / Z"; no hard block
 
-设计要点
+Design notes
 --------
-- **存储**：``memory/{name}/anti_repeat_corpus.json``。schema 见 ``_default_payload``
-- **滚动**：append 时若超 ``BG_WINDOW`` 弹出最老的；DF 不维护反向索引，每
-  次查询线性扫 BG 一遍（N=100 量级，性能无关）
-- **token 化**：复用 ``memory.persona._extract_keywords``（CJK 2/3-gram +
-  拉丁分词），并去 stop names。这是项目里唯一的 keyword 抽取实现，保持单
-  一事实源
-- **并发**：per-character ``threading.Lock``，模式照搬 ``memory/cursors.py``
-- **持久化**：每次 ``record_output`` 落盘（同 PR-1 的 user_directives 风格）
+- **Storage**: ``memory/{name}/anti_repeat_corpus.json``. Schema: see ``_default_payload``
+- **Rolling**: on append, pop the oldest once over ``BG_WINDOW``; DF keeps no
+  inverted index — every query linearly scans the BG once (N=100 scale,
+  performance irrelevant)
+- **Tokenization**: reuses ``memory.persona._extract_keywords`` (CJK 2/3-grams +
+  Latin word split) and strips stop names. This is the project's only keyword
+  extraction implementation; keep the single source of truth
+- **Concurrency**: per-character ``threading.Lock``, pattern copied from ``memory/cursors.py``
+- **Persistence**: every ``record_output`` writes to disk (same style as PR-1's user_directives)
 
-不抽取
+Not extracted
 ------
-- 太短的 draft（< ``ANTI_REPEAT_MIN_DRAFT_TOKENS`` ngram）：BM25 信号不稳定
-  且短回复天然不会"复读"；直接 ``score=0`` 放行
-- 空 corpus：BM25 退化为 0，所有 draft 都通过
-"""
+- Too-short drafts (< ``ANTI_REPEAT_MIN_DRAFT_TOKENS`` ngrams): the BM25 signal is
+  unstable there, and short replies don't naturally "repeat"; pass with ``score=0``
+- Empty corpus: BM25 degrades to 0; every draft passes
+"""  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
 import json
@@ -73,7 +92,7 @@ _DEFAULT_KEY = "default"
 
 
 def _resolve_name(name: Optional[str]) -> Optional[str]:
-    """空 / None 角色名归一化到 ``_DEFAULT_KEY``；其它情况按原样返回。"""
+    """Normalize empty / None character names to ``_DEFAULT_KEY``; anything else is returned as-is."""
     if not name:
         return _DEFAULT_KEY
     return name
@@ -87,13 +106,16 @@ def _now() -> float:
 
 
 def _ngrams(text: str) -> List[str]:
-    """对 ``text`` 抽 ngram。复用 ``memory.persona._extract_keywords`` 作为唯一
-    事实源。失败回退到极简 ASCII whitespace split（不阻断主流程）。
+    """Extract ngrams from ``text``. Reuses ``memory.persona._extract_keywords`` as the
+    single source of truth. On failure, falls back to a minimal ASCII whitespace
+    split (never blocking the main flow).
 
-    ``stop_names`` 用 ``collect_stop_names(config_manager)``——必填，零参数调用
-    会 TypeError 让外层 except 静默吞掉、stop names 永远空，master/lanlan 名字
-    渗透进 ngram 集合污染 BM25（每轮对话都出现的实体名会被算成高 DF 后压下
-    IDF，间接保护了一部分，但仍把无关的 nickname 2/3-gram 灌进 corpus）。"""
+    ``stop_names`` uses ``collect_stop_names(config_manager)`` — required; a
+    zero-argument call would TypeError, get silently swallowed by the outer except,
+    and stop names would stay empty forever, letting master/lanlan names seep into
+    the ngram set and pollute BM25 (entity names appearing every turn get a high DF
+    that suppresses their IDF, which indirectly protects part of it, but irrelevant
+    nickname 2/3-grams would still flood the corpus)."""
     try:
         from memory.persona import _extract_keywords
         from memory.stop_names import collect_stop_names
@@ -119,7 +141,7 @@ def _default_payload() -> Dict[str, Any]:
 
 
 def _normalize_entry(raw: Any) -> Optional[Dict[str, Any]]:
-    """读盘条目归一化。失败 → None。
+    """Normalize an entry read from disk. Failure → None.
 
     Entry shape: ``{"ts": float, "ngrams": [str], "is_proactive": bool}``
     """
@@ -153,27 +175,34 @@ def bm25_score(
     k1: float = ANTI_REPEAT_BM25_K1,
     b: float = ANTI_REPEAT_BM25_B,
 ) -> Tuple[float, Dict[str, float]]:
-    """计算 ``draft`` 在前景窗 ``fg_docs`` 上的"重复度" BM25 分。
+    """Compute the "repetitiveness" BM25 score of ``draft`` over the foreground window ``fg_docs``.
 
-    与经典搜索向 BM25 的关键差异：经典 BM25 把 "rare in corpus" 算高分（搜索
-    相关性偏好罕见关键词），但**复读检测**要的是 "在背景里罕见 + 最近频繁
-    出现"——前者由 BG 大窗算 IDF，后者由 FG 小窗算 TF 累加。所以：
+    Key difference from classic search-oriented BM25: classic BM25 scores "rare in
+    corpus" high (search relevance prefers rare keywords), but **repetition
+    detection** wants "rare in the background + frequent recently" — the former
+    comes from IDF over the large BG window, the latter from accumulated TF over
+    the small FG window. So:
 
-    - ``bg_docs`` (默认 = fg_docs) 算 DF/IDF：term 在多少条**全窗**里出现过
-    - ``fg_docs`` 算 TF：term 在**最近 FG 条**里累计 frequency
-    - 总分 = Σ_term IDF_bg(term) × Σ_doc∈fg BM25_tf_norm(term, doc)
+    - ``bg_docs`` (default = fg_docs) computes DF/IDF: how many docs of the
+      **full window** the term appears in
+    - ``fg_docs`` computes TF: the term's cumulative frequency over the **most
+      recent FG entries**
+    - total = Σ_term IDF_bg(term) × Σ_doc∈fg BM25_tf_norm(term, doc)
 
-    举例：
-    - "老虎" 只在最近 5 条 FG 全出现（5/5），但在 100 条 BG 里只占 5/100 →
-      IDF_bg 高 + TF 高 → 重复度大；触发 regen
-    - "今天" 在 BG 100 条几乎全出现 → IDF_bg 接近 0 → 公共词不打分
-    - 1 条偶发 unique 词在 FG 只出现 1 次 → TF 累加小 → 单次出现不至于触发
+    Examples:
+    - "老虎" appears in all of the last 5 FG entries (5/5) but only in 5/100 of the
+      BG → high IDF_bg + high TF → high repetitiveness; triggers regen
+    - "今天" appears in nearly all 100 BG entries → IDF_bg near 0 → common words
+      don't score
+    - a stray unique term appearing once in FG → small TF accumulation → a single
+      occurrence won't trigger
 
-    返回 ``(total, per_term)``。``per_term`` 只含有正贡献，按分排序。
+    Returns ``(total, per_term)``. ``per_term`` only contains positive
+    contributions, sorted by score.
 
-    边界：
-    - 空 ``fg_docs`` 或空 ``draft_ngrams`` → ``(0.0, {})``
-    """
+    Edge cases:
+    - empty ``fg_docs`` or empty ``draft_ngrams`` → ``(0.0, {})``
+    """  # noqa: DOCSTRING_CJK
     if not draft_ngrams or not fg_docs:
         return 0.0, {}
     if bg_docs is None:
@@ -223,9 +252,9 @@ def bm25_score(
 
 
 class AntiRepeatCorpus:
-    """Per-character 滚动 corpus（线程安全）。
+    """Per-character rolling corpus (thread-safe).
 
-    用法：
+    Usage:
         store = AntiRepeatCorpus()
         store.record_output(name, ai_text, is_proactive=True)
         total, terms = store.score_draft(name, draft_text)
@@ -309,14 +338,15 @@ class AntiRepeatCorpus:
         is_proactive: bool = False,
         now: Optional[float] = None,
     ) -> None:
-        """登记一条 AI 输出（既写背景 corpus 也参与下次评分）。
+        """Register one AI output (written into the background corpus and used in later scoring).
 
-        - 太短的 text（ngram < ``ANTI_REPEAT_MIN_DRAFT_TOKENS``）不入库——免得
-          把"嗯"、"好"这类发言摊薄 DF
-        - 入库后若窗口长度 > ``ANTI_REPEAT_BG_WINDOW`` 弹出最老
-        - 空 name 归一化到 ``_DEFAULT_KEY``（与 user_directives sink / 注入路径
-          一致），否则空 lanlan_name 配置下 BM25 / soft hint 整段失效（codex P2）
-        """
+        - Too-short text (ngrams < ``ANTI_REPEAT_MIN_DRAFT_TOKENS``) is not stored —
+          keeps utterances like "嗯" / "好" from diluting DF
+        - After insertion, pop the oldest once the window exceeds ``ANTI_REPEAT_BG_WINDOW``
+        - Empty names normalize to ``_DEFAULT_KEY`` (consistent with the
+          user_directives sink / injection path); otherwise BM25 / soft hints would
+          break entirely under an empty lanlan_name config (codex P2)
+        """  # noqa: DOCSTRING_CJK
         if not text or not text.strip():
             return
         name = _resolve_name(name)
@@ -346,13 +376,14 @@ class AntiRepeatCorpus:
         *,
         fg_window: int = ANTI_REPEAT_FG_WINDOW,
     ) -> Tuple[float, Dict[str, float]]:
-        """对 draft 做 BM25 评分（vs 最近 ``fg_window`` 条 AI 输出）。
+        """BM25-score a draft (vs the most recent ``fg_window`` AI outputs).
 
-        返回 ``(total_score, per_term_score)``。
-        - 太短的 draft / 空 corpus → ``(0.0, {})``
-        - 不读 BG corpus 的"前 N - fg"段——那部分只贡献 DF，不直接参与评分；
-          但 DF 仍然是基于 BG 整窗算的，让"长期未出现"的 unique 词得到更高 IDF
-        - 空 name → 归一化到 ``_DEFAULT_KEY``（与 record_output 对齐）
+        Returns ``(total_score, per_term_score)``.
+        - Too-short draft / empty corpus → ``(0.0, {})``
+        - The "first N - fg" slice of the BG corpus is not read — it only contributes
+          DF and doesn't directly participate in scoring; but DF is still computed
+          over the whole BG window, giving "long-unseen" unique terms a higher IDF
+        - Empty name → normalized to ``_DEFAULT_KEY`` (aligned with record_output)
         """
         if not draft_text or not draft_text.strip():
             return 0.0, {}
@@ -379,15 +410,18 @@ class AntiRepeatCorpus:
         k: int = ANTI_REPEAT_INJECT_TOP_K,
         fg_window: int = ANTI_REPEAT_FG_WINDOW,
     ) -> List[str]:
-        """返回最近 fg_window 条里 BM25-rank 最高的 K 个 ngram。
+        """Return the K highest BM25-ranked ngrams within the most recent fg_window entries.
 
-        用法：注入下一轮 system prompt 提示模型"最近聊过 X / Y / Z"。
-        DF 用整个 BG 窗算（让经常出现的高频词 IDF 低），TF 用 FG 窗：
-        效果是"最近 5 条里频繁出现 + 整体 corpus 里不常见"的 ngram 排前面。
+        Usage: inject into the next round's system prompt to tell the model "you've
+        recently talked about X / Y / Z".
+        DF uses the whole BG window (frequently appearing common words get low IDF),
+        TF uses the FG window: the effect is that ngrams "frequent in the last 5
+        entries + uncommon in the overall corpus" rank first.
 
-        实现：把 FG 窗自己当 draft 求 BM25 自评分。
+        Implementation: treat the FG window itself as a draft and compute its BM25
+        self-score.
 
-        空 name 归一化到 ``_DEFAULT_KEY`` 与 record_output / score_draft 对齐。
+        Empty names normalize to ``_DEFAULT_KEY``, aligned with record_output / score_draft.
         """
         if k <= 0:
             return []

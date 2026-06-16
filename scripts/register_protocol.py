@@ -1,13 +1,27 @@
-"""注册 neko:// URI Scheme 协议处理器。
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-各平台注册方式：
-- Windows: 写入注册表 HKCU\\Software\\Classes\\neko
-- macOS: 生成 .app bundle 的 Info.plist（需要 .app 结构）
-- Linux: 创建 .desktop 文件并注册 MIME type
+"""Register the neko:// URI scheme protocol handler.
 
-使用：
-  python scripts/register_protocol.py          # 注册
-  python scripts/register_protocol.py --remove # 移除
+Per-platform registration:
+- Windows: write to the registry HKCU\\Software\\Classes\\neko
+- macOS: generate a .app bundle Info.plist (requires the .app structure)
+- Linux: create a .desktop file and register the MIME type
+
+Usage:
+  python scripts/register_protocol.py          # register
+  python scripts/register_protocol.py --remove # remove
 """
 
 from __future__ import annotations
@@ -63,7 +77,7 @@ def _posix_shell_quote(value: str) -> str:
 
 
 def register() -> bool:
-    """注册 neko:// 协议。"""
+    """Register the neko:// protocol."""
     system = platform.system()
     if system == "Windows":
         return _register_windows()
@@ -77,7 +91,7 @@ def register() -> bool:
 
 
 def remove() -> bool:
-    """移除 neko:// 协议注册。"""
+    """Remove the neko:// protocol registration."""
     system = platform.system()
     if system == "Windows":
         return _remove_windows()
@@ -93,7 +107,7 @@ def remove() -> bool:
 # ─── Windows ───────────────────────────────────────────────────────
 
 def _register_windows() -> bool:
-    """Windows: 写入 HKCU\\Software\\Classes\\neko"""
+    """Windows: write HKCU\\Software\\Classes\\neko"""
     try:
         import winreg
 
@@ -135,7 +149,7 @@ def _register_windows() -> bool:
 
 
 def _remove_windows() -> bool:
-    """Windows: 删除注册表键。"""
+    """Windows: delete the registry key."""
     try:
         import winreg
 
@@ -164,7 +178,7 @@ def _remove_windows() -> bool:
 # ─── macOS ─────────────────────────────────────────────────────────
 
 def _register_macos() -> bool:
-    """macOS: 创建 helper .app 并注册 URL scheme。"""
+    """macOS: create the helper .app and register the URL scheme."""
     app_dir = Path.home() / "Applications" / "NekoProtocolHandler.app"
     contents = app_dir / "Contents"
     macos_dir = contents / "MacOS"
@@ -223,7 +237,7 @@ exec {quoted_python_exe} -m {HANDLER_MODULE} "$@"
 
 
 def _remove_macos() -> bool:
-    """macOS: 删除 helper app。"""
+    """macOS: delete the helper app."""
     import shutil
     app_dir = Path.home() / "Applications" / "NekoProtocolHandler.app"
     if app_dir.exists():
@@ -235,7 +249,7 @@ def _remove_macos() -> bool:
 # ─── Linux ─────────────────────────────────────────────────────────
 
 def _register_linux() -> bool:
-    """Linux: 创建 .desktop 文件并注册 MIME type。"""
+    """Linux: create the .desktop file and register the MIME type."""
     desktop_dir = Path.home() / ".local" / "share" / "applications"
     desktop_dir.mkdir(parents=True, exist_ok=True)
 
@@ -263,7 +277,7 @@ MimeType=x-scheme-handler/neko;
 
 
 def _remove_linux() -> bool:
-    """Linux: 删除 .desktop 文件。"""
+    """Linux: delete the .desktop file."""
     desktop_file = Path.home() / ".local" / "share" / "applications" / "neko-protocol-handler.desktop"
     if desktop_file.exists():
         desktop_file.unlink()

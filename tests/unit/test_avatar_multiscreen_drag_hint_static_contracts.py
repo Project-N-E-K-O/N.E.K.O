@@ -16,26 +16,32 @@ def test_multiscreen_drag_hint_ack_snoozes_for_three_days():
     assert "neko:avatar-multiscreen-drag-hint:v1" in source
 
 
-def test_multiscreen_drag_hint_only_observes_multi_display_edge_bounces():
+def test_multiscreen_drag_hint_counts_display_switch_misses_only_on_multiple_displays():
     source = _source("static/avatar-multiscreen-drag-hint.js")
 
-    assert "const REQUIRED_BOUNCES = 2;" in source
-    assert "const BOUNCE_WINDOW_MS = 30 * 1000;" in source
+    assert "const REQUIRED_MISSES = 2;" in source
+    assert "const MISS_WINDOW_MS = 30 * 1000;" in source
+    assert "function hasDisplaySwitchBridge()" in source
+    assert "typeof window.electronScreen.moveWindowToDisplay === 'function'" in source
+    assert "async function hasMultipleDisplays()" in source
     assert "window.electronScreen.getAllDisplays" in source
-    assert "displays.length <= 1" in source
-    assert "state.recentBounceCount >= REQUIRED_BOUNCES" in source
-    assert "moveWindowToDisplay" not in source
+    assert "if (!hasDisplaySwitchBridge()) return false;" in source
+    assert "return Array.isArray(displays) && displays.length > 1;" in source
+    assert "function recordDisplaySwitchMiss(source)" in source
+    assert "if (!(await hasMultipleDisplays())) return false;" in source
+    assert "state.recentMissCount >= REQUIRED_MISSES" in source
+    assert "hasDisplaySwitchBridge() && !displaySwitched && isModelCenterOutsideCurrentWindow(model)" in source
 
 
-def test_multiscreen_drag_hint_serializes_edge_bounce_counter_updates():
+def test_multiscreen_drag_hint_serializes_display_switch_miss_updates():
     source = _source("static/avatar-multiscreen-drag-hint.js")
 
-    assert "let bounceRecordQueue = Promise.resolve();" in source
-    assert "function recordEdgeBounce(source) {" in source
-    assert "const nextRecord = bounceRecordQueue.then(function () {" in source
-    assert "return recordEdgeBounceNow(source);" in source
-    assert "bounceRecordQueue = nextRecord.catch(function () {});" in source
-    assert "async function recordEdgeBounceNow(source)" in source
+    assert "let missRecordQueue = Promise.resolve();" in source
+    assert "function recordDisplaySwitchMiss(source) {" in source
+    assert "const nextRecord = missRecordQueue.then(function () {" in source
+    assert "return recordDisplaySwitchMissNow(source);" in source
+    assert "missRecordQueue = nextRecord.catch(function () {});" in source
+    assert "function recordDisplaySwitchMissNow(source)" in source
 
 
 def test_multiscreen_drag_hint_can_be_disabled_or_suppressed_after_success():
@@ -44,6 +50,8 @@ def test_multiscreen_drag_hint_can_be_disabled_or_suppressed_after_success():
     assert "state.never = true;" in source
     assert "state.successAt = now();" in source
     assert "window.NekoAvatarMultiScreenDragHint" in source
+    assert "state.recentMissCount = 0;" in source
+    assert "state.lastMissAt = 0;" in source
     assert "if (Number(state.successAt) > 0) return true;" not in source
 
 
@@ -65,16 +73,23 @@ def test_multiscreen_drag_hint_uses_top_center_project_popup_style():
     assert ".avatar-multiscreen-drag-hint-visible" in source
 
 
-def test_model_interactions_report_supported_bounces_and_display_switch_success():
+def test_model_interactions_report_display_switch_misses_and_success():
+    helper = _source("static/avatar-multiscreen-drag-hint.js")
     live2d = _source("static/live2d-interaction.js")
     mmd = _source("static/mmd-interaction.js")
     vrm = _source("static/vrm-interaction.js")
 
-    assert "recordEdgeBounce('live2d')" in live2d
+    assert "installLive2DDisplaySwitchMissHook" in helper
+    assert "window.Live2DManager" in helper
+    assert "_checkAndSwitchDisplay" in helper
+    assert "recordDisplaySwitchMiss('live2d')" in helper
+    assert "recordDisplaySwitchMiss('live2d')" not in live2d
     assert "markDisplaySwitchSuccess('live2d')" in live2d
-    assert "recordEdgeBounce('mmd')" in mmd
+    assert "recordDisplaySwitchMiss('mmd')" in mmd
+    assert "recordEdgeBounce('mmd')" not in mmd
     assert "markDisplaySwitchSuccess('mmd')" in mmd
-    assert "recordEdgeBounce('vrm')" in vrm
+    assert "recordDisplaySwitchMiss('vrm')" in vrm
+    assert "recordEdgeBounce('vrm')" not in vrm
     assert "markDisplaySwitchSuccess('vrm')" in vrm
 
 

@@ -681,6 +681,187 @@ def test_loader_returns_defaults_when_no_activity_section(tmp_path):
     assert p.user_app_overrides == {}
 
 
+def test_conversation_turn_dispatcher_sends_messages_to_background_topic_pool():
+    from main_logic.conversation_turns import ConversationTurnDispatcher, TopicHookTurnSink
+
+    calls = []
+
+    class FakeTopicPool:
+        def note_user_message(self, lanlan_name, text, *, lang='zh'):
+            calls.append(('user', lanlan_name, text, lang))
+
+        def note_ai_message(self, lanlan_name, text, *, lang='zh'):
+            calls.append(('ai', lanlan_name, text, lang))
+
+    dispatcher = ConversationTurnDispatcher(
+        'test_lanlan',
+        language='zh-CN',
+        privacy_check=lambda: False,
+    )
+    dispatcher.add_sink(TopicHookTurnSink(pool_factory=lambda: FakeTopicPool()))
+
+    dispatcher.note_user_message(text='我想买凯迪拉克，但预算有点顶不住', now=1.0)
+    dispatcher.note_ai_message(text='别急着破釜沉舟，先看看预算。', now=2.0)
+
+    assert calls == [
+        ('user', 'test_lanlan', '我想买凯迪拉克，但预算有点顶不住', 'zh-CN'),
+        ('ai', 'test_lanlan', '别急着破釜沉舟，先看看预算。', 'zh-CN'),
+    ]
+
+
+def test_conversation_turn_dispatcher_uses_global_language_for_background_topic_pool(monkeypatch):
+    from main_logic.conversation_turns import ConversationTurnDispatcher, TopicHookTurnSink
+    from utils import language_utils
+
+    calls = []
+
+    class FakeTopicPool:
+        def note_user_message(self, lanlan_name, text, *, lang='zh'):
+            calls.append(('user', lanlan_name, text, lang))
+
+        def note_ai_message(self, lanlan_name, text, *, lang='zh'):
+            calls.append(('ai', lanlan_name, text, lang))
+
+    monkeypatch.setattr(language_utils, 'get_global_language', lambda: 'en-US')
+
+    dispatcher = ConversationTurnDispatcher('test_lanlan', privacy_check=lambda: False)
+    dispatcher.add_sink(TopicHookTurnSink(pool_factory=lambda: FakeTopicPool()))
+    dispatcher.note_user_message(text='I want a new phone but I am not sure about the price.', now=1.0)
+    dispatcher.note_ai_message(text='Fair, let us slow down before your wallet files a complaint.', now=2.0)
+
+    assert calls == [
+        ('user', 'test_lanlan', 'I want a new phone but I am not sure about the price.', 'en'),
+        ('ai', 'test_lanlan', 'Fair, let us slow down before your wallet files a complaint.', 'en'),
+    ]
+
+
+def test_conversation_turn_dispatcher_uses_session_language_for_background_topic_pool(monkeypatch):
+    from main_logic.conversation_turns import ConversationTurnDispatcher, TopicHookTurnSink
+    from utils import language_utils
+
+    calls = []
+
+    class FakeTopicPool:
+        def note_user_message(self, lanlan_name, text, *, lang='zh'):
+            calls.append(('user', lanlan_name, text, lang))
+
+        def note_ai_message(self, lanlan_name, text, *, lang='zh'):
+            calls.append(('ai', lanlan_name, text, lang))
+
+    monkeypatch.setattr(language_utils, 'get_global_language', lambda: 'en-US')
+
+    dispatcher = ConversationTurnDispatcher('test_lanlan', privacy_check=lambda: False)
+    dispatcher.add_sink(TopicHookTurnSink(pool_factory=lambda: FakeTopicPool()))
+    dispatcher.set_language('ja-JP')
+    dispatcher.note_user_message(text='転職について少し迷っています。', now=1.0)
+    dispatcher.note_ai_message(text='焦らず、次の条件を一緒に整理しよう。', now=2.0)
+
+    assert calls == [
+        ('user', 'test_lanlan', '転職について少し迷っています。', 'ja'),
+        ('ai', 'test_lanlan', '焦らず、次の条件を一緒に整理しよう。', 'ja'),
+    ]
+
+
+def test_conversation_turn_dispatcher_preserves_traditional_chinese_topic_locale():
+    from main_logic.conversation_turns import ConversationTurnDispatcher, TopicHookTurnSink
+
+    calls = []
+
+    class FakeTopicPool:
+        def note_user_message(self, lanlan_name, text, *, lang='zh'):
+            calls.append((lanlan_name, text, lang))
+
+    dispatcher = ConversationTurnDispatcher('test_lanlan', privacy_check=lambda: False)
+    dispatcher.add_sink(TopicHookTurnSink(pool_factory=lambda: FakeTopicPool()))
+    dispatcher.set_language('zh-TW')
+    dispatcher.note_user_message(text='我想用繁體中文聊最近的生活選擇', now=1.0)
+
+    assert calls == [('test_lanlan', '我想用繁體中文聊最近的生活選擇', 'zh-TW')]
+
+
+def test_conversation_turn_dispatcher_redacts_topic_text_in_privacy_mode():
+    from main_logic.conversation_turns import (
+        ActivityTrackerTurnSink,
+        ConversationTurnDispatcher,
+        TopicHookTurnSink,
+    )
+
+    activity_calls = []
+    topic_calls = []
+
+    class FakeActivityTracker:
+        def on_user_message(self, *, text=None, now=None):
+            activity_calls.append(('user', text, now))
+
+        def on_ai_message(self, *, text=None, now=None):
+            activity_calls.append(('ai', text, now))
+
+    class FakeTopicPool:
+        def note_user_message(self, lanlan_name, text, *, lang='zh'):
+            topic_calls.append(('user', lanlan_name, text, lang))
+
+        def note_ai_message(self, lanlan_name, text, *, lang='zh'):
+            topic_calls.append(('ai', lanlan_name, text, lang))
+
+    dispatcher = ConversationTurnDispatcher(
+        'test_lanlan',
+        language='zh-CN',
+        privacy_check=lambda: True,
+    )
+    dispatcher.add_sink(ActivityTrackerTurnSink(FakeActivityTracker()))
+    dispatcher.add_sink(TopicHookTurnSink(pool_factory=lambda: FakeTopicPool()))
+
+    dispatcher.note_user_message(text='secret user turn', now=1.0)
+    dispatcher.note_ai_message(text='secret ai turn?', now=2.0)
+
+    assert activity_calls == [
+        ('user', None, 1.0),
+        ('ai', None, 2.0),
+    ]
+    assert topic_calls == []
+
+
+def test_conversation_turn_dispatcher_redacts_when_privacy_check_fails():
+    from main_logic.conversation_turns import (
+        ActivityTrackerTurnSink,
+        ConversationTurnDispatcher,
+        TopicHookTurnSink,
+    )
+
+    activity_calls = []
+    topic_calls = []
+
+    class FakeActivityTracker:
+        def on_user_message(self, *, text=None, now=None):
+            activity_calls.append(('user', text, now))
+
+        def on_ai_message(self, *, text=None, now=None):
+            activity_calls.append(('ai', text, now))
+
+    class FakeTopicPool:
+        def note_user_message(self, lanlan_name, text, *, lang='zh'):
+            topic_calls.append(('user', lanlan_name, text, lang))
+
+        def note_ai_message(self, lanlan_name, text, *, lang='zh'):
+            topic_calls.append(('ai', lanlan_name, text, lang))
+
+    def broken_privacy_check():
+        raise RuntimeError("preference store unavailable")
+
+    dispatcher = ConversationTurnDispatcher(
+        'test_lanlan',
+        language='zh-CN',
+        privacy_check=broken_privacy_check,
+    )
+    dispatcher.add_sink(ActivityTrackerTurnSink(FakeActivityTracker()))
+    dispatcher.add_sink(TopicHookTurnSink(pool_factory=lambda: FakeTopicPool()))
+
+    dispatcher.note_user_message(text='secret user turn', now=1.0)
+
+    assert activity_calls == [('user', None, 1.0)]
+    assert topic_calls == []
+
+
 # ── Hot-reload (Codex P2) ───────────────────────────────────────────
 
 

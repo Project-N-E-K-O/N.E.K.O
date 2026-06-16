@@ -1,7 +1,21 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
-DirectTaskExecutor: 合并 Analyzer + Planner 的功能
-并行评估 ComputerUse / BrowserUse / UserPlugin 可行性
+DirectTaskExecutor: merges the Analyzer + Planner roles
+Evaluates ComputerUse / BrowserUse / UserPlugin feasibility in parallel
 """
 import json
 import os
@@ -117,7 +131,7 @@ def _compute_run_wait_timeout(entry_timeout: float | None) -> float | None:
 
 @dataclass
 class TaskResult:
-    """任务执行结果"""
+    """Task execution result"""
     task_id: str
     has_task: bool = False
     task_description: str = ""
@@ -136,7 +150,7 @@ class TaskResult:
 
 @dataclass
 class ComputerUseDecision:
-    """ComputerUse 可行性评估结果"""
+    """ComputerUse feasibility assessment result"""
     has_task: bool = False
     can_execute: bool = False
     task_description: str = ""
@@ -145,7 +159,7 @@ class ComputerUseDecision:
 
 @dataclass
 class BrowserUseDecision:
-    """BrowserUse 可行性评估结果"""
+    """BrowserUse feasibility assessment result"""
     has_task: bool = False
     can_execute: bool = False
     task_description: str = ""
@@ -153,7 +167,7 @@ class BrowserUseDecision:
 
 @dataclass
 class UserPluginDecision:
-    """UserPlugin 可行性评估结果"""
+    """UserPlugin feasibility assessment result"""
     has_task: bool = False
     can_execute: bool = False
     task_description: str = ""
@@ -165,7 +179,7 @@ class UserPluginDecision:
 
 @dataclass
 class OpenFangDecision:
-    """OpenFang 多 Agent 执行决策"""
+    """OpenFang multi-agent execution decision"""
     has_task: bool = False
     can_execute: bool = False
     task_description: str = ""
@@ -175,7 +189,7 @@ class OpenFangDecision:
 
 @dataclass
 class OpenClawDecision:
-    """OpenClaw 独立 Agent 执行决策"""
+    """OpenClaw standalone-agent execution decision"""
     has_task: bool = False
     can_execute: bool = False
     task_description: str = ""
@@ -185,7 +199,7 @@ class OpenClawDecision:
 
 @dataclass
 class UnifiedChannelDecision:
-    """统一渠道评估结果 — 每个渠道为 dict 或 None"""
+    """Unified channel assessment result — each channel is a dict or None"""
     qwenpaw: Optional[Dict[str, Any]] = None     # {"can_execute": bool, "task_description": str, "reason": str}
     openfang: Optional[Dict[str, Any]] = None
     browser_use: Optional[Dict[str, Any]] = None
@@ -204,7 +218,7 @@ _CHANNEL_TO_METHOD = {
 
 class DirectTaskExecutor:
     """
-    直接任务执行器：并行评估 BrowserUse / ComputerUse / UserPlugin 可行性并执行
+    Direct task executor: evaluates BrowserUse / ComputerUse / UserPlugin feasibility in parallel and executes
     """
     
     def __init__(self, computer_use: Optional[ComputerUseAdapter] = None, browser_use: Optional[BrowserUseAdapter] = None,
@@ -438,7 +452,7 @@ class DirectTaskExecutor:
             logger.debug("[Agent] No running event loop, skipping async LLM close")
 
     def _format_messages(self, messages: List[Dict[str, str]]) -> str:
-        """格式化对话消息"""
+        """Format conversation messages"""
         def _extract_text(m: dict) -> str:
             return str(m.get('text') or m.get('content') or '').strip()
 
@@ -511,7 +525,7 @@ class DirectTaskExecutor:
         return latest_text, latest_attachments
     
     def _format_tools(self, capabilities: Dict[str, Dict[str, Any]]) -> str:
-        """格式化工具列表供 LLM 参考"""
+        """Format the tool list for LLM reference"""
         if not capabilities:
             return "No MCP tools available."
         
@@ -898,10 +912,11 @@ class DirectTaskExecutor:
         recent_context: Optional[List[Dict[str, str]]] = None,
         lang: str = "en",
     ) -> UnifiedChannelDecision:
-        """一次 LLM 调用评估所有非 plugin 渠道（qwenpaw / openfang / browser / computer）。
+        """Assess all non-plugin channels (qwenpaw / openfang / browser / computer) in a single LLM call.
 
-        根据 available 标志动态组装 prompt，要求 LLM 选出最合适的渠道。
-        如果 LLM 输出多个 can_execute=true，由调用方按优先级选取。
+        Assembles the prompt dynamically from the available flags and asks the LLM to pick
+        the most suitable channel. If the LLM outputs multiple can_execute=true, the caller
+        picks by priority.
         """
         # 动态组装渠道描述 ──────────────────────────────────
         channel_descs: List[str] = []
@@ -1545,9 +1560,9 @@ class DirectTaskExecutor:
         lang: str = "en",
     ) -> Optional[TaskResult]:
         """
-        评估各渠道可行性，返回 Decision（不执行）。
-        Plugin 单独判定；qwenpaw/openfang/browser/computer 合并为一次 LLM 调用。
-        实际执行由 agent_server 统一 dispatch。
+        Assess each channel's feasibility and return a Decision (no execution).
+        Plugin is judged separately; qwenpaw/openfang/browser/computer are merged into one LLM call.
+        Actual execution is dispatched uniformly by agent_server.
         """
         # Bind active character for {MASTER_NAME}/{LANLAN_NAME} substitution
         # in any LLM call made under this analyze_and_execute (assess_user_plugin
@@ -2279,5 +2294,5 @@ class DirectTaskExecutor:
             reset_active_character(char_token)
     
     async def refresh_capabilities(self) -> Dict[str, Dict[str, Any]]:
-        """保留接口兼容性，MCP 已移除，始终返回空。"""
+        """Kept for interface compatibility; MCP has been removed, always returns empty."""
         return {}

@@ -26,7 +26,7 @@ export type HostedAction = {
 }
 
 export type HostedApi = {
-  call: (actionId: string, args?: Record<string, any>) => Promise<any>
+  call: (actionId: string, args?: Record<string, any>, options?: { timeoutMs?: number }) => Promise<any>
   refresh: () => Promise<any>
 }
 

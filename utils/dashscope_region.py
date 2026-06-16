@@ -1,4 +1,18 @@
-"""DashScope 地域 URL 归一化工具。"""
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""DashScope region URL normalization helpers."""
 
 from __future__ import annotations
 
@@ -36,7 +50,7 @@ def _dashscope_default_ws_url(path_tail: str) -> str:
 
 
 def dashscope_ws_url_from_base(base_url: str, path_tail: str, default_url: str = "") -> str:
-    """从 DashScope REST/WS 地址推导对应的 WebSocket API 地址。"""
+    """Derive the corresponding WebSocket API address from a DashScope REST/WS address."""
     try:
         parsed = urlparse((base_url or "").strip())
     except Exception:
@@ -49,7 +63,7 @@ def dashscope_ws_url_from_base(base_url: str, path_tail: str, default_url: str =
 
 
 def dashscope_http_url_from_base(base_url: str, default_url: str = "") -> str:
-    """从 DashScope REST/WS 地址推导对应的 HTTP API 地址。"""
+    """Derive the corresponding HTTP API address from a DashScope REST/WS address."""
     try:
         parsed = urlparse((base_url or "").strip())
     except Exception:
@@ -68,7 +82,7 @@ def configure_dashscope_sdk_urls(
     websocket_path: str = "inference",
     set_http: bool = True,
 ) -> None:
-    """让 DashScope SDK 的 HTTP / WebSocket 地址跟随当前地域。"""
+    """Make the DashScope SDK's HTTP / WebSocket addresses follow the current region."""
     ws_url = dashscope_ws_url_from_base(
         base_url,
         websocket_path,

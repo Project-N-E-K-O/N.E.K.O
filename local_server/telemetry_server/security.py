@@ -1,10 +1,24 @@
 # -*- coding: utf-8 -*-
-"""
-Telemetry Server — 安全模块
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-1. HMAC-SHA256 签名验证（防篡改）—— 秘钥硬编码（与 vLLM 一致）
-2. 时间戳窗口验证（防重放）
-3. 基于设备的速率限制（防滥用）
+"""
+Telemetry Server — security module
+
+1. HMAC-SHA256 signature verification (anti-tampering) — hard-coded secret (same as vLLM)
+2. Timestamp window verification (anti-replay)
+3. Per-device rate limiting (anti-abuse)
 """
 from __future__ import annotations
 
@@ -21,7 +35,7 @@ DEFAULT_HMAC_SECRET = "neko-v1-a3f8b2c1d4e5f6789012345678abcdef"
 
 
 def compute_signature(payload_json: str, timestamp: float, secret: str = DEFAULT_HMAC_SECRET) -> str:
-    """计算 HMAC-SHA256(secret, f"{timestamp}|{sha256(payload_json)}")。"""
+    """Compute HMAC-SHA256(secret, f"{timestamp}|{sha256(payload_json)}")."""
     body_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
     message = f"{timestamp}|{body_hash}"
     return hmac.new(
@@ -37,7 +51,7 @@ def verify_signature(
     signature: str,
     secret: str = DEFAULT_HMAC_SECRET,
 ) -> bool:
-    """验证签名（常量时间比较，防时序攻击）。"""
+    """Verify the signature (constant-time comparison, guards against timing attacks)."""
     expected = compute_signature(payload_json, timestamp, secret)
     return hmac.compare_digest(expected, signature)
 
@@ -50,7 +64,7 @@ TIMESTAMP_TOLERANCE = 300  # ±5 分钟
 
 
 def verify_timestamp(timestamp: float, tolerance: float = TIMESTAMP_TOLERANCE) -> bool:
-    """拒绝超过 ±tolerance 秒的请求（防重放）。"""
+    """Reject requests older/newer than ±tolerance seconds (anti-replay)."""
     return abs(time.time() - timestamp) <= tolerance
 
 
@@ -59,7 +73,7 @@ def verify_timestamp(timestamp: float, tolerance: float = TIMESTAMP_TOLERANCE) -
 # ---------------------------------------------------------------------------
 
 class RateLimiter:
-    """每个 device_id 在 window 秒内最多 max_requests 次请求。"""
+    """At most max_requests per device_id within a window of `window` seconds."""
 
     def __init__(self, max_requests: int = 60, window: float = 3600.0):
         self.max_requests = max_requests
@@ -79,7 +93,7 @@ class RateLimiter:
             return True
 
     def cleanup_stale(self, max_age: float = 86400.0):
-        """清理长期不活跃的设备记录（防内存膨胀）。"""
+        """Clean up long-inactive device records (prevents memory bloat)."""
         cutoff = time.time() - max_age
         with self._lock:
             stale = [k for k, v in self._records.items() if not v or v[-1] < cutoff]

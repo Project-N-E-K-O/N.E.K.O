@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 MemoryRecallReranker — vector pre-rank + LLM rerank for memory recall.
 
@@ -35,14 +49,14 @@ whole pipeline degrades to "evidence_score DESC + top ``budget``" —
 exactly the current behaviour, no LLM call cost added.
 
 Why vectors are a *prefilter*, not a replacement: cosine alone can't
-tell ``主人喜欢猫`` from ``主人讨厌猫`` (≈0.78), and "semantically
-near" entries that the user didn't actually mean to bring up trigger
-false positives in Stage-2 signal detection (which would either
-reinforce or negate the wrong observation).  Keeping the LLM as the
-arbiter means we save *prompt tokens* (smaller candidate set in the
-Stage-2 prompt), not *LLM calls* — RFC §3.4 stays unchanged in
-shape.
-"""
+tell ``主人喜欢猫`` ("the user likes cats") from ``主人讨厌猫`` ("the user
+hates cats") (≈0.78), and "semantically near" entries that the user
+didn't actually mean to bring up trigger false positives in Stage-2
+signal detection (which would either reinforce or negate the wrong
+observation).  Keeping the LLM as the arbiter means we save *prompt
+tokens* (smaller candidate set in the Stage-2 prompt), not *LLM
+calls* — RFC §3.4 stays unchanged in shape.
+"""  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
 import logging
@@ -235,13 +249,14 @@ class MemoryRecallReranker:
         consolidated into one function so callers don't duplicate the
         list.
 
-        Per-entry try/except：observations 通常来自 JSON 文件
-        （facts.json / reflections.json / persona.json），走 serialize/
-        deserialize 边界。理论上写盘是我们自己代码做的所以 shape 应该
-        正确，但 manual edit / 老格式残留 / 迁移 bug 都可能让 ``text``
-        是 list/int（``.strip()`` 挂）或 ``score`` 是字符串（``< 0`` 比较
-        挂）。单条坏行不该带挂整个 filter——已用的 caller（hybrid_recall
-        和 Stage-2 signal detection）都受益。Codex review on PR #1385。
+        Per-entry try/except: observations usually come from JSON files
+        (facts.json / reflections.json / persona.json) across a serialize/
+        deserialize boundary. In theory we wrote them ourselves so the shape
+        should be right, but manual edits / legacy leftovers / migration bugs
+        can make ``text`` a list/int (breaking ``.strip()``) or ``score`` a
+        string (breaking the ``< 0`` comparison). A single bad row must not
+        take the whole filter down — both existing callers (hybrid_recall and
+        Stage-2 signal detection) benefit. Codex review on PR #1385.
         """
         out: list[dict] = []
         for o in observations:
@@ -442,31 +457,36 @@ class MemoryRecallReranker:
         per_query_k: int,
         total_cap: int,
     ) -> list[dict]:
-        """Per-query top-K cosine recall, union+dedup at most ``total_cap``。
+        """Per-query top-K cosine recall, union+dedup capped at ``total_cap``.
 
-        与 ``aretrieve_candidates`` 的全局 max-pool top-K 不同：这里**每条
-        query 各自享有 ``per_query_k`` 的独立配额**，结果按 id dedup 合并，
-        总数截到 ``total_cap``。
+        Unlike the global max-pool top-K of ``aretrieve_candidates``: here
+        **each query gets its own independent quota of ``per_query_k``**;
+        results are merged with id dedup and truncated to ``total_cap``.
 
-        Use case：reflection synthesis 的 ``{RELATED_CONTEXT_BLOCK}``——20 条
-        unabsorbed fact 主题分散时，max-pool 会让冷门主题被高频主题挤掉，
-        per-query 配额规避这点（PR #1401 thread 拍板）。
+        Use case: reflection synthesis's ``{RELATED_CONTEXT_BLOCK}`` — when 20
+        unabsorbed facts span scattered topics, max-pool lets hot topics crowd
+        out cold ones; the per-query quota avoids that (decided in the PR #1401
+        thread).
 
-        Perf：单次 ``embed_batch`` 拼所有 query，candidates decode 一次成 (N, D)
-        矩阵，一次 ``candidate_matrix @ query_matrix.T`` 算出 (N, Q) 分数矩
-        阵，per-column ``argpartition`` 取 top-K。整体复杂度 O(N·D·Q + N·Q·log K)，
-        BLAS 自带 SIMD/多线程，等同于"并行"per-query 调用但不付 N 次嵌入
-        服务往返。
+        Perf: one ``embed_batch`` packs all queries; candidates are decoded once
+        into an (N, D) matrix, a single ``candidate_matrix @ query_matrix.T``
+        yields the (N, Q) score matrix, and a per-column ``argpartition`` takes
+        the top-K. Overall complexity O(N·D·Q + N·Q·log K); BLAS brings its own
+        SIMD/multithreading — equivalent to "parallel" per-query calls without
+        paying N round-trips to the embedding service.
 
-        Fallback 与主路径不同：embedding 不可用 / 无 model_id / 候选无 valid
-        embedding → **直接返回 []**，**不**退化到 evidence_score 排序。理由：
-        本方法的消费者（``_build_related_context_block``）拿结果是当
-        "semantic anchor" 注入 LLM prompt 用的，没真 semantic 关联的"高分历史
-        fact"当锚反而是注意力污染——宁可空 anchor。
+        The fallback differs from the main path: embedding unavailable / no
+        model_id / no candidate with a valid embedding → **return []
+        directly**, with **no** degradation to evidence_score ordering.
+        Rationale: the consumer (``_build_related_context_block``) injects the
+        results into the LLM prompt as "semantic anchors"; a "high-score
+        historical fact" with no real semantic link is attention pollution as
+        an anchor — better an empty anchor.
 
-        ⚠️ 代码重用：candidate matrix build / query decode 与 ``_coarse_rank``
-        基本一致；当前两份接受少量重复，等出现第三个 caller 时再抽
-        ``_build_score_matrix`` 私有 helper。
+        ⚠️ Code reuse: the candidate-matrix build / query decode largely mirror
+        ``_coarse_rank``; we accept the small duplication for now and will
+        extract a private ``_build_score_matrix`` helper once a third caller
+        appears.
         """
         if not observations or not query_texts:
             return []

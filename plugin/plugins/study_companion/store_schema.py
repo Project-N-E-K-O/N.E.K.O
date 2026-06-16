@@ -47,6 +47,52 @@ def _validate_column_definition(value: str) -> str:
     return text
 
 
+def _init_notes_fts(self, conn: sqlite3.Connection) -> None:
+    try:
+        conn.execute(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
+                title,
+                content_plain,
+                tags,
+                content='notes',
+                content_rowid='rowid'
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes BEGIN
+                INSERT INTO notes_fts(rowid, title, content_plain, tags)
+                VALUES (new.rowid, new.title, new.content_plain, new.tags);
+            END
+            """
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
+                INSERT INTO notes_fts(notes_fts, rowid, title, content_plain, tags)
+                VALUES ('delete', old.rowid, old.title, old.content_plain, old.tags);
+            END
+            """
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes BEGIN
+                INSERT INTO notes_fts(notes_fts, rowid, title, content_plain, tags)
+                VALUES ('delete', old.rowid, old.title, old.content_plain, old.tags);
+                INSERT INTO notes_fts(rowid, title, content_plain, tags)
+                VALUES (new.rowid, new.title, new.content_plain, new.tags);
+            END
+            """
+        )
+    except sqlite3.Error as exc:
+        self._log_warning(
+            "study notes FTS unavailable; falling back to LIKE search: {}",
+            exc,
+        )
+
+
 def _init_db(self) -> None:
     conn = self._require_conn()
     conn.execute(
@@ -154,6 +200,41 @@ def _init_db(self) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS notebooks (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS notes (
+            rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT UNIQUE NOT NULL,
+            notebook_id TEXT REFERENCES notebooks(id) ON DELETE SET NULL,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL,
+            content_plain TEXT NOT NULL,
+            snippet TEXT NOT NULL DEFAULT '',
+            is_ai_generated INTEGER NOT NULL DEFAULT 0,
+            source_type TEXT NOT NULL DEFAULT 'manual',
+            source_ref TEXT NOT NULL DEFAULT '',
+            topic_ids TEXT NOT NULL DEFAULT '[]',
+            tags TEXT NOT NULL DEFAULT '[]',
+            word_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            edited_at TEXT DEFAULT (datetime('now'))
+        )
+        """
+    )
+    _init_notes_fts(self, conn)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS qa_records (
@@ -267,6 +348,15 @@ def _init_db(self) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_contribution_queue_status ON knowledge_contribution_queue(status, updated_at DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_notes_notebook_updated ON notes(notebook_id, updated_at DESC, rowid DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_notes_source ON notes(source_type, source_ref)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_notes_edited ON notes(edited_at DESC, rowid DESC)"
     )
     conn.commit()
 

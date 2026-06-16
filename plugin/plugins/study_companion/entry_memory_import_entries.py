@@ -8,10 +8,12 @@ from .entry_common import (
     _entry_exception_error,
     plugin_entry,
     tr,
+    ui,
 )
 
 
 class _MemoryImportEntriesMixin:
+    @ui.action()
     @plugin_entry(
         id="study_memory_import_words",
         name=tr(

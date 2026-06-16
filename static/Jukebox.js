@@ -106,6 +106,15 @@ window.Jukebox = {
     isMuted: false,
     progressTimer: null,
     isSeeking: false,
+    playbackMode: 'sequence',
+    randomQueue: [],
+    randomQueueIndex: -1,
+    randomQueueExitSongId: null,
+    songSortUnlocked: false,
+    draggedSongId: null,
+    configRevision: null,
+    configPollTimer: null,
+    configPollInFlight: false,
     isOpen: false,
     isHidden: false,
     container: null,
@@ -114,8 +123,11 @@ window.Jukebox = {
     songElements: {},
     tooltipElement: null,
     tooltipTimeout: null,
+    tooltipTarget: null,
+    tooltipTextProvider: null,
     marqueeItems: new Map(),
     marqueeRaf: null,
+    hasCustomWindowSize: false,
     // 窗口拖拽状态
     isDragging: false,
     dragOffset: { x: 0, y: 0 }
@@ -123,18 +135,21 @@ window.Jukebox = {
 
   showTooltip: function(element, text) {
     Jukebox.hideTooltip();
+    Jukebox.State.tooltipTarget = element;
+    Jukebox.State.tooltipTextProvider = text;
     
     Jukebox.State.tooltipTimeout = setTimeout(() => {
+      const tooltipText = typeof text === 'function' ? text() : text;
       if (!Jukebox.State.tooltipElement) {
         const tooltip = document.createElement('div');
         tooltip.className = 'jukebox-tooltip';
-        tooltip.textContent = text;
+        tooltip.textContent = tooltipText;
         document.body.appendChild(tooltip);
         Jukebox.State.tooltipElement = tooltip;
       }
       
       const tooltip = Jukebox.State.tooltipElement;
-      tooltip.textContent = text;
+      tooltip.textContent = tooltipText;
       
       const rect = element.getBoundingClientRect();
       tooltip.style.left = rect.left + rect.width / 2 - tooltip.offsetWidth / 2 + 'px';
@@ -156,11 +171,537 @@ window.Jukebox = {
       Jukebox.State.tooltipElement.remove();
       Jukebox.State.tooltipElement = null;
     }
+    Jukebox.State.tooltipTarget = null;
+    Jukebox.State.tooltipTextProvider = null;
   },
 
   setupTooltip: function(element, text) {
     element.addEventListener('mouseenter', () => Jukebox.showTooltip(element, text));
     element.addEventListener('mouseleave', () => Jukebox.hideTooltip());
+  },
+
+  refreshTooltip: function(element) {
+    if (!Jukebox.State.tooltipElement) return;
+    if (element && Jukebox.State.tooltipTarget !== element) return;
+    const target = Jukebox.State.tooltipTarget;
+    if (!target) return;
+    const provider = Jukebox.State.tooltipTextProvider;
+    const tooltipText = typeof provider === 'function' ? provider() : provider;
+    Jukebox.State.tooltipElement.textContent = tooltipText || '';
+    const rect = target.getBoundingClientRect();
+    Jukebox.State.tooltipElement.style.left = rect.left + rect.width / 2 - Jukebox.State.tooltipElement.offsetWidth / 2 + 'px';
+    Jukebox.State.tooltipElement.style.top = rect.bottom + 6 + 'px';
+  },
+
+  getStorageKey: function(name) {
+    return 'neko.jukebox.' + name;
+  },
+
+  getStoredJson: function(name, fallback) {
+    try {
+      const raw = window.localStorage ? window.localStorage.getItem(Jukebox.getStorageKey(name)) : null;
+      if (!raw) return fallback;
+      return JSON.parse(raw);
+    } catch (error) {
+      console.warn('[Jukebox] 读取本地偏好失败:', name, error);
+      return fallback;
+    }
+  },
+
+  setStoredJson: function(name, value) {
+    try {
+      if (window.localStorage) {
+        window.localStorage.setItem(Jukebox.getStorageKey(name), JSON.stringify(value));
+      }
+    } catch (error) {
+      console.warn('[Jukebox] 保存本地偏好失败:', name, error);
+    }
+  },
+
+  applyStoredWindowSize: function(container) {
+    if (window.__NEKO_JUKEBOX_STANDALONE__ || !container) return;
+
+    const saved = Jukebox.getStoredJson('windowSize', null);
+    if (!saved || typeof saved !== 'object') return;
+
+    const minWidth = 360;
+    const minHeight = 300;
+    const maxWidth = Math.max(minWidth, (window.innerWidth || minWidth) - 16);
+    const maxHeight = Math.max(minHeight, (window.innerHeight || minHeight) - 16);
+    const width = Number(saved.width);
+    const height = Number(saved.height);
+    let applied = false;
+
+    if (Number.isFinite(width) && width >= minWidth) {
+      container.style.width = Math.min(Math.max(width, minWidth), maxWidth) + 'px';
+      applied = true;
+    }
+    if (Number.isFinite(height) && height >= minHeight) {
+      container.style.height = Math.min(Math.max(height, minHeight), maxHeight) + 'px';
+      applied = true;
+    }
+
+    if (applied) {
+      Jukebox.State.hasCustomWindowSize = true;
+    }
+  },
+
+  saveWindowSize: function(container) {
+    if (window.__NEKO_JUKEBOX_STANDALONE__ || !container) return;
+
+    const rect = container.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0) return;
+
+    Jukebox.setStoredJson('windowSize', {
+      width: Math.round(rect.width),
+      height: Math.round(rect.height)
+    });
+  },
+
+  loadPlaybackPreferences: function() {
+    const savedMode = Jukebox.getStoredJson('playbackMode', 'sequence');
+    Jukebox.State.playbackMode = Jukebox.getPlaybackModeOrder().includes(savedMode) ? savedMode : 'sequence';
+  },
+
+  getPlaybackModeOrder: function() {
+    return ['none', 'sequence', 'single', 'random'];
+  },
+
+  setPlaybackMode: function(mode) {
+    const nextMode = Jukebox.getPlaybackModeOrder().includes(mode) ? mode : 'sequence';
+    const previousMode = Jukebox.State.playbackMode;
+    Jukebox.State.playbackMode = nextMode;
+    if (nextMode === 'random' && previousMode !== 'random') {
+      const currentSongId = (Jukebox.State.currentSong ? Jukebox.State.currentSong.id : null)
+        || Jukebox.getCurrentRandomQueueSongId();
+      if (Jukebox.State.randomQueueExitSongId === currentSongId && Jukebox.State.randomQueue.length) {
+        Jukebox.State.randomQueueExitSongId = null;
+        Jukebox.ensureRandomQueueAnchor(currentSongId);
+      } else {
+        Jukebox.resetRandomQueue(currentSongId);
+      }
+    } else if (previousMode === 'random' && nextMode !== 'random') {
+      const activeSongId = Jukebox.State.currentSong ? Jukebox.State.currentSong.id : null;
+      const queuedSongId = !activeSongId ? Jukebox.getCurrentRandomQueueSongId() : null;
+      if (activeSongId && (Jukebox.State.isPlaying || Jukebox.State.isPaused) && Jukebox.State.randomQueue.length) {
+        Jukebox.State.randomQueueExitSongId = activeSongId;
+      } else if (queuedSongId && Jukebox.State.randomQueue.length) {
+        Jukebox.State.randomQueueExitSongId = queuedSongId;
+      } else {
+        Jukebox.clearRandomQueue();
+      }
+    }
+    Jukebox.setStoredJson('playbackMode', nextMode);
+    Jukebox.updatePlaybackModeButtons();
+  },
+
+  cyclePlaybackMode: function() {
+    const modeOrder = Jukebox.getPlaybackModeOrder();
+    const currentIndex = modeOrder.indexOf(Jukebox.State.playbackMode);
+    const nextMode = modeOrder[(currentIndex + 1 + modeOrder.length) % modeOrder.length] || 'sequence';
+    Jukebox.setPlaybackMode(nextMode);
+  },
+
+  getPlaybackModeLabel: function(mode) {
+    if (mode === 'none') return window.t('Jukebox.noAutoNext', '不自动下一首');
+    if (mode === 'single') return window.t('Jukebox.singleLoop', '单曲循环');
+    if (mode === 'random') return window.t('Jukebox.randomPlay', '随机播放');
+    return window.t('Jukebox.sequencePlay', '顺序播放');
+  },
+
+  getPlaybackModeButtonLabel: function() {
+    return `${window.t('Jukebox.switchPlaybackMode', '切换播放模式')}: ${Jukebox.getPlaybackModeLabel(Jukebox.State.playbackMode)}`;
+  },
+
+  getPlaybackModeIcon: function(mode) {
+    if (mode === 'none') {
+      return '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19l5.6-5.6 5.6 5.6 1.4-1.4-5.6-5.6L19 6.4 17.6 5 12 10.6 6.4 5z"/></svg>';
+    }
+    if (mode === 'single') {
+      return '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/><path fill="currentColor" d="M11 9h2v6h-2z"/></svg>';
+    }
+    if (mode === 'sequence') {
+      return '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M4 7h10v2H4V7zm0 4h12v2H4v-2zm0 4h10v2H4v-2zm13.5-8.5L21 10l-3.5 3.5V11H16V9h1.5V6.5z"/></svg>';
+    }
+    return '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M10.6 5.6 9.2 7 6.4 4.2C5.6 3.4 4.6 3 3.5 3H2v2h1.5c.6 0 1.1.2 1.5.6L7.8 8.4 5 11.2c-.4.4-.9.6-1.5.6H2v2h1.5c1.1 0 2.1-.4 2.9-1.2l2.8-2.8 1.4 1.4L8.8 13l5.2 5.2c.8.8 1.8 1.2 2.9 1.2H18v3l4-4-4-4v3h-1.1c-.6 0-1.1-.2-1.5-.6L10.2 9.6l1.8-1.8L10.6 5.6zM18 3v3h-1.1c-1.1 0-2.1.4-2.9 1.2l-1.2 1.2 1.4 1.4 1.2-1.2c.4-.4.9-.6 1.5-.6H18v3l4-4-4-4z"/></svg>';
+  },
+
+  createPlaybackModeButton: function() {
+    const button = document.createElement('button');
+    const mode = Jukebox.State.playbackMode;
+    const label = Jukebox.getPlaybackModeButtonLabel();
+    button.type = 'button';
+    button.className = 'play-btn jukebox-mode-btn active';
+    button.dataset.mode = mode;
+    button.setAttribute('aria-label', label);
+    button.setAttribute('aria-live', 'polite');
+    button.innerHTML = Jukebox.getPlaybackModeIcon(mode);
+    button.removeAttribute('title');
+    Jukebox.setupTooltip(button, () => Jukebox.getPlaybackModeButtonLabel());
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      Jukebox.cyclePlaybackMode();
+    });
+    return button;
+  },
+
+  appendPlaybackModeButtons: function(container) {
+    container.appendChild(Jukebox.createPlaybackModeButton());
+  },
+
+  renderPlaybackControls: function() {
+    const modeContainer = document.getElementById('jukebox-mode-controls');
+    if (modeContainer) {
+      modeContainer.innerHTML = '';
+      Jukebox.appendPlaybackModeButtons(modeContainer);
+    }
+    Jukebox.updateGlobalTransportControls();
+  },
+
+  getGlobalPlayPauseIcon: function() {
+    if (Jukebox.State.isPlaying && !Jukebox.State.isPaused) {
+      return '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>';
+    }
+    return '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>';
+  },
+
+  updateGlobalTransportControls: function() {
+    const playPauseBtn = document.getElementById('jukebox-control-play-pause');
+    if (playPauseBtn) {
+      const isPauseAction = Jukebox.State.isPlaying && !Jukebox.State.isPaused;
+      const label = isPauseAction
+        ? window.t('Jukebox.pause', '暂停')
+        : (Jukebox.State.currentSong && Jukebox.State.isPaused
+          ? window.t('Jukebox.resume', '继续')
+          : window.t('Jukebox.play', '播放'));
+      playPauseBtn.innerHTML = Jukebox.getGlobalPlayPauseIcon();
+      playPauseBtn.setAttribute('aria-label', label);
+      playPauseBtn.title = label;
+      playPauseBtn.classList.toggle('pause-btn', isPauseAction);
+      playPauseBtn.classList.toggle('resume-btn', !isPauseAction && Jukebox.State.currentSong && Jukebox.State.isPaused);
+    }
+  },
+
+  getManualAdjacentSong: function(direction) {
+    const songs = Jukebox.State.songs || [];
+    if (!songs.length) return null;
+    if (!Jukebox.State.currentSong) {
+      return direction === -1 ? songs[songs.length - 1] : songs[0];
+    }
+    const currentIndex = songs.findIndex(song => song.id === Jukebox.State.currentSong.id);
+    if (currentIndex < 0) return direction === -1 ? songs[songs.length - 1] : songs[0];
+    const nextIndex = (currentIndex + direction + songs.length) % songs.length;
+    return songs[nextIndex];
+  },
+
+  findSongById: function(songId) {
+    if (!songId) return null;
+    return (Jukebox.State.songs || []).find(song => song.id === songId) || null;
+  },
+
+  getCurrentRandomQueueSongId: function() {
+    const queue = Jukebox.State.randomQueue || [];
+    const queuedSongId = queue[Jukebox.State.randomQueueIndex];
+    return Jukebox.findSongById(queuedSongId) ? queuedSongId : null;
+  },
+
+  clearRandomQueue: function() {
+    Jukebox.State.randomQueue = [];
+    Jukebox.State.randomQueueIndex = -1;
+    Jukebox.State.randomQueueExitSongId = null;
+  },
+
+  resetRandomQueue: function(anchorSongId) {
+    const anchorSong = Jukebox.findSongById(anchorSongId);
+    if (anchorSong) {
+      Jukebox.State.randomQueue = [anchorSong.id];
+      Jukebox.State.randomQueueIndex = 0;
+      Jukebox.State.randomQueueExitSongId = null;
+      return;
+    }
+    Jukebox.clearRandomQueue();
+  },
+
+  pruneRandomQueue: function(anchorSongId) {
+    const validIds = new Set((Jukebox.State.songs || []).map(song => song.id));
+    if (anchorSongId && !validIds.has(anchorSongId)) {
+      Jukebox.clearRandomQueue();
+      return false;
+    }
+
+    const queue = Jukebox.State.randomQueue || [];
+    const currentQueueIndex = Jukebox.State.randomQueueIndex;
+    const filteredQueue = [];
+    let retainedQueueIndex = -1;
+    queue.forEach((songId, queueIndex) => {
+      if (!validIds.has(songId)) return;
+      if (queueIndex === currentQueueIndex) {
+        retainedQueueIndex = filteredQueue.length;
+      }
+      filteredQueue.push(songId);
+    });
+    Jukebox.State.randomQueue = filteredQueue;
+
+    if (!anchorSongId) {
+      if (!filteredQueue.length) {
+        Jukebox.State.randomQueueIndex = -1;
+        return false;
+      }
+      if (retainedQueueIndex !== -1) {
+        Jukebox.State.randomQueueIndex = retainedQueueIndex;
+      } else if (currentQueueIndex < 0 || currentQueueIndex >= filteredQueue.length) {
+        Jukebox.State.randomQueueIndex = filteredQueue.length - 1;
+      } else {
+        Jukebox.State.randomQueueIndex = currentQueueIndex;
+      }
+      return true;
+    }
+
+    if (retainedQueueIndex !== -1 && filteredQueue[retainedQueueIndex] === anchorSongId) {
+      Jukebox.State.randomQueueIndex = retainedQueueIndex;
+      return true;
+    }
+
+    const anchorIndex = filteredQueue.lastIndexOf(anchorSongId);
+    if (anchorIndex === -1) {
+      Jukebox.State.randomQueue = [anchorSongId];
+      Jukebox.State.randomQueueIndex = 0;
+      return true;
+    }
+
+    Jukebox.State.randomQueueIndex = anchorIndex;
+    return true;
+  },
+
+  syncRandomQueueWithSongs: function() {
+    if (Jukebox.State.playbackMode !== 'random') {
+      const pendingSongId = Jukebox.State.randomQueueExitSongId;
+      const currentSongId = (Jukebox.State.currentSong ? Jukebox.State.currentSong.id : null)
+        || Jukebox.getCurrentRandomQueueSongId();
+      if (!pendingSongId || pendingSongId !== currentSongId) {
+        Jukebox.clearRandomQueue();
+      } else {
+        Jukebox.pruneRandomQueue(pendingSongId);
+      }
+      return;
+    }
+
+    const currentSongId = (Jukebox.State.currentSong ? Jukebox.State.currentSong.id : null)
+      || Jukebox.getCurrentRandomQueueSongId()
+      || null;
+    if (!currentSongId || !Jukebox.pruneRandomQueue(currentSongId)) {
+      Jukebox.clearRandomQueue();
+      return;
+    }
+
+    Jukebox.ensureRandomQueueAnchor(currentSongId);
+  },
+
+  ensureRandomQueueAnchor: function(songId) {
+    if (!Jukebox.findSongById(songId)) {
+      Jukebox.clearRandomQueue();
+      return;
+    }
+
+    const queue = Jukebox.State.randomQueue || [];
+    const index = Jukebox.State.randomQueueIndex;
+    if (!queue.length || index < 0 || index >= queue.length || queue[index] !== songId) {
+      Jukebox.resetRandomQueue(songId);
+    }
+  },
+
+  expireRandomQueueIfPendingSongEnded: function(endedSongId) {
+    if (Jukebox.State.playbackMode === 'random') return;
+    if (Jukebox.State.randomQueueExitSongId && Jukebox.State.randomQueueExitSongId === endedSongId) {
+      Jukebox.clearRandomQueue();
+    }
+  },
+
+  pickRandomSongExcluding: function(excludedIds) {
+    const songs = Jukebox.State.songs || [];
+    if (!songs.length) return null;
+    const excludedSet = new Set((Array.isArray(excludedIds) ? excludedIds : [excludedIds]).filter(Boolean));
+    let candidates = songs.filter(song => !excludedSet.has(song.id));
+    if (!candidates.length && songs.length === 1) {
+      candidates = songs;
+    }
+    if (!candidates.length) return null;
+    return candidates[Math.floor(Math.random() * candidates.length)];
+  },
+
+  getRandomAdjacentSong: function(direction, anchorSongId) {
+    const songs = Jukebox.State.songs || [];
+    if (!songs.length) {
+      Jukebox.clearRandomQueue();
+      return null;
+    }
+
+    const queue = Jukebox.State.randomQueue || [];
+    const queuedSongId = queue[Jukebox.State.randomQueueIndex];
+    const currentSongId = anchorSongId
+      || (Jukebox.findSongById(queuedSongId) ? queuedSongId : null)
+      || (Jukebox.State.currentSong ? Jukebox.State.currentSong.id : null)
+      || null;
+
+    if (currentSongId) {
+      Jukebox.ensureRandomQueueAnchor(currentSongId);
+    } else if (!Jukebox.State.randomQueue.length) {
+      if (direction < 0) return null;
+      const firstRandomSong = Jukebox.pickRandomSongExcluding(null);
+      if (!firstRandomSong) return null;
+      Jukebox.State.randomQueue = [firstRandomSong.id];
+      Jukebox.State.randomQueueIndex = 0;
+      return firstRandomSong;
+    }
+
+    if (direction < 0) {
+      if (Jukebox.State.randomQueueIndex <= 0) return null;
+      Jukebox.State.randomQueueIndex -= 1;
+      return Jukebox.findSongById(Jukebox.State.randomQueue[Jukebox.State.randomQueueIndex]);
+    }
+
+    if (Jukebox.State.randomQueueIndex < Jukebox.State.randomQueue.length - 1) {
+      Jukebox.State.randomQueueIndex += 1;
+      return Jukebox.findSongById(Jukebox.State.randomQueue[Jukebox.State.randomQueueIndex]);
+    }
+
+    const staleCurrentSongId = Jukebox.State.currentSong ? Jukebox.State.currentSong.id : null;
+    const excludedIds = [currentSongId];
+    if (staleCurrentSongId && staleCurrentSongId !== currentSongId) {
+      excludedIds.push(staleCurrentSongId);
+    }
+    const nextRandomSong = Jukebox.pickRandomSongExcluding(excludedIds);
+    if (!nextRandomSong) return null;
+    Jukebox.State.randomQueue.push(nextRandomSong.id);
+    Jukebox.State.randomQueueIndex = Jukebox.State.randomQueue.length - 1;
+    return nextRandomSong;
+  },
+
+  playAdjacentSong: function(direction) {
+    const nextSong = Jukebox.State.playbackMode === 'random'
+      ? Jukebox.getRandomAdjacentSong(direction)
+      : Jukebox.getManualAdjacentSong(direction);
+    if (nextSong) {
+      Jukebox.playSong(nextSong.id, { fromQueue: Jukebox.State.playbackMode === 'random' });
+    }
+  },
+
+  toggleGlobalPlayPause: function() {
+    if (Jukebox.State.currentSong && (Jukebox.State.isPlaying || Jukebox.State.isPaused || Jukebox.State.isVMDPlaying)) {
+      Jukebox.togglePause();
+      return;
+    }
+    const firstSong = (Jukebox.State.songs || [])[0];
+    if (firstSong) {
+      Jukebox.playSong(firstSong.id);
+    }
+  },
+
+  updatePlaybackModeButtons: function(root) {
+    const scope = root || document;
+    scope.querySelectorAll('.jukebox-mode-btn').forEach((button) => {
+      const mode = Jukebox.State.playbackMode;
+      const label = Jukebox.getPlaybackModeButtonLabel();
+      button.dataset.mode = mode;
+      button.classList.add('active');
+      button.setAttribute('aria-label', label);
+      button.removeAttribute('title');
+      button.innerHTML = Jukebox.getPlaybackModeIcon(mode);
+      Jukebox.refreshTooltip(button);
+    });
+  },
+
+  getSavedSongOrder: function() {
+    const saved = Jukebox.getStoredJson('songOrder', []);
+    return Array.isArray(saved) ? saved.filter(id => typeof id === 'string') : [];
+  },
+
+  applySavedSongOrder: function(songs) {
+    const savedOrder = Jukebox.getSavedSongOrder();
+    if (!savedOrder.length) return songs;
+    const byId = new Map(songs.map(song => [song.id, song]));
+    const ordered = [];
+    savedOrder.forEach((id) => {
+      if (byId.has(id)) {
+        ordered.push(byId.get(id));
+        byId.delete(id);
+      }
+    });
+    return ordered.concat(Array.from(byId.values()));
+  },
+
+  saveSongOrder: function() {
+    Jukebox.setStoredJson('songOrder', Jukebox.State.songs.map(song => song.id));
+  },
+
+  moveSongInPlaylist: function(draggedId, targetId, placeAfter) {
+    if (!draggedId || !targetId || draggedId === targetId) return false;
+    const fromIndex = Jukebox.State.songs.findIndex(song => song.id === draggedId);
+    const targetIndex = Jukebox.State.songs.findIndex(song => song.id === targetId);
+    if (fromIndex < 0 || targetIndex < 0) return false;
+
+    const [moved] = Jukebox.State.songs.splice(fromIndex, 1);
+    let insertIndex = Jukebox.State.songs.findIndex(song => song.id === targetId);
+    if (insertIndex < 0) insertIndex = Jukebox.State.songs.length;
+    if (placeAfter) insertIndex += 1;
+    Jukebox.State.songs.splice(insertIndex, 0, moved);
+    Jukebox.saveSongOrder();
+    Jukebox.renderList();
+    return true;
+  },
+
+  isSongSortUnlocked: function() {
+    return Jukebox.State.songSortUnlocked === true;
+  },
+
+  getSongSortLockLabel: function() {
+    return Jukebox.isSongSortUnlocked()
+      ? window.t('Jukebox.lockSongSort', '锁定歌曲排序')
+      : window.t('Jukebox.unlockSongSort', '解锁歌曲排序');
+  },
+
+  getSongSortLockIcon: function() {
+    if (Jukebox.isSongSortUnlocked()) {
+      return '<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M7 10V7a5 5 0 0 1 9.6-1.9l-1.9.8A3 3 0 0 0 9 7v3h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2zm0 2v7h10v-7H7zm4 2h2v3h-2v-3z"/></svg>';
+    }
+    return '<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M7 10V7a5 5 0 0 1 10 0v3h1a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h1zm2 0h6V7a3 3 0 0 0-6 0v3zm-3 2v7h12v-7H6zm5 2h2v3h-2v-3z"/></svg>';
+  },
+
+  toggleSongSortLock: function(event) {
+    if (event) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+    Jukebox.State.songSortUnlocked = !Jukebox.State.songSortUnlocked;
+    if (!Jukebox.State.songSortUnlocked) {
+      Jukebox.clearSongDragState();
+    }
+    Jukebox.updateSongSortLockControls();
+  },
+
+  updateSongSortLockControls: function(root) {
+    const scope = root || document;
+    const unlocked = Jukebox.isSongSortUnlocked();
+    const label = Jukebox.getSongSortLockLabel();
+    scope.querySelectorAll('.jukebox-sort-lock-btn').forEach((button) => {
+      button.classList.toggle('unlocked', unlocked);
+      button.setAttribute('aria-pressed', unlocked ? 'true' : 'false');
+      button.setAttribute('aria-label', label);
+      button.title = label;
+      button.innerHTML = Jukebox.getSongSortLockIcon();
+    });
+    scope.querySelectorAll('#jukebox-song-list tr[data-song-id]').forEach((row) => {
+      row.draggable = unlocked;
+      row.classList.toggle('jukebox-row-sort-unlocked', unlocked);
+    });
+  },
+
+  clearSongDragState: function() {
+    document.querySelectorAll('#jukebox-song-list tr').forEach((row) => {
+      row.classList.remove('jukebox-row-dragging', 'jukebox-row-drop-before', 'jukebox-row-drop-after');
+    });
+    Jukebox.State.draggedSongId = null;
   },
 
   easeInOutMarquee: function(t) {
@@ -679,11 +1220,13 @@ window.Jukebox = {
         `}
         <div class="sam-header">
           <span class="sam-title">${window.t('Jukebox.managerTitle', '管理器')}</span>
+          <span class="sam-drag-fill sam-drag-fill-left" aria-hidden="true"></span>
           <div class="sam-tabs">
             <button class="sam-tab active" data-tab="songs">${window.t('Jukebox.songs', '歌曲')}</button>
             <button class="sam-tab" data-tab="actions">${window.t('Jukebox.actions', '动作')}</button>
             <button class="sam-tab" data-tab="bindings">${window.t('Jukebox.bindings', '绑定')}</button>
           </div>
+          <span class="sam-drag-fill sam-drag-fill-right" aria-hidden="true"></span>
           <button class="sam-close-btn" onclick="Jukebox.SongActionManager.hide()" title="${window.t('Jukebox.close', '关闭')}">×</button>
         </div>
         <div class="sam-content">
@@ -2715,10 +3258,7 @@ window.Jukebox = {
 
     async uploadSongs(files) {
       try {
-        const metadata = files.map(f => ({
-          name: f.name.replace(/\.[^/.]+$/, ''),
-          artist: '未知'
-        }));
+        const metadata = files.map(() => ({}));
         const result = await this.api.uploadSongs(files, metadata);
         console.log('[SongActionManager] 上传歌曲成功:', result);
         await this.load();
@@ -3171,7 +3711,7 @@ window.Jukebox = {
           z-index: 100010;
           background: ${C.panel.background};
           color: ${C.panel.color};
-          padding: 15px;
+          padding: 0;
           border-radius: 12px;
           width: 450px;
           height: min(500px, calc(100vh - 24px));
@@ -3186,7 +3726,7 @@ window.Jukebox = {
           border: 2px solid transparent;
           transition: border-color 0.3s, box-shadow 0.3s;
           pointer-events: auto;
-          cursor: grab;
+          cursor: default;
           user-select: none;
           -webkit-user-select: none;
         }
@@ -3205,10 +3745,6 @@ window.Jukebox = {
         .sam-resize-handle[data-dir="ne"] { top: -3px; right: -3px; width: 18px; height: 18px; cursor: nesw-resize; }
         .sam-resize-handle[data-dir="sw"] { bottom: -3px; left: -3px; width: 18px; height: 18px; cursor: nesw-resize; }
         .sam-resize-handle[data-dir="se"] { bottom: -3px; right: -3px; width: 18px; height: 18px; cursor: nwse-resize; }
-
-        .jukebox-sam-panel:active {
-          cursor: grabbing;
-        }
 
         .jukebox-sam-panel button,
         .jukebox-sam-panel a {
@@ -3234,9 +3770,31 @@ window.Jukebox = {
           justify-content: space-between;
           align-items: center;
           margin-bottom: 10px;
-          padding-bottom: 10px;
+          padding: 15px 15px 10px;
           border-bottom: 1px solid ${C.tabs.borderBottom};
           gap: 10px;
+          cursor: grab;
+          touch-action: none;
+        }
+
+        .sam-title,
+        .sam-drag-fill {
+          cursor: grab;
+        }
+
+        .sam-header:active,
+        .sam-title:active,
+        .sam-drag-fill:active,
+        body.sam-panel-dragging .sam-header,
+        body.sam-panel-dragging .sam-title,
+        body.sam-panel-dragging .sam-drag-fill {
+          cursor: grabbing;
+        }
+
+        .sam-drag-fill {
+          align-self: stretch;
+          flex: 1 1 24px;
+          min-width: 16px;
         }
 
         body.sam-panel-dragging {
@@ -3280,7 +3838,7 @@ window.Jukebox = {
         .sam-tabs {
           display: flex;
           gap: 5px;
-          flex: 1;
+          flex: 0 0 auto;
           justify-content: center;
         }
 
@@ -3308,6 +3866,7 @@ window.Jukebox = {
           flex: 1;
           overflow: hidden;
           min-height: 0;
+          padding: 0 15px;
         }
 
         .sam-panel {
@@ -3392,7 +3951,7 @@ window.Jukebox = {
           background: ${C.item.background};
           padding: 10px;
           border-radius: 6px;
-          cursor: grab;
+          cursor: default;
           transition: all 0.3s;
         }
 
@@ -4458,6 +5017,7 @@ window.Jukebox = {
   
   init: function() {
     console.log('[Jukebox]', window.t('Jukebox.initialized', '初始化点歌台...'));
+    Jukebox.loadPlaybackPreferences();
 
     window.Jukebox_playSong = Jukebox.playSong;
     window.Jukebox_close = Jukebox.close;
@@ -4599,6 +5159,8 @@ window.Jukebox = {
       }
     } catch (e) {}
 
+    Jukebox.startConfigPolling();
+
     const jukeboxButton = document.getElementById('jukeboxButton');
     if (jukeboxButton) {
       jukeboxButton.classList.add('active');
@@ -4671,6 +5233,9 @@ window.Jukebox = {
     }
 
     if (Jukebox.State.container) {
+      if (Jukebox.State.hasCustomWindowSize) {
+        Jukebox.saveWindowSize(Jukebox.State.container.querySelector('.jukebox-container'));
+      }
       Jukebox.State.container.remove();
       Jukebox.State.container = null;
     }
@@ -4682,6 +5247,9 @@ window.Jukebox = {
 
     Jukebox.State.isOpen = false;
     Jukebox.State.isHidden = false;
+    Jukebox.State.hasCustomWindowSize = false;
+    Jukebox.stopConfigPolling();
+    Jukebox.State.configRevision = null;
 
     // 清理 BroadcastChannel
     try {
@@ -4728,6 +5296,9 @@ window.Jukebox = {
     }
 
     if (Jukebox.State.container) {
+      if (Jukebox.State.hasCustomWindowSize) {
+        Jukebox.saveWindowSize(Jukebox.State.container.querySelector('.jukebox-container'));
+      }
       Jukebox.State.container.remove();
       Jukebox.State.container = null;
     }
@@ -4744,6 +5315,7 @@ window.Jukebox = {
     
     Jukebox.State.isOpen = false;
     Jukebox.State.isHidden = false;
+    Jukebox.State.hasCustomWindowSize = false;
     Jukebox.State.songs = [];
     Jukebox.State.songElements = {}; // 清空元素映射
 
@@ -4751,6 +5323,8 @@ window.Jukebox = {
   },
   
   buildUI: function() {
+    Jukebox.loadPlaybackPreferences();
+
     const wrapper = document.createElement('div');
     wrapper.className = 'jukebox-wrapper';
     
@@ -4758,6 +5332,7 @@ window.Jukebox = {
     
     const jukeboxContainer = document.createElement('div');
     jukeboxContainer.className = 'jukebox-container';
+    Jukebox.applyStoredWindowSize(jukeboxContainer);
     jukeboxContainer.innerHTML = `
       <div class="jukebox-drag-overlay"></div>
       <div class="jukebox-header">
@@ -4765,6 +5340,7 @@ window.Jukebox = {
           <h3>${window.t('Jukebox.title', '点歌台')}</h3>
           <span id="jukebox-status-text" class="jukebox-status-text">${window.t('Jukebox.ready', '准备就绪')}</span>
         </div>
+        <div class="jukebox-header-drag-fill" aria-hidden="true"></div>
         <div class="jukebox-header-buttons">
           <button class="jukebox-settings" onclick="Jukebox.SongActionManager.toggle()" title="${window.t('Jukebox.manager', '管理器')}">⚙</button>
           <button class="jukebox-minimize" onclick="Jukebox_hide()" title="${window.t('Jukebox.minimize', '最小化')}">−</button>
@@ -4806,9 +5382,22 @@ window.Jukebox = {
       </div>
       <div class="jukebox-content">
         <table class="jukebox-table">
+          <colgroup>
+            <col class="jukebox-col-sequence">
+            <col class="jukebox-col-song">
+            <col class="jukebox-col-artist">
+            <col class="jukebox-col-action">
+          </colgroup>
           <thead>
             <tr>
-              <th>${window.t('Jukebox.sequence', '序号')}</th>
+              <th class="jukebox-sequence-th">
+                <div class="jukebox-sequence-header">
+                  <span>${window.t('Jukebox.sequence', '序号')}</span>
+                  <button type="button" class="jukebox-sort-lock-btn" onclick="Jukebox.toggleSongSortLock(event)" title="${window.t('Jukebox.unlockSongSort', '解锁歌曲排序')}" aria-label="${window.t('Jukebox.unlockSongSort', '解锁歌曲排序')}" aria-pressed="false">
+                    ${Jukebox.getSongSortLockIcon()}
+                  </button>
+                </div>
+              </th>
               <th>${window.t('Jukebox.song', '歌曲')}</th>
               <th>${window.t('Jukebox.artist', '艺术家')}</th>
               <th>${window.t('Jukebox.action', '操作')}</th>
@@ -4827,21 +5416,36 @@ window.Jukebox = {
           <input type="range" id="jukebox-progress-slider" min="0" max="100" step="0.1" value="0">
           <span id="jukebox-time-total">0:00</span>
         </div>
-        <div class="jukebox-volume-wrapper">
-          <button class="jukebox-speaker-btn" id="jukebox-speaker-btn" title="${window.t('Jukebox.mute', '静音')}">
-            <svg class="speaker-icon" viewBox="0 0 24 24" width="20" height="20">
-              <path fill="${Jukebox.Config.volume.iconColor}" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
-            </svg>
-            <svg class="speaker-muted-icon" viewBox="0 0 24 24" width="20" height="20" style="display:none;">
-              <path fill="${Jukebox.Config.volume.iconColor}" d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>
-            </svg>
-          </button>
-          <div class="jukebox-volume-popup">
-            <div class="jukebox-volume-slider-container">
-              <div class="jukebox-volume-track"></div>
-              <input type="range" id="jukebox-volume-slider" min="0" max="1" step="0.01" value="1" oninput="Jukebox_updateVolume(this.value)" onchange="Jukebox_logVolumeChange(this.value)">
+        <div class="jukebox-playback-controls">
+          <div id="jukebox-mode-controls" class="jukebox-mode-controls" aria-label="${window.t('Jukebox.switchPlaybackMode', '切换播放模式')}"></div>
+          <div class="jukebox-control-divider" aria-hidden="true"></div>
+          <div class="jukebox-transport-controls">
+            <button type="button" class="play-btn jukebox-transport-btn" id="jukebox-control-prev" onclick="Jukebox.playAdjacentSong(-1)" title="${window.t('Jukebox.previousSong', '上一首')}" aria-label="${window.t('Jukebox.previousSong', '上一首')}">
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M6 6h2v12H6V6zm3 6 9 6V6l-9 6z"/></svg>
+            </button>
+            <button type="button" class="play-btn jukebox-transport-btn jukebox-play-pause-btn" id="jukebox-control-play-pause" onclick="Jukebox.toggleGlobalPlayPause()" title="${window.t('Jukebox.play', '播放')}" aria-label="${window.t('Jukebox.play', '播放')}">
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+            </button>
+            <button type="button" class="play-btn jukebox-transport-btn" id="jukebox-control-next" onclick="Jukebox.playAdjacentSong(1)" title="${window.t('Jukebox.nextSong', '下一首')}" aria-label="${window.t('Jukebox.nextSong', '下一首')}">
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M16 6h2v12h-2V6zM6 18l9-6-9-6v12z"/></svg>
+            </button>
+          </div>
+          <div class="jukebox-volume-wrapper">
+            <button class="jukebox-speaker-btn" id="jukebox-speaker-btn" title="${window.t('Jukebox.mute', '静音')}">
+              <svg class="speaker-icon" viewBox="0 0 24 24" width="20" height="20">
+                <path fill="${Jukebox.Config.volume.iconColor}" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
+              </svg>
+              <svg class="speaker-muted-icon" viewBox="0 0 24 24" width="20" height="20" style="display:none;">
+                <path fill="${Jukebox.Config.volume.iconColor}" d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>
+              </svg>
+            </button>
+            <div class="jukebox-volume-popup">
+              <div class="jukebox-volume-slider-container">
+                <div class="jukebox-volume-track"></div>
+                <input type="range" id="jukebox-volume-slider" min="0" max="1" step="0.01" value="1" oninput="Jukebox_updateVolume(this.value)" onchange="Jukebox_logVolumeChange(this.value)">
+              </div>
+              <span id="jukebox-volume-value" class="jukebox-volume-value-editable">100%</span>
             </div>
-            <span id="jukebox-volume-value" class="jukebox-volume-value-editable">100%</span>
           </div>
         </div>
       </div>
@@ -4862,6 +5466,7 @@ window.Jukebox = {
     }
 
     Jukebox.injectStyles();
+    Jukebox.renderPlaybackControls();
 
     // Standalone 点歌台的桌面端拖拽/缩放统一交给 static/jukebox-standalone.js，
     // 避免在 open() 首帧先写入旧的 app-region 热区，导致标题按钮命中缓存异常。
@@ -4870,9 +5475,17 @@ window.Jukebox = {
   
   // 窗口拖拽功能
   bindWindowDrag: function(wrapper, container) {
+    if (Jukebox.State._dragCleanup) {
+      Jukebox.State._dragCleanup();
+      Jukebox.State._dragCleanup = null;
+    }
+
+    const dragRoot = container.querySelector('.jukebox-header');
+    if (!dragRoot) return;
+
     const onMouseDown = (e) => {
-      // 仅忽略具体交互元素，其余区域均可拖动
-      if (e.target.closest('button, input, a, select, textarea, .jukebox-header-buttons, .jukebox-table tbody tr, .sam-panel, .jukebox-controls-row, .jukebox-resize-handle')) return;
+      // 只允许标题栏拖动；标题栏按钮仍保持可点击。
+      if (e.target.closest('button, input, a, select, textarea, .jukebox-header-buttons')) return;
       
       e.preventDefault();
       const clientX = e.touches ? e.touches[0].clientX : e.clientX;
@@ -4925,8 +5538,8 @@ window.Jukebox = {
       document.body.classList.remove('jukebox-dragging');
     };
 
-    container.addEventListener('mousedown', onMouseDown);
-    container.addEventListener('touchstart', onMouseDown, { passive: false });
+    dragRoot.addEventListener('mousedown', onMouseDown);
+    dragRoot.addEventListener('touchstart', onMouseDown, { passive: false });
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('touchmove', onMouseMove, { passive: false });
     document.addEventListener('mouseup', onMouseUp);
@@ -4936,6 +5549,8 @@ window.Jukebox = {
 
     // 保存引用，方便 destroy 时清理
     Jukebox.State._dragCleanup = () => {
+      dragRoot.removeEventListener('mousedown', onMouseDown);
+      dragRoot.removeEventListener('touchstart', onMouseDown);
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('touchmove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
@@ -4970,8 +5585,11 @@ window.Jukebox = {
       const computed = window.getComputedStyle(container);
       const widthExtras = startRect.width - parseFloat(computed.width);
       const heightExtras = startRect.height - parseFloat(computed.height);
+      const initialContentWidth = Math.max(0, startRect.width - widthExtras);
+      const initialContentHeight = Math.max(0, startRect.height - heightExtras);
       const maxWidth = Math.max(MIN_WIDTH, window.innerWidth - 16);
       const maxHeight = Math.max(MIN_HEIGHT, window.innerHeight - 16);
+      let didResize = false;
 
       document.body.classList.add('jukebox-resizing');
 
@@ -5001,8 +5619,15 @@ window.Jukebox = {
           newTop = startTop + (startRect.height - newOuterH);
         }
 
-        container.style.width = Math.max(0, newOuterW - widthExtras) + 'px';
-        container.style.height = Math.max(0, newOuterH - heightExtras) + 'px';
+        const nextWidth = Math.max(0, newOuterW - widthExtras);
+        const nextHeight = Math.max(0, newOuterH - heightExtras);
+        container.style.width = nextWidth + 'px';
+        container.style.height = nextHeight + 'px';
+        if (!didResize) {
+          didResize =
+            Math.abs(nextWidth - initialContentWidth) > 0.5 ||
+            Math.abs(nextHeight - initialContentHeight) > 0.5;
+        }
 
         const wrapper = container.parentElement;
         if (wrapper && (dir.includes('w') || dir.includes('n'))) {
@@ -5014,6 +5639,10 @@ window.Jukebox = {
       };
 
       const cleanup = () => {
+        if (didResize) {
+          Jukebox.State.hasCustomWindowSize = true;
+          Jukebox.saveWindowSize(container);
+        }
         document.body.classList.remove('jukebox-resizing');
         document.removeEventListener('mousemove', onPointerMove);
         document.removeEventListener('touchmove', onPointerMove);
@@ -5048,12 +5677,19 @@ window.Jukebox = {
 
   // 管理器面板拖拽功能
   bindPanelDrag: function(panel) {
+    if (Jukebox.SongActionManager._panelDragCleanup) {
+      Jukebox.SongActionManager._panelDragCleanup();
+      Jukebox.SongActionManager._panelDragCleanup = null;
+    }
+
     let isDragging = false;
     let dragOffset = { x: 0, y: 0 };
+    const dragRoot = panel.querySelector('.sam-header');
+    if (!dragRoot) return;
 
     const onMouseDown = (e) => {
       // 忽略所有交互元素
-      if (e.target.closest('button, input, a, select, textarea, .sam-close-btn, .sam-tab, .sam-content, .sam-checkbox, .sam-click-add, .sam-resize-handle')) return;
+      if (e.target.closest('button, input, a, select, textarea, .sam-close-btn, .sam-tab, .sam-checkbox, .sam-resize-handle')) return;
 
       e.preventDefault();
       const clientX = e.touches ? e.touches[0].clientX : e.clientX;
@@ -5102,8 +5738,8 @@ window.Jukebox = {
       document.body.classList.remove('sam-panel-dragging');
     };
 
-    panel.addEventListener('mousedown', onMouseDown);
-    panel.addEventListener('touchstart', onMouseDown, { passive: false });
+    dragRoot.addEventListener('mousedown', onMouseDown);
+    dragRoot.addEventListener('touchstart', onMouseDown, { passive: false });
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('touchmove', onMouseMove, { passive: false });
     document.addEventListener('mouseup', onMouseUp);
@@ -5112,6 +5748,8 @@ window.Jukebox = {
     window.addEventListener('blur', onMouseUp);
     
     Jukebox.SongActionManager._panelDragCleanup = () => {
+      dragRoot.removeEventListener('mousedown', onMouseDown);
+      dragRoot.removeEventListener('touchstart', onMouseDown);
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('touchmove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
@@ -5255,18 +5893,36 @@ window.Jukebox = {
         pointer-events: auto;
       }
 
+      html.neko-jukebox-standalone-host,
+      html.neko-jukebox-standalone-host body,
+      html[data-theme="dark"].neko-jukebox-standalone-host,
+      html[data-theme="dark"].neko-jukebox-standalone-host body.neko-jukebox-standalone-page {
+        background: ${Jukebox.Config.container.background} !important;
+      }
+
+      body.neko-jukebox-standalone-page .jukebox-wrapper {
+        position: fixed !important;
+        inset: 0 !important;
+        bottom: 0 !important;
+        right: 0 !important;
+      }
+
       ${Jukebox.SongActionManager.getStyles()}
 
       .jukebox-container {
         width: ${Jukebox.Config.width};
+        height: calc(100vh - 40px);
+        max-height: calc(100vh - 40px);
         background: ${Jukebox.Config.container.background};
         border-radius: 12px;
         box-shadow: ${Jukebox.Config.container.boxShadow};
         color: ${Jukebox.Config.container.color};
-        padding: 20px;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         transition: transform 0.3s ease, opacity 0.3s ease;
-        overflow: auto;
+        overflow: hidden;
         opacity: 0;
         transform: translateY(20px);
         pointer-events: auto;
@@ -5288,18 +5944,47 @@ window.Jukebox = {
         pointer-events: none;
         transform: translateY(20px);
       }
+
+      body.neko-jukebox-standalone-page .jukebox-container,
+      body.neko-jukebox-standalone-page .jukebox-container.open,
+      body.neko-jukebox-standalone-page .jukebox-container.hidden {
+        width: 100% !important;
+        height: 100% !important;
+        transition: none !important;
+        transform: none !important;
+      }
       
       .jukebox-header {
         display: flex;
+        flex: 0 0 auto;
         justify-content: space-between;
         align-items: center;
-        margin-bottom: 20px;
-        padding-bottom: 10px;
+        margin-bottom: 12px;
+        padding: 20px 20px 10px;
         border-bottom: ${Jukebox.Config.header.borderBottom};
         cursor: grab;
         user-select: none;
         -webkit-user-select: none;
         position: relative;
+      }
+
+      .jukebox-header-left,
+      .jukebox-header-drag-fill {
+        cursor: grab;
+      }
+
+      .jukebox-header-left:active,
+      .jukebox-header-drag-fill:active,
+      body.jukebox-dragging .jukebox-header,
+      body.jukebox-dragging .jukebox-header-left,
+      body.jukebox-dragging .jukebox-header-drag-fill {
+        cursor: grabbing;
+      }
+
+      .jukebox-header-drag-fill {
+        align-self: stretch;
+        flex: 1 1 24px;
+        min-width: 16px;
       }
 
       /* 专属拖拽层：与按钮是兄弟关系而非父子关系，规避 Chromium
@@ -5310,9 +5995,11 @@ window.Jukebox = {
         inset: 0;
         z-index: 0;
         border-radius: inherit;
+        pointer-events: none;
       }
 
       .jukebox-header-left,
+      .jukebox-header-drag-fill,
       .jukebox-header-buttons,
       .jukebox-content,
       .jukebox-controls-row,
@@ -5321,10 +6008,6 @@ window.Jukebox = {
       .sam-panel {
         position: relative;
         z-index: 1;
-      }
-
-      .jukebox-container:active {
-        cursor: grabbing;
       }
 
       body.jukebox-dragging {
@@ -5403,7 +6086,7 @@ window.Jukebox = {
       }
 
       .jukebox-calibration-section {
-        margin-bottom: 12px;
+        margin: 0 20px 12px;
       }
 
       .jukebox-calibration-toggle {
@@ -5522,7 +6205,7 @@ window.Jukebox = {
         border: ${Jukebox.Config.notice.border};
         border-radius: 8px;
         padding: 8px 12px;
-        margin-bottom: 12px;
+        margin: 0 20px 12px;
         font-size: 12.5px;
         line-height: 1.6;
       }
@@ -5592,10 +6275,10 @@ window.Jukebox = {
       }
       
       .jukebox-content {
-        flex: 1;
+        flex: 1 1 auto;
         overflow-y: auto;
         min-height: 0;
-        max-height: 270px;
+        margin: 0 20px;
         scrollbar-width: none;
         -ms-overflow-style: none;
       }
@@ -5612,6 +6295,22 @@ window.Jukebox = {
         overflow: hidden;
         table-layout: fixed;
       }
+
+      .jukebox-table col.jukebox-col-sequence {
+        width: 66px;
+      }
+
+      .jukebox-table col.jukebox-col-song {
+        width: auto;
+      }
+
+      .jukebox-table col.jukebox-col-artist {
+        width: 118px;
+      }
+
+      .jukebox-table col.jukebox-col-action {
+        width: 104px;
+      }
       
       .jukebox-table thead {
         background: ${Jukebox.Config.table.headerBg};
@@ -5624,6 +6323,65 @@ window.Jukebox = {
         font-size: 14px;
         color: ${Jukebox.Config.table.headerColor};
       }
+
+      .jukebox-table th:not(:last-child) {
+        background-image: linear-gradient(
+          to bottom,
+          transparent 18%,
+          rgba(255, 255, 255, 0.22) 18%,
+          rgba(255, 255, 255, 0.22) 82%,
+          transparent 82%
+        );
+        background-repeat: no-repeat;
+        background-position: right center;
+        background-size: 1px 100%;
+      }
+
+      .jukebox-table th.jukebox-sequence-th {
+        padding-left: 9px;
+        padding-right: 7px;
+      }
+
+      .jukebox-sequence-header {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
+        white-space: nowrap;
+        min-width: 0;
+      }
+
+      .jukebox-sort-lock-btn {
+        width: 21px;
+        height: 21px;
+        flex: 0 0 21px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        border: none;
+        border-radius: 4px;
+        color: rgba(255, 255, 255, 0.82);
+        background: rgba(255, 255, 255, 0.12);
+        cursor: pointer;
+        line-height: 1;
+        transition: background 0.18s ease, color 0.18s ease, transform 0.18s ease;
+      }
+
+      .jukebox-sort-lock-btn:hover,
+      .jukebox-sort-lock-btn.unlocked {
+        color: rgba(255, 255, 255, 1);
+        background: rgba(30, 60, 114, 0.46);
+      }
+
+      .jukebox-sort-lock-btn:active {
+        transform: translateY(1px);
+      }
+
+      .jukebox-sort-lock-btn svg {
+        width: 14px;
+        height: 14px;
+      }
       
       .jukebox-table td {
         padding: 12px;
@@ -5632,19 +6390,30 @@ window.Jukebox = {
         vertical-align: middle;
       }
 
+      .jukebox-table td:not(:last-child) {
+        background-image: linear-gradient(
+          to bottom,
+          transparent 20%,
+          rgba(255, 255, 255, 0.18) 20%,
+          rgba(255, 255, 255, 0.18) 80%,
+          transparent 80%
+        );
+        background-repeat: no-repeat;
+        background-position: right center;
+        background-size: 1px 100%;
+      }
+
       .jukebox-table th:nth-child(1),
       .jukebox-table td.song-index {
-        width: 42px;
+        padding-left: 8px;
+        padding-right: 8px;
+        text-align: center;
       }
 
-      .jukebox-table th:nth-child(3),
-      .jukebox-table td.song-artist {
-        width: 118px;
-      }
-
-      .jukebox-table th:nth-child(4),
-      .jukebox-table td.song-action {
-        width: 48px;
+      .song-index-number {
+        display: inline-flex;
+        min-width: 1.6em;
+        justify-content: center;
       }
 
       .jukebox-table td.song-name,
@@ -5664,6 +6433,22 @@ window.Jukebox = {
       .jukebox-table tbody tr:hover {
         background: ${Jukebox.Config.table.rowHoverBg};
       }
+
+      .jukebox-table tbody tr.jukebox-row-sort-unlocked {
+        cursor: grab;
+      }
+
+      .jukebox-table tbody tr.jukebox-row-dragging {
+        opacity: 0.55;
+      }
+
+      .jukebox-table tbody tr.jukebox-row-drop-before td {
+        box-shadow: inset 0 2px 0 rgba(0, 60, 100, 0.75);
+      }
+
+      .jukebox-table tbody tr.jukebox-row-drop-after td {
+        box-shadow: inset 0 -2px 0 rgba(0, 60, 100, 0.75);
+      }
       
       .jukebox-table tbody tr:last-child td {
         border-bottom: none;
@@ -5675,10 +6460,14 @@ window.Jukebox = {
         color: ${Jukebox.Config.table.loadingColor};
       }
       
-      .jukebox-table td:last-child {
-        display: inline-flex;
-        gap: 4px;
+      .jukebox-table td.song-action {
+        display: flex;
+        gap: 6px;
         align-items: center;
+        justify-content: center;
+        white-space: nowrap;
+        padding-left: 8px;
+        padding-right: 8px;
       }
 
       .play-btn {
@@ -5726,25 +6515,82 @@ window.Jukebox = {
       .play-btn.resume-btn:hover {
         background: ${Jukebox.Config.button.resumeHoverBg};
       }
+
+      .play-btn.jukebox-mode-btn {
+        background: rgba(255, 255, 255, 0.18);
+        border: 1px solid rgba(255, 255, 255, 0.24);
+        padding: 6px 7px;
+      }
+
+      .play-btn.jukebox-mode-btn:hover {
+        background: rgba(255, 255, 255, 0.28);
+      }
+
+      .play-btn.jukebox-mode-btn.active {
+        background: rgba(0, 60, 100, 0.58);
+        border-color: rgba(255, 255, 255, 0.42);
+        box-shadow: inset 0 0 0 1px rgba(0, 30, 70, 0.32);
+      }
+
+      .play-btn.jukebox-mode-btn.active:hover {
+        background: rgba(0, 48, 86, 0.72);
+      }
       
       .jukebox-controls-row {
-        margin-top: 15px;
+        flex: 0 0 auto;
+        margin: 15px 20px 20px;
         padding: 10px;
         background: ${Jukebox.Config.progress.containerBg};
         border-radius: 6px;
         display: flex;
+        flex-direction: column;
         align-items: center;
-        gap: 15px;
+        gap: 10px;
       }
 
       .jukebox-progress {
         display: flex;
         align-items: center;
         gap: 8px;
-        flex: 3;
+        width: 100%;
         min-width: 0;
         font-size: 13px;
         color: ${Jukebox.Config.progress.textColor};
+      }
+
+      .jukebox-playback-controls {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        width: 100%;
+        min-width: 0;
+        flex-wrap: wrap;
+      }
+
+      .jukebox-mode-controls,
+      .jukebox-transport-controls {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 5px;
+      }
+
+      .jukebox-control-divider {
+        width: 1px;
+        height: 22px;
+        background: rgba(255, 255, 255, 0.28);
+        margin: 0 2px;
+      }
+
+      .jukebox-transport-btn,
+      .jukebox-play-pause-btn {
+        min-width: 32px;
+        min-height: 30px;
+      }
+
+      .jukebox-play-pause-btn {
+        min-width: 36px;
       }
 
       #jukebox-progress-slider {
@@ -6000,6 +6846,50 @@ window.Jukebox = {
       }
     }, 10);
   },
+
+  startConfigPolling: function() {
+    Jukebox.stopConfigPolling();
+    Jukebox.State.configPollTimer = setInterval(() => {
+      Jukebox.checkConfigUpdates();
+    }, 10000);
+  },
+
+  stopConfigPolling: function() {
+    if (Jukebox.State.configPollTimer) {
+      clearInterval(Jukebox.State.configPollTimer);
+      Jukebox.State.configPollTimer = null;
+    }
+    Jukebox.State.configPollInFlight = false;
+  },
+
+  checkConfigUpdates: async function() {
+    if (!Jukebox.State.isOpen || Jukebox.State.configPollInFlight) return;
+
+    Jukebox.State.configPollInFlight = true;
+    try {
+      const response = await fetch('/api/jukebox/config/summary', { cache: 'no-store' });
+      if (!response.ok) return;
+
+      const summary = await response.json();
+      const nextRevision = summary && summary.configRevision;
+      if (!nextRevision) return;
+
+      const currentRevision = Jukebox.State.configRevision;
+      if (currentRevision && currentRevision !== nextRevision) {
+        console.log('[Jukebox] 检测到歌单配置更新，重新加载歌曲');
+        await Jukebox.loadSongs();
+        if (Jukebox.SongActionManager && typeof Jukebox.SongActionManager.load === 'function') {
+          await Jukebox.SongActionManager.load();
+        }
+      } else if (!currentRevision) {
+        Jukebox.State.configRevision = nextRevision;
+      }
+    } catch (error) {
+      console.warn('[Jukebox] 检查歌单更新失败:', error);
+    } finally {
+      Jukebox.State.configPollInFlight = false;
+    }
+  },
   
   loadSongs: async function() {
     try {
@@ -6013,13 +6903,14 @@ window.Jukebox = {
       
       // 保存完整的配置数据
       Jukebox.State.config = data;
+      Jukebox.State.configRevision = data.configRevision || Jukebox.State.configRevision || null;
       
       // 将后端的歌曲对象转换为数组格式
       const songs = data.songs || {};
       const actions = data.actions || {};
       const bindings = data.bindings || {};
       
-      Jukebox.State.songs = Object.entries(songs).map(([id, song]) => {
+      Jukebox.State.songs = Jukebox.applySavedSongOrder(Object.entries(songs).map(([id, song]) => {
         // 获取该歌曲绑定的动画
         const songBindings = bindings[id] || {};
         const boundActions = Object.keys(songBindings)
@@ -6048,10 +6939,11 @@ window.Jukebox = {
           isBuiltin: song.isBuiltin || false, // 传递自带资源标记
           boundActions: boundActions // 绑定的动画列表
         };
-      }).filter(song => song.visible); // 只显示可见的歌曲
+      }).filter(song => song.visible)); // 只显示可见的歌曲
       
       console.log('[Jukebox]', window.t('Jukebox.songsLoaded', '歌曲列表已加载'), Jukebox.State.songs.length, '首歌曲');
       
+      Jukebox.syncRandomQueueWithSongs();
       Jukebox.renderList();
       
     } catch (error) {
@@ -6097,22 +6989,26 @@ window.Jukebox = {
       }
     }
 
-    // 创建或更新歌曲行
+    // 创建、更新并按当前排序重新排列歌曲行
     Jukebox.State.songs.forEach((song, index) => {
       const existingRow = Jukebox.State.songElements[song.id];
+      let row;
 
       if (existingRow) {
         // 更新现有行（只更新非播放状态的内容）
         Jukebox.updateSongRow(existingRow, song, index);
+        row = existingRow;
       } else {
         // 创建新行
-        const newRow = Jukebox.createSongRow(song, index);
-        tbody.appendChild(newRow);
-        Jukebox.State.songElements[song.id] = newRow;
+        row = Jukebox.createSongRow(song, index);
+        Jukebox.State.songElements[song.id] = row;
       }
+      tbody.appendChild(row);
     });
 
     console.log('[Jukebox]', window.t('Jukebox.songsRendered', '歌曲列表已渲染'));
+    Jukebox.updatePlaybackModeButtons();
+    Jukebox.updateSongSortLockControls();
     Jukebox.scheduleMarqueeTextUpdate(tbody);
   },
 
@@ -6120,8 +7016,9 @@ window.Jukebox = {
   createSongRow: function(song, index) {
     const tr = document.createElement('tr');
     tr.dataset.songId = song.id;
+    tr.draggable = Jukebox.isSongSortUnlocked();
     tr.innerHTML = `
-      <td class="song-index">${index + 1}</td>
+      <td class="song-index"><span class="song-index-number">${index + 1}</span></td>
       <td class="song-name" data-neko-marquee title="${Jukebox.escapeHtml(song.name)}">${Jukebox.escapeHtml(song.name)}</td>
       <td class="song-artist" data-neko-marquee title="${Jukebox.escapeHtml(song.artist)}">${Jukebox.escapeHtml(song.artist)}</td>
       <td class="song-action">
@@ -6136,6 +7033,7 @@ window.Jukebox = {
     btn.addEventListener('click', () => {
       Jukebox_playSong(song.id);
     });
+    Jukebox.bindSongRowDragEvents(tr);
 
     return tr;
   },
@@ -6144,7 +7042,14 @@ window.Jukebox = {
   updateSongRow: function(row, song, index) {
     // 更新序号
     const indexCell = row.querySelector('.song-index');
-    if (indexCell) indexCell.textContent = index + 1;
+    if (indexCell) {
+      const indexNumber = indexCell.querySelector('.song-index-number');
+      if (indexNumber) {
+        indexNumber.textContent = index + 1;
+      } else {
+        indexCell.textContent = index + 1;
+      }
+    }
 
     // 更新歌名
     const nameCell = row.querySelector('.song-name');
@@ -6164,8 +7069,109 @@ window.Jukebox = {
 
     // 注意：不更新播放按钮，以保持播放状态
   },
+
+  bindSongRowDragEvents: function(row) {
+    row.addEventListener('dragstart', (event) => {
+      if (!Jukebox.isSongSortUnlocked()) {
+        event.preventDefault();
+        return;
+      }
+      if (event.target && event.target.closest('button, input, a, select, textarea')) {
+        event.preventDefault();
+        return;
+      }
+      Jukebox.State.draggedSongId = row.dataset.songId;
+      row.classList.add('jukebox-row-dragging');
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', row.dataset.songId);
+      }
+    });
+
+    row.addEventListener('dragover', (event) => {
+      if (!Jukebox.isSongSortUnlocked()) return;
+      if (!Jukebox.State.draggedSongId || Jukebox.State.draggedSongId === row.dataset.songId) return;
+      event.preventDefault();
+      const rect = row.getBoundingClientRect();
+      const placeAfter = event.clientY > rect.top + rect.height / 2;
+      row.classList.toggle('jukebox-row-drop-before', !placeAfter);
+      row.classList.toggle('jukebox-row-drop-after', placeAfter);
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+    });
+
+    row.addEventListener('dragleave', () => {
+      row.classList.remove('jukebox-row-drop-before', 'jukebox-row-drop-after');
+    });
+
+    row.addEventListener('drop', (event) => {
+      if (!Jukebox.isSongSortUnlocked()) return;
+      if (!Jukebox.State.draggedSongId) return;
+      event.preventDefault();
+      const rect = row.getBoundingClientRect();
+      const placeAfter = event.clientY > rect.top + rect.height / 2;
+      const moved = Jukebox.moveSongInPlaylist(Jukebox.State.draggedSongId, row.dataset.songId, placeAfter);
+      if (!moved) Jukebox.clearSongDragState();
+    });
+
+    row.addEventListener('dragend', () => {
+      Jukebox.clearSongDragState();
+    });
+  },
+
+  getNextSongToPlay: function(endedSong) {
+    const songs = Jukebox.State.songs || [];
+    if (!endedSong || songs.length === 0) return null;
+
+    if (Jukebox.State.playbackMode === 'none') {
+      Jukebox.expireRandomQueueIfPendingSongEnded(endedSong.id);
+      return null;
+    }
+
+    if (Jukebox.State.playbackMode === 'single') {
+      Jukebox.expireRandomQueueIfPendingSongEnded(endedSong.id);
+      return songs.find(song => song.id === endedSong.id) || null;
+    }
+
+    if (Jukebox.State.playbackMode === 'random') {
+      Jukebox.ensureRandomQueueAnchor(endedSong.id);
+      return Jukebox.getRandomAdjacentSong(1, endedSong.id);
+    }
+
+    const currentIndex = songs.findIndex(song => song.id === endedSong.id);
+    Jukebox.expireRandomQueueIfPendingSongEnded(endedSong.id);
+    if (currentIndex >= 0 && currentIndex < songs.length - 1) {
+      return songs[currentIndex + 1];
+    }
+    return null;
+  },
+
+  handleAudioEnded: function(player) {
+    const endedSong = Jukebox.State.currentSong;
+    console.log('[Jukebox]', window.t('Jukebox.audioEnded', '音频播放结束'), {
+      isPlaying: Jukebox.State.isPlaying,
+      currentSong: endedSong,
+      playerLoop: player && player.options ? player.options.loop : undefined,
+      playbackMode: Jukebox.State.playbackMode
+    });
+
+    const nextSong = Jukebox.getNextSongToPlay(endedSong);
+    const nextAction = nextSong ? Jukebox.getActionForModel(nextSong) : null;
+    Jukebox.stopVMD(!!nextAction);
+    Jukebox.State.isPlaying = false;
+    Jukebox.State.isPaused = false;
+
+    Jukebox.State.currentSong = null;
+    Jukebox.updateStoppedStatus();
+
+    if (nextSong) {
+      setTimeout(() => {
+        if (!Jukebox.State.isOpen && !window.__NEKO_JUKEBOX_STANDALONE__) return;
+        Jukebox.playSong(nextSong.id, { fromQueue: Jukebox.State.playbackMode === 'random' });
+      }, 0);
+    }
+  },
   
-  playSong: async function(songId) {
+  playSong: async function(songId, options = {}) {
     const song = Jukebox.State.songs.find(s => s.id === songId);
     if (!song) {
       console.error('[Jukebox]', window.t('Jukebox.notFound', '找不到歌曲'), songId);
@@ -6179,15 +7185,33 @@ window.Jukebox = {
         return;
       }
       if (Jukebox.State.isPlaying) {
+        if (options.fromQueue === true) {
+          return;
+        }
         console.log('[Jukebox] 停止当前播放的歌曲:', song.name);
         Jukebox.stopPlayback();
         return;
       }
     }
     
+    if (Jukebox.State.playbackMode === 'random') {
+      if (options.fromQueue === true) {
+        Jukebox.ensureRandomQueueAnchor(songId);
+      } else {
+        Jukebox.resetRandomQueue(songId);
+      }
+    } else if (Jukebox.State.randomQueueExitSongId && Jukebox.State.randomQueueExitSongId !== songId) {
+      Jukebox.clearRandomQueue();
+    }
+
     console.log('[Jukebox] 播放歌曲:', song.name);
     
-    Jukebox.stopPlayback();
+    const preserveRandomQueue = Jukebox.State.playbackMode === 'random'
+      || (
+        Jukebox.State.randomQueueExitSongId
+        && Jukebox.State.randomQueueExitSongId === songId
+      );
+    Jukebox.stopPlayback({ preserveRandomQueue });
     
     const requestId = ++Jukebox.State.playRequestId;
     
@@ -6267,16 +7291,7 @@ window.Jukebox = {
     
     if (Jukebox.State.boundPlayer !== player) {
       player.on('ended', () => {
-        console.log('[Jukebox]', window.t('Jukebox.audioEnded', '音频播放结束'), {
-          isPlaying: Jukebox.State.isPlaying,
-          currentSong: Jukebox.State.currentSong,
-          playerLoop: player.options.loop
-        });
-        Jukebox.stopVMD();
-        Jukebox.State.isPlaying = false;
-        Jukebox.State.isPaused = false;
-        Jukebox.State.currentSong = null;
-        Jukebox.updateStoppedStatus();
+        Jukebox.handleAudioEnded(player);
       });
       Jukebox.State.boundPlayer = player;
     }
@@ -6414,6 +7429,42 @@ window.Jukebox = {
     if (volumeValueEl) {
       volumeValueEl.addEventListener('click', Jukebox.startVolumeEdit);
     }
+
+    Jukebox.bindVolumeWheel();
+  },
+
+  bindVolumeWheel: function() {
+    const volumeWrapper = document.querySelector('.jukebox-volume-wrapper');
+    if (!volumeWrapper || volumeWrapper.dataset.wheelBound === 'true') return;
+
+    volumeWrapper.dataset.wheelBound = 'true';
+    volumeWrapper.addEventListener('wheel', Jukebox.handleVolumeWheel, { passive: false });
+  },
+
+  handleVolumeWheel: function(e) {
+    if (!e) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (e.deltaY === 0) return;
+
+    const volumeSlider = document.getElementById('jukebox-volume-slider');
+    const player = Jukebox.getPlayer();
+    const sliderVolume = volumeSlider ? parseFloat(volumeSlider.value) : NaN;
+    const playerVolume = player && player.audio ? parseFloat(player.audio.volume) : NaN;
+    const fallbackVolume = Jukebox.State.isMuted ? 0 : (Jukebox.State.savedVolume || 1);
+    const currentVolume = Number.isFinite(sliderVolume)
+      ? sliderVolume
+      : (Number.isFinite(playerVolume) ? playerVolume : fallbackVolume);
+    const wheelStep = 0.05;
+    const nextVolume = Math.max(0, Math.min(1, Math.round((currentVolume + (e.deltaY < 0 ? wheelStep : -wheelStep)) * 100) / 100));
+
+    if (volumeSlider) {
+      volumeSlider.value = nextVolume;
+    }
+
+    Jukebox.updateVolume(nextVolume);
   },
 
   startVolumeEdit: function() {
@@ -6546,7 +7597,8 @@ window.Jukebox = {
     Jukebox.updateSpeakerIcon(volume === 0);
   },
   
-  stopPlayback: function() {
+  stopPlayback: function(options = {}) {
+    const preserveRandomQueue = options.preserveRandomQueue === true;
     Jukebox.stopAudio();
     Jukebox.stopVMD();
 
@@ -6554,6 +7606,9 @@ window.Jukebox = {
     Jukebox.State.isPlaying = false;
     Jukebox.State.isPaused = false;
     Jukebox.State.isVMDPlaying = false;
+    if (!preserveRandomQueue) {
+      Jukebox.clearRandomQueue();
+    }
 
     Jukebox.updateStoppedStatus();
   },
@@ -7093,7 +8148,8 @@ window.Jukebox = {
 
     // 获取绑定的动画中对应格式的动画
     const boundActions = song.boundActions || [];
-    const formatActions = boundActions.filter(a =>
+    const availableActions = boundActions.filter(a => a.missing !== true);
+    const formatActions = availableActions.filter(a =>
       (a.format || 'vmd').toLowerCase() === targetFormat
     );
 
@@ -7130,6 +8186,7 @@ window.Jukebox = {
 
     Jukebox._resetAllButtons();
     Jukebox.startProgressUpdate();
+    Jukebox.updateGlobalTransportControls();
 
     const currentRow = document.querySelector(`tr[data-song-id="${CSS.escape(song.id)}"]`);
     if (currentRow) {
@@ -7162,6 +8219,7 @@ window.Jukebox = {
     }
 
     Jukebox._resetAllButtons();
+    Jukebox.updateGlobalTransportControls();
 
     const currentRow = document.querySelector(`tr[data-song-id="${CSS.escape(song.id)}"]`);
     if (currentRow) {
@@ -7210,6 +8268,7 @@ window.Jukebox = {
 
     Jukebox.stopProgressUpdate();
     Jukebox._resetAllButtons();
+    Jukebox.updateGlobalTransportControls();
   },
   
   showError: function(message) {
@@ -7279,7 +8338,12 @@ window.Jukebox = {
     // --- Table headers ---
     var ths = c.querySelectorAll('.jukebox-table thead th');
     if (ths.length >= 4) {
-      ths[0].textContent = window.t('Jukebox.sequence', '序号');
+      var sequenceLabel = ths[0].querySelector('span');
+      if (sequenceLabel) {
+        sequenceLabel.textContent = window.t('Jukebox.sequence', '序号');
+      } else {
+        ths[0].textContent = window.t('Jukebox.sequence', '序号');
+      }
       ths[1].textContent = window.t('Jukebox.song', '歌曲');
       ths[2].textContent = window.t('Jukebox.artist', '艺术家');
       ths[3].textContent = window.t('Jukebox.action', '操作');
@@ -7288,6 +8352,18 @@ window.Jukebox = {
     // --- Mute button ---
     var speakerBtn = c.querySelector('#jukebox-speaker-btn');
     if (speakerBtn) speakerBtn.title = window.t('Jukebox.mute', '静音');
+    var prevBtn = c.querySelector('#jukebox-control-prev');
+    if (prevBtn) {
+      prevBtn.title = window.t('Jukebox.previousSong', '上一首');
+      prevBtn.setAttribute('aria-label', window.t('Jukebox.previousSong', '上一首'));
+    }
+    var nextBtn = c.querySelector('#jukebox-control-next');
+    if (nextBtn) {
+      nextBtn.title = window.t('Jukebox.nextSong', '下一首');
+      nextBtn.setAttribute('aria-label', window.t('Jukebox.nextSong', '下一首'));
+    }
+    Jukebox.renderPlaybackControls();
+    Jukebox.updateSongSortLockControls(c);
 
     // --- Re-render song list (preserves playback state) ---
     if (Jukebox.State.songs && Jukebox.State.songs.length) {

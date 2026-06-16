@@ -82,6 +82,7 @@ type CompactExportHistoryPanelProps = {
   onDownloadExport: (request: CompactExportActionRequest) => Promise<void> | void;
   onAction?: (message: ChatMessage, action: MessageAction) => void;
   historyResizeActive?: boolean;
+  historyResizeContentLocked?: boolean;
   onHistoryResizePointerDown?: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onHistoryResizePointerMove?: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onHistoryResizePointerUp?: (event: ReactPointerEvent<HTMLDivElement>) => void;
@@ -232,6 +233,7 @@ export default function CompactExportHistoryPanel({
   onDownloadExport,
   onAction,
   historyResizeActive,
+  historyResizeContentLocked,
   onHistoryResizePointerDown,
   onHistoryResizePointerMove,
   onHistoryResizePointerUp,
@@ -488,9 +490,10 @@ export default function CompactExportHistoryPanel({
     const scrollNode = scrollRef.current;
     if (!scrollNode) return;
     lastGeometryClientHeightRef.current = scrollNode.clientHeight;
+    if (!historyResizeContentLocked) return;
     if (!autoScrollToBottomRef.current) return;
     scrollNode.scrollTop = scrollNode.scrollHeight - scrollNode.clientHeight;
-  }, [historyResizeActive]);
+  }, [historyResizeContentLocked]);
 
   // slot / max 高度变化（拖 resize bar、视口/工作区/宽度变化触发的 reapply）只裁剪 scroll 盒可视窗口，
   // 内容不再 reflow。仅当用户当前停在底部（autoScrollToBottom）时处理，否则尊重其向上查看老消息的位置。
@@ -874,6 +877,7 @@ export default function CompactExportHistoryPanel({
       data-compact-export-history-open={historyInteractive ? 'true' : 'false'}
       data-compact-export-history-visibility={visibilityState}
       data-compact-export-history-resizing={historyResizeActive ? 'true' : 'false'}
+      data-compact-export-history-content-locked={historyResizeContentLocked ? 'true' : 'false'}
       data-compact-export-preview-open={previewOpen ? 'true' : 'false'}
       data-compact-export-under-choice={choiceLayerAbove ? 'true' : 'false'}
       aria-label={i18n('chat.exportConversation', 'Export Conversation')}

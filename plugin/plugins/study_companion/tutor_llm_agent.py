@@ -602,3 +602,8 @@ TutorLLMAgent._fallback_track = _fallback_track  # type: ignore[method-assign]
 TutorLLMAgent.summarize_session = summarize_session  # type: ignore[method-assign]
 TutorLLMAgent._normalize_summary = _normalize_summary  # type: ignore[method-assign]
 TutorLLMAgent._fallback_summary = _fallback_summary  # type: ignore[method-assign]
+
+from .tutor_llm_agent_notebook import expand_note, summarize_to_note
+
+TutorLLMAgent.expand_note = expand_note  # type: ignore[method-assign]
+TutorLLMAgent.summarize_to_note = summarize_to_note  # type: ignore[method-assign]

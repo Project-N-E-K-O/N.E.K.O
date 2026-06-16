@@ -1,9 +1,23 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
-网络爬虫模块，用于获取各平台的热门内容
-支持基于区域的内容获取：
-- 中文区域：B站和微博
-- 非中文区域：Reddit和Twitter
-同时支持获取活跃窗口标题和搜索功能
+Web crawler module for fetching trending content from various platforms
+Supports region-based content fetching:
+- Chinese region: Bilibili and Weibo
+- non-Chinese region: Reddit and Twitter
+Also supports fetching the active window title and search
 """
 import asyncio
 import httpx
@@ -28,8 +42,8 @@ logger = get_module_logger(__name__)
 
 def _extract_llm_text_content(content: Any) -> str:
     """
-    尽量从不同形态的 LLM content 中提取可用文本。
-    返回空字符串表示空包或无有效文本。
+    Best-effort extraction of usable text from LLM content of various shapes.
+    Returns an empty string for empty packets or no valid text.
     """
     if content is None:
         return ""
@@ -66,8 +80,8 @@ def _extract_llm_text_content(content: Any) -> str:
 
 def _fix_bilibili_api_env():
     """
-    针对 Nuitka 打包环境的修复函数：
-    在程序运行时检测并强制创建 bilibili_api 缺失的 data 目录和关键 JSON 配置文件。
+    Fix-up function for the Nuitka packaged environment:
+    detects at runtime and force-creates bilibili_api's missing data directory and key JSON config files.
     """
     logger.info("正在检查 Bilibili API 运行环境兼容性...")
     
@@ -157,16 +171,16 @@ except ImportError:
     import locale
     def is_china_region() -> bool:
         """
-        区域检测回退方案
+        Region detection fallback
 
-        仅对中国大陆地区返回True（zh_cn及其变体）
-        港澳台地区（zh_tw, zh_hk）返回False
-        Windows 中文系统返回 True
+        Returns True only for mainland China (zh_cn and variants)
+        Hong Kong/Macau/Taiwan (zh_tw, zh_hk) return False
+        Chinese-language Windows systems return True
         """
         mainland_china_locales = {'zh_cn', 'chinese_china', 'chinese_simplified_china'}
        
         def normalize_locale(loc: str) -> str:
-            """标准化locale字符串：小写、替换连字符、去除编码"""
+            """Normalize a locale string: lowercase, replace hyphens, strip encoding"""
             if not loc:
                 return ''
             loc = loc.lower()
@@ -176,7 +190,7 @@ except ImportError:
             return loc
 
         def check_locale(loc: str) -> bool:
-            """检查标准化后的locale是否为中国大陆"""
+            """Check whether the normalized locale is mainland China"""
             normalized = normalize_locale(loc)
             if not normalized:
                 return False
@@ -218,7 +232,7 @@ USER_AGENTS = [
 ]
 
 def get_random_user_agent() -> str:
-    """随机获取一个User-Agent"""
+    """Get a random User-Agent"""
     return random.choice(USER_AGENTS)
 
 
@@ -250,9 +264,9 @@ def _get_bilibili_credential() -> Any | None:
 
 async def fetch_bilibili_trending(limit: int = 30) -> Dict[str, Any]:
     """
-    获取B站首页推荐视频
-    使用bilibili-api库获取主页视频推荐
-    支持个性化推荐（如果提供了认证信息）
+    Fetch Bilibili homepage recommended videos
+    Uses the bilibili-api library to fetch homepage video recommendations
+    Supports personalized recommendations (when credentials are provided)
     """
     try:
         from bilibili_api import homepage
@@ -336,14 +350,14 @@ async def fetch_bilibili_trending(limit: int = 30) -> Dict[str, Any]:
 
 async def fetch_reddit_popular(limit: int = 10) -> Dict[str, Any]:
     """
-    获取Reddit热门帖子
-    使用Reddit的JSON API获取r/popular的热门帖子
+    Fetch Reddit hot posts
+    Uses Reddit's JSON API to fetch hot posts from r/popular
     
     Args:
-        limit: 返回帖子的最大数量
+        limit: maximum number of posts to return
     
     Returns:
-        包含成功状态和帖子列表的字典
+        Dict with success status and post list
     """
     try:
         # Reddit的JSON API端点
@@ -418,7 +432,7 @@ async def fetch_reddit_popular(limit: int = 10) -> Dict[str, Any]:
 
 
 def _format_score(count: int) -> str:
-    """格式化Reddit分数/评论数"""
+    """Format Reddit scores/comment counts"""
     if count >= 1_000_000:
         return f"{count / 1_000_000:.1f}M"
     elif count >= 1_000:
@@ -430,9 +444,9 @@ def _format_score(count: int) -> str:
 
 async def fetch_weibo_trending(limit: int = 10) -> Dict[str, Any]:
     """
-    获取微博热议话题
-    优先使用s.weibo.com热搜榜页面（刷新频率更高），需要Cookie
-    如果失败则回退到公开API
+    Fetch trending Weibo topics
+    Prefers the s.weibo.com hot-search page (refreshes more often), which requires cookies
+    Falls back to the public API on failure
     """
     try:
         # 动态获取平台 Cookie，拒绝硬编码
@@ -540,7 +554,7 @@ async def fetch_weibo_trending(limit: int = 10) -> Dict[str, Any]:
 
 async def _fetch_weibo_trending_fallback(limit: int = 10) -> Dict[str, Any]:
     """
-    微博热搜回退方案 - 使用公开的ajax API
+    Weibo hot-search fallback — uses the public ajax API
     """
     try:
         url = "https://weibo.com/ajax/side/hotSearch"
@@ -614,14 +628,14 @@ async def _fetch_weibo_trending_fallback(limit: int = 10) -> Dict[str, Any]:
 
 async def fetch_twitter_trending(limit: int = 10) -> Dict[str, Any]:
     """
-    获取Twitter/X热门话题
-    使用Twitter的探索页面获取热门话题
+    Fetch Twitter/X trending topics
+    Uses Twitter's explore page to fetch trends
     
     Args:
-        limit: 返回热门话题的最大数量
+        limit: maximum number of trends to return
     
     Returns:
-        包含成功状态和热门列表的字典
+        Dict with success status and trend list
     """
     try:
         # Twitter探索/热门页面
@@ -696,12 +710,12 @@ async def fetch_twitter_trending(limit: int = 10) -> Dict[str, Any]:
 
 async def _fetch_twitter_trending_fallback(limit: int = 10) -> Dict[str, Any]:
     """
-    Twitter热门的回退方案
-    使用第三方服务获取热门话题，因为Twitter官方API需要OAuth认证
+    Twitter trends fallback
+    Uses third-party services to fetch trends, since Twitter's official API requires OAuth
     """
     
     def _parse_trends24(soup: BeautifulSoup, limit: int) -> List[Dict[str, Any]]:
-        """解析Trends24页面"""
+        """Parse the Trends24 page"""
         trending_list = []
         trend_cards = soup.select('.trend-card__list li a')
         for i, item in enumerate(trend_cards[:limit]):
@@ -718,7 +732,7 @@ async def _fetch_twitter_trending_fallback(limit: int = 10) -> Dict[str, Any]:
         return trending_list
     
     def _parse_getdaytrends(soup: BeautifulSoup, limit: int) -> List[Dict[str, Any]]:
-        """解析GetDayTrends页面"""
+        """Parse the GetDayTrends page"""
         trending_list = []
         trend_items = soup.select('table.table tr td a')
         for i, item in enumerate(trend_items[:limit]):
@@ -793,21 +807,21 @@ async def _fetch_twitter_trending_fallback(limit: int = 10) -> Dict[str, Any]:
 async def fetch_trending_content(bilibili_limit: int = 10, weibo_limit: int = 10, 
                                   reddit_limit: int = 10, twitter_limit: int = 10) -> Dict[str, Any]:
     """
-    根据用户区域获取热门内容
+    Fetch trending content based on the user's region
     
-    中文区域：获取B站视频和微博热议话题
-    非中文区域：获取Reddit热门帖子和Twitter热门话题
+    Chinese region: Bilibili videos and trending Weibo topics
+    non-Chinese region: Reddit hot posts and Twitter trends
     
     Args:
-        bilibili_limit: B站视频最大数量（中文区域）
-        weibo_limit: 微博话题最大数量（中文区域）
-        reddit_limit: Reddit帖子最大数量（非中文区域）
-        twitter_limit: Twitter话题最大数量（非中文区域）
+        bilibili_limit: max Bilibili videos (Chinese region)
+        weibo_limit: max Weibo topics (Chinese region)
+        reddit_limit: max Reddit posts (non-Chinese region)
+        twitter_limit: max Twitter trends (non-Chinese region)
     
     Returns:
-        包含成功状态和热门内容的字典
-        中文区域：'bilibili' 和 'weibo' 键
-        非中文区域：'reddit' 和 'twitter' 键
+        Dict with success status and trending content
+        Chinese region: 'bilibili' and 'weibo' keys
+        non-Chinese region: 'reddit' and 'twitter' keys
     """
     try:
         # 检测用户区域
@@ -908,18 +922,18 @@ async def _fetch_content_by_region(
     non_china_log_msg: str
 ) -> Dict[str, Any]:
     """
-    根据用户区域获取内容的通用辅助函数
+    Generic helper for fetching content based on the user's region
     
     Args:
-        china_fetch_func: 中文区域使用的异步获取函数
-        non_china_fetch_func: 非中文区域使用的异步获取函数
-        limit: 内容最大数量
-        content_key: 返回结果中的内容键名 ('video' 或 'news')
-        china_log_msg: 中文区域的日志消息
-        non_china_log_msg: 非中文区域的日志消息
+        china_fetch_func: async fetch function used in the Chinese region
+        non_china_fetch_func: async fetch function used in the non-Chinese region
+        limit: maximum amount of content
+        content_key: content key in the result ('video' or 'news')
+        china_log_msg: log message for the Chinese region
+        non_china_log_msg: log message for the non-Chinese region
     
     Returns:
-        包含成功状态和内容的字典
+        Dict with success status and content
     """
     china_region = is_china_region()
     if china_region:
@@ -959,16 +973,16 @@ async def _fetch_content_by_region(
 
 async def fetch_video_content(limit: int = 10) -> Dict[str, Any]:
     """
-    根据用户区域获取视频内容
+    Fetch video content based on the user's region
     
-    中文区域：获取B站首页视频
-    非中文区域：获取Reddit热门帖子
+    Chinese region: Bilibili homepage videos
+    non-Chinese region: Reddit hot posts
     
     Args:
-        limit: 内容最大数量
+        limit: maximum amount of content
     
     Returns:
-        包含成功状态和视频内容的字典
+        Dict with success status and video content
     """
     return await _fetch_content_by_region(
         china_fetch_func=fetch_bilibili_trending,
@@ -982,16 +996,16 @@ async def fetch_video_content(limit: int = 10) -> Dict[str, Any]:
 
 async def fetch_news_content(limit: int = 10) -> Dict[str, Any]:
     """
-    根据用户区域获取新闻/热议话题内容
+    Fetch news/trending-topic content based on the user's region
     
-    中文区域：获取微博热议话题
-    非中文区域：获取Twitter热门话题
+    Chinese region: trending Weibo topics
+    non-Chinese region: Twitter trends
     
     Args:
-        limit: 内容最大数量
+        limit: maximum amount of content
     
     Returns:
-        包含成功状态和新闻内容的字典
+        Dict with success status and news content
     """
     return await _fetch_content_by_region(
         china_fetch_func=fetch_weibo_trending,
@@ -1004,7 +1018,7 @@ async def fetch_news_content(limit: int = 10) -> Dict[str, Any]:
 
 
 def _format_bilibili_videos(videos: List[Dict], limit: int = 5) -> List[str]:
-    """格式化B站视频列表"""
+    """Format the Bilibili video list"""
     output_lines = ["【B站首页推荐】"]
     for i, video in enumerate(videos[:limit], 1):
         title = video.get('title', '')
@@ -1020,7 +1034,7 @@ def _format_bilibili_videos(videos: List[Dict], limit: int = 5) -> List[str]:
 
 
 def _format_reddit_posts(posts: List[Dict], limit: int = 5) -> List[str]:
-    """格式化Reddit帖子列表"""
+    """Format the Reddit post list"""
     output_lines = ["【Reddit Hot Posts】"]
     for i, post in enumerate(posts[:limit], 1):
         title = post.get('title', '')
@@ -1035,7 +1049,7 @@ def _format_reddit_posts(posts: List[Dict], limit: int = 5) -> List[str]:
 
 
 def _format_weibo_trending(trending_list: List[Dict], limit: int = 5) -> List[str]:
-    """格式化微博热议话题列表"""
+    """Format the trending Weibo topic list"""
     output_lines = ["【微博热议话题】"]
     for i, item in enumerate(trending_list[:limit], 1):
         word = item.get('word', '')
@@ -1050,7 +1064,7 @@ def _format_weibo_trending(trending_list: List[Dict], limit: int = 5) -> List[st
 
 
 def _format_twitter_trending(trending_list: List[Dict], limit: int = 5) -> List[str]:
-    """格式化Twitter热门话题列表"""
+    """Format the Twitter trend list"""
     output_lines = ["【Twitter Trending Topics】"]
     for i, item in enumerate(trending_list[:limit], 1):
         word = item.get('word', '')
@@ -1066,17 +1080,17 @@ def _format_twitter_trending(trending_list: List[Dict], limit: int = 5) -> List[
 
 def format_trending_content(trending_content: Dict[str, Any]) -> str:
     """
-    将热门内容格式化为可读字符串
+    Format trending content into a readable string
     
-    根据区域自动格式化：
-    - 中文区域：B站和微博内容，中文显示
-    - 非中文区域：Reddit和Twitter内容，英文显示
+    Formats automatically by region:
+    - Chinese region: Bilibili and Weibo content, displayed in Chinese
+    - non-Chinese region: Reddit and Twitter content, displayed in English
     
     Args:
-        trending_content: fetch_trending_content返回的结果
+        trending_content: result returned by fetch_trending_content
     
     Returns:
-        格式化后的字符串
+        The formatted string
     """
     output_lines = []
     region = trending_content.get('region', 'china')
@@ -1113,17 +1127,17 @@ def format_trending_content(trending_content: Dict[str, Any]) -> str:
 
 def format_video_content(video_content: Dict[str, Any]) -> str:
     """
-    将视频内容格式化为可读字符串
+    Format video content into a readable string
     
-    根据区域自动格式化：
-    - 中文区域：B站视频内容
-    - 非中文区域：Reddit帖子内容
+    Formats automatically by region:
+    - Chinese region: Bilibili video content
+    - non-Chinese region: Reddit post content
     
     Args:
-        video_content: fetch_video_content返回的结果
+        video_content: result returned by fetch_video_content
     
     Returns:
-        格式化后的字符串
+        The formatted string
     """
     region = video_content.get('region', 'china')
     video_data = video_content.get('video', {})
@@ -1144,17 +1158,17 @@ def format_video_content(video_content: Dict[str, Any]) -> str:
 
 def format_news_content(news_content: Dict[str, Any]) -> str:
     """
-    将新闻内容格式化为可读字符串
+    Format news content into a readable string
     
-    根据区域自动格式化：
-    - 中文区域：微博热议话题
-    - 非中文区域：Twitter热门话题
+    Formats automatically by region:
+    - Chinese region: trending Weibo topics
+    - non-Chinese region: Twitter trends
     
     Args:
-        news_content: fetch_news_content返回的结果
+        news_content: result returned by fetch_news_content
     
     Returns:
-        格式化后的字符串
+        The formatted string
     """
     region = news_content.get('region', 'china')
     news_data = news_content.get('news', {})
@@ -1177,15 +1191,15 @@ def format_news_content(news_content: Dict[str, Any]) -> str:
 # =======================================================
 def get_active_window_title(include_raw: bool = False) -> Optional[Union[str, Dict[str, str]]]:
     """
-    获取当前活跃窗口的标题（仅支持Windows）
+    Get the title of the currently active window (Windows only)
     
     Args:
-        include_raw: 是否返回原始标题。默认False，仅返回截断后的安全标题。
-                     设为True时返回包含sanitized和raw的字典。
+        include_raw: whether to return the raw title. Default False, returning only the truncated safe title.
+                     When True, returns a dict containing sanitized and raw.
     
     Returns:
-        默认情况：截断后的安全标题字符串（前30字符），失败返回None
-        include_raw=True时：{'sanitized': '截断标题', 'raw': '完整标题'}，失败返回None
+        Default: the truncated safe title string (first 30 chars), or None on failure
+        With include_raw=True: {'sanitized': 'truncated title', 'raw': 'full title'}, or None on failure
     """
     if platform.system() != 'Windows':
         logger.warning("获取活跃窗口标题仅支持Windows系统")
@@ -1227,21 +1241,21 @@ def get_active_window_title(include_raw: bool = False) -> Optional[Union[str, Di
 
 async def generate_diverse_queries(window_title: str) -> List[str]:
     """
-    使用LLM基于窗口标题生成3个多样化的搜索关键词
+    Use the LLM to generate 3 diversified search keywords based on the window title
     
-    根据用户区域自动使用适当的语言：
-    - 中文区域：中文提示词，用于百度搜索
-    - 非中文区域：英文提示词，用于Google搜索
+    Automatically uses the appropriate language per user region:
+    - Chinese region: Chinese prompts, for Baidu search
+    - non-Chinese region: English prompts, for Google search
     
     Args:
-        window_title: 窗口标题（应该是已清理的标题，不应包含敏感信息）
+        window_title: window title (should be a cleaned title without sensitive information)
     
     Returns:
-        包含3个搜索关键词的列表
+        List of 3 search keywords
     
-    注意：
-        为保护隐私，调用此函数前应先使用clean_window_title()清理标题，
-        避免将文件路径、账号等敏感信息发送给LLM API
+    Note:
+        For privacy, clean the title with clean_window_title() before calling,
+        to avoid sending file paths, accounts and other sensitive info to the LLM API
     """
     try:
         # 导入配置管理器
@@ -1326,13 +1340,13 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
 
 def clean_window_title(title: str) -> str:
     """
-    清理窗口标题，提取有意义的搜索关键词
+    Clean a window title, extracting meaningful search keywords
     
     Args:
-        title: 原始窗口标题
+        title: raw window title
     
     Returns:
-        清理后的搜索关键词
+        Cleaned search keywords
     """
     if not title:
         return ""
@@ -1382,14 +1396,14 @@ def clean_window_title(title: str) -> str:
 
 async def search_google(query: str, limit: int = 10) -> Dict[str, Any]:
     """
-    使用Google搜索关键词并获取搜索结果（用于非中文区域）
+    Search keywords on Google and fetch results (for non-Chinese regions)
     
     Args:
-        query: 搜索关键词
-        limit: 返回结果数量限制
+        query: search keywords
+        limit: max number of results
     
     Returns:
-        包含搜索结果的字典
+        Dict with search results
     """
     try:
         if not query or len(query.strip()) < 2:
@@ -1454,14 +1468,14 @@ async def search_google(query: str, limit: int = 10) -> Dict[str, Any]:
 
 def parse_google_results(html_content: str, limit: int = 5) -> List[Dict[str, str]]:
     """
-    解析Google搜索结果页面
+    Parse a Google search results page
     
     Args:
-        html_content: HTML页面内容
-        limit: 结果数量限制
+        html_content: HTML page content
+        limit: result count limit
     
     Returns:
-        搜索结果列表，每个结果包含 title, abstract, url
+        Search result list; each result contains title, abstract, url
     """
     results = []
     
@@ -1535,18 +1549,20 @@ def parse_google_results(html_content: str, limit: int = 5) -> List[Dict[str, st
 
 async def search_duckduckgo(query: str, limit: int = 10) -> Dict[str, Any]:
     """
-    使用 DuckDuckGo 搜索关键词并获取搜索结果（用于非中文区域）。
+    Search keywords on DuckDuckGo and fetch results (for non-Chinese regions).
 
-    取代 Google：Google 对无头/脚本请求的反爬几乎必现（302 → /sorry/index → 429），
-    主动搭话的窗口上下文搜索基本拿不到结果。DuckDuckGo 的 HTML 端点
-    （html.duckduckgo.com）对脚本访问宽容得多，结果直接内嵌在 HTML 里便于解析。
+    Replaces Google: Google's anti-bot measures are nearly guaranteed to trip for
+    headless/scripted requests (302 → /sorry/index → 429), so the proactive-chat
+    window-context search got basically no results. DuckDuckGo's HTML endpoint
+    (html.duckduckgo.com) is far more tolerant of scripted access, and results are
+    embedded directly in the HTML, easy to parse.
 
     Args:
-        query: 搜索关键词
-        limit: 返回结果数量限制
+        query: search keywords
+        limit: max number of results
 
     Returns:
-        包含搜索结果的字典
+        Dict with search results
     """
     try:
         if not query or len(query.strip()) < 2:
@@ -1612,14 +1628,14 @@ async def search_duckduckgo(query: str, limit: int = 10) -> Dict[str, Any]:
 
 def parse_duckduckgo_results(html_content: str, limit: int = 5) -> List[Dict[str, str]]:
     """
-    解析 DuckDuckGo HTML 端点的搜索结果页面
+    Parse a DuckDuckGo HTML-endpoint search results page
 
     Args:
-        html_content: HTML页面内容
-        limit: 结果数量限制
+        html_content: HTML page content
+        limit: result count limit
 
     Returns:
-        搜索结果列表，每个结果包含 title, abstract, url
+        Search result list; each result contains title, abstract, url
     """
     results = []
 
@@ -1682,14 +1698,14 @@ def parse_duckduckgo_results(html_content: str, limit: int = 5) -> List[Dict[str
 
 async def search_baidu(query: str, limit: int = 5) -> Dict[str, Any]:
     """
-    使用百度搜索关键词并获取搜索结果
+    Search keywords on Baidu and fetch results
     
     Args:
-        query: 搜索关键词
-        limit: 返回结果数量限制
+        query: search keywords
+        limit: max number of results
     
     Returns:
-        包含搜索结果的字典
+        Dict with search results
     """
     try:
         if not query or len(query.strip()) < 2:
@@ -1755,14 +1771,14 @@ async def search_baidu(query: str, limit: int = 5) -> Dict[str, Any]:
 
 def parse_baidu_results(html_content: str, limit: int = 5) -> List[Dict[str, str]]:
     """
-    解析百度搜索结果页面
+    Parse a Baidu search results page
     
     Args:
-        html_content: HTML页面内容
-        limit: 结果数量限制
+        html_content: HTML page content
+        limit: result count limit
     
     Returns:
-        搜索结果列表，每个结果包含 title, abstract, url
+        Search result list; each result contains title, abstract, url
     """
     results = []
     
@@ -1838,13 +1854,13 @@ def parse_baidu_results(html_content: str, limit: int = 5) -> List[Dict[str, str
 
 def format_baidu_search_results(search_result: Dict[str, Any]) -> str:
     """
-    格式化百度搜索结果为可读字符串
+    Format Baidu search results into a readable string
     
     Args:
-        search_result: search_baidu返回的结果
+        search_result: result returned by search_baidu
     
     Returns:
-        格式化后的字符串
+        The formatted string
     """
     if not search_result.get('success'):
         return f"搜索失败: {search_result.get('error', '未知错误')}"
@@ -1876,14 +1892,14 @@ def format_baidu_search_results(search_result: Dict[str, Any]) -> str:
 
 def format_search_results(search_result: Dict[str, Any]) -> str:
     """
-    将搜索结果格式化为可读字符串
-    根据区域自动使用适当的语言
+    Format search results into a readable string
+    Uses the appropriate language automatically per region
     
     Args:
-        search_result: search_baidu或search_google返回的结果
+        search_result: result returned by search_baidu or search_google
     
     Returns:
-        格式化后的字符串
+        The formatted string
     """
     china_region = is_china_region()
     
@@ -1925,18 +1941,18 @@ def format_search_results(search_result: Dict[str, Any]) -> str:
 
 async def fetch_window_context_content(limit: int = 5) -> Dict[str, Any]:
     """
-    获取当前活跃窗口标题并进行搜索
+    Get the active window title and run a search on it
     
-    使用区域检测来决定搜索引擎：
-    - 中文区域：百度搜索
-    - 非中文区域：DuckDuckGo搜索（取代 Google，规避其反爬 429）
+    Region detection decides the search engine:
+    - Chinese region: Baidu
+    - non-Chinese region: DuckDuckGo (replacing Google to dodge its anti-bot 429)
     
     Args:
-        limit: 搜索结果数量限制
+        limit: max number of search results
     
     Returns:
-        包含窗口标题和搜索结果的字典
-        注意：window_title是脱敏后的版本以保护隐私
+        Dict with the window title and search results
+        Note: window_title is the sanitized version to protect privacy
     """
     try:
         # 检测区域
@@ -2066,15 +2082,15 @@ async def fetch_window_context_content(limit: int = 5) -> Dict[str, Any]:
 
 def format_window_context_content(content: Dict[str, Any]) -> str:
     """
-    将窗口上下文内容格式化为可读字符串
+    Format window-context content into a readable string
     
-    根据区域自动使用适当的语言
+    Uses the appropriate language automatically per region
     
     Args:
-        content: fetch_window_context_content返回的结果
+        content: result returned by fetch_window_context_content
     
     Returns:
-        格式化后的字符串
+        The formatted string
     """
     china_region = is_china_region()
     
@@ -2142,7 +2158,7 @@ def format_window_context_content(content: Dict[str, Any]) -> str:
 
 def _get_platform_cookies(platform_name: str) -> dict[str, str]:
     """
-    通用平台 Cookie 读取器 (接入系统底层的加密/明文统一读取逻辑)
+    Generic platform cookie reader (hooks into the system's unified encrypted/plaintext read logic)
     """
     try:
         # 优先调用系统底层的解密读取逻辑
@@ -2189,7 +2205,7 @@ def _get_platform_cookies(platform_name: str) -> dict[str, str]:
 
 async def fetch_bilibili_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
     """
-    获取B站推送的动态消息
+    Fetch Bilibili push feed updates
     """
     import re
 
@@ -2348,9 +2364,9 @@ async def fetch_bilibili_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
         
 async def fetch_douyin_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
     """
-    获取抖音个人关注动态
-    依赖: 需在配置中提供含有真实有效会话的 Cookie (douyin_cookies.json)
-    注意: 抖音接口通常需要 X-Bogus 等签名参数，这里主要依赖有效 Cookie 和基础参数尝试获取
+    Fetch the Douyin personal following feed
+    Requires: cookies with a real, valid session in the config (douyin_cookies.json)
+    Note: Douyin endpoints usually require signature params like X-Bogus; this mainly relies on valid cookies and basic params
     """
     try:
         from utils.cookies_login import validate_cookies
@@ -2442,8 +2458,8 @@ async def fetch_douyin_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
 
 async def fetch_kuaishou_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
     """
-    获取快手个人关注动态 (GraphQL 接口 + 严格 Cookie)
-    依赖: 需在配置中提供含有真实有效会话的 Cookie (kuaishou_cookies.json)
+    Fetch the Kuaishou personal following feed (GraphQL endpoint + strict cookies)
+    Requires: cookies with a real, valid session in the config (kuaishou_cookies.json)
     """
     try:
         from utils.cookies_login import validate_cookies
@@ -2524,12 +2540,12 @@ async def fetch_kuaishou_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
 
 async def fetch_weibo_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
     """
-    获取微博动态
-    设计原则：
-    - 切换至 Mobile 移动版 API，彻底绕过 PC 端所有风控
-    - 仅需核心登录凭证 SUB，其他 Cookie 全部失效
-    - 目标变更为：移动端首页关注流的固定 Container ID
-    - 必须伪装成手机浏览器的 User-Agent
+    Fetch the Weibo feed
+    Design principles:
+    - switch to the Mobile API, bypassing all PC-side risk control entirely
+    - only the core login credential SUB is needed; all other cookies are obsolete
+    - target changed to: the fixed Container ID of the mobile home following feed
+    - must disguise as a mobile browser User-Agent
     """
     try:
         from utils.cookies_login import validate_cookies
@@ -2646,7 +2662,7 @@ async def fetch_weibo_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
 
 async def fetch_reddit_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
     """
-    获取Reddit推送的动态帖子
+    Fetch Reddit pushed feed posts
     """
     try:
         reddit_cookies = await asyncio.to_thread(_get_platform_cookies, 'reddit')
@@ -2684,7 +2700,7 @@ async def fetch_reddit_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
 
 async def _fetch_twitter_personal_web_scraping(limit: int = 10, cookies: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """
-    Twitter 网页抓取 fallback
+    Twitter web-scraping fallback
     """
     try:
         url = "https://twitter.com/home"
@@ -2723,7 +2739,7 @@ async def _fetch_twitter_personal_web_scraping(limit: int = 10, cookies: Optiona
 
 async def fetch_twitter_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
     """
-    获取 Twitter 个人时间线
+    Fetch the personal Twitter timeline
     """
     
     try:
@@ -2815,7 +2831,7 @@ async def fetch_twitter_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
 
 async def fetch_personal_dynamics(limit: int = 10) -> Dict[str, Any]:
     """
-    独立获取全平台个人登录态下的订阅/关注动态
+    Independently fetch logged-in subscription/following feeds across all platforms
     """
     try:
         china_region = is_china_region()
@@ -2920,7 +2936,7 @@ async def fetch_personal_dynamics(limit: int = 10) -> Dict[str, Any]:
         
 def format_personal_dynamics(data: Dict[str, Any]) -> str:
     """
-    格式化个人动态 (结构优化版：全配置表驱动 + 层级排版)
+    Format personal feeds (structure-optimized: fully config-table driven + hierarchical layout)
     """
     output_lines = []
     region = data.get('region', 'china')
@@ -2982,8 +2998,8 @@ def format_personal_dynamics(data: Dict[str, Any]) -> str:
 
 async def main():
     """
-    Web爬虫的测试函数
-    自动检测区域并获取相应内容
+    Web crawler test function
+    Auto-detects the region and fetches matching content
     """
     china_region = is_china_region()
     

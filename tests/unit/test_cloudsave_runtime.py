@@ -96,6 +96,30 @@ def _write_runtime_state(cm, *, character_name="小满"):
 
 
 @pytest.mark.unit
+def test_ui_language_override_uses_raw_global_preference_only(tmp_path):
+    cm = _make_config_manager(tmp_path)
+    cm.ensure_config_directory()
+    atomic_write_json(
+        cm.get_runtime_config_path("user_preferences.json"),
+        [
+            {
+                "model_path": "__global_conversation__",
+                "userLanguage": "en",
+                "uiLanguage": "zh-TW",
+            }
+        ],
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    import utils.preferences as preferences
+
+    with patch.object(preferences, "_config_manager", cm):
+        assert preferences.load_ui_language_override() == "zh-TW"
+        assert "uiLanguage" not in preferences.load_global_conversation_settings()
+
+
+@pytest.mark.unit
 def test_resolve_managed_target_path_rejects_traversal(tmp_path):
     from utils.cloudsave_runtime import _resolve_managed_target_path
 

@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 ReflectionEngine — Tier 2 of the three-tier memory hierarchy.
 
@@ -9,7 +23,7 @@ being promoted to persona (Tier 3).
 Cognitive flow:
   Facts(passive) → Reflection(active thinking) → Persona(confirmed & solidified)
 
-Trigger: called during proactive chat (主动搭话), NOT during every conversation.
+Trigger: called during proactive chat, NOT during every conversation.
 This allows reflection to double as a "callback" mechanism where the AI naturally
 mentions its observations and gauges the user's response.
 
@@ -192,12 +206,14 @@ def _validate_reflection_ontology(
 
 
 def _reflection_id_from_facts(source_fact_ids: list[str]) -> str:
-    """根据 source fact ids 生成确定性 reflection id（P1 幂等性核心）。
+    """Generate a deterministic reflection id from the source fact ids (the core of P1 idempotency).
 
-    同一批 facts 的重复合成产生相同 id，save_reflections + mark_absorbed
-    这对"半原子"操作在 kill 后重启重跑时可基于 id 去重——消灭致命点 3。
+    Re-synthesizing the same batch of facts yields the same id, so the
+    "semi-atomic" pair save_reflections + mark_absorbed can dedup by id when
+    re-run after a kill/restart — eliminating fatal issue #3.
 
-    取 sha256 前 16 字符（64 bit）。单角色 reflection 规模远低于生日碰撞阈值。
+    Takes the first 16 chars of sha256 (64 bits). Per-character reflection
+    volume is far below the birthday-collision threshold.
     """
     h = hashlib.sha256()
     for fid in sorted(source_fact_ids):
@@ -301,13 +317,14 @@ class ReflectionEngine:
         return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'surfaced.json')
 
     def _synth_backoff_path(self, name: str) -> str:
-        """Per-character sidecar tracking per-rid synthesis 失败次数。
+        """Per-character sidecar tracking per-rid synthesis failure counts.
 
-        synthesize_reflections 在 LLM 失败时没有任何可挂 attempts 的实体
-        （reflection 还没建），所以失败计数落在这个 ``{rid: attempts}`` map
-        里。rid 由 source_fact_ids 决定（确定性）——facts 一变 rid 就变、
-        attempts 天然复位，所以持续失败的同批 facts 会被 dead-letter，新
-        输入立即重试。
+        When the LLM fails, synthesize_reflections has no entity to hang
+        attempts on (the reflection doesn't exist yet), so failure counts land
+        in this ``{rid: attempts}`` map. rid is determined by source_fact_ids
+        (deterministic) — once the facts change the rid changes and attempts
+        naturally reset, so a persistently failing fact batch gets
+        dead-lettered while new input retries immediately.
         """
         from memory import ensure_character_dir
         return os.path.join(
@@ -316,8 +333,9 @@ class ReflectionEngine:
         )
 
     async def _aload_synth_backoff_from_disk(self, name: str) -> dict:
-        """从磁盘读 {key: {"n": attempts(int), "at": last_fail_iso|None}} map；
-        缺文件 / 损坏 → 空 dict。兼容旧格式 {key: int}（at 补 None）。"""
+        """Read the {key: {"n": attempts(int), "at": last_fail_iso|None}} map from disk;
+        missing / corrupt file → empty dict. Compatible with the old format
+        {key: int} (at backfilled as None)."""
         path = self._synth_backoff_path(name)
         if not await asyncio.to_thread(os.path.exists, path):
             return {}
@@ -343,8 +361,9 @@ class ReflectionEngine:
         return out
 
     async def _aload_synth_backoff(self, name: str) -> dict:
-        """返回失败退避 map。优先用进程内镜像（最新工作副本，即使上次写盘
-        失败也不丢计数）；首次访问该角色时从磁盘加载并缓存。"""
+        """Return the failure-backoff map. Prefers the in-process mirror (the freshest
+        working copy — counts survive even if the last disk write failed);
+        loads from disk and caches on first access for a character."""
         cached = self._synth_backoff_mem.get(name)
         if cached is not None:
             return cached
@@ -353,9 +372,11 @@ class ReflectionEngine:
         return loaded
 
     async def _asave_synth_backoff(self, name: str, backoff: dict) -> None:
-        """先更新进程内镜像（session 内权威，保证写盘失败也不丢 throttle），
-        再 best-effort 落盘。写盘失败 WARN 但不抛——镜像已生效，dead-letter
-        闸门照常工作；重启才会从磁盘读，那时已是另一种恢复语境（Codex P2）。"""
+        """Update the in-process mirror first (authoritative within the session, so a
+        failed disk write never loses the throttle), then best-effort persist.
+        A write failure WARNs without raising — the mirror is already in effect
+        and the dead-letter gate keeps working; only a restart reads from disk,
+        and that is a different recovery context anyway (Codex P2)."""
         self._synth_backoff_mem[name] = backoff
         try:
             await atomic_write_json_async(
@@ -369,9 +390,10 @@ class ReflectionEngine:
             )
 
     async def _abump_synth_backoff(self, name: str, key: str, reason: str) -> int:
-        """记 key 一次合成失败，返回累计次数并戳上失败时刻（供时间自愈）。
-        caller 不持锁（失败分支都在 post-LLM 锁之外），这里自取 _get_alock
-        做 read-modify-write。"""
+        """Record one synthesis failure for key; returns the cumulative count and
+        stamps the failure time (for time-based self-healing). The caller holds
+        no lock (failure branches all run outside the post-LLM lock), so this
+        takes _get_alock itself for the read-modify-write."""
         async with self._get_alock(name):
             # 拷贝一份再改：_aload_synth_backoff 返回的是进程内镜像引用，
             # 由 _asave_synth_backoff 统一回写，避免半改状态被并发读看到。
@@ -393,7 +415,7 @@ class ReflectionEngine:
         return attempts
 
     async def _aclear_synth_backoff(self, name: str, key: str) -> None:
-        """key 成功落盘后清掉其失败记录。caller 不持锁。"""
+        """Clear a key's failure record after it persists successfully. Caller holds no lock."""
         async with self._get_alock(name):
             backoff = dict(await self._aload_synth_backoff(name))
             if key in backoff:
@@ -404,7 +426,7 @@ class ReflectionEngine:
 
     @staticmethod
     def _normalize_reflection(entry: dict) -> dict:
-        """Fill evidence/archive/promote 节流等新字段的默认值 in-place.
+        """Fill in defaults for the new evidence/archive/promote-throttle fields in-place.
 
         Schema extension from memory-evidence-rfc §3.2.2. Defaults do NOT
         back-fill to "migrated" seed values — that's the migration-seed path
@@ -412,9 +434,9 @@ class ReflectionEngine:
         Here we only guarantee the fields exist so downstream code
         (`evidence_score`, `derive_status` …) doesn't KeyError on legacy data.
 
-        Also adds the `recent_mentions` / `suppress` mention抑制 fields so
+        Also adds the `recent_mentions` / `suppress` mention-suppression fields so
         confirmed reflections can share persona's 5h-window rate-limit
-        machinery (AI 自我克制，不在 5h 内反复提同一条)。
+        machinery (AI self-restraint: do not repeatedly mention the same item within 5h).
 
         Note on token-count cache: persona entries carry a
         `token_count` / `token_count_text_sha256` / `token_count_tokenizer`
@@ -577,8 +599,8 @@ class ReflectionEngine:
     def _make_archive_stamper(now_iso: str):
         """Return a ``stamper(chunk, shard_basename)`` callback for
         ``aappend_to_shard`` / ``append_to_shard_sync``. RFC §3.5.6:
-        "归档后字段追加：archived_at（ISO8601）和 archive_shard_path
-        （相对路径字符串）"。
+        "after archiving, append the fields archived_at (ISO8601) and
+        archive_shard_path (relative path string)".
 
         We store the basename only (relative to the kind-archive dir) —
         keeps logs short and survives memory_dir relocation.
@@ -610,8 +632,8 @@ class ReflectionEngine:
     def save_reflections(self, name: str, reflections: list[dict]) -> None:
         """Save reflections, archiving stale promoted/denied entries to shards.
 
-        promoted/denied 超过 _REFLECTION_ARCHIVE_DAYS 的条目自动移入分片归档
-        目录 (RFC §3.5.4)。This path covers the EXISTING age-based archival —
+        promoted/denied entries older than _REFLECTION_ARCHIVE_DAYS are moved
+        automatically into the sharded archive directory (RFC §3.5.4). This path covers the EXISTING age-based archival —
         score-driven `sub_zero_days >= EVIDENCE_ARCHIVE_DAYS` archival uses
         the dedicated `aarchive_reflection` event-sourced path instead.
         """
@@ -744,22 +766,28 @@ class ReflectionEngine:
 
         Called during proactive chat. Returns newly created reflections.
 
-        幂等性（P1 修复致命点 3）：
-          1. reflection id 由 source_fact_ids 决定（_reflection_id_from_facts）。
-          2. LLM 调用前先查：同一批 unabsorbed facts 对应的 id 若已在
-             reflections.json 中存在 → 跳过 LLM、仅补跑 mark_absorbed（幂等）。
-          3. save_reflections 亦按 id dedup，防 concurrent synth 双写。
-          4. 始终在末尾 amark_absorbed，确保 save 成功但 mark 失败后的
-             重启补跑能真正把 facts 的 absorbed 置为 True。
+        Idempotency (P1 fix for fatal issue #3):
+          1. The reflection id is determined by source_fact_ids
+             (_reflection_id_from_facts).
+          2. Before the LLM call, check: if the id for this batch of unabsorbed
+             facts already exists in reflections.json → skip the LLM and only
+             re-run mark_absorbed (idempotent).
+          3. save_reflections also dedups by id, guarding against concurrent
+             synth double-writes.
+          4. Always amark_absorbed at the end, so a restart re-run after "save
+             succeeded but mark failed" really flips the facts' absorbed to True.
 
-        并发（C3 重构 + thinking）：LLM 调用在锁外。锁仅守护"再 load → id
-        dedup → append → save"这一段几十毫秒的临界区。这样：
-          - LLM (90-120s with thinking) 期间不阻塞同角色其他 reflection 写
-            （aapply_signal / aauto_promote_stale 的 pending→confirmed 段 /
-             arecord_mentions / aget_followup_topics 等）
-          - 双写防御：rid 由 source_fact_ids 决定（确定性），并发 synth 拿同
-            一批 facts 算出同 rid，post-LLM 锁内 dedup append 兜住。失败一方
-            返回 [] 不污染 caller 视图。
+        Concurrency (C3 refactor + thinking): the LLM call is outside the lock.
+        The lock only guards the tens-of-milliseconds critical section of
+        "reload → id dedup → append → save". Thus:
+          - During the LLM (90-120s with thinking), other reflection writes for
+            the same character aren't blocked (aapply_signal /
+            aauto_promote_stale's pending→confirmed section / arecord_mentions /
+            aget_followup_topics, etc.)
+          - Double-write defense: rid is determined by source_fact_ids
+            (deterministic); concurrent synths over the same fact batch compute
+            the same rid, and the post-LLM in-lock dedup append catches it. The
+            losing side returns [] without polluting the caller's view.
         """
         from config.prompts.prompts_memory import get_reflection_prompt
         from utils.language_utils import get_global_language
@@ -1019,10 +1047,12 @@ class ReflectionEngine:
     async def _build_related_context_block(
         self, lanlan_name: str, unabsorbed: list[dict]
     ) -> str:
-        """Embedding 可用时召回 absorbed fact 作 RELATED_CONTEXT；不可用 /
-        召回为空 → 返回空字符串（{RELATED_CONTEXT_BLOCK} 渲染消失，prompt 与
-        改造前等价）。远期 fact 仅作参考，不进 source_fact_ids、不
-        mark_absorbed —— 幂等性由 unabsorbed 集合的 rid hash 保证。"""
+        """When embeddings are available, recall absorbed facts as RELATED_CONTEXT;
+        unavailable / empty recall → return an empty string (the
+        {RELATED_CONTEXT_BLOCK} render disappears; the prompt is equivalent to
+        the pre-change one). Distant facts are reference-only: they don't enter
+        source_fact_ids and aren't mark_absorbed — idempotency is guaranteed by
+        the rid hash of the unabsorbed set."""
         try:
             from memory.embeddings import (
                 get_embedding_service,
@@ -1124,10 +1154,11 @@ class ReflectionEngine:
         *,
         split_count: int,
     ) -> dict:
-        """构造 split 产出的新 reflection；继承 src 的 source_fact_ids、
-        ontology、event_when。reinforcement 按实际 split_count 等分
-        （Codex P2 #1392：原本硬编码 /2，N>2 时低估了每条强度）。
-        split_count 至少 2（caller 在 len(produce)<2 时已跳过）。"""
+        """Build a reflection produced by split; inherits src's source_fact_ids,
+        ontology and event_when. reinforcement is divided evenly by the actual
+        split_count (Codex P2 #1392: the old hardcoded /2 underestimated each
+        item's strength when N>2). split_count is at least 2 (the caller
+        already skips when len(produce)<2)."""
         text = str(produce_item.get('text', '')).strip()
         rel_type = produce_item.get('relation_type') or src.get('relation_type')
         temporal = produce_item.get('temporal_scope') or src.get('temporal_scope')
@@ -1157,9 +1188,9 @@ class ReflectionEngine:
         entity: str,
         now: datetime,
     ) -> dict:
-        """构造 merge 产出的新 reflection；合并 source_fact_ids（含
-        absorbed_from_fact_ids），status 取最高（promoted > confirmed >
-        pending），reinforcement 取最大。"""
+        """Build a reflection produced by merge; merges source_fact_ids (including
+        absorbed_from_fact_ids), status takes the highest (promoted > confirmed >
+        pending), reinforcement takes the max."""
         text = str(produce.get('text', '')).strip()
         rel_type = produce.get('relation_type') or (srcs[0].get('relation_type') if srcs else None)
         temporal = produce.get('temporal_scope') or (srcs[0].get('temporal_scope') if srcs else None)
@@ -1202,16 +1233,17 @@ class ReflectionEngine:
         actions: list[dict],
         cluster_hash: str,
     ) -> int:
-        """Apply MemoryRefineEngine 输出的四件套 actions 到 reflections。
+        """Apply the four MemoryRefineEngine action types to reflections.
 
-        cluster 内 fact entries 是只读信息源 —— 任何针对 fact id 的
-        split / discard / modify 一律 reject；fact 只能作 merge / modify
-        的 absorbed_from_fact_ids。代码层兜底，不靠 prompt 自觉。
+        Fact entries within a cluster are read-only information sources — any
+        split / discard / modify aimed at a fact id is rejected outright; facts
+        may only serve as absorbed_from_fact_ids of merge / modify. Enforced in
+        code, not left to prompt goodwill.
 
-        Lock 内：reload → validate → apply → stamp → save。
-        新产生的 reflection 不 stamp —— 下轮 cron 重新审视。
+        Inside the lock: reload → validate → apply → stamp → save.
+        Newly produced reflections aren't stamped — the next cron re-examines them.
 
-        Returns: 成功应用的 action 数。"""
+        Returns: number of successfully applied actions."""
         from memory.refine import REFINE_TYPE_KEY, VALID_REFINE_ACTIONS
 
         cluster_refl_ids = {
@@ -1412,13 +1444,13 @@ class ReflectionEngine:
     async def _abump_refine_attempts(
         self, name: str, cluster: list[dict], cluster_hash: str,
     ) -> None:
-        """Site 4 liveness 兜底：refine cluster LLM 失败时给非 fact 的
-        reflection 成员 bump ``refine_attempts``。对偶
-        ``PersonaManager._abump_refine_attempts``——同样治法、不同存储位
-        （reflections.json vs persona.json）。
+        """Site 4 liveness fallback: bump ``refine_attempts`` on non-fact reflection
+        members when a refine-cluster LLM call fails. Twin of
+        ``PersonaManager._abump_refine_attempts`` — same cure, different storage
+        (reflections.json vs persona.json).
 
-        Recovery：成功 refine（apply_refine_actions 跑到 stamp 分支）会把
-        ``refine_attempts`` 清回 0；或人工编辑 reflections.json。
+        Recovery: a successful refine (apply_refine_actions reaching the stamp
+        branch) resets ``refine_attempts`` to 0; or manually edit reflections.json.
         """
         from config import MEMORY_LIVENESS_MAX_ATTEMPTS
         from memory.facts import safe_int_field
@@ -1501,7 +1533,7 @@ class ReflectionEngine:
     ) -> bool:
         """Mutate one reflection's evidence via EVT_REFLECTION_EVIDENCE_UPDATED.
 
-        record_and_save 合约（RFC §3.3.3）：
+        record_and_save contract (RFC §3.3.3):
           load → append event → mutate view → save view → advance sentinel.
 
         Returns True if applied; False if reflection not found (LLM may point
@@ -1655,7 +1687,7 @@ class ReflectionEngine:
     async def aarchive_reflection(self, lanlan_name: str, reflection_id: str) -> bool:
         """Move one reflection from main view to a sharded archive file.
 
-        RFC §3.5.6: archive 复用 ``EVT_REFLECTION_STATE_CHANGED`` 事件
+        RFC §3.5.6: archiving reuses the ``EVT_REFLECTION_STATE_CHANGED`` event
         (no new event types). Payload carries `from`/`to`/`archive_shard_path`
         so the reconciler can replay the full transition.
 
@@ -1844,12 +1876,15 @@ class ReflectionEngine:
         response_text: str,
         stop_names: list[str] | None = None,
     ) -> bool:
-        """AI response 提到任一 **confirmed** reflection 的文本 → recent_mentions 累加。
-        Pending reflection 本意就是"AI 主动试探"，抑制会反向破坏机制——
-        所以只扫 confirmed。语义和 persona._apply_record_mentions 对齐。
+        """When the AI response mentions any **confirmed** reflection's text →
+        increment recent_mentions. Pending reflections are by design "the AI
+        probing proactively"; suppressing them would break the mechanism — so
+        only confirmed ones are scanned. Semantics aligned with
+        persona._apply_record_mentions.
 
-        ``stop_names`` 在进 ``_is_mentioned`` 之前剥掉，避免高频出现的
-        master/lanlan + 昵称把无关 reflection 也判成 mentioned。
+        ``stop_names`` are stripped before ``_is_mentioned``, so the
+        ever-present master/lanlan + nicknames don't get unrelated reflections
+        judged as mentioned.
         """
         now = datetime.now()
         now_str = now.isoformat()
@@ -1908,8 +1943,9 @@ class ReflectionEngine:
         return changed
 
     async def arecord_mentions(self, lanlan_name: str, response_text: str) -> None:
-        """AI 发完一轮回复后扫 confirmed reflection，按 5h 窗口累加 mention。
-        连续提超过 SUPPRESS_MENTION_LIMIT (=2) 次 → 打上 suppress=True。
+        """After the AI finishes a reply, scan confirmed reflections and accumulate
+        mentions within the 5h window. Mentioned more than
+        SUPPRESS_MENTION_LIMIT (=2) times in a row → stamp suppress=True.
         """
         if not response_text:
             return
@@ -1926,7 +1962,7 @@ class ReflectionEngine:
                 await self.asave_reflections(lanlan_name, active)
 
     async def aupdate_suppressions(self, lanlan_name: str) -> None:
-        """Render 前刷新 suppress 状态：冷却期过 → 解除；清理窗口外的 recent_mentions。"""
+        """Refresh suppress states before render: cooldown elapsed → lift; prune recent_mentions outside the window."""
         async with self._get_alock(lanlan_name):
             reflections = await self._aload_reflections_full(lanlan_name)
             if self._apply_update_reflection_suppressions(reflections):
@@ -1953,10 +1989,12 @@ class ReflectionEngine:
     ) -> list[dict]:
         """Active confirmed = status='confirmed' AND score > 0 AND not suppressed.
 
-        score <= 0：用户否认多次或刚好抵消，既不应进 render "比较确定的印象"
-        段（语义漂移），也会随背景循环 tick 归档计数器（§3.5）。
-        suppress=True：AI 刚在 5h 窗口内提过太多次这条，由 persona 的同款
-        机制静默（§2.6 正交）。
+        score <= 0: the user denied it repeatedly or it nets out to zero; it
+        should neither enter the render's "fairly certain impressions" section
+        (semantic drift), and it also ticks the background loop's archive
+        counter (§3.5).
+        suppress=True: the AI just mentioned this too often within the 5h
+        window; silenced by persona's same mechanism (§2.6, orthogonal).
         """
         if now is None:
             now = datetime.now()
@@ -1996,12 +2034,14 @@ class ReflectionEngine:
         picking it up gives user a natural chance to re-affirm (or push
         back) before the periodic loop finally flips the stored status.
 
-        Sampling: 当候选池 > TOP_K 时按 `evidence_score + WEIGHT_BASE` 无放
-        回加权随机抽样（Efraimidis-Spirakis），避免每次都取同一批前 K 条
-        造成主动搭话内容雷同。WEIGHT_BASE 给 score=0 的"新鲜未受信号"条目
-        留出最低权重，否则全 0 score 时会退化成空集。可由
-        `REFLECTION_FOLLOWUP_WEIGHTED=False` 回退到旧的"按 list 顺序取前
-        K"行为（测试 / 调试用）。
+        Sampling: when the candidate pool > TOP_K, draw a weighted random sample
+        without replacement by `evidence_score + WEIGHT_BASE`
+        (Efraimidis-Spirakis), avoiding always picking the same top-K batch and
+        making proactive chats repetitive. WEIGHT_BASE gives the "fresh,
+        unsignaled" score=0 entries a minimum weight; otherwise an
+        all-zero-score pool would degenerate into an empty set.
+        `REFLECTION_FOLLOWUP_WEIGHTED=False` reverts to the old "first K in
+        list order" behavior (for tests / debugging).
         """
         if not pending:
             return []
@@ -2100,7 +2140,7 @@ class ReflectionEngine:
 
     async def arecord_surfaced(self, lanlan_name: str, reflection_ids: list[str]) -> None:
         """P2.a.2: per-character asyncio.Lock serializes reflections.json /
-        surfaced.json 写入，避免与 synth / promote 竞写。"""
+        surfaced.json writes, avoiding races with synth / promote."""
         if not reflection_ids:
             return
         async with self._get_alock(lanlan_name):
@@ -2118,8 +2158,9 @@ class ReflectionEngine:
 
         Returns list of {reflection_id, feedback} dicts, or None on LLM/processing failure.
 
-        P2.a.2: 本方法会写回 surfaced.json（line 572），因此必须在角色锁下
-        与 arecord_surfaced / aconfirm_promotion / areject_promotion 串行。
+        P2.a.2: this method writes back surfaced.json (line 572), so it must be
+        serialized under the character lock with arecord_surfaced /
+        aconfirm_promotion / areject_promotion.
         """
         async with self._get_alock(lanlan_name):
             return await self._check_feedback_locked(lanlan_name, user_messages)
@@ -2327,10 +2368,10 @@ class ReflectionEngine:
         Deprecated sync version — retained for backward-compat callers
         (tests / CLI scripts). Production path is the async twin below.
 
-        - 删除时间跳级分支（`AUTO_CONFIRM_DAYS` / `AUTO_PROMOTE_DAYS` 已删）
-        - 仅做 pending → confirmed：`evidence_score(r, now) >= EVIDENCE_CONFIRMED_THRESHOLD`
-        - confirmed → promoted 由 PR-3 的 `_apromote_with_merge` 接管；
-          本函数在 PR-1 不承担 promotion 职责
+        - The time-skip branches are deleted (`AUTO_CONFIRM_DAYS` / `AUTO_PROMOTE_DAYS` removed)
+        - Only does pending → confirmed: `evidence_score(r, now) >= EVIDENCE_CONFIRMED_THRESHOLD`
+        - confirmed → promoted is taken over by PR-3's `_apromote_with_merge`;
+          in PR-1 this function carries no promotion responsibility
         Returns number of transitions.
         """
         reflections = self.load_reflections(lanlan_name)
@@ -2361,8 +2402,8 @@ class ReflectionEngine:
         return transitions
 
     async def aauto_promote_stale(self, lanlan_name: str) -> int:
-        """P2.a.2: 角色级 asyncio.Lock 串行化。score-driven pending →
-        confirmed（§3.9.1） + confirmed → promoted via merge-on-promote
+        """P2.a.2: serialized by the character-level asyncio.Lock. Score-driven
+        pending → confirmed (§3.9.1) + confirmed → promoted via merge-on-promote
         (RFC §3.9.3, PR-3). The promote pass uses `_apromote_with_merge`,
         which dispatches LLM merge decisions and updates throttle state.
 
@@ -2467,19 +2508,22 @@ class ReflectionEngine:
         return transitions
 
     async def aauto_promote_time_driven(self, lanlan_name: str) -> int:
-        """Time-driven fallback for "强力记忆 OFF" 模式。
+        """Time-driven fallback for the "strong memory OFF" mode.
 
-        零 LLM 成本。仿 pre-RFC 行为，纯按 reflection 年龄推进 lifecycle：
-          - pending 满 ``WEAK_MEMORY_AUTO_CONFIRM_DAYS`` 天 (按 created_at 计)
+        Zero LLM cost. Mimics pre-RFC behavior, advancing the lifecycle purely
+        by reflection age:
+          - pending for ``WEAK_MEMORY_AUTO_CONFIRM_DAYS`` days (by created_at)
             → status='confirmed', confirmed_at=now, auto_confirmed=True
-          - confirmed 满 ``WEAK_MEMORY_AUTO_PROMOTE_DAYS`` 天 (按 confirmed_at
-            计) → 直接调 ``persona.aadd_fact`` 走简单合入路径，**不**走 merge
-            LLM。aadd_fact 的内部启发式去重 + 角色卡矛盾检查兜底。
+          - confirmed for ``WEAK_MEMORY_AUTO_PROMOTE_DAYS`` days (by
+            confirmed_at) → call ``persona.aadd_fact`` directly via the simple
+            merge-in path, **not** the merge LLM. aadd_fact's internal heuristic
+            dedup + character-card contradiction check are the safety net.
 
-        Returns: pending→confirmed + confirmed→promoted 的总 transition 数。
+        Returns: total number of pending→confirmed + confirmed→promoted transitions.
 
-        与 ``aauto_promote_stale`` 互斥使用——caller 根据强力记忆开关二选一。
-        本方法不读 evidence_score，evidence 字段缺/0 完全无影响。
+        Mutually exclusive with ``aauto_promote_stale`` — the caller picks one
+        based on the strong-memory switch. This method never reads
+        evidence_score; missing/zero evidence fields have no effect.
         """
         from config import (
             WEAK_MEMORY_AUTO_CONFIRM_DAYS,
@@ -2604,12 +2648,14 @@ class ReflectionEngine:
     async def _abump_reflection_recheck_attempts(
         self, lanlan_name: str, rid: str, reason: str,
     ) -> None:
-        """递增指定 reflection 的 ``recheck_attempts`` 计数。
+        """Increment the given reflection's ``recheck_attempts`` counter.
 
-        失败到 ``MEMORY_RECHECK_MAX_ATTEMPTS`` 上限后，candidates filter 会
-        把该 entry 排除，让循环把名额匀给其它 v1 条目。计数持久化到主文件，
-        重启不复位（避免饥饿同一坏 entry 反复消耗 LLM quota）。
-        Best-effort——保存失败不抛，下次仍会尝试。
+        Once failures reach the ``MEMORY_RECHECK_MAX_ATTEMPTS`` cap, the
+        candidates filter excludes the entry so the loop gives its slot to
+        other v1 entries. The counter is persisted to the main file and
+        survives restarts (so the same bad entry can't keep starving others by
+        burning LLM quota).
+        Best-effort — save failures don't raise; the next run tries again.
         """
         try:
             async with self._get_alock(lanlan_name):
@@ -2638,20 +2684,25 @@ class ReflectionEngine:
             )
 
     async def arecheck_one_legacy_reflection(self, lanlan_name: str) -> bool:
-        """Schema v1 → v2 慢速重判（每次只处理 1 条）。
+        """Schema v1 → v2 slow recheck (processes only 1 entry per call).
 
-        找到该角色 schema_version < CURRENT 且非 archived 的最老 reflection，
-        喂给 LLM 重新标 temporal_scope (pattern/state/episode) + event_when
-        (相对偏移)，系统按 reflection.created_at 解算成 ISO 写回。
+        Finds the character's oldest non-archived reflection with
+        schema_version < CURRENT, asks the LLM to re-label temporal_scope
+        (pattern/state/episode) + event_when (relative offsets); the system
+        resolves them into ISO against reflection.created_at and writes them
+        back.
 
-        Returns: True 表示成功处理了一条；False 表示没找到候选或处理失败。
-        Caller (memory_server._periodic_slow_memory_recheck_loop) 拿 True 时
-        无需 sleep 即可继续下一条（实际仍然每 30s 一条以控速）。
+        Returns: True when one entry was processed successfully; False when no
+        candidate was found or processing failed.
+        The caller (memory_server._periodic_slow_memory_recheck_loop) may
+        proceed to the next item without sleeping on True (in practice it still
+        paces at one per 30s).
 
-        Skip 条件：
-        - schema_version >= CURRENT（已升版）
-        - status in REFLECTION_TERMINAL_STATUSES（archived/merged 等终态）
-        - 已在主 reflections.json 之外（archive 分片不被 load_reflections 拉起）
+        Skip conditions:
+        - schema_version >= CURRENT (already upgraded)
+        - status in REFLECTION_TERMINAL_STATUSES (archived/merged etc., terminal)
+        - already outside the main reflections.json (archive shards aren't
+          loaded by load_reflections)
         """
         from config import (
             MEMORY_SCHEMA_VERSION_CURRENT as _SCHEMA_V,
@@ -2828,11 +2879,12 @@ class ReflectionEngine:
         return True
 
     async def areset_confirmed_at_to_now(self, lanlan_name: str) -> int:
-        """开→关 migration：把所有 confirmed reflection 的 confirmed_at 重置
-        到 now，让 time-driven fallback 走完整的 14 天计时。
+        """On→off migration: reset every confirmed reflection's confirmed_at to now,
+        making the time-driven fallback run the full 14-day clock.
 
-        避免"用户开了一阵又关了，发现关了之后旧 confirmed 立刻 14 天到点
-        批量 promote"的体验断层。返回受影响条目数。
+        Avoids the jarring experience of "user enabled it for a while, turned
+        it off, and old confirmed entries immediately hit the 14-day mark and
+        promote in bulk". Returns the number of affected entries.
         """
         async with self._get_alock(lanlan_name):
             reflections = await self._aload_reflections_full(lanlan_name)
