@@ -1042,7 +1042,9 @@ def test_start_session_seeds_topic_hooks_with_full_global_locale():
 
     assert "topic_language_seed = normalize_language_code(get_global_language_full(), format='full')" in normalized_source
     assert "self.user_language = normalize_language_code(topic_language_seed, format='short')" in normalized_source
-    assert "self._set_conversation_turn_language(topic_language_seed or self.user_language)" in normalized_source
+    assert "self._conversation_turn_language = topic_language_seed" in normalized_source
+    assert "self._conversation_turn_language or topic_language_seed or self.user_language" in normalized_source
+    assert "self._conversation_turn_language = normalized_lang" in normalized_source
 
 
 async def test_submit_proactive_callback_does_not_fail_ack_when_goodbye_silent():

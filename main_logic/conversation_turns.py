@@ -83,7 +83,17 @@ class ConversationTurnDispatcher:
 
     def _emit(self, actor: TurnActor, *, text: str | None, now: float | None) -> None:
         ts = now if now is not None else time.time()
-        text_allowed = bool(text) and not self._privacy_check()
+        privacy_on = True
+        if text:
+            try:
+                privacy_on = self._privacy_check()
+            except Exception:
+                logger.debug(
+                    "[%s] privacy check failed; fallback to redacted turn",
+                    self.lanlan_name,
+                    exc_info=True,
+                )
+        text_allowed = bool(text) and not privacy_on
         event = ConversationTurnEvent(
             lanlan_name=self.lanlan_name,
             actor=actor,

@@ -821,6 +821,47 @@ def test_conversation_turn_dispatcher_redacts_topic_text_in_privacy_mode():
     assert topic_calls == []
 
 
+def test_conversation_turn_dispatcher_redacts_when_privacy_check_fails():
+    from main_logic.conversation_turns import (
+        ActivityTrackerTurnSink,
+        ConversationTurnDispatcher,
+        TopicHookTurnSink,
+    )
+
+    activity_calls = []
+    topic_calls = []
+
+    class FakeActivityTracker:
+        def on_user_message(self, *, text=None, now=None):
+            activity_calls.append(('user', text, now))
+
+        def on_ai_message(self, *, text=None, now=None):
+            activity_calls.append(('ai', text, now))
+
+    class FakeTopicPool:
+        def note_user_message(self, lanlan_name, text, *, lang='zh'):
+            topic_calls.append(('user', lanlan_name, text, lang))
+
+        def note_ai_message(self, lanlan_name, text, *, lang='zh'):
+            topic_calls.append(('ai', lanlan_name, text, lang))
+
+    def broken_privacy_check():
+        raise RuntimeError("preference store unavailable")
+
+    dispatcher = ConversationTurnDispatcher(
+        'test_lanlan',
+        language='zh-CN',
+        privacy_check=broken_privacy_check,
+    )
+    dispatcher.add_sink(ActivityTrackerTurnSink(FakeActivityTracker()))
+    dispatcher.add_sink(TopicHookTurnSink(pool_factory=lambda: FakeTopicPool()))
+
+    dispatcher.note_user_message(text='secret user turn', now=1.0)
+
+    assert activity_calls == [('user', None, 1.0)]
+    assert topic_calls == []
+
+
 # ── Hot-reload (Codex P2) ───────────────────────────────────────────
 
 

@@ -1011,6 +1011,7 @@ class LLMSessionManager:
         
         # 用户语言设置（由 start_session 或前端 set_user_language() 设置，初始为 None）
         self.user_language = None
+        self._conversation_turn_language = None
         # 翻译服务（延迟初始化）
         self._translation_service = None
         
@@ -4278,7 +4279,12 @@ class LLMSessionManager:
         if not getattr(self, 'user_language', None):
             topic_language_seed = normalize_language_code(get_global_language_full(), format='full')
             self.user_language = normalize_language_code(topic_language_seed, format='short')
-        self._set_conversation_turn_language(topic_language_seed or self.user_language)
+            self._conversation_turn_language = topic_language_seed
+        self._set_conversation_turn_language(
+            self._conversation_turn_language
+            or topic_language_seed
+            or self.user_language
+        )
         # 重置防刷屏标志
         self.session_closed_by_server = False
         self.last_audio_send_error_time = 0.0
@@ -8226,6 +8232,7 @@ class LLMSessionManager:
         normalized_lang = normalize_language_code(language, format='full')
 
         self.user_language = normalized_lang
+        self._conversation_turn_language = normalized_lang
         self._set_conversation_turn_language(normalized_lang)
         if normalized_lang != language:
             logger.info(f"用户语言已归一化: {language} → {normalized_lang}")
