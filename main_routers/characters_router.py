@@ -5479,8 +5479,19 @@ async def voice_clone(
         logger.info(f"{provider_label} voice_id 已保存到音色库: {voice_id}")
     except Exception as save_error:
         logger.error(f"保存 {provider_label} voice_id 到音色库失败: {save_error}")
-        # 克隆身份（含 MiMo 的样本 base64）都在 voice_data 里、随这次 save 一起落库，没有
-        # 任何旁路本地文件——save 失败不会留下孤儿，无需额外清理（对偶其它 provider）。
+        # MiMo 与其它家不同：它没有远端音色资源（克隆身份 = voice_meta 里的样本 base64，
+        # save 失败＝什么都没落库，voice_id 是本地生成、此刻指向空）。返回 200+local_save_failed
+        # 会给用户一个根本不存在的 voice_id。而且 MiMo 不存在"重试会重复创建远端资源"的代价
+        # （validate 不创建任何东西），重试是安全的——所以这里返回真失败，让客户端知道并可重试
+        # （Codex review #1851；与 PR #528「远端已创建→200 partial」规则的前提相反）。
+        if provider == 'mimo':
+            return JSONResponse({
+                'error': f'{provider_label}音色保存失败: {str(save_error)}',
+                'code': 'TTS_VOICE_SAVE_FAILED',
+                'provider': provider,
+            }, status_code=500)
+        # 其它 provider（cosyvoice/minimax/elevenlabs）远端音色已创建，本地保存失败仍返回
+        # 200+local_save_failed，避免客户端重试重复创建远端资源、浪费配额（PR #528 既定规则）。
         return JSONResponse({
             'voice_id': voice_id,
             'message': f'{provider_label}音色注册成功，但本地保存失败',
