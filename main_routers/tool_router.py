@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Tool calling router.
 
 Cross-process API for plugins / agent_server / external services to
@@ -67,16 +81,19 @@ from .shared_state import get_session_manager
 
 
 def _validate_local_callback_url(url: str) -> str:
-    """callback_url host 白名单校验：只能指向本机 loopback。
+    """callback_url host whitelist validation: it may only point at local loopback.
 
-    ``verify_local_access`` 只管"谁能调 /api/tools/register"，不管
-    ``callback_url`` 的值。如果不校验 host，本地 caller 可以注册一个
-    指向公网/局域网的 callback_url，把 main_server 当 SSRF 出站代理对
-    外发 LLM 工具调用 payload（含用户对话内容、模型生成的 args）。
+    ``verify_local_access`` only governs who may call /api/tools/register; it
+    says nothing about the ``callback_url`` value. Without host validation, a
+    local caller could register a callback_url pointing at the public internet
+    / LAN, turning main_server into an SSRF egress proxy that ships LLM
+    tool-call payloads (including user conversation content and
+    model-generated args) off-box.
 
-    强制 host 必须是 loopback（``127.0.0.0/8`` IPv4、``::1`` IPv6 或
-    字面量 ``localhost``）。当前 plugin 模型全是本机进程，没有跨机
-    合法用例。需要跨机的请走独立的反向代理 + 显式授权流程。
+    The host is forced to be loopback (``127.0.0.0/8`` IPv4, ``::1`` IPv6, or
+    the literal ``localhost``). All current plugin models are local processes;
+    there is no legitimate cross-machine use case. Cross-machine setups should
+    go through a dedicated reverse proxy + an explicit authorization flow.
     """
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
@@ -195,14 +212,17 @@ _consecutive_connect_failures: Dict[Tuple[str, str], int] = {}
 
 
 def _callback_origin(url: str) -> str:
-    """把 ``callback_url`` 归一为 ``scheme://host:port`` 作为驱逐 bucket key。
-    parse 不出来或 port 不合法（``http://127.0.0.1:abc/cb`` 之类的畸形 URL
-    会让 ``ParseResult.port`` 抛 ``ValueError``——loopback validator 没管端口
-    语法）就回退到原字符串，保证：
-    - counter key 在异常输入下不抛，dispatch 路径仍然能返回结构化 ToolResult
-    - 同一畸形 URL 始终映射到同一 key（驱逐计数仍然能累加，不会因为
-      每次重新尝试 parse 又失败而 key collision 退化）
-    （Codex review on PR #1382: malformed callback URLs.）"""
+    """Normalize ``callback_url`` to ``scheme://host:port`` as the eviction bucket key.
+    If it cannot be parsed or the port is invalid (malformed URLs like
+    ``http://127.0.0.1:abc/cb`` make ``ParseResult.port`` raise ``ValueError`` —
+    the loopback validator does not police port syntax), fall back to the raw
+    string, which guarantees:
+    - the counter key never raises on weird input, and the dispatch path still
+      returns a structured ToolResult
+    - the same malformed URL always maps to the same key (eviction counting
+      still accumulates instead of degenerating into key collisions from
+      re-parsing and failing every time)
+    (Codex review on PR #1382: malformed callback URLs.)"""
     if not url:
         return "<unknown>"
     try:
@@ -218,23 +238,24 @@ def _callback_origin(url: str) -> str:
 
 
 def _is_plugin_source(source: str) -> bool:
-    """只有 ``plugin:<id>`` 形态的 source 会参与自动驱逐。builtin 永远豁免；
-    其它自定义 source（如 agent_server、external）现阶段也不参与——它们的
-    生命周期不一定走 plugin 进程模型，复活机制也不一样。"""
+    """Only sources of the ``plugin:<id>`` form participate in auto-eviction. builtin
+    is always exempt; other custom sources (e.g. agent_server, external) also do
+    not participate for now — their lifecycle does not necessarily follow the
+    plugin process model, and their revival mechanism differs."""
     return bool(source) and source.startswith("plugin:")
 
 
 def _is_connection_level_failure(exc: BaseException) -> bool:
-    """是否属于"插件端点不可达"。只认 ``ConnectError`` / ``ConnectTimeout``——
-    ``ReadTimeout`` 可能只是工具慢，HTTP 5xx 是插件活着但 bug，都不算
-    lifecycle 失败。"""
+    """Whether this counts as "plugin endpoint unreachable". Only ``ConnectError`` /
+    ``ConnectTimeout`` qualify — a ``ReadTimeout`` may just be a slow tool, and
+    HTTP 5xx means the plugin is alive but buggy; neither is a lifecycle failure."""
     return isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))
 
 
 def _note_dispatch_outcome(source: str, callback_url: str, *, connection_failed: bool) -> None:
-    """更新某 ``(source, callback_origin)`` 的连续连接失败计数。成功一次
-    （任何 HTTP status）就清零；连续达到阈值则触发
-    ``_evict_dead_callback_origin``。"""
+    """Update the consecutive connection-failure counter for a ``(source,
+    callback_origin)``. A single success (any HTTP status) resets it to zero;
+    hitting the threshold consecutively triggers ``_evict_dead_callback_origin``."""
     if not _is_plugin_source(source):
         return
     key = (source, _callback_origin(callback_url))
@@ -248,15 +269,17 @@ def _note_dispatch_outcome(source: str, callback_url: str, *, connection_failed:
 
 
 def _evict_dead_callback_origin(source: str, origin: str) -> None:
-    """把指定 ``(source, origin)`` 的工具从每个 session manager 的 registry
-    里扫掉，并触发 ``_sync_tools_to_active_session`` 把 wire 上活跃的 OpenAI
-    Realtime / GLM / Qwen schema 刷新——只动 registry 不推 wire 的话，模型
-    还是会看到旧 schema 直到 session 重启。
+    """Sweep the tools of the given ``(source, origin)`` out of every session
+    manager's registry, and trigger ``_sync_tools_to_active_session`` to refresh
+    the live OpenAI Realtime / GLM / Qwen schemas on the wire — touching only
+    the registry without pushing to the wire would leave the model seeing the
+    old schema until the session restarts.
 
-    只扫匹配 origin 的工具：同 source 下其它 origin 的 sibling 工具保留。
-    覆盖 plugin 进程整体崩溃的常见 case（同 plugin 通常一个 server，所有
-    tool 的 callback_url 同 origin → 一起扫），也避免单端点配错时误伤
-    其它健康端点。"""
+    Only tools matching the origin are swept: sibling tools of the same source
+    on other origins are kept. This covers the common case of a whole plugin
+    process crashing (one plugin usually runs one server, so all its tools share
+    one callback_url origin → swept together) while avoiding collateral damage
+    to other healthy endpoints when a single endpoint is misconfigured."""
     _consecutive_connect_failures.pop((source, origin), None)
     try:
         session_manager = get_session_manager()

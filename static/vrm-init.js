@@ -471,6 +471,11 @@ async function initVRMModel() {
             return;
         }
 
+        if ((window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber') {
+            console.log('[VRM Init] PNGTuber 模式，跳过 VRM 加载');
+            return;
+        }
+
         // 如果是 MMD 子类型，跳过 VRM 加载（由 mmd-init.js 处理）
         if ((window.lanlan_config?.live3d_sub_type || '').toLowerCase() === 'mmd') {
             console.log('[VRM Init] MMD 子类型，跳过 VRM 加载');

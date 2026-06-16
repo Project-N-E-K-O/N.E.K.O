@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Live2D Router
 
@@ -257,9 +271,9 @@ def _locate_model_config(model_dir: str):
 @router.get("/models")
 async def get_live2d_models(simple: bool = False):
     """
-    获取Live2D模型列表
+    Get the list of Live2D models.
     Args:
-        simple: 如果为True，只返回模型名称列表；如果为False，返回完整的模型信息
+        simple: if True, return only the list of model names; if False, return full model info
     """
     try:
         # 先获取本地模型
@@ -335,7 +349,7 @@ async def get_live2d_models(simple: bool = False):
 @router.get("/model_config/{model_name}")
 def get_model_config(model_name: str):
     """
-    获取指定Live2D模型的model3.json配置
+    Get the model3.json config of the specified Live2D model.
     """
     try:
         # 查找模型目录（可能在static或用户文档目录）
@@ -391,7 +405,7 @@ def get_model_config(model_name: str):
 @router.post("/model_config/{model_name}")
 async def update_model_config(model_name: str, request: Request):
     """
-    更新指定Live2D模型的model3.json配置
+    Update the model3.json config of the specified Live2D model.
     """
     try:
         data = await request.json()
@@ -432,7 +446,7 @@ async def update_model_config(model_name: str, request: Request):
 @router.get('/emotion_mapping/{model_name}')
 def get_emotion_mapping(model_name: str):
     """
-    获取指定Live2D模型的情绪映射配置
+    Get the emotion mapping config of the specified Live2D model.
     """
     try:
         # 查找模型目录（可能在static或用户文档目录）
@@ -501,7 +515,7 @@ def get_emotion_mapping(model_name: str):
 @router.post('/emotion_mapping/{model_name}')
 async def update_emotion_mapping(model_name: str, request: Request):
     """
-    更新指定Live2D模型的情绪映射配置
+    Update the emotion mapping config of the specified Live2D model.
     """
     try:
         data = await request.json()
@@ -601,7 +615,7 @@ async def update_emotion_mapping(model_name: str, request: Request):
 @router.get('/model_files/{model_name}')
 def get_model_files(model_name: str):
     """
-    获取指定Live2D模型的动作和表情文件列表
+    Get the motion and expression file lists of the specified Live2D model.
     """
     try:
         # 查找模型目录（可能在static或用户文档目录）
@@ -628,11 +642,11 @@ def get_model_files(model_name: str):
         # 递归搜索所有子文件夹
         def search_files_recursive(directory, target_ext, result_list):
             """
-            递归搜索指定扩展名的文件
+            Recursively search for files with the given extension.
             args:
-            - directory: 搜索目录
-            - target_ext: 目标文件扩展名
-            - result_list: 存储结果的列表
+            - directory: directory to search
+            - target_ext: target file extension
+            - result_list: list to store results
             """
             try:
                 for item in os.listdir(directory):
@@ -670,13 +684,13 @@ def get_model_files(model_name: str):
 @router.get('/model_parameters/{model_name}')
 def get_model_parameters(model_name: str):
     """
-    获取指定Live2D模型的参数信息（从.cdi3.json文件）
+    Get parameter info of the specified Live2D model (from the .cdi3.json file).
     args:
-    - model_name: 模型名称（不带路径和扩展名）
+    - model_name: model name (without path or extension)
     returns:
-    - success: 是否成功获取参数信息
-    - parameters: 参数列表，每个参数包含id、groupId和name
-    - parameter_groups: 参数组列表，每个组包含id和name
+    - success: whether the parameter info was retrieved successfully
+    - parameters: parameter list; each parameter contains id, groupId and name
+    - parameter_groups: parameter group list; each group contains id and name
     """
     try:
         # 查找模型目录
@@ -733,10 +747,10 @@ def get_model_parameters(model_name: str):
 @router.post('/save_model_parameters/{model_name}')
 async def save_model_parameters(model_name: str, request: Request):
     """
-    保存模型参数到模型目录的parameters.json文件
+    Save model parameters to parameters.json in the model directory.
     args:
-    - model_name: 模型名称（不带路径和扩展名）
-    - request: 请求体，包含参数信息
+    - model_name: model name (without path or extension)
+    - request: request body containing the parameter info
     """
     try:
         # 查找模型目录
@@ -766,12 +780,12 @@ async def save_model_parameters(model_name: str, request: Request):
 @router.get('/load_model_parameters/{model_name}')
 def load_model_parameters(model_name: str):
     """
-    从模型目录的parameters.json文件加载参数
+    Load parameters from parameters.json in the model directory.
     args:
-    - model_name: 模型名称（不带路径和扩展名）
+    - model_name: model name (without path or extension)
     returns:
-    - success: 是否成功加载参数
-    - parameters: 加载的参数字典
+    - success: whether the parameters were loaded successfully
+    - parameters: loaded parameter dict
     """
     try:
         # 查找模型目录
@@ -802,12 +816,12 @@ def load_model_parameters(model_name: str):
 @router.get("/model_config_by_id/{model_id}")
 def get_model_config_by_id(model_id: str):
     """
-    获取指定Live2D模型的model3.json配置
+    Get the model3.json config of the specified Live2D model.
     args:
-    - model_id: 模型ID（从workshop.json中获取）
+    - model_id: model ID (from workshop.json)
     returns:
-    - success: 是否成功获取配置
-    - config: 模型配置字典
+    - success: whether the config was retrieved successfully
+    - config: model config dict
     """
     try:
         # 查找模型目录（可能在static或用户文档目录）
@@ -866,13 +880,13 @@ def get_model_config_by_id(model_id: str):
 @router.post("/model_config_by_id/{model_id}")
 async def update_model_config_by_id(model_id: str, request: Request):
     """
-    更新指定Live2D模型的model3.json配置
+    Update the model3.json config of the specified Live2D model.
     args:
-    - model_id: 模型ID（从workshop.json中获取）
-    - request: 请求体，包含更新的配置信息
+    - model_id: model ID (from workshop.json)
+    - request: request body containing the updated config
     returns:
-    - success: 是否成功更新配置
-    - config: 更新后的模型配置字典
+    - success: whether the config was updated successfully
+    - config: updated model config dict
     """
     try:
         data = await request.json()
@@ -919,13 +933,13 @@ async def update_model_config_by_id(model_id: str, request: Request):
 @router.get('/model_files_by_id/{model_id}')
 def get_model_files_by_id(model_id: str):
     """
-    获取指定Live2D模型的动作和表情文件列表
+    Get the motion and expression file lists of the specified Live2D model.
     args:
-    - model_id: 模型ID（从workshop.json中获取）
+    - model_id: model ID (from workshop.json)
     returns:
-    - success: 是否成功获取文件列表
-    - motion_files: 动作文件列表
-    - expression_files: 表情文件列表
+    - success: whether the file lists were retrieved successfully
+    - motion_files: motion file list
+    - expression_files: expression file list
     """
     try:
         # 直接拒绝无效的model_id
@@ -974,11 +988,11 @@ def get_model_files_by_id(model_id: str):
         # 递归搜索所有子文件夹
         def search_files_recursive(directory, target_ext, result_list):
             """
-            递归搜索指定扩展名的文件
+            Recursively search for files with the given extension.
             args:
-            - directory: 要搜索的目录路径
-            - target_ext: 目标文件扩展名（如'.motion3.json'）
-            - result_list: 存储找到的文件路径的列表
+            - directory: directory path to search
+            - target_ext: target file extension (e.g. '.motion3.json')
+            - result_list: list to store the found file paths
             """
             try:
                 for item in os.listdir(directory):
@@ -1035,7 +1049,7 @@ def get_model_files_by_id(model_id: str):
 @router.post('/upload_model')
 async def upload_live2d_model(files: list[UploadFile] = File(...)):
     """
-    上传Live2D模型到用户文档目录
+    Upload a Live2D model to the user documents directory.
     """
     import shutil
     import tempfile
@@ -1227,11 +1241,11 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
 @router.post('/upload_file/{model_name}')
 async def upload_file_to_model(model_name: str, file: UploadFile = File(...), file_type: str = "motion"):
     """
-    上传单个动作或表情文件到指定模型
+    Upload a single motion or expression file to the specified model.
     args:
-    - model_name: 模型名称（不带路径和扩展名）
-    - file: 上传的文件对象
-    - file_type: 文件类型，必须是 "motion" 或 "expression"
+    - model_name: model name (without path or extension)
+    - file: uploaded file object
+    - file_type: file type, must be "motion" or "expression"
     """
     try:
         if not file:
@@ -1307,9 +1321,9 @@ async def upload_file_to_model(model_name: str, file: UploadFile = File(...), fi
 @router.get('/open_model_directory/{model_name}')
 def open_model_directory(model_name: str):
     """
-    打开指定Live2D模型的目录
+    Open the directory of the specified Live2D model.
     args:
-    - model_name: 模型名称（不带路径和扩展名）
+    - model_name: model name (without path or extension)
     """
     try:
         import sys
@@ -1335,9 +1349,9 @@ def open_model_directory(model_name: str):
 @router.delete('/model/{model_name}')
 def delete_model(model_name: str):
     """
-    删除指定的Live2D模型
+    Delete the specified Live2D model.
     args:
-    - model_name: 模型名称（不带路径和扩展名）
+    - model_name: model name (without path or extension)
     """
     try:
         # 查找模型目录
@@ -1431,7 +1445,7 @@ def delete_model(model_name: str):
 @router.get('/user_models')
 def get_user_models():
     """
-    获取用户导入的模型列表  
+    Get the list of user-imported models.
     """
     try:
         user_models = []

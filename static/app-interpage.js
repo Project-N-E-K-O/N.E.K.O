@@ -58,6 +58,8 @@
             'body.neko-main-ui-hidden-by-model-manager #live2d-container,',
             'body.neko-main-ui-hidden-by-model-manager #vrm-container,',
             'body.neko-main-ui-hidden-by-model-manager #mmd-container,',
+            'body.neko-main-ui-hidden-by-model-manager #pngtuber-container,',
+            'body.neko-main-ui-hidden-by-model-manager #pngtuber-container .pngtuber-image,',
             'body.neko-main-ui-hidden-by-model-manager #live2d-canvas,',
             'body.neko-main-ui-hidden-by-model-manager #vrm-canvas,',
             'body.neko-main-ui-hidden-by-model-manager #mmd-canvas,',
@@ -65,12 +67,15 @@
             'body.neko-main-ui-hidden-by-model-manager #live2d-floating-buttons,',
             'body.neko-main-ui-hidden-by-model-manager #vrm-floating-buttons,',
             'body.neko-main-ui-hidden-by-model-manager #mmd-floating-buttons,',
+            'body.neko-main-ui-hidden-by-model-manager #pngtuber-floating-buttons,',
             'body.neko-main-ui-hidden-by-model-manager #live2d-lock-icon,',
             'body.neko-main-ui-hidden-by-model-manager #vrm-lock-icon,',
             'body.neko-main-ui-hidden-by-model-manager #mmd-lock-icon,',
+            'body.neko-main-ui-hidden-by-model-manager #pngtuber-lock-icon,',
             'body.neko-main-ui-hidden-by-model-manager #live2d-return-button-container,',
             'body.neko-main-ui-hidden-by-model-manager #vrm-return-button-container,',
-            'body.neko-main-ui-hidden-by-model-manager #mmd-return-button-container {',
+            'body.neko-main-ui-hidden-by-model-manager #mmd-return-button-container,',
+            'body.neko-main-ui-hidden-by-model-manager #pngtuber-return-button-container {',
             '  display: none !important;',
             '  visibility: hidden !important;',
             '  pointer-events: none !important;',
@@ -208,6 +213,21 @@
             return;
         }
         document.querySelectorAll('#mmd-floating-buttons, #mmd-lock-icon, #mmd-return-button-container')
+            .forEach(function (el) {
+                if (window._removeNekoFloatingButtonsElement) {
+                    window._removeNekoFloatingButtonsElement(el);
+                } else {
+                    el.remove();
+                }
+            });
+    }
+
+    function cleanupPNGTuberOverlayUI() {
+        if (window.pngtuberManager && typeof window.pngtuberManager.cleanupFloatingButtons === 'function') {
+            window.pngtuberManager.cleanupFloatingButtons();
+            return;
+        }
+        document.querySelectorAll('#pngtuber-floating-buttons, #pngtuber-lock-icon, #pngtuber-return-button-container')
             .forEach(function (el) {
                 if (window._removeNekoFloatingButtonsElement) {
                     window._removeNekoFloatingButtonsElement(el);
@@ -370,6 +390,16 @@
         var suppressToast = !!reloadOptions.suppressToast;
         var skipIdleRestore = !!reloadOptions.skipIdleRestore;
         var throwOnError = !!reloadOptions.throwOnError;
+        var reloadKey = JSON.stringify({
+            lanlan_name: targetLanlanName,
+            temporaryConfig: temporaryConfig || null,
+            skipIdleRestore: skipIdleRestore
+        });
+
+        if (window._lastModelReloadKey === reloadKey && Date.now() - (window._lastModelReloadAt || 0) < 1000) {
+            console.log('[Model] 忽略短时间内重复的模型重载请求');
+            return window._lastModelReloadResult;
+        }
 
         // 只有承载完整模型 UI 的页面才处理重载；Chat 等子窗口缺少渲染容器，
         // 执行会导致异常并弹出误导性的"模型切换失败"toast。
@@ -388,13 +418,33 @@
         // Concurrency: wait if another reload is in-flight
         if (window._modelReloadInFlight) {
             console.log('[Model] 模型重载已在进行中，等待完成后重试');
-            await window._modelReloadPromise;
-            return handleModelReload(targetLanlanName, reloadOptions);
+            if (window._modelReloadKey === reloadKey) {
+                console.log('[Model] 模型重载已在进行，复用当前重载请求');
+                return window._modelReloadPromise;
+            }
+            console.log('[Model] 模型重载已在进行，记录最后一次不同的重载请求');
+            var pendingResolve;
+            var pendingReject;
+            var pendingPromise = new Promise(function (resolve, reject) {
+                pendingResolve = resolve;
+                pendingReject = reject;
+            });
+            if (window._pendingModelReload && typeof window._pendingModelReload.resolve === 'function') {
+                window._pendingModelReload.resolve(false);
+            }
+            window._pendingModelReload = {
+                targetLanlanName: targetLanlanName,
+                reloadOptions: reloadOptions,
+                resolve: pendingResolve,
+                reject: pendingReject
+            };
+            return pendingPromise;
         }
 
         // Mark in-flight
         window._modelReloadInFlight = true;
-        window._pendingModelReload = false;
+        window._modelReloadKey = reloadKey;
+        window._pendingModelReload = null;
 
         var resolveReload;
         window._modelReloadPromise = new Promise(function (resolve) {
@@ -404,6 +454,7 @@
         console.log('[Model] 开始热切换模型');
         let mmdRequestSessionId = '';
         let activeMmdLoadingSessionId = '';
+        var reloadSucceeded = false;
 
         try {
             // 1. Re-fetch page config, or use a caller-provided temporary runtime config.
@@ -466,6 +517,19 @@
                     if (oldModelType === 'live3d') {
                         cleanupVRMOverlayUI();
                         cleanupMMDOverlayUI();
+                    }
+                    if (oldModelType === 'pngtuber') {
+                        if (window.pngtuberManager && typeof window.pngtuberManager.hide === 'function') {
+                            window.pngtuberManager.hide();
+                        }
+                        cleanupPNGTuberOverlayUI();
+                        var oldPngtuberContainer = document.getElementById('pngtuber-container');
+                        if (oldPngtuberContainer) {
+                            oldPngtuberContainer.style.display = 'none';
+                            oldPngtuberContainer.style.visibility = 'hidden';
+                            oldPngtuberContainer.classList.add('hidden');
+                            oldPngtuberContainer.style.pointerEvents = 'none';
+                        }
                     }
                 }
 
@@ -766,6 +830,53 @@
                         console.error('[Model] MMD 管理器初始化失败');
                         throw new Error('MMD 管理器初始化失败');
                     }
+                } else if (newModelType === 'pngtuber') {
+                    window.cubism4Model = '';
+                    window.vrmModel = '';
+                    window.mmdModel = '';
+
+                    var live2dContainerPng = document.getElementById('live2d-container');
+                    if (live2dContainerPng) {
+                        live2dContainerPng.style.display = 'none';
+                        live2dContainerPng.classList.add('hidden');
+                    }
+                    var vrmContainerPng = document.getElementById('vrm-container');
+                    if (vrmContainerPng) {
+                        vrmContainerPng.style.display = 'none';
+                        vrmContainerPng.classList.add('hidden');
+                    }
+                    var mmdContainerPng = document.getElementById('mmd-container');
+                    if (mmdContainerPng) {
+                        mmdContainerPng.style.display = 'none';
+                        mmdContainerPng.classList.add('hidden');
+                    }
+
+                    if (window.live2dManager && typeof window.live2dManager.pauseRendering === 'function') {
+                        window.live2dManager.pauseRendering();
+                    }
+                    if (window.live2dManager && window.live2dManager.pixi_app && window.live2dManager.pixi_app.renderer) {
+                        window.live2dManager.pixi_app.renderer.clear();
+                    }
+                    if (window.vrmManager && typeof window.vrmManager.pauseRendering === 'function') {
+                        window.vrmManager.pauseRendering();
+                    }
+                    if (window.vrmManager && window.vrmManager.renderer) {
+                        window.vrmManager.renderer.clear();
+                    }
+                    if (window.mmdManager && typeof window.mmdManager.pauseRendering === 'function') {
+                        window.mmdManager.pauseRendering();
+                    }
+
+                    var pngtuberConfig = (data.pngtuber && typeof data.pngtuber === 'object')
+                        ? Object.assign({}, data.pngtuber)
+                        : { idle_image: newModelPath };
+                    if (window.lanlan_config) {
+                        window.lanlan_config.pngtuber = Object.assign({}, pngtuberConfig);
+                    }
+                    if (typeof window.loadPNGTuberAvatar !== 'function') {
+                        throw new Error('PNGTuber runtime not loaded');
+                    }
+                    await window.loadPNGTuberAvatar(pngtuberConfig);
                 } else {
                     // Live2D mode
                     window.cubism4Model = newModelPath;
@@ -803,6 +914,17 @@
                     }
                     if (window.mmdManager && typeof window.mmdManager.pauseRendering === 'function') {
                         window.mmdManager.pauseRendering();
+                    }
+
+                    // Hide PNGTuber when returning to Live2D.
+                    if (window.pngtuberManager && typeof window.pngtuberManager.hide === 'function') {
+                        window.pngtuberManager.hide();
+                    }
+                    cleanupPNGTuberOverlayUI();
+                    var pngtuberContainer2 = document.getElementById('pngtuber-container');
+                    if (pngtuberContainer2) {
+                        pngtuberContainer2.style.display = 'none';
+                        pngtuberContainer2.classList.add('hidden');
                     }
 
                     // Show & reload Live2D
@@ -900,6 +1022,7 @@
                         2000
                     );
                 }
+                reloadSucceeded = true;
             } else {
                 console.error('[Model] 获取页面配置失败:', data.error);
                 if (!suppressToast) {
@@ -927,6 +1050,29 @@
                 window.lanlan_config.live3d_sub_type = oldLive3dSubType || '';
                 console.warn('[Model] 已回滚 config:', { model_type: oldModelType, live3d_sub_type: oldLive3dSubType });
             }
+            if (typeChanged && oldModelType === 'pngtuber') {
+                try {
+                    if (window.lanlan_config && window.lanlan_config.pngtuber && typeof window.loadPNGTuberAvatar === 'function') {
+                        await window.loadPNGTuberAvatar(window.lanlan_config.pngtuber);
+                    } else if (window.pngtuberManager && typeof window.pngtuberManager.show === 'function') {
+                        window.pngtuberManager.show();
+                    }
+                    var restoredPngtuberContainer = document.getElementById('pngtuber-container');
+                    if (restoredPngtuberContainer) {
+                        restoredPngtuberContainer.classList.remove('hidden');
+                        restoredPngtuberContainer.style.display = 'block';
+                        restoredPngtuberContainer.style.visibility = 'visible';
+                        restoredPngtuberContainer.style.pointerEvents = 'auto';
+                        var restoredPngtuberImage = restoredPngtuberContainer.querySelector('.pngtuber-image');
+                        if (restoredPngtuberImage) {
+                            restoredPngtuberImage.style.visibility = 'visible';
+                            restoredPngtuberImage.style.pointerEvents = 'auto';
+                        }
+                    }
+                } catch (restoreError) {
+                    console.warn('[Model] PNGTuber restore after failed switch failed:', restoreError);
+                }
+            }
             if (!suppressToast) {
                 window.showStatusToast(
                     window.t ? window.t('app.modelSwitchFailed') : '模型切换失败',
@@ -939,7 +1085,15 @@
         } finally {
             // Clear in-flight flag
             window._modelReloadInFlight = false;
-            resolveReload();
+            if (reloadSucceeded) {
+                window._lastModelReloadKey = reloadKey;
+                window._lastModelReloadAt = Date.now();
+                window._lastModelReloadResult = true;
+            } else {
+                window._lastModelReloadResult = false;
+            }
+            window._modelReloadKey = '';
+            resolveReload(window._lastModelReloadResult);
 
             // If the model manager is still open, keep the Pet UI hidden even
             // though the reload path briefly re-created containers/buttons.
@@ -951,8 +1105,17 @@
             // Process any queued reload request
             if (window._pendingModelReload) {
                 console.log('[Model] 执行待处理的模型重载请求');
-                window._pendingModelReload = false;
-                setTimeout(function () { handleModelReload(); }, 100);
+                var pendingReload = window._pendingModelReload;
+                window._pendingModelReload = null;
+                setTimeout(function () {
+                    handleModelReload(pendingReload.targetLanlanName, pendingReload.reloadOptions)
+                        .then(function (result) {
+                            if (typeof pendingReload.resolve === 'function') pendingReload.resolve(result);
+                        })
+                        .catch(function (error) {
+                            if (typeof pendingReload.reject === 'function') pendingReload.reject(error);
+                        });
+                }, 100);
             }
         }
     }
@@ -1263,9 +1426,9 @@
             // 记录隐藏前的 display，避免恢复时清空 display 导致容器短暂按默认 block 布局显示，
             // 出现“语音控制/屏幕分享/猫爪/设置/请她离开”先挤在一起再分开的闪烁。
             document.querySelectorAll(
-                '#live2d-floating-buttons, #vrm-floating-buttons, #mmd-floating-buttons, ' +
-                '#live2d-lock-icon, #vrm-lock-icon, #mmd-lock-icon, ' +
-                '#live2d-return-button-container, #vrm-return-button-container, #mmd-return-button-container'
+                '#live2d-floating-buttons, #vrm-floating-buttons, #mmd-floating-buttons, #pngtuber-floating-buttons, ' +
+                '#live2d-lock-icon, #vrm-lock-icon, #mmd-lock-icon, #pngtuber-lock-icon, ' +
+                '#live2d-return-button-container, #vrm-return-button-container, #mmd-return-button-container, #pngtuber-return-button-container'
             ).forEach(function (el) {
                 if (!el.dataset.nekoPreHideDisplay) {
                     var computedDisplay = '';
@@ -1300,6 +1463,78 @@
 
         try {
             var currentModelType = window.lanlan_config?.model_type || 'live2d';
+            var activeUiPrefix = currentModelType === 'pngtuber'
+                ? 'pngtuber'
+                : (currentModelType === 'live3d'
+                    ? (((window.lanlan_config && window.lanlan_config.live3d_sub_type || '').toLowerCase() === 'mmd') ? 'mmd' : 'vrm')
+                    : (currentModelType === 'vrm' ? 'vrm' : 'live2d'));
+
+            function hideInactiveAvatarRuntime(prefix) {
+                if (prefix === 'live2d') {
+                    var live2dContainerToHide = document.getElementById('live2d-container');
+                    if (live2dContainerToHide) {
+                        live2dContainerToHide.style.display = 'none';
+                        live2dContainerToHide.classList.add('hidden');
+                    }
+                    var live2dCanvasToHide = document.getElementById('live2d-canvas');
+                    if (live2dCanvasToHide) {
+                        live2dCanvasToHide.style.visibility = 'hidden';
+                        live2dCanvasToHide.style.pointerEvents = 'none';
+                    }
+                } else if (prefix === 'vrm') {
+                    var vrmContainerToHide = document.getElementById('vrm-container');
+                    if (vrmContainerToHide) {
+                        vrmContainerToHide.style.display = 'none';
+                        vrmContainerToHide.classList.add('hidden');
+                    }
+                    var vrmCanvasToHide = document.getElementById('vrm-canvas');
+                    if (vrmCanvasToHide) {
+                        vrmCanvasToHide.style.visibility = 'hidden';
+                        vrmCanvasToHide.style.pointerEvents = 'none';
+                    }
+                } else if (prefix === 'mmd') {
+                    var mmdContainerToHide = document.getElementById('mmd-container');
+                    if (mmdContainerToHide) {
+                        mmdContainerToHide.style.display = 'none';
+                        mmdContainerToHide.classList.add('hidden');
+                    }
+                    var mmdCanvasToHide = document.getElementById('mmd-canvas');
+                    if (mmdCanvasToHide) {
+                        mmdCanvasToHide.style.visibility = 'hidden';
+                        mmdCanvasToHide.style.pointerEvents = 'none';
+                    }
+                } else if (prefix === 'pngtuber') {
+                    if (window.pngtuberManager && typeof window.pngtuberManager.hide === 'function') {
+                        window.pngtuberManager.hide();
+                    }
+                    if (typeof cleanupPNGTuberOverlayUI === 'function') {
+                        cleanupPNGTuberOverlayUI();
+                    }
+                    var pngtuberContainerToHide = document.getElementById('pngtuber-container');
+                    if (pngtuberContainerToHide) {
+                        pngtuberContainerToHide.style.display = 'none';
+                        pngtuberContainerToHide.style.visibility = 'hidden';
+                        pngtuberContainerToHide.classList.add('hidden');
+                        pngtuberContainerToHide.style.pointerEvents = 'none';
+                    }
+                    var pngtuberImageToHide = pngtuberContainerToHide ? pngtuberContainerToHide.querySelector('.pngtuber-image') : null;
+                    if (pngtuberImageToHide) {
+                        pngtuberImageToHide.style.visibility = 'hidden';
+                        pngtuberImageToHide.style.pointerEvents = 'none';
+                    }
+                }
+                document.querySelectorAll('#' + prefix + '-floating-buttons, #' + prefix + '-lock-icon, #' + prefix + '-return-button-container')
+                    .forEach(function (el) {
+                        el.style.display = 'none';
+                        el.style.visibility = 'hidden';
+                        el.style.opacity = '0';
+                        delete el.dataset.nekoPreHideDisplay;
+                    });
+            }
+
+            ['live2d', 'vrm', 'mmd', 'pngtuber'].forEach(function (prefix) {
+                if (prefix !== activeUiPrefix) hideInactiveAvatarRuntime(prefix);
+            });
             console.log('[UI] 当前模型类型:', currentModelType);
 
             if (currentModelType === 'vrm') {
@@ -1374,6 +1609,24 @@
                         window.vrmManager._startUIUpdateLoop();
                     }
                 }
+            } else if (currentModelType === 'pngtuber') {
+                var pngtuberContainer = document.getElementById('pngtuber-container');
+                if (pngtuberContainer) {
+                    pngtuberContainer.style.display = 'block';
+                    pngtuberContainer.style.visibility = 'visible';
+                    pngtuberContainer.classList.remove('hidden');
+                    pngtuberContainer.style.pointerEvents = 'auto';
+                }
+                var pngtuberImage = pngtuberContainer ? pngtuberContainer.querySelector('.pngtuber-image') : null;
+                if (pngtuberImage) {
+                    pngtuberImage.style.visibility = 'visible';
+                    pngtuberImage.style.pointerEvents = 'auto';
+                }
+                if (window.pngtuberManager && typeof window.pngtuberManager.show === 'function') {
+                    window.pngtuberManager.show();
+                } else if (window.pngtuberManager && typeof window.pngtuberManager.resumeRendering === 'function') {
+                    window.pngtuberManager.resumeRendering();
+                }
             } else {
                 // Show Live2D
                 var live2dContainer = document.getElementById('live2d-container');
@@ -1402,9 +1655,11 @@
             // 恢复为隐藏前的 display（如 flex/block），并让浮动按钮首两帧保持不可见，
             // 等 UI 更新循环完成定位后再显露，避免按钮先挤在一起再分开。
             var restoringFloatingEls = Array.from(document.querySelectorAll(
-                '#live2d-floating-buttons, #vrm-floating-buttons, #mmd-floating-buttons, ' +
-                '#live2d-lock-icon, #vrm-lock-icon, #mmd-lock-icon'
-            ));
+                '#live2d-floating-buttons, #vrm-floating-buttons, #mmd-floating-buttons, #pngtuber-floating-buttons, ' +
+                '#live2d-lock-icon, #vrm-lock-icon, #mmd-lock-icon, #pngtuber-lock-icon'
+            )).filter(function (el) {
+                return el && el.id && el.id.indexOf(activeUiPrefix + '-') === 0;
+            });
             var hiddenFloatingButtonEls = [];
             restoringFloatingEls.forEach(function (el) {
                 var restoreDisplay = el.dataset.nekoPreHideDisplay || '';
@@ -1429,8 +1684,12 @@
                 });
             }
             document.querySelectorAll(
-                '#live2d-return-button-container, #vrm-return-button-container, #mmd-return-button-container'
+                '#live2d-return-button-container, #vrm-return-button-container, #mmd-return-button-container, #pngtuber-return-button-container'
             ).forEach(function (el) {
+                if (!el || !el.id || el.id.indexOf(activeUiPrefix + '-') !== 0) {
+                    if (el) el.style.display = 'none';
+                    return;
+                }
                 if (!el.getAttribute('data-neko-return-visible')) {
                     el.style.display = 'none';
                 }
@@ -2794,6 +3053,7 @@
     mod.cleanupLive2DOverlayUI = cleanupLive2DOverlayUI;
     mod.cleanupVRMOverlayUI = cleanupVRMOverlayUI;
     mod.cleanupMMDOverlayUI = cleanupMMDOverlayUI;
+    mod.cleanupPNGTuberOverlayUI = cleanupPNGTuberOverlayUI;
     mod.syncVoiceChatComposerHidden = syncVoiceChatComposerHidden;
     mod.shouldKeepVoiceComposerHidden = shouldKeepVoiceComposerHidden;
     mod.applyGoodbyeChatComposerHidden = applyGoodbyeChatComposerHidden;
@@ -2814,6 +3074,7 @@
     window.cleanupLive2DOverlayUI = cleanupLive2DOverlayUI;
     window.cleanupVRMOverlayUI = cleanupVRMOverlayUI;
     window.cleanupMMDOverlayUI = cleanupMMDOverlayUI;
+    window.cleanupPNGTuberOverlayUI = cleanupPNGTuberOverlayUI;
     window.syncVoiceChatComposerHidden = syncVoiceChatComposerHidden;
     window.shouldKeepVoiceComposerHidden = shouldKeepVoiceComposerHidden;
     window.applyGoodbyeChatComposerHidden = applyGoodbyeChatComposerHidden;

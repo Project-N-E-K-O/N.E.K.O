@@ -1,20 +1,36 @@
-"""LLM prompt 审计日志（debug 工具）。
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-目的：把每一次发给 LLM 的完整请求体（messages、model、max_completion_tokens 等）
-+ 各 message 的 tiktoken token 数写到本地 jsonl，配合人工/脚本分析各 component
-budget 占比是否合理。
+"""LLM prompt audit log (debug tool).
 
-启用方式（任一为真即开）：
-    1) 源码里把 config.LLM_PROMPT_AUDIT_ENABLED 改成 True（适合打包时分发给用户调试）
-    2) 设置环境变量 NEKO_LLM_PROMPT_AUDIT=1（适合开发期临时打开）
+Purpose: write every complete request body sent to the LLM (messages, model,
+max_completion_tokens, etc.) + the tiktoken token count of each message to a local
+jsonl, for manual/scripted analysis of whether each component's budget share is
+reasonable.
 
-输出：
+Enabling (either being truthy turns it on):
+    1) set config.LLM_PROMPT_AUDIT_ENABLED to True in source (suited for shipping debug builds to users)
+    2) set the environment variable NEKO_LLM_PROMPT_AUDIT=1 (suited for temporary use during development)
+
+Output:
     logs/llm_prompt_audit/YYYY-MM-DD.jsonl
-    每行一条 JSON，messages[*].text 字段含 text 类 part 的**完整原文**
-    （不截断）；image/audio/video 等非 text 类 part 会被替换为
-    "[<type>]" 占位以免 base64 撑爆 log + 泄露用户截图。
+    One JSON per line; the messages[*].text field contains the **full original text**
+    of text-type parts (untruncated); non-text parts like image/audio/video are
+    replaced with an "[<type>]" placeholder so base64 doesn't blow up the log +
+    leak user screenshots.
 
-不要在生产默认启用——log 含完整 prompt 原文，属于隐私敏感数据。
+Never enable by default in production — the log contains full prompt text, which is privacy-sensitive data.
 """
 from __future__ import annotations
 
@@ -54,22 +70,24 @@ def _today_path() -> Path:
 def _content_to_text(content: Any) -> str:
     """Flatten message content to plain text for token counting.
 
-    Whitelist 策略：只有 text 类 part（``text`` / ``input_text`` /
-    ``output_text``）原文落盘，其他所有类型一律替换为 ``[<type>]`` 占位。
+    Whitelist strategy: only text-type parts (``text`` / ``input_text`` /
+    ``output_text``) land verbatim; every other type is replaced with an
+    ``[<type>]`` placeholder.
 
-    为什么不是黑名单——本 repo 实际用到的"图片 part"至少有 5 种形态：
+    Why not a blacklist — this repo actually uses at least 5 shapes of "image part":
 
-    * OpenAI 经典： ``{"type": "image_url", "image_url": {...}}``
-    * Anthropic 风格： ``{"type": "image", "source": {"type": "base64", ...}}``
-    * Anthropic 新： ``{"type": "input_image", ...}``
-    * Plugin schema： ``{"type": "image", "data": bytes, "mime": str}``
-    * 自家适配器： ``{"type": "image", "image_url": "..."}``
+    * classic OpenAI: ``{"type": "image_url", "image_url": {...}}``
+    * Anthropic style: ``{"type": "image", "source": {"type": "base64", ...}}``
+    * new Anthropic: ``{"type": "input_image", ...}``
+    * plugin schema: ``{"type": "image", "data": bytes, "mime": str}``
+    * our own adapter: ``{"type": "image", "image_url": "..."}``
 
-    再加上 ``audio`` / ``video`` / 未来可能新增的 multimodal 类型——
-    任何不在 whitelist 里的 part 都视作可能含二进制/base64，统一替换
-    为 ``[<type>]`` 占位。既避免把用户截图原样写进 jsonl，也让函数
-    契约"flatten to plain text for token counting"保持自洽（二进制
-    本来就不是文本 token）。
+    Plus ``audio`` / ``video`` / multimodal types possibly added later — any part
+    not in the whitelist is treated as potentially containing binary/base64 and
+    uniformly replaced with the ``[<type>]`` placeholder. This avoids writing user
+    screenshots into the jsonl verbatim, and keeps the function contract "flatten
+    to plain text for token counting" self-consistent (binary was never text
+    tokens anyway).
     """
     if isinstance(content, str):
         return content
@@ -158,8 +176,8 @@ def record_llm_request(
 ) -> None:
     """Log one LLM request body.
 
-    field_name/field_value: 实际写进请求体的 token 限制字段（max_tokens vs
-    max_completion_tokens）以及对应数值。
+    field_name/field_value: the token-limit field actually written into the request
+    body (max_tokens vs max_completion_tokens) and its value.
     """
     if not _ENABLED:
         return

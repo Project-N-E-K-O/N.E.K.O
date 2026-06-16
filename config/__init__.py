@@ -1,5 +1,19 @@
 # -*- coding: utf-8 -*-
-"""config 包对外暴露的配置常量。"""
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Configuration constants exposed by the config package."""
 
 from copy import deepcopy
 import json
@@ -71,7 +85,7 @@ CHARACTER_RESERVED_FIELDS = tuple(
 
 
 def get_character_reserved_fields() -> tuple[str, ...]:
-    """返回角色档案保留字段（去重后、有序）。"""
+    """Return the reserved character-profile fields (deduplicated, ordered)."""
     return CHARACTER_RESERVED_FIELDS
 
 
@@ -223,9 +237,11 @@ def _read_list_env(var_name: str) -> tuple[str, ...]:
 def _read_str_env(
     var_name: str, default: str, *, allowed: tuple[str, ...] | None = None,
 ) -> str:
-    """字符串型配置的 env 覆盖。键序同端口：``NEKO_<NAME>`` 优先，裸 ``<NAME>``
-    兼容。``allowed`` 非空时，越界值被忽略并 warning（回退 default），避免一个
-    typo 把功能整块带挂。空串视为未设置。"""
+    """Env override for string-typed config values. Key precedence matches the port
+    settings: ``NEKO_<NAME>`` wins, bare ``<NAME>`` is kept for compatibility.
+    When ``allowed`` is non-empty, out-of-range values are ignored with a warning
+    (falling back to default) so a single typo cannot take the whole feature down.
+    An empty string counts as unset."""
     for key in (f"NEKO_{var_name}", var_name):
         raw = os.getenv(key)
         if raw is None:
@@ -244,8 +260,8 @@ def _read_str_env(
 
 
 def _read_bool_env(var_name: str, default: bool) -> bool:
-    """布尔型配置的 env 覆盖。1/true/yes/on → True；0/false/no/off → False；
-    其余/未设置 → default。键序同上。"""
+    """Env override for boolean config values. 1/true/yes/on → True; 0/false/no/off → False;
+    anything else / unset → default. Key precedence as above."""
     for key in (f"NEKO_{var_name}", var_name):
         raw = os.getenv(key)
         if raw is None:
@@ -464,7 +480,7 @@ VRM_LIGHTING_RANGES = {
 
 
 def get_default_vrm_lighting() -> dict[str, float]:
-    """获取默认VRM打光配置的副本"""
+    """Get a copy of the default VRM lighting config"""
     return dict(DEFAULT_VRM_LIGHTING)
 
 
@@ -526,7 +542,7 @@ MMD_CURSOR_FOLLOW_RANGES = {
 
 
 def get_default_mmd_settings() -> dict:
-    """获取默认MMD设置的副本"""
+    """Get a copy of the default MMD settings"""
     return {
         "lighting": dict(DEFAULT_MMD_LIGHTING),
         "rendering": dict(DEFAULT_MMD_RENDERING),
@@ -585,19 +601,19 @@ _VALUE_TRANSLATIONS = {
 
 def get_localized_default_characters(language: str | None = None) -> dict:
     """
-    获取本地化的默认角色配置。
-    
-    根据 Steam 语言设置翻译内容值（如"哥哥"→"Brother"）。
-    注意：键名保持中文不变，因为系统内部依赖这些键名。
-    仅在首次创建 characters.json 时使用。
-    
+    Get the localized default character configuration.
+
+    Translates content values based on the Steam language setting (e.g. "哥哥"→"Brother").
+    Note: key names stay in Chinese because internal code depends on them.
+    Only used when characters.json is created for the first time.
+
     Args:
-        language: 语言代码 ('en', 'ja', 'zh', 'zh-CN', 'zh-TW')。
-                  如果为 None，则从 Steam 获取或默认为 'zh-CN'。
-    
+        language: Language code ('en', 'ja', 'zh', 'zh-CN', 'zh-TW').
+                  If None, fetched from Steam or defaults to 'zh-CN'.
+
     Returns:
-        本地化后的 DEFAULT_CHARACTERS_CONFIG 副本
-    """
+        Localized copy of DEFAULT_CHARACTERS_CONFIG
+    """  # noqa: DOCSTRING_CJK
     # 获取语言代码
     if language is None:
         try:
@@ -643,7 +659,7 @@ def get_localized_default_characters(language: str | None = None) -> dict:
         return result
     
     def translate_value(val):
-        """翻译值（仅翻译字符串类型）"""
+        """Translate a value (only string types are translated)"""
         if isinstance(val, str):
             return value_trans.get(val, val)
         return val
@@ -688,6 +704,9 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeyGemini": "",
     "assistApiKeyQwenIntl": "",
     "assistApiKeyMinimax": "",
+    "assistApiKeyMimo": "",
+    "useMimoTokenPlan": False,
+    "assistApiKeyMimoTokenPlan": "",
     "assistApiKeyElevenlabs": "",
     "assistApiKeyClaude": "",
     "assistApiKeyGrok": "",
@@ -869,6 +888,21 @@ DEFAULT_ASSIST_API_PROFILES = {
         'VISION_MODEL': "doubao-seed-2-0-lite-260215",
         'AGENT_MODEL': "doubao-seed-2-0-pro-260215",
     },
+    'mimo': {
+        'OPENROUTER_URL': "https://api.xiaomimimo.com/v1",
+        'MIMO_TOKEN_PLAN_OPENROUTER_URL': "https://token-plan-cn.xiaomimimo.com/v1",
+        'MIMO_TOKEN_PLAN_OPENROUTER_URLS': [
+            "https://token-plan-cn.xiaomimimo.com/v1",
+            "https://token-plan-sgp.xiaomimimo.com/v1",
+            "https://token-plan-ams.xiaomimimo.com/v1",
+        ],
+        'CONVERSATION_MODEL': "mimo-v2.5",
+        'SUMMARY_MODEL': "mimo-v2.5",
+        'CORRECTION_MODEL': "mimo-v2.5",
+        'EMOTION_MODEL': "mimo-v2.5",
+        'VISION_MODEL': "mimo-v2.5",
+        'AGENT_MODEL': "mimo-v2.5",
+    },
 }
 
 DEFAULT_ASSIST_API_KEY_FIELDS = {
@@ -881,6 +915,7 @@ DEFAULT_ASSIST_API_KEY_FIELDS = {
     'kimi': 'ASSIST_API_KEY_KIMI',
     'qwen_intl': 'ASSIST_API_KEY_QWEN_INTL',
     'minimax': 'ASSIST_API_KEY_MINIMAX',
+    'mimo': 'ASSIST_API_KEY_MIMO',
     'elevenlabs': 'ASSIST_API_KEY_ELEVENLABS',
     'claude': 'ASSIST_API_KEY_CLAUDE',
     'openrouter': 'ASSIST_API_KEY_OPENROUTER',
@@ -1076,6 +1111,22 @@ RECENT_PER_MESSAGE_MAX_TOKENS = 500
   截断（utils.tokenize.truncate_head_tail_tokens，head=tail=250）。
 - 上游：用户/AI 的原始对话文本，正常一轮 30-500 token，长贴可能数 KB。
 - 截断策略：保留头尾各 250 token，中段用 "…[省略中段]…" 替换。"""
+
+RECENT_COMPRESS_INPUT_BUDGET_TOKENS = 8000
+"""后台 best-effort 压缩的单段输入 token 预算（分段阈值）。
+- 用途：待压积压渲染成文本后若超过此值，compress_history 走分段
+  map-reduce——切成每段 ≤ 此值的小段分别压成中间摘要，再 reduce 成最终
+  备忘录，减小单次 LLM 输入、避免输入过大导致超时。未超此值的正常压缩
+  走原一次性路径，行为不变。
+- 上游：积压对话渲染文本的 token 数。"""
+
+RECENT_HARD_CAP_TOKENS = 60000
+"""recent 历史的硬上限（最终兜底，平时不触发）。
+- 用途：压缩持续失败（如持续 429，best-effort 后台也救不回）导致历史
+  一直压不掉、无限膨胀时，update_history 保留完整历史前若总 token 超过
+  此值，丢弃最旧的未压缩对话原文，保留近期若干条 + 备忘录，保证 prompt
+  有界。设得很大，只作最后防线。
+- 上游：未被压缩而累积的 recent 历史 token 数。"""
 
 # ---- Memory: reflection ----
 REFLECTION_TEXT_MAX_TOKENS = 150
@@ -1729,7 +1780,7 @@ MINI_GAME_INVITE_NEW_USER_FORCE_AT = 4
   从未玩过的人有一次确定的「被邀请」机会，不靠 10% 骰子赌。
 - 上游：_maybe_deliver_mini_game_invite force-first 分支。"""
 
-MINI_GAME_INVITE_AVAILABLE_GAMES: tuple[str, ...] = ("soccer",)
+MINI_GAME_INVITE_AVAILABLE_GAMES: tuple[str, ...] = ("soccer", "basketball")
 """mini-game 邀请可选的 game_type 列表。
 - 命中后从该列表 random.choice 选一个，文案从
   config.prompts.prompts_proactive.MINI_GAME_INVITE_LINES_BY_GAME[game_type] 取。
@@ -1753,6 +1804,7 @@ MINI_GAME_INVITE_LATER_SUPPRESS_SECONDS = 5 * 60
 
 MINI_GAME_LAUNCH_URL_BY_GAME: dict[str, str] = {
     'soccer': '/soccer_demo',
+    'basketball': '/basketball_demo',
 }
 """game_type → 实际打开的页面 URL。前端 `window.open(url)` 让 Electron 主进程
 ``setWindowOpenHandler`` 拦截开独立 BrowserWindow（普通浏览器是新 tab）；URL
@@ -2024,6 +2076,8 @@ __all__ = [
     'RECENT_COMPRESS_THRESHOLD_ITEMS',
     'RECENT_SUMMARY_MAX_TOKENS',
     'RECENT_PER_MESSAGE_MAX_TOKENS',
+    'RECENT_COMPRESS_INPUT_BUDGET_TOKENS',
+    'RECENT_HARD_CAP_TOKENS',
     'REFLECTION_TEXT_MAX_TOKENS',
     'REFLECTION_SURFACE_TOP_K',
     'REFLECTION_SYNTHESIS_FACTS_MAX',

@@ -2,6 +2,21 @@
     'use strict';
 
     const STYLE_ID = 'character-personality-onboarding-style';
+    // 复用本脚本 src 上的 ?v= 版本参数，让动态注入的样式表一起走统一缓存失效。
+    // IIFE 同步执行期间 document.currentScript 即本脚本，querySelector 作为兜底。
+    const ASSET_VERSION_QUERY = (function () {
+        try {
+            let src = document.currentScript && document.currentScript.src;
+            if (!src) {
+                const el = document.querySelector('script[src*="character_personality_onboarding.js"]');
+                src = el ? el.src : '';
+            }
+            const queryIndex = src ? src.indexOf('?') : -1;
+            return queryIndex >= 0 ? src.slice(queryIndex) : '';
+        } catch (err) {
+            return '';
+        }
+    })();
     const TUTORIAL_PROMPT_POLL_INTERVAL_MS = 120;
     const TYPEWRITER_BASE_DELAY_MS = 18;
     const TYPEWRITER_PUNCTUATION_DELAY_MS = 110;
@@ -78,7 +93,7 @@
         const styleLink = document.createElement('link');
         styleLink.id = STYLE_ID;
         styleLink.rel = 'stylesheet';
-        styleLink.href = '/static/css/character_personality_onboarding.css';
+        styleLink.href = '/static/css/character_personality_onboarding.css' + ASSET_VERSION_QUERY;
         document.head.appendChild(styleLink);
     }
 
@@ -98,43 +113,6 @@
             element.textContent = textContent;
         }
         return element;
-    }
-
-    function findLoadedCharacterAvatarSrc(characterName) {
-        const targetName = String(characterName || '').trim();
-        if (!targetName || typeof document === 'undefined') {
-            return '';
-        }
-        const imageSrc = (image) => {
-            const src = image && image.getAttribute && image.getAttribute('src');
-            if (!src) {
-                return '';
-            }
-            if (/default_character_card\.png|sidebar_logo|paw_ui\.png/i.test(src)) {
-                return '';
-            }
-            return image.src || src;
-        };
-
-        const panelImg = Array.from(document.querySelectorAll('.catgirl-panel-wrapper')).find((wrapper) => {
-            return String(wrapper && wrapper.dataset && wrapper.dataset.catgirlName || '').trim() === targetName;
-        })?.querySelector('.catgirl-panel-card-image img.card-face-img');
-        const panelSrc = imageSrc(panelImg);
-        if (panelSrc) {
-            return panelSrc;
-        }
-
-        const gridCard = Array.from(document.querySelectorAll('.chara-card-item')).find((card) => {
-            const nameEl = card.querySelector('.card-name');
-            return String(nameEl && nameEl.textContent || '').trim() === targetName;
-        });
-        const gridImg = gridCard ? gridCard.querySelector('.card-avatar img.card-face-img') : null;
-        const gridSrc = imageSrc(gridImg);
-        if (gridSrc) {
-            return gridSrc;
-        }
-
-        return '';
     }
 
     class CharacterPersonalityOnboardingManager {
@@ -1080,33 +1058,11 @@
             previewSection.appendChild(previewLabel);
 
             const bubbleWrapper = createElement('div', 'preview-bubble-wrapper');
-            const avatar = createElement('div', 'preview-avatar');
-            const avatarLabel = this.currentCharacterName
-                ? translate(
-                    'memory.characterSelection.currentCharacterAvatarAlt',
-                    '{{characterName}} 的头像',
-                    { characterName: this.currentCharacterName }
-                )
-                : translate('memory.characterSelection.currentCharacterEmpty', '当前角色');
-            avatar.setAttribute('aria-label', avatarLabel);
-            avatar.title = avatarLabel;
-            if (this.currentCharacterName) {
-                const avatarImg = document.createElement('img');
-                avatarImg.className = 'preview-avatar-img';
-                avatarImg.alt = avatarLabel;
-                avatarImg.draggable = false;
-                avatarImg.src = (
-                    findLoadedCharacterAvatarSrc(this.currentCharacterName)
-                    || `/api/characters/catgirl/${encodeURIComponent(this.currentCharacterName)}/card-face`
-                );
-                avatarImg.addEventListener('error', () => {
-                    avatarImg.remove();
-                    avatar.classList.add('is-empty');
-                }, { once: true });
-                avatar.appendChild(avatarImg);
-            } else {
-                avatar.classList.add('is-empty');
-            }
+            const avatar = createElement(
+                'div',
+                'preview-avatar',
+                this.currentCharacterName || translate('memory.characterSelection.currentCharacterEmpty', '当前角色')
+            );
             bubbleWrapper.appendChild(avatar);
 
             const bubble = createElement('div', 'preview-bubble');

@@ -1,19 +1,34 @@
 # -*- coding: utf-8 -*-
-"""
-全局 LLM Token 用量追踪模块
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-通过 monkey-patch OpenAI SDK 的 chat.completions.create（同步 + 异步），
-自动拦截所有 LLM 调用（包括 LangChain 底层调用）的 usage 数据。
-用 ContextVar 标记调用类型，确保 Nuitka/PyInstaller 兼容。
+"""
+Global LLM token usage tracking module
+
+Monkey-patches the OpenAI SDK's chat.completions.create (sync + async) to
+automatically intercept usage data of all LLM calls (including LangChain's
+underlying calls). Uses ContextVar to tag call types, ensuring Nuitka/PyInstaller
+compatibility.
 
 Usage:
     from utils.token_tracker import TokenTracker, install_hooks, llm_call_context
 
-    # 启动时安装 hooks
+    # install hooks at startup
     install_hooks()
     TokenTracker.get_instance().start_periodic_save()
 
-    # 在调用模块标记 call_type
+    # tag call_type at the calling module
     with llm_call_context("conversation"):
         async for chunk in llm.astream(messages):
             ...
@@ -55,7 +70,7 @@ _current_call_type: ContextVar[str] = ContextVar('_llm_call_type', default='unkn
 
 @contextmanager
 def llm_call_context(call_type: str):
-    """Context manager，在代码块内标记当前 LLM 调用类型。"""
+    """Context manager that tags the current LLM call type within the block."""
     token = _current_call_type.set(call_type)
     try:
         yield
@@ -64,7 +79,7 @@ def llm_call_context(call_type: str):
 
 
 def set_call_type(call_type: str):
-    """简单设置当前调用类型（适用于不方便 wrap 的场景）。"""
+    """Simply set the current call type (for scenarios where wrapping is inconvenient)."""
     _current_call_type.set(call_type)
 
 
@@ -73,12 +88,12 @@ def set_call_type(call_type: str):
 # ---------------------------------------------------------------------------
 
 def _deep_copy_day(day: dict) -> dict:
-    """深拷贝一天的统计数据。"""
+    """Deep-copy one day's statistics."""
     return copy.deepcopy(day)
 
 
 def _merge_day_stats(target: dict, source: dict):
-    """将 source 的统计数据累加到 target 中（原地修改 target）。"""
+    """Accumulate source's statistics into target (modifying target in place)."""
     for k in ("total_prompt_tokens", "total_completion_tokens", "total_tokens",
               "cached_tokens", "total_prompt_chars", "call_count", "error_count"):
         target[k] = target.get(k, 0) + source.get(k, 0)
@@ -110,10 +125,11 @@ def _merge_day_stats(target: dict, source: dict):
 
 @contextmanager
 def _file_lock(lock_path: Path, timeout: float = 10.0):
-    """基于文件系统的跨进程互斥锁。
+    """File-system based cross-process mutex.
 
-    使用 O_CREAT | O_EXCL 原子创建锁文件，确保同一时刻只有一个进程持有锁。
-    锁文件中写入 PID + 时间戳，用于超时后检测过期锁。
+    Atomically creates the lock file with O_CREAT | O_EXCL, ensuring only one process
+    holds the lock at a time. PID + timestamp are written into the lock file for
+    stale-lock detection after timeouts.
     """
     fd = -1
     deadline = time.monotonic() + timeout
@@ -203,7 +219,7 @@ _TELEMETRY_GZIP_THRESHOLD = 1024
 
 
 def _get_app_version_from_changelog() -> str:
-    """从 config/changelog/ 目录中读取最高版本号作为当前 app 版本。"""
+    """Read the highest version number from the config/changelog/ directory as the current app version."""
     changelog_dir = os.path.join(
         os.path.dirname(os.path.dirname(__file__)), "config", "changelog"
     )
@@ -241,11 +257,12 @@ _MACHINE_ID_PLACEHOLDERS = {
 
 
 def _is_valid_machine_id(value: Optional[str]) -> bool:
-    """合理性校验 OS 机器 ID，防止占位值或镜像克隆未重置的非真实 ID 把多台
-    机器折叠到同一个 device_id。
+    """Sanity-check the OS machine ID, preventing placeholder values or un-reset cloned-image
+    IDs from folding multiple machines into the same device_id.
 
-    要求去掉 GUID 分隔符后正好 32 位十六进制，且不在已知占位符黑名单里。
-    校验失败时调用方应 fallback 到 legacy 算法，而不是把无效值当指纹用。
+    Requires exactly 32 hex digits after stripping GUID separators, and absence from the
+    known placeholder blacklist. On failure, callers should fall back to the legacy
+    algorithm instead of using the invalid value as a fingerprint.
     """
     if not value:
         return False
@@ -259,19 +276,21 @@ def _is_valid_machine_id(value: Optional[str]) -> bool:
 
 
 def _read_os_machine_id() -> Optional[str]:
-    """读取操作系统级稳定机器标识。
+    """Read the OS-level stable machine identifier.
 
     - Windows: HKLM\\SOFTWARE\\Microsoft\\Cryptography\\MachineGuid
-    - macOS:   IOPlatformUUID（ioreg -rd1 -c IOPlatformExpertDevice）
-    - Linux:   /etc/machine-id 或 /var/lib/dbus/machine-id
+    - macOS:   IOPlatformUUID (ioreg -rd1 -c IOPlatformExpertDevice)
+    - Linux:   /etc/machine-id or /var/lib/dbus/machine-id
 
-    这些 ID 由系统安装时生成，绑定到主板/系统而非网络配置，不会因为
-    网卡变化（VPN / Docker / 外接 NIC）或安装路径变化（Steam 库迁移、
-    源码版 / 打包版切换）漂移。
+    These IDs are generated at system installation and bound to the motherboard/system
+    rather than network config, so they don't drift with NIC changes (VPN / Docker /
+    external NIC) or install path changes (Steam library migration, source/packaged
+    switching).
 
-    每个来源的返回值都会过 _is_valid_machine_id 合理性校验，避免占位值
-    （systemd `uninitialized`、全零/全 F GUID）被当成有效指纹。读取失败
-    或校验不通过返回 None，调用方需 fallback 到 legacy 算法。
+    Each source's return value passes the _is_valid_machine_id sanity check, so
+    placeholders (systemd `uninitialized`, all-zero/all-F GUIDs) are not taken as valid
+    fingerprints. Returns None on read failure or failed validation; callers must fall
+    back to the legacy algorithm.
     """
     import sys
 
@@ -330,13 +349,14 @@ def _read_os_machine_id() -> Optional[str]:
 
 
 def _get_legacy_device_id() -> str:
-    """旧版 device_id 算法（保留用于迁移期 fold）。
+    """Legacy device_id algorithm (kept for migration-period folding).
 
-    SHA256(uuid.getnode() | install_dir | "neko-telemetry")。getnode 在多网卡
-    机器上不稳定（VPN / Docker / 外接网卡 enumeration order 变化），install_dir
-    随安装位置变化，所以这个 ID 容易"漂"，长期 retention 数据会被打散。新版本
-    保留它仅用于 server 端 fold 历史数据：客户端在 payload 中同时上报新旧两个
-    ID，server 后续可通过 events 表里的 device_id_legacy 字段建立 mapping。
+    SHA256(uuid.getnode() | install_dir | "neko-telemetry"). getnode is unstable on
+    multi-NIC machines (VPN / Docker / external NIC enumeration order changes), and
+    install_dir changes with install location, so this ID "drifts" easily and long-term
+    retention data gets shattered. The new version keeps it only so the server can fold
+    historical data: the client reports both old and new IDs in the payload, and the
+    server can later build a mapping via the device_id_legacy field of the events table.
     """
     import uuid as _uuid
     import platform
@@ -352,15 +372,16 @@ def _get_legacy_device_id() -> str:
 
 
 def _get_anonymous_device_id() -> str:
-    """生成稳定的匿名设备指纹。
+    """Generate a stable anonymous device fingerprint.
 
-    优先使用 OS 级稳定标识（_read_os_machine_id），失败时回退到 legacy 算法
-    保证不会写入空值。结果为 64 字符十六进制 SHA256，不可逆，不含 PII。
+    Prefers the OS-level stable identifier (_read_os_machine_id), falling back to the
+    legacy algorithm on failure so an empty value is never written. The result is a
+    64-char hex SHA256, irreversible, no PII.
 
-    与 legacy 算法的命名空间用 "neko-telemetry-v2" 区分，确保新旧 ID 不会
-    在哈希空间相撞。
+    The namespace differs from the legacy algorithm via "neko-telemetry-v2", ensuring
+    old and new IDs never collide in hash space.
 
-    参考 vLLM: 只用硬件/系统信息生成匿名 ID，不含用户 PII。
+    Following vLLM: generate the anonymous ID from hardware/system info only, no user PII.
     """
     os_id = _read_os_machine_id()
     if os_id:
@@ -430,24 +451,32 @@ _CONTROL_PROACTIVE_INTERVAL = 15
 
 
 def _rollback_retired_proactive_interval(branch_path: Path) -> None:
-    """一次性回滚退役实验 proactive_interval_20s 覆写的 proactiveChatInterval。
+    """One-shot rollback of proactiveChatInterval overridden by the retired experiment proactive_interval_20s.
 
-    仅当 ``branch_path`` 落盘的原始值正是该退役实验分支时才动手——把回滚面收敛到「曾被
-    分到该实验池」的 install，不碰从没进过这个实验的普通手选 20s 用户。
+    Acts only when the raw value persisted at ``branch_path`` is exactly that retired
+    experiment branch — narrowing the rollback surface to installs that were ever drawn
+    into the experiment pool, not touching ordinary users who manually chose 20s and
+    never entered the experiment.
 
-    已知误伤（无法从落盘数据消除）：抽签是全地区随机的，国内用户也会落到这个 branch，
-    只是前端门禁（!_isUserRegionChina()）当初没给他们覆写 interval。所以国内实验组里
-    interval==20 的一定是用户手选——本函数无法与「海外被实验覆写的 20」区分，会一并回滚
-    成 15s。这属「迁移当刻手选 20s 被误伤」的已接受范围（交集量级：国内 ∩ 落该 branch ∩
-    手选恰好 20s ∩ 当前仍停在 20s，极小）。权衡过用后端 region 判定加门禁，但后端 locale
-    口径与前端 tz+lang 不一致、反而可能误伤国内英文系统用户，故不引入。
+    Known collateral (impossible to eliminate from persisted data): the draw was random
+    across all regions, so CN users also landed in this branch — the frontend gate
+    (!_isUserRegionChina()) just never overrode their interval. So in the CN experiment
+    cohort, interval==20 must be a manual choice — this function cannot distinguish it
+    from "overseas, overridden to 20" and rolls both back to 15s. This falls within the
+    accepted scope of "manual 20s at migration time gets clobbered" (intersection scale:
+    CN ∩ landed in this branch ∩ manually picked exactly 20s ∩ still sitting at 20s —
+    tiny). Backend region gating was weighed, but the backend locale notion mismatches
+    the frontend tz+lang one and could instead hurt CN users on English systems, so it
+    was not introduced.
 
-    幂等性由调用点保证：本函数只在 slow path「落盘 branch 非法、即将重抽覆盖」时触发，
-    重抽后 branch 文件不再是退役值，下次启动 fast path 命中合法值、不会再进来，无需额外
-    的 migration flag。
+    Idempotency is guaranteed by the call site: this function only fires on the slow
+    path "persisted branch invalid, about to redraw and overwrite"; after the redraw the
+    branch file is no longer the retired value, the next startup hits the fast path with
+    a valid value and never re-enters — no extra migration flag needed.
 
-    best-effort：preferences 写入失败（如 cloudsave 维护态）时静默跳过、不阻断 branch
-    解析；此时 branch 仍会被重抽覆盖，该 install 会漏掉这次回滚（罕见，可接受）。
+    best-effort: when the preferences write fails (e.g. cloudsave maintenance state),
+    skip silently without blocking branch resolution; the branch still gets redrawn and
+    that install misses this rollback (rare, acceptable).
     """
     try:
         raw = branch_path.read_text(encoding="utf-8").strip()
@@ -487,16 +516,18 @@ def _rollback_retired_proactive_interval(branch_path: Path) -> None:
 
 
 def _get_telemetry_branch(config_dir: Path) -> str:
-    """读取或抽签生成 A/B test 分支标识，持久化在 config_dir 下。
+    """Read or draw the A/B test branch identifier, persisted under config_dir.
 
-    多进程冷启动安全：用 ``O_CREAT | O_EXCL`` 原子创建保证只有一个进程能写入；
-    其它并发进程拿到 FileExistsError 后回读同一文件，确保 device-stable
-    cohorting（同 device 不同 worker 不会落到不同 branch）。同款模式见
-    _file_lock 的实现。
+    Multi-process cold-start safe: atomic creation with ``O_CREAT | O_EXCL`` guarantees
+    only one process can write; other concurrent processes get FileExistsError and read
+    back the same file, ensuring device-stable cohorting (different workers on the same
+    device never land in different branches). Same pattern as _file_lock's implementation.
 
-    进程级缓存：首次 resolve 后落 `_telemetry_branch_cache`，后续调用直接命中。
-    主要为只读 FS / 权限错误等持久化失败的环境兜底——多 cohort 下没有这层缓存，
-    每次 `secrets.choice` 都会重抽，同一进程内不同调用方会观察到不同分支。
+    Process-level cache: the first resolve lands in `_telemetry_branch_cache`; later
+    calls hit it directly. Mainly a fallback for environments where persistence fails
+    (read-only FS / permission errors) — without this cache, with multiple cohorts every
+    `secrets.choice` would redraw, and different callers within one process would
+    observe different branches.
     """
     cache_key = str(config_dir)
     cached_proc = _telemetry_branch_cache.get(cache_key)
@@ -572,21 +603,22 @@ def _get_telemetry_branch(config_dir: Path) -> str:
 
 
 def get_telemetry_branch() -> str:
-    """对外暴露的 A/B test 分支读取入口。
+    """Externally exposed A/B test branch read entry.
 
-    `_get_telemetry_branch` 是内部实现（参数化 config_dir，方便测试）；本函数从
-    全局 config_manager 取 config_dir 后转发。前端通过 API 拿到 branch 后可在
-    首次启动时按分支选择默认行为，与 token tracker 自身上报的 branch 保持一致。
+    `_get_telemetry_branch` is the internal implementation (parameterized config_dir for
+    testing); this function takes config_dir from the global config_manager and forwards.
+    After the frontend fetches the branch via the API it can pick default behavior by
+    branch on first launch, consistent with the branch the token tracker itself reports.
     """
     return _get_telemetry_branch(get_config_manager().config_dir)
 
 
 def _get_telemetry_locale() -> str:
-    """获取用户 UI locale (zh-CN / en-US / ja-JP …)。
+    """Get the user's UI locale (zh-CN / en-US / ja-JP …).
 
-    优先用 language_utils.get_global_language_full —— 它先看 Steam 设置再 fallback
-    到系统语言，是 codebase 里 "用户真正在用的 UI 语言" 的真值。失败回退到
-    stdlib locale。
+    Prefers language_utils.get_global_language_full — it checks Steam settings first
+    then falls back to the system language, the codebase's ground truth for "the UI
+    language the user actually uses". Falls back to stdlib locale on failure.
     """
     try:
         from utils.language_utils import get_global_language_full
@@ -606,9 +638,9 @@ def _get_telemetry_locale() -> str:
 
 
 def _is_release_build() -> bool:
-    """是否打包过 —— PyInstaller (``sys.frozen``) 或 Nuitka (``__compiled__`` /
-    ``__nuitka_binary_dir``)。两种打包器都要识别：PyInstaller 走 spec 链路，
-    Nuitka 走 build_nuitka.bat 链路。"""
+    """Whether we're packaged — PyInstaller (``sys.frozen``) or Nuitka (``__compiled__`` /
+    ``__nuitka_binary_dir``). Both packagers must be recognized: PyInstaller goes
+    through the spec chain, Nuitka through the build_nuitka.bat chain."""
     import sys
 
     if getattr(sys, "frozen", False):
@@ -627,30 +659,34 @@ def _is_release_build() -> bool:
 
 
 def _get_telemetry_metadata() -> tuple[str, str]:
-    """一次性返回 ``(distribution, steam_user_id)``，两个字段同源同观测点。
+    """Return ``(distribution, steam_user_id)`` at once; both fields share one source and one observation point.
 
-    合并自原 ``_get_telemetry_distribution()`` 与 ``_get_telemetry_steam_user_id()``：
-    Steamworks ``Users.GetSteamID()`` **只调一次**，distribution 与
-    steam_user_id 从同一次观测派生。原本两个函数各调一次 ``GetSteamID()``，
-    Steamworks SDK 异步 init 时两次调用可能跨越 ready 边界——第一次返 0
-    （distribution 走 ``release``）、第二次返 Steam64（steam_user_id 拿到），
-    产出 ``release + 非空 Steam64`` 的矛盾态。合并后该矛盾态在源头消除。
+    Merged from the original ``_get_telemetry_distribution()`` and
+    ``_get_telemetry_steam_user_id()``: Steamworks ``Users.GetSteamID()`` is **called
+    only once**, with distribution and steam_user_id derived from the same observation.
+    Originally each function called ``GetSteamID()`` once; with the Steamworks SDK's
+    async init the two calls could straddle the ready boundary — the first returning 0
+    (distribution goes ``release``), the second returning a Steam64 (steam_user_id
+    obtained), producing the contradictory ``release + non-empty Steam64`` state. The
+    merge eliminates that state at the source.
 
-    **不变量**：返回的 steam_user_id 非空 ⟹ distribution == ``steam``。
-    （反之不成立：steam + 空 ID 是合法尾部，见判定 3。）
+    **Invariant**: a non-empty returned steam_user_id ⟹ distribution == ``steam``.
+    (The converse doesn't hold: steam + empty ID is a legal tail, see rule 3.)
 
-    判定顺序（沿用原逻辑）：
-    1. 非 release build → ``("source", "")``。源码运行哪怕开着 Steam 客户端
-       也算 source —— 只有 release 才可能是 Steam 版。
-    2. release + ``GetSteamID()`` 拿到非零 Steam64 → ``("steam", str(sid))``。
-       锚定首个信号，distribution 与 ID 同次观测。
-    3. release + 工坊订阅 > 0 或 ``workshop_config.json`` 存在 → ``("steam", "")``。
-       证明这台机器跑过 Steam 版（cloudsave 会把 workshop_config.json 打包
-       带走），但本次没从 Steam 客户端拿到登录用户（没开 / 断网）。
-    4. release 但无任何 Steam 信号 → ``("release", "")``。
+    Decision order (following the original logic):
+    1. non-release build → ``("source", "")``. A source run counts as source even with
+       the Steam client open — only release can be the Steam edition.
+    2. release + ``GetSteamID()`` returns a nonzero Steam64 → ``("steam", str(sid))``.
+       Anchored to the first signal; distribution and ID share one observation.
+    3. release + workshop subscriptions > 0 or ``workshop_config.json`` exists →
+       ``("steam", "")``. Proves this machine has run the Steam edition (cloudsave
+       packs workshop_config.json along), but this run got no logged-in user from
+       the Steam client (not open / offline).
+    4. release with no Steam signal at all → ``("release", "")``.
 
-    Steam64 用 string 而非 int 上报，避免 u64（常超 2^53）在 JS / 部分 JSON
-    消费方精度丢失。所有异常 swallow —— 埋点不能抛。
+    Steam64 is reported as a string rather than an int, avoiding u64 (often > 2^53)
+    precision loss in JS / some JSON consumers. All exceptions are swallowed —
+    instrumentation must not throw.
     """
     if not _is_release_build():
         return "source", ""
@@ -691,7 +727,7 @@ def _get_telemetry_metadata() -> tuple[str, str]:
 
 
 def _get_telemetry_timezone() -> str:
-    """获取本地时区。优先 IANA (Asia/Shanghai)，回退到 UTC 偏移 (+08:00)。"""
+    """Get the local timezone. Prefers IANA (Asia/Shanghai), falling back to a UTC offset (+08:00)."""
     try:
         import tzlocal
         tz = tzlocal.get_localzone()
@@ -728,21 +764,24 @@ _DEVICE_HW_CACHE: Optional[str] = None
 
 
 def _get_device_hw() -> str:
-    """设备硬件画像（低基数 enum 复合串），进程内只算一次。
+    """Device hardware profile (a low-cardinality enum composite string), computed once per process.
 
-    形如 ``win|x86_64|16to32|9to16``（os|arch|ram_tier|cpu_tier）。作为 devices
-    表的**设备属性**（非计数）上报，用来 JOIN 留存做"低配设备首日流失率"——区分
-    "跑不动而走"与"不喜欢而走"。
+    Shaped like ``win|x86_64|16to32|9to16`` (os|arch|ram_tier|cpu_tier). Reported as a
+    **device attribute** (not a count) on the devices table, used to JOIN retention for
+    "first-day churn rate on low-end devices" — distinguishing "left because it can't
+    run" from "left because they didn't like it".
 
-    所有维度都是分桶 enum，**绝不发原始值**（RAM 字节 / GPU 型号 / 机器名）——
-    守 dim 低基数 + 零 PII（同 #1426 T3）。
+    All dimensions are bucketed enums; **raw values are never sent** (RAM bytes / GPU
+    model / machine name) — keeping dims low-cardinality + zero PII (same as #1426 T3).
 
-    检测全部 inline（psutil / platform / os）：不 import memory.embeddings —— 那会
-    触发 module-layering 的 utils(L1)→memory(L2) 反转 + 制造 memory↔utils 环
-    （check_module_layering 对函数内 lazy import 同样计）。RAM 检测本就是 psutil
-    一行、没复用价值；真正值得复用的 CPU AVX/VNNI cpuid 检测对"跑不动流失"是
-    二阶信号（多数用户走远程 LLM），暂不收，想要可把检测抽成 utils 层共享 util。
-    任一维度失败回退 'unknown'，整体绝不抛（埋点不能挡上报）。
+    Detection is fully inline (psutil / platform / os): no importing memory.embeddings —
+    that would trip module-layering's utils(L1)→memory(L2) inversion + create a
+    memory↔utils cycle (check_module_layering counts lazy in-function imports too). RAM
+    detection is a psutil one-liner anyway with no reuse value; the genuinely reusable
+    CPU AVX/VNNI cpuid detection is a second-order signal for "can't-run churn" (most
+    users run remote LLMs), so it's not collected for now — if wanted, extract the
+    detection into a shared utils-level util. Any failed dimension falls back to
+    'unknown'; the whole thing never throws (instrumentation must not block reporting).
     """
     global _DEVICE_HW_CACHE
     if _DEVICE_HW_CACHE is not None:
@@ -780,7 +819,7 @@ def _get_device_hw() -> str:
 
 
 def _compute_telemetry_signature(payload_json: str, timestamp: float) -> str:
-    """计算遥测上报的 HMAC-SHA256 签名。"""
+    """Compute the HMAC-SHA256 signature for telemetry reporting."""
     body_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
     message = f"{timestamp}|{body_hash}"
     return hmac.new(
@@ -795,10 +834,11 @@ def _compute_telemetry_signature(payload_json: str, timestamp: float) -> str:
 # ---------------------------------------------------------------------------
 
 def _bucket_proactive_interval(seconds) -> str:
-    """把 proactiveChatInterval（1-3600 秒）分桶成低基数 enum。
+    """Bucket proactiveChatInterval (1-3600 s) into a low-cardinality enum.
 
-    **不上报 raw 秒数** —— 那是连续值，进 dim 会让 metric_key 基数爆炸
-    （跟之前 lanlan_name 同类教训）。分 5 桶覆盖典型配置区间。
+    **Raw seconds are not reported** — that's a continuous value; putting it in a dim
+    explodes metric_key cardinality (same lesson as lanlan_name before). 5 buckets
+    cover the typical configuration range.
     """
     try:
         s = float(seconds)
@@ -816,30 +856,32 @@ def _bucket_proactive_interval(seconds) -> str:
 
 
 def record_settings_state() -> None:
-    """读当前主动搭话 / 隐私模式设置，打一个 settings_state counter。
+    """Read the current proactive-chat / privacy-mode settings and emit one settings_state counter.
 
-    触发时机：**仅** app 启动（record_app_start，仅 main_server 进程）。
+    Trigger timing: **only** at app start (record_app_start, main_server process only).
 
-    语义说明（CodeRabbit 反馈后定型）：server 端 instrument_counters 按
-    (stat_date, device_id, metric_key) 累加 UPSERT。本函数只在启动打点，
-    所以一条记录 = "用户本次启动时的设置组合"。每天每设备启动几次就 +几，
-    是**观测次数**而非 gauge 式"当前最终状态"——但对"深度用户惯用什么档"
-    的分析够用：按 device 取计数最高的 combo 即其惯用档。
+    Semantics (finalized after CodeRabbit feedback): the server-side instrument_counters
+    UPSERTs cumulatively by (stat_date, device_id, metric_key). This function only emits
+    at startup, so one record = "the user's settings combo at this launch". N launches
+    per device per day add +N — an **observation count**, not a gauge-style "current
+    final state" — but good enough for analyzing "which tiers heavy users habitually
+    use": per device, the combo with the highest count is its habitual tier.
 
-    刻意**不**在 save_global_conversation_settings 里打点：那样用户一天内
-    每切一次设置就给一个新 combo +1，把分布污染成"切换轨迹"。要精确的
-    per-device-per-day 最终状态需要 server 端 gauge/overwrite 语义，当前
-    instrument 管道不支持，且对本分析非必要。
+    Deliberately **not** instrumented in save_global_conversation_settings: that would
+    +1 a new combo every time a user flips a setting within a day, polluting the
+    distribution into a "switching trajectory". Precise per-device-per-day final state
+    would need server-side gauge/overwrite semantics, which the current instrument
+    pipeline doesn't support and this analysis doesn't require.
 
-    用途：server 端按 device 活跃天数 / event_count 切出深度用户，再看他们
-    settings_state 各 dim 组合的分布 —— 即"深度用户把主动搭话 / 隐私模式
-    定在什么档"。
+    Use: the server slices out heavy users by device active days / event_count, then
+    looks at the distribution of their settings_state dim combos — i.e. "where do heavy
+    users set proactive chat / privacy mode".
 
-    dim 全是低基数 enum，interval 分桶不发 raw 秒数：
-    - proactive: on / off（proactiveChatEnabled）
-    - interval: <10s / 10-30s / ... / >=300s（off 时为 "off"）
-    - vision_chat: on / off（proactiveVisionChatEnabled）
-    - privacy: on / off（隐私模式 = proactiveVisionEnabled 反面，默认关）
+    Dims are all low-cardinality enums; interval is bucketed, raw seconds not sent:
+    - proactive: on / off (proactiveChatEnabled)
+    - interval: <10s / 10-30s / ... / >=300s ("off" when off)
+    - vision_chat: on / off (proactiveVisionChatEnabled)
+    - privacy: on / off (privacy mode = inverse of proactiveVisionEnabled, default off)
     """
     if _DO_NOT_TRACK:
         return
@@ -867,13 +909,13 @@ def record_settings_state() -> None:
 # ---------------------------------------------------------------------------
 
 class TokenTracker:
-    """线程安全 + 多进程安全的全局 LLM token 用量追踪器。
+    """Thread-safe + multi-process-safe global LLM token usage tracker.
 
-    设计：
-    - 所有进程共享单个 token_usage.json 文件
-    - 内存中只追踪"尚未落盘的增量"（delta）
-    - save() 使用文件锁做 read-merge-write，保证多进程不丢数据
-    - get_stats() 读磁盘 + 合并内存 delta，不做任何文件删除
+    Design:
+    - all processes share a single token_usage.json file
+    - memory only tracks the "not yet persisted increments" (delta)
+    - save() does read-merge-write under a file lock, so multiple processes lose no data
+    - get_stats() reads disk + merges the in-memory delta, never deleting any file
     """
 
     _instance: Optional['TokenTracker'] = None
@@ -948,27 +990,28 @@ class TokenTracker:
 
     @property
     def _unsent_queue_path(self) -> Path:
-        """远程上报未发送队列的持久化文件。
+        """Persistence file for the unsent remote-reporting queue.
 
-        进程被 kill 时 _unsent_daily 会丢失（纯内存）。
-        通过将队列写到这个文件，重启后可以恢复并重发。
+        _unsent_daily is lost when the process is killed (pure memory).
+        Writing the queue to this file lets a restart recover and resend it.
         """
         return self._config_manager.config_dir / ".telemetry_unsent.json"
 
     # ---- atexit / unsent 持久化 ----
 
     def _atexit_save(self):
-        """atexit 兜底：进程退出前尽最后努力保存。
+        """atexit safety net: a final best effort to save before process exit.
 
-        覆盖场景：SIGTERM / 未捕获异常 / 正常退出 / sys.exit()
-        不覆盖：SIGKILL (kill -9) / 断电 — 此时最多丢 60s 数据
+        Covers: SIGTERM / uncaught exceptions / normal exit / sys.exit()
+        Not covered: SIGKILL (kill -9) / power loss — at most 60s of data lost then
 
-        顺序要点：先 emit session_end 到 instrument buffer，再 save()。
-        save() → _report_to_server 会 snapshot 走 instrument，所以 emit
-        必须先发生；否则 session_end 的 counter/histogram 进了 buffer 但
-        没机会被 snapshot，远程 dashboard 看不到 session_end —— 配对的
-        session_start 看得见、session_end 永远缺失，dashboard 上"异常退出
-        率"会被误算成 100%。event 单独通过 event_logger.flush 走本地 jsonl。
+        Ordering matters: first emit session_end into the instrument buffer, then
+        save(). save() → _report_to_server snapshots through instrument, so the emit
+        must happen first; otherwise session_end's counter/histogram enters the buffer
+        but never gets snapshotted, and the remote dashboard never sees session_end —
+        the paired session_start is visible while session_end is forever missing, so
+        the dashboard's "abnormal exit rate" gets miscomputed as 100%. The event goes
+        separately through event_logger.flush into local jsonl.
         """
         # global 声明提到函数开头：下面 3b 步骤会读 _TELEMETRY_SERVER_URL，
         # Python 要求 global 声明先于任何使用（否则 SyntaxError）。
@@ -1050,7 +1093,7 @@ class TokenTracker:
             _TELEMETRY_SERVER_URL = ""
 
     def _load_unsent_queue(self):
-        """启动时加载上次未成功上报的远程数据。"""
+        """Load remote data that previously failed to report, at startup."""
         if _DO_NOT_TRACK or not _TELEMETRY_SERVER_URL:
             return
         try:
@@ -1086,14 +1129,15 @@ class TokenTracker:
             logger.debug(f"Token tracker: failed to load unsent queue: {e}")
 
     def _save_unsent_queue(self):
-        """将当前未发送的远程数据持久化到磁盘。
+        """Persist currently unsent remote data to disk.
 
-        调用时机：
-        1. save() 成功后，如果有 unsent 数据等待远程上报
-        2. atexit 兜底时（通过 save → _report_to_server → 失败 → 持久化）
+        When called:
+        1. after a successful save(), if unsent data awaits remote reporting
+        2. at the atexit safety net (via save → _report_to_server → failure → persist)
 
-        持久化 batch_seq 一起：失败 + 进程崩 + 重启后 → 重传用同一 seq，
-        让 server seen_batches dedupe 不确定成败的 commit。
+        batch_seq is persisted along: failure + process crash + restart → the retry
+        uses the same seq, letting server seen_batches dedupe commits of uncertain
+        outcome.
         """
         if _DO_NOT_TRACK or not _TELEMETRY_SERVER_URL:
             return
@@ -1116,9 +1160,9 @@ class TokenTracker:
     # ---- 旧版文件迁移 ----
 
     def _migrate_legacy_files(self):
-        """将旧版 token_usage_{instance_id}.json 文件合并到新的单文件中。
+        """Merge legacy token_usage_{instance_id}.json files into the new single file.
 
-        只在首次实例化时执行一次。迁移完成后删除旧文件。
+        Runs only once at first instantiation. Old files are deleted after migration.
         """
         try:
             legacy_files = list(self._storage_dir.glob("token_usage_*.json"))
@@ -1173,16 +1217,16 @@ class TokenTracker:
         success: bool = True,
         prompt_chars: int = 0,
     ):
-        """记录一次 LLM 调用的 token 用量。线程安全。
+        """Record token usage of one LLM call. Thread-safe.
 
-        数据先写入内存中的 delta，由 periodic save 定期落盘。
+        Data first goes into the in-memory delta, persisted by the periodic save.
 
         Args:
-            prompt_tokens: 总 prompt tokens（含 cached 部分）
-            completion_tokens: 生成 tokens
+            prompt_tokens: total prompt tokens (including the cached part)
+            completion_tokens: generated tokens
             total_tokens: prompt + completion
-            cached_tokens: prompt 中被缓存命中的部分（OpenAI prompt_tokens_details.cached_tokens）
-            prompt_chars: 字符计费 SKU 的输入字符数。Use this for TTS / ASR /
+            cached_tokens: the cache-hit part of the prompt (OpenAI prompt_tokens_details.cached_tokens)
+            prompt_chars: input characters for char-billed SKUs. Use this for TTS / ASR /
                 embedding-by-char endpoints whose pricing unit is characters,
                 not tokens — keeps the token aggregates clean.
         """
@@ -1252,9 +1296,9 @@ class TokenTracker:
     # ---- 查询 ----
 
     def get_stats(self, days: int = 7) -> dict:
-        """返回最近 N 天的用量统计。
+        """Return usage statistics for the last N days.
 
-        读取磁盘文件 + 合并内存中尚未落盘的 delta，不做任何文件修改。
+        Reads the disk file + merges the in-memory not-yet-persisted delta; modifies nothing.
         """
         # 读磁盘（atomic_write_json 保证文件一致性，无需文件锁）
         disk_data = self._load_file(self._storage_path)
@@ -1290,7 +1334,7 @@ class TokenTracker:
         }
 
     def get_today_stats(self) -> dict:
-        """返回今日用量统计。"""
+        """Return today's usage statistics."""
         disk_data = self._load_file(self._storage_path)
         if not disk_data:
             disk_data = self._empty_file_data()
@@ -1306,14 +1350,15 @@ class TokenTracker:
         return {"date": today, "stats": merged}
 
     def record_app_start(self, process: str = "main_server"):
-        """记录客户端启动事件（app_start）。
+        """Record the client startup event (app_start).
 
-        用于统计 DAU，与 LLM 调用分开计数。
-        保证在单次进程生命周期内只上报一次（线程安全）。
+        Used for DAU statistics, counted separately from LLM calls.
+        Guaranteed to report only once per process lifetime (thread-safe).
 
-        除了沿用老的 ``record(call_type='app_start')`` 路径（dashboard 的
-        by_call_type 还在用），同时打一个 instrument 事件 ``session_start``，
-        以及把启动时刻塞进 self 让 _atexit_save 能算 session_end 的 duration。
+        Besides the old ``record(call_type='app_start')`` path (the dashboard's
+        by_call_type still uses it), also emits an instrument event ``session_start``
+        and stashes the start time on self so _atexit_save can compute session_end's
+        duration.
         """
         with self._lock:
             if self._has_recorded_app_start:
@@ -1353,15 +1398,15 @@ class TokenTracker:
             record_settings_state()
 
     def note_first_user_message(self, input_type: str = "text"):
-        """记录本进程内用户的第一条消息（D1 漏斗关键里程碑）。
+        """Record the user's first message within this process (a key D1-funnel milestone).
 
-        每个进程生命周期内只记一次（线程安全）。区分两类 D1 流失：
-        - first_message_sent counter：用户真的"开口"了——没这条 = 装了打开
-          没说话就走（onboarding / 配置障碍）
-        - time_to_first_message_sec histogram：app 启动→首条消息的时长。卡在
-          配置 / 选角色 / 麦克风授权 = 长；秒级 = 顺畅上手
+        Recorded once per process lifetime (thread-safe). Distinguishes two kinds of D1 churn:
+        - first_message_sent counter: the user actually "spoke" — absence = installed,
+          opened, left without speaking (onboarding / configuration obstacles)
+        - time_to_first_message_sec histogram: time from app start to first message.
+          Stuck on config / character choice / mic permission = long; seconds = smooth onboarding
 
-        input_type: text / voice（低基数）
+        input_type: text / voice (low-cardinality)
         """
         with self._lock:
             if self._first_user_message_recorded:
@@ -1379,16 +1424,17 @@ class TokenTracker:
             pass
 
     def note_user_message(self, input_type: str = "text"):
-        """每条用户消息都调（区别于 note_first_user_message 只记首条）。
+        """Called for every user message (unlike note_first_user_message, which records only the first).
 
-        - emit ``user_message_sent`` counter（input_type 维度）：求和 = 聊天总轮数，
-          按 input_type 切 = voice/text 模态占比
-        - 累加本 session 轮数 ``_session_msg_count``，session_end 时 emit
-          ``session_turn_count`` histogram（含 0 = 零消息会话）
+        - emits the ``user_message_sent`` counter (input_type dim): sum = total chat
+          turns; sliced by input_type = voice/text modality share
+        - accumulates this session's turn count ``_session_msg_count``; at session_end
+          emits the ``session_turn_count`` histogram (including 0 = zero-message session)
 
-        调用方负责保证每条真实用户消息恰好调一次（见 core.py：只在文本侧
-        on_user_message 入口和真语音消息点调，避开 openclaw handoff 复用路径）。
-        input_type: text / voice（低基数）
+        Callers must ensure each real user message calls this exactly once (see core.py:
+        only at the text-side on_user_message entry and the true voice-message point,
+        avoiding the openclaw handoff reuse path).
+        input_type: text / voice (low-cardinality)
         """
         with self._lock:
             self._session_msg_count += 1
@@ -1400,16 +1446,19 @@ class TokenTracker:
             pass
 
     def note_core_loop_completed(self):
-        """用户完成一轮核心体验：发消息→收回复→听到语音。每进程记一次。
+        """The user completed one core-experience loop: send message → get reply → hear speech. Recorded once per process.
 
-        只在用户已经发过消息（_first_user_message_recorded=True）后才算 —— 纯
-        proactive 触发的语音不算"用户主动体验到核心 loop"。
+        Counted only after the user has sent a message (_first_user_message_recorded=True) —
+        purely proactive-triggered speech doesn't count as "the user actively experienced
+        the core loop".
 
-        D1 流失分析的关键区分信号：
-        - 有 first_message_sent 但没 core_loop_completed = 用户开口了但没听到
-          回复（卡在 LLM 失败 / TTS 失败 / 太慢）→ 首次体验障碍型流失
-        - 有 core_loop_completed = 完整体验过产品核心，之后流失更可能是
-          "玩了不喜欢"（产品价值问题）→ 两类流失的运营动作完全不同
+        The key distinguishing signal for D1 churn analysis:
+        - has first_message_sent but no core_loop_completed = the user spoke but never
+          heard a reply (stuck on LLM failure / TTS failure / too slow) →
+          first-experience-obstacle churn
+        - has core_loop_completed = fully experienced the product core; later churn is
+          more likely "tried it, didn't like it" (a product-value problem) — entirely
+          different operational responses for the two kinds
         """
         with self._lock:
             if self._core_loop_recorded:
@@ -1427,28 +1476,31 @@ class TokenTracker:
             pass
 
     def has_completed_core_loop(self) -> bool:
-        """本进程内用户是否已完成过一轮核心体验（发消息→收回复→听到语音）。
+        """Whether the user has completed a core-experience loop in this process (send → reply → speech).
 
-        给各错误埋点站点判 ``before_first_loop`` 维度用：False = 错误发生在用户
-        还没体验到产品核心之前 = 首次体验障碍型流失（最该救）；True = 体验过
-        核心之后的错误，流失更可能是产品价值问题。两类运营动作不同。
+        For error instrumentation sites to set the ``before_first_loop`` dimension:
+        False = the error happened before the user experienced the product core =
+        first-experience-obstacle churn (most worth saving); True = an error after
+        experiencing the core, where churn is more likely a product-value problem.
+        Different operational responses.
         """
         return self._core_loop_recorded
 
     # ---- 持久化 ----
 
     def save(self):
-        """持久化增量数据到磁盘。多进程安全。
+        """Persist incremental data to disk. Multi-process safe.
 
-        流程：
-        1. 线程锁内取出 delta 快照并清空（swap 模式）
-        2. 文件锁内做 read-merge-write
-        3. 如果写入失败，将 delta 放回内存
+        Flow:
+        1. take a delta snapshot and clear it inside the thread lock (swap pattern)
+        2. read-merge-write inside the file lock
+        3. on write failure, put the delta back into memory
 
-        Not-dirty 仍要触发远程上报：纯前端互动（counter/histogram，无 LLM 调用）
-        的用户 self._dirty 永远是 False，老逻辑直接 return 会让 instrument
-        累积窗口永远发不出去。跳过本地写盘但 _report_to_server 仍要调，让它
-        内部按 has_data() 决定是否真的 POST。
+        Not-dirty must still trigger remote reporting: for users with pure frontend
+        interaction (counter/histogram, no LLM calls), self._dirty stays False forever;
+        the old logic's early return kept the instrument accumulation window from ever
+        being sent. Skip the local disk write but still call _report_to_server, letting
+        it decide internally via has_data() whether to actually POST.
         """
         with self._lock:
             if not self._dirty:
@@ -1528,13 +1580,13 @@ class TokenTracker:
     # ---- 远程遥测上报 ----
 
     def _report_to_server(self, delta_daily: dict, delta_records: list):
-        """将增量数据上报到远程遥测服务器。
+        """Report incremental data to the remote telemetry server.
 
-        防丢数据设计：
-        - _unsent_daily 累积在内存中，同时持久化到 .telemetry_unsent.json
-        - 进程被 kill 后重启时，_load_unsent_queue() 恢复未发送数据
-        - 发送成功后清除 unsent 队列文件
-        - 发送失败后放回内存 + 持久化，下次重试
+        Data-loss prevention design:
+        - _unsent_daily accumulates in memory while also persisted to .telemetry_unsent.json
+        - after the process is killed and restarted, _load_unsent_queue() recovers unsent data
+        - the unsent queue file is cleared after a successful send
+        - on send failure, put back into memory + persisted, retried next time
         """
         if _DO_NOT_TRACK or not _TELEMETRY_SERVER_URL:
             return
@@ -1734,7 +1786,7 @@ class TokenTracker:
 
     @staticmethod
     def _load_file(path: Path) -> dict:
-        """从文件加载数据，返回空 dict 表示文件无效或不存在。"""
+        """Load data from the file; returns an empty dict when the file is invalid or missing."""
         try:
             if path.exists():
                 with open(path, "r", encoding="utf-8") as f:
@@ -1748,7 +1800,7 @@ class TokenTracker:
     # ---- 定时保存 ----
 
     def start_periodic_save(self):
-        """启动后台定时保存任务。需在 asyncio loop 内调用。"""
+        """Start the background periodic save task. Must be called inside an asyncio loop."""
         if self._save_task is None or self._save_task.done():
             self._save_task = asyncio.create_task(self._periodic_save_loop())
             logger.info("Token tracker periodic save started")
@@ -1813,7 +1865,7 @@ class TokenTracker:
 
     @staticmethod
     def _dedupe_records(records: list, max_keep: int = 200) -> list:
-        """对 recent_records 去重 + 排序 + 截断。"""
+        """Dedupe + sort + truncate recent_records."""
         seen = set()
         unique = []
         for r in records:
@@ -1838,7 +1890,7 @@ _hooks_install_lock = threading.Lock()
 
 
 def _get_base_url(self_obj) -> str:
-    """从 OpenAI client 实例提取 base_url。"""
+    """Extract base_url from an OpenAI client instance."""
     try:
         # self_obj 是 Completions / AsyncCompletions，其 _client 是 OpenAI / AsyncOpenAI
         client = getattr(self_obj, '_client', None)
@@ -1853,10 +1905,11 @@ def _get_base_url(self_obj) -> str:
 
 
 def _usage_to_dict(usage) -> dict:
-    """将 usage 对象统一转为 dict，确保所有字段（含 provider 自定义字段）都能被检索到。
+    """Normalize the usage object into a dict so all fields (including provider-custom ones) can be retrieved.
 
-    OpenAI SDK 用 Pydantic model 解析 usage，非标准字段（如阶跃的 cached_tokens）
-    在 v2 中藏在 model_extra 里，在 v1 中可能被丢弃但留在 __dict__ 中。
+    The OpenAI SDK parses usage with a Pydantic model; non-standard fields (like
+    StepFun's cached_tokens) hide in model_extra in v2, and in v1 may be dropped but
+    remain in __dict__.
     """
     if isinstance(usage, dict):
         return usage
@@ -1908,12 +1961,12 @@ _NESTED_DETAIL_FIELDS = (
 
 
 def _extract_cached_tokens(usage_dict: dict) -> int:
-    """从 usage dict 中提取 cached_tokens，兼容多种 provider 格式。
+    """Extract cached_tokens from the usage dict, compatible with multiple provider formats.
 
-    已知格式：
-    1. OpenAI 官方: usage.prompt_tokens_details.cached_tokens
-    2. 阶跃星辰 (Step): usage.cached_tokens（顶层）
-    3. Gemini/其他: 可能在嵌套结构中
+    Known formats:
+    1. official OpenAI: usage.prompt_tokens_details.cached_tokens
+    2. StepFun: usage.cached_tokens (top level)
+    3. Gemini/others: possibly in nested structures
     """
     # 1) 检查嵌套结构（如 OpenAI 的 prompt_tokens_details.cached_tokens）
     for nested_key in _NESTED_DETAIL_FIELDS:
@@ -1938,15 +1991,15 @@ def _extract_cached_tokens(usage_dict: dict) -> int:
 
 
 def calculate_cache_hit_rate(prompt_tokens: int, cached_tokens: int) -> float:
-    """计算缓存命中率。
+    """Compute the cache hit rate.
 
     Args:
-        prompt_tokens: 总 prompt tokens（含缓存命中和未命中）
-        cached_tokens: 缓存命中的 tokens
+        prompt_tokens: total prompt tokens (cache hits and misses included)
+        cached_tokens: cache-hit tokens
 
     Returns:
-        缓存命中率，范围 0.0 ~ 1.0
-        如果 prompt_tokens 为 0，返回 0.0
+        Cache hit rate in the range 0.0 ~ 1.0
+        Returns 0.0 when prompt_tokens is 0
 
     Example:
         >>> calculate_cache_hit_rate(2911, 2888)
@@ -1959,13 +2012,13 @@ def calculate_cache_hit_rate(prompt_tokens: int, cached_tokens: int) -> float:
 
 
 def _record_usage_from_response(response, call_type: str):
-    """从 OpenAI SDK response 提取 usage 并记录。
+    """Extract usage from an OpenAI SDK response and record it.
 
-    提取字段：
-    - usage.prompt_tokens: 总 prompt tokens（含 cached）
-    - usage.completion_tokens: 生成 tokens
-    - usage.total_tokens: 总计
-    - usage.prompt_tokens_details.cached_tokens: prompt 缓存命中部分
+    Extracted fields:
+    - usage.prompt_tokens: total prompt tokens (including cached)
+    - usage.completion_tokens: generated tokens
+    - usage.total_tokens: total
+    - usage.prompt_tokens_details.cached_tokens: the cache-hit part of the prompt
     """
     try:
         if not hasattr(response, 'usage') or response.usage is None:
@@ -1995,7 +2048,7 @@ def _record_usage_from_response(response, call_type: str):
 
 
 def _should_inject_stream_options(base_url: str) -> bool:
-    """检查该 base_url 是否在 blocklist 中。"""
+    """Check whether this base_url is in the blocklist."""
     if not base_url:
         return True
     with _blocklist_lock:
@@ -2003,7 +2056,7 @@ def _should_inject_stream_options(base_url: str) -> bool:
 
 
 def _add_to_blocklist(base_url: str):
-    """将不支持 stream_options 的 base_url 加入 blocklist。"""
+    """Add a base_url that doesn't support stream_options to the blocklist."""
     if base_url:
         with _blocklist_lock:
             _stream_options_blocklist.add(base_url)
@@ -2011,14 +2064,14 @@ def _add_to_blocklist(base_url: str):
 
 
 def _install_crash_excepthook():
-    """注入全局 sys.excepthook，把 unhandled exception 打成 crash 事件。
+    """Install a global sys.excepthook that turns unhandled exceptions into crash events.
 
-    用 chain 模式：保留原 hook（系统默认会把 traceback 打到 stderr），自己
-    只在最前面加一层 telemetry 上报。这样不破坏现有的 logging / 错误显示
-    逻辑，只是顺便记一笔。
+    Chain pattern: keeps the original hook (the system default prints the traceback to
+    stderr), only prepending a telemetry layer. Existing logging / error display logic
+    is untouched; we just take a note in passing.
 
-    幂等：install 多次只生效一次（避免 main_server / memory_server 都 import
-    时多套 chain 套娃）。
+    Idempotent: multiple installs take effect once (avoiding nested chains when both
+    main_server and memory_server import this).
     """
     import sys
     if getattr(sys, "_neko_crash_hook_installed", False):
@@ -2061,19 +2114,21 @@ def _install_crash_excepthook():
 
 def install_hooks():
     """
-    安装 OpenAI SDK monkey-patch，自动追踪所有 chat.completions.create 调用的 token 用量。
-    同时覆盖 LangChain 底层调用（因为 LangChain ChatOpenAI 底层调用 OpenAI SDK）。
+    Install the OpenAI SDK monkey-patch, automatically tracking token usage of all chat.completions.create calls.
+    Also covers LangChain's underlying calls (LangChain ChatOpenAI calls the OpenAI SDK underneath).
 
-    顺便：装 sys.excepthook 抓 unhandled exception 打 crash 事件。
+    Along the way: installs sys.excepthook to catch unhandled exceptions as crash events.
 
-    幂等：合并单进程模式（打包 / Steam 版，见 launcher 的 _run_merged）把
-    main / memory / agent 三个 uvicorn app 跑在同一进程，三个 app 的 startup
-    都会调本函数，打在同一个进程级 ``Completions.create`` 上。没有守卫时 wrapper
-    会逐层叠加 —— 每个 chat.completions 调用被 record 多次，conversation /
-    emotion / proactive / galgame_options 等走 hook 的 call_type 在遥测里精确翻
-    N 倍（线上 Steam 版三 app 实测 ×3）。走 ``TokenTracker.record()`` 直接记账的
-    tts / conversation_realtime / agent_cua 绕开 hook 不受影响；app_start 由
-    ``_has_recorded_app_start`` 单例锁兜住 —— 本守卫是它在 hook 侧的对偶。
+    Idempotent: merged single-process mode (packaged / Steam edition, see the launcher's
+    _run_merged) runs the main / memory / agent uvicorn apps in one process; all three
+    apps' startup calls this function, patching the same process-level
+    ``Completions.create``. Without the guard the wrappers would stack — every
+    chat.completions call gets recorded multiple times, and hook-based call_types like
+    conversation / emotion / proactive / galgame_options inflate exactly N-fold in
+    telemetry (×3 measured live on the three-app Steam edition). tts /
+    conversation_realtime / agent_cua, which book directly via ``TokenTracker.record()``,
+    bypass the hook and are unaffected; app_start is held by the
+    ``_has_recorded_app_start`` singleton lock — this guard is its dual on the hook side.
     """
     # crash hook 跟 openai 库无关，独立装；幂等。
     _install_crash_excepthook()
@@ -2152,7 +2207,7 @@ def install_hooks():
 # ---------------------------------------------------------------------------
 
 def _handle_sync_stream(self_obj, original_fn, args, kwargs, call_type):
-    """处理同步 streaming 调用：注入 stream_options + wrap Stream。"""
+    """Handle sync streaming calls: inject stream_options + wrap Stream."""
     base_url = _get_base_url(self_obj)
     injected = False
 
@@ -2188,7 +2243,7 @@ def _handle_sync_stream(self_obj, original_fn, args, kwargs, call_type):
 
 
 async def _handle_async_stream(self_obj, original_fn, args, kwargs, call_type):
-    """处理异步 streaming 调用：注入 stream_options + wrap AsyncStream。"""
+    """Handle async streaming calls: inject stream_options + wrap AsyncStream."""
     base_url = _get_base_url(self_obj)
     injected = False
 
@@ -2222,11 +2277,11 @@ async def _handle_async_stream(self_obj, original_fn, args, kwargs, call_type):
 
 
 class _SyncStreamWrapper:
-    """Wrap 同步 Stream，在迭代结束后提取 usage。
+    """Wrap a sync Stream, extracting usage after iteration completes.
 
-    关键：只在流结束后记录一次（取最后一个带 usage 的 chunk）。
-    部分 OpenAI 兼容 API（阶跃、通义等）在每个 chunk 都返回累计 usage，
-    如果每个 chunk 都记录就会导致严重的重复计数。
+    Key point: record only once after the stream ends (taking the last chunk carrying
+    usage). Some OpenAI-compatible APIs (StepFun, Qwen, etc.) return cumulative usage
+    in every chunk; recording every chunk would cause severe double counting.
     """
 
     def __init__(self, stream, call_type: str):
@@ -2257,9 +2312,9 @@ class _SyncStreamWrapper:
 
 
 class _AsyncStreamWrapper:
-    """Wrap 异步 AsyncStream，在迭代结束后提取 usage。
+    """Wrap an async AsyncStream, extracting usage after iteration completes.
 
-    同 _SyncStreamWrapper：只在流结束后记录一次。
+    Same as _SyncStreamWrapper: record only once after the stream ends.
     """
 
     def __init__(self, stream, call_type: str):

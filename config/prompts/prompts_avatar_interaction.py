@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Avatar-interaction prompt templates and payload normalizers.
 
@@ -1623,13 +1637,15 @@ def _build_avatar_interaction_memory_note(
 def _build_avatar_interaction_memory_meta(
     language: str | None, payload: dict, master_name: str
 ) -> dict:
-    """生成 avatar 互动的 memory_note + dedupe 元信息。
+    """Build the memory_note + dedupe metadata for an avatar interaction.
 
-    ``master_name`` 必传：模板内只用 ``{master}`` 占位符表达"对 AI 做事的人"，
-    禁止字面量"主人 / Your master / ご主人さま / 주인 / Хозяин"等物化称呼。
-    传入空串时按 ``_AVATAR_INTERACTION_MEMORY_NOTE_MASTER_FALLBACK`` 本地化
-    中性词兜底（zh="对方"、en="they" 等），同样不会回落到物化称呼。
-    """
+    ``master_name`` is required: templates only use the ``{master}`` placeholder to
+    refer to "the person interacting with the AI"; objectifying literals like
+    "主人 / Your master / ご主人さま / 주인 / Хозяин" are forbidden.
+    When an empty string is passed in, falls back to the localized neutral word from
+    ``_AVATAR_INTERACTION_MEMORY_NOTE_MASTER_FALLBACK`` (zh="对方", en="they", etc.),
+    which likewise never degrades to an objectifying title.
+    """  # noqa: DOCSTRING_CJK
     locale = _avatar_interaction_locale(language)
     templates = _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES.get(locale, {})
     fallback = _AVATAR_INTERACTION_MEMORY_NOTE_MASTER_FALLBACK

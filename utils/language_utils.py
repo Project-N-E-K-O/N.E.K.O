@@ -1,12 +1,26 @@
 # -*- coding: utf-8 -*-
-"""
-语言检测和翻译工具模块
-用于检测文本语言并翻译到目标语言
-优先级：Google 翻译 (googletrans) -> translatepy (仅使用中国大陆可访问的服务，免费) -> LLM 翻译
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-同时包含全局语言管理功能：
-- 维护全局语言变量，优先级：Steam设置 > 系统设置
-- 判断中文区/非中文区
+"""
+Language detection and translation utility module
+Detects the language of text and translates it into a target language
+Priority: Google Translate (googletrans) -> translatepy (only services reachable from mainland China, free) -> LLM translation
+
+Also includes global language management:
+- maintains the global language variable, priority: Steam settings > system settings
+- decides Chinese region vs non-Chinese region
 """
 import re
 import locale
@@ -39,10 +53,10 @@ _global_region: Optional[str] = None  # 'china' 或 'non-china'
 
 
 def _matches_lang_code(lang_lower: str, code: str, aliases: Optional[set] = None) -> bool:
-    """检查语言字符串是否匹配指定的语言 code，支持精确码、locale 后缀（`xx-XX`/`xx_XX`）和显式别名。
+    """Check whether a language string matches the given language code; supports exact codes, locale suffixes (`xx-XX`/`xx_XX`) and explicit aliases.
 
-    用法：避免 `startswith('es')` 这种宽松匹配把 `estonian`、`esperanto` 误归到西语。
-    传入 aliases 集合（如 `{'spanish', 'latam'}`）可显式接收 Steam/系统的别名。
+    Usage: avoids loose matching like `startswith('es')` misclassifying `estonian` or `esperanto` as Spanish.
+    Pass an aliases set (e.g. `{'spanish', 'latam'}`) to explicitly accept Steam/system aliases.
     """
     aliases = aliases or set()
     return (
@@ -62,17 +76,18 @@ _SUPPORTED_STEAM_LITERALS: frozenset = frozenset({
 
 
 def is_supported_language_code(raw: Any) -> bool:
-    """判断原始输入是否落在 ``normalize_language_code`` 真正能识别的支持集合内。
+    """Decide whether the raw input falls within the supported set that ``normalize_language_code`` truly recognizes.
 
-    背景：``normalize_language_code`` 对未识别的输入会默认回退到 ``'en'``，让 garbage
-    （``'undefined'`` / ``'estonian'`` / 空白）被静默当作英文写入下游状态（全局缓存
-    或 ``mgr.user_language``）。所有"接受请求体语言再回写状态"的入口（例如
-    ``refresh_global_language`` / ``_absorb_request_language``）必须先用此 helper
-    把输入挡在外面，再调归一化。
+    Background: ``normalize_language_code`` silently falls back to ``'en'`` for
+    unrecognized input, letting garbage (``'undefined'`` / ``'estonian'`` / blanks) be
+    silently treated as English and written into downstream state (the global cache or
+    ``mgr.user_language``). Every entry point that "accepts a request-body language and
+    writes state back" (e.g. ``refresh_global_language`` / ``_absorb_request_language``)
+    must use this helper to fence the input out first, then call normalization.
 
-    支持集合 = 与 ``normalize_language_code`` 实际真识别的码 / Steam literal 一致；
-    用 ``_matches_lang_code`` 而不是 ``startswith`` 避免 ``estonian`` / ``ptsd`` /
-    ``essential`` 这种无意义前缀通过校验。
+    Supported set = the codes / Steam literals that ``normalize_language_code`` actually
+    recognizes; uses ``_matches_lang_code`` instead of ``startswith`` so meaningless
+    prefixes like ``estonian`` / ``ptsd`` / ``essential`` don't pass validation.
     """
     if not raw:
         return False
@@ -89,10 +104,10 @@ def is_supported_language_code(raw: Any) -> bool:
 
 def _is_china_region() -> bool:
     """
-    判断当前系统是否在中文区
+    Decide whether the current system is in the Chinese region
     
     Returns:
-        True 表示中文区，False 表示非中文区
+        True for the Chinese region, False otherwise
     """
     try:
         system_locale = locale.getlocale()[0]
@@ -115,11 +130,12 @@ def _is_china_region() -> bool:
 
 def _get_windows_locale() -> Optional[str]:
     """
-    通过 Windows API GetUserDefaultLocaleName 获取用户 locale（如 'en-US'、'zh-CN'）。
-    仅在 Windows 上有效，其他平台返回 None。
+    Get the user locale (e.g. 'en-US', 'zh-CN') via the Windows API GetUserDefaultLocaleName.
+    Only effective on Windows; returns None on other platforms.
 
-    locale.getlocale() 只反映 Python 进程内已设置的 locale，Windows 启动时不会自动注入，
-    因此在 Windows 上几乎总是返回 (None, None)。此函数直接读 Windows 用户 locale 状态。
+    locale.getlocale() only reflects the locale already set within the Python process;
+    Windows doesn't inject it automatically at startup, so on Windows it almost always
+    returns (None, None). This function reads the Windows user locale state directly.
     """
     import platform
     if platform.system() != 'Windows':
@@ -135,10 +151,10 @@ def _get_windows_locale() -> Optional[str]:
 
 def _get_system_language() -> str:
     """
-    从系统设置获取语言
+    Get the language from system settings
 
     Returns:
-        语言代码 ('zh', 'en', 'ja', 'ko', 'ru')，默认返回 'zh'
+        Language code ('zh', 'en', 'ja', 'ko', 'ru'), defaults to 'zh'
     """
     def _parse_locale(s: str) -> Optional[str]:
         s = s.lower()
@@ -188,10 +204,10 @@ def _get_system_language() -> str:
 
 def _get_steam_language() -> Optional[str]:
     """
-    从 Steam 设置获取语言
+    Get the language from Steam settings
     
     Returns:
-        语言代码 ('zh', 'en', 'ja', 'ko', 'ru')，如果无法获取则返回 None
+        Language code ('zh', 'en', 'ja', 'ko', 'ru'), or None if unavailable
     """
     try:
         steamworks = get_steamworks()
@@ -236,10 +252,10 @@ def _get_steam_language() -> Optional[str]:
 
 def initialize_global_language() -> str:
     """
-    初始化全局语言变量（优先级：Steam设置 > 系统设置）
+    Initialize the global language variable (priority: Steam settings > system settings)
     
     Returns:
-        初始化后的语言代码 ('zh', 'en', 'ja', 'ko')
+        The initialized language code ('zh', 'en', 'ja', 'ko')
     """
     global _global_language, _global_language_full, _global_region, _global_language_initialized
     
@@ -275,10 +291,10 @@ def initialize_global_language() -> str:
 
 def get_global_language() -> str:
     """
-    获取全局语言变量
+    Get the global language variable
     
     Returns:
-        语言代码 ('zh', 'en', 'ja', 'ko', 'ru', 'es', 'pt')，默认返回 'zh'
+        Language code ('zh', 'en', 'ja', 'ko', 'ru', 'es', 'pt'), defaults to 'zh'
     """
     global _global_language
     
@@ -291,13 +307,13 @@ def get_global_language() -> str:
 
 def get_global_language_full() -> str:
     """
-    获取全局语言变量（完整格式，保留 zh-TW 等区分）
+    Get the global language variable (full format, keeping distinctions like zh-TW)
     
-    与 get_global_language() 的区别：后者返回短格式 ('zh')，
-    本函数保留完整代码 ('zh-TW')，用于需要区分简繁体的场景。
+    Difference from get_global_language(): the latter returns the short form ('zh'),
+    this function keeps the full code ('zh-TW') for scenarios distinguishing Simplified/Traditional.
     
     Returns:
-        语言代码 ('zh', 'zh-TW', 'en', 'ja', 'ko', 'ru')，默认返回 'zh'
+        Language code ('zh', 'zh-TW', 'en', 'ja', 'ko', 'ru'), defaults to 'zh'
     """
     with _global_language_lock:
         if not _global_language_initialized:
@@ -308,10 +324,10 @@ def get_global_language_full() -> str:
 
 def set_global_language(language: str) -> None:
     """
-    设置全局语言变量（手动设置，会覆盖自动检测）
+    Set the global language variable (manual setting, overrides auto detection)
     
     Args:
-        language: 语言代码 ('zh', 'en', 'ja', 'ko')
+        language: language code ('zh', 'en', 'ja', 'ko')
     """
     global _global_language, _global_language_full, _global_language_initialized
     
@@ -345,22 +361,26 @@ def set_global_language(language: str) -> None:
 
 
 def refresh_global_language(language: str) -> bool:
-    """重新校准全局语言缓存（用于晚到的真值，例如 Steam SDK 启动期 race 失败后才拿到）。
+    """Recalibrate the global language cache (for late-arriving truth, e.g. obtained only after a Steam SDK startup race failed).
 
-    与 ``set_global_language`` 的区别：
-    - 静默 no-op：若归一化后值与当前缓存相同，直接返回 ``False``，不打 INFO 日志
-      （前端 i18n bootstrap 会调 ``/api/config/steam_language``，每次冷启都触发刷新，
-      不应每次都刷屏）。
-    - 仅当值不同 / 缓存未初始化时才覆盖并 log。
+    Differences from ``set_global_language``:
+    - silent no-op: if the normalized value equals the current cache, return ``False``
+      directly without an INFO log (the frontend i18n bootstrap calls
+      ``/api/config/steam_language``, triggering a refresh on every cold start; it
+      shouldn't spam each time).
+    - only overwrites and logs when the value differs / the cache is uninitialized.
 
-    设计动机：``initialize_global_language`` 在进程启动时只跑一次，Steam SDK 没就绪
-    就退化到系统 locale 然后**终生缓存**；前端的 ``/api/config/steam_language`` 端点
-    每次重读 Steam 拿得到对的值，但没有路径回写到全局缓存——所有依赖
-    ``get_global_language()`` 的下游（memory / reflection / tts / soccer 兜底等）就
-    一直用错的英文。该函数就是这条回写路径。
+    Motivation: ``initialize_global_language`` runs only once at process startup; if the
+    Steam SDK isn't ready it degrades to the system locale and **caches it for life**;
+    the frontend's ``/api/config/steam_language`` endpoint re-reads Steam every time and
+    gets the right value, but had no path to write it back to the global cache — so all
+    downstream consumers of ``get_global_language()`` (memory / reflection / tts /
+    soccer fallback, etc.) kept using the wrong English. This function is that
+    write-back path.
 
     Returns:
-        ``True`` 表示发生了真实变更；``False`` 表示已是最新或参数无效。
+        ``True`` when a real change happened; ``False`` when already current or the
+        argument is invalid.
     """
     global _global_language, _global_language_full, _global_region, _global_language_initialized
 
@@ -415,10 +435,10 @@ def refresh_global_language(language: str) -> bool:
 
 def get_global_region() -> str:
     """
-    获取全局区域标识
+    Get the global region identifier
     
     Returns:
-        'china' 或 'non-china'
+        'china' or 'non-china'
     """
     global _global_region
     
@@ -432,17 +452,17 @@ def get_global_region() -> str:
 
 def is_china_region() -> bool:
     """
-    判断当前是否在中文区
+    Decide whether we are currently in the Chinese region
     
     Returns:
-        True 表示中文区，False 表示非中文区
+        True for the Chinese region, False otherwise
     """
     return get_global_region() == 'china'
 
 
 def reset_global_language() -> None:
     """
-    重置全局语言变量（重新初始化）
+    Reset the global language variable (re-initialize)
     """
     global _global_language, _global_language_full, _global_region, _global_language_initialized
     
@@ -456,22 +476,22 @@ def reset_global_language() -> None:
 
 def normalize_language_code(lang: str, format: str = 'short') -> str:
     """
-    归一化语言代码（统一处理 'zh', 'zh-CN', Steam语言代码等格式）
+    Normalize a language code (uniformly handles 'zh', 'zh-CN', Steam language codes, etc.)
     
-    此函数是公共 API，供其他模块复用。
+    This function is a public API for reuse by other modules.
     
-    支持的输入格式：
-    - 标准语言代码：'zh', 'zh-CN', 'zh-TW', 'en', 'en-US', 'ja', 'ja-JP', 'ko', 'ko-KR' 等
-    - Steam 语言代码：'schinese', 'tchinese', 'english', 'japanese' 等
+    Supported input formats:
+    - standard language codes: 'zh', 'zh-CN', 'zh-TW', 'en', 'en-US', 'ja', 'ja-JP', 'ko', 'ko-KR', etc.
+    - Steam language codes: 'schinese', 'tchinese', 'english', 'japanese', etc.
     
     Args:
-        lang: 输入的语言代码
-        format: 输出格式
-            - 'short': 返回短格式 ('zh', 'en', 'ja', 'ko')
-            - 'full': 返回完整格式 ('zh-CN', 'zh-TW', 'en', 'ja', 'ko')
+        lang: input language code
+        format: output format
+            - 'short': returns the short form ('zh', 'en', 'ja', 'ko')
+            - 'full': returns the full form ('zh-CN', 'zh-TW', 'en', 'ja', 'ko')
         
     Returns:
-        归一化后的语言代码，如果无法识别则返回默认值 ('zh' 或 'zh-CN')
+        The normalized language code, or the default ('zh' or 'zh-CN') when unrecognizable
     """
     if not lang:
         return 'en'
@@ -563,7 +583,7 @@ TRANSLATEPY_AVAILABLE: bool | None = None
 
 
 def _ensure_googletrans() -> bool:
-    """首次调用时 import googletrans，缓存结果。返回是否可用。"""
+    """Import googletrans on first call and cache the result. Returns availability."""
     global Translator, GOOGLETRANS_AVAILABLE
     # 显式强制不可用优先 → 降级。
     if GOOGLETRANS_AVAILABLE is False:
@@ -589,7 +609,7 @@ def _ensure_googletrans() -> bool:
 
 
 def _ensure_translatepy() -> bool:
-    """首次调用时 import translatepy 及中国大陆可访问的翻译器，缓存结果。"""
+    """Import translatepy and the translators reachable from mainland China on first call; cache the result."""
     global TranslatepyTranslator, CHINA_ACCESSIBLE_SERVICES, TRANSLATEPY_AVAILABLE
     # 显式强制不可用优先 → 降级。
     if TRANSLATEPY_AVAILABLE is False:
@@ -651,7 +671,7 @@ def _mark_google_failed() -> None:
 
 
 def reset_google_translate_failure_flag() -> None:
-    """重置 Google 翻译失败标记（测试或网络恢复时使用）"""
+    """Reset the Google Translate failure flag (for tests or after network recovery)"""
     global _google_translate_failed_flag
     with _google_translate_failed_lock:
         _google_translate_failed_flag = False
@@ -681,15 +701,15 @@ TTS_LANG_DETECT_MIN_CHARS = 6
 
 
 def detect_tts_language_hint(text: str) -> Optional[str]:
-    """扫描文本，命中假名返回 'ja'，否则返回 None（交由服务端自动识别）。
+    """Scan the text; returns 'ja' on kana hits, otherwise None (leaving auto-detection to the server).
 
-    返回值为 provider 无关的语言代码（'ja'）。各 TTS provider worker 自行把
-    该代码映射到自己的字段：
+    The return value is a provider-agnostic language code ('ja'). Each TTS provider
+    worker maps the code to its own field:
       - CosyVoice: language_hints=["ja"]
       - Qwen:      session.language_type="Japanese"
       - lanlan.tech (step free): voice_label={"language": "日语"}
       - lanlan.app (step free):  language_code="ja-JP"
-    """
+    """  # noqa: DOCSTRING_CJK
     if text and _TTS_KANA_RE.search(text):
         return 'ja'
     return None
@@ -716,7 +736,7 @@ TTS_LANGUAGE_CODE_MAP = {
 
 
 def get_tts_language_code() -> str:
-    """按当前全局语言返回 lanlan.app 所需的 language_code，兜底 'cmn-CN'。"""
+    """Return the language_code required by lanlan.app for the current global language, defaulting to 'cmn-CN'."""
     try:
         lang = normalize_language_code(get_global_language_full(), format='full')
     except Exception:
@@ -726,14 +746,14 @@ def get_tts_language_code() -> str:
 
 def _split_text_into_chunks(text: str, max_chunk_size: int) -> List[str]:
     """
-    将文本分段，尝试在句号、换行符等位置分割
+    Split text into chunks, trying to split at periods, newlines, etc.
     
     Args:
-        text: 要分段的文本
-        max_chunk_size: 每个分段的最大字符数
+        text: text to split
+        max_chunk_size: maximum characters per chunk
         
     Returns:
-        分段后的文本列表
+        List of text chunks
     """
     if len(text) <= max_chunk_size:
         return [text]
@@ -767,25 +787,25 @@ def _split_text_into_chunks(text: str, max_chunk_size: int) -> List[str]:
 
 async def translate_with_translatepy(text: str, source_lang: str, target_lang: str) -> Optional[str]:
     """
-    使用 translatepy 进行翻译（只使用中国大陆可直接访问的翻译服务，免费，不需要 API key）
+    Translate using translatepy (only translation services directly reachable from mainland China; free, no API key needed)
     
-    支持的服务（按优先级）：
+    Supported services (by priority):
     - MicrosoftTranslate (Microsoft Translator)
     - BingTranslate (Bing Translator)
     - ReversoTranslate (Reverso)
-    - LibreTranslate (开源服务)
+    - LibreTranslate (open-source service)
     - MyMemoryTranslate (MyMemory)
     - TranslateComTranslate (Translate.com)
     
-    排除需要代理的服务：Google、Yandex、DeepL
+    Excludes services that require a proxy: Google, Yandex, DeepL
     
     Args:
-        text: 要翻译的文本
-        source_lang: 源语言代码（我们的格式，如 'zh', 'en', 'ja', 'ko'）
-        target_lang: 目标语言代码（我们的格式，如 'zh', 'en', 'ja', 'ko'）
+        text: text to translate
+        source_lang: source language code (our format, e.g. 'zh', 'en', 'ja', 'ko')
+        target_lang: target language code (our format, e.g. 'zh', 'en', 'ja', 'ko')
         
     Returns:
-        翻译后的文本，失败时返回 None
+        Translated text, or None on failure
     """
     if not text or not text.strip() or not _ensure_translatepy():
         return None
@@ -815,7 +835,7 @@ async def translate_with_translatepy(text: str, source_lang: str, target_lang: s
         
         # translatepy 是同步的，需要在线程池中运行以避免阻塞
         def _translate_sync(text_to_translate: str, target: str, source: Optional[str] = None) -> Optional[str]:
-            """同步翻译函数，在线程池中运行，只使用中国大陆可访问的翻译服务"""
+            """Synchronous translation function, run in a thread pool; only uses translation services reachable from mainland China"""
             try:
                 # 创建 Translator 实例，并指定只使用中国大陆可访问的服务
                 translator = TranslatepyTranslator()
@@ -909,13 +929,13 @@ async def translate_with_translatepy(text: str, source_lang: str, target_lang: s
 
 def detect_language(text: str) -> str:
     """
-    检测文本的主要语言
+    Detect the primary language of a text
     
     Args:
-        text: 要检测的文本
+        text: text to examine
         
     Returns:
-        'zh' (中文), 'ja' (日语), 'ko' (韩语), 'en' (英文), 或 'unknown'
+        'zh' (Chinese), 'ja' (Japanese), 'ko' (Korean), 'en' (English), or 'unknown'
     """
     if not text or not text.strip():
         return 'unknown'
@@ -955,21 +975,21 @@ def detect_language(text: str) -> str:
 
 async def translate_text(text: str, target_lang: str, source_lang: Optional[str] = None, skip_google: bool = False) -> Tuple[str, bool]:
     """
-    翻译文本到目标语言
+    Translate text into the target language
 
-    根据系统区域选择不同的翻译服务优先级：
-    - 中文区：直接 translatepy → LLM 翻译（不尝试 Google，避免每次等满超时）
-    - 非中文区：Google 翻译 → LLM 翻译（一旦 Google 失败，进程级标记后续请求直接跳过）
+    Picks the translation service priority by system region:
+    - Chinese region: translatepy directly → LLM translation (no Google attempt, avoiding waiting out the full timeout every time)
+    - non-Chinese region: Google Translate → LLM translation (once Google fails, a process-level flag makes later requests skip it)
 
     Args:
-        text: 要翻译的文本
-        target_lang: 目标语言代码 ('zh', 'en', 'ja', 'ko', 'ru')
-        source_lang: 源语言代码，如果为 None 则自动检测
-        skip_google: 是否跳过 Google 翻译（兼容旧调用方，与进程级标记取或）
+        text: text to translate
+        target_lang: target language code ('zh', 'en', 'ja', 'ko', 'ru')
+        source_lang: source language code; auto-detected when None
+        skip_google: whether to skip Google Translate (legacy-caller compatibility, ORed with the process-level flag)
 
     Returns:
-        (翻译后的文本, google_failed): 翻译失败时返回原文；
-        google_failed 表示本次（或此前）Google 翻译是否被标记为不可用
+        (translated_text, google_failed): returns the original text on failure;
+        google_failed indicates whether Google Translate was marked unavailable this time (or earlier)
     """
     if not text or not text.strip():
         return text, _is_google_marked_failed()
@@ -1031,13 +1051,13 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
     # 辅助函数：尝试 Google 翻译（带超时机制）
     async def _try_google_translate(timeout: float = 5.0) -> Optional[str]:
         """
-        尝试使用 Google 翻译，返回翻译结果或 None
+        Try Google Translate; returns the translation or None
         
         Args:
-            timeout: 超时时间（秒），默认 5 秒。如果超时则认为 Google 翻译不可用，立即降级
+            timeout: timeout in seconds, default 5. On timeout Google Translate is considered unavailable and we degrade immediately
         
         Returns:
-            翻译结果或 None（超时或失败时返回 None）
+            Translation result, or None (on timeout or failure)
         """
         if not _ensure_googletrans():
             return None
@@ -1172,10 +1192,10 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
 
 def get_user_language() -> str:
     """
-    获取用户的语言偏好
+    Get the user's language preference
     
     Returns:
-        用户语言代码 ('zh', 'en', 'ja', 'ko')，默认返回 'en'
+        User language code ('zh', 'en', 'ja', 'ko'), defaults to 'en'
     """
     try:
         return get_global_language()
@@ -1186,10 +1206,10 @@ def get_user_language() -> str:
 
 async def get_user_language_async() -> str:
     """
-    异步获取用户的语言偏好（使用全局语言管理模块）
+    Get the user's language preference asynchronously (uses the global language management module)
 
     Returns:
-        用户语言代码 ('zh', 'en', 'ja', 'ko')，默认返回 'en'
+        User language code ('zh', 'en', 'ja', 'ko'), defaults to 'en'
     """
     try:
         return get_global_language()
@@ -1210,14 +1230,14 @@ SUPPORTED_LANGUAGES = ['zh', 'zh-CN', 'en', 'ja', 'ko', 'ru', 'es', 'pt']
 DEFAULT_LANGUAGE = 'en'
 
 class TranslationService:
-    """翻译服务类"""
+    """Translation service class"""
     
     def __init__(self, config_manager):
         """
-        初始化翻译服务
+        Initialize the translation service
         
         Args:
-            config_manager: 配置管理器实例，用于获取API配置
+            config_manager: config manager instance, used to obtain API config
         """
         self.config_manager = config_manager
         self._llm_client = None
@@ -1226,7 +1246,7 @@ class TranslationService:
         self._cache_lock_init_lock = threading.Lock()  # 用于保护异步锁的创建过程
 
     def _get_llm_client(self):
-        """获取LLM客户端（用于翻译，复用 emotion 模型配置）"""
+        """Get the LLM client (for translation, reusing the emotion model config)"""
         try:
             config = self.config_manager.get_model_api_config('emotion')
             
@@ -1250,13 +1270,13 @@ class TranslationService:
             return None
     
     async def _get_from_cache(self, text: str, target_lang: str) -> Optional[str]:
-        """从缓存获取翻译结果"""
+        """Get a translation result from the cache"""
         async with self._get_cache_lock():
             cache_key = self._get_cache_key(text, target_lang)
             return self._cache.get(cache_key)
     
     def _get_cache_lock(self):
-        """懒加载获取缓存锁"""
+        """Lazily obtain the cache lock"""
         if self._cache_lock is None:
             with self._cache_lock_init_lock:
                 if self._cache_lock is None:
@@ -1264,7 +1284,7 @@ class TranslationService:
         return self._cache_lock
     
     async def _save_to_cache(self, text: str, target_lang: str, translated: str):
-        """保存翻译结果到缓存"""
+        """Save a translation result to the cache"""
         async with self._get_cache_lock():
             if len(self._cache) >= CACHE_MAX_SIZE:
                 first_key = next(iter(self._cache))
@@ -1274,19 +1294,19 @@ class TranslationService:
             self._cache[cache_key] = translated
     
     def _normalize_language_code(self, lang: str) -> str:
-        """归一化语言代码"""
+        """Normalize a language code"""
         if not lang:
             return DEFAULT_LANGUAGE
         return normalize_language_code(lang, format='full')
     
     def _get_cache_key(self, text: str, target_lang: str) -> str:
-        """生成缓存键"""
+        """Build a cache key"""
         normalized_lang = self._normalize_language_code(target_lang)
         text_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
         return f"{normalized_lang}:{text_hash}"
 
     def _detect_language(self, text: str) -> str:
-        """检测文本语言"""
+        """Detect the language of a text"""
         lang = detect_language(text)
         if lang == 'zh':
             return 'zh-CN'
@@ -1296,7 +1316,7 @@ class TranslationService:
     
     async def translate_text_robust(self, text: str, target_lang: str) -> str:
         """
-        稳健的翻译文本服务 (核心内部组件使用)
+        Robust text translation service (used by core internal components)
         """
         if not text or not text.strip():
             return text
@@ -1396,7 +1416,7 @@ class TranslationService:
         fields_to_translate: Optional[list] = None
     ) -> Dict[str, Any]:
         """
-        翻译字典中的指定字段
+        Translate the specified fields in a dict
         """
         if not data:
             return data
@@ -1440,7 +1460,7 @@ _translation_service_instance: Optional[TranslationService] = None
 _instance_lock = threading.Lock()
 
 def get_translation_service(config_manager) -> TranslationService:
-    """获取翻译服务实例（单例）"""
+    """Get the translation service instance (singleton)"""
     global _translation_service_instance
     if _translation_service_instance is None:
         with _instance_lock:

@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from utils.llm_client import SQLChatMessageHistory, SystemMessage
 from sqlalchemy import create_engine, text
 from config import TIME_ORIGINAL_TABLE_NAME, TIME_COMPRESSED_TABLE_NAME
@@ -42,12 +56,13 @@ class TimeIndexedMemory:
         return normalized_db_path, f"sqlite:///{uri_path}"
 
     def _resolve_expected_db_path(self, lanlan_name: str, *, readonly: bool) -> str | None:
-        """计算当前 memory_dir 下该角色 db 的目标路径。
+        """Compute the target path of this character's db under the current memory_dir.
 
-        time_store 优先（允许角色把 db 显式登记到 memory_dir 之外），否则
-        回退到 ``memory_dir/{name}/time_indexed.db``。每次调用都重读
-        ``config_manager.memory_dir``，让 ``_ensure_engine_exists`` 的
-        path-drift 自检能感知到 in-process memory_dir 漂移。
+        time_store takes precedence (allowing a character to register its db
+        explicitly outside memory_dir), otherwise fall back to
+        ``memory_dir/{name}/time_indexed.db``. ``config_manager.memory_dir`` is
+        re-read on every call so the path-drift self-check in
+        ``_ensure_engine_exists`` can notice in-process memory_dir drift.
         """
         try:
             _, _, _, _, _, _, time_store, _, _ = get_config_manager().get_character_data()
@@ -75,7 +90,7 @@ class TimeIndexedMemory:
         db_path: str | None = None,
         readonly: bool = False,
     ) -> bool:
-        """确保指定角色的数据库引擎已初始化喵~"""
+        """Ensure the given character's database engine is initialized, meow~"""
         if not readonly:
             self._assert_timeindex_writable(lanlan_name)
         if lanlan_name in self.engines and lanlan_name in self.db_paths:
@@ -193,19 +208,21 @@ class TimeIndexedMemory:
             return False
 
     async def _aensure_engine_exists(self, lanlan_name: str, db_path: str | None = None) -> bool:
-        """异步版本：把阻塞的 engine 创建丢到线程池。
+        """Async version: offload the blocking engine creation to the thread pool.
 
-        以前在这里有个 ``if lanlan_name in self.engines and lanlan_name in self.db_paths:
-        return True`` 的早期短路，把 cache hit 的判定挡在 sync 实现之外——这条
-        路径会绕过 ``_ensure_engine_exists`` 新增的 path-drift 自检（cached db_path
-        vs 当前 memory_dir 推导出的 expected 不一致时 dispose 重建）。当前没有
-        async 调用方走这条入口，但为了避免未来加进来后 drift 检测被静默废掉，
-        删掉短路统一委托给 sync 实现。
+        There used to be an early short-circuit here — ``if lanlan_name in self.engines and lanlan_name in self.db_paths:
+        return True`` — keeping the cache-hit check outside the sync
+        implementation. That path bypassed the path-drift self-check newly added
+        to ``_ensure_engine_exists`` (dispose & rebuild when the cached db_path
+        mismatches the expected one derived from the current memory_dir). No
+        async caller currently uses this entry, but to keep a future addition
+        from silently disabling the drift detection, the short-circuit was
+        removed and everything delegates to the sync implementation.
         """
         return await asyncio.to_thread(self._ensure_engine_exists, lanlan_name, db_path)
 
     def dispose_engine(self, lanlan_name: str):
-        """释放指定角色的数据库引擎资源喵~"""
+        """Dispose the given character's database engine resources, meow~"""
         db_path = self.db_paths.pop(lanlan_name, None)
         engine = self.engines.pop(lanlan_name, None)
         self._engine_readonly_flags.pop(lanlan_name, None)
@@ -226,15 +243,16 @@ class TimeIndexedMemory:
                     cached_engine.dispose()
 
     def cleanup(self):
-        """清理所有引擎资源喵~"""
+        """Clean up all engine resources, meow~"""
         for name in list(self.engines.keys()):
             self.dispose_engine(name)
 
     def _ensure_tables_exist_with(self, engine, connection_string: str, lanlan_name: str) -> None:
         """
-        确保原始表和压缩表存在喵~
-        注意：此方法利用了 SQLChatMessageHistory 构造函数的副作用（自动创建表）。
-        如果未来 LangChain 实现变更，此逻辑可能需要调整。
+        Ensure the raw and compressed tables exist, meow~
+        Note: this method relies on a side effect of the SQLChatMessageHistory
+        constructor (automatic table creation). If the LangChain implementation
+        changes in the future, this logic may need adjusting.
         """
         _ = SQLChatMessageHistory(
             connection_string=connection_string,
@@ -255,7 +273,7 @@ class TimeIndexedMemory:
                     logger.error(f"[TimeIndexedMemory] 表 {table} 未能成功创建喵！")
 
     def _check_and_migrate_schema(self, engine, lanlan_name: str) -> None:
-        """逐表检查并补齐 timestamp 列，每张表独立处理避免互相影响。"""
+        """Check and backfill the timestamp column table by table; each table handled independently so they can't affect each other."""
         migration_errors = []
         for table_name in [TIME_ORIGINAL_TABLE_NAME, TIME_COMPRESSED_TABLE_NAME]:
             table = self._validate_table_name(table_name)
@@ -313,14 +331,14 @@ class TimeIndexedMemory:
         )
 
     def _validate_table_name(self, table_name: str) -> str:
-        """验证表名是否合法，防止 SQL 注入喵~"""
+        """Validate that a table name is legal, guarding against SQL injection, meow~"""
         allowed_tables = {TIME_ORIGINAL_TABLE_NAME, TIME_COMPRESSED_TABLE_NAME}
         if table_name not in allowed_tables:
             raise ValueError(f"不合法的表名: {table_name}")
         return table_name
 
     def get_last_conversation_time(self, lanlan_name: str) -> datetime | None:
-        """查询指定角色最后一次对话的时间戳。无记录时返回 None。"""
+        """Query the timestamp of the given character's last conversation. Returns None when there are no records."""
         try:
             if not self._ensure_engine_exists(lanlan_name, readonly=True):
                 return None
@@ -351,24 +369,27 @@ class TimeIndexedMemory:
         return await asyncio.to_thread(self.get_last_conversation_time, lanlan_name)
 
     def retrieve_summary_by_timeframe(self, lanlan_name, start_time, end_time):
-        """[已废弃] compressed table 不再写入，fact/reflection 已取代。"""
+        """[Deprecated] The compressed table is no longer written; fact/reflection replaced it."""
         return []
 
     async def aretrieve_summary_by_timeframe(self, lanlan_name, start_time, end_time):
         return []
 
     def retrieve_original_by_timeframe(self, lanlan_name, start_time, end_time, limit_rows: int | None = None):
-        """读取 [start_time, end_time] 窗口内的原始对话行。
+        """Read raw conversation rows within the [start_time, end_time] window.
 
-        返回 ``[(timestamp, session_id, message), ...]``，按 timestamp ASC 排
-        序——保证 caller 可以基于最后一行的 ts 推进 cursor 做 drainage。
+        Returns ``[(timestamp, session_id, message), ...]`` sorted by timestamp
+        ASC — guaranteeing the caller can advance its cursor for drainage based
+        on the last row's ts.
 
-        ``limit_rows`` 不为 None 时在 SQL 层加 LIMIT，防止超长 fallback 窗口
-        把整张表拉进内存。
+        When ``limit_rows`` is not None, a LIMIT is added at the SQL level,
+        keeping an overlong fallback window from pulling the whole table into
+        memory.
 
-        懒加载：首次访问（例如重启后立刻读取）需要注册 engine，否则 rebuttal
-        loop 会静默跳过，直到 store_conversation 才触发建表。读路径走
-        readonly，维护态也允许读。
+        Lazy loading: first access (e.g. reading right after a restart) needs
+        engine registration, otherwise the rebuttal loop silently skips until
+        store_conversation triggers table creation. The read path is readonly;
+        reads are allowed even in maintenance mode.
         """
         try:
             if not self._ensure_engine_exists(lanlan_name, readonly=True):
@@ -404,7 +425,7 @@ class TimeIndexedMemory:
     FACTS_FTS_TABLE = "facts_fts"
 
     def _ensure_fts_table(self, lanlan_name: str, readonly: bool = False) -> bool:
-        """确保 FTS5 虚拟表存在。unicode61 分词器对中文做字级别索引，零依赖。"""
+        """Ensure the FTS5 virtual table exists. The unicode61 tokenizer indexes Chinese character-by-character, zero dependencies."""
         if not self._ensure_engine_exists(lanlan_name, readonly=readonly):
             return False
         if readonly:
@@ -438,14 +459,15 @@ class TimeIndexedMemory:
         await asyncio.to_thread(self._ensure_fts_table, lanlan_name)
 
     def index_fact(self, lanlan_name: str, fact_id: str, content: str) -> None:
-        """将事实插入 FTS5 索引。
+        """Insert a fact into the FTS5 index.
 
-        索引前先剥离 master/lanlan + 各自昵称：这些 token 几乎在每条 fact
-        里都出现，BM25 IDF 虽然会自动降权，但留着仍会让 dedup 时的得分
-        被它们噪声化（"主人喜欢猫" vs "主人讨厌狗" 仍因共享"主人"获得
-        非零相似度）。索引侧 + 查询侧同步剥离才能让 BM25 完全围绕
-        substantive 内容算分。
-        """
+        master/lanlan + their nicknames are stripped before indexing: these
+        tokens appear in nearly every fact, and although BM25 IDF automatically
+        down-weights them, leaving them in still lets them noise up dedup
+        scores ("主人喜欢猫" vs "主人讨厌狗" would still get nonzero similarity
+        through the shared "主人"). Only stripping on both the index side and
+        the query side lets BM25 score entirely around substantive content.
+        """  # noqa: DOCSTRING_CJK
         self._assert_timeindex_writable(lanlan_name)
         if not self._ensure_engine_exists(lanlan_name):
             return
@@ -474,12 +496,13 @@ class TimeIndexedMemory:
         await asyncio.to_thread(self.index_fact, lanlan_name, fact_id, content)
 
     def search_facts(self, lanlan_name: str, query: str, limit: int = 10) -> list[tuple[str, float]]:
-        """通过 FTS5 BM25 搜索事实。返回 [(fact_id, bm25_score), ...]。
+        """Search facts via FTS5 BM25. Returns [(fact_id, bm25_score), ...].
 
-        FTS5 bm25() 分数通常为负值，分数越小（越负）代表相关性越高。
-        查询前先剥离 master/lanlan + 各自昵称：和 ``index_fact`` 对称，
-        只有索引侧与查询侧同时去掉这些 stop-name，BM25 才能围绕
-        substantive 内容真正区分相似度。
+        FTS5 bm25() scores are usually negative; the smaller (more negative),
+        the more relevant. master/lanlan + their nicknames are stripped before
+        querying: symmetric with ``index_fact`` — only with both the index side
+        and the query side rid of these stop-names can BM25 truly
+        differentiate similarity around substantive content.
         """
         try:
             if not self._ensure_engine_exists(lanlan_name, readonly=True):
@@ -517,7 +540,7 @@ class TimeIndexedMemory:
         return await asyncio.to_thread(self.search_facts, lanlan_name, query, limit)
 
     def delete_fact_from_index(self, lanlan_name: str, fact_id: str) -> None:
-        """从 FTS5 索引中移除事实。"""
+        """Remove a fact from the FTS5 index."""
         self._assert_timeindex_writable(lanlan_name)
         if not self._ensure_engine_exists(lanlan_name):
             return

@@ -1,14 +1,15 @@
 import { useEffect, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 
-import { callPlugin, formatError, text } from './study_surface_utils';
+import { callPlugin, ensureBrandCSS, formatError, text } from './study_surface_utils';
 
 export default function SessionSummary(props: PluginSurfaceProps) {
   const [summary, setSummary] = useState<any>({});
   const [error, setError] = useState('');
 
   useEffect(() => {
-    callPlugin('study_session_summary')
+    ensureBrandCSS();
+    callPlugin(props.api, 'study_session_summary')
       .then(setSummary)
       .catch((err) => setError(formatError(err)));
   }, []);
@@ -19,7 +20,7 @@ export default function SessionSummary(props: PluginSurfaceProps) {
   const memoryCorrectRate = Number(memory?.correct_rate);
   const memoryCorrectPercent = Number.isFinite(memoryCorrectRate) ? Math.round(memoryCorrectRate * 100) : 0;
   return (
-    <div className="study-panel">
+    <div className="study-panel surface-shell">
       <header className="study-panel__header">
         <div>
           <h1>{text(props, 'ui.surface.session_summary', 'Session Summary')}</h1>

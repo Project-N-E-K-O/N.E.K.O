@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 EmbeddingService — Tier 0 of the memory hierarchy: vector embeddings.
 
@@ -876,17 +890,19 @@ def build_model_id(
 ) -> str:
     """Return the canonical id used in ``embedding_model_id`` cache fields.
 
-    Format: ``<profile>-<dim>d-<quant>`` 或 ``<profile>-<dim>d-<quant>-mlen<N>``
+    Format: ``<profile>-<dim>d-<quant>`` or ``<profile>-<dim>d-<quant>-mlen<N>``
     (e.g. ``local-text-retrieval-v1-128d-int8-mlen1024``).
     A change to any axis flips the id, which invalidates cached
     embeddings on the next read — same idea as ``tokenizer_identity``.
 
-    ``max_length`` 是 tokenizer 截断长度 —— Codex 在 PR #1585 指出:同段
-    长文本在 max_length=8192 / max_length=1024 下喂进 ONNX 的 token 序列
-    根本不一样,得到的向量空间也不同;不编进 id 就会让升级后旧 cache
-    "看起来还有效",跟新 query 做 cosine 比较时静默偏移召回质量。
-    None 时回退到不带 mlen 的旧格式 — 仅给老调用点(如未传 max_length
-    的 legacy 测试 fixture)做兼容,真正的 service 路径总会传。
+    ``max_length`` is the tokenizer truncation length — Codex pointed out on PR
+    #1585 that the same long text fed into ONNX under max_length=8192 vs
+    max_length=1024 yields entirely different token sequences, hence different
+    vector spaces; leaving it out of the id would make stale caches "look valid"
+    after an upgrade, silently skewing recall quality when cosine-compared against
+    new queries. None falls back to the old mlen-less format — only for legacy call
+    sites (e.g. old test fixtures that don't pass max_length); real service paths
+    always pass it.
     """
     base = f"{profile}-{dim}d-{quantization}"
     if max_length is None:
@@ -1379,10 +1395,11 @@ class EmbeddingService:
         out: list,
         np,
     ) -> None:
-        """单桶的 pad → ONNX run → pool → L2-norm → 写回 ``out``。
+        """Single-bucket pad → ONNX run → pool → L2-norm → write back into ``out``.
 
-        拆出来纯粹是为了让 ``_infer_blocking`` 的桶装循环短一些;状态全
-        通过参数传,无副作用(``out`` 是按 original index 原地写)。
+        Split out purely to keep ``_infer_blocking``'s bucketing loop short; all
+        state is passed via parameters, no side effects (``out`` is written in
+        place by original index).
         """
         ids = [encoded[i].ids for i in bucket_idx]
         mask = [encoded[i].attention_mask for i in bucket_idx]

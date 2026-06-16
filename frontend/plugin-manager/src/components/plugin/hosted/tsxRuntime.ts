@@ -1,9 +1,12 @@
 import { transform } from 'sucrase'
 import type { PluginUiContext, PluginUiSurface } from '@/types/api'
 import { buildUiKitBundle } from './uiKitBundle'
+import { bundleHostedTsxSource } from './hostedTsxModule.mjs'
+import type { HostedTsxDependency } from './hostedTsxModule.mjs'
 
 type BuildHostedTsxDocumentOptions = {
   source: string
+  dependencies?: HostedTsxDependency[]
   pluginId: string
   surface: PluginUiSurface
   context?: PluginUiContext | null
@@ -24,14 +27,13 @@ function escapeHtmlAttribute(value: string) {
     .replace(/>/g, '&gt;')
 }
 
-function normalizeSource(source: string) {
-  return source
-    .replace(/^\s*import\s+[^;]+from\s+['"](?:@neko\/plugin-ui|neko:ui)['"];?\s*$/gm, '')
-    .replace(/^\s*import\s+['"](?:@neko\/plugin-ui|neko:ui)['"];?\s*$/gm, '')
-}
-
-function compileHostedTsx(source: string) {
-  const compiled = transform(normalizeSource(source), {
+// Bundling, dependency linking, and the import/export contract live in the
+// shared hostedTsxModule.mjs so this runtime and the check gate
+// (scripts/check-hosted-tsx.mjs) never drift. This file only owns the
+// browser-specific steps: compiling the bundled source with sucrase and
+// assembling the sandboxed iframe document.
+function compileHostedTsx(source: string, dependencies: HostedTsxDependency[] = [], entryPath = 'entry.tsx') {
+  const compiled = transform(bundleHostedTsxSource(source, dependencies, entryPath), {
     transforms: ['typescript', 'jsx'],
     jsxPragma: 'h',
     jsxFragmentPragma: 'Fragment',
@@ -77,7 +79,7 @@ function buildPayload(options: BuildHostedTsxDocumentOptions) {
 }
 
 export function buildHostedTsxDocument(options: BuildHostedTsxDocumentOptions) {
-  const compiled = compileHostedTsx(options.source)
+  const compiled = compileHostedTsx(options.source, options.dependencies, options.surface.entry || 'entry.tsx')
   const payload = escapeScriptContent(JSON.stringify(buildPayload(options)))
   const locale = escapeHtmlAttribute(options.locale)
   const uiKit = buildUiKitBundle()

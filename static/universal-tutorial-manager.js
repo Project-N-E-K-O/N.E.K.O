@@ -956,12 +956,14 @@ class UniversalTutorialManager {
         // 1. 检查 DOM 中实际存在哪种浮动按钮容器
         if (document.getElementById('vrm-floating-buttons')) return 'vrm';
         if (document.getElementById('mmd-floating-buttons')) return 'mmd';
+        if (document.getElementById('pngtuber-floating-buttons')) return 'pngtuber';
         if (document.getElementById('live2d-floating-buttons')) return 'live2d';
 
         // 2. 回退到配置
         const cfg = window.lanlan_config && window.lanlan_config.model_type;
         if (cfg === 'vrm') return 'vrm';
         if (cfg === 'mmd') return 'mmd';
+        if (cfg === 'pngtuber') return 'pngtuber';
         if (cfg === 'live3d') {
             if (window.mmdManager && window.mmdManager.currentModel) return 'mmd';
             if (window.vrmManager && window.vrmManager.currentModel) return 'vrm';
@@ -2175,7 +2177,7 @@ class UniversalTutorialManager {
             if (this.currentPage !== 'model_manager') return;
             const mode = ev.detail && ev.detail.mode;
             console.log('[Tutorial] 收到 neko-model-manager-mode-set 事件, mode:', mode);
-            if (!mode || !['live2d', 'vrm', 'mmd'].includes(mode)) {
+            if (!mode || !['live2d', 'vrm', 'mmd', 'pngtuber'].includes(mode)) {
                 return;
             }
             this._modelManagerReceivedModeEvent = true;
@@ -3083,19 +3085,19 @@ class UniversalTutorialManager {
     getTutorialInteractiveSelectors() {
         return [
             '#live2d-canvas', '#vrm-canvas', '#mmd-canvas',
-            '#live2d-container', '#vrm-container', '#mmd-container',
+            '#live2d-container', '#vrm-container', '#mmd-container', '#pngtuber-container',
             '#chat-container',
-            '#live2d-floating-buttons', '#vrm-floating-buttons', '#mmd-floating-buttons',
-            '#live2d-return-button-container', '#vrm-return-button-container', '#mmd-return-button-container',
-            '#live2d-btn-return', '#vrm-btn-return', '#mmd-btn-return',
+            '#live2d-floating-buttons', '#vrm-floating-buttons', '#mmd-floating-buttons', '#pngtuber-floating-buttons',
+            '#live2d-return-button-container', '#vrm-return-button-container', '#mmd-return-button-container', '#pngtuber-return-button-container',
+            '#live2d-btn-return', '#vrm-btn-return', '#mmd-btn-return', '#pngtuber-btn-return',
             '#resetSessionButton',
             '#returnSessionButton',
-            '#live2d-lock-icon', '#vrm-lock-icon', '#mmd-lock-icon',
+            '#live2d-lock-icon', '#vrm-lock-icon', '#mmd-lock-icon', '#pngtuber-lock-icon',
             '#toggle-chat-btn',
-            '.live2d-floating-btn', '.vrm-floating-btn', '.mmd-floating-btn',
-            '.live2d-trigger-btn', '.vrm-trigger-btn', '.mmd-trigger-btn',
+            '.live2d-floating-btn', '.vrm-floating-btn', '.mmd-floating-btn', '.pngtuber-floating-btn',
+            '.live2d-trigger-btn', '.vrm-trigger-btn', '.mmd-trigger-btn', '.pngtuber-trigger-btn',
             // 宽泛匹配：所有以模型前缀开头 ID 的元素都将被教程系统自动识别并控制交互状态
-            '[id^="live2d-"]', '[id^="vrm-"]', '[id^="mmd-"]'
+            '[id^="live2d-"]', '[id^="vrm-"]', '[id^="mmd-"]', '[id^="pngtuber-"]'
         ];
     }
 
@@ -4146,7 +4148,8 @@ class UniversalTutorialManager {
             const findExisting = () =>
                 document.getElementById('live2d-floating-buttons') ||
                 document.getElementById('vrm-floating-buttons') ||
-                document.getElementById('mmd-floating-buttons');
+                document.getElementById('mmd-floating-buttons') ||
+                document.getElementById('pngtuber-floating-buttons');
 
             if (findExisting()) {
                 console.log('[Tutorial] 浮动按钮已存在');

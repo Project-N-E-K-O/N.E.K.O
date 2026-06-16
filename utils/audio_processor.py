@@ -1,18 +1,32 @@
 # -- coding: utf-8 --
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Audio Processor Module with RNNoise, AGC and Limiter
-使用 RNNoise 进行深度学习降噪的音频预处理模块，并内置AGC和Limiter
+Audio preprocessing module using RNNoise deep-learning denoising, with built-in AGC and Limiter
 
-RNNoise 是 Mozilla 开发的实时降噪算法，使用 GRU 神经网络，
-延迟仅 13.3ms，适合实时语音处理。
+RNNoise is a real-time noise suppression algorithm developed by Mozilla, using a GRU
+neural network with only 13.3ms latency, suitable for real-time speech processing.
 
-处理链：RNNoise -> AGC -> Limiter -> 降采样
+Processing chain: RNNoise -> AGC -> Limiter -> downsampling
 
-AGC（Automatic Gain Control）：自动增益控制，使音量稳定
-Limiter：限幅器，防止音频削波
+AGC (Automatic Gain Control): keeps the volume stable
+Limiter: prevents audio clipping
 
-重要：RNNoise 的 GRU 状态会随着处理背景噪音而漂移，
-需要在检测到语音结束后重置状态。
+Important: RNNoise's GRU state drifts while processing background noise,
+and must be reset once end of speech is detected.
 """
 
 import numpy as np
@@ -439,12 +453,12 @@ class AudioProcessor:
     
     def save_debug_audio(self) -> None:
         """
-        将累积的 debug 音频保存到 WAV 文件。
-        保存两个文件：
-        - debug_audio_before.wav: RNNoise 处理前的原始音频
-        - debug_audio_after.wav: RNNoise 处理后的降噪音频
+        Save the accumulated debug audio to WAV files.
+        Two files are written:
+        - debug_audio_before.wav: raw audio before RNNoise processing
+        - debug_audio_after.wav: denoised audio after RNNoise processing
         
-        调用此方法后会清空 debug 缓冲区。
+        Calling this method clears the debug buffers.
         """
         if not DEBUG_SAVE_AUDIO:
             return
@@ -472,7 +486,7 @@ class AudioProcessor:
         logger.info("🔧 DEBUG: 音频已保存，缓冲区已清空")
     
     def _save_wav(self, filepath: str, audio: np.ndarray, sample_rate: int) -> None:
-        """将 int16 音频数据保存为 WAV 文件。"""
+        """Save int16 audio data as a WAV file."""
         with wave.open(filepath, 'wb') as wf:
             wf.setnchannels(1)  # mono
             wf.setsampwidth(2)  # 16-bit = 2 bytes

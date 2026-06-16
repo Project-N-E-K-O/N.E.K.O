@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 PersonaManager — Tier 3 of the three-tier memory hierarchy.
 
@@ -9,12 +23,12 @@ Storage is entity-agnostic: any entity key can be added at runtime
 
 Key features:
 - Dynamic entity sections: each entity stores a list of facts
-- Pending reflections injected with "(还不太确定)" annotation
+- Pending reflections injected with a "(还不太确定)" ("not too sure yet") annotation
 - Suppress mechanism: 5h window, >2 mentions → suppress (completely hidden from
   all rendering sections; suppress has highest priority)
 - Contradiction detection → queued for batch correction via LLM
 - Auto-migration from legacy settings files and v1 entity names
-"""
+"""  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
 import asyncio
@@ -66,15 +80,16 @@ AUTO_CONFIRM_DAYS = 3                # pending reflection N 天无反对 → 自
 _SPLIT_RE = re.compile(r'[，。、！？；：\u201c\u201d\u2018\u2019（）()\[\]{}<>《》【】\s,.!?;:\-\u2014\u2026\xb7\u3000]+')
 
 def _extract_keywords(text: str, stop_names: list[str] | None = None) -> set[str]:
-    """从文本提取关键词/n-gram，支持 CJK 和拉丁文。
+    """Extract keywords/n-grams from text, supporting CJK and Latin scripts.
 
-    - 拉丁文按空格分词，保留 len>=2 的 token
-    - CJK 文本生成 2-gram 和 3-gram 滑动窗口
+    - Latin text is split on whitespace, keeping tokens with len>=2
+    - CJK text yields 2-gram and 3-gram sliding windows
 
-    ``stop_names`` 给定时（master/lanlan + 各自昵称），先在 tokenize 之前把这些
-    名字从原文剥离——否则高频实体名每轮对话都出现，会生成大量 n-gram，主导
-    ``_is_mentioned`` 的集合命中与 ``_texts_may_contradict`` 的 fuzzy 矛盾检测，
-    放大无效匹配。
+    When ``stop_names`` is given (master/lanlan + their nicknames), those names
+    are stripped from the text before tokenizing — otherwise the high-frequency
+    entity names appearing every turn would spawn lots of n-grams, dominating
+    ``_is_mentioned`` set hits and ``_texts_may_contradict`` fuzzy contradiction
+    detection, amplifying junk matches.
     """
     if stop_names:
         text = strip_stop_names(text, stop_names)
@@ -105,11 +120,12 @@ def _is_mentioned(
     response_text: str,
     stop_names: list[str] | None = None,
 ) -> bool:
-    """判断 response 中是否"提及"了某条 persona 事实。
+    """Determine whether the response "mentions" a given persona fact.
 
-    ``stop_names`` 给定时同时从 fact 与 response 中剥离——否则 AI 几乎
-    每轮都会喊 master/lanlan 名字，触发"提及"误命中并把无关 fact 推入
-    suppress 流程。
+    When ``stop_names`` is given, they are stripped from both the fact and the
+    response — otherwise the AI calling out master/lanlan names nearly every
+    turn would trigger false "mention" hits and push unrelated facts into the
+    suppress flow.
     """
     if not fact_text or not response_text:
         return False
@@ -162,11 +178,12 @@ class PersonaManager:
         return self._alocks[name]
 
     def _get_resolve_alock(self, name: str) -> asyncio.Lock:
-        """Per-character asyncio.Lock 专用于 resolve_corrections 串行化。
+        """Per-character asyncio.Lock dedicated to serializing resolve_corrections.
 
-        只 serialize resolve_corrections 之间的并发，**不**与 data lock
-        (_get_alock) 互锁。LLM 调用在本锁内、data lock 外——data lock 仅
-        在 LLM 前后的短临界区被借用。
+        Only serializes concurrency between resolve_corrections calls; it does
+        **not** interlock with the data lock (_get_alock). The LLM call runs
+        inside this lock but outside the data lock — the data lock is only
+        borrowed for the short critical sections before/after the LLM.
         """
         if name not in self._resolve_alocks:
             with self._alocks_guard:
@@ -188,7 +205,7 @@ class PersonaManager:
         """Sharded archive directory for persona entries (RFC §3.5.4).
 
         New in PR-2 — persona had no archival before this RFC, so there
-        is no legacy flat file to migrate (RFC §3.5.5 末段).
+        is no legacy flat file to migrate (RFC §3.5.5, last paragraph).
         """
         from memory import ensure_character_dir
         return os.path.join(
@@ -268,7 +285,7 @@ class PersonaManager:
     def ensure_persona(self, name: str) -> dict:
         """Load or create persona. Auto-migrate from legacy settings if needed.
 
-        每次调用时自动与 characters.json 同步 character_card 条目。
+        Every call automatically syncs the character_card entries with characters.json.
         """
         if name in self._personas:
             # 每次读取时同步 character card
@@ -306,14 +323,16 @@ class PersonaManager:
         return persona
 
     async def aensure_persona(self, name: str) -> dict:
-        """Thread-safe wrapper. 首次创建 / character card 变更这两条分支会
-        `asave_persona()` 写盘，必须在 per-character 锁下进行，否则会与
+        """Thread-safe wrapper. The two branches that `asave_persona()` to disk —
+        first creation and a character-card change — must run under the
+        per-character lock; otherwise they race against locked write paths like
         `aadd_fact` / `arecord_mentions` / `aupdate_suppressions` /
-        `_resolve_corrections_locked` 等持锁写盘路径竞争，导致刚落盘的新事实
-        被锁外的 ensure/sync-card 分支覆盖。
+        `_resolve_corrections_locked`, and a freshly persisted new fact can be
+        clobbered by the lock-free ensure/sync-card branch.
 
-        内部已持 `_get_alock(name)` 的调用点（如 aadd_fact 内）必须改用
-        `_aensure_persona_locked` 以避免 asyncio.Lock 不可重入死锁。"""
+        Call sites already holding `_get_alock(name)` (e.g. inside aadd_fact)
+        must use `_aensure_persona_locked` instead, to avoid the deadlock from
+        the non-reentrant asyncio.Lock."""
         async with self._get_alock(name):
             return await self._aensure_persona_locked(name)
 
@@ -380,7 +399,7 @@ class PersonaManager:
 
     @staticmethod
     def _card_entry_id(entity: str, field_name: str) -> str:
-        """为 character card 条目生成确定性 ID（基于 entity + field_name 哈希）。"""
+        """Generate a deterministic ID for a character-card entry (hash of entity + field_name)."""
         raw = f"{entity}:{field_name}"
         return f"card_{hashlib.sha256(raw.encode()).hexdigest()[:8]}"
 
@@ -439,9 +458,10 @@ class PersonaManager:
     def _migrate_from_settings(self, name: str, persona: dict) -> None:
         """One-time migration from legacy settings.json to persona format.
 
-        仅迁移 settings.json（LLM 从对话中提取的设定）。
-        角色卡数据（characters.json）的同步统一由 _sync_character_card() 负责，
-        此方法不再处理角色卡，避免两处写入导致重复条目。
+        Migrates settings.json only (settings the LLM extracted from
+        conversations). Character-card data (characters.json) is synced solely
+        by _sync_character_card(); this method no longer touches the card,
+        avoiding duplicate entries from two write paths.
         """
         _, _, _, _, name_mapping, _, _, _, _ = (
             self._config_manager.get_character_data()
@@ -511,7 +531,7 @@ class PersonaManager:
             return True
 
         def _build_expected(card_data: dict, entity: str) -> list[tuple[str, dict]]:
-            """从 card 字段构建期望的 (id, entry) 列表，保持 card 字段顺序。"""
+            """Build the expected (id, entry) list from card fields, preserving card field order."""
             expected = []
             for k, v in card_data.items():
                 if k in excluded_fields or not _is_syncable(v):
@@ -533,7 +553,7 @@ class PersonaManager:
             return expected
 
         def _sync_entity(entity: str, card_data: dict) -> bool:
-            """同步单个 entity section。返回是否有变更。"""
+            """Sync a single entity section. Returns whether anything changed."""
             section = persona.setdefault(entity, {})
             facts = section.setdefault('facts', [])
             expected = _build_expected(card_data, entity)
@@ -612,14 +632,14 @@ class PersonaManager:
         return changed
 
     def _sync_character_card(self, name: str, persona: dict) -> bool:
-        """同步 character card 条目到 persona 头部，保持顺序与 characters.json 一致。
+        """Sync character-card entries into the persona head, keeping the order consistent with characters.json.
 
-        规则：
-        1. 读取当前 characters.json 的 neko/master 字段
-        2. 为每个字段生成确定性 ID (card_{entity}_{hash})
-        3. 与 persona 中 source=='character_card' 的条目对比
-        4. 更新文本变化的、新增缺少的、删除 card 中已移除的
-        5. card 条目始终排在 facts 列表头部，顺序与 card 一致
+        Rules:
+        1. Read the current characters.json neko/master fields
+        2. Generate a deterministic ID for each field (card_{entity}_{hash})
+        3. Compare against persona entries with source=='character_card'
+        4. Update changed texts, add missing ones, delete those removed from the card
+        5. Card entries always sit at the head of the facts list, ordered as in the card
 
         Returns True if any change was made.
         """
@@ -711,18 +731,18 @@ class PersonaManager:
 
     @staticmethod
     def _normalize_entry(entry) -> dict:
-        """将纯字符串条目迁移为 dict 格式。
+        """Migrate plain-string entries into dict format.
 
-        每个条目包含以下溯源字段：
-        - id: 唯一标识。card_xxx / legacy_xxx / prom_xxx / manual_xxx
-        - source: 来源类型。character_card / settings / reflection / manual
-        - source_id: 上游 ID（如 reflection_id），用于追溯来源链
+        Each entry carries these provenance fields:
+        - id: unique identifier. card_xxx / legacy_xxx / prom_xxx / manual_xxx
+        - source: origin type. character_card / settings / reflection / manual
+        - source_id: upstream ID (e.g. reflection_id), for tracing the provenance chain
 
         Evidence fields (RFC §3.2.3 user-driven evidence mechanism):
-        - reinforcement / disputation: float 累加器，仅由 user signal 驱动
-        - rein_last_signal_at / disp_last_signal_at: 各自独立的衰减时钟
-        - sub_zero_days + sub_zero_last_increment_date: archive 倒计时
-        - merged_from_ids: LLM merge_into 决策吸收的 reflection id 列表
+        - reinforcement / disputation: float accumulators, driven only by user signals
+        - rein_last_signal_at / disp_last_signal_at: independent decay clocks
+        - sub_zero_days + sub_zero_last_increment_date: archive countdown
+        - merged_from_ids: reflection ids absorbed by LLM merge_into decisions
 
         Token-count cache fields (derived, cache-only — not event-sourced):
         - token_count: int | None — cached acount_tokens(text)
@@ -853,8 +873,8 @@ class PersonaManager:
         """Add a confirmed fact to persona. Checks for contradictions first.
 
         Args:
-            source: 来源类型 (reflection / manual / ...)
-            source_id: 上游 ID，如 reflection_id (ref_xxx)
+            source: origin type (reflection / manual / ...)
+            source_id: upstream ID, e.g. reflection_id (ref_xxx)
 
         Returns:
             FACT_ADDED            — successfully appended
@@ -878,12 +898,13 @@ class PersonaManager:
 
     async def aadd_fact(self, name: str, text: str, entity: str = 'master',
                         source: str = 'manual', source_id: str | None = None) -> str:
-        """P2.a.2: 角色级 asyncio.Lock 串行化 add_fact / resolve_corrections /
-        record_mentions，避免 persona.json 竞写。
+        """P2.a.2: character-level asyncio.Lock serializes add_fact /
+        resolve_corrections / record_mentions, preventing persona.json write races.
 
-        Note: _aqueue_correction 被调用时已在本锁内，因此其独立锁使用
-        asyncio.Lock（可重入？不，asyncio.Lock 不可重入）→ 所以在锁内调用
-        _aqueue_correction 的 **unlocked** 版本。"""
+        Note: _aqueue_correction is invoked while already inside this lock, and
+        its standalone lock is an asyncio.Lock (reentrant? no — asyncio.Lock is
+        not reentrant) → so inside the lock we call the **unlocked** version of
+        _aqueue_correction."""
         async with self._get_alock(name):
             persona = await self._aensure_persona_locked(name)
             section_facts = self._get_section_facts(persona, entity)
@@ -926,9 +947,10 @@ class PersonaManager:
     ) -> bool:
         """Mutate an entry's evidence counters via EVT_PERSONA_EVIDENCE_UPDATED.
 
-        Full-snapshot payload, record_and_save 合约（RFC §3.3.3）。锁嵌套：
-        先拿 PersonaManager async 锁，再在 record_and_save 内部拿 event_log
-        threading.Lock——符合 §3.3.3 "外 async 内 sync" 规约。
+        Full-snapshot payload, record_and_save contract (RFC §3.3.3). Lock
+        nesting: take the PersonaManager async lock first, then the event_log
+        threading.Lock inside record_and_save — per the §3.3.3 "async outside,
+        sync inside" rule.
 
         Returns True if the entry existed and was updated; False otherwise
         (unknown entry — migration marker case handled by caller).
@@ -1071,7 +1093,7 @@ class PersonaManager:
         slightly over-counts this merge (rare, human-facing metric) —
         strictly better than the alternative of permanently missing it.
 
-        Idempotency (RFC §3.9.6 "崩溃半程"): if `source_reflection_id` is
+        Idempotency (RFC §3.9.6 "crash halfway through"): if `source_reflection_id` is
         already in the target's `merged_from_ids`, both events are skipped
         and the call returns 'noop'. Replaying persisted events by
         event_id is idempotent on the reconciler side (sha256 matches →
@@ -1361,7 +1383,7 @@ class PersonaManager:
     ) -> bool:
         """Move one persona entry from main view to a sharded archive file.
 
-        RFC §3.5.6: archive 复用 ``EVT_PERSONA_FACT_ADDED`` 事件 — payload
+        RFC §3.5.6: archiving reuses the ``EVT_PERSONA_FACT_ADDED`` event — the payload
         carries an `archive_shard_path` field so consumers can distinguish
         the archive flow from a regular fact_added (regular adds have no
         such field). Mirrors `ReflectionEngine.aarchive_reflection`.
@@ -1477,13 +1499,14 @@ class PersonaManager:
         return persona.setdefault(entity, {}).setdefault('facts', [])
 
     def _get_entity_stop_names(self, lanlan_name: str | None = None) -> list[str]:
-        """Return master + lanlan names + their 昵称 — used to strip stop-names
-        before any keyword/BM25/extraction step in the memory pipeline.
+        """Return master + lanlan names + their nicknames (``昵称``) — used to strip
+        stop-names before any keyword/BM25/extraction step in the memory pipeline.
 
-        ``lanlan_name`` 缺省走 "当前猫娘"。给定时用该角色自己的 ``昵称``——
-        这条路径下 ``aadd_fact`` 等显式拿到了目标角色，避免在多角色配置里
-        误用当前活跃角色的昵称。
-        """
+        ``lanlan_name`` defaults to the currently active catgirl. When given,
+        use that character's own ``昵称`` — on this path ``aadd_fact`` etc.
+        explicitly know the target character, avoiding misuse of the active
+        character's nicknames in multi-character setups.
+        """  # noqa: DOCSTRING_CJK
         return collect_stop_names(self._config_manager, lanlan_name)
 
     async def _aget_entity_stop_names(self, lanlan_name: str | None = None) -> list[str]:
@@ -1495,9 +1518,9 @@ class PersonaManager:
         """Lightweight keyword-overlap heuristic for contradiction detection.
 
         Uses the same CJK-aware tokenization as ``_is_mentioned``.
-        ``stop_names`` — master/lanlan + 各自昵称——会先从原文 substring
-        replace 掉，然后再切 n-gram，避免共享的实体名独自拉高 overlap 比例
-        造成误报。
+        ``stop_names`` — master/lanlan + their nicknames — are substring-replaced
+        out of the texts first, before cutting n-grams, so shared entity names
+        can't single-handedly inflate the overlap ratio into false positives.
         """
         if not old_text or not new_text:
             return False
@@ -1589,26 +1612,29 @@ class PersonaManager:
         return []
 
     async def resolve_corrections(self, name: str) -> int:
-        """用 correction model 批量审视矛盾队列（单次 LLM 调用）。
+        """Batch-review the contradiction queue with the correction model (single LLM call).
 
-        将所有 pending corrections 合并为一个 prompt 发给 correction model，
-        返回处理的矛盾数量。
+        Merges all pending corrections into one prompt for the correction model;
+        returns the number of contradictions processed.
 
-        C4 重构 + thinking：LLM 调用在 data lock 外。data lock 仅在 LLM
-        前后短暂借用（load corrections / load persona + apply + save）。
-        独立的 _resolve_alock 串行同名角色的 resolve_corrections 调用，
-        防多入口（IdleMaint subtask 2 与 _run_post_turn_signals）
-        并发触发同一批 corrections 被重复处理（特别是 keep_new 没有 dedup
-        会导致重复 append）。
+        C4 refactor + thinking: the LLM call runs outside the data lock. The
+        data lock is only borrowed briefly before/after the LLM (load
+        corrections / load persona + apply + save). The separate _resolve_alock
+        serializes same-character resolve_corrections calls, preventing multiple
+        entry points (IdleMaint subtask 2 and _run_post_turn_signals) from
+        concurrently processing the same batch of corrections twice (especially
+        keep_new, which without dedup would append duplicates).
 
-        为什么这样安全：
-        - LLM 期间 aadd_fact / arecord_mentions / aapply_signal / aensure_persona
-          可正常拿 data lock 推进，不再卡 /process 路径
-        - resolve 之间互斥（resolve_alock）防同批 corrections 重复处理
-        - apply 阶段读 fresh persona，与 LLM 期间被并发写入的 persona 状态
-          自然合并
-        - 末尾"重读 corrections 文件 → filter processed_keys → save"已经
-          做了对 LLM 期间新增 correction 的保护
+        Why this is safe:
+        - During the LLM call, aadd_fact / arecord_mentions / aapply_signal /
+          aensure_persona can still take the data lock and make progress; the
+          /process path no longer stalls
+        - resolves are mutually exclusive (resolve_alock), preventing duplicate
+          processing of the same correction batch
+        - The apply phase reads a fresh persona, naturally merging with persona
+          state written concurrently during the LLM call
+        - The final "re-read corrections file → filter processed_keys → save"
+          already protects corrections newly added during the LLM call
         """
         from config.prompts.prompts_memory import persona_correction_prompt
 
@@ -1726,7 +1752,7 @@ class PersonaManager:
         allowed_indices: set,
         results: list,
     ) -> int:
-        """resolve_corrections 的 LLM-后应用阶段。在 data lock 内执行。"""
+        """The post-LLM apply phase of resolve_corrections. Runs inside the data lock."""
         async with self._get_alock(name):
             persona = await self._aensure_persona_locked(name)
             return await self._apply_correction_results_locked(
@@ -1741,7 +1767,7 @@ class PersonaManager:
         allowed_indices: set,
         results: list,
     ) -> int:
-        """data lock 已持有时的 apply 实现。"""
+        """Apply implementation for when the data lock is already held."""
         resolved = 0
         for result in results:
             if not isinstance(result, dict):
@@ -1856,16 +1882,17 @@ class PersonaManager:
     async def _abump_correction_attempts_and_dead_letter(
         self, name: str, batch_items: list[dict],
     ) -> None:
-        """resolve_corrections LLM 失败时的 liveness 兜底。
+        """Liveness fallback when the resolve_corrections LLM fails.
 
-        给本批 corrections 的每条 entry bump ``resolve_attempts`` 字段，
-        累计 ≥ ``MEMORY_LIVENESS_MAX_ATTEMPTS`` 的 entry 直接从 queue
-        删除并 WARN。
+        Bumps the ``resolve_attempts`` field on every entry of this batch's
+        corrections; entries reaching ``MEMORY_LIVENESS_MAX_ATTEMPTS`` are
+        removed from the queue with a WARN.
 
-        Why: 队头若是毒 payload（safety filter / prompt 过长 / 永远 parse
-        不出来），resolve_corrections 每个 tick 都按 FIFO 取相同前 N 条进
-        prompt，LLM 同样失败 → 整条 corrections 链路永久卡死。这跟
-        signal extraction 的毒窗口同源——cursor 不动 + 无 counter。
+        Why: if the queue head is a poison payload (safety filter / oversized
+        prompt / never parsable), resolve_corrections takes the same first N
+        FIFO entries into the prompt every tick and the LLM fails the same way →
+        the whole corrections pipeline deadlocks forever. Same root cause as the
+        poison window in signal extraction — stuck cursor + no counter.
         """
         from config import MEMORY_LIVENESS_MAX_ATTEMPTS
         if not batch_items:
@@ -1944,18 +1971,20 @@ class PersonaManager:
         actions: list[dict],
         cluster_hash: str,
     ) -> int:
-        """Apply MemoryRefineEngine 输出的四件套 actions 到 persona。
+        """Apply the four MemoryRefineEngine action types to the persona.
 
-        Lock 内：reload → validate → apply → stamp survivors → save。
-        cluster 内只有 persona 条目（refine engine 不会把 fact 混进
-        persona pool），protected entries 已在采集阶段过滤；这里再加
-        防御性 `protected` 检查，挡住对 protected 误作 split/discard/
-        modify 的 action（merge 也排除 protected 作 source）。
+        Inside the lock: reload → validate → apply → stamp survivors → save.
+        Clusters contain only persona entries (the refine engine never mixes
+        facts into the persona pool); protected entries were already filtered at
+        gather time; an extra defensive `protected` check here blocks
+        split/discard/modify actions mistakenly aimed at protected entries
+        (merge likewise excludes protected as a source).
 
-        新产生的 entry 故意不 stamp —— 它们会在下一轮 cron 形成新
-        cluster 时被重新审视，自然触发 hash invalidation。
+        Newly produced entries are deliberately not stamped — they get
+        re-examined when the next cron forms new clusters, naturally triggering
+        hash invalidation.
 
-        Returns: 成功应用的 action 数。"""
+        Returns: number of successfully applied actions."""
         from memory.refine import VALID_REFINE_ACTIONS
 
         async with self._get_alock(name):
@@ -2204,18 +2233,20 @@ class PersonaManager:
     async def _abump_refine_attempts(
         self, name: str, cluster: list[dict], cluster_hash: str,
     ) -> None:
-        """Site 4 liveness 兜底：refine cluster LLM 失败时给非 fact 成员
-        bump ``refine_attempts``。达 ``MEMORY_LIVENESS_MAX_ATTEMPTS`` 的
-        entry 在下次 ``_run_persona_refine_for_character`` 候选 gather 时
-        被过滤掉，避免毒 cluster 持续占用 starvation-first ordering 名额
-        空跑 LLM。
+        """Site 4 liveness fallback: bump ``refine_attempts`` on non-fact members
+        when a refine-cluster LLM call fails. Entries reaching
+        ``MEMORY_LIVENESS_MAX_ATTEMPTS`` are filtered out of the next
+        ``_run_persona_refine_for_character`` candidate gather, so a poison
+        cluster stops hogging the starvation-first ordering slots with futile
+        LLM calls.
 
-        Recovery：成功 refine（apply_refine_actions 跑到 stamp 分支）会把
-        ``refine_attempts`` 清回 0；或人工编辑 persona.json。
+        Recovery: a successful refine (apply_refine_actions reaching the stamp
+        branch) resets ``refine_attempts`` to 0; or manually edit persona.json.
 
-        Why 不 in-memory：refine stamp `last_refine_at` 本身就落盘，counter
-        也得落盘——否则重启清零让 dead-letter 失效（参考 issue #1409 "落盘
-        与否的 dual" 部分）。
+        Why not in-memory: the refine stamp `last_refine_at` is itself
+        persisted, so the counter must be too — otherwise a restart zeroes it
+        and defeats the dead-letter (see the "persisted-or-not dual" section of
+        issue #1409).
         """
         from config import MEMORY_LIVENESS_MAX_ATTEMPTS
         from memory.refine import REFINE_ENTITY_KEY, REFINE_TYPE_KEY
@@ -2296,11 +2327,11 @@ class PersonaManager:
         return changed
 
     def record_mentions(self, name: str, response_text: str) -> None:
-        """主动搭话投递后，扫描 response 中哪些 persona 条目被提及。
+        """After a proactive delivery, scan which persona entries the response mentioned.
 
-        核心逻辑：5小时内提及 > SUPPRESS_MENTION_LIMIT 次 → suppress。
-        Stop-names 在进 ``_is_mentioned`` 之前剥掉，避免 master/lanlan
-        每轮被喊一次就把无关 fact 全部判成 mentioned。
+        Core logic: mentioned > SUPPRESS_MENTION_LIMIT times within 5 hours → suppress.
+        Stop-names are stripped before ``_is_mentioned``, so master/lanlan being
+        called once per turn doesn't mark every unrelated fact as mentioned.
         """
         persona = self.ensure_persona(name)
         stop_names = self._get_entity_stop_names(name)
@@ -2344,14 +2375,14 @@ class PersonaManager:
         return changed
 
     def update_suppressions(self, name: str) -> None:
-        """刷新 suppress 状态：冷却期过 → 解除；清理窗口外的 recent_mentions。"""
+        """Refresh suppress states: cooldown elapsed → lift; prune recent_mentions outside the window."""
         persona = self.ensure_persona(name)
         if self._apply_update_suppressions(persona):
             self.save_persona(name, persona)
 
     async def aupdate_suppressions(self, name: str) -> None:
-        """P2.a.2: persona.json 写回必须在角色锁下，避免与 aadd_fact /
-        arecord_mentions / aresolve_corrections 竞写。"""
+        """P2.a.2: persona.json write-back must happen under the character lock,
+        avoiding races with aadd_fact / arecord_mentions / aresolve_corrections."""
         async with self._get_alock(name):
             persona = await self._aensure_persona_locked(name)
             if self._apply_update_suppressions(persona):
@@ -2366,7 +2397,7 @@ class PersonaManager:
 
     @staticmethod
     def _collect_all_entries(persona: dict) -> list[dict]:
-        """收集 persona 中所有 entity section 的 facts 条目引用。"""
+        """Collect references to the facts entries of every entity section in the persona."""
         entries = []
         for section in persona.values():
             if isinstance(section, dict):
@@ -2630,8 +2661,9 @@ class PersonaManager:
             sources, never trimmed (§3.5.7 + §3.6.1).
           - `non_protected_by_entity`: {entity_key: [entry, ...]} — the
             score-trim candidate pool (suppressed entries excluded; they go
-            to the dedicated "暂不主动提及" section in compose).
-        """
+            to the dedicated "暂不主动提及" ("not proactively mentioned for
+            now") section in compose).
+        """  # noqa: DOCSTRING_CJK
         protected_entries: list[tuple[str, dict]] = []
         non_protected_by_entity: dict[str, list[dict]] = defaultdict(list)
         for entity_key, section in persona.items():
@@ -2700,11 +2732,12 @@ class PersonaManager:
     ) -> str:
         """Phase 3 (RFC §3.6.2): emit markdown sections in stable order.
 
-        Headers: `关于主人` / `关于{ai_name}` / `关系动态` / 反思两类 / 抑制区.
+        Headers: the literal `关于主人` / `关于{ai_name}` / `关系动态` entity
+        sections, the two reflection sections, and the suppressed section.
         Within each entity section: protected entries first (deterministic
         order from persona file) then non-protected kept by score-trim,
         preserving the trim-order (which is score DESC).
-        """
+        """  # noqa: DOCSTRING_CJK
         master_name = name_mapping.get('human', '主人')
         ai_name = name
         _headers = {
@@ -2919,9 +2952,10 @@ class PersonaManager:
                                    confirmed_reflections: list[dict] | None = None) -> str:
         """Render persona as markdown for LLM context injection.
 
-        Suppressed entries are rendered in a separate "暂不主动提及" section,
-        NOT in their original sections. suppress has highest priority.
-        """
+        Suppressed entries are rendered in a separate "暂不主动提及" ("not
+        proactively mentioned for now") section, NOT in their original
+        sections. suppress has highest priority.
+        """  # noqa: DOCSTRING_CJK
         # Refresh suppressions before rendering so expired cooldowns are released
         self.update_suppressions(name)
         persona = self.ensure_persona(name)
@@ -2992,7 +3026,7 @@ class PersonaManager:
 
     @staticmethod
     def _render_fact_entries(entries: list) -> list[str]:
-        """渲染 fact 条目列表。suppress 的条目不在此渲染（移至专用区域）。"""
+        """Render the fact entry list. Suppressed entries are not rendered here (moved to the dedicated section)."""
         lines = []
         for entry in entries:
             if isinstance(entry, dict):

@@ -44,10 +44,10 @@
                 :label="surface.title || surface.id"
                 :name="surface.id"
               >
-                <HostedSurfaceFrame :plugin-id="pluginId" :surface="surface" height="560px" @open-logs="openLogsTab" />
+                <HostedSurfaceFrame :plugin-id="pluginId" :surface="surface" height="560px" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
               </el-tab-pane>
             </el-tabs>
-            <HostedSurfaceFrame v-else :plugin-id="pluginId" :surface="panelSurfaces[0]!" height="560px" @open-logs="openLogsTab" />
+            <HostedSurfaceFrame v-else :plugin-id="pluginId" :surface="panelSurfaces[0]!" height="560px" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
           </div>
         </el-tab-pane>
 
@@ -75,15 +75,15 @@
                 :label="surface.title || surface.id"
                 :name="surface.id"
               >
-                <HostedSurfaceFrame :plugin-id="pluginId" :surface="surface" height="560px" @open-logs="openLogsTab" />
+                <HostedSurfaceFrame :plugin-id="pluginId" :surface="surface" height="560px" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
               </el-tab-pane>
             </el-tabs>
-            <HostedSurfaceFrame v-else :plugin-id="pluginId" :surface="guideSurfaces[0]!" height="560px" @open-logs="openLogsTab" />
+            <HostedSurfaceFrame v-else :plugin-id="pluginId" :surface="guideSurfaces[0]!" height="560px" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
           </div>
         </el-tab-pane>
 
         <el-tab-pane v-if="hasStaticUI" :label="$t('plugins.ui.title')" name="ui">
-          <PluginUIFrame :plugin-id="pluginId" height="560px" />
+          <PluginUIFrame ref="staticUiFrameRef" :plugin-id="pluginId" height="560px" @open-surface="openHostedSurfaceFromStaticUi" />
         </el-tab-pane>
 
         <el-tab-pane :label="$t('plugins.basicInfo')" name="info">
@@ -198,7 +198,13 @@ const surfaces = ref<PluginUiSurface[]>([])
 const surfaceWarnings = ref<PluginUiWarning[]>([])
 const activePanelSurfaceId = ref('')
 const activeGuideSurfaceId = ref('')
+const staticUiFrameRef = ref<InstanceType<typeof PluginUIFrame> | null>(null)
 const allowedTabs = new Set(['panel', 'guide', 'ui', 'info', 'entries', 'metrics', 'config', 'logs'])
+const studySurfaceRelayMessageTypes = new Set([
+  'neko-study-review-completed',
+  'neko-study-refresh-summary',
+  'neko-study-memory-deck-updated',
+])
 let currentSurfaceLoadId = 0
 // fetchStaticUI 也需要和 fetchSurfaces 一样的 stale-response guard：用户快速
 // 切换 plugin detail 页时，旧 plugin 的 /ui-info 响应可能在新 plugin 加载后
@@ -280,6 +286,22 @@ function resolveDefaultTab(value: unknown): string {
 }
 
 function syncSurfaceTabs() {
+  const requestedSurfaceId = typeof route.query.surface === 'string' ? route.query.surface : ''
+  const requestedTab = resolveActiveTab(route.query.tab)
+  if (requestedSurfaceId) {
+    const panel = requestedTab !== 'guide'
+      ? panelSurfaces.value.find((surface) => surface.id === requestedSurfaceId)
+      : undefined
+    if (panel) {
+      activePanelSurfaceId.value = panel.id
+    }
+    const guide = requestedTab !== 'panel'
+      ? guideSurfaces.value.find((surface) => surface.id === requestedSurfaceId)
+      : undefined
+    if (guide) {
+      activeGuideSurfaceId.value = guide.id
+    }
+  }
   if (!activePanelSurfaceId.value && panelSurfaces.value[0]) {
     activePanelSurfaceId.value = panelSurfaces.value[0].id
   }
@@ -296,6 +318,66 @@ function openLogsTab() {
       tab: 'logs',
     },
   })
+}
+
+function openHostedSurfaceFromStaticUi(payload: { pluginId?: string; surfaceId: string; kind?: string }) {
+  if (payload.pluginId && payload.pluginId !== pluginId.value) return
+  let activeSurfaceId = ''
+  const preferPanel = payload.kind === 'panel'
+  const preferGuide = payload.kind === 'guide' || payload.kind === 'docs'
+  const panel = (preferPanel || !preferGuide)
+    ? panelSurfaces.value.find((surface) => surface.id === payload.surfaceId)
+    : undefined
+  if (panel) {
+    activePanelSurfaceId.value = panel.id
+    activeSurfaceId = panel.id
+    activeTab.value = 'panel'
+  } else {
+    const guide = (preferGuide || !preferPanel)
+      ? guideSurfaces.value.find((surface) => surface.id === payload.surfaceId)
+      : undefined
+    if (!guide) return
+    activeGuideSurfaceId.value = guide.id
+    activeSurfaceId = guide.id
+    activeTab.value = 'guide'
+  }
+  router.replace({
+    query: {
+      ...route.query,
+      tab: activeTab.value,
+      surface: activeSurfaceId,
+    },
+  })
+}
+
+function isStudySurfaceRelayMessage(data: unknown): data is { type: string; payload?: unknown } {
+  return !!data
+    && typeof data === 'object'
+    && 'type' in data
+    && typeof (data as { type?: unknown }).type === 'string'
+    && studySurfaceRelayMessageTypes.has((data as { type: string }).type)
+}
+
+function isStudyOpenSurfaceMessage(data: unknown): data is {
+  type: 'neko-study-open-surface'
+  payload: { pluginId?: string; surfaceId: string; kind?: string }
+} {
+  if (!data || typeof data !== 'object') return false
+  const message = data as { type?: unknown; payload?: unknown }
+  if (message.type !== 'neko-study-open-surface' || !message.payload || typeof message.payload !== 'object') return false
+  const payload = message.payload as { pluginId?: unknown; surfaceId?: unknown; kind?: unknown }
+  return typeof payload.surfaceId === 'string'
+    && (!payload.pluginId || typeof payload.pluginId === 'string')
+    && (!payload.kind || typeof payload.kind === 'string')
+}
+
+function relayHostedSurfaceMessageToStaticUi(data: unknown) {
+  if (isStudyOpenSurfaceMessage(data)) {
+    openHostedSurfaceFromStaticUi(data.payload)
+    return
+  }
+  if (!isStudySurfaceRelayMessage(data)) return
+  staticUiFrameRef.value?.sendStudySurfaceMessage(data)
 }
 
 async function fetchSurfaces() {
@@ -347,8 +429,9 @@ onMounted(async () => {
 })
 
 watch(
-  () => route.query.tab,
-  (tab) => {
+  () => [route.query.tab, route.query.surface],
+  ([tab]) => {
+    syncSurfaceTabs()
     activeTab.value = resolveDefaultTab(tab)
   },
 )

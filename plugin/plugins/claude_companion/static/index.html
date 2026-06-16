@@ -1,0 +1,1054 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Claude 伙伴陪伴 - Companion</title>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600;700&family=Nunito:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --sky-blue: #87CEEB;
+            --soft-pink: #FFB6C1;
+            --warm-white: #FFF8F0;
+            --gentle-orange: #FFA07A;
+            --honey-yellow: #FFE4B5;
+            --lavender: #E6E6FA;
+            --rose: #F8C8DC;
+            --peach: #FFDAB9;
+            --text-dark: #4A4A6A;
+            --text-light: #7A7A9A;
+            --coral: #FF6B9D;
+            --mint: #98D8C8;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Nunito', 'Noto Serif SC', serif;
+            background: linear-gradient(135deg, #FFF8F0 0%, #FFE4E1 15%, #E6F3FF 35%, #FFF0F5 55%, #FFF8DC 75%, #F0FFF0 90%, #FFF8F0 100%);
+            min-height: 100vh;
+            color: var(--text-dark);
+            overflow-x: hidden;
+            position: relative;
+        }
+
+        /* ── 浮动装饰 ── */
+        .sparkle {
+            position: fixed;
+            pointer-events: none;
+            animation: sparkle-float 8s infinite ease-in-out;
+            z-index: 0;
+            font-size: 18px;
+        }
+        @keyframes sparkle-float {
+            0%, 100% { transform: translateY(0) rotate(0deg) scale(1); opacity: 0.4; }
+            25% { transform: translateY(-20px) rotate(90deg) scale(1.1); opacity: 0.6; }
+            50% { transform: translateY(-10px) rotate(180deg) scale(0.9); opacity: 0.3; }
+            75% { transform: translateY(-30px) rotate(270deg) scale(1.05); opacity: 0.5; }
+        }
+
+        /* ── 容器 ── */
+        .container {
+            max-width: 880px;
+            margin: 0 auto;
+            padding: 20px;
+            position: relative;
+            z-index: 1;
+        }
+
+        /* ── 头部 ── */
+        .header {
+            text-align: center;
+            padding: 44px 20px 36px;
+            background: linear-gradient(135deg, rgba(255,182,193,0.35) 0%, rgba(135,206,235,0.35) 35%, rgba(255,160,122,0.3) 70%, rgba(152,216,200,0.3) 100%);
+            border-radius: 28px;
+            margin-bottom: 28px;
+            backdrop-filter: blur(14px);
+            border: 1px solid rgba(255,255,255,0.55);
+            box-shadow: 0 8px 40px rgba(255,182,193,0.18);
+        }
+        .header h1 {
+            font-size: 2.4em;
+            font-weight: 700;
+            background: linear-gradient(90deg, #FF6B9D, #87CEEB, #FFB347, #98D8C8, #FF6B9D);
+            background-size: 300% auto;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            animation: gradient-shift 5s ease infinite;
+        }
+        @keyframes gradient-shift {
+            0%, 100% { background-position: 0% center; }
+            50% { background-position: 100% center; }
+        }
+        .header .subtitle {
+            font-size: 1.05em;
+            color: var(--text-light);
+            font-style: italic;
+            margin-top: 8px;
+            line-height: 1.6;
+        }
+
+        /* ── 卡片 ── */
+        .card {
+            background: rgba(255,255,255,0.72);
+            border-radius: 22px;
+            padding: 28px;
+            margin-bottom: 24px;
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255,255,255,0.55);
+            box-shadow: 0 4px 28px rgba(135,206,235,0.1);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        .card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 36px rgba(255,182,193,0.18);
+        }
+        .card-title {
+            font-size: 1.2em;
+            font-weight: 600;
+            margin-bottom: 18px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: var(--text-dark);
+        }
+        .card-title .icon { font-size: 1.3em; }
+
+        /* ── 统计网格 ── */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 14px;
+        }
+        .stat-item {
+            text-align: center;
+            padding: 20px 10px;
+            background: linear-gradient(135deg, rgba(255,182,193,0.2), rgba(135,206,235,0.2), rgba(255,160,122,0.2));
+            border-radius: 18px;
+            border: 1px solid rgba(255,255,255,0.5);
+            transition: transform 0.3s;
+        }
+        .stat-item:hover { transform: scale(1.03); }
+        .stat-value {
+            font-size: 2em;
+            font-weight: 700;
+            background: linear-gradient(135deg, #FF6B9D, #87CEEB, #FFB347);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .stat-label {
+            font-size: 0.82em;
+            color: var(--text-light);
+            margin-top: 4px;
+        }
+
+        /* ── 状态指示 ── */
+        .status-bar {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 14px 20px;
+            background: linear-gradient(135deg, rgba(152,216,200,0.25), rgba(135,206,235,0.25));
+            border-radius: 14px;
+            margin-bottom: 18px;
+            border: 1px solid rgba(255,255,255,0.4);
+        }
+        .status-dot {
+            width: 10px; height: 10px;
+            border-radius: 50%;
+            background: #98D8C8;
+            box-shadow: 0 0 8px rgba(152,216,200,0.6);
+            animation: pulse 2s infinite;
+        }
+        .status-dot.offline { background: #FFB6C1; box-shadow: 0 0 8px rgba(255,182,193,0.6); }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.6; transform: scale(0.85); }
+        }
+        .status-text { font-size: 0.92em; color: var(--text-dark); }
+        .status-text strong { color: var(--coral); }
+
+        /* ── 事件时间线 ── */
+        .timeline {
+            position: relative;
+            padding-left: 32px;
+        }
+        .timeline::before {
+            content: '';
+            position: absolute;
+            left: 10px;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: linear-gradient(180deg, #FFB6C1, #87CEEB, #FFA07A, #98D8C8);
+            border-radius: 1px;
+        }
+        .timeline-item {
+            position: relative;
+            margin-bottom: 20px;
+            padding: 16px 20px;
+            background: rgba(255,255,255,0.6);
+            border-radius: 16px;
+            border: 1px solid rgba(255,255,255,0.5);
+            transition: all 0.3s;
+        }
+        .timeline-item:hover {
+            background: rgba(255,255,255,0.85);
+            transform: translateX(4px);
+            box-shadow: 0 4px 20px rgba(135,206,235,0.15);
+        }
+        .timeline-item::before {
+            content: '';
+            position: absolute;
+            left: -28px;
+            top: 22px;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            border: 2px solid #FFB6C1;
+            background: white;
+        }
+        .timeline-item[data-type="edit"]::before { border-color: #FF6B9D; background: #FFE4E1; }
+        .timeline-item[data-type="create"]::before { border-color: #87CEEB; background: #E6F3FF; }
+        .timeline-item[data-type="debug"]::before { border-color: #FFA07A; background: #FFE4D6; }
+        .timeline-item[data-type="test"]::before { border-color: #98D8C8; background: #E8F8F0; }
+        .timeline-item[data-type="git"]::before { border-color: #FFB347; background: #FFF3E0; }
+        .timeline-item[data-type="task_complete"]::before { border-color: #1dd1a1; background: #E8FCF5; }
+        .timeline-item[data-type="command"]::before { border-color: #A29BFE; background: #F0EFFF; }
+
+        .timeline-time {
+            font-size: 0.78em;
+            color: var(--text-light);
+            margin-bottom: 6px;
+        }
+        .timeline-summary {
+            font-size: 0.95em;
+            line-height: 1.6;
+            color: var(--text-dark);
+        }
+        .timeline-meta {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+        }
+        .timeline-tag {
+            font-size: 0.72em;
+            padding: 3px 10px;
+            border-radius: 10px;
+            background: linear-gradient(135deg, rgba(255,182,193,0.3), rgba(135,206,235,0.3));
+            color: var(--text-light);
+            border: 1px solid rgba(255,255,255,0.4);
+        }
+
+        /* ── 空状态 ── */
+        .empty-state {
+            text-align: center;
+            padding: 50px 20px;
+            color: var(--text-light);
+        }
+        .empty-state-icon { font-size: 56px; margin-bottom: 12px; }
+        .empty-state-text { font-size: 15px; font-style: italic; line-height: 1.8; }
+
+        /* ── 按钮 ── */
+        .btn {
+            padding: 11px 26px;
+            border: none;
+            border-radius: 14px;
+            font-family: inherit;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #FF6B9D, #FFB347);
+            color: white;
+            box-shadow: 0 4px 16px rgba(255,107,157,0.3);
+        }
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 24px rgba(255,107,157,0.4);
+        }
+        .btn-secondary {
+            background: linear-gradient(135deg, #87CEEB, #98D8E8);
+            color: white;
+            box-shadow: 0 4px 16px rgba(135,206,235,0.3);
+        }
+        .btn-secondary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 24px rgba(135,206,235,0.4);
+        }
+        .btn-danger {
+            background: linear-gradient(135deg, #FF6B6B, #FFA07A);
+            color: white;
+        }
+        .btn-danger:hover { transform: translateY(-2px); }
+        .btn-group { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
+
+        /* ── 设置面板 ── */
+        .settings-row {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            margin-bottom: 14px;
+            flex-wrap: wrap;
+        }
+        .settings-row label {
+            font-size: 0.9em;
+            color: var(--text-light);
+            font-weight: 600;
+            min-width: 80px;
+        }
+        .settings-row input {
+            padding: 9px 14px;
+            border: 2px solid rgba(135,206,235,0.3);
+            border-radius: 12px;
+            background: rgba(255,255,255,0.7);
+            color: var(--text-dark);
+            font-size: 14px;
+            font-family: inherit;
+            transition: border-color 0.3s;
+            flex: 1;
+            max-width: 280px;
+        }
+        .settings-row input:focus {
+            outline: none;
+            border-color: #87CEEB;
+            box-shadow: 0 0 0 3px rgba(135,206,235,0.2);
+        }
+
+        /* ── 提示条 ── */
+        .toast {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%) translateY(100px);
+            background: linear-gradient(135deg, #FF6B9D, #87CEEB);
+            color: white;
+            padding: 13px 26px;
+            border-radius: 14px;
+            font-weight: 600;
+            font-family: inherit;
+            box-shadow: 0 8px 28px rgba(255,107,157,0.35);
+            transition: transform 0.4s ease;
+            z-index: 200;
+            white-space: nowrap;
+        }
+        .toast.show { transform: translateX(-50%) translateY(0); }
+
+        /* ── 滚动条 ── */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: rgba(135,206,235,0.08); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb {
+            background: linear-gradient(180deg, #FFB6C1, #87CEEB);
+            border-radius: 4px;
+        }
+
+        /* ── 响应式 ── */
+        @media (max-width: 640px) {
+            .header h1 { font-size: 1.7em; }
+            .stats-grid { grid-template-columns: repeat(2, 1fr); }
+            .stat-value { font-size: 1.5em; }
+            .settings-row { flex-direction: column; align-items: stretch; }
+            .settings-row input { max-width: 100%; }
+        }
+
+        /* ── 加载动画 ── */
+        .loading { text-align: center; padding: 40px; color: var(--text-light); }
+        .spinner {
+            display: inline-block;
+            width: 28px; height: 28px;
+            border: 3px solid rgba(135,206,235,0.2);
+            border-top-color: #87CEEB;
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* ── 教程面板 ── */
+        .tutorial-toggle {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            padding: 14px 28px;
+            margin-bottom: 24px;
+            background: linear-gradient(135deg, rgba(255,182,193,0.25), rgba(135,206,235,0.25), rgba(230,230,250,0.25));
+            border-radius: 18px;
+            border: 1px solid rgba(255,255,255,0.5);
+            cursor: pointer;
+            font-size: 1.05em;
+            font-weight: 600;
+            color: var(--coral);
+            transition: all 0.3s ease;
+            user-select: none;
+            backdrop-filter: blur(10px);
+        }
+        .tutorial-toggle:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 24px rgba(255,107,157,0.15);
+            background: linear-gradient(135deg, rgba(255,182,193,0.35), rgba(135,206,235,0.35), rgba(230,230,250,0.35));
+        }
+        .tutorial-toggle .arrow {
+            display: inline-block;
+            transition: transform 0.3s ease;
+            font-size: 0.85em;
+        }
+        .tutorial-toggle .arrow.open { transform: rotate(180deg); }
+        .tutorial-panel {
+            display: none;
+            animation: tutorial-fade-in 0.4s ease;
+        }
+        .tutorial-panel.show { display: block; }
+        @keyframes tutorial-fade-in {
+            from { opacity: 0; transform: translateY(-12px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+
+        .tutorial-header {
+            text-align: center;
+            padding: 32px 24px 24px;
+            margin-bottom: 20px;
+            background: linear-gradient(135deg, rgba(135,206,235,0.15), rgba(255,182,193,0.15), rgba(230,230,250,0.15));
+            border-radius: 20px;
+            border: 1px solid rgba(255,255,255,0.5);
+        }
+        .tutorial-header h2 {
+            font-size: 1.6em;
+            font-weight: 700;
+            background: linear-gradient(90deg, #87CEEB, #FFB6C1, #E6E6FA, #87CEEB);
+            background-size: 200% auto;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            animation: gradient-shift 4s ease infinite;
+        }
+        .tutorial-header p {
+            margin-top: 8px;
+            color: var(--text-light);
+            font-size: 0.95em;
+            line-height: 1.6;
+        }
+
+        .tutorial-step {
+            padding: 24px;
+            margin-bottom: 18px;
+            background: rgba(255,255,255,0.65);
+            border-radius: 18px;
+            border-left: 4px solid;
+            transition: transform 0.3s ease;
+        }
+        .tutorial-step:hover { transform: translateX(4px); }
+        .tutorial-step[data-step-color="blue"]   { border-left-color: #87CEEB; }
+        .tutorial-step[data-step-color="pink"]   { border-left-color: #FFB6C1; }
+        .tutorial-step[data-step-color="lavender"] { border-left-color: #E6E6FA; }
+        .tutorial-step[data-step-color="mint"]   { border-left-color: #98D8C8; }
+        .tutorial-step[data-step-color="coral"]  { border-left-color: #FF6B9D; }
+        .tutorial-step[data-step-color="yellow"] { border-left-color: #FFE4B5; }
+
+        .tutorial-step-title {
+            font-size: 1.1em;
+            font-weight: 700;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .tutorial-step[data-step-color="blue"]   .tutorial-step-title { color: #5BA3CF; }
+        .tutorial-step[data-step-color="pink"]   .tutorial-step-title { color: #E88DA0; }
+        .tutorial-step[data-step-color="lavender"] .tutorial-step-title { color: #9B7BC8; }
+        .tutorial-step[data-step-color="mint"]   .tutorial-step-title { color: #6BB89A; }
+        .tutorial-step[data-step-color="coral"]  .tutorial-step-title { color: #FF6B9D; }
+        .tutorial-step[data-step-color="yellow"] .tutorial-step-title { color: #D4A84B; }
+
+        .tutorial-step-body {
+            font-size: 0.93em;
+            line-height: 1.8;
+            color: var(--text-dark);
+        }
+
+        .highlight {
+            display: inline-block;
+            background: linear-gradient(135deg, rgba(255,107,157,0.18), rgba(135,206,235,0.18));
+            border-radius: 6px;
+            padding: 2px 8px;
+            font-weight: 700;
+            color: var(--coral);
+        }
+
+        .path, .file {
+            display: inline-block;
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 0.88em;
+            padding: 3px 8px;
+            border-radius: 6px;
+        }
+        .path {
+            background: rgba(135,206,235,0.12);
+            color: #5BA3CF;
+            border: 1px solid rgba(135,206,235,0.25);
+        }
+        .file {
+            background: rgba(255,182,193,0.15);
+            color: #D4728A;
+            border: 1px solid rgba(255,182,193,0.3);
+            font-weight: 600;
+        }
+        .placeholder {
+            color: #9B7BC8;
+            font-style: italic;
+            text-decoration: underline;
+            text-decoration-style: dashed;
+            text-decoration-color: #E6E6FA;
+        }
+
+        .json-block {
+            position: relative;
+            margin: 14px 0;
+            padding: 18px 20px;
+            background: linear-gradient(135deg, rgba(135,206,235,0.08), rgba(230,230,250,0.08));
+            border: 1px solid rgba(135,206,235,0.25);
+            border-radius: 12px;
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 0.85em;
+            line-height: 1.6;
+            color: var(--text-dark);
+            white-space: pre;
+            overflow-x: auto;
+        }
+        .json-block .copy-btn {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            padding: 5px 12px;
+            font-size: 0.8em;
+            font-family: inherit;
+            background: linear-gradient(135deg, #87CEEB, #98D8C8);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .json-block .copy-btn:hover {
+            transform: scale(1.05);
+            box-shadow: 0 2px 8px rgba(135,206,235,0.3);
+        }
+
+        .tutorial-note {
+            padding: 18px 22px;
+            margin-top: 20px;
+            background: linear-gradient(135deg, rgba(255,228,181,0.3), rgba(255,182,193,0.2));
+            border-radius: 14px;
+            border: 1px solid rgba(255,200,120,0.3);
+            font-size: 0.92em;
+            line-height: 1.8;
+            color: var(--text-dark);
+        }
+        .tutorial-note strong {
+            color: #D4A84B;
+        }
+    </style>
+</head>
+<body>
+    <!-- 浮动装饰 -->
+    <div class="sparkle" style="top:6%;left:3%;animation-delay:0s;">✨</div>
+    <div class="sparkle" style="top:12%;right:5%;animation-delay:1.5s;font-size:14px;">🌸</div>
+    <div class="sparkle" style="top:45%;left:2%;animation-delay:3s;font-size:16px;">🦋</div>
+    <div class="sparkle" style="top:70%;right:3%;animation-delay:4.5s;">💫</div>
+    <div class="sparkle" style="top:30%;right:94%;animation-delay:2s;font-size:20px;">🌺</div>
+    <div class="sparkle" style="top:55%;left:95%;animation-delay:5.5s;font-size:12px;">🌟</div>
+    <div class="sparkle" style="top:85%;left:6%;animation-delay:6s;font-size:15px;">🍃</div>
+    <div class="sparkle" style="top:20%;left:92%;animation-delay:3.5s;font-size:13px;">💝</div>
+
+    <div class="container">
+        <!-- 头部 -->
+        <div class="header">
+            <h1>🐾 Claude 伙伴陪伴</h1>
+            <p class="subtitle">当你在终端里和 Claude 一起奋斗时<br>你的 NEKO 伙伴会在这里默默关注你、温暖你</p>
+        </div>
+
+        <!-- 教程切换按钮 -->
+        <button type="button" class="tutorial-toggle" onclick="toggleTutorial(this)" aria-expanded="false">
+            <span class="icon">📖</span>
+            <span>使用教程（新手必看）</span>
+            <span class="arrow" id="tutorial-arrow">▼</span>
+        </button>
+
+        <!-- 教程面板 -->
+        <div class="tutorial-panel" id="tutorial-panel">
+            <div class="tutorial-header">
+                <h2>🌸 使用教程</h2>
+                <p>从零开始，手把手带你接入 Claude 陪伴功能</p>
+            </div>
+
+            <!-- Step 1 -->
+            <div class="tutorial-step" data-step-color="blue">
+                <div class="tutorial-step-title">
+                    <span>🎀</span>
+                    <span>第一步：了解这个插件能做什么</span>
+                </div>
+                <div class="tutorial-step-body">
+                    这个插件的作用很简单：当你在终端里用 <span class="highlight">Claude Code</span> 写代码时，它会自动记录你在做什么（修改了哪个文件、调试了什么问题、提交了什么代码），然后把这些信息<span class="highlight">「悄悄告诉」</span>你的 NEKO 猫娘。猫娘就会在对话框里关心你、鼓励你，就像有一个小伙伴在旁边陪你写代码一样温暖 ☁️
+                </div>
+            </div>
+
+            <!-- Step 2 -->
+            <div class="tutorial-step" data-step-color="pink">
+                <div class="tutorial-step-title">
+                    <span>🔧</span>
+                    <span>第二步：配置 Claude Code 的 hooks（核心步骤）</span>
+                </div>
+                <div class="tutorial-step-body">
+                    找到以下目录中的 <span class="file">settings.json</span> 文件：
+                    <br><br>
+                    <span class="path">C:\Users\<span class="placeholder">你的用户名</span>\.claude</span>
+                    <br><br>
+                    具体操作：<span class="highlight">右键点击 settings.json → 选择「在记事本中编辑」</span>
+                    <br><br>
+                    然后在文件里<span class="highlight">完整插入以下内容</span>（通过复制粘贴的方式）：
+
+                    <div class="json-block">
+<button class="copy-btn" onclick="copyJson(this)">📋 复制</button><span class="json-content">{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://localhost:48920/hook/turn-end",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}</span>
+                    </div>
+
+                    ⚠️ 注意：如果你的 <span class="file">settings.json</span> 里已经有其他内容，请确保将上述 <span class="file">"hooks"</span> 部分<span class="highlight">合并进去</span>，注意 JSON 的逗号语法。如果不确定，可以先把整个文件内容截图发给 AI 助手帮你合并。
+                </div>
+            </div>
+
+            <!-- Step 3 -->
+            <div class="tutorial-step" data-step-color="lavender">
+                <div class="tutorial-step-title">
+                    <span>💾</span>
+                    <span>第三步：保存文件</span>
+                </div>
+                <div class="tutorial-step-body">
+                    编辑完成后，在记事本左上角的 <span class="highlight">「文件」</span> 菜单里点击 <span class="highlight">「保存」</span> 选项即可。
+                    <br><br>
+                    保存后可以关闭记事本。
+                </div>
+            </div>
+
+            <!-- Step 4 -->
+            <div class="tutorial-step" data-step-color="mint">
+                <div class="tutorial-step-title">
+                    <span>✅</span>
+                    <span>第四步：确认插件已启用</span>
+                </div>
+                <div class="tutorial-step-body">
+                    打开 NEKO 主界面，在插件列表中找到 <span class="highlight">「Claude 伙伴陪伴」</span>，确认它处于<span class="highlight">启用状态</span>。
+                    <br><br>
+                    当插件运行时，下方活动时间线会开始记录你的编码活动。你可以在当前页面的状态栏中看到连接状态。
+                </div>
+            </div>
+
+            <!-- Step 5 -->
+            <div class="tutorial-step" data-step-color="coral">
+                <div class="tutorial-step-title">
+                    <span>🚀</span>
+                    <span>第五步：开始体验！</span>
+                </div>
+                <div class="tutorial-step-body">
+                    打开终端，运行 <span class="highlight">Claude Code</span> 开始写代码。
+                    <br><br>
+                    当你在终端里操作时，NEKO 猫娘会自动收到你的活动通知并在对话框里回应你～ 你可以在下方设置面板里修改用户名和推送冷却时间。
+                    <br><br>
+                    🎉 现在你可以放心写代码了，你的伙伴会一直在这里陪着你！
+                </div>
+            </div>
+
+            <!-- 温馨提示 -->
+            <div class="tutorial-note">
+                <strong>💛 温馨提示：</strong>
+                插件会在你每次完成一轮对话后自动推送，两次推送之间至少有 <span class="file">60 秒</span> 的冷却时间（可在下方设置面板调整）。
+                如果暂时不想被打扰，可以通过设置面板调大冷却时间。
+            </div>
+        </div>
+
+        <!-- 状态栏 -->
+        <div class="card">
+            <div class="status-bar">
+                <div class="status-dot" id="status-dot"></div>
+                <div class="status-text" id="status-text">正在连接...</div>
+            </div>
+
+            <div class="stats-grid">
+                <div class="stat-item">
+                    <div class="stat-value" id="event-count">0</div>
+                    <div class="stat-label" data-i18n="ui.event_count">活动事件</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="user-name">-</div>
+                    <div class="stat-label" data-i18n="ui.username">用户名</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="port-num">-</div>
+                    <div class="stat-label" data-i18n="ui.port">监听端口</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="cooldown-val">-</div>
+                    <div class="stat-label" data-i18n="ui.cooldown_label">冷却(秒)</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 活动时间线 -->
+        <div class="card">
+            <div class="card-title"><span class="icon">📜</span> <span data-i18n="ui.timeline">活动时间线</span></div>
+            <div id="timeline-container">
+                <div class="loading"><div class="spinner"></div><div style="margin-top:10px;" data-i18n="ui.loading">加载中...</div></div>
+            </div>
+        </div>
+
+        <!-- 设置 -->
+        <div class="card">
+            <div class="card-title"><span class="icon">⚙️</span> <span data-i18n="ui.settings">设置</span></div>
+            <div class="settings-row">
+                <label data-i18n="ui.username">用户名</label>
+                <input type="text" id="input-name" placeholder="输入你的名字">
+                <button class="btn btn-primary" onclick="saveUserName()" data-i18n="ui.save">保存</button>
+            </div>
+            <div class="settings-row">
+                <label data-i18n="ui.cooldown">冷却时间</label>
+                <input type="number" id="input-cooldown" placeholder="秒" min="10" max="3600">
+                <button class="btn btn-secondary" onclick="saveCooldown()" data-i18n="ui.save">保存</button>
+            </div>
+            <div class="btn-group">
+                <button class="btn btn-primary" onclick="testPush()" data-i18n="ui.test_push">💌 发送测试消息</button>
+                <button class="btn btn-danger" onclick="clearEvents()" data-i18n="ui.clear_events">🧹 清空事件日志</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script>
+        const pluginId = 'claude_companion';
+        let refreshTimer = null;
+        let translations = {};
+        let localeLoaded = false;
+
+        // ── 简易翻译函数 ──
+        function t(key, fallback) {
+            return translations[key] || fallback;
+        }
+
+        // ── 加载 i18n ──
+        async function loadLocale() {
+            try {
+                var baseUrl = getBaseUrl();
+                var locResp = await fetch(baseUrl + '/plugin/' + pluginId + '/ui-api/locale');
+                if (locResp.ok) {
+                    var locData = await locResp.json();
+                    var lang = locData.locale || locData.language || 'zh-CN';
+                    // Fallback chain: e.g. en-US -> en -> zh-CN
+                    var candidates = [lang];
+                    var baseLang = lang.split('-')[0];
+                    if (baseLang !== lang) candidates.push(baseLang);
+                    if (candidates.indexOf('zh-CN') === -1) candidates.push('zh-CN');
+
+                    for (var i = 0; i < candidates.length; i++) {
+                        var bundleResp = await fetch(baseUrl + '/plugin/' + pluginId + '/ui-api/i18n/' + candidates[i] + '.json');
+                        if (bundleResp.ok) {
+                            translations = await bundleResp.json();
+                            localeLoaded = true;
+                            applyTranslations();
+                            return;
+                        }
+                    }
+                }
+            } catch (e) {
+                console.warn('[i18n] Failed to load locale, using hardcoded strings:', e);
+            }
+        }
+
+        // ── 应用翻译到 data-i18n 元素 ──
+        function applyTranslations() {
+            if (!localeLoaded) return;
+            var elems = document.querySelectorAll('[data-i18n]');
+            for (var i = 0; i < elems.length; i++) {
+                var el = elems[i];
+                var key = el.getAttribute('data-i18n');
+                var translated = t(key);
+                if (translated && translated !== key) {
+                    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+                        if (key.indexOf('.placeholder') >= 0 || el.getAttribute('placeholder')) {
+                            el.placeholder = translated;
+                        } else {
+                            el.value = translated;
+                        }
+                    } else {
+                        el.textContent = translated;
+                    }
+                }
+            }
+        }
+
+        // ── Toast 提示 ──
+        function showToast(msg) {
+            var el = document.getElementById('toast');
+            el.textContent = msg;
+            el.classList.add('show');
+            setTimeout(function() { el.classList.remove('show'); }, 3000);
+        }
+
+        // ── 教程面板切换 ──
+        function toggleTutorial(btn) {
+            var panel = document.getElementById('tutorial-panel');
+            var arrow = document.getElementById('tutorial-arrow');
+            if (panel.classList.contains('show')) {
+                panel.classList.remove('show');
+                arrow.classList.remove('open');
+                if (btn) btn.setAttribute('aria-expanded', 'false');
+            } else {
+                panel.classList.add('show');
+                arrow.classList.add('open');
+                if (btn) btn.setAttribute('aria-expanded', 'true');
+                // 滚动到教程位置
+                panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+        }
+
+        // ── JSON 复制 ──
+        function copyJson(btn) {
+            var content = btn.parentElement.querySelector('.json-content');
+            var text = content.textContent || content.innerText;
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(function() {
+                    btn.textContent = '✅ 已复制';
+                    setTimeout(function() { btn.textContent = '📋 复制'; }, 2000);
+                });
+            } else {
+                // fallback
+                var ta = document.createElement('textarea');
+                ta.value = text;
+                ta.style.position = 'fixed';
+                ta.style.opacity = '0';
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+                btn.textContent = '✅ 已复制';
+                setTimeout(function() { btn.textContent = '📋 复制'; }, 2000);
+            }
+        }
+
+        // ── 获取基础 URL ──
+        function getBaseUrl() {
+            // UI 在 /plugin/claude_companion/ui/ 下，API 在根路径
+            var loc = window.location;
+            return loc.protocol + '//' + loc.host;
+        }
+
+        // ── 调用插件入口 ──
+        async function callPlugin(entryId, args) {
+            try {
+                var baseUrl = getBaseUrl();
+                var resp = await fetch(baseUrl + '/runs', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        plugin_id: pluginId,
+                        entry_id: entryId,
+                        args: args || {}
+                    })
+                });
+                if (!resp.ok) { showToast('服务器错误: ' + resp.status); return null; }
+                var data = await resp.json();
+                var runId = data.run_id;
+                if (!runId) return null;
+
+                for (var i = 0; i < 60; i++) {
+                    await new Promise(function(r) { setTimeout(r, 150); });
+                    var sr = await fetch(baseUrl + '/runs/' + runId);
+                    if (!sr.ok) return null;
+                    var sd = await sr.json();
+                    if (sd.status === 'succeeded') {
+                        await new Promise(function(r) { setTimeout(r, 200); });
+                        var er = await fetch(baseUrl + '/runs/' + runId + '/export');
+                        if (!er.ok) return null;
+                        var ed = await er.json();
+                        if (ed.items && ed.items.length > 0) {
+                            var ti = ed.items.find(function(x) { return x.label === 'trigger_response'; });
+                            if (ti && ti.json) {
+                                // API 返回格式: {"success":true,"code":0,"data":{...}}
+                                var jsonData = ti.json;
+                                if (jsonData.success && jsonData.data) {
+                                    return jsonData.data;
+                                }
+                                return jsonData.plugin_response || jsonData;
+                            }
+                        }
+                        return ed;
+                    }
+                    if (sd.status === 'failed' || sd.status === 'timeout') return null;
+                }
+                return null;
+            } catch (e) {
+                console.error(e);
+                return null;
+            }
+        }
+
+        // ── 加载状态 ──
+        async function loadStatus() {
+            console.log('[ClaudeCompanion] Loading status...');
+            var result = await callPlugin('get_status');
+            console.log('[ClaudeCompanion] Status result:', result);
+            if (!result) {
+                document.getElementById('status-dot').classList.add('offline');
+                document.getElementById('status-text').innerHTML = t('ui.disconnected', '未连接 - 请确认 NEKO 服务已启动');
+                return;
+            }
+            document.getElementById('status-dot').classList.remove('offline');
+            var connectedFmt = t('ui.connected', '已连接 — <strong>{user}</strong>，你的伙伴正在关注你～');
+            var userDisplay = escapeHtml(result.user_name || '你');
+            document.getElementById('status-text').innerHTML = connectedFmt.replace('{user}', userDisplay);
+            document.getElementById('event-count').textContent = result.event_count || 0;
+            document.getElementById('user-name').textContent = result.user_name || '-';
+            document.getElementById('port-num').textContent = result.port || '-';
+            document.getElementById('cooldown-val').textContent = result.cooldown || '-';
+            document.getElementById('input-name').value = result.user_name || '';
+            document.getElementById('input-cooldown').value = result.cooldown || 60;
+        }
+
+        // ── 加载事件时间线 ──
+        async function loadEvents() {
+            var container = document.getElementById('timeline-container');
+            var result = await callPlugin('get_events', { limit: 30 });
+
+            if (!result || !result.events || !result.events.length) {
+                container.innerHTML =
+                    '<div class="empty-state">' +
+                    '<div class="empty-state-icon">🌙</div>' +
+                    '<div class="empty-state-text">还没有活动记录呢～<br>当你在终端里和 Claude 一起写代码时<br>你的伙伴会在这里记录你的每一步</div>' +
+                    '</div>';
+                return;
+            }
+
+            var html = '<div class="timeline">';
+            result.events.forEach(function(ev) {
+                var type = ev.type || 'general';
+                var icon = getTypeIcon(type);
+                html += '<div class="timeline-item" data-type="' + escapeHtml(type) + '">';
+                html += '<div class="timeline-time">' + escapeHtml(ev.time_str || '') + '</div>';
+                html += '<div class="timeline-summary">' + icon + ' ' + escapeHtml(ev.summary || '') + '</div>';
+                var hasMeta = (ev.tools && ev.tools.length) || (ev.files && ev.files.length);
+                if (hasMeta) {
+                    html += '<div class="timeline-meta">';
+                    if (ev.tools && ev.tools.length) {
+                        ev.tools.forEach(function(t) {
+                            html += '<span class="timeline-tag">🔧 ' + escapeHtml(t) + '</span>';
+                        });
+                    }
+                    if (ev.files && ev.files.length) {
+                        ev.files.slice(0, 3).forEach(function(f) {
+                            var name = f.split(/[\\/]/).pop();
+                            html += '<span class="timeline-tag">📄 ' + escapeHtml(name) + '</span>';
+                        });
+                    }
+                    html += '</div>';
+                }
+                html += '</div>';
+            });
+            html += '</div>';
+            container.innerHTML = html;
+        }
+
+        function getTypeIcon(type) {
+            var icons = {
+                edit: '✏️', create: '📝', debug: '🔍', test: '🧪',
+                git: '📦', search: '🔎', refactor: '🔄', build: '🏗️',
+                deploy: '🚀', task_complete: '🎉', command: '💻', general: '💫'
+            };
+            return icons[type] || '💫';
+        }
+
+        function escapeHtml(t) {
+            var d = document.createElement('div');
+            d.textContent = t || '';
+            return d.innerHTML;
+        }
+
+        // ── 设置操作 ──
+        async function saveUserName() {
+            var name = document.getElementById('input-name').value.trim();
+            if (!name) { showToast(t('ui.toast_username_empty', '请输入用户名')); return; }
+            var r = await callPlugin('set_user_name', { name: name });
+            if (r && r.user_name) {
+                showToast(t('ui.toast_username_updated', '用户名已更新为: ').replace('{name}', r.user_name) + r.user_name);
+                loadStatus();
+            } else {
+                showToast(t('ui.toast_fail', '更新失败'));
+            }
+        }
+
+        async function saveCooldown() {
+            var sec = parseInt(document.getElementById('input-cooldown').value);
+            if (isNaN(sec) || sec < 10) { showToast(t('ui.toast_cooldown_invalid', '冷却时间至少 10 秒')); return; }
+            var r = await callPlugin('set_cooldown', { seconds: sec });
+            if (r && r.cooldown_seconds) {
+                showToast(t('ui.toast_cooldown_updated', '冷却时间已设为 ').replace('{sec}', r.cooldown_seconds) + r.cooldown_seconds + ' 秒');
+                loadStatus();
+            } else {
+                showToast(t('ui.toast_fail', '更新失败'));
+            }
+        }
+
+        async function testPush() {
+            var r = await callPlugin('test_push');
+            if (r && r.sent) {
+                showToast(t('ui.toast_test_sent', '测试消息已发送！检查 NEKO 对话框～'));
+            } else {
+                showToast(t('ui.toast_fail', '更新失败'));
+            }
+        }
+
+        async function clearEvents() {
+            if (!confirm(t('ui.confirm_clear', '确定要清空所有事件日志吗？'))) return;
+            var r = await callPlugin('clear_events');
+            if (r && r.cleared !== undefined) {
+                var fmt = t('ui.toast_events_cleared', '已清空 ').replace('{count}', r.cleared);
+                showToast(fmt + r.cleared + ' 条事件');
+                loadEvents();
+                loadStatus();
+            } else {
+                showToast(t('ui.toast_fail', '更新失败'));
+            }
+        }
+
+        // ── 初始化 ─
+        document.addEventListener('DOMContentLoaded', async function() {
+            await loadLocale();
+            loadStatus();
+            loadEvents();
+            // 每 15 秒自动刷新
+            refreshTimer = setInterval(function() {
+                loadStatus();
+                loadEvents();
+            }, 15000);
+        });
+    </script>
+</body>
+</html>
