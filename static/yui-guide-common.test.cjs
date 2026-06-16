@@ -60,7 +60,7 @@ test('guide helpers are exported from a standalone module and re-exported by com
     assert.match(helpersSource, /function deepFreeze\(value\)/);
     assert.match(helpersSource, /function registerGuide\(config, options\)/);
     assert.match(helpersSource, /function audioFilesForAllLocales\(fileName\)/);
-    assert.match(commonSource, /require\('\.\/tutorial-guide-helpers\.js'\)/);
+    assert.match(commonSource, /require\('\.\.\/core\/guide-helpers\.js'\)/);
     assert.match(commonSource, /tutorialGuideHelpersApi\.deepFreeze\(value\)/);
     assert.match(commonSource, /tutorialGuideHelpersApi\.registerGuide\(config, options\)/);
     assert.match(commonSource, /tutorialGuideHelpersApi\.audioFilesForAllLocales\(fileName\)/);
@@ -76,7 +76,7 @@ test('scoped tutorial resources are exported from a standalone module and re-exp
     assert.equal(typeof common.createScopedTutorialResources, 'function');
     assert.match(scopedSource, /root\.TutorialScopedResources = api/);
     assert.match(scopedSource, /function createScopedTutorialResources\(options\)/);
-    assert.match(commonSource, /require\('\.\/tutorial-scoped-resources\.js'\)/);
+    assert.match(commonSource, /require\('\.\.\/core\/scoped-resources\.js'\)/);
     assert.match(commonSource, /tutorialScopedResourcesApi\.createScopedTutorialResources\(options\)/);
     assert.doesNotMatch(commonSource, /const animationFrames = \[\];/);
 });
@@ -90,7 +90,7 @@ test('tutorial bridge command bus is exported from a standalone module and re-ex
     assert.match(bridgeSource, /root\.TutorialBridgeCommandBus = api/);
     assert.match(bridgeSource, /function createTutorialBridgeCommandBus\(options\)/);
     assert.match(bridgeSource, /DEFAULT_BRIDGE_QUEUE_KEY/);
-    assert.match(commonSource, /require\('\.\/tutorial-bridge-command-bus\.js'\)/);
+    assert.match(commonSource, /require\('\.\.\/core\/bridge-command-bus\.js'\)/);
     assert.match(commonSource, /tutorialBridgeCommandBusApi\.createTutorialBridgeCommandBus\(options\)/);
     assert.doesNotMatch(commonSource, /DEFAULT_BRIDGE_QUEUE_KEY/);
     assert.doesNotMatch(commonSource, /function normalizeBridgeMessage\(message/);
@@ -118,7 +118,7 @@ test('target geometry registry is exported from a standalone module and re-expor
     assert.doesNotMatch(chatAvatarToolsRegistryBlock, /\.composer-icon-button\[data-avatar-tool-id\]/);
     assert.match(chatAvatarToolItemsRegistryBlock, /#composer-tool-popover-compact \.composer-icon-button\[data-avatar-tool-id\]/);
     assert.match(chatAvatarToolItemsRegistryBlock, /#composer-avatar-tool-quickbar \.composer-icon-button\[data-avatar-tool-id\]/);
-    assert.match(commonSource, /require\('\.\/tutorial-target-geometry-registry\.js'\)/);
+    assert.match(commonSource, /require\('\.\.\/core\/target-geometry-registry\.js'\)/);
     assert.match(commonSource, /tutorialTargetGeometryRegistryApi\.createTutorialTargetGeometryRegistry\(options\)/);
     assert.doesNotMatch(commonSource, /DEFAULT_TARGET_GEOMETRY_ENTRIES/);
     assert.doesNotMatch(commonSource, /function cloneTargetGeometryEntry\(entry\)/);
@@ -136,7 +136,7 @@ test('chat window adapter is exported from a standalone module and re-exported b
     assert.match(adapterSource, /function createReactChatTutorialHostAdapter\(options\)/);
     assert.match(adapterSource, /function createChatWindowAdapter\(options\)/);
     assert.match(adapterSource, /rotateExternalizedChatCompactToolWheel/);
-    assert.match(commonSource, /require\('\.\/tutorial-chat-window-adapter\.js'\)/);
+    assert.match(commonSource, /require\('\.\.\/core\/chat-window-adapter\.js'\)/);
     assert.match(commonSource, /tutorialChatWindowAdapterApi\.createReactChatTutorialHostAdapter\(options\)/);
     assert.match(commonSource, /tutorialChatWindowAdapterApi\.createChatWindowAdapter\(options\)/);
     assert.doesNotMatch(commonSource, /function callHost\(methodName, args\)/);
@@ -162,10 +162,10 @@ test('timeline command modules are exported from standalone modules and re-expor
     assert.match(normalizerSource, /root\.TutorialScriptNormalizer = api/);
     assert.match(engineSource, /root\.TutorialTimelineEngine = api/);
     assert.match(visualRuntimeSource, /root\.TutorialVisualRuntime = api/);
-    assert.match(commonSource, /require\('\.\/tutorial-command-registry\.js'\)/);
-    assert.match(commonSource, /require\('\.\/tutorial-script-normalizer\.js'\)/);
-    assert.match(commonSource, /require\('\.\/tutorial-timeline-engine\.js'\)/);
-    assert.match(commonSource, /require\('\.\/tutorial-visual-runtime\.js'\)/);
+    assert.match(commonSource, /require\('\.\.\/core\/command-registry\.js'\)/);
+    assert.match(commonSource, /require\('\.\.\/core\/script-normalizer\.js'\)/);
+    assert.match(commonSource, /require\('\.\.\/core\/timeline-engine\.js'\)/);
+    assert.match(commonSource, /require\('\.\.\/core\/visual-runtime\.js'\)/);
 });
 
 test('ghost cursor can use exact timeline durations without display slowdown', async () => {
@@ -1449,7 +1449,7 @@ test('templates and frontend harness load OperationRegistry before Director', ()
         'utf8'
     );
     const dependencyBlock = harnessSource.split('_YUI_DIRECTOR_DEPENDENCIES = (')[1].split(')', 1)[0];
-    assert.match(dependencyBlock, /"tutorial-resistance-controllers\.js",\s*"tutorial-operation-registry\.js",/);
+    assert.match(dependencyBlock, /"tutorial\/visual\/resistance-controllers\.js",\s*"tutorial\/core\/operation-registry\.js",/);
 });
 
 test('director routes final teardown through performFullCleanup helper', () => {
@@ -1503,7 +1503,7 @@ test('director routes scene and chat stream timers through scoped resources', ()
 
 test('manager routes tutorial listeners and blockers through scoped resources', () => {
     const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
-    const constructorBlock = source.split('    constructor() {')[1].split(
+    const constructorBlock = source.split('class UniversalTutorialManager {')[1].split('    constructor() {')[1].split(
         '        // 刷新延迟常量',
         1
     )[0];

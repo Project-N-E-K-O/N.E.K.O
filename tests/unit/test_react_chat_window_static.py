@@ -162,7 +162,9 @@ def test_goodbye_composer_hidden_survives_surface_mode_switches():
     assert "function syncComposerAttachmentsVisibility(previousVisible)" in source
     assert "return !!(state.composerHidden || state.goodbyeComposerHidden);" in source
     assert "composerHidden: getEffectiveComposerHidden()" in build_render_block
-    assert "state.homeTutorialInteractionLocked || getEffectiveComposerHidden()" in submit_block
+    assert "state.homeTutorialInteractionLocked" in submit_block
+    assert "state.homeTutorialInputLocked" in submit_block
+    assert "getEffectiveComposerHidden()" in submit_block
     assert "syncGoodbyeComposerHidden('chat-surface-mode-change', { localOnly: true });" in set_mode_block
     assert "requestGoodbyeComposerHiddenState('chat-surface-mode-change');" in set_mode_block
     assert "options && options.localOnly && !hasLocalGoodbyeModeSource()" in source
@@ -1005,16 +1007,17 @@ def test_externalized_chat_input_spotlight_uses_global_overlay_only():
 def test_yui_guide_spotlight_state_messages_bypass_cross_channel_dedup():
     script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
 
-    bypass_block = script.split("function shouldBypassYuiGuideMessageDedup(action)", 1)[1].split(
+    bypass_block = script.split("function shouldBypassYuiGuideMessageDedup(action, message)", 1)[1].split(
         "function isMainUIHiddenByModelManager()",
         1,
     )[0]
 
+    assert "message && message.bypassDedup === true" in bypass_block
     assert "action === 'yui_guide_set_chat_spotlight'" in bypass_block
     assert "action === 'yui_guide_set_chat_cursor'" in bypass_block
     assert "action === 'yui_guide_rotate_compact_tool_wheel'" not in bypass_block
-    assert "!shouldBypassYuiGuideMessageDedup(message.action)" in script
-    assert "!shouldBypassYuiGuideMessageDedup(event.data.action)" in script
+    assert "!shouldBypassYuiGuideMessageDedup(message.action, message)" in script
+    assert "!shouldBypassYuiGuideMessageDedup(event.data.action, event.data)" in script
 
 
 def test_externalized_chat_input_spotlight_retries_after_message_layout():
