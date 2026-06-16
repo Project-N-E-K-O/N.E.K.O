@@ -785,15 +785,19 @@ class AppLauncherPlugin(NekoPluginBase):
             self._save_apps_unlocked(apps)
 
             # 路径改变时刷新开机自启命令
+            autostart_msg = ""
             if path_changed and app.get("autostart", False):
-                _set_autostart_windows(app_id, app.get("name", ""), app.get("path", ""), True)
+                success, msg = _set_autostart_windows(app_id, app.get("name", ""), app.get("path", ""), True)
+                if not success:
+                    autostart_msg = f"，但开机自启更新失败: {msg}"
+                    self.logger.warning("Failed to refresh autostart for app {}: {}", app_id, msg)
 
         self.logger.info("App updated: id={} name={}", app_id, app.get("name"))
 
         return Ok({
             "app_id": app_id,
             "name": app.get("name"),
-            "message": f"已更新软件「{app.get('name')}」",
+            "message": f"已更新软件「{app.get('name')}」{autostart_msg}",
         })
 
     @plugin_entry(
