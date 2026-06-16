@@ -238,13 +238,35 @@ def _parse_docx(data: bytes) -> dict[str, Any]:
         budget = _TextBudget()
         parts: list[str] = []
         seen_text_keys: set[str] = set()
-        for name in _docx_text_member_names(archive):
-            xml_bytes = _read_xml_member(archive, name)
-            text = _extract_word_text(xml_bytes)
-            label = _docx_member_label(name)
-            _add_unique_text_part(budget, parts, seen_text_keys, label, text)
+
+        document_xml = _read_xml_member(archive, "word/document.xml")
+        document_root = _parse_xml(document_xml)
+        _add_unique_text_part(
+            budget,
+            parts,
+            seen_text_keys,
+            "Document",
+            _extract_word_text_from_root(document_root),
+        )
+
+        for name in _read_docx_header_footer_names(archive, document_root):
             if budget.truncated:
                 break
+            text = _extract_word_text(_read_xml_member(archive, name))
+            _add_unique_text_part(budget, parts, seen_text_keys, _docx_member_label(name), text)
+
+        note_parts = (
+            ("word/footnotes.xml", "Footnotes", _WORD_NS + "footnoteReference", _WORD_NS + "footnote"),
+            ("word/endnotes.xml", "Endnotes", _WORD_NS + "endnoteReference", _WORD_NS + "endnote"),
+        )
+        for name, label, reference_tag, note_tag in note_parts:
+            if budget.truncated or name not in archive.namelist():
+                continue
+            note_ids = _collect_word_note_reference_ids(document_root, reference_tag)
+            if not note_ids:
+                continue
+            text = _extract_word_notes_text(_read_xml_member(archive, name), note_tag, note_ids)
+            _add_unique_text_part(budget, parts, seen_text_keys, label, text)
         return {
             "content": "\n\n".join(parts),
             "truncated": budget.truncated,
@@ -288,15 +310,20 @@ def _parse_pptx(data: bytes) -> dict[str, Any]:
         parts: list[str] = []
         seen_text_keys: set[str] = set()
         slide_names = _read_pptx_slide_names(archive)
-        parsed_slide_names = slide_names[:MAX_PPTX_SLIDES]
-        slides_truncated = len(slide_names) > MAX_PPTX_SLIDES
+        visible_slide_names = _filter_visible_pptx_slide_names(archive, slide_names)
+        parsed_slide_names = visible_slide_names[:MAX_PPTX_SLIDES]
+        slides_truncated = len(visible_slide_names) > MAX_PPTX_SLIDES
         for index, name in enumerate(parsed_slide_names, start=1):
             xml_bytes = _read_xml_member(archive, name)
             text = _extract_drawing_text(xml_bytes)
             _add_unique_text_part(budget, parts, seen_text_keys, f"Slide {index}", text)
             if budget.truncated:
                 break
-        max_fallback_note_index = len(parsed_slide_names) if slides_truncated else None
+        max_fallback_note_index = (
+            len(parsed_slide_names)
+            if slides_truncated or len(visible_slide_names) < len(slide_names)
+            else None
+        )
         note_names = _read_pptx_note_names(
             archive,
             parsed_slide_names,
@@ -413,15 +440,7 @@ def _xml_declared_encoding(data: bytes) -> str:
     return match.group(1) if match else ""
 
 
-def _docx_text_member_names(archive: zipfile.ZipFile) -> list[str]:
-    names = set(archive.namelist())
-    ordered = ["word/document.xml"]
-    ordered.extend(_read_docx_header_footer_names(archive))
-    ordered.extend(name for name in ("word/footnotes.xml", "word/endnotes.xml") if name in names)
-    return [name for name in ordered if name in names]
-
-
-def _read_docx_header_footer_names(archive: zipfile.ZipFile) -> list[str]:
+def _read_docx_header_footer_names(archive: zipfile.ZipFile, document: ET.Element) -> list[str]:
     names = set(archive.namelist())
     rels_path = "word/_rels/document.xml.rels"
     if rels_path not in names:
@@ -438,7 +457,6 @@ def _read_docx_header_footer_names(archive: zipfile.ZipFile) -> list[str]:
         ):
             rels[rel_id] = _resolve_docx_target(target, "word")
 
-    document = _parse_xml(_read_xml_member(archive, "word/document.xml"))
     ordered: list[str] = []
     for element in document.iter():
         if element.tag not in {_WORD_NS + "headerReference", _WORD_NS + "footerReference"}:
@@ -473,7 +491,10 @@ def _docx_member_label(name: str) -> str:
 
 
 def _extract_word_text(xml_bytes: bytes) -> str:
-    root = _parse_xml(xml_bytes)
+    return _extract_word_text_from_root(_parse_xml(xml_bytes))
+
+
+def _extract_word_text_from_root(root: ET.Element) -> str:
     lines: list[str] = []
 
     def walk(node: ET.Element) -> None:
@@ -490,12 +511,36 @@ def _extract_word_text(xml_bytes: bytes) -> str:
     return "\n".join(lines)
 
 
+def _collect_word_note_reference_ids(root: ET.Element, reference_tag: str) -> set[str]:
+    return {
+        value for value in (
+            element.attrib.get(_WORD_NS + "id", "")
+            for element in root.iter(reference_tag)
+        )
+        if value
+    }
+
+
+def _extract_word_notes_text(xml_bytes: bytes, note_tag: str, note_ids: set[str]) -> str:
+    root = _parse_xml(xml_bytes)
+    lines: list[str] = []
+    for note in root.findall(note_tag):
+        if note.attrib.get(_WORD_NS + "id", "") not in note_ids:
+            continue
+        text = _extract_word_text_from_root(note)
+        if text:
+            lines.append(text)
+    return "\n".join(lines)
+
+
 def _extract_word_paragraph_text(paragraph: ET.Element) -> str:
     chunks: list[str] = []
 
     def walk(node: ET.Element) -> None:
         for child in node:
             if child.tag == _MC_NS + "Fallback":
+                continue
+            if child.tag == _WORD_NS + "r" and _word_run_is_hidden(child):
                 continue
             if child.tag == _WORD_NS + "p":
                 continue
@@ -509,6 +554,11 @@ def _extract_word_paragraph_text(paragraph: ET.Element) -> str:
 
     walk(paragraph)
     return "".join(chunks)
+
+
+def _word_run_is_hidden(run: ET.Element) -> bool:
+    properties = run.find(_WORD_NS + "rPr")
+    return properties is not None and properties.find(_WORD_NS + "vanish") is not None
 
 
 def _add_unique_text_part(
@@ -574,6 +624,19 @@ def _read_pptx_slide_names(archive: zipfile.ZipFile) -> list[str]:
         if path in names:
             ordered.append(path)
     return ordered or fallback
+
+
+def _filter_visible_pptx_slide_names(archive: zipfile.ZipFile, slide_names: list[str]) -> list[str]:
+    visible: list[str] = []
+    for name in slide_names:
+        try:
+            root = _parse_xml(_read_xml_member(archive, name))
+        except DocumentParseError:
+            raise
+        if root.attrib.get("show") == "0":
+            continue
+        visible.append(name)
+    return visible
 
 
 def _read_pptx_note_names(
@@ -648,6 +711,8 @@ def _read_xlsx_sheets(archive: zipfile.ZipFile) -> list[dict[str, str]]:
     if sheets_root is None:
         return sheets
     for sheet in sheets_root.findall(_SPREADSHEET_NS + "sheet"):
+        if str(sheet.attrib.get("state", "")).casefold() in {"hidden", "veryhidden"}:
+            continue
         rel_id = sheet.attrib.get(_OFFICE_REL_NS + "id", "")
         path = rels.get(rel_id)
         if not path:
@@ -677,6 +742,9 @@ def _extract_xlsx_sheet_text(
     try:
         for _event, row in ET.iterparse(io.BytesIO(data), events=("end",)):
             if row.tag != _SPREADSHEET_NS + "row":
+                continue
+            if str(row.attrib.get("hidden", "")).casefold() in {"1", "true"}:
+                row.clear()
                 continue
             values: list[str] = []
             for cell in row.findall(_SPREADSHEET_NS + "c"):

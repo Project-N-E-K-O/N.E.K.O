@@ -91,6 +91,43 @@ def _docx_with_referenced_header_footer() -> bytes:
     })
 
 
+def _docx_with_hidden_run() -> bytes:
+    return _zip_bytes({
+        "[Content_Types].xml": CONTENT_TYPES_XML,
+        "word/document.xml": (
+            f'<w:document xmlns:w="{WORD_NS}"><w:body><w:p>'
+            "<w:r><w:t>Visible text</w:t></w:r>"
+            "<w:r><w:rPr><w:vanish/></w:rPr><w:t>Hidden draft</w:t></w:r>"
+            "</w:p></w:body></w:document>"
+        ),
+    })
+
+
+def _docx_with_referenced_notes() -> bytes:
+    return _zip_bytes({
+        "[Content_Types].xml": CONTENT_TYPES_XML,
+        "word/document.xml": (
+            f'<w:document xmlns:w="{WORD_NS}"><w:body>'
+            "<w:p><w:r><w:t>Body text</w:t></w:r>"
+            '<w:r><w:footnoteReference w:id="2"/></w:r>'
+            '<w:r><w:endnoteReference w:id="3"/></w:r>'
+            "</w:p></w:body></w:document>"
+        ),
+        "word/footnotes.xml": (
+            f'<w:footnotes xmlns:w="{WORD_NS}">'
+            '<w:footnote w:id="2"><w:p><w:r><w:t>Visible footnote</w:t></w:r></w:p></w:footnote>'
+            '<w:footnote w:id="9"><w:p><w:r><w:t>Stale footnote</w:t></w:r></w:p></w:footnote>'
+            "</w:footnotes>"
+        ),
+        "word/endnotes.xml": (
+            f'<w:endnotes xmlns:w="{WORD_NS}">'
+            '<w:endnote w:id="3"><w:p><w:r><w:t>Visible endnote</w:t></w:r></w:p></w:endnote>'
+            '<w:endnote w:id="8"><w:p><w:r><w:t>Stale endnote</w:t></w:r></w:p></w:endnote>'
+            "</w:endnotes>"
+        ),
+    })
+
+
 def _xlsx_bytes(text: str, sheet_count: int = 1, row_count: int = 1) -> bytes:
     sheets = "".join(
         f'<sheet name="Sheet {index}" sheetId="{index}" r:id="rId{index}"/>'
@@ -138,6 +175,32 @@ def _xlsx_sparse_columns_bytes() -> bytes:
         ),
         "xl/_rels/workbook.xml.rels": f'<Relationships xmlns="{PACKAGE_REL_NS}"><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>',
         "xl/worksheets/sheet1.xml": f'<worksheet xmlns="{SPREADSHEET_NS}"><sheetData>{rows}</sheetData></worksheet>',
+    })
+
+
+def _xlsx_with_hidden_sheet_and_row() -> bytes:
+    visible_rows = (
+        '<row r="1"><c r="A1" t="inlineStr"><is><t>Visible row</t></is></c></row>'
+        '<row r="2" hidden="1"><c r="A2" t="inlineStr"><is><t>Hidden row</t></is></c></row>'
+    )
+    hidden_rows = '<row r="1"><c r="A1" t="inlineStr"><is><t>Hidden sheet</t></is></c></row>'
+    return _zip_bytes({
+        "[Content_Types].xml": CONTENT_TYPES_XML,
+        "xl/workbook.xml": (
+            f'<workbook xmlns="{SPREADSHEET_NS}" xmlns:r="{OFFICE_REL_NS}">'
+            "<sheets>"
+            '<sheet name="Visible" sheetId="1" r:id="rId1"/>'
+            '<sheet name="Hidden" sheetId="2" state="hidden" r:id="rId2"/>'
+            "</sheets></workbook>"
+        ),
+        "xl/_rels/workbook.xml.rels": (
+            f'<Relationships xmlns="{PACKAGE_REL_NS}">'
+            '<Relationship Id="rId1" Target="worksheets/sheet1.xml"/>'
+            '<Relationship Id="rId2" Target="worksheets/sheet2.xml"/>'
+            "</Relationships>"
+        ),
+        "xl/worksheets/sheet1.xml": f'<worksheet xmlns="{SPREADSHEET_NS}"><sheetData>{visible_rows}</sheetData></worksheet>',
+        "xl/worksheets/sheet2.xml": f'<worksheet xmlns="{SPREADSHEET_NS}"><sheetData>{hidden_rows}</sheetData></worksheet>',
     })
 
 
@@ -222,6 +285,34 @@ def _pptx_with_notes_on_skipped_slide(slide_count: int) -> bytes:
         f'<p:notes xmlns:p="p" xmlns:a="{DRAWING_NS}"><a:t>Skipped slide notes</a:t></p:notes>'
     )
     return _zip_bytes(members)
+
+
+def _pptx_with_hidden_slide() -> bytes:
+    notes_rel_type = f"{OFFICE_REL_NS}/notesSlide"
+    return _zip_bytes({
+        "[Content_Types].xml": CONTENT_TYPES_XML,
+        "ppt/presentation.xml": (
+            '<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+            f'xmlns:r="{OFFICE_REL_NS}"><p:sldIdLst>'
+            '<p:sldId id="256" r:id="rId1"/>'
+            '<p:sldId id="257" r:id="rId2"/>'
+            "</p:sldIdLst></p:presentation>"
+        ),
+        "ppt/_rels/presentation.xml.rels": (
+            f'<Relationships xmlns="{PACKAGE_REL_NS}">'
+            '<Relationship Id="rId1" Target="slides/slide1.xml"/>'
+            '<Relationship Id="rId2" Target="slides/slide2.xml"/>'
+            "</Relationships>"
+        ),
+        "ppt/slides/slide1.xml": f'<p:sld xmlns:p="p" xmlns:a="{DRAWING_NS}"><a:t>Visible slide</a:t></p:sld>',
+        "ppt/slides/slide2.xml": f'<p:sld xmlns:p="p" xmlns:a="{DRAWING_NS}" show="0"><a:t>Hidden slide</a:t></p:sld>',
+        "ppt/slides/_rels/slide2.xml.rels": (
+            f'<Relationships xmlns="{PACKAGE_REL_NS}">'
+            f'<Relationship Id="rIdNotes" Type="{notes_rel_type}" Target="../notesSlides/notesSlide2.xml"/>'
+            "</Relationships>"
+        ),
+        "ppt/notesSlides/notesSlide2.xml": f'<p:notes xmlns:p="p" xmlns:a="{DRAWING_NS}"><a:t>Hidden slide notes</a:t></p:notes>',
+    })
 
 
 def _reordered_pptx_bytes() -> bytes:
@@ -420,6 +511,24 @@ def test_docx_headers_and_footers_follow_document_relationships():
     assert "Visible header" in parsed["content"]
     assert "Visible footer" in parsed["content"]
     assert "Stale hidden header" not in parsed["content"]
+
+
+@pytest.mark.unit
+def test_docx_skips_hidden_runs():
+    parsed = parse_document("hidden-run.docx", "", _docx_with_hidden_run())
+
+    assert "Visible text" in parsed["content"]
+    assert "Hidden draft" not in parsed["content"]
+
+
+@pytest.mark.unit
+def test_docx_notes_follow_document_references():
+    parsed = parse_document("referenced-notes.docx", "", _docx_with_referenced_notes())
+
+    assert "Visible footnote" in parsed["content"]
+    assert "Visible endnote" in parsed["content"]
+    assert "Stale footnote" not in parsed["content"]
+    assert "Stale endnote" not in parsed["content"]
 
 
 @pytest.mark.unit
@@ -699,6 +808,15 @@ def test_xlsx_preserves_sparse_cell_positions():
 
 
 @pytest.mark.unit
+def test_xlsx_skips_hidden_sheets_and_rows():
+    parsed = parse_document("hidden.xlsx", "", _xlsx_with_hidden_sheet_and_row())
+
+    assert "Visible row" in parsed["content"]
+    assert "Hidden row" not in parsed["content"]
+    assert "Hidden sheet" not in parsed["content"]
+
+
+@pytest.mark.unit
 def test_xlsx_rows_are_not_materialized_before_limit():
     source = PARSER_SOURCE_PATH.read_text(encoding="utf-8")
 
@@ -728,6 +846,15 @@ def test_pptx_notes_are_limited_to_parsed_slides():
     assert "Slide body 40" in parsed["content"]
     assert "Slide body 41" not in parsed["content"]
     assert "Skipped slide notes" not in parsed["content"]
+
+
+@pytest.mark.unit
+def test_pptx_skips_hidden_slides_and_their_notes():
+    parsed = parse_document("hidden-slide.pptx", "", _pptx_with_hidden_slide())
+
+    assert "Visible slide" in parsed["content"]
+    assert "Hidden slide" not in parsed["content"]
+    assert "Hidden slide notes" not in parsed["content"]
 
 
 @pytest.mark.unit
