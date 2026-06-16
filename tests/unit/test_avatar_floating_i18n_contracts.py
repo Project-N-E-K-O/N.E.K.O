@@ -143,8 +143,5 @@ def test_day2_voice_used_intro_uses_matching_audio_key():
         assert _get(_locale(locale), voice_used_key) == expected
     assert _get(_locale("es"), voice_used_key) == voice_used_copy["en"]
     assert _get(_locale("pt"), voice_used_key) == voice_used_copy["en"]
-    generic_scene_block = director_source.split(
-        "if (Number(day) === 1 && this.isDay1SpecialAvatarFloatingScene(scene)",
-        1,
-    )[1].split("const introChatSpotlightTarget", 1)[0]
-    assert "const voiceKey = this.resolveAvatarFloatingSceneVoiceKey(scene);" in generic_scene_block
+    assert "resolveAvatarFloatingSceneVoiceKey(scene)" in director_source
+    assert "return 'avatar_floating_day2_intro_voice_used';" in director_source

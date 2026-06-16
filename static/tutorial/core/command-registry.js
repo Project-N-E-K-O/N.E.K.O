@@ -61,7 +61,11 @@
             if (typeof handler !== 'function') {
                 return Promise.resolve(null);
             }
-            return Promise.resolve(handler(normalizedEvent, context || {}));
+            try {
+                return Promise.resolve(handler(normalizedEvent, context || {}));
+            } catch (error) {
+                return Promise.reject(error);
+            }
         }
     }
 

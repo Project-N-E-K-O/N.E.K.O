@@ -94,7 +94,7 @@
 
 ## 3. 目标架构
 
-```
+```text
 TutorialDirector
   ├─ TutorialTimelineEngine
   ├─ TutorialScriptNormalizer

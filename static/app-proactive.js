@@ -164,6 +164,28 @@
     }
     mod.isNewUserIcebreakerPeriodActive = isNewUserIcebreakerPeriodActive;
 
+    function getNewUserIcebreakerRetryDelayMs() {
+        let remainingMs = 0;
+        const store = readNewUserIcebreakerStore();
+        const days = store && typeof store.days === 'object' ? store.days : null;
+        if (days) {
+            for (let day = 1; day <= 7; day += 1) {
+                const entry = days[String(day)];
+                if (!entry || typeof entry !== 'object') continue;
+                const latest = Math.max(
+                    Number(entry.triggeredAt || 0),
+                    Number(entry.updatedAt || 0),
+                    Number(entry.completedAt || 0),
+                    Number(entry.endedAt || 0)
+                );
+                if (Number.isFinite(latest) && latest > 0) {
+                    remainingMs = Math.max(remainingMs, NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS - (Date.now() - latest));
+                }
+            }
+        }
+        return Math.max(5000, Math.min(remainingMs || 5000, 30000));
+    }
+
     try {
         if (typeof BroadcastChannel !== 'undefined' && PROACTIVE_SELF_RANK !== 99) {
             _proactiveLeaderChannel = new BroadcastChannel(PROACTIVE_LEADER_CHANNEL);
@@ -586,6 +608,12 @@
         }
 
         // 前置条件检查：如果不满足触发条件，不启动调度器并重置退避
+        if (isNewUserIcebreakerPeriodActive()) {
+            console.log('[Proactive] new-user icebreaker active, retry schedule later');
+            S.proactiveChatBackoffLevel = 0;
+            S.proactiveChatTimer = setTimeout(scheduleProactiveChat, getNewUserIcebreakerRetryDelayMs());
+            return;
+        }
         if (!canTriggerProactively()) {
             console.log('主动搭话前置条件不满足，不启动调度器');
             S.proactiveChatBackoffLevel = 0;

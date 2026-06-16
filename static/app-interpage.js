@@ -2356,37 +2356,70 @@
                     }
                     case 'yui_guide_set_chat_buttons_disabled': {
                         if (!isStandaloneChatPage() || !document.body) break;
+                        if (!isYuiGuideCommandForCurrentLanlan(event.data)) break;
                         applyYuiGuideChatLockState(event.data.disabled !== false);
                         break;
                     }
                     case 'yui_guide_set_chat_input_locked': {
                         if (!isStandaloneChatPage() || !document.body) break;
+                        if (!isYuiGuideCommandForCurrentLanlan(event.data)) break;
                         applyYuiGuideChatInputLocked(event.data.locked === true, event.data.reason || '');
                         break;
                     }
                     case 'yui_guide_set_chat_spotlight': {
                         if (!isStandaloneChatPage() || !document.body) break;
+                        if (!isYuiGuideCommandForCurrentLanlan(event.data)) break;
                         applyYuiGuideChatSpotlight(event.data.kind || '');
+                        break;
+                    }
+                    case 'yui_guide_set_chat_cursor':
+                    case 'yui_guide_drag_chat_cursor':
+                    case 'yui_guide_arc_chat_cursor': {
+                        if (!isStandaloneChatPage() || !document.body) break;
+                        if (!isYuiGuideCommandForCurrentLanlan(event.data)) break;
+                        relayYuiGuideChatCommand(event.data);
                         break;
                     }
                     case 'yui_guide_set_avatar_tool_menu_open': {
                         if (!isStandaloneChatPage() || !document.body) break;
+                        if (!isYuiGuideCommandForCurrentLanlan(event.data)) break;
                         applyYuiGuideAvatarToolMenuOpen(event.data.open === true, event.data.reason || '');
+                        break;
+                    }
+                    case 'yui_guide_click_avatar_tool_button': {
+                        if (!isStandaloneChatPage() || !document.body) break;
+                        if (!isYuiGuideCommandForCurrentLanlan(event.data)) break;
+                        relayYuiGuideChatCommand(event.data);
+                        break;
+                    }
+                    case 'yui_guide_set_compact_history_open': {
+                        if (!isStandaloneChatPage() || !document.body) break;
+                        if (!isYuiGuideCommandForCurrentLanlan(event.data)) break;
+                        applyYuiGuideCompactHistoryOpen(event.data.open === true, event.data.reason || '');
                         break;
                     }
                     case 'yui_guide_set_compact_tool_fan_open': {
                         if (!isStandaloneChatPage() || !document.body) break;
+                        if (!isYuiGuideCommandForCurrentLanlan(event.data)) break;
                         applyYuiGuideCompactToolFanOpen(event.data.open === true, event.data.reason || '');
                         break;
                     }
                     case 'yui_guide_rotate_compact_tool_wheel': {
                         if (!isStandaloneChatPage() || !document.body) break;
+                        if (!isYuiGuideCommandForCurrentLanlan(event.data)) break;
                         applyYuiGuideCompactToolWheelRotate(event.data);
                         break;
                     }
                     case 'yui_guide_set_compact_tool_wheel_index': {
                         if (!isStandaloneChatPage() || !document.body) break;
+                        if (!isYuiGuideCommandForCurrentLanlan(event.data)) break;
                         applyYuiGuideCompactToolWheelIndex(event.data);
+                        break;
+                    }
+                    case 'yui_guide_clear_chat_messages': {
+                        if (!isStandaloneChatPage() || !document.body) break;
+                        if (!isYuiGuideCommandForCurrentLanlan(event.data)) break;
+                        applyYuiGuideClearChatMessages();
                         break;
                     }
                     case 'yui_guide_chat_ready': {
@@ -2543,6 +2576,22 @@
         return window.reactChatWindowHost || null;
     }
 
+    function isYuiGuideCommandForCurrentLanlan(data) {
+        if (!data || !data.lanlan_name) return true;
+        var currentName = getCurrentLanlanName();
+        return !!currentName && data.lanlan_name === currentName;
+    }
+
+    function relayYuiGuideChatCommand(message) {
+        var detail = Object.assign({}, message || {});
+        try {
+            window.dispatchEvent(new CustomEvent('neko:tutorial-overlay-relay', { detail: detail }));
+        } catch (_) {}
+        try {
+            window.postMessage({ __nekoTutorialOverlayRelay: true, payload: detail }, '*');
+        } catch (_) {}
+    }
+
     function applyYuiGuideChatInputLocked(locked, reason) {
         var host = getReactChatWindowHost();
         if (host && typeof host.setHomeTutorialInputLocked === 'function') {
@@ -2554,6 +2603,13 @@
         var host = getReactChatWindowHost();
         if (host && typeof host.setAvatarToolMenuOpen === 'function') {
             host.setAvatarToolMenuOpen(open === true, reason || 'externalized-chat-guide');
+        }
+    }
+
+    function applyYuiGuideCompactHistoryOpen(open, reason) {
+        var host = getReactChatWindowHost();
+        if (host && typeof host.setCompactHistoryOpen === 'function') {
+            host.setCompactHistoryOpen(open === true, reason || 'externalized-chat-guide');
         }
     }
 
@@ -2577,6 +2633,13 @@
         var host = getReactChatWindowHost();
         if (!host || typeof host.setCompactToolWheelIndex !== 'function') return;
         host.setCompactToolWheelIndex(payload && payload.index, payload && payload.reason);
+    }
+
+    function applyYuiGuideClearChatMessages() {
+        var host = getReactChatWindowHost();
+        if (host && typeof host.clearGuideMessages === 'function') {
+            host.clearGuideMessages();
+        }
     }
 
     function isStandaloneChatPage() {

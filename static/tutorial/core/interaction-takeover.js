@@ -258,15 +258,21 @@
                         if (tutorialRunId && !outgoingMessage.tutorialRunId) {
                             outgoingMessage.tutorialRunId = tutorialRunId;
                         }
+                        let delivered = false;
                         if (broadcastChannel && typeof broadcastChannel.postMessage === 'function') {
                             try {
                                 broadcastChannel.postMessage(outgoingMessage);
+                                delivered = true;
                             } catch (_) {}
                         }
                         if (nativeRelay) {
                             try {
                                 nativeRelay.relayToChat(outgoingMessage);
+                                delivered = true;
                             } catch (_) {}
+                        }
+                        if (!delivered) {
+                            throw new Error('external_chat_command_delivery_failed');
                         }
                     }
                 };

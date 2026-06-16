@@ -3271,6 +3271,9 @@
     }
     function _consumeGreetingCheckForNewUserIcebreaker() {
         if (!isNewUserIcebreakerBlockingGreeting()) return false;
+        S._greetingCheckDeferredForNewUserIcebreaker = true;
+        S._greetingCheckDeferredIsSwitch = !!S._greetingCheckIsSwitch;
+        S._greetingCheckDeferredReason = S._greetingCheckReason || 'new-user-icebreaker';
         sendHomeTutorialState('greeting-check-consumed-by-icebreaker');
         S._greetingCheckPending = false;
         S._greetingCheckIsSwitch = false;
@@ -3411,6 +3414,15 @@
         }
         sendHomeTutorialState(reason);
         if (detail.active === false) {
+            if (S._greetingCheckDeferredForNewUserIcebreaker && !S._greetingCheckPending) {
+                _markGreetingCheckPending(
+                    !!S._greetingCheckDeferredIsSwitch,
+                    S._greetingCheckDeferredReason || reason || 'new-user-icebreaker-restored'
+                );
+            }
+            S._greetingCheckDeferredForNewUserIcebreaker = false;
+            S._greetingCheckDeferredIsSwitch = false;
+            S._greetingCheckDeferredReason = '';
             _sendGreetingCheckIfReady();
         }
     });

@@ -343,11 +343,12 @@
             }
             await director.ensureCharacterSettingsSidePanelVisible();
             const targets = director.getSettingsPeekTargets();
+            const p = typeof director.resolveModelPrefix === 'function' ? director.resolveModelPrefix() : 'live2d';
             director.setSceneExtraSpotlights([
                 targets.characterMenu,
                 director.getCharacterSettingsSidePanel(),
-                director.resolveElement('#${p}-menu-api-keys'),
-                director.resolveElement('#${p}-menu-memory')
+                director.resolveElement(`#${p}-menu-api-keys`),
+                director.resolveElement(`#${p}-menu-memory`)
             ].filter(Boolean));
             return true;
         }
@@ -378,11 +379,12 @@
 
         async runOpenScreenPopup(primaryTarget) {
             const director = this.director;
+            const p = typeof director.resolveModelPrefix === 'function' ? director.resolveModelPrefix() : 'live2d';
             if (primaryTarget && typeof primaryTarget.click === 'function') {
                 primaryTarget.click();
             }
             await director.waitForElement(() => {
-                const popup = director.resolveElement('#${p}-popup-screen');
+                const popup = director.resolveElement(`#${p}-popup-screen`);
                 return popup && director.isElementVisible(popup) && popup.style.display === 'flex' ? popup : null;
             }, 1800);
             return true;
@@ -390,11 +392,12 @@
 
         async runOpenMicPopup(primaryTarget) {
             const director = this.director;
+            const p = typeof director.resolveModelPrefix === 'function' ? director.resolveModelPrefix() : 'live2d';
             if (primaryTarget && typeof primaryTarget.click === 'function') {
                 primaryTarget.click();
             }
             await director.waitForElement(() => {
-                const popup = director.resolveElement('#${p}-popup-mic');
+                const popup = director.resolveElement(`#${p}-popup-mic`);
                 return popup && director.isElementVisible(popup) && popup.style.display === 'flex' ? popup : null;
             }, 1800);
             return true;

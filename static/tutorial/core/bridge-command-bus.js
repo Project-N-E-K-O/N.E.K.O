@@ -207,14 +207,15 @@
                 };
             }
             const previousHandler = channel.onmessage;
-            channel.onmessage = function handleOnMessage(event) {
+            const handleOnMessage = function handleOnMessage(event) {
                 if (typeof previousHandler === 'function') {
                     previousHandler.call(channel, event);
                 }
                 listener(event);
             };
+            channel.onmessage = handleOnMessage;
             return function unsubscribeBridgeOnMessage() {
-                if (channel.onmessage === listener) {
+                if (channel.onmessage === handleOnMessage) {
                     channel.onmessage = previousHandler || null;
                 }
             };

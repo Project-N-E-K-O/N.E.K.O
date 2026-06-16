@@ -73,6 +73,61 @@ test('TimelineEngine triggers commands by timeline time and waits for blocking c
     ]);
 });
 
+test('TimelineEngine does not dispatch following commands until blocking command resolves', async () => {
+    let currentTime = 0;
+    let resolveBlocking;
+    let resolveStarted;
+    const startedPromise = new Promise((resolve) => {
+        resolveStarted = resolve;
+    });
+    const calls = [];
+    const registry = new CommandRegistry({
+        handlers: {
+            'operation.run': async () => {
+                calls.push(['operation.run', currentTime, 'start']);
+                resolveStarted();
+                await new Promise((resolve) => {
+                    resolveBlocking = resolve;
+                });
+                calls.push(['operation.run', currentTime, 'end']);
+            },
+            'cursor.move': () => {
+                calls.push(['cursor.move', currentTime]);
+            }
+        }
+    });
+    const engine = new TimelineEngine({
+        commandRegistry: registry,
+        now: () => currentTime,
+        wait: async (delayMs) => {
+            currentTime += delayMs;
+        }
+    });
+
+    const playPromise = engine.playScene({
+        id: 'scene-blocking',
+        timeline: [
+            { id: 'operation', at: 10, command: 'operation.run', blocking: true },
+            { id: 'cursor', at: 20, command: 'cursor.move' }
+        ]
+    });
+
+    await startedPromise;
+    assert.deepEqual(calls, [
+        ['operation.run', 10, 'start']
+    ]);
+
+    resolveBlocking();
+    const result = await playPromise;
+
+    assert.equal(result.completed, true);
+    assert.deepEqual(calls, [
+        ['operation.run', 10, 'start'],
+        ['operation.run', 10, 'end'],
+        ['cursor.move', 20]
+    ]);
+});
+
 test('TimelineEngine dispatches zero-time prelude commands before starting audio', async () => {
     let currentTime = 0;
     const calls = [];

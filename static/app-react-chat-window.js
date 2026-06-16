@@ -3938,6 +3938,13 @@
         });
     }
 
+    function setCompactHistoryOpen(open, reason) {
+        return setTutorialChatRequest('compactHistoryOpenRequest', {
+            open: open === true,
+            reason: typeof reason === 'string' ? reason : ''
+        });
+    }
+
     function rotateCompactToolWheel(direction, stepCount, options) {
         var normalizedDirection = direction === -1 ? -1 : 1;
         var normalizedStepCount = Number.isFinite(stepCount)
@@ -4043,6 +4050,17 @@
         state.choicePrompt = null;
         state._launchedMiniGameSessionIds = Object.create(null);
         renderWindow();
+    }
+
+    function clearGuideMessages() {
+        var beforeLength = state.messages.length;
+        state.messages = state.messages.filter(function (message) {
+            return !message || typeof message.id !== 'string' || message.id.indexOf('yui-guide-') !== 0;
+        });
+        if (state.messages.length !== beforeLength) {
+            renderWindow();
+        }
+        return state.messages.length !== beforeLength;
     }
 
     function getStateSnapshot() {
@@ -6453,12 +6471,14 @@
         setHomeTutorialInputLocked: setHomeTutorialInputLocked,
         setAvatarToolMenuOpen: setAvatarToolMenuOpen,
         setCompactToolFanOpen: setCompactToolFanOpen,
+        setCompactHistoryOpen: setCompactHistoryOpen,
         rotateCompactToolWheel: rotateCompactToolWheel,
         setCompactToolWheelIndex: setCompactToolWheelIndex,
         deactivateToolCursor: deactivateToolCursor,
         appendMessage: appendMessage,
         updateMessage: updateMessage,
         removeMessage: removeMessage,
+        clearGuideMessages: clearGuideMessages,
         clearMessages: clearMessages,
         getState: getStateSnapshot,
         setOnMessageAction: function (handler) {

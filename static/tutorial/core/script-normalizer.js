@@ -156,7 +156,7 @@
                     target: cursorTarget,
                     effectDurationMs: numberOrDefault(scene.cursorClickDurationMs, 420)
                 };
-                if (scene.operation) {
+                if (scene.operation && !isGalgameWheelRotationOperation(scene)) {
                     clickEvent.blocking = true;
                     clickEvent.onStart = [{
                         id: sceneId + ':operation',
@@ -235,16 +235,21 @@
             ? normalizeExistingTimeline(normalizedScene)
             : normalizeLegacyTimeline(normalizedScene, options);
 
+        const completion = Object.assign({
+            mode: normalizedScene.waitForUserAction ? 'user-action' : 'audio-and-blocking-commands',
+            afterSceneDelayMs: Number.isFinite(normalizedScene.afterSceneDelayMs)
+                ? Math.max(0, Math.floor(normalizedScene.afterSceneDelayMs))
+                : 420
+        }, normalizedScene.completion || {});
+        completion.afterSceneDelayMs = Number.isFinite(completion.afterSceneDelayMs)
+            ? Math.max(0, Math.floor(completion.afterSceneDelayMs))
+            : 420;
+
         return {
             id: typeof normalizedScene.id === 'string' ? normalizedScene.id : '',
             audio,
             timeline,
-            completion: Object.assign({
-                mode: normalizedScene.waitForUserAction ? 'user-action' : 'audio-and-blocking-commands',
-                afterSceneDelayMs: Number.isFinite(normalizedScene.afterSceneDelayMs)
-                    ? Math.max(0, Math.floor(normalizedScene.afterSceneDelayMs))
-                    : 420
-            }, normalizedScene.completion || {}),
+            completion,
             cleanup: Object.assign({}, normalizedScene.cleanup || {}),
             legacyScene: clonePlain(normalizedScene)
         };

@@ -179,7 +179,6 @@
             const runToken = createRunToken(normalizedScene.id || '', ++this.nextRunId);
             this.activeRunToken = runToken;
             const context = this.createContext(normalizedScene, runToken, extraContext);
-            const blockingPromises = [];
             const triggered = [];
             const pausedDurationRef = { value: 0 };
             const events = this.prepareEvents(normalizedScene);
@@ -213,13 +212,17 @@
                 }
                 const resultPromise = this.dispatchEvent(event, context, triggered);
                 if (event.blocking === true) {
-                    blockingPromises.push(Promise.resolve(resultPromise));
+                    await Promise.resolve(resultPromise);
+                    if (this.isRunCancelled(runToken)) {
+                        return {
+                            completed: false,
+                            cancelled: true,
+                            triggered
+                        };
+                    }
                 }
             }
 
-            if (blockingPromises.length > 0) {
-                await Promise.all(blockingPromises);
-            }
             if (this.audioRuntime && typeof this.audioRuntime.waitForEnd === 'function') {
                 await Promise.resolve(this.audioRuntime.waitForEnd(normalizedScene.audio || {}));
             }
