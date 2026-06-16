@@ -36,7 +36,7 @@ from utils.aiohttp_proxy_utils import aiohttp_session_kwargs_for_url
 from utils.config_manager import _as_bool, get_config_manager
 from utils.gptsovits_config import (
     gsv_ws_url_from_http_base,
-    is_local_http_url,
+    is_valid_http_url,
     normalize_gsv_api_url,
     redact_url_for_log,
 )
@@ -3633,11 +3633,8 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
     tts_config = cm.get_model_api_config('tts_custom')
     base_url = normalize_gsv_api_url(tts_config.get('base_url'))
 
-    if not is_local_http_url(base_url):
-        message = (
-            "GPT-SoVITS URL 配置无效：需要 http(s)://localhost 或 "
-            "http(s)://127.0.0.1 这类本地服务地址"
-        )
+    if not is_valid_http_url(base_url):
+        message = "GPT-SoVITS URL 配置无效：需要 http(s):// 的有效地址（本地或远程均可）"
         logger.error("[GPT-SoVITS v3] %s，当前: %s", message, redact_url_for_log(base_url))
         _enqueue_error(response_queue, {
             "code": "TTS_CONFIG_INVALID",
@@ -3649,7 +3646,7 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
 
     WS_URL = gsv_ws_url_from_http_base(base_url)
     logger.info(
-        "[GPT-SoVITS v3] 使用本地服务: base=%s ws=%s",
+        "[GPT-SoVITS v3] 使用服务: base=%s ws=%s",
         redact_url_for_log(base_url),
         redact_url_for_log(WS_URL),
     )

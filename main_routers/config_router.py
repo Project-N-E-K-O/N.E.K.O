@@ -1092,8 +1092,7 @@ async def get_api_providers_config():
 async def list_gptsovits_voices(request: Request):
     """Proxy a request to the GPT-SoVITS v3 API to fetch the available voice config list."""
     import aiohttp
-    from urllib.parse import urlparse
-    import ipaddress
+    from utils.gptsovits_config import is_valid_http_url
     try:
         data = await request.json()
         api_url = data.get("api_url", "").rstrip("/")
@@ -1101,17 +1100,10 @@ async def list_gptsovits_voices(request: Request):
         if not api_url:
             return JSONResponse({"success": False, "error": "TTS_GPT_SOVITS_URL_REQUIRED", "code": "TTS_GPT_SOVITS_URL_REQUIRED"}, status_code=400)
 
-        # SSRF 防护: 限制 api_url 只能是 localhost
-        parsed = urlparse(api_url)
-        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        # URL 校验：本地或远程均可（按维护者 SSRF posture 决定，对齐 vLLM-Omni）；
+        # 仅挡非 http(s) / 空 host，不再限制 loopback。
+        if not is_valid_http_url(api_url):
             return JSONResponse({"success": False, "error": "TTS_GPT_SOVITS_URL_INVALID", "code": "TTS_GPT_SOVITS_URL_INVALID"}, status_code=400)
-        host = parsed.hostname
-        try:
-            if not ipaddress.ip_address(host).is_loopback:
-                return JSONResponse({"success": False, "error": "TTS_CUSTOM_URL_LOCALHOST_ONLY", "code": "TTS_CUSTOM_URL_LOCALHOST_ONLY"}, status_code=400)
-        except ValueError:
-            if host not in ("localhost",):
-                return JSONResponse({"success": False, "error": "TTS_CUSTOM_URL_LOCALHOST_ONLY", "code": "TTS_CUSTOM_URL_LOCALHOST_ONLY"}, status_code=400)
 
         endpoint = f"{api_url}/api/v3/voices"
         async with aiohttp.ClientSession() as session:
@@ -1145,8 +1137,7 @@ async def test_gptsovits_connectivity(request: Request):
     """
     import websockets as _ws
     import json as _json
-    from urllib.parse import urlparse
-    import ipaddress
+    from utils.gptsovits_config import is_valid_http_url
 
     try:
         data = await request.json()
@@ -1155,17 +1146,9 @@ async def test_gptsovits_connectivity(request: Request):
         # i18n test text
         test_text = data.get("test_text", "") or "连通性测试"
 
-        # SSRF protection: localhost only
-        parsed = urlparse(api_url)
-        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        # URL 校验：本地或远程均可（SSRF posture 同 vLLM-Omni）；仅挡非 http(s) / 空 host。
+        if not is_valid_http_url(api_url):
             return {"success": False, "error": "URL 格式无效", "error_code": "missing_params"}
-        host = parsed.hostname
-        try:
-            if not ipaddress.ip_address(host).is_loopback:
-                return {"success": False, "error": "GPT-SoVITS 仅支持本地服务", "error_code": "connection_refused"}
-        except ValueError:
-            if host not in ("localhost",):
-                return {"success": False, "error": "GPT-SoVITS 仅支持本地服务", "error_code": "connection_refused"}
 
         # Convert HTTP URL to WebSocket URL
         if api_url.startswith("http://"):

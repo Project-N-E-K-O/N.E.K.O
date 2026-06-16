@@ -55,6 +55,18 @@ def is_local_http_url(url: str | None) -> bool:
         return False
 
 
+def is_valid_http_url(url: str | None) -> bool:
+    """True for any well-formed ``http(s)://host`` URL — local OR remote.
+
+    GPT-SoVITS may be self-hosted on a remote box, so (per the maintainer's
+    explicit SSRF posture decision, matching vLLM-Omni) the host is no longer
+    restricted to loopback; only the scheme and a non-empty host are validated to
+    reject garbage / non-HTTP schemes.
+    """
+    parsed = urlparse(str(url or "").strip())
+    return parsed.scheme in ("http", "https") and bool(parsed.hostname)
+
+
 def gsv_ws_url_from_http_base(base_url: str) -> str:
     parsed = urlparse(base_url)
     if parsed.scheme == "http":
