@@ -445,6 +445,18 @@ function getVoiceCloneProviderKeyField(provider) {
     return entry ? entry[1] : '';
 }
 
+// MiMo 的可用凭据可能在普通 key 或 Token Plan key 任一字段——若用户只开了 Token Plan，
+// 凭据只在 assistApiKeyMimoTokenPlan 里，单看 assistApiKeyMimo 会误判 MiMo 无 key 不能克隆。
+const VOICE_CLONE_MIMO_TOKEN_PLAN_KEY_FIELD = 'assistApiKeyMimoTokenPlan';
+
+function cfgHasCloneProviderKey(cfg, provider) {
+    if (!cfg || typeof cfg !== 'object') return false;
+    const fieldName = getVoiceCloneProviderKeyField(provider);
+    if (fieldName && cfg[fieldName]) return true;
+    if (provider === 'mimo' && cfg[VOICE_CLONE_MIMO_TOKEN_PLAN_KEY_FIELD]) return true;
+    return false;
+}
+
 function getVoiceCloneProviderRegistryKey(provider) {
     return VOICE_CLONE_PROVIDER_REGISTRY_KEYS[provider] || provider;
 }
@@ -494,9 +506,7 @@ async function ensureVoiceCloneApiConfigState(options = {}) {
 
 function hasVoiceCloneProviderApi(provider) {
     if (voiceCloneApiConfigState.isLocalTts) return true;
-    const cfg = voiceCloneApiConfigState.cfg;
-    const fieldName = getVoiceCloneProviderKeyField(provider);
-    return !!(cfg && fieldName && cfg[fieldName]);
+    return cfgHasCloneProviderKey(voiceCloneApiConfigState.cfg, provider);
 }
 
 async function checkVoiceCloneMainlandChinaUser() {
@@ -843,8 +853,8 @@ async function initVoiceCloneProviderRestrictions() {
 
 function getPreferredCloneProviderFromConfig(cfg) {
     if (!cfg || typeof cfg !== 'object') return '';
-    for (const [provider, fieldName] of VOICE_CLONE_PROVIDER_KEY_FIELDS) {
-        if (cfg[fieldName] && !isVoiceCloneProviderRestricted(provider)) {
+    for (const [provider] of VOICE_CLONE_PROVIDER_KEY_FIELDS) {
+        if (cfgHasCloneProviderKey(cfg, provider) && !isVoiceCloneProviderRestricted(provider)) {
             return provider;
         }
     }
@@ -854,8 +864,8 @@ function getPreferredCloneProviderFromConfig(cfg) {
 function hasUsableCloneApiFromConfig(cfg, isLocalTts) {
     if (isLocalTts) return true;
     if (!cfg || typeof cfg !== 'object') return false;
-    return VOICE_CLONE_PROVIDER_KEY_FIELDS.some(([provider, fieldName]) => (
-        !!cfg[fieldName] && !isVoiceCloneProviderRestricted(provider)
+    return VOICE_CLONE_PROVIDER_KEY_FIELDS.some(([provider]) => (
+        cfgHasCloneProviderKey(cfg, provider) && !isVoiceCloneProviderRestricted(provider)
     ));
 }
 

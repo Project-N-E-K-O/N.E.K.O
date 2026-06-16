@@ -2609,65 +2609,6 @@ class ConfigManager:
             logger.error("保存音色配置失败: %s", e)
             raise
 
-    # ── Voice-clone reference samples (on disk, not in voice_storage.json) ──────
-    # Some clone providers have no server-side cloned voice id and must re-send the
-    # reference audio on every synthesis (MiMo: ``audio.voice`` data URI). The
-    # sample (a few hundred KB) is persisted as a file here, and only its filename
-    # is stored in voice_meta, so voice_storage.json stays small and fast to load
-    # (it is read on every /voices call and the validate/cleanup chain).
-
-    def get_voice_clone_sample_dir(self):
-        """Directory holding persisted voice-clone reference samples (created lazily)."""
-        sample_dir = self.config_dir / "voice_clone_samples"
-        try:
-            sample_dir.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            logger.error("创建语音克隆样本目录失败: %s", e)
-        return sample_dir
-
-    def save_voice_clone_sample(self, filename: str, audio_bytes: bytes) -> str:
-        """Persist a reference sample and return the stored filename.
-
-        ``filename`` must be a bare name (no path separators); callers build it
-        from the provider + voice_id. Returns the filename actually stored."""
-        safe_name = os.path.basename(str(filename or '').strip())
-        if not safe_name:
-            raise ValueError("voice clone 样本文件名不能为空")
-        path = self.get_voice_clone_sample_dir() / safe_name
-        with open(path, 'wb') as f:
-            f.write(audio_bytes)
-        return safe_name
-
-    def load_voice_clone_sample(self, filename: str) -> bytes | None:
-        """Read a persisted reference sample by filename, or None when missing."""
-        safe_name = os.path.basename(str(filename or '').strip())
-        if not safe_name:
-            return None
-        path = self.get_voice_clone_sample_dir() / safe_name
-        try:
-            with open(path, 'rb') as f:
-                return f.read()
-        except FileNotFoundError:
-            return None
-        except Exception as e:
-            logger.warning("读取语音克隆样本失败 (%s): %s", safe_name, e)
-            return None
-
-    def delete_voice_clone_sample(self, filename: str) -> bool:
-        """Delete a persisted reference sample by filename. Idempotent."""
-        safe_name = os.path.basename(str(filename or '').strip())
-        if not safe_name:
-            return False
-        path = self.get_voice_clone_sample_dir() / safe_name
-        try:
-            path.unlink()
-            return True
-        except FileNotFoundError:
-            return False
-        except Exception as e:
-            logger.warning("删除语音克隆样本失败 (%s): %s", safe_name, e)
-            return False
-
     @staticmethod
     def is_legacy_cosyvoice_id(voice_id: str) -> bool:
         """CosyVoice v2 / v3 cloned voice IDs became invalid with the CosyVoice 3.5 upgrade."""
@@ -3078,6 +3019,15 @@ class ConfigManager:
                         vdata['provider'] = 'mimo'
                     result[vid] = vdata
 
+        if for_listing:
+            # UI 试听列表不需要 MiMo 克隆的参考样本 base64（可达 MB）——剥掉，避免把大 blob
+            # 推给前端。dispatch / preview 走 for_listing=False，仍拿到完整 voice_meta。
+            result = {
+                vid: ({k: v for k, v in vdata.items() if k != 'clone_sample_b64'}
+                      if isinstance(vdata, dict) and 'clone_sample_b64' in vdata else vdata)
+                for vid, vdata in result.items()
+            }
+
         return result
 
     def save_voice_for_current_api(self, voice_id, voice_data):
@@ -3192,15 +3142,10 @@ class ConfigManager:
                 or storage_key.startswith('__MIMO__')
                 or storage_key.startswith('__COSYVOICE_INTL__')
             ) and voice_id in voice_storage.get(storage_key, {}):
-                removed = voice_storage[storage_key].pop(voice_id, None)
-                # 先持久化元数据删除，再清本地样本——顺序很关键：若 save 抛错（cloudsave
-                # write fence / 磁盘错误），样本仍在，voice_storage.json 也仍指向它，状态一致；
-                # 反序（先删样本再 save）一旦 save 失败就留下指向缺失样本的元数据，合成退化 dummy。
+                # 克隆身份（含 MiMo 的样本 base64）都在 voice_data 里，删除 entry 随之消失，
+                # 无旁路本地文件需清理（对偶 MiniMax/ElevenLabs）。
+                del voice_storage[storage_key][voice_id]
                 self.save_voice_storage(voice_storage)
-                # MiMo 克隆把参考样本存在本地（非 voice_storage.json）；删音色时一并清理，
-                # 避免样本文件孤儿堆积。
-                if isinstance(removed, dict) and removed.get('clone_sample_file'):
-                    self.delete_voice_clone_sample(removed.get('clone_sample_file'))
                 return True
 
         # 再检查当前阿里国内/国际 API Key 的原始分区

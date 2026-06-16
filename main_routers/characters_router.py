@@ -4471,15 +4471,61 @@ async def get_voice_preview(
                 'code': 'PRESET_VOICE_PREVIEW_UNSUPPORTED',
             }, status_code=400)
 
-        # MiMo 克隆音色（provider=='mimo'）的试听暂不支持：与上方 MiMo 预制音色试听同步留作
-        # 后续（见 #1848 注释「真试听留作后续」）。显式拦下，避免落到下方 CosyVoice/DashScope
-        # 通用分支拿着 mimo-clone-* 的 id 误合成（Codex review #1851）。
+        # MiMo 克隆音色（provider=='mimo'）试听：读 voice_meta 里的参考样本 base64，用
+        # voiceclone 模型一次性合成预览句（对偶 MiniMax 的克隆试听；避免落到下方
+        # CosyVoice/DashScope 通用分支拿着 mimo-clone-* 的 id 误合成）。
         if provider == 'mimo':
-            return JSONResponse({
-                'success': False,
-                'error': f'MiMo 音色暂不支持试听: {voice_id}',
-                'code': 'MIMO_VOICE_PREVIEW_UNSUPPORTED',
-            }, status_code=400)
+            sample_b64 = (voice_data or {}).get('clone_sample_b64') or ''
+            if not sample_b64:
+                return JSONResponse({
+                    'success': False,
+                    'error': f'MiMo 克隆音色缺少参考样本，无法试听: {voice_id}',
+                    'code': 'MIMO_VOICE_SAMPLE_MISSING',
+                }, status_code=400)
+            mimo_api_key = _config_manager.get_tts_api_key('mimo')
+            if not mimo_api_key:
+                return JSONResponse({
+                    'success': False,
+                    'error': 'MIMO_API_KEY_MISSING',
+                    'code': 'MIMO_API_KEY_MISSING',
+                }, status_code=400)
+            # base_url 与 dispatch 同源：assistApi=mimo（Token Plan 唯一场景）用 OPENROUTER_URL，
+            # 否则用 voice_meta 存的 mimo_base_url，缺省默认端点。
+            if str(preview_core_config.get('assistApi') or '').strip().lower() == 'mimo':
+                mimo_base_url = (preview_core_config.get('OPENROUTER_URL') or '').strip()
+            else:
+                mimo_base_url = str((voice_data or {}).get('mimo_base_url') or '').strip()
+            try:
+                sample_bytes = base64.b64decode(sample_b64)
+            except ValueError:  # binascii.Error 是 ValueError 子类
+                return JSONResponse({
+                    'success': False,
+                    'error': f'MiMo 克隆音色样本损坏，无法试听: {voice_id}',
+                    'code': 'MIMO_VOICE_SAMPLE_CORRUPT',
+                }, status_code=400)
+            try:
+                mimo_client = MimoVoiceCloneClient(api_key=mimo_api_key, base_url=mimo_base_url or None)
+                audio_data = await mimo_client.synthesize_preview(
+                    sample_bytes,
+                    (voice_data or {}).get('clone_sample_mime') or 'audio/wav',
+                    text=text,
+                )
+                audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+                logger.info(f"MiMo 克隆音色 {voice_id} 预览音频生成成功，大小: {len(audio_data)} 字节")
+                return {'success': True, 'audio': audio_base64, 'mime_type': 'audio/wav'}
+            except MimoVoiceCloneError as e:
+                logger.error(f"MiMo 克隆音色 {voice_id} 预览失败: {e}")
+                return JSONResponse({
+                    'success': False,
+                    'error': f'MiMo 预览生成失败: {str(e)}',
+                    'code': 'MIMO_VOICE_PREVIEW_FAILED',
+                }, status_code=502)
+            except Exception as e:
+                logger.error(f"MiMo 克隆音色 {voice_id} 预览异常: {e}")
+                return JSONResponse({
+                    'success': False,
+                    'error': f'MiMo 预览生成失败: {str(e)}',
+                }, status_code=500)
 
         native_preview_provider = _get_active_native_preview_provider(_config_manager, voice_id)
         if native_preview_provider:
@@ -5344,8 +5390,11 @@ async def voice_clone(
             }
 
         elif provider == 'mimo':
-            # MiMo 没有远端注册：校验样本可用后，把参考音频存到本地，克隆身份即这段样本。
-            # voice_id 本地生成（以音频 MD5 为种子，保证唯一且与 MD5 去重一致）。
+            # MiMo 没有远端注册接口（已核实官方文档：voiceclone 只能每次内联参考音频，无
+            # create-voice / 远端 voice_id）。所以严格对偶 MiniMax 的做法是：把克隆身份整段
+            # 落进 voice_storage.json 的 voice_meta——MiniMax 那里存的是远端 voice_id，这里存
+            # 参考音频本身（base64）。不另起本地文件存储，voice_meta 随 voice_storage.json 一起
+            # 云同步（与 MiniMax 同构）。校验样本可用后再落库。
             client = MimoVoiceCloneClient(api_key=api_key, base_url=base_url or None)
             sample_bytes = normalized_buffer.getvalue()
             await client.validate_sample(sample_bytes, mime_type='audio/wav')
@@ -5355,10 +5404,6 @@ async def voice_clone(
             #  - 含 ref_language：去重带 ref_language，若 id 不带则「同音频换语言」绕过去重却又
             #    生成同名 id，覆盖掉前一条 voice_data（CodeRabbit review #1851）。
             voice_id = f'mimo-clone-{api_key[-8:]}-{ref_language}-{audio_md5[:12]}'
-            sample_filename = f'{voice_id}.wav'
-            sample_filename = await asyncio.to_thread(
-                _config_manager.save_voice_clone_sample, sample_filename, sample_bytes
-            )
             voice_data = {
                 'voice_id': voice_id,
                 'prefix': prefix,
@@ -5366,10 +5411,13 @@ async def voice_clone(
                 'ref_language': ref_language,
                 'provider': 'mimo',
                 'source': 'clone',
-                'clone_sample_file': sample_filename,
+                # 克隆身份：参考音频 base64（对偶 MiniMax 的远端 voice_id），dispatch/preview
+                # 读它内联进 voiceclone 请求。存进 voice_meta 即随 voice_storage.json 云同步。
+                'clone_sample_b64': base64.b64encode(sample_bytes).decode('ascii'),
                 'clone_sample_mime': 'audio/wav',
-                # 不冻结 base_url：dispatch（_mimo_resolve）按当前配置同源解析端点，
-                # 避免用户切换 Token Plan 后存储的端点与新 key 不匹配。
+                # base_url 存进 voice_meta（对偶 minimax_base_url）；dispatch 在 assistApi=mimo
+                # （Token Plan 的唯一场景）时仍按当前配置重解析，保证 key/端点配套。
+                'mimo_base_url': base_url or '',
                 'created_at': datetime.now().isoformat()
             }
 
@@ -5431,16 +5479,8 @@ async def voice_clone(
         logger.info(f"{provider_label} voice_id 已保存到音色库: {voice_id}")
     except Exception as save_error:
         logger.error(f"保存 {provider_label} voice_id 到音色库失败: {save_error}")
-        # MiMo 在元数据保存前已把参考样本落盘（其它 provider 无本地文件）；元数据保存失败时
-        # voice_storage.json 不会有指向它的条目，删除流程也找不到它——这里顺手清掉孤儿样本。
-        # 清理是 best-effort：delete_voice_clone_sample 已吞异常返 False，这里再兜一层，确保
-        # 即使清理失败也不会把下方 200 partial-success（local_save_failed）变成 500。
-        orphan_sample = voice_data.get('clone_sample_file') if isinstance(voice_data, dict) else None
-        if orphan_sample:
-            try:
-                _config_manager.delete_voice_clone_sample(orphan_sample)
-            except Exception as cleanup_error:
-                logger.warning("清理 MiMo 孤儿样本失败: file=%s err=%s", orphan_sample, cleanup_error)
+        # 克隆身份（含 MiMo 的样本 base64）都在 voice_data 里、随这次 save 一起落库，没有
+        # 任何旁路本地文件——save 失败不会留下孤儿，无需额外清理（对偶其它 provider）。
         return JSONResponse({
             'voice_id': voice_id,
             'message': f'{provider_label}音色注册成功，但本地保存失败',

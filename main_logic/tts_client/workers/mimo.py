@@ -229,49 +229,44 @@ def _mimo_resolve(ctx):
             "MiMo TTS 已选中但 MiMo API Key 缺失，改用 dummy TTS worker 避免复用主 TTS Key")
         return dummy_tts_worker, None, None
 
-    # base_url 与 api key 必须**同源**地随当前配置解析（不能把克隆时的 base_url 冻进
-    # voice_meta）：get_tts_api_key('mimo') 在 assistApi=mimo+Token Plan 时返回 token-plan
-    # key，而 get_core_config 已把 OPENROUTER_URL 改写成对应的 token-plan 端点
-    # （config_manager:4043）。故 base_url 一律按「assistApi==mimo 时取 OPENROUTER_URL，
-    # 否则默认 xiaomimimo」解析，保证 key 与端点配套（preset/clone 共用此规则）。
     assist_api_type = str(cc.get('assistApi') or '').strip().lower()
-    mimo_base_url = cc.get('OPENROUTER_URL') if assist_api_type == 'mimo' else None
+    # 配置端点：assistApi=mimo 时（Token Plan 的唯一场景）get_core_config 已把 OPENROUTER_URL
+    # 解析成对应端点（普通 / token-plan-*），且 get_tts_api_key('mimo') 返回配套 key——必须用
+    # 它，保证 key 与端点同源；否则用默认 xiaomimimo。
+    config_base_url = cc.get('OPENROUTER_URL') if assist_api_type == 'mimo' else None
 
     # 克隆音色优先：用户挑了某个具体的 MiMo 克隆音色（voice_meta.provider=='mimo'），即使
     # 同时把 MiMo 配成了默认 TTS 也应当尊重这个更具体的选择，走 voiceclone 内联参考音频。
     vm = ctx.voice_meta
     if _mimo_voice_meta_is_clone(vm):
-        clone_voice = _load_mimo_clone_data_uri(ctx.cm, vm)
+        clone_voice = _build_mimo_clone_data_uri(vm)
         if not clone_voice:
             logger.warning(
                 "MiMo 克隆音色 %s 缺少参考音频样本，改用 dummy TTS worker", ctx.voice_id)
             return dummy_tts_worker, None, None
+        # base_url：assistApi=mimo 用配置端点（token-plan 同源）；否则用 voice_meta 里存的
+        # mimo_base_url（对偶 minimax_base_url），缺省回落默认。
+        clone_base_url = config_base_url or (vm or {}).get('mimo_base_url') or None
         return (
-            partial(mimo_tts_worker, base_url=mimo_base_url, clone_voice=clone_voice),
+            partial(mimo_tts_worker, base_url=clone_base_url, clone_voice=clone_voice),
             mimo_api_key,
             'mimo',
         )
 
     # 配置选中：MiMo 作为默认 TTS，走预制音色目录。
-    return partial(mimo_tts_worker, base_url=mimo_base_url), mimo_api_key, 'mimo'
+    return partial(mimo_tts_worker, base_url=config_base_url), mimo_api_key, 'mimo'
 
-def _load_mimo_clone_data_uri(cm, voice_meta) -> str | None:
-    """Read a MiMo clone voice's stored reference sample → a ``data:`` URI for
-    inlining into the voiceclone request, or None when the sample is missing.
+def _build_mimo_clone_data_uri(voice_meta) -> str | None:
+    """Build the ``data:`` reference-audio URI for a MiMo clone from its
+    voice_meta (the clone identity lives entirely in voice_storage.json — the
+    sample base64 is stored inline, dual to MiniMax's remote voice_id), or None
+    when absent.
 
-    Bound into the (same-process) worker thread by ``_mimo_resolve``, so loading
-    the few-hundred-KB sample here once per worker start is cheap.
+    The stored value is already base64, so this only frames it as a data URI —
+    no decode/re-encode. Bound into the (same-process) worker thread.
     """
-    sample_file = str((voice_meta or {}).get('clone_sample_file') or '').strip()
-    if not sample_file:
+    b64 = str((voice_meta or {}).get('clone_sample_b64') or '').strip()
+    if not b64:
         return None
-    try:
-        from utils.mimo_tts_voices import mimo_voice_clone_data_uri
-        audio_bytes = cm.load_voice_clone_sample(sample_file)
-        if not audio_bytes:
-            return None
-        mime_type = str((voice_meta or {}).get('clone_sample_mime') or 'audio/wav')
-        return mimo_voice_clone_data_uri(audio_bytes, mime_type)
-    except Exception:
-        logger.warning("加载 MiMo 克隆参考样本失败 (file=%s)", sample_file, exc_info=True)
-        return None
+    mime = str((voice_meta or {}).get('clone_sample_mime') or '').strip() or 'audio/wav'
+    return f"data:{mime};base64,{b64}"

@@ -133,6 +133,20 @@ def test_mimo_worker_clone_uses_voiceclone_model_and_inlines_sample(monkeypatch)
 
 # ── dispatch: a MiMo clone voice routes to the voiceclone worker ──────────────
 
+def _mimo_clone_meta(sample: bytes, **extra):
+    """A MiMo clone voice_meta with the reference sample stored as base64 (the
+    B-storage model: clone identity lives entirely in voice_storage.json, dual to
+    MiniMax's remote voice_id)."""
+    meta = {
+        "provider": "mimo",
+        "source": "clone",
+        "clone_sample_b64": base64.b64encode(sample).decode("ascii"),
+        "clone_sample_mime": "audio/wav",
+    }
+    meta.update(extra)
+    return meta
+
+
 @pytest.mark.unit
 def test_get_tts_worker_routes_mimo_clone_voice(monkeypatch):
     sample = (np.arange(256, dtype=np.int16)).tobytes()
@@ -149,18 +163,7 @@ def test_get_tts_worker_routes_mimo_clone_voice(monkeypatch):
             return "mimo-key"
 
         def get_voices_for_current_api(self, for_listing=False):
-            return {
-                "mimo-clone-abc": {
-                    "provider": "mimo",
-                    "source": "clone",
-                    "clone_sample_file": "mimo-key-mimo-clone-abc.wav",
-                    "clone_sample_mime": "audio/wav",
-                }
-            }
-
-        def load_voice_clone_sample(self, filename):
-            assert filename == "mimo-key-mimo-clone-abc.wav"
-            return sample
+            return {"mimo-clone-abc": _mimo_clone_meta(sample)}
 
     monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM())
 
@@ -173,6 +176,7 @@ def test_get_tts_worker_routes_mimo_clone_voice(monkeypatch):
     assert provider_key == "mimo"
     assert api_key == "mimo-key"
     assert worker.keywords["base_url"] is None
+    # the stored value is already base64 → the data URI just frames it (no re-encode)
     expected_uri = "data:audio/wav;base64," + base64.b64encode(sample).decode("ascii")
     assert worker.keywords["clone_voice"] == expected_uri
 
@@ -200,11 +204,8 @@ def test_get_tts_worker_mimo_clone_uses_token_plan_base_url(monkeypatch):
             return "mimo-token-plan-key"
 
         def get_voices_for_current_api(self, for_listing=False):
-            return {"mimo-clone-tp": {"provider": "mimo", "source": "clone",
-                                      "clone_sample_file": "s.wav", "clone_sample_mime": "audio/wav"}}
-
-        def load_voice_clone_sample(self, filename):
-            return sample
+            # stale stored base_url must be ignored in favor of the fresh token-plan endpoint
+            return {"mimo-clone-tp": _mimo_clone_meta(sample, mimo_base_url="https://api.xiaomimimo.com/v1")}
 
     monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM())
 
@@ -215,6 +216,33 @@ def test_get_tts_worker_mimo_clone_uses_token_plan_base_url(monkeypatch):
     assert api_key == "mimo-token-plan-key"
     assert worker.keywords["base_url"] == "https://token-plan-cn.xiaomimimo.com/v1"
     assert worker.keywords["clone_voice"].startswith("data:audio/wav;base64,")
+
+
+@pytest.mark.unit
+def test_get_tts_worker_mimo_clone_uses_stored_base_url_when_not_assist(monkeypatch):
+    """When MiMo isn't the assist API, the clone path uses the base_url stored in
+    voice_meta (dual to minimax_base_url)."""
+    sample = (np.arange(32, dtype=np.int16)).tobytes()
+
+    class _CM:
+        def get_core_config(self):
+            return {"assistApi": "qwen", "TTS_PROVIDER": "", "GPTSOVITS_ENABLED": False}
+
+        def get_model_api_config(self, model_type):
+            return {"is_custom": False}
+
+        def get_tts_api_key(self, provider):
+            return "mimo-key"
+
+        def get_voices_for_current_api(self, for_listing=False):
+            return {"mimo-clone-s": _mimo_clone_meta(sample, mimo_base_url="https://custom.mimo.example/v1")}
+
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM())
+    worker, _, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen", has_custom_voice=True, voice_id="mimo-clone-s",
+    )
+    assert provider_key == "mimo"
+    assert worker.keywords["base_url"] == "https://custom.mimo.example/v1"
 
 
 @pytest.mark.unit
@@ -230,10 +258,7 @@ def test_get_tts_worker_mimo_clone_missing_sample_falls_back_to_dummy(monkeypatc
             return "mimo-key"
 
         def get_voices_for_current_api(self, for_listing=False):
-            return {"mimo-clone-x": {"provider": "mimo", "source": "clone", "clone_sample_file": "gone.wav"}}
-
-        def load_voice_clone_sample(self, filename):
-            return None  # sample file missing
+            return {"mimo-clone-x": {"provider": "mimo", "source": "clone"}}  # no sample b64
 
     monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM())
 
@@ -302,26 +327,62 @@ def test_infer_provider_from_mimo_storage_key():
     assert cm._infer_provider_from_storage_key("__MIMO__abcd1234") == "mimo"
 
 
-# ── config_manager: reference-sample persistence roundtrip ────────────────────
+# ── config_manager: heavy sample base64 is stripped from the /voices listing ──
 
 @pytest.mark.unit
-def test_voice_clone_sample_roundtrip(monkeypatch, tmp_path):
+def test_get_voices_strips_sample_b64_for_listing(monkeypatch):
+    """dispatch (for_listing=False) needs the sample base64; the UI list
+    (for_listing=True) must not ship the MB-sized blob to the frontend."""
     cm = get_config_manager()
-    monkeypatch.setattr(cm, "config_dir", tmp_path)
-    stored = cm.save_voice_clone_sample("mimo-key-voice.wav", b"reference-bytes")
-    assert stored == "mimo-key-voice.wav"
-    assert cm.load_voice_clone_sample(stored) == b"reference-bytes"
-    assert cm.delete_voice_clone_sample(stored) is True
-    assert cm.load_voice_clone_sample(stored) is None
-    # idempotent delete
-    assert cm.delete_voice_clone_sample(stored) is False
+    monkeypatch.setattr(cm, "get_tts_api_key", lambda p: "mimokey12345678" if p == "mimo" else None)
+    monkeypatch.setattr(cm, "load_voice_storage", lambda: {
+        "__MIMO__12345678": {"mimo-clone-x": {"source": "clone", "clone_sample_b64": "QUJDRA==", "clone_sample_mime": "audio/wav"}}
+    })
+    monkeypatch.setattr(cm, "get_model_api_config", lambda t: {})
+    monkeypatch.setattr(cm, "get_core_config", lambda: {})
+    monkeypatch.setattr(cm, "_is_local_tts_storage_active", lambda *a, **k: False)
+    monkeypatch.setattr(cm, "is_free_voice", lambda: False)
+    monkeypatch.setattr(cm, "_get_cosyvoice_storage_keys", lambda: [])
+    monkeypatch.setattr(cm, "_get_minimax_storage_keys", lambda: [])
+    monkeypatch.setattr(cm, "_get_elevenlabs_storage_keys", lambda: [])
 
+    full = cm.get_voices_for_current_api(for_listing=False)
+    assert full["mimo-clone-x"]["clone_sample_b64"] == "QUJDRA=="
+
+    listing = cm.get_voices_for_current_api(for_listing=True)
+    assert "clone_sample_b64" not in listing["mimo-clone-x"]
+    # other metadata survives
+    assert listing["mimo-clone-x"]["provider"] == "mimo"
+    assert listing["mimo-clone-x"]["clone_sample_mime"] == "audio/wav"
+
+
+# ── MiMo preview client (dual to MiniMax's synthesize_preview) ────────────────
 
 @pytest.mark.unit
-def test_voice_clone_sample_rejects_path_traversal(monkeypatch, tmp_path):
-    cm = get_config_manager()
-    monkeypatch.setattr(cm, "config_dir", tmp_path)
-    # basename strips any directory components, keeping writes inside the sample dir
-    stored = cm.save_voice_clone_sample("../escape.wav", b"x")
-    assert "/" not in stored and "\\" not in stored
-    assert (tmp_path / "voice_clone_samples" / "escape.wav").exists()
+async def test_mimo_synthesize_preview_returns_audio(monkeypatch):
+    from utils.voice_clone import MimoVoiceCloneClient
+
+    pcm = (np.arange(128, dtype=np.int16)).tobytes()
+
+    class _FakeTransport(httpx.AsyncBaseTransport):
+        def __init__(self):
+            self.body = None
+
+        async def handle_async_request(self, request):
+            self.body = json.loads(request.content)
+            return httpx.Response(200, json={
+                "choices": [{"message": {"audio": {"data": base64.b64encode(pcm).decode("ascii")}}}]
+            })
+
+    transport = _FakeTransport()
+    original = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: original(*a, **{**k, "transport": transport}))
+
+    client = MimoVoiceCloneClient(api_key="mimo-key")
+    audio = await client.synthesize_preview(b"sample-bytes", "audio/wav", text="测试")
+    assert audio == pcm
+    # preview is a non-stream wav request against the voiceclone model
+    assert transport.body["model"] == "mimo-v2.5-tts-voiceclone"
+    assert transport.body["stream"] is False
+    assert transport.body["audio"]["format"] == "wav"
+    assert transport.body["audio"]["voice"].startswith("data:audio/wav;base64,")
