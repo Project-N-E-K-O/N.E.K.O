@@ -963,14 +963,18 @@ opacity: 0.95 !important;
 
 .mimo-assist-select-row {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
+    flex-wrap: wrap;
     gap: 12px;
-    max-width: 760px;
+    width: 100%;
+    max-width: 600px;
 }
 
 .mimo-assist-select-row .api-provider-dropdown,
 .mimo-assist-select-row select {
-    flex: 1 1 420px;
+    flex: 0 0 100%;
+    width: 100%;
+    max-width: 600px;
 }
 
 .mimo-token-plan-toggle {

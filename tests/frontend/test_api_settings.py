@@ -375,6 +375,45 @@ def test_mimo_token_plan_locks_regular_mimo_key(mock_page: Page, running_server:
 
 
 @pytest.mark.frontend
+def test_mimo_token_plan_toggle_wraps_below_assist_provider(mock_page: Page, running_server: str):
+    """The Assist API provider dropdown should keep the Core API width when MiMo controls appear."""
+    mock_page.set_viewport_size({"width": 1280, "height": 900})
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#assistApiSelect option[value='mimo']", state="attached", timeout=10000)
+
+    mock_page.select_option("#assistApiSelect", "mimo")
+    expect(mock_page.locator("#mimoTokenPlanToggleRow")).to_be_visible(timeout=5000)
+
+    metrics = mock_page.evaluate("""
+        () => {
+            const getRect = (selector) => {
+                const el = document.querySelector(selector);
+                const rect = el.getBoundingClientRect();
+                return {
+                    top: rect.top,
+                    bottom: rect.bottom,
+                    width: rect.width,
+                };
+            };
+
+            return {
+                core: getRect("#coreApiSelect-dropdown-trigger"),
+                assist: getRect("#assistApiSelect-dropdown-trigger"),
+                row: getRect(".mimo-assist-select-row"),
+                toggle: getRect("#mimoTokenPlanToggleRow"),
+            };
+        }
+    """)
+
+    assert abs(metrics["assist"]["width"] - metrics["core"]["width"]) <= 1
+    assert metrics["assist"]["width"] <= 600
+    assert metrics["row"]["width"] <= metrics["core"]["width"] + 1
+    assert metrics["toggle"]["top"] >= metrics["assist"]["bottom"] - 1
+
+
+@pytest.mark.frontend
 def test_mimo_token_plan_connectivity_tries_endpoint_candidates(mock_page: Page, running_server: str):
     """Token Plan connectivity should try regional MiMo endpoints until one succeeds."""
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
