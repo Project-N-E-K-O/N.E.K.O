@@ -367,7 +367,7 @@ def _pptx_with_notes_on_skipped_slide(slide_count: int) -> bytes:
     return _zip_bytes(members)
 
 
-def _pptx_with_hidden_slide() -> bytes:
+def _pptx_with_hidden_slide(show_value: str = "0") -> bytes:
     notes_rel_type = f"{OFFICE_REL_NS}/notesSlide"
     return _zip_bytes({
         "[Content_Types].xml": CONTENT_TYPES_XML,
@@ -385,7 +385,7 @@ def _pptx_with_hidden_slide() -> bytes:
             "</Relationships>"
         ),
         "ppt/slides/slide1.xml": f'<p:sld xmlns:p="p" xmlns:a="{DRAWING_NS}"><a:t>Visible slide</a:t></p:sld>',
-        "ppt/slides/slide2.xml": f'<p:sld xmlns:p="p" xmlns:a="{DRAWING_NS}" show="0"><a:t>Hidden slide</a:t></p:sld>',
+        "ppt/slides/slide2.xml": f'<p:sld xmlns:p="p" xmlns:a="{DRAWING_NS}" show="{show_value}"><a:t>Hidden slide</a:t></p:sld>',
         "ppt/slides/_rels/slide2.xml.rels": (
             f'<Relationships xmlns="{PACKAGE_REL_NS}">'
             f'<Relationship Id="rIdNotes" Type="{notes_rel_type}" Target="../notesSlides/notesSlide2.xml"/>'
@@ -1007,6 +1007,15 @@ def test_pptx_notes_are_limited_to_parsed_slides():
 @pytest.mark.unit
 def test_pptx_skips_hidden_slides_and_their_notes():
     parsed = parse_document("hidden-slide.pptx", "", _pptx_with_hidden_slide())
+
+    assert "Visible slide" in parsed["content"]
+    assert "Hidden slide" not in parsed["content"]
+    assert "Hidden slide notes" not in parsed["content"]
+
+
+@pytest.mark.unit
+def test_pptx_skips_false_valued_hidden_slides_and_their_notes():
+    parsed = parse_document("hidden-slide-false.pptx", "", _pptx_with_hidden_slide("false"))
 
     assert "Visible slide" in parsed["content"]
     assert "Hidden slide" not in parsed["content"]

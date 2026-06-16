@@ -3151,13 +3151,14 @@ async def test_stream_text_replaces_full_prompt_history_after_memory_callback(mo
 
     await client.stream_text(
         "full document prompt",
+        system_prefix="callback result",
         input_transcript_callback=transcript_callback,
         history_replacement_text="summary only",
     )
 
     assert transcripts == ["full document prompt"]
     assert isinstance(client._conversation_history[1], HumanMessage)
-    assert client._conversation_history[1].content == "summary only"
+    assert client._conversation_history[1].content == "callback result\n\nsummary only"
     assert "full document prompt" not in [
         getattr(message, "content", "") for message in client._conversation_history
     ]

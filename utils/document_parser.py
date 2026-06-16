@@ -576,6 +576,10 @@ def _word_run_is_hidden(run: ET.Element) -> bool:
     return value is None or value.strip().casefold() not in {"0", "false", "off", "no"}
 
 
+def _office_bool_is_false(value: object) -> bool:
+    return str(value or "").strip().casefold() in {"0", "false", "off", "no"}
+
+
 def _add_unique_text_part(
     budget: _TextBudget,
     parts: list[str],
@@ -653,7 +657,7 @@ def _filter_visible_pptx_slide_names(
             root = _parse_xml(_read_xml_member(archive, name))
         except DocumentParseError:
             raise
-        if root.attrib.get("show") == "0":
+        if _office_bool_is_false(root.attrib.get("show")):
             continue
         visible.append(name)
         if limit is not None and len(visible) >= limit:

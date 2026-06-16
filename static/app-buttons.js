@@ -2714,7 +2714,8 @@
                             S.socket.send(JSON.stringify({
                                 action: 'stream_data',
                                 data: extraUrl,
-                                input_type: 'avatar_drop_image'
+                                input_type: 'avatar_drop_image',
+                                request_id: requestId
                             }));
                         }
 

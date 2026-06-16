@@ -1802,6 +1802,8 @@ class OmniOfflineClient:
             if history_replacement_text is not None
             else ""
         )
+        if history_replacement_text and _prefix_clean:
+            history_replacement_text = f"{_prefix_clean}\n\n{history_replacement_text}"
         if has_images:
             self._evict_old_images()
 
