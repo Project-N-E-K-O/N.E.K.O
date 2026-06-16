@@ -44,7 +44,11 @@
         interrupt_resist_light_1: audioFilesForKey('interrupt_resist_light_1'),
         interrupt_resist_light_3: audioFilesForKey('interrupt_resist_light_3'),
         interrupt_angry_exit: audioFilesForKey('interrupt_angry_exit'),
-        takeover_return_control: audioFilesForKey('takeover_return_control')
+        takeover_return_control: audioFilesForKey('takeover_return_control'),
+        day1_capsule_drag_hint: audioFilesForKey('day1_capsule_drag_hint'),
+        day1_history_handle: audioFilesForKey('day1_history_handle'),
+        day1_screen_entry: audioFilesForKey('day1_screen_entry'),
+        day1_screen_entry_invite: audioFilesForKey('day1_screen_entry_invite')
     });
 
     registerGuide(deepFreeze({
