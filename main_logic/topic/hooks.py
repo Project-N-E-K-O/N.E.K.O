@@ -65,108 +65,15 @@ _HEADERS = {
 }
 
 _LABELS = {
-    "zh": {"material": "深话题 hook", "recent": "刚聊到的点", "memory": "可以顺手接的话题", "thread": "刚才没聊完的点"},
-    "zh-CN": {"material": "深话题 hook", "recent": "刚聊到的点", "memory": "可以顺手接的话题", "thread": "刚才没聊完的点"},
-    "zh-TW": {"material": "深話題 hook", "recent": "剛聊到的點", "memory": "可以順手接的話題", "thread": "剛才沒聊完的點"},
-    "en": {"material": "Deep topic hook", "recent": "Recent topic", "memory": "Optional memory hook", "thread": "Open thread"},
-    "ja": {"material": "深め話題 hook", "recent": "さっき触れた点", "memory": "自然に拾える話題", "thread": "未完了の話題"},
-    "ko": {"material": "깊은 화제 hook", "recent": "방금 나온 점", "memory": "가볍게 이어갈 화제", "thread": "아직 끝나지 않은 점"},
-    "es": {"material": "Hook de tema profundo", "recent": "Tema reciente", "memory": "Tema opcional de memoria", "thread": "Hilo abierto"},
-    "pt": {"material": "Hook de tema profundo", "recent": "Tema recente", "memory": "Gancho opcional de memória", "thread": "Ponto ainda em aberto"},
-    "ru": {"material": "Hook для глубокой темы", "recent": "Недавняя тема", "memory": "Тема из памяти", "thread": "Незавершенная мысль"},
-}
-
-_MATERIAL_FIELD_LABELS = {
-    "zh": {
-        "interest": "关系点",
-        "hook": "切入",
-        "opening": "开口方向",
-        "deepening": "接话后",
-        "hint_summary": "联网素材",
-        "online_angle": "联网角度",
-        "online_angle_suffix": "如果用这个 hook，必须自然借一个具体点",
-        "hint_links": "素材标题",
-    },
-    "zh-CN": {
-        "interest": "关系点",
-        "hook": "切入",
-        "opening": "开口方向",
-        "deepening": "接话后",
-        "hint_summary": "联网素材",
-        "online_angle": "联网角度",
-        "online_angle_suffix": "如果用这个 hook，必须自然借一个具体点",
-        "hint_links": "素材标题",
-    },
-    "zh-TW": {
-        "interest": "關係點",
-        "hook": "切入",
-        "opening": "開口方向",
-        "deepening": "接話後",
-        "hint_summary": "聯網素材",
-        "online_angle": "聯網角度",
-        "online_angle_suffix": "如果用這個 hook，必須自然借一個具體點",
-        "hint_links": "素材標題",
-    },
-    "en": {
-        "interest": "Relationship point",
-        "hook": "Entry hook",
-        "opening": "Opening direction",
-        "deepening": "If they respond",
-        "hint_summary": "Online material",
-        "online_angle": "Online angle",
-        "online_angle_suffix": "if you use this hook, borrow one concrete detail naturally",
-        "hint_links": "Source titles",
-    },
-    "ja": {
-        "interest": "関係点",
-        "hook": "切り口",
-        "opening": "切り出し方",
-        "deepening": "相手が返した後",
-        "hint_summary": "オンライン素材",
-        "online_angle": "オンライン角度",
-        "online_angle_suffix": "この hook を使うなら具体点を1つ自然に借りる",
-        "hint_links": "素材タイトル",
-    },
-    "ko": {
-        "interest": "관계 포인트",
-        "hook": "진입 hook",
-        "opening": "시작 방향",
-        "deepening": "상대가 답한 뒤",
-        "hint_summary": "온라인 소재",
-        "online_angle": "온라인 각도",
-        "online_angle_suffix": "이 hook을 쓰면 구체적인 디테일 하나를 자연스럽게 빌릴 것",
-        "hint_links": "소재 제목",
-    },
-    "es": {
-        "interest": "Punto de conexión",
-        "hook": "Entrada",
-        "opening": "Intención de apertura",
-        "deepening": "Si responde",
-        "hint_summary": "Material online",
-        "online_angle": "Ángulo online",
-        "online_angle_suffix": "si usas este hook, apóyate naturalmente en un detalle concreto",
-        "hint_links": "Títulos de material",
-    },
-    "pt": {
-        "interest": "Ponto de conexão",
-        "hook": "Entrada",
-        "opening": "Intenção de abertura",
-        "deepening": "Se a pessoa responder",
-        "hint_summary": "Material online",
-        "online_angle": "Ângulo online",
-        "online_angle_suffix": "se usar este hook, apoie-se naturalmente em um detalhe concreto",
-        "hint_links": "Títulos do material",
-    },
-    "ru": {
-        "interest": "Точка связи",
-        "hook": "Вход в тему",
-        "opening": "Намерение начала",
-        "deepening": "Если пользователь ответит",
-        "hint_summary": "Онлайн-материал",
-        "online_angle": "Онлайн-ракурс",
-        "online_angle_suffix": "если используешь этот hook, естественно привяжи один конкретный факт",
-        "hint_links": "Заголовки материалов",
-    },
+    "zh": {"memory": "可以顺手接的话题", "thread": "刚才没聊完的点"},
+    "zh-CN": {"memory": "可以顺手接的话题", "thread": "刚才没聊完的点"},
+    "zh-TW": {"memory": "可以順手接的話題", "thread": "剛才沒聊完的點"},
+    "en": {"memory": "Optional memory hook", "thread": "Open thread"},
+    "ja": {"memory": "自然に拾える話題", "thread": "未完了の話題"},
+    "ko": {"memory": "가볍게 이어갈 화제", "thread": "아직 끝나지 않은 점"},
+    "es": {"memory": "Tema opcional de memoria", "thread": "Hilo abierto"},
+    "pt": {"memory": "Gancho opcional de memória", "thread": "Ponto ainda em aberto"},
+    "ru": {"memory": "Тема из памяти", "thread": "Незавершенная мысль"},
 }
 
 def _lang_key(lang: str) -> str:
@@ -207,59 +114,9 @@ def _iter_open_threads(open_threads: Iterable[Any] | None) -> list[str]:
     return texts
 
 
-def _iter_topic_materials(topic_materials: Iterable[Mapping[str, Any]] | None, *, lang: str) -> list[str]:
-    field_labels = _MATERIAL_FIELD_LABELS.get(lang, _MATERIAL_FIELD_LABELS["en"])
-    texts: list[str] = []
-    seen: set[str] = set()
-    for material in topic_materials or []:
-        if not isinstance(material, Mapping):
-            continue
-        interest = clean_text(material.get("interest"), limit=90)
-        hook = clean_text(material.get("hook"), limit=120)
-        opening = clean_text(material.get("opening_intent"), limit=90)
-        deepening = clean_text(material.get("deepening_hint"), limit=90)
-        hint = material.get("material_hint")
-        online_angle = clean_text(material.get("online_angle"), limit=100)
-        hint_summary = ""
-        hint_links: list[str] = []
-        if isinstance(hint, Mapping):
-            hint_summary = clean_text(hint.get("summary"), limit=100)
-            for link in hint.get("links") or []:
-                if isinstance(link, Mapping):
-                    title = clean_text(link.get("title"), limit=60)
-                    link_type = clean_text(link.get("type"), limit=20)
-                    if title:
-                        hint_links.append(f"{link_type}:{title}" if link_type else title)
-
-        parts = []
-        if interest:
-            parts.append(f"{field_labels['interest']}={interest}")
-        if hook:
-            parts.append(f"{field_labels['hook']}={hook}")
-        if opening:
-            parts.append(f"{field_labels['opening']}={opening}")
-        if deepening:
-            parts.append(f"{field_labels['deepening']}={deepening}")
-        if hint_summary:
-            parts.append(f"{field_labels['hint_summary']}={hint_summary}")
-        if online_angle:
-            parts.append(
-                f"{field_labels['online_angle']}={online_angle}；{field_labels['online_angle_suffix']}"
-            )
-        if hint_links:
-            parts.append(f"{field_labels['hint_links']}={'; '.join(hint_links[:2])}")
-        text = "；".join(parts)
-        if text and text not in seen:
-            seen.add(text)
-            texts.append(text)
-    return texts
-
-
 def build_topic_hook_prompt(
     lang: str,
     *,
-    topic_materials: Iterable[Mapping[str, Any]] | None = None,
-    recent_topics: Iterable[Any] | None = None,
     followup_topics: Iterable[Mapping[str, Any]] | None = None,
     open_threads: Iterable[Any] | None = None,
     max_items: int = 3,
@@ -267,24 +124,21 @@ def build_topic_hook_prompt(
     """Render optional topic hooks for the existing proactive prompt.
 
     The output is deliberately a prompt section, not final copy. Phase 2 still
-    owns character voice, timing, and whether to pass.
+    owns character voice, timing, and whether to pass. Only the followup
+    (reflection) and open-thread surfaces are rendered here; the background
+    topic pool delivers its own materials through build_topic_hook_callback,
+    not this prompt section.
     """
     key = _lang_key(lang)
     labels = _LABELS.get(key, _LABELS["en"])
     header = _HEADERS.get(key, _HEADER_EN)
 
-    material_texts = _iter_topic_materials(topic_materials, lang=key)[:max_items]
-    recent_texts = _iter_open_threads(recent_topics)[:max_items]
     memory_texts = _iter_followup_texts(followup_topics)[:max_items]
     thread_texts = _iter_open_threads(open_threads)[:max_items]
-    if not material_texts and not recent_texts and not memory_texts and not thread_texts:
+    if not memory_texts and not thread_texts:
         return ""
 
     lines = [header]
-    for text in material_texts:
-        lines.append(f"- {labels['material']}: {text}")
-    for text in recent_texts:
-        lines.append(f"- {labels['recent']}: {text}")
     for text in memory_texts:
         lines.append(f"- {labels['memory']}: {text}")
     for text in thread_texts:
