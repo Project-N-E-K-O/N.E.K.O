@@ -38,6 +38,11 @@ from .shared_state import get_templates
 router = APIRouter(tags=["pages"])
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_TUTORIAL_RUNTIME_ASSET_PATHS = tuple(sorted(
+    path
+    for pattern in ("**/*.js", "**/*.json")
+    for path in (_PROJECT_ROOT / "static/tutorial").glob(pattern)
+))
 _ICEBREAKER_LOCALE_PATHS = tuple(sorted((_PROJECT_ROOT / "static/tutorial/icebreaker/locales").glob("*.json")))
 _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/css/yui-guide.css",
@@ -105,6 +110,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/tutorial/avatar/floating-guide-reset.js",
     _PROJECT_ROOT / "static/tutorial/icebreaker/new-user-icebreaker.js",
     _PROJECT_ROOT / "static/tutorial/icebreaker/icebreaker_scripts.json",
+    *_TUTORIAL_RUNTIME_ASSET_PATHS,
     *_ICEBREAKER_LOCALE_PATHS,
 )
 _STATIC_ASSET_CACHE_TTL = 30.0
