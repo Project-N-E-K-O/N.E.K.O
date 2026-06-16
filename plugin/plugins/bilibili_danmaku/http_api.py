@@ -101,6 +101,9 @@ class HttpApi:
         self._app.router.add_get("/api/header", self._handle_header)
         self._app.router.add_get("/api/event", self._handle_event)
         self._app.router.add_post("/api/event", self._handle_event)
+        # CORS preflight for cross-origin POST
+        self._app.router.add_route("OPTIONS", "/api/netProxy", self._handle_preflight)
+        self._app.router.add_route("OPTIONS", "/api/event", self._handle_preflight)
         self._app.router.add_get("/api/status", self._handle_status)
         self._app.router.add_get("/api/ping", self._handle_ping)
 
@@ -127,6 +130,21 @@ class HttpApi:
             self._runner = None
         self._app = None
         logger.info("HTTP API 服务已停止")
+
+    # ── CORS 预检 ─────────────────────────────────────────────────
+
+    @staticmethod
+    async def _handle_preflight(request):
+        from aiohttp import web
+        return web.Response(
+            status=204,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type, Authorization",
+                "Access-Control-Max-Age": "86400",
+            },
+        )
 
     # ── 路由处理 ─────────────────────────────────────────────────
 

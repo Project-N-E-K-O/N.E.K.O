@@ -654,6 +654,16 @@ class BiliDanmakuPlugin(NekoPluginBase):
             return True
         return False
 
+    def _is_bridge_blocked(self, uid: int, nickname: str, cmd: str) -> bool:
+        """WS 桥接广播前画像过滤（防止 blocked/not-welcome 用户事件泄露到前端）"""
+        if not self._tracker or uid <= 0:
+            return False
+        if self._tracker.is_user_blocked(uid):
+            return True
+        if cmd in ("INTERACT_WORD", "ENTRY_EFFECT", "DANMU_MSG") and self._tracker.is_user_not_welcome(uid):
+            return True
+        return False
+
     def _format_recent_live_context(self, max_danmaku: int = 12) -> str:
         """格式化最近的直播间上下文（用于AI代写）"""
         lines = []
@@ -1429,8 +1439,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     async def _process_event(self, cmd: str, ld):
         """增强协议事件分发入口"""
-        # WS 桥接器实时广播（所有已订阅的前端都会收到）
-        if self._bridge:
+        # WS 桥接器实时广播 — 先过画像过滤器再推送
+        if self._bridge and not self._is_bridge_blocked(ld.uid, ld.nickname, cmd):
             try:
                 await self._bridge.broadcast_event(cmd, ld.to_dict())
             except Exception:
