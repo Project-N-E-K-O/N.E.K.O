@@ -2422,6 +2422,32 @@
                         applyYuiGuideClearChatMessages();
                         break;
                     }
+                    case 'icebreaker_append_chat_message': {
+                        if (!isStandaloneChatPage() || !document.body) break;
+                        applyIcebreakerAppendChatMessage(event.data.message);
+                        break;
+                    }
+                    case 'icebreaker_set_choice_prompt': {
+                        if (!isStandaloneChatPage() || !document.body) break;
+                        applyIcebreakerChoicePrompt(event.data.prompt);
+                        break;
+                    }
+                    case 'icebreaker_clear_choice_prompt': {
+                        if (!isStandaloneChatPage() || !document.body) break;
+                        applyIcebreakerClearChoicePrompt(event.data.sessionId);
+                        break;
+                    }
+                    case 'icebreaker_choice_selected': {
+                        if (isStandaloneChatPage() || !document.body) break;
+                        window.dispatchEvent(new CustomEvent('neko:icebreaker-choice-selected', {
+                            detail: {
+                                sessionId: event.data.sessionId || '',
+                                choice: event.data.choice || '',
+                                option: event.data.option || null
+                            }
+                        }));
+                        break;
+                    }
                     case 'yui_guide_chat_ready': {
                         if (isStandaloneChatPage()) break;
                         window.dispatchEvent(new CustomEvent('neko:yui-guide:external-chat-ready', {
@@ -2639,6 +2665,42 @@
         var host = getReactChatWindowHost();
         if (host && typeof host.clearGuideMessages === 'function') {
             host.clearGuideMessages();
+        }
+    }
+
+    function applyIcebreakerAppendChatMessage(message) {
+        var host = getReactChatWindowHost();
+        if (!host || typeof host.appendMessage !== 'function' || !message) return;
+        try {
+            host.appendMessage(message);
+            if (typeof host.openWindow === 'function') {
+                host.openWindow();
+            }
+        } catch (error) {
+            console.warn('[NewUserIcebreaker] Failed to append external chat message:', error);
+        }
+    }
+
+    function applyIcebreakerChoicePrompt(prompt) {
+        var host = getReactChatWindowHost();
+        if (!host || typeof host.setIcebreakerChoicePrompt !== 'function') return;
+        try {
+            host.setIcebreakerChoicePrompt(prompt);
+            if (typeof host.openWindow === 'function') {
+                host.openWindow();
+            }
+        } catch (error) {
+            console.warn('[NewUserIcebreaker] Failed to set external choice prompt:', error);
+        }
+    }
+
+    function applyIcebreakerClearChoicePrompt(sessionId) {
+        var host = getReactChatWindowHost();
+        if (!host || typeof host.clearIcebreakerChoicePrompt !== 'function') return;
+        try {
+            host.clearIcebreakerChoicePrompt(sessionId);
+        } catch (error) {
+            console.warn('[NewUserIcebreaker] Failed to clear external choice prompt:', error);
         }
     }
 

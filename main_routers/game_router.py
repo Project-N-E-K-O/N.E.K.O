@@ -6652,7 +6652,14 @@ async def game_project_context(game_type: str, request: Request):
         elif callable(append_icebreaker_context):
             ok = append_icebreaker_context(role, text)
         else:
-            return {"ok": False, "reason": "context_method_unavailable", "lanlan_name": lanlan_name}
+            session = getattr(mgr, "session", None)
+            history = getattr(session, "_conversation_history", None)
+            if not isinstance(history, list):
+                return {"ok": False, "reason": "context_method_unavailable", "lanlan_name": lanlan_name}
+            from utils.llm_client import AIMessage, HumanMessage
+            message_cls = AIMessage if role == "assistant" else HumanMessage
+            history.append(message_cls(content=text))
+            ok = True
     except Exception as exc:
         logger.warning(
             "🎮 新用户破冰上下文追加失败: lanlan=%s role=%s session=%s err=%s",

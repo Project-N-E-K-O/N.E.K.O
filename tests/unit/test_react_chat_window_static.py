@@ -483,6 +483,27 @@ def test_home_tutorial_host_wires_avatar_tool_requests():
     assert "host.rotateCompactToolWheel(payload && payload.direction" in interpage_source
 
 
+def test_new_user_icebreaker_choice_prompt_wires_chat_host_and_external_chat():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    interpage_source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+
+    assert "function setIcebreakerChoicePrompt(payload)" in script
+    assert "function clearIcebreakerChoicePrompt(sessionId)" in script
+    assert "source: 'new_user_icebreaker'" in script
+    assert "setIcebreakerChoicePrompt: setIcebreakerChoicePrompt" in script
+    assert "clearIcebreakerChoicePrompt: clearIcebreakerChoicePrompt" in script
+    assert "if (source === 'new_user_icebreaker')" in script
+    assert "action: 'icebreaker_choice_selected'" in script
+
+    assert "case 'icebreaker_append_chat_message':" in interpage_source
+    assert "case 'icebreaker_set_choice_prompt':" in interpage_source
+    assert "case 'icebreaker_clear_choice_prompt':" in interpage_source
+    assert "case 'icebreaker_choice_selected':" in interpage_source
+    assert "host.setIcebreakerChoicePrompt(prompt)" in interpage_source
+    assert "host.clearIcebreakerChoicePrompt(sessionId)" in interpage_source
+    assert "neko:icebreaker-choice-selected" in interpage_source
+
+
 def test_home_template_loads_delivered_daily_guide_scripts():
     source = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
 

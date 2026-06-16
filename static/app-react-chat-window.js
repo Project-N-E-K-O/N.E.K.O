@@ -3375,6 +3375,31 @@
     function handleChoiceSelect(option, source) {
         if (isHomeTutorialInteractionLocked() || getEffectiveComposerHidden()) return;
         if (!option || typeof option.choice !== 'string') return;
+        if (source === 'new_user_icebreaker') {
+            var icebreakerDetail = {
+                sessionId: option.sessionId || (state.choicePrompt && state.choicePrompt.sessionId) || '',
+                choice: option.choice,
+                option: option
+            };
+            window.dispatchEvent(new CustomEvent('neko:icebreaker-choice-selected', {
+                detail: icebreakerDetail
+            }));
+            try {
+                var channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
+                if (channel && typeof channel.postMessage === 'function') {
+                    channel.postMessage({
+                        action: 'icebreaker_choice_selected',
+                        sessionId: icebreakerDetail.sessionId,
+                        choice: icebreakerDetail.choice,
+                        option: option,
+                        timestamp: Date.now()
+                    });
+                }
+            } catch (error) {
+                console.warn('[NewUserIcebreaker] choice broadcast failed:', error);
+            }
+            return;
+        }
         if (source === 'galgame') {
             // Forward to legacy galgame handler if it shows up here
             if (typeof option.text === 'string') {
@@ -3644,6 +3669,37 @@
         //      文本生成的，与后续对话无关）
         invalidatePendingGalgameRequest();
         renderWindow();
+    }
+
+    function setIcebreakerChoicePrompt(payload) {
+        if (!payload) return;
+        var sessionId = String(payload.sessionId || '');
+        if (!sessionId) return;
+        var rawOptions = Array.isArray(payload.options) ? payload.options : [];
+        var cleanedOptions = rawOptions.map(function (o) {
+            return {
+                choice: String((o && o.choice) || ''),
+                label: String((o && o.label) || ''),
+                sessionId: sessionId
+            };
+        }).filter(function (o) { return o.choice && o.label; });
+        if (!cleanedOptions.length) return;
+        state.choicePrompt = {
+            source: 'new_user_icebreaker',
+            sessionId: sessionId,
+            gameType: String(payload.gameType || 'new_user_icebreaker'),
+            options: cleanedOptions
+        };
+        invalidatePendingGalgameRequest();
+        renderWindow();
+    }
+
+    function clearIcebreakerChoicePrompt(sessionId) {
+        if (!state.choicePrompt || state.choicePrompt.source !== 'new_user_icebreaker') return false;
+        if (sessionId && state.choicePrompt.sessionId !== String(sessionId)) return false;
+        state.choicePrompt = null;
+        renderWindow();
+        return true;
     }
 
     function dismissChoicePromptIfMatches(sessionId) {
@@ -6518,6 +6574,8 @@
         refreshGalgameOptions: fetchGalgameOptionsForLatestTurn,
         // Mini-game invite ChoicePrompt：app-websocket.js 收到对应 WS message 时调
         setMiniGameInvitePrompt: setMiniGameInvitePrompt,
+        setIcebreakerChoicePrompt: setIcebreakerChoicePrompt,
+        clearIcebreakerChoicePrompt: clearIcebreakerChoicePrompt,
         // unified resolved handler：accept 兼 launch / decline / suppress 都通过
         // 这条入口分发——前端 dismiss prompt UI + accept 时 window.open。替代了
         // 旧 launchMiniGame（accept-only）路径，让 codex P2 的 cross-window
