@@ -10,6 +10,7 @@ APP_BUTTONS_PATH = REPO_ROOT / "static" / "app-buttons.js"
 APP_AUDIO_CAPTURE_PATH = REPO_ROOT / "static" / "app-audio-capture.js"
 APP_WEBSOCKET_PATH = REPO_ROOT / "static" / "app-websocket.js"
 CORE_PATH = REPO_ROOT / "main_logic" / "core.py"
+CROSS_SERVER_PATH = REPO_ROOT / "main_logic" / "cross_server.py"
 INDEX_TEMPLATE_PATH = REPO_ROOT / "templates" / "index.html"
 INTAKE_PATH = REPO_ROOT / "static" / "avatar-drop-intake.js"
 MAIN_SERVER_PATH = REPO_ROOT / "app" / "main_server.py"
@@ -212,11 +213,12 @@ def test_avatar_drop_scripts_and_backend_routes_are_wired():
 @pytest.mark.unit
 def test_avatar_drop_image_and_memory_override_are_routed_as_text_session_inputs():
     core_source = _read(CORE_PATH)
+    cross_server_source = _read(CROSS_SERVER_PATH)
     offline_source = _read(OMNI_OFFLINE_PATH)
     websocket_source = _read(WEBSOCKET_ROUTER_PATH)
 
-    assert 'text_session_input_types = {"text", "avatar_drop_image", "user_image"}' in core_source
-    assert 'image_input_types = {"screen", "camera", "avatar_drop_image", "user_image"}' in core_source
+    assert '_TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"})' in core_source
+    assert '_IMAGE_INPUT_TYPES = frozenset({"screen", "camera", "avatar_drop_image", "user_image"})' in core_source
     assert "memory_text = self._clean_frontend_memory_text(message.get(\"memory_text\"))" in core_source
     assert "record_data = memory_text or data" in core_source
     assert "openclaw_magic_command = self._normalize_explicit_openclaw_magic_command(data)" in core_source
@@ -227,8 +229,11 @@ def test_avatar_drop_image_and_memory_override_are_routed_as_text_session_inputs
     assert "memory_override_text" not in core_source
     assert "record_transcript_text = transcript_text" in core_source
     assert '"text": record_transcript_text' in core_source
-    assert 'text_only_input_types = {"text", "avatar_drop_image", "user_image"}' in core_source
-    assert "msg_input_type in text_only_input_types" in core_source
+    assert "msg_input_type in _TEXT_SESSION_INPUT_TYPES" in core_source
+    assert "input_type in _IMAGE_INPUT_TYPES" in core_source
+    assert '_USER_IMAGE_INPUT_TYPES = frozenset({"screen", "camera", "avatar_drop_image", "user_image"})' in cross_server_source
+    assert "input_type in _USER_IMAGE_INPUT_TYPES" in cross_server_source
+    assert "message[\"data\"].get(\"has_image\")" in cross_server_source
     assert "input_transcript_callback: Optional[Callable[[str], Awaitable[None]]] = None" in offline_source
     assert "history_replacement_text: str | None = None" in offline_source
     assert "self._conversation_history[history_replacement_index] = HumanMessage" in offline_source

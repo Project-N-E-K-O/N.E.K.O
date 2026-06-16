@@ -1013,6 +1013,33 @@ def test_turn_image_partition_retains_untagged_images_without_user_input():
 
 
 @pytest.mark.unit
+def test_cross_server_avatar_drop_image_queue_skips_metadata_only_entries():
+    """Cross-server sync may carry real image data, but not metadata-only Avatar Drop placeholders."""
+    pending = []
+
+    appended = cross_server_module._append_pending_user_image(
+        pending,
+        "data:image/jpeg;base64,current",
+        "req-current",
+        "user_image",
+    )
+    skipped = cross_server_module._append_pending_user_image(
+        pending,
+        "",
+        "req-current",
+        "avatar_drop_image",
+    )
+
+    assert appended is True
+    assert skipped is False
+    assert pending == [{
+        "data": "data:image/jpeg;base64,current",
+        "request_id": "req-current",
+        "input_type": "user_image",
+    }]
+
+
+@pytest.mark.unit
 def test_session_end_request_tagged_screenshot_selection_falls_back_to_latest_request():
     """Session-end cleanup may not carry request_id, but must not drop tagged images."""
     pending = [

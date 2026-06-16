@@ -39,6 +39,8 @@ from typing import Any, Awaitable, Callable, Optional
 _REQUEST_ID_UNSET: Any = object()
 _MAGIC_COMMAND_IMAGE_DROP_REQUEST_MAX = 64
 _VOICE_PROACTIVE_ACK_GRACE_S = 0.05
+_TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"})
+_IMAGE_INPUT_TYPES = frozenset({"screen", "camera", "avatar_drop_image", "user_image"})
 from datetime import datetime
 from websockets import exceptions as web_exceptions
 from fastapi import WebSocket, WebSocketDisconnect
@@ -3892,7 +3894,6 @@ class LLMSessionManager:
                 # 的合法路径，不能误丢。audio 在 _stream_data_now 缓存阶段已经
                 # 直接 return 不缓存，pending_input_data 不会出现 audio。
                 is_voice_session = isinstance(self.session, OmniRealtimeClient)
-                text_only_input_types = {"text", "avatar_drop_image", "user_image"}
                 dropped_text_for_voice = 0
                 for message in self.pending_input_data:
                     msg_input_type = message.get("input_type")
@@ -3902,7 +3903,7 @@ class LLMSessionManager:
                         if msg_input_type == "audio":
                             await self._enqueue_audio_stream_data(message)
                         else:
-                            if is_voice_session and msg_input_type in text_only_input_types:
+                            if is_voice_session and msg_input_type in _TEXT_SESSION_INPUT_TYPES:
                                 dropped_text_for_voice += 1
                                 continue
                             await self._process_stream_data_internal(message)
@@ -7516,8 +7517,6 @@ class LLMSessionManager:
 
     async def _stream_data_now(self, message: dict):
         input_type = message.get("input_type")
-        text_session_input_types = {"text", "avatar_drop_image", "user_image"}
-        
         # 检查session是否就绪
         async with self.input_cache_lock:
             if not self.session_ready:
@@ -7545,7 +7544,7 @@ class LLMSessionManager:
                     return
                 logger.info(f"Session未就绪且不存在，根据输入类型 {input_type} 自动创建 session")
                 # 根据输入类型确定模式
-                mode = 'text' if input_type in text_session_input_types else 'audio'
+                mode = 'text' if input_type in _TEXT_SESSION_INPUT_TYPES else 'audio'
                 await self.start_session(self.websocket, new=False, input_mode=mode)
 
                 # 检查启动是否成功
@@ -7560,9 +7559,6 @@ class LLMSessionManager:
         """Internal method: the actual stream_data processing logic"""
         data = message.get("data")
         input_type = message.get("input_type")
-        text_session_input_types = {"text", "avatar_drop_image", "user_image"}
-        image_input_types = {"screen", "camera", "avatar_drop_image", "user_image"}
-        
         # 检查session是否发生致命错误（如1011错误、Response timeout）
         if self.session and isinstance(self.session, OmniRealtimeClient):
             if hasattr(self.session, '_fatal_error_occurred') and self.session._fatal_error_occurred:
@@ -7605,7 +7601,7 @@ class LLMSessionManager:
                 return
             
             # 根据输入类型确定模式
-            mode = 'text' if input_type in text_session_input_types else 'audio'
+            mode = 'text' if input_type in _TEXT_SESSION_INPUT_TYPES else 'audio'
             await self.start_session(self.websocket, new=False, input_mode=mode)
             
             # 检查启动是否成功
@@ -7937,7 +7933,7 @@ class LLMSessionManager:
                         self.last_audio_send_error_time = current_time
                     return
 
-            elif input_type in image_input_types:
+            elif input_type in _IMAGE_INPUT_TYPES:
                 try:
                     if self._should_drop_magic_command_image(message.get("request_id")):
                         return
