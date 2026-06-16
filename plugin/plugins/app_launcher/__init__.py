@@ -135,7 +135,7 @@ def _launch_file(path: str) -> tuple[bool, str]:
             )
         elif file_type in ("exe", "script"):
             subprocess.Popen(
-                path,
+                [path],
                 shell=False,
                 creationflags=subprocess.CREATE_NEW_CONSOLE if hasattr(subprocess, 'CREATE_NEW_CONSOLE') else 0,
             )
@@ -492,6 +492,10 @@ class AppLauncherPlugin(NekoPluginBase):
                 "description": {
                     "type": "string",
                     "description": tr("entry.add_app.param.description", default="软件描述（可选）"),
+                },
+                "autostart": {
+                    "type": "boolean",
+                    "description": "是否设置开机自启（可选，默认 false，仅支持 .exe 文件）",
                 },
             },
             "required": ["name", "path"],
