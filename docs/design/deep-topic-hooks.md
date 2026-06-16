@@ -111,25 +111,24 @@ prompt 只给「明显反复出现 → 高分，顺口一提 → 低分；如实
 - 撤回：`DELIVERY_RETRACTED_KEY` + manager.retract，并从 `pending_agent_callbacks` / `pending_extra_replies` 按对象 id 与 `_callback_delivery_id` 清除。
 - inflight：释放时若一批 callback 全被门控丢弃（投了个空），`ProactiveDeliveryManager.release_inflight_noop()` 立即释放 inflight 槽，避免空投后下一条 cue 干等满 inflight 超时。
 
-## 规划：Phase-2 投递时大模型 deep search（尚未落地）
+## Phase-2：投递时大模型 deep search（已落地）
 
-> 以下为设计意图，**未落地**，不得当成现状引用。
+深话题的价值在于「先查再聊」，所以 deep search 是**开口前的后台准备步骤**，不是阻塞用户热路径的同步调用：
 
-A 阶段后，后台预取只用 keywords 拼一个便宜 query 做兜底现实细节（floor）。规划中的 B 在话题**真要被用来开口时**，由更强档位模型现场把 interest+keywords 衍生成一个更聚焦的 deep query 再联网，覆盖便宜兜底，作为「降临」时刻的天花板（ceiling）。floor 始终在，deep search 失败/超时就回落到它。
+- 触发条件与现有开口完全相同（pool 的 debounce + quiet window + gap + quota + privacy + seq）。
+- `_run_trigger` 在调投递桥之前先 `await self._deepen_material(...)`：用更强档位（`summary` tier，`derive_deep_search_query`）从 interest + keywords（+ A 的便宜 floor 线索 `online_angle`）衍生一条聚焦 deep query，再用它重跑联网增强、覆盖 floor 的 `material_hint`。这一步跑在 trigger task 里，**不阻塞用户对话**。
+- **准备就绪后重新过开口门**：deep 跑完才调 `trigger_topic_hook_once`，其顶部的 `topic_hook_delivery_allowed()` 就是 prepare 之后的再校验——条件仍满足就开口，否则返回 False，pool reschedule 等下个窗口。
+- **floor 永远兜底**：deep query 衍生失败/超时，或 deep 检索没结果，都回落到 A 的 keyword 兜底 `material_hint`。
+- **缓存防重搜**：`deep_search_done` 写在 live material 上，reschedule 重试复用已备好的 deep 结果而不重复搜；它在衍生前就置位，避免 flaky 衍生每次 reschedule 都重试（代价：一次性失败后该物料本轮不再尝试 deep，但 floor 仍投递）。
+- **query 来源对偶**：小模型只识别话题 + keywords；deep query 由大模型 author（`deep_query` 字段，`_query_for_material` 优先用它）——这正是当初从小模型拿掉 `search_query` 的原因。
 
-接入点初步定在 `trigger_topic_hook_once`，在活动门 + 语言重解析之后、`build_topic_hook_callback` 之前插入一次 deep-search 增强。
-
-待拍板旋钮（实现前需确认）：
-
-1. **由哪个档位衍生 query**：Phase-2 角色模型 vs 独立的强推理档位。
-2. **同步还是异步**：同步会让开场延迟一次「query 衍生 + 联网」（对「随口想起」也许是自然停顿，但确是延迟）；异步则先用 floor 开口、deep 结果留给后续轮次。
-3. **是否配开关 / 默认开关态**。
+旋钮：`TopicHookPool(enable_deep_search=...)` 默认开；衍生档位为 `summary`（与窗口搜索摘要同档，比 emotion 重、比 agent 轻），改档位是 `derive_deep_search_query` 里一行。
 
 ## 测试覆盖
 
-- `tests/unit/test_topic_pipeline.py`：采集、打分门控、去重（关键词 + ngram veto）、调度。
-- `tests/unit/test_topic_llm_enrichment.py`：物料契约解析、低相关/高风险跳过、语言模板 fallback、keywords。
-- `tests/unit/test_topic_materials.py`：keywords 拼 query、联网相关性过滤、DuckDuckGo 分区、locale 透传。
+- `tests/unit/test_topic_pipeline.py`：采集、打分门控、去重（关键词 + ngram veto）、调度、`_deepen_material`（衍生 query 覆盖 floor / 无结果保 floor / 幂等 + 开关）。
+- `tests/unit/test_topic_llm_enrichment.py`：物料契约解析、低相关/高风险跳过、语言模板 fallback、keywords、`derive_deep_search_query` 解析。
+- `tests/unit/test_topic_materials.py`：deep_query 优先 / keywords 拼 query、联网相关性过滤、DuckDuckGo 分区、locale 透传。
 - `tests/unit/test_topic_delivery.py`：投递路径、活动门、语言重解析、一次性记账。
 - `tests/unit/test_proactive_delivery.py`：批量释放、inflight、no-op release。
 - `tests/unit/test_system_router_topic_hooks.py`：followup 渲染与 surfaced id 精度、topic hook locale。

@@ -17,6 +17,41 @@ def test_select_lang_template_falls_back_zh_family_to_zh():
 
 
 @pytest.mark.asyncio
+async def test_derive_deep_search_query_parses_json_query(monkeypatch):
+    from main_logic.activity import llm_enrichment
+
+    async def fake_capable(prompt, *, timeout, label):
+        assert "文本世界模型" in prompt
+        return '{"query": "文本世界模型 无撤回 幻觉 最新"}'
+
+    monkeypatch.setattr(llm_enrichment, "_invoke_capable_tier", fake_capable)
+
+    q = await llm_enrichment.derive_deep_search_query(
+        interest="文本世界模型的无撤回机制",
+        keywords=["文本世界模型", "幻觉"],
+        lang="zh-CN",
+    )
+    assert q == "文本世界模型 无撤回 幻觉 最新"
+
+
+@pytest.mark.asyncio
+async def test_derive_deep_search_query_none_when_model_silent(monkeypatch):
+    from main_logic.activity import llm_enrichment
+
+    async def fake_capable(prompt, *, timeout, label):
+        return None
+
+    monkeypatch.setattr(llm_enrichment, "_invoke_capable_tier", fake_capable)
+
+    q = await llm_enrichment.derive_deep_search_query(
+        interest="只有兴趣没有关键词",
+        keywords=[],
+        lang="en",
+    )
+    assert q is None
+
+
+@pytest.mark.asyncio
 async def test_call_topic_candidates_parses_model_output(monkeypatch):
     from main_logic.activity import llm_enrichment
 

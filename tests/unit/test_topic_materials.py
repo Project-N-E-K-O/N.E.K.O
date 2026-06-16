@@ -53,6 +53,38 @@ async def test_enrich_topic_materials_online_defaults_to_search_fetcher():
 
 
 @pytest.mark.asyncio
+async def test_enrich_prefers_deep_query_over_keywords():
+    # A big-model-derived deep_query (Phase-2 delivery-time deep search) is the
+    # query, overriding the cheap keyword-joined floor query.
+    calls = []
+
+    async def fake_news(keyword, limit):
+        calls.append(keyword)
+        return {
+            "success": True,
+            "search": {
+                "results": [{"title": "deep kw result", "url": "https://x.test/d"}]
+            },
+        }
+
+    materials = [
+        {
+            "interest": "x",
+            "keywords": ["floor", "kw"],
+            "deep_query": "deep derived query 关键",
+            "media_intent": ["news"],
+        }
+    ]
+
+    enriched = await enrich_topic_materials_online(
+        materials, fetchers={"news": fake_news}, max_materials=1
+    )
+
+    assert calls == ["deep derived query 关键"]
+    assert enriched[0]["online_query"] == "deep derived query 关键"
+
+
+@pytest.mark.asyncio
 async def test_enrich_topic_materials_online_respects_explicit_empty_fetchers(monkeypatch):
     from main_logic.topic import materials as topic_materials
 

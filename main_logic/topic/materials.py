@@ -119,10 +119,13 @@ async def _default_fetchers(lang: str | None = None) -> dict[str, Fetcher]:
 
 
 def _query_for_material(material: Mapping[str, Any]) -> str:
-    # The small candidate model no longer authors a search string. keywords are
-    # the same "stable relationship points" a query should target, so the cheap
-    # background pre-fetch query is just the keywords joined; interest/hook stay
-    # as fallbacks when no keyword survived cleaning.
+    # A big-model-derived deep_query (Phase-2 delivery-time deep search) wins
+    # when present. Otherwise: the small candidate model no longer authors a
+    # search string, so the cheap background pre-fetch query is just the
+    # keywords joined; interest/hook stay as fallbacks when none survived.
+    deep_query = clean_text(material.get("deep_query"), limit=80)
+    if deep_query:
+        return deep_query
     keywords = [clean_text(kw, limit=30) for kw in (material.get("keywords") or [])]
     query = " ".join(kw for kw in keywords if kw)[:80]
     if query:

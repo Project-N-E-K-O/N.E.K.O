@@ -6,6 +6,25 @@ import pytest
 from main_logic.topic.pipeline import TopicHookPool, _clean_material
 
 
+@pytest.fixture(autouse=True)
+def _neutralize_deep_search(monkeypatch):
+    # Keep the pipeline tests hermetic: the delivery-time deep search calls a
+    # capable-tier LLM, which most tests here don't exercise. Dedicated
+    # deep-search tests below override this stub with their own.
+    async def _no_deep(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "main_logic.activity.llm_enrichment.derive_deep_search_query",
+        _no_deep,
+        raising=False,
+    )
+
+
+async def _async_identity_enrich(materials, **kwargs):
+    return [dict(m) for m in materials]
+
+
 def test_clean_material_normalizes_media_intent_string_and_bad_created_at():
     material = _clean_material(
         {
@@ -851,3 +870,96 @@ async def test_topic_pool_suppresses_same_topic_after_it_was_used_today():
 
     assert delivered == ["文本世界模型的无撤回机制与幻觉问题"]
     assert pool.get_ready_materials("妮可") == []
+
+
+@pytest.mark.asyncio
+async def test_deepen_material_uses_derived_query_and_overrides_floor(monkeypatch):
+    from main_logic.topic import pipeline as topic_pipeline
+
+    async def fake_derive(*, interest, keywords, floor_angle, lang, **kwargs):
+        assert interest == "文本世界模型"
+        return "文本世界模型 幻觉 最新研究"
+
+    async def fake_enrich(materials, **kwargs):
+        out = []
+        for m in materials:
+            m = dict(m)
+            m["material_hint"] = {"summary": f"deep:{m.get('deep_query')}"}
+            m["online_used"] = True
+            m["online_query"] = m.get("deep_query")
+            m["online_angle"] = "最新研究综述"
+            out.append(m)
+        return out
+
+    monkeypatch.setattr(
+        "main_logic.activity.llm_enrichment.derive_deep_search_query", fake_derive
+    )
+    monkeypatch.setattr(topic_pipeline, "enrich_topic_materials_online", fake_enrich)
+
+    pool = TopicHookPool(auto_schedule=False)
+    material = {
+        "interest": "文本世界模型",
+        "keywords": ["文本世界模型", "幻觉"],
+        "material_hint": {"summary": "floor"},
+        "online_angle": "floor angle",
+    }
+    await pool._deepen_material("妮可", material, "zh-CN")
+
+    assert material["deep_search_done"] is True
+    assert material["deep_query"] == "文本世界模型 幻觉 最新研究"
+    assert material["material_hint"] == {"summary": "deep:文本世界模型 幻觉 最新研究"}
+    assert material["online_query"] == "文本世界模型 幻觉 最新研究"
+
+
+@pytest.mark.asyncio
+async def test_deepen_material_keeps_floor_when_deep_search_finds_nothing(monkeypatch):
+    from main_logic.topic import pipeline as topic_pipeline
+
+    async def fake_derive(**kwargs):
+        return "some deep query"
+
+    monkeypatch.setattr(
+        "main_logic.activity.llm_enrichment.derive_deep_search_query", fake_derive
+    )
+    monkeypatch.setattr(
+        topic_pipeline, "enrich_topic_materials_online", _async_identity_enrich
+    )
+
+    pool = TopicHookPool(auto_schedule=False)
+    material = {"interest": "x", "keywords": ["x"], "material_hint": {"summary": "floor"}}
+    await pool._deepen_material("妮可", material, "zh-CN")
+
+    assert material["material_hint"] == {"summary": "floor"}  # floor preserved
+    assert material["deep_query"] == "some deep query"
+
+
+@pytest.mark.asyncio
+async def test_deepen_material_idempotent_and_respects_disable(monkeypatch):
+    from main_logic.topic import pipeline as topic_pipeline
+    calls = []
+
+    async def fake_derive(**kwargs):
+        calls.append(1)
+        return "q"
+
+    monkeypatch.setattr(
+        "main_logic.activity.llm_enrichment.derive_deep_search_query", fake_derive
+    )
+    monkeypatch.setattr(
+        topic_pipeline, "enrich_topic_materials_online", _async_identity_enrich
+    )
+
+    # disabled → never derives, never marks done
+    pool_off = TopicHookPool(auto_schedule=False, enable_deep_search=False)
+    m1 = {"interest": "x", "keywords": ["x"]}
+    await pool_off._deepen_material("n", m1, "zh")
+    assert calls == []
+    assert "deep_search_done" not in m1
+
+    # enabled → derives once; second call is a cached no-op
+    pool_on = TopicHookPool(auto_schedule=False)
+    m2 = {"interest": "x", "keywords": ["x"]}
+    await pool_on._deepen_material("n", m2, "zh")
+    await pool_on._deepen_material("n", m2, "zh")
+    assert calls == [1]
+    assert m2["deep_search_done"] is True

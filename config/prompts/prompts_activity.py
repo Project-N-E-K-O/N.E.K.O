@@ -505,6 +505,73 @@ Se nada valer a pena, retorne {{"topics": []}}.""",
 }
 
 
+# ── Delivery-time deep search query ─────────────────────────────────
+# The candidate model only identifies the topic + keywords. When a hook is
+# about to fire, this capable-tier prompt turns interest + keywords (+ the
+# cheap floor lead) into ONE focused retrieval query for "search first, then
+# chat". Authoring the query is deliberately a bigger-model job, not the small
+# candidate model's.
+
+DEEP_SEARCH_QUERY_PROMPTS: dict[str, str] = {
+    "zh": """你在为一个陪伴角色做「先查再聊」的联网准备。下面是一个值得低频深聊的话题，请只产出一条聚焦、可直接喂给搜索引擎的查询词，围绕最稳定的关系点，便于查到具体、较新的现实细节。不要解释，不要给多条。
+
+话题：{interest}
+关键词：{keywords}
+已有的粗略线索（可参考可忽略）：{floor_angle}
+
+只输出严格 JSON（不带 markdown）：{{"query": "一条查询词"}}""",
+    "zh-TW": """你在為一個陪伴角色做「先查再聊」的聯網準備。下面是一個值得低頻深聊的話題，請只產出一條聚焦、可直接餵給搜尋引擎的查詢詞，圍繞最穩定的關係點，便於查到具體、較新的現實細節。查詢詞使用繁體中文。不要解釋，不要給多條。
+
+話題：{interest}
+關鍵詞：{keywords}
+已有的粗略線索（可參考可忽略）：{floor_angle}
+
+只輸出嚴格 JSON（不帶 markdown）：{{"query": "一條查詢詞"}}""",
+    "en": """You are preparing a "search first, then chat" online lookup for a companion character. Below is a topic worth opening at low frequency. Output only one focused query string that can go straight to a search engine, centered on the most stable relationship point, so it surfaces concrete and reasonably fresh real-world detail. No explanation, no multiple queries.
+
+Topic: {interest}
+Keywords: {keywords}
+Rough lead already found (optional, may ignore): {floor_angle}
+
+Output strict JSON, no markdown: {{"query": "one query string"}}""",
+    "ja": """あなたはコンパニオンキャラクターのために「まず調べてから話す」オンライン下調べを準備しています。以下は低頻度で切り出す価値のある話題です。検索エンジンにそのまま渡せる、安定した関係点に絞った具体的で比較的新しい現実情報が出る検索語を、ユーザーの言語で1つだけ出力してください。説明も複数候補も不要です。
+
+話題：{interest}
+キーワード：{keywords}
+すでに見つかった粗い手がかり（任意・無視可）：{floor_angle}
+
+厳密な JSON だけを出力（markdownなし）：{{"query": "検索語ひとつ"}}""",
+    "ko": """당신은 동반자 캐릭터를 위해 "먼저 검색하고 대화하기" 온라인 사전 조사를 준비하고 있습니다. 아래는 낮은 빈도로 꺼낼 만한 화제입니다. 검색 엔진에 바로 넣을 수 있고 안정적인 관계점에 맞춘, 구체적이고 비교적 최신인 현실 정보가 나오는 검색어를 사용자 언어로 하나만 출력하세요. 설명이나 여러 개는 필요 없습니다.
+
+화제: {interest}
+키워드: {keywords}
+이미 찾은 대략적 단서(참고용, 무시 가능): {floor_angle}
+
+엄격한 JSON만 출력(markdown 금지): {{"query": "검색어 하나"}}""",
+    "es": """Estás preparando una búsqueda en línea de "buscar primero, luego charlar" para un personaje de compañía. Abajo hay un tema que vale la pena abrir con baja frecuencia. Devuelve solo una consulta enfocada que pueda ir directo a un buscador, centrada en el punto de relación más estable, para que aparezca un detalle real concreto y razonablemente reciente. Sin explicación, sin varias consultas.
+
+Tema: {interest}
+Palabras clave: {keywords}
+Pista aproximada ya encontrada (opcional, se puede ignorar): {floor_angle}
+
+Devuelve JSON estricto, sin markdown: {{"query": "una consulta"}}""",
+    "pt": """Voce esta preparando uma busca online de "buscar primeiro, depois conversar" para um personagem de companhia. Abaixo ha um tema que vale a pena puxar com baixa frequencia. Retorne apenas uma consulta focada que possa ir direto a um buscador, centrada no ponto de relacao mais estavel, para trazer um detalhe real concreto e razoavelmente recente. Sem explicacao, sem varias consultas.
+
+Tema: {interest}
+Palavras-chave: {keywords}
+Pista aproximada ja encontrada (opcional, pode ignorar): {floor_angle}
+
+Retorne JSON estrito, sem markdown: {{"query": "uma consulta"}}""",
+    "ru": """Ты готовишь онлайн-поиск по принципу «сначала найти, потом поговорить» для companion-персонажа. Ниже тема, которую стоит поднять с низкой частотой. Выведи только один сфокусированный запрос, который можно сразу отправить в поисковик, вокруг самой устойчивой точки интереса, чтобы он давал конкретную и достаточно свежую реальную деталь. Без пояснений, без нескольких запросов.
+
+Тема: {interest}
+Ключевые слова: {keywords}
+Уже найденная грубая зацепка (необязательно, можно игнорировать): {floor_angle}
+
+Выведи строго JSON, без markdown: {{"query": "один запрос"}}""",
+}
+
+
 # ── Open-thread semantic detection (emotion-tier) ───────────────────
 
 OPEN_THREADS_PROMPTS: dict[str, str] = {

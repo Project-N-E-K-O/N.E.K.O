@@ -207,6 +207,7 @@ class TopicHookPool:
         topic_trigger: TopicTrigger | None = None,
         auto_schedule: bool = True,
         enable_online_enrichment: bool = True,
+        enable_deep_search: bool = True,
         debounce_seconds: float = _PROCESS_DEBOUNCE_SECONDS,
         trigger_delay_seconds: float = _TRIGGER_AFTER_QUIET_SECONDS,
         min_trigger_gap_seconds: float = _MIN_TOPIC_TRIGGER_GAP_SECONDS,
@@ -217,6 +218,7 @@ class TopicHookPool:
         self._topic_trigger = topic_trigger
         self._auto_schedule = auto_schedule
         self._enable_online_enrichment = enable_online_enrichment
+        self._enable_deep_search = enable_deep_search
         self._debounce_seconds = max(0.0, float(debounce_seconds))
         self._trigger_delay_seconds = max(0.0, float(trigger_delay_seconds))
         self._min_trigger_gap_seconds = max(0.0, float(min_trigger_gap_seconds))
@@ -483,6 +485,12 @@ class TopicHookPool:
                 self._materials[name] = []
                 logger.info("[%s] topic material trigger skipped: already used or daily quota reached", name)
                 return
+            # "Search first, then chat": prepare a deeper, big-model-derived
+            # online lead before attempting to open. This runs in the trigger
+            # task (off the user hot path) and caches onto current_material, so
+            # a reschedule reuses it instead of re-searching. The actual open is
+            # re-gated by the delivery bridge AFTER this prepare completes.
+            await self._deepen_material(name, current_material, lang)
             triggered = await self._topic_trigger(
                 lanlan_name=name,
                 material=deepcopy(current_material),
@@ -520,6 +528,55 @@ class TopicHookPool:
             task = self._trigger_tasks.get(name)
             if task is asyncio.current_task():
                 self._trigger_tasks.pop(name, None)
+
+    async def _deepen_material(
+        self, name: str, material: dict[str, Any], lang: str
+    ) -> None:
+        """Delivery-time deep search: derive a focused query and re-enrich.
+
+        Idempotent per material (``deep_search_done``) so a rescheduled trigger
+        reuses the prepared lead instead of re-searching. Any failure leaves the
+        cheap keyword floor hint intact, and ``deep_search_done`` is set up front
+        so a flaky derivation is not retried on every reschedule.
+        """
+        if not self._enable_deep_search:
+            return
+        if material.get("deep_search_done"):
+            return
+        material["deep_search_done"] = True
+        try:
+            from main_logic.activity.llm_enrichment import derive_deep_search_query
+            query = await derive_deep_search_query(
+                interest=str(material.get("interest") or ""),
+                keywords=list(material.get("keywords") or []),
+                floor_angle=str(material.get("online_angle") or ""),
+                lang=lang,
+            )
+        except Exception as exc:
+            logger.debug("[%s] deep search query derivation failed: %s", name, exc)
+            return
+        if not query:
+            return
+        material["deep_query"] = query
+        # Re-run online enrichment with the derived query. Clear the floor hint
+        # so the deeper result can replace it; restore the floor if the deep
+        # fetch turns up nothing.
+        floor_hint = material.get("material_hint")
+        material.pop("material_hint", None)
+        try:
+            enriched = await enrich_topic_materials_online(
+                [material], lang=lang, max_materials=1
+            )
+        except Exception as exc:
+            logger.debug("[%s] deep search enrichment failed: %s", name, exc)
+            enriched = None
+        deep = enriched[0] if enriched else None
+        if isinstance(deep, Mapping) and deep.get("material_hint"):
+            for key in ("material_hint", "online_used", "online_query", "online_angle"):
+                if key in deep:
+                    material[key] = deep[key]
+        elif floor_hint is not None:
+            material["material_hint"] = floor_hint
 
     def _prune_used_topics(self, name: str, *, now: float | None = None) -> list[dict[str, Any]]:
         current_time = float(now if now is not None else time.time())

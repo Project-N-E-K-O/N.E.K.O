@@ -52,6 +52,7 @@ from typing import Any
 
 from config.prompts.prompts_activity import (
     ACTIVITY_GUESS_PROMPTS,
+    DEEP_SEARCH_QUERY_PROMPTS,
     OPEN_THREADS_PROMPTS,
     TOPIC_CANDIDATE_PROMPTS,
 )
@@ -430,6 +431,98 @@ async def _invoke_emotion_tier(prompt: str, *, timeout: float, label: str) -> st
     except Exception as e:
         logger.debug('emotion-tier %s call failed: %s', label, e)
         return None
+
+
+async def _invoke_capable_tier(prompt: str, *, timeout: float, label: str) -> str | None:
+    """Single-shot capable-tier (``summary``) call for delivery-time deep work.
+
+    Deep-search query derivation is a step up from the emotion-tier candidate
+    pass: it runs once, at open time, off the user hot path, so it uses the
+    heavier ``summary`` tier (the same tier the window search summarizer uses).
+    Returns raw response text or None on any failure.
+    """
+    from utils.config_manager import get_config_manager
+    from utils.llm_client import HumanMessage, create_chat_llm
+    from utils.token_tracker import set_call_type
+
+    try:
+        cfg_mgr = get_config_manager()
+        cfg = cfg_mgr.get_model_api_config('summary')
+    except Exception as e:
+        logger.debug('summary config fetch failed: %s', e)
+        return None
+    model = cfg.get('model')
+    api_key = cfg.get('api_key')
+    base_url = cfg.get('base_url')
+    if not model or not api_key:
+        logger.debug('summary tier model/api_key missing — deep search disabled')
+        return None
+
+    set_call_type('topic_deep_search')
+    try:
+        llm = create_chat_llm(
+            model, base_url, api_key,
+            temperature=0.3,
+            max_completion_tokens=128,
+        )
+    except Exception as e:
+        logger.debug('summary-tier llm init failed: %s', e)
+        return None
+
+    try:
+        async with llm:
+            resp = await asyncio.wait_for(
+                llm.ainvoke([HumanMessage(content=prompt)]),
+                timeout=timeout,
+            )
+        return getattr(resp, 'content', '') or ''
+    except asyncio.TimeoutError:
+        logger.debug('summary-tier %s call timed out (%ss)', label, timeout)
+        return None
+    except Exception as e:
+        logger.debug('summary-tier %s call failed: %s', label, e)
+        return None
+
+
+async def derive_deep_search_query(
+    *,
+    interest: str,
+    keywords: list[str],
+    floor_angle: str = "",
+    lang: str,
+    timeout: float = 8.0,
+) -> str | None:
+    """Derive one focused online query for a delivery-time deep search.
+
+    Unlike the small candidate model (which only identifies the topic), this is
+    the capable-tier "big model" step the deep-search design calls for: it turns
+    interest + keywords (+ the cheap floor angle) into a single retrieval query.
+    Returns None when nothing usable comes back, so callers fall back to the
+    keyword-joined floor query.
+    """
+    interest = (interest or "").strip()
+    if not interest:
+        return None
+    lang_key = _normalize_lang(lang)
+    template = _select_lang_template(DEEP_SEARCH_QUERY_PROMPTS, lang_key)
+    prompt = template.format(
+        interest=interest[:120],
+        keywords=", ".join(k for k in (keywords or []) if k)[:120] or "(none)",
+        floor_angle=(floor_angle or "").strip()[:200] or "(none)",
+    )
+    raw = await _invoke_capable_tier(prompt, timeout=timeout, label='topic_deep_query')
+    if raw is None:
+        return None
+    parsed = _safe_parse_json(raw)
+    query = ""
+    if isinstance(parsed, dict):
+        query = str(parsed.get('query') or '').strip()
+    if not query:
+        # Tolerate a bare single-line answer if the model ignored the JSON shape.
+        stripped = " ".join(raw.split())
+        if stripped and len(stripped) < 120 and "{" not in stripped:
+            query = stripped
+    return query.strip().strip('"').strip()[:80] or None
 
 
 def _safe_parse_json(raw: str) -> Any:
