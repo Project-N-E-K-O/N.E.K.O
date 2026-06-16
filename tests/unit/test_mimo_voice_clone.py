@@ -1,0 +1,257 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""MiMo voiceclone enrollment + dispatch (dual to cosyvoice/minimax).
+
+MiMo has no remote cloned voice id: the reference sample is persisted locally and
+inlined per synthesis request via ``audio.voice`` against the voiceclone model.
+"""
+
+import base64
+import json
+import queue
+import threading
+import time
+from functools import partial
+
+import httpx
+import numpy as np
+import pytest
+
+from main_logic import tts_client
+from utils.config_manager import get_config_manager
+
+
+class ControlledQueue:
+    def __init__(self):
+        self._queue = queue.Queue()
+        self._stop = object()
+
+    def put(self, item):
+        self._queue.put(item)
+
+    def get(self, timeout=None):
+        item = self._queue.get(timeout=timeout)
+        if item is self._stop:
+            raise EOFError("queue closed")
+        return item
+
+    def close(self):
+        self._queue.put(self._stop)
+
+
+def _wait_for_queue_item(q, predicate, timeout=5.0):
+    deadline = time.time() + timeout
+    seen = []
+    while time.time() < deadline:
+        remaining = max(0.01, deadline - time.time())
+        try:
+            item = q.get(timeout=remaining)
+        except queue.Empty:
+            continue
+        seen.append(item)
+        if predicate(item):
+            return item, seen
+    raise AssertionError(f"Timed out waiting for queue item, seen={seen!r}")
+
+
+class FakeMiMoTransport(httpx.AsyncBaseTransport):
+    def __init__(self, audio_bytes: bytes, status_code: int = 200):
+        self.audio_bytes = audio_bytes
+        self.status_code = status_code
+        self.requests = []
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else {}
+        self.requests.append({"url": str(request.url), "body": body})
+        if self.status_code != 200:
+            return httpx.Response(self.status_code, json={"error": "bad"})
+        event = {"choices": [{"delta": {"audio": {"data": base64.b64encode(self.audio_bytes).decode("ascii")}}}]}
+        return httpx.Response(
+            200,
+            content=f"data: {json.dumps(event)}\n\ndata: [DONE]\n\n".encode("utf-8"),
+            headers={"content-type": "text/event-stream"},
+        )
+
+
+# ── worker: clone uses the voiceclone model + inlines the reference data URI ──
+
+@pytest.mark.unit
+def test_mimo_worker_clone_uses_voiceclone_model_and_inlines_sample(monkeypatch):
+    pcm_bytes = (np.arange(3000, dtype=np.int16)).tobytes()
+    transport = FakeMiMoTransport(pcm_bytes)
+    original_async_client = httpx.AsyncClient
+
+    def patched_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", patched_client)
+
+    clone_uri = "data:audio/wav;base64,QUJDRA=="
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = threading.Thread(
+        target=tts_client.mimo_tts_worker,
+        kwargs={
+            "request_queue": request_queue,
+            "response_queue": response_queue,
+            "audio_api_key": "mimo-key",
+            "voice_id": "mimo-clone-abc",  # local id, ignored in clone mode
+            "base_url": None,
+            "clone_voice": clone_uri,
+        },
+        daemon=True,
+    )
+    thread.start()
+
+    _wait_for_queue_item(response_queue, lambda item: item == ("__ready__", True))
+    request_queue.put(("speech-1", "你好"))
+    request_queue.put((None, None))
+    _wait_for_queue_item(response_queue, lambda item: isinstance(item, bytes))
+
+    assert len(transport.requests) == 1
+    body = transport.requests[0]["body"]
+    assert body["model"] == "mimo-v2.5-tts-voiceclone"
+    assert body["audio"] == {"format": "pcm16", "voice": clone_uri}
+
+    request_queue.close()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+
+# ── dispatch: a MiMo clone voice routes to the voiceclone worker ──────────────
+
+@pytest.mark.unit
+def test_get_tts_worker_routes_mimo_clone_voice(monkeypatch):
+    sample = (np.arange(256, dtype=np.int16)).tobytes()
+
+    class _CM:
+        def get_core_config(self):
+            return {"assistApi": "qwen", "TTS_PROVIDER": "", "GPTSOVITS_ENABLED": False}
+
+        def get_model_api_config(self, model_type):
+            return {"is_custom": False}
+
+        def get_tts_api_key(self, provider):
+            assert provider == "mimo"
+            return "mimo-key"
+
+        def get_voices_for_current_api(self, for_listing=False):
+            return {
+                "mimo-clone-abc": {
+                    "provider": "mimo",
+                    "source": "clone",
+                    "clone_sample_file": "mimo-key-mimo-clone-abc.wav",
+                    "clone_sample_mime": "audio/wav",
+                }
+            }
+
+        def load_voice_clone_sample(self, filename):
+            assert filename == "mimo-key-mimo-clone-abc.wav"
+            return sample
+
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM())
+
+    worker, api_key, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen", has_custom_voice=True, voice_id="mimo-clone-abc",
+    )
+
+    assert isinstance(worker, partial)
+    assert worker.func is tts_client.mimo_tts_worker
+    assert provider_key == "mimo"
+    assert api_key == "mimo-key"
+    assert worker.keywords["base_url"] is None
+    expected_uri = "data:audio/wav;base64," + base64.b64encode(sample).decode("ascii")
+    assert worker.keywords["clone_voice"] == expected_uri
+
+
+@pytest.mark.unit
+def test_get_tts_worker_mimo_clone_missing_sample_falls_back_to_dummy(monkeypatch):
+    class _CM:
+        def get_core_config(self):
+            return {"assistApi": "qwen", "TTS_PROVIDER": "", "GPTSOVITS_ENABLED": False}
+
+        def get_model_api_config(self, model_type):
+            return {"is_custom": False}
+
+        def get_tts_api_key(self, provider):
+            return "mimo-key"
+
+        def get_voices_for_current_api(self, for_listing=False):
+            return {"mimo-clone-x": {"provider": "mimo", "source": "clone", "clone_sample_file": "gone.wav"}}
+
+        def load_voice_clone_sample(self, filename):
+            return None  # sample file missing
+
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM())
+
+    worker, api_key, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen", has_custom_voice=True, voice_id="mimo-clone-x",
+    )
+    assert worker is tts_client.dummy_tts_worker
+    assert provider_key is None
+
+
+# ── config_manager: __MIMO__ bucket merges into the current-API voice list ────
+
+@pytest.mark.unit
+def test_get_voices_merges_mimo_bucket(monkeypatch):
+    cm = get_config_manager()
+    monkeypatch.setattr(cm, "get_tts_api_key", lambda p: "mimokey12345678" if p == "mimo" else None)
+    monkeypatch.setattr(cm, "load_voice_storage", lambda: {
+        "__MIMO__12345678": {"mimo-clone-x": {"source": "clone"}}  # provider stamped by merge
+    })
+    monkeypatch.setattr(cm, "get_model_api_config", lambda t: {})
+    monkeypatch.setattr(cm, "get_core_config", lambda: {})
+    monkeypatch.setattr(cm, "_is_local_tts_storage_active", lambda *a, **k: False)
+    monkeypatch.setattr(cm, "is_free_voice", lambda: False)
+    monkeypatch.setattr(cm, "_get_cosyvoice_storage_keys", lambda: [])
+    monkeypatch.setattr(cm, "_get_minimax_storage_keys", lambda: [])
+    monkeypatch.setattr(cm, "_get_elevenlabs_storage_keys", lambda: [])
+
+    voices = cm.get_voices_for_current_api()
+    assert "mimo-clone-x" in voices
+    assert voices["mimo-clone-x"]["provider"] == "mimo"
+
+
+@pytest.mark.unit
+def test_infer_provider_from_mimo_storage_key():
+    cm = get_config_manager()
+    assert cm._infer_provider_from_storage_key("__MIMO__abcd1234") == "mimo"
+
+
+# ── config_manager: reference-sample persistence roundtrip ────────────────────
+
+@pytest.mark.unit
+def test_voice_clone_sample_roundtrip(monkeypatch, tmp_path):
+    cm = get_config_manager()
+    monkeypatch.setattr(cm, "config_dir", tmp_path)
+    stored = cm.save_voice_clone_sample("mimo-key-voice.wav", b"reference-bytes")
+    assert stored == "mimo-key-voice.wav"
+    assert cm.load_voice_clone_sample(stored) == b"reference-bytes"
+    assert cm.delete_voice_clone_sample(stored) is True
+    assert cm.load_voice_clone_sample(stored) is None
+    # idempotent delete
+    assert cm.delete_voice_clone_sample(stored) is False
+
+
+@pytest.mark.unit
+def test_voice_clone_sample_rejects_path_traversal(monkeypatch, tmp_path):
+    cm = get_config_manager()
+    monkeypatch.setattr(cm, "config_dir", tmp_path)
+    # basename strips any directory components, keeping writes inside the sample dir
+    stored = cm.save_voice_clone_sample("../escape.wav", b"x")
+    assert "/" not in stored and "\\" not in stored
+    assert (tmp_path / "voice_clone_samples" / "escape.wav").exists()

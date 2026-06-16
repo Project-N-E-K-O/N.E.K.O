@@ -344,6 +344,91 @@ class MinimaxVoiceCloneClient:
 
 
 # ============================================================================
+# Xiaomi MiMo 语音克隆
+# ============================================================================
+#
+# 与 MiniMax/CosyVoice/ElevenLabs 的「上传样本 → 远端注册 → 拿 voice_id」不同，MiMo 的
+# voiceclone（mimo-v2.5-tts-voiceclone）没有注册步骤：参考音频每次合成请求内联在
+# OpenAI 兼容 chat-completions 的 ``audio.voice`` 里（``data:audio/...;base64,...``）。
+# 因此「enrollment」= 在本地保存这段参考样本（克隆身份即这段样本），并用 MiMo 做一次
+# 校验性合成确认 key + 样本可用（对偶其它家在 /voice_clone 时真打远端注册接口）。
+# voice_id 由本地生成；dispatch 由 tts_provider_registry 的 mimo provider 按
+# voice_meta.provider 选中后，读出样本内联进 voiceclone 请求。
+
+# voice_storage 中标识 MiMo 克隆音色的前缀（按 MiMo API key 末 8 位分桶）
+MIMO_VOICE_STORAGE_KEY = '__MIMO__'
+
+
+class MimoVoiceCloneError(VoiceCloneError):
+    """MiMo voice-clone related error"""
+
+
+class MimoVoiceCloneClient:
+    """MiMo voice-clone enrollment client.
+
+    MiMo has no remote voice registration; this client validates that the
+    reference sample + API key actually synthesize via the voiceclone model
+    (one short request), so a bad key / unsupported format / oversized sample
+    fails fast at enrollment instead of going silent at runtime.
+    """
+
+    def __init__(self, api_key: str, base_url: Optional[str] = None):
+        self.api_key = api_key
+        self.base_url = base_url or None
+
+    async def validate_sample(
+        self,
+        audio_bytes: bytes,
+        mime_type: str = 'audio/wav',
+        *,
+        sample_text: str = '你好呀，很高兴认识你。',
+    ) -> None:
+        """Synthesize a short line with the reference sample to confirm it works.
+
+        Raises:
+            MimoVoiceCloneError on a non-200 response / network failure.
+        """
+        from utils.mimo_tts_voices import (
+            MIMO_TTS_VOICECLONE_MODEL,
+            mimo_chat_completions_url,
+            mimo_voice_clone_data_uri,
+        )
+
+        url = mimo_chat_completions_url(self.base_url)
+        headers = {'Content-Type': 'application/json', 'api-key': self.api_key}
+        payload = {
+            'model': MIMO_TTS_VOICECLONE_MODEL,
+            'messages': [{'role': 'assistant', 'content': sample_text}],
+            'audio': {
+                'format': 'pcm16',
+                'voice': mimo_voice_clone_data_uri(audio_bytes, mime_type),
+            },
+            'stream': False,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                resp = await client.post(url, headers=headers, json=payload)
+        except httpx.TimeoutException as e:
+            raise MimoVoiceCloneError("MiMo 克隆校验超时，请稍后重试") from e
+        except Exception as e:
+            raise MimoVoiceCloneError(f"MiMo 克隆校验失败: {e}") from e
+
+        if resp.status_code != 200:
+            raise MimoVoiceCloneError(
+                f"MiMo 克隆校验失败: HTTP {resp.status_code}, {resp.text[:300]}"
+            )
+        # 200 但携带 error 体的兜底（OpenAI 兼容接口偶有 200+error 的情形）
+        try:
+            data = resp.json()
+        except ValueError:
+            return
+        if isinstance(data, dict) and data.get('error'):
+            err = data['error']
+            msg = err.get('message') if isinstance(err, dict) else str(err)
+            raise MimoVoiceCloneError(f"MiMo 克隆校验失败: {msg}")
+
+
+# ============================================================================
 # Qwen / CosyVoice 语音克隆
 # ============================================================================
 

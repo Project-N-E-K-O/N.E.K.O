@@ -1534,13 +1534,15 @@
         "alibabaIntlApiRequired": "Esta función requiere el modelo CosyVoice de Alibaba Internacional. Guarde la clave API de Alibaba Internacional en la configuración de claves API (no es necesario habilitar la API auxiliar).",
         "minimaxApiRequired": "Esta característica requiere el modelo MiniMax (China). Guarde la clave API MiniMax en la configuración de claves API (no es necesario habilitar Assist API).",
         "minimaxIntlApiRequired": "Esta característica requiere el modelo MiniMax (Internacional). Guarde la clave API de MiniMax International en la configuración de claves API (no es necesario habilitar Assist API).",
+        "mimoApiRequired": "Esta función requiere un modelo MiMo. Guarde su clave API de MiMo en la página de configuración de claves API.",
         "providerLabel": "Proveedor de clonación de voz",
         "provider": {
             "cosyvoice": "Alibaba Bailian CosyVoice",
             "cosyvoice_intl": "Alibaba Intl CosyVoice",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Int.)",
-            "elevenlabs": "ElevenLabs"
+            "elevenlabs": "ElevenLabs",
+            "mimo": "MiMo (Xiaomi)"
         },
         "selectFile": "Seleccione el archivo de audio local (se recomiendan 8 segundos, máximo 20 segundos, formato wav/mp3)",
         "customPrefix": "Prefijo personalizado (obligatorio, utilizado para distinguir diferentes voces)",

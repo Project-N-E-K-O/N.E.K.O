@@ -445,7 +445,10 @@ _tts_providers.register(_tts_providers.TTSProvider(
     key='elevenlabs',
     kind='hosted',
     priority=40,
-    capabilities=frozenset({'clone'}),
+    # clone（上传样本）+ design（文字描述生成）。design 经 create-from-preview 落成一个
+    # 普通的 ElevenLabs voice_id（voice_meta.source='design'），dispatch 与 clone 同路
+    # （_elevenlabs_clone_is_selected 按 provider=='elevenlabs' 选中），无需独立 worker。
+    capabilities=frozenset({'clone', 'design'}),
     is_selected=_elevenlabs_clone_is_selected,
     resolve=_elevenlabs_clone_resolve,
     tts_dropdown_only=False,
@@ -462,19 +465,22 @@ _tts_providers.register(_tts_providers.TTSProvider(
 ))
 
 # MiMo：priority 60（clone 之后、native 之前，沿用原 get_tts_worker 顺序）。
-# capabilities 声明 {preset}，预制目录由 preset_catalog 提供（MIMO_PRESET_CATALOG，
-# 数据复用 utils.mimo_tts_voices 的固定音色表）——这是 MiMo 预制音色的单一真相，UI
-# /voices 与 validate_voice_id 都查注册表，不再借道 native_voice_registry（MiMo 是
-# hosted SaaS，不是核心自带，见设计文档 §4）。MiMo 虽有 mimo-v2.5-tts-voiceclone 模型，
-# 但克隆 enrollment 尚未实现——「按实际能力注册」，不在 enrollment 落地前把 clone
-# advertise 进 ui_metadata（否则前端 source-first 选声器会渲染一个不能用的 clone tab）；
-# voiceclone enrollment 真实现时再追加 'clone'（见交接 chip）。
+# capabilities {preset, clone}：
+#   - preset：固定音色目录由 preset_catalog 提供（MIMO_PRESET_CATALOG，数据复用
+#     utils.mimo_tts_voices 的固定音色表）——MiMo 预制音色的单一真相，UI /voices 与
+#     validate_voice_id 都查注册表，不再借道 native_voice_registry（MiMo 是 hosted SaaS，
+#     不是核心自带，见设计文档 §4）。
+#   - clone：voiceclone enrollment（characters_router /voice_clone 的 mimo 分支，对偶
+#     cosyvoice/minimax）。MiMo 克隆没有远端 voice_id——参考音频本地保存、每次合成内联，
+#     dispatch 由 _mimo_resolve 按 voice_meta.provider=='mimo' 选中并读出样本（见 §4/§7）。
+# 同一 provider 条目承载两种选中机制（config-selected preset / voice_meta-selected clone），
+# 见 workers/mimo.py 的 _mimo_is_selected/_mimo_resolve。
 # tts_dropdown_only=False：MiMo 本身是 assist LLM provider，不能被前端从 LLM 下拉隐藏。
 _tts_providers.register(_tts_providers.TTSProvider(
     key='mimo',
     kind='hosted',
     priority=60,
-    capabilities=frozenset({'preset'}),
+    capabilities=frozenset({'preset', 'clone'}),
     is_selected=_mimo_is_selected,
     resolve=_mimo_resolve,
     preset_catalog=MIMO_PRESET_CATALOG,

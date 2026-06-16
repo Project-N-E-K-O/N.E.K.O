@@ -5,17 +5,60 @@ chat-completions with an ``audio.voice`` field. The canonical voice IDs are
 published in the MiMo-V2.5-TTS speech synthesis guide.
 """
 
+import base64
+from urllib.parse import urlparse, urlunparse
+
 from utils.api_config_loader import get_native_tts_voice_provider_config
 from utils.tts_provider_registry import PresetCatalog
 
 MIMO_TTS_MODEL = "mimo-v2.5-tts"
-# MiMo 的声音克隆模型。当前仅声明为常量占位：MiMo 在 tts_provider_registry 里以
-# capabilities={preset, clone} 注册，但克隆 enrollment 流程（上传样本 → 调 MiMo 克隆
-# API → 落 voice_id，对偶 cosyvoice/elevenlabs 的 voice_clone 流程）尚未实现，留待后续
-# 接手（见 voice-source-unification 设计文档 / 交接 chip）。
-MIMO_TTS_VOICECLONE_MODEL = "mimo-v2.5-tts-voiceclone"  # TODO: 接 MiMo 克隆 enrollment
+# MiMo 的声音克隆模型。与 preset 不同，MiMo 克隆没有「注册 → 拿远端 voice_id」这一步：
+# 参考音频每次合成请求内联在 ``audio.voice`` 里（``data:audio/...;base64,...``），克隆身份
+# 即是这段本地保存的样本。enrollment（保存样本 + voice_meta provider=mimo/source=clone）在
+# characters_router 的 /voice_clone mimo 分支，对偶 cosyvoice/minimax 的云端克隆流程；
+# dispatch 由 tts_provider_registry 的 mimo provider 按 voice_meta 选中（见设计文档 §4/§7）。
+MIMO_TTS_VOICECLONE_MODEL = "mimo-v2.5-tts-voiceclone"
 MIMO_TTS_DEFAULT_VOICE = "mimo_default"
 MIMO_TTS_BASE_URL = "https://api.xiaomimimo.com/v1"
+
+
+def mimo_chat_completions_url(base_url: str | None = None) -> str:
+    """Normalize a MiMo API base URL to its chat-completions endpoint.
+
+    Canonical helper shared by the TTS worker and the voice-clone enrollment
+    client so the endpoint-derivation rule lives in one place (utils layer).
+    ``ws(s)://`` is coerced to ``http(s)://``; a bare host gets ``https://``.
+    """
+    raw_url = (base_url or MIMO_TTS_BASE_URL).strip().rstrip("/")
+    if raw_url.startswith("ws://"):
+        raw_url = "http://" + raw_url[5:]
+    elif raw_url.startswith("wss://"):
+        raw_url = "https://" + raw_url[6:]
+    elif not raw_url.startswith(("http://", "https://")):
+        raw_url = "https://" + raw_url
+
+    parsed = urlparse(raw_url)
+    if not parsed.netloc:
+        raise ValueError(f"无效的 MiMo base_url: {base_url!r}")
+
+    path = parsed.path.rstrip("/")
+    if path.endswith("/chat/completions"):
+        endpoint_path = path
+    elif not path or path == "/":
+        endpoint_path = "/v1/chat/completions"
+    elif path.endswith("/v1"):
+        endpoint_path = f"{path}/chat/completions"
+    else:
+        endpoint_path = f"{path}/v1/chat/completions"
+    return urlunparse((parsed.scheme, parsed.netloc, endpoint_path, "", "", ""))
+
+
+def mimo_voice_clone_data_uri(audio_bytes: bytes, mime_type: str = "audio/wav") -> str:
+    """Build the ``data:<mime>;base64,<...>`` URI MiMo expects in ``audio.voice``
+    for the ``mimo-v2.5-tts-voiceclone`` model (reference audio is inlined per
+    synthesis request — MiMo has no server-side cloned voice id)."""
+    b64 = base64.b64encode(audio_bytes).decode("ascii")
+    return f"data:{(mime_type or 'audio/wav').strip()};base64,{b64}"
 
 _FALLBACK_MIMO_TTS_VOICES: dict[str, str] = {
     "mimo_default": "Default",

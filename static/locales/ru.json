@@ -1534,13 +1534,15 @@
         "alibabaIntlApiRequired": "Для этой функции нужна модель Alibaba International CosyVoice. Сохраните API-ключ Alibaba International в настройках API (включение Assist API не требуется).",
         "minimaxApiRequired": "Для этой функции необходима модель MiniMax (Китай). Сохраните ключ API MiniMax в настройках API (включение Assist API не требуется).",
         "minimaxIntlApiRequired": "Для этой функции необходима модель MiniMax (Международная). Сохраните ключ API MiniMax (Международная) в настройках API (включение Assist API не требуется).",
+        "mimoApiRequired": "Для этой функции требуется модель MiMo. Сохраните ключ MiMo API на странице настроек ключей API.",
         "providerLabel": "Провайдер клонирования голоса",
         "provider": {
             "cosyvoice": "Alibaba Bailian CosyVoice",
             "cosyvoice_intl": "Alibaba Intl CosyVoice",
             "minimax": "MiniMax (Китай)",
             "minimax_intl": "MiniMax (Международная)",
-            "elevenlabs": "ElevenLabs"
+            "elevenlabs": "ElevenLabs",
+            "mimo": "MiMo (Xiaomi)"
         },
         "selectFile": "Выберите локальный аудиофайл (рекомендуется 15 секунд, макс. 30 секунд, формат wav/mp3)",
         "customPrefix": "Пользовательский префикс (Обязательно, для различения голосов)",

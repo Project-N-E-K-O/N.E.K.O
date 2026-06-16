@@ -1534,13 +1534,15 @@
         "alibabaIntlApiRequired": "이 기능에는 Alibaba 국제판 CosyVoice 모델이 필요합니다. API 키 설정에서 Alibaba 국제판 API 키를 저장하세요 (Assist API 활성화 불필요).",
         "minimaxApiRequired": "이 기능에는 MiniMax 모델 (China)이 필요합니다. API 키 설정에서 MiniMax API 키를 저장하세요 (Assist API 활성화 불필요).",
         "minimaxIntlApiRequired": "이 기능에는 MiniMax 모델(국제판)이 필요합니다. API 키 설정에서 MiniMax 국제판 API 키를 저장하세요 (Assist API 활성화 불필요).",
+        "mimoApiRequired": "이 기능은 MiMo 모델이 필요합니다. API 키 설정 페이지에서 MiMo API 키를 저장하세요",
         "providerLabel": "음성 복제 제공업체",
         "provider": {
             "cosyvoice": "Alibaba Bailian CosyVoice",
             "cosyvoice_intl": "Alibaba 국제판 CosyVoice",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (국제판)",
-            "elevenlabs": "ElevenLabs"
+            "elevenlabs": "ElevenLabs",
+            "mimo": "MiMo (샤오미)"
         },
         "selectFile": "로컬 오디오 파일 선택(8초 권장, 최대 20초, wav/mp3 형식)",
         "customPrefix": "사용자 정의 접두사(필수, 다양한 음성을 구별하는 데 사용됨)",

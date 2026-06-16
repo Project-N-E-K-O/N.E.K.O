@@ -2609,6 +2609,65 @@ class ConfigManager:
             logger.error("保存音色配置失败: %s", e)
             raise
 
+    # ── Voice-clone reference samples (on disk, not in voice_storage.json) ──────
+    # Some clone providers have no server-side cloned voice id and must re-send the
+    # reference audio on every synthesis (MiMo: ``audio.voice`` data URI). The
+    # sample (a few hundred KB) is persisted as a file here, and only its filename
+    # is stored in voice_meta, so voice_storage.json stays small and fast to load
+    # (it is read on every /voices call and the validate/cleanup chain).
+
+    def get_voice_clone_sample_dir(self):
+        """Directory holding persisted voice-clone reference samples (created lazily)."""
+        sample_dir = self.config_dir / "voice_clone_samples"
+        try:
+            sample_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            logger.error("创建语音克隆样本目录失败: %s", e)
+        return sample_dir
+
+    def save_voice_clone_sample(self, filename: str, audio_bytes: bytes) -> str:
+        """Persist a reference sample and return the stored filename.
+
+        ``filename`` must be a bare name (no path separators); callers build it
+        from the provider + voice_id. Returns the filename actually stored."""
+        safe_name = os.path.basename(str(filename or '').strip())
+        if not safe_name:
+            raise ValueError("voice clone 样本文件名不能为空")
+        path = self.get_voice_clone_sample_dir() / safe_name
+        with open(path, 'wb') as f:
+            f.write(audio_bytes)
+        return safe_name
+
+    def load_voice_clone_sample(self, filename: str) -> bytes | None:
+        """Read a persisted reference sample by filename, or None when missing."""
+        safe_name = os.path.basename(str(filename or '').strip())
+        if not safe_name:
+            return None
+        path = self.get_voice_clone_sample_dir() / safe_name
+        try:
+            with open(path, 'rb') as f:
+                return f.read()
+        except FileNotFoundError:
+            return None
+        except Exception as e:
+            logger.warning("读取语音克隆样本失败 (%s): %s", safe_name, e)
+            return None
+
+    def delete_voice_clone_sample(self, filename: str) -> bool:
+        """Delete a persisted reference sample by filename. Idempotent."""
+        safe_name = os.path.basename(str(filename or '').strip())
+        if not safe_name:
+            return False
+        path = self.get_voice_clone_sample_dir() / safe_name
+        try:
+            path.unlink()
+            return True
+        except FileNotFoundError:
+            return False
+        except Exception as e:
+            logger.warning("删除语音克隆样本失败 (%s): %s", safe_name, e)
+            return False
+
     @staticmethod
     def is_legacy_cosyvoice_id(voice_id: str) -> bool:
         """CosyVoice v2 / v3 cloned voice IDs became invalid with the CosyVoice 3.5 upgrade."""
@@ -2872,11 +2931,31 @@ class ConfigManager:
                 result.append(bucket)
         return result
 
+    def _get_mimo_storage_keys(self) -> list[str]:
+        """Return the list of voice_storage keys for the current MiMo API key.
+
+        Dual to :meth:`_get_elevenlabs_storage_keys`: MiMo cloned voices live in
+        a ``__MIMO__{suffix}`` bucket keyed by the MiMo API key, so they merge
+        into the current-API voice list regardless of which core/TTS provider is
+        otherwise active (a MiMo clone is selected by ``voice_meta.provider`` at
+        dispatch, not by config — see ``workers/mimo.py``)."""
+        voice_storage = self.load_voice_storage()
+        result = []
+        key = self.get_tts_api_key('mimo')
+        if key:
+            suffix = key[-8:] if len(key) >= 8 else key
+            bucket = f'__MIMO__{suffix}'
+            if bucket in voice_storage:
+                result.append(bucket)
+        return result
+
     @staticmethod
     def _infer_provider_from_storage_key(storage_key: str) -> str:
         """Infer the provider from a voice_storage partition key (only for legacy data compatibility)."""
         if storage_key == '__LOCAL_TTS__':
             return 'local'
+        if storage_key.startswith('__MIMO__'):
+            return 'mimo'
         if storage_key.startswith('__ELEVENLABS__'):
             return 'elevenlabs'
         if storage_key.startswith('__MINIMAX_INTL__'):
@@ -2987,6 +3066,16 @@ class ConfigManager:
                 if vid not in result:
                     if isinstance(vdata, dict) and 'provider' not in vdata:
                         vdata['provider'] = 'elevenlabs'
+                    result[vid] = vdata
+
+        # 合并 MiMo 克隆音色，并确保 provider 字段（dual to ElevenLabs/MiniMax；MiMo 克隆走
+        # 独立 __MIMO__ 桶 + voice_meta 选中，与当前 core/TTS provider 无关）
+        for mimo_key in self._get_mimo_storage_keys():
+            mimo_voices = voice_storage.get(mimo_key, {})
+            for vid, vdata in mimo_voices.items():
+                if vid not in result:
+                    if isinstance(vdata, dict) and 'provider' not in vdata:
+                        vdata['provider'] = 'mimo'
                     result[vid] = vdata
 
         return result
@@ -3100,9 +3189,14 @@ class ConfigManager:
                 storage_key.startswith('__MINIMAX__')
                 or storage_key.startswith('__MINIMAX_INTL__')
                 or storage_key.startswith('__ELEVENLABS__')
+                or storage_key.startswith('__MIMO__')
                 or storage_key.startswith('__COSYVOICE_INTL__')
             ) and voice_id in voice_storage.get(storage_key, {}):
-                del voice_storage[storage_key][voice_id]
+                removed = voice_storage[storage_key].pop(voice_id, None)
+                # MiMo 克隆把参考样本存在本地（非 voice_storage.json）；删音色时一并清理，
+                # 避免样本文件孤儿堆积。
+                if isinstance(removed, dict) and removed.get('clone_sample_file'):
+                    self.delete_voice_clone_sample(removed.get('clone_sample_file'))
                 self.save_voice_storage(voice_storage)
                 return True
 

@@ -6490,16 +6490,19 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
                 });
             }
 
-            // 注册的克隆音色：按 provider 分组成「<Provider> · 克隆」optgroup（source-first，§5）。
-            // 同 provider 复用同一组；provider 缺失时归到「其他 · 克隆」。
+            // 注册的音色：按「provider · 来源」分组成 optgroup（source-first，§5）。来源取
+            // voiceData.source（design=描述生成 / clone=克隆），缺省按 clone（存量克隆音色没有
+            // source 字段）。同 (provider, 来源) 复用同一组；provider 缺失归到「其他 · …」。
             const _cloneGroups = {};
             Object.entries(data.voices).forEach(function ([voiceId, voiceData]) {
                 const provider = (voiceData && voiceData.provider) || '';
-                if (!_cloneGroups[provider]) {
+                const source = (voiceData && voiceData.source === 'design') ? 'design' : 'clone';
+                const groupKey = provider + '|' + source;
+                if (!_cloneGroups[groupKey]) {
                     const grp = document.createElement('optgroup');
-                    grp.label = _panelNormalizeVoiceGroupLabel(_panelVoiceSourceGroupLabel(provider, 'clone'));
-                    grp.dataset.voiceSourceGroup = 'clone';
-                    _cloneGroups[provider] = grp;
+                    grp.label = _panelNormalizeVoiceGroupLabel(_panelVoiceSourceGroupLabel(provider, source));
+                    grp.dataset.voiceSourceGroup = source;
+                    _cloneGroups[groupKey] = grp;
                     selectEl.appendChild(grp);
                 }
                 const option = document.createElement('option');
@@ -6508,7 +6511,7 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
                 option.textContent = _panelGetRegisteredVoiceDisplayName(voiceId, voiceData);
                 option.title = voiceId;
                 if (voiceId === currentVoiceId) option.selected = true;
-                _cloneGroups[provider].appendChild(option);
+                _cloneGroups[groupKey].appendChild(option);
             });
 
             // 免费预设音色

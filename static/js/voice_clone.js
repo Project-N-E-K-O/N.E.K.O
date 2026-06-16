@@ -13,6 +13,7 @@ const VOICE_CLONE_PROVIDER_REGISTRY_KEYS = Object.freeze({
     minimax: 'minimax',
     minimax_intl: 'minimax_intl',
     elevenlabs: 'elevenlabs',
+    mimo: 'mimo',
 });
 const VOICE_CLONE_RESTRICTED_REGISTRY_KEYS = new Set([
     'qwen_intl',
@@ -25,6 +26,7 @@ const VOICE_CLONE_PROVIDER_KEY_FIELDS = Object.freeze([
     ['minimax', 'assistApiKeyMinimax'],
     ['minimax_intl', 'assistApiKeyMinimaxIntl'],
     ['elevenlabs', 'assistApiKeyElevenlabs'],
+    ['mimo', 'assistApiKeyMimo'],
 ]);
 const voiceCloneProviderRestrictionState = {
     loaded: false,
@@ -866,10 +868,12 @@ function updateVoiceCloneProviderNoticeText(noticeDiv, provider) {
         'minimax': 'voice.minimaxApiRequired',
         'minimax_intl': 'voice.minimaxIntlApiRequired',
         'elevenlabs': 'voice.elevenlabsApiRequired',
+        'mimo': 'voice.mimoApiRequired',
     };
     const fallbackMap = {
         'cosyvoice_intl': '请先在 API 设置中填写阿里国际版 API Key',
         'elevenlabs': '请先在 API 设置中填写 ElevenLabs API Key',
+        'mimo': '请先在 API 设置中填写 MiMo API Key',
     };
     const i18nKey = keyMap[provider] || 'voice.alibabaApiRequired';
     span.setAttribute('data-i18n', i18nKey);

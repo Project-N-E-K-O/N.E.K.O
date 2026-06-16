@@ -1534,13 +1534,15 @@
         "alibabaIntlApiRequired": "此功能需要阿里国际版 CosyVoice 模型，请在API密钥设置页中保存阿里国际版API Key（不要求启用辅助API）",
         "minimaxApiRequired": "此功能需要MiniMax模型（国服），请在API密钥设置页中保存MiniMax API Key（不要求启用辅助API）",
         "minimaxIntlApiRequired": "此功能需要MiniMax模型（国际服），请在API密钥设置页中保存MiniMax国际服API Key（不要求启用辅助API）",
+        "mimoApiRequired": "此功能需要 MiMo 模型，请在 API 密钥设置页中保存 MiMo API Key",
         "providerLabel": "语音克隆服务商",
         "provider": {
             "cosyvoice": "阿里百炼 CosyVoice",
             "cosyvoice_intl": "阿里国际版 CosyVoice",
             "minimax": "MiniMax（国服）",
             "minimax_intl": "MiniMax（国际服）",
-            "elevenlabs": "ElevenLabs"
+            "elevenlabs": "ElevenLabs",
+            "mimo": "MiMo（小米）"
         },
         "selectFile": "选择本地音频文件（8秒最佳，请勿超过20秒，wav/mp3格式）",
         "customPrefix": "自定义前缀（必填，用于区分音色）",
