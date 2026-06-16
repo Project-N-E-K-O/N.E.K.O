@@ -288,11 +288,8 @@ class HttpApi:
     @staticmethod
     def _raw_resp(data: bytes, content_type: str, status: int = 200):
         from aiohttp import web
-        extra_headers = {"Access-Control-Allow-Origin": "*"}
-        if ";" in content_type:
-            parts = [p.strip() for p in content_type.split(";")]
-            mime_type = parts[0]
-            charset_part = next((p for p in parts[1:] if p.lower().startswith("charset=")), "")
-            extra_headers["Content-Type"] = f"{mime_type}; {charset_part}" if charset_part else mime_type
-            return web.Response(body=data, status=status, headers=extra_headers)
-        return web.Response(body=data, status=status, content_type=content_type, headers=extra_headers)
+        extra_headers = {
+            "Access-Control-Allow-Origin": "*",
+            "Content-Type": content_type,
+        }
+        return web.Response(body=data, status=status, headers=extra_headers)
