@@ -1625,6 +1625,7 @@
             state.tutorialStartRequested = false;
             state.tutorialStarted = true;
             promptLifecycleStateStore.markHomeTutorialCompleted();
+            markHomeTutorialSeen('tutorial-completed');
             endHomeTutorialFeatureSuppression('tutorial-completed');
             emitHomeTutorialLockIfChanged('tutorial-completed');
             void (async function () {

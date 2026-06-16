@@ -666,8 +666,22 @@ console.log(JSON.stringify(result));
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                timeout=20,
                 check=False,
             )
+        except subprocess.TimeoutExpired as exc:
+            result = {
+                "pcRepo": str(pc_repo),
+                "reason": "node_probe_timeout",
+                "timeoutSec": exc.timeout,
+            }
+            return [
+                Check(
+                    "PC renderer probe executed",
+                    "FAIL",
+                    f"Node VM probe timed out after {exc.timeout}s.",
+                )
+            ], result
         except Exception as exc:
             result = {"pcRepo": str(pc_repo), "reason": "node_probe_failed_to_start", "error": str(exc)}
             return [

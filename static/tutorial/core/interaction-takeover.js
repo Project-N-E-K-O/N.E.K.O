@@ -446,6 +446,7 @@
             this.setExternalizedChatAvatarToolMenuOpen(false, 'clear-externalized-chat-fx');
             this.setExternalizedChatCompactHistoryOpen(false, 'clear-externalized-chat-fx');
             this.setExternalizedChatCompactToolFanOpen(false, 'clear-externalized-chat-fx');
+            this.setExternalizedChatInputLocked(false, 'clear-externalized-chat-fx');
         }
 
         onExternalChatReady() {

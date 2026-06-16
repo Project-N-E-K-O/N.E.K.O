@@ -2668,9 +2668,63 @@
         return document.getElementById('yui-guide-chat-spotlight');
     }
 
+    function getYuiGuidePcOverlayHost() {
+        return window.yuiGuidePcOverlay
+            || window.YuiGuidePcOverlay
+            || window.nekoYuiGuidePcOverlay
+            || null;
+    }
+
+    function isYuiGuidePcOverlayAvailable() {
+        var host = getYuiGuidePcOverlayHost();
+        return !!(
+            host
+            && (
+                typeof host.postPatch === 'function'
+                || typeof host.sendPatch === 'function'
+                || typeof host.applyPatch === 'function'
+            )
+        );
+    }
+
+    function sendYuiGuidePcOverlayPatch(patch) {
+        var host = getYuiGuidePcOverlayHost();
+        if (!host || !patch) {
+            return false;
+        }
+        try {
+            if (typeof host.postPatch === 'function') {
+                host.postPatch(patch);
+                return true;
+            }
+            if (typeof host.sendPatch === 'function') {
+                host.sendPatch(patch);
+                return true;
+            }
+            if (typeof host.applyPatch === 'function') {
+                host.applyPatch(patch);
+                return true;
+            }
+        } catch (error) {
+            console.warn('[YuiGuideChat] PC overlay patch failed:', error);
+        }
+        return false;
+    }
+
     function getYuiGuideChatSpotlightTarget(kind) {
         if (!kind || typeof document === 'undefined') {
             return null;
+        }
+
+        if (kind === 'capsule-input') {
+            return document.querySelector('#react-chat-window-root [data-compact-geometry-part="capsuleBody"]')
+                || document.querySelector('#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="capsule"]')
+                || document.querySelector('#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="input"]')
+                || document.querySelector('#react-chat-window-root .compact-chat-surface-frame')
+                || document.querySelector('#react-chat-window-root .compact-chat-surface-shell')
+                || document.querySelector('#react-chat-window-root .composer-panel')
+                || document.querySelector('#react-chat-window-root .composer-input-shell')
+                || document.getElementById('text-input-area');
         }
 
         if (kind === 'input') {
@@ -2716,6 +2770,19 @@
 
         var padding = kind === 'window' ? 10 : 8;
         var radius = kind === 'window' ? 26 : Math.min(34, Math.max(18, Math.round((rect.height + padding * 2) / 2)));
+        var pcRects = [{
+            kind: 'external-chat-' + kind,
+            rect: {
+                left: rect.left - padding,
+                top: rect.top - padding,
+                width: rect.width + padding * 2,
+                height: rect.height + padding * 2,
+                radius: radius
+            }
+        }];
+        if (isYuiGuidePcOverlayAvailable()) {
+            sendYuiGuidePcOverlayPatch({ spotlights: pcRects });
+        }
         spotlight.hidden = false;
         spotlight.classList.remove('is-window', 'is-input');
         spotlight.classList.add(kind === 'window' ? 'is-window' : 'is-input');

@@ -188,7 +188,16 @@
             const timelineEvents = events.filter((event) => event.afterAudioEnd !== true && event.atMs > 0);
 
             if (preAudioEvents.length > 0) {
-                await Promise.all(preAudioEvents.map((event) => this.dispatchEvent(event, context, triggered)));
+                const blockingPromises = [];
+                preAudioEvents.forEach((event) => {
+                    const resultPromise = this.dispatchEvent(event, context, triggered);
+                    if (event.blocking === true) {
+                        blockingPromises.push(Promise.resolve(resultPromise));
+                    }
+                });
+                if (blockingPromises.length > 0) {
+                    await Promise.all(blockingPromises);
+                }
             }
 
             if (

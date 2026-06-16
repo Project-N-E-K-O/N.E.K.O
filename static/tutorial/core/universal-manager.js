@@ -372,6 +372,9 @@ class UniversalTutorialManager {
         this._yuiGuideLifecycleActive = false;
         this.activeAvatarFloatingGuideRound = null;
         this._tutorialEndHandled = false;
+        if (typeof TutorialLifecycleStateStore !== 'function') {
+            throw new Error('TutorialLifecycleStateStore is required before universal-manager initializes');
+        }
         this.lifecycleStateStore = new TutorialLifecycleStateStore();
         this._tutorialAvatarReloadController = null;
         this._tutorialRoundPreludeController = null;
@@ -470,7 +473,7 @@ class UniversalTutorialManager {
         return state;
     }
 
-    markAvatarFloatingGuideRoundOutcome(day, outcome, rawReason = outcome) {
+    markAvatarFloatingGuideRoundOutcome(day, outcome, rawReason = outcome, options = {}) {
         const round = normalizeAvatarFloatingGuideRound(day);
         const normalizedOutcome = outcome === 'skip' ? 'skip' : (outcome === 'complete' ? 'complete' : 'destroy');
         const normalizedRawReason = typeof rawReason === 'string' && rawReason.trim()
@@ -503,9 +506,11 @@ class UniversalTutorialManager {
         };
         state.updatedAt = new Date(endedAt).toISOString();
         saveAvatarFloatingGuideState(state);
-        window.dispatchEvent(new CustomEvent(`neko:avatar-floating-guide-${normalizedOutcome}`, {
-            detail: { day: round, state, endState: state.lastEndState },
-        }));
+        if (options.dispatchEvent !== false) {
+            window.dispatchEvent(new CustomEvent(`neko:avatar-floating-guide-${normalizedOutcome}`, {
+                detail: { day: round, state, endState: state.lastEndState },
+            }));
+        }
         return state;
     }
 
@@ -595,17 +600,17 @@ class UniversalTutorialManager {
         if (!round) {
             return false;
         }
-        this.markAvatarFloatingGuideRoundAutoShown(round);
-        window.setTimeout(() => {
-            if (this.currentPage !== 'home' || this.isTutorialRunning || window.isInTutorial) {
+        this.managerResources.setTimeout(() => {
+            if (this._isDestroyed || window.universalTutorialManager !== this) {
                 return;
             }
-            if (!this.isAvatarFloatingGuideRoundPendingAutoStart(round)) {
+            if (this.currentPage !== 'home' || this.isTutorialRunning || window.isInTutorial) {
                 return;
             }
             if (!this.isAvatarFloatingGuideRoundRegistered(round)) {
                 return;
             }
+            this.markAvatarFloatingGuideRoundAutoShown(round);
             this.startAvatarFloatingGuideRound(round, { source: 'auto' }).catch((error) => {
                 console.warn('[Tutorial] 自动启动悬浮窗教程失败:', round, error);
             });
@@ -5554,10 +5559,15 @@ class UniversalTutorialManager {
         this._teardownTutorialUI();
 
         if (avatarFloatingRound) {
-            this.markAvatarFloatingGuideRoundOutcome(avatarFloatingRound, endMeta.reason, endMeta.rawReason);
+            this.markAvatarFloatingGuideRoundOutcome(
+                avatarFloatingRound,
+                endMeta.reason,
+                endMeta.rawReason,
+                { dispatchEvent: false }
+            );
             this.activeAvatarFloatingGuideRound = null;
         } else if (this.currentPage === 'home' && (endMeta.reason === 'complete' || endMeta.reason === 'skip')) {
-            this.markAvatarFloatingGuideRoundOutcome(1, endMeta.reason, endMeta.rawReason);
+            this.markAvatarFloatingGuideRoundOutcome(1, endMeta.reason, endMeta.rawReason, { dispatchEvent: false });
         }
         let avatarFloatingEndState = null;
         if (avatarFloatingRound || this.currentPage === 'home') {
@@ -6127,6 +6137,7 @@ class UniversalTutorialManager {
 
     async resetAllTutorials() {
         await this.resetHomeTutorialPromptState('manual_all_tutorial_reset');
+        localStorage.removeItem(AVATAR_FLOATING_GUIDE_STORAGE_KEY);
         TUTORIAL_PAGES.forEach(page => {
             this.getResetStorageKeysForPage(page).forEach(key => localStorage.removeItem(key));
         });
@@ -6157,6 +6168,7 @@ class UniversalTutorialManager {
 
         if (pageKey === 'home') {
             this.markTutorialManualStartIntent('home');
+            this.resetAvatarFloatingGuideRoundState(1, { source: 'manual_home_tutorial_reset' });
             dispatchHomeTutorialResetEvent('home', 'manual_home_tutorial_reset');
         }
 
@@ -6292,6 +6304,7 @@ async function resetAllTutorials() {
         TUTORIAL_PAGES.forEach(page => {
             getTutorialStorageKeysForPageFallback(page).forEach(key => localStorage.removeItem(key));
         });
+        localStorage.removeItem(AVATAR_FLOATING_GUIDE_STORAGE_KEY);
         localStorage.setItem(getTutorialManualIntentKeyForPage('home'), 'true');
         dispatchHomeTutorialResetEvent('all', 'manual_all_tutorial_reset');
     }
@@ -6347,6 +6360,7 @@ async function resetTutorialForPage(pageKey) {
     } else {
         if (pageKey === 'home') {
             await postTutorialPromptReset('manual_home_tutorial_reset');
+            localStorage.removeItem(AVATAR_FLOATING_GUIDE_STORAGE_KEY);
         }
         if (pageKey === 'model_manager') {
             getTutorialStorageKeysForPageFallback('model_manager').forEach(key => localStorage.removeItem(key));

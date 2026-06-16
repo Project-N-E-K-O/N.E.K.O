@@ -115,6 +115,7 @@
         }
         if (!host) {
             console.warn('[NewUserIcebreaker] React chat host unavailable');
+            activeSession = null;
             return false;
         }
 
