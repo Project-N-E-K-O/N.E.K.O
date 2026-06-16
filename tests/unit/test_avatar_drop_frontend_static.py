@@ -211,7 +211,8 @@ def test_avatar_drop_image_and_memory_override_are_routed_as_text_session_inputs
     assert 'image_input_types = {"screen", "camera", "avatar_drop_image", "user_image"}' in core_source
     assert "memory_text = self._clean_frontend_memory_text(message.get(\"memory_text\"))" in core_source
     assert "record_data = memory_text or data" in core_source
-    assert "routing_data = record_data if memory_text else data" in core_source
+    assert "openclaw_magic_command = self._normalize_explicit_openclaw_magic_command(data)" in core_source
+    assert "_should_handoff_text_to_openclaw" not in core_source
     assert "input_transcript_callback" in core_source
     assert "self._next_text_transcript_memory_text" not in core_source
     assert "memory_override_text" not in core_source

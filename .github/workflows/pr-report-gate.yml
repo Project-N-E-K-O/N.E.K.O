@@ -2,7 +2,8 @@ name: PR report gate
 
 # Enforces two project policies against the PR DESCRIPTION:
 #   · touching app/ | main_logic/ | memory/ (*.py) → "回归报告" required
-#   · changing > 20 non-test files                 → "不拆分理由" required
+#   · changing > 20 counted files                  → "不拆分理由" required
+#     (new files, i18n locale files, and tests do not count)
 #
 # Kept separate from analyze.yml on purpose: this gate must re-run when the
 # PR body is edited (author adds the report) or a label changes (maintainer

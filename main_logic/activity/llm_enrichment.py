@@ -50,8 +50,14 @@ import re
 import time
 from typing import Any
 
-from config.prompts.prompts_activity import ACTIVITY_GUESS_PROMPTS, OPEN_THREADS_PROMPTS
+from config.prompts.prompts_activity import (
+    ACTIVITY_GUESS_PROMPTS,
+    DEEP_SEARCH_QUERY_PROMPTS,
+    OPEN_THREADS_PROMPTS,
+    TOPIC_CANDIDATE_PROMPTS,
+)
 from utils.file_utils import robust_json_loads
+from utils.tokenize import truncate_to_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -59,9 +65,10 @@ logger = logging.getLogger(__name__)
 # Input cap: the emotion tier is small and cheap, but we still don't
 # want pathological prompt sizes from a long-running session. 8 turns
 # of each side covers the realistic "what's hanging" window without
-# ballooning latency.
+# ballooning latency. Per-turn cap is in tokens (not chars) so the
+# recent-conversation and global-evidence inputs share one budget unit.
 _MAX_CONV_TURNS_PER_SIDE = 8
-_MAX_CONV_CHARS_PER_TURN = 200
+_MAX_CONV_TOKENS_PER_TURN = 300
 
 # Soft-score keys the LLM is asked to fill. Skipping ``transitioning``,
 # ``away``, ``stale_returning`` because those are purely temporal /
@@ -88,15 +95,46 @@ def _normalize_lang(lang: str) -> str:
     if not lang:
         return 'zh'
     low = lang.lower()
+    if low.startswith('zh-tw') or low.startswith('zh_hant') or low.startswith('zh-hant'):
+        return 'zh-TW'
     if low.startswith('zh'):
         return 'zh'
     if low.startswith('ja'):
         return 'ja'
     if low.startswith('ko'):
         return 'ko'
+    if low.startswith('es'):
+        return 'es'
+    if low.startswith('pt'):
+        return 'pt'
     if low.startswith('ru'):
         return 'ru'
     return 'en'
+
+
+def _select_lang_template(prompts: dict, lang_key: str):
+    """Pick a prompt template for ``lang_key`` with a zh-family fallback.
+
+    ``_normalize_lang`` can return ``zh-TW`` (Traditional), but not every
+    prompt dict carries a ``zh-TW`` entry. A plain ``.get(lang_key, en)`` would
+    then drop Traditional Chinese sessions straight to English — regressing
+    them from the Simplified ``zh`` prompt. Fall back zh-* → zh → en instead.
+    """
+    if lang_key in prompts:
+        return prompts[lang_key]
+    if lang_key.startswith('zh') and 'zh' in prompts:
+        return prompts['zh']
+    return prompts['en']
+
+
+def _topic_interest_too_short(interest: str) -> bool:
+    if len(interest) >= 4:
+        return False
+    compact = re.sub(r'\s+', '', interest)
+    cjk_chars = re.findall(r'[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]', compact)
+    if len(cjk_chars) >= 2:
+        return False
+    return True
 
 
 def _format_conversation(
@@ -106,8 +144,8 @@ def _format_conversation(
     """Interleave user / AI messages by timestamp, render as plain lines.
 
     Each side is capped to ``_MAX_CONV_TURNS_PER_SIDE`` (most recent),
-    each text truncated to ``_MAX_CONV_CHARS_PER_TURN``. Empty input
-    returns a placeholder so the prompt still parses.
+    each text truncated to ``_MAX_CONV_TOKENS_PER_TURN`` tokens. Empty
+    input returns a placeholder so the prompt still parses.
     """
     items: list[tuple[float, str, str]] = []
     for ts, text in user_msgs[-_MAX_CONV_TURNS_PER_SIDE:]:
@@ -128,9 +166,10 @@ def _format_conversation(
             age_str = f'{int(age / 60)}min ago'
         else:
             age_str = f'{int(age / 3600)}h ago'
-        clip = text.strip()
-        if len(clip) > _MAX_CONV_CHARS_PER_TURN:
-            clip = clip[:_MAX_CONV_CHARS_PER_TURN] + '…'
+        stripped = text.strip()
+        clip = truncate_to_tokens(stripped, _MAX_CONV_TOKENS_PER_TURN)
+        if clip != stripped:
+            clip = clip + '…'
         out_lines.append(f'[{age_str}] {who}: {clip}')
     return '\n'.join(out_lines)
 
@@ -179,7 +218,7 @@ async def call_activity_guess(
         LLM can choose to confirm or override.
     """
     lang_key = _normalize_lang(lang)
-    template = ACTIVITY_GUESS_PROMPTS.get(lang_key, ACTIVITY_GUESS_PROMPTS['en'])
+    template = _select_lang_template(ACTIVITY_GUESS_PROMPTS, lang_key)
 
     prompt = template.format(
         signals=_format_signals(snapshot_signals),
@@ -231,7 +270,7 @@ async def call_open_threads(
     hanging" (``[]``) from "LLM call failed" (``None``).
     """
     lang_key = _normalize_lang(lang)
-    template = OPEN_THREADS_PROMPTS.get(lang_key, OPEN_THREADS_PROMPTS['en'])
+    template = _select_lang_template(OPEN_THREADS_PROMPTS, lang_key)
 
     if not user_msgs and not ai_msgs:
         return []
@@ -257,6 +296,91 @@ async def call_open_threads(
     return cleaned
 
 
+async def call_topic_candidates(
+    *,
+    user_msgs: list[tuple[float, str]],
+    ai_msgs: list[tuple[float, str]],
+    lang: str,
+    global_signals: str = "",
+    timeout: float = 8.0,
+) -> list[dict[str, Any]] | None:
+    """Extract low-frequency deeper topic hooks for the background pool.
+
+    This is intentionally a background-only helper. It summarizes raw recent
+    turns into short topic materials, so proactive chat never needs to pull raw
+    conversation text synchronously.
+    """
+    lang_key = _normalize_lang(lang)
+    template = _select_lang_template(TOPIC_CANDIDATE_PROMPTS, lang_key)
+
+    if not user_msgs and not ai_msgs:
+        return []
+
+    prompt = template.format(
+        conversation=_format_conversation(user_msgs, ai_msgs),
+        global_signals=(global_signals or "(no global signals yet)").strip(),
+    )
+
+    raw = await _invoke_emotion_tier(prompt, timeout=timeout, label='topic_candidates')
+    if raw is None:
+        return None
+
+    parsed = _safe_parse_json(raw)
+    if not isinstance(parsed, dict):
+        logger.debug('topic_candidates: LLM did not return a JSON object: %r', raw[:200])
+        return None
+
+    topics = parsed.get('topics')
+    if not isinstance(topics, list):
+        return None
+
+    cleaned: list[dict[str, Any]] = []
+    for item in topics[:4]:
+        if not isinstance(item, dict):
+            continue
+        interest = str(item.get('interest') or '').strip()
+        if _topic_interest_too_short(interest):
+            continue
+        try:
+            relevance = int(item.get('relevance', 70))
+        except (TypeError, ValueError):
+            relevance = 70
+        try:
+            risk = int(item.get('risk', 20))
+        except (TypeError, ValueError):
+            risk = 20
+        relevance = max(0, min(100, relevance))
+        risk = max(0, min(100, risk))
+        if relevance < 70 or risk > 65:
+            continue
+        raw_keywords = item.get('keywords')
+        if isinstance(raw_keywords, str):
+            raw_keywords = [raw_keywords]
+        elif not isinstance(raw_keywords, list):
+            raw_keywords = []
+        keywords: list[str] = []
+        for kw in raw_keywords:
+            kw_text = str(kw or '').strip()[:30]
+            if kw_text and kw_text not in keywords:
+                keywords.append(kw_text)
+            if len(keywords) >= 6:
+                break
+        # No search_query: the small candidate model identifies the topic and
+        # its keywords; constructing the actual online query is left to the
+        # downstream pipeline (background pre-fetch joins keywords; the Phase-2
+        # model derives a deeper query at delivery time).
+        material = {
+            'interest': interest[:90],
+            'keywords': keywords,
+            'relevance': relevance,
+            'risk': risk,
+        }
+        cleaned.append(material)
+        if len(cleaned) >= 2:
+            break
+    return cleaned
+
+
 # ── Internal LLM driver ─────────────────────────────────────────────
 
 async def _invoke_emotion_tier(prompt: str, *, timeout: float, label: str) -> str | None:
@@ -266,9 +390,8 @@ async def _invoke_emotion_tier(prompt: str, *, timeout: float, label: str) -> st
     full LLM stack — useful for tests that exercise prompt formatting
     without a live model.
     """
-    from langchain_core.messages import HumanMessage
     from utils.config_manager import get_config_manager
-    from utils.llm_client import create_chat_llm
+    from utils.llm_client import HumanMessage, create_chat_llm
     from utils.token_tracker import set_call_type
 
     try:
@@ -308,6 +431,98 @@ async def _invoke_emotion_tier(prompt: str, *, timeout: float, label: str) -> st
     except Exception as e:
         logger.debug('emotion-tier %s call failed: %s', label, e)
         return None
+
+
+async def _invoke_capable_tier(prompt: str, *, timeout: float, label: str) -> str | None:
+    """Single-shot capable-tier (``summary``) call for delivery-time deep work.
+
+    Deep-search query derivation is a step up from the emotion-tier candidate
+    pass: it runs once, at open time, off the user hot path, so it uses the
+    heavier ``summary`` tier (the same tier the window search summarizer uses).
+    Returns raw response text or None on any failure.
+    """
+    from utils.config_manager import get_config_manager
+    from utils.llm_client import HumanMessage, create_chat_llm
+    from utils.token_tracker import set_call_type
+
+    try:
+        cfg_mgr = get_config_manager()
+        cfg = cfg_mgr.get_model_api_config('summary')
+    except Exception as e:
+        logger.debug('summary config fetch failed: %s', e)
+        return None
+    model = cfg.get('model')
+    api_key = cfg.get('api_key')
+    base_url = cfg.get('base_url')
+    if not model or not api_key:
+        logger.debug('summary tier model/api_key missing — deep search disabled')
+        return None
+
+    set_call_type('topic_deep_search')
+    try:
+        llm = create_chat_llm(
+            model, base_url, api_key,
+            temperature=0.3,
+            max_completion_tokens=128,
+        )
+    except Exception as e:
+        logger.debug('summary-tier llm init failed: %s', e)
+        return None
+
+    try:
+        async with llm:
+            resp = await asyncio.wait_for(
+                llm.ainvoke([HumanMessage(content=prompt)]),
+                timeout=timeout,
+            )
+        return getattr(resp, 'content', '') or ''
+    except asyncio.TimeoutError:
+        logger.debug('summary-tier %s call timed out (%ss)', label, timeout)
+        return None
+    except Exception as e:
+        logger.debug('summary-tier %s call failed: %s', label, e)
+        return None
+
+
+async def derive_deep_search_query(
+    *,
+    interest: str,
+    keywords: list[str],
+    floor_angle: str = "",
+    lang: str,
+    timeout: float = 8.0,
+) -> str | None:
+    """Derive one focused online query for a delivery-time deep search.
+
+    Unlike the small candidate model (which only identifies the topic), this is
+    the capable-tier "big model" step the deep-search design calls for: it turns
+    interest + keywords (+ the cheap floor angle) into a single retrieval query.
+    Returns None when nothing usable comes back, so callers fall back to the
+    keyword-joined floor query.
+    """
+    interest = (interest or "").strip()
+    if not interest:
+        return None
+    lang_key = _normalize_lang(lang)
+    template = _select_lang_template(DEEP_SEARCH_QUERY_PROMPTS, lang_key)
+    prompt = template.format(
+        interest=interest[:120],
+        keywords=", ".join(k for k in (keywords or []) if k)[:120] or "(none)",
+        floor_angle=(floor_angle or "").strip()[:200] or "(none)",
+    )
+    raw = await _invoke_capable_tier(prompt, timeout=timeout, label='topic_deep_query')
+    if raw is None:
+        return None
+    parsed = _safe_parse_json(raw)
+    query = ""
+    if isinstance(parsed, dict):
+        query = str(parsed.get('query') or '').strip()
+    if not query:
+        # Tolerate a bare single-line answer if the model ignored the JSON shape.
+        stripped = " ".join(raw.split())
+        if stripped and len(stripped) < 120 and "{" not in stripped:
+            query = stripped
+    return query.strip().strip('"').strip()[:80] or None
 
 
 def _safe_parse_json(raw: str) -> Any:

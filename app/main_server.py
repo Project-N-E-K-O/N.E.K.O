@@ -583,6 +583,13 @@ def _get_session_manager(name):
     return rs.session_manager if rs is not None else None
 
 
+try:
+    from main_logic.topic.delivery import register_topic_session_manager_getter
+    register_topic_session_manager_getter(_get_session_manager)
+except Exception:
+    logger.warning("Failed to register topic session manager getter", exc_info=True)
+
+
 def _select_fallback_session_manager():
     """Return a single connected session manager as a safe fallback, if unambiguous."""
     connected = []
@@ -640,12 +647,30 @@ async def _handle_agent_event(event: dict):
 
         # Agent status updates may be broadcast (lanlan_name omitted).
         if event_type == "agent_status_update":
+            snapshot = event.get("snapshot", {})
             payload = {
                 "type": "agent_status_update",
-                "snapshot": event.get("snapshot", {}),
+                "snapshot": snapshot,
                 "lanlan_name": lanlan or "",
             }
             mgr_for_status = _get_session_manager(lanlan)
+            if isinstance(snapshot, dict):
+                flags = snapshot.get("flags")
+                if isinstance(flags, dict):
+                    flags_for_sync = dict(flags)
+                    if isinstance(snapshot.get("analyzer_enabled"), bool):
+                        flags_for_sync["agent_enabled"] = bool(snapshot.get("analyzer_enabled"))
+                    if lanlan and mgr_for_status is not None:
+                        try:
+                            mgr_for_status.update_agent_flags(flags_for_sync)
+                        except Exception as e:
+                            logger.debug("[EventBus] agent_status_update flag sync failed: %s", e)
+                    elif not lanlan:
+                        for _, mgr in _iter_session_managers():
+                            try:
+                                mgr.update_agent_flags(flags_for_sync)
+                            except Exception as e:
+                                logger.debug("[EventBus] agent_status_update broadcast flag sync failed: %s", e)
             if lanlan and mgr_for_status is not None:
                 mgr = mgr_for_status
                 ws = getattr(mgr, "websocket", None) if mgr else None
@@ -654,8 +679,16 @@ async def _handle_agent_event(event: dict):
                         await ws.send_json(payload)
                     except Exception as e:
                         logger.debug("[EventBus] agent_status_update send failed: %s", e)
-            else:
+            elif not lanlan:
+                # Only a target-less update (lanlan_name omitted) fans out to all
+                # sessions; a targeted update whose session manager is missing must
+                # NOT broadcast, or one character's status leaks into other sessions.
                 await _broadcast_to_all_connected(payload)
+            else:
+                logger.info(
+                    "[EventBus] agent_status_update dropped: no session_manager for lanlan=%s",
+                    lanlan,
+                )
             return
 
         # 免费版 Agent 每日配额耗尽：全局提示（与角色无关），广播成 status toast

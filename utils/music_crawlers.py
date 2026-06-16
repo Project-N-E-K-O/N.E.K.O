@@ -15,11 +15,11 @@
 """
 Music crawler module, for searching and fetching music from different platforms.
 
--   **Features**: 
+-   **Features**:
     -   Picks suitable music sources based on the user's region (China/non-China).
     -   Supports fetching from NetEase Cloud Music, Musopen (classical), FMA (royalty-free), etc.
     -   All crawlers return APlayer-compatible audio formats.
--   **Design**: 
+-   **Design**:
     -   A unified `BaseMusicCrawler` base class encapsulates common `httpx` request logic, logging and User-Agent management.
     -   Each platform is implemented as a `BaseMusicCrawler` subclass that only overrides the `search` method.
     -   The main function `fetch_music_content` runs multiple crawlers concurrently via `asyncio.gather`, scheduling intelligently by region, keyword and diversity strategy.
@@ -282,6 +282,12 @@ except ImportError:
             return loc and 'zh' in loc.lower() and 'cn' in loc.lower()
         except Exception:
             return False
+
+try:
+    from utils.source_locale import source_region_from_locale
+except ImportError:
+    def source_region_from_locale(source_locale: str | None) -> str | None:
+        return None
 
 # =======================================================
 # 2. 爬虫基类
@@ -1044,12 +1050,13 @@ async def close_all_crawlers():
 # 4. 主调度函数
 # =======================================================
 
-async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
+async def fetch_music_content(keyword: str, limit: int = 1, source_locale: str | None = None) -> Dict[str, Any]:
     """
-    Main music-fetching function, with "segmented cutoff" smart concurrent scheduling.
+    Fetch music content with staged fallback and locale-aware source ordering.
     """
-    china = is_china_region()
-    logger.info(f"音乐搜索请求: keyword='{keyword}', limit={limit}, is_china_region={china}")
+    source_region = source_region_from_locale(source_locale)
+    china = is_china_region() if source_region is None else source_region == "china"
+    logger.info(f"音乐搜索请求: keyword='{keyword}', limit={limit}, is_china_region={china}, source_locale={source_locale}")
 
     all_results = []
     

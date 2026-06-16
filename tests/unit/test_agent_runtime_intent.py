@@ -339,6 +339,106 @@ async def test_set_agent_enabled_off_preserves_sub_flags(
 
 
 @pytest.mark.asyncio
+async def test_set_agent_enabled_on_reprobes_openclaw_when_intent_survives(
+    agent_state_isolation, isolated_intent_store: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Master ON must refresh OpenClaw readiness when the sub-toggle intent survived OFF."""
+    srv = agent_state_isolation
+    started: list[str | None] = []
+
+    srv.Modules.agent_flags["openclaw_enabled"] = True
+    srv.Modules.capability_cache["openclaw"] = {"ready": False, "reason": ""}
+    monkeypatch.setattr(srv, "_start_openclaw_enable_probe", lambda lanlan_name=None: started.append(lanlan_name))
+
+    with patch.object(srv, "_check_agent_api_gate", return_value={"ready": True, "reasons": [], "is_free_version": False}):
+        await srv.agent_command({
+            "command": "set_agent_enabled",
+            "enabled": False,
+            "_persist_intent": False,
+        })
+
+        assert srv.Modules.analyzer_enabled is False
+        assert srv.Modules.agent_flags["openclaw_enabled"] is True
+
+        started.clear()
+
+        await srv.agent_command({
+            "command": "set_agent_enabled",
+            "enabled": True,
+            "lanlan_name": "lanlan-test",
+            "_persist_intent": False,
+        })
+
+    assert started == ["lanlan-test"]
+
+
+@pytest.mark.asyncio
+async def test_openclaw_availability_ready_emits_after_canceling_pending_probe(
+    agent_state_isolation, monkeypatch: pytest.MonkeyPatch
+):
+    srv = agent_state_isolation
+    emitted: list[str | None] = []
+    canceled: list[bool] = []
+
+    class _ReadyOpenClaw:
+        def is_available(self):
+            return {"ready": True, "reasons": []}
+
+    async def _capture_emit(lanlan_name=None):
+        emitted.append(lanlan_name)
+
+    monkeypatch.setattr(srv.Modules, "openclaw", _ReadyOpenClaw())
+    monkeypatch.setattr(srv, "_openclaw_pending", lambda: True)
+    monkeypatch.setattr(srv, "_cancel_openclaw_enable_probe", lambda: canceled.append(True))
+    monkeypatch.setattr(srv, "_emit_agent_status_update", _capture_emit)
+
+    srv.Modules.agent_flags["openclaw_enabled"] = True
+    srv.Modules.capability_cache["openclaw"] = {
+        "ready": False,
+        "reason": "AGENT_PRECHECK_PENDING",
+    }
+
+    status = await srv.openclaw_availability()
+
+    assert status == {"ready": True, "reasons": []}
+    assert srv.Modules.capability_cache["openclaw"] == {"ready": True, "reason": ""}
+    assert canceled == [True]
+    assert emitted == [None]
+
+
+@pytest.mark.asyncio
+async def test_openclaw_availability_loss_emits_after_disabling_flag(
+    agent_state_isolation, monkeypatch: pytest.MonkeyPatch
+):
+    srv = agent_state_isolation
+    emitted: list[str | None] = []
+
+    class _UnavailableOpenClaw:
+        def is_available(self):
+            return {"ready": False, "reasons": ["AGENT_CONNECTIVITY_FAILED"]}
+
+    async def _capture_emit(lanlan_name=None):
+        emitted.append(lanlan_name)
+
+    monkeypatch.setattr(srv.Modules, "openclaw", _UnavailableOpenClaw())
+    monkeypatch.setattr(srv, "_openclaw_pending", lambda: False)
+    monkeypatch.setattr(srv, "_emit_agent_status_update", _capture_emit)
+
+    srv.Modules.agent_flags["openclaw_enabled"] = True
+    srv.Modules.capability_cache["openclaw"] = {"ready": True, "reason": ""}
+
+    status = await srv.openclaw_availability()
+
+    assert status == {"ready": False, "reasons": ["AGENT_CONNECTIVITY_FAILED"]}
+    assert srv.Modules.agent_flags["openclaw_enabled"] is False
+    assert srv.Modules.capability_cache["openclaw"] == {
+        "ready": False,
+        "reason": "AGENT_CONNECTIVITY_FAILED",
+    }
+    assert emitted == [None]
+
+
+@pytest.mark.asyncio
 async def test_gate_fail_preserves_user_plugin_enabled(
     agent_state_isolation, isolated_intent_store: Path
 ):

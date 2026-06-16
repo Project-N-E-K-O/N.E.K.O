@@ -9,6 +9,11 @@ from utils.api_config_loader import get_native_tts_voice_provider_config
 from utils.native_voice_registry import NativeVoiceProvider, register_provider
 
 MIMO_TTS_MODEL = "mimo-v2.5-tts"
+# MiMo 的声音克隆模型。当前仅声明为常量占位：MiMo 在 tts_provider_registry 里以
+# capabilities={preset, clone} 注册，但克隆 enrollment 流程（上传样本 → 调 MiMo 克隆
+# API → 落 voice_id，对偶 cosyvoice/elevenlabs 的 voice_clone 流程）尚未实现，留待后续
+# 接手（见 voice-source-unification 设计文档 / 交接 chip）。
+MIMO_TTS_VOICECLONE_MODEL = "mimo-v2.5-tts-voiceclone"  # TODO: 接 MiMo 克隆 enrollment
 MIMO_TTS_DEFAULT_VOICE = "mimo_default"
 MIMO_TTS_DEFAULT_MALE_VOICE = "Milo"
 MIMO_TTS_BASE_URL = "https://api.xiaomimimo.com/v1"
