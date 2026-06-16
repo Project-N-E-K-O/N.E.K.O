@@ -1234,6 +1234,47 @@ def test_reset_proactive_gate_keeps_topic_hook_on_text_start():
     assert mgr.pending_agent_callbacks == [topic_cb]
 
 
+async def test_deliver_agent_callbacks_text_drops_topic_hook_when_voice_took_over():
+    """Codex P2: an in-flight topic-hook snapshot (already removed from
+    pending_agent_callbacks) is unreachable by the voice-start sweep. The text
+    delivery path re-gates at the actual prompt: if voice has taken over while
+    this trigger parked on the SM claim / write lock, the topic hook is dropped
+    (ack False for the pool to retry) and prompt_ephemeral is never called."""
+    sess = _FakeOmniOffline(delivered=True)
+    mgr = _make_mgr(session=sess)
+    # audio start began while this trigger was parked — session still offline.
+    mgr._starting_session_count = 1
+    mgr._starting_input_mode = 'audio'
+    fut = asyncio.get_running_loop().create_future()
+    topic_cb = {
+        "_callback_delivery_id": "th1", "channel": "topic_hook",
+        "status": "completed", "summary": "deep topic", DELIVERY_ACK_FUTURE_KEY: fut,
+    }
+    snapshot = [topic_cb]
+
+    delivered = await LLMSessionManager._deliver_agent_callbacks_text(mgr, snapshot)
+
+    assert delivered is False
+    assert fut.done() and fut.result() is False
+    assert sess.called_with == []  # prompt_ephemeral never fired
+
+
+async def test_deliver_agent_callbacks_text_keeps_topic_hook_in_plain_text_session():
+    """Non-regression: with no voice active/starting, the text path delivers the
+    topic hook normally (prompt_ephemeral fires, returns True)."""
+    sess = _FakeOmniOffline(delivered=True)
+    mgr = _make_mgr(session=sess)
+    topic_cb = {
+        "_callback_delivery_id": "th1", "channel": "topic_hook",
+        "status": "completed", "summary": "deep topic",
+    }
+
+    delivered = await LLMSessionManager._deliver_agent_callbacks_text(mgr, [topic_cb])
+
+    assert delivered is True
+    assert len(sess.called_with) == 1
+
+
 async def test_text_mode_successful_delivery_fires_full_event_sequence():
     """happy path：START → CLAIM → PHASE2 → DONE，且 phase 回到 IDLE。"""
     sess = _FakeOmniOffline(delivered=True)

@@ -6306,6 +6306,19 @@ class LLMSessionManager:
         """
         async with self._proactive_write_lock:
             async with self.lock:
+                # Delivery-point voice re-gate. A topic hook can pass the release
+                # gate, get copied into callbacks_snapshot + removed from
+                # pending_agent_callbacks, then this trigger parks on
+                # try_start_proactive / _proactive_write_lock while the user
+                # starts an audio session. That in-flight snapshot is in neither
+                # queue, so the voice-start sweep (_drop_pending_topic_hooks_for_voice)
+                # can't reach it — and the release gate's check has gone stale.
+                # Re-check here, at the actual prompt, and drop topic hooks if
+                # voice has since taken over (ack False so TopicHookPool retries
+                # on a text session). The existing retracted filter below then
+                # removes them and their extras.
+                if self._voice_delivery_blocked() and self._retract_topic_hook_snapshots(callbacks_snapshot):
+                    logger.info("[%s] trigger_agent_callbacks: topic hook dropped at text prompt — voice took over mid-delivery", self.lanlan_name)
                 self._purge_retracted_agent_callback_extras(callbacks_snapshot)
                 active_callbacks = [
                     cb for cb in callbacks_snapshot
@@ -7274,6 +7287,24 @@ class LLMSessionManager:
                 "[%s] dropped %d queued + %d extras-only topic hook(s) at voice start: deferred for a text session",
                 self.lanlan_name, len(hooks), dropped_extras,
             )
+
+    def _retract_topic_hook_snapshots(self, callbacks: list) -> int:
+        """Mark in-flight topic-hook snapshot entries retracted + ack False so the
+        text delivery path drops them and ``TopicHookPool`` retries on a text
+        session. The delivery-point voice re-gate: a snapshot held by an
+        in-flight ``trigger_agent_callbacks`` is in neither pending queue, so the
+        voice-start sweep can't reach it. Returns the number retracted."""
+        n = 0
+        for cb in callbacks:
+            if (
+                isinstance(cb, dict)
+                and cb.get("channel") == "topic_hook"
+                and not cb.get(DELIVERY_RETRACTED_KEY)
+            ):
+                resolve_callback_delivery_ack(cb, False)
+                cb[DELIVERY_RETRACTED_KEY] = True
+                n += 1
+        return n
 
     def enqueue_agent_callback(self, callback: dict) -> None:
         """Enqueue a structured agent task callback for LLM injection.

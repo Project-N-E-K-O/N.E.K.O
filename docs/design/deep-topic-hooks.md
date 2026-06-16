@@ -104,6 +104,7 @@ prompt 只给「明显反复出现 → 高分，顺口一提 → 低分；如实
 - **会话启动边界兜底 drain / already-pending / extras-only 三条绕过路径**：`trigger_agent_callbacks` 的 voice 分支与 hot-swap `prime_context` 都直接消费 `pending_agent_callbacks` / `pending_extra_replies`，**不**复查 `topic_hook_delivery_allowed`，所以那两道门管不到已进队列的 hook。`_reset_proactive_gate` 在 `_voice_delivery_blocked()` 时调 `_drop_pending_topic_hooks_for_voice`，一次扫干净：
   - `pending_agent_callbacks` 里 `channel == "topic_hook"` 的——含 `_reset_proactive_gate` 自己刚从 manager drain 进来的、以及释放门早先放进来但 defer 的（SM 忙/媒体流失败/无文本会话）。resolve ack False + retract，复用 `_purge_retracted_agent_callbacks` 同步清配对的 `pending_extra_replies`。
   - `pending_extra_replies` 里 `source_kind == "topic"` 的孤儿 extra——`drain_agent_callbacks_for_llm` 在文本回合清 `pending_agent_callbacks` 但留下 extra，cb 已投递+ack，这条只剩 extra 会被 hot-swap prime 在语音里重新引出，按 `source_kind` 单独扫掉。
+- **文本投递点 delivery-point 复查兜底 in-flight snapshot**：topic hook 过了释放门后，`trigger_agent_callbacks` 会把它拷进局部 `callbacks_snapshot` 并从 `pending_agent_callbacks` 移除；若此 trigger 卡在 `try_start_proactive` / `_proactive_write_lock` 上、同时用户起 audio，这个 in-flight snapshot 不在任何队列里，会话启动 sweep 够不着，且释放门的判定已 stale。`_deliver_agent_callbacks_text` 在持锁后、prompt 前再查一次 `_voice_delivery_blocked()`，命中就 `_retract_topic_hook_snapshots` 把 snapshot 里的 topic hook 标 retract + ack False，复用既有 retracted 过滤链丢弃（普通文本投递时是 no-op）。这是把门补到**实际投递点**，而非只在 submit/release。
 
 ### surfaced reflection id 只记真正渲染的
 
