@@ -1419,6 +1419,40 @@ _GAME_INTERNAL_ADVICE_RE = re.compile(
     r"(?:balanceHint|balance_hint|system advice|system suggestion|系统建议|平衡建议|控制建议)",
     re.IGNORECASE,
 )
+_GAME_LLM_VISIBLE_EVENT_TOP_LEVEL_DROP_KEYS = frozenset({
+    "soccerGameMemoryEnabled",
+    "soccer_game_memory_enabled",
+    "soccerGameMemoryPlayerInteractionEnabled",
+    "soccer_game_memory_player_interaction_enabled",
+    "soccerGameMemoryEventReplyEnabled",
+    "soccer_game_memory_event_reply_enabled",
+    "soccerGameMemoryArchiveEnabled",
+    "soccer_game_memory_archive_enabled",
+    "soccerGameMemoryPostgameContextEnabled",
+    "soccer_game_memory_postgame_context_enabled",
+    "gameMemoryEnabled",
+    "game_memory_enabled",
+    "gameMemoryPlayerInteractionEnabled",
+    "game_memory_player_interaction_enabled",
+    "gameMemoryEventReplyEnabled",
+    "game_memory_event_reply_enabled",
+    "gameMemoryArchiveEnabled",
+    "game_memory_archive_enabled",
+    "gameMemoryPostgameContextEnabled",
+    "game_memory_postgame_context_enabled",
+    "lanlan_name",
+})
+_SOCCER_LLM_VISIBLE_SNAPSHOT_DROP_KEYS = frozenset({
+    "aiFreezeSec",
+    "playerKickStartleWindowSec",
+    "playerKickWallBounceForStartle",
+    "startle",
+    "startleDirectCdSec",
+    "startleGrazeCdSec",
+    "startleMutualLockSec",
+    "zoneoutCooldownSec",
+    "ballGhost",
+})
 
 
 def _sanitize_game_visible_line(text: Any) -> str:
@@ -1444,6 +1478,54 @@ def _sanitize_game_visible_line(text: Any) -> str:
             continue
         lines.append(line)
     return "\n".join(lines).strip()
+
+
+def _sanitize_soccer_llm_visible_snapshot(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _sanitize_soccer_llm_visible_snapshot(item)
+            for key, item in value.items()
+            if key not in _SOCCER_LLM_VISIBLE_SNAPSHOT_DROP_KEYS
+        }
+    if isinstance(value, list):
+        return [_sanitize_soccer_llm_visible_snapshot(item) for item in value]
+    return value
+
+
+def _build_game_llm_visible_event(game_type: str, event: Any) -> Any:
+    """Build the event copy sent to the main game LLM without internal route fields."""
+    if not isinstance(event, dict):
+        return event
+
+    visible_event = {
+        key: value
+        for key, value in event.items()
+        if key not in _GAME_LLM_VISIBLE_EVENT_TOP_LEVEL_DROP_KEYS
+    }
+    if _normalize_game_memory_type(game_type) != "soccer":
+        return visible_event
+
+    if "currentState" in visible_event:
+        visible_event["currentState"] = _sanitize_soccer_llm_visible_snapshot(
+            visible_event.get("currentState")
+        )
+
+    pending_items = visible_event.get("pendingItems")
+    if isinstance(pending_items, list):
+        sanitized_items: list[Any] = []
+        for item in pending_items:
+            if not isinstance(item, dict):
+                sanitized_items.append(item)
+                continue
+            sanitized_item = dict(item)
+            if "snapshot" in sanitized_item:
+                sanitized_item["snapshot"] = _sanitize_soccer_llm_visible_snapshot(
+                    sanitized_item.get("snapshot")
+                )
+            sanitized_items.append(sanitized_item)
+        visible_event["pendingItems"] = sanitized_items
+
+    return visible_event
 
 
 def _game_dialog_history_user_text(item: dict, labels: dict[str, str]) -> str:
@@ -6115,10 +6197,11 @@ async def _run_game_chat(
 
             # 格式化事件为文本发送给 LLM
             import json as _json
-            if isinstance(event, dict):
-                event_payload = _json.dumps(event, ensure_ascii=False)
+            llm_visible_event = _build_game_llm_visible_event(game_type, event)
+            if isinstance(llm_visible_event, dict):
+                event_payload = _json.dumps(llm_visible_event, ensure_ascii=False)
             else:
-                event_payload = str(event)
+                event_payload = str(llm_visible_event)
             event_text = get_game_chat_event_user_prompt(entry.get("user_language")).format(event=event_payload)
 
             llm_started_at = time.perf_counter()
