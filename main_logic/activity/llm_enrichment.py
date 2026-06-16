@@ -364,9 +364,12 @@ async def call_topic_candidates(
                 keywords.append(kw_text)
             if len(keywords) >= 6:
                 break
+        # No search_query: the small candidate model identifies the topic and
+        # its keywords; constructing the actual online query is left to the
+        # downstream pipeline (background pre-fetch joins keywords; the Phase-2
+        # model derives a deeper query at delivery time).
         material = {
             'interest': interest[:90],
-            'search_query': str(item.get('search_query') or '').strip()[:80],
             'keywords': keywords,
             'relevance': relevance,
             'risk': risk,

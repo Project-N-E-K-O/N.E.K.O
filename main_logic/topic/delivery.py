@@ -90,7 +90,7 @@ def build_topic_hook_callback(material: Mapping[str, Any], *, lang: str) -> dict
     hook_id = str(material.get("hook_id") or "")
     interest = str(material.get("interest") or "").strip()
     online_angle = str(material.get("online_angle") or "").strip()
-    online_query = str(material.get("online_query") or material.get("search_query") or "").strip()
+    online_query = str(material.get("online_query") or "").strip()
 
     # The hook is a SIGNAL, not an instruction: hand the LLM the topic (and a
     # concrete online fact when we have one), then let it decide how to open.

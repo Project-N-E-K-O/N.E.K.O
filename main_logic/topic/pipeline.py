@@ -88,7 +88,6 @@ def _clean_material(material: Mapping[str, Any]) -> dict[str, Any] | None:
         "source": "background_topic_pool",
         "interest": interest,
         "media_intent": _clean_media_intent(material.get("media_intent")),
-        "search_query": _clean_text(material.get("search_query"), limit=80),
         "keywords": _clean_keywords(material.get("keywords")),
         "relevance": max(0, min(100, relevance)),
         "risk": max(0, min(100, risk)),
@@ -131,7 +130,7 @@ def _material_topic_units(material: Mapping[str, Any]) -> set[str]:
     return _topic_units(
         " ".join(
             str(material.get(key) or "")
-            for key in ("interest", "hook", "search_query", "online_query")
+            for key in ("interest", "online_query", "online_angle")
         )
     )
 

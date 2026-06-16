@@ -119,7 +119,12 @@ async def _default_fetchers(lang: str | None = None) -> dict[str, Fetcher]:
 
 
 def _query_for_material(material: Mapping[str, Any]) -> str:
-    query = clean_text(material.get("search_query"), limit=80)
+    # The small candidate model no longer authors a search string. keywords are
+    # the same "stable relationship points" a query should target, so the cheap
+    # background pre-fetch query is just the keywords joined; interest/hook stay
+    # as fallbacks when no keyword survived cleaning.
+    keywords = [clean_text(kw, limit=30) for kw in (material.get("keywords") or [])]
+    query = " ".join(kw for kw in keywords if kw)[:80]
     if query:
         return query
     interest = clean_text(material.get("interest"), limit=32)

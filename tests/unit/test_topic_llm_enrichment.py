@@ -49,7 +49,6 @@ async def test_call_topic_candidates_parses_model_output(monkeypatch):
     assert topics == [
         {
             "interest": "想买凯迪拉克但预算压力很大",
-            "search_query": "",
             "keywords": [],
             "relevance": 93,
             "risk": 20,
@@ -58,7 +57,7 @@ async def test_call_topic_candidates_parses_model_output(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_call_topic_candidates_passes_global_signals_and_keeps_online_fields(monkeypatch):
+async def test_call_topic_candidates_passes_global_signals_and_keeps_keywords(monkeypatch):
     from main_logic.activity import llm_enrichment
 
     captured = {}
@@ -96,7 +95,6 @@ async def test_call_topic_candidates_passes_global_signals_and_keeps_online_fiel
     assert topics == [
         {
             "interest": "用户把买车和生活自由感联系在一起",
-            "search_query": "年轻人 买车 通勤 养车 成本",
             "keywords": ["买车", "自由感"],
             "relevance": 91,
             "risk": 18,

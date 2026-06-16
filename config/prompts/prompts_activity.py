@@ -257,14 +257,11 @@ TOPIC_CANDIDATE_PROMPTS: dict[str, str] = {
 - 寒暄、语气词、很薄的短句、问卷式问题，一律给低优先级或不要输出
 - 每个话题要像给角色的一张小抄：知道怎么自然开口，但最终开口仍交给角色生成
 - 重点是关系深度，不是触发频率；宁可少，不要硬凑
-- 如果这个话题适合联网补一点现实细节，给一个简短 search_query；查询词要围绕最稳定的关系点，不要围绕最近窗口里的偶然词
-
 输出严格 JSON（不带 markdown 代码块）：
 {{"topics": [
   {{
     "interest": "用户最近在意、纠结、计划或反复提到的一件具体事，整理成一句，不超过30字",
-    "search_query": "用于联网补现实细节的查询词；不需要联网就留空",
-    "keywords": ["3-6个关系点关键词，用于去重和检索兜底"],
+    "keywords": ["3-6个关系点关键词，用于去重、筛选联网结果，并直接作为联网查询词；围绕最稳定的关系点，不要用最近窗口里的偶然词"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -293,14 +290,11 @@ TOPIC_CANDIDATE_PROMPTS: dict[str, str] = {
 - 寒暄、語氣詞、很薄的短句、問卷式問題，一律給低優先級或不要輸出
 - 每個話題要像給角色的一張小抄：知道怎麼自然開口，但最終開口仍交給角色生成
 - 重點是關係深度，不是觸發頻率；寧可少，不要硬湊
-- 如果這個話題適合聯網補一點現實細節，給一個簡短 search_query；查詢詞也使用繁體中文，圍繞最穩定的關係點
-
 輸出嚴格 JSON（不帶 markdown 代碼塊）：
 {{"topics": [
   {{
     "interest": "用戶最近在意、糾結、計劃或反覆提到的一件具體事，整理成一句，不超過30字",
-    "search_query": "用於聯網補現實細節的查詢詞；不需要聯網就留空",
-    "keywords": ["3-6個關係點關鍵詞，用於去重和檢索兜底"],
+    "keywords": ["3-6個關係點關鍵詞，用於去重、篩選聯網結果，並直接作為聯網查詢詞；圍繞最穩定的關係點，不要用最近窗口裡的偶然詞"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -328,14 +322,11 @@ Rules:
 - Greetings, filler, thin short replies, and survey-like prompts should be low priority or omitted
 - Each topic is a small note for the character: how to open naturally, not final copy
 - Relationship depth matters more than trigger frequency; fewer is better than forced
-- If a topic would benefit from a concrete online detail, provide a concise search_query. The query should target the stable relationship point, not an accidental recent keyword
-
 Output strict JSON, no markdown fences:
 {{"topics": [
   {{
     "interest": "a single concrete thing the user recently cares about, worries over, plans, or keeps bringing up, max 30 words",
-    "search_query": "query for online enrichment; empty if not needed",
-    "keywords": ["3-6 short relationship keywords for dedup and search fallback"],
+    "keywords": ["3-6 short relationship keywords used for dedup, filtering online results, and as the online search query; target the stable relationship point, not an accidental recent word"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -364,14 +355,11 @@ If nothing is worth keeping, output {{"topics": []}}.""",
 - あいさつ、相づち、薄い短文、アンケート風の問いは低優先度または除外
 - 各話題はキャラクター用の短いメモ。最終的な口調はキャラクター側に任せる
 - 大事なのは関係の深さで、頻度ではない。無理に埋めるより少なくする
-- 現実の具体情報が少し役立つ話題なら、短い search_query を入れる。検索語もユーザーの言語で、安定した関係点に絞る
-
 厳密な JSON だけを出力（markdown コードブロックなし）：
 {{"topics": [
   {{
     "interest": "ユーザーが最近気にしている、悩んでいる、計画している、または繰り返し口にしている具体的な一件を一文にまとめたもの、30字以内",
-    "search_query": "現実情報を補う検索語。不要なら空文字",
-    "keywords": ["重複排除と検索の補助用、関係する短いキーワードを3〜6個"],
+    "keywords": ["重複排除・検索結果の絞り込み・そのまま検索語として使う、関係する短いキーワードを3〜6個。安定した関係点に絞り、最近の偶発的な語は避ける"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -400,14 +388,11 @@ If nothing is worth keeping, output {{"topics": []}}.""",
 - 인사, 추임새, 얇은 짧은 답, 설문 같은 질문은 낮은 우선순위로 두거나 제외하세요
 - 각 화제는 캐릭터를 위한 짧은 메모입니다. 최종 말투는 캐릭터 생성 단계에 맡깁니다
 - 중요한 것은 관계의 깊이이지 빈도가 아닙니다. 억지로 채우기보다 적게 출력하세요
-- 현실 정보가 조금 도움이 될 화제라면 짧은 search_query를 넣으세요. 검색어도 사용자 언어로, 안정적인 관계점에 맞추세요
-
 엄격한 JSON만 출력하세요（markdown 코드 블록 금지）:
 {{"topics": [
   {{
     "interest": "사용자가 최근 신경 쓰거나 고민하거나 계획하거나 반복해서 언급하는 구체적인 한 가지를 한 문장으로 정리한 것, 30자 이내",
-    "search_query": "현실 정보를 보충할 검색어. 필요 없으면 빈 문자열",
-    "keywords": ["중복 제거와 검색 보조용 핵심 키워드 3-6개"],
+    "keywords": ["중복 제거, 검색 결과 선별, 그리고 검색어로도 사용할 핵심 키워드 3-6개. 안정적인 관계점에 맞추고 최근의 우연한 단어는 피하세요"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -436,14 +421,11 @@ Reglas:
 - Saludos, muletillas, respuestas muy finas o preguntas tipo encuesta deben tener baja prioridad o omitirse
 - Cada tema es una nota breve para el personaje: cómo abrir naturalmente, no el texto final
 - Importa más la profundidad de la relación que la frecuencia; mejor pocos que forzados
-- Si ayudaría un detalle real de internet, da un search_query breve en el idioma del usuario y centrado en el punto estable
-
 Devuelve JSON estricto, sin bloques markdown:
 {{"topics": [
   {{
     "interest": "una sola cosa concreta que el usuario tiene en mente, le preocupa, planea o menciona repetidamente, resumida en una frase, máximo 30 palabras",
-    "search_query": "consulta para enriquecer con datos reales; vacío si no hace falta",
-    "keywords": ["3-6 palabras clave de la relación para deduplicar y como respaldo de búsqueda"],
+    "keywords": ["3-6 palabras clave de la relación, usadas para deduplicar, filtrar resultados en línea y como la consulta de búsqueda; centradas en el punto estable, no en una palabra reciente accidental"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -472,14 +454,11 @@ Regras:
 - Cumprimentos, muletas, respostas muito finas ou perguntas com cara de questionario devem ter baixa prioridade ou ser omitidos
 - Cada tema e uma nota curta para o personagem: como abrir naturalmente, nao o texto final
 - O foco e profundidade de relacao, nao frequencia; melhor pouco do que forcado
-- Se um detalhe real da internet ajudar, forneca um search_query curto no idioma do usuario e centrado no ponto estavel
-
 Retorne JSON estrito, sem blocos markdown:
 {{"topics": [
   {{
     "interest": "uma unica coisa concreta que o usuario tem em mente, preocupa, planeja ou menciona repetidamente, resumida em uma frase, maximo 30 palavras",
-    "search_query": "consulta para enriquecer com dados reais; vazio se nao precisar",
-    "keywords": ["3-6 palavras-chave da relacao para deduplicar e como apoio de busca"],
+    "keywords": ["3-6 palavras-chave da relacao, usadas para deduplicar, filtrar resultados online e como a consulta de busca; centradas no ponto estavel, nao em uma palavra recente acidental"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -508,14 +487,11 @@ Se nada valer a pena, retorne {{"topics": []}}.""",
 - Приветствия, междометия, тонкие короткие ответы и вопросы в стиле анкеты пропускай или давай низкий приоритет
 - Каждая тема — короткая заметка для персонажа: как естественно начать, а не финальная реплика
 - Важна глубина отношений, а не частота; лучше меньше, чем натянуто
-- Если теме поможет конкретная информация из сети, дай короткий search_query на языке пользователя, вокруг устойчивой точки интереса
-
 Выводи строго JSON, без markdown-блоков:
 {{"topics": [
   {{
     "interest": "одна конкретная вещь, о которой пользователь недавно думает, переживает, планирует или постоянно упоминает, сформулированная в одном предложении, до 30 слов",
-    "search_query": "запрос для фактического обогащения; пусто, если не нужно",
-    "keywords": ["3-6 ключевых слов темы для дедупликации и подстраховки поиска"],
+    "keywords": ["3-6 ключевых слов темы для дедупликации, фильтрации результатов из сети и в качестве поискового запроса; вокруг устойчивой точки интереса, а не случайного недавнего слова"],
     "relevance": 0-100,
     "risk": 0-100
   }}

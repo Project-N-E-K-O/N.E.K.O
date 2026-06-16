@@ -79,7 +79,7 @@ async def test_enrich_topic_materials_online_respects_explicit_empty_fetchers(mo
 
 
 @pytest.mark.asyncio
-async def test_enrich_topic_materials_online_uses_model_search_query_and_marks_online_angle():
+async def test_enrich_topic_materials_online_uses_keywords_as_query_and_marks_online_angle():
     calls = []
 
     async def fake_news(keyword, limit):
@@ -100,7 +100,7 @@ async def test_enrich_topic_materials_online_uses_model_search_query_and_marks_o
         {
             "interest": "用户把买车和生活自由感联系在一起",
             "hook": "不要硬讲车，先接住不想被人生流程推着走",
-            "search_query": "年轻人 买车 通勤 养车 成本",
+            "keywords": ["年轻人", "买车", "通勤", "养车", "成本"],
             "media_intent": ["news"],
         }
     ]
@@ -138,7 +138,7 @@ async def test_enrich_topic_materials_online_localizes_material_hint_summary():
             {
                 "interest": "moving to a quiet city",
                 "hook": "start from wanting quieter daily life",
-                "search_query": "quiet city moving checklist",
+                "keywords": ["quiet city", "moving checklist"],
                 "media_intent": ["news"],
             }
         ],
