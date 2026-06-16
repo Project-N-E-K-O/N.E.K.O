@@ -1555,7 +1555,8 @@ class TestGptsovitsEnabledSaveMigration:
         assert resp.get('success') is True
 
         saved = config_manager.load_json_config('core_config.json', {})
-        assert saved.get('gptsovitsEnabled') is not False
+        # 切到/保持 gptsovits 不触发惰性清理，存量 true 原样保留。
+        assert saved.get('gptsovitsEnabled') is True
         config_manager._core_config_cache = None
         assert config_manager.get_core_config()['GPTSOVITS_ENABLED'] is True
 

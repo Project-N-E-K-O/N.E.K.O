@@ -728,18 +728,22 @@ def test_load_gptsovits_legacy_follow_default_and_sentinel(mock_page: Page, runn
         () => {
             // 1) 存量：gptsovitsEnabled=true + 默认 follow_assist 哨兵 + 远程 URL → 回落旧 flag 启用
             document.getElementById('gptsovitsApiUrl').value = '';
+            document.getElementById('gptsovitsVoiceId').value = '';
             loadGptSovitsConfig('http://192.168.1.50:9881', 'gsv:legacy_voice', '', '', true, 'follow_assist');
             const legacyFollow = {
                 state: _loadedGptSovitsState,
                 url: document.getElementById('gptsovitsApiUrl').value,
+                voice: document.getElementById('gptsovitsVoiceId').value,
             };
             // 2) disabled sentinel（在 ttsVoiceId 位）+ 显式 provider=gptsovits → 显式胜出，
             //    从 sentinel 解 URL/voice
             document.getElementById('gptsovitsApiUrl').value = '';
+            document.getElementById('gptsovitsVoiceId').value = '';
             loadGptSovitsConfig('', '__gptsovits_disabled__|http://10.0.0.9:9881|gsv:kept', '', '', null, 'gptsovits');
             const sentinelButSelected = {
                 state: _loadedGptSovitsState,
                 url: document.getElementById('gptsovitsApiUrl').value,
+                voice: document.getElementById('gptsovitsVoiceId').value,
             };
             return { legacyFollow, sentinelButSelected };
         }
@@ -747,8 +751,10 @@ def test_load_gptsovits_legacy_follow_default_and_sentinel(mock_page: Page, runn
 
     assert result["legacyFollow"]["state"] == "enabled"
     assert result["legacyFollow"]["url"] == "http://192.168.1.50:9881"
+    assert result["legacyFollow"]["voice"] == "gsv:legacy_voice"
     assert result["sentinelButSelected"]["state"] == "enabled"
     assert result["sentinelButSelected"]["url"] == "http://10.0.0.9:9881"
+    assert result["sentinelButSelected"]["voice"] == "gsv:kept"
 
 
 @pytest.mark.frontend
