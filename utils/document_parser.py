@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import io
+import posixpath
 import re
 import zipfile
 from dataclasses import dataclass
@@ -286,24 +287,20 @@ def _parse_pptx(data: bytes) -> dict[str, Any]:
         parts: list[str] = []
         seen_text_keys: set[str] = set()
         slide_names = _read_pptx_slide_names(archive)
+        slides_truncated = len(slide_names) > MAX_PPTX_SLIDES
         for index, name in enumerate(slide_names[:MAX_PPTX_SLIDES], start=1):
             xml_bytes = _read_xml_member(archive, name)
             text = _extract_drawing_text(xml_bytes)
             _add_unique_text_part(budget, parts, seen_text_keys, f"Slide {index}", text)
             if budget.truncated:
                 break
-        if len(slide_names) > MAX_PPTX_SLIDES:
-            budget.truncated = True
-        note_names = sorted(
-            (name for name in archive.namelist() if re.fullmatch(r"ppt/notesSlides/notesSlide\d+\.xml", name)),
-            key=_natural_key,
-        )
+        note_names = _read_pptx_note_names(archive, slide_names)
         for index, name in enumerate(note_names[:MAX_PPTX_SLIDES], start=1):
             if budget.truncated:
                 break
             text = _extract_drawing_text(_read_xml_member(archive, name))
             _add_unique_text_part(budget, parts, seen_text_keys, f"Notes {index}", text)
-        if len(note_names) > MAX_PPTX_SLIDES:
+        if slides_truncated or len(note_names) > MAX_PPTX_SLIDES:
             budget.truncated = True
         return {
             "content": "\n\n".join(parts),
@@ -362,8 +359,7 @@ def _read_xml_member(archive: zipfile.ZipFile, name: str) -> bytes:
     if info.file_size > MAX_XML_MEMBER_BYTES:
         raise DocumentParseError("xml_member_too_large")
     data = archive.read(name)
-    lowered = data.lower()
-    if b"<!doctype" in lowered or b"<!entity" in lowered:
+    if _has_xml_entity_declaration(data):
         raise DocumentParseError("xml_entity_unsupported")
     return data
 
@@ -373,6 +369,41 @@ def _parse_xml(data: bytes) -> ET.Element:
         return ET.fromstring(data)
     except ET.ParseError as exc:
         raise DocumentParseError("invalid_xml") from exc
+
+
+def _has_xml_entity_declaration(data: bytes) -> bool:
+    lowered = data.lower()
+    if b"<!doctype" in lowered or b"<!entity" in lowered:
+        return True
+
+    text = _decode_xml_guard_text(data).casefold()
+    return "<!doctype" in text or "<!entity" in text
+
+
+def _decode_xml_guard_text(data: bytes) -> str:
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        encodings = ("utf-16",)
+    elif data[:2] == b"<\x00":
+        encodings = ("utf-16-le",)
+    elif data[:2] == b"\x00<":
+        encodings = ("utf-16-be",)
+    else:
+        encodings = (_xml_declared_encoding(data), "utf-8-sig")
+
+    for encoding in encodings:
+        if not encoding:
+            continue
+        try:
+            return data.decode(encoding)
+        except (LookupError, UnicodeError):
+            continue
+    return data.decode("utf-8", errors="ignore")
+
+
+def _xml_declared_encoding(data: bytes) -> str:
+    header = data[:256].decode("ascii", errors="ignore")
+    match = re.search(r'encoding=["\']([^"\']+)["\']', header, flags=re.IGNORECASE)
+    return match.group(1) if match else ""
 
 
 def _docx_text_member_names(archive: zipfile.ZipFile) -> list[str]:
@@ -490,7 +521,7 @@ def _read_pptx_slide_names(archive: zipfile.ZipFile) -> list[str]:
         rel_id = rel.attrib.get("Id", "")
         target = rel.attrib.get("Target", "")
         if rel_id and target:
-            rels[rel_id] = _resolve_pptx_target(target)
+            rels[rel_id] = _resolve_pptx_target(target, "ppt")
 
     presentation = _parse_xml(_read_xml_member(archive, "ppt/presentation.xml"))
     ordered: list[str] = []
@@ -504,11 +535,43 @@ def _read_pptx_slide_names(archive: zipfile.ZipFile) -> list[str]:
     return ordered or fallback
 
 
-def _resolve_pptx_target(target: str) -> str:
-    cleaned = str(target or "").lstrip("/")
+def _read_pptx_note_names(archive: zipfile.ZipFile, slide_names: list[str]) -> list[str]:
+    names = set(archive.namelist())
+    ordered: list[str] = []
+    for slide_name in slide_names:
+        rels_path = _pptx_rels_path(slide_name)
+        if rels_path not in names:
+            continue
+        rel_root = _parse_xml(_read_xml_member(archive, rels_path))
+        for rel in rel_root.findall(_REL_NS + "Relationship"):
+            target = rel.attrib.get("Target", "")
+            rel_type = rel.attrib.get("Type", "")
+            if not target or not rel_type.endswith("/notesSlide"):
+                continue
+            note_path = _resolve_pptx_target(target, posixpath.dirname(slide_name))
+            if note_path in names and note_path not in ordered:
+                ordered.append(note_path)
+
+    if ordered:
+        return ordered
+    return sorted(
+        (name for name in names if re.fullmatch(r"ppt/notesSlides/notesSlide\d+\.xml", name)),
+        key=_natural_key,
+    )
+
+
+def _pptx_rels_path(member_name: str) -> str:
+    directory, filename = posixpath.split(member_name)
+    return posixpath.join(directory, "_rels", f"{filename}.rels")
+
+
+def _resolve_pptx_target(target: str, base_dir: str) -> str:
+    cleaned = str(target or "").replace("\\", "/")
+    if cleaned.startswith("/"):
+        return posixpath.normpath(cleaned.lstrip("/"))
     if cleaned.startswith("ppt/"):
-        return cleaned
-    return "ppt/" + cleaned
+        return posixpath.normpath(cleaned)
+    return posixpath.normpath(posixpath.join(base_dir, cleaned))
 
 
 def _read_xlsx_sheets(archive: zipfile.ZipFile) -> list[dict[str, str]]:

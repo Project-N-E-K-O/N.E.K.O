@@ -168,6 +168,41 @@ def _reordered_pptx_bytes() -> bytes:
     })
 
 
+def _reordered_pptx_notes_bytes() -> bytes:
+    notes_rel_type = f"{OFFICE_REL_NS}/notesSlide"
+    return _zip_bytes({
+        "[Content_Types].xml": CONTENT_TYPES_XML,
+        "ppt/presentation.xml": (
+            '<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+            f'xmlns:r="{OFFICE_REL_NS}"><p:sldIdLst>'
+            '<p:sldId id="256" r:id="rId2"/>'
+            '<p:sldId id="257" r:id="rId1"/>'
+            "</p:sldIdLst></p:presentation>"
+        ),
+        "ppt/_rels/presentation.xml.rels": (
+            f'<Relationships xmlns="{PACKAGE_REL_NS}">'
+            '<Relationship Id="rId1" Target="slides/slide1.xml"/>'
+            '<Relationship Id="rId2" Target="slides/slide2.xml"/>'
+            "</Relationships>"
+        ),
+        "ppt/slides/slide1.xml": f'<p:sld xmlns:p="p" xmlns:a="{DRAWING_NS}"><a:t>Created first</a:t></p:sld>',
+        "ppt/slides/_rels/slide1.xml.rels": (
+            f'<Relationships xmlns="{PACKAGE_REL_NS}">'
+            f'<Relationship Id="rIdNotes1" Type="{notes_rel_type}" Target="../notesSlides/notesSlide1.xml"/>'
+            "</Relationships>"
+        ),
+        "ppt/notesSlides/notesSlide1.xml": f'<p:notes xmlns:p="p" xmlns:a="{DRAWING_NS}"><a:t>Created first notes</a:t></p:notes>',
+        "ppt/slides/slide2.xml": f'<p:sld xmlns:p="p" xmlns:a="{DRAWING_NS}"><a:t>Presented first</a:t></p:sld>',
+        "ppt/slides/_rels/slide2.xml.rels": (
+            f'<Relationships xmlns="{PACKAGE_REL_NS}">'
+            f'<Relationship Id="rIdNotes2" Type="{notes_rel_type}" Target="../notesSlides/notesSlide2.xml"/>'
+            "</Relationships>"
+        ),
+        "ppt/notesSlides/notesSlide2.xml": f'<p:notes xmlns:p="p" xmlns:a="{DRAWING_NS}"><a:t>Presented first notes</a:t></p:notes>',
+        "ppt/notesSlides/notesSlide99.xml": f'<p:notes xmlns:p="p" xmlns:a="{DRAWING_NS}"><a:t>Stale unreferenced notes</a:t></p:notes>',
+    })
+
+
 def _xlsx_with_empty_rows_before_data(empty_row_count: int) -> bytes:
     rows = "".join(f'<row r="{index}"/>' for index in range(1, empty_row_count + 1))
     rows += (
@@ -387,6 +422,14 @@ def test_pptx_slides_follow_presentation_order():
 
 
 @pytest.mark.unit
+def test_pptx_notes_follow_slide_relationship_order():
+    parsed = parse_document("reordered-notes.pptx", "", _reordered_pptx_notes_bytes())
+
+    assert parsed["content"].index("Presented first notes") < parsed["content"].index("Created first notes")
+    assert "Stale unreferenced notes" not in parsed["content"]
+
+
+@pytest.mark.unit
 def test_pptx_preserves_runs_within_paragraphs():
     slide_xml = (
         f'<p:sld xmlns:p="p" xmlns:a="{DRAWING_NS}">'
@@ -462,6 +505,19 @@ def test_rejects_zip_path_traversal_and_xml_entities():
                     '<!DOCTYPE foo [<!ENTITY x "boom">]>'
                     f'<w:document xmlns:w="{WORD_NS}"><w:body><w:p><w:r><w:t>&x;</w:t></w:r></w:p></w:body></w:document>'
                 ),
+            }
+        ),
+        "xml_entity_unsupported",
+    )
+    _assert_parse_error(
+        "utf16-entity.docx",
+        _zip_bytes(
+            {
+                "[Content_Types].xml": CONTENT_TYPES_XML,
+                "word/document.xml": (
+                    '<!DOCTYPE foo [<!ENTITY x "boom">]>'
+                    f'<w:document xmlns:w="{WORD_NS}"><w:body><w:p><w:r><w:t>&x;</w:t></w:r></w:p></w:body></w:document>'
+                ).encode("utf-16"),
             }
         ),
         "xml_entity_unsupported",
