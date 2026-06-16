@@ -78,8 +78,8 @@ def test_topic_hook_locale_preserves_traditional_chinese_request_language():
     )
 
     assert topic_hook_lang == "zh-TW"
-    assert "低頻深話題候選" in prompt
-    assert "低频深话题候选" not in prompt
+    assert "可以自然回憶或接續的話題" in prompt
+    assert "可以自然回忆或接续的话题" not in prompt
 
 
 def test_topic_hook_locale_falls_back_to_full_global_language(monkeypatch):
@@ -93,8 +93,8 @@ def test_topic_hook_locale_falls_back_to_full_global_language(monkeypatch):
     )
 
     assert topic_hook_lang == "zh-TW"
-    assert "低頻深話題候選" in prompt
-    assert "低频深话题候选" not in prompt
+    assert "可以自然回憶或接續的話題" in prompt
+    assert "可以自然回忆或接续的话题" not in prompt
 
 
 def test_open_threads_compute_uses_topic_hook_locale():

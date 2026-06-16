@@ -12,45 +12,34 @@ from typing import Any
 from main_logic.topic.common import clean_text
 
 
-_HEADER_ZH = """【低频深话题候选】
-下面这些不是必须聊的话题，只是更适合聊深一点的切入点。目标是关系深度，不是触发频率；宁可不用，也不要硬聊；这轮最多认真挑 1-2 个最强相关的。
-候选里可能夹着寒暄、语气词或还不值得展开的短句；你先判断，没价值就忽略。
-开口要求：具体、短、像随口一提，可以轻微调侃；最终只选一个，只抛一个自然钩子，后面交给多轮展开；不要暴露素材来源，也不要像问卷。"""
+# Deliberately encouraging, not discouraging: paired with Phase 2's repeated
+# anti-repeat warnings, weak/negative wording made the model treat callbacks as
+# "high repeat risk" and skip them. Frame these as welcome, natural cues. No
+# backend scheduling jargon (frequency/quota): the model only decides whether to
+# open this turn. One natural pick, the rest left to later turns.
+_HEADER_ZH = """======可以自然回忆或接续的话题======
+下面是一些适合自然带出来的旧话题和还没聊完的点。挑一个最顺的，像随口想起一样轻轻提起就好；开口具体、简短、别像问卷，剩下的留给后面慢慢聊。"""
 
-_HEADER_ZH_TW = """【低頻深話題候選】
-下面這些不是必須聊的話題，只是更適合聊深一點的切入點。目標是關係深度，不是觸發頻率；寧可不用，也不要硬聊；這輪最多認真挑 1-2 個最強相關的。
-候選裡可能夾著寒暄、語氣詞或還不值得展開的短句；你先判斷，沒價值就忽略。
-開口要求：具體、短、像隨口一提，可以輕微調侃；最終只選一個，只拋一個自然鉤子，後面交給多輪展開；不要暴露素材來源，也不要像問卷。"""
+_HEADER_ZH_TW = """======可以自然回憶或接續的話題======
+下面是一些適合自然帶出來的舊話題和還沒聊完的點。挑一個最順的，像隨口想起一樣輕輕提起就好；開口具體、簡短、別像問卷，剩下的留給後面慢慢聊。"""
 
-_HEADER_EN = """[Low-frequency deeper topic candidates]
-These are optional hooks for a slightly deeper proactive chat. Use at most 1-2 only if they are clearly the strongest matches; it is better to use none than force it.
-Some candidates may be greetings, filler, or too thin to continue; judge first and ignore them if they are not useful.
-Opening style: specific, short, casual, lightly teasing if appropriate. Open with one natural hook and leave the rest to multi-turn expansion. Do not say "based on your recent interests" or sound like a survey."""
+_HEADER_EN = """======Topics worth recalling or picking back up======
+Below are older topics and unfinished points that fit a natural callback. Pick whichever flows best and bring it up lightly, as if it just came to mind; keep the opener specific and short, not survey-like, and leave the rest for later turns."""
 
-_HEADER_JA = """【低頻度の深め話題候補】
-これは少し深めの自然な会話に使える任意のきっかけです。明らかに強く合うものだけ最大1-2個使い、無理に拾うくらいなら使わないでください。
-候補には挨拶、つなぎ言葉、広げるには薄い短文が混じることがあります。まず判断し、役に立たなければ無視してください。
-切り出し方：具体的、短く、自然に、合うなら軽くからかう程度。自然な hook を1つだけ投げ、続きは複数ターンに任せてください。素材元を明かしたり、アンケートのように聞いたりしないでください。"""
+_HEADER_JA = """======自然に思い出して続けられる話題======
+以下は自然に持ち出せる昔の話題やまだ終わっていない点です。一番しっくりくるものを一つ、ふと思い出したように軽く切り出してください。具体的で短く、アンケートっぽくならないように、残りは後のターンに回します。"""
 
-_HEADER_KO = """[저빈도 깊은 화제 후보]
-이 항목들은 조금 더 깊은 능동 대화를 위한 선택적 hook입니다. 가장 잘 맞는 경우에만 최대 1-2개를 쓰고, 억지로 쓰기보다 안 쓰는 편이 낫습니다.
-후보에는 인사, 말버릇, 이어가기 어려운 짧은 문장이 섞일 수 있습니다. 먼저 판단하고 쓸모없으면 무시하세요.
-시작 방식: 구체적이고 짧고 자연스럽게, 어울리면 살짝 장난스럽게. 자연스러운 hook 하나만 던지고 나머지는 여러 턴에 맡기세요. 소재 출처를 드러내거나 설문처럼 묻지 마세요."""
+_HEADER_KO = """======자연스럽게 떠올려 이어갈 화제======
+아래는 자연스럽게 꺼낼 수 있는 예전 화제와 아직 끝나지 않은 점들입니다. 가장 잘 맞는 하나를 문득 떠오른 듯 가볍게 꺼내세요. 구체적이고 짧게, 설문처럼 굴지 말고, 나머지는 다음 턴에 맡기세요."""
 
-_HEADER_ES = """[Candidatos de temas profundos de baja frecuencia]
-Son hooks opcionales para una charla proactiva un poco más profunda. Usa como máximo 1-2 solo si encajan claramente; es mejor no usar ninguno que forzarlo.
-Algunos candidatos pueden ser saludos, relleno o ideas demasiado débiles; juzga primero e ignóralos si no sirven.
-Estilo de apertura: concreto, breve, casual y con una broma suave si encaja. Abre con un solo hook natural y deja el resto para varios turnos. No reveles el origen del material ni suenes como una encuesta."""
+_HEADER_ES = """======Temas para recordar o retomar con naturalidad======
+Abajo hay temas antiguos y puntos sin terminar que encajan en un retorno natural. Elige el que mejor fluya y sácalo con ligereza, como si acabara de ocurrírsete; que la apertura sea concreta, breve y no parezca una encuesta, y deja el resto para turnos posteriores."""
 
-_HEADER_PT = """[Candidatos de temas profundos de baixa frequência]
-Estes são hooks opcionais para uma conversa proativa um pouco mais profunda. Use no máximo 1-2 apenas quando forem claramente os melhores encaixes; é melhor não usar nenhum do que forçar.
-Alguns candidatos podem ser cumprimentos, enchimento ou frases fracas demais para continuar; avalie primeiro e ignore se não forem úteis.
-Estilo de abertura: concreto, curto, casual e com uma provocação leve se couber. Abra com um único hook natural e deixe o resto para vários turnos. Não revele a origem do material nem soe como questionário."""
+_HEADER_PT = """======Temas para relembrar ou retomar com naturalidade======
+Abaixo há temas antigos e pontos não concluídos que cabem em um retorno natural. Escolha o que fluir melhor e traga-o de leve, como se tivesse acabado de lembrar; mantenha a abertura concreta, curta e sem parecer um questionário, e deixe o resto para turnos seguintes."""
 
-_HEADER_RU = """[Низкочастотные кандидаты для более глубоких тем]
-Это необязательные hooks для чуть более глубокой проактивной беседы. Используй максимум 1-2 только если они явно подходят лучше всего; лучше не использовать ничего, чем форсировать тему.
-Среди кандидатов могут быть приветствия, пустые фразы или слишком слабые зацепки; сначала оцени и игнорируй, если пользы нет.
-Стиль начала: конкретно, коротко, непринужденно, с легкой поддевкой если уместно. Начни с одного естественного hook и оставь развитие на несколько ходов. Не раскрывай источник материала и не звучит как анкета."""
+_HEADER_RU = """======Темы, к которым приятно вернуться======
+Ниже — старые темы и незавершённые моменты, подходящие для естественного возврата. Выбери ту, что заходит лучше всего, и заведи её легко, будто только что вспомнил; начни конкретно и коротко, без анкетного тона, остальное оставь на следующие ходы."""
 
 _HEADERS = {
     "zh": _HEADER_ZH,
