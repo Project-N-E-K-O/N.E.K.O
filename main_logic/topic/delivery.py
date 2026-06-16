@@ -163,98 +163,127 @@ def _remove_callback_from_manager(mgr: Any, callback: Mapping[str, Any]) -> None
         ]
 
 
+def _resolve_topic_manager(lanlan_name: str) -> Any:
+    """Resolve the live session manager, logging why when it is unavailable."""
+    if _session_manager_getter is None:
+        logger.info("[%s] topic hook delivery skipped: no session manager getter", lanlan_name)
+        return None
+    mgr = _session_manager_getter(lanlan_name)
+    if mgr is None:
+        logger.info("[%s] topic hook delivery skipped: no session manager", lanlan_name)
+    return mgr
+
+
+def _topic_activity_gate_open(mgr: Any, lanlan_name: str) -> bool:
+    """Whether the activity propensity gate allows interrupting right now.
+
+    Deep topic hooks are fresh text openers, so they respect the same gate as
+    /api/proactive_chat and stay quiet during privacy / gaming / focused-work. A
+    closed gate keeps the material pending for TopicHookPool to retry once the
+    state opens up, without burning the daily quota. A missing or throwing gate
+    fails open, matching the proactive path's default.
+    """
+    gate = getattr(mgr, "topic_hook_delivery_allowed", None)
+    if not callable(gate):
+        return True
+    try:
+        allowed = bool(gate())
+    except Exception:
+        return True
+    if not allowed:
+        logger.info(
+            "[%s] topic hook delivery skipped: activity propensity restricts proactive interruption",
+            lanlan_name,
+        )
+    return allowed
+
+
+def _live_topic_lang(mgr: Any, captured_lang: str) -> str:
+    """Re-resolve the topic language at firing time.
+
+    The hook captured ``lang`` when scheduled; if the session language changed
+    during the quiet window (set_user_language with no new chat turn to
+    reschedule the trigger), the live tracker locale is authoritative —
+    otherwise a zh-TW switch would surface the hook in the captured locale.
+    """
+    getter = getattr(mgr, "current_topic_language", None)
+    if not callable(getter):
+        return captured_lang
+    try:
+        live_lang = getter()
+    except Exception:
+        return captured_lang
+    return live_lang if isinstance(live_lang, str) and live_lang else captured_lang
+
+
+async def _deliver_via_proactive_manager(mgr: Any, callback: dict, lanlan_name: str) -> bool:
+    """Submit through the proactive manager and wait for the delivery ack."""
+    future = asyncio.get_running_loop().create_future()
+    callback[DELIVERY_ACK_FUTURE_KEY] = future
+    mgr.submit_proactive_callback(
+        callback,
+        priority=callback.get("priority", 0),
+        coalesce_key=callback.get("coalesce_key"),
+    )
+    try:
+        return bool(await asyncio.wait_for(asyncio.shield(future), timeout=_DELIVERY_ACK_TIMEOUT_S))
+    except asyncio.CancelledError:
+        # If the ack landed True just before cancellation, honour it: the caller
+        # must not retract a callback that already went out.
+        if future.done() and not future.cancelled() and future.result():
+            return True
+        raise
+    except asyncio.TimeoutError:
+        logger.info("[%s] topic hook delivery timed out waiting for proactive ack", lanlan_name)
+        return False
+    finally:
+        callback.pop(DELIVERY_ACK_FUTURE_KEY, None)
+
+
+async def _deliver_via_agent_callbacks(mgr: Any, callback: dict, lanlan_name: str) -> bool:
+    """Fallback delivery for managers without the proactive manager front stage."""
+    enqueue = getattr(mgr, "enqueue_agent_callback", None)
+    trigger = getattr(mgr, "trigger_agent_callbacks", None)
+    if not callable(enqueue) or not callable(trigger):
+        logger.info("[%s] topic hook delivery skipped: manager cannot deliver callbacks", lanlan_name)
+        return False
+    enqueue(callback)
+    return bool(await trigger())
+
+
 async def trigger_topic_hook_once(
     *,
     lanlan_name: str,
     material: Mapping[str, Any],
     lang: str,
 ) -> bool:
-    """Queue one prepared topic hook into the existing character delivery path."""
-    if _session_manager_getter is None:
-        logger.info("[%s] topic hook delivery skipped: no session manager getter", lanlan_name)
-        return False
+    """Queue one prepared topic hook into the existing character delivery path.
 
-    mgr = _session_manager_getter(lanlan_name)
+    Returns True only on confirmed delivery. Every other outcome returns False
+    (or propagates cancellation) and retracts the queued copy, so the callback
+    can never resurface outside TopicHookPool's one-shot bookkeeping — only the
+    pool may retry and mark used / burn quota.
+    """
+    mgr = _resolve_topic_manager(lanlan_name)
     if mgr is None:
-        logger.info("[%s] topic hook delivery skipped: no session manager", lanlan_name)
+        return False
+    if not _topic_activity_gate_open(mgr, lanlan_name):
         return False
 
-    # Activity gate: deep topic hooks are fresh text openers, so they must
-    # respect the same propensity gate as /api/proactive_chat and stay quiet
-    # while the user is in a privacy / gaming / focused-work state. Returning
-    # False keeps the material pending so TopicHookPool retries once the state
-    # opens up, without burning the daily quota.
-    gate = getattr(mgr, "topic_hook_delivery_allowed", None)
-    if callable(gate):
-        try:
-            allowed = bool(gate())
-        except Exception:
-            allowed = True
-        if not allowed:
-            logger.info(
-                "[%s] topic hook delivery skipped: activity propensity restricts proactive interruption",
-                lanlan_name,
-            )
-            return False
-
-    # Re-resolve the topic language at firing time. The hook captured `lang`
-    # when it was scheduled; if the session language changed during the quiet
-    # window (e.g. set_user_language with no new chat turn to reschedule the
-    # trigger), the live tracker locale is authoritative — otherwise a zh-TW
-    # switch would surface the hook in the previously captured locale.
-    live_lang_getter = getattr(mgr, "current_topic_language", None)
-    if callable(live_lang_getter):
-        try:
-            live_lang = live_lang_getter()
-        except Exception:
-            live_lang = None
-        if isinstance(live_lang, str) and live_lang:
-            lang = live_lang
-
+    lang = _live_topic_lang(mgr, lang)
     callback = build_topic_hook_callback(material, lang=lang)
-    submit = getattr(mgr, "submit_proactive_callback", None)
-    if callable(submit):
-        future = asyncio.get_running_loop().create_future()
-        callback[DELIVERY_ACK_FUTURE_KEY] = future
-        submit(
-            callback,
-            priority=callback.get("priority", 0),
-            coalesce_key=callback.get("coalesce_key"),
-        )
-        try:
-            delivered = bool(await asyncio.wait_for(asyncio.shield(future), timeout=_DELIVERY_ACK_TIMEOUT_S))
-        except asyncio.CancelledError:
-            if future.done() and not future.cancelled():
-                delivered = bool(future.result())
-                if delivered:
-                    return True
-            _remove_callback_from_manager(mgr, callback)
-            raise
-        except asyncio.TimeoutError:
-            logger.info("[%s] topic hook delivery timed out waiting for proactive ack", lanlan_name)
-            delivered = False
-        finally:
-            callback.pop(DELIVERY_ACK_FUTURE_KEY, None)
-        if not delivered:
-            _remove_callback_from_manager(mgr, callback)
-        return delivered
 
-    enqueue = getattr(mgr, "enqueue_agent_callback", None)
-    trigger = getattr(mgr, "trigger_agent_callbacks", None)
-    if not callable(enqueue) or not callable(trigger):
-        logger.info("[%s] topic hook delivery skipped: manager cannot deliver callbacks", lanlan_name)
-        return False
-
-    enqueue(callback)
     try:
-        delivered = bool(await trigger())
-    except Exception:
+        if callable(getattr(mgr, "submit_proactive_callback", None)):
+            delivered = await _deliver_via_proactive_manager(mgr, callback, lanlan_name)
+        else:
+            delivered = await _deliver_via_agent_callbacks(mgr, callback, lanlan_name)
+    except BaseException:
+        # Cancellation or a delivery error: drop the queued copy before
+        # propagating so it cannot surface outside the pool's bookkeeping.
         _remove_callback_from_manager(mgr, callback)
         raise
+
     if not delivered:
-        # ``trigger_agent_callbacks`` keeps callbacks queued on many retriable
-        # False paths. Topic hooks need stricter accounting: only
-        # TopicHookPool may retry and mark used/quota. Remove this queued copy so
-        # it cannot surface later outside the topic pool's one-shot bookkeeping.
         _remove_callback_from_manager(mgr, callback)
     return delivered
