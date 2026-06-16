@@ -6,14 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from utils.avatar_document_parser import (
+from utils.document_parser import (
     MAX_EXTRACTED_CHARS,
-    AvatarDocumentParseError,
-    parse_avatar_document,
+    DocumentParseError,
+    parse_document,
 )
 
 
-PARSER_SOURCE_PATH = Path(__file__).resolve().parents[2] / "utils" / "avatar_document_parser.py"
+PARSER_SOURCE_PATH = Path(__file__).resolve().parents[2] / "utils" / "document_parser.py"
 CONTENT_TYPES_XML = '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>'
 WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 MC_NS = "http://schemas.openxmlformats.org/markup-compatibility/2006"
@@ -204,8 +204,8 @@ def _make_pdf(objects: list[bytes]) -> bytes:
 
 
 def _assert_parse_error(filename: str, data: bytes, code: str) -> None:
-    with pytest.raises(AvatarDocumentParseError) as exc_info:
-        parse_avatar_document(filename, "", data)
+    with pytest.raises(DocumentParseError) as exc_info:
+        parse_document(filename, "", data)
     assert exc_info.value.code == code
 
 
@@ -219,7 +219,7 @@ def test_parse_supported_document_text_formats():
     ]
 
     for filename, data, document_type, expected_text in cases:
-        parsed = parse_avatar_document(filename, "", data)
+        parsed = parse_document(filename, "", data)
 
         assert parsed["document_type"] == document_type
         assert expected_text in parsed["content"]
@@ -231,7 +231,7 @@ def test_parse_supported_document_text_formats():
 def test_deduplicates_repeated_docx_long_text_parts():
     repeated = "Steam GitHub B站 QQ群 Discord 猫娘计划渠道说明 " * 8
 
-    parsed = parse_avatar_document(
+    parsed = parse_document(
         "duplicated.docx",
         "",
         _docx_bytes(
@@ -260,7 +260,7 @@ def test_deduplicates_nested_docx_paragraph_text():
         "</w:p>"
     )
 
-    parsed = parse_avatar_document(
+    parsed = parse_document(
         "nested.docx",
         "",
         _docx_bytes("placeholder", {"word/document.xml": document_xml}),
@@ -285,7 +285,7 @@ def test_ignores_docx_alternate_content_fallback_text():
         + _word_paragraph_xml("后续新增的卡面图层与自定义贴纸说明")
     )
 
-    parsed = parse_avatar_document(
+    parsed = parse_document(
         "alternate-content.docx",
         "",
         _docx_bytes("placeholder", {"word/document.xml": document_xml}),
@@ -311,7 +311,7 @@ def test_ignores_pptx_alternate_content_fallback_text():
         "</p:sld>"
     )
 
-    parsed = parse_avatar_document("alternate-content.pptx", "", _pptx_with_slide_xml(slide_xml))
+    parsed = parse_document("alternate-content.pptx", "", _pptx_with_slide_xml(slide_xml))
 
     assert parsed["content"].count(visible) == 1
 
@@ -320,7 +320,7 @@ def test_ignores_pptx_alternate_content_fallback_text():
 def test_deduplicates_pptx_notes_that_repeat_slide_body():
     repeated = "日常使用 悬浮菜单操作 角色卡功能 模块说明 " * 8
 
-    parsed = parse_avatar_document("duplicated.pptx", "", _pptx_bytes(repeated, repeated))
+    parsed = parse_document("duplicated.pptx", "", _pptx_bytes(repeated, repeated))
 
     assert parsed["content"].count(repeated.strip()) == 1
     assert "# Slide 1" in parsed["content"]
@@ -374,7 +374,7 @@ def test_rejects_blank_pdf_and_garbled_extracted_text():
 
 @pytest.mark.unit
 def test_marks_extracted_text_truncated_when_document_exceeds_budget():
-    parsed = parse_avatar_document("long.docx", "", _docx_bytes("A" * (MAX_EXTRACTED_CHARS + 200)))
+    parsed = parse_document("long.docx", "", _docx_bytes("A" * (MAX_EXTRACTED_CHARS + 200)))
 
     assert parsed["truncated"] is True
     assert parsed["chars"] == MAX_EXTRACTED_CHARS
@@ -384,7 +384,7 @@ def test_marks_extracted_text_truncated_when_document_exceeds_budget():
 
 @pytest.mark.unit
 def test_marks_pdf_truncated_after_first_40_pages():
-    parsed = parse_avatar_document("many.pdf", "", _many_pdf_bytes(41))
+    parsed = parse_document("many.pdf", "", _many_pdf_bytes(41))
 
     assert parsed["document_type"] == "pdf"
     assert parsed["meta"]["pages"] == 41
@@ -408,7 +408,7 @@ def test_pdf_pages_are_not_materialized_before_limit():
 
 @pytest.mark.unit
 def test_marks_xlsx_truncated_when_sheet_limit_is_exceeded():
-    parsed = parse_avatar_document("many.xlsx", "", _xlsx_bytes("Shared", sheet_count=13))
+    parsed = parse_document("many.xlsx", "", _xlsx_bytes("Shared", sheet_count=13))
 
     assert parsed["document_type"] == "xlsx"
     assert parsed["meta"]["sheets"] == 13
@@ -419,7 +419,7 @@ def test_marks_xlsx_truncated_when_sheet_limit_is_exceeded():
 
 @pytest.mark.unit
 def test_marks_xlsx_truncated_when_row_limit_is_exceeded():
-    parsed = parse_avatar_document("many-rows.xlsx", "", _xlsx_bytes("Shared", row_count=805))
+    parsed = parse_document("many-rows.xlsx", "", _xlsx_bytes("Shared", row_count=805))
 
     assert parsed["document_type"] == "xlsx"
     assert parsed["truncated"] is True
@@ -438,7 +438,7 @@ def test_xlsx_rows_are_not_materialized_before_limit():
 
 @pytest.mark.unit
 def test_marks_pptx_truncated_after_first_40_slides():
-    parsed = parse_avatar_document("many.pptx", "", _many_pptx_bytes(41))
+    parsed = parse_document("many.pptx", "", _many_pptx_bytes(41))
 
     assert parsed["document_type"] == "pptx"
     assert parsed["meta"]["slides"] == 41
@@ -451,7 +451,7 @@ def test_marks_pptx_truncated_after_first_40_slides():
 
 @pytest.mark.unit
 def test_marks_pptx_truncated_after_first_40_notes():
-    parsed = parse_avatar_document("many-notes.pptx", "", _many_pptx_notes_bytes(41))
+    parsed = parse_document("many-notes.pptx", "", _many_pptx_notes_bytes(41))
 
     assert parsed["document_type"] == "pptx"
     assert parsed["meta"]["slides"] == 1

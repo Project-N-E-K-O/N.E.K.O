@@ -10,10 +10,10 @@ import re
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
-from utils.avatar_document_parser import (
+from utils.document_parser import (
     MAX_DOCUMENT_BYTES,
-    AvatarDocumentParseError,
-    parse_avatar_document,
+    DocumentParseError,
+    parse_document,
 )
 
 
@@ -44,7 +44,7 @@ async def _read_upload_limited(file: UploadFile) -> bytes:
             break
         total += len(chunk)
         if total > MAX_DOCUMENT_BYTES:
-            raise AvatarDocumentParseError("document_too_large")
+            raise DocumentParseError("document_too_large")
         chunks.append(chunk)
     return b"".join(chunks)
 
@@ -54,8 +54,8 @@ async def parse_avatar_drop_document(file: UploadFile = File(...)):
     filename = _safe_filename(file.filename or "")
     try:
         data = await _read_upload_limited(file)
-        parsed = parse_avatar_document(filename, file.content_type or "", data)
-    except AvatarDocumentParseError as exc:
+        parsed = parse_document(filename, file.content_type or "", data)
+    except DocumentParseError as exc:
         raise HTTPException(status_code=400, detail={"code": exc.code}) from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail={"code": "document_parse_failed"}) from exc

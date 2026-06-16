@@ -26,7 +26,7 @@ MAX_PPTX_SLIDES = 40
 MIN_DEDUP_TEXT_CHARS = 80
 
 
-class AvatarDocumentParseError(ValueError):
+class DocumentParseError(ValueError):
     def __init__(self, code: str, message: str = ""):
         super().__init__(message or code)
         self.code = code
@@ -65,11 +65,11 @@ _SPREADSHEET_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 _OFFICE_REL_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 
 
-def parse_avatar_document(filename: str, content_type: str, data: bytes) -> dict[str, Any]:
+def parse_document(filename: str, content_type: str, data: bytes) -> dict[str, Any]:
     if not isinstance(data, (bytes, bytearray)) or not data:
-        raise AvatarDocumentParseError("empty_file")
+        raise DocumentParseError("empty_file")
     if len(data) > MAX_DOCUMENT_BYTES:
-        raise AvatarDocumentParseError("document_too_large")
+        raise DocumentParseError("document_too_large")
 
     document_type = _detect_document_type(filename, content_type, bytes(data))
     if document_type == "pdf":
@@ -81,12 +81,12 @@ def parse_avatar_document(filename: str, content_type: str, data: bytes) -> dict
     elif document_type == "pptx":
         result = _parse_pptx(bytes(data))
     else:
-        raise AvatarDocumentParseError("unsupported_document")
+        raise DocumentParseError("unsupported_document")
 
     content = _clean_text(result["content"])
     _validate_text_quality(content)
     if not content:
-        raise AvatarDocumentParseError("no_readable_text")
+        raise DocumentParseError("no_readable_text")
     return {
         "document_type": document_type,
         "content": content,
@@ -101,32 +101,32 @@ def _detect_document_type(filename: str, content_type: str, data: bytes) -> str:
     ext = lower_name.rsplit(".", 1)[-1] if "." in lower_name else ""
     mime = str(content_type or "").lower()
     if ext in {"doc", "xls", "ppt"}:
-        raise AvatarDocumentParseError("legacy_office_unsupported")
+        raise DocumentParseError("legacy_office_unsupported")
     if ext in {"docm", "xlsm", "pptm"}:
-        raise AvatarDocumentParseError("macro_document_unsupported")
+        raise DocumentParseError("macro_document_unsupported")
     if data.startswith(b"%PDF-"):
         return "pdf"
     if ext == "pdf" or mime == "application/pdf":
-        raise AvatarDocumentParseError("invalid_pdf")
+        raise DocumentParseError("invalid_pdf")
     if ext in {"docx", "xlsx", "pptx"}:
         if not data.startswith(b"PK\x03\x04") and not data.startswith(b"PK\x05\x06") and not data.startswith(b"PK\x07\x08"):
-            raise AvatarDocumentParseError("invalid_ooxml")
+            raise DocumentParseError("invalid_ooxml")
         return ext
-    raise AvatarDocumentParseError("unsupported_document")
+    raise DocumentParseError("unsupported_document")
 
 
 def _parse_pdf(data: bytes) -> dict[str, Any]:
     try:
         from pypdf import PdfReader
     except Exception as exc:  # pragma: no cover - depends on environment
-        raise AvatarDocumentParseError("pdf_parser_unavailable") from exc
+        raise DocumentParseError("pdf_parser_unavailable") from exc
 
     try:
         reader = PdfReader(io.BytesIO(data))
     except Exception as exc:
-        raise AvatarDocumentParseError("invalid_pdf") from exc
+        raise DocumentParseError("invalid_pdf") from exc
     if getattr(reader, "is_encrypted", False):
-        raise AvatarDocumentParseError("encrypted_pdf_unsupported")
+        raise DocumentParseError("encrypted_pdf_unsupported")
 
     total_pages = _get_pdf_declared_page_count(reader)
     budget = _TextBudget()
@@ -169,7 +169,7 @@ def _iter_pdf_pages_until(reader: Any, limit: int) -> Any:
         from pypdf._page import PageObject
         from pypdf.generic import DictionaryObject, IndirectObject, NameObject
     except Exception as exc:  # pragma: no cover - pypdf import already checked by caller
-        raise AvatarDocumentParseError("pdf_parser_unavailable") from exc
+        raise DocumentParseError("pdf_parser_unavailable") from exc
 
     inheritable_attrs = tuple(NameObject(name) for name in ("/Resources", "/MediaBox", "/CropBox", "/Rotate"))
     emitted = 0
@@ -185,7 +185,7 @@ def _iter_pdf_pages_until(reader: Any, limit: int) -> Any:
             return
         node = _resolve_pdf_object(node_ref)
         if not isinstance(node, DictionaryObject):
-            raise AvatarDocumentParseError("invalid_pdf")
+            raise DocumentParseError("invalid_pdf")
 
         node_type = str(node.get("/Type", ""))
         if not node_type:
@@ -194,7 +194,7 @@ def _iter_pdf_pages_until(reader: Any, limit: int) -> Any:
         if node_type == "/Pages":
             key = object_key(node_ref, node)
             if key in seen_pages_nodes:
-                raise AvatarDocumentParseError("invalid_pdf")
+                raise DocumentParseError("invalid_pdf")
             next_seen = set(seen_pages_nodes)
             next_seen.add(key)
             next_inherited = dict(inherited)
@@ -203,7 +203,7 @@ def _iter_pdf_pages_until(reader: Any, limit: int) -> Any:
                     next_inherited[attr] = node[attr]
             kids = node.get("/Kids")
             if kids is None:
-                raise AvatarDocumentParseError("invalid_pdf")
+                raise DocumentParseError("invalid_pdf")
             for child in kids:
                 yield from walk(child, next_inherited, next_seen)
                 if emitted >= limit:
@@ -218,7 +218,7 @@ def _iter_pdf_pages_until(reader: Any, limit: int) -> Any:
             emitted += 1
             yield page
         else:
-            raise AvatarDocumentParseError("invalid_pdf")
+            raise DocumentParseError("invalid_pdf")
 
     root_pages_ref = reader.root_object["/Pages"]
     yield from walk(root_pages_ref, {}, set())
@@ -258,7 +258,7 @@ def _parse_xlsx(data: bytes) -> dict[str, Any]:
         shared_strings = _read_xlsx_shared_strings(archive)
         sheets = _read_xlsx_sheets(archive)
         if not sheets:
-            raise AvatarDocumentParseError("xlsx_no_sheets")
+            raise DocumentParseError("xlsx_no_sheets")
         budget = _TextBudget()
         parts: list[str] = []
         for sheet_index, sheet in enumerate(sheets[:MAX_XLSX_SHEETS], start=1):
@@ -320,20 +320,20 @@ def _open_checked_zip(data: bytes, document_type: str) -> zipfile.ZipFile:
     try:
         archive = zipfile.ZipFile(io.BytesIO(data), "r")
     except zipfile.BadZipFile as exc:
-        raise AvatarDocumentParseError("invalid_ooxml") from exc
+        raise DocumentParseError("invalid_ooxml") from exc
 
     try:
         names = archive.namelist()
         if len(names) > MAX_ZIP_ENTRIES:
-            raise AvatarDocumentParseError("zip_too_many_entries")
+            raise DocumentParseError("zip_too_many_entries")
         total_size = 0
         for info in archive.infolist():
             _validate_zip_member_name(info.filename)
             total_size += max(0, int(info.file_size or 0))
             if total_size > MAX_ZIP_UNCOMPRESSED_BYTES:
-                raise AvatarDocumentParseError("zip_uncompressed_too_large")
+                raise DocumentParseError("zip_uncompressed_too_large")
         if "[Content_Types].xml" not in names:
-            raise AvatarDocumentParseError(f"invalid_{document_type}")
+            raise DocumentParseError(f"invalid_{document_type}")
         return archive
     except Exception:
         archive.close()
@@ -343,29 +343,29 @@ def _open_checked_zip(data: bytes, document_type: str) -> zipfile.ZipFile:
 def _validate_zip_member_name(name: str) -> None:
     path = PurePosixPath(str(name or ""))
     if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
-        raise AvatarDocumentParseError("invalid_zip_member")
+        raise DocumentParseError("invalid_zip_member")
 
 
 def _require_member(archive: zipfile.ZipFile, name: str) -> None:
     if name not in archive.namelist():
-        raise AvatarDocumentParseError("invalid_ooxml")
+        raise DocumentParseError("invalid_ooxml")
 
 
 def _reject_macro_members(archive: zipfile.ZipFile, prefix: str) -> None:
     for name in archive.namelist():
         lowered = name.lower()
         if lowered.startswith(prefix) and lowered.endswith("vbaproject.bin"):
-            raise AvatarDocumentParseError("macro_document_unsupported")
+            raise DocumentParseError("macro_document_unsupported")
 
 
 def _read_xml_member(archive: zipfile.ZipFile, name: str) -> bytes:
     info = archive.getinfo(name)
     if info.file_size > MAX_XML_MEMBER_BYTES:
-        raise AvatarDocumentParseError("xml_member_too_large")
+        raise DocumentParseError("xml_member_too_large")
     data = archive.read(name)
     lowered = data.lower()
     if b"<!doctype" in lowered or b"<!entity" in lowered:
-        raise AvatarDocumentParseError("xml_entity_unsupported")
+        raise DocumentParseError("xml_entity_unsupported")
     return data
 
 
@@ -373,7 +373,7 @@ def _parse_xml(data: bytes) -> ET.Element:
     try:
         return ET.fromstring(data)
     except ET.ParseError as exc:
-        raise AvatarDocumentParseError("invalid_xml") from exc
+        raise DocumentParseError("invalid_xml") from exc
 
 
 def _docx_text_member_names(archive: zipfile.ZipFile) -> list[str]:
@@ -535,7 +535,7 @@ def _extract_xlsx_sheet_text(
                 lines.append("\t".join(values))
             row.clear()
     except ET.ParseError as exc:
-        raise AvatarDocumentParseError("invalid_xml") from exc
+        raise DocumentParseError("invalid_xml") from exc
     if truncated:
         lines.append("[Rows truncated]")
     return "\n".join(lines), truncated
@@ -600,7 +600,7 @@ def _clean_text(text: str) -> str:
 
 def _validate_text_quality(text: str) -> None:
     if not text.strip():
-        raise AvatarDocumentParseError("no_readable_text")
+        raise DocumentParseError("no_readable_text")
     replacement_count = text.count("\ufffd")
     if replacement_count > 16 or replacement_count / max(1, len(text)) > 0.005:
-        raise AvatarDocumentParseError("garbled_text")
+        raise DocumentParseError("garbled_text")

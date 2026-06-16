@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from main_routers.avatar_drop_router import router
-from tests.unit.test_avatar_document_parser import _docx_bytes
+from tests.unit.test_document_parser import _docx_bytes
 
 
 def _client() -> TestClient:
