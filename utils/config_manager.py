@@ -615,6 +615,16 @@ def validate_reserved_schema(reserved: dict) -> list[str]:
     if reserved is None:
         return errors
     _walk(reserved, RESERVED_FIELD_SCHEMA, "_reserved")
+    # voice_id 是 str | 结构对象的联合类型，schema 的 tuple 分支只做 isinstance，挡不住
+    # {"foo": 1} 这种坏 dict。结构对象形态额外校验 source/provider/ref 都为 str，避免
+    # 放宽 schema 后契约松掉（CodeRabbit）。
+    vid = reserved.get("voice_id")
+    if isinstance(vid, dict):
+        for field in ("source", "provider", "ref"):
+            if not isinstance(vid.get(field), str):
+                errors.append(
+                    f"_reserved.voice_id.{field} 需要 str，实际 {type(vid.get(field)).__name__}"
+                )
     return errors
 
 

@@ -109,6 +109,16 @@ def test_schema_accepts_structured_voice_object():
     assert not [e for e in validate_reserved_schema({"voice_id": "gsv:x"}) if "voice_id" in e]
 
 
+def test_schema_rejects_malformed_voice_object():
+    """放宽成 (str, dict) 后，结构对象形态仍校验 source/provider/ref 都为 str，
+    挡住 {"foo": 1} 这类坏 dict（CodeRabbit 负例）。"""
+    errors = validate_reserved_schema({"voice_id": {"foo": 1}})
+    assert [e for e in errors if "voice_id" in e], "malformed voice_id dict should be flagged"
+    # provider 类型错也要抓
+    bad = validate_reserved_schema({"voice_id": {"source": "clone", "provider": 1, "ref": "x"}})
+    assert [e for e in bad if "voice_id.provider" in e]
+
+
 def test_storage_guard_keeps_legacy_string_when_roundtrip_would_change_key(monkeypatch):
     """Round-trip guard (Codex P2): if the structured form would read back to a DIFFERENT key
     (provider-tagged but un-prefixed clone), keep the legacy string so the binding's library
