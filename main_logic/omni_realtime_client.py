@@ -1697,7 +1697,19 @@ class OmniRealtimeClient:
             await self.create_response(text)
         else:
             # skipped=True 或 Qwen：仅追加到 session instructions
-            await self.update_session({"instructions": self.instructions + '\n' + text})
+            lock = getattr(self, "_prime_context_lock", None)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._prime_context_lock = lock
+            async with lock:
+                current_instructions = str(self.instructions or "")
+                next_instructions = (
+                    current_instructions + "\n" + text
+                    if current_instructions
+                    else text
+                )
+                await self.update_session({"instructions": next_instructions})
+                self.instructions = next_instructions
             logger.info("prime_context: updated session instructions")
 
     async def create_response(self, instructions: str, skipped: bool = False) -> None:

@@ -104,10 +104,15 @@
         galgameOptionsLoading: false,
         galgameTemporarilyDisabled: false,
         homeTutorialInteractionLocked: false,
+        homeTutorialInputLocked: false,
+        _avatarToolMenuOpenRequestSeq: 0,
+        _compactToolFanOpenRequestSeq: 0,
+        _compactToolWheelRotateRequestSeq: 0,
+        _compactToolWheelIndexRequestSeq: 0,
         _galgameRequestSeq: 0,
-        // 通用 ChoicePrompt 框架（PR #1141 follow-up #2）。当前承载 mini_game_invite
-        // 三选项；galgame mode 仍走 galgameOptions 路径（BC，渐进迁移）。
-        // shape: { source: 'mini_game_invite', sessionId, gameType, options: [{choice,label}] } | null
+        // 通用 ChoicePrompt 框架。当前承载 mini_game_invite 与新手破冰；
+        // galgame mode 仍走 galgameOptions 路径（BC，渐进迁移）。
+        // shape: { source, sessionId, gameType, options: [{choice,label}] } | null
         choicePrompt: null,
         // dedupe set：已经 window.open 过的 mini-game session_id。键集，行为按 set 用。
         // 防止 endpoint 路径 + WS push 路径同一 session 双开窗口。
@@ -2293,7 +2298,8 @@
             galgameToggleButtonLabel: getI18nText('chat.galgameToggle', 'GalGame 模式'),
             galgameToggleButtonAriaLabel: getI18nText('chat.galgameToggleAriaLabel', '切换 GalGame 选项模式'),
             galgameLoadingLabel: getI18nText('chat.galgameLoading', '生成回复选项中…'),
-            composerDisabled: !!state.homeTutorialInteractionLocked
+            composerDisabled: !!state.homeTutorialInteractionLocked,
+            compactInputLocked: !!state.homeTutorialInputLocked
         };
     }
 
@@ -2329,6 +2335,7 @@
             createdAt: message.createdAt,
             turnId: message.turnId,
             avatarLabel: message.avatarLabel,
+            baseAvatarUrl: message.baseAvatarUrl || message.avatarUrl,
             avatarUrl: message.avatarUrl,
             blocks: Array.isArray(message.blocks) ? message.blocks.map(function (block) {
                 if (!block || typeof block !== 'object') return null;
@@ -2381,6 +2388,7 @@
             }
         }
 
+        var baseAvatarUrl = message.baseAvatarUrl || message.avatarUrl;
         return {
             id: String(message.id),
             role: message.role || 'assistant',
@@ -2389,12 +2397,40 @@
             createdAt: createdAt,
             turnId: message.turnId ? String(message.turnId) : undefined,
             avatarLabel: message.avatarLabel,
-            avatarUrl: message.avatarUrl,
+            baseAvatarUrl: baseAvatarUrl,
+            avatarUrl: resolveCurrentAssistantAvatarUrl(message.role, baseAvatarUrl),
             blocks: Array.isArray(message.blocks) ? message.blocks : [],
             actions: Array.isArray(message.actions) ? message.actions : undefined,
             status: message.status,
             sortKey: typeof message.sortKey === 'number' ? message.sortKey : fallbackSortKey
         };
+    }
+
+    function resolveCurrentAssistantAvatarUrl(role, baseAvatarUrl) {
+        if (role !== 'assistant') return baseAvatarUrl || undefined;
+        try {
+            if (window.appChatAvatar && typeof window.appChatAvatar.getCurrentAvatarDataUrl === 'function') {
+                return window.appChatAvatar.getCurrentAvatarDataUrl() || baseAvatarUrl || undefined;
+            }
+        } catch (_) {}
+        return baseAvatarUrl || undefined;
+    }
+
+    function refreshAssistantAvatarUrls(event) {
+        var shouldClear = event && event.type === 'chat-avatar-preview-cleared';
+        var changed = false;
+        state.messages = state.messages.map(function (message) {
+            if (!message || message.role !== 'assistant') return message;
+            var baseAvatarUrl = message.baseAvatarUrl || message.avatarUrl || '';
+            var avatarUrl = resolveCurrentAssistantAvatarUrl('assistant', baseAvatarUrl);
+            if (message.avatarUrl === avatarUrl && message.baseAvatarUrl === baseAvatarUrl) return message;
+            changed = true;
+            return Object.assign({}, message, {
+                baseAvatarUrl: baseAvatarUrl,
+                avatarUrl: avatarUrl
+            });
+        });
+        if (changed) renderWindow();
     }
 
     function sortMessages(messages) {
@@ -2728,7 +2764,12 @@
     }
 
     function handleComposerSubmit(payload) {
-        if (state.homeTutorialInteractionLocked || getEffectiveComposerHidden()) {
+        if (
+            state.homeTutorialInteractionLocked
+            || state.homeTutorialInputLocked
+            || isHomeTutorialInteractionLocked()
+            || getEffectiveComposerHidden()
+        ) {
             return;
         }
         var requestId = payload && typeof payload.requestId === 'string' && payload.requestId
@@ -2764,6 +2805,17 @@
             console.log('[ROLLBACK] handleComposerSubmit: clearing rollbackDraft length=' + state.rollbackDraft.length + ' key=' + state._rollbackKey);
         }
         state.rollbackDraft = '';
+
+        if (state.choicePrompt && state.choicePrompt.source === 'new_user_icebreaker') {
+            var icebreakerDetail = {
+                sessionId: state.choicePrompt.sessionId || '',
+                text: detail.text,
+                requestId: detail.requestId
+            };
+            window.dispatchEvent(new CustomEvent('neko:icebreaker-free-text-submitted', { detail: icebreakerDetail }));
+            dispatchHostEvent('icebreaker-free-text-submit', icebreakerDetail);
+            return;
+        }
 
         if (typeof state.onComposerSubmit === 'function') {
             try {
@@ -3368,10 +3420,10 @@
         dispatchHostEvent('galgame-option-select', detail);
     }
 
-    // ---- 通用 ChoicePrompt：mini-game invite 三选项 ----
+    // ---- 通用 ChoicePrompt：mini-game invite / new-user icebreaker ----
     // React 组件 onChoice 回调把 option + source 一起传上来。source==='galgame'
     // 走旧路径（dummy fallback，正常不会到这里——galgame 仍然走 onGalgameOptionSelect
-    // 直接 callback；这里只是 BC 兜底）；source==='mini_game_invite' 走新逻辑。
+    // 直接 callback；这里只是 BC 兜底）。
 
     function handleChoiceSelect(option, source) {
         if (isHomeTutorialInteractionLocked() || getEffectiveComposerHidden()) return;
@@ -3387,16 +3439,37 @@
             handleMiniGameInviteChoice(option);
             return;
         }
+        if (source === 'new_user_icebreaker') {
+            handleIcebreakerChoice(option);
+            return;
+        }
+    }
+
+    function handleIcebreakerChoice(option) {
+        if (isHomeTutorialInteractionLocked()) return;
+        var prompt = state.choicePrompt;
+        if (!prompt || prompt.source !== 'new_user_icebreaker') return;
+        var sessionId = prompt.sessionId || '';
+        var detail = {
+            sessionId: sessionId,
+            choice: String(option.choice || ''),
+            option: {
+                choice: String(option.choice || ''),
+                label: String(option.label || '')
+            }
+        };
+        state.choicePrompt = null;
+        renderWindow();
+        window.dispatchEvent(new CustomEvent('neko:icebreaker-choice-selected', { detail: detail }));
+        dispatchHostEvent('icebreaker-choice-select', detail);
     }
 
     function handleCompactChatStateChange(nextCompactChatState) {
-        if (
-            (state.homeTutorialInputLocked || isHomeTutorialInteractionLocked())
-            && normalizeCompactChatState(nextCompactChatState) === 'input'
-        ) {
+        var normalized = normalizeCompactChatState(nextCompactChatState);
+        if (normalized === 'input' && (state.homeTutorialInputLocked || isHomeTutorialInteractionLocked())) {
             return;
         }
-        setCompactChatState(nextCompactChatState);
+        setCompactChatState(normalized);
     }
 
     // React compact 输入框/胶囊左侧毛绒球点按 → 折叠为 minimized。最小化控制权在宿主，
@@ -3657,6 +3730,42 @@
         }
     }
 
+    function setIcebreakerChoicePrompt(payload) {
+        if (!payload) return;
+        var sessionId = String(payload.sessionId || '');
+        if (!sessionId) return;
+        var rawOptions = Array.isArray(payload.options) ? payload.options : [];
+        if (!rawOptions.length) return;
+        var cleanedOptions = rawOptions.map(function (o) {
+            return {
+                choice: String((o && o.choice) || ''),
+                label: String((o && o.label) || '')
+            };
+        }).filter(function (o) { return o.choice && o.label; });
+        if (!cleanedOptions.length) {
+            console.warn('[NewUserIcebreaker] all options filtered out, skipping render', payload);
+            return;
+        }
+        state.choicePrompt = {
+            source: 'new_user_icebreaker',
+            sessionId: sessionId,
+            gameType: String(payload.gameType || ''),
+            options: cleanedOptions
+        };
+        invalidatePendingGalgameRequest();
+        renderWindow();
+    }
+
+    function clearIcebreakerChoicePrompt(sessionId) {
+        if (!sessionId) return;
+        if (state.choicePrompt
+                && state.choicePrompt.source === 'new_user_icebreaker'
+                && state.choicePrompt.sessionId === sessionId) {
+            state.choicePrompt = null;
+            renderWindow();
+        }
+    }
+
     function handleMiniGameInviteResolved(payload) {
         if (!payload) return;
         var sessionId = String(payload.sessionId || '');
@@ -3902,13 +4011,16 @@
         if (state.homeTutorialInteractionLocked === next) {
             return;
         }
+        if (next && getCurrentCompactChatState() === 'input') {
+            resetCompactChatState();
+        }
         state.homeTutorialInteractionLocked = next;
         if (next && getCurrentCompactChatState() === 'input') {
             resetCompactChatState();
         }
         state.viewProps = Object.assign({}, ensureViewProps(), {
-            composerDisabled: next,
-            compactChatState: getCurrentCompactChatState()
+            compactChatState: getCurrentCompactChatState(),
+            composerDisabled: next
         });
         renderWindow();
     }
@@ -3918,8 +4030,12 @@
         if (state.homeTutorialInputLocked === next) {
             return;
         }
+        if (next && getCurrentCompactChatState() === 'input') {
+            resetCompactChatState();
+        }
         state.homeTutorialInputLocked = next;
         state.viewProps = Object.assign({}, ensureViewProps(), {
+            compactChatState: getCurrentCompactChatState(),
             compactInputLocked: next
         });
         renderWindow();
@@ -3944,7 +4060,9 @@
         var normalizedStepCount = Number.isFinite(stepCount)
             ? Math.max(1, Math.min(7, Math.floor(stepCount)))
             : 1;
-        var normalizedOptions = options || {};
+        var normalizedOptions = typeof options === 'string'
+            ? { reason: options }
+            : (options || {});
         return setTutorialChatRequest('compactToolWheelRotateRequest', {
             direction: normalizedDirection,
             stepCount: normalizedStepCount,
@@ -3987,8 +4105,21 @@
 
     var MAX_MESSAGES = 50;
 
+    function getNextAppendSortKey() {
+        var maxExistingSortKey = Array.isArray(state.messages)
+            ? state.messages.reduce(function (max, message) {
+                var key = message && typeof message.sortKey === 'number' && Number.isFinite(message.sortKey)
+                    ? message.sortKey : null;
+                return (key !== null && key > max) ? key : max;
+            }, -1)
+            : -1;
+        var nextSortKey = Math.max(_sortKeySeq, maxExistingSortKey + 1, Date.now());
+        _sortKeySeq = nextSortKey + 1;
+        return nextSortKey;
+    }
+
     function appendMessage(message) {
-        var normalized = normalizeMessage(message, _sortKeySeq++);
+        var normalized = normalizeMessage(message, getNextAppendSortKey());
         if (!normalized) return null;
 
         state.messages = sortMessages(state.messages.concat([normalized]));
@@ -4024,6 +4155,22 @@
         var beforeLength = state.messages.length;
         state.messages = state.messages.filter(function (message) {
             return String(message.id) !== String(messageId);
+        });
+        var changed = state.messages.length !== beforeLength;
+        if (changed) {
+            renderWindow();
+        }
+        return changed;
+    }
+
+    function isYuiGuideChatMessage(message) {
+        return !!(message && typeof message.id === 'string' && message.id.indexOf('yui-guide-') === 0);
+    }
+
+    function clearGuideMessages() {
+        var beforeLength = state.messages.length;
+        state.messages = state.messages.filter(function (message) {
+            return !isYuiGuideChatMessage(message);
         });
         var changed = state.messages.length !== beforeLength;
         if (changed) {
@@ -4992,10 +5139,7 @@
 
     function setCompactChatState(nextCompactChatState) {
         var normalized = normalizeCompactChatState(nextCompactChatState);
-        if (
-            normalized === 'input'
-            && (state.homeTutorialInputLocked || isHomeTutorialInteractionLocked())
-        ) {
+        if (normalized === 'input' && (state.homeTutorialInputLocked || isHomeTutorialInteractionLocked())) {
             return getCurrentCompactChatState();
         }
         if (state.compactChatState === normalized) {
@@ -6091,6 +6235,10 @@
             clearMessages();
         });
 
+        window.addEventListener('chat-avatar-preview-updated', refreshAssistantAvatarUrls);
+        window.addEventListener('chat-avatar-preview-cleared', refreshAssistantAvatarUrls);
+        window.addEventListener('neko:tutorial-chat-identity-changed', refreshAssistantAvatarUrls);
+
         window.addEventListener(EVENT_PREFIX + 'set-view-props', function (event) {
             setViewProps(event.detail && event.detail.viewProps);
         });
@@ -6120,6 +6268,8 @@
         window.addEventListener('neko:tutorial-started', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
+            setHomeTutorialInteractionLocked(true, 'tutorial-started');
+            setHomeTutorialInputLocked(true, 'tutorial-started');
             setGalgameModeTemporarilyDisabled(true);
             setHomeTutorialInteractionLocked(true, 'tutorial-started');
         });
@@ -6127,6 +6277,8 @@
         window.addEventListener('neko:tutorial-completed', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
+            setHomeTutorialInputLocked(false, 'tutorial-completed');
+            setHomeTutorialInteractionLocked(false, 'tutorial-completed');
             setGalgameModeTemporarilyDisabled(false);
             setHomeTutorialInteractionLocked(false, 'tutorial-completed');
         });
@@ -6134,6 +6286,8 @@
         window.addEventListener('neko:tutorial-skipped', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
+            setHomeTutorialInputLocked(false, 'tutorial-skipped');
+            setHomeTutorialInteractionLocked(false, 'tutorial-skipped');
             setGalgameModeTemporarilyDisabled(false);
             setHomeTutorialInteractionLocked(false, 'tutorial-skipped');
         });
@@ -6141,6 +6295,8 @@
         window.addEventListener('neko:tutorial-ended-without-completion', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
+            setHomeTutorialInputLocked(false, 'tutorial-ended-without-completion');
+            setHomeTutorialInteractionLocked(false, 'tutorial-ended-without-completion');
             setGalgameModeTemporarilyDisabled(false);
             setHomeTutorialInteractionLocked(false, 'tutorial-ended-without-completion');
         });
@@ -6188,12 +6344,20 @@
         var avatarHeaderButton = $('avatarPreviewHeaderButton');
 
         ensureViewProps();
+        var tutorialLockActive = isHomeTutorialRunning();
+        state.homeTutorialInteractionLocked = tutorialLockActive;
+        state.homeTutorialInputLocked = false;
         state.chatSurfaceMode = readInitialChatSurfaceMode();
+        if (tutorialLockActive) {
+            setHomeTutorialInputLocked(true, 'tutorial-startup');
+        }
         lastRestorableChatSurfaceMode = state.chatSurfaceMode;
         resetCompactChatState();
         state.viewProps = Object.assign({}, ensureViewProps(), {
             chatSurfaceMode: getCurrentChatSurfaceMode(),
-            compactChatState: getCurrentCompactChatState()
+            compactChatState: getCurrentCompactChatState(),
+            composerDisabled: !!state.homeTutorialInteractionLocked,
+            compactInputLocked: !!state.homeTutorialInputLocked
         });
         syncChatSurfaceModeUI();
         prewarmUserDisplayName();
@@ -6247,6 +6411,8 @@
         createResizeEdges();
         bindResizing();
         bindBridgeEvents();
+        setTimeout(refreshAssistantAvatarUrls, 0);
+        setTimeout(refreshAssistantAvatarUrls, 500);
         ensureElectronChatMinimizedStateBridge();
 
         // 恢复手机端用户设置的高度
@@ -6487,6 +6653,7 @@
         appendMessage: appendMessage,
         updateMessage: updateMessage,
         removeMessage: removeMessage,
+        clearGuideMessages: clearGuideMessages,
         clearMessages: clearMessages,
         getState: getStateSnapshot,
         setOnMessageAction: function (handler) {
@@ -6526,6 +6693,8 @@
         refreshGalgameOptions: fetchGalgameOptionsForLatestTurn,
         // Mini-game invite ChoicePrompt：app-websocket.js 收到对应 WS message 时调
         setMiniGameInvitePrompt: setMiniGameInvitePrompt,
+        setIcebreakerChoicePrompt: setIcebreakerChoicePrompt,
+        clearIcebreakerChoicePrompt: clearIcebreakerChoicePrompt,
         // unified resolved handler：accept 兼 launch / decline / suppress 都通过
         // 这条入口分发——前端 dismiss prompt UI + accept 时 window.open。替代了
         // 旧 launchMiniGame（accept-only）路径，让 codex P2 的 cross-window

@@ -61,7 +61,7 @@ from main_logic.tool_calling import (
     ToolRegistry,
     ToolResult,
 )
-from utils.llm_client import AIMessage
+from utils.llm_client import AIMessage, HumanMessage
 from main_logic.session_state import SessionStateMachine, SessionEvent, ProactivePhase
 from main_logic.lifecycle_bus import LifecycleEventBus
 from main_logic.proactive_delivery import (
@@ -820,6 +820,9 @@ class LLMSessionManager:
         self.pending_extra_replies: list[dict] = []
         # 结构化 agent 任务回调队列（用于按会话类型注入）
         self.pending_agent_callbacks: list[dict] = []
+        # 新用户破冰是本地脚本，不走普通 LLM；这里暂存它的问答，
+        # 让下一轮普通聊天仍能读到刚刚发生过的上下文。
+        self.pending_icebreaker_context: list[tuple[str, str]] = []
         # ── Proactive delivery front stage ───────────────────────────────
         # Generic, plugin-agnostic pacing/ordering for proactive cues
         # (push_message ai_behavior="respond" + agent task results). The
@@ -2862,6 +2865,105 @@ class LLMSessionManager:
             )
             return False
         return True
+
+    def _queue_pending_icebreaker_context(self, role: str, text: str) -> None:
+        pending = getattr(self, "pending_icebreaker_context", None)
+        if not isinstance(pending, list):
+            pending = []
+            self.pending_icebreaker_context = pending
+        pending.append((role, text))
+        if len(pending) > 80:
+            del pending[:-80]
+
+    @staticmethod
+    def _render_icebreaker_context_for_realtime(role: str, text: str) -> str:
+        return f"{role}: {text}"
+
+    @staticmethod
+    def _append_icebreaker_context_to_history(history: list, role: str, text: str) -> bool:
+        if role == "user":
+            history.append(HumanMessage(content=text))
+            return True
+        if role == "assistant":
+            history.append(AIMessage(content=text))
+            return True
+        return False
+
+    async def _prime_icebreaker_context_to_realtime_session(self, session, role: str, text: str) -> None:
+        try:
+            await session.prime_context(
+                self._render_icebreaker_context_for_realtime(role, text),
+                skipped=True,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[%s] icebreaker realtime context prime failed; re-queueing role=%s: %s",
+                getattr(self, "lanlan_name", "?"),
+                role,
+                exc,
+            )
+            self._queue_pending_icebreaker_context(role, text)
+
+    def _append_icebreaker_context_to_session(self, role: str, text: str) -> bool:
+        session = getattr(self, "session", None)
+        history = getattr(session, "_conversation_history", None)
+        if not isinstance(history, list):
+            prime_context = getattr(session, "prime_context", None)
+            if not callable(prime_context):
+                return False
+            try:
+                self._fire_task(self._prime_icebreaker_context_to_realtime_session(session, role, text))
+            except RuntimeError:
+                return False
+            return True
+        return self._append_icebreaker_context_to_history(history, role, text)
+
+    async def append_icebreaker_context_async(self, role: str, text: str) -> bool:
+        clean_role = str(role or "").strip()
+        clean_text = str(text or "").strip()
+        if clean_role not in {"assistant", "user"} or not clean_text:
+            return False
+
+        session = getattr(self, "session", None)
+        history = getattr(session, "_conversation_history", None)
+        if isinstance(history, list):
+            return self._append_icebreaker_context_to_history(history, clean_role, clean_text)
+
+        prime_context = getattr(session, "prime_context", None)
+        if callable(prime_context):
+            await self._prime_icebreaker_context_to_realtime_session(session, clean_role, clean_text)
+            return True
+
+        self._queue_pending_icebreaker_context(clean_role, clean_text)
+        return True
+
+    def append_icebreaker_context(self, role: str, text: str) -> bool:
+        clean_role = str(role or "").strip()
+        clean_text = str(text or "").strip()
+        if clean_role not in {"assistant", "user"} or not clean_text:
+            return False
+
+        if self._append_icebreaker_context_to_session(clean_role, clean_text):
+            return True
+
+        self._queue_pending_icebreaker_context(clean_role, clean_text)
+        return True
+
+    def _flush_pending_icebreaker_context(self) -> None:
+        pending = getattr(self, "pending_icebreaker_context", None)
+        if not isinstance(pending, list) or not pending:
+            return
+        session = getattr(self, "session", None)
+        has_history = isinstance(getattr(session, "_conversation_history", None), list)
+        has_prime_context = callable(getattr(session, "prime_context", None))
+        if not (has_history or has_prime_context):
+            return
+
+        remaining: list[tuple[str, str]] = []
+        for role, text in pending:
+            if not self._append_icebreaker_context_to_session(role, text):
+                remaining.append((role, text))
+        self.pending_icebreaker_context = remaining
 
     async def emit_mirror_turn_end(
         self,
@@ -4927,6 +5029,8 @@ class LLMSessionManager:
                 # 标记session为就绪状态并处理可能已缓存的输入数据
                 async with self.input_cache_lock:
                     self.session_ready = True
+
+                self._flush_pending_icebreaker_context()
 
                 # 处理在session启动期间可能已经缓存的输入数据
                 await self._flush_pending_input_data()
