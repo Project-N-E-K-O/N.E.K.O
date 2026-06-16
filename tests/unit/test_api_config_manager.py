@@ -1515,8 +1515,9 @@ class TestGptsovitsEnabledSaveMigration:
 
     @pytest.mark.unit
     def test_save_non_gptsovits_provider_clears_stale_flag(self, config_manager, monkeypatch):
-        """存量 gptsovitsEnabled=true，用户经下拉显式切到 follow_assist 保存 → 旧 flag 落
-        False，派生 GPTSOVITS_ENABLED=False（GSV 真正关掉）。"""
+        """Stored gptsovitsEnabled=true; the user explicitly switches the dropdown to
+        follow_assist and saves -> the stale flag is set to False, and the derived
+        GPTSOVITS_ENABLED becomes False (GSV is actually turned off)."""
         config_router, asyncio = self._neutralize_side_effects(monkeypatch)
         _write_core_config(config_manager, {
             'coreApi': 'qwen', 'assistApi': 'qwen', 'enableCustomApi': True,
@@ -1537,7 +1538,8 @@ class TestGptsovitsEnabledSaveMigration:
 
     @pytest.mark.unit
     def test_save_gptsovits_provider_keeps_flag_enabled(self, config_manager, monkeypatch):
-        """保持/切到 gptsovits 保存时不清旧 flag，GSV 仍启用。"""
+        """Saving while the dropdown stays on/returns to gptsovits does not clear the
+        legacy flag; GSV remains enabled."""
         config_router, asyncio = self._neutralize_side_effects(monkeypatch)
         _write_core_config(config_manager, {
             'coreApi': 'qwen', 'assistApi': 'qwen', 'enableCustomApi': True,
