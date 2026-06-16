@@ -7960,9 +7960,14 @@ class LLMSessionManager:
                         if isinstance(self.session, OmniOfflineClient):
                             # 只添加到待发送队列，等待与文本一起发送
                             await self.session.stream_image(image_b64)
+                            image_data = (
+                                ""
+                                if input_type in {"avatar_drop_image", "user_image"}
+                                else f"data:image/jpeg;base64,{image_b64}"
+                            )
                             image_message = {
                                 "input_type": input_type,
-                                "data": "",
+                                "data": image_data,
                                 "has_image": True,
                                 "mime_type": "image/jpeg",
                             }

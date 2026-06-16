@@ -645,9 +645,40 @@ async def test_text_mode_image_input_is_mirrored_to_analyzer_queue(monkeypatch):
         "type": "user",
         "data": {
             "input_type": "screen",
+            "data": "data:image/jpeg;base64,img-b64",
+            "has_image": True,
+            "mime_type": "image/jpeg",
+        },
+    }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_text_mode_avatar_drop_image_is_metadata_only_in_analyzer_queue(monkeypatch):
+    """Avatar Drop images must not put full base64 payloads into the sync queue."""
+    mgr = _make_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session.stream_image = AsyncMock()
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    monkeypatch.setattr(core_module, "process_screen_data", AsyncMock(return_value="img-b64"))
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "avatar_drop_image", "data": "raw-image", "request_id": "req-img"},
+    )
+
+    mgr.session.stream_image.assert_awaited_once_with("img-b64")
+    assert mgr.sync_message_queue.messages == [{
+        "type": "user",
+        "data": {
+            "input_type": "avatar_drop_image",
             "data": "",
             "has_image": True,
             "mime_type": "image/jpeg",
+            "request_id": "req-img",
         },
     }]
 
