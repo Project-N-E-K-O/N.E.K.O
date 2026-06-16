@@ -59,19 +59,19 @@ IS_FROZEN = getattr(sys, 'frozen', False) or '__compiled__' in globals()
 
 
 def _ensure_utf8_filesystem_encoding() -> None:
-    """确保解释器的文件系统编码为 UTF-8，否则带 PYTHONUTF8=1 重启自身一次。
+    """Restart once with PYTHONUTF8=1 when Linux fs encoding is not UTF-8.
 
-    AppImage 内嵌 / 某些精简 Linux 环境的 Python，在 C/POSIX locale 下
-    （且 C.UTF-8 不可用、PEP 538 locale coercion 失败时）
-    sys.getfilesystemencoding() 会退化成 'ascii'。此后任何含中文的路径
-    （如角色目录 memory/玖儿/…）在 os.makedirs / open 时抛 UnicodeEncodeError，
-    整个后端无法启动——即使系统 LANG=zh_CN.UTF-8 也没用，因为壳层往往
-    没把 locale 透传进内嵌解释器。
+    Embedded Python builds in AppImage or minimal Linux runtimes can fall back
+    to ``ascii`` under a C/POSIX locale when C.UTF-8 is unavailable and PEP 538
+    locale coercion fails. Any non-ASCII path then raises UnicodeEncodeError
+    during calls such as os.makedirs or open, preventing the backend from
+    starting even if the host shell has a UTF-8 LANG that was not propagated.
 
-    fs 编码在解释器启动时即固定，运行时改不了，只能设 PYTHONUTF8=1
-    （PEP 540 UTF-8 Mode）后 os.execv 重启自身。execv 不换 PID，Electron
-    壳对后端进程的生命周期跟踪不受影响；PYTHONUTF8 也会被本进程后续
-    Popen 出来的各 server 子进程继承。Windows 默认 fs 编码已是 utf-8，跳过。
+    Filesystem encoding is fixed at interpreter startup, so the only reliable
+    repair is setting PYTHONUTF8=1 (PEP 540 UTF-8 Mode) and execv-restarting
+    the current process. execv preserves the PID for Electron process tracking,
+    and the environment is inherited by later server subprocesses. Windows
+    already defaults to a UTF-8 filesystem encoding, so it is skipped.
     """
     if sys.platform == 'win32':
         return
