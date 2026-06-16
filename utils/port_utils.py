@@ -289,20 +289,38 @@ _LOCK_FILE = os.path.join(tempfile.gettempdir(), "neko_launcher.lock")
 
 def _acquire_file_lock() -> bool:
     global _lock_fd
+    fd = None
+    locked = False
     try:
         import fcntl
 
         fd = open(_LOCK_FILE, "w", encoding="utf-8")
         try:
             fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            locked = True
+            fd.write(str(os.getpid()))
+            fd.flush()
         except (OSError, IOError):
+            if locked:
+                try:
+                    fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
+                except (OSError, IOError):
+                    pass
             fd.close()
             return False
-        fd.write(str(os.getpid()))
-        fd.flush()
         _lock_fd = fd
         return True
     except (OSError, IOError):
+        if fd is not None and fd is not _lock_fd:
+            if locked:
+                try:
+                    fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
+                except (OSError, IOError):
+                    pass
+            try:
+                fd.close()
+            except (OSError, IOError):
+                pass
         return False
     except ImportError:
         # POSIX 上通常应有 fcntl，这里仅做兜底

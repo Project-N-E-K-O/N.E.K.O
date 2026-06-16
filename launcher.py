@@ -94,6 +94,8 @@ def _ensure_utf8_filesystem_encoding() -> None:
             're-exec with PYTHONUTF8=1 to support non-ASCII paths\n'
         )
     except Exception:
+        # stderr may be closed or unwritable in embedded launchers; losing this
+        # diagnostic is harmless, and the re-exec attempt below is still useful.
         pass
     try:
         os.execv(argv[0], argv)
