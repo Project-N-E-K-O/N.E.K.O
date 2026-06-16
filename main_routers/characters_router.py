@@ -4218,14 +4218,25 @@ async def get_voices():
     # vLLM 这类先命中、无静态目录的 provider 则不出目录（preset 为 None）。复用
     # native_voices 通道——前端 source-first 选声器按 entry 的 provider/provider_label
     # 自动分组成「<Provider> · 预制」，无需新增来源通道。
-    # 用 is not None 而非 truthy：preset provider 被选中即应压过 native（dispatch
-    # 会路由到它而非 native），哪怕其目录恰为空字典也不该误回退到 core-native。
-    selected_preset_catalog = tts_provider_registry.selected_preset_catalog_for_ui(
+    # 选声目录与 dispatch 同一优先级：先看哪个注册表 provider 赢得当前配置。
+    #  - 赢家有静态预制目录（如 MiMo）→ 出该目录，压过 core-native（用 is not None，
+    #    空目录也算命中，不误回退）。
+    #  - 赢家无静态目录（vLLM-Omni / GPT-SoVITS，用户自填/自部署音色）→ 既不出目录、
+    #    也不回退 core-native：dispatch 会路由到该赢家，露出 gemini 等原生音色会让用户
+    #    选中后被误传给赢家触发 unsupported-voice（PR #1848 Codex review）。
+    #  - 无注册表 provider 赢 → 回退 core-native（gemini/step/...）。
+    # 复用 native_voices 通道——前端 source-first 选声器按 entry 的 provider/provider_label
+    # 自动分组成「<Provider> · 预制」，无需新增来源通道。
+    winning_provider_key = tts_provider_registry.selected_provider_key(
         core_config or {}, _config_manager
     )
+    selected_preset_catalog = (
+        tts_provider_registry.preset_catalog_for_ui(winning_provider_key)
+        if winning_provider_key else None
+    )
     active_native_provider = (
-        None if selected_preset_catalog is not None
-        else get_active_realtime_native_provider_for_ui(_config_manager)
+        get_active_realtime_native_provider_for_ui(_config_manager)
+        if winning_provider_key is None else None
     )
     if selected_preset_catalog is not None:
         result["native_voices"] = selected_preset_catalog
@@ -4337,6 +4348,20 @@ async def get_voice_preview(
 
         preview_language = _get_voice_preview_language(request, language, i18n_language)
         text = _loc(VOICE_PREVIEW_TEXTS, preview_language)
+
+        # hosted/local provider 的预制音色（如选中 MiMo 时的预制声线）经 native_voices
+        # 通道露给前端会渲染试听按钮，但其试听需走该 provider 自己的合成路径（尚未接）。
+        # 在此显式拦下返回「暂不支持试听」，避免落到下方 DashScope/CosyVoice 通用分支拿着
+        # 该 provider 的 key/voice_id 误合成（PR #1848 Codex review；真试听留作后续）。
+        preview_core_config = await _config_manager.aget_core_config()
+        if tts_provider_registry.is_selected_preset_voice(
+            preview_core_config or {}, _config_manager, voice_id
+        ):
+            return JSONResponse({
+                'success': False,
+                'error': f'当前预制音色暂不支持试听: {voice_id}',
+                'code': 'PRESET_VOICE_PREVIEW_UNSUPPORTED',
+            }, status_code=400)
 
         native_preview_provider = _get_active_native_preview_provider(_config_manager, voice_id)
         if native_preview_provider:

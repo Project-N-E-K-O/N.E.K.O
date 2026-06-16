@@ -356,20 +356,20 @@ def is_preset_voice(provider_key: str | None, voice_id: str | None) -> bool:
     return provider.preset_catalog.is_voice(voice_id)
 
 
-def selected_preset_catalog_for_ui(
+def selected_provider_key(
     core_config: Mapping[str, Any],
     cm: "ConfigManager",
-) -> "dict[str, dict[str, str | bool]] | None":
-    """The preset catalog of the provider currently selected for ``core_config`` /
-    ``cm``, or None when the winning provider ships no static catalog.
+) -> str | None:
+    """Key of the provider currently selected for ``core_config`` / ``cm``, or None.
 
-    Used by the ``/voices`` endpoint so e.g. a selected MiMo surfaces its built-in
-    voices, with the same precedence dispatch uses (a GPT-SoVITS / vLLM pick that
-    wins first suppresses the catalog)."""
+    UI precedence helper: the ``/voices`` endpoint reads this to mirror dispatch —
+    if the winner ships a static catalog (``preset_catalog_for_ui(key)`` non-None)
+    show it; if a registry provider wins but ships no catalog (vLLM-Omni /
+    GPT-SoVITS — user-entered or self-hosted voices), core-native voices must be
+    suppressed too, since selecting one would be misrouted to that winner. None
+    means no registry provider won → fall back to core-native voices."""
     provider = selected_provider(DispatchContext(core_config=core_config, cm=cm))
-    if provider is None:
-        return None
-    return preset_catalog_for_ui(provider.key)
+    return provider.key if provider is not None else None
 
 
 def is_selected_preset_voice(

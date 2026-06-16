@@ -81,6 +81,12 @@ def test_mimo_preset_catalog_for_ui_shape_matches_native():
     assert set(milo) == {"prefix", "provider", "provider_label", "gender", "display_name", "builtin"}
 
 
+def _selected_catalog(core_config, cm):
+    """模拟 /voices 取目录的两步：先拿赢家 key，再按 key 取其静态预制目录。"""
+    key = tts_provider_registry.selected_provider_key(core_config, cm)
+    return tts_provider_registry.preset_catalog_for_ui(key) if key else None
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize(
     "core_config",
@@ -90,7 +96,7 @@ def test_mimo_preset_catalog_for_ui_shape_matches_native():
     ],
 )
 def test_mimo_selected_exposes_preset_catalog_for_ui(core_config):
-    catalog = tts_provider_registry.selected_preset_catalog_for_ui(core_config, _CM(core_config))
+    catalog = _selected_catalog(core_config, _CM(core_config))
     assert catalog and "Milo" in catalog
 
 
@@ -99,7 +105,7 @@ def test_mimo_assist_api_selects_catalog_even_over_core_native():
     # core=gemini 但 assistApi=mimo：mimo（priority 60）在 dispatch 里先于 native 命中，
     # UI 目录也应给 mimo（UI/校验与 dispatch 同一优先级判定）。
     core_config = {"CORE_API_TYPE": "gemini", "ttsProvider": "step", "assistApi": "mimo"}
-    catalog = tts_provider_registry.selected_preset_catalog_for_ui(core_config, _CM(core_config))
+    catalog = _selected_catalog(core_config, _CM(core_config))
     assert catalog and "Milo" in catalog
 
 
@@ -108,8 +114,21 @@ def test_mimo_catalog_hidden_when_gptsovits_custom_tts_wins():
     # GPT-SoVITS（priority 10）先命中且无静态预制目录 → 不出 mimo 预制目录，也不算合法预制
     core_config = {"CORE_API_TYPE": "qwen", "assistApi": "mimo", "GPTSOVITS_ENABLED": True}
     cm = _CM(core_config, tts_custom_config={"is_custom": True})
-    assert tts_provider_registry.selected_preset_catalog_for_ui(core_config, cm) is None
+    assert _selected_catalog(core_config, cm) is None
     assert tts_provider_registry.is_selected_preset_voice(core_config, cm, "Milo") is False
+    # 赢家是无静态目录的 gptsovits：/voices 也应抑制 core-native（key 非 None 但目录为 None）
+    assert tts_provider_registry.selected_provider_key(core_config, cm) == "gptsovits"
+
+
+@pytest.mark.unit
+def test_no_catalog_winner_suppresses_native_voices():
+    # vLLM-Omni（无静态目录）赢得 dispatch：selected_provider_key 返回 vllm_omni、
+    # 目录为 None → /voices 的三路分支既不出目录、也不回退 core-native。
+    core_config = {"CORE_API_TYPE": "gemini", "ENABLE_CUSTOM_API": True}
+    cm = _CM(core_config, raw_core_config={"ttsModelProvider": "vllm_omni"})
+    key = tts_provider_registry.selected_provider_key(core_config, cm)
+    assert key == "vllm_omni"
+    assert tts_provider_registry.preset_catalog_for_ui(key) is None
 
 
 @pytest.mark.unit
