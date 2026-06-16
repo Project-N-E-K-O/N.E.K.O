@@ -566,10 +566,25 @@ class UniversalTutorialManager {
         const maxDueRound = Math.min(AVATAR_FLOATING_GUIDE_ROUND_COUNT, elapsedDays + 1);
         for (let round = 2; round <= maxDueRound; round += 1) {
             if (!completed.has(round) && !skipped.has(round)) {
+                if (!this.isAvatarFloatingGuideRoundRegistered(round)) {
+                    return null;
+                }
                 return round;
             }
         }
         return null;
+    }
+
+    isAvatarFloatingGuideRoundRegistered(day) {
+        const round = normalizeAvatarFloatingGuideRound(day);
+        const registry = window.YuiGuideDailyGuides || {};
+        const guideConfig = registry[round] || null;
+        return !!(
+            guideConfig
+            && guideConfig.round
+            && Array.isArray(guideConfig.round.scenes)
+            && guideConfig.round.scenes.length > 0
+        );
     }
 
     async maybeStartAvatarFloatingGuideAutoRound(delayMs = 1200) {
@@ -586,6 +601,9 @@ class UniversalTutorialManager {
                 return;
             }
             if (!this.isAvatarFloatingGuideRoundPendingAutoStart(round)) {
+                return;
+            }
+            if (!this.isAvatarFloatingGuideRoundRegistered(round)) {
                 return;
             }
             this.startAvatarFloatingGuideRound(round, { source: 'auto' }).catch((error) => {
@@ -835,6 +853,9 @@ class UniversalTutorialManager {
     isYuiGuideEnabledForPage(page = this.currentPage) {
         const pageKey = this.getYuiGuidePageKey(page);
         const pageOrder = this.getYuiGuidePageOrder(pageKey);
+        if (pageKey === 'home' && this.isAvatarFloatingGuideRoundRegistered(1)) {
+            return true;
+        }
         if (pageOrder.length === 0) {
             return false;
         }
@@ -2593,6 +2614,9 @@ class UniversalTutorialManager {
         }
         if (this.currentPage !== 'home') {
             throw new Error('avatar_floating_guide_requires_home');
+        }
+        if (!this.isAvatarFloatingGuideRoundRegistered(round)) {
+            throw new Error('avatar_floating_round_unregistered');
         }
         const buttonsReady = await this.waitForFloatingButtons();
         if (!buttonsReady) {

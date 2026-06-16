@@ -733,6 +733,33 @@ test('lifecycle state store module is loaded before prompt and manager scripts',
     }
 });
 
+test('new-user icebreaker script is present before websocket greeting handling', () => {
+    const icebreakerPath = path.join(repoRoot, 'static', 'icebreaker/new-user-icebreaker.js');
+    assert.ok(fs.existsSync(icebreakerPath), 'static/icebreaker/new-user-icebreaker.js should exist');
+
+    const templateSource = fs.readFileSync(path.join(repoRoot, 'templates/index.html'), 'utf8');
+    const icebreakerIndex = templateSource.indexOf('/static/icebreaker/new-user-icebreaker.js');
+    const websocketIndex = templateSource.indexOf('/static/app-websocket.js');
+
+    assert.notEqual(icebreakerIndex, -1, 'index.html should load the new-user icebreaker');
+    assert.notEqual(websocketIndex, -1, 'index.html should load app-websocket.js');
+    assert.ok(icebreakerIndex < websocketIndex, 'new-user icebreaker should load before app-websocket.js');
+});
+
+test('Day1 guide keeps locale-specific audio filenames', () => {
+    const day1Source = fs.readFileSync(
+        path.join(repoRoot, 'static', 'tutorial/yui-guide/days/day1-home-guide.js'),
+        'utf8'
+    );
+
+    assert.match(day1Source, /zhAudioFileNames/);
+    assert.match(day1Source, /intro_basic:\s*'这里有一个神奇的按钮\.mp3'/);
+    assert.match(day1Source, /intro_basic:\s*'这里有一个神奇的小按\.mp3'/);
+    assert.match(day1Source, /takeover_capture_cursor:\s*'超级魔法按钮出现！只\.mp3'/);
+    assert.match(day1Source, /takeover_capture_cursor:\s*'超级魔法开关出现！只\.mp3'/);
+    assert.match(day1Source, /audioFileOverridesByKey:\s*audioFilesByKey/);
+});
+
 test('resistance controller support module is loaded before the director', () => {
     const controllerPath = path.join(__dirname, 'tutorial/visual/resistance-controllers.js');
     assert.ok(fs.existsSync(controllerPath), 'tutorial/visual/resistance-controllers.js should exist');
@@ -1839,10 +1866,27 @@ test('avatar floating auto-start rechecks pending state before delayed launch', 
     const pendingCheckBlock = pendingCheckMatch[1];
 
     assert.match(maybeAutoBlock, /if \(!this\.isAvatarFloatingGuideRoundPendingAutoStart\(round\)\) \{\s*return;\s*\}/);
+    assert.match(maybeAutoBlock, /if \(!this\.isAvatarFloatingGuideRoundRegistered\(round\)\) \{\s*return;\s*\}/);
     assert.match(pendingCheckBlock, /const state = loadAvatarFloatingGuideState\(\);/);
     assert.match(pendingCheckBlock, /state\.pendingRound !== round && state\.manualResetRound !== round/);
     assert.match(pendingCheckBlock, /state\.completedRounds\.includes\(round\)/);
     assert.match(pendingCheckBlock, /state\.skippedRounds\.includes\(round\)/);
+});
+
+test('avatar floating auto-start only selects registered daily rounds', () => {
+    const managerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
+    const nextRoundBlock = managerSource.split('    getNextAvatarFloatingGuideAutoRound() {')[1].split(
+        '    isAvatarFloatingGuideRoundRegistered(day) {',
+        1
+    )[0];
+    const registeredBlock = managerSource.split('    isAvatarFloatingGuideRoundRegistered(day) {')[1].split(
+        '    async maybeStartAvatarFloatingGuideAutoRound',
+        1
+    )[0];
+
+    assert.match(nextRoundBlock, /if \(!this\.isAvatarFloatingGuideRoundRegistered\(round\)\) \{\s*return null;\s*\}/);
+    assert.match(registeredBlock, /window\.YuiGuideDailyGuides/);
+    assert.match(registeredBlock, /Array\.isArray\(guideConfig\.round\.scenes\)/);
 });
 
 test('tutorial destroy requests share the PC global overlay cleanup path', () => {
