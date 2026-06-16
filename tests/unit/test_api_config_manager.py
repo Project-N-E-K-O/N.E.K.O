@@ -1417,13 +1417,13 @@ class TestGptsovitsEnabledDerivation:
         assert cfg['GPTSOVITS_ENABLED'] is False
 
     @pytest.mark.unit
-    def test_provider_authoritative_over_stale_legacy_flag(self, config_manager):
-        """Dropdown wins over a stale legacy flag. After a user switches the
-        dropdown away from gptsovits, the file may still carry gptsovitsEnabled=true
-        (the frontend retired that field and the backend merges partially). A
-        non-empty ttsModelProvider is the single source of truth and must derive
-        False here — a naive OR would let the stale true stick and leave GSV stuck on."""
-        # 这就是不用纯 OR 的原因：旧 flag 在增量合并下会粘住，下拉切走也切不掉。
+    def test_explicit_provider_authoritative_over_stale_legacy_flag(self, config_manager):
+        """An explicit (non-follow) provider wins over a stale legacy flag. After a
+        user switches the dropdown to e.g. vllm_omni, the file may still carry
+        gptsovitsEnabled=true (the frontend retired that field and the backend merges
+        partially). An explicit provider is the single source of truth and must derive
+        False — a naive OR would let the stale true stick and leave GSV stuck on."""
+        # 这就是不用纯 OR 的原因：旧 flag 在增量合并下会粘住，显式选别家也切不掉。
         _write_core_config(config_manager, {
             'coreApi': 'qwen',
             'assistApi': 'qwen',
@@ -1432,6 +1432,24 @@ class TestGptsovitsEnabledDerivation:
         })
         cfg = config_manager.get_core_config()
         assert cfg['GPTSOVITS_ENABLED'] is False
+
+    @pytest.mark.unit
+    def test_follow_default_provider_falls_back_to_legacy_flag(self, config_manager):
+        """⚠️ Codex PR#1850 P1 regression: a pre-#1830 user who enabled GSV via the
+        old checkbox has gptsovitsEnabled=true AND the TTS dropdown left at its default
+        'follow_assist'/'follow_core' (the older save path submitted every provider
+        dropdown). follow_* is a 'follow assist/core' sentinel — NOT an explicit
+        provider — so it must fall back to the legacy flag and keep GSV enabled, not
+        be misread as 'switched to another provider' and disabled."""
+        for follow in ('follow_assist', 'follow_core'):
+            _write_core_config(config_manager, {
+                'coreApi': 'qwen',
+                'assistApi': 'qwen',
+                'gptsovitsEnabled': True,
+                'ttsModelProvider': follow,
+            })
+            cfg = config_manager.get_core_config()
+            assert cfg['GPTSOVITS_ENABLED'] is True, f"{follow} 应回落旧 flag 保住存量 GSV"
 
     @pytest.mark.unit
     def test_empty_provider_falls_back_to_legacy_flag(self, config_manager):
@@ -1462,6 +1480,82 @@ class TestGptsovitsEnabledDerivation:
         assert cfg['GPTSOVITS_ENABLED'] is True
         tts_cfg = config_manager.get_model_api_config('tts_custom')
         assert tts_cfg['is_custom'] is True
+
+
+# ---------------------------------------------------------------------------
+# save choke point 惰性迁移：gptsovitsEnabled 退役后，用户经下拉显式切到非 gptsovits
+# provider（含 follow_*）保存时，把残留旧 flag 落 False——否则 get_core_config 的
+# follow_* 回落分支会把旧 true 兜回来，导致切到 follow_assist 也关不掉 GSV。对偶 #1842
+# voice_id 的 access-choke-point 惰性迁移思路。
+# ---------------------------------------------------------------------------
+class TestGptsovitsEnabledSaveMigration:
+
+    @staticmethod
+    def _neutralize_side_effects(monkeypatch):
+        """Stub out the heavy post-save side effects of update_core_config so the
+        test exercises only the persisted-config logic."""
+        import asyncio
+        from main_routers import config_router
+
+        async def _noop(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(config_router, 'get_session_manager', lambda: {})
+        monkeypatch.setattr(config_router, 'get_initialize_character_data', lambda: _noop)
+        monkeypatch.setattr(config_router, 'ensure_default_yui_voice_for_free_api', _noop)
+        monkeypatch.setattr(config_router, '_auto_resolve_provider_urls_for_save', _noop)
+        return config_router, asyncio
+
+    class _FakeRequest:
+        def __init__(self, payload):
+            self._payload = payload
+
+        async def json(self):
+            return self._payload
+
+    @pytest.mark.unit
+    def test_save_non_gptsovits_provider_clears_stale_flag(self, config_manager, monkeypatch):
+        """存量 gptsovitsEnabled=true，用户经下拉显式切到 follow_assist 保存 → 旧 flag 落
+        False，派生 GPTSOVITS_ENABLED=False（GSV 真正关掉）。"""
+        config_router, asyncio = self._neutralize_side_effects(monkeypatch)
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen', 'assistApi': 'qwen', 'enableCustomApi': True,
+            'gptsovitsEnabled': True, 'ttsModelProvider': 'gptsovits',
+            'ttsModelUrl': 'http://127.0.0.1:9881', 'ttsVoiceId': 'gsv:v',
+        })
+
+        resp = asyncio.run(config_router.update_core_config(self._FakeRequest({
+            'enableCustomApi': True, 'coreApi': 'qwen', 'assistApi': 'qwen',
+            'ttsModelProvider': 'follow_assist',
+        })))
+        assert resp.get('success') is True
+
+        saved = config_manager.load_json_config('core_config.json', {})
+        assert saved.get('gptsovitsEnabled') is False
+        config_manager._core_config_cache = None
+        assert config_manager.get_core_config()['GPTSOVITS_ENABLED'] is False
+
+    @pytest.mark.unit
+    def test_save_gptsovits_provider_keeps_flag_enabled(self, config_manager, monkeypatch):
+        """保持/切到 gptsovits 保存时不清旧 flag，GSV 仍启用。"""
+        config_router, asyncio = self._neutralize_side_effects(monkeypatch)
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen', 'assistApi': 'qwen', 'enableCustomApi': True,
+            'gptsovitsEnabled': True, 'ttsModelProvider': 'gptsovits',
+            'ttsModelUrl': 'http://127.0.0.1:9881', 'ttsVoiceId': 'gsv:v',
+        })
+
+        resp = asyncio.run(config_router.update_core_config(self._FakeRequest({
+            'enableCustomApi': True, 'coreApi': 'qwen', 'assistApi': 'qwen',
+            'ttsModelProvider': 'gptsovits',
+            'ttsModelUrl': 'http://127.0.0.1:9881', 'ttsVoiceId': 'gsv:v',
+        })))
+        assert resp.get('success') is True
+
+        saved = config_manager.load_json_config('core_config.json', {})
+        assert saved.get('gptsovitsEnabled') is not False
+        config_manager._core_config_cache = None
+        assert config_manager.get_core_config()['GPTSOVITS_ENABLED'] is True
 
 
 if __name__ == '__main__':

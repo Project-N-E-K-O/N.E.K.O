@@ -1727,25 +1727,35 @@ function loadGptSovitsConfig(ttsModelUrl, ttsVoiceId, ttsModelId = '', ttsModelA
     }
 
     // 启用判定与后端 snapshot 派生对偶（见 utils/config_manager.py）：ttsModelProvider
-    // 一旦写出（非空）即唯一真相——选中 gptsovits 才启用，选别家就关，旧 gptsovitsEnabled
-    // 不再参与；仅 provider 缺失/空串（pre-#1830 存量）时才回落显式旧 flag / localhost 启发式。
-    // 这保证远程 GSV 的 dropdown-only 用户（startup heuristic 不认远程 URL）reload 时仍回填
-    // 配置，且切走下拉后残留旧 flag 不会把 GSV 兜回来。
+    // 一旦「显式选了某个 TTS provider」即唯一真相——选中 gptsovits 才启用、选别家就关，
+    // 旧 gptsovitsEnabled / disabled sentinel 不参与。仅当未显式选择时（provider 缺失/空串，
+    // 或 follow_assist/follow_core 这两个「跟随 assist/core」默认哨兵）才回落 legacy 路径：
+    // 先认 __gptsovits_disabled__| sentinel，再回落显式旧 flag / localhost 启发式。
+    // ⚠️ follow_* 必须当「未显式选」而非显式 provider，否则存量 GSV 用户（gptsovitsEnabled=true
+    // + ttsModelProvider='follow_assist' 默认值）会被前端判成关、与后端分叉（Codex PR#1850 P1）。
+    // 显式 provider 压过 sentinel：provider=gptsovits 共存旧 sentinel 时仍判启用，URL/voice
+    // 从 sentinel 解出做迁移（CodeRabbit/Greptile PR#1850）。这也保证远程 GSV 的 dropdown-only
+    // 用户（启发式不认远程 URL）reload 仍回填，且显式切走后残留旧 flag 不会把 GSV 兜回来。
     const provider = (ttsModelProvider || '').trim();
+    const isFollowOrUnset = (provider === '' || provider === 'follow_assist' || provider === 'follow_core');
     const hasExplicitEnabledFlag = typeof gptsovitsEnabled === 'boolean';
     const isLegacyEnabled = !hasExplicitEnabledFlag
         && !isDisabledWithConfig
         && looksLikeLegacyGptSovitsConfig(ttsModelUrl, ttsModelId, ttsModelApiKey);
     let isEnabled;
-    if (isDisabledWithConfig) {
-        isEnabled = false;
-    } else if (provider) {
+    if (!isFollowOrUnset) {
         isEnabled = (provider === 'gptsovits');
+    } else if (isDisabledWithConfig) {
+        isEnabled = false;
     } else {
         isEnabled = hasExplicitEnabledFlag ? gptsovitsEnabled : isLegacyEnabled;
     }
 
-    _loadedGptSovitsState = isDisabledWithConfig ? 'disabled' : (isEnabled ? 'enabled' : 'none');
+    // disabled 态仅在「未显式选 + 存量 sentinel」时成立；显式选了 provider（含 gptsovits）
+    // 以下拉为准，不被 sentinel 拉回 disabled。
+    _loadedGptSovitsState = (isFollowOrUnset && isDisabledWithConfig)
+        ? 'disabled'
+        : (isEnabled ? 'enabled' : 'none');
 
     // GSV 迁到 ttsModelProvider 下拉后，启用状态由下拉表达（这里不再操作已删除的
     // gptsovitsEnabled 开关）。下拉值与字段可见性由随后的 provider 还原循环统一处理

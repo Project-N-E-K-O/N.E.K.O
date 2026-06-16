@@ -707,6 +707,51 @@ def test_load_gptsovits_enabled_by_dropdown_with_remote_url(mock_page: Page, run
 
 
 @pytest.mark.frontend
+def test_load_gptsovits_legacy_follow_default_and_sentinel(mock_page: Page, running_server: str):
+    """⚠️ Codex/CodeRabbit PR#1850 regressions on the load path:
+
+    1. A pre-#1830 GSV user has gptsovitsEnabled=true with the TTS dropdown left at its
+       default 'follow_assist' (the old save path submitted every provider dropdown).
+       follow_* is a 'follow assist/core' sentinel — NOT an explicit provider — so the
+       frontend must fall back to the legacy flag and load GSV as enabled, matching the
+       backend snapshot (otherwise the frontend mirror loads it off and diverges).
+    2. The legacy `__gptsovits_disabled__|` sentinel must NOT force 'disabled' when the
+       dropdown explicitly selects gptsovits — the explicit provider wins, and the
+       URL/voice are recovered from the sentinel for migration.
+    """
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#ttsModelProvider option[value='gptsovits']", state="attached", timeout=10000)
+
+    result = mock_page.evaluate("""
+        () => {
+            // 1) 存量：gptsovitsEnabled=true + 默认 follow_assist 哨兵 + 远程 URL → 回落旧 flag 启用
+            document.getElementById('gptsovitsApiUrl').value = '';
+            loadGptSovitsConfig('http://192.168.1.50:9881', 'gsv:legacy_voice', '', '', true, 'follow_assist');
+            const legacyFollow = {
+                state: _loadedGptSovitsState,
+                url: document.getElementById('gptsovitsApiUrl').value,
+            };
+            // 2) disabled sentinel（在 ttsVoiceId 位）+ 显式 provider=gptsovits → 显式胜出，
+            //    从 sentinel 解 URL/voice
+            document.getElementById('gptsovitsApiUrl').value = '';
+            loadGptSovitsConfig('', '__gptsovits_disabled__|http://10.0.0.9:9881|gsv:kept', '', '', null, 'gptsovits');
+            const sentinelButSelected = {
+                state: _loadedGptSovitsState,
+                url: document.getElementById('gptsovitsApiUrl').value,
+            };
+            return { legacyFollow, sentinelButSelected };
+        }
+    """)
+
+    assert result["legacyFollow"]["state"] == "enabled"
+    assert result["legacyFollow"]["url"] == "http://192.168.1.50:9881"
+    assert result["sentinelButSelected"]["state"] == "enabled"
+    assert result["sentinelButSelected"]["url"] == "http://10.0.0.9:9881"
+
+
+@pytest.mark.frontend
 def test_switching_tts_provider_to_vllm_resets_stale_model(mock_page: Page, running_server: str):
     """Switching from another TTS provider to vLLM should not keep stale model IDs."""
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")

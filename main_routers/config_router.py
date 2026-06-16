@@ -931,6 +931,15 @@ async def update_core_config(request: Request):
                 field = f'{mt}Model{suffix}'
                 if field in data:
                     core_cfg[field] = data[field]
+        # gptsovitsEnabled 退役后的惰性迁移（save choke point，对偶 #1842 voice_id 思路）：
+        # GSV 启用已收口到 ttsModelProvider=='gptsovits' 单一真相，旧 gptsovitsEnabled 仅作
+        # pre-#1830 存量兜底。前端加载会把启用中的 GSV 下拉钉到 'gptsovits'，故任何提交了
+        # 非 'gptsovits' 的 ttsModelProvider 都是用户显式切走 → 顺手把残留旧 flag 落 False，
+        # 否则 get_core_config 的 follow_* 回落分支会把旧 true 兜回来（切到 follow_assist 也
+        # 关不掉 GSV）。未提交 ttsModelProvider 的局部更新不碰旧 flag，保住从不重存的存量。
+        _incoming_tts_provider = str(data.get('ttsModelProvider', '') or '').strip()
+        if _incoming_tts_provider and _incoming_tts_provider != 'gptsovits':
+            core_cfg['gptsovitsEnabled'] = False
         if 'ttsVoiceId' in data:
             core_cfg['ttsVoiceId'] = data['ttsVoiceId']
 
