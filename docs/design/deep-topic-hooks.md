@@ -21,7 +21,7 @@
 
 深话题 hook 是「10% 神明降临」那一侧的能力：低频地、像随口想起来一样，主动接住用户最近真正在意的一件事，而不是高频寒暄。
 
-1. 从「慢收集的全局证据 + 最近对话」里挑 1-2 个值得以后低频开口的深话题，**而不是**总结最近一句话。
+1. 从慢收集的对话证据里挑 1-2 个值得以后低频开口的深话题，**而不是**总结最近一句话。
 2. 物料只是给角色的**信号**，不是开口台词；最终怎么开口由 Phase-2 角色模型决定。
 3. 后台预先把话题备好（含可选的联网现实细节），让 proactive chat 投递时不必同步拉取原始对话。
 4. 全程尊重活动倾向门（propensity）与隐私模式，宁可不开口也不硬凑。
@@ -37,8 +37,8 @@
 
 每个角色一个进程内的 `TopicHookPool`（`main_logic/topic/pipeline.py`）。管线分阶段：
 
-1. **采集**：`note_user_message` / note AI 回合把最近对话按 token 预算存进池子；同时喂 `TopicSignalStore` 形成慢全局证据。
-2. **分析**：debounce + quiet-window 后调情绪档小模型 `call_topic_candidates`（`main_logic/activity/llm_enrichment.py`），从「全局证据 + 最近对话」产出候选物料。
+1. **采集**：`note_user_message` / note AI 回合按 token 预算喂 `TopicSignalStore`，形成跨窗口（最多 80 条）的慢对话证据。池子不再单独保留「最近对话」缓冲——那和证据是同一批 turn，纯冗余。
+2. **分析**：debounce + quiet-window 后调情绪档小模型 `call_topic_candidates`（`main_logic/activity/llm_enrichment.py`）。它的**唯一对话输入就是 signal store 渲染的证据**（`global_signals`），prompt 里用中文水印 `======以下为最近对话(按时间顺序)======` / `======以上为最近对话(按时间顺序)======` 把这块围起来。
 3. **打分 / 门控**：后端代码按 `relevance ≥ 70 且 risk ≤ 65` 过滤（`_material_is_ready`），不是 prompt 自己判阈值。
 4. **联网增强（可选）**：`enrich_topic_materials_online`（`main_logic/topic/materials.py`）拿物料的检索词做一次轻量联网，把现实细节烘进 `material_hint`。
 5. **投递**：到达触发条件后 `trigger_topic_hook_once`（`main_logic/topic/delivery.py`）把物料包成 callback，经 `ProactiveDeliveryManager` 一次性投给角色，命中日配额、一次性 used 记账。
@@ -51,7 +51,7 @@
 |---|---|
 | `interest` | 一句话描述用户最近在意/纠结/计划/反复提的一件具体事（≤90 字符存储，prompt 要求 ≤30 字） |
 | `keywords` | 3-6 个关键词；用于去重、筛选联网结果，并直接作为联网查询词；锚定用户反复在意的稳定点 |
-| `relevance` | 0-100，话题与用户的相关度 × 证据稳定度 |
+| `relevance` | 0-100，话题与用户的相关度 × 它是否在对话里反复出现 |
 | `risk` | 0-100，主动提起的打扰/冒犯/硬凑风险 |
 
 ## 设计决策（review 敲定，含理由）
@@ -97,7 +97,11 @@ prompt 只给「明显反复出现 → 高分，顺口一提 → 低分；如实
 
 ### 输入预算按 token
 
-对话与全局证据都按 token 截断（`utils/tokenize.py`），不按字数。对话路单条上限与全局证据统一。
+慢对话证据按 token 截断（`utils/tokenize.py`，每条 300 token），不按字数。
+
+### is_ready 门：数有信息量的发言，不做魔法打分
+
+分析器只在 `TopicSignalStore.is_ready` 通过后才跑：攒够 `min_user_turns_for_topic` 条**有信息量的用户发言**（`_is_meaningful_turn`：非寒暄填充词、且有 ≥3 个信息字符）才算 ready。早期版本用 signal_len / 信息密度 / 稳定度 一堆魔法数凑到 ≥80，对 AI 无 grounding、对维护是负担，已删；门本身（攒够信号再分析、防刚说一句就开聊）保留。`readiness_percent` 仅供日志。
 
 ### 联网与 i18n
 
