@@ -1203,6 +1203,7 @@
         "gptsovitsVoiceIdEmpty": "-- 請先刷新獲取語音列表 --",
         "gptsovitsNoVoices": "-- 無可用配置 --",
         "gptsovitsRefreshVoices": "刷新列表",
+        "gptsovitsTutorialDoc": "教程文檔",
         "gptsovitsVoicesLoaded": "已載入 {{count}} 個語音配置",
         "gptsovitsVoicesLoadFailed": "獲取語音列表失敗",
         "gptsovitsEnabled": "啟用 GPT-SoVITS",

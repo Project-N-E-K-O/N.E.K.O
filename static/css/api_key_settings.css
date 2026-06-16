@@ -1469,6 +1469,28 @@ input:checked + .slider:before {
     color: #fff;
 }
 
+/* GPT-SoVITS「教程文档」跳转按钮 */
+.gsv-tutorial-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 14px;
+    border-radius: 6px;
+    border: 1px solid var(--accent-blue);
+    background: #fff;
+    color: var(--text-blue);
+    font-weight: 500;
+    font-size: 0.85em;
+    text-decoration: none;
+    white-space: nowrap;
+    transition: all 0.2s ease;
+}
+
+.gsv-tutorial-link:hover {
+    background: #40C5F1;
+    color: #fff;
+}
+
 /* ============ Key Book Section ============ */
 #key-book-section {
     margin-top: 0;

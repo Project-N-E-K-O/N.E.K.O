@@ -1242,7 +1242,25 @@ function updateTtsProviderFieldVisibility(provider) {
     const gsvFields = document.getElementById('gptsovits-config-fields');
     if (standardFields) standardFields.style.display = isGsv ? 'none' : '';
     if (gsvFields) gsvFields.style.display = isGsv ? 'block' : 'none';
+    if (isGsv) updateGptSovitsTutorialLink();
 }
+
+/**
+ * 设置 GPT-SoVITS「教程文档」按钮的跳转链接：中文（zh-*）走中文文档，其余语言走通用文档。
+ * 语言可能在打开页面后才切换，故同时在 updateTtsProviderFieldVisibility 与 localechange 时调用。
+ */
+function updateGptSovitsTutorialLink() {
+    const link = document.getElementById('gptsovitsTutorialLink');
+    if (!link) return;
+    const lang = (window.i18n && window.i18n.language) || document.documentElement.lang || 'zh-CN';
+    const isChinese = String(lang).toLowerCase().startsWith('zh');
+    link.href = isChinese
+        ? 'https://docs.qq.com/aio/DQ1dDcU9rdURQTWJE?p=RLq03bnCUOGEIa8YwBS58H&client_hint=0'
+        : 'https://docs.qq.com/aio/DQ1dDcU9rdURQTWJE?p=Z7zYbDaFk1FIrs4EBk7spv&client_hint=0';
+}
+
+// 语言切换时同步更新教程文档链接（中文↔其它语言走不同文档）
+window.addEventListener('localechange', updateGptSovitsTutorialLink);
 
 /**
  * 在 key 输入框旁添加"前往管理簿"快捷按钮（如果还没有）

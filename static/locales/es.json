@@ -1203,6 +1203,7 @@
         "gptsovitsVoiceIdEmpty": "-- Actualizar para recuperar la lista de voces --",
         "gptsovitsNoVoices": "-- No hay configuraciones disponibles --",
         "gptsovitsRefreshVoices": "Actualizar lista",
+        "gptsovitsTutorialDoc": "Tutorial",
         "gptsovitsVoicesLoaded": "Configuraciones de voz {{count}} cargadas",
         "gptsovitsVoicesLoadFailed": "No se pudo recuperar la lista de voces",
         "gptsovitsEnabled": "Habilitar GPT-SoVITS",

@@ -1203,6 +1203,7 @@
         "gptsovitsVoiceIdEmpty": "-- Обновите список, чтобы получить голоса --",
         "gptsovitsNoVoices": "-- Нет доступных конфигураций --",
         "gptsovitsRefreshVoices": "Обновить список",
+        "gptsovitsTutorialDoc": "Руководство",
         "gptsovitsVoicesLoaded": "Загружено {{count}} конфигураций голоса",
         "gptsovitsVoicesLoadFailed": "Не удалось получить список голосов",
         "gptsovitsEnabled": "Включить GPT-SoVITS",
