@@ -1,5 +1,6 @@
 import asyncio
 import sqlite3
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -11,11 +12,21 @@ from .game_route_test_helpers import (
     set_soccer_game_memory_policy as _set_soccer_game_memory_policy,
 )
 from main_routers import game_router
+from main_routers.system_router import AUTOSTART_CSRF_TOKEN
 
 
 class _FakeRequest:
-    def __init__(self, payload):
+    def __init__(self, payload, *, mutation_headers=True):
         self._payload = payload
+        self.base_url = "http://127.0.0.1:8000/"
+        self.url = SimpleNamespace(path="/api/game/new_user_icebreaker/context")
+        self.method = "POST"
+        self.headers = {}
+        if mutation_headers:
+            self.headers = {
+                "origin": "http://127.0.0.1:8000",
+                "X-CSRF-Token": AUTOSTART_CSRF_TOKEN,
+            }
 
     async def json(self):
         return self._payload
@@ -115,6 +126,29 @@ async def test_new_user_icebreaker_context_endpoint_awaits_async_append(monkeypa
     assert result["ok"] is True
     assert result["method"] == "project_session_history"
     assert mgr.calls == [("user", "icebreaker choice")]
+
+
+@pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_requires_local_mutation_csrf(monkeypatch):
+    class FakeManager:
+        def append_icebreaker_context(self, role, text):
+            raise AssertionError("CSRF rejection should happen before append")
+
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": FakeManager()})
+
+    result = await game_router.game_project_context(
+        "new_user_icebreaker",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "role": "assistant",
+            "text": "blocked context",
+            "session_id": "icebreaker-csrf-test",
+        }, mutation_headers=False),
+    )
+
+    assert isinstance(result, JSONResponse)
+    assert result.status_code == 403
+    assert b"csrf_validation_failed" in result.body
 
 
 @pytest.mark.asyncio
