@@ -1095,7 +1095,9 @@ async def list_gptsovits_voices(request: Request):
     from utils.gptsovits_config import is_valid_http_url
     try:
         data = await request.json()
-        api_url = data.get("api_url", "").rstrip("/")
+        # 边界规范化：转字符串(兼容 None)+trim+去尾斜杠，校验与下游请求复用同一个值，
+        # 避免 {"api_url": null} 崩 / 带空白的 URL 绕过校验后拼出畸形端点。
+        api_url = str(data.get("api_url") or "").strip().rstrip("/")
 
         if not api_url:
             return JSONResponse({"success": False, "error": "TTS_GPT_SOVITS_URL_REQUIRED", "code": "TTS_GPT_SOVITS_URL_REQUIRED"}, status_code=400)
@@ -1141,7 +1143,8 @@ async def test_gptsovits_connectivity(request: Request):
 
     try:
         data = await request.json()
-        api_url = (data.get("api_url", "") or "http://127.0.0.1:9881").rstrip("/")
+        # 边界规范化（同 list_voices）：转字符串(兼容 None)+trim+去尾斜杠后再校验与拼接。
+        api_url = str(data.get("api_url") or "http://127.0.0.1:9881").strip().rstrip("/")
         voice_id = (data.get("voice_id", "") or "init").strip()
         # i18n test text
         test_text = data.get("test_text", "") or "连通性测试"

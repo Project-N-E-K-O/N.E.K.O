@@ -62,9 +62,17 @@ def is_valid_http_url(url: str | None) -> bool:
     explicit SSRF posture decision, matching vLLM-Omni) the host is no longer
     restricted to loopback; only the scheme and a non-empty host are validated to
     reject garbage / non-HTTP schemes.
+
+    Malformed URLs (e.g. an unterminated IPv6 literal ``http://[::1``) make
+    ``parsed.hostname`` raise ``ValueError``; that is caught here so the contract
+    "invalid URL -> False" always holds, rather than leaking the exception.
     """
-    parsed = urlparse(str(url or "").strip())
-    return parsed.scheme in ("http", "https") and bool(parsed.hostname)
+    try:
+        parsed = urlparse(str(url or "").strip())
+        hostname = parsed.hostname
+    except ValueError:
+        return False
+    return parsed.scheme in ("http", "https") and bool(hostname)
 
 
 def gsv_ws_url_from_http_base(base_url: str) -> str:
