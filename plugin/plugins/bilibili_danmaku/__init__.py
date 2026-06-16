@@ -931,15 +931,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
             self.logger.warning(f"弹幕历史存储初始化失败: {e}")
             self._storage = None
         
-        # 初始化背景LLM系统
-        if BACKGROUND_LLM_AVAILABLE:
-            self.logger.info(f"BACKGROUND_LLM_AVAILABLE=True, 即将调用 _init_background_llm")
-            await self._init_background_llm()
-            self.logger.info(f"_init_background_llm 返回: bg_enabled={self._background_llm_enabled}")
-        else:
-            self.logger.info(f"BACKGROUND_LLM_AVAILABLE=False, 跳过背景LLM初始化")
-        
-        # 用户画像系统（独立于背景 LLM，降级模式下同样生效）
+        # 用户画像系统（必须在背景 LLM 之前初始化，供 GuidanceOrchestrator / BackgroundAgent 使用）
         try:
             records_dir = Path(__file__).parent / "data" / "user_records"
             self._tracker = UserRecordManager(data_dir=records_dir)
@@ -948,6 +940,14 @@ class BiliDanmakuPlugin(NekoPluginBase):
         except Exception as e:
             self.logger.warning(f"用户画像系统初始化失败: {e}")
             self._tracker = None
+        
+        # 初始化背景LLM系统
+        if BACKGROUND_LLM_AVAILABLE:
+            self.logger.info(f"BACKGROUND_LLM_AVAILABLE=True, 即将调用 _init_background_llm")
+            await self._init_background_llm()
+            self.logger.info(f"_init_background_llm 返回: bg_enabled={self._background_llm_enabled}")
+        else:
+            self.logger.info(f"BACKGROUND_LLM_AVAILABLE=False, 跳过背景LLM初始化")
         
         # WS 桥接器（本地 WS Server → 多前端连接）
         try:
@@ -1028,7 +1028,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
         # 6. 关闭历史弹幕存储
         if self._storage:
-            self._storage.close()
+            await self._storage.close()
             self._storage = None
 
         # 7. 停止 WS 桥接器
@@ -1339,14 +1339,22 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     async def _process_entry_event(self, user_name: str, uid: int = 0):
         """用户进入直播间事件"""
-        # 画像过滤：永久禁言 → 沉默跳过，不记录来访也不触发欢迎
-        if self._tracker and uid > 0 and self._tracker.is_user_blocked(uid):
-            return
-
-        # 记录来访（参考 C++: come count / come time）— not_welcome 也记，只是不欢迎
-        if self._tracker:
+        # 记录来访（参考 C++: come count / come time）— 先记后过滤，历史记录不丢失
+        if self._tracker and uid > 0:
             self._tracker.record_entry(uid=uid, uname=user_name)
 
+        # 持久化到 SQLite — 记在通知/冷却判断之前，保证历史完整性
+        if self._storage:
+            asyncio.create_task(self._storage.insert_interact(
+                room_id=str(self._room_id),
+                uid=str(uid or 0),
+                uname=str(user_name),
+                msg_type=1,
+            ))
+
+        # 画像过滤：永久禁言 → 沉默跳过，不触发欢迎
+        if self._tracker and uid > 0 and self._tracker.is_user_blocked(uid):
+            return
         # 画像过滤：不自动欢迎
         if self._tracker and uid > 0 and self._tracker.is_user_not_welcome(uid):
             return
@@ -1362,17 +1370,17 @@ class BiliDanmakuPlugin(NekoPluginBase):
         content = self._render_template("welcome", user_name=user_name)
         self._push_to_ai(content, f"观众 {user_name} 进入直播间", priority=priority)
 
-        # 持久化到 SQLite
+    async def _process_follow_event(self, user_name: str, uid: int = 0):
+        """用户关注主播事件"""
+        # 持久化到 SQLite — 记在通知/冷却判断之前
         if self._storage:
             asyncio.create_task(self._storage.insert_interact(
                 room_id=str(self._room_id),
                 uid=str(uid or 0),
                 uname=str(user_name),
-                msg_type=1,
+                msg_type=2,
             ))
 
-    async def _process_follow_event(self, user_name: str):
-        """用户关注主播事件"""
         if not self._get_event_notify_cfg("enabled", True):
             return
         if not self._get_event_notify_cfg("follow_enabled", True):
@@ -1383,15 +1391,6 @@ class BiliDanmakuPlugin(NekoPluginBase):
         priority = int(self._get_event_notify_cfg("priority.follow", 3))
         content = self._render_template("follow", user_name=user_name)
         self._push_to_ai(content, f"观众 {user_name} 关注主播", priority=priority)
-
-        # 持久化到 SQLite
-        if self._storage:
-            asyncio.create_task(self._storage.insert_interact(
-                room_id=str(self._room_id),
-                uid="0",
-                uname=str(user_name),
-                msg_type=2,
-            ))
 
     async def _process_live_event(self):
         """主播开播事件"""
@@ -1455,6 +1454,22 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     async def _process_guard_buy_event(self, ld):
         """上舰事件（直推 HUD + AI 回复）"""
+        # 持久化到 SQLite — 记在冷却判断之前，保证历史完整性
+        if self._storage:
+            gift = ld.gift
+            guard_names_cn = {1: "总督", 2: "提督", 3: "舰长"}
+            guard_name_val = guard_names_cn.get(ld.guard_level, "大航海")
+            asyncio.create_task(self._storage.insert_guard(
+                room_id=str(self._room_id),
+                uid=str(ld.uid),
+                uname=str(ld.nickname),
+                gift_name=str(gift.gift_name) if gift else guard_name_val,
+                gift_id=gift.gift_id if gift else 0,
+                guard_level=ld.guard_level or 1,
+                price=gift.price if gift else 0,
+                number=gift.num if gift else 1,
+            ))
+
         cd = float(self._get_event_notify_cfg("cooldowns.guard_buy", 30))
         if not self._cooldown_tracker.check_and_set(f"guard_buy:{ld.uid}", cd):
             return
@@ -1478,20 +1493,6 @@ class BiliDanmakuPlugin(NekoPluginBase):
         )
         if result is not None and asyncio.iscoroutine(result):
             asyncio.create_task(result)
-
-        # 持久化到 SQLite
-        if self._storage:
-            gift = ld.gift
-            asyncio.create_task(self._storage.insert_guard(
-                room_id=str(self._room_id),
-                uid=str(ld.uid),
-                uname=str(ld.nickname),
-                gift_name=str(gift.gift_name) if gift else guard_name,
-                gift_id=gift.gift_id if gift else 0,
-                guard_level=ld.guard_level or 1,
-                price=gift.price if gift else 0,
-                number=gift.num if gift else 1,
-            ))
 
     async def _process_entry_effect_event(self, ld):
         """高能用户进场"""

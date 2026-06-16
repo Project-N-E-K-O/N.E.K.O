@@ -104,6 +104,10 @@ class DanmakuStorage:
         self._db_path = db_path
         self._logger = logger
         self._conn: Optional[sqlite3.Connection] = None
+        self._write_lock = asyncio.Lock()
+        self._pending_writes: int = 0
+        self._all_done = asyncio.Event()
+        self._all_done.set()
 
     def open(self):
         db_path_str = str(self._db_path)
@@ -115,12 +119,37 @@ class DanmakuStorage:
         if self._logger:
             self._logger.info(f"SQLite 存储已打开: {db_path_str}")
 
-    def close(self):
+    async def close(self):
+        """关闭连接前等待所有正在进行的写入完成"""
+        if self._pending_writes > 0 and self._logger:
+            self._logger.info(f"等待 {self._pending_writes} 个 SQLite 写入完成...")
+        await self._all_done.wait()
         if self._conn:
             self._conn.close()
             self._conn = None
             if self._logger:
                 self._logger.info("SQLite 存储已关闭")
+
+    async def _execute_async(self, sql: str, params: tuple = ()):
+        """串行化的异步写入（加锁 + execute+commit 原子）"""
+        if not self._conn:
+            return
+        self._pending_writes += 1
+        self._all_done.clear()
+        try:
+            async with self._write_lock:
+                conn = self._conn
+                if not conn:
+                    return
+                await asyncio.to_thread(conn.execute, sql, params)
+                await asyncio.to_thread(conn.commit)
+        except Exception as e:
+            if self._logger:
+                self._logger.error(f"SQLite 写入失败: {e} | SQL: {sql[:120]}")
+        finally:
+            self._pending_writes -= 1
+            if self._pending_writes <= 0:
+                self._all_done.set()
 
     # ── 建表 ──────────────────────────────────────────────────────
 
@@ -162,8 +191,7 @@ class DanmakuStorage:
         medal_up: str = "",
         price: int = 0,
     ):
-        await _insert_async(
-            self._conn, self._logger,
+        await self._execute_async(
             "INSERT INTO danmu(room_id, uname, uid, msg, ulevel, admin, guard, "
             "anchor_room_id, medal_name, medal_level, medal_up, price) "
             "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -191,8 +219,7 @@ class DanmakuStorage:
         medal_level: int = 0,
         medal_up: str = "",
     ):
-        await _insert_async(
-            self._conn, self._logger,
+        await self._execute_async(
             "INSERT INTO gift(room_id, uname, uid, gift_name, gift_id, gift_type, "
             "coin_type, total_coin, number, ulevel, admin, guard, "
             "anchor_room_id, medal_name, medal_level, medal_up) "
@@ -219,8 +246,7 @@ class DanmakuStorage:
         spread_desc: str = "",
         spread_info: str = "",
     ):
-        await _insert_async(
-            self._conn, self._logger,
+        await self._execute_async(
             "INSERT INTO interact(room_id, uname, uid, msg_type, admin, guard, "
             "anchor_room_id, medal_name, medal_level, medal_up, "
             "special, spread_desc, spread_info) "
@@ -244,8 +270,7 @@ class DanmakuStorage:
         start_time: Optional[str] = None,
         end_time: Optional[str] = None,
     ):
-        await _insert_async(
-            self._conn, self._logger,
+        await self._execute_async(
             "INSERT INTO guard(room_id, uname, uid, gift_name, gift_id, "
             "guard_level, price, number, start_time, end_time) "
             "VALUES(?,?,?,?,?,?,?,?,?,?)",
@@ -429,18 +454,3 @@ class DanmakuStorage:
 
 
 # ── 内部助手 ──────────────────────────────────────────────────────
-
-async def _insert_async(
-    conn: Optional[sqlite3.Connection],
-    logger,
-    sql: str,
-    params: tuple,
-):
-    if not conn:
-        return
-    try:
-        await asyncio.to_thread(conn.execute, sql, params)
-        await asyncio.to_thread(conn.commit)
-    except Exception as e:
-        if logger:
-            logger.error(f"SQLite 写入失败: {e} | SQL: {sql[:120]}")

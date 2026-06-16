@@ -614,11 +614,12 @@ class DanmakuListener:
             elif cmd == "INTERACT_WORD":
                 inner = data.get("data", {})
                 user_name = inner.get("uname", "未知")
+                uid = int(inner.get("uid", 0))
                 msg_type = inner.get("msg_type", 0)
                 if msg_type == 1:
-                    await self._emit("on_entry", user_name)
+                    await self._emit("on_entry", user_name, uid=uid)
                 elif msg_type == 2:
-                    await self._emit("on_follow", user_name)
+                    await self._emit("on_follow", user_name, uid=uid)
 
                 try:
                     from .livedanmaku import LiveDanmaku as _LD

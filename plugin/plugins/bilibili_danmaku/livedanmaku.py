@@ -372,7 +372,8 @@ class LiveDanmaku:
         uid = int(d.get("uid", 0))
         # uname 优先，copy_writing 仅作兜底文本
         nickname = str(d.get("uname") or d.get("username") or "").strip()
-        copy_writing = str(d.get("copy_writing", "高能用户进场"))
+        raw_copy = d.get("copy_writing") or ""
+        copy_writing = str(raw_copy).strip() if raw_copy else "高能用户进场"
         return cls(
             msg_type=MessageType.MSG_WELCOME_GUARD,
             uid=uid,

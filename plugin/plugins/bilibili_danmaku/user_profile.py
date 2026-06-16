@@ -214,6 +214,11 @@ class UserRecordManager:
         if not key:
             return
         profile = self._get_or_create(key, uid, uname)
+        # 回写缺失的 uid/uname（已有记录通过昵称查找创建的，后续获得 UID 时需要刷新）
+        if uid > 0 and not profile.uid:
+            profile.uid = uid
+        if uname and not profile.uname:
+            profile.uname = uname
         profile.gift_total += price
         profile.gift_count += 1
         profile.is_vip = profile.gift_total > _VIP_GIFT_THRESHOLD
