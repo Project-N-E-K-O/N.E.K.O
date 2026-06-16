@@ -21,6 +21,7 @@ def _json_default(obj: Any) -> Any:
     """
     if isinstance(obj, (bytes, bytearray)):
         return base64.b64encode(bytes(obj)).decode("ascii")
+    logger.debug("pub server: stringifying unexpected non-JSON value of type {}", type(obj).__name__)
     return str(obj)
 
 
@@ -44,11 +45,11 @@ class MessagePlanePubServer:
         if self._sock is None:
             raise RuntimeError("Socket is not bound")
         t = str(topic).encode("utf-8")
-        body = json.dumps(event, ensure_ascii=False, default=_json_default).encode("utf-8")
         try:
+            body = json.dumps(event, ensure_ascii=False, default=_json_default).encode("utf-8")
             self._sock.send_multipart([t, body])
         except Exception as exc:
-            logger.debug("pub server send failed (topic={}): {}", topic, exc)
+            logger.debug("pub server publish failed (topic={}): {}", topic, exc)
 
     def close(self) -> None:
         if self._sock is not None:
