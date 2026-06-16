@@ -84,8 +84,8 @@ N.E.K.O still uses the internal name `openclaw`, so the `OpenClaw` toggle in the
 
 Follow this order:
 
-1. Open the Agent panel in N.E.K.O
-2. Turn on the main `Agent` switch
+1. Open the NekoClaw panel in N.E.K.O
+2. Turn on the NekoClaw Master Switch first
 3. Make sure `openclawUrl` points to `http://127.0.0.1:8088`
 4. Turn on the `OpenClaw` sub-switch
 5. Wait for the availability check to pass
