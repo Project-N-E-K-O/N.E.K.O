@@ -35,6 +35,7 @@
             this.active = false;
             this.externalizedChatSpotlightKind = '';
             this.tutorialFaceForwardLockSnapshot = null;
+            this.externalChatCommandBus = this.createExternalChatCommandBus();
 
             this.interactionGuardHandler = this.onInteractionGuard.bind(this);
 
@@ -208,61 +209,243 @@
             return !!(overlay && overlay.style.display === 'none');
         }
 
-        getExternalChatChannel() {
+        createExternalChatCommandBus() {
+            const common = this.window.YuiGuideCommon || null;
+            if (common && typeof common.createTutorialBridgeCommandBus === 'function') {
+                return common.createTutorialBridgeCommandBus({
+                    window: this.window,
+                    channelProvider: () => this.getExternalChatBroadcastChannel(),
+                    nativeRelayProvider: () => this.window.nekoTutorialOverlay || null
+                });
+            }
+            return null;
+        }
+
+        getExternalChatBroadcastChannel() {
+            const broadcastChannel = this.window.appInterpage && this.window.appInterpage.nekoBroadcastChannel
+                ? this.window.appInterpage.nekoBroadcastChannel
+                : null;
+            if (broadcastChannel) {
+                return broadcastChannel;
+            }
+
             if (typeof this.externalChatChannelProvider === 'function') {
                 return this.externalChatChannelProvider() || null;
             }
-            return this.window.appInterpage && this.window.appInterpage.nekoBroadcastChannel
+            return null;
+        }
+
+        getExternalChatChannel() {
+            const getTutorialRunId = () => {
+                try {
+                    return this.window.localStorage.getItem('yuiGuidePcOverlayRunId') || '';
+                } catch (_) {
+                    return '';
+                }
+            };
+            const broadcastChannel = this.window.appInterpage && this.window.appInterpage.nekoBroadcastChannel
                 ? this.window.appInterpage.nekoBroadcastChannel
                 : null;
+            const nativeRelay = this.window.nekoTutorialOverlay
+                && typeof this.window.nekoTutorialOverlay.relayToChat === 'function'
+                ? this.window.nekoTutorialOverlay
+                : null;
+            if (broadcastChannel || nativeRelay) {
+                return {
+                    postMessage(message) {
+                        const outgoingMessage = Object.assign({}, message || {});
+                        const tutorialRunId = getTutorialRunId();
+                        if (tutorialRunId && !outgoingMessage.tutorialRunId) {
+                            outgoingMessage.tutorialRunId = tutorialRunId;
+                        }
+                        if (broadcastChannel && typeof broadcastChannel.postMessage === 'function') {
+                            try {
+                                broadcastChannel.postMessage(outgoingMessage);
+                            } catch (_) {}
+                        }
+                        if (nativeRelay) {
+                            try {
+                                nativeRelay.relayToChat(outgoingMessage);
+                            } catch (_) {}
+                        }
+                    }
+                };
+            }
+
+            if (typeof this.externalChatChannelProvider === 'function') {
+                return this.externalChatChannelProvider() || null;
+            }
+            return null;
+        }
+
+        postExternalChatCommand(action, payload, options) {
+            if (!this.isHomeChatExternalized()) {
+                return false;
+            }
+
+            const normalizedAction = typeof action === 'string' ? action : '';
+            if (!normalizedAction) {
+                return false;
+            }
+
+            const normalizedOptions = options || {};
+            const message = Object.assign({
+                action: normalizedAction
+            }, payload || {});
+            if (!Number.isFinite(message.timestamp)) {
+                message.timestamp = Date.now();
+            }
+
+            if (this.externalChatCommandBus && typeof this.externalChatCommandBus.post === 'function') {
+                return this.externalChatCommandBus.post(message, normalizedOptions);
+            }
+
+            const channel = this.getExternalChatChannel();
+            if (!channel || typeof channel.postMessage !== 'function') {
+                return false;
+            }
+
+            try {
+                channel.postMessage(message);
+                return true;
+            } catch (error) {
+                console.warn('[TutorialInteractionTakeover] 同步独立聊天窗命令失败:', normalizedAction, error);
+                return false;
+            }
         }
 
         setExternalizedChatButtonsDisabled(disabled) {
-            if (!this.isHomeChatExternalized()) {
-                return;
-            }
+            this.postExternalChatCommand('yui_guide_set_chat_buttons_disabled', {
+                disabled: disabled !== false
+            });
+        }
 
-            const channel = this.getExternalChatChannel();
-            if (!channel || typeof channel.postMessage !== 'function') {
-                return;
-            }
-
-            try {
-                channel.postMessage({
-                    action: 'yui_guide_set_chat_buttons_disabled',
-                    disabled: disabled !== false,
-                    timestamp: Date.now()
-                });
-            } catch (error) {
-                console.warn('[TutorialInteractionTakeover] 同步独立聊天窗按钮禁用状态失败:', error);
-            }
+        setExternalizedChatInputLocked(locked, reason) {
+            this.postExternalChatCommand('yui_guide_set_chat_input_locked', {
+                locked: locked === true,
+                reason: typeof reason === 'string' ? reason : ''
+            });
         }
 
         setExternalizedChatSpotlight(kind) {
-            if (!this.isHomeChatExternalized()) {
-                return;
-            }
-
             this.externalizedChatSpotlightKind = typeof kind === 'string' ? kind : '';
-            const channel = this.getExternalChatChannel();
-            if (!channel || typeof channel.postMessage !== 'function') {
-                return;
-            }
+            this.postExternalChatCommand('yui_guide_set_chat_spotlight', {
+                kind: this.externalizedChatSpotlightKind
+            });
+        }
 
-            try {
-                channel.postMessage({
-                    action: 'yui_guide_set_chat_spotlight',
-                    kind: this.externalizedChatSpotlightKind,
-                    timestamp: Date.now()
-                });
-            } catch (error) {
-                console.warn('[TutorialInteractionTakeover] 同步独立聊天窗高亮失败:', error);
+        setExternalizedChatCursor(kind, options) {
+            const message = {
+                kind: typeof kind === 'string' ? kind : '',
+                effect: options && typeof options.effect === 'string' ? options.effect : '',
+                effectDurationMs: options && Number.isFinite(options.effectDurationMs)
+                    ? Math.max(0, Math.floor(options.effectDurationMs))
+                    : 0,
+                targetIndex: options && Number.isFinite(options.targetIndex)
+                    ? Math.max(0, Math.floor(options.targetIndex))
+                    : 0,
+                freezePoint: !!(options && options.freezePoint === true)
+            };
+            if (options && Number.isFinite(options.durationMs)) {
+                message.durationMs = Math.max(0, Math.floor(options.durationMs));
             }
+            this.postExternalChatCommand('yui_guide_set_chat_cursor', message);
+        }
+
+        setExternalizedChatAvatarToolMenuOpen(open, reason) {
+            this.postExternalChatCommand('yui_guide_set_avatar_tool_menu_open', {
+                open: open === true,
+                reason: typeof reason === 'string' ? reason : ''
+            });
+        }
+
+        clickExternalizedChatAvatarToolButton(reason) {
+            this.postExternalChatCommand('yui_guide_click_avatar_tool_button', {
+                reason: typeof reason === 'string' ? reason : ''
+            });
+        }
+
+        setExternalizedChatCompactHistoryOpen(open, reason) {
+            this.postExternalChatCommand('yui_guide_set_compact_history_open', {
+                open: open === true,
+                reason: typeof reason === 'string' ? reason : ''
+            });
+        }
+
+        setExternalizedChatCompactToolFanOpen(open, reason) {
+            this.postExternalChatCommand('yui_guide_set_compact_tool_fan_open', {
+                open: open === true,
+                reason: typeof reason === 'string' ? reason : ''
+            });
+        }
+
+        rotateExternalizedChatCompactToolWheel(direction, stepCount, reason) {
+            this.postExternalChatCommand('yui_guide_rotate_compact_tool_wheel', {
+                direction: Number(direction) < 0 ? -1 : 1,
+                stepCount: Number.isFinite(Number(stepCount)) ? Math.max(1, Math.min(7, Math.floor(Number(stepCount)))) : 1,
+                reason: typeof reason === 'string' ? reason : ''
+            });
+        }
+
+        setExternalizedChatCompactToolWheelIndex(index, reason) {
+            this.postExternalChatCommand('yui_guide_set_compact_tool_wheel_index', {
+                index: Number.isFinite(Number(index)) ? Math.max(0, Math.min(6, Math.floor(Number(index)))) : 0,
+                reason: typeof reason === 'string' ? reason : ''
+            });
+        }
+
+        dragExternalizedChatCursor(kind, options) {
+            const normalizedOptions = options || {};
+            const message = {
+                kind: typeof kind === 'string' ? kind : '',
+                deltaX: Number.isFinite(Number(normalizedOptions.deltaX)) ? Number(normalizedOptions.deltaX) : 0,
+                deltaY: Number.isFinite(Number(normalizedOptions.deltaY)) ? Number(normalizedOptions.deltaY) : 0,
+                effect: typeof normalizedOptions.effect === 'string' ? normalizedOptions.effect : '',
+                effectDurationMs: Number.isFinite(Number(normalizedOptions.effectDurationMs)) ? Math.max(0, Math.floor(Number(normalizedOptions.effectDurationMs))) : 0,
+                targetIndex: Number.isFinite(Number(normalizedOptions.targetIndex)) ? Math.max(0, Math.floor(Number(normalizedOptions.targetIndex))) : 0
+            };
+            if (
+                Object.prototype.hasOwnProperty.call(normalizedOptions, 'durationMs')
+                && Number.isFinite(Number(normalizedOptions.durationMs))
+            ) {
+                message.durationMs = Math.max(0, Math.floor(Number(normalizedOptions.durationMs)));
+            }
+            this.postExternalChatCommand('yui_guide_drag_chat_cursor', message);
+        }
+
+        arcExternalizedChatCursor(kind, options) {
+            const normalizedOptions = options || {};
+            const message = {
+                kind: typeof kind === 'string' ? kind : '',
+                direction: Number(normalizedOptions.direction) < 0 ? -1 : 1,
+                fraction: Number.isFinite(Number(normalizedOptions.fraction))
+                    ? Math.max(0, Math.min(1, Number(normalizedOptions.fraction)))
+                    : 0.2,
+                durationMs: Number.isFinite(Number(normalizedOptions.durationMs))
+                    ? Math.max(0, Math.floor(Number(normalizedOptions.durationMs)))
+                    : 260,
+                effect: typeof normalizedOptions.effect === 'string' ? normalizedOptions.effect : '',
+                effectDurationMs: Number.isFinite(Number(normalizedOptions.effectDurationMs))
+                    ? Math.max(0, Math.floor(Number(normalizedOptions.effectDurationMs)))
+                    : 0,
+                targetIndex: Number.isFinite(Number(normalizedOptions.targetIndex))
+                    ? Math.max(0, Math.floor(Number(normalizedOptions.targetIndex)))
+                    : 0
+            };
+            this.postExternalChatCommand('yui_guide_arc_chat_cursor', message);
+        }
+
+        clearExternalizedChatGuideMessages() {
+            this.postExternalChatCommand('yui_guide_clear_chat_messages');
         }
 
         clearExternalizedChatFx() {
             this.externalizedChatSpotlightKind = '';
             this.setExternalizedChatSpotlight('');
+            this.setExternalizedChatCursor('');
+            this.setExternalizedChatAvatarToolMenuOpen(false, 'clear-externalized-chat-fx');
+            this.setExternalizedChatCompactHistoryOpen(false, 'clear-externalized-chat-fx');
+            this.setExternalizedChatCompactToolFanOpen(false, 'clear-externalized-chat-fx');
         }
 
         onExternalChatReady() {

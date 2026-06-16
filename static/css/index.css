@@ -154,6 +154,98 @@ body {
     animation: none;
 }
 
+.home-avatar-floating-guide-player {
+    position: fixed;
+    right: 18px;
+    bottom: 70px;
+    z-index: 100040;
+    width: min(360px, calc(100vw - 36px));
+    padding: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.45);
+    border-radius: 8px;
+    background: rgba(23, 28, 38, 0.88);
+    box-shadow: 0 16px 36px rgba(0, 0, 0, 0.24);
+    color: #fff;
+    pointer-events: auto;
+    backdrop-filter: blur(14px);
+}
+
+.home-avatar-floating-guide-kicker {
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.4;
+}
+
+.home-avatar-floating-guide-title {
+    margin: 4px 0 8px;
+    font-size: 17px;
+    font-weight: 700;
+    line-height: 1.35;
+}
+
+.home-avatar-floating-guide-text {
+    margin: 0;
+    color: rgba(255, 255, 255, 0.9);
+    font-size: 14px;
+    line-height: 1.55;
+}
+
+.home-avatar-floating-guide-meta {
+    margin-top: 10px;
+    color: rgba(255, 255, 255, 0.58);
+    font-size: 11px;
+    line-height: 1.4;
+}
+
+.home-avatar-floating-guide-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.home-avatar-floating-guide-actions button {
+    min-width: 56px;
+    height: 30px;
+    padding: 0 10px;
+    border: 1px solid rgba(255, 255, 255, 0.24);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.12);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.home-avatar-floating-guide-actions button:hover,
+.home-avatar-floating-guide-actions button:focus-visible {
+    border-color: rgba(255, 255, 255, 0.56);
+    background: rgba(255, 255, 255, 0.22);
+    outline: none;
+}
+
+.home-avatar-floating-guide-actions button:disabled {
+    cursor: default;
+    opacity: 0.45;
+}
+
+[data-home-avatar-floating-guide-highlight="true"] {
+    outline: 3px solid rgba(255, 231, 122, 0.95) !important;
+    outline-offset: 4px !important;
+    filter: drop-shadow(0 0 10px rgba(255, 231, 122, 0.82));
+}
+
+[data-home-avatar-floating-guide-highlight="true"][data-home-avatar-floating-guide-role="persistent"] {
+    outline-color: rgba(120, 205, 255, 0.92) !important;
+    filter: drop-shadow(0 0 10px rgba(120, 205, 255, 0.54));
+}
+
+[data-home-avatar-floating-guide-highlight="true"][data-home-avatar-floating-guide-role="action"] {
+    outline-color: rgba(255, 231, 122, 0.95) !important;
+    filter: drop-shadow(0 0 12px rgba(255, 231, 122, 0.86));
+}
+
 /* 移动端响应式设计 */
 @media (max-width: 600px) {
     #status-toast {
@@ -185,6 +277,13 @@ body {
     /* 移动端状态提示气泡框滑动出动画 */
     #status-toast.hide {
         transform: translateY(-20px) scale(0.95);
+    }
+
+    .home-avatar-floating-guide-player {
+        right: 10px;
+        bottom: 118px;
+        left: 10px;
+        width: auto;
     }
 }
 
@@ -407,10 +506,12 @@ body.neko-game-active #status-toast,
 body.neko-game-active #subtitle-display,
 body.neko-game-active #react-chat-window-overlay,
 body.neko-game-active #chat-avatar-preview-popup,
+body.neko-game-active .home-avatar-floating-guide-player,
 body.neko-game-active [id$="-floating-buttons"],
 body.neko-game-active [id$="-return-button-container"],
 body.neko-game-active [id$="-lock-icon"] {
     display: none !important;
+    pointer-events: none !important;
 }
 
 /* Goodbye 后的 return 入口 Phase 2 改为 CAT1 占位表现，但继续复用原有

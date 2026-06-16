@@ -88,8 +88,19 @@
             active: false,
             token: 0,
             snapshot: null,
+            agentSuppressionPromise: null,
         },
     };
+
+    const TutorialLifecycleStores = window.TutorialLifecycleStores || {};
+    const HomeTutorialPromptLifecycleStateStore = TutorialLifecycleStores.HomeTutorialPromptLifecycleStateStore;
+    if (typeof HomeTutorialPromptLifecycleStateStore !== 'function') {
+        console.error('[TutorialPrompt] lifecycle state store unavailable');
+        window.appTutorialPrompt = {
+            init: function () { },
+        };
+        return;
+    }
 
     const shortPromptToken = promptTools.shortToken;
     const describeTarget = promptTools.describeTarget;
@@ -132,6 +143,8 @@
         }
         return 'heartbeat-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
     }
+
+    const promptLifecycleStateStore = new HomeTutorialPromptLifecycleStateStore(state, createHeartbeatToken);
 
     function getReactChatWindowHost() {
         return window.reactChatWindowHost || null;
@@ -371,6 +384,11 @@
             && state.featureSuppression.token === restoreToken;
     }
 
+    function isFeatureSuppressionTokenActive(token) {
+        return state.featureSuppression.active
+            && state.featureSuppression.token === token;
+    }
+
     async function restoreAgentSnapshot(flags, restoreToken) {
         if (!flags) {
             return false;
@@ -480,6 +498,46 @@
         }
     }
 
+    async function reapplySuppressedAgentFlags(token, reason) {
+        try {
+            if (!isFeatureSuppressionTokenActive(token)) {
+                return false;
+            }
+            await postAgentCommand('set_agent_enabled', { enabled: false });
+            if (!isFeatureSuppressionTokenActive(token)) {
+                return false;
+            }
+            await postAgentFlags(buildDisabledAgentChildFlags());
+            if (!isFeatureSuppressionTokenActive(token)) {
+                return false;
+            }
+            syncAgentFlagsUi();
+            return true;
+        } catch (error) {
+            console.warn('[TutorialPrompt] failed to enforce agent suppression:', reason || '', error);
+            return false;
+        }
+    }
+
+    function setAgentSuppressionPromise(promise) {
+        const suppression = state.featureSuppression;
+        suppression.agentSuppressionPromise = promise;
+        void promise.finally(function () {
+            if (suppression.agentSuppressionPromise === promise) {
+                suppression.agentSuppressionPromise = null;
+            }
+        });
+    }
+
+    function queueSuppressedAgentFlagsReapply(token, reason) {
+        const suppression = state.featureSuppression;
+        const previous = suppression.agentSuppressionPromise || Promise.resolve();
+        const next = previous.catch(function () {}).then(function () {
+            return reapplySuppressedAgentFlags(token, reason);
+        });
+        setAgentSuppressionPromise(next);
+    }
+
     function beginHomeTutorialFeatureSuppression(reason) {
         if (!isHomePage()) {
             return;
@@ -505,10 +563,40 @@
             proactiveOff[key] = false;
         });
         applyProactiveState(proactiveOff);
-        void snapshotAndDisableAgentFlags(token);
+        setAgentSuppressionPromise(snapshotAndDisableAgentFlags(token));
 
         window.dispatchEvent(new CustomEvent('neko:home-tutorial-features-suppressed', {
             detail: { active: true, reason: reason || 'tutorial-started' },
+        }));
+    }
+
+    function enforceHomeTutorialFeatureSuppression(reason) {
+        if (!isHomePage()) {
+            return;
+        }
+        const suppression = state.featureSuppression;
+        if (!suppression.active) {
+            beginHomeTutorialFeatureSuppression(reason || 'tutorial-enforced');
+            return;
+        }
+
+        setGalgameState(false);
+        const proactiveOff = {};
+        HOME_TUTORIAL_PROACTIVE_KEYS.forEach(function (key) {
+            proactiveOff[key] = false;
+        });
+        applyProactiveState(proactiveOff);
+        queueSuppressedAgentFlagsReapply(
+            suppression.token,
+            reason || (suppression.snapshot && suppression.snapshot.reason) || 'tutorial-enforced'
+        );
+
+        window.dispatchEvent(new CustomEvent('neko:home-tutorial-features-suppressed', {
+            detail: {
+                active: true,
+                enforced: true,
+                reason: reason || (suppression.snapshot && suppression.snapshot.reason) || 'tutorial-enforced',
+            },
         }));
     }
 
@@ -577,12 +665,14 @@
     }
 
     mod.beginHomeTutorialFeatureSuppression = beginHomeTutorialFeatureSuppression;
+    mod.enforceHomeTutorialFeatureSuppression = enforceHomeTutorialFeatureSuppression;
     mod.endHomeTutorialFeatureSuppression = endHomeTutorialFeatureSuppression;
     mod.isHomeTutorialFeatureSuppressionActive = function () {
         return !!state.featureSuppression.active;
     };
     window.NekoHomeTutorialFeatureController = {
         begin: beginHomeTutorialFeatureSuppression,
+        enforce: enforceHomeTutorialFeatureSuppression,
         end: endHomeTutorialFeatureSuppression,
         isActive: mod.isHomeTutorialFeatureSuppressionActive,
     };
@@ -764,7 +854,7 @@
             state.userCohort = userCohort;
         }
         if (serverState.manual_home_tutorial_viewed === true) {
-            state.manualHomeTutorialViewed = true;
+            promptLifecycleStateStore.markManualHomeTutorialViewed();
         }
         if (serverState.never_remind === true) {
             state.neverRemind = true;
@@ -782,8 +872,8 @@
             state.tutorialStarted = true;
         }
         if (status === 'completed' || completedAt > 0) {
-            state.homeTutorialCompleted = true;
-            state.tutorialRunToken = null;
+            promptLifecycleStateStore.markHomeTutorialCompleted();
+            promptLifecycleStateStore.clearTutorialRunToken();
             state.tutorialRunning = false;
             markHomeTutorialStorageSeen();
         }
@@ -866,10 +956,10 @@
                 applyServerState(response.state, flowStep, requestResetGeneration);
             }
             if (response && response.tutorial_run_token) {
-                state.tutorialRunToken = response.tutorial_run_token;
+                promptLifecycleStateStore.setTutorialRunToken(response.tutorial_run_token);
             }
             if (requestOptions.clearRunTokenOnSuccess && response && response.ok) {
-                state.tutorialRunToken = null;
+                promptLifecycleStateStore.clearTutorialRunToken();
             }
             logFlow(flowStep, {
                 page: payload && payload.page,
@@ -976,7 +1066,7 @@
                 source: source,
                 reason: 'missing_run_token',
             });
-            state.promptDrivenTutorialToken = null;
+            promptLifecycleStateStore.clearPromptDrivenTutorialToken();
             return;
         }
 
@@ -987,25 +1077,16 @@
         }, persistedStep, {
             clearRunTokenOnSuccess: true,
         });
-        state.promptDrivenTutorialToken = null;
+        promptLifecycleStateStore.clearPromptDrivenTutorialToken();
     }
 
     function takeHeartbeatSnapshot() {
-        const snapshot = {
+        return promptLifecycleStateStore.createHeartbeatSnapshot({
             foregroundMsDelta: consumeForegroundDelta(),
             homeInteractionsDelta: state.pendingWeakHomeInteractions,
             chatTurnsDelta: state.pendingChatTurns,
             voiceSessionsDelta: state.pendingVoiceSessions,
-            homeTutorialCompleted: state.homeTutorialCompleted,
-            manualHomeTutorialViewed: state.manualHomeTutorialViewed,
-            unloadQueued: false,
-        };
-
-        if (hasReplaySensitiveHeartbeatMetrics(snapshot)) {
-            snapshot.heartbeatToken = createHeartbeatToken();
-        }
-
-        return snapshot;
+        });
     }
 
     function clearHeartbeatSnapshot() {
@@ -1022,24 +1103,11 @@
     }
 
     function hasReplaySensitiveHeartbeatMetrics(snapshot) {
-        if (!snapshot) {
-            return false;
-        }
-
-        return snapshot.foregroundMsDelta > 0
-            || snapshot.homeInteractionsDelta > 0
-            || snapshot.chatTurnsDelta > 0
-            || snapshot.voiceSessionsDelta > 0;
+        return promptLifecycleStateStore.hasReplaySensitiveHeartbeatMetrics(snapshot);
     }
 
     function shouldFlushHeartbeatSnapshot(snapshot) {
-        if (!snapshot) {
-            return false;
-        }
-
-        return hasReplaySensitiveHeartbeatMetrics(snapshot)
-            || snapshot.homeTutorialCompleted
-            || snapshot.manualHomeTutorialViewed;
+        return promptLifecycleStateStore.shouldFlushHeartbeatSnapshot(snapshot);
     }
 
     function resetHomeTutorialClientState(reason) {
@@ -1057,22 +1125,17 @@
             state.pendingResetAfterLifecycleReason = resetReason;
         }
         if (snapshot) {
-            snapshot.homeTutorialCompleted = false;
-            snapshot.manualHomeTutorialViewed = false;
+            promptLifecycleStateStore.clearHeartbeatCompletionMarkers(snapshot);
         }
 
-        state.homeTutorialCompleted = false;
-        state.manualHomeTutorialViewed = false;
-        state.tutorialStarted = false;
-        state.tutorialRunning = false;
-        state.tutorialStartRequested = false;
+        promptLifecycleStateStore.resetTutorialCompletionState();
         state.neverRemind = false;
         state.deferredUntil = 0;
         state.localPromptSuppressedUntil = 0;
         state.lastPromptTokenSeen = null;
         window[HOME_TUTORIAL_PROMPT_SEEN_FLAG] = false;
-        state.promptDrivenTutorialToken = null;
-        state.tutorialRunToken = null;
+        promptLifecycleStateStore.clearPromptDrivenTutorialToken();
+        promptLifecycleStateStore.clearTutorialRunToken();
         state.pendingTutorialStartPayload = null;
         endHomeTutorialFeatureSuppression('home-tutorial-reset');
         emitHomeTutorialLockIfChanged('home-tutorial-reset');
@@ -1092,21 +1155,7 @@
     }
 
     function buildHeartbeatPayload(snapshot) {
-        const payload = {
-            heartbeat_token: snapshot.heartbeatToken,
-            foreground_ms_delta: snapshot.foregroundMsDelta,
-            home_interactions_delta: snapshot.homeInteractionsDelta,
-            chat_turns_delta: snapshot.chatTurnsDelta,
-            voice_sessions_delta: snapshot.voiceSessionsDelta,
-            home_tutorial_completed: snapshot.homeTutorialCompleted,
-            manual_home_tutorial_viewed: snapshot.manualHomeTutorialViewed,
-        };
-
-        if (!snapshot.heartbeatToken) {
-            delete payload.heartbeat_token;
-        }
-
-        return payload;
+        return promptLifecycleStateStore.buildHeartbeatPayload(snapshot);
     }
 
     function queueHeartbeatSnapshotForUnload(snapshot) {
@@ -1344,7 +1393,7 @@
 
     async function handlePromptAcceptance(promptToken) {
         const startWaiter = createHomeTutorialStartWaiter(HOME_TUTORIAL_START_WAIT_TIMEOUT_MS);
-        state.promptDrivenTutorialToken = promptToken;
+        promptLifecycleStateStore.setPromptDrivenTutorialToken(promptToken);
         state.tutorialStartRequested = true;
         emitHomeTutorialLockIfChanged('tutorial-start-requested');
         try {
@@ -1357,7 +1406,7 @@
             });
         } catch (error) {
             startWaiter.cancel();
-            state.tutorialRunToken = null;
+            promptLifecycleStateStore.clearTutorialRunToken();
             const message = error && error.message ? error.message : String(error);
             console.warn('[TutorialPrompt] failed to start tutorial:', error);
             await postDecision({
@@ -1373,7 +1422,7 @@
                     3500
                 );
             }
-            state.promptDrivenTutorialToken = null;
+            promptLifecycleStateStore.clearPromptDrivenTutorialToken();
             state.tutorialStartRequested = false;
             emitHomeTutorialLockIfChanged('tutorial-start-failed');
         } finally {
@@ -1452,7 +1501,7 @@
 
             if (decision === 'never') {
                 const decisionResetGeneration = state.resetGeneration;
-                state.promptDrivenTutorialToken = null;
+                promptLifecycleStateStore.clearPromptDrivenTutorialToken();
                 state.neverRemind = true;
                 state.deferredUntil = 0;
                 state.localPromptSuppressedUntil = 0;
@@ -1469,7 +1518,7 @@
             }
             if (decision === 'later') {
                 const decisionResetGeneration = state.resetGeneration;
-                state.promptDrivenTutorialToken = null;
+                promptLifecycleStateStore.clearPromptDrivenTutorialToken();
                 const localSuppressUntil = Date.now() + LOCAL_PROMPT_LATER_SUPPRESS_MS;
                 state.deferredUntil = localSuppressUntil;
                 state.localPromptSuppressedUntil = localSuppressUntil;
@@ -1575,7 +1624,7 @@
             state.tutorialRunning = false;
             state.tutorialStartRequested = false;
             state.tutorialStarted = true;
-            state.homeTutorialCompleted = true;
+            promptLifecycleStateStore.markHomeTutorialCompleted();
             endHomeTutorialFeatureSuppression('tutorial-completed');
             emitHomeTutorialLockIfChanged('tutorial-completed');
             void (async function () {
@@ -1598,10 +1647,10 @@
             state.tutorialStarted = true;
             emitHomeTutorialLockIfChanged('tutorial-started');
             if (event.detail.source !== 'idle_prompt') {
-                state.promptDrivenTutorialToken = null;
+                promptLifecycleStateStore.clearPromptDrivenTutorialToken();
             }
             if (event.detail.source === 'manual') {
-                state.manualHomeTutorialViewed = true;
+                promptLifecycleStateStore.markManualHomeTutorialViewed();
             }
             logFlow('tutorial-started', {
                 source: event.detail.source || 'unknown',
@@ -1642,7 +1691,7 @@
             state.tutorialRunning = false;
             state.tutorialStartRequested = false;
             state.tutorialStarted = true;
-            state.homeTutorialCompleted = true;
+            promptLifecycleStateStore.markHomeTutorialCompleted();
             markHomeTutorialStorageSeen();
             endHomeTutorialFeatureSuppression('tutorial-skipped');
             emitHomeTutorialLockIfChanged('tutorial-skipped');
@@ -1712,7 +1761,7 @@
             return;
         }
 
-        state.homeTutorialCompleted = isHomeTutorialSeen();
+        promptLifecycleStateStore.setHomeTutorialCompleted(isHomeTutorialSeen());
         state.initialized = true;
         syncForegroundWindow();
         bindEvents();

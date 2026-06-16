@@ -176,7 +176,7 @@
      * guard) vs. any other 403 — business rule, downstream service,
      * future role-based check, etc. Mirrors the contract in
      * ``static/app-prompt-shared.js`` 436-541 and
-     * ``static/universal-tutorial-manager.js`` 120-134: only
+     * ``static/tutorial/core/universal-manager.js`` 120-134: only
      * ``error_code === "csrf_validation_failed"`` triggers the
      * refresh / retry / stop-the-heartbeat path (CodeRabbit Major on
      * PR #1532).

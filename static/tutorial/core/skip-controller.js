@@ -8,6 +8,7 @@
             this.buttonId = normalizedOptions.buttonId || 'neko-tutorial-skip-btn';
             this.currentButton = null;
             this.currentCleanup = null;
+            this.currentResources = null;
         }
 
         getElement() {
@@ -65,14 +66,28 @@
                 }
             };
 
-            button.addEventListener('pointerdown', handleSkipRequest);
-            button.addEventListener('mousedown', handleSkipRequest);
-            button.addEventListener('touchstart', handleSkipRequest, { passive: false });
-            button.addEventListener('click', handleSkipRequest);
+            const common = window.YuiGuideCommon;
+            const resources = common && typeof common.createScopedTutorialResources === 'function'
+                ? common.createScopedTutorialResources({ window: window })
+                : null;
+            const addListener = resources
+                ? (type, listenerOptions) => resources.addEventListener(button, type, handleSkipRequest, listenerOptions)
+                : (type, listenerOptions) => button.addEventListener(type, handleSkipRequest, listenerOptions);
+
+            addListener('pointerdown');
+            addListener('mousedown');
+            addListener('touchstart', { passive: false });
+            addListener('click');
             this.document.body.appendChild(button);
 
             this.currentButton = button;
+            this.currentResources = resources;
             this.currentCleanup = () => {
+                if (this.currentResources && typeof this.currentResources.destroy === 'function') {
+                    this.currentResources.destroy();
+                    this.currentResources = null;
+                    return;
+                }
                 button.removeEventListener('pointerdown', handleSkipRequest);
                 button.removeEventListener('mousedown', handleSkipRequest);
                 button.removeEventListener('touchstart', handleSkipRequest, { passive: false });
@@ -85,6 +100,7 @@
                 this.currentCleanup();
             }
             this.currentCleanup = null;
+            this.currentResources = null;
 
             const existing = this.getElement();
             if (existing) {

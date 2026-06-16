@@ -12,7 +12,7 @@
 
 ## 高光目标
 
-`static/yui-guide-director.js` 是首页教程高光的主入口。
+`static/tutorial/yui-guide/director.js` 是首页教程高光的主入口。
 
 - `getChatInputTarget()`：优先查找 compact input/capsule/surface，再回退 legacy composer。
 - `getChatWindowTarget()`：聊天上下文 spotlight 优先使用 compact capsule/input/surface，再回退旧 shell。
@@ -47,12 +47,12 @@ React 胶囊侧在 `frontend/react-neko-chat/src/App.tsx`：
 - 普通助手消息仍保留原来的相邻时间窗合并逻辑；guide 消息的隔离只作用于 `yui-guide-*`，不要把所有 streaming assistant 都改成禁止合并。
 - `compactSpeechModeActive` 排除 guide 消息，避免教程台词等待普通助手语音播放进度。
 - guide 消息从 `streaming` 收尾为 `sent` 后，胶囊内完整台词会保留到对应 `neko_speech_playback_state` 播放结束；没有再使用固定时长延迟清空。
-- 教程旁白是 `static/yui-guide-director.js` 的本地 Audio/AudioContext 播放，不走普通助手 TTS；因此 `appendGuideChatMessage()` 会把 `voiceKey -> yui-guide-* message.id` 记录下来，`speakGuideLine()` 再把该 id 作为 `playbackTurnId` 传给教程音频播放状态广播。
+- 教程旁白是 `static/tutorial/yui-guide/director.js` 的本地 Audio/AudioContext 播放，不走普通助手 TTS；因此 `appendGuideChatMessage()` 会把 `voiceKey -> yui-guide-* message.id` 记录下来，`speakGuideLine()` 再把该 id 作为 `playbackTurnId` 传给教程音频播放状态广播。
 - `data-compact-preview-scrollable="true"` 让 guide 台词长文本不显示省略号，并复用自动滚到尾部逻辑。
 
 ## 教程点击禁用
 
-`static/universal-tutorial-manager.js` 负责教程期间的全局用户点击拦截。
+`static/tutorial/core/universal-manager.js` 负责教程期间的全局用户点击拦截。
 
 - `blockNekoTutorialClickEvents()` 在 `startTutorial()` 锁定 body 滚动后安装捕获阶段监听。
 - `unblockNekoTutorialClickEvents()` 在 `_teardownTutorialUI()` 开始时移除监听，确保教程结束后恢复正常点击。
@@ -65,9 +65,9 @@ React 胶囊侧在 `frontend/react-neko-chat/src/App.tsx`：
 
 ## 对抗机制
 
-`static/yui-guide-director.js` 负责新手教程期间的“用户试图抢回控制”反馈。它和“点击禁用”不是同一层：点击禁用负责挡住 neko 真实点击；对抗机制负责采样真实鼠标移动/按下，在接管演出中播放抵抗反馈或生气退出。
+`static/tutorial/yui-guide/director.js` 负责新手教程期间的“用户试图抢回控制”反馈。它和“点击禁用”不是同一层：点击禁用负责挡住 neko 真实点击；对抗机制负责采样真实鼠标移动/按下，在接管演出中播放抵抗反馈或生气退出。
 
-场景配置在 `static/yui-guide-steps.js`：
+场景配置在 `static/tutorial/yui-guide/steps.js`：
 
 - `intro_basic`、`takeover_capture_cursor`、`takeover_plugin_preview`、`takeover_settings_peek`、`takeover_return_control` 都设置 `performance.interruptible = true`。
 - 主线 takeover 场景的 `interrupts.mode` 是 `theatrical_abort`，默认阈值 `threshold = 3`，节流 `throttleMs = 500`。
@@ -158,6 +158,6 @@ React 胶囊侧在 `frontend/react-neko-chat/src/App.tsx`：
 
 ```bash
 uv run pytest -q tests/unit/test_yui_guide_director_static.py tests/unit/test_universal_tutorial_manager_static.py tests/unit/test_react_chat_window_static.py
-node --check static/yui-guide-director.js && node --check static/app-interpage.js && node --check static/tutorial-interaction-takeover.js
+node --check static/tutorial/yui-guide/director.js && node --check static/app-interpage.js && node --check static/tutorial/core/interaction-takeover.js
 cd frontend/react-neko-chat && npm run test -- src/App.test.tsx
 ```

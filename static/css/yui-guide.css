@@ -1,8 +1,9 @@
 .yui-guide-overlay {
   position: fixed;
   inset: 0;
-  z-index: 100006;
+  z-index: 2147483000;
   pointer-events: none;
+  isolation: isolate;
   --yui-guide-surface: rgba(255, 252, 248, 0.96);
   --yui-guide-surface-strong: rgba(255, 244, 235, 0.98);
   --yui-guide-text: #382b22;
@@ -354,25 +355,26 @@ body.yui-guide-return-petal-fade #mmd-canvas {
 }
 
 .yui-guide-spotlight-frame.is-circular-mask,
-.yui-guide-spotlight-frame.is-circle-image {
+.yui-guide-spotlight-frame.is-circle-image,
+.yui-guide-spotlight-frame.is-plain-circle {
   box-shadow: none !important;
 }
 
 .yui-guide-spotlight-frame.is-circular-mask.is-visible,
-.yui-guide-spotlight-frame.is-circle-image.is-visible {
+.yui-guide-spotlight-frame.is-circle-image.is-visible,
+.yui-guide-spotlight-frame.is-plain-circle.is-visible {
   animation: none !important;
   animation-name: none !important;
-  box-shadow: none !important;
 }
 
 .yui-guide-spotlight-frame.is-circular-mask .yui-guide-spotlight-chrome,
-.yui-guide-spotlight-frame.is-circular-mask .yui-guide-spotlight-ear-left,
-.yui-guide-spotlight-frame.is-circular-mask .yui-guide-spotlight-ear-right,
-.yui-guide-spotlight-frame.is-circular-mask .yui-guide-spotlight-paw,
 .yui-guide-spotlight-frame.is-circle-image .yui-guide-spotlight-chrome,
-.yui-guide-spotlight-frame.is-circle-image .yui-guide-spotlight-ear-left,
-.yui-guide-spotlight-frame.is-circle-image .yui-guide-spotlight-ear-right,
-.yui-guide-spotlight-frame.is-circle-image .yui-guide-spotlight-paw {
+.yui-guide-spotlight-frame.is-circle-image .yui-guide-spotlight-sweep,
+.yui-guide-spotlight-frame.is-plain-circle .yui-guide-spotlight-sweep,
+.yui-guide-spotlight-frame.is-plain-circle .yui-guide-spotlight-ear-left,
+.yui-guide-spotlight-frame.is-plain-circle .yui-guide-spotlight-ear-right,
+.yui-guide-spotlight-frame.is-plain-circle .yui-guide-spotlight-paw,
+.yui-guide-spotlight-frame.is-plain-circle .yui-guide-spotlight-circle-skin {
   display: none;
 }
 
@@ -381,36 +383,19 @@ body.yui-guide-return-petal-fade #mmd-canvas {
   display: block;
 }
 
-.yui-guide-precise-highlight {
-  position: relative !important;
-  overflow: hidden !important;
-  isolation: isolate;
+.yui-guide-spotlight-frame.is-plain-circle .yui-guide-spotlight-chrome {
+  display: block;
+  inset: 0;
+  border-radius: inherit;
+  background: rgba(255, 255, 255, 0.02);
   box-shadow:
-    0 0 0 2px rgba(104, 183, 255, 0.98),
-    0 0 0 5px rgba(94, 224, 207, 0.42),
-    0 14px 28px rgba(104, 183, 255, 0.2) !important;
-  border-radius: 10px !important;
-  scale: 1;
-  transform-origin: center;
-  animation: yui-guide-spotlight-scale-pulse 1.5s ease-in-out infinite;
+    0 0 0 2px rgba(39, 89, 228, 0.96),
+    0 0 0 6px rgba(39, 89, 228, 0.14),
+    0 0 26px rgba(39, 89, 228, 0.34);
 }
 
-.yui-guide-precise-highlight::after {
-  content: '';
-  position: absolute;
-  top: -22%;
-  bottom: -22%;
-  left: -48%;
-  width: 34%;
-  border-radius: inherit;
-  background:
-    linear-gradient(108deg, transparent 0 10%, rgba(255, 255, 255, 0.28) 45%, rgba(125, 225, 255, 0.12) 58%, transparent 100%);
-  filter: blur(0.2px);
-  opacity: 0;
-  pointer-events: none;
-  transform: translateX(0) skewX(-12deg);
-  animation: yui-guide-spotlight-sweep-slide 3.8s ease-in-out infinite;
-  z-index: 1;
+.yui-guide-spotlight-frame.is-plain-circle .yui-guide-spotlight-chrome::before {
+  display: none;
 }
 
 .yui-guide-bubble {
@@ -666,6 +651,7 @@ html.dark .yui-guide-bubble[data-bubble-variant='plugin-manual-open'] .yui-guide
 
 .yui-guide-preview {
   position: fixed;
+  box-sizing: border-box;
   top: 88px;
   left: 50%;
   width: min(720px, calc(100vw - 48px));
@@ -736,166 +722,14 @@ html.dark .yui-guide-bubble[data-bubble-variant='plugin-manual-open'] .yui-guide
   line-height: 1.35;
 }
 
-.yui-guide-cursor-shell {
-  position: fixed;
-  top: 0;
-  left: 0;
-  z-index: 1;
-  opacity: 0;
-  transition-property: transform;
-  transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
-  will-change: transform, opacity;
-}
-
-.yui-guide-cursor-shell.is-visible {
-  opacity: 1;
-}
-
-.yui-guide-cursor {
-  width: 46px;
-  height: 46px;
-  margin-left: -20px;
-  margin-top: -18px;
-  background-image: url('/static/assets/tutorial/ghost-cursor/default-ghost-cursor.png');
-  background-repeat: no-repeat;
-  background-position: center;
-  background-size: contain;
-  filter:
-    drop-shadow(0 10px 20px rgba(48, 82, 128, 0.22))
-    drop-shadow(0 2px 8px rgba(240, 139, 84, 0.22));
-  transform-origin: center;
-}
-
-.yui-guide-cursor-trail-layer {
-  position: fixed;
-  inset: 0;
-  z-index: 1;
-  width: 100vw;
-  height: 100vh;
-  pointer-events: none;
-  opacity: 0;
-  overflow: visible;
-  transition: opacity 90ms ease-out;
-  will-change: opacity, transform;
-}
-
-.yui-guide-cursor-trail-layer.is-visible {
-  opacity: 0.78;
-}
-
-.yui-guide-cursor-trail-ribbon {
-  opacity: 0.52;
-  filter:
-    blur(0.35px)
-    drop-shadow(0 0 8px rgba(41, 191, 255, 0.16))
-    drop-shadow(0 3px 14px rgba(42, 86, 224, 0.1));
-}
-
-.yui-guide-cursor-trail-core {
-  opacity: 0.3;
-  filter: blur(0.18px);
-}
-
-.yui-guide-cursor-trail-head {
-  opacity: 0.62;
-  filter:
-    blur(0.2px)
-    drop-shadow(0 0 10px rgba(58, 223, 255, 0.22));
-}
-
-.yui-guide-cursor-trail-head-core {
-  opacity: 0.32;
-  filter: blur(0.4px);
-}
-
-.yui-guide-cursor-trail {
-  position: fixed;
-  left: 0;
-  top: 0;
-  z-index: 2;
-  width: var(--trail-width, 10px);
-  height: var(--trail-height, 10px);
-  pointer-events: none;
-  opacity: 0;
-  transform:
-    translate(-50%, -50%)
-    rotate(var(--trail-angle, 0deg))
-    scale(0.92);
-  animation: yui-guide-cursor-trail-fade 420ms ease-out both;
-}
-
-.yui-guide-cursor-trail.is-glow {
-  display: none;
-}
-
-.yui-guide-cursor-trail.is-icon {
-  background-image: var(--trail-icon);
-  background-repeat: no-repeat;
-  background-position: center;
-  background-size: contain;
-  filter:
-    brightness(var(--trail-brightness, 0.88))
-    saturate(1.08)
-    drop-shadow(0 0 4px rgba(87, 211, 255, 0.18));
-  opacity: 0;
-}
-
-.yui-guide-cursor-trail.is-blue-particle {
-  border-radius: 999px;
-  background:
-    radial-gradient(circle at 36% 32%, rgba(255, 255, 255, 0.98) 0 18%, transparent 20%),
-    radial-gradient(circle, rgba(119, 233, 255, 0.96) 0 36%, rgba(44, 174, 255, 0.62) 58%, transparent 76%);
-  box-shadow:
-    0 0 8px rgba(72, 207, 255, 0.62),
-    0 0 16px rgba(49, 113, 255, 0.3);
-  filter: saturate(1.1);
-  mix-blend-mode: normal;
-}
-
-.yui-guide-click-star {
-  position: absolute;
-  left: 0;
-  top: 0;
-  z-index: 3;
-  width: var(--star-size, 8px);
-  height: var(--star-size, 8px);
-  pointer-events: none;
-  opacity: 0;
-  background:
-    radial-gradient(circle at 34% 30%, rgba(255, 255, 255, 0.96) 0 16%, transparent 17%),
-    hsl(var(--star-hue, 46) 96% 62%);
-  clip-path: polygon(50% 0, 61% 34%, 96% 34%, 68% 55%, 80% 92%, 50% 70%, 20% 92%, 32% 55%, 4% 34%, 39% 34%);
-  filter:
-    drop-shadow(0 0 7px rgba(255, 244, 164, 0.92))
-    drop-shadow(0 2px 7px rgba(180, 92, 32, 0.34));
-  transform: translate(-50%, -50%) rotate(var(--star-rotate, 0deg)) scale(0.24);
-  animation: yui-guide-click-star-burst 760ms cubic-bezier(0.16, 1, 0.3, 1) var(--star-delay, 0ms) both;
-}
-
-.yui-guide-cursor::after {
-  content: none;
-}
-
-.yui-guide-cursor.is-clicking {
-  background-image: url('/static/assets/tutorial/ghost-cursor/click-ghost-cursor.png');
-  animation: yui-guide-cursor-click 420ms ease;
-}
-
-.yui-guide-cursor.is-wobbling {
-  animation: yui-guide-cursor-wobble 620ms ease;
-}
-
 body.yui-taking-over .yui-guide-overlay,
 body.yui-taking-over .yui-guide-stage,
 body.yui-taking-over .yui-guide-backdrop,
 body.yui-taking-over .yui-guide-backdrop *,
 body.yui-taking-over .yui-guide-spotlight-frame,
-body.yui-taking-over .yui-guide-precise-highlight,
 body.yui-taking-over .yui-guide-bubble,
 body.yui-taking-over .yui-guide-preview,
 body.yui-taking-over .yui-guide-preview-card,
-body.yui-taking-over .yui-guide-cursor-shell,
-body.yui-taking-over .yui-guide-cursor,
 body.yui-taking-over [data-yui-cursor-hidden="true"] {
   cursor: none !important;
 }
@@ -986,6 +820,7 @@ body.yui-taking-over #react-chat-window-drag-handle {
 
 body.yui-taking-over #react-chat-window-root .composer-input-shell,
 body.yui-taking-over #react-chat-window-root .composer-input-shell:focus-within {
+  border-color: transparent !important;
   box-shadow: none !important;
 }
 
@@ -994,96 +829,6 @@ body.yui-taking-over #react-chat-window-root .composer-input:focus,
 body.yui-taking-over #react-chat-window-root .composer-input:focus-visible {
   outline: none !important;
   box-shadow: none !important;
-}
-
-@keyframes yui-guide-cursor-click {
-  0% {
-    transform: scale(1);
-  }
-
-  35%,
-  68% {
-    transform: scale(0.82);
-  }
-
-  100% {
-    transform: scale(1);
-  }
-}
-
-@keyframes yui-guide-cursor-trail-fade {
-  0% {
-    opacity: var(--trail-opacity, 0.1);
-    transform:
-      translate(-50%, -50%)
-      rotate(var(--trail-angle, 0deg))
-      scale(0.74);
-  }
-
-  36% {
-    opacity: var(--trail-opacity, 0.1);
-  }
-
-  72% {
-    opacity: calc(var(--trail-opacity, 0.1) * 0.42);
-  }
-
-  100% {
-    opacity: 0;
-    transform:
-      translate(calc(-50% + var(--trail-drift-x, 0px)), calc(-50% + var(--trail-drift-y, 0px)))
-      rotate(var(--trail-angle, 0deg))
-      scale(0.48);
-  }
-}
-
-@keyframes yui-guide-click-star-burst {
-  0% {
-    opacity: 0;
-    transform: translate(-50%, -50%) rotate(var(--star-rotate, 0deg)) scale(0.18);
-  }
-
-  18% {
-    opacity: 1;
-  }
-
-  62% {
-    opacity: 1;
-    transform:
-      translate(calc(-50% + var(--star-mid-x, 0px)), calc(-50% + var(--star-mid-y, 0px)))
-      rotate(calc(var(--star-rotate, 0deg) + 88deg))
-      scale(1.14);
-  }
-
-  100% {
-    opacity: 0;
-    transform:
-      translate(calc(-50% + var(--star-x, 0px)), calc(-50% + var(--star-y, 0px)))
-      rotate(calc(var(--star-rotate, 0deg) + 170deg))
-      scale(0.18);
-  }
-}
-
-@keyframes yui-guide-cursor-wobble {
-  0% {
-    transform: rotate(0deg);
-  }
-
-  20% {
-    transform: rotate(-10deg);
-  }
-
-  42% {
-    transform: rotate(12deg);
-  }
-
-  68% {
-    transform: rotate(-7deg);
-  }
-
-  100% {
-    transform: rotate(0deg);
-  }
 }
 
 @keyframes yui-guide-preview-float {
@@ -1167,20 +912,11 @@ body.yui-taking-over #react-chat-window-root .composer-input:focus-visible {
   .yui-guide-backdrop,
   .yui-guide-backdrop-cutout,
   .yui-guide-spotlight-frame,
-  .yui-guide-precise-highlight,
   .yui-guide-bubble,
   .yui-guide-preview,
   .yui-guide-preview-card,
-  .yui-guide-cursor-shell,
-  .yui-guide-cursor,
   .yui-guide-spotlight-chrome::after,
-  .yui-guide-spotlight-sweep::before,
-  .yui-guide-precise-highlight::after,
-  .yui-guide-click-star,
-  .yui-guide-cursor-trail-layer,
-  .yui-guide-cursor-trail,
-  .yui-guide-cursor.is-clicking,
-  .yui-guide-cursor.is-wobbling {
+  .yui-guide-spotlight-sweep::before {
     animation: none !important;
     transition: none !important;
   }

@@ -15,6 +15,9 @@ const TUTORIAL_AVATAR_OVERRIDE_TIMEOUT_MS = 8000;
 const HOME_TUTORIAL_RESET_EVENT = 'neko:home-tutorial-reset';
 const HOME_TUTORIAL_RESET_STORAGE_EVENT_KEY = 'neko_home_tutorial_reset_event';
 const HOME_TUTORIAL_RESET_CHANNEL = 'neko_tutorial_events';
+const AVATAR_FLOATING_GUIDE_STORAGE_KEY = 'neko_avatar_floating_guide_v1';
+const AVATAR_FLOATING_GUIDE_ROUND_COUNT = 7;
+const YUI_GUIDE_CHAT_BRIDGE_QUEUE_KEY = 'neko_yui_guide_chat_bridge_queue_v1';
 
 function getTutorialStorageKeyForPage(pageKey) {
     return TUTORIAL_STORAGE_KEY_PREFIX + pageKey;
@@ -46,6 +49,121 @@ function logTutorialPromptFlow(step, details = {}) {
         return;
     }
     console.log(TUTORIAL_PROMPT_FLOW_PREFIX + ' ' + step, details);
+}
+
+function getTodayLocalDateForAvatarFloatingGuide() {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
+function normalizeAvatarFloatingGuideRound(day) {
+    const round = Number(day);
+    if (!Number.isInteger(round) || round < 1 || round > AVATAR_FLOATING_GUIDE_ROUND_COUNT) {
+        throw new Error(`Invalid avatar floating guide round: ${day}`);
+    }
+    return round;
+}
+
+function normalizeAvatarFloatingGuideRoundList(value) {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return Array.from(new Set(
+        value
+            .map(item => Number(item))
+            .filter(item => Number.isInteger(item) && item >= 1 && item <= AVATAR_FLOATING_GUIDE_ROUND_COUNT)
+    )).sort((left, right) => left - right);
+}
+
+function normalizeOptionalAvatarFloatingGuideRound(value) {
+    const round = Number(value);
+    return Number.isInteger(round) && round >= 1 && round <= AVATAR_FLOATING_GUIDE_ROUND_COUNT ? round : null;
+}
+
+function omitAvatarFloatingGuideRound(value, round) {
+    return normalizeAvatarFloatingGuideRoundList(value).filter(item => item !== round);
+}
+
+function loadAvatarFloatingGuideState() {
+    let parsed = {};
+    try {
+        const raw = localStorage.getItem(AVATAR_FLOATING_GUIDE_STORAGE_KEY);
+        parsed = raw ? JSON.parse(raw) : {};
+    } catch (error) {
+        console.warn('[Tutorial] 悬浮窗教程状态读取失败，使用空状态:', error);
+        parsed = {};
+    }
+
+    return {
+        version: 1,
+        firstSeenDate: parsed.firstSeenDate || getTodayLocalDateForAvatarFloatingGuide(),
+        completedRounds: normalizeAvatarFloatingGuideRoundList(parsed.completedRounds),
+        skippedRounds: normalizeAvatarFloatingGuideRoundList(parsed.skippedRounds),
+        currentRound: normalizeOptionalAvatarFloatingGuideRound(parsed.currentRound),
+        pendingRound: normalizeOptionalAvatarFloatingGuideRound(parsed.pendingRound),
+        manualResetRound: normalizeOptionalAvatarFloatingGuideRound(parsed.manualResetRound),
+        lastAutoShownRound: normalizeOptionalAvatarFloatingGuideRound(parsed.lastAutoShownRound),
+        lastAutoShownDate: parsed.lastAutoShownDate || '',
+        lastEndState: parsed.lastEndState && typeof parsed.lastEndState === 'object' ? parsed.lastEndState : null,
+        updatedAt: parsed.updatedAt || null,
+        resetHistory: Array.isArray(parsed.resetHistory) ? parsed.resetHistory.slice(-20) : [],
+    };
+}
+
+function saveAvatarFloatingGuideState(state) {
+    localStorage.setItem(AVATAR_FLOATING_GUIDE_STORAGE_KEY, JSON.stringify(state));
+}
+
+function recordAvatarFloatingGuideEndState(day, outcome, rawReason, source) {
+    const normalizedDay = normalizeOptionalAvatarFloatingGuideRound(day);
+    const normalizedOutcome = outcome === 'complete'
+        ? 'complete'
+        : (outcome === 'skip' ? 'skip' : 'destroy');
+    const normalizedRawReason = typeof rawReason === 'string' && rawReason.trim()
+        ? rawReason.trim().toLowerCase()
+        : normalizedOutcome;
+    const endState = {
+        day: normalizedDay,
+        ended: true,
+        outcome: normalizedOutcome,
+        rawReason: normalizedRawReason,
+        isAngryExit: normalizedRawReason === 'angry_exit',
+        completed: normalizedOutcome === 'complete',
+        skipped: normalizedOutcome === 'skip',
+        source: typeof source === 'string' ? source : '',
+        endedAt: Date.now(),
+    };
+    window.avatarFloatingGuideEndState = endState;
+    console.log('[AvatarFloatingGuideEndState]', endState);
+    return endState;
+}
+
+function parseAvatarFloatingGuideDate(value) {
+    const text = typeof value === 'string' ? value.trim() : '';
+    const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) {
+        return null;
+    }
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+        return null;
+    }
+    return new Date(year, month - 1, day);
+}
+
+function getAvatarFloatingGuideDateDeltaDays(fromDate, toDate) {
+    const from = parseAvatarFloatingGuideDate(fromDate);
+    const to = parseAvatarFloatingGuideDate(toDate);
+    if (!from || !to) {
+        return 0;
+    }
+    const oneDayMs = 24 * 60 * 60 * 1000;
+    return Math.max(0, Math.floor((to.getTime() - from.getTime()) / oneDayMs));
 }
 
 function dispatchHomeTutorialResetEvent(pageKey, source) {
@@ -142,6 +260,76 @@ window.getTutorialStorageKeyForPage = getTutorialStorageKeyForPage;
 window.getTutorialManualIntentKeyForPage = getTutorialManualIntentKeyForPage;
 window.logTutorialPromptFlow = logTutorialPromptFlow;
 
+const TutorialLifecycleStores = window.TutorialLifecycleStores || {};
+const TutorialLifecycleStateStore = TutorialLifecycleStores.TutorialLifecycleStateStore;
+const TutorialRoundPrelude = window.TutorialRoundPrelude || {};
+const TutorialRoundPreludeController = TutorialRoundPrelude.TutorialRoundPreludeController;
+
+function createUniversalTutorialScopedResources() {
+    if (
+        window.YuiGuideCommon
+        && typeof window.YuiGuideCommon.createScopedTutorialResources === 'function'
+    ) {
+        return window.YuiGuideCommon.createScopedTutorialResources({ window: window });
+    }
+
+    const listeners = [];
+    const timers = [];
+    const intervals = [];
+    return {
+        addEventListener(target, type, handler, listenerOptions) {
+            if (!target || typeof target.addEventListener !== 'function') {
+                return null;
+            }
+            target.addEventListener(type, handler, listenerOptions);
+            listeners.push({ target, type, handler, options: listenerOptions });
+            return handler;
+        },
+        setTimeout(callback, delayMs) {
+            const timerId = window.setTimeout(callback, delayMs);
+            timers.push(timerId);
+            return timerId;
+        },
+        clearTimeout(timerId) {
+            if (!timerId) {
+                return;
+            }
+            window.clearTimeout(timerId);
+            const index = timers.indexOf(timerId);
+            if (index !== -1) {
+                timers.splice(index, 1);
+            }
+        },
+        setInterval(callback, delayMs) {
+            const intervalId = window.setInterval(callback, delayMs);
+            intervals.push(intervalId);
+            return intervalId;
+        },
+        clearInterval(intervalId) {
+            if (!intervalId) {
+                return;
+            }
+            window.clearInterval(intervalId);
+            const index = intervals.indexOf(intervalId);
+            if (index !== -1) {
+                intervals.splice(index, 1);
+            }
+        },
+        destroy() {
+            while (intervals.length) {
+                window.clearInterval(intervals.pop());
+            }
+            while (timers.length) {
+                window.clearTimeout(timers.pop());
+            }
+            while (listeners.length) {
+                const listener = listeners.pop();
+                listener.target.removeEventListener(listener.type, listener.handler, listener.options);
+            }
+        }
+    };
+}
+
 class UniversalTutorialManager {
     constructor() {
         // 立即设置全局引用，以便在 getter 中使用
@@ -161,6 +349,7 @@ class UniversalTutorialManager {
         this.tutorialMarkerDisplayCache = null;
         this.tutorialRollbackActive = false;
         this._applyingInteractionState = false;
+        this._tutorialInteractionApplyToken = 0;
         this._stepChanging = false;
         this._pendingStepChange = false;
         this._lastOnHighlightedStepIndex = null;
@@ -175,28 +364,42 @@ class UniversalTutorialManager {
         this._modelManagerTutorialDebounceTimer = null;
         this._modelManagerBootstrapFallbackTimer = null;
         this._modelManagerReceivedModeEvent = false;
+        this._modelManagerModeResources = null;
+        this._modelManagerTimerResources = createUniversalTutorialScopedResources();
         this.yuiGuideDirector = null;
         this._yuiGuideHandoffToken = null;
         this._yuiGuideLastSceneId = null;
         this._yuiGuideLifecycleActive = false;
-        this._tutorialEndReason = null;
-        this._tutorialEndRawReason = null;
+        this.activeAvatarFloatingGuideRound = null;
         this._tutorialEndHandled = false;
+        this.lifecycleStateStore = new TutorialLifecycleStateStore();
         this._tutorialAvatarReloadController = null;
+        this._tutorialRoundPreludeController = null;
         this._tutorialSkipController = null;
         this._teardownPromise = null;
+        this.managerResources = createUniversalTutorialScopedResources();
+        this._tutorialViewportPlacementResources = null;
         this._tutorialViewportPlacementResizeHandler = null;
         this._tutorialViewportPlacementResizeTimer = null;
         this._tutorialScrollBlockHandler = this.blockTutorialScrollEvent.bind(this);
         this._tutorialScrollBlockOptions = { capture: true, passive: false };
+        this._tutorialScrollBlockResources = null;
         this._isTutorialScrollBlocked = false;
         this._tutorialPointerBlockHandler = this.blockTutorialPointerEvent.bind(this);
         this._tutorialPointerBlockOptions = { capture: true, passive: false };
+        this._tutorialPointerBlockResources = null;
         this._isTutorialPointerBlocked = false;
         this._nekoTutorialClickBlockHandler = this.blockNekoTutorialClickEvent.bind(this);
         this._nekoTutorialClickBlockOptions = { capture: true, passive: false };
+        this._nekoTutorialClickBlockResources = null;
         this._isNekoTutorialClickBlocked = false;
         this._isDestroyed = false;
+        this._desktopYuiGuideSkipHandler = this.handleDesktopYuiGuideSkipRequest.bind(this);
+        this.managerResources.addEventListener(
+            window,
+            'neko:yui-guide:desktop-skip-request',
+            this._desktopYuiGuideSkipHandler
+        );
 
         // 刷新延迟常量
         this.LAYOUT_REFRESH_DELAY = 100;
@@ -219,6 +422,177 @@ class UniversalTutorialManager {
 
     logPromptFlow(step, details = {}) {
         logTutorialPromptFlow(step, details);
+    }
+
+    loadAvatarFloatingGuideState() {
+        return loadAvatarFloatingGuideState();
+    }
+
+    saveAvatarFloatingGuideState(state) {
+        saveAvatarFloatingGuideState(state);
+    }
+
+    resetAvatarFloatingGuideRoundState(day, options = {}) {
+        const round = normalizeAvatarFloatingGuideRound(day);
+        const resetAt = new Date().toISOString();
+        const state = loadAvatarFloatingGuideState();
+        state.completedRounds = omitAvatarFloatingGuideRound(state.completedRounds, round);
+        state.skippedRounds = omitAvatarFloatingGuideRound(state.skippedRounds, round);
+        if (state.currentRound === round) {
+            state.currentRound = null;
+        }
+        if (state.lastAutoShownRound === round) {
+            state.lastAutoShownRound = null;
+            state.lastAutoShownDate = '';
+        }
+        if (state.lastEndState && Number(state.lastEndState.day) === round) {
+            state.lastEndState = null;
+        }
+        state.pendingRound = round;
+        state.manualResetRound = round;
+        state.updatedAt = resetAt;
+        state.resetHistory = state.resetHistory.concat([{
+            day: round,
+            source: options.source || 'home_reset_button',
+            resetAt,
+        }]).slice(-20);
+        saveAvatarFloatingGuideState(state);
+        return state;
+    }
+
+    setAvatarFloatingGuideCurrentRound(day) {
+        const round = normalizeAvatarFloatingGuideRound(day);
+        const state = loadAvatarFloatingGuideState();
+        state.currentRound = round;
+        state.pendingRound = round;
+        state.updatedAt = new Date().toISOString();
+        saveAvatarFloatingGuideState(state);
+        return state;
+    }
+
+    markAvatarFloatingGuideRoundOutcome(day, outcome, rawReason = outcome) {
+        const round = normalizeAvatarFloatingGuideRound(day);
+        const normalizedOutcome = outcome === 'skip' ? 'skip' : (outcome === 'complete' ? 'complete' : 'destroy');
+        const normalizedRawReason = typeof rawReason === 'string' && rawReason.trim()
+            ? rawReason.trim().toLowerCase()
+            : normalizedOutcome;
+        const state = loadAvatarFloatingGuideState();
+        state.currentRound = null;
+        if (state.pendingRound === round) state.pendingRound = null;
+        if (state.manualResetRound === round) state.manualResetRound = null;
+        if (normalizedOutcome === 'complete') {
+            state.completedRounds = normalizeAvatarFloatingGuideRoundList(state.completedRounds.concat(round));
+            state.skippedRounds = omitAvatarFloatingGuideRound(state.skippedRounds, round);
+        } else if (normalizedOutcome === 'skip') {
+            state.skippedRounds = normalizeAvatarFloatingGuideRoundList(state.skippedRounds.concat(round));
+            state.completedRounds = round === 1
+                ? normalizeAvatarFloatingGuideRoundList(state.completedRounds.concat(round))
+                : omitAvatarFloatingGuideRound(state.completedRounds, round);
+        }
+        const endedAt = Date.now();
+        state.lastEndState = {
+            day: round,
+            ended: true,
+            outcome: normalizedOutcome,
+            rawReason: normalizedRawReason,
+            isAngryExit: normalizedRawReason === 'angry_exit',
+            completed: normalizedOutcome === 'complete',
+            skipped: normalizedOutcome === 'skip',
+            source: 'avatar_floating_guide_state',
+            endedAt: endedAt
+        };
+        state.updatedAt = new Date(endedAt).toISOString();
+        saveAvatarFloatingGuideState(state);
+        window.dispatchEvent(new CustomEvent(`neko:avatar-floating-guide-${normalizedOutcome}`, {
+            detail: { day: round, state, endState: state.lastEndState },
+        }));
+        return state;
+    }
+
+    markAvatarFloatingGuideRoundAutoShown(day) {
+        const round = normalizeAvatarFloatingGuideRound(day);
+        const state = loadAvatarFloatingGuideState();
+        state.lastAutoShownRound = round;
+        state.lastAutoShownDate = getTodayLocalDateForAvatarFloatingGuide();
+        state.updatedAt = new Date().toISOString();
+        saveAvatarFloatingGuideState(state);
+        return state;
+    }
+
+    isAvatarFloatingGuideRoundPendingAutoStart(day) {
+        const round = normalizeAvatarFloatingGuideRound(day);
+        const state = loadAvatarFloatingGuideState();
+        if (state.completedRounds.includes(round) || state.skippedRounds.includes(round)) {
+            return false;
+        }
+        if (state.pendingRound || state.manualResetRound) {
+            return state.pendingRound === round || state.manualResetRound === round;
+        }
+        if (state.pendingRound !== round && state.manualResetRound !== round) {
+            const today = getTodayLocalDateForAvatarFloatingGuide();
+            return state.lastAutoShownRound === round && state.lastAutoShownDate === today;
+        }
+        return true;
+    }
+
+    getNextAvatarFloatingGuideAutoRound() {
+        const state = loadAvatarFloatingGuideState();
+        const today = getTodayLocalDateForAvatarFloatingGuide();
+        const pendingManualRound = state.pendingRound || state.manualResetRound;
+        if (pendingManualRound) {
+            return pendingManualRound;
+        }
+        if (state.lastAutoShownDate === today) {
+            return null;
+        }
+
+        const completed = new Set(state.completedRounds);
+        const skipped = new Set(state.skippedRounds);
+        if (
+            !completed.has(1)
+            && getTutorialStorageKeysForPageFallback('home').some(key => localStorage.getItem(key) === 'true')
+        ) {
+            completed.add(1);
+            state.completedRounds = normalizeAvatarFloatingGuideRoundList(state.completedRounds.concat(1));
+            state.skippedRounds = omitAvatarFloatingGuideRound(state.skippedRounds, 1);
+            state.updatedAt = new Date().toISOString();
+            saveAvatarFloatingGuideState(state);
+        }
+        if (!completed.has(1)) {
+            return null;
+        }
+
+        const elapsedDays = getAvatarFloatingGuideDateDeltaDays(state.firstSeenDate, today);
+        const maxDueRound = Math.min(AVATAR_FLOATING_GUIDE_ROUND_COUNT, elapsedDays + 1);
+        for (let round = 2; round <= maxDueRound; round += 1) {
+            if (!completed.has(round) && !skipped.has(round)) {
+                return round;
+            }
+        }
+        return null;
+    }
+
+    async maybeStartAvatarFloatingGuideAutoRound(delayMs = 1200) {
+        if (this.currentPage !== 'home' || this.isTutorialRunning || window.isInTutorial) {
+            return false;
+        }
+        const round = this.getNextAvatarFloatingGuideAutoRound();
+        if (!round) {
+            return false;
+        }
+        this.markAvatarFloatingGuideRoundAutoShown(round);
+        window.setTimeout(() => {
+            if (this.currentPage !== 'home' || this.isTutorialRunning || window.isInTutorial) {
+                return;
+            }
+            if (!this.isAvatarFloatingGuideRoundPendingAutoStart(round)) {
+                return;
+            }
+            this.startAvatarFloatingGuideRound(round, { source: 'auto' }).catch((error) => {
+                console.warn('[Tutorial] 自动启动悬浮窗教程失败:', round, error);
+            });
+        }, Math.max(0, Number.isFinite(delayMs) ? delayMs : 1200));
+        return true;
     }
 
     ensureTutorialSkipController() {
@@ -247,13 +621,39 @@ class UniversalTutorialManager {
                 reloadModel: (currentName, payload, options) => this.reloadTutorialModel(currentName, payload, options),
                 setPreparing: (preparing) => this.setTutorialLive2dPreparing(preparing),
                 revealPrepared: () => this.revealTutorialLive2dPrepared(),
-                captureAvatarPreview: () => this.captureTutorialChatAvatarPreview(),
                 applyIdentityOverride: (payload) => this.applyTutorialChatIdentityOverride(payload),
-                sleep: (delayMs) => this.sleep(delayMs),
                 clearViewportWatcher: () => this.clearTutorialLive2dViewportPlacementWatcher()
             });
         }
         return this._tutorialAvatarReloadController;
+    }
+
+    ensureTutorialRoundPreludeController() {
+        if (!this._tutorialRoundPreludeController && TutorialRoundPreludeController) {
+            this._tutorialRoundPreludeController = new TutorialRoundPreludeController({
+                beginAvatarOverride: () => this.beginTutorialAvatarOverride(),
+                revealPrepared: () => this.revealTutorialLive2dPrepared(),
+                ensureVisible: (sceneId) => this.ensureTutorialYuiLive2dVisible(sceneId),
+                sleep: (delayMs) => this.sleep(delayMs),
+                beginTakingOver: (detail) => {
+                    const director = detail && detail.director;
+                    if (director && typeof director.setTutorialTakingOver === 'function') {
+                        director.setTutorialTakingOver(true);
+                    }
+                },
+                setLifecycleActive: (active) => {
+                    this._yuiGuideLifecycleActive = active === true;
+                },
+                showSkipButton: () => this.showSkipButton(),
+                dispatchStarted: (detail) => {
+                    window.dispatchEvent(new CustomEvent('neko:avatar-floating-guide-started', {
+                        detail: detail
+                    }));
+                },
+                warn: (...args) => console.warn(...args)
+            });
+        }
+        return this._tutorialRoundPreludeController;
     }
 
     /**
@@ -692,8 +1092,11 @@ class UniversalTutorialManager {
     }
 
     notifyYuiGuideTutorialEnd(reason = 'destroy') {
-        const normalizedReason = this.normalizeTutorialEndReason(reason);
-        const rawReason = this.normalizeTutorialEndRawReason(reason);
+        const detail = this.lifecycleStateStore.createYuiGuideEndDetail({
+            page: this.getYuiGuidePageKey(),
+            runtimePage: this.currentPage,
+            reason: reason
+        });
 
         if (!this.isYuiGuideEnabledForPage()) {
             this.yuiGuideDirector = null;
@@ -706,12 +1109,7 @@ class UniversalTutorialManager {
             return;
         }
 
-        this.dispatchYuiGuideEvent('tutorial-end', {
-            page: this.getYuiGuidePageKey(),
-            runtimePage: this.currentPage,
-            reason: normalizedReason,
-            rawReason: rawReason
-        });
+        this.dispatchYuiGuideEvent('tutorial-end', detail);
         this.callYuiGuideDirector('destroy');
         this.yuiGuideDirector = null;
         this._yuiGuideLastSceneId = null;
@@ -721,71 +1119,208 @@ class UniversalTutorialManager {
         }
     }
 
+    clearAllTutorialLifecycles(reason = 'destroy') {
+        const rawReason = this.normalizeTutorialEndRawReason(reason);
+        const director = this.yuiGuideDirector;
+        this.invalidateTutorialInteractionApply(rawReason);
+
+        try {
+            this.notifyYuiGuideTutorialEnd(rawReason);
+        } catch (error) {
+            console.warn('[Tutorial] 清理 Yui Guide 生命周期失败:', error);
+        }
+
+        try {
+            if (director && typeof director.destroy === 'function') {
+                director.destroy();
+            }
+        } catch (error) {
+            console.warn('[Tutorial] 销毁 Yui Guide Director 失败:', error);
+        }
+
+        this.yuiGuideDirector = null;
+        this._yuiGuideLastSceneId = null;
+        this._yuiGuideLifecycleActive = false;
+        if (this.getYuiGuidePageKey() !== 'home') {
+            this._yuiGuideHandoffToken = null;
+        }
+
+        try {
+            this.hideSkipButton();
+        } catch (error) {
+            console.warn('[Tutorial] 清理跳过按钮失败:', error);
+        }
+        try {
+            this.restoreTutorialInteractionState();
+        } catch (error) {
+            console.warn('[Tutorial] 恢复教程交互状态失败:', error);
+        }
+        try {
+            this.unblockNekoTutorialClickEvents();
+        } catch (error) {
+            console.warn('[Tutorial] 恢复教程点击事件失败:', error);
+        }
+        try {
+            this.restoreYuiGuideChatInputState(rawReason);
+        } catch (error) {
+            console.warn('[Tutorial] 恢复教程聊天输入状态失败:', error);
+        }
+        this.clearPcTutorialGlobalOverlay(rawReason);
+        try {
+            if (window.localStorage) {
+                window.localStorage.removeItem(YUI_GUIDE_CHAT_BRIDGE_QUEUE_KEY);
+            }
+        } catch (error) {
+            console.warn('[Tutorial] 清理教程聊天桥队列失败:', error);
+        }
+        try {
+            window.dispatchEvent(new CustomEvent('neko:yui-guide:tutorial-lifecycle-ended', {
+                detail: { reason: rawReason }
+            }));
+        } catch (error) {
+            console.warn('[Tutorial] 广播教程生命周期结束失败:', error);
+        }
+    }
+
     normalizeTutorialEndRawReason(reason) {
-        const normalized = typeof reason === 'string' ? reason.trim().toLowerCase() : '';
-        return normalized || 'destroy';
+        return this.lifecycleStateStore.normalizeRawReason(reason);
     }
 
     normalizeTutorialEndReason(reason) {
-        const normalized = this.normalizeTutorialEndRawReason(reason);
-
-        if (normalized === 'complete') {
-            return 'complete';
-        }
-
-        if (normalized === 'skip' || normalized === 'escape' || normalized === 'angry_exit') {
-            return 'skip';
-        }
-
-        return 'destroy';
+        return this.lifecycleStateStore.normalizeReason(reason);
     }
 
     setTutorialEndReason(reason) {
-        if (this._tutorialEndRawReason) {
-            return this._tutorialEndReason || 'destroy';
-        }
-
-        const rawReason = this.normalizeTutorialEndRawReason(reason);
-        this._tutorialEndRawReason = rawReason;
-        this._tutorialEndReason = this.normalizeTutorialEndReason(rawReason);
-        return this._tutorialEndReason;
+        return this.lifecycleStateStore.setEndReason(reason);
     }
 
     resolveTutorialEndMeta(finalSteps = this.cachedValidSteps || []) {
-        if (this._tutorialEndReason || this._tutorialEndRawReason) {
-            return {
-                reason: this._tutorialEndReason || 'destroy',
-                rawReason: this._tutorialEndRawReason || this._tutorialEndReason || 'destroy'
-            };
-        }
+        return this.lifecycleStateStore.resolveEndMeta({
+            finalSteps: finalSteps,
+            currentStep: this.currentStep
+        });
+    }
 
-        if (Array.isArray(finalSteps) && finalSteps.length > 0 && this.currentStep >= finalSteps.length - 1) {
-            return {
-                reason: 'complete',
-                rawReason: 'complete'
-            };
+    clearPcTutorialGlobalOverlay(reason = 'destroy') {
+        const rawReason = this.normalizeTutorialEndRawReason(reason);
+        try {
+            if (
+                window.nekoTutorialOverlay
+                && typeof window.nekoTutorialOverlay.clear === 'function'
+            ) {
+                let tutorialRunId = '';
+                try {
+                    tutorialRunId = window.localStorage
+                        ? (window.localStorage.getItem('yuiGuidePcOverlayRunId') || '')
+                        : '';
+                } catch (_) {}
+                window.nekoTutorialOverlay.clear({
+                    reason: rawReason,
+                    tutorialRunId: tutorialRunId
+                });
+                try {
+                    if (typeof window.nekoTutorialOverlay.relayToChat === 'function') {
+                        window.nekoTutorialOverlay.relayToChat({
+                            action: 'yui_guide_tutorial_lifecycle_ended',
+                            reason: rawReason,
+                            tutorialRunId: tutorialRunId
+                        });
+                    }
+                } catch (_) {}
+                try {
+                    if (
+                        window.localStorage
+                        && (!tutorialRunId || window.localStorage.getItem('yuiGuidePcOverlayRunId') === tutorialRunId)
+                    ) {
+                        window.localStorage.removeItem('yuiGuidePcOverlayRunId');
+                    }
+                } catch (_) {}
+            }
+        } catch (error) {
+            console.warn('[Tutorial] 清理 PC 教程全局 overlay 失败:', error);
         }
-
-        return {
-            reason: 'destroy',
-            rawReason: 'destroy'
-        };
     }
 
     requestTutorialDestroy(reason = 'destroy') {
         this.setTutorialEndReason(reason);
+        this.clearPcTutorialGlobalOverlay(reason);
 
         if (this.driver) {
-            this.driver.destroy();
+            const driver = this.driver;
+            try {
+                driver.destroy();
+            } catch (error) {
+                console.warn('[Tutorial] driver destroy 失败，执行兜底结束:', error);
+                this.driver = null;
+                this.onTutorialEnd();
+                return;
+            }
+            window.setTimeout(() => {
+                if (this._tutorialEndHandled) {
+                    return;
+                }
+
+                const skipButtonStillVisible = !!document.getElementById('neko-tutorial-skip-btn');
+                if (this.driver === driver || this.isTutorialRunning || window.isInTutorial || skipButtonStillVisible) {
+                    console.warn('[Tutorial] driver destroy 未触发结束回调，执行兜底结束');
+                    this.driver = null;
+                    this.onTutorialEnd();
+                }
+            }, 120);
             return;
         }
 
         this.onTutorialEnd();
     }
 
+    requestAvatarFloatingGuideCooperativeEnd(reason = 'skip') {
+        const director = this.yuiGuideDirector;
+        if (
+            !this.activeAvatarFloatingGuideRound
+            || !director
+            || director.destroyed
+            || this._tutorialEndHandled
+        ) {
+            return false;
+        }
+
+        this.setTutorialEndReason(reason);
+        this.clearPcTutorialGlobalOverlay(reason);
+        this.invalidateTutorialInteractionApply(reason);
+        return true;
+    }
+
+    handleDesktopYuiGuideSkipRequest(event) {
+        if (this._isDestroyed) {
+            return;
+        }
+
+        const detail = event && event.detail && typeof event.detail === 'object'
+            ? event.detail
+            : {};
+        const skipButtonVisible = !!document.getElementById('neko-tutorial-skip-btn');
+        if (!this.isTutorialRunning && !window.isInTutorial && !skipButtonVisible) {
+            return;
+        }
+
+        this.logPromptFlow('desktop-yui-guide-skip-request', {
+            page: this.currentPage,
+            session_id: detail.sessionId || '',
+            source: detail.source || 'desktop',
+        });
+        void this.handleTutorialSkipRequest();
+    }
+
     async destroy(reason = 'destroy') {
         this.setTutorialEndReason(reason);
         this._isDestroyed = true;
+        this.clearAllTutorialLifecycles(reason);
+
+        if (this.managerResources) {
+            this.managerResources.destroy();
+            this.managerResources = null;
+            this._desktopYuiGuideSkipHandler = null;
+        }
 
         if (this.driver) {
             try {
@@ -814,26 +1349,31 @@ class UniversalTutorialManager {
         const yuiGuidePageKey = this.isYuiGuideEnabledForPage()
             ? this.getYuiGuidePageKey()
             : '';
-        if (!yuiGuidePageKey || yuiGuidePageKey === 'home') {
+        const message = this.lifecycleStateStore.createTerminationRequest({
+            sourcePage: yuiGuidePageKey,
+            rawReason: endMeta.rawReason,
+            reason: endMeta.reason
+        });
+        if (!message) {
             return;
         }
 
-        const rawReason = this.normalizeTutorialEndRawReason(
-            endMeta.rawReason || endMeta.reason || 'destroy'
-        );
         const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
         if (channel && typeof channel.postMessage === 'function') {
             try {
-                channel.postMessage({
-                    action: 'yui_guide_request_termination',
-                    sourcePage: yuiGuidePageKey,
-                    targetPage: 'home',
-                    reason: rawReason,
-                    tutorialReason: rawReason,
-                    timestamp: Date.now()
-                });
+                channel.postMessage(message);
             } catch (error) {
                 console.warn('[Tutorial] 广播 Yui Guide 跨页终止请求失败:', error);
+            }
+        }
+        if (
+            window.nekoTutorialOverlay
+            && typeof window.nekoTutorialOverlay.relayToPet === 'function'
+        ) {
+            try {
+                window.nekoTutorialOverlay.relayToPet(message);
+            } catch (error) {
+                console.warn('[Tutorial] 原生转发 Yui Guide 跨页终止请求失败:', error);
             }
         }
     }
@@ -1171,6 +1711,9 @@ class UniversalTutorialManager {
     async loadTemporaryTutorialLive2dModel(payload) {
         const tempConfig = this.buildTutorialTemporaryModelConfig(payload);
         const modelPath = tempConfig.model_path;
+        this.syncTutorialLanlanModelMode({
+            model_type: 'live2d'
+        });
 
         if (!window.live2dManager && typeof window.Live2DManager === 'function') {
             window.live2dManager = new window.Live2DManager();
@@ -1210,7 +1753,8 @@ class UniversalTutorialManager {
 
         await window.live2dManager.loadModel(modelPath, {
             isMobile: window.innerWidth <= 768,
-            suppressInitialIdle: true
+            suppressInitialIdle: true,
+            suppressPersistentExpressions: true
         });
         await this.applyTutorialLive2dViewportPlacement();
         if (window.LanLan1) {
@@ -1222,6 +1766,35 @@ class UniversalTutorialManager {
         }
     }
 
+    isTutorialYuiLive2dActive() {
+        const manager = window.live2dManager || null;
+        if (!manager) {
+            return false;
+        }
+        const loadedPath = this.tutorialNonEmptyString(manager._lastLoadedModelPath);
+        const rootPath = this.tutorialNonEmptyString(manager.modelRootPath);
+        const modelName = this.tutorialNonEmptyString(manager.modelName);
+        return loadedPath.indexOf('/static/yui-origin/yui-origin.model3.json') >= 0
+            || rootPath === '/static/yui-origin'
+            || modelName === TUTORIAL_YUI_LIVE2D_MODEL_NAME;
+    }
+
+    async ensureTutorialYuiLive2dVisible(reason = '') {
+        this.revealTutorialLive2dPrepared();
+        if (this.isTutorialYuiLive2dActive()) {
+            await this.applyTutorialLive2dViewportPlacement();
+            return true;
+        }
+
+        console.warn('[Tutorial] YUI 临时模型未处于激活状态，尝试直接加载:', reason || 'unknown');
+        await this.loadTemporaryTutorialLive2dModel({
+            live2d: TUTORIAL_YUI_LIVE2D_MODEL_NAME
+        });
+        this.revealTutorialLive2dPrepared();
+        await this.applyTutorialLive2dViewportPlacement();
+        return this.isTutorialYuiLive2dActive();
+    }
+
     async reloadTutorialModel(lanlanName, payload, options = {}) {
         const useTemporaryConfig = options && options.temporary === true;
         if (typeof window.handleModelReload === 'function') {
@@ -1231,8 +1804,18 @@ class UniversalTutorialManager {
             if (useTemporaryConfig) {
                 reloadOptions.temporaryConfig = this.buildTutorialTemporaryModelConfig(payload);
                 reloadOptions.skipIdleRestore = true;
+                reloadOptions.skipPersistentExpressions = true;
+                reloadOptions.throwOnError = true;
             }
-            await window.handleModelReload(lanlanName, reloadOptions);
+            try {
+                await window.handleModelReload(lanlanName, reloadOptions);
+            } catch (error) {
+                if (!useTemporaryConfig) {
+                    throw error;
+                }
+                console.warn('[Tutorial] 临时模型热切换失败，改用直接 Live2D 加载:', error);
+                await this.loadTemporaryTutorialLive2dModel(payload);
+            }
             if (useTemporaryConfig) {
                 await this.applyTutorialLive2dViewportPlacement();
             }
@@ -1447,11 +2030,12 @@ class UniversalTutorialManager {
             return;
         }
 
+        this._tutorialViewportPlacementResources = createUniversalTutorialScopedResources();
         this._tutorialViewportPlacementResizeHandler = () => {
             if (this._tutorialViewportPlacementResizeTimer) {
-                clearTimeout(this._tutorialViewportPlacementResizeTimer);
+                this._tutorialViewportPlacementResources.clearTimeout(this._tutorialViewportPlacementResizeTimer);
             }
-            this._tutorialViewportPlacementResizeTimer = setTimeout(() => {
+            this._tutorialViewportPlacementResizeTimer = this._tutorialViewportPlacementResources.setTimeout(() => {
                 this._tutorialViewportPlacementResizeTimer = null;
                 const controller = this.ensureTutorialAvatarReloadController();
                 if (!controller || !controller.hasActiveOverride() || this._isDestroyed) {
@@ -1462,20 +2046,16 @@ class UniversalTutorialManager {
                 });
             }, 120);
         };
-        window.addEventListener('resize', this._tutorialViewportPlacementResizeHandler);
-        window.addEventListener('electron-display-changed', this._tutorialViewportPlacementResizeHandler);
+        this._tutorialViewportPlacementResources.addEventListener(window, 'resize', this._tutorialViewportPlacementResizeHandler);
+        this._tutorialViewportPlacementResources.addEventListener(window, 'electron-display-changed', this._tutorialViewportPlacementResizeHandler);
     }
 
     clearTutorialLive2dViewportPlacementWatcher() {
-        if (this._tutorialViewportPlacementResizeTimer) {
-            clearTimeout(this._tutorialViewportPlacementResizeTimer);
-            this._tutorialViewportPlacementResizeTimer = null;
+        if (this._tutorialViewportPlacementResources) {
+            this._tutorialViewportPlacementResources.destroy();
+            this._tutorialViewportPlacementResources = null;
         }
-        if (!this._tutorialViewportPlacementResizeHandler) {
-            return;
-        }
-        window.removeEventListener('resize', this._tutorialViewportPlacementResizeHandler);
-        window.removeEventListener('electron-display-changed', this._tutorialViewportPlacementResizeHandler);
+        this._tutorialViewportPlacementResizeTimer = null;
         this._tutorialViewportPlacementResizeHandler = null;
     }
 
@@ -1493,28 +2073,6 @@ class UniversalTutorialManager {
             return Promise.resolve();
         }
         return controller.restoreOverride();
-    }
-
-    async captureTutorialChatAvatarPreview() {
-        if (!window.avatarPortrait || typeof window.avatarPortrait.capture !== 'function') {
-            return null;
-        }
-
-        try {
-            return await window.avatarPortrait.capture({
-                width: 320,
-                height: 320,
-                padding: 0.035,
-                shape: 'rounded',
-                radius: 40,
-                background: 'rgba(255, 255, 255, 0.96)',
-                includeDataUrl: true,
-                includeSourceDataUrl: false
-            });
-        } catch (error) {
-            console.warn('[Tutorial] 截取新手教程 YUI 头像失败:', error);
-            return null;
-        }
     }
 
     applyTutorialChatIdentityOverride(detail) {
@@ -2021,13 +2579,93 @@ class UniversalTutorialManager {
         }
     }
 
+    async startAvatarFloatingGuideRound(day, options = {}) {
+        const round = normalizeAvatarFloatingGuideRound(day);
+        const source = options.source || 'manual';
+        if (this.isTutorialRunning || window.isInTutorial) {
+            console.warn('[Tutorial] 引导已在运行中，跳过悬浮窗教程启动:', round);
+            return false;
+        }
+
+        const ready = await this.waitUntilInitialized();
+        if (!ready) {
+            throw new Error('tutorial_not_initialized');
+        }
+        if (this.currentPage !== 'home') {
+            throw new Error('avatar_floating_guide_requires_home');
+        }
+        const buttonsReady = await this.waitForFloatingButtons();
+        if (!buttonsReady) {
+            throw new Error('floating_buttons_not_ready');
+        }
+
+        this._isDestroyed = false;
+        this._tutorialEndHandled = false;
+        this.lifecycleStateStore.resetEndReason();
+        this.currentTutorialStartSource = source;
+        this.pendingTutorialStartSource = null;
+        this.currentStep = 0;
+        this.cachedValidSteps = [{
+            element: 'body',
+            skipInitialCheck: true,
+            yuiGuideSceneId: 'avatar_floating_day' + round,
+        }];
+        this.activeAvatarFloatingGuideRound = round;
+        this.setAvatarFloatingGuideCurrentRound(round);
+        this.isTutorialRunning = true;
+        window.isInTutorial = true;
+        this.lockBodyScroll();
+        this._tutorialModelPrefix = 'live2d';
+        this.emitTutorialStarted('home', source);
+
+        try {
+            const director = this.ensureYuiGuideDirector();
+            if (!director || typeof director.playAvatarFloatingRound !== 'function') {
+                throw new Error('avatar_floating_director_unavailable');
+            }
+            await this.playAvatarFloatingRoundPrelude(round, source, director);
+            const completed = await director.playAvatarFloatingRound(round, {
+                source,
+                surfaceReady: true
+            });
+            if (!this._tutorialEndHandled) {
+                const endReason = completed
+                    ? 'complete'
+                    : (
+                        this.lifecycleStateStore.getEndReason()
+                        || this.lifecycleStateStore.getEndRawReason()
+                        || 'destroy'
+                    );
+                this.requestTutorialDestroy(endReason);
+            }
+            return completed;
+        } catch (error) {
+            console.error('[Tutorial] 悬浮窗教程启动失败:', error);
+            if (!this._tutorialEndHandled) {
+                this.requestTutorialDestroy('destroy');
+            }
+            throw error;
+        }
+    }
+
+    async playAvatarFloatingRoundPrelude(round, source, director) {
+        const controller = this.ensureTutorialRoundPreludeController();
+        if (!controller || typeof controller.play !== 'function') {
+            throw new Error('tutorial_round_prelude_controller_unavailable');
+        }
+        return controller.play(round, {
+            source: source,
+            director: director || null
+        });
+    }
+
     clearModelManagerTutorialRecheckTimer() {
         if (this._modelManagerTutorialRecheckTimer) {
-            clearTimeout(this._modelManagerTutorialRecheckTimer);
+            this._modelManagerTimerResources.clearTimeout(this._modelManagerTutorialRecheckTimer);
             this._modelManagerTutorialRecheckTimer = null;
         }
         if (this._modelManagerBootstrapFallbackTimer) {
-            clearInterval(this._modelManagerBootstrapFallbackTimer);
+            this._modelManagerTimerResources.clearInterval(this._modelManagerBootstrapFallbackTimer);
             this._modelManagerBootstrapFallbackTimer = null;
         }
     }
@@ -2039,7 +2677,7 @@ class UniversalTutorialManager {
     scheduleModelManagerTutorialRecheck(delayMs = 8200) {
         if (this.currentPage !== 'model_manager') return;
         this.clearModelManagerTutorialRecheckTimer();
-        this._modelManagerTutorialRecheckTimer = setTimeout(() => {
+        this._modelManagerTutorialRecheckTimer = this._modelManagerTimerResources.setTimeout(() => {
             this._modelManagerTutorialRecheckTimer = null;
             if (this.isTutorialRunning || window.isInTutorial) return;
             const sk = this.getStorageKey();
@@ -2061,7 +2699,7 @@ class UniversalTutorialManager {
         if (this.currentPage !== 'model_manager') return;
         this.clearModelManagerTutorialRecheckTimer();
         this._pendingI18nStart = false;
-        setTimeout(() => {
+        this._modelManagerTimerResources.setTimeout(() => {
             if (this.isTutorialRunning || window.isInTutorial) return;
             this.setupModelManagerModeListener();
             this.maybeStartModelManagerTutorial(300, 'reset', null);
@@ -2119,6 +2757,13 @@ class UniversalTutorialManager {
                 // 其他页面延迟启动，并等待 i18n 准备完成
                 this.startTutorialWhenI18nReady(1500);
             }
+        } else if (this.currentPage === 'home') {
+            this.waitForFloatingButtons().then((found) => {
+                if (!found) {
+                    return;
+                }
+                this.maybeStartAvatarFloatingGuideAutoRound(1200);
+            });
         }
     }
 
@@ -2145,9 +2790,9 @@ class UniversalTutorialManager {
         }
 
         if (this._modelManagerTutorialDebounceTimer) {
-            clearTimeout(this._modelManagerTutorialDebounceTimer);
+            this._modelManagerTimerResources.clearTimeout(this._modelManagerTutorialDebounceTimer);
         }
-        this._modelManagerTutorialDebounceTimer = setTimeout(() => {
+        this._modelManagerTutorialDebounceTimer = this._modelManagerTimerResources.setTimeout(() => {
             this._modelManagerTutorialDebounceTimer = null;
             if (this.currentPage !== 'model_manager') return;
             if (this.isTutorialRunning || window.isInTutorial) {
@@ -2172,6 +2817,7 @@ class UniversalTutorialManager {
      */
     setupModelManagerModeListener() {
         if (this._modelManagerModeListenerAttached) return;
+        this._modelManagerModeResources = createUniversalTutorialScopedResources();
         this._modelManagerModeListenerAttached = true;
         this._modelManagerModeHandler = (ev) => {
             if (this.currentPage !== 'model_manager') return;
@@ -2181,11 +2827,11 @@ class UniversalTutorialManager {
                 return;
             }
             this._modelManagerReceivedModeEvent = true;
-            setTimeout(() => {
+            this._modelManagerModeResources.setTimeout(() => {
                 this.maybeStartModelManagerTutorial(200, 'mode-set', mode);
             }, 80);
         };
-        window.addEventListener('neko-model-manager-mode-set', this._modelManagerModeHandler);
+        this._modelManagerModeResources.addEventListener(window, 'neko-model-manager-mode-set', this._modelManagerModeHandler);
         console.log('[Tutorial] neko-model-manager-mode-set 监听器已设置');
     }
 
@@ -2193,17 +2839,22 @@ class UniversalTutorialManager {
      * 清理模型管理页相关的事件监听和定时器，防止实例替换后幽灵回调
      */
     teardownModelManagerListeners() {
-        if (this._modelManagerModeHandler) {
-            window.removeEventListener('neko-model-manager-mode-set', this._modelManagerModeHandler);
-            this._modelManagerModeHandler = null;
+        if (this._modelManagerModeResources) {
+            this._modelManagerModeResources.destroy();
+            this._modelManagerModeResources = null;
         }
+        this._modelManagerModeHandler = null;
         this._modelManagerModeListenerAttached = false;
         this._modelManagerReceivedModeEvent = false;
         this.clearModelManagerTutorialRecheckTimer();
         if (this._modelManagerTutorialDebounceTimer) {
-            clearTimeout(this._modelManagerTutorialDebounceTimer);
+            this._modelManagerTimerResources.clearTimeout(this._modelManagerTutorialDebounceTimer);
             this._modelManagerTutorialDebounceTimer = null;
         }
+        if (this._modelManagerTimerResources) {
+            this._modelManagerTimerResources.destroy();
+        }
+        this._modelManagerTimerResources = createUniversalTutorialScopedResources();
     }
 
     /**
@@ -2213,27 +2864,27 @@ class UniversalTutorialManager {
     scheduleModelManagerBootstrapFallback() {
         if (this.currentPage !== 'model_manager') return;
         if (this._modelManagerBootstrapFallbackTimer) {
-            clearInterval(this._modelManagerBootstrapFallbackTimer);
+            this._modelManagerTimerResources.clearInterval(this._modelManagerBootstrapFallbackTimer);
         }
         let pollCount = 0;
         const maxPolls = 8;
-        this._modelManagerBootstrapFallbackTimer = setInterval(() => {
+        this._modelManagerBootstrapFallbackTimer = this._modelManagerTimerResources.setInterval(() => {
             pollCount++;
             if (this.currentPage !== 'model_manager' || pollCount > maxPolls) {
-                clearInterval(this._modelManagerBootstrapFallbackTimer);
+                this._modelManagerTimerResources.clearInterval(this._modelManagerBootstrapFallbackTimer);
                 this._modelManagerBootstrapFallbackTimer = null;
                 return;
             }
             if (this.isTutorialRunning || window.isInTutorial) {
                 console.log('[Tutorial] 模型管理页兜底轮询: 引导已在运行，停止轮询');
-                clearInterval(this._modelManagerBootstrapFallbackTimer);
+                this._modelManagerTimerResources.clearInterval(this._modelManagerBootstrapFallbackTimer);
                 this._modelManagerBootstrapFallbackTimer = null;
                 return;
             }
             const sk = this.getStorageKey();
             if (localStorage.getItem(sk) === 'true') {
                 console.log('[Tutorial] 模型管理页兜底轮询: 已看过', sk);
-                clearInterval(this._modelManagerBootstrapFallbackTimer);
+                this._modelManagerTimerResources.clearInterval(this._modelManagerBootstrapFallbackTimer);
                 this._modelManagerBootstrapFallbackTimer = null;
                 return;
             }
@@ -3254,7 +3905,7 @@ class UniversalTutorialManager {
         return true;
     }
 
-    async refreshAndValidateTutorialLayout(currentElement, context) {
+    async refreshAndValidateTutorialLayout(currentElement, context, applyToken) {
         const isModelManager = this.currentPage === 'model_manager';
         // 模型管理页：多轮等待 WebGL/MMD 布局稳定；仍失败时也不回滚（回滚会隐藏遮罩/高亮，而此处多为误判）
         const extraRetries = isModelManager ? 7 : 0;
@@ -3265,6 +3916,9 @@ class UniversalTutorialManager {
                 this.driver.refresh();
             }
             await new Promise(r => setTimeout(r, this.LAYOUT_REFRESH_DELAY));
+            if (!this.isTutorialInteractionApplyCurrent(applyToken)) {
+                return false;
+            }
             void document.body.offsetHeight;
 
             const ok = this.validateTutorialLayout(currentElement, context);
@@ -3275,6 +3929,9 @@ class UniversalTutorialManager {
             if (attempt < attempts - 1) {
                 const waitMs = isModelManager ? (200 + attempt * 160) : (280 + attempt * 220);
                 await new Promise(r => setTimeout(r, waitMs));
+                if (!this.isTutorialInteractionApplyCurrent(applyToken)) {
+                    return false;
+                }
             }
         }
 
@@ -3328,15 +3985,18 @@ class UniversalTutorialManager {
 
     blockTutorialScroll() {
         if (this._isTutorialScrollBlocked) return;
-        window.addEventListener('wheel', this._tutorialScrollBlockHandler, this._tutorialScrollBlockOptions);
-        window.addEventListener('touchmove', this._tutorialScrollBlockHandler, this._tutorialScrollBlockOptions);
+        this._tutorialScrollBlockResources = createUniversalTutorialScopedResources();
+        this._tutorialScrollBlockResources.addEventListener(window, 'wheel', this._tutorialScrollBlockHandler, this._tutorialScrollBlockOptions);
+        this._tutorialScrollBlockResources.addEventListener(window, 'touchmove', this._tutorialScrollBlockHandler, this._tutorialScrollBlockOptions);
         this._isTutorialScrollBlocked = true;
     }
 
     unblockTutorialScroll() {
         if (!this._isTutorialScrollBlocked) return;
-        window.removeEventListener('wheel', this._tutorialScrollBlockHandler, this._tutorialScrollBlockOptions);
-        window.removeEventListener('touchmove', this._tutorialScrollBlockHandler, this._tutorialScrollBlockOptions);
+        if (this._tutorialScrollBlockResources) {
+            this._tutorialScrollBlockResources.destroy();
+            this._tutorialScrollBlockResources = null;
+        }
         this._isTutorialScrollBlocked = false;
     }
 
@@ -3425,31 +4085,35 @@ class UniversalTutorialManager {
 
     blockNekoTutorialClickEvents() {
         if (this._isNekoTutorialClickBlocked) return;
-        window.addEventListener('pointerdown', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
-        window.addEventListener('pointerup', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
-        window.addEventListener('mousedown', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
-        window.addEventListener('mouseup', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
-        window.addEventListener('click', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
-        window.addEventListener('dblclick', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
-        window.addEventListener('auxclick', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
-        window.addEventListener('contextmenu', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
-        window.addEventListener('touchstart', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
-        window.addEventListener('touchend', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
+        this._nekoTutorialClickBlockResources = createUniversalTutorialScopedResources();
+        [
+            'pointerdown',
+            'pointerup',
+            'mousedown',
+            'mouseup',
+            'click',
+            'dblclick',
+            'auxclick',
+            'contextmenu',
+            'touchstart',
+            'touchend'
+        ].forEach((eventName) => {
+            this._nekoTutorialClickBlockResources.addEventListener(
+                window,
+                eventName,
+                this._nekoTutorialClickBlockHandler,
+                this._nekoTutorialClickBlockOptions
+            );
+        });
         this._isNekoTutorialClickBlocked = true;
     }
 
     unblockNekoTutorialClickEvents() {
         if (!this._isNekoTutorialClickBlocked) return;
-        window.removeEventListener('pointerdown', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
-        window.removeEventListener('pointerup', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
-        window.removeEventListener('mousedown', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
-        window.removeEventListener('mouseup', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
-        window.removeEventListener('click', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
-        window.removeEventListener('dblclick', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
-        window.removeEventListener('auxclick', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
-        window.removeEventListener('contextmenu', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
-        window.removeEventListener('touchstart', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
-        window.removeEventListener('touchend', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
+        if (this._nekoTutorialClickBlockResources) {
+            this._nekoTutorialClickBlockResources.destroy();
+            this._nekoTutorialClickBlockResources = null;
+        }
         this._isNekoTutorialClickBlocked = false;
     }
 
@@ -3469,19 +4133,20 @@ class UniversalTutorialManager {
 
     blockTutorialPointerEvents() {
         if (this._isTutorialPointerBlocked) return;
-        window.addEventListener('pointerdown', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
-        window.addEventListener('mousedown', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
-        window.addEventListener('click', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
-        window.addEventListener('touchstart', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
+        this._tutorialPointerBlockResources = createUniversalTutorialScopedResources();
+        this._tutorialPointerBlockResources.addEventListener(window, 'pointerdown', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
+        this._tutorialPointerBlockResources.addEventListener(window, 'mousedown', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
+        this._tutorialPointerBlockResources.addEventListener(window, 'click', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
+        this._tutorialPointerBlockResources.addEventListener(window, 'touchstart', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
         this._isTutorialPointerBlocked = true;
     }
 
     unblockTutorialPointerEvents() {
         if (!this._isTutorialPointerBlocked) return;
-        window.removeEventListener('pointerdown', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
-        window.removeEventListener('mousedown', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
-        window.removeEventListener('click', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
-        window.removeEventListener('touchstart', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
+        if (this._tutorialPointerBlockResources) {
+            this._tutorialPointerBlockResources.destroy();
+            this._tutorialPointerBlockResources = null;
+        }
         this._isTutorialPointerBlocked = false;
     }
 
@@ -3520,6 +4185,24 @@ class UniversalTutorialManager {
         console.log('[Tutorial] 已恢复交互元素默认状态');
     }
 
+    invalidateTutorialInteractionApply(reason = 'tutorial-ended') {
+        this._tutorialInteractionApplyToken += 1;
+        this._applyingInteractionState = false;
+        this._lastAppliedStateKey = null;
+        if (reason && reason !== 'step-change') {
+            this.tutorialRollbackActive = false;
+        }
+        return this._tutorialInteractionApplyToken;
+    }
+
+    isTutorialInteractionApplyCurrent(token) {
+        return !!(
+            token === this._tutorialInteractionApplyToken
+            && (this.isTutorialRunning || window.isInTutorial)
+            && !this._tutorialEndHandled
+        );
+    }
+
     async applyTutorialInteractionState(currentStepConfig, context) {
         if (!window.isInTutorial || !currentStepConfig) return;
 
@@ -3540,6 +4223,7 @@ class UniversalTutorialManager {
             return;
         }
 
+        const applyToken = ++this._tutorialInteractionApplyToken;
         try {
             this._applyingInteractionState = true;
             this.tutorialRollbackActive = false;
@@ -3570,12 +4254,17 @@ class UniversalTutorialManager {
                 this.setTutorialMarkersVisible(true);
             }
 
-            await this.refreshAndValidateTutorialLayout(currentElement, context);
+            await this.refreshAndValidateTutorialLayout(currentElement, context, applyToken);
+            if (!this.isTutorialInteractionApplyCurrent(applyToken)) {
+                return;
+            }
             if (!this.tutorialRollbackActive) {
                 this._lastAppliedStateKey = stateKey;
             }
         } finally {
-            this._applyingInteractionState = false;
+            if (this._tutorialInteractionApplyToken === applyToken) {
+                this._applyingInteractionState = false;
+            }
         }
     }
 
@@ -3841,8 +4530,7 @@ class UniversalTutorialManager {
         // 重置步骤 onHighlighted 触发标记（避免重复/跨次引导）
         this._lastOnHighlightedStepIndex = null;
         this._tutorialEndHandled = false;
-        this._tutorialEndReason = null;
-        this._tutorialEndRawReason = null;
+        this.lifecycleStateStore.resetEndReason();
 
         // 缓存已验证的步骤，供 onStepChange 使用
         this.cachedValidSteps = validSteps;
@@ -4107,19 +4795,15 @@ class UniversalTutorialManager {
     }
 
     handleTutorialSkipRequest() {
-        const handleSkipFailure = (error) => {
-            console.warn('[Tutorial] Yui Guide skip 失败，回退到 requestTutorialDestroy:', error);
-            this.requestTutorialDestroy('skip');
-        };
-        const director = this.isYuiGuideEnabledForPage(this.currentPage)
-            ? this.ensureYuiGuideDirector()
-            : null;
-        if (director && typeof director.skip === 'function') {
-            return Promise.resolve(director.skip('skip', 'skip'))
-                .then(() => {
-                    this.requestTutorialDestroy('skip');
-                })
-                .catch(handleSkipFailure);
+        const director = this.yuiGuideDirector;
+        if (
+            this.activeAvatarFloatingGuideRound
+            && director
+            && !director.destroyed
+            && typeof director.skip === 'function'
+        ) {
+            director.skip('skip', 'skip');
+            return Promise.resolve();
         }
 
         this.requestTutorialDestroy('skip');
@@ -4836,13 +5520,44 @@ class UniversalTutorialManager {
             ? finalSteps[finalStepIndex]
             : null;
         const endMeta = this.resolveTutorialEndMeta(finalSteps);
+        const avatarFloatingRound = this.activeAvatarFloatingGuideRound;
 
         this.notifyYuiGuideStepLeave(finalStepConfig, finalStepIndex, 'tutorial-end');
         this.broadcastYuiGuideTerminationRequest(endMeta);
-        this.notifyYuiGuideTutorialEnd(endMeta.rawReason);
+        this.clearAllTutorialLifecycles(endMeta.rawReason);
         const completedSource = this.currentTutorialStartSource;
 
         this._teardownTutorialUI();
+
+        if (avatarFloatingRound) {
+            this.markAvatarFloatingGuideRoundOutcome(avatarFloatingRound, endMeta.reason, endMeta.rawReason);
+            this.activeAvatarFloatingGuideRound = null;
+        } else if (this.currentPage === 'home' && (endMeta.reason === 'complete' || endMeta.reason === 'skip')) {
+            this.markAvatarFloatingGuideRoundOutcome(1, endMeta.reason, endMeta.rawReason);
+        }
+        let avatarFloatingEndState = null;
+        if (avatarFloatingRound || this.currentPage === 'home') {
+            avatarFloatingEndState = recordAvatarFloatingGuideEndState(
+                avatarFloatingRound || 1,
+                endMeta.reason,
+                endMeta.rawReason,
+                completedSource
+            );
+        }
+        if (avatarFloatingEndState && (endMeta.reason === 'complete' || endMeta.reason === 'skip')) {
+            const avatarFloatingEndEventName = endMeta.reason === 'skip'
+                ? 'neko:avatar-floating-guide-skip'
+                : 'neko:avatar-floating-guide-complete';
+            window.dispatchEvent(new CustomEvent(avatarFloatingEndEventName, {
+                detail: {
+                    page: this.currentPage,
+                    source: completedSource,
+                    reason: endMeta.rawReason,
+                    day: avatarFloatingEndState.day,
+                    endState: avatarFloatingEndState
+                }
+            }));
+        }
 
         if (endMeta.reason === 'destroy') {
             window.dispatchEvent(new CustomEvent('neko:tutorial-ended-without-completion', {
@@ -4876,7 +5591,9 @@ class UniversalTutorialManager {
                 detail: {
                     page: this.currentPage,
                     source: completedSource,
-                    reason: endMeta.rawReason
+                    reason: endMeta.rawReason,
+                    day: avatarFloatingEndState ? avatarFloatingEndState.day : undefined,
+                    endState: avatarFloatingEndState
                 }
             }));
             this.logPromptFlow('tutorial-skipped', {
@@ -4892,7 +5609,9 @@ class UniversalTutorialManager {
         window.dispatchEvent(new CustomEvent('neko:tutorial-completed', {
             detail: {
                 page: this.currentPage,
-                source: completedSource
+                source: completedSource,
+                day: avatarFloatingEndState ? avatarFloatingEndState.day : undefined,
+                endState: avatarFloatingEndState
             }
         }));
         this.logPromptFlow('tutorial-completed', {
@@ -4980,6 +5699,11 @@ class UniversalTutorialManager {
      * 因此既能给正常结束（onTutorialEnd）复用，也能给启动失败的回退路径复用。
      */
     _teardownTutorialUI() {
+        this.invalidateTutorialInteractionApply(
+            this.lifecycleStateStore.getEndRawReason()
+            || this.lifecycleStateStore.getEndReason()
+            || 'tutorial-ended'
+        );
         // 关键 UI 清理：必须先于 _teardownPromise early-return 守卫执行，
         // 且必须幂等。MMD 模型管理教程曾出现：用户走到末步点「完成」后
         // 跳过按钮残留、模型列表按钮 pointer-events:none 卡死。
@@ -5002,7 +5726,11 @@ class UniversalTutorialManager {
             console.warn('[Tutorial] unblockNekoTutorialClickEvents 失败:', error);
         }
         try {
-            this.restoreYuiGuideChatInputState(this._tutorialEndRawReason || this._tutorialEndReason || 'tutorial-ended');
+            this.restoreYuiGuideChatInputState(
+                this.lifecycleStateStore.getEndRawReason()
+                || this.lifecycleStateStore.getEndReason()
+                || 'tutorial-ended'
+            );
         } catch (error) {
             console.warn('[Tutorial] restoreYuiGuideChatInputState 失败:', error);
         }
@@ -5020,8 +5748,7 @@ class UniversalTutorialManager {
         this._pendingStepChange = false;
         this._applyingInteractionState = false;
         this.cachedValidSteps = null;
-        this._tutorialEndReason = null;
-        this._tutorialEndRawReason = null;
+        this.lifecycleStateStore.resetEndReason();
         this.currentTutorialStartSource = 'auto';
 
         // 清除刷新定时器
@@ -5425,6 +6152,7 @@ class UniversalTutorialManager {
 
         // 先销毁现有的 driver 以避免残留的监听器和遮罩
         if (this.isTutorialRunning) {
+            this.clearAllTutorialLifecycles('restart');
             this.onTutorialEnd();
         }
         if (this.driver) {

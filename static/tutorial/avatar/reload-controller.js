@@ -15,9 +15,7 @@
             this.reloadModel = normalizedOptions.reloadModel || noop;
             this.setPreparing = normalizedOptions.setPreparing || noop;
             this.revealPrepared = normalizedOptions.revealPrepared || noop;
-            this.captureAvatarPreview = normalizedOptions.captureAvatarPreview || noop;
             this.applyIdentityOverride = normalizedOptions.applyIdentityOverride || noop;
-            this.sleep = normalizedOptions.sleep || function () { return Promise.resolve(); };
             this.clearViewportWatcher = normalizedOptions.clearViewportWatcher || noop;
             this.override = null;
             this.overridePromise = null;
@@ -93,15 +91,11 @@
                 this.setPreparing(true);
                 await this.reloadModel(currentName, tutorialModelPayload, { temporary: true });
                 ensureOverrideActive();
-                await this.sleep(350);
-                ensureOverrideActive();
-                const tutorialAvatar = await this.captureAvatarPreview();
-                ensureOverrideActive();
                 this.applyIdentityOverride({
                     active: true,
                     displayName: 'YUI',
-                    avatarDataUrl: tutorialAvatar && tutorialAvatar.dataUrl ? tutorialAvatar.dataUrl : '',
-                    modelType: tutorialAvatar && tutorialAvatar.modelType ? tutorialAvatar.modelType : 'live2d'
+                    avatarDataUrl: '',
+                    modelType: 'live2d'
                 });
                 console.log('[TutorialAvatarReloadController] 新手教程期间已临时切换到 yui-origin 模型（未写入用户配置）:', tutorialModelPayload);
             })(), setupDeadline]).catch(async (error) => {

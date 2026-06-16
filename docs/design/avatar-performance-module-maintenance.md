@@ -33,20 +33,20 @@ Live2D 正常链路保护：
 
 首页 Yui 新手引导适配层：
 
-1. `static/yui-guide-avatar-stage.js`
+1. `static/tutorial/avatar/yui-stage.js`
    - 首页专用 adapter
    - 把 director 的 step、speech、timeline、wakeup 事件翻译成 AvatarPerformance sequence
-2. `static/yui-guide-director.js`
+2. `static/tutorial/yui-guide/director.js`
    - 首页新手引导导演层
    - 仍负责高亮、文本、语音、步骤推进和业务动作
 3. `templates/index.html`
-   - 加载顺序为 `avatar-performance-stage.js`、`yui-guide-avatar-stage.js`、`yui-guide-director.js`
+   - 加载顺序为 `avatar-performance-stage.js`、`tutorial/avatar/yui-stage.js`、`tutorial/yui-guide/director.js`
 4. `main_routers/pages_router.py`
    - 静态资源版本缓存包含上述新模块
 
 兼容入口：
 
-1. `static/yui-guide-wakeup.js` 仍保留为兼容/预热桥接入口，由 `yui-guide-director.js` 和新的演出适配层承接实际流程。
+1. `static/tutorial/yui-guide/wakeup.js` 仍保留为兼容/预热桥接入口，由 `tutorial/yui-guide/director.js` 和新的演出适配层承接实际流程。
 2. `window.YuiGuideWakeup` 只允许作为兼容桥接对象存在，不应恢复为独立视觉演出链路或新增剧情逻辑。
 
 ## 模块边界
@@ -306,12 +306,14 @@ performance.emotion
 4. 适配器不得自己猜 emotion 分类。
 5. 除苏醒 pose 外，step 动作应优先使用已有程序判断出的 emotion 和 director 的目标元素。
 6. 苏醒是首页新手引导 prelude 的一部分，不是独立外置功能。
+7. `playAngryExit()` 是打断退出的最高优先级动作入口；启动前必须停止仍在播放的首页教程专属 session，并跳过旧 session 的长释放动画，确保 angry exit 独占 frame/params 写入。
+8. 如果 angry exit 的 Live2D 演出不可用，director 仍必须兜底应用 `angry` emotion；动作失败不能让生气退出退回普通表情或阻塞 skip 清理。
 
 ## Yui 苏醒 pose
 
 当前 Yui 苏醒动作落在 `YuiGuideAvatarStage.runWakeup()`，由 `AvatarPerformance` 的 `poseTimeline` 执行。
 
-当前参数映射在 `static/yui-guide-avatar-stage.js` 的 `YUI_WAKEUP_PARAMS` 中，包括：
+当前参数映射在 `static/tutorial/avatar/yui-stage.js` 的 `YUI_WAKEUP_PARAMS` 中，包括：
 
 1. eye open
 2. head angle
@@ -339,6 +341,7 @@ performance.emotion
 3. 通用 driver 可以接收 `emotion`，但真实执行由当前 Live2D manager 的 `setEmotion()`、`playExpression()`、`playMotion()` 和资源表决定。
 4. 如果某个模型缺少对应 expression 或 motion，非 required step 应跳过或 fallback。
 5. 不允许为了某个首页 step 在通用模块里新增臆测 emotion。
+6. 七日新手教程可以在 `yui-origin` 模型 profile 或页面 adapter 中声明该模型的情绪 motion 池数量与随机策略，但这属于模型专属配置；不得把 `yui-origin` 的 `happy/sad/angry/neutral/surprised/Idle` 资源假设推广到其他 Live2D 模型或通用 driver。
 
 ## 不同 Live2D 模型资源差异
 
@@ -431,8 +434,8 @@ VRM / MMD / 其他 3D avatar 后续应作为新的 driver 接入同一套 `Avata
 修改本模块或首页适配层后，至少检查：
 
 1. `static/avatar-performance-stage.js` 不包含首页 step、文案、overlay 或 Yui 剧情。
-2. `static/yui-guide-avatar-stage.js` 不删除首页 overlay，不改 `yui-taking-over` 或 ghost cursor 状态。
-3. 旧 `static/yui-guide-wakeup.js` 只保留兼容桥接职责，模板加载它时不能绕过 director / adapter。
+2. `static/tutorial/avatar/yui-stage.js` 不删除首页 overlay，不改 `yui-taking-over` 或 ghost cursor 状态。
+3. 旧 `static/tutorial/yui-guide/wakeup.js` 只保留兼容桥接职责，模板加载它时不能绕过 director / adapter。
 4. `templates/index.html` 脚本顺序正确。
 5. `main_routers/pages_router.py` 的静态资源版本路径包含新模块。
 6. 首页新手引导从苏醒到 intro，再到 takeover steps 能推进。
@@ -446,8 +449,8 @@ VRM / MMD / 其他 3D avatar 后续应作为新的 driver 接入同一套 `Avata
 ```powershell
 .venv\Scripts\python.exe -m pytest tests/test_agent_rewrite_regression.py tests/test_emotion_heuristic.py tests/frontend/test_yui_guide_avatar_performance_flow.py -q
 node --check static/avatar-performance-stage.js
-node --check static/yui-guide-avatar-stage.js
-node --check static/yui-guide-director.js
+node --check static/tutorial/avatar/yui-stage.js
+node --check static/tutorial/yui-guide/director.js
 python -m py_compile main_routers/pages_router.py config/prompts/prompts_emotion.py
 git diff --check
 ```
@@ -457,8 +460,8 @@ macOS / Linux 可使用等价命令：
 ```bash
 ./.venv/bin/python -m pytest tests/test_agent_rewrite_regression.py tests/test_emotion_heuristic.py tests/frontend/test_yui_guide_avatar_performance_flow.py -q
 node --check static/avatar-performance-stage.js
-node --check static/yui-guide-avatar-stage.js
-node --check static/yui-guide-director.js
+node --check static/tutorial/avatar/yui-stage.js
+node --check static/tutorial/yui-guide/director.js
 python3 -m py_compile main_routers/pages_router.py config/prompts/prompts_emotion.py
 git diff --check
 ```
@@ -470,7 +473,7 @@ git diff --check
 1. 把首页剧情、文案、按钮选择器写进 `AvatarPerformanceStage`。
 2. 在 adapter 里自己发明 emotion 分类或 motion/expression 名。
 3. 为了首页新手引导删除或重置 overlay、taking-over、ghost cursor 等业务状态。
-4. 把 `window.YuiGuideWakeup` 或旧 `yui-guide-wakeup.js` 扩回独立视觉演出链路。
+4. 把 `window.YuiGuideWakeup` 或旧 `tutorial/yui-guide/wakeup.js` 扩回独立视觉演出链路。
 5. 在 release 时硬编码回某个固定 Idle / neutral 资源。
 6. 让某个演出 session 没有 release / destroy 路径。
 7. 为 3D 接入复制 Live2D 参数逻辑。

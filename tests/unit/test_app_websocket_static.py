@@ -29,6 +29,56 @@ def test_response_discarded_visible_in_react_chat():
     assert "appendChild(messageDiv)" not in response_discarded_block
 
 
+def test_home_tutorial_feature_suppression_syncs_greeting_block_state():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    assert "neko:home-tutorial-features-suppressed" in source
+    features_listener_block = source.split(
+        "window.addEventListener('neko:home-tutorial-features-suppressed'",
+        1,
+    )[1].split("// ========================  Export module", 1)[0]
+    assert "sendHomeTutorialState(" in features_listener_block
+    assert "features-suppressed" in features_listener_block
+
+
+def test_blocked_greeting_check_reports_home_tutorial_state_before_retry():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    blocked_branch = source.split("if (_isGreetingCheckBlocked()) {", 1)[1].split(
+        "try {",
+        1,
+    )[0]
+    assert "sendHomeTutorialState('greeting-check-blocked')" in blocked_branch
+    assert "_scheduleGreetingCheckRetry();" in blocked_branch
+
+
+def test_icebreaker_greeting_check_is_consumed_without_retry_loop():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    send_block = source.split("function _sendGreetingCheckIfReady()", 1)[1].split(
+        "function _onModelReady()",
+        1,
+    )[0]
+    assert send_block.index("if (_consumeGreetingCheckForNewUserIcebreaker())") < send_block.index(
+        "if (_isGreetingCheckBlocked())"
+    )
+
+    consume_block = source.split("function _consumeGreetingCheckForNewUserIcebreaker()", 1)[1].split(
+        "function _sendGreetingCheckIfReady()",
+        1,
+    )[0]
+    assert "sendHomeTutorialState('greeting-check-consumed-by-icebreaker')" in consume_block
+    assert "S._greetingCheckPending = false;" in consume_block
+    assert "_resetGreetingCheckRetry(true);" in consume_block
+    assert "_scheduleGreetingCheckRetry();" not in consume_block
+
+    tutorial_block = source.split("function _isTutorialBlockingGreeting()", 1)[1].split(
+        "function _isGreetingCheckBlocked()",
+        1,
+    )[0]
+    assert "isNewUserIcebreakerBlockingGreeting()" not in tutorial_block
+
+
 def test_goodbye_blocks_stale_audio_session_started():
     source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
 

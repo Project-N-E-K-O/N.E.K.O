@@ -169,7 +169,7 @@
      * rule, reverse proxy, WAF, …)? The unified-guard contract is
      * ``error_code === "csrf_validation_failed"`` (see
      * ``static/app-prompt-shared.js`` 520-541 and
-     * ``static/universal-tutorial-manager.js`` 120-134).
+     * ``static/tutorial/core/universal-manager.js`` 120-134).
      *
      * Only the CSRF case warrants the ``refreshToken()`` + retry-once
      * recovery path; treating *every* 403 as benign-and-skip means a
