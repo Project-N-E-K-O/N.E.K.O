@@ -1686,7 +1686,7 @@
                 kind: kind || 'unknown',
                 visualRect: parentRect,
                 hitRect: null,
-                nativeRect: null,
+                nativeRect: parentRect,
                 interactive: false
             });
             if (kind === 'history') {

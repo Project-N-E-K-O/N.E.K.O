@@ -807,10 +807,9 @@ def test_desktop_compact_history_hit_regions_are_clipped_to_visible_parent():
     assert "hitRect: clippedRect" in composite_block
     assert "nativeRect: clippedRect" in composite_block
     assert "id: 'history:scrollbar'" in composite_block
-    assert "nativeRect: null" in composite_block
     parent_native_block = composite_block.split("id: kind + ':native'", 1)[1].split("interactive: false", 1)[0]
     assert "hitRect: null" in parent_native_block
-    assert "nativeRect: null" in parent_native_block
+    assert "nativeRect: parentRect" in parent_native_block
     scrollbar_block = composite_block.split("id: 'history:scrollbar'", 1)[1].split("hitRegionKind: 'scrollbar'", 1)[0]
     assert "nativeRect: scrollbarRect" in scrollbar_block
 
