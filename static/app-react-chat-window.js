@@ -3371,6 +3371,20 @@
             handleMiniGameInviteChoice(option);
             return;
         }
+        if (source === 'new_user_icebreaker') {
+            var prompt = state.choicePrompt;
+            if (!prompt || prompt.source !== 'new_user_icebreaker') return;
+            var detail = {
+                sessionId: prompt.sessionId || '',
+                gameType: prompt.gameType || '',
+                option: option
+            };
+            state.choicePrompt = null;
+            renderWindow();
+            window.dispatchEvent(new CustomEvent('neko:icebreaker-choice-selected', { detail: detail }));
+            dispatchHostEvent('icebreaker-choice-selected', detail);
+            return;
+        }
     }
 
     function handleCompactChatStateChange(nextCompactChatState) {

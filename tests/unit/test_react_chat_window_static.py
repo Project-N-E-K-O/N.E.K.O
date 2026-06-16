@@ -988,6 +988,30 @@ def test_yui_guide_external_compact_history_open_is_bridged_to_react_host():
     assert "host.setCompactHistoryOpen(open === true, reason || 'external-yui-guide');" in interpage
 
 
+def test_new_user_icebreaker_choice_prompt_dispatches_host_event():
+    react_host = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    choice_block = react_host.split("function handleChoiceSelect(option, source)", 1)[1].split(
+        "function handleCompactChatStateChange",
+        1,
+    )[0]
+
+    assert "source === 'new_user_icebreaker'" in choice_block
+    assert "prompt.source !== 'new_user_icebreaker'" in choice_block
+    assert "state.choicePrompt = null;" in choice_block
+    assert "window.dispatchEvent(new CustomEvent('neko:icebreaker-choice-selected'" in choice_block
+    assert "dispatchHostEvent('icebreaker-choice-selected', detail);" in choice_block
+
+
+def test_interpage_bundle_uses_static_asset_version_on_home_and_chat():
+    index_template = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
+    chat_template = CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
+
+    assert '/static/app-interpage.js?v={{ static_asset_version }}' in index_template
+    assert '/static/app-interpage.js?v={{ static_asset_version }}' in chat_template
+    assert '/static/app-interpage.js?v={{ react_chat_asset_version }}' not in index_template
+    assert '/static/app-interpage.js?v={{ react_chat_asset_version }}' not in chat_template
+
+
 def test_externalized_chat_input_spotlight_retries_after_message_layout():
     script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
 
