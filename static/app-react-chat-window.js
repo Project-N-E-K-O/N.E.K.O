@@ -2298,7 +2298,7 @@
             galgameToggleButtonLabel: getI18nText('chat.galgameToggle', 'GalGame 模式'),
             galgameToggleButtonAriaLabel: getI18nText('chat.galgameToggleAriaLabel', '切换 GalGame 选项模式'),
             galgameLoadingLabel: getI18nText('chat.galgameLoading', '生成回复选项中…'),
-            composerDisabled: !!state.homeTutorialInteractionLocked,
+            composerDisabled: !!(state.homeTutorialInteractionLocked || state.homeTutorialInputLocked),
             compactInputLocked: !!state.homeTutorialInputLocked
         };
     }
@@ -2807,11 +2807,15 @@
         state.rollbackDraft = '';
 
         if (state.choicePrompt && state.choicePrompt.source === 'new_user_icebreaker') {
+            var prompt = state.choicePrompt;
             var icebreakerDetail = {
-                sessionId: state.choicePrompt.sessionId || '',
+                sessionId: prompt.sessionId || '',
                 text: detail.text,
                 requestId: detail.requestId
             };
+            state.choicePrompt = null;
+            delete state.pendingRollbackDrafts[detail.requestId];
+            renderWindow();
             window.dispatchEvent(new CustomEvent('neko:icebreaker-free-text-submitted', { detail: icebreakerDetail }));
             dispatchHostEvent('icebreaker-free-text-submit', icebreakerDetail);
             return;
@@ -4020,7 +4024,7 @@
         }
         state.viewProps = Object.assign({}, ensureViewProps(), {
             compactChatState: getCurrentCompactChatState(),
-            composerDisabled: next
+            composerDisabled: !!(next || state.homeTutorialInputLocked)
         });
         renderWindow();
     }
@@ -4036,23 +4040,10 @@
         state.homeTutorialInputLocked = next;
         state.viewProps = Object.assign({}, ensureViewProps(), {
             compactChatState: getCurrentCompactChatState(),
-            compactInputLocked: next
+            compactInputLocked: next,
+            composerDisabled: !!(state.homeTutorialInteractionLocked || next)
         });
         renderWindow();
-    }
-
-    function setAvatarToolMenuOpen(open, reason) {
-        return setTutorialChatRequest('avatarToolMenuOpenRequest', {
-            open: open === true,
-            reason: typeof reason === 'string' ? reason : ''
-        });
-    }
-
-    function setCompactToolFanOpen(open, reason) {
-        return setTutorialChatRequest('compactToolFanOpenRequest', {
-            open: open === true,
-            reason: typeof reason === 'string' ? reason : ''
-        });
     }
 
     function rotateCompactToolWheel(direction, stepCount, options) {
@@ -5164,7 +5155,7 @@
             avatarToolMenuOpenRequest: {
                 id: nextTutorialChatRequestId('avatar-tool-menu'),
                 open: open === true,
-                reason: reason || ''
+                reason: typeof reason === 'string' ? reason : ''
             }
         });
         return true;
@@ -5175,7 +5166,7 @@
             compactToolFanOpenRequest: {
                 id: nextTutorialChatRequestId('compact-tool-fan'),
                 open: open === true,
-                reason: reason || ''
+                reason: typeof reason === 'string' ? reason : ''
             }
         });
         return true;
@@ -6356,7 +6347,7 @@
         state.viewProps = Object.assign({}, ensureViewProps(), {
             chatSurfaceMode: getCurrentChatSurfaceMode(),
             compactChatState: getCurrentCompactChatState(),
-            composerDisabled: !!state.homeTutorialInteractionLocked,
+            composerDisabled: !!(state.homeTutorialInteractionLocked || state.homeTutorialInputLocked),
             compactInputLocked: !!state.homeTutorialInputLocked
         });
         syncChatSurfaceModeUI();

@@ -331,6 +331,20 @@ function resolveGuideLocale() {
   return DEFAULT_GUIDE_LOCALE
 }
 
+function resolveRawGuideLocale() {
+  try {
+    return String(getLocale() || '')
+  } catch (_) {}
+
+  const candidates = [
+    window.localStorage?.getItem('locale'),
+    window.localStorage?.getItem('neko_locale'),
+    document.documentElement.getAttribute('lang'),
+    navigator.language,
+  ]
+  return String(candidates.find(Boolean) || '')
+}
+
 function getAllowedOpenerOrigins() {
   const origins = new Set<string>(ALLOWED_OPENER_ORIGINS)
   const queryOpenerOrigin = getQueryOpenerOrigin()
@@ -1447,7 +1461,7 @@ class PluginDashboardGuideRuntime {
 
     const button = document.createElement('button')
     button.type = 'button'
-    const label = resolveGuideLocale() === 'zh' ? '跳过' : 'Skip'
+    const label = resolveRawGuideLocale().toLowerCase().startsWith('zh') ? '跳过' : 'Skip'
     button.textContent = label
     button.setAttribute('aria-label', label)
     button.setAttribute('data-yui-plugin-dashboard-skip-control', 'true')

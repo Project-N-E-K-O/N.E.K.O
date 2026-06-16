@@ -729,7 +729,21 @@ async function yankSweep() {
     // user who installed a stable version and later switched the global
     // preference to beta would lose the yanked flag on the stable install.
     const narrowedEntryChannel = narrowMarketChannel(entry.channel)
-    const entryChannel = narrowedEntryChannel === 'unknown' ? userPref.channel : narrowedEntryChannel
+    if (narrowedEntryChannel === 'unknown') {
+      const carryPid = previousYanked[pidKey]
+      if (carryPid !== undefined) nextYanked[pidKey] = carryPid
+      if (marketKey) {
+        const carryMarket = previousYanked[marketKey]
+        if (carryMarket !== undefined) nextYanked[marketKey] = carryMarket
+      }
+      console.warn('[MarketPanel] skip yanked check for unknown installed channel', {
+        plugin_id: entry.plugin_id,
+        market_id: entry.market_id,
+        channel: entry.channel,
+      })
+      continue
+    }
+    const entryChannel = narrowedEntryChannel
     const cacheKey = `${entry.market_id || entry.plugin_id}::${entryChannel}`
     const cached = yankCache.get(cacheKey)
     let yankedVersions: Set<string>

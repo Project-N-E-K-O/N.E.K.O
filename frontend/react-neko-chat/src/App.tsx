@@ -4987,9 +4987,9 @@ function CompactChatApp({
     if (!request || !request.id || request.id === lastAvatarToolMenuOpenRequestIdRef.current) return;
     const requestId = request.id;
     if (request.open) {
+      lastAvatarToolMenuOpenRequestIdRef.current = requestId;
       const opened = openCompactInputToolFan('click', { ignoreDisabled: true });
       if (!opened) return;
-      lastAvatarToolMenuOpenRequestIdRef.current = requestId;
       if (activeAvatarToolIds.length === 0) {
         setActiveAvatarToolIds([...DEFAULT_ACTIVE_AVATAR_TOOL_IDS]);
       }
@@ -5005,9 +5005,9 @@ function CompactChatApp({
     const request = compactToolFanOpenRequest;
     if (!request || !request.id || request.id === lastCompactToolFanOpenRequestIdRef.current) return;
     if (request.open) {
+      lastCompactToolFanOpenRequestIdRef.current = request.id;
       const opened = openCompactInputToolFan('click', { ignoreDisabled: true });
       if (!opened) return;
-      lastCompactToolFanOpenRequestIdRef.current = request.id;
       return;
     }
     lastCompactToolFanOpenRequestIdRef.current = request.id;
@@ -5033,9 +5033,9 @@ function CompactChatApp({
   useEffect(() => {
     const request = compactToolWheelRotateRequest;
     if (!request || !request.id || request.id === lastCompactToolWheelRotateRequestIdRef.current) return;
+    lastCompactToolWheelRotateRequestIdRef.current = request.id;
     const opened = openCompactInputToolFan('click', { ignoreDisabled: true });
     if (!opened) return;
-    lastCompactToolWheelRotateRequestIdRef.current = request.id;
     rotateCompactInputToolWheelSteps(request.direction, request.stepCount, {
       forceFast: request.forceFast !== false,
     });
@@ -6118,7 +6118,9 @@ function CompactChatApp({
             role="group"
             aria-label={choicePrompt.source === 'mini_game_invite'
               ? i18n('chat.miniGameInviteOptionsAriaLabel', 'Mini-game invite options')
-              : galgameToggleButtonLabel}
+              : choicePrompt.source === 'new_user_icebreaker'
+                ? i18n('chat.newUserIcebreakerOptionsAriaLabel', 'New user icebreaker options')
+                : galgameToggleButtonLabel}
           >
             {choicePrompt.options.slice(0, 3).map((option, index) => (
               <button
