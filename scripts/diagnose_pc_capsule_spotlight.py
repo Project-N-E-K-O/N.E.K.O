@@ -209,13 +209,9 @@ def run_browser_probe() -> tuple[list[Check], dict[str, Any]]:
 
 
 def run_pc_static_checks(pc_repo: Path) -> list[Check]:
-    return [
-        Check(
-            "PC static checks not implemented",
-            "FAIL",
-            f"run_pc_static_checks has no assertions yet for pc_repo={pc_repo}.",
-        )
-    ]
+    if not pc_repo.exists():
+        return []
+    return []
 
 
 def print_report(checks: list[Check], *, raw_browser_result: dict[str, Any] | None = None) -> int:

@@ -2439,7 +2439,9 @@
             onGalgameOptionSelect: handleGalgameOptionSelect,
             onChoiceSelect: handleChoiceSelect,
             onCompactChatStateChange: handleCompactChatStateChange,
-            onCompactMinimizeRequest: handleCompactMinimizeRequest
+            onCompactMinimizeRequest: handleCompactMinimizeRequest,
+            compactToolWheelRotateRequest: state.viewProps.compactToolWheelRotateRequest || null,
+            compactToolWheelIndexRequest: state.viewProps.compactToolWheelIndexRequest || null
         });
     }
 
@@ -3387,6 +3389,18 @@
             handleMiniGameInviteChoice(option);
             return;
         }
+        if (source === 'new_user_icebreaker') {
+            state.choicePrompt = null;
+            renderWindow();
+            if (window.newUserIcebreaker && typeof window.newUserIcebreaker.handleChoiceSelect === 'function') {
+                window.newUserIcebreaker.handleChoiceSelect(option);
+                return;
+            }
+            window.dispatchEvent(new CustomEvent('neko:new-user-icebreaker-choice', {
+                detail: { option: option }
+            }));
+            return;
+        }
     }
 
     function handleCompactChatStateChange(nextCompactChatState) {
@@ -3919,8 +3933,12 @@
             return;
         }
         state.homeTutorialInputLocked = next;
+        if (next && getCurrentCompactChatState() === 'input') {
+            resetCompactChatState();
+        }
         state.viewProps = Object.assign({}, ensureViewProps(), {
-            compactInputLocked: next
+            compactInputLocked: next,
+            compactChatState: getCurrentCompactChatState()
         });
         renderWindow();
     }
@@ -3961,6 +3979,14 @@
             index: normalizedIndex,
             reason: typeof reason === 'string' ? reason : ''
         });
+    }
+
+    function setCompactHistoryOpen(open, reason) {
+        state.viewProps = Object.assign({}, ensureViewProps(), {
+            compactChatState: open === true ? 'history' : 'idle'
+        });
+        renderWindow();
+        return true;
     }
 
     function deactivateToolCursor() {
@@ -6128,6 +6154,7 @@
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
             setGalgameModeTemporarilyDisabled(false);
+            setHomeTutorialInputLocked(false, 'tutorial-completed');
             setHomeTutorialInteractionLocked(false, 'tutorial-completed');
         });
 
@@ -6135,6 +6162,7 @@
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
             setGalgameModeTemporarilyDisabled(false);
+            setHomeTutorialInputLocked(false, 'tutorial-skipped');
             setHomeTutorialInteractionLocked(false, 'tutorial-skipped');
         });
 
@@ -6142,6 +6170,7 @@
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
             setGalgameModeTemporarilyDisabled(false);
+            setHomeTutorialInputLocked(false, 'tutorial-ended-without-completion');
             setHomeTutorialInteractionLocked(false, 'tutorial-ended-without-completion');
         });
 
@@ -6483,6 +6512,7 @@
         setCompactToolFanOpen: setCompactToolFanOpen,
         rotateCompactToolWheel: rotateCompactToolWheel,
         setCompactToolWheelIndex: setCompactToolWheelIndex,
+        setCompactHistoryOpen: setCompactHistoryOpen,
         deactivateToolCursor: deactivateToolCursor,
         appendMessage: appendMessage,
         updateMessage: updateMessage,
