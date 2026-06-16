@@ -64,6 +64,7 @@
     var ELECTRON_CHAT_MINIMIZED_STATE_HEARTBEAT_MS = 1000;
     var savedExpandedShellPosition = null; // last known full-surface desktop position
     var lastRestorableChatSurfaceMode = 'compact';
+    var tutorialChatRequestSeq = 0;
     var _sortKeySeq = 0; // monotonically increasing sortKey counter
     var COMPACT_CHAT_STATES = ['default', 'options', 'input'];
     // The active compact↔minimized cycle. `full` is intentionally NOT here: it is
@@ -5007,6 +5008,33 @@
             state: normalized
         });
         return normalized;
+    }
+
+    function nextTutorialChatRequestId(prefix) {
+        tutorialChatRequestSeq += 1;
+        return prefix + '-' + Date.now() + '-' + tutorialChatRequestSeq;
+    }
+
+    function setAvatarToolMenuOpen(open, reason) {
+        setViewProps({
+            avatarToolMenuOpenRequest: {
+                id: nextTutorialChatRequestId('avatar-tool-menu'),
+                open: open === true,
+                reason: reason || ''
+            }
+        });
+        return true;
+    }
+
+    function setCompactToolFanOpen(open, reason) {
+        setViewProps({
+            compactToolFanOpenRequest: {
+                id: nextTutorialChatRequestId('compact-tool-fan'),
+                open: open === true,
+                reason: reason || ''
+            }
+        });
+        return true;
     }
 
     function commitPendingMinimizedSurfaceMode() {

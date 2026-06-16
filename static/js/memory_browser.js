@@ -304,6 +304,126 @@
         restartBtn.disabled = storagePreflightBusy || restartAccepted;
     }
 
+    let selectedTutorialDay = 0;
+
+    const TUTORIAL_CASCADER_PAGE_LABELS = {
+        all: '全部页面',
+        home: '主页',
+        model_manager: '模型设置',
+        parameter_editor: '捏脸系统',
+        emotion_manager: '情感管理',
+        chara_manager: '角色管理',
+        settings: 'API设置',
+        voice_clone: '语音克隆',
+        memory_browser: '记忆浏览',
+        current_personality: '当前角色性格'
+    };
+
+    function getTutorialPageLabel(pageKey) {
+        const option = document.querySelector('#tutorial-reset-select option[value="' + pageKey + '"]');
+        return option ? String(option.textContent || '').trim() : (TUTORIAL_CASCADER_PAGE_LABELS[pageKey] || pageKey);
+    }
+
+    function getTutorialDayLabel(day) {
+        const fallback = '第 ' + day + ' 天';
+        if (!window.t || typeof window.t !== 'function') {
+            return fallback;
+        }
+        const translated = window.t('memory.tutorialHomeDayLabel', { day: day });
+        return translated && translated !== 'memory.tutorialHomeDayLabel' ? translated : fallback;
+    }
+
+    function refreshTutorialCascaderDayLabels() {
+        document.querySelectorAll('.tutorial-cascader-option[data-tutorial-day]').forEach(function (option) {
+            const day = Number(option.dataset.tutorialDay || 0);
+            if (day > 0) {
+                option.textContent = getTutorialDayLabel(day);
+            }
+        });
+    }
+
+    function resolveSelectedTutorialReset() {
+        const tutorialSelect = document.getElementById('tutorial-reset-select');
+        const pageKey = tutorialSelect ? String(tutorialSelect.value || '') : '';
+        if (pageKey !== 'home') {
+            return { type: pageKey ? 'page' : '', pageKey: pageKey };
+        }
+        return {
+            type: selectedTutorialDay ? 'home-day' : '',
+            pageKey: 'home',
+            day: selectedTutorialDay
+        };
+    }
+
+    function setTutorialCascaderOpen(open) {
+        const popup = document.querySelector('.tutorial-cascader-popup');
+        const trigger = document.querySelector('.tutorial-cascader-trigger');
+        if (popup) {
+            popup.hidden = !open;
+        }
+        if (trigger) {
+            trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+            trigger.classList.toggle('is-open', !!open);
+        }
+    }
+
+    function syncTutorialResetCascader() {
+        const tutorialSelect = document.getElementById('tutorial-reset-select');
+        const tutorialResetBtn = document.getElementById('tutorial-reset-btn');
+        const dayColumn = document.querySelector('.tutorial-cascader-day-column');
+        const valueEl = document.querySelector('.tutorial-reset-value');
+        if (!tutorialSelect || !tutorialResetBtn) return;
+
+        const pageKey = String(tutorialSelect.value || '');
+        if (pageKey !== 'home') {
+            selectedTutorialDay = 0;
+        }
+        if (dayColumn) {
+            dayColumn.hidden = pageKey !== 'home';
+        }
+        document.querySelectorAll('.tutorial-cascader-option[data-tutorial-page]').forEach(function (option) {
+            option.classList.toggle('is-selected', option.dataset.tutorialPage === pageKey);
+        });
+        document.querySelectorAll('.tutorial-cascader-option[data-tutorial-day]').forEach(function (option) {
+            option.classList.toggle('is-selected', Number(option.dataset.tutorialDay) === selectedTutorialDay);
+        });
+        if (valueEl) {
+            if (!pageKey) {
+                valueEl.textContent = getTutorialPageLabel('');
+            } else if (pageKey === 'home' && selectedTutorialDay) {
+                valueEl.textContent = getTutorialPageLabel('home') + ' / ' + getTutorialDayLabel(selectedTutorialDay);
+            } else {
+                valueEl.textContent = getTutorialPageLabel(pageKey);
+            }
+        }
+
+        const selection = resolveSelectedTutorialReset();
+        tutorialResetBtn.disabled = selection.type !== 'page' && selection.type !== 'home-day';
+    }
+
+    async function resetSelectedTutorial() {
+        const selection = resolveSelectedTutorialReset();
+        if (selection.type === 'home-day') {
+            if (window.AvatarFloatingGuideReset && typeof window.AvatarFloatingGuideReset.resetAvatarFloatingGuideDay === 'function') {
+                await window.AvatarFloatingGuideReset.resetAvatarFloatingGuideDay(selection.day, {
+                    source: 'memory_browser_reset_select',
+                });
+            } else if (window.AvatarFloatingGuideReset && typeof window.AvatarFloatingGuideReset.resetHomeTutorialDay === 'function') {
+                await window.AvatarFloatingGuideReset.resetHomeTutorialDay(selection.day, {
+                    source: 'memory_browser_reset_select',
+                });
+            } else if (typeof window.resetHomeTutorialDay === 'function') {
+                await window.resetHomeTutorialDay(selection.day, {
+                    source: 'memory_browser_reset_select',
+                });
+            }
+            return;
+        }
+        if (selection.type === 'page' && typeof window.resetTutorialForPage === 'function') {
+            await window.resetTutorialForPage(selection.pageKey);
+        }
+    }
+
     function sleep(ms) {
         return new Promise(function (resolve) {
             window.setTimeout(resolve, ms);
@@ -1267,6 +1387,10 @@
                 }
             });
         }
+        window.addEventListener('localechange', function () {
+            refreshTutorialCascaderDayLabels();
+            syncTutorialResetCascader();
+        });
 
         const openStorageBtn = document.getElementById('storage-location-open-btn');
         if (openStorageBtn) {
@@ -1315,17 +1439,44 @@
             });
         }
 
-        // 监听新手引导重置下拉框变化
+        // 监听新手引导重置级联选择器变化
         const tutorialSelect = document.getElementById('tutorial-reset-select');
         const tutorialResetBtn = document.getElementById('tutorial-reset-btn');
         if (tutorialSelect && tutorialResetBtn) {
-            // 根据下拉框当前值初始化按钮状态（支持浏览器恢复的表单状态）
-            tutorialResetBtn.disabled = !tutorialSelect.value;
-
-            // 监听下拉框变化
-            tutorialSelect.addEventListener('change', function() {
-                // 当选择非空值时启用按钮，否则禁用
-                tutorialResetBtn.disabled = !this.value;
+            refreshTutorialCascaderDayLabels();
+            syncTutorialResetCascader();
+            const trigger = document.querySelector('.tutorial-cascader-trigger');
+            const popup = document.querySelector('.tutorial-cascader-popup');
+            if (trigger) {
+                trigger.addEventListener('click', function () {
+                    setTutorialCascaderOpen(!(popup && !popup.hidden));
+                });
+            }
+            if (popup) {
+                popup.addEventListener('click', function (event) {
+                    const pageOption = event.target.closest('[data-tutorial-page]');
+                    if (pageOption) {
+                        tutorialSelect.value = pageOption.dataset.tutorialPage || '';
+                        if (tutorialSelect.value !== 'home') {
+                            selectedTutorialDay = 0;
+                            setTutorialCascaderOpen(false);
+                        }
+                        syncTutorialResetCascader();
+                        return;
+                    }
+                    const dayOption = event.target.closest('[data-tutorial-day]');
+                    if (dayOption) {
+                        selectedTutorialDay = Number(dayOption.dataset.tutorialDay || 0);
+                        syncTutorialResetCascader();
+                        setTutorialCascaderOpen(false);
+                    }
+                });
+            }
+            document.addEventListener('click', function (event) {
+                const cascader = document.getElementById('tutorial-reset-cascader');
+                if (cascader && !cascader.contains(event.target)) {
+                    setTutorialCascaderOpen(false);
+                }
             });
         }
 
@@ -1458,5 +1609,7 @@
             updatePowerfulMemoryToggleText(!enabled);
         }
     }
+
+    window.resetSelectedTutorial = resetSelectedTutorial;
 
 })();
