@@ -153,6 +153,15 @@ def test_basketball_duel_prompt_contract():
     assert "label / duel 字段" in prompt
     assert "player_duel_shot" in prompt
     assert "duel.player_score" in prompt
+    assert "duel_outcome" in prompt
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("lang", ("zh", "en", "ja", "ko", "ru", "es", "pt"))
+def test_basketball_duel_prompts_use_duel_outcome_for_winner(lang):
+    prompt = game_router.get_basketball_system_prompt(lang, mode="duel")
+
+    assert "duel_outcome" in prompt
 
 
 @pytest.mark.unit
@@ -236,6 +245,7 @@ def test_basketball_event_sanitizer_keeps_duel_state_and_shot_missed():
     event, error = game_router._sanitize_basketball_event({
         "kind": "shot_missed",
         "mode": "duel",
+        "duel_outcome": "player_win",
         "duel": {
             "playerScore": "2",
             "neko_score": "3",
@@ -263,6 +273,7 @@ def test_basketball_event_sanitizer_keeps_duel_state_and_shot_missed():
     assert error == ""
     assert event["kind"] == "shot_missed"
     assert event["mode"] == "duel"
+    assert event["duel_outcome"] == "player_win"
     assert event["duel"] == {
         "player_score": 2,
         "neko_score": 3,

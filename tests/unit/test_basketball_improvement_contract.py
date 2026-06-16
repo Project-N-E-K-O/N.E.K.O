@@ -1010,10 +1010,10 @@ def test_basketball_duel_uses_three_miss_elimination_instead_of_five_round_cap()
     assert "if (!scored) {" in finish_duel
     assert "if (shooter === 'player') game.duel.playerMisses += 1;" in finish_duel
     assert "else game.duel.nekoMisses += 1;" in finish_duel
-    assert (
-        "var duelFinished = game.duel.playerMisses >= game.duel.maxMisses || game.duel.nekoMisses >= game.duel.maxMisses;"
-        in finish_duel
-    )
+    duel_finished = "var duelFinished = game.duel.playerMisses >= game.duel.maxMisses || game.duel.nekoMisses >= game.duel.maxMisses;"
+    assert duel_finished in finish_duel
+    assert finish_duel.index(duel_finished) < finish_duel.index("kind: newRecord ? 'new_record' : (scored ? 'shot_result' : 'shot_missed'),")
+    assert "if (!duelFinished) {\n      sendGameEvent({" in finish_duel
     assert "} else if (shooter === 'player') {" in finish_duel
     assert "player_misses: game.duel.playerMisses" in html
     assert "neko_misses: game.duel.nekoMisses" in html

@@ -5493,6 +5493,7 @@ def _sanitize_basketball_event(event: Any) -> tuple[dict | None, str]:
         "new_record", "streak_5", "streak_10", "streak_15", "streak_20",
     }
     allowed_results = {"scored", "missed", ""}
+    allowed_duel_outcomes = {"player_win", "neko_win"}
     allowed_shot_types = {"swish", "bank", "rim_in", "rim_out", "air_ball", ""}
     kind = str(event.get("kind") or "").strip()
     if kind not in allowed_kinds:
@@ -5507,11 +5508,14 @@ def _sanitize_basketball_event(event: Any) -> tuple[dict | None, str]:
                 clean[key] = event.get(key) is True
 
     result = str(event.get("result") or "").strip()
+    duel_outcome = str(event.get("duel_outcome") or "").strip()
     shot_type = str(event.get("shot_type") or "").strip()
     if result not in allowed_results:
         clean.pop("result", None)
     else:
         clean["result"] = result
+    if duel_outcome in allowed_duel_outcomes:
+        clean["duel_outcome"] = duel_outcome
     if shot_type not in allowed_shot_types:
         clean.pop("shot_type", None)
     else:

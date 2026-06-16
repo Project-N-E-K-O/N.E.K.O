@@ -3559,19 +3559,21 @@
     recordShotHistory(game.attemptsResults[game.attemptsResults.length - 1]);
     playShotResultSound(shotType, scored);
     if (shooter === 'neko') setYuiAction(scored ? 'react-celebrate' : 'react-disappointed', 620);
-    sendGameEvent({
-      kind: newRecord ? 'new_record' : (scored ? 'shot_result' : 'shot_missed'),
-      result: scored ? 'scored' : 'missed',
-      streak: game.streak,
-      distance: previousDistance,
-      shot_type: shotType,
-      label: shooter === 'neko' ? 'neko_duel_shot' : 'player_duel_shot',
-      is_new_record: newRecord,
-      was_perfect: ball.wasPerfect,
-      shot_angle: ball.angle,
-      shot_power: ball.power
-    });
     var duelFinished = game.duel.playerMisses >= game.duel.maxMisses || game.duel.nekoMisses >= game.duel.maxMisses;
+    if (!duelFinished) {
+      sendGameEvent({
+        kind: newRecord ? 'new_record' : (scored ? 'shot_result' : 'shot_missed'),
+        result: scored ? 'scored' : 'missed',
+        streak: game.streak,
+        distance: previousDistance,
+        shot_type: shotType,
+        label: shooter === 'neko' ? 'neko_duel_shot' : 'player_duel_shot',
+        is_new_record: newRecord,
+        was_perfect: ball.wasPerfect,
+        shot_angle: ball.angle,
+        shot_power: ball.power
+      });
+    }
     if (shooter === 'player') {
       setPlayerAction(scored ? 'react-celebrate' : 'react-disappointed', 620);
     }
