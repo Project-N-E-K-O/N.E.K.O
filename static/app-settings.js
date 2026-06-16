@@ -17,8 +17,8 @@
     let _syncTimerId = null;
     // 同步间隔（毫秒）：60秒
     const SYNC_INTERVAL_MS = 60000;
-    // 「首启等 branch 决议」专属 marker：只有 localStorage 走过本 PR 的首启分支才会写
-    // 「1」，branch 决议后清掉。用 marker 在不在判断「应不应该套 A/B 覆写」，避免拿
+    // 「首启等 settings/telemetry 决议」专属 marker：只有 localStorage 走过首启分支才会写
+    // 「1」，branch 决议后清掉。用 marker 在不在判断「是否仍在等待首次决议」，避免拿
     // 「没见过 branch 」当首启代名——升级用户也都没见过 branch，那个口径会误伤他们的
     // 既有偏好。offline 首启错过 branch 时 marker 留着，下次在线再补
     const _FIRST_LAUNCH_PENDING_KEY = '_neko_first_launch_branch_pending';
@@ -210,10 +210,10 @@
     /**
      * 启动定期同步到服务器
      *
-     * branch 决议未完成（_FIRST_LAUNCH_PENDING_KEY 还在）时跳过 periodic POST：
-     * 否则会把首启控制组默认值推到服务器，下次 GET 拿到 branch 后读到自家 echo
-     * 误判「云端已有偏好」，让 A/B 实验组覆写永久跳过 + marker 清掉。用户主动改
-     * 设置走的 saveSettings 不受影响（那条路径就是要持久化用户显式选择）。
+     * 首启 settings/telemetry 决议未完成（_FIRST_LAUNCH_PENDING_KEY 还在）时跳过 periodic
+     * POST：否则会把首启本地默认值抢先推到服务器，下次 GET 读到自家 echo 误判「云端已有
+     * 偏好」、干扰设置合并与首启决议时序。用户主动改设置走的 saveSettings 不受影响（那条
+     * 路径就是要持久化用户显式选择）。
      */
     function startPeriodicSync() {
         if (_syncTimerId !== null) return; // 防止重复启动
@@ -260,9 +260,8 @@
      * 从 window 全局变量读取最新值（确保同步 live2d.js 中的更改）
      *
      * @param {{ skipServerSync?: boolean }} [options] 传 skipServerSync 跳过 POST，
-     *   首启分支用——避免在 loadSettingsFromServer 拿到 telemetryBranch 之前
-     *   就把控制组默认值写到服务器、回头被自己的 GET 当成「云端已有偏好」从而
-     *   永远跳过 A/B 实验组覆写
+     *   首启用——避免在 loadSettingsFromServer 拿到 telemetryBranch 之前就把首启本地
+     *   默认值写到服务器、回头被自己的 GET 当成「云端已有偏好」，干扰首启决议时序
      */
     function saveSettings(options) {
         const skipServerSync = !!(options && options.skipServerSync);
@@ -563,13 +562,13 @@
                 window.humanoidLocalTrackingEnabled = false;
                 window.lockedHoverFadeEnabled = true;
 
-                // 首启专属 marker：告诉下方异步合并块「这次需要等 branch 决议后套 A/B
-                // 覆写」。升级用户走的是 if (saved) 分支不会写这个，于是不会被误覆写
+                // 首启专属 marker：告诉下方异步合并块「这次仍在等首次 settings/telemetry
+                // 决议」。升级用户走的是 if (saved) 分支不会写这个，于是不会被误判成首启
                 try { localStorage.setItem(_FIRST_LAUNCH_PENDING_KEY, '1'); } catch (_) {}
                 // 持久化首次启动设置到 localStorage，避免每次重新检测。注意：故意跳过
                 // 服务器 POST——loadSettingsFromServer GET 还没拿到 telemetryBranch，
-                // 这时把控制组默认值上行会被自家 GET 当作「云端已有偏好」回读，让 A/B
-                // 实验组覆写永远跳过。等 branch 解析后再做一次完整 saveSettings 推送
+                // 这时把首启本地默认值上行会被自家 GET 当作「云端已有偏好」回读、干扰设置
+                // 合并与首启决议时序。等 branch 解析后再做一次完整 saveSettings 推送
                 saveSettings({ skipServerSync: true });
             }
 
@@ -616,10 +615,9 @@
                 const branchResolutionFinalized = !!(telemetryBranch && _firstLaunchPending);
                 if (branchResolutionFinalized) {
                     try { localStorage.removeItem(_FIRST_LAUNCH_PENDING_KEY); } catch (_) {}
-                    // 首启 branch 决议完后强制 POST 一次：控制组没有 server merge、也没
-                    // 触发 A/B 覆写时 hasUpdate 仍是 false，若用户在 60s periodic 之前关掉
-                    // app，首启的本地默认值就永远到不了服务器。这里 hasUpdate=true 让下方
-                    // saveSettings 走完整路径推一次
+                    // 首启决议完后强制 POST 一次：没有 server merge 时 hasUpdate 仍是 false，
+                    // 若用户在 60s periodic 之前关掉 app，首启的本地默认值就永远到不了服务器。
+                    // 这里 hasUpdate=true 让下方 saveSettings 走完整路径推一次
                     hasUpdate = true;
                 }
 
@@ -668,12 +666,11 @@
                     }
                 }
 
-                // 把 branch 暴露给情境弹窗模块（app-context-prompt.js）并广播——必须放在
-                // 所有设置合并（A/B 覆写 + server merge + saveSettings）之后。否则被缓存的
-                // context 在 branch-resolved 重放时，_isActionable 会读到覆写前的旧
-                // proactiveVisionChatEnabled，误判该不该弹（Codex P2）。GET 失败
-                // telemetryBranch 为 null 时不挂，弹窗模块拿不到实验组标识默认不弹
-                // （fail-closed，宁可漏弹也不要弹给控制组）。
+                // 把 branch 暴露给情境弹窗模块（app-context-prompt.js）并广播 settings-ready
+                // 信号——必须放在所有设置合并（server merge + saveSettings）之后。否则被缓存的
+                // context 在重放时，_isActionable 会读到合并前的旧 proactiveVisionChatEnabled，
+                // 误判该不该弹（Codex P2）。GET 失败 telemetryBranch 为 null 时不挂、不广播，弹窗
+                // 模块拿不到「就绪」信号默认不弹（fail-closed，宁可漏弹也不拿未合并设置误弹）。
                 if (telemetryBranch) {
                     window.nekoTelemetryBranch = telemetryBranch;
                     window.dispatchEvent(new CustomEvent('neko:telemetry-branch-resolved', {
@@ -681,10 +678,9 @@
                     }));
                 }
             }).finally(() => {
-                // 必须等 GET 解析后再起 periodic sync：否则 60s 间隔的 POST 可能
-                // 比 GET 先到，把首启控制组默认值写到服务器；GET 回来读到自家 echo
-                // 误判「云端已有偏好」，让 A/B 实验组覆写永久跳过 + marker 还落上，
-                // cohort 直接污染。GET 走 finally 后周期同步才安全
+                // 必须等 GET 解析后再起 periodic sync：否则 60s 间隔的 POST 可能比 GET 先到，
+                // 把首启本地默认值写到服务器；GET 回来读到自家 echo 误判「云端已有偏好」、干扰
+                // 设置合并，marker 也可能错误留存。GET 走 finally 后周期同步才安全
                 startPeriodicSync();
             });
         } catch (error) {

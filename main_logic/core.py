@@ -4203,26 +4203,29 @@ class LLMSessionManager:
         start the loop twice).
 
         The context prompt used to be gated to the vision_chat_default_off A/B group;
-        it's now merged into main and open to everyone, so the kick is unconditional
-        (no branch check). Privacy on (the overseas default) still means the
-        heartbeat early-exits at _privacy_mode_active → zero LLM cost; only
-        privacy-off users incur the activity_guess LLM cost, which is the intended
-        cost of making the prompt available to all of them.
+        it's now merged into main and open to everyone, so the kick is no longer
+        branch-gated. It is still gated on the user having *explicitly* allowed
+        autonomous vision (privacy mode off) — see the persisted-pref check below.
         """
         try:
-            # 隐私模式开（vision 关）时绝不 kick：get_snapshot 会起 SystemSignalCollector
-            # 并采集窗口/进程信号，绕过隐私模式（loop 只跳过 LLM、collector 仍在采）。
-            # privacy-on 的实验组本就是 no-op（屏幕分享来源开不了），不 kick 即可；隐私关
-            # 时才采集，符合 vision 开的预期。
-            from main_logic.activity.tracker import _privacy_mode_active
-            if _privacy_mode_active():
+            # 只有当 proactiveVisionEnabled 已被显式落盘为 True 才 kick：get_snapshot 会起
+            # SystemSignalCollector 采集窗口/进程信号，且绕过隐私模式（loop 只跳过 LLM、
+            # collector 仍在采）。不能用 is_privacy_mode_active()——它在 proactiveVisionEnabled
+            # 缺失时 fail-open 成「隐私关」，于是首启 settings 尚未同步的窗口里，会把 UI 默认
+            # 隐私开（海外首启 proactiveVisionEnabled 默认 false）的用户误判成可采集，启动一次
+            # session 就采了窗口/进程（Codex P1）。这里改读原始落盘值，缺失/False 一律不 kick，
+            # 等下一次 session（settings 已同步、用户确为 vision 开）再拉起；隐私开的用户本就是
+            # no-op（屏幕分享来源开不了），不 kick 无损。
+            from utils.preferences import aload_global_conversation_settings
+            settings = await aload_global_conversation_settings()
+            if settings.get('proactiveVisionEnabled') is not True:
                 return
             # 清情境弹窗基线：tracker 跨 session 长存，若用户上个 session 结束时就在
             # 游戏/工作、这个 session 仍在同一状态，不清就检测不到「进入」、本会话漏弹。
             self._activity_tracker.reset_context_prompt_baseline()
             await self._activity_tracker.get_snapshot()
         except Exception as e:
-            logger.debug("[%s] 实验组活动心跳 kick 失败: %s", self.lanlan_name, e)
+            logger.debug("[%s] 活动心跳 kick 失败: %s", self.lanlan_name, e)
 
     async def start_session(self, websocket: WebSocket, new=False, input_mode='audio'):
         # 之前每次 start_session 都无脑用 get_global_language() 覆盖 user_language，
@@ -4321,9 +4324,9 @@ class LLMSessionManager:
             self.input_mode = input_mode
             self._reset_voice_echo_suppression_cache()
 
-            # A/B 实验组：拉起活动 tracker 心跳，让进游戏/娱乐/工作的情境弹窗检测得到
-            # （详见 _maybe_kick_activity_loop_for_context_prompt）。fire-and-forget，不
-            # 阻塞会话启动；隐私模式开（海外默认）时直接早退、零成本。
+            # 拉起活动 tracker 心跳，让进游戏/娱乐/工作的情境弹窗检测得到（详见
+            # _maybe_kick_activity_loop_for_context_prompt）。fire-and-forget，不阻塞会话
+            # 启动；仅在用户已显式开启 vision（隐私关）时才 kick，否则直接早退、零成本。
             self._fire_task(self._maybe_kick_activity_loop_for_context_prompt())
         
             # 立即通知前端系统正在准备（静默期开始）
