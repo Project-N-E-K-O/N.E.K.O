@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 import importlib.util
 import json
 import pathlib
@@ -17,7 +18,16 @@ import yaml
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 RAPIDOCR_PILLOW_ROOT = ROOT / "deps" / "rapidocr_pillow"
 
-sys.path.insert(0, str(RAPIDOCR_PILLOW_ROOT))
+
+@pytest.fixture(autouse=True, scope="module")
+def _rapidocr_pillow_path() -> Iterator[None]:
+    original_sys_path = list(sys.path)
+    rapidocr_pillow_path = str(RAPIDOCR_PILLOW_ROOT)
+    sys.path.insert(0, rapidocr_pillow_path)
+    try:
+        yield
+    finally:
+        sys.path[:] = original_sys_path
 
 
 def _load_verifier():
@@ -87,18 +97,20 @@ def test_uv_lock_uses_rapidocr_pillow_without_opencv_or_shapely() -> None:
 def test_rapidocr_pillow_source_has_no_removed_dependency_imports() -> None:
     source_root = ROOT / "deps" / "rapidocr_pillow" / "rapidocr_onnxruntime"
     py_files = list(source_root.rglob("*.py"))
+    removed_dependency_imports = re.compile(
+        r"^\s*(?:from\s+(?:cv2|shapely|six|tqdm)\b|import\s+(?:cv2|shapely|six|tqdm)\b)",
+        re.M,
+    )
 
     assert py_files
 
-    offenders = []
+    offenders: set[str] = set()
     for py_file in py_files:
         source = py_file.read_text(encoding="utf-8")
-        if "import cv2" in source or "cv2." in source or "shapely" in source:
-            offenders.append(py_file.relative_to(ROOT).as_posix())
-        if re.search(r"^\s*(?:from\s+(?:six|tqdm)\b|import\s+(?:six|tqdm)\b)", source, re.M):
-            offenders.append(py_file.relative_to(ROOT).as_posix())
+        if removed_dependency_imports.search(source):
+            offenders.add(py_file.relative_to(ROOT).as_posix())
 
-    assert offenders == []
+    assert sorted(offenders) == []
 
 
 def test_pillow_cv_geometry_helpers_cover_shapely_and_perspective_replacements() -> None:
