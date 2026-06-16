@@ -5399,6 +5399,11 @@ async def voice_clone(
         logger.info(f"{provider_label} voice_id 已保存到音色库: {voice_id}")
     except Exception as save_error:
         logger.error(f"保存 {provider_label} voice_id 到音色库失败: {save_error}")
+        # MiMo 在元数据保存前已把参考样本落盘（其它 provider 无本地文件）；元数据保存失败时
+        # voice_storage.json 不会有指向它的条目，删除流程也找不到它——这里顺手清掉孤儿样本。
+        orphan_sample = voice_data.get('clone_sample_file') if isinstance(voice_data, dict) else None
+        if orphan_sample:
+            _config_manager.delete_voice_clone_sample(orphan_sample)
         return JSONResponse({
             'voice_id': voice_id,
             'message': f'{provider_label}音色注册成功，但本地保存失败',
