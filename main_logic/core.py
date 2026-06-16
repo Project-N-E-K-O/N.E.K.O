@@ -7966,7 +7966,9 @@ class LLMSessionManager:
                             await self.session.stream_image(image_b64)
                             image_message = {
                                 "input_type": input_type,
-                                "data": f"data:image/jpeg;base64,{image_b64}",
+                                "data": "",
+                                "has_image": True,
+                                "mime_type": "image/jpeg",
                             }
                             if message.get("request_id"):
                                 image_message["request_id"] = message.get("request_id")

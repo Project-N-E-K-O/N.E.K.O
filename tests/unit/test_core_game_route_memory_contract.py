@@ -635,7 +635,9 @@ async def test_text_mode_image_input_is_mirrored_to_analyzer_queue(monkeypatch):
         "type": "user",
         "data": {
             "input_type": "screen",
-            "data": "data:image/jpeg;base64,img-b64",
+            "data": "",
+            "has_image": True,
+            "mime_type": "image/jpeg",
         },
     }]
 
