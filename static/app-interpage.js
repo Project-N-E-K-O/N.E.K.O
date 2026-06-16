@@ -2359,9 +2359,21 @@
                         applyYuiGuideChatLockState(event.data.disabled !== false);
                         break;
                     }
+                    case 'yui_guide_set_chat_input_locked': {
+                        if (!isStandaloneChatPage() || !document.body) break;
+                        applyYuiGuideChatInputLocked(event.data.locked === true, event.data.reason || '');
+                        break;
+                    }
                     case 'yui_guide_set_chat_spotlight': {
                         if (!isStandaloneChatPage() || !document.body) break;
                         applyYuiGuideChatSpotlight(event.data.kind || '');
+                        break;
+                    }
+                    case 'yui_guide_set_chat_cursor':
+                    case 'yui_guide_drag_chat_cursor':
+                    case 'yui_guide_arc_chat_cursor': {
+                        if (!isStandaloneChatPage() || !document.body) break;
+                        relayYuiGuideChatCommand(event.data);
                         break;
                     }
                     case 'yui_guide_set_avatar_tool_menu_open': {
@@ -2548,6 +2560,23 @@
         return window.reactChatWindowHost && typeof window.reactChatWindowHost === 'object'
             ? window.reactChatWindowHost
             : null;
+    }
+
+    function relayYuiGuideChatCommand(message) {
+        var detail = Object.assign({}, message || {});
+        try {
+            window.dispatchEvent(new CustomEvent('neko:tutorial-overlay-relay', { detail: detail }));
+        } catch (_) {}
+        try {
+            window.postMessage({ __nekoTutorialOverlayRelay: true, payload: detail }, '*');
+        } catch (_) {}
+    }
+
+    function applyYuiGuideChatInputLocked(locked, reason) {
+        var host = getReactChatWindowHost();
+        if (host && typeof host.setHomeTutorialInputLocked === 'function') {
+            host.setHomeTutorialInputLocked(locked === true, reason || 'external-yui-guide');
+        }
     }
 
     function applyYuiGuideAvatarToolMenuOpen(open, reason) {
