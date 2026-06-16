@@ -3859,6 +3859,12 @@ function CompactChatApp({
     });
   }, [closeCompactInputToolFan]);
 
+  const clearActiveCursorToolAndCloseCompactFan = useCallback(() => {
+    setIsCursorInsideHostWindow(true);
+    clearActiveCursorToolSelection();
+    closeCompactInputToolFanFromUserClick();
+  }, [clearActiveCursorToolSelection, closeCompactInputToolFanFromUserClick]);
+
   const closeCompactInputToolFanFromDesktopOutside = useCallback(() => {
     resetCompactInputToolFanHoverBlock();
     scheduleCompactInputToolFanTransientClose({
@@ -5834,6 +5840,11 @@ function CompactChatApp({
               event.stopPropagation();
               return;
             }
+            if (activeToolItem) {
+              event.stopPropagation();
+              clearActiveCursorToolAndCloseCompactFan();
+              return;
+            }
             compactInputToolFanOpenIntentRef.current = 'click';
             clearCompactInputToolFanCloseTimer();
             setToolMenuOpen(open => !open);
@@ -5861,9 +5872,7 @@ function CompactChatApp({
                 return;
               }
               event.stopPropagation();
-              setIsCursorInsideHostWindow(true);
-              clearActiveCursorToolSelection();
-              closeCompactInputToolFanFromUserClick();
+              clearActiveCursorToolAndCloseCompactFan();
             }}
           >
             <span className="composer-tool-clear-icon" aria-hidden="true" />
