@@ -22,7 +22,7 @@ router = APIRouter(prefix="/api/avatar-drop", tags=["avatar-drop"])
 
 
 def _safe_filename(value: str) -> str:
-    name = re.sub(r"[\x00-\x1f\x7f<>]+", "", str(value or "")).strip()
+    name = re.sub(r"[\x00-\x1f\x7f-\x9f<>]+", "", str(value or "")).strip()
     name = re.sub(r"\s+", " ", name)
     if not name:
         return "document"
@@ -65,8 +65,6 @@ async def parse_avatar_drop_document(file: UploadFile = File(...)):
 
     document_type = parsed["document_type"]
     content = parsed["content"]
-    if parsed.get("truncated"):
-        content += "\n\n[内容已按长度限制截断]"
 
     return {
         "ok": True,

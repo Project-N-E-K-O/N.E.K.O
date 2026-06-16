@@ -177,6 +177,16 @@ def _make_manager():
     return mgr
 
 
+@pytest.mark.unit
+def test_clean_frontend_memory_text_strips_c0_and_c1_controls():
+    mgr = _make_manager()
+
+    assert core_module.LLMSessionManager._clean_frontend_memory_text(
+        mgr,
+        " hello\x00 \x85world\x9f ",
+    ) == "hello world"
+
+
 def _make_transcript_manager():
     mgr = _make_manager()
     mgr.session = object()

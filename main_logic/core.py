@@ -2146,7 +2146,7 @@ class LLMSessionManager:
     def _clean_frontend_memory_text(self, value: Any) -> str:
         if not isinstance(value, str):
             return ""
-        cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]+", "", value)
+        cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]+", "", value)
         cleaned = re.sub(r"\s+", " ", cleaned).strip()
         if not cleaned:
             return ""

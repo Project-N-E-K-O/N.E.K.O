@@ -238,10 +238,11 @@ def test_avatar_drop_image_and_memory_override_are_routed_as_text_session_inputs
     assert "history_replacement_text: str | None = None" in offline_source
     assert "self._conversation_history[history_replacement_index] = HumanMessage" in offline_source
     assert "transcript_callback = input_transcript_callback or self.on_input_transcript" in offline_source
-    assert "input_type in ['audio', 'screen', 'camera', 'text', 'avatar_drop_image', 'user_image']" in websocket_source
-    assert "text_input_types = ['text', 'avatar_drop_image', 'user_image']" in websocket_source
-    assert "if input_type in text_input_types:" in websocket_source
-    assert "mode = 'text' if input_type in text_input_types else 'audio'" in websocket_source
+    assert '_SESSION_INPUT_TYPES = frozenset({"audio", "screen", "camera", "text", "avatar_drop_image", "user_image"})' in websocket_source
+    assert '_TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"})' in websocket_source
+    assert '_ORDERED_STREAM_INPUT_TYPES = frozenset({"audio", "avatar_drop_image", "user_image"})' in websocket_source
+    assert "input_type in _SESSION_INPUT_TYPES" in websocket_source
+    assert "if input_type in _TEXT_SESSION_INPUT_TYPES:" in websocket_source
+    assert "mode = 'text' if input_type in _TEXT_SESSION_INPUT_TYPES else 'audio'" in websocket_source
     assert 'elif action == "stream_data":\n                input_type = message.get("input_type")' in websocket_source
-    assert 'ordered_stream_input_types = {"audio", "avatar_drop_image", "user_image"}' in websocket_source
-    assert "if input_type in ordered_stream_input_types:" in websocket_source
+    assert "if input_type in _ORDERED_STREAM_INPUT_TYPES:" in websocket_source

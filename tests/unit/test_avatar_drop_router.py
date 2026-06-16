@@ -92,6 +92,54 @@ def test_parse_document_endpoint_preserves_extension_after_filename_truncation()
 
 
 @pytest.mark.unit
+def test_parse_document_endpoint_keeps_truncated_content_locale_neutral(monkeypatch):
+    def fake_parse_document(filename, content_type, data):
+        return {
+            "document_type": "docx",
+            "content": "Truncated hello",
+            "truncated": True,
+            "meta": {},
+        }
+
+    monkeypatch.setattr(avatar_drop_router, "parse_document", fake_parse_document)
+
+    response = _client().post(
+        "/api/avatar-drop/parse-document",
+        files={
+            "file": (
+                "truncated.docx",
+                _docx_bytes("Ignored"),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    item = response.json()["item"]
+    assert item["truncated"] is True
+    assert item["content"] == "Truncated hello"
+    assert "内容已按长度限制截断" not in item["content"]
+    assert item["chars"] == len("Truncated hello")
+
+
+@pytest.mark.unit
+def test_parse_document_endpoint_strips_c1_controls_from_filename():
+    response = _client().post(
+        "/api/avatar-drop/parse-document",
+        files={
+            "file": (
+                "bad\x85name.docx",
+                _docx_bytes("Filename hello"),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["item"]["name"] == "badname.docx"
+
+
+@pytest.mark.unit
 def test_parse_document_endpoint_surfaces_parser_error_code():
     response = _client().post(
         "/api/avatar-drop/parse-document",
