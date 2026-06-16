@@ -16,7 +16,7 @@ const HOME_TUTORIAL_RESET_EVENT = 'neko:home-tutorial-reset';
 const HOME_TUTORIAL_RESET_STORAGE_EVENT_KEY = 'neko_home_tutorial_reset_event';
 const HOME_TUTORIAL_RESET_CHANNEL = 'neko_tutorial_events';
 const AVATAR_FLOATING_GUIDE_STORAGE_KEY = 'neko_avatar_floating_guide_v1';
-const AVATAR_FLOATING_GUIDE_ROUND_COUNT = 7;
+const AVATAR_FLOATING_GUIDE_ROUND_COUNT = 6;
 const YUI_GUIDE_CHAT_BRIDGE_QUEUE_KEY = 'neko_yui_guide_chat_bridge_queue_v1';
 
 function getTutorialStorageKeyForPage(pageKey) {
