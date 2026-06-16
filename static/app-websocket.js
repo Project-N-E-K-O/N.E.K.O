@@ -610,11 +610,12 @@
     }
 
     function isNewUserIcebreakerPeriodActive() {
-        if (!window.newUserIcebreaker || typeof window.newUserIcebreaker.getActiveSession !== 'function') {
-            return false;
-        }
         try {
-            if (window.newUserIcebreaker.getActiveSession()) return true;
+            if (window.newUserIcebreaker
+                && typeof window.newUserIcebreaker.getActiveSession === 'function'
+                && window.newUserIcebreaker.getActiveSession()) {
+                return true;
+            }
         } catch (_) {}
 
         var store = readNewUserIcebreakerStore();
@@ -630,17 +631,8 @@
         return false;
     }
 
-    function isNewUserIcebreakerBlockingGreeting(reason) {
-        if (!window.newUserIcebreaker || typeof window.newUserIcebreaker.getActiveSession !== 'function') {
-            return false;
-        }
-        if (isNewUserIcebreakerPeriodActive()) return true;
-        var normalizedReason = String(reason || S._greetingCheckReason || '').trim().toLowerCase();
-        if ((normalizedReason === 'tutorial-completed' || normalizedReason === 'tutorial-skipped')
-            && !hasCompletedNewUserIcebreaker()) {
-            return true;
-        }
-        return false;
+    function isNewUserIcebreakerBlockingGreeting() {
+        return isNewUserIcebreakerPeriodActive();
     }
 
     function sendHomeTutorialState(reason) {
@@ -3409,9 +3401,10 @@
 
     window.addEventListener('neko:home-tutorial-features-suppressed', function (event) {
         var detail = event && event.detail ? event.detail : {};
-        var reason = detail.reason || (detail.active === false ? 'features-restored' : 'features-suppressed');
-        if (detail.active === false && reason) {
-            S._greetingCheckReason = reason;
+        var explicitReason = detail.reason ? String(detail.reason) : '';
+        var reason = explicitReason || (detail.active === false ? 'features-restored' : 'features-suppressed');
+        if (explicitReason) {
+            S._greetingCheckReason = explicitReason;
         }
         sendHomeTutorialState(reason);
         if (detail.active === false) {
