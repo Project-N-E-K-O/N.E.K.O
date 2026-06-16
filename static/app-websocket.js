@@ -1989,6 +1989,9 @@
                     }
 
                     var isGoodbyeActive = (window.live2dManager && window.live2dManager._goodbyeClicked) || (window.vrmManager && window.vrmManager._goodbyeClicked) || (window.mmdManager && window.mmdManager._goodbyeClicked);
+                    if (statusCode === 'CHARACTER_LEFT') {
+                        window.dispatchEvent(new CustomEvent('neko:character-left', { detail: response }));
+                    }
                     if ((S.isSwitchingMode || isGoodbyeActive || S._suppressCharacterLeft) && (statusCode === 'CHARACTER_LEFT' || response.message.includes('已离开'))) {
                         S._suppressCharacterLeft = false;
                         console.log(window.t('console.modeSwitchingIgnoreLeft'));
@@ -2708,6 +2711,7 @@
                 // -------- session_ended_by_server --------
                 } else if (response.type === 'session_ended_by_server') {
                     console.log('[App] Session ended by server, input_mode:', response.input_mode);
+                    window.dispatchEvent(new CustomEvent('neko:session-ended-by-server', { detail: response }));
                     S.isTextSessionActive = false;
                     S.voiceChatActive = false;
                     S.voiceStartPending = false;

@@ -109,6 +109,8 @@ from main_logic.mirror_meta import (
     is_mirror_turn_end_meta,
 )
 
+_USER_IMAGE_INPUT_TYPES = frozenset({"screen", "camera", "avatar_drop_image", "user_image"})
+
 
 def merge_unsynced_tail_assistants(chat_history, last_synced_index):
     """Merge the trailing run of consecutive assistant messages after last_synced_index into one.
@@ -207,7 +209,10 @@ def _should_persist_avatar_interaction_memory(
 def _normalize_pending_user_attachments(pending_user_images: list) -> list[dict]:
     attachments = []
     for raw in pending_user_images or []:
-        url = str(raw or "").strip()
+        if isinstance(raw, dict):
+            url = str(raw.get("data") or raw.get("url") or "").strip()
+        else:
+            url = str(raw or "").strip()
         if not url:
             continue
         attachments.append({
@@ -215,6 +220,85 @@ def _normalize_pending_user_attachments(pending_user_images: list) -> list[dict]
             "url": url,
         })
     return attachments
+
+
+def _append_pending_user_image(
+    pending_user_images: list,
+    data: object,
+    request_id: object,
+    input_type: object = None,
+) -> bool:
+    """Append a real user image entry and return whether one was queued.
+
+    Empty data means the caller only sent metadata, so the placeholder is skipped.
+    """
+    image_data = str(data or "").strip()
+    if not image_data:
+        return False
+    entry = {
+        "data": image_data,
+        "request_id": request_id or "",
+    }
+    if input_type:
+        entry["input_type"] = input_type
+    pending_user_images.append(entry)
+    if len(pending_user_images) > PENDING_USER_IMAGES_MAX:
+        del pending_user_images[:-PENDING_USER_IMAGES_MAX]
+    return True
+
+
+def _select_pending_user_images_for_turn(pending_user_images: list, request_id: object) -> list:
+    turn_request_id = str(request_id or "")
+    selected = []
+    for raw in pending_user_images or []:
+        if not isinstance(raw, dict):
+            if turn_request_id:
+                continue
+            selected.append(raw)
+            continue
+        image_request_id = str(raw.get("request_id") or "")
+        if image_request_id and image_request_id != turn_request_id:
+            continue
+        selected.append(raw)
+    return selected
+
+
+def _partition_pending_user_images_for_turn(
+    pending_user_images: list,
+    request_id: object,
+    *,
+    consume_untagged: bool = True,
+) -> tuple[list, list]:
+    turn_request_id = str(request_id or "")
+    selected = []
+    remaining = []
+    for raw in pending_user_images or []:
+        if not isinstance(raw, dict):
+            if not consume_untagged:
+                remaining.append(raw)
+                continue
+            if not turn_request_id:
+                selected.append(raw)
+            continue
+        image_request_id = str(raw.get("request_id") or "")
+        if image_request_id and image_request_id != turn_request_id:
+            remaining.append(raw)
+            continue
+        if not image_request_id and not consume_untagged:
+            remaining.append(raw)
+            continue
+        selected.append(raw)
+    return selected, remaining
+
+
+def _select_pending_user_images_for_session_end(pending_user_images: list, request_id: object) -> list:
+    session_request_id = str(request_id or "")
+    if not session_request_id:
+        for raw in reversed(pending_user_images or []):
+            if isinstance(raw, dict) and str(raw.get("request_id") or ""):
+                session_request_id = str(raw.get("request_id") or "")
+                break
+    return _select_pending_user_images_for_turn(pending_user_images, session_request_id)
 
 
 def _build_recent_analyze_messages(
@@ -677,18 +761,17 @@ async def run_sync_connector(
                             if data:
                                 await _try_send_json(sync_slot, {'type': 'user_transcript', 'text': data})
                             await _try_send_json(sync_slot, {'type': 'user_activity'})
-                        elif input_type == "screen":
-                            last_screen = data
-                            if data:
-                                pending_user_images.append(data)
-                                if len(pending_user_images) > PENDING_USER_IMAGES_MAX:
-                                    del pending_user_images[:-PENDING_USER_IMAGES_MAX]
-                        elif input_type == "camera":
-                            last_screen = data
-                            if data:
-                                pending_user_images.append(data)
-                                if len(pending_user_images) > PENDING_USER_IMAGES_MAX:
-                                    del pending_user_images[:-PENDING_USER_IMAGES_MAX]
+                        elif input_type in _USER_IMAGE_INPUT_TYPES:
+                            if input_type in {"screen", "camera"}:
+                                last_screen = data
+                            appended_image = _append_pending_user_image(
+                                pending_user_images,
+                                data,
+                                message["data"].get("request_id") or "",
+                                input_type,
+                            )
+                            if not appended_image and message["data"].get("has_image"):
+                                await _try_send_json(sync_slot, {'type': 'user_activity'})
 
                     elif message["type"] == "system":
                         try:
@@ -773,6 +856,7 @@ async def run_sync_connector(
                                 turn_end_meta = message.get("meta") if isinstance(message, dict) else None
                                 if not isinstance(turn_end_meta, dict):
                                     turn_end_meta = None
+                                turn_request_id = message.get("request_id") if isinstance(message, dict) else None
                                 was_assistant_turn = current_turn == 'assistant'
                                 if is_mirror_turn_end_meta(turn_end_meta):
                                     # Mirror turn-end: mirror assistant messages
@@ -907,11 +991,18 @@ async def run_sync_connector(
                                 # 非阻塞地向tool_server发送最近对话，供分析器识别潜在任务。
                                 # 仅 agent-callback 专用通道会显式跳过，避免任务结果回调引发二次分析。
                                 if not shutdown_event.is_set():
+                                    selected_pending_user_images, remaining_pending_user_images = (
+                                        _partition_pending_user_images_for_turn(
+                                            pending_user_images,
+                                            turn_request_id,
+                                            consume_untagged=had_user_input_this_turn,
+                                        )
+                                    )
                                     try:
                                         # 构造最近的消息摘要，并保留本轮最近的图片附件
                                         recent = _build_recent_analyze_messages(
                                             chat_history,
-                                            pending_user_images,
+                                            selected_pending_user_images,
                                             allow_attach_to_last_user=had_user_input_this_turn,
                                         )
                                         has_user = any(m.get('role') == 'user' for m in recent)
@@ -942,7 +1033,7 @@ async def run_sync_connector(
                                     except Exception as e:
                                         logger.debug(f"[{lanlan_name}] 发送到analyzer失败: {e}")
                                     finally:
-                                        pending_user_images = []
+                                        pending_user_images = remaining_pending_user_images
 
                                 # Turn end 轻量缓存：仅写入 recent history，不触发 LLM 摘要/整理
                                 # 主动搭话不写缓存——等用户回应后随下一轮正常 turn 一起入库
@@ -1007,7 +1098,10 @@ async def run_sync_connector(
                                         # 构造最近的消息摘要，并保留本轮最近的图片附件
                                         recent = _build_recent_analyze_messages(
                                             chat_history,
-                                            pending_user_images,
+                                            _select_pending_user_images_for_session_end(
+                                                pending_user_images,
+                                                message.get("request_id"),
+                                            ),
                                             allow_attach_to_last_user=had_user_input_this_turn,
                                         )
                                         has_user = any(m.get('role') == 'user' for m in recent)

@@ -64,6 +64,22 @@ from typing import Any, Awaitable, Callable, Optional
 
 logger = logging.getLogger("main_logic.proactive_delivery")
 
+DELIVERY_ACK_FUTURE_KEY = "_proactive_delivery_ack_future"
+DELIVERY_RETRACTED_KEY = "_proactive_delivery_retracted"
+
+
+def resolve_callback_delivery_ack(callback: dict, delivered: bool) -> None:
+    """Resolve an optional in-memory delivery acknowledgement future."""
+    future = callback.get(DELIVERY_ACK_FUTURE_KEY)
+    if future is None:
+        return
+    try:
+        if not future.done():
+            future.set_result(bool(delivered))
+    except Exception:
+        logger.debug("delivery ack future resolution failed", exc_info=True)
+
+
 def effective_priority(raw: Any) -> int:
     # Repo-wide convention (the "greatest common denominator" of existing
     # producers): HIGHER number = more important. Matches every current
@@ -191,6 +207,8 @@ class ProactiveDeliveryManager:
             dropped = [c for c in self._queue if c.coalesce_key == key]
             if dropped:
                 self._queue = [c for c in self._queue if c.coalesce_key != key]
+                for cue in dropped:
+                    resolve_callback_delivery_ack(cue.callback, False)
                 logger.debug(
                     "[proactive%s] coalesced %d queued cue(s) on key=%r",
                     self._suffix(), len(dropped), key,
@@ -203,6 +221,28 @@ class ProactiveDeliveryManager:
             self._suffix(), key, eff, len(self._queue),
         )
         self._schedule_pump(0.0)
+
+    def retract(self, callback: dict) -> bool:
+        """Remove a not-yet-released callback from the manager queue."""
+        callback[DELIVERY_RETRACTED_KEY] = True
+        delivery_id = callback.get("_callback_delivery_id")
+        callback_obj_id = id(callback)
+        remaining: list[_QueuedCue] = []
+        removed = False
+        for cue in self._queue:
+            queued = cue.callback
+            same_callback = id(queued) == callback_obj_id
+            same_delivery = (
+                bool(delivery_id)
+                and queued.get("_callback_delivery_id") == delivery_id
+            )
+            if same_callback or same_delivery:
+                removed = True
+                resolve_callback_delivery_ack(queued, False)
+                continue
+            remaining.append(cue)
+        self._queue = remaining
+        return removed
 
     # ── lifecycle signals (from LifecycleEventBus) ───────────────────────
     def on_playback_start(self, **_: Any) -> None:
@@ -272,6 +312,7 @@ class ProactiveDeliveryManager:
         fresh: list[_QueuedCue] = []
         for c in self._queue:
             if now - c.submitted_at > self._ttl_s:
+                resolve_callback_delivery_ack(c.callback, False)
                 logger.info(
                     "[proactive%s] dropping stale cue key=%r age=%.1fs (ttl=%.0fs)",
                     self._suffix(), c.coalesce_key, now - c.submitted_at, self._ttl_s,
@@ -279,6 +320,19 @@ class ProactiveDeliveryManager:
             else:
                 fresh.append(c)
         self._queue = fresh
+
+    def release_inflight_noop(self) -> None:
+        """Free the inflight slot for a release that delivered nothing.
+
+        ``_pump`` arms ``_inflight`` before invoking ``deliver``, expecting a
+        playback/text lifecycle signal (or the inflight timeout) to clear it.
+        When a released batch delivers nothing — e.g. every cue is dropped at a
+        release-time gate — no such signal arrives, so the slot would stay
+        armed for the whole timeout window and hold back the next cue. The
+        deliver callback calls this to release the slot immediately and re-pump.
+        """
+        self._inflight = False
+        self._schedule_pump(0.0)
 
     def _pump(self) -> None:
         self._pump_handle = None
@@ -353,9 +407,16 @@ class ProactiveDeliveryManager:
         self._schedule_pump(self._inflight_timeout_s)
 
     async def _run_deliver(self, callbacks: list[dict]) -> None:
+        callbacks = [cb for cb in callbacks if not cb.get(DELIVERY_RETRACTED_KEY)]
+        if not callbacks:
+            self._inflight = False
+            self._schedule_pump(0.0)
+            return
         try:
             await self._deliver(callbacks)
         except Exception:
+            for callback in callbacks:
+                resolve_callback_delivery_ack(callback, False)
             logger.exception("[proactive%s] deliver failed", self._suffix())
             # Free the slot so the queue isn't wedged on a failed hand-off.
             self._inflight = False

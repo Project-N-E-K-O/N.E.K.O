@@ -67,6 +67,7 @@ _AGENT_OFF_FLAGS = {
     "browser_use_enabled": False,
     "user_plugin_enabled": False,
     "openclaw_enabled": False,
+    "openclaw_ready": False,
     "openfang_enabled": False,
 }
 
@@ -358,12 +359,16 @@ async def post_agent_command(request: Request):
                     "browser_use_enabled": False,
                     "user_plugin_enabled": False,
                     "openclaw_enabled": False,
+                    "openclaw_ready": False,
                     "openfang_enabled": False,
                 })
         elif mgr and command == "set_flag":
             key = data.get("key")
             if key in {"computer_use_enabled", "browser_use_enabled", "user_plugin_enabled", "openclaw_enabled", "openfang_enabled"}:
-                mgr.update_agent_flags({key: bool(data.get("value"))})
+                flag_update = {key: bool(data.get("value"))}
+                if key == "openclaw_enabled":
+                    flag_update["openclaw_ready"] = False
+                mgr.update_agent_flags(flag_update)
 
         t_proxy = time.perf_counter()
         client = _get_http_client()

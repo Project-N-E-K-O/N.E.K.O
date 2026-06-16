@@ -579,6 +579,9 @@ describe('App', () => {
     expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
     expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-geometry-hit-scope', 'children');
     expect(container.querySelector('.compact-export-history-anchor')).not.toHaveAttribute('data-compact-hit-region');
+    expect(container.querySelector('.compact-export-history-scroll')).toHaveAttribute('data-compact-hit-region', 'true');
+    expect(container.querySelector('.compact-export-history-scroll')).toHaveAttribute('data-compact-hit-region-id', 'history:scroll');
+    expect(container.querySelector('.compact-export-history-scroll')).toHaveAttribute('data-compact-hit-region-kind', 'scroll');
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('data-compact-hit-region', 'true');
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('data-compact-hit-region-id', 'history:message:assistant-history-1');
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('data-compact-hit-region-kind', 'message');
@@ -635,6 +638,7 @@ describe('App', () => {
       expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('aria-disabled', 'true');
       expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('tabindex', '-1');
       expect(container.querySelector('.compact-export-history-bubble')).not.toHaveAttribute('data-compact-hit-region');
+      expect(container.querySelector('.compact-export-history-scroll')).not.toHaveAttribute('data-compact-hit-region');
       expect(container.querySelector('.compact-export-history-music-mount')).toBeNull();
       expect(container.querySelector('.compact-export-history-controls')).toHaveAttribute('aria-disabled', 'true');
       expect(container.querySelector('.compact-export-history-controls')).not.toHaveAttribute('data-compact-hit-region');
@@ -3870,6 +3874,13 @@ describe('App', () => {
     const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
 
     expect(container.querySelector('[data-compact-geometry-part="inputBody"]')).not.toBeNull();
+    expect(container.querySelector('[data-compact-geometry-part="inputBody"]')).toHaveAttribute('data-compact-geometry-hit-scope', 'children');
+    expect(container.querySelector('.composer-input')).toHaveAttribute('data-compact-hit-region-id', 'input:text');
+    expect(container.querySelector('.composer-input')).toHaveAttribute('data-compact-hit-region-kind', 'input-text');
+    expect(container.querySelector('.compact-chat-minimize-ball')).toHaveAttribute('data-compact-hit-region-id', 'input:minimize');
+    expect(container.querySelector('.compact-chat-minimize-ball')).toHaveAttribute('data-compact-hit-region-kind', 'input-minimize');
+    expect(container.querySelector('.compact-input-tool-toggle')).toHaveAttribute('data-compact-hit-region-id', 'input:tool-toggle');
+    expect(container.querySelector('.compact-input-tool-toggle')).toHaveAttribute('data-compact-hit-region-kind', 'input-tool-toggle');
     expect(container.querySelector('.compact-chat-capsule-button')).toBeNull();
     expect(container.querySelector('.composer-bottom-bar')).toBeNull();
     expect(container.querySelectorAll('.send-button-circle')).toHaveLength(1);
@@ -5046,6 +5057,14 @@ describe('App', () => {
       expect(emojiButton).toHaveClass('is-active');
 
       fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
+
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+      expect(fan.querySelector('#composer-tool-popover-compact')).toBeNull();
+
+      fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(240);
+      });
 
       expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
       expect(avatarTool).toHaveAttribute('data-compact-tool-active', 'true');
@@ -6985,7 +7004,7 @@ describe('App', () => {
     }
   });
 
-  it('keeps the lollipop avatar-range image through transient avatar bounds loss', async () => {
+  it('keeps the lollipop desktop cursor image stable across avatar range changes', async () => {
     vi.useFakeTimers();
     const live2dContainer = document.createElement('div');
     live2dContainer.id = 'live2d-container';
@@ -7028,7 +7047,7 @@ describe('App', () => {
       });
 
       const avatarImage = () => document.body.querySelector('.avatar-cursor-overlay-image-lollipop');
-      expect(avatarImage()).toHaveAttribute('src', '/static/icons/chat_sugar1.png');
+      expect(avatarImage()).toHaveAttribute('src', '/static/icons/chat_sugar1_cursor.png');
 
       boundsAvailable = false;
       fireEvent.pointerMove(window, { clientX: 150, clientY: 150 });
@@ -7037,7 +7056,7 @@ describe('App', () => {
         await vi.advanceTimersByTimeAsync(90);
       });
 
-      expect(avatarImage()).toHaveAttribute('src', '/static/icons/chat_sugar1.png');
+      expect(avatarImage()).toHaveAttribute('src', '/static/icons/chat_sugar1_cursor.png');
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(200);
@@ -7183,6 +7202,20 @@ describe('App', () => {
     expect(lollipopButton).toHaveAttribute('aria-pressed', 'false');
   });
 
+  it('closes the transparent compact tool fan after selecting an avatar cursor tool', async () => {
+    renderInputApp();
+
+    await openCompactInputTools();
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+    fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
+
+    const fan = document.body.querySelector<HTMLElement>('.compact-input-tool-fan');
+    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+    expect(fan).toHaveAttribute('aria-hidden', 'true');
+    expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+    expect(queryAvatarCursorOverlay()).not.toBeNull();
+  });
+
   it('disables avatar sub-actions when the avatar wheel slot is not actionable', async () => {
     const { container } = renderInputApp();
 
@@ -7244,11 +7277,16 @@ describe('App', () => {
       active: true,
       toolId: 'hammer',
       variant: 'primary',
+      imageKind: 'cursor',
       tool: expect.objectContaining({
         id: 'hammer',
         cursorImagePath: '/static/icons/chat_hammer1_cursor.png',
         cursorHotspotX: 50,
         cursorHotspotY: 54,
+        cursorNaturalWidth: 100,
+        cursorNaturalHeight: 96,
+        cursorDisplayWidth: 100,
+        cursorDisplayHeight: 96,
       }),
     }));
   });
@@ -7265,7 +7303,25 @@ describe('App', () => {
 
     const overlay = queryAvatarCursorOverlay();
     expect(overlay).not.toBeNull();
-    expect((overlay as HTMLDivElement).style.transform).toBe('translate3d(201px, 274px, 0)');
+    expect((overlay as HTMLDivElement).style.transform).toBe('translate3d(218.16px, 294.24px, 0)');
+  });
+
+  it('moves the desktop cursor overlay synchronously with pointer movement', async () => {
+    renderInputApp();
+
+    await openCompactInputTools();
+    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    fireEvent.click(screen.getByRole('button', { name: '猫爪' }), {
+      clientX: 240,
+      clientY: 320,
+    });
+
+    const overlay = queryAvatarCursorOverlay();
+    expect(overlay).not.toBeNull();
+
+    fireEvent.pointerMove(window, { clientX: 420, clientY: 360 });
+
+    expect((overlay as HTMLDivElement).style.transform).toBe('translate3d(398.16px, 334.24px, 0)');
   });
 
   it('clears the tool cursor when the composer is hidden for voice mode', async () => {

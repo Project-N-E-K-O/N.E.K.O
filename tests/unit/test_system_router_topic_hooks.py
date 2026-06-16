@@ -1,0 +1,104 @@
+from pathlib import Path
+from types import SimpleNamespace
+
+import main_routers.system_router as system_router
+from main_routers.system_router import (
+    _allow_open_threads_for_topic_hooks,
+    _render_followup_topic_hooks,
+    _resolve_topic_hook_locale,
+)
+
+
+def test_topic_hooks_open_threads_respect_restricted_screen_only():
+    restricted = SimpleNamespace(propensity="restricted_screen_only", unfinished_thread=None)
+    restricted_with_thread = SimpleNamespace(
+        propensity="restricted_screen_only",
+        unfinished_thread={"text": "刚才没聊完的问题"},
+    )
+    normal = SimpleNamespace(propensity="open", unfinished_thread=None)
+
+    assert _allow_open_threads_for_topic_hooks(None) is True
+    assert _allow_open_threads_for_topic_hooks(normal) is True
+    assert _allow_open_threads_for_topic_hooks(restricted) is False
+    assert _allow_open_threads_for_topic_hooks(restricted_with_thread) is True
+
+
+def test_followup_surfaced_ids_are_limited_to_rendered_topics():
+    topics = [
+        {
+            "id": f"reflection-{idx}",
+            "text": f"follow-up memory {idx}",
+        }
+        for idx in range(4)
+    ]
+
+    prompt, surfaced_ids = _render_followup_topic_hooks("en", topics)
+
+    assert "follow-up memory 0" in prompt
+    assert "follow-up memory 1" in prompt
+    assert "follow-up memory 2" in prompt
+    assert "follow-up memory 3" not in prompt
+    assert surfaced_ids == [
+        "reflection-0",
+        "reflection-1",
+        "reflection-2",
+    ]
+
+
+def test_followup_surfaced_ids_skip_blank_and_duplicate_within_first_three():
+    # A blank or duplicate followup inside the first three is dropped by the
+    # prompt's dedup filter, so its id must NOT be reported as surfaced (else
+    # /record_surfaced cools down a reflection the model never saw).
+    topics = [
+        {"id": "rendered-a", "text": "follow-up alpha"},
+        {"id": "blank", "text": "   "},
+        {"id": "dup", "text": "follow-up alpha"},
+        {"id": "rendered-b", "text": "follow-up beta"},
+    ]
+
+    prompt, surfaced_ids = _render_followup_topic_hooks("en", topics)
+
+    assert "follow-up alpha" in prompt
+    # "beta" is the 4th topic and never reaches the rendered [:3] slice.
+    assert "follow-up beta" not in prompt
+    assert surfaced_ids == ["rendered-a"]
+
+
+def test_topic_hook_locale_preserves_traditional_chinese_request_language():
+    mgr = SimpleNamespace(user_language="zh-CN")
+
+    topic_hook_lang = _resolve_topic_hook_locale(
+        {"language": "zh-TW"},
+        mgr,
+        fallback="zh",
+    )
+    prompt, _surfaced_ids = _render_followup_topic_hooks(
+        topic_hook_lang,
+        [{"id": "reflection-tw", "text": "最近想用繁體中文聊城市流行"}],
+    )
+
+    assert topic_hook_lang == "zh-TW"
+    assert "低頻深話題候選" in prompt
+    assert "低频深话题候选" not in prompt
+
+
+def test_topic_hook_locale_falls_back_to_full_global_language(monkeypatch):
+    mgr = SimpleNamespace(user_language=None)
+    monkeypatch.setattr(system_router, "get_global_language_full", lambda: "zh-TW", raising=False)
+
+    topic_hook_lang = _resolve_topic_hook_locale({}, mgr, fallback="zh")
+    prompt, _surfaced_ids = _render_followup_topic_hooks(
+        topic_hook_lang,
+        [{"id": "reflection-global-tw", "text": "最近想用繁體中文聊城市流行"}],
+    )
+
+    assert topic_hook_lang == "zh-TW"
+    assert "低頻深話題候選" in prompt
+    assert "低频深话题候选" not in prompt
+
+
+def test_open_threads_compute_uses_topic_hook_locale():
+    source = Path(system_router.__file__).read_text(encoding="utf-8")
+
+    assert "topic_hook_lang = _resolve_topic_hook_locale(data, mgr, fallback=proactive_lang)" in source
+    assert "kickoff_open_threads_compute(lang=topic_hook_lang)" in source

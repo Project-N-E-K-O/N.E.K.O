@@ -68,6 +68,7 @@ from utils.activity_config import get_activity_preferences
 
 logger = logging.getLogger(__name__)
 
+
 # Conversation buffers: small enough to keep prompt sizes tight, large
 # enough to give the emotion-tier LLM real recent context.
 _CONV_BUFFER_MAXLEN = 12
@@ -360,7 +361,8 @@ class UserActivityTracker:
         # 旧数据被 enrichment LLM 二次曝光。state machine 的时间戳还要更新
         # （下游 idle / focused_work 判定依赖），文本扔了即可。
         if text and not _privacy_mode_active():
-            self._user_msg_buffer.append((ts, text.strip()[:1000]))
+            cleaned = text.strip()[:1000]
+            self._user_msg_buffer.append((ts, cleaned))
 
     def on_ai_message(self, *, text: str | None = None, now: float | None = None) -> None:
         """Stamp an "AI just spoke" event.
@@ -378,7 +380,8 @@ class UserActivityTracker:
         ts = now if now is not None else time.time()
         self._sm.update_ai_message(text=text, now=ts)
         if text and not _privacy_mode_active():
-            self._ai_msg_buffer.append((ts, text.strip()[:1000]))
+            cleaned = text.strip()[:1000]
+            self._ai_msg_buffer.append((ts, cleaned))
             # AI also opens threads (promises, abandoned mid-sentences) →
             # bump _conv_seq so kickoff_open_threads_compute will recompute.
             # Empty / no-text turns (errors / silenced) skip the bump,

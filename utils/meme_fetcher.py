@@ -69,6 +69,12 @@ except ImportError:
             logger.debug(f"获取区域设置失败: {e}")
         return False
 
+try:
+    from utils.source_locale import source_region_from_locale
+except ImportError:
+    def source_region_from_locale(source_locale: str | None) -> str | None:
+        return None
+
 # 更广泛且现代的 User-Agent 池
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -1026,22 +1032,26 @@ class FabiaoqingFetcher:
             return []
 
 
-async def fetch_meme_content(keyword: str = '', limit: int = 5) -> dict:
+async def fetch_meme_content(keyword: str = '', limit: int = 5, source_locale: str | None = None) -> dict:
     """
     High-level wrapper: search memes and return structured data plus formatted content.
     Used by the proactive-chat flow.
     Picks meme sources by user region:
     - Chinese region: prefer Chinese sites (Doutuba, Fabiaoqing)
     - non-Chinese region: use Imgflip directly
+    The source order defaults to runtime region detection. When source_locale is
+    provided, that content locale controls the source order instead.
     
     Args:
         keyword: search keyword; a random hot keyword is picked when empty
         limit: max number of results
+        source_locale: optional content/source locale. When omitted, runtime region detection is used.
     
     Returns:
         dict: contains success, data, formatted_content, raw_data, keyword_used, source, region
     """
-    china_region = is_china_region()
+    source_region = source_region_from_locale(source_locale)
+    china_region = is_china_region() if source_region is None else source_region == "china"
     
     actual_keyword = keyword
     

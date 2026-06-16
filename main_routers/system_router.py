@@ -123,7 +123,6 @@ from config.prompts.prompts_emotion import (
     get_heuristic_contrast_conjunctions_flat,
     get_emotion_label_aliases_flat,
 )
-from config.prompts.prompts_memory import PROACTIVE_FOLLOWUP_HEADER
 from config.prompts.prompts_directives import render_regen_avoid_instruction, render_format_fix_instruction
 from config.prompts.prompts_proactive import (
     get_proactive_screen_prompt, get_proactive_generate_prompt,
@@ -157,7 +156,7 @@ from utils.screenshot_utils import (
     COMPRESS_TARGET_HEIGHT,
     COMPRESS_JPEG_QUALITY,
 )
-from utils.language_utils import detect_language, translate_text, normalize_language_code, get_global_language, is_supported_language_code
+from utils.language_utils import detect_language, translate_text, normalize_language_code, get_global_language, get_global_language_full, is_supported_language_code
 from utils.web_scraper import (
     fetch_trending_content, format_trending_content,
     fetch_window_context_content, format_window_context_content,
@@ -1933,6 +1932,54 @@ def _record_proactive_chat(lanlan_name: str, message: str, channel: str = ''):
         pass
 
 
+def _allow_open_threads_for_topic_hooks(activity_snapshot) -> bool:
+    if activity_snapshot is None:
+        return True
+    if getattr(activity_snapshot, 'propensity', None) != 'restricted_screen_only':
+        return True
+    return getattr(activity_snapshot, 'unfinished_thread', None) is not None
+
+
+def _render_followup_topic_hooks(
+    proactive_lang: str,
+    followup_topics: list[dict[str, Any]],
+) -> tuple[str, list[Any]]:
+    """Render follow-up topic hooks and return the surfaced reflection ids.
+
+    Only reflections whose text actually survives build_topic_hook_prompt's
+    blank/duplicate filter are reported as surfaced. Otherwise a blank or
+    duplicate followup inside the first three would still be recorded via
+    /record_surfaced and pushed into cooldown even though the model never saw
+    it.
+    """
+    if not followup_topics:
+        return "", []
+
+    from main_logic.topic.common import clean_text
+    from main_logic.topic.hooks import build_topic_hook_prompt
+
+    rendered_followup_topics = followup_topics[:3]
+    prompt = build_topic_hook_prompt(
+        proactive_lang,
+        followup_topics=rendered_followup_topics,
+    )
+    if not prompt:
+        return "", []
+
+    # Mirror _iter_followup_texts: drop blanks/duplicates so the surfaced ids
+    # match exactly what the prompt rendered.
+    surfaced_reflection_ids: list[Any] = []
+    seen_texts: set[str] = set()
+    for topic in rendered_followup_topics:
+        text = clean_text(topic.get('text'))
+        if not text or text in seen_texts:
+            continue
+        seen_texts.add(text)
+        if topic.get('id'):
+            surfaced_reflection_ids.append(topic['id'])
+    return prompt, surfaced_reflection_ids
+
+
 # ---------- Mini-game 邀请短路状态管理 ----------
 # 入口在 proactive_chat 内部、过完 propensity / skip_probability /
 # restricted_screen_only 几道门之后调 _maybe_deliver_mini_game_invite。命中
@@ -2323,6 +2370,24 @@ def _resolve_proactive_locale(data: dict, mgr) -> str:
         if normalized:
             return normalized
     return get_global_language() or 'en'
+
+
+def _resolve_topic_hook_locale(data: dict, mgr, *, fallback: str) -> str:
+    """Resolve the locale for topic-hook prompts without collapsing zh-TW."""
+    for raw_lang in (
+        data.get('language'),
+        data.get('lang'),
+        data.get('i18n_language'),
+        getattr(mgr, 'user_language', None),
+    ):
+        if raw_lang and is_supported_language_code(raw_lang):
+            normalized = normalize_language_code(raw_lang, format='full')
+            if normalized:
+                return normalized
+    global_lang = normalize_language_code(get_global_language_full(), format='full')
+    if global_lang:
+        return global_lang
+    return fallback
 
 
 async def _maybe_deliver_mini_game_invite(
@@ -5591,6 +5656,7 @@ async def proactive_chat(request: Request):
             proactive_lang = _resolve_proactive_locale(data, mgr)
         except Exception:
             proactive_lang = 'zh'
+        topic_hook_lang = _resolve_topic_hook_locale(data, mgr, fallback=proactive_lang)
         
         # ========== 3. 注入近期搭话记录 ==========
         proactive_chat_history_prompt = _format_recent_proactive_chats(lanlan_name, proactive_lang)
@@ -5599,7 +5665,7 @@ async def proactive_chat(request: Request):
         # 缓存按用户消息序号失效；没新用户发言就 no-op 直接返回。Phase 2 读
         # snapshot 时会拿到这次的结果（如果赶上了）；赶不上就用上一次的缓存。
         try:
-            mgr._activity_tracker.kickoff_open_threads_compute(lang=proactive_lang)
+            mgr._activity_tracker.kickoff_open_threads_compute(lang=topic_hook_lang)
         except Exception as _ot_err:
             logger.debug(f"[{lanlan_name}] kickoff_open_threads_compute failed: {_ot_err}")
 
@@ -5609,6 +5675,7 @@ async def proactive_chat(request: Request):
         # 用户在 gaming / focused_work 状态下不应自然回忆——会很尬。直接跳过整段
         # （也省 reflect POST 的 15s timeout 风险）。stale_returning 反而欢迎回忆。
         followup_topics_prompt = ""
+        _followup_topics = []
         _surfaced_reflection_ids = []  # 记录本次搭话提及了哪些 pending 反思
         _allow_reminiscence = (
             activity_snapshot is None
@@ -5634,11 +5701,16 @@ async def proactive_chat(request: Request):
                 if _topics_resp.status_code == 200:
                     _followup_topics = _topics_resp.json().get('topics', [])
                     if _followup_topics:
-                        followup_topics_prompt = _loc(PROACTIVE_FOLLOWUP_HEADER, proactive_lang)
-                        for topic in _followup_topics:
-                            followup_topics_prompt += f"- {topic['text']}\n"
-                            if topic.get('id'):
-                                _surfaced_reflection_ids.append(topic['id'])
+                        try:
+                            (
+                                followup_topics_prompt,
+                                _surfaced_reflection_ids,
+                            ) = _render_followup_topic_hooks(
+                                topic_hook_lang,
+                                _followup_topics,
+                            )
+                        except Exception as _followup_prompt_err:
+                            logger.debug(f"[{lanlan_name}] followup topic prompt build failed: {_followup_prompt_err}")
                         print(f"[{lanlan_name}] 回调话题候选: {len(_followup_topics)} 条")
             except Exception as e:
                 logger.debug(f"[{lanlan_name}] 回调话题获取失败（不影响主流程）: {e}")
@@ -5891,12 +5963,13 @@ async def proactive_chat(request: Request):
             if 'meme' in suppressed:
                 meme_content = None
             if 'reminiscence' in suppressed:
-                # 回忆 channel 被 throttle：清空 followup section 和 surfaced ids，
-                # Phase 2 prompt 看不到旧话题，本轮也不会调 record_surfaced。
+                # 回忆 channel 被 throttle：只清空旧 reflection。
+                # 后台深话题池走独立 one-shot 触发，不在 proactive prompt 里消费。
                 if followup_topics_prompt:
                     print(f"[{lanlan_name}] reminiscence channel suppressed by weight, dropping followup section")
-                followup_topics_prompt = ""
+                _followup_topics = []
                 _surfaced_reflection_ids = []
+                followup_topics_prompt = ""
 
             # 被剔除的 web 子通道不参与 merged_web_content（sources 已弹出，
             # 但 merged_web_content 已经构建完毕，需要重新构建）
@@ -6366,11 +6439,6 @@ async def proactive_chat(request: Request):
             track_name = current_track.get('name') or get_proactive_music_unknown_track_name(proactive_lang)
             music_playing_hint = get_proactive_music_playing_hint(track_name, master_name_current, proactive_lang)
 
-        # 静动分离：generate_prompt 作为静态 SystemMessage（可被缓存），
-        # 追加的音乐/表情包指令作为动态上下文注入 HumanMessage
-        # 使用 enriched_memory_context（含回调话题）而非原始 memory_context
-        phase2_memory_context = enriched_memory_context if followup_topics_prompt else memory_context
-
         # 把活动快照渲染成 prompt 段。snapshot 缺失时退化为空串——decision frame
         # 里的 A) 看「用户当前状态」分支会自动走到"其它状态：所有切入点都可用"。
         #
@@ -6398,7 +6466,33 @@ async def proactive_chat(request: Request):
                 display_snap = activity_snapshot
             state_section = format_activity_state_section(display_snap, proactive_lang)
         else:
+            display_snap = None
             state_section = ''
+
+        open_threads_for_topic_hooks = (
+            getattr(display_snap, 'open_threads', None)
+            if display_snap is not None and _allow_open_threads_for_topic_hooks(activity_snapshot)
+            else None
+        )
+        if open_threads_for_topic_hooks or _followup_topics:
+            try:
+                from main_logic.topic.hooks import build_topic_hook_prompt
+                refreshed_topic_hook_prompt = build_topic_hook_prompt(
+                    topic_hook_lang,
+                    followup_topics=_followup_topics if _allow_reminiscence else [],
+                    open_threads=open_threads_for_topic_hooks,
+                )
+                if refreshed_topic_hook_prompt:
+                    followup_topics_prompt = refreshed_topic_hook_prompt
+            except Exception as _topic_hook_err:
+                logger.debug(f"[{lanlan_name}] topic hook prompt build failed: {_topic_hook_err}")
+
+        # 静动分离：generate_prompt 作为静态 SystemMessage（可被缓存），
+        # 追加的音乐/表情包指令作为动态上下文注入 HumanMessage
+        # 使用 enriched_memory_context（含回调话题 / 未完线程）而非原始 memory_context
+        phase2_memory_context = memory_context
+        if followup_topics_prompt:
+            phase2_memory_context = memory_context + "\n" + followup_topics_prompt
 
         generate_prompt = get_proactive_generate_prompt(
             proactive_lang, music_playing_hint,

@@ -316,6 +316,11 @@ SOURCE_DESCRIPTORS = {
         'ja': 'ブラウザ自動化', 'ko': '브라우저 자동화', 'ru': 'автоматизации браузера',
         'es': 'automatización del navegador', 'pt': 'automação do navegador',
     },
+    'topic': {
+        'zh': '话题提示', 'en': 'topic hint',
+        'ja': '話題ヒント', 'ko': '화제 힌트', 'ru': 'подсказки темы',
+        'es': 'sugerencia de tema', 'pt': 'sugestão de tópico',
+    },
     'agent': {
         'zh': '子代理「{name}」', 'en': 'sub-agent "{name}"',
         'ja': 'サブエージェント「{name}」', 'ko': '하위 에이전트 "{name}"',

@@ -89,7 +89,9 @@ def test_tts_voice_id_not_rewritten_when_gptsovits_disabled(mock_page: Page, run
         }
     """)
 
-    assert mock_page.evaluate("document.getElementById('gptsovitsEnabled').checked") is False
+    # GSV「是否启用」迁到 ttsModelProvider 下拉后，启用状态 = 下拉是否选中 gptsovits；
+    # 这里选的是 custom，故未启用（旧的独立 #gptsovitsEnabled 开关已移除）。
+    assert mock_page.evaluate("document.getElementById('ttsModelProvider').value") == "custom"
 
     payload = mock_page.evaluate("""
         async () => {
@@ -588,6 +590,74 @@ def test_explicit_mimo_tts_provider_is_saved_for_runtime_routing(mock_page: Page
     assert payload["assistApi"] == "qwen"
     assert payload["ttsModelProvider"] == "mimo"
     assert payload["ttsProvider"] == "mimo"
+
+
+@pytest.mark.frontend
+def test_gptsovits_dropdown_shows_gsv_fields_and_saves_enabled(mock_page: Page, running_server: str):
+    """GPT-SoVITS moved to the ttsModelProvider dropdown:
+
+    - the registry-only provider 'gptsovits' shows up in the TTS dropdown (Codex #3);
+    - selecting it shows the GSV-specific fields (URL + voice grid) and hides the
+      standard url/model/key/voice fields;
+    - on save ttsModelProvider/ttsProvider=='gptsovits', gptsovitsEnabled is true
+      (dual migration signal), ttsModelUrl is the GSV URL, ttsVoiceId is the GSV
+      voice, and no __gptsovits_disabled__| placeholder is written.
+    """
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    # registry-only provider 必须进 TTS 下拉
+    mock_page.wait_for_selector("#ttsModelProvider option[value='gptsovits']", state="attached", timeout=10000)
+
+    visibility = mock_page.evaluate("""
+        () => {
+            document.getElementById('enableCustomApi').checked = true;
+            toggleCustomApi();
+
+            const ttsContent = document.getElementById('tts-model-content');
+            if (ttsContent && !ttsContent.classList.contains('expanded')) {
+                toggleModelConfig('tts');
+            }
+
+            const provider = document.getElementById('ttsModelProvider');
+            provider.value = 'gptsovits';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+
+            document.getElementById('gptsovitsApiUrl').value = 'http://127.0.0.1:9881';
+            document.getElementById('gptsovitsVoiceId').value = 'my_voice';
+
+            const std = document.getElementById('tts-standard-fields');
+            const gsv = document.getElementById('gptsovits-config-fields');
+            return {
+                stdHidden: std ? getComputedStyle(std).display === 'none' : null,
+                gsvShown: gsv ? getComputedStyle(gsv).display !== 'none' : null,
+            };
+        }
+    """)
+    assert visibility["stdHidden"] is True
+    assert visibility["gsvShown"] is True
+
+    payload = mock_page.evaluate("""
+        async () => {
+            window.__capturedSavePayload = null;
+            window.saveApiKey = async (params) => {
+                window.__capturedSavePayload = JSON.parse(JSON.stringify(params));
+            };
+            const currentApiKeyDiv = document.getElementById('current-api-key');
+            if (currentApiKeyDiv) {
+                currentApiKeyDiv.dataset.hasKey = 'false';
+            }
+            await save_button_down({ preventDefault() {} });
+            return window.__capturedSavePayload;
+        }
+    """)
+
+    assert payload["ttsModelProvider"] == "gptsovits"
+    assert payload["ttsProvider"] == "gptsovits"
+    assert payload["gptsovitsEnabled"] is True
+    assert payload["ttsModelUrl"] == "http://127.0.0.1:9881"
+    assert payload["ttsVoiceId"] == "my_voice"
+    assert not payload["ttsVoiceId"].startswith("__gptsovits_disabled__|")
 
 
 @pytest.mark.frontend
