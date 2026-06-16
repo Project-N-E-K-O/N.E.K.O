@@ -4583,10 +4583,10 @@ def _build_basketball_duel_balance_hint(event: Any) -> Dict[str, Any]:
     """Build a soft balance hint from the Basketball duel score."""
     if not isinstance(event, dict):
         return {}
-    duel = event.get("duel") if isinstance(event.get("duel"), dict) else {}
-    if not duel:
-        current_state = event.get("currentState") if isinstance(event.get("currentState"), dict) else {}
-        duel = _sanitize_basketball_duel_state(current_state.get("duel")) or {}
+    current_state = event.get("currentState") if isinstance(event.get("currentState"), dict) else {}
+    state_duel = _sanitize_basketball_duel_state(current_state.get("duel")) or {}
+    event_duel = _sanitize_basketball_duel_state(event.get("duel")) or {}
+    duel = {**state_duel, **event_duel}
     player_score = _safe_int(duel.get("player_score"), 0)
     neko_score = _safe_int(duel.get("neko_score"), 0)
     max_rounds = _safe_int(duel.get("max_rounds"), 0)

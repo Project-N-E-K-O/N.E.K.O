@@ -784,6 +784,16 @@ def test_basketball_duel_balance_hint_and_anger_cap():
     assert current_state_fallback["diff"] == 4
     assert current_state_fallback["playerMissesLeft"] == 1
 
+    merged_current_state = game_router._build_basketball_duel_balance_hint(
+        {
+            "duel": {"player_score": 4},
+            "currentState": {"duel": {"playerScore": 1, "nekoScore": 6, "playerMisses": 2, "nekoMisses": 1, "maxMisses": 3}},
+        }
+    )
+    assert merged_current_state["diff"] == 2
+    assert merged_current_state["playerMissesLeft"] == 1
+    assert merged_current_state["nekoMissesLeft"] == 2
+
     miss_elimination_ignores_round_decider = game_router._build_basketball_duel_balance_hint(
         {"duel": {"player_score": 0, "neko_score": 9, "round": 5, "max_rounds": 5, "player_misses": 1, "neko_misses": 1, "max_misses": 3}}
     )
