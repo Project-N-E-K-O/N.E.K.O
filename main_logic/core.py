@@ -822,7 +822,8 @@ class LLMSessionManager:
         self.pending_agent_callbacks: list[dict] = []
         # 新用户破冰是本地脚本，不走普通 LLM；这里暂存它的问答，
         # 让下一轮普通聊天仍能读到刚刚发生过的上下文。
-        self.pending_icebreaker_context: list[tuple[str, str]] = []
+        self.pending_icebreaker_context: list[tuple[str, str, str]] = []
+        self._icebreaker_context_request_ids: OrderedDict[str, None] = OrderedDict()
         # ── Proactive delivery front stage ───────────────────────────────
         # Generic, plugin-agnostic pacing/ordering for proactive cues
         # (push_message ai_behavior="respond" + agent task results). The
@@ -2866,12 +2867,27 @@ class LLMSessionManager:
             return False
         return True
 
-    def _queue_pending_icebreaker_context(self, role: str, text: str) -> None:
+    def _claim_icebreaker_context_request_id(self, request_id: str | None) -> bool:
+        clean_request_id = str(request_id or "").strip()
+        if not clean_request_id:
+            return True
+        seen = getattr(self, "_icebreaker_context_request_ids", None)
+        if not isinstance(seen, OrderedDict):
+            seen = OrderedDict()
+            self._icebreaker_context_request_ids = seen
+        if clean_request_id in seen:
+            return False
+        seen[clean_request_id] = None
+        while len(seen) > 200:
+            seen.popitem(last=False)
+        return True
+
+    def _queue_pending_icebreaker_context(self, role: str, text: str, request_id: str | None = "") -> None:
         pending = getattr(self, "pending_icebreaker_context", None)
         if not isinstance(pending, list):
             pending = []
             self.pending_icebreaker_context = pending
-        pending.append((role, text))
+        pending.append((role, text, str(request_id or "").strip()))
         if len(pending) > 80:
             del pending[:-80]
 
@@ -2889,7 +2905,7 @@ class LLMSessionManager:
             return True
         return False
 
-    async def _prime_icebreaker_context_to_realtime_session(self, session, role: str, text: str) -> None:
+    async def _prime_icebreaker_context_to_realtime_session(self, session, role: str, text: str, request_id: str | None = "") -> None:
         try:
             await session.prime_context(
                 self._render_icebreaker_context_for_realtime(role, text),
@@ -2902,9 +2918,9 @@ class LLMSessionManager:
                 role,
                 exc,
             )
-            self._queue_pending_icebreaker_context(role, text)
+            self._queue_pending_icebreaker_context(role, text, request_id)
 
-    def _append_icebreaker_context_to_session(self, role: str, text: str) -> bool:
+    def _append_icebreaker_context_to_session(self, role: str, text: str, request_id: str | None = "") -> bool:
         session = getattr(self, "session", None)
         history = getattr(session, "_conversation_history", None)
         if not isinstance(history, list):
@@ -2912,17 +2928,19 @@ class LLMSessionManager:
             if not callable(prime_context):
                 return False
             try:
-                self._fire_task(self._prime_icebreaker_context_to_realtime_session(session, role, text))
+                self._fire_task(self._prime_icebreaker_context_to_realtime_session(session, role, text, request_id))
             except RuntimeError:
                 return False
             return True
         return self._append_icebreaker_context_to_history(history, role, text)
 
-    async def append_icebreaker_context_async(self, role: str, text: str) -> bool:
+    async def append_icebreaker_context_async(self, role: str, text: str, request_id: str | None = "") -> bool:
         clean_role = str(role or "").strip()
         clean_text = str(text or "").strip()
         if clean_role not in {"assistant", "user"} or not clean_text:
             return False
+        if not self._claim_icebreaker_context_request_id(request_id):
+            return True
 
         session = getattr(self, "session", None)
         history = getattr(session, "_conversation_history", None)
@@ -2931,22 +2949,24 @@ class LLMSessionManager:
 
         prime_context = getattr(session, "prime_context", None)
         if callable(prime_context):
-            await self._prime_icebreaker_context_to_realtime_session(session, clean_role, clean_text)
+            await self._prime_icebreaker_context_to_realtime_session(session, clean_role, clean_text, request_id)
             return True
 
-        self._queue_pending_icebreaker_context(clean_role, clean_text)
+        self._queue_pending_icebreaker_context(clean_role, clean_text, request_id)
         return True
 
-    def append_icebreaker_context(self, role: str, text: str) -> bool:
+    def append_icebreaker_context(self, role: str, text: str, request_id: str | None = "") -> bool:
         clean_role = str(role or "").strip()
         clean_text = str(text or "").strip()
         if clean_role not in {"assistant", "user"} or not clean_text:
             return False
-
-        if self._append_icebreaker_context_to_session(clean_role, clean_text):
+        if not self._claim_icebreaker_context_request_id(request_id):
             return True
 
-        self._queue_pending_icebreaker_context(clean_role, clean_text)
+        if self._append_icebreaker_context_to_session(clean_role, clean_text, request_id):
+            return True
+
+        self._queue_pending_icebreaker_context(clean_role, clean_text, request_id)
         return True
 
     def _flush_pending_icebreaker_context(self) -> None:
@@ -2959,10 +2979,14 @@ class LLMSessionManager:
         if not (has_history or has_prime_context):
             return
 
-        remaining: list[tuple[str, str]] = []
-        for role, text in pending:
-            if not self._append_icebreaker_context_to_session(role, text):
-                remaining.append((role, text))
+        remaining: list[tuple[str, str, str]] = []
+        for item in pending:
+            if len(item) >= 3:
+                role, text, request_id = item[0], item[1], item[2]
+            else:
+                role, text, request_id = item[0], item[1], ""
+            if not self._append_icebreaker_context_to_session(role, text, request_id):
+                remaining.append((role, text, request_id))
         self.pending_icebreaker_context = remaining
 
     async def emit_mirror_turn_end(

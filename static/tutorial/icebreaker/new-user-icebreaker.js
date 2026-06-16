@@ -257,6 +257,7 @@
             role: cleanRole,
             text: cleanText,
             session_id: String(currentSession.sessionId || ''),
+            request_id: String(extra.requestId || ''),
             event: {
                 kind: 'icebreaker-context',
                 source: SOURCE,

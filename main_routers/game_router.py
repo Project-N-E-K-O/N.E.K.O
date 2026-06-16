@@ -6647,6 +6647,8 @@ async def game_project_context(game_type: str, request: Request):
         return {"ok": False, "reason": "missing_text"}
     if len(text) > MAX_ICEBREAKER_CONTEXT_TEXT_LENGTH:
         return {"ok": False, "reason": "invalid_text_length"}
+    event = data.get("event") if isinstance(data.get("event"), dict) else {}
+    request_id = str(data.get("request_id") or event.get("request_id") or "").strip()
 
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
     if not lanlan_name:
@@ -6660,9 +6662,15 @@ async def game_project_context(game_type: str, request: Request):
     append_icebreaker_context_async = getattr(mgr, "append_icebreaker_context_async", None)
     append_icebreaker_context = getattr(mgr, "append_icebreaker_context", None)
     if callable(append_icebreaker_context_async):
-        ok = await append_icebreaker_context_async(role, text)
+        try:
+            ok = await append_icebreaker_context_async(role, text, request_id)
+        except TypeError:
+            ok = await append_icebreaker_context_async(role, text)
     elif callable(append_icebreaker_context):
-        ok = append_icebreaker_context(role, text)
+        try:
+            ok = append_icebreaker_context(role, text, request_id)
+        except TypeError:
+            ok = append_icebreaker_context(role, text)
     else:
         return {"ok": False, "reason": "context_method_unavailable", "lanlan_name": lanlan_name}
 

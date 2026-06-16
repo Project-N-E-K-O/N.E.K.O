@@ -129,6 +129,34 @@ async def test_new_user_icebreaker_context_endpoint_awaits_async_append(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_passes_request_id(monkeypatch):
+    class FakeManager:
+        def __init__(self):
+            self.calls = []
+
+        def append_icebreaker_context(self, role, text, request_id=""):
+            self.calls.append((role, text, request_id))
+            return True
+
+    mgr = FakeManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+
+    result = await game_router.game_project_context(
+        "new_user_icebreaker",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "role": "assistant",
+            "text": "hello",
+            "request_id": "icebreaker-context-1",
+            "event": {"request_id": "fallback-id"},
+        }),
+    )
+
+    assert result["ok"] is True
+    assert mgr.calls == [("assistant", "hello", "icebreaker-context-1")]
+
+
+@pytest.mark.asyncio
 async def test_new_user_icebreaker_context_endpoint_requires_local_mutation_csrf(monkeypatch):
     class FakeManager:
         def append_icebreaker_context(self, role, text):

@@ -14,6 +14,7 @@ STATIC_DARK_MODE_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "cs
 STATIC_INDEX_JS_PATH = Path(__file__).resolve().parents[2] / "static" / "js" / "index.js"
 REACT_CHAT_STYLES_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "styles.css"
 REACT_CHAT_APP_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "App.tsx"
+REACT_CHAT_FULL_SURFACE_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "FullChatSurface.tsx"
 REACT_CHAT_IIFE_PATH = Path(__file__).resolve().parents[2] / "static" / "react" / "neko-chat" / "neko-chat-window.iife.js"
 CHAT_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "chat.html"
 INDEX_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "index.html"
@@ -62,6 +63,19 @@ def inline_z_index(block: str) -> int:
     if not match:
         raise AssertionError(f"missing inline zIndex in block: {block[:240]!r}")
     return int(match.group(1))
+
+
+def test_choice_prompt_sources_have_distinct_accessibility_labels():
+    for path in (REACT_CHAT_APP_PATH, REACT_CHAT_FULL_SURFACE_PATH):
+        source = path.read_text(encoding="utf-8")
+        choice_prompt_block = source.split("data-choice-source={choicePrompt.source}", 1)[1].split(
+            "{choicePrompt.options.slice",
+            1,
+        )[0]
+        assert "choicePrompt.source === 'mini_game_invite'" in choice_prompt_block
+        assert "chat.miniGameInviteOptionsAriaLabel" in choice_prompt_block
+        assert "choicePrompt.source === 'new_user_icebreaker'" in choice_prompt_block
+        assert "chat.newUserIcebreakerOptionsAriaLabel" in choice_prompt_block
 
 
 def test_react_chat_host_can_clear_only_yui_guide_messages():

@@ -262,10 +262,21 @@ def test_icebreaker_context_append_does_not_touch_shared_websocket_router():
 
     assert "appendLlmContext(role, messageText" in runtime
     assert "'/api/game/' + encodeURIComponent(GAME_TYPE) + '/context'" in runtime
-    assert "append_icebreaker_context(role, text)" in game_router
+    assert "request_id: String(extra.requestId || '')" in runtime
+    assert "request_id = str(data.get(\"request_id\") or event.get(\"request_id\") or \"\").strip()" in game_router
+    assert "append_icebreaker_context(role, text, request_id)" in game_router
     assert '@router.post("/{game_type}/context")' in game_router
     assert "action: 'icebreaker_context_append'" not in runtime
     assert 'action == "icebreaker_context_append"' not in websocket_router
+
+
+def test_icebreaker_context_request_ids_are_idempotent():
+    core = (ROOT / "main_logic" / "core.py").read_text(encoding="utf-8")
+
+    assert "self._icebreaker_context_request_ids: OrderedDict[str, None] = OrderedDict()" in core
+    assert "def _claim_icebreaker_context_request_id" in core
+    assert "if clean_request_id in seen:" in core
+    assert "if not self._claim_icebreaker_context_request_id(request_id):" in core
 
 
 def test_icebreaker_context_appends_are_serialized_before_chat_progression():
