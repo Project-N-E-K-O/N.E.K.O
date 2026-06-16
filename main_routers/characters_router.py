@@ -93,6 +93,7 @@ from utils.config_manager import (
     strip_generated_persona_selection_prompt,
 )
 from utils.dashscope_region import DASHSCOPE_GLOBAL_LOCK, configure_dashscope_sdk_urls
+from utils.voice_config import read_legacy_voice_id
 from utils.native_voice_registry import (
     get_active_realtime_native_provider_for_ui,
     get_native_voice_catalog_for_ui,
@@ -2868,12 +2869,12 @@ async def update_catgirl_voice_id(name: str, request: Request):
     if name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
     voice_id = str(data.get('voice_id') or '').strip()
-    old_voice_id = str(get_reserved(
+    old_voice_id = read_legacy_voice_id(get_reserved(
         characters['猫娘'][name],
         'voice_id',
         default='',
         legacy_keys=('voice_id',)
-    ) or '').strip()
+    ))
 
     # 幂等保护：提交同值时直接返回，避免无实际变更触发 reload_page。
     if old_voice_id == voice_id:
@@ -2893,7 +2894,8 @@ async def update_catgirl_voice_id(name: str, request: Request):
             'available_voices': available_voices
         }, status_code=400)
 
-    set_reserved(characters['猫娘'][name], 'voice_id', voice_id)
+    # 用户设音色：惰性迁移这一条到结构对象（用到哪条迁哪条，见 voice_id_to_storage_value）。
+    set_reserved(characters['猫娘'][name], 'voice_id', _config_manager.voice_id_to_storage_value(voice_id))
     await _config_manager.asave_characters(characters)
 
     # 如果是当前活跃的猫娘，需要先通知前端，再关闭session
@@ -3192,7 +3194,7 @@ async def unregister_voice(name: str):
             return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
 
         # 检查是否已有voice_id
-        old_voice_id = get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))
+        old_voice_id = read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)))
         if not old_voice_id:
             return JSONResponse({'success': False, 'error': 'TTS_VOICE_NOT_REGISTERED', 'code': 'TTS_VOICE_NOT_REGISTERED'}, status_code=400)
 
@@ -3771,8 +3773,8 @@ async def update_catgirl(name: str, request: Request):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
     previous_catgirl_data = copy.deepcopy(characters['猫娘'][name])
 
-    old_voice_id = get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))
-    voice_id_will_change = voice_id_in_payload and str(old_voice_id or '').strip() != requested_voice_id
+    old_voice_id = read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)))
+    voice_id_will_change = voice_id_in_payload and old_voice_id != requested_voice_id
     if voice_id_will_change:
         session_manager = get_session_manager()
         if _is_current_catgirl_voice_session_starting(name, characters, session_manager):
@@ -3802,9 +3804,9 @@ async def update_catgirl(name: str, request: Request):
         if k != '档案名' and v:
             characters['猫娘'][name][k] = v
 
-    # 兼容旧接口：若请求中带有 voice_id，则同步写入保留字段。
+    # 兼容旧接口：若请求中带有 voice_id，则同步写入保留字段（惰性迁移成结构对象）。
     if voice_id_in_payload:
-        set_reserved(characters['猫娘'][name], 'voice_id', requested_voice_id)
+        set_reserved(characters['猫娘'][name], 'voice_id', _config_manager.voice_id_to_storage_value(requested_voice_id))
 
     # 兼容前端自动修复：若请求中带有 model_type，则同步写入保留字段。
     if model_type_in_payload and requested_model_type:
@@ -3814,7 +3816,7 @@ async def update_catgirl(name: str, request: Request):
 
     await _config_manager.asave_characters(characters)
 
-    new_voice_id = get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))
+    new_voice_id = read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)))
     voice_id_changed = voice_id_in_payload and old_voice_id != new_voice_id
     prompt_fields_changed = _catgirl_prompt_fields_changed(previous_catgirl_data, characters['猫娘'][name])
 
@@ -4034,7 +4036,7 @@ async def clear_voice_ids():
         # 清除所有猫娘的voice_id
         if '猫娘' in characters:
             for name in characters['猫娘']:
-                if get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)):
+                if read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))):
                     set_reserved(characters['猫娘'][name], 'voice_id', '')
                     cleared_count += 1
 
@@ -4257,7 +4259,7 @@ async def get_voices():
         if not isinstance(catgirl_config, dict):
             logger.warning(f"角色配置格式异常，已跳过 voice_owners 统计: {catgirl_name}")
             continue
-        vid = get_reserved(catgirl_config, 'voice_id', default='', legacy_keys=('voice_id',))
+        vid = read_legacy_voice_id(get_reserved(catgirl_config, 'voice_id', default='', legacy_keys=('voice_id',)))
         if vid:
             voice_owners.setdefault(vid, []).append(catgirl_name)
     result["voice_owners"] = voice_owners
@@ -4602,7 +4604,7 @@ async def delete_voice(voice_id: str):
 
             if '猫娘' in characters:
                 for name in characters['猫娘']:
-                    if get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)) == voice_id:
+                    if read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))) == voice_id:
                         set_reserved(characters['猫娘'][name], 'voice_id', '')
                         cleaned_count += 1
 

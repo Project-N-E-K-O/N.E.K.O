@@ -221,3 +221,25 @@ def to_legacy_voice_id(vc: "VoiceConfig") -> str:
     if vc.provider == "gptsovits":
         return f"gsv:{vc.ref}"
     return vc.ref
+
+
+def read_legacy_voice_id(raw: Any) -> str:
+    """Read a per-character voice **at rest** (either the legacy flat string or the new
+    structured ``{source, provider, ref}`` object) as the flat, prefixed legacy
+    ``voice_id`` string the runtime / validation chain consumes.
+
+    This is the read-tolerance seam for the union-find-style lazy migration (blueprint
+    §6): some entries are flat strings (untouched), some are objects (migrated on a
+    user voice-set). Every consumer that loads a character's voice as a string funnels
+    through here, so downstream logic (dispatch / validate / free-preset gating) keeps
+    working on strings and never needs to know which form is at rest.
+
+    * ``dict`` → reconstruct the legacy string from the object (``eleven:`` / ``gsv:``
+      prefixes restored from ``provider``; presets/native have no prefix so round-trip
+      to their bare ``ref``).
+    * ``str`` → returned stripped (already the legacy form).
+    * anything else / None → ``""``.
+    """
+    if isinstance(raw, dict):
+        return to_legacy_voice_id(VoiceConfig.from_any(raw))
+    return str(raw or "").strip()

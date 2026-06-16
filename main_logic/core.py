@@ -4053,9 +4053,12 @@ class LLMSessionManager:
             default='',
             legacy_keys=('voice_id',),
         )
-        # strip 收口在源头：避免 characters.json 里偶发的前后空白让下游 literal
-        # 比较 / route gating / is_free_preset_voice_id 之类的 callee 失配。
-        return (raw or '').strip()
+        # 声音来源统一架构惰性迁移：characters.json 里 voice 可能是旧扁平串，也可能是
+        # 用户设音色后迁成的结构对象 {source,provider,ref}。read_legacy_voice_id 把两形态
+        # 统一读成 dispatch/route gating 一直消费的 legacy 前缀串（顺带 strip 收口空白），
+        # 下游 literal 比较 / is_free_preset_voice_id 等无需感知存储形态。
+        from utils.voice_config import read_legacy_voice_id
+        return read_legacy_voice_id(raw)
 
     def _apply_voice_id_for_route(self) -> None:
         """Resolve the character card's voice_id into self.voice_id /
@@ -6318,6 +6321,20 @@ class LLMSessionManager:
         """
         async with self._proactive_write_lock:
             async with self.lock:
+                # Delivery-point voice re-gate (1/2 — cheap early-out before the
+                # sid claim). A topic hook can pass the release gate, get copied
+                # into callbacks_snapshot + removed from pending_agent_callbacks,
+                # then this trigger parks on try_start_proactive /
+                # _proactive_write_lock while the user starts an audio session.
+                # That in-flight snapshot is in neither queue, so the voice-start
+                # sweep can't reach it and the release gate's check has gone
+                # stale. Drop topic hooks if voice has since taken over (ack False
+                # so TopicHookPool retries on a text session); the retracted
+                # filter below removes them + their extras. A SECOND identical
+                # re-gate runs right before prompt_ephemeral to catch a takeover
+                # that lands during the CLAIM/PHASE2 awaits in between.
+                if self._voice_delivery_blocked() and self._retract_topic_hook_snapshots(callbacks_snapshot):
+                    logger.info("[%s] trigger_agent_callbacks: topic hook dropped before claim — voice took over mid-delivery", self.lanlan_name)
                 self._purge_retracted_agent_callback_extras(callbacks_snapshot)
                 active_callbacks = [
                     cb for cb in callbacks_snapshot
@@ -6325,6 +6342,11 @@ class LLMSessionManager:
                 ]
                 if not active_callbacks:
                     logger.info("[%s] trigger_agent_callbacks: text proactive callbacks retracted before prompt", self.lanlan_name)
+                    # Nothing will emit text_start/text_end to free the manager's
+                    # inflight slot, so release it now (mirrors
+                    # _deliver_proactive_batch's no-op release) — else the next
+                    # cue stalls until the inflight timeout.
+                    self.proactive_manager.release_inflight_noop()
                     return False
                 callbacks_snapshot[:] = active_callbacks
                 # sticky preempt 复查：与 prepare_proactive_delivery 同样，在持有
@@ -6363,6 +6385,13 @@ class LLMSessionManager:
             # and re-passes it (preserve-until-success). NOTE: we do NOT call
             # _stream_cb_media for text mode (that's the voice path, which uses
             # the realtime session's persistent conversation.item).
+            # Delivery-point voice re-gate (2/2 — authoritative, immediately
+            # before prompt_ephemeral). CLAIM/PHASE2 were just awaited above, so
+            # the user may have switched to audio since the pre-claim check;
+            # re-drop topic hooks here so a takeover during those awaits can't
+            # still prompt the old text session.
+            if self._voice_delivery_blocked() and self._retract_topic_hook_snapshots(active_callbacks):
+                logger.info("[%s] trigger_agent_callbacks: topic hook dropped at prompt — voice took over mid-delivery", self.lanlan_name)
             self._purge_retracted_agent_callback_extras(active_callbacks)
             active_callbacks = [
                 cb for cb in active_callbacks
@@ -6371,6 +6400,8 @@ class LLMSessionManager:
             callbacks_snapshot[:] = active_callbacks
             if not active_callbacks:
                 logger.info("[%s] trigger_agent_callbacks: text proactive callbacks retracted before prompt", self.lanlan_name)
+                # Free the inflight slot — text_start/text_end below won't run.
+                self.proactive_manager.release_inflight_noop()
                 return False
             _proactive_images: list = []
             for _cb in active_callbacks:
@@ -6457,6 +6488,26 @@ class LLMSessionManager:
         if self.is_active and self.input_mode == 'audio':
             return True
         return False
+
+    def _voice_delivery_blocked(self) -> bool:
+        """True whenever a deep-topic hook could still reach the voice path, so
+        topic delivery must defer. The union of two predicates, each covering a
+        transition window the other misses:
+          - ``isinstance(self.session, OmniRealtimeClient)``: the live session is
+            realtime. This still holds during an audio→text switch, where
+            ``start_session`` flips the input-mode flags to text while the old
+            voice session lingers in ``self.session`` for several awaited
+            teardown steps — and ``trigger_agent_callbacks`` would still take its
+            ``isinstance``-gated voice branch and inject into that old session.
+          - ``_is_voice_session_active_or_starting()``: a voice session is active
+            or starting, covering the text→audio startup window before the
+            realtime client is installed in ``self.session``.
+        Using the union keeps the gate aligned with the exact condition under
+        which the voice branch fires."""
+        return (
+            isinstance(self.session, OmniRealtimeClient)
+            or self._is_voice_session_active_or_starting()
+        )
 
     async def trigger_greeting(self) -> None:
         """On first connect or character switch, trigger a proactive greeting based on the gap since the last conversation.
@@ -6857,12 +6908,32 @@ class LLMSessionManager:
         fresh deep topic is not a follow-up to something already on the
         table, so it shouldn't borrow that escape hatch.
 
+        Voice sessions never receive deep topic hooks. A topic hook is a
+        text-mode opener; injecting one mid voice conversation would cut across
+        a live spoken exchange, which is exactly the "forced" intrusion this
+        feature avoids. Gate on ``_voice_delivery_blocked()`` — the union of "the
+        live session is realtime" and "a voice session is active/starting" — so
+        the gate matches the exact condition under which
+        ``trigger_agent_callbacks`` takes its voice branch, including both the
+        text→audio startup window (realtime client not yet installed) and the
+        audio→text teardown window (old realtime client still in ``self.session``).
+        Returning False here defers rather than drops — the process-global
+        per-character ``TopicHookPool`` keeps the material pending and retries
+        it once the user is back in a text session, so a voice-heavy user still
+        gets the hook later instead of losing it. This is the chokepoint both
+        delivery gates consult (``_topic_activity_gate_open`` at submit,
+        ``_deliver_proactive_batch`` at release); the session-start drain /
+        already-pending / extras-only paths are closed separately in
+        ``_reset_proactive_gate`` + ``_drop_pending_topic_hooks_for_voice``.
+
         Fail-open (return True) when no snapshot is available, mirroring the
         proactive path's "snapshot None ⇒ open propensity" default. Privacy
         mode is deliberately NOT re-checked here: it gates *accumulation* (the
         pool is wiped the moment privacy turns on, see enrich_topic_pool), not
         delivery of a hook that was already built from a pre-privacy snapshot.
         """
+        if self._voice_delivery_blocked():
+            return False
         tracker = getattr(self, '_activity_tracker', None)
         if tracker is None:
             return True
@@ -6924,12 +6995,14 @@ class LLMSessionManager:
         behaviour (the manager only governs WHEN the batch is released, not
         how many cues per turn)."""
         callbacks = [cb for cb in callbacks if not cb.get(DELIVERY_RETRACTED_KEY)]
-        # Topic hooks re-validate the activity gate at RELEASE: the submit-time
+        # Topic hooks re-validate the delivery gate at RELEASE: the submit-time
         # check in trigger_topic_hook_once can go stale while the manager paces
         # the cue (min-gap / playback). If the user has since moved into a
-        # restricted activity, drop the topic hook (ack=False) so TopicHookPool
-        # retries later instead of opening a fresh deep topic mid-gaming. Other
-        # channels are unaffected.
+        # restricted activity OR a voice session has taken over (topic hooks are
+        # text-mode openers, never injected mid voice — see
+        # topic_hook_delivery_allowed), drop the topic hook (ack=False) so
+        # TopicHookPool retries later instead of opening a fresh deep topic at
+        # the wrong moment. Other channels are unaffected.
         if callbacks and not self.topic_hook_delivery_allowed():
             kept = []
             for cb in callbacks:
@@ -7178,10 +7251,90 @@ class LLMSessionManager:
                 # losing it.
                 self.enqueue_agent_callback(cb)
             manager.reset_gate()
+            # Deep topic hooks are text-mode openers and must never be spoken in
+            # voice. start_session sets the audio starting flags BEFORE calling
+            # us, so when entering / within a voice session this is the one
+            # boundary where we sweep EVERY queued topic hook out of
+            # pending_agent_callbacks (and the paired pending_extra_replies):
+            # both the cbs just drained from the manager AND any released earlier
+            # by _deliver_proactive_batch into the pending queue but left
+            # deferred (SM busy / media-stream fail / no text session). Both the
+            # voice branch of trigger_agent_callbacks (re-fired by start_session)
+            # and the hot-swap prime path inject those two queues WITHOUT
+            # re-consulting topic_hook_delivery_allowed, so neither delivery gate
+            # covers this. Resolve ack False so TopicHookPool defers and retries
+            # on a text session.
+            if self._voice_delivery_blocked():
+                self._drop_pending_topic_hooks_for_voice()
         except Exception:
             # getattr fallback: the except path must never raise itself
             # (a second AttributeError here would abort end_session teardown).
             logger.exception("[%s] proactive_manager reset/drain failed", getattr(self, "lanlan_name", "?"))
+
+    def _drop_pending_topic_hooks_for_voice(self) -> None:
+        """Drop every queued deep-topic hook when entering / within a voice
+        session, across BOTH delivery queues.
+
+        1. ``pending_agent_callbacks``: hooks here still carry their callback, so
+           resolve each one's delivery ack False (``TopicHookPool`` defers +
+           retries on a text session) and retract it, letting
+           ``_purge_retracted_agent_callbacks`` sweep it and its paired
+           ``pending_extra_replies`` entry by ``_callback_delivery_id``.
+        2. ``pending_extra_replies`` orphans: ``drain_agent_callbacks_for_llm``
+           clears ``pending_agent_callbacks`` on a text user turn but leaves the
+           paired extras behind, so a topic hook can survive as an extras-only
+           entry (callback already delivered + acked in text) and be rendered by
+           the hot-swap ``prime_context`` path. Those have no callback left to
+           ack/retract — just drop them. They are identified by
+           ``source_kind == "topic"`` (stamped by ``build_topic_hook_callback``
+           and copied onto the extra by ``enqueue_agent_callback``).
+
+        See ``_reset_proactive_gate`` for why this is needed beyond the submit /
+        release gates."""
+        pending = getattr(self, "pending_agent_callbacks", None) or []
+        hooks = [
+            cb for cb in pending
+            if isinstance(cb, dict) and cb.get("channel") == "topic_hook"
+        ]
+        for cb in hooks:
+            resolve_callback_delivery_ack(cb, False)
+            cb[DELIVERY_RETRACTED_KEY] = True
+        if hooks:
+            self._purge_retracted_agent_callbacks()
+        # Sweep extras-only topic hooks (callback side already gone).
+        extras = getattr(self, "pending_extra_replies", None)
+        dropped_extras = 0
+        if isinstance(extras, list):
+            kept = [
+                extra for extra in extras
+                if not (isinstance(extra, dict) and extra.get("source_kind") == "topic")
+            ]
+            dropped_extras = len(extras) - len(kept)
+            if dropped_extras:
+                self.pending_extra_replies = kept
+        if hooks or dropped_extras:
+            logger.info(
+                "[%s] dropped %d queued + %d extras-only topic hook(s) at voice start: deferred for a text session",
+                self.lanlan_name, len(hooks), dropped_extras,
+            )
+
+    def _retract_topic_hook_snapshots(self, callbacks: list) -> int:
+        """Mark in-flight topic-hook snapshot entries retracted + ack False so the
+        text delivery path drops them and ``TopicHookPool`` retries on a text
+        session. The delivery-point voice re-gate: a snapshot held by an
+        in-flight ``trigger_agent_callbacks`` is in neither pending queue, so the
+        voice-start sweep can't reach it. Returns the number retracted."""
+        n = 0
+        for cb in callbacks:
+            if (
+                isinstance(cb, dict)
+                and cb.get("channel") == "topic_hook"
+                and not cb.get(DELIVERY_RETRACTED_KEY)
+            ):
+                resolve_callback_delivery_ack(cb, False)
+                cb[DELIVERY_RETRACTED_KEY] = True
+                n += 1
+        return n
 
     def enqueue_agent_callback(self, callback: dict) -> None:
         """Enqueue a structured agent task callback for LLM injection.

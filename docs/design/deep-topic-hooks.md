@@ -91,6 +91,22 @@ prompt 只给「明显反复出现 → 高分，顺口一提 → 低分；如实
 深话题是最具打扰性的全新开场，必须和 `/api/proactive_chat` 同样的 propensity 门：propensity 为 `closed`（隐私黑名单）或 `restricted_screen_only`（游戏/专注）时不投，且**不**借用 proactive reminiscence 的 open-thread 例外。
 被 requeue 进 `pending_agent_callbacks` 的 hook 在 retry 时**不**重查这道门：retry 只在用户在场的回合 drain，propensity 实际为 open，且重查会把话题特定门控铺进通用投递核心。
 
+### 语音会话不投深话题（只 defer 不 drop）
+
+深话题是文本态开场白；在实时语音对话里注入会横切一段正在进行的口语交流，正是这个特性要避免的「硬凑打扰」。因此 `topic_hook_delivery_allowed`（`main_logic/core.py`）在语音路径可达时直接返回 False。
+
+- **谓词是 `_voice_delivery_blocked()`（并集），与 voice 分支实际触发条件对齐**：`trigger_agent_callbacks` 按 `isinstance(self.session, OmniRealtimeClient)` 决定走 voice 分支，而 `_is_voice_session_active_or_starting()` 走的是 input-mode 标志。两者在切换窗口会错位，所以门取两者并集：
+  - `isinstance(self.session, OmniRealtimeClient)`：当前 live session 是 realtime。覆盖 **audio→text** 拆除窗口——`start_session` 已把 input-mode 标志翻成 text，但旧 realtime session 还在 `self.session` 里待若干 await 步，voice 分支照样会注入旧语音会话。
+  - `_is_voice_session_active_or_starting()`：语音活跃或正在启动。覆盖 **text→audio** 启动窗口——realtime client 还没装进 `self.session`、旧 `OmniOfflineClient` 仍在。
+- **采集与 Phase-2 照常跑**：语音回合仍喂 `TopicHookPool`，quiet-window 触发仍会跑 `_deepen_material`。这是有意的——`TopicHookPool` 是进程级、按角色全局的，语音期间攒下的物料应当保留，等用户回到文本会话再投，而不是因为「这次是语音」就不积累（否则重度语音用户永远造不出深话题）。
+- **defer 不是 drop**：返回 False 走的是和活动门同一条「撤回排队副本 + pool reschedule 重试」机制，物料留 pending，下一个文本会话窗口再投，不烧日配额。
+- **两条投递门共用此收口**：提交门（`_topic_activity_gate_open`）和释放门（`_deliver_proactive_batch`）都查 `topic_hook_delivery_allowed`，不在投递核心里散落会话类型判断。
+- **会话启动边界兜底 drain / already-pending / extras-only 三条绕过路径**：`trigger_agent_callbacks` 的 voice 分支与 hot-swap `prime_context` 都直接消费 `pending_agent_callbacks` / `pending_extra_replies`，**不**复查 `topic_hook_delivery_allowed`，所以那两道门管不到已进队列的 hook。`_reset_proactive_gate` 在 `_voice_delivery_blocked()` 时调 `_drop_pending_topic_hooks_for_voice`，一次扫干净：
+  - `pending_agent_callbacks` 里 `channel == "topic_hook"` 的——含 `_reset_proactive_gate` 自己刚从 manager drain 进来的、以及释放门早先放进来但 defer 的（SM 忙/媒体流失败/无文本会话）。resolve ack False + retract，复用 `_purge_retracted_agent_callbacks` 同步清配对的 `pending_extra_replies`。
+  - `pending_extra_replies` 里 `source_kind == "topic"` 的孤儿 extra——`drain_agent_callbacks_for_llm` 在文本回合清 `pending_agent_callbacks` 但留下 extra，cb 已投递+ack，这条只剩 extra 会被 hot-swap prime 在语音里重新引出，按 `source_kind` 单独扫掉。
+- **文本投递点 delivery-point 复查兜底 in-flight snapshot**：topic hook 过了释放门后，`trigger_agent_callbacks` 会把它拷进局部 `callbacks_snapshot` 并从 `pending_agent_callbacks` 移除；若此 trigger 卡在 `try_start_proactive` / `_proactive_write_lock` 上、同时用户起 audio，这个 in-flight snapshot 不在任何队列里，会话启动 sweep 够不着，且释放门的判定已 stale。`_deliver_agent_callbacks_text` 因此在临界区内查**两次** `_voice_delivery_blocked()`：claim sid 前一次（便宜早退）、`prompt_ephemeral` 前一次（权威，兜住 CLAIM/PHASE2 两个 await 期间才发生的切换）——这和该方法本来就为同样的 await 做两道 retracted 过滤是对称的。命中就 `_retract_topic_hook_snapshots` 把 snapshot 里的 topic hook 标 retract + ack False，复用既有 retracted 过滤链丢弃（普通文本投递时是 no-op）。这是把门补到**实际投递点**，而非仅在 submit/release 阶段。
+  - **空批兜底释放 inflight**：若 topic hook 被撤光导致 active 为空提前 return，`text_start`/`text_end` 不会跑，`ProactiveDeliveryManager` 的 inflight 槽不会被释放，后续 cue 会卡到超时。两处空批 return 都调 `release_inflight_noop()`（与 `_deliver_proactive_batch` 的空投兜底同款）。
+
 ### surfaced reflection id 只记真正渲染的
 
 `_render_followup_topic_hooks`（`main_routers/system_router.py`）复刻 `_iter_followup_texts` 的空串/去重过滤后再收集 surfaced id，避免被 `build_topic_hook_prompt` 去掉的空/重复 followup 仍被 `/record_surfaced` 打进冷却。

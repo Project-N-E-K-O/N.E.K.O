@@ -50,6 +50,7 @@ from utils.api_config_loader import (
 from utils.custom_tts_adapter import check_custom_tts_voice_allowed
 from utils.file_utils import atomic_write_json
 from utils.gptsovits_config import normalize_gsv_api_url
+from utils.voice_config import read_legacy_voice_id
 from utils.logger_config import get_module_logger
 from utils.native_voice_registry import (
     is_free_lanlan_app_route,
@@ -269,12 +270,12 @@ async def ensure_default_yui_voice_for_free_api(config_manager, core_cfg: dict |
     if not _is_default_yui_character(current_name, current_character):
         return False
 
-    current_voice_id = str(get_reserved(
+    current_voice_id = read_legacy_voice_id(get_reserved(
         current_character,
         "voice_id",
         default="",
         legacy_keys=("voice_id",),
-    ) or "").strip()
+    ))
     if current_voice_id:
         return False
 
@@ -614,6 +615,16 @@ def validate_reserved_schema(reserved: dict) -> list[str]:
     if reserved is None:
         return errors
     _walk(reserved, RESERVED_FIELD_SCHEMA, "_reserved")
+    # voice_id 是 str | 结构对象的联合类型，schema 的 tuple 分支只做 isinstance，挡不住
+    # {"foo": 1} 这种坏 dict。结构对象形态额外校验 source/provider/ref 都为 str，避免
+    # 放宽 schema 后契约松掉（CodeRabbit）。
+    vid = reserved.get("voice_id")
+    if isinstance(vid, dict):
+        for field in ("source", "provider", "ref"):
+            if not isinstance(vid.get(field), str):
+                errors.append(
+                    f"_reserved.voice_id.{field} 需要 str，实际 {type(vid.get(field)).__name__}"
+                )
     return errors
 
 
@@ -629,7 +640,13 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         changed = True
 
     voice_id = get_reserved(catgirl_data, "voice_id", default="", legacy_keys=("voice_id",))
-    if voice_id is not None:
+    # 把 voice_id 收口进 _reserved。结构对象（惰性迁移形态，可能来自顶层 legacy 字段）
+    # 必须原样 set_reserved 搬进来：既不能被 str(dict) 损坏，也不能跳过——否则随后的旧
+    # 顶层字段清理会 pop 掉它，导致绑定在加载时悄悄丢失（Codex/CodeRabbit P2）。
+    # 普通 legacy 值仍规整成字符串。
+    if isinstance(voice_id, dict):
+        changed |= set_reserved(catgirl_data, "voice_id", voice_id)
+    elif voice_id is not None:
         changed |= set_reserved(catgirl_data, "voice_id", str(voice_id))
 
     system_prompt = get_reserved(catgirl_data, "system_prompt", default=None, legacy_keys=("system_prompt",))
@@ -878,7 +895,8 @@ def flatten_reserved(catgirl_data: dict) -> dict:
         return catgirl_data
     result = dict(catgirl_data)
 
-    voice_id = get_reserved(result, "voice_id", default="")
+    # 展平给 legacy 前端/调用方：始终吐 legacy 字符串形态（容忍结构对象）。
+    voice_id = read_legacy_voice_id(get_reserved(result, "voice_id", default=""))
     if voice_id:
         result["voice_id"] = voice_id
     system_prompt = get_reserved(result, "system_prompt", default=None)
@@ -3227,6 +3245,30 @@ class ConfigManager:
             free_voice_ids=set(get_free_voices().values()),
         )
 
+    def voice_id_to_storage_value(self, voice_id):
+        """Convert a user-set legacy ``voice_id`` string into its at-rest storage form.
+
+        Write side of the voice-source-unification "union-find style lazy migration":
+        every time the user sets/changes a voice, that one entry is migrated to the
+        structured object ``{source, provider, ref}`` (migrate-on-touch, never a
+        full-table sweep). Empty value is stored as an empty string (= no voice set).
+        The read side (:func:`utils.voice_config.read_legacy_voice_id`) tolerates both
+        forms, so untouched legacy flat strings keep working.
+        """
+        s = str(voice_id or '').strip()
+        if not s:
+            return ''
+        from utils.voice_config import to_legacy_voice_id
+        vc = self.normalize_voice_id_to_config(s)
+        # Round-trip guard: only migrate to the structured object when it reads back to
+        # the exact submitted library key. Otherwise (e.g. a provider-tagged but
+        # un-prefixed clone key, where to_legacy_voice_id would re-add a prefix and
+        # change the key) keep the legacy string verbatim — never let migration rewrite
+        # the key a binding points at, or _get_voice_meta would miss and TTS misroute.
+        if to_legacy_voice_id(vc) != s:
+            return s
+        return vc.to_dict()
+
     def cleanup_invalid_voice_ids(self):
         """Clean up invalid voice_ids in characters.json.
         
@@ -3249,7 +3291,9 @@ class ConfigManager:
 
         catgirls = character_data.get('猫娘', {})
         for name, config in catgirls.items():
-            voice_id = get_reserved(config, 'voice_id', default='', legacy_keys=('voice_id',))
+            # 容忍扁平串 / 结构对象两形态，统一按 legacy 字符串做 remap / validate；
+            # cleanup 不在此把有效条目压成对象（守住「不 bulk sweep」，迁移只在用户设音色时发生）。
+            voice_id = read_legacy_voice_id(get_reserved(config, 'voice_id', default='', legacy_keys=('voice_id',)))
             if not voice_id:
                 continue
             # 已废弃的免费 YUI 预设音色：先平移到现役 yui_cn，再 continue 跳过后续
