@@ -101,6 +101,7 @@
         galgameOptions: [],
         galgameOptionsLoading: false,
         galgameTemporarilyDisabled: false,
+        homeTutorialInputLocked: false,
         homeTutorialInteractionLocked: false,
         _galgameRequestSeq: 0,
         // 通用 ChoicePrompt 框架（PR #1141 follow-up #2）。当前承载 mini_game_invite
@@ -3373,6 +3374,10 @@
     }
 
     function handleCompactChatStateChange(nextCompactChatState) {
+        if ((state.homeTutorialInputLocked || isHomeTutorialInteractionLocked())
+            && normalizeCompactChatState(nextCompactChatState) === 'input') {
+            return;
+        }
         setCompactChatState(nextCompactChatState);
     }
 
@@ -3879,11 +3884,90 @@
         if (state.homeTutorialInteractionLocked === next) {
             return;
         }
+        if (next && getCurrentCompactChatState() === 'input') {
+            resetCompactChatState();
+        }
         state.homeTutorialInteractionLocked = next;
         state.viewProps = Object.assign({}, ensureViewProps(), {
+            compactChatState: getCurrentCompactChatState(),
             composerDisabled: next
         });
         renderWindow();
+    }
+
+    function createHomeTutorialRequestId(prefix, reason) {
+        return [
+            prefix || 'home-tutorial',
+            Date.now(),
+            Math.random().toString(36).slice(2, 8),
+            String(reason || '').replace(/[^a-z0-9_-]+/gi, '-').slice(0, 32)
+        ].filter(Boolean).join('-');
+    }
+
+    function setHomeTutorialInputLocked(locked, reason) {
+        var next = locked === true;
+        if (state.homeTutorialInputLocked !== next) {
+            if (next && getCurrentCompactChatState() === 'input') {
+                resetCompactChatState();
+            }
+            state.homeTutorialInputLocked = next;
+        }
+        setHomeTutorialInteractionLocked(next, reason || 'home-tutorial-input-lock');
+    }
+
+    function setAvatarToolMenuOpen(open, reason) {
+        var nextOpen = open === true;
+        setViewProps({
+            compactChatState: nextOpen ? 'input' : getCurrentCompactChatState(),
+            avatarToolMenuOpenRequest: {
+                id: createHomeTutorialRequestId('avatar-tool-menu', reason),
+                open: nextOpen,
+                reason: reason || ''
+            }
+        });
+    }
+
+    function setCompactToolFanOpen(open, reason) {
+        var nextOpen = open === true;
+        setViewProps({
+            compactChatState: nextOpen ? 'input' : getCurrentCompactChatState(),
+            compactToolFanOpenRequest: {
+                id: createHomeTutorialRequestId('compact-tool-fan', reason),
+                open: nextOpen,
+                reason: reason || ''
+            }
+        });
+    }
+
+    function rotateCompactToolWheel(direction, stepCount, reason) {
+        var normalizedDirection = Number(direction) < 0 ? -1 : 1;
+        var normalizedStepCount = Number.isFinite(Number(stepCount))
+            ? Math.max(1, Math.min(7, Math.floor(Number(stepCount))))
+            : 1;
+        setViewProps({
+            compactChatState: 'input',
+            compactToolWheelRotateRequest: {
+                id: createHomeTutorialRequestId('compact-tool-wheel-rotate', reason),
+                direction: normalizedDirection,
+                stepCount: normalizedStepCount,
+                reason: reason || '',
+                forceFast: true
+            }
+        });
+    }
+
+    function setCompactToolWheelIndex(index, reason) {
+        var normalizedIndex = Number.isFinite(Number(index))
+            ? Math.max(0, Math.min(6, Math.floor(Number(index))))
+            : 0;
+        setViewProps({
+            compactChatState: 'input',
+            compactToolWheelIndexRequest: {
+                id: createHomeTutorialRequestId('compact-tool-wheel-index', reason),
+                index: normalizedIndex,
+                reason: reason || ''
+            }
+        });
     }
 
     function deactivateToolCursor() {
@@ -4915,6 +4999,9 @@
 
     function setCompactChatState(nextCompactChatState) {
         var normalized = normalizeCompactChatState(nextCompactChatState);
+        if ((state.homeTutorialInputLocked || isHomeTutorialInteractionLocked()) && normalized === 'input') {
+            return getCurrentCompactChatState();
+        }
         if (state.compactChatState === normalized) {
             return normalized;
         }
@@ -6010,24 +6097,28 @@
         window.addEventListener('neko:tutorial-started', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
+            setHomeTutorialInteractionLocked(true, 'tutorial-started');
             setGalgameModeTemporarilyDisabled(true);
         });
 
         window.addEventListener('neko:tutorial-completed', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
+            setHomeTutorialInteractionLocked(false, 'tutorial-completed');
             setGalgameModeTemporarilyDisabled(false);
         });
 
         window.addEventListener('neko:tutorial-skipped', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
+            setHomeTutorialInteractionLocked(false, 'tutorial-skipped');
             setGalgameModeTemporarilyDisabled(false);
         });
 
         window.addEventListener('neko:tutorial-ended-without-completion', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
+            setHomeTutorialInteractionLocked(false, 'tutorial-ended-without-completion');
             setGalgameModeTemporarilyDisabled(false);
         });
 
@@ -6363,7 +6454,12 @@
         setMessages: setMessages,
         setComposerAttachments: setComposerAttachments,
         setComposerHidden: setComposerHidden,
+        setHomeTutorialInputLocked: setHomeTutorialInputLocked,
         setHomeTutorialInteractionLocked: setHomeTutorialInteractionLocked,
+        setAvatarToolMenuOpen: setAvatarToolMenuOpen,
+        setCompactToolFanOpen: setCompactToolFanOpen,
+        rotateCompactToolWheel: rotateCompactToolWheel,
+        setCompactToolWheelIndex: setCompactToolWheelIndex,
         deactivateToolCursor: deactivateToolCursor,
         appendMessage: appendMessage,
         updateMessage: updateMessage,

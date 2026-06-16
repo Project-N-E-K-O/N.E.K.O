@@ -41,6 +41,13 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/css/yui-guide.css",
     _PROJECT_ROOT / "static/css/index.css",
+    _PROJECT_ROOT / "static/tutorial/yui-guide/days/day1-home-guide.js",
+    _PROJECT_ROOT / "static/tutorial/yui-guide/days/day2-screen-voice-guide.js",
+    _PROJECT_ROOT / "static/tutorial/yui-guide/days/day3-interaction-guide.js",
+    _PROJECT_ROOT / "static/tutorial/yui-guide/days/day4-companion-guide.js",
+    _PROJECT_ROOT / "static/tutorial/yui-guide/days/day5-personalization-guide.js",
+    _PROJECT_ROOT / "static/tutorial/yui-guide/days/day6-agent-guide.js",
+    _PROJECT_ROOT / "static/tutorial/yui-guide/days/day7-graduation-guide.js",
     _PROJECT_ROOT / "static/tutorial/yui-guide/steps.js",
     _PROJECT_ROOT / "static/tutorial/yui-guide/overlay.js",
     _PROJECT_ROOT / "static/tutorial/yui-guide/page-handoff.js",

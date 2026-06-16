@@ -2364,6 +2364,31 @@
                         applyYuiGuideChatSpotlight(event.data.kind || '');
                         break;
                     }
+                    case 'yui_guide_set_avatar_tool_menu_open': {
+                        if (!isStandaloneChatPage()) break;
+                        applyYuiGuideAvatarToolMenuOpen(event.data.open === true, event.data.reason || '');
+                        break;
+                    }
+                    case 'yui_guide_click_avatar_tool_button': {
+                        if (!isStandaloneChatPage()) break;
+                        clickYuiGuideAvatarToolButton(event.data.reason || '');
+                        break;
+                    }
+                    case 'yui_guide_set_compact_tool_fan_open': {
+                        if (!isStandaloneChatPage()) break;
+                        applyYuiGuideCompactToolFanOpen(event.data.open === true, event.data.reason || '');
+                        break;
+                    }
+                    case 'yui_guide_rotate_compact_tool_wheel': {
+                        if (!isStandaloneChatPage()) break;
+                        rotateYuiGuideCompactToolWheel(event.data.direction, event.data.stepCount, event.data.reason || '');
+                        break;
+                    }
+                    case 'yui_guide_set_compact_tool_wheel_index': {
+                        if (!isStandaloneChatPage()) break;
+                        setYuiGuideCompactToolWheelIndex(event.data.index, event.data.reason || '');
+                        break;
+                    }
                     case 'yui_guide_chat_ready': {
                         if (isStandaloneChatPage()) break;
                         window.dispatchEvent(new CustomEvent('neko:yui-guide:external-chat-ready', {
@@ -2512,6 +2537,50 @@
                 element.removeAttribute('data-yui-guide-prev-contenteditable');
             }
         });
+    }
+
+    function getReactChatWindowHost() {
+        return window.reactChatWindowHost && typeof window.reactChatWindowHost === 'object'
+            ? window.reactChatWindowHost
+            : null;
+    }
+
+    function applyYuiGuideAvatarToolMenuOpen(open, reason) {
+        var host = getReactChatWindowHost();
+        if (host && typeof host.setAvatarToolMenuOpen === 'function') {
+            host.setAvatarToolMenuOpen(open === true, reason || 'external-yui-guide');
+        }
+    }
+
+    function clickYuiGuideAvatarToolButton(reason) {
+        applyYuiGuideCompactToolFanOpen(true, reason || 'external-yui-guide-avatar-tool-click');
+        var button = document.querySelector('.avatar-tool-quickbar-edit');
+        if (button && typeof button.click === 'function') {
+            button.click();
+        } else {
+            applyYuiGuideAvatarToolMenuOpen(true, reason || 'external-yui-guide-avatar-tool-click');
+        }
+    }
+
+    function applyYuiGuideCompactToolFanOpen(open, reason) {
+        var host = getReactChatWindowHost();
+        if (host && typeof host.setCompactToolFanOpen === 'function') {
+            host.setCompactToolFanOpen(open === true, reason || 'external-yui-guide');
+        }
+    }
+
+    function rotateYuiGuideCompactToolWheel(direction, stepCount, reason) {
+        var host = getReactChatWindowHost();
+        if (host && typeof host.rotateCompactToolWheel === 'function') {
+            host.rotateCompactToolWheel(direction, stepCount, reason || 'external-yui-guide');
+        }
+    }
+
+    function setYuiGuideCompactToolWheelIndex(index, reason) {
+        var host = getReactChatWindowHost();
+        if (host && typeof host.setCompactToolWheelIndex === 'function') {
+            host.setCompactToolWheelIndex(index, reason || 'external-yui-guide');
+        }
     }
 
 
@@ -2664,8 +2733,43 @@
     var yuiGuideChatSpotlightKind = '';
     var yuiGuideChatSpotlightTimer = 0;
 
+    function ensureYuiGuideChatSpotlightStyle() {
+        if (document.getElementById('yui-guide-chat-spotlight-style')) {
+            return;
+        }
+        var style = document.createElement('style');
+        style.id = 'yui-guide-chat-spotlight-style';
+        style.textContent = [
+            '#yui-guide-chat-spotlight {',
+            '  position: fixed;',
+            '  z-index: 2147483200;',
+            '  pointer-events: none;',
+            '  box-sizing: border-box;',
+            '  border: 2px solid rgba(255, 218, 116, 0.98);',
+            '  box-shadow: 0 0 0 9999px rgba(10, 14, 28, 0.14), 0 0 22px rgba(255, 218, 116, 0.7);',
+            '  opacity: 0;',
+            '  transition: opacity 140ms ease, left 120ms ease, top 120ms ease, width 120ms ease, height 120ms ease;',
+            '}',
+            '#yui-guide-chat-spotlight.is-visible { opacity: 1; }'
+        ].join('\n');
+        (document.head || document.documentElement).appendChild(style);
+    }
+
     function getYuiGuideChatSpotlightElement() {
-        return document.getElementById('yui-guide-chat-spotlight');
+        var existing = document.getElementById('yui-guide-chat-spotlight');
+        if (existing) {
+            return existing;
+        }
+        if (!isStandaloneChatPage() || !document.body) {
+            return null;
+        }
+        ensureYuiGuideChatSpotlightStyle();
+        var spotlight = document.createElement('div');
+        spotlight.id = 'yui-guide-chat-spotlight';
+        spotlight.hidden = true;
+        spotlight.setAttribute('aria-hidden', 'true');
+        document.body.appendChild(spotlight);
+        return spotlight;
     }
 
     function getYuiGuideChatSpotlightTarget(kind) {
