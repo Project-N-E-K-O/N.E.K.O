@@ -6158,6 +6158,55 @@ function _panelGetRegisteredVoiceDisplayName(voiceId, voiceData) {
     return String(voiceId || '').trim();
 }
 
+// ── source-first 选声：把音色按「provider · 来源」分组（声音来源统一架构 §5）──
+// 品牌名跨语言通用，用 JS 常量；只有 local（本地 CosyVoice）/ free（免费）与「· 来源」
+// 后缀需本地化（voice.provider.* / voice.source.*）。
+const _PANEL_VOICE_PROVIDER_SHORT = Object.freeze({
+    cosyvoice: 'CosyVoice',
+    cosyvoice_intl: 'CosyVoice Intl',
+    minimax: 'MiniMax',
+    minimax_intl: 'MiniMax Intl',
+    elevenlabs: 'ElevenLabs',
+    gptsovits: 'GPT-SoVITS',
+    gemini: 'Gemini',
+    step: 'StepFun',
+    grok: 'Grok',
+    mimo: 'MiMo',
+    vllm_omni: 'vLLM-Omni',
+});
+
+function _panelVoiceI18n(key, fallback) {
+    if (window.t) {
+        const t = window.t(key);
+        if (t && t !== key) return t;
+    }
+    return fallback;
+}
+
+function _panelVoiceProviderShortName(provider) {
+    const p = String(provider || '').trim();
+    if (!p) return _panelVoiceI18n('voice.providerUnknown', '其他');
+    if (p === 'local') return _panelVoiceI18n('voice.providerLocal', '本地 CosyVoice');
+    if (p === 'free') return _panelVoiceI18n('voice.providerFree', '免费');
+    return _PANEL_VOICE_PROVIDER_SHORT[p] || p;
+}
+
+function _panelVoiceSourceLabel(source) {
+    const s = String(source || '').trim();
+    const map = {
+        preset: ['voice.sourcePreset', '预制'],
+        clone: ['voice.sourceClone', '克隆'],
+        design: ['voice.sourceDesign', '描述生成'],
+    };
+    const entry = map[s];
+    return entry ? _panelVoiceI18n(entry[0], entry[1]) : s;
+}
+
+// 「<Provider> · <来源>」组标签，如 "ElevenLabs · 克隆" / "Gemini · 预制"
+function _panelVoiceSourceGroupLabel(provider, source) {
+    return _panelVoiceProviderShortName(provider) + ' · ' + _panelVoiceSourceLabel(source);
+}
+
 // 创建音色自定义单选下拉，原生 select 只负责表单值。
 function _panelCreateVoiceSelectUi(selectEl) {
     const container = document.createElement('div');
@@ -6441,23 +6490,32 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
                 });
             }
 
-            // 添加音色选项
+            // 注册的克隆音色：按 provider 分组成「<Provider> · 克隆」optgroup（source-first，§5）。
+            // 同 provider 复用同一组；provider 缺失时归到「其他 · 克隆」。
+            const _cloneGroups = {};
             Object.entries(data.voices).forEach(function ([voiceId, voiceData]) {
+                const provider = (voiceData && voiceData.provider) || '';
+                if (!_cloneGroups[provider]) {
+                    const grp = document.createElement('optgroup');
+                    grp.label = _panelNormalizeVoiceGroupLabel(_panelVoiceSourceGroupLabel(provider, 'clone'));
+                    grp.dataset.voiceSourceGroup = 'clone';
+                    _cloneGroups[provider] = grp;
+                    selectEl.appendChild(grp);
+                }
                 const option = document.createElement('option');
                 option.value = voiceId;
                 // 克隆音色的可读名称存在 prefix 中，不能被角色占用信息或 voice_id 覆盖。
-                const displayName = _panelGetRegisteredVoiceDisplayName(voiceId, voiceData);
-                option.textContent = displayName;
+                option.textContent = _panelGetRegisteredVoiceDisplayName(voiceId, voiceData);
                 option.title = voiceId;
                 if (voiceId === currentVoiceId) option.selected = true;
-                selectEl.appendChild(option);
+                _cloneGroups[provider].appendChild(option);
             });
 
             // 免费预设音色
             if (data.free_voices && Object.keys(data.free_voices).length > 0) {
                 const freeGroup = document.createElement('optgroup');
-                const freeLabel = window.t ? window.t('character.freePresetVoices') : '免费预设音色';
-                freeGroup.label = _panelNormalizeVoiceGroupLabel(freeLabel);
+                freeGroup.label = _panelNormalizeVoiceGroupLabel(_panelVoiceSourceGroupLabel('free', 'preset'));
+                freeGroup.dataset.voiceSourceGroup = 'preset';
                 Object.entries(data.free_voices).forEach(function ([voiceKey, voiceId]) {
                     const option = document.createElement('option');
                     option.value = voiceId;
@@ -6486,7 +6544,13 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
                     .filter(function ([voiceId]) { return !renderedVoiceIds.has(String(voiceId).toLowerCase()); });
                 if (nativeEntries.length > 0) {
                     const nativeGroup = document.createElement('optgroup');
-                    nativeGroup.label = _panelNormalizeVoiceGroupLabel(_panelFormatNativeVoiceGroupLabel(nativeEntries));
+                    // native 预制：「<Provider> · 预制」（provider 取自 voiceData.provider_label/provider）
+                    const _nativeProviderLabel = _panelGetNativeVoiceProviderLabel(nativeEntries)
+                        || _panelVoiceI18n('voice.providerUnknown', '其他');
+                    nativeGroup.label = _panelNormalizeVoiceGroupLabel(
+                        _nativeProviderLabel + ' · ' + _panelVoiceSourceLabel('preset')
+                    );
+                    nativeGroup.dataset.voiceSourceGroup = 'preset';
                     nativeEntries.forEach(function ([voiceId, voiceData]) {
                         const option = document.createElement('option');
                         option.value = voiceId;
@@ -6543,9 +6607,9 @@ async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
         let gsvGroup = selectEl.querySelector('optgroup[data-gsv-group="true"]');
         if (!gsvGroup) {
             gsvGroup = document.createElement('optgroup');
-            const gsvLabel = window.t ? window.t('character.gptsovitsVoices') : 'GPT-SoVITS 声音';
-            gsvGroup.label = _panelNormalizeVoiceGroupLabel(gsvLabel);
+            gsvGroup.label = _panelNormalizeVoiceGroupLabel(_panelVoiceSourceGroupLabel('gptsovits', 'clone'));
             gsvGroup.dataset.gsvGroup = 'true';
+            gsvGroup.dataset.voiceSourceGroup = 'clone';
             selectEl.appendChild(gsvGroup);
         }
         const fallbackOpt = document.createElement('option');
@@ -6603,9 +6667,9 @@ async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
         const result = await resp.json().catch(() => ({}));
         if (result.success && Array.isArray(result.voices) && result.voices.length > 0) {
             const gsvGroup = document.createElement('optgroup');
-            const gsvLabel = window.t ? window.t('character.gptsovitsVoices') : 'GPT-SoVITS 声音';
-            gsvGroup.label = _panelNormalizeVoiceGroupLabel(gsvLabel);
+            gsvGroup.label = _panelNormalizeVoiceGroupLabel(_panelVoiceSourceGroupLabel('gptsovits', 'clone'));
             gsvGroup.dataset.gsvGroup = 'true';
+            gsvGroup.dataset.voiceSourceGroup = 'clone';
             result.voices.forEach(function (v) {
                 const option = document.createElement('option');
                 option.value = v.voice_id;
