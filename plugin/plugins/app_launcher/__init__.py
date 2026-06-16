@@ -71,6 +71,9 @@ def _is_valid_path(path: str) -> bool:
     path = path.strip()
     if not path:
         return False
+    # 先去除引号，支持 Windows 资源管理器复制的带引号路径
+    if (path.startswith('"') and path.endswith('"')) or (path.startswith("'") and path.endswith("'")):
+        path = path[1:-1]
     path = os.path.expandvars(path)
     if not os.path.isabs(path):
         return False
@@ -727,7 +730,7 @@ class AppLauncherPlugin(NekoPluginBase):
         },
         llm_result_fields=["app_id", "name", "message"],
     )
-    async def update_app(self, app_id: str, name: str = "", path: str = "", aliases: Optional[List[str]] = None, description: str = "", **_):
+    async def update_app(self, app_id: str, name: str = "", path: str = "", aliases: Optional[List[str]] = None, description: Optional[str] = None, **_):
         """更新软件信息"""
         app_id = app_id.strip()
         if not app_id:
@@ -745,6 +748,8 @@ class AppLauncherPlugin(NekoPluginBase):
                 return Err(SdkError(f"未找到软件: {app_id}"))
 
             app = apps[target_idx]
+            old_path = app.get("path", "")
+            path_changed = False
 
             if name and name.strip():
                 app["name"] = name.strip()
@@ -755,6 +760,7 @@ class AppLauncherPlugin(NekoPluginBase):
                 app["path"] = new_path
                 app["resolved_path"] = _resolve_path(new_path)
                 app["type"] = _get_file_type(app["resolved_path"])
+                path_changed = new_path != old_path
             if aliases is not None:
                 processed = []
                 for alias in aliases:
@@ -768,6 +774,10 @@ class AppLauncherPlugin(NekoPluginBase):
             app["updated_at"] = _now()
             apps[target_idx] = app
             self._save_apps_unlocked(apps)
+
+            # 路径改变时刷新开机自启命令
+            if path_changed and app.get("autostart", False):
+                _set_autostart_windows(app_id, app.get("name", ""), app.get("path", ""), True)
 
         self.logger.info("App updated: id={} name={}", app_id, app.get("name"))
 
