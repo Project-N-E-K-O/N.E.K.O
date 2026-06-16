@@ -71,6 +71,7 @@ describe('message-schema', () => {
     expect(props.choicePrompt?.source).toBe('new_user_icebreaker');
     props.onChoiceSelect?.(props.choicePrompt!.options[0]!, 'new_user_icebreaker');
     expect(onChoiceSelect).toHaveBeenCalledTimes(1);
+    expect(onChoiceSelect).toHaveBeenCalledWith(props.choicePrompt!.options[0]!, 'new_user_icebreaker');
   });
 
   it('accepts chat surface mode props', () => {

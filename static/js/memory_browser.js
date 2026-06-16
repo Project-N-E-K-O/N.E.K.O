@@ -1385,12 +1385,10 @@
                 if (storageLocationState && storageLocationState.limited) {
                     renderMemoryBrowserLimitedState(storageLocationState);
                 }
+                refreshTutorialCascaderDayLabels();
+                syncTutorialResetCascader();
             });
         }
-        window.addEventListener('localechange', function () {
-            refreshTutorialCascaderDayLabels();
-            syncTutorialResetCascader();
-        });
 
         const openStorageBtn = document.getElementById('storage-location-open-btn');
         if (openStorageBtn) {

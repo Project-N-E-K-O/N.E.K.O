@@ -431,7 +431,9 @@ def analyze(result: dict[str, Any]) -> tuple[list[Finding], dict[str, Any]]:
             not chat_wobble_after_clear and chat_result.get("hasLocalCursor") is False,
             "External chat local cursor retry stays cleared after greeting clear",
             "清 cursor 后等待 720ms，没有旧重试重新触发聊天窗本地 ghost wobble。",
-            f"清 cursor 后仍有聊天窗本地 wobble: {json.dumps(chat_wobble_after_clear, ensure_ascii=False)}",
+            "清 cursor 后本地状态异常: "
+            f"chat_wobble_after_clear={json.dumps(chat_wobble_after_clear, ensure_ascii=False)}, "
+            f"hasLocalCursor={chat_result.get('hasLocalCursor')}",
         ),
         _finding(
             not chat_local_animations and bool(chat_pc_cursor_updates),
