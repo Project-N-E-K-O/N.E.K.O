@@ -313,6 +313,41 @@ def test_mimo_chat_completions_url_maps_ws_to_https_not_plaintext():
 
 
 @pytest.mark.unit
+def test_extract_mimo_audio_bytes_tolerates_non_string_audio():
+    from utils.voice_clone import _extract_mimo_audio_bytes
+    # a malformed upstream payload (audio.data is a number/list) must not raise TypeError
+    assert _extract_mimo_audio_bytes({"choices": [{"message": {"audio": {"data": 12345}}}]}) == b""
+    assert _extract_mimo_audio_bytes({"choices": [{"message": {"audio": {"data": ["x"]}}}]}) == b""
+
+
+@pytest.mark.unit
+async def test_mimo_validate_sample_requires_audio(monkeypatch):
+    from utils.voice_clone import MimoVoiceCloneClient, MimoVoiceCloneError
+
+    class _Transport(httpx.AsyncBaseTransport):
+        def __init__(self, with_audio):
+            self.with_audio = with_audio
+
+        async def handle_async_request(self, request):
+            if self.with_audio:
+                return httpx.Response(200, json={
+                    "choices": [{"message": {"audio": {"data": base64.b64encode(b"abc").decode()}}}]
+                })
+            return httpx.Response(200, json={"choices": [{"message": {"content": "no audio here"}}]})
+
+    original = httpx.AsyncClient
+
+    # 200 but no audio → enrollment must fail
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: original(*a, **{**k, "transport": _Transport(False)}))
+    with pytest.raises(MimoVoiceCloneError):
+        await MimoVoiceCloneClient(api_key="k").validate_sample(b"s", "audio/wav")
+
+    # 200 with audio → passes
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: original(*a, **{**k, "transport": _Transport(True)}))
+    await MimoVoiceCloneClient(api_key="k").validate_sample(b"s", "audio/wav")
+
+
+@pytest.mark.unit
 def test_mimo_voice_clone_data_uri_falls_back_on_blank_mime():
     from utils.mimo_tts_voices import mimo_voice_clone_data_uri
     # whitespace-only / empty mime must fall back to audio/wav, never "data:;base64,"

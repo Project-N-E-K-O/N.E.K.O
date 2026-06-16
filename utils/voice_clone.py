@@ -391,7 +391,8 @@ def _extract_mimo_audio_bytes(payload: dict) -> bytes:
             continue
         try:
             return base64.b64decode(b64)
-        except (binascii.Error, ValueError):
+        except (binascii.Error, ValueError, TypeError):
+            # 上游返回了非字符串/非 bytes 的 audio 字段也不应冒泡，按"无音频"继续尝试下一候选。
             continue
     return b''
 
@@ -458,10 +459,17 @@ class MimoVoiceCloneClient:
     ) -> None:
         """Synthesize a short line with the reference sample to confirm it works.
 
+        Confirms the call actually *produced audio* (not just HTTP 200): if the
+        upstream returns success but an empty/missing audio field the sample is
+        unusable, and enrollment must fail here rather than going silent at
+        runtime / preview.
+
         Raises:
-            MimoVoiceCloneError on a non-200 response / network failure.
+            MimoVoiceCloneError on a non-200 response / network failure / no audio.
         """
-        await self._post(self._build_payload(audio_bytes, mime_type, sample_text))
+        data = await self._post(self._build_payload(audio_bytes, mime_type, sample_text))
+        if not _extract_mimo_audio_bytes(data):
+            raise MimoVoiceCloneError("MiMo 校验未产出音频，参考样本可能不可用")
 
     async def synthesize_preview(
         self,
