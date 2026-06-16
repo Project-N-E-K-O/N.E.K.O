@@ -445,16 +445,26 @@ function getVoiceCloneProviderKeyField(provider) {
     return entry ? entry[1] : '';
 }
 
-// MiMo 的可用凭据可能在普通 key 或 Token Plan key 任一字段——若用户只开了 Token Plan，
-// 凭据只在 assistApiKeyMimoTokenPlan 里，单看 assistApiKeyMimo 会误判 MiMo 无 key 不能克隆。
+// MiMo 的可用凭据在普通 key 或 Token Plan key 两个字段之一——但**不是 OR**：后端
+// get_tts_api_key('mimo') 严格按「assistApi=='mimo' 且 useMimoTokenPlan」二选一取其中一个
+// （token plan 激活取 assistApiKeyMimoTokenPlan，否则取 assistApiKeyMimo）。前端可用性判定必须
+// 镜像同一条规则，否则会出现「OR 判定有 key 但后端取的是另一个空字段 → 上传后 400」的假阳性
+// （Codex review #1851）。
 const VOICE_CLONE_MIMO_TOKEN_PLAN_KEY_FIELD = 'assistApiKeyMimoTokenPlan';
+
+function getActiveMimoKeyField(cfg) {
+    const tokenPlanActive = String((cfg && cfg.assistApi) || '').trim().toLowerCase() === 'mimo'
+        && !!(cfg && cfg.useMimoTokenPlan);
+    return tokenPlanActive ? VOICE_CLONE_MIMO_TOKEN_PLAN_KEY_FIELD : 'assistApiKeyMimo';
+}
 
 function cfgHasCloneProviderKey(cfg, provider) {
     if (!cfg || typeof cfg !== 'object') return false;
+    if (provider === 'mimo') {
+        return !!cfg[getActiveMimoKeyField(cfg)];
+    }
     const fieldName = getVoiceCloneProviderKeyField(provider);
-    if (fieldName && cfg[fieldName]) return true;
-    if (provider === 'mimo' && cfg[VOICE_CLONE_MIMO_TOKEN_PLAN_KEY_FIELD]) return true;
-    return false;
+    return !!(fieldName && cfg[fieldName]);
 }
 
 function getVoiceCloneProviderRegistryKey(provider) {
