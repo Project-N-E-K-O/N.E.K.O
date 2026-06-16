@@ -37,6 +37,7 @@ from typing import Any, Awaitable, Callable, Optional
 # None collapses both into the same code path and would let recovery /
 # proactive paths accidentally bind their messages to a newer request_id.
 _REQUEST_ID_UNSET: Any = object()
+_MAGIC_COMMAND_IMAGE_DROP_REQUEST_MAX = 64
 _VOICE_PROACTIVE_ACK_GRACE_S = 0.05
 from datetime import datetime
 from websockets import exceptions as web_exceptions
@@ -71,6 +72,7 @@ from main_logic.proactive_delivery import (
 from main_logic.agent_event_bus import (
     dispatch_text_user_message,
     dispatch_user_utterance,
+    publish_analyze_request_reliably,
     publish_voice_transcript_observed_best_effort,
 )
 from utils.preferences import load_global_conversation_settings, aload_global_conversation_settings
@@ -543,9 +545,6 @@ from uuid import uuid4
 import numpy as np
 import soxr
 import httpx
-from main_logic.agent_event_bus import (
-    publish_analyze_request_reliably,
-)
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
@@ -883,6 +882,7 @@ class LLMSessionManager:
             'browser_use_enabled': False,
             'user_plugin_enabled': False,
             'openclaw_enabled': False,
+            'openclaw_ready': False,
             'openfang_enabled': False,
         }
         
@@ -919,6 +919,8 @@ class LLMSessionManager:
         self._tts_done_queued_for_turn: bool = False  # 防止同一轮次多次排入 TTS 结束信号
         self._tts_done_pending_until_ready: bool = False  # TTS未就绪时延迟到 flush 后再排入结束信号
         self._active_text_request_id: Optional[str] = None
+        self._magic_command_image_drop_request_ids: set[str] = set()
+        self._magic_command_image_drop_request_order: deque[str] = deque()
         
         # 输入数据缓存机制：确保session初始化期间的输入不丢失
         self.session_ready = False  # Session是否完全就绪
@@ -1766,6 +1768,8 @@ class LLMSessionManager:
         if pending_meta:
             turn_end_msg['meta'] = pending_meta
             self._pending_turn_meta = None
+        if active_request_id:
+            turn_end_msg['request_id'] = active_request_id
         self.sync_message_queue.put(turn_end_msg)
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
@@ -1783,6 +1787,31 @@ class LLMSessionManager:
         # 走这里）。text 用于 unfinished_thread 检测——tracker 跑问号启发式决定
         # 要不要开 5min 跟进窗口；为 None 时不开窗，但仍更新 seconds_since_ai_msg。
         self._flush_ai_turn_text_to_tracker()
+
+    async def _emit_agent_callback_turn_end(self, active_request_id) -> None:
+        turn_end_msg: dict = {'type': 'system', 'data': 'turn end agent_callback'}
+        if active_request_id:
+            turn_end_msg['request_id'] = active_request_id
+        self.sync_message_queue.put(turn_end_msg)
+        try:
+            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                await self.websocket.send_json(turn_end_msg)
+        except Exception as e:
+            logger.error(f"💥 WS Send Agent Callback Turn End Error: {e}")
+
+    def _mark_magic_command_image_drop_request(self, request_id: object) -> None:
+        request_id_str = str(request_id or "")
+        if not request_id_str or request_id_str in self._magic_command_image_drop_request_ids:
+            return
+        self._magic_command_image_drop_request_ids.add(request_id_str)
+        self._magic_command_image_drop_request_order.append(request_id_str)
+        while len(self._magic_command_image_drop_request_order) > _MAGIC_COMMAND_IMAGE_DROP_REQUEST_MAX:
+            stale_request_id = self._magic_command_image_drop_request_order.popleft()
+            self._magic_command_image_drop_request_ids.discard(stale_request_id)
+
+    def _should_drop_magic_command_image(self, request_id: object) -> bool:
+        request_id_str = str(request_id or "")
+        return bool(request_id_str and request_id_str in self._magic_command_image_drop_request_ids)
 
     async def handle_response_complete(self):
         """Qwen completion callback: handles the Core API's response-complete event, including TTS and hot-swap logic"""
@@ -2310,13 +2339,72 @@ class LLMSessionManager:
                 f"WS push failed: {_push_err}",
             )
 
+    async def handle_text_input_transcript(self, transcript: str):
+        """Reuse transcript queue/cache plumbing for text-mode sessions."""
+        await self.handle_input_transcript(transcript, is_voice_source=False)
+
+    @staticmethod
+    def _normalize_explicit_openclaw_magic_command(text: str) -> Optional[str]:
+        raw = str(text or "").strip()
+        if not raw:
+            return None
+        lowered = " ".join(raw.lower().split())
+        prefix = None
+        for candidate in ("/openclaw ", "/qwenpaw "):
+            if lowered.startswith(candidate):
+                prefix = candidate
+                break
+        if prefix is None:
+            return None
+        command = lowered[len(prefix):].strip()
+        if command in {"/clear", "clear"}:
+            return "/clear"
+        if command in {"/new", "new"}:
+            return "/new"
+        if command in {"/stop", "stop"}:
+            return "/stop"
+        if command in {"/daemon approve", "daemon approve", "/approve", "approve"}:
+            return "/daemon approve"
+        return None
+
+    def _clear_text_pending_images(self) -> None:
+        if not isinstance(self.session, OmniOfflineClient):
+            return
+        pending_images = getattr(self.session, "_pending_images", None)
+        if hasattr(pending_images, "clear"):
+            pending_images.clear()
+
+    async def _publish_openclaw_magic_command(self, command: str) -> None:
+        try:
+            sent = await publish_analyze_request_reliably(
+                lanlan_name=self.lanlan_name,
+                trigger="text_openclaw_magic_command",
+                messages=[{"role": "user", "content": command}],
+                ack_timeout_s=0.8,
+                retries=1,
+                conversation_id=uuid4().hex,
+            )
+        except Exception as exc:
+            logger.warning("[%s] openclaw magic command publish failed: %s", self.lanlan_name, exc)
+            await self.send_status(json.dumps({
+                "code": "OPENCLAW_COMMAND_DISPATCH_FAILED",
+                "details": {"command": command},
+            }))
+            return
+        if not sent:
+            logger.warning("[%s] openclaw magic command publish failed: no ack", self.lanlan_name)
+            await self.send_status(json.dumps({
+                "code": "OPENCLAW_COMMAND_DISPATCH_FAILED",
+                "details": {"command": command},
+            }))
+
     async def handle_input_transcript(self, transcript: str, *, is_voice_source: bool = True):
-        """Input transcription callback: sync transcribed text to the message queue and cache, and send it to the frontend for display
+        """Sync transcript text into queues/cache and push it to the frontend.
 
         ``is_voice_source`` defaults to True for the realtime-client
         callbacks (genuine VAD-captured speech). Text-mode call sites
-        that reuse this function for non-voice paths (e.g. openclaw
-        handoff at ``_dispatch_openclaw_handoff``) pass False so that:
+        that reuse this function for non-voice transcript display/cache paths
+        pass False so that:
           - voice_rms is NOT marked (no fake voice_engaged state)
           - on_user_message is skipped here (the text-mode entry has
             already called it directly with the input data — calling
@@ -2402,15 +2490,14 @@ class LLMSessionManager:
                     _tt.note_first_user_message("voice")
                     # 每条用户消息：user_message_sent counter（轮数 + voice/text 占比）
                     # + 累加 per-session 轮数（session_end emit session_turn_count）。
-                    # 只在此真语音消息点调，避开 2041 openclaw 文本 handoff 复用，杜绝双计。
+                    # 只在此真语音消息点调，避开非语音复用路径，杜绝双计。
                     _tt.note_user_message("voice")
                 except Exception:
                     # 埋点 best-effort，绝不阻塞语音转录消息处理（同文本路径）。
                     pass
                 # 与 on_user_message 对偶：把"用户原话"推到插件总线 user-context
                 # bucket。文本路径在 _process_stream_data_internal 已自行调用，
-                # 这里只覆盖语音路径，避免 openclaw handoff（is_voice_source=False）
-                # 重复发布。
+                # 这里只覆盖语音路径，避免非语音复用路径重复发布。
                 self._publish_user_utterance_to_plugin_bus(transcript, is_voice_source=True)
 
                 # Mini-game 邀请关键词兜底：与文本路径
@@ -2420,7 +2507,7 @@ class LLMSessionManager:
                 # dismiss 反复重来。详见 _dispatch_mini_game_invite_keyword。
                 await self._dispatch_mini_game_invite_keyword(transcript)
         else:
-            # Non-voice reuse of this method (e.g. openclaw text handoff).
+            # Non-voice reuse of this method.
             # Skip activity-tracker hooks entirely — the text-mode entry
             # at `_process_stream_data_internal` has already recorded the
             # user message. We still need the queue/cache plumbing below
@@ -2429,7 +2516,10 @@ class LLMSessionManager:
                 self._session_turn_count += 1
 
         # 推送到同步消息队列
-        self.sync_message_queue.put({"type": "user", "data": {"input_type": "transcript", "data": transcript.strip()}})
+        user_message = {"input_type": "transcript", "data": transcript.strip()}
+        if not is_voice_source and self._active_text_request_id:
+            user_message["request_id"] = self._active_text_request_id
+        self.sync_message_queue.put({"type": "user", "data": user_message})
         
         # 只在语音模式（OmniRealtimeClient）下发送到前端显示用户转录
         # 文本模式下前端会自己显示，无需后端发送，避免重复
@@ -4662,7 +4752,7 @@ class LLMSessionManager:
                         vision_base_url=vision_config['base_url'],
                         vision_api_key=vision_config['api_key'],
                         on_text_delta=self.handle_text_data,
-                        on_input_transcript=self.handle_input_transcript,
+                        on_input_transcript=self.handle_text_input_transcript,
                         on_output_transcript=self.handle_output_transcript,
                         on_connection_error=self.handle_connection_error,
                         on_response_done=self.handle_response_complete,
@@ -5136,7 +5226,7 @@ class LLMSessionManager:
                     vision_base_url=vision_config['base_url'],
                     vision_api_key=vision_config['api_key'],
                     on_text_delta=self.handle_text_data,
-                    on_input_transcript=self.handle_input_transcript,
+                    on_input_transcript=self.handle_text_input_transcript,
                     on_output_transcript=self.handle_output_transcript,
                     on_connection_error=self.handle_connection_error,
                     on_response_done=self.handle_response_complete,
@@ -5257,172 +5347,19 @@ class LLMSessionManager:
     # 供主服务调用，更新Agent模式相关开关
     def update_agent_flags(self, flags: dict):
         try:
-            for k in ['agent_enabled', 'computer_use_enabled', 'browser_use_enabled', 'user_plugin_enabled', 'openclaw_enabled', 'openfang_enabled']:
+            for k in [
+                'agent_enabled',
+                'computer_use_enabled',
+                'browser_use_enabled',
+                'user_plugin_enabled',
+                'openclaw_enabled',
+                'openclaw_ready',
+                'openfang_enabled',
+            ]:
                 if k in flags and isinstance(flags[k], bool):
                     self.agent_flags[k] = flags[k]
         except Exception:
             pass
-
-    @staticmethod
-    def _extract_openclaw_history_entry(message_obj) -> Optional[dict]:
-        role_name = type(message_obj).__name__
-        if role_name == "HumanMessage":
-            role = "user"
-        elif role_name == "AIMessage":
-            role = "assistant"
-        else:
-            return None
-
-        raw_content = getattr(message_obj, "content", None)
-        text_parts: list[str] = []
-        attachments: list[dict] = []
-
-        if isinstance(raw_content, str):
-            if raw_content.strip():
-                text_parts.append(raw_content.strip())
-        elif isinstance(raw_content, list):
-            for item in raw_content:
-                if not isinstance(item, dict):
-                    continue
-                item_type = str(item.get("type") or "").strip()
-                if item_type in {"text", "input_text", "output_text"}:
-                    text = str(item.get("text") or "").strip()
-                    if text:
-                        text_parts.append(text)
-                elif item_type == "image_url":
-                    image_url = item.get("image_url")
-                    if isinstance(image_url, dict):
-                        url = str(image_url.get("url") or "").strip()
-                    else:
-                        url = str(item.get("url") or "").strip()
-                    if url:
-                        attachments.append({"type": "image_url", "url": url})
-
-        if not text_parts and not attachments:
-            return None
-
-        entry = {
-            "role": role,
-            "content": "\n".join(text_parts).strip(),
-        }
-        if attachments:
-            entry["attachments"] = attachments
-        return entry
-
-    def _build_openclaw_handoff_messages(self, user_text: str) -> list[dict]:
-        messages: list[dict] = []
-        history = getattr(self.session, "_conversation_history", None)
-        if isinstance(history, list):
-            for item in history[-6:]:
-                entry = self._extract_openclaw_history_entry(item)
-                if entry:
-                    messages.append(entry)
-
-        attachments: list[dict] = []
-        pending_images = getattr(self.session, "_pending_images", None)
-        if isinstance(pending_images, list):
-            for image_b64 in pending_images:
-                image_b64 = str(image_b64 or "").strip()
-                if image_b64:
-                    attachments.append({
-                        "type": "image_url",
-                        "url": f"data:image/jpeg;base64,{image_b64}",
-                    })
-
-        current = {"role": "user", "content": str(user_text or "").strip()}
-        if attachments:
-            current["attachments"] = attachments
-        if current["content"] or attachments:
-            messages.append(current)
-        return messages[-6:]
-
-    def _fallback_should_handoff_to_openclaw(self, user_text: str) -> bool:
-        pending_images = getattr(self.session, "_pending_images", None)
-        if isinstance(pending_images, list) and any(str(item or "").strip() for item in pending_images):
-            return True
-
-        text = str(user_text or "").strip().lower()
-        if not text:
-            return False
-
-        strong_keywords = (
-            "帮我查", "查下", "查一下", "查一查", "找下", "找一下", "搜一下", "搜索",
-            "打开", "浏览", "查看", "整理", "下载", "截图", "图片", "照片",
-            "文件", "文件夹", "桌面", "代码", "报错", "修复", "天气", "新闻",
-            "search", "find", "look up", "browse", "open ", "openclaw", "qwenpaw",
-        )
-        return any(token in text for token in strong_keywords)
-
-    async def _should_handoff_text_to_openclaw(self, user_text: str) -> tuple[bool, list[dict]]:
-        if not (
-            self._is_agent_enabled()
-            and self.agent_flags.get("openclaw_enabled", False)
-            and isinstance(self.session, OmniOfflineClient)
-        ):
-            return False, []
-
-        messages = self._build_openclaw_handoff_messages(user_text)
-        if not messages:
-            return False, []
-
-        payload = {
-            "lanlan_name": self.lanlan_name,
-            "messages": messages,
-            "conversation_id": uuid4().hex,
-            "lang": normalize_language_code(self.user_language, format='short') or "en",
-        }
-
-        try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(12.0, connect=2.0),
-                proxy=None,
-                trust_env=False,
-            ) as client:
-                resp = await client.post(
-                    f"http://127.0.0.1:{TOOL_SERVER_PORT}/openclaw/preflight",
-                    json=payload,
-                )
-                if resp.status_code != 200:
-                    logger.debug(
-                        "[%s] openclaw preflight rejected: status=%s",
-                        self.lanlan_name,
-                        resp.status_code,
-                    )
-                    return self._fallback_should_handoff_to_openclaw(user_text), messages
-                data = resp.json() if resp.content else {}
-                return bool(data.get("should_handoff")), messages
-        except Exception as e:
-            logger.debug("[%s] openclaw preflight failed: %s", self.lanlan_name, e)
-            return self._fallback_should_handoff_to_openclaw(user_text), messages
-
-    async def _dispatch_openclaw_handoff(self, user_text: str, messages: list[dict]) -> bool:
-        if not messages:
-            return False
-
-        try:
-            sent = await publish_analyze_request_reliably(
-                lanlan_name=self.lanlan_name,
-                trigger="text_preflight_openclaw",
-                messages=messages,
-                ack_timeout_s=0.8,
-                retries=1,
-                conversation_id=uuid4().hex,
-            )
-        except Exception as e:
-            logger.info("[%s] openclaw handoff publish failed: %s", self.lanlan_name, e)
-            return False
-
-        if not sent:
-            return False
-
-        # Text mode → voice tracker hooks would lie. Pass is_voice_source=False
-        # so on_voice_rms / on_user_message aren't fired again (text-mode entry
-        # already called on_user_message directly with this same data).
-        await self.handle_input_transcript(user_text, is_voice_source=False)
-        pending_images = getattr(self.session, "_pending_images", None)
-        if isinstance(pending_images, list):
-            pending_images.clear()
-        return True
 
     # ------------------------------------------------------------------
     # Voice-chat proactive audio nudge (dedicated path)
@@ -7767,8 +7704,7 @@ class LLMSessionManager:
                         pass
                     # 与 on_user_message 对偶：把"用户原话"推到插件总线 user-context
                     # bucket。语音路径在 handle_input_transcript 里发布，这里只覆盖
-                    # 文本路径，避免 openclaw handoff（会再走一次 handle_input_transcript
-                    # 但 is_voice_source=False，不会重复发布）。
+                    # 文本路径，避免与语音入口重复发布。
                     self._publish_user_utterance_to_plugin_bus(
                         data if isinstance(data, str) else None,
                         is_voice_source=False,
@@ -7783,13 +7719,29 @@ class LLMSessionManager:
                         data if isinstance(data, str) else '',
                     )
 
-                    should_handoff, openclaw_messages = await self._should_handoff_text_to_openclaw(data)
-                    if should_handoff:
-                        handed_off = await self._dispatch_openclaw_handoff(data, openclaw_messages)
-                        if handed_off:
-                            logger.info("[%s] text input handed off to openclaw, skipping local LLM reply", self.lanlan_name)
-                            return
-                        logger.info("[%s] openclaw handoff fallback: publish failed, continue local LLM reply", self.lanlan_name)
+                    openclaw_magic_command = self._normalize_explicit_openclaw_magic_command(data)
+                    if (
+                        openclaw_magic_command
+                        and self._is_agent_enabled()
+                        and self.agent_flags.get("openclaw_enabled", False)
+                        and self.agent_flags.get("openclaw_ready", False)
+                    ):
+                        self._session_turn_count += 1
+                        self._clear_text_pending_images()
+                        self._mark_magic_command_image_drop_request(message.get("request_id"))
+                        await self.mirror_user_input(
+                            data,
+                            metadata={
+                                "source": "openclaw",
+                                "kind": "magic_command",
+                                "command": openclaw_magic_command,
+                            },
+                            request_id=message.get("request_id"),
+                        )
+                        await self._emit_agent_callback_turn_end(message.get("request_id"))
+                        self._fire_task(self._publish_openclaw_magic_command(openclaw_magic_command))
+                        logger.info("[%s] text input sent explicit openclaw magic command", self.lanlan_name)
+                        return
 
                     # 文本模式：把挂起的 agent 任务回调**就地拼到本轮 user
                     # message 的 content 前缀**——LLM 把它当作"用户当前发声那
@@ -7964,6 +7916,8 @@ class LLMSessionManager:
 
             elif input_type in ['screen', 'camera']:
                 try:
+                    if self._should_drop_magic_command_image(message.get("request_id")):
+                        return
                     # 使用统一的屏幕分享工具处理数据（只验证，不缩放）
                     image_b64 = await process_screen_data(data)
 
@@ -7987,6 +7941,16 @@ class LLMSessionManager:
                         if isinstance(self.session, OmniOfflineClient):
                             # 只添加到待发送队列，等待与文本一起发送
                             await self.session.stream_image(image_b64)
+                            image_message = {
+                                "input_type": input_type,
+                                "data": f"data:image/jpeg;base64,{image_b64}",
+                            }
+                            if message.get("request_id"):
+                                image_message["request_id"] = message.get("request_id")
+                            self.sync_message_queue.put({
+                                "type": "user",
+                                "data": image_message,
+                            })
 
                         # 如果是语音模式（OmniRealtimeClient），检查是否支持视觉并直接发送
                         elif isinstance(self.session, OmniRealtimeClient):

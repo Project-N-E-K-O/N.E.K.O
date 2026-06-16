@@ -1056,6 +1056,15 @@ def _openclaw_pending() -> bool:
     return bool(task and not task.done())
 
 
+def _agent_flags_snapshot() -> Dict[str, Any]:
+    flags = dict(Modules.agent_flags or {})
+    openclaw_capability = (Modules.capability_cache or {}).get("openclaw") or {}
+    flags["openclaw_ready"] = bool(flags.get("openclaw_enabled")) and bool(
+        openclaw_capability.get("ready")
+    )
+    return flags
+
+
 def _cancel_openclaw_enable_probe() -> None:
     Modules.openclaw_enable_seq += 1
     task = getattr(Modules, "openclaw_enable_task", None)
@@ -1114,6 +1123,25 @@ def _openclaw_notification(code: str, reasons: Any) -> str:
         "code": code,
         "details": {"reason": reason, "reason_code": _openclaw_reason_code(reasons)},
     })
+
+
+def _start_openclaw_enable_probe(lanlan_name: Optional[str]) -> None:
+    adapter = Modules.openclaw
+    if not adapter:
+        _cancel_openclaw_enable_probe()
+        Modules.agent_flags["openclaw_enabled"] = False
+        _set_capability("openclaw", False, "AGENT_OPENCLAW_MODULE_NOT_LOADED")
+        Modules.notification = json.dumps({"code": "AGENT_OPENCLAW_MODULE_NOT_LOADED"})
+        return
+
+    _cancel_openclaw_enable_probe()
+    Modules.agent_flags["openclaw_enabled"] = True
+    _set_capability("openclaw", False, "AGENT_PRECHECK_PENDING")
+    Modules.notification = json.dumps({"code": "AGENT_OPENCLAW_ENABLED_CHECKING"})
+    task = asyncio.create_task(_run_openclaw_enable_probe(Modules.openclaw_enable_seq, lanlan_name))
+    Modules.openclaw_enable_task = task
+    Modules._persistent_tasks.add(task)
+    task.add_done_callback(Modules._persistent_tasks.discard)
 
 
 async def _run_openclaw_enable_probe(seq: int, lanlan_name: Optional[str]) -> None:
@@ -1389,7 +1417,7 @@ async def _emit_main_event(event_type: str, lanlan_name: Optional[str], **payloa
 
 def _collect_agent_status_snapshot() -> Dict[str, Any]:
     gate = _check_agent_api_gate()
-    flags = dict(Modules.agent_flags or {})
+    flags = _agent_flags_snapshot()
     capabilities = dict(Modules.capability_cache or {})
     # Periodic cleanup of completed tasks to prevent memory leak
     # Note: _emit_agent_status_update also calls this and handles timed_out tasks
@@ -1523,6 +1551,17 @@ def _build_user_turn_fingerprint(messages: Any) -> Optional[str]:
         return None
     payload_bytes = "\n".join(user_parts).encode("utf-8", errors="ignore")
     return hashlib.sha256(payload_bytes).hexdigest()
+
+
+def _build_analyze_event_fingerprint(event: Dict[str, Any]) -> Optional[str]:
+    fp = _build_user_turn_fingerprint(event.get("messages", []))
+    if fp is None:
+        return None
+    if event.get("trigger") == "text_openclaw_magic_command":
+        turn_marker = str(event.get("event_id") or event.get("conversation_id") or "").strip()
+        if turn_marker:
+            fp = f"{fp}\n[openclaw_magic_turn:{turn_marker}]"
+    return fp
 
 
 def _user_message_signature(message: Any) -> Optional[str]:
@@ -1771,7 +1810,7 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
         if isinstance(messages, list) and messages:
             # Consume only new user turn. Assistant turn_end without new user input should be ignored.
             lanlan_key = _normalize_lanlan_key(lanlan_name)
-            fp = _build_user_turn_fingerprint(messages)
+            fp = _build_analyze_event_fingerprint(event)
             if fp is None:
                 logger.info("[AgentAnalyze] skip analyze: no user message found (trigger=%s lanlan=%s)", event.get("trigger"), lanlan_name)
                 return
@@ -3692,68 +3731,6 @@ async def health():
     )
 
 
-@app.post("/openclaw/preflight")
-async def openclaw_preflight(payload: Dict[str, Any]):
-    """Quickly decide whether the current input should be taken over by OpenClaw(QwenPaw)."""
-    if not Modules.task_executor:
-        raise HTTPException(503, "Task executor not ready")
-
-    if not Modules.analyzer_enabled:
-        return {
-            "success": True,
-            "should_handoff": False,
-            "reason": "analyzer_disabled",
-        }
-
-    if not Modules.agent_flags.get("openclaw_enabled", False):
-        return {
-            "success": True,
-            "should_handoff": False,
-            "reason": "openclaw_disabled",
-        }
-
-    messages = (payload or {}).get("messages") or []
-    if not isinstance(messages, list) or not messages:
-        raise HTTPException(400, "messages required")
-
-    lanlan_name = (payload or {}).get("lanlan_name")
-    conversation_id = (payload or {}).get("conversation_id")
-    lang = str((payload or {}).get("lang") or "en")
-
-    flags = {
-        "computer_use_enabled": False,
-        "browser_use_enabled": False,
-        "user_plugin_enabled": False,
-        "openclaw_enabled": True,
-        "openfang_enabled": False,
-    }
-
-    result = await Modules.task_executor.analyze_and_execute(
-        messages=messages,
-        lanlan_name=lanlan_name,
-        agent_flags=flags,
-        conversation_id=conversation_id,
-        lang=lang,
-    )
-
-    should_handoff = bool(
-        result
-        and getattr(result, "has_task", False)
-        and getattr(result, "execution_method", "") == "openclaw"
-    )
-    tool_args = result.tool_args if isinstance(getattr(result, "tool_args", None), dict) else {}
-
-    return {
-        "success": True,
-        "should_handoff": should_handoff,
-        "execution_method": getattr(result, "execution_method", None) if result else None,
-        "task_description": getattr(result, "task_description", "") if result else "",
-        "reason": getattr(result, "reason", "") if result else "",
-        "magic_command": tool_args.get("magic_command"),
-        "direct_reply": bool(tool_args.get("direct_reply")) if tool_args else False,
-    }
-
-
 # 插件直接触发路由（放在顶层，确保不在其它函数体内）
 @app.post("/plugin/execute")
 async def plugin_execute_direct(payload: Dict[str, Any]):
@@ -4570,9 +4547,12 @@ async def openclaw_availability():
     reasons = status.get("reasons", []) if isinstance(status, dict) else []
     pending = _openclaw_pending()
     if ready:
+        was_ready = bool(((Modules.capability_cache or {}).get("openclaw") or {}).get("ready"))
         if pending:
             _cancel_openclaw_enable_probe()
         _set_capability("openclaw", True, "")
+        if pending or not was_ready:
+            await _emit_agent_status_update()
         return status
     if pending and Modules.agent_flags.get("openclaw_enabled"):
         _set_capability("openclaw", False, "AGENT_PRECHECK_PENDING")
@@ -4581,10 +4561,14 @@ async def openclaw_availability():
             status["pending"] = True
         return status
     reason = reasons[0] if reasons else ""
+    was_openclaw_enabled = bool(Modules.agent_flags.get("openclaw_enabled"))
+    was_ready = bool(((Modules.capability_cache or {}).get("openclaw") or {}).get("ready"))
     _set_capability("openclaw", False, reason)
-    if Modules.agent_flags.get("openclaw_enabled"):
+    if was_openclaw_enabled:
         Modules.agent_flags["openclaw_enabled"] = False
         Modules.notification = _openclaw_notification("AGENT_OPENCLAW_CAPABILITY_LOST", reasons)
+    if was_openclaw_enabled or was_ready:
+        await _emit_agent_status_update()
     return status
 
 
@@ -4758,7 +4742,7 @@ async def get_agent_flags():
         
     return {
         "success": True, 
-        "agent_flags": Modules.agent_flags,
+        "agent_flags": _agent_flags_snapshot(),
         "analyzer_enabled": Modules.analyzer_enabled,
         "agent_api_gate": _check_agent_api_gate(),
         "revision": Modules.state_revision,
@@ -4938,21 +4922,11 @@ async def set_agent_flags(payload: Dict[str, Any]):
 
     if isinstance(nf, bool):
         if nf:
-            adapter = Modules.openclaw
-            if not adapter:
-                _cancel_openclaw_enable_probe()
-                Modules.agent_flags["openclaw_enabled"] = False
-                _set_capability("openclaw", False, "AGENT_OPENCLAW_MODULE_NOT_LOADED")
-                Modules.notification = json.dumps({"code": "AGENT_OPENCLAW_MODULE_NOT_LOADED"})
+            if Modules.analyzer_enabled:
+                _start_openclaw_enable_probe(lanlan_name)
             else:
-                _cancel_openclaw_enable_probe()
                 Modules.agent_flags["openclaw_enabled"] = True
-                _set_capability("openclaw", False, "AGENT_PRECHECK_PENDING")
-                Modules.notification = json.dumps({"code": "AGENT_OPENCLAW_ENABLED_CHECKING"})
-                _bg = asyncio.create_task(_run_openclaw_enable_probe(Modules.openclaw_enable_seq, lanlan_name))
-                Modules.openclaw_enable_task = _bg
-                Modules._persistent_tasks.add(_bg)
-                _bg.add_done_callback(Modules._persistent_tasks.discard)
+                _set_capability("openclaw", False, "")
         else:
             _cancel_openclaw_enable_probe()
             Modules.agent_flags["openclaw_enabled"] = False
@@ -5036,7 +5010,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
     if changed:
         _bump_state_revision()
     await _emit_agent_status_update(lanlan_name=lanlan_name)
-    return {"success": True, "agent_flags": Modules.agent_flags}
+    return {"success": True, "agent_flags": _agent_flags_snapshot()}
 
 
 @app.post("/agent/command")
@@ -5068,6 +5042,8 @@ async def agent_command(payload: Dict[str, Any]):
                 else:
                     _set_capability("computer_use", False, "AGENT_CU_MODULE_NOT_LOADED")
                     _set_capability("browser_use", False, "AGENT_CU_MODULE_NOT_LOADED")
+                if Modules.agent_flags.get("openclaw_enabled"):
+                    _start_openclaw_enable_probe(lanlan_name)
             else:
                 first_reason = (gate.get("reasons") or ["AGENT_ENDPOINT_NOT_CONFIGURED"])[0]
                 _set_capability("computer_use", False, first_reason)
