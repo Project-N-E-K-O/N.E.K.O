@@ -405,21 +405,18 @@ def _get_anonymous_device_id() -> str:
 _TELEMETRY_BRANCH_FILE = ".telemetry_branch"
 # A/B 池（只决定「首启默认值」实验分组；首启后用户行为已落盘、不再响应覆写，其分组
 # 归因对默认值实验无意义，分析端按真·首启样本过滤即可）：
-#   - "main"：控制组，沿用历史默认——主动搭话里的「屏幕分享来源」
-#     （proactiveVisionChatEnabled）首启默认开；隐私模式仍按地区分流。
-#   - "vision_chat_default_off"：实验组，把「屏幕分享来源」首启默认翻成关，并在前端
-#     检测到用户进游戏/娱乐（弹「要不要开屏幕分享搭话」）或进专注工作（弹「要不要关
-#     屏幕分享避嫌」）时一次性弹窗。注意这一组只改屏幕分享来源默认值，**不动**隐私
-#     模式默认值。
-#       地区交互：屏幕分享来源只有在隐私模式关（vision 开）时才有意义；隐私默认仍按
-#       地区分流（仅中国地区默认隐私关），海外默认隐私开 → 对本实验天然 no-op。抽签
-#       全地区随机，海外也会落实验组但首启覆写 / 弹窗都不生效；分析时按 locale 过滤，
-#       A/B 差异主要体现在国内。
+#   - "main"：当前唯一在跑的分支（控制组）。主动搭话里的「屏幕分享来源」
+#     （proactiveVisionChatEnabled）首启默认开；隐私模式仍按地区分流。原
+#     vision_chat_default_off 实验组的情境弹窗机制（进游戏/娱乐弹「要不要开屏幕分享
+#     搭话」、进专注工作弹「要不要关屏幕分享避嫌」）已合并进 main，对所有用户生效、
+#     不再受 branch 限制。
 #
-# 已退役实验（老落盘值被 _read 严格校验判非法 → 下次启动按当前池随机重抽，落 main
-# 或 vision_chat_default_off。都是已过首启的用户，重抽只改
-# telemetry 标签、不动已落盘的用户偏好，对「默认值」实验无影响，故不为其单独做确定性
-# 迁移）：
+# 已退役实验（老落盘值被 _read 严格校验判非法 → 下次启动按当前池随机重抽，落 main。
+# 都是已过首启的用户，重抽只改 telemetry 标签、不动已落盘的用户偏好，对「默认值」实
+# 验无影响，故（除特别注明者外）不为其单独做确定性迁移）：
+#   - "vision_chat_default_off"（试屏幕分享来源首启默认关 + 情境弹窗）：情境弹窗机制
+#     效果保留、整合进 main 对所有人开放；屏幕分享来源默认值则回到控制组「开」。仅改
+#     默认值、**不**对存量实验组做偏好回滚——已落盘成关的用户保持关，除非自己再打开。
 #   - "privacy_default_off_v1"（试国外隐私默认关）：前期数据效果差，已下线。
 #   - "privacy_default_off_v2"（试国内隐私默认开）：改方向去测屏幕分享来源，已下线。
 #   - "proactive_interval_25s"（试海外搭话间隔 20s→25s）：数据点没能通过 A/A 测试，
@@ -433,7 +430,7 @@ _TELEMETRY_BRANCH_FILE = ".telemetry_branch"
 #     branch 正是本实验组的 install，在「判非法 → 重抽」时把仍停在 20s 的
 #     proactiveChatInterval 拉回控制组 15s（见 _rollback_retired_proactive_interval；
 #     重抽即天然幂等标记，不压制用户日后再手选 20s）。
-_TELEMETRY_BRANCHES: tuple = ("main", "vision_chat_default_off")
+_TELEMETRY_BRANCHES: tuple = ("main",)
 
 # 进程级缓存：keyed by str(config_dir)。写盘失败的环境下（只读 FS / 权限拒绝），
 # 不缓存就每次 secrets.choice 重抽，导致同一 install 的 TokenTracker 上报和

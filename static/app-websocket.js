@@ -2906,9 +2906,10 @@
 
                 // -------- activity_context_prompt --------
                 // 后端活动 tracker 检测到用户「进入」游戏/娱乐（context='play'）或
-                // 「进入」专注工作（context='work'）时推这条。前端（仅 A/B 实验组
-                // vision_chat_default_off、每会话每类一次）据此弹窗问要不要开/关主动
-                // 搭话里的屏幕分享来源。分组判定 + 去重都在 app-context-prompt.js。
+                // 「进入」专注工作（context='work'）时推这条。前端（对所有用户、每会话
+                // 每类一次）据此弹窗问要不要开/关主动搭话里的屏幕分享来源。去重都在
+                // app-context-prompt.js（原 A/B 实验组 vision_chat_default_off 的机制已
+                // 合并进 main）。
                 } else if (response.type === 'activity_context_prompt') {
                     if (window.appContextPrompt
                             && typeof window.appContextPrompt.handle === 'function') {

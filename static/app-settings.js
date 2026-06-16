@@ -17,11 +17,6 @@
     let _syncTimerId = null;
     // 同步间隔（毫秒）：60秒
     const SYNC_INTERVAL_MS = 60000;
-    // A/B 实验组分支名（与 utils/token_tracker.py 的 _TELEMETRY_BRANCHES 对齐）。
-    // 实验组把主动搭话里的「屏幕分享来源」（proactiveVisionChatEnabled）首启默认翻成
-    // 关；隐私模式默认值不动（仍按地区分流）。屏幕分享来源只在隐私关（vision 开）时才
-    // 有意义，海外默认隐私开 → 对该实验天然 no-op，A/B 差异主要体现在国内。
-    const _VISION_CHAT_AB_BRANCH = 'vision_chat_default_off';
     // 「首启等 branch 决议」专属 marker：只有 localStorage 走过本 PR 的首启分支才会写
     // 「1」，branch 决议后清掉。用 marker 在不在判断「应不应该套 A/B 覆写」，避免拿
     // 「没见过 branch 」当首启代名——升级用户也都没见过 branch，那个口径会误伤他们的
@@ -545,10 +540,10 @@
                     focusModeDesc: S.focusModeEnabled ? 'AI说话时自动静音麦克风（不允许打断）' : '允许打断AI说话'
                 });
             } else {
-                // 首次启动：默认按 A/B 控制组行为——隐私模式按用户地区分流（仅中国
-                // 地区默认关闭）。实验组（privacy_default_off_v2）的「国内默认打开隐私」
-                // 由 loadSettingsFromServer 拿到 telemetryBranch 后追加覆写，见下方
-                // 异步合并块。
+                // 首次启动：隐私模式按用户地区分流（仅中国地区默认关闭隐私 / vision 开）。
+                // 历史上这里挂过隐私默认值实验（privacy_default_off_v2，已退役）和屏幕分享
+                // 来源默认值实验（vision_chat_default_off，已合并进 main、默认回到「开」），
+                // 现都不再做首启覆写，仅保留地区分流。
                 if (_isUserRegionChina()) {
                     S.proactiveVisionEnabled = true;
                 }
@@ -601,9 +596,6 @@
         S.userLanguage = subtitleState ? subtitleState.userLanguage : (localStorage.getItem('userLanguage') || null);
 
         // 异步：从服务器加载对话设置并合并（不阻塞 UI）
-        // 捕获 fetch 发起时的屏幕分享来源值：若用户在 fetch 返回前手动切了 toggle，
-        // 后续 A/B 覆写就跳过，避免把用户的显式选择刷掉
-        const _visionChatAtFetchStart = S.proactiveVisionChatEnabled;
         const _firstLaunchPending = (() => {
             try { return localStorage.getItem(_FIRST_LAUNCH_PENDING_KEY) === '1'; } catch (_) { return false; }
         })();
@@ -614,35 +606,13 @@
                 const telemetryBranch = serverResult.telemetryBranch;
                 let hasUpdate = false;
 
-                // A/B test 覆写：必须是本 PR 之后真·首启（_FIRST_LAUNCH_PENDING_KEY 存在）+
-                // 分支 = 实验组 + 服务器没有云端屏幕分享来源偏好 + 用户没在 fetch 间隙手动
-                // 切 toggle + 本地值仍等于控制组默认（即用户也没在之前的 offline session
-                // 里改过），才套实验组默认。实验组把屏幕分享来源默认翻成「关」
-                // （proactiveVisionChatEnabled=false）。控制组默认是「开」（true，见
-                // app-state.js:145 / loadSettings 的 ?? true），与地区无关；屏幕分享来源
-                // 只在隐私关时才有意义，海外默认隐私开 → 翻不翻都 no-op，A/B 差异在国内
-                // 体现。升级用户没有 pending marker 不会被误覆写；offline 首启把 marker
-                // 留在 localStorage，下次在线启动再补；offline 期间用户改过 toggle 时本地
-                // 值会跟控制组默认拉开差距，保留用户选择
-                const noServerVisionChatPref = !serverSettings ||
-                    serverSettings.proactiveVisionChatEnabled === undefined;
-                const userToggledDuringFetch = S.proactiveVisionChatEnabled !== _visionChatAtFetchStart;
-                const localVisionChatMatchesControlDefault =
-                    S.proactiveVisionChatEnabled === true;
-                if (_firstLaunchPending
-                        && telemetryBranch === _VISION_CHAT_AB_BRANCH
-                        && noServerVisionChatPref
-                        && !userToggledDuringFetch
-                        && localVisionChatMatchesControlDefault) {
-                    if (S.proactiveVisionChatEnabled !== false) {
-                        S.proactiveVisionChatEnabled = false;
-                        hasUpdate = true;
-                        console.log('[app-settings] A/B 实验组', telemetryBranch, '：屏幕分享来源默认关闭');
-                    }
-                }
-                // 只要 server 给了 branch，本次决议就算完成（不管控制组还是实验组、
-                // 不管是否实际触发覆写），清掉 pending marker；下次启动不再尝试。
-                // GET 失败则 marker 留着，下次在线启动重新决议
+                // 只要 server 给了 branch，本次首启决议就算完成，清掉 pending marker；下次
+                // 启动不再尝试。GET 失败则 marker 留着，下次在线启动重新决议。原本这里还会
+                // 对实验组 vision_chat_default_off 把屏幕分享来源（proactiveVisionChatEnabled）
+                // 首启默认翻成「关」，现该实验已合并进 main、默认回到控制组「开」（见
+                // app-state.js / loadSettings 的 ?? true），故不再做首启覆写；仅保留 marker
+                // 决议时序——情境弹窗 app-context-prompt.js 靠下方 neko:telemetry-branch-resolved
+                // 广播判断 settings 已就绪。
                 const branchResolutionFinalized = !!(telemetryBranch && _firstLaunchPending);
                 if (branchResolutionFinalized) {
                     try { localStorage.removeItem(_FIRST_LAUNCH_PENDING_KEY); } catch (_) {}

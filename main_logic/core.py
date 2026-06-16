@@ -953,21 +953,13 @@ class LLMSessionManager:
         from main_logic.activity import UserActivityTracker
         self._activity_tracker = UserActivityTracker(lanlan_name)
 
-        # 进入游戏/娱乐 或 进入专注工作时，给前端推一次性情境信号——前端（仅 A/B
-        # 实验组 vision_chat_default_off、每会话每类一次）据此弹窗问要不要开/关主动搭话
-        # 里的屏幕分享来源。后端只检测「进入」那一刻并推送，去重在前端。
+        # 进入游戏/娱乐 或 进入专注工作时，给前端推一次性情境信号——前端（每会话每类
+        # 一次）据此弹窗问要不要开/关主动搭话里的屏幕分享来源。后端只检测「进入」那一刻
+        # 并推送，去重在前端。原本只对 A/B 实验组 vision_chat_default_off 生效，现该机制
+        # 已合并进 main，对所有用户开放。
         # 屏幕分享来源只在隐私关（vision 开）时才有意义；隐私开时 tracker 心跳本就不
         # tick（见 _activity_guess_loop 的 _privacy_mode_active 早退），自然不会触发。
         async def _push_activity_context_prompt(context: str) -> None:
-            # 后端这里也按 branch 把关：非实验组（main）压根不推这条信号，连前端 drop
-            # 的开销都省，确保控制组完全无感（前端 _isExperimentBranch 是第二道闸）。
-            # 活动 loop 在「主动搭话已开」的 main 用户上也会跑，故这道后端 gate 必要。
-            try:
-                from utils.token_tracker import get_telemetry_branch
-                if get_telemetry_branch() != 'vision_chat_default_off':
-                    return
-            except Exception:
-                return
             ws = self.websocket
             if not (
                 ws
@@ -4198,30 +4190,26 @@ class LLMSessionManager:
             except Exception as e:
                 logger.warning("[%s] idle_session_reset 单轮异常: %s", self.lanlan_name, e)
 
-    async def _maybe_kick_activity_loop_for_experiment(self) -> None:
-        """A/B experiment group (vision_chat_default_off): start the activity tracker's background heartbeat.
+    async def _maybe_kick_activity_loop_for_context_prompt(self) -> None:
+        """Start the activity tracker's background heartbeat so the context prompt can fire.
 
         Context-prompt detection (entering gaming/entertainment / entering focused
         work) hangs off the tracker's 20s heartbeat, and the heartbeat lazy-starts
         only on the first get_snapshot; get_snapshot in turn is only called by
         paths where proactive chat is on. Proactive chat defaults to off at first
-        start, so without an explicit kick the experiment group would never detect
-        entering a game and the prompt would never show. Here we kick once for the
-        experiment group when the session comes up (get_snapshot is idempotent and
-        won't start the loop twice).
+        start, so without an explicit kick a user who hasn't enabled proactive chat
+        would never detect entering a game and the prompt would never show. Here we
+        kick once when the session comes up (get_snapshot is idempotent and won't
+        start the loop twice).
 
-        Only the experiment group is kicked: avoids adding activity_guess LLM cost
-        for ordinary users who haven't enabled proactive chat. For experiment-group
-        users with privacy on (the overseas default), the heartbeat itself
-        early-exits at _privacy_mode_active, likewise zero LLM cost. The backend
-        branch shares its source with the frontend (both from token_tracker), so
-        even if the judgement here is wrong, the final popup is still gated by the
-        frontend's own branch and won't mis-fire for the control group.
+        The context prompt used to be gated to the vision_chat_default_off A/B group;
+        it's now merged into main and open to everyone, so the kick is unconditional
+        (no branch check). Privacy on (the overseas default) still means the
+        heartbeat early-exits at _privacy_mode_active → zero LLM cost; only
+        privacy-off users incur the activity_guess LLM cost, which is the intended
+        cost of making the prompt available to all of them.
         """
         try:
-            from utils.token_tracker import get_telemetry_branch
-            if get_telemetry_branch() != 'vision_chat_default_off':
-                return
             # 隐私模式开（vision 关）时绝不 kick：get_snapshot 会起 SystemSignalCollector
             # 并采集窗口/进程信号，绕过隐私模式（loop 只跳过 LLM、collector 仍在采）。
             # privacy-on 的实验组本就是 no-op（屏幕分享来源开不了），不 kick 即可；隐私关
@@ -4334,9 +4322,9 @@ class LLMSessionManager:
             self._reset_voice_echo_suppression_cache()
 
             # A/B 实验组：拉起活动 tracker 心跳，让进游戏/娱乐/工作的情境弹窗检测得到
-            # （详见 _maybe_kick_activity_loop_for_experiment）。fire-and-forget，不阻塞
-            # 会话启动；非实验组直接早退、零成本。
-            self._fire_task(self._maybe_kick_activity_loop_for_experiment())
+            # （详见 _maybe_kick_activity_loop_for_context_prompt）。fire-and-forget，不
+            # 阻塞会话启动；隐私模式开（海外默认）时直接早退、零成本。
+            self._fire_task(self._maybe_kick_activity_loop_for_context_prompt())
         
             # 立即通知前端系统正在准备（静默期开始）
             await self.send_session_preparing(input_mode)
