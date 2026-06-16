@@ -3189,14 +3189,17 @@ class ConfigManager:
         return False
 
     def normalize_voice_id_to_config(self, voice_id):
-        """把扁平 / 前缀化的 ``voice_id`` 解析成结构化 ``VoiceConfig``（声音来源统一架构）。
+        """Resolve a flat / prefixed ``voice_id`` into a structured ``VoiceConfig``.
 
-        裸 id（无 ``gsv:`` / ``eleven:`` 前缀）的 ``source`` / ``provider`` 需要运行时
-        上下文才能定，这里复用与 :meth:`validate_voice_id` 同一条解析链（vLLM 选中 /
-        当前 API 的 voice_storage clone / 可保存 native / free 预制），把上下文喂给纯函数
-        :func:`utils.voice_config.normalize_voice_id`，保证迁移忠实、无歧义。
+        A bare id (no ``gsv:`` / ``eleven:`` prefix) needs runtime context to decide
+        its ``source`` / ``provider``; this reuses the same resolution chain as
+        :meth:`validate_voice_id` (vLLM selected / a clone in the current API's
+        voice_storage / a saveable native voice / a free preset) and feeds that
+        context to the pure :func:`utils.voice_config.normalize_voice_id`, so the
+        migration stays faithful and unambiguous.
 
-        解析不出来的裸 id 原样保留在 ``ref`` 里（不丢），调用方按「保持原值」处理。
+        An unresolvable bare id is carried through unchanged in ``ref`` (never
+        dropped); callers treat it as "leave the value as-is".
         """
         from utils.voice_config import normalize_voice_id
         from utils.native_voice_registry import (

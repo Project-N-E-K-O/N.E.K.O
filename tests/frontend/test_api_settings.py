@@ -594,12 +594,14 @@ def test_explicit_mimo_tts_provider_is_saved_for_runtime_routing(mock_page: Page
 
 @pytest.mark.frontend
 def test_gptsovits_dropdown_shows_gsv_fields_and_saves_enabled(mock_page: Page, running_server: str):
-    """GPT-SoVITS 迁到 ttsModelProvider 下拉：
+    """GPT-SoVITS moved to the ttsModelProvider dropdown:
 
-    - registry-only provider 'gptsovits' 出现在 TTS 下拉里（Codex #3）；
-    - 选中后显示 GSV 专属字段（URL + voice grid）、隐藏标准 url/model/key/voice；
-    - 保存时 ttsModelProvider/ttsProvider='gptsovits'、gptsovitsEnabled=true（迁移期双信号），
-      ttsModelUrl=GSV URL、ttsVoiceId=GSV voice，且不写 __gptsovits_disabled__| 占位符。
+    - the registry-only provider 'gptsovits' shows up in the TTS dropdown (Codex #3);
+    - selecting it shows the GSV-specific fields (URL + voice grid) and hides the
+      standard url/model/key/voice fields;
+    - on save ttsModelProvider/ttsProvider=='gptsovits', gptsovitsEnabled is true
+      (dual migration signal), ttsModelUrl is the GSV URL, ttsVoiceId is the GSV
+      voice, and no __gptsovits_disabled__| placeholder is written.
     """
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
     mock_page.goto(f"{running_server}/api_key")

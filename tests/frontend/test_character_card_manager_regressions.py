@@ -381,11 +381,11 @@ def test_character_card_manager_voice_dropdown_groups_by_provider_source(
     mock_page: Page,
     running_server: str,
 ):
-    """source-first 选声（§5）：音色按「<Provider> · 来源」分组。
+    """source-first voice picking (§5): voices grouped by "<Provider> · source".
 
-    - 注册克隆按 provider 分组（MiniMax · 克隆 / ElevenLabs · 克隆，不同 provider 不混）；
-    - 免费预制 → 「免费 · 预制」；native → 「<Provider> · 预制」；
-    - 每个 source 组带 data-voice-source-group + 标签含分隔符「·」。
+    - registered clones grouped per provider (MiniMax / ElevenLabs clones do not mix);
+    - free presets -> "Free · preset"; native -> "<Provider> · preset";
+    - each source group carries data-voice-source-group and a label containing "·".
     """
     _open_character_card_manager(mock_page, running_server)
 

@@ -1,7 +1,8 @@
-"""GPT-SoVITS 迁到 ttsModelProvider 下拉后的 dispatch 选中回归测试。
+"""Dispatch-selection regression tests for GPT-SoVITS moved to the ttsModelProvider dropdown.
 
-迁移期 _gptsovits_is_selected 双信号：既认新的 ttsModelProvider=='gptsovits'（与
-vLLM-Omni 同机制），也保留旧的 GPTSOVITS_ENABLED 开关路径。
+During migration ``_gptsovits_is_selected`` honors two signals: the new
+``ttsModelProvider == 'gptsovits'`` (same mechanism as vLLM-Omni) and the legacy
+``GPTSOVITS_ENABLED`` switch path.
 """
 
 from main_logic import tts_client
@@ -40,7 +41,7 @@ def _base_core_config(**overrides):
 
 
 def test_dropdown_provider_selects_gptsovits(monkeypatch):
-    """ttsModelProvider=='gptsovits'（新下拉信号）即命中 GPT-SoVITS，无需旧开关。"""
+    """ttsModelProvider=='gptsovits' (the new dropdown signal) selects GPT-SoVITS on its own, no legacy switch needed."""
     cm = _FakeConfigManager(
         core_config=_base_core_config(),
         raw_json={"ttsModelProvider": "gptsovits"},
@@ -57,7 +58,7 @@ def test_dropdown_provider_selects_gptsovits(monkeypatch):
 
 
 def test_legacy_enabled_flag_still_selects_gptsovits(monkeypatch):
-    """旧 GPTSOVITS_ENABLED 开关 + tts_custom.is_custom 路径迁移期仍保留。"""
+    """The legacy GPTSOVITS_ENABLED switch + tts_custom.is_custom path is still honored during migration."""
     cm = _FakeConfigManager(
         core_config=_base_core_config(GPTSOVITS_ENABLED=True),
         raw_json={},  # 无 ttsModelProvider，走 legacy 分支
@@ -74,7 +75,7 @@ def test_legacy_enabled_flag_still_selects_gptsovits(monkeypatch):
 
 
 def test_no_signal_does_not_select_gptsovits(monkeypatch):
-    """既没下拉信号也没旧开关时不应误抢 GPT-SoVITS。"""
+    """With neither the dropdown signal nor the legacy switch, GPT-SoVITS must not be wrongly selected."""
     cm = _FakeConfigManager(
         core_config=_base_core_config(),
         raw_json={"ttsModelProvider": ""},

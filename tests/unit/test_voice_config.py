@@ -1,4 +1,4 @@
-"""结构化 voice config 数据模型 + 无歧义前缀 normalizer 单测（声音来源统一架构）。"""
+"""Unit tests for the structured voice config model + unambiguous-prefix normalizer."""
 
 from config import GSV_VOICE_PREFIX
 from utils.elevenlabs_tts_voices import ELEVENLABS_TTS_VOICE_PREFIX
