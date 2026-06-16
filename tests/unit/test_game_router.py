@@ -162,6 +162,7 @@ def test_basketball_duel_prompts_use_duel_outcome_for_winner(lang):
     prompt = game_router.get_basketball_system_prompt(lang, mode="duel")
 
     assert "duel_outcome" in prompt
+    assert "duel.active_shooter" in prompt
 
 
 @pytest.mark.unit
