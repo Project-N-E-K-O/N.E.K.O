@@ -83,9 +83,10 @@ def _is_valid_path(path: str) -> bool:
 def _resolve_path(path: str) -> str:
     """解析路径，展开环境变量"""
     path = path.strip()
-    path = os.path.expandvars(path)
+    # 先去除引号，与 _is_valid_path 保持一致
     if (path.startswith('"') and path.endswith('"')) or (path.startswith("'") and path.endswith("'")):
         path = path[1:-1]
+    path = os.path.expandvars(path)
     return path
 
 
@@ -497,7 +498,7 @@ class AppLauncherPlugin(NekoPluginBase):
         },
         llm_result_fields=["app_id", "name", "path", "message"],
     )
-    async def add_app(self, name: str, path: str, aliases: Optional[List[str]] = None, description: str = "", **_):
+    async def add_app(self, name: str, path: str, aliases: Optional[List[str]] = None, description: str = "", autostart: bool = False, **_):
         """添加软件"""
         name = name.strip()
         path = path.strip()
@@ -541,13 +542,29 @@ class AppLauncherPlugin(NekoPluginBase):
 
         self.logger.info("App added: id={} name={} path={}", app_id, name, path)
 
+        # 处理开机自启
+        autostart_msg = ""
+        if autostart and file_type == "exe":
+            success, msg = _set_autostart_windows(app_id, name, resolved_path, True)
+            if success:
+                with self._apps_lock:
+                    apps = self._load_apps_unlocked()
+                    for a in apps:
+                        if a.get("id") == app_id:
+                            a["autostart"] = True
+                            break
+                    self._save_apps_unlocked(apps)
+                autostart_msg = "，已设置开机自启"
+            else:
+                autostart_msg = f"，开机自启设置失败: {msg}"
+
         return Ok({
             "app_id": app_id,
             "name": name,
             "path": path,
             "type": file_type,
             "aliases": processed_aliases,
-            "message": f"已成功添加软件「{name}」，ID: {app_id}",
+            "message": f"已成功添加软件「{name}」，ID: {app_id}{autostart_msg}",
         })
 
     @plugin_entry(
