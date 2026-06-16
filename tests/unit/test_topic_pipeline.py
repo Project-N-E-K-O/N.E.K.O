@@ -873,6 +873,41 @@ async def test_topic_pool_suppresses_same_topic_after_it_was_used_today():
 
 
 @pytest.mark.asyncio
+async def test_enrich_pool_discards_material_when_privacy_toggles_on_mid_analysis(monkeypatch):
+    # TOCTOU guard: privacy passes the start-of-call wipe, then flips ON during
+    # the analyzer await. Material collected across the privacy interval must be
+    # discarded, not stored for a later trigger.
+    from main_logic.topic import pipeline as topic_pipeline
+
+    privacy = {"on": False}
+    monkeypatch.setattr(topic_pipeline, "_privacy_mode_active", lambda: privacy["on"])
+
+    async def fake_analyzer(*, user_msgs, ai_msgs, lang, global_signals):
+        privacy["on"] = True  # user enables privacy while we're "analyzing"
+        return [
+            {
+                "interest": "隐私期间产生的话题不该留存",
+                "keywords": ["x"],
+                "relevance": 95,
+                "risk": 10,
+            }
+        ]
+
+    pool = TopicHookPool(
+        analyzer=fake_analyzer,
+        auto_schedule=False,
+        enable_online_enrichment=False,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "在聊一个深话题，有场景有困扰可以展开", lang="zh-CN")
+    await pool.process_now("妮可")
+    await asyncio.sleep(0.02)
+
+    assert pool.get_ready_materials("妮可") == []
+    assert pool._materials.get("妮可") in (None, [])
+
+
+@pytest.mark.asyncio
 async def test_deepen_material_uses_derived_query_and_overrides_floor(monkeypatch):
     from main_logic.topic import pipeline as topic_pipeline
 

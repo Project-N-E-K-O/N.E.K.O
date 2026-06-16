@@ -236,6 +236,14 @@ class TopicHookPool:
         self._dirty: set[str] = set()
         self._seq: dict[str, int] = defaultdict(int)
 
+    def _purge_character_state(self, name: str) -> None:
+        """Drop all accumulated topic state for a character (privacy wipe)."""
+        self._user_turns.pop(name, None)
+        self._ai_turns.pop(name, None)
+        self._signal_store.clear(name)
+        self._materials.pop(name, None)
+        self._dirty.discard(name)
+
     def note_user_message(self, lanlan_name: str, text: Any, *, lang: str = "zh") -> None:
         cleaned = _clean_text(text)
         if not cleaned:
@@ -284,11 +292,7 @@ class TopicHookPool:
     ) -> None:
         name = str(lanlan_name or "default")
         if _privacy_mode_active():
-            self._user_turns.pop(name, None)
-            self._ai_turns.pop(name, None)
-            self._signal_store.clear(name)
-            self._materials.pop(name, None)
-            self._dirty.discard(name)
+            self._purge_character_state(name)
             return
         seen_seq = self._seq.get(name, 0)
         user_msgs = list(self._user_turns.get(name, ()))
@@ -336,6 +340,15 @@ class TopicHookPool:
         if cleaned and (self._enable_online_enrichment if enrich_online is None else enrich_online):
             cleaned = await enrich_topic_materials_online(cleaned, lang=topic_lang, max_materials=1)
         if self._seq.get(name, 0) != seen_seq:
+            return
+        if _privacy_mode_active():
+            # Privacy may have toggled on during the analyzer / enrichment
+            # awaits above; the start-of-call wipe already passed. Re-check
+            # before storing, else material collected across a privacy interval
+            # would survive and could deliver if privacy toggles off again
+            # before the quiet-window trigger.
+            self._purge_character_state(name)
+            logger.info("[%s] topic material discarded: privacy turned on during analysis", name)
             return
         cleaned = self._filter_available_materials(name, cleaned)
         if self._daily_quota_reached(name):
@@ -462,11 +475,7 @@ class TopicHookPool:
             if wait_seconds:
                 await asyncio.sleep(wait_seconds)
             if _privacy_mode_active():
-                self._user_turns.pop(name, None)
-                self._ai_turns.pop(name, None)
-                self._signal_store.clear(name)
-                self._materials.pop(name, None)
-                self._dirty.discard(name)
+                self._purge_character_state(name)
                 logger.info("[%s] topic material trigger cancelled: privacy mode active", name)
                 return
             if self._seq.get(name, 0) != expected_seq:
