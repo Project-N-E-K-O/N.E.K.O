@@ -73,7 +73,13 @@
     }
 
     function saveGuideState(state) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+            return true;
+        } catch (error) {
+            console.warn('[AvatarFloatingGuideReset] Failed to persist guide state:', error);
+            return false;
+        }
     }
 
     function resetIcebreakerDay(day) {
