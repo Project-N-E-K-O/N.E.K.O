@@ -36,7 +36,7 @@ from utils.aiohttp_proxy_utils import aiohttp_session_kwargs_for_url
 from utils.config_manager import _as_bool, get_config_manager
 from utils.gptsovits_config import (
     gsv_ws_url_from_http_base,
-    is_local_http_url,
+    is_valid_http_url,
     normalize_gsv_api_url,
     redact_url_for_log,
 )
@@ -65,6 +65,7 @@ from utils.native_voice_registry import (
     make_native_tts_resolver,
     register_tts_worker_resolver,
 )
+from utils import tts_provider_registry as _tts_providers
 from utils.stepfun_tts_voices import (
     STEPFUN_TTS_DEFAULT_VOICE,
     get_stepfun_tts_default_voice,
@@ -3632,11 +3633,8 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
     tts_config = cm.get_model_api_config('tts_custom')
     base_url = normalize_gsv_api_url(tts_config.get('base_url'))
 
-    if not is_local_http_url(base_url):
-        message = (
-            "GPT-SoVITS URL 配置无效：需要 http(s)://localhost 或 "
-            "http(s)://127.0.0.1 这类本地服务地址"
-        )
+    if not is_valid_http_url(base_url):
+        message = "GPT-SoVITS URL 配置无效：需要 http(s):// 的有效地址（本地或远程均可）"
         logger.error("[GPT-SoVITS v3] %s，当前: %s", message, redact_url_for_log(base_url))
         _enqueue_error(response_queue, {
             "code": "TTS_CONFIG_INVALID",
@@ -3648,7 +3646,7 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
 
     WS_URL = gsv_ws_url_from_http_base(base_url)
     logger.info(
-        "[GPT-SoVITS v3] 使用本地服务: base=%s ws=%s",
+        "[GPT-SoVITS v3] 使用服务: base=%s ws=%s",
         redact_url_for_log(base_url),
         redact_url_for_log(WS_URL),
     )
@@ -4683,108 +4681,40 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
 
     tts_provider = str(core_cfg.get('TTS_PROVIDER') or core_cfg.get('ttsProvider') or '').strip().lower()
     assist_api_type = str(core_cfg.get('assistApi') or '').strip().lower()
-    try:
-        _raw_cfg_for_route = cm.load_json_config('core_config.json', {})
-        _tts_provider_sel = (_raw_cfg_for_route.get('ttsModelProvider') or '').strip()
-    except Exception as _e:
-        _raw_cfg_for_route = {}
-        _tts_provider_sel = ''
-        logger.warning(f"读取 ttsModelProvider 失败，跳过 vllm_omni 优先检查: {_e}")
 
-    _tts_config_for_route = None
-    try:
-        _tts_config_for_route = cm.get_model_api_config('tts_custom')
-        if _tts_config_for_route.get('is_custom') and core_cfg.get('GPTSOVITS_ENABLED', False):
-            return gptsovits_tts_worker, None, 'gptsovits'
-    except Exception as e:
-        logger.warning(f'TTS调度器检查报告:{e}')
+    # 特异 TTS provider（用户显式配置端点的 vllm_omni / 本地 GPT-SoVITS 等）的
+    # 选择与 worker 解析已收敛到 utils.tts_provider_registry，按 priority 顺序匹配：
+    # GPT-SoVITS（本地显式开关）优先于 vLLM-Omni，二者都优先于克隆音色 /
+    # assistApi fallback / 原生 TTS（沿用原内联顺序）。新增此类 provider 只需在
+    # 本文件末尾 register 一条，不再在此处插内联特判。凭证防泄漏（vllm_omni 无 key
+    # 时返回空串而非 None，避免 fallback 到别家 provider 的 key）由各 adapter 内部
+    # 保证，配合 core.resolve_tts_api_key 的 provider_key == 'vllm_omni' 特判。
+    # DispatchContext 统一两种选中机制（见设计文档 §3.1）：配置选中（vllm/gptsovits）
+    # 与音色元数据选中（克隆系，后续增量折入）。voice_meta 此处刻意不预算——配置选中的
+    # provider（vllm/gptsovits）不需要它，且必须在任何 voice_meta 查询之前短路
+    # （见 test_get_tts_worker_routes_explicit_vllm_before_cloned_voice）；克隆系折入时
+    # 改为按需惰性加载。
+    _dispatch_ctx = _tts_providers.DispatchContext(
+        core_config=core_cfg,
+        cm=cm,
+        voice_id=voice_id or '',
+        has_custom_voice=bool(has_custom_voice),
+        voice_meta_loader=lambda: _get_voice_meta(voice_id),
+    )
+    special = _tts_providers.resolve_selected(_dispatch_ctx)
+    if special is not None:
+        logger.info("[get_tts_worker] 命中 TTS provider: %s", special[2])
+        return special
 
-    # 用户在 TTS 下拉里显式选 vllm_omni 时，应优先于克隆音色 / assistApi
-    # fallback；但 GPT-SoVITS enabled 是显式本地 TTS 开关，仍在上方优先。
-    if _as_bool(core_cfg.get('ENABLE_CUSTOM_API'), False) and _tts_provider_sel == 'vllm_omni':
-        vllm_url = (_raw_cfg_for_route.get('ttsModelUrl') or '').strip() or VLLM_OMNI_DEFAULT_BASE_URL
-        vllm_model = (_raw_cfg_for_route.get('ttsModelId') or '').strip() \
-            or VLLM_OMNI_DEFAULT_MODEL
-        vllm_voice = (_raw_cfg_for_route.get('ttsVoiceId') or '').strip() \
-            or 'default'
-        vllm_key = (_raw_cfg_for_route.get('ttsModelApiKey') or '')
-        # 修复 PR #1764 review 第三轮 #3（CodeRabbit Major）：跨 provider 凭证泄漏防护
-        # 若用户没为 vllm_omni 单独配置 key，必须返回空字符串而非 None，
-        # 否则 core.py 中 `api_key = api_key_override or tts_config['api_key']`
-        # 会 fallback 到默认 TTS provider（Qwen/Gemini/Step/OpenAI/Grok）的 key，
-        # 进而把别家 provider 的凭证 Bearer 发送到用户配置的 vLLM-Omni endpoint。
-        # 用空字符串 + core.py 中 provider_key == 'vllm_omni' 的特判共同保证：
-        # vllm_omni 显式无 key 时不允许通用 fallback，本地 vLLM 服务通常无需 Auth。
-        logger.info(
-            "[get_tts_worker] 用户选择 vllm_omni provider，绕过克隆/原生 TTS 路由 "
-            "(core_api_type=%s, has_custom_voice=%s, key_present=%s)",
-            core_api_type, has_custom_voice, bool(vllm_key),
-        )
-        worker = partial(
-            vllm_omni_tts_worker,
-            base_url=vllm_url, model=vllm_model, voice=vllm_voice,
-        )
-        return worker, vllm_key, 'vllm_omni'
+    # 克隆音色 provider（MiniMax / ElevenLabs / 阿里 CosyVoice）已折入
+    # tts_provider_registry（priority 30/40/50，按 voice_meta.provider 选中），
+    # 由上面的 resolve_selected 统一返回（含 cosyvoice_intl key 缺失 → dummy 的兜底）。
+    # 这里取出 ctx 已惰性算好的 voice_meta 供下方 grok / cosyvoice fallback 块复用：
+    # voice_meta=None 表示远端 clone 无本地元数据 / xAI 自定义 voice，需走 fallback。
+    voice_meta = _dispatch_ctx.voice_meta
 
-    # voice_meta 提到 outer scope：cosyvoice 分支也需要它来跟"已存 clone"区分
-    # "xAI 自定义 voice / 未知 voice"。MiniMax / ElevenLabs 分支保持嵌套以保留现有日志。
-    voice_meta = None
-
-    # 优先检查克隆音色 provider（MiniMax / ElevenLabs / 阿里 CosyVoice）
-    if has_custom_voice and voice_id:
-        voice_meta = _get_voice_meta(voice_id)
-        if voice_meta is None:
-            # 本地元数据缺失 — 可能是本地 TTS 音色（GPT-SoVITS / CosyVoice local），
-            # 远端 clone 成功但本地保存失败，或 xAI 自定义 voice。
-            # 不要在这里 short-circuit，让下面的 tts_custom（GPT-SoVITS / local
-            # CosyVoice）分支先有机会匹配 — grok 短路放到 cosyvoice 块里。
-            logger.debug("克隆音色 %s 无本地元数据，跳过 MiniMax/ElevenLabs 检测", voice_id)
-        elif voice_meta.get('provider', '').startswith('minimax'):
-            provider = voice_meta['provider']
-            logger.info("检测到 MiniMax 克隆音色: %s (provider=%s)，使用 MiniMax TTS Worker",
-                        voice_id, provider)
-            api_key = cm.get_tts_api_key(provider)
-            from utils.voice_clone import MINIMAX_DOMESTIC_BASE_URL, MINIMAX_INTL_BASE_URL
-            base_url = voice_meta.get('minimax_base_url') or (
-                MINIMAX_INTL_BASE_URL if provider == 'minimax_intl' else MINIMAX_DOMESTIC_BASE_URL
-            )
-            worker = partial(minimax_tts_worker, base_url=base_url)
-            return worker, api_key, 'minimax'
-        elif voice_meta.get('provider') == 'elevenlabs':
-            logger.info("检测到 ElevenLabs 克隆音色: %s，使用 ElevenLabs TTS Worker", voice_id)
-            elevenlabs_options = _get_elevenlabs_options()
-            base_url = voice_meta.get('elevenlabs_base_url') or elevenlabs_options['base_url']
-            worker = partial(elevenlabs_tts_worker, base_url=base_url)
-            return worker, _resolve_elevenlabs_api_key(cm), 'elevenlabs'
-        elif voice_meta.get('provider') in ('cosyvoice', 'cosyvoice_intl'):
-            provider = voice_meta.get('provider') or 'cosyvoice'
-            runtime = cm.get_cosyvoice_clone_runtime(provider)
-            runtime_key = (runtime.get('api_key') or '').strip()
-            # provider=='cosyvoice_intl' 必须用 intl 的 key 调 intl 端点。runtime_key
-            # 缺失时如果只返回 None，core.py 会用 `api_key_override or tts_config['api_key']`
-            # 兜底到 tts_custom 槽位的国内 key，结果拿国内 key 打 intl 端点，每次
-            # utterance 都吃一次上游 401 — 比直接 dummy 静音更难排查。
-            if provider == 'cosyvoice_intl' and not runtime_key:
-                logger.warning(
-                    "阿里国际版 CosyVoice 克隆音色 %s 选中，但 intl key 缺失，"
-                    "改用 dummy TTS worker 避免用错凭证打 intl 端点", voice_id)
-                return dummy_tts_worker, None, None
-            logger.info("检测到阿里 CosyVoice 克隆音色: %s (provider=%s)，使用 CosyVoice TTS Worker",
-                        voice_id, provider)
-            return cosyvoice_vc_tts_worker, (runtime_key or None), 'cosyvoice'
-
-    if tts_provider == 'mimo' or assist_api_type == 'mimo':
-        mimo_base_url = core_cfg.get('OPENROUTER_URL') if assist_api_type == 'mimo' else None
-        mimo_api_key = (cm.get_tts_api_key('mimo') or '').strip()
-        if not mimo_api_key:
-            logger.warning(
-                "MiMo TTS 已选中但 MiMo API Key 缺失，改用 dummy TTS worker 避免复用主 TTS Key")
-            return dummy_tts_worker, None, None
-        return (
-            partial(mimo_tts_worker, base_url=mimo_base_url),
-            mimo_api_key,
-            'mimo',
-        )
+    # MiMo（assistApi=mimo / TTS_PROVIDER=mimo 选中）已折入 tts_provider_registry
+    # （priority 60，clone 之后、native 之前，沿用原顺序），由上面的 resolve_selected 返回。
 
     # core_api_type 命中 native voice provider + 用户选了该 provider 的原生声线
     # (e.g. Gemini Puck/Leda/中文男) 时优先走原生 worker，不能被 has_custom_voice=False
@@ -4800,16 +4730,8 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
         if native is not None:
             return native
 
-    try:
-        tts_config = cm.get_model_api_config('tts_custom')
-        base_url = tts_config.get('base_url') or ''
-
-        if tts_config.get('is_custom'):
-            gsv_enabled = core_cfg.get('GPTSOVITS_ENABLED', False)
-            if gsv_enabled:
-                return gptsovits_tts_worker, None, 'gptsovits'
-    except Exception as e:
-        logger.warning(f'TTS调度器检查报告:{e}')
+    # GPT-SoVITS（is_custom + GPTSOVITS_ENABLED）已由顶部 tts_provider_registry
+    # 以相同 gate 优先返回，此处不再重复判定（原 fallthrough 分支已并入注册表）。
 
     # 如果有自定义克隆音色，使用 CosyVoice（阿里云）
     # 必须同时有有效的 voice_id 且不是免费预设音色，否则 fallthrough 到默认 TTS
@@ -5085,3 +5007,229 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
     except Exception as e:
         logger.error(f"Local CosyVoice Worker 崩溃: {e}")
         response_queue.put(("__ready__", False))
+
+
+# ─── 特异 TTS provider 注册（与 utils.tts_provider_registry 对偶）────────────
+#
+# 在所有 worker 定义之后注册，避免元数据模块过早拉入 soxr/websockets 等重依赖
+# （与 native_voice_registry 的两层注册同源）。各 adapter 精确复刻
+# get_tts_worker 当前对应分支的读取语义，阶段 1 仅注册、不改 dispatch，保证
+# 零行为变化；阶段 2 再把 get_tts_worker 的内联特判换成 resolve_selected。
+#
+# vllm_omni：从原始 core_config.json 读 ttsModelProvider / ttsModelUrl /
+#   ttsModelId / ttsVoiceId / ttsModelApiKey。必须读原始 json 而非 snapshot —
+#   ttsModelApiKey 不进 snapshot（见 config_manager.py 的凭证字段说明），且
+#   get_tts_worker 历史上整段都走 load_json_config，复刻以保字段一致。
+# gptsovits：走 tts_custom 槽位的 is_custom + GPTSOVITS_ENABLED 开关，与
+#   get_tts_worker 顶部的早返回分支同源；优先级高于 vllm_omni（沿用原顺序）。
+
+
+def _vllm_omni_is_selected(ctx) -> bool:
+    core_config, cm = ctx.core_config, ctx.cm
+    if not _as_bool(core_config.get('ENABLE_CUSTOM_API'), False):
+        return False
+    try:
+        raw = cm.load_json_config('core_config.json', {})
+    except Exception:
+        return False
+    return (raw.get('ttsModelProvider') or '').strip() == 'vllm_omni'
+
+
+def _vllm_omni_resolve(ctx):
+    cm = ctx.cm
+    try:
+        raw = cm.load_json_config('core_config.json', {})
+    except Exception:
+        raw = {}
+    vllm_url = (raw.get('ttsModelUrl') or '').strip() or VLLM_OMNI_DEFAULT_BASE_URL
+    vllm_model = (raw.get('ttsModelId') or '').strip() or VLLM_OMNI_DEFAULT_MODEL
+    vllm_voice = (raw.get('ttsVoiceId') or '').strip() or 'default'
+    # 凭证防泄漏：无 key 时返回空字符串而非 None，配合 core.resolve_tts_api_key
+    # 的 provider_key=='vllm_omni' 特判，禁止 fallback 到别家 provider 的 key
+    # （见 get_tts_worker 原注释 / PR #1764 review 第三轮 #3）。
+    vllm_key = (raw.get('ttsModelApiKey') or '')
+    worker = partial(
+        vllm_omni_tts_worker,
+        base_url=vllm_url, model=vllm_model, voice=vllm_voice,
+    )
+    return worker, vllm_key, 'vllm_omni'
+
+
+def _gptsovits_is_selected(ctx) -> bool:
+    core_config, cm = ctx.core_config, ctx.cm
+    # config_manager 写 snapshot 时已 _as_bool 规整 GPTSOVITS_ENABLED，这里再包一层
+    # 防御性对齐隔壁 ENABLE_CUSTOM_API / core.py，避免直接传入未规整 dict 时字符串
+    # "false"/"0" 被当真值误抢 GPT-SoVITS。
+    if not _as_bool(core_config.get('GPTSOVITS_ENABLED'), False):
+        return False
+    try:
+        tts_config = cm.get_model_api_config('tts_custom')
+    except Exception:
+        return False
+    return bool(tts_config.get('is_custom'))
+
+
+def _gptsovits_resolve(ctx):
+    return gptsovits_tts_worker, None, 'gptsovits'
+
+
+# ── 克隆音色 provider（按 voice_meta.provider 选中，hosted SaaS）─────────────
+# 与 vllm/gptsovits 的"配置选中"不同，这三家靠用户所选克隆音色的 voice_meta 路由；
+# is_selected 读 ctx.voice_meta（惰性，vllm/gptsovits 命中时不会触发），resolve 复刻
+# 原 get_tts_worker 克隆块逻辑（含 cosyvoice_intl key 缺失 → dummy 的凭证兜底）。
+
+
+def _minimax_clone_is_selected(ctx) -> bool:
+    vm = ctx.voice_meta
+    return bool(vm and str(vm.get('provider', '')).startswith('minimax'))
+
+
+def _minimax_clone_resolve(ctx):
+    vm = ctx.voice_meta or {}
+    provider = vm.get('provider') or 'minimax'
+    logger.info("检测到 MiniMax 克隆音色: %s (provider=%s)，使用 MiniMax TTS Worker",
+                ctx.voice_id, provider)
+    api_key = ctx.cm.get_tts_api_key(provider)
+    from utils.voice_clone import MINIMAX_DOMESTIC_BASE_URL, MINIMAX_INTL_BASE_URL
+    base_url = vm.get('minimax_base_url') or (
+        MINIMAX_INTL_BASE_URL if provider == 'minimax_intl' else MINIMAX_DOMESTIC_BASE_URL
+    )
+    return partial(minimax_tts_worker, base_url=base_url), api_key, 'minimax'
+
+
+def _elevenlabs_clone_is_selected(ctx) -> bool:
+    vm = ctx.voice_meta
+    return bool(vm and vm.get('provider') == 'elevenlabs')
+
+
+def _elevenlabs_clone_resolve(ctx):
+    vm = ctx.voice_meta or {}
+    logger.info("检测到 ElevenLabs 克隆音色: %s，使用 ElevenLabs TTS Worker", ctx.voice_id)
+    elevenlabs_options = _get_elevenlabs_options()
+    base_url = vm.get('elevenlabs_base_url') or elevenlabs_options['base_url']
+    return partial(elevenlabs_tts_worker, base_url=base_url), _resolve_elevenlabs_api_key(ctx.cm), 'elevenlabs'
+
+
+def _cosyvoice_clone_is_selected(ctx) -> bool:
+    vm = ctx.voice_meta
+    return bool(vm and vm.get('provider') in ('cosyvoice', 'cosyvoice_intl'))
+
+
+def _cosyvoice_clone_resolve(ctx):
+    vm = ctx.voice_meta or {}
+    provider = vm.get('provider') or 'cosyvoice'
+    runtime = ctx.cm.get_cosyvoice_clone_runtime(provider)
+    runtime_key = (runtime.get('api_key') or '').strip()
+    # provider=='cosyvoice_intl' 必须用 intl key 调 intl 端点。runtime_key 缺失时若只返回
+    # None，core.py 会用 `api_key_override or tts_config['api_key']` 兜底到 tts_custom 槽位的
+    # 国内 key，结果拿国内 key 打 intl 端点，每次 utterance 吃一次 401 — 比 dummy 静音更难查。
+    if provider == 'cosyvoice_intl' and not runtime_key:
+        logger.warning(
+            "阿里国际版 CosyVoice 克隆音色 %s 选中，但 intl key 缺失，"
+            "改用 dummy TTS worker 避免用错凭证打 intl 端点", ctx.voice_id)
+        return dummy_tts_worker, None, None
+    logger.info("检测到阿里 CosyVoice 克隆音色: %s (provider=%s)，使用 CosyVoice TTS Worker",
+                ctx.voice_id, provider)
+    return cosyvoice_vc_tts_worker, (runtime_key or None), 'cosyvoice'
+
+
+# ── MiMo（hosted SaaS，assistApi=mimo / TTS_PROVIDER=mimo 选中）────────────────
+
+
+def _mimo_is_selected(ctx) -> bool:
+    cc = ctx.core_config
+    tts_provider = str(cc.get('TTS_PROVIDER') or cc.get('ttsProvider') or '').strip().lower()
+    assist_api_type = str(cc.get('assistApi') or '').strip().lower()
+    return tts_provider == 'mimo' or assist_api_type == 'mimo'
+
+
+def _mimo_resolve(ctx):
+    cc = ctx.core_config
+    assist_api_type = str(cc.get('assistApi') or '').strip().lower()
+    mimo_base_url = cc.get('OPENROUTER_URL') if assist_api_type == 'mimo' else None
+    mimo_api_key = (ctx.cm.get_tts_api_key('mimo') or '').strip()
+    if not mimo_api_key:
+        logger.warning(
+            "MiMo TTS 已选中但 MiMo API Key 缺失，改用 dummy TTS worker 避免复用主 TTS Key")
+        return dummy_tts_worker, None, None
+    return partial(mimo_tts_worker, base_url=mimo_base_url), mimo_api_key, 'mimo'
+
+
+_tts_providers.register(_tts_providers.TTSProvider(
+    key='gptsovits',
+    kind='local',
+    priority=10,
+    capabilities=frozenset({'clone'}),  # GPT-SoVITS = 参考音频克隆
+    is_selected=_gptsovits_is_selected,
+    resolve=_gptsovits_resolve,
+    probe_kind='local_http',
+))
+
+_tts_providers.register(_tts_providers.TTSProvider(
+    key='vllm_omni',
+    kind='local',
+    priority=20,
+    capabilities=frozenset({'preset'}),  # vLLM-Omni = 选预制音色 id，不克隆
+    is_selected=_vllm_omni_is_selected,
+    resolve=_vllm_omni_resolve,
+    default_url=VLLM_OMNI_DEFAULT_BASE_URL,
+    default_model=VLLM_OMNI_DEFAULT_MODEL,
+    default_voice='default',
+    editable_endpoint=True,
+    probe_kind='ws_handshake',
+    probe_sub_type='vllm_omni_tts',
+    probe_ws_path='/audio/speech/stream',
+))
+
+# 克隆音色 provider（hosted SaaS，按 voice_meta.provider 选中）。priority 30/40/50
+# 沿用原 get_tts_worker 克隆块顺序：都在 vllm(20) 之后、mimo/native 之前。capabilities
+# 暂记 {clone}（当前仅克隆路由经注册表；preset/design 待 wiring 后按实际能力追加）。
+# tts_dropdown_only=False：这几家不靠下拉选中（靠 voice_meta），且 minimax 本身还是
+# LLM provider，绝不能被前端从对话/总结等 LLM 下拉里隐藏。它们在 ui_metadata 里的存在
+# 是给前端 source-first 选声器读 capabilities 用的，不参与下拉过滤。
+_tts_providers.register(_tts_providers.TTSProvider(
+    key='minimax',
+    kind='hosted',
+    priority=30,
+    capabilities=frozenset({'clone'}),
+    is_selected=_minimax_clone_is_selected,
+    resolve=_minimax_clone_resolve,
+    tts_dropdown_only=False,
+))
+
+_tts_providers.register(_tts_providers.TTSProvider(
+    key='elevenlabs',
+    kind='hosted',
+    priority=40,
+    capabilities=frozenset({'clone'}),
+    is_selected=_elevenlabs_clone_is_selected,
+    resolve=_elevenlabs_clone_resolve,
+    tts_dropdown_only=False,
+))
+
+_tts_providers.register(_tts_providers.TTSProvider(
+    key='cosyvoice',
+    kind='hosted',
+    priority=50,
+    capabilities=frozenset({'clone'}),
+    is_selected=_cosyvoice_clone_is_selected,
+    resolve=_cosyvoice_clone_resolve,
+    tts_dropdown_only=False,
+))
+
+# MiMo：priority 60（clone 之后、native 之前，沿用原 get_tts_worker 顺序）。
+# capabilities 暂只声明 {preset}（现有固定音色目录；该 catalog 暂仍由 native_voice_registry
+# 对外提供，待统一 preset catalog 接管后从 native 摘除）。MiMo 虽有 mimo-v2.5-tts-voiceclone
+# 模型，但克隆 enrollment 尚未实现——「按实际能力注册」，不在 enrollment 落地前把 clone
+# advertise 进 ui_metadata（否则前端 source-first 选声器会渲染一个不能用的 clone tab）；
+# voiceclone enrollment 真实现时再追加 'clone'（见交接 chip）。
+# tts_dropdown_only=False：MiMo 本身是 assist LLM provider，不能被前端从 LLM 下拉隐藏。
+_tts_providers.register(_tts_providers.TTSProvider(
+    key='mimo',
+    kind='hosted',
+    priority=60,
+    capabilities=frozenset({'preset'}),
+    is_selected=_mimo_is_selected,
+    resolve=_mimo_resolve,
+    tts_dropdown_only=False,
+))
