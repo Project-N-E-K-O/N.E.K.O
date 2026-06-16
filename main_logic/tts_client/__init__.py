@@ -32,6 +32,7 @@ from functools import partial
 
 from utils.config_manager import get_config_manager
 from utils.native_voice_registry import get_native_tts_worker
+from utils.mimo_tts_voices import MIMO_PRESET_CATALOG
 from utils import tts_provider_registry as _tts_providers
 from utils.logger_config import get_module_logger
 
@@ -461,9 +462,11 @@ _tts_providers.register(_tts_providers.TTSProvider(
 ))
 
 # MiMo：priority 60（clone 之后、native 之前，沿用原 get_tts_worker 顺序）。
-# capabilities 暂只声明 {preset}（现有固定音色目录；该 catalog 暂仍由 native_voice_registry
-# 对外提供，待统一 preset catalog 接管后从 native 摘除）。MiMo 虽有 mimo-v2.5-tts-voiceclone
-# 模型，但克隆 enrollment 尚未实现——「按实际能力注册」，不在 enrollment 落地前把 clone
+# capabilities 声明 {preset}，预制目录由 preset_catalog 提供（MIMO_PRESET_CATALOG，
+# 数据复用 utils.mimo_tts_voices 的固定音色表）——这是 MiMo 预制音色的单一真相，UI
+# /voices 与 validate_voice_id 都查注册表，不再借道 native_voice_registry（MiMo 是
+# hosted SaaS，不是核心自带，见设计文档 §4）。MiMo 虽有 mimo-v2.5-tts-voiceclone 模型，
+# 但克隆 enrollment 尚未实现——「按实际能力注册」，不在 enrollment 落地前把 clone
 # advertise 进 ui_metadata（否则前端 source-first 选声器会渲染一个不能用的 clone tab）；
 # voiceclone enrollment 真实现时再追加 'clone'（见交接 chip）。
 # tts_dropdown_only=False：MiMo 本身是 assist LLM provider，不能被前端从 LLM 下拉隐藏。
@@ -474,5 +477,6 @@ _tts_providers.register(_tts_providers.TTSProvider(
     capabilities=frozenset({'preset'}),
     is_selected=_mimo_is_selected,
     resolve=_mimo_resolve,
+    preset_catalog=MIMO_PRESET_CATALOG,
     tts_dropdown_only=False,
 ))

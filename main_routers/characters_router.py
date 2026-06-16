@@ -100,6 +100,7 @@ from utils.native_voice_registry import (
     normalize_native_voice,
     resolve_native_voice_for_routing,
 )
+from utils import tts_provider_registry
 from utils.audio import normalize_voice_clone_api_audio, validate_audio_file
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from utils.initial_personality_state import (
@@ -4211,8 +4212,21 @@ async def get_voices():
     result = {"voices": _config_manager.get_voices_for_current_api(for_listing=True)}
 
     core_config = await _config_manager.aget_core_config()
-    active_native_provider = get_active_realtime_native_provider_for_ui(_config_manager)
-    if active_native_provider:
+    # 先看有没有自带静态预制目录的 provider 被选中（如 MiMo，hosted）。与 dispatch
+    # 同一优先级判定：选中的 provider 若有 preset_catalog 就用它，并压过 core-native
+    # （assistApi=mimo 在 dispatch 里 priority 60 也先于 native 命中）；GPT-SoVITS /
+    # vLLM 这类先命中、无静态目录的 provider 则不出目录（preset 为 None）。复用
+    # native_voices 通道——前端 source-first 选声器按 entry 的 provider/provider_label
+    # 自动分组成「<Provider> · 预制」，无需新增来源通道。
+    selected_preset_catalog = tts_provider_registry.selected_preset_catalog_for_ui(
+        core_config or {}, _config_manager
+    )
+    active_native_provider = (
+        None if selected_preset_catalog else get_active_realtime_native_provider_for_ui(_config_manager)
+    )
+    if selected_preset_catalog:
+        result["native_voices"] = selected_preset_catalog
+    elif active_native_provider:
         native_catalog = get_native_voice_catalog_for_ui(active_native_provider) or {}
         if active_native_provider == 'free_intl':
             # 海外免费（lanlan.app/Gemini）：yui + default(=Leda) 两个置顶 pin，

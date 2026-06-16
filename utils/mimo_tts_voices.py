@@ -6,7 +6,7 @@ published in the MiMo-V2.5-TTS speech synthesis guide.
 """
 
 from utils.api_config_loader import get_native_tts_voice_provider_config
-from utils.native_voice_registry import NativeVoiceProvider, register_provider
+from utils.tts_provider_registry import PresetCatalog
 
 MIMO_TTS_MODEL = "mimo-v2.5-tts"
 # MiMo 的声音克隆模型。当前仅声明为常量占位：MiMo 在 tts_provider_registry 里以
@@ -15,7 +15,6 @@ MIMO_TTS_MODEL = "mimo-v2.5-tts"
 # 接手（见 voice-source-unification 设计文档 / 交接 chip）。
 MIMO_TTS_VOICECLONE_MODEL = "mimo-v2.5-tts-voiceclone"  # TODO: 接 MiMo 克隆 enrollment
 MIMO_TTS_DEFAULT_VOICE = "mimo_default"
-MIMO_TTS_DEFAULT_MALE_VOICE = "Milo"
 MIMO_TTS_BASE_URL = "https://api.xiaomimimo.com/v1"
 
 _FALLBACK_MIMO_TTS_VOICES: dict[str, str] = {
@@ -71,16 +70,12 @@ def _build_aliases(configured: dict[str, str]) -> dict[str, str]:
     }
 
 
-def _create_provider() -> NativeVoiceProvider:
+def _create_preset_catalog() -> PresetCatalog:
     aliases_source = _CFG.get("aliases") or _FALLBACK_MIMO_TTS_ALIASES
-    return NativeVoiceProvider(
-        key="mimo",
+    return PresetCatalog(
         catalog=MIMO_TTS_VOICE_GENDERS,
         aliases=_build_aliases(aliases_source),
         default_voice=_CFG.get("default_voice") or MIMO_TTS_DEFAULT_VOICE,
-        default_male_voice=(
-            _CFG.get("default_male_voice") or MIMO_TTS_DEFAULT_MALE_VOICE
-        ),
         catalog_prefix=_CFG.get("catalog_prefix") or "MiMo",
         catalog_value_is_display_name=bool(
             _CFG.get("catalog_value_is_display_name", False)
@@ -88,9 +83,12 @@ def _create_provider() -> NativeVoiceProvider:
     )
 
 
-MIMO_PROVIDER = _create_provider()
-register_provider(MIMO_PROVIDER)
+# MiMo is a hosted SaaS provider (see design doc §4), so its built-in voice
+# catalog lives on the unified tts_provider_registry.TTSProvider as a
+# preset_catalog, not on native_voice_registry. The TTSProvider entry (in
+# main_logic.tts_client) wires this catalog in via ``preset_catalog=``.
+MIMO_PRESET_CATALOG = _create_preset_catalog()
 
 
 def normalize_mimo_tts_voice(voice_id: str | None) -> tuple[str, bool]:
-    return MIMO_PROVIDER.normalize(voice_id)
+    return MIMO_PRESET_CATALOG.normalize(voice_id)
