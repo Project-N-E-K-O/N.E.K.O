@@ -178,6 +178,46 @@ def test_get_tts_worker_routes_mimo_clone_voice(monkeypatch):
 
 
 @pytest.mark.unit
+def test_get_tts_worker_mimo_clone_uses_token_plan_base_url(monkeypatch):
+    """When MiMo Token Plan is active (assistApi=mimo), get_core_config resolves
+    OPENROUTER_URL to the token-plan endpoint and get_tts_api_key returns the
+    token-plan key — the clone path must pair the two (not hit the default host)."""
+    sample = (np.arange(64, dtype=np.int16)).tobytes()
+
+    class _CM:
+        def get_core_config(self):
+            return {
+                "assistApi": "mimo",
+                "OPENROUTER_URL": "https://token-plan-cn.xiaomimimo.com/v1",
+                "TTS_PROVIDER": "",
+                "GPTSOVITS_ENABLED": False,
+            }
+
+        def get_model_api_config(self, model_type):
+            return {"is_custom": False}
+
+        def get_tts_api_key(self, provider):
+            return "mimo-token-plan-key"
+
+        def get_voices_for_current_api(self, for_listing=False):
+            return {"mimo-clone-tp": {"provider": "mimo", "source": "clone",
+                                      "clone_sample_file": "s.wav", "clone_sample_mime": "audio/wav"}}
+
+        def load_voice_clone_sample(self, filename):
+            return sample
+
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM())
+
+    worker, api_key, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen", has_custom_voice=True, voice_id="mimo-clone-tp",
+    )
+    assert provider_key == "mimo"
+    assert api_key == "mimo-token-plan-key"
+    assert worker.keywords["base_url"] == "https://token-plan-cn.xiaomimimo.com/v1"
+    assert worker.keywords["clone_voice"].startswith("data:audio/wav;base64,")
+
+
+@pytest.mark.unit
 def test_get_tts_worker_mimo_clone_missing_sample_falls_back_to_dummy(monkeypatch):
     class _CM:
         def get_core_config(self):

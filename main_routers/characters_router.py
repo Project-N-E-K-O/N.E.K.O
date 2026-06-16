@@ -4461,6 +4461,16 @@ async def get_voice_preview(
                 'code': 'PRESET_VOICE_PREVIEW_UNSUPPORTED',
             }, status_code=400)
 
+        # MiMo 克隆音色（provider=='mimo'）的试听暂不支持：与上方 MiMo 预制音色试听同步留作
+        # 后续（见 #1848 注释「真试听留作后续」）。显式拦下，避免落到下方 CosyVoice/DashScope
+        # 通用分支拿着 mimo-clone-* 的 id 误合成（Codex review #1851）。
+        if provider == 'mimo':
+            return JSONResponse({
+                'success': False,
+                'error': f'MiMo 音色暂不支持试听: {voice_id}',
+                'code': 'MIMO_VOICE_PREVIEW_UNSUPPORTED',
+            }, status_code=400)
+
         native_preview_provider = _get_active_native_preview_provider(_config_manager, voice_id)
         if native_preview_provider:
             native_voice_id, _ = normalize_native_voice(native_preview_provider, voice_id)
@@ -5229,7 +5239,13 @@ async def voice_clone(
                 'code': 'MIMO_API_KEY_MISSING',
                 'message': '未配置 MiMo API Key，请先在设置中填写'
             }, status_code=400)
-        base_url = ''  # MiMo 克隆用默认 xiaomimimo 端点（mimo_chat_completions_url 兜底）
+        # base_url 须与 api_key 同源：assistApi=mimo（含 Token Plan）时 get_core_config 已把
+        # OPENROUTER_URL 解析成对应端点（普通 / token-plan-*），get_tts_api_key('mimo') 也据此
+        # 返回配套 key；否则用默认 xiaomimimo 端点。和 _mimo_resolve 的 base_url 规则对偶。
+        if str(core_config.get('assistApi') or '').strip().lower() == 'mimo':
+            base_url = (core_config.get('OPENROUTER_URL') or '').strip()
+        else:
+            base_url = ''
         storage_key = f'{MIMO_VOICE_STORAGE_KEY}{api_key[-8:]}'
         provider_label = 'MiMo'
 
@@ -5337,7 +5353,8 @@ async def voice_clone(
                 'source': 'clone',
                 'clone_sample_file': sample_filename,
                 'clone_sample_mime': 'audio/wav',
-                'mimo_base_url': base_url or '',
+                # 不冻结 base_url：dispatch（_mimo_resolve）按当前配置同源解析端点，
+                # 避免用户切换 Token Plan 后存储的端点与新 key 不匹配。
                 'created_at': datetime.now().isoformat()
             }
 

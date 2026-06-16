@@ -1535,6 +1535,7 @@
         "minimaxApiRequired": "此功能需要MiniMax模型（中國），請在API密鑰設定頁中保存MiniMax API Key（不要求啟用輔助API）",
         "minimaxIntlApiRequired": "此功能需要MiniMax模型（國際版），請在API密鑰設定頁中保存MiniMax國際版API Key（不要求啟用輔助API）",
         "mimoApiRequired": "此功能需要 MiMo 模型，請在 API 密鑰設置頁中保存 MiMo API Key",
+        "mimoDirectLinkUnsupported": "MiMo 暫不支持直鏈克隆，請改用本地文件上傳",
         "providerLabel": "語音克隆服務商",
         "provider": {
             "cosyvoice": "阿里百煉 CosyVoice",

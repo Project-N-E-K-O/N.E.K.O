@@ -1229,6 +1229,7 @@ document.addEventListener('DOMContentLoaded', function initProviderSwitch() {
         }
         refreshVoiceCloneProviderNotice(providerSelect, noticeDiv);
         normalizePrefixInputForProvider();
+        updateCloneMethodForProvider(providerSelect.value);
     });
     if (prefixInput) {
         prefixInput.addEventListener('input', () => {
@@ -1237,13 +1238,44 @@ document.addEventListener('DOMContentLoaded', function initProviderSwitch() {
     }
     refreshVoiceCloneProviderNotice(providerSelect, noticeDiv);
     normalizePrefixInputForProvider();
+    updateCloneMethodForProvider(providerSelect.value);
 });
 
 // 当前克隆方式
 let currentCloneMethod = 'file';
 
+// MiMo 只支持本地文件克隆：它把参考样本存在本地、不走 /voice_clone_direct（后端
+// valid_providers 不含 mimo，直链会直接 TTS_PROVIDER_INVALID）。选中 MiMo 时禁用直链方式。
+function isDirectLinkUnsupportedProvider(provider) {
+    return provider === 'mimo';
+}
+
+function updateCloneMethodForProvider(provider) {
+    const btnDirectLinkClone = document.getElementById('btnDirectLinkClone');
+    const disabled = isDirectLinkUnsupportedProvider(provider);
+    if (btnDirectLinkClone) {
+        btnDirectLinkClone.disabled = disabled;
+        btnDirectLinkClone.classList.toggle('disabled', disabled);
+        btnDirectLinkClone.setAttribute('aria-disabled', disabled ? 'true' : 'false');
+        btnDirectLinkClone.title = disabled
+            ? (window.t ? window.t('voice.mimoDirectLinkUnsupported') : 'MiMo 暂不支持直链克隆')
+            : '';
+    }
+    // 当前在直链方式但切到了不支持直链的 provider → 强制回退到本地文件
+    if (disabled && currentCloneMethod === 'directlink') {
+        switchCloneMethod('file');
+    }
+}
+
 // 切换克隆方式
 function switchCloneMethod(method) {
+    // 防御：不支持直链的 provider（MiMo）被选中时，无视直链切换请求
+    if (method === 'directlink') {
+        const providerSelect = document.getElementById('voiceProvider');
+        if (providerSelect && isDirectLinkUnsupportedProvider(providerSelect.value)) {
+            method = 'file';
+        }
+    }
     currentCloneMethod = method;
     const btnFileClone = document.getElementById('btnFileClone');
     const btnDirectLinkClone = document.getElementById('btnDirectLinkClone');

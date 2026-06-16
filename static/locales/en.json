@@ -1535,6 +1535,7 @@
         "minimaxApiRequired": "This feature requires the MiniMax model (China). Please save the MiniMax API Key in API Keys settings (enabling Assist API is not required).",
         "minimaxIntlApiRequired": "This feature requires the MiniMax model (International). Please save the MiniMax International API Key in API Keys settings (enabling Assist API is not required).",
         "mimoApiRequired": "This feature requires a MiMo model. Please save your MiMo API Key on the API key settings page.",
+        "mimoDirectLinkUnsupported": "MiMo does not support direct-link cloning; please upload a local file instead.",
         "providerLabel": "Voice Clone Provider",
         "provider": {
             "cosyvoice": "Alibaba Bailian CosyVoice",

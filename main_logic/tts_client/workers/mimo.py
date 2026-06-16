@@ -229,6 +229,14 @@ def _mimo_resolve(ctx):
             "MiMo TTS 已选中但 MiMo API Key 缺失，改用 dummy TTS worker 避免复用主 TTS Key")
         return dummy_tts_worker, None, None
 
+    # base_url 与 api key 必须**同源**地随当前配置解析（不能把克隆时的 base_url 冻进
+    # voice_meta）：get_tts_api_key('mimo') 在 assistApi=mimo+Token Plan 时返回 token-plan
+    # key，而 get_core_config 已把 OPENROUTER_URL 改写成对应的 token-plan 端点
+    # （config_manager:4043）。故 base_url 一律按「assistApi==mimo 时取 OPENROUTER_URL，
+    # 否则默认 xiaomimimo」解析，保证 key 与端点配套（preset/clone 共用此规则）。
+    assist_api_type = str(cc.get('assistApi') or '').strip().lower()
+    mimo_base_url = cc.get('OPENROUTER_URL') if assist_api_type == 'mimo' else None
+
     # 克隆音色优先：用户挑了某个具体的 MiMo 克隆音色（voice_meta.provider=='mimo'），即使
     # 同时把 MiMo 配成了默认 TTS 也应当尊重这个更具体的选择，走 voiceclone 内联参考音频。
     vm = ctx.voice_meta
@@ -238,7 +246,6 @@ def _mimo_resolve(ctx):
             logger.warning(
                 "MiMo 克隆音色 %s 缺少参考音频样本，改用 dummy TTS worker", ctx.voice_id)
             return dummy_tts_worker, None, None
-        mimo_base_url = (vm or {}).get('mimo_base_url') or None
         return (
             partial(mimo_tts_worker, base_url=mimo_base_url, clone_voice=clone_voice),
             mimo_api_key,
@@ -246,8 +253,6 @@ def _mimo_resolve(ctx):
         )
 
     # 配置选中：MiMo 作为默认 TTS，走预制音色目录。
-    assist_api_type = str(cc.get('assistApi') or '').strip().lower()
-    mimo_base_url = cc.get('OPENROUTER_URL') if assist_api_type == 'mimo' else None
     return partial(mimo_tts_worker, base_url=mimo_base_url), mimo_api_key, 'mimo'
 
 def _load_mimo_clone_data_uri(cm, voice_meta) -> str | None:
