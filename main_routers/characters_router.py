@@ -3773,8 +3773,8 @@ async def update_catgirl(name: str, request: Request):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
     previous_catgirl_data = copy.deepcopy(characters['猫娘'][name])
 
-    old_voice_id = get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))
-    voice_id_will_change = voice_id_in_payload and str(old_voice_id or '').strip() != requested_voice_id
+    old_voice_id = read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)))
+    voice_id_will_change = voice_id_in_payload and old_voice_id != requested_voice_id
     if voice_id_will_change:
         session_manager = get_session_manager()
         if _is_current_catgirl_voice_session_starting(name, characters, session_manager):

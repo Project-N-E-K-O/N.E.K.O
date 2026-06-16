@@ -630,9 +630,13 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         changed = True
 
     voice_id = get_reserved(catgirl_data, "voice_id", default="", legacy_keys=("voice_id",))
-    # 旧数据 voice_id 规整成字符串；但结构化对象形态（惰性迁移后）不能被 str(dict) 损坏，
-    # 原样保留。
-    if voice_id is not None and not isinstance(voice_id, dict):
+    # 把 voice_id 收口进 _reserved。结构对象（惰性迁移形态，可能来自顶层 legacy 字段）
+    # 必须原样 set_reserved 搬进来：既不能被 str(dict) 损坏，也不能跳过——否则随后的旧
+    # 顶层字段清理会 pop 掉它，导致绑定在加载时悄悄丢失（Codex/CodeRabbit P2）。
+    # 普通 legacy 值仍规整成字符串。
+    if isinstance(voice_id, dict):
+        changed |= set_reserved(catgirl_data, "voice_id", voice_id)
+    elif voice_id is not None:
         changed |= set_reserved(catgirl_data, "voice_id", str(voice_id))
 
     system_prompt = get_reserved(catgirl_data, "system_prompt", default=None, legacy_keys=("system_prompt",))
@@ -3232,12 +3236,14 @@ class ConfigManager:
         )
 
     def voice_id_to_storage_value(self, voice_id):
-        """用户设音色时，把 legacy voice_id 串转成 at-rest 存储形态。
+        """Convert a user-set legacy ``voice_id`` string into its at-rest storage form.
 
-        声音来源统一架构的「并查集式惰性迁移」写侧：用户每设/换一次音色，就把那一条迁成
-        结构对象 ``{source,provider,ref}``（用到哪条迁哪条，不做全表 sweep）。空值存空串
-        （＝未设音色）。读侧由 :func:`utils.voice_config.read_legacy_voice_id` 容忍两形态，
-        故存量未触碰的扁平串继续可用。
+        Write side of the voice-source-unification "union-find style lazy migration":
+        every time the user sets/changes a voice, that one entry is migrated to the
+        structured object ``{source, provider, ref}`` (migrate-on-touch, never a
+        full-table sweep). Empty value is stored as an empty string (= no voice set).
+        The read side (:func:`utils.voice_config.read_legacy_voice_id`) tolerates both
+        forms, so untouched legacy flat strings keep working.
         """
         s = str(voice_id or '').strip()
         if not s:
