@@ -12,8 +12,9 @@ from utils.config_manager import (
     get_reserved,
     migrate_catgirl_reserved,
     set_reserved,
+    validate_reserved_schema,
 )
-from utils.voice_config import read_legacy_voice_id
+from utils.voice_config import VoiceConfig, read_legacy_voice_id
 
 
 def test_clone_prefix_storage_roundtrip():
@@ -95,3 +96,28 @@ def test_migrate_normalizes_top_level_legacy_string():
     cfg = {"voice_id": "gsv:legacy"}
     migrate_catgirl_reserved(cfg)
     assert get_reserved(cfg, "voice_id", default="", legacy_keys=("voice_id",)) == "gsv:legacy"
+
+
+def test_schema_accepts_structured_voice_object():
+    """RESERVED_FIELD_SCHEMA accepts the structured object so migrated characters are not
+    flagged malformed on every load (Codex P2)."""
+    errors = validate_reserved_schema(
+        {"voice_id": {"source": "clone", "provider": "elevenlabs", "ref": "abc"}}
+    )
+    assert not [e for e in errors if "voice_id" in e], errors
+    # 旧扁平串仍合法
+    assert not [e for e in validate_reserved_schema({"voice_id": "gsv:x"}) if "voice_id" in e]
+
+
+def test_storage_guard_keeps_legacy_string_when_roundtrip_would_change_key(monkeypatch):
+    """Round-trip guard (Codex P2): if the structured form would read back to a DIFFERENT key
+    (provider-tagged but un-prefixed clone), keep the legacy string so the binding's library
+    key is never rewritten."""
+    cm = get_config_manager()
+    # 模拟 normalize 把裸 key 'xyz' 分类成 elevenlabs（库里以裸 key 存却带 provider 元数据）
+    monkeypatch.setattr(
+        cm, "normalize_voice_id_to_config",
+        lambda v: VoiceConfig(source="clone", provider="elevenlabs", ref="xyz"),
+    )
+    # to_legacy 会还原成 'eleven:xyz' ≠ 'xyz' → 守卫保留原串，不迁移成会改 key 的对象
+    assert cm.voice_id_to_storage_value("xyz") == "xyz"

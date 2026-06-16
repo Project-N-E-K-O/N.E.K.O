@@ -3248,7 +3248,16 @@ class ConfigManager:
         s = str(voice_id or '').strip()
         if not s:
             return ''
-        return self.normalize_voice_id_to_config(s).to_dict()
+        from utils.voice_config import to_legacy_voice_id
+        vc = self.normalize_voice_id_to_config(s)
+        # Round-trip guard: only migrate to the structured object when it reads back to
+        # the exact submitted library key. Otherwise (e.g. a provider-tagged but
+        # un-prefixed clone key, where to_legacy_voice_id would re-add a prefix and
+        # change the key) keep the legacy string verbatim — never let migration rewrite
+        # the key a binding points at, or _get_voice_meta would miss and TTS misroute.
+        if to_legacy_voice_id(vc) != s:
+            return s
+        return vc.to_dict()
 
     def cleanup_invalid_voice_ids(self):
         """Clean up invalid voice_ids in characters.json.
