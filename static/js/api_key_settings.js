@@ -1195,6 +1195,14 @@ function onCustomModelProviderChange(modelType) {
             voiceInput.value = pInfo.tts_default_voice || _spMeta.default_voice || '';
         }
         setKeyEditable(keyInput);
+    } else if (modelType === 'tts' && provider === 'gptsovits') {
+        // GPT-SoVITS：用下方专属字段（#gptsovits-config-fields 的 URL + voice grid），
+        // 标准 url/model/key/voice 不参与，故这里不动标准输入（它们会被隐藏）。
+        // 选中即「启用」，无需独立开关。切到 GSV 时若已有 URL 自动拉一次声音列表。
+        const gsvUrl = document.getElementById('gptsovitsApiUrl')?.value.trim();
+        if (gsvUrl && !_isLoadingSavedConfig) {
+            fetchGptSovitsVoices(true);
+        }
     } else if (provider === 'custom') {
         // custom: remove readonly
         if (urlInput) urlInput.removeAttribute('readonly');
@@ -1217,7 +1225,23 @@ function onCustomModelProviderChange(modelType) {
         const bookKey = getEffectiveAssistKey(provider, null, { useTokenPlan: false });
         setKeyReadonly(keyInput, bookKey);
     }
+    if (modelType === 'tts') {
+        updateTtsProviderFieldVisibility(provider);
+    }
     sel.dataset.currentProvider = provider;
+}
+
+/**
+ * 按所选 TTS provider 切换字段可见性：选 gptsovits 时显示 GSV 专属字段（URL + voice
+ * grid）、隐藏标准 url/model/key/voice；其余 provider 反之。GSV「是否启用」= 下拉是否
+ * 选中 gptsovits，取代旧的独立启用开关。
+ */
+function updateTtsProviderFieldVisibility(provider) {
+    const isGsv = (provider === 'gptsovits');
+    const standardFields = document.getElementById('tts-standard-fields');
+    const gsvFields = document.getElementById('gptsovits-config-fields');
+    if (standardFields) standardFields.style.display = isGsv ? 'none' : '';
+    if (gsvFields) gsvFields.style.display = isGsv ? 'block' : 'none';
 }
 
 /**
@@ -1621,6 +1645,15 @@ async function loadCurrentApiKey() {
                 const sel = document.getElementById(providerField);
                 if (!sel) return;
 
+                // GPT-SoVITS 迁到 ttsModelProvider 下拉后，「启用 GSV」= 下拉选中 gptsovits。
+                // loadGptSovitsConfig 已在前面把 _loadedGptSovitsState 解析好（含旧
+                // gptsovitsEnabled / legacy 嗅探）；这里据此把 tts 下拉钉到 gptsovits，
+                // 覆盖「有 URL 但无 provider → custom」的旧回退，保证存量配置正确回填。
+                if (mt === 'tts' && _loadedGptSovitsState === 'enabled') {
+                    sel.value = 'gptsovits';
+                    onCustomModelProviderChange(mt);
+                    return;
+                }
                 if (data[providerField]) {
                     // Saved provider value exists — use it
                     const optionExists = Array.from(sel.options).some(opt => opt.value === data[providerField]);
@@ -1699,12 +1732,9 @@ function loadGptSovitsConfig(ttsModelUrl, ttsVoiceId, ttsModelId = '', ttsModelA
 
     _loadedGptSovitsState = isDisabledWithConfig ? 'disabled' : (isEnabled ? 'enabled' : 'none');
 
-    // 设置启用开关状态
-    const enabledCheckbox = document.getElementById('gptsovitsEnabled');
-    if (enabledCheckbox) {
-        enabledCheckbox.checked = isEnabled;
-    }
-    toggleGptSovitsConfig();
+    // GSV 迁到 ttsModelProvider 下拉后，启用状态由下拉表达（这里不再操作已删除的
+    // gptsovitsEnabled 开关）。下拉值与字段可见性由随后的 provider 还原循环统一处理
+    // （见 MODEL_TYPES 还原里的 _loadedGptSovitsState==='enabled' 分支）。
 
     // 确定要加载的配置
     const urlToLoad = isDisabledWithConfig ? savedUrl : (isEnabled ? ttsModelUrl : '');
@@ -1881,29 +1911,9 @@ function getGptSovitsConfigForSave() {
     };
 }
 
-/**
- * 从 GPT-SoVITS v3 配置字段组装 ttsModelUrl 和 ttsVoiceId
- * 返回 { url, voiceId } 或 null（如果未启用）
- */
-function getGptSovitsConfig() {
-    const enabled = document.getElementById('gptsovitsEnabled')?.checked;
-    if (!enabled) return null;
-
-    const config = getGptSovitsConfigForSave();
-    if (config && config.url.startsWith('http')) return config;
-    return null;
-}
-
-/**
- * 切换 GPT-SoVITS 配置区域的显示/隐藏
- */
-function toggleGptSovitsConfig() {
-    const enabled = document.getElementById('gptsovitsEnabled')?.checked;
-    const configFields = document.getElementById('gptsovits-config-fields');
-    if (configFields) {
-        configFields.style.display = enabled ? 'block' : 'none';
-    }
-}
+// GPT-SoVITS「是否启用」迁到 ttsModelProvider 下拉后，旧的 getGptSovitsConfig（按
+// checkbox 返回 null）与 toggleGptSovitsConfig（按 checkbox 切显隐）已退役：启用状态
+// 由 ttsModelProvider==='gptsovits' 表达，字段显隐由 updateTtsProviderFieldVisibility 驱动。
 
 // ==================== 结束 GPT-SoVITS v3 配置相关函数 ====================
 
@@ -2053,12 +2063,9 @@ function confirmClearCustomApi() {
     const ttsVoiceIdEl = document.getElementById('ttsVoiceId');
     if (ttsVoiceIdEl) ttsVoiceIdEl.value = '';
 
-    // 取消勾选 GPT-SoVITS
-    const gptsovitsEnabled = document.getElementById('gptsovitsEnabled');
-    if (gptsovitsEnabled && gptsovitsEnabled.checked) {
-        gptsovitsEnabled.checked = false;
-        toggleGptSovitsConfig();
-    }
+    // GSV 启用状态由 ttsModelProvider 下拉表达；上面的 provider 还原循环已把 tts 下拉
+    // 重置为 follow_core 并切回标准字段（updateTtsProviderFieldVisibility），无需再单独
+    // 取消勾选已删除的 gptsovitsEnabled 开关。
     // 清空 GPT-SoVITS 隐藏字段并重置状态，防止保存时残留旧配置
     const gptsovitsApiUrlEl = document.getElementById('gptsovitsApiUrl');
     if (gptsovitsApiUrlEl) gptsovitsApiUrlEl.value = '';
@@ -2249,7 +2256,10 @@ async function save_button_down(e) {
     let ttsVoiceId = getVal('ttsVoiceId');
 
     // 检查 GPT-SoVITS v3 配置
-    const gptsovitsEnabled = document.getElementById('gptsovitsEnabled')?.checked;
+    // GSV「是否启用」迁到 ttsModelProvider 下拉：选中 gptsovits 即启用，取代旧的独立
+    // 启用开关。迁移期仍把 gptsovitsEnabled=true 写进 payload（后端整条 GSV 链路 key off
+    // GPTSOVITS_ENABLED），与 ttsModelProvider='gptsovits' 双信号并存。
+    const gptsovitsEnabled = (document.getElementById('ttsModelProvider')?.value || '').trim() === 'gptsovits';
     const gptsovitsConfigForSave = getGptSovitsConfigForSave();
 
     // 启用 GPT-SoVITS 时校验 URL 协议
@@ -2264,12 +2274,10 @@ async function save_button_down(e) {
     if (gptsovitsEnabled && gptsovitsConfigForSave) {
         ttsModelUrl = gptsovitsConfigForSave.url;
         ttsVoiceId = gptsovitsConfigForSave.voiceId;
-    } else if (!gptsovitsEnabled && _loadedGptSovitsState !== 'none' && !_ttsConfigDirty) {
-        if (gptsovitsConfigForSave) {
-            ttsVoiceId = `__gptsovits_disabled__|${gptsovitsConfigForSave.url}|${gptsovitsConfigForSave.voiceId}`;
-        }
-        ttsModelUrl = '';
     }
+    // 退役 __gptsovits_disabled__| 占位符：下拉切走 gptsovits 即「未选」，ttsModelUrl/
+    // ttsVoiceId 直接用标准字段值，不再把旧 GSV 配置冻进 voice_id（旧前缀仍由
+    // loadGptSovitsConfig 读路径兼容解析，只是不再写出）。
 
     const mcpToken = getVal('mcpTokenInput');
 
