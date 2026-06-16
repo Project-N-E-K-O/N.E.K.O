@@ -210,8 +210,7 @@ def _iter_pdf_pages_until(reader: Any, limit: int) -> Any:
                     break
         elif node_type == "/Page":
             page = PageObject(reader, node_ref if isinstance(node_ref, IndirectObject) else None)
-            if not isinstance(node_ref, IndirectObject):
-                page.update(node)
+            page.update(node)
             for attr, value in inherited.items():
                 if attr not in page:
                     page[attr] = value
@@ -286,10 +285,7 @@ def _parse_pptx(data: bytes) -> dict[str, Any]:
         budget = _TextBudget()
         parts: list[str] = []
         seen_text_keys: set[str] = set()
-        slide_names = sorted(
-            (name for name in archive.namelist() if re.fullmatch(r"ppt/slides/slide\d+\.xml", name)),
-            key=_natural_key,
-        )
+        slide_names = _read_pptx_slide_names(archive)
         for index, name in enumerate(slide_names[:MAX_PPTX_SLIDES], start=1):
             xml_bytes = _read_xml_member(archive, name)
             text = _extract_drawing_text(xml_bytes)
@@ -478,6 +474,43 @@ def _read_xlsx_shared_strings(archive: zipfile.ZipFile) -> list[str]:
     return values
 
 
+def _read_pptx_slide_names(archive: zipfile.ZipFile) -> list[str]:
+    names = archive.namelist()
+    fallback = sorted(
+        (name for name in names if re.fullmatch(r"ppt/slides/slide\d+\.xml", name)),
+        key=_natural_key,
+    )
+    rels_path = "ppt/_rels/presentation.xml.rels"
+    if rels_path not in names:
+        return fallback
+
+    rels = {}
+    rel_root = _parse_xml(_read_xml_member(archive, rels_path))
+    for rel in rel_root.findall(_REL_NS + "Relationship"):
+        rel_id = rel.attrib.get("Id", "")
+        target = rel.attrib.get("Target", "")
+        if rel_id and target:
+            rels[rel_id] = _resolve_pptx_target(target)
+
+    presentation = _parse_xml(_read_xml_member(archive, "ppt/presentation.xml"))
+    ordered: list[str] = []
+    for element in presentation.iter():
+        if not str(element.tag).endswith("}sldId"):
+            continue
+        rel_id = element.attrib.get(_OFFICE_REL_NS + "id", "")
+        path = rels.get(rel_id)
+        if path in names:
+            ordered.append(path)
+    return ordered or fallback
+
+
+def _resolve_pptx_target(target: str) -> str:
+    cleaned = str(target or "").lstrip("/")
+    if cleaned.startswith("ppt/"):
+        return cleaned
+    return "ppt/" + cleaned
+
+
 def _read_xlsx_sheets(archive: zipfile.ZipFile) -> list[dict[str, str]]:
     workbook = _parse_xml(_read_xml_member(archive, "xl/workbook.xml"))
     rels = {}
@@ -525,17 +558,20 @@ def _extract_xlsx_sheet_text(
         for _event, row in ET.iterparse(io.BytesIO(data), events=("end",)):
             if row.tag != _SPREADSHEET_NS + "row":
                 continue
-            if rows_seen >= MAX_XLSX_ROWS_PER_SHEET:
-                truncated = True
-                break
-            rows_seen += 1
             values: list[str] = []
             for cell in row.findall(_SPREADSHEET_NS + "c"):
                 values.append(_xlsx_cell_text(cell, shared_strings))
             while values and not values[-1]:
                 values.pop()
-            if any(values):
-                lines.append("\t".join(values))
+            if not any(values):
+                row.clear()
+                continue
+            if rows_seen >= MAX_XLSX_ROWS_PER_SHEET:
+                truncated = True
+                row.clear()
+                break
+            rows_seen += 1
+            lines.append("\t".join(values))
             row.clear()
     except ET.ParseError as exc:
         raise DocumentParseError("invalid_xml") from exc

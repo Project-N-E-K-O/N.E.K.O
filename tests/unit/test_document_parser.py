@@ -100,7 +100,11 @@ def _xlsx_bytes(text: str, sheet_count: int = 1, row_count: int = 1) -> bytes:
 def _pptx_bytes(slide_text: str, notes_text: str = "") -> bytes:
     members: dict[str, str | bytes] = {
         "[Content_Types].xml": CONTENT_TYPES_XML,
-        "ppt/presentation.xml": "<p:presentation xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\"/>",
+        "ppt/presentation.xml": (
+            '<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+            f'xmlns:r="{OFFICE_REL_NS}"><p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst></p:presentation>'
+        ),
+        "ppt/_rels/presentation.xml.rels": f'<Relationships xmlns="{PACKAGE_REL_NS}"><Relationship Id="rId1" Target="slides/slide1.xml"/></Relationships>',
         "ppt/slides/slide1.xml": f'<p:sld xmlns:p="p" xmlns:a="{DRAWING_NS}"><a:t>{slide_text}</a:t></p:sld>',
     }
     if notes_text:
@@ -141,6 +145,48 @@ def _many_pptx_notes_bytes(note_count: int) -> bytes:
             f'<p:notes xmlns:p="p" xmlns:a="{DRAWING_NS}"><a:t>Notes body {index}</a:t></p:notes>'
         )
     return _zip_bytes(members)
+
+
+def _reordered_pptx_bytes() -> bytes:
+    return _zip_bytes({
+        "[Content_Types].xml": CONTENT_TYPES_XML,
+        "ppt/presentation.xml": (
+            '<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+            f'xmlns:r="{OFFICE_REL_NS}"><p:sldIdLst>'
+            '<p:sldId id="256" r:id="rId2"/>'
+            '<p:sldId id="257" r:id="rId1"/>'
+            "</p:sldIdLst></p:presentation>"
+        ),
+        "ppt/_rels/presentation.xml.rels": (
+            f'<Relationships xmlns="{PACKAGE_REL_NS}">'
+            '<Relationship Id="rId1" Target="slides/slide1.xml"/>'
+            '<Relationship Id="rId2" Target="slides/slide2.xml"/>'
+            "</Relationships>"
+        ),
+        "ppt/slides/slide1.xml": f'<p:sld xmlns:p="p" xmlns:a="{DRAWING_NS}"><a:t>Created first</a:t></p:sld>',
+        "ppt/slides/slide2.xml": f'<p:sld xmlns:p="p" xmlns:a="{DRAWING_NS}"><a:t>Presented first</a:t></p:sld>',
+    })
+
+
+def _xlsx_with_empty_rows_before_data(empty_row_count: int) -> bytes:
+    rows = "".join(f'<row r="{index}"/>' for index in range(1, empty_row_count + 1))
+    rows += (
+        f'<row r="{empty_row_count + 1}">'
+        '<c r="A1" t="s"><v>0</v></c>'
+        '<c r="B1"><v>7</v></c>'
+        "</row>"
+    )
+    return _zip_bytes({
+        "[Content_Types].xml": CONTENT_TYPES_XML,
+        "xl/workbook.xml": (
+            f'<workbook xmlns="{SPREADSHEET_NS}" xmlns:r="{OFFICE_REL_NS}">'
+            '<sheets><sheet name="Sparse" sheetId="1" r:id="rId1"/></sheets>'
+            "</workbook>"
+        ),
+        "xl/_rels/workbook.xml.rels": f'<Relationships xmlns="{PACKAGE_REL_NS}"><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>',
+        "xl/sharedStrings.xml": f'<sst xmlns="{SPREADSHEET_NS}"><si><t>Real data</t></si></sst>',
+        "xl/worksheets/sheet1.xml": f'<worksheet xmlns="{SPREADSHEET_NS}"><sheetData>{rows}</sheetData></worksheet>',
+    })
 
 
 def _pdf_bytes(text: str = "Hello PDF") -> bytes:
@@ -334,6 +380,13 @@ def test_deduplicates_pptx_notes_that_repeat_slide_body():
 
 
 @pytest.mark.unit
+def test_pptx_slides_follow_presentation_order():
+    parsed = parse_document("reordered.pptx", "", _reordered_pptx_bytes())
+
+    assert parsed["content"].index("Presented first") < parsed["content"].index("Created first")
+
+
+@pytest.mark.unit
 def test_rejects_legacy_macro_and_embedded_macro_office_documents():
     _assert_parse_error("legacy.doc", b"legacy", "legacy_office_unsupported")
     _assert_parse_error("macro.docm", b"PK\x03\x04", "macro_document_unsupported")
@@ -463,6 +516,15 @@ def test_marks_xlsx_truncated_when_row_limit_is_exceeded():
     assert "Shared\t800" in parsed["content"]
     assert "Shared\t801" not in parsed["content"]
     assert "[Rows truncated]" in parsed["content"]
+
+
+@pytest.mark.unit
+def test_xlsx_empty_rows_do_not_consume_row_limit():
+    parsed = parse_document("sparse.xlsx", "", _xlsx_with_empty_rows_before_data(805))
+
+    assert parsed["truncated"] is False
+    assert "Real data\t7" in parsed["content"]
+    assert "[Rows truncated]" not in parsed["content"]
 
 
 @pytest.mark.unit

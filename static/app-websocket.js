@@ -2708,6 +2708,7 @@
                 // -------- session_ended_by_server --------
                 } else if (response.type === 'session_ended_by_server') {
                     console.log('[App] Session ended by server, input_mode:', response.input_mode);
+                    window.dispatchEvent(new CustomEvent('neko:session-ended-by-server', { detail: response }));
                     S.isTextSessionActive = false;
                     S.voiceChatActive = false;
                     S.voiceStartPending = false;

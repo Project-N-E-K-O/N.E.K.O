@@ -7,6 +7,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 APP_BUTTONS_PATH = REPO_ROOT / "static" / "app-buttons.js"
+APP_WEBSOCKET_PATH = REPO_ROOT / "static" / "app-websocket.js"
 CORE_PATH = REPO_ROOT / "main_logic" / "core.py"
 INDEX_TEMPLATE_PATH = REPO_ROOT / "templates" / "index.html"
 INTAKE_PATH = REPO_ROOT / "static" / "avatar-drop-intake.js"
@@ -134,8 +135,10 @@ def test_avatar_drop_payload_sends_full_prompt_but_records_memory_summary_only()
     source = _read(APP_BUTTONS_PATH)
     build_prompt = _js_function_block(source, "buildAvatarDropPrompt")
     voice_active = _js_function_block(source, "isAvatarDropVoiceSessionActive")
+    wait_teardown = _js_function_block(source, "waitForAvatarDropVoiceTeardown")
     prepare_text_mode = _js_function_block(source, "prepareAvatarDropTextMode")
     send_payload = _js_function_block(source, "sendAvatarDropPayload")
+    app_websocket_source = _read(APP_WEBSOCKET_PATH)
 
     assert "<<<TEXT_FILE_" in build_prompt
     assert "String(item.content || '').trim()" in build_prompt
@@ -166,9 +169,12 @@ def test_avatar_drop_payload_sends_full_prompt_but_records_memory_summary_only()
     assert "window.isMicStarting" in voice_active
     assert "window.stopRecording()" in prepare_text_mode
     assert "S.socket.send(JSON.stringify({ action: 'end_session' }))" in prepare_text_mode
+    assert "await waitForAvatarDropVoiceTeardown(1500)" in prepare_text_mode
+    assert "window.addEventListener('neko:session-ended-by-server', finish, { once: true });" in wait_teardown
     assert "window.clearAudioQueue" in prepare_text_mode
     assert "S.isTextSessionActive = false;" in prepare_text_mode
     assert "window.syncVoiceChatComposerHidden(false)" in prepare_text_mode
+    assert "window.dispatchEvent(new CustomEvent('neko:session-ended-by-server', { detail: response }))" in app_websocket_source
 
 
 @pytest.mark.unit

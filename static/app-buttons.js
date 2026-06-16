@@ -64,6 +64,22 @@
         );
     }
 
+    function waitForAvatarDropVoiceTeardown(timeoutMs) {
+        return new Promise(function (resolve) {
+            var settled = false;
+            var timeoutId = null;
+            function finish() {
+                if (settled) return;
+                settled = true;
+                if (timeoutId) window.clearTimeout(timeoutId);
+                window.removeEventListener('neko:session-ended-by-server', finish);
+                resolve();
+            }
+            timeoutId = window.setTimeout(finish, timeoutMs || 1500);
+            window.addEventListener('neko:session-ended-by-server', finish, { once: true });
+        });
+    }
+
     async function prepareAvatarDropTextMode() {
         if (!isAvatarDropVoiceSessionActive()) return true;
         try {
@@ -82,6 +98,7 @@
 
             if (S && S.socket && S.socket.readyState === WebSocket.OPEN) {
                 S.socket.send(JSON.stringify({ action: 'end_session' }));
+                await waitForAvatarDropVoiceTeardown(1500);
             }
             if (typeof window.clearAudioQueue === 'function') {
                 await window.clearAudioQueue();
