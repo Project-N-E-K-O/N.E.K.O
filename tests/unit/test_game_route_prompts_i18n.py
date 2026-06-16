@@ -73,6 +73,19 @@ def test_naked_game_route_user_prompts_keep_chinese_watermark(locale):
 
 
 @pytest.mark.unit
+def test_english_archive_prompts_keep_literal_localized_markers():
+    system_prompt = get_game_archive_memory_highlighter_system_prompt("en")
+    source_labels = get_game_archive_highlight_source_labels("en")
+
+    assert 'literal marker "Player:"' in system_prompt
+    assert '"event text" inside "Game event" lines' in system_prompt
+    assert 'literal marker "Player:"' in source_labels["role_explanation"]
+    assert '"event text" inside "Game event" lines' in source_labels["role_explanation"]
+    assert "explicitly marked as player speech" not in system_prompt
+    assert "explicitly marked as player speech" not in source_labels["role_explanation"]
+
+
+@pytest.mark.unit
 def test_game_context_signal_normalizer_accepts_legacy_zh_group_keys():
     normalized = game_router._normalize_game_context_signals({
         "玩家信号": [{

@@ -159,7 +159,7 @@ GAME_ARCHIVE_MEMORY_HIGHLIGHTER_SYSTEM_PROMPTS = {
 - postgame_tone 用短语描述赛后语气，例如普通、得意、闹别扭、低落稍缓；没有可靠证据就留空。
 - memory_summary 用 0-1 句写给后续聊天看的本局摘要；不要编造关系修复。
 - 不要写流水统计、不要写“记录了几条事件”、不要把记录写成玩家逐字发言。
-- 只有材料中明确标为玩家发言的内容才是玩家说的话；游戏事件里的事件原文不是玩家原话，不能写成“玩家说/玩家喊”。
+- 只有材料中以“玩家：”开头的内容才是玩家说的话；游戏事件里的“事件原文”不是玩家原话，不能写成“玩家说/玩家喊”。
 - 官方结果永远以材料里的 finalScore / last_state.score 为准；口头认输、算你赢、让你赢回来只能记录成口头让步/安抚/玩笑，不能写成真实结果改变。
 - 如果保留官方结果，必须沿用材料里的固定顺序或明确写出谁领先谁；不要写无主体裸结果（例如“8:0”“0:10”），也不要前后混用不同视角。
 - 普通本局事件如果没有关系或情绪价值，可以不选。
@@ -176,7 +176,7 @@ Rules:
 - postgame_tone: a short phrase for postgame tone, such as ordinary, proud, sulking, slightly less down; leave empty without reliable evidence.
 - memory_summary: 0-1 sentence for later chat; do not invent relationship repair.
 - Do not write play-by-play stats, do not say how many events were recorded, and do not turn records into verbatim player utterances.
-- Only content explicitly marked as player speech in the material is the player's speech. Event text inside game-event lines is not a player quote.
+- Only content beginning with the literal marker "Player:" in the material is the player's speech. The literal "event text" inside "Game event" lines is not a player quote.
 - Official result always follows finalScore / last_state.score in the material. Verbal concessions are only concessions, comfort, or jokes; they do not change the real result.
 - If you keep the official result, preserve the material's fixed order or explicitly name who leads whom; do not write bare subjectless scores.
 - Skip ordinary session events with no relationship or emotional value.
@@ -193,7 +193,7 @@ Rules:
 - postgame_tone は普通、得意げ、すね気味、少し落ち着いた等の短い語句。証拠がなければ空欄。
 - memory_summary は後続チャット向けの 0-1 文。本局の要約にし、関係修復を捏造しないでください。
 - 統計の羅列や「何件記録した」は書かず、記録をプレイヤーの逐語発言にしないでください。
-- 材料内でプレイヤー発言として明示された内容だけがプレイヤーの発言です。ゲームイベント行のイベント原文はプレイヤー発言ではありません。
+- 材料内でリテラル marker「プレイヤー：」から始まる内容だけがプレイヤーの発言です。「ゲームイベント」行の「イベント原文」はプレイヤー発言ではありません。
 - 公式結果は常に材料内の finalScore / last_state.score に従います。口頭の譲歩や冗談は実際の結果変更ではありません。
 - 公式結果を書く場合は材料の固定順を保つか、誰が誰をリードしたか明示してください。
 - 関係や感情の価値がない普通のイベントは選ばなくてかまいません。
@@ -210,7 +210,7 @@ Rules:
 - postgame_tone 은 보통, 의기양양, 삐침, 조금 누그러짐 같은 짧은 구절입니다. 증거가 없으면 비워 둡니다.
 - memory_summary 는 이후 채팅을 위한 0-1문장 요약입니다. 관계 회복을 지어내지 마세요.
 - 진행 통계, "몇 개 이벤트를 기록했다" 같은 말, 플레이어의 축어 발화처럼 보이는 기록을 쓰지 마세요.
-- 자료에서 플레이어 발화로 명확히 표시된 내용만 플레이어가 한 말입니다. 게임 이벤트 줄의 이벤트 원문은 플레이어 원문이 아닙니다.
+- 자료에서 literal marker "플레이어:" 로 시작하는 내용만 플레이어가 한 말입니다. "게임 이벤트" 줄의 "이벤트 원문"은 플레이어 원문이 아닙니다.
 - 공식 결과는 항상 자료의 finalScore / last_state.score 를 따릅니다. 말로 한 양보나 농담은 실제 결과 변경이 아닙니다.
 - 공식 결과를 남긴다면 자료의 고정 순서를 유지하거나 누가 누구에게 앞섰는지 명확히 쓰세요.
 - 관계나 감정 가치가 없는 평범한 이벤트는 선택하지 않아도 됩니다.
@@ -227,7 +227,7 @@ Rules:
 - postgame_tone: короткая фраза о тоне после игры; без надежных доказательств оставь пустым.
 - memory_summary: 0-1 предложение для дальнейшего чата; не выдумывай восстановление отношений.
 - Не пиши потоковую статистику, не сообщай количество записанных событий и не превращай записи в дословные слова игрока.
-- Только содержимое, явно помеченное в материале как речь игрока, является словами игрока. Текст события в строках игровых событий не является цитатой игрока.
+- Только строки материала, начинающиеся с literal marker "Игрок:", являются словами игрока. "текст события" в строках "Игровое событие" не является цитатой игрока.
 - Официальный результат всегда следует finalScore / last_state.score в материале. Устные уступки являются только уступками, утешением или шуткой и не меняют реальный результат.
 - Если сохраняешь официальный результат, придерживайся фиксированного порядка материала или явно укажи, кто кого опережает.
 - Обычные события без ценности для отношений или эмоций можно не выбирать.
@@ -244,7 +244,7 @@ Reglas:
 - postgame_tone: una frase breve para el tono postpartida, por ejemplo normal, orgullosa, enfurruñada, algo menos decaída; déjalo vacío sin evidencia fiable.
 - memory_summary: 0-1 frase para chats posteriores; no inventes reparación de la relación.
 - No escribas estadísticas jugada por jugada, no digas cuántos eventos se registraron y no conviertas registros en citas literales del jugador.
-- Solo el contenido marcado explícitamente como habla del jugador en el material es habla del jugador. El texto de evento dentro de líneas de evento de juego no es una cita del jugador.
+- Solo el contenido que empieza con el marcador literal "Jugador:" en el material es habla del jugador. "texto del evento" dentro de líneas "Evento de juego" no es una cita del jugador.
 - El resultado oficial siempre sigue finalScore / last_state.score del material. Concesiones verbales solo son concesiones, consuelo o bromas; no cambian el resultado real.
 - Si conservas el resultado oficial, preserva el orden fijo del material o indica explícitamente quién va por delante; no escribas marcadores sin sujeto.
 - Omite eventos ordinarios sin valor relacional o emocional.
@@ -261,7 +261,7 @@ Regras:
 - postgame_tone: uma frase curta para o tom pós-jogo, como normal, orgulhosa, emburrada, um pouco menos abatida; deixe vazio sem evidência confiável.
 - memory_summary: 0-1 frase para chats posteriores; não invente reparação de relação.
 - Não escreva estatísticas lance a lance, não diga quantos eventos foram registrados e não transforme registros em falas literais do jogador.
-- Apenas conteúdo explicitamente marcado como fala do jogador no material é fala do jogador. O texto de evento dentro de linhas de evento de jogo não é citação do jogador.
+- Apenas conteúdo que começa com o marcador literal "Jogador:" no material é fala do jogador. "texto do evento" dentro de linhas "Evento de jogo" não é citação do jogador.
 - O resultado oficial sempre segue finalScore / last_state.score do material. Concessões verbais são apenas concessões, conforto ou brincadeiras; não mudam o resultado real.
 - Se mantiver o resultado oficial, preserve a ordem fixa do material ou diga explicitamente quem lidera; não escreva placares sem sujeito.
 - Ignore eventos comuns sem valor relacional ou emocional.
@@ -286,7 +286,7 @@ GAME_ARCHIVE_HIGHLIGHT_SOURCE_LABELS = {
         "score": "最终/最近结果: {score_text}",
         "score_explanation": "结果说明: 上面的最终/最近结果是游戏模块给出的官方结果，来源优先级为 finalScore / last_state.score；当数据是分差结构时固定顺序是玩家在前、当前角色在后；筛选重点时不要改成相反视角。",
         "verbal_concession_explanation": "口头让步说明: 局内如果出现“算你赢”“让你赢回来”“口头认输”等，只能记录为口头让步、安抚或玩笑；不能改写官方结果或真实胜负。",
-        "role_explanation": "角色说明: 只有明确标为玩家发言的行才是玩家亲口说的话；游戏事件行里的事件原文是游戏模块/猫娘气泡或事件标签，不要归因给玩家。",
+        "role_explanation": "角色说明: 只有“玩家：...”行是玩家亲口说的话；“游戏事件”行里的“事件原文”是游戏模块/猫娘气泡或事件标签，不要归因给玩家。",
         "pregame_context": "开局上下文: {context}",
         "degraded": "局内上下文整理状态: 已降级为纯游戏模式；不要输出关系摘要、信号解释或不可验证的状态延续。",
         "rolling_summary": "局内滚动摘要: {summary}",
@@ -300,7 +300,7 @@ GAME_ARCHIVE_HIGHLIGHT_SOURCE_LABELS = {
         "score": "Final/recent result: {score_text}",
         "score_explanation": "Result note: the final/recent result above is the official result from the game module, prioritized from finalScore / last_state.score. If the data is a score-difference structure, the fixed order is player first and current character second; do not flip the viewpoint.",
         "verbal_concession_explanation": 'Verbal-concession note: in-session phrases like "you win", "I\'ll let you win it back", or "I concede" may only be recorded as verbal concessions, comfort, or jokes; they do not rewrite the official result or real win/loss.',
-        "role_explanation": "Role note: only lines explicitly marked as player speech are the player's own words. Event text inside game-event lines is a game-module/character bubble or event label; do not attribute it to the player.",
+        "role_explanation": 'Role note: only lines beginning with the literal marker "Player:" are the player\'s own words. "event text" inside "Game event" lines is a game-module/character bubble or event label; do not attribute it to the player.',
         "pregame_context": "Opening context: {context}",
         "degraded": "In-session context status: degraded to pure game mode; do not output relationship summaries, signal explanations, or unverifiable state carryover.",
         "rolling_summary": "In-session rolling summary: {summary}",
@@ -314,7 +314,7 @@ GAME_ARCHIVE_HIGHLIGHT_SOURCE_LABELS = {
         "score": "最終/直近結果: {score_text}",
         "score_explanation": "結果説明: 上の最終/直近結果はゲームモジュールの公式結果で、finalScore / last_state.score を優先します。差分構造では固定順はプレイヤーが先、現在のキャラが後です。視点を反転しないでください。",
         "verbal_concession_explanation": "口頭譲歩の説明: 「勝ちでいい」「勝たせる」「降参」などは口頭譲歩、慰め、冗談としてだけ記録し、公式結果や実際の勝敗を書き換えません。",
-        "role_explanation": "役割説明: プレイヤー発言として明示された行だけがプレイヤー本人の発言です。ゲームイベント行のイベント原文はゲームモジュール/キャラのバブルまたはイベントラベルであり、プレイヤーに帰属させないでください。",
+        "role_explanation": "役割説明: literal marker「プレイヤー：...」で始まる行だけがプレイヤー本人の発言です。「ゲームイベント」行の「イベント原文」はゲームモジュール/キャラのバブルまたはイベントラベルであり、プレイヤーに帰属させないでください。",
         "pregame_context": "開局コンテキスト: {context}",
         "degraded": "局内コンテキスト整理状態: 純ゲームモードに降格済み。関係要約、シグナル解釈、検証不能な状態継続を出力しないでください。",
         "rolling_summary": "局内ローリング要約: {summary}",
@@ -328,7 +328,7 @@ GAME_ARCHIVE_HIGHLIGHT_SOURCE_LABELS = {
         "score": "최종/최근 결과: {score_text}",
         "score_explanation": "결과 설명: 위 최종/최근 결과는 게임 모듈의 공식 결과이며 finalScore / last_state.score 를 우선합니다. 점수 차이 구조라면 고정 순서는 플레이어가 먼저, 현재 캐릭터가 나중입니다. 시점을 뒤집지 마세요.",
         "verbal_concession_explanation": '말로 한 양보 설명: 진행 중 "네가 이긴 걸로", "이기게 해줄게", "항복" 같은 말은 말로 한 양보, 위로, 농담으로만 기록하며 공식 결과나 실제 승패를 바꾸지 않습니다.',
-        "role_explanation": "역할 설명: 플레이어 발화로 명시된 줄만 플레이어가 직접 한 말입니다. 게임 이벤트 줄의 이벤트 원문은 게임 모듈/캐릭터 말풍선 또는 이벤트 라벨이며 플레이어에게 귀속하지 마세요.",
+        "role_explanation": '역할 설명: literal marker "플레이어:" 로 시작하는 줄만 플레이어가 직접 한 말입니다. "게임 이벤트" 줄의 "이벤트 원문"은 게임 모듈/캐릭터 말풍선 또는 이벤트 라벨이며 플레이어에게 귀속하지 마세요.',
         "pregame_context": "시작 컨텍스트: {context}",
         "degraded": "진행 중 컨텍스트 정리 상태: 순수 게임 모드로 강등됨. 관계 요약, 신호 해석, 검증할 수 없는 상태 지속을 출력하지 마세요.",
         "rolling_summary": "진행 중 롤링 요약: {summary}",
@@ -342,7 +342,7 @@ GAME_ARCHIVE_HIGHLIGHT_SOURCE_LABELS = {
         "score": "Финальный/последний результат: {score_text}",
         "score_explanation": "Пояснение результата: финальный/последний результат выше является официальным результатом игрового модуля, с приоритетом finalScore / last_state.score. Если данные являются структурой разницы счета, фиксированный порядок: сначала игрок, затем текущий персонаж; не меняй точку зрения.",
         "verbal_concession_explanation": 'Пояснение устных уступок: фразы вроде "ты выиграл", "дам тебе отыграться" или "сдаюсь" можно записывать только как устную уступку, утешение или шутку; они не меняют официальный результат.',
-        "role_explanation": "Пояснение ролей: словами игрока являются только строки, явно помеченные как речь игрока. Текст события в строках игровых событий — это реплика игрового модуля/персонажа или метка события; не приписывай его игроку.",
+        "role_explanation": 'Пояснение ролей: только строки с literal marker "Игрок:" являются словами игрока. "текст события" в строках "Игровое событие" — это реплика игрового модуля/персонажа или метка события; не приписывай его игроку.',
         "pregame_context": "Начальный контекст: {context}",
         "degraded": "Статус контекста сессии: понижен до чистого игрового режима; не выводи summaries отношений, объяснения сигналов или непроверяемое продолжение состояния.",
         "rolling_summary": "Rolling summary сессии: {summary}",
@@ -356,7 +356,7 @@ GAME_ARCHIVE_HIGHLIGHT_SOURCE_LABELS = {
         "score": "Resultado final/reciente: {score_text}",
         "score_explanation": "Nota de resultado: el resultado final/reciente anterior es el resultado oficial del módulo de juego, priorizado desde finalScore / last_state.score. Si los datos son una estructura de diferencia de puntuación, el orden fijo es jugador primero y personaje actual segundo; no inviertas el punto de vista.",
         "verbal_concession_explanation": 'Nota de concesión verbal: frases dentro de la sesión como "tú ganas", "te dejo remontar" o "me rindo" solo pueden registrarse como concesiones verbales, consuelo o bromas; no reescriben el resultado oficial ni la victoria/derrota real.',
-        "role_explanation": "Nota de rol: solo las líneas marcadas explícitamente como habla del jugador son palabras propias del jugador. El texto de evento dentro de líneas de evento de juego es una burbuja del módulo/personaje o etiqueta de evento; no se lo atribuyas al jugador.",
+        "role_explanation": 'Nota de rol: solo las líneas que empiezan con el marcador literal "Jugador:" son palabras propias del jugador. "texto del evento" dentro de líneas "Evento de juego" es una burbuja del módulo/personaje o etiqueta de evento; no se la atribuyas al jugador.',
         "pregame_context": "Contexto inicial: {context}",
         "degraded": "Estado del contexto de sesión: degradado a modo de juego puro; no generes resúmenes de relación, explicaciones de señales ni continuidad de estado no verificable.",
         "rolling_summary": "Resumen continuo de la sesión: {summary}",
@@ -370,7 +370,7 @@ GAME_ARCHIVE_HIGHLIGHT_SOURCE_LABELS = {
         "score": "Resultado final/recente: {score_text}",
         "score_explanation": "Nota de resultado: o resultado final/recente acima é o resultado oficial do módulo de jogo, priorizado a partir de finalScore / last_state.score. Se os dados forem uma estrutura de diferença de placar, a ordem fixa é jogador primeiro e personagem atual em segundo; não inverta o ponto de vista.",
         "verbal_concession_explanation": 'Nota de concessão verbal: frases dentro da sessão como "você venceu", "vou deixar você virar" ou "desisto" só podem ser registradas como concessões verbais, conforto ou brincadeiras; não reescrevem o resultado oficial nem a vitória/derrota real.',
-        "role_explanation": "Nota de papel: apenas linhas marcadas explicitamente como fala do jogador são palavras do próprio jogador. O texto do evento dentro de linhas de evento de jogo é uma fala do módulo/personagem ou etiqueta de evento; não atribua isso ao jogador.",
+        "role_explanation": 'Nota de papel: apenas linhas que começam com o marcador literal "Jogador:" são palavras do próprio jogador. "texto do evento" dentro de linhas "Evento de jogo" é uma fala do módulo/personagem ou etiqueta de evento; não atribua isso ao jogador.',
         "pregame_context": "Contexto inicial: {context}",
         "degraded": "Estado do contexto da sessão: degradado para modo de jogo puro; não gere resumos de relação, explicações de sinais ou continuidade de estado não verificável.",
         "rolling_summary": "Resumo contínuo da sessão: {summary}",
