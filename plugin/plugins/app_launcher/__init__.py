@@ -578,6 +578,10 @@ class AppLauncherPlugin(NekoPluginBase):
             if not target:
                 return Err(SdkError(f"未找到软件: {app_id}"))
 
+            # 清理开机自启注册表项
+            if target.get("autostart", False):
+                _set_autostart_windows(app_id, target.get("name", ""), target.get("path", ""), False)
+
             apps = [a for a in apps if a.get("id") != app_id]
             self._save_apps_unlocked(apps)
 
