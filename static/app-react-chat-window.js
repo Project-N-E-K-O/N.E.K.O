@@ -24,6 +24,7 @@
     // instead of the active compact yarn ball. Strictly gated on the restorable
     // surface being full so the compact minimize path is untouched.
     var CHAT_MINIMIZED_BALL_LEGACY_FULL_ICON_SRC = '/static/icons/expand_icon_off_ball.png';
+    var tutorialChatRequestSeq = 0;
 
     var loadedPromise = null;
     var mounted = false;
@@ -2302,6 +2303,21 @@
         return state.viewProps;
     }
 
+    function createTutorialChatRequest(payload) {
+        tutorialChatRequestSeq += 1;
+        return Object.assign({
+            id: 'tutorial-chat-' + Date.now() + '-' + tutorialChatRequestSeq
+        }, payload || {});
+    }
+
+    function setTutorialChatRequest(propName, payload) {
+        state.viewProps = Object.assign({}, ensureViewProps(), {
+            [propName]: createTutorialChatRequest(payload)
+        });
+        renderWindow();
+        return true;
+    }
+
     function cloneMessage(message) {
         if (!message || typeof message !== 'object') return null;
         return {
@@ -3373,6 +3389,12 @@
     }
 
     function handleCompactChatStateChange(nextCompactChatState) {
+        if (
+            (state.homeTutorialInputLocked || isHomeTutorialInteractionLocked())
+            && normalizeCompactChatState(nextCompactChatState) === 'input'
+        ) {
+            return;
+        }
         setCompactChatState(nextCompactChatState);
     }
 
@@ -3880,10 +3902,64 @@
             return;
         }
         state.homeTutorialInteractionLocked = next;
+        if (next && getCurrentCompactChatState() === 'input') {
+            resetCompactChatState();
+        }
         state.viewProps = Object.assign({}, ensureViewProps(), {
-            composerDisabled: next
+            composerDisabled: next,
+            compactChatState: getCurrentCompactChatState()
         });
         renderWindow();
+    }
+
+    function setHomeTutorialInputLocked(locked, reason) {
+        var next = !!locked;
+        if (state.homeTutorialInputLocked === next) {
+            return;
+        }
+        state.homeTutorialInputLocked = next;
+        state.viewProps = Object.assign({}, ensureViewProps(), {
+            compactInputLocked: next
+        });
+        renderWindow();
+    }
+
+    function setAvatarToolMenuOpen(open, reason) {
+        return setTutorialChatRequest('avatarToolMenuOpenRequest', {
+            open: open === true,
+            reason: typeof reason === 'string' ? reason : ''
+        });
+    }
+
+    function setCompactToolFanOpen(open, reason) {
+        return setTutorialChatRequest('compactToolFanOpenRequest', {
+            open: open === true,
+            reason: typeof reason === 'string' ? reason : ''
+        });
+    }
+
+    function rotateCompactToolWheel(direction, stepCount, options) {
+        var normalizedDirection = direction === -1 ? -1 : 1;
+        var normalizedStepCount = Number.isFinite(stepCount)
+            ? Math.max(1, Math.min(7, Math.floor(stepCount)))
+            : 1;
+        var normalizedOptions = options || {};
+        return setTutorialChatRequest('compactToolWheelRotateRequest', {
+            direction: normalizedDirection,
+            stepCount: normalizedStepCount,
+            reason: typeof normalizedOptions.reason === 'string' ? normalizedOptions.reason : '',
+            forceFast: normalizedOptions.forceFast !== false
+        });
+    }
+
+    function setCompactToolWheelIndex(index, reason) {
+        var normalizedIndex = Number.isFinite(index)
+            ? Math.max(0, Math.min(6, Math.floor(index)))
+            : 0;
+        return setTutorialChatRequest('compactToolWheelIndexRequest', {
+            index: normalizedIndex,
+            reason: typeof reason === 'string' ? reason : ''
+        });
     }
 
     function deactivateToolCursor() {
@@ -4915,6 +4991,12 @@
 
     function setCompactChatState(nextCompactChatState) {
         var normalized = normalizeCompactChatState(nextCompactChatState);
+        if (
+            normalized === 'input'
+            && (state.homeTutorialInputLocked || isHomeTutorialInteractionLocked())
+        ) {
+            return getCurrentCompactChatState();
+        }
         if (state.compactChatState === normalized) {
             return normalized;
         }
@@ -6011,24 +6093,28 @@
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
             setGalgameModeTemporarilyDisabled(true);
+            setHomeTutorialInteractionLocked(true, 'tutorial-started');
         });
 
         window.addEventListener('neko:tutorial-completed', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
             setGalgameModeTemporarilyDisabled(false);
+            setHomeTutorialInteractionLocked(false, 'tutorial-completed');
         });
 
         window.addEventListener('neko:tutorial-skipped', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
             setGalgameModeTemporarilyDisabled(false);
+            setHomeTutorialInteractionLocked(false, 'tutorial-skipped');
         });
 
         window.addEventListener('neko:tutorial-ended-without-completion', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
             setGalgameModeTemporarilyDisabled(false);
+            setHomeTutorialInteractionLocked(false, 'tutorial-ended-without-completion');
         });
 
         // Refresh option list whenever an assistant turn finishes streaming.
@@ -6364,6 +6450,11 @@
         setComposerAttachments: setComposerAttachments,
         setComposerHidden: setComposerHidden,
         setHomeTutorialInteractionLocked: setHomeTutorialInteractionLocked,
+        setHomeTutorialInputLocked: setHomeTutorialInputLocked,
+        setAvatarToolMenuOpen: setAvatarToolMenuOpen,
+        setCompactToolFanOpen: setCompactToolFanOpen,
+        rotateCompactToolWheel: rotateCompactToolWheel,
+        setCompactToolWheelIndex: setCompactToolWheelIndex,
         deactivateToolCursor: deactivateToolCursor,
         appendMessage: appendMessage,
         updateMessage: updateMessage,

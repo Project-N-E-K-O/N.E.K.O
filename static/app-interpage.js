@@ -2359,9 +2359,34 @@
                         applyYuiGuideChatLockState(event.data.disabled !== false);
                         break;
                     }
+                    case 'yui_guide_set_chat_input_locked': {
+                        if (!isStandaloneChatPage() || !document.body) break;
+                        applyYuiGuideChatInputLocked(event.data.locked === true, event.data.reason || '');
+                        break;
+                    }
                     case 'yui_guide_set_chat_spotlight': {
                         if (!isStandaloneChatPage() || !document.body) break;
                         applyYuiGuideChatSpotlight(event.data.kind || '');
+                        break;
+                    }
+                    case 'yui_guide_set_avatar_tool_menu_open': {
+                        if (!isStandaloneChatPage() || !document.body) break;
+                        applyYuiGuideAvatarToolMenuOpen(event.data.open === true, event.data.reason || '');
+                        break;
+                    }
+                    case 'yui_guide_set_compact_tool_fan_open': {
+                        if (!isStandaloneChatPage() || !document.body) break;
+                        applyYuiGuideCompactToolFanOpen(event.data.open === true, event.data.reason || '');
+                        break;
+                    }
+                    case 'yui_guide_rotate_compact_tool_wheel': {
+                        if (!isStandaloneChatPage() || !document.body) break;
+                        applyYuiGuideCompactToolWheelRotate(event.data);
+                        break;
+                    }
+                    case 'yui_guide_set_compact_tool_wheel_index': {
+                        if (!isStandaloneChatPage() || !document.body) break;
+                        applyYuiGuideCompactToolWheelIndex(event.data);
                         break;
                     }
                     case 'yui_guide_chat_ready': {
@@ -2514,6 +2539,45 @@
         });
     }
 
+    function getReactChatWindowHost() {
+        return window.reactChatWindowHost || null;
+    }
+
+    function applyYuiGuideChatInputLocked(locked, reason) {
+        var host = getReactChatWindowHost();
+        if (host && typeof host.setHomeTutorialInputLocked === 'function') {
+            host.setHomeTutorialInputLocked(locked === true, reason || 'externalized-chat-guide');
+        }
+    }
+
+    function applyYuiGuideAvatarToolMenuOpen(open, reason) {
+        var host = getReactChatWindowHost();
+        if (host && typeof host.setAvatarToolMenuOpen === 'function') {
+            host.setAvatarToolMenuOpen(open === true, reason || 'externalized-chat-guide');
+        }
+    }
+
+    function applyYuiGuideCompactToolFanOpen(open, reason) {
+        var host = getReactChatWindowHost();
+        if (host && typeof host.setCompactToolFanOpen === 'function') {
+            host.setCompactToolFanOpen(open === true, reason || 'externalized-chat-guide');
+        }
+    }
+
+    function applyYuiGuideCompactToolWheelRotate(payload) {
+        var host = getReactChatWindowHost();
+        if (!host || typeof host.rotateCompactToolWheel !== 'function') return;
+        host.rotateCompactToolWheel(payload && payload.direction, payload && payload.stepCount, {
+            reason: payload && payload.reason,
+            forceFast: !payload || payload.forceFast !== false
+        });
+    }
+
+    function applyYuiGuideCompactToolWheelIndex(payload) {
+        var host = getReactChatWindowHost();
+        if (!host || typeof host.setCompactToolWheelIndex !== 'function') return;
+        host.setCompactToolWheelIndex(payload && payload.index, payload && payload.reason);
+    }
 
     function isStandaloneChatPage() {
         var pathname = (window.location && window.location.pathname) || '';

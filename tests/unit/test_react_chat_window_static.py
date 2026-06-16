@@ -5,6 +5,7 @@ from pathlib import Path
 APP_REACT_CHAT_WINDOW_PATH = Path(__file__).resolve().parents[2] / "static" / "app-react-chat-window.js"
 APP_BUTTONS_PATH = Path(__file__).resolve().parents[2] / "static" / "app-buttons.js"
 APP_CHAT_EXPORT_PATH = Path(__file__).resolve().parents[2] / "static" / "app-chat-export.js"
+APP_INTERPAGE_PATH = Path(__file__).resolve().parents[2] / "static" / "app-interpage.js"
 AVATAR_UI_POPUP_PATH = Path(__file__).resolve().parents[2] / "static" / "avatar-ui-popup.js"
 MUSIC_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "music_ui.js"
 MUSIC_UI_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "music_ui.css"
@@ -456,6 +457,51 @@ def test_home_tutorial_events_lock_chat_buttons_and_collapse_compact_input():
     assert "setHomeTutorialInteractionLocked(false, 'tutorial-skipped');" in skipped_block
     assert "setHomeTutorialInteractionLocked(false, 'tutorial-ended-without-completion');" in ended_block
     assert "disabled={composerDisabled}" in history_handle_block
+
+
+def test_home_tutorial_host_wires_avatar_tool_requests():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    interpage_source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+
+    assert "setHomeTutorialInputLocked: setHomeTutorialInputLocked" in script
+    assert "setAvatarToolMenuOpen: setAvatarToolMenuOpen" in script
+    assert "setCompactToolFanOpen: setCompactToolFanOpen" in script
+    assert "rotateCompactToolWheel: rotateCompactToolWheel" in script
+    assert "setCompactToolWheelIndex: setCompactToolWheelIndex" in script
+    assert "avatarToolMenuOpenRequest" in script
+    assert "compactToolFanOpenRequest" in script
+    assert "compactToolWheelRotateRequest" in script
+    assert "compactToolWheelIndexRequest" in script
+
+    assert "case 'yui_guide_set_chat_input_locked':" in interpage_source
+    assert "case 'yui_guide_set_avatar_tool_menu_open':" in interpage_source
+    assert "case 'yui_guide_set_compact_tool_fan_open':" in interpage_source
+    assert "case 'yui_guide_rotate_compact_tool_wheel':" in interpage_source
+    assert "case 'yui_guide_set_compact_tool_wheel_index':" in interpage_source
+    assert "host.setHomeTutorialInputLocked(locked === true" in interpage_source
+    assert "host.setAvatarToolMenuOpen(open === true" in interpage_source
+    assert "host.rotateCompactToolWheel(payload && payload.direction" in interpage_source
+
+
+def test_day4_home_template_only_loads_delivered_daily_guide_scripts():
+    source = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
+
+    for guide_script in [
+        "tutorial/yui-guide/days/day1-home-guide.js",
+        "tutorial/yui-guide/days/day2-screen-voice-guide.js",
+        "tutorial/yui-guide/days/day3-interaction-guide.js",
+        "tutorial/yui-guide/days/day4-companion-guide.js",
+    ]:
+        assert f'<script src="/static/{guide_script}' in source
+        assert (Path(__file__).resolve().parents[2] / "static" / guide_script).exists()
+
+    for future_script in [
+        "tutorial/yui-guide/days/day5-personalization-guide.js",
+        "tutorial/yui-guide/days/day6-agent-guide.js",
+        "tutorial/yui-guide/days/day7-graduation-guide.js",
+        "tutorial/icebreaker/new-user-icebreaker.js",
+    ]:
+        assert f'<script src="/static/{future_script}' not in source
 
 
 def test_idle_cat1_compact_mirror_ignores_pet_window_local_events():
