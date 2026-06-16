@@ -4716,18 +4716,8 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     # voice_meta=None 表示远端 clone 无本地元数据 / xAI 自定义 voice，需走 fallback。
     voice_meta = _dispatch_ctx.voice_meta
 
-    if tts_provider == 'mimo' or assist_api_type == 'mimo':
-        mimo_base_url = core_cfg.get('OPENROUTER_URL') if assist_api_type == 'mimo' else None
-        mimo_api_key = (cm.get_tts_api_key('mimo') or '').strip()
-        if not mimo_api_key:
-            logger.warning(
-                "MiMo TTS 已选中但 MiMo API Key 缺失，改用 dummy TTS worker 避免复用主 TTS Key")
-            return dummy_tts_worker, None, None
-        return (
-            partial(mimo_tts_worker, base_url=mimo_base_url),
-            mimo_api_key,
-            'mimo',
-        )
+    # MiMo（assistApi=mimo / TTS_PROVIDER=mimo 选中）已折入 tts_provider_registry
+    # （priority 60，clone 之后、native 之前，沿用原顺序），由上面的 resolve_selected 返回。
 
     # core_api_type 命中 native voice provider + 用户选了该 provider 的原生声线
     # (e.g. Gemini Puck/Leda/中文男) 时优先走原生 worker，不能被 has_custom_voice=False
@@ -5146,6 +5136,28 @@ def _cosyvoice_clone_resolve(ctx):
     return cosyvoice_vc_tts_worker, (runtime_key or None), 'cosyvoice'
 
 
+# ── MiMo（hosted SaaS，assistApi=mimo / TTS_PROVIDER=mimo 选中）────────────────
+
+
+def _mimo_is_selected(ctx) -> bool:
+    cc = ctx.core_config
+    tts_provider = str(cc.get('TTS_PROVIDER') or cc.get('ttsProvider') or '').strip().lower()
+    assist_api_type = str(cc.get('assistApi') or '').strip().lower()
+    return tts_provider == 'mimo' or assist_api_type == 'mimo'
+
+
+def _mimo_resolve(ctx):
+    cc = ctx.core_config
+    assist_api_type = str(cc.get('assistApi') or '').strip().lower()
+    mimo_base_url = cc.get('OPENROUTER_URL') if assist_api_type == 'mimo' else None
+    mimo_api_key = (ctx.cm.get_tts_api_key('mimo') or '').strip()
+    if not mimo_api_key:
+        logger.warning(
+            "MiMo TTS 已选中但 MiMo API Key 缺失，改用 dummy TTS worker 避免复用主 TTS Key")
+        return dummy_tts_worker, None, None
+    return partial(mimo_tts_worker, base_url=mimo_base_url), mimo_api_key, 'mimo'
+
+
 _tts_providers.register(_tts_providers.TTSProvider(
     key='gptsovits',
     kind='local',
@@ -5205,5 +5217,20 @@ _tts_providers.register(_tts_providers.TTSProvider(
     capabilities=frozenset({'clone'}),
     is_selected=_cosyvoice_clone_is_selected,
     resolve=_cosyvoice_clone_resolve,
+    tts_dropdown_only=False,
+))
+
+# MiMo：priority 60（clone 之后、native 之前，沿用原 get_tts_worker 顺序）。
+# capabilities={preset, clone}：preset=现有固定音色目录（mimo_tts_voices；该 catalog 暂
+# 仍由 native_voice_registry 对外提供，待增量 6 的统一 preset catalog 接管后从 native 摘除）；
+# clone=占位（MiMo 有 mimo-v2.5-tts-voiceclone 模型，enrollment 真实现+测后续接手）。
+# tts_dropdown_only=False：MiMo 本身是 assist LLM provider，不能被前端从 LLM 下拉隐藏。
+_tts_providers.register(_tts_providers.TTSProvider(
+    key='mimo',
+    kind='hosted',
+    priority=60,
+    capabilities=frozenset({'preset', 'clone'}),
+    is_selected=_mimo_is_selected,
+    resolve=_mimo_resolve,
     tts_dropdown_only=False,
 ))
