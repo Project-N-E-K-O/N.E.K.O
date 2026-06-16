@@ -4584,6 +4584,9 @@ def _build_basketball_duel_balance_hint(event: Any) -> Dict[str, Any]:
     if not isinstance(event, dict):
         return {}
     duel = event.get("duel") if isinstance(event.get("duel"), dict) else {}
+    if not duel:
+        current_state = event.get("currentState") if isinstance(event.get("currentState"), dict) else {}
+        duel = _sanitize_basketball_duel_state(current_state.get("duel")) or {}
     player_score = _safe_int(duel.get("player_score"), 0)
     neko_score = _safe_int(duel.get("neko_score"), 0)
     max_rounds = _safe_int(duel.get("max_rounds"), 0)
@@ -4644,7 +4647,7 @@ def _build_basketball_duel_balance_hint(event: Any) -> Dict[str, Any]:
         }
 
     neko_leading = diff > 0
-    if neko_leading and diff > remaining_points:
+    if not max_misses and neko_leading and diff > remaining_points:
         return {
             "state": "neko_leading_decided",
             "diff": diff,
@@ -4654,7 +4657,7 @@ def _build_basketball_duel_balance_hint(event: Any) -> Dict[str, Any]:
             "intensity": "low",
             "message": "已经锁定胜局，可以嘴硬庆祝或温和收尾。",
         }
-    if not neko_leading and abs_diff > remaining_points:
+    if not max_misses and not neko_leading and abs_diff > remaining_points:
         return {
             "state": "player_leading_decided",
             "diff": diff,
@@ -5424,9 +5427,12 @@ def _sanitize_basketball_duel_state(value: Any) -> dict | None:
         if src_key not in value:
             continue
         try:
-            number = int(float(value.get(src_key)))
+            number_float = float(value.get(src_key))
         except (TypeError, ValueError):
             continue
+        if not math.isfinite(number_float):
+            continue
+        number = int(number_float)
         clean[dst_key] = max(0, min(number, 999))
     active = _normalize_short_text(
         value.get("active_shooter", value.get("activeShooter")),

@@ -282,6 +282,20 @@ def test_basketball_event_sanitizer_keeps_duel_state_and_shot_missed():
         "active_shooter": "neko",
     }
 
+    event, error = game_router._sanitize_basketball_event({
+        "kind": "shot_missed",
+        "mode": "duel",
+        "duel": {
+            "playerMisses": "Infinity",
+            "nekoMisses": "-Infinity",
+            "maxMisses": "NaN",
+            "playerScore": "5",
+        },
+    })
+
+    assert error == ""
+    assert event["duel"] == {"player_score": 5}
+
 
 @pytest.mark.unit
 def test_basketball_event_sanitizer_drops_removed_horse_state():

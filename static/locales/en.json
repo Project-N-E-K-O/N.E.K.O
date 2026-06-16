@@ -4140,7 +4140,7 @@
             "streak": "Streak {{streak}}",
             "record": "Best {{distance}}",
             "duelScore": "You {{player}} - {{neko}} Neko",
-            "duelMisses": "Misses You {{player}}/{{max}} - Neko {{neko}}/{{max}}",
+            "duelMisses": "Misses: You {{player}}/{{max}} - Neko {{neko}}/{{max}}",
             "round": "Round {{round}}/{{max}}",
             "timer": "{{seconds}}s",
             "practice": "Free Practice",

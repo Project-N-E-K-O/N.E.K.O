@@ -777,6 +777,18 @@ def test_basketball_duel_balance_hint_and_anger_cap():
     assert miss_pressure["nekoMissesLeft"] == 2
     assert miss_pressure["maxMisses"] == 3
 
+    current_state_fallback = game_router._build_basketball_duel_balance_hint(
+        {"currentState": {"duel": {"playerScore": 1, "nekoScore": 5, "playerMisses": 2, "nekoMisses": 0, "maxMisses": 3}}}
+    )
+    assert current_state_fallback["state"] == "neko_leading"
+    assert current_state_fallback["diff"] == 4
+    assert current_state_fallback["playerMissesLeft"] == 1
+
+    miss_elimination_ignores_round_decider = game_router._build_basketball_duel_balance_hint(
+        {"duel": {"player_score": 0, "neko_score": 9, "round": 5, "max_rounds": 5, "player_misses": 1, "neko_misses": 1, "max_misses": 3}}
+    )
+    assert miss_elimination_ignores_round_decider["state"] == "neko_leading"
+
     route_state = {
         "preGameContext": {"gameStance": "punishing", "initialMood": "angry"},
         "anger_pressure_accumulated": 24,
@@ -996,6 +1008,10 @@ def test_basketball_duel_uses_three_miss_elimination_instead_of_five_round_cap()
     assert "player_misses: game.duel.playerMisses" in html
     assert "neko_misses: game.duel.nekoMisses" in html
     assert "max_misses: game.duel.maxMisses" in html
+    assert "result: scored ? 'scored' : 'missed'" in finish_duel
+    assert "duel_outcome: didPlayerWinDuel() ? 'player_win' : 'neko_win'" in finish_duel
+    assert "game.duel.playerScore > game.duel.nekoScore" not in html
+    assert "isDuelMode() && isDuelEliminated() && didPlayerWinDuel()" in html
     assert "_i18n('hud.duelMisses'" in html
     assert "_i18n('result.duelElimination'" in html
     assert "maxRounds: 5" not in html

@@ -1715,7 +1715,7 @@
   function autoAdjustMood(event) {
     if (!event || typeof event !== 'object') return;
     if (event.kind === 'game_over') {
-      if (game.bestStreak >= 10 || game.duel.playerScore > game.duel.nekoScore) setMood('surprised', { reason: 'player_dominated' });
+      if (game.bestStreak >= 10 || (isDuelMode() && isDuelEliminated() && didPlayerWinDuel())) setMood('surprised', { reason: 'player_dominated' });
       else if (game.bestStreak <= 2) setMood('sad', { reason: 'player_struggled' });
     }
     if (event.kind === 'streak_10') setMood('surprised', { reason: 'streak_10' });
@@ -1750,7 +1750,7 @@
     else if (event.kind === 'streak_15') { kind = 'streak_15'; rarity = 'ssr'; }
     else if (event.kind === 'streak_10') { kind = 'streak_10'; rarity = 'sr'; }
     else if (event.kind === 'streak_5') { kind = 'streak_5'; rarity = 'r'; }
-    else if (event.kind === 'game_over' && isDuelMode() && game.duel.playerScore > game.duel.nekoScore) { kind = 'duel_win'; rarity = 'sr'; }
+    else if (event.kind === 'game_over' && isDuelMode() && isDuelEliminated() && didPlayerWinDuel()) { kind = 'duel_win'; rarity = 'sr'; }
     else if (event.kind === 'game_over' && localStorage.getItem('bb_daily_first_game') !== new Date().toISOString().slice(0, 10)) { kind = 'daily_first_game'; rarity = 'n'; localStorage.setItem('bb_daily_first_game', new Date().toISOString().slice(0, 10)); }
     else if (event.result === 'scored' && Number(event.distance || 0) > 600) { kind = 'ultra_range'; rarity = 'sr'; }
     else if (event.shot_type === 'swish' && !cardEventHistory.first_swish) { kind = 'first_swish'; rarity = 'n'; }
@@ -3580,7 +3580,8 @@
       game.ball = null;
       sendGameEvent({
         kind: 'game_over',
-        result: didPlayerWinDuel() ? 'scored' : 'missed',
+        result: scored ? 'scored' : 'missed',
+        duel_outcome: didPlayerWinDuel() ? 'player_win' : 'neko_win',
         streak: game.streak,
         final_streak: game.streak,
         distance: previousDistance,
