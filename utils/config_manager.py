@@ -3188,6 +3188,42 @@ class ConfigManager:
 
         return False
 
+    def normalize_voice_id_to_config(self, voice_id):
+        """把扁平 / 前缀化的 ``voice_id`` 解析成结构化 ``VoiceConfig``（声音来源统一架构）。
+
+        裸 id（无 ``gsv:`` / ``eleven:`` 前缀）的 ``source`` / ``provider`` 需要运行时
+        上下文才能定，这里复用与 :meth:`validate_voice_id` 同一条解析链（vLLM 选中 /
+        当前 API 的 voice_storage clone / 可保存 native / free 预制），把上下文喂给纯函数
+        :func:`utils.voice_config.normalize_voice_id`，保证迁移忠实、无歧义。
+
+        解析不出来的裸 id 原样保留在 ``ref`` 里（不丢），调用方按「保持原值」处理。
+        """
+        from utils.voice_config import normalize_voice_id
+        from utils.native_voice_registry import (
+            get_active_realtime_native_provider,
+            is_saveable_native_voice,
+        )
+        from utils.api_config_loader import get_free_voices
+
+        _voices_cache = {}
+
+        def _clone_lookup(ref):
+            if 'voices' not in _voices_cache:
+                _voices_cache['voices'] = self.get_voices_for_current_api()
+            vdata = _voices_cache['voices'].get(ref)
+            if isinstance(vdata, dict):
+                return str(vdata.get('provider') or '')
+            return None
+
+        return normalize_voice_id(
+            voice_id,
+            vllm_selected=self._is_vllm_omni_tts_selected(self.get_core_config()),
+            clone_provider_lookup=_clone_lookup,
+            is_native=lambda ref: is_saveable_native_voice(self, ref),
+            native_provider=get_active_realtime_native_provider(self) or '',
+            free_voice_ids=set(get_free_voices().values()),
+        )
+
     def cleanup_invalid_voice_ids(self):
         """Clean up invalid voice_ids in characters.json.
         

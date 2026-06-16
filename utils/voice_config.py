@@ -148,3 +148,76 @@ def parse_legacy_voice_id(voice_id: Any) -> "VoiceConfig | None":
             ref=s[len(GSV_VOICE_PREFIX):].strip(),
         )
     return None
+
+
+def normalize_voice_id(
+    voice_id: Any,
+    *,
+    vllm_selected: bool = False,
+    clone_provider_lookup: "Any" = None,
+    is_native: "Any" = None,
+    native_provider: str = "",
+    free_voice_ids: "Any" = (),
+) -> "VoiceConfig":
+    """Resolve a legacy ``voice_id`` (prefixed *or* bare) to a structured VoiceConfig.
+
+    Pure: all runtime context is injected, so it is testable without a ConfigManager.
+    Mirrors the resolution order of ``ConfigManager.validate_voice_id`` so migration
+    is faithful:
+
+    1. unambiguous prefix (``eleven:`` / ``gsv:`` / disabled placeholder / empty) —
+       handled by :func:`parse_legacy_voice_id`.
+    2. ``vllm_selected`` → ``{preset, vllm_omni, ref}`` (vLLM-Omni uses preset ids).
+    3. ``clone_provider_lookup(ref)`` returns a provider (the ref is a cloned voice
+       in the current API's voice_storage) → ``{clone, <provider>, ref}``.
+    4. ``is_native(ref)`` → ``{preset, <native_provider>, ref}``.
+    5. ``ref in free_voice_ids`` → ``{preset, free, ref}``.
+    6. otherwise unresolved → ``{ref}`` only (provider/source unknown; carried through
+       so nothing is lost — callers treat an unresolved ref as "leave as-is").
+
+    Args:
+        clone_provider_lookup: ``ref -> provider|None`` (None = not a known clone).
+        is_native: ``ref -> bool``.
+        free_voice_ids: container of free preset voice ids.
+    """
+    parsed = parse_legacy_voice_id(voice_id)
+    if parsed is not None:
+        return parsed
+
+    ref = str(voice_id or "").strip()
+    if not ref:
+        return VoiceConfig()
+
+    if vllm_selected:
+        return VoiceConfig(source=SOURCE_PRESET, provider="vllm_omni", ref=ref)
+
+    if clone_provider_lookup is not None:
+        provider = clone_provider_lookup(ref)
+        if provider is not None:
+            return VoiceConfig(source=SOURCE_CLONE, provider=str(provider or ""), ref=ref)
+
+    if is_native is not None and is_native(ref):
+        return VoiceConfig(source=SOURCE_PRESET, provider=str(native_provider or ""), ref=ref)
+
+    if ref in free_voice_ids:
+        return VoiceConfig(source=SOURCE_PRESET, provider="free", ref=ref)
+
+    return VoiceConfig(ref=ref)
+
+
+def to_legacy_voice_id(vc: "VoiceConfig") -> str:
+    """Reverse shim: render a VoiceConfig back to the flat, prefixed ``voice_id`` the
+    existing dispatch / validation chain understands.
+
+    Transitional scaffolding for the full refactor: lets storage move to the
+    structured object while consumers not yet migrated keep receiving the legacy
+    string (``eleven:`` / ``gsv:`` prefixes reconstructed from ``provider``). Removed
+    once every consumer reads VoiceConfig directly.
+    """
+    if vc is None or vc.is_empty():
+        return ""
+    if vc.provider == "elevenlabs":
+        return f"eleven:{vc.ref}"
+    if vc.provider == "gptsovits":
+        return f"gsv:{vc.ref}"
+    return vc.ref
