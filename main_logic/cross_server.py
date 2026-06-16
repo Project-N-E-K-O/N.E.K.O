@@ -228,6 +228,10 @@ def _append_pending_user_image(
     request_id: object,
     input_type: object = None,
 ) -> bool:
+    """Append a real user image entry and return whether one was queued.
+
+    Empty data means the caller only sent metadata, so the placeholder is skipped.
+    """
     image_data = str(data or "").strip()
     if not image_data:
         return False
