@@ -103,9 +103,10 @@
     }
 
     const day1Guide = getDailyGuide(1) || {};
-    const pageKeys = Array.isArray(day1Guide.pageKeys) && day1Guide.pageKeys.length > 0
-        ? day1Guide.pageKeys.slice()
-        : DEFAULT_PAGE_KEYS.slice();
+    const configuredPageKeys = Array.isArray(day1Guide.pageKeys) ? day1Guide.pageKeys : [];
+    const pageKeys = DEFAULT_PAGE_KEYS.concat(configuredPageKeys).filter(function (page, index, list) {
+        return typeof page === 'string' && page && list.indexOf(page) === index;
+    });
     const steps = {};
     const day1Steps = day1Guide.steps && typeof day1Guide.steps === 'object'
         ? day1Guide.steps

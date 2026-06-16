@@ -92,7 +92,7 @@
     }
 
     async function start(reason) {
-        if (activeSession || hasCompletedFinalDay()) {
+        if (activeSession || isDayCompleted(DAY) || hasCompletedFinalDay()) {
             return false;
         }
 

@@ -100,6 +100,12 @@
             let narrationPromise = Promise.resolve();
             const legacyScene = scene || {};
             const audio = timelineScene && timelineScene.audio ? timelineScene.audio : {};
+            const resolveTimelineVoiceKey = (voiceKey) => {
+                const resolvedSceneVoiceKey = typeof director.resolveAvatarFloatingSceneVoiceKey === 'function'
+                    ? director.resolveAvatarFloatingSceneVoiceKey(legacyScene)
+                    : '';
+                return resolvedSceneVoiceKey || voiceKey || audio.voiceKey || legacyScene.voiceKey || '';
+            };
             return {
                 play: (voiceKey, audioOptions) => {
                     const text = audio.text || (
@@ -107,7 +113,7 @@
                             ? director.resolveAvatarFloatingSceneText(legacyScene)
                             : ''
                     );
-                    const resolvedVoiceKey = voiceKey || audio.voiceKey || legacyScene.voiceKey || '';
+                    const resolvedVoiceKey = resolveTimelineVoiceKey(voiceKey);
                     if (typeof director.speakGuideLine === 'function' && (text || resolvedVoiceKey)) {
                         narrationPromise = Promise.resolve(director.speakGuideLine(text, {
                             voiceKey: resolvedVoiceKey,
@@ -126,7 +132,7 @@
                 getDurationMs: (voiceKey, locale) => {
                     if (typeof director.getGuideVoiceDurationMs === 'function') {
                         return director.getGuideVoiceDurationMs(
-                            voiceKey || audio.voiceKey || '',
+                            resolveTimelineVoiceKey(voiceKey),
                             locale || audio.locale || ''
                         );
                     }
@@ -138,7 +144,7 @@
                 resolveCueMs: (voiceKey, cueName) => {
                     if (typeof director.resolveGuideVoiceCueTargetMs === 'function') {
                         return director.resolveGuideVoiceCueTargetMs(
-                            voiceKey || audio.voiceKey || '',
+                            resolveTimelineVoiceKey(voiceKey),
                             cueName,
                             0,
                             audio.text || legacyScene.text || ''
