@@ -32,6 +32,8 @@
     var _processedMsgKeys = {};
     var CROSS_WINDOW_IDLE_ACTIVITY_MIN_INTERVAL_MS = 250;
     var _lastCrossWindowIdleActivityAt = 0;
+    var _pendingYuiGuideChatHostCommands = [];
+    var _pendingYuiGuideChatHostFlushTimer = null;
 
     /**
      * Returns true if this action+timestamp was already processed (duplicate).
@@ -2364,6 +2366,11 @@
                         applyYuiGuideChatInputLocked(event.data.locked === true, event.data.reason || '');
                         break;
                     }
+                    case 'yui_guide_set_compact_history_open': {
+                        if (!isStandaloneChatPage() || !document.body) break;
+                        applyYuiGuideCompactHistoryOpen(event.data.open === true, event.data.reason || '');
+                        break;
+                    }
                     case 'yui_guide_set_chat_spotlight': {
                         if (!isStandaloneChatPage() || !document.body) break;
                         applyYuiGuideChatSpotlight(event.data.kind || '');
@@ -2543,40 +2550,140 @@
         return window.reactChatWindowHost || null;
     }
 
-    function applyYuiGuideChatInputLocked(locked, reason) {
+    function queueYuiGuideChatHostCommand(data) {
+        if (!data || typeof data !== 'object' || !data.action) return;
+        _pendingYuiGuideChatHostCommands.push({
+            data: Object.assign({}, data),
+            expiresAt: Date.now() + 5000
+        });
+        if (_pendingYuiGuideChatHostCommands.length > 25) {
+            _pendingYuiGuideChatHostCommands = _pendingYuiGuideChatHostCommands.slice(-25);
+        }
+        scheduleYuiGuideChatHostCommandFlush();
+    }
+
+    function scheduleYuiGuideChatHostCommandFlush() {
+        if (_pendingYuiGuideChatHostFlushTimer !== null) return;
+        _pendingYuiGuideChatHostFlushTimer = window.setTimeout(flushPendingYuiGuideChatHostCommands, 50);
+    }
+
+    function flushPendingYuiGuideChatHostCommands() {
+        _pendingYuiGuideChatHostFlushTimer = null;
+        if (_pendingYuiGuideChatHostCommands.length === 0) return;
+
+        var now = Date.now();
+        var pending = _pendingYuiGuideChatHostCommands;
+        var remaining = [];
+        _pendingYuiGuideChatHostCommands = [];
+        pending.forEach(function (command) {
+            if (!command || command.expiresAt < now) return;
+            if (!applyYuiGuideChatHostCommand(command.data, { queue: false })) {
+                remaining.push(command);
+            }
+        });
+        _pendingYuiGuideChatHostCommands = remaining.concat(_pendingYuiGuideChatHostCommands);
+        if (_pendingYuiGuideChatHostCommands.length > 0) {
+            scheduleYuiGuideChatHostCommandFlush();
+        }
+    }
+
+    function shouldQueueYuiGuideChatHostCommand(options) {
+        return !options || options.queue !== false;
+    }
+
+    function applyYuiGuideChatHostCommand(data, options) {
+        if (!data || typeof data !== 'object') return true;
+        switch (data.action) {
+            case 'yui_guide_set_chat_input_locked':
+                return applyYuiGuideChatInputLocked(data.locked === true, data.reason || '', options);
+            case 'yui_guide_set_compact_history_open':
+                return applyYuiGuideCompactHistoryOpen(data.open === true, data.reason || '', options);
+            case 'yui_guide_set_avatar_tool_menu_open':
+                return applyYuiGuideAvatarToolMenuOpen(data.open === true, data.reason || '', options);
+            case 'yui_guide_set_compact_tool_fan_open':
+                return applyYuiGuideCompactToolFanOpen(data.open === true, data.reason || '', options);
+            case 'yui_guide_rotate_compact_tool_wheel':
+                return applyYuiGuideCompactToolWheelRotate(data, options);
+            case 'yui_guide_set_compact_tool_wheel_index':
+                return applyYuiGuideCompactToolWheelIndex(data, options);
+            default:
+                return true;
+        }
+    }
+
+    function applyYuiGuideChatInputLocked(locked, reason, options) {
         var host = getReactChatWindowHost();
         if (host && typeof host.setHomeTutorialInputLocked === 'function') {
             host.setHomeTutorialInputLocked(locked === true, reason || 'externalized-chat-guide');
+            return true;
         }
+        if (shouldQueueYuiGuideChatHostCommand(options)) {
+            queueYuiGuideChatHostCommand({ action: 'yui_guide_set_chat_input_locked', locked: locked === true, reason: reason || '' });
+        }
+        return false;
     }
 
-    function applyYuiGuideAvatarToolMenuOpen(open, reason) {
+    function applyYuiGuideCompactHistoryOpen(open, reason, options) {
+        var host = getReactChatWindowHost();
+        if (host && typeof host.setCompactHistoryOpen === 'function') {
+            host.setCompactHistoryOpen(open === true, reason || 'externalized-chat-guide');
+            return true;
+        }
+        if (shouldQueueYuiGuideChatHostCommand(options)) {
+            queueYuiGuideChatHostCommand({ action: 'yui_guide_set_compact_history_open', open: open === true, reason: reason || '' });
+        }
+        return false;
+    }
+
+    function applyYuiGuideAvatarToolMenuOpen(open, reason, options) {
         var host = getReactChatWindowHost();
         if (host && typeof host.setAvatarToolMenuOpen === 'function') {
             host.setAvatarToolMenuOpen(open === true, reason || 'externalized-chat-guide');
+            return true;
         }
+        if (shouldQueueYuiGuideChatHostCommand(options)) {
+            queueYuiGuideChatHostCommand({ action: 'yui_guide_set_avatar_tool_menu_open', open: open === true, reason: reason || '' });
+        }
+        return false;
     }
 
-    function applyYuiGuideCompactToolFanOpen(open, reason) {
+    function applyYuiGuideCompactToolFanOpen(open, reason, options) {
         var host = getReactChatWindowHost();
         if (host && typeof host.setCompactToolFanOpen === 'function') {
             host.setCompactToolFanOpen(open === true, reason || 'externalized-chat-guide');
+            return true;
         }
+        if (shouldQueueYuiGuideChatHostCommand(options)) {
+            queueYuiGuideChatHostCommand({ action: 'yui_guide_set_compact_tool_fan_open', open: open === true, reason: reason || '' });
+        }
+        return false;
     }
 
-    function applyYuiGuideCompactToolWheelRotate(payload) {
+    function applyYuiGuideCompactToolWheelRotate(payload, options) {
         var host = getReactChatWindowHost();
-        if (!host || typeof host.rotateCompactToolWheel !== 'function') return;
+        if (!host || typeof host.rotateCompactToolWheel !== 'function') {
+            if (shouldQueueYuiGuideChatHostCommand(options)) {
+                queueYuiGuideChatHostCommand(Object.assign({ action: 'yui_guide_rotate_compact_tool_wheel' }, payload || {}));
+            }
+            return false;
+        }
         host.rotateCompactToolWheel(payload && payload.direction, payload && payload.stepCount, {
             reason: payload && payload.reason,
             forceFast: !payload || payload.forceFast !== false
         });
+        return true;
     }
 
-    function applyYuiGuideCompactToolWheelIndex(payload) {
+    function applyYuiGuideCompactToolWheelIndex(payload, options) {
         var host = getReactChatWindowHost();
-        if (!host || typeof host.setCompactToolWheelIndex !== 'function') return;
+        if (!host || typeof host.setCompactToolWheelIndex !== 'function') {
+            if (shouldQueueYuiGuideChatHostCommand(options)) {
+                queueYuiGuideChatHostCommand(Object.assign({ action: 'yui_guide_set_compact_tool_wheel_index' }, payload || {}));
+            }
+            return false;
+        }
         host.setCompactToolWheelIndex(payload && payload.index, payload && payload.reason);
+        return true;
     }
 
     function isStandaloneChatPage() {

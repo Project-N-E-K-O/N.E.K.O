@@ -1764,7 +1764,7 @@
         "tutorialPageResetSuccess": "El tutorial para esta página se ha restablecido. Se mostrará nuevamente cuando lo visites.",
         "tutorialPageResetSuccessWithName": "Se ha restablecido el tutorial para \"{{pageName}}\". Se mostrará nuevamente cuando visite esa página.",
         "tutorialHomeDayLabel": "Día {{day}}",
-        "tutorialHomeDayColumn": "Tutorial de siete días de la página de inicio",
+        "tutorialHomeDayColumn": "Tutorial de seis días de la página de inicio",
         "refreshed": "Memoria actualizada, la nueva memoria se utilizará en la próxima conversación.",
         "refreshingContext": "Actualizando contexto...",
         "storageLocation": "Ubicación de almacenamiento",

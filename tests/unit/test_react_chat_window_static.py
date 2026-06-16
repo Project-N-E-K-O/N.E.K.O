@@ -14,6 +14,9 @@ STATIC_DARK_MODE_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "cs
 STATIC_INDEX_JS_PATH = Path(__file__).resolve().parents[2] / "static" / "js" / "index.js"
 REACT_CHAT_STYLES_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "styles.css"
 REACT_CHAT_APP_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "App.tsx"
+REACT_CHAT_MESSAGE_SCHEMA_PATH = (
+    Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "message-schema.ts"
+)
 REACT_CHAT_IIFE_PATH = Path(__file__).resolve().parents[2] / "static" / "react" / "neko-chat" / "neko-chat-window.iife.js"
 CHAT_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "chat.html"
 INDEX_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "index.html"
@@ -462,25 +465,41 @@ def test_home_tutorial_events_lock_chat_buttons_and_collapse_compact_input():
 def test_home_tutorial_host_wires_avatar_tool_requests():
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
     interpage_source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+    app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
+    schema_source = REACT_CHAT_MESSAGE_SCHEMA_PATH.read_text(encoding="utf-8")
 
     assert "setHomeTutorialInputLocked: setHomeTutorialInputLocked" in script
     assert "setAvatarToolMenuOpen: setAvatarToolMenuOpen" in script
     assert "setCompactToolFanOpen: setCompactToolFanOpen" in script
+    assert "setCompactHistoryOpen: setCompactHistoryOpen" in script
     assert "rotateCompactToolWheel: rotateCompactToolWheel" in script
     assert "setCompactToolWheelIndex: setCompactToolWheelIndex" in script
     assert "avatarToolMenuOpenRequest" in script
     assert "compactToolFanOpenRequest" in script
+    assert "compactHistoryOpenRequest" in script
     assert "compactToolWheelRotateRequest" in script
     assert "compactToolWheelIndexRequest" in script
+    assert "setTutorialChatRequest('compactHistoryOpenRequest'" in script
 
     assert "case 'yui_guide_set_chat_input_locked':" in interpage_source
+    assert "case 'yui_guide_set_compact_history_open':" in interpage_source
     assert "case 'yui_guide_set_avatar_tool_menu_open':" in interpage_source
     assert "case 'yui_guide_set_compact_tool_fan_open':" in interpage_source
     assert "case 'yui_guide_rotate_compact_tool_wheel':" in interpage_source
     assert "case 'yui_guide_set_compact_tool_wheel_index':" in interpage_source
+    assert "queueYuiGuideChatHostCommand" in interpage_source
+    assert "flushPendingYuiGuideChatHostCommands" in interpage_source
     assert "host.setHomeTutorialInputLocked(locked === true" in interpage_source
+    assert "host.setCompactHistoryOpen(open === true" in interpage_source
     assert "host.setAvatarToolMenuOpen(open === true" in interpage_source
     assert "host.rotateCompactToolWheel(payload && payload.direction" in interpage_source
+
+    assert "compactHistoryOpenRequest = null" in app_source
+    assert "const lastCompactHistoryOpenRequestIdRef = useRef('');" in app_source
+    assert "const request = compactHistoryOpenRequest;" in app_source
+    assert "openCompactExportHistory();" in app_source
+    assert "closeCompactExportHistory();" in app_source
+    assert "compactHistoryOpenRequest: compactHistoryOpenRequestSchema.optional()" in schema_source
 
 
 def test_day6_home_template_only_loads_delivered_daily_guide_scripts():

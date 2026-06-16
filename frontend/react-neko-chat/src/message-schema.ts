@@ -118,6 +118,12 @@ const compactToolWheelIndexRequestSchema = z.object({
   reason: z.string().optional(),
 }).nullable();
 
+const compactHistoryOpenRequestSchema = z.object({
+  id: z.string().min(1),
+  open: z.boolean(),
+  reason: z.string().optional(),
+}).nullable();
+
 const avatarInteractionPayloadBaseSchema = z.object({
   interactionId: z.string().min(1),
   target: z.literal('avatar'),
@@ -276,6 +282,7 @@ export const chatWindowPropsSchema = z.object({
   compactToolFanOpenRequest: compactToolFanOpenRequestSchema.optional(),
   compactToolWheelRotateRequest: compactToolWheelRotateRequestSchema.optional(),
   compactToolWheelIndexRequest: compactToolWheelIndexRequestSchema.optional(),
+  compactHistoryOpenRequest: compactHistoryOpenRequestSchema.optional(),
   onMessageAction: z.function()
     .args(chatMessageSchema, messageActionSchema)
     .returns(z.void())

@@ -161,7 +161,7 @@ def test_memory_browser_page_load(mock_page: Page, running_server: str, seed_mem
     expect(mock_page.locator("#tutorial-reset-select option[value='current_personality']")).to_have_count(1)
     expect(mock_page.locator("#home-tutorial-reset-controls")).to_have_count(0)
     expect(mock_page.locator(".tutorial-day-reset-menu")).to_have_count(0)
-    expect(mock_page.locator(".tutorial-cascader-day-column [data-tutorial-day]")).to_have_count(7)
+    expect(mock_page.locator(".tutorial-cascader-day-column [data-tutorial-day]")).to_have_count(6)
     expect(mock_page.locator(".tutorial-cascader-popup")).to_be_hidden()
     expect(mock_page.locator("#tutorial-reset-btn")).to_be_disabled()
     mock_page.locator(".tutorial-cascader-trigger").click()

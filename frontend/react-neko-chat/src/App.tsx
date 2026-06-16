@@ -1397,6 +1397,7 @@ function CompactChatApp({
   compactToolFanOpenRequest = null,
   compactToolWheelRotateRequest = null,
   compactToolWheelIndexRequest = null,
+  compactHistoryOpenRequest = null,
   onCompactChatStateChange,
   onCompactMinimizeRequest,
   rollbackDraft,
@@ -1562,6 +1563,7 @@ function CompactChatApp({
   const lastCompactToolFanOpenRequestIdRef = useRef('');
   const lastCompactToolWheelRotateRequestIdRef = useRef('');
   const lastCompactToolWheelIndexRequestIdRef = useRef('');
+  const lastCompactHistoryOpenRequestIdRef = useRef('');
   const compactInputHasPayload = draft.trim().length > 0 || composerAttachments.length > 0;
   const canSubmit = !compactTextEntryLocked && compactInputHasPayload;
   const clearActiveCursorToolSelection = useCallback(() => {
@@ -1932,6 +1934,18 @@ function CompactChatApp({
       compactExportHistoryUnmountTimerRef.current = null;
     }, COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
   }, [clearCompactExportHistoryUnmountTimer, messages]);
+
+  useEffect(() => {
+    const request = compactHistoryOpenRequest;
+    if (!request || !request.id || request.id === lastCompactHistoryOpenRequestIdRef.current) return;
+    lastCompactHistoryOpenRequestIdRef.current = request.id;
+    if (request.open) {
+      openCompactExportHistory();
+      return;
+    }
+    closeCompactExportHistory();
+  }, [closeCompactExportHistory, compactHistoryOpenRequest, openCompactExportHistory]);
+
   useEffect(() => () => {
     clearCompactExportHistoryUnmountTimer();
   }, [clearCompactExportHistoryUnmountTimer]);

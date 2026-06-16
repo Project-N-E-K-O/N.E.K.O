@@ -1764,7 +1764,7 @@
         "tutorialPageResetSuccess": "已重置该页面的引导，下次进入时将重新显示引导。",
         "tutorialPageResetSuccessWithName": "已重置「{{pageName}}」的引导，下次进入该页面时将重新显示引导。",
         "tutorialHomeDayLabel": "第 {{day}} 天",
-        "tutorialHomeDayColumn": "主页七日新手教程",
+        "tutorialHomeDayColumn": "主页六日新手教程",
         "refreshed": "记忆已更新，下次对话将使用新记忆",
         "refreshingContext": "正在刷新上下文...",
         "storageLocation": "存储位置",

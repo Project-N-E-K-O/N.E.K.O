@@ -1764,7 +1764,7 @@
         "tutorialPageResetSuccess": "Tutorial for this page has been reset. It will be shown again when you visit.",
         "tutorialPageResetSuccessWithName": "Tutorial for \"{{pageName}}\" has been reset. It will be shown again when you visit that page.",
         "tutorialHomeDayLabel": "Day {{day}}",
-        "tutorialHomeDayColumn": "Home Seven-Day Tutorial",
+        "tutorialHomeDayColumn": "Home Six-Day Tutorial",
         "refreshed": "Memory updated, new memory will be used in the next conversation",
         "refreshingContext": "Refreshing context...",
         "storageLocation": "Storage Location",
