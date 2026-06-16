@@ -5560,6 +5560,8 @@ async def voice_design_preview(request: Request):
         logger.error(f"ElevenLabs voice design 失败: {e}")
         return JSONResponse({'error': f'语音设计失败: {str(e)}'}, status_code=500)
 
+    # 只保留既有 generated_voice_id 又带 audio_base_64 的可试听项——预览接口的契约是给前端
+    # 可试听的选项。若过滤后为空（上游没回可用音频），按上游异常返回 502，不伪装成 success。
     result_previews = [
         {
             'generated_voice_id': p.get('generated_voice_id', ''),
@@ -5568,8 +5570,13 @@ async def voice_design_preview(request: Request):
             'duration_secs': p.get('duration_secs'),
         }
         for p in previews
-        if isinstance(p, dict) and p.get('generated_voice_id')
+        if isinstance(p, dict) and p.get('generated_voice_id') and p.get('audio_base_64')
     ]
+    if not result_previews:
+        return JSONResponse({
+            'error': 'ElevenLabs 未返回可试听的语音预览',
+            'code': 'ELEVENLABS_PREVIEWS_EMPTY',
+        }, status_code=502)
     return JSONResponse({'success': True, 'previews': result_previews})
 
 
