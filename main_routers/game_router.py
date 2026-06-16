@@ -62,6 +62,7 @@ from config.prompts.prompts_game_route import (
     get_game_context_formatter_labels,
     get_game_context_organizer_system_prompt,
     get_game_context_organizer_user_prompt,
+    get_game_dialog_memory_line_labels,
     get_game_postgame_context_labels,
     get_game_postgame_event_texts,
     get_game_postgame_realtime_nudge_labels,
@@ -1298,13 +1299,18 @@ def _game_context_recent_dialogues(state: dict, keep_count: int = _GAME_CONTEXT_
     return dialog[-keep_count:]
 
 
-def _game_context_dialog_lines(dialogues: list[dict], *, max_items: int = 12) -> list[str]:
+def _game_context_dialog_lines(
+    dialogues: list[dict],
+    *,
+    max_items: int = 12,
+    language: str | None = None,
+) -> list[str]:
     lines: list[str] = []
     for item in dialogues[-max_items:]:
         if not isinstance(item, dict):
             continue
         dialog_id = str(item.get("id") or "").strip()
-        line = _dialog_memory_line(item)
+        line = _dialog_memory_line(item, language)
         if dialog_id and line:
             lines.append(f"{dialog_id}: {line}")
         elif line:
@@ -1346,7 +1352,11 @@ def _format_game_context_for_prompt(context: Any, language: str | None = None) -
         return ""
     labels = get_game_context_formatter_labels(language)
     degraded = context.get("degraded") is True
-    recent_lines = _game_context_dialog_lines(context.get("recent_dialogues") or [], max_items=_GAME_CONTEXT_RECENT_KEEP_COUNT)
+    recent_lines = _game_context_dialog_lines(
+        context.get("recent_dialogues") or [],
+        max_items=_GAME_CONTEXT_RECENT_KEEP_COUNT,
+        language=language,
+    )
     if degraded:
         parts = [
             labels["degraded_status"],
@@ -2259,7 +2269,11 @@ def _append_game_output(state: dict, output: dict) -> None:
     state["last_activity"] = time.time()
 
 
-def _build_game_context_organizer_payload(state: dict, snapshot: list[dict]) -> dict:
+def _build_game_context_organizer_payload(
+    state: dict,
+    snapshot: list[dict],
+    language: str | None = None,
+) -> dict:
     organize_dialogues = snapshot[:-_GAME_CONTEXT_RECENT_KEEP_COUNT]
     keep_dialogues = snapshot[-_GAME_CONTEXT_RECENT_KEEP_COUNT:]
     return {
@@ -2271,12 +2285,12 @@ def _build_game_context_organizer_payload(state: dict, snapshot: list[dict]) -> 
         "existingRollingSummary": str(state.get("game_context_summary") or ""),
         "existingSignals": _normalize_game_context_signals(state.get("game_context_signals")),
         "organizeDialogues": [
-            {"id": item.get("id"), "line": _dialog_memory_line(item)}
+            {"id": item.get("id"), "line": _dialog_memory_line(item, language)}
             for item in organize_dialogues
             if isinstance(item, dict)
         ],
         "keptRecentDialogues": [
-            {"id": item.get("id"), "line": _dialog_memory_line(item)}
+            {"id": item.get("id"), "line": _dialog_memory_line(item, language)}
             for item in keep_dialogues
             if isinstance(item, dict)
         ],
@@ -2286,9 +2300,10 @@ def _build_game_context_organizer_payload(state: dict, snapshot: list[dict]) -> 
 async def _run_game_context_organizer_ai(state: dict, snapshot: list[dict]) -> dict:
     """Summarize older in-game context and extract observable signals."""
     char_info = _get_game_route_summary_llm_info(str(state.get("lanlan_name") or ""))
-    payload = _build_game_context_organizer_payload(state, snapshot)
-    system_prompt = get_game_context_organizer_system_prompt(char_info.get("user_language"))
-    user_prompt = get_game_context_organizer_user_prompt(char_info.get("user_language")).format(
+    language = char_info.get("user_language")
+    payload = _build_game_context_organizer_payload(state, snapshot, language)
+    system_prompt = get_game_context_organizer_system_prompt(language)
+    user_prompt = get_game_context_organizer_user_prompt(language).format(
         payload=json.dumps(payload, ensure_ascii=False)
     )
 
@@ -2682,24 +2697,28 @@ def _extract_score_text(state: dict) -> str:
     return f"玩家 {player} : {ai} {state.get('lanlan_name') or 'AI'}"
 
 
-_GAME_EVENT_MEMORY_LABELS = {
-    "goal-scored": "猫娘进球",
-    "goal-conceded": "玩家进球 / 猫娘丢球",
-    "own-goal-by-ai": "猫娘乌龙",
-    "own-goal-by-player": "玩家乌龙",
-    "steal": "猫娘抢到球",
-    "stolen": "猫娘被抢断",
-    "mailbox-batch": "累积上下文",
+_GAME_EVENT_MEMORY_LABEL_KEYS = {
+    "goal-scored": "event_goal_scored",
+    "goal-conceded": "event_goal_conceded",
+    "own-goal-by-ai": "event_own_goal_by_ai",
+    "own-goal-by-player": "event_own_goal_by_player",
+    "steal": "event_steal",
+    "stolen": "event_stolen",
+    "mailbox-batch": "event_mailbox_batch",
 }
 
 
-def _dialog_memory_line(item: dict) -> str:
+def _dialog_memory_line(item: dict, language: str | None = None) -> str:
+    labels = get_game_dialog_memory_line_labels(language)
     item_type = item.get("type")
     ts_text = _format_ts(item.get("ts"))
     prefix = f"[{ts_text}] " if ts_text else ""
     if item_type == "user":
         text = str(item.get("text") or "").strip()
-        return f"{prefix}玩家：{text}" if text else f"{prefix}玩家发来了一条游戏期间输入"
+        return (
+            f"{prefix}{labels['player_line'].format(text=text)}"
+            if text else f"{prefix}{labels['player_fallback']}"
+        )
     if item_type == "assistant":
         line = str(item.get("line") or "").strip()
         control = item.get("control") if isinstance(item.get("control"), dict) else {}
@@ -2709,19 +2728,23 @@ def _dialog_memory_line(item: dict) -> str:
         if control.get("difficulty"):
             control_bits.append(f"difficulty={control['difficulty']}")
         suffix = f" ({', '.join(control_bits)})" if control_bits else ""
-        return f"{prefix}{item.get('source') or 'game_llm'}：{line}{suffix}" if line else f"{prefix}游戏 LLM 返回为空"
+        return (
+            f"{prefix}{labels['assistant_line'].format(source=item.get('source') or 'game_llm', line=line, suffix=suffix)}"
+            if line else f"{prefix}{labels['assistant_empty']}"
+        )
     if item_type == "game_event":
         kind = str(item.get("kind") or "event")
-        label = _GAME_EVENT_MEMORY_LABELS.get(kind, "游戏事件")
+        label_key = _GAME_EVENT_MEMORY_LABEL_KEYS.get(kind, "event_default")
+        label = labels.get(label_key, labels["event_default"])
         text = str(item.get("text") or "").strip()
         line = str(item.get("result_line") or "").strip()
         if text and line:
-            return f"{prefix}游戏事件 {kind}（{label}）：事件原文「{text}」；猫娘回应「{line}」"
+            return f"{prefix}{labels['game_event_text_and_reply'].format(kind=kind, label=label, text=text, line=line)}"
         if line:
-            return f"{prefix}游戏事件 {kind}（{label}）：猫娘回应「{line}」"
+            return f"{prefix}{labels['game_event_reply'].format(kind=kind, label=label, line=line)}"
         if text:
-            return f"{prefix}游戏事件 {kind}（{label}）：事件原文「{text}」"
-        return f"{prefix}游戏事件 {kind}（{label}）"
+            return f"{prefix}{labels['game_event_text'].format(kind=kind, label=label, text=text)}"
+        return f"{prefix}{labels['game_event'].format(kind=kind, label=label)}"
     return f"{prefix}{json.dumps(item, ensure_ascii=False)}"
 
 
@@ -2816,7 +2839,8 @@ def _archive_prompt_language(archive: dict) -> str:
 
 
 def _build_game_archive_memory_text(archive: dict) -> str:
-    labels = get_game_archive_memory_text_labels(_archive_prompt_language(archive))
+    language = _archive_prompt_language(archive)
+    labels = get_game_archive_memory_text_labels(language)
     degraded = _archive_game_context_degraded(archive)
     lines = [
         labels["record_header"],
@@ -2845,7 +2869,7 @@ def _build_game_archive_memory_text(archive: dict) -> str:
     ]
     if key_events:
         lines.append(labels["key_events"])
-        lines.extend(f"- {_dialog_memory_line(item)}" for item in key_events[-8:] if isinstance(item, dict))
+        lines.extend(f"- {_dialog_memory_line(item, language)}" for item in key_events[-8:] if isinstance(item, dict))
 
     pre_game_context = archive.get("preGameContext") if isinstance(archive.get("preGameContext"), dict) else {}
     if pre_game_context:
@@ -2867,7 +2891,7 @@ def _build_game_archive_memory_text(archive: dict) -> str:
     ]
     if last_dialogues:
         lines.append(labels["recent_dialogues"])
-        lines.extend(f"- {_dialog_memory_line(item)}" for item in last_dialogues if isinstance(item, dict))
+        lines.extend(f"- {_dialog_memory_line(item, language)}" for item in last_dialogues if isinstance(item, dict))
 
     return "\n".join(line for line in lines if line is not None)
 
@@ -2970,6 +2994,7 @@ def _normalize_game_archive_memory_highlights(value: Any) -> dict:
 
 
 def _fallback_game_archive_memory_highlights(archive: dict) -> dict:
+    language = _archive_prompt_language(archive)
     records: list[str] = []
     last_user = _archive_last_user_text(archive)
     last_assistant = _archive_last_assistant_line(archive)
@@ -2987,7 +3012,7 @@ def _fallback_game_archive_memory_highlights(archive: dict) -> dict:
             continue
         if not _game_dialog_item_allowed_for_memory(item, archive):
             continue
-        line = _dialog_memory_line(item)
+        line = _dialog_memory_line(item, language)
         if line:
             event_records.append(line)
         if len(event_records) >= 3:
@@ -3004,7 +3029,8 @@ def _fallback_game_archive_memory_highlights(archive: dict) -> dict:
 
 
 def _build_game_archive_memory_highlight_source(archive: dict) -> str:
-    labels = get_game_archive_highlight_source_labels(_archive_prompt_language(archive))
+    language = _archive_prompt_language(archive)
+    labels = get_game_archive_highlight_source_labels(language)
     dialogues = archive.get("full_dialogues") if isinstance(archive.get("full_dialogues"), list) else []
     if not dialogues:
         dialogues = archive.get("last_full_dialogues") if isinstance(archive.get("last_full_dialogues"), list) else []
@@ -3041,7 +3067,7 @@ def _build_game_archive_memory_highlight_source(archive: dict) -> str:
             lines.append(labels["selection_priority"])
     lines.append(labels["full_dialogues"])
     lines.extend(
-        f"- {_dialog_memory_line(item)}"
+        f"- {_dialog_memory_line(item, language)}"
         for item in dialogues
         if isinstance(item, dict) and _game_dialog_item_allowed_for_memory(item, archive)
     )
@@ -3345,7 +3371,8 @@ def _build_game_postgame_context_text(archive: dict) -> str:
     Reuse already-built game archive material only. Do not trigger another LLM
     pass here; the Realtime session only needs compact postgame continuity.
     """
-    labels = get_game_postgame_context_labels(_archive_prompt_language(archive))
+    language = _archive_prompt_language(archive)
+    labels = get_game_postgame_context_labels(language)
     degraded = _archive_game_context_degraded(archive)
     score_text = _archive_score_text(archive)
     highlights = _normalize_game_archive_memory_highlights(archive.get("memory_highlights"))
@@ -3400,7 +3427,7 @@ def _build_game_postgame_context_text(archive: dict) -> str:
             lines.append(signals_text)
 
     unorganized_lines = [
-        f"- {_dialog_memory_line(item)}"
+        f"- {_dialog_memory_line(item, language)}"
         for item in _archive_unorganized_dialogues(archive)
         if isinstance(item, dict)
     ]
@@ -3455,11 +3482,12 @@ def _build_game_postgame_realtime_nudge_instruction(archive: dict, options: dict
 
 
 def _build_game_postgame_event(game_type: str, archive: dict, options: dict) -> dict:
-    texts = get_game_postgame_event_texts(_archive_prompt_language(archive))
+    language = _archive_prompt_language(archive)
+    texts = get_game_postgame_event_texts(language)
     dialogues = archive.get("last_full_dialogues") if isinstance(archive.get("last_full_dialogues"), list) else []
     include_count = int(options.get("include_last_dialogues") or _DEFAULT_LAST_FULL_DIALOGUE_COUNT)
     formatted_dialogues = [
-        _dialog_memory_line(item)
+        _dialog_memory_line(item, language)
         for item in dialogues[-include_count:]
         if isinstance(item, dict)
     ]

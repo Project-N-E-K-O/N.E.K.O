@@ -293,6 +293,28 @@ def test_game_session_history_reset_uses_recent_history_locale_labels(monkeypatc
 
 
 @pytest.mark.unit
+def test_dialog_memory_line_uses_requested_english_locale():
+    user_line = game_router._dialog_memory_line({
+        "type": "user",
+        "text": "nice shot",
+    }, "en")
+    event_line = game_router._dialog_memory_line({
+        "type": "game_event",
+        "kind": "goal-scored",
+        "text": "what a shot",
+        "result_line": "That was clean.",
+    }, "en")
+
+    assert user_line == "Player: nice shot"
+    assert "Game event goal-scored (Character scored)" in event_line
+    assert 'event text "what a shot"' in event_line
+    assert 'character reply "That was clean."' in event_line
+    assert "玩家：" not in user_line
+    assert "事件原文" not in event_line
+    assert "游戏事件" not in event_line
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_finalize_waits_for_running_context_organizer_before_archive(monkeypatch):
     state = _mark_game_started(_new_state(monkeypatch))

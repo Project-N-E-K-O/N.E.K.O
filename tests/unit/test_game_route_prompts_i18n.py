@@ -11,6 +11,7 @@ from config.prompts.prompts_game_route import (
     get_game_context_formatter_labels,
     get_game_context_organizer_system_prompt,
     get_game_context_organizer_user_prompt,
+    get_game_dialog_memory_line_labels,
     get_game_postgame_context_labels,
     get_game_postgame_event_texts,
     get_game_postgame_realtime_nudge_labels,
@@ -19,7 +20,7 @@ from config.prompts.prompts_game_route import (
 from main_routers import game_router
 
 
-LOCALES = ("zh", "en", "ja", "ko", "ru")
+LOCALES = ("zh", "en", "ja", "ko", "ru", "es", "pt")
 LEGACY_SIGNAL_GROUP_KEYS = ("玩家信号", "关系互动信号", "猫娘信号", "本局事实", "口头声明")
 
 
@@ -36,6 +37,7 @@ def test_game_route_prompt_getters_return_locale_content(locale):
         get_game_archive_memory_summary_labels,
         get_game_archive_memory_text_labels,
         get_game_context_formatter_labels,
+        get_game_dialog_memory_line_labels,
         get_game_recent_history_message_labels,
         get_game_postgame_context_labels,
         get_game_postgame_realtime_nudge_labels,
