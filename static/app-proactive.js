@@ -21,6 +21,8 @@
     const mod = {};
     const S = window.appState;
     const C = window.appConst;
+    const NEW_USER_ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1';
+    const NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 1000;
 
     // ======================== proactive leader election ========================
     //
@@ -70,6 +72,7 @@
     let _proactiveLeaderHeartbeatTimer = null;
     let _wasLeaderLastTick = null; // 用于 leader 状态切换时主动 reschedule
     let _chatInputSlowdownUntil = 0;
+    let _homeTutorialFeatureSuppressedByEvent = false;
 
     function isProactiveVisionEnabledNow() {
         // 跨窗口时 leader 可能还没收到 storage 事件；以 localStorage 的最新保存值兜底。
@@ -91,6 +94,9 @@
 
     function isHomeTutorialFeatureSuppressed() {
         try {
+            if (_homeTutorialFeatureSuppressedByEvent) {
+                return true;
+            }
             const controller = window.NekoHomeTutorialFeatureController;
             if (controller && typeof controller.isActive === 'function' && controller.isActive()) {
                 return true;
@@ -101,6 +107,62 @@
             return false;
         }
     }
+
+    function readNewUserIcebreakerStore() {
+        try {
+            if (typeof localStorage === 'undefined') return null;
+            const raw = localStorage.getItem(NEW_USER_ICEBREAKER_STORAGE_KEY);
+            if (!raw) return null;
+            const parsed = JSON.parse(raw);
+            return parsed && typeof parsed === 'object' ? parsed : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function isRecentNewUserIcebreakerEntry(entry) {
+        if (!entry || typeof entry !== 'object') return false;
+        const timestamps = [
+            Number(entry.triggeredAt || 0),
+            Number(entry.updatedAt || 0),
+            Number(entry.completedAt || 0),
+            Number(entry.endedAt || 0)
+        ].filter((value) => Number.isFinite(value) && value > 0);
+        if (!timestamps.length) return false;
+        const latest = Math.max.apply(Math, timestamps);
+        return Date.now() - latest <= NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS;
+    }
+
+    /**
+     * Returns whether a new-user icebreaker is currently owning the greeting slot.
+     *
+     * A live icebreaker session wins immediately; persisted day entries only
+     * suppress nearby reconnect/proactive work so older day history does not
+     * mute normal sessions for the rest of the seven-day onboarding.
+     *
+     * @returns {boolean} True when proactive chat should be suppressed for onboarding.
+     */
+    function isNewUserIcebreakerPeriodActive() {
+        try {
+            if (window.newUserIcebreaker && typeof window.newUserIcebreaker.getActiveSession === 'function') {
+                if (window.newUserIcebreaker.getActiveSession()) return true;
+            }
+        } catch (_) {}
+
+        const store = readNewUserIcebreakerStore();
+        const days = store && typeof store.days === 'object' ? store.days : null;
+        if (!days) return false;
+        const finalDay = days['7'];
+        if (finalDay && finalDay.completed === true) return false;
+        for (let day = 1; day <= 7; day += 1) {
+            const entry = days[String(day)];
+            if (isRecentNewUserIcebreakerEntry(entry)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    mod.isNewUserIcebreakerPeriodActive = isNewUserIcebreakerPeriodActive;
 
     try {
         if (typeof BroadcastChannel !== 'undefined' && PROACTIVE_SELF_RANK !== 99) {
@@ -447,6 +509,9 @@
 
     function canTriggerProactively() {
         if (isHomeTutorialFeatureSuppressed()) {
+            return false;
+        }
+        if (isNewUserIcebreakerPeriodActive()) {
             return false;
         }
 
@@ -796,6 +861,10 @@
         try {
             if (isHomeTutorialFeatureSuppressed()) {
                 console.log('[ProactiveChat] 首页新手教程接管中，跳过主动搭话');
+                return false;
+            }
+            if (isNewUserIcebreakerPeriodActive()) {
+                console.log('[ProactiveChat] 新用户破冰期未结束，跳过主动搭话');
                 return false;
             }
 
@@ -1958,10 +2027,14 @@
     window.addEventListener('neko:home-tutorial-features-suppressed', function (event) {
         var detail = event && event.detail ? event.detail : {};
         if (detail.active === true) {
+            _homeTutorialFeatureSuppressedByEvent = true;
             stopProactiveChatSchedule();
             stopProactiveVisionDuringSpeech();
         } else if (detail.active === false && S.proactiveChatEnabled && hasAnyChatModeEnabled()) {
+            _homeTutorialFeatureSuppressedByEvent = false;
             scheduleProactiveChat();
+        } else if (detail.active === false) {
+            _homeTutorialFeatureSuppressedByEvent = false;
         }
     });
 
