@@ -11,6 +11,8 @@ from .game_route_test_helpers import (
     set_soccer_game_memory_policy as _set_soccer_game_memory_policy,
 )
 from main_routers import game_router
+from main_logic.core import LLMSessionManager
+from utils.llm_client import AIMessage, HumanMessage
 
 
 class _FakeRequest:
@@ -115,6 +117,23 @@ async def test_new_user_icebreaker_context_endpoint_awaits_async_append(monkeypa
     assert result["ok"] is True
     assert result["method"] == "project_session_history"
     assert mgr.calls == [("user", "icebreaker choice")]
+
+
+@pytest.mark.unit
+def test_llm_session_manager_appends_icebreaker_context_to_session_history():
+    class FakeSession:
+        def __init__(self):
+            self._conversation_history = []
+
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.session = FakeSession()
+
+    assert mgr.append_icebreaker_context("assistant", " hi ") is True
+    assert mgr.append_icebreaker_context("user", " choice ") is True
+    assert isinstance(mgr.session._conversation_history[0], AIMessage)
+    assert mgr.session._conversation_history[0].content == "hi"
+    assert isinstance(mgr.session._conversation_history[1], HumanMessage)
+    assert mgr.session._conversation_history[1].content == "choice"
 
 
 @pytest.mark.unit

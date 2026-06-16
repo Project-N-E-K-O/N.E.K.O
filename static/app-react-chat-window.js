@@ -3939,6 +3939,18 @@
         });
     }
 
+    function setCompactHistoryOpen(open, reason) {
+        var nextOpen = open === true;
+        setViewProps({
+            compactChatState: nextOpen ? 'default' : getCurrentCompactChatState(),
+            compactHistoryOpenRequest: {
+                id: createHomeTutorialRequestId('compact-history', reason),
+                open: nextOpen,
+                reason: reason || ''
+            }
+        });
+    }
+
     function rotateCompactToolWheel(direction, stepCount, reason) {
         var normalizedDirection = Number(direction) < 0 ? -1 : 1;
         var normalizedStepCount = Number.isFinite(Number(stepCount))
@@ -6458,6 +6470,7 @@
         setHomeTutorialInteractionLocked: setHomeTutorialInteractionLocked,
         setAvatarToolMenuOpen: setAvatarToolMenuOpen,
         setCompactToolFanOpen: setCompactToolFanOpen,
+        setCompactHistoryOpen: setCompactHistoryOpen,
         rotateCompactToolWheel: rotateCompactToolWheel,
         setCompactToolWheelIndex: setCompactToolWheelIndex,
         deactivateToolCursor: deactivateToolCursor,

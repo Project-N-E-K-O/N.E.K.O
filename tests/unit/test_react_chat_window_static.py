@@ -976,6 +976,18 @@ def test_yui_guide_spotlight_state_messages_bypass_cross_channel_dedup():
     assert "!shouldBypassYuiGuideMessageDedup(event.data.action)" in script
 
 
+def test_yui_guide_external_compact_history_open_is_bridged_to_react_host():
+    react_host = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    interpage = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
+
+    assert "function setCompactHistoryOpen(open, reason)" in react_host
+    assert "compactHistoryOpenRequest" in react_host
+    assert "setCompactHistoryOpen: setCompactHistoryOpen" in react_host
+    assert "case 'yui_guide_set_compact_history_open'" in interpage
+    assert "function applyYuiGuideCompactHistoryOpen(open, reason)" in interpage
+    assert "host.setCompactHistoryOpen(open === true, reason || 'external-yui-guide');" in interpage
+
+
 def test_externalized_chat_input_spotlight_retries_after_message_layout():
     script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
 

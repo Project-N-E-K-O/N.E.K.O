@@ -2379,6 +2379,11 @@
                         applyYuiGuideCompactToolFanOpen(event.data.open === true, event.data.reason || '');
                         break;
                     }
+                    case 'yui_guide_set_compact_history_open': {
+                        if (!isStandaloneChatPage()) break;
+                        applyYuiGuideCompactHistoryOpen(event.data.open === true, event.data.reason || '');
+                        break;
+                    }
                     case 'yui_guide_rotate_compact_tool_wheel': {
                         if (!isStandaloneChatPage()) break;
                         rotateYuiGuideCompactToolWheel(event.data.direction, event.data.stepCount, event.data.reason || '');
@@ -2566,6 +2571,13 @@
         var host = getReactChatWindowHost();
         if (host && typeof host.setCompactToolFanOpen === 'function') {
             host.setCompactToolFanOpen(open === true, reason || 'external-yui-guide');
+        }
+    }
+
+    function applyYuiGuideCompactHistoryOpen(open, reason) {
+        var host = getReactChatWindowHost();
+        if (host && typeof host.setCompactHistoryOpen === 'function') {
+            host.setCompactHistoryOpen(open === true, reason || 'external-yui-guide');
         }
     }
 
