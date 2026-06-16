@@ -210,7 +210,6 @@ def classify_screen_from_ocr(
             "short_line_count": short_line_count,
         }
     )
-
     template_classification = _classification_from_templates(
         screen_templates,
         template_context=template_context or {},

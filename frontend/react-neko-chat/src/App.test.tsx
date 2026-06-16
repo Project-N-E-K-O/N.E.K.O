@@ -2447,7 +2447,24 @@ describe('App', () => {
     expect(preview?.textContent ?? '').toBe('');
   });
 
-  it('shows tutorial guide streaming text in the compact capsule immediately', () => {
+  it('hides compact empty-state copy when the tutorial takes chat buttons', async () => {
+    const { container } = render(<App chatSurfaceMode="compact" composerHidden messages={[]} />);
+
+    const preview = container.querySelector('.compact-chat-capsule-text');
+    expect(preview).not.toBeNull();
+    expect(preview).toHaveTextContent(DEFAULT_CHAT_COMPANION_EMPTY_STATE_FALLBACK);
+
+    act(() => {
+      document.body.classList.add('yui-guide-chat-buttons-disabled');
+    });
+
+    await waitFor(() => {
+      expect(preview?.textContent ?? '').toBe('');
+    });
+    expect(preview).not.toHaveTextContent(DEFAULT_CHAT_COMPANION_EMPTY_STATE_FALLBACK);
+  });
+
+  it('keeps tutorial guide streaming text fully readable in the compact capsule', () => {
     const initialText = '先点这里打开对话。';
     const updatedText = '先点这里打开对话，然后输入一句问候，后面这一长串教程台词也要自动向左滚动，让最新内容进入胶囊可视区域。';
     const initialMessage = parseChatMessage({
@@ -2522,6 +2539,90 @@ describe('App', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('shows tutorial guide streaming text in the compact capsule immediately', () => {
+    const guideText = '这里是新手教程台词，应该直接进入胶囊预览，不等待普通助手语音播放状态。'.repeat(2);
+    const message = parseChatMessage({
+      id: 'yui-guide-day1-line-1',
+      role: 'assistant',
+      author: '林悠怡',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [{ type: 'text', text: guideText }],
+      status: 'streaming',
+    });
+
+    const { container } = render(<App chatSurfaceMode="compact" composerHidden messages={[message]} />);
+
+    const preview = container.querySelector('.compact-chat-capsule-text');
+    expect(preview).toHaveAttribute('data-compact-preview-streaming', 'false');
+    expect(preview).toHaveAttribute('data-compact-preview-scrollable', 'true');
+    expect(preview).toHaveTextContent(guideText);
+  });
+
+  it('does not merge the previous tutorial guide line into the next compact capsule line', () => {
+    const firstText = '上一句教程台词已经播放完。';
+    const secondText = '这一句教程台词刚开始流式播放，胶囊里只能看到这一句。';
+    const firstMessage = parseChatMessage({
+      id: 'yui-guide-day1-line-1',
+      role: 'assistant',
+      author: '林悠怡',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [{ type: 'text', text: firstText }],
+      status: 'sent',
+    });
+    const secondMessage = parseChatMessage({
+      id: 'yui-guide-day1-line-2',
+      role: 'assistant',
+      author: '林悠怡',
+      time: '10:01',
+      createdAt: 3,
+      blocks: [{ type: 'text', text: secondText }],
+      status: 'streaming',
+    });
+
+    const { container } = render(
+      <App chatSurfaceMode="compact" composerHidden messages={[firstMessage, secondMessage]} />,
+    );
+
+    const preview = container.querySelector('.compact-chat-capsule-text');
+    expect(preview).toHaveTextContent(secondText);
+    expect(preview).not.toHaveTextContent(firstText);
+  });
+
+  it('auto-scrolls long tutorial guide text to the latest capsule text', () => {
+    const firstText = '这是新手教程胶囊里一段较长的台词，刚出现时应该跟随到末尾。';
+    const secondText = `${firstText}后面继续补充更长的说明，胶囊文本需要向左滚动来露出最新内容。`;
+    const firstMessage = parseChatMessage({
+      id: 'yui-guide-scroll-line',
+      role: 'assistant',
+      author: '林悠怡',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [{ type: 'text', text: firstText }],
+      status: 'streaming',
+    });
+    const secondMessage = parseChatMessage({
+      ...firstMessage,
+      blocks: [{ type: 'text', text: secondText }],
+    });
+
+    const { container, rerender } = render(
+      <App chatSurfaceMode="compact" composerHidden messages={[firstMessage]} />,
+    );
+    const preview = container.querySelector('.compact-chat-capsule-text') as HTMLSpanElement;
+    expect(preview).not.toBeNull();
+    Object.defineProperty(preview, 'scrollWidth', {
+      configurable: true,
+      value: 420,
+    });
+
+    rerender(<App chatSurfaceMode="compact" composerHidden messages={[secondMessage]} />);
+
+    expect(preview.scrollLeft).toBe(420);
+    expect(preview).toHaveTextContent(secondText);
   });
 
   it('falls back to revealing compact streaming text when playback state never arrives', async () => {
@@ -4434,6 +4535,45 @@ describe('App', () => {
     }
   });
 
+  it('opens compact fan when an external avatar tool menu request arrives during tutorial lock', async () => {
+    const { container, rerender } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        composerDisabled
+      />,
+    );
+
+    expect(container.querySelector('.compact-input-tool-fan')).toHaveAttribute(
+      'data-compact-input-tool-fan-open',
+      'false',
+    );
+    expect(container.querySelector('#composer-tool-popover-compact')).toBeNull();
+
+    rerender(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        composerDisabled
+        avatarToolMenuOpenRequest={{
+          id: 'avatar-tools-open-1',
+          open: true,
+          reason: 'avatar-floating-guide-open-avatar-tool-menu',
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector('.compact-input-tool-fan')).toHaveAttribute(
+        'data-compact-input-tool-fan-open',
+        'true',
+      );
+      expect(
+        container.querySelectorAll('#composer-tool-popover-compact .composer-icon-button[data-avatar-tool-id]'),
+      ).toHaveLength(3);
+    });
+  });
+
   it('opens compact input tools on hover-capable pointer enter', () => {
     const originalMatchMedia = window.matchMedia;
     mockHoverCapableMatchMedia();
@@ -5518,6 +5658,91 @@ describe('App', () => {
     expect(getCompactToolWheelReboundVolume(0.699)).toBe(0.6);
     expect(getCompactToolWheelReboundVolume(0.7)).toBe(0.85);
     expect(getCompactToolWheelReboundVolume(-0.9)).toBe(0.85);
+  });
+
+  it('rotates compact input tools from a guide request', async () => {
+    const { rerender } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        compactToolFanOpenRequest={{
+          id: 'compact-tool-fan-open-guide',
+          open: true,
+          reason: 'avatar-floating-guide-open-tool-fan',
+        }}
+      />,
+    );
+
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    expect(fan.querySelector('.compact-input-tool-item-galgame')).toHaveAttribute('data-compact-tool-wheel-slot', '-1');
+
+    rerender(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        compactToolFanOpenRequest={{
+          id: 'compact-tool-fan-open-guide',
+          open: true,
+          reason: 'avatar-floating-guide-open-tool-fan',
+        }}
+        compactToolWheelRotateRequest={{
+          id: 'compact-tool-wheel-rotate-guide',
+          direction: 1,
+          stepCount: 1,
+          reason: 'avatar-floating-guide-galgame-drag',
+          forceFast: true,
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(fan.querySelector('.compact-input-tool-item-galgame')).toHaveAttribute('data-compact-tool-wheel-slot', '-2');
+    });
+  });
+
+  it('sets compact input tool wheel index from a guide request', async () => {
+    const { rerender } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        compactToolFanOpenRequest={{
+          id: 'compact-tool-fan-open-guide',
+          open: true,
+          reason: 'avatar-floating-guide-open-tool-fan',
+        }}
+        compactToolWheelIndexRequest={{
+          id: 'compact-tool-wheel-index-non-default',
+          index: 6,
+          reason: 'test-non-default',
+        }}
+      />,
+    );
+
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    await waitFor(() => {
+      expect(fan.querySelector('.compact-input-tool-item-galgame')).toHaveAttribute('data-compact-tool-wheel-slot', '0');
+    });
+
+    rerender(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        compactToolFanOpenRequest={{
+          id: 'compact-tool-fan-open-guide',
+          open: true,
+          reason: 'avatar-floating-guide-open-tool-fan',
+        }}
+        compactToolWheelIndexRequest={{
+          id: 'compact-tool-wheel-index-day3-entry',
+          index: 0,
+          reason: 'avatar-floating-guide-day3-entry-reset',
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(fan.querySelector('.compact-input-tool-item-galgame')).toHaveAttribute('data-compact-tool-wheel-slot', '-1');
+    });
   });
 
   // 折中语义（取舍脉络见 App.tsx openCompactInputToolFan 注释）：
@@ -6679,6 +6904,28 @@ describe('App', () => {
 
     expect(onComposerSubmit).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+  });
+
+  it('locks only compact text entry while tutorial input lock is active', async () => {
+    const onComposerSubmit = vi.fn();
+    const onComposerImportImage = vi.fn();
+    renderInputApp({
+      compactInputLocked: true,
+      onComposerSubmit,
+      onComposerImportImage,
+    });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    expect(input).not.toBeDisabled();
+    expect(input).toHaveAttribute('readonly');
+
+    fireEvent.change(input, { target: { value: 'Blocked send' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+
+    await openCompactInputTools();
+    fireEvent.click(document.body.querySelector('.compact-input-tool-item-import')!);
+    expect(onComposerImportImage).toHaveBeenCalledTimes(1);
   });
 
   it('does not render a local optimistic user bubble before the host echoes messages', () => {

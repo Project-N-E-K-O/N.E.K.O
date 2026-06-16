@@ -44,7 +44,11 @@ export default function AvatarToolQuickbar({
       aria-label={i18n('chat.avatarToolQuickbarAriaLabel', 'Avatar quick tools')}
       data-avatar-tool-quickbar-empty={activeTools.length === 0 ? 'true' : 'false'}
     >
-      <div className="avatar-tool-quickbar-scroll">
+      <div
+        id="composer-tool-popover-compact"
+        className="avatar-tool-quickbar-scroll"
+        data-avatar-tool-quickbar-compat="true"
+      >
         {activeTools.length > 0 ? activeTools.map((tool) => {
           const label = getToolLabel(tool);
           const visual = resolveAvatarToolMenuIconVisual(tool, getToolVariant(tool.id));
@@ -53,6 +57,7 @@ export default function AvatarToolQuickbar({
               key={tool.id}
               className={`composer-icon-button avatar-tool-quickbar-button${activeCursorToolId === tool.id ? ' is-active' : ''}`}
               type="button"
+              data-avatar-tool-id={tool.id}
               aria-label={label}
               aria-pressed={activeCursorToolId === tool.id}
               title={label}

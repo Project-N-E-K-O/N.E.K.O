@@ -61,6 +61,62 @@ def test_parse_control_instructions_extracts_json_line():
     }
 
 
+@pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_appends_session_history(monkeypatch):
+    class FakeManager:
+        def __init__(self):
+            self.calls = []
+
+        def append_icebreaker_context(self, role, text):
+            self.calls.append((role, text))
+            return True
+
+    mgr = FakeManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+
+    result = await game_router.game_project_context(
+        "new_user_icebreaker",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "role": "assistant",
+            "text": "教程看完啦？",
+            "session_id": "icebreaker-day1-test",
+        }),
+    )
+
+    assert result["ok"] is True
+    assert result["method"] == "project_session_history"
+    assert mgr.calls == [("assistant", "教程看完啦？")]
+
+
+@pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_awaits_async_append(monkeypatch):
+    class FakeManager:
+        def __init__(self):
+            self.calls = []
+
+        async def append_icebreaker_context_async(self, role, text):
+            self.calls.append((role, text))
+            return True
+
+    mgr = FakeManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+
+    result = await game_router.game_project_context(
+        "new_user_icebreaker",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "role": "user",
+            "text": "icebreaker choice",
+            "session_id": "icebreaker-day1-test",
+        }),
+    )
+
+    assert result["ok"] is True
+    assert result["method"] == "project_session_history"
+    assert mgr.calls == [("user", "icebreaker choice")]
+
+
 @pytest.mark.unit
 def test_basketball_prompt_and_control_contract():
     prompt = game_router._build_game_prompt(

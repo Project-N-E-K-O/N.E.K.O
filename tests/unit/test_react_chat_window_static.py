@@ -13,6 +13,7 @@ STATIC_DARK_MODE_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "cs
 STATIC_INDEX_JS_PATH = Path(__file__).resolve().parents[2] / "static" / "js" / "index.js"
 REACT_CHAT_STYLES_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "styles.css"
 REACT_CHAT_APP_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "App.tsx"
+REACT_CHAT_IIFE_PATH = Path(__file__).resolve().parents[2] / "static" / "react" / "neko-chat" / "neko-chat-window.iife.js"
 CHAT_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "chat.html"
 INDEX_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "index.html"
 SUBTITLE_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "subtitle.html"
@@ -60,6 +61,21 @@ def inline_z_index(block: str) -> int:
     if not match:
         raise AssertionError(f"missing inline zIndex in block: {block[:240]!r}")
     return int(match.group(1))
+
+
+def test_react_chat_host_can_clear_only_yui_guide_messages():
+    source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    clear_block = source.split("function clearGuideMessages()", 1)[1].split(
+        "function clearMessages()",
+        1,
+    )[0]
+
+    assert "function isYuiGuideChatMessage(message)" in source
+    assert "message.id.indexOf('yui-guide-') === 0" in source
+    assert "return !isYuiGuideChatMessage(message);" in clear_block
+    assert "clearGuideMessages: clearGuideMessages" in source
+    assert "state.messages = []" not in clear_block
 
 
 def test_subtitle_window_dark_mode_keeps_transparent_background():
@@ -377,6 +393,69 @@ def test_minimized_restore_uses_previous_real_surface_mode():
     assert "lastRestorableChatSurfaceMode = normalizedChatSurfaceMode;" in set_view_props_block
     assert "lastRestorableChatSurfaceMode = previousChatSurfaceMode;" in set_view_props_block
     assert "lastRestorableChatSurfaceMode = state.chatSurfaceMode;" in init_block
+
+
+def test_home_tutorial_input_lock_blocks_compact_capsule_input_state():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    react_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
+
+    handler_block = script.split("function handleCompactChatStateChange(nextCompactChatState)", 1)[1].split(
+        "function handleMiniGameInviteChoice(option)",
+        1,
+    )[0]
+    set_state_block = script.split("function setCompactChatState(nextCompactChatState", 1)[1].split(
+        "function setChatSurfaceMode(nextMode)",
+        1,
+    )[0]
+    capsule_block = react_source.split('className="compact-chat-capsule-button"', 1)[1].split(
+        "requestCompactChatState('input');",
+        1,
+    )[0]
+
+    assert "state.homeTutorialInputLocked || isHomeTutorialInteractionLocked()" in handler_block
+    assert "normalized === 'input'" in set_state_block
+    assert "state.homeTutorialInputLocked || isHomeTutorialInteractionLocked()" in set_state_block
+    assert "disabled={compactTextEntryLocked}" in capsule_block
+    assert "if (compactTextEntryLocked) return;" in capsule_block
+
+
+def test_home_tutorial_events_lock_chat_buttons_and_collapse_compact_input():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    react_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
+
+    interaction_lock_block = script.split("function setHomeTutorialInteractionLocked(locked, reason)", 1)[1].split(
+        "function setHomeTutorialInputLocked(locked, reason)",
+        1,
+    )[0]
+    started_block = script.split("window.addEventListener('neko:tutorial-started'", 1)[1].split(
+        "window.addEventListener('neko:tutorial-completed'",
+        1,
+    )[0]
+    completed_block = script.split("window.addEventListener('neko:tutorial-completed'", 1)[1].split(
+        "window.addEventListener('neko:tutorial-skipped'",
+        1,
+    )[0]
+    skipped_block = script.split("window.addEventListener('neko:tutorial-skipped'", 1)[1].split(
+        "window.addEventListener('neko:tutorial-ended-without-completion'",
+        1,
+    )[0]
+    ended_block = script.split("window.addEventListener('neko:tutorial-ended-without-completion'", 1)[1].split(
+        "// Refresh option list whenever an assistant turn finishes streaming.",
+        1,
+    )[0]
+    history_handle_block = react_source.split('className={`compact-history-visibility-handle', 1)[1].split(
+        "onClick={handleCompactHistoryVisibilityClick}",
+        1,
+    )[0]
+
+    assert "if (next && getCurrentCompactChatState() === 'input')" in interaction_lock_block
+    assert "resetCompactChatState();" in interaction_lock_block
+    assert "compactChatState: getCurrentCompactChatState()" in interaction_lock_block
+    assert "setHomeTutorialInteractionLocked(true, 'tutorial-started');" in started_block
+    assert "setHomeTutorialInteractionLocked(false, 'tutorial-completed');" in completed_block
+    assert "setHomeTutorialInteractionLocked(false, 'tutorial-skipped');" in skipped_block
+    assert "setHomeTutorialInteractionLocked(false, 'tutorial-ended-without-completion');" in ended_block
+    assert "disabled={composerDisabled}" in history_handle_block
 
 
 def test_idle_cat1_compact_mirror_ignores_pet_window_local_events():
@@ -737,6 +816,18 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     assert "id: index === 0 ? 'toolFan:native' : 'toolFan:native:' + index" in script
 
 
+def test_compact_tool_wheel_rotate_request_is_present_in_host_and_built_bundle():
+    host_source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
+    bundle_source = REACT_CHAT_IIFE_PATH.read_text(encoding="utf-8")
+
+    assert "rotateCompactToolWheel: rotateCompactToolWheel" in host_source
+    assert "compactToolWheelRotateRequest = null" in app_source
+    assert "rotateCompactInputToolWheelSteps(request.direction, request.stepCount" in app_source
+    assert "compactToolWheelRotateRequest:" in bundle_source
+    assert "compactToolWheelRotateRequest" in bundle_source
+
+
 def test_compact_choice_hit_contract_uses_real_options_only():
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
     host_styles = STATIC_INDEX_CSS_PATH.read_text(encoding="utf-8")
@@ -836,6 +927,78 @@ def test_compact_geometry_snapshot_separates_base_surface_from_extra_islands():
     assert "extraIslandItems: extraIslandItems" in snapshot_block
     assert "extraIslandNativeRects:" in snapshot_block
     assert "extraIslandHitRects:" in snapshot_block
+
+
+def test_externalized_chat_input_spotlight_uses_pc_overlay_rounded_rect_radius():
+    script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
+
+    rect_block = script.split("function buildYuiGuidePcOverlayRect(kind, rect, index)", 1)[1].split(
+        "function dispatchCrossWindowIdleActivity",
+        1,
+    )[0]
+
+    assert (
+        "var radius = kind === 'window' ? 26 : Math.min(34, Math.max(18, "
+        "Math.round((rect.height + padding * 2) / 2)));"
+    ) in rect_block
+
+
+def test_externalized_chat_input_spotlight_uses_global_overlay_only():
+    script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
+
+    update_block = script.split("function updateYuiGuideChatSpotlight(kind)", 1)[1].split(
+        "function applyYuiGuideChatSpotlight(kind)",
+        1,
+    )[0]
+
+    assert "if (isYuiGuidePcOverlayAvailable()) {" in update_block
+    assert "kind !== 'input' && isYuiGuidePcOverlayAvailable()" not in update_block
+    assert "hideYuiGuideChatSpotlightElement" not in script
+    assert "hideYuiGuideChatSpotlightElements" not in script
+    assert "is-plain-capsule" not in update_block
+    assert "renderYuiGuideChatSpotlight(" not in update_block
+    assert "getYuiGuideChatSpotlightElement(" not in script
+    assert "function renderYuiGuideChatSpotlight" not in script
+
+
+def test_yui_guide_spotlight_state_messages_bypass_cross_channel_dedup():
+    script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
+
+    bypass_block = script.split("function shouldBypassYuiGuideMessageDedup(action)", 1)[1].split(
+        "function isMainUIHiddenByModelManager()",
+        1,
+    )[0]
+
+    assert "action === 'yui_guide_set_chat_spotlight'" in bypass_block
+    assert "action === 'yui_guide_set_chat_cursor'" in bypass_block
+    assert "action === 'yui_guide_rotate_compact_tool_wheel'" not in bypass_block
+    assert "!shouldBypassYuiGuideMessageDedup(message.action)" in script
+    assert "!shouldBypassYuiGuideMessageDedup(event.data.action)" in script
+
+
+def test_externalized_chat_input_spotlight_retries_after_message_layout():
+    script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
+
+    retry_block = script.split("function scheduleYuiGuideChatInputSpotlightRetry()", 1)[1].split(
+        "function updateYuiGuideChatSpotlight(kind)",
+        1,
+    )[0]
+
+    assert "if (yuiGuideChatSpotlightKind !== 'input')" in retry_block
+    assert "updateYuiGuideChatSpotlight('input');" in retry_block
+    assert "scheduleYuiGuideChatInputSpotlightRetry();" in script
+
+
+def test_compact_tutorial_guide_preview_scrolls_without_ellipsis():
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+
+    scrollable_block = css_block(
+        styles,
+        '.compact-chat-capsule-text[data-compact-preview-scrollable="true"],',
+        ".compact-chat-capsule-text::-webkit-scrollbar",
+    )
+
+    assert "text-overflow: clip;" in scrollable_block
 
 
 def test_compact_surface_drag_uses_declared_surface_and_no_drag_exclusions():

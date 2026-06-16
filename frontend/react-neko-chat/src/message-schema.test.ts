@@ -54,6 +54,25 @@ describe('message-schema', () => {
     expect(props).toEqual({});
   });
 
+  it('accepts new user icebreaker choice prompts', () => {
+    const onChoiceSelect = vi.fn();
+    const props = parseChatWindowProps({
+      choicePrompt: {
+        source: 'new_user_icebreaker',
+        sessionId: 'icebreaker-day1-session',
+        options: [
+          { choice: 'A', label: '看得差不多了' },
+          { choice: 'B', label: '还有点晕乎乎' },
+        ],
+      },
+      onChoiceSelect,
+    });
+
+    expect(props.choicePrompt?.source).toBe('new_user_icebreaker');
+    props.onChoiceSelect?.(props.choicePrompt!.options[0]!, 'new_user_icebreaker');
+    expect(onChoiceSelect).toHaveBeenCalledTimes(1);
+  });
+
   it('accepts chat surface mode props', () => {
     const props = parseChatWindowProps({
       chatSurfaceMode: 'compact',
