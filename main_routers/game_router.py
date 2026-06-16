@@ -221,6 +221,7 @@ _BASKETBALL_GAME_MEMORY_POLICY_FIELDS = (
 )
 _GAME_CONTEXT_ORGANIZE_TRIGGER_COUNT = 15
 _GAME_CONTEXT_RECENT_KEEP_COUNT = 6
+_GAME_CONTEXT_RECENT_WINDOW_MAX_COUNT = _GAME_CONTEXT_ORGANIZE_TRIGGER_COUNT
 _GAME_CONTEXT_DEGRADE_PENDING_COUNT = 40
 _GAME_CONTEXT_FINALIZE_WAIT_SECONDS = 5.0
 _GAME_CONTEXT_SIGNAL_GROUPS = GAME_CONTEXT_SIGNAL_GROUP_KEYS
@@ -1282,7 +1283,7 @@ def _dialog_id_index(dialog: list[dict], dialog_id: str) -> int:
     return -1
 
 
-def _game_context_recent_dialogues(state: dict, keep_count: int = _GAME_CONTEXT_RECENT_KEEP_COUNT) -> list[dict]:
+def _game_context_recent_dialogues(state: dict, keep_count: int = _GAME_CONTEXT_RECENT_WINDOW_MAX_COUNT) -> list[dict]:
     dialog = [item for item in state.get("game_dialog_log") or [] if isinstance(item, dict)]
     if not dialog:
         return []
@@ -1354,7 +1355,7 @@ def _format_game_context_for_prompt(context: Any, language: str | None = None) -
     degraded = context.get("degraded") is True
     recent_lines = _game_context_dialog_lines(
         context.get("recent_dialogues") or [],
-        max_items=_GAME_CONTEXT_RECENT_KEEP_COUNT,
+        max_items=_GAME_CONTEXT_RECENT_WINDOW_MAX_COUNT,
         language=language,
     )
     if degraded:
@@ -1393,7 +1394,7 @@ def _build_game_context_prompt_payload(state: dict | None, *, include_recent: bo
         "summary": str(state.get("game_context_summary") or ""),
         "signals": _normalize_game_context_signals(state.get("game_context_signals")),
         "recent_dialogues": (
-            _game_context_recent_dialogues(state, _GAME_CONTEXT_RECENT_KEEP_COUNT)
+            _game_context_recent_dialogues(state, _GAME_CONTEXT_RECENT_WINDOW_MAX_COUNT)
             if include_recent else []
         ),
         "degraded": organizer.get("degraded") is True,
@@ -1447,7 +1448,7 @@ def _build_game_recent_history_messages(state: dict | None, language: str | None
     labels = get_game_recent_history_message_labels(language)
     messages = []
     last_role = "system"
-    for item in _game_context_recent_dialogues(state, _GAME_CONTEXT_RECENT_KEEP_COUNT):
+    for item in _game_context_recent_dialogues(state, _GAME_CONTEXT_RECENT_WINDOW_MAX_COUNT):
         if not isinstance(item, dict):
             continue
         user_text = _game_dialog_history_user_text(item, labels)
@@ -2191,9 +2192,9 @@ def _game_context_pending_dialogues(state: dict) -> list[dict]:
 
 
 def _set_game_context_recent_ids(state: dict, dialogues: list[dict] | None = None) -> None:
-    source = dialogues if dialogues is not None else state.get("game_dialog_log") or []
+    source = dialogues if dialogues is not None else _game_context_pending_dialogues(state)
     ids = [str(item.get("id") or "") for item in source if isinstance(item, dict) and item.get("id")]
-    state["game_context_recent_ids"] = ids[-_GAME_CONTEXT_RECENT_KEEP_COUNT:]
+    state["game_context_recent_ids"] = ids[-_GAME_CONTEXT_RECENT_WINDOW_MAX_COUNT:]
 
 
 def _should_schedule_game_context_organizer(state: dict) -> bool:

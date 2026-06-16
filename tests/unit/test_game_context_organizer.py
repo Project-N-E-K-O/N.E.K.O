@@ -81,6 +81,7 @@ async def test_context_organizer_triggers_at_15_and_keeps_recent_window(monkeypa
     for index in range(1, 15):
         _append_user_line(state, index)
         assert "_game_context_organizer_task" not in state
+        assert state["game_context_recent_ids"] == [f"glog_{item_index:04d}" for item_index in range(1, index + 1)]
 
     _append_user_line(state, 15)
     task = state["_game_context_organizer_task"]
@@ -121,7 +122,7 @@ async def test_context_organizer_does_not_truncate_logs_added_while_running(monk
 
     assert len(state["game_dialog_log"]) == 17
     assert state["game_context_organizer"]["last_organized_id"] == "glog_0009"
-    assert state["game_context_recent_ids"] == [f"glog_{index:04d}" for index in range(12, 18)]
+    assert state["game_context_recent_ids"] == [f"glog_{index:04d}" for index in range(10, 18)]
     assert [item["id"] for item in state["game_dialog_log"][-2:]] == ["glog_0016", "glog_0017"]
 
 
@@ -144,6 +145,7 @@ async def test_context_organizer_failure_keeps_window_until_new_logs(monkeypatch
     assert state["game_context_summary"] == ""
     assert state["game_context_organizer"]["failure_count"] == 1
     assert state["game_context_organizer"]["degraded"] is False
+    assert state["game_context_recent_ids"] == [f"glog_{index:04d}" for index in range(1, 16)]
     assert state["_game_context_organizer_task"] is task
 
 
@@ -250,11 +252,11 @@ def test_game_session_history_reset_rebuilds_bounded_recent_messages(monkeypatch
     assert isinstance(history[0], SystemMessage)
     assert history[0].content == "稳定 system"
     assert session._instructions == "稳定 system"
-    assert len(history) == 1 + game_router._GAME_CONTEXT_RECENT_KEEP_COUNT * 2
+    assert len(history) == 1 + 8 * 2
     assert isinstance(history[1], HumanMessage)
     assert isinstance(history[2], AIMessage)
-    assert "第 1 句" not in joined
-    assert "第 2 句" not in joined
+    assert "第 1 句" in joined
+    assert "第 2 句" in joined
     assert "第 3 句" in joined
     assert "回应 8 (mood=happy)" in joined
     assert "不应继续留在 history" not in joined
