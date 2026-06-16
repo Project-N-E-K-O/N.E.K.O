@@ -63,6 +63,33 @@ EXPECTED_DAY4_SCENES = [
 ]
 
 
+def test_day1_auto_start_revalidates_pending_round_inside_timer():
+    source = MANAGER_PATH.read_text(encoding="utf-8")
+    auto_start_block = source.split("async maybeStartAvatarFloatingGuideAutoRound", 1)[1].split(
+        "ensureTutorialSkipController",
+        1,
+    )[0]
+
+    assert "const currentRound = this.getNextAvatarFloatingGuideAutoRound();" in auto_start_block
+    assert "if (currentRound !== round)" in auto_start_block
+    assert auto_start_block.index("const currentRound = this.getNextAvatarFloatingGuideAutoRound();") < auto_start_block.index(
+        "this.markAvatarFloatingGuideRoundAutoShown(round);"
+    )
+
+
+def test_external_chat_spotlight_creates_fallback_host():
+    source = INTERPAGE_PATH.read_text(encoding="utf-8")
+    spotlight_block = source.split("function getYuiGuideChatSpotlightElement()", 1)[1].split(
+        "function getYuiGuideChatSpotlightTarget",
+        1,
+    )[0]
+
+    assert "document.getElementById('yui-guide-chat-spotlight')" in spotlight_block
+    assert "document.createElement('div')" in spotlight_block
+    assert "spotlight.id = 'yui-guide-chat-spotlight';" in spotlight_block
+    assert "document.body.appendChild(spotlight);" in spotlight_block
+
+
 EXPECTED_DAY5_SCENES = [
     "day5_character_settings",
     "day5_character_panic",
@@ -743,7 +770,7 @@ def test_day2_and_day3_reset_fallbacks_match_new_scene_shape():
 def test_only_day1_tutorial_configs_use_cursor_wobble():
     guide_files = sorted(Path("static").glob("tutorial/yui-guide/days/day*-*.js"))
     for guide_file in guide_files:
-        if guide_file.name.startswith("tutorial/yui-guide/days/day1-"):
+        if guide_file.name.startswith("day1-"):
             continue
         source = guide_file.read_text(encoding="utf-8")
         assert "cursorAction: 'wobble'" not in source

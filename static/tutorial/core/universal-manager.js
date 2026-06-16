@@ -705,6 +705,10 @@ class UniversalTutorialManager {
             if (this.currentPage !== 'home' || this.isTutorialRunning || window.isInTutorial) {
                 return;
             }
+            const currentRound = this.getNextAvatarFloatingGuideAutoRound();
+            if (currentRound !== round) {
+                return;
+            }
             if (!this.isAvatarFloatingGuideRoundRegistered(round)) {
                 return;
             }

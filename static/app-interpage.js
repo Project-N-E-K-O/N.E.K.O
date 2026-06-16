@@ -2665,7 +2665,21 @@
     var yuiGuideChatSpotlightTimer = 0;
 
     function getYuiGuideChatSpotlightElement() {
-        return document.getElementById('yui-guide-chat-spotlight');
+        var spotlight = document.getElementById('yui-guide-chat-spotlight');
+        if (spotlight || !document.body) {
+            return spotlight;
+        }
+        spotlight = document.createElement('div');
+        spotlight.id = 'yui-guide-chat-spotlight';
+        spotlight.setAttribute('aria-hidden', 'true');
+        spotlight.hidden = true;
+        spotlight.style.position = 'fixed';
+        spotlight.style.pointerEvents = 'none';
+        spotlight.style.zIndex = '2147483600';
+        spotlight.style.boxShadow = '0 0 0 9999px rgba(5, 8, 16, 0.42), 0 0 0 2px rgba(127, 219, 255, 0.88)';
+        spotlight.style.transition = 'left 160ms ease, top 160ms ease, width 160ms ease, height 160ms ease, border-radius 160ms ease, opacity 120ms ease';
+        document.body.appendChild(spotlight);
+        return spotlight;
     }
 
     function getYuiGuidePcOverlayHost() {
