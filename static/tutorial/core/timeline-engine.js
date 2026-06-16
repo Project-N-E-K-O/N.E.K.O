@@ -187,7 +187,16 @@
             const timelineEvents = events.filter((event) => event.afterAudioEnd !== true && event.atMs > 0);
 
             if (preAudioEvents.length > 0) {
-                await Promise.all(preAudioEvents.map((event) => this.dispatchEvent(event, context, triggered)));
+                for (let index = 0; index < preAudioEvents.length; index += 1) {
+                    await Promise.resolve(this.dispatchEvent(preAudioEvents[index], context, triggered));
+                    if (this.isRunCancelled(runToken)) {
+                        return {
+                            completed: false,
+                            cancelled: true,
+                            triggered
+                        };
+                    }
+                }
             }
 
             if (
