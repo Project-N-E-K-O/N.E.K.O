@@ -37,6 +37,18 @@ logger = logging.getLogger(__name__)
 _HEADER_CACHE_DIR = Path(tempfile.gettempdir()) / "neko_bili_headers"
 
 
+class FakeResolver:
+    """固定 IP 的 DNS resolver：将任意 host 解析为同一个已验证 IP
+    用于 netProxy 防止 DNS 重绑定：先验证目标 IP，再通过此 resolver 强制连接该 IP"""
+    def __init__(self, ip: str):
+        self._ip = ip
+
+    async def resolve(self, host, port=0, family=socket.AF_INET):
+        return [{"hostname": host, "host": self._ip, "port": port,
+                 "family": socket.AF_INET, "proto": socket.IPPROTO_TCP,
+                 "flags": socket.AI_NUMERICHOST}]
+
+
 class HttpApi:
     """
     HTTP API 服务（轻量 aiohttp 服务器）
@@ -142,27 +154,24 @@ class HttpApi:
         for key in request.headers:
             if key.lower() not in ("host", "accept-encoding", "content-length"):
                 headers[key] = request.headers[key]
-        # 保留原始 Host 头避免虚拟主机路由失败
-        headers["Host"] = host
 
         timeout = aiohttp.ClientTimeout(total=30)
         try:
+            # 自定义 DNS resolver：将 host 固定解析为已验证的 IP，保留原 hostname 做 TLS SNI
+            resolver = FakeResolver(resolved_ip)
             connector = aiohttp.TCPConnector(
-                family=socket.AF_INET,
+                resolver=resolver,
                 force_close=True,
                 ttl_dns_cache=0,
             )
             async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
-                target_url = f"{parsed.scheme}://{resolved_ip}:{port}{parsed.path or '/'}"
-                if parsed.query:
-                    target_url += f"?{parsed.query}"
                 if request.method == "POST":
                     body = await request.read()
-                    async with session.post(target_url, data=body, headers=headers) as resp:
+                    async with session.post(url, data=body, headers=headers) as resp:
                         result = await resp.read()
                         content_type = resp.headers.get("Content-Type", "text/plain")
                 else:
-                    async with session.get(target_url, headers=headers) as resp:
+                    async with session.get(url, headers=headers) as resp:
                         result = await resp.read()
                         content_type = resp.headers.get("Content-Type", "text/plain")
 
@@ -271,28 +280,19 @@ class HttpApi:
         return web.Response(
             body=body,
             status=status,
-            content_type="application/json; charset=utf-8",
+            content_type="application/json",
+            charset="utf-8",
             headers={"Access-Control-Allow-Origin": "*"},
         )
 
     @staticmethod
     def _raw_resp(data: bytes, content_type: str, status: int = 200):
         from aiohttp import web
-        # aiohttp 的 content_type 不接受参数（如 "text/html; charset=utf-8" 会报错）
-        # 需要拆分 MIME type 和 charset
-        mime_type = content_type
         extra_headers = {"Access-Control-Allow-Origin": "*"}
         if ";" in content_type:
             parts = [p.strip() for p in content_type.split(";")]
             mime_type = parts[0]
-            for part in parts[1:]:
-                if "=" in part:
-                    k, v = part.split("=", 1)
-                    if k.strip().lower() == "charset":
-                        extra_headers["Content-Type"] = f"{mime_type}; charset={v.strip()}"
-        return web.Response(
-            body=data,
-            status=status,
-            content_type=mime_type,
-            headers=extra_headers,
-        )
+            charset_part = next((p for p in parts[1:] if p.lower().startswith("charset=")), "")
+            extra_headers["Content-Type"] = f"{mime_type}; {charset_part}" if charset_part else mime_type
+            return web.Response(body=data, status=status, headers=extra_headers)
+        return web.Response(body=data, status=status, content_type=content_type, headers=extra_headers)
