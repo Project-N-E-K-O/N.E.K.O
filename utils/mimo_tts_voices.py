@@ -58,7 +58,10 @@ def mimo_voice_clone_data_uri(audio_bytes: bytes, mime_type: str = "audio/wav") 
     for the ``mimo-v2.5-tts-voiceclone`` model (reference audio is inlined per
     synthesis request — MiMo has no server-side cloned voice id)."""
     b64 = base64.b64encode(audio_bytes).decode("ascii")
-    return f"data:{(mime_type or 'audio/wav').strip()};base64,{b64}"
+    # 先 strip 再回退默认：避免 mime_type="   "（全空白）被 `or` 当真值留下、strip 成空串
+    # 生成非法的 ``data:;base64,...``。
+    safe_mime = (mime_type or "").strip() or "audio/wav"
+    return f"data:{safe_mime};base64,{b64}"
 
 _FALLBACK_MIMO_TTS_VOICES: dict[str, str] = {
     "mimo_default": "Default",

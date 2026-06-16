@@ -5479,6 +5479,9 @@ async def voice_design_preview(request: Request):
         data = await request.json()
     except Exception:
         return JSONResponse({'error': 'INVALID_JSON', 'code': 'INVALID_JSON'}, status_code=400)
+    # request.json() 也可能返回数组/字符串/null（合法 JSON 但非对象）——直接 .get 会 500。
+    if not isinstance(data, dict):
+        return JSONResponse({'error': 'INVALID_JSON', 'code': 'INVALID_JSON'}, status_code=400)
 
     description, err = _validate_voice_design_description(data.get('description'))
     if err is not None:
@@ -5534,6 +5537,8 @@ async def voice_design_create(request: Request):
     try:
         data = await request.json()
     except Exception:
+        return JSONResponse({'error': 'INVALID_JSON', 'code': 'INVALID_JSON'}, status_code=400)
+    if not isinstance(data, dict):
         return JSONResponse({'error': 'INVALID_JSON', 'code': 'INVALID_JSON'}, status_code=400)
 
     description, err = _validate_voice_design_description(data.get('description'))

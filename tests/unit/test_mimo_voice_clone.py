@@ -267,6 +267,15 @@ def test_get_voices_merges_mimo_bucket(monkeypatch):
 
 
 @pytest.mark.unit
+def test_mimo_voice_clone_data_uri_falls_back_on_blank_mime():
+    from utils.mimo_tts_voices import mimo_voice_clone_data_uri
+    # whitespace-only / empty mime must fall back to audio/wav, never "data:;base64,"
+    assert mimo_voice_clone_data_uri(b"x", "   ").startswith("data:audio/wav;base64,")
+    assert mimo_voice_clone_data_uri(b"x", "").startswith("data:audio/wav;base64,")
+    assert mimo_voice_clone_data_uri(b"x", "audio/mpeg").startswith("data:audio/mpeg;base64,")
+
+
+@pytest.mark.unit
 def test_infer_provider_from_mimo_storage_key():
     cm = get_config_manager()
     assert cm._infer_provider_from_storage_key("__MIMO__abcd1234") == "mimo"

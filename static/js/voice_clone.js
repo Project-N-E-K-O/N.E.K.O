@@ -1407,6 +1407,11 @@ function setFormDisabled(disabled) {
             if (btn) btn.disabled = disabled;
         });
     }
+    // 重新启用时恢复「按 provider 的方法可用性」策略：上面的全局启用会把 MiMo 的直链禁用
+    // 状态冲掉，若不重新触发 provider change，MiMo 下直链按钮会变回可点（与策略不一致）。
+    if (!disabled && typeof updateCloneMethodForProvider === 'function') {
+        updateCloneMethodForProvider(voiceProvider ? voiceProvider.value : '');
+    }
 }
 
 async function registerVoice() {
