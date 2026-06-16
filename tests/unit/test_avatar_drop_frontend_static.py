@@ -179,10 +179,12 @@ def test_avatar_drop_payload_sends_full_prompt_but_records_memory_summary_only()
     assert "const notifyServer = options.notifyServer !== false;" in stop_recording
     assert "if (notifyServer && S.socket && S.socket.readyState === WebSocket.OPEN)" in stop_recording
     assert "window.addEventListener('neko:session-ended-by-server', finish, { once: true });" in wait_teardown
+    assert "window.addEventListener('neko:character-left', finish, { once: true });" in wait_teardown
     assert "window.clearAudioQueue" in prepare_text_mode
     assert "S.isTextSessionActive = false;" in prepare_text_mode
     assert "window.syncVoiceChatComposerHidden(false)" in prepare_text_mode
     assert "window.dispatchEvent(new CustomEvent('neko:session-ended-by-server', { detail: response }))" in app_websocket_source
+    assert "window.dispatchEvent(new CustomEvent('neko:character-left', { detail: response }))" in app_websocket_source
 
 
 @pytest.mark.unit

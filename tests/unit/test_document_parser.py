@@ -147,6 +147,39 @@ def _many_pptx_notes_bytes(note_count: int) -> bytes:
     return _zip_bytes(members)
 
 
+def _pptx_with_notes_on_skipped_slide(slide_count: int) -> bytes:
+    notes_rel_type = f"{OFFICE_REL_NS}/notesSlide"
+    slide_ids = "".join(
+        f'<p:sldId id="{255 + index}" r:id="rId{index}"/>'
+        for index in range(1, slide_count + 1)
+    )
+    rels = "".join(
+        f'<Relationship Id="rId{index}" Target="slides/slide{index}.xml"/>'
+        for index in range(1, slide_count + 1)
+    )
+    members: dict[str, str | bytes] = {
+        "[Content_Types].xml": CONTENT_TYPES_XML,
+        "ppt/presentation.xml": (
+            '<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+            f'xmlns:r="{OFFICE_REL_NS}"><p:sldIdLst>{slide_ids}</p:sldIdLst></p:presentation>'
+        ),
+        "ppt/_rels/presentation.xml.rels": f'<Relationships xmlns="{PACKAGE_REL_NS}">{rels}</Relationships>',
+    }
+    for index in range(1, slide_count + 1):
+        members[f"ppt/slides/slide{index}.xml"] = (
+            f'<p:sld xmlns:p="p" xmlns:a="{DRAWING_NS}"><a:t>Slide body {index}</a:t></p:sld>'
+        )
+    members[f"ppt/slides/_rels/slide{slide_count}.xml.rels"] = (
+        f'<Relationships xmlns="{PACKAGE_REL_NS}">'
+        f'<Relationship Id="rIdNotes" Type="{notes_rel_type}" Target="../notesSlides/notesSlide{slide_count}.xml"/>'
+        "</Relationships>"
+    )
+    members[f"ppt/notesSlides/notesSlide{slide_count}.xml"] = (
+        f'<p:notes xmlns:p="p" xmlns:a="{DRAWING_NS}"><a:t>Skipped slide notes</a:t></p:notes>'
+    )
+    return _zip_bytes(members)
+
+
 def _reordered_pptx_bytes() -> bytes:
     return _zip_bytes({
         "[Content_Types].xml": CONTENT_TYPES_XML,
@@ -622,6 +655,17 @@ def test_marks_pptx_truncated_after_first_40_slides():
     assert "Slide body 40" in parsed["content"]
     assert "# Slide 41" not in parsed["content"]
     assert "Slide body 41" not in parsed["content"]
+
+
+@pytest.mark.unit
+def test_pptx_notes_are_limited_to_parsed_slides():
+    parsed = parse_document("overflow-notes.pptx", "", _pptx_with_notes_on_skipped_slide(41))
+
+    assert parsed["document_type"] == "pptx"
+    assert parsed["truncated"] is True
+    assert "Slide body 40" in parsed["content"]
+    assert "Slide body 41" not in parsed["content"]
+    assert "Skipped slide notes" not in parsed["content"]
 
 
 @pytest.mark.unit

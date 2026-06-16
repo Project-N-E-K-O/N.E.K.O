@@ -287,14 +287,20 @@ def _parse_pptx(data: bytes) -> dict[str, Any]:
         parts: list[str] = []
         seen_text_keys: set[str] = set()
         slide_names = _read_pptx_slide_names(archive)
+        parsed_slide_names = slide_names[:MAX_PPTX_SLIDES]
         slides_truncated = len(slide_names) > MAX_PPTX_SLIDES
-        for index, name in enumerate(slide_names[:MAX_PPTX_SLIDES], start=1):
+        for index, name in enumerate(parsed_slide_names, start=1):
             xml_bytes = _read_xml_member(archive, name)
             text = _extract_drawing_text(xml_bytes)
             _add_unique_text_part(budget, parts, seen_text_keys, f"Slide {index}", text)
             if budget.truncated:
                 break
-        note_names = _read_pptx_note_names(archive, slide_names)
+        max_fallback_note_index = len(parsed_slide_names) if slides_truncated else None
+        note_names = _read_pptx_note_names(
+            archive,
+            parsed_slide_names,
+            max_fallback_note_index=max_fallback_note_index,
+        )
         for index, name in enumerate(note_names[:MAX_PPTX_SLIDES], start=1):
             if budget.truncated:
                 break
@@ -535,7 +541,12 @@ def _read_pptx_slide_names(archive: zipfile.ZipFile) -> list[str]:
     return ordered or fallback
 
 
-def _read_pptx_note_names(archive: zipfile.ZipFile, slide_names: list[str]) -> list[str]:
+def _read_pptx_note_names(
+    archive: zipfile.ZipFile,
+    slide_names: list[str],
+    *,
+    max_fallback_note_index: int | None = None,
+) -> list[str]:
     names = set(archive.namelist())
     ordered: list[str] = []
     for slide_name in slide_names:
@@ -554,15 +565,26 @@ def _read_pptx_note_names(archive: zipfile.ZipFile, slide_names: list[str]) -> l
 
     if ordered:
         return ordered
-    return sorted(
+    fallback = sorted(
         (name for name in names if re.fullmatch(r"ppt/notesSlides/notesSlide\d+\.xml", name)),
         key=_natural_key,
     )
+    if max_fallback_note_index is None:
+        return fallback
+    return [
+        name for name in fallback
+        if _pptx_numbered_part_index(name) <= max_fallback_note_index
+    ]
 
 
 def _pptx_rels_path(member_name: str) -> str:
     directory, filename = posixpath.split(member_name)
     return posixpath.join(directory, "_rels", f"{filename}.rels")
+
+
+def _pptx_numbered_part_index(member_name: str) -> int:
+    match = re.search(r"(\d+)\.xml$", member_name)
+    return int(match.group(1)) if match else 0
 
 
 def _resolve_pptx_target(target: str, base_dir: str) -> str:

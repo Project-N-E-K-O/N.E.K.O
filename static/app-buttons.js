@@ -73,10 +73,12 @@
                 settled = true;
                 if (timeoutId) window.clearTimeout(timeoutId);
                 window.removeEventListener('neko:session-ended-by-server', finish);
+                window.removeEventListener('neko:character-left', finish);
                 resolve();
             }
             timeoutId = window.setTimeout(finish, timeoutMs || 1500);
             window.addEventListener('neko:session-ended-by-server', finish, { once: true });
+            window.addEventListener('neko:character-left', finish, { once: true });
         });
     }
 
