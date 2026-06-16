@@ -4041,9 +4041,12 @@ class LLMSessionManager:
             default='',
             legacy_keys=('voice_id',),
         )
-        # strip 收口在源头：避免 characters.json 里偶发的前后空白让下游 literal
-        # 比较 / route gating / is_free_preset_voice_id 之类的 callee 失配。
-        return (raw or '').strip()
+        # 声音来源统一架构惰性迁移：characters.json 里 voice 可能是旧扁平串，也可能是
+        # 用户设音色后迁成的结构对象 {source,provider,ref}。read_legacy_voice_id 把两形态
+        # 统一读成 dispatch/route gating 一直消费的 legacy 前缀串（顺带 strip 收口空白），
+        # 下游 literal 比较 / is_free_preset_voice_id 等无需感知存储形态。
+        from utils.voice_config import read_legacy_voice_id
+        return read_legacy_voice_id(raw)
 
     def _apply_voice_id_for_route(self) -> None:
         """Resolve the character card's voice_id into self.voice_id /

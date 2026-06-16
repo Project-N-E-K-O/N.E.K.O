@@ -9,6 +9,7 @@ from utils.voice_config import (
     VoiceConfig,
     normalize_voice_id,
     parse_legacy_voice_id,
+    read_legacy_voice_id,
     to_legacy_voice_id,
 )
 
@@ -153,3 +154,39 @@ def test_prefix_roundtrip_via_normalize_and_back():
     for legacy in ("eleven:voiceX", "gsv:my_voice"):
         vc = parse_legacy_voice_id(legacy)
         assert to_legacy_voice_id(vc) == legacy
+
+
+# ── read_legacy_voice_id (lazy-migration read tolerance) ─────────────────────
+
+def test_read_legacy_from_flat_string():
+    assert read_legacy_voice_id("voice-tone-X") == "voice-tone-X"
+    assert read_legacy_voice_id("  spaced  ") == "spaced"
+    assert read_legacy_voice_id("") == ""
+    assert read_legacy_voice_id(None) == ""
+
+
+def test_read_legacy_from_object_clone_restores_prefix():
+    # 对象形态的 clone 读回 legacy 前缀串（与 dispatch/validate 既有契约一致）
+    assert read_legacy_voice_id(
+        {"source": "clone", "provider": "elevenlabs", "ref": "abc"}
+    ) == "eleven:abc"
+    assert read_legacy_voice_id(
+        {"source": "clone", "provider": "gptsovits", "ref": "myv"}
+    ) == "gsv:myv"
+
+
+def test_read_legacy_from_object_preset_is_bare_ref():
+    # preset/native/free 无前缀，对象 round-trip 回裸 ref（与扁平存储零差异）
+    assert read_legacy_voice_id(
+        {"source": "preset", "provider": "gemini", "ref": "Puck"}
+    ) == "Puck"
+    assert read_legacy_voice_id(
+        {"source": "preset", "provider": "free", "ref": "voice-tone-X"}
+    ) == "voice-tone-X"
+
+
+def test_read_legacy_object_str_roundtrip_equivalence():
+    # 关键不变式：扁平串 normalize→to_dict 存对象，再 read 回来 == 原扁平串
+    for legacy in ("eleven:abc", "gsv:myv", "voice-tone-X", "Puck", ""):
+        vc = parse_legacy_voice_id(legacy) or VoiceConfig(ref=legacy)
+        assert read_legacy_voice_id(vc.to_dict()) == legacy

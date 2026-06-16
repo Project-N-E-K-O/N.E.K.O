@@ -50,6 +50,7 @@ from utils.api_config_loader import (
 from utils.custom_tts_adapter import check_custom_tts_voice_allowed
 from utils.file_utils import atomic_write_json
 from utils.gptsovits_config import normalize_gsv_api_url
+from utils.voice_config import read_legacy_voice_id
 from utils.logger_config import get_module_logger
 from utils.native_voice_registry import (
     is_free_lanlan_app_route,
@@ -269,12 +270,12 @@ async def ensure_default_yui_voice_for_free_api(config_manager, core_cfg: dict |
     if not _is_default_yui_character(current_name, current_character):
         return False
 
-    current_voice_id = str(get_reserved(
+    current_voice_id = read_legacy_voice_id(get_reserved(
         current_character,
         "voice_id",
         default="",
         legacy_keys=("voice_id",),
-    ) or "").strip()
+    ))
     if current_voice_id:
         return False
 
@@ -629,7 +630,9 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         changed = True
 
     voice_id = get_reserved(catgirl_data, "voice_id", default="", legacy_keys=("voice_id",))
-    if voice_id is not None:
+    # 旧数据 voice_id 规整成字符串；但结构化对象形态（惰性迁移后）不能被 str(dict) 损坏，
+    # 原样保留。
+    if voice_id is not None and not isinstance(voice_id, dict):
         changed |= set_reserved(catgirl_data, "voice_id", str(voice_id))
 
     system_prompt = get_reserved(catgirl_data, "system_prompt", default=None, legacy_keys=("system_prompt",))
@@ -878,7 +881,8 @@ def flatten_reserved(catgirl_data: dict) -> dict:
         return catgirl_data
     result = dict(catgirl_data)
 
-    voice_id = get_reserved(result, "voice_id", default="")
+    # 展平给 legacy 前端/调用方：始终吐 legacy 字符串形态（容忍结构对象）。
+    voice_id = read_legacy_voice_id(get_reserved(result, "voice_id", default=""))
     if voice_id:
         result["voice_id"] = voice_id
     system_prompt = get_reserved(result, "system_prompt", default=None)
@@ -3227,6 +3231,19 @@ class ConfigManager:
             free_voice_ids=set(get_free_voices().values()),
         )
 
+    def voice_id_to_storage_value(self, voice_id):
+        """用户设音色时，把 legacy voice_id 串转成 at-rest 存储形态。
+
+        声音来源统一架构的「并查集式惰性迁移」写侧：用户每设/换一次音色，就把那一条迁成
+        结构对象 ``{source,provider,ref}``（用到哪条迁哪条，不做全表 sweep）。空值存空串
+        （＝未设音色）。读侧由 :func:`utils.voice_config.read_legacy_voice_id` 容忍两形态，
+        故存量未触碰的扁平串继续可用。
+        """
+        s = str(voice_id or '').strip()
+        if not s:
+            return ''
+        return self.normalize_voice_id_to_config(s).to_dict()
+
     def cleanup_invalid_voice_ids(self):
         """Clean up invalid voice_ids in characters.json.
         
@@ -3249,7 +3266,9 @@ class ConfigManager:
 
         catgirls = character_data.get('猫娘', {})
         for name, config in catgirls.items():
-            voice_id = get_reserved(config, 'voice_id', default='', legacy_keys=('voice_id',))
+            # 容忍扁平串 / 结构对象两形态，统一按 legacy 字符串做 remap / validate；
+            # cleanup 不在此把有效条目压成对象（守住「不 bulk sweep」，迁移只在用户设音色时发生）。
+            voice_id = read_legacy_voice_id(get_reserved(config, 'voice_id', default='', legacy_keys=('voice_id',)))
             if not voice_id:
                 continue
             # 已废弃的免费 YUI 预设音色：先平移到现役 yui_cn，再 continue 跳过后续

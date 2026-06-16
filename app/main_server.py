@@ -1251,13 +1251,15 @@ async def _init_character_resources(k: str, is_new_character: bool):
                 old_mgr = rs.session_manager
                 # 更新prompt
                 old_mgr.lanlan_prompt = lanlan_prompt[k].replace('{LANLAN_NAME}', k).replace('{MASTER_NAME}', master_name)
-                # 直接读 module global lanlan_basic_config，避免重复 load + deepcopy
-                old_mgr.voice_id = get_reserved(
+                # 直接读 module global lanlan_basic_config，避免重复 load + deepcopy。
+                # 经 read_legacy_voice_id 容忍 voice 的扁平串 / 结构对象两形态（惰性迁移）。
+                from utils.voice_config import read_legacy_voice_id
+                old_mgr.voice_id = read_legacy_voice_id(get_reserved(
                     lanlan_basic_config[k],
                     'voice_id',
                     default='',
                     legacy_keys=('voice_id',),
-                )
+                ))
                 logger.info(f"{k} 有活跃session，只更新配置，不重新创建session_manager")
             except Exception as e:
                 logger.error(f"更新 {k} 的活跃session配置失败: {e}", exc_info=True)
