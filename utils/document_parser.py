@@ -310,7 +310,11 @@ def _parse_pptx(data: bytes) -> dict[str, Any]:
         parts: list[str] = []
         seen_text_keys: set[str] = set()
         slide_names = _read_pptx_slide_names(archive)
-        visible_slide_names = _filter_visible_pptx_slide_names(archive, slide_names)
+        visible_slide_names = _filter_visible_pptx_slide_names(
+            archive,
+            slide_names,
+            limit=MAX_PPTX_SLIDES + 1,
+        )
         parsed_slide_names = visible_slide_names[:MAX_PPTX_SLIDES]
         slides_truncated = len(visible_slide_names) > MAX_PPTX_SLIDES
         for index, name in enumerate(parsed_slide_names, start=1):
@@ -370,6 +374,9 @@ def _open_checked_zip(data: bytes, document_type: str) -> zipfile.ZipFile:
 def _validate_zip_member_name(name: str) -> None:
     value = str(name or "")
     if "\\" in value:
+        raise DocumentParseError("invalid_zip_member")
+    raw_parts = value.split("/")
+    if any(part in {"", ".", ".."} for part in raw_parts):
         raise DocumentParseError("invalid_zip_member")
     path = PurePosixPath(value)
     if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
@@ -626,7 +633,12 @@ def _read_pptx_slide_names(archive: zipfile.ZipFile) -> list[str]:
     return ordered or fallback
 
 
-def _filter_visible_pptx_slide_names(archive: zipfile.ZipFile, slide_names: list[str]) -> list[str]:
+def _filter_visible_pptx_slide_names(
+    archive: zipfile.ZipFile,
+    slide_names: list[str],
+    *,
+    limit: int | None = None,
+) -> list[str]:
     visible: list[str] = []
     for name in slide_names:
         try:
@@ -636,6 +648,8 @@ def _filter_visible_pptx_slide_names(archive: zipfile.ZipFile, slide_names: list
         if root.attrib.get("show") == "0":
             continue
         visible.append(name)
+        if limit is not None and len(visible) >= limit:
+            break
     return visible
 
 
@@ -737,10 +751,17 @@ def _extract_xlsx_sheet_text(
         return "", False
     data = _read_xml_member(archive, path)
     lines: list[str] = []
+    hidden_column_ranges: list[tuple[int, int]] = []
     truncated = False
     rows_seen = 0
     try:
         for _event, row in ET.iterparse(io.BytesIO(data), events=("end",)):
+            if row.tag == _SPREADSHEET_NS + "col":
+                hidden_range = _xlsx_hidden_column_range(row)
+                if hidden_range is not None:
+                    hidden_column_ranges.append(hidden_range)
+                row.clear()
+                continue
             if row.tag != _SPREADSHEET_NS + "row":
                 continue
             if str(row.attrib.get("hidden", "")).casefold() in {"1", "true"}:
@@ -752,6 +773,8 @@ def _extract_xlsx_sheet_text(
                 column_index = _xlsx_cell_column_index(cell.attrib.get("r", ""))
                 if column_index is None:
                     values.append(value)
+                    continue
+                if _xlsx_column_is_hidden(column_index, hidden_column_ranges):
                     continue
                 while len(values) <= column_index:
                     values.append("")
@@ -773,6 +796,26 @@ def _extract_xlsx_sheet_text(
     if truncated:
         lines.append("[Rows truncated]")
     return "\n".join(lines), truncated
+
+
+def _xlsx_hidden_column_range(column: ET.Element) -> tuple[int, int] | None:
+    if str(column.attrib.get("hidden", "")).casefold() not in {"1", "true"}:
+        return None
+    try:
+        start = int(column.attrib.get("min", "0")) - 1
+        end = int(column.attrib.get("max", "0")) - 1
+    except (TypeError, ValueError):
+        return None
+    if start < 0 or end < start or end >= MAX_XLSX_COLUMNS:
+        return None
+    return start, end
+
+
+def _xlsx_column_is_hidden(
+    column_index: int,
+    hidden_column_ranges: list[tuple[int, int]],
+) -> bool:
+    return any(start <= column_index <= end for start, end in hidden_column_ranges)
 
 
 def _xlsx_cell_text(cell: ET.Element, shared_strings: list[str]) -> str:

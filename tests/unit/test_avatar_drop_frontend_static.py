@@ -172,6 +172,7 @@ def test_avatar_drop_payload_sends_full_prompt_but_records_memory_summary_only()
     assert "memoryText: prompt" not in send_payload
     assert "extraImageDataUrls: imageDataUrls" in send_payload
     assert "forceReactOptimisticMessage: true" in send_payload
+    assert "ignoreComposerAttachments: true" in send_payload
 
     assert "S.isRecording || S.voiceChatActive || S.voiceStartPending" in voice_active
     assert "window.isMicStarting" in voice_active

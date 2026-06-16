@@ -204,6 +204,31 @@ def _xlsx_with_hidden_sheet_and_row() -> bytes:
     })
 
 
+def _xlsx_with_hidden_column() -> bytes:
+    rows = (
+        '<row r="1">'
+        '<c r="A1" t="inlineStr"><is><t>Visible A</t></is></c>'
+        '<c r="B1" t="inlineStr"><is><t>Hidden B</t></is></c>'
+        '<c r="C1" t="inlineStr"><is><t>Visible C</t></is></c>'
+        "</row>"
+    )
+    return _zip_bytes({
+        "[Content_Types].xml": CONTENT_TYPES_XML,
+        "xl/workbook.xml": (
+            f'<workbook xmlns="{SPREADSHEET_NS}" xmlns:r="{OFFICE_REL_NS}">'
+            '<sheets><sheet name="Visible" sheetId="1" r:id="rId1"/></sheets>'
+            "</workbook>"
+        ),
+        "xl/_rels/workbook.xml.rels": f'<Relationships xmlns="{PACKAGE_REL_NS}"><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>',
+        "xl/worksheets/sheet1.xml": (
+            f'<worksheet xmlns="{SPREADSHEET_NS}">'
+            '<cols><col min="2" max="2" hidden="1"/></cols>'
+            f"<sheetData>{rows}</sheetData>"
+            "</worksheet>"
+        ),
+    })
+
+
 def _pptx_bytes(slide_text: str, notes_text: str = "") -> bytes:
     members: dict[str, str | bytes] = {
         "[Content_Types].xml": CONTENT_TYPES_XML,
@@ -237,6 +262,31 @@ def _many_pptx_bytes(slide_count: int) -> bytes:
     for index in range(1, slide_count + 1):
         members[f"ppt/slides/slide{index}.xml"] = (
             f'<p:sld xmlns:p="p" xmlns:a="{DRAWING_NS}"><a:t>Slide body {index}</a:t></p:sld>'
+        )
+    return _zip_bytes(members)
+
+
+def _pptx_with_many_visible_and_hidden_tail(slide_count: int) -> bytes:
+    slide_ids = "".join(
+        f'<p:sldId id="{255 + index}" r:id="rId{index}"/>'
+        for index in range(1, slide_count + 1)
+    )
+    rels = "".join(
+        f'<Relationship Id="rId{index}" Target="slides/slide{index}.xml"/>'
+        for index in range(1, slide_count + 1)
+    )
+    members: dict[str, str | bytes] = {
+        "[Content_Types].xml": CONTENT_TYPES_XML,
+        "ppt/presentation.xml": (
+            '<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+            f'xmlns:r="{OFFICE_REL_NS}"><p:sldIdLst>{slide_ids}</p:sldIdLst></p:presentation>'
+        ),
+        "ppt/_rels/presentation.xml.rels": f'<Relationships xmlns="{PACKAGE_REL_NS}">{rels}</Relationships>',
+    }
+    for index in range(1, slide_count + 1):
+        hidden = ' show="0"' if index > 41 else ""
+        members[f"ppt/slides/slide{index}.xml"] = (
+            f'<p:sld xmlns:p="p" xmlns:a="{DRAWING_NS}"{hidden}><a:t>Slide body {index}</a:t></p:sld>'
         )
     return _zip_bytes(members)
 
@@ -681,6 +731,17 @@ def test_rejects_zip_path_traversal_and_xml_entities():
         "invalid_zip_member",
     )
     _assert_parse_error(
+        "unsafe-dot-segment.docx",
+        _zip_bytes(
+            {
+                "[Content_Types].xml": CONTENT_TYPES_XML,
+                "./word/vbaProject.bin": b"macro",
+                "word/document.xml": f'<w:document xmlns:w="{WORD_NS}"/>',
+            }
+        ),
+        "invalid_zip_member",
+    )
+    _assert_parse_error(
         "macro-backslash.docx",
         _zip_bytes_with_backslash_member(
             {
@@ -817,6 +878,16 @@ def test_xlsx_skips_hidden_sheets_and_rows():
 
 
 @pytest.mark.unit
+def test_xlsx_skips_hidden_columns():
+    parsed = parse_document("hidden-column.xlsx", "", _xlsx_with_hidden_column())
+
+    assert "Visible A" in parsed["content"]
+    assert "Visible C" in parsed["content"]
+    assert "Hidden B" not in parsed["content"]
+    assert "Visible A\t\tVisible C" in parsed["content"]
+
+
+@pytest.mark.unit
 def test_xlsx_rows_are_not_materialized_before_limit():
     source = PARSER_SOURCE_PATH.read_text(encoding="utf-8")
 
@@ -835,6 +906,18 @@ def test_marks_pptx_truncated_after_first_40_slides():
     assert "Slide body 40" in parsed["content"]
     assert "# Slide 41" not in parsed["content"]
     assert "Slide body 41" not in parsed["content"]
+
+
+@pytest.mark.unit
+def test_pptx_visibility_scan_stops_after_truncation_sentinel():
+    parsed = parse_document("many-visible-with-hidden-tail.pptx", "", _pptx_with_many_visible_and_hidden_tail(80))
+
+    assert parsed["document_type"] == "pptx"
+    assert parsed["meta"]["slides"] == 80
+    assert parsed["truncated"] is True
+    assert "Slide body 40" in parsed["content"]
+    assert "Slide body 41" not in parsed["content"]
+    assert "Slide body 80" not in parsed["content"]
 
 
 @pytest.mark.unit

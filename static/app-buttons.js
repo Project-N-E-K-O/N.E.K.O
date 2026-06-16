@@ -2489,7 +2489,8 @@
             var text = String(typeof rawText === 'string' ? rawText : '').trim();
             var extraImageDataUrls = normalizeExternalImageDataUrls(options.extraImageDataUrls);
             var hasExtraImages = extraImageDataUrls.length > 0;
-            var hasScreenshots = screenshotsList.children.length > 0;
+            var ignoreComposerAttachments = options.ignoreComposerAttachments === true;
+            var hasScreenshots = !ignoreComposerAttachments && screenshotsList.children.length > 0;
             if (!text && !hasScreenshots && !hasExtraImages) return false;
             if (isHomeTutorialInteractionLocked()) {
                 showHomeTutorialLockedToast();
@@ -2521,7 +2522,7 @@
                 ? options.memoryText.trim()
                 : '';
             var forceReactOptimisticMessage = options.forceReactOptimisticMessage === true;
-            var pendingAttachmentUrls = mod.getPendingComposerAttachments().map(function (attachment) {
+            var pendingAttachmentUrls = ignoreComposerAttachments ? [] : mod.getPendingComposerAttachments().map(function (attachment) {
                 return attachment && attachment.url ? String(attachment.url) : '';
             }).filter(Boolean);
             var optimisticImageUrls = pendingAttachmentUrls.concat(extraImageDataUrls);
@@ -2822,7 +2823,7 @@
             var text = String(typeof rawText === 'string' ? rawText : '').trim();
             var extraImageDataUrls = normalizeExternalImageDataUrls(options.extraImageDataUrls);
             var hasExtraImages = extraImageDataUrls.length > 0;
-            var hasScreenshots = screenshotsList.children.length > 0;
+            var hasScreenshots = options.ignoreComposerAttachments === true ? false : screenshotsList.children.length > 0;
 
             if (!text && !hasScreenshots && !hasExtraImages) return;
             if (isHomeTutorialInteractionLocked()) {
@@ -2872,6 +2873,7 @@
                 extraImageDataUrls: imageDataUrls,
                 forceReactOptimisticMessage: true,
                 preserveInputValue: true,
+                ignoreComposerAttachments: true,
                 skipAvatarInteractionDeferral: true,
                 countTextForMeowAchievement: false
             });
