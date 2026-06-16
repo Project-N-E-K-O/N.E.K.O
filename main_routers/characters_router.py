@@ -1504,6 +1504,15 @@ async def _elevenlabs_clone_voice(
 # so no separate worker is needed (design doc §7).
 ELEVENLABS_VOICE_DESIGN_DESC_MIN = 20
 ELEVENLABS_VOICE_DESIGN_DESC_MAX = 1000
+# ElevenLabs voice-design previews require a ``text`` between 100 and 1000 chars to
+# synthesize audible samples. ``auto_generate_text`` only returns generated voice ids
+# (no audio), which would yield empty/unplayable previews — so we always pass a fixed
+# preview line instead (must stay ≥ 100 chars).
+ELEVENLABS_VOICE_DESIGN_PREVIEW_TEXT = (
+    "Hello! This is a preview of your designed voice. I can read your stories, chat "
+    "with you about your day, and keep you company whenever you would like a friendly "
+    "voice nearby. How do I sound to you so far?"
+)
 
 
 async def _elevenlabs_design_previews(
@@ -1523,7 +1532,8 @@ async def _elevenlabs_design_previews(
     headers = {"xi-api-key": api_key, "Content-Type": "application/json"}
     payload = {
         "voice_description": voice_description,
-        "auto_generate_text": True,
+        # 显式给 text（≥100 chars）而非 auto_generate_text，确保返回可试听的 audio_base_64。
+        "text": ELEVENLABS_VOICE_DESIGN_PREVIEW_TEXT,
     }
     async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
         resp = await client.post(url, headers=headers, json=payload)
@@ -5339,8 +5349,11 @@ async def voice_clone(
             client = MimoVoiceCloneClient(api_key=api_key, base_url=base_url or None)
             sample_bytes = normalized_buffer.getvalue()
             await client.validate_sample(sample_bytes, mime_type='audio/wav')
-            voice_id = f'mimo-clone-{audio_md5[:12]}'
-            sample_filename = f'mimo-{api_key[-8:]}-{voice_id}.wav'
+            # voice_id 含 key 末 8 位，保证「同一参考音频在不同 MiMo key 下克隆」落到不同
+            # voice_id——否则跨 __MIMO__ 桶同名，delete_voice_for_current_api 按 id 扫所有桶
+            # 时可能误删另一个 key 的隐藏条目（Codex review #1851）。
+            voice_id = f'mimo-clone-{api_key[-8:]}-{audio_md5[:12]}'
+            sample_filename = f'{voice_id}.wav'
             sample_filename = await asyncio.to_thread(
                 _config_manager.save_voice_clone_sample, sample_filename, sample_bytes
             )

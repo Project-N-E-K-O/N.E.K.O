@@ -113,7 +113,10 @@ async def test_elevenlabs_design_previews_and_create(monkeypatch):
     design_req = transport.requests[0]
     assert design_req["path"].endswith("/v1/text-to-voice/design")
     assert design_req["body"]["voice_description"].startswith("a warm")
-    assert design_req["body"]["auto_generate_text"] is True
+    # text (≥100 chars) must be sent so previews carry audible audio; auto_generate_text
+    # (ids-only, no audio) must NOT be used.
+    assert "auto_generate_text" not in design_req["body"]
+    assert len(design_req["body"]["text"]) >= 100
     assert design_req["headers"]["xi-api-key"] == "el-key"
 
     voice_id = await cr._elevenlabs_create_voice_from_preview(

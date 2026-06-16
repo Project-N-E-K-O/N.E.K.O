@@ -3193,11 +3193,14 @@ class ConfigManager:
                 or storage_key.startswith('__COSYVOICE_INTL__')
             ) and voice_id in voice_storage.get(storage_key, {}):
                 removed = voice_storage[storage_key].pop(voice_id, None)
+                # 先持久化元数据删除，再清本地样本——顺序很关键：若 save 抛错（cloudsave
+                # write fence / 磁盘错误），样本仍在，voice_storage.json 也仍指向它，状态一致；
+                # 反序（先删样本再 save）一旦 save 失败就留下指向缺失样本的元数据，合成退化 dummy。
+                self.save_voice_storage(voice_storage)
                 # MiMo 克隆把参考样本存在本地（非 voice_storage.json）；删音色时一并清理，
                 # 避免样本文件孤儿堆积。
                 if isinstance(removed, dict) and removed.get('clone_sample_file'):
                     self.delete_voice_clone_sample(removed.get('clone_sample_file'))
-                self.save_voice_storage(voice_storage)
                 return True
 
         # 再检查当前阿里国内/国际 API Key 的原始分区
