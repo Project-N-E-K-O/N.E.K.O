@@ -185,26 +185,24 @@ def _set_autostart_windows(app_id: str, name: str, path: str, enabled: bool) -> 
             else:
                 command = f'"{resolved_path}"'
             
-            key = winreg.OpenKey(
+            with winreg.OpenKey(
                 winreg.HKEY_CURRENT_USER,
                 _AUTORUN_KEY_PATH,
                 0,
                 winreg.KEY_SET_VALUE
-            )
-            winreg.SetValueEx(key, reg_name, 0, winreg.REG_SZ, command)
-            winreg.CloseKey(key)
+            ) as key:
+                winreg.SetValueEx(key, reg_name, 0, winreg.REG_SZ, command)
             
             return True, f"已为「{name}」开启开机自启"
         else:
             try:
-                key = winreg.OpenKey(
+                with winreg.OpenKey(
                     winreg.HKEY_CURRENT_USER,
                     _AUTORUN_KEY_PATH,
                     0,
                     winreg.KEY_SET_VALUE
-                )
-                winreg.DeleteValue(key, reg_name)
-                winreg.CloseKey(key)
+                ) as key:
+                    winreg.DeleteValue(key, reg_name)
                 return True, f"已为「{name}」关闭开机自启"
             except FileNotFoundError:
                 return True, f"「{name}」原本就没有开机自启"
@@ -228,15 +226,14 @@ def _get_autostart_status_windows(app_id: str) -> bool:
         reg_name = _get_autostart_reg_name(app_id)
         
         try:
-            key = winreg.OpenKey(
+            with winreg.OpenKey(
                 winreg.HKEY_CURRENT_USER,
                 _AUTORUN_KEY_PATH,
                 0,
                 winreg.KEY_READ
-            )
-            value, _ = winreg.QueryValueEx(key, reg_name)
-            winreg.CloseKey(key)
-            return bool(value)
+            ) as key:
+                value, _ = winreg.QueryValueEx(key, reg_name)
+                return bool(value)
         except FileNotFoundError:
             return False
             
@@ -254,25 +251,22 @@ def _get_all_autostart_status_windows() -> Dict[str, bool]:
         
         result = {}
         try:
-            key = winreg.OpenKey(
+            with winreg.OpenKey(
                 winreg.HKEY_CURRENT_USER,
                 _AUTORUN_KEY_PATH,
                 0,
                 winreg.KEY_READ
-            )
-            
-            i = 0
-            while True:
-                try:
-                    name, _, _ = winreg.EnumValue(key, i)
-                    if name.startswith(_AUTORUN_PREFIX):
-                        app_id = name[len(_AUTORUN_PREFIX):]
-                        result[app_id] = True
-                    i += 1
-                except OSError:
-                    break
-            
-            winreg.CloseKey(key)
+            ) as key:
+                i = 0
+                while True:
+                    try:
+                        name, _, _ = winreg.EnumValue(key, i)
+                        if name.startswith(_AUTORUN_PREFIX):
+                            app_id = name[len(_AUTORUN_PREFIX):]
+                            result[app_id] = True
+                        i += 1
+                    except OSError:
+                        break
         except FileNotFoundError:
             pass
         
