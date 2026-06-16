@@ -1232,7 +1232,7 @@
                         <label class="toggle-switch" title="开机自启">
                             <input type="checkbox" ${autostartChecked} 
                                    onchange="toggleAutostart('${escapeHtml(app.id)}', this.checked)"
-                                   ${!app.exists ? 'disabled title="文件不存在，无法设置开机自启"' : ''}>
+                                   ${!app.exists && !app.autostart ? 'disabled title="文件不存在且未设置开机自启"' : ''}>
                             <span class="toggle-slider"></span>
                         </label>
                         <button class="action-btn action-btn-launch" onclick="launchApp('${escapeHtml(app.id)}')" title="启动">▶️</button>

@@ -761,9 +761,14 @@ class AppLauncherPlugin(NekoPluginBase):
                 new_path = path.strip()
                 if not _is_valid_path(new_path):
                     return Err(SdkError(f"路径无效: {new_path}"))
+                new_resolved = _resolve_path(new_path)
+                # 检查是否与其他应用的路径重复
+                for other in apps:
+                    if other.get("id") != app_id and _resolve_path(other.get("path", "")).lower() == new_resolved.lower():
+                        return Err(SdkError(f"该路径已被其他软件注册: {other.get('name')}"))
                 app["path"] = new_path
-                app["resolved_path"] = _resolve_path(new_path)
-                app["type"] = _get_file_type(app["resolved_path"])
+                app["resolved_path"] = new_resolved
+                app["type"] = _get_file_type(new_resolved)
                 path_changed = new_path != old_path
             if aliases is not None:
                 processed = []
