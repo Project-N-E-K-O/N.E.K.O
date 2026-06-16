@@ -9,6 +9,7 @@ import pytest
 from utils.document_parser import (
     MAX_EXTRACTED_CHARS,
     DocumentParseError,
+    _validate_zip_member_name,
     parse_document,
 )
 
@@ -29,6 +30,11 @@ def _zip_bytes(members: dict[str, str | bytes]) -> bytes:
         for name, value in members.items():
             archive.writestr(name, value.encode("utf-8") if isinstance(value, str) else value)
     return buffer.getvalue()
+
+
+def _zip_bytes_with_backslash_member(members: dict[str, str | bytes], name: str) -> bytes:
+    data = _zip_bytes(members)
+    return data.replace(name.encode("utf-8"), name.replace("/", "\\").encode("utf-8"))
 
 
 def _docx_bytes(text: str, extra_members: dict[str, str | bytes] | None = None) -> bytes:
@@ -352,6 +358,29 @@ def test_rejects_zip_path_traversal_and_xml_entities():
         "invalid_zip_member",
     )
     _assert_parse_error(
+        "unsafe-backslash.docx",
+        _zip_bytes(
+            {
+                "[Content_Types].xml": CONTENT_TYPES_XML,
+                "..\\evil.xml": "x",
+                "word/document.xml": f'<w:document xmlns:w="{WORD_NS}"/>',
+            }
+        ),
+        "invalid_zip_member",
+    )
+    _assert_parse_error(
+        "macro-backslash.docx",
+        _zip_bytes_with_backslash_member(
+            {
+                "[Content_Types].xml": CONTENT_TYPES_XML,
+                "word/document.xml": f'<w:document xmlns:w="{WORD_NS}"><w:body><w:p><w:r><w:t>Safe text</w:t></w:r></w:p></w:body></w:document>',
+                "word/vbaProject.bin": b"macro",
+            },
+            "word/vbaProject.bin",
+        ),
+        "macro_document_unsupported",
+    )
+    _assert_parse_error(
         "entity.docx",
         _zip_bytes(
             {
@@ -364,6 +393,14 @@ def test_rejects_zip_path_traversal_and_xml_entities():
         ),
         "xml_entity_unsupported",
     )
+
+
+@pytest.mark.unit
+def test_rejects_raw_backslash_zip_member_names():
+    with pytest.raises(DocumentParseError) as exc_info:
+        _validate_zip_member_name("..\\evil.xml")
+
+    assert exc_info.value.code == "invalid_zip_member"
 
 
 @pytest.mark.unit

@@ -341,7 +341,10 @@ def _open_checked_zip(data: bytes, document_type: str) -> zipfile.ZipFile:
 
 
 def _validate_zip_member_name(name: str) -> None:
-    path = PurePosixPath(str(name or ""))
+    value = str(name or "")
+    if "\\" in value:
+        raise DocumentParseError("invalid_zip_member")
+    path = PurePosixPath(value)
     if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
         raise DocumentParseError("invalid_zip_member")
 
