@@ -289,6 +289,36 @@ body.subtitle-window-host #subtitle-settings-panel {
     bottom: calc(100% + 8px);
 }
 
+body.subtitle-settings-window-host {
+    margin: 0;
+    width: 100vw;
+    min-height: 100vh;
+    overflow: hidden;
+    background: transparent;
+}
+
+body.subtitle-settings-window-host #subtitle-display {
+    position: fixed;
+    inset: 0;
+    width: auto !important;
+    height: auto !important;
+    min-width: 0;
+    min-height: 0;
+    padding: 0;
+    background: transparent;
+    box-shadow: none;
+    pointer-events: auto;
+}
+
+body.subtitle-settings-window-host #subtitle-settings-panel {
+    position: fixed;
+    inset: 0;
+    min-width: 0;
+    width: auto;
+    border-radius: 8px;
+    box-sizing: border-box;
+}
+
 body.subtitle-window-host.subtitle-linux-host #subtitle-settings-panel {
     top: auto;
     bottom: calc(100% + 8px);
@@ -525,8 +555,8 @@ body.subtitle-window-host #subtitle-display[data-subtitle-panel-locked="true"] {
 }
 
 body.subtitle-window-host #subtitle-display[data-subtitle-native-resizing="true"] {
-    width: calc(100vw - (var(--subtitle-window-edge-inset, 0px) * 2)) !important;
-    height: calc(100vh - (var(--subtitle-window-edge-inset, 0px) * 2)) !important;
+    width: var(--subtitle-native-resize-width, var(--subtitle-panel-width, auto)) !important;
+    height: var(--subtitle-native-resize-height, var(--subtitle-panel-height, auto)) !important;
     max-width: none !important;
     max-height: none !important;
 }

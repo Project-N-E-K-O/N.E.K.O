@@ -34,6 +34,8 @@
         passthroughInteraction: 'subtitle.settings.passthroughInteraction',
         emptyHint: 'subtitle.display.emptyHint'
     };
+    var LOCK_ICON_PATH = 'M7 10V7a5 5 0 0110 0v3h1a1 1 0 011 1v9a1 1 0 01-1 1H6a1 1 0 01-1-1v-9a1 1 0 011-1h1zm2 0h6V7a3 3 0 00-6 0v3z';
+    var UNLOCK_ICON_PATH = 'M12 17a2 2 0 100-4 2 2 0 000 4zm6-7h-8V7a3 3 0 015.64-1.44 1 1 0 001.73-1A5 5 0 008 7v3H6a1 1 0 00-1 1v9a1 1 0 001 1h12a1 1 0 001-1v-9a1 1 0 00-1-1z';
     var UI_FALLBACK = {
         'zh-CN': {
             settingsBtn: '字幕设置',
@@ -692,6 +694,27 @@
         }
     }
 
+    function applyLockButtonIcon(lockBtn, locked) {
+        if (!lockBtn) return;
+        var svg = lockBtn.querySelector ? lockBtn.querySelector('svg') : null;
+        var path = svg && svg.querySelector ? svg.querySelector('path') : null;
+        if (!svg) {
+            svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            svg.setAttribute('viewBox', '0 0 24 24');
+            svg.setAttribute('fill', 'currentColor');
+            svg.setAttribute('width', '14');
+            svg.setAttribute('height', '14');
+            svg.setAttribute('aria-hidden', 'true');
+            lockBtn.appendChild(svg);
+        }
+        if (!path) {
+            path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            svg.appendChild(path);
+        }
+        lockBtn.dataset.subtitleLockIcon = locked ? 'locked' : 'unlocked';
+        path.setAttribute('d', locked ? LOCK_ICON_PATH : UNLOCK_ICON_PATH);
+    }
+
     function measureSubtitleLayout(options) {
         options = options || {};
         var text = String(options.text || '');
@@ -1156,13 +1179,11 @@
                     api.setPosition(result.position.left, result.position.top);
                 }
                 if (typeof api.setSize === 'function') {
-                    var settingsPanelOpen = refs.settingsPanel && !refs.settingsPanel.classList.contains('hidden');
                     api.setSize(
                         result.bounds.width,
                         result.bounds.height,
                         {
-                            panelBounds: result.bounds,
-                            settingsOpen: !!settingsPanelOpen
+                            panelBounds: result.bounds
                         }
                     );
                 }
@@ -1294,6 +1315,7 @@
         var state = getSettings();
         var controlsHideTimer = null;
         var panelState = normalizePanelState((getRenderState() || {}).subtitlePanelState);
+        var externalSettingsOpen = false;
 
         if (!refs.display) {
             return null;
@@ -1334,8 +1356,12 @@
             }
         }
 
-        function isSettingsOpen() {
+        function isInlineSettingsOpen() {
             return !!(refs.settingsPanel && !refs.settingsPanel.classList.contains('hidden'));
+        }
+
+        function isSettingsOpen() {
+            return externalSettingsOpen || isInlineSettingsOpen();
         }
 
         function hasFocusWithinPanel() {
@@ -1351,10 +1377,10 @@
 
         function scheduleClean(source) {
             clearControlsHideTimer();
-            if (isSettingsOpen()) return;
+            if (isInlineSettingsOpen()) return;
             controlsHideTimer = setTimeout(function() {
                 controlsHideTimer = null;
-                if (isSettingsOpen()) return;
+                if (isInlineSettingsOpen()) return;
                 if (refs.display.matches && refs.display.matches(':hover')) return;
                 if (hasFocusWithinPanel()) return;
                 applyPanelState('clean', source || 'subtitle-ui-clean');
@@ -1362,6 +1388,18 @@
         }
 
         function openSettings(source) {
+            if (typeof options.openExternalSettings === 'function') {
+                clearControlsHideTimer();
+                externalSettingsOpen = true;
+                applyPanelState('settings', source || 'subtitle-ui-settings-open');
+                options.openExternalSettings(getSettings(), refs, {
+                    source: source || 'subtitle-ui-settings-open'
+                });
+                if (refs.settingsBtn && typeof refs.settingsBtn.blur === 'function') {
+                    refs.settingsBtn.blur();
+                }
+                return;
+            }
             if (!refs.settingsPanel) return;
             clearControlsHideTimer();
             refs.settingsPanel.classList.remove('hidden');
@@ -1369,10 +1407,25 @@
         }
 
         function closeSettings(source, nextPanelState) {
+            var wasExternalSettingsOpen = externalSettingsOpen;
+            if (wasExternalSettingsOpen && typeof options.closeExternalSettings === 'function') {
+                externalSettingsOpen = false;
+                options.closeExternalSettings({
+                    source: source || 'subtitle-ui-settings-close'
+                });
+            } else {
+                externalSettingsOpen = false;
+            }
             if (refs.settingsPanel) {
                 refs.settingsPanel.classList.add('hidden');
             }
             applyPanelState(nextPanelState || 'controls', source || 'subtitle-ui-settings-close');
+            if (wasExternalSettingsOpen && nextPanelState !== 'clean') {
+                if (refs.settingsBtn && typeof refs.settingsBtn.blur === 'function') {
+                    refs.settingsBtn.blur();
+                }
+                scheduleClean(source || 'subtitle-ui-settings-close');
+            }
         }
 
         function applyState(nextState, detail) {
@@ -1383,6 +1436,7 @@
             }
             if (refs.lockBtn) {
                 refs.lockBtn.setAttribute('aria-pressed', nextState.subtitlePanelLocked ? 'true' : 'false');
+                applyLockButtonIcon(refs.lockBtn, !!nextState.subtitlePanelLocked);
             }
             if (typeof options.onSettingsApplied === 'function') {
                 options.onSettingsApplied(nextState, refs, detail || { changedKeys: [], source: 'init' });
@@ -1542,7 +1596,11 @@
         if (refs.settingsBtn && refs.settingsPanel) {
             var onSettingsClick = function(e) {
                 e.stopPropagation();
-                if (isSettingsOpen()) {
+                if (externalSettingsOpen) {
+                    closeSettings('subtitle-ui-panel', 'controls');
+                } else if (typeof options.openExternalSettings === 'function') {
+                    openSettings('subtitle-ui-panel');
+                } else if (isSettingsOpen()) {
                     closeSettings('subtitle-ui-panel', 'controls');
                 } else {
                     openSettings('subtitle-ui-panel');
@@ -1621,7 +1679,7 @@
             });
         }
 
-        if (options.host === 'window' && options.windowInteractions === 'external') {
+        if (options.windowInteractions === 'external') {
             refs.display.dataset.subtitleWindowInteractions = 'external';
         } else {
             cleanupFns.push(attachPanelResize(refs, options));
@@ -1632,6 +1690,9 @@
             refs: refs,
             applyCurrentState: function() {
                 applyState(getSettings(), { changedKeys: [], source: 'manual' });
+            },
+            closeSettingsForExternalInteraction: function(nextPanelState) {
+                closeSettings('subtitle-ui-external-interaction', nextPanelState || 'controls');
             },
             destroy: function() {
                 clearControlsHideTimer();

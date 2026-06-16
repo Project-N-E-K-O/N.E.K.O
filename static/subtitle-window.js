@@ -4,6 +4,7 @@
     var SubtitleShared = window.nekoSubtitleShared || null;
     var subtitleWindowController = null;
     var currentTranscript = '';
+    var lastSizePayload = null;
     var interactionPollTimer = null;
     var nativeInteractionIgnored = false;
     var interactionPollInFlight = false;
@@ -13,6 +14,7 @@
     var DESKTOP_RESIZE_HIT_ZONE = 10;
     var DESKTOP_MIN_PANEL_WIDTH = 48;
     var DESKTOP_MIN_PANEL_HEIGHT = 28;
+    var activeNativeResizeState = null;
 
     if (!SubtitleShared) {
         console.error('[SubtitleWindow] subtitle-shared.js 未加载');
@@ -41,12 +43,6 @@
         var state = SubtitleShared.getSettings();
         var bounds = SubtitleShared.getPanelBounds(state.subtitlePanelBounds);
         var nativeResizing = isNativeWindowResizing(refs);
-        var settingsPanelOpen = refs.settingsPanel && !refs.settingsPanel.classList.contains('hidden');
-        var settingsPanelHeight = settingsPanelOpen && refs.settingsPanel
-            ? refs.settingsPanel.offsetHeight
-            : 0;
-        var settingsOffset = settingsPanelOpen ? settingsPanelHeight + 8 : 0;
-        var carrierHeight = bounds.height + settingsOffset;
 
         if (!nativeResizing) {
             SubtitleShared.applySubtitlePanelBounds(refs.display, bounds, { host: 'window' });
@@ -54,16 +50,31 @@
         bounds = getRenderedPanelBounds(refs, bounds);
         refs.display.style.maxHeight = 'none';
 
+        function setWindowSizeOnce() {
+            if (nativeResizing || !api || typeof api.setSize !== 'function') return;
+            var payload = {
+                width: bounds.width + DESKTOP_WINDOW_EDGE_INSET * 2,
+                height: bounds.height + DESKTOP_WINDOW_EDGE_INSET * 2,
+                panelWidth: bounds.width,
+                panelHeight: bounds.height
+            };
+            if (lastSizePayload &&
+                lastSizePayload.width === payload.width &&
+                lastSizePayload.height === payload.height &&
+                lastSizePayload.panelWidth === payload.panelWidth &&
+                lastSizePayload.panelHeight === payload.panelHeight) {
+                return;
+            }
+            lastSizePayload = payload;
+            api.setSize(payload.width, payload.height, {
+                panelBounds: bounds
+            });
+        }
+
         if (!refs.text) return;
         if (!currentTranscript.trim()) {
             refs.text.style.fontSize = '';
-            if (!nativeResizing && api && typeof api.setSize === 'function') {
-                api.setSize(bounds.width + DESKTOP_WINDOW_EDGE_INSET * 2, carrierHeight + DESKTOP_WINDOW_EDGE_INSET * 2, {
-                    panelBounds: bounds,
-                    settingsOpen: !!settingsPanelOpen,
-                    carrierOffset: settingsOffset
-                });
-            }
+            setWindowSizeOnce();
             return;
         }
 
@@ -77,13 +88,7 @@
             baseFont: 17
         });
         refs.text.style.fontSize = layout.fontSize < 17 ? layout.fontSize + 'px' : '';
-        if (!nativeResizing && api && typeof api.setSize === 'function') {
-            api.setSize(bounds.width + DESKTOP_WINDOW_EDGE_INSET * 2, carrierHeight + DESKTOP_WINDOW_EDGE_INSET * 2, {
-                panelBounds: bounds,
-                settingsOpen: !!settingsPanelOpen,
-                carrierOffset: settingsOffset
-            });
-        }
+        setWindowSizeOnce();
     }
 
     function applyTranscript(text) {
@@ -302,6 +307,37 @@
             type: change.type,
             value: change.value
         });
+        syncExternalSettingsWindow();
+    }
+
+    function syncExternalSettingsWindow() {
+        var api = window.nekoSubtitle;
+        if (!api || typeof api.updateSettingsWindow !== 'function') return;
+        api.updateSettingsWindow(SubtitleShared.getSettings());
+    }
+
+    function openExternalSettingsWindow() {
+        var api = window.nekoSubtitle;
+        if (!api || typeof api.openSettings !== 'function') return;
+        var refs = subtitleWindowController && subtitleWindowController.refs;
+        var rect = refs && refs.display && refs.display.getBoundingClientRect
+            ? refs.display.getBoundingClientRect()
+            : null;
+        api.openSettings({
+            state: SubtitleShared.getSettings(),
+            anchor: rect ? {
+                screenX: Math.round(window.screenX + rect.left),
+                screenY: Math.round(window.screenY + rect.top),
+                width: Math.round(rect.width),
+                height: Math.round(rect.height)
+            } : null
+        });
+    }
+
+    function closeExternalSettingsWindow() {
+        var api = window.nekoSubtitle;
+        if (!api || typeof api.closeSettings !== 'function') return;
+        api.closeSettings();
     }
 
     function getResizeDirectionFromTarget(target, display) {
@@ -344,7 +380,8 @@
         return 'nwse-resize';
     }
 
-    function attachDesktopWindowInteractions(refs) {
+    function attachDesktopWindowInteractions(controller) {
+        var refs = controller && controller.refs ? controller.refs : controller;
         var api = window.nekoSubtitle;
         if (!refs || !refs.display || !api) return function() {};
 
@@ -357,8 +394,12 @@
             return !!SubtitleShared.getSettings().subtitlePanelLocked;
         }
 
-        function closeSettingsFloatForResize() {
-            if (!refs.settingsPanel || refs.settingsPanel.classList.contains('hidden')) return false;
+        function closeSettingsForNativeInteraction() {
+            var inlineSettingsOpen = !!(refs.settingsPanel && !refs.settingsPanel.classList.contains('hidden'));
+            if (controller && typeof controller.closeSettingsForExternalInteraction === 'function') {
+                controller.closeSettingsForExternalInteraction('controls');
+            }
+            if (!inlineSettingsOpen) return false;
             refs.settingsPanel.classList.add('hidden');
             refs.display.dataset.subtitlePanelState = 'controls';
             if (refs.panelControls) {
@@ -370,8 +411,52 @@
             SubtitleShared.updateRenderState({ subtitlePanelState: 'controls' }, {
                 source: 'subtitle-window-resize-close-settings'
             });
-            resizeWindowToTranscript();
             return true;
+        }
+
+        function getViewportPanelBounds() {
+            return SubtitleShared.getPanelBounds({
+                width: Math.max(DESKTOP_MIN_PANEL_WIDTH, window.innerWidth - DESKTOP_WINDOW_EDGE_INSET * 2),
+                height: Math.max(DESKTOP_MIN_PANEL_HEIGHT, window.innerHeight - DESKTOP_WINDOW_EDGE_INSET * 2)
+            });
+        }
+
+        function getCurrentDisplayPanelBounds() {
+            var rect = refs.display && refs.display.getBoundingClientRect
+                ? refs.display.getBoundingClientRect()
+                : null;
+            return SubtitleShared.getPanelBounds({
+                width: Math.max(DESKTOP_MIN_PANEL_WIDTH, rect && rect.width ? rect.width : DESKTOP_MIN_PANEL_WIDTH),
+                height: Math.max(DESKTOP_MIN_PANEL_HEIGHT, rect && rect.height ? rect.height : DESKTOP_MIN_PANEL_HEIGHT)
+            });
+        }
+
+        function applyNativePanelBounds(bounds) {
+            refs.display.style.setProperty('--subtitle-native-resize-width', bounds.width + 'px');
+            refs.display.style.setProperty('--subtitle-native-resize-height', bounds.height + 'px');
+            refs.display.style.setProperty('--subtitle-panel-width', bounds.width + 'px');
+            refs.display.style.setProperty('--subtitle-panel-height', bounds.height + 'px');
+            refs.display.style.setProperty('--subtitle-content-max-height', Math.max(24, bounds.height - 24) + 'px');
+            return bounds;
+        }
+
+        function applyViewportPanelBounds() {
+            return applyNativePanelBounds(getViewportPanelBounds());
+        }
+
+        function restoreSubtitleOnlyWindowSizeForResize(bounds) {
+            if (!api || typeof api.setSize !== 'function') return;
+            var nextBounds = SubtitleShared.getPanelBounds(bounds || getCurrentDisplayPanelBounds());
+            var payload = {
+                width: nextBounds.width + DESKTOP_WINDOW_EDGE_INSET * 2,
+                height: nextBounds.height + DESKTOP_WINDOW_EDGE_INSET * 2,
+                panelWidth: nextBounds.width,
+                panelHeight: nextBounds.height
+            };
+            lastSizePayload = payload;
+            api.setSize(payload.width, payload.height, {
+                panelBounds: nextBounds
+            });
         }
 
         function canStartDrag(target, e) {
@@ -383,52 +468,39 @@
 
         function clearResizeState() {
             resizeActive = false;
+            activeNativeResizeState = null;
             refs.display.classList.remove('resizing');
             delete refs.display.dataset.subtitleNativeResizing;
+            refs.display.style.removeProperty('--subtitle-native-resize-width');
+            refs.display.style.removeProperty('--subtitle-native-resize-height');
             refs.display.style.transition = '';
             document.documentElement.classList.remove('neko-resizing');
             document.body.style.userSelect = '';
             document.body.style.cursor = '';
+            document.removeEventListener('mousemove', onNativeResizeMove);
             document.removeEventListener('mouseup', endResize);
+            document.removeEventListener('touchmove', onNativeTouchResizeMove, { passive: false });
             document.removeEventListener('touchend', endResize);
             document.removeEventListener('touchcancel', endResize);
         }
 
-        function persistNativeResizeBounds() {
-            if (!api || typeof api.getBounds !== 'function') {
-                clearResizeState();
-                return;
-            }
-            Promise.resolve(api.getBounds()).then(function(windowBounds) {
-                if (!windowBounds) return;
-                var nextBounds = SubtitleShared.getPanelBounds({
-                    width: Math.max(DESKTOP_MIN_PANEL_WIDTH, windowBounds.width - DESKTOP_WINDOW_EDGE_INSET * 2),
-                    height: Math.max(DESKTOP_MIN_PANEL_HEIGHT, windowBounds.height - DESKTOP_WINDOW_EDGE_INSET * 2)
-                });
-                SubtitleShared.applySubtitlePanelBounds(refs.display, nextBounds, { host: 'window' });
-                var nextState = SubtitleShared.updateSettings({ subtitlePanelBounds: nextBounds }, {
-                    source: 'subtitle-window-native-resize'
-                });
-                propagateSubtitleSetting({
-                    type: 'bounds',
-                    value: nextBounds,
-                    patch: { subtitlePanelBounds: nextBounds },
-                    state: nextState
-                });
-            }).catch(function() {}).finally(clearResizeState);
+        function onNativeResizeMove(e) {
+            if (!resizeActive || !activeNativeResizeState) return;
+            if (e.preventDefault) e.preventDefault();
+        }
+
+        function onNativeTouchResizeMove(e) {
+            if (!resizeActive || !activeNativeResizeState || !e.touches || !e.touches.length) return;
+            if (e.preventDefault) e.preventDefault();
         }
 
         function beginResize(e, dir) {
             if (!dir || resizeActive || isPanelLocked()) return;
             if (!api || typeof api.resizeStart !== 'function' || typeof api.resizeStop !== 'function') return;
-            if (closeSettingsFloatForResize()) {
-                if (e.preventDefault) e.preventDefault();
-                if (e.stopImmediatePropagation) e.stopImmediatePropagation();
-                if (e.stopPropagation) e.stopPropagation();
-                window.setTimeout(function() {
-                    beginResize(e, dir);
-                }, 20);
-                return;
+            var startPanelBounds = getCurrentDisplayPanelBounds();
+            var closedSettings = closeSettingsForNativeInteraction();
+            if (closedSettings) {
+                restoreSubtitleOnlyWindowSizeForResize(startPanelBounds);
             }
             resizeActive = true;
             setNativeInteractionIgnored(false);
@@ -442,22 +514,43 @@
             if (e.preventDefault) e.preventDefault();
             if (e.stopImmediatePropagation) e.stopImmediatePropagation();
             if (e.stopPropagation) e.stopPropagation();
-            document.addEventListener('mouseup', endResize);
-            document.addEventListener('touchend', endResize);
-            document.addEventListener('touchcancel', endResize);
+            activeNativeResizeState = { dir: dir };
+            applyNativePanelBounds(startPanelBounds);
             api.resizeStart(dir, {
                 minWidth: DESKTOP_MIN_PANEL_WIDTH + DESKTOP_WINDOW_EDGE_INSET * 2,
                 minHeight: DESKTOP_MIN_PANEL_HEIGHT + DESKTOP_WINDOW_EDGE_INSET * 2
             });
+            document.addEventListener('mousemove', onNativeResizeMove);
+            document.addEventListener('mouseup', endResize);
+            document.addEventListener('touchmove', onNativeTouchResizeMove, { passive: false });
+            document.addEventListener('touchend', endResize);
+            document.addEventListener('touchcancel', endResize);
             updateNativeInteractionPassthrough();
         }
 
-        function endResize() {
+        function endResize(e) {
             if (!resizeActive) return;
+            if (e && e.preventDefault) e.preventDefault();
             if (api && typeof api.resizeStop === 'function') {
                 api.resizeStop();
             }
-            persistNativeResizeBounds();
+            requestAnimationFrame(function() {
+                requestAnimationFrame(function() {
+                    if (!resizeActive) return;
+                    var nextBounds = applyViewportPanelBounds();
+                    SubtitleShared.applySubtitlePanelBounds(refs.display, nextBounds, { host: 'window' });
+                    var nextState = SubtitleShared.updateSettings({ subtitlePanelBounds: nextBounds }, {
+                        source: 'subtitle-window-native-resize'
+                    });
+                    propagateSubtitleSetting({
+                        type: 'bounds',
+                        value: nextBounds,
+                        patch: { subtitlePanelBounds: nextBounds },
+                        state: nextState
+                    });
+                    clearResizeState();
+                });
+            });
         }
 
         function clearPendingDrag() {
@@ -471,6 +564,9 @@
 
         function beginDrag(e) {
             if (!pendingDrag && !canStartDrag(e.target, e)) return;
+            if (controller && typeof controller.closeSettingsForExternalInteraction === 'function') {
+                controller.closeSettingsForExternalInteraction('controls');
+            }
             dragActive = true;
             suppressNextClick = true;
             setNativeInteractionIgnored(false);
@@ -612,11 +708,19 @@
         refs.display.addEventListener('mousedown', onPointerDown, true);
         refs.display.addEventListener('touchstart', onTouchStart, { passive: false, capture: true });
         document.addEventListener('click', onSuppressClick, true);
+        function onNativeWindowResize() {
+            if (resizeActive && activeNativeResizeState) {
+                applyViewportPanelBounds();
+            }
+        }
+
+        window.addEventListener('resize', onNativeWindowResize);
 
         return function detachDesktopWindowInteractions() {
             refs.display.removeEventListener('mousedown', onPointerDown, true);
             refs.display.removeEventListener('touchstart', onTouchStart, { passive: false, capture: true });
             document.removeEventListener('click', onSuppressClick, true);
+            window.removeEventListener('resize', onNativeWindowResize);
             clearPendingDrag();
             if (resizeActive) {
                 if (api && typeof api.resizeStop === 'function') api.resizeStop();
@@ -667,6 +771,7 @@
                 persist: false,
                 source: 'subtitle-window-sync'
             });
+            syncExternalSettingsWindow();
         }
 
         if (subtitleWindowController &&
@@ -687,10 +792,17 @@
             host: 'window',
             api: window.nekoSubtitle,
             windowInteractions: 'external',
+            openExternalSettings: openExternalSettingsWindow,
+            closeExternalSettings: closeExternalSettingsWindow,
             propagateSetting: propagateSubtitleSetting,
-            onSettingsApplied: function(state, refs) {
+            onSettingsApplied: function(state, refs, detail) {
+                var changedKeys = detail && Array.isArray(detail.changedKeys) ? detail.changedKeys : [];
+                var panelStateOnly = changedKeys.length === 1 && changedKeys[0] === 'subtitlePanelState';
                 SubtitleShared.applySubtitlePanelBounds(refs.display, state.subtitlePanelBounds, { host: 'window' });
-                resizeWindowToTranscript();
+                if (!panelStateOnly) {
+                    resizeWindowToTranscript();
+                }
+                syncExternalSettingsWindow();
                 updateNativeInteractionPassthrough();
             }
         });
@@ -699,7 +811,7 @@
             return;
         }
 
-        desktopWindowInteractionsCleanup = attachDesktopWindowInteractions(subtitleWindowController.refs);
+        desktopWindowInteractionsCleanup = attachDesktopWindowInteractions(subtitleWindowController);
 
         window.addEventListener('neko-subtitle-state-sync', function(e) {
             applyStateSync(e.detail || {});
@@ -722,6 +834,10 @@
         window.addEventListener('focus', updateNativeInteractionPassthrough);
         window.addEventListener('blur', updateNativeInteractionPassthrough);
         window.addEventListener('resize', function() {
+            if (activeNativeResizeState) {
+                updateNativeInteractionPassthrough();
+                return;
+            }
             resizeWindowToTranscript();
             updateNativeInteractionPassthrough();
         });
