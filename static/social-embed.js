@@ -16,7 +16,13 @@
     document.removeEventListener('keydown', onKey, true);
     document.removeEventListener('pointermove', onDragMove, true);
     document.removeEventListener('pointerup', onDragEnd, true);
+    document.removeEventListener('pointercancel', onDragEnd, true);
+    document.removeEventListener('mouseup', onDragEnd, true);
+    window.removeEventListener('pointerup', onDragEnd, true);
+    window.removeEventListener('mouseup', onDragEnd, true);
+    window.removeEventListener('blur', onDragEnd, true);
     window.removeEventListener('resize', onResize, true);
+    restoreDragHitTesting();
     dragState = null;
   }
 
@@ -35,6 +41,11 @@
 
   function onDragMove(e) {
     if (!dragState) return;
+    if (dragState.pointerId != null && e.pointerId != null && e.pointerId !== dragState.pointerId) return;
+    if (e.buttons === 0 && e.pointerType !== 'touch') {
+      onDragEnd(e);
+      return;
+    }
     e.preventDefault();
     var maxLeft = Math.max(dragState.margin, window.innerWidth - dragState.width - dragState.margin);
     var maxTop = Math.max(dragState.margin, window.innerHeight - dragState.height - dragState.margin);
@@ -42,19 +53,39 @@
     dragState.win.style.top = clamp(dragState.startTop + e.clientY - dragState.startY, dragState.margin, maxTop) + 'px';
   }
 
-  function onDragEnd() {
+  function restoreDragHitTesting() {
+    if (!dragState) return;
+    if (dragState.frame) dragState.frame.style.pointerEvents = dragState.prevFramePointerEvents || '';
+    if (dragState.bar && dragState.pointerId != null && typeof dragState.bar.releasePointerCapture === 'function') {
+      try { dragState.bar.releasePointerCapture(dragState.pointerId); } catch (_) { /* pointer already released */ }
+    }
+  }
+
+  function onDragEnd(e) {
+    if (dragState && e && dragState.pointerId != null && e.pointerId != null && e.pointerId !== dragState.pointerId) return;
     if (dragState && dragState.bar) dragState.bar.classList.remove('is-dragging');
+    restoreDragHitTesting();
     document.removeEventListener('pointermove', onDragMove, true);
     document.removeEventListener('pointerup', onDragEnd, true);
+    document.removeEventListener('pointercancel', onDragEnd, true);
+    document.removeEventListener('mouseup', onDragEnd, true);
+    window.removeEventListener('pointerup', onDragEnd, true);
+    window.removeEventListener('mouseup', onDragEnd, true);
+    window.removeEventListener('blur', onDragEnd, true);
     dragState = null;
   }
 
   function startDrag(e, win, bar) {
     if (e.button !== 0 || e.target.closest('.neko-social-embed-close')) return;
+    if (dragState) onDragEnd();
     var rect = win.getBoundingClientRect();
+    var frame = win.querySelector('.neko-social-embed-iframe');
     dragState = {
       win: win,
       bar: bar,
+      frame: frame,
+      prevFramePointerEvents: frame ? frame.style.pointerEvents : '',
+      pointerId: e.pointerId,
       startX: e.clientX,
       startY: e.clientY,
       startLeft: rect.left,
@@ -65,9 +96,18 @@
     };
     win.style.left = rect.left + 'px';
     win.style.top = rect.top + 'px';
+    if (frame) frame.style.pointerEvents = 'none';
+    if (typeof bar.setPointerCapture === 'function' && e.pointerId != null) {
+      try { bar.setPointerCapture(e.pointerId); } catch (_) { /* ignore unsupported capture */ }
+    }
     bar.classList.add('is-dragging');
     document.addEventListener('pointermove', onDragMove, true);
     document.addEventListener('pointerup', onDragEnd, true);
+    document.addEventListener('pointercancel', onDragEnd, true);
+    document.addEventListener('mouseup', onDragEnd, true);
+    window.addEventListener('pointerup', onDragEnd, true);
+    window.addEventListener('mouseup', onDragEnd, true);
+    window.addEventListener('blur', onDragEnd, true);
     e.preventDefault();
   }
 
@@ -79,6 +119,12 @@
 
   function onKey(e) {
     if (e.key === 'Escape') { e.stopPropagation(); close(); }
+  }
+
+  function withCacheBust(url) {
+    var busted = new URL(url.toString());
+    busted.searchParams.set('_neko_embed_v', String(Date.now()));
+    return busted.toString();
   }
 
   // 返回 true=已打开 / false=拒绝（URL 缺失/非法/非 http(s)）。调用方据此提示失败、不再当成功路径。
@@ -129,7 +175,7 @@
 
     var frame = document.createElement('iframe');
     frame.className = 'neko-social-embed-iframe';
-    frame.src = parsed.toString();
+    frame.src = withCacheBust(parsed);
     frame.setAttribute('allow', 'clipboard-read; clipboard-write');
     // 沙箱限权：社区是云端独立站，只给它需要的最小权限（脚本/表单/自身 origin 的 storage-cookie/弹窗），
     // 挡掉顶层跳转等越权；referrer 不外泄。allow-same-origin 必需（社区在 iframe 内按自己 :8080 origin 登录）。
