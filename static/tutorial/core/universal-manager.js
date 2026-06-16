@@ -261,7 +261,115 @@ window.getTutorialManualIntentKeyForPage = getTutorialManualIntentKeyForPage;
 window.logTutorialPromptFlow = logTutorialPromptFlow;
 
 const TutorialLifecycleStores = window.TutorialLifecycleStores || {};
-const TutorialLifecycleStateStore = TutorialLifecycleStores.TutorialLifecycleStateStore;
+function createFallbackTutorialLifecycleStateStoreClass() {
+    function FallbackTutorialLifecycleStateStore() {
+        this.resetEndReason();
+    }
+
+    FallbackTutorialLifecycleStateStore.prototype.normalizeRawReason = function (reason) {
+        const normalized = typeof reason === 'string' ? reason.trim().toLowerCase() : '';
+        return normalized || 'destroy';
+    };
+
+    FallbackTutorialLifecycleStateStore.prototype.normalizeReason = function (reason) {
+        const normalized = this.normalizeRawReason(reason);
+        if (normalized === 'complete') {
+            return 'complete';
+        }
+        if (normalized === 'skip' || normalized === 'escape' || normalized === 'angry_exit') {
+            return 'skip';
+        }
+        return 'destroy';
+    };
+
+    FallbackTutorialLifecycleStateStore.prototype.setEndReason = function (reason) {
+        if (this.endRawReason) {
+            return this.endReason || 'destroy';
+        }
+        const rawReason = this.normalizeRawReason(reason);
+        this.endRawReason = rawReason;
+        this.endReason = this.normalizeReason(rawReason);
+        return this.endReason;
+    };
+
+    FallbackTutorialLifecycleStateStore.prototype.resolveEndMeta = function (options) {
+        const normalizedOptions = options || {};
+        const finalSteps = Array.isArray(normalizedOptions.finalSteps)
+            ? normalizedOptions.finalSteps
+            : [];
+        const currentStep = Number.isFinite(normalizedOptions.currentStep)
+            ? normalizedOptions.currentStep
+            : -1;
+
+        if (this.endReason || this.endRawReason) {
+            return {
+                reason: this.endReason || 'destroy',
+                rawReason: this.endRawReason || this.endReason || 'destroy'
+            };
+        }
+        if (finalSteps.length > 0 && currentStep >= finalSteps.length - 1) {
+            return {
+                reason: 'complete',
+                rawReason: 'complete'
+            };
+        }
+        return {
+            reason: 'destroy',
+            rawReason: 'destroy'
+        };
+    };
+
+    FallbackTutorialLifecycleStateStore.prototype.createYuiGuideEndDetail = function (options) {
+        const normalizedOptions = options || {};
+        const rawReason = this.normalizeRawReason(normalizedOptions.reason);
+        return {
+            page: normalizedOptions.page || '',
+            runtimePage: normalizedOptions.runtimePage || '',
+            reason: this.normalizeReason(rawReason),
+            rawReason: rawReason
+        };
+    };
+
+    FallbackTutorialLifecycleStateStore.prototype.createTerminationRequest = function (options) {
+        const normalizedOptions = options || {};
+        const sourcePage = typeof normalizedOptions.sourcePage === 'string'
+            ? normalizedOptions.sourcePage.trim()
+            : '';
+        if (!sourcePage || sourcePage === 'home') {
+            return null;
+        }
+        const rawReason = this.normalizeRawReason(
+            normalizedOptions.rawReason || normalizedOptions.reason || 'destroy'
+        );
+        return {
+            action: 'yui_guide_request_termination',
+            sourcePage: sourcePage,
+            targetPage: 'home',
+            reason: rawReason,
+            tutorialReason: rawReason,
+            timestamp: Number.isFinite(normalizedOptions.timestamp)
+                ? normalizedOptions.timestamp
+                : Date.now()
+        };
+    };
+
+    FallbackTutorialLifecycleStateStore.prototype.resetEndReason = function () {
+        this.endReason = null;
+        this.endRawReason = null;
+    };
+
+    FallbackTutorialLifecycleStateStore.prototype.getEndRawReason = function () {
+        return this.endRawReason;
+    };
+
+    FallbackTutorialLifecycleStateStore.prototype.getEndReason = function () {
+        return this.endReason;
+    };
+
+    return FallbackTutorialLifecycleStateStore;
+}
+const TutorialLifecycleStateStore = TutorialLifecycleStores.TutorialLifecycleStateStore
+    || createFallbackTutorialLifecycleStateStoreClass();
 const TutorialRoundPrelude = window.TutorialRoundPrelude || {};
 const TutorialRoundPreludeController = TutorialRoundPrelude.TutorialRoundPreludeController;
 

@@ -693,6 +693,7 @@ test('lifecycle state store module is loaded before prompt and manager scripts',
     assert.ok(fs.existsSync(lifecyclePath), 'tutorial/core/lifecycle-state-store.js should exist');
     const source = fs.readFileSync(lifecyclePath, 'utf8');
     const stores = require('./tutorial/core/lifecycle-state-store.js');
+    const managerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
 
     for (const exportName of [
         'TutorialLifecycleStateStore',
@@ -702,6 +703,11 @@ test('lifecycle state store module is loaded before prompt and manager scripts',
         assert.match(source, new RegExp('class ' + exportName));
     }
     assert.match(source, /root\.TutorialLifecycleStores = api/);
+    assert.match(
+        managerSource,
+        /TutorialLifecycleStores\.TutorialLifecycleStateStore\s*\|\|\s*createFallbackTutorialLifecycleStateStoreClass\(\)/,
+        'universal manager should keep a local lifecycle store fallback'
+    );
 
     const orderedScripts = [
         ['templates/index.html', '/static/tutorial/core/app-prompt.js'],
