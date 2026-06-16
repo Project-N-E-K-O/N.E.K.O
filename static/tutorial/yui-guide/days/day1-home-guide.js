@@ -27,6 +27,34 @@
         day1_screen_entry_invite: '快让我也看看你眼前的.mp3'
     });
 
+    const zhAudioFileNames = Object.freeze({
+        intro_basic: '这里有一个神奇的小按.mp3',
+        takeover_capture_cursor: '超级魔法开关出现！只.mp3',
+        interrupt_resist_light_1: '喂！不要拽我啦，现在.mp3'
+    });
+
+    function audioFilesForKey(key) {
+        const files = Object.assign({}, audioFilesForAllLocales(audioFileNames[key]));
+        if (zhAudioFileNames[key]) {
+            files.zh = zhAudioFileNames[key];
+        }
+        return Object.freeze(files);
+    }
+
+    const audioFilesByKey = Object.freeze({
+        intro_basic: audioFilesForKey('intro_basic'),
+        intro_greeting_reply: audioFilesForKey('intro_greeting_reply'),
+        takeover_capture_cursor: audioFilesForKey('takeover_capture_cursor'),
+        interrupt_resist_light_1: audioFilesForKey('interrupt_resist_light_1'),
+        interrupt_resist_light_3: audioFilesForKey('interrupt_resist_light_3'),
+        interrupt_angry_exit: audioFilesForKey('interrupt_angry_exit'),
+        takeover_return_control: audioFilesForKey('takeover_return_control'),
+        day1_capsule_drag_hint: audioFilesForKey('day1_capsule_drag_hint'),
+        day1_history_handle: audioFilesForKey('day1_history_handle'),
+        day1_screen_entry: audioFilesForKey('day1_screen_entry'),
+        day1_screen_entry_invite: audioFilesForKey('day1_screen_entry_invite')
+    });
+
     registerGuide(deepFreeze({
         day: 1,
         key: 'home',
