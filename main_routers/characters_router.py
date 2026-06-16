@@ -4218,13 +4218,16 @@ async def get_voices():
     # vLLM 这类先命中、无静态目录的 provider 则不出目录（preset 为 None）。复用
     # native_voices 通道——前端 source-first 选声器按 entry 的 provider/provider_label
     # 自动分组成「<Provider> · 预制」，无需新增来源通道。
+    # 用 is not None 而非 truthy：preset provider 被选中即应压过 native（dispatch
+    # 会路由到它而非 native），哪怕其目录恰为空字典也不该误回退到 core-native。
     selected_preset_catalog = tts_provider_registry.selected_preset_catalog_for_ui(
         core_config or {}, _config_manager
     )
     active_native_provider = (
-        None if selected_preset_catalog else get_active_realtime_native_provider_for_ui(_config_manager)
+        None if selected_preset_catalog is not None
+        else get_active_realtime_native_provider_for_ui(_config_manager)
     )
-    if selected_preset_catalog:
+    if selected_preset_catalog is not None:
         result["native_voices"] = selected_preset_catalog
     elif active_native_provider:
         native_catalog = get_native_voice_catalog_for_ui(active_native_provider) or {}

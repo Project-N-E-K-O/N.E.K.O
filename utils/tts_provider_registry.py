@@ -184,8 +184,8 @@ class PresetCatalog:
         """Voice list structure for the character UI, keyed by canonical voice name.
 
         ``provider_key`` is the owning :class:`TTSProvider` key, stamped into each
-        entry's ``provider`` field so the source-first picker groups it as
-        "<provider> · 预制".
+        entry's ``provider`` field so the source-first picker groups it under
+        that provider's preset source.
         """
         def format_prefix(group: str, display_name: str) -> str:
             if self.catalog_value_is_display_name:
