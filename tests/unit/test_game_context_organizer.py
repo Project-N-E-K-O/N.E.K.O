@@ -148,10 +148,17 @@ async def test_context_organizer_failure_keeps_window_until_new_logs(monkeypatch
     assert state["game_context_recent_ids"] == [f"glog_{index:04d}" for index in range(1, 16)]
     assert state["_game_context_organizer_task"] is task
 
+    _append_user_line(state, 16)
+    _append_user_line(state, 17)
+
+    assert state["game_context_recent_ids"] == [f"glog_{index:04d}" for index in range(1, 18)]
+    await state["_game_context_organizer_task"]
+    assert state["game_context_recent_ids"] == [f"glog_{index:04d}" for index in range(1, 18)]
+
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_context_organizer_degrades_at_40_pending_items(monkeypatch):
+async def test_context_organizer_failure_fallback_keeps_last_8_at_64(monkeypatch):
     state = _new_state(monkeypatch)
     calls = 0
 
@@ -162,17 +169,57 @@ async def test_context_organizer_degrades_at_40_pending_items(monkeypatch):
 
     monkeypatch.setattr(game_router, "_run_game_context_organizer_ai", fake_ai)
 
-    for index in range(1, 41):
+    for index in range(1, 65):
         _append_user_line(state, index)
     await state["_game_context_organizer_task"]
 
     assert calls == 1
-    assert state["game_context_organizer"]["degraded"] is True
-    assert state["game_context_organizer"]["error"] == "degraded_after_40_pending_items"
-    assert state["game_context_organizer"]["last_organized_id"] == ""
+    assert state["game_context_organizer"]["degraded"] is False
+    assert state["game_context_organizer"]["error"] == "fallback_organizer_failure_after_64_pending_items"
+    assert state["game_context_organizer"]["last_organized_id"] == "glog_0056"
+    assert state["game_context_recent_ids"] == [f"glog_{index:04d}" for index in range(57, 65)]
 
-    _append_user_line(state, 41)
-    assert calls == 1
+    for index in range(65, 72):
+        _append_user_line(state, index)
+
+    assert "_game_context_organizer_task" in state
+    assert state["game_context_recent_ids"] == [f"glog_{index:04d}" for index in range(57, 72)]
+    await state["_game_context_organizer_task"]
+    assert calls == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_context_organizer_overflow_fallback_ignores_stale_success(monkeypatch):
+    state = _new_state(monkeypatch)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_ai(_state, _snapshot):
+        started.set()
+        await release.wait()
+        return _fake_success_result()
+
+    monkeypatch.setattr(game_router, "_run_game_context_organizer_ai", fake_ai)
+
+    for index in range(1, 16):
+        _append_user_line(state, index)
+    task = state["_game_context_organizer_task"]
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+
+    for index in range(16, 66):
+        _append_user_line(state, index)
+
+    assert state["game_context_organizer"]["last_organized_id"] == "glog_0057"
+    assert state["game_context_recent_ids"] == [f"glog_{index:04d}" for index in range(58, 66)]
+
+    release.set()
+    await task
+
+    assert state["game_context_summary"] == ""
+    assert state["game_context_organizer"]["last_organized_id"] == "glog_0057"
+    assert state["game_context_organizer"]["error"] == "stale_organizer_result_ignored"
+    assert state["game_context_recent_ids"] == [f"glog_{index:04d}" for index in range(58, 66)]
 
 
 @pytest.mark.unit

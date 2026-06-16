@@ -222,7 +222,8 @@ _BASKETBALL_GAME_MEMORY_POLICY_FIELDS = (
 _GAME_CONTEXT_ORGANIZE_TRIGGER_COUNT = 15
 _GAME_CONTEXT_RECENT_KEEP_COUNT = 6
 _GAME_CONTEXT_RECENT_WINDOW_MAX_COUNT = _GAME_CONTEXT_ORGANIZE_TRIGGER_COUNT
-_GAME_CONTEXT_DEGRADE_PENDING_COUNT = 40
+_GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT = 64
+_GAME_CONTEXT_FAILURE_FALLBACK_KEEP_COUNT = 8
 _GAME_CONTEXT_FINALIZE_WAIT_SECONDS = 5.0
 _GAME_CONTEXT_SIGNAL_GROUPS = GAME_CONTEXT_SIGNAL_GROUP_KEYS
 _LEGACY_SIGNAL_GROUP_ALIASES = {
@@ -1283,7 +1284,7 @@ def _dialog_id_index(dialog: list[dict], dialog_id: str) -> int:
     return -1
 
 
-def _game_context_recent_dialogues(state: dict, keep_count: int = _GAME_CONTEXT_RECENT_WINDOW_MAX_COUNT) -> list[dict]:
+def _game_context_recent_dialogues(state: dict, keep_count: int = _GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT) -> list[dict]:
     dialog = [item for item in state.get("game_dialog_log") or [] if isinstance(item, dict)]
     if not dialog:
         return []
@@ -1355,7 +1356,7 @@ def _format_game_context_for_prompt(context: Any, language: str | None = None) -
     degraded = context.get("degraded") is True
     recent_lines = _game_context_dialog_lines(
         context.get("recent_dialogues") or [],
-        max_items=_GAME_CONTEXT_RECENT_WINDOW_MAX_COUNT,
+        max_items=_GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT,
         language=language,
     )
     if degraded:
@@ -1394,7 +1395,7 @@ def _build_game_context_prompt_payload(state: dict | None, *, include_recent: bo
         "summary": str(state.get("game_context_summary") or ""),
         "signals": _normalize_game_context_signals(state.get("game_context_signals")),
         "recent_dialogues": (
-            _game_context_recent_dialogues(state, _GAME_CONTEXT_RECENT_WINDOW_MAX_COUNT)
+            _game_context_recent_dialogues(state, _GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT)
             if include_recent else []
         ),
         "degraded": organizer.get("degraded") is True,
@@ -1561,7 +1562,7 @@ def _build_game_recent_history_messages(state: dict | None, language: str | None
     labels = get_game_recent_history_message_labels(language)
     messages = []
     last_role = "system"
-    for item in _game_context_recent_dialogues(state, _GAME_CONTEXT_RECENT_WINDOW_MAX_COUNT):
+    for item in _game_context_recent_dialogues(state, _GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT):
         if not isinstance(item, dict):
             continue
         user_text = _game_dialog_history_user_text(item, labels)
@@ -2304,10 +2305,65 @@ def _game_context_pending_dialogues(state: dict) -> list[dict]:
     return dialog[last_idx + 1:]
 
 
+def _game_context_recent_id_limit(state: dict, pending_count: int) -> int:
+    organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
+    if (
+        pending_count > _GAME_CONTEXT_RECENT_WINDOW_MAX_COUNT
+        or organizer.get("running")
+        or int(organizer.get("failure_count") or 0) > 0
+    ):
+        return _GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT
+    return _GAME_CONTEXT_RECENT_WINDOW_MAX_COUNT
+
+
+def _apply_game_context_failure_fallback(
+    state: dict,
+    pending: list[dict],
+    *,
+    reason: str,
+) -> bool:
+    if len(pending) < _GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT:
+        return False
+    keep_count = _GAME_CONTEXT_FAILURE_FALLBACK_KEEP_COUNT
+    compacted = pending[:-keep_count]
+    kept = pending[-keep_count:]
+    if not compacted:
+        return False
+    last_compacted_id = str(compacted[-1].get("id") or "")
+    if not last_compacted_id:
+        return False
+
+    organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
+    organizer["last_organized_id"] = last_compacted_id
+    organizer["degraded"] = False
+    organizer["error"] = f"fallback_{reason}_after_{len(pending)}_pending_items"
+    state["game_context_organizer"] = organizer
+    state["game_context_recent_ids"] = [
+        str(item.get("id") or "")
+        for item in kept
+        if isinstance(item, dict) and item.get("id")
+    ]
+    logger.warning(
+        "🎮 局内上下文整理失败兜底推进: game=%s session=%s reason=%s compacted=%s kept=%s last=%s",
+        state.get("game_type"),
+        state.get("session_id"),
+        reason,
+        len(compacted),
+        len(kept),
+        last_compacted_id,
+    )
+    return True
+
+
 def _set_game_context_recent_ids(state: dict, dialogues: list[dict] | None = None) -> None:
     source = dialogues if dialogues is not None else _game_context_pending_dialogues(state)
+    if dialogues is None and len(source) > _GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT:
+        if _apply_game_context_failure_fallback(state, source, reason="overflow"):
+            return
+        source = _game_context_pending_dialogues(state)
     ids = [str(item.get("id") or "") for item in source if isinstance(item, dict) and item.get("id")]
-    state["game_context_recent_ids"] = ids[-_GAME_CONTEXT_RECENT_WINDOW_MAX_COUNT:]
+    limit = _game_context_recent_id_limit(state, len(ids))
+    state["game_context_recent_ids"] = ids[-limit:]
 
 
 def _should_schedule_game_context_organizer(state: dict) -> bool:
@@ -2464,6 +2520,19 @@ def _apply_game_context_organizer_success(state: dict, snapshot: list[dict], res
     organize_dialogues = snapshot[:-_GAME_CONTEXT_RECENT_KEEP_COUNT]
     if not organize_dialogues:
         return
+    target_last_id = str(organize_dialogues[-1].get("id") or "")
+    dialog = [item for item in state.get("game_dialog_log") or [] if isinstance(item, dict)]
+    organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
+    current_last_id = str(organizer.get("last_organized_id") or "")
+    current_idx = _dialog_id_index(dialog, current_last_id)
+    target_idx = _dialog_id_index(dialog, target_last_id)
+    if current_idx > target_idx >= 0:
+        organizer["running"] = False
+        organizer["error"] = "stale_organizer_result_ignored"
+        state["game_context_organizer"] = organizer
+        _set_game_context_recent_ids(state)
+        return
+
     summary = _normalize_short_text(
         result.get("rollingSummary") or result.get("rolling_summary") or result.get("summary"),
         max_chars=900,
@@ -2474,12 +2543,11 @@ def _apply_game_context_organizer_success(state: dict, snapshot: list[dict], res
         state.get("game_context_signals"),
         result.get("signals") if isinstance(result.get("signals"), dict) else {},
     )
-    organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
     organizer.update({
         "running": False,
         "degraded": False,
         "failure_count": 0,
-        "last_organized_id": str(organize_dialogues[-1].get("id") or ""),
+        "last_organized_id": target_last_id,
         "source": result.get("source") if isinstance(result.get("source"), dict) else result.get("source"),
         "error": "",
     })
@@ -2492,17 +2560,11 @@ def _apply_game_context_organizer_failure(state: dict, snapshot: list[dict], err
     organizer["running"] = False
     organizer["failure_count"] = int(organizer.get("failure_count") or 0) + 1
     organizer["error"] = type(error).__name__
-    pending_count = len(_game_context_pending_dialogues(state))
-    if pending_count >= _GAME_CONTEXT_DEGRADE_PENDING_COUNT:
-        organizer["degraded"] = True
-        organizer["error"] = f"degraded_after_{pending_count}_pending_items"
-        logger.warning(
-            "🎮 局内上下文整理达到硬上限，降级为纯游戏模式: game=%s session=%s pending=%s",
-            state.get("game_type"),
-            state.get("session_id"),
-            pending_count,
-        )
     state["game_context_organizer"] = organizer
+    pending = _game_context_pending_dialogues(state)
+    if _apply_game_context_failure_fallback(state, pending, reason="organizer_failure"):
+        return
+    _set_game_context_recent_ids(state)
 
 
 async def _run_game_context_organizer_task(state: dict, snapshot: list[dict]) -> None:
