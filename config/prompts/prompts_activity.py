@@ -261,7 +261,7 @@ TOPIC_CANDIDATE_PROMPTS: dict[str, str] = {
 {{"topics": [
   {{
     "interest": "用户最近在意、纠结、计划或反复提到的一件具体事，整理成一句，不超过30字",
-    "keywords": ["3-6个关系点关键词，用于去重、筛选联网结果，并直接作为联网查询词；围绕最稳定的关系点，不要用最近窗口里的偶然词"],
+    "keywords": ["3-6个关键词，用于去重、筛选联网结果，并直接作为联网查询词；围绕用户反复在意的稳定点，不要用最近窗口里的偶然词"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -294,7 +294,7 @@ TOPIC_CANDIDATE_PROMPTS: dict[str, str] = {
 {{"topics": [
   {{
     "interest": "用戶最近在意、糾結、計劃或反覆提到的一件具體事，整理成一句，不超過30字",
-    "keywords": ["3-6個關係點關鍵詞，用於去重、篩選聯網結果，並直接作為聯網查詢詞；圍繞最穩定的關係點，不要用最近窗口裡的偶然詞"],
+    "keywords": ["3-6個關鍵詞，用於去重、篩選聯網結果，並直接作為聯網查詢詞；圍繞用戶反覆在意的穩定點，不要用最近窗口裡的偶然詞"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -326,7 +326,7 @@ Output strict JSON, no markdown fences:
 {{"topics": [
   {{
     "interest": "a single concrete thing the user recently cares about, worries over, plans, or keeps bringing up, max 30 words",
-    "keywords": ["3-6 short relationship keywords used for dedup, filtering online results, and as the online search query; target the stable relationship point, not an accidental recent word"],
+    "keywords": ["3-6 short keywords used for dedup, filtering online results, and as the online search query; anchor on the user's stable recurring interest, not an accidental recent word"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -359,7 +359,7 @@ If nothing is worth keeping, output {{"topics": []}}.""",
 {{"topics": [
   {{
     "interest": "ユーザーが最近気にしている、悩んでいる、計画している、または繰り返し口にしている具体的な一件を一文にまとめたもの、30字以内",
-    "keywords": ["重複排除・検索結果の絞り込み・そのまま検索語として使う、関係する短いキーワードを3〜6個。安定した関係点に絞り、最近の偶発的な語は避ける"],
+    "keywords": ["重複排除・検索結果の絞り込み・そのまま検索語として使う短いキーワードを3〜6個。ユーザーが繰り返し気にしている安定した点に絞り、最近の偶発的な語は避ける"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -392,7 +392,7 @@ If nothing is worth keeping, output {{"topics": []}}.""",
 {{"topics": [
   {{
     "interest": "사용자가 최근 신경 쓰거나 고민하거나 계획하거나 반복해서 언급하는 구체적인 한 가지를 한 문장으로 정리한 것, 30자 이내",
-    "keywords": ["중복 제거, 검색 결과 선별, 그리고 검색어로도 사용할 핵심 키워드 3-6개. 안정적인 관계점에 맞추고 최근의 우연한 단어는 피하세요"],
+    "keywords": ["중복 제거, 검색 결과 선별, 그리고 검색어로도 사용할 핵심 키워드 3-6개. 사용자가 반복해서 신경 쓰는 안정적인 지점에 맞추고 최근의 우연한 단어는 피하세요"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -425,7 +425,7 @@ Devuelve JSON estricto, sin bloques markdown:
 {{"topics": [
   {{
     "interest": "una sola cosa concreta que el usuario tiene en mente, le preocupa, planea o menciona repetidamente, resumida en una frase, máximo 30 palabras",
-    "keywords": ["3-6 palabras clave de la relación, usadas para deduplicar, filtrar resultados en línea y como la consulta de búsqueda; centradas en el punto estable, no en una palabra reciente accidental"],
+    "keywords": ["3-6 palabras clave, usadas para deduplicar, filtrar resultados en línea y como la consulta de búsqueda; centradas en el interés estable y recurrente del usuario, no en una palabra reciente accidental"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -458,7 +458,7 @@ Retorne JSON estrito, sem blocos markdown:
 {{"topics": [
   {{
     "interest": "uma unica coisa concreta que o usuario tem em mente, preocupa, planeja ou menciona repetidamente, resumida em uma frase, maximo 30 palavras",
-    "keywords": ["3-6 palavras-chave da relacao, usadas para deduplicar, filtrar resultados online e como a consulta de busca; centradas no ponto estavel, nao em uma palavra recente acidental"],
+    "keywords": ["3-6 palavras-chave, usadas para deduplicar, filtrar resultados online e como a consulta de busca; centradas no interesse estavel e recorrente do usuario, nao em uma palavra recente acidental"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -491,7 +491,7 @@ Se nada valer a pena, retorne {{"topics": []}}.""",
 {{"topics": [
   {{
     "interest": "одна конкретная вещь, о которой пользователь недавно думает, переживает, планирует или постоянно упоминает, сформулированная в одном предложении, до 30 слов",
-    "keywords": ["3-6 ключевых слов темы для дедупликации, фильтрации результатов из сети и в качестве поискового запроса; вокруг устойчивой точки интереса, а не случайного недавнего слова"],
+    "keywords": ["3-6 ключевых слов для дедупликации, фильтрации результатов из сети и в качестве поискового запроса; вокруг устойчивого интереса пользователя, а не случайного недавнего слова"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -513,56 +513,56 @@ Se nada valer a pena, retorne {{"topics": []}}.""",
 # candidate model's.
 
 DEEP_SEARCH_QUERY_PROMPTS: dict[str, str] = {
-    "zh": """你在为一个陪伴角色做「先查再聊」的联网准备。下面是一个值得低频深聊的话题，请只产出一条聚焦、可直接喂给搜索引擎的查询词，围绕最稳定的关系点，便于查到具体、较新的现实细节。不要解释，不要给多条。
+    "zh": """你在为一个陪伴角色做「先查再聊」的联网准备。下面是一个值得低频深聊的话题，请只产出一条聚焦、可直接喂给搜索引擎的查询词，围绕用户反复在意的稳定点，便于查到具体、较新的现实细节。不要解释，不要给多条。
 
 话题：{interest}
 关键词：{keywords}
 已有的粗略线索（可参考可忽略）：{floor_angle}
 
 只输出严格 JSON（不带 markdown）：{{"query": "一条查询词"}}""",
-    "zh-TW": """你在為一個陪伴角色做「先查再聊」的聯網準備。下面是一個值得低頻深聊的話題，請只產出一條聚焦、可直接餵給搜尋引擎的查詢詞，圍繞最穩定的關係點，便於查到具體、較新的現實細節。查詢詞使用繁體中文。不要解釋，不要給多條。
+    "zh-TW": """你在為一個陪伴角色做「先查再聊」的聯網準備。下面是一個值得低頻深聊的話題，請只產出一條聚焦、可直接餵給搜尋引擎的查詢詞，圍繞用戶反覆在意的穩定點，便於查到具體、較新的現實細節。查詢詞使用繁體中文。不要解釋，不要給多條。
 
 話題：{interest}
 關鍵詞：{keywords}
 已有的粗略線索（可參考可忽略）：{floor_angle}
 
 只輸出嚴格 JSON（不帶 markdown）：{{"query": "一條查詢詞"}}""",
-    "en": """You are preparing a "search first, then chat" online lookup for a companion character. Below is a topic worth opening at low frequency. Output only one focused query string that can go straight to a search engine, centered on the most stable relationship point, so it surfaces concrete and reasonably fresh real-world detail. No explanation, no multiple queries.
+    "en": """You are preparing a "search first, then chat" online lookup for a companion character. Below is a topic worth opening at low frequency. Output only one focused query string that can go straight to a search engine, centered on the user's most stable recurring interest, so it surfaces concrete and reasonably fresh real-world detail. No explanation, no multiple queries.
 
 Topic: {interest}
 Keywords: {keywords}
 Rough lead already found (optional, may ignore): {floor_angle}
 
 Output strict JSON, no markdown: {{"query": "one query string"}}""",
-    "ja": """あなたはコンパニオンキャラクターのために「まず調べてから話す」オンライン下調べを準備しています。以下は低頻度で切り出す価値のある話題です。検索エンジンにそのまま渡せる、安定した関係点に絞った具体的で比較的新しい現実情報が出る検索語を、ユーザーの言語で1つだけ出力してください。説明も複数候補も不要です。
+    "ja": """あなたはコンパニオンキャラクターのために「まず調べてから話す」オンライン下調べを準備しています。以下は低頻度で切り出す価値のある話題です。検索エンジンにそのまま渡せる、ユーザーが繰り返し気にしている安定した点に絞った具体的で比較的新しい現実情報が出る検索語を、ユーザーの言語で1つだけ出力してください。説明も複数候補も不要です。
 
 話題：{interest}
 キーワード：{keywords}
 すでに見つかった粗い手がかり（任意・無視可）：{floor_angle}
 
 厳密な JSON だけを出力（markdownなし）：{{"query": "検索語ひとつ"}}""",
-    "ko": """당신은 동반자 캐릭터를 위해 "먼저 검색하고 대화하기" 온라인 사전 조사를 준비하고 있습니다. 아래는 낮은 빈도로 꺼낼 만한 화제입니다. 검색 엔진에 바로 넣을 수 있고 안정적인 관계점에 맞춘, 구체적이고 비교적 최신인 현실 정보가 나오는 검색어를 사용자 언어로 하나만 출력하세요. 설명이나 여러 개는 필요 없습니다.
+    "ko": """당신은 동반자 캐릭터를 위해 "먼저 검색하고 대화하기" 온라인 사전 조사를 준비하고 있습니다. 아래는 낮은 빈도로 꺼낼 만한 화제입니다. 검색 엔진에 바로 넣을 수 있고 사용자가 반복해서 신경 쓰는 안정적인 지점에 맞춘, 구체적이고 비교적 최신인 현실 정보가 나오는 검색어를 사용자 언어로 하나만 출력하세요. 설명이나 여러 개는 필요 없습니다.
 
 화제: {interest}
 키워드: {keywords}
 이미 찾은 대략적 단서(참고용, 무시 가능): {floor_angle}
 
 엄격한 JSON만 출력(markdown 금지): {{"query": "검색어 하나"}}""",
-    "es": """Estás preparando una búsqueda en línea de "buscar primero, luego charlar" para un personaje de compañía. Abajo hay un tema que vale la pena abrir con baja frecuencia. Devuelve solo una consulta enfocada que pueda ir directo a un buscador, centrada en el punto de relación más estable, para que aparezca un detalle real concreto y razonablemente reciente. Sin explicación, sin varias consultas.
+    "es": """Estás preparando una búsqueda en línea de "buscar primero, luego charlar" para un personaje de compañía. Abajo hay un tema que vale la pena abrir con baja frecuencia. Devuelve solo una consulta enfocada que pueda ir directo a un buscador, centrada en el interés estable y recurrente del usuario, para que aparezca un detalle real concreto y razonablemente reciente. Sin explicación, sin varias consultas.
 
 Tema: {interest}
 Palabras clave: {keywords}
 Pista aproximada ya encontrada (opcional, se puede ignorar): {floor_angle}
 
 Devuelve JSON estricto, sin markdown: {{"query": "una consulta"}}""",
-    "pt": """Voce esta preparando uma busca online de "buscar primeiro, depois conversar" para um personagem de companhia. Abaixo ha um tema que vale a pena puxar com baixa frequencia. Retorne apenas uma consulta focada que possa ir direto a um buscador, centrada no ponto de relacao mais estavel, para trazer um detalhe real concreto e razoavelmente recente. Sem explicacao, sem varias consultas.
+    "pt": """Voce esta preparando uma busca online de "buscar primeiro, depois conversar" para um personagem de companhia. Abaixo ha um tema que vale a pena puxar com baixa frequencia. Retorne apenas uma consulta focada que possa ir direto a um buscador, centrada no interesse estavel e recorrente do usuario, para trazer um detalhe real concreto e razoavelmente recente. Sem explicacao, sem varias consultas.
 
 Tema: {interest}
 Palavras-chave: {keywords}
 Pista aproximada ja encontrada (opcional, pode ignorar): {floor_angle}
 
 Retorne JSON estrito, sem markdown: {{"query": "uma consulta"}}""",
-    "ru": """Ты готовишь онлайн-поиск по принципу «сначала найти, потом поговорить» для companion-персонажа. Ниже тема, которую стоит поднять с низкой частотой. Выведи только один сфокусированный запрос, который можно сразу отправить в поисковик, вокруг самой устойчивой точки интереса, чтобы он давал конкретную и достаточно свежую реальную деталь. Без пояснений, без нескольких запросов.
+    "ru": """Ты готовишь онлайн-поиск по принципу «сначала найти, потом поговорить» для companion-персонажа. Ниже тема, которую стоит поднять с низкой частотой. Выведи только один сфокусированный запрос, который можно сразу отправить в поисковик, вокруг самого устойчивого интереса пользователя, чтобы он давал конкретную и достаточно свежую реальную деталь. Без пояснений, без нескольких запросов.
 
 Тема: {interest}
 Ключевые слова: {keywords}

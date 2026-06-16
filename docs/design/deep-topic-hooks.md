@@ -50,7 +50,7 @@
 | 字段 | 含义 |
 |---|---|
 | `interest` | 一句话描述用户最近在意/纠结/计划/反复提的一件具体事（≤90 字符存储，prompt 要求 ≤30 字） |
-| `keywords` | 3-6 个关系点关键词；用于去重、筛选联网结果，并直接作为联网查询词 |
+| `keywords` | 3-6 个关键词；用于去重、筛选联网结果，并直接作为联网查询词；锚定用户反复在意的稳定点 |
 | `relevance` | 0-100，话题与用户的相关度 × 证据稳定度 |
 | `risk` | 0-100，主动提起的打扰/冒犯/硬凑风险 |
 
@@ -73,7 +73,7 @@ prompt 只给「明显反复出现 → 高分，顺口一提 → 低分；如实
 ### keywords 多用途；search_query 已删（A）
 
 `keywords` 同时承担：① 去重主判据（关键词重合）；② 联网结果相关性兜底过滤（`_is_related_link` 关键词子串匹配）；③ **联网查询词**（`_query_for_material` 把 keywords 拼成 query）。
-**原本**小模型另外输出一个 `search_query`。**问题**：prompt 对 `search_query`（围绕最稳定关系点的查询词）和 `keywords`（关系点关键词）的要求本质同一件事，重复，且让小模型构造检索词是它不擅长的 author how-to。
+**原本**小模型另外输出一个 `search_query`。**问题**：prompt 对 `search_query`（围绕用户反复在意的稳定点的查询词）和 `keywords`（同样锚定那个稳定点的关键词）的要求本质同一件事，重复，且让小模型构造检索词是它不擅长的 author how-to。
 **结论**：删 `search_query`，后台预取的查询词改为 keywords 拼接，interest/hook 作兜底。详见 commit 「derive topic search query from keywords」。
 
 ### 去重：关键词重合为主，ngram veto 为兜底
