@@ -307,6 +307,10 @@ def test_icebreaker_context_append_requires_successful_json_payload():
         1,
     )[0]
 
+    assert "getLocalMutationHeaders().then(function (headers)" in append_context_block
+    assert "'X-CSRF-Token'" in runtime
+    assert "error_code === 'csrf_validation_failed'" in append_context_block
+    assert "refreshLocalMutationHeaders()" in append_context_block
     assert "return response.json();" in append_context_block
     assert "return !!(data && data.ok);" in append_context_block
     assert append_context_block.index("return response.json();") < append_context_block.index(
@@ -551,6 +555,8 @@ def test_icebreaker_free_text_fallback_uses_session_snapshot_after_async_append(
     assert "day: day" in continuation_block
     assert "nodeId: nodeId" in continuation_block
     assert "sessionId: sessionId" in continuation_block
+    assert "var currentNode = session.dayConfig && session.dayConfig.nodes" in continuation_block
+    assert "setChoicePrompt(currentNode, localeData)" in continuation_block
     assert "activeSession.localeData" not in continuation_block
     assert "activeSession.day" not in continuation_block
     assert "activeSession.nodeId" not in continuation_block

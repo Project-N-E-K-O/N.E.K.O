@@ -64,6 +64,50 @@
         });
     }
 
+    function getPageConfigUrl() {
+        var lanlanName = resolveLanlanName();
+        var suffix = lanlanName ? ('?lanlan_name=' + encodeURIComponent(lanlanName)) : '';
+        return '/api/config/page_config' + suffix;
+    }
+
+    function getLocalMutationHeaders() {
+        var headers = { 'Content-Type': 'application/json' };
+        var security = window.nekoLocalMutationSecurity;
+        if (security && typeof security.getMutationHeaders === 'function') {
+            return Promise.resolve(security.getMutationHeaders()).then(function (mutationHeaders) {
+                return Object.assign(headers, mutationHeaders || {});
+            }).catch(function () {
+                return headers;
+            });
+        }
+        return fetch(getPageConfigUrl(), {
+            credentials: 'same-origin',
+            cache: 'no-store'
+        }).then(function (response) {
+            if (!response.ok) return headers;
+            return response.json();
+        }).then(function (config) {
+            if (config && typeof config.autostart_csrf_token === 'string' && config.autostart_csrf_token) {
+                headers['X-CSRF-Token'] = config.autostart_csrf_token;
+            }
+            return headers;
+        }).catch(function () {
+            return headers;
+        });
+    }
+
+    function refreshLocalMutationHeaders() {
+        var security = window.nekoLocalMutationSecurity;
+        if (security && typeof security.refreshToken === 'function') {
+            return Promise.resolve(security.refreshToken()).then(function () {
+                return getLocalMutationHeaders();
+            }).catch(function () {
+                return getLocalMutationHeaders();
+            });
+        }
+        return getLocalMutationHeaders();
+    }
+
     function loadScripts() {
         if (!scriptPromise) {
             scriptPromise = fetchJson(SCRIPT_URL);
@@ -271,17 +315,37 @@
                 request_id: String(extra.requestId || '')
             }
         };
-        contextAppendPromise = contextAppendPromise.catch(function () {}).then(function () {
+        function postContextWithHeaders(headers, allowRetry) {
             return fetch('/api/game/' + encodeURIComponent(GAME_TYPE) + '/context', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: headers,
                 credentials: 'same-origin',
                 body: JSON.stringify(body)
+            }).then(function (response) {
+                if (allowRetry && response.status === 403) {
+                    return response.clone().json().catch(function () {
+                        return null;
+                    }).then(function (errorBody) {
+                        if (errorBody && errorBody.error_code === 'csrf_validation_failed') {
+                            return refreshLocalMutationHeaders().then(function (nextHeaders) {
+                                return postContextWithHeaders(nextHeaders, false);
+                            });
+                        }
+                        return response;
+                    });
+                }
+                return response;
             }).then(function (response) {
                 if (!response.ok) throw new Error('HTTP ' + response.status);
                 return response.json();
             }).then(function (data) {
                 return !!(data && data.ok);
+            });
+        }
+
+        contextAppendPromise = contextAppendPromise.catch(function () {}).then(function () {
+            return getLocalMutationHeaders().then(function (headers) {
+                return postContextWithHeaders(headers, true);
             }).catch(function (error) {
                 console.warn('[NewUserIcebreaker] append LLM context failed:', error);
                 return false;
@@ -604,6 +668,13 @@
                     });
                     if (activeSession === session) {
                         activeSession = null;
+                    }
+                } else if (activeSession === session) {
+                    var currentNode = session.dayConfig && session.dayConfig.nodes
+                        ? session.dayConfig.nodes[nodeId]
+                        : null;
+                    if (currentNode) {
+                        setChoicePrompt(currentNode, localeData);
                     }
                 }
                 return null;
