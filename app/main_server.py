@@ -679,8 +679,16 @@ async def _handle_agent_event(event: dict):
                         await ws.send_json(payload)
                     except Exception as e:
                         logger.debug("[EventBus] agent_status_update send failed: %s", e)
-            else:
+            elif not lanlan:
+                # Only a target-less update (lanlan_name omitted) fans out to all
+                # sessions; a targeted update whose session manager is missing must
+                # NOT broadcast, or one character's status leaks into other sessions.
                 await _broadcast_to_all_connected(payload)
+            else:
+                logger.info(
+                    "[EventBus] agent_status_update dropped: no session_manager for lanlan=%s",
+                    lanlan,
+                )
             return
 
         # 免费版 Agent 每日配额耗尽：全局提示（与角色无关），广播成 status toast
