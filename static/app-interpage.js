@@ -57,6 +57,7 @@
             || action === 'yui_guide_set_compact_history_open'
             || action === 'yui_guide_set_avatar_tool_menu_open'
             || action === 'yui_guide_set_compact_tool_fan_open'
+            || action === 'yui_guide_rotate_compact_tool_wheel'
             || action === 'yui_guide_set_compact_tool_wheel_index';
     }
 
