@@ -376,6 +376,8 @@ def _validate_zip_member_name(name: str) -> None:
     if "\\" in value:
         raise DocumentParseError("invalid_zip_member")
     raw_parts = value.split("/")
+    if raw_parts and raw_parts[-1] == "":
+        raw_parts = raw_parts[:-1]
     if any(part in {"", ".", ".."} for part in raw_parts):
         raise DocumentParseError("invalid_zip_member")
     path = PurePosixPath(value)
@@ -565,7 +567,13 @@ def _extract_word_paragraph_text(paragraph: ET.Element) -> str:
 
 def _word_run_is_hidden(run: ET.Element) -> bool:
     properties = run.find(_WORD_NS + "rPr")
-    return properties is not None and properties.find(_WORD_NS + "vanish") is not None
+    if properties is None:
+        return False
+    vanish = properties.find(_WORD_NS + "vanish")
+    if vanish is None:
+        return False
+    value = vanish.attrib.get(_WORD_NS + "val", vanish.attrib.get("val"))
+    return value is None or value.strip().casefold() not in {"0", "false", "off", "no"}
 
 
 def _add_unique_text_part(

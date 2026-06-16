@@ -5,6 +5,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import main_routers.avatar_drop_router as avatar_drop_router
 from main_routers.avatar_drop_router import router
 from tests.unit.test_document_parser import _docx_bytes
 
@@ -39,6 +40,34 @@ def test_parse_document_endpoint_returns_text_item_for_supported_document():
     assert item["truncated"] is False
     assert "Endpoint hello" in item["content"]
     assert item["chars"] == len(item["content"])
+
+
+@pytest.mark.unit
+def test_parse_document_endpoint_runs_parser_off_event_loop(monkeypatch):
+    calls = []
+
+    async def fake_to_thread(func, *args):
+        calls.append((func, args))
+        return func(*args)
+
+    monkeypatch.setattr(avatar_drop_router.asyncio, "to_thread", fake_to_thread)
+
+    response = _client().post(
+        "/api/avatar-drop/parse-document",
+        files={
+            "file": (
+                "threaded.docx",
+                _docx_bytes("Threaded parser hello"),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    assert "Threaded parser hello" in response.json()["item"]["content"]
+    assert calls
+    assert calls[0][0] is avatar_drop_router.parse_document
+    assert calls[0][1][0] == "threaded.docx"
 
 
 @pytest.mark.unit

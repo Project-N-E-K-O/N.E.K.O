@@ -50,6 +50,22 @@ def _docx_bytes(text: str, extra_members: dict[str, str | bytes] | None = None) 
     return _zip_bytes(members)
 
 
+def _docx_bytes_with_directory_entry(text: str) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", CONTENT_TYPES_XML)
+        archive.writestr("word/", b"")
+        archive.writestr(
+            "word/document.xml",
+            (
+                f'<w:document xmlns:w="{WORD_NS}"><w:body><w:p><w:r>'
+                f"<w:t>{text}</w:t>"
+                "</w:r></w:p></w:body></w:document>"
+            ),
+        )
+    return buffer.getvalue()
+
+
 def _word_part_xml(root_name: str, text: str) -> str:
     return (
         f'<w:{root_name} xmlns:w="{WORD_NS}"><w:p><w:r>'
@@ -98,6 +114,20 @@ def _docx_with_hidden_run() -> bytes:
             f'<w:document xmlns:w="{WORD_NS}"><w:body><w:p>'
             "<w:r><w:t>Visible text</w:t></w:r>"
             "<w:r><w:rPr><w:vanish/></w:rPr><w:t>Hidden draft</w:t></w:r>"
+            "</w:p></w:body></w:document>"
+        ),
+    })
+
+
+def _docx_with_vanish_disabled_run() -> bytes:
+    return _zip_bytes({
+        "[Content_Types].xml": CONTENT_TYPES_XML,
+        "word/document.xml": (
+            f'<w:document xmlns:w="{WORD_NS}"><w:body><w:p>'
+            '<w:r><w:rPr><w:vanish w:val="0"/></w:rPr><w:t>Explicit visible zero</w:t></w:r>'
+            '<w:r><w:rPr><w:vanish w:val="false"/></w:rPr><w:t>Explicit visible false</w:t></w:r>'
+            '<w:r><w:rPr><w:vanish w:val="off"/></w:rPr><w:t>Explicit visible off</w:t></w:r>'
+            "<w:r><w:rPr><w:vanish/></w:rPr><w:t>Hidden default</w:t></w:r>"
             "</w:p></w:body></w:document>"
         ),
     })
@@ -572,6 +602,16 @@ def test_docx_skips_hidden_runs():
 
 
 @pytest.mark.unit
+def test_docx_preserves_runs_when_vanish_is_disabled():
+    parsed = parse_document("visible-run.docx", "", _docx_with_vanish_disabled_run())
+
+    assert "Explicit visible zero" in parsed["content"]
+    assert "Explicit visible false" in parsed["content"]
+    assert "Explicit visible off" in parsed["content"]
+    assert "Hidden default" not in parsed["content"]
+
+
+@pytest.mark.unit
 def test_docx_notes_follow_document_references():
     parsed = parse_document("referenced-notes.docx", "", _docx_with_referenced_notes())
 
@@ -787,6 +827,13 @@ def test_rejects_raw_backslash_zip_member_names():
         _validate_zip_member_name("..\\evil.xml")
 
     assert exc_info.value.code == "invalid_zip_member"
+
+
+@pytest.mark.unit
+def test_allows_ooxml_zip_directory_entries():
+    parsed = parse_document("directory-entry.docx", "", _docx_bytes_with_directory_entry("Directory ok"))
+
+    assert "Directory ok" in parsed["content"]
 
 
 @pytest.mark.unit

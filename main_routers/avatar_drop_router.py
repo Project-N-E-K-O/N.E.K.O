@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
@@ -54,7 +55,7 @@ async def parse_avatar_drop_document(file: UploadFile = File(...)):
     filename = _safe_filename(file.filename or "")
     try:
         data = await _read_upload_limited(file)
-        parsed = parse_document(filename, file.content_type or "", data)
+        parsed = await asyncio.to_thread(parse_document, filename, file.content_type or "", data)
     except DocumentParseError as exc:
         raise HTTPException(status_code=400, detail={"code": exc.code}) from exc
     except Exception as exc:
