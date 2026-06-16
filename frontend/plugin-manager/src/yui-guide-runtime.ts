@@ -1,10 +1,8 @@
-import defaultGhostCursorUrl from '../../../static/assets/tutorial/ghost-cursor/default-ghost-cursor.png'
-import clickGhostCursorUrl from '../../../static/assets/tutorial/ghost-cursor/click-ghost-cursor.png'
 import leftCatEarUrl from '../../../static/assets/tutorial/highlight/left-cat-ear.png'
 import rightCatEarUrl from '../../../static/assets/tutorial/highlight/right-cat-ear.png'
 import catPawUrl from '../../../static/assets/tutorial/highlight/cat-paw.png'
-import sendIconUrl from '../../../static/icons/send_icon.png'
-import pawUiUrl from '../../../static/icons/paw_ui.png'
+import defaultGhostCursorUrl from '../../../static/assets/tutorial/ghost-cursor/default-ghost-cursor.png'
+import clickGhostCursorUrl from '../../../static/assets/tutorial/ghost-cursor/click-ghost-cursor.png'
 import { getLocale } from './i18n'
 import router from './router'
 
@@ -15,6 +13,8 @@ const TERMINATE_EVENT = 'neko:yui-guide:plugin-dashboard:terminate'
 const NARRATION_FINISHED_EVENT = 'neko:yui-guide:plugin-dashboard:narration-finished'
 const INTERRUPT_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-request'
 const INTERRUPT_ACK_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-ack'
+const DESKTOP_INTERRUPT_ACK_EVENT = 'neko:yui-guide:desktop-interrupt-ack'
+const DESKTOP_NARRATION_FINISHED_EVENT = 'neko:yui-guide:desktop-narration-finished'
 const SKIP_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:skip-request'
 const HANDOFF_STORAGE_KEY = 'neko_yui_guide_handoff_token'
 const HANDOFF_TOKEN_VERSION = 1
@@ -36,27 +36,12 @@ const DEFAULT_USER_CURSOR_REVEAL_DISTANCE = 14
 const DEFAULT_USER_CURSOR_REVEAL_INTERVAL_MS = 160
 const DEFAULT_USER_CURSOR_REVEAL_MOVES = 2
 const DEFAULT_CURSOR_CLICK_VISIBLE_MS = 420
-const CURSOR_CLICK_STAR_COUNT = 7
-const CURSOR_CLICK_STAR_LIFETIME_MS = 760
-const CURSOR_TRAIL_PARTICLE_LIFETIME_MS = 420
-const CURSOR_TRAIL_MIN_DISTANCE = 3
-const CURSOR_TRAIL_MIN_INTERVAL_MS = 8
-const CURSOR_TRAIL_SEGMENT_SPACING = 9
-const CURSOR_TRAIL_MAX_SEGMENTS_PER_FRAME = 6
-const CURSOR_TRAIL_MAX_POINTS = 34
-const CURSOR_TRAIL_MAX_PARTICLES = 24
-const CURSOR_TRAIL_ICON_CHANCE = 0.045
-const CURSOR_TRAIL_BLUE_PARTICLE_CHANCE = 0.42
-const CURSOR_TRAIL_MOVE_BURST_COUNT = 3
-const CURSOR_TRAIL_ACTION_BURST_COUNT = 5
-const CURSOR_TRAIL_BODY_HEAD_WIDTH = 34
-const CURSOR_TRAIL_BODY_TAIL_WIDTH = 8
-const CURSOR_TRAIL_CORE_HEAD_WIDTH = 14
-const CURSOR_TRAIL_CORE_TAIL_WIDTH = 3.8
-const CURSOR_TRAIL_HEAD_RADIUS = 15
-const CURSOR_TRAIL_ICON_URLS = [sendIconUrl, pawUiUrl] as const
+const NARRATION_RESUME_BACKTRACK_MS = 320
+const NARRATION_RESUME_MIN_REMAINING_MS = 1400
 const PLUGIN_DASHBOARD_MOVE_TO_MAIN_MS = 780
 const PLUGIN_DASHBOARD_SCROLL_PHASE_MS = 2000
+const PLUGIN_DASHBOARD_IDLE_ELLIPSE_MS = 1800
+const PLUGIN_DASHBOARD_NARRATION_FINISH_FALLBACK_EXTRA_MS = 30000
 // Negative values mean inward/inset padding for the plugin-main spotlight.
 const PLUGIN_MAIN_SPOTLIGHT_INSET = -25
 const PLUGIN_DASHBOARD_DEFAULT_TOTAL_MS = 9000
@@ -129,6 +114,24 @@ type StartPluginDashboardTutorialOptions = {
   labels?: {
     skip?: string
     keyboardHint?: string
+  }
+}
+
+type StartPluginDashboardTutorialOptionsFactory = () => StartPluginDashboardTutorialOptions
+
+type DesktopTutorialSkipPayload = {
+  sessionId?: string
+  reason?: string
+  source?: string
+  detail?: Record<string, unknown>
+}
+
+declare global {
+  interface Window {
+    nekoYuiGuideDesktopBridge?: {
+      requestTutorialSkip?: (payload?: DesktopTutorialSkipPayload) => Promise<boolean> | boolean
+      requestTutorialInterrupt?: (payload?: DesktopTutorialSkipPayload) => Promise<boolean> | boolean
+    }
   }
 }
 
@@ -810,8 +813,6 @@ function injectStyle() {
     #${ROOT_ID} .yui-guide-plugin-backdrop *,
     #${ROOT_ID} .yui-guide-plugin-interaction-shield,
     #${ROOT_ID} .yui-guide-plugin-spotlight,
-    #${ROOT_ID} .yui-guide-plugin-cursor-shell,
-    #${ROOT_ID} .yui-guide-plugin-cursor,
     html.yui-guide-plugin-dashboard-running [data-yui-cursor-hidden="true"],
     body.yui-guide-plugin-dashboard-running [data-yui-cursor-hidden="true"],
     html.yui-taking-over [data-yui-cursor-hidden="true"],
@@ -838,29 +839,21 @@ function injectStyle() {
     html.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-backdrop *,
     html.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-interaction-shield,
     html.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-spotlight,
-    html.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-cursor-shell,
-    html.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-cursor,
     body.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID},
     body.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-backdrop,
     body.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-backdrop *,
     body.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-interaction-shield,
     body.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-spotlight,
-    body.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-cursor-shell,
-    body.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-cursor,
     html.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID},
     html.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-backdrop,
     html.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-backdrop *,
     html.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-interaction-shield,
     html.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-spotlight,
-    html.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-cursor-shell,
-    html.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-cursor,
     body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID},
     body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-backdrop,
     body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-backdrop *,
     body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-interaction-shield,
-    body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-spotlight,
-    body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-cursor-shell,
-    body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-cursor {
+    body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-spotlight {
       cursor: auto !important;
     }
 
@@ -1067,6 +1060,40 @@ function injectStyle() {
       animation: yui-guide-plugin-pulse 1.5s ease-in-out infinite;
     }
 
+    #${ROOT_ID} .yui-guide-plugin-pointer {
+      position: fixed;
+      left: 0;
+      top: 0;
+      width: 46px;
+      height: 46px;
+      opacity: 0;
+      pointer-events: none;
+      z-index: 2147483647;
+      transform: translate3d(-9999px, -9999px, 0);
+      transform-origin: center center;
+      transition:
+        transform var(--yui-guide-plugin-pointer-duration, 0ms) cubic-bezier(0.22, 1, 0.36, 1),
+        opacity 120ms ease,
+        scale 120ms ease;
+      will-change: transform;
+      background-image: url('${defaultGhostCursorUrl}');
+      background-position: center;
+      background-repeat: no-repeat;
+      background-size: contain;
+      filter:
+        drop-shadow(0 10px 18px rgba(10, 31, 68, 0.22))
+        drop-shadow(0 2px 3px rgba(10, 31, 68, 0.18));
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-pointer.is-visible {
+      opacity: 1;
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-pointer.is-pressed {
+      background-image: url('${clickGhostCursorUrl}');
+      scale: 1;
+    }
+
     #${ROOT_ID}.is-angry .yui-guide-plugin-backdrop-fill {
       fill: rgba(58, 10, 10, 0.82);
     }
@@ -1080,164 +1107,6 @@ function injectStyle() {
     #${ROOT_ID}.is-angry .yui-guide-plugin-backdrop-cutout {
       visibility: hidden !important;
       display: none !important;
-    }
-
-    #${ROOT_ID} .yui-guide-plugin-cursor-shell {
-      position: fixed;
-      left: 0;
-      top: 0;
-      z-index: 3;
-      width: 0;
-      height: 0;
-      transform: translate(0, 0);
-      transition-property: transform;
-      transition-timing-function: cubic-bezier(0.2, 0.9, 0.2, 1);
-      transition-duration: 0ms;
-      opacity: 0;
-    }
-
-    #${ROOT_ID} .yui-guide-plugin-cursor-shell.is-visible {
-      opacity: 1;
-    }
-
-    #${ROOT_ID} .yui-guide-plugin-cursor {
-      position: absolute;
-      width: 46px;
-      height: 46px;
-      margin-left: -20px;
-      margin-top: -18px;
-      background-image: url('${defaultGhostCursorUrl}');
-      background-repeat: no-repeat;
-      background-position: center;
-      background-size: contain;
-      filter: drop-shadow(0 10px 20px rgba(138, 78, 50, 0.24));
-    }
-
-    #${ROOT_ID} .yui-guide-plugin-cursor-trail-layer {
-      position: fixed;
-      inset: 0;
-      z-index: 2;
-      width: 100vw;
-      height: 100vh;
-      pointer-events: none;
-      opacity: 0;
-      overflow: visible;
-      transition: opacity 90ms ease-out;
-      will-change: opacity, transform;
-    }
-
-    #${ROOT_ID} .yui-guide-plugin-cursor-trail-layer.is-visible {
-      opacity: 0.78;
-    }
-
-    #${ROOT_ID} .yui-guide-plugin-cursor-trail-ribbon {
-      opacity: 0.52;
-      filter:
-        blur(0.35px)
-        drop-shadow(0 0 8px rgba(41, 191, 255, 0.16))
-        drop-shadow(0 3px 14px rgba(42, 86, 224, 0.1));
-    }
-
-    #${ROOT_ID} .yui-guide-plugin-cursor-trail-core {
-      opacity: 0.3;
-      filter: blur(0.18px);
-    }
-
-    #${ROOT_ID} .yui-guide-plugin-cursor-trail-head {
-      opacity: 0.62;
-      filter:
-        blur(0.2px)
-        drop-shadow(0 0 10px rgba(58, 223, 255, 0.22));
-    }
-
-    #${ROOT_ID} .yui-guide-plugin-cursor-trail-head-core {
-      opacity: 0.32;
-      filter: blur(0.4px);
-    }
-
-    #${ROOT_ID} .yui-guide-plugin-cursor-trail {
-      position: fixed;
-      left: 0;
-      top: 0;
-      z-index: 2;
-      width: var(--trail-width, 10px);
-      height: var(--trail-height, 10px);
-      pointer-events: none;
-      opacity: 0;
-      transform:
-        translate(-50%, -50%)
-        rotate(var(--trail-angle, 0deg))
-        scale(0.92);
-      animation: yui-guide-plugin-cursor-trail-fade 420ms ease-out both;
-    }
-
-    #${ROOT_ID} .yui-guide-plugin-cursor-trail.is-glow {
-      display: none;
-    }
-
-    #${ROOT_ID} .yui-guide-plugin-cursor-trail.is-icon {
-      background-image: var(--trail-icon);
-      background-repeat: no-repeat;
-      background-position: center;
-      background-size: contain;
-      filter:
-        brightness(var(--trail-brightness, 0.88))
-        saturate(1.08)
-        drop-shadow(0 0 4px rgba(87, 211, 255, 0.18));
-      opacity: 0;
-    }
-
-    #${ROOT_ID} .yui-guide-plugin-cursor-trail.is-blue-particle {
-      border-radius: 999px;
-      background:
-        radial-gradient(circle at 36% 32%, rgba(255, 255, 255, 0.98) 0 18%, transparent 20%),
-        radial-gradient(circle, rgba(119, 233, 255, 0.96) 0 36%, rgba(44, 174, 255, 0.62) 58%, transparent 76%);
-      box-shadow:
-        0 0 8px rgba(72, 207, 255, 0.62),
-        0 0 16px rgba(49, 113, 255, 0.3);
-      filter: saturate(1.1);
-      mix-blend-mode: normal;
-    }
-
-    #${ROOT_ID} .yui-guide-plugin-click-star {
-      position: absolute;
-      left: 0;
-      top: 0;
-      z-index: 3;
-      width: var(--star-size, 8px);
-      height: var(--star-size, 8px);
-      pointer-events: none;
-      opacity: 0;
-      background:
-        radial-gradient(circle at 34% 30%, rgba(255, 255, 255, 0.96) 0 16%, transparent 17%),
-        hsl(var(--star-hue, 46) 96% 62%);
-      clip-path: polygon(50% 0, 61% 34%, 96% 34%, 68% 55%, 80% 92%, 50% 70%, 20% 92%, 32% 55%, 4% 34%, 39% 34%);
-      filter:
-        drop-shadow(0 0 7px rgba(255, 244, 164, 0.92))
-        drop-shadow(0 2px 7px rgba(180, 92, 32, 0.34));
-      transform: translate(-50%, -50%) rotate(var(--star-rotate, 0deg)) scale(0.24);
-      animation: yui-guide-plugin-click-star-burst 760ms cubic-bezier(0.16, 1, 0.3, 1) var(--star-delay, 0ms) both;
-    }
-
-    #${ROOT_ID}.is-angry .yui-guide-plugin-cursor {
-      background-color: transparent;
-      filter:
-        drop-shadow(0 14px 26px rgba(116, 33, 25, 0.34))
-        saturate(1.08);
-    }
-
-    #${ROOT_ID}.is-angry .yui-guide-plugin-cursor.is-clicking {
-      background-image: url('${defaultGhostCursorUrl}');
-      animation: none;
-    }
-
-    #${ROOT_ID} .yui-guide-plugin-cursor::after {
-      content: none;
-    }
-
-    #${ROOT_ID} .yui-guide-plugin-cursor.is-clicking {
-      background-image: url('${clickGhostCursorUrl}');
-      animation: yui-guide-plugin-click 420ms ease;
     }
 
     @keyframes yui-guide-plugin-pulse {
@@ -1260,72 +1129,12 @@ function injectStyle() {
       }
     }
 
-    @keyframes yui-guide-plugin-click {
-      0% { transform: scale(1); }
-      35%, 68% { transform: scale(0.82); }
-      100% { transform: scale(1); }
-    }
-
-    @keyframes yui-guide-plugin-cursor-trail-fade {
-      0% {
-        opacity: var(--trail-opacity, 0.1);
-        transform:
-          translate(-50%, -50%)
-          rotate(var(--trail-angle, 0deg))
-          scale(0.74);
-      }
-      36% {
-        opacity: var(--trail-opacity, 0.1);
-      }
-      72% {
-        opacity: calc(var(--trail-opacity, 0.1) * 0.42);
-      }
-      100% {
-        opacity: 0;
-        transform:
-          translate(calc(-50% + var(--trail-drift-x, 0px)), calc(-50% + var(--trail-drift-y, 0px)))
-          rotate(var(--trail-angle, 0deg))
-          scale(0.48);
-      }
-    }
-
-    @keyframes yui-guide-plugin-click-star-burst {
-      0% {
-        opacity: 0;
-        transform: translate(-50%, -50%) rotate(var(--star-rotate, 0deg)) scale(0.18);
-      }
-      18% {
-        opacity: 1;
-      }
-      62% {
-        opacity: 1;
-        transform:
-          translate(calc(-50% + var(--star-mid-x, 0px)), calc(-50% + var(--star-mid-y, 0px)))
-          rotate(calc(var(--star-rotate, 0deg) + 88deg))
-          scale(1.14);
-      }
-      100% {
-        opacity: 0;
-        transform:
-          translate(calc(-50% + var(--star-x, 0px)), calc(-50% + var(--star-y, 0px)))
-          rotate(calc(var(--star-rotate, 0deg) + 170deg))
-          scale(0.18);
-      }
-    }
-
     @media (prefers-reduced-motion: reduce) {
       #${ROOT_ID} .yui-guide-plugin-spotlight,
       #${ROOT_ID} .yui-guide-plugin-spotlight-sweep::before,
-      #${ROOT_ID} .yui-guide-plugin-cursor-trail-layer,
-      #${ROOT_ID} .yui-guide-plugin-cursor-trail,
-      #${ROOT_ID} .yui-guide-plugin-click-star {
+      #${ROOT_ID} .yui-guide-plugin-pointer {
         animation: none !important;
-      }
-
-      #${ROOT_ID} .yui-guide-plugin-cursor-trail-layer,
-      #${ROOT_ID} .yui-guide-plugin-cursor-trail,
-      #${ROOT_ID} .yui-guide-plugin-click-star {
-        display: none !important;
+        transition: none !important;
       }
     }
   `
@@ -1340,8 +1149,7 @@ class PluginDashboardGuideRuntime {
   backdropCutout: SVGRectElement | null = null
   interactionShield: HTMLDivElement | null = null
   spotlight: HTMLDivElement | null = null
-  cursorShell: HTMLDivElement | null = null
-  cursorInner: HTMLDivElement | null = null
+  pointer: HTMLDivElement | null = null
   cursorPosition: { x: number; y: number } | null = null
   lastCursorTarget: { x: number; y: number } | null = null
   spotlightElement: Element | null = null
@@ -1363,19 +1171,6 @@ class PluginDashboardGuideRuntime {
   userCursorRevealMoveCount = 0
   userCursorRevealed = false
   lastUserCursorRevealMoveAt = 0
-  cursorClickTimer: number | null = null
-  activeClickStars: Set<{ element: HTMLSpanElement; timer: number }> = new Set()
-  activeTrailParticles: Set<{ element: HTMLSpanElement; timer: number }> = new Set()
-  cursorTrailLastPoint: { x: number; y: number; t?: number } | null = null
-  cursorTrailLastAt = 0
-  cursorTrailSvg: SVGSVGElement | null = null
-  cursorTrailBody: SVGPathElement | null = null
-  cursorTrailCore: SVGPathElement | null = null
-  cursorTrailHead: SVGCircleElement | null = null
-  cursorTrailHeadCore: SVGCircleElement | null = null
-  cursorTrailGradient: SVGLinearGradientElement | null = null
-  cursorTrailPoints: Array<{ x: number; y: number; t: number }> = []
-  cursorTrailDecayFrame = 0
   narrationResumeTimer: number | null = null
   scenePauseResolvers: Array<() => void> = []
   homeNarrationResolvers: Array<() => void> = []
@@ -1386,14 +1181,20 @@ class PluginDashboardGuideRuntime {
   pendingInterruptAck: PendingInterruptAck | null = null
   preactivationTimeoutId: number | null = null
   homeSkipButtonScreenRect: ScreenRect | null = null
+  desktopSkipButton: HTMLButtonElement | null = null
+  desktopSkipButtonCleanup: (() => void) | null = null
   lastForwardedSkipAt = 0
   lastForwardedSkipScreenX = NaN
   lastForwardedSkipScreenY = NaN
   spotlightRefreshRaf: number | null = null
+  cursorClickResetTimer: number | null = null
   boundPointerMoveHandler = (event: PointerEvent | MouseEvent) => {
     this.handleInterrupt(event)
   }
   boundPointerDownHandler = (event: PointerEvent | MouseEvent) => {
+    if (this.isPluginDashboardSkipControlTarget(event)) {
+      return
+    }
     if (this.forwardHomeSkipClick(event)) {
       return
     }
@@ -1401,6 +1202,10 @@ class PluginDashboardGuideRuntime {
   }
   boundInteractionGuard = (event: Event) => {
     if (!this.running || !event) {
+      return
+    }
+
+    if (this.isPluginDashboardSkipControlTarget(event)) {
       return
     }
 
@@ -1502,77 +1307,6 @@ class PluginDashboardGuideRuntime {
     return true
   }
 
-  createCursorTrailLayer() {
-    const trailSvg = createSvgElement('svg', 'yui-guide-plugin-cursor-trail-layer') as SVGSVGElement
-    trailSvg.setAttribute('aria-hidden', 'true')
-    trailSvg.setAttribute('preserveAspectRatio', 'none')
-
-    const defs = createSvgElement('defs')
-    const gradient = createSvgElement('linearGradient') as SVGLinearGradientElement
-    gradient.id = `${ROOT_ID}-cursor-trail-gradient`
-    gradient.setAttribute('gradientUnits', 'userSpaceOnUse')
-
-    ;([
-      ['0%', '#3157e8', '0'],
-      ['22%', '#396dff', '0'],
-      ['58%', '#26bfff', '0.24'],
-      ['100%', '#55efff', '0.52'],
-    ] as const).forEach(([offset, color, opacity]) => {
-      const stop = createSvgElement('stop')
-      stop.setAttribute('offset', offset)
-      stop.setAttribute('stop-color', color)
-      stop.setAttribute('stop-opacity', opacity)
-      gradient.appendChild(stop)
-    })
-
-    const headGradient = createSvgElement('radialGradient')
-    headGradient.id = `${ROOT_ID}-cursor-trail-head-gradient`
-    headGradient.setAttribute('cx', '50%')
-    headGradient.setAttribute('cy', '50%')
-    headGradient.setAttribute('r', '58%')
-    ;([
-      ['0%', '#7df7ff', '0.44'],
-      ['48%', '#31c8ff', '0.2'],
-      ['100%', '#2d5cff', '0'],
-    ] as const).forEach(([offset, color, opacity]) => {
-      const stop = createSvgElement('stop')
-      stop.setAttribute('offset', offset)
-      stop.setAttribute('stop-color', color)
-      stop.setAttribute('stop-opacity', opacity)
-      headGradient.appendChild(stop)
-    })
-
-    defs.appendChild(gradient)
-    defs.appendChild(headGradient)
-
-    const body = createSvgElement('path', 'yui-guide-plugin-cursor-trail-ribbon') as SVGPathElement
-    body.setAttribute('fill', `url(#${ROOT_ID}-cursor-trail-gradient)`)
-
-    const core = createSvgElement('path', 'yui-guide-plugin-cursor-trail-core') as SVGPathElement
-    core.setAttribute('fill', `url(#${ROOT_ID}-cursor-trail-gradient)`)
-
-    const head = createSvgElement('circle', 'yui-guide-plugin-cursor-trail-head') as SVGCircleElement
-    head.setAttribute('fill', `url(#${ROOT_ID}-cursor-trail-head-gradient)`)
-
-    const headCore = createSvgElement('circle', 'yui-guide-plugin-cursor-trail-head-core') as SVGCircleElement
-    headCore.setAttribute('fill', '#66f3ff')
-
-    trailSvg.appendChild(defs)
-    trailSvg.appendChild(body)
-    trailSvg.appendChild(core)
-    trailSvg.appendChild(head)
-    trailSvg.appendChild(headCore)
-
-    this.cursorTrailSvg = trailSvg
-    this.cursorTrailBody = body
-    this.cursorTrailCore = core
-    this.cursorTrailHead = head
-    this.cursorTrailHeadCore = headCore
-    this.cursorTrailGradient = gradient
-
-    return trailSvg
-  }
-
   ensureRoot() {
     if (this.root && this.root.isConnected) {
       return
@@ -1616,22 +1350,17 @@ class PluginDashboardGuideRuntime {
     spotlight.hidden = true
     ensurePluginSpotlightDecorations(spotlight)
 
+    const pointer = document.createElement('div')
+    pointer.className = 'yui-guide-plugin-pointer'
+    pointer.setAttribute('aria-hidden', 'true')
+
     const interactionShield = document.createElement('div')
     interactionShield.className = 'yui-guide-plugin-interaction-shield'
-
-    const cursorShell = document.createElement('div')
-    cursorShell.className = 'yui-guide-plugin-cursor-shell'
-
-    const cursorInner = document.createElement('div')
-    cursorInner.className = 'yui-guide-plugin-cursor'
-    cursorShell.appendChild(cursorInner)
-    const cursorTrailSvg = this.createCursorTrailLayer()
 
     root.appendChild(backdrop)
     root.appendChild(interactionShield)
     root.appendChild(spotlight)
-    root.appendChild(cursorTrailSvg)
-    root.appendChild(cursorShell)
+    root.appendChild(pointer)
     document.body.appendChild(root)
 
     this.root = root
@@ -1641,9 +1370,156 @@ class PluginDashboardGuideRuntime {
     this.backdropCutout = backdropCutout
     this.interactionShield = interactionShield
     this.spotlight = spotlight
-    this.cursorShell = cursorShell
-    this.cursorInner = cursorInner
+    this.pointer = pointer
     this.syncBackdropViewport()
+  }
+
+  hasDesktopTutorialSkipBridge() {
+    return !!(
+      window.nekoYuiGuideDesktopBridge
+      && typeof window.nekoYuiGuideDesktopBridge.requestTutorialSkip === 'function'
+    )
+  }
+
+  hasDesktopTutorialInterruptBridge() {
+    return !!(
+      window.nekoYuiGuideDesktopBridge
+      && typeof window.nekoYuiGuideDesktopBridge.requestTutorialInterrupt === 'function'
+    )
+  }
+
+  isPluginDashboardSkipControlTarget(event: Event) {
+    const target = event.target
+    return !!(
+      target
+      && target instanceof Element
+      && target.closest('[data-yui-plugin-dashboard-skip-control="true"]')
+    )
+  }
+
+  canRequestHomeInterruptPlayback() {
+    if (this.hasDesktopTutorialInterruptBridge()) {
+      return true
+    }
+    return !!(
+      window.opener
+      && !window.opener.closed
+      && (openerMessageOrigin || getTrustedOpenerOrigin())
+    )
+  }
+
+  requestPluginDashboardSkip(detail?: Record<string, unknown>) {
+    const normalizedDetail = detail && typeof detail === 'object' ? detail : {}
+    const payload: DesktopTutorialSkipPayload = {
+      sessionId: this.activeSessionId,
+      reason: 'skip',
+      source: 'plugin_dashboard',
+      detail: normalizedDetail,
+    }
+    const bridge = window.nekoYuiGuideDesktopBridge
+    if (bridge && typeof bridge.requestTutorialSkip === 'function') {
+      try {
+        const result = bridge.requestTutorialSkip(payload)
+        if (result && typeof (result as Promise<boolean>).then === 'function') {
+          void (result as Promise<boolean>).then((handled) => {
+            if (!handled) {
+              this.notify(SKIP_REQUEST_EVENT, this.activeSessionId, normalizedDetail)
+            }
+          }).catch(() => {
+            this.notify(SKIP_REQUEST_EVENT, this.activeSessionId, normalizedDetail)
+          })
+          return true
+        }
+        if (result === true) {
+          return true
+        }
+      } catch (_) {}
+    }
+
+    this.notify(SKIP_REQUEST_EVENT, this.activeSessionId, normalizedDetail)
+    return true
+  }
+
+  ensureDesktopSkipButton() {
+    if (!this.root || this.desktopSkipButton || !this.hasDesktopTutorialSkipBridge()) {
+      return
+    }
+
+    const button = document.createElement('button')
+    button.type = 'button'
+    const label = resolveGuideLocale() === 'zh' ? '跳过' : 'Skip'
+    button.textContent = label
+    button.setAttribute('aria-label', label)
+    button.setAttribute('data-yui-plugin-dashboard-skip-control', 'true')
+    button.style.position = 'fixed'
+    button.style.top = '18px'
+    button.style.right = '18px'
+    button.style.zIndex = '2147483647'
+    button.style.pointerEvents = 'auto'
+    button.style.border = '0'
+    button.style.borderRadius = '999px'
+    button.style.padding = '8px 14px'
+    button.style.background = 'rgba(8, 18, 44, 0.86)'
+    button.style.color = '#eef7ff'
+    button.style.boxShadow = '0 10px 28px rgba(8, 17, 40, 0.28)'
+    button.style.fontSize = '13px'
+    button.style.fontWeight = '600'
+    button.style.cursor = 'pointer'
+
+    let skipHandled = false
+    const stopSkipEvent = (event: Event) => {
+      if (typeof event.stopImmediatePropagation === 'function') {
+        event.stopImmediatePropagation()
+      }
+      if (typeof event.stopPropagation === 'function') {
+        event.stopPropagation()
+      }
+    }
+    const handleSkip = (event: Event) => {
+      if (typeof event.preventDefault === 'function') {
+        event.preventDefault()
+      }
+      stopSkipEvent(event)
+      if (skipHandled) {
+        return
+      }
+      skipHandled = true
+      button.setAttribute('aria-disabled', 'true')
+      button.style.opacity = '0.72'
+      this.requestPluginDashboardSkip({
+        source: 'plugin_dashboard_button',
+      })
+    }
+
+    button.addEventListener('pointerdown', stopSkipEvent)
+    button.addEventListener('pointerup', stopSkipEvent)
+    button.addEventListener('mousedown', stopSkipEvent)
+    button.addEventListener('mouseup', stopSkipEvent)
+    button.addEventListener('touchstart', stopSkipEvent)
+    button.addEventListener('touchend', stopSkipEvent)
+    button.addEventListener('click', handleSkip)
+    this.root.appendChild(button)
+    this.desktopSkipButton = button
+    this.desktopSkipButtonCleanup = () => {
+      button.removeEventListener('pointerdown', stopSkipEvent)
+      button.removeEventListener('pointerup', stopSkipEvent)
+      button.removeEventListener('mousedown', stopSkipEvent)
+      button.removeEventListener('mouseup', stopSkipEvent)
+      button.removeEventListener('touchstart', stopSkipEvent)
+      button.removeEventListener('touchend', stopSkipEvent)
+      button.removeEventListener('click', handleSkip)
+    }
+  }
+
+  clearDesktopSkipButton() {
+    if (this.desktopSkipButtonCleanup) {
+      this.desktopSkipButtonCleanup()
+    }
+    this.desktopSkipButtonCleanup = null
+    if (this.desktopSkipButton && this.desktopSkipButton.parentNode) {
+      this.desktopSkipButton.parentNode.removeChild(this.desktopSkipButton)
+    }
+    this.desktopSkipButton = null
   }
 
   notify(type: string, sessionId: string, detail?: Record<string, unknown>, requestId?: string) {
@@ -1675,18 +1551,18 @@ class PluginDashboardGuideRuntime {
     } catch (_) {}
   }
 
-  handleInterruptAckMessage(event: MessageEvent) {
-    if (!isAllowedOpenerEvent(event)) {
-      return
-    }
-
-    const data = event.data
-    if (!data || typeof data !== 'object' || data.type !== INTERRUPT_ACK_EVENT) {
+  handleInterruptAckData(data: unknown) {
+    const payload = data && typeof data === 'object'
+      ? data as { type?: unknown; requestId?: unknown }
+      : null
+    if (!payload || payload.type !== INTERRUPT_ACK_EVENT) {
       return
     }
 
     const pending = this.pendingInterruptAck
-    const requestId = typeof data.requestId === 'string' ? data.requestId : ''
+    const requestId = typeof payload.requestId === 'string'
+      ? payload.requestId
+      : ''
     if (!pending || !requestId || pending.requestId !== requestId) {
       return
     }
@@ -1694,7 +1570,28 @@ class PluginDashboardGuideRuntime {
     this.clearPendingInterruptAck(true)
   }
 
-  requestHomeInterruptPlayback(
+  handleInterruptAckMessage(event: MessageEvent) {
+    if (!isAllowedOpenerEvent(event)) {
+      return
+    }
+
+    this.handleInterruptAckData(event.data)
+  }
+
+  handleDesktopInterruptAckEvent(event: Event) {
+    const detail = (event as CustomEvent).detail
+    this.handleInterruptAckData(detail)
+  }
+
+  handleDesktopNarrationFinishedEvent(event: Event) {
+    const detail = (event as CustomEvent).detail
+    const sessionId = detail && typeof detail.sessionId === 'string' ? detail.sessionId : ''
+    if (sessionId) {
+      this.markHomeNarrationFinished(sessionId)
+    }
+  }
+
+  async requestHomeInterruptPlayback(
     detail: {
       kind: 'interrupt_resist_light' | 'interrupt_angry_exit'
       text: string
@@ -1705,18 +1602,16 @@ class PluginDashboardGuideRuntime {
       y?: number
     },
   ) {
-    if (!window.opener || window.opener.closed) {
-      return Promise.resolve(false)
-    }
-
-    const targetOrigin = openerMessageOrigin || getTrustedOpenerOrigin()
-    if (!targetOrigin) {
-      return Promise.resolve(false)
-    }
-
     this.clearPendingInterruptAck(false)
     const requestId = `plugin-dashboard-interrupt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-    const timeoutMs = clamp(estimateSpeechDurationMs(detail.text) + 4000, 4000, 12000)
+    const timeoutExtraMs = detail.kind === 'interrupt_angry_exit'
+      ? PLUGIN_DASHBOARD_NARRATION_FINISH_FALLBACK_EXTRA_MS
+      : 4000
+    const timeoutMs = clamp(
+      estimateSpeechDurationMs(detail.text) + timeoutExtraMs,
+      4000,
+      detail.kind === 'interrupt_angry_exit' ? 60000 : 12000,
+    )
 
     return new Promise<boolean>((resolve) => {
       const timeoutId = window.setTimeout(() => {
@@ -1732,11 +1627,53 @@ class PluginDashboardGuideRuntime {
         timeoutId,
       }
 
-      try {
-        this.notify(INTERRUPT_REQUEST_EVENT, this.activeSessionId, detail, requestId)
-      } catch (_) {
-        this.clearPendingInterruptAck(false)
+      const sendPostMessageFallback = () => {
+        if (!this.pendingInterruptAck || this.pendingInterruptAck.requestId !== requestId) {
+          return
+        }
+
+        if (!window.opener || window.opener.closed) {
+          this.clearPendingInterruptAck(false)
+          return
+        }
+
+        const targetOrigin = openerMessageOrigin || getTrustedOpenerOrigin()
+        if (!targetOrigin) {
+          this.clearPendingInterruptAck(false)
+          return
+        }
+
+        try {
+          this.notify(INTERRUPT_REQUEST_EVENT, this.activeSessionId, detail, requestId)
+        } catch (_) {
+          this.clearPendingInterruptAck(false)
+        }
       }
+
+      const bridge = window.nekoYuiGuideDesktopBridge
+      if (bridge && typeof bridge.requestTutorialInterrupt === 'function') {
+        try {
+          const handled = bridge.requestTutorialInterrupt({
+            sessionId: this.activeSessionId,
+            reason: 'interrupt',
+            source: 'plugin_dashboard',
+            detail: {
+              requestId,
+              ...detail,
+            },
+          })
+          void Promise.resolve(handled).then((result) => {
+            if (result !== true) {
+              sendPostMessageFallback()
+            }
+          }).catch(() => {
+            sendPostMessageFallback()
+          })
+          return
+        } catch (_) {}
+      }
+
+      sendPostMessageFallback()
     })
   }
 
@@ -1919,7 +1856,7 @@ class PluginDashboardGuideRuntime {
     this.lastForwardedSkipAt = now
     this.lastForwardedSkipScreenX = screenX
     this.lastForwardedSkipScreenY = screenY
-    this.notify(SKIP_REQUEST_EVENT, this.activeSessionId, {
+    this.requestPluginDashboardSkip({
       source: 'plugin_dashboard',
       screenX,
       screenY,
@@ -2041,59 +1978,48 @@ class PluginDashboardGuideRuntime {
 
   showCursor(x: number, y: number) {
     this.activateOverlayShell()
-    if (!this.cursorShell) {
-      return
-    }
-
-    const previous = this.cursorPosition
-    const shouldGlide = !!(
-      previous
-      && this.cursorShell.classList.contains('is-visible')
-    )
-    this.cursorShell.classList.add('is-visible')
-    this.cursorShell.style.transitionDuration = shouldGlide ? '360ms' : '0ms'
-    this.cursorShell.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`
     this.cursorPosition = { x, y }
     this.lastCursorTarget = { x, y }
-    this.cursorTrailLastPoint = shouldGlide && previous ? { x: previous.x, y: previous.y } : null
-    this.cursorTrailLastAt = 0
+    this.syncPointer()
   }
 
   getRenderedCursorPosition() {
-    if (!this.cursorShell) {
-      return this.cursorPosition
-    }
-
-    try {
-      const transform = window.getComputedStyle(this.cursorShell).transform
-      if (!transform || transform === 'none') {
-        return this.cursorPosition
-      }
-      const matrix = new DOMMatrixReadOnly(transform)
-      return {
-        x: matrix.m41,
-        y: matrix.m42,
-      }
-    } catch (_) {
-      return this.cursorPosition
-    }
+    return this.cursorPosition
   }
 
   cancelCursorMotion() {
-    if (!this.cursorShell) {
-      return
-    }
-
     this.cursorMotionToken += 1
     this.cursorTransitionActive = false
-    const position = this.getRenderedCursorPosition()
-    if (!position) {
+    this.setPointerTransitionDuration(0)
+  }
+
+  setPointerTransitionDuration(durationMs = 0) {
+    if (!this.pointer) {
       return
     }
 
-    this.cursorShell.style.transitionDuration = '0ms'
-    this.cursorShell.style.transform = `translate(${Math.round(position.x)}px, ${Math.round(position.y)}px)`
-    this.cursorPosition = position
+    this.pointer.style.setProperty(
+      '--yui-guide-plugin-pointer-duration',
+      `${Math.max(0, Math.round(durationMs))}ms`,
+    )
+  }
+
+  syncPointer(durationMs = 0) {
+    this.ensureRoot()
+    if (!this.pointer) {
+      return
+    }
+
+    this.setPointerTransitionDuration(durationMs)
+    const position = this.cursorPosition
+    if (!position || !Number.isFinite(position.x) || !Number.isFinite(position.y)) {
+      this.pointer.classList.remove('is-visible')
+      this.pointer.style.transform = 'translate3d(-9999px, -9999px, 0)'
+      return
+    }
+
+    this.pointer.style.transform = `translate3d(${Math.round(position.x - 20)}px, ${Math.round(position.y - 18)}px, 0)`
+    this.pointer.classList.add('is-visible')
   }
 
   moveCursor(
@@ -2104,10 +2030,6 @@ class PluginDashboardGuideRuntime {
     waitForSceneResume = true,
   ) {
     this.ensureRoot()
-    if (!this.cursorShell) {
-      return Promise.resolve(false)
-    }
-
     if (!this.cursorPosition) {
       this.showCursor(x, y)
       return Promise.resolve(true)
@@ -2115,27 +2037,14 @@ class PluginDashboardGuideRuntime {
 
     const motionToken = ++this.cursorMotionToken
     this.cursorTransitionActive = true
-    this.cursorShell.classList.add('is-visible')
-    this.cursorShell.style.transitionDuration = `${Math.max(0, durationMs)}ms`
-    const startPosition = this.getRenderedCursorPosition() || this.cursorPosition
-    const totalDistance = startPosition ? Math.hypot(x - startPosition.x, y - startPosition.y) : 0
-    const movementAngle = startPosition ? Math.atan2(y - startPosition.y, x - startPosition.x || 0.001) : 0
-    this.cursorTrailLastPoint = startPosition ? { x: startPosition.x, y: startPosition.y } : null
-    this.cursorTrailLastAt = 0
 
     return new Promise<boolean>((resolve) => {
       let settled = false
-      let trailFrame = 0
       const finish = (completed: boolean) => {
         if (settled) {
           return
         }
         settled = true
-        if (trailFrame) {
-          window.cancelAnimationFrame(trailFrame)
-          trailFrame = 0
-        }
-        this.cursorShell?.removeEventListener('transitionend', handleEnd)
         const finalize = async () => {
           if (motionToken === this.cursorMotionToken) {
             this.cursorTransitionActive = false
@@ -2148,32 +2057,11 @@ class PluginDashboardGuideRuntime {
             await this.waitUntilSceneResumed()
           }
           const didComplete = completed && motionToken === this.cursorMotionToken
-          if (didComplete && totalDistance > 8) {
-            this.spawnCursorTrailBurst(x, y, movementAngle, CURSOR_TRAIL_MOVE_BURST_COUNT)
-          }
           resolve(didComplete)
         }
         void finalize()
       }
-      const handleEnd = (event: Event) => {
-        if (event.target === this.cursorShell) {
-          finish(true)
-        }
-      }
-      const sampleTrail = (now: number) => {
-        if (settled || motionToken !== this.cursorMotionToken || !this.cursorShell) {
-          return
-        }
-        const position = this.getRenderedCursorPosition()
-        const previous = this.cursorTrailLastPoint || startPosition
-        if (position && previous) {
-          this.maybeSpawnCursorTrail(position.x, position.y, previous.x, previous.y, now)
-        }
-        trailFrame = window.requestAnimationFrame(sampleTrail)
-      }
 
-      this.cursorShell?.addEventListener('transitionend', handleEnd)
-      trailFrame = window.requestAnimationFrame(sampleTrail)
       window.requestAnimationFrame(() => {
         if (motionToken !== this.cursorMotionToken) {
           finish(false)
@@ -2187,13 +2075,11 @@ class PluginDashboardGuideRuntime {
           finish(false)
           return
         }
-        if (this.cursorShell) {
-          this.cursorShell.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`
-        }
+        this.cursorPosition = { x, y }
+        this.lastCursorTarget = { x, y }
+        this.syncPointer(durationMs)
       })
       window.setTimeout(() => finish(true), durationMs + 80)
-      this.cursorPosition = { x, y }
-      this.lastCursorTarget = { x, y }
     })
   }
 
@@ -2222,456 +2108,39 @@ class PluginDashboardGuideRuntime {
     return false
   }
 
-  removeCursorTrailEntry(entry: { element: HTMLSpanElement; timer: number }) {
-    window.clearTimeout(entry.timer)
-    if (entry.element.parentNode) {
-      entry.element.parentNode.removeChild(entry.element)
-    }
-    this.activeTrailParticles.delete(entry)
-  }
-
-  trimCursorTrailParticles() {
-    while (this.activeTrailParticles.size > CURSOR_TRAIL_MAX_PARTICLES) {
-      const first = this.activeTrailParticles.values().next().value
-      if (!first) {
-        return
-      }
-      this.removeCursorTrailEntry(first)
-    }
-  }
-
-  clearCursorTrailParticles() {
-    if (this.cursorTrailDecayFrame) {
-      window.cancelAnimationFrame(this.cursorTrailDecayFrame)
-      this.cursorTrailDecayFrame = 0
-    }
-
-    if (this.activeTrailParticles.size) {
-      Array.from(this.activeTrailParticles).forEach((entry) => {
-        this.removeCursorTrailEntry(entry)
-      })
-    }
-
-    this.cursorTrailPoints = []
-    this.cursorTrailLastPoint = null
-    this.cursorTrailLastAt = 0
-    this.cursorTrailSvg?.classList.remove('is-visible')
-    this.cursorTrailBody?.setAttribute('d', '')
-    this.cursorTrailCore?.setAttribute('d', '')
-  }
-
-  spawnCursorTrailParticle(x: number, y: number, angle: number, kind: 'blue' | 'icon' = 'icon') {
-    if (!this.root || shouldReduceMotion()) {
-      return
-    }
-
-    const particle = document.createElement('span')
-    const isBlueParticle = kind === 'blue'
-    const width = isBlueParticle
-      ? 5 + Math.random() * 5
-      : 7 + Math.random() * 5
-    const opacity = isBlueParticle
-      ? 0.46 + Math.random() * 0.22
-      : 0.09 + Math.random() * 0.1
-    const drift = isBlueParticle
-      ? 14 + Math.random() * 24
-      : 10 + Math.random() * 16
-    const sideJitter = (Math.random() - 0.5) * (isBlueParticle ? 30 : 20)
-    const backOffset = isBlueParticle
-      ? 10 + Math.random() * 28
-      : 22 + Math.random() * 20
-    const cos = Math.cos(angle)
-    const sin = Math.sin(angle)
-    const baseX = x - (cos * backOffset) - (sin * sideJitter)
-    const baseY = y - (sin * backOffset) + (cos * sideJitter)
-
-    particle.className = `yui-guide-plugin-cursor-trail ${isBlueParticle ? 'is-blue-particle' : 'is-icon'}`
-    particle.setAttribute('aria-hidden', 'true')
-    particle.style.left = `${baseX.toFixed(2)}px`
-    particle.style.top = `${baseY.toFixed(2)}px`
-    particle.style.setProperty('--trail-width', `${width.toFixed(2)}px`)
-    particle.style.setProperty('--trail-height', `${width.toFixed(2)}px`)
-    particle.style.setProperty('--trail-angle', `${((angle * 180) / Math.PI).toFixed(2)}deg`)
-    particle.style.setProperty('--trail-drift-x', `${(-cos * drift).toFixed(2)}px`)
-    particle.style.setProperty('--trail-drift-y', `${(-sin * drift).toFixed(2)}px`)
-    particle.style.setProperty('--trail-opacity', opacity.toFixed(2))
-
-    if (!isBlueParticle) {
-      particle.style.setProperty('--trail-brightness', (0.78 + Math.random() * 0.2).toFixed(2))
-      const iconUrl = CURSOR_TRAIL_ICON_URLS[Math.floor(Math.random() * CURSOR_TRAIL_ICON_URLS.length)]
-      particle.style.setProperty('--trail-icon', `url("${iconUrl}")`)
-    }
-
-    const entry: { element: HTMLSpanElement; timer: number } = {
-      element: particle,
-      timer: 0,
-    }
-    entry.timer = window.setTimeout(() => {
-      this.removeCursorTrailEntry(entry)
-    }, CURSOR_TRAIL_PARTICLE_LIFETIME_MS + 120)
-
-    this.activeTrailParticles.add(entry)
-    this.root.appendChild(particle)
-    this.trimCursorTrailParticles()
-  }
-
-  spawnCursorTrailBurst(x: number, y: number, angle: number, count = CURSOR_TRAIL_MOVE_BURST_COUNT) {
-    if (!this.root || shouldReduceMotion()) {
-      return
-    }
-
-    const normalizedCount = Math.max(1, Math.round(Number.isFinite(count) ? count : CURSOR_TRAIL_MOVE_BURST_COUNT))
-    const baseAngle = Number.isFinite(angle) ? angle : 0
-    for (let index = 0; index < normalizedCount; index += 1) {
-      const offset = normalizedCount <= 1
-        ? 0
-        : ((index / (normalizedCount - 1)) - 0.5) * 1.7
-      this.spawnCursorTrailParticle(x, y, baseAngle + offset + ((Math.random() - 0.5) * 0.38), 'blue')
-    }
-  }
-
-  getCursorTrailNow(now?: number) {
-    if (Number.isFinite(now)) {
-      return Number(now)
-    }
-    if (window.performance && typeof window.performance.now === 'function') {
-      return window.performance.now()
-    }
-    return Date.now()
-  }
-
-  syncCursorTrailViewport() {
-    if (!this.cursorTrailSvg) {
-      return
-    }
-    const width = Math.max(1, window.innerWidth || document.documentElement.clientWidth || 1)
-    const height = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 1)
-    this.cursorTrailSvg.setAttribute('viewBox', `0 0 ${width} ${height}`)
-  }
-
-  trimCursorTrailPoints(now: number) {
-    const cutoff = now - CURSOR_TRAIL_PARTICLE_LIFETIME_MS
-    this.cursorTrailPoints = this.cursorTrailPoints
-      .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y) && point.t >= cutoff)
-
-    if (this.cursorTrailPoints.length > CURSOR_TRAIL_MAX_POINTS) {
-      this.cursorTrailPoints = this.cursorTrailPoints.slice(this.cursorTrailPoints.length - CURSOR_TRAIL_MAX_POINTS)
-    }
-  }
-
-  formatCursorTrailPoint(point: { x: number; y: number }) {
-    return `${point.x.toFixed(1)} ${point.y.toFixed(1)}`
-  }
-
-  appendSmoothCursorTrailPath(points: Array<{ x: number; y: number }>, useMove: boolean) {
-    if (!points.length) {
-      return ''
-    }
-
-    let path = `${useMove ? 'M' : 'L'} ${this.formatCursorTrailPoint(points[0]!)}`
-    if (points.length === 1) {
-      return path
-    }
-
-    for (let index = 1; index < points.length - 1; index += 1) {
-      const current = points[index]!
-      const next = points[index + 1]!
-      const mid = {
-        x: (current.x + next.x) / 2,
-        y: (current.y + next.y) / 2,
-      }
-      path += ` Q ${this.formatCursorTrailPoint(current)} ${this.formatCursorTrailPoint(mid)}`
-    }
-
-    path += ` L ${this.formatCursorTrailPoint(points[points.length - 1]!)}`
-    return path
-  }
-
-  buildCursorTrailRibbonPath(points: Array<{ x: number; y: number }>, headWidth: number, tailWidth: number) {
-    if (points.length < 2) {
-      return ''
-    }
-
-    const left: Array<{ x: number; y: number }> = []
-    const right: Array<{ x: number; y: number }> = []
-    const count = points.length
-
-    for (let index = 0; index < count; index += 1) {
-      const point = points[index]!
-      const previous = points[Math.max(0, index - 1)]!
-      const next = points[Math.min(count - 1, index + 1)]!
-      let dx = next.x - previous.x
-      let dy = next.y - previous.y
-      let length = Math.hypot(dx, dy)
-
-      if (length < 0.001 && index > 0) {
-        dx = point.x - points[index - 1]!.x
-        dy = point.y - points[index - 1]!.y
-        length = Math.hypot(dx, dy)
-      }
-      if (length < 0.001) {
-        dx = 1
-        dy = 0
-        length = 1
-      }
-
-      const progress = count <= 1 ? 1 : index / (count - 1)
-      const eased = progress * progress * (3 - (2 * progress))
-      const width = tailWidth + ((headWidth - tailWidth) * eased)
-      const normalX = -dy / length
-      const normalY = dx / length
-      const halfWidth = width / 2
-
-      left.push({
-        x: point.x + (normalX * halfWidth),
-        y: point.y + (normalY * halfWidth),
-      })
-      right.push({
-        x: point.x - (normalX * halfWidth),
-        y: point.y - (normalY * halfWidth),
-      })
-    }
-
-    return `${this.appendSmoothCursorTrailPath(left, true)} ${this.appendSmoothCursorTrailPath(right.slice().reverse(), false)} Z`
-  }
-
-  updateCursorTrail(now?: number) {
-    if (!this.root || shouldReduceMotion()) {
-      this.clearCursorTrailParticles()
-      return
-    }
-
-    if (!this.cursorTrailSvg || !this.cursorTrailBody || !this.cursorTrailCore) {
-      const layer = this.createCursorTrailLayer()
-      if (this.cursorShell) {
-        this.root.insertBefore(layer, this.cursorShell)
-      } else {
-        this.root.appendChild(layer)
-      }
-    }
-
-    const currentNow = this.getCursorTrailNow(now)
-    this.syncCursorTrailViewport()
-    this.trimCursorTrailPoints(currentNow)
-
-    if (this.cursorTrailPoints.length < 2) {
-      this.cursorTrailSvg?.classList.remove('is-visible')
-      this.cursorTrailBody?.setAttribute('d', '')
-      this.cursorTrailCore?.setAttribute('d', '')
-      return
-    }
-
-    const points = this.cursorTrailPoints
-    const tail = points[0]!
-    const head = points[points.length - 1]!
-    const bodyPath = this.buildCursorTrailRibbonPath(
-      points,
-      CURSOR_TRAIL_BODY_HEAD_WIDTH,
-      CURSOR_TRAIL_BODY_TAIL_WIDTH,
-    )
-    const corePath = this.buildCursorTrailRibbonPath(
-      points,
-      CURSOR_TRAIL_CORE_HEAD_WIDTH,
-      CURSOR_TRAIL_CORE_TAIL_WIDTH,
-    )
-
-    this.cursorTrailGradient?.setAttribute('x1', tail.x.toFixed(1))
-    this.cursorTrailGradient?.setAttribute('y1', tail.y.toFixed(1))
-    this.cursorTrailGradient?.setAttribute('x2', head.x.toFixed(1))
-    this.cursorTrailGradient?.setAttribute('y2', head.y.toFixed(1))
-    this.cursorTrailBody?.setAttribute('d', bodyPath)
-    this.cursorTrailCore?.setAttribute('d', corePath)
-    this.cursorTrailHead?.setAttribute('cx', head.x.toFixed(1))
-    this.cursorTrailHead?.setAttribute('cy', head.y.toFixed(1))
-    this.cursorTrailHead?.setAttribute('r', String(CURSOR_TRAIL_HEAD_RADIUS))
-    this.cursorTrailHeadCore?.setAttribute('cx', head.x.toFixed(1))
-    this.cursorTrailHeadCore?.setAttribute('cy', head.y.toFixed(1))
-    this.cursorTrailHeadCore?.setAttribute('r', '3.8')
-    this.cursorTrailSvg?.classList.add('is-visible')
-  }
-
-  scheduleCursorTrailDecay() {
-    if (this.cursorTrailDecayFrame || shouldReduceMotion()) {
-      return
-    }
-
-    const tick = (now: number) => {
-      this.cursorTrailDecayFrame = 0
-      this.updateCursorTrail(now)
-      if (this.cursorTrailPoints.length) {
-        this.cursorTrailDecayFrame = window.requestAnimationFrame(tick)
-      }
-    }
-
-    this.cursorTrailDecayFrame = window.requestAnimationFrame(tick)
-  }
-
-  maybeSpawnCursorTrail(x: number, y: number, previousX: number, previousY: number, now: number) {
-    if (shouldReduceMotion()) {
-      return
-    }
-
-    const dx = x - previousX
-    const dy = y - previousY
-    if (Math.hypot(dx, dy) < 0.6) {
-      return
-    }
-
-    const currentNow = this.getCursorTrailNow(now)
-    const lastPoint = this.cursorTrailLastPoint
-    const elapsedMs = Number.isFinite(currentNow) && Number.isFinite(this.cursorTrailLastAt)
-      ? currentNow - this.cursorTrailLastAt
-      : CURSOR_TRAIL_MIN_INTERVAL_MS
-    const distanceFromLast = lastPoint
-      ? Math.hypot(x - lastPoint.x, y - lastPoint.y)
-      : CURSOR_TRAIL_MIN_DISTANCE
-
-    if (distanceFromLast < CURSOR_TRAIL_MIN_DISTANCE && elapsedMs < CURSOR_TRAIL_MIN_INTERVAL_MS) {
-      return
-    }
-
-    const startPoint = lastPoint
-      ? {
-          x: lastPoint.x,
-          y: lastPoint.y,
-          t: Number.isFinite(lastPoint.t) ? Number(lastPoint.t) : Math.max(0, currentNow - 16),
-        }
-      : {
-          x: previousX,
-          y: previousY,
-          t: Math.max(0, currentNow - 16),
-        }
-    if (!lastPoint || this.cursorTrailPoints.length === 0) {
-      this.cursorTrailPoints.push(startPoint)
-    }
-
-    const distance = Math.hypot(x - startPoint.x, y - startPoint.y)
-    const segmentCount = Math.max(
-      1,
-      Math.min(CURSOR_TRAIL_MAX_SEGMENTS_PER_FRAME, Math.ceil(distance / CURSOR_TRAIL_SEGMENT_SPACING)),
-    )
-    const startTime = Number.isFinite(startPoint.t) ? Number(startPoint.t) : currentNow - 16
-
-    for (let index = 1; index <= segmentCount; index += 1) {
-      const ratio = index / segmentCount
-      this.cursorTrailPoints.push({
-        x: startPoint.x + ((x - startPoint.x) * ratio),
-        y: startPoint.y + ((y - startPoint.y) * ratio),
-        t: startTime + ((currentNow - startTime) * ratio),
-      })
-    }
-
-    this.cursorTrailLastPoint = { x, y, t: currentNow }
-    this.cursorTrailLastAt = currentNow
-    this.updateCursorTrail(currentNow)
-    this.scheduleCursorTrailDecay()
-
-    if (Math.random() < CURSOR_TRAIL_BLUE_PARTICLE_CHANCE && distance > 10) {
-      this.spawnCursorTrailParticle(x, y, Math.atan2(dy, dx), 'blue')
-    }
-    if (Math.random() < CURSOR_TRAIL_ICON_CHANCE && distance > 16) {
-      this.spawnCursorTrailParticle(x, y, Math.atan2(dy, dx), 'icon')
-    }
-  }
-
   clickCursor(durationMs = DEFAULT_CURSOR_CLICK_VISIBLE_MS) {
-    if (!this.cursorInner) {
-      return
+    if (this.cursorClickResetTimer !== null) {
+      window.clearTimeout(this.cursorClickResetTimer)
+      this.cursorClickResetTimer = null
     }
-
-    const visibleMs = Number.isFinite(durationMs)
-      ? Math.max(DEFAULT_CURSOR_CLICK_VISIBLE_MS, Math.round(durationMs))
-      : DEFAULT_CURSOR_CLICK_VISIBLE_MS
-    if (this.cursorClickTimer !== null) {
-      window.clearTimeout(this.cursorClickTimer)
-      this.cursorClickTimer = null
-    }
-    if (this.cursorShell) {
-      this.cursorShell.classList.add('is-visible')
-    }
-    this.cursorInner.classList.remove('is-clicking')
-    void this.cursorInner.offsetWidth
-    this.cursorInner.classList.add('is-clicking')
-    this.spawnCursorClickStars()
-    if (this.cursorPosition) {
-      this.spawnCursorTrailBurst(
-        this.cursorPosition.x,
-        this.cursorPosition.y,
-        -Math.PI / 2,
-        CURSOR_TRAIL_ACTION_BURST_COUNT,
-      )
-    }
-    this.cursorClickTimer = window.setTimeout(() => {
-      this.cursorClickTimer = null
-      this.cursorInner?.classList.remove('is-clicking')
-    }, visibleMs)
-  }
-
-  clearCursorClickStars() {
-    if (!this.activeClickStars.size) {
-      return
-    }
-
-    this.activeClickStars.forEach((entry) => {
-      window.clearTimeout(entry.timer)
-      if (entry.element.parentNode) {
-        entry.element.parentNode.removeChild(entry.element)
-      }
-    })
-    this.activeClickStars.clear()
-  }
-
-  spawnCursorClickStars() {
-    if (!this.cursorShell || shouldReduceMotion()) {
-      return
-    }
-
-    const fragment = document.createDocumentFragment()
-    for (let index = 0; index < CURSOR_CLICK_STAR_COUNT; index += 1) {
-      const angle = ((Math.PI * 2) * (index / CURSOR_CLICK_STAR_COUNT)) + ((Math.random() - 0.5) * 0.92)
-      const distance = 28 + Math.random() * 34
-      const size = 6 + Math.random() * 6
-      const x = Math.cos(angle) * distance
-      const y = Math.sin(angle) * distance
-      const star = document.createElement('span')
-      star.className = 'yui-guide-plugin-click-star'
-      star.setAttribute('aria-hidden', 'true')
-      star.style.setProperty('--star-x', `${x.toFixed(2)}px`)
-      star.style.setProperty('--star-y', `${y.toFixed(2)}px`)
-      star.style.setProperty('--star-mid-x', `${(x * 0.76).toFixed(2)}px`)
-      star.style.setProperty('--star-mid-y', `${(y * 0.76).toFixed(2)}px`)
-      star.style.setProperty('--star-size', `${size.toFixed(2)}px`)
-      star.style.setProperty('--star-rotate', `${Math.round(Math.random() * 180)}deg`)
-      star.style.setProperty('--star-delay', `${Math.round(Math.random() * 60)}ms`)
-      star.style.setProperty('--star-hue', String(Math.round(36 + Math.random() * 28)))
-      fragment.appendChild(star)
-
-      const entry = {
-        element: star,
-        timer: window.setTimeout(() => {
-          if (star.parentNode) {
-            star.parentNode.removeChild(star)
-          }
-          this.activeClickStars.delete(entry)
-        }, CURSOR_CLICK_STAR_LIFETIME_MS + 120),
-      }
-      this.activeClickStars.add(entry)
-    }
-
-    this.cursorShell.appendChild(fragment)
+    document.documentElement.classList.add('yui-taking-over')
+    document.body.classList.add('yui-taking-over')
+    this.pointer?.classList.add('is-pressed')
+    this.cursorClickResetTimer = window.setTimeout(() => {
+      this.cursorClickResetTimer = null
+      this.resetCursorVisualState()
+    }, Math.max(0, durationMs))
   }
 
   resetCursorVisualState() {
-    if (this.cursorClickTimer !== null) {
-      window.clearTimeout(this.cursorClickTimer)
-      this.cursorClickTimer = null
+    if (this.cursorClickResetTimer !== null) {
+      window.clearTimeout(this.cursorClickResetTimer)
+      this.cursorClickResetTimer = null
     }
-    this.clearCursorClickStars()
-    this.clearCursorTrailParticles()
-    if (!this.cursorInner) {
-      return
+    this.pointer?.classList.remove('is-pressed')
+    if (!this.userCursorRevealed) {
+      document.documentElement.classList.remove('yui-user-cursor-revealed')
+      document.body.classList.remove('yui-user-cursor-revealed')
     }
-    this.cursorInner.classList.remove('is-clicking')
+  }
+
+  stopGhostCursorAnimation() {
+    this.cancelCursorMotion()
+    this.resetCursorVisualState()
+    this.cursorTransitionActive = false
+    this.cursorPosition = null
+    this.lastCursorTarget = null
+    this.syncPointer()
   }
 
   async animateScroll(container: HTMLElement, deltaY: number, durationMs: number, isCurrent?: () => boolean) {
@@ -2751,10 +2220,6 @@ class PluginDashboardGuideRuntime {
     let pausedDurationMs = 0
     const motionToken = ++this.cursorMotionToken
     this.cursorTransitionActive = true
-    this.cursorTrailLastPoint = this.cursorPosition
-      ? { x: this.cursorPosition.x, y: this.cursorPosition.y }
-      : null
-    this.cursorTrailLastAt = 0
 
     try {
       await new Promise<void>((resolve) => {
@@ -2778,15 +2243,9 @@ class PluginDashboardGuideRuntime {
           const angle = progress * Math.PI * 2
           const x = centerX + Math.cos(angle) * radiusX
           const y = centerY + Math.sin(angle) * radiusY
-          const previousX = this.cursorPosition ? this.cursorPosition.x : x
-          const previousY = this.cursorPosition ? this.cursorPosition.y : y
-          if (this.cursorShell) {
-            this.cursorShell.style.transitionDuration = '80ms'
-            this.cursorShell.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`
-            this.cursorPosition = { x, y }
-            this.lastCursorTarget = { x, y }
-            this.maybeSpawnCursorTrail(x, y, previousX, previousY, now)
-          }
+          this.cursorPosition = { x, y }
+          this.lastCursorTarget = { x, y }
+          this.syncPointer(0)
 
           if (progress >= 1) {
             resolve()
@@ -2981,13 +2440,30 @@ class PluginDashboardGuideRuntime {
       return true
     }
 
-    narration.resumeAudioOffsetMs = currentGuideAudio && Number.isFinite(currentGuideAudio.currentTime)
-      ? Math.max(0, Math.round(currentGuideAudio.currentTime * 1000))
-      : 0
+    narration.resumeAudioOffsetMs = this.getSafeNarrationResumeAudioOffsetMs(currentGuideAudio)
     narration.interrupted = true
     this.clearNarrationResumeTimer()
     stopCurrentGuideSpeech()
     return true
+  }
+
+  getSafeNarrationResumeAudioOffsetMs(audio: HTMLAudioElement | null) {
+    if (!audio || !Number.isFinite(audio.currentTime)) {
+      return 0
+    }
+
+    const rawOffsetMs = Math.max(0, Math.round(audio.currentTime * 1000))
+    const durationMs = Number.isFinite(audio.duration) && audio.duration > 0
+      ? Math.round(audio.duration * 1000)
+      : 0
+    const maxResumeOffsetMs = durationMs > 0
+      ? Math.max(0, durationMs - NARRATION_RESUME_MIN_REMAINING_MS)
+      : rawOffsetMs
+    return clamp(
+      rawOffsetMs - NARRATION_RESUME_BACKTRACK_MS,
+      0,
+      maxResumeOffsetMs,
+    )
   }
 
   scheduleNarrationResume() {
@@ -3159,7 +2635,7 @@ class PluginDashboardGuideRuntime {
       return
     }
 
-    if (typeof document.hasFocus === 'function' && !document.hasFocus()) {
+    if (!this.canRequestHomeInterruptPlayback() && typeof document.hasFocus === 'function' && !document.hasFocus()) {
       return
     }
 
@@ -3191,7 +2667,11 @@ class PluginDashboardGuideRuntime {
     this.noteUserCursorRevealAttempt(distance, now)
     this.maybePlayPassiveResistance(x, y, distance, speed, now)
 
-    if (this.homeNarrationOwnedByOpener && !this.homeNarrationFinished) {
+    if (
+      this.homeNarrationOwnedByOpener
+      && !this.homeNarrationFinished
+      && !this.canRequestHomeInterruptPlayback()
+    ) {
       return
     }
 
@@ -3371,11 +2851,10 @@ class PluginDashboardGuideRuntime {
     this.angryExitTriggered = true
     this.interruptsEnabled = false
     this.cancelActiveNarration()
-    this.cancelCursorMotion()
+    this.stopGhostCursorAnimation()
     this.scriptedMotionInterruptDistance = 0
     this.scriptedMotionInterruptWindowStartedAt = 0
     this.clearSpotlight()
-    this.resetCursorVisualState()
     this.setAngryVisual(true)
     this.homeNarrationFinished = false
     const handledByHome = await this.requestHomeInterruptPlayback({
@@ -3408,8 +2887,11 @@ class PluginDashboardGuideRuntime {
     if (!isSameSession()) {
       return
     }
-    this.notify(DONE_EVENT, this.activeSessionId)
-    this.cleanup()
+    this.requestPluginDashboardSkip({
+      source: 'plugin_dashboard_angry_exit',
+      reason: 'angry_exit',
+      interruptCount: this.interruptCount,
+    })
   }
 
   cleanup() {
@@ -3485,6 +2967,7 @@ class PluginDashboardGuideRuntime {
     document.removeEventListener('click', this.boundInteractionGuard, true)
     document.removeEventListener('dblclick', this.boundInteractionGuard, true)
     document.removeEventListener('contextmenu', this.boundInteractionGuard, true)
+    this.clearDesktopSkipButton()
     this.clearSpotlight()
     if (this.root && this.root.parentNode) {
       this.root.parentNode.removeChild(this.root)
@@ -3500,22 +2983,14 @@ class PluginDashboardGuideRuntime {
     this.backdropCutout = null
     this.interactionShield = null
     this.spotlight = null
-    this.cursorShell = null
-    this.cursorInner = null
+    this.pointer = null
     this.cursorPosition = null
-    this.cursorTrailSvg = null
-    this.cursorTrailBody = null
-    this.cursorTrailCore = null
-    this.cursorTrailHead = null
-    this.cursorTrailHeadCore = null
-    this.cursorTrailGradient = null
-    this.cursorTrailPoints = []
-    this.cursorTrailLastPoint = null
-    this.cursorTrailLastAt = 0
     this.spotlightElement = null
     this.lastCursorTarget = null
     this.running = false
     this.activeSessionId = ''
+    this.desktopSkipButton = null
+    this.desktopSkipButtonCleanup = null
     this.interruptsEnabled = false
     this.scenePausedForResistance = false
     this.homeNarrationFinished = false
@@ -3574,6 +3049,7 @@ class PluginDashboardGuideRuntime {
     this.homeNarrationOwnedByOpener = false
     const isCurrent = () => this.isCurrentRun(sessionId)
     this.activateOverlayShell()
+    this.ensureDesktopSkipButton()
     window.addEventListener('resize', this.boundScheduleSpotlightRefresh, true)
     window.addEventListener('scroll', this.boundScheduleSpotlightRefresh, true)
     // 用 pointer 事件而非 mouse 事件采样：interactionGuard 把 touchstart/move/end 都拦掉了，
@@ -3656,10 +3132,48 @@ class PluginDashboardGuideRuntime {
       : 0
     const budgetMs = Math.max(0, totalNarrationDurationMs - elapsedBeforeMotionMs)
     this.homeNarrationOwnedByOpener = true
-    const speechPromise = wait(budgetMs)
-    void speechPromise.finally(() => {
-      this.markHomeNarrationFinished(sessionId)
-    })
+    const isCurrentWithoutAngryExit = () => isCurrent() && !this.angryExitTriggered
+    const homeNarrationFallbackActiveMs = clamp(
+      budgetMs + PLUGIN_DASHBOARD_NARRATION_FINISH_FALLBACK_EXTRA_MS,
+      PLUGIN_DASHBOARD_NARRATION_FINISH_FALLBACK_EXTRA_MS,
+      120000,
+    )
+    let homeNarrationFallbackTimer: number | null = null
+    let homeNarrationFallbackCancelled = false
+    let homeNarrationFallbackRemainingMs = homeNarrationFallbackActiveMs
+    let homeNarrationFallbackLastTickAt = Date.now()
+    const clearHomeNarrationFallbackTimer = () => {
+      homeNarrationFallbackCancelled = true
+      if (homeNarrationFallbackTimer !== null) {
+        window.clearTimeout(homeNarrationFallbackTimer)
+        homeNarrationFallbackTimer = null
+      }
+    }
+    const tickHomeNarrationFallback = () => {
+      if (
+        homeNarrationFallbackCancelled
+        || this.homeNarrationFinished
+        || this.angryExitTriggered
+        || !isCurrent()
+      ) {
+        return
+      }
+
+      const now = Date.now()
+      const pausedForInterrupt = this.scenePausedForResistance || !!this.pendingInterruptAck
+      if (!pausedForInterrupt) {
+        homeNarrationFallbackRemainingMs -= Math.max(0, now - homeNarrationFallbackLastTickAt)
+      }
+      homeNarrationFallbackLastTickAt = now
+      if (homeNarrationFallbackRemainingMs <= 0) {
+        homeNarrationFallbackTimer = null
+        this.markHomeNarrationFinished(sessionId)
+        return
+      }
+
+      homeNarrationFallbackTimer = window.setTimeout(tickHomeNarrationFallback, 250)
+    }
+    homeNarrationFallbackTimer = window.setTimeout(tickHomeNarrationFallback, 250)
     const baseMoveToMainDurationMs = PLUGIN_DASHBOARD_MOVE_TO_MAIN_MS
     const baseScrollDownDurationMs = Math.round(PLUGIN_DASHBOARD_SCROLL_PHASE_MS / 2)
     const baseScrollUpDurationMs = PLUGIN_DASHBOARD_SCROLL_PHASE_MS - baseScrollDownDurationMs
@@ -3676,38 +3190,72 @@ class PluginDashboardGuideRuntime {
       ellipseDurationMs = 0
     }
 
-    if (!isCurrent()) {
+    if (!isCurrentWithoutAngryExit()) {
+      clearHomeNarrationFallbackTimer()
       return
     }
     this.setSpotlight(mainContainer)
     if (moveToMainDurationMs > 0) {
-      await this.moveCursorToElementWithRecovery(mainContainer, moveToMainDurationMs, isCurrent)
-      if (!isCurrent()) {
+      await this.moveCursorToElementWithRecovery(mainContainer, moveToMainDurationMs, isCurrentWithoutAngryExit)
+      if (!isCurrentWithoutAngryExit()) {
+        clearHomeNarrationFallbackTimer()
         return
       }
     }
     if (scrollDownDurationMs > 0) {
-      await this.animateScroll(mainContainer, 150, scrollDownDurationMs, isCurrent)
-      if (!isCurrent()) {
+      await this.animateScroll(mainContainer, 150, scrollDownDurationMs, isCurrentWithoutAngryExit)
+      if (!isCurrentWithoutAngryExit()) {
+        clearHomeNarrationFallbackTimer()
         return
       }
     }
     if (scrollUpDurationMs > 0) {
-      await this.animateScroll(mainContainer, -150, scrollUpDurationMs, isCurrent)
-      if (!isCurrent()) {
+      await this.animateScroll(mainContainer, -150, scrollUpDurationMs, isCurrentWithoutAngryExit)
+      if (!isCurrentWithoutAngryExit()) {
+        clearHomeNarrationFallbackTimer()
         return
       }
     }
     if (ellipseDurationMs > 0) {
-      await this.runEllipse(mainContainer, ellipseDurationMs, isCurrent)
-      if (!isCurrent()) {
+      await this.runEllipse(mainContainer, ellipseDurationMs, isCurrentWithoutAngryExit)
+      if (!isCurrentWithoutAngryExit()) {
+        clearHomeNarrationFallbackTimer()
         return
       }
     }
-    if (!(await this.waitForHomeNarrationFinished(sessionId, isCurrent))) {
+
+    while (isCurrentWithoutAngryExit() && !this.homeNarrationFinished) {
+      this.setSpotlight(mainContainer)
+      await this.runEllipse(mainContainer, PLUGIN_DASHBOARD_IDLE_ELLIPSE_MS, isCurrentWithoutAngryExit)
+      if (!isCurrent()) {
+        clearHomeNarrationFallbackTimer()
+        return
+      }
+      if (this.angryExitTriggered) {
+        clearHomeNarrationFallbackTimer()
+        return
+      }
+      if (!this.homeNarrationFinished) {
+        await wait(80)
+      }
+    }
+
+    if (this.angryExitTriggered) {
+      clearHomeNarrationFallbackTimer()
       return
     }
+
+    try {
+      if (!(await this.waitForHomeNarrationFinished(sessionId, isCurrent))) {
+        return
+      }
+    } finally {
+      clearHomeNarrationFallbackTimer()
+    }
     if (!isCurrent()) {
+      return
+    }
+    if (this.angryExitTriggered) {
       return
     }
 
@@ -3831,6 +3379,7 @@ class PluginDashboardLocalTutorialRunner {
     const skipButton = document.createElement('button')
     skipButton.type = 'button'
     skipButton.textContent = labels?.skip || 'Skip'
+    skipButton.setAttribute('data-yui-plugin-dashboard-skip-control', 'true')
     skipButton.style.border = '0'
     skipButton.style.borderRadius = '999px'
     skipButton.style.padding = '8px 14px'
@@ -3839,19 +3388,27 @@ class PluginDashboardLocalTutorialRunner {
     skipButton.style.fontSize = '13px'
     skipButton.style.fontWeight = '600'
     skipButton.style.cursor = 'pointer'
-    const handleSkip = (event: Event) => {
-      if (typeof event.preventDefault === 'function') {
-        event.preventDefault()
-      }
+    const stopSkipEvent = (event: Event) => {
       if (typeof event.stopImmediatePropagation === 'function') {
         event.stopImmediatePropagation()
       }
       if (typeof event.stopPropagation === 'function') {
         event.stopPropagation()
       }
+    }
+    const handleSkip = (event: Event) => {
+      if (typeof event.preventDefault === 'function') {
+        event.preventDefault()
+      }
+      stopSkipEvent(event)
       this.requestCancel()
     }
-    skipButton.addEventListener('pointerdown', handleSkip)
+    skipButton.addEventListener('pointerdown', stopSkipEvent)
+    skipButton.addEventListener('pointerup', stopSkipEvent)
+    skipButton.addEventListener('mousedown', stopSkipEvent)
+    skipButton.addEventListener('mouseup', stopSkipEvent)
+    skipButton.addEventListener('touchstart', stopSkipEvent)
+    skipButton.addEventListener('touchend', stopSkipEvent)
     skipButton.addEventListener('click', handleSkip)
 
     footer.appendChild(hintEl)
@@ -4131,6 +3688,13 @@ export function initPluginDashboardYuiGuideRuntime() {
   const runtime = new PluginDashboardGuideRuntime()
   let receivedStartMessage = false
   runtime.preactivatePendingOverlay()
+
+  window.addEventListener(DESKTOP_INTERRUPT_ACK_EVENT, (event) => {
+    runtime.handleDesktopInterruptAckEvent(event)
+  }, true)
+  window.addEventListener(DESKTOP_NARRATION_FINISHED_EVENT, (event) => {
+    runtime.handleDesktopNarrationFinishedEvent(event)
+  }, true)
 
   window.addEventListener('message', (event: MessageEvent) => {
     const data = event.data

@@ -25,6 +25,17 @@
 
     let compactHistoryDropPayloadQueue = Promise.resolve();
 
+    function rejectPendingTextSessionStart(reason) {
+        if (!mod._textSessionStartRejecter) return;
+        var rejecter = mod._textSessionStartRejecter;
+        mod._textSessionStartRejecter = null;
+        var error = reason instanceof Error
+            ? reason
+            : new Error(reason || 'Text session start cancelled');
+        error.textSessionStartCancelled = true;
+        rejecter(error);
+    }
+
     function isHomeTutorialInteractionLocked() {
         try {
             return typeof window.isNekoHomeTutorialInteractionLocked === 'function'
@@ -1895,6 +1906,7 @@
                     clearTimeout(window.sessionTimeoutId);
                     window.sessionTimeoutId = null;
                 }
+                rejectPendingTextSessionStart(error);
                 S.sessionStartedResolver = null;
                 S.sessionStartedRejecter = null;
 
@@ -1974,6 +1986,7 @@
             } else {
                 S.voiceStartPending = false;
                 window.isMicStarting = false;
+                rejectPendingTextSessionStart('Voice start cancelled by goodbye');
                 S.sessionStartedResolver = null;
                 S.sessionStartedRejecter = null;
             }
@@ -2255,6 +2268,7 @@
                     clearTimeout(window.sessionTimeoutId);
                     window.sessionTimeoutId = null;
                 }
+                rejectPendingTextSessionStart(error);
                 S.sessionStartedResolver = null;
                 S.sessionStartedRejecter = null;
 
@@ -2351,57 +2365,68 @@
                 screenshotButton.disabled = true;
                 resetSessionButton.disabled = false;
 
-                // 同上：切换期间的初始化窗口比默认 3s 更长，延长 toast 避免真空感
-                var initToastMs2 = (S.isSwitchingCatgirl) ? 8000 : 3000;
-                window.showStatusToast(window.t ? window.t('app.initializingText') : '\u6B63\u5728\u521D\u59CB\u5316\u6587\u672C\u5BF9\u8BDD...', initToastMs2);
-
                 try {
-                    var sessionStartPromise = new Promise(function (resolve, reject) {
-                        S.sessionStartedResolver = resolve;
-                        S.sessionStartedRejecter = reject;
+                    if (!mod._textSessionStartPromise) {
+                        mod._textSessionStartPromise = (async function () {
+                            // 同上：切换期间的初始化窗口比默认 3s 更长，延长 toast 避免真空感
+                            var initToastMs2 = (S.isSwitchingCatgirl) ? 8000 : 3000;
+                            window.showStatusToast(window.t ? window.t('app.initializingText') : '\u6B63\u5728\u521D\u59CB\u5316\u6587\u672C\u5BF9\u8BDD...', initToastMs2);
 
-                        if (window.sessionTimeoutId) {
-                            clearTimeout(window.sessionTimeoutId);
-                            window.sessionTimeoutId = null;
-                        }
-                    });
+                            var sessionStartPromise = new Promise(function (resolve, reject) {
+                                S.sessionStartedResolver = resolve;
+                                S.sessionStartedRejecter = reject;
+                                mod._textSessionStartRejecter = reject;
 
-                    await window.ensureWebSocketOpen();
-                    S.socket.send(JSON.stringify({
-                        action: 'start_session',
-                        input_type: 'text',
-                        new_session: false
-                    }));
+                                if (window.sessionTimeoutId) {
+                                    clearTimeout(window.sessionTimeoutId);
+                                    window.sessionTimeoutId = null;
+                                }
+                            });
 
-                    // Timeout after WebSocket confirms connection
-                    window.sessionTimeoutId = setTimeout(function () {
-                        if (S.sessionStartedRejecter) {
-                            var rejecter = S.sessionStartedRejecter;
-                            S.sessionStartedResolver = null;
-                            S.sessionStartedRejecter = null;
-                            window.sessionTimeoutId = null;
+                            await window.ensureWebSocketOpen();
+                            S.socket.send(JSON.stringify({
+                                action: 'start_session',
+                                input_type: 'text',
+                                new_session: false
+                            }));
 
-                            if (S.socket && S.socket.readyState === WebSocket.OPEN) {
-                                S.socket.send(JSON.stringify({ action: 'end_session' }));
-                                console.log('[TextSession] timeout \u2192 sent end_session');
-                            }
+                            // Timeout after WebSocket confirms connection
+                            window.sessionTimeoutId = setTimeout(function () {
+                                if (S.sessionStartedRejecter) {
+                                    var rejecter = S.sessionStartedRejecter;
+                                    S.sessionStartedResolver = null;
+                                    S.sessionStartedRejecter = null;
+                                    mod._textSessionStartRejecter = null;
+                                    window.sessionTimeoutId = null;
 
-                            var timeoutMsg = (window.t && window.t('app.sessionTimeout')) || '\u542F\u52A8\u8D85\u65F6\uFF0C\u670D\u52A1\u5668\u53EF\u80FD\u7E41\u5FD9\uFF0C\u8BF7\u7A0D\u540E\u624B\u52A8\u91CD\u8BD5';
-                            rejecter(new Error(timeoutMsg));
-                        }
-                    }, 15000);
+                                    if (S.socket && S.socket.readyState === WebSocket.OPEN) {
+                                        S.socket.send(JSON.stringify({ action: 'end_session' }));
+                                        console.log('[TextSession] timeout \u2192 sent end_session');
+                                    }
 
-                    await sessionStartPromise;
+                                    var timeoutMsg = (window.t && window.t('app.sessionTimeout')) || '\u542F\u52A8\u8D85\u65F6\uFF0C\u670D\u52A1\u5668\u53EF\u80FD\u7E41\u5FD9\uFF0C\u8BF7\u7A0D\u540E\u624B\u52A8\u91CD\u8BD5';
+                                    rejecter(new Error(timeoutMsg));
+                                }
+                            }, 15000);
 
-                    S.isTextSessionActive = true;
-                    await window.showCurrentModel();
+                            await sessionStartPromise;
 
-                    textSendButton.disabled = false;
-                    textInputBox.disabled = false;
-                    screenshotButton.disabled = false;
-                    refreshHomeTutorialLockedControls(false);
+                            S.isTextSessionActive = true;
+                            await window.showCurrentModel();
 
-                    window.showStatusToast(window.t ? window.t('app.textChattingShort') : '\u6B63\u5728\u6587\u672C\u804A\u5929\u4E2D', 2000);
+                            textSendButton.disabled = false;
+                            textInputBox.disabled = false;
+                            screenshotButton.disabled = false;
+                            refreshHomeTutorialLockedControls(false);
+
+                            window.showStatusToast(window.t ? window.t('app.textChattingShort') : '\u6B63\u5728\u6587\u672C\u804A\u5929\u4E2D', 2000);
+                        })().finally(function () {
+                            mod._textSessionStartPromise = null;
+                            mod._textSessionStartRejecter = null;
+                        });
+                    }
+
+                    await mod._textSessionStartPromise;
                 } catch (error) {
                     console.error(window.t('console.startTextSessionFailed'), error);
                     window.hideVoicePreparingToast();
