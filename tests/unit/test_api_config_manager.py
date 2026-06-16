@@ -1363,5 +1363,106 @@ class TestVllmOmniRawKeyPassthrough:
         assert config_manager.get_tts_api_key('cosyvoice') is None
 
 
+# ---------------------------------------------------------------------------
+# GPT-SoVITS「是否启用」收口到 ttsModelProvider 下拉单一真相：snapshot 在
+# get_core_config() 这一处把下拉（与 pre-#1830 存量旧 gptsovitsEnabled 开关）派生进
+# GPTSOVITS_ENABLED，13 个下游读点全部不动。派生语义：ttsModelProvider 非空即唯一
+# 真相，仅缺失/空串时才回落旧开关——不用纯 OR，避免存量切走下拉后旧 true 粘住。
+# ---------------------------------------------------------------------------
+class TestGptsovitsEnabledDerivation:
+
+    @pytest.mark.unit
+    def test_dropdown_provider_only_enables(self, config_manager):
+        """Dropdown only: ttsModelProvider=gptsovits (no legacy flag) -> GPTSOVITS_ENABLED=True."""
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'ttsModelProvider': 'gptsovits',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['GPTSOVITS_ENABLED'] is True
+
+    @pytest.mark.unit
+    def test_legacy_flag_only_enables(self, config_manager):
+        """Legacy flag only: a pre-#1830 stored config (gptsovitsEnabled=true, no
+        ttsModelProvider) still derives GPTSOVITS_ENABLED=True, so existing GSV
+        users are not silently dropped."""
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'gptsovitsEnabled': True,
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['GPTSOVITS_ENABLED'] is True
+
+    @pytest.mark.unit
+    def test_neither_signal_disabled(self, config_manager):
+        """Neither signal: no dropdown and no legacy flag -> GPTSOVITS_ENABLED=False."""
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['GPTSOVITS_ENABLED'] is False
+
+    @pytest.mark.unit
+    def test_dropdown_other_provider_disabled(self, config_manager):
+        """Dropdown picked another provider: ttsModelProvider=vllm_omni -> GPTSOVITS_ENABLED=False."""
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'ttsModelProvider': 'vllm_omni',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['GPTSOVITS_ENABLED'] is False
+
+    @pytest.mark.unit
+    def test_provider_authoritative_over_stale_legacy_flag(self, config_manager):
+        """Dropdown wins over a stale legacy flag. After a user switches the
+        dropdown away from gptsovits, the file may still carry gptsovitsEnabled=true
+        (the frontend retired that field and the backend merges partially). A
+        non-empty ttsModelProvider is the single source of truth and must derive
+        False here — a naive OR would let the stale true stick and leave GSV stuck on."""
+        # 这就是不用纯 OR 的原因：旧 flag 在增量合并下会粘住，下拉切走也切不掉。
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'gptsovitsEnabled': True,
+            'ttsModelProvider': 'vllm_omni',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['GPTSOVITS_ENABLED'] is False
+
+    @pytest.mark.unit
+    def test_empty_provider_falls_back_to_legacy_flag(self, config_manager):
+        """An empty ttsModelProvider (treated as unselected) falls back to the
+        legacy flag, preserving existing configs."""
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'gptsovitsEnabled': True,
+            'ttsModelProvider': '',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['GPTSOVITS_ENABLED'] is True
+
+    @pytest.mark.unit
+    def test_enabled_snapshot_self_heals_is_custom(self, config_manager):
+        """End-to-end: dropdown=gptsovits + a GSV URL -> snapshot GPTSOVITS_ENABLED=True,
+        and get_model_api_config('tts_custom') self-heals is_custom=True (no separate
+        enableCustomApi needed), which is what dispatch's _gptsovits_is_selected requires."""
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'ttsModelProvider': 'gptsovits',
+            'ttsModelUrl': 'http://127.0.0.1:9881',
+            'ttsVoiceId': 'gsv:my_voice',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['GPTSOVITS_ENABLED'] is True
+        tts_cfg = config_manager.get_model_api_config('tts_custom')
+        assert tts_cfg['is_custom'] is True
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

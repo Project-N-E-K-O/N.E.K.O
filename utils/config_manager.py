@@ -3943,8 +3943,21 @@ class ConfigManager:
         enable_custom_api = core_cfg.get('enableCustomApi', False)
         config['ENABLE_CUSTOM_API'] = enable_custom_api
 
-        # GPT-SoVITS 配置映射
-        config['GPTSOVITS_ENABLED'] = _as_bool(core_cfg.get('gptsovitsEnabled', False))
+        # GPT-SoVITS「是否启用」收口到 ttsModelProvider 下拉这单一真相（见
+        # docs/design/tts-voice-source-unification.md §3/§4）。choke-point 在此派生，
+        # 13 个下游读点（core.py 路由 / 本文件 URL 解析与 TTS_VOICE_ID override /
+        # get_model_api_config 的 is_custom 自愈 / 各 router）以及 worker 的
+        # _gptsovits_is_selected 全部沿用 GPTSOVITS_ENABLED 不变。
+        # 派生语义：ttsModelProvider 一旦写出（非空）即唯一真相——选中 gptsovits 才启用，
+        # 选别家就关；旧 gptsovitsEnabled 开关仅作 pre-#1830 存量（只有旧 flag、无
+        # ttsModelProvider）的兜底。刻意不用 `旧flag OR 下拉` 的纯 OR：前端已退役
+        # gptsovitsEnabled 写路径（保存不再写），而旧 flag 在增量合并下会粘住；若纯 OR，
+        # 存量用户把下拉切走后旧 true 仍会兜出 GSV，切不掉。
+        _tts_model_provider = str(core_cfg.get('ttsModelProvider', '') or '').strip()
+        if _tts_model_provider:
+            config['GPTSOVITS_ENABLED'] = (_tts_model_provider == 'gptsovits')
+        else:
+            config['GPTSOVITS_ENABLED'] = _as_bool(core_cfg.get('gptsovitsEnabled', False))
 
         config['ELEVENLABS_API_KEY'] = core_cfg.get('assistApiKeyElevenlabs', '')
         config['TTS_PROVIDER'] = core_cfg.get('ttsProvider', '')

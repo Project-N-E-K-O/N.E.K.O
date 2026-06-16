@@ -111,7 +111,9 @@ def test_tts_voice_id_not_rewritten_when_gptsovits_disabled(mock_page: Page, run
     """)
 
     assert payload["enableCustomApi"] is True
-    assert payload["gptsovitsEnabled"] is False
+    # gptsovitsEnabled 已退役，保存不再外发；启用状态由 ttsModelProvider 表达（这里 custom，未选 GSV）。
+    assert "gptsovitsEnabled" not in payload
+    assert payload["ttsModelProvider"] == "custom"
     assert payload["ttsModelUrl"] == "https://example.com/v1/audio/speech"
     assert payload["ttsModelId"] == "tts-1"
     assert payload["ttsVoiceId"] == "alloy"
@@ -599,9 +601,10 @@ def test_gptsovits_dropdown_shows_gsv_fields_and_saves_enabled(mock_page: Page, 
     - the registry-only provider 'gptsovits' shows up in the TTS dropdown (Codex #3);
     - selecting it shows the GSV-specific fields (URL + voice grid) and hides the
       standard url/model/key/voice fields;
-    - on save ttsModelProvider/ttsProvider=='gptsovits', gptsovitsEnabled is true
-      (dual migration signal), ttsModelUrl is the GSV URL, ttsVoiceId is the GSV
-      voice, and no __gptsovits_disabled__| placeholder is written.
+    - on save ttsModelProvider/ttsProvider=='gptsovits' and gptsovitsEnabled is no
+      longer emitted (retired single source of truth — backend derives
+      GPTSOVITS_ENABLED from ttsModelProvider), ttsModelUrl is the GSV URL,
+      ttsVoiceId is the GSV voice, and no __gptsovits_disabled__| placeholder is written.
     """
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
     mock_page.goto(f"{running_server}/api_key")
@@ -654,10 +657,53 @@ def test_gptsovits_dropdown_shows_gsv_fields_and_saves_enabled(mock_page: Page, 
 
     assert payload["ttsModelProvider"] == "gptsovits"
     assert payload["ttsProvider"] == "gptsovits"
-    assert payload["gptsovitsEnabled"] is True
+    # gptsovitsEnabled 已退役，保存不再外发；启用收口到 ttsModelProvider=='gptsovits' 单一真相，
+    # 后端 snapshot 据此派生 GPTSOVITS_ENABLED（见 utils/config_manager.py）。
+    assert "gptsovitsEnabled" not in payload
     assert payload["ttsModelUrl"] == "http://127.0.0.1:9881"
     assert payload["ttsVoiceId"] == "my_voice"
     assert not payload["ttsVoiceId"].startswith("__gptsovits_disabled__|")
+
+
+@pytest.mark.frontend
+def test_load_gptsovits_enabled_by_dropdown_with_remote_url(mock_page: Page, running_server: str):
+    """Reload path after gptsovitsEnabled was retired: a dropdown-only user with a
+    REMOTE GSV URL (which the localhost legacy heuristic does not recognize) and no
+    stored gptsovitsEnabled (response returns null) must still load as enabled — the
+    GSV URL/voice fields are repopulated, mirroring the backend snapshot derivation.
+    The negative case (provider switched away while a stale URL lingers) must NOT
+    re-enable GSV.
+    """
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#ttsModelProvider option[value='gptsovits']", state="attached", timeout=10000)
+
+    result = mock_page.evaluate("""
+        () => {
+            const remoteUrl = 'http://192.168.1.50:9881';
+            // 下拉为准：provider=gptsovits + gptsovitsEnabled=null（未存）+ 远程 URL
+            document.getElementById('gptsovitsApiUrl').value = '';
+            loadGptSovitsConfig(remoteUrl, 'gsv:remote_voice', '', '', null, 'gptsovits');
+            const enabled = {
+                state: _loadedGptSovitsState,
+                url: document.getElementById('gptsovitsApiUrl').value,
+            };
+            // 切走下拉：provider=vllm_omni + 残留 gptsovitsEnabled=true 不得把 GSV 兜回来
+            document.getElementById('gptsovitsApiUrl').value = '';
+            loadGptSovitsConfig(remoteUrl, 'gsv:remote_voice', '', '', true, 'vllm_omni');
+            const switchedAway = {
+                state: _loadedGptSovitsState,
+                url: document.getElementById('gptsovitsApiUrl').value,
+            };
+            return { enabled, switchedAway };
+        }
+    """)
+
+    assert result["enabled"]["state"] == "enabled"
+    assert result["enabled"]["url"] == "http://192.168.1.50:9881"
+    assert result["switchedAway"]["state"] == "none"
+    assert result["switchedAway"]["url"] == ""
 
 
 @pytest.mark.frontend

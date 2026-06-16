@@ -1626,13 +1626,15 @@ async function loadCurrentApiKey() {
             setInputValue('ttsModelApiKey', data.ttsModelApiKey);
             setInputValue('ttsVoiceId', data.ttsVoiceId);
 
-            // 加载 GPT-SoVITS 配置（优先使用显式启用状态，兼容旧配置）
+            // 加载 GPT-SoVITS 配置：启用状态以 ttsModelProvider 下拉为准，
+            // 无下拉时回落旧 gptsovitsEnabled / localhost 启发式（兼容存量）
             loadGptSovitsConfig(
                 data.ttsModelUrl,
                 data.ttsVoiceId,
                 data.ttsModelId,
                 data.ttsModelApiKey,
                 data.gptsovitsEnabled,
+                data.ttsModelProvider,
             );
 
             // 加载MCPR_TOKEN
@@ -1709,9 +1711,9 @@ let pendingApiKey = null;
 
 /**
  * 从保存的 TTS 字段解析并加载 GPT-SoVITS v3 配置
- * 优先使用显式 gptsovitsEnabled，旧配置再做有限兼容判断
+ * 启用状态以 ttsModelProvider 下拉为准；无下拉时回落旧 gptsovitsEnabled / localhost 启发式（兼容存量）
  */
-function loadGptSovitsConfig(ttsModelUrl, ttsVoiceId, ttsModelId = '', ttsModelApiKey = '', gptsovitsEnabled = null) {
+function loadGptSovitsConfig(ttsModelUrl, ttsVoiceId, ttsModelId = '', ttsModelApiKey = '', gptsovitsEnabled = null, ttsModelProvider = '') {
     // 检查是否是禁用但保存了配置的情况
     let isDisabledWithConfig = false;
     let savedUrl = '';
@@ -1724,11 +1726,24 @@ function loadGptSovitsConfig(ttsModelUrl, ttsVoiceId, ttsModelId = '', ttsModelA
         if (parts.length >= 2) savedVoiceId = parts[1];
     }
 
+    // 启用判定与后端 snapshot 派生对偶（见 utils/config_manager.py）：ttsModelProvider
+    // 一旦写出（非空）即唯一真相——选中 gptsovits 才启用，选别家就关，旧 gptsovitsEnabled
+    // 不再参与；仅 provider 缺失/空串（pre-#1830 存量）时才回落显式旧 flag / localhost 启发式。
+    // 这保证远程 GSV 的 dropdown-only 用户（startup heuristic 不认远程 URL）reload 时仍回填
+    // 配置，且切走下拉后残留旧 flag 不会把 GSV 兜回来。
+    const provider = (ttsModelProvider || '').trim();
     const hasExplicitEnabledFlag = typeof gptsovitsEnabled === 'boolean';
     const isLegacyEnabled = !hasExplicitEnabledFlag
         && !isDisabledWithConfig
         && looksLikeLegacyGptSovitsConfig(ttsModelUrl, ttsModelId, ttsModelApiKey);
-    const isEnabled = !isDisabledWithConfig && (hasExplicitEnabledFlag ? gptsovitsEnabled : isLegacyEnabled);
+    let isEnabled;
+    if (isDisabledWithConfig) {
+        isEnabled = false;
+    } else if (provider) {
+        isEnabled = (provider === 'gptsovits');
+    } else {
+        isEnabled = hasExplicitEnabledFlag ? gptsovitsEnabled : isLegacyEnabled;
+    }
 
     _loadedGptSovitsState = isDisabledWithConfig ? 'disabled' : (isEnabled ? 'enabled' : 'none');
 
@@ -2256,9 +2271,11 @@ async function save_button_down(e) {
     let ttsVoiceId = getVal('ttsVoiceId');
 
     // 检查 GPT-SoVITS v3 配置
-    // GSV「是否启用」迁到 ttsModelProvider 下拉：选中 gptsovits 即启用，取代旧的独立
-    // 启用开关。迁移期仍把 gptsovitsEnabled=true 写进 payload（后端整条 GSV 链路 key off
-    // GPTSOVITS_ENABLED），与 ttsModelProvider='gptsovits' 双信号并存。
+    // GSV「是否启用」收口到 ttsModelProvider 下拉单一真相：选中 gptsovits 即启用。
+    // gptsovitsEnabled 已退役，保存时不再写进 payload——后端 snapshot 直接从
+    // ttsModelProvider 派生 GPTSOVITS_ENABLED（见 utils/config_manager.py）。这里的
+    // 局部 gptsovitsEnabled 只是本函数内据下拉算出的本地标志，仅供 URL 校验 /
+    // ttsModelUrl·ttsVoiceId 赋值 / ttsProvider 复用，不外发。
     const gptsovitsEnabled = (document.getElementById('ttsModelProvider')?.value || '').trim() === 'gptsovits';
     const gptsovitsConfigForSave = getGptSovitsConfigForSave();
 
@@ -2331,7 +2348,7 @@ async function save_button_down(e) {
         agentModelUrl, agentModelId, agentModelApiKey,
         omniModelUrl, omniModelId, omniModelApiKey,
         ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId,
-        mcpToken, enableCustomApi, gptsovitsEnabled,
+        mcpToken, enableCustomApi,
         useMimoTokenPlan,
         assistApiKeyMimoTokenPlan: mimoTokenPlanKey,
         resolvedProviderUrls: _resolvedProviderUrls,
@@ -2429,7 +2446,9 @@ function refreshAutoResolvedModelUrlsForSave(params) {
     };
 
     MODEL_TYPES.forEach(modelType => {
-        if (modelType === 'tts' && params.gptsovitsEnabled) return;
+        // GSV 选中时 tts URL 由 GSV 专属字段提供，跳过自动解析。启用信号收口到
+        // ttsModelProvider 下拉（gptsovitsEnabled 已不再外发）。
+        if (modelType === 'tts' && (params.ttsModelProvider || '').trim() === 'gptsovits') return;
 
         const providerField = `${modelType}ModelProvider`;
         const urlField = `${modelType}ModelUrl`;
