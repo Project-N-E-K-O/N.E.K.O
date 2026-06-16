@@ -4,9 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>应用启动器 - N.E.K.O</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;600&display=swap" rel="stylesheet">
     <style>
         * {
             margin: 0;
@@ -15,7 +12,7 @@
         }
 
         body {
-            font-family: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, 'Microsoft YaHei', 'SimHei', 'Segoe UI', sans-serif;
             min-height: 100vh;
             padding: 20px;
             background: linear-gradient(135deg, #fdf2f8 0%, #fce7f3 25%, #e0e7ff 50%, #dbeafe 75%, #f0fdf4 100%);
@@ -897,7 +894,13 @@
 
     function escapeHtml(str) {
         if (!str) return '';
-        return str.replace(/[&<>]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));
+        return str.replace(/[&<>"']/g, m => ({
+            '&':'&amp;',
+            '<':'&lt;',
+            '>':'&gt;',
+            '"':'&quot;',
+            "'":'&#39;'
+        }[m]));
     }
 
     function getTypeTag(type) {
@@ -1063,6 +1066,7 @@
         try {
             const result = await callPlugin('launch_app', { app_id: appId });
             showMessage(`✨ ${result.message || '启动成功'}`, 'success');
+            await loadRecentApps();
         } catch (err) {
             showMessage(`❌ ${err.message}`, 'error');
         }

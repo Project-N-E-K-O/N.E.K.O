@@ -65,7 +65,7 @@
   "status.autostart_disabled": "Disabled",
   
   "ui.title": "🚀 App Launcher",
-  "ui.subtitle": "Add your常用 software here, and Neko can launch them for you~",
+  "ui.subtitle": "Add your commonly used software here, and Neko can launch them for you~",
   "ui.stat.registered": "Registered",
   "ui.stat.available": "Available",
   "ui.stat.missing": "Missing",
