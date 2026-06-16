@@ -5834,6 +5834,13 @@ function CompactChatApp({
               event.stopPropagation();
               return;
             }
+            if (activeToolItem) {
+              event.stopPropagation();
+              setIsCursorInsideHostWindow(true);
+              clearActiveCursorToolSelection();
+              closeCompactInputToolFanFromUserClick();
+              return;
+            }
             compactInputToolFanOpenIntentRef.current = 'click';
             clearCompactInputToolFanCloseTimer();
             setToolMenuOpen(open => !open);
