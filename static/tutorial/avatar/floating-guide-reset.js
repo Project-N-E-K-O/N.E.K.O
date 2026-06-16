@@ -26,12 +26,22 @@
     }
 
     function saveGuideState(state) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+            return true;
+        } catch (error) {
+            console.warn('[AvatarFloatingGuideReset] Failed to persist guide state:', error);
+            return false;
+        }
     }
 
     function clearHomeTutorialPromptResetState(round) {
-        HOME_TUTORIAL_KEYS.forEach((key) => localStorage.removeItem(key));
-        localStorage.setItem(HOME_MANUAL_INTENT_KEY, 'true');
+        try {
+            HOME_TUTORIAL_KEYS.forEach((key) => localStorage.removeItem(key));
+            localStorage.setItem(HOME_MANUAL_INTENT_KEY, 'true');
+        } catch (error) {
+            console.warn('[AvatarFloatingGuideReset] Failed to reset home tutorial prompt state:', error);
+        }
         window.dispatchEvent(new CustomEvent('neko:home-tutorial-reset', {
             detail: { page: 'home', round, reason: 'avatar_floating_guide_reset' },
         }));
