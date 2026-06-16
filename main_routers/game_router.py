@@ -81,6 +81,7 @@ from config.prompts.prompts_game_route import (
     get_game_postgame_realtime_nudge_labels,
 )
 from .shared_state import get_config_manager, get_session_manager
+from .system_router import _validate_local_mutation_request
 from main_logic.mirror_meta import (
     MIRROR_USER_TEXT_INPUT_TYPE,
     MIRROR_USER_VOICE_TRANSCRIPT_INPUT_TYPE,
@@ -6628,6 +6629,10 @@ async def game_project_context(game_type: str, request: Request):
     if not isinstance(data, dict):
         return {"ok": False, "reason": "invalid_body"}
 
+    validation_error = _validate_local_mutation_request(request, payload=data)
+    if validation_error is not None:
+        return validation_error
+
     role = str(data.get("role") or "").strip()
     text = str(data.get("text") or "").strip()
     if role not in {"assistant", "user"}:
@@ -6646,12 +6651,21 @@ async def game_project_context(game_type: str, request: Request):
 
     append_icebreaker_context_async = getattr(mgr, "append_icebreaker_context_async", None)
     append_icebreaker_context = getattr(mgr, "append_icebreaker_context", None)
-    if callable(append_icebreaker_context_async):
-        ok = await append_icebreaker_context_async(role, text)
-    elif callable(append_icebreaker_context):
-        ok = append_icebreaker_context(role, text)
-    else:
-        return {"ok": False, "reason": "context_method_unavailable", "lanlan_name": lanlan_name}
+    try:
+        if callable(append_icebreaker_context_async):
+            ok = await append_icebreaker_context_async(role, text)
+        elif callable(append_icebreaker_context):
+            ok = append_icebreaker_context(role, text)
+        else:
+            return {"ok": False, "reason": "context_method_unavailable", "lanlan_name": lanlan_name}
+    except Exception as exc:
+        logger.warning(
+            "new_user_icebreaker context append failed for %s: %s",
+            lanlan_name,
+            exc,
+            exc_info=True,
+        )
+        return {"ok": False, "reason": "context_append_failed", "lanlan_name": lanlan_name}
 
     return {
         "ok": bool(ok),

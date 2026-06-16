@@ -3904,14 +3904,22 @@
             return;
         }
         state.homeTutorialInteractionLocked = next;
+        var compactStateReset = false;
         if (next && getCurrentCompactChatState() === 'input') {
             resetCompactChatState();
+            compactStateReset = true;
         }
         state.viewProps = Object.assign({}, ensureViewProps(), {
             composerDisabled: next,
             compactChatState: getCurrentCompactChatState()
         });
         renderWindow();
+        if (compactStateReset) {
+            syncChatSurfaceModeUI();
+            dispatchHostEvent('compact-chat-state-change', {
+                state: getCurrentCompactChatState()
+            });
+        }
     }
 
     function setHomeTutorialInputLocked(locked, reason) {
@@ -3920,10 +3928,22 @@
             return;
         }
         state.homeTutorialInputLocked = next;
+        var compactStateReset = false;
+        if (next && getCurrentCompactChatState() === 'input') {
+            resetCompactChatState();
+            compactStateReset = true;
+        }
         state.viewProps = Object.assign({}, ensureViewProps(), {
-            compactInputLocked: next
+            compactInputLocked: next,
+            compactChatState: getCurrentCompactChatState()
         });
         renderWindow();
+        if (compactStateReset) {
+            syncChatSurfaceModeUI();
+            dispatchHostEvent('compact-chat-state-change', {
+                state: getCurrentCompactChatState()
+            });
+        }
     }
 
     function setAvatarToolMenuOpen(open, reason) {
@@ -6146,22 +6166,25 @@
         window.addEventListener('neko:tutorial-completed', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
-            setGalgameModeTemporarilyDisabled(false);
             setHomeTutorialInteractionLocked(false, 'tutorial-completed');
+            setHomeTutorialInputLocked(false, 'tutorial-completed');
+            setGalgameModeTemporarilyDisabled(false);
         });
 
         window.addEventListener('neko:tutorial-skipped', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
-            setGalgameModeTemporarilyDisabled(false);
             setHomeTutorialInteractionLocked(false, 'tutorial-skipped');
+            setHomeTutorialInputLocked(false, 'tutorial-skipped');
+            setGalgameModeTemporarilyDisabled(false);
         });
 
         window.addEventListener('neko:tutorial-ended-without-completion', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
-            setGalgameModeTemporarilyDisabled(false);
             setHomeTutorialInteractionLocked(false, 'tutorial-ended-without-completion');
+            setHomeTutorialInputLocked(false, 'tutorial-ended-without-completion');
+            setGalgameModeTemporarilyDisabled(false);
         });
 
         // Refresh option list whenever an assistant turn finishes streaming.

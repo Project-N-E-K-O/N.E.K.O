@@ -253,6 +253,7 @@
             if (broadcastChannel || nativeRelay) {
                 return {
                     postMessage(message) {
+                        let delivered = false;
                         const outgoingMessage = Object.assign({}, message || {});
                         const tutorialRunId = getTutorialRunId();
                         if (tutorialRunId && !outgoingMessage.tutorialRunId) {
@@ -261,13 +262,20 @@
                         if (broadcastChannel && typeof broadcastChannel.postMessage === 'function') {
                             try {
                                 broadcastChannel.postMessage(outgoingMessage);
-                            } catch (_) {}
+                                delivered = true;
+                            } catch (error) {
+                                console.warn('[TutorialInteractionTakeover] BroadcastChannel delivery failed:', error);
+                            }
                         }
                         if (nativeRelay) {
                             try {
                                 nativeRelay.relayToChat(outgoingMessage);
-                            } catch (_) {}
+                                delivered = true;
+                            } catch (error) {
+                                console.warn('[TutorialInteractionTakeover] native relay delivery failed:', error);
+                            }
                         }
+                        return delivered;
                     }
                 };
             }
@@ -306,8 +314,7 @@
             }
 
             try {
-                channel.postMessage(message);
-                return true;
+                return channel.postMessage(message) !== false;
             } catch (error) {
                 console.warn('[TutorialInteractionTakeover] 同步独立聊天窗命令失败:', normalizedAction, error);
                 return false;
@@ -521,6 +528,9 @@
             this.setActive(false);
             this.clearExternalizedChatFx();
             this.setExternalizedChatButtonsDisabled(false);
+            if (this.externalChatCommandBus && typeof this.externalChatCommandBus.destroy === 'function') {
+                this.externalChatCommandBus.destroy();
+            }
             this.releaseFaceForwardLock();
             this.destroyed = true;
 

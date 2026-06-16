@@ -1718,6 +1718,12 @@
         return (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
     }
 
+    function isYuiGuideCommandForCurrentLanlan(data) {
+        if (!data || !data.lanlan_name) return true;
+        var currentName = getCurrentLanlanName();
+        return !!currentName && data.lanlan_name === currentName;
+    }
+
     function isVoiceChatDesktopLayout() {
         return !(window.appUtils && typeof window.appUtils.isMobile === 'function' && window.appUtils.isMobile());
     }
@@ -2358,41 +2364,49 @@
                     }
                     case 'yui_guide_set_chat_buttons_disabled': {
                         if (!isStandaloneChatPage() || !document.body) break;
+                        if (!isYuiGuideCommandForCurrentLanlan(event.data)) break;
                         applyYuiGuideChatLockState(event.data.disabled !== false);
                         break;
                     }
                     case 'yui_guide_set_chat_input_locked': {
                         if (!isStandaloneChatPage() || !document.body) break;
+                        if (!isYuiGuideCommandForCurrentLanlan(event.data)) break;
                         applyYuiGuideChatInputLocked(event.data.locked === true, event.data.reason || '');
                         break;
                     }
                     case 'yui_guide_set_compact_history_open': {
                         if (!isStandaloneChatPage() || !document.body) break;
+                        if (!isYuiGuideCommandForCurrentLanlan(event.data)) break;
                         applyYuiGuideCompactHistoryOpen(event.data.open === true, event.data.reason || '');
                         break;
                     }
                     case 'yui_guide_set_chat_spotlight': {
                         if (!isStandaloneChatPage() || !document.body) break;
+                        if (!isYuiGuideCommandForCurrentLanlan(event.data)) break;
                         applyYuiGuideChatSpotlight(event.data.kind || '');
                         break;
                     }
                     case 'yui_guide_set_avatar_tool_menu_open': {
                         if (!isStandaloneChatPage() || !document.body) break;
+                        if (!isYuiGuideCommandForCurrentLanlan(event.data)) break;
                         applyYuiGuideAvatarToolMenuOpen(event.data.open === true, event.data.reason || '');
                         break;
                     }
                     case 'yui_guide_set_compact_tool_fan_open': {
                         if (!isStandaloneChatPage() || !document.body) break;
+                        if (!isYuiGuideCommandForCurrentLanlan(event.data)) break;
                         applyYuiGuideCompactToolFanOpen(event.data.open === true, event.data.reason || '');
                         break;
                     }
                     case 'yui_guide_rotate_compact_tool_wheel': {
                         if (!isStandaloneChatPage() || !document.body) break;
+                        if (!isYuiGuideCommandForCurrentLanlan(event.data)) break;
                         applyYuiGuideCompactToolWheelRotate(event.data);
                         break;
                     }
                     case 'yui_guide_set_compact_tool_wheel_index': {
                         if (!isStandaloneChatPage() || !document.body) break;
+                        if (!isYuiGuideCommandForCurrentLanlan(event.data)) break;
                         applyYuiGuideCompactToolWheelIndex(event.data);
                         break;
                     }
