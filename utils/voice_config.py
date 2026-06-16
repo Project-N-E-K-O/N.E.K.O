@@ -1,0 +1,150 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Structured per-character voice config (voice-source unification, blueprint §2/§9).
+
+A character's voice used to be a single flat ``voice_id`` string that overloaded
+three orthogonal things and leaked routing through prefixes
+(``gsv:`` / ``eleven:`` / ``__gptsovits_disabled__|``). This module models it as a
+single structured object instead:
+
+* **source** — where the voice identity comes from: ``preset`` (official built-in)
+  / ``clone`` (user-cloned) / ``design`` (text-described, generated; future).
+* **provider** — which TTS backend owns it (``gemini`` / ``gptsovits`` /
+  ``cosyvoice`` / ``elevenlabs`` / ``minimax`` / ``vllm_omni`` / ``free`` / ...).
+* **ref** — the voice identity *within* that provider (preset name / clone id /
+  design id). Not globally unique; only unique per ``(provider, ref)``.
+* **config** — optional ``{url, model, api_key_ref}`` for self-pointed local/hosted
+  endpoints; empty for native / SaaS providers that resolve creds elsewhere.
+
+This module holds **only** the data model and the *unambiguous, context-free*
+legacy-prefix parser. Resolving a *bare* legacy id (no prefix) to its
+(source, provider) needs runtime context (current API key buckets / native
+registry / free catalog) and therefore lives on ``ConfigManager`` next to the
+existing ``validate_voice_id`` resolution, which it reuses.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+# Voice sources (dimension B). Empty string = "no voice configured".
+SOURCE_PRESET = "preset"
+SOURCE_CLONE = "clone"
+SOURCE_DESIGN = "design"
+VALID_SOURCES = frozenset({SOURCE_PRESET, SOURCE_CLONE, SOURCE_DESIGN})
+
+
+@dataclass(frozen=True)
+class VoiceConfig:
+    """One character's voice, as two orthogonal dimensions + a ref + optional config.
+
+    Frozen so it can be passed around dispatch without aliasing surprises; use
+    :meth:`to_dict` for the JSON-at-rest form and :meth:`from_any` to read back
+    either the new object form or a legacy flat string.
+    """
+
+    source: str = ""
+    provider: str = ""
+    ref: str = ""
+    config: dict[str, Any] = field(default_factory=dict)
+
+    def is_empty(self) -> bool:
+        """True when no voice is configured (no ref / source / provider)."""
+        return not self.ref and not self.source and not self.provider
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serializable form for characters.json. ``config`` omitted when empty to
+        keep the stored object minimal for native / SaaS providers."""
+        d: dict[str, Any] = {
+            "source": self.source,
+            "provider": self.provider,
+            "ref": self.ref,
+        }
+        if self.config:
+            d["config"] = dict(self.config)
+        return d
+
+    @classmethod
+    def from_any(cls, value: Any) -> "VoiceConfig":
+        """Read a VoiceConfig from either the new object form or a legacy value.
+
+        * ``VoiceConfig`` → returned as-is.
+        * ``dict`` with source/provider/ref → the structured object.
+        * ``str`` → the *unambiguous* legacy prefix is parsed; a bare id (no
+          prefix) is carried through as ``ref`` only — callers that need its
+          provider/source must run the context-aware normalizer
+          (``ConfigManager.normalize_voice_id_to_config``).
+        * anything else → empty.
+        """
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, str):
+            parsed = parse_legacy_voice_id(value)
+            if parsed is not None:
+                return parsed
+            return cls(ref=value.strip())
+        if isinstance(value, dict):
+            # Tolerate a dict that is actually a stored object.
+            return cls(
+                source=str(value.get("source") or ""),
+                provider=str(value.get("provider") or ""),
+                ref=str(value.get("ref") or ""),
+                config=dict(value.get("config") or {}),
+            )
+        return cls()
+
+
+def parse_legacy_voice_id(voice_id: Any) -> "VoiceConfig | None":
+    """Parse the *unambiguous* prefixed legacy ``voice_id`` forms into a VoiceConfig.
+
+    Handles exactly the forms whose provider is encoded in a prefix (so no runtime
+    context is needed):
+
+    * empty → empty VoiceConfig (no voice).
+    * ``__gptsovits_disabled__|...`` → empty: the retired GPT-SoVITS "disabled"
+      placeholder is *not* an active voice; it froze a now-unselected config into
+      voice_id and is dropped on normalize (blueprint §6).
+    * ``eleven:<id>`` → ``{clone, elevenlabs, <id>}``.
+    * ``gsv:<id>`` → ``{clone, gptsovits, <id>}``.
+
+    Returns ``None`` for a **bare** id (no recognizable prefix): its
+    (source, provider) is ambiguous without runtime context, so the caller must
+    fall back to the context-aware normalizer.
+    """
+    # Imports are local to avoid import cycles (config / utils.* import this module
+    # transitively in some paths) and to keep the data model dependency-light.
+    from config import GSV_VOICE_PREFIX
+    from utils.elevenlabs_tts_voices import ELEVENLABS_TTS_VOICE_PREFIX
+    from utils.gptsovits_config import GSV_DISABLED_VOICE_PREFIX
+
+    s = str(voice_id or "").strip()
+    if not s:
+        return VoiceConfig()
+    if s.startswith(GSV_DISABLED_VOICE_PREFIX):
+        return VoiceConfig()
+    if s.startswith(ELEVENLABS_TTS_VOICE_PREFIX):
+        return VoiceConfig(
+            source=SOURCE_CLONE,
+            provider="elevenlabs",
+            ref=s[len(ELEVENLABS_TTS_VOICE_PREFIX):].strip(),
+        )
+    if s.startswith(GSV_VOICE_PREFIX):
+        return VoiceConfig(
+            source=SOURCE_CLONE,
+            provider="gptsovits",
+            ref=s[len(GSV_VOICE_PREFIX):].strip(),
+        )
+    return None
