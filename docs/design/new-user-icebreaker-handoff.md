@@ -10,7 +10,7 @@
 
 ## 框架定稿
 
-第一版按“独立轻 runtime + 复用现有聊天和选项框”搭，不新增后端接口，不重写 Galgame。
+第一版按“独立轻 runtime + 复用现有聊天和选项框”搭，避免新增独立聊天系统或改写 Galgame；但需要少量受本地 mutation 守卫保护的后端 endpoint，把破冰台词写入现有会话上下文并复用项目 TTS。
 
 ```text
 avatar floating guide end event
@@ -23,6 +23,21 @@ avatar floating guide end event
   -> option.next branch / leaf handoff
   -> clear prompt and return to normal chat
 ```
+
+### 后端依赖
+
+破冰流程需要复用现有聊天会话，因此包含两个 `main_routers/game_router.py` 下的受保护接口：
+
+- `POST /api/game/new_user_icebreaker/context`
+  - 请求体：`lanlan_name`、`role`（`assistant` 或 `user`）、`text`、`session_id`、`request_id`，以及可选 `event` 元数据。
+  - 安全：必须通过 `_validate_local_mutation_request` 的 Origin + `X-CSRF-Token` 校验；前端由 `new-user-icebreaker.js` 发送标准 mutation headers。
+  - 行为：调用 `LLMSessionManager.append_icebreaker_context*()`，按 `request_id` 幂等去重后写入当前会话 history 或 realtime prime 队列。
+  - 响应：成功返回 `{ ok: true, method: "project_session_history", lanlan_name, game_type, session_id }`；非法 role、空 text、超长 text、缺少角色或 session manager 时返回 `{ ok: false, reason: ... }`；CSRF 失败返回 403 + `csrf_validation_failed`。
+- `POST /api/game/new_user_icebreaker/speak`
+  - 请求体：`lanlan_name`、`line`、`request_id`、`session_id`、`mirror_text`、`emit_turn_end`、`interrupt_audio` 和 `event` 元数据。
+  - 行为：复用项目 TTS/turn-end 链路播放猫娘预置台词；失败时 runtime 可按文本估算时长兜底等待。
+
+除此之外不新增用户画像表、不新增 Galgame 业务接口，也不改变普通主动搭话状态机。
 
 实现文件建议：
 
