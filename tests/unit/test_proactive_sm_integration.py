@@ -1257,6 +1257,31 @@ async def test_deliver_agent_callbacks_text_drops_topic_hook_when_voice_took_ove
     assert delivered is False
     assert fut.done() and fut.result() is False
     assert sess.called_with == []  # prompt_ephemeral never fired
+    # Empty batch must free the inflight slot or the next cue stalls to timeout.
+    mgr.proactive_manager.release_inflight_noop.assert_called_once()
+
+
+async def test_deliver_agent_callbacks_text_drops_topic_hook_when_voice_takes_over_during_awaits():
+    """Codex/CodeRabbit P2: the re-gate must also run AFTER the CLAIM/PHASE2
+    awaits, immediately before prompt_ephemeral — a takeover landing during those
+    awaits would otherwise slip through. Simulate voice going blocked only at the
+    second (prompt-adjacent) check."""
+    sess = _FakeOmniOffline(delivered=True)
+    mgr = _make_mgr(session=sess)
+    mgr._voice_delivery_blocked = MagicMock(side_effect=[False, True])
+    fut = asyncio.get_running_loop().create_future()
+    topic_cb = {
+        "_callback_delivery_id": "th1", "channel": "topic_hook",
+        "status": "completed", "summary": "deep topic", DELIVERY_ACK_FUTURE_KEY: fut,
+    }
+
+    delivered = await LLMSessionManager._deliver_agent_callbacks_text(mgr, [topic_cb])
+
+    assert delivered is False
+    assert fut.done() and fut.result() is False
+    assert sess.called_with == []  # dropped at the prompt-adjacent re-gate
+    assert mgr._voice_delivery_blocked.call_count == 2
+    mgr.proactive_manager.release_inflight_noop.assert_called_once()
 
 
 async def test_deliver_agent_callbacks_text_keeps_topic_hook_in_plain_text_session():

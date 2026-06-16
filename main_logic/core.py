@@ -6306,19 +6306,20 @@ class LLMSessionManager:
         """
         async with self._proactive_write_lock:
             async with self.lock:
-                # Delivery-point voice re-gate. A topic hook can pass the release
-                # gate, get copied into callbacks_snapshot + removed from
-                # pending_agent_callbacks, then this trigger parks on
-                # try_start_proactive / _proactive_write_lock while the user
-                # starts an audio session. That in-flight snapshot is in neither
-                # queue, so the voice-start sweep (_drop_pending_topic_hooks_for_voice)
-                # can't reach it — and the release gate's check has gone stale.
-                # Re-check here, at the actual prompt, and drop topic hooks if
-                # voice has since taken over (ack False so TopicHookPool retries
-                # on a text session). The existing retracted filter below then
-                # removes them and their extras.
+                # Delivery-point voice re-gate (1/2 — cheap early-out before the
+                # sid claim). A topic hook can pass the release gate, get copied
+                # into callbacks_snapshot + removed from pending_agent_callbacks,
+                # then this trigger parks on try_start_proactive /
+                # _proactive_write_lock while the user starts an audio session.
+                # That in-flight snapshot is in neither queue, so the voice-start
+                # sweep can't reach it and the release gate's check has gone
+                # stale. Drop topic hooks if voice has since taken over (ack False
+                # so TopicHookPool retries on a text session); the retracted
+                # filter below removes them + their extras. A SECOND identical
+                # re-gate runs right before prompt_ephemeral to catch a takeover
+                # that lands during the CLAIM/PHASE2 awaits in between.
                 if self._voice_delivery_blocked() and self._retract_topic_hook_snapshots(callbacks_snapshot):
-                    logger.info("[%s] trigger_agent_callbacks: topic hook dropped at text prompt — voice took over mid-delivery", self.lanlan_name)
+                    logger.info("[%s] trigger_agent_callbacks: topic hook dropped before claim — voice took over mid-delivery", self.lanlan_name)
                 self._purge_retracted_agent_callback_extras(callbacks_snapshot)
                 active_callbacks = [
                     cb for cb in callbacks_snapshot
@@ -6326,6 +6327,11 @@ class LLMSessionManager:
                 ]
                 if not active_callbacks:
                     logger.info("[%s] trigger_agent_callbacks: text proactive callbacks retracted before prompt", self.lanlan_name)
+                    # Nothing will emit text_start/text_end to free the manager's
+                    # inflight slot, so release it now (mirrors
+                    # _deliver_proactive_batch's no-op release) — else the next
+                    # cue stalls until the inflight timeout.
+                    self.proactive_manager.release_inflight_noop()
                     return False
                 callbacks_snapshot[:] = active_callbacks
                 # sticky preempt 复查：与 prepare_proactive_delivery 同样，在持有
@@ -6364,6 +6370,13 @@ class LLMSessionManager:
             # and re-passes it (preserve-until-success). NOTE: we do NOT call
             # _stream_cb_media for text mode (that's the voice path, which uses
             # the realtime session's persistent conversation.item).
+            # Delivery-point voice re-gate (2/2 — authoritative, immediately
+            # before prompt_ephemeral). CLAIM/PHASE2 were just awaited above, so
+            # the user may have switched to audio since the pre-claim check;
+            # re-drop topic hooks here so a takeover during those awaits can't
+            # still prompt the old text session.
+            if self._voice_delivery_blocked() and self._retract_topic_hook_snapshots(active_callbacks):
+                logger.info("[%s] trigger_agent_callbacks: topic hook dropped at prompt — voice took over mid-delivery", self.lanlan_name)
             self._purge_retracted_agent_callback_extras(active_callbacks)
             active_callbacks = [
                 cb for cb in active_callbacks
@@ -6372,6 +6385,8 @@ class LLMSessionManager:
             callbacks_snapshot[:] = active_callbacks
             if not active_callbacks:
                 logger.info("[%s] trigger_agent_callbacks: text proactive callbacks retracted before prompt", self.lanlan_name)
+                # Free the inflight slot — text_start/text_end below won't run.
+                self.proactive_manager.release_inflight_noop()
                 return False
             _proactive_images: list = []
             for _cb in active_callbacks:
