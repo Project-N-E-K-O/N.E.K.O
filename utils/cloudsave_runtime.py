@@ -4103,6 +4103,8 @@ def acquire_cloud_apply_lock(config_manager) -> bool:
             try:
                 lock_file.close()
             except Exception:
+                # Best-effort cleanup only; the acquisition fallback below keeps
+                # the existing fail-open behavior when cleanup itself fails.
                 pass
         return True
 

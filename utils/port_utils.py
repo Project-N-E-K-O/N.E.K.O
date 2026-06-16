@@ -305,6 +305,8 @@ def _acquire_file_lock() -> bool:
                 try:
                     fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
                 except (OSError, IOError):
+                    # Unlock failure is non-fatal here because this path is
+                    # already abandoning the lock attempt and will close fd next.
                     pass
             fd.close()
             return False
@@ -316,10 +318,14 @@ def _acquire_file_lock() -> bool:
                 try:
                     fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
                 except (OSError, IOError):
+                    # Best-effort unlock before closing; close is still
+                    # attempted below to avoid leaking the opened fd.
                     pass
             try:
                 fd.close()
             except (OSError, IOError):
+                # Cleanup failure should not hide the original acquisition
+                # failure; callers already treat this path as "lock not held".
                 pass
         return False
     except ImportError:
