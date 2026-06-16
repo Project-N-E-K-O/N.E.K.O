@@ -466,10 +466,12 @@ def test_home_tutorial_host_wires_avatar_tool_requests():
     assert "setHomeTutorialInputLocked: setHomeTutorialInputLocked" in script
     assert "setAvatarToolMenuOpen: setAvatarToolMenuOpen" in script
     assert "setCompactToolFanOpen: setCompactToolFanOpen" in script
+    assert "setCompactHistoryOpen: setCompactHistoryOpen" in script
     assert "rotateCompactToolWheel: rotateCompactToolWheel" in script
     assert "setCompactToolWheelIndex: setCompactToolWheelIndex" in script
     assert "avatarToolMenuOpenRequest" in script
     assert "compactToolFanOpenRequest" in script
+    assert "compactHistoryOpenRequest" in script
     assert "compactToolWheelRotateRequest" in script
     assert "compactToolWheelIndexRequest" in script
 

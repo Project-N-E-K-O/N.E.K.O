@@ -1395,6 +1395,7 @@ function CompactChatApp({
   onChoiceSelect,
   avatarToolMenuOpenRequest = null,
   compactToolFanOpenRequest = null,
+  compactHistoryOpenRequest = null,
   compactToolWheelRotateRequest = null,
   compactToolWheelIndexRequest = null,
   onCompactChatStateChange,
@@ -1560,6 +1561,7 @@ function CompactChatApp({
   const lastToolCursorResetKeyRef = useRef('');
   const lastAvatarToolMenuOpenRequestIdRef = useRef('');
   const lastCompactToolFanOpenRequestIdRef = useRef('');
+  const lastCompactHistoryOpenRequestIdRef = useRef('');
   const lastCompactToolWheelRotateRequestIdRef = useRef('');
   const lastCompactToolWheelIndexRequestIdRef = useRef('');
   const compactInputHasPayload = draft.trim().length > 0 || composerAttachments.length > 0;
@@ -5013,6 +5015,17 @@ function CompactChatApp({
     lastCompactToolFanOpenRequestIdRef.current = request.id;
     closeCompactInputToolFan();
   }, [closeCompactInputToolFan, compactToolFanOpenRequest, openCompactInputToolFan]);
+
+  useEffect(() => {
+    const request = compactHistoryOpenRequest;
+    if (!request || !request.id || request.id === lastCompactHistoryOpenRequestIdRef.current) return;
+    lastCompactHistoryOpenRequestIdRef.current = request.id;
+    if (request.open) {
+      openCompactExportHistory();
+      return;
+    }
+    closeCompactExportHistory();
+  }, [closeCompactExportHistory, compactHistoryOpenRequest, openCompactExportHistory]);
 
   useEffect(() => {
     const request = compactToolWheelIndexRequest;
