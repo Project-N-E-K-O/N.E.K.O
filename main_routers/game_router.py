@@ -1402,42 +1402,73 @@ def _build_game_context_prompt_payload(state: dict | None, *, include_recent: bo
     }
 
 
+_GAME_INTERNAL_LOG_PREFIX_RE = re.compile(r"^\s*glog_\d+\s*[:：]\s*", re.IGNORECASE)
+_GAME_CONTROL_PAREN_TRAIL_RE = re.compile(
+    r"\s*[\(（][^()（）]*(?:mood|difficulty|reason|expression|intensity|balanceHint|balance_hint)\s*[:=][^()（）]*[\)）]\s*$",
+    re.IGNORECASE,
+)
+_GAME_CONTROL_JSON_TRAIL_RE = re.compile(
+    r"\s*\{[^{}]*(?:\"?(?:mood|difficulty|reason|expression|intensity|balanceHint|balance_hint)\"?\s*[:=])[^{}]*\}\s*$",
+    re.IGNORECASE,
+)
+_GAME_INTERNAL_CONTROL_LINE_RE = re.compile(
+    r"^\s*(?:reason|mood|difficulty|expression|intensity|balanceHint|balance_hint)\s*[:=]",
+    re.IGNORECASE,
+)
+_GAME_INTERNAL_ADVICE_RE = re.compile(
+    r"(?:balanceHint|balance_hint|system advice|system suggestion|系统建议|平衡建议|控制建议)",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_game_visible_line(text: Any) -> str:
+    """Keep only natural player-visible speech; strip game route metadata leaks."""
+    lines: list[str] = []
+    for raw_line in str(text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        line = _GAME_INTERNAL_LOG_PREFIX_RE.sub("", line).strip()
+        if not line:
+            continue
+        if _GAME_INTERNAL_CONTROL_LINE_RE.search(line) or _GAME_INTERNAL_ADVICE_RE.search(line):
+            continue
+        previous = None
+        while previous != line:
+            previous = line
+            line = _GAME_CONTROL_JSON_TRAIL_RE.sub("", line).strip()
+            line = _GAME_CONTROL_PAREN_TRAIL_RE.sub("", line).strip()
+        if not line:
+            continue
+        if _GAME_INTERNAL_CONTROL_LINE_RE.search(line) or _GAME_INTERNAL_ADVICE_RE.search(line):
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
 def _game_dialog_history_user_text(item: dict, labels: dict[str, str]) -> str:
     item_type = item.get("type")
-    dialog_id = str(item.get("id") or "").strip()
-    prefix = f"{dialog_id}: " if dialog_id else ""
     if item_type == "user":
         text = str(item.get("text") or "").strip()
-        return f"{prefix}{labels['player_line'].format(text=text)}" if text else ""
+        return labels["player_line"].format(text=text) if text else ""
     if item_type == "game_event":
         kind = str(item.get("kind") or "event")
         text = str(item.get("text") or "").strip()
         if text:
-            return f"{prefix}{labels['game_event_text'].format(kind=kind, text=text)}"
-        return f"{prefix}{labels['game_event'].format(kind=kind)}"
+            return labels["game_event_text"].format(kind=kind, text=text)
+        return labels["game_event"].format(kind=kind)
     return ""
 
 
 def _game_dialog_history_assistant_text(item: dict) -> str:
     item_type = item.get("type")
-    dialog_id = str(item.get("id") or "").strip()
-    prefix = f"{dialog_id}: " if dialog_id else ""
     if item_type == "assistant":
         line = str(item.get("line") or "").strip()
     elif item_type == "game_event":
         line = str(item.get("result_line") or "").strip()
     else:
         return ""
-    if not line:
-        return ""
-    control = item.get("control") if isinstance(item.get("control"), dict) else {}
-    control_bits = []
-    if control.get("mood"):
-        control_bits.append(f"mood={control['mood']}")
-    if control.get("difficulty"):
-        control_bits.append(f"difficulty={control['difficulty']}")
-    suffix = f" ({', '.join(control_bits)})" if control_bits else ""
-    return f"{prefix}{line}{suffix}"
+    return _sanitize_game_visible_line(line)
 
 
 def _build_game_recent_history_messages(state: dict | None, language: str | None = None) -> list:
@@ -4465,7 +4496,7 @@ def _parse_control_instructions(reply: str, game_type: str = "soccer") -> Dict[s
                 pass
 
     return {
-        'line': line_text,
+        'line': _sanitize_game_visible_line(line_text),
         'control': control,
     }
 

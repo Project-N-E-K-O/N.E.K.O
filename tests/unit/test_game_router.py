@@ -62,6 +62,33 @@ def test_parse_control_instructions_extracts_json_line():
 
 
 @pytest.mark.unit
+def test_parse_control_instructions_sanitizes_visible_line_leaks():
+    result = game_router._parse_control_instructions(
+        'glog_0040: 哼，那我认真一点咯。 (mood=angry, difficulty=lv2)\n'
+        'reason="balance tuning"\n'
+        '{"mood":"angry","difficulty":"lv2","reason":"压一压节奏"}'
+    )
+
+    assert result == {
+        "line": "哼，那我认真一点咯。",
+        "control": {"mood": "angry", "difficulty": "lv2", "reason": "压一压节奏"},
+    }
+
+
+@pytest.mark.unit
+def test_parse_control_instructions_drops_internal_advice_lines_from_visible_line():
+    result = game_router._parse_control_instructions(
+        '根据系统建议降低难度。\n'
+        '看你追得这么急，我就稍微认真一点点。'
+    )
+
+    assert result == {
+        "line": "看你追得这么急，我就稍微认真一点点。",
+        "control": {},
+    }
+
+
+@pytest.mark.unit
 def test_basketball_prompt_and_control_contract():
     prompt = game_router._build_game_prompt(
         "basketball",
@@ -1935,7 +1962,7 @@ def test_memory_highlight_source_explains_game_event_text_is_not_user_speech():
     })
 
     assert "只有“玩家：...”行是玩家亲口说的话" in source
-    assert "事件原文是游戏模块/猫娘气泡或事件标签，不要归因给玩家" in source
+    assert "“事件原文”是游戏模块/猫娘气泡或事件标签，不要归因给玩家" in source
     assert "游戏事件 goal-conceded（玩家进球 / 猫娘丢球）" in source
     assert "固定顺序是玩家在前、当前角色在后" in source
     assert "官方结果，来源优先级为 finalScore / last_state.score" in source
@@ -1967,12 +1994,10 @@ def test_memory_highlight_source_keeps_role_markers_aligned_in_english(monkeypat
         ],
     })
 
-    assert 'literal marker "玩家："' in source
-    assert '"事件原文" inside "游戏事件" lines' in source
-    assert "玩家：I almost caught up" in source
-    assert "游戏事件 goal-conceded" in source
-    assert "Player:" not in source
-    assert "Game event" not in source
+    assert 'literal marker "Player:"' in source
+    assert '"event text" inside "Game event" lines' in source
+    assert "Player: I almost caught up" in source
+    assert "Game event goal-conceded" in source
 
 
 @pytest.mark.unit

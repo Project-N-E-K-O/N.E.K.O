@@ -258,8 +258,37 @@ def test_game_session_history_reset_rebuilds_bounded_recent_messages(monkeypatch
     assert "第 1 句" in joined
     assert "第 2 句" in joined
     assert "第 3 句" in joined
-    assert "回应 8 (mood=happy)" in joined
+    assert "回应 8" in joined
+    assert "mood=happy" not in joined
+    assert "glog_" not in joined
     assert "不应继续留在 history" not in joined
+
+
+@pytest.mark.unit
+def test_game_recent_history_hides_internal_ids_and_control_suffix(monkeypatch):
+    from utils.llm_client import AIMessage, HumanMessage
+
+    state = _new_state(monkeypatch)
+    game_router._append_game_dialog(state, {
+        "type": "game_event",
+        "kind": "user-text",
+        "text": "不要让了",
+        "result_line": 'glog_0040: 哼，那我认真一点咯。 (mood=angry, difficulty=lv2)',
+        "control": {"mood": "angry", "difficulty": "lv2", "reason": "test"},
+    })
+
+    history = game_router._build_game_recent_history_messages(state, "zh")
+
+    assert isinstance(history[0], HumanMessage)
+    assert isinstance(history[1], AIMessage)
+    joined = "\n".join(str(message.content) for message in history)
+    assert "游戏事件 user-text" in joined
+    assert "事件原文「不要让了」" in joined
+    assert "哼，那我认真一点咯。" in joined
+    assert "glog_" not in joined
+    assert "mood=" not in joined
+    assert "difficulty=" not in joined
+    assert "reason" not in joined
 
 
 @pytest.mark.unit
