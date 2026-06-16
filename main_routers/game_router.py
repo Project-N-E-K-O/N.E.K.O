@@ -2325,16 +2325,16 @@ def _apply_game_context_failure_fallback(
     if len(pending) < _GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT:
         return False
     keep_count = _GAME_CONTEXT_FAILURE_FALLBACK_KEEP_COUNT
-    compacted = pending[:-keep_count]
+    discarded = pending[:-keep_count]
     kept = pending[-keep_count:]
-    if not compacted:
+    if not discarded:
         return False
-    last_compacted_id = str(compacted[-1].get("id") or "")
-    if not last_compacted_id:
+    last_discarded_id = str(discarded[-1].get("id") or "")
+    if not last_discarded_id:
         return False
 
     organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
-    organizer["last_organized_id"] = last_compacted_id
+    organizer["last_organized_id"] = last_discarded_id
     organizer["degraded"] = False
     organizer["error"] = f"fallback_{reason}_after_{len(pending)}_pending_items"
     state["game_context_organizer"] = organizer
@@ -2344,13 +2344,13 @@ def _apply_game_context_failure_fallback(
         if isinstance(item, dict) and item.get("id")
     ]
     logger.warning(
-        "🎮 局内上下文整理失败兜底推进: game=%s session=%s reason=%s compacted=%s kept=%s last=%s",
+        "🎮 局内上下文整理失败兜底丢弃: game=%s session=%s reason=%s discarded=%s kept=%s last=%s",
         state.get("game_type"),
         state.get("session_id"),
         reason,
-        len(compacted),
+        len(discarded),
         len(kept),
-        last_compacted_id,
+        last_discarded_id,
     )
     return True
 
