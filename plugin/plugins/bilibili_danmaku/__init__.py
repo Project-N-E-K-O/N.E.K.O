@@ -951,14 +951,19 @@ class BiliDanmakuPlugin(NekoPluginBase):
         
         # WS 桥接器（本地 WS Server → 多前端连接）
         try:
-            bridge_port = self._config.get("bridge", {}).get("port", 5521)
-            self._bridge = WsBridge(
-                config_provider=self._get_bridge_config,
-                config_saver=self._save_bridge_config,
-                port=bridge_port,
-            )
-            await self._bridge.start()
-            self.logger.info(f"WS 桥接器已启动: ws://127.0.0.1:{self._bridge.port}")
+            bridge_cfg = self._config.get("bridge", {})
+            bridge_enabled = bridge_cfg.get("enabled", True)
+            if bridge_enabled:
+                bridge_port = bridge_cfg.get("port", 5521)
+                self._bridge = WsBridge(
+                    config_provider=self._get_bridge_config,
+                    config_saver=self._save_bridge_config,
+                    port=bridge_port,
+                )
+                await self._bridge.start()
+                self.logger.info(f"WS 桥接器已启动: ws://127.0.0.1:{self._bridge.port}")
+            else:
+                self.logger.info("WS 桥接器已禁用（bridge.enabled=false）")
         except Exception as e:
             self.logger.warning(f"WS 桥接器启动失败: {e}")
             self._bridge = None
@@ -1674,16 +1679,6 @@ class BiliDanmakuPlugin(NekoPluginBase):
                 medal_level=event.get("medal_level", 0) or 0,
                 medal_up=str(event.get("medal_up", "")),
             ))
-
-        # WS 桥接器实时广播
-        if self._bridge:
-            try:
-                from .livedanmaku import LiveDanmaku as _LD, MessageType as _MT
-                ld = _LD(msg_type=_MT.MSG_DANMAKU, uid=user_id, nickname=user_name, text=content,
-                          user_level=event.get("user_level", 0), room_id=self._room_id)
-                await self._bridge.broadcast_event("DANMU_MSG", ld.to_dict())
-            except Exception:
-                pass
 
     async def _process_danmaku_legacy(self, event: Dict[str, Any]):
         """原始弹幕处理（降级模式）"""

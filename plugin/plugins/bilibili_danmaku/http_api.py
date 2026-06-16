@@ -68,7 +68,7 @@ class HttpApi:
         self,
         port: int = 5522,
         host: str = "127.0.0.1",
-        event_handler: Callable[[str, dict], None] | None = None,
+        event_handler: Optional[Callable] = None,
     ):
         """
         Args:
@@ -263,9 +263,21 @@ class HttpApi:
     @staticmethod
     def _raw_resp(data: bytes, content_type: str, status: int = 200):
         from aiohttp import web
+        # aiohttp 的 content_type 不接受参数（如 "text/html; charset=utf-8" 会报错）
+        # 需要拆分 MIME type 和 charset
+        mime_type = content_type
+        extra_headers = {"Access-Control-Allow-Origin": "*"}
+        if ";" in content_type:
+            parts = [p.strip() for p in content_type.split(";")]
+            mime_type = parts[0]
+            for part in parts[1:]:
+                if "=" in part:
+                    k, v = part.split("=", 1)
+                    if k.strip().lower() == "charset":
+                        extra_headers["Content-Type"] = f"{mime_type}; charset={v.strip()}"
         return web.Response(
             body=data,
             status=status,
-            content_type=content_type,
-            headers={"Access-Control-Allow-Origin": "*"},
+            content_type=mime_type,
+            headers=extra_headers,
         )

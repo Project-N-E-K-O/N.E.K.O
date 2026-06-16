@@ -252,12 +252,13 @@ class LiveDanmaku:
         fans_club = int(d.get("fans_club", 0))
         delta_fans = int(d.get("delta_fans", 0))
         delta_fans_club = int(d.get("delta_fans_club", 0))
-        sign = "+" if delta_fans >= 0 else ""
+        sign_fans = "+" if delta_fans >= 0 else ""
+        sign_club = "+" if delta_fans_club >= 0 else ""
         return cls(
             msg_type=MessageType.MSG_FANS,
             uid=0,
             nickname="",
-            text=f"粉丝: {fans}({sign}{delta_fans}), 粉丝团: {fans_club}({sign}{delta_fans_club})",
+            text=f"粉丝: {fans}({sign_fans}{delta_fans}), 粉丝团: {fans_club}({sign_club}{delta_fans_club})",
             room_id=int(data.get("room_id", 0)),
             fans_medal_level=fans_club,
             extra_json=json.dumps(data, ensure_ascii=False),
@@ -513,9 +514,9 @@ class LiveDanmaku:
             return cls.from_notice(data)
         elif cmd in ("PK_LOTTERY_START", "PK_LOTTERY_END", "PK_BEST"):
             return cls.from_pk_best(data)
-        elif cmd in ("ROOM_RANK", "USER_TOAST_MSG"):
-            return cls.from_diange(data)
         elif cmd == "VOICE_JOIN_ROOM_COUNT_INFO":
+            return cls.from_diange(data)
+        elif cmd in ("ROOM_RANK", "USER_TOAST_MSG"):
             return cls.from_fans_change(data)
         return None
 
@@ -704,8 +705,8 @@ class LiveDanmaku:
             if self.gift:
                 obj["total_coin"] = self.gift.total_coin
 
-        # 粉丝牌（所有类型都可能带）
-        if self.medal and self.medal.anchor_roomid:
+        # 粉丝牌（只要有名有级就输出）
+        if self.medal and (self.medal.name or self.medal.level):
             obj["anchor_roomid"] = self.medal.anchor_roomid
             obj["medal_name"] = self.medal.name
             obj["medal_level"] = self.medal.level
@@ -757,15 +758,16 @@ class LiveDanmaku:
                 anchor_roomid=str(data.get("anchor_roomid", "")),
             )
 
-        # 礼物
-        gift_id = int(data.get("gift_id", 0))
-        if gift_id:
+        # 礼物 — 按 gift_name 或 total_coin 存在性重建（SC 可能 gift_id=0）
+        gift_name = str(data.get("gift_name", ""))
+        total_coin = int(data.get("total_coin", 0))
+        if gift_name or total_coin:
             danmaku.gift = GiftInfo(
-                gift_id=gift_id,
-                gift_name=str(data.get("gift_name", "")),
+                gift_id=int(data.get("gift_id", 0)),
+                gift_name=gift_name,
                 num=int(data.get("number", 1)),
                 coin_type=str(data.get("coin_type", "silver")),
-                total_coin=int(data.get("total_coin", 0)),
+                total_coin=total_coin,
             )
 
         danmaku.msg_type = MessageType(int(data.get("msgType", 1)))

@@ -170,9 +170,6 @@ class DanmakuStorage:
             if self._logger:
                 self._logger.error(f"SQLite 写入失败: {e} | SQL: {sql[:120]}")
 
-    async def _execute_async(self, sql: str, params: tuple = ()):
-        await asyncio.to_thread(self._execute, sql, params)
-
     # ── 插入方法 ──────────────────────────────────────────────────
 
     async def insert_danmaku(
