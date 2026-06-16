@@ -57,16 +57,13 @@ def test_get_tts_worker_routes_design_voice_via_elevenlabs(monkeypatch):
 
 
 @pytest.mark.unit
-def test_registry_declares_design_for_elevenlabs_and_clone_for_mimo():
+def test_registry_declares_design_for_elevenlabs():
     import utils.tts_provider_registry as reg
     el = reg.get("elevenlabs")
-    mimo = reg.get("mimo")
     assert el is not None and "design" in el.capabilities and "clone" in el.capabilities
-    assert mimo is not None and "clone" in mimo.capabilities and "preset" in mimo.capabilities
     # design is advertised in the UI metadata the source-first picker reads
     meta = {m["key"]: m for m in reg.ui_metadata()}
     assert "design" in meta["elevenlabs"]["capabilities"]
-    assert "clone" in meta["mimo"]["capabilities"]
 
 
 # ── router design helpers: design previews → create-from-preview ──────────────

@@ -27,13 +27,20 @@ def mimo_chat_completions_url(base_url: str | None = None) -> str:
 
     Canonical helper shared by the TTS worker and the voice-clone enrollment
     client so the endpoint-derivation rule lives in one place (utils layer).
-    ``ws(s)://`` is coerced to ``http(s)://``; a bare host gets ``https://``.
+    ``ws(s)://`` is coerced to ``https://``; a bare host gets ``https://``.
+
+    Note ``ws://`` maps to ``https://`` (not plaintext ``http://``): MiMo is an
+    HTTP chat-completions API (``ws`` was never a meaningful scheme for it), and
+    requests carry the ``api-key`` header — downgrading to plaintext would leak
+    the credential. An explicit ``http://`` the caller configured is left as-is
+    (local self-hosted proxies); a project-wide "reject remote plaintext for any
+    provider base_url" hardening is tracked separately.
     """
     raw_url = (base_url or MIMO_TTS_BASE_URL).strip().rstrip("/")
-    if raw_url.startswith("ws://"):
-        raw_url = "http://" + raw_url[5:]
-    elif raw_url.startswith("wss://"):
+    if raw_url.startswith("wss://"):
         raw_url = "https://" + raw_url[6:]
+    elif raw_url.startswith("ws://"):
+        raw_url = "https://" + raw_url[5:]
     elif not raw_url.startswith(("http://", "https://")):
         raw_url = "https://" + raw_url
 

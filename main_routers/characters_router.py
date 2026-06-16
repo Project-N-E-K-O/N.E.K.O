@@ -5349,10 +5349,12 @@ async def voice_clone(
             client = MimoVoiceCloneClient(api_key=api_key, base_url=base_url or None)
             sample_bytes = normalized_buffer.getvalue()
             await client.validate_sample(sample_bytes, mime_type='audio/wav')
-            # voice_id 含 key 末 8 位，保证「同一参考音频在不同 MiMo key 下克隆」落到不同
-            # voice_id——否则跨 __MIMO__ 桶同名，delete_voice_for_current_api 按 id 扫所有桶
-            # 时可能误删另一个 key 的隐藏条目（Codex review #1851）。
-            voice_id = f'mimo-clone-{api_key[-8:]}-{audio_md5[:12]}'
+            # voice_id 维度必须与 MD5 去重键 (storage_key, audio_md5, ref_language) 一致：
+            #  - 含 key 末 8 位：同一音频在不同 MiMo key 下落不同 voice_id，避免跨 __MIMO__ 桶
+            #    同名被 delete_voice_for_current_api 按 id 扫桶误删（Codex review #1851）。
+            #  - 含 ref_language：去重带 ref_language，若 id 不带则「同音频换语言」绕过去重却又
+            #    生成同名 id，覆盖掉前一条 voice_data（CodeRabbit review #1851）。
+            voice_id = f'mimo-clone-{api_key[-8:]}-{ref_language}-{audio_md5[:12]}'
             sample_filename = f'{voice_id}.wav'
             sample_filename = await asyncio.to_thread(
                 _config_manager.save_voice_clone_sample, sample_filename, sample_bytes
@@ -5431,9 +5433,14 @@ async def voice_clone(
         logger.error(f"保存 {provider_label} voice_id 到音色库失败: {save_error}")
         # MiMo 在元数据保存前已把参考样本落盘（其它 provider 无本地文件）；元数据保存失败时
         # voice_storage.json 不会有指向它的条目，删除流程也找不到它——这里顺手清掉孤儿样本。
+        # 清理是 best-effort：delete_voice_clone_sample 已吞异常返 False，这里再兜一层，确保
+        # 即使清理失败也不会把下方 200 partial-success（local_save_failed）变成 500。
         orphan_sample = voice_data.get('clone_sample_file') if isinstance(voice_data, dict) else None
         if orphan_sample:
-            _config_manager.delete_voice_clone_sample(orphan_sample)
+            try:
+                _config_manager.delete_voice_clone_sample(orphan_sample)
+            except Exception as cleanup_error:
+                logger.warning("清理 MiMo 孤儿样本失败: file=%s err=%s", orphan_sample, cleanup_error)
         return JSONResponse({
             'voice_id': voice_id,
             'message': f'{provider_label}音色注册成功，但本地保存失败',
