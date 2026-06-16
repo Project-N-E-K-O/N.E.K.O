@@ -1083,21 +1083,24 @@ async def test_deliver_proactive_batch_leaves_ack_to_delivery_path():
 
 
 def test_topic_hook_delivery_blocked_in_voice_session():
-    """深话题是文本态开场白，语音会话一律不投：topic_hook_delivery_allowed
-    在 session 是 OmniRealtimeClient 时直接 False，关掉提交门与释放门两处。"""
+    """Topic hooks are text-mode openers; a voice session must never receive one.
+    topic_hook_delivery_allowed returns False when the session is an
+    OmniRealtimeClient, closing both the submit gate and the release gate."""
     mgr = _make_mgr(session=_make_voice_sess())
     assert LLMSessionManager.topic_hook_delivery_allowed(mgr) is False
 
 
 def test_topic_hook_delivery_allowed_in_text_session():
-    """非回归：文本会话（无活动快照时 fail-open）仍允许投递深话题。"""
+    """Non-regression: a text session still allows topic-hook delivery
+    (fail-open when no activity snapshot is available)."""
     mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
     assert LLMSessionManager.topic_hook_delivery_allowed(mgr) is True
 
 
 async def test_deliver_proactive_batch_drops_topic_hook_in_voice():
-    """释放门：语音会话里 topic_hook 被丢弃（ack=False，留给 pool 重试），
-    非 topic_hook 的 cue 不受影响。voice gate 复用 topic_hook_delivery_allowed。"""
+    """Release gate: in a voice session the topic_hook is dropped (ack=False, left
+    for TopicHookPool to retry), while non-topic_hook cues pass through. The voice
+    gate reuses topic_hook_delivery_allowed."""
     mgr = _make_mgr(session=_make_voice_sess())
     hook_future = asyncio.get_running_loop().create_future()
     topic_cb = {
