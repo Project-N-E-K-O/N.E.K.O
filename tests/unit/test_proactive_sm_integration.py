@@ -102,6 +102,12 @@ def _make_mgr(session=None) -> LLMSessionManager:
     # Mirror the production __init__ playback-gate flag (the double is built
     # via __new__, so __init__ never ran). Default False = gate open.
     mgr._voice_playback_active = False
+    # Mirror the voice-session predicate inputs (_is_voice_session_active_or_starting):
+    # default = a non-active text session, i.e. voice gate open.
+    mgr.is_active = False
+    mgr.input_mode = 'text'
+    mgr._starting_session_count = 0
+    mgr._starting_input_mode = None
     mgr._takeover_active = False
     mgr._takeover_input_dispatcher = None
     mgr.goodbye_silent = False
@@ -1082,11 +1088,25 @@ async def test_deliver_proactive_batch_leaves_ack_to_delivery_path():
     assert not future.done()
 
 
-def test_topic_hook_delivery_blocked_in_voice_session():
-    """Topic hooks are text-mode openers; a voice session must never receive one.
-    topic_hook_delivery_allowed returns False when the session is an
-    OmniRealtimeClient, closing both the submit gate and the release gate."""
+def test_topic_hook_delivery_blocked_in_active_voice_session():
+    """Topic hooks are text-mode openers; an active voice session must never
+    receive one. topic_hook_delivery_allowed returns False while a voice session
+    is active, closing both the submit gate and the release gate."""
     mgr = _make_mgr(session=_make_voice_sess())
+    mgr.is_active = True
+    mgr.input_mode = 'audio'
+    assert LLMSessionManager.topic_hook_delivery_allowed(mgr) is False
+
+
+def test_topic_hook_delivery_blocked_during_audio_startup_window():
+    """Codex P2: during a text→audio switch, start_session sets the audio
+    starting flags while the old OmniOfflineClient is still in self.session. The
+    gate must defer on the starting state, not on isinstance(session, Realtime)
+    — otherwise a hook slips through the startup window into the dying text
+    session."""
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    mgr._starting_session_count = 1
+    mgr._starting_input_mode = 'audio'
     assert LLMSessionManager.topic_hook_delivery_allowed(mgr) is False
 
 
@@ -1102,6 +1122,8 @@ async def test_deliver_proactive_batch_drops_topic_hook_in_voice():
     for TopicHookPool to retry), while non-topic_hook cues pass through. The voice
     gate reuses topic_hook_delivery_allowed."""
     mgr = _make_mgr(session=_make_voice_sess())
+    mgr.is_active = True
+    mgr.input_mode = 'audio'
     hook_future = asyncio.get_running_loop().create_future()
     topic_cb = {
         "status": "completed", "summary": "deep topic",
@@ -1117,6 +1139,47 @@ async def test_deliver_proactive_batch_drops_topic_hook_in_voice():
     assert hook_future.done() and hook_future.result() is False
     # 非 topic_hook cue 照常进入投递路径。
     mgr.enqueue_agent_callback.assert_called_once_with(other_cb)
+
+
+async def test_reset_proactive_gate_drops_queued_topic_hook_at_voice_start():
+    """Codex P2: the session-start drain path bypasses the delivery gates. When
+    _reset_proactive_gate runs during a voice session start, a topic_hook still
+    queued in the manager must NOT be handed to pending_agent_callbacks (where
+    the voice branch would speak it) — it is dropped with ack=False so the pool
+    retries. Non-topic cues are still handed back for redelivery."""
+    mgr = _make_mgr(session=_make_voice_sess())
+    # start_session sets these BEFORE calling _reset_proactive_gate.
+    mgr._starting_session_count = 1
+    mgr._starting_input_mode = 'audio'
+    hook_future = asyncio.get_running_loop().create_future()
+    topic_cb = {
+        "status": "completed", "summary": "deep topic",
+        "channel": "topic_hook", DELIVERY_ACK_FUTURE_KEY: hook_future,
+    }
+    other_cb = {"status": "completed", "summary": "task done", "channel": "agent_task"}
+    mgr.proactive_manager.drain_pending = MagicMock(return_value=[topic_cb, other_cb])
+    mgr.proactive_manager.reset_gate = MagicMock()
+    mgr.enqueue_agent_callback = MagicMock()
+
+    LLMSessionManager._reset_proactive_gate(mgr)
+
+    # topic hook dropped at the drain boundary: ack False, never re-enqueued.
+    assert hook_future.done() and hook_future.result() is False
+    mgr.enqueue_agent_callback.assert_called_once_with(other_cb)
+
+
+def test_reset_proactive_gate_keeps_topic_hook_on_text_start():
+    """Non-regression: a text-mode reset (no voice start) hands the queued topic
+    hook back to pending_agent_callbacks unchanged — only voice starts drop it."""
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))  # text, not voice-starting
+    topic_cb = {"status": "completed", "summary": "deep topic", "channel": "topic_hook"}
+    mgr.proactive_manager.drain_pending = MagicMock(return_value=[topic_cb])
+    mgr.proactive_manager.reset_gate = MagicMock()
+    mgr.enqueue_agent_callback = MagicMock()
+
+    LLMSessionManager._reset_proactive_gate(mgr)
+
+    mgr.enqueue_agent_callback.assert_called_once_with(topic_cb)
 
 
 async def test_text_mode_successful_delivery_fires_full_event_sequence():

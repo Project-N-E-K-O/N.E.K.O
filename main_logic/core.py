@@ -6848,13 +6848,19 @@ class LLMSessionManager:
         Voice sessions never receive deep topic hooks. A topic hook is a
         text-mode opener; injecting one mid voice conversation would cut across
         a live spoken exchange, which is exactly the "forced" intrusion this
-        feature avoids. Returning False here defers rather than drops — the
-        process-global per-character ``TopicHookPool`` keeps the material
-        pending and retries it once the user is back in a text session, so a
-        voice-heavy user still gets the hook later instead of losing it. This is
-        the single chokepoint both delivery gates consult (``_topic_activity_
-        gate_open`` at submit, ``_deliver_proactive_batch`` at release), so the
-        whole voice delivery path is severed in one place.
+        feature avoids. Gate on ``_is_voice_session_active_or_starting()`` (the
+        same predicate ``trigger_greeting`` uses to stay off the voice stream),
+        NOT on ``isinstance(self.session, OmniRealtimeClient)`` — during a
+        text→audio switch ``start_session`` sets the audio starting flags while
+        the old ``OmniOfflineClient`` is still in ``self.session``, and an
+        isinstance check would wrongly let a hook through that startup window.
+        Returning False here defers rather than drops — the process-global
+        per-character ``TopicHookPool`` keeps the material pending and retries
+        it once the user is back in a text session, so a voice-heavy user still
+        gets the hook later instead of losing it. This is the chokepoint both
+        delivery gates consult (``_topic_activity_gate_open`` at submit,
+        ``_deliver_proactive_batch`` at release); the session-start drain path
+        is closed separately in ``_reset_proactive_gate``.
 
         Fail-open (return True) when no snapshot is available, mirroring the
         proactive path's "snapshot None ⇒ open propensity" default. Privacy
@@ -6862,7 +6868,7 @@ class LLMSessionManager:
         pool is wiped the moment privacy turns on, see enrich_topic_pool), not
         delivery of a hook that was already built from a pre-privacy snapshot.
         """
-        if isinstance(self.session, OmniRealtimeClient):
+        if self._is_voice_session_active_or_starting():
             return False
         tracker = getattr(self, '_activity_tracker', None)
         if tracker is None:
@@ -7175,7 +7181,24 @@ class LLMSessionManager:
             return
         try:
             leftover = manager.drain_pending()
+            # Deep topic hooks are text-mode openers. When this reset is part of
+            # a voice session START (start_session sets the audio starting flags
+            # BEFORE calling us, so this predicate is already True), draining a
+            # queued hook into pending_agent_callbacks would let
+            # trigger_agent_callbacks' voice branch speak it WITHOUT re-consulting
+            # topic_hook_delivery_allowed — bypassing both delivery gates. Drop
+            # such hooks here instead: resolve ack False so TopicHookPool defers
+            # and retries once the user is back in a text session. Other channels
+            # (and all channels on a text-mode reset) are handed back unchanged.
+            voice_blocked = self._is_voice_session_active_or_starting()
             for cb in leftover:
+                if voice_blocked and isinstance(cb, dict) and cb.get("channel") == "topic_hook":
+                    resolve_callback_delivery_ack(cb, False)
+                    logger.info(
+                        "[%s] topic hook dropped at voice session start: deferred for a text session",
+                        self.lanlan_name,
+                    )
+                    continue
                 # Hand back to the persistent queue so the reconnect path
                 # (websocket_router) / next trigger redelivers rather than
                 # losing it.
