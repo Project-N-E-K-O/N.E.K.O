@@ -7181,33 +7181,55 @@ class LLMSessionManager:
             return
         try:
             leftover = manager.drain_pending()
-            # Deep topic hooks are text-mode openers. When this reset is part of
-            # a voice session START (start_session sets the audio starting flags
-            # BEFORE calling us, so this predicate is already True), draining a
-            # queued hook into pending_agent_callbacks would let
-            # trigger_agent_callbacks' voice branch speak it WITHOUT re-consulting
-            # topic_hook_delivery_allowed — bypassing both delivery gates. Drop
-            # such hooks here instead: resolve ack False so TopicHookPool defers
-            # and retries once the user is back in a text session. Other channels
-            # (and all channels on a text-mode reset) are handed back unchanged.
-            voice_blocked = self._is_voice_session_active_or_starting()
             for cb in leftover:
-                if voice_blocked and isinstance(cb, dict) and cb.get("channel") == "topic_hook":
-                    resolve_callback_delivery_ack(cb, False)
-                    logger.info(
-                        "[%s] topic hook dropped at voice session start: deferred for a text session",
-                        self.lanlan_name,
-                    )
-                    continue
                 # Hand back to the persistent queue so the reconnect path
                 # (websocket_router) / next trigger redelivers rather than
                 # losing it.
                 self.enqueue_agent_callback(cb)
             manager.reset_gate()
+            # Deep topic hooks are text-mode openers and must never be spoken in
+            # voice. start_session sets the audio starting flags BEFORE calling
+            # us, so when entering / within a voice session this is the one
+            # boundary where we sweep EVERY queued topic hook out of
+            # pending_agent_callbacks (and the paired pending_extra_replies):
+            # both the cbs just drained from the manager AND any released earlier
+            # by _deliver_proactive_batch into the pending queue but left
+            # deferred (SM busy / media-stream fail / no text session). Both the
+            # voice branch of trigger_agent_callbacks (re-fired by start_session)
+            # and the hot-swap prime path inject those two queues WITHOUT
+            # re-consulting topic_hook_delivery_allowed, so neither delivery gate
+            # covers this. Resolve ack False so TopicHookPool defers and retries
+            # on a text session.
+            if self._is_voice_session_active_or_starting():
+                self._drop_pending_topic_hooks_for_voice()
         except Exception:
             # getattr fallback: the except path must never raise itself
             # (a second AttributeError here would abort end_session teardown).
             logger.exception("[%s] proactive_manager reset/drain failed", getattr(self, "lanlan_name", "?"))
+
+    def _drop_pending_topic_hooks_for_voice(self) -> None:
+        """Drop every queued deep-topic hook when entering / within a voice
+        session. Resolves each hook's delivery ack False so ``TopicHookPool``
+        defers and retries on a text session, then retracts it so
+        ``_purge_retracted_agent_callbacks`` sweeps it out of BOTH
+        ``pending_agent_callbacks`` and the paired ``pending_extra_replies``
+        (the hot-swap prime channel). See ``_reset_proactive_gate`` for why this
+        is needed beyond the submit / release gates."""
+        pending = getattr(self, "pending_agent_callbacks", None) or []
+        hooks = [
+            cb for cb in pending
+            if isinstance(cb, dict) and cb.get("channel") == "topic_hook"
+        ]
+        if not hooks:
+            return
+        for cb in hooks:
+            resolve_callback_delivery_ack(cb, False)
+            cb[DELIVERY_RETRACTED_KEY] = True
+        self._purge_retracted_agent_callbacks()
+        logger.info(
+            "[%s] dropped %d queued topic hook(s) at voice start: deferred for a text session",
+            self.lanlan_name, len(hooks),
+        )
 
     def enqueue_agent_callback(self, callback: dict) -> None:
         """Enqueue a structured agent task callback for LLM injection.

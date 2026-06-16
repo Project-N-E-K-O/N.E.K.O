@@ -1141,45 +1141,64 @@ async def test_deliver_proactive_batch_drops_topic_hook_in_voice():
     mgr.enqueue_agent_callback.assert_called_once_with(other_cb)
 
 
-async def test_reset_proactive_gate_drops_queued_topic_hook_at_voice_start():
-    """Codex P2: the session-start drain path bypasses the delivery gates. When
-    _reset_proactive_gate runs during a voice session start, a topic_hook still
-    queued in the manager must NOT be handed to pending_agent_callbacks (where
-    the voice branch would speak it) — it is dropped with ack=False so the pool
-    retries. Non-topic cues are still handed back for redelivery."""
+async def test_drop_pending_topic_hooks_for_voice_sweeps_both_queues():
+    """The voice-start sweep removes topic hooks from pending_agent_callbacks AND
+    the paired pending_extra_replies (hot-swap prime channel), resolves ack False
+    for the pool to retry, and leaves non-topic cues + their extras intact."""
+    mgr = _make_mgr(session=_make_voice_sess())
+    fut = asyncio.get_running_loop().create_future()
+    topic_cb = {
+        "_callback_delivery_id": "th1", "channel": "topic_hook",
+        "status": "completed", "summary": "deep topic", DELIVERY_ACK_FUTURE_KEY: fut,
+    }
+    other_cb = {"_callback_delivery_id": "a1", "channel": "agent_task", "status": "completed", "summary": "task"}
+    topic_extra = {"_callback_delivery_id": "th1", "origin": "event", "summary": "deep topic"}
+    other_extra = {"_callback_delivery_id": "a1", "origin": "task_result", "summary": "task"}
+    mgr.pending_agent_callbacks = [topic_cb, other_cb]
+    mgr.pending_extra_replies = [topic_extra, other_extra]
+
+    LLMSessionManager._drop_pending_topic_hooks_for_voice(mgr)
+
+    assert mgr.pending_agent_callbacks == [other_cb]
+    assert mgr.pending_extra_replies == [other_extra]
+    assert fut.done() and fut.result() is False
+
+
+async def test_reset_proactive_gate_sweeps_already_pending_topic_hook_on_voice_start():
+    """Codex P2 follow-up: a topic hook released into pending_agent_callbacks but
+    left deferred is no longer in manager.drain_pending(), so a leftover-only
+    filter misses it. The voice-start reset sweeps the pending queue itself."""
     mgr = _make_mgr(session=_make_voice_sess())
     # start_session sets these BEFORE calling _reset_proactive_gate.
     mgr._starting_session_count = 1
     mgr._starting_input_mode = 'audio'
-    hook_future = asyncio.get_running_loop().create_future()
+    fut = asyncio.get_running_loop().create_future()
     topic_cb = {
-        "status": "completed", "summary": "deep topic",
-        "channel": "topic_hook", DELIVERY_ACK_FUTURE_KEY: hook_future,
+        "_callback_delivery_id": "th1", "channel": "topic_hook",
+        "status": "completed", "summary": "deep topic", DELIVERY_ACK_FUTURE_KEY: fut,
     }
-    other_cb = {"status": "completed", "summary": "task done", "channel": "agent_task"}
-    mgr.proactive_manager.drain_pending = MagicMock(return_value=[topic_cb, other_cb])
+    mgr.pending_agent_callbacks = [topic_cb]  # already released + deferred, NOT in manager
+    mgr.proactive_manager.drain_pending = MagicMock(return_value=[])
     mgr.proactive_manager.reset_gate = MagicMock()
-    mgr.enqueue_agent_callback = MagicMock()
 
     LLMSessionManager._reset_proactive_gate(mgr)
 
-    # topic hook dropped at the drain boundary: ack False, never re-enqueued.
-    assert hook_future.done() and hook_future.result() is False
-    mgr.enqueue_agent_callback.assert_called_once_with(other_cb)
+    assert mgr.pending_agent_callbacks == []
+    assert fut.done() and fut.result() is False
 
 
 def test_reset_proactive_gate_keeps_topic_hook_on_text_start():
-    """Non-regression: a text-mode reset (no voice start) hands the queued topic
-    hook back to pending_agent_callbacks unchanged — only voice starts drop it."""
+    """Non-regression: a text-mode reset (no voice start) leaves a queued topic
+    hook in pending_agent_callbacks untouched — only voice starts drop it."""
     mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))  # text, not voice-starting
-    topic_cb = {"status": "completed", "summary": "deep topic", "channel": "topic_hook"}
-    mgr.proactive_manager.drain_pending = MagicMock(return_value=[topic_cb])
+    topic_cb = {"_callback_delivery_id": "th1", "channel": "topic_hook", "status": "completed", "summary": "deep topic"}
+    mgr.pending_agent_callbacks = [topic_cb]
+    mgr.proactive_manager.drain_pending = MagicMock(return_value=[])
     mgr.proactive_manager.reset_gate = MagicMock()
-    mgr.enqueue_agent_callback = MagicMock()
 
     LLMSessionManager._reset_proactive_gate(mgr)
 
-    mgr.enqueue_agent_callback.assert_called_once_with(topic_cb)
+    assert mgr.pending_agent_callbacks == [topic_cb]
 
 
 async def test_text_mode_successful_delivery_fires_full_event_sequence():
