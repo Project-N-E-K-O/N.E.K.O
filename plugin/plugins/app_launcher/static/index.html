@@ -976,6 +976,11 @@
             const data = await callPlugin('export_apps', {});
             const exportData = data.export_data;
             
+            if (!exportData) {
+                showMessage('❌ 导出数据为空', 'error');
+                return;
+            }
+            
             const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
