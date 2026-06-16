@@ -45,6 +45,25 @@ def test_followup_surfaced_ids_are_limited_to_rendered_topics():
     ]
 
 
+def test_followup_surfaced_ids_skip_blank_and_duplicate_within_first_three():
+    # A blank or duplicate followup inside the first three is dropped by the
+    # prompt's dedup filter, so its id must NOT be reported as surfaced (else
+    # /record_surfaced cools down a reflection the model never saw).
+    topics = [
+        {"id": "rendered-a", "text": "follow-up alpha"},
+        {"id": "blank", "text": "   "},
+        {"id": "dup", "text": "follow-up alpha"},
+        {"id": "rendered-b", "text": "follow-up beta"},
+    ]
+
+    prompt, surfaced_ids = _render_followup_topic_hooks("en", topics)
+
+    assert "follow-up alpha" in prompt
+    # "beta" is the 4th topic and never reaches the rendered [:3] slice.
+    assert "follow-up beta" not in prompt
+    assert surfaced_ids == ["rendered-a"]
+
+
 def test_topic_hook_locale_preserves_traditional_chinese_request_language():
     mgr = SimpleNamespace(user_language="zh-CN")
 

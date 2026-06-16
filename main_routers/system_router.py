@@ -1944,10 +1944,18 @@ def _render_followup_topic_hooks(
     proactive_lang: str,
     followup_topics: list[dict[str, Any]],
 ) -> tuple[str, list[Any]]:
-    """Render follow-up topic hooks and return the surfaced reflection ids."""
+    """Render follow-up topic hooks and return the surfaced reflection ids.
+
+    Only reflections whose text actually survives build_topic_hook_prompt's
+    blank/duplicate filter are reported as surfaced. Otherwise a blank or
+    duplicate followup inside the first three would still be recorded via
+    /record_surfaced and pushed into cooldown even though the model never saw
+    it.
+    """
     if not followup_topics:
         return "", []
 
+    from main_logic.topic.common import clean_text
     from main_logic.topic.hooks import build_topic_hook_prompt
 
     rendered_followup_topics = followup_topics[:3]
@@ -1958,11 +1966,17 @@ def _render_followup_topic_hooks(
     if not prompt:
         return "", []
 
-    surfaced_reflection_ids = [
-        topic['id']
-        for topic in rendered_followup_topics
-        if topic.get('id')
-    ]
+    # Mirror _iter_followup_texts: drop blanks/duplicates so the surfaced ids
+    # match exactly what the prompt rendered.
+    surfaced_reflection_ids: list[Any] = []
+    seen_texts: set[str] = set()
+    for topic in rendered_followup_topics:
+        text = clean_text(topic.get('text'))
+        if not text or text in seen_texts:
+            continue
+        seen_texts.add(text)
+        if topic.get('id'):
+            surfaced_reflection_ids.append(topic['id'])
     return prompt, surfaced_reflection_ids
 
 
