@@ -1487,7 +1487,7 @@ input:checked + .slider:before {
 }
 
 .gsv-tutorial-link:hover {
-    background: #40C5F1;
+    background: var(--accent-blue);
     color: #fff;
 }
 
