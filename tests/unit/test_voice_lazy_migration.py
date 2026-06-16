@@ -110,8 +110,8 @@ def test_schema_accepts_structured_voice_object():
 
 
 def test_schema_rejects_malformed_voice_object():
-    """放宽成 (str, dict) 后，结构对象形态仍校验 source/provider/ref 都为 str，
-    挡住 {"foo": 1} 这类坏 dict（CodeRabbit 负例）。"""
+    """After widening to (str, dict), the object form still validates source/provider/ref
+    are all str, rejecting malformed dicts like {"foo": 1} (CodeRabbit negative case)."""
     errors = validate_reserved_schema({"voice_id": {"foo": 1}})
     assert [e for e in errors if "voice_id" in e], "malformed voice_id dict should be flagged"
     # provider 类型错也要抓
