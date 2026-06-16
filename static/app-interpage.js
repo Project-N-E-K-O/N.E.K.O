@@ -2424,21 +2424,25 @@
                     }
                     case 'icebreaker_append_chat_message': {
                         if (!isStandaloneChatPage() || !document.body) break;
+                        if (!isYuiGuideCommandForCurrentLanlan(event.data)) break;
                         applyIcebreakerAppendChatMessage(event.data.message);
                         break;
                     }
                     case 'icebreaker_set_choice_prompt': {
                         if (!isStandaloneChatPage() || !document.body) break;
+                        if (!isYuiGuideCommandForCurrentLanlan(event.data)) break;
                         applyIcebreakerChoicePrompt(event.data.prompt);
                         break;
                     }
                     case 'icebreaker_clear_choice_prompt': {
                         if (!isStandaloneChatPage() || !document.body) break;
+                        if (!isYuiGuideCommandForCurrentLanlan(event.data)) break;
                         applyIcebreakerClearChoicePrompt(event.data.sessionId);
                         break;
                     }
                     case 'icebreaker_choice_selected': {
                         if (isStandaloneChatPage() || !document.body) break;
+                        if (!isYuiGuideCommandForCurrentLanlan(event.data)) break;
                         window.dispatchEvent(new CustomEvent('neko:icebreaker-choice-selected', {
                             detail: {
                                 sessionId: event.data.sessionId || '',

@@ -6,6 +6,7 @@ APP_REACT_CHAT_WINDOW_PATH = Path(__file__).resolve().parents[2] / "static" / "a
 APP_BUTTONS_PATH = Path(__file__).resolve().parents[2] / "static" / "app-buttons.js"
 APP_CHAT_EXPORT_PATH = Path(__file__).resolve().parents[2] / "static" / "app-chat-export.js"
 APP_INTERPAGE_PATH = Path(__file__).resolve().parents[2] / "static" / "app-interpage.js"
+ICEBREAKER_SCRIPT_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial" / "icebreaker" / "new-user-icebreaker.js"
 AVATAR_UI_POPUP_PATH = Path(__file__).resolve().parents[2] / "static" / "avatar-ui-popup.js"
 MUSIC_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "music_ui.js"
 MUSIC_UI_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "music_ui.css"
@@ -486,6 +487,7 @@ def test_home_tutorial_host_wires_avatar_tool_requests():
 def test_new_user_icebreaker_choice_prompt_wires_chat_host_and_external_chat():
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
     interpage_source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+    icebreaker_source = ICEBREAKER_SCRIPT_PATH.read_text(encoding="utf-8")
 
     assert "function setIcebreakerChoicePrompt(payload)" in script
     assert "function clearIcebreakerChoicePrompt(sessionId)" in script
@@ -499,6 +501,8 @@ def test_new_user_icebreaker_choice_prompt_wires_chat_host_and_external_chat():
     assert "case 'icebreaker_set_choice_prompt':" in interpage_source
     assert "case 'icebreaker_clear_choice_prompt':" in interpage_source
     assert "case 'icebreaker_choice_selected':" in interpage_source
+    assert "lanlan_name: resolveLanlanName()" in icebreaker_source
+    assert "if (!isYuiGuideCommandForCurrentLanlan(event.data)) break;" in interpage_source
     assert "host.setIcebreakerChoicePrompt(prompt)" in interpage_source
     assert "host.clearIcebreakerChoicePrompt(sessionId)" in interpage_source
     assert "neko:icebreaker-choice-selected" in interpage_source

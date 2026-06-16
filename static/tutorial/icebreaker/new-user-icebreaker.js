@@ -203,6 +203,7 @@
     function broadcastIcebreaker(action, payload) {
         var message = Object.assign({
             action: action,
+            lanlan_name: resolveLanlanName(),
             timestamp: nextIcebreakerBridgeTimestamp()
         }, payload || {});
         var channel = getBroadcastChannel();
