@@ -8,12 +8,14 @@ from .entry_common import (
     SdkError,
     _entry_exception_error,
     plugin_entry,
+    ui,
     build_pomodoro_status_payload,
     _validated_pomodoro_focus_minutes,
 )
 
 
 class _PomodoroEntriesMixin:
+    @ui.action()
     @plugin_entry(
         id="study_pomodoro_status",
         name="Study Pomodoro Status",
@@ -44,6 +46,7 @@ class _PomodoroEntriesMixin:
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_pomodoro_status")
 
+    @ui.action()
     @plugin_entry(
         id="study_pomodoro_start",
         name="Start Study Pomodoro",
@@ -144,6 +147,7 @@ class _PomodoroEntriesMixin:
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_pomodoro_start")
 
+    @ui.action()
     @plugin_entry(
         id="study_pomodoro_pause",
         name="Pause Study Pomodoro",
@@ -159,6 +163,7 @@ class _PomodoroEntriesMixin:
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_pomodoro_pause")
 
+    @ui.action()
     @plugin_entry(
         id="study_pomodoro_resume",
         name="Resume Study Pomodoro",
@@ -174,6 +179,7 @@ class _PomodoroEntriesMixin:
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_pomodoro_resume")
 
+    @ui.action()
     @plugin_entry(
         id="study_pomodoro_stop",
         name="Stop Study Pomodoro",
@@ -190,6 +196,7 @@ class _PomodoroEntriesMixin:
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_pomodoro_stop")
 
+    @ui.action()
     @plugin_entry(
         id="study_pomodoro_skip_break",
         name="Skip Study Pomodoro Break",

@@ -28,6 +28,8 @@ _PURGE_TABLES = (
     "knowledge_contribution_queue",
     "interactions",
     "topics",
+    "notes",
+    "notebooks",
     "kv",
 )
 

@@ -1,12 +1,26 @@
 # -*- coding: utf-8 -*-
-"""
-OpenFang Agent 执行后端适配器
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-职责 (仅通信，不管进程):
-1. 通过 A2A API 下发任务
-2. 轮询任务状态
-3. API Key 下发与配置同步
-4. 健康检查 (仅检测连通性，不负责启停 — 启停由 Electron 管理)
+"""
+OpenFang agent execution backend adapter
+
+Responsibilities (communication only, no process management):
+1. Submit tasks via the A2A API
+2. Poll task status
+3. API key delivery and config sync
+4. Health checks (connectivity only; start/stop is managed by Electron)
 """
 
 import asyncio
@@ -30,14 +44,14 @@ logger = logging.getLogger("openfang_adapter")
 
 def _detect_provider_info(base_url: str, model: str) -> dict:
     """
-    根据用户配置的 agent API 推断 OpenFang provider 和是否需要 LLM proxy。
+    Infer the OpenFang provider and whether an LLM proxy is needed from the user-configured agent API.
 
     Returns:
         {
             "provider": "openai" | "anthropic" | "gemini" | "deepseek" | "groq" | ...,
-            "needs_proxy": bool,      # 是否需要经过 LLM proxy（补全兼容性字段）
-            "effective_url": str,     # 给 OpenFang 的 base_url（proxy URL 或直连）
-            "api_key_env": str,       # 环境变量名 (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
+            "needs_proxy": bool,      # whether to go through the LLM proxy (fills compatibility fields)
+            "effective_url": str,     # base_url handed to OpenFang (proxy URL or direct)
+            "api_key_env": str,       # environment variable name (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
         }
     """
     from urllib.parse import urlsplit
@@ -170,7 +184,7 @@ def _detect_provider_info(base_url: str, model: str) -> dict:
 
 @dataclass
 class OpenFangTaskStatus:
-    """A2A 任务状态快照"""
+    """A2A task status snapshot"""
     task_id: str
     status: str  # "pending" | "running" | "completed" | "failed" | "cancelled"
     result: Optional[str] = None
@@ -186,16 +200,16 @@ class OpenFangTaskStatus:
 
 class OpenFangAdapter:
     """
-    OpenFang A2A 适配器
+    OpenFang A2A adapter
 
-    接口约定 (与 ComputerUseAdapter / BrowserUseAdapter 对齐):
+    Interface contract (aligned with ComputerUseAdapter / BrowserUseAdapter):
     - is_available()             -> Dict[str, Any]
     - run_instruction(...)       -> Dict[str, Any]
     - cancel_running(...)        -> None
     - check_connectivity()       -> bool
 
-    本适配器 **不管理** OpenFang 进程生命周期。
-    进程由 Electron main process 管理，本层只做 HTTP 通信。
+    This adapter does **not** manage the OpenFang process lifecycle.
+    The process is managed by the Electron main process; this layer only does HTTP communication.
     """
 
     def __init__(self, base_url: Optional[str] = None):
@@ -218,7 +232,7 @@ class OpenFangAdapter:
     # ──────────────────────────────────────────
 
     def is_available(self) -> Dict[str, Any]:
-        """返回当前可用性状态 (与 ComputerUseAdapter 格式对齐)。"""
+        """Return the current availability status (format aligned with ComputerUseAdapter)."""
         return {
             "enabled": True,
             "ready": self.init_ok,
@@ -229,12 +243,12 @@ class OpenFangAdapter:
         }
 
     def get_tools_list(self) -> List[str]:
-        """返回 OpenFang 侧可用工具名称列表 (缓存)。"""
+        """Return the list of tool names available on the OpenFang side (cached)."""
         return list(self._cached_tools_list)
 
     def _compute_config_hash(self) -> str:
-        """计算当前 agent API 配置的 hash，用于检测变更。
-        注: get_model_api_config() 每次调用时从文件/内存重新读取，无缓存过期问题。
+        """Compute a hash of the current agent API config to detect changes.
+        Note: get_model_api_config() re-reads from file/memory on every call, so there is no cache staleness issue.
         """
         import hashlib
         cm = get_config_manager()
@@ -243,7 +257,7 @@ class OpenFangAdapter:
         return hashlib.md5(key_fields.encode()).hexdigest()
 
     async def _ensure_config_synced(self) -> None:
-        """每次执行任务前检查配置是否变化，有变化则重新同步到 OpenFang。"""
+        """Check whether the config changed before each task execution; re-sync to OpenFang if it did."""
         current_hash = self._compute_config_hash()
         if current_hash != self._last_synced_config_hash:
             logger.info("[OpenFang] Config change detected (hash %s → %s), re-syncing...",
@@ -268,10 +282,10 @@ class OpenFangAdapter:
         local_task_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        向 OpenFang 提交任务并等待结果。
+        Submit a task to OpenFang and wait for the result.
 
-        优先使用 POST /api/agents/{id}/message（直接路由到已注册的 neko-executor），
-        fallback 到 POST /a2a/tasks/send（可能路由到默认 assistant agent）。
+        Prefers POST /api/agents/{id}/message (routes directly to the registered neko-executor),
+        falling back to POST /a2a/tasks/send (may route to the default assistant agent).
         """
         try:
             # 检查配置是否变化，变化则重新同步
@@ -300,8 +314,8 @@ class OpenFangAdapter:
         self, instruction: str, timeout: float, local_task_id: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """
-        POST /api/agents/{id}/message — 直接给指定 agent 发消息。
-        同步阻塞直到 agent 完成。返回 None 表示此方式不可用。
+        POST /api/agents/{id}/message — send a message directly to the given agent.
+        Blocks synchronously until the agent finishes. Returns None if this method is unavailable.
         """
         agent_id = self._executor_agent_id
         if not agent_id:
@@ -449,7 +463,7 @@ class OpenFangAdapter:
         timeout: float,
         local_task_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """通过 A2A 协议提交任务（路由到 OpenFang 默认 agent）。"""
+        """Submit the task via the A2A protocol (routed to OpenFang's default agent)."""
         # OpenFang A2A reads message from request["params"]["message"]["parts"]
         # Must wrap in "params" object — NOT top-level "message" or "messages"
         task_payload = {
@@ -498,15 +512,15 @@ class OpenFangAdapter:
         }
 
     def register_local_task(self, local_id: str, remote_id: str) -> None:
-        """注册本地 task_id 到远程 OpenFang task_id 的映射，供 cancel 使用。"""
+        """Register the mapping from a local task_id to the remote OpenFang task_id, for use by cancel."""
         self._active_tasks[local_id] = remote_id
 
     def unregister_local_task(self, local_id: str) -> None:
-        """移除本地 task_id 映射。"""
+        """Remove the local task_id mapping."""
         self._active_tasks.pop(local_id, None)
 
     async def cancel_running(self, task_id: Optional[str] = None) -> None:
-        """取消正在运行的任务。task_id=None 时取消所有；提供 task_id 但未找到则 no-op。"""
+        """Cancel running tasks. task_id=None cancels all; a task_id that isn't found is a no-op."""
         if task_id is None:
             targets = list(self._active_tasks.values())
         elif task_id in self._active_tasks:
@@ -528,8 +542,8 @@ class OpenFangAdapter:
 
     def check_connectivity(self) -> bool:
         """
-        同步健康检查 (可在线程池中调用)。
-        仅检测连通性，不负责启停 — 启停是 Electron 的事。
+        Synchronous health check (callable from a thread pool).
+        Connectivity only; start/stop is Electron's job, not ours.
         """
         try:
             with httpx.Client(timeout=3.0) as client:
@@ -555,15 +569,15 @@ class OpenFangAdapter:
 
     async def sync_config(self) -> bool:
         """
-        将 NEKO 的 Agent LLM 配置推送到 OpenFang（三层保障）。
+        Push NEKO's agent LLM config to OpenFang (three layers of assurance).
 
-        根据用户配置自动检测 provider 类型：
-        - Anthropic/OpenAI/Groq/Gemini/DeepSeek → 直连（OpenFang 原生支持）
-        - OpenRouter/lanlan.app 等代理 → 经过 LLM proxy（修复兼容性问题）
+        Auto-detects the provider type from the user config:
+        - Anthropic/OpenAI/Groq/Gemini/DeepSeek → direct (natively supported by OpenFang)
+        - Proxies such as OpenRouter/lanlan.app → via the LLM proxy (fixes compatibility issues)
 
-        1. POST /api/providers/{provider}/key  — 运行时推送 API key
-        2. PUT  /api/providers/{provider}/url  — 运行时覆盖 base_url
-        3. 写 ~/.openfang/config.toml           — 设置 [default_model] + [provider_urls]
+        1. POST /api/providers/{provider}/key  — push the API key at runtime
+        2. PUT  /api/providers/{provider}/url  — override base_url at runtime
+        3. Write ~/.openfang/config.toml        — set [default_model] + [provider_urls]
         """
         cm = get_config_manager()
         agent_cfg = cm.get_model_api_config('agent')
@@ -731,8 +745,8 @@ class OpenFangAdapter:
     @staticmethod
     def _write_openfang_model_config(api_key: str, base_url: str, model: str) -> None:
         """
-        确保 ~/.openfang/config.toml 包含 [default_model] 和 [provider_urls] 配置。
-        根据 provider 类型决定是否通过 proxy。
+        Ensure ~/.openfang/config.toml contains the [default_model] and [provider_urls] config.
+        Whether to go through the proxy is decided by the provider type.
         """
         import os, re
         home = os.environ.get("HOME") or os.environ.get("USERPROFILE") or ""
@@ -805,9 +819,9 @@ class OpenFangAdapter:
     @staticmethod
     def _ensure_openfang_env_var(var_name: str, value: str) -> None:
         """
-        确保 OpenFang 进程能读到指定环境变量。
-        由于 OpenFang 由 Electron 启动（非 Python 子进程），os.environ 不可达。
-        写入 ~/.openfang/.env 文件 + 当前进程的 os.environ。
+        Ensure the OpenFang process can read the given environment variable.
+        Since OpenFang is started by Electron (not a Python subprocess), os.environ is unreachable.
+        Writes to the ~/.openfang/.env file + the current process's os.environ.
         """
         import os
         os.environ[var_name] = value
@@ -840,9 +854,9 @@ class OpenFangAdapter:
 
     async def push_agent_manifest(self, agent_config: Optional[Dict] = None) -> Optional[str]:
         """
-        向 OpenFang 注册一个无人格执行 Agent。
-        使用 TOML manifest 格式，明确指定 openai provider。
-        返回 agent_id 或 None。
+        Register a persona-free executor agent with OpenFang.
+        Uses the TOML manifest format and explicitly specifies the openai provider.
+        Returns the agent_id or None.
         """
         agent_config = agent_config or {}
 
@@ -980,7 +994,7 @@ class OpenFangAdapter:
             return None
 
     async def _find_agent_id_by_name(self, client: httpx.AsyncClient, name: str) -> Optional[str]:
-        """查询 OpenFang 已注册 agent 列表，按 name 匹配返回 id。"""
+        """Query OpenFang's registered agent list and return the id matched by name."""
         try:
             resp = await client.get(
                 f"{self.base_url}/api/agents",
@@ -1004,7 +1018,7 @@ class OpenFangAdapter:
     async def _patch_agent_model(
         self, client: httpx.AsyncClient, agent_id: str, model: str, base_url: str
     ) -> None:
-        """PATCH /api/agents/{id} 更新 agent 的 model/provider 配置。"""
+        """PATCH /api/agents/{id} to update the agent's model/provider config."""
         pinfo = getattr(self, '_provider_info', None) or _detect_provider_info(base_url, model)
         patch_payload = {
             "model": {
@@ -1030,7 +1044,7 @@ class OpenFangAdapter:
             logger.debug("[OpenFang] PATCH agent %s failed: %s", agent_id, e)
 
     async def fetch_tools_list(self) -> List[str]:
-        """从 OpenFang 拉取可用工具列表并缓存。"""
+        """Fetch the available tool list from OpenFang and cache it."""
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(
@@ -1064,7 +1078,7 @@ class OpenFangAdapter:
         interval: float = 1.0,
         timeout: float = 300.0,
     ) -> OpenFangTaskStatus:
-        """轮询任务状态直到完成/失败/超时。"""
+        """Poll task status until completion/failure/timeout."""
         elapsed = 0.0
 
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -1116,7 +1130,7 @@ class OpenFangAdapter:
 
     @staticmethod
     def _extract_result(task_data: Dict) -> str:
-        """从 A2A 任务响应中提取文本结果。"""
+        """Extract the text result from an A2A task response."""
         print(f"[OpenFang DEBUG] _extract_result input keys={list(task_data.keys())}")
         result_field = task_data.get("result")
         print(f"[OpenFang DEBUG] _extract_result 'result' field type={type(result_field).__name__}, value(500)={str(result_field)[:500]}")

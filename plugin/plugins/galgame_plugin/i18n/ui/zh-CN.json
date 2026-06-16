@@ -519,7 +519,7 @@
   "ui.install.rapidocr.broken_body": "bundled rapidocr 包导入失败。请重建插件 venv（`uv sync --group galgame`）或重装打包版本。",
   "ui.install.rapidocr.kicker_not_ready": "OCR 主后端未就绪",
   "ui.install.rapidocr.not_ready_title": "RapidOCR 尚未就绪",
-  "ui.install.rapidocr.not_ready_body": "RapidOCR 现在是 OCR Reader 的内部主后端。请确认打包版或源码依赖包含 rapidocr-onnxruntime。",
+  "ui.install.rapidocr.not_ready_body": "RapidOCR 现在是 OCR Reader 的内部主后端。请确认打包版或源码依赖包含 RapidOCR runtime。",
   "ui.install.expected_path": "预期安装位置",
   "ui.install.task_failed_retry": "后台安装任务失败，你可以再次点击按钮重试。",
   "ui.install.task_done_refreshing": "安装任务已结束，正在等待插件状态刷新。",

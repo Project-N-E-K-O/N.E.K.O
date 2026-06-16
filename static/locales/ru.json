@@ -752,7 +752,7 @@
         "avatarCropZoomOut": "Уменьшить",
         "avatarCropCancel": "Отмена",
         "avatarCropSave": "Сохранить",
-        "emptyState":  "Сообщения появятся здесь после подключения чата.",
+        "emptyState": "Сообщения появятся здесь после подключения чата.",
         "companionEmptyState": "(Я рядом с тобой.)",
         "messageStreaming": "Генерация",
         "messageFailed": "Ошибка отправки",
@@ -779,6 +779,24 @@
         "toolLollipop": "Леденец",
         "toolFist": "Кошачья лапка",
         "toolHammer": "Молоток",
+        "avatarToolsButtonAriaLabel": "Инструменты аватара",
+        "clearCursorToolAriaLabel": "Восстановить курсор",
+        "avatarToolQuickbarAriaLabel": "Быстрые инструменты аватара",
+        "avatarToolQuickbarEmpty": "Нет быстрых инструментов",
+        "avatarToolEdit": "Изменить быстрые инструменты",
+        "avatarToolSlotFull": "Сначала снимите один инструмент.",
+        "avatarToolManagerTitle": "Управление инструментами",
+        "avatarToolManagerSubtitle": "Выберите до 3 быстрых инструментов.",
+        "avatarToolManagerClose": "Закрыть",
+        "avatarToolCurrentTools": "Текущие инструменты",
+        "avatarToolEmptySlot": "Пустой слот",
+        "avatarToolRemove": "Удалить",
+        "avatarToolLibrary": "Библиотека инструментов",
+        "avatarToolEquipped": "Уже выбрано",
+        "avatarToolEquip": "Добавить",
+        "avatarToolNoAvailableTools": "Нет доступных инструментов",
+        "avatarToolCancel": "Отмена",
+        "avatarToolSave": "Сохранить изменения",
         "attachmentButtonAriaLabel": "Вложение",
         "jukebox": "Музыкальный автомат",
         "jukeboxLabel": "Музыкальный автомат",
@@ -975,7 +993,8 @@
             "glm": "GLM",
             "step": "StepFun",
             "silicon": "SiliconFlow",
-            "gemini": "Gemini"
+            "gemini": "Gemini",
+            "vllm_omni": "vLLM-Omni (TTS)"
         },
         "coreProviderNames": {
             "free": "Бесплатная версия (Эксклюзив N.E.K.O., веб-поиск)",
@@ -1003,7 +1022,8 @@
             "elevenlabs": "ElevenLabs (клонирование голоса)",
             "claude": "Claude (Anthropic)",
             "grok": "Grok (xAI)",
-            "openrouter": "OpenRouter (агрегатор моделей)"
+            "openrouter": "OpenRouter (агрегатор моделей)",
+            "vllm_omni": "vLLM-Omni (TTS)"
         },
         "coreApiAutoFillHint": "Ключ автоматически заполняется из справочника API, можно ввести вручную",
         "assistApiSelectLabel": "Провайдер вспомогательного API",
@@ -1191,7 +1211,12 @@
         },
         "loadConfigFailed": "Не удалось загрузить конфигурацию, обновите страницу",
         "errorGettingCurrentApiKey": "Ошибка получения текущего API Key",
-        "getCurrentApiKeyFailed": "Не удалось получить текущий API Key"
+        "getCurrentApiKeyFailed": "Не удалось получить текущий API Key",
+        "useMimoTokenPlan": "Использовать MiMo Token Plan",
+        "mimoTokenPlanKeyLabel": "Ключ MiMo Token Plan",
+        "mimoTokenPlanKeyPlaceholder": "Введите ключ Token Plan (tp-xxxxx)",
+        "mimoTokenPlanKeyHint": "Если включено, MiMo использует только этот ключ и endpoint Token Plan; обычный ключ MiMo API блокируется.",
+        "mimoApiKeyLockedByTokenPlan": "MiMo Token Plan включен; этот ключ не используется"
     },
     "live2d": {
         "manager": "Менеджер моделей Live2D",
@@ -1489,7 +1514,9 @@
         "motionStopped": "Анимация остановлена",
         "expressionCleared": "Выражение очищено",
         "cannotDeleteBoundModel": "Нельзя удалить модель, которая сейчас используется",
-        "modelInUse": "Используется"
+        "modelInUse": "Используется",
+        "pngtuberTalkPreview": "Проверить речь",
+        "pngtuberStatePreview": "Предпросмотр состояния"
     },
     "voice": {
         "title": "Регистрация голоса",
@@ -2181,6 +2208,7 @@
         "sessionFailed": "Ошибка запуска сессии"
     },
     "buttons": {
+        "thoughtBubblePop": "Лопнуть облачко мысли",
         "voiceControl": "Голосовое управление",
         "screenShare": "Демонстрация экрана",
         "agentTools": "Лапка Неко",
@@ -2617,6 +2645,7 @@
             "statusCancelled": "Отменено",
             "minimize": "Свернуть/Развернуть",
             "cancelAll": "Отменить все задачи",
+            "cancelTask": "Отменить задачу",
             "cancelConfirm": "Отменить все задачи (включая ожидающие)?",
             "typeUserPlugin": "Пользовательский плагин",
             "typeComputerUse": "Управление клавиатурой/мышью",
@@ -3704,6 +3733,15 @@
         "duration": "Длительность",
         "action": "Действие",
         "play": "Воспроизвести",
+        "sequencePlay": "Воспроизведение по порядку",
+        "singleLoop": "Повтор одной песни",
+        "randomPlay": "Случайное воспроизведение",
+        "noAutoNext": "Не переходить автоматически",
+        "switchPlaybackMode": "Переключить режим воспроизведения",
+        "lockSongSort": "Заблокировать сортировку песен",
+        "unlockSongSort": "Разблокировать сортировку песен",
+        "previousSong": "Предыдущий трек",
+        "nextSong": "Следующий трек",
         "playError": "Музыкальный плеер не инициализирован",
         "notFound": "Песня не найдена",
         "audioEnded": "Воспроизведение завершено",
@@ -4085,6 +4123,394 @@
             "springJoints": "Spring Bone суставы",
             "morphTargets": "Morph Targets",
             "drawCalls": "Draw calls"
+        }
+    },
+    "basketball": {
+        "title": "Баскетбольный вызов",
+        "modeSwitcher": "Режим баскетбола",
+        "mode": {
+            "spectator": "Свободная тренировка",
+            "shooter": "Испытание бросков",
+            "duel": "Дуэль с Yui",
+            "timed": "На время",
+            "horse": "HORSE"
+        },
+        "hud": {
+            "score": "Очки {{score}}",
+            "streak": "Серия {{streak}}",
+            "record": "Рекорд {{distance}}",
+            "duelScore": "Вы {{player}} - {{neko}} Neko",
+            "round": "Раунд {{round}}/{{max}}",
+            "timer": "{{seconds}} с",
+            "practice": "Свободная тренировка",
+            "yourTurn": "Ваш ход",
+            "nekoTurn": "Бросок Neko",
+            "horseLetters": "Вы {{player}} / Neko {{neko}}",
+            "horseChallenge": "Повторите {{distance}} {{angle}}°",
+            "horseSet": "Задайте бросок",
+            "unlimitedAttempts": "Без ограничений",
+            "chances": "Попытки {{count}}",
+            "practiceTitle": "Свободная тренировка: броски без ограничений, счет не попадает в рейтинг",
+            "attemptsTitle": "Осталось {{remaining}}/{{total}}, промахов {{missed}}",
+            "duelTitle": "Дуэль с Neko: вы и Neko бросаете по очереди",
+            "timedTitle": "На время: неограниченные броски за 60 секунд",
+            "horseTitle": "HORSE: повторите дистанцию, угол и точную зону успешного броска",
+            "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
+            "on": "вкл",
+            "off": "выкл"
+        },
+        "result": {
+            "title": "Игра окончена",
+            "leaderboard": "Таблица лидеров",
+            "stats": "Статистика",
+            "retry": "Играть снова",
+            "rating": "Оценка управления: {{rating}}",
+            "duel": "Итог дуэли: {{outcome}} | Вы {{player}} - {{neko}} Neko | Раунды: {{rounds}} | Последняя дистанция: {{distance}}",
+            "horse": "Итог HORSE: {{outcome}} | Вы {{player}} / Neko {{neko}} | Попаданий: {{made}} | Лучшая серия: {{best}}",
+            "timed": "На время: попаданий {{made}}, лучшая серия {{best}}, счет {{score}}",
+            "practice": "Свободная тренировка: счет рейтинга не записывается | Попаданий: {{made}} | Серия: {{streak}} | Лучшая серия: {{best}} | Дистанция: {{distance}}",
+            "summary": "Счет: {{score}} | Попаданий: {{made}} | Серия: {{streak}} | Лучшая серия: {{best}} | Дальше всего: {{record}} | Дистанция: {{distance}}",
+            "attemptsSummary": "Сводка бросков: {{summary}}",
+            "personalBest": "Личный рекорд: {{score}} очк.",
+            "globalRank": "Мировой рейтинг: #{{rank}}{{total}}",
+            "outcome": {
+                "youWin": "Вы победили",
+                "nekoWin": "Neko победила",
+                "tie": "Ничья",
+                "undecided": "Не решено"
+            }
+        },
+        "leaderboard": {
+            "title": "Таблица лидеров",
+            "global": "Глобальная",
+            "local": "Локальная",
+            "shooter": "Броски",
+            "duel": "Дуэль",
+            "empty": "Записей пока нет",
+            "totalPlayers": "Игроков {{count}}",
+            "yourBest": "Ваш рекорд #{{rank}} / {{score}} очк.",
+            "recent": "Последние игры: {{count}}",
+            "loading": "Загрузка...",
+            "mode": {
+                "timed": "На время",
+                "horse": "HORSE",
+                "spectator": "Наблюдение",
+                "shooter": "Броски",
+                "duel": "Дуэль"
+            }
+        },
+        "debug": {
+            "title": "Панель отладки",
+            "collapse": "Свернуть",
+            "hide": "Скрыть",
+            "distance": "Дистанция:",
+            "power": "Сила:",
+            "event": "Событие:",
+            "streak": "Серия:",
+            "reset": "Сброс",
+            "guide": "Линия",
+            "sweet": "Точная зона",
+            "markers": "Метки дистанции",
+            "readout": {
+                "modeState": "Режим={{mode}}  Состояние={{state}}",
+                "distance": "Дистанция={{px}}px ({{meters}})",
+                "streaks": "Серия={{streak}}  Лучшая={{best}}  Попаданий={{made}}",
+                "score": "Счет={{score}}  Осталось={{remaining}}/{{total}}",
+                "difficulty": "Сложность={{difficulty}}  Настроение={{mood}}  Тема={{theme}}",
+                "duel": "Дуэль: Вы {{player}}-{{neko}} NEKO R{{round}}",
+                "horse": "HORSE: Вы {{player}} / Neko {{neko}} phase={{phase}}"
+            }
+        },
+        "stats": {
+            "title": "Личная статистика",
+            "close": "Закрыть",
+            "totalShots": "Бросков={{total}}  Попаданий={{made}}",
+            "farRate": "300px+ точность={{rate}}",
+            "trend": "Последний тренд={{trend}}",
+            "none": "Нет"
+        },
+        "theme": {
+            "next": "Сменить тему",
+            "current": "Тема: {{theme}}",
+            "changed": "Тема {{theme}}",
+            "labels": {
+                "default": "Зал",
+                "sunset": "Закатная площадка",
+                "night": "Ночные огни"
+            }
+        },
+        "court": {
+            "restrictedArc": "Запретная зона",
+            "freeThrowLine": "Штрафная",
+            "threePointLine": "3-очковая",
+            "midCourtLine": "Центр"
+        },
+        "close": "Закрыть",
+        "audio": {
+            "controls": "Звук игры"
+        },
+        "memoryOption": {
+            "label": "Запоминать разговор этой игры (по умолчанию выключено)",
+            "hint": "Если выключено, ввод игрока, ответы NEKO, ответы на события, послематчевые сводки и последующий контекст не будут сохраняться в памяти или читаться из нее."
+        },
+        "table": {
+            "score": "Счет",
+            "bestStreak": "Лучшая серия",
+            "farthest": "Дальше всего",
+            "mode": "Режим",
+            "date": "Дата"
+        },
+        "state": {
+            "ready": "Готово",
+            "in_flight": "В полете",
+            "game_over": "Игра окончена",
+            "neko_thinking": "Neko думает"
+        },
+        "toast": {
+            "difficulty": "Сложность {{difficulty}}",
+            "nekoShoot": "Neko бросает",
+            "nekoThinking": "Neko думает",
+            "nekoTurn": "Ход Neko",
+            "copyNeko": "Повторите Neko",
+            "nekoFailed": "Neko не задала бросок",
+            "yourSet": "Задайте бросок",
+            "yourTurn": "Ваш ход",
+            "reset": "Сброшено",
+            "featureToggled": "{{feature}} {{state}}",
+            "feature": {
+                "guide": "Линия",
+                "sweet": "Точная зона силы",
+                "bgm": "BGM",
+                "markers": "Метки дистанции"
+            },
+            "state": {
+                "on": "вкл",
+                "off": "выкл"
+            }
+        },
+        "tutorial": {
+            "aim": "Двигайте мышью вверх и вниз, чтобы настроить угол",
+            "charge": "Удерживайте левую кнопку для силы",
+            "release": "Отпустите, чтобы бросить!"
+        },
+        "shot": {
+            "swish": "Чисто",
+            "bank": "От щита",
+            "rim_in": "От кольца внутрь",
+            "rim_out": "От кольца наружу",
+            "air_ball": "Мимо кольца",
+            "unknown": "Неизвестно",
+            "attempt": "#{{index}} {{distance}} {{type}}"
+        },
+        "lines": {
+            "default": {
+                "swish": [
+                    "Чистое попадание!",
+                    "Чистое попадание!"
+                ],
+                "bank": [
+                    "От щита тоже считается.",
+                    "От щита тоже считается."
+                ],
+                "rim_in": [
+                    "Заскочил после отскока!",
+                    "Заскочил после отскока!"
+                ],
+                "rim_out": [
+                    "Почти.",
+                    "Почти."
+                ],
+                "air_ball": [
+                    "Кольцо в другой стороне.",
+                    "Кольцо в другой стороне."
+                ],
+                "shot_missed": [
+                    "Шанс еще есть.",
+                    "Шанс еще есть."
+                ],
+                "game_over": [
+                    "Еще одну?",
+                    "Еще одну?"
+                ],
+                "long_aim": [
+                    "Пора бросать.",
+                    "Пора бросать."
+                ],
+                "close_to_record": [
+                    "Рекорд совсем рядом.",
+                    "Рекорд совсем рядом."
+                ],
+                "new_record": [
+                    "Новый рекорд!",
+                    "Новый рекорд!"
+                ],
+                "streak_5": [
+                    "Пять подряд!",
+                    "Пять подряд!"
+                ],
+                "streak_10": [
+                    "Десять подряд?",
+                    "Десять подряд?"
+                ],
+                "streak_15": [
+                    "Пятнадцать подряд, серьезно?",
+                    "Пятнадцать подряд, серьезно?"
+                ],
+                "streak_20": [
+                    "Двадцать подряд? Невероятно.",
+                    "Двадцать подряд? Невероятно."
+                ]
+            },
+            "shooter": {
+                "swish": [
+                    "Чистое попадание!",
+                    "Чистое попадание!"
+                ],
+                "bank": [
+                    "От щита тоже считается.",
+                    "От щита тоже считается."
+                ],
+                "rim_in": [
+                    "Заскочил после отскока!",
+                    "Заскочил после отскока!"
+                ],
+                "rim_out": [
+                    "Почти.",
+                    "Почти."
+                ],
+                "air_ball": [
+                    "Кольцо в другой стороне.",
+                    "Кольцо в другой стороне."
+                ],
+                "shot_missed": [
+                    "Шанс еще есть.",
+                    "Шанс еще есть."
+                ],
+                "game_over": [
+                    "Еще одну?",
+                    "Еще одну?"
+                ],
+                "long_aim": [
+                    "Пора бросать.",
+                    "Пора бросать."
+                ],
+                "close_to_record": [
+                    "Рекорд совсем рядом.",
+                    "Рекорд совсем рядом."
+                ],
+                "new_record": [
+                    "Новый рекорд!",
+                    "Новый рекорд!"
+                ],
+                "streak_5": [
+                    "Пять подряд!",
+                    "Пять подряд!"
+                ],
+                "streak_10": [
+                    "Десять подряд?",
+                    "Десять подряд?"
+                ],
+                "streak_15": [
+                    "Пятнадцать подряд, серьезно?",
+                    "Пятнадцать подряд, серьезно?"
+                ],
+                "streak_20": [
+                    "Двадцать подряд? Невероятно.",
+                    "Двадцать подряд? Невероятно."
+                ]
+            },
+            "duel": {
+                "swish": [
+                    "Чистое попадание!",
+                    "Чистое попадание!"
+                ],
+                "bank": [
+                    "От щита тоже считается.",
+                    "От щита тоже считается."
+                ],
+                "rim_in": [
+                    "Заскочил после отскока!",
+                    "Заскочил после отскока!"
+                ],
+                "rim_out": [
+                    "Почти.",
+                    "Почти."
+                ],
+                "air_ball": [
+                    "Кольцо в другой стороне.",
+                    "Кольцо в другой стороне."
+                ],
+                "shot_missed": [
+                    "Шанс еще есть.",
+                    "Шанс еще есть."
+                ],
+                "game_over": [
+                    "Еще одну?",
+                    "Еще одну?"
+                ],
+                "long_aim": [
+                    "Пора бросать.",
+                    "Пора бросать."
+                ],
+                "close_to_record": [
+                    "Рекорд совсем рядом.",
+                    "Рекорд совсем рядом."
+                ],
+                "new_record": [
+                    "Новый рекорд!",
+                    "Новый рекорд!"
+                ],
+                "streak_5": [
+                    "Пять подряд!",
+                    "Пять подряд!"
+                ],
+                "streak_10": [
+                    "Десять подряд?",
+                    "Десять подряд?"
+                ],
+                "streak_15": [
+                    "Пятнадцать подряд, серьезно?",
+                    "Пятнадцать подряд, серьезно?"
+                ],
+                "streak_20": [
+                    "Двадцать подряд? Невероятно.",
+                    "Двадцать подряд? Невероятно."
+                ],
+                "clutch": "...Этот должен войти.",
+                "excuse": "Ох, рука немного устала."
+            },
+            "fallback": [
+                "Еще раз."
+            ],
+            "pressure": {
+                "lastTied": "Решающий бросок. Не моргайте.",
+                "lastAhead": "Хм, еще не конец.",
+                "lastBehind": "Попадете и выиграете.",
+                "playerAhead": "Вы неплохи...",
+                "playerBehind": "Нужно прибавить."
+            },
+            "horse": {
+                "nekoMiss": "Не повторила. Добавляем {{letters}}.",
+                "playerMiss": "Вам тоже {{letters}}."
+            },
+            "mindGame": [
+                "Рука дрожит.",
+                "Спокойно, без спешки.",
+                "Дистанция не близкая."
+            ],
+            "easterEgg": {
+                "lateNight": "Так поздно, а вы все бросаете?",
+                "xmas": "Колокольчики уже висят, а вы все бросаете?",
+                "newYear": "С Новым годом!",
+                "swish3": "Вы точно не читерите?",
+                "swish5": "...Надо проверить кольцо.",
+                "airball3": "...Может, небольшой перерыв?"
+            }
+        },
+        "mood": {
+            "happySuffix": " ♪",
+            "sadPrefix": "...",
+            "surprisedPrefix": "А?! "
         }
     },
     "soccer": {

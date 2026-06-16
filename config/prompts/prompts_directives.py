@@ -1,50 +1,73 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
-用户**负面意图 / 回避指令** prompt + 模板集中地。包括两类相关但用途不同
-的工具：
+Centralized prompts + templates for user **negative-intent / avoidance directives**.
+Two related but distinct tools live here:
 
-(1) **Ban-topic 抽取（带 term）**：``DIRECTIVE_PATTERNS`` 7 locale 正则模板 +
-    ``extract_directives()``。匹配祈使句结构"动词 + 对象"，capture group 直接
-    拿到话题。命中后由 ``memory.user_directives`` 持久化 3 天（TTL 见
-    ``USER_DIRECTIVE_TTL_SECONDS``），下次 ``_build_initial_prompt`` 启动时把
-    活跃 term 注入 system prompt 让模型避开。
+(1) **Ban-topic extraction (with term)**: ``DIRECTIVE_PATTERNS`` regex templates for
+    7 locales + ``extract_directives()``. Matches imperative "verb + object"
+    structures; the capture group yields the topic directly. On a hit,
+    ``memory.user_directives`` persists it for 3 days (TTL:
+    ``USER_DIRECTIVE_TTL_SECONDS``); on the next ``_build_initial_prompt`` startup the
+    active terms are injected into the system prompt so the model avoids them.
 
-(2) **Negative-intent 关键词扫描（boolean）**：``NEGATIVE_KEYWORDS_I18N`` +
-    ``scan_negative_keywords()``。frozenset 子串扫描，命中即"用户希望结束当前
-    话题"（含 *显式回避* 与 *嫌烦* 两族）。下游由 evidence 系统
-    （``app/memory_server._amaybe_trigger_negative_keyword_hook``）异步派一次
-    LLM target check（``NEGATIVE_TARGET_CHECK_PROMPT``）决定打哪条 fact 的
-    disputation signal。
+(2) **Negative-intent keyword scan (boolean)**: ``NEGATIVE_KEYWORDS_I18N`` +
+    ``scan_negative_keywords()``. A frozenset substring scan; a hit means "the user
+    wants to end the current topic" (covering both the *explicit avoidance* and the
+    *annoyance* families). Downstream, the evidence system
+    (``app/memory_server._amaybe_trigger_negative_keyword_hook``) asynchronously runs
+    one LLM target check (``NEGATIVE_TARGET_CHECK_PROMPT``) deciding which fact gets
+    the disputation signal.
 
-设计动机
---------
-用户偶尔会显式说"别再提 X / 不要叫我 X / stop saying X / その話はもう"——
-这些都是显式的 ban-topic 指令。本轮 LLM 看得到原话不需要处理；但等到**下一轮
-会话重启**（archive / cold start / 重连），那句话早就被 compress 掉了，模型
-会再次踩雷。
+Motivation
+----------
+Users occasionally say explicitly "别再提 X / 不要叫我 X / stop saying X /
+その話はもう" — all explicit ban-topic directives. The current-session LLM sees the
+original message and needs no help here; but by the **next session restart**
+(archive / cold start / reconnect) that message has long been compressed away and the
+model steps on the same landmine again.
 
-落点：在 user_utterance 入口跑正则抽取 → 命中 → 写进
-``memory/{name}/user_directives.json``（3 天 TTL，``memory/user_directives.py``
-负责存储）。下次 ``_build_initial_prompt`` 把活跃条目拼成一段注入到 system
-prompt 末尾。
+Where it lands: run the regex extraction at the user_utterance entry point → on hit →
+write to ``memory/{name}/user_directives.json`` (3-day TTL, storage handled by
+``memory/user_directives.py``). The next ``_build_initial_prompt`` renders the active
+entries into a block appended to the end of the system prompt.
 
-约定：宁可错杀
---------------
-- 所有 locale 模板**并行**跑，不依赖检测语言（用户中英混说很常见）
-- 抓到的 term 只做轻量 trim（剥两端标点 + 语气词），不做语义校验
-- term 长度 ∈ [2, 40] 才入库；越界丢弃
-- 正则只覆盖**带具体对象**的指令（ban_topic）。无对象的"闭嘴/换话题/shut up"
-  本身在 context 已经被 LLM 看到，又不适合持久化，**不**抽取
-- 错杀代价 = 用户下次再说一遍；模型代价 = system prompt 多一行；
-  漏抽代价 = 用户被再次冒犯。所以倾向于宽松。
+Convention: prefer false positives
+----------------------------------
+- All locale templates run **in parallel**, independent of language detection
+  (mixed Chinese/English speech is common)
+- Captured terms only get a light trim (strip surrounding punctuation + particles),
+  no semantic validation
+- A term is stored only when its length ∈ [2, 40]; out-of-range terms are dropped
+- The regexes only cover directives **with a concrete object** (ban_topic).
+  Object-less "闭嘴/换话题/shut up" is already visible to the LLM in context and is a
+  poor fit for persistence, so it is **not** extracted
+- Cost of a false positive = the user says it once more; model cost = one extra
+  system-prompt line; cost of a miss = the user gets offended again. Hence the bias
+  toward leniency.
 
-ban-topic regex vs. negative-keyword scan 的差异
-------------------------------------------------
-- regex 能直接 capture term（祈使句结构清晰），用于 user_directives 的写盘
-- substring scan 只判定"有没有负面意图"，捕不到 term；用于 evidence 的
-  fast pre-filter（命中后 LLM 复核 target），还能涵盖"嫌烦型"（"烦死"、
-  "annoying"——这些无 term，不归 directive，但仍是 negative signal）
-"""
+ban-topic regex vs. negative-keyword scan
+-----------------------------------------
+- The regex can capture the term directly (imperative structure is clear); it feeds
+  the user_directives persistence
+- The substring scan only decides "is there negative intent" and captures no term;
+  it is the fast pre-filter for evidence (LLM re-checks the target on a hit) and also
+  covers the "annoyed" family ("烦死", "annoying" — no term, not a directive, but
+  still a negative signal)
+"""  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
 import re
@@ -80,20 +103,24 @@ _TRIM_TRAIL_TOKENS = (
 
 
 def _norm_lang(lang: str) -> str:
-    """归一化 lang code（``zh-CN`` → ``zh``、``pt-BR`` → ``pt`` 等）。
+    """Normalize a lang code (``zh-CN`` → ``zh``, ``pt-BR`` → ``pt``, etc.).
 
-    本模块的 render 函数都靠 dict 精确 key 取模板；如果上游把
-    ``user_language`` 直接传过来（带 region 后缀），会全部走英文兜底——这是
-    用户可见的回归。在边界归一化一次，比要求所有调用方都先 normalize 更稳。
+    The render functions in this module resolve templates by exact dict key; if the
+    upstream passes ``user_language`` through unchanged (with a region suffix),
+    everything falls into the English fallback — a user-visible regression.
+    Normalizing once at the boundary is more robust than requiring every caller to
+    normalize first.
 
-    策略：优先走 ``config._runtime.normalize_language_code``（app 启动注册了
-    ``utils.language_utils.normalize_language_code``，能识别 Steam literal
-    如 ``schinese`` → ``zh``，未知语言归 ``en``——render 函数用英文兜底）；
-    resolver 未绑定时退化为本地 split 兜底。
+    Strategy: prefer ``config._runtime.normalize_language_code`` (the app registers
+    ``utils.language_utils.normalize_language_code`` at startup, which understands
+    Steam literals like ``schinese`` → ``zh``; unknown languages map to ``en`` —
+    render functions fall back to English); when the resolver is unbound, degrade to
+    a local split fallback.
 
-    ⚠️ 该 helper 服务于 i18n **template rendering** 路径（未知 → en）。如果
-    需要"未知 → 中文"的兜底（比如 ``scan_negative_keywords`` 的契约），不要
-    复用此 helper，自己写本地 strip——见该函数实现。
+    ⚠️ This helper serves the i18n **template rendering** path (unknown → en). If you
+    need an "unknown → Chinese" fallback (e.g. the contract of
+    ``scan_negative_keywords``), do not reuse this helper; write a local strip — see
+    that function's implementation.
     """
     if not lang:
         return 'en'
@@ -111,7 +138,7 @@ def _norm_lang(lang: str) -> str:
 
 
 def _trim_term(term: str) -> str:
-    """裁剪 term：先剥尾部 particle / 修饰词，再剥两端标点 + 空白。"""
+    """Trim a term: strip trailing particles/modifiers first, then surrounding punctuation + whitespace."""
     if not term:
         return ""
     s = term.strip()
@@ -290,17 +317,19 @@ DIRECTIVE_PATTERNS: List[Tuple[str, str, "re.Pattern[str]"]] = [
 
 
 def extract_directives(text: str) -> List[Tuple[str, str, str]]:
-    """对一段 user 文本跑所有 locale × kind 模板，返回 ``[(locale, kind, term)]``。
+    """Run every locale × kind template over a user text; returns ``[(locale, kind, term)]``.
 
-    - 所有模板**并行**尝试，不预先检测语言
-    - 命中后 term 经 ``_trim_term`` 清洗，长度必须 ∈ [2, 40]
-    - 同一 ``(kind, term_lower)`` 在结果列表里只保留一次（保留首个匹配的 locale，
-      因为重复入库由 ``UserDirectivesManager.record`` 再去重一遍）
+    - All templates are tried **in parallel**, with no upfront language detection
+    - On a hit the term is cleaned by ``_trim_term``; its length must be ∈ [2, 40]
+    - Each ``(kind, term_lower)`` is kept only once in the result list (keeping the
+      first matching locale; duplicate storage is deduped again by
+      ``UserDirectivesManager.record``)
 
-    重复模式是有意为之：upstream 多语言混说时一句话可能命中多个 locale 的
-    pattern；这里先去重避免一句话灌出 5 条记录，但同一句话**不同**的 term
-    （"别提小明和小红"）仍会各自被记录——前提是模板能拆出两次匹配。
-    """
+    The repetition is deliberate: with upstream mixed-language input one sentence may
+    hit patterns from multiple locales; deduping here avoids one sentence producing 5
+    records, while **different** terms from the same sentence ("别提小明和小红") are
+    still each recorded — provided the template can split out two matches.
+    """  # noqa: DOCSTRING_CJK
     if not text:
         return []
     seen: set[tuple[str, str]] = set()
@@ -382,10 +411,10 @@ USER_DIRECTIVES_PROMPT_BLOCK = {
 
 
 def render_directives_block(terms: List[str], lang: str) -> str:
-    """把 active term 列表渲染成一段 system-prompt 文本（含 leading newlines）。
+    """Render the active term list into a system-prompt block (with leading newlines).
 
-    空列表 → 返回 ""（调用方直接 concat，不需要判空）。
-    ``lang`` 接受完整 locale（``zh-CN`` 等），内部归一化为 short code。
+    Empty list → returns "" (callers concat directly, no emptiness check needed).
+    ``lang`` accepts full locales (``zh-CN`` etc.), normalized internally to a short code.
     """
     if not terms:
         return ""
@@ -453,7 +482,7 @@ RECENT_TOPIC_HINT_PROMPT_BLOCK = {
 
 
 def render_recent_topics_block(terms: List[str], lang: str) -> str:
-    """把"最近 topic 词"列表渲染成 system-prompt 片段；空列表 → ""。"""
+    """Render the "recent topic terms" list into a system-prompt fragment; empty list → ""."""
     if not terms:
         return ""
     short = _norm_lang(lang)
@@ -547,9 +576,10 @@ _DEFAULT_ADDRESSEE = {
 
 
 def render_regen_avoid_instruction(terms: List[str], lang: str, master_name: str = "") -> str:
-    """把 regen 用的"避开 X / Y"指令渲染成文本。空列表 → ""。
+    """Render the "avoid X / Y" instruction used for regen. Empty list → "".
 
-    ``master_name`` 用于把"对谁说"写进指令；缺省退化为中性占位符，避免 KeyError。
+    ``master_name`` writes "who this is said to" into the instruction; when missing,
+    degrades to a neutral placeholder to avoid KeyError.
     """
     if not terms:
         return ""
@@ -635,7 +665,7 @@ PROACTIVE_FORMAT_FIX_INSTRUCTION = {
 
 
 def render_format_fix_instruction(lang: str, master_name: str = "") -> str:
-    """渲染"格式纠正"自救指令。``master_name`` 缺省退化为中性占位符。"""
+    """Render the "format fix" self-rescue instruction. ``master_name`` defaults to a neutral placeholder."""
     short = _norm_lang(lang)
     template = PROACTIVE_FORMAT_FIX_INSTRUCTION.get(short) or PROACTIVE_FORMAT_FIX_INSTRUCTION['en']
     return template.format(master_name=master_name or _DEFAULT_ADDRESSEE.get(short, "them"))
@@ -969,11 +999,14 @@ def scan_negative_keywords(message: str, lang: str = "zh") -> bool:
     Returns True if the message contains any negation keyword for the given
     language; if lang is unknown, falls back to zh.
 
-    ⚠️ 不走 ``_norm_lang``——那个 helper 服务于 i18n template rendering，未知
-    语言归 ``en``（英文是 lingua franca，模板渲染默认英文合理）。本函数的契约
-    是"语言识别不出就当中文用户"（codex P2 / scan-only policy），与 render
-    路径策略不同。所以这里只做最小归一化：strip region 后缀（``en-US`` →
-    ``en`` / ``zh-CN`` → ``zh``），未识别的短码留给 ``.get(..., zh)`` 兜底。
+    ⚠️ Does NOT go through ``_norm_lang`` — that helper serves i18n template
+    rendering, where unknown languages map to ``en`` (English is the lingua franca;
+    defaulting template rendering to English is reasonable). This function's
+    contract is "treat unrecognizable language as a Chinese user" (codex P2 /
+    scan-only policy), a different policy from the render path. So only minimal
+    normalization happens here: strip the region suffix (``en-US`` → ``en`` /
+    ``zh-CN`` → ``zh``) and leave unrecognized short codes to the
+    ``.get(..., zh)`` fallback.
     """
     if not message:
         return False

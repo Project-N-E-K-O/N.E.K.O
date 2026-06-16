@@ -1,9 +1,23 @@
 # -*- coding: utf-8 -*-
-"""
-角色核心提示词（多语言版本）
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-主体框架始终为英文，仅其中的本地化片段随语言切换。
-支持语言：zh / zh-TW / en / ja / ko / ru / es / pt
+"""
+Core character prompts (multi-language).
+
+The main frame is always English; only the localized fragments inside it switch with the language.
+Supported languages: zh / zh-TW / en / ja / ko / ru / es / pt
 """
 
 # ============================================================================
@@ -111,7 +125,7 @@ Users interacting with {LANLAN_NAME} are already reminded that she is a purely f
 # ============================================================================
 
 def _normalize_lang(lang: str) -> str:
-    """归一化语言代码到支持的 key（zh/zh-TW/en/ja/ko/ru）"""
+    """Normalize a language code to a supported key (zh/zh-TW/en/ja/ko/ru/es/pt)"""
     if not lang:
         return 'en'
     lang_lower = lang.lower()
@@ -135,7 +149,7 @@ def _normalize_lang(lang: str) -> str:
 
 
 def _build_lanlan_prompt(lang: str) -> str:
-    """根据语言代码构建完整提示词"""
+    """Build the full prompt for the given language code"""
     lang_key = _normalize_lang(lang)
     parts = _L10N.get(lang_key, _L10N['en'])
     result = _LANLAN_PROMPT_TEMPLATE
@@ -268,13 +282,13 @@ lanlan_prompt = _ALL_DEFAULTS['zh']
 
 def get_lanlan_prompt(lang: str | None = None) -> str:
     """
-    获取当前语言对应的角色核心提示词。
+    Get the core character prompt for the current language.
 
     Args:
-        lang: 语言代码。为 None 时自动从 get_global_language() 获取。
+        lang: Language code. When None, fetched from get_global_language().
 
     Returns:
-        包含 {LANLAN_NAME} / {MASTER_NAME} 占位符的提示词字符串。
+        Prompt string containing {LANLAN_NAME} / {MASTER_NAME} placeholders.
     """
     if lang is None:
         # config._runtime resolves to utils.language_utils.get_global_language_full
@@ -287,10 +301,11 @@ def get_lanlan_prompt(lang: str | None = None) -> str:
 
 def is_default_prompt(prompt_text: str | None) -> bool:
     """
-    判断给定提示词是否为任一语言的默认版本（即用户未自定义）。
+    Check whether the given prompt is the default version for any language
+    (i.e. the user has not customized it).
 
-    用于 config_manager 在读取已存储的 system_prompt 时，
-    决定是否替换为当前语言的本地化版本。
+    Used by config_manager when reading a stored system_prompt to decide
+    whether to replace it with the localized version for the current language.
     """
     if not prompt_text:
         return True

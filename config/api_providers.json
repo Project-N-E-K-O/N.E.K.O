@@ -222,6 +222,24 @@
       "vision_model": "",
       "agent_model": "MiniMax-M2.7"
     },
+    "mimo": {
+      "key": "mimo",
+      "name": "MiMo（小米）",
+      "description": "小米 MiMo 辅助 API，支持 V2.5 文本/多模态与 MiMo-V2.5-TTS",
+      "openrouter_url": "https://api.xiaomimimo.com/v1",
+      "token_plan_openrouter_url": "https://token-plan-cn.xiaomimimo.com/v1",
+      "token_plan_openrouter_urls": [
+        "https://token-plan-cn.xiaomimimo.com/v1",
+        "https://token-plan-sgp.xiaomimimo.com/v1",
+        "https://token-plan-ams.xiaomimimo.com/v1"
+      ],
+      "conversation_model": "mimo-v2.5",
+      "summary_model": "mimo-v2.5",
+      "correction_model": "mimo-v2.5",
+      "emotion_model": "mimo-v2.5",
+      "vision_model": "mimo-v2.5",
+      "agent_model": "mimo-v2.5"
+    },
     "claude": {
       "key": "claude",
       "name": "Claude（Anthropic）",
@@ -257,6 +275,20 @@
       "emotion_model": "qwen/qwen3.5-9b",
       "vision_model": "google/gemini-2.5-flash",
       "agent_model": "google/gemini-3-flash-preview"
+    },
+    "vllm_omni": {
+      "key": "vllm_omni",
+      "name": "vLLM-Omni (TTS)",
+      "description": "本地 / 远程 vLLM 部署的 TTS 服务，推荐Qwen3-TTS",
+      "openrouter_url": "ws://localhost:8091/v1",
+      "conversation_model": "",
+      "summary_model": "",
+      "correction_model": "",
+      "emotion_model": "",
+      "vision_model": "",
+      "agent_model": "",
+      "tts_default_model": "Qwen3-TTS",
+      "tts_default_voice": "default"
     }
   },
   "default_models": {
@@ -288,6 +320,7 @@
     "doubao": "ASSIST_API_KEY_DOUBAO",
     "minimax": "ASSIST_API_KEY_MINIMAX",
     "minimax_intl": "ASSIST_API_KEY_MINIMAX_INTL",
+    "mimo": "ASSIST_API_KEY_MIMO",
     "elevenlabs": "ASSIST_API_KEY_ELEVENLABS",
     "claude": "ASSIST_API_KEY_CLAUDE",
     "grok": "ASSIST_API_KEY_GROK",
@@ -342,6 +375,10 @@
       "config_field": "assistApiKeyMinimaxIntl",
       "restricted": true
     },
+    "mimo": {
+      "config_field": "assistApiKeyMimo",
+      "restricted": false
+    },
     "elevenlabs": {
       "config_field": "assistApiKeyElevenlabs",
       "restricted": true
@@ -357,6 +394,10 @@
     "openrouter": {
       "config_field": "assistApiKeyOpenrouter",
       "restricted": true
+    },
+    "vllm_omni": {
+      "config_field": "ttsModelApiKey",
+      "restricted": false
     }
   },
   "_comment_livestream_config": "Livestream (主播) overlay on top of core_api_type='free': when enabled with non-empty server_prefix, free路 URLs (/core /text/v1 /tts) auto-derive from server_prefix, voice falls back to voice_id (bypasses free_voices preset gate), and OmniRealtimeClient skips 90s silence-timeout. Preferred path: drop a standalone config/livestream_config.json (untracked via .gitignore) for single-file distribution. The field below is a fallback only; keep server_prefix/voice_id empty in committed configs.",
@@ -495,6 +536,40 @@
         "woman": "eve",
         "女": "eve",
         "女声": "eve"
+      }
+    },
+    "mimo": {
+      "catalog_prefix": "MiMo",
+      "default_voice": "mimo_default",
+      "default_male_voice": "Milo",
+      "voices": {
+        "mimo_default": "Default",
+        "冰糖": "Female",
+        "茉莉": "Female",
+        "苏打": "Male",
+        "白桦": "Male",
+        "Mia": "Female",
+        "Chloe": "Female",
+        "Milo": "Male",
+        "Dean": "Male"
+      },
+      "aliases": {
+        "default": "mimo_default",
+        "默认": "mimo_default",
+        "female": "冰糖",
+        "woman": "冰糖",
+        "女": "冰糖",
+        "女声": "冰糖",
+        "中文女": "冰糖",
+        "male": "苏打",
+        "man": "苏打",
+        "男": "苏打",
+        "男声": "苏打",
+        "中文男": "苏打",
+        "english female": "Mia",
+        "英文女": "Mia",
+        "english male": "Milo",
+        "英文男": "Milo"
       }
     }
   }

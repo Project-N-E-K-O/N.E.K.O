@@ -70,6 +70,26 @@ def test_task_active_renders_task_report_wrapper():
     assert "新消息" not in out
 
 
+def test_topic_hook_source_uses_neutral_descriptor():
+    out = _build(
+        [
+            {
+                "origin": "event",
+                "status": "completed",
+                "source_kind": "topic",
+                "source_name": "deep_topic_hook",
+                "summary": "聊聊最近想听的城市流行",
+                "detail": "请只生成一句自然开场",
+                "delivery_mode": "proactive",
+            }
+        ],
+    )
+
+    assert "话题提示" in out
+    assert "deep_topic_hook" not in out
+    assert "聊聊最近想听的城市流行" in out
+
+
 def test_task_passive_renders_neutral_task_result_wrapper():
     out = _build(
         [

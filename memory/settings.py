@@ -1,22 +1,39 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Legacy ``settings.json`` accessor.
 
-历史背景
+History
 --------
-原本这里同时承载两件事：
+This module originally carried two responsibilities:
 
-1. 维护 ``memory/{name}/settings.json`` 的读写。这部分仍然在用——
-   ``memory_server.py`` 和 testbench/dump 工具都会调用 ``get_settings`` /
-   ``load_settings`` / ``save_settings`` 来把磁盘上的旧字段合进 prompt。
-2. 用 LLM 从对话里抽取新设定 + 用 LLM 跑矛盾消解。这套已经被 evidence /
-   reflection 流水线全面取代——见 ``memory_server.py::process_history``
-   里 "旧模块已禁用（性能不足）" 的注释；``extract_and_update_settings`` 与
-   ``detect_and_resolve_contradictions`` 已经没有任何调用方。
+1. Reading/writing ``memory/{name}/settings.json``. Still in use —
+   ``memory_server.py`` and the testbench/dump tools call ``get_settings`` /
+   ``load_settings`` / ``save_settings`` to merge the legacy on-disk fields
+   into the prompt.
+2. Using an LLM to extract new settings from conversations + run LLM
+   contradiction resolution. Fully superseded by the evidence / reflection
+   pipeline — see the "old module disabled (insufficient performance)" note in
+   ``memory_server.py::process_history``; ``extract_and_update_settings`` and
+   ``detect_and_resolve_contradictions`` have no callers left.
 
-为了避免这两个死方法继续把 ``SETTING_PROPOSER_MODEL`` /
-``SETTING_VERIFIER_MODEL`` 这种已退役的硬编码常量留在身上（也避免
-项目级 "no temperature" 守门时还得给死代码开口子），本次清理直接把
-LLM 路径删掉，只保留磁盘读写。如果未来真的需要重启这套，请走
-evidence/reflection 范式，不要复活旧代码。
+To keep these two dead methods from dragging along retired hard-coded
+constants like ``SETTING_PROPOSER_MODEL`` / ``SETTING_VERIFIER_MODEL`` (and to
+avoid carving out dead-code exceptions in the project-wide "no temperature"
+gate), this cleanup removes the LLM paths outright and keeps only the disk IO.
+If this ever truly needs reviving, follow the evidence/reflection paradigm —
+do not resurrect the old code.
 """
 import json
 

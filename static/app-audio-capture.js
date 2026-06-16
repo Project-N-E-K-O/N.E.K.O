@@ -1547,19 +1547,45 @@
             speakerHeader.appendChild(speakerValue);
             speakerContainer.appendChild(speakerHeader);
 
+            // 非线性轨道：thumb 位置走 0..SPEAKER_SLIDER_TRACK_MAX（千分比精度），
+            // 经膝点映射成 0-200% 音量，使常规的 0-100% 占满轨道前 3/4、100% 落在锚点处。
+            var SPEAKER_SLIDER_TRACK_MAX = 1000;
+            var SPEAKER_VOLUME_NORMAL_COLOR = '#4f8cff';
+            var SPEAKER_VOLUME_BOOST_COLOR = '#ff9f43';
+
+            function speakerTrackPosFromVolume(vol) {
+                return Math.round(window.appUtils.valueToKneeTrack(
+                    vol, C.DEFAULT_SPEAKER_VOLUME, C.MAX_SPEAKER_VOLUME, C.SPEAKER_VOLUME_KNEE_RATIO
+                ) * SPEAKER_SLIDER_TRACK_MAX);
+            }
+            function speakerVolumeFromTrackPos(pos) {
+                return Math.round(window.appUtils.kneeTrackToValue(
+                    pos / SPEAKER_SLIDER_TRACK_MAX, C.DEFAULT_SPEAKER_VOLUME, C.MAX_SPEAKER_VOLUME, C.SPEAKER_VOLUME_KNEE_RATIO
+                ));
+            }
+
             var speakerSlider = document.createElement('input');
             speakerSlider.type = 'range';
             speakerSlider.id = 'speaker-volume-slider';
             speakerSlider.min = '0';
-            speakerSlider.max = '100';
+            speakerSlider.max = String(SPEAKER_SLIDER_TRACK_MAX);
             speakerSlider.step = '1';
-            speakerSlider.value = String(S.speakerVolume);
-            Object.assign(speakerSlider.style, { width: '100%', height: '6px', borderRadius: '3px', cursor: 'pointer', accentColor: '#4f8cff' });
+            speakerSlider.value = String(speakerTrackPosFromVolume(S.speakerVolume));
+            Object.assign(speakerSlider.style, { width: '100%', height: '6px', borderRadius: '3px', cursor: 'pointer', accentColor: SPEAKER_VOLUME_NORMAL_COLOR });
+
+            // 超过标准音量（>100%）时数值与轨道染暖色，把增强区从常规区里区分出来
+            function applySpeakerVolumeVisual(vol) {
+                var color = vol > C.DEFAULT_SPEAKER_VOLUME ? SPEAKER_VOLUME_BOOST_COLOR : SPEAKER_VOLUME_NORMAL_COLOR;
+                speakerValue.textContent = vol + '%';
+                speakerValue.style.color = color;
+                speakerSlider.style.accentColor = color;
+            }
+            applySpeakerVolumeVisual(S.speakerVolume);
 
             speakerSlider.addEventListener('input', function (e) {
-                var newVol = parseInt(e.target.value, 10);
+                var newVol = speakerVolumeFromTrackPos(parseInt(e.target.value, 10));
                 S.speakerVolume = newVol;
-                speakerValue.textContent = newVol + '%';
+                applySpeakerVolumeVisual(newVol);
                 if (S.speakerGainNode) {
                     S.speakerGainNode.gain.setTargetAtTime(newVol / 100, S.speakerGainNode.context.currentTime, 0.05);
                 }
@@ -1567,7 +1593,19 @@
             speakerSlider.addEventListener('change', function () {
                 if (typeof window.saveSpeakerVolumeSetting === 'function') window.saveSpeakerVolumeSetting();
             });
-            speakerContainer.appendChild(speakerSlider);
+
+            // 用相对定位容器在轨道 75% 处画一条 100% 标准锚点，告诉用户「这条线以上是增强」
+            var speakerSliderWrap = document.createElement('div');
+            Object.assign(speakerSliderWrap.style, { position: 'relative', width: '100%' });
+            var speakerAnchorTick = document.createElement('div');
+            Object.assign(speakerAnchorTick.style, {
+                position: 'absolute', left: (C.SPEAKER_VOLUME_KNEE_RATIO * 100) + '%', top: '50%',
+                width: '2px', height: '12px', transform: 'translate(-50%, -50%)',
+                backgroundColor: 'var(--neko-popup-text-sub)', opacity: '0.55', borderRadius: '1px', pointerEvents: 'none'
+            });
+            speakerSliderWrap.appendChild(speakerSlider);
+            speakerSliderWrap.appendChild(speakerAnchorTick);
+            speakerContainer.appendChild(speakerSliderWrap);
 
             var speakerHint = document.createElement('div');
             speakerHint.textContent = window.t ? window.t('speaker.volumeHint') : '调节AI语音的播放音量';

@@ -1,11 +1,25 @@
 # -*- coding: utf-8 -*-
-"""
-N.E.K.O. 端口探测与健康校验工具。
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-提供以下能力：
-- 通过 /health 探测并校验 N.E.K.O 指纹
-- 启动锁（Windows 命名互斥体 / 跨平台文件锁）
-- Windows 上 Hyper-V 保留端口范围检测
+"""
+N.E.K.O. port probing and health-check utilities.
+
+Capabilities:
+- probe /health and verify the N.E.K.O fingerprint
+- startup lock (Windows named mutex / cross-platform file lock)
+- detection of Hyper-V reserved port ranges on Windows
 """
 
 import json
@@ -53,10 +67,10 @@ def build_health_response(
     version: str = "",
     extra: dict | None = None,
 ) -> dict:
-    """构建统一的 /health 响应结构。
+    """Build the unified /health response structure.
 
-    所有 N.E.K.O HTTP 服务都应返回该格式，便于 launcher
-    与前端区分“真实后端”和“其他占用进程”。
+    All N.E.K.O HTTP services should return this format, helping the launcher
+    and frontend distinguish "the real backend" from "some other occupying process".
     """
     resp = {
         "app": HEALTH_APP_SIGNATURE,
@@ -79,13 +93,13 @@ def probe_neko_health(
     host: str = "127.0.0.1",
     timeout: float = 1.0,
 ) -> Optional[dict]:
-    """对指定端口执行 ``GET /health``。
+    """Perform a ``GET /health`` against the given port.
 
-    若响应为合法 N.E.K.O 服务则返回解析后的 JSON，
-    否则返回 ``None``。
+    Returns the parsed JSON if the response is a legitimate N.E.K.O service,
+    otherwise ``None``.
 
-    这里使用原生 socket，避免 launcher 引入 ``httpx`` / ``requests``，
-    保持启动器轻量。
+    Raw sockets are used here so the launcher doesn't pull in ``httpx`` /
+    ``requests``, keeping it lightweight.
     """
     sock: socket.socket | None = None
     try:
@@ -149,9 +163,9 @@ def probe_neko_health(
 # ---------------------------------------------------------------------------
 
 def get_hyperv_excluded_ranges() -> list[tuple[int, int]]:
-    """返回 Hyper-V / WSL 保留端口区间列表（start, end）。
+    """Return the list of Hyper-V / WSL reserved port ranges (start, end).
 
-    在非 Windows 或查询失败时返回空列表。
+    Returns an empty list on non-Windows or query failure.
     """
     if sys.platform != "win32":
         return []
@@ -185,7 +199,7 @@ def get_hyperv_excluded_ranges() -> list[tuple[int, int]]:
 
 
 def is_port_in_excluded_range(port: int, excluded: list[tuple[int, int]] | None = None) -> bool:
-    """检查端口是否落在 Hyper-V 保留区间内。"""
+    """Check whether the port falls inside a Hyper-V reserved range."""
     if excluded is None:
         excluded = get_hyperv_excluded_ranges()
     return any(lo <= port <= hi for lo, hi in excluded)
@@ -201,10 +215,10 @@ _lock_fd = None  # POSIX file lock fd
 
 
 def acquire_startup_lock() -> bool:
-    """尝试获取系统级单实例启动锁。
+    """Try to acquire the system-wide single-instance startup lock.
 
-    返回 ``True`` 表示获取成功（可继续启动）。
-    返回 ``False`` 表示已有其他 launcher 持有该锁。
+    Returns ``True`` when acquired (startup may continue).
+    Returns ``False`` when another launcher already holds the lock.
     """
     global _lock_handle, _lock_fd
 
@@ -215,7 +229,7 @@ def acquire_startup_lock() -> bool:
 
 
 def release_startup_lock() -> None:
-    """释放启动锁（尽力而为）。"""
+    """Release the startup lock (best effort)."""
     global _lock_handle, _lock_fd
 
     if sys.platform == "win32":

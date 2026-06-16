@@ -14,15 +14,23 @@
 
     <style>
         html, body {
+            --neko-jukebox-bg: #87CEEB;
             margin: 0;
             padding: 0;
             width: 100%;
             height: 100%;
             overflow: hidden;
-            background: #87CEEB;
+            background: var(--neko-jukebox-bg);
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             user-select: none;
             -webkit-user-select: none;
+        }
+
+        html.neko-jukebox-standalone-host,
+        html.neko-jukebox-standalone-host body,
+        html[data-theme="dark"].neko-jukebox-standalone-host,
+        html[data-theme="dark"].neko-jukebox-standalone-host body.neko-jukebox-standalone-page {
+            background: var(--neko-jukebox-bg) !important;
         }
 
         .jukebox-wrapper {
@@ -33,8 +41,7 @@
             z-index: 1 !important;
         }
 
-        /* 容器保持 no-drag，避免父级 drag + 子按钮 no-drag 触发 Chromium 命中测试不稳定。
-           标题左侧区域单独交给 OS 原生拖动，其他空白拖动由 jukebox-standalone.js 兜底。 */
+        /* 容器保持 no-drag；窗口拖动只交给标题栏，按钮和内容区单独排除。 */
         .jukebox-container {
             width: 100% !important;
             max-height: 100% !important;
@@ -44,8 +51,12 @@
             -webkit-app-region: no-drag !important;
         }
 
+        .jukebox-header {
+            -webkit-app-region: drag !important;
+        }
+
         .jukebox-header-left,
-        .jukebox-header-left * {
+        .jukebox-header-drag-fill {
             -webkit-app-region: drag !important;
         }
 
@@ -77,17 +88,43 @@
             touch-action: none;
         }
 
-        body.neko-jukebox-standalone-page.jukebox-dragging .jukebox-header {
+        body.neko-jukebox-standalone-page.neko-jukebox-bridge-drag .jukebox-header,
+        body.neko-jukebox-standalone-page.neko-jukebox-bridge-drag .jukebox-header-left,
+        body.neko-jukebox-standalone-page.neko-jukebox-bridge-drag .jukebox-header-drag-fill {
+            -webkit-app-region: no-drag !important;
+            cursor: grab !important;
+        }
+
+        body.neko-jukebox-standalone-page .jukebox-header-left,
+        body.neko-jukebox-standalone-page .jukebox-header-drag-fill {
+            cursor: grab;
+        }
+
+        body.neko-jukebox-standalone-page.jukebox-dragging .jukebox-header,
+        body.neko-jukebox-standalone-page.jukebox-dragging .jukebox-header-left,
+        body.neko-jukebox-standalone-page.jukebox-dragging .jukebox-header-drag-fill {
             cursor: grabbing;
         }
 
         body.neko-jukebox-standalone-page .jukebox-resize-handle {
             touch-action: none;
         }
+
+        /* Keep this in sync with Jukebox.injectStyles() so first paint cannot animate during standalone resize. */
+        body.neko-jukebox-standalone-page .jukebox-container,
+        body.neko-jukebox-standalone-page .jukebox-container.open,
+        body.neko-jukebox-standalone-page .jukebox-container.hidden {
+            width: 100% !important;
+            height: 100% !important;
+            transition: none !important;
+            transform: none !important;
+        }
     </style>
 </head>
 <body>
     <script>
+        // Applied before JS mount so dark-mode global styles cannot flash a black standalone background.
+        document.documentElement.classList.add('neko-jukebox-standalone-host');
         window.__NEKO_JUKEBOX_STANDALONE__ = true;
     </script>
     <script src="/static/Jukebox.js"></script>

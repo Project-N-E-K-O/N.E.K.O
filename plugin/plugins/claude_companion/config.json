@@ -1,0 +1,7 @@
+{
+  "claude_companion": {
+    "port": 48920,
+    "cooldown_seconds": 60,
+    "api_token": ""
+  }
+}

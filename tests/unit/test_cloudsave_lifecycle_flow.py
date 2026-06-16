@@ -570,6 +570,7 @@ def test_main_server_limited_mode_middleware_blocks_runtime_routes():
     assert payload["limited_mode"] is True
     assert health_response.status_code == 200
     assert steam_language_response.status_code == 200
+    assert "uiLanguage" in steam_language_response.json()
 
 
 @pytest.mark.unit

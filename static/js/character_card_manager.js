@@ -6059,45 +6059,64 @@ function _panelConfigureFieldDeleteButton(button) {
     button.innerHTML = '<img src="/static/icons/delete.png" alt="" class="delete-icon" aria-hidden="true">';
 }
 
+function _panelResizeTextarea(textarea) {
+    if (!textarea) return;
+    textarea.style.height = 'auto';
+    const style = getComputedStyle(textarea);
+    const minHeight = parseInt(style.minHeight) || 30;
+
+    // 计算内容高度，考虑padding
+    const paddingTop = parseInt(style.paddingTop) || 0;
+    const paddingBottom = parseInt(style.paddingBottom) || 0;
+
+    const scrollHeight = textarea.scrollHeight;
+    const contentHeight = scrollHeight - paddingTop - paddingBottom;
+
+    // 三行高度的估算：line-height*3
+    const computedLineHeight = parseFloat(style.lineHeight);
+    const fontSize = parseFloat(style.fontSize) || 14;
+    const lineHeight = isNaN(computedLineHeight) ? fontSize * 1.2 : computedLineHeight;
+    const threeLinesHeight = lineHeight * 3;
+    const maxContentHeight = threeLinesHeight;
+    const newContentHeight = Math.min(maxContentHeight, contentHeight);
+    const newHeight = Math.max(minHeight, newContentHeight + paddingTop + paddingBottom);
+
+    textarea.style.height = newHeight + 'px';
+
+    // 根据内容是否超过三行来决定是否显示滚动条
+    const fieldRow = textarea.closest('.field-row');
+    if (fieldRow) {
+        if (contentHeight > maxContentHeight) {
+            textarea.style.overflowY = 'auto';
+            fieldRow.classList.add('has-scrollbar');
+        } else {
+            textarea.style.overflowY = 'hidden';
+            fieldRow.classList.remove('has-scrollbar');
+        }
+    }
+}
+
+function _panelRequestTextareaAutoResize(textarea) {
+    if (!textarea) return;
+    _panelResizeTextarea(textarea);
+    if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(() => _panelResizeTextarea(textarea));
+    } else {
+        setTimeout(() => _panelResizeTextarea(textarea), 0);
+    }
+}
+
 // textarea自动调整高度（匹配原版逻辑：三行最大高度 + scrollbar类切换）
 function _panelAttachTextareaAutoResize(textarea) {
-    if (!textarea || textarea.dataset.autoResizeAttached) return;
+    if (!textarea) return;
+    if (textarea.dataset.autoResizeAttached) {
+        _panelRequestTextareaAutoResize(textarea);
+        return;
+    }
     textarea.dataset.autoResizeAttached = 'true';
 
     function resize() {
-        textarea.style.height = 'auto';
-        const style = getComputedStyle(textarea);
-        const minHeight = parseInt(style.minHeight) || 30;
-
-        // 计算内容高度，考虑padding
-        const paddingTop = parseInt(style.paddingTop) || 0;
-        const paddingBottom = parseInt(style.paddingBottom) || 0;
-
-        const scrollHeight = textarea.scrollHeight;
-        const contentHeight = scrollHeight - paddingTop - paddingBottom;
-
-        // 三行高度的估算：line-height*3
-        const computedLineHeight = parseFloat(style.lineHeight);
-        const fontSize = parseFloat(style.fontSize) || 14;
-        const lineHeight = isNaN(computedLineHeight) ? fontSize * 1.2 : computedLineHeight;
-        const threeLinesHeight = lineHeight * 3;
-        const maxContentHeight = threeLinesHeight;
-        const newContentHeight = Math.min(maxContentHeight, contentHeight);
-        const newHeight = Math.max(minHeight, newContentHeight + paddingTop + paddingBottom);
-
-        textarea.style.height = newHeight + 'px';
-
-        // 根据内容是否超过三行来决定是否显示滚动条
-        const fieldRow = textarea.closest('.field-row');
-        if (fieldRow) {
-            if (contentHeight > maxContentHeight) {
-                textarea.style.overflowY = 'auto';
-                fieldRow.classList.add('has-scrollbar');
-            } else {
-                textarea.style.overflowY = 'hidden';
-                fieldRow.classList.remove('has-scrollbar');
-            }
-        }
+        _panelRequestTextareaAutoResize(textarea);
     }
 
     textarea.addEventListener('input', resize);
@@ -12387,6 +12406,9 @@ function _cardAssistApplyToForm(form, generated, selectedKeys, originalName, isN
         const textarea = _findFieldTextareaByName(form, key);
         if (textarea) {
             textarea.value = value;
+            if (typeof _panelRequestTextareaAutoResize === 'function') {
+                _panelRequestTextareaAutoResize(textarea);
+            }
             textarea.dispatchEvent(new Event('input', { bubbles: true }));
             textarea.dispatchEvent(new Event('change', { bubbles: true }));
             const row = textarea.closest('.field-row-wrapper') || textarea.parentNode;
@@ -12445,6 +12467,9 @@ function _cardAssistApplyToForm(form, generated, selectedKeys, originalName, isN
         }
         if (typeof _panelAttachTextareaAutoResize === 'function') {
             _panelAttachTextareaAutoResize(textareaEl);
+        }
+        if (typeof _panelRequestTextareaAutoResize === 'function') {
+            _panelRequestTextareaAutoResize(textareaEl);
         }
         if (!isNew && originalName && typeof panelAttachAutoSaveListener === 'function') {
             panelAttachAutoSaveListener(textareaEl, originalName);

@@ -67,6 +67,27 @@ class _FakeActivityTracker:
         self.user_messages.append(text)
 
 
+class _FakeVoiceBridgeSession:
+    def __init__(self):
+        self.cancelled = 0
+        self.primed = []
+
+    async def cancel_response(self):
+        self.cancelled += 1
+
+    async def prime_context(self, context, *, skipped=False):
+        self.primed.append((context, skipped))
+
+
+class _FakeGeminiVoiceBridgeSession(core_module.OmniRealtimeClient):
+    def __init__(self):
+        self._is_gemini = True
+        self.primed = []
+
+    async def prime_context(self, context, *, skipped=False):
+        self.primed.append((context, skipped))
+
+
 class _FakeAliveThread:
     def is_alive(self):
         return True
@@ -110,6 +131,7 @@ def _make_manager():
     mgr.tts_handler_task = None
     mgr._takeover_active = False
     mgr._takeover_input_dispatcher = None
+    mgr._bg_tasks = set()
     mgr.sent_responses = []
     mgr.user_activity = []
     mgr.last_user_activity_time = None
@@ -338,6 +360,137 @@ async def test_no_takeover_voice_transcript_uses_ordinary_flow():
         "type": "user",
         "data": {"input_type": "transcript", "data": "普通语音"},
     }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_voice_plugin_observer_noop_preserves_user_context_side_effects():
+    mgr = _make_transcript_manager()
+    routed = []
+
+    async def fake_voice_broadcast(text):
+        routed.append(text)
+        return None
+
+    mgr._broadcast_voice_transcript_observed = fake_voice_broadcast
+
+    await core_module.LLMSessionManager.handle_input_transcript(
+        mgr,
+        "  f(x)=x^3 derivative answer is 3x^2  ",
+        is_voice_source=True,
+    )
+    await asyncio.sleep(0)
+
+    assert routed == ["f(x)=x^3 derivative answer is 3x^2"]
+    assert mgr._activity_tracker.voice_rms_count == 1
+    assert mgr._activity_tracker.user_messages == ["  f(x)=x^3 derivative answer is 3x^2  "]
+    assert mgr._session_turn_count == 1
+    mgr._publish_user_utterance_to_plugin_bus.assert_called_once_with(
+        "  f(x)=x^3 derivative answer is 3x^2  ",
+        is_voice_source=True,
+    )
+    assert mgr.sync_message_queue.messages == [{
+        "type": "user",
+        "data": {"input_type": "transcript", "data": "f(x)=x^3 derivative answer is 3x^2"},
+    }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_voice_bridge_session_change_continues_ordinary_transcript_flow():
+    mgr = _make_transcript_manager()
+    original_session = mgr.session
+    replacement_session = object()
+    routed = []
+
+    async def fake_voice_broadcast(text):
+        routed.append(text)
+        mgr.session = replacement_session
+        return None
+
+    mgr._broadcast_voice_transcript_observed = fake_voice_broadcast
+
+    await core_module.LLMSessionManager.handle_input_transcript(
+        mgr,
+        "  Yui explain this step  ",
+        is_voice_source=True,
+    )
+    await asyncio.sleep(0)
+
+    assert routed == ["Yui explain this step"]
+    assert original_session is not replacement_session
+    assert mgr.session is replacement_session
+    assert mgr._activity_tracker.voice_rms_count == 1
+    assert mgr._activity_tracker.user_messages == ["  Yui explain this step  "]
+    assert mgr._session_turn_count == 1
+    mgr._publish_user_utterance_to_plugin_bus.assert_called_once_with(
+        "  Yui explain this step  ",
+        is_voice_source=True,
+    )
+    assert mgr.sync_message_queue.messages == [{
+        "type": "user",
+        "data": {"input_type": "transcript", "data": "Yui explain this step"},
+    }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_voice_observer_broadcast_failure_continues_ordinary_transcript_flow(monkeypatch):
+    mgr = _make_transcript_manager()
+    mgr.session = _FakeVoiceBridgeSession()
+    called = asyncio.Event()
+
+    async def fake_publish(*_args, **_kwargs):
+        called.set()
+        raise RuntimeError("broadcast failed")
+
+    monkeypatch.setattr(
+        core_module,
+        "publish_voice_transcript_observed_best_effort",
+        fake_publish,
+    )
+
+    await core_module.LLMSessionManager.handle_input_transcript(
+        mgr,
+        "  continue this transcript  ",
+        is_voice_source=True,
+    )
+    await asyncio.wait_for(called.wait(), timeout=1)
+    assert mgr._activity_tracker.voice_rms_count == 1
+    assert mgr._activity_tracker.user_messages == ["  continue this transcript  "]
+    assert mgr._session_turn_count == 1
+    mgr._publish_user_utterance_to_plugin_bus.assert_called_once_with(
+        "  continue this transcript  ",
+        is_voice_source=True,
+    )
+    assert mgr.sync_message_queue.messages == [{
+        "type": "user",
+        "data": {"input_type": "transcript", "data": "continue this transcript"},
+    }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_voice_observer_does_not_prime_gemini_context_from_main(monkeypatch):
+    mgr = _make_transcript_manager()
+    session = _FakeGeminiVoiceBridgeSession()
+    mgr.session = session
+
+    async def fake_publish(*_args, **_kwargs):
+        return True
+
+    monkeypatch.setattr(
+        core_module,
+        "publish_voice_transcript_observed_best_effort",
+        fake_publish,
+    )
+
+    await core_module.LLMSessionManager._broadcast_voice_transcript_observed(
+        mgr,
+        "explain this screen",
+    )
+
+    assert session.primed == []
 
 
 @pytest.mark.unit

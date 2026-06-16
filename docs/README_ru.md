@@ -11,7 +11,7 @@
 > N.E.K.O. — цифровая жизнь, стремящаяся понимать, устанавливать связи и расти вместе с нами.
 
 [![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/LICENSE)
+[![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/LICENSE)
 [![Commit](https://img.shields.io/github/last-commit/wehos/N.E.K.O?color=green)](https://github.com/Project-N-E-K-O/N.E.K.O/commits)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/5kgHfepNJr)
 ![QQ](https://custom-icon-badges.demolab.com/badge/QQ群-995414391-00BFFF?style=flat&logo=tencent-qq)
@@ -50,7 +50,7 @@
 
 # Проект N.E.K.O.
 
-`Project N.E.K.O.` — это платформа ИИ-компаньонов на основе открытого исходного кода. Ядро проекта **всегда остаётся открытым** под лицензией MIT — каждый ваш вклад может попасть в официальные версии для Steam и App Store.
+`Project N.E.K.O.` — это платформа ИИ-компаньонов на основе открытого исходного кода. Ядро проекта **всегда остаётся открытым** под лицензией Apache License 2.0 — каждый ваш вклад может попасть в официальные версии для Steam и App Store.
 
 ---
 

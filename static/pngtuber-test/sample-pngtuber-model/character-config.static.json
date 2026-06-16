@@ -1,0 +1,18 @@
+{
+  "model_type": "pngtuber",
+  "pngtuber": {
+    "idle_image": "/static/pngtuber-test/sample-pngtuber-model/idle.gif",
+    "talking_image": "/static/pngtuber-test/sample-pngtuber-model/talking.gif",
+    "click_image": "/static/pngtuber-test/sample-pngtuber-model/talking.gif",
+    "drag_image": "/static/assets/neko-idle/cat-idle-cat-move-1.gif",
+    "happy_image": "/static/pngtuber-test/sample-pngtuber-model/happy.png",
+    "sad_image": "/static/pngtuber-test/sample-pngtuber-model/sad.png",
+    "angry_image": "/static/pngtuber-test/sample-pngtuber-model/angry.png",
+    "surprised_image": "/static/pngtuber-test/sample-pngtuber-model/surprised.png",
+    "source_type": "gif",
+    "scale": 1,
+    "offset_x": 0,
+    "offset_y": 0,
+    "mirror": false
+  }
+}

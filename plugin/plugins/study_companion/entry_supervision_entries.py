@@ -6,10 +6,12 @@ from .entry_common import (
     SdkError,
     _entry_exception_error,
     plugin_entry,
+    ui,
 )
 
 
 class _SupervisionEntriesMixin:
+    @ui.action()
     @plugin_entry(
         id="study_supervision_status",
         name="Study Supervision Status",
@@ -24,6 +26,7 @@ class _SupervisionEntriesMixin:
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_supervision_status")
 
+    @ui.action()
     @plugin_entry(
         id="study_supervision_toggle",
         name="Toggle Study Supervision",

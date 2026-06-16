@@ -60,6 +60,21 @@ def test_service_payload_builders_preserve_nested_state_and_reply_payloads() -> 
     assert build_ocr_payload(snapshot)["summary"] == "ocr text"
 
 
+def test_status_payload_only_deepcopies_exposed_knowledge_fields() -> None:
+    class _KnowledgeDict(dict):
+        def __deepcopy__(self, memo):  # noqa: ANN001
+            raise AssertionError("outer knowledge mapping should not be deep-copied")
+
+    config = StudyConfig(language="en")
+    state = build_initial_state(mode=config.mode)
+    knowledge = _KnowledgeDict({"weak_topics": [{"topic_id": "limits"}]})
+
+    status = build_status_payload(config=config, state=state, knowledge=knowledge)
+    knowledge["weak_topics"][0]["topic_id"] = "mutated"
+
+    assert status["weak_topics"] == [{"topic_id": "limits"}]
+
+
 def test_dependency_status_uses_installability_and_tesseract_language_fallbacks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -7,6 +7,7 @@ from .entry_common import (
     _entry_exception_error,
     plugin_entry,
     tr,
+    ui,
     MODE_COMPANION,
     MODE_INTERACTIVE,
     MODE_TEACHING,
@@ -36,6 +37,7 @@ class _ModeEntriesMixin:
                 self, exc, operation="study_detect_mode_intent"
             )
 
+    @ui.action()
     @plugin_entry(
         id="study_set_mode",
         name=tr("entries.set_mode.name", default="Set Study Mode"),

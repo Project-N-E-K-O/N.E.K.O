@@ -12,6 +12,7 @@ from plugin.plugins.study_companion.knowledge_quality import (
 )
 from plugin.plugins.study_companion.knowledge_tracker import KnowledgeGraph, KnowledgeTracker
 from plugin.plugins.study_companion.store import StudyStore
+from plugin.plugins.study_companion.store_knowledge import candidate_status_counts
 
 pytestmark = pytest.mark.unit
 
@@ -280,6 +281,40 @@ def test_negative_evidence_deprecates_candidate(tmp_path: Path) -> None:
         assert deprecated["event_type"] == KnowledgeEvidenceType.CONFLICT_DETECTED.value
     finally:
         store.close()
+
+
+def test_candidate_status_counts_derives_total_from_grouped_snapshot() -> None:
+    class _Row(dict):
+        def __getitem__(self, key: str) -> object:
+            return dict.get(self, key)
+
+    class _Connection:
+        def execute(self, sql: str):
+            if "GROUP BY status, item_type" in sql:
+                return self
+            if "COUNT(*) AS count FROM candidate_knowledge_items" in sql:
+                return _TotalCursor()
+            raise AssertionError(sql)
+
+        def fetchall(self):
+            return [
+                _Row(status="candidate", item_type="topic", count=2),
+                _Row(status="trusted", item_type="edge", count=1),
+            ]
+
+    class _TotalCursor:
+        def fetchone(self):
+            return _Row(count=99)
+
+    class _Store:
+        def _require_read_conn(self):
+            return _Connection()
+
+    counts = candidate_status_counts(_Store())
+
+    assert counts["total"] == 3
+    assert counts["by_status"] == {"candidate": 2, "trusted": 1}
+    assert counts["by_type"] == {"topic": 2, "edge": 1}
 
 
 def test_answer_tracking_persists_discovered_runtime_topic(tmp_path: Path) -> None:
