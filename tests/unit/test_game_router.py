@@ -49,6 +49,18 @@ def _allow_basketball_score_session(lanlan_name, session_id, mode="shooter"):
     return state
 
 
+def _allow_icebreaker_route(lanlan_name="Lan", session_id="icebreaker-day1-test"):
+    state = {
+        "game_type": "new_user_icebreaker",
+        "session_id": session_id,
+        "lanlan_name": lanlan_name,
+        "game_route_active": True,
+    }
+    _mark_game_started(state)
+    game_router._game_route_states[game_router._route_state_key(lanlan_name, "new_user_icebreaker")] = state
+    return state
+
+
 @pytest.mark.unit
 def test_parse_control_instructions_extracts_json_line():
     result = game_router._parse_control_instructions(
@@ -73,6 +85,7 @@ async def test_new_user_icebreaker_context_endpoint_appends_session_history(monk
 
     mgr = FakeManager()
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    _allow_icebreaker_route()
 
     result = await game_router.game_project_context(
         "new_user_icebreaker",
@@ -101,6 +114,7 @@ async def test_new_user_icebreaker_context_endpoint_awaits_async_append(monkeypa
 
     mgr = FakeManager()
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    _allow_icebreaker_route()
 
     result = await game_router.game_project_context(
         "new_user_icebreaker",
@@ -115,6 +129,33 @@ async def test_new_user_icebreaker_context_endpoint_awaits_async_append(monkeypa
     assert result["ok"] is True
     assert result["method"] == "project_session_history"
     assert mgr.calls == [("user", "icebreaker choice")]
+    game_router._game_route_states.pop(game_router._route_state_key("Lan", "new_user_icebreaker"), None)
+
+
+@pytest.mark.asyncio
+async def test_new_user_icebreaker_context_rejects_stale_session(monkeypatch):
+    class FakeManager:
+        def append_icebreaker_context(self, role, text):
+            raise AssertionError("stale icebreaker context must not append")
+
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": FakeManager()})
+
+    with reset_game_route_state():
+        _allow_icebreaker_route(session_id="active-session")
+        result = await game_router.game_project_context(
+            "new_user_icebreaker",
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "role": "assistant",
+                "text": "late line",
+                "session_id": "old-session",
+            }),
+        )
+
+    assert result["ok"] is True
+    assert result["skipped"] == "stale_session"
+    assert result["reason"] == "session_id_mismatch"
+    assert result["method"] == "project_session_history"
 
 
 @pytest.mark.unit

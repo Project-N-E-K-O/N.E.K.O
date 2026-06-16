@@ -235,6 +235,8 @@ def test_chat_templates_version_react_chat_bundle_from_react_assets():
     assert 'neko-chat-window.iife.js?v={{ react_chat_asset_version }}' in chat_template
     assert 'neko-chat-window.css?v={{ react_chat_asset_version }}' in index_template
     assert 'neko-chat-window.iife.js?v={{ react_chat_asset_version }}' in index_template
+    assert 'app-interpage.js?v={{ static_asset_version }}' in chat_template
+    assert 'app-interpage.js?v={{ static_asset_version }}' in index_template
 
 
 def test_web_chat_compact_endpoint_uses_index_template_with_initial_compact_surface():
@@ -999,13 +1001,15 @@ def test_externalized_chat_input_spotlight_uses_global_overlay_only():
         1,
     )[0]
 
-    assert "if (isYuiGuidePcOverlayAvailable()) {" in update_block
-    assert "kind !== 'input' && isYuiGuidePcOverlayAvailable()" not in update_block
     assert "hideYuiGuideChatSpotlightElement" not in script
     assert "hideYuiGuideChatSpotlightElements" not in script
     assert "is-plain-capsule" not in update_block
     assert "renderYuiGuideChatSpotlight(" not in update_block
-    assert "getYuiGuideChatSpotlightElement(" not in script
+    assert "function getYuiGuideChatSpotlightElement()" in script
+    assert "spotlight.id = 'yui-guide-chat-spotlight';" in script
+    assert "document.body.appendChild(spotlight);" in script
+    assert "spotlight.hidden = false;" in update_block
+    assert "spotlight.style.left = Math.round(rect.left - padding) + 'px';" in update_block
     assert "function renderYuiGuideChatSpotlight" not in script
 
 

@@ -6640,6 +6640,33 @@ async def game_project_context(game_type: str, request: Request):
         return {"ok": False, "reason": "missing_lanlan_name"}
     _absorb_request_language(data, lanlan_name)
 
+    session_id = str(data.get("session_id") or "")
+    state = _get_active_game_route_state(lanlan_name, game_type)
+    if not state:
+        closed_response = _game_route_closed_session_response(
+            data,
+            session_id=session_id,
+            lanlan_name=lanlan_name,
+            method="project_session_history",
+        )
+        if closed_response:
+            return closed_response
+        return {
+            "ok": False,
+            "reason": "route_not_active",
+            "lanlan_name": lanlan_name,
+            "game_type": game_type,
+            "method": "project_session_history",
+        }
+    stale_response = _game_route_stale_session_response(
+        state,
+        session_id,
+        lanlan_name=lanlan_name,
+        method="project_session_history",
+    )
+    if stale_response:
+        return stale_response
+
     mgr = get_session_manager().get(lanlan_name)
     if not mgr:
         return {"ok": False, "reason": "no_session_manager", "lanlan_name": lanlan_name}

@@ -2729,7 +2729,23 @@
     var yuiGuideChatSpotlightTimer = 0;
 
     function getYuiGuideChatSpotlightElement() {
-        return document.getElementById('yui-guide-chat-spotlight');
+        var existing = document.getElementById('yui-guide-chat-spotlight');
+        if (existing || typeof document === 'undefined' || !document.body) {
+            return existing;
+        }
+        var spotlight = document.createElement('div');
+        spotlight.id = 'yui-guide-chat-spotlight';
+        spotlight.hidden = true;
+        spotlight.setAttribute('aria-hidden', 'true');
+        spotlight.style.position = 'fixed';
+        spotlight.style.pointerEvents = 'none';
+        spotlight.style.zIndex = '2147483000';
+        spotlight.style.boxSizing = 'border-box';
+        spotlight.style.border = '2px solid rgba(39, 89, 228, 0.98)';
+        spotlight.style.boxShadow = '0 0 0 9999px rgba(8, 12, 28, 0.18), 0 0 24px rgba(39, 89, 228, 0.38)';
+        spotlight.style.transition = 'left 120ms ease, top 120ms ease, width 120ms ease, height 120ms ease';
+        document.body.appendChild(spotlight);
+        return spotlight;
     }
 
     function getYuiGuideChatSpotlightTarget(kind) {
