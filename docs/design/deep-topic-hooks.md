@@ -93,13 +93,17 @@ prompt 只给「明显反复出现 → 高分，顺口一提 → 低分；如实
 
 ### 语音会话不投深话题（只 defer 不 drop）
 
-深话题是文本态开场白；在实时语音对话里注入会横切一段正在进行的口语交流，正是这个特性要避免的「硬凑打扰」。因此 `topic_hook_delivery_allowed`（`main_logic/core.py`）在语音会话活跃或正在启动时直接返回 False。
+深话题是文本态开场白；在实时语音对话里注入会横切一段正在进行的口语交流，正是这个特性要避免的「硬凑打扰」。因此 `topic_hook_delivery_allowed`（`main_logic/core.py`）在语音路径可达时直接返回 False。
 
-- **谓词是 `_is_voice_session_active_or_starting()`，不是 `isinstance(session, OmniRealtimeClient)`**：text→audio 切换时 `start_session` 先置好 audio 启动标志，旧的 `OmniOfflineClient` 还留在 `self.session` 里；isinstance 会漏掉这个启动窗口，让 hook 漏进正在消亡的文本会话。用 greeting 同款的「活跃或正在启动语音」谓词才能在启动窗口就 defer。
+- **谓词是 `_voice_delivery_blocked()`（并集），与 voice 分支实际触发条件对齐**：`trigger_agent_callbacks` 按 `isinstance(self.session, OmniRealtimeClient)` 决定走 voice 分支，而 `_is_voice_session_active_or_starting()` 走的是 input-mode 标志。两者在切换窗口会错位，所以门取两者并集：
+  - `isinstance(self.session, OmniRealtimeClient)`：当前 live session 是 realtime。覆盖 **audio→text** 拆除窗口——`start_session` 已把 input-mode 标志翻成 text，但旧 realtime session 还在 `self.session` 里待若干 await 步，voice 分支照样会注入旧语音会话。
+  - `_is_voice_session_active_or_starting()`：语音活跃或正在启动。覆盖 **text→audio** 启动窗口——realtime client 还没装进 `self.session`、旧 `OmniOfflineClient` 仍在。
 - **采集与 Phase-2 照常跑**：语音回合仍喂 `TopicHookPool`，quiet-window 触发仍会跑 `_deepen_material`。这是有意的——`TopicHookPool` 是进程级、按角色全局的，语音期间攒下的物料应当保留，等用户回到文本会话再投，而不是因为「这次是语音」就不积累（否则重度语音用户永远造不出深话题）。
 - **defer 不是 drop**：返回 False 走的是和活动门同一条「撤回排队副本 + pool reschedule 重试」机制，物料留 pending，下一个文本会话窗口再投，不烧日配额。
 - **两条投递门共用此收口**：提交门（`_topic_activity_gate_open`）和释放门（`_deliver_proactive_batch`）都查 `topic_hook_delivery_allowed`，不在投递核心里散落会话类型判断。
-- **session-start drain 路径单独堵**：`_reset_proactive_gate` 在会话启动时把 `ProactiveDeliveryManager` 残留队列 drain 进 `pending_agent_callbacks`，而 `trigger_agent_callbacks` 的 voice 分支注入该队列时**不**复查 `topic_hook_delivery_allowed`。所以这两道门管不到 drain 路径——`_reset_proactive_gate` 在 `_is_voice_session_active_or_starting()` 时对 `channel == "topic_hook"` 的残留 hook 直接 resolve ack False 丢弃（同样 defer 给文本会话重试），不交给 `pending_agent_callbacks`。
+- **会话启动边界兜底 drain / already-pending / extras-only 三条绕过路径**：`trigger_agent_callbacks` 的 voice 分支与 hot-swap `prime_context` 都直接消费 `pending_agent_callbacks` / `pending_extra_replies`，**不**复查 `topic_hook_delivery_allowed`，所以那两道门管不到已进队列的 hook。`_reset_proactive_gate` 在 `_voice_delivery_blocked()` 时调 `_drop_pending_topic_hooks_for_voice`，一次扫干净：
+  - `pending_agent_callbacks` 里 `channel == "topic_hook"` 的——含 `_reset_proactive_gate` 自己刚从 manager drain 进来的、以及释放门早先放进来但 defer 的（SM 忙/媒体流失败/无文本会话）。resolve ack False + retract，复用 `_purge_retracted_agent_callbacks` 同步清配对的 `pending_extra_replies`。
+  - `pending_extra_replies` 里 `source_kind == "topic"` 的孤儿 extra——`drain_agent_callbacks_for_llm` 在文本回合清 `pending_agent_callbacks` 但留下 extra，cb 已投递+ack，这条只剩 extra 会被 hot-swap prime 在语音里重新引出，按 `source_kind` 单独扫掉。
 
 ### surfaced reflection id 只记真正渲染的
 

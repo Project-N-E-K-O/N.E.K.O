@@ -6446,6 +6446,26 @@ class LLMSessionManager:
             return True
         return False
 
+    def _voice_delivery_blocked(self) -> bool:
+        """True whenever a deep-topic hook could still reach the voice path, so
+        topic delivery must defer. The union of two predicates, each covering a
+        transition window the other misses:
+          - ``isinstance(self.session, OmniRealtimeClient)``: the live session is
+            realtime. This still holds during an audio→text switch, where
+            ``start_session`` flips the input-mode flags to text while the old
+            voice session lingers in ``self.session`` for several awaited
+            teardown steps — and ``trigger_agent_callbacks`` would still take its
+            ``isinstance``-gated voice branch and inject into that old session.
+          - ``_is_voice_session_active_or_starting()``: a voice session is active
+            or starting, covering the text→audio startup window before the
+            realtime client is installed in ``self.session``.
+        Using the union keeps the gate aligned with the exact condition under
+        which the voice branch fires."""
+        return (
+            isinstance(self.session, OmniRealtimeClient)
+            or self._is_voice_session_active_or_starting()
+        )
+
     async def trigger_greeting(self) -> None:
         """On first connect or character switch, trigger a proactive greeting based on the gap since the last conversation.
 
@@ -6848,19 +6868,20 @@ class LLMSessionManager:
         Voice sessions never receive deep topic hooks. A topic hook is a
         text-mode opener; injecting one mid voice conversation would cut across
         a live spoken exchange, which is exactly the "forced" intrusion this
-        feature avoids. Gate on ``_is_voice_session_active_or_starting()`` (the
-        same predicate ``trigger_greeting`` uses to stay off the voice stream),
-        NOT on ``isinstance(self.session, OmniRealtimeClient)`` — during a
-        text→audio switch ``start_session`` sets the audio starting flags while
-        the old ``OmniOfflineClient`` is still in ``self.session``, and an
-        isinstance check would wrongly let a hook through that startup window.
+        feature avoids. Gate on ``_voice_delivery_blocked()`` — the union of "the
+        live session is realtime" and "a voice session is active/starting" — so
+        the gate matches the exact condition under which
+        ``trigger_agent_callbacks`` takes its voice branch, including both the
+        text→audio startup window (realtime client not yet installed) and the
+        audio→text teardown window (old realtime client still in ``self.session``).
         Returning False here defers rather than drops — the process-global
         per-character ``TopicHookPool`` keeps the material pending and retries
         it once the user is back in a text session, so a voice-heavy user still
         gets the hook later instead of losing it. This is the chokepoint both
         delivery gates consult (``_topic_activity_gate_open`` at submit,
-        ``_deliver_proactive_batch`` at release); the session-start drain path
-        is closed separately in ``_reset_proactive_gate``.
+        ``_deliver_proactive_batch`` at release); the session-start drain /
+        already-pending / extras-only paths are closed separately in
+        ``_reset_proactive_gate`` + ``_drop_pending_topic_hooks_for_voice``.
 
         Fail-open (return True) when no snapshot is available, mirroring the
         proactive path's "snapshot None ⇒ open propensity" default. Privacy
@@ -6868,7 +6889,7 @@ class LLMSessionManager:
         pool is wiped the moment privacy turns on, see enrich_topic_pool), not
         delivery of a hook that was already built from a pre-privacy snapshot.
         """
-        if self._is_voice_session_active_or_starting():
+        if self._voice_delivery_blocked():
             return False
         tracker = getattr(self, '_activity_tracker', None)
         if tracker is None:
@@ -7200,7 +7221,7 @@ class LLMSessionManager:
             # re-consulting topic_hook_delivery_allowed, so neither delivery gate
             # covers this. Resolve ack False so TopicHookPool defers and retries
             # on a text session.
-            if self._is_voice_session_active_or_starting():
+            if self._voice_delivery_blocked():
                 self._drop_pending_topic_hooks_for_voice()
         except Exception:
             # getattr fallback: the except path must never raise itself
@@ -7209,27 +7230,50 @@ class LLMSessionManager:
 
     def _drop_pending_topic_hooks_for_voice(self) -> None:
         """Drop every queued deep-topic hook when entering / within a voice
-        session. Resolves each hook's delivery ack False so ``TopicHookPool``
-        defers and retries on a text session, then retracts it so
-        ``_purge_retracted_agent_callbacks`` sweeps it out of BOTH
-        ``pending_agent_callbacks`` and the paired ``pending_extra_replies``
-        (the hot-swap prime channel). See ``_reset_proactive_gate`` for why this
-        is needed beyond the submit / release gates."""
+        session, across BOTH delivery queues.
+
+        1. ``pending_agent_callbacks``: hooks here still carry their callback, so
+           resolve each one's delivery ack False (``TopicHookPool`` defers +
+           retries on a text session) and retract it, letting
+           ``_purge_retracted_agent_callbacks`` sweep it and its paired
+           ``pending_extra_replies`` entry by ``_callback_delivery_id``.
+        2. ``pending_extra_replies`` orphans: ``drain_agent_callbacks_for_llm``
+           clears ``pending_agent_callbacks`` on a text user turn but leaves the
+           paired extras behind, so a topic hook can survive as an extras-only
+           entry (callback already delivered + acked in text) and be rendered by
+           the hot-swap ``prime_context`` path. Those have no callback left to
+           ack/retract — just drop them. They are identified by
+           ``source_kind == "topic"`` (stamped by ``build_topic_hook_callback``
+           and copied onto the extra by ``enqueue_agent_callback``).
+
+        See ``_reset_proactive_gate`` for why this is needed beyond the submit /
+        release gates."""
         pending = getattr(self, "pending_agent_callbacks", None) or []
         hooks = [
             cb for cb in pending
             if isinstance(cb, dict) and cb.get("channel") == "topic_hook"
         ]
-        if not hooks:
-            return
         for cb in hooks:
             resolve_callback_delivery_ack(cb, False)
             cb[DELIVERY_RETRACTED_KEY] = True
-        self._purge_retracted_agent_callbacks()
-        logger.info(
-            "[%s] dropped %d queued topic hook(s) at voice start: deferred for a text session",
-            self.lanlan_name, len(hooks),
-        )
+        if hooks:
+            self._purge_retracted_agent_callbacks()
+        # Sweep extras-only topic hooks (callback side already gone).
+        extras = getattr(self, "pending_extra_replies", None)
+        dropped_extras = 0
+        if isinstance(extras, list):
+            kept = [
+                extra for extra in extras
+                if not (isinstance(extra, dict) and extra.get("source_kind") == "topic")
+            ]
+            dropped_extras = len(extras) - len(kept)
+            if dropped_extras:
+                self.pending_extra_replies = kept
+        if hooks or dropped_extras:
+            logger.info(
+                "[%s] dropped %d queued + %d extras-only topic hook(s) at voice start: deferred for a text session",
+                self.lanlan_name, len(hooks), dropped_extras,
+            )
 
     def enqueue_agent_callback(self, callback: dict) -> None:
         """Enqueue a structured agent task callback for LLM injection.

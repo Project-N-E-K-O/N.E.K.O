@@ -1110,6 +1110,22 @@ def test_topic_hook_delivery_blocked_during_audio_startup_window():
     assert LLMSessionManager.topic_hook_delivery_allowed(mgr) is False
 
 
+def test_topic_hook_delivery_blocked_during_audio_to_text_teardown():
+    """Codex P2: during an audio→text switch, start_session flips the input-mode
+    flags to text while the old OmniRealtimeClient lingers in self.session, and
+    trigger_agent_callbacks would still take its isinstance-gated voice branch.
+    The gate must stay blocked on the live realtime session even though
+    _is_voice_session_active_or_starting() has already gone False."""
+    mgr = _make_mgr(session=_make_voice_sess())
+    mgr.input_mode = 'text'
+    mgr._starting_input_mode = 'text'
+    mgr.is_active = True
+    # _is_voice_session_active_or_starting() is False here, but the live session
+    # is still realtime → the union predicate must still block.
+    assert LLMSessionManager._is_voice_session_active_or_starting(mgr) is False
+    assert LLMSessionManager.topic_hook_delivery_allowed(mgr) is False
+
+
 def test_topic_hook_delivery_allowed_in_text_session():
     """Non-regression: a text session still allows topic-hook delivery
     (fail-open when no activity snapshot is available)."""
@@ -1152,8 +1168,8 @@ async def test_drop_pending_topic_hooks_for_voice_sweeps_both_queues():
         "status": "completed", "summary": "deep topic", DELIVERY_ACK_FUTURE_KEY: fut,
     }
     other_cb = {"_callback_delivery_id": "a1", "channel": "agent_task", "status": "completed", "summary": "task"}
-    topic_extra = {"_callback_delivery_id": "th1", "origin": "event", "summary": "deep topic"}
-    other_extra = {"_callback_delivery_id": "a1", "origin": "task_result", "summary": "task"}
+    topic_extra = {"_callback_delivery_id": "th1", "origin": "event", "summary": "deep topic", "source_kind": "topic"}
+    other_extra = {"_callback_delivery_id": "a1", "origin": "task_result", "summary": "task", "source_kind": "agent"}
     mgr.pending_agent_callbacks = [topic_cb, other_cb]
     mgr.pending_extra_replies = [topic_extra, other_extra]
 
@@ -1162,6 +1178,23 @@ async def test_drop_pending_topic_hooks_for_voice_sweeps_both_queues():
     assert mgr.pending_agent_callbacks == [other_cb]
     assert mgr.pending_extra_replies == [other_extra]
     assert fut.done() and fut.result() is False
+
+
+async def test_drop_pending_topic_hooks_for_voice_sweeps_extras_only():
+    """Codex P2: a topic hook can be consumed from pending_agent_callbacks by a
+    text turn (drain_agent_callbacks_for_llm) while its paired extra is left in
+    pending_extra_replies. Such an extras-only hook (source_kind=='topic', no
+    callback left) must still be swept so the hot-swap prime_context path can't
+    re-introduce the topic in voice."""
+    mgr = _make_mgr(session=_make_voice_sess())
+    topic_extra = {"_callback_delivery_id": "th1", "origin": "event", "summary": "deep topic", "source_kind": "topic"}
+    other_extra = {"_callback_delivery_id": "a1", "origin": "task_result", "summary": "task", "source_kind": "agent"}
+    mgr.pending_agent_callbacks = []  # callback already drained + delivered in text
+    mgr.pending_extra_replies = [topic_extra, other_extra]
+
+    LLMSessionManager._drop_pending_topic_hooks_for_voice(mgr)
+
+    assert mgr.pending_extra_replies == [other_extra]
 
 
 async def test_reset_proactive_gate_sweeps_already_pending_topic_hook_on_voice_start():
