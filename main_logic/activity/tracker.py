@@ -69,15 +69,6 @@ from utils.activity_config import get_activity_preferences
 logger = logging.getLogger(__name__)
 
 
-def _topic_pool_language(language: str | None = None) -> str:
-    try:
-        from utils.language_utils import get_global_language, normalize_language_code
-        source = language if language else get_global_language()
-        return normalize_language_code(source, format='full') or 'en'
-    except Exception:
-        return 'en'
-
-
 # Conversation buffers: small enough to keep prompt sizes tight, large
 # enough to give the emotion-tier LLM real recent context.
 _CONV_BUFFER_MAXLEN = 12
@@ -248,7 +239,6 @@ class UserActivityTracker:
         self._sm = ActivityStateMachine()
         self._collector = collector or get_system_signal_collector()
         self._collector_started = False
-        self._topic_language: str | None = None
 
         # Conversation buffers for emotion-tier LLM enrichment input.
         # Tuples of (timestamp, text). User-side captures whatever the
@@ -355,13 +345,6 @@ class UserActivityTracker:
 
     # ── hooks (called from core.py and friends) ─────────────────
 
-    def set_topic_language(self, language: str | None) -> None:
-        """Update the session language used by background topic hooks."""
-        self._topic_language = _topic_pool_language(language)
-
-    def _topic_pool_language(self) -> str:
-        return self._topic_language or _topic_pool_language()
-
     def on_user_message(self, *, text: str | None = None, now: float | None = None) -> None:
         """Stamp a "user said something" event.
 
@@ -380,11 +363,6 @@ class UserActivityTracker:
         if text and not _privacy_mode_active():
             cleaned = text.strip()[:1000]
             self._user_msg_buffer.append((ts, cleaned))
-            try:
-                from main_logic.topic.pipeline import get_topic_hook_pool
-                get_topic_hook_pool().note_user_message(self.lanlan_name, cleaned, lang=self._topic_pool_language())
-            except Exception:
-                logger.debug('[%s] topic pool user-message note failed', self.lanlan_name, exc_info=True)
 
     def on_ai_message(self, *, text: str | None = None, now: float | None = None) -> None:
         """Stamp an "AI just spoke" event.
@@ -404,11 +382,6 @@ class UserActivityTracker:
         if text and not _privacy_mode_active():
             cleaned = text.strip()[:1000]
             self._ai_msg_buffer.append((ts, cleaned))
-            try:
-                from main_logic.topic.pipeline import get_topic_hook_pool
-                get_topic_hook_pool().note_ai_message(self.lanlan_name, cleaned, lang=self._topic_pool_language())
-            except Exception:
-                logger.debug('[%s] topic pool ai-message note failed', self.lanlan_name, exc_info=True)
             # AI also opens threads (promises, abandoned mid-sentences) →
             # bump _conv_seq so kickoff_open_threads_compute will recompute.
             # Empty / no-text turns (errors / silenced) skip the bump,

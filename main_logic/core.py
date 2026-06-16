@@ -951,7 +951,12 @@ class LLMSessionManager:
         # ActivitySnapshot，供 proactive_chat Phase 1/2 决策搭话倾向。
         # 详见 docs/design/user-activity-tracker.md。
         from main_logic.activity import UserActivityTracker
+        from main_logic.conversation_turns import create_default_turn_dispatcher
         self._activity_tracker = UserActivityTracker(lanlan_name)
+        self._turn_dispatcher = create_default_turn_dispatcher(
+            lanlan_name,
+            self._activity_tracker,
+        )
 
         # 进入游戏/娱乐 或 进入专注工作时，给前端推一次性情境信号——前端（仅 A/B
         # 实验组 vision_chat_default_off、每会话每类一次）据此弹窗问要不要开/关主动搭话
@@ -988,8 +993,9 @@ class LLMSessionManager:
         self._activity_tracker.set_context_prompt_callback(_push_activity_context_prompt)
 
         # AI 当前轮文本 buffer：每个 send_lanlan_response chunk 累加，turn end
-        # 时连同 on_ai_message 一起喂给 tracker。后者用末尾文本判断是否问问号
-        # → 触发 unfinished_thread 机制（5 分钟内允许至多 2 次跟进）。
+        # 时作为一个 conversation turn 发给 dispatcher。activity sink 用末尾
+        # 文本判断是否问问号 → 触发 unfinished_thread 机制（5 分钟内允许至多 2
+        # 次跟进）；topic sink 独立消费同一 turn，不和 activity tracker 耦合。
         self._current_ai_turn_text: str = ''
         self._recent_ai_voice_echo_text: str = ''
         self._recent_ai_voice_echo_at: float = 0.0
@@ -1673,21 +1679,45 @@ class LLMSessionManager:
                     if is_first_chunk and self.tts_thread and not self.tts_thread.is_alive():
                         self._respawn_tts_worker()
 
+    def _set_conversation_turn_language(self, language: str | None) -> None:
+        dispatcher = getattr(self, '_turn_dispatcher', None)
+        if dispatcher is not None:
+            dispatcher.set_language(language)
+
+    def _note_user_turn(self, *, text: str | None = None, now: float | None = None) -> None:
+        dispatcher = getattr(self, '_turn_dispatcher', None)
+        if dispatcher is not None:
+            dispatcher.note_user_message(text=text, now=now)
+            return
+        if now is None:
+            self._activity_tracker.on_user_message(text=text)
+        else:
+            self._activity_tracker.on_user_message(text=text, now=now)
+
+    def _note_ai_turn(self, *, text: str | None = None, now: float | None = None) -> None:
+        dispatcher = getattr(self, '_turn_dispatcher', None)
+        if dispatcher is not None:
+            dispatcher.note_ai_message(text=text, now=now)
+            return
+        if now is None:
+            self._activity_tracker.on_ai_message(text=text)
+        else:
+            self._activity_tracker.on_ai_message(text=text, now=now)
+
     def _flush_ai_turn_text_to_tracker(self) -> None:
-        """Flush the per-turn AI text buffer into the activity tracker.
+        """Flush the per-turn AI text buffer into conversation turn sinks.
 
         Called from each AI-turn-end exit point — there are three:
           - ``_emit_turn_end`` for regular replies (and truncate-recovery)
           - ``handle_proactive_complete`` for the agent direct-reply path
           - ``finish_proactive_delivery`` for /api/proactive_chat success
 
-        The tracker runs the question heuristic over the text and (when
-        text is non-empty) bumps ``_conv_seq`` for open_threads cache
-        invalidation. Empty / None text is fine — it just updates the
-        timestamp without opening an unfinished_thread or invalidating
-        the cache.
+        The activity sink runs the question heuristic over the text and
+        (when text is non-empty) bumps ``_conv_seq`` for open_threads cache
+        invalidation. Other sinks, such as background topic collection, see
+        the same turn without living inside ``UserActivityTracker``.
         """
-        self._activity_tracker.on_ai_message(text=self._current_ai_turn_text or None)
+        self._note_ai_turn(text=self._current_ai_turn_text or None)
         self._current_ai_turn_text = ''
 
     async def handle_proactive_complete(self, content_committed: bool = True):
@@ -2357,7 +2387,7 @@ class LLMSessionManager:
             # bump _conv_seq（让 open_threads 缓存失效）、把文本进 buffer 给
             # emotion-tier LLM 用——空 transcript 这些副作用都不该触发。
             if transcript_text:
-                self._activity_tracker.on_user_message(text=transcript)
+                self._note_user_turn(text=transcript)
                 # 真实用户语音消息（已过 echo 抑制 + 非空）才刷「真消息」时间戳，
                 # 给 mini-game 邀请隐式 dismiss 用，避免回声/空噪声误判用户已回应。
                 # 用顶部捕获的到达时刻而非此处 time.time()：takeover dispatcher 的
@@ -4248,8 +4278,7 @@ class LLMSessionManager:
         if not getattr(self, 'user_language', None):
             topic_language_seed = normalize_language_code(get_global_language_full(), format='full')
             self.user_language = normalize_language_code(topic_language_seed, format='short')
-        if hasattr(self._activity_tracker, 'set_topic_language'):
-            self._activity_tracker.set_topic_language(topic_language_seed or self.user_language)
+        self._set_conversation_turn_language(topic_language_seed or self.user_language)
         # 重置防刷屏标志
         self.session_closed_by_server = False
         self.last_audio_send_error_time = 0.0
@@ -6897,10 +6926,10 @@ class LLMSessionManager:
         with no new chat turn to reschedule the trigger), that captured value
         goes stale. Topic delivery re-resolves from here so the hook renders in
         the current locale (preserving zh-TW etc.). Returns None when no
-        tracker is available so the caller keeps the captured language.
+        dispatcher is available so the caller keeps the captured language.
         """
-        tracker = getattr(self, '_activity_tracker', None)
-        getter = getattr(tracker, '_topic_pool_language', None)
+        dispatcher = getattr(self, '_turn_dispatcher', None)
+        getter = getattr(dispatcher, 'current_language', None)
         if not callable(getter):
             return None
         try:
@@ -7717,7 +7746,7 @@ class LLMSessionManager:
                     # 里挂——后者也被 proactive abort 流程调用做清理（见
                     # main_routers/system_router.py），那不算用户活动。
                     # text 进 buffer 给 emotion-tier 用。
-                    self._activity_tracker.on_user_message(text=data if isinstance(data, str) else None)
+                    self._note_user_turn(text=data if isinstance(data, str) else None)
                     # Telemetry：D1 漏斗——本进程首条用户消息（lazy import 防循环）。
                     try:
                         from utils.token_tracker import TokenTracker as _TT
@@ -8197,8 +8226,7 @@ class LLMSessionManager:
         normalized_lang = normalize_language_code(language, format='full')
 
         self.user_language = normalized_lang
-        if hasattr(self._activity_tracker, 'set_topic_language'):
-            self._activity_tracker.set_topic_language(normalized_lang)
+        self._set_conversation_turn_language(normalized_lang)
         if normalized_lang != language:
             logger.info(f"用户语言已归一化: {language} → {normalized_lang}")
         else:
