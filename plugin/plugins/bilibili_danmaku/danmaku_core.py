@@ -750,6 +750,21 @@ class DanmakuListener:
         from .livedanmaku import LiveDanmaku as _LD
         return _LD.from_sc(data)
 
+    def _handle_diange(data: dict):
+        """VOICE_JOIN_ROOM_COUNT_INFO 等 — 点歌/语音"""
+        from .livedanmaku import LiveDanmaku as _LD
+        return _LD.from_diange(data)
+
+    def _handle_pk_best(data: dict):
+        """PK_LOTTERY_START / PK_LOTTERY_END — PK 最佳"""
+        from .livedanmaku import LiveDanmaku as _LD
+        return _LD.from_pk_best(data)
+
+    def _handle_fans(data: dict):
+        """USER_TOAST_MSG / ROOM_RANK — 粉丝变动"""
+        from .livedanmaku import LiveDanmaku as _LD
+        return _LD.from_fans_change(data)
+
     # ── CMD 分发字典 ──────────────────────────────────────────
     _CMD_HANDLERS = {
         "GUARD_BUY": _handle_guard_buy,
@@ -766,6 +781,10 @@ class DanmakuListener:
         "ROOM_REAL_TIME_MESSAGE_UPDATE": _handle_room_update,
         "ROOM_CHANGE": _handle_room_change,
         "SUPER_CHAT_MESSAGE_JPN": _handle_sc_jpn,
+        "VOICE_JOIN_ROOM_COUNT_INFO": _handle_diange,
+        "PK_LOTTERY_START": _handle_pk_best,
+        "PK_LOTTERY_END": _handle_pk_best,
+        "USER_TOAST_MSG": _handle_fans,
     }
 
     async def _process_packet(self, raw: bytes):

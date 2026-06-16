@@ -50,6 +50,8 @@ from urllib.parse import urlparse
 
 import aiohttp
 
+from config import USER_PLUGIN_BASE
+
 from plugin.sdk.plugin import (
     NekoPluginBase,
     neko_plugin,
@@ -67,7 +69,7 @@ from plugin.sdk.plugin import (
 # 常量定义
 MIN_INTERVAL = 5        # 最小推送间隔（秒）
 MAX_INTERVAL = 180      # 最大推送间隔（秒）
-UI_URL = "http://localhost:48916/plugin/bilibili_danmaku/ui/"
+UI_URL = f"{USER_PLUGIN_BASE}/plugin/bilibili_danmaku/ui/"
 
 # ── 同步 helper（避免 async def 内直接调 subprocess 阻塞事件循环）────────────
 import logging as _logging
@@ -180,6 +182,12 @@ except ImportError as e:
 from .bili_auth_service import BiliAuthService
 from .bili_content_service import BiliContentService
 
+# ── WS 桥接器 ─────────────────────────────────────────────────────────
+from .ws_bridge import WsBridge
+
+# ── HTTP API 端点 ─────────────────────────────────────────────────────
+from .http_api import HttpApi
+
 # ── 历史弹幕存储 ──────────────────────────────────────────────────────
 from .danmaku_storage import DanmakuStorage
 
@@ -265,8 +273,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     # 插件元信息
     name = "bilibili_danmaku"
-    version = "1.1.0"  # 版本升级
-    description = "Bilibili 弹幕监听插件，集成背景LLM智能摘要系统"
+    version = "1.2.0"  # 2024-06: WS Bridge + HTTP API + 增强数据模型
+    description = "Bilibili 弹幕监听插件，集成背景LLM智能摘要系统 + WS桥接器 + HTTP API"
     author = "NEKO Team"
     passive = True  # 被动插件（不主动调用 AI）
 
@@ -320,6 +328,12 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
         # 历史弹幕存储（SQLite 对标 MagicalDanmaku）
         self._storage: Optional[DanmakuStorage] = None
+        
+        # WS 桥接器（对标 MagicalDanmaku server.cpp 本地 WS Server）
+        self._bridge: Optional[WsBridge] = None
+
+        # HTTP API 端点（对标 MagicalDanmaku /api/*）
+        self._http_api: Optional[HttpApi] = None
         
         # UI展示队列
         self._ui_danmaku_queue: deque = deque(maxlen=500)
@@ -423,6 +437,15 @@ class BiliDanmakuPlugin(NekoPluginBase):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
+    async def _handle_simulated_event(self, event_name: str, data: dict):
+        """HTTP API 模拟事件回调（/api/event）"""
+        from .livedanmaku import LiveDanmaku as _LD
+        data["room_id"] = data.get("room_id", self._room_id)
+        ld = _LD.from_raw_json({"cmd": event_name, "data": data, "room_id": self._room_id})
+        if ld:
+            await self._process_event(event_name, ld)
+            self.logger.info(f"模拟事件: {event_name}")
+
     # ==========================================
     # B站凭据
     # ==========================================
@@ -482,6 +505,28 @@ class BiliDanmakuPlugin(NekoPluginBase):
         self._logged_in_matches_master = bool(
             self._is_logged_in and self._master_bili_uid > 0 and self._logged_in_bili_uid == self._master_bili_uid
         )
+
+    # ==========================================
+    # WS 桥接器配置同步
+    # ==========================================
+
+    def _get_bridge_config(self) -> dict:
+        """供 WsBridge 读取配置（GET_CONFIG 协议）"""
+        return {
+            "bridge_port": self._config.get("bridge", {}).get("port", 5521),
+            "bridge_enabled": self._config.get("bridge", {}).get("enabled", True),
+        }
+
+    def _save_bridge_config(self, data: dict) -> None:
+        """供 WsBridge 保存配置（SET_CONFIG 协议）"""
+        if "bridge" not in self._config:
+            self._config["bridge"] = {}
+        for k, v in data.items():
+            if k.startswith("bridge_"):
+                key = k[len("bridge_"):]
+                self._config["bridge"][key] = v
+            else:
+                self._config["bridge"][k] = v
 
     # ==========================================
     # B站 API 结果包装
@@ -904,6 +949,33 @@ class BiliDanmakuPlugin(NekoPluginBase):
             self.logger.warning(f"用户画像系统初始化失败: {e}")
             self._tracker = None
         
+        # WS 桥接器（本地 WS Server → 多前端连接）
+        try:
+            bridge_port = self._config.get("bridge", {}).get("port", 5521)
+            self._bridge = WsBridge(
+                config_provider=self._get_bridge_config,
+                config_saver=self._save_bridge_config,
+                port=bridge_port,
+            )
+            await self._bridge.start()
+            self.logger.info(f"WS 桥接器已启动: ws://127.0.0.1:{self._bridge.port}")
+        except Exception as e:
+            self.logger.warning(f"WS 桥接器启动失败: {e}")
+            self._bridge = None
+
+        # HTTP API 端点（对标 MagicalDanmaku /api/netProxy /api/header /api/event）
+        try:
+            http_port = self._config.get("http_api", {}).get("port", 5522)
+            self._http_api = HttpApi(
+                port=http_port,
+                event_handler=self._handle_simulated_event,
+            )
+            await self._http_api.start()
+            self.logger.info(f"HTTP API 服务已启动: http://127.0.0.1:{self._http_api.port}")
+        except Exception as e:
+            self.logger.warning(f"HTTP API 服务启动失败: {e}")
+            self._http_api = None
+
         return Ok({"status": "started", "background_llm": self._background_llm_enabled})
 
     @lifecycle(id="shutdown")
@@ -958,6 +1030,16 @@ class BiliDanmakuPlugin(NekoPluginBase):
         if self._storage:
             self._storage.close()
             self._storage = None
+
+        # 7. 停止 WS 桥接器
+        if self._bridge:
+            await self._bridge.stop()
+            self._bridge = None
+
+        # 8. 停止 HTTP API 服务
+        if self._http_api:
+            await self._http_api.stop()
+            self._http_api = None
 
         self.logger.info("Bilibili弹幕插件已完全关闭")
         return Ok({"status": "shutdown"})
@@ -1343,6 +1425,13 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     async def _process_event(self, cmd: str, ld):
         """增强协议事件分发入口"""
+        # WS 桥接器实时广播（所有已订阅的前端都会收到）
+        if self._bridge:
+            try:
+                await self._bridge.broadcast_event(cmd, ld.to_dict())
+            except Exception:
+                pass
+
         try:
             handler_map = {
                 "GUARD_BUY": self._process_guard_buy_event,
@@ -1584,6 +1673,16 @@ class BiliDanmakuPlugin(NekoPluginBase):
                 medal_level=event.get("medal_level", 0) or 0,
                 medal_up=str(event.get("medal_up", "")),
             ))
+
+        # WS 桥接器实时广播
+        if self._bridge:
+            try:
+                from .livedanmaku import LiveDanmaku as _LD, MessageType as _MT
+                ld = _LD(msg_type=_MT.MSG_DANMAKU, uid=user_id, nickname=user_name, text=content,
+                          user_level=event.get("user_level", 0), room_id=self._room_id)
+                await self._bridge.broadcast_event("DANMU_MSG", ld.to_dict())
+            except Exception:
+                pass
 
     async def _process_danmaku_legacy(self, event: Dict[str, Any]):
         """原始弹幕处理（降级模式）"""

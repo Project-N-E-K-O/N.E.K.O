@@ -1486,6 +1486,7 @@
   }
 
   async function saveInterval() {
+    window._intervalDragging = false;
     const val = parseInt(document.getElementById('intervalSlider').value);
     try {
       const data = await callPlugin('set_interval', { seconds: val });
@@ -1559,7 +1560,7 @@
     if (data.room_id && !document.getElementById('roomIdInput').value) {
       document.getElementById('roomIdInput').value = data.room_id;
     }
-    if (data.interval) {
+    if (data.interval && !window._intervalDragging) {
       document.getElementById('intervalSlider').value = data.interval;
       document.getElementById('intervalDisplay').textContent = data.interval + 's';
     }
@@ -2507,9 +2508,13 @@
   }
 
   document.addEventListener('DOMContentLoaded', async () => {
+    window._intervalDragging = false;
     document.getElementById('intervalSlider').addEventListener('input', e => {
+      window._intervalDragging = true;
       document.getElementById('intervalDisplay').textContent = e.target.value + 's';
     });
+    // change 不在 release 时重置 flag，避免 refreshStatus 在保存前覆盖用户拖动的值
+    // flag 仅在 saveInterval() 中重置
     document.getElementById('danmakuMaxSlider').addEventListener('input', e => {
       document.getElementById('danmakuMaxDisplay').textContent = e.target.value;
     });
