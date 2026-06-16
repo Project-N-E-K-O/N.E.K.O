@@ -5800,6 +5800,11 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 
 @media (prefers-reduced-motion: reduce) {
+  .compact-input-tool-fan[data-compact-tool-wheel-charge-rattle="weak"],
+  .compact-input-tool-fan[data-compact-tool-wheel-charge-rattle="strong"] {
+    animation: none !important;
+  }
+
   .compact-input-tool-fan .compact-input-tool-tooltip {
     transition: none !important;
   }

@@ -1303,6 +1303,15 @@ def test_compact_history_reduced_motion_closing_hides_immediately():
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
 
     reduced_motion_block = styles.rsplit("@media (prefers-reduced-motion: reduce)", 1)[1]
+    assert '.compact-input-tool-fan[data-compact-tool-wheel-charge-rattle="weak"]' in reduced_motion_block
+    assert '.compact-input-tool-fan[data-compact-tool-wheel-charge-rattle="strong"]' in reduced_motion_block
+    rattle_block = css_block(
+        reduced_motion_block,
+        '.compact-input-tool-fan[data-compact-tool-wheel-charge-rattle="weak"],',
+        ".compact-input-tool-fan .compact-input-tool-tooltip",
+    )
+    assert "animation: none !important;" in rattle_block
+
     closing_block = css_block(
         reduced_motion_block,
         '.compact-export-history-anchor[data-compact-export-history-visibility="closing"] {',
