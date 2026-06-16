@@ -122,6 +122,16 @@
                 }
                 const lockIcon = document.getElementById('mmd-lock-icon');
                 if (lockIcon) lockIcon.style.backgroundImage = 'url(/static/icons/unlocked_icon.png)';
+            } else if (modelType === 'pngtuber' && window.pngtuberManager) {
+                if (typeof window.pngtuberManager.setLocked === 'function') {
+                    window.pngtuberManager.setLocked(false, { updateFloatingButtons: !hiddenByModelManager });
+                } else {
+                    window.pngtuberManager.isLocked = false;
+                    if (window.pngtuberManager.image) {
+                        window.pngtuberManager.image.style.pointerEvents = 'auto';
+                        window.pngtuberManager.image.classList.remove('is-locked');
+                    }
+                }
             } else if (window.live2dManager) {
                 if (typeof window.live2dManager.setLocked === 'function') {
                     window.live2dManager.setLocked(false, { updateFloatingButtons: !hiddenByModelManager });
@@ -623,6 +633,9 @@
                 if (effectiveModelType === 'mmd' || effectiveModelType === 'vrm') {
                     window.lanlan_config.model_type = 'live3d';
                     window.lanlan_config.live3d_sub_type = effectiveModelType;
+                } else if (effectiveModelType === 'pngtuber') {
+                    window.lanlan_config.model_type = 'pngtuber';
+                    window.lanlan_config.live3d_sub_type = '';
                 } else {
                     window.lanlan_config.model_type = 'live2d';
                     window.lanlan_config.live3d_sub_type = '';
@@ -834,6 +847,22 @@
                 console.warn('[猫娘切换] MMD 清理出错:', e);
             }
 
+            try {
+                if (window.pngtuberManager && typeof window.pngtuberManager.hide === 'function') {
+                    window.pngtuberManager.hide();
+                }
+                if (typeof window.cleanupPNGTuberOverlayUI === 'function') {
+                    window.cleanupPNGTuberOverlayUI();
+                }
+                const pngtuberContainer = document.getElementById('pngtuber-container');
+                if (pngtuberContainer) {
+                    pngtuberContainer.style.display = 'none';
+                    pngtuberContainer.classList.add('hidden');
+                }
+            } catch (e) {
+                console.warn('[猫娘切换] PNGTuber 清理出错:', e);
+            }
+
             // 3. 准备新环境
             showStatusToast(window.t ? window.t('app.switchingCatgirl', { name: newCatgirl }) : `正在切换到 ${newCatgirl}...`, 3000);
 
@@ -921,6 +950,30 @@
                 if (!isMainUIHiddenByModelManager() && typeof window.syncVoiceChatComposerHidden === 'function') {
                     window.syncVoiceChatComposerHidden(false);
                 }
+            } else if (effectiveModelType === 'pngtuber') {
+                console.log('[猫娘切换] 进入PNGTuber加载分支');
+                const rawPngtuber = catgirlConfig._reserved?.avatar?.pngtuber || catgirlConfig.pngtuber || {};
+                const pngtuberConfig = Object.assign({}, rawPngtuber);
+                if (!pngtuberConfig.idle_image) {
+                    pngtuberConfig.idle_image = _sanitize(rawPngtuber.idle_image)
+                        || _sanitize(catgirlConfig.pngtuber_idle_image)
+                        || _sanitize(catgirlConfig.pngtuber)
+                        || '';
+                }
+                if (!pngtuberConfig.talking_image) {
+                    pngtuberConfig.talking_image = _sanitize(rawPngtuber.talking_image)
+                        || _sanitize(catgirlConfig.pngtuber_talking_image)
+                        || '';
+                }
+                if (!window.PNGTuberManager || typeof window.loadPNGTuberAvatar !== 'function') {
+                    throw new Error('PNGTuber runtime not loaded');
+                }
+                if (window.lanlan_config) {
+                    window.lanlan_config.pngtuber = Object.assign({}, pngtuberConfig);
+                }
+                await window.loadPNGTuberAvatar(pngtuberConfig);
+                throwIfStale();
+                resetAvatarLockForCharacterSwitch('pngtuber');
             } else if (effectiveModelType === 'vrm') {
                 // 加载 VRM 模型（currentSwitchId 在 try 顶部已无条件刷过，VRM 分支直接复用）
                 console.log('[猫娘切换] 进入VRM加载分支');

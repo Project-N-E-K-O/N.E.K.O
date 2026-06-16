@@ -993,7 +993,8 @@
             "glm": "智譜",
             "step": "階躍星辰",
             "silicon": "矽基流動",
-            "gemini": "Gemini"
+            "gemini": "Gemini",
+            "vllm_omni": "vLLM-Omni（TTS）"
         },
         "coreProviderNames": {
             "free": "免費版（貓娘專屬福利，支持聯網搜索）",
@@ -1021,7 +1022,8 @@
             "elevenlabs": "ElevenLabs（語音克隆，國內無法使用）",
             "claude": "Claude（Anthropic）",
             "grok": "Grok（xAI）",
-            "openrouter": "OpenRouter（模型聚合，國內無法使用）"
+            "openrouter": "OpenRouter（模型聚合，國內無法使用）",
+            "vllm_omni": "vLLM-Omni（TTS）"
         },
         "coreApiAutoFillHint": "Key從API管理簿自動填充，也可在此直接輸入",
         "assistApiSelectLabel": "輔助API服務商",
@@ -1512,7 +1514,9 @@
         "motionStopped": "動作已停止",
         "expressionCleared": "表情已清除",
         "cannotDeleteBoundModel": "無法刪除目前正在使用的模型",
-        "modelInUse": "使用中"
+        "modelInUse": "使用中",
+        "pngtuberTalkPreview": "測試說話",
+        "pngtuberStatePreview": "狀態預覽"
     },
     "voice": {
         "title": "音色注冊",
@@ -2204,6 +2208,7 @@
         "sessionFailed": "Session啟動失敗"
     },
     "buttons": {
+        "thoughtBubblePop": "戳破想法氣泡",
         "voiceControl": "語音控製",
         "screenShare": "屏幕分享",
         "agentTools": "猫爪",
@@ -2640,6 +2645,7 @@
             "statusCancelled": "已取消",
             "minimize": "摺疊/展開",
             "cancelAll": "終止所有任務",
+            "cancelTask": "終止任務",
             "cancelConfirm": "確定要終止所有正在進行的任務嗎？",
             "typeUserPlugin": "使用者插件",
             "typeComputerUse": "鍵鼠控制",
@@ -3727,6 +3733,15 @@
         "duration": "時長",
         "action": "操作",
         "play": "播放",
+        "sequencePlay": "順序播放",
+        "singleLoop": "單曲循環",
+        "randomPlay": "隨機播放",
+        "noAutoNext": "不自動下一首",
+        "switchPlaybackMode": "切換播放模式",
+        "lockSongSort": "鎖定歌曲排序",
+        "unlockSongSort": "解鎖歌曲排序",
+        "previousSong": "上一首",
+        "nextSong": "下一首",
         "playError": "音樂播放器未初始化",
         "notFound": "找不到歌曲",
         "audioEnded": "音訊播放結束",
@@ -4108,6 +4123,394 @@
             "springJoints": "Spring Bone 關節",
             "morphTargets": "Morph Targets",
             "drawCalls": "Draw Calls"
+        }
+    },
+    "basketball": {
+        "title": "投籃挑戰 - Basketball",
+        "modeSwitcher": "籃球模式",
+        "mode": {
+            "spectator": "自由練習",
+            "shooter": "投籃挑戰",
+            "duel": "跟 Yui 對戰",
+            "timed": "限時挑戰",
+            "horse": "HORSE"
+        },
+        "hud": {
+            "score": "得分 {{score}}",
+            "streak": "連中 {{streak}}",
+            "record": "最遠 {{distance}}",
+            "duelScore": "你 {{player}} - {{neko}} Neko",
+            "round": "回合 {{round}}/{{max}}",
+            "timer": "{{seconds}} 秒",
+            "practice": "自由練習",
+            "yourTurn": "輪到你",
+            "nekoTurn": "Neko 出手",
+            "horseLetters": "你 {{player}} / Neko {{neko}}",
+            "horseChallenge": "復刻 {{distance}} {{angle}}°",
+            "horseSet": "出題回合",
+            "unlimitedAttempts": "不限次數",
+            "chances": "機會 {{count}}",
+            "practiceTitle": "自由練習：不限投籃次數，不記錄排行榜分數",
+            "attemptsTitle": "剩餘機會 {{remaining}}/{{total}}，已失誤 {{missed}}",
+            "duelTitle": "Neko 對戰模式：玩家和 Neko 輪流投籃",
+            "timedTitle": "限時挑戰：60 秒內不限出手次數",
+            "horseTitle": "HORSE：復刻對手命中的距離、角度和甜區",
+            "assist": "G{{guide}} / S{{sweet}} / M{{music}}",
+            "on": "開",
+            "off": "關"
+        },
+        "result": {
+            "title": "遊戲結束",
+            "leaderboard": "查看排行榜",
+            "stats": "查看統計",
+            "retry": "再來一局",
+            "rating": "操控評級：{{rating}}",
+            "duel": "對戰結果：{{outcome}} | 你 {{player}} - {{neko}} Neko | 回合：{{rounds}} | 最後距離：{{distance}}",
+            "horse": "HORSE結果：{{outcome}} | 你 {{player}} / Neko {{neko}} | 命中：{{made}} | 最佳連中：{{best}}",
+            "timed": "限時挑戰：命中 {{made}} 球，最長連中 {{best}}，總分 {{score}}",
+            "practice": "自由練習：不記錄排行榜分數 | 命中：{{made}} | 目前連中：{{streak}} | 最佳連中：{{best}} | 本球距離：{{distance}}",
+            "summary": "總分：{{score}} | 命中：{{made}} | 目前連中：{{streak}} | 最佳連中：{{best}} | 最遠：{{record}} | 本球距離：{{distance}}",
+            "attemptsSummary": "投籃摘要：{{summary}}",
+            "personalBest": "個人最佳：{{score}}分",
+            "globalRank": "全球排名：#{{rank}}{{total}}",
+            "outcome": {
+                "youWin": "你贏了",
+                "nekoWin": "Neko贏了",
+                "tie": "平手",
+                "undecided": "未分勝負"
+            }
+        },
+        "leaderboard": {
+            "title": "排行榜",
+            "global": "全球",
+            "local": "本地",
+            "shooter": "操控",
+            "duel": "對戰",
+            "empty": "暫無記錄",
+            "totalPlayers": "總玩家 {{count}}",
+            "yourBest": "你的最佳 #{{rank}} / {{score}}分",
+            "recent": "最近 {{count}} 局",
+            "loading": "載入中...",
+            "mode": {
+                "shooter": "操控",
+                "duel": "對戰",
+                "timed": "限時",
+                "horse": "HORSE",
+                "spectator": "觀戰"
+            }
+        },
+        "debug": {
+            "title": "除錯面板",
+            "collapse": "收起",
+            "hide": "隱藏",
+            "distance": "距離:",
+            "power": "力度:",
+            "event": "事件:",
+            "streak": "連中:",
+            "reset": "重置",
+            "guide": "引導線",
+            "sweet": "甜區",
+            "markers": "距離刻度",
+            "readout": {
+                "modeState": "模式={{mode}}  狀態={{state}}",
+                "distance": "距離={{px}}px ({{meters}})",
+                "streaks": "連中={{streak}}  最佳={{best}}  命中={{made}}",
+                "score": "分數={{score}}  剩餘={{remaining}}/{{total}}",
+                "difficulty": "難度={{difficulty}}  心情={{mood}}  主題={{theme}}",
+                "duel": "決鬥: 你{{player}}-{{neko}} NEKO R{{round}}",
+                "horse": "HORSE: 你 {{player}} / Neko {{neko}} phase={{phase}}"
+            }
+        },
+        "stats": {
+            "title": "個人統計",
+            "close": "關閉",
+            "totalShots": "總投籃={{total}}  命中={{made}}",
+            "farRate": "300px+ 命中率={{rate}}",
+            "trend": "最近趨勢={{trend}}",
+            "none": "暫無"
+        },
+        "theme": {
+            "next": "切換主題",
+            "current": "主題：{{theme}}",
+            "changed": "主題 {{theme}}",
+            "labels": {
+                "default": "體育館",
+                "sunset": "黃昏球場",
+                "night": "夜晚燈光"
+            }
+        },
+        "court": {
+            "restrictedArc": "衝撞區",
+            "freeThrowLine": "罰球線",
+            "threePointLine": "三分線",
+            "midCourtLine": "中場線"
+        },
+        "close": "關閉",
+        "audio": {
+            "controls": "遊戲音訊"
+        },
+        "memoryOption": {
+            "label": "本局對話進入記憶（預設不開啟）",
+            "hint": "關閉後，玩家輸入、NEKO直接回應、事件回應、賽後摘要和後續銜接都不會進入或引用記憶。"
+        },
+        "table": {
+            "score": "分數",
+            "bestStreak": "最佳連中",
+            "farthest": "最遠",
+            "mode": "模式",
+            "date": "日期"
+        },
+        "state": {
+            "ready": "準備",
+            "in_flight": "飛行中",
+            "game_over": "結束",
+            "neko_thinking": "Neko思考中"
+        },
+        "toast": {
+            "difficulty": "難度 {{difficulty}}",
+            "nekoShoot": "Neko出手",
+            "nekoThinking": "Neko思考中",
+            "nekoTurn": "Neko回合",
+            "copyNeko": "復刻Neko",
+            "nekoFailed": "Neko出題失敗",
+            "yourSet": "你來出題",
+            "yourTurn": "輪到你",
+            "reset": "已重置",
+            "featureToggled": "{{feature}}已{{state}}",
+            "feature": {
+                "guide": "引導線",
+                "sweet": "力度甜區",
+                "bgm": "BGM",
+                "markers": "距離刻度"
+            },
+            "state": {
+                "on": "開啟",
+                "off": "關閉"
+            }
+        },
+        "tutorial": {
+            "aim": "上下移動滑鼠調整投籃角度",
+            "charge": "按住左鍵蓄力",
+            "release": "放開投籃！"
+        },
+        "shot": {
+            "swish": "空心",
+            "bank": "擦板",
+            "rim_in": "彈進",
+            "rim_out": "彈出",
+            "air_ball": "三不沾",
+            "unknown": "未知",
+            "attempt": "第{{index}}次 {{distance}} {{type}}"
+        },
+        "lines": {
+            "default": {
+                "swish": [
+                    "空心喵！",
+                    "這球漂亮"
+                ],
+                "bank": [
+                    "擦板也算喵",
+                    "角度不錯"
+                ],
+                "rim_in": [
+                    "彈進去了喵",
+                    "心臟停一下"
+                ],
+                "rim_out": [
+                    "差一點喵",
+                    "這都彈出來？"
+                ],
+                "air_ball": [
+                    "籃框在右邊喵",
+                    "偏太多啦"
+                ],
+                "shot_missed": [
+                    "還有機會喵",
+                    "穩一點再來"
+                ],
+                "game_over": [
+                    "再來一局？",
+                    "這次先記著"
+                ],
+                "long_aim": [
+                    "快投呀喵",
+                    "還在瞄準？"
+                ],
+                "close_to_record": [
+                    "快摸到紀錄了",
+                    "差一點點喵"
+                ],
+                "new_record": [
+                    "破紀錄了喵！",
+                    "這也太遠了"
+                ],
+                "streak_5": [
+                    "五連中喵！",
+                    "手感來了"
+                ],
+                "streak_10": [
+                    "十連中？！",
+                    "你是怪物喵"
+                ],
+                "streak_15": [
+                    "十五連也太誇張",
+                    "這次真穩"
+                ],
+                "streak_20": [
+                    "二十連？！",
+                    "這回合離譜喵"
+                ]
+            },
+            "shooter": {
+                "swish": [
+                    "哼，控制得還行",
+                    "這次算你準"
+                ],
+                "bank": [
+                    "擦板也算你會控",
+                    "角度還湊合"
+                ],
+                "rim_in": [
+                    "別得意，有點運氣",
+                    "差點被你控壞了"
+                ],
+                "rim_out": [
+                    "力度差一點啦",
+                    "你剛剛手抖了吧"
+                ],
+                "air_ball": [
+                    "你往哪兒瞄呢",
+                    "籃框在右邊啦"
+                ],
+                "shot_missed": [
+                    "還有機會，別亂控",
+                    "穩一點啦"
+                ],
+                "game_over": [
+                    "這操控我記下了",
+                    "下次別亂帶我投"
+                ],
+                "long_aim": [
+                    "快點啦，手痠了",
+                    "還沒瞄好嗎"
+                ],
+                "close_to_record": [
+                    "快摸到紀錄了",
+                    "別在這兒失手"
+                ],
+                "new_record": [
+                    "勉強算新紀錄",
+                    "你這次還挺穩"
+                ],
+                "streak_5": [
+                    "五連中，別飄",
+                    "五連中，別飄"
+                ],
+                "streak_10": [
+                    "十連中？還行吧",
+                    "十連中？還行吧"
+                ],
+                "streak_15": [
+                    "十五連？別太驕傲",
+                    "這次確實穩"
+                ],
+                "streak_20": [
+                    "二十連？你認真的？",
+                    "這局有點誇張"
+                ]
+            },
+            "duel": {
+                "swish": [
+                    "這回合我拿下了",
+                    "輪到我發力"
+                ],
+                "bank": [
+                    "擦板也算有數",
+                    "角度我記著"
+                ],
+                "rim_in": [
+                    "有點運氣吧",
+                    "差點就攔住了"
+                ],
+                "rim_out": [
+                    "差一點點而已",
+                    "這球還能再來"
+                ],
+                "air_ball": [
+                    "你這是飄哪兒去",
+                    "回合太急了吧"
+                ],
+                "shot_missed": [
+                    "下一回合補回來",
+                    "別急，繼續對戰"
+                ],
+                "game_over": [
+                    "這局我記下了",
+                    "下回再分高下"
+                ],
+                "long_aim": [
+                    "該出手了吧",
+                    "別讓回合拖太久"
+                ],
+                "close_to_record": [
+                    "快摸到紀錄了",
+                    "對戰也能衝紀錄"
+                ],
+                "new_record": [
+                    "這局破紀錄了",
+                    "節奏被你帶起來了"
+                ],
+                "streak_5": [
+                    "五連回合了",
+                    "手感開始熱了"
+                ],
+                "streak_10": [
+                    "十連？對戰認真了",
+                    "你這節奏真怪"
+                ],
+                "streak_15": [
+                    "十五連也太離譜",
+                    "這局有點壓不住"
+                ],
+                "streak_20": [
+                    "二十連？！",
+                    "這回合徹底瘋了"
+                ],
+                "clutch": "……這球必須進",
+                "excuse": "哎，手有點痠了"
+            },
+            "fallback": [
+                "再來一次喵"
+            ],
+            "pressure": {
+                "lastTied": "決勝球了，別眨眼",
+                "lastAhead": "哼，還沒結束呢",
+                "lastBehind": "這球拿下就贏了",
+                "playerAhead": "你還挺厲害嘛...",
+                "playerBehind": "再加把勁喵"
+            },
+            "horse": {
+                "nekoMiss": "沒復刻上？記一個 {{letters}}",
+                "playerMiss": "你也記一個 {{letters}}"
+            },
+            "mindGame": [
+                "你手在抖哦",
+                "想好再投，不急~",
+                "這個距離可不近喵"
+            ],
+            "easterEgg": {
+                "lateNight": "這麼晚了還在投籃？",
+                "xmas": "鈴鐺都掛上了，還要投喵？",
+                "newYear": "新年快樂喵",
+                "swish3": "你是不是開掛了",
+                "swish5": "……我要檢查一下籃框",
+                "airball3": "……要不你去旁邊休息一下？"
+            }
+        },
+        "mood": {
+            "happySuffix": " ♪",
+            "sadPrefix": "……",
+            "surprisedPrefix": "欸？！"
         }
     },
     "soccer": {

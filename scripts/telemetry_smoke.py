@@ -1,16 +1,30 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Telemetry end-to-end smoke test.
 
-跑法：
+How to run:
     uv run python scripts/telemetry_smoke.py
 
-会做：
-  1) 起 telemetry_server（uvicorn 后台）+ 临时 SQLite DB
-  2) 用 utils/instrument + utils/event_logger 在本进程灌一些埋点
-  3) 直接调 TokenTracker._report_to_server 投递到 server（含 gzip）
-  4) 也直接构造一份"模拟前端 WS 转发"的客户端 payload，POST 上去
-  5) 查 SQLite + dashboard HTML，断言关键数据齐了
+What it does:
+  1) Starts telemetry_server (uvicorn in the background) + a temp SQLite DB
+  2) Feeds some metrics in-process via utils/instrument + utils/event_logger
+  3) Calls TokenTracker._report_to_server directly to deliver to the server (gzip included)
+  4) Also builds a "simulated frontend WS forward" client payload and POSTs it
+  5) Queries SQLite + the dashboard HTML, asserting the key data all arrived
 """
 from __future__ import annotations
 
@@ -57,7 +71,7 @@ def _http(method, path, body=None, headers=None, timeout=5.0):
 
 
 def _sign_and_submit(payload: dict, gzip_it: bool = True, batch_id: str | None = None):
-    """构造 HMAC 信封并 POST 到 server。"""
+    """Build the HMAC envelope and POST it to the server."""
     payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     ts = time.time()
     body_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()

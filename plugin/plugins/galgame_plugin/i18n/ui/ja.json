@@ -519,7 +519,7 @@
   "ui.install.rapidocr.broken_body": "bundled rapidocr パッケージのインポートに失敗しました。プラグイン venv を再構築（`uv sync --group galgame`）するか、パッケージ版を再インストールしてください。",
   "ui.install.rapidocr.kicker_not_ready": "OCR メインバックエンド未準備",
   "ui.install.rapidocr.not_ready_title": "RapidOCR はまだ準備できていません",
-  "ui.install.rapidocr.not_ready_body": "RapidOCR は OCR Reader の内部メインバックエンドです。パッケージ版またはソース依存関係に rapidocr-onnxruntime が含まれていることを確認してください。",
+  "ui.install.rapidocr.not_ready_body": "RapidOCR は OCR Reader の内部メインバックエンドです。パッケージ版またはソース依存関係に RapidOCR runtime が含まれていることを確認してください。",
   "ui.install.expected_path": "想定インストール位置",
   "ui.install.task_failed_retry": "バックグラウンドインストールが失敗しました。もう一度ボタンを押して再試行できます。",
   "ui.install.task_done_refreshing": "タスク完了 — プラグインステータスの更新を待っています。",

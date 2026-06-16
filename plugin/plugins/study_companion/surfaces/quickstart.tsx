@@ -1,13 +1,15 @@
+import { useEffect } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 
-function text(props: PluginSurfaceProps, key: string, fallback: string) {
-  const value = props.t?.(key);
-  return value && value !== key ? value : fallback;
-}
+import { ensureBrandCSS, text } from './study_surface_utils';
 
 export default function Quickstart(props: PluginSurfaceProps) {
+  useEffect(() => {
+    ensureBrandCSS();
+  }, []);
+
   return (
-    <div className="study-panel">
+    <div className="study-panel surface-shell">
       <header className="study-panel__header">
         <div>
           <h1>{text(props, 'ui.surface.quickstart', 'Quickstart')}</h1>

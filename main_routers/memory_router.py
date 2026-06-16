@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Memory Router
 
@@ -289,7 +303,7 @@ logger = get_module_logger(__name__, "Main")
 
 @router.get('/recent_files')
 async def get_recent_files():
-    """获取 memory 目录下所有 recent*.json 文件名列表"""
+    """List all recent*.json filenames under the memory directory."""
     from utils.config_manager import get_config_manager
     cm = get_config_manager()
     file_names: list[str] = []
@@ -307,7 +321,7 @@ async def get_recent_files():
 
 @router.get('/recent_file')
 async def get_recent_file(filename: str):
-    """获取指定 recent*.json 文件内容"""
+    """Get the content of the specified recent*.json file."""
     # Reject path traversal attempts
     if '/' in filename or '\\' in filename or '..' in filename:
         return JSONResponse({"success": False, "error": "文件名不能包含路径分隔符或目录遍历字符"}, status_code=400)
@@ -416,9 +430,9 @@ async def save_recent_file(request: Request):
 @router.post('/update_catgirl_name')
 async def update_catgirl_name(request: Request):
     """
-    更新记忆文件中的猫娘名称
-    1. 重命名记忆文件
-    2. 更新文件内容中的猫娘名称引用
+    Update the catgirl name in memory files.
+    1. Rename the memory files
+    2. Update name references inside the file contents
     """
     data = await request.json()
     old_name = data.get('old_name')
@@ -470,7 +484,7 @@ async def update_catgirl_name(request: Request):
 
 @router.get('/review_config')
 async def get_review_config():
-    """获取记忆整理配置"""
+    """Get the memory review configuration."""
     try:
         from utils.config_manager import get_config_manager
         config_manager = get_config_manager()
@@ -485,7 +499,7 @@ async def get_review_config():
 
 @router.post('/review_config')
 async def update_review_config(request: Request):
-    """更新记忆整理配置"""
+    """Update the memory review configuration."""
     try:
         data = await request.json()
         enabled = data.get('enabled', True)
@@ -515,7 +529,7 @@ async def update_review_config(request: Request):
 
 @router.get('/powerful_memory_config')
 async def get_powerful_memory_config():
-    """获取强力记忆开关。默认 True（保兼容老用户）。"""
+    """Get the powerful-memory toggle. Defaults to True (for backward compatibility with existing users)."""
     try:
         from utils.config_manager import get_config_manager
         config_manager = get_config_manager()
@@ -530,12 +544,13 @@ async def get_powerful_memory_config():
 
 @router.post('/powerful_memory_config')
 async def update_powerful_memory_config(request: Request):
-    """更新强力记忆开关。
+    """Update the powerful-memory toggle.
 
-    关闭时停掉 evidence-RFC 引入的全部新 LLM 路径（Stage-2 / promote_merge /
-    rebuttal / negative-keyword / fact_dedup / persona corrections）。保留主
-    动搭话回应的 check_feedback 作为唯一 evidence channel。开→关切换时把所
-    有 confirmed reflection 的 confirmed_at 重置到 now，避免立即批量 promote。
+    Turning it off stops all new LLM paths introduced by the evidence RFC
+    (Stage-2 / promote_merge / rebuttal / negative-keyword / fact_dedup /
+    persona corrections), keeping check_feedback for proactive-chat responses
+    as the only evidence channel. When switching on→off, reset confirmed_at of
+    all confirmed reflections to now to avoid an immediate bulk promote.
     """
     try:
         data = await request.json()
@@ -619,14 +634,14 @@ async def update_powerful_memory_config(request: Request):
 
 def _collect_legacy_memory_roots(config_manager) -> list[tuple[Path, str]]:
     """
-    收集所有非当前 runtime 的 legacy memory 根目录（带来源标签）。
+    Collect all legacy memory root directories outside the current runtime (with source tags).
 
-    返回 ``[(Path, source), ...]``，去重后保持顺序：
-      - ``get_legacy_app_root_candidates()`` 返回的各候选的 ``memory/``
-        子目录（``source="legacy_app_root"``）
-      - ``_readable_docs_dir / <app_name> / memory``（``source="cfa_readable_docs"``）
+    Returns ``[(Path, source), ...]``, deduplicated and order-preserving:
+      - the ``memory/`` subdirectory of each candidate returned by
+        ``get_legacy_app_root_candidates()`` (``source="legacy_app_root"``)
+      - ``_readable_docs_dir / <app_name> / memory`` (``source="cfa_readable_docs"``)
 
-    当前激活的 ``memory_dir`` 绝不会被包含。
+    The currently active ``memory_dir`` is never included.
     """
     roots: list[tuple[Path, str]] = []
     seen: set[str] = set()
@@ -678,8 +693,9 @@ def _collect_legacy_memory_roots(config_manager) -> list[tuple[Path, str]]:
 
 def _directory_size_safe(path: Path, *, max_entries: int = 50000) -> int:
     """
-    计算目录递归 size。遇到权限错误/文件消失时忽略；超过 max_entries 条
-    目提前返回避免阻塞事件循环（返回 -1 作为"过大/未知"标记）。
+    Compute a directory's recursive size. Permission errors / vanished files are
+    ignored; returns early once max_entries is exceeded to avoid blocking the
+    event loop (returns -1 as a "too large / unknown" marker).
     """
     total = 0
     visited = 0
@@ -716,8 +732,9 @@ def _directory_size_safe(path: Path, *, max_entries: int = 50000) -> int:
 @router.get('/legacy/scan')
 async def scan_legacy_memory():
     """
-    扫描 legacy 路径下的角色记忆目录，返回每条的元数据，供前端"清理
-    遗留记忆"按钮弹层使用。本接口**只读**，不做任何删除 / 迁移。
+    Scan character memory directories under legacy paths and return metadata for
+    each entry, used by the frontend "clean up legacy memory" dialog. This
+    endpoint is **read-only** — it never deletes or migrates anything.
     """
     try:
         from utils.config_manager import get_config_manager
@@ -831,8 +848,8 @@ async def scan_legacy_memory():
 
 def _is_path_within(child: Path, parent: Path) -> bool:
     """
-    判断 child 是否严格位于 parent 之下（parent 必须是前缀，且 child != parent）。
-    双方都需要 resolve 后比对，避免 ``..`` 路径逃逸。
+    Check whether child is strictly inside parent (parent must be a prefix, and child != parent).
+    Both sides are resolved before comparison to prevent ``..`` path escapes.
     """
     try:
         child_resolved = child.resolve(strict=False)
@@ -850,13 +867,14 @@ def _is_path_within(child: Path, parent: Path) -> bool:
 @router.post('/legacy/purge')
 async def purge_legacy_memory(request: Request):
     """
-    按前端勾选的 paths 精确删除 legacy memory 条目。
+    Delete exactly the legacy memory entries (paths) the user checked in the frontend.
 
-    安全校验（全部必须通过才删）：
-      1. 每条 path 必须严格位于 ``_collect_legacy_memory_roots`` 返回的
-         任一 root 之下（resolve 后白名单前缀比对），拒绝路径逃逸。
-      2. 不得等于或覆盖当前 runtime ``memory_dir``。
-      3. ``..`` / 相对路径 / 空字符串 / 非字符串 → 400。
+    Safety checks (ALL must pass before deletion):
+      1. Each path must be strictly inside one of the roots returned by
+         ``_collect_legacy_memory_roots`` (whitelist prefix comparison after
+         resolve), rejecting path escapes.
+      2. Must not equal or contain the current runtime ``memory_dir``.
+      3. ``..`` / relative paths / empty strings / non-strings → 400.
     """
     try:
         payload = await request.json()

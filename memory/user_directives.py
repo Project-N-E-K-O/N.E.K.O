@@ -1,43 +1,67 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 UserDirectivesManager — per-character store for explicit user ban-topic
 directives ("别再提 X / stop saying X / その話はもう / ...").
 
-设计动机
+Motivation
 --------
-本轮 LLM 看得到用户原话，不需要这里干预。但下一次 session 重启（archive
-触发 / cold start / 重连），那句话早被 ``compress_history`` 抹掉，模型会再次
-踩雷。所以把抽到的 term 持久化 3 天（``USER_DIRECTIVE_TTL_SECONDS``），
-``_build_initial_prompt`` 启动时拼一段注入 system prompt 尾部。
+The current-round LLM sees the user's original words; no intervention needed
+here. But on the next session restart (archive-triggered / cold start /
+reconnect), that message has long been wiped by ``compress_history`` and the
+model steps on the landmine again. So extracted terms are persisted for 3 days
+(``USER_DIRECTIVE_TTL_SECONDS``), and ``_build_initial_prompt`` splices a
+block into the system prompt tail at startup.
 
-设计要点
+Design notes
 --------
-- **分发入口**：``dispatch_user_utterance`` fan-out。本模块 import 时自动调
-  ``register_user_utterance_sink``，与 ``plugin/core/state.py`` 同款 self-
-  registration（dedup-on-identity，重复注册不会重复触发）。
-- **抽取**：``config.prompts.prompts_directives.extract_directives`` 全 locale
-  并行跑（用户中英混说常见）；命中后 term 经 ``_trim_term`` 清洗。
-- **dedup 键**：``(kind, term.casefold())``。重复命中 → 刷新 ``last_seen_at`` /
-  ``expire_at`` + ``hit_count += 1``；新条目入库。
-- **存储**：``memory/{name}/user_directives.json``。schema 见 ``_DEFAULT_FILE``。
-- **TTL**：每条记录的 ``expire_at = last_seen_at + USER_DIRECTIVE_TTL_SECONDS``。
-  读取时过滤；``purge_expired`` 重写文件（可选，惰性即可）。
-- **prompt 注入**：``render_prompt_block(name, lang)`` 返回拼好的字符串（含
-  leading newline），空时返回 ""。调用方直接 ``prompt += ...``。
-- **并发**：per-character ``threading.Lock``，模式照搬 ``memory/cursors.py``。
+- **Dispatch entry**: ``dispatch_user_utterance`` fan-out. This module
+  self-registers via ``register_user_utterance_sink`` at import time, same
+  style as ``plugin/core/state.py`` (dedup-on-identity; repeated registration
+  doesn't re-fire).
+- **Extraction**: ``config.prompts.prompts_directives.extract_directives``
+  runs all locales in parallel (mixed Chinese/English speech is common); on a
+  hit the term is cleaned by ``_trim_term``.
+- **Dedup key**: ``(kind, term.casefold())``. Repeated hits → refresh
+  ``last_seen_at`` / ``expire_at`` + ``hit_count += 1``; new entries get stored.
+- **Storage**: ``memory/{name}/user_directives.json``. Schema: see ``_DEFAULT_FILE``.
+- **TTL**: each record's ``expire_at = last_seen_at + USER_DIRECTIVE_TTL_SECONDS``.
+  Filtered on read; ``purge_expired`` rewrites the file (optional; lazy is fine).
+- **Prompt injection**: ``render_prompt_block(name, lang)`` returns the
+  assembled string (with leading newline), "" when empty. Callers just do
+  ``prompt += ...``.
+- **Concurrency**: per-character ``threading.Lock``, pattern copied from
+  ``memory/cursors.py``.
 
-什么不抽取
+What is not extracted
 ----------
-- 无对象的"闭嘴/换话题/shut up"：本轮已经在 context 里，模型看得到；持久化又
-  没有具体话题，把这种意图塞到下一轮 prompt 里反而误伤。
-- 普通陈述句"我不喜欢西瓜"：不是显式 ban-topic 指令，让 fact/persona 流水线
-  处理偏好抽取。
+- Object-less "闭嘴/换话题/shut up": already in this round's context, the
+  model sees it; persisting carries no concrete topic, and pushing such intent
+  into the next round's prompt would backfire.
+- Plain statements like "我不喜欢西瓜" ("I don't like watermelon"): not an
+  explicit ban-topic directive; preference extraction belongs to the
+  fact/persona pipeline.
 
-错杀策略
+False-positive policy
 --------
-正则模板宽松。错杀代价 = 用户下次再说一次同义话；漏抽代价 = 用户被再次冒犯
-所以倾向错杀。term 长度 ∈ [2, 40] 才入库，超界丢弃。
-"""
+The regex templates are lenient. Cost of a false kill = the user says an
+equivalent sentence once more; cost of a miss = the user gets offended again —
+so we lean toward over-killing. Terms are stored only when length ∈ [2, 40];
+out-of-range ones are dropped.
+"""  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
 import os
@@ -77,7 +101,7 @@ _TERM_MAX_LEN = 40
 
 
 def _normalize_term(raw: Any) -> Optional[str]:
-    """归一化 term：``str.strip()`` 后强制长度 ∈ [2, 40]，否则 None。"""
+    """Normalize a term: ``str.strip()`` then enforce length ∈ [2, 40], else None."""
     if not isinstance(raw, str):
         return None
     term = raw.strip()
@@ -87,14 +111,16 @@ def _normalize_term(raw: Any) -> Optional[str]:
 
 
 def _normalize_entry(raw: Any) -> Optional[Dict[str, Any]]:
-    """把磁盘读上来的一条记录归一化为 dict；非法/缺字段 → None（丢弃）。
+    """Normalize one record read from disk into a dict; invalid / missing fields → None (dropped).
 
-    历史兼容：早期可能只有 ``term`` 和 ``created_at``——这里补齐
-    ``last_seen_at`` / ``expire_at`` / ``hit_count`` / ``kind`` / ``locale``。
+    Backward compat: early versions may have had only ``term`` and
+    ``created_at`` — this backfills ``last_seen_at`` / ``expire_at`` /
+    ``hit_count`` / ``kind`` / ``locale``.
 
-    ⚠️ 容错：单条脏数据（如 ``created_at: "abc"``）不应该让整份文件 load 失败、
-    把所有合法 directive 一起重置成空。整个函数包在一个 try/except 里，本条
-    返回 None 让 caller 丢弃但保留其它条目（CodeRabbit Minor）。
+    ⚠️ Fault tolerance: one dirty record (e.g. ``created_at: "abc"``) must not
+    fail the whole file load and reset every valid directive. The whole
+    function is wrapped in one try/except; this record returns None for the
+    caller to drop while keeping the others (CodeRabbit Minor).
     """
     if not isinstance(raw, dict):
         return None
@@ -140,15 +166,16 @@ def _normalize_entry(raw: Any) -> Optional[Dict[str, Any]]:
 
 
 class UserDirectivesManager:
-    """Per-character ban-topic 存储（线程安全）。
+    """Per-character ban-topic store (thread-safe).
 
-    用法：
+    Usage:
         mgr = UserDirectivesManager()
         mgr.record_from_text(lanlan_name, raw_user_text)
         block = mgr.render_prompt_block(lanlan_name, lang='zh')
-        # 把 block 直接 concat 到 system prompt 末尾
+        # concat the block straight onto the system prompt tail
 
-    单进程内全局唯一实例 ``_GLOBAL_MANAGER``（见模块末尾）；sink 也基于它注册。
+    A single process-wide instance ``_GLOBAL_MANAGER`` (see module tail); the
+    sink is registered on it too.
     """
 
     def __init__(self) -> None:
@@ -224,14 +251,16 @@ class UserDirectivesManager:
         source: str = "regex",
         now: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """登记一条 directive；命中已有 ``(kind, term.casefold())`` 则刷新。
+        """Register a directive; an existing ``(kind, term.casefold())`` hit refreshes it.
 
-        返回最终存盘的 dict（含合并/刷新后的字段）；输入不合法（term 不是 str /
-        trim 后空 / 长度越界）返回空 dict。
+        Returns the final persisted dict (with merged/refreshed fields); invalid
+        input (term not a str / empty after trim / length out of range) returns
+        an empty dict.
 
-        ⚠️ 写盘 boundary 也走 ``_normalize_term`` —— 与 ``_normalize_entry`` 的
-        读盘校验共享同一份长度不变量，磁盘态始终满足 [_TERM_MIN_LEN, _TERM_MAX_LEN]
-        （CodeRabbit Minor）。
+        ⚠️ The write boundary also goes through ``_normalize_term`` — sharing
+        the same length invariant as ``_normalize_entry``'s read validation, so
+        the on-disk state always satisfies [_TERM_MIN_LEN, _TERM_MAX_LEN]
+        (CodeRabbit Minor).
         """
         if not name:
             return {}
@@ -273,9 +302,9 @@ class UserDirectivesManager:
         *,
         now: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
-        """对一段 user 文本跑完整抽取 → 入库流水线。
+        """Run the full extract → store pipeline over a user text.
 
-        返回当次写入/刷新的 entry 列表（空 = 未命中任何 pattern）。
+        Returns the list of entries written/refreshed this time (empty = no pattern hit).
         """
         if not name or not text:
             return []
@@ -304,7 +333,7 @@ class UserDirectivesManager:
         now: Optional[float] = None,
         limit: int = USER_DIRECTIVE_MAX_ACTIVE,
     ) -> List[Dict[str, Any]]:
-        """返回未过期、按 last_seen_at 倒序的最多 ``limit`` 条记录。"""
+        """Return up to ``limit`` unexpired records, sorted by last_seen_at descending."""
         if not name:
             return []
         ts = float(now if now is not None else _now())
@@ -317,7 +346,7 @@ class UserDirectivesManager:
         return alive
 
     def purge_expired(self, name: str, *, now: Optional[float] = None) -> int:
-        """惰性清理：删除过期条目并落盘；返回删除条数。"""
+        """Lazy cleanup: delete expired entries and persist; returns the number deleted."""
         if not name:
             return 0
         ts = float(now if now is not None else _now())
@@ -338,7 +367,7 @@ class UserDirectivesManager:
         *,
         now: Optional[float] = None,
     ) -> str:
-        """把活跃 term 拼成 system prompt 片段。空时返回 ""。"""
+        """Render active terms into a system-prompt fragment. Returns "" when empty."""
         active = self.get_active(name, now=now)
         if not active:
             return ""
@@ -346,7 +375,7 @@ class UserDirectivesManager:
         return render_directives_block(terms, lang)
 
     def clear(self, name: str) -> None:
-        """测试 / 用户手动清空入口。"""
+        """Entry point for tests / manual user clearing."""
         if not name:
             return
         with self._get_lock(name):
@@ -369,17 +398,21 @@ def get_user_directives_manager() -> UserDirectivesManager:
 
 
 def _on_user_utterance(bucket: str, event: Dict[str, Any]) -> None:
-    """user_utterance sink：抽取并落盘。错误吞掉（main_logic 已经在 dispatch
-    内部做了 per-sink try/except，这里再加一层防御）。
+    """user_utterance sink: extract and persist. Errors are swallowed (main_logic
+    already does a per-sink try/except inside dispatch; this is one more layer
+    of defense).
 
-    Dedup 规则：``dispatch_user_utterance`` 同次 dispatch 会向 ``"default"``
-    与角色名两个 bucket 都派一遍（见 ``main_logic/core.py`` 的
-    ``dict.fromkeys(("default", self.lanlan_name))`` 循环）。规则：
-      - event["lanlan"] 非空且非 "default" → 是真角色，"default" bucket 视
-        为重复，skip；只在 bucket == event["lanlan"] 时入库
-      - event["lanlan"] 为空 / 是 "default" → 整个 dispatch 只发了 "default"
-        一份（角色未配 / 角色名 literal 就是 "default"），bucket=="default"
-        进入正常处理，避免整段消息漏抽（codex P1）
+    Dedup rule: a single ``dispatch_user_utterance`` dispatch fans out to both
+    the ``"default"`` bucket and the character-name bucket (see the
+    ``dict.fromkeys(("default", self.lanlan_name))`` loop in
+    ``main_logic/core.py``). Rules:
+      - event["lanlan"] non-empty and not "default" → a real character; the
+        "default" bucket counts as the duplicate, skip; only store when
+        bucket == event["lanlan"]
+      - event["lanlan"] empty / "default" → the dispatch only sent the
+        "default" copy (character unconfigured / character literally named
+        "default"); bucket=="default" goes through normal processing, so the
+        whole message isn't missed (codex P1)
     """
     if not isinstance(event, dict):
         return

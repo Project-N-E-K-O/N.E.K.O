@@ -519,7 +519,7 @@
   "ui.install.rapidocr.broken_body": "The bundled rapidocr package failed to import. Rebuild the plugin venv (`uv sync --group galgame`) or reinstall the packaged build.",
   "ui.install.rapidocr.kicker_not_ready": "Primary OCR backend not ready",
   "ui.install.rapidocr.not_ready_title": "RapidOCR is not ready yet",
-  "ui.install.rapidocr.not_ready_body": "RapidOCR is now the internal primary backend for OCR Reader. Confirm that the packaged build or source dependencies include rapidocr-onnxruntime.",
+  "ui.install.rapidocr.not_ready_body": "RapidOCR is now the internal primary backend for OCR Reader. Confirm that the packaged build or source dependencies include the RapidOCR runtime.",
   "ui.install.expected_path": "Expected install path",
   "ui.install.task_failed_retry": "The background install task failed. You can click the button again to retry.",
   "ui.install.task_done_refreshing": "Task complete — waiting for plugin status refresh.",

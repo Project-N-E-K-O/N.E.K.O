@@ -46,6 +46,13 @@
         .jukebox-sam-panel .sam-header {
             -webkit-app-region: drag !important;
             cursor: grab;
+            touch-action: none;
+        }
+
+        .jukebox-sam-panel .sam-title,
+        .jukebox-sam-panel .sam-drag-fill {
+            -webkit-app-region: drag !important;
+            cursor: grab;
         }
 
         /* 交互元素必须 no-drag，否则点击会被原生拖动吃掉。 */
@@ -68,6 +75,44 @@
         .jukebox-sam-panel .sam-file-drop-zone {
             -webkit-app-region: no-drag !important;
         }
+
+        /* SAM.getStyles() 会在运行时后注入；独立页需要最后再覆盖一次布局，
+           避免通用面板 padding / max-width / cursor 让右侧出现额外块或误导热区。 */
+        body .jukebox-sam-panel {
+            inset: 0 !important;
+            width: 100vw !important;
+            height: 100vh !important;
+            min-width: 0 !important;
+            min-height: 0 !important;
+            max-width: none !important;
+            max-height: none !important;
+            padding: 0 !important;
+            overflow: hidden !important;
+            cursor: default !important;
+        }
+
+        body .jukebox-sam-panel .sam-header {
+            cursor: grab !important;
+        }
+
+        body .jukebox-sam-panel .sam-title,
+        body .jukebox-sam-panel .sam-drag-fill {
+            cursor: grab !important;
+        }
+
+        body .jukebox-sam-panel .sam-header:active,
+        body.sam-panel-dragging .jukebox-sam-panel .sam-header,
+        body .jukebox-sam-panel .sam-title:active,
+        body .jukebox-sam-panel .sam-drag-fill:active {
+            cursor: grabbing !important;
+        }
+
+        body.neko-jukebox-manager-bridge-drag .jukebox-sam-panel .sam-header,
+        body.neko-jukebox-manager-bridge-drag .jukebox-sam-panel .sam-title,
+        body.neko-jukebox-manager-bridge-drag .jukebox-sam-panel .sam-drag-fill {
+            -webkit-app-region: no-drag !important;
+            cursor: grab !important;
+        }
     </style>
 </head>
 <body>
@@ -83,6 +128,84 @@
         // 原因：JS 设 setBounds 会和 Windows 边缘 resize 热区并发，看起来"一拖就变大"。
         // 原生拖动下 Chromium 返回 HTCAPTION，Windows 直接走窗口移动，绕开 resize 逻辑。
 
+        function _setManagerAppRegion(element, value) {
+            if (!element) return;
+            try {
+                element.style.setProperty('-webkit-app-region', value, 'important');
+            } catch (_) {
+                element.style.webkitAppRegion = value;
+            }
+        }
+
+        function _eventScreenPoint(event) {
+            var point = event.touches ? event.touches[0] : event;
+            return {
+                x: typeof point.screenX === 'number' ? point.screenX : point.clientX,
+                y: typeof point.screenY === 'number' ? point.screenY : point.clientY
+            };
+        }
+
+        function _selectManagerDragBridge() {
+            var candidates = [window.nekoJukeboxBridge, window.nekoJukeboxManagerBridge];
+            for (var i = 0; i < candidates.length; i++) {
+                var candidate = candidates[i];
+                if (candidate && typeof candidate.dragStart === 'function' && typeof candidate.dragStop === 'function') {
+                    return candidate;
+                }
+            }
+            return null;
+        }
+
+        function _enableManagerBridgeCursorDrag(panel) {
+            var bridge = _selectManagerDragBridge();
+            if (!bridge) return false;
+
+            var header = panel.querySelector('.sam-header');
+            if (!header) return false;
+
+            document.body.classList.add('neko-jukebox-manager-bridge-drag');
+            _setManagerAppRegion(header, 'no-drag');
+            panel.querySelectorAll('.sam-title, .sam-drag-fill').forEach(function(element) {
+                _setManagerAppRegion(element, 'no-drag');
+            });
+            panel.querySelectorAll('button, input, a, select, textarea, label, [contenteditable="true"], .sam-tab, .sam-close-btn').forEach(function(element) {
+                _setManagerAppRegion(element, 'no-drag');
+            });
+
+            var dragging = false;
+            function finishDrag() {
+                if (!dragging) return;
+                dragging = false;
+                document.body.classList.remove('sam-panel-dragging');
+                try { bridge.dragStop(); } catch (_) {}
+            }
+
+            function startDrag(event) {
+                if (typeof event.button === 'number' && event.button !== 0) return;
+                if (event.target.closest('button, input, a, select, textarea, label, [contenteditable="true"], .sam-tab, .sam-close-btn')) return;
+
+                event.preventDefault();
+                event.stopPropagation();
+                dragging = true;
+                document.body.classList.add('sam-panel-dragging');
+
+                var point = _eventScreenPoint(event);
+                try {
+                    bridge.dragStart(point.x, point.y);
+                } catch (_) {
+                    finishDrag();
+                }
+            }
+
+            header.addEventListener('mousedown', startDrag);
+            header.addEventListener('touchstart', startDrag, { passive: false });
+            document.addEventListener('mouseup', finishDrag);
+            document.addEventListener('touchend', finishDrag);
+            document.addEventListener('touchcancel', finishDrag);
+            window.addEventListener('blur', finishDrag);
+            return true;
+        }
+
         async function _initManager() {
             if (!window.Jukebox || !window.Jukebox.SongActionManager) return;
 
@@ -97,6 +220,53 @@
             var style = document.createElement('style');
             style.textContent = SAM.getStyles();
             document.head.appendChild(style);
+
+            // SAM.getStyles() 在本模板样式之后注入；standalone 需要最后再声明一次
+            // 标题栏整块原生拖动和交互元素 no-drag，避免 PC 窗口命中区域被通用样式覆盖。
+            var standaloneStyle = document.createElement('style');
+            standaloneStyle.textContent = [
+                'body .jukebox-sam-panel {',
+                '  -webkit-app-region: no-drag !important;',
+                '  padding: 0 !important;',
+                '  cursor: default !important;',
+                '}',
+                'body .jukebox-sam-panel .sam-header {',
+                '  -webkit-app-region: drag !important;',
+                '  padding: 15px 15px 10px !important;',
+                '  cursor: grab !important;',
+                '  touch-action: none !important;',
+                '}',
+                'body .jukebox-sam-panel .sam-header:active,',
+                'body.sam-panel-dragging .jukebox-sam-panel .sam-header {',
+                '  cursor: grabbing !important;',
+                '}',
+                'body .jukebox-sam-panel .sam-title,',
+                'body .jukebox-sam-panel .sam-drag-fill {',
+                '  -webkit-app-region: drag !important;',
+                '  cursor: grab !important;',
+                '}',
+                'body .jukebox-sam-panel button,',
+                'body .jukebox-sam-panel input,',
+                'body .jukebox-sam-panel a,',
+                'body .jukebox-sam-panel select,',
+                'body .jukebox-sam-panel textarea,',
+                'body .jukebox-sam-panel label,',
+                'body .jukebox-sam-panel [contenteditable="true"],',
+                'body .jukebox-sam-panel .sam-tab,',
+                'body .jukebox-sam-panel .sam-close-btn,',
+                'body .jukebox-sam-panel .sam-content,',
+                'body .jukebox-sam-panel .sam-item,',
+                'body .jukebox-sam-panel .sam-binding-item,',
+                'body .jukebox-sam-panel .sam-checkbox,',
+                'body .jukebox-sam-panel .sam-unbind-btn,',
+                'body .jukebox-sam-panel .sam-add-binding-btn,',
+                'body .jukebox-sam-panel .sam-click-add,',
+                'body .jukebox-sam-panel .sam-file-drop-zone {',
+                '  -webkit-app-region: no-drag !important;',
+                '}'
+            ].join('\\n');
+            document.head.appendChild(standaloneStyle);
+            _enableManagerBridgeCursorDrag(panel);
 
             // 覆盖 hide：关闭窗口而非隐藏 DOM
             var _prevHide = SAM.hide;

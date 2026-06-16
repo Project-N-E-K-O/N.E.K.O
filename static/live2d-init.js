@@ -34,6 +34,7 @@ function _getActiveModelType() {
         return sub === 'mmd' ? 'mmd' : sub === 'vrm' ? 'vrm' : 'live2d';
     }
     if (modelType === 'vrm') return 'vrm';
+    if (modelType === 'pngtuber') return 'pngtuber';
     return 'live2d';
 }
 
@@ -52,6 +53,7 @@ window.LanLan1.setEmotion = function(emotion) {
         }
         return;
     }
+    if (activeType === 'pngtuber') return;
     // Live2D 模式
     if (window.live2dManager && window.live2dManager.currentModel) {
         window.live2dManager.setEmotion(emotion);
@@ -65,7 +67,7 @@ window.LanLan1.playExpression = window.LanLan1.setEmotion;
 window.LanLan1.playMotion = function(group, no, priority) {
     const activeType = _getActiveModelType();
     // MMD/VRM 模式下忽略 Live2D 的动作指令
-    if (activeType === 'mmd' || activeType === 'vrm') return;
+    if (activeType === 'mmd' || activeType === 'vrm' || activeType === 'pngtuber') return;
 
     // Live2D 模式
     if (window.live2dManager && window.live2dManager.currentModel) {
@@ -84,12 +86,13 @@ window.LanLan1.clearEmotionEffects = function() {
         if (window.vrmManager && window.vrmManager.expression) window.vrmManager.expression.setMood('neutral');
         return;
     }
+    if (activeType === 'pngtuber') return;
     if (window.live2dManager) window.live2dManager.clearEmotionEffects();
 };
 
 window.LanLan1.clearExpression = function() {
     const activeType = _getActiveModelType();
-    if (activeType === 'mmd' || activeType === 'vrm') return;
+    if (activeType === 'mmd' || activeType === 'vrm' || activeType === 'pngtuber') return;
     if (window.live2dManager) window.live2dManager.clearExpression();
 };
 
@@ -103,6 +106,7 @@ window.LanLan1.setMouth = function(value) {
         }
         return;
     }
+    if (activeType === 'pngtuber') return;
     // VRM 的嘴型通常由 Audio 分析自动控制 (vrm-animation.js)，这里主要服务 Live2D
     if (window.live2dManager && window.live2dManager.currentModel) {
         window.live2dManager.setMouth(value);
@@ -266,10 +270,11 @@ async function initLive2DModel() {
 
     // 如果当前为 Live3D+MMD 模式，跳过 Live2D 初始化
     if (
-        (window.lanlan_config?.model_type || '').toLowerCase() === 'live3d' &&
-        (window.lanlan_config?.live3d_sub_type || '').toLowerCase() === 'mmd'
+        (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber' ||
+        ((window.lanlan_config?.model_type || '').toLowerCase() === 'live3d' &&
+        (window.lanlan_config?.live3d_sub_type || '').toLowerCase() === 'mmd')
     ) {
-        console.log('[Live2D Init] Live3D+MMD 模式，跳过 Live2D 初始化');
+        console.log('[Live2D Init] 非 Live2D 模式，跳过 Live2D 初始化');
         return;
     }
 
@@ -301,13 +306,50 @@ async function initLive2DModel() {
         // 清理VRM管理器和Three.js场景（使用抽取的清理函数）
         await cleanupVRMResources();
 
+        if ((window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber') {
+            console.log('[Live2D Init] 当前为 PNGTuber 模式，取消 Live2D 显示与初始化');
+            const live2dContainerForPngtuber = document.getElementById('live2d-container');
+            if (live2dContainerForPngtuber) {
+                live2dContainerForPngtuber.style.display = 'none';
+                live2dContainerForPngtuber.classList.add('hidden');
+            }
+            const live2dCanvasForPngtuber = document.getElementById('live2d-canvas');
+            if (live2dCanvasForPngtuber) {
+                live2dCanvasForPngtuber.style.visibility = 'hidden';
+                live2dCanvasForPngtuber.style.pointerEvents = 'none';
+            }
+            return;
+        }
+
         // 确保Live2D容器可见
         const live2dContainer = document.getElementById('live2d-container');
         if (live2dContainer) live2dContainer.style.display = 'block';
+        if ((window.lanlan_config?.model_type || '').toLowerCase() !== 'pngtuber') {
+            if (window.pngtuberManager && typeof window.pngtuberManager.hide === 'function') {
+                window.pngtuberManager.hide();
+            }
+            if (window.cleanupPNGTuberOverlayUI && typeof window.cleanupPNGTuberOverlayUI === 'function') {
+                window.cleanupPNGTuberOverlayUI();
+            }
+            const pngtuberContainer = document.getElementById('pngtuber-container');
+            if (pngtuberContainer) {
+                pngtuberContainer.style.display = 'none';
+                pngtuberContainer.classList.add('hidden');
+            }
+        }
 
         // 初始化 PIXI 应用；再次检查是否在 VRM/MMD 模式下（防止在异步操作期间切换）
         if ((window.vrmManager && window.vrmManager.currentModel) || (window.mmdManager && window.mmdManager.currentModel)) {
             console.log('[Live2D Init] 检测到 VRM/MMD 模式，取消 Live2D 初始化');
+            return;
+        }
+
+        if ((window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber') {
+            console.log('[Live2D Init] 当前已切换到 PNGTuber 模式，跳过 PIXI 初始化');
+            if (live2dContainer) {
+                live2dContainer.style.display = 'none';
+                live2dContainer.classList.add('hidden');
+            }
             return;
         }
 

@@ -519,7 +519,7 @@
   "ui.install.rapidocr.broken_body": "번들된 rapidocr 패키지를 가져오지 못했습니다. 플러그인 venv를 다시 빌드(`uv sync --group galgame`)하거나 패키지 빌드를 다시 설치하세요.",
   "ui.install.rapidocr.kicker_not_ready": "주 OCR 백엔드 미준비",
   "ui.install.rapidocr.not_ready_title": "RapidOCR이 아직 준비되지 않았습니다",
-  "ui.install.rapidocr.not_ready_body": "RapidOCR은 OCR Reader의 내부 주 백엔드입니다. 패키지 빌드 또는 소스 의존성에 rapidocr-onnxruntime이 포함되어 있는지 확인하세요.",
+  "ui.install.rapidocr.not_ready_body": "RapidOCR은 OCR Reader의 내부 주 백엔드입니다. 패키지 빌드 또는 소스 의존성에 RapidOCR runtime이 포함되어 있는지 확인하세요.",
   "ui.install.expected_path": "예상 설치 위치",
   "ui.install.task_failed_retry": "백그라운드 설치 작업이 실패했습니다. 버튼을 다시 눌러 재시도할 수 있습니다.",
   "ui.install.task_done_refreshing": "작업 완료 — 플러그인 상태 새로고침을 기다리는 중.",

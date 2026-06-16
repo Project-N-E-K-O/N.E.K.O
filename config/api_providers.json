@@ -275,6 +275,20 @@
       "emotion_model": "qwen/qwen3.5-9b",
       "vision_model": "google/gemini-2.5-flash",
       "agent_model": "google/gemini-3-flash-preview"
+    },
+    "vllm_omni": {
+      "key": "vllm_omni",
+      "name": "vLLM-Omni (TTS)",
+      "description": "本地 / 远程 vLLM 部署的 TTS 服务，推荐Qwen3-TTS",
+      "openrouter_url": "ws://localhost:8091/v1",
+      "conversation_model": "",
+      "summary_model": "",
+      "correction_model": "",
+      "emotion_model": "",
+      "vision_model": "",
+      "agent_model": "",
+      "tts_default_model": "Qwen3-TTS",
+      "tts_default_voice": "default"
     }
   },
   "default_models": {
@@ -380,6 +394,10 @@
     "openrouter": {
       "config_field": "assistApiKeyOpenrouter",
       "restricted": true
+    },
+    "vllm_omni": {
+      "config_field": "ttsModelApiKey",
+      "restricted": false
     }
   },
   "_comment_livestream_config": "Livestream (主播) overlay on top of core_api_type='free': when enabled with non-empty server_prefix, free路 URLs (/core /text/v1 /tts) auto-derive from server_prefix, voice falls back to voice_id (bypasses free_voices preset gate), and OmniRealtimeClient skips 90s silence-timeout. Preferred path: drop a standalone config/livestream_config.json (untracked via .gitignore) for single-file distribution. The field below is a fallback only; keep server_prefix/voice_id empty in committed configs.",

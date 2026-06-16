@@ -6,6 +6,7 @@ import pytest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
+import main_logic.core as core_module
 import main_routers.characters_router as characters_router
 from main_logic.core import LLMSessionManager
 from utils.config_manager import ConfigManager
@@ -442,6 +443,172 @@ def test_custom_tts_config_requires_gptsovits_enabled():
     )
 
 
+def test_explicit_vllm_tts_uses_external_tts_before_native_voice():
+    mgr = _make_mgr("Puck")
+    realtime_config = {"base_url": "https://generativelanguage.googleapis.com"}
+
+    assert (
+        LLMSessionManager._resolve_session_use_tts(
+            mgr,
+            "audio",
+            realtime_config,
+            {
+                "ENABLE_CUSTOM_API": True,
+                "ttsModelProvider": "vllm_omni",
+                "ttsVoiceId": "Puck",
+                "GPTSOVITS_ENABLED": False,
+            },
+        )
+        is True
+    )
+    assert (
+        LLMSessionManager._resolve_session_use_tts(
+            mgr,
+            "audio",
+            realtime_config,
+            {
+                "ENABLE_CUSTOM_API": False,
+                "ttsModelProvider": "vllm_omni",
+                "ttsVoiceId": "Puck",
+                "GPTSOVITS_ENABLED": False,
+            },
+        )
+        is False
+    )
+
+
+def test_vllm_runtime_key_tracks_raw_runtime_config(monkeypatch):
+    class _CM:
+        def __init__(self, url, model, voice_id, tts_model=""):
+            self.url = url
+            self.model = model
+            self.voice_id = voice_id
+            self.tts_model = tts_model
+
+        def get_core_config(self):
+            return {
+                "ENABLE_CUSTOM_API": True,
+                "ttsModelProvider": "vllm_omni",
+                "ttsModelUrl": self.url,
+                "ttsModelId": self.model,
+                "TTS_MODEL": self.tts_model,
+                "ttsVoiceId": self.voice_id,
+                "DISABLE_TTS": False,
+            }
+
+        def get_model_api_config(self, model_type):
+            if model_type == "realtime":
+                return {"base_url": ""}
+            assert model_type == "tts_default"
+            return {
+                "base_url": "http://localhost:8091",
+                "model": "Qwen3-TTS",
+                "api_key": "fallback-key",
+            }
+
+        def voice_id_exists_in_any_storage(self, voice_id):
+            return False
+
+    monkeypatch.setattr(
+        core_module,
+        "get_tts_worker",
+        lambda **kwargs: (object(), "", "vllm_omni"),
+    )
+
+    mgr = _make_mgr("")
+    mgr._config_manager = _CM("http://localhost:8091", "Qwen3-TTS", "voice-a")
+    key_a = LLMSessionManager._build_tts_runtime_key(mgr)
+    mgr._config_manager = _CM("http://localhost:8092", "Qwen3-TTS-v2", "voice-b")
+    key_b = LLMSessionManager._build_tts_runtime_key(mgr)
+    mgr._config_manager = _CM("http://localhost:8093", "", "voice-c", "RouteModel")
+    key_c = LLMSessionManager._build_tts_runtime_key(mgr)
+
+    assert key_a != key_b
+    assert ("http://localhost:8091", "Qwen3-TTS", "voice-a") in key_a
+    assert ("http://localhost:8092", "Qwen3-TTS-v2", "voice-b") in key_b
+    assert ("http://localhost:8093", "Qwen3-TTS", "voice-c") in key_c
+    assert "RouteModel" not in key_c
+    assert "Qwen3-TTS-v2" not in key_a
+
+
+def test_vllm_runtime_key_uses_provider_defaults_without_raw_runtime_config():
+    class _CM:
+        def get_core_config(self):
+            return {
+                "ENABLE_CUSTOM_API": True,
+                "ttsModelProvider": "vllm_omni",
+                "ttsModelUrl": "",
+                "ttsModelId": "",
+                "ttsVoiceId": "",
+                "TTS_MODEL": "qwen3-tts-flash-realtime-2025-11-27",
+                "TTS_VOICE_ID": "assistant-voice",
+                "DISABLE_TTS": False,
+            }
+
+        def get_model_api_config(self, model_type):
+            if model_type == "realtime":
+                return {"base_url": ""}
+            assert model_type == "tts_default"
+            return {
+                "base_url": "https://assist.invalid/v1",
+                "model": "qwen3-tts-flash-realtime-2025-11-27",
+                "api_key": "fallback-key",
+            }
+
+        def voice_id_exists_in_any_storage(self, voice_id):
+            return False
+
+    mgr = _make_mgr("")
+    mgr._config_manager = _CM()
+    key = LLMSessionManager._build_tts_runtime_key(mgr)
+
+    assert ("ws://localhost:8091/v1", "Qwen3-TTS", "default") in key
+    assert "assistant-voice" not in key
+
+
+def test_vllm_tts_url_is_not_treated_as_local_voice_clone_server():
+    tts_config = {
+        "is_custom": True,
+        "base_url": "ws://localhost:8091/v1/audio/speech/stream",
+    }
+
+    assert (
+        characters_router._is_local_voice_clone_tts_config(
+            tts_config,
+            {"ttsModelProvider": "vllm_omni"},
+        )
+        is False
+    )
+    assert (
+        characters_router._is_local_voice_clone_tts_config(
+            tts_config,
+            {"ttsModelProvider": "cosyvoice"},
+        )
+        is True
+    )
+
+
+def test_local_voice_clone_uses_tts_url_fallback_for_registration():
+    tts_config = {
+        "is_custom": True,
+        "url": "ws://localhost:8091/v1/audio/speech/stream",
+    }
+
+    assert characters_router._is_local_voice_clone_tts_config(tts_config, {}) is True
+    assert (
+        characters_router._local_voice_clone_tts_base_url(tts_config, {})
+        == "ws://localhost:8091/v1/audio/speech/stream"
+    )
+
+
+def test_local_voice_clone_uses_core_tts_url_fallback_for_registration():
+    tts_config = {"is_custom": True}
+    core_config = {"ttsModelUrl": "ws://localhost:8092/v1"}
+
+    assert characters_router._is_local_voice_clone_tts_config(tts_config, core_config) is True
+    assert characters_router._local_voice_clone_tts_base_url(tts_config, core_config) == "ws://localhost:8092/v1"
+
+
 def test_has_custom_tts_ignores_disabled_gptsovits_placeholder():
     mgr = _make_mgr(
         "",
@@ -476,3 +643,103 @@ async def test_hot_swap_to_external_tts_starts_pipeline(monkeypatch):
 
     assert mgr.use_tts is True
     assert called is True
+
+
+# ---------------------------------------------------------------------------
+# PR #1764 review #3403710558 边界场景：_is_vllm_omni_tts_enabled 对 snapshot
+# 中 ttsModelProvider 字段缺失/空串/大小写/livestream 优先级的容错性
+# ---------------------------------------------------------------------------
+
+
+def test_is_vllm_omni_tts_enabled_returns_false_when_ttsModelProvider_missing():
+    """Backward compatibility: legacy core_config.json files lack the ttsModelProvider key."""
+    snapshot = {
+        "ENABLE_CUSTOM_API": True,
+        "GPTSOVITS_ENABLED": False,
+        # 故意不写 ttsModelProvider
+    }
+    assert LLMSessionManager._is_vllm_omni_tts_enabled(snapshot) is False
+
+
+def test_is_vllm_omni_tts_enabled_returns_false_for_empty_string():
+    """When the frontend clears the select, an empty string is written and must not trigger vllm_omni routing."""
+    snapshot = {
+        "ENABLE_CUSTOM_API": True,
+        "ttsModelProvider": "",
+        "GPTSOVITS_ENABLED": False,
+    }
+    assert LLMSessionManager._is_vllm_omni_tts_enabled(snapshot) is False
+
+
+def test_is_vllm_omni_tts_enabled_parses_string_false():
+    snapshot = {
+        "ENABLE_CUSTOM_API": "false",
+        "ttsModelProvider": "vllm_omni",
+        "GPTSOVITS_ENABLED": False,
+    }
+    assert LLMSessionManager._is_vllm_omni_tts_enabled(snapshot) is False
+
+
+def test_session_use_tts_ignores_stale_vllm_when_custom_api_string_false():
+    mgr = _make_mgr("Puck")
+    realtime_config = {"base_url": "https://generativelanguage.googleapis.com"}
+    assert (
+        LLMSessionManager._resolve_session_use_tts(
+            mgr,
+            "audio",
+            realtime_config,
+            {
+                "ENABLE_CUSTOM_API": "false",
+                "ttsModelProvider": "vllm_omni",
+                "ttsVoiceId": "Puck",
+                "GPTSOVITS_ENABLED": False,
+            },
+        )
+        is False
+    )
+
+
+def test_is_vllm_omni_tts_enabled_is_case_sensitive():
+    """The provider key comparison is case-sensitive: VLLM_OMNI / Vllm_Omni must not be recognised as vllm_omni."""
+    for variant in ("VLLM_OMNI", "Vllm_Omni", "vLLM_omni"):
+        snapshot = {
+            "ENABLE_CUSTOM_API": True,
+            "ttsModelProvider": variant,
+            "GPTSOVITS_ENABLED": False,
+        }
+        assert LLMSessionManager._is_vllm_omni_tts_enabled(snapshot) is False, \
+            f"variant={variant!r} 应返回 False（区分大小写）"
+
+
+def test_is_vllm_omni_tts_enabled_strips_whitespace():
+    """The frontend may persist values with surrounding whitespace; the helper must still recognise them."""
+    snapshot = {
+        "ENABLE_CUSTOM_API": True,
+        "ttsModelProvider": "  vllm_omni  ",
+        "GPTSOVITS_ENABLED": False,
+    }
+    assert LLMSessionManager._is_vllm_omni_tts_enabled(snapshot) is True
+
+
+def test_livestream_overrides_vllm_omni_tts_routing(monkeypatch):
+    """Livestream mode must short-circuit before the vllm_omni external-TTS branch is selected."""
+    mgr = _make_mgr("Puck")
+    monkeypatch.setattr(
+        LLMSessionManager,
+        "_is_livestream_active",
+        lambda self: True,
+    )
+    realtime_config = {"base_url": "https://generativelanguage.googleapis.com"}
+    snapshot = {
+        "ENABLE_CUSTOM_API": True,
+        "ttsModelProvider": "vllm_omni",
+        "ttsVoiceId": "Puck",
+        "GPTSOVITS_ENABLED": False,
+    }
+    # livestream 早退分支优先（core.py:3786 先于 vllm_omni 检测）
+    assert (
+        LLMSessionManager._resolve_session_use_tts(
+            mgr, "audio", realtime_config, snapshot,
+        )
+        is False
+    )

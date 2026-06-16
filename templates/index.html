@@ -307,6 +307,9 @@
     <div id="mmd-container" style="display: none;">
         <canvas id="mmd-canvas"></canvas>
     </div>
+    <div id="pngtuber-container" style="display: none;">
+        <img class="pngtuber-image" alt="PNGTuber avatar" draggable="false">
+    </div>
 
     <!-- 存储位置首屏哨兵需要尽早建立启动屏障，避免模型与主业务先行初始化 -->
     <script src="/static/app-storage-location.js?v={{ static_asset_version }}"></script>
@@ -328,6 +331,8 @@
     <script src="/static/avatar-ui-popup-config.js?v={{ static_asset_version }}"></script>
     <script src="/static/avatar-ui-buttons.js?v={{ static_asset_version }}"></script>
     <script src="/static/live2d-ui-buttons.js?v={{ static_asset_version }}"></script>
+    <script src="/static/pngtuber-core.js?v={{ static_asset_version }}"></script>
+    <script src="/static/neko-tooltip.js?v={{ static_asset_version }}"></script>
     <script src="/static/common-ui-hud.js?v={{ static_asset_version }}"></script>
     <script src="/static/avatar-ui-drag.js?v={{ static_asset_version }}"></script>
     <script src="/static/live2d-init.js?v={{ static_asset_version }}"></script>
@@ -397,6 +402,7 @@
     <script src="/static/app-autostart-prompt.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/character_personality_onboarding.js?v={{ static_asset_version }}"></script>
     <script src="/static/app.js?v={{ static_asset_version }}"></script>
+    <script src="/static/game/system/game-audio-system.js?v={{ static_asset_version }}"></script>
     <script src="/static/react/neko-chat/neko-chat-window.iife.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app-react-chat-window.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app-chat-export.js?v={{ static_asset_version }}"></script>

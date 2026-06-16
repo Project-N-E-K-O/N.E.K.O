@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 import queue
@@ -190,6 +191,943 @@ def test_get_tts_worker_routes_assist_mimo_to_mimo_worker(monkeypatch):
     assert worker.keywords == {"base_url": "https://api.xiaomimimo.com/v1"}
     assert api_key == "test-mimo-key"
     assert provider_key == "mimo"
+
+
+@pytest.mark.unit
+def test_get_tts_worker_routes_explicit_vllm_before_assist_mimo(monkeypatch):
+    class _CM:
+        def get_core_config(self):
+            return {
+                "assistApi": "mimo",
+                "OPENROUTER_URL": "https://api.xiaomimimo.com/v1",
+                "TTS_PROVIDER": "",
+                "ENABLE_CUSTOM_API": True,
+                "GPTSOVITS_ENABLED": False,
+            }
+
+        def load_json_config(self, filename, default):
+            assert filename == "core_config.json"
+            return {
+                "ttsModelProvider": "vllm_omni",
+                "ttsModelUrl": "http://localhost:8091",
+                "ttsModelId": "Qwen3-TTS",
+                "ttsVoiceId": "global-vllm-voice",
+                "ttsModelApiKey": "",
+            }
+
+        def get_model_api_config(self, model_type):
+            assert model_type == "tts_custom"
+            return {"is_custom": False, "base_url": "https://fallback.invalid"}
+
+        def get_tts_api_key(self, provider):
+            pytest.fail("explicit vllm_omni should bypass assistApi=mimo fallback")
+
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM())
+
+    worker, api_key, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen",
+        has_custom_voice=False,
+        voice_id="",
+    )
+
+    assert isinstance(worker, partial)
+    assert worker.func is tts_client.vllm_omni_tts_worker
+    assert worker.keywords == {
+        "base_url": "http://localhost:8091",
+        "model": "Qwen3-TTS",
+        "voice": "global-vllm-voice",
+    }
+    assert api_key == ""
+    assert provider_key == "vllm_omni"
+
+
+@pytest.mark.unit
+def test_get_tts_worker_routes_explicit_vllm_before_cloned_voice(monkeypatch):
+    class _CM:
+        def get_core_config(self):
+            return {
+                "assistApi": "qwen",
+                "TTS_PROVIDER": "",
+                "ENABLE_CUSTOM_API": True,
+                "GPTSOVITS_ENABLED": False,
+            }
+
+        def load_json_config(self, filename, default):
+            assert filename == "core_config.json"
+            return {
+                "ttsModelProvider": "vllm_omni",
+                "ttsModelUrl": "http://localhost:8091",
+                "ttsModelId": "Qwen3-TTS",
+                "ttsVoiceId": "global-vllm-voice",
+                "ttsModelApiKey": "vllm-key",
+            }
+
+        def get_model_api_config(self, model_type):
+            assert model_type == "tts_custom"
+            return {"is_custom": False, "base_url": "https://fallback.invalid"}
+
+        def get_tts_api_key(self, provider):
+            pytest.fail("explicit vllm_omni should bypass cloned voice providers")
+
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM())
+    monkeypatch.setattr(
+        tts_client,
+        "_get_voice_meta",
+        lambda voice_id: pytest.fail("explicit vllm_omni should run before voice metadata lookup"),
+    )
+
+    worker, api_key, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen",
+        has_custom_voice=True,
+        voice_id="cloned-voice",
+    )
+
+    assert isinstance(worker, partial)
+    assert worker.func is tts_client.vllm_omni_tts_worker
+    assert worker.keywords == {
+        "base_url": "http://localhost:8091",
+        "model": "Qwen3-TTS",
+        "voice": "global-vllm-voice",
+    }
+    assert api_key == "vllm-key"
+    assert provider_key == "vllm_omni"
+
+
+@pytest.mark.unit
+def test_get_tts_worker_keeps_normalized_fallbacks_out_of_vllm(monkeypatch):
+    class _CM:
+        def get_core_config(self):
+            return {
+                "assistApi": "qwen",
+                "TTS_PROVIDER": "",
+                "ENABLE_CUSTOM_API": True,
+                "GPTSOVITS_ENABLED": False,
+                "TTS_MODEL": "qwen3-tts-flash-realtime-2025-11-27",
+                "TTS_MODEL_API_KEY": "assist-key",
+                "TTS_VOICE_ID": "assistant-voice",
+            }
+
+        def load_json_config(self, filename, default):
+            assert filename == "core_config.json"
+            return {
+                "ttsModelProvider": "vllm_omni",
+                "ttsModelUrl": "",
+                "ttsModelId": "",
+                "ttsVoiceId": "",
+            }
+
+        def get_model_api_config(self, model_type):
+            assert model_type == "tts_custom"
+            return {
+                "is_custom": False,
+                "base_url": "https://assist.invalid/v1",
+                "api_key": "custom-key",
+            }
+
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM())
+
+    worker, api_key, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen",
+        has_custom_voice=False,
+        voice_id="",
+    )
+
+    assert isinstance(worker, partial)
+    assert worker.func is tts_client.vllm_omni_tts_worker
+    assert worker.keywords == {
+        "base_url": tts_client.VLLM_OMNI_DEFAULT_BASE_URL,
+        "model": tts_client.VLLM_OMNI_DEFAULT_MODEL,
+        "voice": "default",
+    }
+    assert api_key == ""
+    assert provider_key == "vllm_omni"
+
+
+@pytest.mark.unit
+def test_get_tts_worker_ignores_stale_vllm_when_custom_api_disabled(monkeypatch):
+    class _CM:
+        def get_core_config(self):
+            return {
+                "assistApi": "qwen",
+                "TTS_PROVIDER": "",
+                "ENABLE_CUSTOM_API": False,
+                "GPTSOVITS_ENABLED": False,
+            }
+
+        def load_json_config(self, filename, default):
+            assert filename == "core_config.json"
+            return {
+                "ttsModelProvider": "vllm_omni",
+                "ttsModelUrl": "http://stale-vllm.local",
+                "ttsModelId": "Qwen3-TTS",
+                "ttsVoiceId": "stale-voice",
+            }
+
+        def get_model_api_config(self, model_type):
+            assert model_type == "tts_custom"
+            return {"is_custom": False, "base_url": "https://fallback.invalid"}
+
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM())
+
+    worker, _, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen",
+        has_custom_voice=False,
+        voice_id="",
+    )
+
+    assert provider_key != "vllm_omni"
+    assert not (isinstance(worker, partial) and worker.func is tts_client.vllm_omni_tts_worker)
+
+
+@pytest.mark.unit
+def test_get_tts_worker_ignores_stale_vllm_when_custom_api_string_false(monkeypatch):
+    class _CM:
+        def get_core_config(self):
+            return {
+                "assistApi": "qwen",
+                "TTS_PROVIDER": "",
+                "ENABLE_CUSTOM_API": "false",
+                "GPTSOVITS_ENABLED": False,
+            }
+
+        def load_json_config(self, filename, default):
+            assert filename == "core_config.json"
+            return {
+                "ttsModelProvider": "vllm_omni",
+                "ttsModelUrl": "http://stale-vllm.local",
+                "ttsModelId": "Qwen3-TTS",
+                "ttsVoiceId": "stale-voice",
+            }
+
+        def get_model_api_config(self, model_type):
+            assert model_type == "tts_custom"
+            return {"is_custom": False, "base_url": "https://fallback.invalid"}
+
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM())
+
+    worker, _, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen",
+        has_custom_voice=False,
+        voice_id="",
+    )
+
+    assert provider_key != "vllm_omni"
+    assert not (isinstance(worker, partial) and worker.func is tts_client.vllm_omni_tts_worker)
+
+
+@pytest.mark.unit
+def test_get_tts_worker_keeps_gptsovits_ahead_of_explicit_vllm(monkeypatch):
+    class _CM:
+        def get_core_config(self):
+            return {
+                "assistApi": "qwen",
+                "TTS_PROVIDER": "",
+                "GPTSOVITS_ENABLED": True,
+            }
+
+        def load_json_config(self, filename, default):
+            assert filename == "core_config.json"
+            return {"ttsModelProvider": "vllm_omni"}
+
+        def get_model_api_config(self, model_type):
+            assert model_type == "tts_custom"
+            return {"is_custom": True, "base_url": "http://gsv.local"}
+
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM())
+
+    worker, api_key, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen",
+        has_custom_voice=False,
+        voice_id="",
+    )
+
+    assert worker is tts_client.gptsovits_tts_worker
+    assert api_key is None
+    assert provider_key == "gptsovits"
+
+
+@pytest.mark.unit
+def test_vllm_omni_worker_prefers_character_voice_over_provider_fallback(monkeypatch):
+    sent_messages = []
+
+    class _FakeWS:
+        async def send(self, payload):
+            sent_messages.append(json.loads(payload))
+
+        async def close(self):
+            pass
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await asyncio.sleep(60)
+            raise StopAsyncIteration
+
+    async def _connect(*args, **kwargs):
+        return _FakeWS()
+
+    monkeypatch.setattr(tts_client.websockets, "connect", _connect)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = threading.Thread(
+        target=tts_client.vllm_omni_tts_worker,
+        kwargs={
+            "request_queue": request_queue,
+            "response_queue": response_queue,
+            "audio_api_key": "",
+            "voice_id": "character-voice",
+            "base_url": "http://localhost:8091",
+            "model": "Qwen3-TTS",
+            "voice": "global-default",
+        },
+    )
+    thread.start()
+
+    assert response_queue.get(timeout=3.0) == ("__ready__", True)
+    request_queue.close()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+    assert sent_messages[0]["type"] == "session.config"
+    assert sent_messages[0]["voice"] == "character-voice"
+
+
+@pytest.mark.unit
+def test_vllm_omni_worker_marks_not_ready_on_server_error_event(monkeypatch):
+    class _FakeWS:
+        def __init__(self):
+            self._sent_error = False
+
+        async def send(self, payload):
+            pass
+
+        async def close(self):
+            pass
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self._sent_error:
+                self._sent_error = True
+                return json.dumps({
+                    "type": "error",
+                    "code": "BAD_MODEL",
+                    "message": "invalid model",
+                })
+            await asyncio.sleep(60)
+            raise StopAsyncIteration
+
+    async def _connect(*args, **kwargs):
+        return _FakeWS()
+
+    monkeypatch.setattr(tts_client.websockets, "connect", _connect)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = threading.Thread(
+        target=tts_client.vllm_omni_tts_worker,
+        kwargs={
+            "request_queue": request_queue,
+            "response_queue": response_queue,
+            "audio_api_key": "",
+            "voice_id": "",
+            "base_url": "http://localhost:8091",
+            "model": "bad-model",
+            "voice": "global-default",
+        },
+    )
+    thread.start()
+
+    _, seen = _wait_for_queue_item(
+        response_queue,
+        lambda item: item == ("__ready__", False),
+        timeout=3.0,
+    )
+    request_queue.close()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+    assert ("__ready__", True) in seen
+    assert any(
+        isinstance(item, tuple)
+        and item[0] == "__error__"
+        and "BAD_MODEL" in str(item[1])
+        for item in seen
+    )
+
+
+@pytest.mark.unit
+def test_vllm_omni_worker_marks_not_ready_when_socket_closes_before_session_done(monkeypatch):
+    class _FakeWS:
+        def __init__(self):
+            self.done_sent = False
+
+        async def send(self, payload):
+            event = json.loads(payload)
+            if event.get("type") == "input.done":
+                self.done_sent = True
+
+        async def close(self):
+            pass
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            while not self.done_sent:
+                await asyncio.sleep(0.01)
+            raise tts_client.websockets.exceptions.ConnectionClosedError(None, None)
+
+    async def _connect(*args, **kwargs):
+        return _FakeWS()
+
+    monkeypatch.setattr(tts_client.websockets, "connect", _connect)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = threading.Thread(
+        target=tts_client.vllm_omni_tts_worker,
+        kwargs={
+            "request_queue": request_queue,
+            "response_queue": response_queue,
+            "audio_api_key": "",
+            "voice_id": "",
+            "base_url": "http://localhost:8091",
+            "model": "Qwen3-TTS",
+            "voice": "global-default",
+        },
+    )
+    thread.start()
+
+    assert response_queue.get(timeout=3.0) == ("__ready__", True)
+    request_queue.put(("sid-a", "hello"))
+    request_queue.put((None, None))
+    _, seen = _wait_for_queue_item(
+        response_queue,
+        lambda item: item == ("__ready__", False),
+        timeout=3.0,
+    )
+    request_queue.close()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+    assert any(
+        isinstance(item, tuple)
+        and item[0] == "__error__"
+        and "TTS_CONNECTION_FAILED" in str(item[1])
+        for item in seen
+    )
+
+
+@pytest.mark.unit
+def test_vllm_omni_worker_reports_initial_connection_failure(monkeypatch):
+    async def _connect(*args, **kwargs):
+        raise OSError("server unavailable")
+
+    monkeypatch.setattr(tts_client.websockets, "connect", _connect)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = threading.Thread(
+        target=tts_client.vllm_omni_tts_worker,
+        kwargs={
+            "request_queue": request_queue,
+            "response_queue": response_queue,
+            "audio_api_key": "",
+            "voice_id": "",
+            "base_url": "http://localhost:8091",
+            "model": "Qwen3-TTS",
+            "voice": "global-default",
+        },
+    )
+    thread.start()
+
+    _, seen = _wait_for_queue_item(
+        response_queue,
+        lambda item: item == ("__ready__", False),
+        timeout=3.0,
+    )
+    request_queue.close()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+    assert any(
+        isinstance(item, tuple)
+        and item[0] == "__error__"
+        and "TTS_CONNECTION_FAILED" in str(item[1])
+        for item in seen
+    )
+
+
+@pytest.mark.unit
+def test_vllm_omni_worker_rebuilds_when_sid_changes_after_flush(monkeypatch):
+    connections = []
+
+    class _FakeWS:
+        def __init__(self):
+            self.messages = []
+
+        async def send(self, payload):
+            self.messages.append(json.loads(payload))
+
+        async def close(self):
+            pass
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await asyncio.sleep(60)
+            raise StopAsyncIteration
+
+    async def _connect(*args, **kwargs):
+        ws = _FakeWS()
+        connections.append(ws)
+        return ws
+
+    def _wait_until(predicate, timeout=3.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if predicate():
+                return
+            time.sleep(0.01)
+        raise AssertionError("condition was not reached")
+
+    monkeypatch.setattr(tts_client.websockets, "connect", _connect)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = threading.Thread(
+        target=tts_client.vllm_omni_tts_worker,
+        kwargs={
+            "request_queue": request_queue,
+            "response_queue": response_queue,
+            "audio_api_key": "",
+            "voice_id": "",
+            "base_url": "http://localhost:8091",
+            "model": "Qwen3-TTS",
+            "voice": "global-default",
+        },
+    )
+    thread.start()
+
+    assert response_queue.get(timeout=3.0) == ("__ready__", True)
+    request_queue.put(("sid-a", "hello"))
+    _wait_until(lambda: len(connections[0].messages) >= 2)
+    request_queue.put((None, None))
+    _wait_until(lambda: any(msg.get("type") == "input.done" for msg in connections[0].messages))
+    request_queue.put(("sid-b", "world"))
+    _wait_until(lambda: len(connections) >= 2 and len(connections[1].messages) >= 2)
+    request_queue.close()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+    assert [msg["type"] for msg in connections[0].messages] == [
+        "session.config",
+        "input.text",
+        "input.done",
+    ]
+    assert connections[0].messages[1]["text"] == "hello"
+    assert [msg["type"] for msg in connections[1].messages[:2]] == [
+        "session.config",
+        "input.text",
+    ]
+    assert connections[1].messages[1]["text"] == "world"
+
+
+@pytest.mark.unit
+def test_vllm_omni_worker_rebuilds_when_sid_changes_before_flush(monkeypatch):
+    connections = []
+
+    class _FakeWS:
+        def __init__(self):
+            self.messages = []
+
+        async def send(self, payload):
+            self.messages.append(json.loads(payload))
+
+        async def close(self):
+            pass
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await asyncio.sleep(60)
+            raise StopAsyncIteration
+
+    async def _connect(*args, **kwargs):
+        ws = _FakeWS()
+        connections.append(ws)
+        return ws
+
+    def _wait_until(predicate, timeout=3.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if predicate():
+                return
+            time.sleep(0.01)
+        raise AssertionError("condition was not reached")
+
+    monkeypatch.setattr(tts_client.websockets, "connect", _connect)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = threading.Thread(
+        target=tts_client.vllm_omni_tts_worker,
+        kwargs={
+            "request_queue": request_queue,
+            "response_queue": response_queue,
+            "audio_api_key": "",
+            "voice_id": "",
+            "base_url": "http://localhost:8091",
+            "model": "Qwen3-TTS",
+            "voice": "global-default",
+        },
+    )
+    thread.start()
+
+    assert response_queue.get(timeout=3.0) == ("__ready__", True)
+    request_queue.put(("sid-a", "hello"))
+    _wait_until(lambda: len(connections[0].messages) >= 2)
+    request_queue.put(("sid-b", "world"))
+    _wait_until(lambda: len(connections) >= 2 and len(connections[1].messages) >= 2)
+    request_queue.close()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+    assert [msg["type"] for msg in connections[0].messages] == [
+        "session.config",
+        "input.text",
+    ]
+    assert connections[0].messages[1]["text"] == "hello"
+    assert [msg["type"] for msg in connections[1].messages[:2]] == [
+        "session.config",
+        "input.text",
+    ]
+    assert connections[1].messages[1]["text"] == "world"
+
+
+@pytest.mark.unit
+def test_vllm_omni_worker_replays_pending_text_after_same_sid_reconnect(monkeypatch):
+    connections = []
+
+    class _FakeWS:
+        def __init__(self):
+            self.messages = []
+            self._drop_after_text = asyncio.Event()
+            self.failed = False
+
+        async def send(self, payload):
+            event = json.loads(payload)
+            self.messages.append(event)
+            if len(connections) == 1 and event.get("type") == "input.text":
+                self._drop_after_text.set()
+
+        async def close(self):
+            pass
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await self._drop_after_text.wait()
+            await asyncio.sleep(0)
+            self.failed = True
+            raise RuntimeError("socket dropped mid-stream")
+
+    async def _connect(*args, **kwargs):
+        ws = _FakeWS()
+        connections.append(ws)
+        return ws
+
+    def _wait_until(predicate, timeout=3.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if predicate():
+                return
+            time.sleep(0.01)
+        raise AssertionError("condition was not reached")
+
+    monkeypatch.setattr(tts_client.websockets, "connect", _connect)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = threading.Thread(
+        target=tts_client.vllm_omni_tts_worker,
+        kwargs={
+            "request_queue": request_queue,
+            "response_queue": response_queue,
+            "audio_api_key": "",
+            "voice_id": "",
+            "base_url": "http://localhost:8091",
+            "model": "Qwen3-TTS",
+            "voice": "global-default",
+        },
+    )
+    thread.start()
+
+    assert response_queue.get(timeout=3.0) == ("__ready__", True)
+    request_queue.put(("sid-a", "hello"))
+    _wait_until(lambda: connections and connections[0].failed)
+    request_queue.put(("sid-a", " world"))
+    _wait_until(lambda: len(connections) >= 2 and len(connections[1].messages) >= 3)
+    request_queue.close()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+    assert [msg["type"] for msg in connections[1].messages[:3]] == [
+        "session.config",
+        "input.text",
+        "input.text",
+    ]
+    assert connections[1].messages[1]["text"] == "hello"
+    assert connections[1].messages[2]["text"] == " world"
+
+
+@pytest.mark.unit
+def test_vllm_omni_worker_marks_not_ready_when_reconnect_fails(monkeypatch):
+    calls = {"connect": 0}
+
+    class _FakeWS:
+        async def send(self, payload):
+            pass
+
+        async def close(self):
+            pass
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await asyncio.sleep(60)
+            raise StopAsyncIteration
+
+    async def _connect(*args, **kwargs):
+        calls["connect"] += 1
+        if calls["connect"] > 1:
+            raise OSError("server unavailable")
+        return _FakeWS()
+
+    monkeypatch.setattr(tts_client.websockets, "connect", _connect)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = threading.Thread(
+        target=tts_client.vllm_omni_tts_worker,
+        kwargs={
+            "request_queue": request_queue,
+            "response_queue": response_queue,
+            "audio_api_key": "",
+            "voice_id": "",
+            "base_url": "http://localhost:8091",
+            "model": "Qwen3-TTS",
+            "voice": "global-default",
+        },
+    )
+    thread.start()
+
+    assert response_queue.get(timeout=3.0) == ("__ready__", True)
+    request_queue.put(("__interrupt__", None))
+    request_queue.put(("sid-a", "hello"))
+    _, seen = _wait_for_queue_item(
+        response_queue,
+        lambda item: item == ("__ready__", False),
+        timeout=3.0,
+    )
+    request_queue.close()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+    assert any(
+        isinstance(item, tuple)
+        and item[0] == "__error__"
+        and "TTS_CONNECTION_FAILED" in str(item[1])
+        for item in seen
+    )
+
+
+@pytest.mark.unit
+def test_vllm_omni_worker_marks_not_ready_when_flush_reconnect_fails(monkeypatch):
+    calls = {"connect": 0}
+    sent_messages = []
+
+    class _FakeWS:
+        async def send(self, payload):
+            event = json.loads(payload)
+            sent_messages.append(event)
+            if event.get("type") == "input.done":
+                raise OSError("flush failed")
+
+        async def close(self):
+            pass
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await asyncio.sleep(60)
+            raise StopAsyncIteration
+
+    async def _connect(*args, **kwargs):
+        calls["connect"] += 1
+        if calls["connect"] > 1:
+            raise OSError("server unavailable")
+        return _FakeWS()
+
+    def _wait_until(predicate, timeout=3.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if predicate():
+                return
+            time.sleep(0.01)
+        raise AssertionError("condition was not reached")
+
+    monkeypatch.setattr(tts_client.websockets, "connect", _connect)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = threading.Thread(
+        target=tts_client.vllm_omni_tts_worker,
+        kwargs={
+            "request_queue": request_queue,
+            "response_queue": response_queue,
+            "audio_api_key": "",
+            "voice_id": "",
+            "base_url": "http://localhost:8091",
+            "model": "Qwen3-TTS",
+            "voice": "global-default",
+        },
+    )
+    thread.start()
+
+    assert response_queue.get(timeout=3.0) == ("__ready__", True)
+    request_queue.put(("sid-a", "hello"))
+    _wait_until(lambda: any(item.get("type") == "input.text" for item in sent_messages))
+    request_queue.put((None, None))
+    _, seen = _wait_for_queue_item(
+        response_queue,
+        lambda item: item == ("__ready__", False),
+        timeout=3.0,
+    )
+    request_queue.close()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+    assert calls["connect"] == 2
+    assert [item["type"] for item in sent_messages] == [
+        "session.config",
+        "input.text",
+        "input.done",
+    ]
+    assert any(
+        isinstance(item, tuple)
+        and item[0] == "__error__"
+        and "TTS_CONNECTION_FAILED" in str(item[1])
+        for item in seen
+    )
+
+
+@pytest.mark.unit
+def test_vllm_omni_worker_marks_not_ready_when_pending_replay_fails(monkeypatch):
+    connections = []
+
+    class _FakeWS:
+        def __init__(self, index):
+            self.index = index
+            self.messages = []
+
+        async def send(self, payload):
+            event = json.loads(payload)
+            self.messages.append(event)
+            if (
+                self.index == 0
+                and event.get("type") == "input.text"
+                and event.get("text") == "new"
+            ):
+                raise OSError("send current failed")
+            if (
+                self.index == 1
+                and event.get("type") == "input.text"
+                and event.get("text") == "old"
+            ):
+                raise OSError("replay failed")
+
+        async def close(self):
+            pass
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await asyncio.sleep(60)
+            raise StopAsyncIteration
+
+    async def _connect(*args, **kwargs):
+        ws = _FakeWS(len(connections))
+        connections.append(ws)
+        return ws
+
+    def _wait_until(predicate, timeout=3.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if predicate():
+                return
+            time.sleep(0.01)
+        raise AssertionError("condition was not reached")
+
+    monkeypatch.setattr(tts_client.websockets, "connect", _connect)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = threading.Thread(
+        target=tts_client.vllm_omni_tts_worker,
+        kwargs={
+            "request_queue": request_queue,
+            "response_queue": response_queue,
+            "audio_api_key": "",
+            "voice_id": "",
+            "base_url": "http://localhost:8091",
+            "model": "Qwen3-TTS",
+            "voice": "global-default",
+        },
+    )
+    thread.start()
+
+    assert response_queue.get(timeout=3.0) == ("__ready__", True)
+    request_queue.put(("sid-a", "old"))
+    _wait_until(lambda: len(connections[0].messages) >= 2)
+    request_queue.put(("sid-a", "new"))
+    _, seen = _wait_for_queue_item(
+        response_queue,
+        lambda item: item == ("__ready__", False),
+        timeout=3.0,
+    )
+    request_queue.close()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+    assert [item["type"] for item in connections[0].messages] == [
+        "session.config",
+        "input.text",
+        "input.text",
+    ]
+    assert connections[0].messages[1]["text"] == "old"
+    assert connections[0].messages[2]["text"] == "new"
+    assert [item["type"] for item in connections[1].messages] == [
+        "session.config",
+        "input.text",
+    ]
+    assert connections[1].messages[1]["text"] == "old"
+    assert any(
+        isinstance(item, tuple)
+        and item[0] == "__error__"
+        and "TTS_CONNECTION_FAILED" in str(item[1])
+        for item in seen
+    )
 
 
 @pytest.mark.unit

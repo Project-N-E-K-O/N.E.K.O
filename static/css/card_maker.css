@@ -157,7 +157,8 @@ body {
 
 #model-viewport #live2d-container,
 #model-viewport #vrm-container,
-#model-viewport #mmd-container {
+#model-viewport #mmd-container,
+#model-viewport #pngtuber-container {
     position: absolute;
     inset: 0;
     width: 100%;
@@ -168,6 +169,19 @@ body {
     width: 100%;
     height: 100%;
     display: block;
+}
+
+#model-viewport #pngtuber-container .pngtuber-image {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+    pointer-events: none;
+}
+
+#model-viewport #pngtuber-container .pngtuber-layered-canvas {
+    width: 100%;
+    height: 100%;
 }
 
 /* --- 左侧：卡片预览与编辑区域 --- */

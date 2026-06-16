@@ -370,6 +370,18 @@
             }
         } finally {
             inFlight = false;
+            // 排空响应体，立即释放 fetch 响应的 Mojo 数据管道共享缓冲（默认容量 ~2MB）。
+            // 成功路径（resp.ok）与多数失败路径都从不读 body，而 isCsrfValidationFailure
+            // 对非 403 直接 return false 也不读 —— 未消费的响应体会让该数据管道一直占着
+            // MEM_MAPPED 直到 GC。每 5s 心跳漏一块 ~2MB，挂机数小时 committed 涨到 10G+
+            // （renderer 私有提交 / 任务管理器「提交大小」/ DevTools heap snapshot 都看
+            // 不到，只在系统 commit charge 上暴涨，需 VirtualQueryEx 按 MEM_MAPPED 口径才
+            // 量得到）。用 body.cancel() 不读内容直接释放管道；bodyUsed 守卫避免重复消费。
+            try {
+                if (typeof resp !== 'undefined' && resp && resp.body && !resp.bodyUsed) {
+                    resp.body.cancel();
+                }
+            } catch (_) { /* 已消费 / 无 body / 环境不支持，忽略 */ }
         }
     }
 

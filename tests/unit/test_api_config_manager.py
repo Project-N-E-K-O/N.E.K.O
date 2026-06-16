@@ -1124,5 +1124,244 @@ class TestFollowProviderNotLocal:
         assert rt['is_custom'] is True
 
 
+# ---------------------------------------------------------------------------
+# PR #1764 reviews #3403710558 / #3404339374: get_core_config() 必须把
+# vLLM-Omni TTS raw camelCase key 透传到 normalized snapshot，否则
+# main_logic/core.py 的路由检测和 runtime key 拿不到用户保存字段。
+# ---------------------------------------------------------------------------
+class TestVllmOmniRawKeyPassthrough:
+
+    @pytest.mark.unit
+    def test_ttsModelProvider_passes_through_to_snapshot(self, config_manager):
+        """When the user writes ttsModelProvider=vllm_omni in core_config.json,
+        the snapshot must carry the same raw key."""
+        _write_core_config(config_manager, {
+            'coreApi': 'gemini',
+            'assistApi': 'gemini',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'vllm_omni',
+            'ttsModelUrl': 'http://localhost:8091',
+            'ttsModelId': 'Qwen3-TTS',
+            'ttsVoiceId': 'Puck',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg.get('ttsModelProvider') == 'vllm_omni', \
+            f"snapshot 应透传 ttsModelProvider=vllm_omni，实际={cfg.get('ttsModelProvider')!r}"
+        assert cfg.get('ttsModelUrl') == 'http://localhost:8091', \
+            f"snapshot 应透传 ttsModelUrl，实际={cfg.get('ttsModelUrl')!r}"
+        assert cfg.get('ttsModelId') == 'Qwen3-TTS', \
+            f"snapshot 应透传 ttsModelId，实际={cfg.get('ttsModelId')!r}"
+        assert cfg.get('ttsVoiceId') == 'Puck', \
+            f"snapshot 应透传 ttsVoiceId=Puck，实际={cfg.get('ttsVoiceId')!r}"
+
+    @pytest.mark.unit
+    def test_missing_raw_keys_default_to_empty_string(self, config_manager):
+        """Legacy core_config.json files lack vLLM raw TTS keys; the
+        snapshot must still expose them with empty-string defaults
+        (backward compatibility)."""
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg.get('ttsModelProvider') == '', \
+            f"缺失时应兜底为空串，实际={cfg.get('ttsModelProvider')!r}"
+        assert cfg.get('ttsModelUrl') == '', \
+            f"缺失时应兜底为空串，实际={cfg.get('ttsModelUrl')!r}"
+        assert cfg.get('ttsModelId') == '', \
+            f"缺失时应兜底为空串，实际={cfg.get('ttsModelId')!r}"
+        assert cfg.get('ttsVoiceId') == '', \
+            f"缺失时应兜底为空串，实际={cfg.get('ttsVoiceId')!r}"
+        # 关键：这些 key 必须存在于 dict 中（即使值为空串），
+        # 否则 _is_vllm_omni_tts_enabled 的 .get() 会返回 None 触发 .strip() 链路异常
+        assert 'ttsModelProvider' in cfg
+        assert 'ttsModelUrl' in cfg
+        assert 'ttsModelId' in cfg
+        assert 'ttsVoiceId' in cfg
+
+    @pytest.mark.unit
+    def test_none_value_in_raw_config_normalized_to_empty_string(self, config_manager):
+        """When core_config.json is hand-edited to a null value, the snapshot
+        must coerce None to an empty string so downstream .strip() does not
+        raise AttributeError."""
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'ttsModelProvider': None,
+            'ttsModelUrl': None,
+            'ttsModelId': None,
+            'ttsVoiceId': None,
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg.get('ttsModelProvider') == '', \
+            f"None 应兜底为空串，实际={cfg.get('ttsModelProvider')!r}"
+        assert cfg.get('ttsModelUrl') == '', \
+            f"None 应兜底为空串，实际={cfg.get('ttsModelUrl')!r}"
+        assert cfg.get('ttsModelId') == '', \
+            f"None 应兜底为空串，实际={cfg.get('ttsModelId')!r}"
+        assert cfg.get('ttsVoiceId') == '', \
+            f"None 应兜底为空串，实际={cfg.get('ttsVoiceId')!r}"
+        # 验证下游真实消费方不会抛 AttributeError
+        from main_logic.core import LLMSessionManager
+        assert LLMSessionManager._is_vllm_omni_tts_enabled(cfg) is False
+
+    @pytest.mark.unit
+    def test_snapshot_drives_is_vllm_omni_tts_enabled(self, config_manager):
+        """End-to-end: when core_config.json has ttsModelProvider=vllm_omni and
+        enableCustomApi=True, the snapshot returned by get_core_config() must
+        make _is_vllm_omni_tts_enabled return True. This is the core contract
+        from codex review #3403710558."""
+        from main_logic.core import LLMSessionManager
+        _write_core_config(config_manager, {
+            'coreApi': 'gemini',
+            'assistApi': 'gemini',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'vllm_omni',
+            'ttsVoiceId': 'Puck',
+        })
+        cfg = config_manager.get_core_config()
+        assert LLMSessionManager._is_vllm_omni_tts_enabled(cfg) is True, \
+            "snapshot 透传 ttsModelProvider 后，_is_vllm_omni_tts_enabled 应返回 True"
+
+    @pytest.mark.unit
+    def test_snapshot_disabled_when_custom_api_off(self, config_manager):
+        """When enableCustomApi is off, ttsModelProvider=vllm_omni still stays disabled."""
+        from main_logic.core import LLMSessionManager
+        _write_core_config(config_manager, {
+            'coreApi': 'gemini',
+            'assistApi': 'gemini',
+            'enableCustomApi': False,
+            'ttsModelProvider': 'vllm_omni',
+            'ttsVoiceId': 'Puck',
+        })
+        cfg = config_manager.get_core_config()
+        assert LLMSessionManager._is_vllm_omni_tts_enabled(cfg) is False
+
+    @pytest.mark.unit
+    def test_vllm_omni_selection_uses_strict_boolean_parsing(self):
+        from utils.config_manager import ConfigManager
+
+        assert ConfigManager._is_vllm_omni_tts_selected({
+            'ENABLE_CUSTOM_API': 'false',
+            'ttsModelProvider': 'vllm_omni',
+        }) is False
+        assert ConfigManager._is_vllm_omni_tts_selected({
+            'ENABLE_CUSTOM_API': '0',
+            'ttsModelProvider': 'vllm_omni',
+        }) is False
+        assert ConfigManager._is_vllm_omni_tts_selected({
+            'ENABLE_CUSTOM_API': 'true',
+            'ttsModelProvider': 'vllm_omni',
+        }) is True
+
+    @pytest.mark.unit
+    def test_vllm_omni_voice_ids_are_valid_while_provider_selected(self, config_manager):
+        """vLLM voice names are provider-local strings and are not stored clone IDs."""
+        _write_core_config(config_manager, {
+            'coreApi': 'gemini',
+            'assistApi': 'gemini',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'vllm_omni',
+            'ttsModelUrl': 'ws://localhost:8091/v1',
+            'ttsModelId': 'Qwen3-TTS',
+        })
+
+        assert config_manager.validate_voice_id('speaker-from-vllm-server') is True
+
+    @pytest.mark.unit
+    def test_vllm_omni_keeps_custom_tts_adapter_rejections(self, config_manager, monkeypatch):
+        """Provider-local voices are allowed only after custom TTS prefixes are rejected or accepted."""
+        _write_core_config(config_manager, {
+            'coreApi': 'gemini',
+            'assistApi': 'gemini',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'vllm_omni',
+            'ttsModelUrl': 'ws://localhost:8091/v1',
+            'ttsModelId': 'Qwen3-TTS',
+        })
+        monkeypatch.setattr(
+            'utils.config_manager.check_custom_tts_voice_allowed',
+            lambda voice_id, _getter: False if voice_id == 'gsv:missing' else None,
+        )
+
+        assert config_manager.validate_voice_id('gsv:missing') is False
+        assert config_manager.validate_voice_id('speaker-from-vllm-server') is True
+
+    @pytest.mark.unit
+    def test_vllm_omni_does_not_expose_or_delete_local_tts_storage(self, config_manager, monkeypatch):
+        _write_core_config(config_manager, {
+            'coreApi': 'gemini',
+            'assistApi': 'gemini',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'vllm_omni',
+            'ttsModelUrl': 'ws://localhost:8091/v1',
+            'ttsModelId': 'Qwen3-TTS',
+        })
+        config_manager.save_voice_storage({
+            '__LOCAL_TTS__': {
+                'local-speaker': {'name': 'Local Speaker'},
+            },
+        })
+
+        def _fake_model_config(model_type):
+            assert model_type == 'tts_custom'
+            return {'is_custom': True, 'base_url': 'ws://localhost:8091/v1', 'api_key': ''}
+
+        monkeypatch.setattr(config_manager, 'get_model_api_config', _fake_model_config)
+
+        assert 'local-speaker' not in config_manager.get_voices_for_current_api(for_listing=True)
+        assert config_manager.delete_voice_for_current_api('local-speaker') is False
+        assert 'local-speaker' in config_manager.load_voice_storage()['__LOCAL_TTS__']
+
+    @pytest.mark.unit
+    def test_cleanup_keeps_vllm_omni_character_voice(self, config_manager):
+        """cleanup_invalid_voice_ids must not clear provider-local vLLM voices."""
+        _write_core_config(config_manager, {
+            'coreApi': 'gemini',
+            'assistApi': 'gemini',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'vllm_omni',
+            'ttsModelUrl': 'ws://localhost:8091/v1',
+            'ttsModelId': 'Qwen3-TTS',
+        })
+        character_data = {
+            '猫娘': {
+                'YUI': {
+                    '昵称': 'YUI',
+                    '_reserved': {'voice_id': 'speaker-from-vllm-server'},
+                }
+            }
+        }
+        saved = {}
+        config_manager.load_characters = lambda: character_data
+        config_manager.save_characters = lambda data: saved.setdefault('data', data)
+
+        cleaned, legacy = config_manager.cleanup_invalid_voice_ids()
+
+        assert cleaned == 0
+        assert legacy == []
+        assert character_data['猫娘']['YUI']['_reserved']['voice_id'] == 'speaker-from-vllm-server'
+        assert saved == {}
+
+    @pytest.mark.unit
+    def test_vllm_omni_tts_slot_does_not_feed_cosyvoice_clone_runtime(self, config_manager):
+        """CosyVoice clone should require Qwen/CosyVoice credentials, not reuse vLLM TTS."""
+        _write_core_config(config_manager, {
+            'coreApi': 'gemini',
+            'assistApi': 'gemini',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'vllm_omni',
+            'ttsModelUrl': 'ws://localhost:8091/v1',
+            'ttsModelId': 'Qwen3-TTS',
+            'ttsModelApiKey': 'sk-vllm-should-not-be-used',
+        })
+
+        runtime = config_manager.get_cosyvoice_clone_runtime('cosyvoice')
+
+        assert runtime['api_key'] == ''
+        assert runtime['base_url'] != 'ws://localhost:8091/v1'
+        assert config_manager.get_tts_api_key('cosyvoice') is None
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

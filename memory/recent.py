@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from utils.config_manager import get_config_manager
 from utils.token_tracker import set_call_type
 from utils.llm_client import SystemMessage, HumanMessage, AIMessage, messages_to_dict, messages_from_dict, create_chat_llm
@@ -43,12 +57,13 @@ REVIEW_FINGERPRINT_CONTENT_PREFIX = 50
 
 
 def _msg_fingerprint(m) -> tuple[str, str]:
-    """归一化一条消息为 (type, content_prefix) 元组用于 fingerprint 比对。
+    """Normalize a message into a (type, content_prefix) tuple for fingerprint comparison.
 
-    支持消息对象（HumanMessage/AIMessage/...）和 dict（持久化 fingerprint）。
-    content 是 list 时（multimodal）拼成 string。content 截断到前
-    REVIEW_FINGERPRINT_CONTENT_PREFIX 字符——只要重启用户没改写已有消息内容，
-    这个前缀稳定。
+    Supports message objects (HumanMessage/AIMessage/...) and dicts (persisted
+    fingerprints). When content is a list (multimodal), it is joined into a
+    string. Content is truncated to the first
+    REVIEW_FINGERPRINT_CONTENT_PREFIX characters — stable across restarts as
+    long as the user doesn't rewrite existing message content.
     """
     if isinstance(m, dict):
         t = m.get('type', '') or ''
@@ -70,7 +85,7 @@ def _msg_fingerprint(m) -> tuple[str, str]:
 
 
 def build_review_fingerprint(snapshot, k: int = REVIEW_FINGERPRINT_K) -> list[dict]:
-    """从 snapshot 末尾取 K 条做 fingerprint，序列化成可 JSON 持久化的 dict 列表。"""
+    """Take the last K messages of the snapshot as the fingerprint, serialized into JSON-persistable dicts."""
     if not snapshot:
         return []
     tail = snapshot[-k:] if len(snapshot) >= k else list(snapshot)
@@ -82,10 +97,11 @@ def build_review_fingerprint(snapshot, k: int = REVIEW_FINGERPRINT_K) -> list[di
 
 
 def _find_fingerprint_position(current: list, fingerprint: list[dict]) -> int | None:
-    """在 current 里找最后一段连续 K 条消息匹配 fingerprint 的位置。
+    """Find, in current, the last run of K consecutive messages matching the fingerprint.
 
-    返回 fingerprint 末位（也就是 cutoff）在 current 里的 index；
-    找不到返回 None。从尾往前搜，多个候选时取最靠后的（最近）。
+    Returns the index in current of the fingerprint's last element (i.e. the
+    cutoff); None when not found. Searches from the tail backwards, taking the
+    rearmost (most recent) of multiple candidates.
     """
     if not current or not fingerprint:
         return None
@@ -100,14 +116,15 @@ def _find_fingerprint_position(current: list, fingerprint: list[dict]) -> int | 
 
 
 def _compute_review_capacity(snapshot: list, current: list) -> tuple[int, int | None]:
-    """给定 review 启动时的 snapshot 和当前 history，算出 (capacity, cutoff_idx)。
+    """Given the snapshot taken at review start and the current history, compute (capacity, cutoff_idx).
 
-    1. 用 snapshot 末尾 K 条做 anchor 在 current 里定位 cutoff_idx。
-    2. 从 cutoff_idx 起逆向走，对比 snapshot[-1], snapshot[-2], ... 与
-       current[cutoff_idx], current[cutoff_idx-1], ... 的连续匹配长度
-       即 capacity（当中间出现压缩 SystemMessage 等"alien"条目时停下）。
+    1. Use the snapshot's last K entries as an anchor to locate cutoff_idx in current.
+    2. Walk backwards from cutoff_idx, comparing snapshot[-1], snapshot[-2], ...
+       against current[cutoff_idx], current[cutoff_idx-1], ...; the consecutive
+       match length is the capacity (stopping when an "alien" entry such as a
+       compression SystemMessage appears in between).
 
-    返回 ``(0, None)`` 表示白 review。
+    Returns ``(0, None)`` for a wasted (no-op) review.
     """
     if not snapshot or not current:
         return (0, None)
@@ -157,19 +174,19 @@ class CompressedRecentHistoryManager:
                 self.user_histories[ln] = []
 
     def _get_default_path(self, lanlan_name: str) -> str:
-        """统一获取默认路径，避免重复代码。"""
+        """Single place for the default path, avoiding duplicated code."""
         from memory import ensure_character_dir
         return os.path.join(ensure_character_dir(self._config_manager.memory_dir, lanlan_name), 'recent.json')
 
     def _ensure_path_for_character(self, lanlan_name: str) -> str:
-        """确保角色有有效的文件路径，返回路径。"""
+        """Ensure the character has a valid file path; returns the path."""
         if lanlan_name not in self.log_file_path:
             self.log_file_path[lanlan_name] = self._get_default_path(lanlan_name)
             logger.info(f"[RecentHistory] 角色 '{lanlan_name}' 不在配置中，使用默认路径")
         return self.log_file_path[lanlan_name]
 
     def _reset_history_file(self, file_path, lanlan_name, reason):
-        """当 recent 文件损坏或为空时，重置为合法的空 JSON 数组。"""
+        """Reset the recent file to a valid empty JSON array when it is corrupted or empty."""
         try:
             assert_cloudsave_writable(
                 self._config_manager,
@@ -193,7 +210,7 @@ class CompressedRecentHistoryManager:
             logger.error(f"[RecentHistory] 重置 {lanlan_name} 的历史记录文件失败: {reset_error}", exc_info=True)
 
     def _load_history_from_file(self, file_path, lanlan_name):
-        """安全读取 recent 文件，遇到空文件或非法 JSON 时自动重置。"""
+        """Safely read the recent file, auto-resetting on an empty file or invalid JSON."""
         try:
             with open(file_path, encoding='utf-8') as f:
                 raw_content = f.read()
@@ -239,11 +256,13 @@ class CompressedRecentHistoryManager:
             return f.read()
     
     def _get_llm(self):
-        """动态获取LLM实例以支持配置热重载。
+        """Fetch the LLM instance dynamically to support config hot-reload.
 
-        timeout=30 配合业务层 max_retries=3 + 指数 backoff（最坏 ~127s）
-        覆盖 /process 上游 30s timeout 后的"放弃" 上限。
-        max_retries=0 禁掉 OpenAI SDK 默认 2 次自动重试，避免与业务层 retry 叠加翻 3 倍。
+        timeout=30 pairs with business-level max_retries=3 + exponential backoff
+        (worst case ~127s), covering the "give up" ceiling after the /process
+        upstream's 30s timeout.
+        max_retries=0 disables the OpenAI SDK's default 2 automatic retries,
+        avoiding a 3× blow-up stacked on the business-level retry.
         """
         api_config = self._config_manager.get_model_api_config('summary')
         return create_chat_llm(
@@ -253,16 +272,19 @@ class CompressedRecentHistoryManager:
         )
 
     def _get_review_llm(self):
-        """动态获取审核LLM实例以支持配置热重载。
+        """Fetch the review LLM instance dynamically to support config hot-reload.
 
-        timeout 用 MEMORY_LLM_HARD_TIMEOUT_SECONDS（上游转发 120s hard
-        cap，必须 ≤110）。review 是纯后台任务（Phase C 重设计后不持锁、
-        不阻塞用户路径、并发跑也无所谓），完全可以开 thinking——重写
-        历史的判断密度高，思考受益明显。
+        timeout uses MEMORY_LLM_HARD_TIMEOUT_SECONDS (the upstream forwards with
+        a 120s hard cap; must be ≤110). Review is a pure background task (after
+        the Phase C redesign it holds no locks, never blocks the user path, and
+        concurrent runs are harmless), so thinking can be enabled freely — the
+        judgment-dense work of rewriting history clearly benefits from it.
 
-        Phase D：extra_body=None 显式覆盖 create_chat_llm 自动解析，让 thinking
-        模型按其默认行为响应（thinking 模式开启）。
-        max_retries=0 同上：禁 SDK 自动重试，由业务层 retry 兜底。
+        Phase D: extra_body=None explicitly overrides create_chat_llm's
+        automatic resolution, letting thinking models respond with their
+        default behavior (thinking mode on).
+        max_retries=0 as above: SDK auto-retry off; the business-layer retry is
+        the safety net.
         """
         api_config = self._config_manager.get_model_api_config('correction')
         return create_chat_llm(
@@ -357,12 +379,13 @@ class CompressedRecentHistoryManager:
         """Side meta file per character, co-located with recent.json
         ({"last_past_block_update_at": ISO}).
 
-        优先沿用 ``self.log_file_path[lanlan_name]`` 的目录——这是该类所有
-        recent.json 读写的实际路径来源（character_data 第 9 元组项）。如果
-        用户配置把某个角色的 recent.json 移到了 memory_dir 之外，meta 文件
-        仍跟它在同一目录，不会跑去无关位置（CodeRabbit review on PR #1316
-        catch）。在 update_history 跑过之前 log_file_path 可能为空——这种
-        情况下 fall back 到 memory_dir-based 推导。
+        Prefers the directory of ``self.log_file_path[lanlan_name]`` — the
+        actual path source of every recent.json read/write in this class (item
+        9 of the character_data tuple). If the user's config moved a
+        character's recent.json outside memory_dir, the meta file still sits in
+        the same directory instead of wandering off (CodeRabbit review catch on
+        PR #1316). Before update_history has run, log_file_path may be empty —
+        in that case fall back to the memory_dir-based derivation.
         """
         recent_path = (self.log_file_path or {}).get(lanlan_name)
         if recent_path:
@@ -667,8 +690,11 @@ class CompressedRecentHistoryManager:
         return SystemMessage(content=memo_text), summary
 
     async def _notify_compress_done(self, callback, lanlan_name, snapshot, ok, detailed):
-        """调 on_compress_done 回调（best-effort，异常吞掉不挡主流程）。
-        回调由 memory_server 注入：ok=False 起后台压缩、ok=True cancel 在跑的后台。"""
+        """Invoke the best-effort compression callback without blocking the main flow.
+
+        memory_server injects the callback: ok=False starts background
+        compression, while ok=True cancels any running background task.
+        """
         if callback is None:
             return
         try:
@@ -677,10 +703,13 @@ class CompressedRecentHistoryManager:
             logger.debug(f"[RecentHistory] {lanlan_name} on_compress_done({ok}) 回调异常: {e}")
 
     async def enforce_hard_cap(self, lanlan_name):
-        """最终兜底：历史 token 超 RECENT_HARD_CAP_TOKENS 时丢弃最旧的未压缩对话
-        原文，保留首条备忘录（若有）+ 最新若干条（至少 max_history_length 条），
-        直到 ≤ 上限。只在 best-effort 后台压缩也压不成、历史仍无限膨胀时由
-        memory_server 调用（上限设很大，平时不触发），保证 prompt 有界。"""
+        """Keep recent-history prompt size bounded as a final fallback.
+
+        When history still exceeds RECENT_HARD_CAP_TOKENS after best-effort
+        background compression, discard the oldest uncompressed dialogue text
+        while preserving the first memo, when present, and at least the latest
+        max_history_length entries.
+        """
         history = self.user_histories.get(lanlan_name, [])
         if not history:
             return
@@ -905,28 +934,36 @@ class CompressedRecentHistoryManager:
 
     async def review_history(self, lanlan_name, snapshot=None, cancel_event=None):
         """
-        审阅历史记录，寻找并修正矛盾、冗余、逻辑混乱或复读的部分。
+        Review the history, finding and fixing contradictions, redundancy,
+        logical confusion, or repetition.
 
-        Phase C 重设计（snapshot + capacity-based 替换）：
-        - ``snapshot``：spawn 时拍下的 history 副本（list of message objects）。
-          LLM 输入用 snapshot 不用当前 history——这样 review LLM 期间用户路径
-          可以继续追加消息 / 触发压缩，互不干扰。
-        - 完成时基于 snapshot 末尾 K=3 条做 fingerprint 匹配，定位 cutoff 在
-          当前 history 里的位置；逆向走出 capacity（连续匹配长度）；用 corrected
-          末尾 ``min(capacity, len(corrected))`` 条替换当前 history 里 cutoff 前
-          连续 ``capacity`` 个 slot；cutoff 之后的新增消息保持不动。
-        - cutoff 找不到（被压缩吞了 / 被 /new_dialog 清了）→ 整段丢弃 = 白 review
-          → caller 应将 fingerprint 设为 None，下一轮 review 立刻可起。
+        Phase C redesign (snapshot + capacity-based replacement):
+        - ``snapshot``: a copy of the history taken at spawn time (list of
+          message objects). The LLM input uses the snapshot, not the current
+          history — so while the review LLM runs, the user path can keep
+          appending messages / triggering compression without interference.
+        - On completion, fingerprint-match the snapshot's last K=3 entries to
+          locate the cutoff position in the current history; walk back to get
+          the capacity (consecutive match length); replace the consecutive
+          ``capacity`` slots before the cutoff in the current history with the
+          last ``min(capacity, len(corrected))`` entries of corrected; messages
+          added after the cutoff stay untouched.
+        - Cutoff not found (swallowed by compression / cleared by /new_dialog)
+          → drop the whole batch = wasted review → the caller should set the
+          fingerprint to None so the next review can start immediately.
 
         Returns:
             (str, list[dict] | None) tuple:
-              ('patched', new_fingerprint) — 成功 patch 并落盘；new_fingerprint
-                  是 patch 后 new_history 末尾 review 区的 K 条 fingerprint，供
-                  caller 写入 maint_state（**必须**用这个新 fingerprint，而不是
-                  ``build_review_fingerprint(snapshot)``——review 可能改写过末
-                  尾 K 条里的任一条，旧 fingerprint 在新 history 里再也定位不到）
-              ('white', None) — cutoff 在当前 history 里失配，整段丢弃
-              ('failed', None) — LLM 失败 / 被取消 / 历史为空 / 响应格式错误
+              ('patched', new_fingerprint) — patched and persisted;
+                  new_fingerprint is the K-entry fingerprint of the review
+                  region at the tail of the patched new_history, for the caller
+                  to write into maint_state (it **must** use this new
+                  fingerprint rather than ``build_review_fingerprint(snapshot)``
+                  — the review may have rewritten any of the last K entries,
+                  and the old fingerprint would never locate again in the new
+                  history)
+              ('white', None) — cutoff failed to match in the current history; batch dropped
+              ('failed', None) — LLM failure / cancelled / empty history / malformed response
         """
         # 检查是否被取消
         if cancel_event and cancel_event.is_set():

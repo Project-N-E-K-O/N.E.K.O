@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import sys
 import os
 _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -171,8 +185,8 @@ async def handle_maintenance_mode_error(_request, exc: MaintenanceModeError):
 # ── 健康检查 / 指纹端点 ──────────────────────────────────────────
 @app.get("/health")
 async def health():
-    """返回带 N.E.K.O 签名的健康响应，供 launcher/前端识别，
-    以区分当前服务与随机占用该端口的其他进程。"""
+    """Return a health response carrying the N.E.K.O signature so the launcher/frontend
+    can distinguish this service from a random process squatting on the port."""
     from utils.port_utils import build_health_response
     from config import INSTANCE_ID
     return build_health_response("memory", instance_id=INSTANCE_ID)
@@ -232,7 +246,7 @@ _memory_background_tasks_started = False
 
 
 def _defer_time_manager_cleanup(manager: TimeIndexedMemory | None) -> None:
-    """将旧的 TimeIndexedMemory 延迟到进程关闭时再清理，避免切换窗口内并发请求触发已释放句柄。"""
+    """Defer cleanup of the old TimeIndexedMemory until process shutdown, so concurrent requests in the switchover window don't hit a released handle."""
     if manager is None:
         return
     if any(existing is manager for existing in _deferred_time_managers):
@@ -241,16 +255,19 @@ def _defer_time_manager_cleanup(manager: TimeIndexedMemory | None) -> None:
     logger.info("[MemoryServer] 旧的 TimeIndexedMemory 已加入延迟清理队列")
 
 async def reload_memory_components():
-    """重新加载记忆组件配置（用于新角色创建后）
+    """Reload memory component config (used after a new character is created)
 
-    使用锁保护重新加载操作，确保原子性交换，避免竞态条件。
-    先创建所有新实例，然后原子性地交换引用。
+    The reload is protected by a lock to guarantee an atomic swap and avoid race
+    conditions. All new instances are created first, then the references are swapped
+    atomically.
 
-    注意：reload 期间旧 cursor_store 已启动的 async 任务可能与新实例并发
-    读写同一份 cursors.json。整个架构假设"per-character 单写者"，重载是
-    管理员操作（角色新增），不会与后台 rebuttal_loop 高频冲突；
-    atomic_write_json 保证单次写原子，极端 last-writer-wins 场景下最多
-    损失一次 cursor 推进——下一轮 tick 即恢复。
+    Note: during reload, async tasks already started by the old cursor_store may
+    concurrently read/write the same cursors.json as the new instance. The whole
+    architecture assumes a single writer per character; reload is an admin operation
+    (character creation) and won't conflict at high frequency with the background
+    rebuttal_loop; atomic_write_json guarantees each write is atomic, and in the
+    extreme last-writer-wins case at most one cursor advance is lost — the next tick
+    recovers it.
     """
     global recent_history_manager, settings_manager, time_manager, fact_store, persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler, fact_dedup_resolver
     async with _reload_lock:
@@ -317,7 +334,7 @@ async def reload_memory_components():
 
 @app.post("/release_character/{lanlan_name}")
 async def release_character_resources(lanlan_name: str):
-    """在角色重命名/删除前主动释放对应 SQLite 句柄。"""
+    """Proactively release the corresponding SQLite handles before a character rename/delete."""
     try:
         lanlan_name = validate_lanlan_name(lanlan_name)
     except HTTPException as exc:
@@ -396,7 +413,7 @@ def _maint_state_path() -> str:
 
 
 async def _aload_maint_state() -> None:
-    """启动时从磁盘加载维护状态。"""
+    """Load maintenance state from disk at startup."""
     from utils.file_utils import read_json_async
     global _maint_state
     path = _maint_state_path()
@@ -415,7 +432,7 @@ async def _aload_maint_state() -> None:
 
 
 async def _asave_maint_state() -> None:
-    """将维护状态持久化到磁盘。"""
+    """Persist maintenance state to disk."""
     from utils.file_utils import atomic_write_json_async
     try:
         await atomic_write_json_async(_maint_state_path(), _maint_state,
@@ -425,12 +442,12 @@ async def _asave_maint_state() -> None:
 
 
 def _is_review_clean(lanlan_name: str) -> bool:
-    """检查角色是否处于 review_clean 状态（已 review 且无新对话）。"""
+    """Check whether the character is in the review_clean state (reviewed and no new conversation)."""
     return _maint_state.get(lanlan_name, {}).get('review_clean', False)
 
 
 async def _aclear_review_clean(lanlan_name: str) -> None:
-    """新 human 消息到达时清除 review_clean 标记。"""
+    """Clear the review_clean flag when a new human message arrives."""
     state = _maint_state.get(lanlan_name, {})
     if state.get('review_clean'):
         state['review_clean'] = False
@@ -438,7 +455,7 @@ async def _aclear_review_clean(lanlan_name: str) -> None:
 
 
 def _has_human_messages(messages) -> bool:
-    """检查消息列表中是否包含用户（human）消息。"""
+    """Check whether the message list contains user (human) messages."""
     for m in messages:
         if getattr(m, 'type', '') == 'human':
             return True
@@ -446,7 +463,7 @@ def _has_human_messages(messages) -> bool:
 
 
 async def _ais_review_enabled() -> bool:
-    """检查配置中 correction/review 是否启用（走异步 IO）。"""
+    """Check whether correction/review is enabled in config (async IO)."""
     from utils.file_utils import read_json_async
     try:
         config_path = str(_config_manager.get_runtime_config_path('core_config.json'))
@@ -461,15 +478,17 @@ async def _ais_review_enabled() -> bool:
 
 
 async def _ais_powerful_memory_enabled() -> bool:
-    """检查"强力记忆"是否启用——controls evidence-RFC 引入的全部新 LLM 路径。
+    """Check whether "powerful memory" is enabled — controls all the new LLM paths introduced by the evidence RFC.
 
-    关闭时只保留 RFC 之前的基础流水线（Stage-1 fact 抽取 / reflection synthesize
-    / recent compress+review / recall reranker / 主动搭话回应的 check_feedback）
-    + time-driven promote fallback。关后可省 ~40-50% token。
+    When off, only the pre-RFC base pipeline remains (Stage-1 fact extraction /
+    reflection synthesize / recent compress+review / recall reranker /
+    check_feedback for proactive-chat responses) + the time-driven promote
+    fallback. Turning it off saves ~40-50% tokens.
 
-    持久化到 ``core_config.json`` 的 ``powerful_memory_enabled`` 字段，缺失默
-    认 True（保兼容）。每次需要时再开 read_json_async，不缓存——和
-    ``_ais_review_enabled`` 同款热加载，无需重启即生效。
+    Persisted as the ``powerful_memory_enabled`` field in ``core_config.json``;
+    missing defaults to True (for compatibility). Re-opens read_json_async on each
+    use, no caching — same hot-reload as ``_ais_review_enabled``, takes effect
+    without a restart.
     """
     from utils.file_utils import read_json_async
     try:
@@ -485,18 +504,21 @@ async def _ais_powerful_memory_enabled() -> bool:
 
 
 async def _reset_confirmed_at_for_all_characters() -> int:
-    """开→关 migration：所有角色的 confirmed reflection 重置 confirmed_at 锚点。
+    """On→off migration: reset the confirmed_at anchor of every character's confirmed reflections.
 
-    被 main_routers/memory_router.py 的 update_powerful_memory_config 调用——
-    只在 prev=True, new=False 切换时跑。让 time-driven fallback 走完整 14 天
-    计时，避免"刚关就立刻批量 promote 旧 confirmed"的体验断层。
+    Called by update_powerful_memory_config in main_routers/memory_router.py — only
+    runs on the prev=True, new=False transition. Lets the time-driven fallback run
+    the full 14-day clock, avoiding the jarring "old confirmed entries get bulk
+    promoted immediately after switching off" experience.
 
-    返回真实迁移条目数。**对不可恢复失败（reflection_engine 未初始化 / 角色
-    列表加载失败）一律 raise**，让 caller endpoint 区分"真实 0 条"（角色都
-    loaded 但没需要重置的）vs"根本没跑"（早期失败）。CodeRabbit PR #997
-    feedback：之前两条早期失败路径都返回 0 → endpoint 包装成 ok=true,
-    count=0 → 上游 memory_router 误判成功 → 落盘 powerful_memory_enabled=False
-    → 旧 confirmed_at 永久漏迁移。
+    Returns the real number of migrated entries. **Raises on unrecoverable failures
+    (reflection_engine not initialized / character list load failure)** so the
+    caller endpoint can distinguish "genuinely 0 entries" (characters loaded but
+    nothing needed resetting) from "never ran" (early failure). CodeRabbit PR #997
+    feedback: previously both early-failure paths returned 0 → the endpoint wrapped
+    it as ok=true, count=0 → upstream memory_router misread it as success →
+    persisted powerful_memory_enabled=False → old confirmed_at permanently missed
+    migration.
     """
     if reflection_engine is None:
         raise RuntimeError(
@@ -517,25 +539,25 @@ async def _reset_confirmed_at_for_all_characters() -> int:
 
 
 def _touch_activity() -> None:
-    """记录一次对话活动，刷新空闲计时器。"""
+    """Record one conversation activity, refreshing the idle timer."""
     global _last_activity_time
     _last_activity_time = datetime.now()
 
 
 def _is_idle() -> bool:
-    """判断当前是否空闲（距上次活动超过阈值）。"""
+    """Whether the system is currently idle (more than the threshold since the last activity)."""
     return (datetime.now() - _last_activity_time).total_seconds() >= IDLE_THRESHOLD
 
 
 def _get_settle_lock(lanlan_name: str) -> asyncio.Lock:
-    """获取指定角色的结算锁（懒创建）"""
+    """Get the settle lock for the given character (lazily created)"""
     if lanlan_name not in _settle_locks:
         _settle_locks[lanlan_name] = asyncio.Lock()
     return _settle_locks[lanlan_name]
 
 
 def _format_legacy_settings_as_text(settings: dict, lanlan_name: str) -> str:
-    """将旧版 settings JSON 转为自然语言格式，替代原始 json.dumps 输出。"""
+    """Convert legacy settings JSON into natural-language form, replacing the raw json.dumps output."""
     if not settings:
         return f"{lanlan_name}记得：（暂无记录）"
 
@@ -595,19 +617,22 @@ def register_outbox_handler(op_type: str, handler: OutboxHandler) -> None:
 
 
 async def _run_outbox_op(name: str, op: dict, sem: asyncio.Semaphore | None = None) -> None:
-    """跑单条 outbox op 并在成功后 append_done。失败保持 pending 等下次启动补跑。
+    """Run a single outbox op and append_done on success. On failure it stays pending and is replayed at the next startup.
 
-    `sem`：startup replay 路径传入共享 Semaphore 限制 LLM fan-out；日常单次
-    spawn 路径传 None 即不限流。
+    `sem`: the startup replay path passes a shared Semaphore to limit LLM fan-out;
+    the everyday single-spawn path passes None for no throttling.
 
-    Liveness 兜底（Site 7）：handler 失败时 append_attempt 一行记录失败。
-    若同 op_id 累计 attempt 数（含本次） ≥ ``MEMORY_LIVENESS_MAX_ATTEMPTS``
-    则 append_done 当 dead-letter 放弃该 op + WARN。否则毒 op（payload 触
-    发 handler 永久 raise，例如 LLM safety filter / parse 永久失败）每次重启
-    都重跑且永远不出 pending → ``compact`` 永久阻塞 → outbox.ndjson 线性增
-    长。``op.get('_attempt_count', 0)`` 来自 ``pending_ops`` scan 时的累计，
-    日常 spawn 路径调 _run_outbox_op 时 op 是临时构造的不带这个字段，按 0
-    起算（首次失败 → attempt=1，远 < N，正常 pending 等重启重放）。
+    Liveness fallback (Site 7): on handler failure, append_attempt records one
+    failure line. If the cumulative attempt count for the same op_id (including
+    this one) is >= ``MEMORY_LIVENESS_MAX_ATTEMPTS``, append_done is written as a
+    dead-letter, abandoning the op + WARN. Otherwise a poison op (payload makes the
+    handler raise permanently, e.g. LLM safety filter / permanent parse failure)
+    would re-run on every restart and never leave pending → ``compact`` blocked
+    forever → outbox.ndjson grows linearly. ``op.get('_attempt_count', 0)`` comes
+    from the accumulation during the ``pending_ops`` scan; on the everyday spawn
+    path the op is constructed ad hoc without this field and starts from 0 (first
+    failure → attempt=1, far below N, normally stays pending for replay at
+    restart).
     """
     from config import MEMORY_LIVENESS_MAX_ATTEMPTS
     op_id = op.get('op_id')
@@ -706,11 +731,12 @@ async def _run_outbox_op(name: str, op: dict, sem: asyncio.Semaphore | None = No
 
 
 async def _spawn_outbox_post_turn_signals(lanlan_name: str, messages: list) -> asyncio.Task:
-    """把 per-turn signals 背景任务登记到 outbox 并 spawn。
+    """Register the per-turn signals background task in the outbox and spawn it.
 
-    "per-turn signals" = counter bump（给 batch loop 计数）+ 复读嗅探 +
-    check_feedback + OFF-mode Stage-1 fallback，见 ``_run_post_turn_signals``。
-    登记的 payload 包含 messages_to_dict 序列化后的整轮对话，重启时可重放。
+    "per-turn signals" = counter bump (for the batch loop's counting) + repetition
+    sniffing + check_feedback + OFF-mode Stage-1 fallback; see
+    ``_run_post_turn_signals``. The registered payload contains the whole turn's
+    conversation serialized via messages_to_dict, replayable at restart.
     """
     from utils.llm_client import messages_to_dict
 
@@ -731,14 +757,16 @@ async def _spawn_outbox_post_turn_signals(lanlan_name: str, messages: list) -> a
 
 
 async def _replay_pending_outbox() -> list[asyncio.Task]:
-    """启动期扫描 outbox，补跑未完成 op。返回 spawn 出的 Task 列表。
+    """Scan the outbox at startup and replay unfinished ops. Returns the list of spawned Tasks.
 
-    返回值方便调用方（或测试）await 所有任务跑完，而不是靠
-    `_BACKGROUND_TASKS` 快照 + `asyncio.sleep(0)` 这种弱保证等法。
+    The return value lets the caller (or tests) await all tasks to completion,
+    instead of relying on weak guarantees like a `_BACKGROUND_TASKS` snapshot +
+    `asyncio.sleep(0)`.
 
-    扫描范围 = 当前 config 的角色名 ∪ memory_dir 下有 `outbox.ndjson` 的
-    子目录。仅扫 config 会漏掉"曾经在用、后来被移出 config 但仍有 pending
-    op 的角色"，导致那些 op 永远不会被补跑。
+    Scan scope = character names in the current config ∪ subdirectories under
+    memory_dir that have an `outbox.ndjson`. Scanning only the config would miss
+    "characters that were once in use, later removed from config, but still have
+    pending ops", leaving those ops never replayed.
     """
     global _replay_semaphore
     spawned: list[asyncio.Task] = []
@@ -793,7 +821,7 @@ async def _replay_pending_outbox() -> list[asyncio.Task]:
 
 @app.post("/shutdown")
 async def shutdown_memory_server():
-    """接收来自main_server的关闭信号"""
+    """Receive the shutdown signal from main_server"""
     global enable_shutdown
     if not enable_shutdown:
         logger.warning("收到关闭信号，但当前模式不允许响应退出请求")
@@ -818,18 +846,19 @@ REBUTTAL_SQL_ROW_LIMIT = 200
 
 
 def _coerce_db_ts(ts) -> datetime | None:
-    """归一化 SQL 行里的 timestamp 字段为 **naive** datetime。
+    """Normalize the timestamp field of a SQL row into a **naive** datetime.
 
-    SQLAlchemy + SQLite 在某些 driver 配置下返回字符串而非 datetime；与
-    memory/timeindex.py:get_last_conversation_time 同款归一化。返回 None
-    表示无法解析（caller 应跳过此行而不是把 None 写进 cursor）。
+    SQLAlchemy + SQLite return strings instead of datetimes under some driver
+    configurations; same normalization as
+    memory/timeindex.py:get_last_conversation_time. Returns None when unparseable
+    (the caller should skip the row rather than write None into the cursor).
 
-    若解析出 TZ-aware datetime（import / migration 路径写入 "...+00:00"
-    之类），强制 `replace(tzinfo=None)` 转 naive——本文件所有 cursor /
-    比较都按 naive 语义工作（last_b_check_ts / last_a_msg_ts / facts.json
-    `created_at` 全是 naive `datetime.now().isoformat()`），aware 跟 naive
-    比较会抛 TypeError 让 caller 永久哑火（Codex P1+P2 round-7/8 on PR
-    #1408 双侧 case）。
+    If a TZ-aware datetime is parsed (import / migration paths write things like
+    "...+00:00"), force `replace(tzinfo=None)` to naive — every cursor / comparison
+    in this file works with naive semantics (last_b_check_ts / last_a_msg_ts /
+    facts.json `created_at` are all naive `datetime.now().isoformat()`); comparing
+    aware with naive raises TypeError, permanently muting the caller (Codex P1+P2
+    round-7/8 on PR #1408, both cases).
     """
     if isinstance(ts, datetime):
         result = ts
@@ -849,15 +878,16 @@ def _coerce_db_ts(ts) -> datetime | None:
 
 
 def _extract_user_messages_with_ts_from_rows(rows: list) -> list[tuple[str, datetime]]:
-    """从 time_indexed SQL 查询结果中提取 (用户消息文本, timestamp) 元组。
+    """Extract (user message text, timestamp) tuples from time_indexed SQL query results.
 
     rows: [(timestamp, session_id, message_json), ...] (ASC ordered by ts)
-    message_json 是 langchain SQLChatMessageHistory 存储的 JSON 字符串。
-    content 可能是 str 或 list[{type, text}]。
+    message_json is the JSON string stored by langchain SQLChatMessageHistory.
+    content may be a str or list[{type, text}].
 
-    返回的 list 按 ts ASC 排序，caller 可基于 last item 的 ts 推 cursor。
-    timestamp 通过 _coerce_db_ts 归一化为 datetime 对象（SQL driver 可能
-    返回 str）；解析失败的行会被跳过。
+    The returned list is sorted by ts ASC; the caller can advance the cursor based
+    on the last item's ts. The timestamp is normalized into a datetime object via
+    _coerce_db_ts (the SQL driver may return str); rows that fail parsing are
+    skipped.
     """
     out: list[tuple[str, datetime]] = []
     for ts_raw, _, msg_json in rows:
@@ -883,7 +913,7 @@ def _extract_user_messages_with_ts_from_rows(rows: list) -> list[tuple[str, date
 
 
 def _extract_user_messages_from_rows(rows: list) -> list[str]:
-    """从 time_indexed SQL 查询结果中提取用户消息文本（legacy text-only 视图）。
+    """Extract user message text from time_indexed SQL query results (legacy text-only view).
 
     rows: [(timestamp, session_id, message_json), ...]
     """
@@ -908,20 +938,22 @@ def _extract_user_messages_from_rows(rows: list) -> list[str]:
 
 
 def _extract_role_tagged_messages_from_rows(rows: list) -> list[dict]:
-    """Path B 用的全消息提取——保留 user + ai 两种 type，输出 message_dict
-    list 直接喂 ``convert_to_messages``。
+    """Full-message extraction for Path B — keeps both user + ai types and outputs a
+    message_dict list fed directly into ``convert_to_messages``.
 
-    跟 ``_extract_user_messages_from_rows`` 的区别：
-    - 收 type ∈ {'human', 'ai'} 两种（不再仅 human）
-    - 返回 [{'type': 'human'|'ai', 'data': {'content': str}}, ...] 而不是
-      纯 str list，让下游 ``convert_to_messages`` 还原成 HumanMessage/AIMessage
-      让 ``FactStore._format_conversation`` 渲染时按 type → name_mapping 出
-      "{MASTER_NAME} | xxx" / "{LANLAN_NAME} | xxx" 形式，path B prompt 据此
-      判每条 fact 的 source 归属（user_observation / ai_disclosure）
+    Differences from ``_extract_user_messages_from_rows``:
+    - accepts type ∈ {'human', 'ai'} (no longer human-only)
+    - returns [{'type': 'human'|'ai', 'data': {'content': str}}, ...] instead of a
+      plain str list, so downstream ``convert_to_messages`` can restore
+      HumanMessage/AIMessage, letting ``FactStore._format_conversation`` render by
+      type → name_mapping into the "{MASTER_NAME} | xxx" / "{LANLAN_NAME} | xxx"
+      form, from which the path B prompt judges each fact's source attribution
+      (user_observation / ai_disclosure)
 
-    PR #1399 的教训：这里返回 list[dict] 让 caller 拼 message_dicts 后用
-    ``convert_to_messages(message_dicts)`` 直接转——**不要** ``json.dumps``
-    包一层（convert_to_messages 只接 list，str 会被静默吞成 []）。
+    Lesson from PR #1399: return list[dict] here and let the caller assemble
+    message_dicts and convert with ``convert_to_messages(message_dicts)``
+    directly — do **not** wrap with ``json.dumps`` (convert_to_messages only
+    accepts a list; a str gets silently swallowed into []).
     """
     out: list[dict] = []
     for _, _, msg_json in rows:
@@ -957,17 +989,19 @@ def _extract_role_tagged_messages_from_rows(rows: list) -> list[dict]:
 
 
 def _trim_to_user_msg_bracket(message_dicts: list[dict]) -> list[dict]:
-    """只保留首条 human msg 到末条 human msg 之间（含两端）的消息。
+    """Keep only the messages between the first and last human msg (inclusive).
 
-    Product thesis 防廉价层污染：AI 在首条 user msg **之前**的内容是 user
-    还没印证的 proactive 试探，AI 在末条 user msg **之后**的内容是 user
-    还没回应过的独白——两段都是廉价层，不该当 fact 沉淀。只有夹在两条
-    user msg 中间的 AI 内容才意味着 "user 看到了 / 认可了这段对话上下
-    文"，才有资格被 path B 拣回当 ai_disclosure fact。
+    Product thesis: guard against cheap-layer pollution. AI content **before** the
+    first user msg is a proactive probe the user never validated, and AI content
+    **after** the last user msg is a monologue the user never responded to — both
+    are cheap layers and shouldn't settle as facts. Only AI content sandwiched
+    between two user msgs implies "the user saw / acknowledged this conversation
+    context" and qualifies for path B to pick back up as an ai_disclosure fact.
 
-    完全无 human msg → 返 []（caller 视作 AI-only 窗口跳过）。
-    只有一条 human msg → 返该条（bracket 退化为单点，仍合法：那条本身
-    就是 user 发声，path B 可借 known_pool 看相邻 AI 上下文）。
+    No human msg at all → return [] (caller treats it as an AI-only window and
+    skips). Exactly one human msg → return that one (the bracket degenerates to a
+    single point, still legal: that msg is itself the user speaking, and path B can
+    use known_pool to see the adjacent AI context).
     """
     human_indices = [
         i for i, m in enumerate(message_dicts) if m.get('type') == 'human'
@@ -978,22 +1012,27 @@ def _trim_to_user_msg_bracket(message_dicts: list[dict]) -> list[dict]:
 
 
 async def _resolve_rebuttal_start_time(name: str, now: datetime):
-    """决定 rebuttal_loop 本轮查询的起始时间。
+    """Decide the starting time for this round's rebuttal_loop query.
 
-    优先级：
-      1. 持久化的 CURSOR_REBUTTAL_CHECKED_UNTIL
-      2. 兜底回扫窗口（首次启动 / cursor 文件缺失）
-      3. 时钟回拨保护：cursor > now 视为脏数据，走兜底并**立刻重写**游标
+    Priority:
+      1. persisted CURSOR_REBUTTAL_CHECKED_UNTIL
+      2. fallback look-back window (first launch / cursor file missing)
+      3. clock-rollback protection: cursor > now is treated as dirty data; use the
+         fallback and **immediately rewrite** the cursor
 
-    rollback 分支立即覆写游标的原因：若只在主循环 success branch 才覆写，
-    遇上 LLM 持续失败 + 时钟回拨，主循环每轮都会命中 fallback 并告警，
-    但游标永远停留在未来时间，无法自愈；这里直接写回 fallback 打破死循环。
+    Why the rollback branch overwrites the cursor immediately: if only the main
+    loop's success branch overwrote it, then under persistent LLM failures + a
+    clock rollback, every loop iteration would hit the fallback and warn, but the
+    cursor would stay stuck at a future time, never self-healing; writing the
+    fallback back here breaks that infinite loop.
 
-    写 fallback 而非 now：若写 now，本 tick 的 LLM 调用若失败，
-    窗口 `[fallback, now]` 的消息会因下轮 cursor 已推进到 now 而被跳过；
-    写 fallback 则保持重试语义——主循环 success branch 再把 cursor 推进到 now。
+    Why write fallback rather than now: if we wrote now and this tick's LLM call
+    failed, messages in the window `[fallback, now]` would be skipped because the
+    next round's cursor has already advanced to now; writing fallback preserves
+    retry semantics — the main loop's success branch then advances the cursor to
+    now.
 
-    独立成函数便于单测验证。
+    Standalone function for easy unit testing.
     """
     cursor = await cursor_store.aget_cursor(name, CURSOR_REBUTTAL_CHECKED_UNTIL)
     fallback = now - timedelta(hours=REBUTTAL_FIRST_RUN_LOOKBACK_HOURS)
@@ -1040,27 +1079,30 @@ evidence loop）。"""
 
 
 def _rebuttal_bump_failure(name: str, cursor_key: str) -> int:
-    """Bump 失败计数，返回当前累计次数。Caller 自行判 ≥ MEMORY_LIVENESS_MAX_ATTEMPTS。"""
+    """Bump the failure counter and return the cumulative count. The caller checks >= MEMORY_LIVENESS_MAX_ATTEMPTS itself."""
     fails = _rebuttal_failures.setdefault(name, {})
     fails[cursor_key] = int(fails.get(cursor_key, 0) or 0) + 1
     return fails[cursor_key]
 
 
 def _rebuttal_clear_failures(name: str) -> None:
-    """Cursor 推进（成功）或 dead-letter 强推后清零 counter。"""
+    """Reset the counter after a cursor advance (success) or a forced dead-letter push."""
     _rebuttal_failures.pop(name, None)
 
 
 async def _periodic_rebuttal_loop():
-    """每 5 分钟检查 confirmed reflections 是否被近期对话反驳。
+    """Every 5 minutes, check whether confirmed reflections are rebutted by recent conversation.
 
-    通过 time_indexed SQL 查询上次检查之后的所有新对话消息，
-    确保不遗漏任何未消费的用户回复。
+    Queries all new conversation messages since the last check via time_indexed SQL,
+    ensuring no unconsumed user replies are missed.
 
-    游标持久化（P0 修复）：`CURSOR_REBUTTAL_CHECKED_UNTIL` 写入 cursors.json，
-    关机→重启后从磁盘读取，消灭"默认只回扫 1 小时导致关机期间反驳丢失"的缺陷。
+    Cursor persistence (P0 fix): `CURSOR_REBUTTAL_CHECKED_UNTIL` is written to
+    cursors.json and read back from disk after shutdown→restart, eliminating the
+    flaw where "the default 1-hour look-back loses rebuttals from the shutdown
+    period".
 
-    首轮启动延迟 _INITIAL_DELAY_REBUTTAL 秒（与其他后台循环错峰）。
+    First run delayed by _INITIAL_DELAY_REBUTTAL seconds (staggered against the
+    other background loops).
     """
     await asyncio.sleep(_INITIAL_DELAY_REBUTTAL)
     while True:
@@ -1104,13 +1146,14 @@ async def _periodic_rebuttal_loop():
         now = datetime.now()
 
         async def _check_one_rebuttal(name: str):
-            """单个 catgirl 的反驳检查。各角色互相独立，外层 gather 并行。
-            内部对 feedbacks 仍串行 areject_promotion（同 reflection 不能并发处理）。
+            """Rebuttal check for a single catgirl. Characters are mutually independent; the outer gather runs them in parallel.
+            Internally, feedbacks still run areject_promotion serially (the same reflection must not be processed concurrently).
 
-            Drain 模式：每轮最多处理 ``REBUTTAL_DRAIN_BATCH_LIMIT`` (=20) 条
-            user 消息，cursor 推进到第 N 条的 timestamp。背压期（高频对话用户
-            或 1h fallback）下分多个 tick 排干，每次 LLM prompt 大小受控；
-            消息不丢（cursor 严格按已处理位置推进）。
+            Drain mode: each round processes at most ``REBUTTAL_DRAIN_BATCH_LIMIT`` (=20)
+            user messages, advancing the cursor to the Nth message's timestamp. Under
+            backpressure (high-frequency chat users or the 1h fallback) it drains over
+            multiple ticks with bounded LLM prompt size per tick; no messages are lost
+            (the cursor advances strictly by processed position).
             """
             try:
                 confirmed = await reflection_engine.aget_confirmed_reflections(name)
@@ -1263,17 +1306,19 @@ async def _periodic_rebuttal_loop():
 AUTO_PROMOTE_CHECK_INTERVAL = 180  # 3 分钟（与 rebuttal 同步，覆盖同样级别的状态变化）
 
 async def _periodic_auto_promote_loop():
-    """定期执行 auto_promote_stale：pending→confirmed→promoted 状态迁移。
+    """Periodically run auto_promote_stale: pending→confirmed→promoted state migration.
 
-    PR-3 (RFC §3.9.1)：`aauto_promote_stale` 现在包含两段：
-      1. 锁内 pending → confirmed (score driven)
-      2. 锁外 confirmed → promoted via `_apromote_with_merge`（LLM 决策
-         合并 / 独立晋升 / 拒绝；带节流防 LLM 失败 DOS）
+    PR-3 (RFC §3.9.1): `aauto_promote_stale` now has two parts:
+      1. in-lock pending → confirmed (score driven)
+      2. out-of-lock confirmed → promoted via `_apromote_with_merge` (LLM decides
+         merge / standalone promotion / rejection; throttled to prevent
+         LLM-failure DOS)
 
-    Per-character 用 asyncio.gather 并行——每个角色内部仍是顺序操作
-    （锁串行），但跨角色可以打满。
+    Per-character via asyncio.gather in parallel — within each character operations
+    remain sequential (lock-serialized), but across characters it can saturate.
 
-    首轮启动延迟 _INITIAL_DELAY_AUTO_PROMOTE 秒（与其他后台循环错峰）。
+    First run delayed by _INITIAL_DELAY_AUTO_PROMOTE seconds (staggered against the
+    other background loops).
     """
     await asyncio.sleep(_INITIAL_DELAY_AUTO_PROMOTE)
     while True:
@@ -1313,19 +1358,21 @@ async def _periodic_auto_promote_loop():
 
 
 async def _periodic_idle_maintenance_loop():
-    """定期检查系统是否空闲，空闲时自动执行记忆维护任务。
+    """Periodically check whether the system is idle and run memory maintenance tasks when it is.
 
-    首次执行延迟 _INITIAL_DELAY_IDLE_MAINT 秒（让 startup 期 cloudsave / outbox
-    replay / migration 任务先消化），之后每 IDLE_CHECK_INTERVAL 秒轮询一次。
+    First run delayed by _INITIAL_DELAY_IDLE_MAINT seconds (letting startup-phase
+    cloudsave / outbox replay / migration tasks digest first), then polled every
+    IDLE_CHECK_INTERVAL seconds.
 
-    每轮为每个角色依次执行：
-    1. 历史记录压缩 — 有需要就跑（history > compress_threshold）
-    1b. Fact 向量去重 — 有需要就跑（vectors 启用且 pending dedup 队列非空）
-    2. Persona 矛盾审视 — 有需要就跑（pending corrections 非空）；不受 recent_memory_auto_review
-       开关或 REVIEW_SKIP_HISTORY_LEN 影响：persona corrections 不读 recent history，是独立的
-       矛盾消解管线，不应被 review 开关一刀切。
-    3. 记忆整理 review — review_clean 则跳过；受 REVIEW_MIN_INTERVAL 最短间隔；
-       history < REVIEW_SKIP_HISTORY_LEN 或 review_enabled 关闭则跳过。
+    Each round runs, for every character in order:
+    1. History compression — runs when needed (history > compress_threshold)
+    1b. Fact vector dedup — runs when needed (vectors enabled and pending dedup queue non-empty)
+    2. Persona contradiction review — runs when needed (pending corrections non-empty); unaffected
+       by the recent_memory_auto_review switch or REVIEW_SKIP_HISTORY_LEN: persona corrections
+       don't read recent history; they are an independent contradiction-resolution pipeline and
+       shouldn't be blanket-disabled by the review switch.
+    3. Memory tidy-up review — skipped when review_clean; subject to the REVIEW_MIN_INTERVAL
+       minimum interval; skipped when history < REVIEW_SKIP_HISTORY_LEN or review_enabled is off.
     """
     await asyncio.sleep(_INITIAL_DELAY_IDLE_MAINT)
     while True:
@@ -1438,9 +1485,10 @@ async def _periodic_idle_maintenance_loop():
 
 
 async def _periodic_new_dialog_qps_log_loop():
-    """每 NEW_DIALOG_QPS_FLUSH_INTERVAL 秒输出一次 /new_dialog 调用计数并清零。
+    """Every NEW_DIALOG_QPS_FLUSH_INTERVAL seconds, log the /new_dialog call count and reset it.
 
-    无流量时也打 total=0 心跳——避免静默时无法区分'真零流量'与'loop 已挂'。
+    Logs a total=0 heartbeat even with no traffic — otherwise silence can't be
+    distinguished between "genuinely zero traffic" and "the loop died".
     """
     while True:
         await asyncio.sleep(NEW_DIALOG_QPS_FLUSH_INTERVAL)
@@ -1638,31 +1686,33 @@ _RECHECK_RR_CURSOR: int = 0
 
 
 async def _periodic_slow_memory_recheck_loop():
-    """Schema v1 → v2 慢速记忆重判循环。
+    """Schema v1 → v2 slow memory re-judgement loop.
 
-    每 MEMORY_RECHECK_INTERVAL_SECONDS 秒重判 1 条 reflection / fact。优
-    先级：所有角色的 v1 reflection 先跑完，再跑 fact。每轮只处理 1 条，
-    控速避免 LLM 抢占工作模型 quota（参考 archive_sweep 的 background-tier
-    设计）。
+    Re-judges 1 reflection / fact every MEMORY_RECHECK_INTERVAL_SECONDS seconds.
+    Priority: finish all characters' v1 reflections first, then facts. Only 1
+    entry per round, throttled so the LLM doesn't steal quota from the working
+    model (following the background-tier design of archive_sweep).
 
-    多角色公平性：用 `_RECHECK_RR_CURSOR` 做 round-robin 起点轮转——每轮
-    从 cursor 开始扫描，命中即 break + 推进 cursor。catgirl A 有 100 条
-    v1 数据、catgirl B 只有 1 条时，B 仍能在 N 轮内拿到调度名额，不被
-    A 长尾独占。
+    Multi-character fairness: `_RECHECK_RR_CURSOR` rotates the round-robin start —
+    each round scans from the cursor, breaks on a hit + advances the cursor. When
+    catgirl A has 100 v1 entries and catgirl B only 1, B still gets a scheduling
+    slot within N rounds rather than being monopolized by A's long tail.
 
-    LLM 输出：
-    - reflection: temporal_scope (pattern/state/episode) + event_when (相对偏移)
-    - fact:       event_when 单字段
-    系统按 created_at 当锚点解算 event_start_at / event_end_at 写回。
+    LLM output:
+    - reflection: temporal_scope (pattern/state/episode) + event_when (relative offset)
+    - fact:       single event_when field
+    The system resolves event_start_at / event_end_at against created_at as the
+    anchor and writes them back.
 
-    Skip 条件（在 store 层做）：
+    Skip conditions (done in the store layer):
     - schema_version >= CURRENT
-    - reflection status in REFLECTION_TERMINAL_STATUSES（archived 等）
-    - 已 archive 的 reflection / fact 在 shard 文件里，主路径不加载，
-      自然不会被选中
+    - reflection status in REFLECTION_TERMINAL_STATUSES (archived etc.)
+    - archived reflections / facts live in shard files, never loaded on the main
+      path, so they naturally can't be selected
 
-    首轮启动延迟 MEMORY_RECHECK_INITIAL_DELAY_SECONDS 秒（与其他后台循环
-    错峰）。`MEMORY_RECHECK_ENABLED=False` 时整个循环不启动。
+    First run delayed by MEMORY_RECHECK_INITIAL_DELAY_SECONDS seconds (staggered
+    against the other background loops). When `MEMORY_RECHECK_ENABLED=False` the
+    whole loop never starts.
     """
     global _RECHECK_RR_CURSOR
     if not MEMORY_RECHECK_ENABLED:
@@ -1725,8 +1775,9 @@ async def _periodic_archive_sweep_loop():
     character has independent files + locks; one slow char must not
     block another.
 
-    首轮启动延迟 _INITIAL_DELAY_ARCHIVE 秒（远小于 INTERVAL=3600s，确保
-    短会话用户也能跑到一次归档；之后按 INTERVAL 周期跑）。
+    First run delayed by _INITIAL_DELAY_ARCHIVE seconds (much smaller than
+    INTERVAL=3600s, so even short-session users get one archive pass; afterwards
+    it runs at the INTERVAL cadence).
     """
     from memory.evidence import maybe_mark_sub_zero
     await asyncio.sleep(_INITIAL_DELAY_ARCHIVE)
@@ -1908,18 +1959,21 @@ def _signal_check_mark_done(name: str, now: datetime) -> None:
 def _stage1_path_a_bump_failure(
     name: str, state: dict, cursor_key: str, now: datetime,
 ) -> bool:
-    """Path A Stage-1 LLM 终态失败的 liveness 兜底。
+    """Liveness fallback for Path A Stage-1 LLM terminal failures.
 
-    给 (cursor_key) 当前窗口 bump 失败计数；达 ``MEMORY_LIVENESS_MAX_ATTEMPTS``
-    时强推 cursor 到 now（视为放弃该窗口的 fact 抽取），返回 True；未达上限
-    返回 False（caller 走原有"保留 cursor 下轮重试"路径）。
+    Bumps the failure counter for the (cursor_key) current window; when it reaches
+    ``MEMORY_LIVENESS_MAX_ATTEMPTS``, force-pushes the cursor to now (counts as
+    abandoning fact extraction for that window) and returns True; below the limit
+    it returns False (the caller takes the original "keep the cursor, retry next
+    round" path).
 
-    Why: 毒 msg（safety filter / content policy / 永远 parse 不出来的畸形
-    输出）让 ``_allm_call_with_retries`` 永久耗尽，原代码捕获后直接 return
-    不动 cursor → 下轮重读同窗口 → 永远卡死该角色的 fact pipeline（类似
-    PR #1399 "26 天 0 fact" 事故的 liveness 缺口）。强推 cursor 等于
-    放弃这段窗口的 fact 抽取，代价上限 = N × interval (≈ 3 分钟)，远比
-    "永久 0 fact" 划算。
+    Why: a poison msg (safety filter / content policy / output that can never be
+    parsed) permanently exhausts ``_allm_call_with_retries``; the original code
+    caught it and returned without moving the cursor → next round re-reads the
+    same window → that character's fact pipeline is stuck forever (the liveness
+    gap behind the PR #1399 "26 days, 0 facts" incident). Force-pushing the
+    cursor means giving up fact extraction for that window, with a cost ceiling
+    of N × interval (≈ 3 minutes) — far better than "0 facts forever".
     """
     from config import MEMORY_LIVENESS_MAX_ATTEMPTS
     fails = state.setdefault('a_extract_failures', {})
@@ -1939,17 +1993,19 @@ def _stage1_path_a_bump_failure(
 def _stage1_path_b_bump_failure(
     name: str, state: dict, cursor_key: str, force_to: datetime,
 ) -> bool:
-    """Path B Stage-1 LLM 终态失败的 liveness 兜底（path A 的对偶）。
+    """Liveness fallback for Path B Stage-1 LLM terminal failures (the dual of path A's).
 
-    给 (cursor_key) 当前 B 窗口 bump 失败计数；达
-    ``MEMORY_LIVENESS_MAX_ATTEMPTS`` 时强推 ``state['last_b_check_ts']``
-    到 ``force_to`` (= last_fetched_ts)，返回 True；未达上限返回 False
-    （caller 走原有"保留 cursor 下次 trigger 重试"路径）。
+    Bumps the failure counter for the (cursor_key) current B window; when it
+    reaches ``MEMORY_LIVENESS_MAX_ATTEMPTS``, force-pushes
+    ``state['last_b_check_ts']`` to ``force_to`` (= last_fetched_ts) and returns
+    True; below the limit returns False (the caller takes the original "keep the
+    cursor, retry at the next trigger" path).
 
-    Why: 跟 path A 同源问题——B 的 ``persisted is None`` 分支原代码直接
-    return 不动 ``last_b_check_ts`` → 下次 B trigger 重读 [last_b_check_ts,
-    last_a_msg_ts] 同窗口 → 仍卡。强推 cursor 到 last_fetched_ts 等于
-    放弃 AI-aware 视角下的这段窗口，代价上限 = N × B trigger 间隔。
+    Why: same root problem as path A — B's ``persisted is None`` branch originally
+    returned without moving ``last_b_check_ts`` → the next B trigger re-reads the
+    same [last_b_check_ts, last_a_msg_ts] window → still stuck. Force-pushing the
+    cursor to last_fetched_ts means giving up that window from the AI-aware
+    perspective, with a cost ceiling of N × the B trigger interval.
     """
     from config import MEMORY_LIVENESS_MAX_ATTEMPTS
     fails = state.setdefault('b_extract_failures', {})
@@ -2066,41 +2122,51 @@ async def _adispatch_evidence_signals(
 
 
 async def _run_path_b(name: str, state: dict) -> None:
-    """Path B: AI-aware Stage-1 only（不进 Stage-2 evidence loop）。
+    """Path B: AI-aware Stage-1 only (does not enter the Stage-2 evidence loop).
 
-    Piggyback 在 path A 循环里，每 ``EVIDENCE_AI_AWARE_EVERY_N_A_TICKS`` 次 A
-    tick 触发一次。窗口下游边界用 path A 实际处理过的最晚 msg ts，保证 B
-    看到的消息严格被 A 看过——避免"A scan SQL 完成那一刻之后才入 SQLite 的
-    msg 被 B 抢先处理"的 race。
+    Piggybacks on the path A loop, triggered once every
+    ``EVIDENCE_AI_AWARE_EVERY_N_A_TICKS`` A ticks. The window's downstream boundary
+    is the latest msg ts path A actually processed, guaranteeing every message B
+    sees was strictly seen by A — avoiding the race where "a msg inserted into
+    SQLite right after A's scan SQL finished gets grabbed by B first".
 
-    设计要点：
-      1. 窗口 = [last_b_check_ts, last_a_msg_ts]。cold start last_b 推算 =
-         last_a_msg_ts - max(N_TICKS, N_TURNS) × IDLE_MINUTES（取两种 A 触发
-         节律的较保守值，cover sparse turn 场景）
-      2. SQL 层 LIMIT MAX_AI_AWARE_WINDOW_MSGS 防极端长窗口爆 prompt
-      3. 已知 fact 池：从 facts.json 拉 created_at ≥ last_b 的 fact（不设
-         上界——A idle delay 让最新一批 A facts 的 created_at 略晚于
-         last_a_msg_ts，设上界会把它们整批漏掉），按 importance DESC 取
-         前 MAX_KNOWN_POOL_FACTS 塞 prompt，让 LLM 输出层主动去重 path A
-         已抽内容
-      4. 落盘 default_source='ai_disclosure'；LLM 显式 source 字段优先
-         注：喂给 Stage-1 的消息会先 trim 到 user-msg-bracket（首条 user msg
-         到末条 user msg 之间，含两端）——product thesis 防廉价层污染，
-         首尾的 AI 残段不该被 path B 当 fact 沉淀
-      5. Cursor 推进规则：
-         - SQL 返 0 rows → 推到 last_a_msg_ts（窗口确实空）
-         - SQL 返 N rows 但全 system/空 msg → 推到 last fetched row ts
-           （未取尾巴可能有内容）
-         - Stage-1 LLM 终态失败（aextract_facts_with_known_pool 返 None）
-           → cursor 不推进，下次 trigger 重试同窗口（fact dedup 防双写）
-         - 其它正常路径 → 推到 last fetched row ts（截断时 < last_a_msg_ts）
+    Design points:
+      1. Window = [last_b_check_ts, last_a_msg_ts]. Cold-start last_b is derived =
+         last_a_msg_ts - max(N_TICKS, N_TURNS) × IDLE_MINUTES (the more
+         conservative of the two A trigger cadences, covering sparse-turn cases)
+      2. SQL-level LIMIT MAX_AI_AWARE_WINDOW_MSGS guards against extreme long
+         windows blowing up the prompt
+      3. Known-fact pool: pull facts with created_at ≥ last_b from facts.json (no
+         upper bound — A's idle delay makes the latest batch of A facts'
+         created_at slightly later than last_a_msg_ts; an upper bound would drop
+         that whole batch), take the top MAX_KNOWN_POOL_FACTS by importance DESC
+         into the prompt, so the LLM's output layer actively dedups content path A
+         already extracted
+      4. Persisted with default_source='ai_disclosure'; an explicit LLM source
+         field takes precedence
+         Note: messages fed to Stage-1 are first trimmed to the user-msg bracket
+         (first user msg through last user msg, inclusive) — product thesis,
+         guarding against cheap-layer pollution; leading/trailing AI fragments
+         shouldn't settle as facts via path B
+      5. Cursor advancement rules:
+         - SQL returns 0 rows → push to last_a_msg_ts (window genuinely empty)
+         - SQL returns N rows but all system/empty msgs → push to last fetched
+           row ts (the unfetched tail may have content)
+         - Stage-1 LLM terminal failure (aextract_facts_with_known_pool returns
+           None) → cursor stays put; the next trigger retries the same window
+           (fact dedup prevents double writes)
+         - all other normal paths → push to last fetched row ts (< last_a_msg_ts
+           when truncated)
 
-    与 path A 区别：
-    - 不进 Stage-2 evidence loop（_apersist_new_facts 写 signal_processed=True
-      + aextract_facts_and_detect_signals 内部 source filter 双重防御）
-    - Stage-1 失败 swallow 不抛（path A 自己的 FactExtractionFailed 有独立
-      retry 路径，B 是补抓性质不该阻塞），但 cursor 必须保留——失败窗口
-      下次 trigger 重试，不能折叠成"成功 0 抽"静默 skip
+    Differences from path A:
+    - does not enter the Stage-2 evidence loop (_apersist_new_facts writes
+      signal_processed=True + the source filter inside
+      aextract_facts_and_detect_signals as double defense)
+    - Stage-1 failures are swallowed, not raised (path A's own
+      FactExtractionFailed has an independent retry path; B is supplementary and
+      shouldn't block), but the cursor must be preserved — a failed window is
+      retried at the next trigger, never collapsed into a silent
+      "succeeded with 0 extractions" skip
     """
     last_a_msg_ts = state.get('last_a_msg_ts')
     if last_a_msg_ts is None:
@@ -2312,10 +2378,10 @@ async def _run_path_b(name: str, state: dict) -> None:
 
 
 async def _periodic_signal_extraction_loop():
-    """每 EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS 轮询，满足触发条件时对每个
-    catgirl 跑 Stage-1 + Stage-2 + signal dispatch（RFC §3.4.3）。
+    """Polls every EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS; when the trigger condition is
+    met, runs Stage-1 + Stage-2 + signal dispatch for each catgirl (RFC §3.4.3).
 
-    首轮启动延迟 _INITIAL_DELAY_SIGNAL 秒（与其他后台循环错峰）。
+    First run delayed by _INITIAL_DELAY_SIGNAL seconds (staggered against the other background loops).
     """
     await asyncio.sleep(_INITIAL_DELAY_SIGNAL)
     while True:
@@ -2356,9 +2422,10 @@ async def _periodic_signal_extraction_loop():
         now = datetime.now()
 
         async def _signal_check_one(name: str):
-            """单角色的 Stage-1 + Stage-2 + signal dispatch。各角色互相
-            独立（per-char event_log 锁 / 文件），外层 gather 并行。失败
-            不阻塞其他角色，cursor 只在完整成功路径上推进。"""
+            """Stage-1 + Stage-2 + signal dispatch for a single character. Characters are
+            mutually independent (per-char event_log lock / files); the outer gather runs
+            them in parallel. A failure doesn't block other characters, and the cursor
+            only advances on the fully successful path."""
             try:
                 if not _signal_check_should_run(name, now):
                     return
@@ -2600,8 +2667,8 @@ async def _amaybe_trigger_negative_keyword_hook(
 
 
 async def _run_persona_refine_for_character(character: str) -> None:
-    """单角色 persona refine pass。embedding 不可用 / cluster_hash 全
-    skip / 候选不足 → 整 pass no-op。"""
+    """Single-character persona refine pass. Embedding unavailable / all
+    cluster_hash skipped / not enough candidates → the whole pass is a no-op."""
     from config import (
         MEMORY_LIVENESS_MAX_ATTEMPTS,
         MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
@@ -2677,11 +2744,12 @@ async def _run_persona_refine_for_character(character: str) -> None:
 
 
 async def _periodic_persona_refine_loop():
-    """每 N 秒对每个角色跑一轮 PERSONA_REFINE。
+    """Run one PERSONA_REFINE round per character every N seconds.
 
-    embedding 服务关 / powerful memory 关 → no-op；engine 内 cluster_hash
-    skip 让"刚审过"的 cluster 零成本跳过，所以高频触发不会浪费 LLM
-    token。初始 delay 错峰 reflection refine 100s。"""
+    Embedding service off / powerful memory off → no-op; the engine's cluster_hash
+    skip makes "just reviewed" clusters zero-cost to skip, so high-frequency
+    triggering doesn't waste LLM tokens. Initial delay staggered 100s from
+    reflection refine."""
     await asyncio.sleep(_INITIAL_DELAY_PERSONA_REFINE)
     interval = MEMORY_REFINE_CRON_INTERVAL_SECONDS
     while True:
@@ -2704,9 +2772,9 @@ async def _periodic_persona_refine_loop():
 
 
 async def _run_reflection_refine_for_character(character: str) -> None:
-    """单角色 reflection refine pass。cluster 内可混入同 entity 的
-    absorbed fact 作只读信息源（fact 不可被 split/discard/modify，apply
-    层代码兜底）。"""
+    """Single-character reflection refine pass. The cluster may mix in absorbed
+    facts of the same entity as a read-only information source (facts cannot be
+    split/discarded/modified; the apply layer enforces this as a backstop)."""
     from config import (
         MEMORY_LIVENESS_MAX_ATTEMPTS,
         MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
@@ -2792,8 +2860,8 @@ async def _run_reflection_refine_for_character(character: str) -> None:
 
 
 async def _periodic_reflection_refine_loop():
-    """每 N 秒对每个角色跑一轮 REFLECTION_REFINE。candidate pool 包含
-    active reflection + 同 entity 的 absorbed fact（fact 只读）。"""
+    """Run one REFLECTION_REFINE round per character every N seconds. The candidate
+    pool contains active reflections + absorbed facts of the same entity (facts read-only)."""
     await asyncio.sleep(_INITIAL_DELAY_REFLECTION_REFINE)
     interval = MEMORY_REFINE_CRON_INTERVAL_SECONDS
     while True:
@@ -2816,33 +2884,39 @@ async def _periodic_reflection_refine_loop():
 
 
 async def _periodic_reflection_synthesis_loop():
-    """每 N 秒对每个角色跑一轮 reflection 合成。
+    """Run one reflection synthesis round per character every N seconds.
 
-    与其他 9 条 ``_periodic_*_loop`` 对偶——signal_extraction 把对话抽成 fact，
-    本循环把 unabsorbed fact 综合成 pending reflection，auto_promote_loop 再把
-    pending 推到 confirmed/promoted。整条链路全部在 memory_server 进程内长跑，
-    不依赖 ``/api/proactive_chat`` HTTP trigger（也就不再依赖前端浏览器开着）。
+    Dual to the other 9 ``_periodic_*_loop``s — signal_extraction distills
+    conversations into facts, this loop synthesizes unabsorbed facts into pending
+    reflections, and auto_promote_loop pushes pending on to confirmed/promoted.
+    The whole chain runs long-lived inside the memory_server process, independent
+    of the ``/api/proactive_chat`` HTTP trigger (and thus no longer dependent on a
+    frontend browser being open).
 
-    历史背景（为啥要这条循环）：reflection 合成原本只挂在
-    ``main_routers/system_router.py`` 的 proactive_chat handler 里
-    （``_mem_client.post('/reflect/{name}')``，PR #1015 顺手塞的），导致：
-      - 前端关 / proactive 不触发 / 任一 frontend gate false → ``/reflect``
-        永不被调 → ``reflections.json`` 永不增长
-      - reflection 生命周期实际上跟前端 setTimeout 强耦合，违背"长跑后端服务
-        自己保证记忆生态"的设计意图
+    History (why this loop exists): reflection synthesis used to hang solely off
+    the proactive_chat handler in ``main_routers/system_router.py``
+    (``_mem_client.post('/reflect/{name}')``, tacked on in PR #1015), which meant:
+      - frontend closed / proactive never fires / any frontend gate false →
+        ``/reflect`` is never called → ``reflections.json`` never grows
+      - the reflection lifecycle was effectively hard-coupled to a frontend
+        setTimeout, violating the design intent of "the long-running backend
+        service guarantees the memory ecosystem on its own"
 
-    Gate 全靠 ``reflection_engine.synthesize_reflections`` 内置：
-      - ``len(unabsorbed) < MIN_FACTS_FOR_REFLECTION (=5)`` → 直接返回 []
-      - 同批 source_fact_ids → 同 rid 幂等 short-circuit，无新 fact 时 LLM 不调
-      - ``REFLECTION_SYNTHESIS_FACTS_MAX (=20)`` cap 单次输入规模
-    所以本循环只做调度，不重复加 gate；间隔常量
-    ``MEMORY_REFLECTION_SYNTHESIS_INTERVAL_SECONDS`` 控制最大调用频率。
+    Gating relies entirely on what's built into
+    ``reflection_engine.synthesize_reflections``:
+      - ``len(unabsorbed) < MIN_FACTS_FOR_REFLECTION (=5)`` → returns [] directly
+      - same batch of source_fact_ids → same-rid idempotent short-circuit; no LLM
+        call when there are no new facts
+      - ``REFLECTION_SYNTHESIS_FACTS_MAX (=20)`` caps single-run input size
+    So this loop only schedules and adds no duplicate gates; the interval constant
+    ``MEMORY_REFLECTION_SYNTHESIS_INTERVAL_SECONDS`` bounds the max call rate.
 
-    与 powerful_memory 开关：synthesize_reflections 不在 evidence-RFC 引入的
-    新 LLM 路径里——它是 RFC 之前就存在的合成机制（pending reflection 是 RFC
-    前就有的，evidence 只是给它做了状态推进），所以**不**受 powerful_memory 关
-    闭影响。这跟 refine / signal_extraction 不一样，对齐 idle_maintenance 里
-    "history 压缩 / review" 那两个子任务的处理。
+    Relation to the powerful_memory switch: synthesize_reflections is not one of
+    the new LLM paths introduced by the evidence RFC — it is a synthesis mechanism
+    that predates the RFC (pending reflections existed before the RFC; evidence
+    merely added state progression), so it is **not** affected by powerful_memory
+    being off. That differs from refine / signal_extraction, and aligns with how
+    the "history compression / review" subtasks in idle_maintenance are handled.
     """
     await asyncio.sleep(_INITIAL_DELAY_REFLECTION_SYNTHESIS)
     interval = MEMORY_REFLECTION_SYNTHESIS_INTERVAL_SECONDS
@@ -2868,17 +2942,21 @@ async def _periodic_reflection_synthesis_loop():
 
 
 async def _bootstrap_embedding_worker() -> None:
-    """ready 后在后台 bootstrap 向量预热 / 去重 worker。
+    """Bootstrap the vector warmup / dedup worker in the background after ready.
 
-    重 import（``memory.embedding_worker`` 拉起 embedding 栈 ~0.6s）和服务构造
-    （``get_embedding_service()`` 可能 probe/load 模型）全程在 ``to_thread`` 里跑，
-    不阻塞 event loop；``start()`` 是轻量的（只 ``create_task``），回到 loop 上调。
-    worker 自带 warmup 延迟、向量不可用也会降级，所以从 memory 启动关键路径移出来
-    对 greeting 零影响。
+    The heavy import (``memory.embedding_worker`` pulls in the embedding stack
+    ~0.6s) and service construction (``get_embedding_service()`` may probe/load a
+    model) all run inside ``to_thread`` without blocking the event loop;
+    ``start()`` is lightweight (just ``create_task``) and is called back on the
+    loop. The worker has its own warmup delay and degrades gracefully when vectors
+    are unavailable, so moving it off the memory startup critical path has zero
+    impact on greeting.
 
-    ⚠️ 故意**不**把 manager 作为参数传入：worker 的 getter（``lambda: persona_manager``
-    等）必须解析到模块全局，这样 /reload 重绑全局后下一轮 sweep 能看到新实例。
-    传参会让闭包捕获启动期的旧实例，绕过 worker 设计的 reload-staleness 防护。
+    ⚠️ Deliberately does **not** pass the manager as a parameter: the worker's
+    getters (``lambda: persona_manager`` etc.) must resolve to the module globals,
+    so that after /reload rebinds the globals the next sweep sees the new
+    instances. Passing parameters would let the closure capture the startup-era
+    old instances, bypassing the worker's designed reload-staleness protection.
     """
     global embedding_warmup_worker, fact_dedup_resolver
     try:
@@ -3090,7 +3168,7 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
 
 @app.on_event("startup")
 async def startup_event_handler():
-    """应用启动时初始化"""
+    """Initialization at application startup"""
     blocking_reason = get_storage_startup_blocking_reason(_config_manager)
     if blocking_reason:
         logger.info(
@@ -3152,14 +3230,15 @@ async def block_storage_startup(payload: ContinueStorageStartupRequest | None = 
 
 @app.post("/internal/memory/reset_confirmed_at")
 async def internal_reset_confirmed_at():
-    """强力记忆 ON→OFF migration：重置所有角色 confirmed reflection 的
-    confirmed_at 锚点到 now。
+    """Powerful-memory ON→OFF migration: reset the confirmed_at anchor of every
+    character's confirmed reflections to now.
 
-    main_routers/memory_router.py 通过 HTTP 触发本端点——helper
-    ``_reset_confirmed_at_for_all_characters`` 依赖本进程内的
-    ``reflection_engine`` 全局，必须在 memory_server 进程跑才能拿到正确的
-    实例（main_server 进程虽然能 import memory_server 模块，但那是个 fresh
-    副本，``reflection_engine`` 是 None，调用会成 no-op）。
+    main_routers/memory_router.py triggers this endpoint over HTTP — the helper
+    ``_reset_confirmed_at_for_all_characters`` depends on this process's
+    ``reflection_engine`` global, and must run inside the memory_server process to
+    get the correct instance (the main_server process can import the
+    memory_server module, but that's a fresh copy where ``reflection_engine`` is
+    None, making the call a no-op).
     """
     try:
         count = await _reset_confirmed_at_for_all_characters()
@@ -3171,7 +3250,7 @@ async def internal_reset_confirmed_at():
 
 @app.on_event("shutdown")
 async def shutdown_event_handler():
-    """应用关闭时执行清理工作"""
+    """Cleanup at application shutdown"""
     logger.info("Memory server正在关闭...")
     try:
         from utils.token_tracker import TokenTracker
@@ -3214,7 +3293,7 @@ async def shutdown_event_handler():
 
 
 def _get_review_spawn_lock(name: str) -> asyncio.Lock:
-    """惰性 per-name asyncio.Lock，串行化 gate+spawn 检查。"""
+    """Lazy per-name asyncio.Lock serializing the gate+spawn check."""
     lock = _review_spawn_locks.get(name)
     if lock is None:
         lock = asyncio.Lock()
@@ -3223,11 +3302,11 @@ def _get_review_spawn_lock(name: str) -> asyncio.Lock:
 
 
 def _count_new_user_msgs_since_last_review(name: str, current_history: list) -> float:
-    """数自上次 review cutoff 起 history 里的 user msg 数。
+    """Count the user msgs in history since the last review cutoff.
 
-    白 review（fingerprint=None）→ 视为足够多放行。
-    fingerprint 在 current 里找不到（被压缩 / 清空）→ 同样视为足够多放行
-    （应当尽快重 review 重建 fingerprint）。
+    White review (fingerprint=None) → treated as plenty, allowed through.
+    Fingerprint not found in current (compressed / cleared) → likewise treated as
+    plenty, allowed through (should re-review ASAP to rebuild the fingerprint).
     """
     from memory.recent import _find_fingerprint_position
     fp = _maint_state.get(name, {}).get('last_reviewed_cutoff_tail')
@@ -3243,18 +3322,18 @@ def _count_new_user_msgs_since_last_review(name: str, current_history: list) -> 
 
 
 async def maybe_spawn_review(name: str) -> None:
-    """统一 review 触发入口（Phase C）。
+    """Unified review trigger entry (Phase C).
 
-    /process /renew /settle / IdleMaint 都调这一个函数。本身**不**取消任何
-    在跑的 review——看到 in-flight 直接 skip 本次 spawn。由 spawn 锁串行化
-    gate+spawn 防多入口竞态。
+    /process /renew /settle / IdleMaint all call this one function. It does
+    **not** cancel any running review — on seeing one in-flight it simply skips
+    this spawn. The spawn lock serializes gate+spawn against multi-entry races.
 
-    Gates（任一不过都 skip）：
-    1. 已有 review 在跑（in-flight）
-    2. ``review_enabled``（``recent_memory_auto_review`` flag）
-    3. 历史长度 < ``REVIEW_SKIP_HISTORY_LEN``
-    4. 距上次 review 完成 < ``REVIEW_MIN_INTERVAL``
-    5. 自上次 review cutoff 起累积 user msg < ``MIN_NEW_MSGS_FOR_REVIEW``
+    Gates (failing any one skips):
+    1. a review is already running (in-flight)
+    2. ``review_enabled`` (the ``recent_memory_auto_review`` flag)
+    3. history length < ``REVIEW_SKIP_HISTORY_LEN``
+    4. less than ``REVIEW_MIN_INTERVAL`` since the last review finished
+    5. user msgs accumulated since the last review cutoff < ``MIN_NEW_MSGS_FOR_REVIEW``
     """
     async with _get_review_spawn_lock(name):
         # Gate 1: in-flight
@@ -3335,11 +3414,13 @@ async def maybe_spawn_review(name: str) -> None:
 
 
 async def _record_review_failure(lanlan_name: str, snapshot: list) -> int:
-    """记一次 review 失败到失败退避计数（Gate 6 用），返回累计次数。
+    """Record one review failure into the failure-backoff counter (used by Gate 6); returns the cumulative count.
 
-    输入 fingerprint 与上次失败记录不同 → 先把预算归零再 +1，让每段
-    history tail 各享独立的 N 次预算，不跨输入累积（Codex P2）。'failed'
-    返回分支和 except 异常分支共用本函数，避免两处逻辑漂移。
+    If the input fingerprint differs from the last failure record → zero the
+    budget first, then +1, so each history tail gets its own independent budget of
+    N attempts instead of accumulating across inputs (Codex P2). The 'failed'
+    return branch and the except branch share this function to keep the two paths
+    from drifting apart.
     """
     from memory.recent import build_review_fingerprint
     state = _maint_state.setdefault(lanlan_name, {})
@@ -3362,8 +3443,11 @@ compress_backup_tasks: dict[str, asyncio.Task] = {}
 
 
 async def _record_compress_backup_failure(lanlan_name: str, snapshot: list) -> int:
-    """记一次后台压缩失败到退避计数并返回累计次数。输入 fingerprint 变了先归零
-    （每段积压各享独立预算，不跨输入累积），与 _record_review_failure 对偶。"""
+    """Record one backup-compression failure and return the current attempt count.
+
+    A changed input fingerprint resets the counter so each backlog segment gets
+    its own budget, matching the review-failure backoff shape.
+    """
     from memory.recent import build_review_fingerprint
     state = _maint_state.setdefault(lanlan_name, {})
     cur_fp = build_review_fingerprint(snapshot)
@@ -3376,7 +3460,7 @@ async def _record_compress_backup_failure(lanlan_name: str, snapshot: list) -> i
 
 
 async def _clear_compress_backup_failure(lanlan_name: str) -> None:
-    """清后台压缩失败退避计数（主路径成功 / 后台成功或白做时调）。"""
+    """Clear the backup-compression failure backoff counter."""
     state = _maint_state.setdefault(lanlan_name, {})
     if state.get('compress_backup_fail_attempts') or state.get('compress_backup_fail_fp'):
         state['compress_backup_fail_attempts'] = 0
@@ -3385,8 +3469,7 @@ async def _clear_compress_backup_failure(lanlan_name: str) -> None:
 
 
 async def _run_backup_compress(lanlan_name: str, snapshot: list, detailed: bool):
-    """后台跑 best-effort 压缩：compress 在锁外（LLM 耗时，不阻塞其它端点），
-    merge 在 _get_settle_lock 内（快，串行化对该角色 history 的写）。"""
+    """Run best-effort background compression and merge the result under lock."""
     try:
         # 1) 压缩（锁外）。compress_history 内部按输入大小自动分段，避免输入过大超时。
         try:
@@ -3475,28 +3558,32 @@ async def _on_compress_done(lanlan_name: str, snapshot: list, ok: bool, detailed
 async def _run_review_in_background(
     lanlan_name: str, snapshot: list, cancel_event: asyncio.Event,
 ):
-    """在后台运行 review_history，支持取消。
+    """Run review_history in the background, with cancellation support.
 
-    Phase C 改动：
-    - snapshot + cancel_event 由 caller 拍下传入（task 自己持有引用）
-    - review_history 返回 (status, fingerprint) tuple：
-        ('patched', new_fp) → 成功 patch；new_fp 是 patch 后 new_history 末尾
-                              的 K 条 fingerprint，**必须**用这个新 fingerprint
-                              （review 可能改写过末尾 K 条里的任一条，
-                              ``build_review_fingerprint(snapshot)`` 是旧的）
-        ('white', None)    → cutoff 失配 / 整段丢弃
-        ('failed', None)   → LLM 失败 / 被取消 / 格式错误
+    Phase C changes:
+    - snapshot + cancel_event are captured and passed in by the caller (the task
+      holds its own references)
+    - review_history returns a (status, fingerprint) tuple:
+        ('patched', new_fp) → patch succeeded; new_fp is the fingerprint of the
+                              last K entries of new_history after the patch —
+                              **must** use this new fingerprint (the review may
+                              have rewritten any of the last K entries;
+                              ``build_review_fingerprint(snapshot)`` is stale)
+        ('white', None)    → cutoff mismatch / whole segment dropped
+        ('failed', None)   → LLM failure / cancelled / malformed output
 
-    白 review 处理（CodeRabbit Issue #1 修复）：
-    - **不**更新 last_review_ts → 下轮 gate 4 视为"距上次 review 时间已久"
-      → 配合 fingerprint=None → MIN_NEW_MSGS gate 视为 ∞ → 下次 /process
-      立即重 review，重建锚点。这才符合"白 review = 锚点丢失，应尽快重建"
-      的用户原意。
+    White-review handling (CodeRabbit Issue #1 fix):
+    - do **not** update last_review_ts → next round's gate 4 sees "long since the
+      last review" → combined with fingerprint=None → the MIN_NEW_MSGS gate reads
+      as ∞ → the next /process re-reviews immediately, rebuilding the anchor.
+      This matches the original user intent of "white review = anchor lost,
+      rebuild ASAP".
 
-    清理（CodeRabbit Issue #2 修复）：
-    - finally 按 task/event 身份比对再 pop/clear，避免并发新 spawn 写入的
-      条目被误删。理论上 spawn lock + asyncio finally 同步语义已经排除了
-      race，但身份检查是廉价的防御。
+    Cleanup (CodeRabbit Issue #2 fix):
+    - finally compares task/event identity before pop/clear, so entries written by
+      a concurrently spawned new review aren't deleted by mistake. In theory the
+      spawn lock + asyncio finally semantics already preclude the race, but the
+      identity check is cheap defense.
     """
     try:
         # 只把 review_history 调用本身包进内层 try：它抛异常才算"review 失败"，
@@ -3572,7 +3659,7 @@ async def _run_review_in_background(
             correction_cancel_flags.pop(lanlan_name, None)
 
 def _extract_ai_response(messages: list) -> str:
-    """从消息列表中提取最后一条 AI 回复的文本。"""
+    """Extract the text of the last AI reply from the message list."""
     for m in reversed(messages):
         if getattr(m, 'type', '') == 'ai':
             content = getattr(m, 'content', '')
@@ -3585,7 +3672,7 @@ def _extract_ai_response(messages: list) -> str:
 
 
 def _extract_user_messages(messages: list) -> list[str]:
-    """从消息列表中提取用户消息文本（跳过空白）。"""
+    """Extract user message texts from the message list (skipping blanks)."""
     user_msgs = []
     for m in messages:
         if getattr(m, 'type', '') == 'human':
@@ -3606,10 +3693,10 @@ def _extract_user_messages(messages: list) -> list[str]:
 
 @app.post("/reflect/{lanlan_name}")
 async def api_reflect(lanlan_name: str):
-    """合成反思 + 自动状态迁移，返回结果。
+    """Synthesize reflections + automatic state migration, returning the result.
 
-    集中在 memory_server 进程内执行，避免 main_server 本地实例化导致的
-    absorbed 标记竞态问题。
+    Centralized in the memory_server process, avoiding the absorbed-flag race
+    caused by main_server instantiating locally.
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
     reflection_result = None
@@ -3630,9 +3717,10 @@ async def api_reflect(lanlan_name: str):
 
 
 async def _safe_auto_promote(lanlan_name: str) -> None:
-    """fire-and-forget 包装，吞 reflection_engine.aauto_promote_* 的异常。
+    """Fire-and-forget wrapper swallowing exceptions from reflection_engine.aauto_promote_*.
 
-    根据强力记忆开关二选一：开 → score-driven + merge LLM；关 → time-driven。
+    Picks one of two based on the powerful-memory switch: on → score-driven +
+    merge LLM; off → time-driven.
     """
     try:
         if await _ais_powerful_memory_enabled():
@@ -3645,7 +3733,7 @@ async def _safe_auto_promote(lanlan_name: str) -> None:
 
 @app.get("/followup_topics/{lanlan_name}")
 async def api_followup_topics(lanlan_name: str):
-    """获取回调话题候选（不标记 surfaced，调用方需后续调 /record_surfaced）。"""
+    """Get follow-up topic candidates (does not mark them surfaced; the caller must call /record_surfaced afterwards)."""
     lanlan_name = validate_lanlan_name(lanlan_name)
     try:
         topics = await reflection_engine.aget_followup_topics(lanlan_name)
@@ -3657,7 +3745,7 @@ async def api_followup_topics(lanlan_name: str):
 
 @app.post("/record_surfaced/{lanlan_name}")
 async def api_record_surfaced(request: Request, lanlan_name: str):
-    """记录本次主动搭话提及了哪些反思，刷新 cooldown。"""
+    """Record which reflections this proactive chat mentioned, refreshing the cooldown."""
     lanlan_name = validate_lanlan_name(lanlan_name)
     body = await request.json()
     reflection_ids = body.get("reflection_ids", [])
@@ -3671,26 +3759,29 @@ async def api_record_surfaced(request: Request, lanlan_name: str):
 
 
 async def _run_post_turn_signals(messages: list, lanlan_name: str):
-    """后台异步：每轮 turn end 的 per-turn signals。失败静默跳过。
+    """Background async: per-turn signals at every turn end. Failures are skipped silently.
 
-    职责（按 step 顺序）：
-      0. counter bump —— 给 ``_periodic_signal_extraction_loop`` 的 turn
-         counter +1，让 batch loop 在累积 10 turn 时触发 Stage-1+Stage-2
-      1. OFF-mode Stage-1 fallback —— powerful_memory 关闭时 batch loop 整段
-         停，per-turn ``fact_store.extract_facts`` 是 fact extraction 唯一
-         兜底（ON-mode 不跑，交给 batch loop）
-      2. 复读嗅探 —— 本地 BM25，§2.6 5h 窗口 suppress
-      3. check_feedback —— 用户对 surfaced reflection 的反馈检测（LLM 仅在
-         surfaced 有 pending 时跑）+ NEGATIVE_KEYWORDS 命中触发 LLM target check
+    Responsibilities (in step order):
+      0. counter bump — +1 to ``_periodic_signal_extraction_loop``'s turn counter,
+         so the batch loop triggers Stage-1+Stage-2 at 10 accumulated turns
+      1. OFF-mode Stage-1 fallback — when powerful_memory is off the batch loop is
+         fully stopped, and per-turn ``fact_store.extract_facts`` is the only
+         fallback for fact extraction (not run in ON-mode; left to the batch loop)
+      2. repetition sniffing — local BM25, §2.6 5h-window suppress
+      3. check_feedback — detects user feedback on surfaced reflections (LLM runs
+         only when surfaced has pending entries) + NEGATIVE_KEYWORDS hits trigger
+         the LLM target check
 
-    命名史 — 本函数 PR-1 (RFC #928) 引入时叫 ``_extract_facts_and_check_feedback``，
-    当时 step 1 还是无条件每轮跑 ``fact_store.extract_facts`` (Stage-1)。
-    RFC §3.4.3 原话："**不**在对话主路径上每轮运行 extract_facts——太贵。
-    改为背景调度"——PR #1346 把 ON-mode Stage-1 剥离到
-    ``_periodic_signal_extraction_loop``，step 1 退化为 OFF-mode fallback，
-    本 follow-up 把符号名（含 outbox spawn helper / handler / op 常量）统一
-    改成 ``post_turn_signals`` 以匹配实际语义。``OP_POST_TURN_SIGNALS`` 的
-    **字符串值**仍是 ``"extract_facts"``（outbox.ndjson wire-format 不可变）。
+    Naming history — this function was introduced in PR-1 (RFC #928) as
+    ``_extract_facts_and_check_feedback``, when step 1 still unconditionally ran
+    ``fact_store.extract_facts`` (Stage-1) every turn. RFC §3.4.3 verbatim: "do
+    **not** run extract_facts every turn on the conversation hot path — too
+    expensive. Move to background scheduling" — PR #1346 split ON-mode Stage-1 out
+    into ``_periodic_signal_extraction_loop``, step 1 degraded to the OFF-mode
+    fallback, and this follow-up renamed the symbols (including the outbox spawn
+    helper / handler / op constant) to ``post_turn_signals`` to match the actual
+    semantics. The **string value** of ``OP_POST_TURN_SIGNALS`` remains
+    ``"extract_facts"`` (the outbox.ndjson wire format is immutable).
     """
     user_msgs = _extract_user_messages(messages)
 
@@ -3846,17 +3937,17 @@ async def _run_post_turn_signals(messages: list, lanlan_name: str):
 
 
 async def _outbox_post_turn_signals_handler(lanlan_name: str, payload: dict) -> None:
-    """OP_POST_TURN_SIGNALS 的 outbox handler：从 payload 还原 messages 再跑
-    ``_run_post_turn_signals``。
+    """Outbox handler for OP_POST_TURN_SIGNALS: restore messages from the payload and run
+    ``_run_post_turn_signals``.
 
-    幂等性来源：
-      - fact_store.extract_facts（OFF-mode fallback）内部靠 SHA-256 对事实
-        去重，重复提取不会产生重复 fact。
-      - arecord_mentions 是单调累加计数，重放会小幅抬高提及次数（可接受的
-        at-least-once 语义）。
-      - check_feedback 下次自然回补——reflection 的 surfaced/feedback
-        列表是持久化的。
-      - resolve_corrections 内部用 processed_indices 保护幂等。
+    Sources of idempotency:
+      - fact_store.extract_facts (OFF-mode fallback) dedups facts internally via
+        SHA-256; repeated extraction produces no duplicate facts.
+      - arecord_mentions is a monotonically accumulating counter; replay slightly
+        inflates mention counts (acceptable at-least-once semantics).
+      - check_feedback naturally catches up next time — a reflection's
+        surfaced/feedback lists are persisted.
+      - resolve_corrections protects idempotency internally via processed_indices.
     """
     from utils.llm_client import messages_from_dict
 
@@ -3874,32 +3965,37 @@ register_outbox_handler(OP_POST_TURN_SIGNALS, _outbox_post_turn_signals_handler)
 
 @app.post("/cache/{lanlan_name}")
 async def cache_conversation(request: HistoryRequest, lanlan_name: str):
-    """每轮 turn end 的"轻量持久化"端点：写 recent.json + 落 time_indexed.db
-    + 登记 per-turn signals outbox op（counter bump + 本地复读嗅探 +
-    check_feedback）。**不**跑 Stage-1 fact_extract LLM——RFC §3.4.3
-    明确"per-turn extract_facts 太贵，改为背景调度"，batch 抽取由
-    ``_periodic_signal_extraction_loop`` 在累积 10 turn 或 5 min idle 时
-    从 ``time_indexed.db`` 拉窗口跑 Stage-1+Stage-2；也**不**跑 review LLM
-    重写历史（那一类仍由 /settle 在 renew session 时跑）。
+    """The "lightweight persistence" endpoint at every turn end: writes recent.json +
+    stores into time_indexed.db + registers the per-turn signals outbox op
+    (counter bump + local repetition sniffing + check_feedback). Does **not** run
+    the Stage-1 fact_extract LLM — RFC §3.4.3 explicitly says "per-turn
+    extract_facts is too expensive; move to background scheduling"; batch
+    extraction is done by ``_periodic_signal_extraction_loop``, which pulls a
+    window from ``time_indexed.db`` and runs Stage-1+Stage-2 at 10 accumulated
+    turns or 5 min idle; nor does it run the review LLM rewriting history (that
+    category is still run by /settle at session renew).
 
-    历史 — commit cba377c5（"Fix/memory hotswap timing"，2026-03-29）引入
-    /settle 时把"补完 cache 留下的 LLM 后续操作"全 gate 在 ``if input_history``
-    后面，但 cross_server 的标准节奏是"turn end /cache → renew session
-    /settle(msgs=0)"，settle 永远收 msgs=0，于是 ``store_conversation`` 和
-    outbox extract 都被静默跳过：``time_indexed.db`` 永不创建（time
-    perception 失效）+ ``outbox.ndjson`` / ``events.ndjson`` / ``facts.json``
-    全部不建（长期记忆 + evidence-RFC 链路完全空转），**且 batch loop 依赖
-    db 拉历史也一并瘫痪**。
+    History — commit cba377c5 ("Fix/memory hotswap timing", 2026-03-29)
+    introduced /settle and gated "the LLM follow-up work left over from cache"
+    entirely behind ``if input_history``, but cross_server's standard rhythm is
+    "turn end /cache → renew session /settle(msgs=0)", so settle always received
+    msgs=0 and both ``store_conversation`` and the outbox extract were silently
+    skipped: ``time_indexed.db`` was never created (time perception broken) +
+    ``outbox.ndjson`` / ``events.ndjson`` / ``facts.json`` never created
+    (long-term memory + the evidence-RFC chain idling completely), **and the
+    batch loop, which depends on the db for history, was paralyzed with it**.
 
-    修法把 store + post-turn signals 搬回 cache 端点；同时 PR-1 当时为
-    "短期行为不变"暂留的 Stage-1 per-turn fact_extract（``legacy flow``）
-    一并迁完——RFC 原本就计划只让 ``_periodic_signal_extraction_loop`` 跑
-    fact extraction。``astore_conversation`` 是 SQLite INSERT（~ms 量级），
-    ``_spawn_outbox_post_turn_signals`` 现内部只跑 counter bump + 本地复读嗅探
-    + check_feedback（LLM 仅在 surfaced 有 pending 时才跑），是 ndjson
-    append + spawn background task（不阻塞响应）。``cache`` 保持"前台无
-    LLM 延迟"的轻量语义，**且比 PR-1 实现更轻**——单 turn fact_extract
-    LLM 浪费已彻底去除。
+    The fix moves store + post-turn signals back into the cache endpoint; at the
+    same time the Stage-1 per-turn fact_extract that PR-1 had temporarily kept
+    for "short-term behavior parity" (the ``legacy flow``) is migrated out too —
+    the RFC always planned for only ``_periodic_signal_extraction_loop`` to run
+    fact extraction. ``astore_conversation`` is a SQLite INSERT (~ms scale), and
+    ``_spawn_outbox_post_turn_signals`` now only runs counter bump + local
+    repetition sniffing + check_feedback (LLM only when surfaced has pending
+    entries) — an ndjson append + spawned background task (non-blocking).
+    ``cache`` keeps its "no LLM latency in the foreground" lightweight semantics,
+    **and is lighter than the PR-1 implementation** — the per-turn fact_extract
+    LLM waste is fully gone.
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
     _touch_activity()
@@ -4013,11 +4109,12 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
 
 @app.post("/settle/{lanlan_name}")
 async def settle_conversation(request: HistoryRequest, lanlan_name: str):
-    """结算已通过 /cache 缓存的对话：触发摘要压缩 + 时间戳写入 + 事实提取。
+    """Settle the conversation already cached via /cache: trigger summary compression + timestamp writes + fact extraction.
 
-    当 cross_server 的 renew session 发现增量为 0（所有消息已 /cache 过）时调用此端点。
-    /cache 只做 update_history(compress=False)，不触发 LLM 摘要和 time_manager 写入，
-    本端点补全这些操作。
+    Called by cross_server's renew session when it finds the increment is 0 (all
+    messages already /cache'd). /cache only does update_history(compress=False)
+    without triggering LLM summarization or time_manager writes; this endpoint
+    completes those operations.
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
     _touch_activity()
@@ -4076,9 +4173,10 @@ async def get_recent_history(lanlan_name: str):
 
 @app.get("/search_for_memory/{lanlan_name}/{query}")
 async def get_memory(query: str, lanlan_name: str):
-    """**Deprecated** — 旧 GET 端点保留只为不破坏老调用方；新调用方走
-    POST ``/query_memory/{lanlan_name}`` 拿结构化结果。本端点继续返回
-    占位文字以避免老路径回流（语义召回早就在这条 GET 上下线了）。
+    """**Deprecated** — the old GET endpoint is kept only to avoid breaking old
+    callers; new callers use POST ``/query_memory/{lanlan_name}`` for structured
+    results. This endpoint keeps returning placeholder text to discourage the old
+    path from coming back (semantic recall was taken off this GET long ago).
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
     _lang = get_global_language()
@@ -4107,27 +4205,31 @@ class QueryMemoryRequest(BaseModel):
 
 @app.post("/query_memory/{lanlan_name}")
 async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
-    """混合检索 entry point —— BM25 + cosine embedding 并行召回 + RRF 融合。
+    """Hybrid retrieval entry point — BM25 + cosine embedding parallel recall + RRF fusion.
 
-    POST body: ``{"query": "<自然语言查询>", "time": "<可选 ISO 时间>"}``
+    POST body: ``{"query": "<natural language query>", "time": "<optional ISO time>"}``
 
-    返回 ``hybrid_recall`` 的结构化结果（见 ``memory.hybrid_recall``
-    docstring）。``main_server`` 的 ``recall_memory`` 工具 handler 调
-    本端点拿结果，再格式化给模型看。
+    Returns the structured result of ``hybrid_recall`` (see the
+    ``memory.hybrid_recall`` docstring). ``main_server``'s ``recall_memory`` tool
+    handler calls this endpoint for results, then formats them for the model.
 
-    路由（query / time 三种组合）：
-    - **query + time**：``hybrid_recall(query, time_window=...)`` —— 先按事件
-      时间窗口硬过滤候选池，再在窗口内条目上跑语义检索（"那段时间里和
-      query 相关的记忆"）。
-    - **只有 time**：``recall_by_time`` —— 按事件时间锚点返回离该窗口最接近
-      的若干条 fact + reflection，不做语义打分（"那天/那周发生的事"）。
-    - **只有 query**：``hybrid_recall(query)`` —— 全量语义检索。
-    - time 解析失败时按"没给 time"处理，回落到纯 query 语义检索（不能让
-      一个坏 time 把 query 的语义召回也一起吞掉返回空，Codex P2）。
+    Routing (the three query / time combinations):
+    - **query + time**: ``hybrid_recall(query, time_window=...)`` — first
+      hard-filters the candidate pool by event time window, then runs semantic
+      retrieval over the in-window entries ("memories related to query from that
+      period").
+    - **time only**: ``recall_by_time`` — returns the facts + reflections closest
+      to that window by event-time anchor, without semantic scoring ("what
+      happened that day/week").
+    - **query only**: ``hybrid_recall(query)`` — full semantic retrieval.
+    - When time parsing fails, treat it as "no time given" and fall back to pure
+      query semantic retrieval (one bad time must not swallow the query's
+      semantic recall and return empty, Codex P2).
 
-    ⚠️ 候选范围、阈值、budget 都在 ``config.HYBRID_RECALL_*`` 里配置；
-    persona 整段不入池（已经常态渲染进 system prompt），facts +
-    reflections 走全路径，facts_archive 只入 BM25 池。
+    ⚠️ Candidate scope, thresholds, and budget are all configured in
+    ``config.HYBRID_RECALL_*``; persona never enters the pool as a block (it's
+    already rendered into the system prompt routinely), facts + reflections take
+    the full path, facts_archive only enters the BM25 pool.
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
     if fact_store is None or reflection_engine is None:
@@ -4221,7 +4323,7 @@ async def get_settings(lanlan_name: str):
 
 @app.get("/get_persona/{lanlan_name}")
 async def get_persona(lanlan_name: str):
-    """返回完整 persona JSON（供 UI / memory_browser 使用）。"""
+    """Return the full persona JSON (for the UI / memory_browser)."""
     lanlan_name = validate_lanlan_name(lanlan_name)
     return await persona_manager.aget_persona(lanlan_name)
 
@@ -4283,7 +4385,7 @@ async def api_memory_funnel(lanlan_name: str, since: str | None = None, until: s
 
 @app.post("/reload")
 async def reload_config():
-    """重新加载记忆服务器配置（用于新角色创建后）"""
+    """Reload the memory server config (used after a new character is created)"""
     try:
         success = await reload_memory_components()
         if success:
@@ -4418,7 +4520,7 @@ async def new_dialog(lanlan_name: str):
 
 @app.get("/last_conversation_gap/{lanlan_name}")
 async def last_conversation_gap(lanlan_name: str):
-    """返回距上次对话的间隔秒数，供主服务判断是否触发主动搭话。"""
+    """Return the seconds elapsed since the last conversation, for the main server to decide whether to trigger proactive chat."""
     lanlan_name = validate_lanlan_name(lanlan_name)
     try:
         last_time = await time_manager.aget_last_conversation_time(lanlan_name)

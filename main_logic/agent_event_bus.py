@@ -1,10 +1,25 @@
-"""
-用于 main_server <-> agent_server 通信的 ZeroMQ 事件总线。
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-重要说明：这里使用 **同步** 的 zmq.Context + zmq.Socket，并通过后台
-守护线程执行 recv。原因是 zmq.asyncio.Socket.recv 依赖事件循环的
-fd 轮询（add_reader），而该机制在 Windows ProactorEventLoop 上不可用。
-发送侧使用 zmq.NOBLOCK，并在 asyncio 线程内调用（本地 TCP 延迟很低）。
+"""
+ZeroMQ event bus for main_server <-> agent_server communication.
+
+Important: this uses the **synchronous** zmq.Context + zmq.Socket, running
+recv on a background daemon thread. The reason is that zmq.asyncio.Socket.recv
+relies on the event loop's fd polling (add_reader), which is unavailable on
+the Windows ProactorEventLoop. The send side uses zmq.NOBLOCK and is called
+from the asyncio thread (local TCP latency is very low).
 """
 
 import asyncio
@@ -52,7 +67,7 @@ _ack_waiters_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 
 class MainServerAgentBridge:
-    """运行于 main_server 进程内，绑定 PUB、PUSH(analyze)、PULL(agent→main)。"""
+    """Runs inside the main_server process; binds PUB, PUSH(analyze), PULL(agent→main)."""
 
     def __init__(self, on_agent_event: Callable[[Dict[str, Any]], Awaitable[None]]) -> None:
         self.on_agent_event = on_agent_event
@@ -173,7 +188,7 @@ class MainServerAgentBridge:
 # ---------------------------------------------------------------------------
 
 class AgentServerEventBridge:
-    """运行于 agent_server 进程内，连接 SUB、PULL(analyze)、PUSH(agent→main)。"""
+    """Runs inside the agent_server process; connects SUB, PULL(analyze), PUSH(agent→main)."""
 
     def __init__(self, on_session_event: Callable[[Dict[str, Any]], Awaitable[None]]) -> None:
         self.on_session_event = on_session_event
@@ -467,7 +482,7 @@ async def publish_analyze_request_reliably(
     retries: int = 1,
     conversation_id: Optional[str] = None,
 ) -> bool:
-    """可靠发布 analyze_request：携带 event_id + ack，并支持短重试。"""
+    """Reliably publish analyze_request: carries event_id + ack, with short retries."""
     event_id = uuid.uuid4().hex
     sent_at = time.perf_counter()
 

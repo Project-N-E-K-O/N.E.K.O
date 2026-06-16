@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Lightweight LLM client layer using the ``openai`` SDK directly.
 
 Provides:
@@ -302,9 +316,10 @@ class ToolCallAggregate:
 def _normalize_messages(messages: Any) -> list[dict]:
     """Convert various message formats to openai-compatible dicts.
 
-    ``BaseMessage`` 子类透传 ``tool_calls`` / ``tool_call_id`` 字段（如果存在）
-    给 OpenAI Chat Completions —— 这两个字段是 tool calling 多轮对话回填时
-    必须的：assistant 角色带 tool_calls + tool 角色带 tool_call_id。"""
+    ``BaseMessage`` subclasses pass their ``tool_calls`` / ``tool_call_id`` fields (when
+    present) through to OpenAI Chat Completions — both fields are required when
+    backfilling multi-turn tool-calling conversations: the assistant role carries
+    tool_calls + the tool role carries tool_call_id."""
     if isinstance(messages, str):
         return [{"role": "user", "content": messages}]
     out: list[dict] = []
@@ -622,10 +637,11 @@ class ChatOpenAI:
         Multiple parallel calls are kept distinct via ``index`` (the OpenAI
         Chat Completions schema guarantees one ``index`` per call).
 
-        ⚠️ 空 ``name`` 的聚合槽位会被丢弃 —— SDK bug / 流提前中断 / 部分
-        小模型偶发产出的残缺碎片，如果不过滤直接写进 ``tool_calls`` 历史，
-        下一轮调用会被 server 以 schema invalid 拒掉。这里直接 drop，
-        让上层走"模型这一轮没成功调用任何工具"的常规分支。
+        ⚠️ Aggregation slots with an empty ``name`` are dropped — broken fragments
+        produced by SDK bugs / prematurely interrupted streams / some small models.
+        Written into the ``tool_calls`` history unfiltered, the next round's call
+        would be rejected by the server as schema invalid. Dropping here lets the
+        upper layer take the normal "the model called no tool this round" branch.
         """
         import logging as _logging
         _logger = _logging.getLogger(__name__)

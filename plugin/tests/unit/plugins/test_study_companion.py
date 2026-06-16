@@ -4,6 +4,7 @@ import asyncio
 import concurrent.futures
 import json
 import os
+import re
 import shutil
 import sqlite3
 import threading
@@ -16,6 +17,40 @@ from types import SimpleNamespace
 import pytest
 
 pytestmark = pytest.mark.unit
+
+HOSTED_SURFACE_ACTION_IDS = [
+    "study_anonymous_knowledge_preview",
+    "study_checkin_manual",
+    "study_checkin_status",
+    "study_evaluate_answer",
+    "study_explain_text",
+    "study_generate_question",
+    "study_goal_create",
+    "study_goal_delete",
+    "study_goals",
+    "study_knowledge_map",
+    "study_memory_create_deck",
+    "study_memory_delete_deck",
+    "study_memory_due_reviews",
+    "study_memory_habit_status",
+    "study_memory_import_words",
+    "study_memory_list_decks",
+    "study_memory_recitation_attempt",
+    "study_memory_review_item",
+    "study_memory_set_deck_goal",
+    "study_pomodoro_pause",
+    "study_pomodoro_resume",
+    "study_pomodoro_skip_break",
+    "study_pomodoro_start",
+    "study_pomodoro_status",
+    "study_session_summary",
+    "study_set_knowledge_contribution_opt_in",
+    "study_set_mode",
+    "study_status",
+    "study_summarize_session",
+    "study_supervision_status",
+    "study_supervision_toggle",
+]
 
 try:
     import tomllib
@@ -125,7 +160,12 @@ class _Ctx:
         self.config_path.write_text(
             "[plugin]\nid='study_companion'\n", encoding="utf-8"
         )
-        self._config = config
+        self._config = dict(config)
+        study_config = self._config.get("study")
+        if isinstance(study_config, dict):
+            self._config["study"] = {"auto_open_ui": True, **study_config}
+        else:
+            self._config["study"] = {"auto_open_ui": True}
         self._effective_config = {
             "plugin": {"store": {"enabled": True}, "database": {"enabled": False}},
             "plugin_state": {"backend": "memory"},
@@ -238,7 +278,7 @@ async def test_awareness_disabled_does_not_start_loop_on_startup(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en", "awareness": {"enabled": False}},
+            "study": {"language": "en", "auto_open_ui": False, "awareness": {"enabled": False}},
             "study_companion": {"communication": {"enabled": False}},
         },
     )
@@ -250,6 +290,130 @@ async def test_awareness_disabled_does_not_start_loop_on_startup(
     assert plugin.is_awareness_active() is False
     assert plugin._awareness_task is None
     await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_plugin_startup_auto_opens_static_ui(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened: list[str] = []
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setenv("NEKO_USER_PLUGIN_SERVER_PORT", "49888")
+    monkeypatch.setattr(study_companion_module, "_open_url_in_browser", opened.append)
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "auto_open_ui": True},
+            "study_companion": {"communication": {"enabled": False}},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+
+    result = await plugin.startup()
+
+    try:
+        assert isinstance(result, Ok)
+        assert opened == ["http://127.0.0.1:49888/ui/plugins/study_companion?tab=ui"]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_plugin_startup_auto_open_falls_back_for_invalid_port(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened: list[str] = []
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setenv("NEKO_USER_PLUGIN_SERVER_PORT", "70000")
+    monkeypatch.setattr(study_companion_module, "_open_url_in_browser", opened.append)
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "auto_open_ui": True},
+            "study_companion": {"communication": {"enabled": False}},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+
+    result = await plugin.startup()
+
+    try:
+        assert isinstance(result, Ok)
+        assert opened == ["http://127.0.0.1:48916/ui/plugins/study_companion?tab=ui"]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_plugin_auto_open_failure_does_not_block_startup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _fail_open(_url: str) -> None:
+        raise RuntimeError("browser unavailable")
+
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setattr(study_companion_module, "_open_url_in_browser", _fail_open)
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "auto_open_ui": True},
+            "study_companion": {"communication": {"enabled": False}},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    plugin.logger = ctx.logger
+
+    result = await plugin.startup()
+
+    try:
+        assert isinstance(result, Ok)
+        assert any(
+            warning[0][0] == "study auto-open UI failed: {}"
+            for warning in ctx.logger.warnings
+        )
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_plugin_auto_open_timeout_does_not_block_startup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unblock = threading.Event()
+    opened: list[str] = []
+
+    def _hang_open(url: str) -> None:
+        opened.append(url)
+        unblock.wait(timeout=1.0)
+
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setattr(study_companion_module, "_open_url_in_browser", _hang_open)
+    monkeypatch.setattr(
+        study_companion_module,
+        "_AUTO_OPEN_UI_TASK_TIMEOUT_SECONDS",
+        0.01,
+    )
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "auto_open_ui": True},
+            "study_companion": {"communication": {"enabled": False}},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    plugin.logger = ctx.logger
+
+    try:
+        result = await plugin.startup()
+
+        assert isinstance(result, Ok)
+        assert any(
+            warning[0][0] == "study auto-open UI failed: {}"
+            for warning in ctx.logger.warnings
+        )
+    finally:
+        unblock.set()
+        await plugin.shutdown()
 
 
 @pytest.mark.asyncio
@@ -269,7 +433,7 @@ async def test_start_awareness_loop_runs_async_tick_and_pushes_context(
                 thumbnail_phash="0" * 16,
             )
 
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     plugin._cfg = StudyConfig(
         awareness=AwarenessConfig(
@@ -321,7 +485,7 @@ async def test_awareness_tick_counts_unusable_snapshot_as_idle(tmp_path: Path) -
         def capture_lightweight(self):
             return _NoActivitySnapshot()
 
-    plugin = StudyCompanionPlugin(_Ctx(tmp_path, {"study": {"language": "en"}}))
+    plugin = StudyCompanionPlugin(_Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}}))
     plugin._cfg = StudyConfig(awareness=AwarenessConfig(push_to_llm_mode="blind"))
     plugin._buffer = ActivityBuffer()
     plugin._ocr_pipeline = _FakeAwarenessPipeline()
@@ -527,6 +691,58 @@ def test_study_store_round_trip_and_export(tmp_path: Path) -> None:
     assert exported["review_log"][0]["topic_id"] == "photosynthesis_topic"
     assert exported["knowledge_evidence"][0]["item_id"] == candidate["id"]
     store.close()
+
+
+@pytest.mark.asyncio
+async def test_study_settings_entry_persists_and_updates_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "default_mode": MODE_COMPANION, "auto_open_ui": False},
+            "ocr_reader": {"enabled": True, "languages": "eng"},
+            "llm": {"llm_call_timeout_seconds": 45},
+            "study_companion": {"communication": {"enabled": False}},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    startup = await plugin.startup()
+    assert isinstance(startup, Ok)
+    plugin._agent = _FakeTutorAgent()
+
+    try:
+        result = await plugin.study_update_settings_config(
+            config={
+                "study": {"default_mode": MODE_TEACHING, "auto_open_ui": True},
+                "ocr_reader": {"enabled": "false", "languages": "chi_sim+eng"},
+                "llm": {"llm_call_timeout_seconds": 90},
+            }
+        )
+
+        assert isinstance(result, Ok)
+        assert result.value["config"]["study"]["default_mode"] == MODE_TEACHING
+        assert result.value["config"]["study"]["auto_open_ui"] is True
+        assert result.value["config"]["ocr_reader"]["enabled"] is False
+        assert result.value["config"]["ocr_reader"]["languages"] == "chi_sim+eng"
+        assert result.value["config"]["llm"]["llm_call_timeout_seconds"] == 90.0
+        assert plugin._cfg.default_mode == MODE_TEACHING
+        assert plugin._cfg.auto_open_ui is True
+        assert plugin._cfg.ocr_enabled is False
+        assert plugin._cfg.ocr_languages == "chi_sim+eng"
+        assert plugin._cfg.llm_call_timeout_seconds == 90.0
+        persisted = plugin._store.load_config(StudyConfig())
+        assert persisted.default_mode == MODE_TEACHING
+        assert persisted.auto_open_ui is True
+        assert persisted.ocr_enabled is False
+        assert persisted.ocr_languages == "chi_sim+eng"
+        assert persisted.llm_call_timeout_seconds == 90.0
+        assert plugin._agent._config is plugin._cfg
+        assert plugin._ocr_pipeline is not None
+        assert plugin._ocr_pipeline._config is plugin._cfg
+    finally:
+        await plugin.shutdown()
 
 
 def test_study_store_seed_topic_upsert_preserves_seed_metadata(tmp_path: Path) -> None:
@@ -1080,6 +1296,11 @@ def test_study_config_and_state_legacy_mode_migration(tmp_path: Path) -> None:
     assert legacy.mode == MODE_COMPANION
     assert legacy.default_mode == MODE_COMPANION
 
+    auto_open = build_config({"study": {"auto_open_ui": True}})
+    assert auto_open.auto_open_ui is True
+    assert build_config({"auto_open_ui": True}).auto_open_ui is True
+    assert StudyConfig(auto_open_ui="yes").auto_open_ui is True
+
     llm_timeout = build_config({"llm": {"call_timeout_seconds": 42}})
     assert llm_timeout.llm_call_timeout_seconds == 42
     assert llm_timeout.llm_vision_enabled is False
@@ -1343,6 +1564,7 @@ def test_study_companion_i18n_bundles_are_present() -> None:
         "ui.surface.knowledge_contribution_settings",
         "ui.surface.note_exporter",
         "ui.surface.quickstart",
+        "ui.quickstart.subtitle",
         "ui.button.export",
     ]
     bundles: dict[str, dict[str, str]] = {}
@@ -1394,6 +1616,10 @@ def test_study_companion_i18n_bundles_are_present() -> None:
         surface["id"] == "study-panel" and surface["available"] is True
         for surface in surfaces
     )
+    study_panel_surface = next(
+        surface for surface in surfaces if surface["id"] == "study-panel"
+    )
+    assert "action:call" in study_panel_surface["permissions"]
     assert any(
         surface["id"] == "knowledge-map" and surface["available"] is True
         for surface in surfaces
@@ -1407,16 +1633,150 @@ def test_study_companion_i18n_bundles_are_present() -> None:
         surface["id"] == "note-exporter" and surface["available"] is True
         for surface in surfaces
     )
-    assert any(
-        surface["id"] == "quickstart" and surface["available"] is True
-        for surface in surfaces
-    )
+    assert not any(surface["id"] == "quickstart" for surface in surfaces)
 
     index_html = (plugin_dir / "static" / "index.html").read_text(encoding="utf-8")
     main_js = (plugin_dir / "static" / "main.js").read_text(encoding="utf-8")
     assert "./i18n.js" in index_html
     assert 'data-i18n="ui.title"' in index_html
     assert "I18n.init" in main_js
+
+
+def test_study_companion_ui7_surfaces_use_brand_css_and_quickstart_is_removed() -> (
+    None
+):
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+
+    with (plugin_dir / "plugin.toml").open("rb") as handle:
+        config = tomllib.load(handle)
+    guide_ids = {surface["id"] for surface in config["plugin"]["ui"]["guide"]}
+    assert "quickstart" not in guide_ids
+
+    quickstart_path = plugin_dir / "surfaces" / "quickstart.tsx"
+    assert quickstart_path.exists()
+
+    index_html = (plugin_dir / "static" / "index.html").read_text(encoding="utf-8")
+    assert 'http-equiv="Content-Security-Policy"' in index_html
+    assert "style-src 'self'" in index_html
+    assert "script-src 'self'" in index_html
+    assert "style-src-attr 'unsafe-inline'" in index_html
+    assert "connect-src 'self'" in index_html
+    assert ":*" not in index_html
+    assert "meta CSP cannot express dynamic localhost ports" in index_html
+
+    surface_files = [
+        "daily_goal_editor.tsx",
+        "due_review_panel.tsx",
+        "habit_dashboard.tsx",
+        "knowledge_contribution_settings.tsx",
+        "knowledge_map.tsx",
+        "memory_deck_list.tsx",
+        "memory_importer.tsx",
+        "note_exporter.tsx",
+        "passage_recitation.tsx",
+        "pomodoro_panel.tsx",
+        "session_summary.tsx",
+        "study_panel.tsx",
+        "word_review.tsx",
+    ]
+    for filename in surface_files:
+        source = (plugin_dir / "surfaces" / filename).read_text(encoding="utf-8")
+        assert "ensureBrandCSS" in source, filename
+        assert "ensureBrandCSS();" in source, filename
+
+    surface_utils = (plugin_dir / "surfaces" / "study_surface_utils.ts").read_text(
+        encoding="utf-8"
+    )
+    assert "export const STUDY_SURFACE_MESSAGE_TYPES" in surface_utils
+    assert "reviewCompleted: 'neko-study-review-completed'" in surface_utils
+    assert "refreshSummary: 'neko-study-refresh-summary'" in surface_utils
+    assert "memoryDeckUpdated: 'neko-study-memory-deck-updated'" in surface_utils
+    assert "--mastery-mastered: #82d99e;" in surface_utils
+    assert ".surface-shell" in surface_utils
+
+
+def test_study_companion_ui_refactor_static_and_hosted_contracts() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    index_html = (plugin_dir / "static" / "index.html").read_text(encoding="utf-8")
+    style_css = (plugin_dir / "static" / "style.css").read_text(encoding="utf-8")
+    main_js = (plugin_dir / "static" / "main.js").read_text(encoding="utf-8")
+    study_panel = (plugin_dir / "surfaces" / "study_panel.tsx").read_text(
+        encoding="utf-8"
+    )
+    surface_utils = (
+        plugin_dir / "surfaces" / "study_surface_utils.ts"
+    ).read_text(encoding="utf-8")
+
+    assert 'class="page-shell"' in index_html
+    assert 'id="mainView"' in index_html
+    assert 'class="hero"' in index_html
+    assert 'id="modeSwitch"' in index_html
+    assert 'class="mode-switch"' in index_html
+    assert "mode-strip" not in index_html
+
+    assert "--brand: #2f7d57;" in style_css
+    assert "--study-companion: #2f7d57;" in style_css
+    assert "body::before" not in style_css
+    assert "paw-pattern" not in style_css
+    assert "paw-pattern.svg" not in index_html
+    assert 'data-i18n-aria-label="ui.memory.ratings_aria" aria-label="Memory ratings"' in index_html
+    assert ".mode-switch::before" in style_css
+    assert "@keyframes pawBounce" not in style_css
+    assert "@media (prefers-reduced-motion: reduce)" in style_css
+    assert "clip-path: inset(50%);" in style_css
+
+    assert "const modeSwitch = document.getElementById('modeSwitch');" in main_js
+    assert "function updateModeIndicator()" in main_js
+    assert "modeSwitch.dataset.active = currentMode" in main_js
+    assert "modeSwitch.offsetParent === null" in main_js
+    assert "getBoundingClientRect()" in main_js
+    assert "modeSwitch.style.setProperty('--indicator-left'" in main_js
+    assert "modeSwitch.style.setProperty('--indicator-width'" in main_js
+    assert "modeSwitch.setAttribute('data-ready', 'true')" in main_js
+    assert "return origin === window.location.origin;" in main_js
+    assert "origin === 'null'" not in main_js
+    assert "const STUDY_SURFACE_INCOMING_MESSAGE_TYPES = new Set" in main_js
+    assert "function isTrustedStudySurfaceMessage(message)" in main_js
+    assert "kind: 'guide'" in main_js
+    assert "kind: 'panel'" not in main_js
+
+    assert "export const BRAND_CSS" in surface_utils
+    assert "export function ensureBrandCSS()" in surface_utils
+    assert "study-companion-brand-css" in surface_utils
+    assert "ensureBrandCSS();" in study_panel
+    assert 'className="mode-switch study-panel__modes"' in study_panel
+    assert 'style={{' not in study_panel
+
+    plugin_ui_frame = (
+        Path(__file__).resolve().parents[4]
+        / "frontend"
+        / "plugin-manager"
+        / "src"
+        / "components"
+        / "plugin"
+        / "PluginUIFrame.vue"
+    ).read_text(encoding="utf-8")
+    plugin_detail = (
+        Path(__file__).resolve().parents[4]
+        / "frontend"
+        / "plugin-manager"
+        / "src"
+        / "views"
+        / "PluginDetail.vue"
+    ).read_text(encoding="utf-8")
+    assert "neko-study-open-surface" in plugin_ui_frame
+    assert "openSurface" in plugin_ui_frame
+    assert "payload.pluginId.trim()" in plugin_ui_frame
+    assert "payload.kind.trim()" in plugin_ui_frame
+    assert "sendStudySurfaceMessage" in plugin_ui_frame
+    assert '@open-surface="openHostedSurfaceFromStaticUi"' in plugin_detail
+    assert '@message="relayHostedSurfaceMessageToStaticUi"' in plugin_detail
+    assert "studySurfaceRelayMessageTypes" in plugin_detail
+    assert "staticUiFrameRef.value?.sendStudySurfaceMessage(data)" in plugin_detail
+    assert "const preferGuide = payload.kind === 'guide' || payload.kind === 'docs'" in plugin_detail
+    assert "activeGuideSurfaceId.value = guide.id" in plugin_detail
+    assert "surface: activeSurfaceId" in plugin_detail
+    assert "route.query.surface" in plugin_detail
 
 
 def test_study_companion_static_ui_smoke_with_mocked_runs() -> None:
@@ -1531,6 +1891,32 @@ if (!runEntries.get('run-mode') || runEntries.get('run-mode').args.mode !== 'int
   throw new Error(`mode run args mismatch: ${JSON.stringify(runEntries.get('run-mode'))}`);
 }
 
+const modeSelect = document.getElementById('modeSelect');
+if (!modeSelect || modeSelect.className !== 'sr-only') {
+  throw new Error(`screen-reader mode select missing: ${modeSelect && modeSelect.outerHTML}`);
+}
+if (modeSelect.value !== 'interactive') {
+  throw new Error(`mode select not synced after click: ${modeSelect.value}`);
+}
+modeSelect.value = 'teaching';
+modeSelect.dispatchEvent(new window.Event('change', { bubbles: true }));
+await waitFor(() => document.getElementById('statusLine').textContent.includes('Teaching'), 'select teaching mode');
+if (!runEntries.get('run-mode') || runEntries.get('run-mode').args.mode !== 'teaching') {
+  throw new Error(`select mode run args mismatch: ${JSON.stringify(runEntries.get('run-mode'))}`);
+}
+if (document.querySelector('[data-mode="teaching"]').getAttribute('aria-pressed') !== 'true') {
+  throw new Error('teaching mode button not synced after select change');
+}
+
+window.document.dispatchEvent(new window.KeyboardEvent('keydown', { key: '1', altKey: true, bubbles: true }));
+await waitFor(() => document.getElementById('statusLine').textContent.includes('Companion'), 'shortcut companion mode');
+if (!runEntries.get('run-mode') || runEntries.get('run-mode').args.mode !== 'companion') {
+  throw new Error(`shortcut mode run args mismatch: ${JSON.stringify(runEntries.get('run-mode'))}`);
+}
+if (modeSelect.value !== 'companion' || document.querySelector('[data-mode="companion"]').getAttribute('aria-pressed') !== 'true') {
+  throw new Error('mode select and buttons not synced after keyboard shortcut');
+}
+
 document.getElementById('studyInput').value = 'Explain derivative';
 document.getElementById('explainBtn').click();
 await waitFor(() => document.getElementById('replyText').textContent === 'A derivative is slope at one point.', 'explain reply');
@@ -1557,6 +1943,505 @@ if (!explainRun || explainRun.args.text !== 'Explain derivative') {
     assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
+def test_study_companion_static_ui_loads_zh_cn_copy_at_runtime() -> None:
+    if shutil.which("node") is None:
+        pytest.skip(
+            "node is not installed; frontend/plugin-manager happy-dom smoke test requires node"
+        )
+
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    frontend_dir = Path(__file__).resolve().parents[4] / "frontend" / "plugin-manager"
+    if not (frontend_dir / "node_modules" / "happy-dom").is_dir():
+        pytest.skip(
+            "frontend/plugin-manager node_modules with happy-dom is not installed"
+        )
+
+    script = r"""
+import { Window } from 'happy-dom';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const staticDir = process.env.STUDY_COMPANION_STATIC_DIR;
+const i18nDir = process.env.STUDY_COMPANION_I18N_DIR;
+const html = fs.readFileSync(path.join(staticDir, 'index.html'), 'utf8');
+const mainJs = fs.readFileSync(path.join(staticDir, 'main.js'), 'utf8');
+const i18nJs = fs.readFileSync(path.join(staticDir, 'i18n.js'), 'utf8');
+const zhBundle = JSON.parse(fs.readFileSync(path.join(i18nDir, 'zh-CN.json'), 'utf8'));
+
+const window = new Window({ url: 'http://testserver/plugin/study_companion/ui/?locale=zh-CN' });
+const { document } = window;
+document.write(html);
+document.close();
+
+const runEntries = [];
+window.fetch = async (rawUrl, options = {}) => {
+  const url = String(rawUrl);
+  if (url === '/plugin/study_companion/ui-api/i18n/zh-CN.json') {
+    return Response.json(zhBundle);
+  }
+  if (url === '/runs' && options.method === 'POST') {
+    const body = JSON.parse(String(options.body || '{}'));
+    runEntries.push(body);
+    return Response.json({ run_id: `run-${runEntries.length}`, status: 'queued' });
+  }
+  if (/^\/runs\/run-\d+$/.test(url)) {
+    return Response.json({ status: 'succeeded' });
+  }
+  if (/^\/runs\/run-\d+\/export$/.test(url)) {
+    return Response.json({
+      items: [{
+        type: 'json',
+        json: {
+          success: true,
+          data: {
+            status: 'ready',
+            active_mode: 'companion',
+            is_first_run: true,
+            dependencies: {
+              rapidocr: { available: true },
+              dxcam: { available: false },
+            },
+            knowledge_summary: { topic_count: 4, edge_count: 3 },
+            habit: {
+              checkin: { checked_in: false },
+              pomodoro: { state: 'idle' },
+              summary: { total_focus_minutes: 42, completed_goal_count: 2, goal_count: 5 },
+            },
+            memory_deck: { card_count: 12, due_count: 3, due_cards: [] },
+          },
+        },
+      }],
+    });
+  }
+  throw new Error(`Unexpected fetch: ${url}`);
+};
+
+window.eval(i18nJs);
+window.eval(mainJs);
+
+async function waitFor(predicate, label) {
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
+
+await waitFor(() => document.title === zhBundle['ui.title'], 'localized title');
+await waitFor(() => document.getElementById('firstRunGuide') && !document.getElementById('firstRunGuide').hidden, 'localized onboarding');
+
+const expectedOcr = zhBundle['ui.settings.ocr.ready_summary']
+  .replace('{ready}', '1')
+  .replace('{total}', '2');
+const expectedKnowledge = zhBundle['ui.settings.knowledge.loaded_summary']
+  .replace('{topics}', '4')
+  .replace('{edges}', '3');
+const expectedMemory = zhBundle['ui.settings.memory.loaded_summary']
+  .replace('{cards}', '12')
+  .replace('{due}', '3');
+
+const checks = [
+  ['eyebrow', document.querySelector('.hero__eyebrow').textContent, zhBundle['ui.eyebrow']],
+  ['advanced button', document.getElementById('advancedToggleBtn').textContent.trim(), zhBundle['ui.button.advanced_settings']],
+  ['duration label', document.querySelector('[data-summary-duration-label]').textContent.trim(), zhBundle['ui.label.duration']],
+  ['duration value', document.getElementById('summaryDuration').textContent.trim(), '42 min'],
+  ['goal label', document.querySelector('[data-summary-goal-label]').textContent.trim(), zhBundle['ui.label.goal']],
+  ['goal value', document.getElementById('summaryGoal').textContent.trim(), '2/5'],
+  ['knowledge tab', document.getElementById('tab-knowledge').textContent.trim(), zhBundle['ui.settings.tab.knowledge']],
+  ['first run title', document.getElementById('firstRunTitle').textContent.trim(), zhBundle['ui.onboarding.title']],
+  ['OCR summary', document.getElementById('settingsOcrSummary').textContent.trim(), expectedOcr],
+  ['knowledge summary', document.getElementById('settingsKnowledgeSummary').textContent.trim(), expectedKnowledge],
+  ['memory summary', document.getElementById('settingsMemorySummary').textContent.trim(), expectedMemory],
+];
+for (const [label, actual, expected] of checks) {
+  if (actual !== expected) {
+    throw new Error(`${label} mismatch: ${JSON.stringify({ actual, expected })}`);
+  }
+}
+"""
+    env = {
+        **os.environ,
+        "STUDY_COMPANION_STATIC_DIR": str(plugin_dir / "static"),
+        "STUDY_COMPANION_I18N_DIR": str(plugin_dir / "i18n"),
+    }
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=frontend_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
+def test_study_companion_static_ui_scan_dom_updates_core_locales() -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is not installed")
+
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    frontend_dir = Path(__file__).resolve().parents[4] / "frontend" / "plugin-manager"
+    if not (frontend_dir / "node_modules" / "happy-dom").is_dir():
+        pytest.skip(
+            "frontend/plugin-manager node_modules with happy-dom is not installed"
+        )
+
+    script = r"""
+import { Window } from 'happy-dom';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const staticDir = process.env.STUDY_COMPANION_STATIC_DIR;
+const i18nDir = process.env.STUDY_COMPANION_I18N_DIR;
+const html = fs.readFileSync(path.join(staticDir, 'index.html'), 'utf8');
+const i18nJs = fs.readFileSync(path.join(staticDir, 'i18n.js'), 'utf8');
+const locales = ['zh-CN', 'en', 'ja'];
+const bundles = Object.fromEntries(locales.map((locale) => [
+  locale,
+  JSON.parse(fs.readFileSync(path.join(i18nDir, `${locale}.json`), 'utf8')),
+]));
+
+const window = new Window({ url: 'http://testserver/plugin/study_companion/ui/' });
+const { document } = window;
+document.write(html);
+document.close();
+window.eval(i18nJs);
+
+function assertLocalizedAttribute(selector, attr, locale, bundle) {
+  const failures = [];
+  document.querySelectorAll(selector).forEach((el) => {
+    const key = el.getAttribute(selector.slice(1, -1));
+    const expected = bundle[key];
+    if (typeof expected !== 'string' || !expected) {
+      failures.push({ key, reason: 'missing bundle value' });
+      return;
+    }
+    const actual = attr === 'textContent'
+      ? el.textContent.trim()
+      : el.getAttribute(attr);
+    if (actual !== expected) {
+      failures.push({ key, actual, expected });
+    }
+  });
+  if (failures.length) {
+    throw new Error(`${locale} ${selector} localization mismatches: ${JSON.stringify(failures)}`);
+  }
+}
+
+for (const locale of locales) {
+  const bundle = bundles[locale];
+  window.I18n._bundle = bundle;
+  window.I18n.setLang(locale);
+  window.I18n.scanDOM(document);
+
+  if (document.documentElement.lang !== locale) {
+    throw new Error(`${locale} document lang mismatch: ${document.documentElement.lang}`);
+  }
+  assertLocalizedAttribute('[data-i18n]', 'textContent', locale, bundle);
+  assertLocalizedAttribute('[data-i18n-placeholder]', 'placeholder', locale, bundle);
+  assertLocalizedAttribute('[data-i18n-aria-label]', 'aria-label', locale, bundle);
+  assertLocalizedAttribute('[data-i18n-title]', 'title', locale, bundle);
+}
+"""
+    env = {
+        **os.environ,
+        "STUDY_COMPANION_STATIC_DIR": str(plugin_dir / "static"),
+        "STUDY_COMPANION_I18N_DIR": str(plugin_dir / "i18n"),
+    }
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=frontend_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
+def test_study_companion_static_onboarding_and_advanced_settings_behaviour() -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is not installed")
+
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    frontend_dir = Path(__file__).resolve().parents[4] / "frontend" / "plugin-manager"
+    if not (frontend_dir / "node_modules" / "happy-dom").is_dir():
+        pytest.skip(
+            "frontend/plugin-manager node_modules with happy-dom is not installed"
+        )
+
+    script = r"""
+import { Window } from 'happy-dom';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const staticDir = process.env.STUDY_COMPANION_STATIC_DIR;
+const i18nDir = process.env.STUDY_COMPANION_I18N_DIR;
+const html = fs.readFileSync(path.join(staticDir, 'index.html'), 'utf8');
+const mainJs = fs.readFileSync(path.join(staticDir, 'main.js'), 'utf8');
+const i18nJs = fs.readFileSync(path.join(staticDir, 'i18n.js'), 'utf8');
+const enBundle = JSON.parse(fs.readFileSync(path.join(i18nDir, 'en.json'), 'utf8'));
+
+const window = new Window({ url: 'http://testserver/plugin/study_companion/ui/?locale=en' });
+const { document } = window;
+const parentMessages = [];
+Object.defineProperty(window, 'parent', {
+  value: { postMessage: (message) => parentMessages.push(message) },
+});
+document.write(html);
+document.close();
+const consoleErrors = [];
+window.console.error = (...args) => {
+  consoleErrors.push(args.map((arg) => String(arg)).join(' '));
+};
+
+const runEntries = [];
+const runById = new Map();
+let configPayload = {
+  plugin_id: 'study_companion',
+  config: {
+    plugin: { id: 'study_companion', entry: 'plugin.plugins.study_companion:StudyCompanionPlugin' },
+    study: { default_mode: 'interactive', language: 'en', history_limit: 50, auto_open_ui: false },
+    ocr_reader: { enabled: false, backend_selection: 'rapidocr', languages: 'eng' },
+    llm: { llm_call_timeout_seconds: 45, llm_vision_enabled: false },
+  },
+};
+let statusPayload = {
+  status: 'ready',
+  active_mode: 'companion',
+  is_first_run: true,
+  dependencies: {
+    rapidocr: { available: true },
+    tesseract: { available: true },
+    dxcam: { available: true },
+  },
+  knowledge_summary: { topic_count: 4, edge_count: 3 },
+  habit: { available: true, checkin: { checked_in: false }, pomodoro: { state: 'idle' } },
+  memory_deck: { card_count: 12, due_count: 3, due_cards: [] },
+};
+window.fetch = async (rawUrl, options = {}) => {
+  const url = String(rawUrl);
+  if (url === '/plugin/study_companion/ui-api/i18n/en.json') {
+    return Response.json(enBundle);
+  }
+  if (url === '/runs' && options.method === 'POST') {
+    const body = JSON.parse(String(options.body || '{}'));
+    const runId = `run-${runEntries.length + 1}`;
+    runEntries.push({ runId, ...body });
+    runById.set(runId, body);
+    return Response.json({ run_id: runId, status: 'queued' });
+  }
+  if (/^\/runs\/run-\d+$/.test(url)) {
+    return Response.json({ status: 'succeeded' });
+  }
+  if (/^\/runs\/run-\d+\/export$/.test(url)) {
+    const runId = url.match(/^\/runs\/(run-\d+)\/export$/)[1];
+    const run = runById.get(runId) || {};
+    let data = statusPayload;
+    if (run.entry_id === 'study_get_settings_config') {
+      data = { config: configPayload.config };
+    } else if (run.entry_id === 'study_update_settings_config') {
+      configPayload = {
+        ...configPayload,
+        config: run.args.config,
+      };
+      data = { config: configPayload.config };
+    }
+    return Response.json({
+      items: [{
+        type: 'json',
+        json: {
+          success: true,
+          data,
+        },
+      }],
+    });
+  }
+  throw new Error(`Unexpected fetch: ${url}`);
+};
+
+window.eval(i18nJs);
+window.eval(mainJs);
+
+async function waitFor(predicate, label) {
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
+
+await waitFor(() => document.getElementById('firstRunGuide') && !document.getElementById('firstRunGuide').hidden, 'first run guide');
+
+const guide = document.getElementById('firstRunGuide');
+if (guide.querySelectorAll('[data-first-run-step]').length !== 3) {
+  throw new Error(`expected 3 onboarding steps: ${guide.outerHTML}`);
+}
+if (!document.getElementById('diagnosisTitle').textContent.trim().startsWith('✓')) {
+  throw new Error(`ok diagnosis missing prefix: ${document.getElementById('diagnosisTitle').textContent}`);
+}
+
+statusPayload = {
+  ...statusPayload,
+  is_first_run: false,
+  llm: { available: false, message: 'LLM unavailable' },
+};
+document.getElementById('refreshBtn').click();
+await waitFor(
+  () => document.getElementById('primaryDiagnosis').dataset.severity === 'error',
+  'llm unavailable error diagnosis',
+);
+if (!document.getElementById('diagnosisTitle').textContent.trim().startsWith('⚠')) {
+  throw new Error(`error diagnosis missing prefix: ${document.getElementById('diagnosisTitle').textContent}`);
+}
+if (!document.getElementById('diagnosisBody').textContent.includes('LLM unavailable')) {
+  throw new Error(`llm diagnostic body missing: ${document.getElementById('diagnosisBody').textContent}`);
+}
+statusPayload = { ...statusPayload, is_first_run: true, llm: { available: true } };
+document.getElementById('refreshBtn').click();
+await waitFor(
+  () => document.getElementById('primaryDiagnosis').dataset.severity === 'ok',
+  'recovered ok diagnosis',
+);
+
+document.getElementById('firstRunSkipBtn').click();
+if (!guide.hidden || guide.dataset.dismissed !== 'true') {
+  throw new Error(`first run guide not dismissed: ${guide.outerHTML}`);
+}
+if (runEntries.some((entry) => String(entry.entry_id).includes('first_run'))) {
+  throw new Error(`frontend should not mutate is_first_run flag: ${JSON.stringify(runEntries)}`);
+}
+
+document.getElementById('advancedToggleBtn').click();
+const advanced = document.getElementById('advancedSettings');
+if (advanced.hidden || document.getElementById('advancedToggleBtn').getAttribute('aria-expanded') !== 'true') {
+  throw new Error('advanced settings did not expand');
+}
+if (!guide.hidden) {
+  throw new Error('first run guide should remain hidden when advanced settings is expanded');
+}
+await waitFor(
+  () => document.getElementById('settingsDefaultMode') && document.getElementById('settingsDefaultMode').value === 'interactive',
+  'advanced settings config load',
+);
+if (document.getElementById('settingsOcrEnabled').checked !== false) {
+  throw new Error('OCR enabled checkbox did not load from config');
+}
+if (document.getElementById('settingsOcrLanguages').value !== 'eng') {
+  throw new Error(`OCR languages did not load from config: ${document.getElementById('settingsOcrLanguages').value}`);
+}
+if (document.getElementById('settingsLlmTimeout').value !== '45') {
+  throw new Error(`LLM timeout did not load from config: ${document.getElementById('settingsLlmTimeout').value}`);
+}
+document.getElementById('settingsDefaultMode').value = 'teaching';
+document.getElementById('settingsOcrEnabled').checked = true;
+document.getElementById('settingsOcrLanguages').value = 'chi_sim+eng';
+document.getElementById('settingsLlmTimeout').value = '90';
+document.getElementById('settingsSaveBtn').click();
+await waitFor(
+  () => runEntries.some((entry) => entry.entry_id === 'study_update_settings_config'),
+  'advanced settings config save',
+);
+const savedConfig = runEntries.find((entry) => entry.entry_id === 'study_update_settings_config').args.config;
+if (
+  savedConfig.study.default_mode !== 'teaching'
+  || savedConfig.study.auto_open_ui !== false
+  || savedConfig.ocr_reader.enabled !== true
+  || savedConfig.ocr_reader.languages !== 'chi_sim+eng'
+  || savedConfig.llm.llm_call_timeout_seconds !== 90
+  || savedConfig.plugin.id !== 'study_companion'
+) {
+  throw new Error(`settings save payload mismatch: ${JSON.stringify(savedConfig)}`);
+}
+await waitFor(
+  () => document.getElementById('settingsConfigStatus').textContent.includes('Saved'),
+  'settings saved status',
+);
+
+const memoryTab = document.getElementById('tab-memory');
+memoryTab.click();
+if (memoryTab.getAttribute('aria-selected') !== 'true' || document.getElementById('panel-memory').hidden) {
+  throw new Error('memory settings tab did not activate');
+}
+memoryTab.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
+if (document.getElementById('tab-study').getAttribute('aria-selected') !== 'true') {
+  throw new Error('Home key did not activate first settings tab');
+}
+document.getElementById('tab-study').dispatchEvent(new window.KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+if (document.getElementById('tab-data').getAttribute('aria-selected') !== 'true') {
+  throw new Error('End key did not activate last settings tab');
+}
+document.getElementById('tab-data').dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+if (document.activeElement !== document.getElementById('panel-data')) {
+  throw new Error(`Tab key did not move focus into active panel: ${document.activeElement && document.activeElement.id}`);
+}
+
+document.querySelector('#panel-memory [data-open-surface="due-review-panel"]').click();
+if (!parentMessages.some((message) => message.type === 'neko-study-open-surface' && message.payload?.surfaceId === 'due-review-panel')) {
+  throw new Error(`surface open message missing: ${JSON.stringify(parentMessages)}`);
+}
+
+for (const surfaceId of ['memory-importer', 'habit-dashboard', 'pomodoro-panel', 'daily-goal-editor']) {
+  document.querySelector(`#advancedSettings [data-open-surface="${surfaceId}"]`).click();
+  if (!parentMessages.some((message) => message.type === 'neko-study-open-surface' && message.payload?.surfaceId === surfaceId)) {
+    throw new Error(`advanced settings surface open message missing for ${surfaceId}: ${JSON.stringify(parentMessages)}`);
+  }
+}
+
+for (const surfaceId of ['pomodoro-panel', 'due-review-panel', 'habit-dashboard']) {
+  document.querySelector(`.quick-panels [data-open-surface="${surfaceId}"]`).click();
+  if (!parentMessages.some((message) => message.type === 'neko-study-open-surface' && message.payload?.surfaceId === surfaceId)) {
+    throw new Error(`quick panel surface open message missing for ${surfaceId}: ${JSON.stringify(parentMessages)}`);
+  }
+}
+
+const statusRunCountBeforeMessage = runEntries.filter((entry) => entry.entry_id === 'study_status').length;
+window.dispatchEvent(new window.MessageEvent('message', {
+  origin: window.location.origin,
+  data: {
+    type: 'neko-study-review-completed',
+    payload: {
+      deck_id: 'deck-1',
+      remaining: 2,
+      reviewed_count: 1,
+      timestamp: Date.now(),
+    },
+  },
+}));
+await waitFor(
+  () => runEntries.filter((entry) => entry.entry_id === 'study_status').length > statusRunCountBeforeMessage,
+  'review completed status refresh',
+);
+
+if (consoleErrors.length) {
+  throw new Error(`unexpected console errors: ${JSON.stringify(consoleErrors)}`);
+}
+"""
+    env = {
+        **os.environ,
+        "STUDY_COMPANION_STATIC_DIR": str(plugin_dir / "static"),
+        "STUDY_COMPANION_I18N_DIR": str(plugin_dir / "i18n"),
+    }
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=frontend_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
 def test_study_companion_hosted_panel_uses_long_running_entry_poll_budget() -> None:
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
     source = (plugin_dir / "surfaces" / "study_panel.tsx").read_text(encoding="utf-8")
@@ -1564,7 +2449,13 @@ def test_study_companion_hosted_panel_uses_long_running_entry_poll_budget() -> N
     assert "ENTRY_TIMEOUT_MS" in source
     assert "study_set_mode: 15000" in source
     assert "study_explain_text: 60000" in source
-    assert "const deadline = Date.now() + timeoutForEntry(entryId);" in source
+    assert "callPlugin as callHostedPlugin" in source
+    assert (
+        "return callHostedPlugin<T>(api, entryId, args, { signal, timeoutMs: timeoutForEntry(entryId) });"
+        in source
+    )
+    assert "fetch('/runs'" not in source
+    assert "fetch(`/runs/" not in source
     assert "for (let i = 0; i < 40; i += 1)" not in source
     assert (
         "async function refresh(signal?: AbortSignal, options: { updateReply?: boolean } = {})"
@@ -1578,6 +2469,41 @@ def test_study_companion_hosted_panel_uses_long_running_entry_poll_budget() -> N
     assert "study-panel__modes" in source
     assert "study_set_mode" in source
     assert "status.mode.companion" in source
+
+
+def test_study_companion_hosted_surface_actions_are_bridge_authorized() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    entry_sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(plugin_dir.glob("entry_*.py"))
+    )
+    assert re.search(
+        r"@ui\.context\(id=[\"']study[\"']",
+        entry_sources,
+        re.MULTILINE,
+    )
+
+    with (plugin_dir / "plugin.toml").open("rb") as handle:
+        config = tomllib.load(handle)
+    for surface in config["plugin"]["ui"]["guide"]:
+        assert surface["context"] == "study", surface["id"]
+        assert "action:call" in surface["permissions"], surface["id"]
+
+    for action_id in HOSTED_SURFACE_ACTION_IDS:
+        assert re.search(
+            rf"@ui\.action\([^)]*\)\s+@plugin_entry\(\s+id=[\"']{re.escape(action_id)}[\"']",
+            entry_sources,
+            re.MULTILINE,
+        ), action_id
+
+    export_source = (plugin_dir / "entry_export_support.py").read_text(
+        encoding="utf-8"
+    )
+    assert re.search(
+        r"@ui\.action\([^)]*\)\s+async def _study_export_notes_entry",
+        export_source,
+        re.MULTILINE,
+    )
 
 
 def test_study_companion_hosted_panel_supports_image_paste_contract() -> None:
@@ -1644,12 +2570,10 @@ def test_study_companion_note_exporter_uses_backend_export_poll_budget() -> None
     assert "POLL_TIMEOUT_BUFFER_MS = 5_000" in source
     assert "const timeoutSeconds = Number(entry?.timeout);" in source
     assert "return timeoutSeconds * 1000 + POLL_TIMEOUT_BUFFER_MS;" in source
-    assert (
-        "const deadline = Date.now() + Math.max(timeoutMs, POLL_INTERVAL_MS);" in source
-    )
-    assert "while (Date.now() < deadline)" in source
     assert "pollTimeoutMs = getEntryTimeoutMs(exportEntry)" in source
-    assert "}, pollTimeoutMs);" in source
+    assert "{ timeoutMs: pollTimeoutMs }" in source
+    assert "fetch('/runs'" not in source
+    assert "fetch(`/runs/" not in source
     assert "for (let attempt = 0; attempt < 40; attempt += 1)" not in source
     assert "for (let i = 0; i < 40; i += 1)" not in source
 
@@ -1661,13 +2585,11 @@ def test_study_companion_ui_export_failures_are_not_silent_successes() -> None:
     )
     static_source = (plugin_dir / "static" / "main.js").read_text(encoding="utf-8")
 
-    assert "RUN_EXPORT_RETRY_COUNT = 3" in hosted_source
-    assert "throw new Error(`Run export failed: HTTP ${lastStatus}`);" in hosted_source
-    assert (
-        "const exported = exportResp.ok ? await exportResp.json() : {};"
-        not in hosted_source
-    )
-    assert "return item?.json?.data || {};" not in hosted_source
+    assert "callPlugin as callHostedPlugin" in hosted_source
+    assert "RUN_EXPORT_RETRY_COUNT = 3" not in hosted_source
+    assert "throw new Error(`Run export failed: HTTP ${lastStatus}`);" not in hosted_source
+    assert "fetch('/runs'" not in hosted_source
+    assert "fetch(`/runs/" not in hosted_source
     assert "study_set_mode" in hosted_source
 
     assert "RUN_EXPORT_RETRY_COUNT = 3" in static_source
@@ -1843,7 +2765,7 @@ def test_study_surface_utils_preserves_nonstandard_backend_error_details() -> No
     assert "function pluginErrorMessage" in source
     assert "typeof error === 'string'" in source
     assert "JSON.stringify(error)" in source
-    assert "throw new Error(pluginErrorMessage(item.json.error))" in source
+    assert "throw new Error(pluginErrorMessage(payload.error || payload.message))" in source
 
 
 def test_study_companion_i18n_prefers_traditional_chinese_bundle() -> None:
@@ -1942,7 +2864,9 @@ eval(source);
         env=env,
         capture_output=True,
         text=True,
-        timeout=15,
+        # Windows Actions runners can briefly starve plain Node subprocesses
+        # while the full plugin suite is cleaning up browser-heavy tests.
+        timeout=45,
         check=False,
     )
     assert completed.returncode == 0, completed.stderr or completed.stdout
@@ -2325,7 +3249,7 @@ async def test_study_install_tesseract_uses_local_support(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en"},
+            "study": {"language": "en", "auto_open_ui": False},
             "ocr_reader": {
                 "enabled": True,
                 "install_target_dir": str(tmp_path / "Tesseract-OCR"),
@@ -2430,7 +3354,7 @@ async def test_study_ocr_snapshot_preserves_last_text_when_capture_fails(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en"},
+            "study": {"language": "en", "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
         },
@@ -2542,7 +3466,7 @@ async def test_study_explain_text_detects_mode_intent_and_continues_when_content
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION},
+            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION, "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
         },
@@ -2644,7 +3568,7 @@ async def test_study_explain_text_explain_intent_without_content_returns_err(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION},
+            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION, "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
         },
@@ -2672,7 +3596,7 @@ async def test_study_generate_question_without_content_returns_err(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en", "default_mode": MODE_COMPANION},
+            "study": {"language": "en", "default_mode": MODE_COMPANION, "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
         },
@@ -2702,7 +3626,7 @@ async def test_study_explain_text_continues_when_mode_switch_is_locked(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION},
+            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION, "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
         },
@@ -2768,7 +3692,7 @@ async def test_learning_context_builds_question_params_off_event_loop(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION},
+            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION, "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
         },
@@ -2804,7 +3728,7 @@ async def test_study_evaluate_answer_does_not_reuse_old_expected_answer_for_cust
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en", "default_mode": MODE_COMPANION},
+            "study": {"language": "en", "default_mode": MODE_COMPANION, "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
         },
@@ -2893,7 +3817,7 @@ async def test_study_evaluate_answer_custom_question_does_not_reuse_old_topic(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en", "default_mode": MODE_COMPANION},
+            "study": {"language": "en", "default_mode": MODE_COMPANION, "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
         },
@@ -2993,7 +3917,7 @@ async def test_study_evaluate_answer_persists_knowledge_tracking(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "zh-CN", "default_mode": MODE_TEACHING},
+            "study": {"language": "zh-CN", "default_mode": MODE_TEACHING, "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
         },
@@ -3796,7 +4720,7 @@ async def test_study_plugin_starts_and_collects_entries(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en"},
+            "study": {"language": "en", "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
         },
@@ -3962,7 +4886,7 @@ async def test_study_status_degrades_when_habit_payload_fails(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en"},
+            "study": {"language": "en", "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
         },
@@ -3998,7 +4922,7 @@ async def test_communication_disabled_skips_eventbus(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en"},
+            "study": {"language": "en", "auto_open_ui": False},
             "study_companion": {"communication": {"enabled": False}},
         },
     )
@@ -4027,7 +4951,7 @@ async def test_shutdown_stops_event_bus_worker(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en"},
+            "study": {"language": "en", "auto_open_ui": False},
             "study_companion": {"communication": {"enabled": True}},
         },
     )
@@ -4063,7 +4987,7 @@ async def test_shutdown_clears_ocr_pipeline_when_close_fails(
         def close(self) -> None:
             raise RuntimeError("ocr close failed")
 
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
     assert isinstance(result, Ok)
@@ -4097,7 +5021,7 @@ async def test_screen_classification_change_emits_event(
             reason="unit-test",
         ),
     )
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
     try:
@@ -4131,7 +5055,7 @@ async def test_screen_classification_no_change_skips_duplicate_push(
             reason="unit-test",
         ),
     )
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
     try:
@@ -4152,7 +5076,7 @@ async def test_evaluate_answer_emits_answer_evaluated(
 ) -> None:
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
     assert isinstance(result, Ok)
@@ -4219,7 +5143,7 @@ async def test_evaluate_answer_mastery_lookup_failure_is_best_effort(
 
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
     assert isinstance(result, Ok)
@@ -4272,7 +5196,7 @@ async def test_memory_review_emits_answer_evaluated(
 ) -> None:
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
     try:
@@ -4304,7 +5228,7 @@ async def test_memory_review_event_failure_does_not_fail_review(
 ) -> None:
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
     try:
@@ -4350,7 +5274,7 @@ async def test_review_due_background_task_emits_without_status(
         "_REVIEW_DUE_INTERVAL_SECONDS",
         0.01,
     )
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
     try:
@@ -4385,7 +5309,7 @@ async def test_review_due_event_includes_knowledge_tracker_cards(
 ) -> None:
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
     try:
@@ -4419,7 +5343,7 @@ async def test_study_status_does_not_drive_review_due_emission(
 ) -> None:
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
     try:
@@ -4450,7 +5374,7 @@ async def test_recitation_emits_answer_evaluated(
 ) -> None:
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
     try:
@@ -4481,7 +5405,7 @@ async def test_summarize_session_emits_event(
 ) -> None:
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
     assert isinstance(result, Ok)
@@ -4505,7 +5429,7 @@ async def test_session_summarized_falls_back_to_answer_count(
 ) -> None:
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
     try:
@@ -4581,7 +5505,7 @@ async def test_evaluate_answer_emits_mastery_updated_on_threshold_cross(
 
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
     assert isinstance(result, Ok)
@@ -4613,7 +5537,7 @@ async def test_study_plugin_shutdown_continues_when_dynamic_entry_cleanup_fails(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en"},
+            "study": {"language": "en", "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
         },
@@ -4656,7 +5580,7 @@ async def test_study_plugin_doc_export_dynamic_entry_and_knowledge_settings(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en"},
+            "study": {"language": "en", "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
             "doc_export": {
@@ -4734,7 +5658,7 @@ async def test_study_knowledge_contribution_opt_in_preview_failure_is_atomic(
 ) -> None:
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
-    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
     assert isinstance(result, Ok)
@@ -4766,7 +5690,7 @@ async def test_study_plugin_doc_export_schema_includes_xmind_only_when_enabled(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en"},
+            "study": {"language": "en", "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
             "doc_export": {"enabled": True, "xmind_enabled": True},
@@ -4795,7 +5719,7 @@ async def test_study_plugin_startup_restores_runtime_mode_without_overwriting_de
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en", "default_mode": MODE_COMPANION},
+            "study": {"language": "en", "default_mode": MODE_COMPANION, "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
         },
@@ -4837,7 +5761,7 @@ async def test_study_plugin_startup_failure_cleans_partial_resources(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en"},
+            "study": {"language": "en", "auto_open_ui": False},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
         },

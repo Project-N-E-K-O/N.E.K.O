@@ -50,6 +50,7 @@
         <div id="mmd-container" style="display: none;">
             <canvas id="mmd-canvas"></canvas>
         </div>
+        <div id="pngtuber-container" style="display: none;"></div>
     </div>
 
     <!-- 左侧：卡片预览与编辑区域 -->
@@ -223,6 +224,7 @@
 
     <script src="/static/vrm-init.js"></script>
     <script src="/static/mmd-init.js"></script>
+    <script src="/static/pngtuber-core.js?v={{ static_asset_version | default('0') }}"></script>
     <script src="/static/js/card_maker.js?v={{ static_asset_version | default('0') }}"></script>
 </body>
 </html>

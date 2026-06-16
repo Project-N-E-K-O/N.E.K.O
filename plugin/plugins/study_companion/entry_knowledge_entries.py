@@ -6,6 +6,7 @@ from .entry_common import (
     _entry_exception_error,
     plugin_entry,
     tr,
+    ui,
     StudyConfig,
     PublicGraphContributionBuilder,
     build_contribution_settings_payload,
@@ -43,6 +44,7 @@ class _KnowledgeEntriesMixin:
                 self, exc, operation="study_knowledge_quality_status"
             )
 
+    @ui.action()
     @plugin_entry(
         id="study_anonymous_knowledge_preview",
         name=tr(
@@ -69,6 +71,7 @@ class _KnowledgeEntriesMixin:
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_anonymous_knowledge_preview")
 
+    @ui.action()
     @plugin_entry(
         id="study_knowledge_map",
         name=tr("entries.knowledge_map.name", default="Study Knowledge Map"),
@@ -106,6 +109,7 @@ class _KnowledgeEntriesMixin:
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_knowledge_map")
 
+    @ui.action()
     @plugin_entry(
         id="study_set_knowledge_contribution_opt_in",
         name=tr(

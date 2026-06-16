@@ -1,14 +1,28 @@
-"""跨 Provider 的原生音色注册表。
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-带内置 TTS 音色的 core_api_type（例如 Gemini、StepFun，以及后续可能接入的
-OpenAI/Qwen 原生音色）会在这里注册 NativeVoiceProvider。
-配置校验、角色 UI、TTS worker 分发和实时语音路由都通过这个注册表查询，
-避免到处硬编码 core_api_type 判断。
+"""Cross-provider native voice registry.
 
-注册分两层，避免循环导入：
-  1. Provider 元数据模块只在 import 时创建并注册 NativeVoiceProvider。
-  2. TTS worker 模块等 worker 定义完之后再注册 worker 与鉴权解析函数，
-     避免元数据模块提前加载 httpx、soxr 等重依赖。
+core_api_types with built-in TTS voices (e.g. Gemini, StepFun, and possibly future
+OpenAI/Qwen native voices) register a NativeVoiceProvider here.
+Config validation, the character UI, TTS worker dispatch and realtime voice routing
+all query this registry, avoiding hardcoded core_api_type checks scattered everywhere.
+
+Registration has two layers, avoiding circular imports:
+  1. Provider metadata modules only create and register a NativeVoiceProvider at import time.
+  2. TTS worker modules register workers and auth-resolution functions after the workers
+     are defined, so metadata modules don't pull in heavy deps like httpx and soxr early.
 """
 
 from __future__ import annotations
@@ -29,11 +43,11 @@ TTSWorkerResolver = Callable[["ConfigManager"], "tuple[Callable[..., Any], str]"
 
 @dataclass(frozen=True)
 class NativeVoiceProvider:
-    """单个 core API 内置 TTS 音色目录的元数据。
+    """Metadata of a single core API's built-in TTS voice catalog.
 
-    key 对应代码里的 core_api_type / realtime api_type。catalog 的 key 是上游
-    API 接收的规范音色名，value 默认作为补充标签；aliases 用于把用户友好的
-    输入映射回规范音色名。
+    key corresponds to core_api_type / realtime api_type in code. Catalog keys are the
+    canonical voice names accepted by the upstream API; values serve as supplementary
+    labels by default; aliases map user-friendly input back to canonical voice names.
     """
 
     key: str
@@ -53,10 +67,10 @@ class NativeVoiceProvider:
         )
 
     def normalize(self, voice_id: str | None) -> tuple[str, bool]:
-        """返回 (规范音色名, 是否识别)。
+        """Return (canonical voice name, recognized).
 
-        空值按未识别处理，方便调用方区分“用户明确选择了原生音色”和
-        “系统使用默认值”。
+        Empty values count as unrecognized, helping callers distinguish "the user
+        explicitly chose a native voice" from "the system uses the default".
         """
         normalized = (voice_id or "").strip()
         if not normalized:
@@ -76,7 +90,7 @@ class NativeVoiceProvider:
         return self.normalize(voice_id)[1]
 
     def voice_catalog_for_ui(self) -> dict[str, dict[str, str | bool]]:
-        """返回角色 UI 需要的音色列表结构。"""
+        """Return the voice list structure needed by the character UI."""
         def format_prefix(voice_name: str, group: str, display_name: str) -> str:
             if self.catalog_value_is_display_name:
                 return display_name
@@ -105,13 +119,15 @@ class NativeVoiceProvider:
         voice_id: str | None,
         voice_id_exists: VoiceIdExists | None = None,
     ) -> tuple[str, bool]:
-        """返回 (音色, 是否使用原生音色)。
+        """Return (voice, whether to use the native voice).
 
-        输入未命中当前 Provider 目录时，返回 strip 后的原始输入，避免把用户自定义
-        音色悄悄替换成默认原生音色。
+        When the input doesn't hit the current provider's catalog, the stripped raw
+        input is returned, so user-defined custom voices aren't silently replaced
+        with the default native voice.
 
-        如果规范音色名和用户克隆音色冲突，则返回规范音色名但禁用原生路由，
-        让调用方按自定义音色处理。
+        If the canonical voice name collides with a user-cloned voice, the canonical
+        name is returned but native routing is disabled, letting the caller treat it
+        as a custom voice.
         """
         normalized_voice, recognized = self.normalize(voice_id)
         if not recognized:
@@ -240,12 +256,13 @@ def is_free_lanlan_app_route(
     core_api_type: str | None,
     realtime_base_url: str | None,
 ) -> bool:
-    """是否为海外免费路由（core_api_type='free' 且 host 落在 lanlan.app 域）。
+    """Whether this is the overseas free route (core_api_type='free' with host in the lanlan.app domain).
 
-    海外免费上游是 lanlan.app 的 Gemini 代理，可选音色是 Gemini 全量 + 品牌
-    yui，因此这条路由的"有效 native voice provider"不是阶跃系的 'free'，而是
-    'free_intl'（见 _effective_native_provider_key）。host 判定集中在这里，
-    避免散落到 cross-cutting 文件。
+    The overseas free upstream is lanlan.app's Gemini proxy; available voices are the
+    full Gemini set + the branded yui, so the "effective native voice provider" of
+    this route is not the StepFun-based 'free' but 'free_intl' (see
+    _effective_native_provider_key). Host checks are centralized here instead of
+    leaking into cross-cutting files.
     """
     raw_url = str(realtime_base_url or "").strip()
     parsed = urlparse(raw_url if "://" in raw_url else f"//{raw_url}")
@@ -260,12 +277,12 @@ def _effective_native_provider_key(
     core_api_type: str | None,
     realtime_base_url: str | None,
 ) -> str | None:
-    """把 (core_api_type, host) 归一化成实际查表用的 native voice provider key。
+    """Normalize (core_api_type, host) into the native voice provider key actually used for lookups.
 
-    唯一的 host 依赖分歧：海外免费（free + *.lanlan.app）→ 'free_intl'
-    （Gemini 全量 + yui）。其余情况 provider key == core_api_type。集中在
-    registry 内做重映射，cross-cutting 调用方只需把 base_url 透传进来，不必
-    自己 if host == ...。
+    The only host-dependent divergence: overseas free (free + *.lanlan.app) → 'free_intl'
+    (full Gemini + yui). In all other cases provider key == core_api_type. The remap is
+    centralized inside the registry; cross-cutting callers just pass base_url through
+    instead of doing their own if host == ... checks.
     """
     if is_free_lanlan_app_route(core_api_type, realtime_base_url):
         return "free_intl"
@@ -284,9 +301,10 @@ def resolve_native_voice_for_routing(
     registered native-voice provider, returns the stripped input verbatim
     with use_native=False so callers fall through to custom TTS routing.
 
-    传入 realtime_base_url 时，海外免费路由（free + *.lanlan.app）会被重映射
-    到 'free_intl'（Gemini 全量 + yui），让 yui / Gemini 音色在该路由下被认成
-    native；不传则按 core_api_type 原样查表（向后兼容旧调用与非 free 路由）。
+    When realtime_base_url is passed, the overseas free route (free + *.lanlan.app)
+    is remapped to 'free_intl' (full Gemini + yui), so yui / Gemini voices are
+    recognized as native on that route; without it the lookup uses core_api_type
+    as-is (backward compatible with old callers and non-free routes).
     """
     provider_key = _effective_native_provider_key(core_api_type, realtime_base_url)
     provider = get_provider(provider_key)
@@ -296,7 +314,7 @@ def resolve_native_voice_for_routing(
 
 
 def is_free_preset_voice_id(voice_id: str | None) -> bool:
-    """判断 voice_id 是否属于 api_providers.json 的 free_voices 列表。"""
+    """Whether voice_id belongs to the free_voices list of api_providers.json."""
     from utils.api_config_loader import get_free_voices  # 延迟导入避免循环
 
     voice = (voice_id or "").strip()
@@ -362,23 +380,25 @@ def _read_tts_native_provider_for_ui(cm: "ConfigManager") -> str | None:
 
 
 def get_active_realtime_native_provider(cm: "ConfigManager") -> str | None:
-    """返回当前 realtime API 注册的 native voice provider key（route-agnostic）。
+    """Return the native voice provider key registered for the current realtime API (route-agnostic).
 
-    仅看 api_type 是否对应已注册 provider，不做 host 重映射 —— 海外免费下
-    api_type 仍是 'free'。validate / cleanup 这条链路用 route-agnostic 版叠加
-    `is_saveable_native_voice` 的 free_intl 候选，既认海外 Gemini/yui 音色，
-    又保留切线路时 Step 原生音色不被误清的宽容度。
+    Only checks whether api_type maps to a registered provider, with no host remapping —
+    under overseas free, api_type is still 'free'. The validate / cleanup chain uses
+    this route-agnostic version plus `is_saveable_native_voice`'s free_intl candidates,
+    recognizing overseas Gemini/yui voices while staying lenient enough that switching
+    routes doesn't wrongly purge Step native voices.
     """
     api_type = _read_realtime_api_type(cm)
     return api_type if api_type in _PROVIDERS else None
 
 
 def is_saveable_native_voice(cm: "ConfigManager", voice_id: str | None) -> bool:
-    """voice_id 是否是当前线路下可保存的 native 音色。
+    """Whether voice_id is a savable native voice on the current route.
 
-    候选 provider = registered api_type（route-agnostic，避免用户切线路时把
-    characters.json 里存的 Step 原生音色误清）∪ host 重映射后的有效 provider
-    （海外免费叠加 free_intl 的 Gemini 全量 + yui）。命中任一即合法。
+    Candidate providers = registered api_type (route-agnostic, so switching routes
+    doesn't wrongly purge Step native voices saved in characters.json) ∪ the effective
+    provider after host remapping (overseas free adds free_intl's full Gemini + yui).
+    Hitting either counts as valid.
     """
     api_type = _read_realtime_api_type(cm)
     base_url = _read_realtime_base_url(cm)
@@ -391,11 +411,12 @@ def is_saveable_native_voice(cm: "ConfigManager", voice_id: str | None) -> bool:
 
 
 def get_active_realtime_native_provider_for_ui(cm: "ConfigManager") -> str | None:
-    """返回 /voices 端点和原生音色 preview 应展示的有效 provider key。
+    """Return the effective provider key that the /voices endpoint and native voice previews should display.
 
-    与 route-agnostic 版的差别：这里做 host 重映射 —— 海外免费（free +
-    *.lanlan.app）展示 'free_intl'（Gemini 全量 + yui），国内免费展示 'free'
-    （阶跃原生）。UI 只暴露该线路实际可用的音色目录。
+    Difference from the route-agnostic version: this one does the host remap — overseas
+    free (free + *.lanlan.app) displays 'free_intl' (full Gemini + yui), domestic free
+    displays 'free' (StepFun native). The UI only exposes the voice catalog actually
+    usable on the route.
     """
     tts_provider = _read_tts_native_provider_for_ui(cm)
     if tts_provider:

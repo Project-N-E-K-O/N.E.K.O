@@ -221,7 +221,7 @@ async def test_b5_finalize_late_close_request_during_inner_archive(monkeypatch):
         # Force the inner to actually enter ``_submit_game_archive_to_memory``
         # so the barrier in ``_blocked_submit`` becomes a real park point.
         # Without these flags ``_game_archive_memory_skip_reason`` returns
-        # "game_not_started" / "soccer_game_memory_archive_disabled" and
+        # "game_not_started" / "game_memory_archive_disabled" and
         # the submit call is bypassed entirely.
         state["game_started"] = True
         state["game_started_at"] = game_router.time.time() - 30

@@ -1,5 +1,19 @@
 # -*- coding: utf-8 -*-
-"""轻量级时间格式化工具，供 memory_server / main_logic 等模块共用。"""
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Lightweight time formatting helpers shared by memory_server / main_logic and friends."""
 
 from config.prompts.prompts_sys import _loc
 from config.prompts.prompts_memory import (
@@ -9,7 +23,7 @@ from config.prompts.prompts_memory import (
 
 
 def format_elapsed(lang: str, gap_seconds: float) -> str:
-    """根据间隔秒数，智能选择时间格式模板（天/时/分，省略零值单位）。"""
+    """Pick a time format template (days/hours/minutes, omitting zero-value units) based on the interval in seconds."""
     days = int(gap_seconds // 86400)
     hours = int((gap_seconds % 86400) // 3600)
     minutes = int((gap_seconds % 3600) // 60)

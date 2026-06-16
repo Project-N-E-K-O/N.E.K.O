@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """GPT-SoVITS runtime configuration helpers."""
 
 from __future__ import annotations
@@ -39,6 +53,26 @@ def is_local_http_url(url: str | None) -> bool:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False
+
+
+def is_valid_http_url(url: str | None) -> bool:
+    """True for any well-formed ``http(s)://host`` URL — local OR remote.
+
+    GPT-SoVITS may be self-hosted on a remote box, so (per the maintainer's
+    explicit SSRF posture decision, matching vLLM-Omni) the host is no longer
+    restricted to loopback; only the scheme and a non-empty host are validated to
+    reject garbage / non-HTTP schemes.
+
+    Malformed URLs (e.g. an unterminated IPv6 literal ``http://[::1``) make
+    ``parsed.hostname`` raise ``ValueError``; that is caught here so the contract
+    "invalid URL -> False" always holds, rather than leaking the exception.
+    """
+    try:
+        parsed = urlparse(str(url or "").strip())
+        hostname = parsed.hostname
+    except ValueError:
+        return False
+    return parsed.scheme in ("http", "https") and bool(hostname)
 
 
 def gsv_ws_url_from_http_base(base_url: str) -> str:

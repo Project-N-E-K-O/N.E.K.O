@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import sys
 import os
 # Make the repo root importable when this module is run as a script
@@ -370,15 +384,17 @@ async def _request_memory_server_block_startup(reason: str = "") -> None:
 class _SyncMessageQueue(asyncio.Queue):
     """``asyncio.Queue`` with sync ``put()`` aliased to ``put_nowait()``.
 
-    ``sync_message_queue`` 历史上是 ``queue.Queue``（线程安全），生产端在
-    core.py / system_router.py 等 14+ 处用同步 ``q.put(item)`` 调用。
-    cross_server 改成主 loop 上的 ``asyncio.Task`` 后，message_queue 切到
-    ``asyncio.Queue``。原生 ``asyncio.Queue.put`` 是 coroutine，原 sync 调用
-    会变成"未 await 的 coroutine"——既不入队也产生 RuntimeWarning。
+    ``sync_message_queue`` was historically a ``queue.Queue`` (thread-safe), with
+    producers calling sync ``q.put(item)`` in 14+ places across core.py /
+    system_router.py etc. After cross_server became an ``asyncio.Task`` on the main
+    loop, message_queue switched to ``asyncio.Queue``. The native
+    ``asyncio.Queue.put`` is a coroutine, so the old sync calls would become
+    "un-awaited coroutines" — never enqueuing and raising RuntimeWarning.
 
-    覆盖 ``put`` 为 sync alias 到 ``put_nowait`` 保持向后兼容：sync_message_queue
-    全部 unbounded（无 maxsize），``put_nowait`` 永远不会因满而 raise，所以
-    替换在语义上等价。
+    Overriding ``put`` as a sync alias of ``put_nowait`` keeps backward
+    compatibility: every sync_message_queue is unbounded (no maxsize), so
+    ``put_nowait`` can never raise for being full, making the replacement
+    semantically equivalent.
     """
 
     def put(self, item):  # type: ignore[override]
@@ -388,33 +404,39 @@ class _SyncMessageQueue(asyncio.Queue):
 
 @dataclass
 class RoleState:
-    """单个 catgirl 的 per-k 运行态容器。
+    """Per-k runtime state container for a single catgirl.
 
-    把之前 6 张并列 module-global dict（sync_message_queue / sync_shutdown_event /
-    session_id / sync_process / websocket_locks / session_manager）合并成一个
-    record，由 role_state[k] 统一持有，避免半初始化状态 + 维护成本分散。
-    见 issue #857 / PR #855 review。
+    Merges what used to be 6 parallel module-global dicts (sync_message_queue /
+    sync_shutdown_event / session_id / sync_process / websocket_locks /
+    session_manager) into one record held uniformly by role_state[k], avoiding
+    half-initialized states + scattered maintenance cost.
+    See issue #857 / PR #855 review.
 
-    不变量：
-    - sync_message_queue / websocket_lock 在 _ensure_character_slots
-      一次性构造，之后**永不替换**。特别是 websocket_lock —— 替换会让已经
-      ``async with`` 进来的协程阻塞在一把孤立的旧 Lock 上；如果任何逻辑
-      需要整体重建 role_state[k]，必须把旧 lock 原样传过去。
-    - session_id / sync_task / session_manager 初始为 None，分别由
-      websocket_router / _init_character_resources 后续赋值。
+    Invariants:
+    - sync_message_queue / websocket_lock are constructed once in
+      _ensure_character_slots and **never replaced** afterwards. Especially
+      websocket_lock — replacing it would leave coroutines already inside
+      ``async with`` blocked on an orphaned old Lock; if any logic needs to
+      rebuild role_state[k] wholesale, it must carry the old lock over as-is.
+    - session_id / sync_task / session_manager start as None and are assigned
+      later by websocket_router / _init_character_resources respectively.
 
-    历史字段：``sync_shutdown_event: ThreadEvent`` 和 ``sync_process: Thread``
-    在 cross_server 合并到主 event loop 后语义上已删除（不再起独立线程）。
-    生命周期改由 ``sync_task: asyncio.Task`` 管理，shutdown 走 ``task.cancel()``。
+    Legacy fields: ``sync_shutdown_event: ThreadEvent`` and ``sync_process:
+    Thread`` are semantically gone since cross_server merged into the main event
+    loop (no separate thread anymore). Lifecycle is now managed by ``sync_task:
+    asyncio.Task``, with shutdown via ``task.cancel()``.
 
-    但 ``main_routers/shared_state.py`` 的 ``_RoleStateFieldView`` 仍为
-    ``sync_shutdown_event`` / ``sync_process`` 暴露 dict-like 视图（``get_sync_shutdown_event()``
-    / ``get_sync_process()`` 公共 router API）。视图的 ``__getitem__`` 用
-    ``getattr(rs, field)``（不带 default），如果字段不存在会 ``AttributeError``。
-    保留这两个 ``Optional[Any] = None`` 占位字段维护 shim 的"永远空字典"语义：
-    ``__contains__`` 看到 None 返回 False、``__getitem__`` 走 ``raise KeyError``，
-    所有调用者得到一致的空状态而不是崩溃。这两个字段不再被赋值，未来如果
-    确认外部确无依赖再清。
+    However, ``main_routers/shared_state.py``'s ``_RoleStateFieldView`` still
+    exposes dict-like views for ``sync_shutdown_event`` / ``sync_process``
+    (the public router APIs ``get_sync_shutdown_event()`` /
+    ``get_sync_process()``). The view's ``__getitem__`` uses
+    ``getattr(rs, field)`` (no default) and would raise ``AttributeError`` if
+    the field didn't exist. Keeping these two ``Optional[Any] = None``
+    placeholder fields preserves the shim's "always-empty dict" semantics:
+    ``__contains__`` sees None and returns False, ``__getitem__`` goes to
+    ``raise KeyError``, and every caller gets a consistent empty state instead
+    of a crash. The two fields are never assigned anymore; remove them once
+    it's confirmed nothing external depends on them.
     """
     sync_message_queue: _SyncMessageQueue
     websocket_lock: asyncio.Lock
@@ -433,7 +455,7 @@ role_state: dict[str, RoleState] = {}
 
 
 def _iter_sync_connector_tasks():
-    """迭代所有仍然存活的同步连接器 task（按 role_state 为准）。"""
+    """Iterate over all still-alive sync connector tasks (role_state is the source of truth)."""
     for name, rs in role_state.items():
         task = rs.sync_task
         if task is None:
@@ -442,8 +464,8 @@ def _iter_sync_connector_tasks():
 
 
 def _signal_sync_connectors_shutdown(*, log: bool = True) -> None:
-    """取消所有同步连接器 task。task.cancel() 是同步、幂等、loop 关闭后亦无害的，
-    所以 atexit 二次调用安全。"""
+    """Cancel all sync connector tasks. task.cancel() is synchronous, idempotent, and harmless
+    after the loop is closed, so a second atexit invocation is safe."""
     if log:
         logger.info("正在关闭同步连接器 task...")
     for rs in role_state.values():
@@ -456,10 +478,11 @@ def _signal_sync_connectors_shutdown(*, log: bool = True) -> None:
 
 
 async def join_sync_connector_tasks(timeout: float = 3.0) -> list[str]:
-    """并行 await 所有同步连接器 task，返回在 timeout 内未结束的角色名。
+    """Await all sync connector tasks in parallel; return the role names that didn't finish within the timeout.
 
-    通常调用前已经 ``_signal_sync_connectors_shutdown`` 取消过；这里只是等
-    各 task 走完 finally cleanup（关闭 ws/session/reader）。
+    Normally ``_signal_sync_connectors_shutdown`` has already cancelled them before
+    this is called; here we just wait for each task to run its finally cleanup
+    (closing ws/session/reader).
     """
     wait_timeout = max(0.0, float(timeout))
     targets = list(_iter_sync_connector_tasks())
@@ -499,14 +522,15 @@ join_sync_connector_threads = join_sync_connector_tasks
 
 
 def cleanup(*, log: bool = True):
-    """通知所有同步连接器 task 停止。log=False 用于 atexit 二次触发时抑制重复日志。"""
+    """Tell all sync connector tasks to stop. log=False suppresses duplicate logs when atexit fires a second time."""
     _signal_sync_connectors_shutdown(log=log)
 
 
 def _reset_sync_connector_shutdown_events() -> None:
-    """已是空实现：旧版用 ThreadEvent.clear() 让下次启动可以复用线程槽位；
-    现在 task 模式下没有可重置的状态——已死的 task 会被 ``_init_character_resources``
-    检测后直接 ``asyncio.create_task`` 重启。保留函数名以避免修改众多调用点。"""
+    """Now a no-op: the old version used ThreadEvent.clear() so the thread slot could be reused
+    on the next start; in task mode there is no state to reset — a dead task is detected by
+    ``_init_character_resources`` and simply restarted via ``asyncio.create_task``. The function
+    name is kept to avoid touching the many call sites."""
     return
 
 
@@ -559,6 +583,13 @@ def _get_session_manager(name):
     return rs.session_manager if rs is not None else None
 
 
+try:
+    from main_logic.topic.delivery import register_topic_session_manager_getter
+    register_topic_session_manager_getter(_get_session_manager)
+except Exception:
+    logger.warning("Failed to register topic session manager getter", exc_info=True)
+
+
 def _select_fallback_session_manager():
     """Return a single connected session manager as a safe fallback, if unambiguous."""
     connected = []
@@ -573,7 +604,7 @@ def _select_fallback_session_manager():
 
 async def _broadcast_to_all_connected(event_payload: dict) -> int:
     """Broadcast an event to all connected WebSocket sessions in parallel.
-    每秒可能多次（agent status），串行 await 会让一个慢的 ws 拖累其它会话。"""
+    Can fire multiple times per second (agent status); serial awaits would let one slow ws drag down the other sessions."""
     # Take a snapshot to avoid RuntimeError from concurrent dict mutation
     targets = [
         (name, getattr(mgr, "websocket", None))
@@ -595,7 +626,7 @@ async def _broadcast_to_all_connected(event_payload: dict) -> int:
 
 
 async def _handle_agent_event(event: dict):
-    """通过 ZeroMQ 接收 agent_server 事件，并分发到 core/websocket。"""
+    """Receive agent_server events over ZeroMQ and dispatch them to core/websocket."""
     try:
         event_type = event.get("event_type")
         lanlan = event.get("lanlan_name")
@@ -1136,10 +1167,11 @@ async def _handle_agent_event(event: dict):
         logger.debug(f"handle_agent_event error: {e}")
 
 async def _refresh_character_globals():
-    """刷新角色相关 module globals（从 config 重新拉一次 aget_character_data）。
+    """Refresh character-related module globals (re-fetch aget_character_data from config).
 
-    所有 fast-path 入口都必须先走这一步，确保 set_current_catgirl / update_catgirl
-    等操作后，后续读 her_name / lanlan_prompt / lanlan_basic_config 的代码看到最新值。
+    Every fast-path entry must go through this first, so that after operations like
+    set_current_catgirl / update_catgirl, subsequent reads of her_name / lanlan_prompt /
+    lanlan_basic_config see the latest values.
     """
     global master_name, her_name, master_basic_config, lanlan_basic_config
     global name_mapping, lanlan_prompt, time_store, setting_store, recent_log
@@ -1149,16 +1181,18 @@ async def _refresh_character_globals():
 
 
 def _ensure_character_slots(k: str) -> bool:
-    """为单个 catgirl 预备 per-k 同步资源槽位。返回是否为新建角色（决定后续要不要强制启动 task）。
+    """Prepare the per-k sync resource slot for a single catgirl. Returns whether this is a newly created character (which decides whether to force-start the task afterwards).
 
-    纯内存的原子操作：要么 role_state[k] 已经存在（什么都不做），要么一次性
-    把 queue / websocket_lock 两件全部填好。避免旧代码里 6 张 dict 用两种不同
-    sentinel（sync_message_queue vs websocket_locks）各自判断 "角色是否已有
-    槽位" 造成的半初始化风险。
+    A purely in-memory atomic operation: either role_state[k] already exists (do
+    nothing), or both the queue and websocket_lock are filled in at once. This avoids
+    the half-initialization risk of the old code, where 6 dicts used two different
+    sentinels (sync_message_queue vs websocket_locks) to independently decide
+    "does this character already have a slot".
 
-    注：``asyncio.Queue`` 在 Python 3.10+ 创建时不需要 running loop；
-    本函数虽然是 sync，但调用链上来自 ``initialize_character_data`` /
-    ``_init_character_resources`` 等 async 上下文，loop 可用。
+    Note: ``asyncio.Queue`` does not need a running loop at creation time on
+    Python 3.10+; although this function is sync, its call chain comes from async
+    contexts like ``initialize_character_data`` / ``_init_character_resources``,
+    so a loop is available.
     """
     if k not in role_state:
         role_state[k] = RoleState(
@@ -1171,11 +1205,11 @@ def _ensure_character_slots(k: str) -> bool:
 
 
 async def _init_character_resources(k: str, is_new_character: bool):
-    """为单个 catgirl 完成 session_manager 更新 + 同步连接器 task 检查/重启。
+    """Complete the session_manager update + sync connector task check/restart for a single catgirl.
 
-    依赖 module globals: master_name, lanlan_prompt, lanlan_basic_config（调用方负责先刷新）。
-    写入 per-k 槽位: role_state[k].session_manager / sync_task —— 不同 k 之间
-    不共享状态，可安全并行。
+    Depends on module globals: master_name, lanlan_prompt, lanlan_basic_config (the caller must refresh them first).
+    Writes the per-k slots: role_state[k].session_manager / sync_task — no state is
+    shared between different k, so this is safe to run in parallel.
     """
     rs = role_state[k]  # 调用方必须先 _ensure_character_slots，保证这里可直接索引
     # 更新或创建session manager（使用最新的prompt）
@@ -1325,9 +1359,9 @@ async def _init_character_resources(k: str, is_new_character: bool):
 
 
 async def _stop_character_thread(k: str):
-    """停止单个 catgirl 的同步连接器 task（最多 3s 等待 cleanup）。dict 清理留给调用方顺序做。
+    """Stop a single catgirl's sync connector task (waiting up to 3s for cleanup). Dict cleanup is left to the caller to do in order.
 
-    函数名保留 ``_thread`` 后缀以避免修改众多调用点；现在底层是 ``asyncio.Task``。
+    The ``_thread`` suffix in the name is kept to avoid touching the many call sites; the underlying mechanism is now an ``asyncio.Task``.
     """
     rs = role_state.get(k)
     if rs is None or rs.sync_task is None:
@@ -1353,7 +1387,7 @@ async def _stop_character_thread(k: str):
 
 
 def _cleanup_character_dicts(k: str):
-    """同步清理单个 catgirl 的 per-k 槽位。调用前确保对应 task 已停或超时。"""
+    """Synchronously clean up a single catgirl's per-k slot. Make sure the corresponding task has stopped or timed out before calling."""
     rs = role_state.get(k)
     if rs is None:
         return
@@ -1370,10 +1404,10 @@ def _cleanup_character_dicts(k: str):
 
 
 async def initialize_character_data():
-    """全量刷新：加载 config + 对所有 catgirl 做 per-k init + 清理已删除的。
+    """Full refresh: load config + run per-k init for every catgirl + clean up deleted ones.
 
-    冷路径（启动 / 主人名编辑 / 大规模批量导入）。per-catgirl 编辑请走
-    init_one_catgirl / remove_one_catgirl / switch_current_catgirl_fast 这些 fast path。
+    Cold path (startup / master-name edit / large bulk import). For per-catgirl edits
+    use the fast paths: init_one_catgirl / remove_one_catgirl / switch_current_catgirl_fast.
     """
     logger.info("正在加载角色配置...")
 
@@ -1423,23 +1457,24 @@ async def initialize_character_data():
 # ─────────────────────────────────────────────────────────────
 
 async def switch_current_catgirl_fast():
-    """当前猫娘切换（`当前猫娘` 字段变更）专用 fast path。
+    """Dedicated fast path for switching the current catgirl (change of the `current catgirl` field).
 
-    关键前提：切换只影响 `her_name` 这一个 global，per-k 的 prompt / voice_id / thread
-    状态完全不变。所以这里**只刷 globals**，不做任何 per-k 工作。
+    Key premise: the switch only affects the single global `her_name`; per-k prompt /
+    voice_id / thread state is completely unchanged. So this **only refreshes
+    globals** and does no per-k work at all.
 
-    墙钟：一次 aget_character_data（~数 ms）即全部。
+    Wall clock: one aget_character_data (~a few ms) and that's everything.
     """
     await _refresh_character_globals()
     logger.info(f"[fast-switch] 已刷新 globals，当前猫娘: {her_name}")
 
 
 async def init_one_catgirl(name: str, *, is_new: bool = False):
-    """新增 / 编辑单个 catgirl 的 fast path。
+    """Fast path for adding / editing a single catgirl.
 
-    - is_new=True：新增，强制启动同步连接器线程
-    - is_new=False：编辑（prompt / voice_id 等）—— 只刷新 session_manager 的 prompt/voice_id，
-                    不会重启线程
+    - is_new=True: addition; force-starts the sync connector thread
+    - is_new=False: edit (prompt / voice_id etc.) — only refreshes the session_manager's
+                    prompt/voice_id, does not restart the thread
     """
     await _refresh_character_globals()
     if name not in lanlan_prompt:
@@ -1450,7 +1485,7 @@ async def init_one_catgirl(name: str, *, is_new: bool = False):
 
 
 async def remove_one_catgirl(name: str):
-    """删除单个 catgirl 的 fast path：停该角色的线程 + 清 dict + 刷 globals。"""
+    """Fast path for deleting a single catgirl: stop the character's thread + clear dicts + refresh globals."""
     await _stop_character_thread(name)
     _cleanup_character_dicts(name)
     # config 文件已由调用方写入，这里刷新 globals 让 catgirl_names 等反映删除
@@ -1481,6 +1516,7 @@ _MAIN_LIMITED_MODE_ALLOWED_PAGE_PATHS = {
     "/model_manager",
     "/live2d_parameter_editor",
     "/soccer_demo",
+    "/basketball_demo",
     "/live2d_emotion_manager",
     "/vrm_emotion_manager",
     "/mmd_emotion_manager",
@@ -1578,6 +1614,7 @@ if _IS_MAIN_PROCESS:
     _config_manager.ensure_live2d_directory()
     _config_manager.ensure_vrm_directory()
     _config_manager.ensure_mmd_directory()
+    _config_manager.ensure_pngtuber_directory()
     _config_manager.ensure_chara_directory()
 
     # CFA (反勒索防护) 感知挂载：
@@ -1631,7 +1668,12 @@ if _IS_MAIN_PROCESS:
     if os.path.exists(user_mmd_path):
         app.mount("/user_mmd", CustomStaticFiles(directory=user_mmd_path), name="user_mmd")
         logger.info(f"已挂载MMD目录: {user_mmd_path}")
-    
+
+    user_pngtuber_path = str(_config_manager.pngtuber_dir)
+    if os.path.exists(user_pngtuber_path):
+        app.mount("/user_pngtuber", CustomStaticFiles(directory=user_pngtuber_path), name="user_pngtuber")
+        logger.info(f"已挂载PNGTuber目录: {user_pngtuber_path}")
+
     # 挂载项目目录下的static/mmd（作为备用）
     project_mmd_path = os.path.join(static_dir, 'mmd')
     if os.path.exists(project_mmd_path) and os.path.isdir(project_mmd_path):
@@ -1659,6 +1701,7 @@ from main_routers.memory_router import router as memory_router # noqa
 from main_routers.mmd_router import router as mmd_router # noqa
 from main_routers.music_router import router as music_router # noqa
 from main_routers.pages_router import router as pages_router # noqa
+from main_routers.pngtuber_router import router as pngtuber_router # noqa
 from main_routers.storage_location_router import router as storage_location_router # noqa
 from main_routers.system_router import router as system_router # noqa
 from main_routers.tool_router import router as tool_router # noqa
@@ -1674,8 +1717,8 @@ from main_routers.shared_state import init_shared_state, set_steamworks_initiali
 # ── 健康检查 / 指纹端点 ──────────────────────────────────────────
 @app.get("/health")
 async def health():
-    """返回带 N.E.K.O 签名的健康响应，供 launcher/前端识别，
-    以区分当前服务与随机占用该端口的其他进程。"""
+    """Return a health response carrying the N.E.K.O signature so the launcher/frontend
+    can distinguish this service from a random process squatting on the port."""
     from utils.port_utils import build_health_response
     from config import INSTANCE_ID
     return build_health_response("main", instance_id=INSTANCE_ID)
@@ -1683,7 +1726,7 @@ async def health():
 
 @app.post('/api/beacon/shutdown')
 async def beacon_shutdown():
-    """Beacon 接口：用于优雅关闭服务器"""
+    """Beacon endpoint: used for graceful server shutdown"""
     try:
         # 从 app.state 获取配置
         current_config = get_start_config()
@@ -1785,6 +1828,7 @@ app.include_router(characters_router)
 app.include_router(live2d_router)
 app.include_router(vrm_router)
 app.include_router(mmd_router)
+app.include_router(pngtuber_router)
 app.include_router(jukebox_router)
 app.include_router(workshop_router)
 app.include_router(memory_router)
@@ -1812,10 +1856,11 @@ _runtime_startup_init_completed = False
 
 
 async def _background_preload():
-    """后台预加载音频处理模块
+    """Preload audio processing modules in the background
     
-    注意：不需要 Event 同步机制，因为 Python 的 import lock 会自动等待首次导入完成。
-    如果用户在预加载完成前点击语音，再次 import 会自动阻塞等待。
+    Note: no Event-based synchronization is needed, because Python's import lock
+    automatically waits for the first import to finish. If the user clicks voice
+    before preloading completes, the second import simply blocks until ready.
     """
     try:
         logger.info("🔄 后台预加载音频处理模块...")
@@ -1829,20 +1874,20 @@ async def _background_preload():
 
 
 def _sync_preload_modules():
-    """同步预加载延迟导入的模块（在线程池中执行）
+    """Synchronously preload lazily imported modules (runs in a thread pool)
     
-    注意：以下模块已通过导入链在启动时加载，无需预加载：
-    - numpy, soxr: 通过 core.py / audio_processor.py
-    - websockets: 通过 omni_realtime_client.py
-    - langchain_openai/langchain_core: 通过 omni_offline_client.py
-    - httpx: 通过 core.py
-    - aiohttp: 通过 tts_client.py
+    Note: the following modules are already loaded at startup via the import chain and need no preloading:
+    - numpy, soxr: via core.py / audio_processor.py
+    - websockets: via omni_realtime_client.py
+    - langchain_openai/langchain_core: via omni_offline_client.py
+    - httpx: via core.py
+    - aiohttp: via tts_client.py
     
-    真正需要预加载的延迟导入模块：
-    - pyrnnoise.rnnoise: audio_processor.py 中通过 _get_rnnoise() 延迟加载
-    - dashscope: tts_client.py 中仅在 cosyvoice_vc_tts_worker 函数内部导入
-    - googletrans/translatepy: language_utils.py 中延迟导入的翻译库
-    - translation_service: language_utils.py 中的翻译服务（TranslationService）
+    Lazily imported modules that genuinely need preloading:
+    - pyrnnoise.rnnoise: lazily loaded in audio_processor.py via _get_rnnoise()
+    - dashscope: imported only inside the cosyvoice_vc_tts_worker function in tts_client.py
+    - googletrans/translatepy: translation libraries lazily imported in language_utils.py
+    - translation_service: the translation service (TranslationService) in language_utils.py
     """
     import time
     start = time.time()
@@ -2199,7 +2244,7 @@ async def release_storage_startup_barrier(*, reason: str = "storage_selection_co
 # Startup 事件：延迟初始化 Steamworks 和全局语言
 @app.on_event("startup")
 async def on_startup():
-    """服务器启动时执行的初始化操作"""
+    """Initialization performed at server startup"""
     if _IS_MAIN_PROCESS:
         global _server_loop
         _server_loop = asyncio.get_running_loop()
@@ -2266,7 +2311,7 @@ async def on_startup():
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    """服务器关闭时清理资源"""
+    """Clean up resources at server shutdown"""
     if _IS_MAIN_PROCESS:
         logger.info("正在清理资源...")
         cleanup()
@@ -2456,7 +2501,7 @@ async def on_shutdown():
 
 # 使用 FastAPI 的 app.state 来管理启动配置
 def get_start_config():
-    """从 app.state 获取启动配置"""
+    """Get the startup config from app.state"""
     if hasattr(app.state, 'start_config'):
         return app.state.start_config
     return {
@@ -2468,7 +2513,7 @@ def get_start_config():
     }
 
 def set_start_config(config):
-    """设置启动配置到 app.state"""
+    """Store the startup config into app.state"""
     app.state.start_config = config
 
 
@@ -2513,11 +2558,12 @@ async def request_application_shutdown_async():
 
 
 def _schedule_workshop_sync(steamworks) -> None:
-    """把创意工坊里真正慢的部分（UGC 缓存预热 + 角色卡网络同步）丢到后台 task。
+    """Push the genuinely slow parts of the workshop (UGC cache warmup + character card network sync) to a background task.
 
-    目录挂载已由调用方在 ready 前同步完成（``_init_and_mount_workshop``），这里
-    只调度网络密集的预热/同步——与本次重构前的原始行为一致（原本它们就是
-    ``create_task``）。greeting 不依赖这两步。
+    Directory mounting is done synchronously by the caller before ready
+    (``_init_and_mount_workshop``); this only schedules the network-heavy
+    warmup/sync — same as the original behavior before this refactor (they were
+    already ``create_task``). greeting does not depend on these two steps.
     """
     try:
         if not steamworks:
@@ -2579,12 +2625,12 @@ def _schedule_workshop_sync(steamworks) -> None:
 
 async def _init_and_mount_workshop():
     """
-    初始化并挂载创意工坊目录
+    Initialize and mount the workshop directory
     
-    设计原则：
-    - main 层只负责调用，不维护状态
-    - 路径由 utils 层计算并持久化到 config 层
-    - 其他代码需要路径时调用 get_workshop_path() 获取
+    Design principles:
+    - the main layer only calls; it keeps no state
+    - the path is computed by the utils layer and persisted into the config layer
+    - other code that needs the path calls get_workshop_path()
     """
     try:
         # 1. 获取订阅的创意工坊物品列表
@@ -2621,7 +2667,7 @@ async def _init_and_mount_workshop():
 
 
 async def shutdown_server_async():
-    """异步关闭服务器"""
+    """Shut down the server asynchronously"""
     try:
         # 短暂延时，确保 beacon 响应有机会先发送
         await asyncio.sleep(0.5)
@@ -2649,7 +2695,7 @@ if _IS_MAIN_PROCESS:
 
 def _format_size(size_bytes):
     """
-    将字节大小格式化为人类可读的格式
+    Format a byte size into a human-readable string
     """
     for unit in ['B', 'KB', 'MB', 'GB']:
         if size_bytes < 1024.0:
@@ -2661,7 +2707,7 @@ def _format_size(size_bytes):
 
 # 辅助函数
 def get_folder_size(folder_path):
-    """获取文件夹大小（字节）"""
+    """Get folder size (in bytes)"""
     total_size = 0
     for dirpath, dirnames, filenames in os.walk(folder_path):
         for filename in filenames:
@@ -2673,7 +2719,7 @@ def get_folder_size(folder_path):
     return total_size
 
 def find_preview_image_in_folder(folder_path):
-    """在文件夹中查找预览图片，只查找指定的8个图片名称"""
+    """Look for a preview image in the folder, checking only the 8 designated image names"""
     # 按优先级顺序查找指定的图片文件列表
     preview_image_names = ['preview.jpg', 'preview.png', 'thumbnail.jpg', 'thumbnail.png', 
                          'icon.jpg', 'icon.png', 'header.jpg', 'header.png']
@@ -2688,7 +2734,7 @@ def find_preview_image_in_folder(folder_path):
 
 
 def _get_port_owners(port: int) -> list[int]:
-    """查询监听指定端口的进程 PID 列表（尽力而为）。"""
+    """Query the PIDs of processes listening on the given port (best effort)."""
     pids: set[int] = set()
     try:
         import subprocess
@@ -2733,7 +2779,7 @@ def _get_port_owners(port: int) -> list[int]:
 
 
 def _is_port_available(port: int) -> bool:
-    """检查 127.0.0.1:port 是否可绑定。"""
+    """Check whether 127.0.0.1:port can be bound."""
     import socket
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:

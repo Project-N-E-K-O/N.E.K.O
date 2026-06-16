@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -40,6 +41,9 @@ _ALLOWED_PLUGIN_LIST_ACTION_BUILTINS = {
 }
 _HOSTED_TRANSLATIONS_MAX_BYTES = 128 * 1024
 _HOSTED_TRANSLATIONS_DEFAULT_SOURCE_LOCALE = "en-US"
+_HOSTED_TSX_DEPENDENCIES_MAX_FILES = 32
+_HOSTED_TSX_DEPENDENCIES_MAX_BYTES = 512 * 1024
+_HOSTED_TSX_CODE_EXTENSIONS = (".tsx", ".ts", ".jsx", ".js")
 _PLUGIN_NOT_RUNNING_MESSAGES = {
     "en": "The plugin is not running. Start the plugin before using this action.",
     "zh-CN": "插件未运行。请先启动该插件，再执行这个操作。",
@@ -415,6 +419,695 @@ def _load_surface_translations_sync(entry_path: Path) -> dict[str, object]:
     return _normalize_translations(raw, path=translations_path)
 
 
+def _plugin_root_from_meta(plugin_meta: Mapping[str, object]) -> Path | None:
+    config_path_obj = plugin_meta.get("config_path")
+    if not isinstance(config_path_obj, str) or not config_path_obj:
+        return None
+    try:
+        return Path(config_path_obj).parent.resolve()
+    except Exception:
+        return None
+
+
+def _resolve_hosted_tsx_relative_dependency(root: Path, from_path: Path, specifier: str) -> Path | None:
+    clean_specifier = specifier.split("?", 1)[0].split("#", 1)[0]
+    try:
+        base_path = (from_path.parent / clean_specifier).resolve()
+        candidates = [
+            base_path,
+            *(Path(f"{base_path}{ext}") for ext in _HOSTED_TSX_CODE_EXTENSIONS),
+            *(base_path / f"index{ext}" for ext in _HOSTED_TSX_CODE_EXTENSIONS),
+        ]
+    except (OSError, ValueError):
+        return None
+
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(root)
+        except (OSError, ValueError):
+            continue
+        if resolved.suffix.lower() in _HOSTED_TSX_CODE_EXTENSIONS and resolved.is_file():
+            return resolved
+    return None
+
+
+def _hosted_is_identifier_char(value: str) -> bool:
+    return value.isalnum() or value in {"_", "$"}
+
+
+def _hosted_matches_keyword(source: str, index: int, keyword: str) -> bool:
+    end = index + len(keyword)
+    if source[index:end] != keyword:
+        return False
+    before = source[index - 1] if index > 0 else ""
+    after = source[end] if end < len(source) else ""
+    return not _hosted_is_identifier_char(before) and not _hosted_is_identifier_char(after)
+
+
+def _hosted_skip_whitespace(source: str, index: int) -> int:
+    while index < len(source) and source[index].isspace():
+        index += 1
+    return index
+
+
+def _hosted_skip_trivia(source: str, index: int) -> int:
+    while index < len(source):
+        index = _hosted_skip_whitespace(source, index)
+        if index + 1 >= len(source) or source[index] != "/":
+            return index
+        next_char = source[index + 1]
+        if next_char == "/":
+            index = _hosted_skip_line_comment(source, index)
+            continue
+        if next_char == "*":
+            index = _hosted_skip_block_comment(source, index)
+            continue
+        return index
+    return index
+
+
+def _hosted_skip_quoted(source: str, index: int) -> int:
+    quote = source[index]
+    index += 1
+    while index < len(source):
+        char = source[index]
+        if char == "\\":
+            index += 2
+            continue
+        index += 1
+        if char == quote:
+            break
+    return index
+
+
+def _hosted_read_quoted(source: str, index: int) -> tuple[str, int] | None:
+    quote = source[index]
+    index += 1
+    value: list[str] = []
+    while index < len(source):
+        char = source[index]
+        if char == "\\":
+            if index + 1 < len(source):
+                value.append(source[index + 1])
+            index += 2
+            continue
+        if char == quote:
+            return "".join(value), index + 1
+        value.append(char)
+        index += 1
+    return None
+
+
+def _hosted_skip_line_comment(source: str, index: int) -> int:
+    newline = source.find("\n", index + 2)
+    return len(source) if newline < 0 else newline + 1
+
+
+def _hosted_skip_block_comment(source: str, index: int) -> int:
+    end = source.find("*/", index + 2)
+    return len(source) if end < 0 else end + 2
+
+
+def _hosted_skip_template(source: str, index: int, *, scan_expressions: bool = False) -> int:
+    index += 1
+    while index < len(source):
+        char = source[index]
+        if char == "\\":
+            index += 2
+            continue
+        if scan_expressions and char == "$" and index + 1 < len(source) and source[index + 1] == "{":
+            index = _hosted_skip_jsx_expression(source, index + 1)
+            continue
+        index += 1
+        if char == "`":
+            break
+    return index
+
+
+def _hosted_previous_significant_char(source: str, index: int) -> str:
+    index -= 1
+    while index >= 0:
+        char = source[index]
+        if char.isspace():
+            index -= 1
+            continue
+        return char
+    return ""
+
+
+def _hosted_can_start_regex_literal(source: str, index: int) -> bool:
+    previous = _hosted_previous_significant_char(source, index)
+    return previous == "" or previous in "=([{,:!?&|^~+-*%<>;"
+
+
+def _hosted_skip_regex_literal(source: str, index: int) -> int:
+    in_class = False
+    index += 1
+    while index < len(source):
+        char = source[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == "[":
+            in_class = True
+            index += 1
+            continue
+        if char == "]":
+            in_class = False
+            index += 1
+            continue
+        if char == "/" and not in_class:
+            index += 1
+            while index < len(source) and source[index].isalpha():
+                index += 1
+            return index
+        index += 1
+    return index
+
+
+def _hosted_looks_like_jsx_start(source: str, index: int) -> bool:
+    if source[index] != "<" or index + 1 >= len(source):
+        return False
+    next_char = source[index + 1]
+    return next_char in {"/", ">"} or next_char.isalpha()
+
+
+def _hosted_skip_jsx_expression(source: str, index: int) -> int:
+    depth = 1
+    index += 1
+    while index < len(source) and depth > 0:
+        char = source[index]
+        if char == "/" and index + 1 < len(source):
+            next_char = source[index + 1]
+            if next_char == "/":
+                index = _hosted_skip_line_comment(source, index)
+                continue
+            if next_char == "*":
+                index = _hosted_skip_block_comment(source, index)
+                continue
+            if _hosted_can_start_regex_literal(source, index):
+                index = _hosted_skip_regex_literal(source, index)
+                continue
+        if char in {"'", '"'}:
+            index = _hosted_skip_quoted(source, index)
+            continue
+        if char == "`":
+            index = _hosted_skip_template(source, index, scan_expressions=True)
+            continue
+        if _hosted_matches_keyword(source, index, "import") and _hosted_is_dynamic_import_call(source, index):
+            _hosted_raise_dynamic_import_unsupported()
+        if char == "<" and _hosted_looks_like_jsx_start(source, index):
+            index = _hosted_skip_jsx_element(source, index)
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+        index += 1
+    return index
+
+
+def _hosted_skip_jsx_tag(source: str, index: int) -> tuple[int, bool, bool]:
+    closing = index + 1 < len(source) and source[index + 1] == "/"
+    index += 2 if closing else 1
+    while index < len(source):
+        char = source[index]
+        if char in {"'", '"'}:
+            index = _hosted_skip_quoted(source, index)
+            continue
+        if char == "{":
+            index = _hosted_skip_jsx_expression(source, index)
+            continue
+        if char == ">":
+            self_closing = index > 0 and source[index - 1] == "/"
+            return index + 1, closing, self_closing
+        index += 1
+    return index, closing, False
+
+
+def _hosted_skip_jsx_element(source: str, index: int) -> int:
+    depth = 0
+    while index < len(source):
+        char = source[index]
+        if char == "{":
+            index = _hosted_skip_jsx_expression(source, index)
+            continue
+        if char == "<" and _hosted_looks_like_jsx_start(source, index):
+            index, closing, self_closing = _hosted_skip_jsx_tag(source, index)
+            if closing:
+                depth -= 1
+                if depth <= 0:
+                    return index
+            elif not self_closing:
+                depth += 1
+            continue
+        index += 1
+    return index
+
+
+def _hosted_find_keyword_before_statement_end(source: str, index: int, keyword: str) -> int:
+    while index < len(source):
+        char = source[index]
+        if char == ";":
+            return -1
+        if char == "/" and index + 1 < len(source):
+            next_char = source[index + 1]
+            if next_char == "/":
+                index = _hosted_skip_line_comment(source, index)
+                continue
+            if next_char == "*":
+                index = _hosted_skip_block_comment(source, index)
+                continue
+        if char in {"'", '"'}:
+            index = _hosted_skip_quoted(source, index)
+            continue
+        if char == "`":
+            index = _hosted_skip_template(source, index, scan_expressions=True)
+            continue
+        if char == "<" and _hosted_looks_like_jsx_start(source, index):
+            index = _hosted_skip_jsx_element(source, index)
+            continue
+        if _hosted_matches_keyword(source, index, keyword):
+            return index
+        index += 1
+    return -1
+
+
+def _hosted_relative_specifier(value: str | None) -> str | None:
+    if isinstance(value, str) and (value.startswith("./") or value.startswith("../")):
+        return value
+    return None
+
+
+def _hosted_named_bindings_have_runtime(raw_bindings: str) -> bool:
+    stripped = raw_bindings.strip()
+    if not (stripped.startswith("{") and stripped.endswith("}")):
+        return bool(stripped)
+    for item in stripped[1:-1].split(","):
+        if item.strip() and not _hosted_is_type_only_binding(item):
+            return True
+    return False
+
+
+def _hosted_is_type_only_binding(raw_binding: str) -> bool:
+    # Mirror the frontend scanner's isTypeOnlyBinding so the server and the
+    # bundler agree: `type Foo` / `type Foo as Bar` / `type { ... }` / `type * as
+    # ns` are erased, but `type as kind` imports a value literally named `type`.
+    stripped = raw_binding.strip()
+    if re.match(r"type\s*\{", stripped):
+        return True
+    if re.fullmatch(r"type\s+\*\s+as\s+[A-Za-z_$][\w$]*", stripped):
+        return True
+    if re.match(r"type\s+[A-Za-z_$][\w$]*\s*,", stripped):
+        return True
+    return bool(re.fullmatch(r"type\s+[A-Za-z_$][\w$]*(?:\s+as\s+[A-Za-z_$][\w$]*)?", stripped))
+
+
+def _hosted_import_is_type_only(raw_bindings: str) -> bool:
+    # Fully-erased imports only: `import type …` and named lists whose every
+    # binding is inline-type. Bare `import './x'` and empty `import {} from './x'`
+    # are runtime side-effect deps, not type-only.
+    bindings = raw_bindings.strip()
+    if not bindings:
+        return False
+    if _hosted_is_type_only_binding(bindings):
+        return True
+    named_start = bindings.find("{")
+    if named_start < 0:
+        return False
+    if bindings[:named_start].strip().rstrip(",").strip():
+        return False
+    inner = bindings[named_start:].strip()
+    if re.fullmatch(r"\{\s*\}", inner):
+        return False
+    return not _hosted_named_bindings_have_runtime(inner)
+
+
+def _hosted_raise_bare_import_unsupported(specifier: str) -> None:
+    raise ServerDomainError(
+        code="PLUGIN_UI_BARE_IMPORT_UNSUPPORTED",
+        message=(
+            f"Bare import '{specifier}' cannot resolve inside the surface iframe; "
+            "import only relative helpers and '@neko/plugin-ui'"
+        ),
+        status_code=400,
+        details={"specifier": specifier},
+    )
+
+
+def _hosted_is_dynamic_import_call(source: str, index: int) -> bool:
+    if _hosted_previous_significant_char(source, index) == ".":
+        return False
+    import_target = _hosted_skip_trivia(source, index + len("import"))
+    return import_target < len(source) and source[import_target] == "("
+
+
+def _hosted_classify_import_specifier(specifier: str | None) -> str | None:
+    # Relative → a bundled dependency. '@neko/plugin-ui' / 'neko:ui' → rewritten
+    # by the frontend, no dep. Any other bare/external module can't resolve inside
+    # the iframe and would leave a raw ESM import in the classic script — reject it
+    # (installed plugins reach this endpoint without running check-hosted-tsx).
+    if specifier is None:
+        return None
+    relative = _hosted_relative_specifier(specifier)
+    if relative is not None:
+        return relative
+    if specifier in {"@neko/plugin-ui", "neko:ui"}:
+        return None
+    _hosted_raise_bare_import_unsupported(specifier)
+    return None
+
+
+def _hosted_import_specifier(source: str, index: int) -> str | None:
+    import_index = index
+    index = _hosted_skip_trivia(source, index + len("import"))
+    if _hosted_is_dynamic_import_call(source, import_index):
+        _hosted_raise_dynamic_import_unsupported()
+    if index >= len(source) or source[index] in {"(", "."}:
+        return None
+    if _hosted_matches_keyword(source, index, "type"):
+        # `import type { Foo } from './types'` is erased at runtime — no dep.
+        return None
+    if source[index] in {"'", '"'}:
+        # Bare `import './x'` runs for side effects — a runtime dependency.
+        read = _hosted_read_quoted(source, index)
+        return _hosted_classify_import_specifier(read[0] if read else None)
+    from_index = _hosted_find_keyword_before_statement_end(source, index, "from")
+    if from_index < 0:
+        return None
+    if _hosted_import_is_type_only(source[index:from_index]):
+        return None
+    specifier_index = _hosted_skip_trivia(source, from_index + len("from"))
+    if specifier_index >= len(source) or source[specifier_index] not in {"'", '"'}:
+        return None
+    read = _hosted_read_quoted(source, specifier_index)
+    return _hosted_classify_import_specifier(read[0] if read else None)
+
+
+def _hosted_raise_dynamic_import_unsupported() -> None:
+    raise ServerDomainError(
+        code="PLUGIN_UI_DYNAMIC_IMPORT_UNSUPPORTED",
+        message="Dynamic import is not supported in hosted TSX",
+        status_code=400,
+    )
+
+
+def _hosted_tsx_relative_import_specifiers(source: str) -> list[str]:
+    specifiers: list[str] = []
+    index = 0
+    depth = 0
+    while index < len(source):
+        char = source[index]
+        if char == "/" and index + 1 < len(source):
+            next_char = source[index + 1]
+            if next_char == "/":
+                index = _hosted_skip_line_comment(source, index)
+                continue
+            if next_char == "*":
+                index = _hosted_skip_block_comment(source, index)
+                continue
+            if _hosted_can_start_regex_literal(source, index):
+                index = _hosted_skip_regex_literal(source, index)
+                continue
+        if char in {"'", '"'}:
+            index = _hosted_skip_quoted(source, index)
+            continue
+        if char == "`":
+            index = _hosted_skip_template(source, index, scan_expressions=True)
+            continue
+        if char == "<" and _hosted_looks_like_jsx_start(source, index):
+            index = _hosted_skip_jsx_element(source, index)
+            continue
+        if char in {"(", "[", "{"}:
+            depth += 1
+            index += 1
+            continue
+        if char in {")", "]", "}"}:
+            depth = max(0, depth - 1)
+            index += 1
+            continue
+        specifier: str | None = None
+        if (
+            _hosted_matches_keyword(source, index, "import")
+            and _hosted_is_dynamic_import_call(source, index)
+        ):
+            _hosted_raise_dynamic_import_unsupported()
+        if depth == 0 and _hosted_matches_keyword(source, index, "import"):
+            specifier = _hosted_import_specifier(source, index)
+            index += len("import")
+        else:
+            index += 1
+            continue
+        if specifier is not None:
+            specifiers.append(specifier)
+    return specifiers
+
+
+def _hosted_declaration_has_top_level_comma(source: str, index: int) -> bool:
+    depth = 0
+    while index < len(source):
+        char = source[index]
+        if char == "/" and source[index + 1 : index + 2] == "/":
+            index = _hosted_skip_line_comment(source, index)
+            continue
+        if char == "/" and source[index + 1 : index + 2] == "*":
+            index = _hosted_skip_block_comment(source, index)
+            continue
+        if char == "/" and _hosted_can_start_regex_literal(source, index):
+            index = _hosted_skip_regex_literal(source, index)
+            continue
+        if char in {"'", '"'}:
+            index = _hosted_skip_quoted(source, index)
+            continue
+        if char == "`":
+            index = _hosted_skip_template(source, index, scan_expressions=True)
+            continue
+        if char in {"(", "[", "{"}:
+            depth += 1
+            index += 1
+            continue
+        if char in {")", "]", "}"}:
+            if depth == 0:
+                return False
+            depth -= 1
+            index += 1
+            continue
+        if depth == 0 and char == ",":
+            return True
+        if depth == 0 and char in {";", "\n", "\r"}:
+            return False
+        index += 1
+    return False
+
+
+def _hosted_classify_export_rejection(source: str, index: int) -> str | None:
+    # Mirrors the frontend classifyHostedExportRejection so the server rejects the
+    # same unsupported export forms (installed plugins reach /hosted-ui/source
+    # without running check-hosted-tsx, and the bundler only strips simple
+    # declaration exports).
+    cursor = _hosted_skip_trivia(source, index + len("export"))
+    if _hosted_matches_keyword(source, cursor, "default"):
+        return None
+    if _hosted_matches_keyword(source, cursor, "interface"):
+        return None
+    if _hosted_matches_keyword(source, cursor, "type"):
+        after_type = _hosted_skip_trivia(source, cursor + len("type"))
+        if source[after_type : after_type + 1] == "*":
+            return "re-export (`export … from`) is not supported"
+        if source[after_type : after_type + 1] == "{":
+            if _hosted_find_keyword_before_statement_end(source, after_type, "from") >= 0:
+                return "re-export (`export … from`) is not supported"
+            return None
+        return None
+    if source[cursor : cursor + 1] == "*":
+        return "re-export (`export … from`) is not supported"
+    if source[cursor : cursor + 1] == "{":
+        if _hosted_find_keyword_before_statement_end(source, cursor, "from") >= 0:
+            return "re-export (`export … from`) is not supported"
+        return "`export { … }` lists are not supported"
+    if _hosted_matches_keyword(source, cursor, "enum"):
+        return "exported enums are not supported"
+    if _hosted_matches_keyword(source, cursor, "abstract"):
+        return "exported abstract classes are not supported"
+    if _hosted_matches_keyword(source, cursor, "namespace") or _hosted_matches_keyword(source, cursor, "module"):
+        return "exported namespaces are not supported"
+    kw_cursor = cursor
+    if _hosted_matches_keyword(source, kw_cursor, "async"):
+        kw_cursor = _hosted_skip_trivia(source, kw_cursor + len("async"))
+    if _hosted_matches_keyword(source, kw_cursor, "function"):
+        after_function = _hosted_skip_trivia(source, kw_cursor + len("function"))
+        if source[after_function : after_function + 1] == "*":
+            return "exported generator functions are not supported"
+        return None
+    if _hosted_matches_keyword(source, cursor, "class"):
+        return None
+    for keyword in ("const", "let", "var"):
+        if not _hosted_matches_keyword(source, cursor, keyword):
+            continue
+        after_keyword = _hosted_skip_trivia(source, cursor + len(keyword))
+        if keyword == "const" and _hosted_matches_keyword(source, after_keyword, "enum"):
+            return "exported enums are not supported"
+        if keyword != "const":
+            return "mutable exports (`export let`/`export var`) are not supported"
+        if source[after_keyword : after_keyword + 1] in {"{", "["}:
+            return "destructured exports are not supported"
+        if _hosted_declaration_has_top_level_comma(source, after_keyword):
+            return "multiple declarators in one `export const` are not supported"
+        return None
+    return None
+
+
+def _hosted_assert_export_contract(source: str) -> None:
+    depth = 0
+    index = 0
+    while index < len(source):
+        char = source[index]
+        if char == "/" and source[index + 1 : index + 2] == "/":
+            index = _hosted_skip_line_comment(source, index)
+            continue
+        if char == "/" and source[index + 1 : index + 2] == "*":
+            index = _hosted_skip_block_comment(source, index)
+            continue
+        if char == "/" and _hosted_can_start_regex_literal(source, index):
+            index = _hosted_skip_regex_literal(source, index)
+            continue
+        if char in {"'", '"'}:
+            index = _hosted_skip_quoted(source, index)
+            continue
+        if char == "`":
+            index = _hosted_skip_template(source, index, scan_expressions=True)
+            continue
+        if char == "<" and _hosted_looks_like_jsx_start(source, index):
+            index = _hosted_skip_jsx_element(source, index)
+            continue
+        if depth == 0 and _hosted_matches_keyword(source, index, "export"):
+            reason = _hosted_classify_export_rejection(source, index)
+            if reason is not None:
+                raise ServerDomainError(
+                    code="PLUGIN_UI_EXPORT_UNSUPPORTED",
+                    message=f"Unsupported hosted TSX export: {reason}",
+                    status_code=400,
+                    details={"reason": reason},
+                )
+            index += len("export")
+            continue
+        if char in {"(", "[", "{"}:
+            depth += 1
+            index += 1
+            continue
+        if char in {")", "]", "}"}:
+            depth = max(0, depth - 1)
+            index += 1
+            continue
+        index += 1
+
+
+def _load_hosted_tsx_dependencies_sync(
+    plugin_meta: Mapping[str, object],
+    entry_path: Path,
+) -> list[dict[str, str]]:
+    root = _plugin_root_from_meta(plugin_meta)
+    if root is None:
+        return []
+    try:
+        entry_path = entry_path.resolve()
+        entry_path.relative_to(root)
+    except (OSError, ValueError):
+        return []
+
+    dependencies: list[dict[str, str]] = []
+    seen: set[Path] = set()
+    visiting: list[Path] = []
+    total_bytes = 0
+
+    def hosted_path(path: Path) -> str:
+        return path.relative_to(root).as_posix()
+
+    def raise_dependency_cycle(path: Path) -> None:
+        cycle_start = visiting.index(path)
+        cycle = [hosted_path(item) for item in [*visiting[cycle_start:], path]]
+        raise ServerDomainError(
+            code="PLUGIN_UI_DEPENDENCY_CYCLE",
+            message="Hosted UI dependencies contain a cycle",
+            status_code=400,
+            details={"cycle": cycle},
+        )
+
+    def read_source(path: Path, *, count_bytes: bool = True) -> str:
+        nonlocal total_bytes
+        try:
+            size = path.stat().st_size
+        except OSError as exc:
+            raise ServerDomainError(
+                code="PLUGIN_UI_DEPENDENCY_READ_FAILED",
+                message=f"Failed to read hosted UI dependency '{path.name}'",
+                status_code=500,
+                details={"path": str(path), "error_type": type(exc).__name__},
+            ) from exc
+        # The budget bounds the returned *dependency* payload. The entry's own
+        # source is returned separately by the endpoint, so it must not count.
+        if count_bytes:
+            total_bytes += size
+            if total_bytes > _HOSTED_TSX_DEPENDENCIES_MAX_BYTES:
+                raise ServerDomainError(
+                    code="PLUGIN_UI_DEPENDENCIES_TOO_LARGE",
+                    message="Hosted UI dependencies are too large",
+                    status_code=500,
+                    details={"max_bytes": _HOSTED_TSX_DEPENDENCIES_MAX_BYTES},
+                )
+        try:
+            return path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise ServerDomainError(
+                code="PLUGIN_UI_DEPENDENCY_READ_FAILED",
+                message=f"Failed to read hosted UI dependency '{path.name}'",
+                status_code=500,
+                details={"path": str(path), "error_type": type(exc).__name__},
+            ) from exc
+
+    def visit(path: Path, *, count_bytes: bool = True) -> str:
+        source = read_source(path, count_bytes=count_bytes)
+        _hosted_assert_export_contract(source)
+        visiting.append(path)
+        try:
+            for specifier in _hosted_tsx_relative_import_specifiers(source):
+                dependency_path = _resolve_hosted_tsx_relative_dependency(root, path, specifier)
+                if dependency_path is None:
+                    raise ServerDomainError(
+                        code="PLUGIN_UI_DEPENDENCY_NOT_FOUND",
+                        message=f"Hosted UI dependency '{specifier}' was not found",
+                        status_code=404,
+                        details={
+                            "specifier": specifier,
+                            "importer": hosted_path(path),
+                        },
+                    )
+                if dependency_path in visiting:
+                    raise_dependency_cycle(dependency_path)
+                if dependency_path in seen:
+                    continue
+                if len(seen) >= _HOSTED_TSX_DEPENDENCIES_MAX_FILES:
+                    raise ServerDomainError(
+                        code="PLUGIN_UI_DEPENDENCIES_TOO_MANY",
+                        message="Hosted UI declares too many dependencies",
+                        status_code=500,
+                        details={"max_files": _HOSTED_TSX_DEPENDENCIES_MAX_FILES},
+                    )
+                seen.add(dependency_path)
+                dependency_source = visit(dependency_path)
+                dependencies.append({
+                    "path": hosted_path(dependency_path),
+                    "source": dependency_source,
+                })
+        finally:
+            visiting.pop()
+        return source
+
+    visit(entry_path, count_bytes=False)
+    return dependencies
+
+
 def _entry_ids_from_meta(plugin_meta: Mapping[str, object]) -> set[str]:
     entries_obj = plugin_meta.get("entries")
     if not isinstance(entries_obj, list):
@@ -674,6 +1367,11 @@ class PluginUiQueryService:
 
             source = await asyncio.to_thread(entry_path.read_text, encoding="utf-8")
             translations_payload = await asyncio.to_thread(_load_surface_translations_sync, entry_path)
+            dependencies = (
+                await asyncio.to_thread(_load_hosted_tsx_dependencies_sync, plugin_meta, entry_path)
+                if mode == "hosted-tsx"
+                else []
+            )
             return {
                 "plugin_id": plugin_id,
                 "kind": kind,
@@ -683,6 +1381,7 @@ class PluginUiQueryService:
                 "source": source,
                 "source_locale": hit_locale or translations_payload["source_locale"],
                 "translations": translations_payload["translations"],
+                "dependencies": dependencies,
                 "warnings": warnings,
             }
         except ServerDomainError:

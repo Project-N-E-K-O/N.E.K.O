@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
+import { callPlugin as callHostedPlugin, ensureBrandCSS } from './study_surface_utils';
 
 type StudyStatus = {
   status?: string;
@@ -31,10 +32,6 @@ type StudyStatus = {
 
 type StudyMode = 'companion' | 'interactive' | 'teaching';
 
-const RUN_POLL_INITIAL_DELAY_MS = 300;
-const RUN_POLL_MAX_DELAY_MS = 2000;
-const RUN_EXPORT_RETRY_COUNT = 3;
-const RUN_EXPORT_RETRY_DELAY_MS = 400;
 const ENTRY_TIMEOUT_MS: Record<string, number> = {
   study_status: 15000,
   study_ocr_snapshot: 60000,
@@ -188,7 +185,7 @@ function MathReply({ text, label }: { text: string; label: string }) {
     }
   }, [mathReady, text]);
   const mathTools = mathReady ? getStudyMathTools() : null;
-  const parts = mathTools ? mathTools.splitByMath(text) : [{ type: 'text', value: text }];
+  const parts: MathTextPart[] = mathTools ? mathTools.splitByMath(text) : [{ type: 'text', value: text }];
   return (
     <div
       ref={containerRef}
@@ -196,16 +193,6 @@ function MathReply({ text, label }: { text: string; label: string }) {
       role="status"
       aria-live="polite"
       aria-label={label}
-      style={{
-        minHeight: '180px',
-        whiteSpace: 'pre-wrap',
-        overflowWrap: 'break-word',
-        border: '1px solid rgba(148, 163, 184, 0.36)',
-        borderRadius: '8px',
-        background: 'rgba(255, 255, 255, 0.84)',
-        padding: '12px',
-        lineHeight: '1.5',
-      }}
     >
       {parts.map((part, index) => {
         if (part.type === 'math') {
@@ -225,20 +212,6 @@ function MathReply({ text, label }: { text: string; label: string }) {
       })}
     </div>
   );
-}
-
-function delay(ms: number, signal?: AbortSignal) {
-  return new Promise<void>((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new DOMException('Aborted', 'AbortError'));
-      return;
-    }
-    const timeout = window.setTimeout(resolve, ms);
-    signal?.addEventListener('abort', () => {
-      window.clearTimeout(timeout);
-      reject(new DOMException('Aborted', 'AbortError'));
-    }, { once: true });
-  });
 }
 
 function timeoutForEntry(entryId: string) {
@@ -484,69 +457,13 @@ function createPasteHandler(
   };
 }
 
-async function exportRunResult(runId: string, signal?: AbortSignal) {
-  let lastStatus = 0;
-  for (let attempt = 0; attempt < RUN_EXPORT_RETRY_COUNT; attempt += 1) {
-    const exportResp = await fetch(`/runs/${runId}/export`, { signal });
-    lastStatus = exportResp.status;
-    if (exportResp.ok) {
-      const exported = await exportResp.json();
-      const item = (exported.items || []).find((candidate: any) => candidate.type === 'json' && candidate.json);
-      const pluginResponse = item ? (item.json || {}) : {};
-      if (pluginResponse.success === false || pluginResponse.error) {
-        throw new Error(pluginResponse.error?.message || pluginResponse.message || 'Plugin call failed');
-      }
-      if (!item) {
-        throw new Error('Run export missing JSON result');
-      }
-      return pluginResponse.data || {};
-    }
-    if (attempt < RUN_EXPORT_RETRY_COUNT - 1) {
-      await delay(RUN_EXPORT_RETRY_DELAY_MS * (attempt + 1), signal);
-    }
-  }
-  throw new Error(`Run export failed: HTTP ${lastStatus}`);
-}
-
-async function callPlugin(entryId: string, args: Record<string, unknown> = {}, signal?: AbortSignal) {
-  const createResp = await fetch('/runs', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ plugin_id: 'study_companion', entry_id: entryId, args }),
-    signal,
-  });
-  if (!createResp.ok) {
-    throw new Error(`Run create failed: HTTP ${createResp.status}`);
-  }
-  const created = await createResp.json();
-  const runId = created.run_id || created.id;
-  if (!runId) {
-    throw new Error('run_id_missing');
-  }
-  let failureCount = 0;
-  let pollDelay = RUN_POLL_INITIAL_DELAY_MS;
-  const deadline = Date.now() + timeoutForEntry(entryId);
-  while (Date.now() < deadline) {
-    await delay(Math.min(pollDelay, Math.max(0, deadline - Date.now())), signal);
-    pollDelay = Math.min(Math.round(pollDelay * 1.5), RUN_POLL_MAX_DELAY_MS);
-    const runResp = await fetch(`/runs/${runId}`, { signal });
-    if (!runResp.ok) {
-      failureCount += 1;
-      if (failureCount >= 3) {
-        throw new Error(`Run poll failed: HTTP ${runResp.status}`);
-      }
-      continue;
-    }
-    failureCount = 0;
-    const run = await runResp.json();
-    if (run.status === 'succeeded') {
-      return await exportRunResult(runId, signal);
-    }
-    if (['failed', 'canceled', 'timeout'].includes(run.status)) {
-      throw new Error(run.error?.message || run.message || run.status);
-    }
-  }
-  throw new Error('plugin_call_timeout');
+function callStudyPlugin<T = Record<string, unknown>>(
+  api: PluginSurfaceProps['api'],
+  entryId: string,
+  args: Record<string, unknown> = {},
+  signal?: AbortSignal,
+) {
+  return callHostedPlugin<T>(api, entryId, args, { signal, timeoutMs: timeoutForEntry(entryId) });
 }
 
 export default function StudyPanel(props: PluginSurfaceProps) {
@@ -574,6 +491,10 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const currentMode = String(status.active_mode || status.mode || 'companion');
   const interactionBusy = busy || pastePending;
+
+  useEffect(() => {
+    ensureBrandCSS();
+  }, []);
 
   function beginStudyRequest() {
     explainControllerRef.current?.abort();
@@ -702,7 +623,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
 
   async function refresh(signal?: AbortSignal, options: { updateReply?: boolean } = {}) {
     const updateReply = options.updateReply !== false;
-    const data = normalizeStudyStatus(await callPlugin('study_status', {}, signal));
+    const data = normalizeStudyStatus(await callStudyPlugin(props.api, 'study_status', {}, signal));
     if (signal?.aborted) {
       return;
     }
@@ -727,7 +648,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     setBusy(true);
     try {
       setReply('');
-      const data = await callPlugin('study_set_mode', { mode, reason: 'ui' }, controller.signal) as {
+      const data = await callStudyPlugin(props.api, 'study_set_mode', { mode, reason: 'ui' }, controller.signal) as {
         changed?: boolean;
         transition_phrase?: string;
         new_mode?: string;
@@ -772,7 +693,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     if (textImage) explainArgs.vision_image_base64 = textImage;
     let shouldClearTextImage = false;
     try {
-      const data = await callPlugin('study_explain_text', explainArgs, controller.signal) as {
+      const data = await callStudyPlugin(props.api, 'study_explain_text', explainArgs, controller.signal) as {
         reply?: string;
         summary?: string;
         transition_phrase?: string;
@@ -812,7 +733,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     if (textImage) genArgs.vision_image_base64 = textImage;
     let shouldClearTextImage = false;
     try {
-      const data = await callPlugin('study_generate_question', genArgs, controller.signal) as {
+      const data = await callStudyPlugin(props.api, 'study_generate_question', genArgs, controller.signal) as {
         question?: string;
         hint?: string;
         summary?: string;
@@ -856,7 +777,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     if (answerImage) evalArgs.vision_image_base64 = answerImage;
     let shouldClearAnswerImage = false;
     try {
-      const data = await callPlugin('study_evaluate_answer', evalArgs, controller.signal) as {
+      const data = await callStudyPlugin(props.api, 'study_evaluate_answer', evalArgs, controller.signal) as {
         feedback?: string;
         next_action?: string;
         summary?: string;
@@ -893,7 +814,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     const controller = beginStudyRequest();
     setBusy(true);
     try {
-      const data = await callPlugin('study_summarize_session', {}, controller.signal) as {
+      const data = await callStudyPlugin(props.api, 'study_summarize_session', {}, controller.signal) as {
         markdown?: string;
         summary?: string;
         reply?: string;
@@ -997,7 +918,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   return (
     <div
       ref={panelRef}
-      className="study-panel"
+      className="study-panel surface-shell"
       role="region"
       aria-label={t('ui.surface.study_panel', 'Study Panel')}
       data-busy={interactionBusy ? "true" : "false"}
@@ -1007,15 +928,21 @@ export default function StudyPanel(props: PluginSurfaceProps) {
           <h1>{t('ui.title', 'Study Companion')}</h1>
           <span>{stateLabel} / {modeLabel(currentMode)}</span>
         </div>
-        <div className="study-panel__modes" role="group" aria-label={t('ui.label.mode', 'Mode')}>
+        <div
+          className="mode-switch study-panel__modes"
+          role="group"
+          aria-label={t('ui.label.mode', 'Mode')}
+          data-active={currentMode}
+        >
           {MODE_ORDER.map((item) => {
             const pressed = currentMode === item.id;
             return (
               <button
                 key={item.id}
                 type="button"
-                className={pressed ? 'is-active' : ''}
+                className={pressed ? 'mode-btn active is-active' : 'mode-btn'}
                 aria-pressed={pressed}
+                data-mode={item.id}
                 disabled={interactionBusy}
                 onClick={() => setMode(item.id)}
               >

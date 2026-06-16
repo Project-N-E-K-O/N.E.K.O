@@ -27,6 +27,7 @@ from main_routers.config_router import (
     _get_save_provider_api_key,
     _test_openai_compatible,
     _test_websocket,
+    _test_vllm_omni_ws_handshake,
     _classify_openai_error,
     test_connectivity as _endpoint_test_connectivity,
 )
@@ -1173,3 +1174,238 @@ class TestEndpointExceptionHandling:
             mock_http.assert_awaited_once_with(
                 "https://api.example.com/v1", "sk-free", model="gpt-3.5-turbo", is_free=True
             )
+
+
+# ===========================================================================
+# 12. vLLM-Omni TTS handshake-only probe (#1764 review 第六轮)
+#     验证 sub_type='vllm_omni_tts' 路径不发 OpenAI Realtime session.update
+# ===========================================================================
+
+class TestVllmOmniWsHandshake:
+    """vLLM-Omni's /v1/audio/speech/stream uses the Qwen custom protocol
+    (session.config / input.text / input.done) and does not understand the
+    OpenAI Realtime session.update message. _test_vllm_omni_ws_handshake only
+    performs the WebSocket handshake and immediately closes — it never sends
+    any application-layer frame."""
+
+    async def test_handshake_succeeds_without_sending_session_update(self):
+        """Handshake succeeds and ws.send is never called (core assertion: no session.update)."""
+        mock_conn = AsyncMock()
+        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn.__aexit__ = AsyncMock(return_value=False)
+        mock_conn.send = AsyncMock()
+        mock_conn.recv = AsyncMock()
+
+        with patch("websockets.connect", return_value=mock_conn):
+            result = await _test_vllm_omni_ws_handshake(
+                "ws://10.0.1.92:8091/v1/audio/speech/stream", ""
+            )
+
+        assert result["success"] is True
+        # 关键断言：握手探测路径绝不发任何应用层帧（session.update / 任何 send）
+        mock_conn.send.assert_not_called()
+        mock_conn.recv.assert_not_called()
+
+    async def test_handshake_with_api_key_sets_authorization_header(self):
+        """When api_key is provided, the Authorization header is set (matches _test_websocket behaviour)."""
+        mock_conn = AsyncMock()
+        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("websockets.connect", return_value=mock_conn) as mock_connect:
+            await _test_vllm_omni_ws_handshake(
+                "ws://10.0.1.92:8091/v1/audio/speech/stream", "sk-test"
+            )
+            headers = mock_connect.call_args[1].get("additional_headers", {})
+            assert headers.get("Authorization") == "Bearer sk-test"
+
+    async def test_handshake_empty_api_key_no_authorization_header(self):
+        """When api_key is empty, no Authorization header is sent (vLLM self-hosted deployments commonly run without auth)."""
+        mock_conn = AsyncMock()
+        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("websockets.connect", return_value=mock_conn) as mock_connect:
+            await _test_vllm_omni_ws_handshake(
+                "ws://10.0.1.92:8091/v1/audio/speech/stream", ""
+            )
+            headers = mock_connect.call_args[1].get("additional_headers", {})
+            assert "Authorization" not in headers
+
+    async def test_handshake_url_passed_through_unchanged(self):
+        """URL is passed through unchanged; unlike _test_websocket it does NOT append a ?model= query parameter."""
+        mock_conn = AsyncMock()
+        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("websockets.connect", return_value=mock_conn) as mock_connect:
+            await _test_vllm_omni_ws_handshake(
+                "ws://10.0.1.92:8091/v1/audio/speech/stream", "sk-test"
+            )
+            ws_url = mock_connect.call_args[0][0]
+            assert ws_url == "ws://10.0.1.92:8091/v1/audio/speech/stream"
+            assert "?model=" not in ws_url
+
+    async def test_handshake_auth_failed_401(self):
+        """A 401 during handshake → auth_failed (matches _test_websocket's error_code)."""
+        exc = Exception("HTTP 401")
+        exc.status_code = 401
+        with patch("websockets.connect", side_effect=exc):
+            result = await _test_vllm_omni_ws_handshake(
+                "ws://example.com/v1/audio/speech/stream", "wrong-key"
+            )
+
+        assert result["success"] is False
+        assert result["error_code"] == "auth_failed"
+
+    async def test_handshake_dns_error(self):
+        """OSError 'getaddrinfo' → dns_error。"""
+        with patch(
+            "websockets.connect",
+            side_effect=OSError("[Errno 11001] getaddrinfo failed"),
+        ):
+            result = await _test_vllm_omni_ws_handshake(
+                "ws://nonexistent.example.com/v1/audio/speech/stream", ""
+            )
+
+        assert result["success"] is False
+        assert result["error_code"] == "dns_error"
+
+    async def test_handshake_connection_refused(self):
+        """OSError 'connection refused' → connection_refused。"""
+        with patch(
+            "websockets.connect",
+            side_effect=OSError("[Errno 111] Connection refused"),
+        ):
+            result = await _test_vllm_omni_ws_handshake(
+                "ws://localhost:9999/v1/audio/speech/stream", ""
+            )
+
+        assert result["success"] is False
+        assert result["error_code"] == "connection_refused"
+
+    async def test_handshake_timeout(self):
+        """asyncio.TimeoutError → timeout。"""
+        with patch("websockets.connect", side_effect=asyncio.TimeoutError()):
+            result = await _test_vllm_omni_ws_handshake(
+                "ws://10.0.1.92:8091/v1/audio/speech/stream", ""
+            )
+
+        assert result["success"] is False
+        assert result["error_code"] == "timeout"
+
+    async def test_endpoint_dispatches_sub_type_to_handshake(self):
+        """End-to-end: sub_type='vllm_omni_tts' must dispatch to
+        _test_vllm_omni_ws_handshake instead of _test_websocket. This is the
+        core contract behind the connectivity-mis-detection fix."""
+        with patch(
+            "main_routers.config_router._test_vllm_omni_ws_handshake",
+            new=AsyncMock(return_value={"success": True}),
+        ) as mock_handshake, patch(
+            "main_routers.config_router._test_websocket",
+            new=AsyncMock(return_value={"success": True}),
+        ) as mock_realtime_ws:
+            req = ConnectivityTestRequest(
+                url="ws://10.0.1.92:8091/v1/audio/speech/stream",
+                api_key="",
+                model="Qwen3-TTS",
+                provider_type="websocket",
+                sub_type="vllm_omni_tts",
+            )
+            await _endpoint_test_connectivity(req)
+
+        mock_handshake.assert_awaited_once()
+        mock_realtime_ws.assert_not_called()
+
+    async def test_endpoint_websocket_without_sub_type_uses_realtime_probe(self):
+        """End-to-end inverse contract: when sub_type is omitted, the request
+        still routes to _test_websocket (the OpenAI Realtime path) so genuine
+        Realtime providers like Qwen Realtime / Step are not hit by mistake."""
+        with patch(
+            "main_routers.config_router._test_vllm_omni_ws_handshake",
+            new=AsyncMock(return_value={"success": True}),
+        ) as mock_handshake, patch(
+            "main_routers.config_router._test_websocket",
+            new=AsyncMock(return_value={"success": True}),
+        ) as mock_realtime_ws:
+            req = ConnectivityTestRequest(
+                url="wss://realtime.example.com",
+                api_key="sk-test",
+                model="step-audio-2",
+                provider_type="websocket",
+            )
+            await _endpoint_test_connectivity(req)
+
+        mock_realtime_ws.assert_awaited_once()
+        mock_handshake.assert_not_called()
+
+    async def test_handshake_auth_failed_via_invalidstatus_response_status_code(self):
+        """Real websockets >=15 raises InvalidStatus with status code at e.response.status_code,
+        NOT at e.status_code. Production code's second-layer fallback (getattr(e, 'response', None)
+        → getattr(_resp, 'status_code', None)) must catch it. The earlier test (test_handshake_auth_failed_401)
+        used a bare Exception with .status_code attribute and only exercises the FIRST fallback layer."""
+        # Build a fake exception that mimics websockets.exceptions.InvalidStatus shape:
+        # bare attribute lookup `e.status_code` returns None; `e.response.status_code` returns 401.
+        class _FakeResponse:
+            status_code = 401
+
+        class _FakeInvalidStatus(Exception):
+            def __init__(self):
+                super().__init__("server rejected WebSocket connection: HTTP 401")
+                self.response = _FakeResponse()
+
+        with patch("websockets.connect", side_effect=_FakeInvalidStatus()):
+            result = await _test_vllm_omni_ws_handshake(
+                "ws://example.com/v1/audio/speech/stream", "wrong-key"
+            )
+
+        assert result["success"] is False
+        assert result["error_code"] == "auth_failed", (
+            f"Expected auth_failed via InvalidStatus.response.status_code path, got {result}"
+        )
+
+    async def test_handshake_forbidden_via_invalidstatus_403(self):
+        """403 via InvalidStatus.response.status_code → auth_failed (same bucket as 401)."""
+        class _FakeResponse:
+            status_code = 403
+
+        class _FakeInvalidStatus(Exception):
+            def __init__(self):
+                super().__init__("server rejected WebSocket connection: HTTP 403")
+                self.response = _FakeResponse()
+
+        with patch("websockets.connect", side_effect=_FakeInvalidStatus()):
+            result = await _test_vllm_omni_ws_handshake(
+                "ws://example.com/v1/audio/speech/stream", "expired-key"
+            )
+
+        assert result["success"] is False
+        assert result["error_code"] == "auth_failed"
+
+    async def test_endpoint_mode1_ignores_sub_type_injection(self):
+        """Security gating contract: when both provider_key and provider_scope are set (Mode 1
+        built-in provider), sub_type is dropped and Mode 1's resolved provider_type drives the
+        probe. A malicious frontend cannot force handshake-only probe on a non-vllm-omni
+        built-in provider via sub_type injection.
+        (#1764 review round 6 - gating at config_router.py line ~1937-1942)"""
+        with patch(
+            "main_routers.config_router._test_vllm_omni_ws_handshake",
+            new=AsyncMock(return_value={"success": True}),
+        ) as mock_handshake, patch(
+            "main_routers.config_router._test_websocket",
+            new=AsyncMock(return_value={"success": True}),
+        ) as mock_realtime_ws:
+            # Mode 1 built-in: qwen + scope=core resolves to provider_type="websocket"
+            # from api_providers.json. sub_type='vllm_omni_tts' would be a malicious
+            # injection attempt, but the gating (line 1941-1943) sets sub_type="" for Mode 1.
+            req = ConnectivityTestRequest(
+                provider_key="qwen",
+                provider_scope="core",
+                sub_type="vllm_omni_tts",
+            )
+            await _endpoint_test_connectivity(req)
+
+        # Mode 1 must use _test_websocket regardless of sub_type. Handshake probe must NEVER fire.
+        mock_handshake.assert_not_called()
+        # _test_websocket should be called (Mode 1 resolved provider_type="websocket" from api_providers.json).
+        mock_realtime_ws.assert_awaited_once()

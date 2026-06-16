@@ -1,10 +1,24 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Sharded archive storage helpers (memory-evidence-rfc §3.5.4).
 
 Both `memory.reflection` and `memory.persona` archive entries into per-day
 shard files under a directory like ``memory/<char>/<kind>_archive/``. To
-keep symmetry (CLAUDE.md "对偶性是硬性要求"), the sharding logic lives in
+keep symmetry (a hard requirement per CLAUDE.md), the sharding logic lives in
 this single module — both managers just declare which directory and call
 in.
 
@@ -507,8 +521,8 @@ def migrate_flat_archive_to_shards_sync(
     Failure semantics:
       If shard writes succeed for some but not all groups (e.g. disk
       full mid-way), this raises so the caller can leave the flat file
-      intact as fallback (RFC §3.5.5: "迁移失败 → 保留 flat 文件
-      fallback"). Successful writes accumulate; partial state is
+      intact as fallback (RFC §3.5.5: "migration failed → keep the flat
+      file as fallback"). Successful writes accumulate; partial state is
       recoverable on next boot since the flat file remains and the
       sentinel is only written after success.
     """

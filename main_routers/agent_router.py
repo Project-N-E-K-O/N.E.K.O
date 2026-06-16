@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Agent Router
 
@@ -90,7 +104,7 @@ def _remote_backend_block() -> JSONResponse | None:
 
 
 async def force_disable_agent_for_character_switch(current_lanlan: str, previous_lanlan: str | None = None) -> bool:
-    """角色切换后强制关闭猫爪，避免工具服务的全局旧状态串到新角色。"""
+    """Force-disable the agent (cat paw) after a character switch so stale global tool-service state cannot leak into the new character."""
     names = {
         str(name or "").strip()
         for name in (current_lanlan, previous_lanlan)
@@ -229,7 +243,7 @@ async def _close_http_client():
 
 @router.post('/flags')
 async def update_agent_flags(request: Request):
-    """来自前端的Agent开关更新，级联到各自的session manager。"""
+    """Agent flag updates from the frontend, cascaded to each session manager."""
     blocked = _remote_backend_block()
     if blocked is not None:
         return blocked
@@ -285,7 +299,7 @@ async def update_agent_flags(request: Request):
 
 @router.get('/flags')
 async def get_agent_flags():
-    """获取当前 agent flags 状态（供前端同步）"""
+    """Get the current agent flags state (for frontend sync)."""
     try:
         client = _get_http_client()
         r = await client.get(f"{TOOL_SERVER_BASE}/agent/flags", timeout=0.7)
@@ -298,7 +312,7 @@ async def get_agent_flags():
 
 @router.get('/state')
 async def get_agent_state():
-    """获取 Agent 的权威状态快照（revision + flags + capabilities）。"""
+    """Get the authoritative agent state snapshot (revision + flags + capabilities)."""
     try:
         client = _get_http_client()
         r = await client.get(f"{TOOL_SERVER_BASE}/agent/state", timeout=1.2)
@@ -311,7 +325,7 @@ async def get_agent_state():
 
 @router.post('/command')
 async def post_agent_command(request: Request):
-    """统一命令入口，前端只发送 command，不直接操作多路开关。"""
+    """Unified command entry point; the frontend only sends commands and never toggles the individual switches directly."""
     blocked = _remote_backend_block()
     if blocked is not None:
         return blocked
@@ -508,7 +522,7 @@ async def proxy_up_availability():
 
 @router.get('/openclaw/availability')
 async def openclaw_availability():
-    """检查 OpenClaw Agent 能力是否可用"""
+    """Check whether the OpenClaw agent capability is available."""
     try:
         client = _get_http_client()
         # OpenClaw availability may perform a downstream health probe and can

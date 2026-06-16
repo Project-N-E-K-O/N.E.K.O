@@ -1,7 +1,21 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
-API配置加载器
-从JSON文件加载API服务商配置和默认模型配置
+API config loader
+Loads API provider configs and default model configs from JSON files
 """
 import json
 import sys
@@ -44,24 +58,24 @@ def _get_default_assist_api_key_fields() -> Dict[str, str]:
 
 def _get_config_file_path() -> Path:
     """
-    获取配置文件路径
+    Get the config file path
     
     Returns:
-        Path: api_providers.json 文件路径
+        Path: path to api_providers.json
     """
     return _get_app_root() / "config" / "api_providers.json"
 
 
 def _load_json_config() -> Dict[str, Any]:
     """
-    加载JSON配置文件
+    Load the JSON config file
     
     Returns:
-        Dict: 配置字典
+        Dict: config dict
         
     Raises:
-        FileNotFoundError: 配置文件不存在
-        json.JSONDecodeError: JSON格式错误
+        FileNotFoundError: config file does not exist
+        json.JSONDecodeError: malformed JSON
     """
     config_path = _get_config_file_path()
     
@@ -83,13 +97,13 @@ def _load_json_config() -> Dict[str, Any]:
 
 def _convert_core_api_profile(json_profile: Dict[str, Any]) -> Dict[str, Any]:
     """
-    将JSON格式的核心API配置转换为Python代码使用的格式
+    Convert core API config from JSON format to the format used by Python code
     
     Args:
-        json_profile: JSON格式的配置
+        json_profile: config in JSON format
         
     Returns:
-        Dict: Python代码使用的格式（字段名大写）
+        Dict: format used by Python code (uppercase field names)
     """
     result = {}
     
@@ -110,13 +124,13 @@ def _convert_core_api_profile(json_profile: Dict[str, Any]) -> Dict[str, Any]:
 
 def _convert_assist_api_profile(json_profile: Dict[str, Any]) -> Dict[str, Any]:
     """
-    将JSON格式的辅助API配置转换为Python代码使用的格式
+    Convert assist API config from JSON format to the format used by Python code
     
     Args:
-        json_profile: JSON格式的配置
+        json_profile: config in JSON format
         
     Returns:
-        Dict: Python代码使用的格式（字段名大写）
+        Dict: format used by Python code (uppercase field names)
     """
     result = {}
     
@@ -145,13 +159,13 @@ def _convert_assist_api_profile(json_profile: Dict[str, Any]) -> Dict[str, Any]:
 
 def get_config(force_reload: bool = False) -> Dict[str, Any]:
     """
-    获取配置（带缓存）
+    Get the config (cached)
     
     Args:
-        force_reload: 是否强制重新加载
+        force_reload: whether to force a reload
         
     Returns:
-        Dict: 配置字典
+        Dict: config dict
     """
     global _config_cache
     
@@ -167,13 +181,13 @@ def get_config(force_reload: bool = False) -> Dict[str, Any]:
 
 def get_core_api_profiles(force_reload: bool = False) -> Dict[str, Dict[str, Any]]:
     """
-    获取核心API配置（兼容原有的 CORE_API_PROFILES 格式）
+    Get core API configs (compatible with the legacy CORE_API_PROFILES format)
     
     Args:
-        force_reload: 是否强制重新加载配置
+        force_reload: whether to force-reload the config
     
     Returns:
-        Dict: 核心API配置字典，格式与 CORE_API_PROFILES 相同
+        Dict: core API config dict, same format as CORE_API_PROFILES
     """
     config = get_config(force_reload=force_reload)
     core_providers = config.get('core_api_providers', {})
@@ -191,13 +205,13 @@ def get_core_api_profiles(force_reload: bool = False) -> Dict[str, Dict[str, Any
 
 def get_assist_api_profiles(force_reload: bool = False) -> Dict[str, Dict[str, Any]]:
     """
-    获取辅助API配置（兼容原有的 ASSIST_API_PROFILES 格式）
+    Get assist API configs (compatible with the legacy ASSIST_API_PROFILES format)
     
     Args:
-        force_reload: 是否强制重新加载配置
+        force_reload: whether to force-reload the config
     
     Returns:
-        Dict: 辅助API配置字典，格式与 ASSIST_API_PROFILES 相同
+        Dict: assist API config dict, same format as ASSIST_API_PROFILES
     """
     # 首先获取默认配置作为基础
     defaults = _get_default_assist_api_profiles()
@@ -231,10 +245,10 @@ def get_assist_api_profiles(force_reload: bool = False) -> Dict[str, Dict[str, A
 
 def get_assist_api_key_fields() -> Dict[str, str]:
     """
-    获取辅助API Key字段映射（兼容原有的 ASSIST_API_KEY_FIELDS 格式）
+    Get the assist API key field mapping (compatible with the legacy ASSIST_API_KEY_FIELDS format)
     
     Returns:
-        Dict: API Key字段映射字典
+        Dict: API key field mapping dict
     """
     config = get_config()
     result = config.get('assist_api_key_fields', {})
@@ -245,10 +259,10 @@ def get_assist_api_key_fields() -> Dict[str, str]:
 
 def get_default_models() -> Dict[str, str]:
     """
-    获取默认模型配置
+    Get default model configs
     
     Returns:
-        Dict: 默认模型配置字典
+        Dict: default model config dict
     """
     config = get_config()
     return config.get('default_models', {})
@@ -256,13 +270,13 @@ def get_default_models() -> Dict[str, str]:
 
 def get_core_api_providers_for_frontend(force_reload: bool = False) -> list:
     """
-    获取核心API服务商列表（供前端使用）
+    Get the list of core API providers (for the frontend)
     
     Args:
-        force_reload: 是否强制重新加载配置
+        force_reload: whether to force-reload the config
     
     Returns:
-        list: 包含服务商信息的列表，每个元素包含 key, name, description
+        list: provider info list; each element contains key, name, description
     """
     config = get_config(force_reload=force_reload)
     core_providers = config.get('core_api_providers', {})
@@ -280,13 +294,13 @@ def get_core_api_providers_for_frontend(force_reload: bool = False) -> list:
 
 def get_assist_api_providers_for_frontend(force_reload: bool = False) -> list:
     """
-    获取辅助API服务商列表（供前端使用）
+    Get the list of assist API providers (for the frontend)
     
     Args:
-        force_reload: 是否强制重新加载配置
+        force_reload: whether to force-reload the config
     
     Returns:
-        list: 包含服务商信息的列表，每个元素包含 key, name, description
+        list: provider info list; each element contains key, name, description
     """
     config = get_config(force_reload=force_reload)
     assist_providers = config.get('assist_api_providers', {})
@@ -304,7 +318,7 @@ def get_assist_api_providers_for_frontend(force_reload: bool = False) -> list:
 
 def reload_config():
     """
-    重新加载配置（清除缓存）
+    Reload the config (clear the cache)
     """
     global _config_cache
     _config_cache = None
@@ -312,17 +326,17 @@ def reload_config():
 
 def get_free_voices() -> Dict[str, str]:
     """
-    获取免费预设音色列表（从 api_providers.json 中读取 free_voices 字段）
+    Get the list of free preset voices (read from the free_voices field of api_providers.json)
     
     Returns:
-        Dict[str, str]: {voiceKey: voice_id} 的映射字典，voiceKey 由前端本地化
+        Dict[str, str]: {voiceKey: voice_id} mapping; voiceKey is localized by the frontend
     """
     config = get_config()
     return config.get('free_voices', {})
 
 
 def _normalize_str_dict(raw: Any) -> Dict[str, str]:
-    """把配置中的 dict 规范化为 str -> str，过滤空 key。"""
+    """Normalize a dict from config to str -> str, filtering out empty keys."""
     if not isinstance(raw, dict):
         return {}
     result: Dict[str, str] = {}
@@ -338,7 +352,7 @@ def _resolve_native_tts_voice_provider_config(
     raw_configs: Dict[str, Any],
     resolving: Optional[set[str]] = None,
 ) -> Dict[str, Any]:
-    """解析原生 TTS 音色 Provider 配置，支持 inherits 复用目录。"""
+    """Parse native TTS voice provider configs; supports inherits for catalog reuse."""
     key = str(provider_key or '').strip()
     if not key:
         return {}
@@ -382,7 +396,7 @@ def _resolve_native_tts_voice_provider_config(
 
 
 def get_native_tts_voice_provider_config(provider_key: str) -> Dict[str, Any]:
-    """获取单个原生 TTS 音色 Provider 配置。"""
+    """Get a single native TTS voice provider config."""
     raw_configs = get_config().get('native_tts_voice_providers', {})
     if not isinstance(raw_configs, dict):
         return {}
@@ -411,7 +425,7 @@ def get_native_tts_voice_provider_config(provider_key: str) -> Dict[str, Any]:
 
 
 def get_native_tts_voice_provider_configs() -> Dict[str, Dict[str, Any]]:
-    """获取所有原生 TTS 音色 Provider 配置。"""
+    """Get all native TTS voice provider configs."""
     raw_configs = get_config().get('native_tts_voice_providers', {})
     if not isinstance(raw_configs, dict):
         return {}
@@ -426,11 +440,12 @@ _COSYVOICE_INTL_CLONE_MODEL_DEFAULT = "cosyvoice-v3-plus"
 
 
 def get_cosyvoice_clone_model(provider: str | None = None) -> str:
-    """获取 CosyVoice 克隆/合成使用的模型名称。
+    """Get the model name used for CosyVoice cloning/synthesis.
 
-    国内版读取 api_providers.json → default_models.cosyvoice_clone_model，
-    国际版读取 default_models.cosyvoice_intl_clone_model。阿里国际部署不支持
-    ``cosyvoice-v3.5-plus``，需要使用国际区域可用的 v3 系列模型。
+    The CN edition reads api_providers.json → default_models.cosyvoice_clone_model,
+    the international edition reads default_models.cosyvoice_intl_clone_model. Alibaba's
+    international deployment does not support ``cosyvoice-v3.5-plus``; a v3-series
+    model available in international regions must be used.
     """
     normalized_provider = str(provider or '').strip().lower()
     intl_aliases = {
@@ -462,36 +477,37 @@ def get_cosyvoice_clone_model(provider: str | None = None) -> str:
 
 
 def cosyvoice_model_supports_language_hints(model: str | None) -> bool:
-    """language_hints 仅适用于 v3 / v3.5 系列模型，v2 不支持。"""
+    """language_hints only applies to v3 / v3.5 series models; v2 does not support it."""
     return not str(model or _COSYVOICE_CLONE_MODEL_DEFAULT).startswith("cosyvoice-v2")
 
 
 def _get_livestream_config_path() -> Path:
-    """独立 livestream 配置文件路径。
+    """Path of the standalone livestream config file.
 
-    优先于 api_providers.json 中的 livestream_config 字段，方便分发给
-    主播作为单文件补丁——把这个 json 丢进 config 目录即可生效，无需
-    动 tracked 的 api_providers.json。文件被 .gitignore 的 config/*.json
-    默认覆盖，不会进 git。
+    Takes precedence over the livestream_config field in api_providers.json, making
+    it easy to distribute to streamers as a single-file patch — drop this json into
+    the config directory and it takes effect, without touching the tracked
+    api_providers.json. The file is covered by the default config/*.json
+    .gitignore rule and never enters git.
     """
     return _get_app_root() / "config" / "livestream_config.json"
 
 
 def get_livestream_config() -> Dict[str, Any]:
-    """读取 livestream 配置（独立文件优先，api_providers.json 字段 fallback）。
+    """Read the livestream config (standalone file first, api_providers.json field as fallback).
 
-    Livestream 模式是叠加在 core_api_type='free' 之上的子模式，启用后：
-    - free 路所有 lanlan.tech URL 重写为 server_prefix 派生地址（/core /text/v1 /tts）
-    - free 路 voice 强制使用 voice_id（绕过 free_voices preset gate）
-    - OmniRealtimeClient 跳过 90 秒静默闭麦判定
+    Livestream mode is a sub-mode layered on top of core_api_type='free'. When enabled:
+    - on the free path, all lanlan.tech URLs are rewritten to server_prefix-derived addresses (/core /text/v1 /tts)
+    - on the free path, voice is forced to voice_id (bypassing the free_voices preset gate)
+    - OmniRealtimeClient skips the 90-second silence mic-off check
 
-    优先级：
-    1. ``config/livestream_config.json``（untracked，主播分发场景的单文件补丁）
-    2. ``config/api_providers.json`` 的 ``livestream_config`` 字段（兼容路径）
+    Priority:
+    1. ``config/livestream_config.json`` (untracked, single-file patch for streamer distribution)
+    2. the ``livestream_config`` field of ``config/api_providers.json`` (compatibility path)
 
     Returns:
         Dict: {'enabled': bool, 'server_prefix': str, 'voice_id': str}
-        缺失/读取失败/字段缺失时以默认值（False / 空串）兜底。
+        Falls back to defaults (False / empty string) when missing/unreadable/fields absent.
     """
     raw: Optional[Dict[str, Any]] = None
     standalone_path = _get_livestream_config_path()
@@ -519,9 +535,9 @@ def get_livestream_config() -> Dict[str, Any]:
 
 
 def is_livestream_active() -> bool:
-    """livestream 实际生效需要同时具备 enabled=True 且 server_prefix 非空。
+    """Livestream only actually takes effect when enabled=True and server_prefix is non-empty.
 
-    voice_id 不强制要求（缺省时 free 路保留原 voice 解析路径）。
+    voice_id is not required (when absent, the free path keeps the original voice resolution).
     """
     cfg = get_livestream_config()
     return cfg['enabled'] and bool(cfg['server_prefix'])

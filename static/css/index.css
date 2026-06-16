@@ -258,7 +258,8 @@ button * {
 
 /* 看板娘判定框-悬停时半透明 */
 #live2d-container.locked-hover-fade,
-#vrm-container.locked-hover-fade {
+#vrm-container.locked-hover-fade,
+#pngtuber-container.locked-hover-fade {
     opacity: 0.12;
 }
 
@@ -331,6 +332,50 @@ button * {
     transform-origin: var(--neko-model-exit-origin-x, 50%) var(--neko-model-exit-origin-y, 50%);
 }
 
+#pngtuber-container {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 10;
+    pointer-events: none;
+    background: transparent !important;
+    overflow: hidden;
+    visibility: visible;
+    transition: var(--neko-model-opacity-transition), var(--neko-model-transform-transition);
+    will-change: transform;
+    transform: translateZ(0);
+    transform-origin: var(--neko-model-exit-origin-x, 50%) var(--neko-model-exit-origin-y, 50%);
+}
+
+#pngtuber-container.minimized {
+    transform: scale(0.38) translateZ(0);
+    opacity: 0;
+}
+
+#pngtuber-container .pngtuber-image {
+    position: absolute;
+    left: calc(100% - 48px);
+    top: calc(100% - 18px);
+    right: auto;
+    bottom: auto;
+    max-width: min(56vw, 560px);
+    max-height: 82vh;
+    width: auto;
+    height: auto;
+    object-fit: contain;
+    pointer-events: auto;
+    user-select: none;
+    touch-action: none;
+    cursor: grab;
+    transform-origin: right bottom;
+}
+
+#pngtuber-container .pngtuber-image.is-dragging {
+    cursor: grabbing;
+}
+
 /* 看板娘VR/MMD模型判定框-最小化状态 */
 #vrm-container.minimized,
 #mmd-container.minimized {
@@ -356,6 +401,7 @@ button * {
 body.neko-game-active #live2d-container,
 body.neko-game-active #vrm-container,
 body.neko-game-active #mmd-container,
+body.neko-game-active #pngtuber-container,
 body.neko-game-active #chat-container,
 body.neko-game-active #status-toast,
 body.neko-game-active #subtitle-display,
@@ -427,6 +473,7 @@ body.neko-game-active [id$="-lock-icon"] {
 
 .neko-idle-return-art {
     --neko-idle-return-facing-transform: scaleX(1);
+    --neko-idle-return-edge-transform: rotate(0deg);
     width: 100%;
     height: 100%;
     display: block;
@@ -435,7 +482,8 @@ body.neko-game-active [id$="-lock-icon"] {
     position: relative;
     z-index: 1;
     will-change: opacity, transform, filter;
-    transform: var(--neko-idle-return-facing-transform);
+    transform: var(--neko-idle-return-facing-transform) var(--neko-idle-return-edge-transform);
+    transform-origin: center center;
 }
 
 .neko-idle-return-btn[data-neko-idle-tier="cat2"] .neko-idle-return-art,
@@ -445,6 +493,38 @@ body.neko-game-active [id$="-lock-icon"] {
 
 .neko-idle-return-btn.is-cat1-facing-right > .neko-idle-return-art {
     --neko-idle-return-facing-transform: scaleX(-1);
+}
+
+.neko-idle-return-btn.is-cat1-edge-peek-left > .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(60deg);
+}
+
+.neko-idle-return-btn.is-cat1-edge-peek-right > .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(-60deg);
+}
+
+.neko-idle-return-btn.is-cat1-edge-peek-top > .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(180deg);
+}
+
+.neko-idle-return-btn.is-cat1-edge-peek-bottom > .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(0deg);
+}
+
+.neko-idle-return-btn.is-cat1-edge-peek-top-left > .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(120deg);
+}
+
+.neko-idle-return-btn.is-cat1-edge-peek-top-right > .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(240deg);
+}
+
+.neko-idle-return-btn.is-cat1-edge-peek-bottom-left > .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(60deg);
+}
+
+.neko-idle-return-btn.is-cat1-edge-peek-bottom-right > .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(-60deg);
 }
 
 .neko-idle-thought-bubble {
@@ -471,6 +551,7 @@ body.neko-game-active [id$="-lock-icon"] {
     height: 100%;
     object-fit: contain;
     display: block;
+    transform-origin: center center;
     pointer-events: none;
     user-select: none;
 }
@@ -508,10 +589,20 @@ body.neko-game-active [id$="-lock-icon"] {
     opacity: 1;
     visibility: visible;
     transition-delay: 0s;
+    pointer-events: auto;
+    cursor: pointer;
 }
 
 .neko-idle-return-btn.is-thought-bubble-active .neko-idle-thought-bubble-item {
     animation: neko-idle-thought-bubble-item-float 3600ms steps(24, end) infinite;
+}
+
+.neko-idle-return-btn.is-thought-bubble-popping .neko-idle-thought-bubble {
+    pointer-events: none;
+}
+
+.neko-idle-return-btn.is-thought-bubble-popping .neko-idle-thought-bubble-item {
+    display: none;
 }
 
 .neko-idle-return-btn.is-thought-bubble-sleeping .neko-idle-thought-bubble-item {

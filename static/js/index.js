@@ -118,13 +118,42 @@ async function loadPageConfig() {
             lanlan_config.lighting = (data.lighting && typeof data.lighting === 'object')
                 ? Object.assign({}, data.lighting)
                 : null;
+            lanlan_config.pngtuber = (data.pngtuber && typeof data.pngtuber === 'object')
+                ? Object.assign({}, data.pngtuber)
+                : null;
             window.master_name = lanlan_config.master_name;
             window.master_profile_name = lanlan_config.master_profile_name;
             window.master_nickname = lanlan_config.master_nickname;
             window.master_display_name = lanlan_config.master_display_name;
             window.lanlan_config = lanlan_config;
             // 根据model_type判断是Live2D还是Live3D (VRM/MMD)
-            if (modelType === 'live3d' || modelType === 'vrm') {
+            if (modelType === 'pngtuber') {
+                cubism4Model = "";
+                window.cubism4Model = "";
+                vrmModel = "";
+                window.vrmModel = "";
+                window.mmdModel = "";
+                const live2dC = document.getElementById('live2d-container');
+                const vrmC = document.getElementById('vrm-container');
+                const mmdC = document.getElementById('mmd-container');
+                if (live2dC) {
+                    live2dC.style.display = 'none';
+                    live2dC.classList.add('hidden');
+                }
+                const live2dCanvas = document.getElementById('live2d-canvas');
+                if (live2dCanvas) {
+                    live2dCanvas.style.visibility = 'hidden';
+                    live2dCanvas.style.pointerEvents = 'none';
+                }
+                if (vrmC) vrmC.style.display = 'none';
+                if (mmdC) mmdC.style.display = 'none';
+                if (typeof window.hideOtherAvatarRuntimesForPNGTuber === 'function') {
+                    window.hideOtherAvatarRuntimesForPNGTuber();
+                }
+                if (typeof window.loadPNGTuberAvatar === 'function') {
+                    window.loadPNGTuberAvatar(lanlan_config.pngtuber || { idle_image: modelPath });
+                }
+            } else if (modelType === 'live3d' || modelType === 'vrm') {
                 const validPath = modelPath &&
                     modelPath !== 'undefined' &&
                     modelPath !== 'null' &&
@@ -157,6 +186,24 @@ async function loadPageConfig() {
                     }
                 }
             } else {
+                if (window.pngtuberManager && typeof window.pngtuberManager.hide === 'function') {
+                    window.pngtuberManager.hide();
+                }
+                if (window.cleanupPNGTuberOverlayUI && typeof window.cleanupPNGTuberOverlayUI === 'function') {
+                    window.cleanupPNGTuberOverlayUI();
+                }
+                const pngtuberC = document.getElementById('pngtuber-container');
+                if (pngtuberC) {
+                    pngtuberC.style.display = 'none';
+                    pngtuberC.classList.add('hidden');
+                }
+                const live2dCanvas = document.getElementById('live2d-canvas');
+                if (live2dCanvas) {
+                    live2dCanvas.style.visibility = 'visible';
+                    live2dCanvas.style.pointerEvents = '';
+                }
+                const live2dC = document.getElementById('live2d-container');
+                if (live2dC) live2dC.classList.remove('hidden');
                 cubism4Model = modelPath;
                 window.cubism4Model = cubism4Model;
                 vrmModel = "";
