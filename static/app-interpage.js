@@ -46,6 +46,20 @@
         return false;
     }
 
+    function shouldBypassYuiGuideMessageDedup(action, message) {
+        return (message && message.bypassDedup === true)
+            || action === 'yui_guide_set_chat_spotlight'
+            || action === 'yui_guide_set_chat_cursor'
+            || action === 'yui_guide_drag_chat_cursor'
+            || action === 'yui_guide_arc_chat_cursor'
+            || action === 'yui_guide_set_chat_buttons_disabled'
+            || action === 'yui_guide_set_chat_input_locked'
+            || action === 'yui_guide_set_compact_history_open'
+            || action === 'yui_guide_set_avatar_tool_menu_open'
+            || action === 'yui_guide_set_compact_tool_fan_open'
+            || action === 'yui_guide_set_compact_tool_wheel_index';
+    }
+
     function isMainUIHiddenByModelManager() {
         return window[MAIN_UI_HIDDEN_BY_MODEL_MANAGER_KEY] === true;
     }
@@ -2175,7 +2189,10 @@
                 }
 
                 // Deduplicate: same message arrives via both BC and postMessage
-                if (isDuplicateMessage(event.data.action, event.data.timestamp)) {
+                if (
+                    !shouldBypassYuiGuideMessageDedup(event.data.action, event.data)
+                    && isDuplicateMessage(event.data.action, event.data.timestamp)
+                ) {
                     console.log('[BroadcastChannel] 跳过重复消息:', event.data.action);
                     return;
                 }
@@ -2364,6 +2381,13 @@
                         applyYuiGuideChatInputLocked(event.data.locked === true, event.data.reason || '');
                         break;
                     }
+                    case 'yui_guide_set_chat_cursor':
+                    case 'yui_guide_drag_chat_cursor':
+                    case 'yui_guide_arc_chat_cursor': {
+                        if (!isStandaloneChatPage() || !document.body) break;
+                        relayYuiGuideChatCommand(event.data);
+                        break;
+                    }
                     case 'yui_guide_set_compact_history_open': {
                         if (!isStandaloneChatPage() || !document.body) break;
                         applyYuiGuideCompactHistoryOpen(event.data.open === true, event.data.reason || '');
@@ -2546,6 +2570,21 @@
 
     function getReactChatWindowHost() {
         return window.reactChatWindowHost || null;
+    }
+
+    function relayYuiGuideChatCommand(data) {
+        var detail = data && typeof data === 'object' ? Object.assign({}, data) : {};
+        window.dispatchEvent(new CustomEvent('neko:tutorial-overlay-relay', { detail: detail }));
+        if (window.parent && window.parent !== window) {
+            try {
+                window.parent.postMessage({
+                    action: '__nekoTutorialOverlayRelay',
+                    detail: detail
+                }, window.location.origin);
+            } catch (e) {
+                // Parent relay is best-effort; the local DOM event is the primary path.
+            }
+        }
     }
 
     function applyYuiGuideChatInputLocked(locked, reason) {

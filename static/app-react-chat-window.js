@@ -2441,7 +2441,8 @@
             onCompactChatStateChange: handleCompactChatStateChange,
             onCompactMinimizeRequest: handleCompactMinimizeRequest,
             compactToolWheelRotateRequest: state.viewProps.compactToolWheelRotateRequest || null,
-            compactToolWheelIndexRequest: state.viewProps.compactToolWheelIndexRequest || null
+            compactToolWheelIndexRequest: state.viewProps.compactToolWheelIndexRequest || null,
+            compactHistoryOpenRequest: state.viewProps.compactHistoryOpenRequest || null
         });
     }
 
@@ -3982,11 +3983,10 @@
     }
 
     function setCompactHistoryOpen(open, reason) {
-        state.viewProps = Object.assign({}, ensureViewProps(), {
-            compactChatState: open === true ? 'history' : 'idle'
+        return setTutorialChatRequest('compactHistoryOpenRequest', {
+            open: open === true,
+            reason: typeof reason === 'string' ? reason : ''
         });
-        renderWindow();
-        return true;
     }
 
     function deactivateToolCursor() {
