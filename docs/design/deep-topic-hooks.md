@@ -91,6 +91,14 @@ prompt 只给「明显反复出现 → 高分，顺口一提 → 低分；如实
 深话题是最具打扰性的全新开场，必须和 `/api/proactive_chat` 同样的 propensity 门：propensity 为 `closed`（隐私黑名单）或 `restricted_screen_only`（游戏/专注）时不投，且**不**借用 proactive reminiscence 的 open-thread 例外。
 被 requeue 进 `pending_agent_callbacks` 的 hook 在 retry 时**不**重查这道门：retry 只在用户在场的回合 drain，propensity 实际为 open，且重查会把话题特定门控铺进通用投递核心。
 
+### 语音会话不投深话题（只 defer 不 drop）
+
+深话题是文本态开场白；在实时语音对话里注入会横切一段正在进行的口语交流，正是这个特性要避免的「硬凑打扰」。因此 `topic_hook_delivery_allowed`（`main_logic/core.py`）在 `isinstance(self.session, OmniRealtimeClient)` 时直接返回 False。
+
+- **采集与 Phase-2 照常跑**：语音回合仍喂 `TopicHookPool`，quiet-window 触发仍会跑 `_deepen_material`。这是有意的——`TopicHookPool` 是进程级、按角色全局的，语音期间攒下的物料应当保留，等用户回到文本会话再投，而不是因为「这次是语音」就不积累（否则重度语音用户永远造不出深话题）。
+- **defer 不是 drop**：返回 False 走的是和活动门同一条「撤回排队副本 + pool reschedule 重试」机制，物料留 pending，下一个文本会话窗口再投，不烧日配额。
+- **单一收口点**：`topic_hook_delivery_allowed` 是提交门（`_topic_activity_gate_open`）和释放门（`_deliver_proactive_batch`）共用的唯一 chokepoint，语音投递路径在这一处被整条切断，不在投递核心里散落会话类型判断。
+
 ### surfaced reflection id 只记真正渲染的
 
 `_render_followup_topic_hooks`（`main_routers/system_router.py`）复刻 `_iter_followup_texts` 的空串/去重过滤后再收集 surfaced id，避免被 `build_topic_hook_prompt` 去掉的空/重复 followup 仍被 `/record_surfaced` 打进冷却。

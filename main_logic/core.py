@@ -6845,12 +6845,25 @@ class LLMSessionManager:
         fresh deep topic is not a follow-up to something already on the
         table, so it shouldn't borrow that escape hatch.
 
+        Voice sessions never receive deep topic hooks. A topic hook is a
+        text-mode opener; injecting one mid voice conversation would cut across
+        a live spoken exchange, which is exactly the "forced" intrusion this
+        feature avoids. Returning False here defers rather than drops — the
+        process-global per-character ``TopicHookPool`` keeps the material
+        pending and retries it once the user is back in a text session, so a
+        voice-heavy user still gets the hook later instead of losing it. This is
+        the single chokepoint both delivery gates consult (``_topic_activity_
+        gate_open`` at submit, ``_deliver_proactive_batch`` at release), so the
+        whole voice delivery path is severed in one place.
+
         Fail-open (return True) when no snapshot is available, mirroring the
         proactive path's "snapshot None ⇒ open propensity" default. Privacy
         mode is deliberately NOT re-checked here: it gates *accumulation* (the
         pool is wiped the moment privacy turns on, see enrich_topic_pool), not
         delivery of a hook that was already built from a pre-privacy snapshot.
         """
+        if isinstance(self.session, OmniRealtimeClient):
+            return False
         tracker = getattr(self, '_activity_tracker', None)
         if tracker is None:
             return True
@@ -6912,12 +6925,14 @@ class LLMSessionManager:
         behaviour (the manager only governs WHEN the batch is released, not
         how many cues per turn)."""
         callbacks = [cb for cb in callbacks if not cb.get(DELIVERY_RETRACTED_KEY)]
-        # Topic hooks re-validate the activity gate at RELEASE: the submit-time
+        # Topic hooks re-validate the delivery gate at RELEASE: the submit-time
         # check in trigger_topic_hook_once can go stale while the manager paces
         # the cue (min-gap / playback). If the user has since moved into a
-        # restricted activity, drop the topic hook (ack=False) so TopicHookPool
-        # retries later instead of opening a fresh deep topic mid-gaming. Other
-        # channels are unaffected.
+        # restricted activity OR a voice session has taken over (topic hooks are
+        # text-mode openers, never injected mid voice — see
+        # topic_hook_delivery_allowed), drop the topic hook (ack=False) so
+        # TopicHookPool retries later instead of opening a fresh deep topic at
+        # the wrong moment. Other channels are unaffected.
         if callbacks and not self.topic_hook_delivery_allowed():
             kept = []
             for cb in callbacks:

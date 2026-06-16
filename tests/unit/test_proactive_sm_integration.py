@@ -1082,6 +1082,40 @@ async def test_deliver_proactive_batch_leaves_ack_to_delivery_path():
     assert not future.done()
 
 
+def test_topic_hook_delivery_blocked_in_voice_session():
+    """深话题是文本态开场白，语音会话一律不投：topic_hook_delivery_allowed
+    在 session 是 OmniRealtimeClient 时直接 False，关掉提交门与释放门两处。"""
+    mgr = _make_mgr(session=_make_voice_sess())
+    assert LLMSessionManager.topic_hook_delivery_allowed(mgr) is False
+
+
+def test_topic_hook_delivery_allowed_in_text_session():
+    """非回归：文本会话（无活动快照时 fail-open）仍允许投递深话题。"""
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    assert LLMSessionManager.topic_hook_delivery_allowed(mgr) is True
+
+
+async def test_deliver_proactive_batch_drops_topic_hook_in_voice():
+    """释放门：语音会话里 topic_hook 被丢弃（ack=False，留给 pool 重试），
+    非 topic_hook 的 cue 不受影响。voice gate 复用 topic_hook_delivery_allowed。"""
+    mgr = _make_mgr(session=_make_voice_sess())
+    hook_future = asyncio.get_running_loop().create_future()
+    topic_cb = {
+        "status": "completed", "summary": "deep topic",
+        "channel": "topic_hook", DELIVERY_ACK_FUTURE_KEY: hook_future,
+    }
+    other_cb = {"status": "completed", "summary": "task done", "channel": "agent_task"}
+    mgr.enqueue_agent_callback = MagicMock()
+    mgr.trigger_agent_callbacks = AsyncMock(return_value=True)
+
+    await LLMSessionManager._deliver_proactive_batch(mgr, [topic_cb, other_cb])
+
+    # topic hook held at the gate: ack resolved False so TopicHookPool retries.
+    assert hook_future.done() and hook_future.result() is False
+    # 非 topic_hook cue 照常进入投递路径。
+    mgr.enqueue_agent_callback.assert_called_once_with(other_cb)
+
+
 async def test_text_mode_successful_delivery_fires_full_event_sequence():
     """happy path：START → CLAIM → PHASE2 → DONE，且 phase 回到 IDLE。"""
     sess = _FakeOmniOffline(delivered=True)
