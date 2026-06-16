@@ -38,10 +38,10 @@
 每个角色一个进程内的 `TopicHookPool`（`main_logic/topic/pipeline.py`）。管线分阶段：
 
 1. **采集**：`note_user_message` / note AI 回合按 token 预算喂 `TopicSignalStore`，形成跨窗口（最多 80 条）的慢对话证据。池子不再单独保留「最近对话」缓冲——那和证据是同一批 turn，纯冗余。
-2. **分析**：debounce + quiet-window 后调情绪档小模型 `call_topic_candidates`（`main_logic/activity/llm_enrichment.py`）。它的**唯一对话输入就是 signal store 渲染的证据**（`global_signals`），prompt 里用中文水印 `======以下为最近对话(按时间顺序)======` / `======以上为最近对话(按时间顺序)======` 把这块围起来。
+2. **分析**：`_schedule` → `_run_later` 经 debounce（`_PROCESS_DEBOUNCE_SECONDS`，默认 45s）后调情绪档小模型 `call_topic_candidates`（`main_logic/activity/llm_enrichment.py`）。注意 quiet-window 不在这一步——它是投递前的等待（见第 5 步）。它的**唯一对话输入就是 signal store 渲染的证据**（`global_signals`），prompt 里用中文水印 `======以下为最近对话(按时间顺序)======` / `======以上为最近对话(按时间顺序)======` 把这块围起来。
 3. **打分 / 门控**：后端代码按 `relevance ≥ 70 且 risk ≤ 65` 过滤（`_material_is_ready`），不是 prompt 自己判阈值。
 4. **联网增强（可选）**：`enrich_topic_materials_online`（`main_logic/topic/materials.py`）拿物料的检索词做一次轻量联网，把现实细节烘进 `material_hint`。
-5. **投递**：到达触发条件后 `trigger_topic_hook_once`（`main_logic/topic/delivery.py`）把物料包成 callback，经 `ProactiveDeliveryManager` 一次性投给角色，命中日配额、一次性 used 记账。
+5. **投递**：材料就绪后 `_schedule_trigger` → `_run_trigger` 经 quiet-window（`_TRIGGER_AFTER_QUIET_SECONDS`，默认 60s 静默等待）+ gap/quota 才调 `trigger_topic_hook_once`（`main_logic/topic/delivery.py`），把物料包成 callback、经 `ProactiveDeliveryManager` 一次性投给角色，命中日配额、一次性 used 记账。
 
 ### 物料契约
 
