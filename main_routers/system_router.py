@@ -166,6 +166,7 @@ from utils.web_scraper import (
 )
 from utils.music_crawlers import fetch_music_content
 from utils.meme_fetcher import fetch_meme_content, MEME_ALLOWED_HOSTS
+from utils.meme_moderation import moderate_meme_image_url
 from utils.logger_config import get_module_logger
 from utils.autostart_prompt_state import (
     get_autostart_prompt_state_response,
@@ -6297,6 +6298,32 @@ async def proactive_chat(request: Request):
                     meme_topic_key = _source_hash(meme_url, meme_title)
                     if meme_topic_key and _should_skip_source(meme_topic_key):
                         logger.debug(f"[{lanlan_name}]- Phase 1 表情包候选去重命中，跳过: {meme_title[:30]}")
+                        continue
+                    moderation = await moderate_meme_image_url(meme_url)
+                    if not moderation.allowed:
+                        logger.info(
+                            "[%s]- Phase 1 meme candidate moderation blocked: reason=%s cached=%s url_hash=%s title=%s",
+                            lanlan_name,
+                            moderation.reason,
+                            moderation.cached,
+                            moderation.url_hash,
+                            meme_title[:30],
+                        )
+                        if moderation.reason in {
+                            "rate_limited",
+                            "missing_api_key",
+                            "unsupported_provider",
+                            "request_failed",
+                            "http_error",
+                            "invalid_response",
+                            "payment_required",
+                        }:
+                            logger.info(
+                                "[%s]- Meme moderation service unavailable; stop checking candidates: reason=%s",
+                                lanlan_name,
+                                moderation.reason,
+                            )
+                            break
                         continue
                     single_meme_topic = get_meme_topic_line(
                         proactive_lang,
