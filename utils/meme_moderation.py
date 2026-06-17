@@ -21,6 +21,7 @@ environment variables. Do not commit a real key into tracked source files.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import os
@@ -384,7 +385,7 @@ async def moderate_meme_image_url(
     fail_closed: bool | None = None,
 ) -> MemeModerationResult:
     """Moderate a remote meme image URL."""
-    moderation_config = get_meme_moderation_config()
+    moderation_config = await asyncio.to_thread(get_meme_moderation_config)
     provider = _read_env("MEME_MODERATION_PROVIDER", "uniapi").lower()
     model = (
         _read_config_text(moderation_config, "model")
