@@ -156,6 +156,12 @@
             return Promise.resolve(resultPromise);
         }
 
+        watchNonBlockingEvent(event, resultPromise) {
+            Promise.resolve(resultPromise).catch((error) => {
+                console.warn('[TutorialTimeline] non-blocking event failed:', event && event.command, error);
+            });
+        }
+
         async waitForTimelineTime(targetMs, startedAt, pausedDurationRef, runToken) {
             while (!this.isRunCancelled(runToken)) {
                 if (this.isPaused()) {
@@ -230,6 +236,7 @@
                         };
                     }
                 } else {
+                    this.watchNonBlockingEvent(event, resultPromise);
                     await Promise.resolve();
                 }
             }
@@ -249,6 +256,8 @@
                 const resultPromise = this.dispatchEvent(event, context, triggered);
                 if (event.blocking === true) {
                     await Promise.resolve(resultPromise);
+                } else {
+                    this.watchNonBlockingEvent(event, resultPromise);
                 }
                 if (this.isRunCancelled(runToken)) {
                     return {

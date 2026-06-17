@@ -13,6 +13,7 @@ from utils.file_utils import robust_json_loads
 from utils.llm_client import create_chat_llm
 from utils.token_tracker import set_call_type
 
+from .context_tokens import truncate_tokens_heuristic
 from .llm_prompts import build_prompt_messages_with_metadata
 
 if TYPE_CHECKING:
@@ -25,8 +26,8 @@ _EXPLAIN_EVIDENCE_TYPES = frozenset({"current_line", "history_line", "choice"})
 _KEY_POINT_TYPES = frozenset({"plot", "emotion", "decision", "reveal", "objective"})
 _CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE | re.DOTALL)
 _JSON_CORRECTION_MAX_ATTEMPTS = 1
-_JSON_CORRECTION_BAD_OUTPUT_MAX_CHARS = 12000
-_JSON_CORRECTION_ERROR_MAX_CHARS = 600
+_JSON_CORRECTION_BAD_OUTPUT_MAX_TOKENS = 6000
+_JSON_CORRECTION_ERROR_MAX_TOKENS = 300
 _LLM_CALL_MAX_ATTEMPTS = 3
 _LLM_CALL_RETRY_BASE_DELAY_SECONDS = 0.25
 _PROMPT_METADATA: ContextVar[dict[str, Any] | None] = ContextVar(
@@ -58,12 +59,13 @@ def _strip_code_fences(raw_text: str) -> str:
     return text
 
 
-def _bounded_prompt_text(value: object, *, max_chars: int) -> str:
+def _bounded_prompt_text(value: object, *, max_tokens: int) -> str:
     text = _as_str(value, str(value))
-    if len(text) <= max_chars:
-        return text
-    omitted = len(text) - max_chars
-    return f"{text[:max_chars]}\n...[truncated {omitted} chars]"
+    return truncate_tokens_heuristic(
+        text,
+        max_tokens,
+        notice_template="\n...[truncated {omitted} chars]",
+    )
 
 
 def _api_key_cache_fingerprint(api_key: str) -> str:
@@ -323,11 +325,11 @@ class GalgameLLMBackend:
             raise SdkError(f"unsupported operation: {operation!r}")
         bounded_bad_output = _bounded_prompt_text(
             bad_output,
-            max_chars=_JSON_CORRECTION_BAD_OUTPUT_MAX_CHARS,
+            max_tokens=_JSON_CORRECTION_BAD_OUTPUT_MAX_TOKENS,
         )
         bounded_error = _bounded_prompt_text(
             parse_error,
-            max_chars=_JSON_CORRECTION_ERROR_MAX_CHARS,
+            max_tokens=_JSON_CORRECTION_ERROR_MAX_TOKENS,
         )
         correction_messages = list(messages)
         correction_messages.append({"role": "assistant", "content": bounded_bad_output})

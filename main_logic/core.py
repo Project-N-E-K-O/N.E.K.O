@@ -374,7 +374,11 @@ def _build_callback_instruction(
             # tells the AI that something happened. Strip trailing newline so
             # the joined output is clean.
             parts.append(header.rstrip())
-    return "\n\n".join(parts)
+    rendered = "\n\n".join(parts)
+    # Total input budget: many callbacks accumulating must not blow up the turn.
+    from utils.tokenize import truncate_to_tokens
+    from config import AGENT_CALLBACK_TOTAL_MAX_TOKENS
+    return truncate_to_tokens(rendered, AGENT_CALLBACK_TOTAL_MAX_TOKENS)
 
 
 def _format_voice_swap_item(
@@ -513,7 +517,53 @@ def _render_pending_extra_replies_by_origin(
                 + "\n".join(items)
                 + _loc(CONTEXT_SUMMARY_EVENT_FOOTER, lang)
             )
-    return "".join(blocks)
+    rendered = "".join(blocks)
+    # Total input budget for the voice hot-swap injection (mirror of the
+    # text-mode cap in _build_callback_instruction). Backstop only — callers
+    # should pre-select within budget via _select_callbacks_within_token_budget
+    # so whole callbacks are never silently dropped after a successful ack.
+    from utils.tokenize import truncate_to_tokens
+    from config import AGENT_CALLBACK_TOTAL_MAX_TOKENS
+    return truncate_to_tokens(rendered, AGENT_CALLBACK_TOTAL_MAX_TOKENS)
+
+
+def _select_callbacks_within_token_budget(callbacks, total_budget):
+    """Greedily take the oldest prefix of ``callbacks`` whose cumulative
+    summary/detail token count stays within ``total_budget``.
+
+    Returns ``(selected, deferred)``. Always selects at least one item so the
+    queue makes forward progress (each item is already per-item capped at
+    enqueue). The point: a caller that acks + clears must ack/clear only the
+    *selected* items and re-queue ``deferred`` for the next turn — otherwise
+    callbacks beyond the cap would be acked as delivered but never reach the
+    model (see PR review)."""
+    from utils.tokenize import count_tokens
+    # Per-item overhead for the emoji/bullet, the per-group outer header, and the
+    # template wrapper that the renderer adds around the body. Over-counting is
+    # the SAFE direction: we select fewer, so the rendered instruction stays
+    # under budget and the builder's backstop truncation never cuts an already
+    # selected (and acked) callback.
+    _ITEM_OVERHEAD_TOKENS = 48
+    selected: list = []
+    used = 0
+    for i, cb in enumerate(callbacks):
+        if isinstance(cb, dict):
+            # Count every field the renderer may emit — body line (summary or
+            # detail) plus the error/source fallback line — not just summary.
+            t = (
+                count_tokens(cb.get("summary") or "")
+                + count_tokens(cb.get("detail") or "")
+                + count_tokens(cb.get("error_message") or "")
+                + count_tokens(cb.get("source_name") or "")
+                + _ITEM_OVERHEAD_TOKENS
+            )
+        else:
+            t = count_tokens(str(cb)) + _ITEM_OVERHEAD_TOKENS
+        if selected and used + t > total_budget:
+            return selected, list(callbacks[i:])
+        selected.append(cb)
+        used += t
+    return selected, []
 
 
 from config.prompts.prompts_avatar_interaction import (
@@ -7372,8 +7422,36 @@ class LLMSessionManager:
         hot-swap fire at different lifecycle points).
         """
         try:
-            summary = str(callback.get("summary") or "").strip()
-            detail = str(callback.get("detail") or "").strip()
+            from utils.tokenize import truncate_to_tokens
+            from config import (
+                AGENT_CALLBACK_TEXT_MAX_TOKENS,
+                AGENT_CALLBACK_QUEUE_MAX_ITEMS,
+            )
+            # Per-item input budget: summary/detail flow into the LLM verbatim
+            # (text-mode drain + voice hot-swap). task_result callbacks are
+            # already TASK_*-capped upstream, but push_message/proactive_message
+            # text is aggregated uncapped by proactive_bridge — cap it here, the
+            # single chokepoint both queues pass through.
+            #
+            # Cheap CHAR pre-cap BEFORE tokenizing: a malformed/huge plugin
+            # message must not make tiktoken encode megabytes synchronously on
+            # the event loop. 8x headroom over the token budget is safe for any
+            # language (English ~4 char/token, CJK <1), so the char cut never
+            # removes content the token cap would have kept.
+            _char_precap = AGENT_CALLBACK_TEXT_MAX_TOKENS * 8
+            summary_raw = str(callback.get("summary") or "").strip()[:_char_precap]
+            detail_raw = str(callback.get("detail") or "").strip()[:_char_precap]
+            summary = truncate_to_tokens(summary_raw, AGENT_CALLBACK_TEXT_MAX_TOKENS)
+            # summary/detail frequently carry the SAME body (proactive_bridge
+            # sets both to the aggregated text) — reuse the encode, don't do it
+            # twice.
+            detail = summary if detail_raw == summary_raw else truncate_to_tokens(
+                detail_raw, AGENT_CALLBACK_TEXT_MAX_TOKENS
+            )
+            # Write the capped text back so the text-mode drain (which reads the
+            # callback dict directly) injects the truncated body too.
+            callback["summary"] = summary
+            callback["detail"] = detail
             error_message = str(callback.get("error_message") or "").strip()
             source_name = str(callback.get("source_name") or "").strip()
             status = callback.get("status") or "completed"
@@ -7415,6 +7493,33 @@ class LLMSessionManager:
                 "source_name": source_name,
                 "error_message": error_message,
             })
+            # Flood guard: a runaway plugin event stream must not grow either
+            # queue without bound. Keep the most recent N (newest = most
+            # relevant); drop-oldest.
+            if len(self.pending_agent_callbacks) > AGENT_CALLBACK_QUEUE_MAX_ITEMS:
+                overflow = len(self.pending_agent_callbacks) - AGENT_CALLBACK_QUEUE_MAX_ITEMS
+                dropped = self.pending_agent_callbacks[:overflow]
+                dropped_ids = {
+                    _cb.get("_callback_delivery_id")
+                    for _cb in dropped
+                    if isinstance(_cb, dict) and _cb.get("_callback_delivery_id")
+                }
+                self.pending_agent_callbacks = self.pending_agent_callbacks[overflow:]
+                # Resolve any delivery-ack future on a dropped callback NOW, so a
+                # waiter (e.g. topic-hook delivery) unblocks immediately instead
+                # of stalling until its timeout.
+                for _cb in dropped:
+                    resolve_callback_delivery_ack(_cb, False)
+                # Drop the matching voice-queue mirrors by delivery_id (the two
+                # queues drift, so positional trimming is unreliable) — otherwise
+                # a callback acked False here could still be injected via hot-swap.
+                if dropped_ids:
+                    self.pending_extra_replies = [
+                        _extra for _extra in self.pending_extra_replies
+                        if _extra.get("_callback_delivery_id") not in dropped_ids
+                    ]
+            if len(self.pending_extra_replies) > AGENT_CALLBACK_QUEUE_MAX_ITEMS:
+                self.pending_extra_replies = self.pending_extra_replies[-AGENT_CALLBACK_QUEUE_MAX_ITEMS:]
         except Exception:
             pass
 
@@ -7435,7 +7540,13 @@ class LLMSessionManager:
         self._purge_retracted_agent_callbacks()
         if not self.pending_agent_callbacks:
             return ""
-        callbacks_snapshot = list(self.pending_agent_callbacks)
+        from config import AGENT_CALLBACK_TOTAL_MAX_TOKENS
+        # Budget-aware selection: render (and ack) only the callbacks that fit
+        # the total budget this turn; defer the rest to the next drain instead
+        # of acking them as delivered while their text falls off the cap.
+        callbacks_snapshot, deferred = _select_callbacks_within_token_budget(
+            list(self.pending_agent_callbacks), AGENT_CALLBACK_TOTAL_MAX_TOKENS
+        )
         delivered_to_prompt = False
         try:
             _lang = normalize_language_code(getattr(self, 'user_language', '') or '', format='short') or get_global_language()
@@ -7452,7 +7563,9 @@ class LLMSessionManager:
             if delivered_to_prompt:
                 for cb in callbacks_snapshot:
                     resolve_callback_delivery_ack(cb, True)
-            self.pending_agent_callbacks.clear()
+            # Keep deferred (over-budget) callbacks for the next turn; only the
+            # rendered+acked ones leave the queue.
+            self.pending_agent_callbacks = deferred
 
     async def _perform_final_swap_sequence(self):
         """[Hot-swap related] Perform the final swap sequence"""
@@ -7494,14 +7607,19 @@ class LLMSessionManager:
             # 若存在需要植入的额外提示，则指示模型忽略上一条消息，并在下一次响应中统一向用户补充这些提示
             if self.pending_extra_replies and len(self.pending_extra_replies) > 0:
                 _lang = normalize_language_code(self.user_language, format='short')
+                from config import AGENT_CALLBACK_TOTAL_MAX_TOKENS
+                # Budget-aware selection (mirror of the text-mode drain): render
+                # only what fits, keep the rest for the next hot-swap rather than
+                # dropping it after clearing the queue.
+                _selected, _deferred = _select_callbacks_within_token_budget(
+                    list(self.pending_extra_replies), AGENT_CALLBACK_TOTAL_MAX_TOKENS
+                )
                 final_prime_text += _render_pending_extra_replies_by_origin(
-                    self.pending_extra_replies,
+                    _selected,
                     lang=_lang,
                     lanlan_name=self.lanlan_name,
                     master_name=self.master_name,
                 )
-                # 清空队列，避免重复注入
-                self.pending_extra_replies.clear()
                 try:
                     await self.pending_session.prime_context(final_prime_text, skipped=False)
                 except (web_exceptions.ConnectionClosed, AttributeError) as e:
@@ -7511,6 +7629,9 @@ class LLMSessionManager:
                     await self._reset_preparation_state(clear_main_cache=True)
                     self.is_hot_swap_imminent = False
                     return
+                # 仅在成功注入后才移除已选条目；失败时保留整队列等下一轮 hot-swap
+                # （否则 _selected 既没进模型又丢了）。over-budget 的 _deferred 留到下一轮。
+                self.pending_extra_replies = _deferred
             else:
                 _lang = normalize_language_code(self.user_language, format='short')
                 final_prime_text += _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)

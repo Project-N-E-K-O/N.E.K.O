@@ -4,14 +4,17 @@ from .constants import LLM_OPERATION_EXPAND_NOTE, LLM_OPERATION_SUMMARIZE_TO_NOT
 from .tutor_llm_agent_common import (
     SdkError,
     TutorReply,
-    _bounded_prompt_text,
+    _bounded_prompt_text_chars,
     diagnostic_code_for_exception,
     utc_now_iso,
 )
 
 
-_MAX_EXPAND_NOTE_CHARS = 8000
-_MAX_SUMMARIZE_TO_NOTE_CHARS = 12000
+# Char budgets (not token): notebook sources are user-pasted prose, and the
+# truncation marker reports an exact char count, so a predictable character cap
+# is the contract here. Tunable.
+_EXPAND_NOTE_MAX_CHARS = 8000
+_SUMMARIZE_TO_NOTE_MAX_CHARS = 12000
 _NOTE_SUMMARY_HEADINGS = {
     "zh": ("标题", "要点", "细节"),
     "zh-cn": ("标题", "要点", "细节"),
@@ -62,7 +65,7 @@ async def expand_note(
     original = str(content or "").strip()
     if not original:
         raise SdkError("note content is required")
-    bounded = _bounded_prompt_text(original, max_chars=_MAX_EXPAND_NOTE_CHARS)
+    bounded = _bounded_prompt_text_chars(original, max_chars=_EXPAND_NOTE_MAX_CHARS)
     scope = str(expand_scope or "details").strip() or "details"
     messages = [
         {
@@ -128,7 +131,7 @@ async def summarize_to_note(
     text = str(source_text or "").strip()
     if not text:
         raise SdkError("note source text is required")
-    bounded = _bounded_prompt_text(text, max_chars=_MAX_SUMMARIZE_TO_NOTE_CHARS)
+    bounded = _bounded_prompt_text_chars(text, max_chars=_SUMMARIZE_TO_NOTE_MAX_CHARS)
     headings = _localized_note_headings(self._config.language)
     messages = [
         {

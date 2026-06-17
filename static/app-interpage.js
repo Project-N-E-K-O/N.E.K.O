@@ -50,6 +50,9 @@
         return (message && message.bypassDedup === true)
             || action === 'yui_guide_set_chat_spotlight'
             || action === 'yui_guide_set_chat_cursor'
+            || action === 'yui_guide_drag_chat_cursor'
+            || action === 'yui_guide_arc_chat_cursor'
+            || action === 'yui_guide_rotate_compact_tool_wheel'
             || action === 'yui_guide_set_chat_buttons_disabled'
             || action === 'yui_guide_set_chat_input_locked'
             || action === 'yui_guide_set_compact_history_open'

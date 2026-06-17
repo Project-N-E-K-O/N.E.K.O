@@ -41,8 +41,8 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 
 from config import (
-    PERSONA_RENDER_TOKEN_BUDGET,
-    REFLECTION_RENDER_TOKEN_BUDGET,
+    PERSONA_RENDER_MAX_TOKENS,
+    REFLECTION_RENDER_MAX_TOKENS,
 )
 from memory.evidence import evidence_score
 from memory.facts import safe_int_field
@@ -1696,15 +1696,16 @@ class PersonaManager:
                 # aapply_signal。
                 # max_retries=0: 禁 SDK 自动重试（这里没业务 retry，单次即终态）。
                 # extra_body=None: 显式开 thinking。
-                from config import MEMORY_LLM_HARD_TIMEOUT_SECONDS
+                from config import MEMORY_LLM_HARD_TIMEOUT_SECONDS, LLM_OUTPUT_GUARD_MAX_TOKENS
                 llm = create_chat_llm(
                     api_config['model'],
                     api_config['base_url'], api_config['api_key'],
                     timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS, max_retries=0,
+                    max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
                     extra_body=None,
                 )
                 try:
-                    resp = await llm.ainvoke(prompt)
+                    resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # correction prompt built from PERSONA_MERGE_POOL_MAX_TOKENS-capped entity pool.
                 finally:
                     await llm.aclose()
                 raw = resp.content
@@ -2886,7 +2887,7 @@ class PersonaManager:
                 flat_non_protected.append(e)
 
         trimmed_non_protected = self._score_trim_entries(
-            flat_non_protected, PERSONA_RENDER_TOKEN_BUDGET, now,
+            flat_non_protected, PERSONA_RENDER_MAX_TOKENS, now,
         )
 
         suppressed_text_set = self._suppressed_text_set(persona)
@@ -2895,7 +2896,7 @@ class PersonaManager:
                 (pending_reflections or []) + (confirmed_reflections or []),
                 persona, suppressed_text_set,
             ),
-            REFLECTION_RENDER_TOKEN_BUDGET, now,
+            REFLECTION_RENDER_MAX_TOKENS, now,
             # Reflections have no `_personas`-style in-memory view — they're
             # always loaded fresh from disk. Writing cache fields onto the
             # transient dicts would be garbage-collected on render exit and
@@ -2988,7 +2989,7 @@ class PersonaManager:
                 flat_non_protected.append(e)
 
         trimmed_non_protected = await self._ascore_trim_entries(
-            flat_non_protected, PERSONA_RENDER_TOKEN_BUDGET, now,
+            flat_non_protected, PERSONA_RENDER_MAX_TOKENS, now,
         )
 
         suppressed_text_set = self._suppressed_text_set(persona)
@@ -2997,7 +2998,7 @@ class PersonaManager:
                 (pending_reflections or []) + (confirmed_reflections or []),
                 persona, suppressed_text_set,
             ),
-            REFLECTION_RENDER_TOKEN_BUDGET, now,
+            REFLECTION_RENDER_MAX_TOKENS, now,
             # See sync twin: reflections have no `_personas`-style
             # in-memory view, so we compute fresh every render without
             # writing cache fields back onto the transient dicts.

@@ -9,6 +9,11 @@
     var RENDER_EVENT = 'neko-subtitle-render-state';
     var DEFAULT_BACKGROUND_OPACITY = 95;
     var DEFAULT_PANEL_BOUNDS = { width: 600, height: 68 };
+    var PANEL_SIZE_PRESETS = {
+        small: { width: 420, height: 52 },
+        medium: { width: 600, height: 68 },
+        large: { width: 760, height: 92 }
+    };
     var MIN_PANEL_WIDTH = 48;
     var MIN_PANEL_HEIGHT = 28;
     var DEFAULT_TRANSLATION_LANGUAGE = 'zh';
@@ -31,6 +36,11 @@
         closePanel: 'subtitle.settings.closePanel',
         targetLang: 'subtitle.settings.targetLang',
         opacity: 'subtitle.settings.opacity',
+        dragAnywhere: 'subtitle.settings.dragAnywhere',
+        size: 'subtitle.settings.size',
+        sizeSmall: 'subtitle.settings.sizeSmall',
+        sizeMedium: 'subtitle.settings.sizeMedium',
+        sizeLarge: 'subtitle.settings.sizeLarge',
         passthroughInteraction: 'subtitle.settings.passthroughInteraction',
         emptyHint: 'subtitle.display.emptyHint'
     };
@@ -256,6 +266,21 @@
         if (!a && !b) return true;
         if (!a || !b) return false;
         return a.width === b.width && a.height === b.height;
+    }
+
+    function getPanelSizePresetName(bounds) {
+        var resolved = getPanelBounds(bounds);
+        var closestName = 'medium';
+        var closestDistance = Infinity;
+        Object.keys(PANEL_SIZE_PRESETS).forEach(function(name) {
+            var preset = PANEL_SIZE_PRESETS[name];
+            var distance = Math.abs(resolved.width - preset.width) + Math.abs(resolved.height - preset.height);
+            if (distance < closestDistance) {
+                closestDistance = distance;
+                closestName = name;
+            }
+        });
+        return closestName;
     }
 
     function normalizePanelState(state) {
@@ -571,6 +596,17 @@
         return null;
     }
 
+    function queryAll(root, selector) {
+        if (!root) return [];
+        if (typeof root.querySelectorAll === 'function') {
+            return Array.prototype.slice.call(root.querySelectorAll(selector));
+        }
+        if (root.document && typeof root.document.querySelectorAll === 'function') {
+            return Array.prototype.slice.call(root.document.querySelectorAll(selector));
+        }
+        return [];
+    }
+
     function getSubtitleRefs(root) {
         return {
             display: query(root, '#subtitle-display'),
@@ -586,7 +622,10 @@
             opacitySlider: query(root, '#subtitle-opacity-slider'),
             opacityValue: query(root, '#subtitle-opacity-value'),
             passthroughToggle: query(root, '#subtitle-passthrough-toggle'),
-            resizeHandles: root && typeof root.querySelectorAll === 'function' ? root.querySelectorAll('.subtitle-resize-edge') : []
+            dragModeToggle: query(root, '#subtitle-drag-mode-toggle'),
+            sizeButtons: queryAll(root, '.subtitle-size-btn'),
+            dragHandle: query(root, '#subtitle-drag-handle'),
+            resizeHandles: queryAll(root, '.subtitle-resize-edge')
         };
     }
 
@@ -654,6 +693,18 @@
         if (refs.passthroughToggle) {
             refs.passthroughToggle.checked = passthroughEnabled;
         }
+        if (refs.dragModeToggle) {
+            refs.dragModeToggle.checked = !state.subtitlePanelLocked;
+            refs.dragModeToggle.setAttribute('aria-checked', refs.dragModeToggle.checked ? 'true' : 'false');
+        }
+        if (refs.sizeButtons && refs.sizeButtons.length) {
+            var activeSize = getPanelSizePresetName(state.subtitlePanelBounds);
+            refs.sizeButtons.forEach(function(button) {
+                var isActive = button && button.dataset && button.dataset.size === activeSize;
+                button.classList.toggle('active', !!isActive);
+                button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+            });
+        }
     }
 
     function applyUiLabels(refs, state) {
@@ -687,6 +738,20 @@
         }
         if (refs.passthroughToggle) {
             refs.passthroughToggle.title = getUiText('passthroughInteraction', locale);
+        }
+        if (refs.dragModeToggle) {
+            refs.dragModeToggle.title = getUiText('dragAnywhere', locale);
+            refs.dragModeToggle.setAttribute('aria-label', getUiText('dragAnywhere', locale));
+        }
+        if (refs.sizeButtons && refs.sizeButtons.length) {
+            refs.sizeButtons.forEach(function(button) {
+                var key = 'size' + String(button.dataset && button.dataset.size || '').replace(/^\w/, function(first) {
+                    return first.toUpperCase();
+                });
+                var label = getUiText(key, locale);
+                button.title = label;
+                button.setAttribute('aria-label', label);
+            });
         }
         if (refs.text) {
             var placeholderLocale = normalizeUiLocale(state && state.userLanguage ? state.userLanguage : locale);
@@ -955,9 +1020,23 @@
             beginTouchDrag(e);
         }
 
+        function onDragHandleMouseDown(e) {
+            if (e.stopPropagation) e.stopPropagation();
+            beginDrag(e);
+        }
+
+        function onDragHandleTouchStart(e) {
+            if (e.stopPropagation) e.stopPropagation();
+            beginTouchDrag(e);
+        }
+
         clampManualPosition();
         refs.display.addEventListener('mousedown', onDisplayMouseDown);
         refs.display.addEventListener('touchstart', onDisplayTouchStart, { passive: false });
+        if (refs.dragHandle) {
+            refs.dragHandle.addEventListener('mousedown', onDragHandleMouseDown);
+            refs.dragHandle.addEventListener('touchstart', onDragHandleTouchStart, { passive: false });
+        }
         document.addEventListener('touchmove', handleTouchMove, { passive: false });
         document.addEventListener('touchend', handleMouseUp);
         document.addEventListener('touchcancel', handleMouseUp);
@@ -968,6 +1047,10 @@
             handleMouseUp();
             refs.display.removeEventListener('mousedown', onDisplayMouseDown);
             refs.display.removeEventListener('touchstart', onDisplayTouchStart, { passive: false });
+            if (refs.dragHandle) {
+                refs.dragHandle.removeEventListener('mousedown', onDragHandleMouseDown);
+                refs.dragHandle.removeEventListener('touchstart', onDragHandleTouchStart, { passive: false });
+            }
             document.removeEventListener('touchmove', handleTouchMove, { passive: false });
             document.removeEventListener('touchend', handleMouseUp);
             document.removeEventListener('touchcancel', handleMouseUp);
@@ -1053,8 +1136,22 @@
             startDrag(e);
         }
 
+        function onDragHandleMouseDown(e) {
+            if (e.stopPropagation) e.stopPropagation();
+            startDrag(e);
+        }
+
+        function onDragHandleTouchStart(e) {
+            if (e.stopPropagation) e.stopPropagation();
+            startDrag(e);
+        }
+
         refs.display.addEventListener('mousedown', onDisplayMouseDown);
         refs.display.addEventListener('touchstart', onDisplayTouchStart, { passive: false });
+        if (refs.dragHandle) {
+            refs.dragHandle.addEventListener('mousedown', onDragHandleMouseDown);
+            refs.dragHandle.addEventListener('touchstart', onDragHandleTouchStart, { passive: false });
+        }
         document.addEventListener('mouseup', stopDrag);
         document.addEventListener('touchend', stopDrag);
         document.addEventListener('touchcancel', stopDrag);
@@ -1066,6 +1163,10 @@
             refs.display.classList.remove('dragging');
             refs.display.removeEventListener('mousedown', onDisplayMouseDown);
             refs.display.removeEventListener('touchstart', onDisplayTouchStart, { passive: false });
+            if (refs.dragHandle) {
+                refs.dragHandle.removeEventListener('mousedown', onDragHandleMouseDown);
+                refs.dragHandle.removeEventListener('touchstart', onDragHandleTouchStart, { passive: false });
+            }
             document.removeEventListener('mouseup', stopDrag);
             document.removeEventListener('touchend', stopDrag);
             document.removeEventListener('touchcancel', stopDrag);
@@ -1493,6 +1594,23 @@
             return nextState;
         }
 
+        function setPanelSizePreset(sizeName, source) {
+            var preset = PANEL_SIZE_PRESETS[sizeName] || PANEL_SIZE_PRESETS.medium;
+            var nextBounds = getPanelBounds(preset);
+            var nextState = updateSettings({ subtitlePanelBounds: nextBounds }, {
+                source: source || 'subtitle-ui-size'
+            });
+            if (typeof options.propagateSetting === 'function') {
+                options.propagateSetting({
+                    type: 'bounds',
+                    value: nextBounds,
+                    patch: { subtitlePanelBounds: nextBounds },
+                    state: nextState
+                });
+            }
+            return nextState;
+        }
+
         var observedThemeDark = isDarkThemeActive();
         var applyThemeStateIfChanged = function(source) {
             var nextThemeDark = isDarkThemeActive();
@@ -1598,6 +1716,40 @@
             refs.lockBtn.addEventListener('click', onLockClick);
             cleanupFns.push(function() {
                 refs.lockBtn.removeEventListener('click', onLockClick);
+            });
+        }
+
+        if (refs.dragModeToggle) {
+            var onDragModeChange = function(e) {
+                e.stopPropagation();
+                showControls('subtitle-ui-drag-mode');
+                setPanelLocked(!refs.dragModeToggle.checked, 'subtitle-ui-drag-mode');
+            };
+            refs.dragModeToggle.addEventListener('change', onDragModeChange);
+            cleanupFns.push(function() {
+                refs.dragModeToggle.removeEventListener('change', onDragModeChange);
+            });
+        }
+
+        if (refs.sizeButtons && refs.sizeButtons.length) {
+            refs.sizeButtons.forEach(function(button) {
+                var onSizeClick = function(e) {
+                    e.stopPropagation();
+                    showControls('subtitle-ui-size');
+                    setPanelSizePreset(button.dataset && button.dataset.size, 'subtitle-ui-size');
+                };
+                button.addEventListener('click', onSizeClick);
+                button._nekoSubtitleSizeCleanup = function() {
+                    button.removeEventListener('click', onSizeClick);
+                };
+            });
+            cleanupFns.push(function() {
+                refs.sizeButtons.forEach(function(button) {
+                    if (typeof button._nekoSubtitleSizeCleanup === 'function') {
+                        button._nekoSubtitleSizeCleanup();
+                        delete button._nekoSubtitleSizeCleanup;
+                    }
+                });
             });
         }
 

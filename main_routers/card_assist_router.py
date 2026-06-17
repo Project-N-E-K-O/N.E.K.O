@@ -261,12 +261,14 @@ def _build_assist_llm():
         return None, {"success": False, "error": "assist_api_not_configured",
                       "message": "agent model not set"}
     try:
+        from config import LLM_OUTPUT_GUARD_MAX_TOKENS
         llm = create_chat_llm(
             model,
             base_url,
             api_key,
             timeout=_LLM_TIMEOUT_SECONDS,
             max_retries=1,
+            max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length structured suggestions aren't truncated
         )
     except Exception as exc:
         logger.warning("card-assist: create_chat_llm failed: %s", exc)
@@ -318,7 +320,7 @@ async def _invoke_assist_detailed(prompt: Any) -> tuple[str | None, dict | None]
     # 注意：ainvoke / aclose 两个错误必须分开处理，否则 aclose 抛错时会把
     # 已经拿到的 resp 当成 llm_call_failed 丢掉。
     try:
-        resp = await llm.ainvoke(prompt)
+        resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # prompt is the user's own card draft (user-provided config — uncapped by design, cf. llm-prompt-budget.md §6).
     except Exception as exc:
         logger.warning("card-assist: LLM ainvoke failed: %s", exc)
         try:
