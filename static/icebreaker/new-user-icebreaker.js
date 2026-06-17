@@ -55,6 +55,10 @@
         return !!(entry && entry.completed === true);
     }
 
+    function isPeriodActive() {
+        return !!activeSession;
+    }
+
     function getHost() {
         return window.reactChatWindowHost || null;
     }
@@ -215,6 +219,12 @@
         getActiveSession: function () {
             return activeSession;
         }
+    };
+
+    window.NekoNewUserIcebreakerState = {
+        readStore: readStore,
+        hasCompletedDay: isDayCompleted,
+        isPeriodActive: isPeriodActive
     };
 
     window.addEventListener('neko:tutorial-completed', handleTutorialEnded);

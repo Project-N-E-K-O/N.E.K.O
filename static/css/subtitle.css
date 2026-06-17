@@ -200,6 +200,7 @@ body.subtitle-window-host.subtitle-linux-host #subtitle-display {
     justify-content: flex-end;
     gap: 4px;
     opacity: 0;
+    visibility: hidden;
     pointer-events: none;
     transition: opacity 0.2s ease;
 }
@@ -207,6 +208,7 @@ body.subtitle-window-host.subtitle-linux-host #subtitle-display {
 #subtitle-display[data-subtitle-panel-state="controls"] #subtitle-panel-controls,
 #subtitle-display[data-subtitle-panel-state="settings"] #subtitle-panel-controls {
     opacity: 1;
+    visibility: visible;
     pointer-events: auto;
 }
 

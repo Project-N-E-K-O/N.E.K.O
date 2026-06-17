@@ -57,6 +57,10 @@
         return !!(entry && entry.completed);
     }
 
+    function isPeriodActive() {
+        return !!activeSession;
+    }
+
     function fetchJson(url) {
         return fetch(url, { credentials: 'same-origin', cache: 'no-store' }).then(function (response) {
             if (!response.ok) throw new Error('HTTP ' + response.status);
@@ -816,5 +820,11 @@
         getActiveSession: function () {
             return activeSession ? Object.assign({}, activeSession) : null;
         }
+    };
+
+    window.NekoNewUserIcebreakerState = {
+        readStore: readStore,
+        hasCompletedDay: isDayCompleted,
+        isPeriodActive: isPeriodActive
     };
 })();

@@ -126,6 +126,27 @@ test('normalizeTutorialScene maps day3 galgame wheel rotation to a dedicated tim
     assert.equal(scene.timeline.some((event) => event.command === 'operation.run'), false);
 });
 
+test('normalizeTutorialScene does not duplicate galgame rotation for click scenes', () => {
+    const scene = normalizeTutorialScene({
+        id: 'day3_galgame_entry_click',
+        target: 'chat-galgame',
+        cursorAction: 'click',
+        operation: 'rotate-galgame-tool-into-center'
+    });
+
+    assert.equal(
+        scene.timeline.filter((event) => event.command === 'compactToolWheel.rotateGalgameIntoCenter').length,
+        1
+    );
+    assert.equal(scene.timeline.some((event) => event.command === 'operation.run'), false);
+    assert.equal(
+        scene.timeline.some((event) => Array.isArray(event.onStart) && event.onStart.some((nested) => (
+            nested.command === 'operation.run'
+        ))),
+        false
+    );
+});
+
 test('normalizeTutorialScene preserves explicit timeline scenes and adds audio metadata', () => {
     const scene = normalizeTutorialScene({
         id: 'explicit-scene',
