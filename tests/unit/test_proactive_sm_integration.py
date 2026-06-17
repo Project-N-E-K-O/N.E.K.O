@@ -1139,6 +1139,11 @@ def test_topic_hook_delivery_does_not_recheck_privacy_preference(monkeypatch):
         raise AssertionError("delivery gate must not read the privacy preference")
 
     monkeypatch.setattr("utils.preferences.is_privacy_mode_enabled", _raise_privacy_error)
+    monkeypatch.setattr(
+        "main_logic.core.is_privacy_mode_enabled",
+        _raise_privacy_error,
+        raising=False,
+    )
     mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
     assert LLMSessionManager.topic_hook_delivery_allowed(mgr) is True
 
