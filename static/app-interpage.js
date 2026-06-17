@@ -2782,6 +2782,9 @@
             : null;
 
         if (!rect || rect.width <= 0 || rect.height <= 0) {
+            if (isYuiGuidePcOverlayAvailable()) {
+                sendYuiGuidePcOverlayPatch({ spotlights: [] });
+            }
             spotlight.hidden = true;
             spotlight.style.opacity = '0';
             spotlight.classList.remove('is-visible', 'is-window', 'is-input');

@@ -770,6 +770,12 @@ test('new-user icebreaker script is present before websocket greeting handling',
     assert.match(icebreakerSource, /activeSession \|\| isDayCompleted\(DAY\) \|\| hasCompletedFinalDay\(\)/);
 });
 
+test('home template cache-busts app interpage with static guide assets', () => {
+    const templateSource = fs.readFileSync(path.join(repoRoot, 'templates/index.html'), 'utf8');
+    assert.match(templateSource, /\/static\/app-interpage\.js\?v=\{\{ static_asset_version \}\}/);
+    assert.doesNotMatch(templateSource, /\/static\/app-interpage\.js\?v=\{\{ react_chat_asset_version \}\}/);
+});
+
 test('Day1 guide keeps locale-specific audio filenames', () => {
     const day1Source = fs.readFileSync(
         path.join(repoRoot, 'static', 'tutorial/yui-guide/days/day1-home-guide.js'),

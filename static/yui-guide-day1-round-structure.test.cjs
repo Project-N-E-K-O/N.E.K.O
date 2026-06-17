@@ -174,6 +174,7 @@ test('Day1 return control cursor moves to the capsule primary target before the 
   assert.match(appInterpageSource, /spotlight = document\.createElement\('div'\);[\s\S]*spotlight\.id = 'yui-guide-chat-spotlight';/);
   assert.match(appInterpageSource, /var spotlight = getYuiGuideChatSpotlightElement\(true\);/);
   assert.match(appInterpageSource, /function updateYuiGuideChatSpotlight\(kind\) \{[\s\S]*var target = getYuiGuideChatSpotlightTarget\(kind\);[\s\S]*spotlight\.style\.borderRadius = radius \+ 'px';/);
+  assert.match(appInterpageSource, /if \(!rect \|\| rect\.width <= 0 \|\| rect\.height <= 0\) \{[\s\S]*sendYuiGuidePcOverlayPatch\(\{ spotlights: \[\] \}\);/);
   assert.match(appInterpageSource, /yuiGuideChatSpotlightTimer = window\.setInterval\(function \(\) \{[\s\S]*updateYuiGuideChatSpotlight\(yuiGuideChatSpotlightKind\);/);
   assert.doesNotMatch(appInterpageSource, /function renderYuiGuideChatSpotlight/);
   assert.doesNotMatch(appInterpageSource, /function isYuiGuideInputLikeChatTarget/);
