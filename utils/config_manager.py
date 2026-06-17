@@ -3319,19 +3319,21 @@ class ConfigManager:
 
             Dual to :meth:`_is_selected_hosted_preset_voice` (used by validate); both
             gate on tts_provider_registry's selection so a hosted preset is only
-            recognized while that provider is the one dispatch would route to. Same
-            layer rule: config_manager (utils) must NOT import main_logic, so we only
-            query the same-layer registry, which the running app populates by
-            importing main_logic.tts_client at startup. Degrades to None on error.
+            recognized while that provider is the one dispatch would route to. A
+            single ``selected_preset_provider_key`` dispatch resolves both membership
+            and key together, so the two can never disagree. Same layer rule:
+            config_manager (utils) must NOT import main_logic, so we only query the
+            same-layer registry, which the running app populates by importing
+            main_logic.tts_client at startup. Degrades to None on error.
             """
             try:
                 from utils import tts_provider_registry
-                core = self.get_core_config() or {}
-                if tts_provider_registry.is_selected_preset_voice(core, self, ref):
-                    return tts_provider_registry.selected_provider_key(core, self)
+                return tts_provider_registry.selected_preset_provider_key(
+                    self.get_core_config() or {}, self, ref
+                )
             except Exception:
                 logger.warning("hosted preset voice 归一化异常，按非预制处理", exc_info=True)
-            return None
+                return None
 
         return normalize_voice_id(
             voice_id,
@@ -3364,6 +3366,14 @@ class ConfigManager:
         # change the key) keep the legacy string verbatim — never let migration rewrite
         # the key a binding points at, or _get_voice_meta would miss and TTS misroute.
         if to_legacy_voice_id(vc) != s:
+            return s
+        # Ownership guard: a bare id we could NOT resolve (no source/provider tagged)
+        # carries zero information beyond the flat string. Storing it as
+        # ``{source:"", provider:"", ref}`` is a half-migrated shell that only bloats
+        # storage and disguises "ownership unknown" as "migrated" — keep the legacy
+        # string until we can actually tag its ownership. (Only resolved bindings,
+        # incl. hosted presets like MiMo's, become structured objects.)
+        if not vc.source and not vc.provider:
             return s
         return vc.to_dict()
 

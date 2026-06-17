@@ -213,3 +213,7 @@ def test_normalize_mimo_preset_unresolved_when_not_selected(config_manager):
     _write_core_config(config_manager, {"coreApi": "qwen", "assistApi": "qwen"})
     vc = config_manager.normalize_voice_id_to_config("Milo")
     assert (vc.source, vc.provider, vc.ref) == ("", "", "Milo")
+    # 落库侧：未解析的裸 ref 存回扁平串（不写成空壳结构对象），守住回归
+    stored = config_manager.voice_id_to_storage_value("Milo")
+    assert stored == "Milo"
+    assert read_legacy_voice_id(stored) == "Milo"
