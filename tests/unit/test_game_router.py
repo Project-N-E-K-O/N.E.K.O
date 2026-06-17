@@ -117,6 +117,31 @@ async def test_new_user_icebreaker_context_endpoint_awaits_async_append(monkeypa
     assert mgr.calls == [("user", "icebreaker choice")]
 
 
+@pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_handles_append_failure(monkeypatch):
+    class FakeManager:
+        def append_icebreaker_context(self, role, text):
+            raise RuntimeError("append failed")
+
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": FakeManager()})
+
+    result = await game_router.game_project_context(
+        "new_user_icebreaker",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "role": "assistant",
+            "text": "教程看完啦？",
+            "session_id": "icebreaker-day1-test",
+        }),
+    )
+
+    assert result == {
+        "ok": False,
+        "reason": "context_append_failed",
+        "lanlan_name": "Lan",
+    }
+
+
 @pytest.mark.unit
 def test_basketball_prompt_and_control_contract():
     prompt = game_router._build_game_prompt(

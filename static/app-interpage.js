@@ -2185,16 +2185,17 @@
             console.log('[BroadcastChannel] 主页面 BroadcastChannel 已初始化');
 
             nekoBroadcastChannel.onmessage = async function (event) {
-                if (!event.data || !event.data.action) {
+                var message = event.data;
+                if (!message || !message.action) {
                     return;
                 }
 
                 // Deduplicate: same message arrives via both BC and postMessage
                 if (
-                    !shouldBypassYuiGuideMessageDedup(event.data.action, event.data)
-                    && isDuplicateMessage(event.data.action, event.data.timestamp)
+                    !shouldBypassYuiGuideMessageDedup(message.action, message)
+                    && isDuplicateMessage(message.action, message.timestamp)
                 ) {
-                    console.log('[BroadcastChannel] 跳过重复消息:', event.data.action);
+                    console.log('[BroadcastChannel] 跳过重复消息:', message.action);
                     return;
                 }
 
@@ -3010,7 +3011,10 @@
 
         if (event.data && (event.data.action === 'model_saved' || event.data.action === 'reload_model')) {
             // Deduplicate: same message arrives via both BC and postMessage
-            if (isDuplicateMessage(event.data.action, event.data.timestamp)) {
+            if (
+                !shouldBypassYuiGuideMessageDedup(event.data.action, event.data)
+                && isDuplicateMessage(event.data.action, event.data.timestamp)
+            ) {
                 console.log('[Model] 跳过重复 postMessage:', event.data.action);
                 return;
             }

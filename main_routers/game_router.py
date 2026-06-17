@@ -6646,12 +6646,16 @@ async def game_project_context(game_type: str, request: Request):
 
     append_icebreaker_context_async = getattr(mgr, "append_icebreaker_context_async", None)
     append_icebreaker_context = getattr(mgr, "append_icebreaker_context", None)
-    if callable(append_icebreaker_context_async):
-        ok = await append_icebreaker_context_async(role, text)
-    elif callable(append_icebreaker_context):
-        ok = append_icebreaker_context(role, text)
-    else:
-        return {"ok": False, "reason": "context_method_unavailable", "lanlan_name": lanlan_name}
+    try:
+        if callable(append_icebreaker_context_async):
+            ok = await append_icebreaker_context_async(role, text)
+        elif callable(append_icebreaker_context):
+            ok = append_icebreaker_context(role, text)
+        else:
+            return {"ok": False, "reason": "context_method_unavailable", "lanlan_name": lanlan_name}
+    except Exception:
+        logger.exception("new_user_icebreaker context append failed for %s", lanlan_name)
+        return {"ok": False, "reason": "context_append_failed", "lanlan_name": lanlan_name}
 
     return {
         "ok": bool(ok),
