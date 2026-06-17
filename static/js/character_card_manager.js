@@ -6059,45 +6059,64 @@ function _panelConfigureFieldDeleteButton(button) {
     button.innerHTML = '<img src="/static/icons/delete.png" alt="" class="delete-icon" aria-hidden="true">';
 }
 
+function _panelResizeTextarea(textarea) {
+    if (!textarea) return;
+    textarea.style.height = 'auto';
+    const style = getComputedStyle(textarea);
+    const minHeight = parseInt(style.minHeight) || 30;
+
+    // 计算内容高度，考虑padding
+    const paddingTop = parseInt(style.paddingTop) || 0;
+    const paddingBottom = parseInt(style.paddingBottom) || 0;
+
+    const scrollHeight = textarea.scrollHeight;
+    const contentHeight = scrollHeight - paddingTop - paddingBottom;
+
+    // 三行高度的估算：line-height*3
+    const computedLineHeight = parseFloat(style.lineHeight);
+    const fontSize = parseFloat(style.fontSize) || 14;
+    const lineHeight = isNaN(computedLineHeight) ? fontSize * 1.2 : computedLineHeight;
+    const threeLinesHeight = lineHeight * 3;
+    const maxContentHeight = threeLinesHeight;
+    const newContentHeight = Math.min(maxContentHeight, contentHeight);
+    const newHeight = Math.max(minHeight, newContentHeight + paddingTop + paddingBottom);
+
+    textarea.style.height = newHeight + 'px';
+
+    // 根据内容是否超过三行来决定是否显示滚动条
+    const fieldRow = textarea.closest('.field-row');
+    if (fieldRow) {
+        if (contentHeight > maxContentHeight) {
+            textarea.style.overflowY = 'auto';
+            fieldRow.classList.add('has-scrollbar');
+        } else {
+            textarea.style.overflowY = 'hidden';
+            fieldRow.classList.remove('has-scrollbar');
+        }
+    }
+}
+
+function _panelRequestTextareaAutoResize(textarea) {
+    if (!textarea) return;
+    _panelResizeTextarea(textarea);
+    if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(() => _panelResizeTextarea(textarea));
+    } else {
+        setTimeout(() => _panelResizeTextarea(textarea), 0);
+    }
+}
+
 // textarea自动调整高度（匹配原版逻辑：三行最大高度 + scrollbar类切换）
 function _panelAttachTextareaAutoResize(textarea) {
-    if (!textarea || textarea.dataset.autoResizeAttached) return;
+    if (!textarea) return;
+    if (textarea.dataset.autoResizeAttached) {
+        _panelRequestTextareaAutoResize(textarea);
+        return;
+    }
     textarea.dataset.autoResizeAttached = 'true';
 
     function resize() {
-        textarea.style.height = 'auto';
-        const style = getComputedStyle(textarea);
-        const minHeight = parseInt(style.minHeight) || 30;
-
-        // 计算内容高度，考虑padding
-        const paddingTop = parseInt(style.paddingTop) || 0;
-        const paddingBottom = parseInt(style.paddingBottom) || 0;
-
-        const scrollHeight = textarea.scrollHeight;
-        const contentHeight = scrollHeight - paddingTop - paddingBottom;
-
-        // 三行高度的估算：line-height*3
-        const computedLineHeight = parseFloat(style.lineHeight);
-        const fontSize = parseFloat(style.fontSize) || 14;
-        const lineHeight = isNaN(computedLineHeight) ? fontSize * 1.2 : computedLineHeight;
-        const threeLinesHeight = lineHeight * 3;
-        const maxContentHeight = threeLinesHeight;
-        const newContentHeight = Math.min(maxContentHeight, contentHeight);
-        const newHeight = Math.max(minHeight, newContentHeight + paddingTop + paddingBottom);
-
-        textarea.style.height = newHeight + 'px';
-
-        // 根据内容是否超过三行来决定是否显示滚动条
-        const fieldRow = textarea.closest('.field-row');
-        if (fieldRow) {
-            if (contentHeight > maxContentHeight) {
-                textarea.style.overflowY = 'auto';
-                fieldRow.classList.add('has-scrollbar');
-            } else {
-                textarea.style.overflowY = 'hidden';
-                fieldRow.classList.remove('has-scrollbar');
-            }
-        }
+        _panelRequestTextareaAutoResize(textarea);
     }
 
     textarea.addEventListener('input', resize);
@@ -6137,6 +6156,55 @@ function _panelGetRegisteredVoiceDisplayName(voiceId, voiceData) {
         if (name) return name;
     }
     return String(voiceId || '').trim();
+}
+
+// ── source-first 选声：把音色按「provider · 来源」分组（声音来源统一架构 §5）──
+// 品牌名跨语言通用，用 JS 常量；只有 local（本地 CosyVoice）/ free（免费）与「· 来源」
+// 后缀需本地化（voice.provider.* / voice.source.*）。
+const _PANEL_VOICE_PROVIDER_SHORT = Object.freeze({
+    cosyvoice: 'CosyVoice',
+    cosyvoice_intl: 'CosyVoice Intl',
+    minimax: 'MiniMax',
+    minimax_intl: 'MiniMax Intl',
+    elevenlabs: 'ElevenLabs',
+    gptsovits: 'GPT-SoVITS',
+    gemini: 'Gemini',
+    step: 'StepFun',
+    grok: 'Grok',
+    mimo: 'MiMo',
+    vllm_omni: 'vLLM-Omni',
+});
+
+function _panelVoiceI18n(key, fallback) {
+    if (window.t) {
+        const t = window.t(key);
+        if (t && t !== key) return t;
+    }
+    return fallback;
+}
+
+function _panelVoiceProviderShortName(provider) {
+    const p = String(provider || '').trim();
+    if (!p) return _panelVoiceI18n('voice.providerUnknown', '其他');
+    if (p === 'local') return _panelVoiceI18n('voice.providerLocal', '本地 CosyVoice');
+    if (p === 'free') return _panelVoiceI18n('voice.providerFree', '免费');
+    return _PANEL_VOICE_PROVIDER_SHORT[p] || p;
+}
+
+function _panelVoiceSourceLabel(source) {
+    const s = String(source || '').trim();
+    const map = {
+        preset: ['voice.sourcePreset', '预制'],
+        clone: ['voice.sourceClone', '克隆'],
+        design: ['voice.sourceDesign', '描述生成'],
+    };
+    const entry = map[s];
+    return entry ? _panelVoiceI18n(entry[0], entry[1]) : s;
+}
+
+// 「<Provider> · <来源>」组标签，如 "ElevenLabs · 克隆" / "Gemini · 预制"
+function _panelVoiceSourceGroupLabel(provider, source) {
+    return _panelVoiceProviderShortName(provider) + ' · ' + _panelVoiceSourceLabel(source);
 }
 
 // 创建音色自定义单选下拉，原生 select 只负责表单值。
@@ -6422,23 +6490,35 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
                 });
             }
 
-            // 添加音色选项
+            // 注册的音色：按「provider · 来源」分组成 optgroup（source-first，§5）。来源取
+            // voiceData.source（design=描述生成 / clone=克隆），缺省按 clone（存量克隆音色没有
+            // source 字段）。同 (provider, 来源) 复用同一组；provider 缺失归到「其他 · …」。
+            const _cloneGroups = {};
             Object.entries(data.voices).forEach(function ([voiceId, voiceData]) {
+                const provider = (voiceData && voiceData.provider) || '';
+                const source = (voiceData && voiceData.source === 'design') ? 'design' : 'clone';
+                const groupKey = provider + '|' + source;
+                if (!_cloneGroups[groupKey]) {
+                    const grp = document.createElement('optgroup');
+                    grp.label = _panelNormalizeVoiceGroupLabel(_panelVoiceSourceGroupLabel(provider, source));
+                    grp.dataset.voiceSourceGroup = source;
+                    _cloneGroups[groupKey] = grp;
+                    selectEl.appendChild(grp);
+                }
                 const option = document.createElement('option');
                 option.value = voiceId;
                 // 克隆音色的可读名称存在 prefix 中，不能被角色占用信息或 voice_id 覆盖。
-                const displayName = _panelGetRegisteredVoiceDisplayName(voiceId, voiceData);
-                option.textContent = displayName;
+                option.textContent = _panelGetRegisteredVoiceDisplayName(voiceId, voiceData);
                 option.title = voiceId;
                 if (voiceId === currentVoiceId) option.selected = true;
-                selectEl.appendChild(option);
+                _cloneGroups[groupKey].appendChild(option);
             });
 
             // 免费预设音色
             if (data.free_voices && Object.keys(data.free_voices).length > 0) {
                 const freeGroup = document.createElement('optgroup');
-                const freeLabel = window.t ? window.t('character.freePresetVoices') : '免费预设音色';
-                freeGroup.label = _panelNormalizeVoiceGroupLabel(freeLabel);
+                freeGroup.label = _panelNormalizeVoiceGroupLabel(_panelVoiceSourceGroupLabel('free', 'preset'));
+                freeGroup.dataset.voiceSourceGroup = 'preset';
                 Object.entries(data.free_voices).forEach(function ([voiceKey, voiceId]) {
                     const option = document.createElement('option');
                     option.value = voiceId;
@@ -6467,7 +6547,13 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
                     .filter(function ([voiceId]) { return !renderedVoiceIds.has(String(voiceId).toLowerCase()); });
                 if (nativeEntries.length > 0) {
                     const nativeGroup = document.createElement('optgroup');
-                    nativeGroup.label = _panelNormalizeVoiceGroupLabel(_panelFormatNativeVoiceGroupLabel(nativeEntries));
+                    // native 预制：「<Provider> · 预制」（provider 取自 voiceData.provider_label/provider）
+                    const _nativeProviderLabel = _panelGetNativeVoiceProviderLabel(nativeEntries)
+                        || _panelVoiceI18n('voice.providerUnknown', '其他');
+                    nativeGroup.label = _panelNormalizeVoiceGroupLabel(
+                        _nativeProviderLabel + ' · ' + _panelVoiceSourceLabel('preset')
+                    );
+                    nativeGroup.dataset.voiceSourceGroup = 'preset';
                     nativeEntries.forEach(function ([voiceId, voiceData]) {
                         const option = document.createElement('option');
                         option.value = voiceId;
@@ -6524,9 +6610,9 @@ async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
         let gsvGroup = selectEl.querySelector('optgroup[data-gsv-group="true"]');
         if (!gsvGroup) {
             gsvGroup = document.createElement('optgroup');
-            const gsvLabel = window.t ? window.t('character.gptsovitsVoices') : 'GPT-SoVITS 声音';
-            gsvGroup.label = _panelNormalizeVoiceGroupLabel(gsvLabel);
+            gsvGroup.label = _panelNormalizeVoiceGroupLabel(_panelVoiceSourceGroupLabel('gptsovits', 'clone'));
             gsvGroup.dataset.gsvGroup = 'true';
+            gsvGroup.dataset.voiceSourceGroup = 'clone';
             selectEl.appendChild(gsvGroup);
         }
         const fallbackOpt = document.createElement('option');
@@ -6584,9 +6670,9 @@ async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
         const result = await resp.json().catch(() => ({}));
         if (result.success && Array.isArray(result.voices) && result.voices.length > 0) {
             const gsvGroup = document.createElement('optgroup');
-            const gsvLabel = window.t ? window.t('character.gptsovitsVoices') : 'GPT-SoVITS 声音';
-            gsvGroup.label = _panelNormalizeVoiceGroupLabel(gsvLabel);
+            gsvGroup.label = _panelNormalizeVoiceGroupLabel(_panelVoiceSourceGroupLabel('gptsovits', 'clone'));
             gsvGroup.dataset.gsvGroup = 'true';
+            gsvGroup.dataset.voiceSourceGroup = 'clone';
             result.voices.forEach(function (v) {
                 const option = document.createElement('option');
                 option.value = v.voice_id;
@@ -10845,7 +10931,7 @@ function _cardAssistCollectCurrentFormData(form) {
 // → 没有 window.nekoLocalMutationSecurity，所以这里自包含地拿 X-CSRF-Token：
 //   1) 主 app 上下文里若已有统一安全助手就直接用（带刷新逻辑）；
 //   2) 独立页兜底：从 /api/config/page_config 取 autostart_csrf_token（与本页已加载的
-//      universal-tutorial-manager.js 同一套来源），缓存一次即可（per-instance 常量）。
+//      tutorial/core/universal-manager.js 同一套来源），缓存一次即可（per-instance 常量）。
 // 取不到就返回空头——后端会 403，_cardAssistFetch 下面的错误通路照常当失败处理，不会
 // 静默成功。Origin 头由浏览器对同源 POST 自动带上，与本页 tutorial 上报走的是同一条路。
 let _cardAssistCsrfToken = null;
@@ -12387,6 +12473,9 @@ function _cardAssistApplyToForm(form, generated, selectedKeys, originalName, isN
         const textarea = _findFieldTextareaByName(form, key);
         if (textarea) {
             textarea.value = value;
+            if (typeof _panelRequestTextareaAutoResize === 'function') {
+                _panelRequestTextareaAutoResize(textarea);
+            }
             textarea.dispatchEvent(new Event('input', { bubbles: true }));
             textarea.dispatchEvent(new Event('change', { bubbles: true }));
             const row = textarea.closest('.field-row-wrapper') || textarea.parentNode;
@@ -12445,6 +12534,9 @@ function _cardAssistApplyToForm(form, generated, selectedKeys, originalName, isN
         }
         if (typeof _panelAttachTextareaAutoResize === 'function') {
             _panelAttachTextareaAutoResize(textareaEl);
+        }
+        if (typeof _panelRequestTextareaAutoResize === 'function') {
+            _panelRequestTextareaAutoResize(textareaEl);
         }
         if (!isNew && originalName && typeof panelAttachAutoSaveListener === 'function') {
             panelAttachAutoSaveListener(textareaEl, originalName);

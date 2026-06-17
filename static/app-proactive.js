@@ -21,6 +21,8 @@
     const mod = {};
     const S = window.appState;
     const C = window.appConst;
+    const NEW_USER_ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1';
+    const NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 1000;
 
     // ======================== proactive leader election ========================
     //
@@ -70,6 +72,7 @@
     let _proactiveLeaderHeartbeatTimer = null;
     let _wasLeaderLastTick = null; // 用于 leader 状态切换时主动 reschedule
     let _chatInputSlowdownUntil = 0;
+    let _homeTutorialFeatureSuppressedByEvent = false;
 
     function isProactiveVisionEnabledNow() {
         // 跨窗口时 leader 可能还没收到 storage 事件；以 localStorage 的最新保存值兜底。
@@ -91,6 +94,9 @@
 
     function isHomeTutorialFeatureSuppressed() {
         try {
+            if (_homeTutorialFeatureSuppressedByEvent) {
+                return true;
+            }
             const controller = window.NekoHomeTutorialFeatureController;
             if (controller && typeof controller.isActive === 'function' && controller.isActive()) {
                 return true;
@@ -101,6 +107,113 @@
             return false;
         }
     }
+
+    function readNewUserIcebreakerStore() {
+        try {
+            if (typeof localStorage === 'undefined') return null;
+            const raw = localStorage.getItem(NEW_USER_ICEBREAKER_STORAGE_KEY);
+            if (!raw) return null;
+            const parsed = JSON.parse(raw);
+            return parsed && typeof parsed === 'object' ? parsed : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function isRecentNewUserIcebreakerEntry(entry) {
+        if (!entry || typeof entry !== 'object') return false;
+        const timestamps = [
+            Number(entry.triggeredAt || 0),
+            Number(entry.updatedAt || 0),
+            Number(entry.completedAt || 0),
+            Number(entry.endedAt || 0)
+        ].filter((value) => Number.isFinite(value) && value > 0);
+        if (!timestamps.length) return false;
+        const latest = Math.max.apply(Math, timestamps);
+        return Date.now() - latest <= NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS;
+    }
+
+    function getNewUserIcebreakerEntryRemainingMs(entry) {
+        if (!entry || typeof entry !== 'object') return 0;
+        const timestamps = [
+            Number(entry.triggeredAt || 0),
+            Number(entry.updatedAt || 0),
+            Number(entry.completedAt || 0),
+            Number(entry.endedAt || 0)
+        ].filter((value) => Number.isFinite(value) && value > 0);
+        if (!timestamps.length) return 0;
+        const latest = Math.max.apply(Math, timestamps);
+        return Math.max(0, NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS - (Date.now() - latest));
+    }
+
+    /**
+     * Returns whether a new-user icebreaker is currently owning the greeting slot.
+     *
+     * A live icebreaker session wins immediately; persisted day entries only
+     * suppress nearby reconnect/proactive work so older day history does not
+     * mute normal sessions for the rest of the seven-day onboarding.
+     *
+     * @returns {boolean} True when proactive chat should be suppressed for onboarding.
+     */
+    function isNewUserIcebreakerPeriodActive() {
+        try {
+            if (window.newUserIcebreaker && typeof window.newUserIcebreaker.getActiveSession === 'function') {
+                if (window.newUserIcebreaker.getActiveSession()) return true;
+            }
+        } catch (_) {}
+
+        const store = readNewUserIcebreakerStore();
+        const days = store && typeof store.days === 'object' ? store.days : null;
+        if (!days) return false;
+        const finalDay = days['7'];
+        if (finalDay && finalDay.completed === true) return false;
+        for (let day = 1; day <= 7; day += 1) {
+            const entry = days[String(day)];
+            if (isRecentNewUserIcebreakerEntry(entry)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    mod.isNewUserIcebreakerPeriodActive = isNewUserIcebreakerPeriodActive;
+
+    function hasCompletedNewUserIcebreakerDay(day) {
+        const store = readNewUserIcebreakerStore();
+        const days = store && typeof store.days === 'object' ? store.days : null;
+        const entry = days && days[String(day)];
+        return !!(entry && entry.completed === true);
+    }
+
+    window.NekoNewUserIcebreakerState = Object.assign({}, window.NekoNewUserIcebreakerState || {}, {
+        readStore: readNewUserIcebreakerStore,
+        isRecentEntry: isRecentNewUserIcebreakerEntry,
+        isPeriodActive: isNewUserIcebreakerPeriodActive,
+        hasCompletedDay: hasCompletedNewUserIcebreakerDay,
+    });
+
+    function getNewUserIcebreakerRetryDelayMs() {
+        try {
+            if (window.newUserIcebreaker && typeof window.newUserIcebreaker.getActiveSession === 'function') {
+                if (window.newUserIcebreaker.getActiveSession()) return 1000;
+            }
+        } catch (_) {}
+
+        const store = readNewUserIcebreakerStore();
+        const days = store && typeof store.days === 'object' ? store.days : null;
+        if (!days) return 0;
+        const finalDay = days['7'];
+        if (finalDay && finalDay.completed === true) return 0;
+
+        let remainingMs = 0;
+        for (let day = 1; day <= 7; day += 1) {
+            remainingMs = Math.max(
+                remainingMs,
+                getNewUserIcebreakerEntryRemainingMs(days[String(day)])
+            );
+        }
+        return remainingMs;
+    }
+    mod.getNewUserIcebreakerRetryDelayMs = getNewUserIcebreakerRetryDelayMs;
 
     try {
         if (typeof BroadcastChannel !== 'undefined' && PROACTIVE_SELF_RANK !== 99) {
@@ -169,7 +282,7 @@
      * rule, reverse proxy, WAF, …)? The unified-guard contract is
      * ``error_code === "csrf_validation_failed"`` (see
      * ``static/app-prompt-shared.js`` 520-541 and
-     * ``static/universal-tutorial-manager.js`` 120-134).
+     * ``static/tutorial/core/universal-manager.js`` 120-134).
      *
      * Only the CSRF case warrants the ``refreshToken()`` + retry-once
      * recovery path; treating *every* 403 as benign-and-skip means a
@@ -449,6 +562,9 @@
         if (isHomeTutorialFeatureSuppressed()) {
             return false;
         }
+        if (isNewUserIcebreakerPeriodActive()) {
+            return false;
+        }
 
         // 「请她离开」状态下禁止一切主动搭话
         if (isGoodbyeActive()) {
@@ -522,6 +638,13 @@
 
         // 前置条件检查：如果不满足触发条件，不启动调度器并重置退避
         if (!canTriggerProactively()) {
+            const icebreakerRetryDelayMs = getNewUserIcebreakerRetryDelayMs();
+            if (icebreakerRetryDelayMs > 0) {
+                const retryDelayMs = Math.max(1000, icebreakerRetryDelayMs + 250);
+                console.log('[Proactive] New-user icebreaker active/recent, retrying proactive schedule in '
+                    + retryDelayMs + 'ms');
+                S.proactiveChatTimer = setTimeout(scheduleProactiveChat, retryDelayMs);
+            }
             console.log('主动搭话前置条件不满足，不启动调度器');
             S.proactiveChatBackoffLevel = 0;
             return;
@@ -796,6 +919,10 @@
         try {
             if (isHomeTutorialFeatureSuppressed()) {
                 console.log('[ProactiveChat] 首页新手教程接管中，跳过主动搭话');
+                return false;
+            }
+            if (isNewUserIcebreakerPeriodActive()) {
+                console.log('[ProactiveChat] 新用户破冰期未结束，跳过主动搭话');
                 return false;
             }
 
@@ -1958,10 +2085,14 @@
     window.addEventListener('neko:home-tutorial-features-suppressed', function (event) {
         var detail = event && event.detail ? event.detail : {};
         if (detail.active === true) {
+            _homeTutorialFeatureSuppressedByEvent = true;
             stopProactiveChatSchedule();
             stopProactiveVisionDuringSpeech();
         } else if (detail.active === false && S.proactiveChatEnabled && hasAnyChatModeEnabled()) {
+            _homeTutorialFeatureSuppressedByEvent = false;
             scheduleProactiveChat();
+        } else if (detail.active === false) {
+            _homeTutorialFeatureSuppressedByEvent = false;
         }
     });
 

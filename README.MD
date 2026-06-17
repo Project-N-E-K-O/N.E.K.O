@@ -10,7 +10,7 @@
 > N.E.K.O，一个渴望理解、建立连接、并与我们共同成长的数字生命。
 
 [![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
 [![Commit](https://img.shields.io/github/last-commit/wehos/N.E.K.O?color=green)](https://github.com/Project-N-E-K-O/N.E.K.O/commits)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/5kgHfepNJr)
 ![QQ群](https://custom-icon-badges.demolab.com/badge/QQ群-995414391-00BFFF?style=flat&logo=tencent-qq)
@@ -49,7 +49,7 @@
 
 # 猫娘计划 (Project N.E.K.O.)
 
-`N.E.K.O.` 是一个以开源为驱动的AI伙伴平台。核心驱动器基于MIT许可证 **始终开源**，你的每一次贡献都将有机会实装到Steam和App商店的正式版本中。
+`N.E.K.O.` 是一个以开源为驱动的AI伙伴平台。核心驱动器基于Apache 2.0许可证 **始终开源**，你的每一次贡献都将有机会实装到Steam和App商店的正式版本中。
 
 ---
 
@@ -578,11 +578,11 @@ N.E.K.O/
 
 v0.7: ✅ 完善Agent相关功能。**已完成。**
 
-v0.8：完善记忆相关功能，完善OpenClaw类似功能。预计2026年3月完成。
+v0.8: ✅ 完善记忆相关功能，完善OpenClaw类似功能。**已完成（2026年4月）。**
 
-v0.9：完善多系统适配，包括linux，手机。猫娘网络上线。预计2026年4月完成。
+v0.9：完善多系统适配，包括linux，手机。猫娘网络上线。预计2026年6月完成。
 
-v1.0：放弃部分模型供应商的适配，专注于自研大模型和智能体系统。预计2026年6月完成。
+v1.0：放弃部分模型供应商的适配，专注于自研大模型和智能体系统。预计2026年8月完成。
 
 ### 遥测说明 (Telemetry)
 

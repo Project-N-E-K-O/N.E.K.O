@@ -108,6 +108,98 @@
         return Number.isFinite(n) ? n : fallback;
     }
 
+    function clampOverlayScale(scale) {
+        const n = Number.parseFloat(scale);
+        if (!Number.isFinite(n) || n <= 0) return 1;
+        return Math.max(0.25, Math.min(3, n));
+    }
+
+    function parseTransformScale(transform) {
+        if (!transform || transform === 'none') return 1;
+
+        const scaleMatch = String(transform).match(/scale\(\s*([^) ,]+)/);
+        if (scaleMatch) {
+            return clampOverlayScale(scaleMatch[1]);
+        }
+
+        const matrixMatch = String(transform).match(/^matrix\(([^)]+)\)$/);
+        if (matrixMatch) {
+            const values = matrixMatch[1].split(',').map(value => Number.parseFloat(value.trim()));
+            if (values.length >= 4 && Number.isFinite(values[0]) && Number.isFinite(values[1])) {
+                return clampOverlayScale(Math.hypot(values[0], values[1]));
+            }
+        }
+
+        const matrix3dMatch = String(transform).match(/^matrix3d\(([^)]+)\)$/);
+        if (matrix3dMatch) {
+            const values = matrix3dMatch[1].split(',').map(value => Number.parseFloat(value.trim()));
+            if (values.length >= 16 && Number.isFinite(values[0]) && Number.isFinite(values[1])) {
+                return clampOverlayScale(Math.hypot(values[0], values[1]));
+            }
+        }
+
+        return 1;
+    }
+
+    function getPopupOwnerPrefix(popup) {
+        if (!popup || !popup.id) return '';
+        const match = String(popup.id).match(/^([a-z0-9]+)-popup-/i);
+        return match ? match[1].toLowerCase() : '';
+    }
+
+    function getSidePanelOwnerPrefix(container, anchor) {
+        const popup = container && container._popupElement ? container._popupElement : null;
+        const popupPrefix = getPopupOwnerPrefix(popup);
+        if (popupPrefix) return popupPrefix;
+
+        const ownerId = container && typeof container.getAttribute === 'function'
+            ? (container.getAttribute('data-neko-sidepanel-owner') || '')
+            : '';
+        const ownerMatch = ownerId.match(/^([a-z0-9]+)-popup-/i);
+        if (ownerMatch) return ownerMatch[1].toLowerCase();
+
+        const idSource = anchor && typeof anchor.id === 'string' ? anchor.id : '';
+        const idMatch = idSource.match(/^(live2d|vrm|mmd)-/i);
+        if (idMatch) return idMatch[1].toLowerCase();
+
+        const classSource = anchor && typeof anchor.className === 'string' ? anchor.className : '';
+        const classMatch = classSource.match(/\b(live2d|vrm|mmd)-/i);
+        return classMatch ? classMatch[1].toLowerCase() : '';
+    }
+
+    function getFloatingButtonScale(ownerPrefix, popup) {
+        let scaledContainer = popup && typeof popup.closest === 'function'
+            ? popup.closest('[id$="-floating-buttons"]')
+            : null;
+        if (!scaledContainer && ownerPrefix) {
+            scaledContainer = document.getElementById(`${ownerPrefix}-floating-buttons`);
+        }
+        if (!scaledContainer) return 1;
+        return parseTransformScale(window.getComputedStyle(scaledContainer).transform);
+    }
+
+    function getSidePanelScale(container, anchor) {
+        const popup = container && container._popupElement ? container._popupElement : null;
+        const ownerPrefix = getSidePanelOwnerPrefix(container, anchor);
+        return getFloatingButtonScale(ownerPrefix, popup);
+    }
+
+    function toLocalCssPx(visualPx, scale) {
+        return visualPx / Math.max(clampOverlayScale(scale), 0.001);
+    }
+
+    function formatSidePanelTransform(container, motion = 'none') {
+        const scale = clampOverlayScale(container && container.dataset ? container.dataset.nekoUiScale : 1);
+        const motionPart = motion && motion !== 'none' ? String(motion) : '';
+        const scalePart = Math.abs(scale - 1) > 0.001 ? `scale(${scale})` : '';
+        return [motionPart, scalePart].filter(Boolean).join(' ') || 'none';
+    }
+
+    function applySidePanelTransform(container, motion = 'none') {
+        if (!container || !container.style) return;
+        container.style.transform = formatSidePanelTransform(container, motion);
+    }
+
     function resetPopupPosition(popup, options = {}) {
         const left = options.left || '100%';
         const top = options.top || '0';
@@ -127,6 +219,9 @@
         const topMargin = Number.isFinite(options.topMargin) ? options.topMargin : 8;
         const gap = Number.isFinite(options.gap) ? options.gap : 8;
         const sidePanelWidth = Number.isFinite(options.sidePanelWidth) ? options.sidePanelWidth : 0;
+        const ownerPrefix = getPopupOwnerPrefix(popup) || String(buttonPrefix).replace(/-btn-$/, '');
+        const sidePanelScale = getFloatingButtonScale(ownerPrefix, popup);
+        const effectiveSidePanelWidth = sidePanelWidth * sidePanelScale;
 
         const triggerIcon = document.querySelector(`.${triggerPrefix}${buttonId}`);
         const screenWidth = window.innerWidth;
@@ -142,8 +237,8 @@
         let popupRect = popup.getBoundingClientRect();
         // 考虑侧面板宽度：如果 popup + gap + 侧面板一起会溢出右边缘，提前选择向左弹出
         // sidePanelWidth 是纯面板宽度（不含 gap），gap 在此处统一添加
-        const effectiveRight = sidePanelWidth > 0
-            ? popupRect.right + gap + sidePanelWidth
+        const effectiveRight = effectiveSidePanelWidth > 0
+            ? popupRect.right + gap + effectiveSidePanelWidth
             : popupRect.right;
         if (effectiveRight > screenWidth - rightMargin) {
             const button = document.getElementById(`${buttonPrefix}${buttonId}`);
@@ -158,16 +253,7 @@
             if (button && popup.parentElement) {
                 const parentRect = popup.parentElement.getBoundingClientRect();
                 const buttonRect = button.getBoundingClientRect();
-                let scale = 1;
-                const scaledContainer = popup.closest('[id$="-floating-buttons"]');
-                if (scaledContainer) {
-                    const transform = getComputedStyle(scaledContainer).transform;
-                    if (transform && transform !== 'none') {
-                        const match = transform.match(/matrix\(([^,]+)/);
-                        if (match) scale = parseFloat(match[1]) || 1;
-                    }
-                }
-                rightClearance = (parentRect.right - buttonRect.left) / scale + gap;
+                rightClearance = toLocalCssPx(parentRect.right - buttonRect.left, sidePanelScale) + gap;
             }
             popup.style.marginRight = `${Math.max(rightClearance, 0)}px`;
             opensLeft = true;
@@ -262,6 +348,9 @@
         const gap = Number.isFinite(options.gap) ? options.gap : 12;
         const edgeMargin = Number.isFinite(options.edgeMargin) ? options.edgeMargin : 8;
         const bottomSafe = Number.isFinite(options.bottomSafe) ? options.bottomSafe : 60;
+        const panelScale = getSidePanelScale(container, anchor);
+        container.dataset.nekoUiScale = String(panelScale);
+        container.style.transformOrigin = 'left top';
 
         // ── Step 0：彻底清除上一次定位残留 ──
         container.style.left = '';
@@ -283,6 +372,7 @@
         const screenWidth = window.innerWidth;
         const isMobile = typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (screenWidth <= 768);
         const goDown = isMobile;
+        container.dataset.goDown = String(goDown);
 
         // ── Step 1：从 popup 获取方向（取代 getButtonZone 启发式） ──
         const popup = container._popupElement;
@@ -296,8 +386,9 @@
         const anchorRect = anchor.getBoundingClientRect();
         const screenW = window.innerWidth;
         const screenH = window.innerHeight;
-        const panelW = container.offsetWidth;
-        const panelH = container.offsetHeight;
+        const panelW = container.offsetWidth * panelScale;
+        const panelH = container.offsetHeight * panelScale;
+        let entryMotion = 'translateX(-6px)';
 
         // 从 popup ID 推断系统前缀，用于过滤 getButtonZone
         const popupId = popup ? popup.id : '';
@@ -326,7 +417,7 @@
             container.style.left = `${panelLeft}px`;
             container.style.right = 'auto';
             container.style.top = `${panelTop}px`;
-            container.style.transform = 'translateY(-6px)';
+            entryMotion = 'translateY(-6px)';
         } else if (goLeft) {
             // popup 向左弹出 → 侧面板放在 popup 的左侧（更远离按钮）
             let panelRight = popupRect.left - gap;
@@ -335,23 +426,24 @@
             // 超出屏幕左边缘时限制
             if (panelLeft < edgeMargin) {
                 panelLeft = edgeMargin;
-                container.style.maxWidth = `${panelRight - edgeMargin}px`;
+                container.style.maxWidth = `${Math.max(0, toLocalCssPx(panelRight - edgeMargin, panelScale))}px`;
             }
             container.style.left = `${panelLeft}px`;
             container.style.right = 'auto';
-            container.style.transform = 'translateX(6px)';
+            entryMotion = 'translateX(6px)';
         } else {
             // popup 向右弹出 → 侧面板放在 popup 的右侧（更远离按钮）
             let panelLeft = popupRect.right + gap;
 
             // 超出屏幕右边缘时限制
             if (panelLeft + panelW > screenW - edgeMargin) {
-                container.style.maxWidth = `${screenW - edgeMargin - panelLeft}px`;
+                container.style.maxWidth = `${Math.max(0, toLocalCssPx(screenW - edgeMargin - panelLeft, panelScale))}px`;
             }
             container.style.left = `${panelLeft}px`;
             container.style.right = 'auto';
-            container.style.transform = 'translateX(-6px)';
+            entryMotion = 'translateX(-6px)';
         }
+        applySidePanelTransform(container, entryMotion);
 
         // ── Step 3：垂直定位（对齐 anchor）── 非手机端执行
         if (!goDown) {
@@ -367,7 +459,7 @@
         const zone = getButtonZone(ownerPrefix);
         if (zone.hasButtons) {
             const savedTransform = container.style.transform;
-            container.style.transform = 'none';
+            applySidePanelTransform(container, 'none');
             void container.offsetHeight;
             const pr = container.getBoundingClientRect();
             container.style.transform = savedTransform;
@@ -382,10 +474,10 @@
                     container.style.top = `${zone.top - gap - panelH}px`;
                 } else if (goLeft) {
                     container.style.left = `${edgeMargin}px`;
-                    container.style.maxWidth = `${zone.left - gap - edgeMargin}px`;
+                    container.style.maxWidth = `${Math.max(0, toLocalCssPx(zone.left - gap - edgeMargin, panelScale))}px`;
                 } else {
                     container.style.left = `${zone.right + gap}px`;
-                    container.style.maxWidth = `${screenW - edgeMargin - zone.right - gap}px`;
+                    container.style.maxWidth = `${Math.max(0, toLocalCssPx(screenW - edgeMargin - zone.right - gap, panelScale))}px`;
                 }
             }
         }
@@ -411,12 +503,12 @@
                     _containerRef.style.top = `${z.top - _gap - r.height}px`;
                 } else if (_goLeft) {
                     _containerRef.style.left = `${_edgeMargin}px`;
-                    _containerRef.style.maxWidth = `${z.left - _gap - _edgeMargin}px`;
+                    _containerRef.style.maxWidth = `${Math.max(0, toLocalCssPx(z.left - _gap - _edgeMargin, _containerRef.dataset.nekoUiScale))}px`;
                 } else {
                     _containerRef.style.left = `${z.right + _gap}px`;
-                    _containerRef.style.maxWidth = `${_screenW - _edgeMargin - z.right - _gap}px`;
+                    _containerRef.style.maxWidth = `${Math.max(0, toLocalCssPx(_screenW - _edgeMargin - z.right - _gap, _containerRef.dataset.nekoUiScale))}px`;
                 }
-                _containerRef.style.transform = 'translateX(0)';
+                applySidePanelTransform(_containerRef, 'none');
             }
         }, 300);
     }
@@ -428,6 +520,8 @@
         unregisterSidePanel,
         collapseOtherSidePanels,
         positionSidePanel,
+        applySidePanelTransform,
+        formatSidePanelTransform,
         hasVisiblePopup,
         hasVisibleSidePanel,
         hasVisibleOverlay

@@ -623,7 +623,7 @@
                 if (button) {
                     button.dataset.active = isActive ? 'true' : 'false';
                     if (imgOff && imgOn) {
-                        imgOff.style.opacity = isActive ? '0' : '1';
+                        imgOff.style.opacity = isActive ? '0' : '0.75';
                         imgOn.style.opacity = isActive ? '1' : '0';
                     }
                     if (typeof manager.updateSeparatePopupTriggerIcon === 'function') {

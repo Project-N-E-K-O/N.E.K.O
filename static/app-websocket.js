@@ -573,12 +573,52 @@
         return false;
     }
 
+    function getNewUserIcebreakerStateApi() {
+        var api = window.NekoNewUserIcebreakerState;
+        return api && typeof api === 'object' ? api : null;
+    }
+
+    function readNewUserIcebreakerStore() {
+        var api = getNewUserIcebreakerStateApi();
+        return api && typeof api.readStore === 'function' ? api.readStore() : null;
+    }
+
+    function hasCompletedNewUserIcebreaker() {
+        var store = readNewUserIcebreakerStore();
+        var days = store && typeof store.days === 'object' ? store.days : null;
+        var finalDay = days && days['7'];
+        return !!(finalDay && finalDay.completed === true);
+    }
+
+    function hasCompletedNewUserIcebreakerDay(day) {
+        var api = getNewUserIcebreakerStateApi();
+        return !!(api && typeof api.hasCompletedDay === 'function' && api.hasCompletedDay(day));
+    }
+
+    function isNewUserIcebreakerPeriodActive() {
+        var api = getNewUserIcebreakerStateApi();
+        return !!(api && typeof api.isPeriodActive === 'function' && api.isPeriodActive());
+    }
+
+    function isNewUserIcebreakerBlockingGreeting(reason) {
+        var normalizedReason = String(reason || S._greetingCheckReason || '').trim().toLowerCase();
+        if ((normalizedReason === 'tutorial-completed' || normalizedReason === 'tutorial-skipped')
+            && hasCompletedNewUserIcebreakerDay(1)) {
+            return false;
+        }
+        if (isNewUserIcebreakerPeriodActive()) return true;
+        if (normalizedReason === 'tutorial-completed' || normalizedReason === 'tutorial-skipped') {
+            return true;
+        }
+        return false;
+    }
+
     function sendHomeTutorialState(reason) {
         if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
         try {
             S.socket.send(JSON.stringify({
                 action: 'home_tutorial_state',
-                blocking_greeting: isHomeTutorialLockedForGreeting(),
+                blocking_greeting: isHomeTutorialLockedForGreeting() || isNewUserIcebreakerBlockingGreeting(reason),
                 reason: reason || 'state-sync',
                 timestamp: Date.now(),
             }));
@@ -1363,10 +1403,60 @@
             sendHomeTutorialState('ws-open');
 
             // ── 首次连接 / 切换角色：标记 greeting 意图，若模型已就绪则立即发送 ──
+            var goodbyeActiveOnOpen = false;
+            var goodbyeSyncOnOpen = null;
+            try {
+                var pendingGoodbyeState = window.__nekoGoodbyeSilentState;
+                if (pendingGoodbyeState && pendingGoodbyeState.pending === true) {
+                    goodbyeSyncOnOpen = {
+                        active: !!pendingGoodbyeState.active,
+                        reason: pendingGoodbyeState.reason || (pendingGoodbyeState.active ? 'goodbye' : 'return')
+                    };
+                }
+                goodbyeActiveOnOpen = (typeof window.isNekoGoodbyeModeActive === 'function')
+                    ? window.isNekoGoodbyeModeActive()
+                    : !!((window.live2dManager && window.live2dManager._goodbyeClicked)
+                        || (window.vrmManager && window.vrmManager._goodbyeClicked)
+                        || (window.mmdManager && window.mmdManager._goodbyeClicked));
+                if (!goodbyeSyncOnOpen && goodbyeActiveOnOpen) {
+                    goodbyeSyncOnOpen = {
+                        active: true,
+                        reason: 'ws-open-goodbye'
+                    };
+                }
+                if (!goodbyeSyncOnOpen && pendingGoodbyeState && pendingGoodbyeState.active === true) {
+                    goodbyeSyncOnOpen = {
+                        active: true,
+                        reason: 'ws-open-goodbye-from-sync'
+                    };
+                }
+                if (goodbyeSyncOnOpen && _thisSocket && _thisSocket.readyState === WebSocket.OPEN) {
+                    _thisSocket.send(JSON.stringify({
+                        action: 'goodbye_state',
+                        active: !!goodbyeSyncOnOpen.active,
+                        reason: goodbyeSyncOnOpen.reason
+                    }));
+                    window.__nekoGoodbyeSilentState = {
+                        active: !!goodbyeSyncOnOpen.active,
+                        reason: goodbyeSyncOnOpen.reason,
+                        pending: false,
+                        updatedAt: Date.now()
+                    };
+                }
+            } catch (_) {
+                goodbyeActiveOnOpen = false;
+            }
             _resetGreetingCheckRetry(true);
-            _markGreetingCheckPending(!!S._pendingGreetingSwitch, S._greetingCheckReason || 'ws-open');
-            S._pendingGreetingSwitch = false;
-            _sendGreetingCheckIfReady();
+            if (goodbyeActiveOnOpen || (goodbyeSyncOnOpen && goodbyeSyncOnOpen.active)) {
+                S._greetingCheckPending = false;
+                S._greetingCheckIsSwitch = false;
+                S._greetingCheckReason = '';
+                S._pendingGreetingSwitch = false;
+            } else {
+                _markGreetingCheckPending(!!S._pendingGreetingSwitch, S._greetingCheckReason || 'ws-open');
+                S._pendingGreetingSwitch = false;
+                _sendGreetingCheckIfReady();
+            }
 
             // ── game-window-state 重连兜底（codex P2）──
             // game_window_state_change 是 edge-triggered WS 事件——只在 activate
@@ -1945,6 +2035,9 @@
                     }
 
                     var isGoodbyeActive = (window.live2dManager && window.live2dManager._goodbyeClicked) || (window.vrmManager && window.vrmManager._goodbyeClicked) || (window.mmdManager && window.mmdManager._goodbyeClicked);
+                    if (statusCode === 'CHARACTER_LEFT') {
+                        window.dispatchEvent(new CustomEvent('neko:character-left', { detail: response }));
+                    }
                     if ((S.isSwitchingMode || isGoodbyeActive || S._suppressCharacterLeft) && (statusCode === 'CHARACTER_LEFT' || response.message.includes('已离开'))) {
                         S._suppressCharacterLeft = false;
                         console.log(window.t('console.modeSwitchingIgnoreLeft'));
@@ -2664,6 +2757,7 @@
                 // -------- session_ended_by_server --------
                 } else if (response.type === 'session_ended_by_server') {
                     console.log('[App] Session ended by server, input_mode:', response.input_mode);
+                    window.dispatchEvent(new CustomEvent('neko:session-ended-by-server', { detail: response }));
                     S.isTextSessionActive = false;
                     S.voiceChatActive = false;
                     S.voiceStartPending = false;
@@ -2862,9 +2956,10 @@
 
                 // -------- activity_context_prompt --------
                 // 后端活动 tracker 检测到用户「进入」游戏/娱乐（context='play'）或
-                // 「进入」专注工作（context='work'）时推这条。前端（仅 A/B 实验组
-                // vision_chat_default_off、每会话每类一次）据此弹窗问要不要开/关主动
-                // 搭话里的屏幕分享来源。分组判定 + 去重都在 app-context-prompt.js。
+                // 「进入」专注工作（context='work'）时推这条。前端（对所有用户、每会话
+                // 每类一次）据此弹窗问要不要开/关主动搭话里的屏幕分享来源。去重都在
+                // app-context-prompt.js（原 A/B 实验组 vision_chat_default_off 的机制已
+                // 合并进 main）。
                 } else if (response.type === 'activity_context_prompt') {
                     if (window.appContextPrompt
                             && typeof window.appContextPrompt.handle === 'function') {
@@ -3159,12 +3254,26 @@
         S._greetingCheckIsSwitch = !!isSwitch;
         S._greetingCheckReason = reason || '';
     }
+    function _consumeGreetingCheckForNewUserIcebreaker() {
+        if (!isNewUserIcebreakerBlockingGreeting()) return false;
+        sendHomeTutorialState('greeting-check-consumed-by-icebreaker');
+        S._greetingCheckPending = false;
+        S._greetingCheckIsSwitch = false;
+        S._greetingCheckReason = '';
+        _resetGreetingCheckRetry(true);
+        console.log('[greeting_check] consumed by new-user icebreaker period');
+        return true;
+    }
     function _sendGreetingCheckIfReady() {
         if (!S._greetingCheckPending || !S._modelReady) {
             if (!S._greetingCheckPending) _resetGreetingCheckRetry(true);
             return;
         }
+        if (_consumeGreetingCheckForNewUserIcebreaker()) {
+            return;
+        }
         if (_isGreetingCheckBlocked()) {
+            sendHomeTutorialState('greeting-check-blocked');
             _scheduleGreetingCheckRetry();
             return;
         }
@@ -3275,6 +3384,18 @@
                 && S._greetingCheckPending) {
                 S._greetingCheckReason = detail.reason;
             }
+            _sendGreetingCheckIfReady();
+        }
+    });
+
+    window.addEventListener('neko:home-tutorial-features-suppressed', function (event) {
+        var detail = event && event.detail ? event.detail : {};
+        var reason = detail.reason || (detail.active === false ? 'features-restored' : 'features-suppressed');
+        if (detail.active === false && reason) {
+            S._greetingCheckReason = reason;
+        }
+        sendHomeTutorialState(reason);
+        if (detail.active === false) {
             _sendGreetingCheckIfReady();
         }
     });

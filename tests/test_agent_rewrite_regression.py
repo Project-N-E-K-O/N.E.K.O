@@ -225,8 +225,8 @@ def test_home_page_opens_plugin_dashboard_through_backend_redirect_for_handoff()
     pages_router_source = Path("main_routers/pages_router.py").read_text(encoding="utf-8")
     index_source = Path("static/js/index.js").read_text(encoding="utf-8")
     hud_source = Path("static/common-ui-hud.js").read_text(encoding="utf-8")
-    handoff_source = Path("static/yui-guide-page-handoff.js").read_text(encoding="utf-8")
-    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    handoff_source = Path("static/tutorial/yui-guide/page-handoff.js").read_text(encoding="utf-8")
+    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
     plugin_runtime_source = Path("frontend/plugin-manager/src/yui-guide-runtime.ts").read_text(encoding="utf-8")
 
     assert "def _user_plugin_ctx()" not in pages_router_source
@@ -333,13 +333,29 @@ def test_agent_router_command_syncs_core_flags_locally():
     assert _contains_call(fn, "update_agent_flags")
 
 
+def test_agent_router_openclaw_optimistic_sync_clears_stale_ready():
+    source = Path("main_routers/agent_router.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    func = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "post_agent_command":
+            func = node
+            break
+    assert func is not None
+    func_src = ast.get_source_segment(source, func) or ""
+
+    assert 'if key == "openclaw_enabled":' in func_src
+    assert 'flag_update["openclaw_ready"] = False' in func_src
+    assert '"openclaw_ready": False' in func_src
+
+
 def test_agent_router_has_internal_analyze_request_endpoint():
     paths = _route_paths_from_decorators("main_routers/agent_router.py", "router")
     assert "/internal/analyze_request" in paths
 
 
 def test_yui_guide_steps_registry_keeps_m1_to_m4_home_flow_contract():
-    source = Path("static/yui-guide-steps.js").read_text(encoding="utf-8")
+    source = Path("static/tutorial/yui-guide/steps.js").read_text(encoding="utf-8")
 
     for expected in (
         "const CONTRACT_VERSION = 2;",
@@ -379,8 +395,8 @@ def test_yui_guide_steps_registry_keeps_m1_to_m4_home_flow_contract():
 
 
 def test_yui_guide_overlay_supports_progress_meta_and_viewport_placement():
-    overlay_source = Path("static/yui-guide-overlay.js").read_text(encoding="utf-8")
-    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    overlay_source = Path("static/tutorial/yui-guide/overlay.js").read_text(encoding="utf-8")
+    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
     style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
 
     for expected in (
@@ -415,8 +431,8 @@ def test_yui_guide_overlay_supports_progress_meta_and_viewport_placement():
 
 
 def test_yui_takeover_overlay_keeps_window_hittable_during_plugin_preview_cleanup():
-    overlay_source = Path("static/yui-guide-overlay.js").read_text(encoding="utf-8")
-    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    overlay_source = Path("static/tutorial/yui-guide/overlay.js").read_text(encoding="utf-8")
+    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
     style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
 
     for expected in (
@@ -447,8 +463,8 @@ def test_yui_takeover_overlay_keeps_window_hittable_during_plugin_preview_cleanu
 
 
 def test_plugin_dashboard_skip_contract_uses_skip_request_without_bypass_event():
-    tutorial_source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
-    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    tutorial_source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
+    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
     plugin_runtime_source = Path("frontend/plugin-manager/src/yui-guide-runtime.ts").read_text(encoding="utf-8")
 
     assert "neko:yui-guide:plugin-dashboard-skip-bypass" not in tutorial_source
@@ -467,7 +483,7 @@ def test_plugin_dashboard_skip_contract_uses_skip_request_without_bypass_event()
 
 
 def test_home_yui_return_petal_transition_decouples_petal_opacity_from_model_fade():
-    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
     style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
     doc_source = Path("docs/design/home-yui-guide-text-highlight-cursor-flow.md").read_text(encoding="utf-8")
     petal_animation = Path("static/assets/tutorial/petals/yui-guide-petal-transition.webp")
@@ -538,8 +554,8 @@ def test_home_yui_return_petal_transition_decouples_petal_opacity_from_model_fad
 
 
 def test_yui_guide_cat_paw_click_state_is_visible_before_actions():
-    overlay_source = Path("static/yui-guide-overlay.js").read_text(encoding="utf-8")
-    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    overlay_source = Path("static/tutorial/yui-guide/overlay.js").read_text(encoding="utf-8")
+    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
     style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
     plugin_runtime_source = Path("frontend/plugin-manager/src/yui-guide-runtime.ts").read_text(encoding="utf-8")
 
@@ -598,22 +614,22 @@ def test_yui_guide_cat_paw_click_state_is_visible_before_actions():
 
 
 _YUI_RUNTIME_SCRIPTS = (
-    "yui-guide-steps.js",
-    "yui-guide-overlay.js",
-    "yui-guide-page-handoff.js",
-    "tutorial-interaction-takeover.js",
-    "yui-guide-director.js",
+    "tutorial/yui-guide/steps.js",
+    "tutorial/yui-guide/overlay.js",
+    "tutorial/yui-guide/page-handoff.js",
+    "tutorial/core/interaction-takeover.js",
+    "tutorial/yui-guide/director.js",
 )
 
 _HOME_YUI_RUNTIME_SCRIPTS = (
-    "yui-guide-steps.js",
-    "yui-guide-overlay.js",
-    "yui-guide-page-handoff.js",
+    "tutorial/yui-guide/steps.js",
+    "tutorial/yui-guide/overlay.js",
+    "tutorial/yui-guide/page-handoff.js",
     "avatar-performance-stage.js",
-    "yui-guide-avatar-stage.js",
-    "yui-guide-wakeup.js",
-    "tutorial-interaction-takeover.js",
-    "yui-guide-director.js",
+    "tutorial/avatar/yui-stage.js",
+    "tutorial/yui-guide/wakeup.js",
+    "tutorial/core/interaction-takeover.js",
+    "tutorial/yui-guide/director.js",
 )
 
 
@@ -641,9 +657,9 @@ def test_home_template_loads_yui_runtime_stack_before_tutorial_manager():
         _script_tag_position(source, name)
         for name in (
             *_HOME_YUI_RUNTIME_SCRIPTS,
-            "tutorial-skip-controller.js",
-            "tutorial-avatar-reload-controller.js",
-            "universal-tutorial-manager.js",
+            "tutorial/core/skip-controller.js",
+            "tutorial/avatar/reload-controller.js",
+            "tutorial/core/universal-manager.js",
         )
     ]
     assert positions == sorted(positions)
@@ -655,23 +671,23 @@ def test_home_template_loads_yui_wakeup_before_director():
     positions = [
         _script_tag_position(source, name)
         for name in (
-            "yui-guide-overlay.js",
-            "yui-guide-page-handoff.js",
+            "tutorial/yui-guide/overlay.js",
+            "tutorial/yui-guide/page-handoff.js",
             "avatar-performance-stage.js",
-            "yui-guide-avatar-stage.js",
-            "yui-guide-wakeup.js",
-            "tutorial-interaction-takeover.js",
-            "yui-guide-director.js",
-            "tutorial-skip-controller.js",
-            "tutorial-avatar-reload-controller.js",
-            "universal-tutorial-manager.js",
+            "tutorial/avatar/yui-stage.js",
+            "tutorial/yui-guide/wakeup.js",
+            "tutorial/core/interaction-takeover.js",
+            "tutorial/yui-guide/director.js",
+            "tutorial/core/skip-controller.js",
+            "tutorial/avatar/reload-controller.js",
+            "tutorial/core/universal-manager.js",
         )
     ]
     assert positions == sorted(positions)
 
 
 def test_yui_avatar_stage_exposes_extracted_wakeup_action():
-    source = Path("static/yui-guide-avatar-stage.js").read_text(encoding="utf-8")
+    source = Path("static/tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
 
     assert "class Live2DWakeupSession" in source
     assert "createWakeupSession" in source
@@ -737,12 +753,12 @@ def test_yui_asset_version_includes_avatar_performance_runtime():
     source = Path("main_routers/pages_router.py").read_text(encoding="utf-8")
 
     assert 'static/avatar-performance-stage.js' in source
-    assert source.index('static/avatar-performance-stage.js') < source.index('static/yui-guide-avatar-stage.js')
+    assert source.index('static/avatar-performance-stage.js') < source.index('static/tutorial/avatar/yui-stage.js')
 
 
 def test_yui_wakeup_delegates_action_boundary_to_avatar_stage():
-    source = Path("static/yui-guide-wakeup.js").read_text(encoding="utf-8")
-    avatar_source = Path("static/yui-guide-avatar-stage.js").read_text(encoding="utf-8")
+    source = Path("static/tutorial/yui-guide/wakeup.js").read_text(encoding="utf-8")
+    avatar_source = Path("static/tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
     live2d_source = Path("static/live2d-model.js").read_text(encoding="utf-8")
     style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
     yui_model = json.loads(Path("static/yui-origin/yui-origin.model3.json").read_text(encoding="utf-8"))
@@ -841,7 +857,7 @@ def test_yui_wakeup_delegates_action_boundary_to_avatar_stage():
 
 
 def test_yui_intro_greeting_hug_action_is_called_without_param_coupling():
-    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
 
     assert "runIntroGreetingHugPerformance" in director_source
     assert "playIntroGreetingHug" in director_source
@@ -865,8 +881,8 @@ def test_yui_intro_greeting_hug_action_is_called_without_param_coupling():
 
 
 def test_yui_intro_avatar_actions_respect_reduced_motion():
-    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
-    avatar_source = Path("static/yui-guide-avatar-stage.js").read_text(encoding="utf-8")
+    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    avatar_source = Path("static/tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
 
     assert "shouldReduceTutorialMotion()" in director_source
     assert "prefers-reduced-motion: reduce" in director_source
@@ -876,8 +892,8 @@ def test_yui_intro_avatar_actions_respect_reduced_motion():
 
 
 def test_yui_plugin_dashboard_corner_peek_uses_adapter_and_releases_on_close():
-    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
-    avatar_source = Path("static/yui-guide-avatar-stage.js").read_text(encoding="utf-8")
+    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    avatar_source = Path("static/tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
     performance_source = Path("static/avatar-performance-stage.js").read_text(encoding="utf-8")
 
     assert "class Live2DPluginDashboardCornerSession" in avatar_source
@@ -927,8 +943,8 @@ def test_yui_plugin_dashboard_corner_peek_uses_adapter_and_releases_on_close():
 
 
 def test_yui_settings_peek_second_line_triggers_panic_session_with_real_model_params():
-    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
-    avatar_source = Path("static/yui-guide-avatar-stage.js").read_text(encoding="utf-8")
+    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    avatar_source = Path("static/tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
     performance_source = Path("static/avatar-performance-stage.js").read_text(encoding="utf-8")
 
     assert "class Live2DSettingsPeekPanicSession" in avatar_source
@@ -970,8 +986,8 @@ def test_yui_settings_peek_second_line_triggers_panic_session_with_real_model_pa
 
 
 def test_yui_interrupt_sessions_keep_scope_in_home_adapter_and_gate_runtime_reentry():
-    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
-    avatar_source = Path("static/yui-guide-avatar-stage.js").read_text(encoding="utf-8")
+    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    avatar_source = Path("static/tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
     performance_source = Path("static/avatar-performance-stage.js").read_text(encoding="utf-8")
 
     assert ": ['frame', 'params'];" in avatar_source
@@ -1004,9 +1020,9 @@ def test_target_page_templates_load_yui_runtime_stack_before_tutorial_manager():
             _script_tag_position(source, name)
             for name in (
                 *_YUI_RUNTIME_SCRIPTS,
-                "tutorial-skip-controller.js",
-                "tutorial-avatar-reload-controller.js",
-                "universal-tutorial-manager.js",
+                "tutorial/core/skip-controller.js",
+                "tutorial/avatar/reload-controller.js",
+                "tutorial/core/universal-manager.js",
             )
         ]
         assert positions == sorted(positions), template_path
@@ -1020,21 +1036,67 @@ def test_emotion_manager_templates_use_static_asset_version_for_tutorial_runtime
         "templates/vrm_emotion_manager.html",
     ):
         source = Path(template_path).read_text(encoding="utf-8")
-        assert "tutorial-skip-controller.js?v={{ static_asset_version|default('0', true) }}" in source
-        assert "tutorial-avatar-reload-controller.js?v={{ static_asset_version|default('0', true) }}" in source
-        assert "universal-tutorial-manager.js?v={{ static_asset_version|default('0', true) }}" in source
+        assert "tutorial/core/skip-controller.js?v={{ static_asset_version|default('0', true) }}" in source
+        assert "tutorial/avatar/reload-controller.js?v={{ static_asset_version|default('0', true) }}" in source
+        assert "tutorial/core/universal-manager.js?v={{ static_asset_version|default('0', true) }}" in source
 
 
 def test_pages_router_static_asset_version_tracks_tutorial_runtime_modules():
     source = Path("main_routers/pages_router.py").read_text(encoding="utf-8")
 
-    assert '_PROJECT_ROOT / "static/tutorial-skip-controller.js"' in source
-    assert '_PROJECT_ROOT / "static/tutorial-avatar-reload-controller.js"' in source
+    assert "_TUTORIAL_RUNTIME_ASSET_PATHS" in source
+    assert '"**/*.js", "**/*.json"' in source
+    assert "*_TUTORIAL_RUNTIME_ASSET_PATHS" in source
+    assert '_PROJECT_ROOT / "static/tutorial/core/skip-controller.js"' not in source
+    assert '_PROJECT_ROOT / "static/tutorial/avatar/reload-controller.js"' not in source
+
+    from main_routers import pages_router
+
+    tracked_paths = {
+        path.relative_to(Path("main_routers/pages_router.py").resolve().parent.parent).as_posix()
+        for path in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
+    }
+    assert "static/tutorial/core/skip-controller.js" in tracked_paths
+    assert "static/tutorial/avatar/reload-controller.js" in tracked_paths
+
+
+def test_react_chat_templates_use_react_asset_version_for_chat_bundle():
+    react_version = "{{ react_chat_asset_version }}"
+    static_version = "{{ static_asset_version }}"
+    react_assets = (
+        "/static/react/neko-chat/neko-chat-window.css",
+        "/static/react/neko-chat/neko-chat-window.iife.js",
+        "/static/app-react-chat-window.js",
+        "/static/app-chat-adapter.js",
+        "/static/app-buttons.js",
+    )
+
+    for template_path in ("templates/index.html", "templates/chat.html"):
+        source = Path(template_path).read_text(encoding="utf-8")
+        assert "window.__NEKO_REACT_CHAT_ASSET_VERSION__={{ react_chat_asset_version | tojson }};" in source
+        for asset_path in react_assets:
+            assert f"{asset_path}?v={react_version}" in source
+            assert f"{asset_path}?v={static_version}" not in source
+
+
+def test_pages_router_react_chat_asset_version_tracks_avatar_tool_icons():
+    source = Path("main_routers/pages_router.py").read_text(encoding="utf-8")
+
+    for asset_path in (
+        "static/icons/edit_tool_unified.png",
+        "static/icons/chat_sugar1.png",
+        "static/icons/cat_claw1.png",
+        "static/icons/chat_hammer1.png",
+        "static/app-react-chat-window.js",
+        "static/app-chat-adapter.js",
+        "static/app-buttons.js",
+    ):
+        assert f'_PROJECT_ROOT / "{asset_path}"' in source
 
 
 def test_home_yui_guide_does_not_route_to_steam_workshop():
-    yui_source = Path("static/yui-guide-steps.js").read_text(encoding="utf-8")
-    tutorial_source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+    yui_source = Path("static/tutorial/yui-guide/steps.js").read_text(encoding="utf-8")
+    tutorial_source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
 
     assert "handoff_steam_workshop" not in yui_source
     assert "/steam_workshop_manager" not in yui_source
@@ -1043,13 +1105,13 @@ def test_home_yui_guide_does_not_route_to_steam_workshop():
 
 
 def test_home_tutorial_reset_also_clears_backend_prompt_state():
-    tutorial_source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+    tutorial_source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
 
     assert "/api/tutorial-prompt/reset" in tutorial_source
 
 
 def test_tutorial_destroy_does_not_mark_seen_but_skip_does():
-    tutorial_source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+    tutorial_source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
 
     assert "if (endMeta.reason === 'destroy')" in tutorial_source
     assert "if (endMeta.reason === 'skip')" in tutorial_source
@@ -1058,7 +1120,7 @@ def test_tutorial_destroy_does_not_mark_seen_but_skip_does():
 
 
 def test_universal_tutorial_manager_normalizes_api_key_handoff_and_resume_scene_mappings():
-    source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+    source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
 
     for expected in (
         "getYuiGuidePageKey(page = this.currentPage)",
@@ -1072,7 +1134,7 @@ def test_universal_tutorial_manager_normalizes_api_key_handoff_and_resume_scene_
 
 
 def test_character_card_manager_tutorial_uses_current_page_and_targets():
-    source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+    source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
     steps_start = source.index("    getCharaManagerSteps() {")
     steps_end = source.index("getSettingsSteps()", steps_start)
     steps_source = source[steps_start:steps_end]
@@ -1114,7 +1176,7 @@ def test_character_card_manager_tutorial_uses_current_page_and_targets():
 
 
 def test_character_card_manager_tutorial_prepare_helpers_use_current_card_selectors():
-    source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+    source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
     prepare_start = source.index("async prepareCharaManagerForTutorial()")
     prepare_end = source.index("cleanupCharaManagerTutorialIds()", prepare_start)
     prepare_source = source[prepare_start:prepare_end]
@@ -1137,7 +1199,7 @@ def test_character_card_manager_tutorial_prepare_helpers_use_current_card_select
 
 
 def test_universal_tutorial_manager_blocks_user_scroll_during_tutorial():
-    source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+    source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
 
     for expected in (
         "_tutorialScrollBlockOptions = { capture: true, passive: false }",
@@ -1152,7 +1214,7 @@ def test_universal_tutorial_manager_blocks_user_scroll_during_tutorial():
 
 
 def test_universal_tutorial_manager_blocks_page_clicks_during_tutorial():
-    source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+    source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
 
     for expected in (
         "blockTutorialPointerEvent(event)",
@@ -1173,7 +1235,7 @@ def test_universal_tutorial_manager_blocks_page_clicks_during_tutorial():
 
 
 def test_universal_tutorial_manager_limits_input_blockers_to_chara_manager_page():
-    source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+    source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
     scroll_start = source.index("blockTutorialScrollEvent(event)")
     scroll_end = source.index("blockTutorialScroll()", scroll_start)
     scroll_source = source[scroll_start:scroll_end]
@@ -1217,8 +1279,8 @@ def test_character_card_manager_cloudsave_button_uses_icon_badge():
 
 
 def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
-    tutorial_source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
-    avatar_reload_source = Path("static/tutorial-avatar-reload-controller.js").read_text(encoding="utf-8")
+    tutorial_source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
+    avatar_reload_source = Path("static/tutorial/avatar/reload-controller.js").read_text(encoding="utf-8")
     interpage_source = Path("static/app-interpage.js").read_text(encoding="utf-8")
 
     begin_start = avatar_reload_source.index("beginOverride()")
@@ -1242,9 +1304,9 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
 
 
 def test_tutorial_lifecycle_modules_export_reusable_controllers():
-    interaction_source = Path("static/tutorial-interaction-takeover.js").read_text(encoding="utf-8")
-    skip_source = Path("static/tutorial-skip-controller.js").read_text(encoding="utf-8")
-    avatar_reload_source = Path("static/tutorial-avatar-reload-controller.js").read_text(encoding="utf-8")
+    interaction_source = Path("static/tutorial/core/interaction-takeover.js").read_text(encoding="utf-8")
+    skip_source = Path("static/tutorial/core/skip-controller.js").read_text(encoding="utf-8")
+    avatar_reload_source = Path("static/tutorial/avatar/reload-controller.js").read_text(encoding="utf-8")
 
     for expected in (
         "class TutorialInteractionTakeoverController",
@@ -1291,7 +1353,7 @@ def test_theme_system_preference_does_not_become_saved_user_choice():
 
 
 def test_home_yui_guide_uses_platform_capability_matrix_for_cross_window_skip():
-    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
     plugin_runtime_source = Path("frontend/plugin-manager/src/yui-guide-runtime.ts").read_text(encoding="utf-8")
 
     assert "window.homeTutorialPlatformCapabilities" in director_source
@@ -1308,8 +1370,8 @@ def test_home_yui_guide_uses_platform_capability_matrix_for_cross_window_skip():
 
 
 def test_home_yui_guide_scenes_declare_timelines_and_director_consumes_normalized_cues():
-    steps_source = Path("static/yui-guide-steps.js").read_text(encoding="utf-8")
-    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    steps_source = Path("static/tutorial/yui-guide/steps.js").read_text(encoding="utf-8")
+    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
 
     assert "timeline: []" in steps_source
     assert "{ at: 0.16, action: 'highlightVoiceControl' }" in steps_source
@@ -1323,7 +1385,7 @@ def test_home_yui_guide_scenes_declare_timelines_and_director_consumes_normalize
 
 
 def test_home_yui_guide_records_local_experience_metrics_without_upload_path():
-    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
 
     assert "neko_home_tutorial_experience_metrics_v1" in director_source
     assert "window.homeTutorialExperienceMetrics" in director_source
@@ -1703,6 +1765,35 @@ def test_agent_server_user_turn_fingerprint_includes_attachments():
 
     assert text_only != with_attachment
     assert image_only is not None
+
+
+def test_openclaw_magic_analyze_fingerprint_uses_turn_marker():
+    from app.agent_server import _build_analyze_event_fingerprint
+
+    messages = [{"role": "user", "content": "/stop"}]
+    first = _build_analyze_event_fingerprint({
+        "trigger": "text_openclaw_magic_command",
+        "event_id": "event-a",
+        "messages": messages,
+    })
+    second = _build_analyze_event_fingerprint({
+        "trigger": "text_openclaw_magic_command",
+        "event_id": "event-b",
+        "messages": messages,
+    })
+    ordinary_first = _build_analyze_event_fingerprint({
+        "trigger": "turn_end",
+        "event_id": "event-a",
+        "messages": messages,
+    })
+    ordinary_second = _build_analyze_event_fingerprint({
+        "trigger": "turn_end",
+        "event_id": "event-b",
+        "messages": messages,
+    })
+
+    assert first != second
+    assert ordinary_first == ordinary_second
 
 
 def test_user_message_signature_ignores_metadata_and_role():
@@ -2499,6 +2590,13 @@ def test_agent_gate_is_free_version_field_sources_agent_free():
     router = Path("main_routers/agent_router.py").read_text(encoding="utf-8")
     assert "_config_manager.is_agent_free()" in router
     assert "cfg.is_agent_free()" in router
+
+
+def test_main_server_mounts_card_assist_router():
+    source = Path("app/main_server.py").read_text(encoding="utf-8")
+
+    assert "from main_routers.card_assist_router import router as card_assist_router" in source
+    assert "app.include_router(card_assist_router)" in source
 
 
 def test_agent_command_set_agent_enabled_reports_free_version_and_refreshes_capabilities():

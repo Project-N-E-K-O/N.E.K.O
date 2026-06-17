@@ -12,7 +12,7 @@ Module to file mappings for i18n-check.
 | `steam` | steam*.html | steam*.js |
 | `settings` | settings*.html, config*.html | settings*.js, config*.js |
 | `chat` | chat*.html, memory_browser.html, chara_manager.html | chat*.js, memory_browser.js, chara_manager.js |
-| `common` | viewer.html | common_dialogs.js, common_ui.js, i18n-i18next.js, universal-tutorial-manager.js |
+| `common` | viewer.html | common_dialogs.js, common_ui.js, i18n-i18next.js, tutorial/core/universal-manager.js |
 
 ## Custom Module
 

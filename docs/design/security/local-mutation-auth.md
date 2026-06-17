@@ -163,7 +163,7 @@ AUTOSTART_CSRF_TOKEN = env('NEKO_AUTOSTART_CSRF_TOKEN') or INSTANCE_ID
   - 失败 → 403 { ok: false, error_code: "csrf_validation_failed", error: "Request could not be verified" }
   ↓
 [业务调用方处理 403]
-  - 短期请求：refreshToken() → 重试一次（参考 universal-tutorial-manager.js:120-134 pattern）
+  - 短期请求：refreshToken() → 重试一次（参考 tutorial/core/universal-manager.js:229-254 pattern）
   - 长跑心跳：连续 N 次失败后停止（参考 static/app-activity-signal.js）
 ```
 
@@ -254,7 +254,7 @@ let response = await fetch('/api/some-endpoint', {
     body: JSON.stringify(payload),
 });
 
-// 可选：CSRF-403 retry-once（参考 universal-tutorial-manager.js:120-134）
+// 可选：CSRF-403 retry-once（参考 tutorial/core/universal-manager.js:229-254）
 if (response.status === 403 && sec && typeof sec.refreshToken === 'function') {
     let shouldRetry = false;
     try {
@@ -383,7 +383,7 @@ assert "no-store" in resp.headers.get("Cache-Control", "").lower()
 
 ### 前端
 - `static/app-prompt-shared.js` — `createLocalMutationSecurity()` / `window.nekoLocalMutationSecurity.getMutationHeaders()` / `refreshToken()`（已合并）
-- `static/universal-tutorial-manager.js` — 短期事件驱动调用 + CSRF-403 retry-once 的参考实现（已合并）
+- `static/tutorial/core/universal-manager.js` — 短期事件驱动调用 + CSRF-403 retry-once 的参考实现（已合并）
 - `static/app-activity-signal.js` — 长跑心跳 + stop-the-heartbeat 退避的参考实现（PR #1532 完整版本；main 当前是 PR #1477 的临时版本）
 - `static/app-proactive.js` — 与 attempt/backoff 状态机协作的参考实现（PR #1530 引入）
 

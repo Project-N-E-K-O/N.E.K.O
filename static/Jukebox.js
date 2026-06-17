@@ -106,6 +106,15 @@ window.Jukebox = {
     isMuted: false,
     progressTimer: null,
     isSeeking: false,
+    playbackMode: 'sequence',
+    randomQueue: [],
+    randomQueueIndex: -1,
+    randomQueueExitSongId: null,
+    songSortUnlocked: false,
+    draggedSongId: null,
+    configRevision: null,
+    configPollTimer: null,
+    configPollInFlight: false,
     isOpen: false,
     isHidden: false,
     container: null,
@@ -114,6 +123,11 @@ window.Jukebox = {
     songElements: {},
     tooltipElement: null,
     tooltipTimeout: null,
+    tooltipTarget: null,
+    tooltipTextProvider: null,
+    marqueeItems: new Map(),
+    marqueeRaf: null,
+    hasCustomWindowSize: false,
     // 窗口拖拽状态
     isDragging: false,
     dragOffset: { x: 0, y: 0 }
@@ -121,18 +135,21 @@ window.Jukebox = {
 
   showTooltip: function(element, text) {
     Jukebox.hideTooltip();
+    Jukebox.State.tooltipTarget = element;
+    Jukebox.State.tooltipTextProvider = text;
     
     Jukebox.State.tooltipTimeout = setTimeout(() => {
+      const tooltipText = typeof text === 'function' ? text() : text;
       if (!Jukebox.State.tooltipElement) {
         const tooltip = document.createElement('div');
         tooltip.className = 'jukebox-tooltip';
-        tooltip.textContent = text;
+        tooltip.textContent = tooltipText;
         document.body.appendChild(tooltip);
         Jukebox.State.tooltipElement = tooltip;
       }
       
       const tooltip = Jukebox.State.tooltipElement;
-      tooltip.textContent = text;
+      tooltip.textContent = tooltipText;
       
       const rect = element.getBoundingClientRect();
       tooltip.style.left = rect.left + rect.width / 2 - tooltip.offsetWidth / 2 + 'px';
@@ -154,11 +171,641 @@ window.Jukebox = {
       Jukebox.State.tooltipElement.remove();
       Jukebox.State.tooltipElement = null;
     }
+    Jukebox.State.tooltipTarget = null;
+    Jukebox.State.tooltipTextProvider = null;
   },
 
   setupTooltip: function(element, text) {
     element.addEventListener('mouseenter', () => Jukebox.showTooltip(element, text));
     element.addEventListener('mouseleave', () => Jukebox.hideTooltip());
+  },
+
+  refreshTooltip: function(element) {
+    if (!Jukebox.State.tooltipElement) return;
+    if (element && Jukebox.State.tooltipTarget !== element) return;
+    const target = Jukebox.State.tooltipTarget;
+    if (!target) return;
+    const provider = Jukebox.State.tooltipTextProvider;
+    const tooltipText = typeof provider === 'function' ? provider() : provider;
+    Jukebox.State.tooltipElement.textContent = tooltipText || '';
+    const rect = target.getBoundingClientRect();
+    Jukebox.State.tooltipElement.style.left = rect.left + rect.width / 2 - Jukebox.State.tooltipElement.offsetWidth / 2 + 'px';
+    Jukebox.State.tooltipElement.style.top = rect.bottom + 6 + 'px';
+  },
+
+  getStorageKey: function(name) {
+    return 'neko.jukebox.' + name;
+  },
+
+  getStoredJson: function(name, fallback) {
+    try {
+      const raw = window.localStorage ? window.localStorage.getItem(Jukebox.getStorageKey(name)) : null;
+      if (!raw) return fallback;
+      return JSON.parse(raw);
+    } catch (error) {
+      console.warn('[Jukebox] 读取本地偏好失败:', name, error);
+      return fallback;
+    }
+  },
+
+  setStoredJson: function(name, value) {
+    try {
+      if (window.localStorage) {
+        window.localStorage.setItem(Jukebox.getStorageKey(name), JSON.stringify(value));
+      }
+    } catch (error) {
+      console.warn('[Jukebox] 保存本地偏好失败:', name, error);
+    }
+  },
+
+  applyStoredWindowSize: function(container) {
+    if (window.__NEKO_JUKEBOX_STANDALONE__ || !container) return;
+
+    const saved = Jukebox.getStoredJson('windowSize', null);
+    if (!saved || typeof saved !== 'object') return;
+
+    const minWidth = 360;
+    const minHeight = 300;
+    const maxWidth = Math.max(minWidth, (window.innerWidth || minWidth) - 16);
+    const maxHeight = Math.max(minHeight, (window.innerHeight || minHeight) - 16);
+    const width = Number(saved.width);
+    const height = Number(saved.height);
+    let applied = false;
+
+    if (Number.isFinite(width) && width >= minWidth) {
+      container.style.width = Math.min(Math.max(width, minWidth), maxWidth) + 'px';
+      applied = true;
+    }
+    if (Number.isFinite(height) && height >= minHeight) {
+      container.style.height = Math.min(Math.max(height, minHeight), maxHeight) + 'px';
+      applied = true;
+    }
+
+    if (applied) {
+      Jukebox.State.hasCustomWindowSize = true;
+    }
+  },
+
+  saveWindowSize: function(container) {
+    if (window.__NEKO_JUKEBOX_STANDALONE__ || !container) return;
+
+    const rect = container.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0) return;
+
+    Jukebox.setStoredJson('windowSize', {
+      width: Math.round(rect.width),
+      height: Math.round(rect.height)
+    });
+  },
+
+  loadPlaybackPreferences: function() {
+    const savedMode = Jukebox.getStoredJson('playbackMode', 'sequence');
+    Jukebox.State.playbackMode = Jukebox.getPlaybackModeOrder().includes(savedMode) ? savedMode : 'sequence';
+  },
+
+  getPlaybackModeOrder: function() {
+    return ['none', 'sequence', 'single', 'random'];
+  },
+
+  setPlaybackMode: function(mode) {
+    const nextMode = Jukebox.getPlaybackModeOrder().includes(mode) ? mode : 'sequence';
+    const previousMode = Jukebox.State.playbackMode;
+    Jukebox.State.playbackMode = nextMode;
+    if (nextMode === 'random' && previousMode !== 'random') {
+      const currentSongId = (Jukebox.State.currentSong ? Jukebox.State.currentSong.id : null)
+        || Jukebox.getCurrentRandomQueueSongId();
+      if (Jukebox.State.randomQueueExitSongId === currentSongId && Jukebox.State.randomQueue.length) {
+        Jukebox.State.randomQueueExitSongId = null;
+        Jukebox.ensureRandomQueueAnchor(currentSongId);
+      } else {
+        Jukebox.resetRandomQueue(currentSongId);
+      }
+    } else if (previousMode === 'random' && nextMode !== 'random') {
+      const activeSongId = Jukebox.State.currentSong ? Jukebox.State.currentSong.id : null;
+      const queuedSongId = !activeSongId ? Jukebox.getCurrentRandomQueueSongId() : null;
+      if (activeSongId && (Jukebox.State.isPlaying || Jukebox.State.isPaused) && Jukebox.State.randomQueue.length) {
+        Jukebox.State.randomQueueExitSongId = activeSongId;
+      } else if (queuedSongId && Jukebox.State.randomQueue.length) {
+        Jukebox.State.randomQueueExitSongId = queuedSongId;
+      } else {
+        Jukebox.clearRandomQueue();
+      }
+    }
+    Jukebox.setStoredJson('playbackMode', nextMode);
+    Jukebox.updatePlaybackModeButtons();
+  },
+
+  cyclePlaybackMode: function() {
+    const modeOrder = Jukebox.getPlaybackModeOrder();
+    const currentIndex = modeOrder.indexOf(Jukebox.State.playbackMode);
+    const nextMode = modeOrder[(currentIndex + 1 + modeOrder.length) % modeOrder.length] || 'sequence';
+    Jukebox.setPlaybackMode(nextMode);
+  },
+
+  getPlaybackModeLabel: function(mode) {
+    if (mode === 'none') return window.t('Jukebox.noAutoNext', '不自动下一首');
+    if (mode === 'single') return window.t('Jukebox.singleLoop', '单曲循环');
+    if (mode === 'random') return window.t('Jukebox.randomPlay', '随机播放');
+    return window.t('Jukebox.sequencePlay', '顺序播放');
+  },
+
+  getPlaybackModeButtonLabel: function() {
+    return `${window.t('Jukebox.switchPlaybackMode', '切换播放模式')}: ${Jukebox.getPlaybackModeLabel(Jukebox.State.playbackMode)}`;
+  },
+
+  getPlaybackModeIcon: function(mode) {
+    if (mode === 'none') {
+      return '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19l5.6-5.6 5.6 5.6 1.4-1.4-5.6-5.6L19 6.4 17.6 5 12 10.6 6.4 5z"/></svg>';
+    }
+    if (mode === 'single') {
+      return '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/><path fill="currentColor" d="M11 9h2v6h-2z"/></svg>';
+    }
+    if (mode === 'sequence') {
+      return '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M4 7h10v2H4V7zm0 4h12v2H4v-2zm0 4h10v2H4v-2zm13.5-8.5L21 10l-3.5 3.5V11H16V9h1.5V6.5z"/></svg>';
+    }
+    return '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M10.6 5.6 9.2 7 6.4 4.2C5.6 3.4 4.6 3 3.5 3H2v2h1.5c.6 0 1.1.2 1.5.6L7.8 8.4 5 11.2c-.4.4-.9.6-1.5.6H2v2h1.5c1.1 0 2.1-.4 2.9-1.2l2.8-2.8 1.4 1.4L8.8 13l5.2 5.2c.8.8 1.8 1.2 2.9 1.2H18v3l4-4-4-4v3h-1.1c-.6 0-1.1-.2-1.5-.6L10.2 9.6l1.8-1.8L10.6 5.6zM18 3v3h-1.1c-1.1 0-2.1.4-2.9 1.2l-1.2 1.2 1.4 1.4 1.2-1.2c.4-.4.9-.6 1.5-.6H18v3l4-4-4-4z"/></svg>';
+  },
+
+  createPlaybackModeButton: function() {
+    const button = document.createElement('button');
+    const mode = Jukebox.State.playbackMode;
+    const label = Jukebox.getPlaybackModeButtonLabel();
+    button.type = 'button';
+    button.className = 'play-btn jukebox-mode-btn active';
+    button.dataset.mode = mode;
+    button.setAttribute('aria-label', label);
+    button.setAttribute('aria-live', 'polite');
+    button.innerHTML = Jukebox.getPlaybackModeIcon(mode);
+    button.removeAttribute('title');
+    Jukebox.setupTooltip(button, () => Jukebox.getPlaybackModeButtonLabel());
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      Jukebox.cyclePlaybackMode();
+    });
+    return button;
+  },
+
+  appendPlaybackModeButtons: function(container) {
+    container.appendChild(Jukebox.createPlaybackModeButton());
+  },
+
+  renderPlaybackControls: function() {
+    const modeContainer = document.getElementById('jukebox-mode-controls');
+    if (modeContainer) {
+      modeContainer.innerHTML = '';
+      Jukebox.appendPlaybackModeButtons(modeContainer);
+    }
+    Jukebox.updateGlobalTransportControls();
+  },
+
+  getGlobalPlayPauseIcon: function() {
+    if (Jukebox.State.isPlaying && !Jukebox.State.isPaused) {
+      return '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>';
+    }
+    return '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>';
+  },
+
+  updateGlobalTransportControls: function() {
+    const playPauseBtn = document.getElementById('jukebox-control-play-pause');
+    if (playPauseBtn) {
+      const isPauseAction = Jukebox.State.isPlaying && !Jukebox.State.isPaused;
+      const label = isPauseAction
+        ? window.t('Jukebox.pause', '暂停')
+        : (Jukebox.State.currentSong && Jukebox.State.isPaused
+          ? window.t('Jukebox.resume', '继续')
+          : window.t('Jukebox.play', '播放'));
+      playPauseBtn.innerHTML = Jukebox.getGlobalPlayPauseIcon();
+      playPauseBtn.setAttribute('aria-label', label);
+      playPauseBtn.title = label;
+      playPauseBtn.classList.toggle('pause-btn', isPauseAction);
+      playPauseBtn.classList.toggle('resume-btn', !isPauseAction && Jukebox.State.currentSong && Jukebox.State.isPaused);
+    }
+  },
+
+  getManualAdjacentSong: function(direction) {
+    const songs = Jukebox.State.songs || [];
+    if (!songs.length) return null;
+    if (!Jukebox.State.currentSong) {
+      return direction === -1 ? songs[songs.length - 1] : songs[0];
+    }
+    const currentIndex = songs.findIndex(song => song.id === Jukebox.State.currentSong.id);
+    if (currentIndex < 0) return direction === -1 ? songs[songs.length - 1] : songs[0];
+    const nextIndex = (currentIndex + direction + songs.length) % songs.length;
+    return songs[nextIndex];
+  },
+
+  findSongById: function(songId) {
+    if (!songId) return null;
+    return (Jukebox.State.songs || []).find(song => song.id === songId) || null;
+  },
+
+  getCurrentRandomQueueSongId: function() {
+    const queue = Jukebox.State.randomQueue || [];
+    const queuedSongId = queue[Jukebox.State.randomQueueIndex];
+    return Jukebox.findSongById(queuedSongId) ? queuedSongId : null;
+  },
+
+  clearRandomQueue: function() {
+    Jukebox.State.randomQueue = [];
+    Jukebox.State.randomQueueIndex = -1;
+    Jukebox.State.randomQueueExitSongId = null;
+  },
+
+  resetRandomQueue: function(anchorSongId) {
+    const anchorSong = Jukebox.findSongById(anchorSongId);
+    if (anchorSong) {
+      Jukebox.State.randomQueue = [anchorSong.id];
+      Jukebox.State.randomQueueIndex = 0;
+      Jukebox.State.randomQueueExitSongId = null;
+      return;
+    }
+    Jukebox.clearRandomQueue();
+  },
+
+  pruneRandomQueue: function(anchorSongId) {
+    const validIds = new Set((Jukebox.State.songs || []).map(song => song.id));
+    if (anchorSongId && !validIds.has(anchorSongId)) {
+      Jukebox.clearRandomQueue();
+      return false;
+    }
+
+    const queue = Jukebox.State.randomQueue || [];
+    const currentQueueIndex = Jukebox.State.randomQueueIndex;
+    const filteredQueue = [];
+    let retainedQueueIndex = -1;
+    queue.forEach((songId, queueIndex) => {
+      if (!validIds.has(songId)) return;
+      if (queueIndex === currentQueueIndex) {
+        retainedQueueIndex = filteredQueue.length;
+      }
+      filteredQueue.push(songId);
+    });
+    Jukebox.State.randomQueue = filteredQueue;
+
+    if (!anchorSongId) {
+      if (!filteredQueue.length) {
+        Jukebox.State.randomQueueIndex = -1;
+        return false;
+      }
+      if (retainedQueueIndex !== -1) {
+        Jukebox.State.randomQueueIndex = retainedQueueIndex;
+      } else if (currentQueueIndex < 0 || currentQueueIndex >= filteredQueue.length) {
+        Jukebox.State.randomQueueIndex = filteredQueue.length - 1;
+      } else {
+        Jukebox.State.randomQueueIndex = currentQueueIndex;
+      }
+      return true;
+    }
+
+    if (retainedQueueIndex !== -1 && filteredQueue[retainedQueueIndex] === anchorSongId) {
+      Jukebox.State.randomQueueIndex = retainedQueueIndex;
+      return true;
+    }
+
+    const anchorIndex = filteredQueue.lastIndexOf(anchorSongId);
+    if (anchorIndex === -1) {
+      Jukebox.State.randomQueue = [anchorSongId];
+      Jukebox.State.randomQueueIndex = 0;
+      return true;
+    }
+
+    Jukebox.State.randomQueueIndex = anchorIndex;
+    return true;
+  },
+
+  syncRandomQueueWithSongs: function() {
+    if (Jukebox.State.playbackMode !== 'random') {
+      const pendingSongId = Jukebox.State.randomQueueExitSongId;
+      const currentSongId = (Jukebox.State.currentSong ? Jukebox.State.currentSong.id : null)
+        || Jukebox.getCurrentRandomQueueSongId();
+      if (!pendingSongId || pendingSongId !== currentSongId) {
+        Jukebox.clearRandomQueue();
+      } else {
+        Jukebox.pruneRandomQueue(pendingSongId);
+      }
+      return;
+    }
+
+    const currentSongId = (Jukebox.State.currentSong ? Jukebox.State.currentSong.id : null)
+      || Jukebox.getCurrentRandomQueueSongId()
+      || null;
+    if (!currentSongId || !Jukebox.pruneRandomQueue(currentSongId)) {
+      Jukebox.clearRandomQueue();
+      return;
+    }
+
+    Jukebox.ensureRandomQueueAnchor(currentSongId);
+  },
+
+  ensureRandomQueueAnchor: function(songId) {
+    if (!Jukebox.findSongById(songId)) {
+      Jukebox.clearRandomQueue();
+      return;
+    }
+
+    const queue = Jukebox.State.randomQueue || [];
+    const index = Jukebox.State.randomQueueIndex;
+    if (!queue.length || index < 0 || index >= queue.length || queue[index] !== songId) {
+      Jukebox.resetRandomQueue(songId);
+    }
+  },
+
+  expireRandomQueueIfPendingSongEnded: function(endedSongId) {
+    if (Jukebox.State.playbackMode === 'random') return;
+    if (Jukebox.State.randomQueueExitSongId && Jukebox.State.randomQueueExitSongId === endedSongId) {
+      Jukebox.clearRandomQueue();
+    }
+  },
+
+  pickRandomSongExcluding: function(excludedIds) {
+    const songs = Jukebox.State.songs || [];
+    if (!songs.length) return null;
+    const excludedSet = new Set((Array.isArray(excludedIds) ? excludedIds : [excludedIds]).filter(Boolean));
+    let candidates = songs.filter(song => !excludedSet.has(song.id));
+    if (!candidates.length && songs.length === 1) {
+      candidates = songs;
+    }
+    if (!candidates.length) return null;
+    return candidates[Math.floor(Math.random() * candidates.length)];
+  },
+
+  getRandomAdjacentSong: function(direction, anchorSongId) {
+    const songs = Jukebox.State.songs || [];
+    if (!songs.length) {
+      Jukebox.clearRandomQueue();
+      return null;
+    }
+
+    const queue = Jukebox.State.randomQueue || [];
+    const queuedSongId = queue[Jukebox.State.randomQueueIndex];
+    const currentSongId = anchorSongId
+      || (Jukebox.findSongById(queuedSongId) ? queuedSongId : null)
+      || (Jukebox.State.currentSong ? Jukebox.State.currentSong.id : null)
+      || null;
+
+    if (currentSongId) {
+      Jukebox.ensureRandomQueueAnchor(currentSongId);
+    } else if (!Jukebox.State.randomQueue.length) {
+      if (direction < 0) return null;
+      const firstRandomSong = Jukebox.pickRandomSongExcluding(null);
+      if (!firstRandomSong) return null;
+      Jukebox.State.randomQueue = [firstRandomSong.id];
+      Jukebox.State.randomQueueIndex = 0;
+      return firstRandomSong;
+    }
+
+    if (direction < 0) {
+      if (Jukebox.State.randomQueueIndex <= 0) return null;
+      Jukebox.State.randomQueueIndex -= 1;
+      return Jukebox.findSongById(Jukebox.State.randomQueue[Jukebox.State.randomQueueIndex]);
+    }
+
+    if (Jukebox.State.randomQueueIndex < Jukebox.State.randomQueue.length - 1) {
+      Jukebox.State.randomQueueIndex += 1;
+      return Jukebox.findSongById(Jukebox.State.randomQueue[Jukebox.State.randomQueueIndex]);
+    }
+
+    const staleCurrentSongId = Jukebox.State.currentSong ? Jukebox.State.currentSong.id : null;
+    const excludedIds = [currentSongId];
+    if (staleCurrentSongId && staleCurrentSongId !== currentSongId) {
+      excludedIds.push(staleCurrentSongId);
+    }
+    const nextRandomSong = Jukebox.pickRandomSongExcluding(excludedIds);
+    if (!nextRandomSong) return null;
+    Jukebox.State.randomQueue.push(nextRandomSong.id);
+    Jukebox.State.randomQueueIndex = Jukebox.State.randomQueue.length - 1;
+    return nextRandomSong;
+  },
+
+  playAdjacentSong: function(direction) {
+    const nextSong = Jukebox.State.playbackMode === 'random'
+      ? Jukebox.getRandomAdjacentSong(direction)
+      : Jukebox.getManualAdjacentSong(direction);
+    if (nextSong) {
+      Jukebox.playSong(nextSong.id, { fromQueue: Jukebox.State.playbackMode === 'random' });
+    }
+  },
+
+  toggleGlobalPlayPause: function() {
+    if (Jukebox.State.currentSong && (Jukebox.State.isPlaying || Jukebox.State.isPaused || Jukebox.State.isVMDPlaying)) {
+      Jukebox.togglePause();
+      return;
+    }
+    const firstSong = (Jukebox.State.songs || [])[0];
+    if (firstSong) {
+      Jukebox.playSong(firstSong.id);
+    }
+  },
+
+  updatePlaybackModeButtons: function(root) {
+    const scope = root || document;
+    scope.querySelectorAll('.jukebox-mode-btn').forEach((button) => {
+      const mode = Jukebox.State.playbackMode;
+      const label = Jukebox.getPlaybackModeButtonLabel();
+      button.dataset.mode = mode;
+      button.classList.add('active');
+      button.setAttribute('aria-label', label);
+      button.removeAttribute('title');
+      button.innerHTML = Jukebox.getPlaybackModeIcon(mode);
+      Jukebox.refreshTooltip(button);
+    });
+  },
+
+  getSavedSongOrder: function() {
+    const saved = Jukebox.getStoredJson('songOrder', []);
+    return Array.isArray(saved) ? saved.filter(id => typeof id === 'string') : [];
+  },
+
+  applySavedSongOrder: function(songs) {
+    const savedOrder = Jukebox.getSavedSongOrder();
+    if (!savedOrder.length) return songs;
+    const byId = new Map(songs.map(song => [song.id, song]));
+    const ordered = [];
+    savedOrder.forEach((id) => {
+      if (byId.has(id)) {
+        ordered.push(byId.get(id));
+        byId.delete(id);
+      }
+    });
+    return ordered.concat(Array.from(byId.values()));
+  },
+
+  saveSongOrder: function() {
+    Jukebox.setStoredJson('songOrder', Jukebox.State.songs.map(song => song.id));
+  },
+
+  moveSongInPlaylist: function(draggedId, targetId, placeAfter) {
+    if (!draggedId || !targetId || draggedId === targetId) return false;
+    const fromIndex = Jukebox.State.songs.findIndex(song => song.id === draggedId);
+    const targetIndex = Jukebox.State.songs.findIndex(song => song.id === targetId);
+    if (fromIndex < 0 || targetIndex < 0) return false;
+
+    const [moved] = Jukebox.State.songs.splice(fromIndex, 1);
+    let insertIndex = Jukebox.State.songs.findIndex(song => song.id === targetId);
+    if (insertIndex < 0) insertIndex = Jukebox.State.songs.length;
+    if (placeAfter) insertIndex += 1;
+    Jukebox.State.songs.splice(insertIndex, 0, moved);
+    Jukebox.saveSongOrder();
+    Jukebox.renderList();
+    return true;
+  },
+
+  isSongSortUnlocked: function() {
+    return Jukebox.State.songSortUnlocked === true;
+  },
+
+  getSongSortLockLabel: function() {
+    return Jukebox.isSongSortUnlocked()
+      ? window.t('Jukebox.lockSongSort', '锁定歌曲排序')
+      : window.t('Jukebox.unlockSongSort', '解锁歌曲排序');
+  },
+
+  getSongSortLockIcon: function() {
+    if (Jukebox.isSongSortUnlocked()) {
+      return '<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M7 10V7a5 5 0 0 1 9.6-1.9l-1.9.8A3 3 0 0 0 9 7v3h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2zm0 2v7h10v-7H7zm4 2h2v3h-2v-3z"/></svg>';
+    }
+    return '<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M7 10V7a5 5 0 0 1 10 0v3h1a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h1zm2 0h6V7a3 3 0 0 0-6 0v3zm-3 2v7h12v-7H6zm5 2h2v3h-2v-3z"/></svg>';
+  },
+
+  toggleSongSortLock: function(event) {
+    if (event) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+    Jukebox.State.songSortUnlocked = !Jukebox.State.songSortUnlocked;
+    if (!Jukebox.State.songSortUnlocked) {
+      Jukebox.clearSongDragState();
+    }
+    Jukebox.updateSongSortLockControls();
+  },
+
+  updateSongSortLockControls: function(root) {
+    const scope = root || document;
+    const unlocked = Jukebox.isSongSortUnlocked();
+    const label = Jukebox.getSongSortLockLabel();
+    scope.querySelectorAll('.jukebox-sort-lock-btn').forEach((button) => {
+      button.classList.toggle('unlocked', unlocked);
+      button.setAttribute('aria-pressed', unlocked ? 'true' : 'false');
+      button.setAttribute('aria-label', label);
+      button.title = label;
+      button.innerHTML = Jukebox.getSongSortLockIcon();
+    });
+    scope.querySelectorAll('#jukebox-song-list tr[data-song-id]').forEach((row) => {
+      row.draggable = unlocked;
+      row.classList.toggle('jukebox-row-sort-unlocked', unlocked);
+    });
+  },
+
+  clearSongDragState: function() {
+    document.querySelectorAll('#jukebox-song-list tr').forEach((row) => {
+      row.classList.remove('jukebox-row-dragging', 'jukebox-row-drop-before', 'jukebox-row-drop-after');
+    });
+    Jukebox.State.draggedSongId = null;
+  },
+
+  easeInOutMarquee: function(t) {
+    return 0.5 - Math.cos(Math.PI * t) / 2;
+  },
+
+  getMarqueeDuration: function(maxScroll) {
+    return Math.max(3000, Math.min(60000, maxScroll * 100));
+  },
+
+  updateMarqueeText: function(root) {
+    const scope = root || document;
+    const nodes = Array.from(scope.querySelectorAll('[data-neko-marquee]'));
+
+    nodes.forEach((el) => {
+      const maxScroll = Math.max(0, el.scrollWidth - el.clientWidth);
+      if (maxScroll <= 1) {
+        el.classList.remove('neko-marquee-active');
+        el.scrollLeft = 0;
+        Jukebox.State.marqueeItems.delete(el);
+        return;
+      }
+
+      el.classList.add('neko-marquee-active');
+      const existing = Jukebox.State.marqueeItems.get(el);
+      const duration = Jukebox.getMarqueeDuration(maxScroll);
+      if (!existing || Math.abs((existing.maxScroll || 0) - maxScroll) > 1) {
+        Jukebox.State.marqueeItems.set(el, {
+          phase: 'pauseStart',
+          phaseStart: performance.now(),
+          duration,
+          maxScroll
+        });
+        el.scrollLeft = 0;
+      } else {
+        existing.duration = duration;
+        existing.maxScroll = maxScroll;
+      }
+    });
+
+    for (const el of Array.from(Jukebox.State.marqueeItems.keys())) {
+      if (!document.contains(el)) {
+        Jukebox.State.marqueeItems.delete(el);
+      }
+    }
+
+    if (Jukebox.State.marqueeItems.size > 0 && !Jukebox.State.marqueeRaf) {
+      Jukebox.State.marqueeRaf = requestAnimationFrame(Jukebox.tickMarqueeText);
+    }
+  },
+
+  tickMarqueeText: function(now) {
+    Jukebox.State.marqueeRaf = null;
+
+    for (const [el, item] of Array.from(Jukebox.State.marqueeItems.entries())) {
+      if (!document.contains(el)) {
+        Jukebox.State.marqueeItems.delete(el);
+        continue;
+      }
+
+      const maxScroll = Math.max(0, el.scrollWidth - el.clientWidth);
+      if (maxScroll <= 1) {
+        el.classList.remove('neko-marquee-active');
+        el.scrollLeft = 0;
+        Jukebox.State.marqueeItems.delete(el);
+        continue;
+      }
+
+      if (document.activeElement === el || el.contains(document.activeElement)) {
+        el.classList.add('neko-marquee-editing');
+        item.phase = 'pauseStart';
+        item.phaseStart = now;
+        continue;
+      }
+      el.classList.remove('neko-marquee-editing');
+
+      item.maxScroll = maxScroll;
+      item.duration = Jukebox.getMarqueeDuration(maxScroll);
+      const elapsed = now - item.phaseStart;
+
+      if (item.phase === 'pauseStart') {
+        el.scrollLeft = 0;
+        if (elapsed >= 1000) {
+          item.phase = 'forward';
+          item.phaseStart = now;
+        }
+      } else if (item.phase === 'forward') {
+        const t = Math.min(1, elapsed / item.duration);
+        el.scrollLeft = Math.round(maxScroll * Jukebox.easeInOutMarquee(t));
+        if (t >= 1) {
+          el.scrollLeft = 0;
+          item.phase = 'pauseStart';
+          item.phaseStart = now;
+        }
+      }
+    }
+
+    if (Jukebox.State.marqueeItems.size > 0) {
+      Jukebox.State.marqueeRaf = requestAnimationFrame(Jukebox.tickMarqueeText);
+    }
+  },
+
+  scheduleMarqueeTextUpdate: function(root) {
+    requestAnimationFrame(() => Jukebox.updateMarqueeText(root || document));
   },
 
   SongActionManager: {
@@ -366,6 +1013,36 @@ window.Jukebox = {
         });
         return response.json();
       },
+
+      async batchDeleteSongs(songIds) {
+        const response = await fetch(`${this.baseUrl}/songs/batch-delete`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ songIds })
+        });
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.detail?.message || errorData.detail || errorData.error || `HTTP ${response.status}`);
+        }
+        return response.json();
+      },
+
+      async batchDeleteActions(actionIds) {
+        const response = await fetch(`${this.baseUrl}/actions/batch-delete`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ actionIds })
+        });
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.detail?.message || errorData.detail || errorData.error || `HTTP ${response.status}`);
+        }
+        return response.json();
+      },
       
       async deleteAction(actionId) {
         const response = await fetch(`${this.baseUrl}/actions/${actionId}`, {
@@ -378,6 +1055,16 @@ window.Jukebox = {
         const formData = new FormData();
         formData.append('visible', visible);
         const response = await fetch(`${this.baseUrl}/songs/${songId}/visibility`, {
+          method: 'PUT',
+          body: formData
+        });
+        return response.json();
+      },
+
+      async updateActionVisibility(actionId, visible) {
+        const formData = new FormData();
+        formData.append('visible', visible);
+        const response = await fetch(`${this.baseUrl}/actions/${actionId}/visibility`, {
           method: 'PUT',
           body: formData
         });
@@ -464,7 +1151,7 @@ window.Jukebox = {
         } else {
           this._managerWindow = window.open(
             '/jukebox/manager', 'neko-jukebox-manager',
-            'width=480,height=600'
+            'width=480,height=600,resizable=yes'
           );
         }
         return;
@@ -521,13 +1208,25 @@ window.Jukebox = {
       panel.className = 'jukebox-sam-panel';
       panel.style.display = 'none'; // 默认隐藏
       panel.innerHTML = `
+        ${window.__NEKO_JUKEBOX_MANAGER_STANDALONE__ ? '' : `
+          <div class="sam-resize-handle" data-dir="n"></div>
+          <div class="sam-resize-handle" data-dir="s"></div>
+          <div class="sam-resize-handle" data-dir="w"></div>
+          <div class="sam-resize-handle" data-dir="e"></div>
+          <div class="sam-resize-handle" data-dir="nw"></div>
+          <div class="sam-resize-handle" data-dir="ne"></div>
+          <div class="sam-resize-handle" data-dir="sw"></div>
+          <div class="sam-resize-handle" data-dir="se"></div>
+        `}
         <div class="sam-header">
           <span class="sam-title">${window.t('Jukebox.managerTitle', '管理器')}</span>
+          <span class="sam-drag-fill sam-drag-fill-left" aria-hidden="true"></span>
           <div class="sam-tabs">
             <button class="sam-tab active" data-tab="songs">${window.t('Jukebox.songs', '歌曲')}</button>
             <button class="sam-tab" data-tab="actions">${window.t('Jukebox.actions', '动作')}</button>
             <button class="sam-tab" data-tab="bindings">${window.t('Jukebox.bindings', '绑定')}</button>
           </div>
+          <span class="sam-drag-fill sam-drag-fill-right" aria-hidden="true"></span>
           <button class="sam-close-btn" onclick="Jukebox.SongActionManager.hide()" title="${window.t('Jukebox.close', '关闭')}">×</button>
         </div>
         <div class="sam-content">
@@ -540,6 +1239,13 @@ window.Jukebox = {
             <button class="sam-btn sam-btn-export-all" onclick="Jukebox.SongActionManager.exportAll(false)">${window.t('Jukebox.exportAllIgnoreHidden', '全部导出(忽略隐藏)')}</button>
             <button class="sam-btn sam-btn-export-all" onclick="Jukebox.SongActionManager.exportAll(true)">${window.t('Jukebox.exportAllIncludeHidden', '全部导出(含隐藏)')}</button>
             <button class="sam-btn sam-btn-export-selected" onclick="Jukebox.SongActionManager.exportSelected()" style="display:none">${window.t('Jukebox.exportSelected', '导出选中')}</button>
+            <span class="sam-danger-action-wrap" style="display:none">
+              <button class="sam-btn sam-btn-danger sam-btn-song-danger"
+                      onclick="Jukebox.SongActionManager.confirmManagerBatchDelete()"
+                      onmouseenter="Jukebox.SongActionManager.showManagerDeleteTooltip(this)"
+                      onmouseleave="Jukebox.SongActionManager.hideManagerDeleteTooltip()"></button>
+              <span class="sam-danger-tooltip" role="tooltip"></span>
+            </span>
           </div>
           <span class="sam-selection-info" id="sam-selection-info"></span>
           <div class="sam-unified-hint" id="sam-unified-hint">
@@ -623,9 +1329,9 @@ window.Jukebox = {
                     <label class="sam-checkbox sam-item-checkbox">
                       <input type="checkbox" class="sam-song-select" data-id="${id}" ${this.selectedSongs?.has(id) ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleSongSelect('${id}', this.checked)">
                     </label>
-                    <span class="sam-item-name" contenteditable="true"
+                    <span class="sam-item-name" contenteditable="true" data-neko-marquee title="${Jukebox.escapeHtml(song.name)}"
                           onblur="Jukebox.SongActionManager.updateSongName('${id}', this.innerText)"
-                          onkeydown="if(event.key==='Enter'){this.blur();event.preventDefault();}">${song.name}</span>
+                          onkeydown="if(event.key==='Enter'){this.blur();event.preventDefault();}">${Jukebox.escapeHtml(song.name)}</span>
                     <div class="sam-item-actions">
                       <button class="sam-visibility-btn ${song.visible === false ? 'hidden' : ''}"
                               onclick="Jukebox.SongActionManager.toggleSongVisibility('${id}')"
@@ -637,12 +1343,12 @@ window.Jukebox = {
                       <button class="sam-delete-btn" onclick="Jukebox.SongActionManager.confirmDeleteSong('${id}')" title="${window.t('Jukebox.delete', '删除')}">🗑</button>
                     </div>
                   </div>
-                  <div class="sam-item-artist" contenteditable="true"
+                  <div class="sam-item-artist" contenteditable="true" data-neko-marquee title="${Jukebox.escapeHtml(song.artist || window.t('Jukebox.unknown', '未知'))}"
                        onblur="Jukebox.SongActionManager.updateSongArtist('${id}', this.innerText)"
-                       onkeydown="if(event.key==='Enter'){this.blur();event.preventDefault();}">${song.artist || window.t('Jukebox.unknown', '未知')}</span>
+                       onkeydown="if(event.key==='Enter'){this.blur();event.preventDefault();}">${Jukebox.escapeHtml(song.artist || window.t('Jukebox.unknown', '未知'))}
                   </div>
                   <div class="sam-item-bindings">
-                    ${this.getSongBindings(id).map(actionId => {
+                    ${this.getSongBindings(id).filter(actionId => this.shouldShowAction(this.data.actions[actionId])).map(actionId => {
                       const action = this.data.actions[actionId];
                       if (!action) return '';
                       const isDefault = song.defaultAction === actionId;
@@ -651,9 +1357,10 @@ window.Jukebox = {
                         ? `${window.t('Jukebox.defaultAction', '默认动画')} - ${window.t('Jukebox.clickSetDefault', '点击设为默认')}\n${window.t('Jukebox.format', '格式')}: ${format.toUpperCase()}`
                         : `${window.t('Jukebox.clickSetDefault', '点击设为默认')}\n${window.t('Jukebox.format', '格式')}: ${format.toUpperCase()}`;
                       return `<span class="sam-binding-tag sam-action-tag sam-action-tag-${format.toLowerCase()} ${isDefault ? 'sam-action-tag-default' : ''}"
+                                   data-neko-marquee
                                    onclick="Jukebox.SongActionManager.setDefaultAction('${id}', '${actionId}')"
                                    title="${titleText}">
-                        ${isDefault ? '★ ' : ''}${action.name}
+                        ${isDefault ? '★ ' : ''}${Jukebox.escapeHtml(action.name)}
                       </span>`;
                     }).join('')}
                   </div>
@@ -664,10 +1371,12 @@ window.Jukebox = {
       this.syncCheckboxState(panel.querySelector('#select-all-songs'), allSongsSelected, hasAnySongsSelected && !allSongsSelected);
       this.bindDragEvents(panel);
       this.bindFileDropEvents(panel, 'audio');
+      Jukebox.scheduleMarqueeTextUpdate(panel);
     },
 
     renderActions(panel) {
-      const actions = Object.entries(this.data.actions);
+      const showHidden = this.showHiddenActions !== false;
+      const actions = this.getVisibleActionEntries();
       const allActionsSelected = this.areAllActionsSelected();
       const hasAnyActionsSelected = this.hasAnyActionsSelected();
       panel.innerHTML = `
@@ -676,7 +1385,10 @@ window.Jukebox = {
             <input type="checkbox" id="select-all-actions" ${allActionsSelected ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleSelectAllActions(this.checked)">
             <span>${window.t('Jukebox.selectAll', '全选')}</span>
           </label>
-          <span></span>
+          <label class="sam-checkbox sam-checkbox-right">
+            <input type="checkbox" ${showHidden ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleShowHiddenActions(this.checked)">
+            <span>${window.t('Jukebox.showHiddenActions', '显示隐藏的动画')}</span>
+          </label>
         </div>
         <div class="sam-list">
             ${actions.length === 0 ? `<div class="sam-empty">${window.t('Jukebox.noActions', '暂无动画')}</div>` :
@@ -684,24 +1396,31 @@ window.Jukebox = {
                 const format = action.format || 'vmd';
                 const formatColor = this.getFormatColor(format);
                 return `
-                <div class="sam-item ${this.selectedActions?.has(id) ? 'sam-item-selected' : ''}" data-id="${id}" draggable="true">
+                <div class="sam-item ${action.visible === false ? 'sam-item-hidden' : ''} ${this.selectedActions?.has(id) ? 'sam-item-selected' : ''}" data-id="${id}" draggable="true">
                   <div class="sam-item-header">
                     <label class="sam-checkbox sam-item-checkbox">
                       <input type="checkbox" class="sam-action-select" data-id="${id}" ${this.selectedActions?.has(id) ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleActionSelect('${id}', this.checked)">
                     </label>
                     <span class="sam-format-dot" style="background-color: ${formatColor};"></span>
-                    <span class="sam-item-name" contenteditable="true"
+                    <span class="sam-item-name" contenteditable="true" data-neko-marquee title="${Jukebox.escapeHtml(action.name)}"
                           onblur="Jukebox.SongActionManager.updateActionName('${id}', this.innerText)"
-                          onkeydown="if(event.key==='Enter'){this.blur();event.preventDefault();}">${action.name}</span>
+                          onkeydown="if(event.key==='Enter'){this.blur();event.preventDefault();}">${Jukebox.escapeHtml(action.name)}</span>
                     <div class="sam-item-actions">
                       ${action.missing ? `<span class="sam-missing-badge">${window.t('Jukebox.missing', '缺失')}</span>` : ''}
+                      <button class="sam-visibility-btn ${action.visible === false ? 'hidden' : ''}"
+                              onclick="Jukebox.SongActionManager.toggleActionVisibility('${id}')"
+                              title="${action.visible === false ? window.t('Jukebox.show', '显示') : window.t('Jukebox.hide', '隐藏')}">
+                        ${action.visible === false
+                          ? '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/><line x1="3" y1="3" x2="21" y2="21" stroke="currentColor" stroke-width="2"/></svg>'
+                          : '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>'}
+                      </button>
                       <button class="sam-delete-btn" onclick="Jukebox.SongActionManager.confirmDeleteAction('${id}')" title="${window.t('Jukebox.delete', '删除')}">🗑</button>
                     </div>
                   </div>
                   <div class="sam-item-bindings">
-                    ${this.getActionBindings(id).map(songId => {
+                    ${this.getActionBindings(id).filter(songId => this.shouldShowSong(this.data.songs[songId])).map(songId => {
                       const song = this.data.songs[songId];
-                      return song ? `<span class="sam-binding-tag">${song.name}</span>` : '';
+                      return song ? `<span class="sam-binding-tag" data-neko-marquee title="${Jukebox.escapeHtml(song.name)}">${Jukebox.escapeHtml(song.name)}</span>` : '';
                     }).join('')}
                   </div>
                 </div>
@@ -711,6 +1430,7 @@ window.Jukebox = {
       this.syncCheckboxState(panel.querySelector('#select-all-actions'), allActionsSelected, hasAnyActionsSelected && !allActionsSelected);
       this.bindDragEvents(panel);
       this.bindFileDropEvents(panel, 'action');
+      Jukebox.scheduleMarqueeTextUpdate(panel);
     },
 
     renderBindings(panel) {
@@ -720,6 +1440,8 @@ window.Jukebox = {
       const hasAnyBindingSongsSelected = this.hasAnyBindingSongsSelected();
       const allBindingActionsSelected = this.areAllBindingActionsSelected();
       const hasAnyBindingActionsSelected = this.hasAnyBindingActionsSelected();
+      const visibleSongs = this.getVisibleSongEntries();
+      const visibleActions = this.getVisibleActionEntries();
 
       panel.innerHTML = `
         <div class="sam-bindings-container">
@@ -732,9 +1454,9 @@ window.Jukebox = {
               </label>
             </div>
             <div class="sam-bindings-list songs-for-drop">
-              ${Object.entries(this.data.songs).length === 0 ? `<div class="sam-empty">${window.t('Jukebox.noSongs', '暂无歌曲')}</div>` :
-                Object.entries(this.data.songs).map(([id, song], index) => {
-                  const boundActions = this.getSongBindings(id);
+              ${visibleSongs.length === 0 ? `<div class="sam-empty">${window.t('Jukebox.noSongs', '暂无歌曲')}</div>` :
+                visibleSongs.map(([id, song], index) => {
+                  const boundActions = this.getSongBindings(id).filter(actionId => this.shouldShowAction(this.data.actions[actionId]));
                   const isSelected = this.bindingSelectedSongs.has(id);
                   const songIndex = index + 1;
                   return `
@@ -744,7 +1466,7 @@ window.Jukebox = {
                       <input type="checkbox" ${isSelected ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleBindingSongSelect('${id}', this.checked)">
                     </label>
                     <span class="sam-binding-item-index">${songIndex}</span>
-                    <span class="sam-binding-item-name">${song.name}</span>
+                    <span class="sam-binding-item-name" data-neko-marquee title="${Jukebox.escapeHtml(song.name)}">${Jukebox.escapeHtml(song.name)}</span>
                   </div>
                   <div class="sam-binding-item-tags">
                     ${boundActions.map(actionId => {
@@ -762,7 +1484,7 @@ window.Jukebox = {
                               onclick="Jukebox.SongActionManager.setDefaultAction('${id}', '${actionId}')"
                               title="${titleText}">
                           <span class="sam-format-dot" style="background-color: ${formatColor};"></span>
-                          ${isDefault ? '★ ' : ''}${action.name}
+                          <span class="sam-binding-tag-label" data-neko-marquee>${isDefault ? '★ ' : ''}${Jukebox.escapeHtml(action.name)}</span>
                           <button class="sam-unbind-btn" onclick="event.stopPropagation(); Jukebox.SongActionManager.unbindSongFromAction('${id}', '${actionId}');" title="${window.t('Jukebox.unbind', '解除绑定')}">×</button>
                         </span>` : '';
                     }).join('')}
@@ -781,8 +1503,8 @@ window.Jukebox = {
               </label>
             </div>
             <div class="sam-bindings-list actions-for-drop">
-              ${Object.entries(this.data.actions).length === 0 ? `<div class="sam-empty">${window.t('Jukebox.noActions', '暂无动画')}</div>` :
-                Object.entries(this.data.actions).map(([id, action], index) => {
+              ${visibleActions.length === 0 ? `<div class="sam-empty">${window.t('Jukebox.noActions', '暂无动画')}</div>` :
+                visibleActions.map(([id, action], index) => {
                   const boundSongs = this.getActionBindings(id);
                   const isSelected = this.bindingSelectedActions.has(id);
                   const format = action.format || 'vmd';
@@ -796,17 +1518,17 @@ window.Jukebox = {
                     </label>
                     <span class="sam-binding-item-index">${actionIndex}</span>
                     <span class="sam-format-dot" style="background-color: ${formatColor};"></span>
-                    <span class="sam-binding-item-name">${action.name}</span>
+                    <span class="sam-binding-item-name" data-neko-marquee title="${Jukebox.escapeHtml(action.name)}">${Jukebox.escapeHtml(action.name)}</span>
                   </div>
                   <div class="sam-binding-item-tags">
-                    ${boundSongs.map(songId => {
+                    ${boundSongs.filter(songId => this.shouldShowSong(this.data.songs[songId])).map(songId => {
                       const song = this.data.songs[songId];
                       const isSongSelected = this.bindingSelectedSongs.has(songId);
                       const offset = this.data.bindings[songId]?.[id]?.offset || 0;
                       const titleText = `${window.t('Jukebox.offset', '偏移')}: ${offset}${window.t('Jukebox.frame', '帧')}`;
                       return song ? `
                         <span class="sam-binding-tag-small ${isSongSelected ? 'sam-tag-selected' : ''}" title="${titleText}">
-                          ${song.name}
+                          <span class="sam-binding-tag-label" data-neko-marquee>${Jukebox.escapeHtml(song.name)}</span>
                           <button class="sam-unbind-btn" onclick="Jukebox.SongActionManager.unbindSongFromAction('${songId}', '${id}'); event.stopPropagation();" title="${window.t('Jukebox.unbind', '解除绑定')}">×</button>
                         </span>` : '';
                     }).join('')}
@@ -821,14 +1543,35 @@ window.Jukebox = {
       this.syncCheckboxState(panel.querySelector('#select-all-binding-songs'), allBindingSongsSelected, hasAnyBindingSongsSelected && !allBindingSongsSelected);
       this.syncCheckboxState(panel.querySelector('#select-all-binding-actions'), allBindingActionsSelected, hasAnyBindingActionsSelected && !allBindingActionsSelected);
       this.bindBindingDragEvents(panel);
+      Jukebox.scheduleMarqueeTextUpdate(panel);
     },
     
     toggleShowHidden(checked) {
       this.showHiddenSongs = checked;
+      if (!checked) {
+        this.pruneHiddenSongSelection();
+      }
       const songsPanel = document.querySelector('.songs-panel');
       if (songsPanel) {
         this.rerenderPanel(songsPanel, () => this.renderSongs(songsPanel));
       }
+      this.updateSelectionInfo();
+    },
+
+    toggleShowHiddenActions(checked) {
+      this.showHiddenActions = checked;
+      if (!checked) {
+        this.pruneHiddenActionSelection();
+      }
+      const actionsPanel = document.querySelector('.actions-panel');
+      if (actionsPanel) {
+        this.rerenderPanel(actionsPanel, () => this.renderActions(actionsPanel));
+      }
+      const bindingsPanel = document.querySelector('.bindings-panel');
+      if (bindingsPanel && bindingsPanel.innerHTML.trim()) {
+        this.rerenderPanel(bindingsPanel, () => this.renderBindings(bindingsPanel));
+      }
+      this.updateSelectionInfo();
     },
     
     async toggleSongVisibility(songId) {
@@ -839,11 +1582,17 @@ window.Jukebox = {
       try {
         await this.api.updateSongVisibility(songId, newVisible);
         song.visible = newVisible;
+        if (!newVisible) {
+          if (this.selectedSongs) this.selectedSongs.delete(songId);
+          if (this.bindingSourceSongs) this.bindingSourceSongs.delete(songId);
+          if (this.bindingSelectedSongs) this.bindingSelectedSongs.delete(songId);
+        }
         
         const songsPanel = document.querySelector('.songs-panel');
         if (songsPanel) {
           this.rerenderPanel(songsPanel, () => this.renderSongs(songsPanel));
         }
+        this.updateSelectionInfo();
         
         // 通知主UI刷新歌曲列表
         if (window.Jukebox && window.Jukebox.loadSongs) {
@@ -851,6 +1600,39 @@ window.Jukebox = {
         }
       } catch (err) {
         console.error('切换歌曲可见性失败:', err);
+        alert(window.t('Jukebox.operationFailed', '操作失败'));
+      }
+    },
+
+    async toggleActionVisibility(actionId) {
+      const action = this.data.actions[actionId];
+      if (!action) return;
+
+      const newVisible = action.visible === false ? true : false;
+      try {
+        await this.api.updateActionVisibility(actionId, newVisible);
+        action.visible = newVisible;
+        if (!newVisible) {
+          if (this.selectedActions) this.selectedActions.delete(actionId);
+          if (this.bindingSourceActions) this.bindingSourceActions.delete(actionId);
+          if (this.bindingSelectedActions) this.bindingSelectedActions.delete(actionId);
+        }
+
+        const actionsPanel = document.querySelector('.actions-panel');
+        if (actionsPanel) {
+          this.rerenderPanel(actionsPanel, () => this.renderActions(actionsPanel));
+        }
+        const bindingsPanel = document.querySelector('.bindings-panel');
+        if (bindingsPanel && bindingsPanel.innerHTML.trim()) {
+          this.rerenderPanel(bindingsPanel, () => this.renderBindings(bindingsPanel));
+        }
+        this.updateSelectionInfo();
+
+        if (window.Jukebox && window.Jukebox.loadSongs) {
+          await window.Jukebox.loadSongs();
+        }
+      } catch (err) {
+        console.error('切换动画可见性失败:', err);
         alert(window.t('Jukebox.operationFailed', '操作失败'));
       }
     },
@@ -991,13 +1773,17 @@ window.Jukebox = {
     
     async deleteSong(songId) {
       try {
-        await this.api.deleteSong(songId);
+        const result = await this.api.deleteSong(songId);
         // 从选择集合中移除
         if (this.selectedSongs) this.selectedSongs.delete(songId);
         if (this.bindingSourceSongs) this.bindingSourceSongs.delete(songId);
         if (this.bindingSelectedSongs) this.bindingSelectedSongs.delete(songId);
-        delete this.data.songs[songId];
-        delete this.data.bindings[songId];
+        if (result?.hidden && this.data.songs[songId]) {
+          this.data.songs[songId].visible = false;
+        } else {
+          delete this.data.songs[songId];
+          delete this.data.bindings[songId];
+        }
 
         // 刷新所有面板
         this.refreshAllPanels();
@@ -1011,20 +1797,563 @@ window.Jukebox = {
       }
     },
 
-    async deleteAction(actionId) {
+    getSongDeleteMode() {
+      const activeTab = this.element?.querySelector('.sam-tab.active')?.dataset.tab || 'songs';
+      if (activeTab !== 'songs') return null;
+
+      const visibleSongIds = this.getVisibleSongEntries().map(([id]) => id);
+      const visibleSongIdSet = new Set(visibleSongIds);
+      const selectedIds = Array.from(this.selectedSongs || []).filter(id => visibleSongIdSet.has(id));
+      if (selectedIds.length > 0) {
+        return { resource: 'songs', mode: 'selected', ids: selectedIds, songIds: selectedIds };
+      }
+
+      if (visibleSongIds.length > 0) {
+        return { resource: 'songs', mode: 'clear-visible', ids: visibleSongIds, songIds: visibleSongIds };
+      }
+
+      return null;
+    },
+
+    getActionDeleteMode() {
+      const activeTab = this.element?.querySelector('.sam-tab.active')?.dataset.tab || 'songs';
+      if (activeTab !== 'actions') return null;
+
+      const visibleActionIds = this.getVisibleActionEntries().map(([id]) => id);
+      const visibleActionIdSet = new Set(visibleActionIds);
+      const selectedIds = Array.from(this.selectedActions || []).filter(id => visibleActionIdSet.has(id));
+      if (selectedIds.length > 0) {
+        return { resource: 'actions', mode: 'selected', ids: selectedIds, actionIds: selectedIds };
+      }
+
+      if (visibleActionIds.length > 0) {
+        return { resource: 'actions', mode: 'clear-visible', ids: visibleActionIds, actionIds: visibleActionIds };
+      }
+
+      return null;
+    },
+
+    getManagerDeleteMode() {
+      const activeTab = this.element?.querySelector('.sam-tab.active')?.dataset.tab || 'songs';
+      if (activeTab === 'songs') return this.getSongDeleteMode();
+      if (activeTab === 'actions') return this.getActionDeleteMode();
+      return null;
+    },
+
+    getSongDeleteSummary(songIds) {
+      const songs = songIds.map(id => [id, this.data.songs[id]]).filter(([, song]) => !!song);
+      return {
+        total: songs.length,
+        userCount: songs.filter(([, song]) => !song.isBuiltin).length,
+        builtinCount: songs.filter(([, song]) => !!song.isBuiltin).length,
+        hiddenCount: songs.filter(([, song]) => song.visible === false).length
+      };
+    },
+
+    getActionDeleteSummary(actionIds) {
+      const actions = actionIds.map(id => [id, this.data.actions[id]]).filter(([, action]) => !!action);
+      return {
+        total: actions.length,
+        userCount: actions.filter(([, action]) => !action.isBuiltin).length,
+        builtinCount: actions.filter(([, action]) => !!action.isBuiltin).length
+      };
+    },
+
+    formatSongDeleteTooltip(mode, songIds) {
+      const summary = this.getSongDeleteSummary(songIds);
+      const scope = mode === 'selected'
+        ? window.t('Jukebox.deleteSelectedScope', '选中的歌曲')
+        : window.t('Jukebox.clearVisibleScope', '当前显示的歌曲');
+      const hiddenHint = mode === 'clear-visible'
+        ? (this.showHiddenSongs !== false
+          ? window.t('Jukebox.clearVisibleIncludesHidden', '已开启显示隐藏歌曲，隐藏歌曲也会被处理。')
+          : window.t('Jukebox.clearVisibleExcludesHidden', '未开启显示隐藏歌曲，隐藏歌曲不会被处理。'))
+        : '';
+      const template = window.t('Jukebox.songBatchDeleteTooltip', {
+        defaultValue: '范围：{{scope}}\n共 {{total}} 首；自定义歌曲会删除，内置歌曲会隐藏。\n自定义：{{userCount}}，内置：{{builtinCount}}\n{{hiddenHint}}',
+        scope,
+        total: summary.total,
+        userCount: summary.userCount,
+        builtinCount: summary.builtinCount,
+        hiddenHint
+      });
+      return template
+        .replace('{{scope}}', scope)
+        .replace('{{total}}', summary.total)
+        .replace('{{userCount}}', summary.userCount)
+        .replace('{{builtinCount}}', summary.builtinCount)
+        .replace('{{hiddenHint}}', hiddenHint)
+        .trim();
+    },
+
+    formatActionDeleteTooltip(mode, actionIds) {
+      const summary = this.getActionDeleteSummary(actionIds);
+      const scope = mode === 'selected'
+        ? window.t('Jukebox.deleteSelectedActionScope', '选中的动画')
+        : window.t('Jukebox.clearVisibleActionScope', '当前显示的动画');
+      const hiddenHint = mode === 'clear-visible'
+        ? (this.showHiddenActions !== false
+          ? window.t('Jukebox.clearVisibleActionsIncludesHidden', '已开启显示隐藏动画，隐藏动画也会被处理。')
+          : window.t('Jukebox.clearVisibleActionsExcludesHidden', '未开启显示隐藏动画，隐藏动画不会被处理。'))
+        : '';
+      const template = window.t('Jukebox.actionBatchDeleteTooltip', {
+        defaultValue: '范围：{{scope}}\n共 {{total}} 个；自定义动画会删除，内置动画会隐藏。\n自定义：{{userCount}}，内置：{{builtinCount}}\n{{hiddenHint}}',
+        scope,
+        total: summary.total,
+        userCount: summary.userCount,
+        builtinCount: summary.builtinCount,
+        hiddenHint
+      });
+      return template
+        .replace('{{scope}}', scope)
+        .replace('{{total}}', summary.total)
+        .replace('{{userCount}}', summary.userCount)
+        .replace('{{builtinCount}}', summary.builtinCount)
+        .replace('{{hiddenHint}}', hiddenHint)
+        .trim();
+    },
+
+    showManagerDeleteTooltip(button) {
+      const state = this.getManagerDeleteMode();
+      const wrapper = button?.closest('.sam-danger-action-wrap');
+      const tooltip = wrapper?.querySelector('.sam-danger-tooltip');
+      if (!state || !tooltip) return;
+      tooltip.textContent = state.resource === 'actions'
+        ? this.formatActionDeleteTooltip(state.mode, state.ids)
+        : this.formatSongDeleteTooltip(state.mode, state.ids);
+      tooltip.style.display = 'block';
+    },
+
+    hideManagerDeleteTooltip() {
+      const tooltip = this.element?.querySelector('.sam-danger-tooltip');
+      if (tooltip) tooltip.style.display = 'none';
+    },
+
+    showSongDeleteTooltip(button) {
+      this.showManagerDeleteTooltip(button);
+    },
+
+    hideSongDeleteTooltip() {
+      this.hideManagerDeleteTooltip();
+    },
+
+    confirmManagerBatchDelete() {
+      const state = this.getManagerDeleteMode();
+      if (!state || state.ids.length === 0) return;
+      this.showResourceDeleteConfirmDialog(state.resource, state.mode, state.ids, 1);
+    },
+
+    confirmSongBatchDelete() {
+      const state = this.getSongDeleteMode();
+      if (!state || state.ids.length === 0) return;
+      this.showResourceDeleteConfirmDialog('songs', state.mode, state.ids, 1);
+    },
+
+    confirmActionBatchDelete() {
+      const state = this.getActionDeleteMode();
+      if (!state || state.ids.length === 0) return;
+      this.showResourceDeleteConfirmDialog('actions', state.mode, state.ids, 1);
+    },
+
+    closeSongDeleteDialog() {
+      const dialog = document.querySelector('.sam-danger-modal-backdrop');
+      if (dialog) dialog.remove();
+    },
+
+    getDangerDialogHost() {
+      if (this.element && document.body.contains(this.element)) {
+        return this.element;
+      }
+      return document.body;
+    },
+
+    showSongDeleteConfirmDialog(mode, songIds, step) {
+      this.showResourceDeleteConfirmDialog('songs', mode, songIds, step);
+    },
+
+    showResourceDeleteConfirmDialog(resource, mode, ids, step) {
+      this.closeSongDeleteDialog();
+      const isActions = resource === 'actions';
+      const summary = isActions ? this.getActionDeleteSummary(ids) : this.getSongDeleteSummary(ids);
+      const isClear = mode === 'clear-visible';
+      const isFinalClear = isClear && step === 2;
+      const backdrop = document.createElement('div');
+      backdrop.className = 'sam-danger-modal-backdrop';
+
+      const dialog = document.createElement('div');
+      dialog.className = `sam-danger-modal ${isFinalClear ? 'sam-danger-modal-final' : ''}`;
+      dialog.setAttribute('role', 'dialog');
+      dialog.setAttribute('aria-modal', 'true');
+
+      const title = document.createElement('h3');
+      if (isActions) {
+        title.textContent = isClear
+          ? window.t('Jukebox.clearVisibleActionsTitle', '删除当前显示')
+          : window.t('Jukebox.deleteSelectedActionsTitle', '删除选中动画');
+      } else {
+        title.textContent = isClear
+          ? window.t('Jukebox.clearVisibleSongsTitle', '删除当前显示')
+          : window.t('Jukebox.deleteSelectedSongsTitle', '删除选中歌曲');
+      }
+
+      const body = document.createElement('p');
+      if (isFinalClear) {
+        body.textContent = isActions
+          ? window.t('Jukebox.clearVisibleActionsSecondConfirm', '真..真的要删除当前显示吗..')
+          : window.t('Jukebox.clearVisibleSongsSecondConfirm', '真..真的要删除当前显示吗..');
+      } else if (isClear) {
+        body.textContent = isActions
+          ? window.t('Jukebox.clearVisibleActionsConfirm', {
+            defaultValue: '将处理当前显示的 {{total}} 个动画。自定义动画会被删除，内置动画会被隐藏。此操作不可恢复。',
+            total: summary.total
+          }).replace('{{total}}', summary.total)
+          : window.t('Jukebox.clearVisibleSongsConfirm', {
+            defaultValue: '将处理当前显示的 {{total}} 首歌曲。自定义歌曲会被删除，内置歌曲会被隐藏。此操作不可恢复。',
+            total: summary.total
+          }).replace('{{total}}', summary.total);
+      } else {
+        body.textContent = isActions
+          ? window.t('Jukebox.deleteSelectedActionsConfirm', {
+            defaultValue: '将删除选中的 {{total}} 个动画。自定义动画会被删除，内置动画会被隐藏。此操作不可恢复。',
+            total: summary.total
+          }).replace('{{total}}', summary.total)
+          : window.t('Jukebox.deleteSelectedSongsConfirm', {
+            defaultValue: '将删除选中的 {{total}} 首歌曲。自定义歌曲会被删除，内置歌曲会被隐藏。此操作不可恢复。',
+            total: summary.total
+          }).replace('{{total}}', summary.total);
+      }
+
+      const detail = document.createElement('p');
+      detail.className = 'sam-danger-modal-detail';
+      detail.textContent = window.t(isActions ? 'Jukebox.actionBatchDeleteSummary' : 'Jukebox.songBatchDeleteSummary', {
+        defaultValue: isActions
+          ? '共 {{total}} 个；自定义 {{userCount}} 个，内置 {{builtinCount}} 个。'
+          : '共 {{total}} 首；自定义 {{userCount}} 首，内置 {{builtinCount}} 首。',
+        total: summary.total,
+        userCount: summary.userCount,
+        builtinCount: summary.builtinCount
+      })
+        .replace('{{total}}', summary.total)
+        .replace('{{userCount}}', summary.userCount)
+        .replace('{{builtinCount}}', summary.builtinCount);
+
+      const actions = document.createElement('div');
+      actions.className = `sam-danger-modal-actions ${isFinalClear ? 'sam-danger-modal-actions-reversed' : ''}`;
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.className = 'sam-danger-modal-cancel';
+      cancelBtn.textContent = window.t('Jukebox.cancel', '取消');
+      cancelBtn.onclick = () => this.closeSongDeleteDialog();
+
+      const confirmZone = document.createElement('span');
+      confirmZone.className = `sam-danger-confirm-zone ${isFinalClear ? 'sam-danger-confirm-zone-final' : ''}`;
+
+      const confirmBtn = document.createElement('button');
+      confirmBtn.className = 'sam-danger-modal-confirm';
+      confirmBtn.textContent = isClear
+        ? (isFinalClear
+          ? window.t(isActions ? 'Jukebox.clearVisibleActionsNow' : 'Jukebox.clearVisibleSongsNow', '删除当前显示')
+          : window.t('Jukebox.continue', '继续'))
+        : window.t(isActions ? 'Jukebox.deleteSelectedActionsNow' : 'Jukebox.deleteSelectedSongsNow', '删除选中');
+
+      if (isFinalClear) {
+        confirmBtn.dataset.escapeReady = 'false';
+      }
+
+      if (isFinalClear) {
+        confirmZone.onmouseenter = (event) => {
+          if (confirmBtn.dataset.escaped === 'true') return;
+          this.runFinalClearButtonEscape(confirmBtn, event, body);
+        };
+      }
+
+      confirmBtn.onclick = (event) => {
+        if (isFinalClear && confirmBtn.dataset.escapeReady !== 'true') {
+          event.preventDefault();
+          event.stopPropagation();
+          if (confirmBtn.dataset.escaped !== 'true') {
+            this.runFinalClearButtonEscape(confirmBtn, event, body);
+          }
+          return;
+        }
+        if (isClear && step === 1) {
+          this.showResourceDeleteConfirmDialog(resource, mode, ids, 2);
+          return;
+        }
+        if (isActions) {
+          this.executeActionBatchDelete(mode, ids);
+        } else {
+          this.executeSongBatchDelete(mode, ids);
+        }
+      };
+
+      confirmZone.appendChild(confirmBtn);
+      actions.appendChild(cancelBtn);
+      actions.appendChild(confirmZone);
+      dialog.appendChild(title);
+      dialog.appendChild(body);
+      dialog.appendChild(detail);
+      dialog.appendChild(actions);
+      backdrop.appendChild(dialog);
+      this.getDangerDialogHost().appendChild(backdrop);
+      confirmBtn.focus();
+    },
+
+    runFinalClearButtonEscape(confirmBtn, event, promptEl) {
+      confirmBtn.dataset.escaped = 'true';
+      confirmBtn.classList.add('sam-danger-confirm-escaped', 'sam-danger-confirm-escaping');
+
+      const buttonRect = confirmBtn.getBoundingClientRect();
+      const promptRect = promptEl.getBoundingClientRect();
+      const centerX = buttonRect.left + buttonRect.width / 2;
+      const centerY = buttonRect.top + buttonRect.height / 2;
+      const mouseX = Number.isFinite(event?.clientX) ? event.clientX : centerX + 1;
+      const mouseY = Number.isFinite(event?.clientY) ? event.clientY : centerY;
+
+      const normalize = (x, y, fallbackX, fallbackY) => {
+        const length = Math.hypot(x, y);
+        if (length < 0.001) return { x: fallbackX, y: fallbackY };
+        return { x: x / length, y: y / length };
+      };
+
+      const escape = normalize(centerX - mouseX, centerY - mouseY, -1, 0);
+      // Bias the curved path toward the early ".." area in the final warning text.
+      const promptTargetX = promptRect.left + promptRect.width * 0.28;
+      const promptTargetY = promptRect.top + promptRect.height * 0.48;
+      const towardPrompt = normalize(promptTargetX - centerX, promptTargetY - centerY, 0, -1);
+      const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+
+      const controlX = escape.x * 116;
+      const controlY = escape.y * 54;
+      const endX = clamp(escape.x * 96 + towardPrompt.x * 54, -150, 150);
+      const endY = clamp(escape.y * 36 + towardPrompt.y * 70, -92, 42);
+      confirmBtn.dataset.escapeInitialX = String(Math.round(controlX));
+      confirmBtn.dataset.escapeInitialY = String(Math.round(controlY));
+      confirmBtn.dataset.escapeX = String(Math.round(endX));
+      confirmBtn.dataset.escapeY = String(Math.round(endY));
+
+      const durationMs = 620;
+      const startedAt = performance.now();
+      const easeInOutSine = (t) => 0.5 - Math.cos(Math.PI * t) / 2;
+
+      const tick = (now) => {
+        const progress = Math.min(1, (now - startedAt) / durationMs);
+        const eased = easeInOutSine(progress);
+        const inv = 1 - eased;
+        const x = inv * inv * 0 + 2 * inv * eased * controlX + eased * eased * endX;
+        const y = inv * inv * 0 + 2 * inv * eased * controlY + eased * eased * endY;
+        confirmBtn.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`;
+        if (progress < 1) {
+          requestAnimationFrame(tick);
+        } else {
+          confirmBtn.style.transform = `translate(${endX.toFixed(1)}px, ${endY.toFixed(1)}px)`;
+          confirmBtn.classList.remove('sam-danger-confirm-escaping');
+          confirmBtn.dataset.escapeReady = 'true';
+        }
+      };
+
+      requestAnimationFrame(tick);
+    },
+
+    async executeSongBatchDelete(mode, songIds) {
       try {
-        await this.api.deleteAction(actionId);
-        // 从选择集合中移除
+        const result = await this.api.batchDeleteSongs(songIds);
+        this.applySongBatchDeleteResult(result);
+        this.closeSongDeleteDialog();
+        this.showSongBatchDeleteResult(result);
+        this.refreshAllPanels();
+        if (window.Jukebox && window.Jukebox.loadSongs) {
+          await window.Jukebox.loadSongs();
+        }
+      } catch (err) {
+        console.error('批量删除歌曲失败:', err);
+        this.closeSongDeleteDialog();
+        alert(window.t('Jukebox.deleteFailed', '删除失败') + ': ' + (err.message || window.t('Jukebox.unknownError', '未知错误')));
+      }
+    },
+
+    applySongBatchDeleteResult(result) {
+      const deletedIds = (result.deleted || []).map(item => item.songId);
+      const hiddenIds = (result.hidden || []).map(item => item.songId);
+      const processedIds = new Set([...deletedIds, ...hiddenIds]);
+
+      deletedIds.forEach(songId => {
+        delete this.data.songs[songId];
+        delete this.data.bindings[songId];
+      });
+      hiddenIds.forEach(songId => {
+        if (this.data.songs[songId]) this.data.songs[songId].visible = false;
+      });
+
+      processedIds.forEach(songId => {
+        if (this.selectedSongs) this.selectedSongs.delete(songId);
+        if (this.bindingSourceSongs) this.bindingSourceSongs.delete(songId);
+        if (this.bindingSelectedSongs) this.bindingSelectedSongs.delete(songId);
+      });
+    },
+
+    showSongBatchDeleteResult(result) {
+      const failed = result.failed || [];
+      const failedNames = failed.slice(0, 5).map(item => item.name || item.songId).join(', ');
+      let message = window.t('Jukebox.songBatchDeleteResult', {
+        defaultValue: '已删除 {{deletedCount}} 首自定义歌曲，隐藏 {{hiddenCount}} 首内置歌曲。',
+        deletedCount: result.deletedCount || 0,
+        hiddenCount: result.hiddenCount || 0
+      })
+        .replace('{{deletedCount}}', result.deletedCount || 0)
+        .replace('{{hiddenCount}}', result.hiddenCount || 0);
+
+      if ((result.failedCount || 0) > 0) {
+        message += '\n' + window.t('Jukebox.songBatchDeleteFailedSummary', {
+          defaultValue: '{{failedCount}} 首处理失败：{{names}}',
+          failedCount: result.failedCount,
+          names: failedNames
+        })
+          .replace('{{failedCount}}', result.failedCount)
+          .replace('{{names}}', failedNames);
+      }
+
+      const backdrop = document.createElement('div');
+      backdrop.className = 'sam-danger-modal-backdrop sam-danger-result-backdrop';
+      const dialog = document.createElement('div');
+      dialog.className = 'sam-danger-modal sam-danger-result-modal';
+      const title = document.createElement('h3');
+      title.textContent = (result.failedCount || 0) > 0
+        ? window.t('Jukebox.songBatchDeletePartialTitle', '处理完成，部分失败')
+        : window.t('Jukebox.songBatchDeleteSuccessTitle', '处理完成');
+      const body = document.createElement('p');
+      body.textContent = message;
+      const actions = document.createElement('div');
+      actions.className = 'sam-danger-modal-actions';
+      const okBtn = document.createElement('button');
+      okBtn.className = 'sam-danger-modal-confirm';
+      okBtn.textContent = window.t('Jukebox.confirm', '确认');
+      okBtn.onclick = () => backdrop.remove();
+      actions.appendChild(okBtn);
+      dialog.appendChild(title);
+      dialog.appendChild(body);
+      dialog.appendChild(actions);
+      backdrop.appendChild(dialog);
+      this.getDangerDialogHost().appendChild(backdrop);
+      okBtn.focus();
+    },
+
+    async executeActionBatchDelete(mode, actionIds) {
+      try {
+        const result = await this.api.batchDeleteActions(actionIds);
+        this.applyActionBatchDeleteResult(result);
+        this.closeSongDeleteDialog();
+        this.showActionBatchDeleteResult(result);
+        this.refreshAllPanels();
+        if (window.Jukebox && window.Jukebox.loadSongs) {
+          await window.Jukebox.loadSongs();
+        }
+      } catch (err) {
+        console.error('批量删除动画失败:', err);
+        this.closeSongDeleteDialog();
+        alert(window.t('Jukebox.deleteFailed', '删除失败') + ': ' + (err.message || window.t('Jukebox.unknownError', '未知错误')));
+      }
+    },
+
+    applyActionBatchDeleteResult(result) {
+      const deletedIds = (result.deleted || []).map(item => item.actionId);
+      const hiddenIds = (result.hidden || []).map(item => item.actionId);
+      const processedIds = new Set([...deletedIds, ...hiddenIds]);
+
+      deletedIds.forEach(actionId => {
+        delete this.data.actions[actionId];
+      });
+
+      hiddenIds.forEach(actionId => {
+        if (this.data.actions[actionId]) this.data.actions[actionId].visible = false;
+      });
+
+      processedIds.forEach(actionId => {
         if (this.selectedActions) this.selectedActions.delete(actionId);
         if (this.bindingSourceActions) this.bindingSourceActions.delete(actionId);
         if (this.bindingSelectedActions) this.bindingSelectedActions.delete(actionId);
-        delete this.data.actions[actionId];
+      });
 
-        // 从所有绑定中移除
+      deletedIds.forEach(actionId => {
         for (const songId in this.data.bindings) {
           delete this.data.bindings[songId][actionId];
           if (Object.keys(this.data.bindings[songId]).length === 0) {
             delete this.data.bindings[songId];
+          }
+        }
+
+        for (const songId in this.data.songs) {
+          if (this.data.songs[songId]?.defaultAction === actionId) {
+            this.data.songs[songId].defaultAction = '';
+          }
+        }
+      });
+    },
+
+    showActionBatchDeleteResult(result) {
+      const failed = result.failed || [];
+      const failedNames = failed.slice(0, 5).map(item => item.name || item.actionId).join(', ');
+      let message = window.t('Jukebox.actionBatchDeleteResult', {
+        defaultValue: '已删除 {{deletedCount}} 个自定义动画，隐藏 {{hiddenCount}} 个内置动画。',
+        deletedCount: result.deletedCount || 0,
+        hiddenCount: result.hiddenCount || 0
+      })
+        .replace('{{deletedCount}}', result.deletedCount || 0)
+        .replace('{{hiddenCount}}', result.hiddenCount || 0);
+
+      if ((result.failedCount || 0) > 0) {
+        message += '\n' + window.t('Jukebox.actionBatchDeleteFailedSummary', {
+          defaultValue: '{{failedCount}} 个处理失败：{{names}}',
+          failedCount: result.failedCount,
+          names: failedNames
+        })
+          .replace('{{failedCount}}', result.failedCount)
+          .replace('{{names}}', failedNames);
+      }
+
+      const backdrop = document.createElement('div');
+      backdrop.className = 'sam-danger-modal-backdrop sam-danger-result-backdrop';
+      const dialog = document.createElement('div');
+      dialog.className = 'sam-danger-modal sam-danger-result-modal';
+      const title = document.createElement('h3');
+      title.textContent = (result.failedCount || 0) > 0
+        ? window.t('Jukebox.actionBatchDeletePartialTitle', '处理完成，部分失败')
+        : window.t('Jukebox.actionBatchDeleteSuccessTitle', '处理完成');
+      const body = document.createElement('p');
+      body.textContent = message;
+      const actions = document.createElement('div');
+      actions.className = 'sam-danger-modal-actions';
+      const okBtn = document.createElement('button');
+      okBtn.className = 'sam-danger-modal-confirm';
+      okBtn.textContent = window.t('Jukebox.confirm', '确认');
+      okBtn.onclick = () => backdrop.remove();
+      actions.appendChild(okBtn);
+      dialog.appendChild(title);
+      dialog.appendChild(body);
+      dialog.appendChild(actions);
+      backdrop.appendChild(dialog);
+      this.getDangerDialogHost().appendChild(backdrop);
+      okBtn.focus();
+    },
+
+    async deleteAction(actionId) {
+      try {
+        const result = await this.api.deleteAction(actionId);
+        // 从选择集合中移除
+        if (this.selectedActions) this.selectedActions.delete(actionId);
+        if (this.bindingSourceActions) this.bindingSourceActions.delete(actionId);
+        if (this.bindingSelectedActions) this.bindingSelectedActions.delete(actionId);
+        if (result?.hidden && this.data.actions[actionId]) {
+          this.data.actions[actionId].visible = false;
+        } else {
+          delete this.data.actions[actionId];
+
+          // 从所有绑定中移除
+          for (const songId in this.data.bindings) {
+            delete this.data.bindings[songId][actionId];
+            if (Object.keys(this.data.bindings[songId]).length === 0) {
+              delete this.data.bindings[songId];
+            }
           }
         }
 
@@ -1097,6 +2426,48 @@ window.Jukebox = {
       return Object.entries(this.data.songs).filter(([id, song]) => showHidden || song.visible !== false);
     },
 
+    shouldShowSong(song) {
+      const showHidden = this.showHiddenSongs !== false;
+      return !!song && (showHidden || song.visible !== false);
+    },
+
+    shouldShowAction(action) {
+      const showHidden = this.showHiddenActions !== false;
+      return !!action && (showHidden || action.visible !== false);
+    },
+
+    getVisibleActionEntries() {
+      return Object.entries(this.data.actions).filter(([, action]) => this.shouldShowAction(action));
+    },
+
+    pruneHiddenSongSelection() {
+      const visibleSongIds = new Set(this.getVisibleSongEntries().map(([id]) => id));
+      this.selectedSongs?.forEach(id => {
+        if (!visibleSongIds.has(id)) this.selectedSongs.delete(id);
+      });
+      this.bindingSelectedSongs?.forEach(id => {
+        if (!visibleSongIds.has(id)) this.bindingSelectedSongs.delete(id);
+      });
+      this.bindingSourceSongs?.forEach(id => {
+        if (!visibleSongIds.has(id)) this.bindingSourceSongs.delete(id);
+      });
+      this.syncBindingSelection();
+    },
+
+    pruneHiddenActionSelection() {
+      const visibleActionIds = new Set(this.getVisibleActionEntries().map(([id]) => id));
+      this.selectedActions?.forEach(id => {
+        if (!visibleActionIds.has(id)) this.selectedActions.delete(id);
+      });
+      this.bindingSelectedActions?.forEach(id => {
+        if (!visibleActionIds.has(id)) this.bindingSelectedActions.delete(id);
+      });
+      this.bindingSourceActions?.forEach(id => {
+        if (!visibleActionIds.has(id)) this.bindingSourceActions.delete(id);
+      });
+      this.syncBindingSelection();
+    },
+
     areAllSongsSelected() {
       this.initSelection();
       const songs = this.getVisibleSongEntries();
@@ -1110,35 +2481,35 @@ window.Jukebox = {
 
     areAllActionsSelected() {
       this.initSelection();
-      const actionIds = Object.keys(this.data.actions);
+      const actionIds = this.getVisibleActionEntries().map(([id]) => id);
       return actionIds.length > 0 && actionIds.every(id => this.selectedActions.has(id));
     },
 
     hasAnyActionsSelected() {
       this.initSelection();
-      return Object.keys(this.data.actions).some(id => this.selectedActions.has(id));
+      return this.getVisibleActionEntries().some(([id]) => this.selectedActions.has(id));
     },
 
     areAllBindingSongsSelected() {
       this.initBindingSelection();
-      const songIds = Object.keys(this.data.songs);
+      const songIds = this.getVisibleSongEntries().map(([id]) => id);
       return songIds.length > 0 && songIds.every(songId => this.bindingSelectedSongs.has(songId));
     },
 
     hasAnyBindingSongsSelected() {
       this.initBindingSelection();
-      return Object.keys(this.data.songs).some(songId => this.bindingSelectedSongs.has(songId));
+      return this.getVisibleSongEntries().some(([songId]) => this.bindingSelectedSongs.has(songId));
     },
 
     areAllBindingActionsSelected() {
       this.initBindingSelection();
-      const actionIds = Object.keys(this.data.actions);
+      const actionIds = this.getVisibleActionEntries().map(([id]) => id);
       return actionIds.length > 0 && actionIds.every(actionId => this.bindingSelectedActions.has(actionId));
     },
 
     hasAnyBindingActionsSelected() {
       this.initBindingSelection();
-      return Object.keys(this.data.actions).some(actionId => this.bindingSelectedActions.has(actionId));
+      return this.getVisibleActionEntries().some(([actionId]) => this.bindingSelectedActions.has(actionId));
     },
 
     syncCheckboxState(checkbox, checked, indeterminate) {
@@ -1154,20 +2525,20 @@ window.Jukebox = {
       const actionIds = new Set();
 
       this.bindingSourceSongs.forEach(songId => {
-        if (!this.data.songs[songId]) return;
+        if (!this.shouldShowSong(this.data.songs[songId])) return;
         songIds.add(songId);
         this.getSongBindings(songId).forEach(actionId => {
-          if (this.data.actions[actionId]) {
+          if (this.shouldShowAction(this.data.actions[actionId])) {
             actionIds.add(actionId);
           }
         });
       });
 
       this.bindingSourceActions.forEach(actionId => {
-        if (!this.data.actions[actionId]) return;
+        if (!this.shouldShowAction(this.data.actions[actionId])) return;
         actionIds.add(actionId);
         this.getActionBindings(actionId).forEach(songId => {
-          if (this.data.songs[songId]) {
+          if (this.shouldShowSong(this.data.songs[songId])) {
             songIds.add(songId);
           }
         });
@@ -1272,8 +2643,8 @@ window.Jukebox = {
     // 动画Tab全选：只勾选动画本身
     toggleSelectAllActions(checked) {
       this.initSelection();
-      
-      Object.keys(this.data.actions).forEach(id => {
+
+      this.getVisibleActionEntries().forEach(([id]) => {
         if (checked) {
           this.selectedActions.add(id);
         } else {
@@ -1288,7 +2659,7 @@ window.Jukebox = {
     toggleSelectAllBindingSongs(checked) {
       this.ensureBindingSelectionState();
       
-      Object.keys(this.data.songs).forEach(songId => {
+      this.getVisibleSongEntries().forEach(([songId]) => {
         if (checked) {
           this.bindingSourceSongs.add(songId);
         } else {
@@ -1303,8 +2674,8 @@ window.Jukebox = {
     // 绑定Tab全选动画（使用合集逻辑：只勾选满足条件的动画）
     toggleSelectAllBindingActions(checked) {
       this.ensureBindingSelectionState();
-      
-      Object.keys(this.data.actions).forEach(actionId => {
+
+      this.getVisibleActionEntries().forEach(([actionId]) => {
         if (checked) {
           this.bindingSourceActions.add(actionId);
         } else {
@@ -1366,6 +2737,8 @@ window.Jukebox = {
       const hasSelection = songCount > 0 || actionCount > 0;
       const exportAllBtns = document.querySelectorAll('.sam-btn-export-all');
       const exportSelectedBtn = document.querySelector('.sam-btn-export-selected');
+      const dangerWrap = document.querySelector('.sam-danger-action-wrap');
+      const dangerBtn = document.querySelector('.sam-btn-song-danger');
       const hasBindingSelection = bindingSongCount > 0 || bindingActionCount > 0;
       const hasActiveSelection = activeTab === 'bindings' ? hasBindingSelection : hasSelection;
       
@@ -1374,6 +2747,31 @@ window.Jukebox = {
       });
       if (exportSelectedBtn) {
         exportSelectedBtn.style.display = hasActiveSelection ? '' : 'none';
+      }
+
+      if (dangerWrap && dangerBtn) {
+        const deleteState = this.getManagerDeleteMode();
+        if ((activeTab === 'songs' || activeTab === 'actions') && deleteState) {
+          const isActions = deleteState.resource === 'actions';
+          dangerWrap.style.display = '';
+          dangerBtn.dataset.mode = deleteState.mode;
+          dangerBtn.dataset.resource = deleteState.resource;
+          dangerBtn.textContent = deleteState.mode === 'selected'
+            ? window.t(isActions ? 'Jukebox.deleteSelectedActions' : 'Jukebox.deleteSelectedSongs', {
+              defaultValue: '删除选中({{count}})',
+              count: deleteState.ids.length,
+            }).replace('{{count}}', deleteState.ids.length)
+            : window.t(isActions ? 'Jukebox.clearVisibleActions' : 'Jukebox.clearVisibleSongs', {
+              defaultValue: '删除当前显示({{count}})',
+              count: deleteState.ids.length,
+            }).replace('{{count}}', deleteState.ids.length);
+          dangerBtn.title = deleteState.mode === 'selected'
+            ? window.t(isActions ? 'Jukebox.deleteSelectedActionsTitle' : 'Jukebox.deleteSelectedSongsTitle', isActions ? '删除选中动画' : '删除选中歌曲')
+            : window.t(isActions ? 'Jukebox.clearVisibleActionsTitle' : 'Jukebox.clearVisibleSongsTitle', '删除当前显示');
+        } else {
+          dangerWrap.style.display = 'none';
+          this.hideManagerDeleteTooltip();
+        }
       }
     },
     
@@ -1477,7 +2875,7 @@ window.Jukebox = {
     getActionBindings(actionId) {
       const songs = [];
       for (const [songId, actions] of Object.entries(this.data.bindings)) {
-        if (actions[actionId]) {
+        if (actions && Object.prototype.hasOwnProperty.call(actions, actionId)) {
           songs.push(songId);
         }
       }
@@ -1502,15 +2900,15 @@ window.Jukebox = {
       btn.style.display = 'none';
       container.appendChild(inputWrapper);
 
-      // 获取可用项目（排除已绑定的）
-      const availableItems = isSong ? this.data.actions : this.data.songs;
+      // 获取可用项目（排除当前视图隐藏和已绑定的）
+      const availableEntries = isSong ? this.getVisibleActionEntries() : this.getVisibleSongEntries();
       const currentBindings = isSong
         ? (this.data.bindings[sourceId] || {})
         : this.getActionBindings(sourceId);
       const boundIds = new Set(isSong ? Object.keys(currentBindings) : currentBindings);
 
-      // 获取所有项目的原始序号映射
-      const allItemsWithIndex = Object.entries(availableItems)
+      // 获取当前视图项目的序号映射
+      const allItemsWithIndex = availableEntries
         .map(([id, item], index) => ({ id, item, originalIndex: index + 1 }));
 
       // 过滤：只排除已绑定的项目（被隐藏的歌曲也可以绑定）
@@ -1860,10 +3258,7 @@ window.Jukebox = {
 
     async uploadSongs(files) {
       try {
-        const metadata = files.map(f => ({
-          name: f.name.replace(/\.[^/.]+$/, ''),
-          artist: '未知'
-        }));
+        const metadata = files.map(() => ({}));
         const result = await this.api.uploadSongs(files, metadata);
         console.log('[SongActionManager] 上传歌曲成功:', result);
         await this.load();
@@ -2177,6 +3572,10 @@ window.Jukebox = {
         this._panelDragCleanup();
         this._panelDragCleanup = null;
       }
+      if (this._panelResizeCleanup) {
+        this._panelResizeCleanup();
+        this._panelResizeCleanup = null;
+      }
       if (this.element) {
         this.element.remove();
         this.element = null;
@@ -2312,10 +3711,14 @@ window.Jukebox = {
           z-index: 100010;
           background: ${C.panel.background};
           color: ${C.panel.color};
-          padding: 15px;
+          padding: 0;
           border-radius: 12px;
           width: 450px;
-          max-height: 500px;
+          height: min(500px, calc(100vh - 24px));
+          min-width: 420px;
+          min-height: 360px;
+          max-width: calc(100vw - 24px);
+          max-height: calc(100vh - 24px);
           overflow: hidden;
           display: flex;
           flex-direction: column;
@@ -2323,14 +3726,25 @@ window.Jukebox = {
           border: 2px solid transparent;
           transition: border-color 0.3s, box-shadow 0.3s;
           pointer-events: auto;
-          cursor: grab;
+          cursor: default;
           user-select: none;
           -webkit-user-select: none;
         }
 
-        .jukebox-sam-panel:active {
-          cursor: grabbing;
+        .sam-resize-handle {
+          position: absolute;
+          z-index: 130;
+          -webkit-app-region: no-drag;
         }
+
+        .sam-resize-handle[data-dir="n"]  { top: -3px; left: 12px; right: 12px; height: 6px; cursor: ns-resize; }
+        .sam-resize-handle[data-dir="s"]  { bottom: -3px; left: 12px; right: 12px; height: 6px; cursor: ns-resize; }
+        .sam-resize-handle[data-dir="w"]  { left: -3px; top: 12px; bottom: 12px; width: 6px; cursor: ew-resize; }
+        .sam-resize-handle[data-dir="e"]  { right: -3px; top: 12px; bottom: 12px; width: 6px; cursor: ew-resize; }
+        .sam-resize-handle[data-dir="nw"] { top: -3px; left: -3px; width: 18px; height: 18px; cursor: nwse-resize; }
+        .sam-resize-handle[data-dir="ne"] { top: -3px; right: -3px; width: 18px; height: 18px; cursor: nesw-resize; }
+        .sam-resize-handle[data-dir="sw"] { bottom: -3px; left: -3px; width: 18px; height: 18px; cursor: nesw-resize; }
+        .sam-resize-handle[data-dir="se"] { bottom: -3px; right: -3px; width: 18px; height: 18px; cursor: nwse-resize; }
 
         .jukebox-sam-panel button,
         .jukebox-sam-panel a {
@@ -2356,9 +3770,31 @@ window.Jukebox = {
           justify-content: space-between;
           align-items: center;
           margin-bottom: 10px;
-          padding-bottom: 10px;
+          padding: 15px 15px 10px;
           border-bottom: 1px solid ${C.tabs.borderBottom};
           gap: 10px;
+          cursor: grab;
+          touch-action: none;
+        }
+
+        .sam-title,
+        .sam-drag-fill {
+          cursor: grab;
+        }
+
+        .sam-header:active,
+        .sam-title:active,
+        .sam-drag-fill:active,
+        body.sam-panel-dragging .sam-header,
+        body.sam-panel-dragging .sam-title,
+        body.sam-panel-dragging .sam-drag-fill {
+          cursor: grabbing;
+        }
+
+        .sam-drag-fill {
+          align-self: stretch;
+          flex: 1 1 24px;
+          min-width: 16px;
         }
 
         body.sam-panel-dragging {
@@ -2402,7 +3838,7 @@ window.Jukebox = {
         .sam-tabs {
           display: flex;
           gap: 5px;
-          flex: 1;
+          flex: 0 0 auto;
           justify-content: center;
         }
 
@@ -2428,18 +3864,21 @@ window.Jukebox = {
         
         .sam-content {
           flex: 1;
-          overflow-y: auto;
+          overflow: hidden;
           min-height: 0;
+          padding: 0 15px;
         }
 
         .sam-panel {
           display: none;
           height: 100%;
-          overflow-y: auto;
+          min-height: 0;
+          overflow: hidden;
         }
 
         .sam-panel.active {
-          display: block;
+          display: flex;
+          flex-direction: column;
         }
         
         .sam-list {
@@ -2512,7 +3951,7 @@ window.Jukebox = {
           background: ${C.item.background};
           padding: 10px;
           border-radius: 6px;
-          cursor: grab;
+          cursor: default;
           transition: all 0.3s;
         }
 
@@ -2552,6 +3991,7 @@ window.Jukebox = {
           display: flex;
           flex-wrap: wrap;
           gap: 4px;
+          min-width: 0;
         }
 
         .sam-binding-tag {
@@ -2560,6 +4000,37 @@ window.Jukebox = {
           background: ${C.functional.tagBg};
           padding: 2px 6px;
           border-radius: 10px;
+          display: inline-block;
+          max-width: 180px;
+          white-space: nowrap;
+          overflow: hidden;
+        }
+
+        .jukebox-sam-panel [data-neko-marquee] {
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: clip;
+          scrollbar-width: none;
+          -ms-overflow-style: none;
+        }
+
+        .jukebox-sam-panel [data-neko-marquee]::-webkit-scrollbar {
+          display: none;
+        }
+
+        .jukebox-sam-panel [data-neko-marquee].neko-marquee-active {
+          cursor: default;
+        }
+
+        .jukebox-sam-panel [contenteditable][data-neko-marquee]:focus {
+          overflow-x: auto;
+          scrollbar-width: thin;
+          -ms-overflow-style: auto;
+        }
+
+        .jukebox-sam-panel [contenteditable][data-neko-marquee]:focus::-webkit-scrollbar {
+          display: block;
+          height: 6px;
         }
         
         /* 动画标签样式 - 不同格式不同颜色 */
@@ -2673,10 +4144,24 @@ window.Jukebox = {
         .sam-bindings-container {
           display: flex;
           gap: 15px;
+          width: 100%;
+          flex: 1;
+          min-width: 0;
+          min-height: 0;
+          overflow: hidden;
         }
 
         .sam-bindings-section {
-          flex: 1;
+          display: flex;
+          flex-direction: column;
+          flex: 1 1 0;
+          min-width: 0;
+          min-height: 0;
+          overflow: hidden;
+        }
+
+        .sam-bindings-header {
+          flex: 0 0 auto;
         }
 
         .sam-bindings-section h4 {
@@ -2689,12 +4174,15 @@ window.Jukebox = {
           display: flex;
           flex-direction: column;
           gap: 8px;
-          max-height: 200px;
+          flex: 1;
+          min-height: 0;
           overflow-y: auto;
+          overflow-x: hidden;
           padding: 10px;
           border: 2px dashed transparent;
           border-radius: 8px;
           transition: all 0.3s;
+          min-width: 0;
         }
 
         .sam-bindings-list.drag-over {
@@ -2709,10 +4197,13 @@ window.Jukebox = {
           position: relative;
           cursor: grab;
           transition: all 0.3s;
-          min-height: 40px;
+          min-height: 66px;
           display: flex;
           flex-direction: column;
-          gap: 4px;
+          gap: 6px;
+          width: 100%;
+          min-width: 0;
+          box-sizing: border-box;
         }
 
         .sam-binding-item:hover {
@@ -2741,6 +4232,9 @@ window.Jukebox = {
           align-items: center;
           gap: 8px;
           width: 100%;
+          min-width: 0;
+          flex: 0 0 auto;
+          min-height: 22px;
         }
 
         .sam-binding-item-index {
@@ -2754,9 +4248,15 @@ window.Jukebox = {
           flex-shrink: 0;
         }
 
+        .sam-binding-item-main input[type="checkbox"] {
+          flex-shrink: 0;
+        }
+
         .sam-binding-item-name {
           font-weight: 500;
           flex: 1;
+          min-width: 0;
+          max-width: 100%;
         }
 
         .sam-binding-count {
@@ -2767,15 +4267,26 @@ window.Jukebox = {
           border-radius: 10px;
           min-width: 18px;
           text-align: center;
+          flex-shrink: 0;
         }
 
         .sam-binding-item-tags {
           display: flex;
-          flex-wrap: wrap;
+          flex-wrap: nowrap;
           gap: 4px;
           margin-top: 4px;
           padding-top: 4px;
           border-top: 1px solid ${C.borders.divider};
+          min-width: 0;
+          width: 100%;
+          max-width: 100%;
+          min-height: 24px;
+          align-items: center;
+          overflow: hidden;
+          box-sizing: border-box;
+          flex: 0 0 auto;
+          position: relative;
+          z-index: 1;
         }
 
         .sam-add-binding-btn {
@@ -2792,6 +4303,8 @@ window.Jukebox = {
           align-items: center;
           justify-content: center;
           transition: all 0.2s;
+          flex: 0 0 20px;
+          box-sizing: border-box;
         }
 
         .sam-add-binding-btn:hover {
@@ -2913,13 +4426,25 @@ window.Jukebox = {
           padding: 2px 6px;
           border-radius: 10px;
           white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
           max-width: 140px;
           display: inline-flex;
           align-items: center;
           gap: 4px;
           position: relative;
+          overflow: hidden;
+          min-width: 0;
+          flex: 1 1 0;
+          box-sizing: border-box;
+          min-height: 20px;
+          max-height: 20px;
+        }
+
+        .sam-binding-tag-label {
+          display: inline-block;
+          min-width: 0;
+          overflow: hidden;
+          white-space: nowrap;
+          flex: 1 1 auto;
         }
 
         .sam-unbind-btn {
@@ -3143,10 +4668,16 @@ window.Jukebox = {
           align-items: center;
           justify-content: space-between;
           gap: 8px;
+          min-width: 0;
         }
         
         .sam-item-name {
+          display: block;
           flex: 1;
+          min-width: 0;
+          max-width: 100%;
+          overflow: hidden;
+          white-space: nowrap;
           font-weight: 500;
           cursor: text;
           padding: 2px 4px;
@@ -3171,6 +4702,8 @@ window.Jukebox = {
           border-radius: 3px;
           transition: all 0.2s;
           margin-top: 4px;
+          overflow: hidden;
+          white-space: nowrap;
         }
 
         .sam-item-artist:hover {
@@ -3186,6 +4719,7 @@ window.Jukebox = {
           display: flex;
           align-items: center;
           gap: 4px;
+          flex-shrink: 0;
         }
         
         .sam-visibility-btn {
@@ -3261,6 +4795,7 @@ window.Jukebox = {
           flex-direction: column;
           align-items: center;
           gap: 8px;
+          flex: 0 0 auto;
           padding: 12px 16px;
           background: ${C.footer.importBg};
           border-top: ${C.footer.borderTop};
@@ -3271,6 +4806,7 @@ window.Jukebox = {
           align-items: center;
           justify-content: center;
           gap: 12px;
+          flex-wrap: wrap;
         }
 
         .sam-selection-info {
@@ -3342,6 +4878,132 @@ window.Jukebox = {
           background: ${C.footer.buttonHoverBg};
         }
 
+        .sam-danger-action-wrap {
+          position: relative;
+          display: inline-flex;
+        }
+
+        .sam-btn-danger {
+          background: rgba(190, 45, 45, 0.32);
+          color: #ffd7d7;
+          border: 1px solid rgba(255, 110, 110, 0.42);
+        }
+
+        .sam-btn-danger:hover {
+          background: rgba(220, 60, 60, 0.46);
+        }
+
+        .sam-danger-tooltip {
+          position: absolute;
+          left: 50%;
+          bottom: calc(100% + 8px);
+          transform: translateX(-50%);
+          z-index: 30;
+          display: none;
+          width: max-content;
+          max-width: 320px;
+          padding: 8px 10px;
+          border-radius: 6px;
+          background: rgba(20, 20, 24, 0.96);
+          border: 1px solid rgba(255,255,255,0.14);
+          box-shadow: 0 8px 24px rgba(0,0,0,0.32);
+          color: ${C.text.primary};
+          font-size: 12px;
+          line-height: 1.45;
+          text-align: left;
+          white-space: pre-line;
+          pointer-events: none;
+        }
+
+        .sam-danger-modal-backdrop {
+          position: fixed;
+          inset: 0;
+          z-index: 100040;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: rgba(0,0,0,0.52);
+          -webkit-app-region: no-drag;
+          pointer-events: auto;
+        }
+
+        .jukebox-sam-panel > .sam-danger-modal-backdrop {
+          position: absolute;
+          z-index: 120;
+        }
+
+        .sam-danger-modal {
+          width: min(420px, calc(100vw - 32px));
+          padding: 18px;
+          border-radius: 8px;
+          background: rgba(31, 34, 42, 0.98);
+          border: 1px solid rgba(255,255,255,0.14);
+          box-shadow: 0 18px 54px rgba(0,0,0,0.42);
+          color: ${C.text.primary};
+          pointer-events: auto;
+        }
+
+        .sam-danger-modal h3 {
+          margin: 0 0 10px;
+          font-size: 16px;
+          font-weight: 600;
+        }
+
+        .sam-danger-modal p {
+          margin: 0 0 10px;
+          font-size: 13px;
+          line-height: 1.55;
+          white-space: pre-line;
+        }
+
+        .sam-danger-modal-detail {
+          color: ${C.text.muted};
+        }
+
+        .sam-danger-modal-actions {
+          display: flex;
+          justify-content: flex-end;
+          align-items: center;
+          gap: 12px;
+          margin-top: 16px;
+        }
+
+        .sam-danger-modal-actions-reversed {
+          flex-direction: row-reverse;
+          justify-content: flex-start;
+        }
+
+        .sam-danger-modal-actions button {
+          min-width: 88px;
+          padding: 8px 14px;
+          border-radius: 4px;
+          border: 1px solid rgba(255,255,255,0.16);
+          color: ${C.text.primary};
+          cursor: pointer;
+        }
+
+        .sam-danger-modal-cancel {
+          background: rgba(255,255,255,0.12);
+        }
+
+        .sam-danger-modal-confirm {
+          background: rgba(190, 45, 45, 0.78);
+        }
+
+        .sam-danger-confirm-zone-final {
+          display: inline-flex;
+          padding: 12px;
+          margin: -12px;
+        }
+
+        .sam-danger-confirm-escaped {
+          will-change: transform;
+        }
+
+        .sam-danger-confirm-escaping {
+          cursor: default;
+        }
+
         .sam-btn-primary {
           background: ${C.buttons.primary.bg};
         }
@@ -3355,6 +5017,7 @@ window.Jukebox = {
   
   init: function() {
     console.log('[Jukebox]', window.t('Jukebox.initialized', '初始化点歌台...'));
+    Jukebox.loadPlaybackPreferences();
 
     window.Jukebox_playSong = Jukebox.playSong;
     window.Jukebox_close = Jukebox.close;
@@ -3496,6 +5159,8 @@ window.Jukebox = {
       }
     } catch (e) {}
 
+    Jukebox.startConfigPolling();
+
     const jukeboxButton = document.getElementById('jukeboxButton');
     if (jukeboxButton) {
       jukeboxButton.classList.add('active');
@@ -3568,6 +5233,9 @@ window.Jukebox = {
     }
 
     if (Jukebox.State.container) {
+      if (Jukebox.State.hasCustomWindowSize) {
+        Jukebox.saveWindowSize(Jukebox.State.container.querySelector('.jukebox-container'));
+      }
       Jukebox.State.container.remove();
       Jukebox.State.container = null;
     }
@@ -3579,6 +5247,9 @@ window.Jukebox = {
 
     Jukebox.State.isOpen = false;
     Jukebox.State.isHidden = false;
+    Jukebox.State.hasCustomWindowSize = false;
+    Jukebox.stopConfigPolling();
+    Jukebox.State.configRevision = null;
 
     // 清理 BroadcastChannel
     try {
@@ -3625,6 +5296,9 @@ window.Jukebox = {
     }
 
     if (Jukebox.State.container) {
+      if (Jukebox.State.hasCustomWindowSize) {
+        Jukebox.saveWindowSize(Jukebox.State.container.querySelector('.jukebox-container'));
+      }
       Jukebox.State.container.remove();
       Jukebox.State.container = null;
     }
@@ -3641,6 +5315,7 @@ window.Jukebox = {
     
     Jukebox.State.isOpen = false;
     Jukebox.State.isHidden = false;
+    Jukebox.State.hasCustomWindowSize = false;
     Jukebox.State.songs = [];
     Jukebox.State.songElements = {}; // 清空元素映射
 
@@ -3648,6 +5323,8 @@ window.Jukebox = {
   },
   
   buildUI: function() {
+    Jukebox.loadPlaybackPreferences();
+
     const wrapper = document.createElement('div');
     wrapper.className = 'jukebox-wrapper';
     
@@ -3655,6 +5332,7 @@ window.Jukebox = {
     
     const jukeboxContainer = document.createElement('div');
     jukeboxContainer.className = 'jukebox-container';
+    Jukebox.applyStoredWindowSize(jukeboxContainer);
     jukeboxContainer.innerHTML = `
       <div class="jukebox-drag-overlay"></div>
       <div class="jukebox-header">
@@ -3662,6 +5340,7 @@ window.Jukebox = {
           <h3>${window.t('Jukebox.title', '点歌台')}</h3>
           <span id="jukebox-status-text" class="jukebox-status-text">${window.t('Jukebox.ready', '准备就绪')}</span>
         </div>
+        <div class="jukebox-header-drag-fill" aria-hidden="true"></div>
         <div class="jukebox-header-buttons">
           <button class="jukebox-settings" onclick="Jukebox.SongActionManager.toggle()" title="${window.t('Jukebox.manager', '管理器')}">⚙</button>
           <button class="jukebox-minimize" onclick="Jukebox_hide()" title="${window.t('Jukebox.minimize', '最小化')}">−</button>
@@ -3703,9 +5382,22 @@ window.Jukebox = {
       </div>
       <div class="jukebox-content">
         <table class="jukebox-table">
+          <colgroup>
+            <col class="jukebox-col-sequence">
+            <col class="jukebox-col-song">
+            <col class="jukebox-col-artist">
+            <col class="jukebox-col-action">
+          </colgroup>
           <thead>
             <tr>
-              <th>${window.t('Jukebox.sequence', '序号')}</th>
+              <th class="jukebox-sequence-th">
+                <div class="jukebox-sequence-header">
+                  <span>${window.t('Jukebox.sequence', '序号')}</span>
+                  <button type="button" class="jukebox-sort-lock-btn" onclick="Jukebox.toggleSongSortLock(event)" title="${window.t('Jukebox.unlockSongSort', '解锁歌曲排序')}" aria-label="${window.t('Jukebox.unlockSongSort', '解锁歌曲排序')}" aria-pressed="false">
+                    ${Jukebox.getSongSortLockIcon()}
+                  </button>
+                </div>
+              </th>
               <th>${window.t('Jukebox.song', '歌曲')}</th>
               <th>${window.t('Jukebox.artist', '艺术家')}</th>
               <th>${window.t('Jukebox.action', '操作')}</th>
@@ -3724,21 +5416,36 @@ window.Jukebox = {
           <input type="range" id="jukebox-progress-slider" min="0" max="100" step="0.1" value="0">
           <span id="jukebox-time-total">0:00</span>
         </div>
-        <div class="jukebox-volume-wrapper">
-          <button class="jukebox-speaker-btn" id="jukebox-speaker-btn" title="${window.t('Jukebox.mute', '静音')}">
-            <svg class="speaker-icon" viewBox="0 0 24 24" width="20" height="20">
-              <path fill="${Jukebox.Config.volume.iconColor}" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
-            </svg>
-            <svg class="speaker-muted-icon" viewBox="0 0 24 24" width="20" height="20" style="display:none;">
-              <path fill="${Jukebox.Config.volume.iconColor}" d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>
-            </svg>
-          </button>
-          <div class="jukebox-volume-popup">
-            <div class="jukebox-volume-slider-container">
-              <div class="jukebox-volume-track"></div>
-              <input type="range" id="jukebox-volume-slider" min="0" max="1" step="0.01" value="1" oninput="Jukebox_updateVolume(this.value)" onchange="Jukebox_logVolumeChange(this.value)">
+        <div class="jukebox-playback-controls">
+          <div id="jukebox-mode-controls" class="jukebox-mode-controls" aria-label="${window.t('Jukebox.switchPlaybackMode', '切换播放模式')}"></div>
+          <div class="jukebox-control-divider" aria-hidden="true"></div>
+          <div class="jukebox-transport-controls">
+            <button type="button" class="play-btn jukebox-transport-btn" id="jukebox-control-prev" onclick="Jukebox.playAdjacentSong(-1)" title="${window.t('Jukebox.previousSong', '上一首')}" aria-label="${window.t('Jukebox.previousSong', '上一首')}">
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M6 6h2v12H6V6zm3 6 9 6V6l-9 6z"/></svg>
+            </button>
+            <button type="button" class="play-btn jukebox-transport-btn jukebox-play-pause-btn" id="jukebox-control-play-pause" onclick="Jukebox.toggleGlobalPlayPause()" title="${window.t('Jukebox.play', '播放')}" aria-label="${window.t('Jukebox.play', '播放')}">
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+            </button>
+            <button type="button" class="play-btn jukebox-transport-btn" id="jukebox-control-next" onclick="Jukebox.playAdjacentSong(1)" title="${window.t('Jukebox.nextSong', '下一首')}" aria-label="${window.t('Jukebox.nextSong', '下一首')}">
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M16 6h2v12h-2V6zM6 18l9-6-9-6v12z"/></svg>
+            </button>
+          </div>
+          <div class="jukebox-volume-wrapper">
+            <button class="jukebox-speaker-btn" id="jukebox-speaker-btn" title="${window.t('Jukebox.mute', '静音')}">
+              <svg class="speaker-icon" viewBox="0 0 24 24" width="20" height="20">
+                <path fill="${Jukebox.Config.volume.iconColor}" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
+              </svg>
+              <svg class="speaker-muted-icon" viewBox="0 0 24 24" width="20" height="20" style="display:none;">
+                <path fill="${Jukebox.Config.volume.iconColor}" d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>
+              </svg>
+            </button>
+            <div class="jukebox-volume-popup">
+              <div class="jukebox-volume-slider-container">
+                <div class="jukebox-volume-track"></div>
+                <input type="range" id="jukebox-volume-slider" min="0" max="1" step="0.01" value="1" oninput="Jukebox_updateVolume(this.value)" onchange="Jukebox_logVolumeChange(this.value)">
+              </div>
+              <span id="jukebox-volume-value" class="jukebox-volume-value-editable">100%</span>
             </div>
-            <span id="jukebox-volume-value" class="jukebox-volume-value-editable">100%</span>
           </div>
         </div>
       </div>
@@ -3754,10 +5461,12 @@ window.Jukebox = {
     if (!window.__NEKO_JUKEBOX_STANDALONE__) {
       Jukebox.bindWindowDrag(wrapper, jukeboxContainer);
       Jukebox.bindPanelDrag(sidePanel);
+      Jukebox.bindPanelResize(sidePanel);
       Jukebox.bindResize(jukeboxContainer);
     }
 
     Jukebox.injectStyles();
+    Jukebox.renderPlaybackControls();
 
     // Standalone 点歌台的桌面端拖拽/缩放统一交给 static/jukebox-standalone.js，
     // 避免在 open() 首帧先写入旧的 app-region 热区，导致标题按钮命中缓存异常。
@@ -3766,9 +5475,17 @@ window.Jukebox = {
   
   // 窗口拖拽功能
   bindWindowDrag: function(wrapper, container) {
+    if (Jukebox.State._dragCleanup) {
+      Jukebox.State._dragCleanup();
+      Jukebox.State._dragCleanup = null;
+    }
+
+    const dragRoot = container.querySelector('.jukebox-header');
+    if (!dragRoot) return;
+
     const onMouseDown = (e) => {
-      // 仅忽略具体交互元素，其余区域均可拖动
-      if (e.target.closest('button, input, a, select, textarea, .jukebox-header-buttons, .jukebox-table tbody tr, .sam-panel, .jukebox-controls-row, .jukebox-resize-handle')) return;
+      // 只允许标题栏拖动；标题栏按钮仍保持可点击。
+      if (e.target.closest('button, input, a, select, textarea, .jukebox-header-buttons')) return;
       
       e.preventDefault();
       const clientX = e.touches ? e.touches[0].clientX : e.clientX;
@@ -3821,8 +5538,8 @@ window.Jukebox = {
       document.body.classList.remove('jukebox-dragging');
     };
 
-    container.addEventListener('mousedown', onMouseDown);
-    container.addEventListener('touchstart', onMouseDown, { passive: false });
+    dragRoot.addEventListener('mousedown', onMouseDown);
+    dragRoot.addEventListener('touchstart', onMouseDown, { passive: false });
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('touchmove', onMouseMove, { passive: false });
     document.addEventListener('mouseup', onMouseUp);
@@ -3832,6 +5549,8 @@ window.Jukebox = {
 
     // 保存引用，方便 destroy 时清理
     Jukebox.State._dragCleanup = () => {
+      dragRoot.removeEventListener('mousedown', onMouseDown);
+      dragRoot.removeEventListener('touchstart', onMouseDown);
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('touchmove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
@@ -3843,17 +5562,13 @@ window.Jukebox = {
     };
   },
 
-  // 缩放功能（八方向：四条边 + 四个角，内容等比缩放）
+  // 网页浮层 resize：只改变容器宽高，不缩放内部文字和控件。
   bindResize: function(container) {
     const handles = container.querySelectorAll('.jukebox-resize-handle');
     if (!handles.length) return;
 
-    const BASE_WIDTH = parseInt(Jukebox.Config.width) || 500;
-    const MIN_SCALE = 0.5;
-    const MAX_SCALE = 3;
-
-    // 记录初始 zoom
-    const getZoom = () => parseFloat(container.style.zoom) || 1;
+    const MIN_WIDTH = 360;
+    const MIN_HEIGHT = 300;
 
     const onPointerDown = (e) => {
       e.preventDefault();
@@ -3864,13 +5579,17 @@ window.Jukebox = {
 
       const startX = e.touches ? e.touches[0].clientX : e.clientX;
       const startY = e.touches ? e.touches[0].clientY : e.clientY;
-      const startZoom = getZoom();
       const startRect = container.getBoundingClientRect();
       const startLeft = startRect.left;
       const startTop = startRect.top;
-      // 实际视觉宽高（包含 zoom 效果）
-      const startVisualW = startRect.width;
-      const startVisualH = startRect.height;
+      const computed = window.getComputedStyle(container);
+      const widthExtras = startRect.width - parseFloat(computed.width);
+      const heightExtras = startRect.height - parseFloat(computed.height);
+      const initialContentWidth = Math.max(0, startRect.width - widthExtras);
+      const initialContentHeight = Math.max(0, startRect.height - heightExtras);
+      const maxWidth = Math.max(MIN_WIDTH, window.innerWidth - 16);
+      const maxHeight = Math.max(MIN_HEIGHT, window.innerHeight - 16);
+      let didResize = false;
 
       document.body.classList.add('jukebox-resizing');
 
@@ -3880,49 +5599,38 @@ window.Jukebox = {
         const dx = clientX - startX;
         const dy = clientY - startY;
 
-        let newZoom = startZoom;
         let newLeft = startLeft;
         let newTop = startTop;
-
-        // 计算新的视觉宽度/高度
-        let newVisualW = startVisualW;
-        let newVisualH = startVisualH;
+        let newOuterW = startRect.width;
+        let newOuterH = startRect.height;
 
         if (dir.includes('e')) {
-          newVisualW = Math.max(BASE_WIDTH * MIN_SCALE, startVisualW + dx);
+          newOuterW = clamp(startRect.width + dx, MIN_WIDTH, maxWidth);
         }
         if (dir.includes('w')) {
-          newVisualW = Math.max(BASE_WIDTH * MIN_SCALE, startVisualW - dx);
-          newLeft = startLeft + (startVisualW - newVisualW);
+          newOuterW = clamp(startRect.width - dx, MIN_WIDTH, maxWidth);
+          newLeft = startLeft + (startRect.width - newOuterW);
         }
         if (dir.includes('s')) {
-          newVisualH = Math.max(BASE_WIDTH * MIN_SCALE, startVisualH + dy);
+          newOuterH = clamp(startRect.height + dy, MIN_HEIGHT, maxHeight);
         }
         if (dir.includes('n')) {
-          newVisualH = Math.max(BASE_WIDTH * MIN_SCALE, startVisualH - dy);
-          newTop = startTop + (startVisualH - newVisualH);
+          newOuterH = clamp(startRect.height - dy, MIN_HEIGHT, maxHeight);
+          newTop = startTop + (startRect.height - newOuterH);
         }
 
-        // 根据拖拽方向选择缩放基准
-        if (dir === 'n' || dir === 's') {
-          newZoom = Math.max(MIN_SCALE, Math.min(MAX_SCALE, startZoom * (newVisualH / startVisualH)));
-        } else {
-          newZoom = Math.max(MIN_SCALE, Math.min(MAX_SCALE, startZoom * (newVisualW / startVisualW)));
+        const nextWidth = Math.max(0, newOuterW - widthExtras);
+        const nextHeight = Math.max(0, newOuterH - heightExtras);
+        container.style.width = nextWidth + 'px';
+        container.style.height = nextHeight + 'px';
+        if (!didResize) {
+          didResize =
+            Math.abs(nextWidth - initialContentWidth) > 0.5 ||
+            Math.abs(nextHeight - initialContentHeight) > 0.5;
         }
 
-        container.style.zoom = newZoom;
-
-        // 左/上方向缩放时同步移动 wrapper 位置
         const wrapper = container.parentElement;
         if (wrapper && (dir.includes('w') || dir.includes('n'))) {
-          // 使用 getBoundingClientRect 获取实际视觉尺寸
-          const zoomedRect = container.getBoundingClientRect();
-          if (dir.includes('w')) {
-            newLeft = startLeft + startVisualW - zoomedRect.width;
-          }
-          if (dir.includes('n')) {
-            newTop = startTop + startVisualH - zoomedRect.height;
-          }
           wrapper.style.left = newLeft + 'px';
           wrapper.style.top = newTop + 'px';
           wrapper.style.bottom = 'auto';
@@ -3931,6 +5639,10 @@ window.Jukebox = {
       };
 
       const cleanup = () => {
+        if (didResize) {
+          Jukebox.State.hasCustomWindowSize = true;
+          Jukebox.saveWindowSize(container);
+        }
         document.body.classList.remove('jukebox-resizing');
         document.removeEventListener('mousemove', onPointerMove);
         document.removeEventListener('touchmove', onPointerMove);
@@ -3957,16 +5669,27 @@ window.Jukebox = {
       handle.addEventListener('mousedown', onPointerDown);
       handle.addEventListener('touchstart', onPointerDown, { passive: false });
     });
+
+    function clamp(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
   },
 
   // 管理器面板拖拽功能
   bindPanelDrag: function(panel) {
+    if (Jukebox.SongActionManager._panelDragCleanup) {
+      Jukebox.SongActionManager._panelDragCleanup();
+      Jukebox.SongActionManager._panelDragCleanup = null;
+    }
+
     let isDragging = false;
     let dragOffset = { x: 0, y: 0 };
+    const dragRoot = panel.querySelector('.sam-header');
+    if (!dragRoot) return;
 
     const onMouseDown = (e) => {
       // 忽略所有交互元素
-      if (e.target.closest('button, input, a, select, textarea, .sam-close-btn, .sam-tab, .sam-content, .sam-checkbox, .sam-click-add')) return;
+      if (e.target.closest('button, input, a, select, textarea, .sam-close-btn, .sam-tab, .sam-checkbox, .sam-resize-handle')) return;
 
       e.preventDefault();
       const clientX = e.touches ? e.touches[0].clientX : e.clientX;
@@ -4015,8 +5738,8 @@ window.Jukebox = {
       document.body.classList.remove('sam-panel-dragging');
     };
 
-    panel.addEventListener('mousedown', onMouseDown);
-    panel.addEventListener('touchstart', onMouseDown, { passive: false });
+    dragRoot.addEventListener('mousedown', onMouseDown);
+    dragRoot.addEventListener('touchstart', onMouseDown, { passive: false });
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('touchmove', onMouseMove, { passive: false });
     document.addEventListener('mouseup', onMouseUp);
@@ -4025,6 +5748,8 @@ window.Jukebox = {
     window.addEventListener('blur', onMouseUp);
     
     Jukebox.SongActionManager._panelDragCleanup = () => {
+      dragRoot.removeEventListener('mousedown', onMouseDown);
+      dragRoot.removeEventListener('touchstart', onMouseDown);
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('touchmove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
@@ -4034,6 +5759,112 @@ window.Jukebox = {
       isDragging = false;
       document.body.classList.remove('sam-panel-dragging');
     };
+  },
+
+  // Web 管理器 resize：模拟桌面窗口边缘 resize，不用于 Electron standalone 管理器。
+  bindPanelResize: function(panel) {
+    if (window.__NEKO_JUKEBOX_MANAGER_STANDALONE__) return;
+    const handles = panel.querySelectorAll('.sam-resize-handle');
+    if (!handles.length) return;
+
+    const MIN_WIDTH = 420;
+    const MIN_HEIGHT = 360;
+    const VIEWPORT_MARGIN = 12;
+
+    const onPointerDown = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const dir = e.currentTarget.dataset.dir;
+      if (!dir) return;
+
+      const startX = e.touches ? e.touches[0].clientX : e.clientX;
+      const startY = e.touches ? e.touches[0].clientY : e.clientY;
+      const rect = panel.getBoundingClientRect();
+      const startLeft = rect.left;
+      const startTop = rect.top;
+      const maxWidth = Math.max(MIN_WIDTH, window.innerWidth - VIEWPORT_MARGIN);
+      const maxHeight = Math.max(MIN_HEIGHT, window.innerHeight - VIEWPORT_MARGIN);
+
+      if (!panel.style.left) panel.style.left = startLeft + 'px';
+      if (!panel.style.top) panel.style.top = startTop + 'px';
+      panel.style.right = 'auto';
+      panel.style.bottom = 'auto';
+      panel.style.maxWidth = `calc(100vw - ${VIEWPORT_MARGIN * 2}px)`;
+      panel.style.maxHeight = `calc(100vh - ${VIEWPORT_MARGIN * 2}px)`;
+
+      document.body.classList.add('sam-panel-resizing');
+
+      const onPointerMove = (ev) => {
+        ev.preventDefault();
+        const clientX = ev.touches ? ev.touches[0].clientX : ev.clientX;
+        const clientY = ev.touches ? ev.touches[0].clientY : ev.clientY;
+        const dx = clientX - startX;
+        const dy = clientY - startY;
+
+        let nextWidth = rect.width;
+        let nextHeight = rect.height;
+        let nextLeft = startLeft;
+        let nextTop = startTop;
+
+        if (dir.includes('e')) {
+          nextWidth = clamp(rect.width + dx, MIN_WIDTH, maxWidth);
+        }
+        if (dir.includes('w')) {
+          nextWidth = clamp(rect.width - dx, MIN_WIDTH, maxWidth);
+          nextLeft = startLeft + (rect.width - nextWidth);
+        }
+        if (dir.includes('s')) {
+          nextHeight = clamp(rect.height + dy, MIN_HEIGHT, maxHeight);
+        }
+        if (dir.includes('n')) {
+          nextHeight = clamp(rect.height - dy, MIN_HEIGHT, maxHeight);
+          nextTop = startTop + (rect.height - nextHeight);
+        }
+
+        nextLeft = clamp(nextLeft, 0, Math.max(0, window.innerWidth - nextWidth));
+        nextTop = clamp(nextTop, 0, Math.max(0, window.innerHeight - nextHeight));
+
+        panel.style.width = nextWidth + 'px';
+        panel.style.height = nextHeight + 'px';
+        panel.style.left = nextLeft + 'px';
+        panel.style.top = nextTop + 'px';
+      };
+
+      const cleanup = () => {
+        document.body.classList.remove('sam-panel-resizing');
+        document.removeEventListener('mousemove', onPointerMove);
+        document.removeEventListener('touchmove', onPointerMove);
+        document.removeEventListener('mouseup', cleanup);
+        document.removeEventListener('touchend', cleanup);
+        document.removeEventListener('touchcancel', cleanup);
+        window.removeEventListener('blur', cleanup);
+      };
+
+      document.addEventListener('mousemove', onPointerMove);
+      document.addEventListener('touchmove', onPointerMove, { passive: false });
+      document.addEventListener('mouseup', cleanup);
+      document.addEventListener('touchend', cleanup);
+      document.addEventListener('touchcancel', cleanup);
+      window.addEventListener('blur', cleanup);
+    };
+
+    handles.forEach((handle) => {
+      handle.addEventListener('mousedown', onPointerDown);
+      handle.addEventListener('touchstart', onPointerDown, { passive: false });
+    });
+
+    Jukebox.SongActionManager._panelResizeCleanup = () => {
+      handles.forEach((handle) => {
+        handle.removeEventListener('mousedown', onPointerDown);
+        handle.removeEventListener('touchstart', onPointerDown);
+      });
+      document.body.classList.remove('sam-panel-resizing');
+    };
+
+    function clamp(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
   },
   
   injectStyles: function() {
@@ -4062,18 +5893,36 @@ window.Jukebox = {
         pointer-events: auto;
       }
 
+      html.neko-jukebox-standalone-host,
+      html.neko-jukebox-standalone-host body,
+      html[data-theme="dark"].neko-jukebox-standalone-host,
+      html[data-theme="dark"].neko-jukebox-standalone-host body.neko-jukebox-standalone-page {
+        background: ${Jukebox.Config.container.background} !important;
+      }
+
+      body.neko-jukebox-standalone-page .jukebox-wrapper {
+        position: fixed !important;
+        inset: 0 !important;
+        bottom: 0 !important;
+        right: 0 !important;
+      }
+
       ${Jukebox.SongActionManager.getStyles()}
 
       .jukebox-container {
         width: ${Jukebox.Config.width};
+        height: calc(100vh - 40px);
+        max-height: calc(100vh - 40px);
         background: ${Jukebox.Config.container.background};
         border-radius: 12px;
         box-shadow: ${Jukebox.Config.container.boxShadow};
         color: ${Jukebox.Config.container.color};
-        padding: 20px;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         transition: transform 0.3s ease, opacity 0.3s ease;
-        overflow: auto;
+        overflow: hidden;
         opacity: 0;
         transform: translateY(20px);
         pointer-events: auto;
@@ -4095,18 +5944,47 @@ window.Jukebox = {
         pointer-events: none;
         transform: translateY(20px);
       }
+
+      body.neko-jukebox-standalone-page .jukebox-container,
+      body.neko-jukebox-standalone-page .jukebox-container.open,
+      body.neko-jukebox-standalone-page .jukebox-container.hidden {
+        width: 100% !important;
+        height: 100% !important;
+        transition: none !important;
+        transform: none !important;
+      }
       
       .jukebox-header {
         display: flex;
+        flex: 0 0 auto;
         justify-content: space-between;
         align-items: center;
-        margin-bottom: 20px;
-        padding-bottom: 10px;
+        margin-bottom: 12px;
+        padding: 20px 20px 10px;
         border-bottom: ${Jukebox.Config.header.borderBottom};
         cursor: grab;
         user-select: none;
         -webkit-user-select: none;
         position: relative;
+      }
+
+      .jukebox-header-left,
+      .jukebox-header-drag-fill {
+        cursor: grab;
+      }
+
+      .jukebox-header-left:active,
+      .jukebox-header-drag-fill:active,
+      body.jukebox-dragging .jukebox-header,
+      body.jukebox-dragging .jukebox-header-left,
+      body.jukebox-dragging .jukebox-header-drag-fill {
+        cursor: grabbing;
+      }
+
+      .jukebox-header-drag-fill {
+        align-self: stretch;
+        flex: 1 1 24px;
+        min-width: 16px;
       }
 
       /* 专属拖拽层：与按钮是兄弟关系而非父子关系，规避 Chromium
@@ -4117,9 +5995,11 @@ window.Jukebox = {
         inset: 0;
         z-index: 0;
         border-radius: inherit;
+        pointer-events: none;
       }
 
       .jukebox-header-left,
+      .jukebox-header-drag-fill,
       .jukebox-header-buttons,
       .jukebox-content,
       .jukebox-controls-row,
@@ -4128,10 +6008,6 @@ window.Jukebox = {
       .sam-panel {
         position: relative;
         z-index: 1;
-      }
-
-      .jukebox-container:active {
-        cursor: grabbing;
       }
 
       body.jukebox-dragging {
@@ -4210,7 +6086,7 @@ window.Jukebox = {
       }
 
       .jukebox-calibration-section {
-        margin-bottom: 12px;
+        margin: 0 20px 12px;
       }
 
       .jukebox-calibration-toggle {
@@ -4329,7 +6205,7 @@ window.Jukebox = {
         border: ${Jukebox.Config.notice.border};
         border-radius: 8px;
         padding: 8px 12px;
-        margin-bottom: 12px;
+        margin: 0 20px 12px;
         font-size: 12.5px;
         line-height: 1.6;
       }
@@ -4399,10 +6275,10 @@ window.Jukebox = {
       }
       
       .jukebox-content {
-        flex: 1;
+        flex: 1 1 auto;
         overflow-y: auto;
         min-height: 0;
-        max-height: 270px;
+        margin: 0 20px;
         scrollbar-width: none;
         -ms-overflow-style: none;
       }
@@ -4417,6 +6293,23 @@ window.Jukebox = {
         background: ${Jukebox.Config.table.bodyBg};
         border-radius: 8px;
         overflow: hidden;
+        table-layout: fixed;
+      }
+
+      .jukebox-table col.jukebox-col-sequence {
+        width: 66px;
+      }
+
+      .jukebox-table col.jukebox-col-song {
+        width: auto;
+      }
+
+      .jukebox-table col.jukebox-col-artist {
+        width: 118px;
+      }
+
+      .jukebox-table col.jukebox-col-action {
+        width: 104px;
       }
       
       .jukebox-table thead {
@@ -4430,15 +6323,131 @@ window.Jukebox = {
         font-size: 14px;
         color: ${Jukebox.Config.table.headerColor};
       }
+
+      .jukebox-table th:not(:last-child) {
+        background-image: linear-gradient(
+          to bottom,
+          transparent 18%,
+          rgba(255, 255, 255, 0.22) 18%,
+          rgba(255, 255, 255, 0.22) 82%,
+          transparent 82%
+        );
+        background-repeat: no-repeat;
+        background-position: right center;
+        background-size: 1px 100%;
+      }
+
+      .jukebox-table th.jukebox-sequence-th {
+        padding-left: 9px;
+        padding-right: 7px;
+      }
+
+      .jukebox-sequence-header {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
+        white-space: nowrap;
+        min-width: 0;
+      }
+
+      .jukebox-sort-lock-btn {
+        width: 21px;
+        height: 21px;
+        flex: 0 0 21px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        border: none;
+        border-radius: 4px;
+        color: rgba(255, 255, 255, 0.82);
+        background: rgba(255, 255, 255, 0.12);
+        cursor: pointer;
+        line-height: 1;
+        transition: background 0.18s ease, color 0.18s ease, transform 0.18s ease;
+      }
+
+      .jukebox-sort-lock-btn:hover,
+      .jukebox-sort-lock-btn.unlocked {
+        color: rgba(255, 255, 255, 1);
+        background: rgba(30, 60, 114, 0.46);
+      }
+
+      .jukebox-sort-lock-btn:active {
+        transform: translateY(1px);
+      }
+
+      .jukebox-sort-lock-btn svg {
+        width: 14px;
+        height: 14px;
+      }
       
       .jukebox-table td {
         padding: 12px;
         border-bottom: ${Jukebox.Config.table.rowBorder};
         font-size: 14px;
+        vertical-align: middle;
+      }
+
+      .jukebox-table td:not(:last-child) {
+        background-image: linear-gradient(
+          to bottom,
+          transparent 20%,
+          rgba(255, 255, 255, 0.18) 20%,
+          rgba(255, 255, 255, 0.18) 80%,
+          transparent 80%
+        );
+        background-repeat: no-repeat;
+        background-position: right center;
+        background-size: 1px 100%;
+      }
+
+      .jukebox-table th:nth-child(1),
+      .jukebox-table td.song-index {
+        padding-left: 8px;
+        padding-right: 8px;
+        text-align: center;
+      }
+
+      .song-index-number {
+        display: inline-flex;
+        min-width: 1.6em;
+        justify-content: center;
+      }
+
+      .jukebox-table td.song-name,
+      .jukebox-table td.song-artist {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: clip;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+
+      .jukebox-table td.song-name::-webkit-scrollbar,
+      .jukebox-table td.song-artist::-webkit-scrollbar {
+        display: none;
       }
       
       .jukebox-table tbody tr:hover {
         background: ${Jukebox.Config.table.rowHoverBg};
+      }
+
+      .jukebox-table tbody tr.jukebox-row-sort-unlocked {
+        cursor: grab;
+      }
+
+      .jukebox-table tbody tr.jukebox-row-dragging {
+        opacity: 0.55;
+      }
+
+      .jukebox-table tbody tr.jukebox-row-drop-before td {
+        box-shadow: inset 0 2px 0 rgba(0, 60, 100, 0.75);
+      }
+
+      .jukebox-table tbody tr.jukebox-row-drop-after td {
+        box-shadow: inset 0 -2px 0 rgba(0, 60, 100, 0.75);
       }
       
       .jukebox-table tbody tr:last-child td {
@@ -4451,10 +6460,14 @@ window.Jukebox = {
         color: ${Jukebox.Config.table.loadingColor};
       }
       
-      .jukebox-table td:last-child {
-        display: inline-flex;
-        gap: 4px;
+      .jukebox-table td.song-action {
+        display: flex;
+        gap: 6px;
         align-items: center;
+        justify-content: center;
+        white-space: nowrap;
+        padding-left: 8px;
+        padding-right: 8px;
       }
 
       .play-btn {
@@ -4502,25 +6515,82 @@ window.Jukebox = {
       .play-btn.resume-btn:hover {
         background: ${Jukebox.Config.button.resumeHoverBg};
       }
+
+      .play-btn.jukebox-mode-btn {
+        background: rgba(255, 255, 255, 0.18);
+        border: 1px solid rgba(255, 255, 255, 0.24);
+        padding: 6px 7px;
+      }
+
+      .play-btn.jukebox-mode-btn:hover {
+        background: rgba(255, 255, 255, 0.28);
+      }
+
+      .play-btn.jukebox-mode-btn.active {
+        background: rgba(0, 60, 100, 0.58);
+        border-color: rgba(255, 255, 255, 0.42);
+        box-shadow: inset 0 0 0 1px rgba(0, 30, 70, 0.32);
+      }
+
+      .play-btn.jukebox-mode-btn.active:hover {
+        background: rgba(0, 48, 86, 0.72);
+      }
       
       .jukebox-controls-row {
-        margin-top: 15px;
+        flex: 0 0 auto;
+        margin: 15px 20px 20px;
         padding: 10px;
         background: ${Jukebox.Config.progress.containerBg};
         border-radius: 6px;
         display: flex;
+        flex-direction: column;
         align-items: center;
-        gap: 15px;
+        gap: 10px;
       }
 
       .jukebox-progress {
         display: flex;
         align-items: center;
         gap: 8px;
-        flex: 3;
+        width: 100%;
         min-width: 0;
         font-size: 13px;
         color: ${Jukebox.Config.progress.textColor};
+      }
+
+      .jukebox-playback-controls {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        width: 100%;
+        min-width: 0;
+        flex-wrap: wrap;
+      }
+
+      .jukebox-mode-controls,
+      .jukebox-transport-controls {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 5px;
+      }
+
+      .jukebox-control-divider {
+        width: 1px;
+        height: 22px;
+        background: rgba(255, 255, 255, 0.28);
+        margin: 0 2px;
+      }
+
+      .jukebox-transport-btn,
+      .jukebox-play-pause-btn {
+        min-width: 32px;
+        min-height: 30px;
+      }
+
+      .jukebox-play-pause-btn {
+        min-width: 36px;
       }
 
       #jukebox-progress-slider {
@@ -4776,6 +6846,50 @@ window.Jukebox = {
       }
     }, 10);
   },
+
+  startConfigPolling: function() {
+    Jukebox.stopConfigPolling();
+    Jukebox.State.configPollTimer = setInterval(() => {
+      Jukebox.checkConfigUpdates();
+    }, 10000);
+  },
+
+  stopConfigPolling: function() {
+    if (Jukebox.State.configPollTimer) {
+      clearInterval(Jukebox.State.configPollTimer);
+      Jukebox.State.configPollTimer = null;
+    }
+    Jukebox.State.configPollInFlight = false;
+  },
+
+  checkConfigUpdates: async function() {
+    if (!Jukebox.State.isOpen || Jukebox.State.configPollInFlight) return;
+
+    Jukebox.State.configPollInFlight = true;
+    try {
+      const response = await fetch('/api/jukebox/config/summary', { cache: 'no-store' });
+      if (!response.ok) return;
+
+      const summary = await response.json();
+      const nextRevision = summary && summary.configRevision;
+      if (!nextRevision) return;
+
+      const currentRevision = Jukebox.State.configRevision;
+      if (currentRevision && currentRevision !== nextRevision) {
+        console.log('[Jukebox] 检测到歌单配置更新，重新加载歌曲');
+        await Jukebox.loadSongs();
+        if (Jukebox.SongActionManager && typeof Jukebox.SongActionManager.load === 'function') {
+          await Jukebox.SongActionManager.load();
+        }
+      } else if (!currentRevision) {
+        Jukebox.State.configRevision = nextRevision;
+      }
+    } catch (error) {
+      console.warn('[Jukebox] 检查歌单更新失败:', error);
+    } finally {
+      Jukebox.State.configPollInFlight = false;
+    }
+  },
   
   loadSongs: async function() {
     try {
@@ -4789,19 +6903,22 @@ window.Jukebox = {
       
       // 保存完整的配置数据
       Jukebox.State.config = data;
+      Jukebox.State.configRevision = data.configRevision || Jukebox.State.configRevision || null;
       
       // 将后端的歌曲对象转换为数组格式
       const songs = data.songs || {};
       const actions = data.actions || {};
       const bindings = data.bindings || {};
       
-      Jukebox.State.songs = Object.entries(songs).map(([id, song]) => {
+      Jukebox.State.songs = Jukebox.applySavedSongOrder(Object.entries(songs).map(([id, song]) => {
         // 获取该歌曲绑定的动画
         const songBindings = bindings[id] || {};
-        const boundActions = Object.keys(songBindings).map(actionId => ({
-          id: actionId,
-          ...actions[actionId]
-        })).filter(a => a.id); // 过滤掉不存在的动画
+        const boundActions = Object.keys(songBindings)
+          .filter(actionId => actions[actionId] && actions[actionId].visible !== false)
+          .map(actionId => ({
+            id: actionId,
+            ...actions[actionId]
+          })); // 过滤掉不存在或已隐藏的动画
         
         // 处理音频路径：自带资源使用 /static/jukebox/ 前缀
         let audioPath = song.audio || '';
@@ -4822,10 +6939,11 @@ window.Jukebox = {
           isBuiltin: song.isBuiltin || false, // 传递自带资源标记
           boundActions: boundActions // 绑定的动画列表
         };
-      }).filter(song => song.visible); // 只显示可见的歌曲
+      }).filter(song => song.visible)); // 只显示可见的歌曲
       
       console.log('[Jukebox]', window.t('Jukebox.songsLoaded', '歌曲列表已加载'), Jukebox.State.songs.length, '首歌曲');
       
+      Jukebox.syncRandomQueueWithSongs();
       Jukebox.renderList();
       
     } catch (error) {
@@ -4871,32 +6989,38 @@ window.Jukebox = {
       }
     }
 
-    // 创建或更新歌曲行
+    // 创建、更新并按当前排序重新排列歌曲行
     Jukebox.State.songs.forEach((song, index) => {
       const existingRow = Jukebox.State.songElements[song.id];
+      let row;
 
       if (existingRow) {
         // 更新现有行（只更新非播放状态的内容）
         Jukebox.updateSongRow(existingRow, song, index);
+        row = existingRow;
       } else {
         // 创建新行
-        const newRow = Jukebox.createSongRow(song, index);
-        tbody.appendChild(newRow);
-        Jukebox.State.songElements[song.id] = newRow;
+        row = Jukebox.createSongRow(song, index);
+        Jukebox.State.songElements[song.id] = row;
       }
+      tbody.appendChild(row);
     });
 
     console.log('[Jukebox]', window.t('Jukebox.songsRendered', '歌曲列表已渲染'));
+    Jukebox.updatePlaybackModeButtons();
+    Jukebox.updateSongSortLockControls();
+    Jukebox.scheduleMarqueeTextUpdate(tbody);
   },
 
   // 创建歌曲行
   createSongRow: function(song, index) {
     const tr = document.createElement('tr');
     tr.dataset.songId = song.id;
+    tr.draggable = Jukebox.isSongSortUnlocked();
     tr.innerHTML = `
-      <td class="song-index">${index + 1}</td>
-      <td class="song-name">${Jukebox.escapeHtml(song.name)}</td>
-      <td class="song-artist">${Jukebox.escapeHtml(song.artist)}</td>
+      <td class="song-index"><span class="song-index-number">${index + 1}</span></td>
+      <td class="song-name" data-neko-marquee title="${Jukebox.escapeHtml(song.name)}">${Jukebox.escapeHtml(song.name)}</td>
+      <td class="song-artist" data-neko-marquee title="${Jukebox.escapeHtml(song.artist)}">${Jukebox.escapeHtml(song.artist)}</td>
       <td class="song-action">
         <button class="play-btn" data-song-id="${Jukebox.escapeHtml(song.id)}" data-tooltip="${window.t('Jukebox.play', '播放')}">
           <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
@@ -4909,6 +7033,7 @@ window.Jukebox = {
     btn.addEventListener('click', () => {
       Jukebox_playSong(song.id);
     });
+    Jukebox.bindSongRowDragEvents(tr);
 
     return tr;
   },
@@ -4917,20 +7042,136 @@ window.Jukebox = {
   updateSongRow: function(row, song, index) {
     // 更新序号
     const indexCell = row.querySelector('.song-index');
-    if (indexCell) indexCell.textContent = index + 1;
+    if (indexCell) {
+      const indexNumber = indexCell.querySelector('.song-index-number');
+      if (indexNumber) {
+        indexNumber.textContent = index + 1;
+      } else {
+        indexCell.textContent = index + 1;
+      }
+    }
 
     // 更新歌名
     const nameCell = row.querySelector('.song-name');
-    if (nameCell) nameCell.textContent = Jukebox.escapeHtml(song.name);
+    if (nameCell) {
+      nameCell.textContent = song.name;
+      nameCell.title = song.name;
+    }
 
     // 更新歌手
     const artistCell = row.querySelector('.song-artist');
-    if (artistCell) artistCell.textContent = Jukebox.escapeHtml(song.artist);
+    if (artistCell) {
+      artistCell.textContent = song.artist;
+      artistCell.title = song.artist;
+    }
+
+    Jukebox.scheduleMarqueeTextUpdate(row);
 
     // 注意：不更新播放按钮，以保持播放状态
   },
+
+  bindSongRowDragEvents: function(row) {
+    row.addEventListener('dragstart', (event) => {
+      if (!Jukebox.isSongSortUnlocked()) {
+        event.preventDefault();
+        return;
+      }
+      if (event.target && event.target.closest('button, input, a, select, textarea')) {
+        event.preventDefault();
+        return;
+      }
+      Jukebox.State.draggedSongId = row.dataset.songId;
+      row.classList.add('jukebox-row-dragging');
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', row.dataset.songId);
+      }
+    });
+
+    row.addEventListener('dragover', (event) => {
+      if (!Jukebox.isSongSortUnlocked()) return;
+      if (!Jukebox.State.draggedSongId || Jukebox.State.draggedSongId === row.dataset.songId) return;
+      event.preventDefault();
+      const rect = row.getBoundingClientRect();
+      const placeAfter = event.clientY > rect.top + rect.height / 2;
+      row.classList.toggle('jukebox-row-drop-before', !placeAfter);
+      row.classList.toggle('jukebox-row-drop-after', placeAfter);
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+    });
+
+    row.addEventListener('dragleave', () => {
+      row.classList.remove('jukebox-row-drop-before', 'jukebox-row-drop-after');
+    });
+
+    row.addEventListener('drop', (event) => {
+      if (!Jukebox.isSongSortUnlocked()) return;
+      if (!Jukebox.State.draggedSongId) return;
+      event.preventDefault();
+      const rect = row.getBoundingClientRect();
+      const placeAfter = event.clientY > rect.top + rect.height / 2;
+      const moved = Jukebox.moveSongInPlaylist(Jukebox.State.draggedSongId, row.dataset.songId, placeAfter);
+      if (!moved) Jukebox.clearSongDragState();
+    });
+
+    row.addEventListener('dragend', () => {
+      Jukebox.clearSongDragState();
+    });
+  },
+
+  getNextSongToPlay: function(endedSong) {
+    const songs = Jukebox.State.songs || [];
+    if (!endedSong || songs.length === 0) return null;
+
+    if (Jukebox.State.playbackMode === 'none') {
+      Jukebox.expireRandomQueueIfPendingSongEnded(endedSong.id);
+      return null;
+    }
+
+    if (Jukebox.State.playbackMode === 'single') {
+      Jukebox.expireRandomQueueIfPendingSongEnded(endedSong.id);
+      return songs.find(song => song.id === endedSong.id) || null;
+    }
+
+    if (Jukebox.State.playbackMode === 'random') {
+      Jukebox.ensureRandomQueueAnchor(endedSong.id);
+      return Jukebox.getRandomAdjacentSong(1, endedSong.id);
+    }
+
+    const currentIndex = songs.findIndex(song => song.id === endedSong.id);
+    Jukebox.expireRandomQueueIfPendingSongEnded(endedSong.id);
+    if (currentIndex >= 0 && currentIndex < songs.length - 1) {
+      return songs[currentIndex + 1];
+    }
+    return null;
+  },
+
+  handleAudioEnded: function(player) {
+    const endedSong = Jukebox.State.currentSong;
+    console.log('[Jukebox]', window.t('Jukebox.audioEnded', '音频播放结束'), {
+      isPlaying: Jukebox.State.isPlaying,
+      currentSong: endedSong,
+      playerLoop: player && player.options ? player.options.loop : undefined,
+      playbackMode: Jukebox.State.playbackMode
+    });
+
+    const nextSong = Jukebox.getNextSongToPlay(endedSong);
+    const nextAction = nextSong ? Jukebox.getActionForModel(nextSong) : null;
+    Jukebox.stopVMD(!!nextAction);
+    Jukebox.State.isPlaying = false;
+    Jukebox.State.isPaused = false;
+
+    Jukebox.State.currentSong = null;
+    Jukebox.updateStoppedStatus();
+
+    if (nextSong) {
+      setTimeout(() => {
+        if (!Jukebox.State.isOpen && !window.__NEKO_JUKEBOX_STANDALONE__) return;
+        Jukebox.playSong(nextSong.id, { fromQueue: Jukebox.State.playbackMode === 'random' });
+      }, 0);
+    }
+  },
   
-  playSong: async function(songId) {
+  playSong: async function(songId, options = {}) {
     const song = Jukebox.State.songs.find(s => s.id === songId);
     if (!song) {
       console.error('[Jukebox]', window.t('Jukebox.notFound', '找不到歌曲'), songId);
@@ -4944,15 +7185,33 @@ window.Jukebox = {
         return;
       }
       if (Jukebox.State.isPlaying) {
+        if (options.fromQueue === true) {
+          return;
+        }
         console.log('[Jukebox] 停止当前播放的歌曲:', song.name);
         Jukebox.stopPlayback();
         return;
       }
     }
     
+    if (Jukebox.State.playbackMode === 'random') {
+      if (options.fromQueue === true) {
+        Jukebox.ensureRandomQueueAnchor(songId);
+      } else {
+        Jukebox.resetRandomQueue(songId);
+      }
+    } else if (Jukebox.State.randomQueueExitSongId && Jukebox.State.randomQueueExitSongId !== songId) {
+      Jukebox.clearRandomQueue();
+    }
+
     console.log('[Jukebox] 播放歌曲:', song.name);
     
-    Jukebox.stopPlayback();
+    const preserveRandomQueue = Jukebox.State.playbackMode === 'random'
+      || (
+        Jukebox.State.randomQueueExitSongId
+        && Jukebox.State.randomQueueExitSongId === songId
+      );
+    Jukebox.stopPlayback({ preserveRandomQueue });
     
     const requestId = ++Jukebox.State.playRequestId;
     
@@ -5032,16 +7291,7 @@ window.Jukebox = {
     
     if (Jukebox.State.boundPlayer !== player) {
       player.on('ended', () => {
-        console.log('[Jukebox]', window.t('Jukebox.audioEnded', '音频播放结束'), {
-          isPlaying: Jukebox.State.isPlaying,
-          currentSong: Jukebox.State.currentSong,
-          playerLoop: player.options.loop
-        });
-        Jukebox.stopVMD();
-        Jukebox.State.isPlaying = false;
-        Jukebox.State.isPaused = false;
-        Jukebox.State.currentSong = null;
-        Jukebox.updateStoppedStatus();
+        Jukebox.handleAudioEnded(player);
       });
       Jukebox.State.boundPlayer = player;
     }
@@ -5179,6 +7429,42 @@ window.Jukebox = {
     if (volumeValueEl) {
       volumeValueEl.addEventListener('click', Jukebox.startVolumeEdit);
     }
+
+    Jukebox.bindVolumeWheel();
+  },
+
+  bindVolumeWheel: function() {
+    const volumeWrapper = document.querySelector('.jukebox-volume-wrapper');
+    if (!volumeWrapper || volumeWrapper.dataset.wheelBound === 'true') return;
+
+    volumeWrapper.dataset.wheelBound = 'true';
+    volumeWrapper.addEventListener('wheel', Jukebox.handleVolumeWheel, { passive: false });
+  },
+
+  handleVolumeWheel: function(e) {
+    if (!e) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (e.deltaY === 0) return;
+
+    const volumeSlider = document.getElementById('jukebox-volume-slider');
+    const player = Jukebox.getPlayer();
+    const sliderVolume = volumeSlider ? parseFloat(volumeSlider.value) : NaN;
+    const playerVolume = player && player.audio ? parseFloat(player.audio.volume) : NaN;
+    const fallbackVolume = Jukebox.State.isMuted ? 0 : (Jukebox.State.savedVolume || 1);
+    const currentVolume = Number.isFinite(sliderVolume)
+      ? sliderVolume
+      : (Number.isFinite(playerVolume) ? playerVolume : fallbackVolume);
+    const wheelStep = 0.05;
+    const nextVolume = Math.max(0, Math.min(1, Math.round((currentVolume + (e.deltaY < 0 ? wheelStep : -wheelStep)) * 100) / 100));
+
+    if (volumeSlider) {
+      volumeSlider.value = nextVolume;
+    }
+
+    Jukebox.updateVolume(nextVolume);
   },
 
   startVolumeEdit: function() {
@@ -5311,7 +7597,8 @@ window.Jukebox = {
     Jukebox.updateSpeakerIcon(volume === 0);
   },
   
-  stopPlayback: function() {
+  stopPlayback: function(options = {}) {
+    const preserveRandomQueue = options.preserveRandomQueue === true;
     Jukebox.stopAudio();
     Jukebox.stopVMD();
 
@@ -5319,6 +7606,9 @@ window.Jukebox = {
     Jukebox.State.isPlaying = false;
     Jukebox.State.isPaused = false;
     Jukebox.State.isVMDPlaying = false;
+    if (!preserveRandomQueue) {
+      Jukebox.clearRandomQueue();
+    }
 
     Jukebox.updateStoppedStatus();
   },
@@ -5858,7 +8148,8 @@ window.Jukebox = {
 
     // 获取绑定的动画中对应格式的动画
     const boundActions = song.boundActions || [];
-    const formatActions = boundActions.filter(a =>
+    const availableActions = boundActions.filter(a => a.missing !== true);
+    const formatActions = availableActions.filter(a =>
       (a.format || 'vmd').toLowerCase() === targetFormat
     );
 
@@ -5895,6 +8186,7 @@ window.Jukebox = {
 
     Jukebox._resetAllButtons();
     Jukebox.startProgressUpdate();
+    Jukebox.updateGlobalTransportControls();
 
     const currentRow = document.querySelector(`tr[data-song-id="${CSS.escape(song.id)}"]`);
     if (currentRow) {
@@ -5927,6 +8219,7 @@ window.Jukebox = {
     }
 
     Jukebox._resetAllButtons();
+    Jukebox.updateGlobalTransportControls();
 
     const currentRow = document.querySelector(`tr[data-song-id="${CSS.escape(song.id)}"]`);
     if (currentRow) {
@@ -5975,6 +8268,7 @@ window.Jukebox = {
 
     Jukebox.stopProgressUpdate();
     Jukebox._resetAllButtons();
+    Jukebox.updateGlobalTransportControls();
   },
   
   showError: function(message) {
@@ -6044,7 +8338,12 @@ window.Jukebox = {
     // --- Table headers ---
     var ths = c.querySelectorAll('.jukebox-table thead th');
     if (ths.length >= 4) {
-      ths[0].textContent = window.t('Jukebox.sequence', '序号');
+      var sequenceLabel = ths[0].querySelector('span');
+      if (sequenceLabel) {
+        sequenceLabel.textContent = window.t('Jukebox.sequence', '序号');
+      } else {
+        ths[0].textContent = window.t('Jukebox.sequence', '序号');
+      }
       ths[1].textContent = window.t('Jukebox.song', '歌曲');
       ths[2].textContent = window.t('Jukebox.artist', '艺术家');
       ths[3].textContent = window.t('Jukebox.action', '操作');
@@ -6053,6 +8352,18 @@ window.Jukebox = {
     // --- Mute button ---
     var speakerBtn = c.querySelector('#jukebox-speaker-btn');
     if (speakerBtn) speakerBtn.title = window.t('Jukebox.mute', '静音');
+    var prevBtn = c.querySelector('#jukebox-control-prev');
+    if (prevBtn) {
+      prevBtn.title = window.t('Jukebox.previousSong', '上一首');
+      prevBtn.setAttribute('aria-label', window.t('Jukebox.previousSong', '上一首'));
+    }
+    var nextBtn = c.querySelector('#jukebox-control-next');
+    if (nextBtn) {
+      nextBtn.title = window.t('Jukebox.nextSong', '下一首');
+      nextBtn.setAttribute('aria-label', window.t('Jukebox.nextSong', '下一首'));
+    }
+    Jukebox.renderPlaybackControls();
+    Jukebox.updateSongSortLockControls(c);
 
     // --- Re-render song list (preserves playback state) ---
     if (Jukebox.State.songs && Jukebox.State.songs.length) {

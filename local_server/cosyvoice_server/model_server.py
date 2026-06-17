@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import os
 import sys
 import asyncio
@@ -81,9 +95,9 @@ def create_response(action, task_id, payload=None):
 
 def generator(input_queue: queue.Queue):
     """
-    【核心组件】
-    这是一个运行在推理线程中的同步生成器。
-    它不断从 input_queue 获取文本，并 yield 给 CosyVoice。
+    [Core component]
+    A synchronous generator running on the inference thread.
+    It keeps pulling text from input_queue and yields it to CosyVoice.
     """
     while True:
         # 阻塞等待新文本
@@ -99,7 +113,7 @@ def generator(input_queue: queue.Queue):
 
 def inference_loop(input_queue: queue.Queue, output_queue: asyncio.Queue, loop):
     """
-    运行在 ThreadPoolExecutor 中的阻塞函数
+    Blocking function running inside the ThreadPoolExecutor
     """
     try:
         # 调用 inference_zero_shot，传入 generator

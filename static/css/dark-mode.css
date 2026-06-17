@@ -1205,6 +1205,18 @@ html[data-theme="dark"].subtitle-window-host body.subtitle-window-host {
   color: #fff !important;
 }
 
+/* GPT-SoVITS 教程文档按钮 */
+[data-theme="dark"] .gsv-tutorial-link {
+  background: #2d2d2d !important;
+  color: #3a9fd8 !important;
+  border-color: #3a9fd8 !important;
+}
+
+[data-theme="dark"] .gsv-tutorial-link:hover {
+  background: #3a9fd8 !important;
+  color: #fff !important;
+}
+
 /* GPT-SoVITS 声音卡片网格 */
 [data-theme="dark"] .gsv-voices-grid {
   background: #1e1e1e;
@@ -1410,6 +1422,34 @@ html[data-theme="dark"].subtitle-window-host body.subtitle-window-host {
 [data-theme="dark"] .tutorial-reset-btn:disabled:hover {
   background: #1a1a1a;
   border-color: #2a2a2a;
+}
+
+[data-theme="dark"] .storage-location-mini-label,
+[data-theme="dark"] .storage-location-mini-status {
+  color: #4aa3df;
+}
+[data-theme="dark"] .storage-location-mini-value {
+  background: #252525;
+  border-color: #3a5a6e;
+  color: #e0e0e0;
+}
+[data-theme="dark"] .storage-location-open-btn {
+  background: #2d2d2d;
+  border-color: #3a5a6e;
+  color: #4aa3df;
+}
+[data-theme="dark"] .storage-location-open-btn:not(:disabled):hover {
+  background: #383838;
+  border-color: #4aa3df;
+  box-shadow: 0 4px 12px rgba(74, 163, 223, 0.2);
+}
+[data-theme="dark"] .storage-location-open-btn:disabled,
+[data-theme="dark"] .storage-location-manage-btn:disabled {
+  background: #1a1a1a;
+  border-color: #2a2a2a;
+  color: #666;
+  opacity: 0.5;
+  box-shadow: none;
 }
 
 /* ===== 子页面：当前角色栏 ===== */

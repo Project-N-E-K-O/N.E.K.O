@@ -24,20 +24,19 @@ def ensure_session(self, *, session_id: str, mode: str) -> None:
 
 
 def list_sessions(self, limit: int = 100) -> list[dict[str, Any]]:
-    with self._lock:
-        rows = (
-            self._require_conn()
-            .execute(
-                """
+    rows = (
+        self._require_read_conn()
+        .execute(
+            """
             SELECT *
             FROM sessions
             ORDER BY started_at DESC, id DESC
             LIMIT ?
             """,
-                (max(1, int(limit)),),
-            )
-            .fetchall()
+            (max(1, int(limit)),),
         )
+        .fetchall()
+    )
     return [
         {
             "id": str(row["id"]),
@@ -114,20 +113,19 @@ def add_qa_record(
 
 
 def list_qa_records(self, limit: int = 100) -> list[dict[str, Any]]:
-    with self._lock:
-        rows = (
-            self._require_conn()
-            .execute(
-                """
+    rows = (
+        self._require_read_conn()
+        .execute(
+            """
             SELECT *
             FROM qa_records
             ORDER BY id DESC
             LIMIT ?
             """,
-                (max(1, int(limit)),),
-            )
-            .fetchall()
+            (max(1, int(limit)),),
         )
+        .fetchall()
+    )
     return [
         item
         for item in (self._qa_record_from_row(row) for row in reversed(rows))
@@ -158,12 +156,7 @@ def list_qa_records_for_topic(
             LIMIT ?
             """
         params = (safe_limit,)
-    with self._lock:
-        rows = (
-            self._require_conn()
-            .execute(query, params)
-            .fetchall()
-        )
+    rows = self._require_read_conn().execute(query, params).fetchall()
     return [
         item
         for item in (self._qa_record_from_row(row) for row in reversed(rows))
@@ -253,12 +246,7 @@ def list_wrong_questions(
             LIMIT ?
             """
         params = (status_json, safe_limit)
-    with self._lock:
-        rows = (
-            self._require_conn()
-            .execute(query, params)
-            .fetchall()
-        )
+    rows = self._require_read_conn().execute(query, params).fetchall()
     return [self._wrong_question_from_row(row) for row in rows]
 
 

@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Emotion-analysis prompt templates used by runtime expression / reaction systems.
 """
@@ -377,16 +391,19 @@ EMOTION_LABEL_ALIASES_BY_LANG = {
 
 
 def get_emotion_keywords_flat() -> dict:
-    """合并各语种 emotion 关键词为 dict[emotion → tuple[keyword]]，供启发式扁平匹配。"""
+    """Merge per-language emotion keywords into dict[emotion → tuple[keyword]] for flat heuristic matching."""
     merged: dict = {}
     for lang_map in EMOTION_KEYWORDS_BY_LANG.values():
         for emotion, words in lang_map.items():
             merged[emotion] = merged.get(emotion, ()) + tuple(words)
-    return merged
+    # 跨语种去重：同一词条出现在多个语种块（如 en/pt 都收了 `haha`）时只保留一份，
+    # 否则启发式按词条逐一累加命中数会对同一段文本重复计分。
+    return {emotion: tuple(dict.fromkeys(words)) for emotion, words in merged.items()}
 
 
 def _flatten_lang_tuples(by_lang: dict) -> tuple:
-    return tuple(item for words in by_lang.values() for item in words)
+    # dict.fromkeys 保序去重，理由同上：跨语种重复词条不能导致重复计分。
+    return tuple(dict.fromkeys(item for words in by_lang.values() for item in words))
 
 
 def get_angry_attack_patterns_flat() -> tuple:
@@ -418,7 +435,7 @@ def get_heuristic_contrast_conjunctions_flat() -> tuple:
 
 
 def get_emotion_label_aliases_flat() -> dict:
-    """合并各语种别名为 dict[alias → canonical]，用于 _normalize_emotion_label。"""
+    """Merge per-language aliases into dict[alias → canonical], used by _normalize_emotion_label."""
     merged: dict = {}
     for lang_map in EMOTION_LABEL_ALIASES_BY_LANG.values():
         merged.update(lang_map)

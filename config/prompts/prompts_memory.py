@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Memory-related prompt templates.
 
@@ -917,11 +931,13 @@ _INNER_THOUGHTS_DYNAMIC_PATTERNS = _build_inner_thoughts_dynamic_patterns()
 
 
 def split_inner_thoughts_and_history(text: str) -> tuple[str, str] | None:
-    """把 /new_dialog 文本切成 ``(inner_thoughts, history)``。
+    """Split a /new_dialog text into ``(inner_thoughts, history)``.
 
-    在 INNER_THOUGHTS_DYNAMIC 那句话（任一支持的 locale）**结尾处**切开：
-    其前（含长期记忆 + 内心活动引语）归 inner_thoughts，其后（对话历史）归 history。
-    任何 locale 都找不到该句 → 返回 ``None``，由调用方决定兜底并打日志（不要静默错位）。
+    Cuts at the **end of** the INNER_THOUGHTS_DYNAMIC sentence (any supported locale):
+    everything before it (long-term memory + inner-monologue lead-in) goes to
+    inner_thoughts, everything after it (conversation history) goes to history.
+    If no locale's sentence is found → return ``None``; the caller decides the
+    fallback and logs it (never silently misalign).
     """
     if not text:
         return None
@@ -1131,7 +1147,7 @@ PROFILE_RENAME_EVENT_TEXT_MASTER = {
 
 
 def _normalize_memory_prompt_lang(lang: str | None) -> str:
-    """归一化记忆 prompt 本地化 key，保留繁中分支。"""
+    """Normalize the memory-prompt localization key, keeping the Traditional Chinese branch."""
     raw = str(lang or "").strip().lower()
     if raw.startswith("zh"):
         if "tw" in raw or "hant" in raw or "hk" in raw:
@@ -1156,12 +1172,14 @@ def render_profile_rename_event_context(
     new_name: str,
     entity: str = "neko",
 ) -> tuple[str, str]:
-    """渲染改名记录，返回 (字段名, 内容)。
+    """Render a rename record; returns (field_name, content).
 
-    entity="neko"：写进猫娘自己的 section，用第一人称「我」。
-    entity="master"：写进猫娘 persona 的 master section，读者是猫娘、改名的是用户，
-    因此去掉人称用中性陈述，避免第一人称把用户的改名误当成猫娘自己的。
-    """
+    entity="neko": written into the catgirl's own section, in the first person 「我」.
+    entity="master": written into the master section of the catgirl's persona — the
+    reader is the catgirl while the renamer is the user, so person markers are dropped
+    in favor of a neutral statement, lest the first person make the user's rename look
+    like the catgirl's own.
+    """  # noqa: DOCSTRING_CJK
     lang_key = _normalize_memory_prompt_lang(lang)
     if str(entity or "").strip().lower() == "master":
         field_dict, text_dict = PROFILE_RENAME_EVENT_FIELD_MASTER, PROFILE_RENAME_EVENT_TEXT_MASTER
@@ -1174,20 +1192,6 @@ def render_profile_rename_event_context(
             new_name=str(new_name or "").strip(),
         ),
     )
-
-# ---------- Proactive chat followup header ----------
-# 文案故意"鼓励性"而非"可选性"——之前的"可以选择性地回顾"语气太弱，配合
-# Phase 2 prompt 的反复读警告，会让模型把回忆当成"高重复风险"绕开。新表述
-# 强调这些是"久远的旧话题"，与"最近 1h 内复读"明确区分。
-PROACTIVE_FOLLOWUP_HEADER = {
-    "zh": "\n[回忆线索] 以下旧话题距今较久，适合自然回忆与跟进：\n",
-    "en": "\n[Memory cues] Older topics from prior conversations — well-suited for natural reminiscence:\n",
-    "ja": "\n[記憶の手がかり] 以前の会話で出た古い話題——自然に回想して持ち出すのに向いている：\n",
-    "ko": "\n[기억 단서] 이전 대화에서 나온 오래된 화제——자연스럽게 회상하여 꺼내기 좋음:\n",
-    "ru": "\n[Подсказки памяти] Старые темы из прошлых разговоров — удачные для естественного возврата:\n",
-    "es": "\n[Pistas de memoria] Temas antiguos de conversaciones previas, adecuados para recordar y dar seguimiento con naturalidad:\n",
-    "pt": "\n[Pistas de memória] Temas antigos de conversas anteriores, adequados para recordar e acompanhar com naturalidade:\n",
-}
 
 # =====================================================================
 # ======= Long-term memory prompt templates ===========================
@@ -2358,10 +2362,10 @@ Este aviso afeta apenas a geração atual do summary; não entra na memória de 
 
 
 def get_summary_stale_hint(lang: str, gap_hours: float) -> str:
-    """Return locale-formatted stale hint for compress_history。
+    """Return locale-formatted stale hint for compress_history.
 
-    gap_hours 小数取一位（"1.5 小时" / "1.5 hours"）。lang 未知时回退 zh。
-    """
+    gap_hours is rounded to one decimal ("1.5 小时" / "1.5 hours"). Unknown lang falls back to zh.
+    """  # noqa: DOCSTRING_CJK
     tmpl = _loc(SUMMARY_STALE_HINT, lang)
     return tmpl.replace('{GAP}', f"{gap_hours:.1f}")
 

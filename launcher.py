@@ -1,7 +1,21 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
-N.E.K.O. 统一启动器
-启动所有服务器，等待它们准备就绪后启动主程序，并监控主程序状态
+N.E.K.O. unified launcher
+Starts all servers, waits until they are ready, then starts the main program and monitors its state
 """
 from __future__ import annotations
 
@@ -13,9 +27,10 @@ import signal
 def _configure_stdio_utf8() -> None:
     """Normalize stdio encoding when running the launcher on Windows.
 
-    优先 stream.reconfigure（保留 stream 对象），失败再兜底换 TextIOWrapper。
-    保留原对象是为了兼容 pytest capture / IDE 控制台 / 其他 embedded host —
-    替换 sys.stdout 会断掉这些上游的 redirector。
+    Prefer stream.reconfigure (keeps the stream object); fall back to swapping in a
+    TextIOWrapper on failure. Keeping the original object preserves compatibility
+    with pytest capture / IDE consoles / other embedded hosts — replacing sys.stdout
+    would break those upstream redirectors.
     """
     if sys.platform != 'win32':
         return
@@ -42,6 +57,61 @@ _configure_stdio_utf8()
 # 检测打包环境（PyInstaller 设 sys.frozen，Nuitka 设 __compiled__）
 IS_FROZEN = getattr(sys, 'frozen', False) or '__compiled__' in globals()
 
+
+def _ensure_utf8_filesystem_encoding() -> None:
+    """Restart once with PYTHONUTF8=1 when Linux fs encoding is not UTF-8.
+
+    Embedded Python builds in AppImage or minimal Linux runtimes can fall back
+    to ``ascii`` under a C/POSIX locale when C.UTF-8 is unavailable and PEP 538
+    locale coercion fails. Any non-ASCII path then raises UnicodeEncodeError
+    during calls such as os.makedirs or open, preventing the backend from
+    starting even if the host shell has a UTF-8 LANG that was not propagated.
+
+    Filesystem encoding is fixed at interpreter startup, so the only reliable
+    repair is setting PYTHONUTF8=1 (PEP 540 UTF-8 Mode) and execv-restarting
+    the current process. execv preserves the PID for Electron process tracking,
+    and the environment is inherited by later server subprocesses. Windows
+    already defaults to a UTF-8 filesystem encoding, so it is skipped.
+    """
+    if sys.platform == 'win32':
+        return
+    enc = (sys.getfilesystemencoding() or '').lower().replace('-', '')
+    if enc == 'utf8':
+        return
+    # 已经重启过一次：即便仍非 utf-8（例如 PYTHONUTF8 未被尊重）也放行，
+    # 绝不二次 execv，避免无限重启。
+    if os.environ.get('_NEKO_FS_UTF8_REEXEC') == '1':
+        return
+    os.environ['PYTHONUTF8'] = '1'
+    os.environ['_NEKO_FS_UTF8_REEXEC'] = '1'
+    if IS_FROZEN:
+        argv = [sys.executable, *sys.argv[1:]]
+    else:
+        argv = [sys.executable, os.path.abspath(__file__), *sys.argv[1:]]
+    try:
+        sys.stderr.write(
+            f'[launcher] filesystem encoding is {enc!r}; '
+            're-exec with PYTHONUTF8=1 to support non-ASCII paths\n'
+        )
+    except Exception:
+        # stderr may be closed or unwritable in embedded launchers; losing this
+        # diagnostic is harmless, and the re-exec attempt below is still useful.
+        pass
+    try:
+        os.execv(argv[0], argv)
+    except Exception:
+        # execv 失败（极少见）就放行：本进程仍是 ascii，但 PYTHONUTF8 已留在
+        # os.environ 里，后续 Popen 的子进程仍能拿到 utf-8。好过完全起不来。
+        pass
+
+
+# 仅在作为入口运行时才可能 re-exec：被 tests 当模块 import 时（__name__ !=
+# '__main__'）跳过，否则 ascii-fs 环境下的一次 import 会用 execv 把 pytest
+# 进程顶替掉。__name__ 在模块体执行前即确定，放这里能赶在任何中文路径操作之前。
+if __name__ == '__main__':
+    _ensure_utf8_filesystem_encoding()
+
+
 # 处理 PyInstaller 和 Nuitka 打包后的路径
 if IS_FROZEN:
     # 运行在打包后的环境
@@ -62,23 +132,27 @@ else:
 
 
 def _configure_ssl_cert_bundle() -> None:
-    """仅在冻结发行版里把 certifi 的 CA bundle 显式喂给 OpenSSL。
+    """Explicitly feed certifi's CA bundle to OpenSSL, only in frozen distributions.
 
-    Nuitka / PyInstaller 会复制 `libssl`，但其编译期硬编码的 OPENSSLDIR 指向
-    构建机路径，用户机上不存在；如果同时没设 SSL_CERT_FILE 环境变量，
-    `ssl.create_default_context()` 拿不到任何根证书，所有外部 TLS 一律失败。
-    build-desktop.yml 已经把 `certifi/cacert.pem` 当 package data 打进去，
-    这里只是把它显式指给 OpenSSL。
+    Nuitka / PyInstaller copy `libssl`, but its compile-time hard-coded OPENSSLDIR
+    points at a build-machine path that doesn't exist on user machines; if the
+    SSL_CERT_FILE env var isn't set either, `ssl.create_default_context()` gets no
+    root certificates and all external TLS fails. build-desktop.yml already packs
+    `certifi/cacert.pem` as package data; this merely points OpenSSL at it
+    explicitly.
 
-    源码模式下**不动** SSL_CERT_FILE：系统 Python 的 OpenSSL 默认信任链是
-    OS / venv 在用的那一份，可能挂着企业私有 CA（公司 TLS 中间人代理、
-    内部 PKI 等），certifi 静态 bundle 里没有这些根，硬覆盖会让原本能通
-    的内网 HTTPS 突然报 `certificate verify failed`。打包发行版没这层风险
-    （libssl 的 OPENSSLDIR 本身就指不到任何东西），所以只在 IS_FROZEN
-    分支里兜底。
+    In source mode we do **not** touch SSL_CERT_FILE: the system Python's OpenSSL
+    default trust chain is whatever the OS / venv uses, possibly carrying private
+    enterprise CAs (corporate TLS MITM proxies, internal PKI, etc.). The static
+    certifi bundle lacks those roots, and a hard override would suddenly break
+    previously working intranet HTTPS with `certificate verify failed`. Frozen
+    builds don't carry that risk (libssl's OPENSSLDIR points at nothing anyway),
+    so the fallback only runs in the IS_FROZEN branch.
 
-    用户已显式设过任一变量且文件存在时，无论是否冻结都尊重原值；只覆盖
-    那些缺失或指向已不存在路径的变量（比如打包构建机继承下来的失效路径）。
+    If the user already set either variable explicitly and the file exists, the
+    original value is respected whether frozen or not; we only override variables
+    that are missing or point at no-longer-existing paths (e.g. stale paths
+    inherited from the packaging build machine).
     """
     var_names = ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE")
 
@@ -454,7 +528,7 @@ def _bootstrap_launcher_runtime(project_dir: str) -> None:
 
 
 def _show_error_dialog(message: str):
-    """在 Windows 打包场景显示错误弹窗。"""
+    """Show an error dialog in the Windows packaged scenario."""
     if sys.platform != 'win32':
         return
     try:
@@ -464,9 +538,10 @@ def _show_error_dialog(message: str):
 
 
 def emit_frontend_event(event_type: str, payload: dict | None = None):
-    """向 Electron stdout 发送机器可读事件。
+    """Emit a machine-readable event to Electron via stdout.
 
-    每个事件都带有 *launch_id*，前端可据此忽略历史（僵尸）进程事件。
+    Every event carries a *launch_id* so the frontend can ignore events from stale
+    (zombie) processes.
     """
     envelope = {
         "source": "neko_launcher",
@@ -662,7 +737,7 @@ def _persist_post_startup_root_state(config_manager) -> None:
 
 
 def report_startup_failure(message: str, show_dialog: bool = True):
-    """统一报告启动失败信息：终端 + （可选）弹窗。"""
+    """Uniformly report startup failure: terminal + (optional) dialog."""
     normalized_message = str(message or "").strip().lower()
     if _is_expected_launcher_shutdown() and normalized_message.startswith(("start failed", "startup failed", "startup timeout", "startup aborted")):
         print(f"[Launcher] Suppressed startup failure during expected shutdown: {message}", flush=True)
@@ -674,7 +749,7 @@ def report_startup_failure(message: str, show_dialog: bool = True):
 
 
 def _get_last_error() -> int:
-    """获取最近一次 Win32 错误码。"""
+    """Get the most recent Win32 error code."""
     if sys.platform != 'win32':
         return 0
     return ctypes.windll.kernel32.GetLastError()
@@ -705,10 +780,10 @@ def _iter_servers_for_shutdown():
 
 def setup_job_object():
     """
-    创建 Windows Job Object 并将当前进程加入其中。
-    设置 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE 标志，
-    这样当主进程被 kill 时，OS 会自动终止所有子进程，
-    防止孤儿进程悬挂。
+    Create a Windows Job Object and add the current process to it.
+    Sets the JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE flag so that when the main
+    process is killed, the OS automatically terminates all child processes,
+    preventing orphaned processes from lingering.
     """
     global JOB_HANDLE
     if sys.platform != 'win32':
@@ -850,7 +925,7 @@ SERVERS = [
 # 每个服务仍然监听自己的端口，前端 / 服务间 HTTP 调用零改动。
 
 def run_merged_servers() -> int:
-    """单进程合并模式：3 个 uvicorn.Server 共享一个 asyncio event loop。"""
+    """Single-process merged mode: 3 uvicorn.Server instances share one asyncio event loop."""
     import asyncio
     import uvicorn
 
@@ -1008,7 +1083,7 @@ def run_memory_server(
     shutdown_event: Event | None = None,
     shutdown_complete_event: Event | None = None,
 ):
-    """运行 Memory Server"""
+    """Run the Memory Server"""
     try:
         _detach_child_process_session()
         _reload_runtime_config_from_env()
@@ -1105,7 +1180,7 @@ def run_agent_server(
     shutdown_event: Event | None = None,
     shutdown_complete_event: Event | None = None,
 ):
-    """运行 Agent Server (不需要等待初始化)"""
+    """Run the Agent Server (no need to wait for initialization)"""
     try:
         _detach_child_process_session()
         _reload_runtime_config_from_env()
@@ -1179,7 +1254,7 @@ def run_main_server(
     shutdown_event: Event | None = None,
     shutdown_complete_event: Event | None = None,
 ):
-    """运行 Main Server"""
+    """Run the Main Server"""
     try:
         _detach_child_process_session()
         _reload_runtime_config_from_env()
@@ -1271,7 +1346,7 @@ def run_main_server(
             shutdown_complete_event.set()
 
 def check_port(port: int, timeout: float = 0.5) -> bool:
-    """检查端口是否已开放"""
+    """Check whether the port is open"""
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(timeout)
@@ -1283,7 +1358,7 @@ def check_port(port: int, timeout: float = 0.5) -> bool:
 
 
 def get_port_owners(port: int) -> list[int]:
-    """查询监听指定端口的进程 PID 列表（尽力而为）。"""
+    """Query the PIDs of processes listening on the given port (best-effort)."""
     pids: set[int] = set()
     try:
         if sys.platform == 'win32':
@@ -1363,14 +1438,14 @@ def _classify_port_conflict(
     port: int,
     excluded_ranges: list[tuple[int, int]] | None = None,
 ) -> tuple[str, list]:
-    """对端口不可用原因进行分类。
+    """Classify why a port is unavailable.
 
-    返回 ``(reason, owners)``，其中 reason 为以下之一：
-    - ``"neko"``            已有 N.E.K.O 服务占用
-    - ``"hyperv_excluded"`` 位于 Hyper-V / WSL 保留端口范围
-    - ``"other_process"``   被非 N.E.K.O 进程监听
-    - ``"unknown"``         无法绑定但原因不明确
-    owners 为监听该端口的进程 ID 列表。
+    Returns ``(reason, owners)`` where reason is one of:
+    - ``"neko"``            already taken by an existing N.E.K.O service
+    - ``"hyperv_excluded"`` inside a Hyper-V / WSL reserved port range
+    - ``"other_process"``   listened on by a non-N.E.K.O process
+    - ``"unknown"``         cannot bind but the reason is unclear
+    owners is the list of process IDs listening on the port.
     """
     health = probe_neko_health(port)
     if health is not None:
@@ -1386,16 +1461,16 @@ def _classify_port_conflict(
 
 
 def apply_port_strategy() -> bool | str:
-    """优先使用默认端口，必要时自动规避冲突。
+    """Prefer the default ports, automatically dodging conflicts when necessary.
 
-    返回值：
-        ``True``      端口规划完成，可继续启动服务。
-        ``False``     发生致命错误，需中止启动。
-        ``"attach"`` 默认端口已由现有 N.E.K.O 后端完整占用。
+    Return value:
+        ``True``      port planning done; server startup can proceed.
+        ``False``     fatal error; startup must abort.
+        ``"attach"`` the default ports are fully owned by an existing N.E.K.O backend.
 
-    策略：
-    1. 默认端口若已是 N.E.K.O 服务，则视为可复用。
-    2. 若被 Hyper-V/WSL 保留或其他进程占用，则选择 fallback 端口。
+    Strategy:
+    1. If a default port is already a N.E.K.O service, treat it as reusable.
+    2. If reserved by Hyper-V/WSL or taken by another process, pick a fallback port.
     """
     global MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT
     chosen: dict[str, int] = {}
@@ -1555,7 +1630,7 @@ def apply_port_strategy() -> bool | str:
     return True
 
 def show_spinner(stop_event: threading.Event, message: str = "正在启动服务器"):
-    """显示转圈圈动画"""
+    """Show a spinner animation"""
     spinner = itertools.cycle(['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'])
     while not stop_event.is_set():
         sys.stdout.write(f'\r{message}... {next(spinner)} ')
@@ -1566,7 +1641,7 @@ def show_spinner(stop_event: threading.Event, message: str = "正在启动服务
     sys.stdout.flush()
 
 def start_server(server: Dict) -> bool:
-    """启动单个服务器"""
+    """Start a single server"""
     try:
         port = server.get('port')
 
@@ -1624,7 +1699,7 @@ def start_server(server: Dict) -> bool:
         return False
 
 def wait_for_servers(timeout: int = 60) -> bool | str:
-    """等待所有服务器启动完成"""
+    """Wait for all servers to finish starting"""
     print("\n等待服务器准备就绪...", flush=True)
     
     # 启动动画线程
@@ -1713,7 +1788,7 @@ def wait_for_servers(timeout: int = 60) -> bool | str:
 
 
 def cleanup_servers():
-    """清理所有服务器进程"""
+    """Clean up all server processes"""
     global _cleanup_done
     with _cleanup_lock:
         if _cleanup_done:
@@ -1813,7 +1888,7 @@ def cleanup_servers():
 
 
 def _handle_termination_signal(signum, _frame):
-    """处理终止信号，尽量保证清理逻辑被触发。"""
+    """Handle termination signals, doing our best to ensure cleanup logic runs."""
     _mark_expected_launcher_shutdown()
     print(f"\n收到终止信号 ({signum})，正在关闭...", flush=True)
     cleanup_servers()
@@ -1821,7 +1896,7 @@ def _handle_termination_signal(signum, _frame):
 
 
 def register_shutdown_hooks():
-    """注册退出钩子，覆盖更多退出路径。"""
+    """Register shutdown hooks to cover more exit paths."""
     atexit.register(cleanup_servers)
     try:
         signal.signal(signal.SIGTERM, _handle_termination_signal)
@@ -1973,7 +2048,7 @@ def _is_local_state_directory_error(exc) -> bool:
 
 
 def main():
-    """主函数"""
+    """Main entry point"""
     # 支持 multiprocessing 在 Windows 上的打包
     freeze_support()
 

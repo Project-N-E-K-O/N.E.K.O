@@ -1,6 +1,8 @@
 import { useEffect, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 
+import { callPlugin, ensureBrandCSS } from './study_surface_utils';
+
 type KnowledgeNode = {
   id: string;
   label: string;
@@ -17,48 +19,29 @@ type KnowledgeEdge = {
   relation?: string;
 };
 
-async function readJsonResponse(response: Response, label: string) {
-  if (!response.ok) {
-    throw new Error(`${label} failed: HTTP ${response.status}`);
-  }
-  return await response.json();
-}
-
-async function callPlugin(entryId: string, args: Record<string, unknown> = {}) {
-  const createResp = await fetch('/runs', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ plugin_id: 'study_companion', entry_id: entryId, args }),
-  });
-  const created = await readJsonResponse(createResp, 'Run create');
-  const runId = created.run_id || created.id;
-  if (!runId) {
-    throw new Error('Run id missing');
-  }
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    await new Promise((resolve) => window.setTimeout(resolve, 350));
-    const run = await readJsonResponse(await fetch(`/runs/${runId}`), 'Run poll');
-    if (run.status === 'succeeded') {
-      const exported = await readJsonResponse(await fetch(`/runs/${runId}/export`), 'Run export');
-      const item = (exported.items || []).find((candidate: any) => candidate.type === 'json' && candidate.json);
-      if (!item) {
-        throw new Error('Run export missing JSON result');
-      }
-      if (item.json.success === false || item.json.error) {
-        throw new Error(item.json.error?.message || item.json.message || 'Plugin call failed');
-      }
-      return item.json.data || {};
-    }
-    if (['failed', 'canceled', 'timeout'].includes(run.status)) {
-      throw new Error(run.error?.message || run.message || run.status);
-    }
-  }
-  throw new Error('Plugin call timed out');
-}
-
 function text(props: PluginSurfaceProps, key: string, fallback: string) {
   const value = props.t?.(key);
   return value && value !== key ? value : fallback;
+}
+
+function nodeMasteryLevel(node: KnowledgeNode) {
+  if (node.weak) {
+    return 'weak';
+  }
+  const mastery = Number(node.mastery);
+  if (!Number.isFinite(mastery)) {
+    return 'new';
+  }
+  if (mastery >= 0.85) {
+    return 'mastered';
+  }
+  if (mastery >= 0.6) {
+    return 'good';
+  }
+  if (mastery >= 0.3) {
+    return 'progress';
+  }
+  return 'weak';
 }
 
 export default function KnowledgeMap(props: PluginSurfaceProps) {
@@ -68,8 +51,9 @@ export default function KnowledgeMap(props: PluginSurfaceProps) {
   const [error, setError] = useState('');
 
   useEffect(() => {
+    ensureBrandCSS();
     let mounted = true;
-    callPlugin('study_knowledge_map', { limit: 200 })
+    callPlugin(props.api, 'study_knowledge_map', { limit: 200 })
       .then((payload: any) => {
         if (!mounted) {
           return;
@@ -85,7 +69,7 @@ export default function KnowledgeMap(props: PluginSurfaceProps) {
   }, []);
 
   return (
-    <div className="study-panel">
+    <div className="study-panel surface-shell">
       <header className="study-panel__header">
         <div>
           <h1>{text(props, 'ui.surface.knowledge_map', 'Knowledge Map')}</h1>
@@ -108,11 +92,16 @@ export default function KnowledgeMap(props: PluginSurfaceProps) {
         </div>
       </section>
       <div className="study-panel__actions">
-        {nodes.slice(0, 60).map((node) => (
-          <button key={node.id} type="button" className={node.weak ? 'is-active' : ''}>
-            {node.label} {node.mastery !== undefined && node.mastery !== null ? `${Math.round(node.mastery * 100)}%` : ''}
-          </button>
-        ))}
+        {nodes.slice(0, 60).map((node) => {
+          const mastery = Number(node.mastery);
+          const masteryText = Number.isFinite(mastery) ? ` ${Math.round(mastery * 100)}%` : '';
+          return (
+            <button key={node.id} type="button" className="knowledge-node" data-mastery={nodeMasteryLevel(node)}>
+              {node.label}
+              {masteryText}
+            </button>
+          );
+        })}
       </div>
       <div className="study-panel__reply-label">{text(props, 'ui.label.edges', 'Edges')}</div>
       <pre>{edges.slice(0, 30).map((edge) => `${edge.from} -> ${edge.to}${edge.relation ? ` (${edge.relation})` : ''}`).join('\n')}</pre>

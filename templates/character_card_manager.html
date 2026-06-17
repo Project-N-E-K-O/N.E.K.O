@@ -879,7 +879,7 @@
     <script src="/static/live2d-init.js"></script>
     
     <script src="/static/js/reserved_fields_utils.js"></script>
-    <script src="/static/js/character_personality_onboarding.js"></script>
+    <script src="/static/js/character_personality_onboarding.js?v={{ static_asset_version | default('0') }}"></script>
     <script src="/static/js/character_card_manager.js?v={{ static_asset_version | default('0') }}"></script>
 
     <!-- Three.js 核心库和importmap（用于VRM/MMD模型预览）-->
@@ -907,9 +907,10 @@
     <link rel="stylesheet" href="/static/libs/driver.min.css">
 
     <!-- 通用教程管理器 -->
-    <script src="/static/tutorial-skip-controller.js"></script>
-    <script src="/static/tutorial-avatar-reload-controller.js"></script>
-    <script src="/static/universal-tutorial-manager.js"></script>
+    <script src="/static/tutorial/core/skip-controller.js"></script>
+    <script src="/static/tutorial/avatar/reload-controller.js"></script>
+    <script src="/static/tutorial/core/lifecycle-state-store.js"></script>
+    <script src="/static/tutorial/core/universal-manager.js"></script>
 
     <!-- 初始化 -->
     <script>

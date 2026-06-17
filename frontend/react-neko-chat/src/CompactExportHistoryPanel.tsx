@@ -37,7 +37,7 @@ export function computeCompactHistoryExitDelay(index: number): string {
   return `${Math.min(index * COMPACT_HISTORY_EXIT_DELAY_STEP_MS, COMPACT_HISTORY_EXIT_DELAY_MAX_MS)}ms`;
 }
 
-export type CompactExportFormat = 'markdown' | 'image';
+export type CompactExportFormat = 'image' | 'markdown';
 export type CompactExportImageStyle = 'neko' | 'original' | 'poster' | 'lyrics';
 export type CompactExportImageFormat = 'png' | 'jpeg' | 'webp';
 
@@ -82,6 +82,7 @@ type CompactExportHistoryPanelProps = {
   onDownloadExport: (request: CompactExportActionRequest) => Promise<void> | void;
   onAction?: (message: ChatMessage, action: MessageAction) => void;
   historyResizeActive?: boolean;
+  historyResizeContentLocked?: boolean;
   onHistoryResizePointerDown?: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onHistoryResizePointerMove?: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onHistoryResizePointerUp?: (event: ReactPointerEvent<HTMLDivElement>) => void;
@@ -94,6 +95,12 @@ type ScrollbarDragState = {
   startScrollTop: number;
   scrollableHeight: number;
   draggableTrackHeight: number;
+};
+
+type CompactHistoryScrollbarThumbState = {
+  top: number;
+  height: number;
+  scrollable: boolean;
 };
 
 type CompactHistoryBubbleTone = {
@@ -226,6 +233,7 @@ export default function CompactExportHistoryPanel({
   onDownloadExport,
   onAction,
   historyResizeActive,
+  historyResizeContentLocked,
   onHistoryResizePointerDown,
   onHistoryResizePointerMove,
   onHistoryResizePointerUp,
@@ -249,6 +257,11 @@ export default function CompactExportHistoryPanel({
   const [exportActionError, setExportActionError] = useState<string | null>(null);
   const [previewState, setPreviewState] = useState<CompactExportPreviewState>({ status: 'idle' });
   const [scrollbarVisible, setScrollbarVisible] = useState(false);
+  const [scrollbarThumbState, setScrollbarThumbState] = useState<CompactHistoryScrollbarThumbState>({
+    top: 0,
+    height: 0,
+    scrollable: false,
+  });
   const selectedMessages = messages.filter(message => selectedIds.has(message.id));
   const previewHasSelection = selectedMessages.length > 0;
   const selectedMessageIds = selectedMessages.map(message => message.id);
@@ -298,9 +311,27 @@ export default function CompactExportHistoryPanel({
     scrollbarVisibleTimerRef.current = null;
   }
 
+  function updateScrollbarThumbState() {
+    const scrollNode = scrollRef.current;
+    const metrics = scrollNode ? getCompactHistoryScrollbarMetrics(scrollNode) : null;
+    if (!scrollNode || !metrics) {
+      setScrollbarThumbState(prev => (
+        prev.scrollable ? { top: 0, height: 0, scrollable: false } : prev
+      ));
+      return;
+    }
+    const top = Math.round(metrics.draggableTrackHeight * (scrollNode.scrollTop / metrics.scrollableHeight));
+    const height = Math.round(metrics.thumbHeight);
+    setScrollbarThumbState(prev => {
+      if (prev.scrollable && prev.top === top && prev.height === height) return prev;
+      return { top, height, scrollable: true };
+    });
+  }
+
   function revealScrollbarForWheel() {
     if (!historyInteractive) return;
     clearScrollbarVisibleTimer();
+    updateScrollbarThumbState();
     setScrollbarVisible(true);
     if (desktopHistoryHoverActiveRef.current) return;
     scrollbarVisibleTimerRef.current = window.setTimeout(() => {
@@ -397,6 +428,9 @@ export default function CompactExportHistoryPanel({
     if (historyInteractive) return;
     clearScrollbarVisibleTimer();
     setScrollbarVisible(false);
+    setScrollbarThumbState(prev => (
+      prev.scrollable ? { top: 0, height: 0, scrollable: false } : prev
+    ));
     scrollbarDragRef.current = null;
     desktopHistoryHoverActiveRef.current = false;
   }, [historyInteractive]);
@@ -407,6 +441,9 @@ export default function CompactExportHistoryPanel({
       const detail = (event as CustomEvent<{ active?: boolean }>).detail;
       desktopHistoryHoverActiveRef.current = detail?.active === true;
       clearScrollbarVisibleTimer();
+      if (desktopHistoryHoverActiveRef.current) {
+        updateScrollbarThumbState();
+      }
       setScrollbarVisible(desktopHistoryHoverActiveRef.current);
     }
 
@@ -453,9 +490,10 @@ export default function CompactExportHistoryPanel({
     const scrollNode = scrollRef.current;
     if (!scrollNode) return;
     lastGeometryClientHeightRef.current = scrollNode.clientHeight;
+    if (!historyResizeContentLocked) return;
     if (!autoScrollToBottomRef.current) return;
     scrollNode.scrollTop = scrollNode.scrollHeight - scrollNode.clientHeight;
-  }, [historyResizeActive]);
+  }, [historyResizeContentLocked]);
 
   // slot / max 高度变化（拖 resize bar、视口/工作区/宽度变化触发的 reapply）只裁剪 scroll 盒可视窗口，
   // 内容不再 reflow。仅当用户当前停在底部（autoScrollToBottom）时处理，否则尊重其向上查看老消息的位置。
@@ -545,6 +583,7 @@ export default function CompactExportHistoryPanel({
     if (!scrollNode) return;
     const distanceToBottom = scrollNode.scrollHeight - scrollNode.scrollTop - scrollNode.clientHeight;
     onAutoScrollToBottomChange(distanceToBottom <= COMPACT_EXPORT_BOTTOM_THRESHOLD);
+    updateScrollbarThumbState();
   }
 
   function handleClick(event: ReactMouseEvent<HTMLElement>, message: ChatMessage, selectable: boolean) {
@@ -595,8 +634,8 @@ export default function CompactExportHistoryPanel({
   }
 
   const exportFormatOptions: { id: CompactExportFormat; label: string }[] = [
-    { id: 'markdown', label: i18n('chat.exportFormatMarkdown', 'Markdown') },
     { id: 'image', label: i18n('chat.exportFormatImage', 'Image') },
+    { id: 'markdown', label: i18n('chat.exportFormatMarkdown', 'Markdown') },
   ];
   const imageStyleOptions: { id: CompactExportImageStyle; label: string }[] = [
     { id: 'neko', label: i18n('chat.exportImageStyleNeko', 'N.E.K.O') },
@@ -701,7 +740,7 @@ export default function CompactExportHistoryPanel({
           className="compact-export-preview-frame"
           title={i18n('chat.exportPreviewTitle', 'Export Preview')}
           srcDoc={previewState.result.previewDocument}
-          sandbox=""
+          sandbox="allow-scripts"
         />
       </div>
     );
@@ -746,21 +785,23 @@ export default function CompactExportHistoryPanel({
           </div>
         </div>
       </div>
-      <div className="compact-export-preview-format-strip" aria-label={i18n('chat.exportFormatLabel', 'Export Format')}>
-        {exportFormatOptions.map(option => (
-          <button
-            key={option.id}
-            type="button"
-            className={clsx('compact-export-preview-chip', {
-              'is-active': exportFormat === option.id,
-            })}
-            aria-pressed={exportFormat === option.id}
-            onClick={() => setExportFormat(option.id)}
-          >
-            {option.label}
-          </button>
-        ))}
-      </div>
+      {exportFormatOptions.length > 1 ? (
+        <div className="compact-export-preview-format-strip" aria-label={i18n('chat.exportFormatLabel', 'Export Format')}>
+          {exportFormatOptions.map(option => (
+            <button
+              key={option.id}
+              type="button"
+              className={clsx('compact-export-preview-chip', {
+                'is-active': exportFormat === option.id,
+              })}
+              aria-pressed={exportFormat === option.id}
+              onClick={() => setExportFormat(option.id)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
       {exportFormat === 'image' ? (
         <div className="compact-export-preview-options" aria-label={i18n('chat.exportFormatImage', 'Image')}>
           <div className="compact-export-preview-option-row">
@@ -836,6 +877,7 @@ export default function CompactExportHistoryPanel({
       data-compact-export-history-open={historyInteractive ? 'true' : 'false'}
       data-compact-export-history-visibility={visibilityState}
       data-compact-export-history-resizing={historyResizeActive ? 'true' : 'false'}
+      data-compact-export-history-content-locked={historyResizeContentLocked ? 'true' : 'false'}
       data-compact-export-preview-open={previewOpen ? 'true' : 'false'}
       data-compact-export-under-choice={choiceLayerAbove ? 'true' : 'false'}
       aria-label={i18n('chat.exportConversation', 'Export Conversation')}
@@ -867,6 +909,9 @@ export default function CompactExportHistoryPanel({
             className="compact-export-history-scroll"
             role="list"
             aria-label={i18n('chat.messageListAriaLabel', 'Chat messages')}
+            data-compact-hit-region={historyInteractive && !choiceLayerAbove ? 'true' : undefined}
+            data-compact-hit-region-id={historyInteractive && !choiceLayerAbove ? 'history:scroll' : undefined}
+            data-compact-hit-region-kind={historyInteractive && !choiceLayerAbove ? 'scroll' : undefined}
             data-compact-scrollbar-visible={scrollbarVisible ? 'true' : undefined}
             onScroll={handleScroll}
             onWheel={handleWheel}
@@ -941,6 +986,10 @@ export default function CompactExportHistoryPanel({
             <div
               className="compact-export-history-scrollbar-hit"
               data-compact-scrollbar-hit="true"
+              style={{
+                '--compact-history-scroll-thumb-top': `${scrollbarThumbState.top}px`,
+                '--compact-history-scroll-thumb-height': `${scrollbarThumbState.height}px`,
+              } as CSSProperties}
               aria-hidden="true"
               onWheel={handleScrollbarWheel}
               onPointerDown={handleScrollbarPointerDown}

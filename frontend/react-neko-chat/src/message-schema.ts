@@ -132,6 +132,10 @@ const avatarToolDescriptorSchema = z.object({
   cursorImagePathAlt2: z.string().optional(),
   cursorHotspotX: z.number().finite().optional(),
   cursorHotspotY: z.number().finite().optional(),
+  cursorNaturalWidth: z.number().finite().positive().optional(),
+  cursorNaturalHeight: z.number().finite().positive().optional(),
+  cursorDisplayWidth: z.number().finite().positive().optional(),
+  cursorDisplayHeight: z.number().finite().positive().optional(),
   menuIconScale: z.number().finite().positive().optional(),
 }).strict();
 
@@ -185,6 +189,18 @@ export const composerSubmitSchema = z.object({
   requestId: z.string().optional(),
 });
 
+const compactToolFanOpenRequestSchema = z.object({
+  id: z.string().min(1),
+  open: z.boolean(),
+  reason: z.string().optional(),
+}).nullable();
+
+const compactHistoryOpenRequestSchema = z.object({
+  id: z.string().min(1),
+  open: z.boolean(),
+  reason: z.string().optional(),
+}).nullable();
+
 export const chatWindowPropsSchema = z.object({
   title: z.string().optional(),
   iconSrc: z.string().optional(),
@@ -216,7 +232,14 @@ export const chatWindowPropsSchema = z.object({
   composerHidden: z.boolean().optional(),
   composerDisabled: z.boolean().optional(),
   chatSurfaceMode: chatSurfaceModeSchema.optional(),
+  // host 折叠取消序号：必须在 schema 里声明，否则 z.object().parse() 默认 strip 未知键、
+  // App 永远只看到默认 0，重开立即复位的 useLayoutEffect 不会触发（Codex P2）。
+  // 逻辑上是单调递增的非负整数计数（host 从 0 起 += 1），加 int/nonnegative 作边界防御
+  // （CodeRabbit）；host 恒传合法值，约束不会触发拒绝。
+  compactMinimizeCancelSeq: z.number().int().nonnegative().optional(),
   compactChatState: compactChatStateSchema.optional(),
+  compactToolFanOpenRequest: compactToolFanOpenRequestSchema.optional(),
+  compactHistoryOpenRequest: compactHistoryOpenRequestSchema.optional(),
   onCompactChatStateChange: z.function()
     .args(compactChatStateSchema)
     .returns(z.void())

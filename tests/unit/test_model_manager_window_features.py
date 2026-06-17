@@ -12,7 +12,7 @@ def test_avatar_model_manager_popup_opens_fullscreen():
 
 
 def test_yui_model_manager_handoff_opens_fullscreen():
-    source = Path("static/yui-guide-page-handoff.js").read_text(encoding="utf-8")
+    source = Path("static/tutorial/yui-guide/page-handoff.js").read_text(encoding="utf-8")
 
     assert "function buildFullscreenWindowFeatures()" in source
     assert "function isModelManagerPageUrl(openUrl)" in source

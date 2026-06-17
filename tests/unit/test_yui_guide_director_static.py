@@ -3,8 +3,11 @@ import json
 import re
 
 
-YUI_GUIDE_DIRECTOR_PATH = Path(__file__).resolve().parents[2] / "static" / "yui-guide-director.js"
-YUI_GUIDE_STEPS_PATH = Path(__file__).resolve().parents[2] / "static" / "yui-guide-steps.js"
+YUI_GUIDE_DIRECTOR_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/yui-guide/director.js"
+YUI_GUIDE_STEPS_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/yui-guide/steps.js"
+YUI_GUIDE_DAY1_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/yui-guide/days/day1-home-guide.js"
+SCENE_ORCHESTRATOR_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/core/scene-orchestrator.js"
+NEW_USER_ICEBREAKER_PATH = Path(__file__).resolve().parents[2] / "static" / "icebreaker/new-user-icebreaker.js"
 APP_INTERPAGE_PATH = Path(__file__).resolve().parents[2] / "static" / "app-interpage.js"
 STATIC_LOCALES_DIR = Path(__file__).resolve().parents[2] / "static" / "locales"
 
@@ -15,6 +18,10 @@ def _read_director() -> str:
 
 def _read_steps() -> str:
     return YUI_GUIDE_STEPS_PATH.read_text(encoding="utf-8")
+
+
+def _read_day1_guide() -> str:
+    return YUI_GUIDE_DAY1_PATH.read_text(encoding="utf-8")
 
 
 def _read_interpage() -> str:
@@ -67,6 +74,42 @@ def test_home_tutorial_chat_targets_prefer_compact_capsule_over_removed_full_win
 
     assert compact_capsule_selector in allowed_target_block
     assert compact_input_selector in allowed_target_block
+
+
+def test_steps_keep_default_non_home_page_registrations():
+    source = _read_steps()
+    page_key_block = source.split("const day1Guide = getDailyGuide(1) || {};", 1)[1].split(
+        "const steps = {};",
+        1,
+    )[0]
+
+    assert "const configuredPageKeys = Array.isArray(day1Guide.pageKeys) ? day1Guide.pageKeys : [];" in page_key_block
+    assert "const pageKeys = DEFAULT_PAGE_KEYS.concat(configuredPageKeys).filter" in page_key_block
+    assert "list.indexOf(page) === index" in page_key_block
+
+
+def test_timeline_voice_key_resolution_uses_director_before_normalized_audio():
+    source = SCENE_ORCHESTRATOR_PATH.read_text(encoding="utf-8")
+    runtime_block = source.split("createTimelineAudioRuntime(scene, timelineScene, context)", 1)[1].split(
+        "async runLegacyScene",
+        1,
+    )[0]
+
+    assert "const resolveTimelineVoiceKey = (voiceKey) => {" in runtime_block
+    assert "director.resolveAvatarFloatingSceneVoiceKey(legacyScene)" in runtime_block
+    assert "return resolvedSceneVoiceKey || voiceKey || audio.voiceKey || legacyScene.voiceKey || '';" in runtime_block
+    assert "const resolvedVoiceKey = resolveTimelineVoiceKey(voiceKey);" in runtime_block
+    assert "director.getGuideVoiceDurationMs(\n                            resolveTimelineVoiceKey(voiceKey)," in runtime_block
+
+
+def test_icebreaker_does_not_restart_completed_current_day():
+    source = NEW_USER_ICEBREAKER_PATH.read_text(encoding="utf-8")
+    start_block = source.split("async function start(reason)", 1)[1].split(
+        "activeSession = {",
+        1,
+    )[0]
+
+    assert "activeSession || isDayCompleted(DAY) || hasCompletedFinalDay()" in start_block
 
 
 def test_externalized_tutorial_chat_spotlight_targets_compact_input_not_window_shell():
@@ -220,14 +263,14 @@ def test_guide_audio_playback_state_uses_guide_message_id_for_compact_capsule_cl
 
 def test_settings_peek_copy_matches_existing_voice_audio_script():
     expected_audio_script_markers = {
-        "en": ("gear icon", "replace me"),
-        "es": ("icono de engranaje", "reemplazarme"),
-        "ja": ("歯車", "取り替える"),
-        "ko": ("톱니바퀴", "바꾸려는"),
-        "pt": ("ícone de engrenagem", "substituir"),
-        "ru": ("шестеренке", "заменить"),
-        "zh-CN": ("齿轮", "把我换掉吧？啊啊啊不行"),
-        "zh-TW": ("齒輪", "把我換掉吧？啊啊啊不行"),
+        "en": ("little space", "warmth of my words"),
+        "es": ("little space", "warmth of my words"),
+        "ja": ("小さな空間", "ワガママ"),
+        "ko": ("우리만의", "다정함"),
+        "pt": ("little space", "warmth of my words"),
+        "ru": ("крошечном пространстве", "Теплоту"),
+        "zh-CN": ("小空间", "说话的温度"),
+        "zh-TW": ("小空間", "說話的溫度"),
     }
 
     for locale_name, (intro_marker, detail_marker) in expected_audio_script_markers.items():
@@ -241,11 +284,13 @@ def test_settings_peek_copy_matches_existing_voice_audio_script():
 
 
 def test_zh_cn_intro_basic_copy_matches_step_fallback_and_voice_script():
-    steps_source = _read_steps()
-    match = re.search(r"steps\.intro_basic\.performance\.bubbleText = '([^']+)';", steps_source)
+    day1_source = _read_day1_guide()
+    match = re.search(r"bubbleText: '([^']+)',\n\s+bubbleTextKey: 'tutorial\.yuiGuide\.lines\.introBasic'", day1_source)
     assert match is not None
     fallback_text = match.group(1)
     static_intro = _read_static_locale("zh-CN")["tutorial"]["yuiGuide"]["lines"]["introBasic"]
 
-    assert "神奇的小按钮" in fallback_text
+    assert "神奇的按钮" in fallback_text
     assert static_intro == fallback_text
+    assert not fallback_text.endswith("喵！")
+    assert fallback_text.endswith("啦！")

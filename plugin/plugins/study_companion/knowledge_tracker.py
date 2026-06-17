@@ -6,6 +6,7 @@ import hashlib
 import logging
 import math
 import re
+import uuid
 from typing import Any, Callable
 
 from .fsrs_bridge import (
@@ -27,6 +28,12 @@ from .models import json_copy
 
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class _BatchAnswerWriteFailed(RuntimeError):
+    def __init__(self, original: Exception) -> None:
+        super().__init__(str(original))
+        self.original = original
 
 
 def _utc_iso() -> str:
@@ -238,9 +245,86 @@ class MasteryTracker:
 
 
 class KnowledgeGraph:
+    _TOPIC_INDEX_LIMIT = 1000
+
     def __init__(self, store: Any) -> None:
         self._store = store
         self._quality = KnowledgeQualityStore(store)
+        self._topic_id_index: set[str] = set()
+        self._topic_name_index: dict[str, str] = {}
+        self._index_truncated = False
+        self._index_dirty = True
+
+    def _ensure_index(self) -> None:
+        """Refresh the in-memory topic-name index from the store when needed."""
+        if not self._index_dirty:
+            return
+        self._topic_id_index.clear()
+        self._topic_name_index.clear()
+        self._index_truncated = False
+        index_limit = self._TOPIC_INDEX_LIMIT
+        topics = self._store.list_topics(limit=index_limit)
+        if len(topics) >= index_limit:
+            self._index_truncated = True
+            if callable(getattr(self._store, "count_topics", None)):
+                try:
+                    total = int(self._store.count_topics())
+                except Exception:
+                    total = index_limit + 1
+                self._index_truncated = total > index_limit
+                if self._index_truncated:
+                    _LOGGER.warning(
+                        "KnowledgeGraph topic index limited to %s of %s topics",
+                        index_limit,
+                        total,
+                    )
+        for topic in topics:
+            topic_id = str(topic.get("id") or "").strip()
+            name = str(topic.get("name") or "").strip()
+            if topic_id:
+                self._topic_id_index.add(topic_id)
+            if name and topic_id:
+                self._topic_name_index[name] = topic_id
+        self._index_dirty = False
+
+    def mark_dirty(self) -> None:
+        self._index_dirty = True
+
+    def resolve_known_topic(self, topic: str) -> str:
+        value = str(topic or "").strip()
+        if not value:
+            return ""
+        self._ensure_index()
+        if value in self._topic_id_index:
+            return value
+        indexed = self._topic_name_index.get(value, "")
+        if indexed:
+            return indexed
+        if self._index_truncated:
+            return self._resolve_store_topic(value)
+        return ""
+
+    def _resolve_store_topic(self, value: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        get_topic = getattr(self._store, "get_topic", None)
+        if callable(get_topic):
+            try:
+                topic = get_topic(text)
+            except Exception:
+                topic = None
+            if topic:
+                return str(topic.get("id") or text)
+        find_topic_by_name = getattr(self._store, "find_topic_by_name", None)
+        if callable(find_topic_by_name):
+            try:
+                topic = find_topic_by_name(text)
+            except Exception:
+                topic = None
+            if topic:
+                return str(topic.get("id") or "")
+        return ""
 
     def get_ready_topics(self, mastered: set[str]) -> list[str]:
         ready: list[str] = []
@@ -288,13 +372,12 @@ class KnowledgeGraph:
     def discover_candidate(
         self, text: str, context: dict[str, Any] | None = None
     ) -> str | None:
+        self._ensure_index()
         topic = str((context or {}).get("topic") or "").strip()
         if topic:
-            known = self._store.get_topic(topic) or self._store.find_topic_by_name(
-                topic
-            )
-            if known:
-                return str(known.get("id") or "")
+            known_id = self.resolve_known_topic(topic)
+            if known_id:
+                return known_id
             candidate = self._quality.upsert_candidate(
                 KnowledgeCandidateType.TOPIC.value,
                 {
@@ -310,15 +393,30 @@ class KnowledgeGraph:
         normalized = str(text or "").strip()
         if not normalized:
             return None
-        for known in self._store.list_topics(limit=1000):
-            name = str(known.get("name") or "")
+        if self._index_truncated:
+            known_id = self._resolve_store_topic(normalized)
+            if known_id:
+                return known_id
+            first = next(
+                (line.strip() for line in normalized.splitlines() if line.strip()), ""
+            )
+            if first and first != normalized:
+                known_id = self._resolve_store_topic(first)
+                if known_id:
+                    return known_id
+            return None
+        for name, topic_id in self._topic_name_index.items():
             if name and name in normalized:
-                return str(known.get("id") or "")
+                return topic_id
         first = next(
             (line.strip() for line in normalized.splitlines() if line.strip()), ""
         )
         if not first:
             return None
+        if self._index_truncated:
+            known_id = self._resolve_store_topic(first)
+            if known_id:
+                return known_id
         candidate = self._quality.upsert_candidate(
             KnowledgeCandidateType.TOPIC.value,
             {
@@ -382,6 +480,7 @@ class KnowledgeTracker:
         self.fsrs = FSRSBridge(retention_target=retention_target)
         self._logger = logger
         self._memory_deck_summary_provider: Callable[..., dict[str, Any]] | None = None
+        self._quality_warning_failures = 0
 
     def set_memory_deck_summary_provider(
         self, provider: Callable[..., dict[str, Any]] | None
@@ -394,6 +493,180 @@ class KnowledgeTracker:
         return float((latest or {}).get("mastery") or 0.0)
 
     def on_answer(
+        self,
+        *,
+        topic_id: str,
+        question: dict[str, Any],
+        user_answer: str,
+        eval_result: dict[str, Any],
+        mode: str,
+        session_id: str = "default",
+        response_time_ms: int | None = None,
+    ) -> dict[str, Any]:
+        if not self._can_batch_answer_data():
+            return self._on_answer_legacy(
+                topic_id=topic_id,
+                question=question,
+                user_answer=user_answer,
+                eval_result=eval_result,
+                mode=mode,
+                session_id=session_id,
+                response_time_ms=response_time_ms,
+            )
+
+        answer_lock = self.store.answer_write_lock()
+        try:
+            with answer_lock:
+                return self._on_answer_batch(
+                    topic_id=topic_id,
+                    question=question,
+                    user_answer=user_answer,
+                    eval_result=eval_result,
+                    mode=mode,
+                    session_id=session_id,
+                    response_time_ms=response_time_ms,
+                )
+        except _BatchAnswerWriteFailed as exc:
+            self._log_exception(
+                "study batch answer write failed; falling back to legacy path: {}",
+                exc.original,
+            )
+            return self._on_answer_legacy(
+                topic_id=topic_id,
+                question=question,
+                user_answer=user_answer,
+                eval_result=eval_result,
+                mode=mode,
+                session_id=session_id,
+                response_time_ms=response_time_ms,
+            )
+
+    def _on_answer_batch(
+        self,
+        *,
+        topic_id: str,
+        question: dict[str, Any],
+        user_answer: str,
+        eval_result: dict[str, Any],
+        mode: str,
+        session_id: str,
+        response_time_ms: int | None,
+    ) -> dict[str, Any]:
+        (
+            topic_id,
+            topic_existed,
+            topic_upsert_data,
+            topic_candidate_data,
+        ) = self._prepare_answer_topic_data(
+            topic_id, question=question, eval_result=eval_result
+        )
+        question_payload = dict(question or {})
+        question_payload.setdefault("topic", topic_id)
+        difficulty = _difficulty_to_float(question_payload.get("difficulty"), 0.5)
+        verdict = str(eval_result.get("verdict") or "").strip().lower()
+        error_type = str(eval_result.get("error_type") or "").strip() or "unknown"
+        answer_state = self.store.load_answer_write_state(topic_id, recent_limit=10)
+        recent = answer_state.get("recent") if topic_existed else []
+        card_row = answer_state.get("fsrs_card") if topic_existed else None
+        recent_results = [dict(item.get("eval_result") or {}) for item in recent]
+        mastery_result = {
+            "verdict": verdict,
+            "score": eval_result.get("score"),
+            "difficulty": difficulty,
+            "response_time_ms": response_time_ms,
+        }
+        snapshot = self.mastery.update(
+            topic_id, mastery_result, recent_results=recent_results
+        )
+
+        wrong_question_data: dict[str, Any] | None = None
+        error_candidates: list[dict[str, Any]] = []
+        positive_candidate: dict[str, Any] | None = None
+        if verdict in {"wrong", "partial", "dont_know"}:
+            wrong_question_data = {
+                "id": str(uuid.uuid4()),
+                "topic_id": topic_id,
+                "question": question_payload,
+                "user_answer": user_answer,
+                "expected_answer": str(
+                    question_payload.get("answer")
+                    or eval_result.get("expected_answer")
+                    or ""
+                ),
+                "error_type": error_type,
+                "verdict": verdict,
+            }
+            error_candidates = self._build_error_candidate_data(
+                topic_id=topic_id,
+                question=question_payload,
+                eval_result=eval_result,
+                error_type=error_type,
+                verdict=verdict,
+            )
+        elif verdict == "correct":
+            positive_candidate = self._build_positive_candidate_data(
+                topic_id=topic_id, question=question_payload
+            )
+
+        card = card_row.get("card") if card_row else create_card(topic_id).to_dict()
+        rating = self._rating_from_eval(eval_result)
+        updated_card, schedule = rate_answer(card, rating)
+        try:
+            batch_result = self.store.batch_write_answer_data(
+                session_id=session_id,
+                mode=mode,
+                topic_id=topic_id,
+                question=question_payload,
+                user_answer=user_answer,
+                eval_result=eval_result,
+                response_time_ms=response_time_ms,
+                mastery_snapshot=snapshot.to_dict(),
+                wrong_question_data=wrong_question_data,
+                fsrs_card=updated_card.to_dict(),
+                fsrs_rating=int(rating),
+                review_log_data={
+                    "topic_id": topic_id,
+                    "card_id": int((card_row or {}).get("id") or 0) or None,
+                    "rating": int(rating),
+                    "scheduled_days": int(round(updated_card.scheduled_days)),
+                    "actual_days": int(round(updated_card.elapsed_days)),
+                },
+                error_candidate_data=error_candidates,
+                positive_candidate_data=positive_candidate,
+                topic_upsert_data=topic_upsert_data,
+                topic_candidate_data=topic_candidate_data,
+            )
+        except Exception as exc:
+            raise _BatchAnswerWriteFailed(exc) from exc
+        if topic_upsert_data:
+            self.graph.mark_dirty()
+        if verdict == "correct":
+            self.store.record_wrong_question_correct(
+                topic_id=topic_id,
+                error_type=error_type,
+                difficulty=_difficulty_to_level(difficulty),
+            )
+
+        return {
+            "topic_id": topic_id,
+            "mastery": snapshot.to_dict(),
+            "wrong_question_id": str(batch_result.get("wrong_question_id") or ""),
+            "fsrs": schedule,
+        }
+
+    def _can_batch_answer_data(self) -> bool:
+        if not bool(getattr(self.store, "_supports_batch_answer", False)):
+            return False
+        return all(
+            callable(getattr(self.store, name, None))
+            for name in (
+                "batch_write_answer_data",
+                "answer_write_lock",
+                "load_answer_write_state",
+            )
+        )
+
+    def _on_answer_legacy(
         self,
         *,
         topic_id: str,
@@ -512,6 +785,130 @@ class KnowledgeTracker:
             "mastery": snapshot.to_dict(),
             "wrong_question_id": wrong_question_id,
             "fsrs": schedule,
+        }
+
+    def _prepare_answer_topic_data(
+        self, topic_id: str, *, question: dict[str, Any], eval_result: dict[str, Any]
+    ) -> tuple[str, bool, dict[str, Any] | None, dict[str, Any] | None]:
+        resolved, topic_name, existing = self._resolve_and_identify_topic(
+            topic_id, question=question, eval_result=eval_result
+        )
+        topic_data = None
+        topic_candidate = None
+        if not existing:
+            topic_data = {
+                "id": resolved,
+                "name": topic_name or resolved,
+                "subject": str(question.get("subject") or "math"),
+                "chapter": str(
+                    question.get("chapter") or question.get("topic") or "runtime"
+                ),
+                "depth": 2,
+                "difficulty": _difficulty_to_float(question.get("difficulty"), 0.5),
+                "prerequisites": [],
+                "related": [],
+                "typical_misconceptions": [],
+                "source": "runtime",
+            }
+            topic_candidate = self._build_candidate_write_data(
+                item_type=KnowledgeCandidateType.TOPIC.value,
+                payload={
+                    "topic_id": resolved,
+                    "name": topic_name or resolved,
+                    "subject": str(question.get("subject") or "math"),
+                },
+                source=str(eval_result.get("source") or "answer_tracking"),
+                evidence_type=KnowledgeEvidenceType.MENTIONED.value,
+                context={"topic_id": resolved, "mode": eval_result.get("mode") or ""},
+                weight=0.2,
+            )
+        return resolved, existing, topic_data, topic_candidate
+
+    def _build_error_candidate_data(
+        self,
+        *,
+        topic_id: str,
+        question: dict[str, Any],
+        eval_result: dict[str, Any],
+        error_type: str,
+        verdict: str,
+    ) -> list[dict[str, Any]]:
+        key = _slug(error_type or "unknown")
+        return [
+            self._build_candidate_write_data(
+                item_type=KnowledgeCandidateType.MISCONCEPTION.value,
+                payload={
+                    "topic_id": topic_id,
+                    "misconception_key": key,
+                    "error_type": error_type,
+                },
+                source="answer_evaluation",
+                evidence_type=KnowledgeEvidenceType.MENTIONED.value,
+                context={"verdict": verdict, "score": eval_result.get("score")},
+                weight=0.2,
+            ),
+            self._build_candidate_write_data(
+                item_type=KnowledgeCandidateType.QUESTION_TYPE.value,
+                payload={
+                    "topic_id": topic_id,
+                    "question_type_key": self._question_type_key(question),
+                    "difficulty": question.get("difficulty"),
+                },
+                source="answer_evaluation",
+                evidence_type=KnowledgeEvidenceType.MENTIONED.value,
+                context={"verdict": verdict, "error_type": error_type},
+                weight=0.2,
+            ),
+        ]
+
+    def _build_positive_candidate_data(
+        self, *, topic_id: str, question: dict[str, Any]
+    ) -> dict[str, Any]:
+        candidate = self._build_candidate_write_data(
+            item_type=KnowledgeCandidateType.QUESTION_TYPE.value,
+            payload={
+                "topic_id": topic_id,
+                "question_type_key": self._question_type_key(question),
+                "difficulty": question.get("difficulty"),
+            },
+            source="answer_evaluation",
+            evidence_type=KnowledgeEvidenceType.MENTIONED.value,
+            context={"verdict": "correct"},
+            weight=0.2,
+        )
+        candidate["evidence"].append(
+            {
+                "event_type": KnowledgeEvidenceType.ANSWER_IMPROVED.value,
+                "weight": 1.0,
+                "context": {"source": "answer_evaluation", "topic_id": topic_id},
+            }
+        )
+        return candidate
+
+    def _build_candidate_write_data(
+        self,
+        *,
+        item_type: str,
+        payload: dict[str, Any],
+        source: str,
+        evidence_type: str,
+        context: dict[str, Any],
+        weight: float,
+    ) -> dict[str, Any]:
+        clean_payload = json_copy(payload or {})
+        return {
+            "id": str(uuid.uuid4()),
+            "item_type": item_type,
+            "payload": clean_payload,
+            "source": source,
+            "dedupe_key": KnowledgeQualityStore._dedupe_key(item_type, clean_payload),
+            "evidence": [
+                {
+                    "event_type": evidence_type,
+                    "weight": weight,
+                    "context": context,
+                }
+            ],
         }
 
     def get_next_question_params(self, topic_id: str = "") -> dict[str, Any]:
@@ -833,16 +1230,10 @@ class KnowledgeTracker:
     def _ensure_topic(
         self, topic_id: str, *, question: dict[str, Any], eval_result: dict[str, Any]
     ) -> str:
-        raw_topic = str(
-            topic_id or question.get("topic") or eval_result.get("topic") or ""
-        ).strip()
-        resolved = self._resolve_topic_id(raw_topic)
-        topic_name = str(
-            question.get("topic") or eval_result.get("topic") or resolved or "general"
-        ).strip()
-        if not resolved:
-            resolved = _slug(topic_name)
-        if not self.store.get_topic(resolved):
+        resolved, topic_name, topic_existed = self._resolve_and_identify_topic(
+            topic_id, question=question, eval_result=eval_result
+        )
+        if not topic_existed:
             self.quality.upsert_candidate(
                 KnowledgeCandidateType.TOPIC.value,
                 {
@@ -861,12 +1252,31 @@ class KnowledgeTracker:
             chapter=str(question.get("chapter") or question.get("topic") or "runtime"),
             difficulty=_difficulty_to_float(question.get("difficulty"), 0.5),
         )
+        if not topic_existed:
+            self.graph.mark_dirty()
         return resolved
+
+    def _resolve_and_identify_topic(
+        self, topic_id: str, *, question: dict[str, Any], eval_result: dict[str, Any]
+    ) -> tuple[str, str, bool]:
+        raw_topic = str(
+            topic_id or question.get("topic") or eval_result.get("topic") or ""
+        ).strip()
+        resolved = self._resolve_topic_id(raw_topic)
+        topic_name = str(
+            question.get("topic") or eval_result.get("topic") or resolved or "general"
+        ).strip()
+        if not resolved:
+            resolved = _slug(topic_name)
+        return resolved, topic_name, bool(self.store.get_topic(resolved))
 
     def _resolve_topic_id(self, topic: str) -> str:
         value = str(topic or "").strip()
         if not value:
             return ""
+        indexed = self.graph.resolve_known_topic(value)
+        if indexed:
+            return indexed
         if self.store.get_topic(value):
             return value
         existing = self.store.find_topic_by_name(value)
@@ -953,12 +1363,35 @@ class KnowledgeTracker:
         return "general"
 
     def _log_quality_warning(self, message: str, *args: Any) -> None:
+        self._quality_warning_failures += 1
+        if self._quality_warning_failures >= 3:
+            error = getattr(self._logger, "error", None)
+            if callable(error):
+                try:
+                    error(message, *args)
+                    self._quality_warning_failures = 0
+                    return
+                except Exception:
+                    pass
         warning = getattr(self._logger, "warning", None)
         if callable(warning):
             try:
                 warning(message, *args)
             except Exception:
                 pass
+
+    def _log_exception(self, message: str, *args: Any) -> None:
+        exception = getattr(self._logger, "exception", None)
+        if callable(exception):
+            try:
+                exception(message, *args)
+                return
+            except Exception:
+                pass
+        try:
+            _LOGGER.exception(message.format(*args))
+        except Exception:
+            _LOGGER.exception(message)
 
     @staticmethod
     def _rating_from_review(value: str | int) -> StudyFsrsRating:

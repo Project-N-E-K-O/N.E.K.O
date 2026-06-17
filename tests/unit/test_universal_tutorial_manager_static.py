@@ -2,7 +2,7 @@ from pathlib import Path
 
 
 UNIVERSAL_TUTORIAL_MANAGER_PATH = (
-    Path(__file__).resolve().parents[2] / "static" / "universal-tutorial-manager.js"
+    Path(__file__).resolve().parents[2] / "static" / "tutorial/core/universal-manager.js"
 )
 
 

@@ -62,12 +62,95 @@ describe('CompactExportHistoryPanel', () => {
     expect(container.querySelector('.compact-export-history-resize-bar.is-active')).not.toBeNull();
   });
 
-  it('flags the anchor as resizing so content height locks to max (no reflow on shrink)', () => {
+  it('separates the active resize handle from the content height lock', () => {
     const { container, rerender } = renderPanel({ previewOpen: false, visibilityState: 'open', historyResizeActive: false });
     const anchor = container.querySelector('.compact-export-history-anchor');
     expect(anchor?.getAttribute('data-compact-export-history-resizing')).toBe('false');
+    expect(anchor?.getAttribute('data-compact-export-history-content-locked')).toBe('false');
     rerender(<CompactExportHistoryPanel {...createPanelProps({ previewOpen: false, visibilityState: 'open', historyResizeActive: true })} />);
     expect(anchor?.getAttribute('data-compact-export-history-resizing')).toBe('true');
+    expect(anchor?.getAttribute('data-compact-export-history-content-locked')).toBe('false');
+    rerender(<CompactExportHistoryPanel {...createPanelProps({
+      previewOpen: false,
+      visibilityState: 'open',
+      historyResizeActive: true,
+      historyResizeContentLocked: true,
+    })} />);
+    expect(anchor?.getAttribute('data-compact-export-history-resizing')).toBe('true');
+    expect(anchor?.getAttribute('data-compact-export-history-content-locked')).toBe('true');
+  });
+
+  it('does not repin scrollTop when releasing the history resize content lock', () => {
+    const scrollTopValues: number[] = [];
+    const scrollTopByElement = new WeakMap<HTMLElement, number>();
+    const scrollHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight');
+    const clientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight');
+    const scrollTopDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollTop');
+    const requestAnimationFrameSpy = vi
+      .spyOn(window, 'requestAnimationFrame')
+      .mockImplementation(() => 0);
+
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
+      configurable: true,
+      get() {
+        return this.classList.contains('compact-export-history-scroll') ? 640 : 0;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+      configurable: true,
+      get() {
+        return this.classList.contains('compact-export-history-scroll') ? 300 : 0;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, 'scrollTop', {
+      configurable: true,
+      get() {
+        return scrollTopByElement.get(this) ?? 0;
+      },
+      set(value: number) {
+        scrollTopByElement.set(this, value);
+        if (this.classList.contains('compact-export-history-scroll')) {
+          scrollTopValues.push(value);
+        }
+      },
+    });
+
+    try {
+      const props = createPanelProps({
+        previewOpen: false,
+        visibilityState: 'open',
+        autoScrollToBottom: true,
+        historyResizeActive: true,
+        historyResizeContentLocked: false,
+      });
+      const { rerender } = render(<CompactExportHistoryPanel {...props} />);
+      scrollTopValues.length = 0;
+      expect(scrollTopValues).toHaveLength(0);
+
+      rerender(<CompactExportHistoryPanel {...props} historyResizeContentLocked />);
+      expect(scrollTopValues).toEqual([340]);
+
+      scrollTopValues.length = 0;
+      rerender(<CompactExportHistoryPanel {...props} historyResizeContentLocked={false} />);
+      expect(scrollTopValues).toHaveLength(0);
+    } finally {
+      if (scrollHeightDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollHeight', scrollHeightDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollHeight');
+      }
+      if (clientHeightDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'clientHeight', clientHeightDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'clientHeight');
+      }
+      if (scrollTopDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollTop', scrollTopDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollTop');
+      }
+      requestAnimationFrameSpy.mockRestore();
+    }
   });
 
   it('re-pins the history list to the bottom on geometry refresh only while shrinking and auto-following', () => {
@@ -415,6 +498,7 @@ describe('CompactExportHistoryPanel', () => {
       await waitFor(() => {
         expect(screen.getByTitle('Export Preview')).toBeInTheDocument();
       });
+      expect(screen.getByTitle('Export Preview')).toHaveAttribute('sandbox', 'allow-scripts');
 
       const copyButton = screen.getByRole('button', { name: 'Copy to Clipboard' });
       fireEvent.click(copyButton);
@@ -433,6 +517,58 @@ describe('CompactExportHistoryPanel', () => {
     } finally {
       consoleError.mockRestore();
     }
+  });
+
+  it('restores Markdown as an export format for preview, copy, and download', async () => {
+    const onBuildPreview = vi.fn().mockResolvedValue({
+      previewKind: 'document',
+      previewDocument: '<!doctype html><html><body>Markdown Preview</body></html>',
+    });
+    const onCopyExport = vi.fn();
+    const onDownloadExport = vi.fn();
+
+    renderPanel({ onBuildPreview, onCopyExport, onDownloadExport });
+
+    await waitFor(() => {
+      expect(onBuildPreview).toHaveBeenCalledWith({
+        messageIds: [message.id],
+        format: 'image',
+        imageStyle: 'neko',
+        imageFormat: 'png',
+      });
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Markdown' }));
+
+    await waitFor(() => {
+      expect(onBuildPreview).toHaveBeenCalledWith({
+        messageIds: [message.id],
+        format: 'markdown',
+        imageStyle: 'neko',
+        imageFormat: 'png',
+      });
+    });
+    expect(screen.queryByRole('button', { name: 'N.E.K.O' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy to Clipboard' }));
+    await waitFor(() => {
+      expect(onCopyExport).toHaveBeenCalledWith({
+        messageIds: [message.id],
+        format: 'markdown',
+        imageStyle: 'neko',
+        imageFormat: 'png',
+      });
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Export' }));
+    await waitFor(() => {
+      expect(onDownloadExport).toHaveBeenCalledWith({
+        messageIds: [message.id],
+        format: 'markdown',
+        imageStyle: 'neko',
+        imageFormat: 'png',
+      });
+    });
   });
 
   it('clears rejected export action errors when the preview closes', async () => {

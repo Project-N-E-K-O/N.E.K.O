@@ -73,6 +73,68 @@ window.AgentHUD._shortenDesc = function (desc) {
     return s.slice(0, 50) || desc.slice(0, 50);
 };
 
+window.AgentHUD._getTaskRawDesc = function (task) {
+    const params = task && task.params ? task.params : {};
+    return params.description || params.instruction || '';
+};
+
+// New cards and differential updates share this path so the visible text and
+// tooltip source cannot drift apart while task_update events reuse DOM nodes.
+window.AgentHUD._syncTaskDescriptionRow = function (card, task, isRunning) {
+    if (!card) return;
+    const rawDesc = this._getTaskRawDesc(task);
+    const descText = rawDesc ? window.AgentHUD._shortenDesc(rawDesc) : '';
+    let descRow = card.querySelector('.task-card-desc');
+
+    if (!descText) {
+        if (descRow) {
+            if (window.NekoTooltip && typeof window.NekoTooltip.destroyFor === 'function') {
+                window.NekoTooltip.destroyFor(descRow);
+            }
+            descRow.removeAttribute('title');
+            descRow.remove();
+        }
+        return;
+    }
+
+    if (!descRow) {
+        descRow = document.createElement('div');
+        descRow.className = 'task-card-desc';
+        Object.assign(descRow.style, {
+            color: 'var(--neko-popup-text-sub, #888)',
+            fontSize: '11px',
+            lineHeight: '1.3',
+            marginTop: '3px',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap'
+        });
+        const progressRow = card.querySelector('.task-progress-row');
+        if (progressRow) {
+            card.insertBefore(descRow, progressRow);
+        } else {
+            card.appendChild(descRow);
+        }
+    }
+
+    if (descRow.dataset.rawDesc !== rawDesc) {
+        descRow.textContent = descText;
+        descRow.dataset.rawDesc = rawDesc;
+        // Bind only the description text, not the whole card, so cancel and drag
+        // targets keep their existing pointer behavior.
+        if (window.NekoTooltip && typeof window.NekoTooltip.attach === 'function') {
+            window.NekoTooltip.attach(descRow, { text: rawDesc });
+        } else {
+            descRow.title = rawDesc;
+        }
+    }
+
+    const expectedMargin = isRunning ? '3px' : '0';
+    if (descRow.style.marginBottom !== expectedMargin) {
+        descRow.style.marginBottom = expectedMargin;
+    }
+};
+
 // 缓存当前显示器边界信息（多屏幕支持）
 let cachedDisplayHUD = {
     x: 0,
@@ -547,11 +609,22 @@ window.AgentHUD.createAgentTaskHUD = function () {
         try {
             cancelBtn.style.opacity = '0.5';
             cancelBtn.style.pointerEvents = 'none';
-            await fetch('/api/agent/admin/control', {
+            const r = await fetch('/api/agent/admin/control', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: 'end_all' })
             });
+            // 2xx → end_all ran; 504 → the proxy timed out AFTER forwarding,
+            // so the tool server keeps executing end_all to completion.
+            // Either way the backend registry ends up cleared — apply the
+            // terminal state locally in case its task_update events never
+            // arrive (stuck dispatch). Other failures (500 connect error,
+            // 501 remote block) mean the request never landed: don't lie.
+            if (r.ok || r.status === 504) {
+                if (window.AgentHUD._markTasksCancelledLocally) {
+                    window.AgentHUD._markTasksCancelledLocally();
+                }
+            }
         } catch (err) {
             console.error('[AgentHUD] Cancel all tasks failed:', err);
         } finally {
@@ -736,6 +809,11 @@ window.AgentHUD.hideAgentTaskHUD = function () {
         return;
     }
 
+    // The tooltip lives on document.body, so hide it explicitly when the HUD fades.
+    if (window.NekoTooltip && typeof window.NekoTooltip.hide === 'function') {
+        window.NekoTooltip.hide();
+    }
+
     // 已经处于隐藏状态时跳过重复操作
     if (hud.style.display === 'none') {
         return;
@@ -775,6 +853,68 @@ window.AgentHUD.updateAgentTaskHUD = function (tasksData) {
     this._updateRafId = requestAnimationFrame(() => {
         this._updateRafId = null;
         this._doUpdateAgentTaskHUD();
+    });
+};
+
+// Local fallback: mark tasks cancelled in the shared task map and re-render.
+// The HUD is purely event-driven; when the backend is wedged (the very
+// situation the user is cancelling out of) its task_update(cancelled) events
+// may never arrive, leaving cards stuck on "running" forever. The cancel
+// click handlers below call this after reaching the server so the UI always
+// converges. Backend events for the same tasks merge idempotently in
+// app-websocket.js.
+window.AgentHUD._markTasksCancelledLocally = function (taskIds, status) {
+    const map = window._agentTaskMap;
+    if (!map || typeof map.forEach !== 'function' || map.size === 0) return;
+    if (!window._agentTaskRemoveTimers) window._agentTaskRemoveTimers = new Map();
+    const ids = Array.isArray(taskIds) ? new Set(taskIds) : null;
+    // Optional status override: when the backend reports the task already
+    // reached a different terminal state, mirror it instead of "cancelled".
+    const terminalStatus = status || 'cancelled';
+    const now = Date.now();
+    let changed = false;
+    map.forEach((t, id) => {
+        if (!t || (ids && !ids.has(id))) return;
+        if (t.status !== 'running' && t.status !== 'queued') return;
+        map.set(id, Object.assign({}, t, { status: terminalStatus, terminal_at: now }));
+        changed = true;
+        // Schedule the same 10s map removal as the websocket event path —
+        // otherwise the entry outlives the HUD's 30s terminal cache and a
+        // later full-map refresh would re-show it as a "new" terminal task.
+        // If the backend's own cancelled event arrives later, app-websocket
+        // clears this timer and installs its own (idempotent handoff).
+        if (window._agentTaskRemoveTimers.has(id)) {
+            clearTimeout(window._agentTaskRemoveTimers.get(id));
+        }
+        window._agentTaskRemoveTimers.set(id, setTimeout(() => {
+            window._agentTaskRemoveTimers.delete(id);
+            const current = window._agentTaskMap && window._agentTaskMap.get(id);
+            if (!current || current.status !== terminalStatus) return;
+            window._agentTaskMap.delete(id);
+            const remaining = Array.from(window._agentTaskMap.values());
+            window.AgentHUD.updateAgentTaskHUD({
+                success: true,
+                tasks: remaining,
+                total_count: remaining.length,
+                running_count: remaining.filter(t2 => t2.status === 'running').length,
+                queued_count: remaining.filter(t2 => t2.status === 'queued').length,
+                completed_count: remaining.filter(t2 => t2.status === 'completed').length,
+                failed_count: remaining.filter(t2 => t2.status === 'failed').length,
+                timestamp: new Date().toISOString()
+            });
+        }, 10000));
+    });
+    if (!changed) return;
+    const tasks = Array.from(map.values());
+    this.updateAgentTaskHUD({
+        success: true,
+        tasks: tasks,
+        total_count: tasks.length,
+        running_count: tasks.filter(t => t.status === 'running').length,
+        queued_count: tasks.filter(t => t.status === 'queued').length,
+        completed_count: tasks.filter(t => t.status === 'completed').length,
+        failed_count: tasks.filter(t => t.status === 'failed').length,
+        timestamp: new Date().toISOString()
     });
 };
 
@@ -911,6 +1051,10 @@ window.AgentHUD._doUpdateAgentTaskHUD = function () {
         if (tid && activeIds.has(tid)) {
             existingById.set(tid, card);
         } else {
+            const descRow = card.querySelector('.task-card-desc');
+            if (descRow && window.NekoTooltip && typeof window.NekoTooltip.destroyFor === 'function') {
+                window.NekoTooltip.destroyFor(descRow);
+            }
             card.remove(); // remove cards no longer active
         }
     });
@@ -1009,12 +1153,18 @@ window.AgentHUD._updateTaskCard = function (card, task) {
         if (cardCancelBtn.style.display !== cancelDisplay) cardCancelBtn.style.display = cancelDisplay;
     }
 
+    this._syncTaskDescriptionRow(card, task, isRunning);
+
     // Handle progress row: add if now running but missing, remove if no longer running
     const progressRow = card.querySelector('.task-progress-row');
     if (isRunning && !progressRow) {
         // Status just changed to running — rebuild the card cleanly
         const newCard = this._createTaskCard(task);
         const parent = card.parentNode;
+        const oldDescRow = card.querySelector('.task-card-desc');
+        if (oldDescRow && window.NekoTooltip && typeof window.NekoTooltip.destroyFor === 'function') {
+            window.NekoTooltip.destroyFor(oldDescRow);
+        }
         if (parent) parent.replaceChild(newCard, card);
         return newCard;
     } else if (!isRunning && progressRow) {
@@ -1180,6 +1330,7 @@ window.AgentHUD._createTaskCard = function (task) {
     typeLabel.style.overflow = 'hidden';
     typeLabel.style.textOverflow = 'ellipsis';
     typeLabel.style.minWidth = '0';
+    typeLabel.title = typeName;
 
     // 使用 textContent 防止 XSS（避免 plugin_name 中的 HTML 被解析）
     const iconSpan = document.createElement('span');
@@ -1230,18 +1381,51 @@ window.AgentHUD._createTaskCard = function (task) {
         flexShrink: '0',
         marginLeft: '6px'
     });
-    taskCancelBtn.title = window.t ? window.t('agent.taskHud.cancelAll') : '终止任务';
+    taskCancelBtn.title = window.t ? window.t('agent.taskHud.cancelTask') : '终止任务';
     taskCancelBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
         taskCancelBtn.style.opacity = '0.4';
         taskCancelBtn.style.pointerEvents = 'none';
         try {
-            await fetch(`/api/agent/tasks/${encodeURIComponent(task.id)}/cancel`, {
+            const r = await fetch(`/api/agent/tasks/${encodeURIComponent(task.id)}/cancel`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' }
             });
+            // 2xx → the backend handled the cancel (marking locally is an
+            // idempotent fallback for when its event can't arrive);
+            // 404 → the backend no longer tracks this task, the card is an
+            // orphan (e.g. left behind by an earlier end_all) — clear it;
+            // 504 → proxy timed out AFTER forwarding, the cancel did land.
+            // Anything else (502 connect error, 501 remote block) means the
+            // request never reached the tool server — keep the card and
+            // re-enable the button for retry.
+            if (r.ok || r.status === 404 || r.status === 504) {
+                // "task is not active" (200 + success:false) means the task
+                // hit a different terminal state right before the click —
+                // mirror that status instead of faking "cancelled".
+                let realStatus = null;
+                if (r.ok) {
+                    try {
+                        const body = await r.json();
+                        if (body && body.success === false
+                            && ['completed', 'failed', 'cancelled'].indexOf(body.status) !== -1) {
+                            realStatus = body.status;
+                        }
+                    } catch (_) { /* empty or non-JSON body */ }
+                }
+                if (window.AgentHUD._markTasksCancelledLocally) {
+                    window.AgentHUD._markTasksCancelledLocally([task.id], realStatus || undefined);
+                }
+            } else {
+                taskCancelBtn.style.opacity = '1';
+                taskCancelBtn.style.pointerEvents = 'auto';
+            }
         } catch (err) {
             console.error('[AgentHUD] Cancel task failed:', err);
+            // Network-level failure: the request never reached the server.
+            // Re-enable the button so the user can retry.
+            taskCancelBtn.style.opacity = '1';
+            taskCancelBtn.style.pointerEvents = 'auto';
         }
     });
 
@@ -1249,25 +1433,7 @@ window.AgentHUD._createTaskCard = function (task) {
     header.appendChild(taskCancelBtn);
     card.appendChild(header);
 
-    // === 描述行：显示任务具体内容（如"15分钟后 起来活动"） ===
-    const rawDesc = params.description || params.instruction || '';
-    const descText = rawDesc ? window.AgentHUD._shortenDesc(rawDesc) : '';
-    if (descText) {
-        const descRow = document.createElement('div');
-        descRow.textContent = descText;
-        if (rawDesc !== descText) descRow.title = rawDesc; // hover 显示完整内容
-        Object.assign(descRow.style, {
-            color: 'var(--neko-popup-text-sub, #888)',
-            fontSize: '11px',
-            lineHeight: '1.3',
-            marginTop: '3px',
-            marginBottom: isRunning ? '3px' : '0',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap'
-        });
-        card.appendChild(descRow);
-    }
+    this._syncTaskDescriptionRow(card, task, isRunning);
 
     // === 第二行：倒计时 + 进度条（仅运行中任务） ===
     if (isRunning) {
@@ -1413,6 +1579,11 @@ window.AgentHUD._setupDragging = function (hud) {
 
         if (isInteractive) return;
 
+        // Body-level tooltips are outside the HUD tree, so close them before moving the HUD.
+        if (window.NekoTooltip && typeof window.NekoTooltip.hide === 'function') {
+            window.NekoTooltip.hide();
+        }
+
         isDragging = true;
         setAgentHudDraggingState(true);
 
@@ -1513,6 +1684,11 @@ window.AgentHUD._setupDragging = function (hud) {
         const isInteractive = e.target.closest(interactiveSelectors.join(','));
 
         if (isInteractive) return;
+
+        // Body-level tooltips are outside the HUD tree, so close them before moving the HUD.
+        if (window.NekoTooltip && typeof window.NekoTooltip.hide === 'function') {
+            window.NekoTooltip.hide();
+        }
 
         touchDragging = true;
         isDragging = true;  // 让performDrag函数能正常工作

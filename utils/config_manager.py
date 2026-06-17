@@ -1,7 +1,21 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
-配置文件管理模块
-负责管理配置文件的存储位置和迁移
+Config file management module
+Manages config file storage locations and migration
 """
 import sys
 import os
@@ -36,6 +50,7 @@ from utils.api_config_loader import (
 from utils.custom_tts_adapter import check_custom_tts_voice_allowed
 from utils.file_utils import atomic_write_json
 from utils.gptsovits_config import normalize_gsv_api_url
+from utils.voice_config import read_legacy_voice_id
 from utils.logger_config import get_module_logger
 from utils.native_voice_registry import (
     is_free_lanlan_app_route,
@@ -99,10 +114,10 @@ def _as_bool(value, default=False):
 
 
 def get_reserved(data: dict, *path, default=None, legacy_keys: tuple[str, ...] | None = None):
-    """统一读取 `_reserved` 下的嵌套字段，支持旧平铺字段回退。
+    """Unified read of nested fields under `_reserved`, with fallback to legacy flat fields.
 
-    如果 _reserved 中的嵌套路径存在（即使值为 None），直接返回该值；
-    仅当路径不存在或 _reserved 本身缺失时，才回退到旧平铺字段。
+    If the nested path exists in _reserved (even when the value is None), return it directly;
+    only fall back to the legacy flat field when the path is absent or _reserved itself is missing.
     """
     if not isinstance(data, dict):
         return default
@@ -128,7 +143,7 @@ def get_reserved(data: dict, *path, default=None, legacy_keys: tuple[str, ...] |
 
 
 def set_reserved(data: dict, *path_and_value) -> bool:
-    """统一写入 `_reserved` 下的嵌套字段，自动创建中间层。
+    """Unified write of nested fields under `_reserved`, auto-creating intermediate levels.
 
     Returns ``True`` if the stored value was actually changed, ``False``
     otherwise (including invalid input).
@@ -255,12 +270,12 @@ async def ensure_default_yui_voice_for_free_api(config_manager, core_cfg: dict |
     if not _is_default_yui_character(current_name, current_character):
         return False
 
-    current_voice_id = str(get_reserved(
+    current_voice_id = read_legacy_voice_id(get_reserved(
         current_character,
         "voice_id",
         default="",
         legacy_keys=("voice_id",),
-    ) or "").strip()
+    ))
     if current_voice_id:
         return False
 
@@ -291,7 +306,7 @@ async def ensure_default_yui_voice_for_free_api(config_manager, core_cfg: dict |
 
 
 def delete_reserved(data: dict, *path) -> bool:
-    """删除 `_reserved` 下的嵌套字段，并尽量清理空的中间层。"""
+    """Delete a nested field under `_reserved`, cleaning up empty intermediate levels where possible."""
     if not isinstance(data, dict) or not path:
         return False
 
@@ -442,10 +457,11 @@ def _build_ai_context_fields(
     existing_fields: set[str] | None = None,
     entity: str = "neko",
 ) -> dict[str, str]:
-    """把隐藏运行时事件展开成只给 prompt/记忆同步使用的合成字段。
+    """Expand hidden runtime events into synthetic fields used only for prompt/memory sync.
 
-    entity 区分这份 payload 是猫娘（neko）还是主人（master），决定改名记录的人称：
-    主人的记录进的是猫娘 persona 的 master section，必须第二人称，不能第一人称。
+    entity indicates whether this payload is the catgirl (neko) or the master, which decides
+    the person used in rename records: the master's records go into the master section of the
+    catgirl persona and must be second person, never first person.
     """
     if not isinstance(character_payload, dict):
         return {}
@@ -546,7 +562,7 @@ def _resolve_effective_character_prompt(character_payload: dict) -> str:
 
 
 def _legacy_live2d_to_model_path(legacy_live2d: str) -> str:
-    """将旧 live2d 目录名转为 model3 文件路径。"""
+    """Convert a legacy live2d directory name to a model3 file path."""
     if not legacy_live2d:
         return ""
     raw = str(legacy_live2d).strip().replace("\\", "/")
@@ -559,7 +575,7 @@ def _legacy_live2d_to_model_path(legacy_live2d: str) -> str:
 
 
 def _legacy_live2d_name_from_model_path(model_path: str) -> str:
-    """将新 model_path 反向还原为旧 live2d 模型名（兼容旧前端字段）。"""
+    """Map a new model_path back to the legacy live2d model name (for legacy frontend fields)."""
     if not model_path:
         return ""
     raw = str(model_path).strip().replace("\\", "/")
@@ -576,7 +592,7 @@ def _legacy_live2d_name_from_model_path(model_path: str) -> str:
 
 
 def validate_reserved_schema(reserved: dict) -> list[str]:
-    """校验 `_reserved` 结构，返回错误列表（空列表表示通过）。"""
+    """Validate the `_reserved` structure; returns a list of errors (empty list means pass)."""
     errors: list[str] = []
 
     def _walk(value, schema, path: str):
@@ -599,11 +615,21 @@ def validate_reserved_schema(reserved: dict) -> list[str]:
     if reserved is None:
         return errors
     _walk(reserved, RESERVED_FIELD_SCHEMA, "_reserved")
+    # voice_id 是 str | 结构对象的联合类型，schema 的 tuple 分支只做 isinstance，挡不住
+    # {"foo": 1} 这种坏 dict。结构对象形态额外校验 source/provider/ref 都为 str，避免
+    # 放宽 schema 后契约松掉（CodeRabbit）。
+    vid = reserved.get("voice_id")
+    if isinstance(vid, dict):
+        for field in ("source", "provider", "ref"):
+            if not isinstance(vid.get(field), str):
+                errors.append(
+                    f"_reserved.voice_id.{field} 需要 str，实际 {type(vid.get(field)).__name__}"
+                )
     return errors
 
 
 def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
-    """迁移单个角色配置到 `_reserved` 结构，返回是否发生变更。"""
+    """Migrate a single character config to the `_reserved` structure; returns whether changes occurred."""
     if not isinstance(catgirl_data, dict):
         return False
 
@@ -614,7 +640,13 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         changed = True
 
     voice_id = get_reserved(catgirl_data, "voice_id", default="", legacy_keys=("voice_id",))
-    if voice_id is not None:
+    # 把 voice_id 收口进 _reserved。结构对象（惰性迁移形态，可能来自顶层 legacy 字段）
+    # 必须原样 set_reserved 搬进来：既不能被 str(dict) 损坏，也不能跳过——否则随后的旧
+    # 顶层字段清理会 pop 掉它，导致绑定在加载时悄悄丢失（Codex/CodeRabbit P2）。
+    # 普通 legacy 值仍规整成字符串。
+    if isinstance(voice_id, dict):
+        changed |= set_reserved(catgirl_data, "voice_id", voice_id)
+    elif voice_id is not None:
         changed |= set_reserved(catgirl_data, "voice_id", str(voice_id))
 
     system_prompt = get_reserved(catgirl_data, "system_prompt", default=None, legacy_keys=("system_prompt",))
@@ -624,10 +656,14 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
     model_type = str(
         get_reserved(catgirl_data, "avatar", "model_type", default="", legacy_keys=("model_type",))
     ).strip().lower()
-    if model_type not in {"live2d", "vrm", "live3d"}:
+    if model_type not in {"live2d", "vrm", "live3d", "pngtuber"}:
         has_vrm = catgirl_data.get("vrm") or get_reserved(catgirl_data, "avatar", "vrm", "model_path")
         has_mmd = catgirl_data.get("mmd") or get_reserved(catgirl_data, "avatar", "mmd", "model_path")
-        model_type = "live3d" if (has_vrm or has_mmd) else "live2d"
+        has_pngtuber = catgirl_data.get("pngtuber") or get_reserved(catgirl_data, "avatar", "pngtuber", default={})
+        if has_pngtuber:
+            model_type = "pngtuber"
+        else:
+            model_type = "live3d" if (has_vrm or has_mmd) else "live2d"
     # 归一化：旧配置中的 'vrm' 统一为 'live3d'
     if model_type == "vrm":
         model_type = "live3d"
@@ -750,6 +786,26 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
     if mmd_animation is not None:
         changed |= set_reserved(catgirl_data, "avatar", "mmd", "animation", mmd_animation)
 
+    pngtuber_config = get_reserved(catgirl_data, "avatar", "pngtuber", default=None, legacy_keys=("pngtuber",))
+    if pngtuber_config is None:
+        pngtuber_config = {}
+    if not isinstance(pngtuber_config, dict):
+        pngtuber_config = {"idle_image": str(pngtuber_config)} if str(pngtuber_config or "").strip() else {}
+    pngtuber_config = dict(pngtuber_config)
+    legacy_pngtuber_fields = {
+        "idle_image": "pngtuber_idle_image",
+        "talking_image": "pngtuber_talking_image",
+        "happy_image": "pngtuber_happy_image",
+        "sad_image": "pngtuber_sad_image",
+        "angry_image": "pngtuber_angry_image",
+        "surprised_image": "pngtuber_surprised_image",
+    }
+    for reserved_key, legacy_key in legacy_pngtuber_fields.items():
+        if not pngtuber_config.get(reserved_key) and catgirl_data.get(legacy_key):
+            pngtuber_config[reserved_key] = str(catgirl_data.get(legacy_key) or "")
+    if pngtuber_config:
+        changed |= set_reserved(catgirl_data, "avatar", "pngtuber", pngtuber_config)
+
     mmd_idle_animation = get_reserved(
         catgirl_data,
         "avatar",
@@ -818,6 +874,13 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         "mmd_animation",
         "mmd_idle_animation",
         "mmd_idle_animations",
+        "pngtuber",
+        "pngtuber_idle_image",
+        "pngtuber_talking_image",
+        "pngtuber_happy_image",
+        "pngtuber_sad_image",
+        "pngtuber_angry_image",
+        "pngtuber_surprised_image",
     ):
         if legacy_key in catgirl_data:
             catgirl_data.pop(legacy_key, None)
@@ -827,12 +890,13 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
 
 
 def flatten_reserved(catgirl_data: dict) -> dict:
-    """将 `_reserved` 展开成旧平铺字段（仅用于兼容旧调用方/前端）。"""
+    """Expand `_reserved` into legacy flat fields (only for compatibility with legacy callers/frontends)."""
     if not isinstance(catgirl_data, dict):
         return catgirl_data
     result = dict(catgirl_data)
 
-    voice_id = get_reserved(result, "voice_id", default="")
+    # 展平给 legacy 前端/调用方：始终吐 legacy 字符串形态（容忍结构对象）。
+    voice_id = read_legacy_voice_id(get_reserved(result, "voice_id", default=""))
     if voice_id:
         result["voice_id"] = voice_id
     system_prompt = get_reserved(result, "system_prompt", default=None)
@@ -907,6 +971,20 @@ def flatten_reserved(catgirl_data: dict) -> dict:
             result["mmd_idle_animation"] = ""
             result["mmd_idle_animations"] = []
 
+    pngtuber_config = get_reserved(result, "avatar", "pngtuber", default=None)
+    if isinstance(pngtuber_config, dict) and pngtuber_config:
+        result["pngtuber"] = dict(pngtuber_config)
+        for key in (
+            "idle_image",
+            "talking_image",
+            "happy_image",
+            "sad_image",
+            "angry_image",
+            "surprised_image",
+        ):
+            if pngtuber_config.get(key):
+                result[f"pngtuber_{key}"] = pngtuber_config.get(key)
+
     touch_set = get_reserved(result, 'touch_set', default=None)
     if touch_set:
         result['touch_set'] = touch_set
@@ -914,7 +992,7 @@ def flatten_reserved(catgirl_data: dict) -> dict:
 
 
 class ConfigManager:
-    """配置文件管理器"""
+    """Config file manager"""
     _agent_quota_lock = threading.Lock()
     _selected_root_unavailable_recovery_override_roots: set[str] = set()
     _free_agent_daily_limit = 500 # 免费配额并非只在本地实施，本地计算是为了减少无效请求、节约网络带宽。
@@ -940,10 +1018,10 @@ class ConfigManager:
 
     def __init__(self, app_name=None):
         """
-        初始化配置管理器
+        Initialize the config manager
         
         Args:
-            app_name: 应用名称，默认使用配置中的 APP_NAME
+            app_name: application name, defaults to APP_NAME from config
         """
         self.app_name = app_name if app_name is not None else APP_NAME
         # 检测是否在子进程中，子进程静默初始化（通过 main_server.py 设置的环境变量）
@@ -1059,6 +1137,7 @@ class ConfigManager:
         # MMD模型存储在用户文档目录下
         self.mmd_dir = self.app_docs_dir / "mmd"
         self.mmd_animation_dir = self.mmd_dir / "animation"  # VMD动画文件目录
+        self.pngtuber_dir = self.app_docs_dir / "pngtuber"
         self.workshop_dir = self.app_docs_dir / "workshop"
         self._steam_workshop_path = None
         self._user_workshop_folder_persisted = False
@@ -1096,7 +1175,7 @@ class ConfigManager:
 
     @property
     def cloudsave_dir(self) -> Path:
-        """云存档导出根目录（运行时目录之外的规范化导出层）。"""
+        """Cloud-save export root directory (the normalized export layer outside the runtime directory)."""
         return self.anchor_root / "cloudsave"
 
     @property
@@ -1133,17 +1212,17 @@ class ConfigManager:
 
     @property
     def cloudsave_staging_dir(self) -> Path:
-        """本地 staging 区，不进入云端同步白名单。"""
+        """Local staging area; excluded from the cloud sync whitelist."""
         return self.anchor_root / ".cloudsave_staging"
 
     @property
     def cloudsave_backups_dir(self) -> Path:
-        """本地冲突备份池，显式放在 cloudsave/ 外避免后续误同步。"""
+        """Local conflict backup pool, kept explicitly outside cloudsave/ to avoid accidental future sync."""
         return self.anchor_root / "cloudsave_backups"
 
     @property
     def local_state_dir(self) -> Path:
-        """本地状态目录，保存不进入云端的同步元数据。"""
+        """Local state directory, holding sync metadata that never goes to the cloud."""
         return self.anchor_root / "state"
 
     @property
@@ -1193,7 +1272,7 @@ class ConfigManager:
         self.save_root_state(self._build_selected_root_unavailable_recovery_state(state))
     
     def _log(self, msg):
-        """仅在主进程中打印调试信息"""
+        """Print debug info only in the main process"""
         if self._verbose:
             print(msg, file=sys.stderr)
 
@@ -1228,7 +1307,7 @@ class ConfigManager:
         return unique
 
     def _get_standard_data_directory_candidates(self):
-        """返回当前平台的首选应用数据根目录候选。"""
+        """Return preferred app-data root directory candidates for the current platform."""
         candidates = []
         if sys.platform == "win32":
             localappdata = os.environ.get("LOCALAPPDATA", "").strip()
@@ -1244,7 +1323,7 @@ class ConfigManager:
         return self._dedupe_paths(candidates)
 
     def _get_legacy_storage_candidates(self):
-        """返回历史运行时根的父目录候选，仅用于旧数据导入。"""
+        """Return parent-directory candidates of historical runtime roots, used only for legacy data import."""
         candidates = []
 
         if sys.platform == "win32":
@@ -1352,7 +1431,7 @@ class ConfigManager:
         return self._dedupe_paths(candidates)
 
     def get_legacy_app_root_candidates(self):
-        """返回旧版用户根目录候选（带 app_name），用于阶段 0 启动导入。"""
+        """Return legacy user root directory candidates (with app_name), used for phase-0 startup import."""
         roots = []
         current_root = str(self.app_docs_dir)
         for base_dir in self._get_legacy_storage_candidates():
@@ -1363,10 +1442,11 @@ class ConfigManager:
         return self._dedupe_paths(roots)
     
     def _get_documents_directory(self):
-        """获取运行时数据根目录的父目录。
+        """Get the parent directory of the runtime data root.
 
-        方法名保留为历史兼容，但阶段 0 之后它优先返回标准应用数据目录，
-        Documents / exe 目录 / cwd 仅作为旧数据导入与兜底候选。
+        The method name is kept for historical compatibility, but after phase 0 it prefers
+        the standard app-data directory; Documents / exe directory / cwd are only candidates
+        for legacy data import and last-resort fallback.
         """
         primary_candidates = self._get_standard_data_directory_candidates()
         legacy_candidates = self._get_legacy_storage_candidates()
@@ -1432,10 +1512,11 @@ class ConfigManager:
         return fallback
     
     def _get_project_root(self):
-        """获取项目根目录（私有方法）。
+        """Get the project root directory (private method).
 
-        源码模式固定基于本文件位置回溯到仓库根目录，避免 IDE / 外部 cwd
-        导致 static、config、memory/store 等项目资源解析到错误位置。
+        In source mode this is fixed to backtracking from this file's location to the repo
+        root, so static, config, memory/store and other project resources never resolve to
+        wrong locations due to IDE / external cwd.
         """
         if getattr(sys, 'frozen', False):
             # 如果是打包后的exe（PyInstaller）
@@ -1451,19 +1532,19 @@ class ConfigManager:
     
     @property
     def project_root(self):
-        """获取项目根目录（公共属性）"""
+        """Get the project root directory (public property)"""
         return self._get_project_root()
     
     def _get_project_config_directory(self):
-        """获取项目的config目录"""
+        """Get the project's config directory"""
         return self._get_project_root() / "config"
     
     def _get_project_memory_directory(self):
-        """获取项目的memory/store目录"""
+        """Get the project's memory/store directory"""
         return self._get_project_root() / "memory" / "store"
     
     def _ensure_app_docs_directory(self):
-        """确保应用文档目录存在（N.E.K.O目录本身）"""
+        """Ensure the app documents directory exists (the N.E.K.O directory itself)"""
         try:
             # 先确保父目录（docs_dir）存在
             if not self.docs_dir.exists():
@@ -1499,7 +1580,7 @@ class ConfigManager:
             return False
 
     def _ensure_anchor_root_directory(self):
-        """确保锚点目录存在（固定承载 cloudsave/state）。"""
+        """Ensure the anchor directory exists (it permanently hosts cloudsave/state)."""
         try:
             self.anchor_root.mkdir(parents=True, exist_ok=True)
             return True
@@ -1508,7 +1589,7 @@ class ConfigManager:
             return False
     
     def ensure_config_directory(self):
-        """确保我的文档下的config目录存在"""
+        """Ensure the config directory under Documents exists"""
         try:
             # 先确保app_docs_dir存在
             if not self._ensure_app_docs_directory():
@@ -1521,7 +1602,7 @@ class ConfigManager:
             return False
     
     def ensure_memory_directory(self):
-        """确保我的文档下的memory目录存在"""
+        """Ensure the memory directory under Documents exists"""
         try:
             # 先确保app_docs_dir存在
             if not self._ensure_app_docs_directory():
@@ -1534,7 +1615,7 @@ class ConfigManager:
             return False
 
     def ensure_plugins_directory(self):
-        """确保我的文档下的plugins目录存在"""
+        """Ensure the plugins directory under Documents exists"""
         try:
             if not self._ensure_app_docs_directory():
                 return False
@@ -1546,7 +1627,7 @@ class ConfigManager:
             return False
     
     def ensure_live2d_directory(self):
-        """确保我的文档下的live2d目录存在"""
+        """Ensure the live2d directory under Documents exists"""
         try:
             # 先确保app_docs_dir存在
             if not self._ensure_app_docs_directory():
@@ -1560,13 +1641,14 @@ class ConfigManager:
 
     @property
     def readable_live2d_dir(self):
-        """原始 Documents 下的 live2d 目录（只读，用于 CFA 场景）。
+        """The live2d directory under the original Documents (read-only, for CFA scenarios).
 
-        当 Windows 受控文件夹访问(CFA/反勒索防护) 阻止写入 Documents 时，
-        写入操作回退到 AppData，但用户的模型文件仍在原始 Documents 中。
-        此属性返回原始 Documents 中的 live2d 路径以供读取。
+        When Windows Controlled Folder Access (CFA / anti-ransomware protection) blocks
+        writes to Documents, write operations fall back to AppData, but the user's model
+        files are still in the original Documents. This property returns the live2d path
+        in the original Documents for reading.
 
-        非 CFA 场景下返回 None（此时 live2d_dir 本身就指向 Documents）。
+        Returns None in non-CFA scenarios (live2d_dir itself then points to Documents).
         """
         if self.is_windows_cfa_fallback_active and self._readable_docs_dir is not None:
             p = self._readable_docs_dir / self.app_name / "live2d"
@@ -1576,7 +1658,7 @@ class ConfigManager:
 
     @property
     def is_windows_cfa_fallback_active(self) -> bool:
-        """是否处于 Windows CFA 读写分离模式。"""
+        """Whether Windows CFA read/write split mode is active."""
         if self._readable_docs_dir is None:
             return False
         write_docs_dir = getattr(self, "_cfa_fallback_write_docs_dir", None)
@@ -1586,10 +1668,11 @@ class ConfigManager:
         return str(self._readable_docs_dir) != str(current_write_docs_dir) and str(write_docs_dir) == str(current_write_docs_dir)
 
     def get_live2d_lookup_roots(self, *, prefer_writable: bool = True) -> list[Path]:
-        """返回 Live2D 查找路径（去重后）。
+        """Return Live2D lookup paths (deduped).
 
-        默认优先可写运行时目录，命中失败时回退到只读 legacy 目录，
-        避免 CFA 模式下“新导入模型存在但仍优先命中旧目录”。
+        Prefers the writable runtime directory by default, falling back to the read-only
+        legacy directory on miss, avoiding the CFA-mode pitfall where a newly imported
+        model exists but the legacy directory is still matched first.
         """
         readable = self.readable_live2d_dir
         writable = Path(self.live2d_dir)
@@ -1608,7 +1691,7 @@ class ConfigManager:
         return roots
 
     def ensure_vrm_directory(self):
-        """确保用户文档目录下的vrm目录和animation子目录存在"""
+        """Ensure the vrm directory and its animation subdirectory exist under the user documents directory"""
         try:
             # 先确保app_docs_dir存在
             if not self._ensure_app_docs_directory():
@@ -1623,7 +1706,7 @@ class ConfigManager:
             return False
     
     def ensure_mmd_directory(self):
-        """确保用户文档目录下的mmd目录和animation子目录存在"""
+        """Ensure the mmd directory and its animation subdirectory exist under the user documents directory"""
         try:
             if not self._ensure_app_docs_directory():
                 return False
@@ -1633,9 +1716,20 @@ class ConfigManager:
         except Exception as e:
             print(f"Warning: Failed to create mmd directory: {e}", file=sys.stderr)
             return False
+
+    def ensure_pngtuber_directory(self):
+        """Ensure the user PNGTuber asset directory exists."""
+        try:
+            if not self._ensure_app_docs_directory():
+                return False
+            self.pngtuber_dir.mkdir(parents=True, exist_ok=True)
+            return True
+        except Exception as e:
+            print(f"Warning: Failed to create pngtuber directory: {e}", file=sys.stderr)
+            return False
         
     def ensure_chara_directory(self):
-        """确保我的文档下的character_cards目录存在"""
+        """Ensure the character_cards directory under Documents exists"""
         try:
             # 先确保app_docs_dir存在
             if not self._ensure_app_docs_directory():
@@ -1648,7 +1742,7 @@ class ConfigManager:
             return False
 
     def ensure_card_faces_directory(self):
-        """确保我的文档下的card_faces目录存在"""
+        """Ensure the card_faces directory under Documents exists"""
         try:
             if not self._ensure_app_docs_directory():
                 return False
@@ -1659,7 +1753,7 @@ class ConfigManager:
             return False
 
     def migrate_default_card_faces(self):
-        """补写内置默认卡面，不覆盖用户已经创建的卡面。"""
+        """Backfill built-in default card faces without overwriting user-created ones."""
         source_dir = self.project_config_dir.parent / "static" / "default" / "card_faces"
         if not source_dir.exists():
             return
@@ -1691,18 +1785,19 @@ class ConfigManager:
                     self._log(f"Warning: Failed to migrate default card face meta {source_meta_path.name}: {e}")
 
     def card_face_meta_path(self, name: str):
-        """返回猫娘卡面元数据 sidecar 文件路径（card_faces/{name}.json）。
+        """Return the catgirl card-face metadata sidecar file path (card_faces/{name}.json).
 
-        不做存在性检查，调用方需自行处理。仅用于读写 sidecar 元数据
-        （作者、创建时间、来源等）。
+        No existence check is performed; callers must handle that themselves. Used only
+        for reading/writing sidecar metadata (author, creation time, source, etc.).
         """
         return self.card_faces_dir / f"{name}.json"
 
     def ensure_cloudsave_structure(self):
-        """确保本地 cloudsave 基础目录存在。
+        """Ensure the local cloudsave base directories exist.
 
-        这里只创建目录骨架和本地工作区，不创建 manifest 内容，
-        以便阶段 0 先落地路径与状态基础设施，不改变现有同步语义。
+        Only the directory skeleton and local workspace are created here, not manifest
+        content, so phase 0 can land path and state infrastructure first without
+        changing existing sync semantics.
         """
         try:
             if not self._ensure_anchor_root_directory():
@@ -1727,7 +1822,7 @@ class ConfigManager:
             return False
 
     def ensure_local_state_directory(self):
-        """确保本地状态目录存在。"""
+        """Ensure the local state directory exists."""
         self._last_local_state_directory_error = None
         try:
             if self.anchor_root.exists() and not self.anchor_root.is_dir():
@@ -1833,7 +1928,7 @@ class ConfigManager:
             self._raise_local_state_file_error(operation, path, str(e), cause=e)
 
     def build_default_root_state(self):
-        """构建默认 root_state 内容。"""
+        """Build default root_state content."""
         return {
             "version": self.ROOT_STATE_VERSION,
             "mode": "normal",
@@ -1847,7 +1942,7 @@ class ConfigManager:
         }
 
     def build_default_cloudsave_local_state(self, *, client_id=None):
-        """构建默认 cloudsave_local_state 内容。"""
+        """Build default cloudsave_local_state content."""
         return {
             "version": self.CLOUDSAVE_LOCAL_STATE_VERSION,
             "client_id": str(client_id or uuid.uuid4().hex),
@@ -1858,14 +1953,14 @@ class ConfigManager:
         }
 
     def build_default_character_tombstones_state(self):
-        """构建默认角色 tombstone 本地状态。"""
+        """Build default per-character tombstone local state."""
         return {
             "version": self.CHARACTER_TOMBSTONES_STATE_VERSION,
             "tombstones": [],
         }
 
     def _load_json_file(self, path, default_value=None):
-        """加载任意 JSON 文件；文件缺失时返回默认值副本。"""
+        """Load an arbitrary JSON file; returns a copy of the default when the file is missing."""
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 return json.load(f)
@@ -1878,11 +1973,11 @@ class ConfigManager:
             raise
 
     def _save_json_file(self, path, data):
-        """原子保存任意 JSON 文件。"""
+        """Atomically save an arbitrary JSON file."""
         atomic_write_json(path, data, ensure_ascii=False, indent=2)
 
     def load_root_state(self, default_value=None):
-        """加载 root_state；缺失时返回默认状态。"""
+        """Load root_state; returns the default state when missing."""
         if default_value is None:
             default_value = self.build_default_root_state()
         state = self._load_local_state_json_file(
@@ -1895,13 +1990,13 @@ class ConfigManager:
         return state
 
     def save_root_state(self, data):
-        """保存 root_state。"""
+        """Save root_state."""
         if not self.ensure_local_state_directory():
             self._raise_local_state_directory_error("saving root_state")
         self._save_local_state_json_file(self.root_state_path, data, "saving root_state")
 
     def load_cloudsave_local_state(self, default_value=None):
-        """加载 cloudsave_local_state；缺失时返回带稳定字段结构的默认值。"""
+        """Load cloudsave_local_state; returns a default with a stable field structure when missing."""
         if default_value is None:
             default_value = self.build_default_cloudsave_local_state()
         return self._load_local_state_json_file(
@@ -1911,7 +2006,7 @@ class ConfigManager:
         )
 
     def save_cloudsave_local_state(self, data):
-        """保存 cloudsave_local_state。"""
+        """Save cloudsave_local_state."""
         if not self.ensure_local_state_directory():
             self._raise_local_state_directory_error("saving cloudsave_local_state")
         self._save_local_state_json_file(
@@ -1921,7 +2016,7 @@ class ConfigManager:
         )
 
     def load_character_tombstones_state(self, default_value=None):
-        """加载角色 tombstone 本地状态。"""
+        """Load per-character tombstone local state."""
         if default_value is None:
             default_value = self.build_default_character_tombstones_state()
         return self._load_local_state_json_file(
@@ -1931,7 +2026,7 @@ class ConfigManager:
         )
 
     def save_character_tombstones_state(self, data):
-        """保存角色 tombstone 本地状态。"""
+        """Save per-character tombstone local state."""
         if not self.ensure_local_state_directory():
             self._raise_local_state_directory_error("saving character_tombstones_state")
         self._save_local_state_json_file(
@@ -1941,7 +2036,7 @@ class ConfigManager:
         )
 
     def ensure_cloudsave_state_files(self):
-        """确保本地 cloudsave 相关状态文件存在，返回是否发生创建。"""
+        """Ensure local cloudsave-related state files exist; returns whether anything was created."""
         created = False
         if not self.ensure_local_state_directory():
             diagnostic = getattr(self, "_last_local_state_directory_error", None)
@@ -1967,17 +2062,17 @@ class ConfigManager:
     
     def get_config_path(self, filename):
         """
-        获取配置文件路径
+        Get the config file path
         
-        优先级：
-        1. 我的文档/{APP_NAME}/config/
-        2. 项目目录/config/
+        Priority:
+        1. Documents/{APP_NAME}/config/
+        2. project directory/config/
         
         Args:
-            filename: 配置文件名
+            filename: config file name
             
         Returns:
-            Path: 配置文件路径
+            Path: config file path
         """
         # 首选：我的文档下的配置
         docs_config_path = self.config_dir / filename
@@ -1993,14 +2088,14 @@ class ConfigManager:
         return docs_config_path
 
     def get_runtime_config_path(self, filename):
-        """获取运行时真源配置路径（始终位于 app_docs_dir/config）。"""
+        """Get the runtime source-of-truth config path (always under app_docs_dir/config)."""
         return self.config_dir / filename
     
     def _get_localized_characters_source(self):
-        """根据用户语言获取本地化的 characters.json 源文件路径。
+        """Get the localized characters.json source file path based on user language.
         
         Returns:
-            Path | None: 本地化文件路径，如果无法检测语言或文件不存在则返回 None（回退到默认）
+            Path | None: localized file path, or None when language detection fails or the file does not exist (fall back to default)
         """
         try:
             from utils.language_utils import _get_steam_language, _get_system_language, normalize_language_code
@@ -2047,16 +2142,16 @@ class ConfigManager:
     
     def migrate_config_files(self):
         """
-        迁移配置文件到我的文档
+        Migrate config files to Documents
         
-        策略：
-        1. 检查我的文档下的config文件夹，没有就创建
-        2. 对于每个配置文件：
-           - 如果我的文档下有，跳过
-           - 如果我的文档下没有：
-             - characters.json: 根据语言选择本地化版本，回退到默认
-             - 其他文件: 从项目config复制
-           - 如果都没有，不做处理（后续会创建默认值）
+        Strategy:
+        1. Check the config folder under Documents; create it if missing
+        2. For each config file:
+           - if present under Documents, skip
+           - if absent under Documents:
+             - characters.json: pick the localized version by language, falling back to default
+             - other files: copy from the project config
+           - if neither exists, do nothing (defaults are created later)
         """
         # 确保目录存在
         if not self.ensure_config_directory():
@@ -2104,11 +2199,11 @@ class ConfigManager:
     
     def migrate_memory_files(self):
         """
-        迁移记忆文件到我的文档
+        Migrate memory files to Documents
         
-        策略：
-        1. 检查我的文档下的memory文件夹，没有就创建
-        2. 迁移所有记忆文件和目录
+        Strategy:
+        1. Check the memory folder under Documents; create it if missing
+        2. Migrate all memory files and directories
         """
         # 确保目录存在
         if not self.ensure_memory_directory():
@@ -2140,19 +2235,21 @@ class ConfigManager:
 
     def migrate_legacy_documents_memory(self):
         """
-        启动时对 legacy 根目录（``Documents\\N.E.K.O`` / CFA 原始只读路径等）
-        下的 ``memory/`` 仅做**软迁移**：把仍在 ``characters.json[猫娘]``
-        的角色目录搬到当前 runtime ``memory_dir``；runtime 已有同名目录则
-        保留 legacy 副本并打印 warning，绝不覆盖。
+        At startup, perform only a **soft migration** of ``memory/`` under legacy roots
+        (``Documents\\N.E.K.O`` / original CFA read-only paths, etc.): move character
+        directories still present in ``characters.json[猫娘]`` to the current runtime
+        ``memory_dir``; if the runtime already has a directory of the same name, keep
+        the legacy copy and print a warning — never overwrite.
 
-        **未关联条目**（目录名不在 ``characters.json[猫娘]`` 的孤立记忆）
-        不在本方法处理范围内，完全交由创意工坊页面的"清理遗留记忆"按钮
-        走 ``/api/memory/legacy/scan`` + ``purge`` 由用户主动勾选删除。
+        **Unlinked entries** (orphan memory whose directory name is not in
+        ``characters.json[猫娘]``) are out of scope here; they are handled entirely by
+        the Workshop page's "clean up legacy memory" button via
+        ``/api/memory/legacy/scan`` + ``purge`` with explicit user selection.
 
-        该方法应在 ``migrate_config_files`` / ``migrate_memory_files`` 之后
-        调用，此时 ``characters.json`` 已就位。任何失败只打日志不抛异常，
-        绝不阻塞启动流程。
-        """
+        This method should be called after ``migrate_config_files`` /
+        ``migrate_memory_files``, when ``characters.json`` is in place. Any failure is
+        only logged, never raised — startup must not be blocked.
+        """  # noqa: DOCSTRING_CJK
         try:
             # get_legacy_app_root_candidates 已排除当前 app_docs_dir，且去重
             legacy_roots = list(self.get_legacy_app_root_candidates() or [])
@@ -2224,9 +2321,10 @@ class ConfigManager:
 
         def _legacy_error_summary(exc: BaseException) -> str:
             """
-            把异常压成脱敏字符串：只保留类名 + errno + strerror，
-            绝不打印 OSError/PermissionError 自带的 filename 参数（那会
-            暴露 Documents 用户名 + 角色目录名）。
+            Squash the exception into a sanitized string: keep only the class name +
+            errno + strerror, never printing the filename argument carried by
+            OSError/PermissionError (it would expose the Documents username +
+            character directory name).
             """
             if isinstance(exc, OSError):
                 parts = [type(exc).__name__]
@@ -2367,12 +2465,12 @@ class ConfigManager:
     # --- Character configuration helpers ---
 
     def get_default_characters(self):
-        """获取默认角色配置数据（根据Steam语言本地化内容值）"""
+        """Get default character config data (content values localized per Steam language)"""
         from config import get_localized_default_characters
         return get_localized_default_characters()
 
     def load_characters(self, character_json_path=None):
-        """加载角色配置"""
+        """Load character configs"""
         use_default_path = character_json_path is None
         if character_json_path is None:
             character_json_path = str(self.get_config_path('characters.json'))
@@ -2461,7 +2559,7 @@ class ConfigManager:
             return character_data
 
     def save_characters(self, data, character_json_path=None, *, bypass_write_fence: bool = False):
-        """保存角色配置（同步版本，会阻塞事件循环；async 路径请用 asave_characters）"""
+        """Save character configs (sync version, blocks the event loop; use asave_characters on async paths)"""
         if character_json_path is None:
             character_json_path = str(self.get_runtime_config_path('characters.json'))
 
@@ -2485,7 +2583,7 @@ class ConfigManager:
             self._characters_dirty = False
 
     async def asave_characters(self, data, character_json_path=None, *, bypass_write_fence: bool = False):
-        """async 包装：事件循环上禁止直接走同步版本（atomic_write_json 会阻塞）。"""
+        """Async wrapper: the sync version must not run directly on the event loop (atomic_write_json blocks)."""
         return await asyncio.to_thread(
             self.save_characters,
             data,
@@ -2496,7 +2594,7 @@ class ConfigManager:
     # --- Voice storage helpers ---
 
     def load_voice_storage(self):
-        """加载音色配置存储"""
+        """Load the voice config storage"""
         try:
             return self.load_json_config('voice_storage.json', default_value=deepcopy(DEFAULT_CONFIG_DATA['voice_storage.json']))
         except Exception as e:
@@ -2504,7 +2602,7 @@ class ConfigManager:
             return {}
 
     def save_voice_storage(self, data):
-        """保存音色配置存储"""
+        """Save the voice config storage"""
         try:
             self.save_json_config('voice_storage.json', data)
         except Exception as e:
@@ -2513,32 +2611,39 @@ class ConfigManager:
 
     @staticmethod
     def is_legacy_cosyvoice_id(voice_id: str) -> bool:
-        """CosyVoice v2 / v3 的克隆音色 ID 已随 CosyVoice 3.5 升级而失效。"""
+        """CosyVoice v2 / v3 cloned voice IDs became invalid with the CosyVoice 3.5 upgrade."""
         return bool(voice_id) and (
             voice_id.startswith("cosyvoice-v2") or voice_id.startswith("cosyvoice-v3-")
         )
 
     @staticmethod
     def is_deprecated_free_yui_voice_id(voice_id) -> bool:
-        """voice_id 是否是已被替换、仍残留在存量存档里的免费 YUI 预设音色。"""
+        """Whether voice_id is the replaced free YUI preset voice still lingering in existing saves."""
         return bool(voice_id) and str(voice_id).strip() in _DEPRECATED_FREE_YUI_VOICE_IDS
 
     def remap_deprecated_free_yui_voice_id(self, voice_id):
-        """废弃的免费 YUI 预设音色 → 现役国内 yui_cn（仅国内 free 线路迁移）。
+        """Deprecated free YUI preset voice → active CN yui_cn (CN free route migration only).
 
-        非废弃值原样返回（不做 strip 归一化），避免调用方把单纯的前后空白差异
-        误当成「已迁移」而 continue，漏掉本轮对无效 voice_id 的清理。
+        Non-deprecated values are returned as-is (no strip normalization), so callers don't
+        mistake a mere leading/trailing whitespace difference for "already migrated" and
+        continue, skipping this round's cleanup of invalid voice_ids.
 
-        废弃值是国内 StepFun YUI tone，只有国内免费（lanlan.tech）线路会真正下发它，
-        也只有该线路迁移到现役 free_voices["yui_cn"]：
-          - 海外免费（lanlan.app → free_intl）：原样返回，交既有 validate 在海外线路
-            判 invalid 清空 → 落服务端默认音色 fallback。客户端不注入 "yui"/native
-            alias（PR #1643 设计原则：free_intl 继承 Gemini-native provider，不得把
-            StepFun magic id 或其 alias 漏进该 catalog；且无条件换成国内 voice-tone
-            还会让非空 voice_id 在 free_intl 落进 external TTS）。
-          - 非 free 路由：原样返回，废弃 StepFun preset 用不上，交清空兜底。
-        现役 yui_cn 缺失/为空/仍落废弃集合时也原样返回——绝不借 cuteGirl 等其它 preset
-        当替身把 YUI 串成别的音色，也不把废弃换成另一个废弃造成死循环。
+        The deprecated value is the CN StepFun YUI tone; only the CN free (lanlan.tech)
+        route actually serves it, and only that route migrates to the active
+        free_voices["yui_cn"]:
+          - overseas free (lanlan.app → free_intl): returned as-is; the existing validate
+            marks it invalid on the overseas route and clears it → server-side default
+            voice fallback. The client does not inject the "yui"/native alias (PR #1643
+            design principle: free_intl inherits the Gemini-native provider and must not
+            leak StepFun magic ids or their aliases into that catalog; besides,
+            unconditionally swapping to the CN voice tone would land a non-empty voice_id
+            on free_intl into external TTS).
+          - non-free routes: returned as-is; the deprecated StepFun preset is unusable
+            there, left to the clear-and-fallback path.
+        Also returned as-is when the active yui_cn is missing/empty/itself in the
+        deprecated set — never borrow cuteGirl or other presets as stand-ins to morph YUI
+        into a different voice, and never replace one deprecated value with another,
+        creating an endless loop.
         """
         if not self.is_deprecated_free_yui_voice_id(voice_id):
             return voice_id
@@ -2565,14 +2670,18 @@ class ConfigManager:
         return voice_id
 
     def get_tts_api_key(self, provider: str) -> str | None:
-        """根据 provider 统一获取 TTS API Key，返回 None 表示未配置。
+        """Return the configured TTS API key for a provider, or None.
 
-        - cosyvoice: tts_custom 配置的 api_key
-        - cosyvoice_intl: ASSIST_API_KEY_QWEN_INTL（阿里国际版）
+        - cosyvoice: api_key from the tts_custom model config
+        - cosyvoice_intl: API key resolved by the CosyVoice intl runtime
         - minimax:   ASSIST_API_KEY_MINIMAX → MINIMAX_API_KEY fallback
         - minimax_intl: ASSIST_API_KEY_MINIMAX_INTL → MINIMAX_INTL_API_KEY fallback
+        - mimo: ASSIST_API_KEY_MIMO
         """
         if provider == 'cosyvoice':
+            core_config = self.get_core_config()
+            if self._is_vllm_omni_tts_selected(core_config):
+                return None
             tts_config = self.get_model_api_config('tts_custom')
             key = (tts_config.get('api_key') or '').strip()
             return key or None
@@ -2601,10 +2710,44 @@ class ConfigManager:
             if '***' in key:
                 return None
             return key or None
+        if provider == 'mimo':
+            core_config = self.get_core_config()
+            use_token_plan = (
+                (core_config.get('assistApi') or '').strip() == 'mimo'
+                and _as_bool(core_config.get('useMimoTokenPlan', False))
+            )
+            key_field = 'ASSIST_API_KEY_MIMO_TOKEN_PLAN' if use_token_plan else 'ASSIST_API_KEY_MIMO'
+            key = (core_config.get(key_field) or '').strip()
+            if '***' in key:
+                return None
+            return key or None
         return None
 
+    @staticmethod
+    def _is_vllm_omni_tts_selected(core_config: dict | None) -> bool:
+        if not isinstance(core_config, dict):
+            return False
+        return _as_bool(core_config.get('ENABLE_CUSTOM_API'), False) and (
+            str(core_config.get('ttsModelProvider') or '').strip() == 'vllm_omni'
+        )
+
+    def _is_local_tts_storage_active(
+        self,
+        tts_config: dict | None = None,
+        core_config: dict | None = None,
+    ) -> bool:
+        """Return True when the current TTS config should use __LOCAL_TTS__ voices."""
+        if tts_config is None:
+            tts_config = self.get_model_api_config('tts_custom')
+        if core_config is None:
+            core_config = self.get_core_config()
+        base_url = str((tts_config or {}).get('base_url') or '')
+        return _as_bool((tts_config or {}).get('is_custom'), False) and base_url.startswith(('ws://', 'wss://')) and (
+            not self._is_vllm_omni_tts_selected(core_config)
+        )
+
     def get_cosyvoice_clone_runtime(self, provider: str = 'cosyvoice') -> dict:
-        """返回声音克隆页显式选择的阿里国内/国际运行时配置。"""
+        """Return the Alibaba CN/international runtime config explicitly selected on the voice-clone page."""
         normalized_provider = str(provider or 'cosyvoice').strip().lower()
         if normalized_provider not in ('cosyvoice', 'cosyvoice_intl'):
             normalized_provider = 'cosyvoice'
@@ -2635,19 +2778,20 @@ class ConfigManager:
             base_url = profile.get('OPENROUTER_URL', '')
 
         if normalized_provider == 'cosyvoice' and not api_key:
-            try:
-                legacy_tts_config = self.get_model_api_config('tts_custom')
-            except Exception:
-                legacy_tts_config = {}
-            legacy_key = (legacy_tts_config.get('api_key') or '').strip()
-            legacy_url = (legacy_tts_config.get('base_url') or '').strip()
-            if legacy_key and not (
-                'dashscope-intl.aliyuncs.com' in legacy_url
-                or 'dashscope-us.aliyuncs.com' in legacy_url
-            ):
-                api_key = legacy_key
-                if legacy_url:
-                    base_url = legacy_url
+            if not self._is_vllm_omni_tts_selected(core_config):
+                try:
+                    legacy_tts_config = self.get_model_api_config('tts_custom')
+                except Exception:
+                    legacy_tts_config = {}
+                legacy_key = (legacy_tts_config.get('api_key') or '').strip()
+                legacy_url = (legacy_tts_config.get('base_url') or '').strip()
+                if legacy_key and not (
+                    'dashscope-intl.aliyuncs.com' in legacy_url
+                    or 'dashscope-us.aliyuncs.com' in legacy_url
+                ):
+                    api_key = legacy_key
+                    if legacy_url:
+                        base_url = legacy_url
 
         if normalized_provider == 'cosyvoice_intl' and api_key:
             suffix = api_key[-8:] if len(api_key) >= 8 else api_key
@@ -2665,7 +2809,7 @@ class ConfigManager:
         }
 
     def _get_cosyvoice_storage_keys(self) -> list[tuple[str, str]]:
-        """返回当前阿里国内/国际 API Key 对应的 voice_storage key。"""
+        """Return the voice_storage key for the current Alibaba CN/international API key."""
         voice_storage = self.load_voice_storage()
         result: list[tuple[str, str]] = []
         seen = set()
@@ -2690,10 +2834,10 @@ class ConfigManager:
         return result
 
     def _get_minimax_storage_keys(self) -> list[str]:
-        """返回当前 MiniMax API Key 对应的 voice_storage key 列表。
+        """Return the list of voice_storage keys for the current MiniMax API keys.
 
-        通过 get_tts_api_key 获取已解析的 key（含 env fallback），
-        分别为国服和国际服生成 bucket 前缀。
+        Uses get_tts_api_key to obtain resolved keys (including env fallback),
+        generating bucket prefixes for the CN and international services respectively.
         """
         voice_storage = self.load_voice_storage()
         result = []
@@ -2717,7 +2861,7 @@ class ConfigManager:
         return result
 
     def _get_elevenlabs_storage_keys(self) -> list[str]:
-        """返回当前 ElevenLabs API Key 对应的 voice_storage key 列表。"""
+        """Return the list of voice_storage keys for the current ElevenLabs API key."""
         voice_storage = self.load_voice_storage()
         result = []
         key = self.get_tts_api_key('elevenlabs')
@@ -2728,11 +2872,31 @@ class ConfigManager:
                 result.append(bucket)
         return result
 
+    def _get_mimo_storage_keys(self) -> list[str]:
+        """Return the list of voice_storage keys for the current MiMo API key.
+
+        Dual to :meth:`_get_elevenlabs_storage_keys`: MiMo cloned voices live in
+        a ``__MIMO__{suffix}`` bucket keyed by the MiMo API key, so they merge
+        into the current-API voice list regardless of which core/TTS provider is
+        otherwise active (a MiMo clone is selected by ``voice_meta.provider`` at
+        dispatch, not by config — see ``workers/mimo.py``)."""
+        voice_storage = self.load_voice_storage()
+        result = []
+        key = self.get_tts_api_key('mimo')
+        if key:
+            suffix = key[-8:] if len(key) >= 8 else key
+            bucket = f'__MIMO__{suffix}'
+            if bucket in voice_storage:
+                result.append(bucket)
+        return result
+
     @staticmethod
     def _infer_provider_from_storage_key(storage_key: str) -> str:
-        """根据 voice_storage 的分区 key 推断 provider（仅用于兼容旧数据）。"""
+        """Infer the provider from a voice_storage partition key (only for legacy data compatibility)."""
         if storage_key == '__LOCAL_TTS__':
             return 'local'
+        if storage_key.startswith('__MIMO__'):
+            return 'mimo'
         if storage_key.startswith('__ELEVENLABS__'):
             return 'elevenlabs'
         if storage_key.startswith('__MINIMAX_INTL__'):
@@ -2744,37 +2908,38 @@ class ConfigManager:
         return 'cosyvoice'
 
     def get_voices_for_current_api(self, for_listing: bool = False):
-        """获取当前 TTS 配置对应的所有音色
+        """Get all voices for the current TTS config
 
-        根据实际使用的 TTS 配置返回音色：
-        1. 本地 TTS（ws/wss 协议）→ 返回 __LOCAL_TTS__ 下的音色
-        2. 阿里云 TTS（通过 ASSIST_API_KEY_QWEN）→ 返回该 API Key 下的音色
-        3. 其他情况 → 返回 AUDIO_API_KEY 下的音色
-        结果中同时合并阿里国际版、MiniMax 和 ElevenLabs 音色。
+        Returns voices based on the TTS config actually in use:
+        1. Local TTS (ws/wss protocol) → voices under __LOCAL_TTS__
+        2. Alibaba Cloud TTS (via ASSIST_API_KEY_QWEN) → voices under that API key
+        3. Otherwise → voices under AUDIO_API_KEY
+        The result also merges Alibaba international, MiniMax and ElevenLabs voices.
 
-        返回的每个 voice_data 都保证包含 ``provider`` 字段
-        （``local`` / ``minimax`` / ``minimax_intl`` / ``elevenlabs`` / ``cosyvoice`` / ``cosyvoice_intl``）。
+        Every returned voice_data is guaranteed to contain a ``provider`` field
+        (``local`` / ``minimax`` / ``minimax_intl`` / ``elevenlabs`` / ``cosyvoice`` / ``cosyvoice_intl``).
 
-        ``for_listing=True`` 时启用面向 UI 列表的过滤：免费版下跳过 *云端* 主分区
-        （CosyVoice / Qwen），因为这些音色需付费 API Key 鉴权（运行时走
-        step_realtime_tts_worker free_mode 也无法实际使用），列出来只会让 UI
-        误导用户。``__LOCAL_TTS__`` 走 WebSocket 本地推理，免费版仍可用，所以
-        即便 for_listing+free 也必须展示。MiniMax 与 GSV 走独立配置/路由，
-        免费版同样可用，所以保留下方 MiniMax 合并 + 不影响 /custom_tts_voices
-        的 GSV。
+        ``for_listing=True`` enables UI-list-oriented filtering: on the free edition, skip
+        the *cloud* main partitions (CosyVoice / Qwen), because those voices require paid
+        API key auth (and cannot actually be used at runtime via step_realtime_tts_worker
+        free_mode); listing them would only mislead users. ``__LOCAL_TTS__`` runs local
+        inference over WebSocket and still works on the free edition, so it must be shown
+        even with for_listing+free. MiniMax and GSV use independent config/routing and
+        also work on the free edition, so the MiniMax merge below is kept and the
+        /custom_tts_voices GSV is unaffected.
 
-        默认 ``for_listing=False`` 保留全量视图——``validate_voice_id`` /
-        ``cleanup_invalid_voice_ids`` 等校验链路必须见到 storage 中真实存在的
-        所有音色，否则免费版会把用户在付费期保存的 voice_id 误判为不存在并
-        在清理流程中直接清空。
+        The default ``for_listing=False`` keeps the full view — validation chains like
+        ``validate_voice_id`` / ``cleanup_invalid_voice_ids`` must see every voice actually
+        present in storage, otherwise the free edition would misjudge voice_ids users saved
+        during a paid period as nonexistent and clear them outright during cleanup.
         """
         voice_storage = self.load_voice_storage()
         storage_key = ''
         result: dict = {}
 
         tts_config = self.get_model_api_config('tts_custom')
-        base_url = tts_config.get('base_url', '')
-        is_local_tts = tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://'))
+        core_config = self.get_core_config()
+        is_local_tts = self._is_local_tts_storage_active(tts_config, core_config)
         hide_cloud_main = for_listing and self.is_free_voice()
 
         if is_local_tts:
@@ -2789,7 +2954,6 @@ class ConfigManager:
                 all_voices = voice_storage.get(storage_key, {})
                 result = dict(all_voices)
             else:
-                core_config = self.get_core_config()
                 audio_api_key = core_config.get('AUDIO_API_KEY', '')
                 if audio_api_key:
                     storage_key = audio_api_key
@@ -2845,10 +3009,29 @@ class ConfigManager:
                         vdata['provider'] = 'elevenlabs'
                     result[vid] = vdata
 
+        # 合并 MiMo 克隆音色，并确保 provider 字段（dual to ElevenLabs/MiniMax；MiMo 克隆走
+        # 独立 __MIMO__ 桶 + voice_meta 选中，与当前 core/TTS provider 无关）
+        for mimo_key in self._get_mimo_storage_keys():
+            mimo_voices = voice_storage.get(mimo_key, {})
+            for vid, vdata in mimo_voices.items():
+                if vid not in result:
+                    if isinstance(vdata, dict) and 'provider' not in vdata:
+                        vdata['provider'] = 'mimo'
+                    result[vid] = vdata
+
+        if for_listing:
+            # UI 试听列表不需要 MiMo 克隆的参考样本 base64（可达 MB）——剥掉，避免把大 blob
+            # 推给前端。dispatch / preview 走 for_listing=False，仍拿到完整 voice_meta。
+            result = {
+                vid: ({k: v for k, v in vdata.items() if k != 'clone_sample_b64'}
+                      if isinstance(vdata, dict) and 'clone_sample_b64' in vdata else vdata)
+                for vid, vdata in result.items()
+            }
+
         return result
 
     def save_voice_for_current_api(self, voice_id, voice_data):
-        """为当前 AUDIO_API_KEY 保存音色"""
+        """Save a voice for the current AUDIO_API_KEY"""
         core_config = self.get_core_config()
         audio_api_key = core_config.get('AUDIO_API_KEY', '')
 
@@ -2863,7 +3046,7 @@ class ConfigManager:
         self.save_voice_storage(voice_storage)
 
     def save_voice_for_api_key(self, api_key: str, voice_id: str, voice_data: dict):
-        """为指定的 API Key 保存音色（用于复刻时使用实际 API Key 而非 AUDIO_API_KEY）"""
+        """Save a voice for the given API key (used when cloning with the actual API key instead of AUDIO_API_KEY)"""
         if not api_key:
             raise ValueError("API Key 不能为空")
 
@@ -2875,13 +3058,14 @@ class ConfigManager:
         self.save_voice_storage(voice_storage)
 
     def voice_id_exists_in_any_storage(self, voice_id: str) -> bool:
-        """voice_id 是否出现在 voice_storage.json 的任意 bucket 下。
+        """Whether voice_id appears under any bucket of voice_storage.json.
 
-        比 get_voices_for_current_api() 的视图更宽：后者按当前 tts_custom 配置
-        筛选 bucket（AUDIO_API_KEY / __LOCAL_TTS__ / 当前 ASSIST_API_KEY_QWEN
-        等），配置切换后曾在旧 bucket 保存过的克隆音色不会出现在视图里。
-        碰撞检测场景（"用户曾经显式克隆过这个 voice_id 吗"）必须看完整存储，
-        不能只看当前视图，否则同名 voice 会被静默切到内置 provider 上。
+        Wider than the view of get_voices_for_current_api(): the latter filters buckets by
+        the current tts_custom config (AUDIO_API_KEY / __LOCAL_TTS__ / current
+        ASSIST_API_KEY_QWEN etc.), so cloned voices saved in old buckets before a config
+        switch don't appear in the view. Collision detection ("has the user ever explicitly
+        cloned this voice_id") must look at the full storage, not just the current view,
+        otherwise a same-named voice gets silently switched to the built-in provider.
         """
         if not voice_id:
             return False
@@ -2899,12 +3083,12 @@ class ConfigManager:
         return False
 
     def find_voice_by_audio_md5(self, api_key: str, audio_md5: str, ref_language: str | None = None):
-        """在指定 API Key 下按参考音频 MD5（及可选 ref_language）查找已有音色。
+        """Look up an existing voice by reference-audio MD5 (and optional ref_language) under the given API key.
 
-        返回 (voice_id, voice_data) 或 None。
-        旧条目没有 audio_md5 字段时会被自动跳过（向后兼容）。
-        当 ref_language 不为 None 时，要求 voice_data 中的 ref_language 也匹配
-        （旧条目无 ref_language 字段视为 'ch'）。
+        Returns (voice_id, voice_data) or None.
+        Old entries without an audio_md5 field are skipped automatically (backward compatible).
+        When ref_language is not None, the ref_language in voice_data must also match
+        (old entries without a ref_language field are treated as 'ch').
         """
         if not api_key or not audio_md5:
             return None
@@ -2923,7 +3107,7 @@ class ConfigManager:
         audio_md5: str,
         ref_language: str | None = None,
     ):
-        """按 CosyVoice 当前与旧版存储分区查找参考音频 MD5。"""
+        """Look up a reference-audio MD5 across the current and legacy CosyVoice storage partitions."""
         runtime = self.get_cosyvoice_clone_runtime(provider)
         storage_keys = []
         seen = set()
@@ -2946,7 +3130,7 @@ class ConfigManager:
         return None
 
     def delete_voice_for_current_api(self, voice_id):
-        """删除当前 TTS 配置下的指定音色（含独立服务商音色）"""
+        """Delete the given voice under the current TTS config (including standalone-provider voices)"""
         voice_storage = self.load_voice_storage()
 
         # 先检查带前缀的独立服务商存储
@@ -2955,8 +3139,11 @@ class ConfigManager:
                 storage_key.startswith('__MINIMAX__')
                 or storage_key.startswith('__MINIMAX_INTL__')
                 or storage_key.startswith('__ELEVENLABS__')
+                or storage_key.startswith('__MIMO__')
                 or storage_key.startswith('__COSYVOICE_INTL__')
             ) and voice_id in voice_storage.get(storage_key, {}):
+                # 克隆身份（含 MiMo 的样本 base64）都在 voice_data 里，删除 entry 随之消失，
+                # 无旁路本地文件需清理（对偶 MiniMax/ElevenLabs）。
                 del voice_storage[storage_key][voice_id]
                 self.save_voice_storage(voice_storage)
                 return True
@@ -2969,8 +3156,7 @@ class ConfigManager:
                 return True
         
         tts_config = self.get_model_api_config('tts_custom')
-        base_url = tts_config.get('base_url', '')
-        is_local_tts = tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://'))
+        is_local_tts = self._is_local_tts_storage_active(tts_config)
 
         if is_local_tts:
             api_key = '__LOCAL_TTS__'
@@ -2992,17 +3178,44 @@ class ConfigManager:
             return True
         return False
 
+    def _is_selected_hosted_preset_voice(self, voice_id):
+        """Whether voice_id is a built-in (preset) voice of the currently selected
+        TTS provider in tts_provider_registry (e.g. MiMo, a hosted SaaS).
+
+        Dual to :func:`is_saveable_native_voice` but for the unified provider
+        registry: a hosted/local provider's presets are only saveable while that
+        provider is the one dispatch would route to, so this gates on the same
+        selection the dispatcher uses.
+
+        The hosted providers are registered as a side effect of importing
+        ``main_logic.tts_client``. config_manager (utils layer) must NOT import it
+        — that's a CI-enforced layer inversion (utils → main_logic). We rely on the
+        running app having imported tts_client at startup (the TTS pipeline does),
+        so the registry is populated by the time any voice is validated; if it
+        isn't (or the lookup errors), this degrades to "not a preset voice" rather
+        than breaking validation.
+        """
+        try:
+            from utils import tts_provider_registry
+            return tts_provider_registry.is_selected_preset_voice(
+                self.get_core_config() or {}, self, voice_id
+            )
+        except Exception:
+            logger.warning("hosted preset voice 校验异常，按非预制处理", exc_info=True)
+            return False
+
     def validate_voice_id(self, voice_id):
-        """校验 voice_id 是否在当前 AUDIO_API_KEY 下有效。
+        """Validate whether voice_id is valid under the current AUDIO_API_KEY.
         
-        校验覆盖四类 voice_id：
-          1. "cosyvoice-v2/v3..." → 旧版格式，始终无效
-          2. "gsv:xxx" → 委托 check_custom_tts_voice_allowed (custom_tts_adapter)
-             判定，由适配器根据 tts_custom 配置决定有效性
-          3. 普通 ID → 在 voice_storage (CosyVoice 云端克隆音色) 中查找
-          4. 免费预设音色 → 这里只做静态白名单放行；运行时由 core.py
-             _should_block_free_preset_voice 根据线路 (lanlan.tech / lanlan.app)
-             动态决定是否实际启用（lanlan.app 海外节点不支持预设音色）
+        Validation covers four kinds of voice_id:
+          1. "cosyvoice-v2/v3..." → legacy format, always invalid
+          2. "gsv:xxx" → delegated to check_custom_tts_voice_allowed (custom_tts_adapter);
+             the adapter decides validity from the tts_custom config
+          3. plain IDs → looked up in voice_storage (CosyVoice cloud-cloned voices)
+          4. free preset voices → only statically whitelisted here; at runtime core.py
+             _should_block_free_preset_voice decides dynamically per route
+             (lanlan.tech / lanlan.app) whether they are actually enabled
+             (the lanlan.app overseas node does not support preset voices)
         """
         voice_id = str(voice_id or '').strip()
         if not voice_id:
@@ -3015,11 +3228,19 @@ class ConfigManager:
         if custom_tts_allowed is not None:
             return custom_tts_allowed
 
+        if self._is_vllm_omni_tts_selected(self.get_core_config()):
+            return True
+
         voices = self.get_voices_for_current_api()
         if voice_id in voices:
             return True
 
         if is_saveable_native_voice(self, voice_id):
+            return True
+
+        # hosted/local provider 的内置预制音色（如选中 MiMo 时的预制声线），由
+        # tts_provider_registry 收口，仅在该 provider 被选中时算合法
+        if self._is_selected_hosted_preset_voice(voice_id):
             return True
 
         # 免费预设音色允许豁免保存校验，运行时再由 core.py 按当前线路动态判断可用性
@@ -3031,7 +3252,7 @@ class ConfigManager:
         return False
 
     def validate_voice_id_for_api_key(self, api_key: str, voice_id: str) -> bool:
-        """校验 voice_id 是否在指定 API Key 下有效"""
+        """Validate whether voice_id is valid under the given API key"""
         voice_id = str(voice_id or '').strip()
         if not voice_id:
             return True
@@ -3051,6 +3272,9 @@ class ConfigManager:
         if is_saveable_native_voice(self, voice_id):
             return True
 
+        if self._is_selected_hosted_preset_voice(voice_id):
+            return True
+
         from utils.api_config_loader import get_free_voices
         free_voices = get_free_voices()
         if voice_id in free_voices.values():
@@ -3058,19 +3282,115 @@ class ConfigManager:
 
         return False
 
-    def cleanup_invalid_voice_ids(self):
-        """清理 characters.json 中无效的 voice_id。
-        
-        通过 validate_voice_id 统一判定有效性，不含 provider 专属逻辑。
-        注意：免费预设音色在此处不会被清理（validate_voice_id 白名单放行），
-        实际可用性由 core.py 运行时按 free + lanlan.app/lanlan.tech 线路决定。
+    def normalize_voice_id_to_config(self, voice_id):
+        """Resolve a flat / prefixed ``voice_id`` into a structured ``VoiceConfig``.
 
-        清空前还会先把已废弃的免费 YUI 预设音色平移到现役 yui_cn
-        （remap_deprecated_free_yui_voice_id），避免存量用户因 YUI 音色 ID 更替
-        被判 invalid 清空、无声掉档到通用默认音色。迁移命中同样触发存盘。
+        A bare id (no ``gsv:`` / ``eleven:`` prefix) needs runtime context to decide
+        its ``source`` / ``provider``; this reuses the same resolution chain as
+        :meth:`validate_voice_id` (vLLM selected / a clone in the current API's
+        voice_storage / a saveable native voice / a free preset) and feeds that
+        context to the pure :func:`utils.voice_config.normalize_voice_id`, so the
+        migration stays faithful and unambiguous.
+
+        An unresolvable bare id is carried through unchanged in ``ref`` (never
+        dropped); callers treat it as "leave the value as-is".
+        """
+        from utils.voice_config import normalize_voice_id
+        from utils.native_voice_registry import (
+            get_active_realtime_native_provider,
+            is_saveable_native_voice,
+        )
+        from utils.api_config_loader import get_free_voices
+
+        _voices_cache = {}
+
+        def _clone_lookup(ref):
+            if 'voices' not in _voices_cache:
+                _voices_cache['voices'] = self.get_voices_for_current_api()
+            vdata = _voices_cache['voices'].get(ref)
+            if isinstance(vdata, dict):
+                return str(vdata.get('provider') or '')
+            return None
+
+        def _hosted_preset_provider(ref):
+            """Selected hosted/local provider key when ``ref`` is one of its preset
+            voices (e.g. MiMo's "Milo"), else None — so the structured object keeps
+            the ``source=preset / provider=<key>`` ownership the flat string drops.
+
+            Dual to :meth:`_is_selected_hosted_preset_voice` (used by validate); both
+            gate on tts_provider_registry's selection so a hosted preset is only
+            recognized while that provider is the one dispatch would route to. A
+            single ``selected_preset_provider_key`` dispatch resolves both membership
+            and key together, so the two can never disagree. Same layer rule:
+            config_manager (utils) must NOT import main_logic, so we only query the
+            same-layer registry, which the running app populates by importing
+            main_logic.tts_client at startup. Degrades to None on error.
+            """
+            try:
+                from utils import tts_provider_registry
+                return tts_provider_registry.selected_preset_provider_key(
+                    self.get_core_config() or {}, self, ref
+                )
+            except Exception:
+                logger.warning("hosted preset voice 归一化异常，按非预制处理", exc_info=True)
+                return None
+
+        return normalize_voice_id(
+            voice_id,
+            vllm_selected=self._is_vllm_omni_tts_selected(self.get_core_config()),
+            clone_provider_lookup=_clone_lookup,
+            is_native=lambda ref: is_saveable_native_voice(self, ref),
+            native_provider=get_active_realtime_native_provider(self) or '',
+            hosted_preset_provider=_hosted_preset_provider,
+            free_voice_ids=set(get_free_voices().values()),
+        )
+
+    def voice_id_to_storage_value(self, voice_id):
+        """Convert a user-set legacy ``voice_id`` string into its at-rest storage form.
+
+        Write side of the voice-source-unification "union-find style lazy migration":
+        every time the user sets/changes a voice, that one entry is migrated to the
+        structured object ``{source, provider, ref}`` (migrate-on-touch, never a
+        full-table sweep). Empty value is stored as an empty string (= no voice set).
+        The read side (:func:`utils.voice_config.read_legacy_voice_id`) tolerates both
+        forms, so untouched legacy flat strings keep working.
+        """
+        s = str(voice_id or '').strip()
+        if not s:
+            return ''
+        from utils.voice_config import to_legacy_voice_id
+        vc = self.normalize_voice_id_to_config(s)
+        # Round-trip guard: only migrate to the structured object when it reads back to
+        # the exact submitted library key. Otherwise (e.g. a provider-tagged but
+        # un-prefixed clone key, where to_legacy_voice_id would re-add a prefix and
+        # change the key) keep the legacy string verbatim — never let migration rewrite
+        # the key a binding points at, or _get_voice_meta would miss and TTS misroute.
+        if to_legacy_voice_id(vc) != s:
+            return s
+        # Ownership guard: a bare id we could NOT resolve (no source/provider tagged)
+        # carries zero information beyond the flat string. Storing it as
+        # ``{source:"", provider:"", ref}`` is a half-migrated shell that only bloats
+        # storage and disguises "ownership unknown" as "migrated" — keep the legacy
+        # string until we can actually tag its ownership. (Only resolved bindings,
+        # incl. hosted presets like MiMo's, become structured objects.)
+        if not vc.source and not vc.provider:
+            return s
+        return vc.to_dict()
+
+    def cleanup_invalid_voice_ids(self):
+        """Clean up invalid voice_ids in characters.json.
+        
+        Validity is decided uniformly via validate_voice_id, with no provider-specific logic.
+        Note: free preset voices are not cleaned here (whitelisted by validate_voice_id);
+        actual availability is decided at runtime by core.py per free + lanlan.app/lanlan.tech route.
+
+        Before clearing, deprecated free YUI preset voices are first remapped to the active
+        yui_cn (remap_deprecated_free_yui_voice_id), so existing users aren't judged invalid
+        and silently dropped to the generic default voice due to the YUI voice ID change.
+        A migration hit also triggers a save.
 
         Returns:
-            (cleaned_count, legacy_cosyvoice_names): 清理总数 及 仍在使用旧版 CosyVoice 音色的角色名列表
+            (cleaned_count, legacy_cosyvoice_names): total cleaned, and the list of character names still using legacy CosyVoice voices
         """
         character_data = self.load_characters()
         cleaned_count = 0
@@ -3079,7 +3399,9 @@ class ConfigManager:
 
         catgirls = character_data.get('猫娘', {})
         for name, config in catgirls.items():
-            voice_id = get_reserved(config, 'voice_id', default='', legacy_keys=('voice_id',))
+            # 容忍扁平串 / 结构对象两形态，统一按 legacy 字符串做 remap / validate；
+            # cleanup 不在此把有效条目压成对象（守住「不 bulk sweep」，迁移只在用户设音色时发生）。
+            voice_id = read_legacy_voice_id(get_reserved(config, 'voice_id', default='', legacy_keys=('voice_id',)))
             if not voice_id:
                 continue
             # 已废弃的免费 YUI 预设音色：先平移到现役 yui_cn，再 continue 跳过后续
@@ -3121,7 +3443,7 @@ class ConfigManager:
     # --- Character metadata helpers ---
 
     def get_character_data(self):
-        """获取角色基础数据及相关路径"""
+        """Get character base data and related paths"""
         character_data = self.load_characters()
         defaults = self.get_default_characters()
 
@@ -3193,13 +3515,13 @@ class ConfigManager:
         return await asyncio.to_thread(self.get_character_data)
 
     async def aload_characters(self, character_json_path=None):
-        """异步包装 load_characters：cache hit 也要 deepcopy 整个字典，
-        N 个 catgirl 时拷贝可达数 ms，offload 避免阻塞事件循环。"""
+        """Async wrapper for load_characters: even a cache hit deepcopies the whole dict;
+        with N catgirls the copy can take several ms — offload to avoid blocking the event loop."""
         return await asyncio.to_thread(self.load_characters, character_json_path)
 
     async def aget_core_config(self):
-        """异步包装 get_core_config：内部 open()+json.load() 读 core_config.json，
-        async endpoint 调用时必须 offload，避免事件循环阻塞。"""
+        """Async wrapper for get_core_config: internally open()+json.load() reads core_config.json;
+        async endpoints must offload it to avoid blocking the event loop."""
         return await asyncio.to_thread(self.get_core_config)
 
     # --- Core config helpers ---
@@ -3314,9 +3636,9 @@ class ConfigManager:
     def _adjust_free_api_url(self, url: str, is_free: bool) -> str:
         """Internal URL adjustment for free API users.
 
-        优先级：livestream prefix 派生 > 海外 lanlan.tech→lanlan.app 切换 > 原样返回。
-        livestream 启用时仅接管 lanlan.tech 域下白名单内的 free 路端点
-        （/core /text/v1 /tts），其他 path 走原地区切换。
+        Priority: livestream prefix derivation > overseas lanlan.tech→lanlan.app switch > return as-is.
+        When livestream is enabled it only takes over whitelisted free-path endpoints under
+        the lanlan.tech domain (/core /text/v1 /tts); other paths go through the original region switch.
         """
         if not url or 'lanlan.tech' not in url:
             return url
@@ -3345,22 +3667,22 @@ class ConfigManager:
         return url
 
     def _normalize_agent_url(self, url: str) -> str:
-        """临时不改写 Agent URL。
+        """Temporarily do not rewrite the Agent URL.
 
-        free-agent-model 需要走配置里的国内 ``lanlan.tech`` 文本入口；这里保持
-        AGENT_MODEL_URL 原样，避免把它归一化到 ``lanlan.app``。
+        free-agent-model must use the CN ``lanlan.tech`` text entry from the config; keep
+        AGENT_MODEL_URL as-is here to avoid normalizing it to ``lanlan.app``.
         """
         return url
 
     @staticmethod
     def _derive_livestream_url(original_url: str, prefix: str) -> str:
-        """从 livestream server_prefix 派生 lanlan.tech URL 的等价地址。
+        """Derive the equivalent address of a lanlan.tech URL from the livestream server_prefix.
 
-        - 保留原 URL 的 path（``/core`` / ``/tts`` / ``/text/v1``）拼到 prefix path 之后
-        - scheme 家族不变（原 ws/wss → 输出 ws/wss；原 http/https → 输出 http/https）
-        - 加密与否（``s`` 后缀）按 prefix 的 scheme 走（prefix 是 https/wss → 输出加密）
+        - keeps the original URL's path (``/core`` / ``/tts`` / ``/text/v1``) appended after the prefix path
+        - scheme family is unchanged (ws/wss in → ws/wss out; http/https in → http/https out)
+        - encryption (the ``s`` suffix) follows the prefix's scheme (https/wss prefix → encrypted output)
 
-        例：
+        Examples:
         - ``wss://www.lanlan.tech/core`` + ``http://host:port/tok`` → ``ws://host:port/tok/core``
         - ``https://www.lanlan.tech/text/v1`` + ``http://host:port/tok`` → ``http://host:port/tok/text/v1``
         - ``wss://www.lanlan.tech/tts`` + ``https://host/tok`` → ``wss://host/tok/tts``
@@ -3387,7 +3709,7 @@ class ConfigManager:
 
     @staticmethod
     def _provider_url_candidates(profile: dict, url_key: str, list_key: str) -> list[str]:
-        """读取 provider 的主 URL 和候选 URL，去空去重后保持顺序。"""
+        """Read the provider's primary URL and candidate URLs, deduped and order-preserving."""
         raw_candidates = [profile.get(url_key)]
         configured_candidates = profile.get(list_key)
         if isinstance(configured_candidates, list):
@@ -3414,7 +3736,7 @@ class ConfigManager:
         url_key: str,
         list_key: str,
     ) -> str:
-        """返回连通性测试保存过且仍属于当前 provider 候选集的 URL。"""
+        """Return the URL saved by the connectivity test that still belongs to the current provider candidate set."""
         resolved_urls = core_cfg.get('resolvedProviderUrls')
         if not isinstance(resolved_urls, dict):
             return ''
@@ -3425,7 +3747,7 @@ class ConfigManager:
         return saved_url if saved_url in candidates else ''
 
     def get_core_config(self):
-        """动态读取核心配置"""
+        """Read core config dynamically"""
         # 从 config 模块导入所有默认配置值
         from config import (
             DEFAULT_CORE_API_KEY,
@@ -3486,6 +3808,8 @@ class ConfigManager:
             'ASSIST_API_KEY_QWEN_INTL': '',
             'ASSIST_API_KEY_MINIMAX': '',
             'ASSIST_API_KEY_MINIMAX_INTL': '',
+            'ASSIST_API_KEY_MIMO': '',
+            'ASSIST_API_KEY_MIMO_TOKEN_PLAN': '',
             'ASSIST_API_KEY_GROK': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_OPENROUTER': DEFAULT_CORE_API_KEY,
             'VISION_MODEL': DEFAULT_VISION_MODEL,
@@ -3520,6 +3844,12 @@ class ConfigManager:
                 file_data = json.load(f)
             if isinstance(file_data, dict):
                 core_cfg.update(file_data)
+                # 模板默认 assistApi='qwen' 会把文件里从未保存过的 assistApi 填
+                # 上，导致下方「core=free 时 assist 默认 free」的跟随逻辑收不到
+                # 缺失信号。仅当文件显式选了 core=free 且从未保存 assistApi 时
+                # 恢复跟随语义；其余缺失场景维持模板默认。
+                if 'assistApi' not in file_data and file_data.get('coreApi') == 'free':
+                    core_cfg['assistApi'] = 'free'
             else:
                 logger.warning("core_config.json 格式异常，使用默认配置。")
 
@@ -3560,11 +3890,14 @@ class ConfigManager:
         config['ASSIST_API_KEY_KIMI'] = core_cfg.get('assistApiKeyKimi', '') or _fb('kimi')
         config['ASSIST_API_KEY_DEEPSEEK'] = core_cfg.get('assistApiKeyDeepseek', '') or _fb('deepseek')
         config['ASSIST_API_KEY_DOUBAO'] = core_cfg.get('assistApiKeyDoubao', '') or _fb('doubao')
-        # MiniMax 是 assist-only（TTS 专用），不在 coreApi 候选集里，
-        # coreApiKey 永远不是 minimax 兼容的；不 fallback，以免把无效 key
-        # 塞进 TTS 凭证槽位导致 401，掩盖"未配置 minimax key"的真实提示。
+        # MiniMax / MiMo 是 assist-only TTS provider，coreApiKey 不保证兼容；
+        # 不 fallback，以免把无效 key 塞进 TTS 凭证槽位导致 401，
+        # 掩盖"未配置 TTS provider key"的真实提示。
         config['ASSIST_API_KEY_MINIMAX'] = core_cfg.get('assistApiKeyMinimax', '')
         config['ASSIST_API_KEY_MINIMAX_INTL'] = core_cfg.get('assistApiKeyMinimaxIntl', '')
+        config['ASSIST_API_KEY_MIMO'] = core_cfg.get('assistApiKeyMimo', '')
+        config['ASSIST_API_KEY_MIMO_TOKEN_PLAN'] = core_cfg.get('assistApiKeyMimoTokenPlan', '')
+        config['useMimoTokenPlan'] = _as_bool(core_cfg.get('useMimoTokenPlan', False))
         config['ASSIST_API_KEY_ELEVENLABS'] = core_cfg.get('assistApiKeyElevenlabs', '')
         config['ASSIST_API_KEY_GROK'] = core_cfg.get('assistApiKeyGrok', '') or _fb('grok')
         config['ASSIST_API_KEY_CLAUDE'] = core_cfg.get('assistApiKeyClaude', '') or _fb('claude')
@@ -3660,12 +3993,44 @@ class ConfigManager:
             )
             if resolved_assist_url:
                 config['OPENROUTER_URL'] = resolved_assist_url
+        use_mimo_token_plan = (
+            assist_api_value == 'mimo'
+            and _as_bool(core_cfg.get('useMimoTokenPlan', False))
+        )
+        if use_mimo_token_plan:
+            token_plan_urls = config.get('MIMO_TOKEN_PLAN_OPENROUTER_URLS')
+            if not isinstance(token_plan_urls, list):
+                token_plan_urls = []
+            token_plan_profile = {
+                'OPENROUTER_URL': config.get(
+                    'MIMO_TOKEN_PLAN_OPENROUTER_URL',
+                    'https://token-plan-cn.xiaomimimo.com/v1',
+                ),
+                'OPENROUTER_URLS': token_plan_urls or [
+                    'https://token-plan-cn.xiaomimimo.com/v1',
+                    'https://token-plan-sgp.xiaomimimo.com/v1',
+                    'https://token-plan-ams.xiaomimimo.com/v1',
+                ],
+            }
+            token_plan_url = self._get_saved_provider_url(
+                core_cfg,
+                'assist',
+                'mimo_token_plan',
+                token_plan_profile,
+                'OPENROUTER_URL',
+                'OPENROUTER_URLS',
+            )
+            config['OPENROUTER_URL'] = token_plan_url or token_plan_profile['OPENROUTER_URL']
         # agent api 默认跟随辅助 API 的 agent_model，缺失时回退到 VISION_MODEL
         config['AGENT_MODEL'] = config.get('AGENT_MODEL') or config.get('VISION_MODEL', '')
         config['AGENT_MODEL_URL'] = config.get('AGENT_MODEL_URL') or config.get('VISION_MODEL_URL', '') or config.get('OPENROUTER_URL', '')
         config['AGENT_MODEL_URL'] = self._normalize_agent_url(config['AGENT_MODEL_URL'])
 
-        key_field = assist_api_key_fields.get(assist_api_value)
+        key_field = (
+            'ASSIST_API_KEY_MIMO_TOKEN_PLAN'
+            if use_mimo_token_plan
+            else assist_api_key_fields.get(assist_api_value)
+        )
         derived_key = ''
         if key_field:
             derived_key = config.get(key_field, '')
@@ -3686,11 +4051,38 @@ class ConfigManager:
         enable_custom_api = core_cfg.get('enableCustomApi', False)
         config['ENABLE_CUSTOM_API'] = enable_custom_api
 
-        # GPT-SoVITS 配置映射
-        config['GPTSOVITS_ENABLED'] = _as_bool(core_cfg.get('gptsovitsEnabled', False))
+        # GPT-SoVITS「是否启用」收口到 ttsModelProvider 下拉这单一真相（见
+        # docs/design/tts-voice-source-unification.md §3/§4）。choke-point 在此派生，
+        # 13 个下游读点（core.py 路由 / 本文件 URL 解析与 TTS_VOICE_ID override /
+        # get_model_api_config 的 is_custom 自愈 / 各 router）以及 worker 的
+        # _gptsovits_is_selected 全部沿用 GPTSOVITS_ENABLED 不变。
+        # 派生语义：ttsModelProvider 一旦「显式选了某个 TTS provider」即唯一真相——选中
+        # gptsovits 才启用、选别家（vllm_omni/mimo/custom…）就关，旧 gptsovitsEnabled 不参与。
+        # 仅当未显式选择时（provider 缺失/空串，或 follow_assist/follow_core 这两个「跟随
+        # assist/core」哨兵——它们是各 model provider 下拉的默认值，等同未选）才回落旧开关，
+        # 兜住 pre-#1830 存量（用 checkbox 开 GSV、下拉仍停在默认 follow_* 的用户）。
+        # ⚠️ 不能把 follow_* 当显式 provider，否则存量 GSV 用户（gptsovitsEnabled=true +
+        # ttsModelProvider='follow_assist'）会被误判为关 → 升级后 GSV 失效（Codex PR#1850 P1）。
+        # 刻意不用 `旧flag OR 下拉` 的纯 OR：前端已退役 gptsovitsEnabled 写路径，旧 flag 在
+        # 增量合并下会粘住；显式切走由「下拉为准」关掉，follow_* 切走由 config_router 的
+        # save choke point 惰性落 False 清掉（见该处注释）。
+        _tts_model_provider = str(core_cfg.get('ttsModelProvider', '') or '').strip()
+        if _tts_model_provider in ('', 'follow_assist', 'follow_core'):
+            config['GPTSOVITS_ENABLED'] = _as_bool(core_cfg.get('gptsovitsEnabled', False))
+        else:
+            config['GPTSOVITS_ENABLED'] = (_tts_model_provider == 'gptsovits')
 
         config['ELEVENLABS_API_KEY'] = core_cfg.get('assistApiKeyElevenlabs', '')
         config['TTS_PROVIDER'] = core_cfg.get('ttsProvider', '')
+
+        # 将 vLLM-Omni TTS 的前端原始字段放进 core_config snapshot，供
+        # core.py 判断是否启用外部 TTS，并生成与实际 worker 参数一致的复用 key。
+        # 凭证字段 ttsModelApiKey 不放入 snapshot；它仍由 tts_client.py 从持久化
+        # 配置读取，避免扩大通用配置快照中的敏感字段范围。
+        config['ttsModelProvider'] = str(core_cfg.get('ttsModelProvider', '') or '')
+        config['ttsModelUrl'] = str(core_cfg.get('ttsModelUrl', '') or '')
+        config['ttsModelId'] = str(core_cfg.get('ttsModelId', '') or '')
+        config['ttsVoiceId'] = str(core_cfg.get('ttsVoiceId', '') or '')
 
         # 禁用TTS
         _raw_disable_tts = core_cfg.get('disableTts', False)
@@ -3723,7 +4115,7 @@ class ConfigManager:
             #   - follow_core / follow_assist / ''（老配置无此字段）→ 保留上方派生的值
             #   - 具体服务商或 'custom' → 允许覆盖（空串合法，本地服务商可能不需要 key）
             def _resolve_follow_model_url(prefix: str, provider: str) -> str:
-                """按当前 provider 重新计算 follow_* 的 URL，避免使用历史保存的旧地域。"""
+                """Recompute follow_* URLs for the current provider, avoiding stale regions saved historically."""
                 if provider == 'follow_assist':
                     return config.get('OPENROUTER_URL', '')
                 if provider != 'follow_core':
@@ -3859,24 +4251,24 @@ class ConfigManager:
 
     def get_model_api_config(self, model_type: str) -> dict:
         """
-        获取指定模型类型的 API 配置（自动处理自定义 API 优先级）
+        Get the API config for the given model type (automatically handling custom API priority)
         
         Args:
-            model_type: 模型类型，可选值：
-                - 'summary': 摘要模型（回退到辅助API）
-                - 'correction': 纠错模型（回退到辅助API）
-                - 'emotion': 情感分析模型（回退到辅助API）
-                - 'vision': 视觉模型（回退到辅助API）
-                - 'realtime': 实时语音模型（回退到核心API）
-                - 'tts_default': 默认TTS（回退到核心API，用于OmniOfflineClient）
-                - 'tts_custom': 自定义TTS（回退到辅助API，用于voice_id场景）
+            model_type: model type, one of:
+                - 'summary': summary model (falls back to assist API)
+                - 'correction': correction model (falls back to assist API)
+                - 'emotion': emotion analysis model (falls back to assist API)
+                - 'vision': vision model (falls back to assist API)
+                - 'realtime': realtime speech model (falls back to core API)
+                - 'tts_default': default TTS (falls back to core API, used by OmniOfflineClient)
+                - 'tts_custom': custom TTS (falls back to assist API, used for voice_id scenarios)
                 
         Returns:
-            dict: 包含以下字段的配置：
-                - 'model': 模型名称
-                - 'api_key': API密钥
-                - 'base_url': API端点URL
-                - 'is_custom': 是否使用自定义API配置
+            dict: config containing:
+                - 'model': model name
+                - 'api_key': API key
+                - 'base_url': API endpoint URL
+                - 'is_custom': whether a custom API config is used
         """
         core_config = self.get_core_config()
         enable_custom_api = core_config.get('ENABLE_CUSTOM_API', False)
@@ -4066,12 +4458,13 @@ class ConfigManager:
 
     def is_agent_api_ready(self) -> tuple[bool, list[str]]:
         """
-        Agent 模式门槛检查：
-        - 必须具备可用的 AGENT_MODEL(model/url/api_key)
-        - 是否免费(计配额/前端提示)由 is_agent_free() 单独判定，与本检查无关：
-          readiness 只关心 model/url/key 三件套填没填、能否发起请求。free-access 对
-          真免费 agent 是有效占位 token，应让它过门槛；脏配置(占位 key 打自费端点)由
-          下游 401 兜底，不在这里拦。
+        Agent mode readiness check:
+        - a usable AGENT_MODEL (model/url/api_key) is required
+        - whether it is free (quota counting / frontend hints) is decided separately by
+          is_agent_free() and is unrelated to this check: readiness only cares whether the
+          model/url/key trio is filled in and a request can be made. free-access is a valid
+          placeholder token for the truly free agent and should pass the gate; dirty configs
+          (placeholder key against a self-paid endpoint) are caught downstream by 401, not here.
         """
         reasons = []
         agent_api = self.get_model_api_config('agent')
@@ -4085,41 +4478,45 @@ class ConfigManager:
         return len(reasons) == 0, reasons
 
     def is_agent_free(self) -> bool:
-        """当前 Agent 实际用的是否为内置免费 Agent 模型(free-agent-model)。
+        """Whether the Agent actually in use is the built-in free Agent model (free-agent-model).
 
-        agent 侧"是否免费"的唯一真相源——计配额、前端"免费模型易阻塞"提示都看它。
-        对偶于 is_free_voice()(语音/core 维度)：即便用免费语音(core=free)，只要 agent
-        换成自费/自定义 model，这里就为 False。
+        The single source of truth for "is the agent free" — quota counting and the frontend
+        "free model may be congested" hint both read it. Dual of is_free_voice() (the
+        voice/core dimension): even when using the free voice (core=free), if the agent is
+        switched to a self-paid/custom model, this returns False.
         """
         agent_model = (self.get_model_api_config('agent').get('model') or '').strip()
         return agent_model == self._free_agent_model_name
 
     def is_free_voice(self) -> bool:
-        """当前是否走内置免费语音(core=free)。语音/音色侧"是否免费"的唯一真相源——
-        免费预设音色、隐藏云端克隆音色、默认 YUI 兜底都看它。对偶于 is_agent_free()。
+        """Whether the built-in free voice is in use (core=free). The single source of truth for
+        "is voice free" — free preset voices, hidden cloud clone voices and the default YUI
+        fallback all read it. Dual of is_agent_free().
 
-        realtime 与文本 TTS 共用同一音色、统一跟 core 走，与 assist 无关：被
-        hide_cloud_main 隐藏的 CosyVoice/Qwen 克隆音色只是复用了 assist key，免费版
-        (core=free)运行时走 free_mode worker 播不出它们，故隐藏。
+        Realtime and text TTS share the same voice and follow core, independent of assist:
+        the CosyVoice/Qwen clone voices hidden by hide_cloud_main merely reuse the assist
+        key; the free edition (core=free) runs the free_mode worker at runtime and cannot
+        play them, hence hidden.
         """
         return (self.get_core_config().get('CORE_API_TYPE') or '') == 'free'
 
     def _get_agent_quota_path(self) -> Path:
-        """本地 Agent 试用配额计数文件路径。"""
+        """Local Agent trial quota counter file path."""
         return self.config_dir / "agent_quota.json"
 
     @classmethod
     def register_quota_exceeded_notifier(cls, notifier) -> None:
-        """注册"免费版 Agent 配额耗尽"通知回调（进程级，由 agent_server 启动时注册）。
+        """Register the "free Agent quota exhausted" notification callback (process-level, registered by agent_server at startup).
 
-        notifier(used:int, limit:int) 会在配额耗尽时被调用，**最多每 10 秒一次**（见
-        ``_maybe_notify_quota_exceeded`` 的节流）。回调本身必须非阻塞——它在持有
-        ``_agent_quota_lock`` 的临界区里被调用，通常只做一次跨线程 schedule。
+        notifier(used:int, limit:int) is invoked when the quota is exhausted, **at most once
+        every 10 seconds** (see the throttling in ``_maybe_notify_quota_exceeded``). The
+        callback itself must be non-blocking — it is invoked inside the critical section
+        holding ``_agent_quota_lock`` and should normally just do one cross-thread schedule.
         """
         cls._quota_exceeded_notifier = notifier
 
     def _maybe_notify_quota_exceeded(self, used: int, limit: int) -> None:
-        """配额耗尽时节流触发已注册的前端提示回调（最多每 _quota_notify_interval_s 秒一次）。"""
+        """On quota exhaustion, fire the registered frontend notification callback with throttling (at most once per _quota_notify_interval_s seconds)."""
         notifier = ConfigManager._quota_exceeded_notifier
         if notifier is None:
             return
@@ -4135,7 +4532,7 @@ class ConfigManager:
             logger.debug("配额耗尽通知回调失败: %s", e)
 
     def consume_agent_daily_quota(self, source: str = "", units: int = 1) -> tuple[bool, dict]:
-        """消费 Agent 模型每日配额（仅当实际 Agent 模型为 free-agent-model 时生效）。配额并非只在本地实施，本地计算是为了减少无效请求、节约网络带宽。
+        """Consume the Agent model daily quota (only effective when the actual Agent model is free-agent-model). The quota is not enforced locally alone; local counting just reduces useless requests and saves network bandwidth.
 
         Returns:
             (ok, info)
@@ -4217,20 +4614,20 @@ class ConfigManager:
     async def aconsume_agent_daily_quota(self, source: str = "", units: int = 1) -> tuple[bool, dict]:
         """Async wrapper of ``consume_agent_daily_quota``.
 
-        事件循环上禁止直接走同步版本（会 open+fsync 阻塞）。
+        The sync version must not run directly on the event loop (open+fsync blocks).
         """
         return await asyncio.to_thread(self.consume_agent_daily_quota, source, units)
 
     def load_json_config(self, filename, default_value=None):
         """
-        加载JSON配置文件
+        Load a JSON config file
         
         Args:
-            filename: 配置文件名
-            default_value: 默认值（如果文件不存在）
+            filename: config file name
+            default_value: default value (when the file does not exist)
             
         Returns:
-            dict: 配置内容
+            dict: config content
         """
         config_path = self.get_config_path(filename)
         
@@ -4249,11 +4646,11 @@ class ConfigManager:
     
     def save_json_config(self, filename, data, *, bypass_write_fence: bool = False):
         """
-        保存JSON配置文件
+        Save a JSON config file
         
         Args:
-            filename: 配置文件名
-            data: 要保存的数据
+            filename: config file name
+            data: data to save
         """
         if not bypass_write_fence:
             from utils.cloudsave_runtime import assert_cloudsave_writable
@@ -4273,17 +4670,17 @@ class ConfigManager:
     
     def get_memory_path(self, filename):
         """
-        获取记忆文件路径
+        Get a memory file path
         
-        优先级：
-        1. 我的文档/{APP_NAME}/memory/
-        2. 项目目录/memory/store/
+        Priority:
+        1. Documents/{APP_NAME}/memory/
+        2. project directory/memory/store/
         
         Args:
-            filename: 记忆文件名
+            filename: memory file name
             
         Returns:
-            Path: 记忆文件路径
+            Path: memory file path
         """
         # 首选：我的文档下的记忆
         docs_memory_path = self.memory_dir / filename
@@ -4299,7 +4696,7 @@ class ConfigManager:
         return docs_memory_path
     
     def get_config_info(self):
-        """获取配置目录信息"""
+        """Get config directory info"""
         return {
             "documents_dir": str(self.docs_dir),
             "app_dir": str(self.app_docs_dir),
@@ -4326,15 +4723,15 @@ class ConfigManager:
     
     def get_workshop_config_path(self):
         """
-        获取workshop配置文件路径
+        Get the workshop config file path
         
         Returns:
-            str: workshop配置文件的绝对路径
+            str: absolute path of the workshop config file
         """
         return str(self.get_config_path('workshop_config.json'))
 
     def _normalize_workshop_folder_path(self, folder_path):
-        """标准化 workshop 目录路径，失败时返回 None。"""
+        """Normalize a workshop directory path; returns None on failure."""
         if not isinstance(folder_path, str):
             return None
 
@@ -4352,9 +4749,9 @@ class ConfigManager:
 
     def _cleanup_invalid_workshop_config_file(self, config_path):
         """
-        检查并清理无效的 workshop 配置文件。
+        Check and clean up invalid workshop config files.
 
-        判定规则：如果配置中任一路径字段存在但不是有效目录，则删除整个配置文件。
+        Rule: if any path field present in the config is not a valid directory, delete the whole config file.
         """
         if not config_path.exists():
             return False
@@ -4401,7 +4798,7 @@ class ConfigManager:
         return False
 
     def _cleanup_invalid_workshop_configs(self):
-        """同时检查文档目录和项目目录中的 workshop 配置并清理无效文件。"""
+        """Check workshop configs in both the documents and project directories and clean up invalid files."""
         candidates = (
             self.config_dir / "workshop_config.json",
             self.project_config_dir / "workshop_config.json",
@@ -4410,7 +4807,7 @@ class ConfigManager:
             self._cleanup_invalid_workshop_config_file(candidate)
 
     def repair_workshop_configs(self):
-        """显式修复 workshop 配置文件，仅在调用方明确允许写盘时执行。"""
+        """Explicitly repair the workshop config file; runs only when the caller explicitly allows writing to disk."""
         with self._workshop_config_lock:
             from utils.cloudsave_runtime import assert_cloudsave_writable
 
@@ -4461,10 +4858,10 @@ class ConfigManager:
     
     def load_workshop_config(self):
         """
-        加载workshop配置
+        Load workshop config
         
         Returns:
-            dict: workshop配置数据
+            dict: workshop config data
         """
         config_path = self.get_workshop_config_path()
         try:
@@ -4502,10 +4899,10 @@ class ConfigManager:
     
     def save_workshop_config(self, config_data):
         """
-        保存workshop配置
+        Save workshop config
         
         Args:
-            config_data: 要保存的配置数据
+            config_data: config data to save
         """
         config_path = str(self.get_runtime_config_path('workshop_config.json'))
         try:
@@ -4528,19 +4925,19 @@ class ConfigManager:
     
     def save_workshop_path(self, workshop_path):
         """
-        设置Steam创意工坊根目录路径（运行时变量，不写入配置文件）
+        Set the Steam Workshop root directory path (runtime variable, not written to the config file)
         
         Args:
-            workshop_path: Steam创意工坊根目录路径
+            workshop_path: Steam Workshop root directory path
         """
         self._steam_workshop_path = workshop_path
         logger.info(f"已设置Steam创意工坊路径（运行时）: {workshop_path}")
 
     def persist_user_workshop_folder(self, workshop_path):
         """
-        将Steam创意工坊实际路径持久化到配置文件（每次启动仅首次写入）。
+        Persist the actual Steam Workshop path into the config file (written only once per startup).
 
-        仅在动态获取Steam工坊位置成功时调用，后续读取可在Steam未运行时作为回退。
+        Called only when the Steam Workshop location was obtained dynamically; later reads can serve as a fallback when Steam is not running.
         """
         if self._user_workshop_folder_persisted:
             return
@@ -4557,21 +4954,21 @@ class ConfigManager:
 
     def get_steam_workshop_path(self):
         """
-        获取Steam创意工坊根目录路径（仅运行时，由启动流程设置）
+        Get the Steam Workshop root directory path (runtime only, set by the startup flow)
         
         Returns:
-            str | None: Steam创意工坊根目录路径
+            str | None: Steam Workshop root directory path
         """
         return self._steam_workshop_path
     
     def get_workshop_path(self):
         """
-        获取workshop根目录路径
+        Get the workshop root directory path
         
-        优先级: user_mod_folder(配置) > Steam运行时路径 > user_workshop_folder(缓存文件) > default_workshop_folder(配置) > self.workshop_dir
+        Priority: user_mod_folder (config) > Steam runtime path > user_workshop_folder (cache file) > default_workshop_folder (config) > self.workshop_dir
         
         Returns:
-            str: workshop根目录路径
+            str: workshop root directory path
         """
         config = self.load_workshop_config()
         if config.get("user_mod_folder"):
@@ -4628,7 +5025,7 @@ def reset_config_manager_cache() -> None:
 
 
 def get_config_manager(app_name=None, *, migrate=True):
-    """获取配置管理器单例，默认使用配置中的 APP_NAME。"""
+    """Get the config manager singleton, defaulting to APP_NAME from config."""
     global _config_manager, _config_manager_migrated
     if _config_manager is None:
         _config_manager = ConfigManager(app_name)
@@ -4640,54 +5037,54 @@ def get_config_manager(app_name=None, *, migrate=True):
 
 # 便捷函数
 def get_config_path(filename):
-    """获取配置文件路径"""
+    """Get the config file path"""
     return get_config_manager().get_config_path(filename)
 
 
 def get_runtime_config_path(filename):
-    """获取运行时真源配置路径。"""
+    """Get the runtime source-of-truth config path."""
     return get_config_manager().get_runtime_config_path(filename)
 
 
 def get_plugins_directory(app_name=None):
-    """获取用户插件根目录，默认位于应用文档目录下的 ``plugins``。"""
+    """Get the user plugin root directory, defaulting to ``plugins`` under the app documents directory."""
     manager = ConfigManager(app_name)
     manager.ensure_plugins_directory()
     return manager.plugins_dir
 
 
 def load_json_config(filename, default_value=None):
-    """加载JSON配置"""
+    """Load JSON config"""
     return get_config_manager().load_json_config(filename, default_value)
 
 
 def save_json_config(filename, data):
-    """保存JSON配置"""
+    """Save JSON config"""
     return get_config_manager().save_json_config(filename, data)
 
 # Workshop配置便捷函数
 def load_workshop_config():
-    """加载workshop配置"""
+    """Load workshop config"""
     return get_config_manager().load_workshop_config()
 
 def save_workshop_config(config_data):
-    """保存workshop配置"""
+    """Save workshop config"""
     return get_config_manager().save_workshop_config(config_data)
 
 def save_workshop_path(workshop_path):
-    """设置Steam创意工坊根目录路径（运行时）"""
+    """Set the Steam Workshop root directory path (runtime)"""
     return get_config_manager().save_workshop_path(workshop_path)
 
 def persist_user_workshop_folder(workshop_path):
-    """将Steam创意工坊实际路径持久化到配置文件（每次启动仅首次写入）"""
+    """Persist the actual Steam Workshop path into the config file (written only once per startup)"""
     return get_config_manager().persist_user_workshop_folder(workshop_path)
 
 def get_steam_workshop_path():
-    """获取Steam创意工坊根目录路径（运行时）"""
+    """Get the Steam Workshop root directory path (runtime)"""
     return get_config_manager().get_steam_workshop_path()
 
 def get_workshop_path():
-    """获取workshop根目录路径"""
+    """Get the workshop root directory path"""
     return get_config_manager().get_workshop_path()
 
 

@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Hybrid memory recall — BM25 + cosine embedding parallel retrieval with
 Reciprocal Rank Fusion. The user-facing backend for the ``recall_memory``
@@ -90,25 +104,27 @@ _BM25_B = 0.75
 
 
 def _tokenize(text: str, stop_names: list[str] | None) -> list[str]:
-    """BM25-friendly tokenize：与 ``memory.persona._extract_keywords``
-    **共享同款 _SPLIT_RE + CJK n-gram + Latin 词切分规则**，但 *保留
-    multiplicity*（list with duplicates，不去重）。
+    """BM25-friendly tokenize: shares the **same _SPLIT_RE + CJK n-gram + Latin
+    word-split rules** as ``memory.persona._extract_keywords``, but *preserves
+    multiplicity* (a list with duplicates, no dedup).
 
-    为啥不复用 ``_extract_keywords``：那个返回 ``set[str]``，单 doc 内
-    重复词被 dedupe → BM25 的 TF 信号死掉（"博士"出现 5 次和 1 次得分
-    一样，BM25 退化成 BM1）。``_extract_keywords`` 的 set 语义是给
-    ``_is_mentioned`` / ``anti_repeat`` 这两个用例用的（"是否出现过"，不
-    care 出现几次），跟检索 BM25 的目标不一样。所以本模块本地实现一份
-    list-语义的 tokenize，分词规则严格对齐 persona 那份（共用 _SPLIT_RE
-    + 同样的 CJK 阈值 + 2/3-gram + Latin 整段切），未来 persona 那边改
-    分词规则要同步过来。
+    Why not reuse ``_extract_keywords``: that one returns ``set[str]`` —
+    duplicate terms within a doc get deduped → BM25's TF signal dies ("博士"
+    appearing 5 times scores the same as once; BM25 degrades into BM1). The set
+    semantics of ``_extract_keywords`` serve the ``_is_mentioned`` /
+    ``anti_repeat`` use cases ("did it appear", not caring how many times),
+    which differs from retrieval BM25's goal. So this module implements a local
+    list-semantics tokenize whose splitting rules strictly mirror persona's
+    (shared _SPLIT_RE + same CJK threshold + 2/3-grams + whole-Latin-run split);
+    future changes to persona's tokenization must be synced here.
 
-    Codex review #1 (commit fd2b75fc4): 之前 ``Counter`` 优化其实没生效
-    —— set 输入下每个 key 计数都是 1。这版让 multiplicity 真的传到 BM25。
+    Codex review #1 (commit fd2b75fc4): the earlier ``Counter`` optimization
+    never took effect — with set input every key's count is 1. This version
+    makes multiplicity actually reach BM25.
 
-    stop_names: strip 主人/猫娘 等 from text before tokenize，避免高频
-    实体名污染 BM25 IDF。
-    """
+    stop_names: strip master/catgirl names from the text before tokenizing,
+    keeping high-frequency entity names from polluting BM25 IDF.
+    """  # noqa: DOCSTRING_CJK
     # Lazy import: 跟着 _extract_keywords 一起借 _SPLIT_RE 和 strip_stop_names，
     # 不要硬依赖 import-time —— persona 在某些 entrypoint（memory-only test）
     # 可能没加载。
@@ -394,12 +410,13 @@ def _tag_tier(items: list[dict], tier: str) -> list[dict]:
     """Shallow-copy each item and stamp ``_tier`` + ``target_type`` for
     downstream hard_filter + result formatting. Doesn't mutate originals.
 
-    Skip non-dict rows defensively：facts.json / reflections.json /
-    facts_archive.json 理论上 schema 都是 list[dict]，但 manual edit /
-    老格式残留 / 迁移 bug 可能让 list 里混进 non-dict（string / int /
-    list）。``dict(it)`` 对这些会 TypeError / ValueError，单条坏行就把
-    整个 _tag_tier 挂掉 → 整次 hybrid_recall abort，违背"单坏行 skip
-    其余正常返回"的设计。Codex review on PR #1385。
+    Skip non-dict rows defensively: facts.json / reflections.json /
+    facts_archive.json are all nominally list[dict] schemas, but manual edits /
+    legacy leftovers / migration bugs can slip non-dicts (string / int / list)
+    into the list. ``dict(it)`` would TypeError / ValueError on those, and a
+    single bad row would take down the whole _tag_tier → the entire
+    hybrid_recall aborts, violating the "skip the single bad row, return the
+    rest" design. Codex review on PR #1385.
     """
     out: list[dict] = []
     for it in items:
@@ -423,21 +440,22 @@ def _tag_tier(items: list[dict], tier: str) -> list[dict]:
 
 
 def _entry_event_window(entry: dict):
-    """取条目的事件时间区间 ``(start, end)``（naive 本地）。无可解析时间戳
-    返回 None。
+    """Get the entry's event time interval ``(start, end)`` (naive local). Returns
+    None when no parsable timestamp exists.
 
-    锚点优先级和 persona 过时 block / ``temporal._past_anchor`` 一致——
-    ``event_end_at → event_start_at → created_at``。``created_at``（写盘时间）
-    只在完全没有事件时间时才兜底；只有 ``event_end_at`` 的条目用 end 当锚点，
-    不会被误判成无时间、也不会拿写盘时间入窗/排序（CodeRabbit）。
+    Anchor priority matches the persona stale block / ``temporal._past_anchor``:
+    ``event_end_at → event_start_at → created_at``. ``created_at`` (write time)
+    is only the last resort when there is no event time at all; entries with
+    only ``event_end_at`` anchor on end — they are neither misjudged as
+    timeless nor windowed/sorted by write time (CodeRabbit).
 
-    - 双端齐全 → [start, end]
-    - 只有 start → [start, start]
-    - 只有 end   → [end, end]
-    - 都没有     → [created_at, created_at]
+    - both ends present → [start, end]
+    - only start → [start, start]
+    - only end   → [end, end]
+    - neither    → [created_at, created_at]
 
-    fact / reflection 共用同一套锚点字段（schema v2），按时间过滤/排序口径
-    统一。归档 fact 也走这套。
+    fact / reflection share the same anchor fields (schema v2), unifying the
+    time-filter/sort semantics. Archived facts go through this too.
     """
     from memory.temporal import _parse_iso_safe, to_naive_local
     # aware（import/迁移的 +00:00 / Z）统一先转本地再剥 tz，避免 day 级窗口
@@ -456,8 +474,9 @@ def _entry_event_window(entry: dict):
 
 
 def _overlaps_window(entry: dict, win_start, win_end) -> bool:
-    """条目事件区间 [s, e] 与半开窗口 [win_start, win_end) 是否有交集。
-    无可解析时间戳的条目判为不在窗口内（时间检索下宁可漏不可错挂）。
+    """Whether the entry's event interval [s, e] intersects the half-open window
+    [win_start, win_end). Entries without a parsable timestamp are treated as
+    outside the window (for time-based recall, better to miss than to mismatch).
     """
     win = _entry_event_window(entry)
     if win is None:
@@ -490,11 +509,13 @@ async def hybrid_recall(
       reflection_engine: ``memory.reflection.ReflectionEngine`` instance
       config_manager: needed by ``collect_stop_names`` to derive the
         master/lanlan name filter
-      time_window: 可选 ``(start, end)`` naive 时间区间（来自
-        ``recall_memory(query=..., time=...)`` 同时给两者的"语义 + 时间"
-        联合检索）。给了就把候选池**先按事件时间窗口硬过滤**，再在窗口内
-        条目上跑常规 BM25 + cosine + RRF —— 即"那段时间里和 query 相关的
-        记忆"。不给则全量语义检索（旧行为）。
+      time_window: optional ``(start, end)`` naive time interval (from the
+        joint "semantic + time" recall where ``recall_memory(query=...,
+        time=...)`` supplies both). When given, the candidate pool is
+        **hard-filtered by the event-time window first**, then the regular
+        BM25 + cosine + RRF runs over the in-window entries — i.e. "memories
+        related to the query within that period". When absent, full-corpus
+        semantic recall (old behavior).
 
     Returns:
       ::
@@ -503,7 +524,7 @@ async def hybrid_recall(
           "results": [
             {
               "id": "fact_xxx",
-              "text": "原始记忆文本（不翻译）",
+              "text": "original memory text (not translated)",
               "tier": "fact" | "reflection" | "fact_archive",
               "entity": "master" | "neko" | "relationship" | null,
               "score": 0.0327,    # RRF fused score, for observability
@@ -649,23 +670,29 @@ async def recall_by_time(
     fact_store,
     reflection_engine,
 ) -> dict[str, Any]:
-    """按时间回溯——返回离 ``time_spec`` 窗口**最接近的若干条**记忆
-    （fact + reflection 混合）。
+    """Time-based recall — return the few entries (facts + reflections mixed)
+    whose event time is **closest to the ``time_spec`` window**.
 
-    这是 ``recall_memory(time=...)`` 走的路径：不做 BM25 / cosine 语义打分，
-    纯按事件时间锚点排序，所以"那天/那周/那段时间"的记忆都能被拎出来，不会
-    因为语义不匹配 query 而漏掉，且不需要 query —— 只给 time 即可。
+    This is the path taken by ``recall_memory(time=...)``: no BM25 / cosine
+    semantic scoring; sorted purely by event-time anchors, so the memories of
+    "that day / that week / that period" all get pulled up without being
+    dropped for not semantically matching a query — and no query is needed,
+    time alone suffices.
 
-    排序口径：取每条的事件窗口 ``[event_start_at, event_end_at]``（缺 start
-    退回 ``created_at``，缺 end 退回 start），算它与 ``parse_time_window``
-    解出的 ``[win_start, win_end)`` 的时间距离——落在窗口内距离为 0，否则
-    取到最近窗口边界的秒数。按 (距离 ASC, 事件起点 DESC) 排序后取前
-    ``HYBRID_RECALL_TIME_BUDGET`` 条。所以窗口内的条目（距离 0）天然排在
-    最前，窗口为空时则回落到时间上最邻近的几条。
+    Sort semantics: take each entry's event window ``[event_start_at,
+    event_end_at]`` (missing start falls back to ``created_at``, missing end
+    falls back to start) and compute its time distance to the
+    ``[win_start, win_end)`` window resolved by ``parse_time_window`` —
+    distance 0 inside the window, otherwise seconds to the nearest window
+    boundary. Sort by (distance ASC, event start DESC) and take the first
+    ``HYBRID_RECALL_TIME_BUDGET`` entries. In-window entries (distance 0)
+    naturally rank first; with an empty window the result degrades to the
+    temporally nearest few.
 
-    候选池 = 活跃 facts + 活跃 reflections + 归档 facts（归档对老时间回溯
-    有用），再过 ``_hard_filter`` 丢 score<0 / suppressed / 终态，口径与
-    ``hybrid_recall`` 一致。``time_spec`` 解析失败时返回空 results。
+    Candidate pool = active facts + active reflections + archived facts
+    (archives matter when recalling old periods), then ``_hard_filter`` drops
+    score<0 / suppressed / terminal entries, consistent with
+    ``hybrid_recall``. Returns empty results when ``time_spec`` fails to parse.
     """
     from memory.temporal import parse_time_window
     start_t = time.time()

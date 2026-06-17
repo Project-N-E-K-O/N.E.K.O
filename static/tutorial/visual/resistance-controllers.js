@@ -1,0 +1,873 @@
+(function (root, factory) {
+    'use strict';
+
+    const api = factory();
+    if (typeof module === 'object' && module.exports) {
+        module.exports = api;
+    }
+    if (root) {
+        root.TutorialResistanceControllers = api;
+    }
+})(typeof window !== 'undefined' ? window : globalThis, function () {
+    'use strict';
+
+    const DEFAULT_RESISTANCE_VOICE_KEYS = Object.freeze([
+        'interrupt_resist_light_1',
+        'interrupt_resist_light_3'
+    ]);
+    const DEFAULT_INTERRUPT_DISTANCE = 56;
+    const DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD = 0.16;
+    const DEFAULT_INTERRUPT_QUALIFYING_MOVE_STREAK = 3;
+
+    function call(callbacks, name, fallbackValue, ...args) {
+        const callback = callbacks && callbacks[name];
+        if (typeof callback !== 'function') {
+            return fallbackValue;
+        }
+
+        return callback(...args);
+    }
+
+    function getCount(value) {
+        return Math.max(0, Math.floor(Number.isFinite(value) ? value : 0));
+    }
+
+    class ResetInterruptController {
+        constructor(options) {
+            const normalizedOptions = options || {};
+            this.overlay = normalizedOptions.overlay || null;
+            this.cursor = normalizedOptions.cursor || null;
+            this.callbacks = normalizedOptions.callbacks || {};
+            this.resistanceVoiceKeys = Array.isArray(normalizedOptions.resistanceVoiceKeys)
+                && normalizedOptions.resistanceVoiceKeys.length
+                ? normalizedOptions.resistanceVoiceKeys.slice()
+                : DEFAULT_RESISTANCE_VOICE_KEYS.slice();
+            this.destroyed = false;
+            this.lightResistanceActive = false;
+        }
+
+        isDestroyed() {
+            return !!(this.destroyed || call(this.callbacks, 'isDestroyed', false));
+        }
+
+        isStopping() {
+            return !!(this.isDestroyed() || call(this.callbacks, 'isStopping', false));
+        }
+
+        getResistanceMessage(performance) {
+            const voices = call(this.callbacks, 'resolveResistanceVoices', [], performance);
+            const count = getCount(call(this.callbacks, 'getInterruptCount', 0));
+            const voiceIndex = Math.max(0, Math.min(this.resistanceVoiceKeys.length - 1, count - 1));
+            const defaultText = call(this.callbacks, 'resolveBubbleText', '', performance);
+            const message = Array.isArray(voices) && voices.length > 0
+                ? voices[(Math.max(1, count) - 1) % voices.length]
+                : defaultText || '不要拽我啦，还没结束呢！';
+
+            return {
+                message: message,
+                voiceKey: this.resistanceVoiceKeys[voiceIndex] || '',
+                textKey: this.resistanceVoiceKeys[voiceIndex] === 'interrupt_resist_light_3'
+                    ? 'tutorial.yuiGuide.lines.interruptResistLight3'
+                    : 'tutorial.yuiGuide.lines.interruptResistLight1'
+            };
+        }
+
+        playLightResistance(x, y, options) {
+            if (
+                this.lightResistanceActive
+                || this.isDestroyed()
+                || this.isStopping()
+                || call(this.callbacks, 'isResistancePaused', false)
+            ) {
+                return Promise.resolve();
+            }
+
+            const normalizedOptions = options || {};
+            const resistanceStep = call(this.callbacks, 'getStep', null, 'interrupt_resist_light');
+            if (!resistanceStep) {
+                return Promise.resolve();
+            }
+
+            this.lightResistanceActive = true;
+            const performance = resistanceStep.performance || {};
+            const resistanceMessage = this.getResistanceMessage(performance);
+            const presentationSnapshot = call(this.callbacks, 'capturePresentationSnapshot', null);
+
+            if (!normalizedOptions.suppressCursorReveal) {
+                call(this.callbacks, 'prepareResistanceCursorReveal', null, normalizedOptions);
+            }
+
+            call(this.callbacks, 'pauseCurrentSceneForResistance', null);
+            call(this.callbacks, 'interruptNarrationForResistance', null);
+
+            if (this.overlay && typeof this.overlay.hideBubble === 'function') {
+                this.overlay.hideBubble();
+            }
+
+            call(this.callbacks, 'appendGuideChatMessage', null, resistanceMessage.message, {
+                textKey: resistanceMessage.textKey,
+                voiceKey: resistanceMessage.voiceKey,
+                streamPauseWithScene: false
+            });
+            call(this.callbacks, 'applyGuideEmotion', null, 'angry', {
+                allowDuringInterrupt: true
+            });
+
+            const cursorResistancePromise = Promise.resolve(
+                this.cursor && typeof this.cursor.resistTo === 'function'
+                    ? this.cursor.resistTo(x, y, {
+                        motionDx: normalizedOptions.motionDx,
+                        motionDy: normalizedOptions.motionDy
+                    })
+                    : null
+            );
+            const interruptPerformancePromise = Promise.resolve(call(
+                this.callbacks,
+                'runInterruptResistPerformance',
+                null,
+                {
+                    x: x,
+                    y: y,
+                    voiceKey: resistanceMessage.voiceKey
+                }
+            )).catch(() => null);
+            const voicePromise = Promise.resolve(call(
+                this.callbacks,
+                'speakResistanceLine',
+                null,
+                resistanceMessage.message,
+                {
+                    voiceKey: resistanceMessage.voiceKey
+                }
+            ));
+
+            return Promise.all([
+                voicePromise,
+                cursorResistancePromise,
+                interruptPerformancePromise
+            ]).finally(() => {
+                this.lightResistanceActive = false;
+                call(this.callbacks, 'resumeCurrentSceneAfterResistance', null);
+                if (this.isStopping()) {
+                    return;
+                }
+
+                const didRestorePresentationSnapshot = call(
+                    this.callbacks,
+                    'restoreGuidePresentationSnapshot',
+                    false,
+                    presentationSnapshot
+                );
+                const narration = call(this.callbacks, 'getActiveNarration', null);
+                if (narration && narration.interrupted) {
+                    call(this.callbacks, 'scheduleNarrationResume', null, {
+                        skipEmotion: didRestorePresentationSnapshot,
+                        preserveSpotlights: true
+                    });
+                    return;
+                }
+
+                call(this.callbacks, 'restoreCurrentScenePresentation', null, {
+                    skipEmotion: didRestorePresentationSnapshot,
+                    preserveSpotlights: true
+                });
+            });
+        }
+
+        async abortAsAngryExit(source) {
+            if (
+                this.isDestroyed()
+                || this.isStopping()
+                || call(this.callbacks, 'isAngryExitTriggered', false)
+            ) {
+                return;
+            }
+
+            call(this.callbacks, 'recordExperienceMetric', null, 'angry_exit', {
+                sceneId: call(this.callbacks, 'getCurrentSceneId', null) || 'interrupt_angry_exit',
+                reason: source || 'pointer_interrupt',
+                interruptCount: getCount(call(this.callbacks, 'getInterruptCount', 0))
+            });
+            call(this.callbacks, 'setAngryExitTriggered', null, true);
+            call(this.callbacks, 'clearSceneTimers', null);
+            call(this.callbacks, 'disableInterrupts', null);
+            call(this.callbacks, 'cancelActiveNarration', null);
+            call(this.callbacks, 'beginGuideInterruptPresentation', null);
+
+            const angryStep = call(this.callbacks, 'getStep', null, 'interrupt_angry_exit');
+            const performance = (angryStep && angryStep.performance) || {};
+            const bubbleText = call(this.callbacks, 'resolveBubbleText', '', performance);
+            const angryExitNarrationDurationMs = call(
+                this.callbacks,
+                'getGuideVoiceDurationMs',
+                0,
+                performance.voiceKey
+            );
+            const lastPointerPoint = call(this.callbacks, 'getLastPointerPoint', null);
+            const pointerPoint = lastPointerPoint
+                && Number.isFinite(lastPointerPoint.x)
+                && Number.isFinite(lastPointerPoint.y)
+                ? lastPointerPoint
+                : null;
+
+            call(this.callbacks, 'setTutorialTakingOver', null, true);
+            if (this.overlay && typeof this.overlay.setAngry === 'function') {
+                this.overlay.setAngry(true);
+            }
+            if (this.overlay && typeof this.overlay.hidePluginPreview === 'function') {
+                this.overlay.hidePluginPreview();
+            }
+            if (this.overlay && typeof this.overlay.hideBubble === 'function') {
+                this.overlay.hideBubble();
+            }
+
+            call(this.callbacks, 'appendGuideChatMessage', null, bubbleText || '人类！你真的很没礼貌喵！', {
+                textKey: performance.bubbleTextKey || '',
+                voiceKey: performance.voiceKey,
+                streamPauseWithScene: false,
+                streamAllowDuringAngryExit: true
+            });
+            call(this.callbacks, 'applyGuideEmotion', null, 'angry', {
+                allowDuringInterrupt: true
+            });
+
+            const angryExitPerformancePromise = Promise.resolve(call(
+                this.callbacks,
+                'runAngryExitPerformance',
+                null,
+                {
+                    x: pointerPoint ? pointerPoint.x : null,
+                    y: pointerPoint ? pointerPoint.y : null,
+                    voiceKey: performance.voiceKey
+                }
+            )).catch(() => null);
+            await Promise.all([
+                Promise.resolve(call(this.callbacks, 'speakGuideLine', null, bubbleText || '', {
+                    voiceKey: performance.voiceKey,
+                    minDurationMs: Number.isFinite(angryExitNarrationDurationMs)
+                        ? angryExitNarrationDurationMs
+                        : 0
+                })),
+                angryExitPerformancePromise
+            ]);
+            call(this.callbacks, 'notifyPluginDashboardNarrationFinished', null);
+            if (this.isDestroyed()) {
+                return;
+            }
+
+            call(this.callbacks, 'requestTermination', null, source || 'angry_exit', 'angry_exit');
+        }
+
+        destroy() {
+            this.destroyed = true;
+            this.lightResistanceActive = false;
+        }
+    }
+
+    class ResistanceController {
+        constructor(director) {
+            this.director = director;
+            this.destroyed = false;
+            this.lightResistanceActive = false;
+            this.resistanceVoiceKeys = DEFAULT_RESISTANCE_VOICE_KEYS.slice();
+        }
+
+        getInterruptCount() {
+            const director = this.director;
+            return Math.max(0, Math.floor(Number.isFinite(director.interruptCount) ? director.interruptCount : 0));
+        }
+
+        isDestroyed() {
+            const director = this.director;
+            return !!(this.destroyed || director.destroyed);
+        }
+
+        isStopping() {
+            const director = this.director;
+            return !!(this.isDestroyed() || director.isStopping());
+        }
+
+        getResistanceMessage(performance) {
+            const director = this.director;
+            const voices = director.resolvePerformanceResistanceVoices(performance);
+            const count = this.getInterruptCount();
+            const voiceIndex = Math.max(0, Math.min(this.resistanceVoiceKeys.length - 1, count - 1));
+            const defaultText = director.resolvePerformanceBubbleText(performance);
+            const message = Array.isArray(voices) && voices.length > 0
+                ? voices[(Math.max(1, count) - 1) % voices.length]
+                : defaultText || '不要拽我啦，还没结束呢！';
+            const voiceKey = this.resistanceVoiceKeys[voiceIndex] || '';
+
+            return {
+                message: message,
+                voiceKey: voiceKey,
+                textKey: voiceKey === 'interrupt_resist_light_3'
+                    ? 'tutorial.yuiGuide.lines.interruptResistLight3'
+                    : 'tutorial.yuiGuide.lines.interruptResistLight1'
+            };
+        }
+
+        recordPointerDown(event) {
+            const director = this.director;
+            if (!event || event.isTrusted === false) {
+                return;
+            }
+
+            const x = Number.isFinite(event.clientX) ? event.clientX : null;
+            const y = Number.isFinite(event.clientY) ? event.clientY : null;
+            if (x === null || y === null) {
+                return;
+            }
+
+            director.lastPointerPoint = {
+                x: x,
+                y: y,
+                t: Date.now(),
+                speed: 0
+            };
+            director.interruptQualifyingMoveStreak = 0;
+        }
+
+        handleInterrupt(event) {
+            const director = this.director;
+            if (
+                director.destroyed
+                || director.angryExitTriggered
+                || director.scenePausedForResistance
+                || !director.interruptsEnabled
+                || !event
+                || event.isTrusted === false
+            ) {
+                return;
+            }
+
+            const step = director.currentStep;
+            const performance = (step && step.performance) || {};
+            const interrupts = (step && step.interrupts) || {};
+            if (performance.interruptible === false) {
+                return;
+            }
+
+            const x = Number.isFinite(event.clientX) ? event.clientX : null;
+            const y = Number.isFinite(event.clientY) ? event.clientY : null;
+            if (x === null || y === null) {
+                return;
+            }
+
+            if (!director.shouldAllowInterruptDuringCurrentScene()) {
+                return;
+            }
+
+            const shouldRequireDocumentFocus = !(
+                director.platformCapabilities
+                && director.platformCapabilities.windowBoundsSource === 'electron-window-bounds'
+            );
+            if (
+                shouldRequireDocumentFocus
+                && director.page === 'home'
+                && typeof document !== 'undefined'
+                && typeof document.hasFocus === 'function'
+                && !document.hasFocus()
+            ) {
+                return;
+            }
+
+            let sampleDx = null;
+            let sampleDy = null;
+            if (event.type === 'mousemove') {
+                const movementX = Number.isFinite(event.movementX) ? event.movementX : null;
+                const movementY = Number.isFinite(event.movementY) ? event.movementY : null;
+                if (movementX !== null && movementY !== null) {
+                    const movementDistance = Math.hypot(movementX, movementY);
+                    if (movementDistance <= 0) {
+                        return;
+                    }
+                    sampleDx = movementX;
+                    sampleDy = movementY;
+                }
+            }
+
+            const now = Date.now();
+            const previousPoint = director.lastPointerPoint;
+            if (!previousPoint || !Number.isFinite(previousPoint.t)) {
+                director.lastPointerPoint = {
+                    x: x,
+                    y: y,
+                    t: now,
+                    speed: 0
+                };
+                if (sampleDx !== null || sampleDy !== null) {
+                    const initialDx = sampleDx === null ? 0 : sampleDx;
+                    const initialDy = sampleDy === null ? 0 : sampleDy;
+                    const initialDistance = Math.hypot(initialDx, initialDy);
+                    director.noteUserCursorRevealAttempt(initialDistance, now);
+                    director.playCursorResistanceToUserMotion(x, y, initialDistance, initialDx, initialDy);
+                }
+                director.interruptQualifyingMoveStreak = 0;
+                return;
+            }
+
+            const dx = sampleDx === null ? x - previousPoint.x : sampleDx;
+            const dy = sampleDy === null ? y - previousPoint.y : sampleDy;
+            const distance = Math.hypot(dx, dy);
+            const dt = Math.max(1, now - previousPoint.t);
+            const speed = distance / dt;
+            const previousSpeed = Number.isFinite(previousPoint.speed) ? previousPoint.speed : 0;
+            const acceleration = (speed - previousSpeed) / dt;
+
+            director.lastPointerPoint = {
+                x: x,
+                y: y,
+                t: now,
+                speed: speed
+            };
+
+            director.noteUserCursorRevealAttempt(distance, now);
+            director.playCursorResistanceToUserMotion(x, y, distance, dx, dy);
+
+            if (
+                distance < DEFAULT_INTERRUPT_DISTANCE
+                && acceleration < DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD
+            ) {
+                director.interruptQualifyingMoveStreak = 0;
+                return;
+            }
+
+            director.interruptQualifyingMoveStreak += 1;
+            if (director.interruptQualifyingMoveStreak < DEFAULT_INTERRUPT_QUALIFYING_MOVE_STREAK) {
+                return;
+            }
+            director.interruptQualifyingMoveStreak = 0;
+
+            const throttleMs = Number.isFinite(interrupts.throttleMs) ? interrupts.throttleMs : 500;
+            if (now - director.lastInterruptAt < throttleMs) {
+                return;
+            }
+            director.lastInterruptAt = now;
+
+            director.interruptCount += 1;
+            const threshold = Number.isFinite(interrupts.threshold) ? interrupts.threshold : 3;
+
+            if (director.interruptCount >= threshold) {
+                director.lastPointerPoint = null;
+                director.abortAsAngryExit('pointer_interrupt');
+                return;
+            }
+
+            director.lastPointerPoint = null;
+            director.playLightResistance(x, y, {
+                motionDx: dx,
+                motionDy: dy
+            });
+        }
+
+        playLightResistance(x, y, options) {
+            const director = this.director;
+            if (
+                this.lightResistanceActive
+                || this.isDestroyed()
+                || this.isStopping()
+                || director.scenePausedForResistance
+            ) {
+                return Promise.resolve();
+            }
+
+            const normalizedOptions = options || {};
+            const resistanceStep = director.getStep('interrupt_resist_light');
+            if (!resistanceStep) {
+                return Promise.resolve();
+            }
+
+            this.lightResistanceActive = true;
+            const performance = resistanceStep.performance || {};
+            const resistanceMessage = this.getResistanceMessage(performance);
+            const presentationSnapshot = director.captureCurrentGuidePresentationSnapshot();
+
+            if (!normalizedOptions.suppressCursorReveal) {
+                director.prepareResistanceCursorReveal(normalizedOptions);
+            }
+
+            director.pauseCurrentSceneForResistance();
+            director.interruptNarrationForResistance();
+
+            if (director.overlay && typeof director.overlay.hideBubble === 'function') {
+                director.overlay.hideBubble();
+            }
+
+            director.appendGuideChatMessage(resistanceMessage.message, {
+                textKey: resistanceMessage.textKey,
+                voiceKey: resistanceMessage.voiceKey,
+                streamPauseWithScene: false
+            });
+            director.applyGuideEmotion('angry', {
+                allowDuringInterrupt: true
+            });
+
+            const cursorResistancePromise = Promise.resolve(
+                director.cursor && typeof director.cursor.resistTo === 'function'
+                    ? director.cursor.resistTo(x, y, {
+                        motionDx: normalizedOptions.motionDx,
+                        motionDy: normalizedOptions.motionDy
+                    })
+                    : null
+            );
+            const interruptPerformancePromise = Promise.resolve(director.runInterruptResistPerformance({
+                x: x,
+                y: y,
+                voiceKey: resistanceMessage.voiceKey
+            })).catch(() => null);
+            const voicePromise = Promise.resolve(director.voiceQueue.speak(resistanceMessage.message, {
+                voiceKey: resistanceMessage.voiceKey
+            }));
+
+            return Promise.all([
+                voicePromise,
+                cursorResistancePromise,
+                interruptPerformancePromise
+            ]).finally(() => {
+                this.lightResistanceActive = false;
+                director.resumeCurrentSceneAfterResistance();
+                if (this.isStopping()) {
+                    return;
+                }
+
+                const didRestorePresentationSnapshot = director.restoreGuidePresentationSnapshot(presentationSnapshot);
+                const narration = director.activeNarration;
+                if (narration && narration.interrupted) {
+                    director.scheduleNarrationResume({
+                        skipEmotion: didRestorePresentationSnapshot,
+                        preserveSpotlights: true
+                    });
+                    return;
+                }
+
+                director.restoreCurrentScenePresentation({
+                    skipEmotion: didRestorePresentationSnapshot,
+                    preserveSpotlights: true
+                });
+            });
+        }
+
+        abortAsAngryExit(source) {
+            const director = this.director;
+            if (
+                this.isDestroyed()
+                || this.isStopping()
+                || director.angryExitTriggered
+            ) {
+                return Promise.resolve();
+            }
+
+            director.recordExperienceMetric('angry_exit', {
+                sceneId: director.currentSceneId || 'interrupt_angry_exit',
+                reason: source || 'pointer_interrupt',
+                interruptCount: this.getInterruptCount()
+            });
+            director.angryExitTriggered = true;
+            director.clearSceneTimers();
+            director.disableInterrupts();
+            director.cancelActiveNarration();
+            director.beginGuideInterruptPresentation();
+
+            const angryStep = director.getStep('interrupt_angry_exit');
+            const performance = (angryStep && angryStep.performance) || {};
+            const bubbleText = director.resolvePerformanceBubbleText(performance);
+            const angryExitNarrationDurationMs = director.getGuideVoiceDurationMs(
+                performance.voiceKey
+            );
+            const lastPointerPoint = director.lastPointerPoint;
+            const pointerPoint = lastPointerPoint
+                && Number.isFinite(lastPointerPoint.x)
+                && Number.isFinite(lastPointerPoint.y)
+                ? lastPointerPoint
+                : null;
+
+            director.setTutorialTakingOver(true);
+            if (director.overlay && typeof director.overlay.setAngry === 'function') {
+                director.overlay.setAngry(true);
+            }
+            if (director.overlay && typeof director.overlay.hidePluginPreview === 'function') {
+                director.overlay.hidePluginPreview();
+            }
+            if (director.overlay && typeof director.overlay.hideBubble === 'function') {
+                director.overlay.hideBubble();
+            }
+
+            director.appendGuideChatMessage(bubbleText || '人类！你真的很没礼貌喵！', {
+                textKey: performance.bubbleTextKey || '',
+                voiceKey: performance.voiceKey,
+                streamPauseWithScene: false,
+                streamAllowDuringAngryExit: true
+            });
+            director.applyGuideEmotion('angry', {
+                allowDuringInterrupt: true
+            });
+
+            const angryExitPerformancePromise = Promise.resolve(director.runAngryExitPerformance({
+                x: pointerPoint ? pointerPoint.x : null,
+                y: pointerPoint ? pointerPoint.y : null,
+                voiceKey: performance.voiceKey
+            })).catch(() => null);
+
+            const angryExitPresentationPromise = Promise.all([
+                Promise.resolve(director.speakGuideLine(bubbleText || '', {
+                    voiceKey: performance.voiceKey,
+                    minDurationMs: Number.isFinite(angryExitNarrationDurationMs)
+                        ? angryExitNarrationDurationMs
+                        : 0
+                })),
+                angryExitPerformancePromise
+            ]).then(() => {
+                director.notifyPluginDashboardNarrationFinished();
+                if (this.isDestroyed()) {
+                    return;
+                }
+
+                director.requestTermination(source || 'angry_exit', 'angry_exit');
+            }).finally(() => {
+                if (director.angryExitPresentationPromise === angryExitPresentationPromise) {
+                    director.angryExitPresentationPromise = null;
+                }
+            });
+            director.angryExitPresentationPromise = angryExitPresentationPromise;
+            return angryExitPresentationPromise;
+        }
+
+        destroy() {
+            this.destroyed = true;
+            this.lightResistanceActive = false;
+        }
+    }
+
+    class SidebarPauseController {
+        constructor(options) {
+            const normalizedOptions = options || {};
+            this.document = normalizedOptions.document || (typeof document !== 'undefined' ? document : null);
+            this.trackedPanels = new Set();
+            this.pausedPanelStyles = new Map();
+        }
+
+        trackPanel(panel) {
+            if (panel && panel.nodeType === 1) {
+                this.trackedPanels.add(panel);
+            }
+            return panel || null;
+        }
+
+        getTrackedPanels() {
+            const panels = new Set();
+            this.trackedPanels.forEach((panel) => {
+                if (panel && panel.isConnected !== false) {
+                    panels.add(panel);
+                }
+            });
+            if (this.document && typeof this.document.querySelectorAll === 'function') {
+                this.document.querySelectorAll([
+                    '[data-neko-sidepanel-type="chat-settings"]',
+                    '[data-neko-sidepanel-type="animation-settings"]',
+                    '[data-neko-sidepanel-type="character-settings"]',
+                    '[data-neko-sidepanel-type="interval-proactive-vision"]'
+                ].join(',')).forEach((panel) => panels.add(panel));
+            }
+            return Array.from(panels);
+        }
+
+        pause() {
+            this.getTrackedPanels().forEach((panel) => {
+                if (!panel || this.pausedPanelStyles.has(panel)) {
+                    return;
+                }
+                this.pausedPanelStyles.set(panel, {
+                    transition: panel.style.transition,
+                    animationPlayState: panel.style.animationPlayState
+                });
+                panel.setAttribute('data-yui-guide-sidebar-paused', 'true');
+                panel.style.transition = 'none';
+                panel.style.animationPlayState = 'paused';
+            });
+        }
+
+        resume() {
+            this.pausedPanelStyles.forEach((style, panel) => {
+                if (!panel) {
+                    return;
+                }
+                if (panel.getAttribute && panel.getAttribute('data-yui-guide-sidebar-paused') === 'true') {
+                    panel.removeAttribute('data-yui-guide-sidebar-paused');
+                }
+                panel.style.transition = style.transition || '';
+                panel.style.animationPlayState = style.animationPlayState || '';
+            });
+            this.pausedPanelStyles.clear();
+        }
+
+        getPauseToken() {
+            return {
+                pause: () => this.pause(),
+                resume: () => this.resume()
+            };
+        }
+    }
+
+    class PauseCoordinator {
+        constructor(options) {
+            const normalizedOptions = options || {};
+            this.pauseTokens = new Map();
+            this.getResistancePaused = typeof normalizedOptions.getResistancePaused === 'function'
+                ? normalizedOptions.getResistancePaused
+                : () => false;
+            this.setResistancePaused = typeof normalizedOptions.setResistancePaused === 'function'
+                ? normalizedOptions.setResistancePaused
+                : () => {};
+            this.setPausedAt = typeof normalizedOptions.setPausedAt === 'function'
+                ? normalizedOptions.setPausedAt
+                : () => {};
+            this.beginInterruptPresentation = typeof normalizedOptions.beginInterruptPresentation === 'function'
+                ? normalizedOptions.beginInterruptPresentation
+                : () => {};
+            this.endInterruptPresentation = typeof normalizedOptions.endInterruptPresentation === 'function'
+                ? normalizedOptions.endInterruptPresentation
+                : () => {};
+            this.takeScenePauseResolvers = typeof normalizedOptions.takeScenePauseResolvers === 'function'
+                ? normalizedOptions.takeScenePauseResolvers
+                : () => [];
+            this.registerPauseToken('cursor', normalizedOptions.cursor);
+            this.registerPauseToken('spotlight', normalizedOptions.spotlightController);
+        }
+
+        registerPauseToken(name, token) {
+            const normalizedName = typeof name === 'string' ? name.trim() : '';
+            if (
+                !normalizedName
+                || !token
+                || (
+                    typeof token.pause !== 'function'
+                    && typeof token.resume !== 'function'
+                )
+            ) {
+                return () => {};
+            }
+
+            this.pauseTokens.set(normalizedName, token);
+            return () => {
+                if (this.pauseTokens.get(normalizedName) === token) {
+                    this.pauseTokens.delete(normalizedName);
+                }
+            };
+        }
+
+        pauseForResistance() {
+            if (this.getResistancePaused()) {
+                return;
+            }
+            this.setResistancePaused(true);
+            this.setPausedAt(Date.now());
+            this.pauseTokens.forEach((token) => {
+                if (token && typeof token.pause === 'function') {
+                    try {
+                        token.pause();
+                    } catch (_) {}
+                }
+            });
+            this.beginInterruptPresentation();
+        }
+
+        resumeAfterResistance() {
+            if (!this.getResistancePaused()) {
+                return;
+            }
+            this.setResistancePaused(false);
+            this.setPausedAt(0);
+            this.pauseTokens.forEach((token) => {
+                if (token && typeof token.resume === 'function') {
+                    try {
+                        token.resume();
+                    } catch (_) {}
+                }
+            });
+            this.endInterruptPresentation();
+            const resolvers = this.takeScenePauseResolvers();
+            resolvers.forEach((resolve) => {
+                try {
+                    resolve();
+                } catch (_) {}
+            });
+        }
+    }
+
+    class TutorialTerminationRouter {
+        constructor(director) {
+            this.director = director;
+        }
+
+        requestTermination(reason, tutorialReason) {
+            const director = this.director;
+            if (director.destroyed || director.terminationRequested) {
+                return;
+            }
+
+            director.terminationRequested = true;
+            director.clearPendingGuideMessageAction();
+            const finalReason = tutorialReason || reason || 'skip';
+            director.setGuideChatInputLocked(false, 'avatar-floating-guide-' + finalReason);
+            director.notifyPluginDashboardTerminationRequested(finalReason);
+            director.closePluginDashboardWindowIfCreatedByGuide('终止请求').catch((error) => {
+                console.warn('[YuiGuide] 终止请求时关闭插件面板失败:', error);
+            });
+            director.cancelActiveNarration();
+            director.resumeCurrentSceneAfterResistance();
+            if (director.tutorialManager && typeof director.tutorialManager.requestTutorialDestroy === 'function') {
+                if (
+                    typeof director.tutorialManager.requestAvatarFloatingGuideCooperativeEnd === 'function'
+                    && director.tutorialManager.requestAvatarFloatingGuideCooperativeEnd(finalReason)
+                ) {
+                    return;
+                }
+                director.tutorialManager.requestTutorialDestroy(finalReason);
+            } else {
+                director.destroy();
+            }
+        }
+
+        skip(reason, tutorialReason) {
+            const director = this.director;
+            director.recordExperienceMetric('skip', {
+                reason: reason || 'skip',
+                tutorialReason: tutorialReason || reason || 'skip'
+            });
+            return this.requestTermination(reason, tutorialReason);
+        }
+
+        async handlePluginDashboardSkipRequest(data) {
+            const director = this.director;
+            const detail = data && data.detail && typeof data.detail === 'object'
+                ? data.detail
+                : null;
+            const forwardResult = await director.forwardPluginDashboardSkipRequestToButton(detail);
+            if (forwardResult === 'forwarded') {
+                return;
+            }
+
+            if (forwardResult === 'rejected' && !director.isPluginDashboardDirectSkipRequest(data)) {
+                return;
+            }
+
+            if (director.tutorialManager && typeof director.tutorialManager.handleTutorialSkipRequest === 'function') {
+                await director.tutorialManager.handleTutorialSkipRequest();
+            } else {
+                await director.skip('skip', 'skip');
+            }
+        }
+    }
+
+    return {
+        ResetInterruptController,
+        createResetInterruptController(options) {
+            return new ResetInterruptController(options);
+        },
+        ResistanceController,
+        SidebarPauseController,
+        PauseCoordinator,
+        TutorialTerminationRouter
+    };
+});

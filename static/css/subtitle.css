@@ -7,29 +7,93 @@ body.subtitle-window-host {
     overflow: hidden;
     background: transparent;
     font-family: 'Segoe UI', Arial, sans-serif;
+    --subtitle-window-edge-inset: 6px;
 }
 
 #subtitle-display {
-    padding: 10px 46px;
-    padding-top: 24px;
-    /* min-height, max-height, font-size 由 JS preset 控制 */
-    background: linear-gradient(135deg, rgba(68, 183, 254, 0.95) 0%, rgba(68, 183, 254, 0.9) 50%, rgba(100, 200, 255, 0.95) 100%);
-    color: #fff;
-    border-radius: 12px;
+    --subtitle-panel-alpha: 0.95;
+    --subtitle-panel-soft-alpha: 0.95;
+    --subtitle-panel-soft-mid-alpha: 0.95;
+    --subtitle-panel-soft-edge-alpha: 0.95;
+    --subtitle-panel-bg-rgb: 250, 250, 247;
+    --subtitle-panel-text: #202428;
+    --subtitle-text-fill: #1f2429;
+    --subtitle-text-stroke: rgba(255, 255, 255, 0.62);
+    --subtitle-placeholder-fill: rgba(31, 36, 41, 0.58);
+    --subtitle-placeholder-stroke: rgba(255, 255, 255, 0.5);
+    --subtitle-panel-shadow: none;
+    --subtitle-panel-text-shadow: 0 1px 2px rgba(255, 255, 255, 0.8),
+        0 0 7px rgba(255, 255, 255, 0.55);
+    --subtitle-control-bg: rgba(255, 255, 255, 0.68);
+    --subtitle-control-hover-bg: rgba(255, 255, 255, 0.92);
+    --subtitle-control-border: rgba(36, 43, 49, 0.14);
+    --subtitle-control-fg: #2f363d;
+    --subtitle-settings-bg: rgba(252, 252, 250, 0.96);
+    --subtitle-settings-text: #202428;
+    --subtitle-settings-muted: rgba(32, 36, 40, 0.68);
+    --subtitle-settings-border: rgba(36, 43, 49, 0.14);
+    --subtitle-settings-input-bg: rgba(255, 255, 255, 0.9);
+    --subtitle-scroll-thumb: rgba(32, 38, 45, 0.28);
+    --subtitle-scroll-thumb-hover: rgba(32, 38, 45, 0.42);
+    --subtitle-focus-ring: rgba(52, 112, 179, 0.32);
+    --subtitle-panel-padding-block: clamp(4px, calc(var(--subtitle-panel-height, 68px) * 0.18), 12px);
+    --subtitle-panel-padding-right: clamp(8px, calc(var(--subtitle-panel-width, 600px) * 0.14), 86px);
+    --subtitle-panel-padding-left: clamp(8px, calc(var(--subtitle-panel-width, 600px) * 0.04), 24px);
+    padding: var(--subtitle-panel-padding-block) var(--subtitle-panel-padding-right) var(--subtitle-panel-padding-block) var(--subtitle-panel-padding-left);
+    /* width, height, font-size are controlled by the shared subtitle bounds. */
+    background: rgba(var(--subtitle-panel-bg-rgb), var(--subtitle-panel-alpha));
+    color: var(--subtitle-panel-text);
+    border-radius: 16px;
     font-weight: 500;
     line-height: 1.5;
     text-align: center;
     overflow-wrap: break-word;
     white-space: normal;
     overflow: visible;
-    box-shadow: 0 6px 24px rgba(68, 183, 254, 0.35),
-        0 0 0 1px rgba(255, 255, 255, 0.3) inset;
-    border: 1.5px solid rgba(255, 255, 255, 0.4);
-    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+    box-shadow: none;
+    border: none;
+    text-shadow: var(--subtitle-panel-text-shadow);
     box-sizing: border-box;
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: center;
+}
+
+html[data-theme="dark"] #subtitle-display,
+html.dark #subtitle-display {
+    --subtitle-panel-bg-rgb: 18, 20, 23;
+    --subtitle-panel-text: #f4f6f8;
+    --subtitle-text-fill: #f4f6f8;
+    --subtitle-text-stroke: rgba(0, 0, 0, 0.62);
+    --subtitle-placeholder-fill: rgba(244, 246, 248, 0.62);
+    --subtitle-placeholder-stroke: rgba(0, 0, 0, 0.5);
+    --subtitle-panel-shadow: none;
+    --subtitle-panel-text-shadow: 0 1px 3px rgba(0, 0, 0, 0.68),
+        0 0 8px rgba(0, 0, 0, 0.42);
+    --subtitle-control-bg: rgba(25, 28, 32, 0.72);
+    --subtitle-control-hover-bg: rgba(44, 49, 55, 0.92);
+    --subtitle-control-border: rgba(255, 255, 255, 0.14);
+    --subtitle-control-fg: #f4f6f8;
+    --subtitle-settings-bg: rgba(26, 29, 33, 0.96);
+    --subtitle-settings-text: #f4f6f8;
+    --subtitle-settings-muted: rgba(244, 246, 248, 0.72);
+    --subtitle-settings-border: rgba(255, 255, 255, 0.14);
+    --subtitle-settings-input-bg: rgba(255, 255, 255, 0.1);
+    --subtitle-scroll-thumb: rgba(244, 246, 248, 0.32);
+    --subtitle-scroll-thumb-hover: rgba(244, 246, 248, 0.5);
+    --subtitle-focus-ring: rgba(129, 173, 227, 0.4);
+    background: rgba(var(--subtitle-panel-bg-rgb), var(--subtitle-panel-alpha));
+    color: var(--subtitle-panel-text);
+    border: none;
+    box-shadow: none;
+    text-shadow: var(--subtitle-panel-text-shadow);
+}
+
+html.subtitle-window-host,
+html.subtitle-window-host body.subtitle-window-host,
+html[data-theme="dark"].subtitle-window-host,
+html[data-theme="dark"].subtitle-window-host body.subtitle-window-host {
+    background: transparent;
 }
 
 body.subtitle-web-host #subtitle-display {
@@ -38,41 +102,53 @@ body.subtitle-web-host #subtitle-display {
     left: 50%;
     transform: translateX(-50%);
     z-index: 99998;
-    min-width: 200px;
-    max-width: min(var(--subtitle-max-width, 500px), 85%);
+    min-width: 0;
+    max-width: none;
     opacity: 0;
     visibility: hidden;
-    transition: opacity 0.4s cubic-bezier(0.34, 1.56, 0.64, 1), visibility 0.4s, max-width 0.3s ease, min-height 0.3s ease, max-height 0.3s ease, font-size 0.3s ease;
+    transition: opacity 0.4s cubic-bezier(0.34, 1.56, 0.64, 1), visibility 0.4s, width 0.2s ease, height 0.2s ease, font-size 0.2s ease;
     pointer-events: none;
+}
+
+body.subtitle-web-host #subtitle-display.show {
+    pointer-events: none;
+}
+
+body.subtitle-web-host #subtitle-display[data-subtitle-interaction-passthrough="false"],
+body.subtitle-web-host #subtitle-display.show[data-subtitle-interaction-passthrough="false"] {
+    pointer-events: auto;
 }
 
 body.subtitle-window-host #subtitle-display {
     position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    transition: min-height 0.3s ease, max-height 0.3s ease, font-size 0.3s ease;
+    top: auto;
+    bottom: var(--subtitle-window-edge-inset, 0px);
+    left: var(--subtitle-window-edge-inset, 0px);
+    transition: width 0.2s ease, height 0.2s ease, font-size 0.2s ease;
 }
 
 body.subtitle-window-host.subtitle-linux-host #subtitle-display {
-    top: auto;
-    bottom: 0;
+    bottom: var(--subtitle-window-edge-inset, 0px);
 }
 
 #subtitle-scroll {
     width: 100%;
+    min-width: 0;
     max-height: var(--subtitle-content-max-height, 120px);
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    pointer-events: auto;
-    scrollbar-gutter: stable;
-    scrollbar-width: thin;
-    scrollbar-color: rgba(255, 255, 255, 0.42) transparent;
-    padding: 4px 0;
+    overflow: hidden;
+    overscroll-behavior: none;
+    pointer-events: none;
+    scrollbar-gutter: auto;
+    scrollbar-width: none;
+    scrollbar-color: transparent transparent;
+    padding: 2px 0;
+    text-align: center;
 }
 
 #subtitle-scroll::-webkit-scrollbar {
-    width: 3px;
+    width: 0;
+    height: 0;
+    display: none;
 }
 
 #subtitle-scroll::-webkit-scrollbar-track {
@@ -81,29 +157,61 @@ body.subtitle-window-host.subtitle-linux-host #subtitle-display {
 }
 
 #subtitle-scroll::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.42);
+    background: transparent;
     border-radius: 999px;
 }
 
 #subtitle-scroll::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.68);
+    background: transparent;
 }
 
 #subtitle-text {
-    display: block;
-    margin-right: 8px;
+    display: inline;
+    margin-right: 0;
+    color: var(--subtitle-text-fill);
     white-space: pre-wrap;
     overflow-wrap: break-word;
+    text-shadow: var(--subtitle-panel-text-shadow);
+    -webkit-text-stroke: 0.35px var(--subtitle-text-stroke);
+    paint-order: stroke fill;
+    pointer-events: auto;
+}
+
+#subtitle-text:empty::before {
+    content: attr(data-subtitle-placeholder);
+    display: inline-block;
+    color: var(--subtitle-placeholder-fill);
+    -webkit-text-stroke: 0.3px var(--subtitle-placeholder-stroke);
+    text-shadow: var(--subtitle-panel-text-shadow);
+    opacity: 0.82;
 }
 
 #subtitle-display.hidden {
     display: none;
 }
 
-#subtitle-settings-btn {
+#subtitle-panel-controls {
     position: absolute;
-    top: 4px;
-    right: 4px;
+    top: 6px;
+    right: 6px;
+    z-index: 12;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 4px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+}
+
+#subtitle-display[data-subtitle-panel-state="controls"] #subtitle-panel-controls,
+#subtitle-display[data-subtitle-panel-state="settings"] #subtitle-panel-controls {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+#subtitle-settings-btn,
+.subtitle-panel-control-btn {
     width: 22px;
     height: 22px;
     display: flex;
@@ -113,26 +221,46 @@ body.subtitle-window-host.subtitle-linux-host #subtitle-display {
     border-radius: 5px;
     transition: all 0.2s ease;
     pointer-events: auto;
-    background: rgba(255, 255, 255, 0.12);
+    background: var(--subtitle-control-bg);
+    color: var(--subtitle-control-fg);
     opacity: 0;
-    border: none;
+    border: 1px solid var(--subtitle-control-border);
     padding: 0;
     font-size: inherit;
+    box-shadow: 0 1px 4px rgba(17, 24, 39, 0.12);
 }
 
-#subtitle-settings-btn svg {
+#subtitle-settings-btn {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+}
+
+#subtitle-panel-controls #subtitle-settings-btn,
+#subtitle-panel-controls .subtitle-panel-control-btn {
+    position: static;
+    opacity: 1;
+}
+
+#subtitle-settings-btn svg,
+.subtitle-panel-control-btn svg {
     width: 13px;
     height: 13px;
     transition: transform 0.3s ease;
+    fill: currentColor;
 }
 
-#subtitle-display:hover #subtitle-settings-btn,
-#subtitle-display.show #subtitle-settings-btn {
+#subtitle-display[data-subtitle-panel-state="controls"] > #subtitle-settings-btn,
+#subtitle-display[data-subtitle-panel-state="settings"] > #subtitle-settings-btn {
     opacity: 1;
 }
 
 #subtitle-settings-btn:hover {
-    background: rgba(255, 255, 255, 0.32);
+    background: var(--subtitle-control-hover-bg);
+}
+
+.subtitle-panel-control-btn:hover {
+    background: var(--subtitle-control-hover-bg);
 }
 
 #subtitle-settings-btn:hover svg {
@@ -144,21 +272,51 @@ body.subtitle-window-host.subtitle-linux-host #subtitle-display {
     top: auto;
     right: 0;
     bottom: calc(100% + 8px);
-    min-width: 210px;
+    min-width: 236px;
     padding: 8px 10px;
-    background: rgba(0, 0, 0, 0.65);
-    backdrop-filter: blur(12px);
+    background: var(--subtitle-settings-bg);
     border-radius: 8px;
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--subtitle-settings-border);
+    box-shadow: 0 8px 22px rgba(17, 24, 39, 0.18);
+    color: var(--subtitle-settings-text);
     pointer-events: auto;
     z-index: 10;
 }
 
 body.subtitle-window-host #subtitle-settings-panel {
-    top: calc(100% + 8px);
+    top: auto;
     right: 4px;
-    bottom: auto;
+    bottom: calc(100% + 8px);
+}
+
+body.subtitle-settings-window-host {
+    margin: 0;
+    width: 100vw;
+    min-height: 100vh;
+    overflow: hidden;
+    background: transparent;
+}
+
+body.subtitle-settings-window-host #subtitle-display {
+    position: fixed;
+    inset: 0;
+    width: auto !important;
+    height: auto !important;
+    min-width: 0;
+    min-height: 0;
+    padding: 0;
+    background: transparent;
+    box-shadow: none;
+    pointer-events: auto;
+}
+
+body.subtitle-settings-window-host #subtitle-settings-panel {
+    position: fixed;
+    inset: 0;
+    min-width: 0;
+    width: auto;
+    border-radius: 8px;
+    box-sizing: border-box;
 }
 
 body.subtitle-window-host.subtitle-linux-host #subtitle-settings-panel {
@@ -176,15 +334,15 @@ body.subtitle-window-host.subtitle-linux-host #subtitle-settings-panel {
     justify-content: space-between;
     gap: 10px;
     padding: 4px 0;
-    color: #fff;
+    color: var(--subtitle-settings-text);
     font-size: 13px;
     white-space: nowrap;
 }
 
 #subtitle-lang-select {
-    background: rgba(255, 255, 255, 0.18);
-    color: #fff;
-    border: 1px solid rgba(255, 255, 255, 0.25);
+    background: var(--subtitle-settings-input-bg);
+    color: var(--subtitle-settings-text);
+    border: 1px solid var(--subtitle-settings-border);
     border-radius: 5px;
     padding: 2px 4px;
     font-size: 12px;
@@ -193,15 +351,14 @@ body.subtitle-window-host.subtitle-linux-host #subtitle-settings-panel {
 }
 
 #subtitle-lang-select option {
-    background: #333;
-    color: #fff;
+    background: var(--subtitle-settings-bg);
+    color: var(--subtitle-settings-text);
 }
 
 #subtitle-lang-select:focus-visible {
-    outline: 2px solid rgba(255, 255, 255, 0.95);
+    outline: 2px solid var(--subtitle-control-fg);
     outline-offset: 2px;
-    border-color: rgba(255, 255, 255, 0.75);
-    box-shadow: 0 0 0 3px rgba(68, 183, 254, 0.4);
+    box-shadow: 0 0 0 3px var(--subtitle-focus-ring);
 }
 
 #subtitle-opacity-slider {
@@ -209,36 +366,47 @@ body.subtitle-window-host.subtitle-linux-host #subtitle-settings-panel {
     height: 4px;
     -webkit-appearance: none;
     appearance: none;
-    background: rgba(255, 255, 255, 0.3);
+    background: var(--subtitle-settings-muted);
     border-radius: 2px;
     outline: none;
     cursor: pointer;
 }
 
 #subtitle-opacity-slider:focus-visible {
-    outline: 2px solid rgba(255, 255, 255, 0.95);
+    outline: 2px solid var(--subtitle-control-fg);
     outline-offset: 3px;
-    box-shadow: 0 0 0 3px rgba(68, 183, 254, 0.35);
+    box-shadow: 0 0 0 3px var(--subtitle-focus-ring);
 }
 
 #subtitle-opacity-slider::-webkit-slider-thumb {
     -webkit-appearance: none;
     width: 14px;
     height: 14px;
-    background: #fff;
+    background: var(--subtitle-control-fg);
     border-radius: 50%;
     cursor: pointer;
-    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.24);
+}
+
+#subtitle-opacity-slider::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    background: var(--subtitle-control-fg);
+    border: 0;
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.24);
 }
 
 #subtitle-opacity-slider:focus-visible::-webkit-slider-thumb {
-    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.95), 0 0 0 5px rgba(68, 183, 254, 0.45);
+    box-shadow: 0 0 0 2px var(--subtitle-settings-bg), 0 0 0 5px var(--subtitle-focus-ring);
 }
 
 #subtitle-opacity-value {
     font-size: 11px;
     min-width: 30px;
     text-align: right;
+    color: var(--subtitle-settings-muted);
 }
 
 .subtitle-settings-switch {
@@ -259,7 +427,7 @@ body.subtitle-window-host.subtitle-linux-host #subtitle-settings-panel {
 .subtitle-settings-track {
     position: absolute;
     inset: 0;
-    background: rgba(255, 255, 255, 0.25);
+    background: var(--subtitle-settings-muted);
     border-radius: 10px;
     transition: 0.25s;
 }
@@ -271,13 +439,13 @@ body.subtitle-window-host.subtitle-linux-host #subtitle-settings-panel {
     top: 2px;
     width: 16px;
     height: 16px;
-    background: #fff;
+    background: var(--subtitle-control-fg);
     border-radius: 50%;
     transition: 0.25s;
 }
 
 .subtitle-settings-switch input:checked + .subtitle-settings-track {
-    background: rgba(100, 220, 130, 0.7);
+    background: rgba(76, 175, 116, 0.7);
 }
 
 .subtitle-settings-switch input:checked + .subtitle-settings-track::before {
@@ -285,95 +453,126 @@ body.subtitle-window-host.subtitle-linux-host #subtitle-settings-panel {
 }
 
 .subtitle-settings-switch input:focus-visible + .subtitle-settings-track {
-    outline: 2px solid rgba(255, 255, 255, 0.95);
+    outline: 2px solid var(--subtitle-control-fg);
     outline-offset: 2px;
-    box-shadow: 0 0 0 3px rgba(68, 183, 254, 0.35);
+    box-shadow: 0 0 0 3px var(--subtitle-focus-ring);
 }
 
 .subtitle-settings-switch input:focus-visible + .subtitle-settings-track::before {
-    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.95), 0 0 0 5px rgba(68, 183, 254, 0.35);
+    box-shadow: 0 0 0 2px var(--subtitle-settings-bg), 0 0 0 5px var(--subtitle-focus-ring);
 }
 
-body.subtitle-web-host #subtitle-display.drag-anywhere,
-#subtitle-display.drag-anywhere {
+body.subtitle-web-host #subtitle-display[data-subtitle-panel-locked="false"],
+body.subtitle-window-host #subtitle-display[data-subtitle-panel-locked="false"] {
     cursor: grab;
-    pointer-events: auto;
 }
 
-#subtitle-display.drag-anywhere.dragging {
+body.subtitle-web-host #subtitle-display[data-subtitle-panel-locked="true"],
+body.subtitle-window-host #subtitle-display[data-subtitle-panel-locked="true"] {
+    cursor: default;
+}
+
+#subtitle-display.dragging {
     cursor: grabbing;
 }
 
-.subtitle-size-group {
-    display: flex;
-    gap: 4px;
-}
-
-.subtitle-size-btn {
-    background: rgba(255, 255, 255, 0.18);
-    color: #fff;
-    border: 1px solid rgba(255, 255, 255, 0.25);
-    border-radius: 4px;
-    padding: 2px 8px;
-    font-size: 12px;
-    cursor: pointer;
-    transition: background 0.15s;
-}
-
-.subtitle-size-btn:hover {
-    background: rgba(255, 255, 255, 0.3);
-}
-
-.subtitle-size-btn.active {
-    background: rgba(255, 255, 255, 0.45);
-    border-color: rgba(255, 255, 255, 0.6);
-}
-
-#subtitle-drag-handle {
+#subtitle-resize-handles {
     position: absolute;
-    bottom: 4px;
-    right: 4px;
-    width: 26px;
-    height: 26px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: grab;
-    border-radius: 6px;
-    transition: all 0.2s ease;
+    inset: 0;
+    pointer-events: none;
+    z-index: 11;
+}
+
+.subtitle-resize-edge {
+    position: absolute;
+    display: block;
     pointer-events: auto;
-    background: rgba(255, 255, 255, 0.18);
-    backdrop-filter: blur(4px);
+    background: transparent;
 }
 
-#subtitle-drag-handle:hover {
-    background: rgba(255, 255, 255, 0.32);
-    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.6);
+.subtitle-resize-n,
+.subtitle-resize-s {
+    left: 12px;
+    right: 12px;
+    height: 8px;
+    cursor: ns-resize;
 }
 
-#subtitle-drag-handle:active {
-    cursor: grabbing;
-    background: rgba(255, 255, 255, 0.42);
-    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9);
+.subtitle-resize-n {
+    top: -4px;
 }
 
-#subtitle-drag-arrows {
-    width: 100%;
-    height: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+.subtitle-resize-s {
+    bottom: -4px;
 }
 
-#subtitle-drag-arrows svg {
+.subtitle-resize-e,
+.subtitle-resize-w {
+    top: 12px;
+    bottom: 12px;
+    width: 8px;
+    cursor: ew-resize;
+}
+
+.subtitle-resize-e {
+    right: -4px;
+}
+
+.subtitle-resize-w {
+    left: -4px;
+}
+
+.subtitle-resize-ne,
+.subtitle-resize-se,
+.subtitle-resize-sw,
+.subtitle-resize-nw {
     width: 14px;
     height: 14px;
 }
 
+.subtitle-resize-ne {
+    top: -5px;
+    right: -5px;
+    cursor: nesw-resize;
+}
+
+.subtitle-resize-se {
+    right: -5px;
+    bottom: -5px;
+    cursor: nwse-resize;
+}
+
+.subtitle-resize-sw {
+    left: -5px;
+    bottom: -5px;
+    cursor: nesw-resize;
+}
+
+.subtitle-resize-nw {
+    top: -5px;
+    left: -5px;
+    cursor: nwse-resize;
+}
+
+body.subtitle-window-host #subtitle-display[data-subtitle-native-resizing="true"] {
+    width: var(--subtitle-native-resize-width, var(--subtitle-panel-width, auto)) !important;
+    height: var(--subtitle-native-resize-height, var(--subtitle-panel-height, auto)) !important;
+    max-width: none !important;
+    max-height: none !important;
+}
+
+#subtitle-display[data-subtitle-panel-locked="true"] .subtitle-resize-edge {
+    pointer-events: none;
+}
+
+#subtitle-display.resizing {
+    transition: none !important;
+    user-select: none;
+}
+
 #subtitle-display.dragging {
     opacity: 0.85;
-    box-shadow: 0 12px 40px rgba(68, 183, 254, 0.6),
-        0 0 0 2px rgba(255, 255, 255, 0.5) inset;
+    box-shadow: none;
     transition: none !important;
     user-select: none;
 }
@@ -399,9 +598,32 @@ body.subtitle-web-host #subtitle-display.show {
 @media only screen and (max-width: 768px) {
     body.subtitle-web-host #subtitle-display {
         bottom: 80px;
-        min-width: 180px;
-        max-width: min(var(--subtitle-max-width, 500px), 92%);
-        padding: 6px 42px;
-        padding-top: 24px;
+        min-width: 0;
+        max-width: none;
+        --subtitle-panel-padding-block: clamp(4px, calc(var(--subtitle-panel-height, 68px) * 0.18), 10px);
+        --subtitle-panel-padding-right: clamp(8px, calc(var(--subtitle-panel-width, 600px) * 0.12), 58px);
+        --subtitle-panel-padding-left: clamp(8px, calc(var(--subtitle-panel-width, 600px) * 0.035), 16px);
+    }
+
+    #subtitle-panel-controls {
+        top: 4px;
+        right: 4px;
+        gap: 2px;
+    }
+
+    #subtitle-settings-btn,
+    .subtitle-panel-control-btn {
+        width: 20px;
+        height: 20px;
+    }
+
+    #subtitle-settings-btn svg,
+    .subtitle-panel-control-btn svg {
+        width: 12px;
+        height: 12px;
+    }
+
+    #subtitle-settings-panel {
+        min-width: min(236px, calc(100vw - 32px));
     }
 }

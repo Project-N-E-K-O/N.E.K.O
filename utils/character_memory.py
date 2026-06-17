@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from __future__ import annotations
 
 import json
@@ -30,20 +44,22 @@ MESSAGE_NAME_FIELDS = ("speaker", "author", "name", "character")
 
 
 def iter_character_memory_roots(config_manager) -> list[Path]:
-    """返回所有承载角色记忆的运行时根目录（去重、保持插入顺序）。
+    """Return all runtime root directories holding character memory (deduped, insertion order kept).
 
-    只返回当前激活的 runtime 路径：
-      - ``memory_dir``：当前运行时的 ``<app_docs>/memory``。
-      - ``project_memory_dir``：项目目录下的种子/默认 memory 位置。
+    Only currently active runtime paths are returned:
+      - ``memory_dir``: the current runtime's ``<app_docs>/memory``.
+      - ``project_memory_dir``: the seed/default memory location under the project directory.
 
-    历史遗留路径（``Documents\\N.E.K.O\\memory`` 等 CFA 回退或老版本写过
-    的根）**不**在此列。那类数据由以下两条路径单独处理，避免删除/清理
-    逻辑意外波及非运行时位置：
+    Legacy paths (``Documents\\N.E.K.O\\memory`` and other CFA fallbacks or roots
+    written by old versions) are **not** included. That data is handled separately by
+    the two paths below, so deletion/cleanup logic never accidentally touches
+    non-runtime locations:
 
-      - 启动软迁移：``ConfigManager.migrate_legacy_documents_memory`` 只
-        把仍在 ``characters.json[猫娘]`` 的目录搬到 runtime。
-      - 手动清理按钮：创意工坊页面的"清理遗留记忆"扫描 + 勾选删除。
-    """
+      - Startup soft migration: ``ConfigManager.migrate_legacy_documents_memory`` only
+        moves directories still present in ``characters.json[猫娘]`` to the runtime.
+      - Manual cleanup button: the Workshop page's "clean up legacy memory" scan +
+        user-checked deletion.
+    """  # noqa: DOCSTRING_CJK
     roots: list[Path] = []
     seen: set[str] = set()
 

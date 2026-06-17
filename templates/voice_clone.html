@@ -44,6 +44,7 @@
                         <option value="minimax" data-i18n="voice.provider.minimax">MiniMax（国服）</option>
                         <option value="minimax_intl" data-i18n="voice.provider.minimax_intl">MiniMax（国际服）</option>
                         <option value="elevenlabs" data-i18n="voice.provider.elevenlabs">ElevenLabs</option>
+                        <option value="mimo" data-i18n="voice.provider.mimo">MiMo（小米）</option>
                     </select>
                 </div>
                 <div id="provider-notice" class="alibaba-api-notice" style="display: none;">
@@ -239,9 +240,10 @@
     <link rel="stylesheet" href="/static/libs/driver.min.css">
 
     <!-- 通用教程管理器 -->
-    <script src="/static/tutorial-skip-controller.js"></script>
-    <script src="/static/tutorial-avatar-reload-controller.js"></script>
-    <script src="/static/universal-tutorial-manager.js"></script>
+    <script src="/static/tutorial/core/skip-controller.js"></script>
+    <script src="/static/tutorial/avatar/reload-controller.js"></script>
+    <script src="/static/tutorial/core/lifecycle-state-store.js"></script>
+    <script src="/static/tutorial/core/universal-manager.js"></script>
 
     <!-- 初始化 -->
     <script>

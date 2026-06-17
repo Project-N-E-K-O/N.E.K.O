@@ -1,19 +1,35 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
-Agent 结果解析器 — 将 ComputerUse / BrowserUse / Plugin 的返回 dict
-转换为人类可读的自然语言摘要，避免原始 JSON 污染 LLM 上下文。
+Agent result parser — converts dicts returned by ComputerUse / BrowserUse / Plugin
+into human-readable natural-language summaries, keeping raw JSON from polluting the
+LLM context.
 
-所有函数均为纯函数，不依赖 LLM、不抛异常。
-所有面向模型的字符串均通过 prompts_sys i18n 字典输出。
+All functions are pure: no LLM dependency, no exceptions raised.
+All model-facing strings go through the prompts_sys i18n dictionary.
 
-历史
+History
 ----
-本模块原位于 ``brain/result_parser.py``。这些函数其实是纯格式化器
-（输入 dict → 输出字符串），唯一依赖是 ``config.prompts.prompts_sys``，
-没有任何 brain 运行时耦合。``plugin/server/messaging/proactive_bridge.py``
-也合理地需要复用 ``parse_push_message_content``，但 plugin (L4) 不允许
-依赖 brain (L5)（见 ``scripts/check_module_layering.py``）。把模块下沉
-到 ``utils`` 后所有消费方都用允许的方向：app/plugin/brain → utils。
+This module originally lived at ``brain/result_parser.py``. These functions are really
+pure formatters (dict in → string out) whose only dependency is
+``config.prompts.prompts_sys``, with no brain runtime coupling.
+``plugin/server/messaging/proactive_bridge.py`` also legitimately needs to reuse
+``parse_push_message_content``, but plugin (L4) must not depend on brain (L5)
+(see ``scripts/check_module_layering.py``). With the module sunk into ``utils``,
+all consumers use allowed directions: app/plugin/brain → utils.
 """
 from __future__ import annotations
 
@@ -31,7 +47,7 @@ from config.prompts.prompts_sys import (
 # ── 语言工具 ──────────────────────────────────────────────────────────
 
 def _get_lang(lang: str | None) -> str:
-    """获取当前语言代码。优先使用显式传入值，其次全局设置，兜底 'zh'。"""
+    """Get the current language code. Prefers the explicitly passed value, then the global setting, falling back to 'zh'."""
     if lang:
         return lang
     try:
@@ -42,7 +58,7 @@ def _get_lang(lang: str | None) -> str:
 
 
 def _phrase(key: str, lang: str, **kwargs: Any) -> str:
-    """从 RESULT_PARSER_PHRASES 取出 i18n 字符串并格式化。"""
+    """Fetch an i18n string from RESULT_PARSER_PHRASES and format it."""
     template = _loc(RESULT_PARSER_PHRASES.get(key, {}), lang)
     if not template:
         return key
@@ -55,7 +71,7 @@ def _phrase(key: str, lang: str, **kwargs: Any) -> str:
 # ── 辅助 ────────────────────────────────────────────────────────────────
 
 def _try_extract_error_message(error: str, lang: str) -> str:
-    """如果 error 是 JSON 字符串，提取人类可读部分；否则原样返回。"""
+    """If error is a JSON string, extract the human-readable part; otherwise return as-is."""
     s = error.strip()
     if not (s.startswith("{") or s.startswith("[")):
         return error
@@ -73,7 +89,7 @@ def _try_extract_error_message(error: str, lang: str) -> str:
 
 
 def _format_error(error: Any, lang: str) -> str:
-    """统一处理各种形态的 error 值（str / dict / None）→ 人类可读字符串。"""
+    """Uniformly handle error values of various shapes (str / dict / None) → human-readable string."""
     if error is None:
         return ""
     if isinstance(error, dict):
@@ -127,9 +143,8 @@ def _truncate(s: str, limit: int | None = None) -> str:
 # ── ComputerUse / BrowserUse 共用 ───────────────────────────────────────
 
 def _parse_tool_result(res: Any, lang: str) -> tuple[bool, str]:
-    """解析 ComputerUse / BrowserUse 返回值 → (succeeded, 自然语言摘要)。
-
-    返回二元组方便调用方区分成功/失败，将 detail 和 error_message 放入正确字段。
+    """Parse ComputerUse / BrowserUse return values → (succeeded, natural-language summary).
+    Returns a 2-tuple so callers can distinguish success/failure, putting detail and error_message into the right fields.
     """
     if not isinstance(res, dict):
         return False, _phrase('no_result', lang)
@@ -161,19 +176,19 @@ def _parse_tool_result(res: Any, lang: str) -> tuple[bool, str]:
 
 
 def parse_computer_use_result(res: Any, *, lang: str | None = None) -> tuple[bool, str]:
-    """解析 ComputerUse run_instruction 返回值 → (succeeded, 自然语言摘要)。"""
+    """Parse a ComputerUse run_instruction return value → (succeeded, natural-language summary)."""
     return _parse_tool_result(res, _get_lang(lang))
 
 
 def parse_browser_use_result(res: Any, *, lang: str | None = None) -> tuple[bool, str]:
-    """解析 BrowserUse run_instruction 返回值 → (succeeded, 自然语言摘要)。"""
+    """Parse a BrowserUse run_instruction return value → (succeeded, natural-language summary)."""
     return _parse_tool_result(res, _get_lang(lang))
 
 
 # ── Plugin ──────────────────────────────────────────────────────────────
 
 def _format_field_value(val: Any, lang: str) -> Optional[str]:
-    """将单个字段值格式化为人类可读字符串。"""
+    """Format a single field value into a human-readable string."""
     if val is None:
         return None
     if isinstance(val, dict):
@@ -192,7 +207,7 @@ def parse_plugin_result(
     error: Any = None,
     lang: str | None = None,
 ) -> str:
-    """解析 Plugin 执行结果 → 自然语言摘要。"""
+    """Parse a Plugin execution result → natural-language summary."""
     lang = _get_lang(lang)
 
     # 失败路径
@@ -235,7 +250,7 @@ def parse_plugin_result(
 # ── Push Message ───────────────────────────────────────────────────────
 
 def parse_push_message_content(content: Any, *, lang: str | None = None) -> str:
-    """解析插件 push_message 的 content → 干净的自然语言字符串。"""
+    """Parse plugin push_message content → a clean natural-language string."""
     lang = _get_lang(lang)
 
     if content is None:

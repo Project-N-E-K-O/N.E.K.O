@@ -1,9 +1,23 @@
 # -*- coding: utf-8 -*-
-"""
-Telemetry Server — 数据模型
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-数据最小化：仅 token 计数，零对话内容、零 PII。
-兼容 Pydantic v1 和 v2。
+"""
+Telemetry Server — data models
+
+Data minimization: token counts only, zero conversation content, zero PII.
+Compatible with both Pydantic v1 and v2.
 """
 from __future__ import annotations
 
@@ -15,28 +29,28 @@ PYDANTIC_V2 = int(getattr(__import__('pydantic'), 'VERSION', '1.0').split('.')[0
 
 
 def model_to_dict(obj):
-    """兼容 .model_dump() (v2) / .dict() (v1)。"""
+    """Compat for .model_dump() (v2) / .dict() (v1)."""
     if hasattr(obj, 'model_dump'):
         return obj.model_dump()
     return obj.dict()
 
 
 def model_to_json(obj):
-    """兼容 .model_dump_json() (v2) / .json() (v1)。"""
+    """Compat for .model_dump_json() (v2) / .json() (v1)."""
     if hasattr(obj, 'model_dump_json'):
         return obj.model_dump_json()
     return obj.json()
 
 
 def model_from_json(cls, data: str):
-    """兼容 .model_validate_json() (v2) / .parse_raw() (v1)。"""
+    """Compat for .model_validate_json() (v2) / .parse_raw() (v1)."""
     if hasattr(cls, 'model_validate_json'):
         return cls.model_validate_json(data)
     return cls.parse_raw(data)
 
 
 class ModelBucket(BaseModel):
-    """按模型/调用类型聚合的统计桶。"""
+    """Stats bucket aggregated by model/call type."""
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
@@ -45,7 +59,7 @@ class ModelBucket(BaseModel):
 
 
 class DailyStats(BaseModel):
-    """一天的聚合统计。"""
+    """Aggregated stats for one day."""
     total_prompt_tokens: int = 0
     total_completion_tokens: int = 0
     total_tokens: int = 0
@@ -57,7 +71,7 @@ class DailyStats(BaseModel):
 
 
 class RecentRecord(BaseModel):
-    """单次 LLM 调用记录（脱敏）。"""
+    """A single LLM call record (redacted)."""
     ts: float
     model: str = "unknown"
     pt: int = 0          # prompt_tokens（含 cached）
@@ -69,23 +83,24 @@ class RecentRecord(BaseModel):
 
 
 class HistogramStat(BaseModel):
-    """单个 histogram 指标的桶分布。"""
+    """Bucket distribution of a single histogram metric."""
     count: int = 0
     sum: float = 0.0
     buckets: List[int] = Field(default_factory=list)
 
 
 class InstrumentSnapshot(BaseModel):
-    """客户端 utils/instrument 的 60s 窗口 snapshot。
+    """60s-window snapshot from the client's utils/instrument.
 
-    counters / histograms 的 key 是 ``name`` 或 ``name|k1=v1,k2=v2``。
-    bounds 是 histogram 桶边界数组，len == 任一 histogram.buckets 长度 - 1
-    （多出来的那个桶是溢出桶）。
+    Keys of counters / histograms are ``name`` or ``name|k1=v1,k2=v2``.
+    bounds is the histogram bucket-boundary array, len == length of any
+    histogram.buckets - 1 (the extra bucket is the overflow bucket).
 
-    服务端当前不强 schema 化（events.payload 列原样保存 JSON），dashboard /
-    aggregation 是后续 Batch 的工作。这里声明只是为了让 server 代码能从
-    submission.payload.instruments 类型安全地访问字段，不被当成 unknown
-    field 静默忽略。
+    The server currently does not enforce a schema (the events.payload column stores
+    the JSON verbatim); dashboards / aggregation are later Batch work. This
+    declaration only exists so server code can access fields on
+    submission.payload.instruments type-safely instead of having them silently
+    dropped as unknown fields.
     """
     window_start: float = 0.0
     window_end: float = 0.0
@@ -99,7 +114,7 @@ class InstrumentSnapshot(BaseModel):
 
 
 class TelemetryEvent(BaseModel):
-    """客户端上报的遥测负载。"""
+    """Telemetry payload reported by the client."""
     device_id: str = Field(..., min_length=16, max_length=128)
     app_version: str = Field(default="unknown", max_length=64)
     # 三个用户维度字段。`branch` 在客户端首次启动时随机抽签后落盘，后续保持稳
@@ -126,7 +141,7 @@ class TelemetryEvent(BaseModel):
 
 
 class TelemetrySubmission(BaseModel):
-    """带 HMAC 签名信封的上报请求。"""
+    """Submission request with an HMAC-signed envelope."""
     timestamp: float
     signature: str = Field(..., min_length=64, max_length=64)
     payload: TelemetryEvent
