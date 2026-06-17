@@ -1117,6 +1117,13 @@ def test_new_user_icebreaker_choice_listener_posts_context():
     )[0]
 
     assert "const option = detail && detail.option" in choice_block
+    assert "if (session.choiceInFlight)" in choice_block
+    assert choice_block.index("if (sessionId && sessionId !== session.id)") < choice_block.index(
+        "session.choiceInFlight = true;"
+    )
+    assert "try {" in choice_block
+    assert "finally {" in choice_block
+    assert "session.choiceInFlight = false;" in choice_block
     assert "const choice = String((detail && detail.choice) || option.choice || '')" in choice_block
     assert "const label = String((detail && detail.label) || option.label || '')" in choice_block
     assert "const contextSynced = await postContext('user', label || choice, session.id);" in choice_block
