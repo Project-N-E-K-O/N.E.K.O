@@ -646,7 +646,10 @@
         if (isNewUserIcebreakerPeriodActive()) {
             console.log('[Proactive] new-user icebreaker active, retry schedule later');
             S.proactiveChatBackoffLevel = 0;
-            S.proactiveChatTimer = setTimeout(scheduleProactiveChat, getNewUserIcebreakerRetryDelayMs());
+            S.proactiveChatTimer = setTimeout(
+                scheduleProactiveChat,
+                getNewUserIcebreakerBlockingRetryMs() || getNewUserIcebreakerRetryDelayMs()
+            );
             return;
         }
         if (!canTriggerProactively()) {

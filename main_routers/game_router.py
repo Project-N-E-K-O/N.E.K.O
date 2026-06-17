@@ -6969,6 +6969,8 @@ async def game_project_context(game_type: str, request: Request):
     if not text:
         return {"ok": False, "reason": "missing_text"}
 
+    if "lanlan_name" not in data:
+        return {"ok": False, "reason": "missing_lanlan_name"}
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
     if not lanlan_name:
         return {"ok": False, "reason": "missing_lanlan_name"}
@@ -7028,6 +7030,14 @@ async def game_project_context(game_type: str, request: Request):
             "lanlan_name": lanlan_name,
             "game_type": game_type,
             "session_id": str(data.get("session_id") or ""),
+        }
+    if ok is False:
+        return {
+            "ok": False,
+            "reason": "context_write_failed",
+            "lanlan_name": lanlan_name,
+            "game_type": game_type,
+            "session_id": session_id,
         }
 
     return {

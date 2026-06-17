@@ -901,6 +901,8 @@ def test_compact_history_open_request_drives_export_panel():
     assert "lastCompactHistoryOpenRequestIdRef.current = request.id;" in app_source
     assert "openCompactExportHistory();" in app_source
     assert "closeCompactExportHistory();" in app_source
+    assert app_source.count("const lastCompactHistoryOpenRequestIdRef = useRef('');") == 1
+    assert app_source.count("const request = compactHistoryOpenRequest;") == 1
 
     assert "const compactHistoryOpenRequestSchema = z.object({" in schema_source
     assert "compactHistoryOpenRequest: compactHistoryOpenRequestSchema.optional()" in schema_source
