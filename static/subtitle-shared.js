@@ -1442,6 +1442,21 @@
             }
         }
 
+        function hasHostCloseBridge() {
+            return !!(options.api && typeof options.api.changeSettings === 'function');
+        }
+
+        function hideLocalPanelAfterClose(source) {
+            refs.display.classList.remove('show');
+            refs.display.classList.add('hidden');
+            updateRenderState({
+                visible: false,
+                subtitleEnabled: false
+            }, {
+                source: source || 'subtitle-ui-close-local'
+            });
+        }
+
         function applyState(nextState, detail) {
             applySettingsToUi(refs, nextState, options);
             applyUiLabels(refs, nextState);
@@ -1599,6 +1614,12 @@
                         patch: { subtitleEnabled: false },
                         state: nextState
                     });
+                    if (!hasHostCloseBridge()) {
+                        hideLocalPanelAfterClose('subtitle-ui-close-fallback');
+                    }
+                } else {
+                    updateSettings({ subtitleEnabled: false }, { source: 'subtitle-ui-close' });
+                    hideLocalPanelAfterClose('subtitle-ui-close-fallback');
                 }
             };
             refs.closeBtn.addEventListener('click', onCloseClick);

@@ -840,6 +840,10 @@ def test_subtitle_panel_close_fallback_updates_state_before_propagating(
                 enabled: shared.getSettings().subtitleEnabled,
                 storedEnabled: window.localStorage.getItem('subtitleEnabled'),
                 panelState: display.dataset.subtitlePanelState,
+                isHidden: display.classList.contains('hidden'),
+                isShown: display.classList.contains('show'),
+                renderVisible: shared.getRenderState().visible,
+                renderEnabled: shared.getRenderState().subtitleEnabled,
                 propagated,
             };
             controller.destroy();
@@ -852,6 +856,10 @@ def test_subtitle_panel_close_fallback_updates_state_before_propagating(
         "enabled": False,
         "storedEnabled": "false",
         "panelState": "clean",
+        "isHidden": True,
+        "isShown": False,
+        "renderVisible": False,
+        "renderEnabled": False,
         "propagated": [{"type": "toggle", "value": False, "enabled": False}],
     }
 
