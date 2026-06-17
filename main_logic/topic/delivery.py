@@ -220,6 +220,18 @@ def _topic_manager_release_gate_open(mgr: Any, lanlan_name: str) -> bool:
     return allowed
 
 
+def _topic_proactive_switch_open(lanlan_name: str) -> bool:
+    try:
+        from utils.preferences import load_global_conversation_settings
+        enabled = bool(load_global_conversation_settings().get("proactiveChatEnabled", True))
+    except Exception as exc:
+        logger.debug("[%s] topic hook proactive switch check failed open: %s", lanlan_name, exc)
+        return True
+    if not enabled:
+        logger.info("[%s] topic hook delivery skipped: proactive chat is disabled", lanlan_name)
+    return enabled
+
+
 def topic_hook_delivery_available(
     lanlan_name: str,
     *,
@@ -228,6 +240,8 @@ def topic_hook_delivery_available(
     """Preflight whether a topic hook could be delivered right now."""
     mgr = _resolve_topic_manager(lanlan_name)
     if mgr is None:
+        return False
+    if not _topic_proactive_switch_open(lanlan_name):
         return False
     is_goodbye_silent = getattr(mgr, "is_goodbye_silent", None)
     has_silent_gate = (

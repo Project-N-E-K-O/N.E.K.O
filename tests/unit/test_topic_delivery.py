@@ -270,6 +270,26 @@ def test_topic_hook_delivery_available_false_when_manager_cannot_release():
         clear_topic_session_manager_getter()
 
 
+def test_topic_hook_delivery_available_false_when_proactive_chat_disabled(monkeypatch):
+    class FakeManager:
+        def topic_hook_delivery_allowed(self):
+            return True
+
+        def submit_proactive_callback(self, callback, *, priority=0, coalesce_key=None):
+            raise AssertionError("preflight should not submit")
+
+    monkeypatch.setattr(
+        "utils.preferences.load_global_conversation_settings",
+        lambda: {"proactiveChatEnabled": False},
+    )
+    clear_topic_session_manager_getter()
+    register_topic_session_manager_getter(lambda name: FakeManager())
+    try:
+        assert topic_hook_delivery_available("妮可") is False
+    finally:
+        clear_topic_session_manager_getter()
+
+
 @pytest.mark.asyncio
 async def test_trigger_topic_hook_once_retracts_submitted_callback_when_cancelled(monkeypatch):
     delivered_batches = []

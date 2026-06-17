@@ -1279,12 +1279,16 @@ class UserActivityTracker:
         # Spin up the activity_guess background loop on first snapshot
         # request. The loop self-throttles (state-signature dedup +
         # anti-thrash interval), so starting it eagerly is cheap.
-        if self._activity_guess_loop_task is None:
-            self._activity_guess_loop_task = asyncio.create_task(
-                self._activity_guess_loop(),
-                name=f'activity_guess_loop_{self.lanlan_name}',
-            )
+        self.ensure_activity_guess_loop_started()
         logger.info(
             '[%s] UserActivityTracker started (shared system collector + guess loop)',
             self.lanlan_name,
         )
+
+    def ensure_activity_guess_loop_started(self) -> None:
+        """Start the 20s heartbeat without starting OS signal collection."""
+        if self._activity_guess_loop_task is None or self._activity_guess_loop_task.done():
+            self._activity_guess_loop_task = asyncio.create_task(
+                self._activity_guess_loop(),
+                name=f'activity_guess_loop_{self.lanlan_name}',
+            )

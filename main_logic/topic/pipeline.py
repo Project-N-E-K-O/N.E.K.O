@@ -864,6 +864,7 @@ class TopicHookPool:
         keywords = _material_keywords(material)
         bigram_units = _material_bigram_units(material)
         hook_id_hash = _topic_fingerprint(hook_id)
+        interest_hash = _topic_fingerprint(interest)
         keyword_hashes = _topic_fingerprints(keywords)
         bigram_hashes = _topic_fingerprints(bigram_units)
         self._prune_used_topics(name)
@@ -873,6 +874,8 @@ class TopicHookPool:
             if hook_id_hash and record.get("hook_id_hash") == hook_id_hash:
                 return True
             if interest and record.get("interest") == interest:
+                return True
+            if interest_hash and record.get("interest_hash") == interest_hash:
                 return True
             # Primary: a shared LLM keyword means the same topic.
             record_keywords = set(record.get("keywords") or ())
@@ -926,6 +929,7 @@ class TopicHookPool:
                     "hook_id": str(material.get("hook_id") or "").strip(),
                     "hook_id_hash": _topic_fingerprint(material.get("hook_id")),
                     "interest": _clean_text(material.get("interest"), token_limit=90),
+                    "interest_hash": _topic_fingerprint(material.get("interest")),
                     "keywords": sorted(_material_keywords(material)),
                     "keyword_hashes": sorted(_topic_fingerprints(_material_keywords(material))),
                     "bigram_units": sorted(_material_bigram_units(material)),
@@ -973,6 +977,9 @@ class TopicHookPool:
                         "hook_id_hash": _stored_topic_fingerprint(
                             entry.get("hook_id_hash") or entry.get("hook_id")
                         ),
+                        "interest_hash": _stored_topic_fingerprint(
+                            entry.get("interest_hash") or entry.get("interest")
+                        ),
                         "keyword_hashes": sorted(
                             _stored_topic_fingerprints(
                                 entry.get("keyword_hashes") or entry.get("keywords") or []
@@ -1012,6 +1019,9 @@ class TopicHookPool:
                             "used_at": float(record.get("used_at") or 0.0),
                             "hook_id_hash": _stored_topic_fingerprint(
                                 record.get("hook_id_hash") or record.get("hook_id")
+                            ),
+                            "interest_hash": _stored_topic_fingerprint(
+                                record.get("interest_hash") or record.get("interest")
                             ),
                             "keyword_hashes": sorted(
                                 _stored_topic_fingerprints(

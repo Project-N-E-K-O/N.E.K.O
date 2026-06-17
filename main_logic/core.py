@@ -4394,7 +4394,7 @@ class LLMSessionManager:
                 logger.warning("[%s] idle_session_reset 单轮异常: %s", self.lanlan_name, e)
 
     async def _maybe_kick_activity_loop_for_context_prompt(self) -> None:
-        """Start the activity tracker's background heartbeat so the context prompt can fire.
+        """Start the activity tracker's background heartbeat.
 
         Context-prompt detection (entering gaming/entertainment / entering focused
         work) hangs off the tracker's 20s heartbeat, and the heartbeat lazy-starts
@@ -4402,15 +4402,16 @@ class LLMSessionManager:
         paths where proactive chat is on. Proactive chat defaults to off at first
         start, so without an explicit kick a user who hasn't enabled proactive chat
         would never detect entering a game and the prompt would never show. Here we
-        kick once when the session comes up (get_snapshot is idempotent and won't
-        start the loop twice).
+        kick once when the session comes up.
 
         The context prompt used to be gated to the vision_chat_default_off A/B group;
-        it's now merged into main and open to everyone, so the kick is no longer
-        branch-gated. It is still gated on the user having *explicitly* allowed
-        autonomous vision (privacy mode off) — see the persisted-pref check below.
+        it's now merged into main and open to everyone. OS signal collection is still
+        gated on the user having *explicitly* allowed autonomous vision (privacy mode
+        off), but the topic candidate heartbeat is privacy-independent and should
+        run even when vision is disabled.
         """
         try:
+            self._activity_tracker.ensure_activity_guess_loop_started()
             # 只有当 proactiveVisionEnabled 已被显式落盘为 True 才 kick：get_snapshot 会起
             # SystemSignalCollector 采集窗口/进程信号，且绕过隐私模式（loop 只跳过 LLM、
             # collector 仍在采）。不能用 is_privacy_mode_active()——它在 proactiveVisionEnabled

@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import inspect
 import json
 import threading
@@ -914,8 +915,8 @@ async def test_topic_pool_restored_signals_respect_persisted_used_history(tmp_pa
         analyzer_calls += 1
         return [
             {
-                "interest": "重启后不该立刻重投的话题",
-                "keywords": ["跨重启同题"],
+                "interest": "买车",
+                "keywords": [],
                 "relevance": 90,
             }
         ]
@@ -939,14 +940,14 @@ async def test_topic_pool_restored_signals_respect_persisted_used_history(tmp_pa
     await pool.process_now("妮可", lang="zh-CN")
     await asyncio.sleep(0.02)
 
-    assert delivered == ["重启后不该立刻重投的话题"]
+    assert delivered == ["买车"]
     used_path = path.with_name("topic_signals.used_topics.json")
     used_payload = json.loads(used_path.read_text(encoding="utf-8"))
     assert used_payload["characters"]["妮可"][0]["used_at"] > 0
     used_text = used_path.read_text(encoding="utf-8")
-    assert used_payload["characters"]["妮可"][0]["keyword_hashes"]
-    assert "重启后不该立刻重投的话题" not in used_text
-    assert "跨重启同题" not in used_text
+    assert used_payload["characters"]["妮可"][0]["interest_hash"]
+    assert used_payload["characters"]["妮可"][0]["keyword_hashes"] == []
+    assert "买车" not in used_text
 
     store = TopicSignalStore(min_user_turns_for_topic=1, persistence_path=path)
     store.note_turn("妮可", actor="user", text="重启后仍然残留的同题候选证据", now=time.time())
@@ -967,7 +968,7 @@ async def test_topic_pool_restored_signals_respect_persisted_used_history(tmp_pa
     await asyncio.sleep(0.02)
 
     assert analyzer_calls == 2
-    assert delivered == ["重启后不该立刻重投的话题"]
+    assert delivered == ["买车"]
     assert restarted.get_ready_materials("妮可") == []
 
 
@@ -1181,6 +1182,21 @@ async def test_activity_tracker_topic_candidate_kickoff_does_not_block_heartbeat
     release.set()
     await asyncio.wait_for(tracker._topic_candidate_task, timeout=1.0)
     assert calls == [{"lanlan_name": "妮可", "lang": "zh-CN", "now": 123.0}]
+
+
+@pytest.mark.asyncio
+async def test_activity_tracker_can_start_topic_heartbeat_without_collector():
+    from main_logic.activity.tracker import UserActivityTracker
+
+    tracker = UserActivityTracker("妮可")
+    tracker.ensure_activity_guess_loop_started()
+
+    assert tracker._activity_guess_loop_task is not None
+    assert tracker._collector_started is False
+
+    tracker._activity_guess_loop_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await tracker._activity_guess_loop_task
 
 
 def test_activity_tracker_topic_candidate_heartbeat_uses_full_global_locale():
