@@ -889,6 +889,34 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     assert "id: index === 0 ? 'toolFan:native' : 'toolFan:native:' + index" in script
 
 
+def test_compact_tool_fan_labels_are_plain_noninteractive_tags():
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+
+    tooltip_block = css_block(
+        styles,
+        ".compact-input-tool-fan .compact-input-tool-tooltip {",
+        ".compact-input-tool-fan .compact-input-tool-item:hover,",
+    )
+    visible_block = css_block(
+        styles,
+        '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:hover > .compact-input-tool-tooltip,\n'
+        '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:focus-within > .compact-input-tool-tooltip {',
+        ".compact-input-tool-fan .compact-input-tool-item > img,",
+    )
+
+    assert "pointer-events: none;" in tooltip_block
+    assert "user-select: none;" in tooltip_block
+    assert "left: calc(100% + 5px);" in tooltip_block
+    assert "top: calc(100% - 6px);" in tooltip_block
+    assert "border-radius: 0;" in tooltip_block
+    assert "background: #ffffff;" in tooltip_block
+    assert "box-shadow: none;" in tooltip_block
+    assert "scale(" not in tooltip_block
+    assert "transform-origin: 0 0;" in tooltip_block
+    assert "transform: translate(0, 0);" in visible_block
+    assert "scale(" not in visible_block
+
+
 def test_compact_tool_wheel_rotate_request_is_present_in_host_and_built_bundle():
     host_source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
     app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
