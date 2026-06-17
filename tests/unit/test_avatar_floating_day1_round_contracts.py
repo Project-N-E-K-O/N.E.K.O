@@ -368,6 +368,7 @@ def test_tutorial_exit_clears_externalized_guide_chat_messages():
     assert "this.clearGuideChatMessages();" in destroy_block
     assert "clearExternalizedChatGuideMessages()" in takeover
     assert "this.clearExternalizedChatGuideMessages();" in fx_block
+    assert "this.setExternalizedChatInputLocked(false, 'clear-externalized-chat-fx');" in fx_block
 
 
 def test_pc_external_chat_ghost_cursor_routes_to_global_overlay_only():
