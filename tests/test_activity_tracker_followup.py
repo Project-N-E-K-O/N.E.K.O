@@ -14,6 +14,7 @@ to avoid touching the real user_preferences.json, and feeds a fabricated
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 
 import pytest
@@ -906,6 +907,9 @@ def test_conversation_turn_dispatcher_updates_topic_quiet_clock_for_redacted_tur
     timestamps = []
 
     class FakeTopicPool:
+        def purge_all_accumulated_signals(self):
+            purges.append("*")
+
         def purge_accumulated_signals(self, lanlan_name):
             purges.append(lanlan_name)
 
@@ -921,8 +925,20 @@ def test_conversation_turn_dispatcher_updates_topic_quiet_clock_for_redacted_tur
 
     dispatcher.note_user_message(text='secret user turn', now=1.0)
 
-    assert purges == ['test_lanlan']
+    assert purges == ['*']
     assert timestamps == [('test_lanlan', 'zh-CN', 1.0)]
+
+
+def test_activity_guess_loop_purges_topic_signals_on_private_ticks():
+    from main_logic.activity.tracker import UserActivityTracker
+
+    source = inspect.getsource(UserActivityTracker._activity_guess_loop)
+    private_branch = source[
+        source.index("if rule_snap.state == 'private':"):
+        source.index("from utils.language_utils")
+    ]
+
+    assert "await self._purge_topic_candidates_for_privacy(now=ts)" in private_branch
 
 
 # ── Hot-reload (Codex P2) ───────────────────────────────────────────

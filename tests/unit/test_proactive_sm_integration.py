@@ -609,6 +609,51 @@ async def test_drain_agent_callbacks_resolves_delivery_ack():
     assert mgr.pending_agent_callbacks == []
 
 
+async def test_drain_agent_callbacks_rechecks_topic_release_gate():
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    mgr.topic_hook_delivery_allowed = lambda: True
+    topic_future = asyncio.get_running_loop().create_future()
+    normal_future = asyncio.get_running_loop().create_future()
+    topic_cb = {
+        "_callback_delivery_id": "id-topic-drain",
+        "channel": "topic_hook",
+        "source_kind": "topic",
+        "status": "completed",
+        "summary": "stale deep topic",
+        "_topic_release_available": lambda: False,
+        DELIVERY_ACK_FUTURE_KEY: topic_future,
+    }
+    normal_cb = {
+        "_callback_delivery_id": "id-normal-drain",
+        "status": "completed",
+        "summary": "regular callback",
+        DELIVERY_ACK_FUTURE_KEY: normal_future,
+    }
+    topic_extra = {
+        "_callback_delivery_id": "id-topic-drain",
+        "origin": "event",
+        "summary": "stale deep topic",
+    }
+    normal_extra = {
+        "_callback_delivery_id": "id-normal-drain",
+        "origin": "task_result",
+        "summary": "regular callback",
+    }
+    mgr.pending_agent_callbacks = [topic_cb, normal_cb]
+    mgr.pending_extra_replies = [topic_extra, normal_extra]
+
+    rendered = LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
+
+    assert "regular callback" in rendered
+    assert "stale deep topic" not in rendered
+    assert topic_future.done()
+    assert topic_future.result() is False
+    assert normal_future.done()
+    assert normal_future.result() is True
+    assert mgr.pending_agent_callbacks == []
+    assert mgr.pending_extra_replies == [normal_extra]
+
+
 async def test_voice_mode_reject_during_await_not_pruned():
     """TOCTOU 回归（Codex P1）：error 事件可能在 inject 仍 await 期间由
     handle_messages 派发 on_rejected——此时 cb 还在队列里（乐观 prune 还没跑）。

@@ -103,6 +103,35 @@ def test_topic_signal_store_flushes_pruned_entries_after_load(tmp_path):
     assert entries[0]["text"] == "仍然有效的新证据"
 
 
+def test_topic_pool_privacy_purge_flushes_only_when_signals_changed(monkeypatch):
+    pool = TopicHookPool(
+        auto_schedule=False,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "这是需要清掉的隐私前证据")
+    flushes = []
+    monkeypatch.setattr(pool._signal_store, "flush", lambda: flushes.append("flush"))
+
+    pool._purge_accumulated_signals("妮可")
+    pool._purge_accumulated_signals("妮可")
+
+    assert flushes == ["flush"]
+
+
+def test_topic_pool_global_privacy_purge_clears_all_characters():
+    pool = TopicHookPool(
+        auto_schedule=False,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "第一个角色的隐私前证据")
+    pool.note_user_message("兰兰", "第二个角色的隐私前证据")
+
+    pool.purge_all_accumulated_signals()
+
+    assert pool._signal_store.names() == []
+    assert pool._dirty == set()
+
+
 def test_topic_signal_store_batches_persistence_off_chat_path(monkeypatch, tmp_path):
     from main_logic.topic import signals as topic_signals
 

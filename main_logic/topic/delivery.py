@@ -207,6 +207,21 @@ def topic_hook_delivery_available(lanlan_name: str) -> bool:
     mgr = _resolve_topic_manager(lanlan_name)
     if mgr is None:
         return False
+    is_goodbye_silent = getattr(mgr, "is_goodbye_silent", None)
+    has_silent_gate = (
+        "is_goodbye_silent" in getattr(mgr, "__dict__", {})
+        or hasattr(type(mgr), "is_goodbye_silent")
+    )
+    if has_silent_gate and callable(is_goodbye_silent):
+        try:
+            if bool(is_goodbye_silent()):
+                logger.info(
+                    "[%s] topic hook delivery skipped: goodbye silence is active",
+                    lanlan_name,
+                )
+                return False
+        except Exception:
+            pass
     if not _topic_activity_gate_open(mgr, lanlan_name):
         return False
     if callable(getattr(mgr, "submit_proactive_callback", None)):

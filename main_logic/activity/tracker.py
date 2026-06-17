@@ -1085,6 +1085,7 @@ class UserActivityTracker:
                 # until the user leaves the private app; on resume the
                 # state-signature dedup will refresh naturally.
                 if rule_snap.state == 'private':
+                    await self._purge_topic_candidates_for_privacy(now=ts)
                     continue
 
                 from utils.language_utils import get_global_language, get_global_language_full

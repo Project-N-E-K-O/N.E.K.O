@@ -7478,11 +7478,24 @@ class LLMSessionManager:
         if not self.pending_agent_callbacks:
             return ""
         callbacks_snapshot = list(self.pending_agent_callbacks)
+        if self._retract_unavailable_topic_hook_snapshots(callbacks_snapshot):
+            logger.info(
+                "[%s] drain_agent_callbacks_for_llm: topic hook dropped before passive drain — delivery gate closed",
+                self.lanlan_name,
+            )
+        self._purge_retracted_agent_callback_extras(callbacks_snapshot)
+        self._purge_retracted_agent_callbacks()
+        active_callbacks = [
+            cb for cb in callbacks_snapshot
+            if not cb.get(DELIVERY_RETRACTED_KEY)
+        ]
+        if not active_callbacks:
+            return ""
         delivered_to_prompt = False
         try:
             _lang = normalize_language_code(getattr(self, 'user_language', '') or '', format='short') or get_global_language()
             rendered = _build_callback_instruction(
-                callbacks_snapshot,
+                active_callbacks,
                 lang=_lang,
                 lanlan_name=getattr(self, "lanlan_name", "") or "",
                 master_name=getattr(self, "master_name", "") or "",
@@ -7492,7 +7505,7 @@ class LLMSessionManager:
             return rendered
         finally:
             if delivered_to_prompt:
-                for cb in callbacks_snapshot:
+                for cb in active_callbacks:
                     resolve_callback_delivery_ack(cb, True)
             self.pending_agent_callbacks.clear()
 

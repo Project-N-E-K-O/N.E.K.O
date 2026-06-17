@@ -278,14 +278,23 @@ class TopicHookPool:
         destructive policy point, while normal analysis consumption keeps
         durable evidence until the pending hook is done.
         """
-        self._purge_generation[name] += 1
-        self._signal_store.clear(name)
-        self._signal_store.flush()
+        had_dirty = name in self._dirty
+        changed = self._signal_store.clear(name)
         self._dirty.discard(name)
+        if changed or had_dirty:
+            self._purge_generation[name] += 1
+        if changed:
+            self._signal_store.flush()
 
     def purge_accumulated_signals(self, lanlan_name: str) -> None:
         """Public privacy-redaction hook for conversation-turn sinks."""
         self._purge_accumulated_signals(str(lanlan_name or "default"))
+
+    def purge_all_accumulated_signals(self) -> None:
+        """Drop privacy-tainted candidate evidence for every known character."""
+        names = set(self._signal_store.names()) | set(self._dirty)
+        for name in names:
+            self._purge_accumulated_signals(name)
 
     def _consume_accumulated_signals(self, name: str) -> None:
         """Consume analyzed evidence for this process, but keep it durable.
@@ -307,13 +316,13 @@ class TopicHookPool:
         cutoff = None
         if material is not None:
             cutoff = material.get("_signal_cutoff_at")
-        self._signal_store.clear_until(name, timestamp=cutoff)
-        self._signal_store.flush()
+        if self._signal_store.clear_until(name, timestamp=cutoff):
+            self._signal_store.flush()
 
     def _discard_analyzed_signals(self, name: str, cutoff: float | None) -> None:
         """Drop durable evidence after analysis proves no hook is pending."""
-        self._signal_store.clear_until(name, timestamp=cutoff)
-        self._signal_store.flush()
+        if self._signal_store.clear_until(name, timestamp=cutoff):
+            self._signal_store.flush()
         self._dirty.discard(name)
 
     def note_user_message(self, lanlan_name: str, text: Any, *, lang: str = "zh") -> None:

@@ -200,30 +200,38 @@ class TopicSignalStore:
             self._prune(name, now=timestamp)
         self._request_persist()
 
-    def clear(self, lanlan_name: str) -> None:
+    def clear(self, lanlan_name: str) -> bool:
+        name = str(lanlan_name or "default")
         with self._persist_lock:
-            self._turns.pop(str(lanlan_name or "default"), None)
-        self._request_persist()
+            changed = name in self._turns
+            if changed:
+                self._turns.pop(name, None)
+        if changed:
+            self._request_persist()
+        return changed
 
-    def clear_until(self, lanlan_name: str, *, timestamp: float | None) -> None:
+    def clear_until(self, lanlan_name: str, *, timestamp: float | None) -> bool:
         if timestamp is None:
-            self.clear(lanlan_name)
-            return
+            return self.clear(lanlan_name)
         name = str(lanlan_name or "default")
         cutoff = float(timestamp)
         with self._persist_lock:
             turns = self._turns.get(name)
             if not turns:
-                return
+                return False
             retained = [
                 turn for turn in turns
                 if float(turn.timestamp) > cutoff
             ][-self._max_turns:]
+            changed = len(retained) != len(turns)
+            if not changed:
+                return False
             if retained:
                 self._turns[name] = deque(retained, maxlen=self._max_turns)
             else:
                 self._turns.pop(name, None)
         self._request_persist()
+        return True
 
     def names(self) -> list[str]:
         with self._persist_lock:
