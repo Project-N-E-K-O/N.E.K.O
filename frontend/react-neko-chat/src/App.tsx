@@ -3678,7 +3678,6 @@ function CompactChatApp({
     setCompactInputToolFanOpen(false);
     setToolMenuOpen(false);
     dispatchCompactToolFanOpenState(false);
-    setToolMenuOpen(false);
     if (!options?.afterClose) return;
     const desktopWindow = window as Window & {
       __nekoDesktopCompactLayout?: {
