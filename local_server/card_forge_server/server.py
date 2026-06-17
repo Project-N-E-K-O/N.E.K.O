@@ -617,6 +617,7 @@ async def arena_forge_facts(
 
 @app.post("/forge/card-story")
 async def arena_forge_card_story(body: dict[str, Any]):
+    """用 NEKO 核心 LLM 配置把故事引子生成 Forged 卡牌专属小故事。"""
     request_id = f"forge-{uuid.uuid4().hex[:10]}"
     safe_body = body if isinstance(body, dict) else {}
     runtime_hint = str(
@@ -645,7 +646,6 @@ async def arena_forge_card_story(body: dict[str, Any]):
             "attrName": card.get("attrName"),
         },
     )
-    """用 NEKO 核心 LLM 配置把故事引子生成 Forged 卡牌专属小故事。"""
     try:
         from forge_story_generator import ForgeStoryGenerationError, generate_forge_card_story
 

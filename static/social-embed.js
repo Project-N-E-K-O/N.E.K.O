@@ -297,12 +297,12 @@
     var dot = document.createElement('span');
     dot.className = 'neko-social-embed-dot';
     title.appendChild(dot);
-    title.appendChild(document.createTextNode('猫娘社区'));
+    title.appendChild(document.createTextNode((window.t && window.t('buttons.social')) || 'Neko Community'));
 
     var closeBtn = document.createElement('button');
     closeBtn.className = 'neko-social-embed-close';
     closeBtn.type = 'button';
-    closeBtn.setAttribute('aria-label', '关闭');
+    closeBtn.setAttribute('aria-label', (window.t && window.t('common.close')) || 'Close');
     closeBtn.textContent = '✕'; // ✕
     closeBtn.addEventListener('click', close);
 

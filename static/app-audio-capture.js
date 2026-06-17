@@ -1501,6 +1501,20 @@
         scrollNode.addEventListener('scroll', showScrollbar, { passive: true });
         scrollNode.addEventListener('wheel', showScrollbar, { passive: true });
         scrollNode.addEventListener('touchmove', showScrollbar, { passive: true });
+        return function cleanupTransientMicPopupScrollbar() {
+            if (hideTimer) {
+                window.clearTimeout(hideTimer);
+                hideTimer = null;
+            }
+            if (frameId) {
+                window.cancelAnimationFrame(frameId);
+                frameId = null;
+            }
+            scrollNode.removeEventListener('scroll', showScrollbar);
+            scrollNode.removeEventListener('wheel', showScrollbar);
+            scrollNode.removeEventListener('touchmove', showScrollbar);
+            if (thumb.parentNode) thumb.parentNode.removeChild(thumb);
+        };
     }
 
     /** 请求麦克风权限并缓存设备列表 */
@@ -1568,16 +1582,17 @@
             micPopup.style.overflowY = 'hidden';
             var audioInputs = cachedMicDevices || [];
             if (!isPopupAvailable()) return false;
+            if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
+                micPopup.__nekoMicScrollbarCleanup();
+                micPopup.__nekoMicScrollbarCleanup = null;
+            }
             micPopup.innerHTML = '';
 
             // ===== 双栏布局 =====
             var leftColumn = document.createElement('div');
             leftColumn.className = 'neko-mic-popup-scroll';
             Object.assign(leftColumn.style, { flex: '0 0 100%', width: '100%', minWidth: '0', minHeight: '0', maxWidth: '100%', display: 'flex', flexDirection: 'column', overflowY: 'auto' });
-            attachTransientMicPopupScrollbar(leftColumn, micPopup);
-
-            var rightColumn = document.createElement('div');
-            Object.assign(rightColumn.style, { flex: '1', minWidth: '160px', display: 'flex', flexDirection: 'column', overflowY: 'auto' });
+            micPopup.__nekoMicScrollbarCleanup = attachTransientMicPopupScrollbar(leftColumn, micPopup);
 
             if (micPopup.id) {
                 document.querySelectorAll('[data-neko-sidepanel-owner="' + micPopup.id + '"].neko-mic-subwindow').forEach(function (panel) {
