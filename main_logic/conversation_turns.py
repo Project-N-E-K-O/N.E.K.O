@@ -39,6 +39,7 @@ class ConversationTurnEvent:
     lang: str
     timestamp: float
     text_allowed: bool
+    had_text: bool = False
 
 
 class ConversationTurnSink(Protocol):
@@ -101,6 +102,7 @@ class ConversationTurnDispatcher:
             lang=self._language,
             timestamp=ts,
             text_allowed=text_allowed,
+            had_text=bool(text),
         )
         for sink in list(self._sinks):
             try:
@@ -136,9 +138,17 @@ class TopicHookTurnSink:
         return get_topic_hook_pool()
 
     def note_turn(self, event: ConversationTurnEvent) -> None:
-        if not event.text_allowed or not event.text:
-            return
         pool = self._pool()
+        if not event.text_allowed or not event.text:
+            if event.had_text:
+                note_turn_timestamp = getattr(pool, "note_turn_timestamp", None)
+                if note_turn_timestamp is not None:
+                    note_turn_timestamp(
+                        event.lanlan_name,
+                        lang=event.lang,
+                        now=event.timestamp,
+                    )
+            return
         if event.actor == "user":
             pool.note_user_message(event.lanlan_name, event.text, lang=event.lang)
         else:

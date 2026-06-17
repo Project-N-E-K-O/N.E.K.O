@@ -306,6 +306,18 @@ class TopicHookPool:
         self._dirty.add(name)
         self._schedule(name)
 
+    def note_turn_timestamp(
+        self,
+        lanlan_name: str,
+        *,
+        lang: str = "zh",
+        now: float | None = None,
+    ) -> None:
+        """Refresh delivery quieting without storing private turn text."""
+        name = str(lanlan_name or "default")
+        self._last_turn_at[name] = float(now if now is not None else time.time())
+        self._langs[name] = lang or self._langs.get(name, "zh")
+
     def get_ready_materials(self, lanlan_name: str, *, max_items: int = 2) -> list[dict[str, Any]]:
         name = str(lanlan_name or "default")
         materials = sorted(
@@ -554,6 +566,9 @@ class TopicHookPool:
             # task (off the user hot path) and caches onto current_material, so
             # a reschedule reuses it instead of re-searching. The actual open is
             # re-gated by the delivery bridge AFTER this prepare completes.
+            if self._seconds_until_next_delivery_window(name) > 0:
+                self._reschedule_trigger_window(name, current_material, lang)
+                return
             await self._deepen_material(name, current_material, lang)
             if self._seconds_until_next_delivery_window(name) > 0:
                 self._reschedule_trigger_window(name, current_material, lang)

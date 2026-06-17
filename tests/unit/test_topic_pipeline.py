@@ -519,6 +519,50 @@ async def test_topic_pool_keeps_prepared_material_when_new_turn_arrives_during_p
 
 
 @pytest.mark.asyncio
+async def test_topic_pool_rechecks_quiet_window_before_delivery_prepare(monkeypatch):
+    deep_calls = []
+    delivered = []
+
+    async def fake_analyzer(*, lang, **kwargs):
+        return [
+            {
+                "interest": "旧话题",
+                "keywords": ["旧话题"],
+                "relevance": 90,
+            }
+        ]
+
+    async def fake_deepen(self, name, material, lang):
+        deep_calls.append(material["interest"])
+
+    async def fake_trigger(*, lanlan_name, material, lang):
+        delivered.append(material["interest"])
+        return True
+
+    monkeypatch.setattr(TopicHookPool, "_deepen_material", fake_deepen)
+    pool = TopicHookPool(
+        analyzer=fake_analyzer,
+        auto_schedule=False,
+        topic_trigger=fake_trigger,
+        trigger_delay_seconds=0.04,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "旧话题：我最近一直在纠结买车是不是代表生活进入新阶段")
+
+    await pool.process_now("妮可")
+    await asyncio.sleep(0.02)
+    pool.note_user_message("妮可", "新话题：我后来又开始纠结换工作和现实压力怎么平衡")
+    await asyncio.sleep(0.03)
+
+    assert deep_calls == []
+    assert delivered == []
+
+    await asyncio.sleep(0.05)
+    assert deep_calls == ["旧话题"]
+    assert delivered == ["旧话题"]
+
+
+@pytest.mark.asyncio
 async def test_topic_pool_process_ready_waits_for_candidate_quiet_window():
     calls = []
 
@@ -900,6 +944,50 @@ async def test_topic_pool_delivers_existing_pending_material_when_privacy_turns_
 
     assert delivered == [("妮可", "买车像进入新生活阶段", "zh-CN")]
     assert pool.get_ready_materials("妮可") == []
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_redacted_turn_timestamp_quiets_pending_delivery(monkeypatch):
+    delivered = []
+    privacy_enabled = False
+
+    async def fake_analyzer(*, lang, **kwargs):
+        return [
+            {
+                "interest": "买车像进入新生活阶段",
+                "hook": "从买车背后的生活阶段感切入",
+                "relevance": 95,
+            }
+        ]
+
+    async def fake_trigger(*, lanlan_name, material, lang):
+        delivered.append(material["interest"])
+        return True
+
+    monkeypatch.setattr(
+        "main_logic.topic.pipeline._privacy_mode_active",
+        lambda: privacy_enabled,
+    )
+    pool = TopicHookPool(
+        analyzer=fake_analyzer,
+        auto_schedule=False,
+        enable_online_enrichment=False,
+        topic_trigger=fake_trigger,
+        trigger_delay_seconds=0.04,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "我感觉买车算人生大事，最近一直在想它是不是代表生活进入新阶段", lang="zh-CN")
+
+    await pool.process_now("妮可")
+    await asyncio.sleep(0.02)
+    privacy_enabled = True
+    pool.note_turn_timestamp("妮可", lang="zh-CN")
+    await asyncio.sleep(0.03)
+
+    assert delivered == []
+
+    await asyncio.sleep(0.05)
+    assert delivered == ["买车像进入新生活阶段"]
 
 
 @pytest.mark.asyncio

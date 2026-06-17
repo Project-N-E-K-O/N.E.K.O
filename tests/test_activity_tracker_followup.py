@@ -899,6 +899,27 @@ def test_conversation_turn_dispatcher_redacts_when_privacy_check_fails():
     assert topic_calls == []
 
 
+def test_conversation_turn_dispatcher_updates_topic_quiet_clock_for_redacted_turns():
+    from main_logic.conversation_turns import ConversationTurnDispatcher, TopicHookTurnSink
+
+    timestamps = []
+
+    class FakeTopicPool:
+        def note_turn_timestamp(self, lanlan_name, *, lang='zh', now=None):
+            timestamps.append((lanlan_name, lang, now))
+
+    dispatcher = ConversationTurnDispatcher(
+        'test_lanlan',
+        language='zh-CN',
+        privacy_check=lambda: True,
+    )
+    dispatcher.add_sink(TopicHookTurnSink(pool_factory=lambda: FakeTopicPool()))
+
+    dispatcher.note_user_message(text='secret user turn', now=1.0)
+
+    assert timestamps == [('test_lanlan', 'zh-CN', 1.0)]
+
+
 # ── Hot-reload (Codex P2) ───────────────────────────────────────────
 
 
