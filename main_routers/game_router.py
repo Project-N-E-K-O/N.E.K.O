@@ -6958,31 +6958,58 @@ async def game_project_context(game_type: str, request: Request):
         return {"ok": False, "reason": "missing_lanlan_name"}
     _absorb_request_language(data, lanlan_name)
 
+    session_id = str(data.get("session_id") or "")
+    state = _get_active_game_route_state(lanlan_name, game_type)
+    stale_response = _game_route_stale_session_response(
+        state,
+        session_id,
+        lanlan_name=lanlan_name,
+        method="project_session_history",
+    )
+    if stale_response:
+        return stale_response
+
     mgr = get_session_manager().get(lanlan_name)
     if not mgr:
         return {"ok": False, "reason": "no_session_manager", "lanlan_name": lanlan_name}
 
     append_icebreaker_context_async = getattr(mgr, "append_icebreaker_context_async", None)
     append_icebreaker_context = getattr(mgr, "append_icebreaker_context", None)
-    if callable(append_icebreaker_context_async):
-        try:
-            ok = await append_icebreaker_context_async(role, text, request_id)
-        except TypeError:
-            ok = await append_icebreaker_context_async(role, text)
-    elif callable(append_icebreaker_context):
-        try:
-            ok = append_icebreaker_context(role, text, request_id)
-        except TypeError:
-            ok = append_icebreaker_context(role, text)
-    else:
-        return {"ok": False, "reason": "context_method_unavailable", "lanlan_name": lanlan_name}
+    try:
+        if callable(append_icebreaker_context_async):
+            try:
+                ok = await append_icebreaker_context_async(role, text, request_id)
+            except TypeError:
+                ok = await append_icebreaker_context_async(role, text)
+        elif callable(append_icebreaker_context):
+            try:
+                ok = append_icebreaker_context(role, text, request_id)
+            except TypeError:
+                ok = append_icebreaker_context(role, text)
+        else:
+            return {"ok": False, "reason": "context_method_unavailable", "lanlan_name": lanlan_name}
+    except Exception as exc:
+        logger.warning(
+            "new_user_icebreaker context append failed for %s: %s",
+            lanlan_name,
+            exc,
+            exc_info=True,
+        )
+        return {
+            "ok": False,
+            "reason": "context_write_failed",
+            "error": str(exc),
+            "lanlan_name": lanlan_name,
+            "game_type": game_type,
+            "session_id": str(data.get("session_id") or ""),
+        }
 
     return {
         "ok": bool(ok),
         "method": "project_session_history",
         "lanlan_name": lanlan_name,
         "game_type": game_type,
-        "session_id": str(data.get("session_id") or ""),
+        "session_id": session_id,
     }
 
 
