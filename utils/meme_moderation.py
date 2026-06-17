@@ -23,17 +23,15 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import json
 import os
-import sys
 import time
 from dataclasses import dataclass, replace
-from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
 
+from utils.api_config_loader import get_meme_moderation_config
 from utils.external_http_client import get_external_http_client
 from utils.logger_config import get_module_logger
 
@@ -110,43 +108,6 @@ def _read_env(name: str, default: str = "") -> str:
         if value:
             return value
     return default
-
-
-def _get_app_root() -> Path:
-    if getattr(sys, "frozen", False):
-        if hasattr(sys, "_MEIPASS"):
-            return Path(sys._MEIPASS)
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parents[1]
-
-
-def _get_meme_moderation_config_path() -> Path:
-    return _get_app_root() / "config" / "meme_moderation_config.json"
-
-
-def _read_meme_moderation_config() -> dict[str, Any]:
-    config_path = _get_meme_moderation_config_path()
-    if not config_path.is_file():
-        return {}
-    try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            loaded = json.load(f)
-    except Exception as exc:
-        logger.warning(
-            "[Meme Moderation] Failed to read %s; falling back to environment: %s",
-            config_path.name,
-            exc,
-        )
-        return {}
-    if not isinstance(loaded, dict):
-        logger.warning(
-            "[Meme Moderation] Ignoring %s (top-level value is not an object)",
-            config_path.name,
-        )
-        return {}
-    inner = loaded.get("meme_moderation_config")
-    raw = inner if isinstance(inner, dict) else loaded
-    return raw
 
 
 def _read_bool_env(name: str, default: bool) -> bool:
@@ -262,15 +223,7 @@ def _api_key_from_env() -> str:
 
 
 def _api_key_from_config() -> str:
-    config = _read_meme_moderation_config()
-    for key in ("api_key", "uniapi_api_key", "meme_moderation_api_key"):
-        raw = config.get(key)
-        if raw is None:
-            continue
-        value = str(raw).strip()
-        if value:
-            return value
-    return ""
+    return get_meme_moderation_config().get("api_key", "")
 
 
 def _api_key_from_runtime_sources() -> str:

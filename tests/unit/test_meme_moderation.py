@@ -9,6 +9,7 @@ import pytest
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 from utils import meme_moderation as mm
+from utils import api_config_loader as acl
 
 
 ENV_KEYS = [
@@ -52,7 +53,7 @@ def clean_moderation_state(monkeypatch, tmp_path):
     for key in ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
     config_path = tmp_path / "meme_moderation_config.json"
-    monkeypatch.setattr(mm, "_get_meme_moderation_config_path", lambda: config_path)
+    monkeypatch.setattr(acl, "_get_meme_moderation_config_path", lambda: config_path)
     mm.clear_meme_moderation_cache()
     yield
     mm.clear_meme_moderation_cache()
@@ -156,7 +157,7 @@ def use_direct_url_payload(monkeypatch):
 
 
 def write_config(data):
-    mm._get_meme_moderation_config_path().write_text(
+    acl._get_meme_moderation_config_path().write_text(
         json.dumps(data),
         encoding="utf-8",
     )
@@ -252,6 +253,26 @@ def test_wrapped_config_file_key_is_supported(monkeypatch):
 
     assert result.allowed is True
     assert client.post_calls[0]["headers"]["Authorization"] == "Bearer wrapped-key"
+
+
+def test_api_providers_config_key_is_fallback(monkeypatch):
+    use_direct_url_payload(monkeypatch)
+    monkeypatch.setattr(
+        acl,
+        "get_config",
+        lambda: {"meme_moderation_config": {"api_key": "fallback-key"}},
+    )
+    client = FakeClient(post_response=FakeResponse(json_data=moderation_json(False)))
+
+    result = run(
+        mm.moderate_meme_image_url(
+            "https://example.com/cat.jpg",
+            http_client=client,
+        )
+    )
+
+    assert result.allowed is True
+    assert client.post_calls[0]["headers"]["Authorization"] == "Bearer fallback-key"
 
 
 def test_unflagged_image_passes_and_uses_openai_payload(monkeypatch):
