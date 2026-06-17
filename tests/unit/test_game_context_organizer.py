@@ -223,6 +223,29 @@ async def test_context_organizer_overflow_fallback_ignores_stale_success(monkeyp
 
 
 @pytest.mark.unit
+def test_context_organizer_failure_fallback_preserves_error_type(monkeypatch):
+    state = _new_state(monkeypatch)
+    state["game_dialog_log"] = [
+        {
+            "id": f"glog_{index:04d}",
+            "type": "user",
+            "text": f"line {index}",
+        }
+        for index in range(1, 65)
+    ]
+    snapshot = state["game_dialog_log"][:15]
+
+    game_router._apply_game_context_organizer_failure(state, snapshot, ValueError("bad json"))
+
+    assert state["game_context_organizer"]["last_organized_id"] == "glog_0056"
+    assert (
+        state["game_context_organizer"]["error"]
+        == "fallback_organizer_failure_ValueError_after_64_pending_items"
+    )
+    assert state["game_context_recent_ids"] == [f"glog_{index:04d}" for index in range(57, 65)]
+
+
+@pytest.mark.unit
 def test_degraded_context_does_not_schedule_organizer(monkeypatch):
     state = _new_state(monkeypatch)
     state["game_context_organizer"]["degraded"] = True
@@ -402,6 +425,30 @@ def test_game_session_history_reset_skips_pending_current_user_input(monkeypatch
     assert "previous reply" in joined
     assert "current pending input" not in joined
     assert sum(isinstance(message, HumanMessage) for message in session._conversation_history) == 1
+
+
+@pytest.mark.unit
+def test_game_recent_history_merges_consecutive_user_side_events(monkeypatch):
+    from utils.llm_client import HumanMessage
+
+    state = _new_state(monkeypatch)
+    game_router._append_game_dialog(state, {
+        "type": "game_event",
+        "kind": "mailbox-batch",
+        "text": "first queued event",
+    })
+    game_router._append_game_dialog(state, {
+        "type": "game_event",
+        "kind": "mailbox-batch",
+        "text": "second queued event",
+    })
+
+    history = game_router._build_game_recent_history_messages(state, "en")
+
+    assert len(history) == 1
+    assert isinstance(history[0], HumanMessage)
+    assert "first queued event" in history[0].content
+    assert "second queued event" in history[0].content
 
 
 @pytest.mark.unit

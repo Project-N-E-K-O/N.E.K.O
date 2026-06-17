@@ -1582,7 +1582,11 @@ def _build_game_recent_history_messages(state: dict | None, language: str | None
         user_text = _game_dialog_history_user_text(item, labels)
         assistant_text = _game_dialog_history_assistant_text(item)
         if user_text:
-            messages.append(HumanMessage(content=user_text))
+            if last_role == "human" and messages:
+                previous_content = str(getattr(messages[-1], "content", "")).rstrip()
+                messages[-1].content = f"{previous_content}\n{user_text}" if previous_content else user_text
+            else:
+                messages.append(HumanMessage(content=user_text))
             last_role = "human"
         if assistant_text:
             if last_role == "human":
@@ -2589,7 +2593,8 @@ def _apply_game_context_organizer_failure(state: dict, snapshot: list[dict], err
     organizer["error"] = type(error).__name__
     state["game_context_organizer"] = organizer
     pending = _game_context_pending_dialogues(state)
-    if _apply_game_context_failure_fallback(state, pending, reason="organizer_failure"):
+    fallback_reason = f"organizer_failure_{type(error).__name__}"
+    if _apply_game_context_failure_fallback(state, pending, reason=fallback_reason):
         return
     _set_game_context_recent_ids(state)
 
