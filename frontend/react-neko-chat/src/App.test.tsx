@@ -5745,6 +5745,41 @@ describe('App', () => {
     });
   });
 
+  it('toggles compact history from a guide request', async () => {
+    const { rerender } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactHistoryOpenRequest={{
+          id: 'compact-history-open-guide',
+          open: true,
+          reason: 'avatar-floating-guide-history',
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(document.body.querySelector('.compact-export-history-anchor')).not.toBeNull();
+    });
+
+    rerender(
+      <App
+        chatSurfaceMode="compact"
+        compactHistoryOpenRequest={{
+          id: 'compact-history-close-guide',
+          open: false,
+          reason: 'avatar-floating-guide-history',
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(document.body.querySelector('.compact-export-history-anchor')).toHaveAttribute(
+        'data-compact-export-history-visibility',
+        'closing',
+      );
+    });
+  });
+
   // 折中语义（取舍脉络见 App.tsx openCompactInputToolFan 注释）：
   // 轮盘转角在「会话内」（组件存活期间）延续上次滚到的位置，关闭再展开不弹回默认；
   // 但「不」持久化到 localStorage —— 页面刷新/组件重挂后随 useState 初值复位到环位 0。

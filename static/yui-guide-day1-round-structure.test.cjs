@@ -6,7 +6,7 @@ const test = require('node:test');
 const repoRoot = path.resolve(__dirname, '..');
 const directorSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
 const day1Source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/days/day1-home-guide.js'), 'utf8');
-const resetSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/avatar/floating-guide-reset.js'), 'utf8');
+const universalManagerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
 const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
 const sceneOrchestratorSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/scene-orchestrator.js'), 'utf8');
 const operationRegistrySource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/operation-registry.js'), 'utf8');
@@ -164,28 +164,24 @@ test('Day1 return control highlights the capsule input and keeps the petal cue',
   assert.match(day1SceneBlock, /petalTransition:\s*true/);
 });
 
-test('avatar floating reset script no longer ships the deprecated reset player', () => {
-  assert.doesNotMatch(resetSource, /const DAY_TUTORIALS\s*=/);
-  assert.doesNotMatch(resetSource, /function createRoundPlayer/);
-  assert.doesNotMatch(resetSource, /resetHomeTutorialFallback/);
-  assert.doesNotMatch(resetSource, /home-avatar-floating-guide-player/);
+test('avatar floating reset owner no longer ships the deprecated reset player', () => {
+  assert.doesNotMatch(universalManagerSource, /const DAY_TUTORIALS\s*=/);
+  assert.doesNotMatch(universalManagerSource, /function createRoundPlayer/);
+  assert.doesNotMatch(universalManagerSource, /resetHomeTutorialFallback/);
+  assert.doesNotMatch(universalManagerSource, /home-avatar-floating-guide-player/);
 });
 
 test('memory reset only prepares the formal avatar floating round for the next Neko refresh', () => {
-  const resetHomeBlock = resetSource.split('async function resetHomeTutorialDay(day, options = {}) {')[1].split(
-    '\n    async function startAvatarFloatingGuideDay',
-    1
-  )[0];
-  const startDayBlock = resetSource.split('async function startAvatarFloatingGuideDay(day, options = {}) {')[1].split(
-    '\n    function showResetToast',
+  const resetHomeBlock = universalManagerSource.split('resetAvatarFloatingGuideRoundState(day, options = {}) {')[1].split(
+    '\n    setAvatarFloatingGuideCurrentRound',
     1
   )[0];
 
-  assert.match(resetHomeBlock, /clearHomeTutorialPromptResetState\(round\);/);
+  assert.match(resetHomeBlock, /state\.pendingRound = round;/);
+  assert.match(resetHomeBlock, /state\.manualResetRound = round;/);
+  assert.match(resetHomeBlock, /saveAvatarFloatingGuideState\(state\);/);
   assert.doesNotMatch(resetHomeBlock, /startFormalAvatarFloatingGuideRound/);
   assert.doesNotMatch(resetHomeBlock, /createRoundPlayer/);
-  assert.match(startDayBlock, /return startFormalAvatarFloatingGuideRound\(day,\s*\{\s*source:\s*options\.source \|\| 'home_reset_button'/);
-  assert.doesNotMatch(startDayBlock, /createRoundPlayer/);
 });
 
 test('Day1 return control cursor moves to the capsule primary target before the operation runs', () => {
@@ -195,8 +191,12 @@ test('Day1 return control cursor moves to the capsule primary target before the 
   assert.match(directorSource, /if \(selector === 'chat-capsule-input'\) \{\s*return this\.getChatCapsuleInputTarget\(\);/);
   assert.match(directorSource, /const registeredKind = this\.cursor\.getExternalKind\(this\.getAvatarFloatingCursorTargetKey\(scene\)\);[\s\S]*if \(registeredKind\) \{[\s\S]*return registeredKind;/);
   assert.match(directorSource, /'chat-capsule-input': 'capsule-input'/);
-  assert.match(appInterpageSource, /if \(kind === 'capsule-input'\) \{[\s\S]*data-compact-geometry-part="capsuleBody"/);
-  assert.match(appInterpageSource, /function updateYuiGuideChatSpotlight\(kind\) \{[\s\S]*if \(isYuiGuidePcOverlayAvailable\(\)\) \{[\s\S]*sendYuiGuidePcOverlayPatch\(\{ spotlights: pcRects \}\);/);
+  assert.match(directorSource, /getChatCapsuleInputTarget\(\) \{[\s\S]*data-compact-geometry-part="capsuleBody"/);
+  assert.match(appInterpageSource, /function getYuiGuideChatSpotlightElement\(\) \{[\s\S]*spotlight\.id = 'yui-guide-chat-spotlight'/);
+  assert.match(appInterpageSource, /function updateYuiGuideChatSpotlight\(kind\) \{[\s\S]*var target = getYuiGuideChatSpotlightTarget\(kind\);[\s\S]*spotlight\.style\.left = Math\.round\(rect\.left - padding\) \+ 'px';/);
+  assert.match(appInterpageSource, /function applyYuiGuideChatCursorRelay\(message\) \{[\s\S]*action !== 'yui_guide_set_chat_cursor'[\s\S]*action !== 'yui_guide_drag_chat_cursor'[\s\S]*action !== 'yui_guide_arc_chat_cursor'/);
+  assert.match(appInterpageSource, /window\.addEventListener\('neko:tutorial-overlay-relay'[\s\S]*applyYuiGuideChatCursorRelay\(evt && evt\.detail\)/);
+  assert.match(appInterpageSource, /__nekoTutorialOverlayRelay[\s\S]*applyYuiGuideChatCursorRelay\(data\.payload\)/);
   assert.doesNotMatch(appInterpageSource, /function renderYuiGuideChatSpotlight/);
   assert.doesNotMatch(appInterpageSource, /function isYuiGuideInputLikeChatTarget/);
   assert.match(directorSource, /setExternalizedChatCursorEffect\(kind,\s*effect,\s*options\)[\s\S]*this\.rememberExternalizedChatCursorHandoffPoint\(normalizedKind,\s*cursorOptions\.effect\);[\s\S]*this\.interactionTakeover\.setExternalizedChatCursor\(normalizedKind,\s*cursorOptions\);/);
