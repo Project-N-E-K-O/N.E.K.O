@@ -5786,6 +5786,7 @@ describe('App', () => {
     await waitFor(() => {
       expect(document.body.querySelector('.compact-export-history-anchor')).not.toBeNull();
     });
+    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
 
     rerender(
       <App
@@ -5804,6 +5805,7 @@ describe('App', () => {
         'closing',
       );
     });
+    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
   });
 
   // 折中语义（取舍脉络见 App.tsx openCompactInputToolFan 注释）：
