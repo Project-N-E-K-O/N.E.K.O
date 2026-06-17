@@ -37,7 +37,19 @@
      * Returns true if this action+timestamp was already processed (duplicate).
      * First call for a given key returns false and registers it.
      */
-    function isDuplicateMessage(action, timestamp) {
+    function shouldBypassYuiGuideMessageDedup(action, message) {
+        return !!(
+            (message && message.bypassDedup === true)
+            || action === 'yui_guide_set_chat_cursor'
+            || action === 'yui_guide_drag_chat_cursor'
+            || action === 'yui_guide_arc_chat_cursor'
+        );
+    }
+
+    function isDuplicateMessage(action, timestamp, message) {
+        if (message && shouldBypassYuiGuideMessageDedup(message.action, message)) {
+            return false;
+        }
         if (!timestamp) return false;  // no timestamp → cannot deduplicate
         var key = action + '_' + timestamp;
         if (_processedMsgKeys[key]) return true;
@@ -2175,7 +2187,10 @@
                 }
 
                 // Deduplicate: same message arrives via both BC and postMessage
-                if (isDuplicateMessage(event.data.action, event.data.timestamp)) {
+                if (
+                    !shouldBypassYuiGuideMessageDedup(event.data.action, event.data)
+                    && isDuplicateMessage(event.data.action, event.data.timestamp, event.data)
+                ) {
                     console.log('[BroadcastChannel] 跳过重复消息:', event.data.action);
                     return;
                 }
@@ -2369,9 +2384,36 @@
                         applyYuiGuideChatSpotlight(event.data.kind || '');
                         break;
                     }
+                    case 'yui_guide_set_chat_cursor': {
+                        if (!isStandaloneChatPage() || !document.body) break;
+                        applyYuiGuideChatCursor(event.data.kind || '', event.data);
+                        break;
+                    }
+                    case 'yui_guide_drag_chat_cursor': {
+                        if (!isStandaloneChatPage() || !document.body) break;
+                        applyYuiGuideChatCursorDrag(event.data.kind || '', event.data);
+                        break;
+                    }
+                    case 'yui_guide_arc_chat_cursor': {
+                        if (!isStandaloneChatPage() || !document.body) break;
+                        applyYuiGuideChatCursorArc(event.data.kind || '', event.data);
+                        break;
+                    }
+                    case 'yui_guide_chat_cursor_anchor': {
+                        if (isStandaloneChatPage()) break;
+                        window.dispatchEvent(new CustomEvent('neko:yui-guide:external-chat-cursor-anchor', {
+                            detail: event.data || {}
+                        }));
+                        break;
+                    }
                     case 'yui_guide_set_avatar_tool_menu_open': {
                         if (!isStandaloneChatPage() || !document.body) break;
                         applyYuiGuideAvatarToolMenuOpen(event.data.open === true, event.data.reason || '');
+                        break;
+                    }
+                    case 'yui_guide_set_compact_history_open': {
+                        if (!isStandaloneChatPage() || !document.body) break;
+                        applyYuiGuideCompactHistoryOpen(event.data.open === true, event.data.reason || '');
                         break;
                     }
                     case 'yui_guide_set_compact_tool_fan_open': {
@@ -2564,6 +2606,13 @@
         }
     }
 
+    function applyYuiGuideCompactHistoryOpen(open, reason) {
+        var host = getReactChatWindowHost();
+        if (host && typeof host.setCompactHistoryOpen === 'function') {
+            host.setCompactHistoryOpen(open === true, reason || 'externalized-chat-guide');
+        }
+    }
+
     function applyYuiGuideCompactToolWheelRotate(payload) {
         var host = getReactChatWindowHost();
         if (!host || typeof host.rotateCompactToolWheel !== 'function') return;
@@ -2727,6 +2776,330 @@
 
     var yuiGuideChatSpotlightKind = '';
     var yuiGuideChatSpotlightTimer = 0;
+    var yuiGuideChatCursorPoint = null;
+    var yuiGuideChatCursorMoveTimer = 0;
+    var yuiGuideChatCursorArcRequestToken = 0;
+
+    function getYuiGuideChatVisibleElement(selector) {
+        var matches = Array.prototype.slice.call(document.querySelectorAll(selector || ''));
+        for (var index = 0; index < matches.length; index += 1) {
+            var element = matches[index];
+            var rect = element && typeof element.getBoundingClientRect === 'function'
+                ? element.getBoundingClientRect()
+                : null;
+            if (rect && rect.width > 0 && rect.height > 0) {
+                return element;
+            }
+        }
+        return null;
+    }
+
+    function getYuiGuideChatSpotlightItemTargets(kind) {
+        if (kind !== 'avatar-tool-items' || typeof document === 'undefined') {
+            return [];
+        }
+        var popover = document.getElementById('composer-tool-popover-compact');
+        var quickbar = document.getElementById('composer-avatar-tool-quickbar');
+        return Array.prototype.slice.call(document.querySelectorAll(
+            '#react-chat-window-root #composer-tool-popover-compact .composer-icon-button[data-avatar-tool-id], '
+            + '#react-chat-window-root #composer-avatar-tool-quickbar .composer-icon-button[data-avatar-tool-id], '
+            + '#react-chat-window-root .composer-icon-button[data-avatar-tool-id]'
+        )).concat(
+            popover ? Array.prototype.slice.call(popover.querySelectorAll('.composer-icon-button[data-avatar-tool-id]')) : [],
+            quickbar ? Array.prototype.slice.call(quickbar.querySelectorAll('.composer-icon-button[data-avatar-tool-id]')) : []
+        ).filter(function (element, index, elements) {
+            if (elements.indexOf(element) !== index) {
+                return false;
+            }
+            var rect = element && typeof element.getBoundingClientRect === 'function'
+                ? element.getBoundingClientRect()
+                : null;
+            return !!(rect && rect.width > 0 && rect.height > 0);
+        });
+    }
+
+    function getYuiGuideChatCursorTargets(kind) {
+        if (!kind || typeof document === 'undefined') {
+            return [];
+        }
+
+        if (kind === 'input') {
+            return [
+                getYuiGuideChatVisibleElement('#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="input"]'),
+                getYuiGuideChatVisibleElement('#react-chat-window-root [data-compact-geometry-part="inputBody"]'),
+                getYuiGuideChatVisibleElement('#react-chat-window-root .composer-input'),
+                document.getElementById('text-input-area')
+            ].filter(Boolean);
+        }
+
+        if (kind === 'capsule-input') {
+            return [
+                getYuiGuideChatVisibleElement('#react-chat-window-root [data-compact-geometry-part="capsuleBody"]'),
+                getYuiGuideChatVisibleElement('#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="capsule"]'),
+                getYuiGuideChatVisibleElement('#react-chat-window-root .composer-input-shell'),
+                document.getElementById('text-input-area')
+            ].filter(Boolean);
+        }
+
+        if (kind === 'history') {
+            return [
+                getYuiGuideChatVisibleElement('#react-chat-window-root .compact-history-visibility-handle'),
+                getYuiGuideChatVisibleElement('.compact-history-visibility-handle')
+            ].filter(Boolean);
+        }
+
+        if (kind === 'tool-toggle') {
+            return [
+                getYuiGuideChatVisibleElement('#react-chat-window-root .send-button-circle.compact-input-tool-toggle'),
+                getYuiGuideChatVisibleElement('.send-button-circle.compact-input-tool-toggle')
+            ].filter(Boolean);
+        }
+
+        if (kind === 'avatar-tools') {
+            return [
+                getYuiGuideChatVisibleElement('#react-chat-window-root .compact-input-tool-item-avatar > .composer-emoji-btn'),
+                getYuiGuideChatVisibleElement('#react-chat-window-root .compact-input-tool-item-avatar')
+            ].filter(Boolean);
+        }
+
+        if (kind === 'avatar-tool-items') {
+            return getYuiGuideChatSpotlightItemTargets(kind);
+        }
+
+        if (kind === 'galgame') {
+            return [
+                getYuiGuideChatVisibleElement('#react-chat-window-root [data-avatar-tool-id="galgame"]'),
+                getYuiGuideChatVisibleElement('#react-chat-window-root .composer-icon-button[data-avatar-tool-id="galgame"]')
+            ].filter(Boolean);
+        }
+
+        if (kind === 'window') {
+            return [document.getElementById('react-chat-window-shell')].filter(Boolean);
+        }
+
+        return [];
+    }
+
+    function getYuiGuideChatCursorTargetPoint(kind, targetIndex) {
+        var targets = getYuiGuideChatCursorTargets(kind);
+        var index = Number.isFinite(Number(targetIndex))
+            ? Math.max(0, Math.floor(Number(targetIndex)))
+            : 0;
+        var target = targets[Math.min(index, Math.max(0, targets.length - 1))];
+        var rect = target && typeof target.getBoundingClientRect === 'function'
+            ? target.getBoundingClientRect()
+            : null;
+        if (!rect || rect.width <= 0 || rect.height <= 0) {
+            return null;
+        }
+        return {
+            x: rect.left + (rect.width / 2),
+            y: rect.top + (rect.height / 2)
+        };
+    }
+
+    function getYuiGuideChatCursorElement() {
+        var existing = document.getElementById('yui-guide-chat-cursor');
+        if (existing || typeof document === 'undefined' || !document.body) {
+            return existing;
+        }
+        var cursor = document.createElement('div');
+        cursor.id = 'yui-guide-chat-cursor';
+        cursor.hidden = true;
+        cursor.setAttribute('aria-hidden', 'true');
+        cursor.style.position = 'fixed';
+        cursor.style.left = '0';
+        cursor.style.top = '0';
+        cursor.style.width = '18px';
+        cursor.style.height = '18px';
+        cursor.style.pointerEvents = 'none';
+        cursor.style.zIndex = '2147483001';
+        cursor.style.borderRadius = '999px 999px 999px 2px';
+        cursor.style.background = 'rgba(39, 89, 228, 0.96)';
+        cursor.style.boxShadow = '0 8px 20px rgba(15, 23, 42, 0.22), 0 0 0 2px rgba(255, 255, 255, 0.92)';
+        cursor.style.transform = 'translate(-4px, -4px) rotate(-18deg)';
+        cursor.style.transition = 'left 220ms ease, top 220ms ease';
+        document.body.appendChild(cursor);
+        return cursor;
+    }
+
+    function getYuiGuideChatScreenPoint(point) {
+        if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+            return null;
+        }
+        var viewport = window.visualViewport || null;
+        var offsetLeft = viewport && Number.isFinite(Number(viewport.offsetLeft)) ? Number(viewport.offsetLeft) : 0;
+        var offsetTop = viewport && Number.isFinite(Number(viewport.offsetTop)) ? Number(viewport.offsetTop) : 0;
+        return {
+            x: (Number.isFinite(window.screenX) ? window.screenX : 0) + point.x + offsetLeft,
+            y: (Number.isFinite(window.screenY) ? window.screenY : 0) + point.y + offsetTop
+        };
+    }
+
+    function rememberYuiGuideChatCursorScreenPoint(screenPoint, kind, effect) {
+        if (!screenPoint || !Number.isFinite(screenPoint.x) || !Number.isFinite(screenPoint.y)) {
+            return false;
+        }
+        try {
+            window.localStorage.setItem('neko_yui_guide_external_chat_cursor_screen_point_v1', JSON.stringify({
+                x: screenPoint.x,
+                y: screenPoint.y,
+                kind: typeof kind === 'string' ? kind : '',
+                effect: typeof effect === 'string' ? effect : '',
+                source: 'externalized-chat',
+                at: Date.now()
+            }));
+            return true;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function reportYuiGuideChatCursorAnchor(kind, options, settled) {
+        var screenPoint = getYuiGuideChatScreenPoint(yuiGuideChatCursorPoint);
+        if (!screenPoint) {
+            return;
+        }
+        var normalizedOptions = options || {};
+        var message = {
+            action: 'yui_guide_chat_cursor_anchor',
+            kind: typeof kind === 'string' ? kind : '',
+            x: screenPoint.x,
+            y: screenPoint.y,
+            effect: typeof normalizedOptions.effect === 'string' ? normalizedOptions.effect : '',
+            effectDurationMs: Number.isFinite(Number(normalizedOptions.effectDurationMs))
+                ? Math.max(0, Math.floor(Number(normalizedOptions.effectDurationMs)))
+                : 0,
+            settled: settled === true,
+            timestamp: Date.now()
+        };
+        rememberYuiGuideChatCursorScreenPoint(screenPoint, message.kind, message.effect);
+        if (nekoBroadcastChannel) {
+            nekoBroadcastChannel.postMessage(message);
+        }
+    }
+
+    function runYuiGuideChatCursorEffect(effect, durationMs) {
+        var cursor = getYuiGuideChatCursorElement();
+        if (!cursor || !effect || typeof cursor.animate !== 'function') {
+            return;
+        }
+        var duration = Number.isFinite(Number(durationMs)) ? Math.max(120, Math.floor(Number(durationMs))) : 420;
+        if (effect === 'click') {
+            cursor.animate([
+                { transform: 'translate(-4px, -4px) rotate(-18deg) scale(1)' },
+                { transform: 'translate(-4px, -4px) rotate(-18deg) scale(0.82)' },
+                { transform: 'translate(-4px, -4px) rotate(-18deg) scale(1)' }
+            ], { duration: duration, easing: 'ease-out' });
+        } else if (effect === 'wobble') {
+            cursor.animate([
+                { transform: 'translate(-4px, -4px) rotate(-18deg)' },
+                { transform: 'translate(-7px, -4px) rotate(-28deg)' },
+                { transform: 'translate(-1px, -4px) rotate(-8deg)' },
+                { transform: 'translate(-4px, -4px) rotate(-18deg)' }
+            ], { duration: duration, easing: 'ease-in-out' });
+        }
+    }
+
+    function moveYuiGuideChatCursorToPoint(point, kind, options) {
+        if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+            return false;
+        }
+        var cursor = getYuiGuideChatCursorElement();
+        if (!cursor) {
+            return false;
+        }
+        var normalizedOptions = options || {};
+        var durationMs = Number.isFinite(Number(normalizedOptions.durationMs))
+            ? Math.max(0, Math.floor(Number(normalizedOptions.durationMs)))
+            : 220;
+        if (yuiGuideChatCursorMoveTimer) {
+            window.clearTimeout(yuiGuideChatCursorMoveTimer);
+            yuiGuideChatCursorMoveTimer = 0;
+        }
+        cursor.hidden = false;
+        cursor.style.transitionDuration = durationMs + 'ms';
+        cursor.style.left = Math.round(point.x) + 'px';
+        cursor.style.top = Math.round(point.y) + 'px';
+        yuiGuideChatCursorPoint = { x: point.x, y: point.y };
+        reportYuiGuideChatCursorAnchor(kind, normalizedOptions, durationMs <= 0);
+        yuiGuideChatCursorMoveTimer = window.setTimeout(function () {
+            yuiGuideChatCursorMoveTimer = 0;
+            reportYuiGuideChatCursorAnchor(kind, normalizedOptions, true);
+            runYuiGuideChatCursorEffect(
+                normalizedOptions.effect || '',
+                normalizedOptions.effectDurationMs
+            );
+        }, durationMs);
+        return true;
+    }
+
+    function applyYuiGuideChatCursor(kind, options) {
+        var normalizedOptions = options || {};
+        yuiGuideChatCursorArcRequestToken += 1;
+        if (!kind) {
+            if (yuiGuideChatCursorMoveTimer) {
+                window.clearTimeout(yuiGuideChatCursorMoveTimer);
+                yuiGuideChatCursorMoveTimer = 0;
+            }
+            var cursor = getYuiGuideChatCursorElement();
+            if (cursor) {
+                cursor.hidden = true;
+            }
+            yuiGuideChatCursorPoint = null;
+            return;
+        }
+        var point = normalizedOptions.freezePoint === true && yuiGuideChatCursorPoint
+            ? yuiGuideChatCursorPoint
+            : getYuiGuideChatCursorTargetPoint(kind, normalizedOptions.targetIndex);
+        moveYuiGuideChatCursorToPoint(point, kind, normalizedOptions);
+    }
+
+    function applyYuiGuideChatCursorDrag(kind, options) {
+        var normalizedOptions = options || {};
+        yuiGuideChatCursorArcRequestToken += 1;
+        var startPoint = yuiGuideChatCursorPoint
+            || getYuiGuideChatCursorTargetPoint(kind, normalizedOptions.targetIndex);
+        if (!startPoint) {
+            return;
+        }
+        moveYuiGuideChatCursorToPoint({
+            x: startPoint.x + (Number.isFinite(Number(normalizedOptions.deltaX)) ? Number(normalizedOptions.deltaX) : 0),
+            y: startPoint.y + (Number.isFinite(Number(normalizedOptions.deltaY)) ? Number(normalizedOptions.deltaY) : 0)
+        }, kind, normalizedOptions);
+    }
+
+    function applyYuiGuideChatCursorArc(kind, options) {
+        var normalizedOptions = options || {};
+        var center = getYuiGuideChatCursorTargetPoint(kind, normalizedOptions.targetIndex);
+        if (!center) {
+            return;
+        }
+        var startPoint = yuiGuideChatCursorPoint || {
+            x: center.x - 36,
+            y: center.y
+        };
+        var startAngle = Math.atan2(startPoint.y - center.y, startPoint.x - center.x);
+        var radius = Math.max(24, Math.hypot(startPoint.x - center.x, startPoint.y - center.y));
+        var direction = Number(normalizedOptions.direction) < 0 ? -1 : 1;
+        var fraction = Number.isFinite(Number(normalizedOptions.fraction))
+            ? Math.max(0, Math.min(1, Number(normalizedOptions.fraction)))
+            : 0.2;
+        var targetAngle = startAngle + (Math.PI * 2 * fraction * direction);
+        var arcRequestToken = ++yuiGuideChatCursorArcRequestToken;
+        moveYuiGuideChatCursorToPoint({
+            x: center.x + Math.cos(targetAngle) * radius,
+            y: center.y + Math.sin(targetAngle) * radius
+        }, kind, normalizedOptions);
+        window.setTimeout(function () {
+            if (arcRequestToken !== yuiGuideChatCursorArcRequestToken) {
+                return;
+            }
+            var finalScreenPoint = getYuiGuideChatScreenPoint(yuiGuideChatCursorPoint);
+            rememberYuiGuideChatCursorScreenPoint(finalScreenPoint, kind, normalizedOptions.effect);
+            reportYuiGuideChatCursorAnchor(kind, normalizedOptions, true);
+        }, Number.isFinite(Number(normalizedOptions.durationMs)) ? Math.max(0, Math.floor(Number(normalizedOptions.durationMs))) : 260);
+    }
 
     function getYuiGuideChatSpotlightElement() {
         var existing = document.getElementById('yui-guide-chat-spotlight');
@@ -2974,7 +3347,10 @@
 
         if (event.data && (event.data.action === 'model_saved' || event.data.action === 'reload_model')) {
             // Deduplicate: same message arrives via both BC and postMessage
-            if (isDuplicateMessage(event.data.action, event.data.timestamp)) {
+            if (
+                !shouldBypassYuiGuideMessageDedup(event.data.action, event.data)
+                && isDuplicateMessage(event.data.action, event.data.timestamp, event.data)
+            ) {
                 console.log('[Model] 跳过重复 postMessage:', event.data.action);
                 return;
             }
