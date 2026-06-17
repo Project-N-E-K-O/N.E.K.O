@@ -632,8 +632,7 @@ class UniversalTutorialManager {
             return state.pendingRound === round || state.manualResetRound === round;
         }
         if (state.pendingRound !== round && state.manualResetRound !== round) {
-            const today = getTodayLocalDateForAvatarFloatingGuide();
-            return state.lastAutoShownRound === round && state.lastAutoShownDate === today;
+            return this.getNextAvatarFloatingGuideAutoRound() === round;
         }
         return true;
     }
@@ -705,8 +704,7 @@ class UniversalTutorialManager {
             if (this.currentPage !== 'home' || this.isTutorialRunning || window.isInTutorial) {
                 return;
             }
-            const currentRound = this.getNextAvatarFloatingGuideAutoRound();
-            if (currentRound !== round) {
+            if (!this.isAvatarFloatingGuideRoundPendingAutoStart(round)) {
                 return;
             }
             if (!this.isAvatarFloatingGuideRoundRegistered(round)) {
@@ -960,9 +958,6 @@ class UniversalTutorialManager {
     isYuiGuideEnabledForPage(page = this.currentPage) {
         const pageKey = this.getYuiGuidePageKey(page);
         const pageOrder = this.getYuiGuidePageOrder(pageKey);
-        if (pageKey === 'home' && this.isAvatarFloatingGuideRoundRegistered(1)) {
-            return true;
-        }
         if (pageOrder.length === 0) {
             return false;
         }
