@@ -615,7 +615,7 @@ async def moderate_meme_image_url(
             reason="request_failed",
             url_hash=short_hash,
         )
-    except (KeyError, TypeError, ValueError) as exc:
+    except (TypeError, ValueError) as exc:
         logger.warning(
             "[Meme Moderation] UniAPI invalid response url_hash=%s error=%s",
             short_hash,

@@ -6319,7 +6319,6 @@ async def proactive_chat(request: Request):
                         )
                         if moderation.reason in {
                             "rate_limited",
-                            "missing_api_key",
                             "unsupported_provider",
                             "request_failed",
                             "http_error",
