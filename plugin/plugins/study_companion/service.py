@@ -42,7 +42,6 @@ def build_status_payload(
         "recent_screen_classifications": copy.deepcopy(
             state.recent_screen_classifications
         ),
-        "current_question": copy.deepcopy(state.current_question),
         "last_answer_evaluation": copy.deepcopy(state.last_answer_evaluation),
         "session_summary_seed": copy.deepcopy(state.session_summary_seed),
         "recent_learning_events": copy.deepcopy(state.recent_learning_events),
@@ -50,8 +49,6 @@ def build_status_payload(
         "last_answer_evaluated_at": state.last_answer_evaluated_at,
         "last_session_summary": state.last_session_summary,
         "last_session_summary_at": state.last_session_summary_at,
-        "last_reply": state.last_reply,
-        "last_reply_at": state.last_reply_at,
         "checkpoint": copy.deepcopy(state.checkpoint),
         "dependencies": copy.deepcopy(state.dependency_status),
         "knowledge_summary": copy.deepcopy(

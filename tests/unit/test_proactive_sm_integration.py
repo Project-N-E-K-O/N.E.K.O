@@ -1133,6 +1133,24 @@ def test_topic_hook_delivery_allowed_in_text_session():
     assert LLMSessionManager.topic_hook_delivery_allowed(mgr) is True
 
 
+def test_topic_hook_delivery_blocked_when_privacy_enabled(monkeypatch):
+    """Deep topic is optional; delivery re-checks privacy before surfacing a
+    prebuilt hook, so flipping privacy on after accumulation still blocks it."""
+    monkeypatch.setattr("utils.preferences.is_privacy_mode_enabled", lambda: True)
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    assert LLMSessionManager.topic_hook_delivery_allowed(mgr) is False
+
+
+def test_topic_hook_delivery_privacy_check_fails_closed(monkeypatch):
+    """If the privacy preference cannot be read, do not surface a new opener."""
+    def _raise_privacy_error():
+        raise RuntimeError("preferences unavailable")
+
+    monkeypatch.setattr("utils.preferences.is_privacy_mode_enabled", _raise_privacy_error)
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    assert LLMSessionManager.topic_hook_delivery_allowed(mgr) is False
+
+
 async def test_deliver_proactive_batch_drops_topic_hook_in_voice():
     """Release gate: in a voice session the topic_hook is dropped (ack=False, left
     for TopicHookPool to retry), while non-topic_hook cues pass through. The voice
