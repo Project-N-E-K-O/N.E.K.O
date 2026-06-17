@@ -84,7 +84,7 @@ prompt 只给「明显反复出现 → 高分，顺口一提 → 低分；如实
 ### 隐私语义：只管积累，不管投递
 
 隐私模式开启时，`enrich_topic_pool`（pipeline.py）**早退并清空整个池**（user/ai 回合、signal store、materials 全清）。因此隐私态下造不出新的敏感话题。
-**结论**：投递阶段**不**再查隐私。已经排队的 hook 是隐私前快照造的，晚一点投出去可接受；否则需要把全局 privacy preference 读取铺进通用投递门，扩大 deep topic 的运行时耦合面。`topic_hook_delivery_allowed`（`main_logic/core.py`）只保留语音与活动倾向门，不查 `is_privacy_mode_enabled()`。
+**结论**：投递阶段**不**再查隐私。已经排队的 hook 是隐私前快照造的，晚一点投出去可接受；否则需要把全局 privacy preference 读取铺进通用投递门，扩大 deep topic 的运行时耦合面。`TopicHookPool` 会在分析/联网增强 await 之后、以及 trigger task 的 `_deepen_material` await 之后重新执行累积侧隐私检查并清空材料；`topic_hook_delivery_allowed`（`main_logic/core.py`）只保留语音与活动倾向门，不查 `is_privacy_mode_enabled()`。
 
 ### 活动倾向门：投递路径上守，retry 路径不守
 
@@ -137,7 +137,7 @@ prompt 只给「明显反复出现 → 高分，顺口一提 → 低分；如实
 
 - 触发条件与现有开口完全相同（pool 的 debounce + quiet window + gap + quota + privacy + seq）。
 - `_run_trigger` 在调投递桥之前先 `await self._deepen_material(...)`：用更强档位（`summary` tier，`derive_deep_search_query`）从 interest + keywords（+ A 的便宜 floor 线索 `online_angle`）衍生一条聚焦 deep query，再用它重跑联网增强、覆盖 floor 的 `material_hint`。这一步跑在 trigger task 里，**不阻塞用户对话**。
-- **准备就绪后重新过开口门**：deep 跑完才调 `trigger_topic_hook_once`，其顶部的 `topic_hook_delivery_allowed()` 就是 prepare 之后的再校验——条件仍满足就开口，否则返回 False，pool reschedule 等下个窗口。
+- **准备就绪后重新过门**：deep 跑完后先在 `TopicHookPool` 内重查 privacy，若隐私已开则清空该角色 topic pool 并放弃本次 trigger；privacy 仍关才调 `trigger_topic_hook_once`，其顶部的 `topic_hook_delivery_allowed()` 继续做语音与 activity 再校验——条件仍满足就开口，否则返回 False，pool reschedule 等下个窗口。
 - **floor 永远兜底**：deep query 衍生失败/超时，或 deep 检索没结果，都回落到 A 的 keyword 兜底 `material_hint`。
 - **缓存防重搜**：`deep_search_done` 写在 live material 上，reschedule 重试复用已备好的 deep 结果而不重复搜；它在衍生前就置位，避免 flaky 衍生每次 reschedule 都重试（代价：一次性失败后该物料本轮不再尝试 deep，但 floor 仍投递）。
 - **query 来源对偶**：小模型只识别话题 + keywords；deep query 由大模型 author（`deep_query` 字段，`_query_for_material` 优先用它）——这正是当初从小模型拿掉 `search_query` 的原因。
