@@ -305,17 +305,22 @@ async def test_new_user_icebreaker_context_endpoint_handles_false_append(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_new_user_icebreaker_context_endpoint_requires_explicit_lanlan_name(monkeypatch):
+@pytest.mark.parametrize("lanlan_name_value", [None, "", "   "])
+async def test_new_user_icebreaker_context_endpoint_rejects_empty_lanlan_name(monkeypatch, lanlan_name_value):
     monkeypatch.setattr(game_router, "_get_current_character_info", lambda: {"lanlan_name": "FallbackLan"})
     monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
 
+    payload = {
+        "role": "assistant",
+        "text": "context line",
+        "session_id": "icebreaker-day1-test",
+    }
+    if lanlan_name_value is not None:
+        payload["lanlan_name"] = lanlan_name_value
+
     result = await game_router.game_project_context(
         "new_user_icebreaker",
-        _FakeRequest({
-            "role": "assistant",
-            "text": "context line",
-            "session_id": "icebreaker-day1-test",
-        }),
+        _FakeRequest(payload),
     )
 
     assert result == {"ok": False, "reason": "missing_lanlan_name"}

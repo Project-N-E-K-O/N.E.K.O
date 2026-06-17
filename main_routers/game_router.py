@@ -6971,7 +6971,10 @@ async def game_project_context(game_type: str, request: Request):
 
     if "lanlan_name" not in data:
         return {"ok": False, "reason": "missing_lanlan_name"}
-    lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
+    raw_lanlan_name = data.get("lanlan_name")
+    if raw_lanlan_name is None or str(raw_lanlan_name).strip() == "":
+        return {"ok": False, "reason": "missing_lanlan_name"}
+    lanlan_name = _resolve_lanlan_name(raw_lanlan_name)
     if not lanlan_name:
         return {"ok": False, "reason": "missing_lanlan_name"}
     _absorb_request_language(data, lanlan_name)

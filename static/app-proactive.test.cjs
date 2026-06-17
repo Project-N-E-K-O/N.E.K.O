@@ -9,6 +9,14 @@ test('proactive scheduler re-arms after new-user icebreaker suppression', () => 
     assert.match(source, /function getNewUserIcebreakerRetryDelayMs\(\)/);
     assert.match(source, /function getNewUserIcebreakerBlockingRetryMs\(\)/);
 
+    const blockingStart = source.indexOf('function getNewUserIcebreakerBlockingRetryMs()');
+    assert.notEqual(blockingStart, -1, 'missing blocking retry helper');
+    const blockingEnd = source.indexOf('const store = readNewUserIcebreakerStore();', blockingStart);
+    assert.notEqual(blockingEnd, -1, 'missing blocking retry persisted-store branch');
+    const activeSessionBlock = source.slice(blockingStart, blockingEnd);
+    assert.match(activeSessionBlock, /return getNewUserIcebreakerRetryDelayMs\(\);/);
+    assert.doesNotMatch(activeSessionBlock, /return NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS;/);
+
     const scheduleStart = source.indexOf('function scheduleProactiveChat()');
     assert.notEqual(scheduleStart, -1, 'missing proactive scheduler function');
 

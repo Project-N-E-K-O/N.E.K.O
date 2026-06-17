@@ -137,7 +137,7 @@
         try {
             if (window.newUserIcebreaker && typeof window.newUserIcebreaker.getActiveSession === 'function') {
                 if (window.newUserIcebreaker.getActiveSession()) {
-                    return NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS;
+                    return getNewUserIcebreakerRetryDelayMs();
                 }
             }
         } catch (_) {}
