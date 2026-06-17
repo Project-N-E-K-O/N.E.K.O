@@ -493,12 +493,35 @@
 
         function onNativeResizeMove(e) {
             if (!resizeActive || !activeNativeResizeState) return;
+            pushNativeResizeCursor(e);
             if (e.preventDefault) e.preventDefault();
         }
 
         function onNativeTouchResizeMove(e) {
             if (!resizeActive || !activeNativeResizeState || !e.touches || !e.touches.length) return;
+            pushNativeResizeCursor(e.touches[0]);
             if (e.preventDefault) e.preventDefault();
+        }
+
+        function getEventScreenPoint(e) {
+            if (!e) return null;
+            var screenX = Number(e.screenX);
+            var screenY = Number(e.screenY);
+            if (Number.isFinite(screenX) && Number.isFinite(screenY)) {
+                return { x: screenX, y: screenY };
+            }
+            var clientX = Number(e.clientX);
+            var clientY = Number(e.clientY);
+            if (Number.isFinite(clientX) && Number.isFinite(clientY)) {
+                return { x: clientX, y: clientY };
+            }
+            return null;
+        }
+
+        function pushNativeResizeCursor(e) {
+            if (!api || typeof api.resizeMove !== 'function') return;
+            var point = getEventScreenPoint(e);
+            if (point) api.resizeMove(point);
         }
 
         function beginResize(e, dir) {
@@ -525,7 +548,8 @@
             applyNativePanelBounds(startPanelBounds);
             api.resizeStart(dir, {
                 minWidth: DESKTOP_MIN_PANEL_WIDTH + DESKTOP_WINDOW_EDGE_INSET * 2,
-                minHeight: DESKTOP_MIN_PANEL_HEIGHT + DESKTOP_WINDOW_EDGE_INSET * 2
+                minHeight: DESKTOP_MIN_PANEL_HEIGHT + DESKTOP_WINDOW_EDGE_INSET * 2,
+                cursor: getEventScreenPoint(e)
             });
             document.addEventListener('mousemove', onNativeResizeMove);
             document.addEventListener('mouseup', endResize);

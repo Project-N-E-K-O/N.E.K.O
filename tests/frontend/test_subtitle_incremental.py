@@ -4407,6 +4407,13 @@ def test_subtitle_shared_cleanup_and_owner_guard_contracts():
     assert "detail.source === 'subtitle-ui-resize'" in host_apply_block
     assert "writeSubtitleText(refs.text.textContent);" in host_apply_block
     assert "if (uiOptions.windowInteractions === 'external') {\n            desktopWindowInteractionsCleanup = attachDesktopWindowInteractions(subtitleWindowController);\n        }" in subtitle_window_script
+    assert "function getEventScreenPoint(e)" in subtitle_window_script
+    assert "function pushNativeResizeCursor(e)" in subtitle_window_script
+    assert "if (!api || typeof api.resizeMove !== 'function') return;" in subtitle_window_script
+    assert "if (point) api.resizeMove(point);" in subtitle_window_script
+    assert "pushNativeResizeCursor(e);" in subtitle_window_script
+    assert "pushNativeResizeCursor(e.touches[0]);" in subtitle_window_script
+    assert "cursor: getEventScreenPoint(e)" in subtitle_window_script
 
 
 @pytest.mark.frontend
