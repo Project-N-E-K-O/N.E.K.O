@@ -2021,7 +2021,11 @@ class ReflectionEngine:
 
     @staticmethod
     def _followup_render_key(value) -> str:
-        """Return the text key used when deciding whether a followup can render."""
+        """Return the text key used when deciding whether a followup can render.
+
+        Keep this local instead of importing main_logic.topic.common.clean_text:
+        memory is a lower layer and should not depend on prompt-rendering code.
+        """
         text = " ".join(str(value or "").strip().split())
         if not text:
             return ""

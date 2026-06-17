@@ -145,7 +145,8 @@ async def test_followup_filters_blank_and_duplicate_text_before_top_k(tmp_path):
         _seed("ref_gamma", "pending", text="用户想继续聊桌面宠物的互动边界"),
     ])
 
-    with patch("config.REFLECTION_FOLLOWUP_WEIGHTED", False):
+    with patch("config.REFLECTION_FOLLOWUP_WEIGHTED", False), \
+         patch("config.REFLECTION_SURFACE_TOP_K", 3):
         result = await re.aget_followup_topics("小天")
 
     assert [r["id"] for r in result] == [
