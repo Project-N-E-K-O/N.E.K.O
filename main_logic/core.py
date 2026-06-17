@@ -2905,7 +2905,15 @@ class LLMSessionManager:
             return True
         return False
 
-    async def _prime_icebreaker_context_to_realtime_session(self, session, role: str, text: str, request_id: str | None = "") -> None:
+    async def _prime_icebreaker_context_to_realtime_session(
+        self,
+        session,
+        role: str,
+        text: str,
+        request_id: str | None = "",
+        *,
+        requeue_on_fail: bool = True,
+    ) -> bool:
         try:
             await session.prime_context(
                 self._render_icebreaker_context_for_realtime(role, text),
@@ -2918,7 +2926,10 @@ class LLMSessionManager:
                 role,
                 exc,
             )
-            self._queue_pending_icebreaker_context(role, text, request_id)
+            if requeue_on_fail:
+                self._queue_pending_icebreaker_context(role, text, request_id)
+            return False
+        return True
 
     def _append_icebreaker_context_to_session(self, role: str, text: str, request_id: str | None = "") -> bool:
         session = getattr(self, "session", None)
@@ -2949,8 +2960,7 @@ class LLMSessionManager:
 
         prime_context = getattr(session, "prime_context", None)
         if callable(prime_context):
-            await self._prime_icebreaker_context_to_realtime_session(session, clean_role, clean_text, request_id)
-            return True
+            return await self._prime_icebreaker_context_to_realtime_session(session, clean_role, clean_text, request_id)
 
         self._queue_pending_icebreaker_context(clean_role, clean_text, request_id)
         return True
@@ -2969,7 +2979,7 @@ class LLMSessionManager:
         self._queue_pending_icebreaker_context(clean_role, clean_text, request_id)
         return True
 
-    def _flush_pending_icebreaker_context(self) -> None:
+    async def _flush_pending_icebreaker_context(self) -> None:
         pending = getattr(self, "pending_icebreaker_context", None)
         if not isinstance(pending, list) or not pending:
             return
@@ -2985,7 +2995,18 @@ class LLMSessionManager:
                 role, text, request_id = item[0], item[1], item[2]
             else:
                 role, text, request_id = item[0], item[1], ""
-            if not self._append_icebreaker_context_to_session(role, text, request_id):
+            history = getattr(session, "_conversation_history", None)
+            if isinstance(history, list):
+                appended = self._append_icebreaker_context_to_history(history, role, text)
+            else:
+                appended = await self._prime_icebreaker_context_to_realtime_session(
+                    session,
+                    role,
+                    text,
+                    request_id,
+                    requeue_on_fail=False,
+                )
+            if not appended:
                 remaining.append((role, text, request_id))
         self.pending_icebreaker_context = remaining
 
@@ -5054,7 +5075,7 @@ class LLMSessionManager:
                 async with self.input_cache_lock:
                     self.session_ready = True
 
-                self._flush_pending_icebreaker_context()
+                await self._flush_pending_icebreaker_context()
 
                 # 处理在session启动期间可能已经缓存的输入数据
                 await self._flush_pending_input_data()
