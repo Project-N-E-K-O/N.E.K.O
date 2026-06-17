@@ -3500,6 +3500,40 @@
     function handleChoiceSelect(option, source) {
         if (isHomeTutorialInteractionLocked() || getEffectiveComposerHidden()) return;
         if (!option || typeof option.choice !== 'string') return;
+        if (source === 'new_user_icebreaker') {
+            var prompt = state.choicePrompt;
+            if (!prompt || prompt.source !== 'new_user_icebreaker') return;
+            var detail = {
+                sessionId: option.sessionId || prompt.sessionId || '',
+                gameType: prompt.gameType || 'new_user_icebreaker',
+                choice: option.choice,
+                label: option.label || '',
+                option: option
+            };
+            state.choicePrompt = null;
+            renderWindow();
+            window.dispatchEvent(new CustomEvent('neko:icebreaker-choice-selected', {
+                detail: detail
+            }));
+            dispatchHostEvent('icebreaker-choice-selected', detail);
+            try {
+                var channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
+                if (channel && typeof channel.postMessage === 'function') {
+                    channel.postMessage({
+                        action: 'icebreaker_choice_selected',
+                        sessionId: detail.sessionId,
+                        gameType: detail.gameType,
+                        choice: detail.choice,
+                        label: detail.label,
+                        option: option,
+                        timestamp: Date.now()
+                    });
+                }
+            } catch (error) {
+                console.warn('[NewUserIcebreaker] choice broadcast failed:', error);
+            }
+            return;
+        }
         if (source === 'galgame') {
             // Forward to legacy galgame handler if it shows up here
             if (typeof option.text === 'string') {
@@ -3511,29 +3545,6 @@
             handleMiniGameInviteChoice(option);
             return;
         }
-        if (source === 'new_user_icebreaker') {
-            handleIcebreakerChoice(option);
-            return;
-        }
-    }
-
-    function handleIcebreakerChoice(option) {
-        if (isHomeTutorialInteractionLocked()) return;
-        var prompt = state.choicePrompt;
-        if (!prompt || prompt.source !== 'new_user_icebreaker') return;
-        var sessionId = prompt.sessionId || '';
-        var detail = {
-            sessionId: sessionId,
-            choice: String(option.choice || ''),
-            option: {
-                choice: String(option.choice || ''),
-                label: String(option.label || '')
-            }
-        };
-        state.choicePrompt = null;
-        renderWindow();
-        window.dispatchEvent(new CustomEvent('neko:icebreaker-choice-selected', { detail: detail }));
-        dispatchHostEvent('icebreaker-choice-select', detail);
     }
 
     function handleCompactChatStateChange(nextCompactChatState) {
@@ -3792,17 +3803,7 @@
         renderWindow();
     }
 
-    function dismissChoicePromptIfMatches(sessionId) {
-        if (!sessionId) return;
-        if (state.choicePrompt
-                && state.choicePrompt.source === 'mini_game_invite'
-                && state.choicePrompt.sessionId === sessionId) {
-            state.choicePrompt = null;
-            renderWindow();
-        }
-    }
-
-    function setIcebreakerChoicePrompt(payload) {
+    function setNewUserIcebreakerPrompt(payload) {
         if (!payload) return;
         var sessionId = String(payload.sessionId || '');
         if (!sessionId) return;
@@ -3811,7 +3812,8 @@
         var cleanedOptions = rawOptions.map(function (o) {
             return {
                 choice: String((o && o.choice) || ''),
-                label: String((o && o.label) || '')
+                label: String((o && o.label) || ''),
+                sessionId: sessionId
             };
         }).filter(function (o) { return o.choice && o.label; });
         if (!cleanedOptions.length) {
@@ -3821,17 +3823,29 @@
         state.choicePrompt = {
             source: 'new_user_icebreaker',
             sessionId: sessionId,
-            gameType: String(payload.gameType || ''),
+            gameType: String(payload.gameType || 'new_user_icebreaker'),
             options: cleanedOptions
         };
         invalidatePendingGalgameRequest();
         renderWindow();
     }
 
+    function setIcebreakerChoicePrompt(payload) {
+        setNewUserIcebreakerPrompt(payload);
+    }
+
     function clearIcebreakerChoicePrompt(sessionId) {
+        if (!state.choicePrompt || state.choicePrompt.source !== 'new_user_icebreaker') return false;
+        if (sessionId && state.choicePrompt.sessionId !== String(sessionId)) return false;
+        state.choicePrompt = null;
+        renderWindow();
+        return true;
+    }
+
+    function dismissChoicePromptIfMatches(sessionId) {
         if (!sessionId) return;
         if (state.choicePrompt
-                && state.choicePrompt.source === 'new_user_icebreaker'
+                && state.choicePrompt.source === 'mini_game_invite'
                 && state.choicePrompt.sessionId === sessionId) {
             state.choicePrompt = null;
             renderWindow();
@@ -6753,6 +6767,7 @@
         // Mini-game invite ChoicePrompt：app-websocket.js 收到对应 WS message 时调
         setMiniGameInvitePrompt: setMiniGameInvitePrompt,
         setIcebreakerChoicePrompt: setIcebreakerChoicePrompt,
+        setNewUserIcebreakerPrompt: setNewUserIcebreakerPrompt,
         clearIcebreakerChoicePrompt: clearIcebreakerChoicePrompt,
         // unified resolved handler：accept 兼 launch / decline / suppress 都通过
         // 这条入口分发——前端 dismiss prompt UI + accept 时 window.open。替代了

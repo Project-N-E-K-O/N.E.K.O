@@ -183,19 +183,7 @@
             ]
         },
         audioFileNames: audioFileNames,
-        audioFilesByKey: {
-            intro_basic: audioFilesForAllLocales(audioFileNames.intro_basic),
-            intro_greeting_reply: audioFilesForAllLocales(audioFileNames.intro_greeting_reply),
-            takeover_capture_cursor: audioFilesForAllLocales(audioFileNames.takeover_capture_cursor),
-            interrupt_resist_light_1: audioFilesForAllLocales(audioFileNames.interrupt_resist_light_1),
-            interrupt_resist_light_3: audioFilesForAllLocales(audioFileNames.interrupt_resist_light_3),
-            interrupt_angry_exit: audioFilesForAllLocales(audioFileNames.interrupt_angry_exit),
-            takeover_return_control: audioFilesForAllLocales(audioFileNames.takeover_return_control),
-            day1_capsule_drag_hint: audioFilesForAllLocales(audioFileNames.day1_capsule_drag_hint),
-            day1_history_handle: audioFilesForAllLocales(audioFileNames.day1_history_handle),
-            day1_screen_entry: audioFilesForAllLocales(audioFileNames.day1_screen_entry),
-            day1_screen_entry_invite: audioFilesForAllLocales(audioFileNames.day1_screen_entry_invite)
-        },
-        audioFileOverridesByKey: {}
+        audioFilesByKey: audioFilesByKey,
+        audioFileOverridesByKey: audioFilesByKey
     }));
 })();

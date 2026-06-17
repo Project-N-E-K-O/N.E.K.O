@@ -98,6 +98,40 @@
         return fallback;
     }
 
+    function resolveLanlanName() {
+        try {
+            if (window.appState && typeof window.appState.lanlan_name === 'string' && window.appState.lanlan_name) {
+                return window.appState.lanlan_name;
+            }
+        } catch (_) {}
+        try {
+            if (window.lanlan_config && typeof window.lanlan_config.lanlan_name === 'string' && window.lanlan_config.lanlan_name) {
+                return window.lanlan_config.lanlan_name;
+            }
+        } catch (_) {}
+        return '';
+    }
+
+    function postContext(role, text, sessionId) {
+        const lanlanName = resolveLanlanName();
+        const content = String(text || '').trim();
+        if (!lanlanName || !content || typeof fetch !== 'function') {
+            return;
+        }
+        fetch('/api/game/new_user_icebreaker/context', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                lanlan_name: lanlanName,
+                role: role,
+                text: content,
+                session_id: sessionId || ''
+            })
+        }).catch((error) => {
+            console.warn('[NewUserIcebreaker] context write failed:', error);
+        });
+    }
+
     async function start(reason) {
         if (activeSession || isDayCompleted(DAY) || hasCompletedFinalDay()) {
             return false;
@@ -141,14 +175,18 @@
         if (sessionId && sessionId !== activeSession.id) {
             return;
         }
+        const option = detail && detail.option && typeof detail.option === 'object' ? detail.option : {};
+        const choice = String((detail && detail.choice) || option.choice || '');
+        const label = String((detail && detail.label) || option.label || '');
 
         updateDayEntry({
             sessionId: activeSession.id,
-            choice: String(detail && detail.choice || ''),
-            label: String(detail && detail.label || ''),
+            choice: choice,
+            label: label,
             completed: true,
             completedAt: now()
         });
+        postContext('user', label || choice, activeSession.id);
         activeSession = null;
     }
 
