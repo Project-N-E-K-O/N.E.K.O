@@ -48,7 +48,7 @@ LLM_INPUT_BUDGET  (call-site, heuristic)
    string/constant literal) must show evidence of input budgeting somewhere in
    the enclosing function: a call to one of the ``utils.tokenize`` truncation
    helpers (``truncate_to_tokens`` / ``truncate_head_tail_tokens`` / ...), or a
-   reference to a ``*_MAX_TOKENS`` / ``*_MAX_CHARS`` budget constant.
+   reference to a ``*_MAX_TOKENS`` budget constant.
 
    This is a deliberately coarse heuristic — it cannot prove a given string was
    truncated, only that the function is "budget-aware". False positives are
@@ -132,8 +132,8 @@ CODE_OUTPUT = "LLM_OUTPUT_BUDGET"
 LLM_CALL_ATTRS = {"ainvoke", "invoke", "astream", "ainvoke_raw", "invoke_raw"}
 
 # Names whose presence anywhere in the enclosing function marks it as
-# "budget-aware". The tokenize helpers do real truncation; a ``*_MAX_TOKENS`` /
-# ``*_MAX_CHARS`` constant reference signals a deliberate cap is in play.
+# "budget-aware". The tokenize helpers do real truncation; a ``*_MAX_TOKENS``
+# constant reference signals a deliberate token cap is in play.
 # Only helpers that ENFORCE a token cap count as evidence. ``count_tokens`` /
 # ``acount_tokens`` merely measure, and ``truncate_to_last_sentence_end`` trims
 # to a sentence boundary with no max-token argument — none of them actually
@@ -143,10 +143,11 @@ BUDGET_HELPER_NAMES = {
     "atruncate_to_tokens",
     "truncate_head_tail_tokens",
 }
-# Token/char budget constants only — ``_MAX_ITEMS`` (item counts) and a bare
-# ``_BUDGET`` (could be anything) are deliberately excluded so a function with
-# only a count limit isn't mistaken for input-token-budget-aware.
-BUDGET_CONST_RE = re.compile(r"_MAX_TOKENS$|_MAX_CHARS$|_TOKEN_BUDGET$")
+# Token budget constants only — ``_MAX_ITEMS`` (item counts), ``_MAX_CHARS``
+# (character caps), and a bare ``_BUDGET`` / ``_TOKEN_BUDGET`` are deliberately
+# excluded so a function with a non-token cap is not mistaken for
+# input-token-budget-aware.
+BUDGET_CONST_RE = re.compile(r"_MAX_TOKENS$")
 
 CODE_INPUT = "LLM_INPUT_BUDGET"
 
@@ -262,7 +263,7 @@ def _build_parent_func_map(tree: ast.Module) -> dict[int, ast.AST]:
 
 def _function_is_budget_aware(func: ast.AST | None) -> bool:
     """True if the function's *own* body references a tokenize truncation helper
-    or a ``*_MAX_TOKENS`` / ``*_MAX_CHARS`` / ``*_TOKEN_BUDGET`` constant.
+    or a ``*_MAX_TOKENS`` constant.
 
     Does NOT descend into nested ``def`` / ``async def`` / ``lambda`` bodies — a
     budget marker that lives only inside an inner helper says nothing about the

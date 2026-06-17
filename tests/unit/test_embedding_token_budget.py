@@ -5,7 +5,7 @@
 背景:之前 ``_infer_blocking`` 用 pad-to-longest + 固定 batch(BATCH_SIZE=16),
 一条粘贴进 recent 的长文本会让整批 16 条都 pad 到几千 token,激活内存
 顶到多 GB(实测把 RSS 从 1.1 GB 顶到 12.4 GB)。修复改成桶装:
-``batch_size × max_len ≤ _INFER_TOKEN_BUDGET``。
+``batch_size × max_len ≤ _INFER_BATCH_MAX_TOKENS``。
 
 测试目标:
 - 桶分边界正确(满桶 vs 必须 flush)
@@ -136,12 +136,12 @@ def test_long_entries_split_into_multiple_buckets(service_with_fake_session):
 def test_single_overlong_entry_still_runs(service_with_fake_session):
     """单条 > budget 时,空桶必接受(否则永远 flush 不出去)。"""
     svc, sess, emb = service_with_fake_session
-    out = _run_with_lengths(svc, sess, emb, [emb._INFER_TOKEN_BUDGET + 1000])
+    out = _run_with_lengths(svc, sess, emb, [emb._INFER_BATCH_MAX_TOKENS + 1000])
     assert len(out) == 1
     assert len(sess.calls) == 1
     batch, seq = sess.calls[0]
     assert batch == 1
-    assert seq == emb._INFER_TOKEN_BUDGET + 1000
+    assert seq == emb._INFER_BATCH_MAX_TOKENS + 1000
 
 
 def test_mixed_length_preserves_original_order(service_with_fake_session):

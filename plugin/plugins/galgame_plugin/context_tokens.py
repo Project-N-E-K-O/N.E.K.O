@@ -38,6 +38,42 @@ def count_tokens_heuristic(text: str) -> int:
     return int(math.ceil(total))
 
 
+def truncate_tokens_heuristic(
+    text: str,
+    max_tokens: int,
+    *,
+    notice_template: str | None = None,
+) -> str:
+    """Return the longest prefix that fits the heuristic token budget."""
+    if max_tokens <= 0 or not text:
+        return ""
+    if count_tokens_heuristic(text) <= max_tokens:
+        return text
+
+    def candidate(prefix_len: int) -> str:
+        prefix = text[:prefix_len]
+        if notice_template is None:
+            return prefix
+        omitted = len(text) - prefix_len
+        return f"{prefix}{notice_template.format(omitted=omitted)}"
+
+    best = ""
+    low = 0
+    high = len(text) - 1
+    while low <= high:
+        mid = (low + high) // 2
+        clipped = candidate(mid)
+        if count_tokens_heuristic(clipped) <= max_tokens:
+            best = clipped
+            low = mid + 1
+        else:
+            high = mid - 1
+
+    if best or notice_template is None:
+        return best
+    return truncate_tokens_heuristic(text, max_tokens)
+
+
 def estimate_context_tokens(context: dict[str, Any]) -> int:
     """Estimate tokens for a context dict using the prompt JSON representation."""
     rendered = json.dumps(context, ensure_ascii=False, indent=2, default=str)

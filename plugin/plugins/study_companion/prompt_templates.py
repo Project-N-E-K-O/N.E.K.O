@@ -1,11 +1,11 @@
 """Study Companion prompt templates and local fallback text."""
 
-STUDY_PROMPT_CONTEXT_MAX_CHARS = {
-    "concept_explain": 12000,
-    "question_generate": 9000,
-    "answer_evaluate": 6000,
-    "knowledge_track": 5000,
-    "summarize_session": 4500,
+STUDY_PROMPT_CONTEXT_MAX_TOKENS = {
+    "concept_explain": 6000,
+    "question_generate": 4500,
+    "answer_evaluate": 3000,
+    "knowledge_track": 2500,
+    "summarize_session": 2000,
 }
 
 STUDY_CONCEPT_EXPLAIN_SYSTEM_PROMPT = (
