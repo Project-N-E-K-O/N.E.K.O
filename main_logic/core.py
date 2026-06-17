@@ -2905,6 +2905,19 @@ class LLMSessionManager:
             return True
         return False
 
+    def _cache_icebreaker_context_for_new_session(self, role: str, text: str) -> None:
+        if not getattr(self, "is_preparing_new_session", False):
+            return
+        cache = getattr(self, "message_cache_for_new_session", None)
+        if not isinstance(cache, list):
+            cache = []
+            self.message_cache_for_new_session = cache
+        speaker = self.master_name if role == "user" else self.lanlan_name
+        if cache and cache[-1].get("role") == speaker:
+            cache[-1]["text"] += text
+            return
+        cache.append({"role": speaker, "text": text})
+
     async def _prime_icebreaker_context_to_realtime_session(
         self,
         session,
@@ -2952,6 +2965,7 @@ class LLMSessionManager:
             return False
         if not self._claim_icebreaker_context_request_id(request_id):
             return True
+        self._cache_icebreaker_context_for_new_session(clean_role, clean_text)
 
         session = getattr(self, "session", None)
         history = getattr(session, "_conversation_history", None)
@@ -2972,6 +2986,7 @@ class LLMSessionManager:
             return False
         if not self._claim_icebreaker_context_request_id(request_id):
             return True
+        self._cache_icebreaker_context_for_new_session(clean_role, clean_text)
 
         if self._append_icebreaker_context_to_session(clean_role, clean_text, request_id):
             return True
