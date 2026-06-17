@@ -247,10 +247,12 @@ def _build_parent_func_map(tree: ast.Module) -> dict[int, ast.AST]:
     def _walk(node: ast.AST, cur: ast.AST | None) -> None:
         is_func = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         nxt = node if is_func else cur
-        if cur is not None:
-            m[id(node)] = cur
+        # Function nodes map to themselves; non-function nodes map to the
+        # nearest enclosing function; top-level nodes stay out of the map.
         if is_func:
             m[id(node)] = node
+        elif cur is not None:
+            m[id(node)] = cur
         for child in ast.iter_child_nodes(node):
             _walk(child, nxt)
 
