@@ -196,6 +196,6 @@
             day1_screen_entry: audioFilesForAllLocales(audioFileNames.day1_screen_entry),
             day1_screen_entry_invite: audioFilesForAllLocales(audioFileNames.day1_screen_entry_invite)
         },
-        audioFileOverridesByKey: {}
+        audioFileOverridesByKey: audioFilesByKey
     }));
 })();

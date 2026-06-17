@@ -2369,7 +2369,27 @@
                         applyYuiGuideChatSpotlight(event.data.kind || '');
                         break;
                     }
-                    case 'yui_guide_set_chat_cursor':
+                    case 'yui_guide_set_chat_cursor': {
+                        if (!isStandaloneChatPage() || !document.body) break;
+                        var message = Object.assign({}, event.data);
+                        var cursorOptions = Object.assign({}, message, {
+                            freezePoint: event.data.freezePoint === true,
+                            normalizedFreezePoint: message.freezePoint === true
+                        });
+                        var freezePointMessage = {
+                            freezePoint: message.freezePoint === true
+                        };
+                        var expandedForCursor = false;
+                        if (expandedForCursor && cursorOptions.freezePoint !== true) {
+                            relayYuiGuideChatCommand(cursorOptions);
+                        }
+                        relayYuiGuideChatCommand(Object.assign({}, cursorOptions, freezePointMessage));
+                        break;
+                    }
+                    case 'yui_guide_chat_cursor_anchor': {
+                        if (isStandaloneChatPage()) break;
+                        break;
+                    }
                     case 'yui_guide_drag_chat_cursor':
                     case 'yui_guide_arc_chat_cursor': {
                         if (!isStandaloneChatPage() || !document.body) break;
@@ -2573,6 +2593,10 @@
     }
 
     var yuiGuideChatCursorLastRelayKey = '';
+    var yuiGuideChatCursorRequestToken = 0;
+    var yuiGuideChatCursorArcRequestToken = 0;
+    var yuiGuideChatCursorLastPoint = null;
+    var yuiGuideChatCursorFrozenScreenPoints = {};
 
     function ensureYuiGuideChatCursorElement() {
         if (!isStandaloneChatPage() || !document.body) {
@@ -2614,6 +2638,31 @@
         return cursor;
     }
 
+    function getYuiGuideChatSpotlightItemTargets(kind) {
+        var normalizedKind = typeof kind === 'string' ? kind : '';
+        var roots = [
+            document.getElementById('composer-tool-popover-compact'),
+            document.getElementById('composer-avatar-tool-quickbar'),
+            document.getElementById('react-chat-window-root')
+        ].filter(Boolean);
+        var selectors = normalizedKind === 'galgame'
+            ? ['.compact-input-tool-item-galgame', '.composer-galgame-btn', '.composer-galgame-option']
+            : ['.composer-icon-button[data-avatar-tool-id]', '.compact-input-tool-item-avatar'];
+        var targets = [];
+        roots.forEach(function (root) {
+            selectors.forEach(function (selector) {
+                try {
+                    Array.prototype.forEach.call(root.querySelectorAll(selector), function (element) {
+                        if (targets.indexOf(element) === -1) {
+                            targets.push(element);
+                        }
+                    });
+                } catch (_) {}
+            });
+        });
+        return targets;
+    }
+
     function resolveYuiGuideChatCursorTarget(kind, targetIndex) {
         var normalizedKind = typeof kind === 'string' ? kind : '';
         if (!normalizedKind || typeof document === 'undefined') {
@@ -2636,6 +2685,11 @@
                     }
                 });
             } catch (_) {}
+        });
+        getYuiGuideChatSpotlightItemTargets(normalizedKind).forEach(function (element) {
+            if (targets.indexOf(element) === -1) {
+                targets.push(element);
+            }
         });
         if (!targets.length) {
             var fallback = getYuiGuideChatSpotlightTarget(normalizedKind === 'capsule-input' ? 'input' : normalizedKind);
@@ -2708,26 +2762,108 @@
         }
         yuiGuideChatCursorLastRelayKey = relayKey;
         var kind = typeof message.kind === 'string' ? message.kind : '';
-        if (!kind) {
+        if (action === 'yui_guide_drag_chat_cursor') {
+            return applyYuiGuideChatCursorDrag(kind, message);
+        }
+        if (action === 'yui_guide_arc_chat_cursor') {
+            return applyYuiGuideChatCursorArc(kind, message);
+        }
+        return applyYuiGuideChatCursor(kind, message);
+    }
+
+    function rememberYuiGuideChatCursorScreenPoint(point, kind, effect, effectDurationMs) {
+        if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+            return;
+        }
+        yuiGuideChatCursorLastPoint = {
+            x: point.x,
+            y: point.y,
+            kind: typeof kind === 'string' ? kind : '',
+            effect: typeof effect === 'string' ? effect : '',
+            effectDurationMs: Number.isFinite(Number(effectDurationMs)) ? Math.max(0, Math.floor(Number(effectDurationMs))) : 0,
+            timestamp: Date.now()
+        };
+    }
+
+    function applyYuiGuideChatCursor(kind, options) {
+        var normalizedOptions = options || {};
+        var freezePoint = normalizedOptions.freezePoint === true;
+        var freezeKey = freezePoint && Number.isFinite(Number(normalizedOptions.timestamp))
+            ? String(Math.floor(Number(normalizedOptions.timestamp)))
+            : '';
+        var normalizedKind = typeof kind === 'string' ? kind : '';
+        if (!normalizedKind) {
+            yuiGuideChatCursorRequestToken += 1;
             var existing = document.getElementById('yui-guide-chat-cursor');
             if (existing) {
                 existing.classList.remove('is-visible');
             }
+            yuiGuideChatCursorLastPoint = null;
             return true;
         }
-        var point = getYuiGuideChatCursorTargetPoint(kind, message.targetIndex);
+        var point = freezeKey && yuiGuideChatCursorFrozenScreenPoints[freezeKey]
+            ? yuiGuideChatCursorFrozenScreenPoints[freezeKey]
+            : getYuiGuideChatCursorTargetPoint(normalizedKind, normalizedOptions.targetIndex);
         if (!point) {
             return false;
         }
-        if (action === 'yui_guide_drag_chat_cursor') {
-            point.x += Number.isFinite(Number(message.deltaX)) ? Number(message.deltaX) : 0;
-            point.y += Number.isFinite(Number(message.deltaY)) ? Number(message.deltaY) : 0;
+        if (freezeKey) {
+            yuiGuideChatCursorFrozenScreenPoints[freezeKey] = point;
         }
-        return moveYuiGuideChatCursor(point, {
-            durationMs: message.durationMs,
-            effect: message.effect,
-            effectDurationMs: message.effectDurationMs
-        });
+        if (freezePoint) {
+            yuiGuideChatCursorRequestToken += 1;
+            if (kind === 'galgame') {
+                yuiGuideChatCursorArcRequestToken += 1;
+            }
+        } else {
+            yuiGuideChatCursorRequestToken += 1;
+        }
+        rememberYuiGuideChatCursorScreenPoint(point, normalizedKind, normalizedOptions.effect, normalizedOptions.effectDurationMs);
+        return moveYuiGuideChatCursor(point, normalizedOptions);
+    }
+
+    function applyYuiGuideChatCursorDrag(kind, options) {
+        yuiGuideChatCursorRequestToken += 1;
+        var normalizedOptions = options || {};
+        var startPoint = yuiGuideChatCursorLastPoint || getYuiGuideChatCursorTargetPoint(kind, normalizedOptions.targetIndex);
+        if (!startPoint) {
+            return false;
+        }
+        var point = {
+            x: startPoint.x + (Number.isFinite(Number(normalizedOptions.deltaX)) ? Number(normalizedOptions.deltaX) : 0),
+            y: startPoint.y + (Number.isFinite(Number(normalizedOptions.deltaY)) ? Number(normalizedOptions.deltaY) : 0)
+        };
+        rememberYuiGuideChatCursorScreenPoint(point, kind, normalizedOptions.effect, normalizedOptions.effectDurationMs);
+        return moveYuiGuideChatCursor(point, normalizedOptions);
+    }
+
+    function applyYuiGuideChatCursorArc(kind, options) {
+        var normalizedOptions = options || {};
+        var arcRequestToken = ++yuiGuideChatCursorArcRequestToken;
+        var startPoint = yuiGuideChatCursorLastPoint || getYuiGuideChatCursorTargetPoint(kind, normalizedOptions.targetIndex);
+        var centerPoint = getYuiGuideChatCursorTargetPoint(kind, normalizedOptions.targetIndex);
+        if (!startPoint || !centerPoint) {
+            return false;
+        }
+        var direction = Number(normalizedOptions.direction) < 0 ? -1 : 1;
+        var fraction = Number.isFinite(Number(normalizedOptions.fraction))
+            ? Math.max(0, Math.min(1, Number(normalizedOptions.fraction)))
+            : 0.2;
+        var angle = direction * Math.PI * 2 * fraction;
+        var dx = startPoint.x - centerPoint.x;
+        var dy = startPoint.y - centerPoint.y;
+        var finalScreenPoint = {
+            x: Math.round(centerPoint.x + dx * Math.cos(angle) - dy * Math.sin(angle)),
+            y: Math.round(centerPoint.y + dx * Math.sin(angle) + dy * Math.cos(angle))
+        };
+        var moved = moveYuiGuideChatCursor(finalScreenPoint, normalizedOptions);
+        window.setTimeout(function () {
+            if (arcRequestToken !== yuiGuideChatCursorArcRequestToken) {
+                return;
+            }
+            rememberYuiGuideChatCursorScreenPoint(finalScreenPoint, kind, normalizedOptions.effect, normalizedOptions.effectDurationMs);
+        }, Math.max(0, Number.isFinite(Number(normalizedOptions.durationMs)) ? Number(normalizedOptions.durationMs) : 260));
+        return moved;
     }
 
     window.addEventListener('neko:tutorial-overlay-relay', function (evt) {
