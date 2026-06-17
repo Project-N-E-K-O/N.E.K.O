@@ -312,6 +312,7 @@ function writeSubtitleText(text) {
                 minHeight: panelBounds.height,
                 maxHeight: panelBounds.height,
                 baseFont: 17,
+                // Keep in sync with PANEL_TEXT_HORIZONTAL_RESERVE in subtitle-shared.js.
                 availableWidth: Math.max(0, (display.clientWidth || panelBounds.width) - 110),
                 availableHeight: panelBounds.height
             })
