@@ -72,6 +72,7 @@
         const nativeRelayProvider = typeof normalizedOptions.nativeRelayProvider === 'function'
             ? normalizedOptions.nativeRelayProvider
             : () => null;
+        const subscriptions = [];
 
         function readQueue() {
             try {
@@ -200,25 +201,40 @@
             };
             if (typeof channel.addEventListener === 'function') {
                 channel.addEventListener('message', listener);
-                return function unsubscribeBridgeMessage() {
+                const unsubscribe = function unsubscribeBridgeMessage() {
                     if (typeof channel.removeEventListener === 'function') {
                         channel.removeEventListener('message', listener);
                     }
                 };
+                subscriptions.push(unsubscribe);
+                return unsubscribe;
             }
             const previousHandler = channel.onmessage;
-            const handleOnMessage = function handleOnMessage(event) {
+            const wrappedHandler = function handleOnMessage(event) {
                 if (typeof previousHandler === 'function') {
                     previousHandler.call(channel, event);
                 }
                 listener(event);
             };
-            channel.onmessage = handleOnMessage;
-            return function unsubscribeBridgeOnMessage() {
-                if (channel.onmessage === handleOnMessage) {
+            channel.onmessage = wrappedHandler;
+            const unsubscribe = function unsubscribeBridgeOnMessage() {
+                if (channel.onmessage === wrappedHandler) {
                     channel.onmessage = previousHandler || null;
                 }
             };
+            subscriptions.push(unsubscribe);
+            return unsubscribe;
+        }
+
+        function destroy() {
+            while (subscriptions.length) {
+                const unsubscribe = subscriptions.pop();
+                try {
+                    unsubscribe();
+                } catch (error) {
+                    consoleApi.warn('[YuiGuide] cleanup bridge subscription failed:', error);
+                }
+            }
         }
 
         return {
@@ -228,7 +244,9 @@
             post,
             postToChat: post,
             postToPet,
-            on
+            on,
+            destroy,
+            dispose: destroy
         };
     }
 

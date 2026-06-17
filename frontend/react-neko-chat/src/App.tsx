@@ -1597,6 +1597,7 @@ function CompactChatApp({
   const lastCompactToolWheelRotateRequestIdRef = useRef('');
   const lastCompactHistoryOpenRequestIdRef = useRef('');
   const lastCompactToolWheelIndexRequestIdRef = useRef('');
+  const lastCompactHistoryOpenRequestIdRef = useRef('');
   const compactInputHasPayload = draft.trim().length > 0 || composerAttachments.length > 0;
   const canSubmit = !compactTextEntryLocked && compactInputHasPayload;
   const clearActiveCursorToolSelection = useCallback(() => {

@@ -3297,6 +3297,10 @@
             "desc": "Para obtener la mejor experiencia del tutorial, recomendamos ingresar al modo de pantalla completa.\nEn el modo de pantalla completa, el contenido del tutorial será más claro y no quedará oscurecido por otros elementos.",
             "enterFullscreen": "Ingrese al tutorial en pantalla completa"
         },
+        "reset": {
+            "daySuccess": "Se restableció el tutorial de principiante del día {{day}}. Actualiza Neko para iniciarlo de nuevo.",
+            "dayFailed": "No se pudo restablecer el tutorial de principiante. Inténtalo de nuevo más tarde."
+        },
         "drag_hint": "Mantenga presionado y arrastre para mover la información sobre herramientas",
         "yuiGuide": {
             "buttons": {

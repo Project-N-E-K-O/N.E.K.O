@@ -3297,6 +3297,10 @@
             "desc": "为了获得最佳的引导体验，建议进入全屏模式。\n全屏模式下，引导内容会更清晰，不会被其他元素遮挡。",
             "enterFullscreen": "进入全屏引导"
         },
+        "reset": {
+            "daySuccess": "已重置第 {{day}} 天新手教程，请刷新 Neko 后启动。",
+            "dayFailed": "新手教程重置失败，请稍后再试。"
+        },
         "drag_hint": "按住拖动以移动提示框",
         "yuiGuide": {
             "buttons": {

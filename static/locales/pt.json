@@ -3297,6 +3297,10 @@
             "desc": "Para obter a melhor experiência do tutorial, recomendamos entrar no modo de tela cheia.\nNo modo de tela cheia, o conteúdo do tutorial será mais claro e não será obscurecido por outros elementos.",
             "enterFullscreen": "Entrar no tutorial em tela cheia"
         },
+        "reset": {
+            "daySuccess": "O tutorial de iniciante do dia {{day}} foi redefinido. Atualize o Neko para iniciá-lo novamente.",
+            "dayFailed": "Falha ao redefinir o tutorial de iniciante. Tente novamente mais tarde."
+        },
         "drag_hint": "Segure e arraste para mover a dica de ferramenta",
         "yuiGuide": {
             "buttons": {

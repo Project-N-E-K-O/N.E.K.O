@@ -3297,6 +3297,10 @@
             "desc": "For the best tutorial experience, we recommend entering fullscreen mode.\nIn fullscreen mode, the tutorial content will be clearer and won't be obscured by other elements.",
             "enterFullscreen": "Enter Fullscreen Tutorial"
         },
+        "reset": {
+            "daySuccess": "Day {{day}} novice tutorial has been reset. Refresh Neko to start it again.",
+            "dayFailed": "Failed to reset the novice tutorial. Please try again later."
+        },
         "drag_hint": "Hold and drag to move the tooltip",
         "yuiGuide": {
             "buttons": {
