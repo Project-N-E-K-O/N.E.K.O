@@ -298,28 +298,25 @@ async def call_open_threads(
 
 async def call_topic_candidates(
     *,
-    user_msgs: list[tuple[float, str]],
-    ai_msgs: list[tuple[float, str]],
     lang: str,
     global_signals: str = "",
     timeout: float = 8.0,
 ) -> list[dict[str, Any]] | None:
     """Extract low-frequency deeper topic hooks for the background pool.
 
-    This is intentionally a background-only helper. It summarizes raw recent
-    turns into short topic materials, so proactive chat never needs to pull raw
-    conversation text synchronously.
+    Background-only helper. Its only conversation input is the slow
+    cross-window evidence the signal store keeps (``global_signals``); it
+    distils that into short topic materials, so proactive chat never needs to
+    pull raw conversation text synchronously.
     """
     lang_key = _normalize_lang(lang)
     template = _select_lang_template(TOPIC_CANDIDATE_PROMPTS, lang_key)
 
-    if not user_msgs and not ai_msgs:
+    evidence = (global_signals or "").strip()
+    if not evidence:
         return []
 
-    prompt = template.format(
-        conversation=_format_conversation(user_msgs, ai_msgs),
-        global_signals=(global_signals or "(no global signals yet)").strip(),
-    )
+    prompt = template.format(global_signals=evidence)
 
     raw = await _invoke_emotion_tier(prompt, timeout=timeout, label='topic_candidates')
     if raw is None:

@@ -909,6 +909,9 @@ export default function CompactExportHistoryPanel({
             className="compact-export-history-scroll"
             role="list"
             aria-label={i18n('chat.messageListAriaLabel', 'Chat messages')}
+            data-compact-hit-region={historyInteractive && !choiceLayerAbove ? 'true' : undefined}
+            data-compact-hit-region-id={historyInteractive && !choiceLayerAbove ? 'history:scroll' : undefined}
+            data-compact-hit-region-kind={historyInteractive && !choiceLayerAbove ? 'scroll' : undefined}
             data-compact-scrollbar-visible={scrollbarVisible ? 'true' : undefined}
             onScroll={handleScroll}
             onWheel={handleWheel}

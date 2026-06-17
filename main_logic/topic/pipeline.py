@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections import defaultdict, deque
+from collections import defaultdict
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from copy import deepcopy
 from datetime import date, datetime
@@ -32,7 +32,6 @@ TopicTrigger = Callable[
     Awaitable[bool],
 ]
 
-_MAX_TURNS_PER_SIDE = 8
 _MAX_TEXT_CHARS = 1000
 _PROCESS_DEBOUNCE_SECONDS = 45.0
 _TRIGGER_AFTER_QUIET_SECONDS = 60.0
@@ -171,22 +170,10 @@ def _material_bigram_units(material: Mapping[str, Any]) -> set[str]:
     return {unit for unit in _material_topic_units(material) if len(unit) >= 2}
 
 
-async def _default_analyzer(
-    *,
-    user_msgs: list[str],
-    ai_msgs: list[str],
-    lang: str,
-    global_signals: str = "",
-):
+async def _default_analyzer(*, lang: str, global_signals: str = ""):
     from main_logic.activity.llm_enrichment import call_topic_candidates
 
-    now = time.time()
-    return await call_topic_candidates(
-        user_msgs=[(now + idx * 0.001, text) for idx, text in enumerate(user_msgs)],
-        ai_msgs=[(now + idx * 0.001, text) for idx, text in enumerate(ai_msgs)],
-        lang=lang,
-        global_signals=global_signals,
-    )
+    return await call_topic_candidates(lang=lang, global_signals=global_signals)
 
 
 def _privacy_mode_active() -> bool:
@@ -226,8 +213,6 @@ class TopicHookPool:
         self._signal_store = TopicSignalStore(
             min_user_turns_for_topic=min_user_turns_for_topic,
         )
-        self._user_turns: dict[str, deque[str]] = defaultdict(lambda: deque(maxlen=_MAX_TURNS_PER_SIDE))
-        self._ai_turns: dict[str, deque[str]] = defaultdict(lambda: deque(maxlen=_MAX_TURNS_PER_SIDE))
         self._langs: dict[str, str] = {}
         self._materials: dict[str, list[dict[str, Any]]] = {}
         self._tasks: dict[str, asyncio.Task] = {}
@@ -238,8 +223,6 @@ class TopicHookPool:
 
     def _purge_character_state(self, name: str) -> None:
         """Drop all accumulated topic state for a character (privacy wipe)."""
-        self._user_turns.pop(name, None)
-        self._ai_turns.pop(name, None)
         self._signal_store.clear(name)
         self._materials.pop(name, None)
         self._dirty.discard(name)
@@ -250,8 +233,7 @@ class TopicHookPool:
             return
         name = str(lanlan_name or "default")
         self._seq[name] += 1
-        self._user_turns[name].append(cleaned)
-        self._signal_store.note_turn(name, actor="user", text=cleaned, lang=lang)
+        self._signal_store.note_turn(name, actor="user", text=cleaned)
         self._langs[name] = lang or self._langs.get(name, "zh")
         self._dirty.add(name)
         self._cancel_trigger(name)
@@ -263,8 +245,7 @@ class TopicHookPool:
             return
         name = str(lanlan_name or "default")
         self._seq[name] += 1
-        self._ai_turns[name].append(cleaned)
-        self._signal_store.note_turn(name, actor="ai", text=cleaned, lang=lang)
+        self._signal_store.note_turn(name, actor="ai", text=cleaned)
         self._langs[name] = lang or self._langs.get(name, "zh")
         self._dirty.add(name)
         self._cancel_trigger(name)
@@ -295,11 +276,6 @@ class TopicHookPool:
             self._purge_character_state(name)
             return
         seen_seq = self._seq.get(name, 0)
-        user_msgs = list(self._user_turns.get(name, ()))
-        ai_msgs = list(self._ai_turns.get(name, ()))
-        if not user_msgs and not ai_msgs:
-            self._dirty.discard(name)
-            return
         if self._daily_quota_reached(name):
             logger.info("[%s] topic collection paused: daily topic quota reached", name)
             self._materials.pop(name, None)
@@ -317,8 +293,6 @@ class TopicHookPool:
         topic_lang = lang or self._langs.get(name, "zh")
         global_signals = self._signal_store.format_global_signals(name, lang=topic_lang)
         raw_materials = await self._analyzer(
-            user_msgs=user_msgs,
-            ai_msgs=ai_msgs,
             lang=topic_lang,
             global_signals=global_signals,
         )

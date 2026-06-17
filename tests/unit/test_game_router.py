@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sqlite3
 from unittest.mock import AsyncMock
 
@@ -48,6 +49,40 @@ def _allow_basketball_score_session(lanlan_name, session_id, mode="shooter"):
     game_router._game_route_states[game_router._route_state_key(lanlan_name, "basketball")] = state
     game_router._remember_basketball_score_session(lanlan_name, session_id, mode)
     return state
+
+
+@pytest.mark.unit
+def test_basketball_removed_modes_are_not_public_or_scored():
+    assert game_router._normalize_basketball_mode("horse") == "spectator"
+    assert game_router._normalize_basketball_mode("HORSE") == "spectator"
+    assert game_router._is_basketball_scoring_mode("horse") is False
+    assert game_router._normalize_basketball_mode("timed") == "spectator"
+    assert game_router._normalize_basketball_mode("TIMED") == "spectator"
+    assert game_router._is_basketball_scoring_mode("timed") is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_basketball_route_start_accepts_direct_debug_session(monkeypatch):
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    async def fake_pregame_context(**kwargs):
+        assert kwargs["neko_initiated"] is False
+        return game_router._default_basketball_pregame_context(mode="shooter"), "lightweight", ""
+
+    monkeypatch.setattr(game_router, "_build_basketball_pregame_context", fake_pregame_context)
+
+    with reset_game_route_state():
+        result = await game_router.game_route_start(
+            "basketball",
+            _FakeRequest({"lanlan_name": "Lan", "session_id": "debug-basketball", "mode": "shooter"}),
+        )
+
+        assert result["ok"] is True
+        assert result["state"]["game_type"] == "basketball"
+        assert result["state"]["session_id"] == "debug-basketball"
+        assert result["state"]["mode"] == "shooter"
+        assert game_router._route_state_key("Lan", "basketball") in game_router._game_route_states
 
 
 @pytest.mark.unit
@@ -164,6 +199,33 @@ async def test_new_user_icebreaker_context_endpoint_handles_append_failure(monke
 
 
 @pytest.mark.unit
+def test_parse_control_instructions_sanitizes_visible_line_leaks():
+    result = game_router._parse_control_instructions(
+        'glog_0040: 哼，那我认真一点咯。 (mood=angry, difficulty=lv2)\n'
+        'reason="balance tuning"\n'
+        '{"mood":"angry","difficulty":"lv2","reason":"压一压节奏"}'
+    )
+
+    assert result == {
+        "line": "哼，那我认真一点咯。",
+        "control": {"mood": "angry", "difficulty": "lv2", "reason": "压一压节奏"},
+    }
+
+
+@pytest.mark.unit
+def test_parse_control_instructions_drops_internal_advice_lines_from_visible_line():
+    result = game_router._parse_control_instructions(
+        '根据系统建议降低难度。\n'
+        '看你追得这么急，我就稍微认真一点点。'
+    )
+
+    assert result == {
+        "line": "看你追得这么急，我就稍微认真一点点。",
+        "control": {},
+    }
+
+
+@pytest.mark.unit
 def test_basketball_prompt_and_control_contract():
     prompt = game_router._build_game_prompt(
         "basketball",
@@ -221,6 +283,16 @@ def test_basketball_duel_prompt_contract():
     assert "label / duel 字段" in prompt
     assert "player_duel_shot" in prompt
     assert "duel.player_score" in prompt
+    assert "duel_outcome" in prompt
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("lang", ("zh", "en", "ja", "ko", "ru", "es", "pt"))
+def test_basketball_duel_prompts_use_duel_outcome_for_winner(lang):
+    prompt = game_router.get_basketball_system_prompt(lang, mode="duel")
+
+    assert "duel_outcome" in prompt
+    assert "duel.active_shooter" in prompt
 
 
 @pytest.mark.unit
@@ -287,7 +359,7 @@ def test_basketball_event_sanitizer_keeps_current_state_and_drops_invalid_fields
             "best_streak": 7,
             "made_count": 9,
             "max_distance_px": 380.0,
-            "mode": "timed",
+            "mode": "spectator",
         },
     }
 
@@ -304,12 +376,15 @@ def test_basketball_event_sanitizer_keeps_duel_state_and_shot_missed():
     event, error = game_router._sanitize_basketball_event({
         "kind": "shot_missed",
         "mode": "duel",
+        "duel_outcome": "player_win",
         "duel": {
             "playerScore": "2",
             "neko_score": "3",
+            "playerMisses": "1",
+            "neko_misses": "2",
+            "maxMisses": "3",
             "round": "4",
             "activeShooter": "neko",
-            "maxRounds": "6",
         },
         "currentState": {
             "game": "basketball",
@@ -317,9 +392,11 @@ def test_basketball_event_sanitizer_keeps_duel_state_and_shot_missed():
             "duel": {
                 "player_score": "2",
                 "nekoScore": "3",
+                "player_misses": "1",
+                "nekoMisses": "2",
+                "max_misses": "3",
                 "round": "4",
                 "active_shooter": "neko",
-                "max_rounds": "6",
             },
         },
     })
@@ -327,24 +404,43 @@ def test_basketball_event_sanitizer_keeps_duel_state_and_shot_missed():
     assert error == ""
     assert event["kind"] == "shot_missed"
     assert event["mode"] == "duel"
+    assert event["duel_outcome"] == "player_win"
     assert event["duel"] == {
         "player_score": 2,
         "neko_score": 3,
+        "player_misses": 1,
+        "neko_misses": 2,
+        "max_misses": 3,
         "round": 4,
-        "max_rounds": 6,
         "active_shooter": "neko",
     }
     assert event["currentState"]["duel"] == {
         "player_score": 2,
         "neko_score": 3,
+        "player_misses": 1,
+        "neko_misses": 2,
+        "max_misses": 3,
         "round": 4,
-        "max_rounds": 6,
         "active_shooter": "neko",
     }
 
+    event, error = game_router._sanitize_basketball_event({
+        "kind": "shot_missed",
+        "mode": "duel",
+        "duel": {
+            "playerMisses": "Infinity",
+            "nekoMisses": "-Infinity",
+            "maxMisses": "NaN",
+            "playerScore": "5",
+        },
+    })
+
+    assert error == ""
+    assert event["duel"] == {"player_score": 5}
+
 
 @pytest.mark.unit
-def test_basketball_event_sanitizer_keeps_horse_state():
+def test_basketball_event_sanitizer_drops_removed_horse_state():
     event, error = game_router._sanitize_basketball_event({
         "kind": "shot_missed",
         "mode": "horse",
@@ -376,26 +472,9 @@ def test_basketball_event_sanitizer_keeps_horse_state():
     })
 
     assert error == ""
-    assert event["horse"] == {
-        "word": "HORSE",
-        "letters_player": 2,
-        "letters_neko": 1,
-        "phase": "player_reply",
-        "turn_owner": "player",
-        "challenge": {
-            "owner": "neko",
-            "distance": 220.0,
-            "angle": 58.0,
-            "sweet": [38.0, 44.0],
-        },
-    }
-    assert event["currentState"]["horse"] == {
-        "letters_player": 2,
-        "letters_neko": 1,
-        "phase": "player_reply",
-        "turn_owner": "player",
-        "challenge": None,
-    }
+    assert event["mode"] == "spectator"
+    assert "horse" not in event
+    assert "horse" not in event["currentState"]
 
 
 @pytest.mark.unit
@@ -697,7 +776,7 @@ def test_basketball_template_contract():
     assert "不限次数" in html
     assert "自由练习：不限投篮次数，不记录排行榜分数" in html
     assert "自由练习：不记录排行榜分数" in html
-    assert "if (!isPracticeMode() && !isTimeAttackMode() && !isHorseMode()) game.attemptsRemaining" in html
+    assert "if (!isPracticeMode()) game.attemptsRemaining" in html
     assert "if (!isPracticeMode()) game.totalScore += shotScore" in html
     assert "var newRecord = !isPracticeMode() && previousDistance > game.recordDistance" in html
     assert "if (playerSenseiLoading) return" in html
@@ -724,8 +803,9 @@ def test_basketball_template_contract():
     assert "YUI_PASSIVE_LINES_DUEL" in html
     assert "mode: currentMode" in html
     assert "launchedFromInvite" in html
-    assert "currentMode = requestedMode === 'shooter' || (!requestedMode && launchedFromInvite) ? 'shooter' : 'spectator'" in html
-    assert "if (requestedMode === 'duel') currentMode = 'duel'" in html
+    assert "basketballInviteRequired" not in html
+    assert "var currentMode = requestedMode === 'shooter' ? 'shooter' : 'spectator';" in html
+    assert "if (requestedMode === 'duel') currentMode = 'duel';" in html
     assert "await initLive2DAvatar('/static/yui-origin/yui-origin.model3.json')" in html
     assert "aim_duration_seconds" in html
     assert "操控评级" in html
@@ -816,7 +896,7 @@ async def test_basketball_leaderboard_post_and_get_sorting(tmp_path, monkeypatch
             "rim_in_count": 0,
             "mode": "shooter",
         }))
-        _allow_basketball_score_session("Lan A", "s3", "timed")
+        _allow_basketball_score_session("Lan A", "s3", "duel")
         third = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
             "session_id": "s3",
             "lanlan_name": "Lan A",
@@ -826,7 +906,7 @@ async def test_basketball_leaderboard_post_and_get_sorting(tmp_path, monkeypatch
             "swish_count": 2,
             "bank_count": 0,
             "rim_in_count": 1,
-            "mode": "timed",
+            "mode": "duel",
         }))
 
         assert first["ok"] is True
@@ -954,7 +1034,7 @@ async def test_basketball_leaderboard_sanitizes_inputs_and_normalizes_mode(tmp_p
     monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", tmp_path / "basketball_scores.db")
 
     with reset_game_route_state():
-        _allow_basketball_score_session("Lan C", "session-9", "timed")
+        _allow_basketball_score_session("Lan C", "session-9", "shooter")
         result = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
             "session_id": "  session-9  ",
             "lanlan_name": "  Lan C  ",
@@ -964,7 +1044,7 @@ async def test_basketball_leaderboard_sanitizes_inputs_and_normalizes_mode(tmp_p
             "swish_count": "-2",
             "bank_count": "2.8",
             "rim_in_count": "3.2",
-            "mode": "timed",
+            "mode": "shooter",
         }))
 
         assert result["ok"] is True
@@ -981,7 +1061,7 @@ async def test_basketball_leaderboard_sanitizes_inputs_and_normalizes_mode(tmp_p
         assert leaderboard["top"][0]["name"] == "Lan C"
         assert leaderboard["top"][0]["score"] == 0
         assert leaderboard["top"][0]["streak"] == 4
-        assert leaderboard["top"][0]["mode"] == "timed"
+        assert leaderboard["top"][0]["mode"] == "shooter"
         assert leaderboard["your_best"] == {"rank": 1, "score": 0}
 
 
@@ -1097,7 +1177,7 @@ async def test_basketball_route_end_remembers_completed_round_score_session(monk
 
     with reset_game_route_state():
         state = game_router._activate_game_route("basketball", "completed-session", "Lan Done")
-        state["mode"] = "timed"
+        state["mode"] = "shooter"
         _mark_game_started(state)
 
         result = await game_router._complete_game_end_from_payload(
@@ -1105,10 +1185,10 @@ async def test_basketball_route_end_remembers_completed_round_score_session(monk
             {
                 "session_id": "completed-session",
                 "lanlan_name": "Lan Done",
-                "mode": "timed",
+                "mode": "shooter",
                 "gameStarted": True,
                 "round_completed": True,
-                "finalScore": {"mode": "timed", "score": 12, "best_streak": 4, "max_distance_px": 240},
+                "finalScore": {"mode": "shooter", "score": 12, "best_streak": 4, "max_distance_px": 240},
             },
             default_reason="route_end",
         )
@@ -1117,7 +1197,7 @@ async def test_basketball_route_end_remembers_completed_round_score_session(monk
         assert result["route_closed"] is True
         assert result["state"]["lanlan_name"] == "Lan Done"
         score_session = game_router._basketball_recent_score_sessions[("Lan Done", "completed-session")]
-        assert score_session["mode"] == "timed"
+        assert score_session["mode"] == "shooter"
         assert score_session["score_totals"] == {"score": 12, "streak": 4, "max_distance_px": 240.0}
 
 
@@ -1211,9 +1291,9 @@ async def test_basketball_leaderboard_allows_recently_ended_route_score(tmp_path
     monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", tmp_path / "basketball_scores.db")
 
     with reset_game_route_state():
-        state = _allow_basketball_score_session("Lan Ended", "ended-session", "horse")
+        state = _allow_basketball_score_session("Lan Ended", "ended-session", "shooter")
         state["game_route_active"] = False
-        game_router._remember_basketball_score_session("Lan Ended", "ended-session", "horse")
+        game_router._remember_basketball_score_session("Lan Ended", "ended-session", "shooter")
 
         result = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
             "session_id": "ended-session",
@@ -1221,7 +1301,7 @@ async def test_basketball_leaderboard_allows_recently_ended_route_score(tmp_path
             "score": 42,
             "streak": 2,
             "max_distance_px": 180,
-            "mode": "horse",
+            "mode": "shooter",
         }))
 
         assert result["ok"] is True
@@ -1233,12 +1313,56 @@ async def test_basketball_leaderboard_allows_recently_ended_route_score(tmp_path
             "score": 99,
             "streak": 9,
             "max_distance_px": 500,
-            "mode": "horse",
+            "mode": "shooter",
         }))
 
         assert duplicate == {"ok": False, "reason": "invalid_session"}
         leaderboard = await game_router.game_basketball_leaderboard("basketball")
         assert leaderboard["total_scores"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_basketball_leaderboard_rejects_removed_horse_mode_score(tmp_path, monkeypatch):
+    monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", tmp_path / "basketball_scores.db")
+
+    with reset_game_route_state():
+        _allow_basketball_score_session("Lan Horse", "horse-session", "horse")
+
+        result = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+            "session_id": "horse-session",
+            "lanlan_name": "Lan Horse",
+            "score": 42,
+            "streak": 2,
+            "max_distance_px": 180,
+            "mode": "horse",
+        }))
+
+        assert result == {"ok": False, "reason": "invalid_session"}
+        leaderboard = await game_router.game_basketball_leaderboard("basketball")
+        assert leaderboard["total_scores"] == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_basketball_leaderboard_rejects_removed_timed_mode_score(tmp_path, monkeypatch):
+    monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", tmp_path / "basketball_scores.db")
+
+    with reset_game_route_state():
+        _allow_basketball_score_session("Lan Timed", "timed-session", "timed")
+
+        result = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+            "session_id": "timed-session",
+            "lanlan_name": "Lan Timed",
+            "score": 42,
+            "streak": 2,
+            "max_distance_px": 180,
+            "mode": "timed",
+        }))
+
+        assert result == {"ok": False, "reason": "invalid_session"}
+        leaderboard = await game_router.game_basketball_leaderboard("basketball")
+        assert leaderboard["total_scores"] == 0
 
 
 @pytest.mark.unit
@@ -2037,7 +2161,7 @@ def test_memory_highlight_source_explains_game_event_text_is_not_user_speech():
     })
 
     assert "只有“玩家：...”行是玩家亲口说的话" in source
-    assert "事件原文是游戏模块/猫娘气泡或事件标签，不要归因给玩家" in source
+    assert "“事件原文”是游戏模块/猫娘气泡或事件标签，不要归因给玩家" in source
     assert "游戏事件 goal-conceded（玩家进球 / 猫娘丢球）" in source
     assert "固定顺序是玩家在前、当前角色在后" in source
     assert "官方结果，来源优先级为 finalScore / last_state.score" in source
@@ -2069,12 +2193,34 @@ def test_memory_highlight_source_keeps_role_markers_aligned_in_english(monkeypat
         ],
     })
 
-    assert 'literal marker "玩家："' in source
-    assert '"事件原文" inside "游戏事件" lines' in source
-    assert "玩家：I almost caught up" in source
-    assert "游戏事件 goal-conceded" in source
-    assert "Player:" not in source
-    assert "Game event" not in source
+    assert 'literal marker "Player:"' in source
+    assert '"event text" inside "Game event" lines' in source
+    assert "Player: I almost caught up" in source
+    assert "Game event goal-conceded" in source
+
+
+@pytest.mark.unit
+def test_archive_memory_fallback_highlights_use_requested_locale(monkeypatch):
+    monkeypatch.setattr(game_router, "_archive_prompt_language", lambda _archive: "en")
+
+    highlights = game_router._fallback_game_archive_memory_highlights({
+        "game_type": "soccer",
+        "session_id": "match_1",
+        "lanlan_name": "Lan",
+        "last_state": {"score": {"player": 1, "ai": 2}},
+        "soccer_game_memory_enabled": True,
+        "soccer_game_memory_player_interaction_enabled": True,
+        "last_full_dialogues": [
+            {"type": "user", "text": "That was close"},
+            {"type": "assistant", "line": "Almost."},
+        ],
+        "key_events": [],
+    })
+
+    assert highlights["important_records"] == [
+        'The player last said "That was close", and you replied "Almost.".'
+    ]
+    assert "玩家最后" not in highlights["important_records"][0]
 
 
 @pytest.mark.unit
@@ -2187,6 +2333,127 @@ def test_game_route_helper_llm_info_does_not_mix_partial_summary_config(monkeypa
 
 
 @pytest.mark.unit
+def test_build_game_llm_visible_event_filters_soccer_internal_fields():
+    event = {
+        "kind": "mailbox-batch",
+        "lanlan_name": "Lan",
+        "soccerGameMemoryEnabled": True,
+        "soccer_game_memory_enabled": True,
+        "soccerGameMemoryPlayerInteractionEnabled": True,
+        "soccer_game_memory_player_interaction_enabled": True,
+        "soccerGameMemoryEventReplyEnabled": True,
+        "soccer_game_memory_event_reply_enabled": True,
+        "soccerGameMemoryArchiveEnabled": True,
+        "soccer_game_memory_archive_enabled": True,
+        "soccerGameMemoryPostgameContextEnabled": True,
+        "soccer_game_memory_postgame_context_enabled": True,
+        "gameMemoryEnabled": True,
+        "game_memory_enabled": True,
+        "gameMemoryPlayerInteractionEnabled": True,
+        "game_memory_player_interaction_enabled": True,
+        "gameMemoryEventReplyEnabled": True,
+        "game_memory_event_reply_enabled": True,
+        "balanceHint": {"message": "keep this pending judgment"},
+        "angerPressureCap": {"message": "keep this pending judgment", "reason": "internal-ish but undecided"},
+        "currentState": {
+            "round": 12,
+            "score": {"player": 1, "ai": 3},
+            "aiFreezeSec": 0.2,
+            "playerKickStartleWindowSec": 0.5,
+            "playerKickWallBounceForStartle": True,
+            "startle": {"directCdSec": 1},
+            "startleDirectCdSec": 1,
+            "startleGrazeCdSec": 2,
+            "startleMutualLockSec": 3,
+            "zoneoutCooldownSec": 4,
+            "ballGhost": True,
+        },
+        "pendingItems": [{
+            "kind": "goal-scored",
+            "priority": 8,
+            "source": "voice_input_gate",
+            "builtinFallback": "备用台词",
+            "snapshot": {
+                "round": 11,
+                "score": {"player": 1, "ai": 2},
+                "aiFreezeSec": 0.1,
+                "ballGhost": False,
+            },
+        }],
+    }
+
+    visible = game_router._build_game_llm_visible_event("soccer", event)
+
+    assert "lanlan_name" not in visible
+    assert "soccerGameMemoryEnabled" not in visible
+    assert "soccer_game_memory_enabled" not in visible
+    assert "gameMemoryEnabled" not in visible
+    assert "game_memory_enabled" not in visible
+    assert visible["balanceHint"] == event["balanceHint"]
+    assert visible["angerPressureCap"] == event["angerPressureCap"]
+    assert visible["pendingItems"][0]["priority"] == 8
+    assert visible["pendingItems"][0]["source"] == "voice_input_gate"
+    assert visible["pendingItems"][0]["builtinFallback"] == "备用台词"
+    for state in (visible["currentState"], visible["pendingItems"][0]["snapshot"]):
+        assert "aiFreezeSec" not in state
+        assert "playerKickStartleWindowSec" not in state
+        assert "playerKickWallBounceForStartle" not in state
+        assert "startle" not in state
+        assert "zoneoutCooldownSec" not in state
+        assert "ballGhost" not in state
+    assert event["currentState"]["aiFreezeSec"] == 0.2
+    assert event["pendingItems"][0]["snapshot"]["ballGhost"] is False
+
+
+@pytest.mark.unit
+def test_build_game_llm_visible_event_filters_basketball_memory_flags():
+    event = {
+        "kind": "shot-made",
+        "basketballGameMemoryEnabled": True,
+        "basketball_game_memory_enabled": True,
+        "basketballGameMemoryPlayerInteractionEnabled": True,
+        "basketball_game_memory_player_interaction_enabled": True,
+        "basketballGameMemoryEventReplyEnabled": True,
+        "basketball_game_memory_event_reply_enabled": True,
+        "basketballGameMemoryArchiveEnabled": True,
+        "basketball_game_memory_archive_enabled": True,
+        "basketballGameMemoryPostgameContextEnabled": True,
+        "basketball_game_memory_postgame_context_enabled": True,
+        "currentState": {"mode": "shooter", "streak": 3},
+    }
+
+    visible = game_router._build_game_llm_visible_event("basketball", event)
+
+    assert visible == {
+        "kind": "shot-made",
+        "currentState": {"mode": "shooter", "streak": 3},
+    }
+    assert event["basketballGameMemoryEnabled"] is True
+
+
+@pytest.mark.unit
+def test_postgame_context_snapshot_excludes_recent_dialogues(monkeypatch):
+    state = {
+        "preGameContext": {"story": "opening"},
+        "game_context_summary": "summary",
+        "game_context_signals": {},
+        "game_context_organizer": {},
+        "game_dialog_log": [],
+    }
+    game_router._append_game_dialog(state, {
+        "type": "game_event",
+        "kind": "goal-scored",
+        "text": "scored",
+        "result_line": "Nice.",
+    })
+
+    snapshot = game_router._build_postgame_context_snapshot(state)
+
+    assert snapshot["game_context"]["summary"] == "summary"
+    assert snapshot["game_context"]["recent_dialogues"] == []
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_game_chat_event_user_turn_keeps_watermark(monkeypatch):
     class FakeSession:
@@ -2224,6 +2491,100 @@ async def test_game_chat_event_user_turn_keeps_watermark(monkeypatch):
     assert result["line"] == ""
     assert "======以上为游戏事件输入======" in fake_session.last_text
     assert '"kind": "goal-scored"' in fake_session.last_text
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_game_chat_sends_filtered_llm_visible_event(monkeypatch):
+    class FakeSession:
+        def __init__(self):
+            self.last_text = ""
+
+        async def stream_text(self, text):
+            self.last_text = text
+
+        async def update_session(self, _config):
+            return None
+
+    fake_session = FakeSession()
+    key = game_router._game_session_key("Lan", "soccer", "match_filtered")
+    game_router._game_sessions[key] = {
+        "session": fake_session,
+        "reply_chunks": [],
+        "lanlan_name": "Lan",
+        "lanlan_prompt": "",
+        "user_language": "zh",
+        "game_type": "soccer",
+        "session_id": "match_filtered",
+        "last_activity": 0,
+        "lock": asyncio.Lock(),
+        "instructions": "stub",
+    }
+    monkeypatch.setattr(game_router, "_refresh_game_session_instructions", AsyncMock())
+
+    await game_router._run_game_chat(
+        "soccer",
+        "match_filtered",
+        {
+            "kind": "mailbox-batch",
+            "lanlan_name": "Lan",
+            "soccerGameMemoryEnabled": True,
+            "soccer_game_memory_enabled": True,
+            "soccerGameMemoryPlayerInteractionEnabled": True,
+            "soccer_game_memory_player_interaction_enabled": True,
+            "soccerGameMemoryEventReplyEnabled": True,
+            "soccer_game_memory_event_reply_enabled": True,
+            "gameMemoryEnabled": True,
+            "game_memory_enabled": True,
+            "balanceHint": {"message": "暂时保留"},
+            "angerPressureCap": {"message": "暂时保留", "reached": False},
+            "currentState": {
+                "round": 2,
+                "score": {"player": 1, "ai": 1},
+                "aiFreezeSec": 0,
+                "playerKickStartleWindowSec": 0,
+                "playerKickWallBounceForStartle": False,
+                "startle": {"directCdSec": 0, "grazeCdSec": 0, "mutualLockSec": 0},
+                "zoneoutCooldownSec": 0,
+                "ballGhost": False,
+            },
+            "pendingItems": [{
+                "kind": "user-voice",
+                "priority": 8,
+                "source": "voice_input_gate",
+                "builtinFallback": "备用台词",
+                "snapshot": {
+                    "round": 1,
+                    "score": {"player": 0, "ai": 1},
+                    "aiFreezeSec": 0.3,
+                    "ballGhost": True,
+                },
+            }],
+        },
+    )
+
+    payload_text = fake_session.last_text.split("======以下为游戏事件输入======", 1)[1]
+    payload_text = payload_text.split("======以上为游戏事件输入======", 1)[0].strip()
+    payload = json.loads(payload_text)
+
+    assert "lanlan_name" not in payload
+    assert "soccerGameMemoryEnabled" not in payload
+    assert "soccer_game_memory_enabled" not in payload
+    assert "gameMemoryEnabled" not in payload
+    assert "game_memory_enabled" not in payload
+    assert "aiFreezeSec" not in payload["currentState"]
+    assert "playerKickStartleWindowSec" not in payload["currentState"]
+    assert "playerKickWallBounceForStartle" not in payload["currentState"]
+    assert "startle" not in payload["currentState"]
+    assert "zoneoutCooldownSec" not in payload["currentState"]
+    assert "ballGhost" not in payload["currentState"]
+    assert "aiFreezeSec" not in payload["pendingItems"][0]["snapshot"]
+    assert "ballGhost" not in payload["pendingItems"][0]["snapshot"]
+    assert payload["pendingItems"][0]["priority"] == 8
+    assert payload["pendingItems"][0]["source"] == "voice_input_gate"
+    assert payload["pendingItems"][0]["builtinFallback"] == "备用台词"
+    assert isinstance(payload["balanceHint"].get("message"), str)
+    assert payload["angerPressureCap"]["message"] == "暂时保留"
 
 
 @pytest.mark.unit
