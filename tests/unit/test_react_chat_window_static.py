@@ -1028,9 +1028,17 @@ def test_externalized_chat_input_spotlight_uses_global_overlay_only():
 
 def test_yui_guide_spotlight_state_messages_bypass_cross_channel_dedup():
     script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    bypass_block = script.split("function shouldBypassYuiGuideMessageDedup(action, message)", 1)[1].split(
+        "function isMainUIHiddenByModelManager()",
+        1,
+    )[0]
 
     assert "function isDuplicateMessage(action, timestamp)" in script
-    assert "if (isDuplicateMessage(event.data.action, event.data.timestamp))" in script
+    assert "action === 'yui_guide_set_chat_cursor'" in bypass_block
+    assert "action === 'yui_guide_drag_chat_cursor'" in bypass_block
+    assert "action === 'yui_guide_arc_chat_cursor'" in bypass_block
+    assert "action === 'yui_guide_rotate_compact_tool_wheel'" in bypass_block
+    assert "!shouldBypassYuiGuideMessageDedup(event.data.action, event.data)" in script
     assert "function isYuiGuideCommandForCurrentLanlan(data)" in script
     assert "if (!isYuiGuideCommandForCurrentLanlan(event.data)) break;" in script
     assert "case 'yui_guide_set_chat_spotlight':" in script
