@@ -648,7 +648,7 @@ export default {
       lines: {
         introActivationHint: 'Click here so I can start talking, nyan~!',
         introGreetingReply: "A gentle breeze, warm sunshine, and you, appearing at just the right moment. Nice to meet you! I'm Lin Youyi, please take good care of me from now on, meow~! I've written down everything about this place in this novice guide! Think of it as our very first little gift for meeting each other, please accept it!",
-        introBasic: "Here is a magical button! Just click it and you can chat with me directly! Want to share something new that happened today? Or maybe just call my name? Come on, try it out! I can't wait to hear your voice!",
+        introBasic: "Here is a magical button! Just click it and you can chat with me directly! Want to share something new that happened today? Or maybe just say my name? Come on, try it out! I can't wait to hear your voice!",
         takeoverCaptureCursor: "Ta-da! A super magic switch appears! Just click here, and I can reach my little paws onto your keyboard and mouse! I can help you type, open web pages... but, if that mouse cursor keeps wiggling around, I might not be able to resist pouncing on it! Are you ready for my mischief... uh, I mean, my help? Meow!",
         takeoverPluginPreviewHome: "On top of the features I introduced before, there are tons of super fun plugins here too!",
         takeoverPluginPreviewDashboard: "With these, not only can I read Bilibili bullet comments, but I can also help you turn off the lights and switch on the AC... This kitty is the omnipotent Super Cat God! Hmph!",
