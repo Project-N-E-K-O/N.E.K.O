@@ -1001,8 +1001,11 @@ def test_activity_tracker_topic_candidate_heartbeat_uses_full_global_locale():
 
     source = inspect.getsource(UserActivityTracker._activity_guess_loop)
 
-    assert "from utils.language_utils import get_global_language_full" in source
-    assert "lang = get_global_language_full() or 'en'" in source
+    assert "from utils.language_utils import get_global_language, get_global_language_full" in source
+    assert "activity_lang = get_global_language() or 'en'" in source
+    assert "topic_lang = get_global_language_full() or activity_lang" in source
+    assert "self._process_topic_candidates_if_ready(lang=topic_lang, now=ts)" in source
+    assert "lang=activity_lang" in source
 
 
 @pytest.mark.asyncio
