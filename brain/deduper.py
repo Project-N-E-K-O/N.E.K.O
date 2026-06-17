@@ -50,7 +50,11 @@ class TaskDeduper:
         # could drop the actual task and make a later identical request look
         # non-duplicate. Total stays within the same TASK_* token budget.
         from utils.tokenize import truncate_head_tail_tokens
-        from config import TASK_SUMMARY_MAX_TOKENS, TASK_DETAIL_MAX_TOKENS
+        from config import (
+            TASK_SUMMARY_MAX_TOKENS,
+            TASK_DETAIL_MAX_TOKENS,
+            AGENT_DEDUP_CANDIDATES_MAX,
+        )
         _h_sum = TASK_SUMMARY_MAX_TOKENS // 2
         _h_det = TASK_DETAIL_MAX_TOKENS // 2
         lines = [
@@ -58,7 +62,9 @@ class TaskDeduper:
             truncate_head_tail_tokens(new_task.strip(), _h_sum, _h_sum),
             "\nExisting tasks:",
         ]
-        for tid, desc in candidates:
+        # Cap candidate count so a backlog/flood can't grow the prompt without
+        # bound; with per-item head/tail truncation this gives a real total cap.
+        for tid, desc in candidates[:AGENT_DEDUP_CANDIDATES_MAX]:
             lines.append(f"- id={tid}: {truncate_head_tail_tokens(desc, _h_det, _h_det)}")
         lines.append(
             "\nTask: Decide whether the NEW task duplicates ANY existing task (same goal or a strict subset). "

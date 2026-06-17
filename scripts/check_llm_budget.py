@@ -134,13 +134,14 @@ LLM_CALL_ATTRS = {"ainvoke", "invoke", "astream", "ainvoke_raw", "invoke_raw"}
 # Names whose presence anywhere in the enclosing function marks it as
 # "budget-aware". The tokenize helpers do real truncation; a ``*_MAX_TOKENS`` /
 # ``*_MAX_CHARS`` constant reference signals a deliberate cap is in play.
+# Only helpers that ENFORCE a token cap count as evidence. ``count_tokens`` /
+# ``acount_tokens`` merely measure, and ``truncate_to_last_sentence_end`` trims
+# to a sentence boundary with no max-token argument — none of them actually
+# bound the input, so they must not satisfy the rule.
 BUDGET_HELPER_NAMES = {
     "truncate_to_tokens",
     "atruncate_to_tokens",
     "truncate_head_tail_tokens",
-    "truncate_to_last_sentence_end",
-    "count_tokens",
-    "acount_tokens",
 }
 # Token/char budget constants only — ``_MAX_ITEMS`` (item counts) and a bare
 # ``_BUDGET`` (could be anything) are deliberately excluded so a function with

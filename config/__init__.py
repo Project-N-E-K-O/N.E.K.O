@@ -1471,6 +1471,15 @@ AGENT_CALLBACK_QUEUE_MAX_ITEMS = 50
   最相关）。
 - 与 AGENT_TASK_TRACKER_MAX_RECORDS=50 同口径。"""
 
+AGENT_DEDUP_CANDIDATES_MAX = 50
+"""task deduper 单次比对的 existing-task 候选条数上限。
+- 用途：`brain/deduper.py:_build_prompt` 只取前 N 条 candidate 拼 prompt，
+  防 backlog/flood 下 `_collect_existing_task_descriptions` 把上百条任务全量
+  塞进 dedup prompt。配合 per-item 头尾截断（TASK_DETAIL_MAX_TOKENS）给输入
+  一个真实总上限。
+- 与 FACT_DEDUP_BATCH_LIMIT=20 类似（LLM 配对决策的舒适 batch）；dedup 只做
+  一次 N×1 比对，放宽到 50。"""
+
 # ---- Agent: defensive char-caps (NOT token caps) ----
 # 下面这些是"防御性 char-cap"——在异常文本 / cancel reason / plugin reply
 # 流入下游字段（summary / detail / error_message / tracker.detail / 前端
@@ -2161,6 +2170,7 @@ __all__ = [
     'AGENT_CALLBACK_TEXT_MAX_TOKENS',
     'AGENT_CALLBACK_TOTAL_MAX_TOKENS',
     'AGENT_CALLBACK_QUEUE_MAX_ITEMS',
+    'AGENT_DEDUP_CANDIDATES_MAX',
     'AGENT_TASK_TRACKER_MAX_RECORDS',
     'AGENT_RECENT_CTX_PER_ITEM_TOKENS',
     'AGENT_RECENT_CTX_TOTAL_TOKENS',
