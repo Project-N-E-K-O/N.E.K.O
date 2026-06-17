@@ -1046,8 +1046,10 @@ def test_pages_router_static_asset_version_tracks_tutorial_runtime_modules():
 
     assert "_TUTORIAL_RUNTIME_ASSET_PATHS" in source
     assert '"**/*.js", "**/*.json"' in source
-    assert '_PROJECT_ROOT / "static/tutorial/core/skip-controller.js"' in source
-    assert '_PROJECT_ROOT / "static/tutorial/avatar/reload-controller.js"' in source
+    assert "*_TUTORIAL_RUNTIME_ASSET_PATHS" in source
+    assert "_ICEBREAKER_LOCALE_PATHS" not in source
+    assert '_PROJECT_ROOT / "static/tutorial/core/skip-controller.js"' not in source
+    assert '_PROJECT_ROOT / "static/tutorial/avatar/reload-controller.js"' not in source
 
     from main_routers import pages_router
 
