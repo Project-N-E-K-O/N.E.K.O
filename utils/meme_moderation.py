@@ -54,9 +54,10 @@ _DEFAULT_BLOCK_SCORE_THRESHOLDS = {
 }
 _SCORE_CATEGORY_ALIASES = {
     "porn": ("porn", "sexual"),
-    "hentai": ("hentai",),
+    "hentai": ("hentai", "sexual/minors"),
     "sexy": ("sexy",),
 }
+_ALWAYS_BLOCK_FLAGGED_CATEGORIES = {"sexual/minors"}
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
 _IMAGE_CONTENT_TYPES = {
     "image/jpeg",
@@ -99,8 +100,27 @@ class MemeModerationResult:
     url_hash: str = ""
 
 
+@dataclass(frozen=True)
+class _ImagePayloadCacheEntry:
+    created_at: float
+    payload: str
+    size: int
+    content_type: str
+    etag: str = ""
+    last_modified: str = ""
+
+
+@dataclass(frozen=True)
+class _DownloadedImage:
+    body: bytes
+    content_type: str
+    etag: str = ""
+    last_modified: str = ""
+    not_modified: bool = False
+
+
 _cache: dict[str, tuple[float, MemeModerationResult]] = {}
-_image_payload_cache: dict[str, tuple[float, str, int]] = {}
+_image_payload_cache: dict[str, _ImagePayloadCacheEntry] = {}
 _image_payload_cache_bytes = 0
 
 
@@ -291,20 +311,29 @@ def _moderation_policy_cache_key(
     return _url_hash(policy)
 
 
-def _image_payload_cache_get(cache_key: str, ttl_seconds: float) -> str | None:
+def _image_payload_cache_get(
+    cache_key: str,
+    ttl_seconds: float,
+) -> _ImagePayloadCacheEntry | None:
     global _image_payload_cache_bytes
     item = _image_payload_cache.get(cache_key)
     if not item:
         return None
-    created_at, payload, size = item
-    if time.monotonic() - created_at > ttl_seconds:
+    if time.monotonic() - item.created_at > ttl_seconds:
         _image_payload_cache.pop(cache_key, None)
-        _image_payload_cache_bytes = max(0, _image_payload_cache_bytes - size)
+        _image_payload_cache_bytes = max(0, _image_payload_cache_bytes - item.size)
         return None
-    return payload
+    return item
 
 
-def _image_payload_cache_set(cache_key: str, payload: str) -> None:
+def _image_payload_cache_set(
+    cache_key: str,
+    payload: str,
+    *,
+    content_type: str,
+    etag: str = "",
+    last_modified: str = "",
+) -> None:
     global _image_payload_cache_bytes
     payload_size = len(payload)
     max_bytes = _read_int_env(
@@ -314,19 +343,26 @@ def _image_payload_cache_set(cache_key: str, payload: str) -> None:
     if payload_size > max_bytes:
         old_item = _image_payload_cache.pop(cache_key, None)
         if old_item is not None:
-            _image_payload_cache_bytes = max(0, _image_payload_cache_bytes - old_item[2])
+            _image_payload_cache_bytes = max(0, _image_payload_cache_bytes - old_item.size)
         return
     old_item = _image_payload_cache.pop(cache_key, None)
     if old_item is not None:
-        _image_payload_cache_bytes = max(0, _image_payload_cache_bytes - old_item[2])
+        _image_payload_cache_bytes = max(0, _image_payload_cache_bytes - old_item.size)
     while (
         len(_image_payload_cache) >= _DEFAULT_CACHE_MAX_ITEMS
         or _image_payload_cache_bytes + payload_size > max_bytes
     ):
-        oldest_key = min(_image_payload_cache.items(), key=lambda item: item[1][0])[0]
-        _, _, old_size = _image_payload_cache.pop(oldest_key)
-        _image_payload_cache_bytes = max(0, _image_payload_cache_bytes - old_size)
-    _image_payload_cache[cache_key] = (time.monotonic(), payload, payload_size)
+        oldest_key = min(_image_payload_cache.items(), key=lambda item: item[1].created_at)[0]
+        old_entry = _image_payload_cache.pop(oldest_key)
+        _image_payload_cache_bytes = max(0, _image_payload_cache_bytes - old_entry.size)
+    _image_payload_cache[cache_key] = _ImagePayloadCacheEntry(
+        created_at=time.monotonic(),
+        payload=payload,
+        size=payload_size,
+        content_type=content_type,
+        etag=etag,
+        last_modified=last_modified,
+    )
     _image_payload_cache_bytes += payload_size
 
 
@@ -513,15 +549,30 @@ async def _read_limited_response_body(response: httpx.Response) -> bytes:
     return bytes(body)
 
 
-async def _download_image_for_moderation(url: str, timeout_seconds: float) -> tuple[bytes, str]:
+async def _download_image_for_moderation(
+    url: str,
+    timeout_seconds: float,
+    cached_entry: _ImagePayloadCacheEntry | None = None,
+) -> _DownloadedImage:
     if not _is_allowed_meme_image_fetch_url(url):
         raise ValueError("meme image URL is not in the allowed host list")
     headers = _image_fetch_headers(url)
+    if cached_entry:
+        if cached_entry.etag:
+            headers["If-None-Match"] = cached_entry.etag
+        if cached_entry.last_modified:
+            headers["If-Modified-Since"] = cached_entry.last_modified
 
-    async def _fetch(*, verify: bool) -> tuple[bytes, str]:
+    async def _fetch(*, verify: bool) -> _DownloadedImage:
         if verify:
             client = get_external_http_client()
-            return await _stream_image_response(client, url, headers, timeout_seconds)
+            return await _stream_image_response(
+                client,
+                url,
+                headers,
+                timeout_seconds,
+                cached_entry=cached_entry,
+            )
         async with httpx.AsyncClient(
             timeout=timeout_seconds,
             follow_redirects=False,
@@ -530,7 +581,13 @@ async def _download_image_for_moderation(url: str, timeout_seconds: float) -> tu
             # after strict verification fails and the env flag explicitly opts in.
             verify=False,
         ) as relaxed_client:
-            return await _stream_image_response(relaxed_client, url, headers, timeout_seconds)
+            return await _stream_image_response(
+                relaxed_client,
+                url,
+                headers,
+                timeout_seconds,
+                cached_entry=cached_entry,
+            )
 
     try:
         image_data = await _fetch(verify=True)
@@ -556,7 +613,9 @@ async def _stream_image_response(
     url: str,
     headers: dict[str, str],
     timeout_seconds: float,
-) -> tuple[bytes, str]:
+    *,
+    cached_entry: _ImagePayloadCacheEntry | None = None,
+) -> _DownloadedImage:
     current_url = url
     for _ in range(_MAX_IMAGE_REDIRECTS + 1):
         if not _is_allowed_meme_image_fetch_url(current_url):
@@ -569,6 +628,17 @@ async def _stream_image_response(
             follow_redirects=False,
         ) as response:
             status_code = int(getattr(response, "status_code", 0) or 0)
+            final_url = str(getattr(response, "url", current_url) or current_url)
+            if not _is_allowed_meme_image_fetch_url(final_url):
+                raise ValueError("meme image redirect target is not in the allowed host list")
+            if status_code == 304 and cached_entry is not None:
+                return _DownloadedImage(
+                    body=b"",
+                    content_type=cached_entry.content_type,
+                    etag=cached_entry.etag,
+                    last_modified=cached_entry.last_modified,
+                    not_modified=True,
+                )
             if 300 <= status_code < 400:
                 location = (response.headers.get("Location") or "").strip()
                 if not location:
@@ -578,15 +648,17 @@ async def _stream_image_response(
                     raise ValueError("meme image redirect target is not in the allowed host list")
                 current_url = next_url
                 continue
-            final_url = str(getattr(response, "url", current_url) or current_url)
-            if not _is_allowed_meme_image_fetch_url(final_url):
-                raise ValueError("meme image redirect target is not in the allowed host list")
             response.raise_for_status()
             content_type = _normalize_image_content_type(response.headers.get("Content-Type", ""))
             if content_type not in _IMAGE_CONTENT_TYPES:
                 raise ValueError(f"unsupported image content type: {content_type}")
             body = await _read_limited_response_body(response)
-            return body, content_type
+            return _DownloadedImage(
+                body=body,
+                content_type=content_type,
+                etag=(response.headers.get("ETag") or "").strip(),
+                last_modified=(response.headers.get("Last-Modified") or "").strip(),
+            )
     raise ValueError("too many meme image redirects")
 
 
@@ -599,13 +671,23 @@ async def _build_moderation_image_url(
     mode = _image_input_mode(base_url)
     if mode in {"data_url", "base64"}:
         payload_cache_key = _url_hash(url)
-        cached_payload = _image_payload_cache_get(payload_cache_key, ttl_seconds)
-        if cached_payload is not None:
-            return cached_payload, _url_hash(cached_payload)
-        body, content_type = await _download_image_for_moderation(url, timeout_seconds)
-        encoded = base64.b64encode(body).decode("ascii")
-        payload = f"data:{content_type};base64,{encoded}"
-        _image_payload_cache_set(payload_cache_key, payload)
+        cached_entry = _image_payload_cache_get(payload_cache_key, ttl_seconds)
+        downloaded = await _download_image_for_moderation(
+            url,
+            timeout_seconds,
+            cached_entry,
+        )
+        if cached_entry is not None and downloaded.not_modified:
+            return cached_entry.payload, _url_hash(cached_entry.payload)
+        encoded = base64.b64encode(downloaded.body).decode("ascii")
+        payload = f"data:{downloaded.content_type};base64,{encoded}"
+        _image_payload_cache_set(
+            payload_cache_key,
+            payload,
+            content_type=downloaded.content_type,
+            etag=downloaded.etag,
+            last_modified=downloaded.last_modified,
+        )
         return payload, _url_hash(payload)
     return url, None
 
@@ -879,10 +961,14 @@ async def moderate_meme_image_url(
     flagged_outside_threshold_policy = bool(
         flagged and flagged_category_keys - threshold_category_aliases
     )
+    flagged_always_block_policy = bool(
+        flagged and flagged_category_keys & _ALWAYS_BLOCK_FLAGGED_CATEGORIES
+    )
     has_threshold_scores = _has_threshold_score_categories(category_scores)
     blocked = (
         bool(blocked_categories)
         or flagged_outside_threshold_policy
+        or flagged_always_block_policy
         or (flagged and not has_threshold_scores)
     )
     reason = "pass"

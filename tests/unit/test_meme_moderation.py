@@ -610,6 +610,39 @@ def test_openai_scores_block_even_when_provider_does_not_flag(monkeypatch):
     assert result.reason == "score_threshold"
 
 
+def test_openai_sexual_minors_score_blocks_even_when_provider_does_not_flag(monkeypatch):
+    use_direct_url_payload(monkeypatch)
+    client = FakeClient(
+        post_response=FakeResponse(
+            json_data=moderation_json(
+                False,
+                scores={
+                    "sexual": 0.0,
+                    "sexual/minors": 0.99,
+                    "violence": 0.0,
+                },
+                categories={
+                    "sexual": False,
+                    "sexual/minors": False,
+                    "violence": False,
+                },
+            )
+        )
+    )
+
+    result = run(
+        mm.moderate_meme_image_url(
+            "https://example.com/cat.jpg",
+            http_client=client,
+            enabled=True,
+            api_key="test-key",
+        )
+    )
+
+    assert result.allowed is False
+    assert result.reason == "score_threshold"
+
+
 def test_high_scores_block_even_when_provider_does_not_flag(monkeypatch):
     use_direct_url_payload(monkeypatch)
     client = FakeClient(
@@ -842,7 +875,7 @@ def test_successful_results_are_cached(monkeypatch):
     assert first.cached is False
     assert second.cached is True
     assert len(client.post_calls) == 1
-    assert len(image_client.get_calls) == 1
+    assert len(image_client.get_calls) == 2
 
 
 def test_direct_url_payload_does_not_cache_allowed_verdict(monkeypatch):
@@ -908,7 +941,7 @@ def test_successful_cache_is_scoped_to_moderation_policy(monkeypatch):
     assert first.cached is False
     assert second.cached is False
     assert len(client.post_calls) == 2
-    assert len(image_client.get_calls) == 1
+    assert len(image_client.get_calls) == 2
     assert client.post_calls[0]["json"]["model"] == "policy-one"
     assert client.post_calls[1]["json"]["model"] == "policy-two"
 
@@ -953,11 +986,17 @@ def test_api_gpt_ge_defaults_to_data_url(monkeypatch):
 
 def test_data_url_payload_is_cached_after_moderation_timeout(monkeypatch):
     write_config({"base_url": "https://api.gpt.ge/v1"})
-    image_client = FakeClient(
-        get_response=FakeResponse(
-            headers={"Content-Type": "image/jpeg"},
-            content=b"abc",
-        )
+    image_client = SequenceStreamClient(
+        [
+            FakeResponse(
+                headers={"Content-Type": "image/jpeg", "ETag": '"v1"'},
+                content=b"abc",
+            ),
+            FakeResponse(
+                status_code=304,
+                headers={"ETag": '"v1"'},
+            ),
+        ]
     )
     monkeypatch.setattr(mm, "get_external_http_client", lambda: image_client)
 
@@ -1000,7 +1039,100 @@ def test_data_url_payload_is_cached_after_moderation_timeout(monkeypatch):
     assert first.reason == "request_failed"
     assert second.allowed is True
     assert second.reason == "pass"
-    assert len(image_client.get_calls) == 1
+    assert len(image_client.get_calls) == 2
+    assert image_client.get_calls[1]["headers"]["If-None-Match"] == '"v1"'
+    assert len(moderation_client.post_calls) == 2
+
+
+def test_data_url_cached_payload_revalidates_unchanged_image(monkeypatch):
+    write_config({"base_url": "https://api.gpt.ge/v1"})
+    image_client = SequenceStreamClient(
+        [
+            FakeResponse(
+                headers={"Content-Type": "image/jpeg", "ETag": '"v1"'},
+                content=b"abc",
+            ),
+            FakeResponse(
+                status_code=304,
+                headers={"ETag": '"v1"'},
+            ),
+        ]
+    )
+    moderation_client = SequencePostClient(
+        [
+            FakeResponse(json_data=moderation_json(False)),
+        ]
+    )
+    monkeypatch.setattr(mm, "get_external_http_client", lambda: image_client)
+
+    first = run(
+        mm.moderate_meme_image_url(
+            "https://img.soutula.com/example.jpg",
+            http_client=moderation_client,
+            enabled=True,
+            api_key="test-key",
+        )
+    )
+    second = run(
+        mm.moderate_meme_image_url(
+            "https://img.soutula.com/example.jpg",
+            http_client=moderation_client,
+            enabled=True,
+            api_key="test-key",
+        )
+    )
+
+    assert first.cached is False
+    assert second.cached is True
+    assert len(image_client.get_calls) == 2
+    assert image_client.get_calls[1]["headers"]["If-None-Match"] == '"v1"'
+    assert len(moderation_client.post_calls) == 1
+
+
+def test_data_url_mutable_image_refreshes_verdict_cache_key(monkeypatch):
+    write_config({"base_url": "https://api.gpt.ge/v1"})
+    image_client = SequenceStreamClient(
+        [
+            FakeResponse(
+                headers={"Content-Type": "image/jpeg", "ETag": '"v1"'},
+                content=b"benign",
+            ),
+            FakeResponse(
+                headers={"Content-Type": "image/jpeg", "ETag": '"v2"'},
+                content=b"blocked",
+            ),
+        ]
+    )
+    moderation_client = SequencePostClient(
+        [
+            FakeResponse(json_data=moderation_json(False)),
+            FakeResponse(json_data=moderation_json(True)),
+        ]
+    )
+    monkeypatch.setattr(mm, "get_external_http_client", lambda: image_client)
+
+    first = run(
+        mm.moderate_meme_image_url(
+            "https://img.soutula.com/example.jpg",
+            http_client=moderation_client,
+            enabled=True,
+            api_key="test-key",
+        )
+    )
+    second = run(
+        mm.moderate_meme_image_url(
+            "https://img.soutula.com/example.jpg",
+            http_client=moderation_client,
+            enabled=True,
+            api_key="test-key",
+        )
+    )
+
+    assert first.allowed is True
+    assert second.allowed is False
+    assert second.reason == "flagged"
+    assert len(image_client.get_calls) == 2
+    assert image_client.get_calls[1]["headers"]["If-None-Match"] == '"v1"'
     assert len(moderation_client.post_calls) == 2
 
 
