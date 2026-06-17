@@ -2379,10 +2379,6 @@
                         var freezePointMessage = {
                             freezePoint: message.freezePoint === true
                         };
-                        var expandedForCursor = false;
-                        if (expandedForCursor && cursorOptions.freezePoint !== true) {
-                            relayYuiGuideChatCommand(cursorOptions);
-                        }
                         relayYuiGuideChatCommand(Object.assign({}, cursorOptions, freezePointMessage));
                         break;
                     }

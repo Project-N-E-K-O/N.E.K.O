@@ -4987,10 +4987,10 @@ function CompactChatApp({
     const request = avatarToolMenuOpenRequest;
     if (!request || !request.id || request.id === lastAvatarToolMenuOpenRequestIdRef.current) return;
     const requestId = request.id;
+    lastAvatarToolMenuOpenRequestIdRef.current = requestId;
     if (request.open) {
       const opened = openCompactInputToolFan('click', { ignoreDisabled: true });
       if (!opened) return;
-      lastAvatarToolMenuOpenRequestIdRef.current = requestId;
       if (activeAvatarToolIds.length === 0) {
         setActiveAvatarToolIds([...DEFAULT_ACTIVE_AVATAR_TOOL_IDS]);
       }
@@ -4998,20 +4998,18 @@ function CompactChatApp({
       setToolMenuOpen(opened);
       return;
     }
-    lastAvatarToolMenuOpenRequestIdRef.current = requestId;
     setToolMenuOpen(false);
   }, [activeAvatarToolIds.length, avatarToolMenuOpenRequest, openCompactInputToolFan]);
 
   useEffect(() => {
     const request = compactToolFanOpenRequest;
     if (!request || !request.id || request.id === lastCompactToolFanOpenRequestIdRef.current) return;
+    lastCompactToolFanOpenRequestIdRef.current = request.id;
     if (request.open) {
       const opened = openCompactInputToolFan('click', { ignoreDisabled: true });
       if (!opened) return;
-      lastCompactToolFanOpenRequestIdRef.current = request.id;
       return;
     }
-    lastCompactToolFanOpenRequestIdRef.current = request.id;
     closeCompactInputToolFan();
   }, [closeCompactInputToolFan, compactToolFanOpenRequest, openCompactInputToolFan]);
 
@@ -5045,9 +5043,9 @@ function CompactChatApp({
   useEffect(() => {
     const request = compactToolWheelRotateRequest;
     if (!request || !request.id || request.id === lastCompactToolWheelRotateRequestIdRef.current) return;
+    lastCompactToolWheelRotateRequestIdRef.current = request.id;
     const opened = openCompactInputToolFan('click', { ignoreDisabled: true });
     if (!opened) return;
-    lastCompactToolWheelRotateRequestIdRef.current = request.id;
     rotateCompactInputToolWheelSteps(request.direction, request.stepCount, {
       forceFast: request.forceFast !== false,
     });
