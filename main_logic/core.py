@@ -8633,17 +8633,22 @@ class LLMSessionManager:
     async def tts_response_handler(self):
         q = self.tts_response_queue
         logger.info(f"🎧 tts_response_handler started (queue id={id(q):#x})")
+        # 轻量轮询而非 asyncio.to_thread(q.get)：阻塞式 get 要占用默认线程池，一旦
+        # 线程池被其它同步任务（如 ssl.create_default_context 构造 LLM 客户端）打满，
+        # 这个 get 就排不上号，已经放进队列的 TTS 音频迟迟取不出来 → 8-10s 大卡顿。
+        # get_nowait() 直接在主 loop 上取，无消息时让出极短时间，彻底绕开线程池竞争。
+        _IDLE_POLL_INTERVAL = 0.005  # 5ms：对 200-700ms 的音频 chunk 来说延迟可忽略
         while True:
             try:
-                # 阻塞 get 挂在线程池里，无消息时主 event loop 完全沉默；
-                # 取消时 except CancelledError 分支会 push 哨兵唤醒线程池里那个
-                # 仍在 q.get() 上的线程，避免线程泄漏。
-                data = await asyncio.to_thread(q.get)
+                try:
+                    data = q.get_nowait()
+                except Empty:
+                    await asyncio.sleep(_IDLE_POLL_INTERVAL)
+                    continue
 
-                # 处理 cancel 时为唤醒泄漏线程而 push 的哨兵。同一个 handler 实例
-                # 不会在 cancel 之后继续运行（CancelledError 已 raise），所以这里
-                # 只是为了在 handler 被替换后，新 handler（绑同一 queue）若意外
-                # 读到旧 handler 留下的哨兵也能正确忽略。
+                # 处理历史遗留哨兵：早期实现用阻塞 get + 哨兵唤醒线程池里的泄漏线程，
+                # 现已改为轮询不再产生该哨兵；但旧 handler 被替换后，新 handler（绑同一
+                # queue）若意外读到残留哨兵仍需正确忽略。
                 if isinstance(data, tuple) and len(data) == 2 and data[0] == "__handler_exit__":
                     continue
 
@@ -8818,13 +8823,8 @@ class LLMSessionManager:
                 self._discard_pending_ai_voice_echo()
             except asyncio.CancelledError:
                 logger.info("🎧 tts_response_handler cancelled")
-                # asyncio.to_thread 取消后，线程池里那个 thread 仍阻塞在 q.get()。
-                # push 哨兵唤醒它返回，避免线程泄漏（线程持有 queue ref，整个 queue
-                # 也会被一起留住）。put_nowait 失败不影响主流程。
-                try:
-                    q.put_nowait(("__handler_exit__", None))
-                except Exception:
-                    pass
+                # 轮询实现不再有阻塞在 q.get() 的线程池线程，取消时直接退出即可，
+                # 无需再 push 哨兵唤醒任何线程。
                 raise
             except Exception as e:
                 logger.error(f"💥 tts_response_handler error (will retry): {e}")

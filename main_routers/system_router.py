@@ -3394,7 +3394,12 @@ async def emotion_analysis(request: Request):
         set_call_type("emotion")
 
         # 异步调用模型（使用统一工厂，自动处理 extra_body / provider 兼容）
-        llm = create_chat_llm(
+        # create_chat_llm 在构造 OpenAI/AsyncOpenAI 客户端时会同步触发
+        # ssl.create_default_context()（读取磁盘 CA 证书），冷启动 / 高负载下可阻塞主
+        # event loop 数秒，导致已生成好的 TTS 音频迟迟发不出去、analyze ack 一起冻结。
+        # /emotion/analysis 在主 loop 上被频繁调用，因此必须把这次同步构造挪到线程池。
+        llm = await asyncio.to_thread(
+            create_chat_llm,
             model,
             emotion_base_url,
             api_key,
