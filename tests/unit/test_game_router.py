@@ -3,6 +3,7 @@ import sqlite3
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import HTTPException
 from starlette.responses import JSONResponse
 
 from .game_route_test_helpers import (
@@ -115,6 +116,26 @@ async def test_new_user_icebreaker_context_endpoint_awaits_async_append(monkeypa
     assert result["ok"] is True
     assert result["method"] == "project_session_history"
     assert mgr.calls == [("user", "icebreaker choice")]
+
+
+@pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_rejects_unsupported_game_type():
+    with pytest.raises(HTTPException) as exc_info:
+        await game_router.game_project_context(
+            "soccer",
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "role": "user",
+                "text": "choice a",
+            }),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == {
+        "ok": False,
+        "reason": "unsupported_game_type",
+        "game_type": "soccer",
+    }
 
 
 @pytest.mark.asyncio

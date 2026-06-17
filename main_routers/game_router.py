@@ -47,7 +47,7 @@ _SSML_TAG_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from config.prompts.prompts_game import (
     get_basketball_pregame_context_formatter_labels,
@@ -6619,7 +6619,10 @@ async def game_project_mirror_assistant(game_type: str, request: Request):
 async def game_project_context(game_type: str, request: Request):
     """Append game-scoped UI dialogue into the active project session history."""
     if str(game_type or "") != "new_user_icebreaker":
-        return {"ok": False, "reason": "unsupported_game_type", "game_type": game_type}
+        raise HTTPException(
+            status_code=400,
+            detail={"ok": False, "reason": "unsupported_game_type", "game_type": game_type},
+        )
 
     try:
         data = await request.json()
