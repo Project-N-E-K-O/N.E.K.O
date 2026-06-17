@@ -18,8 +18,13 @@
 
 ### 🌍 多语言支持
 - 🇨🇳 中文（简体）
+- 🇹🇼 中文（繁體）
 - 🇺🇸 English
 - 🇯🇵 日本語
+- 🇰🇷 한국어
+- 🇷🇺 Русский
+- 🇵🇹 Português
+- 🇪🇸 Español
 
 ## 📦 安装说明
 
@@ -143,7 +148,7 @@ version = "1.2.0"
 
 [plugin.i18n]
 default_locale = "zh-CN"
-locales = ["zh-CN", "en", "ja"]
+locales = ["zh-CN", "zh-TW", "en", "ja", "ko", "ru", "pt", "es"]
 ```
 
 ### 数据存储

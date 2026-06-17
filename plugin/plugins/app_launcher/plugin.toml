@@ -31,4 +31,4 @@ enabled = true
 
 [plugin.i18n]
 default_locale = "zh-CN"
-locales = ["zh-CN", "en", "ja"]
+locales = ["zh-CN", "zh-TW", "en", "ja", "ko", "ru", "pt", "es"]
