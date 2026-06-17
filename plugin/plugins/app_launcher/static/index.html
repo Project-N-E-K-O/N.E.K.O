@@ -1087,6 +1087,15 @@
         }[m]));
     }
 
+    function stripPathQuotes(path) {
+        const trimmed = (path || '').trim();
+        if ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+            (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+            return trimmed.slice(1, -1).trim();
+        }
+        return trimmed;
+    }
+
     function getTypeTag(type) {
         const map = {
             exe: '<span class="tag tag-exe">EXE</span>',
@@ -1397,7 +1406,7 @@
     }
 
     document.getElementById('appPath').addEventListener('input', (e) => {
-        const path = e.target.value.trim().toLowerCase();
+        const path = stripPathQuotes(e.target.value).toLowerCase();
         const isExe = path.endsWith('.exe');
         const autostartCheckbox = document.getElementById('appAutostart');
         const autostartHint = document.getElementById('autostartHint');

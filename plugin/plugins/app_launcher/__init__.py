@@ -236,8 +236,8 @@ def _get_autostart_status_windows(app_id: str) -> bool:
                 0,
                 winreg.KEY_READ
             ) as key:
-                value, _ = winreg.QueryValueEx(key, reg_name)
-                return bool(value)
+                winreg.QueryValueEx(key, reg_name)
+                return True
         except FileNotFoundError:
             return False
             
@@ -289,6 +289,7 @@ class AppLauncherPlugin(NekoPluginBase):
         self.file_logger = self.enable_file_logging(log_level="INFO")
         self.logger = self.file_logger
         self._apps_lock = threading.Lock()
+        self._recent_lock = threading.Lock()
         # i18n 已通过 SDK 自动加载（plugin.toml 中的 [plugin.i18n] 配置）
 
     def _load_apps_unlocked(self) -> List[Dict[str, Any]]:
@@ -405,18 +406,19 @@ class AppLauncherPlugin(NekoPluginBase):
     def _add_to_recent(self, app_id: str, app_name: str) -> None:
         """添加到最近使用记录"""
         try:
-            recent = self._load_recent()
-            # 移除已存在的记录
-            recent = [r for r in recent if r.get("app_id") != app_id]
-            # 添加到开头
-            recent.insert(0, {
-                "app_id": app_id,
-                "app_name": app_name,
-                "launched_at": _now(),
-            })
-            # 只保留最近10条
-            recent = recent[:10]
-            self._save_recent(recent)
+            with self._recent_lock:
+                recent = self._load_recent()
+                # 移除已存在的记录
+                recent = [r for r in recent if r.get("app_id") != app_id]
+                # 添加到开头
+                recent.insert(0, {
+                    "app_id": app_id,
+                    "app_name": app_name,
+                    "launched_at": _now(),
+                })
+                # 只保留最近10条
+                recent = recent[:10]
+                self._save_recent(recent)
         except Exception as exc:
             self.logger.warning("Failed to add to recent: {}", exc)
 
