@@ -744,6 +744,25 @@ def get_tts_language_code() -> str:
     return TTS_LANGUAGE_CODE_MAP.get(lang, 'cmn-CN')
 
 
+def _find_token_chunk_end(text: str, start: int, max_tokens: int) -> int:
+    """Return the largest character end offset whose slice fits max_tokens."""
+    from utils.tokenize import count_tokens
+
+    low = start + 1
+    high = len(text)
+    best = start
+    while low <= high:
+        mid = (low + high) // 2
+        candidate = text[start:mid]
+        if count_tokens(candidate) <= max_tokens:
+            best = mid
+            low = mid + 1
+        else:
+            high = mid - 1
+
+    return best
+
+
 def _split_text_into_token_chunks(text: str, max_tokens: int) -> List[str]:
     """
     Split text into token-bounded chunks, trying to split at periods, newlines, etc.
@@ -755,22 +774,24 @@ def _split_text_into_token_chunks(text: str, max_tokens: int) -> List[str]:
     Returns:
         List of text chunks
     """
-    from utils.tokenize import count_tokens, truncate_to_tokens
+    from utils.tokenize import count_tokens
+
+    if not text:
+        return [text]
+    if max_tokens <= 0:
+        return [text]
 
     if count_tokens(text) <= max_tokens:
         return [text]
     
     chunks: List[str] = []
-    remaining = text
-    while remaining:
-        if count_tokens(remaining) <= max_tokens:
-            chunks.append(remaining)
+    start = 0
+    while start < len(text):
+        chunk_end = _find_token_chunk_end(text, start, max_tokens)
+        if chunk_end <= start:
             break
 
-        current_chunk = truncate_to_tokens(remaining, max_tokens)
-        if not current_chunk:
-            break
-
+        current_chunk = text[start:chunk_end]
         # 尝试在句号、换行符等位置分割，避免把一句话砍在中间。
         last_period = max(
             current_chunk.rfind('。'),
@@ -783,11 +804,11 @@ def _split_text_into_token_chunks(text: str, max_tokens: int) -> List[str]:
         )
         if last_period > len(current_chunk) * 0.7:
             split_at = last_period + 1
-            chunks.append(current_chunk[:split_at])
-            remaining = current_chunk[split_at:] + remaining[len(current_chunk):]
+            chunks.append(text[start:start + split_at])
+            start += split_at
         else:
             chunks.append(current_chunk)
-            remaining = remaining[len(current_chunk):]
+            start = chunk_end
     
     return chunks
 
@@ -1481,4 +1502,3 @@ def get_translation_service(config_manager) -> TranslationService:
     elif _translation_service_instance.config_manager is not config_manager:
         logger.warning("get_translation_service: 传入了不同的 config_manager，但会使用第一次创建时的实例")
     return _translation_service_instance
-
