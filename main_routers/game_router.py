@@ -2992,16 +2992,17 @@ async def _select_game_archive_memory_highlights(archive: dict) -> dict:
     """Ask a small independent LLM call to select meaningful memory items."""
     char_info = _get_game_route_summary_llm_info(str(archive.get("lanlan_name") or ""))
     source = _build_game_archive_memory_highlight_source(archive)
-    # Bound a long game_dialog_log: _build_game_archive stores the whole dialog in
-    # full_dialogues and the source builder appends every line. Head+tail keeps the
-    # early framing + late outcome of the session within a real token budget.
-    from utils.tokenize import truncate_head_tail_tokens
-    source = truncate_head_tail_tokens(source, 2000, 2000)
     language = _archive_prompt_language(archive)
     system_prompt = get_game_archive_memory_highlighter_system_prompt(language)
-    user_prompt = get_game_archive_memory_highlighter_user_prompt(language).format(source=source)
 
     try:
+        # Bound a long game_dialog_log: _build_game_archive stores the whole dialog
+        # in full_dialogues and the source builder appends every line. Head+tail
+        # keeps the early framing + late outcome within a real token budget. Inside
+        # the try so any failure falls back to _fallback_game_archive_memory_highlights.
+        from utils.tokenize import truncate_head_tail_tokens
+        source = truncate_head_tail_tokens(source, 2000, 2000)
+        user_prompt = get_game_archive_memory_highlighter_user_prompt(language).format(source=source)
         from utils.file_utils import robust_json_loads
         from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm
         from utils.token_tracker import set_call_type

@@ -64,7 +64,11 @@ class TaskDeduper:
         ]
         # Cap candidate count so a backlog/flood can't grow the prompt without
         # bound; with per-item head/tail truncation this gives a real total cap.
-        for tid, desc in candidates[:AGENT_DEDUP_CANDIDATES_MAX]:
+        # Keep the NEWEST candidates (task_registry appends new tasks at the end,
+        # _collect_existing_task_descriptions preserves that order): a user
+        # repeating a recently-queued task must have it included, or the judge
+        # could return non-duplicate and schedule it twice.
+        for tid, desc in candidates[-AGENT_DEDUP_CANDIDATES_MAX:]:
             lines.append(f"- id={tid}: {truncate_head_tail_tokens(desc, _h_det, _h_det)}")
         lines.append(
             "\nTask: Decide whether the NEW task duplicates ANY existing task (same goal or a strict subset). "
