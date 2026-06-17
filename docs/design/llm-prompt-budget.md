@@ -24,7 +24,7 @@
 **抑制写法**：`# noqa: LLM_OUTPUT_BUDGET` / `# noqa: LLM_INPUT_BUDGET`，可加 `# noqa: CODE  # 理由` 把理由写在第二个 `#` 之后（解析器在第二个 `#` 处停止读 code）。
 
 **变量级共识**：
-- 变长结构化 JSON 输出（memory reflection/recall/persona/facts/refine、deduper、card-assist、window-title 关键词等）没有紧的 task-specific budget——硬 cap 会在 thinking 模型上把 reasoning token 一起算进去、截断 JSON 中段导致 `robust_json_loads` 静默失败。这类站点统一用 **`LLM_OUTPUT_GUARD_MAX_TOKENS`（8000，runaway guard）** 作 `max_completion_tokens`：取值刻意大，正常输出不会被截，只挡模型失控；靠 guard + timeout + 输入 budget 三层兜底。
+- 变长结构化 JSON 输出（memory reflection/recall/persona/facts/refine、deduper、card-assist、window-title 关键词等）没有紧的 task-specific budget——硬 cap 会在 thinking 模型上把 reasoning token 一起算进去、截断 JSON 中段导致 `robust_json_loads` 静默失败。这类站点统一用 **`LLM_OUTPUT_GUARD_MAX_TOKENS`（4096，runaway guard）** 作 `max_completion_tokens`：取值刻意大，正常输出不会被截，只挡模型失控；靠 guard + timeout + 输入 budget 三层兜底。
 - 真正在 **调用时** 设 budget 的站点用 `# noqa: LLM_OUTPUT_BUDGET`：CUA engine（裸 `_client.chat.completions.create(max_completion_tokens=...)`）、`computer_use`（`invoke_raw(max_completion_tokens=...)`，ping vs 主调用预算不同）。
 - 主对话流式 client（`OmniOfflineClient`）的 `timeout` 用 `DIALOG_LLM_STREAM_TIMEOUT_SECONDS`（180s，取大只作 hang-guard，不误截正常长回复）。
 
@@ -243,7 +243,7 @@ callback（`enqueue_agent_callback`）会经 `_build_callback_instruction`（文
 | Proactive Phase 2 SDK 端 | `PROACTIVE_PHASE2_GENERATE_MAX_TOKENS` | 450 (=abort fence × 1.5) |
 | 翻译输出 | `TRANSLATION_OUTPUT_MAX_TOKENS` | 1000 |
 | ComputerUse 主调用 | `COMPUTER_USE_MAX_TOKENS` | 6000 |
-| 变长输出 runaway guard | `LLM_OUTPUT_GUARD_MAX_TOKENS` | 8000 |
+| 变长输出 runaway guard | `LLM_OUTPUT_GUARD_MAX_TOKENS` | 4096 |
 
 > 注：变长结构化 JSON 输出（memory reflection/recall/persona/facts/refine、deduper、card-assist 等）没有紧的 task-specific budget，统一用 `LLM_OUTPUT_GUARD_MAX_TOKENS`（generous runaway guard，不会误截）作上限。见 §0。
 
