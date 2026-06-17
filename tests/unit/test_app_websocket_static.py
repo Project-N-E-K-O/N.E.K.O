@@ -71,8 +71,8 @@ def test_icebreaker_greeting_check_is_consumed_without_retry_loop():
         "function sendHomeTutorialState(reason)",
         1,
     )[0]
-    assert "if (!window.newUserIcebreaker || typeof window.newUserIcebreaker.getActiveSession !== 'function')" in blocking_block
-    assert "return false;" in blocking_block
+    assert "if (!window.newUserIcebreaker || typeof window.newUserIcebreaker.getActiveSession !== 'function')" not in blocking_block
+    assert "if (isNewUserIcebreakerPeriodActive()) return true;" in blocking_block
     assert "sendHomeTutorialState('greeting-check-consumed-by-icebreaker')" in consume_block
     assert "S._greetingCheckPending = false;" in consume_block
     assert "_resetGreetingCheckRetry(true);" in consume_block
