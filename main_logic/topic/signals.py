@@ -167,6 +167,7 @@ class TopicSignalStore:
             float(persistence_flush_delay_seconds),
         )
         self._persist_lock = threading.RLock()
+        self._persist_write_lock = threading.Lock()
         self._persist_timer: threading.Timer | None = None
         self._persist_dirty = False
         self._turns: dict[str, deque[TopicTurnSignal]] = defaultdict(
@@ -376,17 +377,18 @@ class TopicSignalStore:
         method when they need the local-state file to reflect the in-memory
         view immediately.
         """
-        with self._persist_lock:
-            timer = self._persist_timer
-            self._persist_timer = None
-            if timer is not None and timer is not threading.current_thread():
-                timer.cancel()
-            if not self._persist_dirty:
-                return
-            payload = self._persistence_payload_locked()
-            self._persist_dirty = False
+        with self._persist_write_lock:
+            with self._persist_lock:
+                timer = self._persist_timer
+                self._persist_timer = None
+                if timer is not None and timer is not threading.current_thread():
+                    timer.cancel()
+                if not self._persist_dirty:
+                    return
+                payload = self._persistence_payload_locked()
+                self._persist_dirty = False
 
-        write_result = self._write_payload(payload)
+            write_result = self._write_payload(payload)
         if write_result is not False:
             return
 

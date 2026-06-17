@@ -1314,7 +1314,7 @@ async def test_topic_pool_triggers_ready_hook_without_quiet_window():
 
     assert delivered == [("妮可", "买车像进入新生活阶段", "zh-CN")]
     assert pool.get_ready_materials("妮可") == []
-    assert pool._materials["妮可"][0]["status"] == "used"
+    assert pool._materials["妮可"] == []
 
 
 @pytest.mark.asyncio
@@ -1427,9 +1427,8 @@ async def test_topic_pool_triggers_highest_relevance_material_first():
     await asyncio.sleep(0.03)
 
     assert delivered == ["高优先级话题"]
-    assert pool._materials["妮可"][0]["interest"] == "高优先级话题"
-    assert pool._materials["妮可"][0]["status"] == "used"
-    assert pool.get_ready_materials("妮可")[0]["interest"] == "低优先级话题"
+    assert pool._materials["妮可"] == []
+    assert pool.get_ready_materials("妮可") == []
 
 
 @pytest.mark.asyncio

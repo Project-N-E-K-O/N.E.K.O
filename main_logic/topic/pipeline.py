@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import threading
 import time
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Iterable, Mapping
@@ -264,6 +265,8 @@ class TopicHookPool:
         self._tasks: dict[str, asyncio.Task] = {}
         self._trigger_tasks: dict[str, asyncio.Task] = {}
         self._used_topics: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        self._used_topics_lock = threading.RLock()
+        self._used_topics_write_lock = threading.Lock()
         self._load_used_topics()
         self._last_turn_at: dict[str, float] = {
             name: last_turn_at
@@ -283,7 +286,8 @@ class TopicHookPool:
         self._signal_store.clear(name)
         self._materials.pop(name, None)
         self._dirty.discard(name)
-        self._used_topics.pop(name, None)
+        with self._used_topics_lock:
+            self._used_topics.pop(name, None)
         self._persist_used_topics()
         self._cancel_trigger(name)
 
@@ -708,6 +712,7 @@ class TopicHookPool:
             current_material["used_at"] = time.time()
             self._mark_topic_used(name, current_material)
             await asyncio.to_thread(self._persist_used_topics)
+            self._materials[name] = []
             await self._discard_delivered_signals_async(name, current_material)
             logger.info(
                 "[%s] topic material triggered once: %s",
@@ -808,31 +813,34 @@ class TopicHookPool:
     def _prune_used_topics(self, name: str, *, now: float | None = None) -> list[dict[str, Any]]:
         current_time = float(now if now is not None else time.time())
         current_day = _local_day(current_time)
-        previous_len = len(self._used_topics.get(name, []))
-        records = []
-        today_records = []
-        for record in self._used_topics.get(name, []):
-            used_at = float(record.get("used_at") or 0.0)
-            used_day = _local_day(used_at)
-            if used_day == current_day or current_time - used_at < _USED_TOPIC_RECENT_SECONDS:
-                records.append(record)
-            if used_day == current_day:
-                today_records.append(record)
-        if records:
-            self._used_topics[name] = records
-        else:
-            self._used_topics.pop(name, None)
-        if len(records) != previous_len:
+        with self._used_topics_lock:
+            previous_len = len(self._used_topics.get(name, []))
+            records = []
+            today_records = []
+            for record in self._used_topics.get(name, []):
+                used_at = float(record.get("used_at") or 0.0)
+                used_day = _local_day(used_at)
+                if used_day == current_day or current_time - used_at < _USED_TOPIC_RECENT_SECONDS:
+                    records.append(record)
+                if used_day == current_day:
+                    today_records.append(record)
+            if records:
+                self._used_topics[name] = records
+            else:
+                self._used_topics.pop(name, None)
+            changed = len(records) != previous_len
+        if changed:
             self._request_used_topics_persist()
         return today_records
 
     def _recent_used_topics(self, name: str, *, now: float | None = None) -> list[dict[str, Any]]:
         current_time = float(now if now is not None else time.time())
-        return [
-            record
-            for record in self._used_topics.get(name, [])
-            if current_time - float(record.get("used_at") or 0.0) < _USED_TOPIC_RECENT_SECONDS
-        ]
+        with self._used_topics_lock:
+            return [
+                record
+                for record in self._used_topics.get(name, [])
+                if current_time - float(record.get("used_at") or 0.0) < _USED_TOPIC_RECENT_SECONDS
+            ]
 
     def _daily_quota_reached(self, name: str, *, now: float | None = None) -> bool:
         if self._daily_topic_limit <= 0:
@@ -911,18 +919,19 @@ class TopicHookPool:
 
     def _mark_topic_used(self, name: str, material: Mapping[str, Any]) -> None:
         self._prune_used_topics(name)
-        self._used_topics[name].append(
-            {
-                "used_at": float(material.get("used_at") or time.time()),
-                "hook_id": str(material.get("hook_id") or "").strip(),
-                "hook_id_hash": _topic_fingerprint(material.get("hook_id")),
-                "interest": _clean_text(material.get("interest"), token_limit=90),
-                "keywords": sorted(_material_keywords(material)),
-                "keyword_hashes": sorted(_topic_fingerprints(_material_keywords(material))),
-                "bigram_units": sorted(_material_bigram_units(material)),
-                "bigram_hashes": sorted(_topic_fingerprints(_material_bigram_units(material))),
-            }
-        )
+        with self._used_topics_lock:
+            self._used_topics[name].append(
+                {
+                    "used_at": float(material.get("used_at") or time.time()),
+                    "hook_id": str(material.get("hook_id") or "").strip(),
+                    "hook_id_hash": _topic_fingerprint(material.get("hook_id")),
+                    "interest": _clean_text(material.get("interest"), token_limit=90),
+                    "keywords": sorted(_material_keywords(material)),
+                    "keyword_hashes": sorted(_topic_fingerprints(_material_keywords(material))),
+                    "bigram_units": sorted(_material_bigram_units(material)),
+                    "bigram_hashes": sorted(_topic_fingerprints(_material_bigram_units(material))),
+                }
+            )
         self._request_used_topics_persist()
 
     def _request_used_topics_persist(self) -> None:
@@ -977,46 +986,56 @@ class TopicHookPool:
                     }
                 )
             if loaded:
-                self._used_topics[safe_name].extend(loaded)
-        for name in list(self._used_topics):
+                with self._used_topics_lock:
+                    self._used_topics[safe_name].extend(loaded)
+        with self._used_topics_lock:
+            names = list(self._used_topics)
+        for name in names:
             self._prune_used_topics(name)
 
     def _persist_used_topics(self) -> None:
         path = self._used_topics_path
         if path is None:
             return
-        payload = {
-            "version": 1,
-            "characters": {
-                name: [
-                    {
-                        "used_at": float(record.get("used_at") or 0.0),
-                        "hook_id_hash": _stored_topic_fingerprint(
-                            record.get("hook_id_hash") or record.get("hook_id")
-                        ),
-                        "keyword_hashes": sorted(
-                            _stored_topic_fingerprints(
-                                record.get("keyword_hashes") or record.get("keywords") or []
-                            )
-                        ),
-                        "bigram_hashes": sorted(
-                            _stored_topic_fingerprints(
-                                record.get("bigram_hashes") or record.get("bigram_units") or []
-                            )
-                        ),
-                    }
-                    for record in records
-                    if float(record.get("used_at") or 0.0) > 0
-                ]
-                for name, records in self._used_topics.items()
-                if records
-            },
-        }
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_json(path, payload, ensure_ascii=False, indent=2)
-        except Exception:
-            logger.debug("topic used-history persistence failed", exc_info=True)
+        with self._used_topics_write_lock:
+            with self._used_topics_lock:
+                used_topics = {
+                    name: [dict(record) for record in records]
+                    for name, records in self._used_topics.items()
+                    if records
+                }
+            payload = {
+                "version": 1,
+                "characters": {
+                    name: [
+                        {
+                            "used_at": float(record.get("used_at") or 0.0),
+                            "hook_id_hash": _stored_topic_fingerprint(
+                                record.get("hook_id_hash") or record.get("hook_id")
+                            ),
+                            "keyword_hashes": sorted(
+                                _stored_topic_fingerprints(
+                                    record.get("keyword_hashes") or record.get("keywords") or []
+                                )
+                            ),
+                            "bigram_hashes": sorted(
+                                _stored_topic_fingerprints(
+                                    record.get("bigram_hashes") or record.get("bigram_units") or []
+                                )
+                            ),
+                        }
+                        for record in records
+                        if float(record.get("used_at") or 0.0) > 0
+                    ]
+                    for name, records in used_topics.items()
+                    if records
+                },
+            }
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                atomic_write_json(path, payload, ensure_ascii=False, indent=2)
+            except Exception:
+                logger.debug("topic used-history persistence failed", exc_info=True)
 
 
 def _default_topic_trigger():
