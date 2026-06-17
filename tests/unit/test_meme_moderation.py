@@ -225,6 +225,7 @@ def run(coro):
 
 def use_direct_url_payload(monkeypatch):
     monkeypatch.setenv("NEKO_MEME_MODERATION_IMAGE_INPUT_MODE", "url")
+    monkeypatch.setattr(mm, "MEME_ALLOWED_HOSTS", [*mm.MEME_ALLOWED_HOSTS, "example.com"])
 
 
 def test_sequence_clients_report_extra_requests():
@@ -418,6 +419,7 @@ def test_api_providers_config_key_is_fallback(monkeypatch):
 
 
 def test_unflagged_image_passes_and_uses_openai_payload(monkeypatch):
+    use_direct_url_payload(monkeypatch)
     client = FakeClient(post_response=FakeResponse(json_data=moderation_json(False)))
 
     result = run(
@@ -909,6 +911,24 @@ def test_direct_url_payload_does_not_cache_allowed_verdict(monkeypatch):
     assert second.allowed is False
     assert second.cached is False
     assert len(client.post_calls) == 2
+
+
+def test_direct_url_payload_rejects_non_meme_hosts_before_post(monkeypatch):
+    use_direct_url_payload(monkeypatch)
+    client = FakeClient()
+
+    result = run(
+        mm.moderate_meme_image_url(
+            "https://127.0.0.1/private.jpg",
+            http_client=client,
+            enabled=True,
+            api_key="test-key",
+        )
+    )
+
+    assert result.allowed is False
+    assert result.reason == "image_fetch_failed"
+    assert client.post_calls == []
 
 
 def test_successful_cache_is_scoped_to_moderation_policy(monkeypatch):

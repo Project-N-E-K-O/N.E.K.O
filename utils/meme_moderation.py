@@ -689,6 +689,8 @@ async def _build_moderation_image_url(
             last_modified=downloaded.last_modified,
         )
         return payload, _url_hash(payload)
+    if not _is_allowed_meme_image_fetch_url(url):
+        raise ValueError("meme image URL is not in the allowed host list")
     return url, None
 
 
