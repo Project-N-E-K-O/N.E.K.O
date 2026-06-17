@@ -1938,13 +1938,17 @@ def _open_threads_for_activity_state(activity_snapshot, fresh_open_threads) -> l
     ``unfinished_thread`` is a stronger, rule-based continuation signal (the
     previous AI question is still hanging and may bypass normal propensity).
     When it exists, suppress softer LLM-enriched open_threads so Phase 2 sees a
-    single follow-up surface. Otherwise keep open_threads in activity state,
-    where they sit next to live state/tone rather than old reminiscence.
+    single follow-up surface. Also suppress open_threads during
+    ``restricted_screen_only`` states: those rounds allow screen-derived chatter
+    only, with unfinished_thread as the explicit text-only continuation
+    exception. Otherwise keep open_threads in activity state, where they sit
+    next to live state/tone rather than old reminiscence.
     """
-    if (
-        activity_snapshot is not None
-        and getattr(activity_snapshot, 'unfinished_thread', None) is not None
-    ):
+    if activity_snapshot is None:
+        return list(fresh_open_threads or [])
+    if getattr(activity_snapshot, 'unfinished_thread', None) is not None:
+        return []
+    if getattr(activity_snapshot, 'propensity', None) == 'restricted_screen_only':
         return []
     return list(fresh_open_threads or [])
 

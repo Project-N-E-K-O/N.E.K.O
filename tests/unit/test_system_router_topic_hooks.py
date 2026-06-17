@@ -9,7 +9,7 @@ from main_routers.system_router import (
 )
 
 
-def test_unfinished_thread_suppresses_softer_open_threads():
+def test_screen_only_and_unfinished_thread_suppress_softer_open_threads():
     restricted = SimpleNamespace(propensity="restricted_screen_only", unfinished_thread=None)
     restricted_with_thread = SimpleNamespace(
         propensity="restricted_screen_only",
@@ -20,7 +20,7 @@ def test_unfinished_thread_suppresses_softer_open_threads():
     threads = ["AI 答应看测试还没看"]
     assert _open_threads_for_activity_state(None, threads) == threads
     assert _open_threads_for_activity_state(normal, threads) == threads
-    assert _open_threads_for_activity_state(restricted, threads) == threads
+    assert _open_threads_for_activity_state(restricted, threads) == []
     assert _open_threads_for_activity_state(restricted_with_thread, threads) == []
 
 
