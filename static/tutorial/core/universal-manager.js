@@ -4680,6 +4680,7 @@ class UniversalTutorialManager {
         const useYuiOnlyHomeFlow = (
             this.currentPage === 'home'
             && this.isYuiGuideEnabledForPage(this.currentPage)
+            && this.getYuiGuidePreludeSceneIds(this.currentPage, validSteps).length > 0
         );
         const shouldOverrideYuiAvatar = useYuiOnlyHomeFlow;
 

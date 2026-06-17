@@ -776,6 +776,26 @@ test('home template cache-busts app interpage with static guide assets', () => {
     assert.doesNotMatch(templateSource, /\/static\/app-interpage\.js\?v=\{\{ react_chat_asset_version \}\}/);
 });
 
+test('standalone chat cache-busts app interpage with static guide assets', () => {
+    const templateSource = fs.readFileSync(path.join(repoRoot, 'templates/chat.html'), 'utf8');
+    assert.match(templateSource, /\/static\/app-interpage\.js\?v=\{\{ static_asset_version \}\}/);
+    assert.doesNotMatch(templateSource, /\/static\/app-interpage\.js\?v=\{\{ react_chat_asset_version \}\}/);
+});
+
+test('home Yui-only flow requires a non-empty prelude order before skipping driver', () => {
+    const managerSource = fs.readFileSync(
+        path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'),
+        'utf8'
+    );
+    const yuiOnlyBlock = managerSource.split('const useYuiOnlyHomeFlow = (')[1].split(');')[0];
+    const startBlock = managerSource.split('if (useYuiOnlyHomeFlow) {')[1].split('// 重新创建 driver 实例')[0];
+
+    assert.match(yuiOnlyBlock, /this\.currentPage === 'home'/);
+    assert.match(yuiOnlyBlock, /this\.isYuiGuideEnabledForPage\(this\.currentPage\)/);
+    assert.match(yuiOnlyBlock, /this\.getYuiGuidePreludeSceneIds\(this\.currentPage, validSteps\)\.length > 0/);
+    assert.match(startBlock, /this\.driver = null/);
+});
+
 test('Day1 guide keeps locale-specific audio filenames', () => {
     const day1Source = fs.readFileSync(
         path.join(repoRoot, 'static', 'tutorial/yui-guide/days/day1-home-guide.js'),
