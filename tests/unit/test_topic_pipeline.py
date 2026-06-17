@@ -913,6 +913,51 @@ async def test_enrich_pool_discards_material_when_privacy_toggles_on_mid_analysi
 
 
 @pytest.mark.asyncio
+async def test_trigger_discards_material_when_privacy_toggles_on_during_deepen(monkeypatch):
+    from main_logic.topic import pipeline as topic_pipeline
+
+    privacy = {"on": False}
+    delivered = []
+    monkeypatch.setattr(topic_pipeline, "_privacy_mode_active", lambda: privacy["on"])
+
+    async def fake_analyzer(*, lang, global_signals):
+        return [
+            {
+                "interest": "深搜期间隐私切换的话题",
+                "keywords": ["privacy"],
+                "relevance": 95,
+                "risk": 10,
+            }
+        ]
+
+    async def fake_deepen(self, name, material, lang):
+        privacy["on"] = True
+        material["material_hint"] = {"summary": "prepared during privacy"}
+
+    async def fake_trigger(*, lanlan_name, material, lang):
+        delivered.append(material["interest"])
+        return True
+
+    monkeypatch.setattr(TopicHookPool, "_deepen_material", fake_deepen)
+
+    pool = TopicHookPool(
+        analyzer=fake_analyzer,
+        auto_schedule=False,
+        enable_online_enrichment=False,
+        topic_trigger=fake_trigger,
+        trigger_delay_seconds=0.01,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "一个足够具体、可以深挖的话题", lang="zh-CN")
+    await pool.process_now("妮可")
+    await asyncio.sleep(0.03)
+
+    assert delivered == []
+    assert pool.get_ready_materials("妮可") == []
+    assert pool._materials.get("妮可") in (None, [])
+
+
+@pytest.mark.asyncio
 async def test_deepen_material_uses_derived_query_and_overrides_floor(monkeypatch):
     from main_logic.topic import pipeline as topic_pipeline
 
