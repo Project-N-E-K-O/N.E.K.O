@@ -5196,9 +5196,9 @@ describe('App', () => {
       expect(avatarTool).toHaveAttribute('data-compact-tool-active', 'true');
       expect(emojiButton).toHaveClass('is-active');
 
-      const firstQuickToolButton = fan.querySelector<HTMLButtonElement>('#composer-avatar-tool-quickbar .avatar-tool-quickbar-button');
-      expect(firstQuickToolButton).not.toBeNull();
-      fireEvent.click(firstQuickToolButton!);
+      const lollipopButton = fan.querySelector<HTMLButtonElement>('#composer-avatar-tool-quickbar [data-avatar-tool-id="lollipop"]');
+      expect(lollipopButton).not.toBeNull();
+      fireEvent.click(lollipopButton!);
 
       expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
       expect(fan.querySelector('#composer-tool-popover-compact')).toBeNull();
@@ -7475,11 +7475,11 @@ describe('App', () => {
 
     expect(screen.getByRole('group', { name: 'Avatar quick tools' })).toBeInTheDocument();
 
-    const firstQuickToolButton = document.body.querySelector<HTMLButtonElement>('.avatar-tool-quickbar-button');
-    expect(firstQuickToolButton).not.toBeNull();
-    expect(firstQuickToolButton).toHaveAttribute('aria-pressed', 'false');
+    const lollipopButton = document.body.querySelector<HTMLButtonElement>('[data-avatar-tool-id="lollipop"]');
+    expect(lollipopButton).not.toBeNull();
+    expect(lollipopButton).toHaveAttribute('aria-pressed', 'false');
 
-    fireEvent.click(firstQuickToolButton!);
+    fireEvent.click(lollipopButton!);
 
     expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
     expect(screen.queryByRole('group', { name: 'Avatar quick tools' })).toBeNull();
@@ -7510,9 +7510,9 @@ describe('App', () => {
 
     await openCompactInputTools();
     fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
-    const firstQuickToolButton = document.body.querySelector<HTMLButtonElement>('.avatar-tool-quickbar-button');
-    expect(firstQuickToolButton).not.toBeNull();
-    fireEvent.click(firstQuickToolButton!);
+    const lollipopButton = document.body.querySelector<HTMLButtonElement>('[data-avatar-tool-id="lollipop"]');
+    expect(lollipopButton).not.toBeNull();
+    fireEvent.click(lollipopButton!);
 
     expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
     expect(screen.queryByRole('group', { name: 'Avatar quick tools' })).toBeNull();
@@ -7538,7 +7538,7 @@ describe('App', () => {
     const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
     fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
 
-    const lollipopButton = document.body.querySelector<HTMLButtonElement>('.avatar-tool-quickbar-button');
+    const lollipopButton = document.body.querySelector<HTMLButtonElement>('[data-avatar-tool-id="lollipop"]');
     const editButton = container.querySelector('.avatar-tool-quickbar-edit') as HTMLButtonElement;
     expect(lollipopButton).not.toBeNull();
     expect(lollipopButton).not.toBeDisabled();
@@ -7558,9 +7558,8 @@ describe('App', () => {
 
     await openCompactInputTools();
     fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
-    const quickToolButtons = document.body.querySelectorAll<HTMLButtonElement>('.avatar-tool-quickbar-button');
-    const fistButton = quickToolButtons[1];
-    expect(fistButton).not.toBeUndefined();
+    const fistButton = document.body.querySelector<HTMLButtonElement>('[data-avatar-tool-id="fist"]');
+    expect(fistButton).not.toBeNull();
     fireEvent.click(fistButton!);
 
     expect(document.documentElement).toHaveClass('neko-tool-cursor-active');

@@ -3426,19 +3426,7 @@
     // 直接 callback；这里只是 BC 兜底）；source==='mini_game_invite' 走新逻辑。
 
     function handleChoiceSelect(option, source) {
-        if (isHomeTutorialInteractionLocked() || getEffectiveComposerHidden()) return;
         if (!option || typeof option.choice !== 'string') return;
-        if (source === 'galgame') {
-            // Forward to legacy galgame handler if it shows up here
-            if (typeof option.text === 'string') {
-                handleGalgameOptionSelect(option);
-            }
-            return;
-        }
-        if (source === 'mini_game_invite') {
-            handleMiniGameInviteChoice(option);
-            return;
-        }
         if (source === 'new_user_icebreaker') {
             var prompt = state.choicePrompt;
             if (!prompt || prompt.source !== 'new_user_icebreaker') return;
@@ -3453,6 +3441,18 @@
             renderWindow();
             window.dispatchEvent(new CustomEvent('neko:icebreaker-choice-selected', { detail: detail }));
             dispatchHostEvent('icebreaker-choice-selected', detail);
+            return;
+        }
+        if (isHomeTutorialInteractionLocked() || getEffectiveComposerHidden()) return;
+        if (source === 'galgame') {
+            // Forward to legacy galgame handler if it shows up here
+            if (typeof option.text === 'string') {
+                handleGalgameOptionSelect(option);
+            }
+            return;
+        }
+        if (source === 'mini_game_invite') {
+            handleMiniGameInviteChoice(option);
             return;
         }
     }
@@ -3739,6 +3739,18 @@
         renderWindow();
     }
 
+    function setChoicePrompt(payload) {
+        if (!payload || typeof payload !== 'object') return;
+        var source = String(payload.source || '');
+        if (source === 'new_user_icebreaker') {
+            setNewUserIcebreakerPrompt(payload);
+            return;
+        }
+        if (source === 'mini_game_invite') {
+            setMiniGameInvitePrompt(payload);
+        }
+    }
+
     function dismissChoicePromptIfMatches(sessionId) {
         if (!sessionId) return;
         if (state.choicePrompt
@@ -4021,8 +4033,12 @@
                 resetCompactChatState();
             }
             state.homeTutorialInputLocked = next;
+            state.viewProps = Object.assign({}, ensureViewProps(), {
+                compactChatState: getCurrentCompactChatState(),
+                compactInputLocked: next
+            });
+            renderWindow();
         }
-        setHomeTutorialInteractionLocked(next, reason || 'home-tutorial-input-lock');
     }
 
     function setAvatarToolMenuOpen(open, reason) {
@@ -6626,6 +6642,7 @@
         refreshGalgameOptions: fetchGalgameOptionsForLatestTurn,
         // Mini-game invite ChoicePrompt：app-websocket.js 收到对应 WS message 时调
         setMiniGameInvitePrompt: setMiniGameInvitePrompt,
+        setChoicePrompt: setChoicePrompt,
         setNewUserIcebreakerPrompt: setNewUserIcebreakerPrompt,
         // unified resolved handler：accept 兼 launch / decline / suppress 都通过
         // 这条入口分发——前端 dismiss prompt UI + accept 时 window.open。替代了

@@ -6949,12 +6949,22 @@ async def game_project_context(game_type: str, request: Request):
 
     append_icebreaker_context_async = getattr(mgr, "append_icebreaker_context_async", None)
     append_icebreaker_context = getattr(mgr, "append_icebreaker_context", None)
-    if callable(append_icebreaker_context_async):
-        ok = await append_icebreaker_context_async(role, text)
-    elif callable(append_icebreaker_context):
-        ok = append_icebreaker_context(role, text)
-    else:
-        return {"ok": False, "reason": "context_method_unavailable", "lanlan_name": lanlan_name}
+    try:
+        if callable(append_icebreaker_context_async):
+            ok = await append_icebreaker_context_async(role, text)
+        elif callable(append_icebreaker_context):
+            ok = append_icebreaker_context(role, text)
+        else:
+            return {"ok": False, "reason": "context_method_unavailable", "lanlan_name": lanlan_name}
+    except Exception as exc:
+        logger.warning(
+            "🎮 新手破冰上下文写入失败: lanlan=%s game_type=%s err=%s",
+            lanlan_name,
+            game_type,
+            exc,
+            exc_info=True,
+        )
+        return {"ok": False, "reason": "context_write_failed", "lanlan_name": lanlan_name}
 
     return {
         "ok": bool(ok),
