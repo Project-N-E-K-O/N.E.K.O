@@ -532,18 +532,22 @@
 
     function handleChoice(detail) {
         if (!activeSession || !detail) return;
-        if (detail.sessionId && detail.sessionId !== activeSession.sessionId) return;
-        var node = activeSession.dayConfig.nodes[activeSession.nodeId];
+        var session = activeSession;
+        if (session.choiceInFlight) return;
+        if (detail.sessionId && detail.sessionId !== session.sessionId) return;
+        var node = session.dayConfig.nodes[session.nodeId];
         if (!node || !Array.isArray(node.options)) return;
         var choice = String(detail.choice || '');
         var option = node.options.find(function (candidate) {
             return String(candidate.id || '') === choice;
         });
         if (!option) return;
-        var label = (detail.option && detail.option.label) || getText(activeSession.localeData, option.labelKey);
+        session.choiceInFlight = true;
+        clearChoicePrompt();
+        var label = (detail.option && detail.option.label) || getText(session.localeData, option.labelKey);
         appendChatMessage('user', label, {
-            day: activeSession.day,
-            nodeId: activeSession.nodeId,
+            day: session.day,
+            nodeId: session.nodeId,
             choice: choice
         }).then(function () {
             if (option.next) {
@@ -553,6 +557,14 @@
                 completeWithHandoff(option);
             }
             return null;
+        }).then(function () {
+            session.choiceInFlight = false;
+        }).catch(function (error) {
+            session.choiceInFlight = false;
+            console.warn('[NewUserIcebreaker] choice append failed:', error);
+            if (activeSession === session) {
+                setChoicePrompt(node, session.localeData);
+            }
         });
     }
 

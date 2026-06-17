@@ -284,6 +284,16 @@
             return null;
         }
 
+        resolveLanlanName() {
+            try {
+                return (this.window.appState && this.window.appState.lanlan_name)
+                    || (this.window.lanlan_config && this.window.lanlan_config.lanlan_name)
+                    || '';
+            } catch (_) {
+                return '';
+            }
+        }
+
         postExternalChatCommand(action, payload, options) {
             if (!this.isHomeChatExternalized()) {
                 return false;
@@ -298,6 +308,12 @@
             const message = Object.assign({
                 action: normalizedAction
             }, payload || {});
+            if (!message.lanlan_name) {
+                const lanlanName = this.resolveLanlanName();
+                if (lanlanName) {
+                    message.lanlan_name = lanlanName;
+                }
+            }
             if (!Number.isFinite(message.timestamp)) {
                 message.timestamp = Date.now();
             }

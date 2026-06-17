@@ -90,6 +90,13 @@ def test_avatar_floating_scene_text_keys_exist_for_all_supported_locales():
         assert mismatched == []
 
 
+def test_avatar_floating_reset_toast_keys_exist_for_all_supported_locales():
+    for locale in ("zh-CN", "zh-TW", "en", "ja", "ru", "ko", "es", "pt"):
+        data = _locale(locale)
+        assert _get(data, "tutorial.reset.daySuccess")
+        assert _get(data, "tutorial.reset.dayFailed")
+
+
 def test_day2_voice_used_intro_uses_matching_audio_key():
     day2_source = (ROOT / "static" / "tutorial/yui-guide/days/day2-screen-voice-guide.js").read_text(encoding="utf-8")
     director_source = DIRECTOR_PATH.read_text(encoding="utf-8")

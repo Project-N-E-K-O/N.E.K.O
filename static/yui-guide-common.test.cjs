@@ -900,6 +900,8 @@ test('interaction takeover delegates external chat commands to the command bus b
     assert.match(constructorBlock, /this\.externalChatCommandBus = this\.createExternalChatCommandBus\(\);/);
     assert.match(source, /createExternalChatCommandBus\(\) \{[\s\S]*this\.window\.YuiGuideCommon[\s\S]*createTutorialBridgeCommandBus/);
     assert.match(source, /postExternalChatCommand\(action,\s*payload,\s*options\) \{[\s\S]*this\.externalChatCommandBus\.post\(message,\s*normalizedOptions\)/);
+    assert.match(source, /resolveLanlanName\(\) \{[\s\S]*this\.window\.appState[\s\S]*this\.window\.lanlan_config/);
+    assert.match(source, /if \(!message\.lanlan_name\) \{[\s\S]*const lanlanName = this\.resolveLanlanName\(\);[\s\S]*message\.lanlan_name = lanlanName;/);
     assert.match(commandsBlock, /this\.postExternalChatCommand\('yui_guide_set_chat_buttons_disabled'/);
     assert.match(commandsBlock, /this\.postExternalChatCommand\('yui_guide_set_chat_cursor'/);
     assert.match(commandsBlock, /this\.postExternalChatCommand\('yui_guide_drag_chat_cursor'/);
@@ -912,6 +914,20 @@ test('interaction takeover delegates external chat commands to the command bus b
     assert.doesNotMatch(clearFxBlock, /yui_guide_clear_chat_messages/);
     assert.doesNotMatch(commandsBlock, /getExternalChatChannel\(\)/);
     assert.doesNotMatch(commandsBlock, /channel\.postMessage/);
+});
+
+test('new user icebreaker clears and locks choice prompt while advancing branches', () => {
+    const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/icebreaker/new-user-icebreaker.js'), 'utf8');
+    const handleChoiceBlock = source.split('    function handleChoice(detail) {')[1].split(
+        '\n    function handleFreeText',
+        1
+    )[0];
+
+    assert.match(handleChoiceBlock, /if \(session\.choiceInFlight\) return;/);
+    assert.match(handleChoiceBlock, /session\.choiceInFlight = true;\s*clearChoicePrompt\(\);/);
+    assert.match(handleChoiceBlock, /appendChatMessage\('user'[\s\S]*\)\.then\(function \(\) \{[\s\S]*return deliverNode\(option\.next\);/);
+    assert.match(handleChoiceBlock, /\}\)\.then\(function \(\) \{\s*session\.choiceInFlight = false;/);
+    assert.match(handleChoiceBlock, /\.catch\(function \(error\) \{[\s\S]*session\.choiceInFlight = false;[\s\S]*setChoicePrompt\(node,\s*session\.localeData\);/);
 });
 
 test('director exposes phase one guard and timing helpers for complex sequences', () => {

@@ -3278,6 +3278,10 @@
             "enterFullscreen": "Enter Fullscreen Tutorial"
         },
         "drag_hint": "Hold and drag to move the tooltip",
+        "reset": {
+            "daySuccess": "Day {{day}} of the beginner guide has been reset. Please refresh Neko to start it.",
+            "dayFailed": "Failed to reset the beginner guide. Please try again later."
+        },
         "yuiGuide": {
             "buttons": {
                 "skipChat": "Not now",

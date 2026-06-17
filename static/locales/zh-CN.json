@@ -3278,6 +3278,10 @@
             "enterFullscreen": "进入全屏引导"
         },
         "drag_hint": "按住拖动以移动提示框",
+        "reset": {
+            "daySuccess": "已重置第 {{day}} 天新手教程，请刷新 Neko 后启动。",
+            "dayFailed": "新手教程重置失败，请稍后再试。"
+        },
         "yuiGuide": {
             "buttons": {
                 "skipChat": "暂时不聊天",

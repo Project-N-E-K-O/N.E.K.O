@@ -3278,6 +3278,10 @@
             "enterFullscreen": "Ingrese al tutorial en pantalla completa"
         },
         "drag_hint": "Mantenga presionado y arrastre para mover la información sobre herramientas",
+        "reset": {
+            "daySuccess": "Se ha reiniciado el día {{day}} de la guía para principiantes. Actualiza Neko para iniciarlo.",
+            "dayFailed": "No se pudo reiniciar la guía para principiantes. Inténtalo de nuevo más tarde."
+        },
         "yuiGuide": {
             "buttons": {
                 "skipChat": "Ahora no",

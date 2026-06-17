@@ -188,6 +188,13 @@ test('memory reset only prepares the formal avatar floating round for the next N
   assert.doesNotMatch(startDayBlock, /createRoundPlayer/);
 });
 
+test('avatar floating reset toasts resolve through i18n keys', () => {
+  assert.match(resetSource, /function translateResetMessage\(key,\s*fallback,\s*options = \{\}\)/);
+  assert.match(resetSource, /window\.t\(key,\s*options\)/);
+  assert.match(resetSource, /'tutorial\.reset\.daySuccess'/);
+  assert.match(resetSource, /'tutorial\.reset\.dayFailed'/);
+});
+
 test('Day1 return control cursor moves to the capsule primary target before the operation runs', () => {
   assert.match(sceneOrchestratorSource, /await director\.moveAvatarFloatingCursor\(scene,\s*cursorTarget \|\| primaryTarget,\s*secondaryTarget,\s*previousSceneId/);
   assert.match(sceneOrchestratorSource, /externalizedSceneTargetKind && scene\.cursorAction === 'move'[\s\S]*await director\.waitForExternalizedChatCursorMove/);

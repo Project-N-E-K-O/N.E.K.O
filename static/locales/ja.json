@@ -3278,6 +3278,10 @@
             "enterFullscreen": "フルスクリーンで開始"
         },
         "drag_hint": "ドラッグしてツールチップを移動",
+        "reset": {
+            "daySuccess": "初心者ガイド {{day}} 日目をリセットしました。Neko を再読み込みして開始してください。",
+            "dayFailed": "初心者ガイドのリセットに失敗しました。しばらくしてからもう一度お試しください。"
+        },
         "yuiGuide": {
             "buttons": {
                 "skipChat": "今は話さない",
