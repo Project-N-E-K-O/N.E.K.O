@@ -3296,10 +3296,6 @@
             "enterFullscreen": "Ingrese al tutorial en pantalla completa"
         },
         "drag_hint": "Mantenga presionado y arrastre para mover la información sobre herramientas",
-        "reset": {
-            "daySuccess": "Se ha reiniciado el día {{day}} de la guía para principiantes. Actualiza Neko para iniciarlo.",
-            "dayFailed": "No se pudo reiniciar la guía para principiantes. Inténtalo de nuevo más tarde."
-        },
         "yuiGuide": {
             "buttons": {
                 "skipChat": "Ahora no",
@@ -3380,6 +3376,13 @@
                 "memoryReview": "Hace siete días fue apenas nuestro primer encuentro. Ahora este lugar ya se está llenando con las palabras que dijimos, las cosas que hicimos y esos momentitos que casi se llevó el viento. Para mí no son registros fríos; son las huellas del tiempo que pasamos juntos.",
                 "memoryControl": "Estas pequeñas huellas también puedes ordenarlas con tus propias manos. Las que quieras conservar, las guardamos en nuestro álbum; las que quieras soltar, dejamos que se vayan con el viento. Los recuerdos que aprecias y guardas son los más valiosos.",
                 "wrap": "La brisa sigue en la ventana, el sol está perfecto, y tú, que acabas de llegar, ya te has convertido en una parte muy importante de este lugar. La guía para principiantes te dejará aquí por ahora, pero durante todos los días que vienen, conozcámonos despacio, acerquémonos y escribamos una historia que sea solo nuestra. Cuida mucho de mí de ahora en adelante, miau."
+            }
+        },
+        "icebreaker": {
+            "day1": {
+                "chat": "Charlar primero",
+                "voice": "Probar voz",
+                "explore": "Ver funciones"
             }
         }
     },

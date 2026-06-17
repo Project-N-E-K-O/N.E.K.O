@@ -3296,10 +3296,6 @@
             "enterFullscreen": "Enter Fullscreen Tutorial"
         },
         "drag_hint": "Hold and drag to move the tooltip",
-        "reset": {
-            "daySuccess": "Day {{day}} of the beginner guide has been reset. Please refresh Neko to start it.",
-            "dayFailed": "Failed to reset the beginner guide. Please try again later."
-        },
         "yuiGuide": {
             "buttons": {
                 "skipChat": "Not now",
@@ -3380,6 +3376,13 @@
                 "memoryReview": "Seven days ago, it was just our very first meeting. Now, this place is already filling up with the words we've spoken, the things we've done, and those tiny little moments that almost drifted away in the wind. To me, these aren't cold data logs; they are the footprints of our time spent together.",
                 "memoryControl": "These little footprints can be neatly organized by your own hands, too. The ones you want to keep, we can tuck into our album; the ones you want to let go, we can just let them drift away in the wind. The memories you cherish and save are the most precious of all.",
                 "wrap": "The breeze is still at the window, the sunshine is just perfect, and you, who just arrived, have already quietly become a very important part of this place. The novice guide will leave you here for now, but for the rest of our days, let's slowly get to know each other, draw closer, and write a story that belongs only to us. Please take good care of me from now on, meow!"
+            }
+        },
+        "icebreaker": {
+            "day1": {
+                "chat": "Chat first",
+                "voice": "Try voice",
+                "explore": "Explore features"
             }
         }
     },
