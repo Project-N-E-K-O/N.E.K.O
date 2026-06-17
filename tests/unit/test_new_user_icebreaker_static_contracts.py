@@ -332,6 +332,9 @@ def test_icebreaker_choice_submission_is_mutexed_and_restores_prompt_on_failure(
     assert handle_choice_block.index("session.choiceInFlight = true;") < handle_choice_block.index("clearChoicePrompt();")
     assert handle_choice_block.index("clearChoicePrompt();") < handle_choice_block.index("appendChatMessage('user', label")
     assert "if (!message)" in handle_choice_block
+    assert "if (activeSession !== session)" in handle_choice_block
+    assert handle_choice_block.index("if (activeSession !== session)") < handle_choice_block.index("return deliverNode(option.next);")
+    assert handle_choice_block.index("if (activeSession !== session)") < handle_choice_block.index("completeWithHandoff(option);")
     assert "session.choiceInFlight = false;" in handle_choice_block
     assert "setChoicePrompt(node, session.localeData);" in handle_choice_block
 
@@ -490,8 +493,11 @@ def test_icebreaker_uses_broadcast_channel_for_desktop_chat_window():
     assert "action: 'icebreaker_append_chat_message'" in runtime
     assert "action: 'icebreaker_set_choice_prompt'" in runtime
     assert "action: 'icebreaker_clear_choice_prompt'" in runtime
+    assert "lanlan_name: resolveLanlanName()" in runtime
 
     assert "handleIcebreakerBridgeData" in interpage
+    assert "function isIcebreakerBridgeForCurrentLanlan(data)" in interpage
+    assert "if (!isIcebreakerBridgeForCurrentLanlan(data)) return false;" in interpage
     assert "case 'icebreaker_append_chat_message'" in interpage
     assert "case 'icebreaker_set_choice_prompt'" in interpage
     assert "case 'icebreaker_clear_choice_prompt'" in interpage
@@ -502,6 +508,8 @@ def test_icebreaker_uses_broadcast_channel_for_desktop_chat_window():
     assert "postIcebreakerBridgeEvent('icebreaker_choice_selected'" in interpage
     assert "case 'icebreaker_free_text_submitted'" in interpage
     assert "postIcebreakerBridgeEvent('icebreaker_free_text_submitted'" in interpage
+    assert "nekoBroadcastChannel.postMessage(message)" in interpage
+    assert "postInterpageMessage(message)" not in interpage
 
 
 def test_icebreaker_desktop_bridge_has_storage_fallback():

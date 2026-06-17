@@ -251,6 +251,7 @@
     function broadcastIcebreaker(action, payload) {
         var message = Object.assign({
             action: action,
+            lanlan_name: resolveLanlanName(),
             timestamp: nextIcebreakerBridgeTimestamp()
         }, payload || {});
         var channel = getBroadcastChannel();
@@ -623,6 +624,9 @@
                     session.choiceInFlight = false;
                     setChoicePrompt(node, session.localeData);
                 }
+                return null;
+            }
+            if (activeSession !== session) {
                 return null;
             }
             if (option.next) {
