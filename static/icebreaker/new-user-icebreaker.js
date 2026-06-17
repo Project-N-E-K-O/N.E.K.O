@@ -48,6 +48,13 @@
         return !!(finalDay && finalDay.completed === true);
     }
 
+    function isDayCompleted(day) {
+        const store = readStore();
+        const days = store.days && typeof store.days === 'object' ? store.days : null;
+        const entry = days && days[String(day)];
+        return !!(entry && entry.completed === true);
+    }
+
     function getHost() {
         return window.reactChatWindowHost || null;
     }

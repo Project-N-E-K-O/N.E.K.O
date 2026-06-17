@@ -476,6 +476,21 @@ test('app interpage recognizes explicit Yui guide dedup bypass messages', () => 
     assert.match(source, /shouldBypassYuiGuideMessageDedup\(event\.data\.action,\s*event\.data\)/);
 });
 
+test('app interpage clears PC overlay when external chat spotlight is hidden', () => {
+    const source = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
+    const spotlightApplyBlock = source.split('    function applyYuiGuideChatSpotlight(kind) {')[1].split(
+        '    // =====================================================================',
+        1
+    )[0];
+    const clearBlock = spotlightApplyBlock.split('        if (!yuiGuideChatSpotlightKind) {')[1].split(
+        '            return;',
+        1
+    )[0];
+
+    assert.match(clearBlock, /spotlight\.hidden = true;/);
+    assert.match(clearBlock, /sendYuiGuidePcOverlayPatch\(\{\s*spotlights:\s*\[\]\s*\}\);/);
+});
+
 test('app interpage sends external chat pet reports through the command bus', () => {
     const source = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
     const bridgeDataBlock = source.split('    function handleYuiGuideChatBridgeData(data) {')[1].split(
@@ -708,6 +723,11 @@ test('lifecycle state store module is loaded before prompt and manager scripts',
         /TutorialLifecycleStores\.TutorialLifecycleStateStore\s*\|\|\s*createFallbackTutorialLifecycleStateStoreClass\(\)/,
         'universal manager should keep a local lifecycle store fallback'
     );
+    assert.doesNotMatch(
+        managerSource,
+        /^class FallbackTutorialLifecycleStateStore\b/m,
+        'universal manager should not keep a duplicate fallback lifecycle class'
+    );
 
     const orderedScripts = [
         ['templates/index.html', '/static/tutorial/core/app-prompt.js'],
@@ -737,6 +757,7 @@ test('lifecycle state store module is loaded before prompt and manager scripts',
 test('new-user icebreaker script is present before websocket greeting handling', () => {
     const icebreakerPath = path.join(repoRoot, 'static', 'icebreaker/new-user-icebreaker.js');
     assert.ok(fs.existsSync(icebreakerPath), 'static/icebreaker/new-user-icebreaker.js should exist');
+    const icebreakerSource = fs.readFileSync(icebreakerPath, 'utf8');
 
     const templateSource = fs.readFileSync(path.join(repoRoot, 'templates/index.html'), 'utf8');
     const icebreakerIndex = templateSource.indexOf('/static/icebreaker/new-user-icebreaker.js');
@@ -745,6 +766,8 @@ test('new-user icebreaker script is present before websocket greeting handling',
     assert.notEqual(icebreakerIndex, -1, 'index.html should load the new-user icebreaker');
     assert.notEqual(websocketIndex, -1, 'index.html should load app-websocket.js');
     assert.ok(icebreakerIndex < websocketIndex, 'new-user icebreaker should load before app-websocket.js');
+    assert.match(icebreakerSource, /function isDayCompleted\(day\) \{/);
+    assert.match(icebreakerSource, /activeSession \|\| isDayCompleted\(DAY\) \|\| hasCompletedFinalDay\(\)/);
 });
 
 test('Day1 guide keeps locale-specific audio filenames', () => {
@@ -759,6 +782,29 @@ test('Day1 guide keeps locale-specific audio filenames', () => {
     assert.match(day1Source, /takeover_capture_cursor:\s*'超级魔法按钮出现！只\.mp3'/);
     assert.match(day1Source, /takeover_capture_cursor:\s*'超级魔法开关出现！只\.mp3'/);
     assert.match(day1Source, /audioFileOverridesByKey:\s*audioFilesByKey/);
+});
+
+test('Day2 guide ships every referenced audio file', () => {
+    const audioRoot = path.join(repoRoot, 'static', 'assets/tutorial/guide-audio');
+    const expectedAudioFiles = [
+        '昨天你一直在噼里啪啦.mp3',
+        '嘿嘿，昨天听到你的声.mp3',
+        '在这个只属于我们的小.mp3',
+        '不管是说话的温度、相.mp3',
+        '这个小按钮也很重要哦.mp3',
+        '今天的教程到这里就结.mp3',
+        '其实只要能这样陪着你.mp3',
+        '我们不需要着急，每天.mp3'
+    ];
+
+    for (const locale of ['zh', 'ja', 'en', 'ko', 'ru']) {
+        for (const audioFile of expectedAudioFiles) {
+            assert.ok(
+                fs.existsSync(path.join(audioRoot, locale, audioFile)),
+                locale + ' should ship ' + audioFile
+            );
+        }
+    }
 });
 
 test('resistance controller support module is loaded before the director', () => {

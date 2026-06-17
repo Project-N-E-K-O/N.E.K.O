@@ -2826,6 +2826,9 @@
                 spotlight.style.opacity = '0';
                 spotlight.classList.remove('is-visible', 'is-window', 'is-input');
             }
+            if (isYuiGuidePcOverlayAvailable()) {
+                sendYuiGuidePcOverlayPatch({ spotlights: [] });
+            }
             return;
         }
 
