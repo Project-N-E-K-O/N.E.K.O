@@ -143,6 +143,24 @@ def test_input_max_tokens_constant_makes_function_aware():
     assert "LLM_INPUT_BUDGET" not in _codes(src)
 
 
+def test_input_max_chars_constant_is_not_budget_aware():
+    src = """
+    async def f(prompt):
+        budget = RECALL_PER_CANDIDATE_MAX_CHARS
+        resp = await llm.ainvoke(prompt)
+    """
+    assert _codes(src).count("LLM_INPUT_BUDGET") == 1
+
+
+def test_input_token_budget_suffix_is_not_budget_aware():
+    src = """
+    async def f(prompt):
+        budget = RECALL_PER_CANDIDATE_TOKEN_BUDGET
+        resp = await llm.ainvoke(prompt)
+    """
+    assert _codes(src).count("LLM_INPUT_BUDGET") == 1
+
+
 def test_input_count_tokens_alone_not_budget_aware():
     # count_tokens only *measures* — it doesn't cap, so it must not satisfy the
     # input-budget rule for a dynamic call.

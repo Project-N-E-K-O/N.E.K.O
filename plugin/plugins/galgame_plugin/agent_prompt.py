@@ -1,16 +1,25 @@
 from __future__ import annotations
 
 from .agent_shared import *  # noqa: F401,F403
+from .context_tokens import count_tokens_heuristic
 
 
 def _bounded_choice_instruction_text(value: object) -> str:
     text = str(value or "")
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = _CHOICE_INSTRUCTION_CONTROL_RE.sub(" ", text)
-    if len(text) <= _CHOICE_INSTRUCTION_TEXT_MAX_CHARS:
+    if count_tokens_heuristic(text) <= _CHOICE_INSTRUCTION_TEXT_MAX_TOKENS:
         return text
-    omitted = len(text) - _CHOICE_INSTRUCTION_TEXT_MAX_CHARS
-    return f"{text[:_CHOICE_INSTRUCTION_TEXT_MAX_CHARS]}\n...[truncated {omitted} chars]"
+    clipped = text
+    while clipped and count_tokens_heuristic(clipped) > _CHOICE_INSTRUCTION_TEXT_MAX_TOKENS:
+        clipped = clipped[:-1]
+    omitted = len(text) - len(clipped)
+    result = f"{clipped}\n...[truncated {omitted} chars]"
+    while clipped and count_tokens_heuristic(result) > _CHOICE_INSTRUCTION_TEXT_MAX_TOKENS:
+        clipped = clipped[:-1]
+        omitted = len(text) - len(clipped)
+        result = f"{clipped}\n...[truncated {omitted} chars]"
+    return result
 
 
 def _context_line_count(lines: object) -> int:

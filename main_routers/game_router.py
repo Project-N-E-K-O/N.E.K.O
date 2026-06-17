@@ -3167,7 +3167,7 @@ def _build_game_archive_memory_messages(archive: dict, tail_count: int | None = 
 _POSTGAME_SKIP_REASONS = {"heartbeat_timeout", "session_cleanup", "cleanup", "manual_return_to_start"}
 _POSTGAME_REALTIME_NUDGE_DELAYS = (1.5, 5.0, 9.0)
 _POSTGAME_REALTIME_UNORGANIZED_LIMIT = 12
-_POSTGAME_REALTIME_UNORGANIZED_MAX_CHARS = 2400
+_POSTGAME_REALTIME_UNORGANIZED_MAX_TOKENS = 1500
 
 
 def _normalize_postgame_options(raw: Any, *, reason: str) -> dict:
@@ -3267,18 +3267,21 @@ def _archive_unorganized_dialogues(archive: dict, *, limit: int = _POSTGAME_REAL
     return pending[-max(1, limit):]
 
 
-def _append_limited_lines(lines: list[str], header: str, raw_lines: list[str], *, max_chars: int) -> None:
+def _append_token_limited_lines(lines: list[str], header: str, raw_lines: list[str], *, max_tokens: int) -> None:
+    from utils.tokenize import count_tokens
+
     kept: list[str] = []
-    total = 0
+    total_tokens = 0
     for raw in reversed(raw_lines):
         line = str(raw or "").strip()
         if not line:
             continue
-        next_total = total + len(line) + 2
-        if kept and next_total > max_chars:
+        line_tokens = count_tokens(line)
+        next_total = total_tokens + line_tokens
+        if kept and next_total > max_tokens:
             break
         kept.insert(0, line)
-        total = next_total
+        total_tokens = next_total
     if kept:
         lines.append(header)
         lines.extend(kept)
@@ -3349,11 +3352,11 @@ def _build_game_postgame_context_text(archive: dict) -> str:
         for item in _archive_unorganized_dialogues(archive)
         if isinstance(item, dict)
     ]
-    _append_limited_lines(
+    _append_token_limited_lines(
         lines,
         labels["unorganized_window"],
         unorganized_lines,
-        max_chars=_POSTGAME_REALTIME_UNORGANIZED_MAX_CHARS,
+        max_tokens=_POSTGAME_REALTIME_UNORGANIZED_MAX_TOKENS,
     )
 
     last_user = _archive_last_user_text(archive)

@@ -79,7 +79,7 @@ from .service import (
     resolve_effective_current_line,
 )
 
-_CHOICE_INSTRUCTION_TEXT_MAX_CHARS = 160
+_CHOICE_INSTRUCTION_TEXT_MAX_TOKENS = 80
 _CHOICE_INSTRUCTION_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _TITLE_START_TEXT_MARKERS = (
     "start",

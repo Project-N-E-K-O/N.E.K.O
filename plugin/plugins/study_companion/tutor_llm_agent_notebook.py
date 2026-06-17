@@ -10,8 +10,8 @@ from .tutor_llm_agent_common import (
 )
 
 
-_MAX_EXPAND_NOTE_CHARS = 8000
-_MAX_SUMMARIZE_TO_NOTE_CHARS = 12000
+_EXPAND_NOTE_MAX_TOKENS = 4000
+_SUMMARIZE_TO_NOTE_MAX_TOKENS = 6000
 _NOTE_SUMMARY_HEADINGS = {
     "zh": ("标题", "要点", "细节"),
     "zh-cn": ("标题", "要点", "细节"),
@@ -62,7 +62,7 @@ async def expand_note(
     original = str(content or "").strip()
     if not original:
         raise SdkError("note content is required")
-    bounded = _bounded_prompt_text(original, max_chars=_MAX_EXPAND_NOTE_CHARS)
+    bounded = _bounded_prompt_text(original, max_tokens=_EXPAND_NOTE_MAX_TOKENS)
     scope = str(expand_scope or "details").strip() or "details"
     messages = [
         {
@@ -128,7 +128,7 @@ async def summarize_to_note(
     text = str(source_text or "").strip()
     if not text:
         raise SdkError("note source text is required")
-    bounded = _bounded_prompt_text(text, max_chars=_MAX_SUMMARIZE_TO_NOTE_CHARS)
+    bounded = _bounded_prompt_text(text, max_tokens=_SUMMARIZE_TO_NOTE_MAX_TOKENS)
     headings = _localized_note_headings(self._config.language)
     messages = [
         {

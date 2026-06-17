@@ -72,7 +72,7 @@ class GalgameLLMConfig:
     llm_max_tokens_default: int = 1200
     context_max_tokens: int = 6000
     context_metrics_enabled: bool = False
-    context_counting_mode: str = "char"
+    context_counting_mode: str = "token"
     context_semantic_compression: bool = False
     context_explain_min_lines: int = 4
     context_explain_max_lines: int = 16

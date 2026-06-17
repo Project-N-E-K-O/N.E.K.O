@@ -41,8 +41,8 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 
 from config import (
-    PERSONA_RENDER_TOKEN_BUDGET,
-    REFLECTION_RENDER_TOKEN_BUDGET,
+    PERSONA_RENDER_MAX_TOKENS,
+    REFLECTION_RENDER_MAX_TOKENS,
 )
 from memory.evidence import evidence_score
 from memory.facts import safe_int_field
@@ -2887,7 +2887,7 @@ class PersonaManager:
                 flat_non_protected.append(e)
 
         trimmed_non_protected = self._score_trim_entries(
-            flat_non_protected, PERSONA_RENDER_TOKEN_BUDGET, now,
+            flat_non_protected, PERSONA_RENDER_MAX_TOKENS, now,
         )
 
         suppressed_text_set = self._suppressed_text_set(persona)
@@ -2896,7 +2896,7 @@ class PersonaManager:
                 (pending_reflections or []) + (confirmed_reflections or []),
                 persona, suppressed_text_set,
             ),
-            REFLECTION_RENDER_TOKEN_BUDGET, now,
+            REFLECTION_RENDER_MAX_TOKENS, now,
             # Reflections have no `_personas`-style in-memory view — they're
             # always loaded fresh from disk. Writing cache fields onto the
             # transient dicts would be garbage-collected on render exit and
@@ -2989,7 +2989,7 @@ class PersonaManager:
                 flat_non_protected.append(e)
 
         trimmed_non_protected = await self._ascore_trim_entries(
-            flat_non_protected, PERSONA_RENDER_TOKEN_BUDGET, now,
+            flat_non_protected, PERSONA_RENDER_MAX_TOKENS, now,
         )
 
         suppressed_text_set = self._suppressed_text_set(persona)
@@ -2998,7 +2998,7 @@ class PersonaManager:
                 (pending_reflections or []) + (confirmed_reflections or []),
                 persona, suppressed_text_set,
             ),
-            REFLECTION_RENDER_TOKEN_BUDGET, now,
+            REFLECTION_RENDER_MAX_TOKENS, now,
             # See sync twin: reflections have no `_personas`-style
             # in-memory view, so we compute fresh every render without
             # writing cache fields back onto the transient dicts.

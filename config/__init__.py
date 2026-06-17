@@ -1022,8 +1022,8 @@ MAX_KNOWN_POOL_FACTS = 30
 EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS = 3600
 
 # §3.6 render budget（PR-3 使用，此处先占位）
-PERSONA_RENDER_TOKEN_BUDGET = 2000       # 非-protected persona 预算
-REFLECTION_RENDER_TOKEN_BUDGET = 2000    # reflection 渲染预算（pending+confirmed 总和）
+PERSONA_RENDER_MAX_TOKENS = 2000         # 非-protected persona 预算
+REFLECTION_RENDER_MAX_TOKENS = 2000      # reflection 渲染预算（pending+confirmed 总和）
 PERSONA_RENDER_ENCODING = "o200k_base"   # tiktoken encoding
 
 # ── 混合记忆召回（recall_memory 工具后端） ───────────────────────────────
@@ -1065,7 +1065,9 @@ HYBRID_RECALL_RRF_K = 60                 # RRF 常数（k=60 = Elastic / OpenSea
 #                                         （≈ 1.3-1.5 CJK char / 4 EN char）
 #   *_TRIGGER_TOKENS                   → 触发某个动作的 token 阈值（不是硬上限）
 #   *_MAX_ITEMS / *_MAX                → 条数（消息 / deque maxlen / list[-N:]）
-#   *_MAX_CHARS                        → 字符数（仅遗留 char-based 流程用）
+#   *_MAX_CHARS                        → 字符数（仅非 prompt-facing 的 UI /
+#                                         payload 防爆流程用，不作为 LLM input
+#                                         budget 证据）
 #   *_BYTES                            → 字节
 #   *_MS                               → 毫秒
 #
@@ -1294,7 +1296,7 @@ PERSONA_MERGE_POOL_MAX_TOKENS = 4000
 - 用途：_allm_call_promotion_merge 把同 entity 的所有 confirmed/promoted
   persona 和 reflection 全拼进 prompt，本 cap 防止该池失控。
 - 上游：同一 entity 长期累积的 persona/reflection。
-- 注意：这条不复用 PERSONA_RENDER_TOKEN_BUDGET（render 是给主对话看的，
+- 注意：这条不复用 PERSONA_RENDER_MAX_TOKENS（render 是给主对话看的，
   merge 是给 promotion LLM 看的，需要更大的池才能做合并判断）。"""
 
 PERSONA_CORRECTION_BATCH_LIMIT = 10
@@ -1924,13 +1926,13 @@ TRANSLATION_OUTPUT_MAX_TOKENS = 1000
 - 用途：单 chunk 翻译输出上限。
 - 上游：LLM 输出。"""
 
-TRANSLATION_CHUNK_MAX_CHARS_SHORT = 5000
-"""翻译短文本路径的分块字符数上限（chars，遗留 char-based）。
-- 用途：单次翻译调用的输入字符数；长文本被切成多块串行翻译。
+TRANSLATION_CHUNK_MAX_TOKENS_SHORT = 2000
+"""翻译短文本路径的分块 token 上限。
+- 用途：单次翻译调用的输入 token 数；长文本被切成多块串行翻译。
 - 上游：用户/系统传入的待翻译原文。"""
 
-TRANSLATION_CHUNK_MAX_CHARS_LONG = 15000
-"""翻译长文本路径的分块字符数上限（chars，遗留 char-based）。
+TRANSLATION_CHUNK_MAX_TOKENS_LONG = 5000
+"""翻译长文本路径的分块 token 上限。
 - 用途：长文本翻译路径下的更大 chunk size。
 - 上游：用户/系统传入的待翻译原文。"""
 
@@ -2132,8 +2134,8 @@ __all__ = [
     'EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS',
     'EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS',
     'EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS',
-    'PERSONA_RENDER_TOKEN_BUDGET',
-    'REFLECTION_RENDER_TOKEN_BUDGET',
+    'PERSONA_RENDER_MAX_TOKENS',
+    'REFLECTION_RENDER_MAX_TOKENS',
     'PERSONA_RENDER_ENCODING',
     # §3.7 LLM Context & Output Budget
     'RECENT_HISTORY_MAX_ITEMS',
@@ -2232,8 +2234,8 @@ __all__ = [
     'EMOTION_ANALYSIS_MAX_TOKENS',
     'PLUGIN_USER_CONTEXT_MAX_ITEMS',
     'TRANSLATION_OUTPUT_MAX_TOKENS',
-    'TRANSLATION_CHUNK_MAX_CHARS_SHORT',
-    'TRANSLATION_CHUNK_MAX_CHARS_LONG',
+    'TRANSLATION_CHUNK_MAX_TOKENS_SHORT',
+    'TRANSLATION_CHUNK_MAX_TOKENS_LONG',
     'VISION_ANALYSIS_MAX_TOKENS',
     'CONNECTIVITY_TEST_MAX_TOKENS',
     'MCP_TOOL_RESULT_MAX_TOKENS',

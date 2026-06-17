@@ -342,7 +342,7 @@ async def test_render_protected_always_emitted_under_tight_budget(tmp_path):
     pm.aupdate_suppressions = AsyncMock()
 
     # Force the persona budget to 1 so non-protected entries cannot fit.
-    with patch('memory.persona.PERSONA_RENDER_TOKEN_BUDGET', 1):
+    with patch('memory.persona.PERSONA_RENDER_MAX_TOKENS', 1):
         md = await pm.arender_persona_markdown('小天')
 
     assert '主人是一只猫娘的主人' in md, (
