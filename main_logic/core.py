@@ -536,14 +536,27 @@ def _select_callbacks_within_token_budget(callbacks, total_budget):
     callbacks beyond the cap would be acked as delivered but never reach the
     model (see PR review)."""
     from utils.tokenize import count_tokens
+    # Per-item overhead for the emoji/bullet, the per-group outer header, and the
+    # template wrapper that the renderer adds around the body. Over-counting is
+    # the SAFE direction: we select fewer, so the rendered instruction stays
+    # under budget and the builder's backstop truncation never cuts an already
+    # selected (and acked) callback.
+    _ITEM_OVERHEAD_TOKENS = 48
     selected: list = []
     used = 0
     for i, cb in enumerate(callbacks):
         if isinstance(cb, dict):
-            text = cb.get("summary") or cb.get("detail") or ""
+            # Count every field the renderer may emit — body line (summary or
+            # detail) plus the error/source fallback line — not just summary.
+            t = (
+                count_tokens(cb.get("summary") or "")
+                + count_tokens(cb.get("detail") or "")
+                + count_tokens(cb.get("error_message") or "")
+                + count_tokens(cb.get("source_name") or "")
+                + _ITEM_OVERHEAD_TOKENS
+            )
         else:
-            text = str(cb)
-        t = count_tokens(text) if text else 0
+            t = count_tokens(str(cb)) + _ITEM_OVERHEAD_TOKENS
         if selected and used + t > total_budget:
             return selected, list(callbacks[i:])
         selected.append(cb)
@@ -7310,12 +7323,25 @@ class LLMSessionManager:
             if len(self.pending_agent_callbacks) > AGENT_CALLBACK_QUEUE_MAX_ITEMS:
                 overflow = len(self.pending_agent_callbacks) - AGENT_CALLBACK_QUEUE_MAX_ITEMS
                 dropped = self.pending_agent_callbacks[:overflow]
+                dropped_ids = {
+                    _cb.get("_callback_delivery_id")
+                    for _cb in dropped
+                    if isinstance(_cb, dict) and _cb.get("_callback_delivery_id")
+                }
                 self.pending_agent_callbacks = self.pending_agent_callbacks[overflow:]
                 # Resolve any delivery-ack future on a dropped callback NOW, so a
                 # waiter (e.g. topic-hook delivery) unblocks immediately instead
                 # of stalling until its timeout.
                 for _cb in dropped:
                     resolve_callback_delivery_ack(_cb, False)
+                # Drop the matching voice-queue mirrors by delivery_id (the two
+                # queues drift, so positional trimming is unreliable) — otherwise
+                # a callback acked False here could still be injected via hot-swap.
+                if dropped_ids:
+                    self.pending_extra_replies = [
+                        _extra for _extra in self.pending_extra_replies
+                        if _extra.get("_callback_delivery_id") not in dropped_ids
+                    ]
             if len(self.pending_extra_replies) > AGENT_CALLBACK_QUEUE_MAX_ITEMS:
                 self.pending_extra_replies = self.pending_extra_replies[-AGENT_CALLBACK_QUEUE_MAX_ITEMS:]
         except Exception:
@@ -7418,8 +7444,6 @@ class LLMSessionManager:
                     lanlan_name=self.lanlan_name,
                     master_name=self.master_name,
                 )
-                # 仅移除已注入的条目，over-budget 的留到下一轮 hot-swap
-                self.pending_extra_replies = _deferred
                 try:
                     await self.pending_session.prime_context(final_prime_text, skipped=False)
                 except (web_exceptions.ConnectionClosed, AttributeError) as e:
@@ -7429,6 +7453,9 @@ class LLMSessionManager:
                     await self._reset_preparation_state(clear_main_cache=True)
                     self.is_hot_swap_imminent = False
                     return
+                # 仅在成功注入后才移除已选条目；失败时保留整队列等下一轮 hot-swap
+                # （否则 _selected 既没进模型又丢了）。over-budget 的 _deferred 留到下一轮。
+                self.pending_extra_replies = _deferred
             else:
                 _lang = normalize_language_code(self.user_language, format='short')
                 final_prime_text += _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)
