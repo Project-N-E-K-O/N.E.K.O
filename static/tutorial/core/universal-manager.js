@@ -710,8 +710,11 @@ class UniversalTutorialManager {
             if (!this.isAvatarFloatingGuideRoundRegistered(round)) {
                 return;
             }
-            this.markAvatarFloatingGuideRoundAutoShown(round);
-            this.startAvatarFloatingGuideRound(round, { source: 'auto' }).catch((error) => {
+            this.startAvatarFloatingGuideRound(round, { source: 'auto' }).then((result) => {
+                if (result !== false) {
+                    this.markAvatarFloatingGuideRoundAutoShown(round);
+                }
+            }).catch((error) => {
                 console.warn('[Tutorial] 自动启动悬浮窗教程失败:', round, error);
             });
         }, Math.max(0, Number.isFinite(delayMs) ? delayMs : 1200));
