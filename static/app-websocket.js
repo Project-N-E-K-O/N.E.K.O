@@ -19,8 +19,6 @@
     const USER_ACTIVITY_CANCEL_GRACE_MS = 700;
     const GREETING_CHECK_RETRY_BASE_MS = 800;
     const GREETING_CHECK_RETRY_MAX_MS = 5000;
-    const NEW_USER_ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1';
-    const NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 1000;
     const MUSIC_PLAY_URL_FOLLOWER_GRACE_MS = 500;
     const MUSIC_PLAY_URL_SECONDARY_CONFIRM_MS = 100;
     const MUSIC_PLAY_URL_CLAIM_TTL_MS = 5000;
@@ -575,16 +573,14 @@
         return false;
     }
 
+    function getNewUserIcebreakerStateApi() {
+        var api = window.NekoNewUserIcebreakerState;
+        return api && typeof api === 'object' ? api : null;
+    }
+
     function readNewUserIcebreakerStore() {
-        try {
-            if (typeof localStorage === 'undefined') return null;
-            var raw = localStorage.getItem(NEW_USER_ICEBREAKER_STORAGE_KEY);
-            if (!raw) return null;
-            var parsed = JSON.parse(raw);
-            return parsed && typeof parsed === 'object' ? parsed : null;
-        } catch (_) {
-            return null;
-        }
+        var api = getNewUserIcebreakerStateApi();
+        return api && typeof api.readStore === 'function' ? api.readStore() : null;
     }
 
     function hasCompletedNewUserIcebreaker() {
@@ -594,46 +590,24 @@
         return !!(finalDay && finalDay.completed === true);
     }
 
-    function isRecentNewUserIcebreakerEntry(entry) {
-        if (!entry || typeof entry !== 'object') return false;
-        var timestamps = [
-            Number(entry.triggeredAt || 0),
-            Number(entry.updatedAt || 0),
-            Number(entry.completedAt || 0),
-            Number(entry.endedAt || 0)
-        ].filter(function (value) {
-            return Number.isFinite(value) && value > 0;
-        });
-        if (!timestamps.length) return false;
-        var latest = Math.max.apply(Math, timestamps);
-        return Date.now() - latest <= NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS;
+    function hasCompletedNewUserIcebreakerDay(day) {
+        var api = getNewUserIcebreakerStateApi();
+        return !!(api && typeof api.hasCompletedDay === 'function' && api.hasCompletedDay(day));
     }
 
     function isNewUserIcebreakerPeriodActive() {
-        try {
-            if (window.newUserIcebreaker && typeof window.newUserIcebreaker.getActiveSession === 'function') {
-                if (window.newUserIcebreaker.getActiveSession()) return true;
-            }
-        } catch (_) {}
-
-        var store = readNewUserIcebreakerStore();
-        var days = store && typeof store.days === 'object' ? store.days : null;
-        if (!days) return false;
-        if (hasCompletedNewUserIcebreaker()) return false;
-        for (var day = 1; day <= 7; day += 1) {
-            var entry = days[String(day)];
-            if (isRecentNewUserIcebreakerEntry(entry)) {
-                return true;
-            }
-        }
-        return false;
+        var api = getNewUserIcebreakerStateApi();
+        return !!(api && typeof api.isPeriodActive === 'function' && api.isPeriodActive());
     }
 
     function isNewUserIcebreakerBlockingGreeting(reason) {
-        if (isNewUserIcebreakerPeriodActive()) return true;
         var normalizedReason = String(reason || S._greetingCheckReason || '').trim().toLowerCase();
         if ((normalizedReason === 'tutorial-completed' || normalizedReason === 'tutorial-skipped')
-            && !hasCompletedNewUserIcebreaker()) {
+            && hasCompletedNewUserIcebreakerDay(1)) {
+            return false;
+        }
+        if (isNewUserIcebreakerPeriodActive()) return true;
+        if (normalizedReason === 'tutorial-completed' || normalizedReason === 'tutorial-skipped') {
             return true;
         }
         return false;

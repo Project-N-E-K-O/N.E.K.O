@@ -259,6 +259,7 @@ def test_electron_chat_loads_interpage_before_react_chat_for_desktop_cat1_sync()
 
     assert 'class="electron-chat-window subtitle-web-host"' in source
     assert source.index('/static/app-interpage.js') < source.index('/static/app-react-chat-window.js')
+    assert '/static/app-interpage.js?v={{ static_asset_version }}' in source
 
 
 def test_react_chat_applies_desktop_cat1_pair_move_bounds_when_collapsed():

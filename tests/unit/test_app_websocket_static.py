@@ -79,6 +79,27 @@ def test_icebreaker_greeting_check_is_consumed_without_retry_loop():
     assert "isNewUserIcebreakerBlockingGreeting()" not in tutorial_block
 
 
+def test_completed_day1_icebreaker_does_not_swallow_later_tutorial_greetings():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    assert "function getNewUserIcebreakerStateApi()" in source
+    assert "window.NekoNewUserIcebreakerState" in source
+    assert "NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS" not in source
+    assert "function isRecentNewUserIcebreakerEntry(entry)" not in source
+    assert "function hasCompletedNewUserIcebreakerDay(day)" in source
+    blocking_block = source.split("function isNewUserIcebreakerBlockingGreeting(reason)", 1)[1].split(
+        "function sendHomeTutorialState(reason)",
+        1,
+    )[0]
+
+    assert "hasCompletedNewUserIcebreakerDay(1)" in blocking_block
+    assert "return false;" in blocking_block.split("hasCompletedNewUserIcebreakerDay(1)", 1)[1].split(
+        "if (isNewUserIcebreakerPeriodActive())",
+        1,
+    )[0]
+    assert "hasCompletedNewUserIcebreaker())" not in blocking_block
+
+
 def test_goodbye_blocks_stale_audio_session_started():
     source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
 
