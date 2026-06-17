@@ -6,6 +6,7 @@ APP_REACT_CHAT_WINDOW_PATH = Path(__file__).resolve().parents[2] / "static" / "a
 APP_BUTTONS_PATH = Path(__file__).resolve().parents[2] / "static" / "app-buttons.js"
 APP_CHAT_EXPORT_PATH = Path(__file__).resolve().parents[2] / "static" / "app-chat-export.js"
 APP_INTERPAGE_PATH = Path(__file__).resolve().parents[2] / "static" / "app-interpage.js"
+ICEBREAKER_SCRIPT_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial" / "icebreaker" / "new-user-icebreaker.js"
 AVATAR_UI_POPUP_PATH = Path(__file__).resolve().parents[2] / "static" / "avatar-ui-popup.js"
 MUSIC_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "music_ui.js"
 MUSIC_UI_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "music_ui.css"
@@ -493,7 +494,31 @@ def test_home_tutorial_host_wires_avatar_tool_requests():
     assert "host.rotateCompactToolWheel(payload && payload.direction" in interpage_source
 
 
-def test_day5_home_template_only_loads_delivered_daily_guide_scripts():
+def test_new_user_icebreaker_choice_prompt_wires_chat_host_and_external_chat():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    interpage_source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+    icebreaker_source = ICEBREAKER_SCRIPT_PATH.read_text(encoding="utf-8")
+
+    assert "function setIcebreakerChoicePrompt(payload)" in script
+    assert "function clearIcebreakerChoicePrompt(sessionId)" in script
+    assert "source: 'new_user_icebreaker'" in script
+    assert "setIcebreakerChoicePrompt: setIcebreakerChoicePrompt" in script
+    assert "clearIcebreakerChoicePrompt: clearIcebreakerChoicePrompt" in script
+    assert "if (source === 'new_user_icebreaker')" in script
+    assert "action: 'icebreaker_choice_selected'" in script
+
+    assert "case 'icebreaker_append_chat_message':" in interpage_source
+    assert "case 'icebreaker_set_choice_prompt':" in interpage_source
+    assert "case 'icebreaker_clear_choice_prompt':" in interpage_source
+    assert "case 'icebreaker_choice_selected':" in interpage_source
+    assert "lanlan_name: resolveLanlanName()" in icebreaker_source
+    assert "if (!isYuiGuideCommandForCurrentLanlan(event.data)) break;" in interpage_source
+    assert "host.setIcebreakerChoicePrompt(prompt)" in interpage_source
+    assert "host.clearIcebreakerChoicePrompt(sessionId)" in interpage_source
+    assert "neko:icebreaker-choice-selected" in interpage_source
+
+
+def test_home_template_loads_delivered_daily_guide_scripts():
     source = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
 
     for guide_script in [
@@ -502,16 +527,12 @@ def test_day5_home_template_only_loads_delivered_daily_guide_scripts():
         "tutorial/yui-guide/days/day3-interaction-guide.js",
         "tutorial/yui-guide/days/day4-companion-guide.js",
         "tutorial/yui-guide/days/day5-personalization-guide.js",
-    ]:
-        assert f'<script src="/static/{guide_script}' in source
-        assert (Path(__file__).resolve().parents[2] / "static" / guide_script).exists()
-
-    for future_script in [
         "tutorial/yui-guide/days/day6-agent-guide.js",
         "tutorial/yui-guide/days/day7-graduation-guide.js",
         "tutorial/icebreaker/new-user-icebreaker.js",
     ]:
-        assert f'<script src="/static/{future_script}' not in source
+        assert f'<script src="/static/{guide_script}' in source
+        assert (Path(__file__).resolve().parents[2] / "static" / guide_script).exists()
 
 
 def test_idle_cat1_compact_mirror_ignores_pet_window_local_events():
@@ -1022,34 +1043,29 @@ def test_externalized_chat_input_spotlight_uses_global_overlay_only():
         1,
     )[0]
 
+    assert "if (isYuiGuidePcOverlayAvailable()) {" in update_block
+    assert "kind !== 'input' && isYuiGuidePcOverlayAvailable()" not in update_block
     assert "hideYuiGuideChatSpotlightElement" not in script
     assert "hideYuiGuideChatSpotlightElements" not in script
     assert "is-plain-capsule" not in update_block
     assert "renderYuiGuideChatSpotlight(" not in update_block
-    assert "function getYuiGuideChatSpotlightElement()" in script
-    assert "spotlight.id = 'yui-guide-chat-spotlight';" in script
-    assert "document.body.appendChild(spotlight);" in script
-    assert "spotlight.hidden = false;" in update_block
-    assert "spotlight.style.left = Math.round(rect.left - padding) + 'px';" in update_block
+    assert "getYuiGuideChatSpotlightElement(" not in script
     assert "function renderYuiGuideChatSpotlight" not in script
 
 
 def test_yui_guide_spotlight_state_messages_bypass_cross_channel_dedup():
     script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
 
-    bypass_block = script.split("function shouldBypassYuiGuideMessageDedup(action, message)", 1)[1].split(
+    bypass_block = script.split("function shouldBypassYuiGuideMessageDedup(action)", 1)[1].split(
         "function isMainUIHiddenByModelManager()",
         1,
     )[0]
 
     assert "action === 'yui_guide_set_chat_spotlight'" in bypass_block
     assert "action === 'yui_guide_set_chat_cursor'" in bypass_block
-    assert "action === 'yui_guide_drag_chat_cursor'" in bypass_block
-    assert "action === 'yui_guide_arc_chat_cursor'" in bypass_block
-    assert "action === 'yui_guide_rotate_compact_tool_wheel'" in bypass_block
-    assert "shouldBypassYuiGuideMessageDedup(message.action, message)" in script
-    assert "isDuplicateMessage(event.data.action, event.data.timestamp, event.data)" in script
-    assert "!shouldBypassYuiGuideMessageDedup(event.data.action, event.data)" in script
+    assert "action === 'yui_guide_rotate_compact_tool_wheel'" not in bypass_block
+    assert "!shouldBypassYuiGuideMessageDedup(message.action)" in script
+    assert "!shouldBypassYuiGuideMessageDedup(event.data.action)" in script
 
 
 def test_yui_guide_external_compact_history_open_is_bridged_to_react_host():
@@ -1105,6 +1121,13 @@ def test_new_user_icebreaker_choice_listener_posts_context():
     )[0]
 
     assert "const option = detail && detail.option" in choice_block
+    assert "if (session.choiceInFlight)" in choice_block
+    assert choice_block.index("if (sessionId && sessionId !== session.id)") < choice_block.index(
+        "session.choiceInFlight = true;"
+    )
+    assert "try {" in choice_block
+    assert "finally {" in choice_block
+    assert "session.choiceInFlight = false;" in choice_block
     assert "const choice = String((detail && detail.choice) || option.choice || '')" in choice_block
     assert "const label = String((detail && detail.label) || option.label || '')" in choice_block
     assert "const contextSynced = await postContext('user', label || choice, session.id);" in choice_block

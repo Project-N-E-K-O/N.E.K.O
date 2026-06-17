@@ -258,15 +258,21 @@
                         if (tutorialRunId && !outgoingMessage.tutorialRunId) {
                             outgoingMessage.tutorialRunId = tutorialRunId;
                         }
+                        let delivered = false;
                         if (broadcastChannel && typeof broadcastChannel.postMessage === 'function') {
                             try {
                                 broadcastChannel.postMessage(outgoingMessage);
+                                delivered = true;
                             } catch (_) {}
                         }
                         if (nativeRelay) {
                             try {
                                 nativeRelay.relayToChat(outgoingMessage);
+                                delivered = true;
                             } catch (_) {}
+                        }
+                        if (!delivered) {
+                            throw new Error('external_chat_command_delivery_failed');
                         }
                     }
                 };
@@ -279,12 +285,13 @@
         }
 
         resolveLanlanName() {
-            const appStateName = this.window && this.window.appState && this.window.appState.lanlan_name;
-            if (typeof appStateName === 'string' && appStateName) {
-                return appStateName;
+            try {
+                return (this.window.appState && this.window.appState.lanlan_name)
+                    || (this.window.lanlan_config && this.window.lanlan_config.lanlan_name)
+                    || '';
+            } catch (_) {
+                return '';
             }
-            const configName = this.window && this.window.lanlan_config && this.window.lanlan_config.lanlan_name;
-            return typeof configName === 'string' ? configName : '';
         }
 
         postExternalChatCommand(action, payload, options) {
@@ -301,6 +308,12 @@
             const message = Object.assign({
                 action: normalizedAction
             }, payload || {});
+            if (!message.lanlan_name) {
+                const lanlanName = this.resolveLanlanName();
+                if (lanlanName) {
+                    message.lanlan_name = lanlanName;
+                }
+            }
             if (!Number.isFinite(message.timestamp)) {
                 message.timestamp = Date.now();
             }

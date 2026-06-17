@@ -249,6 +249,7 @@ async def test_new_user_icebreaker_context_endpoint_handles_sync_append_error(mo
 
     assert result["ok"] is False
     assert result["reason"] == "context_write_failed"
+    assert result["error"] == "session history unavailable"
     assert result["lanlan_name"] == "Lan"
     assert result["game_type"] == "new_user_icebreaker"
     assert result["session_id"] == "icebreaker-day1-test"
@@ -275,6 +276,7 @@ async def test_new_user_icebreaker_context_endpoint_handles_async_append_error(m
 
     assert result["ok"] is False
     assert result["reason"] == "context_write_failed"
+    assert result["error"] == "session history unavailable"
     assert result["lanlan_name"] == "Lan"
     assert result["game_type"] == "new_user_icebreaker"
     assert result["session_id"] == "icebreaker-day1-test"

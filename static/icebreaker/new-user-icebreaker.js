@@ -55,6 +55,10 @@
         return !!(entry && entry.completed === true);
     }
 
+    function isPeriodActive() {
+        return !!activeSession;
+    }
+
     function getHost() {
         return window.reactChatWindowHost || null;
     }
@@ -180,25 +184,33 @@
             return;
         }
         const session = activeSession;
+        if (session.choiceInFlight) {
+            return;
+        }
         const sessionId = String(detail && detail.sessionId || '');
         if (sessionId && sessionId !== session.id) {
             return;
         }
+        session.choiceInFlight = true;
         const option = detail && detail.option && typeof detail.option === 'object' ? detail.option : {};
         const choice = String((detail && detail.choice) || option.choice || '');
         const label = String((detail && detail.label) || option.label || '');
-        const contextSynced = await postContext('user', label || choice, session.id);
+        try {
+            const contextSynced = await postContext('user', label || choice, session.id);
 
-        updateDayEntry({
-            sessionId: session.id,
-            choice: choice,
-            label: label,
-            completed: contextSynced,
-            completedAt: contextSynced ? now() : null,
-            contextSyncPending: !contextSynced
-        });
-        if (activeSession === session) {
-            activeSession = null;
+            updateDayEntry({
+                sessionId: session.id,
+                choice: choice,
+                label: label,
+                completed: contextSynced,
+                completedAt: contextSynced ? now() : null,
+                contextSyncPending: !contextSynced
+            });
+            if (activeSession === session) {
+                activeSession = null;
+            }
+        } finally {
+            session.choiceInFlight = false;
         }
     }
 
@@ -215,6 +227,12 @@
         getActiveSession: function () {
             return activeSession;
         }
+    };
+
+    window.NekoNewUserIcebreakerState = {
+        readStore: readStore,
+        hasCompletedDay: isDayCompleted,
+        isPeriodActive: isPeriodActive
     };
 
     window.addEventListener('neko:tutorial-completed', handleTutorialEnded);

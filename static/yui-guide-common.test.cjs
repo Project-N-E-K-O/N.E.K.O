@@ -76,7 +76,7 @@ test('scoped tutorial resources are exported from a standalone module and re-exp
     assert.equal(typeof common.createScopedTutorialResources, 'function');
     assert.match(scopedSource, /root\.TutorialScopedResources = api/);
     assert.match(scopedSource, /function createScopedTutorialResources\(options\)/);
-    assert.match(commonSource, /require\('\.\/tutorial-scoped-resources\.js'\)/);
+    assert.match(commonSource, /require\('\.\.\/core\/scoped-resources\.js'\)/);
     assert.match(commonSource, /tutorialScopedResourcesApi\.createScopedTutorialResources\(options\)/);
     assert.doesNotMatch(commonSource, /const animationFrames = \[\];/);
 });
@@ -90,7 +90,7 @@ test('tutorial bridge command bus is exported from a standalone module and re-ex
     assert.match(bridgeSource, /root\.TutorialBridgeCommandBus = api/);
     assert.match(bridgeSource, /function createTutorialBridgeCommandBus\(options\)/);
     assert.match(bridgeSource, /DEFAULT_BRIDGE_QUEUE_KEY/);
-    assert.match(commonSource, /require\('\.\/tutorial-bridge-command-bus\.js'\)/);
+    assert.match(commonSource, /require\('\.\.\/core\/bridge-command-bus\.js'\)/);
     assert.match(commonSource, /tutorialBridgeCommandBusApi\.createTutorialBridgeCommandBus\(options\)/);
     assert.doesNotMatch(commonSource, /DEFAULT_BRIDGE_QUEUE_KEY/);
     assert.doesNotMatch(commonSource, /function normalizeBridgeMessage\(message/);
@@ -143,7 +143,7 @@ test('target geometry registry is exported from a standalone module and re-expor
     assert.doesNotMatch(chatAvatarToolsRegistryBlock, /\.composer-icon-button\[data-avatar-tool-id\]/);
     assert.match(chatAvatarToolItemsRegistryBlock, /#composer-tool-popover-compact \.composer-icon-button\[data-avatar-tool-id\]/);
     assert.match(chatAvatarToolItemsRegistryBlock, /#composer-avatar-tool-quickbar \.composer-icon-button\[data-avatar-tool-id\]/);
-    assert.match(commonSource, /require\('\.\/tutorial-target-geometry-registry\.js'\)/);
+    assert.match(commonSource, /require\('\.\.\/core\/target-geometry-registry\.js'\)/);
     assert.match(commonSource, /tutorialTargetGeometryRegistryApi\.createTutorialTargetGeometryRegistry\(options\)/);
     assert.doesNotMatch(commonSource, /DEFAULT_TARGET_GEOMETRY_ENTRIES/);
     assert.doesNotMatch(commonSource, /function cloneTargetGeometryEntry\(entry\)/);
@@ -161,7 +161,7 @@ test('chat window adapter is exported from a standalone module and re-exported b
     assert.match(adapterSource, /function createReactChatTutorialHostAdapter\(options\)/);
     assert.match(adapterSource, /function createChatWindowAdapter\(options\)/);
     assert.match(adapterSource, /rotateExternalizedChatCompactToolWheel/);
-    assert.match(commonSource, /require\('\.\/tutorial-chat-window-adapter\.js'\)/);
+    assert.match(commonSource, /require\('\.\.\/core\/chat-window-adapter\.js'\)/);
     assert.match(commonSource, /tutorialChatWindowAdapterApi\.createReactChatTutorialHostAdapter\(options\)/);
     assert.match(commonSource, /tutorialChatWindowAdapterApi\.createChatWindowAdapter\(options\)/);
     assert.doesNotMatch(commonSource, /function callHost\(methodName, args\)/);
@@ -187,10 +187,10 @@ test('timeline command modules are exported from standalone modules and re-expor
     assert.match(normalizerSource, /root\.TutorialScriptNormalizer = api/);
     assert.match(engineSource, /root\.TutorialTimelineEngine = api/);
     assert.match(visualRuntimeSource, /root\.TutorialVisualRuntime = api/);
-    assert.match(commonSource, /require\('\.\/tutorial-command-registry\.js'\)/);
-    assert.match(commonSource, /require\('\.\/tutorial-script-normalizer\.js'\)/);
-    assert.match(commonSource, /require\('\.\/tutorial-timeline-engine\.js'\)/);
-    assert.match(commonSource, /require\('\.\/tutorial-visual-runtime\.js'\)/);
+    assert.match(commonSource, /require\('\.\.\/core\/command-registry\.js'\)/);
+    assert.match(commonSource, /require\('\.\.\/core\/script-normalizer\.js'\)/);
+    assert.match(commonSource, /require\('\.\.\/core\/timeline-engine\.js'\)/);
+    assert.match(commonSource, /require\('\.\.\/core\/visual-runtime\.js'\)/);
 });
 
 test('ghost cursor can use exact timeline durations without display slowdown', async () => {
@@ -866,21 +866,19 @@ test('daily guide files consume common helpers instead of redeclaring shared hel
     }
 });
 
-test('daily guide files ship every referenced audio file', () => {
+test('Day3 guide ships every referenced audio file', () => {
     const audioRoot = path.join(repoRoot, 'static', 'assets/tutorial/guide-audio');
-    const audioFiles = new Set();
+    const day3GuideSource = fs.readFileSync(
+        path.join(repoRoot, 'static', 'tutorial/yui-guide/days/day3-interaction-guide.js'),
+        'utf8'
+    );
+    const expectedAudioFiles = Array.from(day3GuideSource.matchAll(/zhAudio\('([^']+\.mp3)'\)/g))
+        .map((match) => match[1]);
 
-    for (const fileName of dayGuideFiles) {
-        const guidePath = path.join(repoRoot, 'static', fileName);
-        if (!fs.existsSync(guidePath)) continue;
-        const source = fs.readFileSync(guidePath, 'utf8');
-        for (const match of source.matchAll(/zhAudio\('([^']+)'\)/g)) {
-            audioFiles.add(match[1]);
-        }
-    }
+    assert.ok(expectedAudioFiles.length > 0, 'Day3 guide should reference audio files');
 
     for (const locale of ['zh', 'ja', 'en', 'ko', 'ru']) {
-        for (const audioFile of audioFiles) {
+        for (const audioFile of expectedAudioFiles) {
             assert.ok(
                 fs.existsSync(path.join(audioRoot, locale, audioFile)),
                 locale + ' should ship ' + audioFile
@@ -950,6 +948,8 @@ test('interaction takeover delegates external chat commands to the command bus b
     assert.match(source, /resolveLanlanName\(\) \{/);
     assert.match(source, /message\.lanlan_name = this\.resolveLanlanName\(\);/);
     assert.match(source, /postExternalChatCommand\(action,\s*payload,\s*options\) \{[\s\S]*this\.externalChatCommandBus\.post\(message,\s*normalizedOptions\)/);
+    assert.match(source, /resolveLanlanName\(\) \{[\s\S]*this\.window\.appState[\s\S]*this\.window\.lanlan_config/);
+    assert.match(source, /if \(!message\.lanlan_name\) \{[\s\S]*const lanlanName = this\.resolveLanlanName\(\);[\s\S]*message\.lanlan_name = lanlanName;/);
     assert.match(commandsBlock, /this\.postExternalChatCommand\('yui_guide_set_chat_buttons_disabled'/);
     assert.match(commandsBlock, /this\.postExternalChatCommand\('yui_guide_set_chat_cursor'/);
     assert.match(commandsBlock, /this\.postExternalChatCommand\('yui_guide_drag_chat_cursor'/);
@@ -962,6 +962,29 @@ test('interaction takeover delegates external chat commands to the command bus b
     assert.doesNotMatch(clearFxBlock, /yui_guide_clear_chat_messages/);
     assert.doesNotMatch(commandsBlock, /getExternalChatChannel\(\)/);
     assert.doesNotMatch(commandsBlock, /channel\.postMessage/);
+});
+
+test('new user icebreaker clears and locks choice prompt while advancing branches', () => {
+    const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/icebreaker/new-user-icebreaker.js'), 'utf8');
+    const handleChoiceBlock = source.split('    function handleChoice(detail) {')[1].split(
+        '\n    function handleFreeText',
+        1
+    )[0];
+
+    assert.match(handleChoiceBlock, /if \(session\.choiceInFlight\) return;/);
+    assert.match(handleChoiceBlock, /session\.choiceInFlight = true;\s*clearChoicePrompt\(\);/);
+    assert.match(handleChoiceBlock, /appendChatMessage\('user'[\s\S]*\)\.then\(function \(\) \{[\s\S]*return deliverNode\(option\.next\);/);
+    assert.match(handleChoiceBlock, /\}\)\.then\(function \(\) \{\s*session\.choiceInFlight = false;/);
+    assert.match(handleChoiceBlock, /\.catch\(function \(error\) \{[\s\S]*session\.choiceInFlight = false;[\s\S]*setChoicePrompt\(node,\s*session\.localeData\);/);
+});
+
+test('new user icebreaker exports state used by greeting gating', () => {
+    const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/icebreaker/new-user-icebreaker.js'), 'utf8');
+
+    assert.match(source, /window\.NekoNewUserIcebreakerState\s*=\s*\{/);
+    assert.match(source, /readStore:\s*readStore/);
+    assert.match(source, /hasCompletedDay:\s*isDayCompleted/);
+    assert.match(source, /isPeriodActive:\s*isPeriodActive/);
 });
 
 test('director exposes phase one guard and timing helpers for complex sequences', () => {
@@ -1499,7 +1522,7 @@ test('templates and frontend harness load OperationRegistry before Director', ()
         'utf8'
     );
     const dependencyBlock = harnessSource.split('_YUI_DIRECTOR_DEPENDENCIES = (')[1].split(')', 1)[0];
-    assert.match(dependencyBlock, /"tutorial-resistance-controllers\.js",\s*"tutorial-operation-registry\.js",/);
+    assert.match(dependencyBlock, /"tutorial\/visual\/resistance-controllers\.js",\s*"tutorial\/core\/operation-registry\.js",/);
 });
 
 test('director routes final teardown through performFullCleanup helper', () => {

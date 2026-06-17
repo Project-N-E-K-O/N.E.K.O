@@ -111,6 +111,20 @@
         }
     }
 
+    function resetAllIcebreakerDays() {
+        try {
+            localStorage.setItem(ICEBREAKER_STORAGE_KEY, JSON.stringify({
+                version: 1,
+                days: {},
+            }));
+            window.dispatchEvent(new CustomEvent(ICEBREAKER_RESET_EVENT, {
+                detail: { day: 'all' },
+            }));
+        } catch (error) {
+            console.warn('[AvatarFloatingGuideReset] 破冰状态重置失败:', error);
+        }
+    }
+
     function dispatchGuideResetEvent(detail) {
         window.dispatchEvent(new CustomEvent(RESET_EVENT, { detail }));
 
@@ -149,8 +163,34 @@
         state.updatedAt = resetAt;
         state.resetHistory = state.resetHistory.concat([{ day: round, source, resetAt }]).slice(-RESET_HISTORY_LIMIT);
 
-        saveGuideState(state);
+        if (!saveGuideState(state)) {
+            return null;
+        }
         dispatchGuideResetEvent({ day: round, source, resetAt, state });
+        return state;
+    }
+
+    function resetAllGuideRoundState(options = {}) {
+        const resetAt = new Date().toISOString();
+        const source = options.source || 'all_tutorial_reset';
+        const state = loadGuideState();
+
+        resetAllIcebreakerDays();
+        state.completedRounds = [];
+        state.skippedRounds = [];
+        state.currentRound = null;
+        state.pendingRound = 1;
+        state.manualResetRound = 1;
+        state.lastAutoShownRound = null;
+        state.lastAutoShownDate = '';
+        state.lastEndState = null;
+        state.updatedAt = resetAt;
+        state.resetHistory = state.resetHistory.concat([{ day: 'all', source, resetAt }]).slice(-RESET_HISTORY_LIMIT);
+
+        if (!saveGuideState(state)) {
+            return null;
+        }
+        dispatchGuideResetEvent({ day: 'all', source, resetAt, state });
         return state;
     }
 
@@ -240,14 +280,35 @@
         return state;
     }
 
+    async function resetAllAvatarFloatingGuideDays(options = {}) {
+        const state = resetAllGuideRoundState(options);
+        clearHomeTutorialPromptResetState(1);
+        return state;
+    }
+
     async function startAvatarFloatingGuideDay(day, options = {}) {
         return startFormalAvatarFloatingGuideRound(day, {
             source: options.source || 'home_reset_button',
         });
     }
 
+    function translateResetMessage(key, fallback, options = {}) {
+        let message = fallback;
+        if (typeof window.t === 'function') {
+            const translated = window.t(key, options);
+            if (typeof translated === 'string' && translated && translated !== key) {
+                message = translated;
+            }
+        }
+        return String(message || '').replace(/\{\{\s*day\s*\}\}/g, String(options.day || ''));
+    }
+
     function showResetToast(day) {
-        const message = `已重置第 ${day} 天新手教程，请刷新 Neko 后启动。`;
+        const message = translateResetMessage(
+            'tutorial.reset.daySuccess',
+            '已重置第 {{day}} 天新手教程，请刷新 Neko 后启动。',
+            { day }
+        );
         if (typeof window.showStatusToast === 'function') {
             window.showStatusToast(message, 2500, { priority: 1 });
             return;
@@ -274,7 +335,15 @@
                 } catch (error) {
                     console.error('[AvatarFloatingGuideReset] 重置失败:', error);
                     if (typeof window.showStatusToast === 'function') {
-                        window.showStatusToast('新手教程重置失败，请稍后再试。', 3000, { priority: 2 });
+                        window.showStatusToast(
+                            translateResetMessage(
+                                'tutorial.reset.dayFailed',
+                                '新手教程重置失败，请稍后再试。',
+                                { day }
+                            ),
+                            3000,
+                            { priority: 2 }
+                        );
                     }
                 } finally {
                     button.disabled = false;
@@ -298,12 +367,15 @@
         RESET_EVENT,
         loadGuideState,
         resetGuideRoundState,
+        resetAllGuideRoundState,
         startAvatarFloatingGuideDay,
+        resetAllAvatarFloatingGuideDays,
         resetAvatarFloatingGuideDay: resetHomeTutorialDay,
         resetHomeTutorialDay,
         bindResetButtons,
     };
     window.resetHomeTutorialDay = resetHomeTutorialDay;
     window.resetAvatarFloatingGuideDay = resetHomeTutorialDay;
+    window.resetAllAvatarFloatingGuideDays = resetAllAvatarFloatingGuideDays;
     window.startAvatarFloatingGuideDay = startAvatarFloatingGuideDay;
 })();
