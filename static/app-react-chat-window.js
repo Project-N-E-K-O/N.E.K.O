@@ -64,7 +64,6 @@
     var ELECTRON_CHAT_MINIMIZED_STATE_HEARTBEAT_MS = 1000;
     var savedExpandedShellPosition = null; // last known full-surface desktop position
     var lastRestorableChatSurfaceMode = 'compact';
-    var tutorialChatRequestSeq = 0;
     var _sortKeySeq = 0; // monotonically increasing sortKey counter
     var COMPACT_CHAT_STATES = ['default', 'options', 'input'];
     // The active compact↔minimized cycle. `full` is intentionally NOT here: it is
@@ -3935,27 +3934,6 @@
             compactInputLocked: next
         });
         renderWindow();
-    }
-
-    function setAvatarToolMenuOpen(open, reason) {
-        return setTutorialChatRequest('avatarToolMenuOpenRequest', {
-            open: open === true,
-            reason: typeof reason === 'string' ? reason : ''
-        });
-    }
-
-    function setCompactToolFanOpen(open, reason) {
-        return setTutorialChatRequest('compactToolFanOpenRequest', {
-            open: open === true,
-            reason: typeof reason === 'string' ? reason : ''
-        });
-    }
-
-    function setCompactHistoryOpen(open, reason) {
-        return setTutorialChatRequest('compactHistoryOpenRequest', {
-            open: open === true,
-            reason: typeof reason === 'string' ? reason : ''
-        });
     }
 
     function rotateCompactToolWheel(direction, stepCount, options) {
