@@ -141,13 +141,14 @@ class FakeClient:
             raise self.get_error
         return self.get_response
 
-    def stream(self, method, url, *, headers=None, timeout=None):
+    def stream(self, method, url, *, headers=None, timeout=None, **kwargs):
         self.get_calls.append(
             {
                 "method": method,
                 "url": url,
                 "headers": headers or {},
                 "timeout": timeout,
+                "kwargs": kwargs,
             }
         )
         if self.get_error:
@@ -812,7 +813,7 @@ def test_ssl_fallback_can_be_enabled(monkeypatch):
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-        def stream(self, method, url, *, headers=None, timeout=None):
+        def stream(self, method, url, *, headers=None, timeout=None, **kwargs):
             return FakeStream(
                 FakeResponse(headers={"Content-Type": "image/jpeg"}, content=b"abc")
             )

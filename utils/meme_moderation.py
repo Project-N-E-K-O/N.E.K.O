@@ -403,7 +403,7 @@ async def _download_image_for_moderation(url: str, timeout_seconds: float) -> tu
         raise ValueError("meme image URL is not in the allowed host list")
     headers = _image_fetch_headers(url)
 
-    async def _fetch(*, verify: bool) -> httpx.Response:
+    async def _fetch(*, verify: bool) -> tuple[bytes, str]:
         if verify:
             client = get_external_http_client()
             return await _stream_image_response(client, url, headers, timeout_seconds)
@@ -411,12 +411,14 @@ async def _download_image_for_moderation(url: str, timeout_seconds: float) -> tu
             timeout=timeout_seconds,
             follow_redirects=True,
             trust_env=True,
+            # Last-resort path for certificate-broken meme hosts. This only runs
+            # after strict verification fails and the env flag explicitly opts in.
             verify=False,
         ) as relaxed_client:
             return await _stream_image_response(relaxed_client, url, headers, timeout_seconds)
 
     try:
-        response = await _fetch(verify=True)
+        image_data = await _fetch(verify=True)
     except httpx.HTTPError as exc:
         message = str(exc).lower()
         if "ssl" not in message and "certificate" not in message:
@@ -429,9 +431,9 @@ async def _download_image_for_moderation(url: str, timeout_seconds: float) -> tu
             host,
             exc,
         )
-        response = await _fetch(verify=False)
+        image_data = await _fetch(verify=False)
 
-    return response
+    return image_data
 
 
 async def _stream_image_response(
