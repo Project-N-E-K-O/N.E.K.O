@@ -4125,6 +4125,27 @@
         });
     }
 
+    function setAvatarToolMenuOpen(open, reason) {
+        return setTutorialChatRequest('avatarToolMenuOpenRequest', {
+            open: open === true,
+            reason: typeof reason === 'string' ? reason : ''
+        });
+    }
+
+    function setCompactToolFanOpen(open, reason) {
+        return setTutorialChatRequest('compactToolFanOpenRequest', {
+            open: open === true,
+            reason: typeof reason === 'string' ? reason : ''
+        });
+    }
+
+    function setCompactHistoryOpen(open, reason) {
+        return setTutorialChatRequest('compactHistoryOpenRequest', {
+            open: open === true,
+            reason: typeof reason === 'string' ? reason : ''
+        });
+    }
+
     function rotateCompactToolWheel(direction, stepCount, options) {
         var normalizedDirection = direction === -1 ? -1 : 1;
         var normalizedStepCount = Number.isFinite(stepCount)
@@ -4218,17 +4239,17 @@
         return changed;
     }
 
-    function isGuideMessage(message) {
+    function isYuiGuideChatMessage(message) {
         if (!message) return false;
-        return String(message.id || '').indexOf('yui-guide-') === 0
-            || String(message.source || '') === 'yui-guide-director'
-            || String(message.source || '') === 'yui_guide';
+        if (typeof message.id === 'string' && message.id.indexOf('yui-guide-') === 0) return true;
+        var source = typeof message.source === 'string' ? message.source : '';
+        return source === 'yui_guide' || source === 'yui-guide-director';
     }
 
     function clearGuideMessages() {
         var beforeLength = state.messages.length;
         state.messages = state.messages.filter(function (message) {
-            return !isGuideMessage(message);
+            return !isYuiGuideChatMessage(message);
         });
         var changed = state.messages.length !== beforeLength;
         if (changed) {
@@ -5213,44 +5234,6 @@
             state: normalized
         });
         return normalized;
-    }
-
-    function nextTutorialChatRequestId(prefix) {
-        tutorialChatRequestSeq += 1;
-        return prefix + '-' + Date.now() + '-' + tutorialChatRequestSeq;
-    }
-
-    function setAvatarToolMenuOpen(open, reason) {
-        setViewProps({
-            avatarToolMenuOpenRequest: {
-                id: nextTutorialChatRequestId('avatar-tool-menu'),
-                open: open === true,
-                reason: reason || ''
-            }
-        });
-        return true;
-    }
-
-    function setCompactToolFanOpen(open, reason) {
-        setViewProps({
-            compactToolFanOpenRequest: {
-                id: nextTutorialChatRequestId('compact-tool-fan'),
-                open: open === true,
-                reason: reason || ''
-            }
-        });
-        return true;
-    }
-
-    function setCompactHistoryOpen(open, reason) {
-        setViewProps({
-            compactHistoryOpenRequest: {
-                id: nextTutorialChatRequestId('compact-history'),
-                open: open === true,
-                reason: reason || ''
-            }
-        });
-        return true;
     }
 
     function commitPendingMinimizedSurfaceMode() {

@@ -2604,15 +2604,17 @@
         "enable": "Tradução de legendas",
         "enableAriaLabel": "Alternar tradução de legendas",
         "markdownPlaceholder": "[conteúdo formatado]",
+        "display": {
+            "emptyHint": "Sem tradução ainda"
+        },
         "settings": {
             "targetLang": "Idioma alvo",
-            "opacity": "Opacidade",
-            "dragAnywhere": "Arraste para qualquer lugar",
-            "size": "Tamanho",
-            "sizeSmall": "S",
-            "sizeMedium": "M",
-            "sizeLarge": "eu",
-            "settingsBtn": "Configurações de legenda"
+            "opacity": "Opacidade do fundo",
+            "passthroughInteraction": "Clique através da área transparente",
+            "settingsBtn": "Configurações de legenda",
+            "lockPosition": "Bloquear posição",
+            "unlockPosition": "Desbloquear posição",
+            "closePanel": "Fechar painel de tradução"
         }
     },
     "viewer": {
