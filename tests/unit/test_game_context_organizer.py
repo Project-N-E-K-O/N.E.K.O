@@ -81,6 +81,7 @@ async def test_context_organizer_triggers_at_15_and_keeps_recent_window(monkeypa
     for index in range(1, 15):
         _append_user_line(state, index)
         assert "_game_context_organizer_task" not in state
+        assert state["game_context_recent_ids"] == [f"glog_{item_index:04d}" for item_index in range(1, index + 1)]
 
     _append_user_line(state, 15)
     task = state["_game_context_organizer_task"]
@@ -121,7 +122,7 @@ async def test_context_organizer_does_not_truncate_logs_added_while_running(monk
 
     assert len(state["game_dialog_log"]) == 17
     assert state["game_context_organizer"]["last_organized_id"] == "glog_0009"
-    assert state["game_context_recent_ids"] == [f"glog_{index:04d}" for index in range(12, 18)]
+    assert state["game_context_recent_ids"] == [f"glog_{index:04d}" for index in range(10, 18)]
     assert [item["id"] for item in state["game_dialog_log"][-2:]] == ["glog_0016", "glog_0017"]
 
 
@@ -144,12 +145,20 @@ async def test_context_organizer_failure_keeps_window_until_new_logs(monkeypatch
     assert state["game_context_summary"] == ""
     assert state["game_context_organizer"]["failure_count"] == 1
     assert state["game_context_organizer"]["degraded"] is False
+    assert state["game_context_recent_ids"] == [f"glog_{index:04d}" for index in range(1, 16)]
     assert state["_game_context_organizer_task"] is task
+
+    _append_user_line(state, 16)
+    _append_user_line(state, 17)
+
+    assert state["game_context_recent_ids"] == [f"glog_{index:04d}" for index in range(1, 18)]
+    await state["_game_context_organizer_task"]
+    assert state["game_context_recent_ids"] == [f"glog_{index:04d}" for index in range(1, 18)]
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_context_organizer_degrades_at_40_pending_items(monkeypatch):
+async def test_context_organizer_failure_fallback_keeps_last_8_at_64(monkeypatch):
     state = _new_state(monkeypatch)
     calls = 0
 
@@ -160,17 +169,80 @@ async def test_context_organizer_degrades_at_40_pending_items(monkeypatch):
 
     monkeypatch.setattr(game_router, "_run_game_context_organizer_ai", fake_ai)
 
-    for index in range(1, 41):
+    for index in range(1, 65):
         _append_user_line(state, index)
     await state["_game_context_organizer_task"]
 
     assert calls == 1
-    assert state["game_context_organizer"]["degraded"] is True
-    assert state["game_context_organizer"]["error"] == "degraded_after_40_pending_items"
-    assert state["game_context_organizer"]["last_organized_id"] == ""
+    assert state["game_context_organizer"]["degraded"] is False
+    assert state["game_context_organizer"]["error"] == "fallback_overflow_after_64_pending_items"
+    assert state["game_context_organizer"]["last_organized_id"] == "glog_0056"
+    assert state["game_context_recent_ids"] == [f"glog_{index:04d}" for index in range(57, 65)]
 
-    _append_user_line(state, 41)
-    assert calls == 1
+    for index in range(65, 72):
+        _append_user_line(state, index)
+
+    assert "_game_context_organizer_task" in state
+    assert state["game_context_recent_ids"] == [f"glog_{index:04d}" for index in range(57, 72)]
+    await state["_game_context_organizer_task"]
+    assert calls == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_context_organizer_overflow_fallback_ignores_stale_success(monkeypatch):
+    state = _new_state(monkeypatch)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_ai(_state, _snapshot):
+        started.set()
+        await release.wait()
+        return _fake_success_result()
+
+    monkeypatch.setattr(game_router, "_run_game_context_organizer_ai", fake_ai)
+
+    for index in range(1, 16):
+        _append_user_line(state, index)
+    task = state["_game_context_organizer_task"]
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+
+    for index in range(16, 66):
+        _append_user_line(state, index)
+
+    assert state["game_context_organizer"]["last_organized_id"] == "glog_0056"
+    assert state["game_context_recent_ids"] == [f"glog_{index:04d}" for index in range(57, 66)]
+
+    release.set()
+    await task
+
+    assert state["game_context_summary"] == ""
+    assert state["game_context_organizer"]["last_organized_id"] == "glog_0056"
+    assert state["game_context_organizer"]["error"] == "stale_organizer_result_ignored"
+    assert state["game_context_recent_ids"] == [f"glog_{index:04d}" for index in range(57, 66)]
+
+
+@pytest.mark.unit
+def test_context_organizer_failure_fallback_preserves_error_type(monkeypatch):
+    state = _new_state(monkeypatch)
+    state["game_dialog_log"] = [
+        {
+            "id": f"glog_{index:04d}",
+            "type": "user",
+            "text": f"line {index}",
+        }
+        for index in range(1, 65)
+    ]
+    snapshot = state["game_dialog_log"][:15]
+
+    game_router._apply_game_context_organizer_failure(state, snapshot, ValueError("bad json"))
+
+    assert state["game_context_organizer"]["last_organized_id"] == "glog_0056"
+    assert (
+        state["game_context_organizer"]["error"]
+        == "fallback_organizer_failure_ValueError_after_64_pending_items"
+    )
+    assert state["game_context_recent_ids"] == [f"glog_{index:04d}" for index in range(57, 65)]
 
 
 @pytest.mark.unit
@@ -183,6 +255,222 @@ def test_degraded_context_does_not_schedule_organizer(monkeypatch):
 
     assert "_game_context_organizer_task" not in state
     assert state["game_context_organizer"]["running"] is False
+
+
+@pytest.mark.unit
+def test_game_context_payload_can_exclude_recent_window_for_stable_system(monkeypatch):
+    state = _new_state(monkeypatch)
+    state["game_context_summary"] = "猫娘领先，玩家正在追分。"
+    state["game_context_signals"] = {
+        "session_facts": [{
+            "signalLabel": "当前比分",
+            "summary": "猫娘暂时领先。",
+            "evidence": [],
+            "lastRound": 2,
+            "count": 1,
+        }],
+    }
+    for index in range(1, 4):
+        game_router._append_game_dialog(state, {
+            "type": "game_event",
+            "kind": "user-text",
+            "text": f"第 {index} 句",
+            "result_line": f"回应 {index}",
+        })
+
+    payload = game_router._build_game_context_prompt_payload(state, include_recent=False)
+    formatted = game_router._format_game_context_for_prompt(payload, "zh")
+
+    assert payload["recent_dialogues"] == []
+    assert "局内滚动摘要：猫娘领先，玩家正在追分。" in formatted
+    assert "局内信号列表：" in formatted
+    assert "最近原文窗口：" not in formatted
+    assert "第 1 句" not in formatted
+
+
+@pytest.mark.unit
+def test_game_session_history_reset_rebuilds_bounded_recent_messages(monkeypatch):
+    from utils.llm_client import AIMessage, HumanMessage, SystemMessage
+
+    class DummySession:
+        pass
+
+    state = _new_state(monkeypatch)
+    for index in range(1, 9):
+        game_router._append_game_dialog(state, {
+            "type": "game_event",
+            "kind": "user-text",
+            "text": f"第 {index} 句",
+            "result_line": f"回应 {index}",
+            "control": {"mood": "happy"} if index == 8 else {},
+        })
+
+    session = DummySession()
+    session._instructions = "旧 system"
+    session._conversation_history = [
+        SystemMessage(content="旧 system"),
+        HumanMessage(content="不应继续留在 history 里的旧输入"),
+        AIMessage(content="不应继续留在 history 里的旧回复"),
+    ]
+    entry = {"session": session, "instructions": "稳定 system"}
+
+    game_router._reset_game_session_text_history_for_turn(entry, state)
+
+    history = session._conversation_history
+    joined = "\n".join(str(getattr(message, "content", "")) for message in history)
+
+    assert isinstance(history[0], SystemMessage)
+    assert history[0].content == "稳定 system"
+    assert session._instructions == "稳定 system"
+    assert len(history) == 1 + 8 * 2
+    assert isinstance(history[1], HumanMessage)
+    assert isinstance(history[2], AIMessage)
+    assert "第 1 句" in joined
+    assert "第 2 句" in joined
+    assert "第 3 句" in joined
+    assert "回应 8" in joined
+    assert "mood=happy" not in joined
+    assert "glog_" not in joined
+    assert "不应继续留在 history" not in joined
+
+
+@pytest.mark.unit
+def test_game_recent_history_hides_internal_ids_and_control_suffix(monkeypatch):
+    from utils.llm_client import AIMessage, HumanMessage
+
+    state = _new_state(monkeypatch)
+    game_router._append_game_dialog(state, {
+        "type": "game_event",
+        "kind": "user-text",
+        "text": "不要让了",
+        "result_line": 'glog_0040: 哼，那我认真一点咯。 (mood=angry, difficulty=lv2)',
+        "control": {"mood": "angry", "difficulty": "lv2", "reason": "test"},
+    })
+
+    history = game_router._build_game_recent_history_messages(state, "zh")
+
+    assert isinstance(history[0], HumanMessage)
+    assert isinstance(history[1], AIMessage)
+    joined = "\n".join(str(message.content) for message in history)
+    assert "游戏事件 user-text" in joined
+    assert "事件原文「不要让了」" in joined
+    assert "哼，那我认真一点咯。" in joined
+    assert "glog_" not in joined
+    assert "mood=" not in joined
+    assert "difficulty=" not in joined
+    assert "reason" not in joined
+
+
+@pytest.mark.unit
+def test_game_session_history_reset_uses_recent_history_locale_labels(monkeypatch):
+    from utils.llm_client import SystemMessage
+
+    class DummySession:
+        pass
+
+    state = _new_state(monkeypatch)
+    game_router._append_game_dialog(state, {
+        "type": "user",
+        "text": "nice shot",
+    })
+    game_router._append_game_dialog(state, {
+        "type": "assistant",
+        "line": "Thanks.",
+    })
+    session = DummySession()
+    session._instructions = "system"
+    session._conversation_history = [SystemMessage(content="system")]
+    entry = {
+        "session": session,
+        "instructions": "system",
+        "user_language": "en",
+    }
+
+    game_router._reset_game_session_text_history_for_turn(entry, state)
+
+    joined = "\n".join(str(getattr(message, "content", "")) for message in session._conversation_history)
+    assert "Player: nice shot" in joined
+    assert "玩家：nice shot" not in joined
+
+
+@pytest.mark.unit
+def test_game_session_history_reset_skips_pending_current_user_input(monkeypatch):
+    from utils.llm_client import HumanMessage, SystemMessage
+
+    class DummySession:
+        pass
+
+    state = _new_state(monkeypatch)
+    game_router._append_game_dialog(state, {
+        "type": "user",
+        "text": "previous turn",
+    })
+    game_router._append_game_dialog(state, {
+        "type": "assistant",
+        "line": "previous reply",
+    })
+    game_router._append_game_dialog(state, {
+        "type": "user",
+        "text": "current pending input",
+    })
+    session = DummySession()
+    session._instructions = "system"
+    session._conversation_history = [SystemMessage(content="system")]
+    entry = {"session": session, "instructions": "system", "user_language": "en"}
+
+    game_router._reset_game_session_text_history_for_turn(entry, state)
+
+    joined = "\n".join(str(getattr(message, "content", "")) for message in session._conversation_history)
+    assert "Player: previous turn" in joined
+    assert "previous reply" in joined
+    assert "current pending input" not in joined
+    assert sum(isinstance(message, HumanMessage) for message in session._conversation_history) == 1
+
+
+@pytest.mark.unit
+def test_game_recent_history_merges_consecutive_user_side_events(monkeypatch):
+    from utils.llm_client import HumanMessage
+
+    state = _new_state(monkeypatch)
+    game_router._append_game_dialog(state, {
+        "type": "game_event",
+        "kind": "mailbox-batch",
+        "text": "first queued event",
+    })
+    game_router._append_game_dialog(state, {
+        "type": "game_event",
+        "kind": "mailbox-batch",
+        "text": "second queued event",
+    })
+
+    history = game_router._build_game_recent_history_messages(state, "en")
+
+    assert len(history) == 1
+    assert isinstance(history[0], HumanMessage)
+    assert "first queued event" in history[0].content
+    assert "second queued event" in history[0].content
+
+
+@pytest.mark.unit
+def test_dialog_memory_line_uses_requested_english_locale():
+    user_line = game_router._dialog_memory_line({
+        "type": "user",
+        "text": "nice shot",
+    }, "en")
+    event_line = game_router._dialog_memory_line({
+        "type": "game_event",
+        "kind": "goal-scored",
+        "text": "what a shot",
+        "result_line": "That was clean.",
+    }, "en")
+
+    assert user_line == "Player: nice shot"
+    assert "Game event goal-scored (Character scored)" in event_line
+    assert 'event text "what a shot"' in event_line
+    assert 'character reply "That was clean."' in event_line
+    assert "玩家：" not in user_line
+    assert "事件原文" not in event_line
+    assert "游戏事件" not in event_line
 
 
 @pytest.mark.unit

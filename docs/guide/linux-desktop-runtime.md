@@ -119,6 +119,23 @@ These errors mean the module was found but could not initialize against the libr
 3. Keep `LD_LIBRARY_PATH` narrow so only the required compatible libraries are preferred.
 4. Log the selected IM module path and initialization failure early, before users only see "cannot type Chinese".
 
+## Filesystem Encoding And Non-ASCII Paths
+
+The Python backend can crash on startup with `UnicodeEncodeError` when it creates or opens a path that contains non-ASCII characters — most often a character directory such as `memory/玖儿/...`. The traceback points at an innocent-looking `os.makedirs()` or `open()`.
+
+The root cause is the interpreter's **filesystem encoding** (`sys.getfilesystemencoding()`), not the encoding passed to `open()`. The embedded Python in an AppImage, or any minimal Linux runtime, can fall back to `ascii` when it starts under the `C`/`POSIX` locale and PEP 538 locale coercion finds no `C.UTF-8` target. Once the filesystem encoding is `ascii`, every filesystem call with a non-ASCII path fails. Note:
+
+- A correct system `LANG=zh_CN.UTF-8` does **not** help, because the launcher shell often does not propagate the locale into the embedded interpreter.
+- `sys.getdefaultencoding()` is unrelated — it is always UTF-8 on Python 3 and does not affect path handling.
+- The filesystem encoding is fixed when the interpreter starts; it cannot be changed at runtime.
+
+The fix is **UTF-8 Mode** (PEP 540), enabled by the `PYTHONUTF8=1` environment variable. It is a runtime environment variable, so no rebuild of the embedded Python is required. Two layers of defense should both hold:
+
+1. **Electron shell** — `backend-runtime.js` sets `PYTHONUTF8=1` (and `PYTHONIOENCODING=utf-8`) in the spawned backend's environment. This is the primary fix for the AppImage path.
+2. **Python launcher self-heal** — `launcher.py` checks `sys.getfilesystemencoding()` at entry; if it is not UTF-8, it sets `PYTHONUTF8=1` and re-execs itself once with `os.execv` (same PID, so the shell's process tracking is unaffected). This covers older shells, the Steam build, and direct launches that do not go through `backend-runtime.js`.
+
+If a report still shows this crash, confirm the build actually carries both layers — an AppImage built before the shell env injection is only covered once it is rebuilt, or updated to a launcher that self-heals.
+
 ## What To Include In A Bug Report
 
 For click-through bugs, include:

@@ -84,8 +84,8 @@ N.E.K.O 內部仍沿用 `openclaw` 這個名稱，所以介面中的 `OpenClaw` 
 
 請依照以下順序操作：
 
-1. 打開 N.E.K.O 的 Agent 面板
-2. 先開啟 `Agent` 總開關
+1. 打開 N.E.K.O 的貓爪面板
+2. 先開啟貓爪總開關
 3. 確認 `openclawUrl` 指向 `http://127.0.0.1:8088`
 4. 再開啟 `OpenClaw` 子開關
 5. 等待可用性檢查通過

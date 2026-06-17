@@ -86,11 +86,9 @@ svg {
 
 .avatar-cursor-overlay-stage {
   opacity: 0;
-  transform: scale(calc(var(--avatar-cursor-overlay-scale) * 0.84));
+  transform: scale(var(--avatar-cursor-overlay-scale));
   will-change: transform, opacity;
-  transition:
-    opacity 180ms cubic-bezier(0.22, 0.78, 0.2, 1),
-    transform 180ms cubic-bezier(0.2, 0.82, 0.22, 1);
+  transition: opacity 120ms cubic-bezier(0.22, 0.78, 0.2, 1);
 }
 
 .avatar-cursor-overlay.is-visible .avatar-cursor-overlay-stage {
@@ -112,8 +110,8 @@ svg {
 }
 
 .avatar-cursor-overlay-image-fist {
-  width: 100px;
-  height: 102px;
+  width: 78px;
+  height: 80px;
 }
 
 .fist-floating-drop {
@@ -5802,6 +5800,11 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 
 @media (prefers-reduced-motion: reduce) {
+  .compact-input-tool-fan[data-compact-tool-wheel-charge-rattle="weak"],
+  .compact-input-tool-fan[data-compact-tool-wheel-charge-rattle="strong"] {
+    animation: none !important;
+  }
+
   .compact-input-tool-fan .compact-input-tool-tooltip {
     transition: none !important;
   }

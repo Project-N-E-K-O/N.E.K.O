@@ -1581,5 +1581,5 @@ def test_accept_basketball_invite_returns_basketball_url():
     assert result['action'] == 'open_game'
     assert result['game_type'] == 'basketball'
     assert result['game_url'].startswith('/basketball_demo?')
-    assert 'mode=shooter' in result['game_url']
+    assert 'mode=duel' in result['game_url']
     assert 'session_id=bb-sess' in result['game_url']

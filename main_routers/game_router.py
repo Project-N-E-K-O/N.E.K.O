@@ -68,6 +68,7 @@ from config.prompts.prompts_game_route import (
     GAME_CONTEXT_SIGNAL_GROUP_KEYS,
     get_compact_realtime_context_texts,
     get_game_chat_event_user_prompt,
+    get_game_archive_fallback_highlight_labels,
     get_game_archive_highlight_source_labels,
     get_game_archive_memory_highlighter_system_prompt,
     get_game_archive_memory_highlighter_user_prompt,
@@ -76,9 +77,11 @@ from config.prompts.prompts_game_route import (
     get_game_context_formatter_labels,
     get_game_context_organizer_system_prompt,
     get_game_context_organizer_user_prompt,
+    get_game_dialog_memory_line_labels,
     get_game_postgame_context_labels,
     get_game_postgame_event_texts,
     get_game_postgame_realtime_nudge_labels,
+    get_game_recent_history_message_labels,
 )
 from .shared_state import get_config_manager, get_session_manager
 from main_logic.mirror_meta import (
@@ -111,7 +114,7 @@ _game_sessions: Dict[str, dict] = {}
 _SESSION_TIMEOUT_SECONDS = 30 * 60
 _GAME_ROUTE_ACTIVATION_LOG_LIMIT = 32
 _BASKETBALL_SCORE_SESSION_TTL_SECONDS = 10 * 60
-_BASKETBALL_SCORING_MODES = {"shooter", "duel", "timed", "horse"}
+_BASKETBALL_SCORING_MODES = {"shooter", "duel"}
 _basketball_recent_score_sessions: Dict[tuple[str, str], dict] = {}
 
 _SOCCER_QUICK_LINE_KEYS = {
@@ -234,7 +237,9 @@ _BASKETBALL_GAME_MEMORY_POLICY_FIELDS = (
 )
 _GAME_CONTEXT_ORGANIZE_TRIGGER_COUNT = 15
 _GAME_CONTEXT_RECENT_KEEP_COUNT = 6
-_GAME_CONTEXT_DEGRADE_PENDING_COUNT = 40
+_GAME_CONTEXT_RECENT_WINDOW_MAX_COUNT = _GAME_CONTEXT_ORGANIZE_TRIGGER_COUNT
+_GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT = 64
+_GAME_CONTEXT_FAILURE_FALLBACK_KEEP_COUNT = 8
 _GAME_CONTEXT_FINALIZE_WAIT_SECONDS = 5.0
 _GAME_CONTEXT_SIGNAL_GROUPS = GAME_CONTEXT_SIGNAL_GROUP_KEYS
 _LEGACY_SIGNAL_GROUP_ALIASES = {
@@ -1108,8 +1113,6 @@ def _default_basketball_pregame_context(*, initial_difficulty: str | None = None
         "spectator": "自由练习",
         "shooter": "投篮挑战（操控模式）",
         "duel": "投篮对战",
-        "timed": "限时挑战",
-        "horse": "HORSE",
     }.get(normalized_mode, "投篮挑战")
     return {
         "launchIntent": "unknown",
@@ -1126,7 +1129,7 @@ def _default_basketball_pregame_context(*, initial_difficulty: str | None = None
         "initialDifficulty": difficulty,
         "openingLine": "",
         "tonePolicy": "普通陪玩，轻松自然，不强行解释成哄开心或关系修复。",
-        "difficultyPolicy": "duel 默认 lv2；spectator/shooter/timed/HORSE 忽略初始 difficulty，由局内事件自然调整。",
+        "difficultyPolicy": "duel 默认 lv2；spectator/shooter 忽略初始 difficulty，由局内事件自然调整。",
         "moodPolicy": "沿用普通投篮陪玩表现；不引入强情绪惯性。",
         "expressionPolicy": "默认期待/轻吐槽；根据命中、失误、连中和对战比分自然变化。",
         "softeningSignals": [],
@@ -1275,8 +1278,6 @@ def _format_basketball_pregame_context_for_prompt(
         "spectator": "投篮挑战",
         "shooter": "投篮挑战（操控模式）",
         "duel": "投篮对战",
-        "timed": "限时挑战",
-        "horse": "HORSE",
     }.get(_normalize_basketball_mode(mode), "投篮挑战")
     return (
         f"{labels['header']}\n"
@@ -1295,7 +1296,7 @@ def _dialog_id_index(dialog: list[dict], dialog_id: str) -> int:
     return -1
 
 
-def _game_context_recent_dialogues(state: dict, keep_count: int = _GAME_CONTEXT_RECENT_KEEP_COUNT) -> list[dict]:
+def _game_context_recent_dialogues(state: dict, keep_count: int = _GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT) -> list[dict]:
     dialog = [item for item in state.get("game_dialog_log") or [] if isinstance(item, dict)]
     if not dialog:
         return []
@@ -1312,13 +1313,18 @@ def _game_context_recent_dialogues(state: dict, keep_count: int = _GAME_CONTEXT_
     return dialog[-keep_count:]
 
 
-def _game_context_dialog_lines(dialogues: list[dict], *, max_items: int = 12) -> list[str]:
+def _game_context_dialog_lines(
+    dialogues: list[dict],
+    *,
+    max_items: int = 12,
+    language: str | None = None,
+) -> list[str]:
     lines: list[str] = []
     for item in dialogues[-max_items:]:
         if not isinstance(item, dict):
             continue
         dialog_id = str(item.get("id") or "").strip()
-        line = _dialog_memory_line(item)
+        line = _dialog_memory_line(item, language)
         if dialog_id and line:
             lines.append(f"{dialog_id}: {line}")
         elif line:
@@ -1360,7 +1366,11 @@ def _format_game_context_for_prompt(context: Any, language: str | None = None) -
         return ""
     labels = get_game_context_formatter_labels(language)
     degraded = context.get("degraded") is True
-    recent_lines = _game_context_dialog_lines(context.get("recent_dialogues") or [], max_items=_GAME_CONTEXT_RECENT_KEEP_COUNT)
+    recent_lines = _game_context_dialog_lines(
+        context.get("recent_dialogues") or [],
+        max_items=_GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT,
+        language=language,
+    )
     if degraded:
         parts = [
             labels["degraded_status"],
@@ -1389,17 +1399,228 @@ def _format_game_context_for_prompt(context: Any, language: str | None = None) -
     return "\n".join(parts) + "\n"
 
 
-def _build_game_context_prompt_payload(state: dict | None) -> dict | None:
+def _build_game_context_prompt_payload(state: dict | None, *, include_recent: bool = True) -> dict | None:
     if not isinstance(state, dict):
         return None
     organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
     return {
         "summary": str(state.get("game_context_summary") or ""),
         "signals": _normalize_game_context_signals(state.get("game_context_signals")),
-        "recent_dialogues": _game_context_recent_dialogues(state, _GAME_CONTEXT_RECENT_KEEP_COUNT),
+        "recent_dialogues": (
+            _game_context_recent_dialogues(state, _GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT)
+            if include_recent else []
+        ),
         "degraded": organizer.get("degraded") is True,
         "organizer": organizer,
     }
+
+
+_GAME_INTERNAL_LOG_PREFIX_RE = re.compile(r"^\s*glog_\d+\s*[:：]\s*", re.IGNORECASE)
+_GAME_CONTROL_PAREN_TRAIL_RE = re.compile(
+    r"\s*[\(（][^()（）]*(?:mood|difficulty|reason|expression|intensity|balanceHint|balance_hint)\s*[:=][^()（）]*[\)）]\s*$",
+    re.IGNORECASE,
+)
+_GAME_CONTROL_JSON_TRAIL_RE = re.compile(
+    r"\s*\{[^{}]*(?:\"?(?:mood|difficulty|reason|expression|intensity|balanceHint|balance_hint)\"?\s*[:=])[^{}]*\}\s*$",
+    re.IGNORECASE,
+)
+_GAME_INTERNAL_CONTROL_LINE_RE = re.compile(
+    r"^\s*(?:reason|mood|difficulty|expression|intensity|balanceHint|balance_hint)\s*[:=]",
+    re.IGNORECASE,
+)
+_GAME_INTERNAL_ADVICE_RE = re.compile(
+    r"(?:balanceHint|balance_hint|system advice|system suggestion|系统建议|平衡建议|控制建议)",
+    re.IGNORECASE,
+)
+_GAME_LLM_VISIBLE_EVENT_TOP_LEVEL_DROP_KEYS = frozenset({
+    "basketballGameMemoryEnabled",
+    "basketball_game_memory_enabled",
+    "basketballGameMemoryPlayerInteractionEnabled",
+    "basketball_game_memory_player_interaction_enabled",
+    "basketballGameMemoryEventReplyEnabled",
+    "basketball_game_memory_event_reply_enabled",
+    "basketballGameMemoryArchiveEnabled",
+    "basketball_game_memory_archive_enabled",
+    "basketballGameMemoryPostgameContextEnabled",
+    "basketball_game_memory_postgame_context_enabled",
+    "soccerGameMemoryEnabled",
+    "soccer_game_memory_enabled",
+    "soccerGameMemoryPlayerInteractionEnabled",
+    "soccer_game_memory_player_interaction_enabled",
+    "soccerGameMemoryEventReplyEnabled",
+    "soccer_game_memory_event_reply_enabled",
+    "soccerGameMemoryArchiveEnabled",
+    "soccer_game_memory_archive_enabled",
+    "soccerGameMemoryPostgameContextEnabled",
+    "soccer_game_memory_postgame_context_enabled",
+    "gameMemoryEnabled",
+    "game_memory_enabled",
+    "gameMemoryPlayerInteractionEnabled",
+    "game_memory_player_interaction_enabled",
+    "gameMemoryEventReplyEnabled",
+    "game_memory_event_reply_enabled",
+    "gameMemoryArchiveEnabled",
+    "game_memory_archive_enabled",
+    "gameMemoryPostgameContextEnabled",
+    "game_memory_postgame_context_enabled",
+    "lanlan_name",
+})
+_SOCCER_LLM_VISIBLE_SNAPSHOT_DROP_KEYS = frozenset({
+    "aiFreezeSec",
+    "playerKickStartleWindowSec",
+    "playerKickWallBounceForStartle",
+    "startle",
+    "startleDirectCdSec",
+    "startleGrazeCdSec",
+    "startleMutualLockSec",
+    "zoneoutCooldownSec",
+    "ballGhost",
+})
+
+
+def _sanitize_game_visible_line(text: Any) -> str:
+    """Keep only natural player-visible speech; strip game route metadata leaks."""
+    lines: list[str] = []
+    for raw_line in str(text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        line = _GAME_INTERNAL_LOG_PREFIX_RE.sub("", line).strip()
+        if not line:
+            continue
+        if _GAME_INTERNAL_CONTROL_LINE_RE.search(line) or _GAME_INTERNAL_ADVICE_RE.search(line):
+            continue
+        previous = None
+        while previous != line:
+            previous = line
+            line = _GAME_CONTROL_JSON_TRAIL_RE.sub("", line).strip()
+            line = _GAME_CONTROL_PAREN_TRAIL_RE.sub("", line).strip()
+        if not line:
+            continue
+        if _GAME_INTERNAL_CONTROL_LINE_RE.search(line) or _GAME_INTERNAL_ADVICE_RE.search(line):
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def _sanitize_soccer_llm_visible_snapshot(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _sanitize_soccer_llm_visible_snapshot(item)
+            for key, item in value.items()
+            if key not in _SOCCER_LLM_VISIBLE_SNAPSHOT_DROP_KEYS
+        }
+    if isinstance(value, list):
+        return [_sanitize_soccer_llm_visible_snapshot(item) for item in value]
+    return value
+
+
+def _build_game_llm_visible_event(game_type: str, event: Any) -> Any:
+    """Build the event copy sent to the main game LLM without internal route fields."""
+    if not isinstance(event, dict):
+        return event
+
+    visible_event = {
+        key: value
+        for key, value in event.items()
+        if key not in _GAME_LLM_VISIBLE_EVENT_TOP_LEVEL_DROP_KEYS
+    }
+    if _normalize_game_memory_type(game_type) != "soccer":
+        return visible_event
+
+    if "currentState" in visible_event:
+        visible_event["currentState"] = _sanitize_soccer_llm_visible_snapshot(
+            visible_event.get("currentState")
+        )
+
+    pending_items = visible_event.get("pendingItems")
+    if isinstance(pending_items, list):
+        sanitized_items: list[Any] = []
+        for item in pending_items:
+            if not isinstance(item, dict):
+                sanitized_items.append(item)
+                continue
+            sanitized_item = dict(item)
+            if "snapshot" in sanitized_item:
+                sanitized_item["snapshot"] = _sanitize_soccer_llm_visible_snapshot(
+                    sanitized_item.get("snapshot")
+                )
+            sanitized_items.append(sanitized_item)
+        visible_event["pendingItems"] = sanitized_items
+
+    return visible_event
+
+
+def _game_dialog_history_user_text(item: dict, labels: dict[str, str]) -> str:
+    item_type = item.get("type")
+    if item_type == "user":
+        text = str(item.get("text") or "").strip()
+        return labels["player_line"].format(text=text) if text else ""
+    if item_type == "game_event":
+        kind = str(item.get("kind") or "event")
+        text = str(item.get("text") or "").strip()
+        if text:
+            return labels["game_event_text"].format(kind=kind, text=text)
+        return labels["game_event"].format(kind=kind)
+    return ""
+
+
+def _game_dialog_history_assistant_text(item: dict) -> str:
+    item_type = item.get("type")
+    if item_type == "assistant":
+        line = str(item.get("line") or "").strip()
+    elif item_type == "game_event":
+        line = str(item.get("result_line") or "").strip()
+    else:
+        return ""
+    return _sanitize_game_visible_line(line)
+
+
+def _build_game_recent_history_messages(state: dict | None, language: str | None = None) -> list:
+    if not isinstance(state, dict):
+        return []
+    from utils.llm_client import AIMessage, HumanMessage
+
+    labels = get_game_recent_history_message_labels(language)
+    messages = []
+    last_role = "system"
+    dialogues = _game_context_recent_dialogues(state, _GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT)
+    if dialogues and isinstance(dialogues[-1], dict) and dialogues[-1].get("type") == "user":
+        dialogues = dialogues[:-1]
+    for item in dialogues:
+        if not isinstance(item, dict):
+            continue
+        user_text = _game_dialog_history_user_text(item, labels)
+        assistant_text = _game_dialog_history_assistant_text(item)
+        if user_text:
+            if last_role == "human" and messages:
+                previous_content = str(getattr(messages[-1], "content", "")).rstrip()
+                messages[-1].content = f"{previous_content}\n{user_text}" if previous_content else user_text
+            else:
+                messages.append(HumanMessage(content=user_text))
+            last_role = "human"
+        if assistant_text:
+            if last_role == "human":
+                messages.append(AIMessage(content=assistant_text))
+                last_role = "ai"
+            else:
+                messages.append(HumanMessage(content=labels["previous_character_output"].format(text=assistant_text)))
+                last_role = "human"
+    return messages
+
+
+def _reset_game_session_text_history_for_turn(entry: dict, route_state: dict | None) -> None:
+    session = entry.get("session") if isinstance(entry, dict) else None
+    if session is None:
+        return
+    from utils.llm_client import SystemMessage
+
+    instructions = str(entry.get("instructions") or getattr(session, "_instructions", "") or "")
+    language = entry.get("user_language") if isinstance(entry, dict) else None
+    history = [SystemMessage(content=instructions)] if instructions else []
+    history.extend(_build_game_recent_history_messages(route_state, language))
+    session._instructions = instructions
+    session._conversation_history = history
 
 
 def _normalize_quick_lines(value: Any, allowed_keys: set[str] | None = None) -> Dict[str, list[str]]:
@@ -1764,9 +1985,6 @@ async def _build_basketball_pregame_context(
     mode: str = "spectator",
 ) -> tuple[dict, str, str]:
     normalized_mode = _normalize_basketball_mode(mode)
-    if normalized_mode in {"timed", "horse"}:
-        return _default_basketball_pregame_context(mode=normalized_mode), "lightweight", ""
-
     char_info = _get_character_info(lanlan_name)
     recent_history, history_error = await _fetch_recent_history_for_pregame(lanlan_name)
     _log_game_debug_material(
@@ -2120,10 +2338,65 @@ def _game_context_pending_dialogues(state: dict) -> list[dict]:
     return dialog[last_idx + 1:]
 
 
+def _game_context_recent_id_limit(state: dict, pending_count: int) -> int:
+    organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
+    if (
+        pending_count > _GAME_CONTEXT_RECENT_WINDOW_MAX_COUNT
+        or organizer.get("running")
+        or int(organizer.get("failure_count") or 0) > 0
+    ):
+        return _GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT
+    return _GAME_CONTEXT_RECENT_WINDOW_MAX_COUNT
+
+
+def _apply_game_context_failure_fallback(
+    state: dict,
+    pending: list[dict],
+    *,
+    reason: str,
+) -> bool:
+    if len(pending) < _GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT:
+        return False
+    keep_count = _GAME_CONTEXT_FAILURE_FALLBACK_KEEP_COUNT
+    discarded = pending[:-keep_count]
+    kept = pending[-keep_count:]
+    if not discarded:
+        return False
+    last_discarded_id = str(discarded[-1].get("id") or "")
+    if not last_discarded_id:
+        return False
+
+    organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
+    organizer["last_organized_id"] = last_discarded_id
+    organizer["degraded"] = False
+    organizer["error"] = f"fallback_{reason}_after_{len(pending)}_pending_items"
+    state["game_context_organizer"] = organizer
+    state["game_context_recent_ids"] = [
+        str(item.get("id") or "")
+        for item in kept
+        if isinstance(item, dict) and item.get("id")
+    ]
+    logger.warning(
+        "🎮 局内上下文整理失败兜底丢弃: game=%s session=%s reason=%s discarded=%s kept=%s last=%s",
+        state.get("game_type"),
+        state.get("session_id"),
+        reason,
+        len(discarded),
+        len(kept),
+        last_discarded_id,
+    )
+    return True
+
+
 def _set_game_context_recent_ids(state: dict, dialogues: list[dict] | None = None) -> None:
-    source = dialogues if dialogues is not None else state.get("game_dialog_log") or []
+    source = dialogues if dialogues is not None else _game_context_pending_dialogues(state)
+    if dialogues is None and len(source) >= _GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT:
+        if _apply_game_context_failure_fallback(state, source, reason="overflow"):
+            return
+        source = _game_context_pending_dialogues(state)
     ids = [str(item.get("id") or "") for item in source if isinstance(item, dict) and item.get("id")]
-    state["game_context_recent_ids"] = ids[-_GAME_CONTEXT_RECENT_KEEP_COUNT:]
+    limit = _game_context_recent_id_limit(state, len(ids))
+    state["game_context_recent_ids"] = ids[-limit:]
 
 
 def _should_schedule_game_context_organizer(state: dict) -> bool:
@@ -2199,7 +2472,11 @@ def _append_game_output(state: dict, output: dict) -> None:
     state["last_activity"] = time.time()
 
 
-def _build_game_context_organizer_payload(state: dict, snapshot: list[dict]) -> dict:
+def _build_game_context_organizer_payload(
+    state: dict,
+    snapshot: list[dict],
+    language: str | None = None,
+) -> dict:
     organize_dialogues = snapshot[:-_GAME_CONTEXT_RECENT_KEEP_COUNT]
     keep_dialogues = snapshot[-_GAME_CONTEXT_RECENT_KEEP_COUNT:]
     return {
@@ -2211,12 +2488,12 @@ def _build_game_context_organizer_payload(state: dict, snapshot: list[dict]) -> 
         "existingRollingSummary": str(state.get("game_context_summary") or ""),
         "existingSignals": _normalize_game_context_signals(state.get("game_context_signals")),
         "organizeDialogues": [
-            {"id": item.get("id"), "line": _dialog_memory_line(item)}
+            {"id": item.get("id"), "line": _dialog_memory_line(item, language)}
             for item in organize_dialogues
             if isinstance(item, dict)
         ],
         "keptRecentDialogues": [
-            {"id": item.get("id"), "line": _dialog_memory_line(item)}
+            {"id": item.get("id"), "line": _dialog_memory_line(item, language)}
             for item in keep_dialogues
             if isinstance(item, dict)
         ],
@@ -2226,9 +2503,10 @@ def _build_game_context_organizer_payload(state: dict, snapshot: list[dict]) -> 
 async def _run_game_context_organizer_ai(state: dict, snapshot: list[dict]) -> dict:
     """Summarize older in-game context and extract observable signals."""
     char_info = _get_game_route_summary_llm_info(str(state.get("lanlan_name") or ""))
-    payload = _build_game_context_organizer_payload(state, snapshot)
-    system_prompt = get_game_context_organizer_system_prompt(char_info.get("user_language"))
-    user_prompt = get_game_context_organizer_user_prompt(char_info.get("user_language")).format(
+    language = char_info.get("user_language")
+    payload = _build_game_context_organizer_payload(state, snapshot, language)
+    system_prompt = get_game_context_organizer_system_prompt(language)
+    user_prompt = get_game_context_organizer_user_prompt(language).format(
         payload=json.dumps(payload, ensure_ascii=False)
     )
 
@@ -2275,6 +2553,19 @@ def _apply_game_context_organizer_success(state: dict, snapshot: list[dict], res
     organize_dialogues = snapshot[:-_GAME_CONTEXT_RECENT_KEEP_COUNT]
     if not organize_dialogues:
         return
+    target_last_id = str(organize_dialogues[-1].get("id") or "")
+    dialog = [item for item in state.get("game_dialog_log") or [] if isinstance(item, dict)]
+    organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
+    current_last_id = str(organizer.get("last_organized_id") or "")
+    current_idx = _dialog_id_index(dialog, current_last_id)
+    target_idx = _dialog_id_index(dialog, target_last_id)
+    if current_idx > target_idx >= 0:
+        organizer["running"] = False
+        organizer["error"] = "stale_organizer_result_ignored"
+        state["game_context_organizer"] = organizer
+        _set_game_context_recent_ids(state)
+        return
+
     summary = _normalize_short_text(
         result.get("rollingSummary") or result.get("rolling_summary") or result.get("summary"),
         max_chars=900,
@@ -2285,12 +2576,11 @@ def _apply_game_context_organizer_success(state: dict, snapshot: list[dict], res
         state.get("game_context_signals"),
         result.get("signals") if isinstance(result.get("signals"), dict) else {},
     )
-    organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
     organizer.update({
         "running": False,
         "degraded": False,
         "failure_count": 0,
-        "last_organized_id": str(organize_dialogues[-1].get("id") or ""),
+        "last_organized_id": target_last_id,
         "source": result.get("source") if isinstance(result.get("source"), dict) else result.get("source"),
         "error": "",
     })
@@ -2299,21 +2589,29 @@ def _apply_game_context_organizer_success(state: dict, snapshot: list[dict], res
 
 
 def _apply_game_context_organizer_failure(state: dict, snapshot: list[dict], error: Exception) -> None:
+    organize_dialogues = snapshot[:-_GAME_CONTEXT_RECENT_KEEP_COUNT]
     organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
+    if organize_dialogues:
+        target_last_id = str(organize_dialogues[-1].get("id") or "")
+        dialog = [item for item in state.get("game_dialog_log") or [] if isinstance(item, dict)]
+        current_last_id = str(organizer.get("last_organized_id") or "")
+        current_idx = _dialog_id_index(dialog, current_last_id)
+        target_idx = _dialog_id_index(dialog, target_last_id)
+        if current_idx > target_idx >= 0:
+            organizer["running"] = False
+            organizer["error"] = organizer.get("error") or "stale_organizer_failure_ignored"
+            state["game_context_organizer"] = organizer
+            _set_game_context_recent_ids(state)
+            return
     organizer["running"] = False
     organizer["failure_count"] = int(organizer.get("failure_count") or 0) + 1
     organizer["error"] = type(error).__name__
-    pending_count = len(_game_context_pending_dialogues(state))
-    if pending_count >= _GAME_CONTEXT_DEGRADE_PENDING_COUNT:
-        organizer["degraded"] = True
-        organizer["error"] = f"degraded_after_{pending_count}_pending_items"
-        logger.warning(
-            "🎮 局内上下文整理达到硬上限，降级为纯游戏模式: game=%s session=%s pending=%s",
-            state.get("game_type"),
-            state.get("session_id"),
-            pending_count,
-        )
     state["game_context_organizer"] = organizer
+    pending = _game_context_pending_dialogues(state)
+    fallback_reason = f"organizer_failure_{type(error).__name__}"
+    if _apply_game_context_failure_fallback(state, pending, reason=fallback_reason):
+        return
+    _set_game_context_recent_ids(state)
 
 
 async def _run_game_context_organizer_task(state: dict, snapshot: list[dict]) -> None:
@@ -2622,24 +2920,28 @@ def _extract_score_text(state: dict) -> str:
     return f"玩家 {player} : {ai} {state.get('lanlan_name') or 'AI'}"
 
 
-_GAME_EVENT_MEMORY_LABELS = {
-    "goal-scored": "猫娘进球",
-    "goal-conceded": "玩家进球 / 猫娘丢球",
-    "own-goal-by-ai": "猫娘乌龙",
-    "own-goal-by-player": "玩家乌龙",
-    "steal": "猫娘抢到球",
-    "stolen": "猫娘被抢断",
-    "mailbox-batch": "累积上下文",
+_GAME_EVENT_MEMORY_LABEL_KEYS = {
+    "goal-scored": "event_goal_scored",
+    "goal-conceded": "event_goal_conceded",
+    "own-goal-by-ai": "event_own_goal_by_ai",
+    "own-goal-by-player": "event_own_goal_by_player",
+    "steal": "event_steal",
+    "stolen": "event_stolen",
+    "mailbox-batch": "event_mailbox_batch",
 }
 
 
-def _dialog_memory_line(item: dict) -> str:
+def _dialog_memory_line(item: dict, language: str | None = None) -> str:
+    labels = get_game_dialog_memory_line_labels(language)
     item_type = item.get("type")
     ts_text = _format_ts(item.get("ts"))
     prefix = f"[{ts_text}] " if ts_text else ""
     if item_type == "user":
         text = str(item.get("text") or "").strip()
-        return f"{prefix}玩家：{text}" if text else f"{prefix}玩家发来了一条游戏期间输入"
+        return (
+            f"{prefix}{labels['player_line'].format(text=text)}"
+            if text else f"{prefix}{labels['player_fallback']}"
+        )
     if item_type == "assistant":
         line = str(item.get("line") or "").strip()
         control = item.get("control") if isinstance(item.get("control"), dict) else {}
@@ -2649,19 +2951,23 @@ def _dialog_memory_line(item: dict) -> str:
         if control.get("difficulty"):
             control_bits.append(f"difficulty={control['difficulty']}")
         suffix = f" ({', '.join(control_bits)})" if control_bits else ""
-        return f"{prefix}{item.get('source') or 'game_llm'}：{line}{suffix}" if line else f"{prefix}游戏 LLM 返回为空"
+        return (
+            f"{prefix}{labels['assistant_line'].format(source=item.get('source') or 'game_llm', line=line, suffix=suffix)}"
+            if line else f"{prefix}{labels['assistant_empty']}"
+        )
     if item_type == "game_event":
         kind = str(item.get("kind") or "event")
-        label = _GAME_EVENT_MEMORY_LABELS.get(kind, "游戏事件")
+        label_key = _GAME_EVENT_MEMORY_LABEL_KEYS.get(kind, "event_default")
+        label = labels.get(label_key, labels["event_default"])
         text = str(item.get("text") or "").strip()
         line = str(item.get("result_line") or "").strip()
         if text and line:
-            return f"{prefix}游戏事件 {kind}（{label}）：事件原文「{text}」；猫娘回应「{line}」"
+            return f"{prefix}{labels['game_event_text_and_reply'].format(kind=kind, label=label, text=text, line=line)}"
         if line:
-            return f"{prefix}游戏事件 {kind}（{label}）：猫娘回应「{line}」"
+            return f"{prefix}{labels['game_event_reply'].format(kind=kind, label=label, line=line)}"
         if text:
-            return f"{prefix}游戏事件 {kind}（{label}）：事件原文「{text}」"
-        return f"{prefix}游戏事件 {kind}（{label}）"
+            return f"{prefix}{labels['game_event_text'].format(kind=kind, label=label, text=text)}"
+        return f"{prefix}{labels['game_event'].format(kind=kind, label=label)}"
     return f"{prefix}{json.dumps(item, ensure_ascii=False)}"
 
 
@@ -2756,7 +3062,8 @@ def _archive_prompt_language(archive: dict) -> str:
 
 
 def _build_game_archive_memory_text(archive: dict) -> str:
-    labels = get_game_archive_memory_text_labels(_archive_prompt_language(archive))
+    language = _archive_prompt_language(archive)
+    labels = get_game_archive_memory_text_labels(language)
     degraded = _archive_game_context_degraded(archive)
     lines = [
         labels["record_header"],
@@ -2785,7 +3092,7 @@ def _build_game_archive_memory_text(archive: dict) -> str:
     ]
     if key_events:
         lines.append(labels["key_events"])
-        lines.extend(f"- {_dialog_memory_line(item)}" for item in key_events[-8:] if isinstance(item, dict))
+        lines.extend(f"- {_dialog_memory_line(item, language)}" for item in key_events[-8:] if isinstance(item, dict))
 
     pre_game_context = archive.get("preGameContext") if isinstance(archive.get("preGameContext"), dict) else {}
     if pre_game_context:
@@ -2807,7 +3114,7 @@ def _build_game_archive_memory_text(archive: dict) -> str:
     ]
     if last_dialogues:
         lines.append(labels["recent_dialogues"])
-        lines.extend(f"- {_dialog_memory_line(item)}" for item in last_dialogues if isinstance(item, dict))
+        lines.extend(f"- {_dialog_memory_line(item, language)}" for item in last_dialogues if isinstance(item, dict))
 
     return "\n".join(line for line in lines if line is not None)
 
@@ -2910,15 +3217,20 @@ def _normalize_game_archive_memory_highlights(value: Any) -> dict:
 
 
 def _fallback_game_archive_memory_highlights(archive: dict) -> dict:
+    language = _archive_prompt_language(archive)
+    labels = get_game_archive_fallback_highlight_labels(language)
     records: list[str] = []
     last_user = _archive_last_user_text(archive)
     last_assistant = _archive_last_assistant_line(archive)
     if last_user and last_assistant:
-        records.append(f"玩家最后说「{last_user}」，你回应「{last_assistant}」。")
+        records.append(labels["user_and_assistant"].format(
+            last_user=last_user,
+            last_assistant=last_assistant,
+        ))
     elif last_user:
-        records.append(f"玩家最后在这局游戏里说「{last_user}」。")
+        records.append(labels["user_only"].format(last_user=last_user))
     elif last_assistant:
-        records.append(f"你最后在这局游戏里说「{last_assistant}」。")
+        records.append(labels["assistant_only"].format(last_assistant=last_assistant))
 
     event_records: list[str] = []
     key_events = archive.get("key_events") if isinstance(archive.get("key_events"), list) else []
@@ -2927,7 +3239,7 @@ def _fallback_game_archive_memory_highlights(archive: dict) -> dict:
             continue
         if not _game_dialog_item_allowed_for_memory(item, archive):
             continue
-        line = _dialog_memory_line(item)
+        line = _dialog_memory_line(item, language)
         if line:
             event_records.append(line)
         if len(event_records) >= 3:
@@ -2944,7 +3256,8 @@ def _fallback_game_archive_memory_highlights(archive: dict) -> dict:
 
 
 def _build_game_archive_memory_highlight_source(archive: dict) -> str:
-    labels = get_game_archive_highlight_source_labels(_archive_prompt_language(archive))
+    language = _archive_prompt_language(archive)
+    labels = get_game_archive_highlight_source_labels(language)
     dialogues = archive.get("full_dialogues") if isinstance(archive.get("full_dialogues"), list) else []
     if not dialogues:
         dialogues = archive.get("last_full_dialogues") if isinstance(archive.get("last_full_dialogues"), list) else []
@@ -2981,7 +3294,7 @@ def _build_game_archive_memory_highlight_source(archive: dict) -> str:
             lines.append(labels["selection_priority"])
     lines.append(labels["full_dialogues"])
     lines.extend(
-        f"- {_dialog_memory_line(item)}"
+        f"- {_dialog_memory_line(item, language)}"
         for item in dialogues
         if isinstance(item, dict) and _game_dialog_item_allowed_for_memory(item, archive)
     )
@@ -3285,7 +3598,8 @@ def _build_game_postgame_context_text(archive: dict) -> str:
     Reuse already-built game archive material only. Do not trigger another LLM
     pass here; the Realtime session only needs compact postgame continuity.
     """
-    labels = get_game_postgame_context_labels(_archive_prompt_language(archive))
+    language = _archive_prompt_language(archive)
+    labels = get_game_postgame_context_labels(language)
     degraded = _archive_game_context_degraded(archive)
     score_text = _archive_score_text(archive)
     highlights = _normalize_game_archive_memory_highlights(archive.get("memory_highlights"))
@@ -3340,7 +3654,7 @@ def _build_game_postgame_context_text(archive: dict) -> str:
             lines.append(signals_text)
 
     unorganized_lines = [
-        f"- {_dialog_memory_line(item)}"
+        f"- {_dialog_memory_line(item, language)}"
         for item in _archive_unorganized_dialogues(archive)
         if isinstance(item, dict)
     ]
@@ -3395,11 +3709,12 @@ def _build_game_postgame_realtime_nudge_instruction(archive: dict, options: dict
 
 
 def _build_game_postgame_event(game_type: str, archive: dict, options: dict) -> dict:
-    texts = get_game_postgame_event_texts(_archive_prompt_language(archive))
+    language = _archive_prompt_language(archive)
+    texts = get_game_postgame_event_texts(language)
     dialogues = archive.get("last_full_dialogues") if isinstance(archive.get("last_full_dialogues"), list) else []
     include_count = int(options.get("include_last_dialogues") or _DEFAULT_LAST_FULL_DIALOGUE_COUNT)
     formatted_dialogues = [
-        _dialog_memory_line(item)
+        _dialog_memory_line(item, language)
         for item in dialogues[-include_count:]
         if isinstance(item, dict)
     ]
@@ -3960,7 +4275,7 @@ def _build_postgame_context_snapshot(state: dict) -> dict:
     pre_game_context = state.get("preGameContext") if isinstance(state.get("preGameContext"), dict) else None
     return {
         "pre_game_context": pre_game_context,
-        "game_context": _build_game_context_prompt_payload(state),
+        "game_context": _build_game_context_prompt_payload(state, include_recent=False),
         "mode": _normalize_basketball_mode(state.get("mode")),
     }
 
@@ -4197,7 +4512,7 @@ async def _build_and_register_game_session(
     else:
         route_state = _find_game_route_state_for_session(game_type, _route_session_id(session_id), lanlan_name)
         pre_game_context = route_state.get("preGameContext") if isinstance(route_state, dict) else None
-        game_context = _build_game_context_prompt_payload(route_state)
+        game_context = _build_game_context_prompt_payload(route_state, include_recent=False)
         route_mode = _normalize_basketball_mode(route_state.get("mode") if isinstance(route_state, dict) else "")
     prompt_args = (
         game_type,
@@ -4289,7 +4604,7 @@ async def _refresh_game_session_instructions(
     else:
         route_state = _find_game_route_state_for_session(game_type, _route_session_id(session_id), char_info["lanlan_name"])
         pre_game_context = route_state.get("preGameContext") if isinstance(route_state, dict) else None
-        game_context = _build_game_context_prompt_payload(route_state)
+        game_context = _build_game_context_prompt_payload(route_state, include_recent=False)
         route_mode = _normalize_basketball_mode(route_state.get("mode") if isinstance(route_state, dict) else "")
     prompt_args = (
         game_type,
@@ -4376,7 +4691,7 @@ def _parse_control_instructions(reply: str, game_type: str = "soccer") -> Dict[s
                 pass
 
     return {
-        'line': line_text,
+        'line': _sanitize_game_visible_line(line_text),
         'control': control,
     }
 
@@ -4590,12 +4905,31 @@ def _build_basketball_duel_balance_hint(event: Any) -> Dict[str, Any]:
     """Build a soft balance hint from the Basketball duel score."""
     if not isinstance(event, dict):
         return {}
-    duel = event.get("duel") if isinstance(event.get("duel"), dict) else {}
+    current_state = event.get("currentState") if isinstance(event.get("currentState"), dict) else {}
+    state_duel = _sanitize_basketball_duel_state(current_state.get("duel")) or {}
+    event_duel = _sanitize_basketball_duel_state(event.get("duel")) or {}
+    duel = {**state_duel, **event_duel}
     player_score = _safe_int(duel.get("player_score"), 0)
     neko_score = _safe_int(duel.get("neko_score"), 0)
     max_rounds = _safe_int(duel.get("max_rounds"), 0)
     round_num = _safe_int(duel.get("round"), 0)
     remaining_rounds = max(0, max_rounds - round_num) if max_rounds else 999
+    max_misses = _safe_int(duel.get("max_misses"), 0)
+    player_misses = _safe_int(duel.get("player_misses"), 0)
+    neko_misses = _safe_int(duel.get("neko_misses"), 0)
+    player_misses_left = max(0, max_misses - player_misses) if max_misses else 999
+    neko_misses_left = max(0, max_misses - neko_misses) if max_misses else 999
+    miss_context = (
+        {
+            "playerMisses": player_misses,
+            "nekoMisses": neko_misses,
+            "maxMisses": max_misses,
+            "playerMissesLeft": player_misses_left,
+            "nekoMissesLeft": neko_misses_left,
+        }
+        if max_misses
+        else {}
+    )
 
     diff = neko_score - player_score
     active_shooter = str(duel.get("active_shooter") or "").strip().lower()
@@ -4603,32 +4937,55 @@ def _build_basketball_duel_balance_hint(event: Any) -> Dict[str, Any]:
     pending_shot_points = 2 if active_shooter == trailing_shooter else 0
     remaining_points = remaining_rounds * 2 + pending_shot_points if max_rounds else 999
     abs_diff = abs(diff)
+    if max_misses and player_misses_left <= 0:
+        return {
+            "state": "player_eliminated",
+            "diff": diff,
+            "remainingRounds": remaining_rounds,
+            "remainingPoints": remaining_points,
+            **miss_context,
+            "intensity": "low",
+            "message": "玩家已经三次投丢，按淘汰规则收尾。",
+        }
+    if max_misses and neko_misses_left <= 0:
+        return {
+            "state": "neko_eliminated",
+            "diff": diff,
+            "remainingRounds": remaining_rounds,
+            "remainingPoints": remaining_points,
+            **miss_context,
+            "intensity": "low",
+            "message": "Neko 已经三次投丢，按淘汰规则收尾。",
+        }
     if abs_diff <= 1:
         return {
             "state": "close",
             "diff": diff,
             "remainingRounds": remaining_rounds,
             "remainingPoints": remaining_points,
+            **miss_context,
             "intensity": "low",
             "message": "比分接近，自由发挥。",
         }
 
     neko_leading = diff > 0
-    if neko_leading and diff > remaining_points:
+    if not max_misses and neko_leading and diff > remaining_points:
         return {
             "state": "neko_leading_decided",
             "diff": diff,
             "remainingRounds": remaining_rounds,
             "remainingPoints": remaining_points,
+            **miss_context,
             "intensity": "low",
             "message": "已经锁定胜局，可以嘴硬庆祝或温和收尾。",
         }
-    if not neko_leading and abs_diff > remaining_points:
+    if not max_misses and not neko_leading and abs_diff > remaining_points:
         return {
             "state": "player_leading_decided",
             "diff": diff,
             "remainingRounds": remaining_rounds,
             "remainingPoints": remaining_points,
+            **miss_context,
             "intensity": "low",
             "message": "确定输定了，可以不服气、认输或要求再来一局。",
         }
@@ -4638,6 +4995,7 @@ def _build_basketball_duel_balance_hint(event: Any) -> Dict[str, Any]:
             "diff": diff,
             "remainingRounds": remaining_rounds,
             "remainingPoints": remaining_points,
+            **miss_context,
             "intensity": "high" if abs_diff >= 5 else "medium",
             "message": "你领先中。可以考虑放水搞笑，也可以继续认真；台词里表达原因。",
         }
@@ -4646,6 +5004,7 @@ def _build_basketball_duel_balance_hint(event: Any) -> Dict[str, Any]:
         "diff": diff,
         "remainingRounds": remaining_rounds,
         "remainingPoints": remaining_points,
+        **miss_context,
         "intensity": "high" if abs_diff >= 5 else "medium",
         "message": "玩家领先中。可以认真起来、不服气、要求重赛。",
     }
@@ -4784,7 +5143,7 @@ def _check_basketball_chat_rate(lanlan_name: str, session_id: str) -> bool:
 
 def _normalize_basketball_mode(value: Any) -> str:
     mode = str(value or "").strip().lower()
-    return mode if mode in {"spectator", "shooter", "duel", "timed", "horse"} else "spectator"
+    return mode if mode in {"spectator", "shooter", "duel"} else "spectator"
 
 
 def _is_basketball_scoring_mode(value: Any) -> bool:
@@ -5377,6 +5736,12 @@ def _sanitize_basketball_duel_state(value: Any) -> dict | None:
         ("playerScore", "player_score"),
         ("neko_score", "neko_score"),
         ("nekoScore", "neko_score"),
+        ("player_misses", "player_misses"),
+        ("playerMisses", "player_misses"),
+        ("neko_misses", "neko_misses"),
+        ("nekoMisses", "neko_misses"),
+        ("max_misses", "max_misses"),
+        ("maxMisses", "max_misses"),
         ("round", "round"),
         ("max_rounds", "max_rounds"),
         ("maxRounds", "max_rounds"),
@@ -5384,9 +5749,12 @@ def _sanitize_basketball_duel_state(value: Any) -> dict | None:
         if src_key not in value:
             continue
         try:
-            number = int(float(value.get(src_key)))
+            number_float = float(value.get(src_key))
         except (TypeError, ValueError):
             continue
+        if not math.isfinite(number_float):
+            continue
+        number = int(number_float)
         clean[dst_key] = max(0, min(number, 999))
     active = _normalize_short_text(
         value.get("active_shooter", value.get("activeShooter")),
@@ -5397,78 +5765,10 @@ def _sanitize_basketball_duel_state(value: Any) -> dict | None:
     return clean or None
 
 
-def _sanitize_basketball_horse_state(value: Any) -> dict | None:
-    if not isinstance(value, dict):
-        return None
-    clean: dict[str, Any] = {}
-    word = _normalize_short_text(value.get("word"), max_chars=16)
-    if word:
-        clean["word"] = word
-    for src_key, dst_key in (
-        ("letters_player", "letters_player"),
-        ("lettersPlayer", "letters_player"),
-        ("letters_neko", "letters_neko"),
-        ("lettersNeko", "letters_neko"),
-    ):
-        if src_key not in value:
-            continue
-        try:
-            number = int(float(value.get(src_key)))
-        except (TypeError, ValueError):
-            continue
-        clean[dst_key] = max(0, min(number, 999))
-    phase = _normalize_short_text(value.get("phase"), max_chars=40)
-    if phase:
-        clean["phase"] = phase
-    turn_owner = _normalize_short_text(
-        value.get("turn_owner", value.get("turnOwner")),
-        max_chars=20,
-    ).lower()
-    if turn_owner in {"player", "neko"}:
-        clean["turn_owner"] = turn_owner
-    challenge = value.get("challenge")
-    if isinstance(challenge, dict):
-        clean_challenge: dict[str, Any] = {}
-        owner = _normalize_short_text(challenge.get("owner"), max_chars=20).lower()
-        if owner in {"player", "neko"}:
-            clean_challenge["owner"] = owner
-        for key in ("distance", "angle"):
-            if key not in challenge:
-                continue
-            try:
-                number = float(challenge.get(key))
-            except (TypeError, ValueError):
-                continue
-            if not math.isfinite(number):
-                continue
-            limit = 5000.0 if key == "distance" else 1000.0
-            clean_challenge[key] = max(-limit, min(number, limit))
-        sweet = challenge.get("sweet")
-        if isinstance(sweet, list) and len(sweet) >= 2:
-            sweet_values: list[float] = []
-            for raw in sweet[:2]:
-                try:
-                    number = float(raw)
-                except (TypeError, ValueError):
-                    sweet_values = []
-                    break
-                if not math.isfinite(number):
-                    sweet_values = []
-                    break
-                sweet_values.append(max(0.0, min(number, 1000.0)))
-            if len(sweet_values) == 2:
-                clean_challenge["sweet"] = sweet_values
-        if clean_challenge:
-            clean["challenge"] = clean_challenge
-    elif "challenge" in value and value.get("challenge") is None:
-        clean["challenge"] = None
-    return clean or None
-
-
 def _sanitize_basketball_attempts_results(value: Any, *, max_items: int = 12) -> list[dict]:
     if not isinstance(value, list):
         return []
-    allowed_text = {"shooter", "shot_type", "horse_phase"}
+    allowed_text = {"shooter", "shot_type"}
     allowed_numbers = {
         "distance", "distance_m", "score", "angle", "power", "round",
         "streak_before", "streak_after", "best_streak_after", "made_count_after",
@@ -5515,6 +5815,7 @@ def _sanitize_basketball_event(event: Any) -> tuple[dict | None, str]:
         "new_record", "streak_5", "streak_10", "streak_15", "streak_20",
     }
     allowed_results = {"scored", "missed", ""}
+    allowed_duel_outcomes = {"player_win", "neko_win"}
     allowed_shot_types = {"swish", "bank", "rim_in", "rim_out", "air_ball", ""}
     kind = str(event.get("kind") or "").strip()
     if kind not in allowed_kinds:
@@ -5529,11 +5830,14 @@ def _sanitize_basketball_event(event: Any) -> tuple[dict | None, str]:
                 clean[key] = event.get(key) is True
 
     result = str(event.get("result") or "").strip()
+    duel_outcome = str(event.get("duel_outcome") or "").strip()
     shot_type = str(event.get("shot_type") or "").strip()
     if result not in allowed_results:
         clean.pop("result", None)
     else:
         clean["result"] = result
+    if duel_outcome in allowed_duel_outcomes:
+        clean["duel_outcome"] = duel_outcome
     if shot_type not in allowed_shot_types:
         clean.pop("shot_type", None)
     else:
@@ -5574,9 +5878,6 @@ def _sanitize_basketball_event(event: Any) -> tuple[dict | None, str]:
     duel_state = _sanitize_basketball_duel_state(event.get("duel"))
     if duel_state:
         clean["duel"] = duel_state
-    horse_state = _sanitize_basketball_horse_state(event.get("horse"))
-    if horse_state:
-        clean["horse"] = horse_state
     current_state = event.get("currentState")
     if isinstance(current_state, dict):
         state_clean = {}
@@ -5633,9 +5934,6 @@ def _sanitize_basketball_event(event: Any) -> tuple[dict | None, str]:
         duel_state = _sanitize_basketball_duel_state(current_state.get("duel"))
         if duel_state:
             state_clean["duel"] = duel_state
-        horse_state = _sanitize_basketball_horse_state(current_state.get("horse"))
-        if horse_state:
-            state_clean["horse"] = horse_state
         attempts_results = _sanitize_basketball_attempts_results(
             current_state.get("attempts_results"),
         )
@@ -5946,6 +6244,10 @@ async def _run_game_chat(
                     err_result["_postgame_cache_session_id"] = chat_session_id
                 return err_result
 
+            if not allow_postgame:
+                history_state = _find_game_route_state_for_session(game_type, session_id, lanlan_name)
+                _reset_game_session_text_history_for_turn(entry, history_state)
+
             # 清空上一次的回复
             reply_chunks.clear()
 
@@ -5991,10 +6293,11 @@ async def _run_game_chat(
 
             # 格式化事件为文本发送给 LLM
             import json as _json
-            if isinstance(event, dict):
-                event_payload = _json.dumps(event, ensure_ascii=False)
+            llm_visible_event = _build_game_llm_visible_event(game_type, event)
+            if isinstance(llm_visible_event, dict):
+                event_payload = _json.dumps(llm_visible_event, ensure_ascii=False)
             else:
-                event_payload = str(event)
+                event_payload = str(llm_visible_event)
             event_text = get_game_chat_event_user_prompt(entry.get("user_language")).format(event=event_payload)
 
             llm_started_at = time.perf_counter()

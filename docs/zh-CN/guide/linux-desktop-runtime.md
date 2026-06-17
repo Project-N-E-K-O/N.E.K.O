@@ -118,6 +118,23 @@ GLib version too old
 3. 收窄 `LD_LIBRARY_PATH`，只优先必要的兼容库。
 4. 尽早记录选中的 IM module 路径和初始化失败原因，避免用户只看到“无法输入中文”。
 
+## 文件系统编码与非 ASCII 路径
+
+Python 后端在启动时可能因 `UnicodeEncodeError` 崩溃——当它创建或打开含非 ASCII 字符的路径时，最常见的是角色目录，例如 `memory/玖儿/...`。报错栈会指向一个看似无害的 `os.makedirs()` 或 `open()`。
+
+根因是解释器的**文件系统编码**（`sys.getfilesystemencoding()`），而不是传给 `open()` 的编码。AppImage 内嵌的 Python（或任何精简 Linux 运行环境）在 `C`/`POSIX` locale 下启动、且 PEP 538 locale coercion 找不到 `C.UTF-8` 目标时，会退化成 `ascii`。一旦文件系统编码是 `ascii`，任何带非 ASCII 路径的文件系统调用都会失败。注意：
+
+- 系统层正确设置 `LANG=zh_CN.UTF-8` 也**没用**，因为启动壳往往没把 locale 透传进内嵌解释器。
+- `sys.getdefaultencoding()` 与此无关——它在 Python 3 永远是 UTF-8，且不影响路径处理。
+- 文件系统编码在解释器启动时即固定，运行时无法更改。
+
+修复方式是 **UTF-8 Mode**（PEP 540），由环境变量 `PYTHONUTF8=1` 开启。它是运行时环境变量，无需重新编译内嵌 Python。两层防御应同时成立：
+
+1. **Electron 壳层** —— `backend-runtime.js` 在 spawn 后端时往其环境里设了 `PYTHONUTF8=1`（以及 `PYTHONIOENCODING=utf-8`）。这是 AppImage 路径的主修复。
+2. **Python 启动器自愈** —— `launcher.py` 在入口处检查 `sys.getfilesystemencoding()`；若非 UTF-8，则设 `PYTHONUTF8=1` 并用 `os.execv` 把自身重启一次（同 PID，壳层对进程的跟踪不受影响）。这覆盖旧壳层、Steam 构建，以及不经过 `backend-runtime.js` 的直接启动。
+
+若报告仍出现此崩溃，先确认该构建确实带齐这两层——早于壳层 env 注入的 AppImage，只有在重新构建、或更新到带自愈的启动器之后才被覆盖。
+
 ## Bug Report 应包含的信息
 
 点击穿透问题建议包含：
