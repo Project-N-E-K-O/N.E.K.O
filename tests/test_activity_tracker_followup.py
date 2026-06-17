@@ -20,6 +20,7 @@ import pytest
 
 from main_logic.activity.snapshot import (
     ActivitySnapshot,
+    UnfinishedThread,
     derive_skip_probability,
     derive_tone,
     format_activity_state_section,
@@ -357,8 +358,8 @@ def test_count_thresholds_reject_non_integer_floats():
     """``window_switch_transition_threshold`` and
     ``unfinished_thread_max_followups`` are count-shaped — floats like
     ``0.9`` or ``1.7`` must NOT silently truncate to 0 / 1 (which would
-    break transitioning detection or cap unfinished_thread at 1 instead
-    of the user's intended 2). Loader-side validation only checks
+    break transitioning detection or turn a typo into an unintended
+    unfinished_thread override). Loader-side validation only checks
     "positive number"; the integer guard lives in ActivityStateMachine.
 
     Verify by direct ActivityPreferences construction (bypasses the
@@ -375,8 +376,8 @@ def test_count_thresholds_reject_non_integer_floats():
         f'non-integer float must fall back to default 5; '
         f'got {sm._window_switch_transition_threshold}'
     )
-    assert sm._unfinished_thread_max_followups == 2, (
-        f'non-integer float must fall back to default 2; '
+    assert sm._unfinished_thread_max_followups == 1, (
+        f'non-integer float must fall back to default 1; '
         f'got {sm._unfinished_thread_max_followups}'
     )
 
@@ -478,6 +479,42 @@ def test_non_witty_tone_has_no_quality_bar():
     )
     out = format_activity_state_section(snap, lang='zh')
     assert '[PASS]' not in out
+
+
+@pytest.mark.unit
+def test_activity_state_renders_open_threads_in_state_section():
+    snap = ActivitySnapshot(
+        state='idle', state_age_seconds=10.0, previous_state=None,
+        transitioned_recently=False, stale_returning=False,
+        propensity='open', tone='playful',
+        open_threads=['AI 答应等会帮看测试还没看'],
+    )
+
+    out = format_activity_state_section(snap, lang='zh')
+
+    assert '开放话题:' in out
+    assert '- AI 答应等会帮看测试还没看' in out
+
+
+@pytest.mark.unit
+def test_activity_state_unfinished_thread_hides_followup_count():
+    snap = ActivitySnapshot(
+        state='focused_work', state_age_seconds=10.0, previous_state=None,
+        transitioned_recently=False, stale_returning=False,
+        propensity='restricted_screen_only', tone='concise',
+        unfinished_thread=UnfinishedThread(
+            text='主人，你今天准备几点出发?',
+            age_seconds=60.0,
+            follow_up_count=0,
+            max_follow_ups=1,
+        ),
+    )
+
+    out = format_activity_state_section(snap, lang='zh')
+
+    assert '未收尾话题：「…主人，你今天准备几点出发?」(60s前)' in out
+    assert '已跟进' not in out
+    assert '/1' not in out
 
 
 # ── #1 / skip_probability ───────────────────────────────────────────
@@ -988,7 +1025,7 @@ def test_update_window_collapses_on_canonical_but_invalidates_on_intensity_chang
 
 def test_mark_unfinished_thread_used_honors_threshold_override():
     """When prefs set max_followups=3, the cap retires the thread on the
-    third call (not the second — the module constant default)."""
+    third call, proving explicit integer overrides still win over the default."""
     prefs = ActivityPreferences(
         thresholds={'unfinished_thread_max_followups': 3.0},
     )

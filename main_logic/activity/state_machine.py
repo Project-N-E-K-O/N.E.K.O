@@ -135,7 +135,7 @@ GAMING_GPU_MAX_IDLE_SECONDS = 60.0
 # cap on follow-ups prevents the AI from harassing the user about the
 # same hanging question.
 UNFINISHED_THREAD_WINDOW_SECONDS = 5 * 60
-UNFINISHED_THREAD_MAX_FOLLOWUPS = 2
+UNFINISHED_THREAD_MAX_FOLLOWUPS = 1
 
 # Question-detection heuristic: only the last N chars of the AI message
 # are scanned. Mid-sentence question marks (e.g. "你说『你好吗』我没听清")

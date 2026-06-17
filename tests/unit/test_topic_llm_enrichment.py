@@ -76,9 +76,8 @@ async def test_call_topic_candidates_parses_model_output(monkeypatch):
     monkeypatch.setattr(llm_enrichment, "_invoke_emotion_tier", fake_invoke)
 
     topics = await llm_enrichment.call_topic_candidates(
-        user_msgs=[(1.0, "我想买凯迪拉克，但我根本买不起，毕业一年才攒了4600")],
-        ai_msgs=[],
         lang="zh-CN",
+        global_signals="- [3min前] 用户: 我想买凯迪拉克，但根本买不起\n- [0s前] 用户: 毕业一年才攒了4600",
     )
 
     assert topics == [
@@ -120,13 +119,11 @@ async def test_call_topic_candidates_passes_global_signals_and_keeps_keywords(mo
     monkeypatch.setattr(llm_enrichment, "_invoke_emotion_tier", fake_invoke)
 
     topics = await llm_enrichment.call_topic_candidates(
-        user_msgs=[(1.0, "刚才又聊到买车")],
-        ai_msgs=[],
         lang="zh-CN",
-        global_signals="全局信号：用户三次提到买车和自由感",
+        global_signals="- [5min前] 用户: 又聊到买车\n- [1min前] 用户: 买车让我觉得能自由点",
     )
 
-    assert "全局信号：用户三次提到买车和自由感" in captured["prompt"]
+    assert "买车让我觉得能自由点" in captured["prompt"]
     assert topics == [
         {
             "interest": "用户把买车和生活自由感联系在一起",
@@ -158,10 +155,8 @@ async def test_call_topic_candidates_skips_low_relevance(monkeypatch):
     monkeypatch.setattr(llm_enrichment, "_invoke_emotion_tier", fake_invoke)
 
     topics = await llm_enrichment.call_topic_candidates(
-        user_msgs=[(1.0, "还没聊开")],
-        ai_msgs=[],
         lang="zh-CN",
-        global_signals="收集进度: 60%",
+        global_signals="- [2min前] 用户: 还没聊开，就随口提了句",
     )
 
     assert topics == []
@@ -187,9 +182,8 @@ async def test_call_topic_candidates_skips_high_risk(monkeypatch):
     monkeypatch.setattr(llm_enrichment, "_invoke_emotion_tier", fake_invoke)
 
     topics = await llm_enrichment.call_topic_candidates(
-        user_msgs=[(1.0, "顺口提了一句不太想被追问的事")],
-        ai_msgs=[],
         lang="zh-CN",
+        global_signals="- [1min前] 用户: 顺口提了一句不太想被追问的事",
     )
 
     # relevance clears the bar but risk > 65 must still reject — guards the
@@ -218,10 +212,8 @@ async def test_call_topic_candidates_keeps_short_cjk_interests(monkeypatch):
     monkeypatch.setattr(llm_enrichment, "_invoke_emotion_tier", fake_invoke)
 
     topics = await llm_enrichment.call_topic_candidates(
-        user_msgs=[(1.0, "我最近一直在想转职")],
-        ai_msgs=[],
         lang="zh-CN",
-        global_signals="收集进度: 100%",
+        global_signals="- [4min前] 用户: 我最近一直在想转职\n- [0s前] 用户: 越来越认真在考虑",
     )
 
     assert topics and topics[0]["interest"] == "转职"
@@ -255,10 +247,8 @@ async def test_call_topic_candidates_uses_localized_prompt_for_supported_languag
     monkeypatch.setattr(llm_enrichment, "_invoke_emotion_tier", fake_invoke)
 
     topics = await llm_enrichment.call_topic_candidates(
-        user_msgs=[(1.0, "I mentioned wanting a new phone.")],
-        ai_msgs=[],
         lang=lang,
-        global_signals="collection: enough evidence",
+        global_signals="- [2min ago] User: I keep thinking about wanting a new phone",
     )
 
     assert topics == []

@@ -1563,8 +1563,13 @@
         return kind === 'surfaceShell' || kind === 'capsule' || kind === 'input';
     }
 
+    function isCompactSurfaceBaseHitKind(kind) {
+        return kind === 'inputControl';
+    }
+
     function getCompactSurfaceGeometryRole(kind) {
         if (isCompactSurfaceBaseAnchorKind(kind)) return 'baseAnchor';
+        if (isCompactSurfaceBaseHitKind(kind)) return 'baseHit';
         return 'extraIsland';
     }
 
@@ -1572,6 +1577,14 @@
         if (!item) return item;
         item.geometryRole = getCompactSurfaceGeometryRole(item.kind);
         return item;
+    }
+
+    function getCompactGeometryItemBoundsRects(item) {
+        if (!item) return [];
+        var rects = [];
+        if (item.visualRect) rects.push(item.visualRect);
+        if (item.nativeRect) rects.push(item.nativeRect);
+        return rects;
     }
 
     function collectCompactToolFanGeometryItems(element) {
@@ -1619,6 +1632,52 @@
             .filter(Boolean));
     }
 
+    function collectCompactInputSurfaceGeometryItems(element) {
+        var parentRect = getCompactGeometryElementRect(element);
+        var inputSurfaceIsDragSurface = element.getAttribute('data-compact-drag-surface') === 'true';
+        var items = [];
+        if (parentRect) {
+            items.push({
+                id: element.id || 'input:surface',
+                owner: 'surface',
+                kind: 'input',
+                visualRect: parentRect,
+                hitRect: inputSurfaceIsDragSurface ? parentRect : null,
+                nativeRect: inputSurfaceIsDragSurface ? parentRect : null,
+                interactive: inputSurfaceIsDragSurface
+            });
+        }
+        var hitRegionElements = [];
+        if (element.getAttribute('data-compact-hit-region') === 'true') {
+            hitRegionElements.push(element);
+        }
+        hitRegionElements = hitRegionElements.concat(
+            Array.prototype.slice.call(element.querySelectorAll('[data-compact-hit-region="true"]'))
+        );
+        return items.concat(hitRegionElements
+            .map(function (child, index) {
+                var style = window.getComputedStyle ? window.getComputedStyle(child) : null;
+                if (style && (style.display === 'none' || style.visibility === 'hidden')) return null;
+                if (style && Number(style.opacity) <= 0.01) return null;
+                if (style && style.pointerEvents === 'none') return null;
+                var rect = normalizeCompactDomRect(child.getBoundingClientRect());
+                if (!rect) return null;
+                var clippedRect = parentRect ? intersectCompactRects(rect, parentRect) : rect;
+                if (!clippedRect) return null;
+                return {
+                    id: child.getAttribute('data-compact-hit-region-id') || ('input:hit:' + index),
+                    owner: 'surface',
+                    kind: 'inputControl',
+                    visualRect: clippedRect,
+                    hitRect: clippedRect,
+                    nativeRect: clippedRect,
+                    interactive: true,
+                    hitRegionKind: child.getAttribute('data-compact-hit-region-kind') || null
+                };
+            })
+            .filter(Boolean));
+    }
+
     function collectCompactCompositeGeometryItems(element, kind) {
         var parentRect = getCompactGeometryElementRect(element);
         var items = [];
@@ -1641,7 +1700,7 @@
                         kind: kind || 'unknown',
                         visualRect: scrollbarRect,
                         hitRect: scrollbarRect,
-                        nativeRect: null,
+                        nativeRect: scrollbarRect,
                         interactive: true,
                         hitRegionKind: 'scrollbar'
                     });
@@ -1668,7 +1727,7 @@
                     kind: kind || 'unknown',
                     visualRect: clippedRect,
                     hitRect: clippedRect,
-                    nativeRect: kind === 'history' ? null : clippedRect,
+                    nativeRect: clippedRect,
                     interactive: true,
                     hitRegionKind: hitRegionKind
                 };
@@ -1692,7 +1751,7 @@
                 kind: 'surfaceShell',
                 visualRect: shellRect,
                 hitRect: null,
-                nativeRect: shellRect,
+                nativeRect: null,
                 interactive: false
             });
         }
@@ -1722,6 +1781,9 @@
             var compactGeometryItem = element.getAttribute('data-compact-geometry-item');
             if (compactGeometryItem === 'toolFan') {
                 return items.concat(collectCompactToolFanGeometryItems(element));
+            }
+            if (compactGeometryItem === 'input') {
+                return items.concat(collectCompactInputSurfaceGeometryItems(element));
             }
             if (compactGeometryItem === 'cat1Mirror') {
                 var mirrorRect = getCompactGeometryElementRect(element);
@@ -1767,8 +1829,15 @@
         var extraIslandItems = surfaceItems.filter(function (item) {
             return item && item.geometryRole === 'extraIsland';
         });
-        var surfaceRects = surfaceItems.map(function (item) { return item.nativeRect; });
-        var baseSurfaceRects = baseSurfaceItems.map(function (item) { return item.nativeRect; });
+        var baseSurfaceNativeItems = surfaceItems.filter(function (item) {
+            return item && (item.geometryRole === 'baseAnchor' || item.geometryRole === 'baseHit');
+        });
+        var surfaceRects = surfaceItems.reduce(function (rects, item) {
+            return rects.concat(getCompactGeometryItemBoundsRects(item));
+        }, []);
+        var baseSurfaceRects = baseSurfaceItems.reduce(function (rects, item) {
+            return rects.concat(getCompactGeometryItemBoundsRects(item));
+        }, []);
         // compact 态不再渲染模型旁的悬浮最小化球，故不再上报其 hit/native 区域，
         // 避免 Electron 桌面壳为一个不可见的球保留点击区域（externalBall 仍走桌面外部球）。
         var ballRect = null;
@@ -1783,9 +1852,8 @@
             surfaceUnion: unionCompactRects(surfaceRects),
             baseSurfaceItems: baseSurfaceItems,
             baseSurfaceRect: unionCompactRects(baseSurfaceRects),
-            baseSurfaceNativeRects: baseSurfaceItems.map(function (item) { return item.nativeRect; }).filter(Boolean),
-            baseSurfaceHitRects: surfaceItems
-                .filter(function (item) { return item && (item.geometryRole === 'baseAnchor' || item.geometryRole === 'baseHit'); })
+            baseSurfaceNativeRects: baseSurfaceNativeItems.map(function (item) { return item.nativeRect; }).filter(Boolean),
+            baseSurfaceHitRects: baseSurfaceNativeItems
                 .map(function (item) { return item.hitRect; })
                 .filter(Boolean),
             extraIslandItems: extraIslandItems,

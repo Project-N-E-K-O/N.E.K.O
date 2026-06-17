@@ -1,0 +1,1597 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title data-i18n="ui.title">应用启动器 - N.E.K.O</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Microsoft YaHei', 'SimHei', 'Segoe UI', sans-serif;
+            min-height: 100vh;
+            padding: 20px;
+            background: linear-gradient(135deg, #fdf2f8 0%, #fce7f3 25%, #e0e7ff 50%, #dbeafe 75%, #f0fdf4 100%);
+            background-attachment: fixed;
+            color: #4a5568;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        .card {
+            background: rgba(255, 255, 255, 0.85);
+            backdrop-filter: blur(10px);
+            border-radius: 24px;
+            padding: 28px;
+            margin-bottom: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.6);
+            box-shadow: 0 8px 32px rgba(199, 146, 234, 0.1);
+        }
+
+        .header {
+            text-align: center;
+            padding: 48px 20px;
+            background: linear-gradient(135deg, rgba(244, 114, 182, 0.15) 0%, rgba(192, 132, 252, 0.15) 50%, rgba(147, 197, 253, 0.15) 100%);
+            border-radius: 28px;
+            margin-bottom: 24px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .header::before {
+            content: '✨ 🌸 ✨ 🌙 ✨';
+            position: absolute;
+            top: 12px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 1rem;
+            letter-spacing: 8px;
+            opacity: 0.6;
+        }
+
+        .header::after {
+            content: '💫 🌸 💫';
+            position: absolute;
+            bottom: 12px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 0.9rem;
+            letter-spacing: 6px;
+            opacity: 0.5;
+        }
+
+        .header h1 {
+            font-size: 2.2rem;
+            font-weight: 600;
+            background: linear-gradient(135deg, #ec4899 0%, #a855f7 50%, #6366f1 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 12px;
+            position: relative;
+            z-index: 1;
+        }
+
+        .header p {
+            color: #9ca3af;
+            font-size: 1rem;
+            font-weight: 300;
+            position: relative;
+            z-index: 1;
+            letter-spacing: 1px;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 14px;
+            margin-bottom: 20px;
+        }
+
+        .stat-card {
+            background: rgba(255, 255, 255, 0.7);
+            border-radius: 18px;
+            padding: 18px 12px;
+            text-align: center;
+            border: 1px solid rgba(255, 255, 255, 0.8);
+            transition: all 0.3s ease;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 12px 24px rgba(199, 146, 234, 0.15);
+        }
+
+        .stat-card:nth-child(1) { background: linear-gradient(135deg, rgba(244, 114, 182, 0.12) 0%, rgba(255, 255, 255, 0.7) 100%); }
+        .stat-card:nth-child(2) { background: linear-gradient(135deg, rgba(147, 197, 253, 0.12) 0%, rgba(255, 255, 255, 0.7) 100%); }
+        .stat-card:nth-child(3) { background: linear-gradient(135deg, rgba(251, 146, 60, 0.1) 0%, rgba(255, 255, 255, 0.7) 100%); }
+        .stat-card:nth-child(4) { background: linear-gradient(135deg, rgba(192, 132, 252, 0.12) 0%, rgba(255, 255, 255, 0.7) 100%); }
+
+        .stat-value {
+            font-size: 1.8rem;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .stat-card:nth-child(1) .stat-value { color: #ec4899; }
+        .stat-card:nth-child(2) .stat-value { color: #3b82f6; }
+        .stat-card:nth-child(3) .stat-value { color: #f97316; }
+        .stat-card:nth-child(4) .stat-value { color: #a855f7; }
+
+        .stat-label {
+            font-size: 0.8rem;
+            color: #9ca3af;
+            font-weight: 400;
+        }
+
+        .action-bar {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 18px;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 11px 20px;
+            border: none;
+            border-radius: 14px;
+            font-size: 0.9rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-family: inherit;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #f472b6 0%, #c084fc 100%);
+            color: white;
+            box-shadow: 0 4px 14px rgba(244, 114, 182, 0.3);
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(244, 114, 182, 0.4);
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.8);
+            color: #6b7280;
+            border: 1px solid rgba(199, 146, 234, 0.2);
+        }
+
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.95);
+            border-color: rgba(199, 146, 234, 0.4);
+        }
+
+        .btn-success {
+            background: linear-gradient(135deg, #34d399 0%, #2dd4bf 100%);
+            color: white;
+            box-shadow: 0 4px 14px rgba(52, 211, 153, 0.3);
+        }
+
+        .btn-success:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(52, 211, 153, 0.4);
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, #fb7185 0%, #f472b6 100%);
+            color: white;
+        }
+
+        .btn-danger:hover {
+            transform: translateY(-2px);
+        }
+
+        .btn:disabled {
+            opacity: 0.55;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .btn-icon {
+            padding: 9px 12px;
+            font-size: 0.95rem;
+        }
+
+        .search-box {
+            position: relative;
+            margin-bottom: 18px;
+        }
+
+        .search-box input {
+            width: 100%;
+            padding: 14px 18px 14px 46px;
+            border: 2px solid rgba(199, 146, 234, 0.15);
+            border-radius: 16px;
+            font-size: 0.95rem;
+            font-family: inherit;
+            transition: all 0.3s ease;
+            background: rgba(255, 255, 255, 0.7);
+        }
+
+        .search-box input:focus {
+            outline: none;
+            border-color: rgba(192, 132, 252, 0.5);
+            box-shadow: 0 0 0 4px rgba(192, 132, 252, 0.1);
+            background: white;
+        }
+
+        .search-box::before {
+            content: '🌸';
+            position: absolute;
+            left: 16px;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 1rem;
+        }
+
+        .app-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .app-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 20px 22px;
+            background: linear-gradient(135deg, rgba(255, 255, 255, 0.9) 0%, rgba(255, 255, 255, 0.7) 100%);
+            border-radius: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.9);
+            transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+            gap: 16px;
+            box-shadow: 0 2px 12px rgba(199, 146, 234, 0.06);
+        }
+
+        .app-item:hover {
+            background: linear-gradient(135deg, rgba(255, 255, 255, 1) 0%, rgba(252, 231, 243, 0.5) 100%);
+            box-shadow: 0 8px 28px rgba(199, 146, 234, 0.15);
+            transform: translateY(-2px);
+        }
+
+        .app-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .app-name {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-weight: 600;
+            font-size: 1.02rem;
+            margin-bottom: 6px;
+            color: #374151;
+        }
+
+        .status-dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .status-dot.ok {
+            background: linear-gradient(135deg, #34d399 0%, #2dd4bf 100%);
+            box-shadow: 0 0 10px rgba(52, 211, 153, 0.5);
+        }
+
+        .status-dot.missing {
+            background: linear-gradient(135deg, #fbbf24 0%, #fb923c 100%);
+            box-shadow: 0 0 10px rgba(251, 191, 36, 0.5);
+        }
+
+        .tag {
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 0.72rem;
+            font-weight: 500;
+            letter-spacing: 0.3px;
+        }
+
+        .tag-exe {
+            background: linear-gradient(135deg, rgba(192, 132, 252, 0.18) 0%, rgba(147, 197, 253, 0.18) 100%);
+            color: #8b5cf6;
+        }
+
+        .tag-lnk {
+            background: linear-gradient(135deg, rgba(147, 197, 253, 0.18) 0%, rgba(165, 180, 252, 0.18) 100%);
+            color: #3b82f6;
+        }
+
+        .tag-url {
+            background: linear-gradient(135deg, rgba(244, 114, 182, 0.18) 0%, rgba(251, 113, 133, 0.18) 100%);
+            color: #ec4899;
+        }
+
+        .tag-script {
+            background: linear-gradient(135deg, rgba(52, 211, 153, 0.18) 0%, rgba(45, 212, 191, 0.18) 100%);
+            color: #10b981;
+        }
+
+        .tag-other {
+            background: rgba(156, 163, 175, 0.12);
+            color: #9ca3af;
+        }
+
+        .tag-autostart {
+            background: linear-gradient(135deg, rgba(244, 114, 182, 0.22) 0%, rgba(192, 132, 252, 0.22) 100%);
+            color: #d946ef;
+            font-weight: 600;
+        }
+
+        .app-path {
+            font-size: 0.8rem;
+            color: #9ca3af;
+            word-break: break-all;
+            font-family: 'SF Mono', Monaco, monospace;
+            margin-bottom: 4px;
+            padding: 6px 10px;
+            background: rgba(243, 232, 255, 0.3);
+            border-radius: 8px;
+        }
+
+        .app-aliases {
+            font-size: 0.8rem;
+            color: #6b7280;
+            margin-top: 4px;
+        }
+
+        .app-desc {
+            font-size: 0.8rem;
+            color: #9ca3af;
+            margin-top: 4px;
+            font-style: italic;
+        }
+
+        .app-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 46px;
+            height: 25px;
+        }
+
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(135deg, #e9d5ff 0%, #ddd6fe 100%);
+            transition: all 0.3s ease;
+            border-radius: 25px;
+        }
+
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 19px;
+            width: 19px;
+            left: 3px;
+            bottom: 3px;
+            background: white;
+            transition: all 0.3s ease;
+            border-radius: 50%;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+        }
+
+        input:checked + .toggle-slider {
+            background: linear-gradient(135deg, #f472b6 0%, #c084fc 100%);
+        }
+
+        input:checked + .toggle-slider:before {
+            transform: translateX(21px);
+        }
+
+        input:disabled + .toggle-slider {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+
+        .action-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 38px;
+            height: 38px;
+            border: none;
+            border-radius: 12px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .action-btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            opacity: 0;
+            transition: opacity 0.25s ease;
+        }
+
+        .action-btn:hover::before {
+            opacity: 1;
+        }
+
+        .action-btn-launch {
+            background: linear-gradient(135deg, rgba(52, 211, 153, 0.15) 0%, rgba(45, 212, 191, 0.15) 100%);
+            color: #10b981;
+        }
+
+        .action-btn-launch::before {
+            background: linear-gradient(135deg, #34d399 0%, #2dd4bf 100%);
+        }
+
+        .action-btn-launch:hover {
+            color: white;
+            box-shadow: 0 4px 14px rgba(52, 211, 153, 0.35);
+            transform: translateY(-2px);
+        }
+
+        .action-btn-edit {
+            background: linear-gradient(135deg, rgba(147, 197, 253, 0.15) 0%, rgba(165, 180, 252, 0.15) 100%);
+            color: #3b82f6;
+        }
+
+        .action-btn-edit::before {
+            background: linear-gradient(135deg, #60a5fa 0%, #818cf8 100%);
+        }
+
+        .action-btn-edit:hover {
+            color: white;
+            box-shadow: 0 4px 14px rgba(59, 130, 246, 0.35);
+            transform: translateY(-2px);
+        }
+
+        .action-btn-delete {
+            background: linear-gradient(135deg, rgba(251, 113, 133, 0.12) 0%, rgba(244, 114, 182, 0.12) 100%);
+            color: #f87171;
+        }
+
+        .action-btn-delete::before {
+            background: linear-gradient(135deg, #fb7185 0%, #f472b6 100%);
+        }
+
+        .action-btn-delete:hover {
+            color: white;
+            box-shadow: 0 4px 14px rgba(251, 113, 133, 0.35);
+            transform: translateY(-2px);
+        }
+
+        .action-btn:active {
+            transform: translateY(0) scale(0.95);
+        }
+
+        .btn-tutorial {
+            background: linear-gradient(135deg, rgba(147, 197, 253, 0.2) 0%, rgba(165, 180, 252, 0.2) 100%);
+            color: #6366f1;
+            border: 1px solid rgba(147, 197, 253, 0.3);
+        }
+
+        .btn-tutorial:hover {
+            background: linear-gradient(135deg, rgba(147, 197, 253, 0.35) 0%, rgba(165, 180, 252, 0.35) 100%);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.2);
+        }
+
+        .tutorial-content {
+            max-height: 70vh;
+            overflow-y: auto;
+            padding-right: 10px;
+        }
+
+        .tutorial-content::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .tutorial-content::-webkit-scrollbar-track {
+            background: rgba(243, 232, 255, 0.3);
+            border-radius: 3px;
+        }
+
+        .tutorial-content::-webkit-scrollbar-thumb {
+            background: linear-gradient(135deg, #c084fc, #a855f7);
+            border-radius: 3px;
+        }
+
+        .tutorial-section {
+            margin-bottom: 28px;
+            padding: 20px;
+            background: linear-gradient(135deg, rgba(252, 231, 243, 0.3) 0%, rgba(224, 231, 254, 0.3) 100%);
+            border-radius: 16px;
+            border: 1px solid rgba(192, 132, 252, 0.15);
+        }
+
+        .tutorial-section h4 {
+            font-size: 1.05rem;
+            font-weight: 600;
+            color: #7c3aed;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .tutorial-step {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            margin-bottom: 14px;
+            padding: 12px;
+            background: rgba(255, 255, 255, 0.6);
+            border-radius: 12px;
+            transition: all 0.2s ease;
+        }
+
+        .tutorial-step:hover {
+            background: rgba(255, 255, 255, 0.85);
+            transform: translateX(4px);
+        }
+
+        .step-number {
+            width: 28px;
+            height: 28px;
+            background: linear-gradient(135deg, #c084fc, #a855f7);
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.8rem;
+            font-weight: 600;
+            flex-shrink: 0;
+        }
+
+        .step-text {
+            font-size: 0.9rem;
+            color: #4b5563;
+            line-height: 1.5;
+        }
+
+        .tutorial-tip {
+            padding: 16px;
+            background: linear-gradient(135deg, rgba(251, 191, 36, 0.1) 0%, rgba(245, 158, 11, 0.1) 100%);
+            border-radius: 12px;
+            border: 1px solid rgba(251, 191, 36, 0.2);
+        }
+
+        .tutorial-tip h4 {
+            color: #d97706;
+        }
+
+        .tip-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            margin-bottom: 10px;
+            font-size: 0.85rem;
+            color: #92400e;
+        }
+
+        .tip-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .tip-icon {
+            flex-shrink: 0;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 50px 20px;
+            color: #9ca3af;
+        }
+
+        .empty-state .icon {
+            font-size: 3.5rem;
+            margin-bottom: 14px;
+            opacity: 0.7;
+        }
+
+        .empty-state p {
+            font-size: 0.95rem;
+            font-weight: 300;
+        }
+
+        .modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(251, 207, 232, 0.2);
+            backdrop-filter: blur(8px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s ease;
+        }
+
+        .modal.active {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        .modal-content {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 24px;
+            padding: 32px;
+            width: 90%;
+            max-width: 500px;
+            max-height: 90vh;
+            overflow-y: auto;
+            transform: scale(0.9) translateY(20px);
+            transition: all 0.3s ease;
+            box-shadow: 0 25px 60px rgba(199, 146, 234, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.8);
+        }
+
+        .modal.active .modal-content {
+            transform: scale(1) translateY(0);
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+        }
+
+        .modal-header h3 {
+            font-size: 1.3rem;
+            font-weight: 600;
+            background: linear-gradient(135deg, #ec4899 0%, #a855f7 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .modal-close {
+            background: none;
+            border: none;
+            color: #d1d5db;
+            font-size: 1.5rem;
+            cursor: pointer;
+            padding: 4px 8px;
+            border-radius: 10px;
+            transition: all 0.2s ease;
+        }
+
+        .modal-close:hover {
+            background: rgba(244, 114, 182, 0.1);
+            color: #f472b6;
+        }
+
+        .form-group {
+            margin-bottom: 18px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 7px;
+            font-weight: 500;
+            font-size: 0.85rem;
+            color: #6b7280;
+        }
+
+        .form-group input,
+        .form-group textarea {
+            width: 100%;
+            padding: 13px 15px;
+            border: 2px solid rgba(199, 146, 234, 0.15);
+            border-radius: 14px;
+            font-size: 0.95rem;
+            font-family: inherit;
+            transition: all 0.3s ease;
+            background: rgba(255, 255, 255, 0.8);
+        }
+
+        .form-group input:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: rgba(192, 132, 252, 0.5);
+            box-shadow: 0 0 0 4px rgba(192, 132, 252, 0.08);
+            background: white;
+        }
+
+        .form-group textarea {
+            resize: vertical;
+            min-height: 70px;
+        }
+
+        .form-hint {
+            font-size: 0.75rem;
+            color: #9ca3af;
+            margin-top: 5px;
+            font-style: italic;
+        }
+
+        .form-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .form-row label {
+            margin: 0;
+        }
+
+        .status-bar {
+            padding: 13px 18px;
+            border-radius: 14px;
+            margin-bottom: 18px;
+            font-size: 0.9rem;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-bar.success {
+            background: linear-gradient(135deg, rgba(52, 211, 153, 0.12) 0%, rgba(45, 212, 191, 0.12) 100%);
+            color: #059669;
+            border: 1px solid rgba(52, 211, 153, 0.2);
+        }
+
+        .status-bar.error {
+            background: linear-gradient(135deg, rgba(251, 113, 133, 0.12) 0%, rgba(244, 114, 182, 0.12) 100%);
+            color: #e11d48;
+            border: 1px solid rgba(251, 113, 133, 0.2);
+        }
+
+        .status-bar.warning {
+            background: linear-gradient(135deg, rgba(251, 191, 36, 0.12) 0%, rgba(245, 158, 11, 0.12) 100%);
+            color: #d97706;
+            border: 1px solid rgba(251, 191, 36, 0.2);
+        }
+
+        .section-title {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: #6b7280;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .recent-list {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 18px;
+        }
+
+        .recent-item {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 7px 13px;
+            background: linear-gradient(135deg, rgba(244, 114, 182, 0.08) 0%, rgba(192, 132, 252, 0.08) 100%);
+            border-radius: 20px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            border: 1px solid rgba(255, 255, 255, 0.6);
+        }
+
+        .recent-item:hover {
+            background: linear-gradient(135deg, rgba(244, 114, 182, 0.15) 0%, rgba(192, 132, 252, 0.15) 100%);
+            transform: translateY(-2px);
+        }
+
+        .recent-name {
+            font-size: 0.8rem;
+            font-weight: 500;
+            color: #374151;
+        }
+
+        .recent-time {
+            font-size: 0.7rem;
+            color: #9ca3af;
+        }
+
+        @media (max-width: 768px) {
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            
+            .app-item {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+            
+            .app-actions {
+                width: 100%;
+                justify-content: flex-end;
+                margin-top: 12px;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .stats-grid {
+                grid-template-columns: 1fr 1fr;
+                gap: 10px;
+            }
+            
+            .action-bar {
+                flex-direction: column;
+            }
+            
+            .btn {
+                width: 100%;
+                justify-content: center;
+            }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1 data-i18n="ui.title">✨ 应用启动器 ✨</h1>
+        <p data-i18n="ui.subtitle">在这里添加你电脑上常用的软件，猫娘就能帮你打开它们啦~</p>
+    </div>
+
+    <div id="statusMessage" class="status-bar warning" data-i18n="ui.loading">🌸 正在加载...</div>
+
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-value" id="statTotal">0</div>
+            <div class="stat-label" data-i18n="ui.stat.registered">已注册</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value" id="statAvailable">0</div>
+            <div class="stat-label" data-i18n="ui.stat.available">可用</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value" id="statMissing">0</div>
+            <div class="stat-label" data-i18n="ui.stat.missing">缺失</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value" id="statAutostart">0</div>
+            <div class="stat-label" data-i18n="ui.stat.autostart">开机自启</div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="action-bar">
+            <button id="addAppBtn" class="btn btn-primary" data-i18n="ui.btn.add">✨ 添加软件</button>
+            <button id="refreshBtn" class="btn btn-secondary" data-i18n="ui.btn.refresh">🔄 刷新列表</button>
+            <button id="exportBtn" class="btn btn-secondary" data-i18n="ui.btn.export">📤 导出配置</button>
+            <button id="tutorialBtn" class="btn btn-tutorial" data-i18n="tutorial.btn.show">📚 查看教程</button>
+        </div>
+        
+        <div class="search-box">
+            <input type="text" id="searchInput" data-i18n-placeholder="ui.search.placeholder" placeholder="搜索软件名称或别名...">
+        </div>
+
+        <div id="recentSection" class="recent-section" style="display: none;">
+            <h4 class="section-title" data-i18n="ui.recent.title">🌸 最近使用</h4>
+            <div id="recentList" class="recent-list"></div>
+        </div>
+        
+        <div id="appList" class="app-list">
+            <div class="empty-state">
+                <div class="icon">🌸</div>
+                <p data-i18n="ui.empty">暂无软件，点击上方「添加软件」开始录入</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="appModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3 id="modalTitle" data-i18n="ui.modal.add_title">添加软件</h3>
+            <button class="modal-close" onclick="closeModal()">&times;</button>
+        </div>
+        <div class="form-group">
+            <label for="appName" data-i18n="ui.form.name">软件名称 *</label>
+            <input type="text" id="appName" data-i18n-placeholder="ui.form.name.placeholder" placeholder="例如：Steam、Chrome">
+        </div>
+        <div class="form-group">
+            <label for="appPath" data-i18n="ui.form.path">文件路径 *</label>
+            <input type="text" id="appPath" data-i18n-placeholder="ui.form.path.placeholder" placeholder="例如：C:\Program Files (x86)\Steam\Steam.exe">
+            <p class="form-hint" data-i18n="ui.form.path.hint">支持 .exe、.lnk 快捷方式、.bat 脚本等绝对路径</p>
+        </div>
+        <div class="form-group">
+            <label for="appAliases" data-i18n="ui.form.aliases">别名（用逗号分隔）</label>
+            <input type="text" id="appAliases" data-i18n-placeholder="ui.form.aliases.placeholder" placeholder="例如：steam, 游戏平台, 蒸汽">
+            <p class="form-hint" data-i18n="ui.form.aliases.hint">别名方便猫娘识别，可以设置多个常用叫法</p>
+        </div>
+        <div class="form-group">
+            <label for="appDesc" data-i18n="ui.form.description">描述（可选）</label>
+            <textarea id="appDesc" data-i18n-placeholder="ui.form.description.placeholder" placeholder="简单描述这个软件的用途..."></textarea>
+        </div>
+        <div class="form-group">
+            <div class="form-row">
+                <label for="appAutostart" data-i18n="ui.form.autostart">开机自启</label>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="appAutostart">
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+            <p class="form-hint" id="autostartHint" data-i18n="ui.form.autostart.hint.not_exe">仅支持 .exe 文件</p>
+        </div>
+        <div class="action-bar" style="margin-top: 24px;">
+            <button id="saveAppBtn" class="btn btn-primary" onclick="saveApp()" data-i18n="ui.btn.save">保存</button>
+            <button class="btn btn-secondary" onclick="closeModal()" data-i18n="ui.btn.cancel">取消</button>
+        </div>
+    </div>
+</div>
+
+<div id="tutorialModal" class="modal">
+    <div class="modal-content" style="max-width: 600px;">
+        <div class="modal-header">
+            <h3 data-i18n="tutorial.title">📚 使用教程</h3>
+            <button class="modal-close" onclick="closeTutorial()">&times;</button>
+        </div>
+        <div class="tutorial-content">
+            <div class="tutorial-section">
+                <h4 data-i18n="tutorial.step1.title">✨ 方法一：通过快捷方式添加（最简单）</h4>
+                <div class="tutorial-step">
+                    <span class="step-number">1</span>
+                    <span class="step-text" data-i18n="tutorial.step1.1">在桌面右键软件图标，点击「复制文件地址」</span>
+                </div>
+                <div class="tutorial-step">
+                    <span class="step-number">2</span>
+                    <span class="step-text" data-i18n="tutorial.step1.2">粘贴至插件，设定好软件名称（软件名可自定义取）</span>
+                </div>
+                <div class="tutorial-step">
+                    <span class="step-number">3</span>
+                    <span class="step-text" data-i18n="tutorial.step1.3">简单注册软件的方法：别名和描述直接填前面取好的软件名称</span>
+                </div>
+                <div class="tutorial-step">
+                    <span class="step-number">4</span>
+                    <span class="step-text" data-i18n="tutorial.step1.4">然后点击保存，确保插件启动</span>
+                </div>
+                <div class="tutorial-step">
+                    <span class="step-number">5</span>
+                    <span class="step-text" data-i18n="tutorial.step1.5">和猫娘说「打开」或「启动」（和你取的软件名一致），猫娘就可以帮你打开或启动软件啦~</span>
+                </div>
+            </div>
+
+            <div class="tutorial-section">
+                <h4 data-i18n="tutorial.step2.title">🎯 方法二：通过可执行文件添加</h4>
+                <div class="tutorial-step">
+                    <span class="step-number">1</span>
+                    <span class="step-text" data-i18n="tutorial.step2.1">右键桌面软件图标，点击「打开文件所在位置」</span>
+                </div>
+                <div class="tutorial-step">
+                    <span class="step-number">2</span>
+                    <span class="step-text" data-i18n="tutorial.step2.2">找到软件的 .exe 文件并右键复制文件地址</span>
+                </div>
+                <div class="tutorial-step">
+                    <span class="step-number">3</span>
+                    <span class="step-text" data-i18n="tutorial.step2.3">接着粘贴进插件，填好软件名称、别名、描述后保存即可</span>
+                </div>
+            </div>
+
+            <div class="tutorial-tip">
+                <h4 data-i18n="tutorial.tip.title">💡 小贴士</h4>
+                <div class="tip-item">
+                    <span class="tip-icon">📝</span>
+                    <span data-i18n="tutorial.tip.path">支持带双引号的路径，直接粘贴即可，无需手动删除引号</span>
+                </div>
+                <div class="tip-item">
+                    <span class="tip-icon">🏷️</span>
+                    <span data-i18n="tutorial.tip.alias">设置多个别名，猫娘更容易识别</span>
+                </div>
+                <div class="tip-item">
+                    <span class="tip-icon">⚡</span>
+                    <span data-i18n="tutorial.tip.autostart">.exe 文件可设置开机自启</span>
+                </div>
+            </div>
+        </div>
+        <div class="action-bar" style="margin-top: 20px;">
+            <button class="btn btn-primary" onclick="closeTutorial()" data-i18n="tutorial.close">我知道了</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    const PLUGIN_ID = 'app_launcher';
+    const RUNS_URL = '/runs';
+
+    let allApps = [];
+    let editingAppId = null;
+    let editingAppSnapshot = null;
+    let translations = {};
+    const SUPPORTED_LOCALES = ['en', 'ja', 'ko', 'zh-CN', 'zh-TW', 'ru', 'pt', 'es'];
+    const LOCALE_ALIASES = {
+        zh: 'zh-CN',
+        'zh-Hans': 'zh-CN',
+        'zh-Hant': 'zh-TW',
+    };
+
+    function formatTemplate(template, params = {}) {
+        return String(template).replace(/\{(\w+)\}/g, (_, key) => {
+            return Object.prototype.hasOwnProperty.call(params, key) ? params[key] : `{${key}}`;
+        });
+    }
+
+    function t(key, fallback, params = {}) {
+        return formatTemplate(translations[key] || fallback || key, params);
+    }
+
+    function localeCandidates(locale) {
+        const raw = String(locale || '').trim();
+        const candidates = [];
+        const add = value => {
+            const normalized = normalizeLocale(value);
+            if (normalized && !candidates.includes(normalized)) candidates.push(normalized);
+        };
+        add(raw);
+        add(raw.replace('_', '-'));
+        if (raw.includes('-')) add(raw.split('-')[0]);
+        if (/^zh/i.test(raw)) add(raw.toLowerCase().includes('tw') || raw.toLowerCase().includes('hk') ? 'zh-TW' : 'zh-CN');
+        add('zh-CN');
+        add('en');
+        return candidates;
+    }
+
+    function normalizeLocale(locale) {
+        const value = String(locale || '').trim().replace('_', '-');
+        if (!value || /[^A-Za-z-]/.test(value)) return '';
+        if (SUPPORTED_LOCALES.includes(value)) return value;
+        if (LOCALE_ALIASES[value]) return LOCALE_ALIASES[value];
+
+        const lower = value.toLowerCase();
+        const exact = SUPPORTED_LOCALES.find(candidate => candidate.toLowerCase() === lower);
+        if (exact) return exact;
+        if (lower === 'zh-cn' || lower.startsWith('zh-hans')) return 'zh-CN';
+        if (lower === 'zh-tw' || lower === 'zh-hk' || lower.startsWith('zh-hant')) return 'zh-TW';
+
+        const language = lower.split('-')[0];
+        return SUPPORTED_LOCALES.includes(language) ? language : '';
+    }
+
+    async function loadI18n() {
+        let locale = new URLSearchParams(location.search).get('locale') ||
+            localStorage.getItem('locale') ||
+            navigator.language ||
+            'zh-CN';
+        try {
+            const localeResp = await fetch(`/plugin/${PLUGIN_ID}/ui-api/locale`);
+            if (localeResp.ok) {
+                const localeData = await localeResp.json();
+                locale = localeData.locale || localeData.language || locale;
+            }
+        } catch (err) {
+            console.warn('Failed to load plugin locale:', err);
+        }
+
+        for (const candidate of localeCandidates(locale)) {
+            try {
+                const resp = await fetch(`/plugin/${PLUGIN_ID}/ui-api/i18n/${candidate}.json`);
+                if (!resp.ok) continue;
+                translations = await resp.json();
+                document.documentElement.lang = candidate;
+                break;
+            } catch (err) {
+                console.warn(`Failed to load i18n bundle ${candidate}:`, err);
+            }
+        }
+    }
+
+    function applyI18n() {
+        document.querySelectorAll('[data-i18n]').forEach(el => {
+            const key = el.getAttribute('data-i18n');
+            el.textContent = t(key, el.textContent);
+        });
+        document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+            const key = el.getAttribute('data-i18n-placeholder');
+            el.setAttribute('placeholder', t(key, el.getAttribute('placeholder') || ''));
+        });
+        document.querySelectorAll('[data-i18n-title]').forEach(el => {
+            const key = el.getAttribute('data-i18n-title');
+            el.setAttribute('title', t(key, el.getAttribute('title') || ''));
+        });
+    }
+
+    async function callPlugin(entry, args = {}) {
+        const createResp = await fetch(RUNS_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                plugin_id: PLUGIN_ID,
+                entry_id: entry,
+                args: args
+            })
+        });
+        if (!createResp.ok) {
+            const text = await createResp.text();
+            throw new Error(t('ui.error.create_run', `创建任务失败 HTTP ${createResp.status}: ${text}`, {
+                status: createResp.status,
+                error: text,
+            }));
+        }
+        const runData = await createResp.json();
+        const runId = runData.run_id || runData.id;
+        if (!runId) throw new Error(t('ui.error.missing_run_id', '未获取到 run_id'));
+
+        const deadline = Date.now() + 30000;
+        while (Date.now() < deadline) {
+            await new Promise(r => setTimeout(r, 300));
+            const pollResp = await fetch(`${RUNS_URL}/${runId}`);
+            if (!pollResp.ok) continue;
+            const runRecord = await pollResp.json();
+            const status = runRecord.status;
+            if (status === 'succeeded') {
+                const exportResp = await fetch(`${RUNS_URL}/${runId}/export`);
+                if (!exportResp.ok) return {};
+                const exportData = await exportResp.json();
+                const items = exportData.items || [];
+                const resultItem = items.find(i => i.type === 'json' && i.json) || items[0];
+                if (!resultItem) return {};
+                const pluginResponse = resultItem.json || {};
+                if (pluginResponse.success === false || pluginResponse.error) {
+                    throw new Error(getPluginErrorMessage(pluginResponse));
+                }
+                return pluginResponse.data || {};
+            } else if (status === 'failed' || status === 'canceled' || status === 'timeout') {
+                const err = runRecord.error?.message || runRecord.message || status;
+                throw new Error(t('ui.error.run_failed', `插件执行失败: ${err}`, { error: err }));
+            }
+        }
+        throw new Error(t('ui.error.timeout', '插件调用超时'));
+    }
+
+    function getPluginErrorMessage(pluginResponse) {
+        const error = pluginResponse.error;
+        if (typeof error === 'string') return error;
+        if (error?.message) return error.message;
+        if (pluginResponse.message) return pluginResponse.message;
+        return t('ui.error.plugin_failed', '插件调用失败');
+    }
+
+    function showMessage(text, type = 'warning') {
+        const msgDiv = document.getElementById('statusMessage');
+        msgDiv.textContent = text;
+        msgDiv.className = `status-bar ${type}`;
+    }
+
+    function isWarningMessage(message) {
+        return /失败|已关闭/.test(message || '');
+    }
+
+    function escapeHtml(str) {
+        if (!str) return '';
+        return str.replace(/[&<>"']/g, m => ({
+            '&':'&amp;',
+            '<':'&lt;',
+            '>':'&gt;',
+            '"':'&quot;',
+            "'":'&#39;'
+        }[m]));
+    }
+
+    function stripPathQuotes(path) {
+        const trimmed = (path || '').trim();
+        if ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+            (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+            return trimmed.slice(1, -1).trim();
+        }
+        return trimmed;
+    }
+
+    function updateModalAutostartState() {
+        const path = stripPathQuotes(document.getElementById('appPath').value).toLowerCase();
+        const isExe = path.endsWith('.exe');
+        const autostartCheckbox = document.getElementById('appAutostart');
+        const autostartHint = document.getElementById('autostartHint');
+
+        if (editingAppId && editingAppSnapshot) {
+            const originalPath = stripPathQuotes(editingAppSnapshot.path || '').toLowerCase();
+            const pathUnchanged = path === originalPath;
+            const canEnable = isExe && (!pathUnchanged || editingAppSnapshot.exists);
+            const canDisableCurrent = Boolean(editingAppSnapshot.autostart);
+            autostartCheckbox.disabled = !canEnable && !canDisableCurrent;
+            if (!canEnable && !canDisableCurrent) {
+                autostartCheckbox.checked = false;
+            }
+            autostartHint.textContent = canEnable
+                ? t('ui.form.autostart.hint.exe', '支持开机自启')
+                : t('ui.form.autostart.hint.not_exists', '仅存在的 .exe 文件支持开机自启');
+            return;
+        }
+
+        autostartCheckbox.disabled = !isExe;
+        if (!isExe) {
+            autostartCheckbox.checked = false;
+        }
+        autostartHint.textContent = isExe
+            ? t('ui.form.autostart.hint.exe', '支持开机自启')
+            : t('ui.form.autostart.hint.not_exe', '仅支持 .exe 文件');
+    }
+
+    function getTypeTag(type) {
+        const map = {
+            exe: '<span class="tag tag-exe">EXE</span>',
+            lnk: `<span class="tag tag-lnk">${t('ui.tag.lnk', '快捷方式')}</span>`,
+            url: '<span class="tag tag-url">URL</span>',
+            script: `<span class="tag tag-script">${t('ui.tag.script', '脚本')}</span>`,
+            other: `<span class="tag tag-other">${t('ui.tag.other', '其他')}</span>`,
+        };
+        return map[type] || map.other;
+    }
+
+    async function loadApps() {
+        showMessage(t('ui.loading.apps', '🌸 正在加载软件列表...'), 'warning');
+        try {
+            const data = await callPlugin('list_apps', {});
+            allApps = data.apps || [];
+            updateStats(data.count || 0, data.apps || []);
+            renderAppList(allApps);
+            await loadRecentApps();
+            showMessage(t('ui.success.loaded', '✨ 已加载 {count} 个软件', { count: allApps.length }), 'success');
+        } catch (err) {
+            showMessage(t('ui.error.load', '❌ 加载失败: {error}', { error: err.message }), 'error');
+            console.error(err);
+        }
+    }
+
+    async function loadRecentApps() {
+        try {
+            const data = await callPlugin('get_recent_apps', {});
+            const recentApps = data.recent_apps || [];
+            const section = document.getElementById('recentSection');
+            const list = document.getElementById('recentList');
+            
+            if (recentApps.length === 0) {
+                section.style.display = 'none';
+                return;
+            }
+            
+            section.style.display = 'block';
+            let html = '';
+            recentApps.slice(0, 5).forEach(app => {
+                html += `
+                    <div class="recent-item" onclick="launchApp('${escapeHtml(app.app_id)}')">
+                        <span class="recent-name">${escapeHtml(app.app_name)}</span>
+                        <span class="recent-time">${formatTime(app.launched_at)}</span>
+                    </div>
+                `;
+            });
+            list.innerHTML = html;
+        } catch (err) {
+            console.error('Failed to load recent apps:', err);
+        }
+    }
+
+    function formatTime(isoString) {
+        if (!isoString) return '';
+        try {
+            const date = new Date(isoString);
+            const now = new Date();
+            const diff = now - date;
+            
+            if (diff < 60000) return t('ui.time.just_now', '刚刚');
+            if (diff < 3600000) return t('ui.time.minutes_ago', '{count}分钟前', { count: Math.floor(diff / 60000) });
+            if (diff < 86400000) return t('ui.time.hours_ago', '{count}小时前', { count: Math.floor(diff / 3600000) });
+            return t('ui.time.days_ago', '{count}天前', { count: Math.floor(diff / 86400000) });
+        } catch {
+            return '';
+        }
+    }
+
+    async function exportApps() {
+        showMessage(t('ui.loading.export', '🌸 正在导出配置...'), 'warning');
+        try {
+            const data = await callPlugin('export_apps', {});
+            const exportData = data.export_data;
+            
+            if (!exportData) {
+                showMessage(t('ui.error.export_empty', '❌ 导出数据为空'), 'error');
+                return;
+            }
+            
+            const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `neko-apps-export-${new Date().toISOString().split('T')[0]}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            
+            showMessage(t('ui.success.export', '✨ 已导出 {count} 个软件配置', { count: data.count }), 'success');
+        } catch (err) {
+            showMessage(t('ui.error.export', '❌ 导出失败: {error}', { error: err.message }), 'error');
+        }
+    }
+
+    function updateStats(total, apps) {
+        document.getElementById('statTotal').textContent = total;
+        const available = apps.filter(a => a.exists).length;
+        const missing = total - available;
+        const autostart = apps.filter(a => a.autostart).length;
+        document.getElementById('statAvailable').textContent = available;
+        document.getElementById('statMissing').textContent = missing;
+        document.getElementById('statAutostart').textContent = autostart;
+    }
+
+    function renderAppList(apps) {
+        const container = document.getElementById('appList');
+        if (!apps || apps.length === 0) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <div class="icon">🌸</div>
+                    <p>${t('ui.empty', '暂无软件，点击上方「添加软件」开始录入')}</p>
+                </div>`;
+            return;
+        }
+
+        let html = '';
+        apps.forEach(app => {
+            const statusDot = app.exists
+                ? `<span class="status-dot ok" title="${t('ui.status.exists', '文件存在')}"></span>`
+                : `<span class="status-dot missing" title="${t('ui.status.missing', '文件不存在')}"></span>`;
+            const aliases = (app.aliases || []).map(a => `<span class="tag tag-other">${escapeHtml(a)}</span>`).join(' ');
+            const desc = app.description ? `<div class="app-desc">${escapeHtml(app.description)}</div>` : '';
+            const autostartChecked = app.autostart ? 'checked' : '';
+            const autostartTag = app.autostart ? `<span class="tag tag-autostart">🌸 ${t('ui.tag.autostart', '自启')}</span>` : '';
+            const canEnableAutostart = app.exists && app.type === 'exe';
+            const autostartDisabled = !canEnableAutostart && !app.autostart ? 'disabled' : '';
+            const autostartTitle = canEnableAutostart
+                ? t('ui.form.autostart', '开机自启')
+                : (app.autostart ? t('ui.autostart.disable_current', '关闭当前开机自启') : t('ui.form.autostart.hint.not_exists', '仅存在的 .exe 文件支持开机自启'));
+
+            html += `
+                <div class="app-item" data-id="${escapeHtml(app.id)}">
+                    <div class="app-info">
+                        <div class="app-name">
+                            ${statusDot}
+                            ${escapeHtml(app.name)}
+                            ${getTypeTag(app.type)}
+                            ${autostartTag}
+                        </div>
+                        <div class="app-path">${escapeHtml(app.path)}</div>
+                        ${aliases ? `<div class="app-aliases">✨ ${t('ui.aliases.label', '别名')}: ${aliases}</div>` : ''}
+                        ${desc}
+                    </div>
+                    <div class="app-actions">
+                        <label class="toggle-switch" title="${autostartTitle}">
+                            <input type="checkbox" ${autostartChecked} 
+                                   onchange="toggleAutostart('${escapeHtml(app.id)}', this.checked)"
+                                   ${autostartDisabled}>
+                            <span class="toggle-slider"></span>
+                        </label>
+                        <button class="action-btn action-btn-launch" onclick="launchApp('${escapeHtml(app.id)}')" title="${t('ui.action.launch', '启动')}">▶️</button>
+                        <button class="action-btn action-btn-edit" onclick="editApp('${escapeHtml(app.id)}')" title="${t('ui.action.edit', '编辑')}">✏️</button>
+                        <button class="action-btn action-btn-delete" onclick="deleteApp('${escapeHtml(app.id)}')" title="${t('ui.action.delete', '删除')}">🗑️</button>
+                    </div>
+                </div>
+            `;
+        });
+        container.innerHTML = html;
+    }
+
+    async function launchApp(appId) {
+        showMessage(t('ui.loading.launch', '🌸 正在启动...'), 'warning');
+        try {
+            const result = await callPlugin('launch_app', { app_id: appId });
+            showMessage(t('ui.success.launch', '✨ {message}', { message: result.message || t('ui.success.launch.default', '启动成功') }), 'success');
+            await loadRecentApps();
+        } catch (err) {
+            showMessage(t('ui.error.launch', '❌ {error}', { error: err.message }), 'error');
+        }
+    }
+
+    async function toggleAutostart(appId, enabled) {
+        const action = enabled ? t('ui.action.enable', '开启') : t('ui.action.disable', '关闭');
+        showMessage(enabled
+            ? t('ui.loading.autostart.enable', '🌸 正在开启开机自启...')
+            : t('ui.loading.autostart.disable', '🌸 正在关闭开机自启...'), 'warning');
+        try {
+            const result = await callPlugin('set_autostart', { app_id: appId, enabled: enabled });
+            await loadApps();
+            showMessage(`✨ ${result.message || t('ui.success.action', '{action}成功', { action })}`, 'success');
+        } catch (err) {
+            await loadApps();
+            showMessage(t('ui.error.autostart', '❌ {error}', { error: err.message }), 'error');
+        }
+    }
+
+    function openModal(title = t('ui.modal.add_title', '添加软件'), app = null) {
+        document.getElementById('modalTitle').textContent = title;
+        document.getElementById('appName').value = app ? app.name : '';
+        document.getElementById('appPath').value = app ? app.path : '';
+        document.getElementById('appAliases').value = app ? (app.aliases || []).join(', ') : '';
+        document.getElementById('appDesc').value = app ? (app.description || '') : '';
+        
+        const autostartCheckbox = document.getElementById('appAutostart');
+        if (app) {
+            autostartCheckbox.checked = app.autostart || false;
+        } else {
+            autostartCheckbox.checked = false;
+        }
+        
+        editingAppId = app ? app.id : null;
+        editingAppSnapshot = app;
+        updateModalAutostartState();
+        document.getElementById('appModal').classList.add('active');
+    }
+
+    function closeModal() {
+        document.getElementById('appModal').classList.remove('active');
+        editingAppId = null;
+        editingAppSnapshot = null;
+    }
+
+    async function saveApp() {
+        const saveButton = document.getElementById('saveAppBtn');
+        if (saveButton.disabled) return;
+
+        const name = document.getElementById('appName').value.trim();
+        const path = document.getElementById('appPath').value.trim();
+        const aliasesStr = document.getElementById('appAliases').value.trim();
+        const desc = document.getElementById('appDesc').value.trim();
+        const autostart = document.getElementById('appAutostart').checked;
+
+        if (!name) { showMessage(t('ui.error.name_empty', '❌ 请输入软件名称'), 'error'); return; }
+        if (!path) { showMessage(t('ui.error.path_empty', '❌ 请输入文件路径'), 'error'); return; }
+
+        const aliases = aliasesStr
+            .split(/[,，]/)
+            .map(s => s.trim())
+            .filter(s => s);
+
+        saveButton.disabled = true;
+        try {
+            let finalMessage = t('ui.success.add', '✨ 添加成功');
+            let finalType = 'success';
+
+            if (editingAppId) {
+                const normalizedPath = stripPathQuotes(path).toLowerCase();
+                const originalPath = stripPathQuotes(editingAppSnapshot?.path || '').toLowerCase();
+                const autostartChanged = autostart !== Boolean(editingAppSnapshot?.autostart);
+                const canApplyAutostart = normalizedPath.endsWith('.exe') ||
+                    (editingAppSnapshot?.autostart && !autostart);
+
+                const updateResult = await callPlugin('update_app', {
+                    app_id: editingAppId,
+                    name, path, aliases, description: desc
+                });
+                if (updateResult.message) {
+                    finalMessage = `✨ ${updateResult.message}`;
+                    if (isWarningMessage(updateResult.message)) {
+                        finalType = 'warning';
+                    }
+                }
+                if (autostartChanged && canApplyAutostart) {
+                    try {
+                        await callPlugin('set_autostart', { app_id: editingAppId, enabled: autostart });
+                    } catch (err) {
+                        finalMessage = t('ui.warning.update_autostart_failed', '⚠️ 更新成功，但开机自启设置失败: {error}', { error: err.message });
+                        finalType = 'warning';
+                    }
+                }
+                if (finalType === 'success') {
+                    finalMessage = t('ui.success.update', '✨ 更新成功');
+                }
+            } else {
+                const result = await callPlugin('add_app', {
+                    name, path, aliases, description: desc, autostart
+                });
+                if (result.message) {
+                    finalMessage = `✨ ${result.message}`;
+                    if (isWarningMessage(result.message)) {
+                        finalType = 'warning';
+                    }
+                }
+            }
+            closeModal();
+            await loadApps();
+            showMessage(finalMessage, finalType);
+        } catch (err) {
+            showMessage(t('ui.error.save', '❌ {error}', { error: err.message }), 'error');
+        } finally {
+            saveButton.disabled = false;
+        }
+    }
+
+    function editApp(appId) {
+        const app = allApps.find(a => a.id === appId);
+        if (app) openModal(t('ui.modal.edit_title', '编辑软件'), app);
+    }
+
+    async function deleteApp(appId) {
+        const app = allApps.find(a => a.id === appId);
+        if (!app) return;
+        if (!confirm(t('ui.confirm.delete', '确定要删除「{name}」吗？', { name: app.name }))) return;
+
+        try {
+            await callPlugin('remove_app', { app_id: appId });
+            showMessage(t('ui.success.delete', '✨ 删除成功'), 'success');
+            await loadApps();
+        } catch (err) {
+            showMessage(t('ui.error.delete', '❌ {error}', { error: err.message }), 'error');
+        }
+    }
+
+    document.getElementById('searchInput').addEventListener('input', (e) => {
+        const query = e.target.value.toLowerCase().trim();
+        if (!query) {
+            renderAppList(allApps);
+            return;
+        }
+        const filtered = allApps.filter(app => {
+            const nameMatch = app.name.toLowerCase().includes(query);
+            const aliasMatch = (app.aliases || []).some(a => a.toLowerCase().includes(query));
+            const pathMatch = app.path.toLowerCase().includes(query);
+            return nameMatch || aliasMatch || pathMatch;
+        });
+        renderAppList(filtered);
+    });
+
+    document.getElementById('addAppBtn').addEventListener('click', () => openModal());
+    document.getElementById('refreshBtn').addEventListener('click', loadApps);
+    document.getElementById('exportBtn').addEventListener('click', exportApps);
+    document.getElementById('tutorialBtn').addEventListener('click', openTutorial);
+
+    document.getElementById('appModal').addEventListener('click', (e) => {
+        if (e.target.id === 'appModal') closeModal();
+    });
+
+    document.getElementById('tutorialModal').addEventListener('click', (e) => {
+        if (e.target.id === 'tutorialModal') closeTutorial();
+    });
+
+    function openTutorial() {
+        document.getElementById('tutorialModal').classList.add('active');
+    }
+
+    function closeTutorial() {
+        document.getElementById('tutorialModal').classList.remove('active');
+    }
+
+    document.getElementById('appPath').addEventListener('input', () => {
+        updateModalAutostartState();
+    });
+
+    document.addEventListener('DOMContentLoaded', async () => {
+        await loadI18n();
+        applyI18n();
+        await loadApps();
+    });
+</script>
+</body>
+</html>

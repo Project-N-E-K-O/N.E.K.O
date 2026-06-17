@@ -32,7 +32,6 @@ _MAX_RECENT_TEXTS = 20               # 每人保留最近发言数
 _MAX_ACTIVE_USERS = 200              # 最多追踪的用户数
 _VIP_GIFT_THRESHOLD = 50             # 送礼超此金额标记 VIP
 _REGULAR_MSG_THRESHOLD = 10          # 发言超此条数标记常客
-_SENTIMENT_HISTORY_MAX = 20          # 情绪历史保留条数
 
 
 # ==================================================================
@@ -64,14 +63,9 @@ class UserRecord:
     topics: dict = field(default_factory=dict)   # topic_name -> mention_count
     top_topic: str = ""
 
-    # ── 情绪画像 ──
-    sentiment_history: list = field(default_factory=list)  # [(timestamp, score)]
-    avg_sentiment: float = 0.0
-
     # ── 互动风格（LLM 推测） ──
     interaction_style: str = "默认"    # 提问型/梗型/闲聊型/支持型
     response_preference: str = ""      # 希望猫娘怎么回应
-    response_style: str = "默认"       # UserProfileTracker 兼容
 
     # ── 身份标签 ──
     is_regular: bool = False           # 常客（发言 >= _REGULAR_MSG_THRESHOLD）
@@ -107,14 +101,6 @@ class UserRecord:
         self.topics[topic] = self.topics.get(topic, 0) + count
         if self.topics:
             self.top_topic = max(self.topics, key=self.topics.get)
-
-    def record_sentiment(self, score: float):
-        """记录情绪点"""
-        self.sentiment_history.append((time.time(), score))
-        if len(self.sentiment_history) > _SENTIMENT_HISTORY_MAX:
-            self.sentiment_history = self.sentiment_history[-_SENTIMENT_HISTORY_MAX:]
-        total = sum(s for _, s in self.sentiment_history)
-        self.avg_sentiment = total / max(len(self.sentiment_history), 1)
 
     def is_inactive(self, now: float, ttl: float = 3600) -> bool:
         """是否长时间无活动"""
@@ -220,22 +206,22 @@ class UserRecordManager:
         """记录弹幕 — DanmakuMemory 兼容接口"""
         self.record(uid=uid, uname=uname, text=text)
 
-    def record_gift(self, uname: str, price: float):
-        """记录送礼
-
-        兼容 UserProfileTracker.record_gift() 接口。
-        """
-        key = self._find_by_uname(uname)
-        if key:
-            profile = self._profiles[key]
-        else:
-            profile = self._get_or_create(uname, 0, uname)
-            key = profile.key
-
+    def record_gift(self, uid: int = 0, uname: str = "", price: float = 0.0):
+        """记录送礼"""
+        key = str(uid) if uid > 0 else self._find_by_uname(uname)
+        if not key:
+            key = uname
+        if not key:
+            return
+        profile = self._get_or_create(key, uid, uname)
+        # 回写缺失的 uid/uname（已有记录通过昵称查找创建的，后续获得 UID 时需要刷新）
+        if uid > 0 and not profile.uid:
+            profile.uid = uid
+        if uname and not profile.uname:
+            profile.uname = uname
         profile.gift_total += price
         profile.gift_count += 1
         profile.is_vip = profile.gift_total > _VIP_GIFT_THRESHOLD
-
         self._touch(key)
 
     def record_entry(self, uid: int, uname: str):
@@ -399,9 +385,9 @@ class UserRecordManager:
             if tags:
                 parts.append(f"（{'，'.join(tags)}）")
 
-            # 回应风格
-            if p.response_style and p.response_style != "默认":
-                parts.append(f"→ 回应风格：{p.response_style}")
+            # 互动风格
+            if p.interaction_style and p.interaction_style != "默认":
+                parts.append(f"→ 互动风格：{p.interaction_style}")
 
             # 最近发言摘要
             recent = p.recent_texts[-3:] if p.recent_texts else []
@@ -470,11 +456,8 @@ class UserRecordManager:
         return self._profiles.get(key) if key else None
 
     def update_style(self, uname: str, style: str):
-        """更新回应风格（兼容 UserProfileTracker 接口）"""
-        key = self._find_by_uname(uname)
-        if key:
-            self._profiles[key].response_style = style
-            self._profiles[key].interaction_style = style
+        """更新互动风格"""
+        self.update_interaction_style(uname, style)
 
     def update_interaction_style(self, uname: str, style: str):
         """更新互动风格"""

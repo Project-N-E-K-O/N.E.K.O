@@ -13,6 +13,7 @@ const VOICE_CLONE_PROVIDER_REGISTRY_KEYS = Object.freeze({
     minimax: 'minimax',
     minimax_intl: 'minimax_intl',
     elevenlabs: 'elevenlabs',
+    mimo: 'mimo',
 });
 const VOICE_CLONE_RESTRICTED_REGISTRY_KEYS = new Set([
     'qwen_intl',
@@ -25,6 +26,7 @@ const VOICE_CLONE_PROVIDER_KEY_FIELDS = Object.freeze([
     ['minimax', 'assistApiKeyMinimax'],
     ['minimax_intl', 'assistApiKeyMinimaxIntl'],
     ['elevenlabs', 'assistApiKeyElevenlabs'],
+    ['mimo', 'assistApiKeyMimo'],
 ]);
 const voiceCloneProviderRestrictionState = {
     loaded: false,
@@ -443,6 +445,28 @@ function getVoiceCloneProviderKeyField(provider) {
     return entry ? entry[1] : '';
 }
 
+// MiMo 的可用凭据在普通 key 或 Token Plan key 两个字段之一——但**不是 OR**：后端
+// get_tts_api_key('mimo') 严格按「assistApi=='mimo' 且 useMimoTokenPlan」二选一取其中一个
+// （token plan 激活取 assistApiKeyMimoTokenPlan，否则取 assistApiKeyMimo）。前端可用性判定必须
+// 镜像同一条规则，否则会出现「OR 判定有 key 但后端取的是另一个空字段 → 上传后 400」的假阳性
+// （Codex review #1851）。
+const VOICE_CLONE_MIMO_TOKEN_PLAN_KEY_FIELD = 'assistApiKeyMimoTokenPlan';
+
+function getActiveMimoKeyField(cfg) {
+    const tokenPlanActive = String((cfg && cfg.assistApi) || '').trim().toLowerCase() === 'mimo'
+        && !!(cfg && cfg.useMimoTokenPlan);
+    return tokenPlanActive ? VOICE_CLONE_MIMO_TOKEN_PLAN_KEY_FIELD : 'assistApiKeyMimo';
+}
+
+function cfgHasCloneProviderKey(cfg, provider) {
+    if (!cfg || typeof cfg !== 'object') return false;
+    if (provider === 'mimo') {
+        return !!cfg[getActiveMimoKeyField(cfg)];
+    }
+    const fieldName = getVoiceCloneProviderKeyField(provider);
+    return !!(fieldName && cfg[fieldName]);
+}
+
 function getVoiceCloneProviderRegistryKey(provider) {
     return VOICE_CLONE_PROVIDER_REGISTRY_KEYS[provider] || provider;
 }
@@ -492,9 +516,7 @@ async function ensureVoiceCloneApiConfigState(options = {}) {
 
 function hasVoiceCloneProviderApi(provider) {
     if (voiceCloneApiConfigState.isLocalTts) return true;
-    const cfg = voiceCloneApiConfigState.cfg;
-    const fieldName = getVoiceCloneProviderKeyField(provider);
-    return !!(cfg && fieldName && cfg[fieldName]);
+    return cfgHasCloneProviderKey(voiceCloneApiConfigState.cfg, provider);
 }
 
 async function checkVoiceCloneMainlandChinaUser() {
@@ -841,8 +863,8 @@ async function initVoiceCloneProviderRestrictions() {
 
 function getPreferredCloneProviderFromConfig(cfg) {
     if (!cfg || typeof cfg !== 'object') return '';
-    for (const [provider, fieldName] of VOICE_CLONE_PROVIDER_KEY_FIELDS) {
-        if (cfg[fieldName] && !isVoiceCloneProviderRestricted(provider)) {
+    for (const [provider] of VOICE_CLONE_PROVIDER_KEY_FIELDS) {
+        if (cfgHasCloneProviderKey(cfg, provider) && !isVoiceCloneProviderRestricted(provider)) {
             return provider;
         }
     }
@@ -852,8 +874,8 @@ function getPreferredCloneProviderFromConfig(cfg) {
 function hasUsableCloneApiFromConfig(cfg, isLocalTts) {
     if (isLocalTts) return true;
     if (!cfg || typeof cfg !== 'object') return false;
-    return VOICE_CLONE_PROVIDER_KEY_FIELDS.some(([provider, fieldName]) => (
-        !!cfg[fieldName] && !isVoiceCloneProviderRestricted(provider)
+    return VOICE_CLONE_PROVIDER_KEY_FIELDS.some(([provider]) => (
+        cfgHasCloneProviderKey(cfg, provider) && !isVoiceCloneProviderRestricted(provider)
     ));
 }
 
@@ -866,10 +888,12 @@ function updateVoiceCloneProviderNoticeText(noticeDiv, provider) {
         'minimax': 'voice.minimaxApiRequired',
         'minimax_intl': 'voice.minimaxIntlApiRequired',
         'elevenlabs': 'voice.elevenlabsApiRequired',
+        'mimo': 'voice.mimoApiRequired',
     };
     const fallbackMap = {
         'cosyvoice_intl': '请先在 API 设置中填写阿里国际版 API Key',
         'elevenlabs': '请先在 API 设置中填写 ElevenLabs API Key',
+        'mimo': '请先在 API 设置中填写 MiMo API Key',
     };
     const i18nKey = keyMap[provider] || 'voice.alibabaApiRequired';
     span.setAttribute('data-i18n', i18nKey);
@@ -1225,6 +1249,7 @@ document.addEventListener('DOMContentLoaded', function initProviderSwitch() {
         }
         refreshVoiceCloneProviderNotice(providerSelect, noticeDiv);
         normalizePrefixInputForProvider();
+        updateCloneMethodForProvider(providerSelect.value);
     });
     if (prefixInput) {
         prefixInput.addEventListener('input', () => {
@@ -1233,13 +1258,44 @@ document.addEventListener('DOMContentLoaded', function initProviderSwitch() {
     }
     refreshVoiceCloneProviderNotice(providerSelect, noticeDiv);
     normalizePrefixInputForProvider();
+    updateCloneMethodForProvider(providerSelect.value);
 });
 
 // 当前克隆方式
 let currentCloneMethod = 'file';
 
+// MiMo 只支持本地文件克隆：它把参考样本存在本地、不走 /voice_clone_direct（后端
+// valid_providers 不含 mimo，直链会直接 TTS_PROVIDER_INVALID）。选中 MiMo 时禁用直链方式。
+function isDirectLinkUnsupportedProvider(provider) {
+    return provider === 'mimo';
+}
+
+function updateCloneMethodForProvider(provider) {
+    const btnDirectLinkClone = document.getElementById('btnDirectLinkClone');
+    const disabled = isDirectLinkUnsupportedProvider(provider);
+    if (btnDirectLinkClone) {
+        btnDirectLinkClone.disabled = disabled;
+        btnDirectLinkClone.classList.toggle('disabled', disabled);
+        btnDirectLinkClone.setAttribute('aria-disabled', disabled ? 'true' : 'false');
+        btnDirectLinkClone.title = disabled
+            ? (window.t ? window.t('voice.mimoDirectLinkUnsupported') : 'MiMo 暂不支持直链克隆')
+            : '';
+    }
+    // 当前在直链方式但切到了不支持直链的 provider → 强制回退到本地文件
+    if (disabled && currentCloneMethod === 'directlink') {
+        switchCloneMethod('file');
+    }
+}
+
 // 切换克隆方式
 function switchCloneMethod(method) {
+    // 防御：不支持直链的 provider（MiMo）被选中时，无视直链切换请求
+    if (method === 'directlink') {
+        const providerSelect = document.getElementById('voiceProvider');
+        if (providerSelect && isDirectLinkUnsupportedProvider(providerSelect.value)) {
+            method = 'file';
+        }
+    }
     currentCloneMethod = method;
     const btnFileClone = document.getElementById('btnFileClone');
     const btnDirectLinkClone = document.getElementById('btnDirectLinkClone');
@@ -1370,6 +1426,11 @@ function setFormDisabled(disabled) {
         buttons.forEach(btn => {
             if (btn) btn.disabled = disabled;
         });
+    }
+    // 重新启用时恢复「按 provider 的方法可用性」策略：上面的全局启用会把 MiMo 的直链禁用
+    // 状态冲掉，若不重新触发 provider change，MiMo 下直链按钮会变回可点（与策略不一致）。
+    if (!disabled && typeof updateCloneMethodForProvider === 'function') {
+        updateCloneMethodForProvider(voiceProvider ? voiceProvider.value : '');
     }
 }
 
