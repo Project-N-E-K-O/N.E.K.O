@@ -269,6 +269,7 @@ class UserActivityTracker:
         self._activity_guess_state_sig: tuple | None = None
         self._activity_guess_at: float = 0.0
         self._activity_guess_loop_task: asyncio.Task | None = None
+        self._topic_candidate_task: asyncio.Task | None = None
 
         # Frontend-pushed system signal (for remote deployments where the
         # backend's local OS APIs see only the server, not the user).
@@ -1088,7 +1089,7 @@ class UserActivityTracker:
 
                 from utils.language_utils import get_global_language
                 lang = get_global_language() or 'en'
-                await self._process_topic_candidates_if_ready(lang=lang, now=ts)
+                self._process_topic_candidates_if_ready(lang=lang, now=ts)
 
                 # Anti-thrash: respect the minimum refresh interval.
                 if (
@@ -1151,13 +1152,22 @@ class UserActivityTracker:
                 # Stay alive — one bad tick shouldn't kill the loop.
                 logger.debug('[%s] activity_guess loop tick failed: %s', self.lanlan_name, e)
 
-    async def _process_topic_candidates_if_ready(self, *, lang: str, now: float) -> None:
+    def _process_topic_candidates_if_ready(self, *, lang: str, now: float) -> None:
         """Let the topic pool piggyback on the activity heartbeat.
 
         Candidate analysis has its own readiness/quiet-window checks inside
-        the pool. This hook merely supplies the existing 20s cadence so topic
-        collection does not maintain a parallel debounce loop.
+        the pool. This hook merely supplies the existing 20s cadence, then
+        returns immediately so a slow topic analyzer cannot stall the activity
+        heartbeat.
         """
+        if self._topic_candidate_task is not None and not self._topic_candidate_task.done():
+            return
+        self._topic_candidate_task = asyncio.create_task(
+            self._run_topic_candidates_if_ready(lang=lang, now=now),
+            name=f"topic-candidates-{self.lanlan_name}",
+        )
+
+    async def _run_topic_candidates_if_ready(self, *, lang: str, now: float) -> None:
         try:
             from main_logic.topic.pipeline import get_topic_hook_pool
             await get_topic_hook_pool().process_ready_topics(
@@ -1172,10 +1182,7 @@ class UserActivityTracker:
         """Let the topic pool wipe accumulated signals during privacy ticks."""
         try:
             from main_logic.topic.pipeline import get_topic_hook_pool
-            await get_topic_hook_pool().process_ready_topics(
-                lanlan_name=self.lanlan_name,
-                now=now,
-            )
+            await get_topic_hook_pool().process_ready_topics(now=now)
         except Exception as exc:
             logger.debug("[%s] topic candidate privacy purge failed: %s", self.lanlan_name, exc)
 

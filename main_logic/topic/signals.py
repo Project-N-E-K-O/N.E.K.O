@@ -335,7 +335,7 @@ class TopicSignalStore:
                 return
             self._persist_dirty = False
             payload = self._persistence_payload_locked()
-        self._write_payload(payload)
+            self._write_payload(payload)
 
     def _request_persist(self) -> None:
         path = self._persistence_path

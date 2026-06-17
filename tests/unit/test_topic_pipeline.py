@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import time
 from datetime import datetime
 
@@ -85,6 +86,50 @@ def test_topic_signal_store_batches_persistence_off_chat_path(monkeypatch, tmp_p
 
     assert len(calls) == 1
     assert len(calls[0][1]["characters"]["妮可"]) == 2
+
+
+def test_topic_signal_store_privacy_flush_wins_over_inflight_write(tmp_path):
+    path = tmp_path / "topic_signals.json"
+    store = TopicSignalStore(
+        min_user_turns_for_topic=1,
+        persistence_path=path,
+        persistence_flush_delay_seconds=60,
+    )
+    original_write = store._write_payload
+    first_write_entered = threading.Event()
+    release_first_write = threading.Event()
+    write_count = 0
+
+    def slow_first_write(payload):
+        nonlocal write_count
+        write_count += 1
+        if write_count == 1:
+            first_write_entered.set()
+            assert release_first_write.wait(timeout=1.0)
+        original_write(payload)
+
+    store._write_payload = slow_first_write
+    store.note_turn("妮可", actor="user", text="隐私前的候选证据")
+
+    first_flush = threading.Thread(target=store.flush)
+    first_flush.start()
+    assert first_write_entered.wait(timeout=1.0)
+
+    privacy_flush = threading.Thread(
+        target=lambda: (store.clear("妮可"), store.flush())
+    )
+    privacy_flush.start()
+    release_first_write.set()
+    first_flush.join(timeout=1.0)
+    privacy_flush.join(timeout=1.0)
+    assert not first_flush.is_alive()
+    assert not privacy_flush.is_alive()
+
+    reloaded = TopicSignalStore(
+        min_user_turns_for_topic=1,
+        persistence_path=path,
+    )
+    assert not reloaded.is_ready("妮可")
 
 
 def test_topic_signal_store_drops_entries_older_than_retention(tmp_path):
@@ -573,6 +618,27 @@ async def test_topic_pool_process_ready_scopes_to_requested_character():
 
 
 @pytest.mark.asyncio
+async def test_topic_pool_under_ready_signals_do_not_drop_pending_material():
+    async def fake_analyzer(*, lang, global_signals):
+        return [{"interest": "已经准备好的旧话题", "relevance": 90}]
+
+    pool = TopicHookPool(
+        analyzer=fake_analyzer,
+        auto_schedule=False,
+        candidate_quiet_seconds=0,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "我最近一直在纠结换工作")
+    await pool.process_now("妮可", lang="zh-CN")
+    assert pool.get_ready_materials("妮可")[0]["interest"] == "已经准备好的旧话题"
+
+    pool.note_ai_message("妮可", "我先帮你把这个问题放在一边")
+    await pool.process_ready_topics(lanlan_name="妮可", now=time.time() + 60, lang="zh-CN")
+
+    assert pool.get_ready_materials("妮可")[0]["interest"] == "已经准备好的旧话题"
+
+
+@pytest.mark.asyncio
 async def test_topic_pool_purges_requested_character_while_privacy_is_enabled(monkeypatch):
     from main_logic.topic import pipeline as topic_pipeline
 
@@ -614,6 +680,58 @@ async def test_topic_pool_purges_requested_character_while_privacy_is_enabled(mo
 
     assert calls == []
     assert pool.get_ready_materials("妮可") == []
+
+
+@pytest.mark.asyncio
+async def test_activity_tracker_privacy_purge_uses_global_topic_pool(monkeypatch):
+    from main_logic.activity.tracker import UserActivityTracker
+
+    calls = []
+
+    class FakePool:
+        async def process_ready_topics(self, **kwargs):
+            calls.append(kwargs)
+
+    monkeypatch.setattr(
+        "main_logic.topic.pipeline.get_topic_hook_pool",
+        lambda: FakePool(),
+    )
+
+    tracker = UserActivityTracker("妮可")
+    await tracker._purge_topic_candidates_for_privacy(now=123.0)
+
+    assert calls == [{"now": 123.0}]
+
+
+@pytest.mark.asyncio
+async def test_activity_tracker_topic_candidate_kickoff_does_not_block_heartbeat(monkeypatch):
+    from main_logic.activity.tracker import UserActivityTracker
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls = []
+
+    class FakePool:
+        async def process_ready_topics(self, **kwargs):
+            calls.append(kwargs)
+            entered.set()
+            await release.wait()
+
+    monkeypatch.setattr(
+        "main_logic.topic.pipeline.get_topic_hook_pool",
+        lambda: FakePool(),
+    )
+
+    tracker = UserActivityTracker("妮可")
+    tracker._process_topic_candidates_if_ready(lang="zh-CN", now=123.0)
+    await asyncio.wait_for(entered.wait(), timeout=1.0)
+
+    tracker._process_topic_candidates_if_ready(lang="zh-CN", now=124.0)
+    assert len(calls) == 1
+
+    release.set()
+    await asyncio.wait_for(tracker._topic_candidate_task, timeout=1.0)
+    assert calls == [{"lanlan_name": "妮可", "lang": "zh-CN", "now": 123.0}]
 
 
 @pytest.mark.asyncio

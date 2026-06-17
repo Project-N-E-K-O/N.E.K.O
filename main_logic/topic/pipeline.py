@@ -342,7 +342,6 @@ class TopicHookPool:
                 name,
                 self._signal_store.readiness_percent(name),
             )
-            self._materials.pop(name, None)
             self._dirty.discard(name)
             return
         stored_lang = self._langs.get(name)
