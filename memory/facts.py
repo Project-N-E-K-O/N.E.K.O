@@ -415,10 +415,15 @@ class FactStore:
             try:
                 set_call_type(call_type)
                 api_config = self._config_manager.get_model_api_config(tier)
-                _llm_kwargs = dict(timeout=timeout, max_retries=0)
+                from config import LLM_OUTPUT_GUARD_MAX_TOKENS
+                _llm_kwargs = dict(
+                    timeout=timeout,
+                    max_retries=0,
+                    max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,
+                )
                 if extra_body is not _DEFAULT_EXTRA_BODY:
                     _llm_kwargs['extra_body'] = extra_body
-                llm = create_chat_llm(
+                llm = create_chat_llm(  # noqa: LLM_OUTPUT_BUDGET  # budget + timeout live in _llm_kwargs above (splat invisible to the lint); guard is generous for variable-length JSON.
                     api_config['model'],
                     api_config['base_url'], api_config['api_key'],
                     **_llm_kwargs,

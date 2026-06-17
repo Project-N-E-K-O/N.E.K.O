@@ -1156,12 +1156,15 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
         source_name = lang_names.get(source_lang, source_lang)
         target_name = lang_names.get(target_lang, target_lang)
 
-        from config import TRANSLATION_OUTPUT_MAX_TOKENS
+        from config import LLM_OUTPUT_GUARD_MAX_TOKENS
         llm = create_chat_llm(
             emotion_config['model'], emotion_config['base_url'],
             emotion_config['api_key'],
             timeout=10.0,
-            max_completion_tokens=TRANSLATION_OUTPUT_MAX_TOKENS,
+            # Generous guard, not a tight cap: this translate_text LLM path can
+            # receive long user text, so a small cap would truncate the
+            # translation mid-stream and return it as a "success".
+            max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,
         )
 
         instruction = _loc(TRANSLATION_INSTRUCTION, lang).format(
@@ -1179,7 +1182,7 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
         # 与 memory/ 其它调用点的 try/finally 收尾对偶（缓存版客户端在
         # TranslationService._llm_client 里复用，不走这条路径）。
         try:
-            response = await llm.ainvoke(messages)  # noqa: LLM_INPUT_BUDGET  # source text chunked by TRANSLATION_CHUNK_MAX_CHARS upstream before translation.
+            response = await llm.ainvoke(messages)  # noqa: LLM_INPUT_BUDGET  # user-submitted translation text; intentionally uncapped here (best-effort LLM path), output bounded by the generous guard above.
             translated_text = response.content.strip()
         finally:
             await llm.aclose()
@@ -1390,7 +1393,7 @@ class TranslationService:
 ======以上为规则======"""
 
             set_call_type("translation")
-            response = await llm.ainvoke([  # noqa: LLM_INPUT_BUDGET  # source text chunked by TRANSLATION_CHUNK_MAX_CHARS upstream before translation.
+            response = await llm.ainvoke([  # noqa: LLM_INPUT_BUDGET  # user-submitted translation text; intentionally uncapped here (best-effort LLM path).
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=text)
             ])

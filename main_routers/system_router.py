@@ -5767,14 +5767,16 @@ async def proactive_chat(request: Request):
                 m, bu, ak = vision_model_name, vision_base_url, vision_api_key
             else:
                 m, bu, ak = conversation_model, conversation_base_url, conversation_api_key
+            from config import DIALOG_LLM_STREAM_TIMEOUT_SECONDS
             kw: dict = dict(
                 temperature=temperature,
                 max_completion_tokens=max_completion_tokens,
                 streaming=True,
+                timeout=DIALOG_LLM_STREAM_TIMEOUT_SECONDS,  # hang-guard for the streaming call
             )
             if not disable_thinking:
                 kw["extra_body"] = None  # skip auto-resolved extra_body
-            return create_chat_llm(m, bu, ak, **kw)
+            return create_chat_llm(m, bu, ak, **kw)  # noqa: LLM_OUTPUT_BUDGET  # budget + timeout set in kw above (splat invisible to the lint).
 
         async def _llm_call_with_retry(
             system_prompt: str, label: str, *,

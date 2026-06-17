@@ -1291,10 +1291,11 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
         # Gemini 的 OpenAI 兼容接口需要实际的 user content；
         # 仅发送 system message 可能被底层适配为空 contents。
         set_call_type("web_scraper")
-        response = await llm.ainvoke([  # noqa: LLM_INPUT_BUDGET  # input is the OS window title (uncapped by design, cf. llm-prompt-budget.md §6).
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=user_prompt),
-        ])
+        async with llm:  # ensure the per-call client is closed (no connection leak on repeated calls)
+            response = await llm.ainvoke([  # noqa: LLM_INPUT_BUDGET  # input is the OS window title (uncapped by design, cf. llm-prompt-budget.md §6).
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt),
+            ])
         response_text = _extract_llm_text_content(getattr(response, 'content', None))
         if not response_text:
             # 窗口标题不写 logger，但记下长度元数据便于调试

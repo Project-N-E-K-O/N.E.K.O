@@ -78,9 +78,15 @@ def test_output_alias_class_matched():
     assert _codes(src).count("LLM_OUTPUT_BUDGET") == 1
 
 
-def test_output_star_kwargs_skipped():
-    # Can't prove absence through a splat — must not flag.
+def test_output_star_kwargs_not_an_exemption():
+    # A splat hides its keys from the checker, so it must NOT silently pass —
+    # the hard rule requires an explicit kwarg or a justified noqa.
     src = "llm = create_chat_llm(m, b, k, **opts)"
+    assert _codes(src).count("LLM_OUTPUT_BUDGET") == 1
+
+
+def test_output_star_kwargs_with_noqa_suppressed():
+    src = "llm = create_chat_llm(m, b, k, **opts)  # noqa: LLM_OUTPUT_BUDGET"
     assert "LLM_OUTPUT_BUDGET" not in _codes(src)
 
 

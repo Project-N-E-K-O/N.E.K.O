@@ -44,9 +44,18 @@ class TaskDeduper:
         )
 
     def _build_prompt(self, new_task: str, candidates: List[Tuple[str, str]]) -> str:
-        lines = ["New task:", new_task.strip(), "\nExisting tasks:"]
+        # Input budget: cap each component so the dedup prompt can't blow up on a
+        # pathologically long task description. Per-component truncation (not a
+        # tail truncate of the whole prompt) keeps the trailing instruction intact.
+        from utils.tokenize import truncate_to_tokens
+        from config import TASK_SUMMARY_MAX_TOKENS, TASK_DETAIL_MAX_TOKENS
+        lines = [
+            "New task:",
+            truncate_to_tokens(new_task.strip(), TASK_SUMMARY_MAX_TOKENS),
+            "\nExisting tasks:",
+        ]
         for tid, desc in candidates:
-            lines.append(f"- id={tid}: {desc}")
+            lines.append(f"- id={tid}: {truncate_to_tokens(desc, TASK_DETAIL_MAX_TOKENS)}")
         lines.append(
             "\nTask: Decide whether the NEW task duplicates ANY existing task (same goal or a strict subset). "
             "Ignore superficial wording differences. Scan the existing tasks; "
@@ -68,7 +77,7 @@ class TaskDeduper:
         for attempt in range(max_retries):
             try:
                 set_call_type("dedup")
-                resp = await self.llm.ainvoke([  # noqa: LLM_INPUT_BUDGET  # prompt is task descriptions already capped by TASK_*_MAX_TOKENS upstream.
+                resp = await self.llm.ainvoke([  # noqa: LLM_INPUT_BUDGET  # each prompt component truncated to TASK_SUMMARY/DETAIL_MAX_TOKENS in _build_prompt (truncation lives in the builder, not here).
                     {"role": "system", "content": "You are a careful deduplication judge."},
                     {"role": "user", "content": prompt},
                 ])

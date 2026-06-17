@@ -53,8 +53,8 @@ LLM_INPUT_BUDGET  (call-site, heuristic)
    This is a deliberately coarse heuristic — it cannot prove a given string was
    truncated, only that the function is "budget-aware". False positives are
    suppressed with ``# noqa: LLM_INPUT_BUDGET`` plus a justification (e.g. the
-   "咎由自取" user-text sites enumerated in llm-prompt-budget.md §6, or
-   constant-only health-check pings).
+   intentionally-uncapped user-text sites enumerated in llm-prompt-budget.md
+   section 6, or constant-only health-check pings).
 
 Scope
 -----
@@ -142,7 +142,10 @@ BUDGET_HELPER_NAMES = {
     "count_tokens",
     "acount_tokens",
 }
-BUDGET_CONST_RE = re.compile(r"_MAX_TOKENS$|_MAX_CHARS$|_MAX_ITEMS$|_BUDGET$")
+# Token/char budget constants only — ``_MAX_ITEMS`` (item counts) and a bare
+# ``_BUDGET`` (could be anything) are deliberately excluded so a function with
+# only a count limit isn't mistaken for input-token-budget-aware.
+BUDGET_CONST_RE = re.compile(r"_MAX_TOKENS$|_MAX_CHARS$|_TOKEN_BUDGET$")
 
 CODE_INPUT = "LLM_INPUT_BUDGET"
 
@@ -185,12 +188,6 @@ def _callee_name(call: ast.Call) -> str | None:
 
 def _has_kwarg(call: ast.Call, names: set[str]) -> bool:
     return any(kw.arg in names for kw in call.keywords if kw.arg is not None)
-
-
-def _has_star_kwargs(call: ast.Call) -> bool:
-    """True if the call splats ``**something`` — we can't statically prove
-    a budget/timeout is absent, so such calls are skipped (not flagged)."""
-    return any(kw.arg is None for kw in call.keywords)
 
 
 def _is_constant_prompt(node: ast.AST | None) -> bool:
@@ -248,17 +245,33 @@ def _build_parent_func_map(tree: ast.Module) -> dict[int, ast.AST]:
 
 
 def _function_is_budget_aware(func: ast.AST | None) -> bool:
-    """True if the function body references a tokenize truncation helper or a
-    ``*_MAX_TOKENS`` / ``*_MAX_CHARS`` budget constant."""
+    """True if the function's *own* body references a tokenize truncation helper
+    or a ``*_MAX_TOKENS`` / ``*_MAX_CHARS`` / ``*_TOKEN_BUDGET`` constant.
+
+    Does NOT descend into nested ``def`` / ``async def`` / ``lambda`` bodies — a
+    budget marker that lives only inside an inner helper says nothing about the
+    enclosing function's own LLM call (avoids a false negative)."""
     if func is None:
         return False
-    for sub in ast.walk(func):
-        if isinstance(sub, ast.Name):
-            if sub.id in BUDGET_HELPER_NAMES or BUDGET_CONST_RE.search(sub.id):
-                return True
-        elif isinstance(sub, ast.Attribute):
-            if sub.attr in BUDGET_HELPER_NAMES or BUDGET_CONST_RE.search(sub.attr):
-                return True
+
+    def _is_marker(name: str) -> bool:
+        return name in BUDGET_HELPER_NAMES or bool(BUDGET_CONST_RE.search(name))
+
+    stack: list[ast.AST] = [func]
+    first = True
+    while stack:
+        node = stack.pop()
+        # Skip the bodies of nested functions (but always scan ``func`` itself).
+        if not first and isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+        ):
+            continue
+        first = False
+        if isinstance(node, ast.Name) and _is_marker(node.id):
+            return True
+        if isinstance(node, ast.Attribute) and _is_marker(node.attr):
+            return True
+        stack.extend(ast.iter_child_nodes(node))
     return False
 
 
@@ -282,9 +295,10 @@ class LLMBudgetChecker(ast.NodeVisitor):
         self.generic_visit(node)
 
     def _check_output_budget(self, node: ast.Call, name: str) -> None:
-        # Can't prove absence through ``**kwargs`` splat — skip.
-        if _has_star_kwargs(node):
-            return
+        # NOTE: a ``**kwargs`` splat is NOT an exemption. We only see explicit
+        # keyword args, so a construction that hides its budget/timeout inside a
+        # splatted dict must carry a justified ``# noqa: LLM_OUTPUT_BUDGET`` —
+        # otherwise the hard rule would be trivially bypassable (see PR review).
         missing: list[str] = []
         if not _has_kwarg(node, BUDGET_KWARGS):
             missing.append("token budget (max_completion_tokens= / max_tokens=)")
@@ -339,13 +353,18 @@ class LLMBudgetChecker(ast.NodeVisitor):
 
 
 def _is_excluded(path: Path) -> bool:
-    parts = set(path.parts)
-    if parts & EXCLUDE_DIRS:
-        return True
+    # Match EXCLUDE_DIRS only against components *relative to the repo root* —
+    # otherwise a repo living under e.g. /home/dist/... would match "dist" on
+    # every path and silently pass CI.
     try:
-        rel = path.relative_to(REPO_ROOT).as_posix()
+        rel_path = path.relative_to(REPO_ROOT)
+        rel = rel_path.as_posix()
+        parts = set(rel_path.parts)
     except ValueError:
         rel = path.as_posix()
+        parts = set(path.parts)
+    if parts & EXCLUDE_DIRS:
+        return True
     if rel in EXCLUDE_FILES:
         return True
     for ex in EXCLUDE_DIRS:
