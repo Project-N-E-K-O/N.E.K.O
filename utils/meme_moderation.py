@@ -42,6 +42,11 @@ _DEFAULT_MODEL = "gi-image-moderation"
 _DEFAULT_TIMEOUT_SECONDS = 8.0
 _DEFAULT_CACHE_TTL_SECONDS = 7 * 24 * 3600
 _DEFAULT_CACHE_MAX_ITEMS = 1024
+_DEFAULT_BLOCK_SCORE_THRESHOLDS = {
+    "porn": 0.70,
+    "hentai": 0.70,
+    "sexy": 0.85,
+}
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
 _IMAGE_CONTENT_TYPES = {
     "image/jpeg",
@@ -64,10 +69,6 @@ _MODERATION_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 )
-
-# Left blank on purpose. If a downstream/private build wants a bundled key,
-# inject it during build time instead of committing a live secret upstream.
-_BUILTIN_UNIAPI_API_KEY = "sk-oXF1RK2cLXd2fIZZDdFe1472Cc4c46688dDb4f1a1663De03"
 
 _TRUTHY = {"1", "true", "yes", "on"}
 _FALSY = {"0", "false", "no", "off"}
@@ -158,6 +159,35 @@ def _read_float_env(name: str, default: float) -> float:
     return default
 
 
+def _read_probability_env(name: str, default: float) -> float:
+    for key in (f"NEKO_{name}", name):
+        raw = os.environ.get(key)
+        if raw is None:
+            continue
+        value = raw.strip()
+        if not value:
+            continue
+        try:
+            parsed = float(value)
+        except ValueError:
+            logger.warning(
+                "[Meme Moderation] Ignoring %s=%r (not a 0..1 score); using default %s",
+                key,
+                raw,
+                default,
+            )
+            continue
+        if 0.0 <= parsed <= 1.0:
+            return parsed
+        logger.warning(
+            "[Meme Moderation] Ignoring %s=%r (must be between 0 and 1); using default %s",
+            key,
+            raw,
+            default,
+        )
+    return default
+
+
 def _is_http_url(url: str) -> bool:
     try:
         parsed = urlsplit(url)
@@ -188,16 +218,44 @@ def _cache_set(cache_key: str, result: MemeModerationResult) -> None:
     _cache[cache_key] = (time.monotonic(), replace(result, cached=False))
 
 
-def _api_key_from_env_or_builtin() -> str:
-    return (
-        _read_env("UNIAPI_API_KEY")
-        or _read_env("MEME_MODERATION_API_KEY")
-        or _BUILTIN_UNIAPI_API_KEY.strip()
-    )
+def _api_key_from_env() -> str:
+    return _read_env("UNIAPI_API_KEY") or _read_env("MEME_MODERATION_API_KEY")
 
 
 def _default_moderation_enabled(api_key: str) -> bool:
     return bool(api_key.strip())
+
+
+def _score_threshold_for(category: str, default: float) -> float:
+    return _read_probability_env(
+        f"MEME_MODERATION_{category.upper()}_THRESHOLD",
+        default,
+    )
+
+
+def _score_as_float(value: Any) -> float | None:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return None
+    if score < 0.0:
+        return 0.0
+    if score > 1.0:
+        return 1.0
+    return score
+
+
+def _blocked_score_categories(category_scores: Any) -> list[str]:
+    if not isinstance(category_scores, dict):
+        return []
+    blocked = []
+    for category, default_threshold in _DEFAULT_BLOCK_SCORE_THRESHOLDS.items():
+        score = _score_as_float(category_scores.get(category))
+        if score is None:
+            continue
+        if score >= _score_threshold_for(category, default_threshold):
+            blocked.append(category)
+    return blocked
 
 
 def _rate_limit_backoff_seconds(response: httpx.Response | None) -> float:
@@ -315,7 +373,7 @@ async def moderate_meme_image_url(
     full_hash = _url_hash(url) if url else ""
     short_hash = full_hash[:12]
 
-    key = (api_key or "").strip() or _api_key_from_env_or_builtin()
+    key = (api_key or "").strip() or _api_key_from_env()
     if enabled is None:
         enabled = _read_bool_env(
             "MEME_MODERATION_ENABLED",
@@ -366,10 +424,10 @@ async def moderate_meme_image_url(
 
     if not key:
         return MemeModerationResult(
-            allowed=False,
+            allowed=True,
             provider=provider,
             model=model,
-            reason="missing_api_key",
+            reason="disabled",
             url_hash=short_hash,
         )
 
@@ -523,11 +581,18 @@ async def moderate_meme_image_url(
             url_hash=short_hash,
         )
 
+    blocked_categories = _blocked_score_categories(category_scores)
+    has_scores = isinstance(category_scores, dict) and bool(category_scores)
+    blocked = bool(blocked_categories) or (flagged and not has_scores)
+    reason = "pass"
+    if blocked:
+        reason = "flagged" if flagged else "score_threshold"
+
     result = MemeModerationResult(
-        allowed=not flagged,
+        allowed=not blocked,
         provider=provider,
         model=str(data.get("model") or model),
-        reason="flagged" if flagged else "pass",
+        reason=reason,
         categories=categories if isinstance(categories, dict) else None,
         category_scores=category_scores if isinstance(category_scores, dict) else None,
         url_hash=short_hash,

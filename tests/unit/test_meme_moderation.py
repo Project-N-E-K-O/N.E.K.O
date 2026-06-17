@@ -35,6 +35,12 @@ ENV_KEYS = [
     "MEME_MODERATION_RATE_LIMIT_BACKOFF_SECONDS",
     "NEKO_MEME_MODERATION_PAYMENT_BACKOFF_SECONDS",
     "MEME_MODERATION_PAYMENT_BACKOFF_SECONDS",
+    "NEKO_MEME_MODERATION_PORN_THRESHOLD",
+    "MEME_MODERATION_PORN_THRESHOLD",
+    "NEKO_MEME_MODERATION_HENTAI_THRESHOLD",
+    "MEME_MODERATION_HENTAI_THRESHOLD",
+    "NEKO_MEME_MODERATION_SEXY_THRESHOLD",
+    "MEME_MODERATION_SEXY_THRESHOLD",
 ]
 
 
@@ -42,7 +48,6 @@ ENV_KEYS = [
 def clean_moderation_state(monkeypatch):
     for key in ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setattr(mm, "_BUILTIN_UNIAPI_API_KEY", "")
     mm.clear_meme_moderation_cache()
     yield
     mm.clear_meme_moderation_cache()
@@ -115,21 +120,23 @@ class FakeClient:
         return self.get_response
 
 
-def moderation_json(flagged, *, model="omni-moderation-latest"):
+def moderation_json(flagged, *, model="omni-moderation-latest", scores=None, categories=None):
+    category_scores = scores if scores is not None else {"porn": 1.0 if flagged else 0.0}
+    category_flags = categories if categories is not None else {
+        "neutral": not flagged,
+        "drawings": False,
+        "sexy": False,
+        "hentai": False,
+        "porn": flagged,
+    }
     return {
         "id": "mod-test",
         "model": model,
         "results": [
             {
                 "flagged": flagged,
-                "categories": {
-                    "neutral": not flagged,
-                    "drawings": False,
-                    "sexy": False,
-                    "hentai": False,
-                    "porn": flagged,
-                },
-                "category_scores": {"porn": 1.0 if flagged else 0.0},
+                "categories": category_flags,
+                "category_scores": category_scores,
             }
         ],
     }
@@ -153,7 +160,7 @@ def test_disabled_allows_without_request():
     assert client.post_calls == []
 
 
-def test_missing_key_blocks_when_enabled():
+def test_missing_key_allows_without_request_even_when_enabled():
     client = FakeClient()
 
     result = run(
@@ -164,8 +171,8 @@ def test_missing_key_blocks_when_enabled():
         )
     )
 
-    assert result.allowed is False
-    assert result.reason == "missing_api_key"
+    assert result.allowed is True
+    assert result.reason == "disabled"
     assert client.post_calls == []
 
 
@@ -254,6 +261,54 @@ def test_flagged_image_blocks(monkeypatch):
     assert result.allowed is False
     assert result.reason == "flagged"
     assert result.categories["porn"] is True
+
+
+def test_flagged_low_scores_are_allowed_to_reduce_false_positives(monkeypatch):
+    use_direct_url_payload(monkeypatch)
+    client = FakeClient(
+        post_response=FakeResponse(
+            json_data=moderation_json(
+                True,
+                scores={"porn": 0.10, "hentai": 0.12, "sexy": 0.25},
+            )
+        )
+    )
+
+    result = run(
+        mm.moderate_meme_image_url(
+            "https://example.com/cat.jpg",
+            http_client=client,
+            enabled=True,
+            api_key="test-key",
+        )
+    )
+
+    assert result.allowed is True
+    assert result.reason == "pass"
+
+
+def test_high_scores_block_even_when_provider_does_not_flag(monkeypatch):
+    use_direct_url_payload(monkeypatch)
+    client = FakeClient(
+        post_response=FakeResponse(
+            json_data=moderation_json(
+                False,
+                scores={"porn": 0.72, "hentai": 0.01, "sexy": 0.20},
+            )
+        )
+    )
+
+    result = run(
+        mm.moderate_meme_image_url(
+            "https://example.com/cat.jpg",
+            http_client=client,
+            enabled=True,
+            api_key="test-key",
+        )
+    )
+
+    assert result.allowed is False
+    assert result.reason == "score_threshold"
 
 
 def test_request_failure_is_fail_closed_by_default(monkeypatch):
