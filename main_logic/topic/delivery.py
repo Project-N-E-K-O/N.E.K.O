@@ -202,6 +202,24 @@ def _topic_activity_gate_open(mgr: Any, lanlan_name: str) -> bool:
     return allowed
 
 
+def _topic_manager_release_gate_open(mgr: Any, lanlan_name: str) -> bool:
+    """Whether the proactive manager would release a submitted callback now."""
+    gate = getattr(mgr, "_can_release_proactive", None)
+    if not callable(gate):
+        return True
+    try:
+        allowed = bool(gate())
+    except Exception as exc:
+        logger.debug("[%s] topic hook manager release preflight failed: %s", lanlan_name, exc)
+        return False
+    if not allowed:
+        logger.info(
+            "[%s] topic hook delivery skipped: proactive manager cannot release yet",
+            lanlan_name,
+        )
+    return allowed
+
+
 def topic_hook_delivery_available(lanlan_name: str) -> bool:
     """Preflight whether a topic hook could be delivered right now."""
     mgr = _resolve_topic_manager(lanlan_name)
@@ -227,6 +245,8 @@ def topic_hook_delivery_available(lanlan_name: str) -> bool:
                 exc,
             )
     if not _topic_activity_gate_open(mgr, lanlan_name):
+        return False
+    if not _topic_manager_release_gate_open(mgr, lanlan_name):
         return False
     if callable(getattr(mgr, "submit_proactive_callback", None)):
         return True

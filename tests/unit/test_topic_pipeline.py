@@ -1925,7 +1925,10 @@ async def test_trigger_keeps_prepared_material_when_privacy_toggles_on_during_de
     )
     pool.note_user_message("妮可", "一个足够具体、可以深挖的话题", lang="zh-CN")
     await pool.process_now("妮可")
-    await asyncio.sleep(0.03)
+    for _ in range(20):
+        if delivered:
+            break
+        await asyncio.sleep(0.01)
 
     assert delivered == ["深搜期间隐私切换的话题"]
     assert pool.get_ready_materials("妮可") == []

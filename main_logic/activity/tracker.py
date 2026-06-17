@@ -389,6 +389,13 @@ class UserActivityTracker:
             # since nothing in the buffer changed.
             self._conv_seq += 1
 
+    def is_private_activity_active(self) -> bool:
+        """Whether the latest activity state is private/redacted."""
+        try:
+            return self._sm._current_state == 'private'
+        except Exception:
+            return True
+
     def mark_unfinished_thread_used(self) -> None:
         """Record that a proactive emission just used the override slot.
 

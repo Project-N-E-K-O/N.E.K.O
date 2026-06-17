@@ -128,8 +128,14 @@ class ActivityTrackerTurnSink:
 
 
 class TopicHookTurnSink:
-    def __init__(self, pool_factory: Callable[[], object] | None = None) -> None:
+    def __init__(
+        self,
+        pool_factory: Callable[[], object] | None = None,
+        *,
+        activity_private_check: Callable[[], bool] | None = None,
+    ) -> None:
         self._pool_factory = pool_factory
+        self._activity_private_check = activity_private_check
 
     def _pool(self):
         if self._pool_factory is not None:
@@ -137,32 +143,61 @@ class TopicHookTurnSink:
         from main_logic.topic.pipeline import get_topic_hook_pool
         return get_topic_hook_pool()
 
-    def note_turn(self, event: ConversationTurnEvent) -> None:
-        pool = self._pool()
-        if not event.text_allowed or not event.text:
-            if event.had_text:
-                purge_all_accumulated_signals = getattr(
+    def _activity_private(self) -> bool:
+        if self._activity_private_check is None:
+            return False
+        try:
+            return bool(self._activity_private_check())
+        except Exception:
+            return True
+
+    @staticmethod
+    def _purge_and_mark_turn(
+        pool,
+        event: ConversationTurnEvent,
+        *,
+        all_characters: bool,
+    ) -> None:
+        if all_characters:
+            purge_all_accumulated_signals = getattr(
+                pool,
+                "purge_all_accumulated_signals",
+                None,
+            )
+            if purge_all_accumulated_signals is not None:
+                purge_all_accumulated_signals()
+            else:
+                purge_accumulated_signals = getattr(
                     pool,
-                    "purge_all_accumulated_signals",
+                    "purge_accumulated_signals",
                     None,
                 )
-                if purge_all_accumulated_signals is not None:
-                    purge_all_accumulated_signals()
-                else:
-                    purge_accumulated_signals = getattr(
-                        pool,
-                        "purge_accumulated_signals",
-                        None,
-                    )
-                    if purge_accumulated_signals is not None:
-                        purge_accumulated_signals(event.lanlan_name)
-                note_turn_timestamp = getattr(pool, "note_turn_timestamp", None)
-                if note_turn_timestamp is not None:
-                    note_turn_timestamp(
-                        event.lanlan_name,
-                        lang=event.lang,
-                        now=event.timestamp,
-                    )
+                if purge_accumulated_signals is not None:
+                    purge_accumulated_signals(event.lanlan_name)
+        else:
+            purge_accumulated_signals = getattr(
+                pool,
+                "purge_accumulated_signals",
+                None,
+            )
+            if purge_accumulated_signals is not None:
+                purge_accumulated_signals(event.lanlan_name)
+        note_turn_timestamp = getattr(pool, "note_turn_timestamp", None)
+        if note_turn_timestamp is not None:
+            note_turn_timestamp(
+                event.lanlan_name,
+                lang=event.lang,
+                now=event.timestamp,
+            )
+
+    def note_turn(self, event: ConversationTurnEvent) -> None:
+        pool = self._pool()
+        if event.text_allowed and event.had_text and self._activity_private():
+            self._purge_and_mark_turn(pool, event, all_characters=False)
+            return
+        if not event.text_allowed or not event.text:
+            if event.had_text:
+                self._purge_and_mark_turn(pool, event, all_characters=True)
             return
         if event.actor == "user":
             pool.note_user_message(event.lanlan_name, event.text, lang=event.lang)
@@ -178,5 +213,13 @@ def create_default_turn_dispatcher(
 ) -> ConversationTurnDispatcher:
     dispatcher = ConversationTurnDispatcher(lanlan_name, language=language)
     dispatcher.add_sink(ActivityTrackerTurnSink(activity_tracker))
-    dispatcher.add_sink(TopicHookTurnSink())
+    dispatcher.add_sink(
+        TopicHookTurnSink(
+            activity_private_check=getattr(
+                activity_tracker,
+                "is_private_activity_active",
+                None,
+            )
+        )
+    )
     return dispatcher
