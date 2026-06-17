@@ -6299,7 +6299,15 @@ async def proactive_chat(request: Request):
                     if meme_topic_key and _should_skip_source(meme_topic_key):
                         logger.debug(f"[{lanlan_name}]- Phase 1 表情包候选去重命中，跳过: {meme_title[:30]}")
                         continue
+                    if mgr.state.is_proactive_preempted():
+                        return await _end_proactive(
+                            JSONResponse(_proactive_preempted_json("phase1_pre_meme_moderation"))
+                        )
                     moderation = await moderate_meme_image_url(meme_url)
+                    if mgr.state.is_proactive_preempted():
+                        return await _end_proactive(
+                            JSONResponse(_proactive_preempted_json("phase1_post_meme_moderation"))
+                        )
                     if not moderation.allowed:
                         logger.info(
                             "[%s]- Phase 1 meme candidate moderation blocked: reason=%s cached=%s url_hash=%s title=%s",

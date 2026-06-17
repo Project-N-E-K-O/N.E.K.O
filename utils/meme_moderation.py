@@ -313,6 +313,10 @@ def _normalize_image_content_type(raw: str) -> str:
     return content_type or "image/jpeg"
 
 
+def _ssl_fallback_enabled() -> bool:
+    return _read_bool_env("MEME_MODERATION_ALLOW_SSL_FALLBACK", False)
+
+
 async def _download_image_for_moderation(url: str, timeout_seconds: float) -> tuple[bytes, str]:
     headers = _image_fetch_headers(url)
 
@@ -334,6 +338,14 @@ async def _download_image_for_moderation(url: str, timeout_seconds: float) -> tu
         message = str(exc).lower()
         if "ssl" not in message and "certificate" not in message:
             raise
+        if not _ssl_fallback_enabled():
+            raise
+        host = (urlsplit(url).hostname or "").lower()
+        logger.warning(
+            "[Meme Moderation] SSL verification fallback enabled for image fetch host=%s error=%s",
+            host,
+            exc,
+        )
         response = await _fetch(verify=False)
 
     response.raise_for_status()
@@ -597,5 +609,8 @@ async def moderate_meme_image_url(
         category_scores=category_scores if isinstance(category_scores, dict) else None,
         url_hash=short_hash,
     )
-    _cache_set(full_hash, result)
+    # Cache only allowed moderation results. Blocked images should be rechecked
+    # after provider or local score thresholds change instead of staying stuck.
+    if result.allowed:
+        _cache_set(full_hash, result)
     return result

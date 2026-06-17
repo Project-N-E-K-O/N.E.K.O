@@ -35,6 +35,8 @@ ENV_KEYS = [
     "MEME_MODERATION_RATE_LIMIT_BACKOFF_SECONDS",
     "NEKO_MEME_MODERATION_PAYMENT_BACKOFF_SECONDS",
     "MEME_MODERATION_PAYMENT_BACKOFF_SECONDS",
+    "NEKO_MEME_MODERATION_ALLOW_SSL_FALLBACK",
+    "MEME_MODERATION_ALLOW_SSL_FALLBACK",
     "NEKO_MEME_MODERATION_PORN_THRESHOLD",
     "MEME_MODERATION_PORN_THRESHOLD",
     "NEKO_MEME_MODERATION_HENTAI_THRESHOLD",
@@ -482,6 +484,76 @@ def test_image_fetch_failure_blocks_and_skips_post(monkeypatch):
     assert result.allowed is False
     assert result.reason == "image_fetch_failed"
     assert moderation_client.post_calls == []
+
+
+def test_ssl_fallback_is_disabled_by_default(monkeypatch):
+    monkeypatch.setenv("NEKO_UNIAPI_BASE_URL", "https://api.gpt.ge/v1")
+    ssl_error = "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"
+    image_client = FakeClient(get_error=httpx.ConnectError(ssl_error))
+    moderation_client = FakeClient()
+    monkeypatch.setattr(mm, "get_external_http_client", lambda: image_client)
+
+    class UnexpectedRelaxedClient:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("SSL fallback should be disabled by default")
+
+    monkeypatch.setattr(mm.httpx, "AsyncClient", UnexpectedRelaxedClient)
+
+    result = run(
+        mm.moderate_meme_image_url(
+            "https://img.soutula.com/example.jpg",
+            http_client=moderation_client,
+            enabled=True,
+            api_key="test-key",
+        )
+    )
+
+    assert result.allowed is False
+    assert result.reason == "image_fetch_failed"
+    assert moderation_client.post_calls == []
+
+
+def test_ssl_fallback_can_be_enabled(monkeypatch):
+    monkeypatch.setenv("NEKO_UNIAPI_BASE_URL", "https://api.gpt.ge/v1")
+    monkeypatch.setenv("NEKO_MEME_MODERATION_ALLOW_SSL_FALLBACK", "1")
+    ssl_error = "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"
+    image_client = FakeClient(get_error=httpx.ConnectError(ssl_error))
+    moderation_client = FakeClient(
+        post_response=FakeResponse(
+            json_data=moderation_json(False, model="nsfw-classifier")
+        )
+    )
+    relaxed_client_kwargs = []
+    monkeypatch.setattr(mm, "get_external_http_client", lambda: image_client)
+
+    class RelaxedClient:
+        def __init__(self, *args, **kwargs):
+            relaxed_client_kwargs.append(kwargs)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url, *, headers=None):
+            return FakeResponse(headers={"Content-Type": "image/jpeg"}, content=b"abc")
+
+    monkeypatch.setattr(mm.httpx, "AsyncClient", RelaxedClient)
+
+    result = run(
+        mm.moderate_meme_image_url(
+            "https://img.soutula.com/example.jpg",
+            http_client=moderation_client,
+            enabled=True,
+            api_key="test-key",
+        )
+    )
+
+    assert result.allowed is True
+    assert relaxed_client_kwargs[0]["verify"] is False
+    payload_url = moderation_client.post_calls[0]["json"]["input"][0]["image_url"]["url"]
+    assert payload_url == "data:image/jpeg;base64,YWJj"
 
 
 def test_non_http_url_is_rejected():
