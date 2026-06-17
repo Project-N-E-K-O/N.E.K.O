@@ -6956,6 +6956,17 @@ async def game_project_context(game_type: str, request: Request):
         return {"ok": False, "reason": "missing_lanlan_name"}
     _absorb_request_language(data, lanlan_name)
 
+    session_id = str(data.get("session_id") or "")
+    state = _get_active_game_route_state(lanlan_name, game_type)
+    stale_response = _game_route_stale_session_response(
+        state,
+        session_id,
+        lanlan_name=lanlan_name,
+        method="project_session_history",
+    )
+    if stale_response:
+        return stale_response
+
     mgr = get_session_manager().get(lanlan_name)
     if not mgr:
         return {"ok": False, "reason": "no_session_manager", "lanlan_name": lanlan_name}
@@ -6969,16 +6980,28 @@ async def game_project_context(game_type: str, request: Request):
             ok = append_icebreaker_context(role, text)
         else:
             return {"ok": False, "reason": "context_method_unavailable", "lanlan_name": lanlan_name}
-    except Exception:
-        logger.exception("new_user_icebreaker context append failed for %s", lanlan_name)
-        return {"ok": False, "reason": "context_append_failed", "lanlan_name": lanlan_name}
+    except Exception as exc:
+        logger.warning(
+            "new_user_icebreaker context append failed for %s: %s",
+            lanlan_name,
+            exc,
+            exc_info=True,
+        )
+        return {
+            "ok": False,
+            "reason": "context_write_failed",
+            "error": str(exc),
+            "lanlan_name": lanlan_name,
+            "game_type": game_type,
+            "session_id": str(data.get("session_id") or ""),
+        }
 
     return {
         "ok": bool(ok),
         "method": "project_session_history",
         "lanlan_name": lanlan_name,
         "game_type": game_type,
-        "session_id": str(data.get("session_id") or ""),
+        "session_id": session_id,
     }
 
 

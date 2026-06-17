@@ -3444,7 +3444,6 @@
     // 直接 callback；这里只是 BC 兜底）；source==='mini_game_invite' 走新逻辑。
 
     function handleChoiceSelect(option, source) {
-        if (isHomeTutorialInteractionLocked() || getEffectiveComposerHidden()) return;
         if (!option || typeof option.choice !== 'string') return;
         if (source === 'new_user_icebreaker') {
             var prompt = state.choicePrompt;
@@ -3480,6 +3479,7 @@
             }
             return;
         }
+        if (isHomeTutorialInteractionLocked() || getEffectiveComposerHidden()) return;
         if (source === 'galgame') {
             // Forward to legacy galgame handler if it shows up here
             if (typeof option.text === 'string') {
@@ -3778,6 +3778,18 @@
         renderWindow();
     }
 
+    function setChoicePrompt(payload) {
+        if (!payload || typeof payload !== 'object') return;
+        var source = String(payload.source || '');
+        if (source === 'new_user_icebreaker') {
+            setNewUserIcebreakerPrompt(payload);
+            return;
+        }
+        if (source === 'mini_game_invite') {
+            setMiniGameInvitePrompt(payload);
+        }
+    }
+
     function setIcebreakerChoicePrompt(payload) {
         setNewUserIcebreakerPrompt(payload);
     }
@@ -4057,17 +4069,20 @@
     }
 
     function setHomeTutorialInputLocked(locked, reason) {
-        var next = !!locked;
+        var next = locked === true;
         if (state.homeTutorialInputLocked === next) {
             return;
+        }
+        if (next && getCurrentCompactChatState() === 'input') {
+            resetCompactChatState();
         }
         state.homeTutorialInputLocked = next;
         if (next && getCurrentCompactChatState() === 'input') {
             resetCompactChatState();
         }
         state.viewProps = Object.assign({}, ensureViewProps(), {
-            compactInputLocked: next,
-            compactChatState: getCurrentCompactChatState()
+            compactChatState: getCurrentCompactChatState(),
+            compactInputLocked: next
         });
         renderWindow();
     }
@@ -6688,6 +6703,7 @@
         // Mini-game invite ChoicePrompt：app-websocket.js 收到对应 WS message 时调
         setMiniGameInvitePrompt: setMiniGameInvitePrompt,
         setIcebreakerChoicePrompt: setIcebreakerChoicePrompt,
+        setChoicePrompt: setChoicePrompt,
         setNewUserIcebreakerPrompt: setNewUserIcebreakerPrompt,
         clearIcebreakerChoicePrompt: clearIcebreakerChoicePrompt,
         // unified resolved handler：accept 兼 launch / decline / suppress 都通过
