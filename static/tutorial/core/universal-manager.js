@@ -636,6 +636,18 @@ class UniversalTutorialManager {
         return true;
     }
 
+    isAvatarFloatingGuideRoundRegistered(day) {
+        const round = normalizeAvatarFloatingGuideRound(day);
+        const registry = window.YuiGuideDailyGuides || {};
+        const guideConfig = registry[round] || null;
+        return !!(
+            guideConfig
+            && guideConfig.round
+            && Array.isArray(guideConfig.round.scenes)
+            && guideConfig.round.scenes.length > 0
+        );
+    }
+
     getNextAvatarFloatingGuideAutoRound() {
         const state = loadAvatarFloatingGuideState();
         const today = getTodayLocalDateForAvatarFloatingGuide();
@@ -667,6 +679,9 @@ class UniversalTutorialManager {
         const maxDueRound = Math.min(AVATAR_FLOATING_GUIDE_ROUND_COUNT, elapsedDays + 1);
         for (let round = 2; round <= maxDueRound; round += 1) {
             if (!completed.has(round) && !skipped.has(round)) {
+                if (!this.isAvatarFloatingGuideRoundRegistered(round)) {
+                    return null;
+                }
                 return round;
             }
         }
@@ -681,15 +696,24 @@ class UniversalTutorialManager {
         if (!round) {
             return false;
         }
-        this.markAvatarFloatingGuideRoundAutoShown(round);
-        window.setTimeout(() => {
+        this.managerResources.setTimeout(() => {
+            if (this._isDestroyed || window.universalTutorialManager !== this) {
+                return;
+            }
             if (this.currentPage !== 'home' || this.isTutorialRunning || window.isInTutorial) {
                 return;
             }
             if (!this.isAvatarFloatingGuideRoundPendingAutoStart(round)) {
                 return;
             }
-            this.startAvatarFloatingGuideRound(round, { source: 'auto' }).catch((error) => {
+            if (!this.isAvatarFloatingGuideRoundRegistered(round)) {
+                return;
+            }
+            this.startAvatarFloatingGuideRound(round, { source: 'auto' }).then((result) => {
+                if (result !== false) {
+                    this.markAvatarFloatingGuideRoundAutoShown(round);
+                }
+            }).catch((error) => {
                 console.warn('[Tutorial] 自动启动悬浮窗教程失败:', round, error);
             });
         }, Math.max(0, Number.isFinite(delayMs) ? delayMs : 1200));
