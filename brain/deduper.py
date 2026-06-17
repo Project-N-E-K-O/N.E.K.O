@@ -45,17 +45,21 @@ class TaskDeduper:
 
     def _build_prompt(self, new_task: str, candidates: List[Tuple[str, str]]) -> str:
         # Input budget: cap each component so the dedup prompt can't blow up on a
-        # pathologically long task description. Per-component truncation (not a
-        # tail truncate of the whole prompt) keeps the trailing instruction intact.
-        from utils.tokenize import truncate_to_tokens
+        # pathologically long task description. Use HEAD+TAIL truncation — users
+        # often put context first and the concrete ask last, so a head-only cut
+        # could drop the actual task and make a later identical request look
+        # non-duplicate. Total stays within the same TASK_* token budget.
+        from utils.tokenize import truncate_head_tail_tokens
         from config import TASK_SUMMARY_MAX_TOKENS, TASK_DETAIL_MAX_TOKENS
+        _h_sum = TASK_SUMMARY_MAX_TOKENS // 2
+        _h_det = TASK_DETAIL_MAX_TOKENS // 2
         lines = [
             "New task:",
-            truncate_to_tokens(new_task.strip(), TASK_SUMMARY_MAX_TOKENS),
+            truncate_head_tail_tokens(new_task.strip(), _h_sum, _h_sum),
             "\nExisting tasks:",
         ]
         for tid, desc in candidates:
-            lines.append(f"- id={tid}: {truncate_to_tokens(desc, TASK_DETAIL_MAX_TOKENS)}")
+            lines.append(f"- id={tid}: {truncate_head_tail_tokens(desc, _h_det, _h_det)}")
         lines.append(
             "\nTask: Decide whether the NEW task duplicates ANY existing task (same goal or a strict subset). "
             "Ignore superficial wording differences. Scan the existing tasks; "

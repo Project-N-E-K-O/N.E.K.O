@@ -187,7 +187,20 @@ def _callee_name(call: ast.Call) -> str | None:
 
 
 def _has_kwarg(call: ast.Call, names: set[str]) -> bool:
-    return any(kw.arg in names for kw in call.keywords if kw.arg is not None)
+    """True if the call passes one of ``names`` with a non-``None`` value.
+
+    A literal ``None`` (``timeout=None`` / ``max_completion_tokens=None``) is
+    treated as ABSENT: ``ChatOpenAI._params`` omits a falsy token limit and the
+    SDK timeout stays unset, so forwarding an optional config default as ``None``
+    must not satisfy the hard rule. Non-literal values (variables / expressions)
+    still count — we can't prove those are ``None`` statically."""
+    for kw in call.keywords:
+        if kw.arg not in names:
+            continue
+        if isinstance(kw.value, ast.Constant) and kw.value.value is None:
+            continue
+        return True
+    return False
 
 
 def _is_constant_prompt(node: ast.AST | None) -> bool:

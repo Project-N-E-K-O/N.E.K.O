@@ -90,6 +90,18 @@ def test_output_star_kwargs_with_noqa_suppressed():
     assert "LLM_OUTPUT_BUDGET" not in _codes(src)
 
 
+def test_output_none_value_treated_as_missing():
+    # A literal None defeats the budget/timeout (client omits a falsy limit /
+    # leaves SDK timeout unset), so it must NOT satisfy the rule.
+    src = "llm = create_chat_llm(m, b, k, max_completion_tokens=None, timeout=None)"
+    assert _codes(src).count("LLM_OUTPUT_BUDGET") == 1
+
+
+def test_output_none_timeout_with_real_budget_still_flagged():
+    src = "llm = create_chat_llm(m, b, k, max_completion_tokens=100, timeout=None)"
+    assert _codes(src).count("LLM_OUTPUT_BUDGET") == 1
+
+
 def test_output_noqa_suppresses():
     src = "llm = create_chat_llm(m, b, k)  # noqa: LLM_OUTPUT_BUDGET"
     assert "LLM_OUTPUT_BUDGET" not in _codes(src)

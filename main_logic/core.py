@@ -7270,7 +7270,14 @@ class LLMSessionManager:
             # queue without bound. Keep the most recent N (newest = most
             # relevant); drop-oldest.
             if len(self.pending_agent_callbacks) > AGENT_CALLBACK_QUEUE_MAX_ITEMS:
-                self.pending_agent_callbacks = self.pending_agent_callbacks[-AGENT_CALLBACK_QUEUE_MAX_ITEMS:]
+                overflow = len(self.pending_agent_callbacks) - AGENT_CALLBACK_QUEUE_MAX_ITEMS
+                dropped = self.pending_agent_callbacks[:overflow]
+                self.pending_agent_callbacks = self.pending_agent_callbacks[overflow:]
+                # Resolve any delivery-ack future on a dropped callback NOW, so a
+                # waiter (e.g. topic-hook delivery) unblocks immediately instead
+                # of stalling until its timeout.
+                for _cb in dropped:
+                    resolve_callback_delivery_ack(_cb, False)
             if len(self.pending_extra_replies) > AGENT_CALLBACK_QUEUE_MAX_ITEMS:
                 self.pending_extra_replies = self.pending_extra_replies[-AGENT_CALLBACK_QUEUE_MAX_ITEMS:]
         except Exception:
