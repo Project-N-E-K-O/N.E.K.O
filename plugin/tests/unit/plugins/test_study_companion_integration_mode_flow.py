@@ -49,7 +49,8 @@ def test_integration_mode_switch_persists_context_and_status_payload(tmp_path: P
 
         assert switched["changed"] is True
         assert payload["active_mode"] == MODE_TEACHING
-        assert payload["current_question"]["topic"] == "calculus"
+        assert loaded.current_question["topic"] == "calculus"
+        assert "current_question" not in payload
         assert payload["recent_learning_events"][0]["kind"] == "question_generate"
     finally:
         store.close()

@@ -59,6 +59,7 @@ dependencies = [
   "tornado>=6.5.4",
   "jmespath>=1.1.0",
   "orjson>=3.11.8",
+  "playwright>=1.58.0",
   # memory-evidence-rfc §3.6.6: tiktoken for persona/reflection render
   # token budgeting (o200k_base encoding). PR-1 pins the dep; PR-3 ships
   # utils/tokenize.py and wires render-time counting.
@@ -160,7 +161,6 @@ override-dependencies = [
 dev = [
     "hypothesis>=6.100",
     "nest-asyncio>=1.6.0",
-    "playwright>=1.58.0",
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.1.0",

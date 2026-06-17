@@ -177,8 +177,10 @@ googleapis-common-protos==1.72.0
     # via google-api-core
 googletrans==4.0.2
     # via n-e-k-o
-greenlet==3.2.4 ; platform_machine == 'AMD64' or platform_machine == 'WIN32' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'ppc64le' or platform_machine == 'win32' or platform_machine == 'x86_64'
-    # via sqlalchemy
+greenlet==3.2.4
+    # via
+    #   playwright
+    #   sqlalchemy
 groq==1.0.0
     # via browser-use
 h11==0.16.0
@@ -320,6 +322,8 @@ pillow==11.3.0
     #   pytesseract
     #   qrcode-terminal
     #   reportlab
+playwright==1.58.0
+    # via n-e-k-o
 portalocker==2.10.1
     # via
     #   browser-use
@@ -376,6 +380,8 @@ pydantic-core==2.33.2
     #   pydantic
 pydantic-settings==2.12.0
     # via mcp
+pyee==13.0.1
+    # via playwright
 pygetwindow==0.0.9
     # via
     #   n-e-k-o
@@ -1290,6 +1296,7 @@ typing-extensions==4.14.1
     #   posthog
     #   pydantic
     #   pydantic-core
+    #   pyee
     #   python-docx
     #   referencing
     #   sqlalchemy
