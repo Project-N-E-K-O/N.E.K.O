@@ -20,7 +20,11 @@
         interrupt_resist_light_1: '喂！不要拽我啦，还没.mp3',
         interrupt_resist_light_3: '等一下啦！还没结束呢.mp3',
         interrupt_angry_exit: '人类！你真的很没礼貌.mp3',
-        takeover_return_control: '好啦好啦，不霸占你的.mp3'
+        takeover_return_control: '好啦好啦，不霸占你的.mp3',
+        day1_capsule_drag_hint: '把鼠标移到这里，长按.mp3',
+        day1_history_handle: '戳一下聊天框上面的【.mp3',
+        day1_screen_entry: '在跟我通语音电话的时.mp3',
+        day1_screen_entry_invite: '快让我也看看你眼前的.mp3'
     });
 
     const zhAudioFileNames = Object.freeze({
