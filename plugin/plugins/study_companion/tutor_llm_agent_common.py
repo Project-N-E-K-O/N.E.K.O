@@ -138,6 +138,22 @@ def _bounded_prompt_text(value: object, *, max_tokens: int) -> str:
     return result
 
 
+def _bounded_prompt_text_chars(value: object, *, max_chars: int) -> str:
+    """Char-based bound for notebook sources.
+
+    Unlike :func:`_bounded_prompt_text` (token budget, shared with the JSON
+    corrector), this keeps an exact CHARACTER prefix so the reported
+    ``...[truncated N chars]`` count is precise — notebook expand/summarize
+    sources are user-pasted prose where a predictable char cap is the contract.
+    """
+    text = _as_str(value, str(value))
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    clipped = text[:max_chars]
+    omitted = len(text) - len(clipped)
+    return f"{clipped}\n...[truncated {omitted} chars]"
+
+
 def diagnostic_code_for_exception(exc: BaseException) -> str:
     name = exc.__class__.__name__.lower()
     message = str(exc).lower()
@@ -217,5 +233,6 @@ __all__ = [
     "_clamp_int",
     "_strip_code_fences",
     "_bounded_prompt_text",
+    "_bounded_prompt_text_chars",
     "diagnostic_code_for_exception",
 ]
