@@ -1427,9 +1427,9 @@ function CompactChatApp({
   onChoiceSelect,
   avatarToolMenuOpenRequest = null,
   compactToolFanOpenRequest = null,
-  compactHistoryOpenRequest = null,
   compactToolWheelRotateRequest = null,
   compactToolWheelIndexRequest = null,
+  compactHistoryOpenRequest = null,
   onCompactChatStateChange,
   onCompactMinimizeRequest,
   rollbackDraft,
@@ -1967,6 +1967,17 @@ function CompactChatApp({
       compactExportHistoryUnmountTimerRef.current = null;
     }, COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
   }, [clearCompactExportHistoryUnmountTimer, messages]);
+
+  useEffect(() => {
+    const request = compactHistoryOpenRequest;
+    if (!request || !request.id || request.id === lastCompactHistoryOpenRequestIdRef.current) return;
+    lastCompactHistoryOpenRequestIdRef.current = request.id;
+    if (request.open) {
+      openCompactExportHistory();
+      return;
+    }
+    closeCompactExportHistory({ persist: false });
+  }, [closeCompactExportHistory, compactHistoryOpenRequest, openCompactExportHistory]);
 
   useEffect(() => () => {
     clearCompactExportHistoryUnmountTimer();
@@ -5027,6 +5038,7 @@ function CompactChatApp({
     const request = avatarToolMenuOpenRequest;
     if (!request || !request.id || request.id === lastAvatarToolMenuOpenRequestIdRef.current) return;
     const requestId = request.id;
+    lastAvatarToolMenuOpenRequestIdRef.current = requestId;
     if (request.open) {
       lastAvatarToolMenuOpenRequestIdRef.current = requestId;
       const opened = openCompactInputToolFan('click', { ignoreDisabled: true });
@@ -5038,33 +5050,21 @@ function CompactChatApp({
       setToolMenuOpen(opened);
       return;
     }
-    lastAvatarToolMenuOpenRequestIdRef.current = requestId;
     setToolMenuOpen(false);
   }, [activeAvatarToolIds.length, avatarToolMenuOpenRequest, openCompactInputToolFan]);
 
   useEffect(() => {
     const request = compactToolFanOpenRequest;
     if (!request || !request.id || request.id === lastCompactToolFanOpenRequestIdRef.current) return;
+    lastCompactToolFanOpenRequestIdRef.current = request.id;
     if (request.open) {
       lastCompactToolFanOpenRequestIdRef.current = request.id;
       const opened = openCompactInputToolFan('click', { ignoreDisabled: true });
       if (!opened) return;
       return;
     }
-    lastCompactToolFanOpenRequestIdRef.current = request.id;
     closeCompactInputToolFan();
   }, [closeCompactInputToolFan, compactToolFanOpenRequest, openCompactInputToolFan]);
-
-  useEffect(() => {
-    const request = compactHistoryOpenRequest;
-    if (!request || !request.id || request.id === lastCompactHistoryOpenRequestIdRef.current) return;
-    lastCompactHistoryOpenRequestIdRef.current = request.id;
-    if (request.open) {
-      openCompactExportHistory();
-      return;
-    }
-    closeCompactExportHistory({ persist: false });
-  }, [closeCompactExportHistory, compactHistoryOpenRequest, openCompactExportHistory]);
 
   useEffect(() => {
     const request = compactToolWheelIndexRequest;
@@ -6187,9 +6187,7 @@ function CompactChatApp({
             role="group"
             aria-label={choicePrompt.source === 'mini_game_invite'
               ? i18n('chat.miniGameInviteOptionsAriaLabel', 'Mini-game invite options')
-              : choicePrompt.source === 'new_user_icebreaker'
-                ? i18n('chat.newUserIcebreakerOptionsAriaLabel', 'New user icebreaker options')
-                : galgameToggleButtonLabel}
+              : galgameToggleButtonLabel}
           >
             {choicePrompt.options.slice(0, 3).map((option, index) => (
               <button

@@ -47,7 +47,7 @@ _SSML_TAG_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from config.prompts.prompts_game import (
     get_basketball_pregame_context_formatter_labels,
@@ -6941,7 +6941,10 @@ async def game_project_mirror_assistant(game_type: str, request: Request):
 async def game_project_context(game_type: str, request: Request):
     """Append game-scoped UI dialogue into the active project session history."""
     if str(game_type or "") != "new_user_icebreaker":
-        return {"ok": False, "reason": "unsupported_game_type", "game_type": game_type}
+        raise HTTPException(
+            status_code=400,
+            detail={"ok": False, "reason": "unsupported_game_type", "game_type": game_type},
+        )
 
     try:
         data = await request.json()
@@ -6971,7 +6974,12 @@ async def game_project_context(game_type: str, request: Request):
     event = data.get("event") if isinstance(data.get("event"), dict) else {}
     request_id = str(data.get("request_id") or event.get("request_id") or "").strip()
 
-    lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
+    if "lanlan_name" not in data:
+        return {"ok": False, "reason": "missing_lanlan_name"}
+    raw_lanlan_name = data.get("lanlan_name")
+    if raw_lanlan_name is None or str(raw_lanlan_name).strip() == "":
+        return {"ok": False, "reason": "missing_lanlan_name"}
+    lanlan_name = _resolve_lanlan_name(raw_lanlan_name)
     if not lanlan_name:
         return {"ok": False, "reason": "missing_lanlan_name"}
     _absorb_request_language(data, lanlan_name)
@@ -7036,6 +7044,14 @@ async def game_project_context(game_type: str, request: Request):
             "lanlan_name": lanlan_name,
             "game_type": game_type,
             "session_id": str(data.get("session_id") or ""),
+        }
+    if ok is False:
+        return {
+            "ok": False,
+            "reason": "context_write_failed",
+            "lanlan_name": lanlan_name,
+            "game_type": game_type,
+            "session_id": session_id,
         }
 
     return {

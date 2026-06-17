@@ -15,6 +15,9 @@ STATIC_INDEX_JS_PATH = Path(__file__).resolve().parents[2] / "static" / "js" / "
 REACT_CHAT_STYLES_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "styles.css"
 REACT_CHAT_APP_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "App.tsx"
 REACT_CHAT_FULL_SURFACE_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "FullChatSurface.tsx"
+REACT_CHAT_MESSAGE_SCHEMA_PATH = (
+    Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "message-schema.ts"
+)
 REACT_CHAT_IIFE_PATH = Path(__file__).resolve().parents[2] / "static" / "react" / "neko-chat" / "neko-chat-window.iife.js"
 CHAT_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "chat.html"
 INDEX_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "index.html"
@@ -518,10 +521,12 @@ def test_icebreaker_home_template_loads_delivered_daily_guide_scripts():
         "tutorial/yui-guide/days/day5-personalization-guide.js",
         "tutorial/yui-guide/days/day6-agent-guide.js",
         "tutorial/yui-guide/days/day7-graduation-guide.js",
-        "tutorial/icebreaker/new-user-icebreaker.js",
     ]:
         assert f'<script src="/static/{guide_script}' in source
         assert (Path(__file__).resolve().parents[2] / "static" / guide_script).exists()
+
+    assert '<script src="/static/tutorial/icebreaker/new-user-icebreaker.js' in source
+
 
 def test_idle_cat1_compact_mirror_ignores_pet_window_local_events():
     source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
@@ -893,6 +898,29 @@ def test_compact_tool_wheel_rotate_request_is_present_in_host_and_built_bundle()
     assert "compactToolWheelRotateRequest" in bundle_source
 
 
+def test_compact_history_open_request_drives_export_panel():
+    host_source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
+    schema_source = REACT_CHAT_MESSAGE_SCHEMA_PATH.read_text(encoding="utf-8")
+
+    assert "compactHistoryOpenRequest: state.viewProps.compactHistoryOpenRequest || null" in host_source
+    assert "setTutorialChatRequest('compactHistoryOpenRequest'" in host_source
+    assert "compactChatState: open === true ? 'history' : 'idle'" not in host_source
+    assert "setCompactHistoryOpen: setCompactHistoryOpen" in host_source
+
+    assert "compactHistoryOpenRequest = null" in app_source
+    assert "const lastCompactHistoryOpenRequestIdRef = useRef('');" in app_source
+    assert "const request = compactHistoryOpenRequest;" in app_source
+    assert "lastCompactHistoryOpenRequestIdRef.current = request.id;" in app_source
+    assert "openCompactExportHistory();" in app_source
+    assert "closeCompactExportHistory();" in app_source
+    assert app_source.count("const lastCompactHistoryOpenRequestIdRef = useRef('');") == 1
+    assert app_source.count("const request = compactHistoryOpenRequest;") == 1
+
+    assert "const compactHistoryOpenRequestSchema = z.object({" in schema_source
+    assert "compactHistoryOpenRequest: compactHistoryOpenRequestSchema.optional()" in schema_source
+
+
 def test_compact_choice_hit_contract_uses_real_options_only():
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
     host_styles = STATIC_INDEX_CSS_PATH.read_text(encoding="utf-8")
@@ -1054,11 +1082,18 @@ def test_yui_guide_spotlight_state_messages_bypass_cross_channel_dedup():
     assert "action === 'yui_guide_set_chat_cursor'" in bypass_block
     assert "action === 'yui_guide_drag_chat_cursor'" in bypass_block
     assert "action === 'yui_guide_arc_chat_cursor'" in bypass_block
+    assert "action === 'yui_guide_set_compact_history_open'" in bypass_block
     assert "action === 'yui_guide_rotate_compact_tool_wheel'" in bypass_block
     assert "action === 'yui_guide_set_chat_spotlight'" in bypass_block
     assert "action === 'yui_guide_set_chat_buttons_disabled'" in bypass_block
     assert "!shouldBypassYuiGuideMessageDedup(message.action, message)" in script
     assert "!shouldBypassYuiGuideMessageDedup(event.data.action, event.data)" in script
+    assert "case 'yui_guide_set_chat_cursor':" in script
+    assert "case 'yui_guide_drag_chat_cursor':" in script
+    assert "case 'yui_guide_arc_chat_cursor':" in script
+    assert "relayYuiGuideChatCommand(event.data);" in script
+    assert "neko:tutorial-overlay-relay" in script
+    assert "__nekoTutorialOverlayRelay" in script
 
 
 def test_yui_guide_external_compact_history_open_is_bridged_to_react_host():

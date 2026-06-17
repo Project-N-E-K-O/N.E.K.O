@@ -2543,7 +2543,10 @@
             onGalgameOptionSelect: handleGalgameOptionSelect,
             onChoiceSelect: handleChoiceSelect,
             onCompactChatStateChange: handleCompactChatStateChange,
-            onCompactMinimizeRequest: handleCompactMinimizeRequest
+            onCompactMinimizeRequest: handleCompactMinimizeRequest,
+            compactToolWheelRotateRequest: state.viewProps.compactToolWheelRotateRequest || null,
+            compactToolWheelIndexRequest: state.viewProps.compactToolWheelIndexRequest || null,
+            compactHistoryOpenRequest: state.viewProps.compactHistoryOpenRequest || null
         });
     }
 
@@ -4132,6 +4135,9 @@
             resetCompactChatState();
         }
         state.homeTutorialInputLocked = next;
+        if (next && getCurrentCompactChatState() === 'input') {
+            resetCompactChatState();
+        }
         state.viewProps = Object.assign({}, ensureViewProps(), {
             compactChatState: getCurrentCompactChatState(),
             compactInputLocked: next,
@@ -4162,6 +4168,13 @@
             : 0;
         return setTutorialChatRequest('compactToolWheelIndexRequest', {
             index: normalizedIndex,
+            reason: typeof reason === 'string' ? reason : ''
+        });
+    }
+
+    function setCompactHistoryOpen(open, reason) {
+        return setTutorialChatRequest('compactHistoryOpenRequest', {
+            open: open === true,
             reason: typeof reason === 'string' ? reason : ''
         });
     }
@@ -6365,27 +6378,24 @@
         window.addEventListener('neko:tutorial-completed', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
-            setHomeTutorialInputLocked(false, 'tutorial-completed');
-            setHomeTutorialInteractionLocked(false, 'tutorial-completed');
             setGalgameModeTemporarilyDisabled(false);
+            setHomeTutorialInputLocked(false, 'tutorial-completed');
             setHomeTutorialInteractionLocked(false, 'tutorial-completed');
         });
 
         window.addEventListener('neko:tutorial-skipped', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
-            setHomeTutorialInputLocked(false, 'tutorial-skipped');
-            setHomeTutorialInteractionLocked(false, 'tutorial-skipped');
             setGalgameModeTemporarilyDisabled(false);
+            setHomeTutorialInputLocked(false, 'tutorial-skipped');
             setHomeTutorialInteractionLocked(false, 'tutorial-skipped');
         });
 
         window.addEventListener('neko:tutorial-ended-without-completion', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
-            setHomeTutorialInputLocked(false, 'tutorial-ended-without-completion');
-            setHomeTutorialInteractionLocked(false, 'tutorial-ended-without-completion');
             setGalgameModeTemporarilyDisabled(false);
+            setHomeTutorialInputLocked(false, 'tutorial-ended-without-completion');
             setHomeTutorialInteractionLocked(false, 'tutorial-ended-without-completion');
         });
 
@@ -6737,6 +6747,7 @@
         setCompactToolFanOpen: setCompactToolFanOpen,
         rotateCompactToolWheel: rotateCompactToolWheel,
         setCompactToolWheelIndex: setCompactToolWheelIndex,
+        setCompactHistoryOpen: setCompactHistoryOpen,
         deactivateToolCursor: deactivateToolCursor,
         appendMessage: appendMessage,
         updateMessage: updateMessage,

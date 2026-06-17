@@ -560,12 +560,13 @@ def analyze(raw: dict[str, Any]) -> tuple[list[Finding], dict[str, Any]]:
     ]
     snapshots = [event.get("detail") or {} for event in snapshot_events]
 
-    def visible_tool_count(snapshot: dict[str, Any]) -> int:
-        if "visibleToolCount" in snapshot:
-            return int(snapshot.get("visibleToolCount") or 0)
-        return int(snapshot.get("toolCount") or 0)
+    def visible_count(snapshot: dict[str, Any]) -> int:
+        value = snapshot.get("visibleToolCount")
+        if value is None:
+            value = snapshot.get("toolCount")
+        return int(value or 0)
 
-    max_tool_count = max([visible_tool_count(snapshot) for snapshot in snapshots] or [0])
+    max_tool_count = max([visible_count(snapshot) for snapshot in snapshots] or [0])
 
     def closest_snapshot_to(event_types: set[str], source: str | None = None) -> dict[str, Any]:
         targets = [
@@ -594,8 +595,10 @@ def analyze(raw: dict[str, Any]) -> tuple[list[Finding], dict[str, Any]]:
         detail = event.get("detail") or {}
         if not isinstance(detail, dict):
             continue
-        if visible_tool_count(detail) >= 3:
+        if visible_count(detail) >= 3:
             visible_tool_ids = detail.get("visibleToolIds") or []
+            if detail.get("visibleToolCount") is None and not visible_tool_ids:
+                visible_tool_ids = detail.get("toolIds") or []
             visible_tool_at = event.get("at")
             break
     close_clicks = count(

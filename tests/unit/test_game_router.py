@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import HTTPException
 from starlette.responses import JSONResponse
 
 from .game_route_test_helpers import (
@@ -297,6 +298,26 @@ async def test_new_user_icebreaker_context_endpoint_requires_local_mutation_csrf
 
 
 @pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_rejects_unsupported_game_type():
+    with pytest.raises(HTTPException) as exc_info:
+        await game_router.game_project_context(
+            "soccer",
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "role": "user",
+                "text": "choice a",
+            }),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == {
+        "ok": False,
+        "reason": "unsupported_game_type",
+        "game_type": "soccer",
+    }
+
+
+@pytest.mark.asyncio
 async def test_new_user_icebreaker_context_endpoint_handles_append_failure(monkeypatch):
     class FakeManager:
         def append_icebreaker_context(self, role, text):
@@ -319,6 +340,54 @@ async def test_new_user_icebreaker_context_endpoint_handles_append_failure(monke
     assert result["ok"] is False
     assert result["reason"] == "context_write_failed"
     assert result["lanlan_name"] == "Lan"
+
+
+@pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_handles_false_append(monkeypatch):
+    class FakeManager:
+        def append_icebreaker_context(self, role, text):
+            return False
+
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": FakeManager()})
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+
+    with reset_game_route_state():
+        _allow_icebreaker_route()
+        result = await game_router.game_project_context(
+            "new_user_icebreaker",
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "role": "assistant",
+                "text": "context line",
+                "session_id": "icebreaker-day1-test",
+            }),
+        )
+
+    assert result["ok"] is False
+    assert result["reason"] == "context_write_failed"
+    assert result["lanlan_name"] == "Lan"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lanlan_name_value", [None, "", "   "])
+async def test_new_user_icebreaker_context_endpoint_rejects_empty_lanlan_name(monkeypatch, lanlan_name_value):
+    monkeypatch.setattr(game_router, "_get_current_character_info", lambda: {"lanlan_name": "FallbackLan"})
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+
+    payload = {
+        "role": "assistant",
+        "text": "context line",
+        "session_id": "icebreaker-day1-test",
+    }
+    if lanlan_name_value is not None:
+        payload["lanlan_name"] = lanlan_name_value
+
+    result = await game_router.game_project_context(
+        "new_user_icebreaker",
+        _FakeRequest(payload),
+    )
+
+    assert result == {"ok": False, "reason": "missing_lanlan_name"}
 
 
 @pytest.mark.asyncio
