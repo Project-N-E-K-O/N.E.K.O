@@ -458,6 +458,11 @@ function updateIncrementalDisplay() {
 }
 
 function showSubtitleWithoutOriginalAndRestartCurrentTurn() {
+    if (!isSubtitleTranslationOwner()) {
+        syncSubtitleRenderState('subtitle-non-owner-skip-show');
+        return;
+    }
+
     if (currentTurnIsStructured) {
         ensureSubtitleVisibleIfEnabled();
         writeSubtitleText(getStructuredPlaceholder());

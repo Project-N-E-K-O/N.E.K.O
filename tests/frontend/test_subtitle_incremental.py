@@ -3781,6 +3781,161 @@ def test_subtitle_window_settings_button_uses_external_layer_without_resizing(mo
 
 
 @pytest.mark.frontend
+def test_subtitle_window_settings_button_falls_back_to_inline_panel_without_external_bridge(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display" style="display:flex;" data-subtitle-panel-state="controls">
+            <div id="subtitle-scroll"><span id="subtitle-text">Translated text.</span></div>
+            <button type="button" id="subtitle-settings-btn" aria-expanded="false"></button>
+            <div id="subtitle-settings-panel" class="hidden">
+                <div class="subtitle-settings-row">
+                    <span class="subtitle-settings-label">目标语言</span>
+                    <select id="subtitle-lang-select"><option value="zh">中文</option></select>
+                </div>
+                <div class="subtitle-settings-row">
+                    <span class="subtitle-settings-label">背景不透明度</span>
+                    <input type="range" id="subtitle-opacity-slider" min="0" max="100" value="95">
+                    <span id="subtitle-opacity-value">95%</span>
+                </div>
+            </div>
+        </div>
+        """,
+        path="/subtitle-window-inline-fallback-harness",
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.nekoSubtitle = {
+                setSize: () => {},
+                changeSettings: () => {},
+                dragStart: () => {},
+                dragStop: () => {},
+                enableInteraction: () => {},
+                disableInteraction: () => {},
+            };
+        }
+        """
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            document.dispatchEvent(new Event('DOMContentLoaded'));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const display = document.getElementById('subtitle-display');
+            const panel = document.getElementById('subtitle-settings-panel');
+            const button = document.getElementById('subtitle-settings-btn');
+            button.click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const opened = {
+                panelState: display.dataset.subtitlePanelState || '',
+                panelHidden: panel.classList.contains('hidden'),
+                expanded: button.getAttribute('aria-expanded'),
+                externalDataset: display.dataset.subtitleWindowInteractions || '',
+            };
+            button.click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return {
+                opened,
+                closed: {
+                    panelState: display.dataset.subtitlePanelState || '',
+                    panelHidden: panel.classList.contains('hidden'),
+                    expanded: button.getAttribute('aria-expanded'),
+                },
+            };
+        }
+        """
+    )
+
+    assert result["opened"]["panelState"] == "settings"
+    assert result["opened"]["panelHidden"] is False
+    assert result["opened"]["expanded"] == "true"
+    assert result["opened"]["externalDataset"] == ""
+    assert result["closed"]["panelState"] == "controls"
+    assert result["closed"]["panelHidden"] is True
+    assert result["closed"]["expanded"] == "false"
+
+
+@pytest.mark.frontend
+def test_subtitle_external_settings_button_works_without_inline_panel(mock_page: Page):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display" style="display:flex;" data-subtitle-panel-state="controls">
+            <div id="subtitle-scroll"><span id="subtitle-text">Translated text.</span></div>
+            <button type="button" id="subtitle-settings-btn" aria-expanded="false"></button>
+        </div>
+        """,
+        path="/subtitle-window-external-no-inline-panel-harness",
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const calls = [];
+            const shared = window.nekoSubtitleShared;
+            const controller = shared.initSubtitleUI({
+                host: 'window',
+                windowInteractions: 'external',
+                openExternalSettings: (state, refs, detail) => calls.push({
+                    type: 'open',
+                    source: detail && detail.source,
+                    bounds: state.subtitlePanelBounds,
+                }),
+                closeExternalSettings: (detail) => calls.push({
+                    type: 'close',
+                    source: detail && detail.source,
+                }),
+            });
+            const display = document.getElementById('subtitle-display');
+            const button = document.getElementById('subtitle-settings-btn');
+            button.click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const opened = {
+                panelState: display.dataset.subtitlePanelState || '',
+                expanded: button.getAttribute('aria-expanded'),
+                calls: calls.slice(),
+            };
+            button.click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const closed = {
+                panelState: display.dataset.subtitlePanelState || '',
+                expanded: button.getAttribute('aria-expanded'),
+                calls: calls.slice(),
+            };
+            controller.destroy();
+            return { opened, closed };
+        }
+        """
+    )
+
+    assert result["opened"]["panelState"] == "settings"
+    assert result["opened"]["expanded"] == "true"
+    assert result["opened"]["calls"] == [
+        {
+            "type": "open",
+            "source": "subtitle-ui-panel",
+            "bounds": {"width": 600, "height": 68},
+        }
+    ]
+    assert result["closed"]["panelState"] == "controls"
+    assert result["closed"]["expanded"] == "false"
+    assert result["closed"]["calls"] == [
+        result["opened"]["calls"][0],
+        {"type": "close", "source": "subtitle-ui-panel"},
+    ]
+
+
+@pytest.mark.frontend
 def test_subtitle_window_external_settings_closes_when_resize_or_drag_starts(
     mock_page: Page,
 ):
@@ -4208,6 +4363,34 @@ def test_subtitle_window_passthrough_poll_matches_desktop_chat_latency():
     assert "var INTERACTION_PASSTHROUGH_POLL_MS = 16;" in script
     assert "setInterval(updateNativeInteractionPassthrough, INTERACTION_PASSTHROUGH_POLL_MS)" in script
     assert "setInterval(updateNativeInteractionPassthrough, 80)" not in script
+
+
+@pytest.mark.frontend
+def test_launcher_packages_top_level_static_html_files():
+    launcher_spec = (PROJECT_ROOT / "specs/launcher.spec").read_text(encoding="utf-8")
+
+    assert "add_data('static/*.html', 'static')" in launcher_spec
+
+
+@pytest.mark.frontend
+def test_subtitle_shared_cleanup_and_owner_guard_contracts():
+    shared_script = (PROJECT_ROOT / "static/subtitle-shared.js").read_text(encoding="utf-8")
+    subtitle_script = (PROJECT_ROOT / "static/subtitle.js").read_text(encoding="utf-8")
+    show_block = subtitle_script.split("function showSubtitleWithoutOriginalAndRestartCurrentTurn()", 1)[1].split(
+        "if (currentTurnIsStructured)",
+        1,
+    )[0]
+
+    assert "width = Math.max(MIN_PANEL_WIDTH, Math.min(node.offsetWidth + 8, maxWidth));" in shared_script
+    assert "if (refs.settingsBtn)" in shared_script
+    assert "if (refs.settingsBtn && refs.settingsPanel)" not in shared_script
+    assert "handleMouseUp();" in shared_script
+    assert "stopDrag();" in shared_script
+    assert "document.body.style.userSelect = '';" in shared_script
+    assert "document.body.style.cursor = '';" in shared_script
+    assert "refs.display.classList.remove('resizing');" in shared_script
+    assert "if (!isSubtitleTranslationOwner())" in show_block
+    assert "subtitle-non-owner-skip-show" in show_block
 
 
 @pytest.mark.frontend

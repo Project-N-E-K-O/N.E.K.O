@@ -316,6 +316,13 @@
         api.updateSettingsWindow(SubtitleShared.getSettings());
     }
 
+    function hasExternalSettingsBridge() {
+        var api = window.nekoSubtitle;
+        return !!(api &&
+            typeof api.openSettings === 'function' &&
+            typeof api.closeSettings === 'function');
+    }
+
     function openExternalSettingsWindow() {
         var api = window.nekoSubtitle;
         if (!api || typeof api.openSettings !== 'function') return;
@@ -788,12 +795,9 @@
             document.body.classList.add('subtitle-linux-host');
         }
 
-        subtitleWindowController = SubtitleShared.initSubtitleUI({
+        var uiOptions = {
             host: 'window',
             api: window.nekoSubtitle,
-            windowInteractions: 'external',
-            openExternalSettings: openExternalSettingsWindow,
-            closeExternalSettings: closeExternalSettingsWindow,
             propagateSetting: propagateSubtitleSetting,
             onSettingsApplied: function(state, refs, detail) {
                 var changedKeys = detail && Array.isArray(detail.changedKeys) ? detail.changedKeys : [];
@@ -805,7 +809,14 @@
                 syncExternalSettingsWindow();
                 updateNativeInteractionPassthrough();
             }
-        });
+        };
+        if (hasExternalSettingsBridge()) {
+            uiOptions.windowInteractions = 'external';
+            uiOptions.openExternalSettings = openExternalSettingsWindow;
+            uiOptions.closeExternalSettings = closeExternalSettingsWindow;
+        }
+
+        subtitleWindowController = SubtitleShared.initSubtitleUI(uiOptions);
 
         if (!subtitleWindowController || !subtitleWindowController.refs) {
             return;

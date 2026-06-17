@@ -757,7 +757,7 @@
         document.body.appendChild(node);
 
         if (mode === 'window') {
-            width = Math.max(200, Math.min(node.offsetWidth + 8, maxWidth));
+            width = Math.max(MIN_PANEL_WIDTH, Math.min(node.offsetWidth + 8, maxWidth));
             node.style.width = width + 'px';
         } else {
             width = Math.max(0, options.availableWidth || Math.max(0, maxWidth - PANEL_TEXT_HORIZONTAL_RESERVE));
@@ -965,6 +965,7 @@
         window.addEventListener('orientationchange', clampManualPosition);
 
         return function detachWebDrag() {
+            handleMouseUp();
             refs.display.removeEventListener('mousedown', onDisplayMouseDown);
             refs.display.removeEventListener('touchstart', onDisplayTouchStart, { passive: false });
             document.removeEventListener('touchmove', handleTouchMove, { passive: false });
@@ -1061,6 +1062,8 @@
         window.addEventListener('resize', bounceBackIfNeeded);
 
         return function detachWindowDrag() {
+            stopDrag();
+            refs.display.classList.remove('dragging');
             refs.display.removeEventListener('mousedown', onDisplayMouseDown);
             refs.display.removeEventListener('touchstart', onDisplayTouchStart, { passive: false });
             document.removeEventListener('mouseup', stopDrag);
@@ -1294,6 +1297,17 @@
         });
 
         return function detachPanelResize() {
+            if (resizeState) {
+                endResize({
+                    clientX: resizeState.lastX,
+                    clientY: resizeState.lastY
+                });
+            } else {
+                document.body.style.userSelect = '';
+                document.body.style.cursor = '';
+                refs.display.classList.remove('resizing');
+                refs.display.style.transition = '';
+            }
             refs.resizeHandles.forEach(function(handle) {
                 if (typeof handle._nekoSubtitleResizeCleanup === 'function') {
                     handle._nekoSubtitleResizeCleanup();
@@ -1593,7 +1607,7 @@
             });
         }
 
-        if (refs.settingsBtn && refs.settingsPanel) {
+        if (refs.settingsBtn) {
             var onSettingsClick = function(e) {
                 e.stopPropagation();
                 if (externalSettingsOpen) {
