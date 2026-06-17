@@ -372,7 +372,11 @@ def _build_callback_instruction(
             # tells the AI that something happened. Strip trailing newline so
             # the joined output is clean.
             parts.append(header.rstrip())
-    return "\n\n".join(parts)
+    rendered = "\n\n".join(parts)
+    # Total input budget: many callbacks accumulating must not blow up the turn.
+    from utils.tokenize import truncate_to_tokens
+    from config import AGENT_CALLBACK_TOTAL_MAX_TOKENS
+    return truncate_to_tokens(rendered, AGENT_CALLBACK_TOTAL_MAX_TOKENS)
 
 
 def _format_voice_swap_item(
@@ -511,7 +515,12 @@ def _render_pending_extra_replies_by_origin(
                 + "\n".join(items)
                 + _loc(CONTEXT_SUMMARY_EVENT_FOOTER, lang)
             )
-    return "".join(blocks)
+    rendered = "".join(blocks)
+    # Total input budget for the voice hot-swap injection (mirror of the
+    # text-mode cap in _build_callback_instruction).
+    from utils.tokenize import truncate_to_tokens
+    from config import AGENT_CALLBACK_TOTAL_MAX_TOKENS
+    return truncate_to_tokens(rendered, AGENT_CALLBACK_TOTAL_MAX_TOKENS)
 
 
 from config.prompts.prompts_avatar_interaction import (
@@ -7196,8 +7205,26 @@ class LLMSessionManager:
         hot-swap fire at different lifecycle points).
         """
         try:
-            summary = str(callback.get("summary") or "").strip()
-            detail = str(callback.get("detail") or "").strip()
+            from utils.tokenize import truncate_to_tokens
+            from config import (
+                AGENT_CALLBACK_TEXT_MAX_TOKENS,
+                AGENT_CALLBACK_QUEUE_MAX_ITEMS,
+            )
+            # Per-item input budget: summary/detail flow into the LLM verbatim
+            # (text-mode drain + voice hot-swap). task_result callbacks are
+            # already TASK_*-capped upstream, but push_message/proactive_message
+            # text is aggregated uncapped by proactive_bridge — cap it here, the
+            # single chokepoint both queues pass through.
+            summary = truncate_to_tokens(
+                str(callback.get("summary") or "").strip(), AGENT_CALLBACK_TEXT_MAX_TOKENS
+            )
+            detail = truncate_to_tokens(
+                str(callback.get("detail") or "").strip(), AGENT_CALLBACK_TEXT_MAX_TOKENS
+            )
+            # Write the capped text back so the text-mode drain (which reads the
+            # callback dict directly) injects the truncated body too.
+            callback["summary"] = summary
+            callback["detail"] = detail
             error_message = str(callback.get("error_message") or "").strip()
             source_name = str(callback.get("source_name") or "").strip()
             status = callback.get("status") or "completed"
@@ -7239,6 +7266,13 @@ class LLMSessionManager:
                 "source_name": source_name,
                 "error_message": error_message,
             })
+            # Flood guard: a runaway plugin event stream must not grow either
+            # queue without bound. Keep the most recent N (newest = most
+            # relevant); drop-oldest.
+            if len(self.pending_agent_callbacks) > AGENT_CALLBACK_QUEUE_MAX_ITEMS:
+                self.pending_agent_callbacks = self.pending_agent_callbacks[-AGENT_CALLBACK_QUEUE_MAX_ITEMS:]
+            if len(self.pending_extra_replies) > AGENT_CALLBACK_QUEUE_MAX_ITEMS:
+                self.pending_extra_replies = self.pending_extra_replies[-AGENT_CALLBACK_QUEUE_MAX_ITEMS:]
         except Exception:
             pass
 

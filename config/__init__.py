@@ -1447,6 +1447,30 @@ TASK_ERROR_MAX_TOKENS = 350
 - 用途：_emit_task_result 的 error 档位。
 - 上游：异常 stack / API 错误响应。"""
 
+AGENT_CALLBACK_TEXT_MAX_TOKENS = 1000
+"""单条 agent callback 的 summary/detail 注入 LLM 的 token 上限（per-item）。
+- 用途：`Core.enqueue_agent_callback` 落队前对每条 callback 的 summary/detail
+  截断。task_result 类回流已在 _emit_task_result 用 TASK_*_MAX_TOKENS 截过
+  （≤1000），本档对齐 TASK_LARGE_DETAIL 不会误伤；真正的兜底对象是
+  **push_message / proactive_message** 这条 plugin 事件流——proactive_bridge
+  直接聚合 text parts 写进 summary/detail，此前没有任何 cap。
+- 上游：plugin SDK push_message() 的 text parts / 外部通知。"""
+
+AGENT_CALLBACK_TOTAL_MAX_TOKENS = 3000
+"""一次注入 LLM 的 agent callback 指令总和 token 上限（total）。
+- 用途：`_build_callback_instruction`（文本轮 system_prefix / proactive 触发）
+  和 `_render_pending_extra_replies_by_origin`（语音 hot-swap final_prime_text）
+  渲染完成后对整段做兜底截断。防 N 条 callback 累加撑爆本轮 prompt。
+- 与 per-item 配合：单条 cap 防长贴，total cap 防大量短条累加（见
+  docs/design/llm-prompt-budget.md §2.1 三层防护）。"""
+
+AGENT_CALLBACK_QUEUE_MAX_ITEMS = 50
+"""pending_agent_callbacks / pending_extra_replies 队列长度上限（flood guard）。
+- 用途：`enqueue_agent_callback` 落队后裁到最近 N 条，防 plugin 事件流灌爆
+  内存（队列此前无容量上限，drain 时全量 snapshot）。丢最旧的（最新事件
+  最相关）。
+- 与 AGENT_TASK_TRACKER_MAX_RECORDS=50 同口径。"""
+
 # ---- Agent: defensive char-caps (NOT token caps) ----
 # 下面这些是"防御性 char-cap"——在异常文本 / cancel reason / plugin reply
 # 流入下游字段（summary / detail / error_message / tracker.detail / 前端
@@ -2134,6 +2158,9 @@ __all__ = [
     'TASK_SUMMARY_MAX_TOKENS',
     'TASK_LARGE_DETAIL_MAX_TOKENS',
     'TASK_ERROR_MAX_TOKENS',
+    'AGENT_CALLBACK_TEXT_MAX_TOKENS',
+    'AGENT_CALLBACK_TOTAL_MAX_TOKENS',
+    'AGENT_CALLBACK_QUEUE_MAX_ITEMS',
     'AGENT_TASK_TRACKER_MAX_RECORDS',
     'AGENT_RECENT_CTX_PER_ITEM_TOKENS',
     'AGENT_RECENT_CTX_TOTAL_TOKENS',
