@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import time
+import threading
+import atexit
 from collections import defaultdict, deque
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -153,15 +155,25 @@ class TopicSignalStore:
         max_turns: int = _MAX_GLOBAL_TURNS,
         retention_seconds: float = _SIGNAL_RETENTION_SECONDS,
         persistence_path: str | Path | None = None,
+        persistence_flush_delay_seconds: float = 1.0,
     ) -> None:
         self._min_user_turns_for_topic = max(1, int(min_user_turns_for_topic))
         self._max_turns = max(1, int(max_turns))
         self._retention_seconds = max(0.0, float(retention_seconds))
         self._persistence_path = Path(persistence_path) if persistence_path else None
+        self._persistence_flush_delay_seconds = max(
+            0.0,
+            float(persistence_flush_delay_seconds),
+        )
+        self._persist_lock = threading.RLock()
+        self._persist_timer: threading.Timer | None = None
+        self._persist_dirty = False
         self._turns: dict[str, deque[TopicTurnSignal]] = defaultdict(
             lambda: deque(maxlen=self._max_turns)
         )
         self._load()
+        if self._persistence_path is not None:
+            atexit.register(self.flush)
 
     def note_turn(
         self,
@@ -177,43 +189,49 @@ class TopicSignalStore:
         name = str(lanlan_name or "default")
         safe_actor = "ai" if actor == "ai" else "user"
         timestamp = float(now if now is not None else time.time())
-        self._turns[name].append(
-            TopicTurnSignal(
-                actor=safe_actor,
-                text=cleaned,
-                timestamp=timestamp,
+        with self._persist_lock:
+            self._turns[name].append(
+                TopicTurnSignal(
+                    actor=safe_actor,
+                    text=cleaned,
+                    timestamp=timestamp,
+                )
             )
-        )
-        self._prune(name, now=timestamp)
-        self._persist()
+            self._prune(name, now=timestamp)
+        self._request_persist()
 
     def clear(self, lanlan_name: str) -> None:
-        self._turns.pop(str(lanlan_name or "default"), None)
-        self._persist()
+        with self._persist_lock:
+            self._turns.pop(str(lanlan_name or "default"), None)
+        self._request_persist()
 
     def names(self) -> list[str]:
-        return list(self._turns)
+        with self._persist_lock:
+            return list(self._turns)
 
     def last_turn_at(self, lanlan_name: str) -> float | None:
         name = str(lanlan_name or "default")
-        self._prune(name)
-        turns = self._turns.get(name)
-        if not turns:
-            return None
-        return float(turns[-1].timestamp)
+        with self._persist_lock:
+            self._prune(name)
+            turns = self._turns.get(name)
+            if not turns:
+                return None
+            return float(turns[-1].timestamp)
 
     def readiness_percent(self, lanlan_name: str) -> int:
         # Coarse "have we heard enough to bother analysing" estimate, for logs.
-        self._prune(lanlan_name)
-        count = len(self._meaningful_user_turns(lanlan_name))
+        with self._persist_lock:
+            self._prune(lanlan_name)
+            count = len(self._meaningful_user_turns(lanlan_name))
         return min(100, int(count * 100 / self._min_user_turns_for_topic))
 
     def is_ready(self, lanlan_name: str) -> bool:
-        self._prune(lanlan_name)
-        return (
-            len(self._meaningful_user_turns(lanlan_name))
-            >= self._min_user_turns_for_topic
-        )
+        with self._persist_lock:
+            self._prune(lanlan_name)
+            return (
+                len(self._meaningful_user_turns(lanlan_name))
+                >= self._min_user_turns_for_topic
+            )
 
     def format_global_signals(self, lanlan_name: str, *, max_lines: int = 40, lang: str | None = None) -> str:
         """Render the slow-evidence turns as the topic prompt's only context.
@@ -223,12 +241,13 @@ class TopicSignalStore:
         The caller fences this block with the conversation-history watermark.
         """
         name = str(lanlan_name or "default")
-        self._prune(name)
-        labels = _GLOBAL_SIGNAL_LABELS[_label_key_for_lang(lang)]
-        turns = list(self._turns.get(name, ()))
+        with self._persist_lock:
+            self._prune(name)
+            turns = list(self._turns.get(name, ()))
         if not turns:
             return ""
 
+        labels = _GLOBAL_SIGNAL_LABELS[_label_key_for_lang(lang)]
         selected = _select_turns_for_prompt(turns, max_lines=max_lines)
         base_ts = turns[-1].timestamp
         lines: list[str] = []
@@ -299,30 +318,64 @@ class TopicSignalStore:
                 )
             self._prune(safe_name)
 
-    def _persist(self) -> None:
+    def flush(self) -> None:
+        """Persist any pending topic signals.
+
+        Normal chat turns request a delayed background flush so user-message
+        handling never waits on fsync. Privacy cleanup and tests can call this
+        method when they need the local-state file to reflect the in-memory
+        view immediately.
+        """
+        with self._persist_lock:
+            timer = self._persist_timer
+            self._persist_timer = None
+            if timer is not None and timer is not threading.current_thread():
+                timer.cancel()
+            if not self._persist_dirty:
+                return
+            self._persist_dirty = False
+            payload = self._persistence_payload_locked()
+        self._write_payload(payload)
+
+    def _request_persist(self) -> None:
+        path = self._persistence_path
+        if path is None:
+            return
+        with self._persist_lock:
+            self._persist_dirty = True
+            if self._persist_timer is not None:
+                return
+            timer = threading.Timer(self._persistence_flush_delay_seconds, self.flush)
+            timer.daemon = True
+            self._persist_timer = timer
+            timer.start()
+
+    def _persistence_payload_locked(self) -> dict[str, Any]:
+        now = time.time()
+        for name in list(self._turns):
+            self._prune(name, now=now)
+        return {
+            "version": 1,
+            "characters": {
+                name: [
+                    {
+                        "actor": turn.actor,
+                        "text": turn.text,
+                        "timestamp": turn.timestamp,
+                    }
+                    for turn in turns
+                ]
+                for name, turns in self._turns.items()
+                if turns
+            },
+        }
+
+    def _write_payload(self, payload: Mapping[str, Any]) -> None:
         path = self._persistence_path
         if path is None:
             return
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            now = time.time()
-            for name in list(self._turns):
-                self._prune(name, now=now)
-            payload = {
-                "version": 1,
-                "characters": {
-                    name: [
-                        {
-                            "actor": turn.actor,
-                            "text": turn.text,
-                            "timestamp": turn.timestamp,
-                        }
-                        for turn in turns
-                    ]
-                    for name, turns in self._turns.items()
-                    if turns
-                },
-            }
             atomic_write_json(path, payload, ensure_ascii=False, indent=2)
         except Exception:
             return

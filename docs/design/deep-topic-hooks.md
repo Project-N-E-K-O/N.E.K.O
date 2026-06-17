@@ -35,14 +35,14 @@
 
 ## 机制总览
 
-每个角色一个进程内的 `TopicHookPool`（`main_logic/topic/pipeline.py`）。管线分阶段：
+进程内共享一个 `TopicHookPool`（`main_logic/topic/pipeline.py`），内部按角色分桶；activity tracker heartbeat 调用时只处理自己的角色，避免一个 open 角色替另一个 private/away 角色跑 candidate。管线分阶段：
 
-1. **采集**：`note_user_message` / note AI 回合按 token 预算喂 `TopicSignalStore`，形成跨窗口（最多 80 条、最近 12 小时）的慢对话证据。全局池把这份 signal 持久化到 local state，短时间反复重启会合并处理；超过 12 小时的 signal 直接淘汰。池子不再单独保留「最近对话」缓冲——那和证据是同一批 turn，纯冗余。
-2. **分析**：topic 不再维护自己的 45s sleep/debounce loop。`main_logic/activity/tracker.py` 的 activity heartbeat 每 20s 调一次 `process_ready_topics()`；当最近一条可分析 turn 距今至少 60s（3 个 heartbeat tick）且有足够有信息量的 user turn 时，才调情绪档小模型 `call_topic_candidates`（`main_logic/activity/llm_enrichment.py`）。它每次读取的是 capped rolling evidence，不是「上次之后新增的增量」。`_seq` 只保护 candidate LLM：分析期间来了新 turn，就丢弃这次候选结果，等下一轮基于完整窗口重算。它的**唯一对话输入就是 signal store 渲染的证据**（`global_signals`），prompt 里用中文水印 `======以下为最近对话(按时间顺序)======` / `======以上为最近对话(按时间顺序)======` 把这块围起来。
+1. **采集**：`note_user_message` / note AI 回合按 token 预算喂 `TopicSignalStore`，形成跨窗口（最多 80 条、最近 12 小时）的慢对话证据。全局池把这份 signal 持久化到 local state，短时间反复重启会合并处理；超过 12 小时的 signal 直接淘汰。持久化是后台合并 flush，不在每个聊天 turn 上同步 `atomic_write_json` / fsync；隐私清理和测试可显式 `flush()`。池子不再单独保留「最近对话」缓冲——那和证据是同一批 turn，纯冗余。
+2. **分析**：topic 不再维护自己的 45s sleep/debounce loop。`main_logic/activity/tracker.py` 的 activity heartbeat 每 20s 调一次 `process_ready_topics(lanlan_name=当前角色)`；当最近一条可分析 turn 距今至少 60s（3 个 heartbeat tick）且有足够有信息量的 user turn 时，才调情绪档小模型 `call_topic_candidates`（`main_logic/activity/llm_enrichment.py`）。无角色参数的 `process_ready_topics()` 会扫描 dirty + 已恢复的 signal names，用于启动后 re-arm；tracker heartbeat 一律带角色名，避免跨角色泄露。它每次读取的是 capped rolling evidence，不是「上次之后新增的增量」。`_seq` 只保护 candidate LLM：分析期间来了新 turn，就丢弃这次候选结果，等下一轮基于完整窗口重算。它的**唯一对话输入就是 signal store 渲染的证据**（`global_signals`），prompt 里用中文水印 `======以下为最近对话(按时间顺序)======` / `======以上为最近对话(按时间顺序)======` 把这块围起来。
 3. **打分 / 门控**：后端代码按 `relevance ≥ 70 且 risk ≤ 65` 过滤（`_material_is_ready`），不是 prompt 自己判阈值。
 4. **pending material**：candidate 阶段不做联网增强，只把 `interest/keywords/relevance/risk` 过滤后的 material 放入 pending。
 5. **投递前 prepare**：`_schedule_trigger` → `_run_trigger_after_quiet_window` 等投递窗口（静默窗口 + `min_trigger_gap_seconds` + quota/activity gate）打开后，先 `await _deepen_material(...)`。这一步把 deep search query 衍生和联网补强合并为同一个 delivery-time prepare，并把 `material_hint` / `deep_query` 写回 live material。`deep_search_done` 保证同一份 material 只 prepare 一次。
-6. **投递**：prepare 完成后立刻重新检查投递窗口；窗口仍打开就调 `trigger_topic_hook_once`（`main_logic/topic/delivery.py`），把物料包成 callback、经 `ProactiveDeliveryManager` 一次性投给角色。窗口已关则保留 prepared material，reschedule 到下一个窗口直接投递，不重复 research。只有确认投递成功才命中日配额、记 used。
+6. **投递**：prepare 完成后立刻重新检查投递窗口；窗口仍打开就调 `trigger_topic_hook_once`（`main_logic/topic/delivery.py`），把物料包成 callback、经 `ProactiveDeliveryManager` 一次性投给角色。窗口已关则保留 prepared material，reschedule 到下一个窗口直接投递，不重复 research。若 delivery bridge 返回 False（语音、活动门、unfinished thread、manager 暂不可用等），按 trigger retry delay 退避后再试，避免投递窗口已满足时 tight-loop。只有确认投递成功才命中日配额、记 used。
 
 ### 物料契约
 
@@ -143,6 +143,7 @@ prompt 只给「明显反复出现 → 高分，顺口一提 → 低分；如实
 
 - 触发条件是 delivery window：topic quiet window + `min_trigger_gap_seconds` + daily quota + `topic_hook_delivery_allowed()`（语音、`closed`、`restricted_screen_only`、`unfinished_thread`）。
 - `_run_trigger_after_quiet_window` 在调投递桥之前先 `await self._deepen_material(...)`：用更强档位（`summary` tier，`derive_deep_search_query`）从 interest + keywords（+ floor 线索 `online_angle`）衍生一条聚焦 deep query，再用它跑联网增强、写入 `material_hint`。这一步跑在 trigger task 里，**不阻塞用户对话**。
+- `enable_online_enrichment=False` 是完整 offline kill switch：delivery-time prepare 不衍生 deep query，也不调用 `enrich_topic_materials_online()`。若只想关掉深搜但保留其他联网能力，用 `enable_deep_search=False`。
 - **准备就绪后重新过门**：deep 跑完后重新检查 delivery window。条件仍满足就调 `trigger_topic_hook_once`；如果窗口已关，保留 prepared material，reschedule 等下个窗口直接投递。
 - **floor 永远兜底**：deep query 衍生失败/超时，或 deep 检索没结果，都保留已有 keyword / floor hint。
 - **缓存防重搜**：`deep_search_done` 写在 live material 上，reschedule 重试复用已备好的 deep 结果而不重复搜；它在衍生前就置位，避免 flaky 衍生每次 reschedule 都重试（代价：一次性失败后该物料本轮不再尝试 deep，但 floor 仍投递）。

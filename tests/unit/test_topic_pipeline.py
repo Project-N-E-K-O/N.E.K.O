@@ -51,6 +51,7 @@ def test_topic_signal_store_persists_recent_turns_across_instances(tmp_path):
     )
 
     store.note_turn("妮可", actor="user", text="我最近一直在纠结换工作", now=now)
+    store.flush()
 
     reloaded = TopicSignalStore(
         min_user_turns_for_topic=1,
@@ -58,6 +59,32 @@ def test_topic_signal_store_persists_recent_turns_across_instances(tmp_path):
     )
     assert reloaded.is_ready("妮可")
     assert "换工作" in reloaded.format_global_signals("妮可", lang="zh-CN")
+
+
+def test_topic_signal_store_batches_persistence_off_chat_path(monkeypatch, tmp_path):
+    from main_logic.topic import signals as topic_signals
+
+    calls = []
+
+    def fake_atomic_write_json(path, payload, **kwargs):
+        calls.append((path, payload, kwargs))
+
+    monkeypatch.setattr(topic_signals, "atomic_write_json", fake_atomic_write_json)
+    store = TopicSignalStore(
+        min_user_turns_for_topic=1,
+        persistence_path=tmp_path / "topic_signals.json",
+        persistence_flush_delay_seconds=60,
+    )
+
+    store.note_turn("妮可", actor="user", text="我最近一直在纠结换工作")
+    store.note_turn("妮可", actor="user", text="这个问题又聊了第二轮")
+
+    assert calls == []
+
+    store.flush()
+
+    assert len(calls) == 1
+    assert len(calls[0][1]["characters"]["妮可"]) == 2
 
 
 def test_topic_signal_store_drops_entries_older_than_retention(tmp_path):
@@ -71,6 +98,7 @@ def test_topic_signal_store_drops_entries_older_than_retention(tmp_path):
 
     store.note_turn("妮可", actor="user", text="前一天的旧话题", now=now - 13 * 60 * 60)
     store.note_turn("妮可", actor="user", text="今天的新话题", now=now)
+    store.flush()
 
     signals = store.format_global_signals("妮可", lang="zh-CN")
     assert "前一天的旧话题" not in signals
@@ -472,6 +500,65 @@ async def test_topic_pool_process_ready_waits_for_candidate_quiet_window():
 
 
 @pytest.mark.asyncio
+async def test_topic_pool_process_ready_rearms_restored_signals(tmp_path):
+    calls = []
+    path = tmp_path / "topic_signals.json"
+    base = time.time() - 120
+    store = TopicSignalStore(
+        min_user_turns_for_topic=2,
+        persistence_path=path,
+    )
+    store.note_turn("妮可", actor="user", text="我最近一直在认真考虑换城市生活", now=base)
+    store.note_turn("妮可", actor="user", text="换城市这件事反复纠结很久", now=base + 1)
+    store.flush()
+
+    async def fake_analyzer(*, lang, global_signals):
+        calls.append(global_signals)
+        return [{"interest": "恢复后的换城市话题", "relevance": 90}]
+
+    pool = TopicHookPool(
+        analyzer=fake_analyzer,
+        auto_schedule=False,
+        candidate_quiet_seconds=60,
+        min_user_turns_for_topic=2,
+        signal_store_path=path,
+    )
+
+    await pool.process_ready_topics(now=base + 121, lang="zh-CN")
+
+    assert len(calls) == 1
+    assert "换城市" in calls[0]
+    assert pool.get_ready_materials("妮可")[0]["interest"] == "恢复后的换城市话题"
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_process_ready_scopes_to_requested_character():
+    calls = []
+
+    async def fake_analyzer(*, lang, global_signals):
+        calls.append(global_signals)
+        return [{"interest": global_signals, "relevance": 90}]
+
+    pool = TopicHookPool(
+        analyzer=fake_analyzer,
+        auto_schedule=False,
+        candidate_quiet_seconds=60,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "妮可自己的可分析话题")
+    pool.note_user_message("兰兰", "兰兰自己的可分析话题")
+    now = time.time() + 120
+
+    await pool.process_ready_topics(lanlan_name="妮可", now=now, lang="zh-CN")
+
+    assert len(calls) == 1
+    assert "妮可自己的可分析话题" in calls[0]
+    assert "兰兰自己的可分析话题" not in calls[0]
+    assert pool.get_ready_materials("妮可")
+    assert pool.get_ready_materials("兰兰") == []
+
+
+@pytest.mark.asyncio
 async def test_topic_pool_debounce_retries_after_background_analyzer_failure():
     calls = 0
     retried = asyncio.Event()
@@ -757,6 +844,50 @@ async def test_topic_pool_retries_pending_material_after_delivery_defers():
     ]
     assert pool.get_ready_materials("妮可") == []
     assert pool._materials["妮可"][0]["status"] == "used"
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_backoff_when_delivery_defers_with_open_window():
+    attempts = []
+    first_attempt = asyncio.Event()
+    retried = asyncio.Event()
+
+    async def fake_analyzer(*, lang, **kwargs):
+        return [
+            {
+                "interest": "买车像进入新生活阶段",
+                "hook": "从买车背后的生活阶段感切入",
+                "relevance": 95,
+            }
+        ]
+
+    async def fake_trigger(*, lanlan_name, material, lang):
+        attempts.append(time.time())
+        if len(attempts) == 1:
+            first_attempt.set()
+            return False
+        retried.set()
+        return True
+
+    pool = TopicHookPool(
+        analyzer=fake_analyzer,
+        auto_schedule=False,
+        enable_online_enrichment=False,
+        topic_trigger=fake_trigger,
+        trigger_delay_seconds=0,
+        trigger_retry_delay_seconds=0.05,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "我感觉买车算人生大事，最近一直在想它是不是代表生活进入新阶段", lang="zh-CN")
+
+    await pool.process_now("妮可")
+    await asyncio.wait_for(first_attempt.wait(), timeout=1.0)
+    await asyncio.sleep(0.02)
+    assert len(attempts) == 1
+
+    await asyncio.wait_for(retried.wait(), timeout=1.0)
+
+    assert len(attempts) == 2
 
 
 @pytest.mark.asyncio
@@ -1210,6 +1341,16 @@ async def test_deepen_material_idempotent_and_respects_disable(monkeypatch):
     await pool_off._deepen_material("n", m1, "zh")
     assert calls == []
     assert "deep_search_done" not in m1
+
+    # online enrichment disabled → stays fully offline, including query derivation
+    pool_online_off = TopicHookPool(
+        auto_schedule=False,
+        enable_online_enrichment=False,
+    )
+    m_offline = {"interest": "x", "keywords": ["x"]}
+    await pool_online_off._deepen_material("n", m_offline, "zh")
+    assert calls == []
+    assert "deep_search_done" not in m_offline
 
     # enabled → derives once; second call is a cached no-op
     pool_on = TopicHookPool(auto_schedule=False)

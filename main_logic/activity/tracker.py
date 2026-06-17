@@ -1157,7 +1157,11 @@ class UserActivityTracker:
         """
         try:
             from main_logic.topic.pipeline import get_topic_hook_pool
-            await get_topic_hook_pool().process_ready_topics(lang=lang, now=now)
+            await get_topic_hook_pool().process_ready_topics(
+                lanlan_name=self.lanlan_name,
+                lang=lang,
+                now=now,
+            )
         except Exception as exc:
             logger.debug("[%s] topic candidate heartbeat failed: %s", self.lanlan_name, exc)
 

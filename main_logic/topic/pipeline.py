@@ -209,6 +209,7 @@ class TopicHookPool:
         debounce_seconds: float | None = None,
         candidate_quiet_seconds: float = _CANDIDATE_AFTER_QUIET_SECONDS,
         trigger_delay_seconds: float = _TRIGGER_AFTER_QUIET_SECONDS,
+        trigger_retry_delay_seconds: float | None = None,
         min_trigger_gap_seconds: float = _MIN_TOPIC_TRIGGER_GAP_SECONDS,
         min_user_turns_for_topic: int = 4,
         daily_topic_limit: int = _MAX_DAILY_TOPIC_TRIGGERS,
@@ -224,6 +225,18 @@ class TopicHookPool:
             float(candidate_quiet_seconds if debounce_seconds is None else debounce_seconds),
         )
         self._trigger_delay_seconds = max(0.0, float(trigger_delay_seconds))
+        self._trigger_retry_delay_seconds = max(
+            0.0,
+            float(
+                trigger_retry_delay_seconds
+                if trigger_retry_delay_seconds is not None
+                else (
+                    trigger_delay_seconds
+                    if trigger_delay_seconds > 0
+                    else _TRIGGER_AFTER_QUIET_SECONDS
+                )
+            ),
+        )
         self._min_trigger_gap_seconds = max(0.0, float(min_trigger_gap_seconds))
         self._daily_topic_limit = max(0, int(daily_topic_limit))
         self._signal_store = TopicSignalStore(
@@ -248,6 +261,7 @@ class TopicHookPool:
     def _purge_accumulated_signals(self, name: str) -> None:
         """Drop pre-candidate evidence without touching pending delivery material."""
         self._signal_store.clear(name)
+        self._signal_store.flush()
         self._dirty.discard(name)
 
     def note_user_message(self, lanlan_name: str, text: Any, *, lang: str = "zh") -> None:
@@ -378,15 +392,25 @@ class TopicHookPool:
     async def process_ready_topics(
         self,
         *,
+        lanlan_name: str | None = None,
         lang: str | None = None,
         now: float | None = None,
     ) -> None:
         if _privacy_mode_active():
-            for name in set(self._signal_store.names()) | set(self._dirty):
+            names = {str(lanlan_name or "default")} if lanlan_name is not None else (
+                set(self._signal_store.names()) | set(self._dirty)
+            )
+            for name in names:
                 self._purge_accumulated_signals(name)
             return
         current_time = float(now if now is not None else time.time())
-        for name in list(self._dirty):
+        if lanlan_name is not None:
+            names = {str(lanlan_name or "default")}
+        else:
+            # Include persisted names as well as newly dirty ones so a restart
+            # after collecting enough evidence does not strand restored signals.
+            names = set(self._signal_store.names()) | set(self._dirty)
+        for name in sorted(names):
             last_turn_at = self._signal_store.last_turn_at(name)
             if last_turn_at is None:
                 self._dirty.discard(name)
@@ -429,7 +453,39 @@ class TopicHookPool:
             name=f"topic_trigger_{name}",
         )
 
+    async def _run_trigger_after_retry_delay(
+        self,
+        name: str,
+        material: dict[str, Any],
+        lang: str,
+    ) -> None:
+        delay = self._trigger_retry_delay_seconds
+        if delay:
+            await asyncio.sleep(delay)
+        await self._run_trigger_after_quiet_window(name, material, lang)
+
     def _reschedule_trigger_retry(
+        self,
+        name: str,
+        material: Mapping[str, Any],
+        lang: str,
+    ) -> None:
+        if material.get("status") != "pending":
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._trigger_tasks[name] = loop.create_task(
+            self._run_trigger_after_retry_delay(
+                name,
+                deepcopy(dict(material)),
+                lang,
+            ),
+            name=f"topic_trigger_{name}",
+        )
+
+    def _reschedule_trigger_window(
         self,
         name: str,
         material: Mapping[str, Any],
@@ -482,7 +538,7 @@ class TopicHookPool:
             # re-gated by the delivery bridge AFTER this prepare completes.
             await self._deepen_material(name, current_material, lang)
             if self._seconds_until_next_delivery_window(name) > 0:
-                self._reschedule_trigger_retry(name, current_material, lang)
+                self._reschedule_trigger_window(name, current_material, lang)
                 return
             triggered = await self._topic_trigger(
                 lanlan_name=name,
@@ -530,7 +586,7 @@ class TopicHookPool:
         cheap keyword floor hint intact, and ``deep_search_done`` is set up front
         so a flaky derivation is not retried on every reschedule.
         """
-        if not self._enable_deep_search:
+        if not self._enable_deep_search or not self._enable_online_enrichment:
             return
         if material.get("deep_search_done"):
             return
