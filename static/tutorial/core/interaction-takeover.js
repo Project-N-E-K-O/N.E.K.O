@@ -250,6 +250,7 @@
                 && typeof this.window.nekoTutorialOverlay.relayToChat === 'function'
                 ? this.window.nekoTutorialOverlay
                 : null;
+            let nativeRelaySequence = 0;
             if (broadcastChannel || nativeRelay) {
                 return {
                     postMessage(message) {
@@ -265,7 +266,10 @@
                         }
                         if (nativeRelay) {
                             try {
-                                nativeRelay.relayToChat(outgoingMessage);
+                                nativeRelay.relayToChat(Object.assign({}, outgoingMessage, {
+                                    sequence: ++nativeRelaySequence,
+                                    payload: Object.assign({}, outgoingMessage)
+                                }));
                             } catch (_) {}
                         }
                     }

@@ -34,6 +34,17 @@
         return dateProvider.now();
     }
 
+    let nativeEnvelopeSequence = 0;
+
+    function buildNativeRelayEnvelope(message) {
+        const payload = Object.assign({}, message || {});
+        const envelope = Object.assign({}, payload, {
+            sequence: ++nativeEnvelopeSequence,
+            payload
+        });
+        return envelope;
+    }
+
     function normalizeBridgeMessage(message, win, runIdStorageKey, options) {
         if (!message || typeof message !== 'object' || !message.action) {
             return null;
@@ -131,7 +142,7 @@
             const nativeRelay = nativeRelayProvider();
             if (nativeRelay && typeof nativeRelay.relayToChat === 'function') {
                 try {
-                    nativeRelay.relayToChat(outgoingMessage);
+                    nativeRelay.relayToChat(buildNativeRelayEnvelope(outgoingMessage));
                     posted = true;
                 } catch (error) {
                     consoleApi.warn('[YuiGuide] PC 原生转发独立聊天窗消息失败:', error);
@@ -176,7 +187,7 @@
             const nativeRelay = nativeRelayProvider();
             if (nativeRelay && typeof nativeRelay.relayToPet === 'function') {
                 try {
-                    nativeRelay.relayToPet(outgoingMessage);
+                    nativeRelay.relayToPet(buildNativeRelayEnvelope(outgoingMessage));
                     posted = true;
                 } catch (error) {
                     consoleApi.warn('[YuiGuide] PC 原生转发 Pet 教程消息失败:', error);
