@@ -6351,7 +6351,7 @@ async def proactive_chat(request: Request):
                     logger.debug(f"[{lanlan_name}] 预选表情包话题: {meme_title[:30]}")
                     break
                 else:
-                    logger.debug(f"[{lanlan_name}]- Phase 1 所有表情包候选均被去重，跳过表情包话题")
+                    logger.debug(f"[{lanlan_name}]- Phase 1 未选出可用表情包候选，跳过表情包话题")
             else:
                 logger.warning(f"[{lanlan_name}] Phase 1 表情包数据为空，跳过表情包话题")
         
