@@ -2939,6 +2939,126 @@
         }, 120);
     }
 
+    var yuiGuideChatCursorPoint = null;
+    var yuiGuideChatCursorRequestToken = 0;
+
+    function ensureYuiGuideChatCursorElement() {
+        var cursor = document.getElementById('yui-guide-chat-cursor');
+        if (cursor) return cursor;
+        if (!document.body) return null;
+        cursor = document.createElement('div');
+        cursor.id = 'yui-guide-chat-cursor';
+        cursor.setAttribute('aria-hidden', 'true');
+        cursor.style.position = 'fixed';
+        cursor.style.left = '0';
+        cursor.style.top = '0';
+        cursor.style.width = '18px';
+        cursor.style.height = '18px';
+        cursor.style.borderRadius = '999px';
+        cursor.style.background = 'rgba(80, 140, 255, 0.78)';
+        cursor.style.boxShadow = '0 0 0 4px rgba(80, 140, 255, 0.22), 0 8px 18px rgba(0, 0, 0, 0.24)';
+        cursor.style.pointerEvents = 'none';
+        cursor.style.zIndex = '2147483600';
+        cursor.style.opacity = '0';
+        cursor.style.transform = 'translate3d(-9999px, -9999px, 0)';
+        cursor.style.transitionProperty = 'transform, opacity, box-shadow, background-color';
+        cursor.style.transitionTimingFunction = 'cubic-bezier(0.22, 1, 0.36, 1)';
+        document.body.appendChild(cursor);
+        return cursor;
+    }
+
+    function getYuiGuideChatCursorTargetPoint(kind) {
+        var target = getYuiGuideChatSpotlightTarget(kind);
+        var rect = target && typeof target.getBoundingClientRect === 'function'
+            ? target.getBoundingClientRect()
+            : null;
+        if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+        return {
+            x: rect.left + rect.width / 2,
+            y: rect.top + rect.height / 2
+        };
+    }
+
+    function moveYuiGuideChatCursor(point, options) {
+        var cursor = ensureYuiGuideChatCursorElement();
+        if (!cursor || !point) return false;
+        var duration = options && Number.isFinite(Number(options.durationMs))
+            ? Math.max(0, Math.floor(Number(options.durationMs)))
+            : 240;
+        cursor.style.transitionDuration = duration + 'ms, 120ms, 120ms, 120ms';
+        cursor.hidden = false;
+        cursor.style.opacity = '1';
+        cursor.style.transform = 'translate3d(' + Math.round(point.x - 9) + 'px, ' + Math.round(point.y - 9) + 'px, 0)';
+        yuiGuideChatCursorPoint = { x: point.x, y: point.y };
+        return true;
+    }
+
+    function applyYuiGuideChatCursor(kind, options) {
+        yuiGuideChatCursorRequestToken += 1;
+        if (!kind) {
+            var cursor = document.getElementById('yui-guide-chat-cursor');
+            if (cursor) {
+                cursor.style.opacity = '0';
+                cursor.hidden = true;
+            }
+            yuiGuideChatCursorPoint = null;
+            return true;
+        }
+        return moveYuiGuideChatCursor(getYuiGuideChatCursorTargetPoint(kind), options || {});
+    }
+
+    function applyYuiGuideChatCursorDrag(kind, options) {
+        yuiGuideChatCursorRequestToken += 1;
+        var start = yuiGuideChatCursorPoint || getYuiGuideChatCursorTargetPoint(kind);
+        if (!start) return false;
+        return moveYuiGuideChatCursor({
+            x: start.x + (Number.isFinite(Number(options && options.deltaX)) ? Number(options.deltaX) : 0),
+            y: start.y + (Number.isFinite(Number(options && options.deltaY)) ? Number(options.deltaY) : 0)
+        }, options || {});
+    }
+
+    function applyYuiGuideChatCursorArc(kind, options) {
+        yuiGuideChatCursorRequestToken += 1;
+        var start = yuiGuideChatCursorPoint || getYuiGuideChatCursorTargetPoint(kind);
+        var center = getYuiGuideChatCursorTargetPoint(kind);
+        if (!start || !center) return false;
+        var direction = Number(options && options.direction) < 0 ? -1 : 1;
+        var fraction = Number.isFinite(Number(options && options.fraction)) ? Math.max(0, Math.min(1, Number(options.fraction))) : 0.2;
+        var angle = direction * Math.PI * 2 * fraction;
+        var dx = start.x - center.x;
+        var dy = start.y - center.y;
+        return moveYuiGuideChatCursor({
+            x: center.x + dx * Math.cos(angle) - dy * Math.sin(angle),
+            y: center.y + dx * Math.sin(angle) + dy * Math.cos(angle)
+        }, options || {});
+    }
+
+    function applyYuiGuideChatCursorRelay(message) {
+        if (!message || typeof message !== 'object' || !isStandaloneChatPage() || !document.body) return false;
+        var action = message.action || '';
+        if (action === 'yui_guide_drag_chat_cursor') {
+            return applyYuiGuideChatCursorDrag(message.kind || '', message);
+        }
+        if (action === 'yui_guide_arc_chat_cursor') {
+            return applyYuiGuideChatCursorArc(message.kind || '', message);
+        }
+        if (action === 'yui_guide_set_chat_cursor') {
+            return applyYuiGuideChatCursor(message.kind || '', message);
+        }
+        return false;
+    }
+
+    window.addEventListener('neko:tutorial-overlay-relay', function (event) {
+        applyYuiGuideChatCursorRelay(event && event.detail);
+    });
+
+    window.addEventListener('message', function (event) {
+        if (event.origin && event.origin !== window.location.origin) return;
+        var data = event.data || {};
+        if (!data.__nekoTutorialOverlayRelay) return;
+        applyYuiGuideChatCursorRelay(data.payload);
+    });
+
     // =====================================================================
     // Cross-window handoff event forwarding via BroadcastChannel
     // =====================================================================

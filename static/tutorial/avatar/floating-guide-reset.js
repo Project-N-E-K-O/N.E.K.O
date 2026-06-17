@@ -163,7 +163,9 @@
         state.updatedAt = resetAt;
         state.resetHistory = state.resetHistory.concat([{ day: round, source, resetAt }]).slice(-RESET_HISTORY_LIMIT);
 
-        saveGuideState(state);
+        if (!saveGuideState(state)) {
+            return null;
+        }
         dispatchGuideResetEvent({ day: round, source, resetAt, state });
         return state;
     }
@@ -185,7 +187,9 @@
         state.updatedAt = resetAt;
         state.resetHistory = state.resetHistory.concat([{ day: 'all', source, resetAt }]).slice(-RESET_HISTORY_LIMIT);
 
-        saveGuideState(state);
+        if (!saveGuideState(state)) {
+            return null;
+        }
         dispatchGuideResetEvent({ day: 'all', source, resetAt, state });
         return state;
     }
