@@ -82,6 +82,10 @@ def test_icebreaker_greeting_check_is_consumed_without_retry_loop():
 def test_completed_day1_icebreaker_does_not_swallow_later_tutorial_greetings():
     source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
 
+    assert "function getNewUserIcebreakerStateApi()" in source
+    assert "window.NekoNewUserIcebreakerState" in source
+    assert "NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS" not in source
+    assert "function isRecentNewUserIcebreakerEntry(entry)" not in source
     assert "function hasCompletedNewUserIcebreakerDay(day)" in source
     blocking_block = source.split("function isNewUserIcebreakerBlockingGreeting(reason)", 1)[1].split(
         "function sendHomeTutorialState(reason)",

@@ -177,6 +177,20 @@
     }
     mod.isNewUserIcebreakerPeriodActive = isNewUserIcebreakerPeriodActive;
 
+    function hasCompletedNewUserIcebreakerDay(day) {
+        const store = readNewUserIcebreakerStore();
+        const days = store && typeof store.days === 'object' ? store.days : null;
+        const entry = days && days[String(day)];
+        return !!(entry && entry.completed === true);
+    }
+
+    window.NekoNewUserIcebreakerState = Object.assign({}, window.NekoNewUserIcebreakerState || {}, {
+        readStore: readNewUserIcebreakerStore,
+        isRecentEntry: isRecentNewUserIcebreakerEntry,
+        isPeriodActive: isNewUserIcebreakerPeriodActive,
+        hasCompletedDay: hasCompletedNewUserIcebreakerDay,
+    });
+
     function getNewUserIcebreakerRetryDelayMs() {
         try {
             if (window.newUserIcebreaker && typeof window.newUserIcebreaker.getActiveSession === 'function') {
