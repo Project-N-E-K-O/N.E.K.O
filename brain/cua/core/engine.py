@@ -329,6 +329,7 @@ class LMMEngineAzureOpenAI(LMMEngine):
                 azure_endpoint=azure_endpoint,
                 api_key=api_key,
                 api_version=api_version,
+                timeout=120.0,  # hang-guard; output budget is set per-call on .create() (max_completion_tokens)
             )
         # Use self.temperature if set, otherwise use the temperature argument
         set_call_type("agent_cua")
