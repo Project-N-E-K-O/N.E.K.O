@@ -474,6 +474,10 @@ class TopicHookPool:
             # a reschedule reuses it instead of re-searching. The actual open is
             # re-gated by the delivery bridge AFTER this prepare completes.
             await self._deepen_material(name, current_material, lang)
+            if _privacy_mode_active():
+                self._purge_character_state(name)
+                logger.info("[%s] topic material trigger cancelled: privacy mode turned on during prepare", name)
+                return
             triggered = await self._topic_trigger(
                 lanlan_name=name,
                 material=deepcopy(current_material),
