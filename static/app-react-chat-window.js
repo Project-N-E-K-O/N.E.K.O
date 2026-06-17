@@ -1605,18 +1605,21 @@
             });
         }
         return items.concat(Array.prototype.slice.call(element.querySelectorAll('.compact-input-tool-item, .composer-icon-popover .composer-icon-button, .avatar-tool-quickbar .composer-icon-button, .avatar-tool-quickbar-edit'))
-            .map(function (child, index) {
+            .reduce(function (collectedItems, child, index) {
                 var style = window.getComputedStyle ? window.getComputedStyle(child) : null;
-                if (style && (style.display === 'none' || style.visibility === 'hidden')) return null;
-                if (style && Number(style.opacity) <= 0.01) return null;
+                if (style && (style.display === 'none' || style.visibility === 'hidden')) return collectedItems;
+                if (style && Number(style.opacity) <= 0.01) return collectedItems;
                 var slot = child.getAttribute('data-compact-tool-wheel-slot') || '';
                 var isAvatarToolChoice = child.classList && (child.classList.contains('composer-icon-button') || child.classList.contains('avatar-tool-quickbar-edit'));
-                if (!isAvatarToolChoice && (!slot || slot.indexOf('hidden') === 0)) return null;
+                if (!isAvatarToolChoice && (!slot || slot.indexOf('hidden') === 0)) return collectedItems;
                 var rect = normalizeCompactDomRect(child.getBoundingClientRect());
-                if (!rect) return null;
+                if (!rect) return collectedItems;
                 var hitRect = isAvatarToolChoice ? buildCompactAvatarToolChoiceHitRect(rect) : rect;
-                if (!hitRect) return null;
-                return {
+                if (!hitRect) return collectedItems;
+                var itemId = isAvatarToolChoice
+                    ? 'toolFan:avatarToolChoice:' + index
+                    : 'toolFan:' + slot + ':' + index;
+                collectedItems.push({
                     id: isAvatarToolChoice
                         ? 'toolFan:avatarToolChoice:' + index
                         : 'toolFan:' + slot + ':' + index,
@@ -1626,9 +1629,25 @@
                     hitRect: hitRect,
                     nativeRect: hitRect,
                     interactive: true
-                };
-            })
-            .filter(Boolean));
+                });
+                var tooltip = child.querySelector && child.querySelector('.compact-input-tool-tooltip');
+                if (!tooltip) return collectedItems;
+                var tooltipStyle = window.getComputedStyle ? window.getComputedStyle(tooltip) : null;
+                if (tooltipStyle && (tooltipStyle.display === 'none' || tooltipStyle.visibility === 'hidden')) return collectedItems;
+                if (tooltipStyle && Number(tooltipStyle.opacity) <= 0.01) return collectedItems;
+                var tooltipRect = normalizeCompactDomRect(tooltip.getBoundingClientRect());
+                if (!tooltipRect) return collectedItems;
+                collectedItems.push({
+                    id: itemId + ':tooltip',
+                    owner: 'surface',
+                    kind: 'toolFan',
+                    visualRect: tooltipRect,
+                    hitRect: null,
+                    nativeRect: tooltipRect,
+                    interactive: false
+                });
+                return collectedItems;
+            }, []));
     }
 
     function collectCompactInputSurfaceGeometryItems(element) {

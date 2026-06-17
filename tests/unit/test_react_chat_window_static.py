@@ -862,6 +862,12 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     assert "nativeRect: hitRect" in collector_block
     assert "slot.indexOf('hidden') === 0" in collector_block
     assert "style.pointerEvents !== 'none'" not in collector_block
+    assert "var tooltip = child.querySelector && child.querySelector('.compact-input-tool-tooltip');" in collector_block
+    assert "id: itemId + ':tooltip'" in collector_block
+    assert "visualRect: tooltipRect" in collector_block
+    assert "hitRect: null" in collector_block
+    assert "nativeRect: tooltipRect" in collector_block
+    assert "interactive: false" in collector_block
     assert "hitRect: nativeRect" in native_hit_block
     assert "interactive: true" in native_hit_block
     assert "hitRect: null" not in native_hit_block
