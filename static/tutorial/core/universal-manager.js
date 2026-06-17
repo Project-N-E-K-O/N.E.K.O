@@ -261,21 +261,17 @@ window.getTutorialManualIntentKeyForPage = getTutorialManualIntentKeyForPage;
 window.logTutorialPromptFlow = logTutorialPromptFlow;
 
 const TutorialLifecycleStores = window.TutorialLifecycleStores || {};
-const TutorialLifecycleStateStore = TutorialLifecycleStores.TutorialLifecycleStateStore;
-const TutorialRoundPrelude = window.TutorialRoundPrelude || {};
-const TutorialRoundPreludeController = TutorialRoundPrelude.TutorialRoundPreludeController;
-
-class FallbackTutorialLifecycleStateStore {
-    constructor() {
+function createFallbackTutorialLifecycleStateStoreClass() {
+    function FallbackTutorialLifecycleStateStore() {
         this.resetEndReason();
     }
 
-    normalizeRawReason(reason) {
+    FallbackTutorialLifecycleStateStore.prototype.normalizeRawReason = function (reason) {
         const normalized = typeof reason === 'string' ? reason.trim().toLowerCase() : '';
         return normalized || 'destroy';
-    }
+    };
 
-    normalizeReason(reason) {
+    FallbackTutorialLifecycleStateStore.prototype.normalizeReason = function (reason) {
         const normalized = this.normalizeRawReason(reason);
         if (normalized === 'complete') {
             return 'complete';
@@ -284,18 +280,19 @@ class FallbackTutorialLifecycleStateStore {
             return 'skip';
         }
         return 'destroy';
-    }
+    };
 
-    setEndReason(reason) {
+    FallbackTutorialLifecycleStateStore.prototype.setEndReason = function (reason) {
         if (this.endRawReason) {
             return this.endReason || 'destroy';
         }
-        this.endRawReason = this.normalizeRawReason(reason);
-        this.endReason = this.normalizeReason(this.endRawReason);
+        const rawReason = this.normalizeRawReason(reason);
+        this.endRawReason = rawReason;
+        this.endReason = this.normalizeReason(rawReason);
         return this.endReason;
-    }
+    };
 
-    resolveEndMeta(options) {
+    FallbackTutorialLifecycleStateStore.prototype.resolveEndMeta = function (options) {
         const normalizedOptions = options || {};
         const finalSteps = Array.isArray(normalizedOptions.finalSteps)
             ? normalizedOptions.finalSteps
@@ -303,6 +300,7 @@ class FallbackTutorialLifecycleStateStore {
         const currentStep = Number.isFinite(normalizedOptions.currentStep)
             ? normalizedOptions.currentStep
             : -1;
+
         if (this.endReason || this.endRawReason) {
             return {
                 reason: this.endReason || 'destroy',
@@ -310,23 +308,29 @@ class FallbackTutorialLifecycleStateStore {
             };
         }
         if (finalSteps.length > 0 && currentStep >= finalSteps.length - 1) {
-            return { reason: 'complete', rawReason: 'complete' };
+            return {
+                reason: 'complete',
+                rawReason: 'complete'
+            };
         }
-        return { reason: 'destroy', rawReason: 'destroy' };
-    }
+        return {
+            reason: 'destroy',
+            rawReason: 'destroy'
+        };
+    };
 
-    createYuiGuideEndDetail(options) {
+    FallbackTutorialLifecycleStateStore.prototype.createYuiGuideEndDetail = function (options) {
         const normalizedOptions = options || {};
         const rawReason = this.normalizeRawReason(normalizedOptions.reason);
         return {
             page: normalizedOptions.page || '',
             runtimePage: normalizedOptions.runtimePage || '',
             reason: this.normalizeReason(rawReason),
-            rawReason
+            rawReason: rawReason
         };
-    }
+    };
 
-    createTerminationRequest(options) {
+    FallbackTutorialLifecycleStateStore.prototype.createTerminationRequest = function (options) {
         const normalizedOptions = options || {};
         const sourcePage = typeof normalizedOptions.sourcePage === 'string'
             ? normalizedOptions.sourcePage.trim()
@@ -339,7 +343,7 @@ class FallbackTutorialLifecycleStateStore {
         );
         return {
             action: 'yui_guide_request_termination',
-            sourcePage,
+            sourcePage: sourcePage,
             targetPage: 'home',
             reason: rawReason,
             tutorialReason: rawReason,
@@ -347,21 +351,27 @@ class FallbackTutorialLifecycleStateStore {
                 ? normalizedOptions.timestamp
                 : Date.now()
         };
-    }
+    };
 
-    resetEndReason() {
+    FallbackTutorialLifecycleStateStore.prototype.resetEndReason = function () {
         this.endReason = null;
         this.endRawReason = null;
-    }
+    };
 
-    getEndRawReason() {
+    FallbackTutorialLifecycleStateStore.prototype.getEndRawReason = function () {
         return this.endRawReason;
-    }
+    };
 
-    getEndReason() {
+    FallbackTutorialLifecycleStateStore.prototype.getEndReason = function () {
         return this.endReason;
-    }
+    };
+
+    return FallbackTutorialLifecycleStateStore;
 }
+const TutorialLifecycleStateStore = TutorialLifecycleStores.TutorialLifecycleStateStore
+    || createFallbackTutorialLifecycleStateStoreClass();
+const TutorialRoundPrelude = window.TutorialRoundPrelude || {};
+const TutorialRoundPreludeController = TutorialRoundPrelude.TutorialRoundPreludeController;
 
 function createUniversalTutorialScopedResources() {
     if (
@@ -472,7 +482,7 @@ class UniversalTutorialManager {
         this._tutorialEndHandled = false;
         const LifecycleStateStore = typeof TutorialLifecycleStateStore === 'function'
             ? TutorialLifecycleStateStore
-            : FallbackTutorialLifecycleStateStore;
+            : createFallbackTutorialLifecycleStateStoreClass();
         this.lifecycleStateStore = new LifecycleStateStore();
         this._tutorialAvatarReloadController = null;
         this._tutorialRoundPreludeController = null;
@@ -960,6 +970,9 @@ class UniversalTutorialManager {
     isYuiGuideEnabledForPage(page = this.currentPage) {
         const pageKey = this.getYuiGuidePageKey(page);
         const pageOrder = this.getYuiGuidePageOrder(pageKey);
+        if (pageKey === 'home' && this.isAvatarFloatingGuideRoundRegistered(1)) {
+            return true;
+        }
         if (pageOrder.length === 0) {
             return false;
         }
@@ -1482,6 +1495,13 @@ class UniversalTutorialManager {
         if (!message) {
             return;
         }
+        let tutorialRunId = '';
+        try {
+            tutorialRunId = window.localStorage
+                ? (window.localStorage.getItem('yuiGuidePcOverlayRunId') || '')
+                : '';
+        } catch (_) {}
+        message.tutorialRunId = tutorialRunId;
 
         const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
         if (channel && typeof channel.postMessage === 'function') {
@@ -4663,6 +4683,7 @@ class UniversalTutorialManager {
         const useYuiOnlyHomeFlow = (
             this.currentPage === 'home'
             && this.isYuiGuideEnabledForPage(this.currentPage)
+            && this.getYuiGuidePreludeSceneIds(this.currentPage, validSteps).length > 0
         );
         const shouldOverrideYuiAvatar = useYuiOnlyHomeFlow;
 
