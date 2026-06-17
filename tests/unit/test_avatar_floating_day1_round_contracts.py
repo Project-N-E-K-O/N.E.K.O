@@ -85,6 +85,7 @@ def test_external_chat_spotlight_creates_fallback_host():
     )[0]
 
     assert "document.getElementById('yui-guide-chat-spotlight')" in spotlight_block
+    assert "isYuiGuidePcOverlayAvailable()" in spotlight_block
     assert "document.createElement('div')" in spotlight_block
     assert "spotlight.id = 'yui-guide-chat-spotlight';" in spotlight_block
     assert "document.body.appendChild(spotlight);" in spotlight_block
@@ -428,10 +429,9 @@ def test_pc_overlay_cursor_effect_is_one_shot_not_persisted_on_external_chat_bri
         1,
     )[0]
 
-    assert "function withoutTransientYuiGuideCursorEffect(cursor)" in source
-    assert "yuiGuidePcOverlayCursor = withoutTransientYuiGuideCursorEffect(patch.cursor);" in bridge_block
-    assert "payload.cursor = patch.cursor || null;" in bridge_block
-    assert "payload.cursor = yuiGuidePcOverlayCursor;" in bridge_block
+    assert "window.nekoTutorialOverlay" in source
+    assert "typeof host.update === 'function'" in source
+    assert "host.update(patch);" in bridge_block
 
 
 def test_day1_round_start_uses_avatar_floating_round_lifecycle():

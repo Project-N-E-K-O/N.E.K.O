@@ -2687,7 +2687,7 @@
 
     function getYuiGuideChatSpotlightElement() {
         var spotlight = document.getElementById('yui-guide-chat-spotlight');
-        if (spotlight || !document.body) {
+        if (spotlight || isYuiGuidePcOverlayAvailable() || !document.body) {
             return spotlight;
         }
         spotlight = document.createElement('div');
@@ -2707,6 +2707,7 @@
         return window.yuiGuidePcOverlay
             || window.YuiGuidePcOverlay
             || window.nekoYuiGuidePcOverlay
+            || window.nekoTutorialOverlay
             || null;
     }
 
@@ -2718,6 +2719,7 @@
                 typeof host.postPatch === 'function'
                 || typeof host.sendPatch === 'function'
                 || typeof host.applyPatch === 'function'
+                || typeof host.update === 'function'
             )
         );
     }
@@ -2738,6 +2740,10 @@
             }
             if (typeof host.applyPatch === 'function') {
                 host.applyPatch(patch);
+                return true;
+            }
+            if (typeof host.update === 'function') {
+                host.update(patch);
                 return true;
             }
         } catch (error) {
